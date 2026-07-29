@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary } from '../../types/domain'
+import type { AuditLogDetailSupplement, AuditLogPayloadDetail, AuditLogSummary } from '../../types/domain'
 import { useAuditLogDetailPayload } from '../../views/audit-logs/useAuditLogDetailPayload'
 
 function source(relativePath: string): string {
@@ -21,7 +21,6 @@ const logsApiSource = source('../../api/domains/logs.ts')
 const runtimeTypesSource = source('../../types/domain/runtime-logs.ts')
 const runtimeRouteSource = source('../../../../backend/src/modules/runtime-logs/runtime-logs.routes.ts')
 const auditRouteSource = source('../../../../backend/src/modules/audit-logs/audit-logs.routes.ts')
-const dbServiceIpcSource = source('../../../../backend/src/modules/db-service/db-service-ipc.ts')
 const globalStylesSource = source('../../styles/global.css')
 
 const auditFetchPageSource = auditViewSource.match(/fetchPage: async[\s\S]*?requestSignature:/)?.[0] ?? ''
@@ -35,10 +34,10 @@ assert.doesNotMatch(
   /refreshAuditRuntimeQuietly/,
   '审计列表刷新和模式切换不得连带请求完整运行态'
 )
-assert.match(
+assert.doesNotMatch(
   auditViewSource,
-  /scheduleAuditRuntimeRefresh/,
-  '审计运行态应在列表首屏之外通过空闲任务补充'
+  /auditLogs\.runtime|scheduleAuditRuntimeRefresh|refreshAuditRuntimeQuietly|useAuditLogRuntimeAlert/,
+  '审计页面无交互时不得请求非首屏必要的完整运行态'
 )
 
 assert.doesNotMatch(
@@ -58,27 +57,13 @@ assert.match(
 )
 assert.match(runtimePageContentSource, /@facets-open="emit\('facetsOpen'\)"/, '筛选打开事件必须透传到页面')
 assert.match(runtimeViewSource, /@facets-open="loadRuntimeLogFacets"/, '页面只在筛选交互时读取轻 facets')
-assert.match(runtimeViewSource, /scheduleRuntimeStatusRefresh/, '运行日志重量运行态应在首屏之外空闲补充')
-assert.match(runtimeViewSource, /loadRuntimeLogRuntime\(true\)/, '页面重新激活时应刷新而不是永久复用旧运行态')
-assert.match(runtimeFacetsStateSource, /catch \(error\)[\s\S]*runtime\.value = unavailableRuntimeLogRuntime\(\)/, '运行态请求失败必须显式进入 unavailable，不能沿用旧健康状态')
+assert.doesNotMatch(runtimeViewSource, /scheduleRuntimeStatusRefresh|loadRuntimeLogRuntime/, '运行日志页无交互时不得补请求运行态')
+assert.doesNotMatch(runtimeFacetsStateSource, /loadRuntimeLogRuntime|unavailableRuntimeLogRuntime/, '轻 facets 状态不得夹带独立运行态请求')
 assert.doesNotMatch(auditViewSource, /<RuntimeAvailabilityAlert|<a-alert/, '审计日志页面不得显示运行态或搜索结果横幅')
 assert.doesNotMatch(source('../../views/runtime-logs/RuntimeLogListSection.vue'), /<a-alert/, '运行日志页面不得显示搜索结果横幅')
 assert.match(globalStylesSource, /\.ant-alert\s*\{\s*display:\s*none\s*!important;/, '全局样式必须禁止页面横幅展示')
-assert.match(logsApiSource, /runtime: \(\) => unwrap<RuntimeLogRuntime>/, '运行日志运行态应有独立 API')
-assert.doesNotMatch(runtimeTypesSource, /RuntimeLogRuntime[\s\S]*?queueHealth:/, '运行日志告警接口类型不得携带完整队列指标')
-assert.doesNotMatch(runtimeTypesSource, /RuntimeLogRuntime[\s\S]*?gatewayAccountSideEffects:/, '运行日志告警接口类型不得携带网关副作用明细')
-const runtimeAvailabilityRouteSource = runtimeRouteSource.match(
-  /runtimeLogsRouter\.get\('\/runtime'[\s\S]*?(?=\nexport function runtimeLogFileConsumerRuntimeDto)/
-)?.[0] ?? ''
-assert.match(runtimeAvailabilityRouteSource, /requestServerRuntimeLogAvailabilitySnapshot\(\)/, '运行日志运行态接口必须调用轻量 availability scope')
-assert.doesNotMatch(runtimeAvailabilityRouteSource, /requestServerRuntimeSnapshot\(\)/, '运行日志运行态接口不得调用 full runtime snapshot')
-const runtimeAvailabilityBuilderSource = dbServiceIpcSource.match(/async function buildServerRuntimeLogAvailabilitySnapshot[\s\S]*?\n}\n/)?.[0] ?? ''
-assert.match(runtimeAvailabilityBuilderSource, /getIngestWorkerRuntimeLogAvailability/, '运行日志轻量运行态只应读取 ingest worker O(1) 可用性')
-assert.doesNotMatch(runtimeAvailabilityBuilderSource, /requestIngestWorkerSnapshot/, '运行日志轻量运行态不得请求完整 ingest worker 快照')
-assert.doesNotMatch(runtimeAvailabilityBuilderSource, /requestStatsWorkerSnapshot|requestOpsWorkerSnapshot/, '运行日志轻量运行态不得读取无关 worker 快照')
-assert.doesNotMatch(runtimeAvailabilityBuilderSource, /import\([^)]*(audit|account-concurrency|high-concurrency)/, '运行日志轻量运行态不得加载审计、账户并发或高并发队列模块')
-assert.match(dbServiceIpcSource, /record\.scope === 'runtime_logs'/, '父进程接收端必须保留 runtime_logs scope，不能降级为 full')
-assert.doesNotMatch(runtimeAvailabilityBuilderSource, /snapshotGatewayAccountRuntimeAvailability/, '运行日志轻量运行态不得遍历并复制全部账户运行态')
+assert.doesNotMatch(logsApiSource, /runtime:\s*\(\)/, '前端日志 API 不得保留无消费者的运行态入口')
+assert.doesNotMatch(runtimeRouteSource, /runtimeLogsRouter\.get\('\/runtime'/, '后端不得保留无页面消费者的运行态接口')
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -96,11 +81,11 @@ function deferred<T>(): Deferred<T> {
   return { promise, reject, resolve }
 }
 
-const detailRequests = new Map<string, Deferred<AuditLogDetail>>()
+const detailRequests = new Map<string, Deferred<AuditLogDetailSupplement>>()
 const staleErrors: string[] = []
 const detailState = useAuditLogDetailPayload({
   loadDetail: (id) => {
-    const request = deferred<AuditLogDetail>()
+    const request = deferred<AuditLogDetailSupplement>()
     detailRequests.set(id, request)
     return request.promise
   },
@@ -109,15 +94,44 @@ const detailState = useAuditLogDetailPayload({
 const detailA = detailState.openDetail({ id: 'audit-race-a' } as AuditLogSummary)
 const detailB = detailState.openDetail({ id: 'audit-race-b' } as AuditLogSummary)
 detailRequests.get('audit-race-a')?.reject(new Error('stale detail failure'))
-detailRequests.get('audit-race-b')?.resolve({ id: 'audit-race-b' } as AuditLogDetail)
+detailRequests.get('audit-race-b')?.resolve({ attempts: [], payloads: [] } as AuditLogDetailSupplement)
 await Promise.all([detailA, detailB])
 assert.equal(detailState.detail.value?.id, 'audit-race-b', '旧详情响应不得覆盖新详情')
 assert.deepEqual(staleErrors, [], '过期详情失败不得在新详情上弹错')
 
+let payloadCallsBeforeExplicitAction = 0
+const detailMergeRequest = deferred<AuditLogDetailSupplement>()
+const detailMergeState = useAuditLogDetailPayload({
+  loadDetail: async () => detailMergeRequest.promise,
+  loadPayload: async () => {
+    payloadCallsBeforeExplicitAction += 1
+    return { id: 'unexpected-payload' } as AuditLogPayloadDetail
+  }
+})
+const detailMergeOpen = detailMergeState.openDetail({
+  id: 'audit-delta',
+  traceId: 'trace-from-row',
+  accountName: '列表账户',
+  path: '/v1/responses'
+} as AuditLogSummary)
+assert.equal(detailMergeState.detail.value, undefined, '详情 supplement 返回前应隐藏上一条详情')
+assert.equal(payloadCallsBeforeExplicitAction, 0, '打开详情不得自动请求 payload')
+detailMergeRequest.resolve({
+  id: 'audit-delta',
+  accountName: '详情账户',
+  attempts: [],
+  payloads: []
+} as AuditLogDetailSupplement)
+await detailMergeOpen
+assert.equal(detailMergeState.detail.value?.traceId, 'trace-from-row', '详情 supplement 不得清空列表已有字段')
+assert.equal(detailMergeState.detail.value?.accountName, '详情账户', '详情 supplement 应覆盖同名列表字段')
+assert.equal(detailMergeState.detail.value?.path, '/v1/responses', '详情 supplement 未提供的可展示字段应保留')
+assert.equal(payloadCallsBeforeExplicitAction, 0, '详情 supplement 返回后仍不得自动请求 payload')
+
 const payloadFailure = deferred<never>()
 const payloadErrors: string[] = []
 const payloadState = useAuditLogDetailPayload({
-  loadDetail: async (id) => ({ id } as AuditLogDetail),
+  loadDetail: async () => ({ attempts: [], payloads: [] } as AuditLogDetailSupplement),
   loadPayload: async () => payloadFailure.promise,
   reportError: (text) => payloadErrors.push(text)
 })
@@ -137,7 +151,7 @@ const fullPayload = {
 } as AuditLogPayloadDetail
 const payloadCalls: Array<[string, string]> = []
 const fullPayloadState = useAuditLogDetailPayload({
-  loadDetail: async (id) => ({ id } as AuditLogDetail),
+  loadDetail: async () => ({ attempts: [], payloads: [] } as AuditLogDetailSupplement),
   loadPayload: async (auditLogId, payloadId) => {
     payloadCalls.push([auditLogId, payloadId])
     return fullPayload
@@ -165,15 +179,23 @@ assert.doesNotMatch(runtimeFacetsRouteSource, /requestServerRuntime|type: 'statu
 const openAuditDetailSource = auditPayloadStateSource.match(/async function openDetail[\s\S]*?async function loadPayload/)?.[0] ?? ''
 assert.match(openAuditDetailSource, /payloadRequestId \+= 1/, '切换审计详情时必须作废上一条记录的 payload 请求')
 assert.match(openAuditDetailSource, /detail\.value = undefined/, '加载新审计详情时必须立即隐藏旧详情，避免旧 payload 操作串页')
+assert.match(openAuditDetailSource, /detail\.value = \{ \.\.\.record, \.\.\.nextDetail \}/, '详情响应必须作为 supplement 与当前列表行合并，不能丢失列表已有展示字段')
 assert.doesNotMatch(auditPayloadStateSource, /loadNextPayloadWindow|auditPayloadReadWindowBytes/, '前端不得保留审计正文分段加载状态')
 assert.doesNotMatch(auditDetailDrawerSource, /加载下一段|load-next-payload/, '审计详情不得显示下一段交互')
 assert.match(logsApiSource, /payload: \(id: string, payloadId: string\)/, '审计 payload API 不应再暴露 offset/limit 参数')
+assert.match(logsApiSource, /detail: \(id: string\) => unwrap<AuditLogDetailSupplement>/, '审计详情 API 必须声明为列表行补充字段，不能伪装成完整详情')
+assert.doesNotMatch(logsApiSource, /auditLogsApi[\s\S]{0,500}runtime:/, '前端不得保留无人使用且容易重新接入首屏的审计运行态 API')
 const auditPayloadRouteSource = auditRouteSource.match(/auditLogsRouter\.get\('\/:id\/payloads\/:payloadId'[\s\S]*?\n}\)/)?.[0] ?? ''
 assert.match(auditPayloadRouteSource, /full: true/, '管理员审计 payload 接口必须一次返回完整正文')
 assert.doesNotMatch(auditPayloadRouteSource, /req\.query\.(offset|limit)/, '管理员审计 payload 接口不得继续接受窗口参数')
 
 const grepItemType = runtimeTypesSource.match(/export interface RuntimeLogGrepItem \{[\s\S]*?\n\}/)?.[0] ?? ''
-assert.doesNotMatch(grepItemType, /rawJson:/, 'grep 命中项不得重复返回 rawJson 和 line')
-assert.match(grepItemType, /line:/, 'grep 命中项应保留单份原始行')
+assert.doesNotMatch(grepItemType, /rawJson:|\n  line:|\n  file:/, 'grep 列表不得提前返回原始行或服务器完整路径')
+assert.match(logsApiSource, /grepDetail: \(item: \{ id: string; fileName: string; lineNumber: number \}\)/, 'grep 原始行必须由点击详情后的定位接口读取')
+assert.match(runtimeRouteSource, /runtimeLogsRouter\.get\('\/grep-detail'/, '后端必须提供 grep 增量详情端点')
+assert.match(runtimeRouteSource, /type: 'get_runtime_log_detail_delta'/, '索引详情路由只应读取 rawJson 增量')
+const runtimeDetailStateSource = source('../../views/runtime-logs/useRuntimeLogDetailState.ts')
+assert.match(runtimeDetailStateSource, /selectedLog\.value = \{ \.\.\.record, \.\.\.detail \}/, '索引详情必须把行摘要与详情增量合并')
+assert.match(runtimeDetailStateSource, /selectedGrepItem\.value = \{ \.\.\.record, \.\.\.detail \}/, 'grep 详情必须把行摘要与原始行增量合并')
 
-console.log('日志加载回归通过：审计正文单次完整返回，运行态、facets 和 grep 原文仍按需读取')
+console.log('日志加载回归通过：运行日志首屏无 runtime 请求，facets、grep options 与两类原文详情均按交互增量读取')

@@ -182,12 +182,17 @@ function accountRuntimeStatusFreshCandidatePage(
   page: AccountManagementListPage,
   seenCandidateIds: Set<string>
 ): AccountManagementListPage {
-  const items = page.items.filter((item) => {
-    if (seenCandidateIds.has(item.id)) return false
+  const statusSeedsById = new Map(page.statusSeeds.map((seed) => [seed.id, seed]))
+  const items = [] as AccountManagementListPage['items']
+  const statusSeeds = [] as AccountManagementListPage['statusSeeds']
+  for (const item of page.items) {
+    if (seenCandidateIds.has(item.id)) continue
     seenCandidateIds.add(item.id)
-    return true
-  })
-  return { ...page, items }
+    items.push(item)
+    const statusSeed = statusSeedsById.get(item.id)
+    if (statusSeed) statusSeeds.push(statusSeed)
+  }
+  return { ...page, items, statusSeeds }
 }
 
 async function hydrateAccountRuntimeStatusCandidatePage(
@@ -197,7 +202,12 @@ async function hydrateAccountRuntimeStatusCandidatePage(
   const items: AccountListItem[] = []
   let generatedAt = new Date().toISOString()
   for (const candidateItems of chunkValues(page.items, maxRuntimeStatusHydrationBatchSize)) {
-    const hydrated = await hydrateAccountListPage(access, { ...page, items: candidateItems })
+    const candidateIds = new Set(candidateItems.map((item) => item.id))
+    const hydrated = await hydrateAccountListPage(access, {
+      ...page,
+      items: candidateItems,
+      statusSeeds: page.statusSeeds.filter((seed) => candidateIds.has(seed.id))
+    })
     items.push(...hydrated.items)
     generatedAt = hydrated.generatedAt
   }

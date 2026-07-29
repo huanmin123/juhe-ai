@@ -1,20 +1,20 @@
-import type { OperationLogListItem, OperationLogSummary } from '@/types/domain'
+import type { OperationLogListItem } from '@/types/domain'
 
 import { resourceTypeText } from './operationLogLabels'
 
-export function actorText(record: OperationLogListItem | OperationLogSummary): string {
+export function actorText(record: OperationLogListItem): string {
   return displayName(record.actorDisplayName ?? record.actorSystemAccountName)
 }
 
-export function displayName(name?: string, _id?: string): string {
-  return name || '-'
+export function displayName(name?: string, id?: string): string {
+  return name || id || '-'
 }
 
-export function resourceText(record: Pick<OperationLogSummary, 'resourceType' | 'resourceName' | 'resourceId'>): string {
-  return `${resourceTypeText(record.resourceType)}：${displayName(record.resourceName)}`
+export function resourceText(record: { resourceType: string; resourceId?: string; resourceName?: string }): string {
+  return `${resourceTypeText(record.resourceType)}：${displayName(record.resourceName, record.resourceId)}`
 }
 
-export function requestText(record: Pick<OperationLogSummary, 'method' | 'path'>): string {
+export function requestText(record: { method?: string; path?: string }): string {
   return [record.method, record.path].filter(Boolean).join(' ') || '-'
 }
 

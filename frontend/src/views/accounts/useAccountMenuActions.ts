@@ -2,7 +2,7 @@ import { message } from '@/lib/antd'
 import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountListItem } from '@/types/domain'
+import type { AccountListItem, AccountMutationResult } from '@/types/domain'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { mergeAuthorizedDispatchMutation } from './accountListMutations'
@@ -16,16 +16,20 @@ import {
   canUseBoundAuthorizedAccount
 } from './accountRules'
 import { managedOAuthProviderKind } from './accountProviderCapabilities'
+import { isOAuthConfigRevisionConflict, requiredOAuthConfigRevision } from './accountOAuthRevision'
 
 interface UseAccountMenuActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
+  markAccountMutation: (mutation: AccountMutationResult) => boolean
   openReauthorizeModal: (account: AccountListItem) => void | Promise<void>
   openTestModal: (account: AccountListItem) => Promise<void>
   openTrafficMigration: (account: AccountListItem) => void
+  reloadAccountPageAfterMutation: () => Promise<boolean>
   updateLoadedAccount: (account: AccountListItem) => boolean
+  updateLoadedAccountRevision: (accountId: string, configRevision: number) => boolean
 }
 
 export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
@@ -39,35 +43,45 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     tokenRefreshLoading.value = true
     const hide = message.loading(`${account.name}: 正在刷新令牌...`, 0)
     try {
+      const expectedConfigRevision = requiredOAuthConfigRevision(account)
+      if (expectedConfigRevision === undefined) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return
+      }
+      const payload = { expectedConfigRevision }
       const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
       const providerKind = managedOAuthProviderKind({ profile: account })
+      let updated
       if (providerKind === 'anthropic') {
         if (options.isManagementView.value) {
-          await api.anthropicOAuth.refreshToken(account.id, scopeParams)
+          updated = await api.anthropicOAuth.refreshToken(account.id, payload, scopeParams)
         } else {
-          await api.myAnthropicOAuth.refreshToken(account.id)
+          updated = await api.myAnthropicOAuth.refreshToken(account.id, payload)
         }
       } else if (providerKind === 'gemini') {
         if (options.isManagementView.value) {
-          await api.geminiOAuth.refreshToken(account.id, scopeParams)
+          updated = await api.geminiOAuth.refreshToken(account.id, payload, scopeParams)
         } else {
-          await api.myGeminiOAuth.refreshToken(account.id)
+          updated = await api.myGeminiOAuth.refreshToken(account.id, payload)
         }
       } else if (providerKind === 'grok') {
         if (options.isManagementView.value) {
-          await api.grokOAuth.refreshToken(account.id, scopeParams)
+          updated = await api.grokOAuth.refreshToken(account.id, payload, scopeParams)
         } else {
-          await api.myGrokOAuth.refreshToken(account.id)
+          updated = await api.myGrokOAuth.refreshToken(account.id, payload)
         }
       } else if (options.isManagementView.value) {
-        await api.openaiOAuth.refreshToken(account.id, scopeParams)
+        updated = await api.openaiOAuth.refreshToken(account.id, payload, scopeParams)
       } else {
-        await api.myOpenaiOAuth.refreshToken(account.id)
+        updated = await api.myOpenaiOAuth.refreshToken(account.id, payload)
       }
+      options.updateLoadedAccountRevision(account.id, updated.configRevision)
       message.success(`${account.name}: 令牌刷新成功`)
-      await options.loadData()
     } catch (error) {
       console.error(error)
+      if (isOAuthConfigRevisionConflict(error)) {
+        await options.loadData().catch((loadError) => console.error(loadError))
+      }
       message.error(options.extractApiErrorMessage(error, `${account.name}: 令牌刷新失败`))
     } finally {
       hide()
@@ -114,12 +128,14 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       }
       const updatePayload = { ...payload, expectedConfigRevision: configRevision }
       if (options.isManagementView.value) {
-        await api.accounts.update(account.id, updatePayload, scopeParams)
+        const updated = await api.accounts.update(account.id, updatePayload, scopeParams)
+        options.markAccountMutation(updated)
       } else {
-        await api.myAccounts.update(account.id, updatePayload)
+        const updated = await api.myAccounts.update(account.id, updatePayload)
+        options.markAccountMutation(updated)
       }
       message.success(successText)
-      await options.loadData()
+      await options.reloadAccountPageAfterMutation()
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '账户状态更新失败'))

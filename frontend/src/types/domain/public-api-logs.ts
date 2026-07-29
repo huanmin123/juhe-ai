@@ -34,6 +34,19 @@ export interface PublicApiLogDetail extends PublicApiLogSummary {
   responseData: Record<string, unknown>
 }
 
+export interface PublicApiLogDetailSupplement {
+  tokenName?: string
+  tokenPrefix?: string
+  isTestToken: boolean
+  userAgent?: string
+  errorCode?: string
+  errorMessage?: string
+  requestData: Record<string, unknown>
+  responseData: Record<string, unknown>
+}
+
+export interface PublicApiLogRenderedDetail extends PublicApiLogListItem, PublicApiLogDetailSupplement {}
+
 export interface PublicApiLogListItem {
   id: string
   createdAt: string

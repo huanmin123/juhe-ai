@@ -156,9 +156,15 @@ assert.match(
 )
 const readWorkerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
 assert.match(readWorkerSource, /case 'list_account_status_snapshots_read_only'/, 'SQLite read worker 必须实现状态投影 operation')
+assert.match(
+  readWorkerSource,
+  /case 'hydrate_account_management_status_seeds_read_only':[\s\S]*hydrateAccountManagementStatusSeedsReadOnly\(operation\.seeds\)/,
+  'SQLite read worker 必须直接水合管理列表最小 seed，不得回退按 ID 重查账户'
+)
 assert.match(readWorkerSource, /listAccountManagementItemsPageReadOnly\(operation\.access, operation\.options, operation\.candidateLimit\)/, 'SQLite read worker 必须透传内部候选前缀上限')
 const readWorkerTypesSource = readFileSync(resolve('src/storage/sqlite-read-worker-pool.types.ts'), 'utf8')
 assert.match(readWorkerTypesSource, /type: 'list_account_management_items_page_read_only'[\s\S]*candidateLimit\?: number/, 'SQLite read worker operation 必须声明候选前缀上限')
+assert.match(readWorkerTypesSource, /type: 'hydrate_account_management_status_seeds_read_only'[\s\S]*seeds: AccountManagementStatusSeed\[\]/, 'SQLite read worker 必须声明最小状态 seed operation')
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-status-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databaseDriver = 'sqlite'
@@ -405,15 +411,15 @@ try {
     true,
     'pageSize > 100 时每一行都必须完成状态、展示和今日用量投影'
   )
-  const snapshotBatchDatabase = databaseModule.getBusinessDatabase()
+  const snapshotBatchDatabase = databaseModule.getStatsDatabase()
   const originalSnapshotPrepare = snapshotBatchDatabase.prepare.bind(snapshotBatchDatabase) as typeof snapshotBatchDatabase.prepare
   const statusProjectionBatchSizes: number[] = []
   snapshotBatchDatabase.prepare = ((sql: string) => {
     const statement = originalSnapshotPrepare(sql)
-    if (/SELECT\s+accounts\.id,\s*accounts\.system_account_id,\s*accounts\.status,\s*accounts\.schedulable/i.test(sql)) {
+    if (/WITH\s+requested\(row_key, system_account_id, scope_type, scope_id\)/i.test(sql) && /usage_stats_daily/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
-        statusProjectionBatchSizes.push(Math.max(0, params.length - 1))
+        statusProjectionBatchSizes.push(Math.max(0, (params.length - 1) / 4))
         return originalAll(...params)
       }) as typeof statement.all
     }
@@ -431,7 +437,7 @@ try {
     snapshotBatchDatabase.prepare = originalSnapshotPrepare
   }
   assert(largeRuntimeFilteredPage, '运行态状态筛选必须返回分页结果')
-  assert.deepEqual(statusProjectionBatchSizes, [100, 29], '128 行分页加一条 lookahead 必须按 100 ID 运行态快照边界执行两次 hydrate')
+  assert.deepEqual(statusProjectionBatchSizes, [100, 29], '128 行分页加一条 lookahead 必须按 100 seed 运行态快照边界执行两次 hydrate')
   assert.equal(largeRuntimeFilteredPage.items.length, 128, 'pageSize=128 的运行态状态筛选不得漏掉第 101 条之后的匹配账户')
   assert.equal(largeRuntimeFilteredPage.hasMore, true, '第 129 个匹配必须形成准确的 hasMore')
   assert.equal(
@@ -522,6 +528,8 @@ try {
   repositories.updateAccountTags(`acc_runtime_deep_${String(deepActiveStart).padStart(4, '0')}`, ['运行态尾页标签'], userAccess)
   const businessDatabase = databaseModule.getBusinessDatabase()
   const originalPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
+  const runtimeStatsDatabase = databaseModule.getStatsDatabase()
+  const originalRuntimeStatsPrepare = runtimeStatsDatabase.prepare.bind(runtimeStatsDatabase) as typeof runtimeStatsDatabase.prepare
   const candidateQueries: Array<{ limit: number; offset: number; sql: string }> = []
   const runtimeHydrationBatchSizes: number[] = []
   const runtimeHydrationAccountIds: string[] = []
@@ -538,16 +546,23 @@ try {
         return originalAll(...params)
       }) as typeof statement.all
     }
-    if (/SELECT\s+accounts\.id,\s*accounts\.system_account_id,\s*accounts\.status,\s*accounts\.schedulable/i.test(sql)) {
+    return statement
+  }) as typeof businessDatabase.prepare
+  runtimeStatsDatabase.prepare = ((sql: string) => {
+    const statement = originalRuntimeStatsPrepare(sql)
+    if (/WITH\s+requested\(row_key, system_account_id, scope_type, scope_id\)/i.test(sql) && /usage_stats_daily/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
-        runtimeHydrationBatchSizes.push(Math.max(0, params.length - 1))
-        runtimeHydrationAccountIds.push(...params.slice(0, -1).map(String))
+        const scopeParams = params.slice(0, -1)
+        runtimeHydrationBatchSizes.push(scopeParams.length / 4)
+        for (let index = 0; index < scopeParams.length; index += 4) {
+          runtimeHydrationAccountIds.push(String(scopeParams[index]))
+        }
         return originalAll(...params)
       }) as typeof statement.all
     }
     return statement
-  }) as typeof businessDatabase.prepare
+  }) as typeof runtimeStatsDatabase.prepare
   let denseActivePage: Awaited<ReturnType<typeof listAccountsPageWithRuntimeStatusFilter>>
   let denseCandidateQueries: typeof candidateQueries
   let denseHydrationBatchSizes: number[]
@@ -604,6 +619,7 @@ try {
     })
     deepUnboundedCandidateQueries = candidateQueries.slice(deepUnboundedQueryStart)
   } finally {
+    runtimeStatsDatabase.prepare = originalRuntimeStatsPrepare
     businessDatabase.prepare = originalPrepare
   }
   assert(denseActivePage, '正常状态运行态筛选必须返回分页结果')

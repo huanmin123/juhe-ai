@@ -1,7 +1,7 @@
 import type { EChartsOption } from 'echarts'
 
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import type { DatabaseStorageHistoryPoint, DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverviewSummary } from '@/types/domain'
+import type { DatabaseStorageHistoryPoint, DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageHistoryPoint, TableStorageOverviewSummary } from '@/types/domain'
 
 export const tableMonitorColumns = [
   { title: '库', key: 'databaseRole', width: 168, fixed: 'left' },
@@ -158,6 +158,59 @@ export function buildTableMonitorHistoryChartOption(input: {
   }
 }
 
+export function buildTableStorageHistoryChartOption(rows: TableStorageHistoryPoint[]): EChartsOption {
+  return {
+    color: ['#1677ff', '#13a8a8'],
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: unknown) => tableHistoryTooltip(params)
+    },
+    legend: {
+      top: 4,
+      data: ['总大小', '行数']
+    },
+    grid: { left: 64, right: 64, top: 48, bottom: 42 },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: rows.map((row) => formatSampleTime(row.sampledAt))
+    },
+    yAxis: [
+      {
+        type: 'value',
+        name: '大小',
+        axisLabel: { formatter: (value: number) => formatBytes(value) },
+        splitLine: { lineStyle: { color: '#edf2f7' } }
+      },
+      {
+        type: 'value',
+        name: '行数',
+        axisLabel: { formatter: (value: number) => formatInteger(value) },
+        splitLine: { show: false }
+      }
+    ],
+    series: [
+      {
+        name: '总大小',
+        type: 'line',
+        smooth: true,
+        showSymbol: false,
+        connectNulls: false,
+        data: rows.map((row) => row.totalBytes ?? null)
+      },
+      {
+        name: '行数',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: true,
+        showSymbol: false,
+        connectNulls: false,
+        data: rows.map((row) => row.rowCount ?? null)
+      }
+    ]
+  }
+}
+
 function historySeries(
   rows: DatabaseStorageHistoryPoint[],
   role: MonitoredDatabaseRole,
@@ -219,6 +272,21 @@ function historyTooltip(params: unknown) {
       `表 ${formatInteger(data.tableCount)}`
     ].join(' / ')
     lines.push(`${point.marker ?? ''}${escapeHtml(point.seriesName ?? '')}: ${formatBytes(total)} · ${details}`)
+  }
+  return lines.join('<br/>')
+}
+
+function tableHistoryTooltip(params: unknown) {
+  const points = Array.isArray(params) ? params as HistoryTooltipPoint[] : [params as HistoryTooltipPoint]
+  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
+  const lines = [`<strong>${escapeHtml(title)}</strong>`]
+  for (const point of points) {
+    const value = point.data && typeof point.data === 'object'
+      ? numberValue((point.data as { value?: unknown }).value)
+      : numberValue(point.data)
+    if (value === undefined) continue
+    const formatted = point.seriesName === '行数' ? `${formatInteger(value)} 行` : formatBytes(value)
+    lines.push(`${point.marker ?? ''}${escapeHtml(point.seriesName ?? '')}: ${formatted}`)
   }
   return lines.join('<br/>')
 }

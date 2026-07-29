@@ -87,6 +87,12 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     pagination.pageSize = options.pageSize
   }
 
+  function invalidatePendingLoads(): void {
+    loadRequestId += 1
+    inflightLoadKey = ''
+    inflightLoadPromise = undefined
+  }
+
   async function loadData(loadOptions = {} as ResponsivePagedListLoadOptions & ExtraOptions): Promise<boolean> {
     const loadKey = requestKey(loadOptions)
     if (loadKey && inflightLoadPromise && inflightLoadKey === loadKey) {
@@ -240,6 +246,7 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     handleTableChange,
     loadData,
     loadMoreMobile,
+    invalidatePendingLoads,
     removeItems,
     refreshMobile,
     resetPagination,

@@ -31,6 +31,12 @@ assert.match(
 )
 
 assert.match(
+  usageStatsWindowSource,
+  /usageStatsWindowIdentitySignature[\s\S]*user\?\.id[\s\S]*user\?\.role[\s\S]*authState\.revision\.value/,
+  'usage stats window cache must be isolated by the current identity and auth revision'
+)
+
+assert.match(
   statsViewSource,
   /function\s+selectedRangeParams\(\):\s*\{ startDate\?: string; endDate\?: string \}\s*\{[\s\S]*if\s*\(!dateRangeExplicit\.value\)\s*return\s*\{\}/,
   'stats overview must not submit browser-local dates when the range is not explicit'
@@ -38,8 +44,8 @@ assert.match(
 
 assert.match(
   statsViewSource,
-  /loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*isManagementView\.value \? 'admin' : 'self'[\s\S]*\}\)/,
-  'stats overview loads must use the scoped stats window and let manual refresh bypass its metadata cache'
+  /const viewScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*loadUsageStatsWindow\(\{ viewScope \}\)/,
+  'stats overview loads must use the scoped cached stats window'
 )
 
 assert.match(
@@ -61,7 +67,7 @@ for (const [name, source] of [
 
 assert.match(
   systemMetricsViewSource,
-  /void\s+loadUsageStatsWindow\(\{\s*force,\s*viewScope:\s*'admin'\s*\}\)[\s\S]*return\s+loadData\(\)/,
+  /void\s+loadUsageStatsWindow\(\{\s*viewScope:\s*'admin'\s*\}\)[\s\S]*return\s+loadData\(\)/,
   'system metrics must start the scoped cached-window request without blocking its trend request'
 )
 
@@ -109,20 +115,26 @@ assert.match(
 
 assert.match(
   aiPerformanceViewSource,
-  /const windowScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*await\s+loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*windowScope[\s\S]*\}\)[\s\S]*loadPerformanceBase\(\)/,
-  'AI performance must use the scoped cached stats window before loading its base data'
+  /const windowScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*const windowLoad = loadUsageStatsWindow\(\{\s*viewScope:\s*windowScope\s*\}\)[\s\S]*await\s+loadPerformanceBase\(\)/,
+  'AI performance must start the scoped stats window metadata without delaying its base data'
+)
+
+assert.doesNotMatch(
+  aiPerformanceViewSource,
+  /function\s+refreshPerformance\(\)[\s\S]{0,120}force:\s*true/,
+  'AI performance manual refresh must reuse valid usage-window metadata'
 )
 
 assert.match(
   aiPerformanceViewSource,
   /function\s+currentPerformanceRequest[\s\S]*systemAccountId:\s*selectedPerformanceSystemAccountId\(\)/,
-  'AI performance requests must include the selected system account after the stats window resolves'
+  'AI performance requests must include the selected system account'
 )
 
 assert.match(
   aiPerformanceViewSource,
-  /function\s+selectedRangeParams\(\):\s*\{ startDate\?: string; endDate\?: string \}\s*\{[\s\S]*if\s*\(!dateRangeExplicit\.value\)[\s\S]*defaultDateRange\(\)/,
-  'AI performance default range must be derived after the stats window is current'
+  /function\s+selectedRangeParams\(\):\s*\{ startDate\?: string; endDate\?: string \}\s*\{[\s\S]*if\s*\(!dateRangeExplicit\.value\) return \{\}/,
+  'AI performance default range must be normalized by the Node service timezone without browser-local dates'
 )
 
 assert.match(
@@ -133,5 +145,5 @@ assert.match(
 
 assert.match(usageStatsWindowSource, /lastLoadFailed:\s*boolean/, 'usage-window must retain an explicit failure state')
 assert.match(usageStatsWindowSource, /scopeState\.value = undefined[\s\S]*scopeState\.lastLoadFailed = true/, 'failed usage-window requests must not be cached as successful fallback windows')
-assert.match(aiPerformanceViewSource, /didUsageStatsWindowLoadFail\(windowScope\)/, 'AI performance must stop before using a failed server window')
+assert.doesNotMatch(aiPerformanceViewSource, /didUsageStatsWindowLoadFail\(windowScope\)/, 'AI performance base must remain usable when optional usage-window metadata fails')
 assert.match(ipStatsViewSource, /didUsageStatsWindowLoadFail\('admin'\)/, 'IP stats must stop before using a failed server window')

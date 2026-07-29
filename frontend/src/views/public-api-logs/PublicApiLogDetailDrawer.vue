@@ -42,14 +42,14 @@
 <script setup lang="ts">
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
 import { formatDateTime } from '@/shared/formatters'
-import type { PublicApiLogDetail } from '@/types/domain'
+import type { PublicApiLogRenderedDetail } from '@/types/domain'
 import {
   formatPublicApiLogDuration,
   prettyPublicApiLogJson
 } from './publicApiLogFormatters'
 
 defineProps<{
-  detail?: PublicApiLogDetail
+  detail?: PublicApiLogRenderedDetail
   loading: boolean
   open: boolean
 }>()

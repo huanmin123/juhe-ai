@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import { createModelCheckDemandRequestCoordinator } from '../../views/model-checks/modelCheckDemandRequestCoordinator'
+
 const view = readFileSync(new URL('../../views/model-checks/ModelChecksView.vue', import.meta.url), 'utf8')
 const accountOptions = readFileSync(new URL('../../views/model-checks/useModelCheckAccountOptions.ts', import.meta.url), 'utf8')
+const historyList = readFileSync(new URL('../../views/model-checks/ModelCheckRunHistoryList.vue', import.meta.url), 'utf8')
 const api = readFileSync(new URL('../../api/domains/modelChecks.ts', import.meta.url), 'utf8')
 
 function sourceBetween(source: string, start: string, end: string): string {
@@ -35,6 +38,29 @@ assert.match(accountOptions, /comparisonAbortController\?\.abort\(\)/, '可信�
 assert.match(accountOptions, /historyAbortController\?\.abort\(\)/, '历史账户搜索必须中止旧请求')
 assert.match(view, /function handleScheduleAccountSearch[\s\S]*setTimeout\([\s\S]*250\)/, '定时计划账户搜索必须防抖')
 assert.match(view, /scheduleAccountOptionsAbortController\?\.abort\(\)/, '定时计划账户搜索必须中止旧请求')
-assert.match(view, /scheduleAccountModelOptionsAbortController\?\.abort\(\)/, '定时计划模型选项请求必须中止旧请求')
+assert.match(view, /purpose: 'schedule',[\s\S]*accountId: selectedId,[\s\S]*limit: 1/, '定时计划模型选项只能在展开模型下拉后按 accountId 定点加载')
+assert.match(view, /scheduleAccountModelRequestCoordinator\.invalidate\(\)/, '定时计划模型选项必须中止失效上下文请求')
+assert.match(accountOptions, /purpose: 'run',[\s\S]*accountId,[\s\S]*limit: 1/, '手动检测模型选项只能在展开模型下拉后按 accountId 定点加载')
+assert.match(accountOptions, /targetModelRequestCoordinator\.run\(/, '手动检测模型选项必须复用 singleflight 协调器')
+assert.match(historyList, /runs: ModelCheckRunListItem\[\]/, '历史列表必须只消费独立窄 DTO，不能复用详情摘要对象')
 
-console.log('模型检测按需加载回归通过：首屏无质量策略预取，搜索防抖可中止，策略和计划使用差量 PATCH，计划保存局部更新')
+const coordinator = createModelCheckDemandRequestCoordinator()
+let requestCount = 0
+let capturedSignal: AbortSignal | undefined
+let resolveRequest: ((value: string) => void) | undefined
+const request = (signal: AbortSignal) => {
+  requestCount += 1
+  capturedSignal = signal
+  return new Promise<string>((resolve) => { resolveRequest = resolve })
+}
+const first = coordinator.run('same-account', request)
+const duplicate = coordinator.run('same-account', request)
+assert.strictEqual(duplicate, first, '同一账户模型选项并发请求必须 singleflight 复用同一个 Promise')
+assert.equal(requestCount, 1, '同一账户模型选项并发请求只能回源一次')
+coordinator.invalidate()
+assert.equal(capturedSignal?.aborted, true, '上下文失效必须中止在途模型选项请求')
+resolveRequest?.('stale')
+assert.equal(await first, undefined, '失效请求结果不得回写当前页面状态')
+assert.equal(await coordinator.run('same-account', async () => 'fresh'), 'fresh', '失效后新上下文必须可以重新按需加载')
+
+console.log('模型检测按需加载回归通过：首屏无策略预取，模型按 accountId+limit=1 定点加载且 singleflight，历史列表使用窄 DTO，策略和计划使用差量 PATCH')

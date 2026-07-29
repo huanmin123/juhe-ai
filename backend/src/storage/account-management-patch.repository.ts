@@ -822,11 +822,18 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   const gatewayRuntimeAffected = groupChanged
     || credentialsChanged
     || [...changedFields].some((field) => gatewayFields.has(field))
+  const authorizationDependencyFields = new Set([
+    'name', 'status', 'schedulable', 'concurrencyLimit', 'proxyProfileId', 'clientCompatibility',
+    'supportedModels', 'modelMappings', 'healthCheckModel', 'healthCheckEndpointMode',
+    'availabilitySchedule', 'accountExpiresAt', 'temporaryUnavailableContinuousProbeEnabled', 'runtimeState'
+  ])
+  const authorizationInstancesAffected = credentialsChanged
+    || [...changedFields].some((field) => authorizationDependencyFields.has(field))
   return {
     id: row.id,
     configRevision: integerValue(row.config_revision) + 1,
     changedFields: [...changedFields].sort(),
-    authorizationInstancesAffected: gatewayRuntimeAffected || row.name !== nextName,
+    authorizationInstancesAffected,
     changes,
     name: nextName,
     ownerSystemAccountId: row.system_account_id,

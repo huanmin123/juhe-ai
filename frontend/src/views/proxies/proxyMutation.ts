@@ -67,6 +67,52 @@ export function applyProxyMutation(item: ProxyProfileSummary, mutation: ProxyPro
   }
 }
 
+export interface ProxyMutationListState {
+  keyword: string
+  page: number
+  pageSize: number
+  total: number
+  accumulated: boolean
+}
+
+export function reconcileProxyMutationList(
+  items: ProxyProfileSummary[],
+  mutation: ProxyProfileMutationResult,
+  state: ProxyMutationListState
+): { items: ProxyProfileSummary[]; total: number } {
+  const current = items.find((item) => item.id === mutation.id)
+  if (!current) return { items, total: state.total }
+  const merged = applyProxyMutation(current, mutation)
+  const remaining = items.filter((item) => item.id !== mutation.id)
+  const search = state.keyword.trim()
+  if (search && !merged.name.startsWith(search)) {
+    return { items: remaining, total: Math.max(0, state.total - 1) }
+  }
+  if (state.page !== 1 && !state.accumulated) {
+    return { items: remaining, total: state.total }
+  }
+  const reordered = [merged, ...remaining]
+  return {
+    items: state.accumulated ? reordered : reordered.slice(0, state.pageSize),
+    total: state.total
+  }
+}
+
+export function reconcileCreatedProxyList(
+  items: ProxyProfileSummary[],
+  created: ProxyProfileSummary,
+  state: ProxyMutationListState
+): { items: ProxyProfileSummary[]; total: number } | undefined {
+  const search = state.keyword.trim()
+  if (search && !created.name.startsWith(search)) return undefined
+  if (state.page !== 1 && !state.accumulated) return undefined
+  const reordered = [created, ...items.filter((item) => item.id !== created.id)]
+  return {
+    items: state.accumulated ? reordered : reordered.slice(0, state.pageSize),
+    total: state.total + 1
+  }
+}
+
 function normalizedNullableText(value: string): string | null {
   const text = value.trim()
   return text || null

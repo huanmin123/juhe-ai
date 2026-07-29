@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
-  getPublicApiLogDetailAsync,
+  getPublicApiLogDetailSupplementAsync,
   listPublicApiLogsAsync,
   type PublicApiLogListOptions,
   type PublicApiLogResultFilter
@@ -24,12 +24,12 @@ publicApiLogsRouter.get('/', async (req, res, next) => {
 
 publicApiLogsRouter.get('/:id', async (req, res, next) => {
   try {
-    const detail = await getPublicApiLogDetailAsync(req.params.id)
-    if (!detail) {
+    const supplement = await getPublicApiLogDetailSupplementAsync(req.params.id)
+    if (!supplement) {
       sendNotFound(res, '公开接口日志不存在')
       return
     }
-    res.json(ok(detail))
+    res.json(ok(supplement))
   } catch (error) {
     next(error)
   }

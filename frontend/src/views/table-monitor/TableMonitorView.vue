@@ -54,6 +54,14 @@
       @submit="submitNonBusinessDataCleanup"
     />
 
+    <TableMonitorTableHistoryModal
+      v-model:open="tableHistoryOpen"
+      :loading="tableHistoryLoading"
+      :rows="tableHistoryRows"
+      :table="selectedTable"
+      @update:open="handleTableHistoryOpenChange"
+    />
+
     <div class="database-summary-grid">
       <a-card v-for="item in databaseSummaryRows" :key="item.role" class="database-summary-card">
         <div class="database-summary-head">
@@ -102,15 +110,24 @@
           :columns="columns"
           :data-source="filteredTables"
           :loading="loading"
+          :loading-more="mobileLoadingMore"
+          :mobile-has-more="mobileHasMore"
           :pagination="tablePagination"
           :row-key="tableMonitorRowKey"
           :scroll-x="1320"
           :table-scroll-enabled="false"
           :lock-body-scroll="false"
+          row-clickable
           class="table-monitor-table"
           table-class="table-monitor-table"
           size="middle"
           mobile-pagination
+          pull-refresh-enabled
+          :refreshing="loading"
+          @change="handleTableChange"
+          @mobile-load-more="loadMoreMobile"
+          @mobile-refresh="refreshTableMonitorMobile"
+          @row-click="openTableHistory"
         >
           <template #emptyText>
             <a-empty class="page-empty-card" description="当前条件下没有表监控数据。" />
@@ -154,7 +171,14 @@
             </template>
           </template>
           <template #card="{ record }">
-            <article class="table-monitor-mobile-card">
+            <article
+              class="table-monitor-mobile-card table-monitor-mobile-card-clickable"
+              role="button"
+              tabindex="0"
+              @click="openTableHistory(record)"
+              @keydown.enter="openTableHistory(record)"
+              @keydown.space.prevent="openTableHistory(record)"
+            >
               <div class="mobile-card-head">
                 <span class="mono-cell">{{ record.tableName }}</span>
                 <span class="mobile-card-tags">
@@ -202,7 +226,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { DeleteOutlined } from '@ant-design/icons-vue'
@@ -214,12 +238,14 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
-import type { DatabaseStorageHistoryPoint, NonBusinessDataCleanupResult, TableStorageOverview } from '@/types/domain'
+import type { DatabaseStorageHistoryPoint, NonBusinessDataCleanupResult, TableStorageHistoryPoint, TableStorageOverview, TableStorageOverviewSummary } from '@/types/domain'
 
 import TableMonitorCleanupModal from './TableMonitorCleanupModal.vue'
+import TableMonitorTableHistoryModal from './TableMonitorTableHistoryModal.vue'
 import {
   buildTableMonitorHistoryChartOption,
   databaseRoleColor,
@@ -231,7 +257,6 @@ import {
   formatInteger,
   formatRatioPercent,
   growthColor,
-  matchesTableNameKeyword,
   tableMonitorColumns,
   tableMonitorDatabaseRoles,
   tableMonitorRowKey,
@@ -253,7 +278,6 @@ const pageStateCache = usePageStateCache<TableMonitorPageState>(undefined, defau
 })
 const initialPageState = pageStateCache.read()
 
-const loading = ref(false)
 const keyword = ref(initialPageState.keyword)
 const historyRange = ref<[Dayjs, Dayjs] | undefined>(parseCachedHistoryRange(initialPageState.historyRange))
 const overview = ref<TableStorageOverview>()
@@ -261,6 +285,10 @@ const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
 const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<NonBusinessDataCleanupResult>()
+const selectedTable = ref<TableStorageOverviewSummary>()
+const tableHistoryOpen = ref(false)
+const tableHistoryLoading = ref(false)
+const tableHistoryRows = ref<TableStorageHistoryPoint[]>([])
 const databaseSummaryRoles = tableMonitorDatabaseRoles
 const historyChartPointLimit = 720
 const historyLoaded = ref(false)
@@ -271,19 +299,72 @@ const historyChartElement = ref<HTMLDivElement>()
 const historyChart = shallowRef<ECharts>()
 let historyObserver: IntersectionObserver | undefined
 const historyRequestGate = createTableMonitorHistoryRequestGate()
+const tableHistoryRequestGate = createTableMonitorHistoryRequestGate()
 const { pageActive } = useEchartsPageLifecycle({
   renderCharts: renderHistoryCharts,
   resizeCharts: resizeHistoryChart,
   disposeCharts: disposeHistoryCharts,
   onMounted: onTableMonitorMounted,
+  onDeactivate: deactivateTableMonitorPage,
   renderOnActivated: 'always'
 })
 
-const tablePagination = {
+type TableMonitorPagedResult = ResponsivePagedListResult<TableStorageOverviewSummary> & Pick<TableStorageOverview, 'sampledAt' | 'databases'>
+
+const {
+  items: tableRows,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  tablePagination: baseTablePagination,
+  handleTableChange,
+  invalidatePendingLoads,
+  loadData: loadOverviewData,
+  loadMoreMobile,
+  resetPagination
+} = useResponsivePagedList<TableStorageOverviewSummary>({
   pageSize: 10,
+  showTotal: (total) => `共 ${formatInteger(total)} 张表`,
+  fetchPage: async (_options, pagination) => {
+    const result = await api.tableMonitor.overview({
+      page: pagination.current,
+      pageSize: pagination.pageSize,
+      keyword: keyword.value.trim() || undefined
+    })
+    return {
+      items: result.tables,
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+      hasMore: result.hasMore,
+      sampledAt: result.sampledAt,
+      databases: result.databases
+    } satisfies TableMonitorPagedResult
+  },
+  onLoaded: (result) => {
+    const pageResult = result as TableMonitorPagedResult
+    overview.value = {
+      sampledAt: pageResult.sampledAt,
+      databases: pageResult.databases,
+      tables: [],
+      page: pageResult.page,
+      pageSize: pageResult.pageSize,
+      total: pageResult.total,
+      hasMore: pageResult.hasMore ?? false
+    }
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('表监控加载失败')
+  },
+  requestSignature: () => keyword.value.trim().toLowerCase()
+})
+
+const tablePagination = computed(() => ({
+  ...baseTablePagination.value,
   showSizeChanger: true,
   pageSizeOptions: ['10', '20', '50', '100']
-}
+}))
 
 const databaseSummaryRows = computed(() => {
   const databasesByRole = new Map((overview.value?.databases ?? []).map((database) => [database.databaseRole, database]))
@@ -293,10 +374,8 @@ const databaseSummaryRows = computed(() => {
   }))
 })
 const filteredTables = computed(() => {
-  const text = keyword.value.trim().toLowerCase()
-  return (overview.value?.tables ?? [])
+  return tableRows.value
     .filter((row) => databaseSummaryRoles.includes(row.databaseRole))
-    .filter((row) => matchesTableNameKeyword(row.tableName, text))
 })
 const activeFilterCount = computed(() => {
   let count = 0
@@ -312,19 +391,15 @@ const historyChartResetKey = computed(() => {
 })
 
 async function loadData() {
-  loading.value = true
-  try {
-    overview.value = await api.tableMonitor.overview()
-    if (historyLoaded.value) await loadHistoryData()
-  } catch (error) {
-    console.error(error)
-    message.error('表监控加载失败')
-  } finally {
-    loading.value = false
-  }
+  if (!pageActive.value) return
+  await Promise.all([
+    loadOverviewData({ shouldApply: () => pageActive.value }),
+    historyLoaded.value ? loadHistoryData() : Promise.resolve()
+  ])
 }
 
 async function loadHistoryData() {
+  if (!pageActive.value || !historyLoaded.value) return
   const params = {
     ...historyRangeParams(),
     limit: historyChartPointLimit
@@ -333,15 +408,39 @@ async function loadHistoryData() {
   historyLoading.value = true
   try {
     const rows = await api.tableMonitor.databaseHistory(params)
-    if (!request.isCurrent(currentHistoryRequestSignature())) return
+    if (!pageActive.value || !request.isCurrent(currentHistoryRequestSignature())) return
     databaseHistoryRows.value = rows
     await renderHistoryChart()
   } catch (error) {
-    if (!request.isCurrent(currentHistoryRequestSignature())) return
+    if (!pageActive.value || !request.isCurrent(currentHistoryRequestSignature())) return
     console.error(error)
     message.error('表监控趋势加载失败')
   } finally {
     if (request.isCurrent(currentHistoryRequestSignature())) historyLoading.value = false
+  }
+}
+
+async function loadTableHistoryData() {
+  const table = selectedTable.value
+  if (!pageActive.value || !tableHistoryOpen.value || !table) return
+  const params = {
+    databaseRole: table.databaseRole,
+    tableName: table.tableName,
+    ...historyRangeParams(),
+    limit: historyChartPointLimit
+  }
+  const request = tableHistoryRequestGate.begin(JSON.stringify(params))
+  tableHistoryLoading.value = true
+  try {
+    const rows = await api.tableMonitor.history(params)
+    if (!pageActive.value || !request.isCurrent(currentTableHistoryRequestSignature())) return
+    tableHistoryRows.value = rows
+  } catch (error) {
+    if (!pageActive.value || !request.isCurrent(currentTableHistoryRequestSignature())) return
+    console.error(error)
+    message.error('表历史趋势加载失败')
+  } finally {
+    if (request.isCurrent(currentTableHistoryRequestSignature())) tableHistoryLoading.value = false
   }
 }
 
@@ -352,13 +451,28 @@ function currentHistoryRequestSignature() {
   })
 }
 
+function currentTableHistoryRequestSignature() {
+  const table = selectedTable.value
+  return JSON.stringify({
+    databaseRole: table?.databaseRole,
+    tableName: table?.tableName,
+    ...historyRangeParams(),
+    limit: historyChartPointLimit
+  })
+}
+
 async function onTableMonitorMounted() {
   await loadData()
   await nextTick()
+  ensureHistoryObserver()
+}
+
+function ensureHistoryObserver() {
+  if (!pageActive.value || historyLoaded.value || historyObserver || !historyCardElement.value) return
   if (!historyCardElement.value) return
   if (typeof IntersectionObserver === 'undefined') {
     historyLoaded.value = true
-    await loadHistoryData()
+    void loadHistoryData()
     return
   }
   historyObserver = new IntersectionObserver((entries) => {
@@ -369,6 +483,21 @@ async function onTableMonitorMounted() {
     historyObserver = undefined
   }, { rootMargin: '240px 0px' })
   historyObserver.observe(historyCardElement.value)
+}
+
+function openTableHistory(table: TableStorageOverviewSummary) {
+  selectedTable.value = table
+  tableHistoryRows.value = []
+  tableHistoryOpen.value = true
+  void loadTableHistoryData()
+}
+
+function handleTableHistoryOpenChange(open: boolean) {
+  if (open) return
+  tableHistoryRequestGate.invalidate()
+  tableHistoryLoading.value = false
+  tableHistoryRows.value = []
+  selectedTable.value = undefined
 }
 
 function openCleanupModal() {
@@ -393,13 +522,10 @@ async function submitNonBusinessDataCleanup() {
     cleanupResult.value = result
     if (result.queued) {
       message.success('非业务数据清理任务已提交后台')
-    } else if (result.deletedRows > 0) {
-      message.success(`已清理 ${formatInteger(result.deletedRows)} 行非业务数据`)
-      await loadData()
     } else if (result.blockedReason) {
       message.warning(result.blockedReason)
     } else {
-      message.info('没有可清理的非业务数据')
+      message.warning('非业务数据清理任务未提交')
     }
   } catch (error) {
     console.error(error)
@@ -410,11 +536,16 @@ async function submitNonBusinessDataCleanup() {
 }
 
 function handleFilterChange() {
-  renderHistoryChart()
+  resetPagination()
+  void loadData()
 }
 
 function handleHistoryRangeChange() {
-  if (historyLoaded.value) void loadHistoryData()
+  if (!pageActive.value) return
+  const requests: Array<Promise<void>> = []
+  if (historyLoaded.value) requests.push(loadHistoryData())
+  if (tableHistoryOpen.value) requests.push(loadTableHistoryData())
+  void Promise.all(requests)
 }
 
 function resetFilters() {
@@ -422,7 +553,13 @@ function resetFilters() {
   keyword.value = defaults.keyword
   historyRange.value = parseCachedHistoryRange(defaults.historyRange)
   pageStateCache.clear()
+  resetPagination()
   void loadData()
+}
+
+async function refreshTableMonitorMobile() {
+  resetPagination()
+  await loadData()
 }
 
 function historyRangeParams() {
@@ -521,8 +658,27 @@ function resizeHistoryChart() {
   resizeEcharts([historyChart.value])
 }
 
-onBeforeUnmount(() => {
+function deactivateTableMonitorPage() {
+  invalidatePendingLoads()
   historyRequestGate.invalidate()
+  tableHistoryRequestGate.invalidate()
+  historyLoading.value = false
+  tableHistoryLoading.value = false
+  historyObserver?.disconnect()
+  historyObserver = undefined
+  tableHistoryOpen.value = false
+  tableHistoryRows.value = []
+  selectedTable.value = undefined
+}
+
+onActivated(() => {
+  void nextTick(ensureHistoryObserver)
+})
+
+onBeforeUnmount(() => {
+  invalidatePendingLoads()
+  historyRequestGate.invalidate()
+  tableHistoryRequestGate.invalidate()
   historyObserver?.disconnect()
   historyObserver = undefined
 })
@@ -533,6 +689,15 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.table-monitor-mobile-card-clickable {
+  cursor: pointer;
+}
+
+.table-monitor-mobile-card-clickable:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
 }
 
 .table-monitor-toolbar-card :deep(.ant-card-body) {

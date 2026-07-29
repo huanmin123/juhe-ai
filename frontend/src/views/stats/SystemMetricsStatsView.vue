@@ -24,7 +24,7 @@
         </div>
         <div class="page-toolbar-actions">
           <a-button :disabled="loading" @click="resetFilters">重置</a-button>
-          <a-button :loading="loading" @click="loadPageData(true)">
+          <a-button :loading="loading" @click="loadPageData">
             <template #icon>
               <ReloadOutlined />
             </template>
@@ -74,49 +74,52 @@
       </a-col>
     </a-row>
 
-    <a-row :gutter="[16, 16]" class="system-metrics-section">
-      <a-col :xs="24">
-        <StatsBackgroundJobsCard
-          :empty-description="backgroundJobEmptyDescription"
-          :has-data="hasBackgroundJobs"
-          :loading="runtimeInitialLoading"
-          :pagination="backgroundJobPagination"
-          :rows="backgroundJobRows"
-          :runtime-alert-description="systemRuntimeAlertDescription"
-          :runtime-alert-visible="systemRuntimeAlertVisible"
-          :error="runtimeError"
-          :on-retry="loadRuntimeData"
-          @change="handleBackgroundJobTableChange"
-        />
-      </a-col>
-    </a-row>
+    <div ref="runtimeSectionRef">
+      <a-row :gutter="[16, 16]" class="system-metrics-section">
+        <a-col :xs="24">
+          <StatsBackgroundJobsCard
+            :empty-description="backgroundJobEmptyDescription"
+            :has-data="hasBackgroundJobs"
+            :loading="runtimeInitialLoading"
+            :pagination="backgroundJobPagination"
+            :rows="backgroundJobRows"
+            :runtime-alert-description="systemRuntimeAlertDescription"
+            :runtime-alert-visible="systemRuntimeAlertVisible"
+            :error="runtimeError"
+            :on-retry="loadRuntimeData"
+            @change="handleBackgroundJobTableChange"
+          />
+        </a-col>
+      </a-row>
 
-    <a-row :gutter="[16, 16]" class="system-metrics-section">
-      <a-col :xs="24">
-        <StatsBackgroundQueuesCard
-          :empty-description="backgroundQueueEmptyDescription"
-          :has-data="hasBackgroundQueues"
-          :loading="runtimeInitialLoading"
-          :pagination="backgroundQueuePagination"
-          :rows="backgroundQueueRows"
-          :runtime-alert-description="systemRuntimeAlertDescription"
-          :runtime-alert-visible="systemRuntimeAlertVisible"
-          :error="runtimeError"
-          :on-retry="loadRuntimeData"
-          @change="handleBackgroundQueueTableChange"
-        />
-      </a-col>
-    </a-row>
+      <a-row :gutter="[16, 16]" class="system-metrics-section">
+        <a-col :xs="24">
+          <StatsBackgroundQueuesCard
+            :empty-description="backgroundQueueEmptyDescription"
+            :has-data="hasBackgroundQueues"
+            :loading="runtimeInitialLoading"
+            :pagination="backgroundQueuePagination"
+            :rows="backgroundQueueRows"
+            :runtime-alert-description="systemRuntimeAlertDescription"
+            :runtime-alert-visible="systemRuntimeAlertVisible"
+            :error="runtimeError"
+            :on-retry="loadRuntimeData"
+            @change="handleBackgroundQueueTableChange"
+          />
+        </a-col>
+      </a-row>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onActivated, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onActivated, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
@@ -165,6 +168,8 @@ const processMemoryChartRef = ref<HTMLDivElement>()
 const systemMetricsChart = shallowRef<ECharts>()
 const processEventLoopChart = shallowRef<ECharts>()
 const processMemoryChart = shallowRef<ECharts>()
+const runtimeSectionRef = ref<HTMLDivElement>()
+const runtimeSectionLoaded = ref(false)
 const backgroundJobPageSize = 10
 const backgroundJobPage = ref(1)
 const backgroundQueuePageSize = 10
@@ -172,6 +177,8 @@ const backgroundQueuePage = ref(1)
 let requestSeq = 0
 let runtimeRequestSeq = 0
 let needsReloadOnActivate = false
+let runtimeObserver: IntersectionObserver | undefined
+let disposed = false
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderSystemCharts,
@@ -184,13 +191,24 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
     loading.value = false
     runtimeLoading.value = false
     needsReloadOnActivate = true
+    runtimeObserver?.disconnect()
+    runtimeObserver = undefined
   }
 })
 
-onActivated(() => {
-  if (!needsReloadOnActivate) return
-  needsReloadOnActivate = false
-  void loadPageData()
+onMounted(async () => {
+  disposed = false
+  await nextTick()
+  setupRuntimeObserver()
+})
+
+onActivated(async () => {
+  if (needsReloadOnActivate) {
+    needsReloadOnActivate = false
+    void loadPageData()
+  }
+  await nextTick()
+  setupRuntimeObserver()
 })
 
 const hasOverview = computed(() => Boolean(systemMetrics.value))
@@ -293,12 +311,32 @@ async function loadData() {
   }
 }
 
-function loadPageData(force = false) {
-  void loadUsageStatsWindow({ force, viewScope: 'admin' }).then(() => {
+function loadPageData() {
+  void loadUsageStatsWindow({ viewScope: 'admin' }).then(() => {
     if (!dateRangeExplicit.value) syncImplicitDateRangeToStatsWindow()
   }).catch(() => undefined)
-  void loadRuntimeData()
+  if (runtimeSectionLoaded.value) void loadRuntimeData()
   return loadData()
+}
+
+function setupRuntimeObserver(): void {
+  runtimeObserver?.disconnect()
+  if (disposed || !pageActive.value) return
+  const target = runtimeSectionRef.value
+  if (!target || runtimeSectionLoaded.value) return
+  if (typeof IntersectionObserver === 'undefined') {
+    runtimeSectionLoaded.value = true
+    void loadRuntimeData()
+    return
+  }
+  runtimeObserver = new IntersectionObserver((entries) => {
+    if (disposed || !pageActive.value || !entries.some((entry) => entry.isIntersecting)) return
+    runtimeSectionLoaded.value = true
+    runtimeObserver?.disconnect()
+    runtimeObserver = undefined
+    void loadRuntimeData()
+  }, { rootMargin: '240px 0px' })
+  runtimeObserver.observe(target)
 }
 
 async function loadRuntimeData() {
@@ -472,6 +510,21 @@ function snapshotPageState(): SystemMetricsPageState {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(() => authState.revision.value, () => {
+  requestSeq += 1
+  runtimeRequestSeq += 1
+  loading.value = false
+  runtimeLoading.value = false
+  systemMetrics.value = undefined
+  systemMetricsRuntime.value = undefined
+  trendError.value = ''
+  runtimeError.value = ''
+  if (pageActive.value) {
+    void loadPageData()
+  } else {
+    needsReloadOnActivate = true
+  }
+})
 watch(() => backgroundJobRows.value.length, (total) => {
   const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
   if (backgroundJobPage.value > maxPage) {
@@ -483,6 +536,14 @@ watch(() => backgroundQueueRows.value.length, (total) => {
   if (backgroundQueuePage.value > maxPage) {
     backgroundQueuePage.value = maxPage
   }
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  requestSeq += 1
+  runtimeRequestSeq += 1
+  runtimeObserver?.disconnect()
+  runtimeObserver = undefined
 })
 </script>
 

@@ -4,12 +4,66 @@ import { badRequest, ok } from '../../shared/http.js'
 import { findAccountAdvancedDetailAsync } from '../../storage/account-advanced-detail.repository.js'
 import { findAccountApiKeyRuntimeAccountAsync } from '../../storage/account-api-key-runtime.repository.js'
 import { AccountEditBasicForbiddenError, findAccountEditBasicDetailAsync } from '../../storage/account-edit-basic.repository.js'
+import {
+  AccountInteractionContextConflictError,
+  AccountInteractionContextForbiddenError,
+  findAccountCloneContextAsync,
+  findAccountOAuthReauthorizationContextAsync
+} from '../../storage/account-interaction-context.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { loadOwnerAccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
 import { sanitizeAccountApiKeyRuntimeResponse } from './account-response-sanitizer.js'
 
 export function registerAccountDetailRoutes(router: Router): void {
+  router.get('/:id/oauth-reauthorization-context', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
+    try {
+      const account = await loadAccountOAuthReauthorizationContext(req.params.id, req.query)
+      if (!account) {
+        res.status(404).json({ message: '账户不存在' })
+        return
+      }
+      res.json(ok(account))
+    } catch (error) {
+      if (error instanceof AccountDetailBadRequestError) {
+        res.status(400).json(badRequest(error.message))
+        return
+      }
+      if (error instanceof AccountInteractionContextForbiddenError) {
+        res.status(403).json({ message: error.message })
+        return
+      }
+      next(error)
+    }
+  })
+
+  router.get('/:id/clone-context', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
+    try {
+      const account = await loadAccountCloneContext(req.params.id, req.query)
+      if (!account) {
+        res.status(404).json({ message: '账户不存在' })
+        return
+      }
+      res.json(ok(account))
+    } catch (error) {
+      if (error instanceof AccountDetailBadRequestError) {
+        res.status(400).json(badRequest(error.message))
+        return
+      }
+      if (error instanceof AccountInteractionContextForbiddenError) {
+        res.status(403).json({ message: error.message })
+        return
+      }
+      if (error instanceof AccountInteractionContextConflictError) {
+        res.status(409).json({ message: error.message })
+        return
+      }
+      next(error)
+    }
+  })
+
   router.get('/:id/api-key-runtime', async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     try {
@@ -103,6 +157,24 @@ async function loadEditableAccountDetail(accountId: string, query: Record<string
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   return findAccountAdvancedDetailAsync(accountId, requestAccess)
+}
+
+async function loadAccountOAuthReauthorizationContext(accountId: string, query: Record<string, unknown>) {
+  const scopeQuery = parseRequestScopeQuery(query)
+  if (!scopeQuery.success) throw new AccountDetailBadRequestError(scopeQuery.message)
+  return findAccountOAuthReauthorizationContextAsync(
+    accountId,
+    getRequestAccessScope(scopeQuery.data.systemAccountId)
+  )
+}
+
+async function loadAccountCloneContext(accountId: string, query: Record<string, unknown>) {
+  const scopeQuery = parseRequestScopeQuery(query)
+  if (!scopeQuery.success) throw new AccountDetailBadRequestError(scopeQuery.message)
+  return findAccountCloneContextAsync(
+    accountId,
+    getRequestAccessScope(scopeQuery.data.systemAccountId)
+  )
 }
 
 class AccountDetailBadRequestError extends Error {}

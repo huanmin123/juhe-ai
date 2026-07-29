@@ -2,15 +2,13 @@ import { message } from '@/lib/antd'
 import { ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { RuntimeLogFacets, RuntimeLogGrepRuntime, RuntimeLogRuntime } from '@/types/domain'
+import type { RuntimeLogFacets, RuntimeLogGrepRuntime } from '@/types/domain'
 
 export function useRuntimeLogFacetsState() {
   const facets = ref<RuntimeLogFacets>()
   const grepRuntime = ref<RuntimeLogGrepRuntime>()
-  const runtime = ref<RuntimeLogRuntime>()
   let facetsRequestSeq = 0
   let grepOptionsRequestSeq = 0
-  let runtimeRequestSeq = 0
 
   async function loadRuntimeLogFacets(force = false): Promise<void> {
     if (facets.value && !force) return
@@ -40,24 +38,9 @@ export function useRuntimeLogFacetsState() {
     }
   }
 
-  async function loadRuntimeLogRuntime(force = false): Promise<void> {
-    if (runtime.value && !force) return
-    const requestSeq = ++runtimeRequestSeq
-    try {
-      const nextRuntime = await api.runtimeLogs.runtime()
-      if (requestSeq !== runtimeRequestSeq) return
-      runtime.value = nextRuntime
-    } catch (error) {
-      if (requestSeq !== runtimeRequestSeq) return
-      console.error(error)
-      runtime.value = unavailableRuntimeLogRuntime()
-    }
-  }
-
   function cancelRuntimeLogFacetsRequest(): void {
     facetsRequestSeq += 1
     grepOptionsRequestSeq += 1
-    runtimeRequestSeq += 1
   }
 
   return {
@@ -65,21 +48,6 @@ export function useRuntimeLogFacetsState() {
     facets,
     grepRuntime,
     loadRuntimeLogFacets,
-    loadRuntimeLogGrepOptions,
-    loadRuntimeLogRuntime,
-    runtime
-  }
-}
-
-function unavailableRuntimeLogRuntime(): RuntimeLogRuntime {
-  return {
-    runtimeAvailable: false,
-    ingestWorkerAvailable: false,
-    runtimeLogIndexQueueAvailable: false,
-    dbService: {
-      statusAvailable: false,
-      stateAvailable: false
-    },
-    gatewayAccountSideEffectsAvailable: false
+    loadRuntimeLogGrepOptions
   }
 }

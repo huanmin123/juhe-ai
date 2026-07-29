@@ -16,6 +16,7 @@ import {
   canSelectTrustedModelCheckAccount,
   type ModelCheckAccountProfile
 } from './modelCheckProviderCapabilities'
+import { createModelCheckDemandRequestCoordinator } from './modelCheckDemandRequestCoordinator'
 
 type AccountSelectOption = { label: string; value: string }
 type SelectValue = string | string[] | undefined
@@ -23,6 +24,7 @@ type SelectValue = string | string[] | undefined
 interface ModelCheckAccountOptionsApi {
   options(params: {
     purpose: 'run' | 'history'
+    accountId?: string
     systemAccountId?: string
     keyword?: string
     limit: number
@@ -42,6 +44,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   const targetOptionsLoading = ref(false)
   const comparisonOptionsLoading = ref(false)
   const historyTargetOptionsLoading = ref(false)
+  const targetModelOptionsLoading = ref(false)
   const targetOptions = ref<AccountSelectOption[]>([])
   const comparisonOptions = ref<AccountSelectOption[]>([])
   const historyTargetOptions = ref<AccountSelectOption[]>([])
@@ -59,6 +62,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   let comparisonAbortController: AbortController | undefined
   let historyAbortController: AbortController | undefined
   let active = true
+  const targetModelRequestCoordinator = createModelCheckDemandRequestCoordinator()
   onActivated(() => { active = true })
   onDeactivated(invalidateAccountOptionRequests)
   onBeforeUnmount(invalidateAccountOptionRequests)
@@ -69,12 +73,14 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     targetAbortController?.abort()
     comparisonAbortController?.abort()
     historyAbortController?.abort()
+    targetModelRequestCoordinator.invalidate()
     targetAbortController = undefined
     comparisonAbortController = undefined
     historyAbortController = undefined
     targetOptionsRequestId += 1
     comparisonOptionsRequestId += 1
     historyTargetOptionsRequestId += 1
+    targetModelOptionsLoading.value = false
   }
   const selectedTargetAccountProfile = computed(() => accountProfilesById.value[input.form.targetId])
   const selectedComparisonAccountProfile = computed(() => accountProfilesById.value[input.form.trustedComparisonAccountId ?? ''])
@@ -203,11 +209,45 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     }
   }
 
+  async function loadTargetModelOptions(): Promise<void> {
+    const accountId = input.form.targetId.trim()
+    if (!accountId || accountProfilesById.value[accountId]?.modelCheckModels !== undefined) return
+    const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
+    const identityKey = input.identityKey.value
+    const requestKey = JSON.stringify([identityKey, systemAccountId ?? '', 'run', accountId])
+    targetModelOptionsLoading.value = true
+    try {
+      const items = await targetModelRequestCoordinator.run(requestKey, (signal) => input.accountsApi.options({
+        purpose: 'run',
+        systemAccountId,
+        accountId,
+        limit: 1
+      }, { signal }))
+      if (!items
+        || accountId !== input.form.targetId.trim()
+        || identityKey !== input.identityKey.value
+        || systemAccountId !== input.modelCheckScopeParams.value?.systemAccountId) return
+      const account = items.find((item) => item.id === accountId)
+      if (!account) throw new Error('当前检测账户不可用')
+      rememberAccountProfile(account)
+    } catch (error) {
+      if (isAbortError(error)) return
+      if (accountId !== input.form.targetId.trim() || identityKey !== input.identityKey.value) return
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载检查模型失败'))
+    } finally {
+      if (accountId === input.form.targetId.trim() && identityKey === input.identityKey.value) {
+        targetModelOptionsLoading.value = false
+      }
+    }
+  }
+
   function resetAccountOptionsState() {
     clearSearchTimers()
     targetAbortController?.abort()
     comparisonAbortController?.abort()
     historyAbortController?.abort()
+    targetModelRequestCoordinator.invalidate()
     targetAbortController = undefined
     comparisonAbortController = undefined
     historyAbortController = undefined
@@ -220,6 +260,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     targetOptionsLoading.value = false
     comparisonOptionsLoading.value = false
     historyTargetOptionsLoading.value = false
+    targetModelOptionsLoading.value = false
     targetOptionsRequestId += 1
     comparisonOptionsRequestId += 1
     historyTargetOptionsRequestId += 1
@@ -246,7 +287,12 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   }
 
   function handleTargetValueUpdate(value: SelectValue) {
+    const previousTargetId = input.form.targetId
     input.form.targetId = typeof value === 'string' ? value : ''
+    if (previousTargetId !== input.form.targetId) {
+      targetModelRequestCoordinator.invalidate()
+      targetModelOptionsLoading.value = false
+    }
     selectedTargetAccount.value = selectedAccountForId(input.form.targetId, targetOptions.value)
   }
 
@@ -316,27 +362,33 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     if (!accounts.length) return
     accountProfilesById.value = {
       ...accountProfilesById.value,
-      ...Object.fromEntries(accounts.map((account) => [account.id, accountProfile(account)]))
+      ...Object.fromEntries(accounts.map((account) => [account.id, accountProfile(account, accountProfilesById.value[account.id])]))
     }
   }
 
   function rememberAccountProfile(account: ModelCheckAccountOption) {
     accountProfilesById.value = {
       ...accountProfilesById.value,
-      [account.id]: accountProfile(account)
+      [account.id]: accountProfile(account, accountProfilesById.value[account.id])
     }
   }
 
-  function accountProfile(account: ModelCheckAccountOption): ModelCheckAccountProfile {
-    return {
+  function accountProfile(account: ModelCheckAccountOption, existing?: ModelCheckAccountProfile): ModelCheckAccountProfile {
+    const profile: ModelCheckAccountProfile = {
       id: account.id,
       name: account.name,
       providerCode: account.providerCode,
       providerProtocolProfileId: account.providerProtocolProfileId,
       protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      modelCheckModels: [...account.modelCheckModels]
+      protocolVersion: account.protocolVersion
     }
+    const models = account.modelCheckModels ?? existing?.modelCheckModels
+    if (models !== undefined) profile.modelCheckModels = [...models]
+    return profile
+  }
+
+  function isAbortError(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError'
   }
 
   function selectedAccountForId(id: string | undefined, options: AccountSelectOption[]): AccountSelection | undefined {
@@ -368,6 +420,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     selectedTargetAccountProfile,
     targetOptions,
     targetOptionsLoading,
+    targetModelOptionsLoading,
     handleComparisonDropdownVisibleChange,
     handleComparisonSearch,
     handleHistoryTargetDropdownVisibleChange,
@@ -379,6 +432,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     loadComparisonOptions,
     loadHistoryTargetOptions,
     loadTargetOptions,
+    loadTargetModelOptions,
     resetAccountOptionsState,
     resetRunAccountSelection,
     comparisonOptionText,

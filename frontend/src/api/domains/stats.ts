@@ -7,11 +7,13 @@ import type {
   AiPerformanceBaseResult,
   AiPerformanceSeriesResult,
   AiHealthListResult,
+  AiHealthHourDetail,
   DatabaseStorageHistoryPoint,
   NonBusinessDataCleanupResult,
   SystemMetricsOverview,
   SystemMetricsTrendOverview,
   SystemMetricsRuntimeOverview,
+  TableStorageHistoryPoint,
   TableStorageOverview,
   UsageStatsWindow,
   UsageStatsOverview,
@@ -28,12 +30,14 @@ import type {
   AiPerformanceParams,
   AiPerformanceSeriesParams,
   AiHealthParams,
+  AiHealthHourDetailParams,
   NonBusinessDataCleanupPayload,
   TableMonitorDatabaseHistoryParams,
+  TableMonitorHistoryParams,
   TableMonitorOverviewParams,
   UsageOverviewParams
 } from '../contracts'
-import { http, noTimeout, unwrap } from '../http'
+import { http, unwrap } from '../http'
 import { accountUsageStatsOptionParams, accountUsageStatsParams, aiPerformanceAccountOptionsParams, aiPerformanceParams, aiPerformanceSeriesParams, stripSystemAccountParam } from '../params'
 
 export const statsApi = {
@@ -51,7 +55,8 @@ export const statsApi = {
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
   aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceBaseResult>(http.get('/stats/ai-performance', { params: aiPerformanceParams(params) })),
   aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/stats/ai-performance/series', { params: aiPerformanceSeriesParams(params) })),
-  aiHealth: (params?: AiHealthParams) => unwrap<AiHealthListResult>(http.get('/stats/ai-health', { params })),
+  aiHealth: (params?: AiHealthParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthListResult>(http.get('/stats/ai-health', { params, signal: options?.signal })),
+  aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/stats/ai-health/hour-detail', { params, signal: options?.signal })),
   systemMetrics: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params })),
   systemMetricsTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsTrendOverview>(http.get('/stats/system-metrics/trend', { params })),
   systemMetricsRuntime: () => unwrap<SystemMetricsRuntimeOverview>(http.get('/stats/system-metrics/runtime'))
@@ -59,8 +64,9 @@ export const statsApi = {
 
 export const tableMonitorApi = {
   overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
+  history: (params: TableMonitorHistoryParams) => unwrap<TableStorageHistoryPoint[]>(http.get('/table-monitor/history', { params })),
   databaseHistory: (params?: TableMonitorDatabaseHistoryParams) => unwrap<DatabaseStorageHistoryPoint[]>(http.get('/table-monitor/database-history', { params })),
-  cleanupNonBusinessData: (payload: NonBusinessDataCleanupPayload) => unwrap<NonBusinessDataCleanupResult>(http.post('/table-monitor/non-business-data/cleanup', payload, noTimeout))
+  cleanupNonBusinessData: (payload: NonBusinessDataCleanupPayload) => unwrap<NonBusinessDataCleanupResult>(http.post('/table-monitor/non-business-data/cleanup', payload))
 }
 
 export const myStatsApi = {
@@ -78,5 +84,6 @@ export const myStatsApi = {
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),
   aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceBaseResult>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) })),
   aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/my-stats/ai-performance/series', { params: aiPerformanceSeriesParams(params, false) })),
-  aiHealth: (params?: AiHealthParams) => unwrap<AiHealthListResult>(http.get('/my-stats/ai-health', { params: stripSystemAccountParam(params) }))
+  aiHealth: (params?: AiHealthParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthListResult>(http.get('/my-stats/ai-health', { params: stripSystemAccountParam(params), signal: options?.signal })),
+  aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/my-stats/ai-health/hour-detail', { params: stripSystemAccountParam(params), signal: options?.signal }))
 }

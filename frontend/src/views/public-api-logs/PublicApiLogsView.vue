@@ -45,13 +45,14 @@ import axios from 'axios'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { PublicApiLogDetail, PublicApiLogListItem, PublicApiLogResultFilter } from '@/types/domain'
+import type { PublicApiLogListItem, PublicApiLogRenderedDetail, PublicApiLogResultFilter } from '@/types/domain'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import PublicApiLogDetailDrawer from './PublicApiLogDetailDrawer.vue'
 import PublicApiLogFilterToolbar from './PublicApiLogFilterToolbar.vue'
 import PublicApiLogList from './PublicApiLogList.vue'
+import { mergePublicApiLogDetail } from './publicApiLogDetail'
 import { mergePublicApiLogListItems } from './publicApiLogPageWindow'
 import {
   normalizePublicApiLogStatusCode,
@@ -95,7 +96,7 @@ const resultFilter = ref<PublicApiLogResultFilter>(initialState.resultFilter)
 const timeRange = ref<PublicApiLogTimeRangeValue>(parseStoredPublicApiLogTimeRange(initialState.timeRange))
 const detailOpen = ref(false)
 const detailLoading = ref(false)
-const detail = ref<PublicApiLogDetail>()
+const detail = ref<PublicApiLogRenderedDetail>()
 let detailRequestId = 0
 
 const {
@@ -186,11 +187,12 @@ async function openDetail(record: PublicApiLogListItem): Promise<void> {
   detailLoading.value = true
   detail.value = undefined
   try {
-    const nextDetail = await api.publicApiLogs.detail(record.id)
+    const supplement = await api.publicApiLogs.detail(record.id)
     if (requestId === detailRequestId) {
-      detail.value = nextDetail
+      detail.value = mergePublicApiLogDetail(record, supplement)
     }
   } catch (error) {
+    if (requestId !== detailRequestId) return
     console.error(error)
     if (isNotFoundError(error)) {
       closeDetail()

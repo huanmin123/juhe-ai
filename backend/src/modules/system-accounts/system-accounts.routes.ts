@@ -7,7 +7,7 @@ import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gate
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
-import { createSystemAccountWithPasswordHashAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, patchSystemAccountManagementAsync, revokeAllSessionsForAccountAsync, SystemAccountManagementPatchConflictError, type SystemAccountManagementPatchField } from '../../storage/repositories.js'
+import { createSystemAccountWithPasswordHashAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, patchSystemAccountManagementAsync, SystemAccountManagementPatchConflictError, type SystemAccountManagementPatchField } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
@@ -41,7 +41,7 @@ const createSchema = z.object({
 }).strict()
 
 const updateSchema = z.object({
-  expectedUpdatedAt: z.string().min(1),
+  expectedUpdatedAt: z.string().datetime({ message: '系统账户编辑版本格式不正确' }),
   displayName: z.string().min(1).optional(),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),
@@ -164,10 +164,6 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
       const outcome = await patchSystemAccountManagementAsync(req.params.id, patch, expectedUpdatedAt, passwordHash)
       if (!outcome) {
         throw new Error('系统账户不存在')
-      }
-      const disabled = outcome.changes.some((change) => change.field === 'status' && change.after === 'disabled')
-      if (disabled || outcome.changes.some((change) => change.field === 'password')) {
-        await revokeAllSessionsForAccountAsync(req.params.id)
       }
       return {
         result: outcome.result,

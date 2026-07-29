@@ -2,7 +2,7 @@ import type { AccountRuntimeProbePresentation, AccountStatus, AccountSummary, Ac
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
-import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import type { ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
@@ -207,12 +207,6 @@ export interface DbServiceBackgroundScheduledJobSnapshot {
 
 export interface DbServiceServerRuntimeSnapshot {
   observedAt?: string
-  runtimeLogAvailability?: {
-    ingestWorkerAvailable: boolean
-    runtimeLogIndexQueueAvailable: boolean
-    dbServiceStateAvailable: boolean
-    gatewayAccountSideEffectsAvailable: boolean
-  }
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
   accountBalanceSnapshotCleanup?: {
@@ -400,7 +394,73 @@ export interface DbServiceServerRuntimeSnapshot {
   }
 }
 
-export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime' | 'runtime_logs'
+export interface DbServiceSystemMetricsRuntimeSnapshot {
+  observedAt?: DbServiceServerRuntimeSnapshot['observedAt']
+  accountBalanceSnapshotCleanup?: DbServiceServerRuntimeSnapshot['accountBalanceSnapshotCleanup']
+  ingestWorker?: Pick<
+    NonNullable<DbServiceServerRuntimeSnapshot['ingestWorker']>,
+    'ready' | 'pendingQueues' | 'pendingWriteRequestCount' | 'oldestPendingWriteMs' | 'snapshot'
+  >
+  statsWorker?: Pick<
+    NonNullable<DbServiceServerRuntimeSnapshot['statsWorker']>,
+    'ready' | 'pendingWriteRequestCount' | 'oldestPendingWriteMs' | 'snapshot'
+  >
+  opsWorker?: Pick<
+    NonNullable<DbServiceServerRuntimeSnapshot['opsWorker']>,
+    'ready' | 'pendingQueues' | 'snapshot'
+  >
+  dbService?: Pick<
+    NonNullable<DbServiceServerRuntimeSnapshot['dbService']>,
+    | 'pendingDatasetWriteRequestCount'
+    | 'oldestDatasetWriteRequestMs'
+    | 'timedOutDatasetWriteRequestCount'
+    | 'rejectedDatasetWriteRequestCount'
+    | 'queuedRequestCount'
+    | 'queuedRequestBytes'
+    | 'queuedHighRequestCount'
+    | 'queuedNormalRequestCount'
+    | 'queuedLowRequestCount'
+    | 'oldestQueuedMs'
+    | 'queueRejectedCount'
+    | 'queueExpiredCount'
+    | 'activeConcurrentRequestCount'
+    | 'maxActiveConcurrentRequestCount'
+    | 'lastExecMs'
+    | 'maxExecMs'
+    | 'slowOpCount'
+    | 'lastSlowOpType'
+    | 'lastSlowOpAt'
+    | 'pendingProcessEventLoopRequestCount'
+    | 'timedOutProcessEventLoopRequestCount'
+    | 'failedProcessEventLoopRequestCount'
+    | 'pendingServerRuntimeRequestCount'
+    | 'timedOutServerRuntimeRequestCount'
+    | 'failedServerRuntimeRequestCount'
+    | 'codexContextStateWriterPool'
+  >
+  highConcurrencyQueues?: DbServiceServerRuntimeSnapshot['highConcurrencyQueues']
+  gatewayAccountSideEffects?: {
+    queueLength: number
+    processing: boolean
+    completedCount: number
+    coalescedCount: number
+    canceledBySuccessCount: number
+    skippedHealthySuccessCount: number
+    failedAttemptCount: number
+    droppedCount: number
+    expiredCount: number
+    localSuppressedAccountCount: number
+    degradedAccountCount: number
+    precheckPendingAccountCount: number
+    nextAttemptAt?: string
+  }
+}
+
+export type DbServiceServerRuntimeSnapshotScope =
+  | 'full'
+  | 'account_concurrency'
+  | 'account_runtime'
+  | 'system_metrics'
 
 export interface DbServiceRuntimeQueueSnapshot {
   queueLength?: number
@@ -1117,6 +1177,10 @@ export type DbServiceOperation =
     id: string
   }
   | {
+    type: 'get_runtime_log_detail_delta'
+    id: string
+  }
+  | {
     type: 'get_runtime_log_facets'
   }
   | {
@@ -1152,7 +1216,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'read_api_key_quota_costs' } ? RequestQuotaCosts :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
   T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :
-  T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean } :
+  T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean; configRevision?: number; updatedAt?: string } :
   T extends { type: 'find_openai_oauth_account_for_refresh' } ? DbServiceOpenAIOAuthRefreshAccount | undefined :
   T extends { type: 'mark_openai_oauth_local_configuration_exception' } ? { updated: boolean } :
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
@@ -1221,6 +1285,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :
   T extends { type: 'get_runtime_log_detail' } ? RuntimeLogDetail | undefined :
+  T extends { type: 'get_runtime_log_detail_delta' } ? RuntimeLogDetailDelta | undefined :
   T extends { type: 'get_runtime_log_facets' } ? RuntimeLogFacets :
   T extends { type: 'status' } ? DbServiceRuntimeSnapshot :
   unknown
@@ -1241,7 +1306,7 @@ export type DbServiceParentMessage =
     type: 'db_service_server_runtime_response'
     requestId: string
     ok: true
-    result: DbServiceServerRuntimeSnapshot
+    result: DbServiceServerRuntimeSnapshot | DbServiceSystemMetricsRuntimeSnapshot
   }
   | {
     type: 'db_service_server_runtime_response'

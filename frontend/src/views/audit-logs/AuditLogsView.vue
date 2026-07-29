@@ -106,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
@@ -148,7 +148,6 @@ import { useAuditLogAccountOptions } from './useAuditLogAccountOptions'
 import { useAuditLogDetailPayload } from './useAuditLogDetailPayload'
 import { useAuditLogHotSearchState } from './useAuditLogHotSearchState'
 import { useAuditLogModeBridge } from './useAuditLogModeBridge'
-import { useAuditLogRuntimeAlert } from './useAuditLogRuntimeAlert'
 import { auditLogEmptyDescription } from './auditLogRetentionText'
 import {
   auditLogRouteTraceId,
@@ -176,12 +175,7 @@ const {
 } = useRemoteSystemAccountOptions({
   selectedIds: () => [systemAccountFilter.value]
 })
-const {
-  auditRuntimeSettings,
-  cancelAuditRuntimeRequest,
-  refreshAuditRuntimeQuietly
-} = useAuditLogRuntimeAlert()
-const auditEmptyDescription = computed(() => auditLogEmptyDescription(auditRuntimeSettings.value))
+const auditEmptyDescription = auditLogEmptyDescription()
 
 const pageSize = 100
 type AuditLogsPageState = {
@@ -546,56 +540,16 @@ function loadInitialModeData(): void {
   void loadData()
 }
 
-type AuditRuntimeIdleWindow = Window & {
-  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-  cancelIdleCallback?: (handle: number) => void
-}
-
-let auditRuntimeIdleHandle: number | undefined
-let auditRuntimeTimer: ReturnType<typeof setTimeout> | undefined
-
-function scheduleAuditRuntimeRefresh(): void {
-  cancelAuditRuntimeIdleRefresh()
-  if (typeof window === 'undefined') return
-  const idleWindow = window as AuditRuntimeIdleWindow
-  if (idleWindow.requestIdleCallback) {
-    auditRuntimeIdleHandle = idleWindow.requestIdleCallback(() => {
-      auditRuntimeIdleHandle = undefined
-      void refreshAuditRuntimeQuietly()
-    }, { timeout: 1500 })
-    return
-  }
-  auditRuntimeTimer = setTimeout(() => {
-    auditRuntimeTimer = undefined
-    void refreshAuditRuntimeQuietly()
-  }, 250)
-}
-
-function cancelAuditRuntimeIdleRefresh(): void {
-  if (typeof window !== 'undefined' && auditRuntimeIdleHandle !== undefined) {
-    ;(window as AuditRuntimeIdleWindow).cancelIdleCallback?.(auditRuntimeIdleHandle)
-  }
-  auditRuntimeIdleHandle = undefined
-  if (auditRuntimeTimer !== undefined) clearTimeout(auditRuntimeTimer)
-  auditRuntimeTimer = undefined
-}
-
 onMounted(() => {
   loadInitialModeData()
-  scheduleAuditRuntimeRefresh()
 })
-onActivated(scheduleAuditRuntimeRefresh)
 onBeforeUnmount(() => {
   traceRoute.stop()
   clearAccountOptionsSearchTimer()
-  cancelAuditRuntimeRequest()
-  cancelAuditRuntimeIdleRefresh()
   cancelHotSearchRequest()
 })
 onDeactivated(() => {
   clearAccountOptionsSearchTimer()
-  cancelAuditRuntimeRequest()
-  cancelAuditRuntimeIdleRefresh()
   cancelHotSearchRequest()
   closeTransientDetails()
 })

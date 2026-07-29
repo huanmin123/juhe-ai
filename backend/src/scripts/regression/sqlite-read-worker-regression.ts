@@ -239,15 +239,21 @@ try {
   assert(accountGroupOptions.some((item) => item.id === group.id && item.accountIds.includes(account.id)), '账户分组选项应保留真实 accountIds')
   assert.equal((await repositories.findGroupSummaryAsync(group.id, userAccess))?.id, group.id, '分组详情 async 读应由 read worker 返回真实数据')
   const groupEditReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
-  assert.deepEqual(await repositories.findGroupEditDetailAsync(group.id, userAccess), {
-    id: group.id,
+  const groupEditDetail = await repositories.findGroupEditDetailAsync(group.id, userAccess)
+  assert(groupEditDetail, '分组编辑详情应由 read worker 返回真实数据')
+  assert.deepEqual(Object.keys(groupEditDetail).sort(), ['enabled', 'groupType', 'name', 'providerCode', 'updatedAt'], '分组编辑详情应只返回当前表单与 CAS 需要的精确 DTO')
+  assert.deepEqual({
+    name: groupEditDetail.name,
+    providerCode: groupEditDetail.providerCode,
+    enabled: groupEditDetail.enabled,
+    groupType: groupEditDetail.groupType
+  }, {
     name: 'SQLite read worker 分组',
     providerCode: 'gpt',
     enabled: true,
-    isDefault: false,
-    groupType: 'personal',
-    accessType: 'owner'
-  }, '分组编辑详情应由 read worker 返回精确 DTO')
+    groupType: 'personal'
+  }, '分组编辑详情应保留当前表单值')
+  assert.equal(typeof groupEditDetail.updatedAt, 'string', '分组编辑详情应返回 CAS updatedAt')
   assert(
     readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= groupEditReadHandledJobsBefore + 1,
     'SQLite DB service 下 findGroupEditDetailAsync 必须进入 read worker，避免编辑弹窗同步读阻塞主连接'

@@ -67,6 +67,7 @@ function createStableAccount(name: string, apiKey: string, createdAt: string): {
       api_key: apiKey,
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     status: 'active',
     priority: 10,
     schedulable: true,

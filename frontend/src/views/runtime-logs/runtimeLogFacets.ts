@@ -1,4 +1,4 @@
-import type { RuntimeLogGrepRuntime, RuntimeLogRuntime } from '@/types/domain'
+import type { RuntimeLogGrepRuntime } from '@/types/domain'
 
 import { eventText } from './runtimeLogFormatters'
 
@@ -21,34 +21,4 @@ export function filterRuntimeLogEventOption(input: string, option?: Partial<Runt
 export function runtimeLogGrepRangeLimitText(runtime?: RuntimeLogGrepRuntime): string {
   if (!runtime) return '按文件时间筛选，默认最近 3 天，单次最多 7 天'
   return `按文件时间筛选，默认最近 ${runtime.defaultRangeDays} 天，单次最多 ${runtime.maxRangeDays} 天`
-}
-
-export function isRuntimeLogsAlertVisible(state?: RuntimeLogRuntime): boolean {
-  if (!state) return false
-  return Boolean(
-    !state.runtimeAvailable
-    || !state.ingestWorkerAvailable
-    || !state.runtimeLogIndexQueueAvailable
-    || !state.dbService.statusAvailable
-    || !state.dbService.stateAvailable
-    || !state.gatewayAccountSideEffectsAvailable
-  )
-}
-
-export function runtimeLogsAlertDescription(state?: RuntimeLogRuntime): string {
-  if (!state) return ''
-  const reasons: string[] = []
-  if (!state.runtimeAvailable) {
-    reasons.push('服务运行态不可用')
-  } else {
-    if (!state.ingestWorkerAvailable) reasons.push('日志写入进程不可用')
-    if (!state.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
-    if (!state.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
-  }
-  if (!state.dbService.statusAvailable) {
-    reasons.push('本地数据库服务状态不可用')
-  } else if (!state.dbService.stateAvailable) {
-    reasons.push('本地数据库服务父进程状态不可用')
-  }
-  return `${reasons.join('；') || '运行态状态未知'}。`
 }

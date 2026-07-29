@@ -220,6 +220,7 @@ let dailyTrendResolved = false
 let chartObserver: IntersectionObserver | undefined
 let reloadOnActivate = false
 let wasDeactivated = false
+let disposed = false
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
@@ -297,12 +298,16 @@ async function loadData(options: { force?: boolean } = {}) {
   chartSectionResolved.modelDistribution = false
   chartSectionResolved.errors = false
   try {
-    await loadUsageStatsWindow({
-      force: options.force === true,
-      viewScope: isManagementView.value ? 'admin' : 'self'
-    })
-    if (didUsageStatsWindowLoadFail(isManagementView.value ? 'admin' : 'self')) {
-      throw new Error('统计日期窗口加载失败')
+    const viewScope = isManagementView.value ? 'admin' : 'self'
+    const windowLoad = loadUsageStatsWindow({ viewScope })
+    if (dateRangeExplicit.value) {
+      void windowLoad.catch(() => undefined)
+    } else {
+      await windowLoad
+      if (requestSeq !== statsRequestSeq) return
+      if (didUsageStatsWindowLoadFail(viewScope)) {
+        throw new Error('统计日期窗口加载失败')
+      }
     }
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
     const rangeParams = selectedRangeParams()
@@ -435,12 +440,14 @@ function loadSelfChartSection(section: StatsChartSection, params: { startDate?: 
 }
 
 onMounted(async () => {
+  disposed = false
   await nextTick()
   setupChartObservers()
 })
 
 function setupChartObservers(): void {
   chartObserver?.disconnect()
+  if (disposed || !pageActive.value) return
   const targets: Array<[HTMLDivElement | undefined, StatsObservedSection]> = [
     [dailyTrendSectionRef.value, 'dailyTrend'],
     [usageTrendSectionRef.value, 'hourlyTrend'],
@@ -456,6 +463,7 @@ function setupChartObservers(): void {
     return
   }
   chartObserver = new IntersectionObserver((entries) => {
+    if (disposed || !pageActive.value) return
     for (const entry of entries) {
       if (!entry.isIntersecting) continue
       const section = targets.find(([element]) => element === entry.target)?.[1]
@@ -690,6 +698,7 @@ watch(pageActive, async (active) => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   invalidateStatsRequests()
   chartObserver?.disconnect()
   chartObserver = undefined

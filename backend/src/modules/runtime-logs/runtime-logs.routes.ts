@@ -3,27 +3,12 @@ import { Router } from 'express'
 import { ok } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
-import type { BackgroundWorkerRuntimeLogQueueRuntime } from '../background/background-ipc.types.js'
-import { requestDbService, requestServerRuntimeLogAvailabilitySnapshot } from '../db-service/db-service-ipc.js'
-import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
+import { getRuntimeLogGrepDetail, getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const runtimeLogsRouter = Router()
 const runtimeLogRouteTimeoutMs = 120_000
-
-export interface RuntimeLogFileConsumerHttpDto {
-  retentionDays: number
-  discoveredFileCount: number
-  pendingFileCount: number
-  pendingBytes: number
-  oldestPendingMtime?: string
-  currentFile?: string
-  currentOffset: number
-  lastReadAt?: string
-  lastCommitAt?: string
-  lastError?: string
-  protectedRotatedFileCount: number
-}
 
 runtimeLogsRouter.use((req, res, next) => {
   req.setTimeout(runtimeLogRouteTimeoutMs)
@@ -60,46 +45,6 @@ runtimeLogsRouter.get('/grep-options', async (_req, res, next) => {
   }
 })
 
-runtimeLogsRouter.get('/runtime', async (_req, res, next) => {
-  try {
-    const [serverRuntime, dbServiceSnapshot] = await Promise.all([
-      requestServerRuntimeLogAvailabilitySnapshot(),
-      requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined)
-    ])
-    res.json(ok({
-      runtimeAvailable: Boolean(serverRuntime),
-      ingestWorkerAvailable: serverRuntime?.ingestWorkerAvailable ?? false,
-      runtimeLogIndexQueueAvailable: serverRuntime?.runtimeLogIndexQueueAvailable ?? false,
-      dbService: {
-        statusAvailable: Boolean(dbServiceSnapshot),
-        stateAvailable: serverRuntime?.dbServiceStateAvailable ?? false
-      },
-      gatewayAccountSideEffectsAvailable: serverRuntime?.gatewayAccountSideEffectsAvailable ?? false
-    }))
-  } catch (error) {
-    next(error)
-  }
-})
-
-export function runtimeLogFileConsumerRuntimeDto(
-  runtime: Partial<BackgroundWorkerRuntimeLogQueueRuntime> | undefined
-): RuntimeLogFileConsumerHttpDto | null {
-  if (!runtime) return null
-  return {
-    retentionDays: runtime.retentionDays ?? 0,
-    discoveredFileCount: runtime.discoveredFileCount ?? 0,
-    pendingFileCount: runtime.pendingFileCount ?? 0,
-    pendingBytes: runtime.pendingBytes ?? 0,
-    oldestPendingMtime: runtime.oldestPendingMtime,
-    currentFile: runtime.currentFile,
-    currentOffset: runtime.currentOffset ?? 0,
-    lastReadAt: runtime.lastReadAt,
-    lastCommitAt: runtime.lastCommitAt,
-    lastError: runtime.lastError,
-    protectedRotatedFileCount: runtime.protectedRotatedFileCount ?? 0
-  }
-}
-
 runtimeLogsRouter.get('/grep', async (req, res, next) => {
   try {
     const result = await grepRuntimeLogFiles(parseRuntimeLogGrepOptions(req.query))
@@ -109,10 +54,34 @@ runtimeLogsRouter.get('/grep', async (req, res, next) => {
   }
 })
 
+runtimeLogsRouter.get('/grep-detail', async (req, res, next) => {
+  try {
+    const id = optionalQueryText(req.query.id)
+    const fileName = optionalQueryText(req.query.fileName)
+    const lineNumber = finiteNumberQueryValue(req.query.lineNumber)
+    if (!id || !fileName || !Number.isInteger(lineNumber) || Number(lineNumber) < 1) {
+      res.status(400).json({ message: 'grep 详情定位参数无效' })
+      return
+    }
+    const result = await getRuntimeLogGrepDetail({ id, fileName, lineNumber: Number(lineNumber) })
+    if (result.status === 'not_found') {
+      res.status(404).json({ message: 'grep 匹配行不存在' })
+      return
+    }
+    if (result.status === 'stale') {
+      res.status(409).json({ message: '日志文件已经轮转或内容发生变化，请重新搜索' })
+      return
+    }
+    res.json(ok(result.detail))
+  } catch (error) {
+    next(error)
+  }
+})
+
 runtimeLogsRouter.get('/:id', async (req, res, next) => {
   try {
     const detail = await requestDbService({
-      type: 'get_runtime_log_detail',
+      type: 'get_runtime_log_detail_delta',
       id: req.params.id
     })
     if (!detail) {

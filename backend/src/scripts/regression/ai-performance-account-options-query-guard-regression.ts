@@ -54,6 +54,7 @@ try {
   const matchedAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: 'perfneedle 主账号',
     type: 'api_key',
     credentials: {
@@ -70,6 +71,7 @@ try {
   const authorizedSourceAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: '性能授权来源账号',
     type: 'api_key',
     credentials: {
@@ -95,6 +97,7 @@ try {
   const otherOwnerAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: 'otherneedle 主账号',
     type: 'api_key',
     credentials: {
@@ -106,6 +109,7 @@ try {
   const adminAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: '管理员普通账号',
     type: 'api_key',
     credentials: {
@@ -117,6 +121,7 @@ try {
   const wildcardAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: 'perf%literal 主账号',
     type: 'api_key',
     credentials: {
@@ -128,6 +133,7 @@ try {
   const wildcardNeighborAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: 'perfXliteral 主账号',
     type: 'api_key',
     credentials: {
@@ -206,6 +212,7 @@ try {
   const groupAuthorizedAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    supportedModels: ['gpt-5.6-sol'],
     name: 'perfgroupauth 分组来源账号',
     type: 'api_key',
     credentials: {
@@ -228,7 +235,7 @@ try {
   })
   assert.deepEqual(groupAuthorizedKeyword.map((account) => account.id), [groupAuthorizedAccount.id], '用户侧 AI 性能账号选项应能命中授权分组里的来源账户')
   assert.equal(groupAuthorizedKeyword[0]?.accessType, 'authorized', '分组授权来源账户在被授权人视角应标记为授权来源')
-  assert.equal(groupAuthorizedKeyword[0]?.ownerSystemAccountId, owner.id, '分组授权来源账户应保留资源归属人用于前端展示')
+  assert.equal(groupAuthorizedKeyword[0]?.ownerSystemAccountName, owner.displayName, '分组授权来源账户应保留前端实际展示的资源归属人名称')
 
   const groupAuthorizedOverview = usageStatsRepository.getAiPerformanceOverview(granteeAccess, {
     startDate: '2026-01-01',
@@ -238,7 +245,7 @@ try {
   }, [groupAuthorizedAccount.id])
   const groupAuthorizedOverviewAccount = groupAuthorizedOverview.accounts.find((account) => account.id === groupAuthorizedAccount.id)
   assert.equal(groupAuthorizedOverviewAccount?.accessType, 'authorized', '被授权人的 AI 性能概览应能追加分组授权来源账户')
-  assert.equal(groupAuthorizedOverviewAccount?.ownerSystemAccountId, owner.id, '被授权人的 AI 性能概览应保留分组授权来源账户归属人')
+  assert.equal(groupAuthorizedOverviewAccount?.ownerSystemAccountName, owner.displayName, '被授权人的 AI 性能概览应保留前端实际展示的资源归属人名称')
   const groupAuthorizedPoint = groupAuthorizedOverview.hourlySeries
     .find((series) => series.accountId === groupAuthorizedAccount.id)
     ?.points.find((point) => point.statHour === '2026-01-01T00')

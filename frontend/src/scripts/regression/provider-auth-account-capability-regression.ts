@@ -11,6 +11,7 @@ import { normalizeGrokSsoTokens } from '../../views/accounts/grokSsoTokens'
 import { inferGeminiOAuthType } from '../../views/accounts/geminiOAuthType'
 
 const gpt = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gpt')
+const gptProfile = gpt?.protocolProfiles.find((profile) => profile.id === 'profile_gpt_openai_v1')
 const openAICompatible = FALLBACK_PROVIDERS.find((provider) => provider.code === 'openai')
 assert.equal(gpt?.defaultSupportedModels.includes('codex-auto-review'), false, 'GPT 回退供应商不得保留资料不完整的 codex-auto-review')
 assert.equal(openAICompatible?.defaultSupportedModels.includes('codex-auto-review'), false, '通用 OpenAI-compatible 回退供应商不得默认勾选 GPT 专属模型')
@@ -27,6 +28,9 @@ assert.deepEqual(anthropicProfile?.accountTypes, ['api_key', 'oauth'], 'Anthropi
 const openAICompatibleProfile = openAICompatible?.protocolProfiles.find((profile) => profile.id === 'profile_openai_openai_v1')
 assert.deepEqual(openAICompatible?.accountTypes, ['api_key'], '通用 OpenAI-compatible 回退供应商不得开放 OAuth 账户类型')
 assert.deepEqual(openAICompatibleProfile?.accountTypes, ['api_key'], '通用 OpenAI-compatible 回退协议档案不得开放 OAuth 账户类型')
+assert.equal(managedOAuthProviderKind({ provider: gpt, profile: gptProfile }), 'openai', 'GPT OAuth 必须分派到 OpenAI OAuth API')
+assert.equal(managedOAuthProviderKind({ provider: anthropic, profile: anthropicProfile }), 'anthropic', 'Anthropic OAuth 必须分派到 Anthropic OAuth API')
+assert.equal(managedOAuthProviderKind({ provider: openAICompatible, profile: openAICompatibleProfile }), undefined, '通用 OpenAI-compatible API Key 档案不得误入托管 OAuth 重新授权')
 
 const anthropicOAuthForm = defaultAccountForm('anthropic', 'oauth', FALLBACK_PROVIDERS, 'profile_anthropic_anthropic_v1')
 Object.assign(anthropicOAuthForm, {

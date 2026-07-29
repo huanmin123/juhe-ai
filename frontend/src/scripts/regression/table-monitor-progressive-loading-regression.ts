@@ -5,17 +5,25 @@ import { createTableMonitorHistoryRequestGate } from '@/views/table-monitor/tabl
 
 const source = readFileSync(new URL('../../views/table-monitor/TableMonitorView.vue', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../../api/domains/stats.ts', import.meta.url), 'utf8')
+const loadDataSource = source.slice(source.indexOf('async function loadData()'), source.indexOf('async function loadHistoryData()'))
 
 assert.match(source, /const historyLoaded = ref\(false\)/, '表监控应显式记录趋势历史是否已按需加载')
 assert.match(source, /IntersectionObserver/, '表监控趋势应在进入视口后触发历史加载')
 assert.match(source, /api\.tableMonitor\.databaseHistory\(/, '表监控仍应保留趋势历史接口')
 assert.doesNotMatch(
-  source,
-  /Promise\.all\(\[\s*api\.tableMonitor\.overview[\s\S]*api\.tableMonitor\.databaseHistory/,
+  loadDataSource,
+  /api\.tableMonitor\.databaseHistory/,
   '表监控首屏不应并行请求 database-history'
 )
-assert.match(source, /api\.tableMonitor\.overview\(\)/, '表监控首屏概览应使用无日期窗口的最新快照入口')
-assert.doesNotMatch(apiSource, /history:\s*\(params: TableMonitorHistoryParams\)/, '前端不应继续暴露未使用的单表历史 API')
+assert.match(source, /api\.tableMonitor\.overview\(\{[\s\S]*page: pagination\.current[\s\S]*pageSize: pagination\.pageSize[\s\S]*keyword:/, '表监控概览应使用服务端分页与前缀搜索')
+assert.match(apiSource, /history:\s*\(params: TableMonitorHistoryParams\)/, '单表趋势应使用独立按需历史 API')
+assert.match(source, /row-clickable[\s\S]*@row-click="openTableHistory"/, '桌面表行点击后才应打开单表趋势')
+assert.match(source, /function openTableHistory[\s\S]*tableHistoryOpen\.value = true[\s\S]*loadTableHistoryData/, '单表历史只能由显式表行交互触发')
+assert.match(source, /if \(!pageActive\.value \|\| !tableHistoryOpen\.value \|\| !table\) return/, '隐藏或失活页面不得读取单表历史')
+assert.match(source, /onDeactivate: deactivateTableMonitorPage/, '页面失活必须作废趋势请求和 observer')
+assert.match(source, /useResponsivePagedList<TableStorageOverviewSummary>/, '概览分页应复用带旧响应门的列表协调器')
+assert.match(source, /function deactivateTableMonitorPage[\s\S]*invalidatePendingLoads\(\)/, '页面失活必须作废概览分页在途请求')
+assert.doesNotMatch(apiSource, /cleanupNonBusinessData:[^\n]*noTimeout/, '仅投递队列的清理请求不应禁用客户端超时')
 
 const gate = createTableMonitorHistoryRequestGate()
 const firstA = gate.begin('A')

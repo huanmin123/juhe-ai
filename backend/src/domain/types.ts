@@ -175,6 +175,15 @@ export interface AnnouncementSummary {
   updatedAt: string
 }
 
+export interface AnnouncementEditDetail {
+  id: string
+  title: string
+  content: string
+  level: AnnouncementLevel
+  status: AnnouncementStatus
+  revision: string
+}
+
 export interface PublicAnnouncementListItem {
   id: string
   title: string
@@ -195,15 +204,12 @@ export interface AnnouncementListItem {
   id: string
   title: string
   contentPreview: string
+  contentTruncated: boolean
   level: AnnouncementLevel
   status: AnnouncementStatus
-  createdBy?: string
-  createdByName?: string
-  updatedBy?: string
   updatedByName?: string
   publishedAt?: string
-  createdAt: string
-  updatedAt: string
+  revision: string
 }
 
 export interface SystemTeamMemberSummary {
@@ -266,8 +272,29 @@ export interface SystemTeamDetail {
   description?: string
   status: SystemTeamStatus
   memberCount: number
-  members: SystemTeamMemberDetail[]
   createdAt: string
+  updatedAt: string
+}
+
+export interface SystemTeamMembersResult {
+  id: string
+  memberCount: number
+  updatedAt: string
+  items: SystemTeamMemberDetail[]
+}
+
+export interface SystemTeamMemberHistoryItem extends SystemTeamMemberDetail {
+  status: 'removed'
+  removedAt?: string
+}
+
+export interface SystemTeamMemberHistoryResult {
+  id: string
+  items: SystemTeamMemberHistoryItem[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
@@ -469,29 +496,19 @@ export interface AccountUsageSummary {
 export interface AiPerformanceAccount {
   id: string
   name: string
-  status: AccountStatus
   providerCode: ProviderCode
-  systemAccountId: string
   systemAccountName?: string
-  ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   accessType?: ResourceAccessType
-  requestCountLast7d: number
-  selected: boolean
-  defaultVisible: boolean
 }
 
 export interface AiPerformanceAccountOption {
   id: string
   name: string
-  status: AccountStatus
   providerCode: ProviderCode
-  systemAccountId: string
   systemAccountName?: string
-  ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   accessType?: ResourceAccessType
-  requestCountLast7d: number
 }
 
 export interface AiPerformancePoint {
@@ -507,7 +524,6 @@ export interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
   providerCode: string
-  systemAccountId: string
   points: AiPerformancePoint[]
 }
 
@@ -546,6 +562,9 @@ export type AiHealthHourStatus = 'success' | 'failure' | 'unknown'
 export interface AiHealthHourPoint {
   statHour: string
   status: AiHealthHourStatus
+}
+
+export interface AiHealthHourDetail extends AiHealthHourPoint {
   lastObservedAt?: string
   statusCode?: number
   errorCode?: string
@@ -557,11 +576,7 @@ export interface AiHealthAccountRow {
   name: string
   providerCode: ProviderCode
   status: AccountStatus
-  systemAccountId?: string
   systemAccountName?: string
-  ownerSystemAccountId?: string
-  ownerSystemAccountName?: string
-  accessType?: ResourceAccessType
   lastHealthCheckAt?: string
   lastHealthSuccessAt?: string
   nextHealthCheckAt?: string
@@ -574,10 +589,6 @@ export interface AiHealthAccountRow {
 }
 
 export interface AiHealthListResult {
-  timezone: string
-  rangeHours: number
-  startHour: string
-  endHour: string
   items: AiHealthAccountRow[]
   total: number
   hasMore: boolean
@@ -1402,7 +1413,7 @@ export interface ModelCheckOptions {
 }
 
 export type ModelCheckAccountOption = Pick<AccountOptionSummary, 'id' | 'name' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'> & {
-  modelCheckModels: string[]
+  modelCheckModels?: string[]
 }
 
 export interface ModelCheckRunRequest {
@@ -1560,8 +1571,29 @@ export interface ModelCheckRunDetail extends ModelCheckRunSummary {
   checks: ModelCheckItemSummary[]
 }
 
+export type ModelCheckRunListItem = Pick<ModelCheckRunSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'providerCode'
+  | 'targetType'
+  | 'targetId'
+  | 'targetName'
+  | 'model'
+  | 'profile'
+  | 'triggerKind'
+  | 'trustedComparison'
+  | 'level'
+  | 'score'
+  | 'maxScore'
+  | 'status'
+  | 'message'
+  | 'durationMs'
+  | 'errorMessage'
+  | 'createdAt'
+>
+
 export interface ModelCheckRunListResult {
-  items: ModelCheckRunSummary[]
+  items: ModelCheckRunListItem[]
   total: number
   hasMore: boolean
   page: number
@@ -1813,9 +1845,21 @@ export interface ResourceAuthorizationListItem {
 export interface ResourceAuthorizationMutationResult {
   id: string
   status: AuthorizationStatus
-  expiresAt?: string
-  limits?: RequestQuotaLimits
+  expiresAt: string | null
+  limits: RequestQuotaLimits | null
   updatedAt: string
+}
+
+export interface ResourceAuthorizationTerminalMutationResult {
+  id: string
+  status: Extract<AuthorizationStatus, 'revoked' | 'returned'>
+  updatedAt: string
+}
+
+export interface ResourceAuthorizationCreateMutationResult {
+  item: ResourceAuthorizationListItem
+  created: boolean
+  previousStatus?: AuthorizationStatus
 }
 
 export interface ResourceAuthorizationListResult {

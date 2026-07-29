@@ -134,8 +134,9 @@ function assertSourceBoundaries(): void {
 
   assertIncludes(systemAccountsViewSource, 'canManageSystemAccounts = computed(() => isSuperAdminRole', '系统账户写入口必须只对 super_admin 展示')
   assertIncludes(systemAccountsViewSource, 'await api.systemAccounts.create(payload)', '系统账户页必须调用 create API')
-  assertIncludes(systemAccountsViewSource, 'await api.systemAccounts.update(editingId.value, basePayload)', '系统账户页编辑必须走统一 update API')
-  assertIncludes(systemAccountsViewSource, 'await api.systemAccounts.update(resettingId.value, { password: resetPassword.value', '系统账户页重置密码必须走统一 update API')
+  assertIncludes(systemAccountsViewSource, 'buildSystemAccountEditablePatch(editingBaseline.value, editableValues)', '系统账户页编辑必须构造字段级 delta')
+  assertIncludes(systemAccountsViewSource, 'expectedUpdatedAt: editingVersion.value', '系统账户页编辑必须携带列表 CAS 版本')
+  assertIncludes(systemAccountsViewSource, 'expectedUpdatedAt: resettingVersion.value', '系统账户页重置密码必须携带列表 CAS 版本')
   assertIncludes(systemAccountsViewSource, 'mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword', '管理员账户创建/编辑必须关闭初始改密提醒')
 
   for (const forbidden of ['passwordHash', 'tokenHash', 'DefaultAPIKey', 'defaultAPIKey', 'keySecret', 'key_secret']) {

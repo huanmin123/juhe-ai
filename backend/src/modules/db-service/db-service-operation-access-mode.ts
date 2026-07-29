@@ -101,6 +101,7 @@ export const dbServiceOperationAccessModeByType = {
   record_client_ip_policy_hits: 'write',
   list_runtime_logs: 'read',
   get_runtime_log_detail: 'read',
+  get_runtime_log_detail_delta: 'read',
   get_runtime_log_facets: 'read',
   status: 'runtime'
 } as const satisfies Record<DbServiceOperation['type'], DbServiceOperationAccessMode>

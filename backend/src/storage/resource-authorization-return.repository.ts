@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
+import type { AuthorizationStatus, ResourceAuthorizationTerminalMutationResult } from '../domain/types.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
@@ -12,6 +13,7 @@ import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { getPostgresPool } from './postgres-client.js'
 import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
+import type { ResourceAuthorizationTerminalMutationOutcome } from './resource-authorization-write.repository.js'
 import { syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync } from './request-quota-hourly-windows.repository.js'
 import { resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import {
@@ -95,6 +97,94 @@ export async function returnResourceAuthorizationForGranteeAsync(authorizationId
     refreshAfterResourceAuthorizationReturnedWrite()
   }
   return authorization
+}
+
+export async function returnResourceAuthorizationForGranteeMutationAsync(
+  authorizationId: string,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): Promise<ResourceAuthorizationTerminalMutationOutcome> {
+  const normalizedExpectedUpdatedAt = expectedUpdatedAt.trim()
+  if (!normalizedExpectedUpdatedAt) throw new Error('缺少授权配置版本')
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? returnResourceAuthorizationForGranteeMutationPostgresAsync(authorizationId, normalizedExpectedUpdatedAt, access)
+    : returnResourceAuthorizationForGranteeMutationSqlite(authorizationId, normalizedExpectedUpdatedAt, access)
+}
+
+function returnResourceAuthorizationForGranteeMutationSqlite(
+  authorizationId: string,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): ResourceAuthorizationTerminalMutationOutcome {
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) return { kind: 'not_found' }
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let outcome: ResourceAuthorizationTerminalMutationOutcome
+  try {
+    const grant = findDirectGrantForReturnMutation(authorizationId, granteeSystemAccountId, database)
+    if (!grant || grant.resource_owner_system_account_id === granteeSystemAccountId) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return { kind: 'not_found' }
+    }
+    if (grant.updated_at !== expectedUpdatedAt) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return { kind: 'conflict', currentUpdatedAt: grant.updated_at }
+    }
+    if (grant.status === 'returned') {
+      commitDatabaseTransaction(database, transactionStarted)
+      return returnAuthorizationTerminalMutationSuccess('unchanged', grant, grant.updated_at)
+    }
+    if (grant.status === 'revoked') {
+      commitDatabaseTransaction(database, transactionStarted)
+      return { kind: 'not_found' }
+    }
+    const authorization = findRuntimeAuthorizationForDirectGrant(grant, granteeSystemAccountId, database)
+    if (!authorization || !hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return { kind: 'not_found' }
+    }
+    const now = nextResourceAuthorizationReturnVersion(grant.updated_at)
+    returnResourceAuthorizationGrant(grant, currentSystemAccountId(access), database, now)
+    commitDatabaseTransaction(database, transactionStarted)
+    outcome = returnAuthorizationTerminalMutationSuccess('updated', grant, now)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  refreshAfterResourceAuthorizationReturnedWrite()
+  return outcome
+}
+
+async function returnResourceAuthorizationForGranteeMutationPostgresAsync(
+  authorizationId: string,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): Promise<ResourceAuthorizationTerminalMutationOutcome> {
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) return { kind: 'not_found' }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const actor = currentSystemAccountId(access)
+  const outcome = await client.transaction(async (tx): Promise<ResourceAuthorizationTerminalMutationOutcome> => {
+    const grant = await findDirectGrantForReturnMutationAsync(authorizationId, granteeSystemAccountId, tx)
+    if (!grant || grant.resource_owner_system_account_id === granteeSystemAccountId) return { kind: 'not_found' }
+    if (grant.updated_at !== expectedUpdatedAt) return { kind: 'conflict', currentUpdatedAt: grant.updated_at }
+    if (grant.status === 'returned') {
+      return returnAuthorizationTerminalMutationSuccess('unchanged', grant, grant.updated_at)
+    }
+    if (grant.status === 'revoked') return { kind: 'not_found' }
+    const authorization = await findRuntimeAuthorizationForDirectGrantAsync(grant, granteeSystemAccountId, tx)
+    if (!authorization || !await hasActiveManualRuntimeAuthorizationSourceAsync(authorization.id, tx)) {
+      return { kind: 'not_found' }
+    }
+    const now = nextResourceAuthorizationReturnVersion(grant.updated_at)
+    await returnResourceAuthorizationGrantAsync(grant, actor, tx, now)
+    return returnAuthorizationTerminalMutationSuccess('updated', grant, now)
+  })
+  if (outcome.kind === 'updated') {
+    refreshAfterResourceAuthorizationReturnedWrite()
+  }
+  return outcome
 }
 
 export function returnAccountAuthorizationInstanceForGrantee(accountId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
@@ -312,6 +402,20 @@ function findReturnableDirectGrantForGrantee(authorizationId: string, granteeSys
     .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
 }
 
+function findDirectGrantForReturnMutation(authorizationId: string, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
+  return database.prepare(`
+    SELECT
+      id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+      grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+      limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+    FROM resource_authorization_grants
+    WHERE id = ?
+      AND grantee_type = 'system_account'
+      AND grantee_system_account_id = ?
+    LIMIT 1
+  `).get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
+}
+
 function findReturnableDirectGrantForRuntimeAuthorization(authorization: ResourceAuthorizationIdentity, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
   return database
     .prepare(`
@@ -356,6 +460,20 @@ async function findReturnableDirectGrantForGranteeAsync(authorizationId: string,
       AND grant_row.grantee_system_account_id = ?
       AND grant_row.status NOT IN ('revoked', 'returned')
     LIMIT 1
+  `, [authorizationId, granteeSystemAccountId])
+}
+
+async function findDirectGrantForReturnMutationAsync(authorizationId: string, granteeSystemAccountId: string, client: DatabaseClient): Promise<ResourceAuthorizationGrantRow | undefined> {
+  return client.one<ResourceAuthorizationGrantRow>(`
+    SELECT
+      id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+      grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+      limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+    FROM ${resourceAuthorizationReturnTable(client, 'resource_authorization_grants')}
+    WHERE id = ?
+      AND grantee_type = 'system_account'
+      AND grantee_system_account_id = ?
+    LIMIT 1 FOR UPDATE
   `, [authorizationId, granteeSystemAccountId])
 }
 
@@ -633,6 +751,37 @@ function resourceAuthorizationReturnTable(client: DatabaseClient, tableName: str
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function returnAuthorizationTerminalMutationSuccess(
+  kind: 'unchanged' | 'updated',
+  grant: ResourceAuthorizationGrantRow,
+  updatedAt: string
+): ResourceAuthorizationTerminalMutationOutcome {
+  const result: ResourceAuthorizationTerminalMutationResult = {
+    id: grant.id,
+    status: 'returned',
+    updatedAt
+  }
+  return {
+    kind,
+    result,
+    previousStatus: grant.status as AuthorizationStatus,
+    context: {
+      resourceType: grant.resource_type,
+      resourceId: grant.resource_id,
+      resourceOwnerSystemAccountId: grant.resource_owner_system_account_id,
+      granteeType: grant.grantee_type,
+      granteeSystemAccountId: grant.grantee_system_account_id ?? undefined,
+      granteeTeamId: grant.grantee_team_id ?? undefined
+    }
+  }
+}
+
+function nextResourceAuthorizationReturnVersion(currentUpdatedAt: string): string {
+  const now = Date.now()
+  const current = Date.parse(currentUpdatedAt)
+  return new Date(Number.isFinite(current) && current >= now ? current + 1 : now).toISOString()
 }
 
 function refreshAfterResourceAuthorizationReturnedWrite(): void {

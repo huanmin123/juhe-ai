@@ -5,6 +5,7 @@
     title="操作日志详情"
     :body-style="{ padding: '18px' }"
     @update:open="emit('update:open', $event)"
+    @close="emit('close')"
   >
     <a-spin :spinning="loading">
       <template v-if="detail">
@@ -57,21 +58,21 @@
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'target'">{{ displayName(record.targetName, record.targetId) }}</template>
                 <template v-else-if="column.key === 'type'"><a-tag>{{ resourceTypeText(record.targetType) }}</a-tag></template>
-                <template v-else-if="column.key === 'owner'">{{ displayName(record.targetOwnerSystemAccountName, record.targetOwnerSystemAccountId) }}</template>
+                <template v-else-if="column.key === 'owner'">{{ displayName(record.targetOwnerSystemAccountName) }}</template>
                 <template v-else-if="column.key === 'relation'">{{ relationText(record.relation) }}</template>
               </template>
               <template #card="{ record }">
                 <article class="detail-table-card">
                   <strong>{{ displayName(record.targetName, record.targetId) }}</strong>
                   <span>类型：{{ resourceTypeText(record.targetType) }}</span>
-                  <span>归属用户：{{ displayName(record.targetOwnerSystemAccountName, record.targetOwnerSystemAccountId) }}</span>
+                  <span>归属用户：{{ displayName(record.targetOwnerSystemAccountName) }}</span>
                   <span>关系：{{ relationText(record.relation) }}</span>
                 </article>
               </template>
             </ResponsiveDataList>
           </a-tab-pane>
           <a-tab-pane v-if="isManagementView" key="viewers" tab="可见用户">
-            <ResponsiveDataList size="small" :pagination="false" :columns="viewerColumns" :data-source="detail.viewers" row-key="systemAccountId" :table-scroll-enabled="false" :lock-body-scroll="false">
+            <ResponsiveDataList size="small" :pagination="false" :columns="viewerColumns" :data-source="detail.viewers" :row-key="viewerRowKey" :table-scroll-enabled="false" :lock-body-scroll="false">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'user'">{{ displayName(record.systemAccountName, record.systemAccountId) }}</template>
                 <template v-else-if="column.key === 'reason'">{{ visibilityReasonText(record.visibilityReason) }}</template>
@@ -95,21 +96,26 @@
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { formatDateTime } from '@/shared/formatters'
-import type { OperationLogDetail } from '@/types/domain'
+import type { OperationLogDetailViewer, OperationLogRenderedDetail } from '@/types/domain'
 import { actorText, displayName, requestText, resourceText, valueText } from './operationLogDisplay'
 import { actionText, moduleText, relationText, resourceTypeText, visibilityReasonText, visibilityText } from './operationLogLabels'
 import { changeColumns, targetColumns, viewerColumns } from './operationLogOptions'
 
 defineProps<{
-  detail?: OperationLogDetail
+  detail?: OperationLogRenderedDetail
   isManagementView: boolean
   loading: boolean
   open: boolean
 }>()
 
 const emit = defineEmits<{
+  (event: 'close'): void
   (event: 'update:open', open: boolean): void
 }>()
+
+function viewerRowKey(viewer: OperationLogDetailViewer): string {
+  return `${viewer.systemAccountId}:${viewer.visibilityReason}`
+}
 </script>
 
 <style scoped>

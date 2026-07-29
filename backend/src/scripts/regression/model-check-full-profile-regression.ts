@@ -66,7 +66,7 @@ try {
   const quickRun = await runModelCheck({
     targetType: 'account',
     targetId: account.id,
-    model: 'gpt-5.6-sol'
+    model: 'gpt-5.5'
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   assert.equal(quickRun.status, 'completed')
   assert.equal(quickRun.profile, 'quick', '省略 profile 时必须使用快速检测')
@@ -82,7 +82,7 @@ try {
   const accountRun = await runModelCheck({
     targetType: 'account',
     targetId: account.id,
-    model: 'gpt-5.6-sol',
+    model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
   }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, (event) => {

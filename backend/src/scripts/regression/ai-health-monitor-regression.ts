@@ -29,9 +29,15 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
   const monitorSource = readFileSync(resolve('src/storage/account-health-monitor.repository.ts'), 'utf8')
+  const routesSource = readFileSync(resolve('src/modules/stats/stats.routes.ts'), 'utf8')
+  const workerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
   assert.doesNotMatch(monitorSource, /\busage_records\b/i, '健康监控请求路径不得扫描使用记录明细')
   assert.match(monitorSource, /FROM account_health_hourly/, '健康监控必须查询小时预聚合表')
-  assert.match(monitorSource, /field: 'lastUsedAt'[\s\S]+field: 'name'/, '健康监控应按最近使用时间和名称稳定排序')
+  assert.match(monitorSource, /SELECT account_id, stat_hour, status, source_order/, '健康列表只应读取小时槽状态字段')
+  assert.match(monitorSource, /accounts\.last_used_at DESC[\s\S]+accounts\.name ASC/, '健康监控应按最近使用时间和名称稳定排序')
+  assert.doesNotMatch(monitorSource, /listAccountItemsPage/, '健康监控不得复用 AI 账户管理宽列表组装')
+  assert.match(routesSource, /statsRouter\.get\('\/ai-health\/hour-detail'/, '管理与自助统计路由必须提供单点小时详情')
+  assert.match(workerSource, /case 'get_ai_health_hour_detail_read_only'/, 'SQLite read worker 必须承接小时详情读取')
   assert.doesNotMatch(monitorSource, /field: 'recentRequestCount'/, '健康监控不得借用管理列表的质量统计排序')
 
   const group = repositories.createGroup({ name: 'AI 健康监控回归分组', providerCode: 'gpt' }, access)
@@ -80,10 +86,62 @@ try {
   assert.equal(result.items[0]?.unknownHours, 1)
   assert.equal(result.items[0]?.latestStatus, 'failure')
   assert.equal(result.items[0]?.healthRate, 50)
-  assert.equal(result.items[0]?.hours.find((hour) => hour.status === 'success')?.statusCode, undefined, '空状态码不应转换为 0')
+  assert.deepEqual(
+    Object.keys(result.items[0]?.hours.find((hour) => hour.status === 'failure') ?? {}).sort(),
+    ['statHour', 'status'],
+    '健康列表小时槽不得携带只在点击详情使用的状态码和错误正文'
+  )
+  assert.deepEqual(
+    Object.keys(result).sort(),
+    ['hasMore', 'items', 'page', 'pageSize', 'total'],
+    '健康列表不得返回页面未使用的时区和范围元数据'
+  )
+  const selfResult = healthMonitorRepository.getAiHealthList({ systemAccountId: 'sys_admin', role: 'user' }, { hours: 3, keyword: '健康监控回归', page: 1, pageSize: 20 })
+  assert.equal(selfResult.items.length, 1)
+  assert.equal('systemAccountName' in selfResult.items[0], false, '自助健康列表不得返回只供管理视图展示的所属用户字段')
+  const failureSlot = result.items[0]?.hours.find((hour) => hour.status === 'failure')
+  assert.ok(failureSlot)
+  const detail = healthMonitorRepository.getAiHealthHourDetail(access, account.id, failureSlot.statHour)
+  assert.deepEqual(detail, {
+    statHour: failureSlot.statHour,
+    status: 'failure',
+    lastObservedAt: currentFailureAt,
+    statusCode: 503,
+    errorCode: 'upstream_unavailable',
+    errorMessage: '上游暂时不可用'
+  }, '点击单个小时槽后才应返回该小时详情')
+  const unknownSlot = result.items[0]?.hours.find((hour) => hour.status === 'unknown')
+  assert.ok(unknownSlot)
+  assert.deepEqual(
+    healthMonitorRepository.getAiHealthHourDetail(access, account.id, unknownSlot.statHour),
+    { statHour: unknownSlot.statHour, status: 'unknown' },
+    '无记录小时的详情应保持最小响应'
+  )
+  assert.equal(
+    healthMonitorRepository.getAiHealthHourDetail({ systemAccountId: 'sys_other', role: 'user' }, account.id, failureSlot.statHour),
+    undefined,
+    '小时详情必须在读取统计详情前按账户所有权拒绝跨用户访问'
+  )
+  databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO account_quality_health_hourly (
+      account_id, system_account_id, provider_code, stat_hour, observed_at, model_check_run_id,
+      model, profile, score, threshold, level, error_code, error_message, updated_at
+    ) VALUES (?, 'sys_admin', 'gpt', ?, ?, 'run_ai_health_quality',
+      'gpt-5.1', 'quick', 35, 70, 'suspicious', 'quality_failed', '质量检查失败', ?)
+  `).run(account.id, failureSlot.statHour, currentFailureAt, currentFailureAt)
+  assert.deepEqual(
+    healthMonitorRepository.getAiHealthHourDetail(access, account.id, failureSlot.statHour),
+    {
+      statHour: failureSlot.statHour,
+      status: 'failure',
+      lastObservedAt: currentFailureAt,
+      errorCode: 'model_quality_failed',
+      errorMessage: '模型质量检查不达标：35 分，阈值 70 分'
+    },
+    '普通健康和质量健康同小时并存时，详情必须保持质量失败优先'
+  )
 
   const bounded = healthMonitorRepository.getAiHealthList(access, { hours: 9999, pageSize: 20 })
-  assert.equal(bounded.rangeHours, 31 * 24, '最大范围必须限制为 31 天')
   assert.equal(bounded.items.find((item) => item.id === account.id)?.hours.length, 31 * 24)
 
   const highRecent = createSortAccount('AI 健康排序-高频较新', 'recent')
@@ -112,8 +170,8 @@ try {
   const sorted = healthMonitorRepository.getAiHealthList(access, { hours: 3, keyword: 'AI 健康排序-', page: 1, pageSize: 20 })
   assert.deepEqual(
     sorted.items.map((item) => item.id),
-    [highRecent.id, highOlder.id, lowLatest.id],
-    '健康监控必须先按近期请求数降序，再按最后使用时间降序'
+    [lowLatest.id, highRecent.id, highOlder.id],
+    '健康监控必须按最后使用时间降序，不应为列表排序额外读取质量统计'
   )
   console.log('AI 健康监控回归通过')
 

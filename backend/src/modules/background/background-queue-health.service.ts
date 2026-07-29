@@ -79,6 +79,10 @@ interface WorkerQueueSpec {
 
 type IngestWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['ingestWorker']>['snapshot']>
 type StatsWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['statsWorker']>['snapshot']>
+type BackgroundQueueHealthRuntimeSnapshot = Pick<
+  DbServiceServerRuntimeSnapshot,
+  'ingestWorker' | 'statsWorker' | 'opsWorker'
+>
 
 interface IpcQueueSpec {
   key: string
@@ -123,7 +127,7 @@ const ipcQueueSpecs: IpcQueueSpec[] = [
 ]
 
 export function buildBackgroundQueueHealthSnapshot(
-  serverRuntime: DbServiceServerRuntimeSnapshot | undefined
+  serverRuntime: BackgroundQueueHealthRuntimeSnapshot | undefined
 ): BackgroundQueueHealthSnapshot {
   const ingestWorkerSnapshot = serverRuntime?.ingestWorker?.snapshot
   const statsWorkerSnapshot = serverRuntime?.statsWorker?.snapshot
@@ -176,7 +180,7 @@ export function buildBackgroundQueueHealthSnapshot(
 
 function rolePendingWriteStateForQueue(
   spec: WorkerQueueSpec,
-  serverRuntime: DbServiceServerRuntimeSnapshot | undefined
+  serverRuntime: BackgroundQueueHealthRuntimeSnapshot | undefined
 ): { pendingWriteRequestCount?: number; oldestPendingWriteMs?: number } | undefined {
   if (spec.workerRole === 'ingest-worker' && spec.key === 'usageRecords') {
     return serverRuntime?.ingestWorker

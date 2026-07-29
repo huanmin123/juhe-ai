@@ -96,6 +96,7 @@ import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-param
 export type {
   ProcessEventLoopSampleInput,
   SystemMetricsOverview,
+  SystemMetricsTrendOverview,
   SystemMetricsSampleInput,
   UsageStatsOverview,
   UsageStatsOverviewDailyTrendResult,
@@ -117,6 +118,8 @@ export {
 export {
   getSystemMetricsOverview,
   getSystemMetricsOverviewAsync,
+  getSystemMetricsTrend,
+  getSystemMetricsTrendAsync,
   insertProcessEventLoopSample,
   insertProcessEventLoopSampleAsync,
   insertSystemMetricsSample,

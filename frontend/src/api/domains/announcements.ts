@@ -1,11 +1,11 @@
 import type {
   AnnouncementListResult,
+  AnnouncementEditDetail,
   AnnouncementMutationResult,
-  AnnouncementSummary,
   PublishedAnnouncementDetail,
   PublishedAnnouncementListItem
 } from '@/types/domain'
-import type { AnnouncementListParams, AnnouncementPayload, AnnouncementReadResult } from '../contracts'
+import type { AnnouncementListParams, AnnouncementPatchPayload, AnnouncementPayload, AnnouncementReadResult, AnnouncementVersionPayload } from '../contracts'
 import { http, unwrap } from '../http'
 
 export const announcementsApi = {
@@ -14,10 +14,10 @@ export const announcementsApi = {
   markRead: (payload: { announcementIds: string[] }) => unwrap<AnnouncementReadResult>(http.post('/announcements/public/read', payload)),
   list: async () => (await unwrap<AnnouncementListResult>(http.get('/announcements', { params: { page: 1, pageSize: 100 } }))).items,
   listPage: (params?: { page?: number; pageSize?: number }) => unwrap<AnnouncementListResult>(http.get('/announcements', { params })),
-  detail: (id: string) => unwrap<AnnouncementSummary>(http.get(`/announcements/${id}`)),
+  detail: (id: string) => unwrap<AnnouncementEditDetail>(http.get(`/announcements/${id}`)),
   create: (payload: AnnouncementPayload) => unwrap<AnnouncementMutationResult>(http.post('/announcements', payload)),
-  update: (id: string, payload: Partial<AnnouncementPayload>) => unwrap<AnnouncementMutationResult>(http.patch(`/announcements/${id}`, payload)),
-  publish: (id: string) => unwrap<AnnouncementMutationResult>(http.post(`/announcements/${id}/publish`)),
-  unpublish: (id: string) => unwrap<AnnouncementMutationResult>(http.post(`/announcements/${id}/unpublish`)),
-  delete: (id: string) => http.delete(`/announcements/${id}`)
+  update: (id: string, payload: AnnouncementPatchPayload) => unwrap<AnnouncementMutationResult>(http.patch(`/announcements/${id}`, payload)),
+  publish: (id: string, payload: AnnouncementVersionPayload) => unwrap<AnnouncementMutationResult>(http.post(`/announcements/${id}/publish`, payload)),
+  unpublish: (id: string, payload: AnnouncementVersionPayload) => unwrap<AnnouncementMutationResult>(http.post(`/announcements/${id}/unpublish`, payload)),
+  delete: (id: string, payload: AnnouncementVersionPayload) => http.delete(`/announcements/${id}`, { data: payload })
 }

@@ -17,19 +17,25 @@ export interface AnnouncementSummary {
   updatedAt: string
 }
 
+export interface AnnouncementEditDetail {
+  id: string
+  title: string
+  content: string
+  level: AnnouncementLevel
+  status: AnnouncementStatus
+  revision: string
+}
+
 export interface AnnouncementListItem {
   id: string
   title: string
   contentPreview: string
+  contentTruncated: boolean
   level: AnnouncementLevel
   status: AnnouncementStatus
-  createdBy?: string
-  createdByName?: string
-  updatedBy?: string
   updatedByName?: string
   publishedAt?: string
-  createdAt: string
-  updatedAt: string
+  revision: string
 }
 
 export interface PublishedAnnouncementListItem {

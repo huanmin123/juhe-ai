@@ -1609,9 +1609,8 @@ assert.match(ipPolicyBodySchemaSource, /durationDays:\s*z\.number\(\)\.int\(\)\.
 assert.doesNotMatch(ipPolicyBodySchemaSource, /z\.coerce\.number/)
 
 const tableMonitorRoutesSource = readSource('modules/table-monitor/table-monitor.routes.ts')
-const nonBusinessDataCleanupSchemaSource = sourceBetween(tableMonitorRoutesSource, 'const nonBusinessDataCleanupSchema', 'interface NonBusinessDataCleanupResult')
-assert.match(nonBusinessDataCleanupSchemaSource, /batchSize:\s*z\.number\(\)\.int\(\)\.min\(100\)\.max\(10000\)\.optional\(\)/)
-assert.match(nonBusinessDataCleanupSchemaSource, /maxBatches:\s*z\.number\(\)\.int\(\)\.min\(1\)\.max\(100\)\.optional\(\)/)
+const nonBusinessDataCleanupSchemaSource = sourceBetween(tableMonitorRoutesSource, 'const nonBusinessDataCleanupSchema', 'interface NonBusinessDataCleanupReceipt')
+assert.doesNotMatch(nonBusinessDataCleanupSchemaSource, /batchSize|maxBatches/, '表监控清理接口不应把 worker 批次预算暴露给前端')
 assert.match(nonBusinessDataCleanupSchemaSource, /\}\)\.strict\(\)/)
 assert.doesNotMatch(nonBusinessDataCleanupSchemaSource, /z\.coerce\.number/)
 

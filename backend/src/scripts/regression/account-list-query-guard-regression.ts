@@ -285,6 +285,7 @@ function assertAccountListRouteBoundary(): void {
   const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
   const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
   const accountListRuntimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
+  const accountStatusSnapshotServiceSource = readFileSync(resolve('src/modules/accounts/account-status-snapshot.service.ts'), 'utf8')
   const accountManagementListRepositorySource = readFileSync(resolve('src/storage/account-management-list.repository.ts'), 'utf8')
   const accountOptionsRepositorySource = readFileSync(resolve('src/storage/account-options.repository.ts'), 'utf8')
   assert(
@@ -314,6 +315,16 @@ function assertAccountListRouteBoundary(): void {
   )
   assert.match(accountManagementListRepositorySource, /export async function listAccountManagementItemsPageAsync\s*\(/, '窄管理列表仓储应暴露异步入口')
   assert.match(accountManagementListRepositorySource, /export async function listAccountManagementItemsPageReadOnly\s*\(/, '窄管理列表仓储应暴露 SQLite 只读入口')
+  assert.match(
+    accountManagementListRepositorySource,
+    /statusSeeds:\s*AccountManagementStatusSeed\[\]/,
+    '窄管理列表内部页必须携带状态种子，避免状态水合按 ID 重查账户主表'
+  )
+  assert.match(
+    accountStatusSnapshotServiceSource,
+    /const\s+\{\s*statusSeeds,\s*\.\.\.listPage\s*\}\s*=\s*page/,
+    'HTTP 响应边界必须显式剥离内部 statusSeeds，不得泄漏状态投影 SQL 行'
+  )
   for (const [pattern, message] of [
     [/\bAccountSummary\b/, '窄管理列表仓储不得依赖 AccountSummary'],
     [/account-summary\.repository/, '窄管理列表仓储不得回退旧 account-summary 仓储'],

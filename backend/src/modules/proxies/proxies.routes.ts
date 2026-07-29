@@ -4,7 +4,6 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { createProxyAsync, deleteProxyForManagementAsync, findProxyAsync, listProxiesPageAsync, listProxyOptionsAsync, patchProxyForManagementAsync, ProxyInUseError, ProxyProfileUpdateConflictError } from '../../storage/repositories.js'
-import { currentSystemAccountId } from '../../storage/access-scope.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
@@ -46,15 +45,7 @@ proxiesRouter.get('/options', async (req, res, next) => {
 
 proxiesRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
-    const requestAccess = getRequestAccessScope()
-    if (!requestAccess) {
-      res.status(401).json(badRequest('缺少系统账户上下文'))
-      return
-    }
-    res.json(ok(await listProxiesPageAsync({
-      ...parseProxyListOptions(req.query),
-      systemAccountId: currentSystemAccountId(requestAccess)
-    })))
+    res.json(ok(await listProxiesPageAsync(parseProxyListOptions(req.query))))
   } catch (error) {
     next(error)
   }
@@ -206,8 +197,7 @@ proxiesRouter.patch('/:id', requireAdmin, async (req, res) => {
     const outcome = await patchProxyForManagementAsync(
       req.params.id,
       body,
-      expectedUpdatedAt,
-      currentSystemAccountId(requestAccess)
+      expectedUpdatedAt
     )
     if (!outcome) {
       res.status(404).json({ message: '代理不存在' })
@@ -240,7 +230,7 @@ proxiesRouter.patch('/:id', requireAdmin, async (req, res) => {
               username: '用户名',
               enabled: '启用状态'
             }),
-            ...(typeof body.password === 'string' && body.password.trim()
+            ...(outcome.passwordChanged
               ? [safeChange('password', '密码', undefined, body.password)]
               : [])
           ]
@@ -343,13 +333,8 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
 
 proxiesRouter.delete('/:id', requireAdmin, async (req, res) => {
   try {
-    const requestAccess = getRequestAccessScope()
-    if (!requestAccess) {
-      res.status(401).json(badRequest('缺少系统账户上下文'))
-      return
-    }
     await runLoggedOperationAsync(async () => {
-      const deleted = await deleteProxyForManagementAsync(req.params.id, currentSystemAccountId(requestAccess))
+      const deleted = await deleteProxyForManagementAsync(req.params.id)
       if (!deleted) {
         throw new Error('代理不存在')
       }

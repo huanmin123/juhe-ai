@@ -90,7 +90,7 @@ try {
   let latestOverview: ReturnType<typeof tableMonitorRepository.getTableStorageOverview>
   try {
     latestOverview = tableMonitorRepository.getTableStorageOverview({
-      limit: 200
+      pageSize: 100
     })
   } finally {
     statsDatabase.prepare = originalPrepare as typeof statsDatabase.prepare
@@ -112,21 +112,28 @@ try {
   )
   assert(capturedSql.every((sql) => !/\bJOIN\b/i.test(sql)), '表监控概览不应使用关联查询拼接采样结果')
   const overviewDatabaseSql = capturedSql.find((sql) => sql.includes('FROM database_storage_snapshots'))
-  const overviewTableSampleSql = capturedSql.find((sql) => sql.includes('FROM table_storage_snapshots') && sql.includes('SELECT sampled_at'))
-  const overviewTableSql = capturedSql.find((sql) => sql.includes('FROM table_storage_snapshots') && sql.includes('sampled_at = ?'))
+  const overviewTableCountSql = capturedSql.find((sql) => sql.includes('COUNT(*) AS total') && sql.includes('GROUP BY database_role, table_name'))
+  const overviewTableSql = capturedSql.find((sql) => sql.includes('WITH table_keys AS') && sql.includes('LIMIT ? OFFSET ?'))
   assert(overviewDatabaseSql, '表监控概览应按库角色读取最新数据库快照')
-  assert(overviewTableSampleSql, '表监控概览应先读取每个库角色的最新表采样时间')
-  assert(overviewTableSql, '表监控概览应只读取最新采样批次')
-  const overviewDatabasePlan = explainQueryPlan(statsDatabase, overviewDatabaseSql, ['business'])
+  assert(overviewTableCountSql, '表监控概览应对唯一表键计数')
+  assert(overviewTableSql, '表监控概览应读取每张表各自最新快照并执行分页')
+  const overviewDatabasePlan = explainQueryPlan(statsDatabase, overviewDatabaseSql, [])
   assertNoTempBtree(overviewDatabasePlan, '表监控概览数据库快照查询')
   assert(overviewDatabasePlan.includes('idx_database_storage_snapshots_role_time_id'), `表监控概览数据库快照应使用 role+time+id 索引，实际计划：${overviewDatabasePlan}`)
-  const overviewTableSamplePlan = explainQueryPlan(statsDatabase, overviewTableSampleSql, ['business'])
-  assert(overviewTableSamplePlan.includes('idx_table_storage_snapshots_time'), `表监控概览最新批次查询应使用 time 索引，实际计划：${overviewTableSamplePlan}`)
+  const overviewTablePlan = explainQueryPlan(statsDatabase, overviewTableSql, [100, 0])
+  assert(overviewTablePlan.includes('idx_table_storage_snapshots_latest_id'), `表监控概览每表最新快照应使用 role+table+time+id 索引，实际计划：${overviewTablePlan}`)
+  const firstPage = tableMonitorRepository.getTableStorageOverview({ page: 1, pageSize: 2, keyword: 'table_monitor_default_' })
+  const secondPage = tableMonitorRepository.getTableStorageOverview({ page: 2, pageSize: 2, keyword: 'table_monitor_default_' })
+  assert.equal(firstPage.pageSize, 2, '表监控概览应在存储层遵守 pageSize')
+  assert(firstPage.total >= firstPage.tables.length, '表监控概览应返回唯一表键总数')
+  assert.equal(firstPage.hasMore, firstPage.total > firstPage.tables.length, '表监控概览 hasMore 应由总数和当前窗口计算')
+  assert(firstPage.tables.every((row) => row.tableName.startsWith('table_monitor_default_')), '表名前缀搜索不得返回无关表')
+  assert(secondPage.tables.every((row) => !firstPage.tables.some((first) => first.databaseRole === row.databaseRole && first.tableName === row.tableName)), '相邻分页不得重复表键')
   const asyncOverview = await tableMonitorRepository.getTableStorageOverviewAsync({
-    limit: 200
+    pageSize: 100
   })
   assert.deepEqual(asyncOverview, tableMonitorRepository.getTableStorageOverview({
-    limit: 200
+    pageSize: 100
   }), 'SQLite 模式下表监控概览 async 入口应回退同步读取并保持结果一致')
 
   const capturedHistorySql: string[] = []
@@ -226,7 +233,10 @@ function assertTableMonitorAsyncSourceGuard(): void {
   assert(repositorySource.includes("statsTable(client, 'table_storage_snapshots')"), '表监控表快照 PG 读路径应使用 juhe_stats schema 表名')
   assert(!repositorySource.includes('tableStorageOverviewCacheTtlMs'), '表监控 overview 不得叠加进程内响应缓存，管理端刷新必须读取最新物化快照')
   assert(!repositorySource.includes('getCachedTableStorageOverview(input)'), '表监控 overview async 入口不得返回旧响应缓存')
-  assert(repositorySource.includes('SELECT MAX(sampled_at)'), '表监控 PG overview 应先定位最新采样批次，避免扫描整段历史窗口')
+  assert(repositorySource.includes('SELECT DISTINCT ON (database_role, table_name)'), '表监控 PG overview 应按每张表定位最新快照，避免 cursor 分批采样时漏表')
+  assert(repositorySource.includes('ORDER BY database_role, table_name, sampled_at DESC, id DESC'), '表监控 PG overview 最新快照必须使用确定性复合排序')
+  const statsSchemaSource = readSource('../../storage/schema/stats-schema.ts')
+  assert(statsSchemaSource.includes('idx_table_storage_snapshots_latest_id ON table_storage_snapshots(database_role, table_name, sampled_at DESC, id DESC)'), '表监控每表最新快照查询必须有对应复合索引')
   assert(routesSource.includes('await getTableStorageOverviewAsync('), '表监控 overview 路由必须 await async 读入口')
   assert(routesSource.includes('await listTableStorageHistoryAsync('), '表监控 history 路由必须 await async 读入口')
   assert(routesSource.includes('await listDatabaseStorageHistoryAsync('), '表监控 database-history 路由必须 await async 读入口')

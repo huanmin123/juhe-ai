@@ -8,6 +8,8 @@ import {
 
 const oauthRoutesSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth.routes.ts', import.meta.url), 'utf8')
 const rotationRepositorySource = readFileSync(new URL('../../storage/oauth-credential-rotation.repository.ts', import.meta.url), 'utf8')
+const refreshServiceSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.ts', import.meta.url), 'utf8')
+const dbServiceHandlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
 assert.match(oauthRoutesSource, /service_tier_override: z\.enum\(\['default', 'priority', 'flex'\]\)/, 'OAuth 创建接口 schema 必须接受 Flex 覆盖')
 assert.match(oauthRoutesSource, /expectedConfigRevision: z\.number\(\)\.int\(\)\.min\(1\)/, '重新授权必须携带配置版本')
 assert.doesNotMatch(oauthRoutesSource, /updateAccountAsync\(account\.id, \{\s*credentials/, '重新授权不得复用账户全量更新')
@@ -16,6 +18,12 @@ assert.match(rotationRepositorySource, /SELECT id, system_account_id, provider_c
 assert.doesNotMatch(rotationRepositorySource, /todayUsage|usage_stats|permissions|supported_models/i, '重新授权投影不得读取列表统计或关系字段')
 assert.match(rotationRepositorySource, /SET credentials_encrypted = \?,[\s\S]*config_revision = config_revision \+ 1/, '重新授权只更新凭据列和配置版本')
 assert.match(rotationRepositorySource, /AND system_account_id = \?[\s\S]*AND provider_code = \?[\s\S]*AND config_revision = \?/, '重新授权写入必须在 SQL 中同时下推 owner/provider/CAS')
+assert.match(refreshServiceSource, /findOAuthCredentialRotationAccountAsync\(/, '后台刷新必须使用 OAuth 专用窄查询')
+assert.match(refreshServiceSource, /rotateOAuthCredentialsAsync\(/, '后台刷新必须使用 OAuth 专用字段级 CAS 写入')
+assert.doesNotMatch(refreshServiceSource, /updateOpenAIOAuthCredentialsIfCurrent\(/, '后台刷新不得退回通用凭据更新路径')
+assert.doesNotMatch(refreshServiceSource, /findAccountForTest\(/, '后台刷新不得读取账户测试宽 DTO')
+assert.match(dbServiceHandlersSource, /case 'update_openai_oauth_credentials': \{[\s\S]*findOAuthCredentialRotationAccountAsync\([\s\S]*rotateOAuthCredentialsAsync\(/, 'DB service 异步路径必须使用 OAuth 专用窄仓储')
+assert.match(dbServiceHandlersSource, /case 'update_openai_oauth_credentials':\s*case 'find_openai_oauth_account_for_refresh':\s*throw new Error\(`\$\{operation\.type\} 必须通过异步窄仓储处理`\)/, 'DB service 同步路径必须拒绝 OAuth 宽读写')
 
 const legacyErrorHandlingRules = [{
   enabled: true,

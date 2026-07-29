@@ -13,9 +13,12 @@ export const tableMonitorRouter = Router()
 
 const defaultCleanupBatchSize = 5000
 const defaultCleanupMaxBatches = 100
+const maxHistoryPointsPerSeries = 2000
 
 const overviewQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(1000).optional()
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  keyword: z.string().trim().max(200).optional()
 })
 
 const historyQuerySchema = z.object({
@@ -23,29 +26,21 @@ const historyQuerySchema = z.object({
   tableName: z.string().trim().min(1),
   startAt: z.string().trim().optional(),
   endAt: z.string().trim().optional(),
-  limit: z.coerce.number().int().min(1).max(10000).optional()
+  limit: z.coerce.number().int().min(1).max(maxHistoryPointsPerSeries).optional()
 })
 
 const databaseHistoryQuerySchema = z.object({
   startAt: z.string().trim().optional(),
   endAt: z.string().trim().optional(),
-  limit: z.coerce.number().int().min(1).max(10000).optional()
+  limit: z.coerce.number().int().min(1).max(maxHistoryPointsPerSeries).optional()
 })
 
 const nonBusinessDataCleanupSchema = z.object({
-  cutoffAt: z.string().trim().min(1, '请选择清理截止时间'),
-  batchSize: z.number().int().min(100).max(10000).optional(),
-  maxBatches: z.number().int().min(1).max(100).optional()
+  cutoffAt: z.string().trim().min(1, '请选择清理截止时间')
 }).strict()
 
-interface NonBusinessDataCleanupResult {
+interface NonBusinessDataCleanupReceipt {
   cutoffAt: string
-  deletedRows: number
-  deletedFiles: number
-  batches: number
-  batchSize: number
-  maxBatches: number
-  hasMore: boolean
   queued: boolean
   jobId?: string
   submittedAt?: string
@@ -60,7 +55,9 @@ tableMonitorRouter.get('/overview', async (req, res, next) => {
   }
   try {
     res.json(ok(await getTableStorageOverviewAsync({
-      limit: parsed.data.limit
+      page: parsed.data.page,
+      pageSize: parsed.data.pageSize,
+      keyword: parsed.data.keyword
     })))
   } catch (error) {
     next(error)
@@ -70,9 +67,7 @@ tableMonitorRouter.get('/overview', async (req, res, next) => {
 tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
   operationKey: 'table_monitor.cleanup_non_business_data',
   fingerprint: (req) => ({
-    cutoffAt: bodyField(req, 'cutoffAt'),
-    batchSize: bodyField(req, 'batchSize'),
-    maxBatches: bodyField(req, 'maxBatches')
+    cutoffAt: bodyField(req, 'cutoffAt')
   })
 }), async (req, res) => {
   const parsed = nonBusinessDataCleanupSchema.safeParse(req.body)
@@ -91,27 +86,16 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
     return
   }
 
-  const batchSize = parsed.data.batchSize ?? defaultCleanupBatchSize
-  const maxBatches = parsed.data.maxBatches ?? defaultCleanupMaxBatches
-  const baseResult: NonBusinessDataCleanupResult = {
-    cutoffAt: cutoff.iso,
-    deletedRows: 0,
-    deletedFiles: 0,
-    batches: 0,
-    batchSize,
-    maxBatches,
-    hasMore: false,
-    queued: false
-  }
-
+  const batchSize = defaultCleanupBatchSize
+  const maxBatches = defaultCleanupMaxBatches
   const enqueueResult = await enqueueRecordMaintenanceJobWithResultAsync({
     type: 'non_business_data_cleanup',
     cutoffAt: cutoff.iso,
     batchSize,
     maxBatches
   })
-  const result: NonBusinessDataCleanupResult = {
-    ...baseResult,
+  const result: NonBusinessDataCleanupReceipt = {
+    cutoffAt: cutoff.iso,
     queued: enqueueResult.queued,
     jobId: enqueueResult.job.id,
     submittedAt: enqueueResult.job.createdAt ?? nowIso(),
@@ -123,7 +107,7 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
   }
 
   try {
-    await recordNonBusinessDataCleanupOperation(result, req)
+    await recordNonBusinessDataCleanupOperation({ ...result, batchSize, maxBatches }, req)
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'table_monitor_non_business_data_cleanup_operation_log_failed' }), '表监控非业务数据清理操作日志写入失败')
   }
@@ -136,7 +120,10 @@ function normalizeCleanupCutoff(value: string): { iso: string; time: number } | 
   return Number.isNaN(time) ? undefined : { iso: new Date(time).toISOString(), time }
 }
 
-async function recordNonBusinessDataCleanupOperation(result: NonBusinessDataCleanupResult, req: Parameters<typeof recordOperationLogAsync>[1]): Promise<void> {
+async function recordNonBusinessDataCleanupOperation(
+  result: NonBusinessDataCleanupReceipt & { batchSize: number; maxBatches: number },
+  req: Parameters<typeof recordOperationLogAsync>[1]
+): Promise<void> {
   await recordOperationLogAsync({
     module: 'table_monitor',
     action: 'cleanup_non_business_data',

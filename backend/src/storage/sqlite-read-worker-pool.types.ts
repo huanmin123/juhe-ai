@@ -4,7 +4,7 @@ import type { ModelCheckAccountOption } from '../domain/types.js'
 import type { ManagementSettingsSectionKey } from './settings.repository.js'
 import type { AccountListResult } from './account-summary.repository.js'
 import type { AccountManagementListPage } from './account-management-list.repository.js'
-import type { AccountStatusProjection } from './account-status-snapshot.repository.js'
+import type { AccountManagementStatusSeed, AccountStatusProjection } from './account-status-snapshot.repository.js'
 import type { AccountTagSummary } from './account-tags.repository.js'
 import type { AccessScope } from './access-scope.js'
 import type { AnnouncementListOptions, AnnouncementListResult } from './announcements.repository.js'
@@ -13,6 +13,7 @@ import type {
   AuditErrorGroupListOptions,
   AuditErrorGroupListResult,
   AuditLogDetail,
+  AuditLogDetailSupplement,
   AuditLogListOptions,
   AuditLogListResult,
   AuditLogPayloadDetail,
@@ -36,10 +37,12 @@ import type {
   AccountGroupOptionSummary,
   AccountUsageStatsListResult,
   AccountUsageStatsRange,
+  AnnouncementEditDetail,
   AnnouncementSummary,
   PublicAnnouncementDetail,
   PublicAnnouncementListItem,
   AiPerformanceBase,
+  AiHealthHourDetail,
   AiHealthListResult,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
@@ -65,6 +68,8 @@ import type {
   SystemTeamListResult,
   SystemTeamListItem,
   SystemTeamDetail,
+  SystemTeamMemberHistoryResult,
+  SystemTeamMembersResult,
   SystemTeamPrincipalSummary,
   SystemTeamSummary,
   RouteStrategyListItemResult,
@@ -94,11 +99,13 @@ import type {
 import type { ModelCheckRunListOptions } from './model-checks.repository.js'
 import type {
   OperationLogDetail,
+  OperationLogDetailSupplement,
   OperationLogListOptions,
   OperationLogListResult
 } from './operation-logs.repository.js'
 import type {
   PublicApiLogDetail,
+  PublicApiLogDetailSupplement,
   PublicApiLogListOptions,
   PublicApiLogListResult
 } from './public-api-logs.repository.js'
@@ -114,16 +121,16 @@ import type {
 } from './resource-authorization-read.repository.js'
 import type { ResourceAuthorizationUsageOptions } from './resource-authorization-usage.repository.js'
 import type { RouteStrategyListOptions, RouteStrategyOptionListOptions } from './route-strategy.repository.js'
-import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from './runtime-logs.repository.js'
-import type { SystemTeamListOptions } from './system-team.repository.js'
+import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from './runtime-logs.repository.js'
+import type { SystemTeamListOptions, SystemTeamMemberHistoryOptions } from './system-team.repository.js'
 import type { SystemAccountListOptions, SystemAccountListResult, SystemAccountOptionListOptions } from './system-accounts.repository.js'
 import type { SessionWithAccount } from './system-accounts.repository.js'
 import type {
   DatabaseStorageHistoryPoint,
   DatabaseStorageSnapshotSummary,
   MonitoredDatabaseRole,
-  TableStorageOverview,
-  TableStorageSnapshotSummary
+  TableStorageHistoryPoint,
+  TableStorageOverview
 } from './table-monitor.repository.js'
 import type {
   GroupUsageAccessMetadata,
@@ -132,6 +139,7 @@ import type {
 } from './openai-account-selector.types.js'
 import type {
   SystemMetricsOverview,
+  SystemMetricsTrendOverview,
   UsageStatsOverview,
   UsageStatsOverviewDailyTrendResult,
   UsageStatsOverviewErrorsResult,
@@ -193,6 +201,10 @@ export type SqliteReadWorkerOperation =
     type: 'list_account_status_snapshots_read_only'
     accountIds: string[]
     access?: AccessScope
+  }
+  | {
+    type: 'hydrate_account_management_status_seeds_read_only'
+    seeds: AccountManagementStatusSeed[]
   }
   | {
     type: 'find_account_summary_read_only'
@@ -313,6 +325,10 @@ export type SqliteReadWorkerOperation =
     id: string
   }
   | {
+    type: 'find_announcement_edit_detail_read_only'
+    id: string
+  }
+  | {
     type: 'list_system_teams_read_only'
     access?: AccessScope
   }
@@ -329,6 +345,17 @@ export type SqliteReadWorkerOperation =
   | {
     type: 'find_system_team_detail_read_only'
     id: string
+    access?: AccessScope
+  }
+  | {
+    type: 'list_system_team_members_read_only'
+    id: string
+    access?: AccessScope
+  }
+  | {
+    type: 'list_system_team_member_history_read_only'
+    id: string
+    options?: SystemTeamMemberHistoryOptions
     access?: AccessScope
   }
   | {
@@ -360,11 +387,24 @@ export type SqliteReadWorkerOperation =
     systemAccountId: string
   }
   | {
+    type: 'get_operation_log_detail_supplement_read_only'
+    id: string
+  }
+  | {
+    type: 'get_operation_log_detail_supplement_for_viewer_read_only'
+    id: string
+    systemAccountId: string
+  }
+  | {
     type: 'list_public_api_logs_read_only'
     options?: PublicApiLogListOptions
   }
   | {
     type: 'get_public_api_log_detail_read_only'
+    id: string
+  }
+  | {
+    type: 'get_public_api_log_detail_supplement_read_only'
     id: string
   }
   | {
@@ -389,6 +429,10 @@ export type SqliteReadWorkerOperation =
     id: string
   }
   | {
+    type: 'get_audit_log_detail_supplement_read_only'
+    id: string
+  }
+  | {
     type: 'get_audit_log_payload_read_only'
     auditLogId: string
     payloadId: string
@@ -404,7 +448,7 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'get_table_storage_overview_read_only'
-    input?: { limit?: number }
+    input?: { page?: number; pageSize?: number; keyword?: string }
   }
   | {
     type: 'list_table_storage_history_read_only'
@@ -524,12 +568,22 @@ export type SqliteReadWorkerOperation =
     options?: { hours?: number; keyword?: string; page?: number; pageSize?: number }
   }
   | {
+    type: 'get_ai_health_hour_detail_read_only'
+    access?: AccessScope
+    accountId: string
+    statHour: string
+  }
+  | {
     type: 'get_account_usage_stats_overview_page_read_only'
     access?: AccessScope
     options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }
   }
   | {
     type: 'get_system_metrics_overview_read_only'
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_system_metrics_trend_read_only'
     range: AccountUsageStatsRange
   }
   | {
@@ -790,6 +844,10 @@ export type SqliteReadWorkerOperation =
     id: string
   }
   | {
+    type: 'get_runtime_log_detail_delta_read_only'
+    id: string
+  }
+  | {
     type: 'get_runtime_log_facets_read_only'
   }
   | {
@@ -845,6 +903,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_account_items_page_read_only' } ? AccountListResult :
   T extends { type: 'list_account_management_items_page_read_only' } ? AccountManagementListPage :
   T extends { type: 'list_account_status_snapshots_read_only' } ? AccountStatusProjection[] :
+  T extends { type: 'hydrate_account_management_status_seeds_read_only' } ? AccountStatusProjection[] :
   T extends { type: 'find_account_summary_read_only' } ? AccountSummary | undefined :
   T extends { type: 'list_account_options_read_only' } ? AccountOptionSummary[] :
   T extends { type: 'list_model_check_account_options_read_only' } ? ModelCheckAccountOption[] :
@@ -868,28 +927,35 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'find_public_announcement_read_only' } ? PublicAnnouncementDetail | undefined :
   T extends { type: 'list_announcements_page_read_only' } ? AnnouncementListResult :
   T extends { type: 'find_announcement_read_only' } ? AnnouncementSummary | undefined :
+  T extends { type: 'find_announcement_edit_detail_read_only' } ? AnnouncementEditDetail | undefined :
   T extends { type: 'list_system_teams_read_only' } ? SystemTeamListItem[] :
   T extends { type: 'list_system_teams_page_read_only' } ? SystemTeamListResult :
   T extends { type: 'find_system_team_summary_read_only' } ? SystemTeamSummary | undefined :
   T extends { type: 'find_system_team_detail_read_only' } ? SystemTeamDetail | undefined :
+  T extends { type: 'list_system_team_members_read_only' } ? SystemTeamMembersResult | undefined :
+  T extends { type: 'list_system_team_member_history_read_only' } ? SystemTeamMemberHistoryResult | undefined :
   T extends { type: 'list_usage_records_read_only' } ? UsageRecordListResult :
   T extends { type: 'get_usage_record_detail_read_only' } ? UsageRecordSummary | undefined :
   T extends { type: 'list_operation_logs_read_only' } ? OperationLogListResult :
   T extends { type: 'list_operation_logs_for_viewer_read_only' } ? OperationLogListResult :
   T extends { type: 'get_operation_log_detail_read_only' } ? OperationLogDetail | undefined :
   T extends { type: 'get_operation_log_detail_for_viewer_read_only' } ? OperationLogDetail | undefined :
+  T extends { type: 'get_operation_log_detail_supplement_read_only' } ? OperationLogDetailSupplement | undefined :
+  T extends { type: 'get_operation_log_detail_supplement_for_viewer_read_only' } ? OperationLogDetailSupplement | undefined :
   T extends { type: 'list_public_api_logs_read_only' } ? PublicApiLogListResult :
   T extends { type: 'get_public_api_log_detail_read_only' } ? PublicApiLogDetail | undefined :
+  T extends { type: 'get_public_api_log_detail_supplement_read_only' } ? PublicApiLogDetailSupplement | undefined :
   T extends { type: 'list_audit_logs_read_only' } ? AuditLogListResult :
   T extends { type: 'list_audit_logs_by_ids_read_only' } ? AuditLogListItem[] :
   T extends { type: 'list_audit_error_groups_read_only' } ? AuditErrorGroupListResult :
   T extends { type: 'list_audit_error_group_events_read_only' } ? AuditLogListResult :
   T extends { type: 'get_audit_log_detail_read_only' } ? AuditLogDetail | undefined :
+  T extends { type: 'get_audit_log_detail_supplement_read_only' } ? AuditLogDetailSupplement | undefined :
   T extends { type: 'get_audit_log_payload_read_only' } ? AuditLogPayloadDetail | undefined :
   T extends { type: 'list_client_ip_stats_read_only' } ? ClientIpStatsListResult :
   T extends { type: 'get_client_ip_stats_detail_read_only' } ? ClientIpStatsDetailResult | undefined :
   T extends { type: 'get_table_storage_overview_read_only' } ? TableStorageOverview :
-  T extends { type: 'list_table_storage_history_read_only' } ? TableStorageSnapshotSummary[] :
+  T extends { type: 'list_table_storage_history_read_only' } ? TableStorageHistoryPoint[] :
   T extends { type: 'list_database_storage_history_read_only' } ? DatabaseStorageHistoryPoint[] :
   T extends { type: 'list_model_check_runs_read_only' } ? ModelCheckRunListResult :
   T extends { type: 'get_model_check_run_detail_read_only' } ? ModelCheckRunDetail | undefined :
@@ -913,8 +979,10 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_ai_performance_overview_read_only' } ? AiPerformanceOverview :
   T extends { type: 'list_ai_performance_account_options_read_only' } ? AiPerformanceAccountOption[] :
   T extends { type: 'get_ai_health_list_read_only' } ? AiHealthListResult :
+  T extends { type: 'get_ai_health_hour_detail_read_only' } ? AiHealthHourDetail | undefined :
   T extends { type: 'get_account_usage_stats_overview_page_read_only' } ? AccountUsageStatsListResult :
   T extends { type: 'get_system_metrics_overview_read_only' } ? SystemMetricsOverview :
+  T extends { type: 'get_system_metrics_trend_read_only' } ? SystemMetricsTrendOverview :
   T extends { type: 'resolve_group_usage_access_read_only' } ? GroupUsageAccessMetadata | undefined :
   T extends { type: 'list_openai_accounts_for_group_read_only' } ? OpenAIAccountSecret[] :
   T extends { type: 'list_openai_accounts_for_group_result_read_only' } ? OpenAIAccountsForGroupResult :
@@ -975,6 +1043,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'read_gateway_settings_read_only' } ? GatewaySettings :
   T extends { type: 'list_runtime_logs_read_only' } ? RuntimeLogListResult :
   T extends { type: 'get_runtime_log_detail_read_only' } ? RuntimeLogDetail | undefined :
+  T extends { type: 'get_runtime_log_detail_delta_read_only' } ? RuntimeLogDetailDelta | undefined :
   T extends { type: 'get_runtime_log_facets_read_only' } ? RuntimeLogFacets :
   T extends { type: 'list_provider_model_catalog_read_only' } ? ProviderModelCatalogItem[] :
   T extends { type: 'list_openai_compatible_files_read_only' } ? OpenAICompatibleFileListResult :

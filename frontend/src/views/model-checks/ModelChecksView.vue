@@ -11,6 +11,7 @@
       :is-management-view="isManagementView"
       :model="form.model"
       :model-options="runModelOptions"
+      :model-options-loading="optionsLoading || targetModelOptionsLoading"
       :options-loading="optionsLoading"
       :quality-actions-disabled="qualityActionsDisabled"
       :quality-policy="qualityPolicy"
@@ -34,6 +35,7 @@
       :trusted-comparison-account-id="selectValueOrUndefined(form.trustedComparisonAccountId)"
       @comparison-dropdown-visible-change="handleComparisonDropdownVisibleChange"
       @comparison-search="handleComparisonSearch"
+      @model-dropdown-visible-change="handleRunModelOptionsDropdown"
       @refresh="loadOptions"
       @quality-policy-open="loadQualityPolicy"
       @quality-policy-save="saveQualityPolicy"
@@ -154,6 +156,7 @@ import type {
   ModelCheckProfile,
   ModelCheckRunDetail,
   ModelCheckRunPayload,
+  ModelCheckRunListItem,
   ModelCheckRunSummary,
   ModelCheckStatus,
   ModelCheckTriggerKind,
@@ -192,6 +195,7 @@ import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
 import ModelCheckRunDetailDrawer from './ModelCheckRunDetailDrawer.vue'
 import ModelQualitySchedulesModal from './ModelQualitySchedulesModal.vue'
 import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
+import { createModelCheckDemandRequestCoordinator } from './modelCheckDemandRequestCoordinator'
 
 interface ModelChecksPageState {
   filters: {
@@ -257,12 +261,11 @@ let scheduleAccountSearchTimer: ReturnType<typeof setTimeout> | undefined
 let scheduleAccountOptionsAbortController: AbortController | undefined
 let scheduleAccountOptionsLoadingKeyword: string | undefined
 let scheduleAccountOptionsLoadedKeyword: string | undefined
-let scheduleAccountModelOptionsRequestId = 0
-let scheduleAccountModelOptionsAbortController: AbortController | undefined
-let scheduleAccountModelOptionsLoadingId: string | undefined
+let scheduleAccountModelOptionsLoadingKey: string | undefined
 let scheduleAccountOptionsGeneration = 0
 let schedulesRequestId = 0
 let pageActive = true
+const scheduleAccountModelRequestCoordinator = createModelCheckDemandRequestCoordinator()
 const scheduleAccountModelOptionsLoadedIds = new Set<string>()
 const scheduleAccountModelOptionsById = new Map<string, { label: string; value: string; modelCheckModels: string[] }>()
 const qualityPolicy = ref<ModelQualityPolicy>(defaultQualityPolicy())
@@ -301,7 +304,7 @@ const {
   loadMoreMobile: loadMoreMobileRuns,
   refreshMobile: refreshMobileRuns,
   resetPagination: resetRunsPagination
-} = useResponsivePagedList<ModelCheckRunSummary>({
+} = useResponsivePagedList<ModelCheckRunListItem>({
   pageSize: modelCheckPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -359,6 +362,7 @@ const {
   selectedTargetAccountProfile,
   targetOptions,
   targetOptionsLoading,
+  targetModelOptionsLoading,
   handleComparisonDropdownVisibleChange,
   handleComparisonSearch,
   handleHistoryTargetDropdownVisibleChange,
@@ -367,6 +371,7 @@ const {
   handleTargetDropdownVisibleChange,
   handleTargetSearch,
   handleTargetValueUpdate,
+  loadTargetModelOptions,
   resetAccountOptionsState,
   resetRunAccountSelection,
   comparisonOptionText,
@@ -388,8 +393,9 @@ const {
 selectedHistoryTargetAccount.value = initialPageState.historyTargetAccount
 const historyModelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
 const runModelOptions = computed(() => {
-  const accountModels = modelCheckModelsForAccount(selectedTargetAccountProfile.value)
-  const supportedModels = accountModels.length
+  const accountProfile = selectedTargetAccountProfile.value
+  const accountModels = accountProfile?.modelCheckModels ?? modelCheckModelsForAccount(accountProfile)
+  const supportedModels = accountProfile
     ? options.value.supportedModels.filter((item) => accountModels.includes(item.value))
     : options.value.supportedModels
   return supportedModels.map((item) => ({ label: item.label, value: item.value }))
@@ -426,6 +432,13 @@ async function loadOptions(force = false) {
 
 function handleModelUpdate(model: ModelCheckModel) {
   form.model = model
+  clearIncompatibleComparisonAccount()
+}
+
+async function handleRunModelOptionsDropdown(open: boolean): Promise<void> {
+  if (!open) return
+  await loadTargetModelOptions()
+  ensureRunModelMatchesTarget()
   clearIncompatibleComparisonAccount()
 }
 
@@ -521,7 +534,7 @@ async function loadScheduleAccountOptions(keyword: string, selectedAccountId = '
   try {
     const items = await accountsApi.options({
       ...modelCheckScopeParams.value,
-      purpose: 'run',
+      purpose: 'schedule',
       keyword: normalizedKeyword || undefined,
       selectedIds: normalizedSelectedAccountId ? [normalizedSelectedAccountId] : undefined,
       limit: 50
@@ -530,9 +543,8 @@ async function loadScheduleAccountOptions(keyword: string, selectedAccountId = '
     const nextOptions = items.map((item) => ({
       label: item.name,
       value: item.id,
-      modelCheckModels: [...item.modelCheckModels]
+      modelCheckModels: []
     }))
-    for (const option of nextOptions) scheduleAccountModelOptionsLoadedIds.add(option.value)
     scheduleAccountOptions.value = mergeScheduleAccountOptions(nextOptions)
     scheduleAccountOptionsLoadedKeyword = requestKey
   } catch (error) {
@@ -561,10 +573,8 @@ function handleScheduleAccountSearch(value: string, accountId: string): void {
 }
 
 function handleScheduleAccountChange(): void {
-  scheduleAccountModelOptionsAbortController?.abort()
-  scheduleAccountModelOptionsAbortController = undefined
-  scheduleAccountModelOptionsRequestId += 1
-  scheduleAccountModelOptionsLoadingId = undefined
+  scheduleAccountModelRequestCoordinator.invalidate()
+  scheduleAccountModelOptionsLoadingKey = undefined
   scheduleAccountModelOptionsLoading.value = false
 }
 
@@ -575,44 +585,38 @@ function handleScheduleModelOptionsDropdown(open: boolean, accountId: string) {
 
 async function loadScheduleAccountModelOptions(accountId: string): Promise<void> {
   const selectedId = accountId.trim()
-  if (!selectedId
-    || scheduleAccountModelOptionsLoadedIds.has(selectedId)
-    || scheduleAccountModelOptionsLoadingId === selectedId) return
-  const requestId = ++scheduleAccountModelOptionsRequestId
-  scheduleAccountModelOptionsAbortController?.abort()
-  const controller = new AbortController()
-  scheduleAccountModelOptionsAbortController = controller
+  if (!selectedId || scheduleAccountModelOptionsLoadedIds.has(selectedId)) return
   const generation = scheduleAccountOptionsGeneration
   const requestContextKey = scheduleRequestContextKey()
-  scheduleAccountModelOptionsLoadingId = selectedId
+  const requestKey = JSON.stringify([requestContextKey, generation, 'schedule', selectedId])
+  scheduleAccountModelOptionsLoadingKey = requestKey
   scheduleAccountModelOptionsLoading.value = true
   try {
-    const items = await accountsApi.options({
+    const items = await scheduleAccountModelRequestCoordinator.run(requestKey, (signal) => accountsApi.options({
       ...modelCheckScopeParams.value,
-      purpose: 'run',
-      selectedIds: [selectedId],
+      purpose: 'schedule',
+      accountId: selectedId,
       limit: 1
-    }, { signal: controller.signal })
-    if (!isCurrentScheduleAccountModelOptionsRequest(requestId, generation, requestContextKey)) return
+    }, { signal }))
+    if (!items || !isCurrentScheduleAccountModelOptionsRequest(generation, requestContextKey)) return
     const item = items.find((option) => option.id === selectedId)
     if (!item) throw new Error('当前检查账户不可用')
     scheduleAccountModelOptionsById.set(selectedId, {
       label: item.name,
       value: item.id,
-      modelCheckModels: [...item.modelCheckModels]
+      modelCheckModels: [...(item.modelCheckModels ?? [])]
     })
     scheduleAccountModelOptionsLoadedIds.add(selectedId)
     scheduleAccountOptions.value = mergeScheduleAccountOptions(scheduleAccountOptions.value)
   } catch (error) {
-    if (!isCurrentScheduleAccountModelOptionsRequest(requestId, generation, requestContextKey)) return
-    if (controller.signal.aborted) return
+    if (!isCurrentScheduleAccountModelOptionsRequest(generation, requestContextKey)) return
+    if (isAbortError(error)) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载检查模型失败'))
   } finally {
-    if (generation === scheduleAccountOptionsGeneration && requestId === scheduleAccountModelOptionsRequestId) {
-      scheduleAccountModelOptionsLoadingId = undefined
+    if (scheduleAccountModelOptionsLoadingKey === requestKey) {
+      scheduleAccountModelOptionsLoadingKey = undefined
       scheduleAccountModelOptionsLoading.value = false
-      if (scheduleAccountModelOptionsAbortController === controller) scheduleAccountModelOptionsAbortController = undefined
     }
   }
 }
@@ -636,11 +640,10 @@ function isCurrentScheduleAccountOptionsRequest(requestId: number, generation: n
     && contextKey === scheduleRequestContextKey()
 }
 
-function isCurrentScheduleAccountModelOptionsRequest(requestId: number, generation: number, contextKey: string): boolean {
+function isCurrentScheduleAccountModelOptionsRequest(generation: number, contextKey: string): boolean {
   return pageActive
     && schedulesOpen.value
     && generation === scheduleAccountOptionsGeneration
-    && requestId === scheduleAccountModelOptionsRequestId
     && contextKey === scheduleRequestContextKey()
 }
 
@@ -656,15 +659,13 @@ function resetScheduleAccountOptionsState() {
   clearTimeout(scheduleAccountSearchTimer)
   scheduleAccountSearchTimer = undefined
   scheduleAccountOptionsAbortController?.abort()
-  scheduleAccountModelOptionsAbortController?.abort()
+  scheduleAccountModelRequestCoordinator.invalidate()
   scheduleAccountOptionsAbortController = undefined
-  scheduleAccountModelOptionsAbortController = undefined
   scheduleAccountOptionsGeneration += 1
   scheduleAccountOptionsRequestId += 1
-  scheduleAccountModelOptionsRequestId += 1
   scheduleAccountOptionsLoadingKeyword = undefined
   scheduleAccountOptionsLoadedKeyword = undefined
-  scheduleAccountModelOptionsLoadingId = undefined
+  scheduleAccountModelOptionsLoadingKey = undefined
   scheduleAccountOptionsSearchLoading.value = false
   scheduleAccountModelOptionsLoading.value = false
   scheduleAccountOptions.value = []
@@ -1049,7 +1050,6 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   }
   if (event.type === 'run_created') {
     appendTerminalLine('success', `检测记录已创建：${event.runId}，Trace ${event.traceId}`)
-    void loadRuns()
     return
   }
   if (event.type === 'probe_started') {
@@ -1118,7 +1118,7 @@ function knownTargetName(id: string) {
   return undefined
 }
 
-function rememberRunAccountLabels(items: Array<Pick<ModelCheckRunSummary, 'targetId' | 'targetName'>>) {
+function rememberRunAccountLabels(items: Array<Pick<ModelCheckRunListItem, 'targetId' | 'targetName'>>) {
   for (const item of items) {
     rememberAccountLabelIfUnknown(item.targetId, item.targetName)
   }

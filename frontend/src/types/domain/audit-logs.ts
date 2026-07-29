@@ -119,6 +119,29 @@ export interface AuditLogDetail extends AuditLogSummary {
   payloads: AuditLogPayloadSummary[]
 }
 
+export type AuditLogDetailAttemptSupplement = Pick<AuditLogAttemptSummary,
+  | 'id' | 'attemptIndex' | 'accountId' | 'accountName'
+  | 'upstreamUrl' | 'upstreamStatusCode' | 'success' | 'errorMessage'
+  | 'startedAt' | 'endedAt' | 'durationMs'
+>
+
+export type AuditLogDetailPayloadSupplement = Pick<AuditLogPayloadSummary,
+  | 'id' | 'attemptId' | 'partType' | 'sequenceIndex'
+  | 'sizeBytes' | 'captureStatus' | 'createdAt' | 'hasHeaders' | 'hasBody'
+>
+
+export interface AuditLogDetailSupplement extends Pick<AuditLogSummary,
+  | 'queryString' | 'errorMessage'
+  | 'sampleBucket' | 'sampleReason'
+  | 'startedAt' | 'endedAt' | 'httpCompletedAt'
+> {
+  conversationKey?: string
+  attempts: AuditLogDetailAttemptSupplement[]
+  payloads: AuditLogDetailPayloadSupplement[]
+}
+
+export interface AuditLogDisplayDetail extends AuditLogListItem, AuditLogDetailSupplement {}
+
 export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string
@@ -132,57 +155,6 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   bodyTotalBytes: number
   bodyNextOffset?: number
   bodyTruncated: boolean
-}
-
-export interface AuditLogRuntime {
-  enabled?: boolean
-  runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
-  auditLogQueueAvailable: boolean
-  activeCaptureAvailable: boolean
-  unavailableReason?: string
-  queueLength: number | null
-  queueBytes: number | null
-  flushLastSuccessAt?: string
-  flushLastError?: string
-  droppedSuccessCount: number | null
-  droppedFailureCount: number | null
-  droppedOverflowCount: number | null
-  droppedOversizeCount: number | null
-  activeCaptureCount: number | null
-  transport: {
-    available: boolean
-    queuedJobs: number | null
-    queuedBytes: number | null
-    activeJobs: number | null
-    activeBytes: number | null
-    workerCount: number | null
-    completedCount: number | null
-    failedCount: number | null
-    rejectedCount: number | null
-    pendingDispatchCount: number | null
-  }
-  worker: {
-    available: boolean
-    snapshotAvailable: boolean
-    pid?: number
-    ready: boolean | null
-    pendingMessageCount: number | null
-  }
-  settings: {
-    enabled: boolean
-    successSampleRate: number
-    flushIntervalSeconds: number
-    batchSize: number
-    queueMaxItems: number
-    queueMaxBytes: number
-    activeCaptureMaxBytes: number
-    successHotRetentionHours: number
-    successRetentionDays: number
-    problemRetentionDays: number
-    successFullBodyLimitBytes: number
-    problemFullBodyLimitBytes: number
-  }
 }
 
 export interface AuditLogListResult {

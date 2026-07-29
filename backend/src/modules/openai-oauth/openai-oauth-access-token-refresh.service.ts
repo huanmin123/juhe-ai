@@ -13,16 +13,15 @@ import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import {
   clearAccountFailureState,
   clearAccountFailureStateResult,
-  findAccountForTest,
   getSettings,
   getSettingsAsync,
   listOpenAIOAuthAccountsDueForAccessTokenRefresh,
   listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync,
   markOpenAIOAuthLocalConfigurationExceptionIfCurrent,
   resolveProxyUrlsForProfiles,
-  type OpenAIOAuthRefreshCandidateResult,
-  updateOpenAIOAuthCredentialsIfCurrent
+  type OpenAIOAuthRefreshCandidateResult
 } from '../../storage/repositories.js'
+import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync } from '../../storage/oauth-credential-rotation.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceOpenAIOAuthRefreshAccount, DbServiceOperation, DbServiceOperationResult } from '../db-service/db-service-types.js'
@@ -114,6 +113,7 @@ const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccoun
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
 type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode' | 'configRevision'>> & {
+  updatedAt?: string
   proxyUrl?: string
   localConfigurationError?: OpenAIOAuthRefreshLocalConfigurationMarker
 }
@@ -256,29 +256,42 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
       }
       await assertLockOwned()
       if (persistMode === 'db-service') {
-        const updated = await persistOpenAIOAuthCredentialsViaDbService(
+        const persisted = await persistOpenAIOAuthCredentialsViaDbService(
           current.id,
           nextCredentials,
           current.configRevision ?? 1,
           persistMode
         )
-        if (!updated) {
+        if (!persisted.updated) {
           throw new Error('OpenAI OAuth 账户不存在或无法更新')
         }
         const refreshed: OpenAIOAuthRefreshAccount = {
           ...current,
           credentials: nextCredentials,
-          configRevision: (current.configRevision ?? 1) + 1
+          configRevision: persisted.configRevision ?? (current.configRevision ?? 1) + 1,
+          updatedAt: persisted.updatedAt ?? current.updatedAt
         }
         rememberRecentOpenAIOAuthRefresh(refreshed, persistMode)
         return refreshed
       }
-      const updated = updateOpenAIOAuthCredentialsIfCurrent(
-        current.id,
-        nextCredentials,
-        current.configRevision ?? 1,
-        options.access ?? internalOpenAIOAuthRefreshAccess
-      )
+      if (!current.providerProtocolProfileId) {
+        throw new Error('OpenAI OAuth 账户协议配置缺失')
+      }
+      const rotation = await rotateOAuthCredentialsAsync({
+        accountId: current.id,
+        expectedConfigRevision: current.configRevision ?? 1,
+        expectedProviderCode: GPT_VENDOR_CODE,
+        expectedAccountType: 'oauth',
+        expectedProviderProtocolProfileId: current.providerProtocolProfileId,
+        credentials: nextCredentials,
+        access: options.access ?? internalOpenAIOAuthRefreshAccess
+      })
+      const updated = rotation ? {
+        ...current,
+        credentials: rotation.credentials,
+        configRevision: rotation.configRevision,
+        updatedAt: rotation.updatedAt
+      } : undefined
       if (!updated) {
         throw new Error('OpenAI OAuth 账户不存在或无法更新')
       }
@@ -318,7 +331,7 @@ async function persistOpenAIOAuthCredentialsViaDbService(
   credentials: Record<string, unknown>,
   expectedConfigRevision: number,
   persistMode: 'sync' | 'db-service'
-): Promise<boolean> {
+): Promise<{ updated: boolean; configRevision?: number; updatedAt?: string }> {
   const result = await requestOpenAIOAuthDbService({
     type: 'update_openai_oauth_credentials',
     accountId,
@@ -328,7 +341,7 @@ async function persistOpenAIOAuthCredentialsViaDbService(
   if (result.updated) {
     clearGatewayRuntimeCache()
   }
-  return result.updated
+  return result
 }
 
 export async function refreshDueOpenAIOAuthAccessTokens(
@@ -822,7 +835,7 @@ async function findLatestRefreshableOpenAIOAuthAccount(
     return latest ? normalizeDbServiceRefreshAccount(latest) : undefined
   }
 
-  const latest = findAccountForTest(account.id, options.access)
+  const latest = await findOAuthCredentialRotationAccountAsync(account.id, options.access)
   if (!isOpenAIOAuthRefreshAccount(latest)) {
     return undefined
   }

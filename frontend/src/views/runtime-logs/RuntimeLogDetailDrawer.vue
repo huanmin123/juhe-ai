@@ -31,15 +31,17 @@
         <a-descriptions-item v-if="log.event" label="事件原值">{{ log.event }}</a-descriptions-item>
         <a-descriptions-item label="消息" :span="fullSpan">{{ runtimeLogMessageText(log) }}</a-descriptions-item>
       </a-descriptions>
-      <div class="raw-block-toolbar">
-        <strong>原始内容</strong>
-        <a-tooltip title="复制原始内容">
-          <a-button size="small" :disabled="!log.rawJson" @click="emit('copy-text', prettyRawJson(log.rawJson ?? ''), '原始内容已复制')">
-            <template #icon><CopyOutlined /></template>
-          </a-button>
-        </a-tooltip>
-      </div>
-      <pre class="raw-block">{{ prettyRawJson(log.rawJson ?? '') }}</pre>
+      <a-spin :spinning="indexLoading">
+        <div class="raw-block-toolbar">
+          <strong>原始内容</strong>
+          <a-tooltip title="复制原始内容">
+            <a-button size="small" :disabled="!log.rawJson" @click="emit('copy-text', prettyRawJson(log.rawJson ?? ''), '原始内容已复制')">
+              <template #icon><CopyOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
+        <pre class="raw-block">{{ prettyRawJson(log.rawJson ?? '') }}</pre>
+      </a-spin>
     </template>
   </a-drawer>
 
@@ -74,19 +76,21 @@
         <a-descriptions-item label="事件">{{ eventText(grepItem.event) }}</a-descriptions-item>
         <a-descriptions-item v-if="grepItem.event" label="事件原值">{{ grepItem.event }}</a-descriptions-item>
         <a-descriptions-item label="消息">{{ runtimeLogMessageText(grepItem) }}</a-descriptions-item>
-        <a-descriptions-item label="文件">{{ grepItem.fileName || grepItem.file }}</a-descriptions-item>
+        <a-descriptions-item label="文件">{{ grepItem.fileName }}</a-descriptions-item>
         <a-descriptions-item label="位置" :span="grepItem.event ? fullSpan : 1">{{ grepLinePositionText(grepItem) }}</a-descriptions-item>
-        <a-descriptions-item label="完整路径" :span="fullSpan">{{ grepItem.file }}</a-descriptions-item>
+        <a-descriptions-item v-if="grepItem.file" label="完整路径" :span="fullSpan">{{ grepItem.file }}</a-descriptions-item>
       </a-descriptions>
-      <div class="raw-block-toolbar">
-        <strong>原始内容</strong>
-        <a-tooltip title="复制原始内容">
-          <a-button size="small" :disabled="!grepRawText" @click="emit('copy-text', grepRawText, '原始内容已复制')">
-            <template #icon><CopyOutlined /></template>
-          </a-button>
-        </a-tooltip>
-      </div>
-      <pre class="raw-block">{{ grepRawText }}</pre>
+      <a-spin :spinning="grepLoading">
+        <div class="raw-block-toolbar">
+          <strong>原始内容</strong>
+          <a-tooltip title="复制原始内容">
+            <a-button size="small" :disabled="!grepRawText" @click="emit('copy-text', grepRawText, '原始内容已复制')">
+              <template #icon><CopyOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
+        <pre class="raw-block">{{ grepRawText }}</pre>
+      </a-spin>
     </template>
   </a-drawer>
 </template>
@@ -95,7 +99,7 @@
 import { CopyOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
-import type { RuntimeLogGrepItem, RuntimeLogSummary } from '@/types/domain'
+import type { RuntimeLogDetailView, RuntimeLogGrepDetailView } from '@/types/domain'
 import { formatDateTime } from '@/shared/formatters'
 import {
   eventText,
@@ -106,10 +110,12 @@ import {
 } from './runtimeLogFormatters'
 
 const props = defineProps<{
-  grepItem?: RuntimeLogGrepItem
+  grepItem?: RuntimeLogGrepDetailView
+  grepLoading: boolean
   grepOpen: boolean
+  indexLoading: boolean
   indexOpen: boolean
-  log?: RuntimeLogSummary
+  log?: RuntimeLogDetailView
 }>()
 
 const emit = defineEmits<{
@@ -121,7 +127,7 @@ const emit = defineEmits<{
 
 const descriptionColumn = { xs: 1, sm: 1, md: 2 }
 const fullSpan = 2
-const grepRawText = computed(() => props.grepItem ? prettyRawJson(props.grepItem.line) : '')
+const grepRawText = computed(() => props.grepItem?.line ? prettyRawJson(props.grepItem.line) : '')
 </script>
 
 <style scoped>

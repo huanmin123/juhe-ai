@@ -163,9 +163,9 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
-import type { ProxyProfileSummary, ProxyTestReport } from '@/types/domain'
+import type { ProxyProfileMutationResult, ProxyProfileSummary, ProxyTestReport } from '@/types/domain'
 import ProxyTestReportModal from './ProxyTestReportModal.vue'
-import { applyProxyMutation, buildProxyCreatePayload, buildProxyPatchPayload, type ProxyFormState } from './proxyMutation'
+import { buildProxyCreatePayload, buildProxyPatchPayload, reconcileCreatedProxyList, reconcileProxyMutationList, type ProxyFormState } from './proxyMutation'
 import {
   formatLatency,
   latencyTooltip,
@@ -292,7 +292,7 @@ const saveProxy = submitAction('proxies.save', async () => {
         return
       }
       const mutation = await api.proxies.update(targetId, { ...patch, expectedUpdatedAt })
-      updateProxyItems((item) => item.id === targetId, (item) => applyProxyMutation(item, mutation))
+      applyEditedProxyMutation(mutation)
       message.success('代理已更新')
     } else {
       const created = await api.proxies.create(buildProxyCreatePayload(form))
@@ -371,16 +371,49 @@ function proxyFormFromSummary(proxy: ProxyProfileSummary): ProxyFormState {
 }
 
 function insertCreatedProxy(proxy: ProxyProfileSummary): void {
-  const search = keyword.value.trim()
-  if (pagination.current !== 1 || (search && !proxy.name.startsWith(search))) return
-  const nextItems = [proxy, ...proxies.value.filter((item) => item.id !== proxy.id)].slice(0, pagination.pageSize)
-  const nextTotal = pagination.total + 1
-  applyProxyListResult({
-    items: nextItems,
-    page: 1,
+  const accumulated = proxies.value.length > pagination.pageSize
+  const reconciled = reconcileCreatedProxyList(proxies.value, proxy, {
+    keyword: keyword.value,
+    page: pagination.current,
     pageSize: pagination.pageSize,
-    total: nextTotal,
-    hasMore: nextTotal > nextItems.length
+    total: pagination.total,
+    accumulated
+  })
+  if (!reconciled) return
+  if (accumulated) {
+    proxies.value = reconciled.items
+    pagination.total = reconciled.total
+    return
+  }
+  applyProxyListResult({
+    items: reconciled.items,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: reconciled.total,
+    hasMore: mobileHasMore.value || reconciled.total > reconciled.items.length
+  })
+}
+
+function applyEditedProxyMutation(mutation: ProxyProfileMutationResult): void {
+  const accumulated = proxies.value.length > pagination.pageSize
+  const reconciled = reconcileProxyMutationList(proxies.value, mutation, {
+    keyword: keyword.value,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: pagination.total,
+    accumulated
+  })
+  if (accumulated) {
+    proxies.value = reconciled.items
+    pagination.total = reconciled.total
+    return
+  }
+  applyProxyListResult({
+    items: reconciled.items,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: reconciled.total,
+    hasMore: mobileHasMore.value
   })
 }
 

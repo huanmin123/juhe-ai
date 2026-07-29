@@ -54,6 +54,9 @@ try {
   const secondTeam = repositories.createSystemTeam({ name: '系统团队查询防护 2' }, access)
   repositories.addSystemTeamMembers(firstTeam.id, { systemAccountIds: [firstMember.id] }, access)
   repositories.addSystemTeamMembers(secondTeam.id, { systemAccountIds: [secondMember.id] }, access)
+  const firstTeamMemberId = repositories.listSystemTeamMembers(firstTeam.id, access)?.items[0]?.id
+  assert(firstTeamMemberId, '系统团队历史查询防护需要有效成员夹具')
+  repositories.removeSystemTeamMember(firstTeam.id, firstTeamMemberId, access)
 
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database)
@@ -71,6 +74,8 @@ try {
   try {
     const page = repositories.listSystemTeamsPage(access, { page: 1, pageSize: 20 })
     assert(page.items.length >= 2, '系统团队列表回归应至少返回两个团队')
+    const history = repositories.listSystemTeamMemberHistory(firstTeam.id, { page: 1, pageSize: 20 }, access)
+    assert.deepEqual(history?.items.map((item) => item.status), ['removed'], '历史成员查询只能返回已移除成员')
   } finally {
     database.prepare = originalPrepare as typeof database.prepare
   }
@@ -88,7 +93,14 @@ try {
   assertNoTempBtree(memberCountPlan, '系统团队成员计数')
   assert(/idx_system_team_members_team(?:_status_joined)?/.test(memberCountPlan), `系统团队成员计数应使用 team/status 索引，实际计划：${memberCountPlan}`)
 
-  console.log('系统团队查询防护回归通过：列表和有效成员计数均命中索引且不创建临时排序树')
+  const historyCall = capturedCalls.find((call) => /system_team_members\.status\s*=\s*'removed'/i.test(call.sql)
+    && /ORDER\s+BY\s+system_team_members\.joined_at\s+DESC,\s*system_team_members\.id\s+DESC/i.test(call.sql))
+  assert(historyCall, '系统团队历史成员应使用仅 removed 的稳定倒序分页查询')
+  const historyPlan = explainQueryPlan(database, historyCall.sql, historyCall.params)
+  assertNoTempBtree(historyPlan, '系统团队历史成员')
+  assert(historyPlan.includes('idx_system_team_members_team_status_joined'), `系统团队历史成员应使用 team/status/joined 索引，实际计划：${historyPlan}`)
+
+  console.log('系统团队查询防护回归通过：列表、有效成员计数和历史成员均命中索引且不创建临时排序树')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

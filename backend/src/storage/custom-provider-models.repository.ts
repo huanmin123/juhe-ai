@@ -132,7 +132,6 @@ export async function listCustomProviderModelOptionsAsync(input: {
   const whereParts = [
     providerFilter,
     "status = 'active'",
-    client ? 'catalog_visible = TRUE' : 'catalog_visible = 1',
     client
       ? "(shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)"
       : "(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))",

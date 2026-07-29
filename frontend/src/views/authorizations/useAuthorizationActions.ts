@@ -5,7 +5,16 @@ import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationListItem, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type {
+  AccountOptionSummary,
+  GroupOptionSummary,
+  ResourceAuthorizationCreateMutationResult,
+  ResourceAuthorizationListItem,
+  ResourceAuthorizationMutationResult,
+  ResourceAuthorizationTerminalMutationResult,
+  SystemAccountPrincipalSummary,
+  SystemTeamPrincipalSummary
+} from '@/types/domain'
 import {
   extractApiErrorMessage,
   formatDateTime,
@@ -22,6 +31,10 @@ import {
 } from './authorizationFormModel'
 
 interface UseAuthorizationActionsOptions {
+  applyCreateMutation: (result: ResourceAuthorizationCreateMutationResult) => void
+  applyPatchMutation: (result: ResourceAuthorizationMutationResult) => void
+  applyReturnMutation: (authorizationId: string) => void
+  applyTerminalMutation: (result: ResourceAuthorizationTerminalMutationResult) => void
   createAuthorizationScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   createExcludedGranteeIds: ComputedRef<string[]>
   createForm: AuthorizationCreateFormModel
@@ -34,17 +47,16 @@ interface UseAuthorizationActionsOptions {
   expireForm: AuthorizationExpireFormModel
   expireModalOpen: Ref<boolean>
   isManagementView: ComputedRef<boolean>
-  loadData: (options?: { quiet?: boolean }) => Promise<boolean>
-  removeAuthorizationItems: (predicate: (item: ResourceAuthorizationListItem) => boolean) => number
+  onVersionConflict: (error: unknown) => void
   selectedCreateAccount: ComputedRef<AccountOptionSummary | undefined>
-  updateAuthorizationItems: (
-    predicate: (item: ResourceAuthorizationListItem) => boolean,
-    updater: (item: ResourceAuthorizationListItem) => ResourceAuthorizationListItem
-  ) => number
 }
 
 export function useAuthorizationActions(options: UseAuthorizationActionsOptions) {
   const {
+    applyCreateMutation,
+    applyPatchMutation,
+    applyReturnMutation,
+    applyTerminalMutation,
     createAuthorizationScopeParams,
     createExcludedGranteeIds,
     createForm,
@@ -57,10 +69,8 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     expireForm,
     expireModalOpen,
     isManagementView,
-    loadData,
-    removeAuthorizationItems,
-    selectedCreateAccount,
-    updateAuthorizationItems
+    onVersionConflict,
+    selectedCreateAccount
   } = options
   const { submitAction, submittingRef } = useSubmitAction('authorizations')
   const authorizationCreating = submittingRef('authorizations.create')
@@ -107,14 +117,12 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
     try {
       const payload = authorizationCreatePayload(createForm, createTargetGroupVisible.value)
-      if (isManagementView.value) {
-        await api.authorizations.create(payload, createAuthorizationScopeParams.value)
-      } else {
-        await api.myAuthorizations.create(payload)
-      }
+      const result = isManagementView.value
+        ? await api.authorizations.create(payload, createAuthorizationScopeParams.value)
+        : await api.myAuthorizations.create(payload)
+      applyCreateMutation(result)
       createModalOpen.value = false
       message.success(createForm.granteeType === 'team' ? '团队授权已创建' : '授权已创建')
-      await loadData()
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '创建授权失败'))
@@ -140,12 +148,12 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
   async function revokeWithMessage(item: ResourceAuthorizationListItem, successMessage: string, errorMessage: string) {
     try {
       const updated = isManagementView.value
-        ? await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))
-        : await api.myAuthorizations.revoke(item.id)
-      updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
+        ? await api.authorizations.revoke(item.id, { expectedUpdatedAt: item.updatedAt }, authorizationOperationScopeParams(item))
+        : await api.myAuthorizations.revoke(item.id, { expectedUpdatedAt: item.updatedAt })
+      applyTerminalMutation(updated)
       message.success(successMessage)
-      void loadData({ quiet: true })
     } catch (error) {
+      onVersionConflict(error)
       console.error(error)
       message.error(extractApiErrorMessage(error, errorMessage))
     }
@@ -153,11 +161,11 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
 
   async function returnAuthorization(item: ResourceAuthorizationListItem) {
     try {
-      await api.myAuthorizations.returnAuthorization(item.id)
-      removeAuthorizationItems((authorization) => authorization.id === item.id)
+      await api.myAuthorizations.returnAuthorization(item.id, { expectedUpdatedAt: item.updatedAt })
+      applyReturnMutation(item.id)
       message.success('授权已归还')
-      void loadData({ quiet: true })
     } catch (error) {
+      onVersionConflict(error)
       console.error(error)
       message.error(extractApiErrorMessage(error, '归还授权失败'))
     }
@@ -216,9 +224,10 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       const updated = isManagementView.value
         ? await api.authorizations.update(item.id, payload, authorizationOperationScopeParams(item))
         : await api.myAuthorizations.update(item.id, payload)
-      updateAuthorizationItems((authorization) => authorization.id === item.id, (authorization) => ({ ...authorization, ...updated }))
+      applyPatchMutation(updated)
       message.success(status === 'active' ? '授权已恢复' : '授权已暂停')
     } catch (error) {
+      onVersionConflict(error)
       console.error(error)
       message.error(extractApiErrorMessage(error, status === 'active' ? '恢复授权失败' : '暂停授权失败'))
     }
@@ -260,12 +269,13 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       const updated = isManagementView.value
         ? await api.authorizations.updateExpire(authorization.id, payload, authorizationOperationScopeParams(authorization))
         : await api.myAuthorizations.updateExpire(authorization.id, payload)
-      updateAuthorizationItems((item) => item.id === authorization.id, (item) => ({ ...item, ...updated }))
+      applyPatchMutation(updated)
       expireModalOpen.value = false
       expireAuthorization.value = undefined
       expireBaseline = undefined
       message.success('授权配置已更新')
     } catch (error) {
+      onVersionConflict(error)
       console.error(error)
       message.error(extractApiErrorMessage(error, '修改授权配置失败'))
     }

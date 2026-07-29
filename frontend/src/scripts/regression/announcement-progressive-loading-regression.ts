@@ -11,6 +11,10 @@ const typeSource = readFileSync(fileURLToPath(new URL('../../types/domain/announ
 assert.match(typeSource, /interface PublishedAnnouncementListItem[\s\S]*?id: string[\s\S]*?title: string[\s\S]*?level: AnnouncementLevel[\s\S]*?publishedAt: string/, '公共公告列表类型应只表达轻量摘要')
 assert.doesNotMatch(typeSource.match(/interface PublishedAnnouncementListItem[\s\S]*?\n}/)?.[0] ?? '', /content:/, '公共公告列表类型不能包含正文')
 assert.match(typeSource, /interface AnnouncementListItem[\s\S]*?contentPreview: string/, '管理公告列表应使用显式 contentPreview 字段')
+assert.match(typeSource, /interface AnnouncementListItem[\s\S]*?contentTruncated: boolean/, '管理公告列表必须标识预览是否完整，以便只对长正文读取详情')
+assert.match(typeSource, /interface AnnouncementListItem[\s\S]*?revision: string/, '管理公告列表必须携带并发写入 revision')
+assert.doesNotMatch(typeSource.match(/interface AnnouncementListItem[\s\S]*?\n}/)?.[0] ?? '', /createdBy:|updatedBy:|createdAt:|updatedAt:/, '管理公告列表不能返回未展示的 actor ID 或重复时间字段')
+assert.match(typeSource, /interface AnnouncementEditDetail[\s\S]*?content: string[\s\S]*?revision: string/, '编辑详情必须使用专用表单 DTO 和 revision')
 assert.match(typeSource, /interface AnnouncementMutationResult[\s\S]*?id: string[\s\S]*?revision: string/, '公告写操作必须使用轻量 id/revision 响应类型')
 assert.match(apiSource, /publicDetail:\s*\(id: string\)[\s\S]*?\/announcements\/public\/\$\{id\}/, '公告 API 应提供公共详情按 ID 读取')
 for (const actionName of ['create', 'update', 'publish', 'unpublish']) {
@@ -40,7 +44,7 @@ assert.match(adminViewSource, /let announcementDetailRequestGeneration = 0/, '�
 assert.match(adminViewSource, /function openCreate[\s\S]*?announcementDetailRequestGeneration \+= 1/, '打开新增必须使未完成的编辑详情请求失效')
 assert.match(adminViewSource, /async function openEdit[\s\S]*?const requestGeneration = \+\+announcementDetailRequestGeneration/, '每次打开编辑必须生成新的详情请求代次')
 assert.match(adminViewSource, /requestGeneration !== announcementDetailRequestGeneration \|\| editingId\.value !== record\.id/, 'A→B 编辑切换时旧详情不得落到新目标表单')
-assert.match(adminViewSource, /async function openEdit[\s\S]*?await api\.announcements\.detail\(record\.id\)/, '公告编辑每次打开都必须直接读取权威详情')
+assert.match(adminViewSource, /async function openEdit[\s\S]*?if \(!record\.contentTruncated\)[\s\S]*?modalOpen\.value = true[\s\S]*?await api\.announcements\.detail\(record\.id\)/, '短正文编辑应直接使用完整列表值，只有截断正文才读取权威详情')
 assert.doesNotMatch(adminViewSource, /loadEntityDetailCached|entityDetailCache/, '公告编辑不能缓存动态详情结果')
 assert.match(adminViewSource, /function invalidatePendingAnnouncementDetail[\s\S]*?announcementDetailRequestGeneration \+= 1/, '公告写操作必须使同一公告的在途详情请求失效')
 for (const actionName of ['saveAnnouncement', 'publishAnnouncement', 'unpublishAnnouncement', 'removeAnnouncement']) {
@@ -50,9 +54,17 @@ for (const actionName of ['saveAnnouncement', 'publishAnnouncement', 'unpublishA
     `${actionName} 成功后必须使同一公告的在途详情请求失效`
   )
 }
-assert.doesNotMatch(adminViewSource, /const\s+\w+\s*=\s*await api\.announcements\.(?:create|update|publish|unpublish)/, '公告管理页面不能依赖写操作返回完整公告摘要')
-assert.match(adminViewSource, /await api\.announcements\.update[\s\S]{0,800}await loadData\(\)/, '公告编辑成功后应重新加载权威列表')
-assert.match(adminViewSource, /async function publishAnnouncement[\s\S]{0,800}await loadData\(\)/, '公告发布成功后应重新加载权威列表')
-assert.match(adminViewSource, /async function unpublishAnnouncement[\s\S]{0,800}await loadData\(\)/, '公告下线成功后应重新加载权威列表')
+assert.match(adminViewSource, /const receipt = await api\.announcements\.update/, '公告更新只能消费轻量 mutation receipt 做列表局部合并')
+assert.match(adminViewSource, /const receipt = await api\.announcements\.create/, '公告创建只能消费轻量 mutation receipt 做列表局部合并')
+assert.match(adminViewSource, /const payload: AnnouncementPatchPayload = \{ expectedRevision \}/, '公告编辑保存必须从 revision 和空 delta 开始')
+assert.match(adminViewSource, /if \(title !== baseline\.title\) payload\.title = title/, '公告编辑只应提交真实变化的标题')
+assert.match(adminViewSource, /if \(Object\.keys\(payload\)\.length === 1\)/, '公告编辑无变化时不得发送 PATCH')
+assert.match(adminViewSource, /api\.announcements\.publish\(record\.id, \{ expectedRevision: record\.revision \}\)/, '发布必须携带列表 revision')
+assert.match(adminViewSource, /api\.announcements\.unpublish\(record\.id, \{ expectedRevision: record\.revision \}\)/, '下线必须携带列表 revision')
+assert.match(adminViewSource, /api\.announcements\.delete\(record\.id, \{ expectedRevision: record\.revision \}\)/, '删除必须携带列表 revision')
+assert.match(adminViewSource, /const receipt = await api\.announcements\.update[\s\S]{0,500}commitAnnouncementListMutation/, '公告编辑成功后应使用最小响应局部合并列表')
+assert.match(adminViewSource, /async function publishAnnouncement[\s\S]{0,500}commitAnnouncementListMutation/, '公告发布成功后应局部合并列表')
+assert.match(adminViewSource, /async function unpublishAnnouncement[\s\S]{0,500}commitAnnouncementListMutation/, '公告下线成功后应局部合并列表')
+assert.match(adminViewSource, /if \(isRevisionConflict\(error\)\)[\s\S]{0,200}await loadData\(\)/, '只有 revision 冲突才应回源刷新权威列表')
 
 console.log('公告前端渐进加载回归通过：首屏与轮询仅取摘要，展开单条才按 ID 取正文')

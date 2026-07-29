@@ -199,7 +199,20 @@ try {
       Cookie: adminCookie
     })
     assert.equal(detailResponse.status, 200)
-    assert.equal(detailResponse.body.data.id, successLog.id)
+    const detailSupplement = detailResponse.body.data as Record<string, unknown>
+    const allowedDetailSupplementKeys = new Set([
+      'sourceRefId', 'tokenId', 'tokenName', 'tokenPrefix', 'isTestToken', 'queryString', 'userAgent',
+      'requestSizeBytes', 'responseSizeBytes', 'requestCaptureStatus', 'responseCaptureStatus',
+      'errorCode', 'errorMessage', 'startedAt', 'endedAt', 'requestData', 'responseData'
+    ])
+    for (const key of Object.keys(detailSupplement)) {
+      assert(allowedDetailSupplementKeys.has(key), `管理员详情增量响应包含非白名单字段：${key}`)
+    }
+    for (const duplicateKey of ['id', 'createdAt', 'sourceName', 'method', 'path', 'success', 'statusCode', 'durationMs', 'clientIp', 'traceId']) {
+      assert.equal(duplicateKey in detailSupplement, false, `管理员详情增量响应不得重复列表字段：${duplicateKey}`)
+    }
+    assert.equal(typeof detailSupplement.requestData, 'object')
+    assert.equal(typeof detailSupplement.responseData, 'object')
   } finally {
     await closeServer(server)
   }

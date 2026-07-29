@@ -30,8 +30,6 @@
       :pagination="tablePagination"
       :records="records"
       :runtime-log-columns="runtimeLogColumns"
-      :runtime-logs-alert-description="runtimeLogsAlertDescription"
-      :runtime-logs-alert-visible="runtimeLogsAlertVisible"
       :view-mode-options="viewModeOptions"
       @apply-index="applyIndexFilters"
       @change="handleTableChange"
@@ -58,7 +56,9 @@
     <RuntimeLogDetailDrawer
       v-model:grep-open="grepDetailOpen"
       v-model:index-open="detailOpen"
+      :grep-loading="grepDetailLoading"
       :grep-item="selectedGrepItem"
+      :index-loading="detailLoading"
       :log="selectedLog"
       @copy-text="copyDetailText"
       @search-trace="searchTrace"
@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -78,9 +78,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import {
   buildRuntimeLogEventOptions,
   filterRuntimeLogEventOption,
-  isRuntimeLogsAlertVisible,
-  runtimeLogGrepRangeLimitText,
-  runtimeLogsAlertDescription as buildRuntimeLogsAlertDescription
+  runtimeLogGrepRangeLimitText
 } from './runtimeLogFacets'
 import {
   runtimeLogColumns,
@@ -146,15 +144,15 @@ const {
   facets,
   grepRuntime,
   loadRuntimeLogFacets,
-  loadRuntimeLogGrepOptions,
-  loadRuntimeLogRuntime,
-  runtime
+  loadRuntimeLogGrepOptions
 } = useRuntimeLogFacetsState()
 const indexTimeRange = ref<RuntimeLogTimeRangeValue>(parseOptionalTimeRange(effectiveInitialPageState.indexTimeRange))
 const {
   closeTransientDetails,
   detailOpen,
+  detailLoading,
   grepDetailOpen,
+  grepDetailLoading,
   openRuntimeGrepDetail,
   openRuntimeLogDetail,
   selectedGrepItem,
@@ -210,8 +208,6 @@ const {
 
 const eventOptions = computed(() => buildRuntimeLogEventOptions(facets.value?.events))
 const grepRangeLimitText = computed(() => runtimeLogGrepRangeLimitText(grepRuntime.value))
-const runtimeLogsAlertVisible = computed(() => isRuntimeLogsAlertVisible(runtime.value))
-const runtimeLogsAlertDescription = computed(() => buildRuntimeLogsAlertDescription(runtime.value))
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -382,53 +378,15 @@ function loadCurrentRuntimeLogState(): void {
   void loadData()
 }
 
-type RuntimeStatusIdleWindow = Window & {
-  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-  cancelIdleCallback?: (handle: number) => void
-}
-
-let runtimeStatusIdleHandle: number | undefined
-let runtimeStatusTimer: ReturnType<typeof setTimeout> | undefined
-
-function scheduleRuntimeStatusRefresh(): void {
-  cancelRuntimeStatusRefresh()
-  if (typeof window === 'undefined') return
-  const idleWindow = window as RuntimeStatusIdleWindow
-  if (idleWindow.requestIdleCallback) {
-    runtimeStatusIdleHandle = idleWindow.requestIdleCallback(() => {
-      runtimeStatusIdleHandle = undefined
-      void loadRuntimeLogRuntime(true)
-    }, { timeout: 1500 })
-    return
-  }
-  runtimeStatusTimer = setTimeout(() => {
-    runtimeStatusTimer = undefined
-    void loadRuntimeLogRuntime(true)
-  }, 250)
-}
-
-function cancelRuntimeStatusRefresh(): void {
-  if (typeof window !== 'undefined' && runtimeStatusIdleHandle !== undefined) {
-    ;(window as RuntimeStatusIdleWindow).cancelIdleCallback?.(runtimeStatusIdleHandle)
-  }
-  runtimeStatusIdleHandle = undefined
-  if (runtimeStatusTimer !== undefined) clearTimeout(runtimeStatusTimer)
-  runtimeStatusTimer = undefined
-}
-
 onMounted(() => {
   loadCurrentRuntimeLogState()
-  scheduleRuntimeStatusRefresh()
 })
-onActivated(scheduleRuntimeStatusRefresh)
 
 onDeactivated(() => {
   closeTransientDetails()
   cancelRuntimeLogFacetsRequest()
-  cancelRuntimeStatusRefresh()
 })
 onBeforeUnmount(() => {
   cancelRuntimeLogFacetsRequest()
-  cancelRuntimeStatusRefresh()
 })
 </script>

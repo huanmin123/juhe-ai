@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
-  getAuditLogDetailAsync,
+  getAuditLogDetailSupplementAsync,
   getAuditLogPayload,
   listAuditErrorGroupEventsAsync,
   listAuditErrorGroupsAsync,
@@ -134,7 +134,7 @@ auditLogsRouter.get('/error-groups/:id/events', async (req, res, next) => {
 
 auditLogsRouter.get('/:id', async (req, res, next) => {
   try {
-    const detail = await getAuditLogDetailAsync(req.params.id)
+    const detail = await getAuditLogDetailSupplementAsync(req.params.id)
     if (!detail) {
       sendNotFound(res, '审计日志不存在')
       return

@@ -11,23 +11,23 @@ import {
 import { isAdminRole, type ProviderDefinition, type ProviderListItem, type ProviderModelPricing } from '../../domain/types.js'
 import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, isHybridProviderCode } from '../../domain/provider-protocol.js'
 import {
-  clearProviderDefaultHealthCheckModelPreferenceIfModelAsync,
   listProviderDefaultHealthCheckModelPreferencesAsync,
   upsertProviderDefaultHealthCheckModelPreferenceAsync
 } from '../../storage/provider-default-health-check-model.repository.js'
 import {
-  clearProviderSystemDefaultHealthCheckModelIfModelAsync,
   listProviderSystemDefaultHealthCheckModelsAsync,
   upsertProviderSystemDefaultHealthCheckModelAsync
 } from '../../storage/provider-system-default-health-check-model.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import {
-  findCustomProviderModelAsync,
+  findCustomProviderModelDeleteState,
   findCustomProviderModelPatchState,
   findProviderModelCapabilitiesAsync,
   customProviderModelBindingsAsync,
   listProviderModelCatalogAsync,
+  modelCatalogBuiltInSourceProviderCodes,
+  modelCatalogSourceProviderCodesAsync,
   patchCustomProviderModelConfigurationAsync,
   removeCustomProviderModelAsync,
   saveCustomProviderModelAsync,
@@ -35,6 +35,7 @@ import {
   type ProviderModelPatchField
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
+import type { ProviderModelDefaultReferenceCleanupInput } from '../../storage/provider-model-default-reference-cleanup.repository.js'
 import {
   findBuiltInProviderModelPatchStateAsync,
   patchBuiltInProviderModelConfigurationAsync
@@ -264,7 +265,6 @@ const customModelSchema = z.object({
   scope: z.enum(['personal', 'global']).optional(),
   model: z.string().trim().min(1),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
-  catalogVisible: z.boolean().optional(),
   mode: nullableModelModeSchema,
   supportedApiProtocols: z.array(z.enum([
     'chat_completions',
@@ -321,7 +321,10 @@ const builtInModelPatchSchema = customModelSchema.omit({
   pricingNotes: true,
   capabilityNotes: true,
   notes: true
-}).extend({ status: z.enum(['active', 'disabled']).optional() }).partial().extend({
+}).extend({
+  status: z.enum(['active', 'disabled']).optional(),
+  catalogVisible: z.boolean().optional()
+}).partial().extend({
   expectedUpdatedAt: expectedModelUpdatedAtSchema
 }).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供有效的内置模型配置'
@@ -409,7 +412,9 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       return
     }
     const submittedBody = requestRecord(req.body)
-    const builtIn = await findBuiltInProviderModelPatchStateAsync(req.params.id, submittedBody)
+    const builtIn = req.params.id.startsWith('custom_model_')
+      ? undefined
+      : await findBuiltInProviderModelPatchStateAsync(req.params.id, submittedBody)
     if (builtIn) {
       if (builtIn.providerCode !== req.params.code) {
         sendNotFound(res, '模型不存在')
@@ -447,22 +452,22 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
           return
         }
       }
-      const becameUnavailable = providerModelAvailabilityTransitionedToUnavailable(builtIn, next)
+      const defaultReferenceCleanup = providerModelDefaultUsabilityTransitionedToUnavailable(builtIn, next)
+        ? await providerModelDefaultReferenceCleanupInput({
+            providerCode: builtIn.providerCode,
+            model: builtIn.model,
+            clearSystemDefault: true
+          })
+        : undefined
       const saved = await patchBuiltInProviderModelConfigurationAsync({
         current: builtIn,
         patch: configurationPatch,
-        expectedUpdatedAt
+        expectedUpdatedAt,
+        defaultReferenceCleanup
       })
       if (!saved) {
         res.status(409).json({ message: '模型已被其他操作更新，请刷新后重试' })
         return
-      }
-      if (becameUnavailable) {
-        await clearProviderModelDefaultReferences({
-          providerCode: saved.providerCode,
-          model: saved.model,
-          clearSystemDefault: true
-        })
       }
       await recordOperationLogAsync({
         module: 'providers', action: 'update_model_configuration', operationKey: 'providers.update_model_configuration',
@@ -475,10 +480,11 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
           providerModelPatchSnapshot(next, Object.keys(configurationPatch))
         )]
       }, req)
-      res.json(ok(providerModelMutationResult(saved, becameUnavailable)))
+      res.json(ok(providerModelMutationResult(saved)))
       return
     }
-    const existing = await findCustomProviderModelPatchState(req.params.id, submittedBody)
+    const ownerSystemAccountId = isAdminRole(context.role) ? undefined : context.systemAccountId
+    const existing = await findCustomProviderModelPatchState(req.params.id, submittedBody, ownerSystemAccountId)
     if (!existing || existing.providerCode !== req.params.code) {
       sendNotFound(res, '自定义模型不存在')
       return
@@ -515,7 +521,14 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       }
     }
     try {
-      const becameUnavailable = providerModelAvailabilityTransitionedToUnavailable(existing, next)
+      const defaultReferenceCleanup = providerModelDefaultUsabilityTransitionedToUnavailable(existing, next)
+        ? await providerModelDefaultReferenceCleanupInput({
+            providerCode: existing.providerCode,
+            systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
+            model: existing.model,
+            clearSystemDefault: existing.scope === 'global'
+          })
+        : undefined
       const outcome = await patchCustomProviderModelConfigurationAsync({
         current: existing,
         expectedUpdatedAt,
@@ -525,22 +538,19 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
           providerCode: existing.providerCode,
           systemAccountId: existing.systemAccountId,
           actorSystemAccountId: context.systemAccountId
-        }
+        },
+        ownerSystemAccountId,
+        defaultReferenceCleanup
       })
       if (outcome.kind === 'conflict') {
         res.status(409).json({ message: '模型已被其他操作更新，请刷新后重试' })
         return
       }
       const saved = outcome.record
-      if (outcome.kind === 'updated' && becameUnavailable) {
-        await clearProviderModelDefaultReferences({
-          providerCode: saved.providerCode,
-          systemAccountId: saved.scope === 'global' ? undefined : saved.systemAccountId,
-          model: saved.model,
-          clearSystemDefault: saved.scope === 'global'
-        })
-      }
-      res.json(ok(providerModelMutationResult(saved, outcome.kind === 'updated' && becameUnavailable)))
+      res.json(ok(providerModelMutationResult({
+        ...saved,
+        clearedDefaultHealthCheckProviderCodes: outcome.clearedDefaultHealthCheckProviderCodes
+      })))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
     }
@@ -556,7 +566,8 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
       res.status(401).json({ message: '请先登录' })
       return
     }
-    const existing = await findCustomProviderModelAsync(req.params.id)
+    const ownerSystemAccountId = isAdminRole(context.role) ? undefined : context.systemAccountId
+    const existing = await findCustomProviderModelDeleteState(req.params.id, ownerSystemAccountId)
     if (!existing || existing.providerCode !== req.params.code) {
       sendNotFound(res, '自定义模型不存在')
       return
@@ -577,20 +588,16 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
       })
       return
     }
-    const deleted = await removeCustomProviderModelAsync(existing.id)
-    if (deleted) {
-      await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
-        providerCode: existing.providerCode,
-        systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
-        model: existing.model
-      })
-      if (existing.scope === 'global') {
-        await clearProviderSystemDefaultHealthCheckModelIfModelAsync({
-          providerCode: existing.providerCode,
-          model: existing.model
-        })
-      }
-    }
+    const defaultReferenceCleanup = await providerModelDefaultReferenceCleanupInput({
+      providerCode: existing.providerCode,
+      systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
+      model: existing.model,
+      clearSystemDefault: existing.scope === 'global'
+    })
+    const deleted = await removeCustomProviderModelAsync(existing.id, {
+      ownerSystemAccountId,
+      defaultReferenceCleanup
+    })
     res.json(ok({ deleted }))
   } catch (error) {
     next(error)
@@ -696,23 +703,34 @@ async function validateDefaultHealthCheckModelSelection(input: {
   model: string
 }): Promise<{ success: true; model: string } | { success: false; message: string }> {
   const model = input.model.trim()
-  const catalog = await listProviderModelsForRequestAsync({
+  const activeCatalog = await listProviderModelsForRequestAsync({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    includeUnpriced: true
+  })
+  const activeItem = activeCatalog.find((entry) => entry.model.trim() === model)
+  if (activeItem) {
+    if (!isProviderModelUsableForAccountTest(activeItem)) {
+      return { success: false, message: '默认检查模型只能选择文本生成模型' }
+    }
+    return { success: true, model: activeItem.model }
+  }
+
+  // 非活动目录仅用于给出具体诊断，不应让同名的过期来源遮蔽活动来源。
+  const inactiveCatalog = await listProviderModelsForRequestAsync({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
     includeInactive: true,
     includeUnpriced: true
   })
-  const item = catalog.find((entry) => entry.model.trim() === model)
+  const item = inactiveCatalog.find((entry) => entry.model.trim() === model)
   if (!item) {
     return { success: false, message: `模型不在当前用户可见目录中：${model}` }
-  }
-  if ((item.status ?? 'active') !== 'active') {
-    return { success: false, message: '只能把启用模型设置为默认检查模型' }
   }
   if (!isProviderModelUsableForAccountTest(item)) {
     return { success: false, message: '默认检查模型只能选择文本生成模型' }
   }
-  return { success: true, model: item.model }
+  return { success: false, message: '只能把当前可用的模型设置为默认检查模型' }
 }
 
 function isProviderModelUsableForAccountTest(item: ProviderModelCatalogItem): boolean {
@@ -944,19 +962,22 @@ function providerModelMutationResult(value: {
   model: string
   status: 'draft' | 'active' | 'disabled'
   updatedAt: string
-}, defaultHealthCheckModelCleared = false) {
+  clearedDefaultHealthCheckProviderCodes?: string[]
+}) {
   return {
     id: value.id,
     providerCode: value.providerCode,
     model: value.model,
     status: value.status,
     updatedAt: value.updatedAt,
-    ...(defaultHealthCheckModelCleared ? { defaultHealthCheckModelCleared: true } : {})
+    ...(value.clearedDefaultHealthCheckProviderCodes?.length
+      ? { defaultHealthCheckModelCleared: true }
+      : {})
   }
 }
 
 const providerModelValidationFields = new Set([
-  'mode', 'supportedServiceTiers', 'supportedReasoningEfforts', 'defaultReasoningEffort',
+  'mode', 'supportedApiProtocols', 'supportedServiceTiers', 'supportedReasoningEfforts', 'defaultReasoningEffort',
   'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M',
   'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'serviceTierPrices',
   'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
@@ -972,36 +993,57 @@ function requiresBuiltInModelPatchValidation(patch: Record<string, unknown>): bo
     || Object.keys(patch).some((field) => ['supportedApiProtocols', 'releaseDate', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens'].includes(field))
 }
 
-function providerModelAvailabilityTransitionedToUnavailable(
-  current: { status?: string; catalogVisible?: boolean; shutdownDate?: string | null },
-  next: { status?: string; catalogVisible?: boolean; shutdownDate?: string | null }
+function providerModelDefaultUsabilityTransitionedToUnavailable(
+  current: ProviderModelDefaultUsabilityState,
+  next: ProviderModelDefaultUsabilityState
 ): boolean {
-  return providerModelIsAvailable(current) && !providerModelIsAvailable(next)
+  return providerModelIsUsableAsDefault(current) && !providerModelIsUsableAsDefault(next)
 }
 
-function providerModelIsAvailable(value: { status?: string; catalogVisible?: boolean; shutdownDate?: string | null }): boolean {
+interface ProviderModelDefaultUsabilityState {
+  status?: string
+  catalogVisible?: boolean
+  shutdownDate?: string | null
+  mode?: string | null
+  supportedApiProtocols?: string[]
+}
+
+function providerModelIsUsableAsDefault(value: ProviderModelDefaultUsabilityState): boolean {
   if (value.status !== 'active' || value.catalogVisible === false) return false
   const shutdownDate = value.shutdownDate?.trim()
-  return !shutdownDate || shutdownDate > new Date().toISOString().slice(0, 10)
+  if (shutdownDate && shutdownDate <= new Date().toISOString().slice(0, 10)) return false
+  if (value.mode === 'image' || value.mode === 'audio') return false
+  const protocols = value.supportedApiProtocols ?? []
+  return !protocols.length || protocols.some((protocol) => [
+    'chat_completions',
+    'responses',
+    'messages',
+    'generate_content',
+    'stream_generate_content'
+  ].includes(protocol))
 }
 
-async function clearProviderModelDefaultReferences(input: {
+async function providerModelDefaultReferenceCleanupInput(input: {
   providerCode: string
   systemAccountId?: string
   model: string
   clearSystemDefault: boolean
-}): Promise<void> {
+}): Promise<ProviderModelDefaultReferenceCleanupInput> {
   const providerCodes = await providerModelDefaultReferenceCodes(input.providerCode)
-  await Promise.all(providerCodes.flatMap((providerCode) => [
-    clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
+  const targets = await Promise.all(providerCodes.map(async (providerCode) => {
+    const customSourceProviderCodes = await modelCatalogSourceProviderCodesAsync(providerCode)
+    return {
       providerCode,
-      systemAccountId: input.systemAccountId,
-      model: input.model
-    }),
-    ...(input.clearSystemDefault
-      ? [clearProviderSystemDefaultHealthCheckModelIfModelAsync({ providerCode, model: input.model })]
-      : [])
-  ]))
+      builtInSourceProviderCodes: modelCatalogBuiltInSourceProviderCodes(providerCode, customSourceProviderCodes),
+      customSourceProviderCodes
+    }
+  }))
+  return {
+    model: input.model,
+    targets,
+    systemAccountId: input.systemAccountId,
+    clearSystemDefault: input.clearSystemDefault
+  }
 }
 
 async function providerModelDefaultReferenceCodes(providerCode: string): Promise<string[]> {

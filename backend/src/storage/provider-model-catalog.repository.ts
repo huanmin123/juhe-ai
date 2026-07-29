@@ -3,9 +3,13 @@ import type { SQLInputValue } from 'node:sqlite'
 import type { ProviderModelPriceSet, ProviderModelPricing } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, nowIso } from './database.js'
-import { createPostgresDatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { notifyCommittedModelCacheInvalidationAsync } from './model-cache-sync-warning.js'
+import {
+  clearUnavailableProviderModelDefaultReferencesInTransaction,
+  type ProviderModelDefaultReferenceCleanupInput
+} from './provider-model-default-reference-cleanup.repository.js'
 
 interface ProviderModelCatalogRow {
   id: string
@@ -70,7 +74,9 @@ export type BuiltInProviderModelPatchState = Pick<BuiltInProviderModelRecord,
   & Partial<BuiltInProviderModelRecord>
 
 export type BuiltInProviderModelMutationRecord = Pick<BuiltInProviderModelRecord,
-  'id' | 'providerCode' | 'model' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
+  'id' | 'providerCode' | 'model' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'> & {
+    clearedDefaultHealthCheckProviderCodes?: string[]
+  }
 
 export interface ProviderModelTestCatalogRecord {
   id: string
@@ -384,18 +390,20 @@ export async function patchBuiltInProviderModelConfigurationAsync(input: {
   current: BuiltInProviderModelPatchState
   patch: ProviderModelConfigurationPatch
   expectedUpdatedAt: string
+  defaultReferenceCleanup?: ProviderModelDefaultReferenceCleanupInput
 }): Promise<BuiltInProviderModelMutationRecord | undefined> {
+  if (input.current.updatedAt !== input.expectedUpdatedAt) return undefined
+  const patch = providerModelConfigurationChanges(input.current, input.patch)
   const { assignments, params } = configurationPatchAssignments(
-    input.patch,
+    patch,
     runtimeConfig.databaseDriver === 'postgres'
   )
   if (!assignments.length) return builtInProviderModelMutationRecord(input.current)
-  const marksManualOverride = Object.keys(input.patch).some((field) => field !== 'status' && field !== 'catalogVisible')
+  const marksManualOverride = Object.keys(patch).some((field) => field !== 'status' && field !== 'catalogVisible')
   const sourceAssignment = marksManualOverride
     ? ', source = ?'
     : ", source = CASE WHEN source = 'manual-override' THEN source ELSE ? END"
   const updatedAt = nextProviderModelUpdatedAt(input.expectedUpdatedAt)
-  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}${sourceAssignment}, updated_at = ? WHERE id = ? AND updated_at = ?`
   const writeParams = [
     ...params,
     marksManualOverride ? 'manual-override' : 'manual-visibility-override',
@@ -403,15 +411,27 @@ export async function patchBuiltInProviderModelConfigurationAsync(input: {
     input.current.id,
     input.expectedUpdatedAt
   ]
-  const changes = runtimeConfig.databaseDriver !== 'postgres'
-    ? Number(getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[]).changes)
-    : Number((await createPostgresDatabaseClient(await getPostgresPool()).execute(
-        sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'),
-        writeParams
-      )).changes)
-  if (changes === 0) return undefined
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? createPostgresDatabaseClient(await getPostgresPool())
+    : createSqliteDatabaseClient(getBusinessDatabase())
+  const table = client.dialect.qualifyTable('juhe_business', 'provider_model_catalog')
+  const transactionResult = await client.transaction(async (tx) => {
+    const changes = Number((await tx.execute(
+      `UPDATE ${table} SET ${assignments.join(', ')}${sourceAssignment}, updated_at = ? WHERE id = ? AND updated_at = ?`,
+      writeParams
+    )).changes)
+    if (changes === 0) return { changes, clearedProviderCodes: [] as string[] }
+    const clearedProviderCodes = input.defaultReferenceCleanup
+      ? await clearUnavailableProviderModelDefaultReferencesInTransaction(tx, input.defaultReferenceCleanup)
+      : []
+    return { changes, clearedProviderCodes }
+  })
+  if (transactionResult.changes === 0) return undefined
   await notifyCommittedModelCacheInvalidationAsync('provider_model_configuration_updated')
-  return builtInProviderModelMutationRecord({ ...input.current, ...input.patch, updatedAt })
+  return builtInProviderModelMutationRecord(
+    { ...input.current, ...patch, updatedAt },
+    transactionResult.clearedProviderCodes
+  )
 }
 
 export async function updateBuiltInProviderModelPricesAsync(id: string, patch: ProviderModelPricePatch): Promise<BuiltInProviderModelRecord | undefined> {
@@ -503,6 +523,22 @@ function configurationPatchAssignments(
   return { assignments, params }
 }
 
+function providerModelConfigurationChanges(
+  current: BuiltInProviderModelPatchState,
+  requested: ProviderModelConfigurationPatch
+): ProviderModelConfigurationPatch {
+  const currentRecord = current as Record<string, unknown>
+  return Object.fromEntries(Object.entries(requested).filter(([field, value]) => (
+    !providerModelConfigurationValuesEqual(currentRecord[field], value)
+  ))) as ProviderModelConfigurationPatch
+}
+
+function providerModelConfigurationValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (left == null && right == null) return true
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 function nullableText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
@@ -570,7 +606,7 @@ const builtInProviderModelPatchColumnByField: Partial<Record<keyof ProviderModel
 
 const builtInProviderModelValidationFields = new Set<keyof ProviderModelConfigurationPatch>([
   'mode', 'supportedApiProtocols', 'supportedServiceTiers', 'supportedReasoningEfforts',
-  'defaultReasoningEffort', 'releaseDate', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens',
+  'defaultReasoningEffort', 'releaseDate', 'shutdownDate', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens',
   'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M',
   'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'serviceTierPrices',
   'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
@@ -581,6 +617,7 @@ function builtInProviderModelPatchColumns(submitted: Record<string, unknown>): s
   const requestedFields = Object.keys(submitted)
     .filter((field): field is keyof ProviderModelConfigurationPatch => field in builtInProviderModelPatchColumnByField)
   const requiresValidation = submitted.status === 'active'
+    || submitted.catalogVisible === true
     || requestedFields.some((field) => builtInProviderModelValidationFields.has(field))
   const projectedFields = new Set<keyof ProviderModelConfigurationPatch>(requestedFields)
   if (requiresValidation) {
@@ -606,7 +643,8 @@ function builtInProviderModelMutationRecord(
     catalogVisible: boolean
     shutdownDate?: string | null
     updatedAt: string
-  }
+  },
+  clearedDefaultHealthCheckProviderCodes: string[] = []
 ): BuiltInProviderModelMutationRecord {
   return {
     id: value.id,
@@ -615,7 +653,10 @@ function builtInProviderModelMutationRecord(
     status: value.status,
     catalogVisible: value.catalogVisible,
     shutdownDate: value.shutdownDate ?? undefined,
-    updatedAt: value.updatedAt
+    updatedAt: value.updatedAt,
+    ...(clearedDefaultHealthCheckProviderCodes.length
+      ? { clearedDefaultHealthCheckProviderCodes }
+      : {})
   }
 }
 

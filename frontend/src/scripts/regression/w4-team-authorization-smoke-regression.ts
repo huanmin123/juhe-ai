@@ -8,8 +8,13 @@ import { http } from '@/api/http'
 import type {
   ResourceAuthorizationListResult,
   ResourceAuthorizationSummary,
+  SystemTeamDetail,
+  SystemTeamListItem,
   SystemTeamListResult,
-  SystemTeamSummary
+  SystemTeamMemberHistoryResult,
+  SystemTeamMemberListResult,
+  SystemTeamMemberRemovedResult,
+  SystemTeamMembersAddedResult
 } from '@/types/domain'
 
 type HttpMethod = 'get' | 'post' | 'patch' | 'delete'
@@ -65,6 +70,24 @@ async function assertSystemTeamApiContract(): Promise<void> {
   await api.myTeams.detail('team_w4')
   assertLastCall('get', '/my-teams/team_w4', undefined, undefined, '个人侧团队详情应走 my-teams 且不带 owner 作用域')
 
+  await api.systemTeams.members('team_w4', { systemAccountId: 'sys_owner' })
+  assertLastCall('get', '/system-teams/team_w4/members', undefined, {
+    params: { systemAccountId: 'sys_owner' }
+  }, '管理侧团队成员必须使用按需端点并保留 owner 作用域')
+
+  await api.myTeams.members('team_w4')
+  assertLastCall('get', '/my-teams/team_w4/members', undefined, undefined, '个人侧团队成员必须使用按需端点')
+
+  await api.systemTeams.memberHistory('team_w4', { systemAccountId: 'sys_owner', page: 2, pageSize: 20 })
+  assertLastCall('get', '/system-teams/team_w4/members/history', undefined, {
+    params: { systemAccountId: 'sys_owner', page: 2, pageSize: 20 }
+  }, '管理侧历史成员必须使用独立分页端点并保留 owner 作用域')
+
+  await api.myTeams.memberHistory('team_w4', { page: 1, pageSize: 20 })
+  assertLastCall('get', '/my-teams/team_w4/members/history', undefined, {
+    params: { page: 1, pageSize: 20 }
+  }, '个人侧历史成员必须使用独立分页端点')
+
   const createPayload = { name: '产品授权团队', description: '前端 smoke', status: 'active' as const }
   await api.systemTeams.create(createPayload)
   assertLastCall('post', '/system-teams', createPayload, undefined, '团队创建应走管理侧 system-teams POST')
@@ -78,11 +101,13 @@ async function assertSystemTeamApiContract(): Promise<void> {
   await api.systemTeams.update('team_w4', updatePayload)
   assertLastCall('patch', '/system-teams/team_w4', updatePayload, undefined, '团队更新应走管理侧 system-teams PATCH')
 
-  await api.systemTeams.addMembers('team_w4', { systemAccountIds: ['sys_a', 'sys_b'] })
-  assertLastCall('post', '/system-teams/team_w4/members', { systemAccountIds: ['sys_a', 'sys_b'] }, undefined, '团队添加成员应只提交 systemAccountIds')
+  const memberPayload = { systemAccountIds: ['sys_a', 'sys_b'], expectedUpdatedAt: '2026-07-09T09:00:00Z' }
+  await api.systemTeams.addMembers('team_w4', memberPayload)
+  assertLastCall('post', '/system-teams/team_w4/members', memberPayload, undefined, '团队添加成员应提交成员 ID 与 CAS 版本')
 
-  await api.systemTeams.removeMember('team_w4', 'member_w4')
-  assertLastCall('delete', '/system-teams/team_w4/members/member_w4', undefined, undefined, '团队移除成员应定位 teamId 和 memberId')
+  const removePayload = { expectedUpdatedAt: '2026-07-09T09:00:01Z' }
+  await api.systemTeams.removeMember('team_w4', 'member_w4', removePayload)
+  assertLastCall('delete', '/system-teams/team_w4/members/member_w4', undefined, { data: removePayload }, '团队移除成员应定位 teamId/memberId 并提交 CAS 版本')
 }
 
 async function assertAuthorizationApiContract(): Promise<void> {
@@ -154,6 +179,7 @@ async function assertAuthorizationApiContract(): Promise<void> {
   assertLastCall('post', '/my-authorizations', createPayload, undefined, '个人侧授权创建应走 my-authorizations 且不带 owner 作用域')
 
   const updatePayload = {
+    expectedUpdatedAt: '2026-07-09T09:00:00Z',
     status: 'paused' as const,
     expiresAt: '2026-08-02T00:00:00Z',
     limits: { monthly: { enabled: true, limit: 50 } }
@@ -163,33 +189,36 @@ async function assertAuthorizationApiContract(): Promise<void> {
     params: { systemAccountId: 'sys_owner' }
   }, '管理侧授权普通更新应走 PATCH grant ID 并带 owner 作用域')
 
-  await api.myAuthorizations.update('grant_w4', { status: 'active', expiresAt: null, limits: null })
-  assertLastCall('patch', '/my-authorizations/grant_w4', { status: 'active', expiresAt: null, limits: null }, undefined, '个人侧授权普通更新应保留清空 expiresAt/limits 语义')
+  await api.myAuthorizations.update('grant_w4', { expectedUpdatedAt: '2026-07-09T09:00:00Z', status: 'active', expiresAt: null, limits: null })
+  assertLastCall('patch', '/my-authorizations/grant_w4', { expectedUpdatedAt: '2026-07-09T09:00:00Z', status: 'active', expiresAt: null, limits: null }, undefined, '个人侧授权普通更新应保留清空 expiresAt/limits 语义')
 
-  const expirePayload = { expiresAt: null, limits: { hourly: { enabled: true, limit: 5, hours: 24 } } }
+  const expirePayload = { expectedUpdatedAt: '2026-07-09T09:00:00Z', expiresAt: null, limits: { hourly: { enabled: true, limit: 5, hours: 24 } } }
   await api.authorizations.updateExpire('grant_w4', expirePayload, { systemAccountId: 'sys_owner' })
   assertLastCall('patch', '/authorizations/grant_w4/expire', expirePayload, {
     params: { systemAccountId: 'sys_owner' }
   }, '管理侧授权有效期更新应走专用 expire 路径')
 
-  await api.myAuthorizations.updateExpire('grant_w4', { expiresAt: null, limits: null })
-  assertLastCall('patch', '/my-authorizations/grant_w4/expire', { expiresAt: null, limits: null }, undefined, '个人侧授权有效期更新应走 my 专用 expire 路径')
+  await api.myAuthorizations.updateExpire('grant_w4', { expectedUpdatedAt: '2026-07-09T09:00:00Z', expiresAt: null, limits: null })
+  assertLastCall('patch', '/my-authorizations/grant_w4/expire', { expectedUpdatedAt: '2026-07-09T09:00:00Z', expiresAt: null, limits: null }, undefined, '个人侧授权有效期更新应走 my 专用 expire 路径')
 
-  await api.authorizations.revoke('grant_w4', { systemAccountId: 'sys_owner' })
+  const terminalPayload = { expectedUpdatedAt: '2026-07-09T09:00:00Z' }
+  await api.authorizations.revoke('grant_w4', terminalPayload, { systemAccountId: 'sys_owner' })
   assertLastCall('delete', '/authorizations/grant_w4', undefined, {
+    data: terminalPayload,
     params: { systemAccountId: 'sys_owner' }
   }, '管理侧授权回收应带 owner 作用域')
 
-  await api.myAuthorizations.revoke('grant_w4')
-  assertLastCall('delete', '/my-authorizations/grant_w4', undefined, undefined, '个人侧授权回收应走 my-authorizations')
+  await api.myAuthorizations.revoke('grant_w4', terminalPayload)
+  assertLastCall('delete', '/my-authorizations/grant_w4', undefined, { data: terminalPayload }, '个人侧授权回收应走 my-authorizations')
 
-  await api.authorizations.returnAuthorization('grant_w4', { systemAccountId: 'sys_owner' })
+  await api.authorizations.returnAuthorization('grant_w4', terminalPayload, { systemAccountId: 'sys_owner' })
   assertLastCall('delete', '/authorizations/grant_w4/return', undefined, {
+    data: terminalPayload,
     params: { systemAccountId: 'sys_owner' }
   }, '管理侧授权归还应支持 grant ID return 路径')
 
-  await api.myAuthorizations.returnAuthorization('grant_w4')
-  assertLastCall('delete', '/my-authorizations/grant_w4/return', undefined, undefined, '个人侧授权归还应走 my return 路径')
+  await api.myAuthorizations.returnAuthorization('grant_w4', terminalPayload)
+  assertLastCall('delete', '/my-authorizations/grant_w4/return', undefined, { data: terminalPayload }, '个人侧授权归还应走 my return 路径')
 }
 
 function assertSourceBoundaries(): void {
@@ -215,6 +244,8 @@ function assertSourceBoundaries(): void {
 
   assertIncludes(systemTeamsApiSource, "http.get('/system-teams'", 'system teams API 必须暴露管理侧列表')
   assertIncludes(systemTeamsApiSource, "http.get('/my-teams'", 'system teams API 必须暴露个人侧列表')
+  assertIncludes(systemTeamsApiSource, 'http.get(`/system-teams/${id}/members`', 'system teams API 必须暴露管理侧成员按需端点')
+  assertIncludes(systemTeamsApiSource, 'http.get(`/my-teams/${id}/members`', 'system teams API 必须暴露个人侧成员按需端点')
   assertIncludes(systemTeamsApiSource, "http.post('/system-teams'", 'system teams API 必须暴露团队创建')
   assertIncludes(systemTeamsApiSource, 'http.patch(`/system-teams/${id}`', 'system teams API 必须暴露团队更新')
   assertIncludes(systemTeamsApiSource, 'http.post(`/system-teams/${id}/members`', 'system teams API 必须暴露成员新增')
@@ -222,10 +253,11 @@ function assertSourceBoundaries(): void {
 
   assertIncludes(systemTeamsViewSource, '<a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建授权团队</a-button>', '团队创建入口只能在管理视图展示')
   assertIncludes(systemTeamsViewSource, 'const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)', '团队页面必须使用管理/个人视图作用域 API')
-  assertIncludes(systemTeamsViewSource, 'await api.systemTeams.create(payload)', '团队页面创建必须调用 systemTeams.create')
+  assertIncludes(systemTeamsViewSource, 'systemTeamsApi.members(teamId, teamScopeParams.value)', '成员弹窗必须走 scoped members 按需端点')
+  assertIncludes(systemTeamsViewSource, 'await api.systemTeams.create({', '团队页面创建必须调用 systemTeams.create')
   assertIncludes(systemTeamsViewSource, 'const updated = await api.systemTeams.update(editingTeamId.value', '团队页面编辑必须调用 systemTeams.update')
   assertIncludes(systemTeamsViewSource, 'await api.systemTeams.addMembers(teamId', '团队页面成员新增必须调用 addMembers')
-  assertIncludes(systemTeamsViewSource, 'await api.systemTeams.removeMember(teamId, memberId)', '团队页面成员移除必须调用 removeMember')
+  assertIncludes(systemTeamsViewSource, 'const result = await api.systemTeams.removeMember(teamId, memberId', '团队页面成员移除必须调用 removeMember')
   assertIncludes(systemTeamsViewSource, "message.warning('当前是只读视图，不能维护授权团队')", '个人团队视图必须保持只读保护')
 
   assertIncludes(authorizationsApiSource, "http.get('/authorizations'", 'authorizations API 必须暴露管理侧列表')
@@ -242,8 +274,8 @@ function assertSourceBoundaries(): void {
 
   assertIncludes(authorizationActionsSource, 'await api.authorizations.create(payload, createAuthorizationScopeParams.value)', '管理侧授权创建必须带 owner 作用域')
   assertIncludes(authorizationActionsSource, 'await api.myAuthorizations.create(payload)', '个人侧授权创建必须走 my-authorizations')
-  assertIncludes(authorizationActionsSource, 'await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))', '管理侧授权回收必须带资源 owner 作用域')
-  assertIncludes(authorizationActionsSource, 'await api.myAuthorizations.returnAuthorization(item.id)', '个人侧授权归还必须走 my-authorizations return')
+  assertIncludes(authorizationActionsSource, 'await api.authorizations.revoke(item.id, { expectedUpdatedAt: item.updatedAt }, authorizationOperationScopeParams(item))', '管理侧授权回收必须携带 CAS 与资源 owner 作用域')
+  assertIncludes(authorizationActionsSource, 'await api.myAuthorizations.returnAuthorization(item.id, { expectedUpdatedAt: item.updatedAt })', '个人侧授权归还必须携带 CAS 并走 my-authorizations return')
   assertIncludes(authorizationActionsSource, 'await api.authorizations.update(item.id, payload, authorizationOperationScopeParams(item))', '管理侧授权状态更新必须带资源 owner 作用域')
   assertIncludes(authorizationActionsSource, 'authorizationExpireFormFromSummary(item)', '打开有效期弹窗必须直接复用授权列表行')
   assertNotIncludes(authorizationActionsSource, 'api.authorizations.detail(item.id', '打开有效期弹窗不得额外读取完整授权详情')
@@ -279,13 +311,30 @@ function fixtureFor(method: HttpMethod, url: string): unknown {
     return systemTeamListFixture()
   }
   if (method === 'get' && (url === '/system-teams/team_w4' || url === '/my-teams/team_w4')) {
-    return systemTeamFixture()
+    return systemTeamDetailFixture()
   }
-  if ((method === 'post' && url === '/system-teams') || (method === 'patch' && url === '/system-teams/team_w4')) {
-    return systemTeamFixture()
+  if (method === 'get' && (url === '/system-teams/team_w4/members' || url === '/my-teams/team_w4/members')) {
+    return systemTeamMembersFixture()
   }
-  if ((method === 'post' && url === '/system-teams/team_w4/members') || (method === 'delete' && url === '/system-teams/team_w4/members/member_w4')) {
-    return systemTeamFixture()
+  if (method === 'get' && (url === '/system-teams/team_w4/members/history' || url === '/my-teams/team_w4/members/history')) {
+    return systemTeamMemberHistoryFixture()
+  }
+  if (method === 'post' && url === '/system-teams') {
+    return systemTeamListItemFixture()
+  }
+  if (method === 'patch' && url === '/system-teams/team_w4') {
+    return {
+      id: 'team_w4',
+      changedFields: ['name', 'description', 'status'],
+      rowPatch: { name: '产品授权团队更新', description: '更新说明', status: 'disabled' },
+      updatedAt: '2026-07-09T09:00:01Z'
+    }
+  }
+  if (method === 'post' && url === '/system-teams/team_w4/members') {
+    return systemTeamMembersAddedFixture()
+  }
+  if (method === 'delete' && url === '/system-teams/team_w4/members/member_w4') {
+    return systemTeamMemberRemovedFixture()
   }
   if (method === 'get' && (url === '/authorizations' || url === '/my-authorizations')) {
     return authorizationListFixture()
@@ -301,7 +350,7 @@ function fixtureFor(method: HttpMethod, url: string): unknown {
 
 function systemTeamListFixture(): SystemTeamListResult {
   return {
-    items: [systemTeamFixture()],
+    items: [systemTeamListItemFixture()],
     total: 1,
     hasMore: false,
     page: 1,
@@ -309,29 +358,74 @@ function systemTeamListFixture(): SystemTeamListResult {
   }
 }
 
-function systemTeamFixture(): SystemTeamSummary {
+function systemTeamListItemFixture(): SystemTeamListItem {
   return {
     id: 'team_w4',
     name: '产品授权团队',
     description: '前端 smoke',
     status: 'active',
-    createdBy: 'sys_owner',
     createdAt: '2026-07-09T09:00:00Z',
     updatedAt: '2026-07-09T09:00:00Z',
+    memberCount: 1
+  }
+}
+
+function systemTeamDetailFixture(): SystemTeamDetail {
+  return systemTeamListItemFixture()
+}
+
+function systemTeamMembersFixture(): SystemTeamMemberListResult {
+  return {
+    id: 'team_w4',
     memberCount: 1,
-    activeMemberCount: 1,
-    members: [{
+    updatedAt: '2026-07-09T09:00:00Z',
+    items: [{
       id: 'member_w4',
-      teamId: 'team_w4',
       systemAccountId: 'sys_grantee',
       systemAccountName: '被授权用户',
-      username: 'grantee',
-      memberRole: 'member',
-      status: 'active',
-      joinedAt: '2026-07-09T09:00:00Z',
-      createdAt: '2026-07-09T09:00:00Z',
-      updatedAt: '2026-07-09T09:00:00Z'
+      joinedAt: '2026-07-09T09:00:00Z'
     }]
+  }
+}
+
+function systemTeamMemberHistoryFixture(): SystemTeamMemberHistoryResult {
+  return {
+    id: 'team_w4',
+    items: [{
+      id: 'member_removed',
+      systemAccountId: 'sys_removed',
+      systemAccountName: '历史成员',
+      status: 'removed',
+      joinedAt: '2026-07-08T09:00:00Z',
+      removedAt: '2026-07-09T09:00:00Z'
+    }],
+    total: 1,
+    hasMore: false,
+    page: 1,
+    pageSize: 20
+  }
+}
+
+function systemTeamMembersAddedFixture(): SystemTeamMembersAddedResult {
+  return {
+    id: 'team_w4',
+    memberCount: 2,
+    updatedAt: '2026-07-09T09:00:01Z',
+    addedMembers: [{
+      id: 'member_added',
+      systemAccountId: 'sys_a',
+      systemAccountName: '新增成员',
+      joinedAt: '2026-07-09T09:00:01Z'
+    }]
+  }
+}
+
+function systemTeamMemberRemovedFixture(): SystemTeamMemberRemovedResult {
+  return {
+    id: 'team_w4',
+    memberCount: 0,
+    updatedAt: '2026-07-09T09:00:02Z',
+    removedMemberId: 'member_w4'
   }
 }
 

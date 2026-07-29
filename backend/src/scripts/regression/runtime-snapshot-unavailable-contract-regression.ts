@@ -27,14 +27,15 @@ const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.ge
 assert(systemMetricsRouteSource, '应定义系统指标首屏路由')
 assert(systemMetricsRuntimeRouteSource, '应定义系统指标运行态独立路由')
 assert.doesNotMatch(systemMetricsRouteSource, /requestServerRuntimeSnapshot|get[A-Za-z]+RedisStreamRuntime|backgroundQueueRuntimeRows/, '首屏趋势路由不得采集 server / Redis 运行态')
-assert.match(systemMetricsRuntimeRouteSource, /requestServerRuntimeSnapshot\(2500\)/, '独立运行态路由快照预算必须大于内部 worker 快照预算')
+assert.match(systemMetricsRuntimeRouteSource, /requestServerSystemMetricsRuntimeSnapshot\(2500\)/, '独立运行态路由快照预算必须大于内部 worker 快照预算')
 assert.match(dbServiceIpcSource, /requestIngestWorkerSnapshot\(1500\)/)
 assert.match(dbServiceIpcSource, /requestStatsWorkerSnapshot\(1500\)/)
 assert.match(dbServiceIpcSource, /requestOpsWorkerSnapshot\(1500\)/)
 assert.match(statsRoutesSource, /consumers: optionalNumberValue\(queue\.consumers\)/, '缺失 consumers 不能被伪造成 0')
 assert.match(statsRoutesSource, /expiredCount: numberValue\(state\.expiredCount\)/, '网关过期必须与丢弃分别展示')
 assert.match(dbServiceIpcSource, /observedAt: new Date\(\)\.toISOString\(\)/, '运行态快照必须记录采集时间')
-assert.match(statsRoutesSource, /runtimeSnapshotAgeMs/, '系统指标接口必须返回运行态快照年龄')
+assert.match(statsRoutesSource, /const runtimeSnapshotAgeMs/, '系统指标接口必须计算快照年龄用于过期判断')
+assert.doesNotMatch(systemMetricsRuntimeRouteSource, /runtimeSnapshotAgeMs,/, '系统指标接口不得返回页面未展示的快照年龄')
 assert.match(statsRoutesSource, /runtimeSnapshotStale/, '系统指标接口必须明确快照过期状态')
 assert.doesNotMatch(workerSchedulerSource, /state\.lastErrorAt = undefined/, '任务成功后必须保留最近失败时间供恢复状态判断')
 
@@ -72,9 +73,16 @@ interface AuditLogRuntimeResponse {
 }
 
 interface RuntimeLogSearchResponse {
-  items: unknown[]
+  items: Array<Record<string, unknown>>
+  hasMore: boolean
   page: number
   pageSize: number
+  total: number
+}
+
+interface RuntimeLogDetailDeltaResponse {
+  id: string
+  rawJson: string
 }
 
 interface RuntimeLogFacetsResponse {
@@ -84,17 +92,6 @@ interface RuntimeLogFacetsResponse {
   totalIndexed: number
   levels: Array<{ value: string; count: number }>
   events: string[]
-}
-
-interface RuntimeLogRuntimeResponse {
-  runtimeAvailable: boolean
-  ingestWorkerAvailable: boolean
-  runtimeLogIndexQueueAvailable: boolean
-  dbService: {
-    statusAvailable: boolean
-    stateAvailable: boolean
-  }
-  gatewayAccountSideEffectsAvailable: boolean
 }
 
 interface SystemMetricsResponse {
@@ -171,6 +168,12 @@ try {
     ['hasMore', 'items', 'page', 'pageSize', 'total'].sort(),
     '运行日志列表只应返回分页数据，不得夹带运行态或保留期'
   )
+  assert.equal(runtimeLogSearch.items[0]?.id, seed.runtimeLogId, '运行日志列表应返回测试摘要行')
+  assert(!('rawJson' in runtimeLogSearch.items[0]!), '运行日志列表响应不得提前返回 rawJson')
+  assert(!('createdAt' in runtimeLogSearch.items[0]!), '运行日志列表响应不得返回未消费 createdAt')
+  const runtimeLogDetail = await getEnvelope<RuntimeLogDetailDeltaResponse>(baseUrl, `/__aisys__/api/runtime-logs/${seed.runtimeLogId}`, seed.adminCookie)
+  assert.deepEqual(Object.keys(runtimeLogDetail).sort(), ['id', 'rawJson'], '运行日志详情 HTTP 响应只应补充 id + rawJson')
+  assert.match(runtimeLogDetail.rawJson, /runtime_snapshot_detail_delta/, '运行日志详情增量应返回完整原文')
 
   const runtimeLogFacets = await getEnvelope<RuntimeLogFacetsResponse>(baseUrl, '/__aisys__/api/runtime-logs/facets', seed.adminCookie)
   assert.equal(typeof runtimeLogFacets.retentionDays, 'number', '运行日志 facets 必须返回保留天数')
@@ -192,25 +195,6 @@ try {
   )
   const runtimeLogGrepOptions = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/runtime-logs/grep-options', seed.adminCookie)
   assert('defaultRangeDays' in runtimeLogGrepOptions, 'grep 模式应通过独立接口读取文件时间范围')
-
-  const runtimeLogRuntime = await getEnvelope<RuntimeLogRuntimeResponse>(baseUrl, '/__aisys__/api/runtime-logs/runtime', seed.adminCookie)
-  assert.equal(runtimeLogRuntime.runtimeAvailable, false, '运行日志 runtime 应标记 server runtime 不可用')
-  assert.equal(runtimeLogRuntime.ingestWorkerAvailable, false, '运行日志 runtime 应标记 ingest worker 不可用')
-  assert.equal(runtimeLogRuntime.runtimeLogIndexQueueAvailable, false, '运行日志 runtime 应标记索引队列不可用')
-  assert.equal(runtimeLogRuntime.dbService.statusAvailable, true, 'DB service 本地 status 仍应可用')
-  assert.equal(runtimeLogRuntime.dbService.stateAvailable, false, 'server runtime 缺失时 DB service 父进程状态应标记不可用')
-  assert.equal(runtimeLogRuntime.gatewayAccountSideEffectsAvailable, false, '网关账户副作用运行态应标记不可用')
-  assert.deepEqual(
-    Object.keys(runtimeLogRuntime).sort(),
-    [
-      'dbService',
-      'gatewayAccountSideEffectsAvailable',
-      'runtimeAvailable',
-      'runtimeLogIndexQueueAvailable',
-      'ingestWorkerAvailable'
-    ].sort(),
-    '运行日志告警运行态只应返回页面消费的可用性字段'
-  )
 
   const systemMetricsRuntime = await getEnvelope<SystemMetricsRuntimeResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/runtime', seed.adminCookie)
   assert.equal(systemMetricsRuntime.runtimeSnapshotAvailable, false, '系统指标应标记 runtime snapshot 不可用')
@@ -268,7 +252,7 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedData(): { accountId: string; adminCookie: string; groupId: string } {
+function seedData(): { accountId: string; adminCookie: string; groupId: string; runtimeLogId: string } {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
   repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
@@ -287,6 +271,9 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     concurrencyLimit: 10,
     schedulable: true,
     groupId: group.id
@@ -297,11 +284,24 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
     failureThreshold: 3,
     statusCode: 200
   }), true, '运行态契约 fixture 应显式通过后台健康检查激活账户')
+  const runtimeLogId = 'rtlog_runtime_snapshot_detail_delta'
+  const runtimeLogTime = new Date().toISOString()
+  repositories.createRuntimeLogsBatch([{
+    id: runtimeLogId,
+    time: runtimeLogTime,
+    level: 'info',
+    traceId: 'trace-runtime-snapshot-detail-delta',
+    event: 'runtime_snapshot_detail_delta',
+    message: 'runtime snapshot detail delta',
+    rawJson: JSON.stringify({ event: 'runtime_snapshot_detail_delta', time: runtimeLogTime }),
+    createdAt: runtimeLogTime
+  }])
   usageStatsRepository.refreshDirtyGroupAccountStatsCache()
   return {
     accountId: account.id,
     adminCookie: `juhe_ai_session=${repositories.createSession(admin.id, 1).token}`,
-    groupId: group.id
+    groupId: group.id,
+    runtimeLogId
   }
 }
 

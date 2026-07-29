@@ -77,20 +77,17 @@ assert.equal(columnKeys.includes('success'), false, '结果状态不应继续占
 assert.equal(columnKeys.includes('statusCode'), false, 'HTTP 状态码不应继续占用独立列')
 assert.equal(columnKeys.includes('status'), true, '结果状态和 HTTP 状态码应合并为状态列')
 const tableSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordsTable.vue'), 'utf8')
-assert.match(tableSource, /column\.key === 'status'[\s\S]*UsageRecordResultCell[\s\S]*statusCodeText\(record\)/, '状态列必须显示结果和 HTTP 状态码两个标签，并保留失败原因提示')
+assert.match(tableSource, /column\.key === 'status'[\s\S]*UsageRecordResultCell[\s\S]*statusCodeText\(record\)/, '状态列必须显示结果和 HTTP 状态码两个标签')
 assert.match(tableSource, /<a-tag v-if="typeof record\.statusCode === 'number'" :color="statusCodeColor\(record\)">/, '状态码缺失时不得渲染空标签')
 
 const resultCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordResultCell.vue'), 'utf8')
-const failedResultTemplate = resultCellSource.match(/<span v-if="!record\.success"[\s\S]*?<\/span>/)?.[0] ?? ''
-assert.ok(
-  failedResultTemplate.indexOf('InfoCircleOutlined') < failedResultTemplate.indexOf('<a-tag color="red">失败</a-tag>'),
-  '失败原因图标必须显示在失败标签左侧'
-)
+assert.match(resultCellSource, /record\.success \? '成功' : '失败'/, '结果单元格只显示列表可直接渲染的成功或失败标签')
+assert.doesNotMatch(resultCellSource, /InfoCircleOutlined|failureReason|a-tooltip/, '轻量列表不得依赖失败详情或悬浮提示')
 
 const costCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordCostCell.vue'), 'utf8')
 assert.doesNotMatch(costCellSource, />计价信息</, '成本明细不得保留独立计价信息分组')
-assert.match(costCellSource, />最终单价<[\s\S]*v-for="row in finalPriceRows"/, '最终单价分组必须展示合并后的计价事实和单价')
-assert.match(costCellSource, /finalPriceRows = computed\(\(\) => \[\.\.\.metadataRows\.value, \.\.\.unitPriceRows\.value\]\)/, '计价模型等计价事实必须并入最终单价行列表')
+assert.match(costCellSource, /formatCost\(record\.costUsd\)/, '列表成本单元格只显示可直接渲染的最终成本')
+assert.doesNotMatch(costCellSource, /finalPriceRows|metadataRows|unitPriceRows/, '轻量列表不得依赖计价详情行')
 assert.doesNotMatch(viewSource, /openUsageRecordDetail|UsageRecordDetailDrawer|createUsageRecordDetailRequestGate/, '使用记录页面不得保留详情组件或详情请求门禁')
 assert.equal(columnKeys.includes('actions'), false, '使用记录列表不得保留操作列')
 assert.doesNotMatch(tableSource, /open-detail|open-trace-target|查看运行日志|查看审计日志|查看详情/, '桌面列表不得保留详情或日志跳转')

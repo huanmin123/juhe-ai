@@ -115,6 +115,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
+import axios from 'axios'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -186,6 +187,13 @@ import {
   createAuthorizationResourceTypeOptions
 } from './authorizationTableColumns'
 import { useAuthorizationActions } from './useAuthorizationActions'
+import {
+  applyAuthorizationCreateMutation,
+  applyAuthorizationPatchMutation,
+  applyAuthorizationReturnMutation,
+  applyAuthorizationTerminalMutation,
+  type AuthorizationListMutationState
+} from './authorizationListMutation'
 import { useAuthorizationOptionState } from './useAuthorizationOptionState'
 
 const createModalOpen = ref(false)
@@ -216,6 +224,7 @@ const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
 const selectedFilterOwnerSystemAccountId = computed(() => {
   return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
 })
+let authorizationMutationRevision = 0
 const {
   handleDropdown: handleFilterOwnerDropdown,
   handleSearch: handleFilterOwnerSearch,
@@ -233,21 +242,22 @@ const {
   mobileLoadingMore,
   pagination,
   tablePagination,
+  applyResult: applyAuthorizationPageResult,
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileAuthorizations,
-  removeItems: removeAuthorizationItems,
-  resetPagination,
-  updateItems: updateAuthorizationItems
+  resetPagination
 } = useResponsivePagedList<ResourceAuthorizationListItem>({
   pageSize: authorizationsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: authorizationListTotalText,
   fetchPage: async (_options, pageState) => {
+    const mutationRevision = authorizationMutationRevision
     const params = createAuthorizationListParams(pageState)
-    return isManagementView.value
+    const result = isManagementView.value
       ? await api.authorizations.listPage(params)
       : await api.myAuthorizations.listPage(params)
+    return mutationRevision === authorizationMutationRevision ? result : { ...result, superseded: true }
   },
   requestSignature: (_options, pageState) => [
     isManagementView.value ? 'management' : 'self',
@@ -422,12 +432,62 @@ const hasReturnableInboundAuthorization = computed(() => {
   if (isManagementView.value || filters.direction !== 'inbound') return false
   return authorizations.value.some((authorization) => canReturnAuthorization(authorization))
 })
+function authorizationMutationFilterContext() {
+  return {
+    ...authorizationListFilterContext(),
+    currentSystemAccountId: currentSystemAccountId.value
+  }
+}
+
+function commitAuthorizationListMutation(result: AuthorizationListMutationState): void {
+  authorizationMutationRevision += 1
+  const total = Math.max(0, pagination.total + result.totalDelta)
+  applyAuthorizationPageResult({
+    items: result.items,
+    total,
+    hasMore: pagination.current * pagination.pageSize < total,
+    page: pagination.current,
+    pageSize: pagination.pageSize
+  })
+}
+
+function applyCreateMutation(result: Parameters<typeof applyAuthorizationCreateMutation>[1]): void {
+  commitAuthorizationListMutation(applyAuthorizationCreateMutation(
+    authorizations.value,
+    result,
+    authorizationMutationFilterContext(),
+    pagination.current,
+    pagination.pageSize
+  ))
+}
+
+function applyPatchMutation(result: Parameters<typeof applyAuthorizationPatchMutation>[1]): void {
+  commitAuthorizationListMutation(applyAuthorizationPatchMutation(authorizations.value, result, authorizationMutationFilterContext()))
+}
+
+function applyTerminalMutation(result: Parameters<typeof applyAuthorizationTerminalMutation>[1]): void {
+  commitAuthorizationListMutation(applyAuthorizationTerminalMutation(authorizations.value, result, authorizationMutationFilterContext()))
+}
+
+function applyReturnMutation(authorizationId: string): void {
+  commitAuthorizationListMutation(applyAuthorizationReturnMutation(authorizations.value, authorizationId))
+}
+
+function onAuthorizationVersionConflict(error: unknown): void {
+  if (axios.isAxiosError(error) && error.response?.status === 409) {
+    void loadData({ quiet: true })
+  }
+}
 const {
   authorizationCreating,
   confirmExpireChange,
   createAuthorization,
   handleActionMenuClick
 } = useAuthorizationActions({
+  applyCreateMutation,
+  applyPatchMutation,
+  applyReturnMutation,
+  applyTerminalMutation,
   createAuthorizationScopeParams,
   createExcludedGranteeIds,
   createForm,
@@ -440,10 +500,8 @@ const {
   expireForm,
   expireModalOpen,
   isManagementView,
-  loadData,
-  removeAuthorizationItems,
-  selectedCreateAccount,
-  updateAuthorizationItems
+  onVersionConflict: onAuthorizationVersionConflict,
+  selectedCreateAccount
 })
 const rawColumns = computed(() => {
   return authorizationVisibleColumns({

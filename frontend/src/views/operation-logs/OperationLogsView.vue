@@ -67,6 +67,7 @@
       :detail="detail"
       :is-management-view="isManagementView"
       :loading="detailLoading"
+      @close="closeTransientDetails"
     />
   </a-card>
 </template>
@@ -84,11 +85,12 @@ import { useScopedOperationLogsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
-import type { OperationLogDetail, OperationLogListItem } from '@/types/domain'
+import type { OperationLogListItem, OperationLogRenderedDetail } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import OperationLogDetailDrawer from './OperationLogDetailDrawer.vue'
 import OperationLogFilterToolbar from './OperationLogFilterToolbar.vue'
 import OperationLogList from './OperationLogList.vue'
+import { mergeOperationLogDetail } from './operationLogDetail'
 import { operationLogFilterCounts, operationLogListParams } from './operationLogFilters'
 import {
   applyOperationLogPageState,
@@ -118,7 +120,7 @@ const effectiveInitialPageState: OperationLogsPageState = initialTraceId
   : initialPageState
 
 const detailLoading = ref(false)
-const detail = ref<OperationLogDetail>()
+const detail = ref<OperationLogRenderedDetail>()
 const detailOpen = ref(false)
 let detailRequestId = 0
 let skipNextRouteTraceRestore = false
@@ -291,12 +293,14 @@ async function openDetail(record: OperationLogListItem): Promise<void> {
   detailRequestId = requestId
   detailOpen.value = true
   detailLoading.value = true
+  detail.value = undefined
   try {
-    const nextDetail = await operationLogsApi.detail(record.id)
+    const supplement = await operationLogsApi.detail(record.id)
     if (requestId === detailRequestId) {
-      detail.value = nextDetail
+      detail.value = mergeOperationLogDetail(record, supplement)
     }
   } catch (error) {
+    if (requestId !== detailRequestId) return
     console.error(error)
     message.error('加载操作日志详情失败')
   } finally {

@@ -87,6 +87,8 @@ export interface ProxyProfileManagementPatchOutcome {
   name: string
   before: Record<string, unknown>
   after: Record<string, unknown>
+  passwordChanged: boolean
+  runtimeChanged: boolean
 }
 
 export class ProxyProfileUpdateConflictError extends Error {
@@ -102,7 +104,6 @@ export interface ProxyProfileListOptions {
   page?: number
   pageSize?: number
   keyword?: string
-  systemAccountId?: string
 }
 
 export interface ProxyProfileOptionListOptions {
@@ -219,7 +220,7 @@ export async function findProxyAsync(id: string): Promise<ProxyProfileSummary | 
     return findProxyReadOnly(id)
   }
   const client = await getProxyDatabaseClient()
-  const row = await client.one<ProxyRow>(`SELECT ${proxySummarySelectColumns()} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
+  const row = await client.one<ProxyRow>(`SELECT ${proxySummarySelectColumns(client.driver)} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
   return row ? proxySummaryFromRow(row) : undefined
 }
 
@@ -331,14 +332,12 @@ function proxyOptionEnabled(value: number | boolean): boolean {
 function queryProxies(options: ProxyProfileListOptions = {}, paged = false): ProxyProfileListResult {
   const normalized = normalizeProxyListOptions(options)
   const keywordFilter = buildProxyKeywordFilter(normalized.keyword)
-  const scopeFilter = buildProxySystemAccountFilter(normalized.systemAccountId)
-  const filters = [keywordFilter.clause, scopeFilter.clause].filter(Boolean)
-  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+  const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
   const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = getBusinessDatabase()
     .prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ${whereClause} ORDER BY updated_at DESC, id DESC${pageClause}`)
-    .all(...keywordFilter.params, ...scopeFilter.params, ...pageParams) as unknown as ProxyRow[]
+    .all(...keywordFilter.params, ...pageParams) as unknown as ProxyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = pageRows.rows.map(proxySummaryFromRow)
   return {
@@ -353,18 +352,16 @@ function queryProxies(options: ProxyProfileListOptions = {}, paged = false): Pro
 async function queryProxiesAsync(options: ProxyProfileListOptions = {}, paged = false): Promise<ProxyProfileListResult> {
   const normalized = normalizeProxyListOptions(options)
   const keywordFilter = buildProxyKeywordFilterAsync(normalized.keyword)
-  const scopeFilter = buildProxySystemAccountFilter(normalized.systemAccountId)
-  const filters = [keywordFilter.clause, scopeFilter.clause].filter(Boolean)
-  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+  const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
   const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const client = await getProxyDatabaseClient()
   const rows = await client.query<ProxyRow>(
-    `SELECT ${proxySummarySelectColumns()}
+    `SELECT ${proxySummarySelectColumns(client.driver)}
      FROM ${proxyProfilesTable(client)}
      ${whereClause}
      ORDER BY updated_at DESC, id DESC${pageClause}`,
-    [...keywordFilter.params, ...scopeFilter.params, ...pageParams]
+    [...keywordFilter.params, ...pageParams]
   )
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = pageRows.rows.map(proxySummaryFromRow)
@@ -377,7 +374,7 @@ async function queryProxiesAsync(options: ProxyProfileListOptions = {}, paged = 
   }
 }
 
-function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<Pick<ProxyProfileListOptions, 'page' | 'pageSize'>> & Pick<ProxyProfileListOptions, 'keyword' | 'systemAccountId'> {
+function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<Pick<ProxyProfileListOptions, 'page' | 'pageSize'>> & Pick<ProxyProfileListOptions, 'keyword'> {
   const rawPageSize = options.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(200, Math.max(1, rawPageSize))
@@ -386,14 +383,8 @@ function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<P
   return {
     page,
     pageSize,
-    keyword: optionalString(options.keyword),
-    systemAccountId: optionalString(options.systemAccountId)
+    keyword: optionalString(options.keyword)
   }
-}
-
-function buildProxySystemAccountFilter(systemAccountId?: string): { clause: string; params: string[] } {
-  const value = optionalString(systemAccountId)
-  return value ? { clause: 'system_account_id = ?', params: [value] } : { clause: '', params: [] }
 }
 
 function buildProxyKeywordFilter(keyword?: string): { clause: string; params: string[] } {
@@ -444,7 +435,7 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
   }
 }
 
-function proxySummarySelectColumns(): string {
+function proxySummarySelectColumns(driver: DatabaseClient['driver'] = 'sqlite'): string {
   return [
     'id',
     'name',
@@ -460,7 +451,9 @@ function proxySummarySelectColumns(): string {
     'outbound_region',
     'last_test_message',
     'last_tested_at',
-    'updated_at'
+    driver === 'postgres'
+      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+      : 'updated_at'
   ].join(', ')
 }
 
@@ -678,7 +671,7 @@ export async function updateProxyAsync(id: string, input: Record<string, unknown
     updated = await client.transaction(async (tx) => {
       // Serialize patch-on-current-row semantics so disjoint management edits cannot overwrite each other.
       const currentRow = await tx.one<ProxyRow>(`
-        SELECT ${proxySummarySelectColumns()}, password_encrypted
+        SELECT ${proxySummarySelectColumns(tx.driver)}, password_encrypted
         FROM ${proxyProfilesTable(tx)}
         WHERE id = ?
         FOR UPDATE
@@ -708,7 +701,7 @@ export async function updateProxyAsync(id: string, input: Record<string, unknown
           test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?,
           updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST(? AS timestamptz))
         WHERE id = ?
-        RETURNING ${proxySummarySelectColumns()}
+        RETURNING ${proxySummarySelectColumns(tx.driver)}
       `, [
         next.name,
         next.description ?? null,
@@ -746,64 +739,64 @@ interface ProxyManagementPatchPlan {
   after: Record<string, unknown>
   values: ProxyProfileMutationValues
   connectionChanged: boolean
+  passwordChanged: boolean
+  runtimeChanged: boolean
   name: string
 }
 
 export function patchProxyForManagement(
   id: string,
   input: Record<string, unknown>,
-  expectedUpdatedAt: string,
-  systemAccountId: string
+  expectedUpdatedAt: string
 ): ProxyProfileManagementPatchOutcome | undefined {
   assertKnownInputKeys(input, proxyInputKeys, '代理')
   const expectedRevision = normalizeProxyConfigRevision(expectedUpdatedAt)
-  const ownerId = normalizedRequiredSystemAccountId(systemAccountId)
   const database = getBusinessDatabase()
-  let changed = false
+  let runtimeChanged = false
   let outcome: ProxyProfileManagementPatchOutcome | undefined
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   try {
-      const selectColumns = proxyManagementPatchSelectColumns(input, 'sqlite')
-      const currentRow = database.prepare(`
-        SELECT ${selectColumns}
-        FROM proxy_profiles
-        WHERE id = ? AND system_account_id = ?
-      `).get(id, ownerId) as unknown as Record<string, unknown> | undefined
-      if (!currentRow) return
+    const selectColumns = proxyManagementPatchSelectColumns(input, 'sqlite')
+    const currentRow = database.prepare(`
+      SELECT ${selectColumns}
+      FROM proxy_profiles
+      WHERE id = ?
+    `).get(id) as unknown as Record<string, unknown> | undefined
+    if (currentRow) {
       const currentUpdatedAt = proxyPatchTimestamp(currentRow.updated_at)
-      if (currentUpdatedAt !== expectedRevision) {
+      if (!proxyRevisionsEqual(currentUpdatedAt, expectedRevision)) {
         throw new ProxyProfileUpdateConflictError(id)
       }
-      const plan = buildProxyManagementPatchPlan(input, currentRow)
+      const plan = buildProxyManagementPatchPlan(input, currentRow, 'sqlite')
       if (plan.assignments.length === 0) {
         outcome = proxyManagementPatchOutcome(id, currentUpdatedAt, plan, false)
-        return
+      } else {
+        appendProxyTestResetAssignments(plan)
+        const updatedAtCandidate = nowIso()
+        const setClauses = plan.assignments.map(({ column }) => `${column} = ?`)
+        setClauses.push(`updated_at = CASE
+          WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
+          ELSE ?
+        END`)
+        const updatedRow = database.prepare(`
+          UPDATE proxy_profiles
+          SET ${setClauses.join(', ')}
+          WHERE id = ? AND updated_at = ?
+          RETURNING updated_at
+        `).get(
+          ...plan.assignments.map(({ value }) => value as never),
+          updatedAtCandidate,
+          updatedAtCandidate,
+          id,
+          currentUpdatedAt
+        ) as unknown as { updated_at?: unknown } | undefined
+        if (!updatedRow) {
+          throw new ProxyProfileUpdateConflictError(id)
+        }
+        runtimeChanged = plan.runtimeChanged
+        outcome = proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
       }
-      appendProxyTestResetAssignments(plan)
-      const updatedAtCandidate = nowIso()
-      const setClauses = plan.assignments.map(({ column }) => `${column} = ?`)
-      setClauses.push(`updated_at = CASE
-        WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
-        ELSE ?
-      END`)
-      const updatedRow = database.prepare(`
-        UPDATE proxy_profiles
-        SET ${setClauses.join(', ')}
-        WHERE id = ? AND system_account_id = ? AND updated_at = ?
-        RETURNING updated_at
-      `).get(
-        ...plan.assignments.map(({ value }) => value as never),
-        updatedAtCandidate,
-        updatedAtCandidate,
-        id,
-        ownerId,
-        expectedRevision
-      ) as unknown as { updated_at?: unknown } | undefined
-      if (!updatedRow) {
-        throw new ProxyProfileUpdateConflictError(id)
-      }
-      changed = true
-      outcome = proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
+    }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -812,7 +805,7 @@ export function patchProxyForManagement(
     }
     throw error
   }
-  if (changed) {
+  if (runtimeChanged) {
     notifyGatewayRuntimeCacheInvalidation('proxy_updated')
   }
   return outcome
@@ -821,32 +814,30 @@ export function patchProxyForManagement(
 export async function patchProxyForManagementAsync(
   id: string,
   input: Record<string, unknown>,
-  expectedUpdatedAt: string,
-  systemAccountId: string
+  expectedUpdatedAt: string
 ): Promise<ProxyProfileManagementPatchOutcome | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return patchProxyForManagement(id, input, expectedUpdatedAt, systemAccountId)
+    return patchProxyForManagement(id, input, expectedUpdatedAt)
   }
   assertKnownInputKeys(input, proxyInputKeys, '代理')
   const expectedRevision = normalizeProxyConfigRevision(expectedUpdatedAt)
-  const ownerId = normalizedRequiredSystemAccountId(systemAccountId)
   const client = await getProxyDatabaseClient()
-  let changed = false
+  let runtimeChanged = false
   let outcome: ProxyProfileManagementPatchOutcome | undefined
   try {
     outcome = await client.transaction(async (tx) => {
       const currentRow = await tx.one<Record<string, unknown>>(`
         SELECT ${proxyManagementPatchSelectColumns(input, 'postgres')}
         FROM ${proxyProfilesTable(tx)}
-        WHERE id = ? AND system_account_id = ?
+        WHERE id = ?
         FOR UPDATE
-      `, [id, ownerId])
+      `, [id])
       if (!currentRow) return undefined
       const currentUpdatedAt = proxyPatchTimestamp(currentRow.updated_at)
-      if (currentUpdatedAt !== expectedRevision) {
+      if (!proxyRevisionsEqual(currentUpdatedAt, expectedRevision)) {
         throw new ProxyProfileUpdateConflictError(id)
       }
-      const plan = buildProxyManagementPatchPlan(input, currentRow)
+      const plan = buildProxyManagementPatchPlan(input, currentRow, 'postgres')
       if (plan.assignments.length === 0) {
         return proxyManagementPatchOutcome(id, currentUpdatedAt, plan, false)
       }
@@ -858,20 +849,18 @@ export async function patchProxyForManagementAsync(
         UPDATE ${proxyProfilesTable(tx)}
         SET ${setClauses.join(', ')}
         WHERE id = ?
-          AND system_account_id = ?
           AND updated_at = CAST(? AS timestamptz)
         RETURNING to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
       `, [
         ...plan.assignments.map(({ value }) => value),
         updatedAtCandidate,
         id,
-        ownerId,
-        expectedRevision
+        currentUpdatedAt
       ])
       if (!updatedRow) {
         throw new ProxyProfileUpdateConflictError(id)
       }
-      changed = true
+      runtimeChanged = plan.runtimeChanged
       return proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
     })
   } catch (error) {
@@ -880,7 +869,7 @@ export async function patchProxyForManagementAsync(
     }
     throw error
   }
-  if (changed) {
+  if (runtimeChanged) {
     notifyGatewayRuntimeCacheInvalidation('proxy_updated')
   }
   return outcome
@@ -911,12 +900,18 @@ function proxyManagementPatchSelectColumns(input: Record<string, unknown>, drive
   return [...columns].join(', ')
 }
 
-function buildProxyManagementPatchPlan(input: Record<string, unknown>, row: Record<string, unknown>): ProxyManagementPatchPlan {
+function buildProxyManagementPatchPlan(
+  input: Record<string, unknown>,
+  row: Record<string, unknown>,
+  driver: DatabaseClient['driver']
+): ProxyManagementPatchPlan {
   const assignments: ProxyManagementPatchPlan['assignments'] = []
   const before: Record<string, unknown> = {}
   const after: Record<string, unknown> = {}
   const values: ProxyProfileMutationValues = {}
   let connectionChanged = false
+  let passwordChanged = false
+  let runtimeChanged = false
   const has = (key: string) => Object.prototype.hasOwnProperty.call(input, key)
   const add = (
     key: keyof ProxyProfileMutationValues,
@@ -932,6 +927,7 @@ function buildProxyManagementPatchPlan(input: Record<string, unknown>, row: Reco
     assignments.push({ column, value: databaseValue })
     Object.assign(values, { [key]: nextValue })
     if (affectsConnection) connectionChanged = true
+    if (affectsConnection) runtimeChanged = true
   }
   if (has('name')) {
     const next = normalizedRequiredProxyName(input.name)
@@ -967,12 +963,15 @@ function buildProxyManagementPatchPlan(input: Record<string, unknown>, row: Reco
     if (currentPassword !== nextPassword) {
       assignments.push({ column: 'password_encrypted', value: encryptJson({ password: nextPassword }) })
       connectionChanged = true
+      passwordChanged = true
+      runtimeChanged = true
     }
   }
   if (has('enabled')) {
     const current = proxyOptionEnabled(row.enabled as number | boolean)
     const next = normalizeOptionalBoolean(input.enabled, current, '代理启用状态')
-    add('enabled', 'enabled', current, next, next)
+    add('enabled', 'enabled', current, next, driver === 'sqlite' ? (next ? 1 : 0) : next)
+    if (current !== next) runtimeChanged = true
   }
   return {
     assignments,
@@ -980,6 +979,8 @@ function buildProxyManagementPatchPlan(input: Record<string, unknown>, row: Reco
     after,
     values,
     connectionChanged,
+    passwordChanged,
+    runtimeChanged,
     name: has('name') ? String(after.name) : String(row.name)
   }
 }
@@ -1019,23 +1020,31 @@ function proxyManagementPatchOutcome(
     },
     name: plan.name,
     before: plan.before,
-    after: plan.after
+    after: plan.after,
+    passwordChanged: plan.passwordChanged,
+    runtimeChanged: changed && plan.runtimeChanged
   }
 }
 
 function proxyPatchTimestamp(value: unknown): string {
   if (value instanceof Date) return value.toISOString()
-  if (typeof value === 'string' && value) return value
+  if (typeof value === 'string' && value && Number.isFinite(Date.parse(value))) return value
   throw new Error('代理配置版本无效')
+}
+
+function proxyRevisionsEqual(left: string, right: string): boolean {
+  return normalizedProxyRevisionToken(left) === normalizedProxyRevisionToken(right)
+}
+
+function normalizedProxyRevisionToken(value: string): string {
+  const utcMatch = /^(.*?)(?:\.(\d+))?Z$/i.exec(value)
+  if (!utcMatch) return value
+  const fraction = (utcMatch[2] ?? '').replace(/0+$/, '')
+  return `${utcMatch[1]}${fraction ? `.${fraction}` : ''}Z`
 }
 
 function optionalStringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-function normalizedRequiredSystemAccountId(value: unknown): string {
-  if (typeof value === 'string' && value.trim()) return value.trim()
-  throw new Error('缺少系统账户上下文')
 }
 
 function normalizedAttemptedProxyName(input: Record<string, unknown>): string {
@@ -1147,7 +1156,7 @@ export async function updateProxyTestStateAsync(
     WHERE id = ?
       AND updated_at = ?
       AND (last_tested_at IS NULL OR last_tested_at <= ?)
-    RETURNING ${proxySummarySelectColumns()}
+    RETURNING ${proxySummarySelectColumns(client.driver)}
   `
   const params = [
     testStatus,
@@ -1192,30 +1201,39 @@ export async function deleteProxyAsync(id: string): Promise<boolean> {
   return result.changes > 0
 }
 
-export async function deleteProxyForManagementAsync(id: string, systemAccountId: string): Promise<{ id: string; name: string } | undefined> {
-  const ownerId = normalizedRequiredSystemAccountId(systemAccountId)
+export async function deleteProxyForManagementAsync(id: string): Promise<{ id: string; name: string } | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     const database = getBusinessDatabase()
-    const current = database.prepare('SELECT id, name FROM proxy_profiles WHERE id = ? AND system_account_id = ?')
-      .get(id, ownerId) as unknown as { id?: string; name?: string } | undefined
-    if (!current?.id || !current.name) return undefined
-    const usage = proxyUsageSummary(id)
-    if (usage.accountCount > 0) {
-      throw new ProxyInUseError(usage.accountCount, usage.accountNames, usage.accountCountIsLowerBound)
+    const transactionStarted = beginImmediateDatabaseTransaction(database)
+    try {
+      const current = database.prepare('SELECT id, name FROM proxy_profiles WHERE id = ?')
+        .get(id) as unknown as { id?: string; name?: string } | undefined
+      if (!current?.id || !current.name) {
+        commitDatabaseTransaction(database, transactionStarted)
+        return undefined
+      }
+      const usage = proxyUsageSummary(id)
+      if (usage.accountCount > 0) {
+        throw new ProxyInUseError(usage.accountCount, usage.accountNames, usage.accountCountIsLowerBound)
+      }
+      const deleted = database.prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
+      const result = Number(deleted.changes ?? 0) === 1 ? { id, name: current.name } : undefined
+      commitDatabaseTransaction(database, transactionStarted)
+      if (result) notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
+      return result
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      throw error
     }
-    const deleted = database.prepare('DELETE FROM proxy_profiles WHERE id = ? AND system_account_id = ?').run(id, ownerId)
-    if (Number(deleted.changes ?? 0) !== 1) return undefined
-    notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
-    return { id, name: current.name }
   }
   const client = await getProxyDatabaseClient()
   const result = await client.transaction(async (tx) => {
     const current = await tx.one<{ id?: string; name?: string }>(`
       SELECT id, name
       FROM ${proxyProfilesTable(tx)}
-      WHERE id = ? AND system_account_id = ?
+      WHERE id = ?
       FOR UPDATE
-    `, [id, ownerId])
+    `, [id])
     if (!current?.id || !current.name) return undefined
     const rows = await tx.query<Array<{ id?: string; name?: string }>[number]>(`
       SELECT id, name
@@ -1231,7 +1249,7 @@ export async function deleteProxyForManagementAsync(id: string, systemAccountId:
         rows.length >= proxyUsageWindowLimit
       )
     }
-    const deleted = await tx.execute(`DELETE FROM ${proxyProfilesTable(tx)} WHERE id = ? AND system_account_id = ?`, [id, ownerId])
+    const deleted = await tx.execute(`DELETE FROM ${proxyProfilesTable(tx)} WHERE id = ?`, [id])
     return Number(deleted.changes ?? 0) === 1 ? { id, name: current.name } : undefined
   })
   if (result) notifyGatewayRuntimeCacheInvalidation('proxy_deleted')

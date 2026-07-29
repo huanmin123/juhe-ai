@@ -1,10 +1,10 @@
 import type {
-  AuditLogDetail,
+  AuditLogDetailPayloadSupplement,
   AuditLogPayloadDetail,
   AuditPayloadBlobStorageStatus
 } from '@/types/domain'
 
-export type AuditPayloadRow = AuditLogDetail['payloads'][number] | AuditLogPayloadDetail
+export type AuditPayloadRow = AuditLogDetailPayloadSupplement | AuditLogPayloadDetail
 
 export function payloadCaptureStatusDescription(record: AuditPayloadRow): string {
   const available = [

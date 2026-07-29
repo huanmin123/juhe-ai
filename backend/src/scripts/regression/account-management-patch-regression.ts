@@ -184,6 +184,7 @@ try {
   assert(groupPatch.result)
   assert.equal(groupPatch.result.configRevision, 3)
   assert.deepEqual(groupPatch.result.changedFields, ['groupId'])
+  assert.equal(groupPatch.result.authorizationInstancesAffected, false, '来源账户本地分组变化不影响授权实例')
   const groupAccountUpdate = requiredAccountUpdate(groupPatch.dml)
   assert.doesNotMatch(groupAccountUpdate, /"(?:name|notes|status|credentials_encrypted)"\s*=/i)
   assert(groupPatch.dml.some((sql) => /^DELETE FROM "?group_accounts"?/i.test(sql)))
@@ -424,11 +425,11 @@ try {
     data?: { id?: string; configRevision?: number; changedFields?: string[]; authorizationInstancesAffected?: boolean }
   }
   assert(payload.data)
-  assert.deepEqual(Object.keys(payload.data).sort(), ['authorizationInstancesAffected', 'changedFields', 'configRevision', 'id'])
+  assert.deepEqual(Object.keys(payload.data).sort(), ['changedFields', 'configRevision', 'id'])
   assert.equal(payload.data.id, account.id)
   assert.equal(payload.data.configRevision, 5)
   assert.deepEqual(payload.data.changedFields, ['notes'])
-  assert.equal(payload.data.authorizationInstancesAffected, false)
+  assert.equal(payload.data.authorizationInstancesAffected, undefined)
 
   const staleHttp = await captureBusinessDml(() => fetch(`http://127.0.0.1:${address.port}/accounts/${account.id}`, {
     method: 'PATCH',
@@ -450,8 +451,7 @@ try {
   assert.deepEqual(noOpPayload.data, {
     id: account.id,
     configRevision: 5,
-    changedFields: [],
-    authorizationInstancesAffected: false
+    changedFields: []
   })
   assert.deepEqual(noOpHttp.dml, [], 'HTTP no-op 不得写账户、关系或审计业务表')
 

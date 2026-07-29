@@ -27,6 +27,22 @@ const openCreateSource = sourceBetween(viewSource, 'function openCreateModal', '
 assert.match(openCreateSource, /createModalOpen\.value = true/, '新增授权操作必须直接打开弹窗')
 assert.doesNotMatch(openCreateSource, /loadCreate\w+Options\(/, '打开新增授权弹窗不得预取任何候选项')
 
+const createSubmitSource = sourceBetween(actionSource, "const createAuthorization = submitAction", 'async function revokeManualSource')
+assert.match(createSubmitSource, /applyCreateMutation\(result\)/, '创建成功必须直接消费服务端权威列表行')
+assert.doesNotMatch(createSubmitSource, /loadData|reload/, '创建成功不得重新加载授权列表')
+
+const revokeSource = sourceBetween(actionSource, 'async function revokeWithMessage', 'async function returnAuthorization')
+assert.match(revokeSource, /expectedUpdatedAt: item\.updatedAt/, '回收授权必须提交列表行 CAS 版本')
+assert.match(revokeSource, /applyTerminalMutation\(updated\)/, '回收成功必须本地合并终态最小回执')
+assert.doesNotMatch(revokeSource, /loadData|reload/, '回收成功不得重新加载授权列表')
+
+const returnSource = sourceBetween(actionSource, 'async function returnAuthorization', 'function handleActionMenuClick')
+assert.match(returnSource, /expectedUpdatedAt: item\.updatedAt/, '归还授权必须提交列表行 CAS 版本')
+assert.match(returnSource, /applyReturnMutation\(item\.id\)/, '归还 204 后必须本地删除授权行')
+assert.doesNotMatch(returnSource, /loadData|reload/, '归还成功不得重新加载授权列表')
+
+assert.doesNotMatch(actionSource, /\bloadData\b|\breload\b/, 'authorization 动作层不得在成功路径回源整表')
+
 const granteeTypeWatchSource = sourceBetween(
   viewSource,
   'watch(() => createForm.granteeType',

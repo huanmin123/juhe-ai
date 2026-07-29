@@ -69,20 +69,23 @@ interface AccountOptionCandidatePage<T> {
 }
 
 export interface ModelCheckAccountOptionListOptions {
-  purpose: 'run' | 'history'
+  purpose: 'run' | 'history' | 'schedule'
+  accountId?: string
   keyword?: string
   selectedIds?: string[]
   limit: number
 }
 
 export function listModelCheckAccountOptions(access: AccessScope | undefined, options: ModelCheckAccountOptionListOptions): ModelCheckAccountOption[] {
-  const base = normalizeAccountOptionListOptions({ keyword: options.keyword, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: modelCheckCandidateLimit(options) })
-  const rows = queryAccountOptionRowsForAccess(access, base)
-  const selected = options.selectedIds?.length ? queryAccountOptionRowsForAccess(access, normalizeAccountOptionListOptions({ ids: options.selectedIds, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.selectedIds.length })) : []
+  const base = modelCheckAccountOptionQuery(options)
+  const rows = options.purpose === 'schedule'
+    ? queryOwnedAccountOptionRows(access, base)
+    : queryAccountOptionRowsForAccess(access, base)
+  const selected = !options.accountId && options.selectedIds?.length
+    ? (options.purpose === 'schedule' ? queryOwnedAccountOptionRows : queryAccountOptionRowsForAccess)(access, modelCheckSelectedAccountOptionQuery(options))
+    : []
   const selectedRows = selectModelCheckRows([...rows, ...selected])
-  if (options.purpose === 'history') {
-    return finalizeModelCheckOptions(modelCheckHistoryOptionsFromRows(selectedRows), options)
-  }
+  if (!options.accountId) return finalizeModelCheckOptions(modelCheckBaseOptionsFromRows(selectedRows), options)
   const resourceAccountIds = selectedRows.map(modelCheckResourceAccountId)
   return finalizeModelCheckOptions(
     modelCheckOptionsFromRows(
@@ -98,13 +101,17 @@ export async function listModelCheckAccountOptionsAsync(access: AccessScope | un
   if (sqliteReadWorkerPoolEnabled()) return requestSqliteReadWorker({ type: 'list_model_check_account_options_read_only', access, options })
   if (runtimeConfig.databaseDriver !== 'postgres') return listModelCheckAccountOptions(access, options)
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const base = normalizeAccountOptionListOptions({ keyword: options.keyword, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: modelCheckCandidateLimit(options) })
-  const rows = await queryAccountOptionRowsForAccessAsync(client, access, base)
-  const selected = options.selectedIds?.length ? await queryAccountOptionRowsForAccessAsync(client, access, normalizeAccountOptionListOptions({ ids: options.selectedIds, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.selectedIds.length })) : []
+  const base = modelCheckAccountOptionQuery(options)
+  const rows = options.purpose === 'schedule'
+    ? await queryOwnerAccountOptionRowsAsync(client, access, base)
+    : await queryAccountOptionRowsForAccessAsync(client, access, base)
+  const selected = !options.accountId && options.selectedIds?.length
+    ? options.purpose === 'schedule'
+      ? await queryOwnerAccountOptionRowsAsync(client, access, modelCheckSelectedAccountOptionQuery(options))
+      : await queryAccountOptionRowsForAccessAsync(client, access, modelCheckSelectedAccountOptionQuery(options))
+    : []
   const selectedRows = selectModelCheckRows([...rows, ...selected])
-  if (options.purpose === 'history') {
-    return finalizeModelCheckOptions(modelCheckHistoryOptionsFromRows(selectedRows), options)
-  }
+  if (!options.accountId) return finalizeModelCheckOptions(modelCheckBaseOptionsFromRows(selectedRows), options)
   const resourceAccountIds = selectedRows.map(modelCheckResourceAccountId)
   const [supportedModelsByAccountId, modelMappingsByAccountId] = await Promise.all([
     loadSupportedModelsByAccountIdsAsync(resourceAccountIds),
@@ -116,15 +123,14 @@ export async function listModelCheckAccountOptionsAsync(access: AccessScope | un
   )
 }
 
-function modelCheckHistoryOptionsFromRows(rows: AccountOptionRow[]): ModelCheckAccountOption[] {
+function modelCheckBaseOptionsFromRows(rows: AccountOptionRow[]): ModelCheckAccountOption[] {
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
     providerCode: row.provider_code,
     providerProtocolProfileId: row.provider_protocol_profile_id,
     protocolCode: row.protocol_code,
-    protocolVersion: row.protocol_version,
-    modelCheckModels: []
+    protocolVersion: row.protocol_version
   }))
 }
 
@@ -176,14 +182,32 @@ function finalizeModelCheckOptions(
   items: ModelCheckAccountOption[],
   options: ModelCheckAccountOptionListOptions
 ): ModelCheckAccountOption[] {
-  const filtered = options.purpose === 'run'
-    ? items.filter((item) => item.modelCheckModels.length > 0)
-    : items
-  return filtered.slice(0, options.limit)
+  return items.slice(0, options.limit)
 }
 
 function modelCheckCandidateLimit(options: ModelCheckAccountOptionListOptions): number {
-  return options.purpose === 'run' ? 50 : options.limit
+  return options.accountId ? 1 : options.purpose === 'run' || options.purpose === 'schedule' ? 50 : options.limit
+}
+
+function modelCheckAccountOptionQuery(options: ModelCheckAccountOptionListOptions) {
+  const runnable = options.purpose !== 'history'
+  return normalizeAccountOptionListOptions({
+    ids: options.accountId ? [options.accountId] : undefined,
+    keyword: options.accountId ? undefined : options.keyword,
+    status: runnable ? 'active' : undefined,
+    schedulable: runnable ? 'enabled' : 'all',
+    limit: modelCheckCandidateLimit(options)
+  })
+}
+
+function modelCheckSelectedAccountOptionQuery(options: ModelCheckAccountOptionListOptions) {
+  const runnable = options.purpose !== 'history'
+  return normalizeAccountOptionListOptions({
+    ids: options.selectedIds,
+    status: runnable ? 'active' : undefined,
+    schedulable: runnable ? 'enabled' : 'all',
+    limit: options.selectedIds?.length ?? 1
+  })
 }
 
 export async function collectAccountOptionCandidateMatches<T>(
@@ -384,10 +408,8 @@ async function queryOwnerAccountOptionRowsAsync(
   access: AccessScope | undefined,
   options: ReturnType<typeof normalizeAccountOptionListOptions>
 ): Promise<AccountOptionRow[]> {
-  const ownerSystemAccountId = manageableSystemAccountId(access)
-  if (!ownerSystemAccountId && !canAccessAll(access)) {
-    throw new Error('缺少系统账户上下文')
-  }
+  const ownerSystemAccountId = manageableSystemAccountId(access) ?? userVisibleSystemAccountId(access)
+  if (!ownerSystemAccountId) throw new Error('定时检查必须指定系统账户')
   const filters = buildOwnerAccountOptionFilters(client, options, ownerSystemAccountId)
   return await client.query<AccountOptionRow>(`
     SELECT
@@ -905,6 +927,33 @@ function accountOptionTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function queryOwnedAccountOptionRows(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountOptionListOptions>): AccountOptionRow[] {
+  const database = getBusinessDatabase()
+  if (accountOptionNeedsDerivedStatusFunctions(options)) ensureAccountDerivedStatusSqlFunctions(database)
+  const ownerSystemAccountId = manageableSystemAccountId(access) ?? userVisibleSystemAccountId(access)
+  if (!ownerSystemAccountId) throw new Error('定时检查必须指定系统账户')
+  const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
+  return database.prepare(`
+    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
+      NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at,
+      NULL AS authorization_limits_json, NULL AS authorization_effective_source_team_id,
+      NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id,
+      ${emptyAccountOptionBindingColumns()},
+      ${emptySourceAccountOptionColumns()}
+    FROM accounts
+    WHERE accounts.system_account_id = ?
+      AND accounts.deleted_at IS NULL
+      AND accounts.authorization_instance_authorization_id IS NULL${filters.clause}
+    ORDER BY accounts.priority ASC, accounts.created_at ASC, accounts.id ASC
+    LIMIT ? OFFSET ?
+  `).all(
+    ownerSystemAccountId,
+    ...filters.params,
+    options.pageSize,
+    (options.page - 1) * options.pageSize
+  ) as unknown as AccountOptionRow[]
 }
 
 function queryAccountOptionRowsForAccess(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountOptionListOptions>): AccountOptionRow[] {

@@ -212,6 +212,27 @@ export interface AuditLogDetail extends AuditLogSummary {
   payloads: AuditLogPayloadSummary[]
 }
 
+export type AuditLogDetailAttemptSupplement = Pick<AuditLogAttemptSummary,
+  | 'id' | 'attemptIndex' | 'accountId' | 'accountName'
+  | 'upstreamUrl' | 'upstreamStatusCode' | 'success' | 'errorMessage'
+  | 'startedAt' | 'endedAt' | 'durationMs'
+>
+
+export type AuditLogDetailPayloadSupplement = Pick<AuditLogPayloadSummary,
+  | 'id' | 'attemptId' | 'partType' | 'sequenceIndex'
+  | 'sizeBytes' | 'captureStatus' | 'createdAt' | 'hasHeaders' | 'hasBody'
+>
+
+export interface AuditLogDetailSupplement extends Pick<AuditLogSummary,
+  | 'queryString' | 'errorMessage'
+  | 'sampleBucket' | 'sampleReason'
+  | 'startedAt' | 'endedAt' | 'httpCompletedAt'
+> {
+  conversationKey?: string
+  attempts: AuditLogDetailAttemptSupplement[]
+  payloads: AuditLogDetailPayloadSupplement[]
+}
+
 export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string

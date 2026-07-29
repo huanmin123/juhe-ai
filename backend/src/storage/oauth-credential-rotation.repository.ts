@@ -13,7 +13,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { AccountConfigRevisionConflictError } from './repositories.js'
+import { AccountConfigRevisionConflictError } from './account-config-revision.js'
 
 const businessSchemaName = 'juhe_business'
 

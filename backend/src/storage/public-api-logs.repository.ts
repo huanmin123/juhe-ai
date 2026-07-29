@@ -79,6 +79,17 @@ export interface PublicApiLogDetail extends PublicApiLogSummary {
   responseData: Record<string, unknown>
 }
 
+export interface PublicApiLogDetailSupplement {
+  tokenName?: string
+  tokenPrefix?: string
+  isTestToken: boolean
+  userAgent?: string
+  errorCode?: string
+  errorMessage?: string
+  requestData: Record<string, unknown>
+  responseData: Record<string, unknown>
+}
+
 export interface PublicApiLogListItem {
   id: string
   createdAt: string
@@ -117,7 +128,7 @@ type PublicApiLogRow = Record<string, unknown>
 type PublicApiLogFilterValue = string | number
 
 const publicApiLogDefaultPageSize = 50
-const publicApiLogMaxPageSize = 50
+const publicApiLogMaxPageSize = 100
 const publicApiLogMaxListWindowRows = 1001
 const publicApiLogPostgresRowsPerInsert = 1000
 
@@ -433,6 +444,36 @@ export async function getPublicApiLogDetailAsync(id: string): Promise<PublicApiL
   return row ? publicApiLogDetailFromRow(row) : undefined
 }
 
+export function getPublicApiLogDetailSupplement(id: string): PublicApiLogDetailSupplement | undefined {
+  const row = getDatasetDatabase()
+    .prepare(`
+      SELECT ${publicApiLogDetailSupplementSelectColumns('pal')}
+      FROM public_api_logs pal
+      WHERE pal.id = ?
+    `)
+    .get(id) as PublicApiLogRow | undefined
+  return row ? publicApiLogDetailSupplementFromRow(row) : undefined
+}
+
+export async function getPublicApiLogDetailSupplementAsync(id: string): Promise<PublicApiLogDetailSupplement | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_public_api_log_detail_supplement_read_only',
+      id
+    })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getPublicApiLogDetailSupplement(id)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<PublicApiLogRow>(`
+    SELECT ${publicApiLogDetailSupplementSelectColumns('pal')}
+    FROM juhe_dataset.public_api_logs pal
+    WHERE pal.id = ?
+  `, [id])
+  return row ? publicApiLogDetailSupplementFromRow(row) : undefined
+}
+
 export function cleanupPublicApiLogsBefore(cutoffCreatedAt: string, limit = 1000): number {
   const rows = getDatasetDatabase()
     .prepare('SELECT id FROM public_api_logs WHERE created_at < ? ORDER BY created_at ASC, id ASC LIMIT ?')
@@ -514,6 +555,19 @@ function publicApiLogListSelectColumns(alias: string): string {
   ].map((column) => column.includes(' AS ') ? column : `${alias}.${column}`).join(', ')
 }
 
+function publicApiLogDetailSupplementSelectColumns(alias: string): string {
+  return [
+    'token_name',
+    'token_prefix',
+    'is_test_token',
+    'user_agent',
+    'error_code',
+    'error_message',
+    'request_data_json',
+    'response_data_json'
+  ].map((column) => `${alias}.${column}`).join(', ')
+}
+
 function publicApiLogListItemFromRow(row: PublicApiLogRow): PublicApiLogListItem {
   return {
     id: String(row.id),
@@ -562,6 +616,19 @@ function publicApiLogSummaryFromRow(row: PublicApiLogRow): PublicApiLogSummary {
 function publicApiLogDetailFromRow(row: PublicApiLogRow): PublicApiLogDetail {
   return {
     ...publicApiLogSummaryFromRow(row),
+    requestData: parseJsonObject(row.request_data_json),
+    responseData: parseJsonObject(row.response_data_json)
+  }
+}
+
+function publicApiLogDetailSupplementFromRow(row: PublicApiLogRow): PublicApiLogDetailSupplement {
+  return {
+    tokenName: optionalString(row.token_name),
+    tokenPrefix: optionalString(row.token_prefix),
+    isTestToken: Number(row.is_test_token ?? 0) === 1,
+    userAgent: optionalString(row.user_agent),
+    errorCode: optionalString(row.error_code),
+    errorMessage: optionalString(row.error_message),
     requestData: parseJsonObject(row.request_data_json),
     responseData: parseJsonObject(row.response_data_json)
   }

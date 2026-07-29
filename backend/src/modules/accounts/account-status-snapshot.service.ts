@@ -11,7 +11,10 @@ import {
   accountBalanceSnapshotMatchesConfiguration,
   loadAccountBalanceSnapshotRecordsByAccountIdsAsync
 } from '../../storage/account-balance.repository.js'
-import { listAccountStatusProjectionsAsync } from '../../storage/account-status-snapshot.repository.js'
+import {
+  hydrateAccountManagementStatusSeedsAsync,
+  listAccountStatusProjectionsAsync
+} from '../../storage/account-status-snapshot.repository.js'
 import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
 import { loadAccountConcurrencyByIds, loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
 import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-circuit-control-plane-bridge.js'
@@ -23,11 +26,13 @@ export async function hydrateAccountListPage(
   access: AccessScope | undefined,
   page: AccountManagementListPage
 ): Promise<AccountManagementListResult> {
-  const listPage = page
+  const { statusSeeds, ...listPage } = page
   if (page.items.length === 0) {
     return { ...listPage, items: [], generatedAt: new Date().toISOString() }
   }
-  const snapshot = await getAccountStatusSnapshot(access, page.items.map((item) => item.id))
+  const snapshot = statusSeeds.length === page.items.length
+    ? await getAccountStatusSnapshotFromProjections(await hydrateAccountManagementStatusSeedsAsync(statusSeeds))
+    : await getAccountStatusSnapshot(access, page.items.map((item) => item.id))
   const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
   return {
     ...listPage,
@@ -54,6 +59,12 @@ export async function getAccountStatusSnapshot(
   accountIds: string[]
 ): Promise<AccountStatusSnapshotResult> {
   const projections = await listAccountStatusProjectionsAsync(access, accountIds)
+  return getAccountStatusSnapshotFromProjections(projections)
+}
+
+async function getAccountStatusSnapshotFromProjections(
+  projections: Awaited<ReturnType<typeof listAccountStatusProjectionsAsync>>
+): Promise<AccountStatusSnapshotResult> {
   const ownerIds = projections
     .filter((item) => item.accessType !== 'authorized' && item.balanceQueryEnabled === true)
     .map((item) => item.id)

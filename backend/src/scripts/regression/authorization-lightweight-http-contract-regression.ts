@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -118,6 +118,7 @@ try {
   const baseUrl = `http://127.0.0.1:${address.port}`
   const adminCookie = sessionCookie(admin.id)
   const ownerCookie = sessionCookie(owner.id)
+  const granteeCookie = sessionCookie(grantee.id)
 
   const page = await requestEnvelope<{ items: Array<Record<string, unknown>> }>(
     baseUrl,
@@ -176,6 +177,16 @@ try {
     body: JSON.stringify({ expectedUpdatedAt: initialUpdatedAt, expiresAt: '2099-03-01T00:00:00.000Z' })
   })
   assert.equal(staleResponse.status, 409, '旧授权版本必须返回 409 冲突')
+
+  const cleared = await requestMutationEnvelope<Record<string, unknown>>(
+    baseUrl,
+    `/__aisys__/api/my-authorizations/${String(item.id)}/expire`,
+    ownerCookie,
+    { expectedUpdatedAt: changed.updatedAt, expiresAt: null, limits: null }
+  )
+  assert.deepEqual(Object.keys(cleared).sort(), ['expiresAt', 'id', 'limits', 'status', 'updatedAt'].sort(), '清空授权字段时最小 mutation result 仍必须保留 nullable key')
+  assert.equal(cleared.expiresAt, null, '清空 expiresAt 必须显式返回 null，不能被 JSON 省略')
+  assert.equal(cleared.limits, null, '清空 limits 必须显式返回 null，不能被 JSON 省略')
 
   const groups = await requestEnvelope<Array<Record<string, unknown>>>(
     baseUrl,
@@ -255,7 +266,115 @@ try {
   const invalidSummary = await fetch(`${baseUrl}/__aisys__/api/my-authorizations/usage/team-summary?page=2`, { headers: { cookie: ownerCookie } })
   assert.equal(invalidSummary.status, 400, '独立摘要接口必须拒绝分页参数')
 
-  console.log('授权轻量 HTTP 契约回归通过：授权列表、目标选项与用量 rows/summary 均保持窄响应')
+  const mutationGroup = repositories.createGroup({ name: '轻量授权 mutation 分组', providerCode: 'gpt' }, ownerAccess)
+  const createPayload = {
+    resourceType: 'group',
+    resourceId: mutationGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: 'mutation 幂等契约'
+  }
+  const createdMutation = await requestJson<Record<string, unknown>>(
+    baseUrl,
+    '/__aisys__/api/my-authorizations',
+    ownerCookie,
+    'POST',
+    createPayload,
+    201
+  )
+  assert.deepEqual(Object.keys(createdMutation).sort(), ['created', 'item'], 'create mutation 只能返回 created/item 和按需出现的 previousStatus')
+  assert.equal(createdMutation.created, true, '首次创建必须标记 created=true')
+  const createdItem = createdMutation.item as Record<string, unknown>
+  const mutationPage = await requestEnvelope<{ items: Array<Record<string, unknown>> }>(
+    baseUrl,
+    '/__aisys__/api/my-authorizations?status=all&page=1&pageSize=20',
+    ownerCookie
+  )
+  const listedMutationItem = mutationPage.items.find((candidate) => candidate.id === createdItem.id)
+  assert(listedMutationItem, 'create mutation 对应授权必须能出现在列表中')
+  assert.deepEqual(createdItem, listedMutationItem, 'create mutation item 必须与同一授权的列表窄 DTO 完全一致')
+
+  const duplicateCapture = await captureAuthorizationDml(
+    () => repositories.createResourceAuthorizationMutationAsync(createPayload, ownerAccess) as unknown as Promise<Record<string, unknown>>
+  )
+  const duplicateMutation = duplicateCapture.result
+  assert.deepEqual(Object.keys(duplicateMutation).sort(), ['created', 'item'], '重复 active 同值创建不得增加额外响应字段')
+  assert.equal(duplicateMutation.created, false, '重复 active 同值创建必须成为幂等 no-op')
+  assert.equal((duplicateMutation.item as Record<string, unknown>).updatedAt, createdItem.updatedAt, '重复 active 同值创建不得推进版本')
+  assert.equal(duplicateCapture.dmlCount, 0, '重复 active 同值创建必须为 0 DML')
+
+  const revoked = await requestJson<Record<string, unknown>>(
+    baseUrl,
+    `/__aisys__/api/my-authorizations/${String(createdItem.id)}`,
+    ownerCookie,
+    'DELETE',
+    { expectedUpdatedAt: createdItem.updatedAt },
+    200
+  )
+  assert.deepEqual(Object.keys(revoked).sort(), ['id', 'status', 'updatedAt'], 'revoke 只能返回终态最小回执')
+  assert.equal(revoked.status, 'revoked')
+  assert.notEqual(revoked.updatedAt, createdItem.updatedAt, '真实 revoke 必须推进 CAS 版本')
+
+  const staleRevoke = await fetch(`${baseUrl}/__aisys__/api/my-authorizations/${String(createdItem.id)}`, {
+    method: 'DELETE',
+    headers: { cookie: ownerCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: createdItem.updatedAt })
+  })
+  assert.equal(staleRevoke.status, 409, '终态授权收到旧 revoke 版本仍必须先返回 409')
+
+  const noOpRevokeCapture = await captureAuthorizationDml(() => requestJson<Record<string, unknown>>(
+      baseUrl,
+      `/__aisys__/api/my-authorizations/${String(createdItem.id)}`,
+      ownerCookie,
+      'DELETE',
+      { expectedUpdatedAt: revoked.updatedAt },
+      200
+    )
+  )
+  const noOpRevoke = noOpRevokeCapture.result
+  assert.equal(noOpRevoke.updatedAt, revoked.updatedAt, '同版本重复 revoke 必须保持版本不变')
+  assert.equal(noOpRevokeCapture.dmlCount, 0, '同版本重复 revoke 必须为 0 DML')
+
+  const reactivatedMutation = await repositories.createResourceAuthorizationMutationAsync(createPayload, ownerAccess) as unknown as Record<string, unknown>
+  assert.equal(reactivatedMutation.created, false, '终态复用不得伪装成新记录')
+  assert.equal(reactivatedMutation.previousStatus, 'revoked', '终态复用必须返回 previousStatus 供日志说明')
+  const reactivatedItem = reactivatedMutation.item as Record<string, unknown>
+  assert.equal(reactivatedItem.id, createdItem.id, '重新授权必须复用稳定授权 ID')
+  assert.notEqual(reactivatedItem.updatedAt, revoked.updatedAt, '重新激活必须推进 CAS 版本')
+
+  const returned = await fetch(`${baseUrl}/__aisys__/api/my-authorizations/${String(createdItem.id)}/return`, {
+    method: 'DELETE',
+    headers: { cookie: granteeCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: reactivatedItem.updatedAt })
+  })
+  assert.equal(returned.status, 204, 'return 成功应使用无正文最小回执')
+  const returnedVersion = String((databaseModule.getBusinessDatabase()
+    .prepare('SELECT updated_at FROM resource_authorization_grants WHERE id = ?')
+    .get(String(createdItem.id)) as { updated_at?: string } | undefined)?.updated_at)
+  assert.notEqual(returnedVersion, reactivatedItem.updatedAt, '真实 return 必须推进 CAS 版本')
+
+  const staleReturn = await fetch(`${baseUrl}/__aisys__/api/my-authorizations/${String(createdItem.id)}/return`, {
+    method: 'DELETE',
+    headers: { cookie: granteeCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: reactivatedItem.updatedAt })
+  })
+  assert.equal(staleReturn.status, 409, '终态授权收到旧 return 版本仍必须先返回 409')
+  const noOpReturnCapture = await captureAuthorizationDml(() => fetch(`${baseUrl}/__aisys__/api/my-authorizations/${String(createdItem.id)}/return`, {
+      method: 'DELETE',
+      headers: { cookie: granteeCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedUpdatedAt: returnedVersion })
+    })
+  )
+  const noOpReturn = noOpReturnCapture.result
+  assert.equal(noOpReturn.status, 204, '同版本重复 return 必须成为成功 no-op')
+  assert.equal(noOpReturnCapture.dmlCount, 0, '同版本重复 return 必须为 0 DML')
+  const returnedVersionAfterNoOp = (databaseModule.getBusinessDatabase()
+    .prepare('SELECT updated_at FROM resource_authorization_grants WHERE id = ?')
+    .get(String(createdItem.id)) as { updated_at?: string } | undefined)?.updated_at
+  assert.equal(returnedVersionAfterNoOp, returnedVersion, '重复 return 不得推进版本')
+  assertMutationQueriesAreNarrow()
+
+  console.log('授权轻量 HTTP 契约回归通过：列表、create/revoke/return mutation、目标选项与用量均保持窄契约和 CAS/no-op')
 } finally {
   await closeServer(server)
   await closeSqliteReadWorkerPool()
@@ -291,6 +410,24 @@ async function requestMutationEnvelope<T>(baseUrl: string, path: string, cookie:
   return payload.data as T
 }
 
+async function requestJson<T>(
+  baseUrl: string,
+  path: string,
+  cookie: string,
+  method: 'POST' | 'DELETE',
+  body: Record<string, unknown>,
+  expectedStatus: number
+): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert.equal(response.status, expectedStatus, `${method} ${path} HTTP ${response.status}: ${text}`)
+  return (JSON.parse(text) as ApiEnvelope<T>).data as T
+}
+
 async function onceListening(listeningServer: ReturnType<typeof app.listen>): Promise<void> {
   if (listeningServer.listening) return
   await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -304,4 +441,56 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
   await new Promise<void>((resolvePromise, rejectPromise) => {
     listeningServer.close((error) => error ? rejectPromise(error) : resolvePromise())
   })
+}
+
+function assertMutationQueriesAreNarrow(): void {
+  const writeSource = readFileSync(resolve(process.cwd(), 'src/storage/resource-authorization-write.repository.ts'), 'utf8')
+  const returnSource = readFileSync(resolve(process.cwd(), 'src/storage/resource-authorization-return.repository.ts'), 'utf8')
+  const routeSource = readFileSync(resolve(process.cwd(), 'src/modules/authorizations/authorizations.routes.ts'), 'utf8')
+  for (const name of [
+    'upsertResourceAuthorizationGrantMutation',
+    'upsertResourceAuthorizationGrantMutationAsync',
+    'revokeResourceAuthorizationMutationSqlite',
+    'revokeResourceAuthorizationMutationPostgresAsync'
+  ]) {
+    assert.doesNotMatch(functionSource(writeSource, name), /SELECT\s+\*/i, `${name} 不得退回 SELECT *`)
+  }
+  for (const name of ['findDirectGrantForReturnMutation', 'findDirectGrantForReturnMutationAsync']) {
+    assert.doesNotMatch(functionSource(returnSource, name), /SELECT\s+\*/i, `${name} 不得退回 SELECT *`)
+  }
+  assert.match(functionSource(writeSource, 'revokeResourceAuthorizationMutationSqlite'), /resource_owner_system_account_id\s*=\s*\?/, 'SQLite revoke 定位 SQL 必须下推 owner 条件')
+  assert.match(functionSource(writeSource, 'revokeResourceAuthorizationMutationPostgresAsync'), /resource_owner_system_account_id\s*=\s*\?/, 'PostgreSQL revoke 锁行 SQL 必须下推 owner 条件')
+  assert.match(functionSource(returnSource, 'findDirectGrantForReturnMutation'), /grantee_system_account_id\s*=\s*\?/, 'SQLite return 定位 SQL 必须下推 grantee 条件')
+  assert.match(functionSource(returnSource, 'findDirectGrantForReturnMutationAsync'), /grantee_system_account_id\s*=\s*\?/, 'PostgreSQL return 锁行 SQL 必须下推 grantee 条件')
+  assert.match(functionSource(writeSource, 'resourceAuthorizationCreateResourceContextAsync'), /LIMIT\s+1\s+FOR\s+UPDATE/i, 'PostgreSQL create 必须先锁资源行串行化不存在 grant 的并发创建')
+  const createRoute = routeSource.slice(routeSource.indexOf("authorizationsRouter.post('/', mutationGuard"), routeSource.indexOf("authorizationsRouter.get('/:id'"))
+  for (const field of ['remark', 'expiresAt', 'limits']) {
+    assert.match(createRoute, new RegExp(`${field}:\\s*bodyField\\(req, '${field}'\\)`), `create mutationGuard 指纹必须包含 ${field}`)
+  }
+}
+
+async function captureAuthorizationDml<T>(run: () => Promise<T>): Promise<{ result: T; dmlCount: number }> {
+  const database = databaseModule.getBusinessDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  let dmlCount = 0
+  database.prepare = ((sql: string) => {
+    if (/^\s*(?:UPDATE|INSERT|DELETE)\s+(?:resource_authorization_grants|resource_authorizations|resource_authorization_sources|group_accounts|accounts)\b/i.test(sql)) {
+      dmlCount += 1
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  try {
+    return { result: await run(), dmlCount }
+  } finally {
+    database.prepare = originalPrepare
+  }
+}
+
+function functionSource(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}`)
+  assert(start >= 0, `应存在 ${name}`)
+  const remaining = source.slice(start + 10)
+  const nextMatch = /\n(?:export\s+)?(?:async\s+)?function\s+/.exec(remaining)
+  const end = nextMatch ? start + 10 + nextMatch.index : source.length
+  return source.slice(start, end)
 }

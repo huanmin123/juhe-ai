@@ -278,9 +278,9 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
   }
 }
 
-export async function listModelCheckAccountOptions(access: AccessScope | undefined, options: { purpose: 'run' | 'history'; keyword?: string; selectedIds?: string[]; limit?: number }): Promise<ModelCheckAccountOption[]> {
+export async function listModelCheckAccountOptions(access: AccessScope | undefined, options: { purpose: 'run' | 'history' | 'schedule'; accountId?: string; keyword?: string; selectedIds?: string[]; limit?: number }): Promise<ModelCheckAccountOption[]> {
   const selectedIds = [...new Set((options.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 20)
-  return listModelCheckAccountOptionsAsync(access, { purpose: options.purpose, keyword: options.keyword?.trim() || undefined, selectedIds, limit: options.limit ?? 50 })
+  return listModelCheckAccountOptionsAsync(access, { purpose: options.purpose, accountId: options.accountId?.trim() || undefined, keyword: options.keyword?.trim() || undefined, selectedIds, limit: options.limit ?? 50 })
 }
 
 export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal, progress?: ModelCheckProgressReporter, execution: ModelCheckExecutionContext = {}): Promise<ModelCheckRunDetail> {
@@ -305,7 +305,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   const triggerKind = execution.triggerKind ?? 'manual'
   const target = await resolveModelCheckTargetAsync({ ...input, model, targetId }, access, triggerKind === 'quality_recovery')
   const policy = execution.policy ?? await getModelQualityPolicyAsync(target.identity.systemAccountId)
-  const profile = policy.profile
+  const profile = requestedProfile
   const policySnapshot: ModelQualityPolicySnapshot = {
     policyRevision: policy.revision,
     configSource: execution.scheduleId ? 'schedule' : 'manual',
@@ -414,6 +414,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         probeSetVersion: quickProbeSetVersion,
         evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
       })
+      throwIfAborted(signal)
       await requestDatasetWriter({
         type: 'finish_model_check_run',
         runId: run.id,
@@ -528,6 +529,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         }))
       })
     }
+    throwIfAborted(signal)
     await requestDatasetWriter({
       type: 'finish_model_check_run',
       runId: run.id,

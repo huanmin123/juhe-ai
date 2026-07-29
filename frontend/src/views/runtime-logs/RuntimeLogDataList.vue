@@ -130,15 +130,12 @@ function handleActionClick(key: string, record: RuntimeLogListRecord) {
 }
 
 function messageText(record: RuntimeLogListRecord): string {
-  if (props.messageMode === 'grep' && 'line' in record) {
-    return runtimeLogMessageText(record, { includeLine: true })
-  }
   return runtimeLogMessageText(record)
 }
 
 function cardTitle(record: RuntimeLogListRecord): string {
-  if (props.messageMode === 'grep' && 'line' in record) {
-    return (record.event ? eventText(record.event) : '') || record.message || record.errorMessage || record.line || record.id
+  if (props.messageMode === 'grep') {
+    return (record.event ? eventText(record.event) : '') || record.message || record.errorMessage || record.id
   }
   return (record.event ? eventText(record.event) : '') || record.message || record.errorMessage || record.id
 }

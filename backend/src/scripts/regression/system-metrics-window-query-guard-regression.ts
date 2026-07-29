@@ -76,6 +76,27 @@ try {
     assert.equal(overview.processEventLoopTrend[0]?.sampleCount, 3, '窗口缓存应保留采样数')
     assert.equal(overview.processEventLoopTrend[0]?.eventLoopLagMsAvg, 20, '窗口缓存应计算平均延迟')
     assert.equal(overview.processEventLoopTrend[0]?.eventLoopLagMsMax, 30, '窗口缓存应保留峰值延迟')
+    capturedCalls.length = 0
+    const trend = usageStatsRepository.getSystemMetricsTrend(range)
+    assert.deepEqual(
+      Object.keys(trend.processEventLoopTrend[0] ?? {}).sort(),
+      ['eventLoopLagMsAvg', 'eventLoopLagMsMax', 'processRole', 'processRssBytesAvg', 'processRssBytesMax', 'statMinute'].sort(),
+      '趋势场景 DTO 不得映射未展示的 heap 等窗口字段'
+    )
+    const latest = trend.processEventLoopLatestStatus.find((row) => row.processRole === 'server')
+    assert(latest, '趋势场景应返回 server 最新状态')
+    assert.deepEqual(
+      Object.keys(latest).sort(),
+      ['eventLoopLagMs', 'processHeapTotalBytes', 'processHeapUsedBytes', 'processPid', 'processRole', 'processRssBytes', 'sampleAvailable', 'sampledAt'].sort(),
+      '最新状态场景 DTO 不得映射页面未展示的 external / array buffer 字段'
+    )
+    const peak = trend.processEventLoopPeakStatus.find((row) => row.processRole === 'server')
+    assert(peak, '趋势场景应返回 server 峰值状态')
+    assert.deepEqual(
+      Object.keys(peak).sort(),
+      ['eventLoopLagMs', 'processPid', 'processRole', 'sampleAvailable', 'sampledAt'].sort(),
+      '峰值状态场景 DTO 只保留表格消费字段'
+    )
   } finally {
     database.prepare = originalPrepare
   }

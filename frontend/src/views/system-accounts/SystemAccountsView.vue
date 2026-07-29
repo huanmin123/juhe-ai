@@ -144,7 +144,7 @@ import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus, UserRequestLimits } from '@/types/domain'
-import { buildSystemAccountEditablePatch, cloneSystemAccountEditableValues, hasSystemAccountEditableChanges, mergeSystemAccountMutation, type SystemAccountEditableValues } from './systemAccountEditForm'
+import { buildSystemAccountEditablePatch, cloneSystemAccountEditableValues, hasSystemAccountEditableChanges, reconcileSystemAccountMutationPage, type SystemAccountEditableValues } from './systemAccountEditForm'
 
 interface SystemAccountsPageState {
   keyword: string
@@ -236,11 +236,12 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
+  invalidatePendingLoads,
   loadData,
   loadMoreMobile: loadMoreMobileAccounts,
   refreshMobile: refreshMobileAccounts,
+  removeItems,
   resetPagination,
-  updateItems
 } = useResponsivePagedList<SystemAccountListItem>({
   pageSize,
   initialPagination: initialPageState.pagination,
@@ -363,7 +364,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
         expectedUpdatedAt: editingVersion.value,
         ...patch
       })
-      updateItems((item) => item.id === updated.id, (item) => mergeSystemAccountMutation(item, updated))
+      await applySystemAccountMutation(updated)
       message.success('系统账户已更新')
     } else {
       const payload = { ...basePayload, username, password: form.password }
@@ -402,7 +403,7 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
       password: resetPassword.value,
       mustChangePassword: !isAdminRole(resettingAccountRole.value)
     })
-    updateItems((item) => item.id === updated.id, (item) => mergeSystemAccountMutation(item, updated))
+    await applySystemAccountMutation(updated)
     message.success('密码已重置')
     passwordModalOpen.value = false
   } catch (error) {
@@ -415,6 +416,34 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
 function searchAccounts() {
   resetPagination()
   void loadData()
+}
+
+async function applySystemAccountMutation(mutation: Parameters<typeof reconcileSystemAccountMutationPage>[1]): Promise<void> {
+  invalidatePendingLoads()
+  const reconciliation = reconcileSystemAccountMutationPage(accounts.value, mutation, {
+    keyword: keyword.value,
+    page: pagination.current,
+    pageSize: pagination.pageSize
+  })
+  if (reconciliation.disposition === 'filtered_out') {
+    const accumulatedMobilePages = accounts.value.length > pagination.pageSize
+    if (accumulatedMobilePages) {
+      accounts.value = reconciliation.items
+      pagination.total = Math.max(0, pagination.total - 1)
+    } else if (mobileHasMore.value) {
+      await loadData({ quiet: true })
+    } else {
+      removeItems((item) => item.id === mutation.id)
+    }
+    return
+  }
+  if (reconciliation.disposition === 'relocated_to_first_page') {
+    await loadData({ quiet: true })
+    return
+  }
+  if (reconciliation.disposition !== 'not_found') {
+    accounts.value = reconciliation.items
+  }
 }
 
 function resetSearch() {

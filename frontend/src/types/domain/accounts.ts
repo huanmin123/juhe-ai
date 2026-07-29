@@ -538,6 +538,58 @@ export interface AccountAdvancedDetail {
   authorizationInstanceSourceAccountSchedulable?: boolean
 }
 
+export interface AccountOAuthReauthorizationContext {
+  id: string
+  configRevision: number
+  oauthType: 'code_assist' | 'google_one' | 'ai_studio'
+  clientId?: string
+  clientSecret?: string
+  quotaProjectId?: string
+  projectId?: string
+  tierId?: string
+  baseUrl?: string
+}
+
+export interface AccountCloneContext {
+  id: string
+  configRevision: number
+  providerCode: ProviderCode
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  name: string
+  notes?: string
+  type: AccountType
+  credentialOptions: AccountCloneCredentialOptions
+  concurrencyLimit: number
+  priority: number
+  superPriorityEnabled: boolean
+  fallbackEnabled: boolean
+  clientCompatibility: AccountClientCompatibility
+  supportedModels: string[]
+  tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
+  healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  boundGroupId?: string
+  boundGroupName?: string
+  modelMappings: AccountModelMapping[]
+  proxyProfileId?: string
+  availabilitySchedule?: AccountAvailabilitySchedule
+  accountExpiresAt?: string
+  temporaryUnavailableContinuousProbeEnabled: boolean
+}
+
+export interface AccountCloneCredentialOptions {
+  base_url?: string
+  supported_endpoint_modes?: AccountSupportedEndpointMode[]
+  service_tier_override?: AccountGptServiceTierOverride
+  reasoning_effort_override?: AccountGptReasoningEffortOverride
+  error_handling_rules?: unknown[]
+  response_inspection_rules?: unknown[]
+  codex_responses_safe_repair_enabled?: boolean
+  codex_responses_strict_intercept_enabled?: boolean
+}
+
 export interface AccountMutationResult {
   id: string
   configRevision: number

@@ -60,6 +60,34 @@ export function mergeSystemAccountMutation(
   return next
 }
 
+export function systemAccountMatchesListKeyword(item: Pick<SystemAccountListItem, 'username' | 'displayName'>, keyword: string): boolean {
+  const normalizedKeyword = keyword.trim().toLowerCase()
+  if (!normalizedKeyword) return true
+  return item.username.toLowerCase().startsWith(normalizedKeyword)
+    || item.displayName.toLowerCase().startsWith(normalizedKeyword)
+}
+
+export type SystemAccountMutationPageDisposition = 'not_found' | 'moved_to_first' | 'relocated_to_first_page' | 'filtered_out'
+
+export function reconcileSystemAccountMutationPage(
+  items: SystemAccountListItem[],
+  mutation: SystemAccountMutationResult,
+  options: { keyword: string; page: number; pageSize: number }
+): { items: SystemAccountListItem[]; disposition: SystemAccountMutationPageDisposition } {
+  const current = items.find((item) => item.id === mutation.id)
+  if (!current) return { items, disposition: 'not_found' }
+  const merged = mergeSystemAccountMutation(current, mutation)
+  const remaining = items.filter((item) => item.id !== mutation.id)
+  if (!systemAccountMatchesListKeyword(merged, options.keyword)) {
+    return { items: remaining, disposition: 'filtered_out' }
+  }
+  const accumulatedPages = items.length > options.pageSize
+  if (options.page > 1 && !accumulatedPages) {
+    return { items: remaining, disposition: 'relocated_to_first_page' }
+  }
+  return { items: [merged, ...remaining], disposition: 'moved_to_first' }
+}
+
 function sameSystemAccountEditableValue(left: unknown, right: unknown): boolean {
   if (left === right) return true
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false

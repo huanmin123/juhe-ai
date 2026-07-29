@@ -308,7 +308,7 @@ function verifyViewUsesCoordinator(): void {
   const dropdownFunction = functionSource(source, 'async function loadProviderOptionsOnDropdown')
   assert.match(dropdownFunction, /if \(!open\)[\s\S]*cancelActiveProviderOptionsRequest\(\)/, '关闭下拉必须取消在途 provider options 请求')
   assert.match(dropdownFunction, /await loadProviderOptions\(query\)/, '只有供应商下拉展开后才加载当前上下文 provider options')
-  const optionsFunction = functionSource(source, 'async function loadProviderOptions')
+  const optionsFunction = functionSource(source, 'async function loadProviderOptions(')
   assert.match(optionsFunction, /query\.scopeType !== 'provider'/, '协议层不得发起 provider options 请求')
   assert.match(optionsFunction, /loadCoordinator\.loadProviderOptions\(intent, query\)/, 'provider options 必须携带 protocol/scope/keyword 查询')
   assert.equal((optionsFunction.match(/message\.error\(/g) ?? []).length, 1, '同一 provider options 请求只能在一个 UI 边界提示一次错误')

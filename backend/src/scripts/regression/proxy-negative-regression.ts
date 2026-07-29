@@ -98,6 +98,14 @@ interface ProxyProfileSummary {
   id: string
   name: string
   enabled: boolean
+  updatedAt: string
+}
+
+interface ProxyProfileMutationResult {
+  id: string
+  updatedAt: string
+  changed: boolean
+  values: { enabled?: boolean }
 }
 
 interface AccountSummary {
@@ -227,7 +235,11 @@ async function main(): Promise<void> {
     assert(apiKey.routeStrategyId === routeStrategy.id, '代理负向 API Key 应绑定当前策略路由')
     assert(apiKey.key, '临时 API Key 未返回明文密钥')
 
-    await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: false })
+    const disabledProxy = await patchEnvelope<ProxyProfileMutationResult>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, {
+      enabled: false,
+      expectedUpdatedAt: proxy.updatedAt
+    })
+    assert(disabledProxy.changed && disabledProxy.values.enabled === false, '代理停用 PATCH 应返回最小 mutation 和新 CAS 版本')
     gatewayCache.clearGatewayRuntimeCache()
 
     const testResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
@@ -280,7 +292,11 @@ async function main(): Promise<void> {
     assert(gatewayResponseText.includes('service_unavailable'), `停用代理网关请求应返回统一服务不可用错误，实际 ${gatewayResponseText}`)
     assert(directUpstreamHitCount === 0, `停用代理后发生了直连上游请求 ${directUpstreamHitCount} 次`)
 
-    await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: true })
+    const enabledProxy = await patchEnvelope<ProxyProfileMutationResult>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, {
+      enabled: true,
+      expectedUpdatedAt: disabledProxy.updatedAt
+    })
+    assert(enabledProxy.changed && enabledProxy.values.enabled === true, '代理恢复 PATCH 应串接停用 mutation 的 CAS 版本')
     await deleteNoContent(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, 409)
 
     console.log('代理负向回归通过：停用代理阻止账户测试，网关请求失败，没有直连上游，使用中的代理不能删除')

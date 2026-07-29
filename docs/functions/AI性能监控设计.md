@@ -136,8 +136,8 @@ GET /__aisys__/api/stats/ai-performance/accounts
 
 | 参数 | 说明 |
 | --- | --- |
-| `startDate` | 日期范围开始，格式 `YYYY-MM-DD`；接口缺省为今天，页面首次进入显式传最近 3 天范围 |
-| `endDate` | 日期范围结束，格式 `YYYY-MM-DD`；接口缺省为今天，最大最近 31 天 |
+| `startDate` | 日期范围开始，格式 `YYYY-MM-DD`；页面未显式选日期时省略，由 Node 按统计时区返回最近 3 天 |
+| `endDate` | 日期范围结束，格式 `YYYY-MM-DD`；页面未显式选日期时省略，显式范围最大最近 31 天 |
 | `systemAccountId` | 仅管理侧有效；筛选指定系统账户，缺省为全部用户全局缓存 |
 | `accountIds` | 仅 series 路由使用的重复裸键账户 ID，1-20 个；base 路由拒绝该参数；不持久化 |
 
@@ -174,30 +174,25 @@ interface AiPerformanceSeriesResult {
 interface AiPerformanceAccount {
   id: string
   name: string
-  status: string
   providerCode: string
-  systemAccountId: string
   systemAccountName?: string
-  requestCountLast7d: number
-  selected: boolean
-  defaultVisible: boolean
+  ownerSystemAccountName?: string
+  accessType?: 'owner' | 'authorized'
 }
 
 interface AiPerformanceAccountOption {
   id: string
   name: string
-  status: string
   providerCode: string
-  systemAccountId: string
   systemAccountName?: string
-  requestCountLast7d: number
+  ownerSystemAccountName?: string
+  accessType?: 'owner' | 'authorized'
 }
 
 interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
   providerCode: string
-  systemAccountId: string
   points: Array<{
     statHour: string
     requestCount: number
@@ -213,6 +208,7 @@ interface AiPerformanceAccountSeries {
 
 - base 的 `accounts` 表示后端按最近 7 天活跃度选出的默认前 10。
 - series 的 `accounts` 只包含本次请求中合法且可见的搜索追加账户；不可见或不存在 ID 静默省略。
+- `accounts` 与账户 options 只返回页面真实渲染所需的标签、供应商和可选归属名称；最近 7 天请求数、状态、内部系统账户 ID、`selected/defaultVisible` 等排序或前端可派生字段不进入 HTTP DTO。
 - 前端按账户 ID 将 base 与 series 去重合并，点击筛选只控制本地显隐。
 - `hourlySeries` 必须按 `accounts` 顺序返回，便于前端颜色和图例稳定。
 - 后端需要补齐窗口内小时桶；没有数据的小时返回 `requestCount = 0`，平均耗时为空。
@@ -276,6 +272,8 @@ LIMIT 10
 - 管理员在管理模式进入 `AI性能监控`，可按用户筛选或查看全部用户全局账户性能，默认日期范围为最近 3 天。
 - 别人授权给自己的 AI 账户以当前用户自己的授权实例账户进入默认账户池、搜索结果和 `accountIds` 临时追加结果；授权分组内来源账户可以通过来源账户名进入搜索结果和临时追加结果，但只读取当前用户自己的 `caller_account` 数据。搜索结果可通过授权实例名或来源账户当前名命中该实例，授权方原账户不会把自用数据带入被授权人的用户侧页面。
 - 搜索添加多个账户后，这些账户进入筛选区下方账户列表；未点选时图表展示当前列表全部账户，点选后图表只展示点选账户；刷新或重新进入后恢复默认前 10。
+- 页面手动刷新只刷新 AI 性能业务数据，复用身份隔离且仍在 TTL 内的 `usage-window` 元数据；临时追加和点选状态不持久化，重新进入页面不会自动补拉 series。
+- 首屏并行启动 `usage-window` 元数据与 AI 性能 base；base 不等待窗口元数据，未显式选日期时不发送浏览器本地日期，由 Node 统计时区归一化默认最近 3 天。
 - 接口只读取 `usage_stats_hourly` 和账户 / 系统账户元数据，不实时扫描 `usage_records`。
 - 最近 31 天内的日期范围都按小时返回数据，底部时间线按日期范围自动压缩，并正确处理空小时。
 - 空态、无权限和参数非法都返回或展示中文提示。

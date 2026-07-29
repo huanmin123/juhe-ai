@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { access, opendir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setImmediate as yieldImmediate } from 'node:timers/promises'
@@ -25,17 +27,25 @@ export interface RuntimeLogGrepOptions {
 
 export interface RuntimeLogGrepItem {
   id: string
-  file: string
   fileName: string
-  lineNumber?: number
+  lineNumber: number
   time: string
   level: string
   traceId?: string
   event?: string
   message?: string
   errorMessage?: string
+}
+
+export interface RuntimeLogGrepDetail {
+  file: string
   line: string
 }
+
+export type RuntimeLogGrepDetailLookup =
+  | { status: 'ok'; detail: RuntimeLogGrepDetail }
+  | { status: 'not_found' }
+  | { status: 'stale' }
 
 export interface RuntimeLogGrepResult {
   available: boolean
@@ -101,6 +111,9 @@ type OrderedRuntimeLogGrepItem = RuntimeLogGrepItem & {
 }
 
 const maxLineLength = 20_000
+const maxDetailLineBytes = maxLineLength * 4
+const maxPreviewTextLength = 1_000
+const maxIdentityTextLength = 256
 const maxRgJsonLineLength = maxLineLength + 8_000
 const maxRgStderrLength = 2_000
 const maxRgCommandChars = 24_000
@@ -235,6 +248,37 @@ export async function getRuntimeLogGrepRuntime(): Promise<RuntimeLogGrepRuntime>
   }
 }
 
+export async function getRuntimeLogGrepDetail(input: {
+  id: string
+  fileName: string
+  lineNumber: number
+}): Promise<RuntimeLogGrepDetailLookup> {
+  const id = input.id.trim()
+  const fileName = input.fileName.trim()
+  const lineNumber = Math.trunc(input.lineNumber)
+  if (!/^[a-f0-9]{64}$/.test(id) || !fileName || lineNumber < 1) {
+    return { status: 'not_found' }
+  }
+
+  const listing = await listLogFiles()
+  const file = listing.files.find((candidate) => candidate.fileName === fileName)
+  if (!file) return { status: 'not_found' }
+
+  const lineResult = await readRuntimeLogLine(file.path, lineNumber)
+  if (lineResult.status === 'not_found') return { status: 'stale' }
+  if (lineResult.status === 'too_large') return { status: 'stale' }
+  if (runtimeLogGrepItemId(file.fileName, lineNumber, lineResult.line) !== id) {
+    return { status: 'stale' }
+  }
+  return {
+    status: 'ok',
+    detail: {
+      file: file.path,
+      line: lineResult.line
+    }
+  }
+}
+
 function acquireGrepSearchSlot(): boolean {
   if (activeGrepSearches >= maxConcurrentGrepSearches) {
     return false
@@ -362,7 +406,8 @@ async function searchLogFilesWithRg(options: {
       onMatch: (event) => {
         const filePath = event.data?.path?.text
         const line = event.data?.lines?.text?.replace(/\r?\n$/, '')
-        if (!filePath || line === undefined) return
+        const lineNumber = event.data?.line_number
+        if (!filePath || line === undefined || !Number.isInteger(lineNumber) || Number(lineNumber) < 1) return
         const file = filesByPath.get(filePath) ?? filesByLowerPath.get(filePath.toLowerCase())
         if (!file) return
         if (!lineMatchesKeywords(line, normalizedKeywords)) return
@@ -372,8 +417,7 @@ async function searchLogFilesWithRg(options: {
         insertLatestGrepItem(items, buildGrepItem({
           file,
           line,
-          lineNumber: event.data?.line_number,
-          sequence: matchedCount
+          lineNumber: Number(lineNumber)
         }), options.limit)
       }
     })
@@ -602,14 +646,12 @@ function rgExecutionError(error: Error): Error {
 function buildGrepItem(input: {
   file: LogFile
   line: string
-  lineNumber?: number
-  sequence: number
+  lineNumber: number
 }): OrderedRuntimeLogGrepItem {
   const fields = runtimeLogFieldsFromLine(input.line)
   const parsedTime = parseRuntimeLogTimeMs(fields.time)
   return {
-    id: `${input.file.path}:${input.lineNumber ?? input.sequence}:${input.sequence}`,
-    file: input.file.path,
+    id: runtimeLogGrepItemId(input.file.fileName, input.lineNumber, input.line),
     fileName: input.file.fileName,
     lineNumber: input.lineNumber,
     fileOrder: input.file.order,
@@ -675,7 +717,6 @@ function compareGrepItems(left: OrderedRuntimeLogGrepItem, right: OrderedRuntime
 function stripOrderFields(item: OrderedRuntimeLogGrepItem): RuntimeLogGrepItem {
   return {
     id: item.id,
-    file: item.file,
     fileName: item.fileName,
     lineNumber: item.lineNumber,
     time: item.time,
@@ -683,8 +724,7 @@ function stripOrderFields(item: OrderedRuntimeLogGrepItem): RuntimeLogGrepItem {
     traceId: item.traceId,
     event: item.event,
     message: item.message,
-    errorMessage: item.errorMessage,
-    line: item.line
+    errorMessage: item.errorMessage
   }
 }
 
@@ -708,7 +748,7 @@ function trimLine(value: string, length = maxLineLength): string {
   return value.length > length ? `${value.slice(0, length)}...` : value
 }
 
-function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'traceId' | 'event' | 'message' | 'errorMessage' | 'line'> {
+function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'traceId' | 'event' | 'message' | 'errorMessage'> {
   const rawLine = trimLine(line)
   if (line.length > maxLineLength) {
     return fallbackRuntimeLogFields(rawLine)
@@ -723,23 +763,94 @@ function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time'
     return {
       time: runtimeLogTimeValue(record.time),
       level: normalizeLevel(record.level),
-      traceId: stringValue(record.traceId),
-      event: stringValue(record.event),
-      message: stringValue(record.msg) ?? stringValue(record.message),
-      errorMessage: stringValue(record.errorMessage) ?? errorMessageFromErr(record.err),
-      line: rawLine
+      traceId: trimOptionalText(stringValue(record.traceId), maxIdentityTextLength),
+      event: trimOptionalText(stringValue(record.event), maxIdentityTextLength),
+      message: trimOptionalText(stringValue(record.msg) ?? stringValue(record.message), maxPreviewTextLength),
+      errorMessage: trimOptionalText(stringValue(record.errorMessage) ?? errorMessageFromErr(record.err), maxPreviewTextLength)
     }
   } catch {
     return fallbackRuntimeLogFields(rawLine)
   }
 }
 
-function fallbackRuntimeLogFields(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'line'> {
+function fallbackRuntimeLogFields(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'message'> {
   return {
     time: '',
     level: 'info',
-    line
+    message: trimLine(line, maxPreviewTextLength)
   }
+}
+
+function trimOptionalText(value: string | undefined, length: number): string | undefined {
+  return value === undefined ? undefined : trimLine(value, length)
+}
+
+function runtimeLogGrepItemId(fileName: string, lineNumber: number, line: string): string {
+  return createHash('sha256')
+    .update(fileName)
+    .update('\0')
+    .update(String(lineNumber))
+    .update('\0')
+    .update(line)
+    .digest('hex')
+}
+
+type RuntimeLogLineReadResult =
+  | { status: 'found'; line: string }
+  | { status: 'not_found' }
+  | { status: 'too_large' }
+
+async function readRuntimeLogLine(filePath: string, targetLineNumber: number): Promise<RuntimeLogLineReadResult> {
+  const stream = createReadStream(filePath)
+  const lineChunks: Buffer[] = []
+  let capturedBytes = 0
+  let currentLineNumber = 1
+  let targetLineStarted = false
+
+  try {
+    for await (const value of stream) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+      let segmentStart = 0
+      for (let index = 0; index < chunk.length; index += 1) {
+        if (chunk[index] !== 0x0a) continue
+        if (currentLineNumber === targetLineNumber) {
+          const appendResult = appendRuntimeLogLineChunk(lineChunks, chunk.subarray(segmentStart, index), capturedBytes)
+          if (appendResult === undefined) return { status: 'too_large' }
+          capturedBytes = appendResult
+          targetLineStarted = true
+          return { status: 'found', line: decodeRuntimeLogLine(lineChunks) }
+        }
+        currentLineNumber += 1
+        segmentStart = index + 1
+      }
+      if (currentLineNumber === targetLineNumber && segmentStart < chunk.length) {
+        const appendResult = appendRuntimeLogLineChunk(lineChunks, chunk.subarray(segmentStart), capturedBytes)
+        if (appendResult === undefined) return { status: 'too_large' }
+        capturedBytes = appendResult
+        targetLineStarted = true
+      }
+    }
+    return currentLineNumber === targetLineNumber && targetLineStarted
+      ? { status: 'found', line: decodeRuntimeLogLine(lineChunks) }
+      : { status: 'not_found' }
+  } catch (error) {
+    if (isLogFileStatRace(error)) return { status: 'not_found' }
+    throw error
+  } finally {
+    stream.destroy()
+  }
+}
+
+function appendRuntimeLogLineChunk(chunks: Buffer[], chunk: Buffer, currentBytes: number): number | undefined {
+  const nextBytes = currentBytes + chunk.length
+  if (nextBytes > maxDetailLineBytes) return undefined
+  if (chunk.length > 0) chunks.push(chunk)
+  return nextBytes
+}
+
+function decodeRuntimeLogLine(chunks: Buffer[]): string {
+  const line = Buffer.concat(chunks).toString('utf8')
+  return line.endsWith('\r') ? line.slice(0, -1) : line
 }
 
 function runtimeLogTimeValue(value: unknown): string {

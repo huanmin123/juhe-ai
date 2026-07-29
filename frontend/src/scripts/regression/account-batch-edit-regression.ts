@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { api } from '../../api/client'
 import {
+  accountBatchEditContextFieldsForForm,
   accountBatchEditFieldLabels,
   buildAccountBatchEditRequest,
   createAccountBatchEditForm,
@@ -201,24 +202,44 @@ const deferredContextSource = modalSource.slice(
   modalSource.indexOf('async function loadModelOptions')
 )
 assert.match(deferredContextSource, /batchEditContext\(accountIds, requestedFields/, '用户启用模型字段后必须只读取该交互依赖的上下文字段')
+assert.match(deferredContextSource, /if \(token !== loadToken \|\| !open\.value\) return[\s\S]*catch \(error\) \{[\s\S]*if \(token !== loadToken \|\| !open\.value\) return/, '模型上下文成功和失败响应都必须隔离关闭或重开后的旧请求')
+assert.match(deferredContextSource, /revisionChanged[\s\S]*pendingModelContextFields\.add\(field\)[\s\S]*clearAccountModelContext/, '分批上下文遇到版本变化时必须丢弃旧字段并重取，不能混合不同版本快照')
 const contextFieldPlannerSource = modalSource.slice(
   modalSource.indexOf('function modelContextFieldsForEnabledForm'),
   modalSource.indexOf('function accountBatchEditContextFromListItem')
 )
-assert.match(contextFieldPlannerSource, /!form\.enabled\.supportedModels[\s\S]*fields\.add\('supportedModels'\)/, '已经覆盖支持模型时不得再读取旧支持模型关系')
-assert.match(contextFieldPlannerSource, /!form\.enabled\.supportedEndpointModes[\s\S]*fields\.add\('supportedEndpointModes'\)/, '已经覆盖接口能力时不得再读取旧接口能力')
-assert.match(contextFieldPlannerSource, /form\.enabled\.supportedEndpointModes && !form\.enabled\.modelMappings[\s\S]*fields\.add\('modelMappings'\)/, '仅覆盖接口能力时才按需读取现有映射用于前端校验')
+assert.match(contextFieldPlannerSource, /accountBatchEditContextFieldsForForm\(form, homogeneousAccount\.value\?\.providerCode\)/, '批量弹窗必须复用可执行的字段级上下文规划器')
+verifyModelContextFieldPlanning()
+const requestOverrideVisibilitySource = modalSource.slice(
+  modalSource.indexOf('const requestOverridesSupported'),
+  modalSource.indexOf('const modelConfigurationLoading')
+)
+assert.match(requestOverrideVisibilitySource, /loadedModelContextFields\.has\('supportedEndpointModes'\)[\s\S]*: undefined/, 'Gemini 接口能力尚未加载时必须保留请求覆盖入口')
+assert.match(requestOverrideVisibilitySource, /\|\| form\.enabled\.serviceTierOverride[\s\S]*\|\| form\.enabled\.reasoningEffortOverride/, '接口能力加载后即使不支持，也必须保留已启用字段入口供用户取消，不能隐藏仍会提交的值')
 assert.match(
   modalSource.slice(
     modalSource.indexOf('function handleMappingModelOptionsOpen'),
     modalSource.indexOf('function handleMappingModelOptionsSearch')
   ),
-  /ensureModelContext\(modelContextFieldsForEnabledForm\(\)\)[\s\S]*loadModelOptions\(loadToken\)/,
+  /ensureModelContext\(modelContextFieldsForEnabledForm\(\)\)[\s\S]*loadModelOptions\(token\)/,
   '批量编辑模型候选必须仅在用户展开模型下拉后加载'
 )
 const supportedModelSelectSource = modelsTabSource.match(/v-model:value="form\.supportedModels"[\s\S]*?\/>/)?.[0] ?? ''
 assert.match(supportedModelSelectSource, /:filter-option="false"/, '支持模型必须使用服务端搜索，不能只过滤首批 50 条')
 assert.match(supportedModelSelectSource, /@search="handleSupportedModelOptionsSearch"/, '支持模型输入搜索必须请求供应商模型目录')
+for (const [start, end, label] of [
+  ['function handleMappingModelOptionsOpen', 'function handleMappingModelOptionsSearch', '映射下拉'],
+  ['function scheduleModelOptionsSearch', 'function clearModelOptionsSearchTimer', '模型搜索'],
+  ['() => [form.enabled.serviceTierOverride', 'async function save', '请求覆盖字段']
+] as const) {
+  const asynchronousModelLoadSource = modalSource.slice(modalSource.indexOf(start), modalSource.indexOf(end, modalSource.indexOf(start)))
+  assert.match(asynchronousModelLoadSource, /const token = loadToken[\s\S]*token === loadToken && open\.value[\s\S]*loadModelOptions\(token/, `${label}等待上下文期间关闭或重开后不得替新弹窗加载模型目录`)
+}
+const saveSource = modalSource.slice(
+  modalSource.indexOf('async function save'),
+  modalSource.indexOf('function close')
+)
+assert.match(saveSource, /const token = loadToken[\s\S]*await ensureModelContext[\s\S]*token !== loadToken \|\| !open\.value/, '保存等待模型上下文期间关闭或重开弹窗后不得继续提交旧表单')
 assert.match(formSource, /configRevision/, '批量编辑请求必须使用乐观版本')
 assert.match(accountsViewSource, /@edit="openBatchEdit"/, '账户列表批量工具栏应接入批量编辑入口')
 assert.match(accountsViewSource, /AccountBatchDisableConfirmModal/, '批量停用必须使用独立二次确认弹窗')
@@ -273,6 +294,39 @@ async function verifySupportedModelSearchBeyondFirstPage(): Promise<void> {
   } finally {
     api.providers.modelOptions = originalModelOptions
   }
+}
+
+function verifyModelContextFieldPlanning(): void {
+  const contextFieldsFor = (
+    enabledFields: Array<keyof ReturnType<typeof createAccountBatchEditForm>['enabled']>,
+    providerCode = 'gpt'
+  ) => {
+    const candidate = createAccountBatchEditForm()
+    for (const field of enabledFields) candidate.enabled[field] = true
+    return accountBatchEditContextFieldsForForm(candidate, providerCode)
+  }
+
+  assert.deepEqual(contextFieldsFor([]), [], '首开没有启用模型字段时不得请求任何批量模型上下文')
+  assert.deepEqual(contextFieldsFor(['supportedModels']), [], '覆盖支持模型不得读取旧支持模型关系')
+  assert.deepEqual(contextFieldsFor(['healthCheckModel']), ['supportedModels'], '只覆盖检查模型时只能读取现有支持模型')
+  assert.deepEqual(contextFieldsFor(['healthCheckEndpointMode']), ['supportedEndpointModes'], '只覆盖检查请求形态时只能读取现有接口能力')
+  assert.deepEqual(contextFieldsFor(['supportedEndpointModes']), ['modelMappings'], '只覆盖接口能力时只能读取现有映射用于冲突校验')
+  assert.deepEqual(
+    contextFieldsFor(['modelMappings']),
+    ['supportedModels', 'supportedEndpointModes'],
+    '只覆盖模型别名时只能读取其两个现有校验依赖'
+  )
+  assert.deepEqual(
+    contextFieldsFor(['supportedModels', 'supportedEndpointModes', 'modelMappings']),
+    [],
+    '三个模型字段都显式覆盖时不得读取任何旧模型上下文'
+  )
+  assert.deepEqual(contextFieldsFor(['serviceTierOverride']), ['supportedModels'], 'GPT 服务等级只依赖现有支持模型')
+  assert.deepEqual(
+    contextFieldsFor(['reasoningEffortOverride'], 'gemini'),
+    ['supportedModels', 'supportedEndpointModes'],
+    'Gemini 思考级别必须定点补取支持模型和接口能力'
+  )
 }
 
 function accountFixture(

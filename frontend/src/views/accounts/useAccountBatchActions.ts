@@ -12,8 +12,9 @@ interface UseAccountBatchActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   clearSelection: () => void
   isManagementView: ComputedRef<boolean>
-  loadData: () => Promise<void>
+  reloadAccountPageAfterMutation: () => Promise<boolean>
   selectedAccounts: ComputedRef<AccountListItem[]>
+  updateLoadedAccountRevision: (accountId: string, configRevision: number) => boolean
 }
 
 export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
@@ -40,18 +41,22 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
             ...payload,
             expectedConfigRevision: configRevision
           } as Parameters<typeof api.accounts.updateAuthorizedDispatch>[1]
-          return await (options.isManagementView.value
+          const updated = await (options.isManagementView.value
             ? api.accounts.updateAuthorizedDispatch(account.id, authorizedPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
             : api.myAccounts.updateAuthorizedDispatch(account.id, authorizedPayload))
+          options.updateLoadedAccountRevision(account.id, updated.configRevision)
+          return updated
         }
         const configRevision = Number(account.configRevision)
         if (!Number.isInteger(configRevision) || configRevision < 1) {
           throw new Error(`账户 ${account.name} 的版本信息缺失，请刷新列表后重试`)
         }
         const updatePayload = { ...payload, expectedConfigRevision: configRevision }
-        return await (options.isManagementView.value
+        const updated = await (options.isManagementView.value
           ? api.accounts.update(account.id, updatePayload, options.accountScopeParams.value)
           : api.myAccounts.update(account.id, updatePayload))
+        options.updateLoadedAccountRevision(account.id, updated.configRevision)
+        return updated
       })
       const failedCount = results.filter((result) => result.status === 'rejected').length
       if (failedCount === 0) {
@@ -60,7 +65,7 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
       } else {
         message.warning(`${successLabel}，成功 ${selected.length - failedCount} 个，失败 ${failedCount} 个`)
       }
-      await options.loadData()
+      await options.reloadAccountPageAfterMutation()
     } catch (error) {
       console.error(error)
       message.error(`${loadingLabel}失败`)

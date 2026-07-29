@@ -139,8 +139,8 @@ function fallbackRuntimeLogEventText(value: string): string {
   return runtimeLogEventFallbackPrefixes.find(([prefix]) => value.startsWith(prefix))?.[1] ?? '未映射运行事件'
 }
 
-export function runtimeLogMessageText(record: { event?: string; errorMessage?: string; message?: string; line?: string }, options: { includeLine?: boolean } = {}): string {
-  const rawMessage = record.errorMessage || record.message || (options.includeLine ? record.line : undefined) || '-'
+export function runtimeLogMessageText(record: { event?: string; errorMessage?: string; message?: string }): string {
+  const rawMessage = record.errorMessage || record.message || '-'
   if (record.event === 'http_request_completed' && rawMessage === 'HTTP 请求完成') {
     return 'HTTP 请求已结束'
   }

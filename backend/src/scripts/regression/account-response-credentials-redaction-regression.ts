@@ -74,6 +74,13 @@ interface AccountMutationResponse {
   id: string
   configRevision: number
   changedFields: string[]
+  authorizationInstancesAffected?: boolean
+}
+
+interface OAuthCredentialRotationResponse {
+  id: string
+  configRevision: number
+  updatedAt: string
 }
 
 interface AccountApiKeyRuntimeResponse {
@@ -312,7 +319,8 @@ try {
     name: '响应脱敏 API Key 已更新',
     notes: '只修改名称和备注'
   })
-  assert.deepEqual(Object.keys(updatedApiKey).sort(), ['changedFields', 'configRevision', 'id'], '账户 PATCH 响应只能返回变更定位字段')
+  assert.deepEqual(Object.keys(updatedApiKey).sort(), ['authorizationInstancesAffected', 'changedFields', 'configRevision', 'id'], '账户 PATCH 响应只能返回变更定位字段和授权实例影响信号')
+  assert.equal(updatedApiKey.authorizationInstancesAffected, true, '账户名称变化应通知前端定点刷新已加载的授权实例')
   assert.deepEqual(updatedApiKey.changedFields, ['name', 'notes'], '账户 PATCH 只应声明实际变更字段')
   assertNoCredentialLeak(updatedApiKey, 'API Key 编辑响应')
   assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.credentials.api_key, 'sk-redaction-existing-api-key', '只改名称和备注时不应覆盖 API Key')
@@ -327,7 +335,8 @@ try {
       api_key_weights: null
     }
   })
-  assert.deepEqual(Object.keys(replacedMultiApiKey).sort(), ['changedFields', 'configRevision', 'id'], '凭据 PATCH 也只能返回变更定位字段')
+  assert.deepEqual(Object.keys(replacedMultiApiKey).sort(), ['authorizationInstancesAffected', 'changedFields', 'configRevision', 'id'], '凭据 PATCH 也只能返回变更定位字段和授权实例影响信号')
+  assert.equal(replacedMultiApiKey.authorizationInstancesAffected, true, '凭据变化应通知前端定点刷新已加载的授权实例')
   assert(replacedMultiApiKey.changedFields.includes('credentials.api_key'), '凭据 PATCH 应声明实际变化的 API Key 字段')
   assert(replacedMultiApiKey.changedFields.includes('credentials.api_keys'), '多 Key 改单 Key 应声明删除 api_keys')
   assertNoCredentialLeak(replacedMultiApiKey, '多 API Key 改单 API Key 编辑响应')
@@ -341,7 +350,8 @@ try {
     name: '响应脱敏 OAuth 已更新',
     notes: 'OAuth 只改备注'
   })
-  assert.deepEqual(Object.keys(updatedOAuth).sort(), ['changedFields', 'configRevision', 'id'], 'OAuth PATCH 响应也必须保持窄字段')
+  assert.deepEqual(Object.keys(updatedOAuth).sort(), ['authorizationInstancesAffected', 'changedFields', 'configRevision', 'id'], 'OAuth PATCH 响应也必须保持窄字段')
+  assert.equal(updatedOAuth.authorizationInstancesAffected, true, 'OAuth 账户名称变化应通知前端定点刷新已加载的授权实例')
   assertNoCredentialLeak(updatedOAuth, 'OAuth 编辑响应')
   const latestOAuth = repositories.findAccountForTest(seed.oauthAccountId)
   assert.equal(latestOAuth?.credentials.access_token, 'oauth-redaction-access-token', 'OAuth 编辑留空时应保留原 access_token')
@@ -365,12 +375,17 @@ try {
       planType: 'pro'
     }
   })
-  const refreshedOAuth = await postEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/openai-oauth/accounts/${seed.oauthAccountId}/refresh-token`, seed.adminCookie, {})
-  assert(refreshedOAuth.credentials, 'OAuth 刷新响应应返回公开凭据字段')
-  assert(refreshedOAuth.credentials, 'OAuth 刷新响应应返回编辑凭据')
-  assert.equal(refreshedOAuth.credentials.expires_at, '2027-01-02T00:00:00.000Z', 'OAuth 刷新响应应保留前端需要展示的过期时间')
-  assert.equal(refreshedOAuth.credentials.base_url, 'https://api.openai.com/v1', 'OAuth 刷新响应应保留 Base URL')
+  const refreshedOAuth = await postEnvelope<OAuthCredentialRotationResponse>(baseUrl, `/__aisys__/api/openai-oauth/accounts/${seed.oauthAccountId}/refresh-token`, seed.adminCookie, {
+    expectedConfigRevision: updatedOAuth.configRevision
+  })
+  assert.deepEqual(Object.keys(refreshedOAuth).sort(), ['configRevision', 'id', 'updatedAt'], 'OAuth 刷新响应只应返回版本协调字段')
+  assert.equal(refreshedOAuth.id, seed.oauthAccountId)
+  assert.equal(refreshedOAuth.configRevision, updatedOAuth.configRevision + 1, 'OAuth 刷新应推进配置版本')
   assertNoCredentialLeak(refreshedOAuth, 'OAuth 刷新响应')
+  const refreshedOAuthStored = repositories.findAccountForTest(seed.oauthAccountId)
+  assert.equal(refreshedOAuthStored?.credentials.access_token, 'oauth-redaction-refreshed-access-token', 'OAuth 刷新应保存新 access_token')
+  assert.equal(refreshedOAuthStored?.credentials.expires_at, '2027-01-02T00:00:00.000Z', 'OAuth 刷新应保存新过期时间')
+  assert.equal(refreshedOAuthStored?.credentials.base_url, 'https://api.openai.com/v1', 'OAuth 刷新应保留原 Base URL')
   runtimeConfig.processRole = 'worker'
 
   const rebound = await postEnvelope<AccountMutationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/group`, seed.adminCookie, {
@@ -567,7 +582,8 @@ async function requestEnvelope<T>(baseUrl: string, path: string, cookie: string,
 function assertAccountCreateResponseContracts(): void {
   const source = readFileSync('src/modules/openai-oauth/openai-oauth.routes.ts', 'utf8')
   assert.match(source, /ok\(\{ id: account\.id, status: account\.status \}\)/, 'OpenAI OAuth 创建响应只能返回 id 与 status')
-  assert.match(source, /ok\(sanitizeAccount(?:CredentialCarrier)?Response\(updated\)\)/, 'OpenAI OAuth 更新响应必须经过账号响应脱敏器')
+  assert.match(source, /id: updated\.id,[\s\S]*configRevision:[\s\S]*updatedAt:/, 'OpenAI OAuth 凭据更新响应只能返回版本协调字段')
+  assert.doesNotMatch(source, /sanitizeAccount(?:CredentialCarrier)?Response\(updated\)/, 'OpenAI OAuth 凭据更新不得再返回完整账户响应')
   const repositorySource = readFileSync('src/storage/repositories.ts', 'utf8')
   assert.doesNotMatch(repositorySource, /loadSystemAccountNameForAccountWriteAsync/, '账户创建不得为拼装完整摘要额外读取系统账户名称')
   assert.doesNotMatch(

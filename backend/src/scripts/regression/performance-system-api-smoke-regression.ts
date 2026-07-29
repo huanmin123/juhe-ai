@@ -536,12 +536,15 @@ async function runHttpSmoke(): Promise<void> {
     )
     const createdAccountTargetGroup = createdAccountReferenceData.providerDefaults.find((item) => item.providerCode === 'gpt')?.defaultGroup
     assert.ok(createdAccountTargetGroup?.id, 'performance smoke 授权创建应从用户常量缓存接口读取 GPT 默认分组')
-    const createdAuthorization = await postEnvelope<{
-      id: string
-      status: string
-      resourceId: string
-      granteeSystemAccountId?: string
-      updatedAt: string
+    const createdAuthorizationMutation = await postEnvelope<{
+      item: {
+        id: string
+        status: string
+        resourceId: string
+        granteeSystemAccountId?: string
+        updatedAt: string
+      }
+      created: boolean
     }>(baseUrl, '/__aisys__/api/authorizations?systemAccountId=sys_admin', {
       resourceType: 'account',
       resourceId: createdAiAccount.id,
@@ -556,6 +559,8 @@ async function runHttpSmoke(): Promise<void> {
         }
       }
     }, cookie)
+    const createdAuthorization = createdAuthorizationMutation.item
+    assert.equal(createdAuthorizationMutation.created, true, 'performance smoke 授权创建应返回最小创建结果')
     createdAuthorizationGrantIds.push(createdAuthorization.id)
     assert.equal(createdAuthorization.status, 'active', 'performance smoke 应能创建个人资源授权')
     assert.equal(createdAuthorization.resourceId, createdAiAccount.id, 'performance smoke 创建授权应指向目标 AI 账户')

@@ -347,8 +347,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       await options.refreshAccountMutationRows(mutation)
     } catch (error) {
       console.error(error)
-      message.warning('账户已更新，列表局部刷新失败，正在重新加载当前页')
-      await options.loadData()
+      try {
+        await options.loadData()
+        message.warning('账户已更新，列表局部刷新失败，已尝试重新加载当前页')
+      } catch (reloadError) {
+        console.error(reloadError)
+        message.warning('账户已更新，但列表刷新失败，请手动刷新')
+      }
     }
   }
 

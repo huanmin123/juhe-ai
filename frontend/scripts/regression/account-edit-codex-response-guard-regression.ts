@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { AccountAdvancedDetail, AccountEditBasicDetail } from '../../src/types/domain'
+import type { AccountAdvancedDetail, AccountCloneContext, AccountEditBasicDetail } from '../../src/types/domain'
 import {
   buildAccountBasicEditFormLoad,
   buildAccountCloneFormLoad,
@@ -55,10 +55,37 @@ const advanced: AccountAdvancedDetail = {
   temporaryUnavailableContinuousProbeEnabled: true,
   balanceQueryEnabled: false
 }
+const cloneContext: AccountCloneContext = {
+  id: account.id,
+  configRevision: account.configRevision,
+  providerCode: account.providerCode,
+  providerProtocolProfileId: account.providerProtocolProfileId,
+  protocolCode: account.protocolCode,
+  protocolVersion: account.protocolVersion,
+  name: account.name,
+  type: account.type,
+  credentialOptions: {
+    base_url: credentials.base_url,
+    supported_endpoint_modes: ['responses_json', 'responses_sse'],
+    codex_responses_safe_repair_enabled: credentials.codex_responses_safe_repair_enabled,
+    codex_responses_strict_intercept_enabled: credentials.codex_responses_strict_intercept_enabled
+  },
+  concurrencyLimit: account.concurrencyLimit,
+  priority: account.priority,
+  superPriorityEnabled: account.superPriorityEnabled,
+  fallbackEnabled: account.fallbackEnabled,
+  clientCompatibility: account.clientCompatibility,
+  supportedModels: account.supportedModels,
+  tags: account.tags,
+  healthCheckModel: account.healthCheckModel,
+  healthCheckEndpointMode: account.healthCheckEndpointMode,
+  modelMappings: [],
+  temporaryUnavailableContinuousProbeEnabled: true
+}
 
 const basicLoaded = buildAccountBasicEditFormLoad({ account, credentials, defaults })
 const loaded = buildAccountEditFormLoad({ account, advanced, credentials, defaults })
-const cloned = buildAccountCloneFormLoad({ account, advanced, credentials, defaults })
+const cloned = buildAccountCloneFormLoad({ account: cloneContext, defaults })
 
 assert.equal(basicLoaded.patch.clientCompatibility, 'codex_responses', '基础详情加载必须保留账户持久化的兼容模式')
 for (const [label, patch] of [['编辑', loaded.patch], ['克隆', cloned.patch]] as const) {

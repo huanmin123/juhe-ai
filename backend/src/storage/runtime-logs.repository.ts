@@ -36,14 +36,14 @@ export interface RuntimeLogListOptions {
 }
 
 export interface RuntimeLogListResult {
-  items: RuntimeLogSummary[]
+  items: RuntimeLogListItem[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
 }
 
-export interface RuntimeLogSummary {
+export interface RuntimeLogListItem {
   id: string
   time: string
   level: string
@@ -51,11 +51,19 @@ export interface RuntimeLogSummary {
   event?: string
   message?: string
   errorMessage?: string
+}
+
+export interface RuntimeLogSummary extends RuntimeLogListItem {
   rawJson?: string
   createdAt: string
 }
 
 export type RuntimeLogDetail = RuntimeLogSummary & { rawJson: string }
+
+export interface RuntimeLogDetailDelta {
+  id: string
+  rawJson: string
+}
 
 export interface RuntimeLogFacets {
   retentionDays: number
@@ -191,7 +199,7 @@ export function listRuntimeLogsReadOnly(options: RuntimeLogListOptions = {}): Ru
     .all(...filters.params, pageSize + 1, offset) as RuntimeLogRow[]
 
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map((row) => runtimeLogFromRow(row, { includeRawJson: false }))
+  const items = pageRows.rows.map(runtimeLogListItemFromRow)
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -270,7 +278,7 @@ export async function listRuntimeLogsAsync(options: RuntimeLogListOptions = {}):
   `, [...filters.params, pageSize + 1, offset])
 
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map((row) => runtimeLogFromRow(row, { includeRawJson: false }))
+  const items = pageRows.rows.map(runtimeLogListItemFromRow)
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -314,6 +322,38 @@ export async function getRuntimeLogDetailAsync(id: string): Promise<RuntimeLogDe
     LIMIT 1
   `, [id.trim()])
   return row ? runtimeLogDetailFromRow(row) : undefined
+}
+
+export function getRuntimeLogDetailDeltaReadOnly(id: string): RuntimeLogDetailDelta | undefined {
+  const row = getDatasetDatabase()
+    .prepare(`
+      SELECT id, raw_json
+      FROM runtime_logs
+      WHERE id = ?
+      LIMIT 1
+    `)
+    .get(id.trim()) as RuntimeLogRow | undefined
+  return row ? runtimeLogDetailDeltaFromRow(row) : undefined
+}
+
+export async function getRuntimeLogDetailDeltaAsync(id: string): Promise<RuntimeLogDetailDelta | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'get_runtime_log_detail_delta_read_only',
+        id
+      })
+    }
+    return getRuntimeLogDetailDeltaReadOnly(id)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<RuntimeLogRow>(`
+    SELECT id, raw_json
+    FROM juhe_dataset.runtime_logs
+    WHERE id = ?
+    LIMIT 1
+  `, [id.trim()])
+  return row ? runtimeLogDetailDeltaFromRow(row) : undefined
 }
 
 export function getRuntimeLogFacets(): RuntimeLogFacets {
@@ -703,6 +743,18 @@ function escapeSqlLikePattern(value: string): string {
 
 function runtimeLogListSelectColumns(alias: string): string {
   return [
+    `${alias}.id`,
+    `${alias}.time`,
+    `${alias}.level`,
+    `SUBSTR(${alias}.trace_id, 1, 256) AS trace_id`,
+    `SUBSTR(${alias}.event, 1, 256) AS event`,
+    `SUBSTR(${alias}.message, 1, 1000) AS message`,
+    `SUBSTR(${alias}.error_message, 1, 1000) AS error_message`
+  ].join(', ')
+}
+
+function runtimeLogDetailSelectColumns(alias: string): string {
+  return [
     'id',
     'time',
     'level',
@@ -710,12 +762,9 @@ function runtimeLogListSelectColumns(alias: string): string {
     'event',
     'message',
     'error_message',
+    'raw_json',
     'created_at'
   ].map((column) => `${alias}.${column}`).join(', ')
-}
-
-function runtimeLogDetailSelectColumns(alias: string): string {
-  return `${runtimeLogListSelectColumns(alias)}, ${alias}.raw_json`
 }
 
 function normalizeRuntimeLogPage(value: unknown, pageSize: number): number {
@@ -739,7 +788,7 @@ function positiveInteger(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
 }
 
-function runtimeLogFromRow(row: RuntimeLogRow, options: { includeRawJson?: boolean } = { includeRawJson: true }): RuntimeLogSummary {
+function runtimeLogFromRow(row: RuntimeLogRow): RuntimeLogSummary {
   return {
     id: String(row.id),
     time: String(row.time),
@@ -748,13 +797,32 @@ function runtimeLogFromRow(row: RuntimeLogRow, options: { includeRawJson?: boole
     event: optionalString(row.event),
     message: optionalString(row.message),
     errorMessage: optionalString(row.error_message),
-    ...(options.includeRawJson === false ? {} : { rawJson: optionalString(row.raw_json) ?? '' }),
+    rawJson: optionalString(row.raw_json) ?? '',
     createdAt: String(row.created_at)
+  }
+}
+
+function runtimeLogListItemFromRow(row: RuntimeLogRow): RuntimeLogListItem {
+  return {
+    id: String(row.id),
+    time: String(row.time),
+    level: String(row.level),
+    traceId: optionalString(row.trace_id),
+    event: optionalString(row.event),
+    message: optionalString(row.message),
+    errorMessage: optionalString(row.error_message)
   }
 }
 
 function runtimeLogDetailFromRow(row: RuntimeLogRow): RuntimeLogDetail {
   return runtimeLogFromRow(row) as RuntimeLogDetail
+}
+
+function runtimeLogDetailDeltaFromRow(row: RuntimeLogRow): RuntimeLogDetailDelta {
+  return {
+    id: String(row.id),
+    rawJson: optionalString(row.raw_json) ?? ''
+  }
 }
 
 function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {

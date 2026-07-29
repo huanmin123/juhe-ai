@@ -230,6 +230,7 @@ function seedData(upstreamBaseUrl: string): SeedState {
       api_key: 'sk-user-authorized-model-check',
       base_url: upstreamBaseUrl
     },
+    supportedModels: ['gpt-5.5', 'gpt-5.4'],
     groupId: ownerSourceGroup.id,
     status: 'active',
     schedulable: true

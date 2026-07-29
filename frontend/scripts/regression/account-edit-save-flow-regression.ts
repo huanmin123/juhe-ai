@@ -43,7 +43,15 @@ const tagSelectSource = readSource('src/views/accounts/AccountTagSelect.vue')
 const oauthSectionSource = readSource('src/views/accounts/AccountOAuthSection.vue')
 const reauthorizeSource = readSource('src/views/accounts/useAccountReauthorize.ts')
 const reauthorizeModalSource = readSource('src/views/accounts/AccountReauthorizeModal.vue')
+const accountApiSource = readSource('src/api/domains/accounts.ts')
+const accountMenuActionsSource = readSource('src/views/accounts/useAccountMenuActions.ts')
 const batchEditModalSource = readSource('src/views/accounts/AccountBatchEditModal.vue')
+const oauthDomainSources = [
+  ['OpenAI', readSource('src/api/domains/openaiOAuth.ts')],
+  ['Anthropic', readSource('src/api/domains/anthropicOAuth.ts')],
+  ['Gemini', readSource('src/api/domains/geminiOAuth.ts')],
+  ['Grok', readSource('src/api/domains/grokOAuth.ts')]
+] as const
 const packageJson = JSON.parse(readSource('package.json')) as { scripts?: Record<string, string> }
 
 assert.doesNotMatch(
@@ -159,13 +167,13 @@ assert.match(
 assert.match(saveFlowSource, /await refreshEditedAccountRows\(updated\)/, '编辑成功必须定点刷新后端确认的账户行')
 assert.match(
   accountsViewSource,
-  /mutation\.authorizationInstancesAffected[\s\S]*account\.authorizationInstanceSourceAccountId === mutation\.id[\s\S]*ids: chunk/,
-  '来源账户编辑必须把当前已加载的授权实例纳入定点刷新'
+  /markAccountMutation\(mutation\)[\s\S]*mutation\.authorizationInstancesAffected[\s\S]*await reloadAccountPageAfterMutation\(\)[\s\S]*return/,
+  '来源账户编辑必须先推进列表代次，再重建服务端分页窗口以覆盖未加载的授权实例'
 )
 assert.match(
   accountsViewSource,
-  /offset \+= 200[\s\S]*api\.accounts\.list\([\s\S]*api\.myAccounts\.list\(/,
-  '受影响账户行必须按管理或个人作用域分批查询，不能重新加载宽列表'
+  /const ids = \[mutation\.id\][\s\S]*api\.accounts\.list\([\s\S]*api\.myAccounts\.list\([\s\S]*accountUpdateAffectsPageWindow\(account\)[\s\S]*await reloadAccountPageAfterMutation\(\)/,
+  '普通变更应先定点刷新；影响筛选或排序时必须等待服务端分页窗口刷新'
 )
 assert.match(
   editTestSource,
@@ -209,18 +217,61 @@ assert.match(
 )
 assert.match(
   reauthorizeSource,
-  /async function openReauthorizeModal[\s\S]*api\.accounts\.editBasicDetail[\s\S]*api\.myAccounts\.editBasicDetail[\s\S]*reauthorizeModalOpen\.value = true/,
-  '重新授权只能在用户点击后读取 edit-basic，成功后再打开弹窗'
+  /async function openReauthorizeModal[\s\S]*providerKind === 'gemini'[\s\S]*oauthReauthorizationContext[\s\S]*reauthorizeModalOpen\.value = true/,
+  '重新授权只能在 Gemini 用户点击后读取窄 OAuth 元数据上下文，其他供应商直接使用列表版本'
 )
+assert.doesNotMatch(reauthorizeSource, /editBasicDetail/, '重新授权不得读取包含凭据和模型关系的 edit-basic')
 assert.doesNotMatch(
   reauthorizeSource,
   /account\.credentials/,
   '重新授权不得从列表行读取凭据'
 )
+assert.match(
+  editFormSource,
+  /async function openClone[\s\S]*cloneContext\(account\.id[\s\S]*buildAccountCloneFormLoad/,
+  '克隆只能通过单次 clone-context 请求加载同版本的窄表单上下文'
+)
+assert.doesNotMatch(
+  editFormSource.match(/async function openClone[\s\S]*?async function loadAccountDetailForForm/)?.[0] ?? '',
+  /editBasicDetail|advancedDetail|Promise\.all|groupIdForAccount/,
+  '克隆不得再拼接详情响应或回退到列表缓存中的旧分组'
+)
+assert.match(cloneOpenSource, /buildAccountCloneFormLoad\(\{[\s\S]*account: sourceAccount/, '克隆表单只能消费专用上下文')
+assert.doesNotMatch(cloneOpenSource, /sourceAccount\.credentials|credentials:/, '克隆表单不得读取或清空建号秘密凭据容器')
+assert.match(accountApiSource, /cloneContext:[\s\S]*\/clone-context/, '账户 API 必须提供专用 clone-context 契约')
+assert.match(accountApiSource, /oauthReauthorizationContext:[\s\S]*\/oauth-reauthorization-context/, '账户 API 必须提供专用 OAuth 重授权上下文契约')
 assert.match(oauthSectionSource, /isOpenAI[\s\S]*form\.oauthMode === 'refresh_token'[\s\S]*form\.googleClientId/, 'OpenAI Refresh Token 建号必须提供可选 Client ID 输入')
 assert.match(reauthorizeModalSource, /providerKind === 'openai' && form\.oauthMode === 'refresh_token'[\s\S]*form\.googleClientId/, 'OpenAI Refresh Token 重授权必须提供可选 Client ID 输入')
 assert.match(saveFlowSource, /openAIOAuthClientPayload\(form\)[\s\S]*openaiOAuth\.createFromRefreshToken\(openAIPayload/, 'OpenAI Refresh Token 建号必须单独附加 clientId，不能污染其他供应商 payload')
 assert.match(reauthorizeSource, /providerKind === 'openai'[\s\S]*openAIOAuthClientPayload\(reauthorizeForm\)/, 'OpenAI Refresh Token 重授权必须附加 clientId')
+
+for (const [providerName, source] of oauthDomainSources) {
+  assert.doesNotMatch(source, /unwrap<AccountSummary>/, `${providerName} OAuth 凭据轮换接口不得再接收完整账户响应`)
+  assert.match(
+    source,
+    /refreshToken: \(id: string, payload: OAuthCredentialRotationPayload[\s\S]*unwrap<OAuthCredentialRotationResult>/,
+    `${providerName} 主动刷新令牌必须携带配置版本并接收最小轮换回执`
+  )
+  assert.equal(
+    [...source.matchAll(/reauthorizeFrom(?:Code|RefreshToken):[\s\S]*?unwrap<OAuthCredentialRotationResult>/g)].length,
+    4,
+    `${providerName} 管理端和用户端重新授权接口都必须接收最小轮换回执`
+  )
+}
+
+const saveReauthorizeSource = sourceBetween(reauthorizeSource, 'async function saveReauthorize()', '\n  return {')
+const reauthorizeSuccessSource = sourceBetween(saveReauthorizeSource, 'options.updateLoadedAccountRevision', '} catch (error) {')
+assert.match(saveReauthorizeSource, /expectedConfigRevision/, '重新授权请求必须携带当前账户配置版本')
+assert.match(saveReauthorizeSource, /updateLoadedAccountRevision\(account\.id, updated\.configRevision\)/, '重新授权成功后必须只推进列表行配置版本')
+assert.doesNotMatch(reauthorizeSuccessSource, /options\.loadData\(/, '重新授权成功后不得刷新完整账户列表')
+assert.match(saveReauthorizeSource, /isOAuthConfigRevisionConflict\(error\)[\s\S]*options\.loadData\(\)/, '重新授权只有版本冲突时才刷新账户列表')
+
+const refreshOAuthTokenSource = sourceBetween(accountMenuActionsSource, 'async function refreshOAuthToken(', 'async function updateAccountState(')
+const refreshOAuthSuccessSource = sourceBetween(refreshOAuthTokenSource, 'options.updateLoadedAccountRevision', '} catch (error) {')
+assert.match(refreshOAuthTokenSource, /payload = \{ expectedConfigRevision \}/, '主动刷新令牌请求必须携带当前账户配置版本')
+assert.match(refreshOAuthTokenSource, /updateLoadedAccountRevision\(account\.id, updated\.configRevision\)/, '主动刷新令牌成功后必须只推进列表行配置版本')
+assert.doesNotMatch(refreshOAuthSuccessSource, /options\.loadData\(/, '主动刷新令牌成功后不得刷新完整账户列表')
+assert.match(refreshOAuthTokenSource, /isOAuthConfigRevisionConflict\(error\)[\s\S]*options\.loadData\(\)/, '主动刷新令牌只有版本冲突时才刷新账户列表')
 
 const openAIOAuthForm = defaultAccountForm('gpt', 'oauth', FALLBACK_PROVIDERS)
 assert.deepEqual(openAIOAuthClientPayload(openAIOAuthForm), {}, 'OpenAI Client ID 留空时必须由后端使用内置默认值')

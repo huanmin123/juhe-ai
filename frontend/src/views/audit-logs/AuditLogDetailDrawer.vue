@@ -168,10 +168,10 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type {
-  AuditLogAttemptSummary,
-  AuditLogDetail,
+  AuditLogDetailAttemptSupplement,
+  AuditLogDisplayDetail,
   AuditLogPayloadDetail,
-  AuditLogPayloadSummary,
+  AuditLogDetailPayloadSupplement,
   AuditPayloadPartType
 } from '@/types/domain'
 import {
@@ -193,7 +193,7 @@ import {
 } from './auditPayloadDetails'
 
 const props = defineProps<{
-  detail?: AuditLogDetail
+  detail?: AuditLogDisplayDetail
   loading: boolean
   open: boolean
   payloadLoadingId: string
@@ -221,7 +221,7 @@ interface RequestChainRow {
   captureStatus?: string
   url?: string
   errorMessage?: string
-  payload?: AuditLogPayloadSummary
+  payload?: AuditLogDetailPayloadSupplement
 }
 
 const requestChainColumns = [
@@ -252,8 +252,8 @@ const requestChainRows = computed<RequestChainRow[]>(() => {
 
   const payloads = [...detail.payloads].sort((left, right) => left.sequenceIndex - right.sequenceIndex)
   const attemptById = new Map(detail.attempts.map((attempt) => [attempt.id, attempt]))
-  const payloadsByAttemptPart = new Map<string, AuditLogPayloadSummary[]>()
-  const payloadsByPart = new Map<AuditPayloadPartType, AuditLogPayloadSummary[]>()
+  const payloadsByAttemptPart = new Map<string, AuditLogDetailPayloadSupplement[]>()
+  const payloadsByPart = new Map<AuditPayloadPartType, AuditLogDetailPayloadSupplement[]>()
 
   for (const payload of payloads) {
     if (payload.partType === 'gateway_metadata') continue
@@ -272,7 +272,7 @@ const requestChainRows = computed<RequestChainRow[]>(() => {
   const usedPayloadIds = new Set<string>()
   const rows: RequestChainRow[] = []
   const nextSequence = () => String(rows.length + 1)
-  const takePayload = (partType: AuditPayloadPartType, attemptId?: string): AuditLogPayloadSummary | undefined => {
+  const takePayload = (partType: AuditPayloadPartType, attemptId?: string): AuditLogDetailPayloadSupplement | undefined => {
     const bucket = attemptId
       ? payloadsByAttemptPart.get(attemptPartKey(attemptId, partType))
       : payloadsByPart.get(partType)
@@ -311,8 +311,8 @@ function attemptPartKey(attemptId: string, partType: AuditPayloadPartType): stri
 }
 
 function createClientRequestRow(
-  detail: AuditLogDetail,
-  payload: AuditLogPayloadSummary | undefined,
+  detail: AuditLogDisplayDetail,
+  payload: AuditLogDetailPayloadSupplement | undefined,
   sequenceText: string
 ): RequestChainRow {
   const target = auditDetailPath(detail)
@@ -332,8 +332,8 @@ function createClientRequestRow(
 }
 
 function createUpstreamRequestRow(
-  attempt: AuditLogAttemptSummary,
-  payload: AuditLogPayloadSummary | undefined,
+  attempt: AuditLogDetailAttemptSupplement,
+  payload: AuditLogDetailPayloadSupplement | undefined,
   sequenceText: string
 ): RequestChainRow {
   return {
@@ -354,8 +354,8 @@ function createUpstreamRequestRow(
 }
 
 function createUpstreamResponseRow(
-  attempt: AuditLogAttemptSummary,
-  payload: AuditLogPayloadSummary | undefined,
+  attempt: AuditLogDetailAttemptSupplement,
+  payload: AuditLogDetailPayloadSupplement | undefined,
   sequenceText: string
 ): RequestChainRow {
   return {
@@ -379,8 +379,8 @@ function createUpstreamResponseRow(
 }
 
 function createGatewayResultRow(
-  detail: AuditLogDetail,
-  payload: AuditLogPayloadSummary | undefined,
+  detail: AuditLogDisplayDetail,
+  payload: AuditLogDetailPayloadSupplement | undefined,
   sequenceText: string
 ): RequestChainRow {
   const partType = payload?.partType ?? (detail.success ? 'gateway_response' : 'gateway_error')
@@ -406,9 +406,9 @@ function createGatewayResultRow(
 }
 
 function createPayloadOnlyRow(
-  detail: AuditLogDetail,
-  payload: AuditLogPayloadSummary,
-  attempt: AuditLogAttemptSummary | undefined,
+  detail: AuditLogDisplayDetail,
+  payload: AuditLogDetailPayloadSupplement,
+  attempt: AuditLogDetailAttemptSupplement | undefined,
   sequenceText: string
 ): RequestChainRow {
   return {
@@ -431,19 +431,19 @@ function createPayloadOnlyRow(
   }
 }
 
-function upstreamAttemptStatusText(attempt: AuditLogAttemptSummary): string {
+function upstreamAttemptStatusText(attempt: AuditLogDetailAttemptSupplement): string {
   if (attempt.upstreamStatusCode !== undefined) return String(attempt.upstreamStatusCode)
   return attempt.success ? '成功' : '失败'
 }
 
-function gatewayStatusText(detail: AuditLogDetail): string {
+function gatewayStatusText(detail: AuditLogDisplayDetail): string {
   if (detail.finalStatusCode !== undefined) return String(detail.finalStatusCode)
   return outcomeText(detail.auditOutcome)
 }
 
 function payloadOnlyStatusText(
-  payload: AuditLogPayloadSummary,
-  attempt: AuditLogAttemptSummary | undefined
+  payload: AuditLogDetailPayloadSupplement,
+  attempt: AuditLogDetailAttemptSupplement | undefined
 ): string {
   if (payload.partType === 'upstream_response' && attempt) return upstreamAttemptStatusText(attempt)
   if (payload.partType === 'gateway_response') return '返回'
@@ -451,15 +451,15 @@ function payloadOnlyStatusText(
   return '已捕获'
 }
 
-function auditDetailPath(detail: AuditLogDetail): string {
+function auditDetailPath(detail: AuditLogDisplayDetail): string {
   return detail.queryString ? `${detail.path}?${detail.queryString}` : detail.path
 }
 
-function readablePayload(record?: AuditLogPayloadSummary): boolean {
+function readablePayload(record?: AuditLogDetailPayloadSupplement): boolean {
   return Boolean(record && (record.hasHeaders || record.hasBody))
 }
 
-function payloadActionLabel(record: AuditLogPayloadSummary): string {
+function payloadActionLabel(record: AuditLogDetailPayloadSupplement): string {
   if (!record.hasBody && record.hasHeaders) return '查看 Headers'
   if (record.partType === 'upstream_response' || record.partType === 'gateway_response') return '查看原始响应'
   if (record.partType === 'gateway_error') return '查看原始错误'

@@ -24,15 +24,18 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 const announcementsRoutesSource = readFileSync(resolve('src/modules/announcements/announcements.routes.ts'), 'utf8')
+const announcementsRepositorySource = readFileSync(resolve('src/storage/announcements.repository.ts'), 'utf8')
 assert.match(announcementsRoutesSource, /listPublicAnnouncementsAsync/, '公告公开列表路由必须使用 async repository')
 assert.match(announcementsRoutesSource, /markPublicAnnouncementsReadAsync/, '公告已读路由必须使用 async repository')
 assert.match(announcementsRoutesSource, /listAnnouncementsPageAsync/, '公告管理列表路由必须使用 async repository')
-assert.match(announcementsRoutesSource, /findAnnouncementAsync/, '公告详情和变更 before 读取必须使用 async repository')
-assert.match(announcementsRoutesSource, /createAnnouncementAsync/, '公告创建路由必须使用 async repository')
-assert.match(announcementsRoutesSource, /updateAnnouncementAsync/, '公告更新路由必须使用 async repository')
-assert.match(announcementsRoutesSource, /deleteAnnouncementAsync/, '公告删除路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /findAnnouncementEditDetailAsync/, '公告编辑必须使用专用窄详情 async repository')
+assert.match(announcementsRoutesSource, /createAnnouncementForManagementAsync/, '公告创建路由必须使用管理写仓储')
+assert.match(announcementsRoutesSource, /patchAnnouncementForManagementAsync/, '公告更新路由必须使用字段级管理写仓储')
+assert.match(announcementsRoutesSource, /deleteAnnouncementForManagementAsync/, '公告删除路由必须使用带 revision 的管理写仓储')
 assert.match(announcementsRoutesSource, /runLoggedOperationAsync/, '公告管理操作日志必须使用 async 包裹')
+assert.doesNotMatch(announcementsRoutesSource, /findAnnouncementAsync/, '公告写路由不能在事务外预读完整 before')
 assert.doesNotMatch(announcementsRoutesSource, /import \{[^}]*\bfindAnnouncement\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, '公告路由不能重新导入同步 findAnnouncement')
+assert.doesNotMatch(announcementsRepositorySource, /SELECT\s+\*/i, '公告兼容详情读取也必须使用显式字段投影')
 assert.doesNotMatch(announcementsRoutesSource, /import \{[^}]*\bcreateAnnouncement\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, '公告路由不能重新导入同步 createAnnouncement')
 
 const actor = 'sys_admin'
@@ -87,7 +90,7 @@ try {
   assert.equal(repositories.deleteAnnouncement(targetId), true, '删除公告应成功')
   assert.equal(repositories.findAnnouncement(targetId), undefined, '删除后按 ID 单条读取应找不到公告')
 
-  console.log('公告单条读取回归通过：更新、发布、下线和删除日志 before 不再依赖全量公告列表')
+  console.log('公告单条读取回归通过：编辑使用专用窄详情，写入 before 收口到事务内管理仓储')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

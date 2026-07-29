@@ -10,6 +10,7 @@ const routesSource = readFileSync(new URL('../../../../backend/src/modules/stats
 
 assert.doesNotMatch(viewSource, /api\.(?:stats|myStats)\.usageOverview\(/, '统计首页不得继续调用兼容 usage-overview')
 assert.match(viewSource, /usageOverviewSummary\(/, '统计首页首屏必须调用独立 summary')
+assert.match(viewSource, /if \(dateRangeExplicit\.value\) \{[\s\S]*void windowLoad\.catch\(\(\) => undefined\)[\s\S]*\} else \{[\s\S]*await windowLoad/, '显式日期范围不得等待 usage-window 才请求摘要')
 assert.match(viewSource, /IntersectionObserver/, '四个图表必须按视口触发加载')
 assert.match(viewSource, /const defaultDateRange = \(\) => recentDateRange\(MAX_RANGE_DAYS\)/, '统计概览浏览器初始展示必须为近 31 天')
 assert.match(viewSource, /usageOverviewDailyTrend\(\{ \.\.\.rangeParams, systemAccountId \}\)/, '管理端日趋势必须携带当前筛选范围')
@@ -29,6 +30,8 @@ for (const description of [
 assert.match(viewSource, /const chartRequestSeq = \{ hourlyTrend: 0, modelDistribution: 0, errors: 0 \}/, '三个图表必须拥有独立请求代次')
 assert.match(viewSource, /rangeSignature\(result\.range\) !== rangeSignature\(currentOverview\.range\)/, '图表结果必须校验服务端归一化 range')
 assert.match(viewSource, /chartObserver\?\.unobserve\(entry\.target\)/, '图表首次进入视口后不得重复观察并发请求')
+assert.match(viewSource, /if \(disposed \|\| !pageActive\.value\) return/, '失活或卸载后排队的视口回调不得重新发起图表请求')
+assert.match(viewSource, /await windowLoad\s+if \(requestSeq !== statsRequestSeq\) return/, '等待统计窗口期间失效的请求不得继续发起摘要请求')
 assert.match(viewSource, /\.\.\.currentAuthSignature\(\)/, '请求签名必须包含 auth revision 与当前用户身份')
 assert.match(viewSource, /onDeactivate:\s*handlePageDeactivate/, 'KeepAlive 失活必须使在途统计请求失效')
 assert.doesNotMatch(viewSource, /<a-alert[\s\S]*summaryError/, 'summary 加载失败不得显示页面横幅')

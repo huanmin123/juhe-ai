@@ -4,11 +4,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccountListItem } from '@/types/domain'
+import type { AccountFilters } from '@/views/accounts/accountFormTypes'
 import { filterAccounts } from '@/views/accounts/accountListFilters'
 import {
+  accountListPageWindowChanged,
   accountListSortChanged,
+  mergeAccountListPageWithRevisionOverlays,
   replaceAccountListRow,
-  sortAccountListRows
+  sortAccountListRows,
+  type AccountListRevisionOverlay
 } from '@/views/accounts/accountListMutations'
 
 const fixture = (input: Partial<AccountListItem> & Pick<AccountListItem, 'id' | 'name'>): AccountListItem => ({
@@ -27,6 +31,7 @@ const fixture = (input: Partial<AccountListItem> & Pick<AccountListItem, 'id' | 
   healthCheckModel: input.healthCheckModel ?? 'gpt-4o-mini',
   healthCheckEndpointMode: input.healthCheckEndpointMode ?? 'responses',
   schedulable: input.schedulable ?? true,
+  tags: input.tags ?? [],
   todayUsage: input.todayUsage ?? { requestCount: 0, totalTokens: 0, totalCost: 0 },
   ...input
 })
@@ -36,14 +41,21 @@ const stale = fixture({ id: 'account-a', name: 'Stale', configRevision: 3, prior
 const currentRows = [original, fixture({ id: 'account-b', name: 'Beta', priority: 10 })]
 assert.equal(replaceAccountListRow(currentRows, stale), currentRows, '旧 PATCH/GET revision 不得覆盖当前账户行')
 
-const updated = fixture({ id: 'account-a', name: 'Alpha', configRevision: 5, priority: 5 })
-const replaced = replaceAccountListRow(currentRows, updated)
-assert.equal(accountListSortChanged(original, updated, [{ field: 'priority', order: 'asc' }]), true)
-assert.deepEqual(
-  sortAccountListRows(replaced, [{ field: 'priority', order: 'asc' }]).map((account) => account.id),
-  ['account-a', 'account-b'],
-  'PATCH 改动当前排序字段后必须立即重排已加载窗口'
+const overlays = new Map<string, AccountListRevisionOverlay>([
+  [original.id, { configRevision: 4, row: original }]
+])
+assert.equal(
+  mergeAccountListPageWithRevisionOverlays([stale], currentRows, overlays)[0],
+  original,
+  '整页 GET 也不得覆盖更高 configRevision 的 PATCH overlay'
 )
+assert.equal(overlays.size, 1, '服务端追上 revision 前必须保留 overlay')
+const caughtUp = fixture({ id: 'account-a', name: 'Server current', configRevision: 4 })
+assert.equal(mergeAccountListPageWithRevisionOverlays([caughtUp], currentRows, overlays)[0], caughtUp)
+assert.equal(overlays.size, 0, '服务端追上 revision 后应释放 overlay')
+
+const updated = fixture({ id: 'account-a', name: 'Alpha', configRevision: 5, priority: 5 })
+assert.equal(accountListSortChanged(original, updated, [{ field: 'priority', order: 'asc' }]), true)
 const sourceBlocked = fixture({
   id: 'account-authorized',
   name: 'Authorized',
@@ -59,7 +71,7 @@ const sourceRecovered = fixture({
 assert.equal(
   replaceAccountListRow([sourceBlocked], sourceRecovered)[0]?.effectiveAvailability?.available,
   true,
-  '来源账户恢复后，定点刷新不得保留旧来源阻断派生状态'
+  '来源账户恢复后，权威刷新不得保留旧来源阻断派生状态'
 )
 assert.deepEqual(
   sortAccountListRows([
@@ -70,37 +82,68 @@ assert.deepEqual(
   '最近使用时间无论升降序都必须保持空值在末尾'
 )
 
+const filters: AccountFilters = {
+  keyword: '',
+  providerCode: 'all',
+  type: 'all',
+  groupId: '',
+  group: undefined,
+  tagIds: [],
+  status: [],
+  systemAccountId: 'all',
+  systemAccount: undefined
+}
+assert.equal(accountListPageWindowChanged(original, fixture({ ...original, notes: 'display-only' }), {
+  filters,
+  isManagementView: false,
+  sorts: [{ field: 'priority', order: 'asc' }]
+}), false, '非筛选/排序字段仍应只做局部行合并')
+assert.equal(accountListPageWindowChanged(original, updated, {
+  filters,
+  isManagementView: false,
+  sorts: [{ field: 'priority', order: 'asc' }]
+}), true, '排序字段变化必须重建服务端分页窗口')
+assert.equal(accountListPageWindowChanged(original, fixture({ ...original, name: 'Renamed' }), {
+  filters: { ...filters, keyword: 'alpha' },
+  isManagementView: false,
+  sorts: [{ field: 'priority', order: 'asc' }]
+}), true, '活动筛选字段变化必须重建服务端分页窗口')
+
 const filteredOut = fixture({ ...updated, status: 'disabled' })
 assert.equal(filterAccounts({
   accounts: [filteredOut],
-  filters: {
-    keyword: '',
-    providerCode: 'all',
-    type: 'all',
-    groupId: '',
-    tagIds: [],
-    status: ['active'],
-    systemAccountId: 'all'
-  },
+  filters: { ...filters, status: ['active'] },
   isManagementView: false
-}).length, 0, 'PATCH 后不再满足当前筛选的账户必须移出本地页')
+}).length, 0, '状态筛选辅助语义仍需识别 PATCH 后已不匹配的账户')
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const listDataSource = fs.readFileSync(path.resolve(scriptDir, '../../views/accounts/useAccountListData.ts'), 'utf8')
+const accountsViewSource = fs.readFileSync(path.resolve(scriptDir, '../../views/accounts/AccountsView.vue'), 'utf8')
 assert.match(
   listDataSource,
   /get superseded\(\) \{ return requestMutationRevision !== listMutationRevision \}/,
   '列表 GET 应在真正提交响应时检查本地写入代次'
 )
-assert.match(
+assert.match(listDataSource, /transformItems:[\s\S]{0,180}mergeAccountListPageWithRevisionOverlays/)
+assert.doesNotMatch(
   listDataSource,
-  /listMutationRevision \+= 1[\s\S]*if \(!matchesCurrentFilters\)[\s\S]*removeAccountItems/,
-  '本地 PATCH 应先推进写入代次，再按当前筛选维护分页窗口'
+  /accounts\.value = sortAccountListRows\(nextAccounts/,
+  '影响服务端分页窗口的 PATCH 不得只在当前页复刻服务端排序'
 )
 assert.match(
-  listDataSource,
-  /if \(!matchesCurrentFilters \|\| sortChanged\)[\s\S]*loadData\(\{ forceData: true, quiet: true, requestIdentity: listMutationRevision \}\)/,
-  '只有筛选成员或分页排序边界变化时才应按最新写入代次静默校准权威页'
+  accountsViewSource,
+  /markAccountMutation\(mutation\)[\s\S]{0,180}mutation\.authorizationInstancesAffected[\s\S]{0,120}await reloadAccountPageAfterMutation\(\)[\s\S]{0,40}return/,
+  'mutation receipt 必须先推进 generation；来源账户影响授权实例时必须整页协调'
+)
+assert.doesNotMatch(
+  accountsViewSource,
+  /authorizationInstancesAffected[\s\S]{0,250}authorizationInstanceSourceAccountId/,
+  '来源账户联动不得只刷新当前已加载授权实例'
+)
+assert.match(
+  accountsViewSource,
+  /pageReloadRequired = accountUpdateAffectsPageWindow\(account\)[\s\S]{0,220}if \(pageReloadRequired\) await reloadAccountPageAfterMutation\(\)/,
+  '排序或筛选变化必须等待服务端分页窗口刷新'
 )
 
 console.log('account list mutation coordination regression passed')

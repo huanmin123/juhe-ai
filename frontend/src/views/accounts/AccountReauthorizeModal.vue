@@ -65,7 +65,7 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import type { AccountEditBasicDetail, OAuthAuthURLResult } from '@/types/domain'
+import type { AccountListItem, OAuthAuthURLResult } from '@/types/domain'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountOAuthAuthorizeForm } from './accountFormTypes'
 import { managedOAuthProviderKind } from './accountProviderCapabilities'
@@ -73,7 +73,7 @@ import { managedOAuthProviderKind } from './accountProviderCapabilities'
 const open = defineModel<boolean>('open', { required: true })
 
 const props = defineProps<{
-  account?: AccountEditBasicDetail
+  account?: AccountListItem
   authLoading: boolean
   authResult?: OAuthAuthURLResult
   form: AccountOAuthAuthorizeForm

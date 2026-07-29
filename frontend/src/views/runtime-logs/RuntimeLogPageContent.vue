@@ -45,11 +45,6 @@
     @update:view-mode="emit('update:viewMode', $event)"
   />
 
-  <RuntimeLogStatusAlerts
-    :runtime-logs-alert-visible="runtimeLogsAlertVisible"
-    :runtime-logs-alert-description="runtimeLogsAlertDescription"
-  />
-
   <RuntimeLogListSection
     :grep-columns="grepColumns"
     :grep-keyword-filter="grepKeywordFilter"
@@ -81,7 +76,6 @@ import type { RuntimeLogEventOption } from './runtimeLogFacets'
 import type { RuntimeLogTimeRangeValue } from './runtimeLogTimeRanges'
 import RuntimeLogFilterToolbar from './RuntimeLogFilterToolbar.vue'
 import RuntimeLogListSection from './RuntimeLogListSection.vue'
-import RuntimeLogStatusAlerts from './RuntimeLogStatusAlerts.vue'
 
 type RuntimeLogViewMode = 'index' | 'grep'
 type RuntimeLogLevelFilter = RuntimeLogLevel | 'all'
@@ -119,8 +113,6 @@ defineProps<{
   pagination?: false | Record<string, unknown>
   records: RuntimeLogSummary[]
   runtimeLogColumns: Array<Record<string, any>>
-  runtimeLogsAlertDescription: string
-  runtimeLogsAlertVisible: boolean
   traceIdFilter: string
   viewMode: RuntimeLogViewMode
   viewModeOptions: RuntimeLogOption[]

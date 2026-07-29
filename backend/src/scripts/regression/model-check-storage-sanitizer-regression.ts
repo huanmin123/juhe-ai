@@ -72,7 +72,7 @@ repositories.createModelCheckItems(run.id, [{
   errorMessage: `代理错误 ${proxyUrl}`
 }])
 
-repositories.finishModelCheckRun(run.id, {
+const firstTerminalWrite = repositories.finishModelCheckRun(run.id, {
   level: 'uncertain',
   score: 42,
   status: 'completed',
@@ -82,9 +82,19 @@ repositories.finishModelCheckRun(run.id, {
     message: `结果摘要包含 ${bearerToken}`
   }
 })
+assert.deepEqual(Object.keys(firstTerminalWrite).sort(), ['applied', 'finishedAt', 'id', 'status', 'updatedAt'], '终态写入只应返回最小 IPC 回执')
+const losingTerminalWrite = repositories.finishModelCheckRun(run.id, {
+  level: 'unavailable',
+  score: 0,
+  status: 'canceled',
+  message: '迟到的取消结果不得覆盖已完成终态'
+})
+assert.deepEqual(losingTerminalWrite, { applied: false, id: run.id }, '终态竞争必须 first-wins，迟到写入应返回显式 CAS miss 回执')
 
 const detail = repositories.getModelCheckRunDetail(run.id, { systemAccountId: 'sys_admin', role: 'admin' })
 assert(detail, '模型检测详情应可读取')
+assert.equal(detail.status, 'completed', '迟到终态不得覆盖首个 completed 结果')
+assert.equal(detail.score, 42, '迟到终态不得覆盖首个评分')
 
 const serialized = JSON.stringify(detail)
 assert(!serialized.includes(secretApiKey), '模型检测记录不得泄露 OpenAI API Key 形态字符串')
@@ -101,6 +111,11 @@ assert(manyItems.length <= 20, '数组摘要应限制长度')
 const list = repositories.listModelCheckRuns({ systemAccountId: 'sys_admin', role: 'admin' }, { page: 1, pageSize: 10 })
 assert.equal(list.items.length, 1, '检测历史列表应可分页读取模型检测摘要')
 assert(!JSON.stringify(list).includes(secretApiKey), '检测历史列表同样不得泄露敏感字符串')
+assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(list.items[0]))).sort(), [
+  'createdAt', 'id', 'level', 'maxScore', 'message', 'model', 'profile', 'providerCode',
+  'score', 'status', 'systemAccountId', 'targetId', 'targetName', 'targetType',
+  'triggerKind', 'trustedComparison'
+].sort(), '检测历史列表响应只能返回页面渲染字段')
 
 const atomicRun = repositories.createModelCheckRun({
   systemAccountId: 'sys_admin',
@@ -204,6 +219,8 @@ for (const call of capturedCalls) {
   assert(/\bmcr\.status\s+=\s+\?/i.test(call.sql), '模型检测历史列表应下推状态筛选')
   assert(/\bmcr\.model\s+=\s+\?/i.test(call.sql), '模型检测历史列表应下推模型筛选')
   assert(/\bLIMIT\s+\?\s+OFFSET\s+\?/i.test(call.sql), '模型检测历史列表必须分页查询')
+  assert(!/\bCOUNT\s*\(/i.test(call.sql), '模型检测历史列表请求路径不得执行 COUNT(*)')
+  assert(!/request_summary_json|result_summary_json|policy_snapshot_json|quality_decision_json|actor_system_account_id|trace_id|probe_set_version/i.test(call.sql), '模型检测历史列表不得读取详情和内部字段')
   assert(!/\bLIKE\s+\?/i.test(call.sql), '模型检测历史列表不应使用 LIKE 扫描')
   assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '模型检测历史列表不应传入前导通配符参数')
 }

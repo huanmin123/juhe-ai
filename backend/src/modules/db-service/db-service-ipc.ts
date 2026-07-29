@@ -24,6 +24,7 @@ import type {
   DbServiceRuntimeSnapshot,
   DbServiceServerRuntimeSnapshot,
   DbServiceServerRuntimeSnapshotScope,
+  DbServiceSystemMetricsRuntimeSnapshot,
   OpenAIAccountTrafficMigrationRuntimeRequest,
   OpenAIAccountTrafficMigrationRuntimeResult,
   OpenAIAccountTrafficMigrationRuntimeScope
@@ -108,8 +109,10 @@ let lastSnapshot: DbServiceRuntimeSnapshot | undefined
 let unavailableCircuitOpenUntilMs = 0
 let dbServiceReadyHandler: (() => void) | undefined
 
+type DbServiceServerRuntimeResponseSnapshot = DbServiceServerRuntimeSnapshot | DbServiceSystemMetricsRuntimeSnapshot
+
 interface PendingServerRuntimeRequest {
-  resolve: (snapshot: DbServiceServerRuntimeSnapshot | undefined) => void
+  resolve: (snapshot: DbServiceServerRuntimeResponseSnapshot | undefined) => void
   timeout: NodeJS.Timeout
 }
 
@@ -302,10 +305,10 @@ export async function requestServerRuntimeSnapshot(timeoutMs = 1000): Promise<Db
   return await requestServerRuntimeSnapshotByScope('full', timeoutMs)
 }
 
-export async function requestServerRuntimeLogAvailabilitySnapshot(
+export async function requestServerSystemMetricsRuntimeSnapshot(
   timeoutMs = 1000
-): Promise<DbServiceServerRuntimeSnapshot['runtimeLogAvailability'] | undefined> {
-  return (await requestServerRuntimeSnapshotByScope('runtime_logs', timeoutMs))?.runtimeLogAvailability
+): Promise<DbServiceSystemMetricsRuntimeSnapshot | undefined> {
+  return await requestServerRuntimeSnapshotByScope('system_metrics', timeoutMs)
 }
 
 export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): Promise<Record<string, number> | undefined> {
@@ -608,7 +611,7 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (!pending) {
     return true
   }
-  finishServerRuntimeRequest(record.requestId, record.ok === true ? record.result as DbServiceServerRuntimeSnapshot : undefined)
+  finishServerRuntimeRequest(record.requestId, record.ok === true ? record.result as DbServiceServerRuntimeResponseSnapshot : undefined)
   return true
 }
 
@@ -654,7 +657,7 @@ function handleDbServiceMessage(message: unknown): void {
           record.requestId,
           record.scope === 'account_concurrency'
           || record.scope === 'account_runtime'
-          || record.scope === 'runtime_logs'
+          || record.scope === 'system_metrics'
             ? record.scope
             : 'full'
         )
@@ -912,8 +915,8 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
       ? await buildServerAccountConcurrencySnapshot()
       : scope === 'account_runtime'
         ? await buildServerAccountRuntimeSnapshot()
-        : scope === 'runtime_logs'
-          ? await buildServerRuntimeLogAvailabilitySnapshot()
+        : scope === 'system_metrics'
+          ? await buildServerSystemMetricsRuntimeSnapshot()
           : await buildServerRuntimeSnapshot()
     sendToDbServiceProcess(child, {
       type: 'db_service_server_runtime_response',
@@ -931,16 +934,24 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
   }
 }
 
+function requestServerRuntimeSnapshotByScope(
+  scope: 'system_metrics',
+  timeoutMs: number
+): Promise<DbServiceSystemMetricsRuntimeSnapshot | undefined>
+function requestServerRuntimeSnapshotByScope(
+  scope: Exclude<DbServiceServerRuntimeSnapshotScope, 'system_metrics'>,
+  timeoutMs: number
+): Promise<DbServiceServerRuntimeSnapshot | undefined>
 async function requestServerRuntimeSnapshotByScope(
   scope: DbServiceServerRuntimeSnapshotScope,
   timeoutMs: number
-): Promise<DbServiceServerRuntimeSnapshot | undefined> {
+): Promise<DbServiceServerRuntimeResponseSnapshot | undefined> {
   if (runtimeConfig.processRole !== 'db-service' || !process.send) {
     return undefined
   }
 
   const requestId = randomUUID()
-  return await new Promise<DbServiceServerRuntimeSnapshot | undefined>((resolve) => {
+  return await new Promise<DbServiceServerRuntimeResponseSnapshot | undefined>((resolve) => {
     const timeout = setTimeout(() => {
       const pending = pendingServerRuntimeRequests.get(requestId)
       if (!pending) {
@@ -962,7 +973,7 @@ async function requestServerRuntimeSnapshotByScope(
   })
 }
 
-function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServerRuntimeSnapshot | undefined): void {
+function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServerRuntimeResponseSnapshot | undefined): void {
   const pending = pendingServerRuntimeRequests.get(requestId)
   if (!pending) {
     return
@@ -1135,23 +1146,95 @@ function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMes
 
 async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
   const [
-    backgroundIpc,
-    gatewaySideEffects,
+    systemMetrics,
     auditCapture,
     auditLogTransport,
     auditLogQueue,
     gatewayUsageFinalization,
     accountConcurrency,
-    highConcurrencyQueue,
-    accountBalanceSnapshotCleanup
+    backgroundIpc,
+    gatewaySideEffects
   ] = await Promise.all([
-    import('../background/background-ipc.js'),
-    import('../gateway/runtime/account-side-effects.service.js'),
+    buildServerSystemMetricsRuntimeSnapshot(),
     import('../gateway/audit/capture.service.js'),
     import('../audit-logs/audit-log-transport.service.js'),
     import('../audit-logs/audit-log-queue.service.js'),
     import('../gateway/usage/failure-finalization.service.js'),
     import('../../shared/account-concurrency.js'),
+    import('../background/background-ipc.js'),
+    import('../gateway/runtime/account-side-effects.service.js')
+  ])
+  const workerState = backgroundIpc.getBackgroundWorkerState()
+  const dbServiceState = getDbServiceState()
+  return {
+    ...systemMetrics,
+    ingestWorker: systemMetrics.ingestWorker
+      ? {
+        ...systemMetrics.ingestWorker,
+        pid: systemMetrics.ingestWorker.snapshot?.pid ?? workerState.ingestWorker?.pid,
+        pendingMessageCount: workerState.ingestWorker?.pendingMessageCount,
+        pendingMessageBytes: workerState.ingestWorker?.pendingMessageBytes,
+        pendingSnapshotRequestCount: workerState.ingestWorker?.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: workerState.ingestWorker?.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: workerState.ingestWorker?.rejectedSnapshotRequestCount
+      }
+      : undefined,
+    statsWorker: systemMetrics.statsWorker
+      ? {
+        ...systemMetrics.statsWorker,
+        pid: systemMetrics.statsWorker.snapshot?.pid ?? workerState.statsWorker?.pid,
+        pendingSnapshotRequestCount: workerState.statsWorker?.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: workerState.statsWorker?.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: workerState.statsWorker?.rejectedSnapshotRequestCount
+      }
+      : undefined,
+    opsWorker: systemMetrics.opsWorker
+      ? {
+        ...systemMetrics.opsWorker,
+        pid: systemMetrics.opsWorker.snapshot?.pid ?? workerState.opsWorker?.pid,
+        pendingMessageCount: workerState.opsWorker?.pendingMessageCount,
+        pendingMessageBytes: workerState.opsWorker?.pendingMessageBytes,
+        pendingSnapshotRequestCount: workerState.opsWorker?.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: workerState.opsWorker?.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: workerState.opsWorker?.rejectedSnapshotRequestCount
+      }
+      : undefined,
+    dbService: {
+      ...systemMetrics.dbService,
+      pid: dbServiceState.pid,
+      ready: dbServiceState.ready,
+      pendingRequestCount: dbServiceState.pendingRequestCount,
+      timedOutRequestCount: dbServiceState.timedOutRequestCount,
+      rejectedRequestCount: dbServiceState.rejectedRequestCount,
+      failedRequestCount: dbServiceState.failedRequestCount,
+      lastQueueWaitMs: dbServiceState.lastSnapshot?.lastQueueWaitMs,
+      maxQueueWaitMs: dbServiceState.lastSnapshot?.maxQueueWaitMs,
+      processEventLoopTimeoutStreak: dbServiceState.processEventLoopTimeoutStreak,
+      unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
+      httpHost: dbServiceState.httpHost,
+      httpPort: dbServiceState.httpPort,
+      sqliteReadWorkerPool: dbServiceState.lastSnapshot?.sqliteReadWorkerPool
+    },
+    accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
+    gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
+    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
+    gatewayUsageFinalization: gatewayUsageFinalization.getGatewayUsageFinalizationRuntime(),
+    auditLogTransport: {
+      ...auditLogTransport.getAuditLogTransportRuntime(),
+      pendingDispatchCount: auditLogQueue.getAuditLogServerDispatchPendingCount()
+    }
+  }
+}
+
+async function buildServerSystemMetricsRuntimeSnapshot(): Promise<DbServiceSystemMetricsRuntimeSnapshot> {
+  const [
+    backgroundIpc,
+    gatewaySideEffects,
+    highConcurrencyQueue,
+    accountBalanceSnapshotCleanup
+  ] = await Promise.all([
+    import('../background/background-ipc.js'),
+    import('../gateway/runtime/account-side-effects.service.js'),
     import('../gateway/runtime/high-concurrency-queue.service.js'),
     import('../accounts/account-balance-snapshot-cleanup.service.js')
   ])
@@ -1169,24 +1252,18 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   const ingestWorkerState = workerState.ingestWorker
   const statsWorkerState = workerState.statsWorker
   const opsWorkerState = workerState.opsWorker
+  const gatewayAccountSideEffectState = gatewaySideEffects.getGatewayAccountSideEffectState()
 
   return {
     observedAt: new Date().toISOString(),
-    accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     accountBalanceSnapshotCleanup: accountBalanceSnapshotCleanup.getAccountBalanceSnapshotCleanupRuntime(),
     ingestWorker: {
-      pid: ingestWorkerSnapshot?.pid ?? ingestWorkerState?.pid,
       ready: ingestWorkerSnapshot?.ready ?? ingestWorkerState?.ready ?? false,
-      pendingMessageCount: ingestWorkerState?.pendingMessageCount,
-      pendingMessageBytes: ingestWorkerState?.pendingMessageBytes,
       pendingQueues: ingestWorkerState?.pendingQueues
         ? backgroundPendingQueuesSnapshot(ingestWorkerState.pendingQueues)
         : undefined,
       pendingWriteRequestCount: ingestWorkerState?.pendingWriteRequestCount,
       oldestPendingWriteMs: ingestWorkerState?.oldestPendingWriteMs,
-      pendingSnapshotRequestCount: ingestWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: ingestWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: ingestWorkerState?.rejectedSnapshotRequestCount,
       snapshot: ingestWorkerSnapshot
         ? {
           pid: ingestWorkerSnapshot.pid,
@@ -1203,13 +1280,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
         : undefined
     },
     statsWorker: {
-      pid: statsWorkerSnapshot?.pid ?? statsWorkerState?.pid,
       ready: statsWorkerSnapshot?.ready ?? statsWorkerState?.ready ?? false,
       pendingWriteRequestCount: statsWorkerState?.pendingWriteRequestCount,
       oldestPendingWriteMs: statsWorkerState?.oldestPendingWriteMs,
-      pendingSnapshotRequestCount: statsWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: statsWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: statsWorkerState?.rejectedSnapshotRequestCount,
       snapshot: statsWorkerSnapshot
         ? {
           pid: statsWorkerSnapshot.pid,
@@ -1224,16 +1297,10 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
         : undefined
     },
     opsWorker: {
-      pid: opsWorkerSnapshot?.pid ?? opsWorkerState?.pid,
       ready: opsWorkerSnapshot?.ready ?? opsWorkerState?.ready ?? false,
-      pendingMessageCount: opsWorkerState?.pendingMessageCount,
-      pendingMessageBytes: opsWorkerState?.pendingMessageBytes,
       pendingQueues: opsWorkerState?.pendingQueues
         ? backgroundPendingQueuesSnapshot(opsWorkerState.pendingQueues)
         : undefined,
-      pendingSnapshotRequestCount: opsWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: opsWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: opsWorkerState?.rejectedSnapshotRequestCount,
       snapshot: opsWorkerSnapshot
         ? {
           pid: opsWorkerSnapshot.pid,
@@ -1262,24 +1329,16 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
         : undefined
     },
     dbService: {
-      pid: dbServiceState.pid,
-      ready: dbServiceState.ready,
-      pendingRequestCount: dbServiceState.pendingRequestCount,
       pendingDatasetWriteRequestCount: dbServiceState.pendingDatasetWriteRequestCount,
       oldestDatasetWriteRequestMs: dbServiceState.oldestDatasetWriteRequestMs,
       timedOutDatasetWriteRequestCount: dbServiceState.timedOutDatasetWriteRequestCount,
       rejectedDatasetWriteRequestCount: dbServiceState.rejectedDatasetWriteRequestCount,
-      timedOutRequestCount: dbServiceState.timedOutRequestCount,
-      rejectedRequestCount: dbServiceState.rejectedRequestCount,
-      failedRequestCount: dbServiceState.failedRequestCount,
       queuedRequestCount: dbServiceState.lastSnapshot?.queuedRequestCount,
       queuedRequestBytes: dbServiceState.lastSnapshot?.queuedRequestBytes,
       queuedHighRequestCount: dbServiceState.lastSnapshot?.queuedHighRequestCount,
       queuedNormalRequestCount: dbServiceState.lastSnapshot?.queuedNormalRequestCount,
       queuedLowRequestCount: dbServiceState.lastSnapshot?.queuedLowRequestCount,
       oldestQueuedMs: dbServiceState.lastSnapshot?.oldestQueuedMs,
-      lastQueueWaitMs: dbServiceState.lastSnapshot?.lastQueueWaitMs,
-      maxQueueWaitMs: dbServiceState.lastSnapshot?.maxQueueWaitMs,
       queueRejectedCount: dbServiceState.lastSnapshot?.queueRejectedCount,
       queueExpiredCount: dbServiceState.lastSnapshot?.queueExpiredCount,
       activeConcurrentRequestCount: dbServiceState.lastSnapshot?.activeConcurrentRequestCount,
@@ -1288,28 +1347,30 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       maxExecMs: dbServiceState.lastSnapshot?.maxExecMs,
       slowOpCount: dbServiceState.lastSnapshot?.slowOpCount,
       lastSlowOpType: dbServiceState.lastSnapshot?.lastSlowOpType,
-      lastSlowOpMs: dbServiceState.lastSnapshot?.lastSlowOpMs,
       lastSlowOpAt: dbServiceState.lastSnapshot?.lastSlowOpAt,
       pendingProcessEventLoopRequestCount: dbServiceState.pendingProcessEventLoopRequestCount,
       timedOutProcessEventLoopRequestCount: dbServiceState.timedOutProcessEventLoopRequestCount,
       failedProcessEventLoopRequestCount: dbServiceState.failedProcessEventLoopRequestCount,
-      processEventLoopTimeoutStreak: dbServiceState.processEventLoopTimeoutStreak,
       pendingServerRuntimeRequestCount: dbServiceState.pendingServerRuntimeRequestCount,
       timedOutServerRuntimeRequestCount: dbServiceState.timedOutServerRuntimeRequestCount,
       failedServerRuntimeRequestCount: dbServiceState.failedServerRuntimeRequestCount,
-      unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
-      httpHost: dbServiceState.httpHost,
-      httpPort: dbServiceState.httpPort,
-      codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool,
-      sqliteReadWorkerPool: dbServiceState.lastSnapshot?.sqliteReadWorkerPool
+      codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool
     },
     highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
-    gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
-    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
-    gatewayUsageFinalization: gatewayUsageFinalization.getGatewayUsageFinalizationRuntime(),
-    auditLogTransport: {
-      ...auditLogTransport.getAuditLogTransportRuntime(),
-      pendingDispatchCount: auditLogQueue.getAuditLogServerDispatchPendingCount()
+    gatewayAccountSideEffects: {
+      queueLength: gatewayAccountSideEffectState.queueLength,
+      processing: gatewayAccountSideEffectState.processing,
+      completedCount: gatewayAccountSideEffectState.completedCount,
+      coalescedCount: gatewayAccountSideEffectState.coalescedCount,
+      canceledBySuccessCount: gatewayAccountSideEffectState.canceledBySuccessCount,
+      skippedHealthySuccessCount: gatewayAccountSideEffectState.skippedHealthySuccessCount,
+      failedAttemptCount: gatewayAccountSideEffectState.failedAttemptCount,
+      droppedCount: gatewayAccountSideEffectState.droppedCount,
+      expiredCount: gatewayAccountSideEffectState.expiredCount,
+      localSuppressedAccountCount: gatewayAccountSideEffectState.localSuppressedAccountCount,
+      degradedAccountCount: gatewayAccountSideEffectState.degradedAccountCount,
+      precheckPendingAccountCount: gatewayAccountSideEffectState.precheckPendingAccountCount,
+      nextAttemptAt: gatewayAccountSideEffectState.nextAttemptAt
     }
   }
 }
@@ -1534,21 +1595,6 @@ async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRunti
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     accountRuntimeAvailability: gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
-  }
-}
-
-async function buildServerRuntimeLogAvailabilitySnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
-  const [backgroundIpc, gatewaySideEffects] = await Promise.all([
-    import('../background/background-ipc.js'),
-    import('../gateway/runtime/account-side-effects.service.js')
-  ])
-  const ingestAvailability = backgroundIpc.getIngestWorkerRuntimeLogAvailability()
-  return {
-    runtimeLogAvailability: {
-      ...ingestAvailability,
-      dbServiceStateAvailable: Boolean(getDbServiceState()),
-      gatewayAccountSideEffectsAvailable: Boolean(gatewaySideEffects)
-    }
   }
 }
 

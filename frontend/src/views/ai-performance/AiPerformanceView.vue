@@ -13,7 +13,7 @@
       :disabled-date="disabledDate"
       :has-active-account-filter="hasActiveAccountFilter"
       :is-management-view="isManagementView"
-      :loading="contextLoading || baseLoading"
+      :loading="initialLoading"
       :system-account-options-loading="systemAccountOptionsLoading"
       :system-accounts="systemAccounts"
       @account-dropdown-visible-change="handleAccountDropdownVisibleChange"
@@ -30,6 +30,17 @@
       @system-account-search="handleSystemAccountOptionsSearch"
       @toggle-account="toggleAccountFilter"
     />
+
+    <a-alert v-if="baseError" :message="baseError" show-icon type="error">
+      <template #action>
+        <a-button size="small" @click="retryBase">重试</a-button>
+      </template>
+    </a-alert>
+    <a-alert v-else-if="seriesError" :message="seriesError" show-icon type="warning">
+      <template #action>
+        <a-button size="small" @click="retrySeries">重试</a-button>
+      </template>
+    </a-alert>
 
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" compact />
 
@@ -54,9 +65,8 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { didUsageStatsWindowLoadFail, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { AccountSelection } from '@/shared/accountLabelCache'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
@@ -80,9 +90,6 @@ const defaultDateRange = (): [Dayjs, Dayjs] => {
 }
 
 interface AiPerformancePageState {
-  activeAccountIds: string[]
-  addedAccountIds: string[]
-  addedAccountSelections: AccountSelection[]
   dateRange?: [string, string]
   selectedSystemAccount?: PrincipalSelection
   selectedSystemAccountId: string
@@ -90,7 +97,7 @@ interface AiPerformancePageState {
 
 const pageStateCache = usePageStateCache<AiPerformancePageState>(undefined, defaultAiPerformancePageState, {
   sanitize: sanitizeAiPerformancePageState,
-  version: 2
+  version: 3
 })
 const initialPageState = pageStateCache.read()
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.dateRange
@@ -148,6 +155,7 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   },
   onDeactivate: () => {
     clearAccountSearchTimer()
+    invalidateAccountOptions()
     deactivatePerformanceRequests(true)
   },
   onBeforeUnmount: () => {
@@ -192,10 +200,6 @@ const {
   visibleHourlySeries,
   visibleOverview
 } = accountSelection
-activeAccountIds.value = [...initialPageState.activeAccountIds]
-addedAccountIds.value = [...initialPageState.addedAccountIds]
-addedAccountSelections.value = [...initialPageState.addedAccountSelections]
-
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => (contextLoading.value || baseLoading.value) && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
@@ -259,21 +263,20 @@ const summaryCards = computed(() => {
   ]
 })
 
-async function loadPerformanceContext(options: { force?: boolean } = {}) {
+async function loadPerformanceContext() {
   const contextSeq = ++contextRequestSeq
   invalidatePerformanceRequests()
   contextLoading.value = true
   try {
     const windowScope = isManagementView.value ? 'admin' : 'self'
-    await loadUsageStatsWindow({
-      force: options.force === true,
+    const windowLoad = loadUsageStatsWindow({
       viewScope: windowScope
     })
-    if (didUsageStatsWindowLoadFail(windowScope)) throw new Error('统计窗口加载失败')
+    await loadPerformanceBase()
     if (contextSeq !== contextRequestSeq || !pageActive.value) return
-    await Promise.allSettled([
-      loadPerformanceBase(),
-      loadAdditionalSeries(addedAccountIds.value)
+    await Promise.all([
+      windowLoad,
+      overview.value ? loadAdditionalSeries(addedAccountIds.value) : Promise.resolve()
     ])
   } catch (error) {
     if (contextSeq !== contextRequestSeq || !pageActive.value) return
@@ -286,7 +289,7 @@ async function loadPerformanceContext(options: { force?: boolean } = {}) {
 }
 
 function refreshPerformance() {
-  void loadPerformanceContext({ force: true })
+  void loadPerformanceContext()
 }
 
 async function loadPerformanceBase() {
@@ -412,13 +415,7 @@ function handleDateRangeChange() {
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
-  if (!dateRangeExplicit.value) {
-    const [startDate, endDate] = defaultDateRange()
-    return {
-      startDate: formatDateKey(startDate),
-      endDate: formatDateKey(endDate)
-    }
-  }
+  if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }
@@ -460,9 +457,6 @@ function resetFilters() {
 
 function defaultAiPerformancePageState(): AiPerformancePageState {
   return {
-    activeAccountIds: [],
-    addedAccountIds: [],
-    addedAccountSelections: [],
     dateRange: undefined,
     selectedSystemAccount: undefined,
     selectedSystemAccountId: allSystemAccountsValue
@@ -472,21 +466,10 @@ function defaultAiPerformancePageState(): AiPerformancePageState {
 function sanitizeAiPerformancePageState(value: unknown, fallback: AiPerformancePageState): AiPerformancePageState {
   const source = value && typeof value === 'object' ? value as Partial<AiPerformancePageState> : {}
   return {
-    activeAccountIds: sanitizeStringArray(source.activeAccountIds),
-    addedAccountIds: sanitizeStringArray(source.addedAccountIds),
-    addedAccountSelections: Array.isArray(source.addedAccountSelections)
-      ? source.addedAccountSelections.map(sanitizeAccountSelection).filter((selection): selection is AccountSelection => Boolean(selection))
-      : [],
     dateRange: sanitizeDateRange(source.dateRange),
     selectedSystemAccount: sanitizeSystemAccountSelection(source.selectedSystemAccount),
     selectedSystemAccountId: stringOrFallback(source.selectedSystemAccountId, fallback.selectedSystemAccountId) || fallback.selectedSystemAccountId
   }
-}
-
-function sanitizeStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim())
-    : []
 }
 
 function sanitizeDateRange(value: unknown): [string, string] | undefined {
@@ -506,24 +489,8 @@ function sanitizeSystemAccountSelection(value: unknown): PrincipalSelection | un
   return { id, name, kind: 'system_account' }
 }
 
-function sanitizeAccountSelection(value: unknown): AccountSelection | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const selection = value as Partial<AccountSelection>
-  const id = stringOrFallback(selection.id).trim()
-  const name = stringOrFallback(selection.name).trim()
-  if (!id || !name) return undefined
-  const accessType = selection.accessType === 'owner' || selection.accessType === 'authorized' ? selection.accessType : undefined
-  const ownerSystemAccountName = stringOrFallback(selection.ownerSystemAccountName).trim() || undefined
-  return ownerSystemAccountName
-    ? { id, name, accessType, ownerSystemAccountName }
-    : { id, name, accessType }
-}
-
 function snapshotPageState(): AiPerformancePageState {
   return {
-    activeAccountIds: [...activeAccountIds.value],
-    addedAccountIds: [...addedAccountIds.value],
-    addedAccountSelections: [...addedAccountSelections.value],
     dateRange: dateRangeExplicit.value ? [displayRange.value[0], displayRange.value[1]] : undefined,
     selectedSystemAccount: selectedSystemAccount.value,
     selectedSystemAccountId: selectedSystemAccountId.value

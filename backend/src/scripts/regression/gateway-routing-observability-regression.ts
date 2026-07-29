@@ -118,7 +118,7 @@ assert.match(requestContextSource, /!context\.stageSummaries\?\.length && !conte
 const upstreamDispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
 assert.match(upstreamDispatchSource, /attemptTier[\s\S]*observeGatewayRouting\(\{ kind: 'tier_escape', outcome: 'applied' \}\)/u)
 const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
-assert.match(statsRoutesSource, /getGatewayRoutingObservabilitySnapshot\(\)[\s\S]*gatewayRoutingObservabilityAvailable[\s\S]*gatewayRoutingObservability:/u)
+assert.doesNotMatch(statsRoutesSource, /gatewayRoutingObservabilityAvailable|gatewayRoutingObservability:/u, '系统指标 runtime 不得附带页面未消费的路由观测大对象')
 
 const originalRuntimeMode = runtimeConfig.runtimeMode
 const originalStateDriver = runtimeConfig.runtimeStateDriver

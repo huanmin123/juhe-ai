@@ -10,6 +10,8 @@ import {
   createResourceAuthorizationAsync,
   createSystemTeamAsync,
   findSystemTeamDetailAsync,
+  listSystemTeamMemberHistoryAsync,
+  listSystemTeamMembersAsync,
   listSystemTeamsPageAsync,
   removeSystemTeamMemberAsync,
   updateSystemTeamAsync
@@ -30,18 +32,21 @@ try {
 
   const team = await createSystemTeamAsync({ name: `${keyword}_主团队`, status: 'active' }, adminAccess)
   createdTeamIds.push(team.id)
-  const teamWithFirstMember = await addSystemTeamMembersAsync(team.id, { systemAccountIds: [memberIds[0]] }, adminAccess)
-  const firstMemberRow = teamWithFirstMember?.members?.find((member) => member.systemAccountId === memberIds[0])
+  const teamWithFirstMember = await addSystemTeamMembersAsync(team.id, { systemAccountIds: [memberIds[0]], expectedUpdatedAt: team.updatedAt }, adminAccess)
+  assert.equal(teamWithFirstMember.status, 'updated')
+  const firstMemberRow = teamWithFirstMember.status === 'updated' ? teamWithFirstMember.result.addedMembers[0] : undefined
   assert(firstMemberRow?.id, 'PG 系统团队添加成员后应返回成员 ID')
 
   const listed = await listSystemTeamsPageAsync(adminAccess, { keyword, page: 1, pageSize: 10 })
   assert.ok(listed.items.some((item) => item.id === team.id), 'PG 系统团队列表关键词应返回刚创建的团队')
-  assert.equal(listed.items.find((item) => item.id === team.id)?.updatedAt, team.updatedAt, 'PG 系统团队列表必须携带编辑 CAS 版本')
+  assert.equal(listed.items.find((item) => item.id === team.id)?.updatedAt, teamWithFirstMember.status === 'updated' ? teamWithFirstMember.result.updatedAt : undefined, 'PG 系统团队列表必须携带成员写后的 CAS 版本')
   const scopedListed = await listSystemTeamsPageAsync({ systemAccountId: memberIds[0], role: 'user' }, { keyword, page: 1, pageSize: 10 })
   assert.deepEqual(scopedListed.items.map((item) => item.id), [team.id], 'PG 系统团队成员作用域列表应只返回成员所在团队')
   const detail = await findSystemTeamDetailAsync(team.id, adminAccess)
-  assert.deepEqual(Object.keys(detail ?? {}).sort(), ['createdAt', 'description', 'id', 'memberCount', 'members', 'name', 'status'], 'PG 系统团队详情只应返回弹窗字段')
-  assert.deepEqual(Object.keys(detail?.members[0] ?? {}).sort(), ['id', 'joinedAt', 'systemAccountId', 'systemAccountName'], 'PG 系统团队成员 DTO 只应返回四个字段')
+  assert.deepEqual(Object.keys(detail ?? {}).sort(), ['createdAt', 'description', 'id', 'memberCount', 'name', 'status', 'updatedAt'], 'PG 系统团队基础详情不得提前返回成员集合')
+  const memberList = await listSystemTeamMembersAsync(team.id, adminAccess)
+  assert.deepEqual(Object.keys(memberList ?? {}).sort(), ['id', 'items', 'memberCount', 'updatedAt'], 'PG 系统团队成员必须独立按需读取')
+  assert.deepEqual(Object.keys(memberList?.items[0] ?? {}).sort(), ['id', 'joinedAt', 'systemAccountId', 'systemAccountName'], 'PG 系统团队成员 DTO 只应返回四个字段')
 
   const group = await createGroupAsync({
     name: `系统团队 PG smoke 授权分组 ${marker}`,
@@ -58,15 +63,22 @@ try {
   }, adminAccess)
   await assertRuntimeAuthorization(group.id, memberIds[0], 'active', team.id)
 
-  const teamWithSecondMember = await addSystemTeamMembersAsync(team.id, { systemAccountIds: [memberIds[1]] }, adminAccess)
-  assert.ok(teamWithSecondMember?.members?.some((member) => member.systemAccountId === memberIds[1]), 'PG 系统团队新增成员应返回团队摘要')
+  assert(teamWithFirstMember.status === 'updated')
+  const teamWithSecondMember = await addSystemTeamMembersAsync(team.id, { systemAccountIds: [memberIds[1]], expectedUpdatedAt: teamWithFirstMember.result.updatedAt }, adminAccess)
+  assert.equal(teamWithSecondMember.status, 'updated')
+  assert.equal(teamWithSecondMember.status === 'updated' ? teamWithSecondMember.result.addedMembers[0]?.systemAccountId : undefined, memberIds[1], 'PG 系统团队新增成员应返回增量成员')
   await assertRuntimeAuthorization(group.id, memberIds[1], 'active', team.id)
 
-  const afterRemove = await removeSystemTeamMemberAsync(team.id, firstMemberRow.id, adminAccess)
-  assert.ok(afterRemove?.members?.every((member) => member.systemAccountId !== memberIds[0]), 'PG 系统团队移除成员后摘要不应包含该成员')
+  assert(teamWithSecondMember.status === 'updated')
+  const afterRemove = await removeSystemTeamMemberAsync(team.id, firstMemberRow.id, { expectedUpdatedAt: teamWithSecondMember.result.updatedAt }, adminAccess)
+  assert.equal(afterRemove.status, 'updated')
   await assertRuntimeAuthorization(group.id, memberIds[0], 'revoked', null)
+  const memberHistory = await listSystemTeamMemberHistoryAsync(team.id, { page: 1, pageSize: 20 }, adminAccess)
+  assert.deepEqual(memberHistory?.items.map((item) => item.systemAccountId), [memberIds[0]], 'PG 历史成员接口只能返回已移除成员')
+  assert(memberHistory?.items.every((item) => item.status === 'removed' && item.removedAt), 'PG 历史成员必须返回移除状态与时间')
 
-  const disabled = await updateSystemTeamAsync(team.id, { status: 'disabled', expectedUpdatedAt: team.updatedAt }, adminAccess)
+  assert(afterRemove.status === 'updated')
+  const disabled = await updateSystemTeamAsync(team.id, { status: 'disabled', expectedUpdatedAt: afterRemove.result.updatedAt }, adminAccess)
   assert.equal(disabled.status, 'updated', 'PG 系统团队应可停用')
   assert.equal(disabled.status === 'updated' ? disabled.result.rowPatch.status : undefined, 'disabled', 'PG 系统团队停用应返回状态行补丁')
   await assertRuntimeAuthorization(group.id, memberIds[1], 'revoked', null)
@@ -135,28 +147,17 @@ async function assertRuntimeAuthorization(resourceId: string, granteeSystemAccou
 
 async function assertSystemTeamIndexedPlans(keywordValue: string, teamId: string): Promise<void> {
   await assertIndexedPlan(
-    '系统团队列表排序 PG 查询',
+    '系统团队关键词列表 PG 查询',
     `
-      SELECT id, name, status
-      FROM juhe_business.system_teams
+      SELECT id, name, description, status, created_at, updated_at
+      FROM juhe_business.system_teams system_teams
+      WHERE system_teams.name COLLATE "C" >= $1
+        AND system_teams.name COLLATE "C" < $2
+        AND starts_with(system_teams.name, $3)
       ORDER BY status ASC, updated_at DESC, name ASC, id ASC
-      LIMIT 10
+      LIMIT $4 OFFSET $5
     `,
-    [],
-    ['idx_system_teams_list_order']
-  )
-  await assertIndexedPlan(
-    '系统团队名称前缀 PG 查询',
-    `
-      SELECT id
-      FROM juhe_business.system_teams
-      WHERE name COLLATE "C" >= $1
-        AND name COLLATE "C" < $2
-        AND starts_with(name, $1)
-      ORDER BY name COLLATE "C" ASC, id ASC
-      LIMIT 10
-    `,
-    [keywordValue, systemTeamTextPrefixUpperBound(keywordValue)],
+    [keywordValue, systemTeamTextPrefixUpperBound(keywordValue), keywordValue, 11, 0],
     ['idx_system_teams_name_c_lookup']
   )
   await assertIndexedPlan(
@@ -176,6 +177,23 @@ async function assertSystemTeamIndexedPlans(keywordValue: string, teamId: string
       WHERE team_member_rank <= 1000
     `,
     [teamId],
+    ['idx_system_team_members_team_status_joined']
+  )
+  await assertIndexedPlan(
+    '系统团队历史成员 PG 查询',
+    `
+      SELECT system_team_members.id, system_team_members.team_id, system_team_members.system_account_id,
+        system_team_members.status, system_team_members.joined_at, system_team_members.removed_at,
+        system_accounts.display_name
+      FROM juhe_business.system_team_members system_team_members
+      INNER JOIN juhe_business.system_accounts system_accounts
+        ON system_accounts.id = system_team_members.system_account_id
+      WHERE system_team_members.team_id = $1
+        AND system_team_members.status = 'removed'
+      ORDER BY system_team_members.joined_at DESC, system_team_members.id DESC
+      LIMIT $2 OFFSET $3
+    `,
+    [teamId, 21, 0],
     ['idx_system_team_members_team_status_joined']
   )
   await assertIndexedPlan(

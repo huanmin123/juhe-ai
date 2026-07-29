@@ -352,7 +352,7 @@ accountsRouter.patch('/:id', async (req, res) => {
       id: account.id,
       configRevision: account.configRevision,
       changedFields: account.changedFields,
-      authorizationInstancesAffected: account.authorizationInstancesAffected
+      ...(account.authorizationInstancesAffected ? { authorizationInstancesAffected: true } : {})
     }))
   } catch (error) {
     if (error instanceof AccountManagementPatchRevisionConflictError) {

@@ -109,24 +109,20 @@ const loadPageDataSource = loadPageDataStart >= 0 && loadPageDataEnd > loadPageD
   : ''
 assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '跨层门禁必须绑定真实 system-metrics 接口')
 assert.match(statsApiSource, /systemMetricsRuntime:[\s\S]*\/stats\/system-metrics\/runtime/, '后台运行态必须使用独立 API')
-assert.match(systemMetricsViewSource, /void loadRuntimeData\(\)[\s\S]*return loadData\(\)/, '运行态卡片加载不得阻塞趋势首屏')
+assert.match(systemMetricsViewSource, /if \(runtimeSectionLoaded\.value\) void loadRuntimeData\(\)[\s\S]*return loadData\(\)/, '只有运行态区块进入视口后，页面刷新才应并行刷新运行态')
 assert(loadPageDataSource.includes('void loadUsageStatsWindow('), '页面加载必须并行启动窗口配置请求')
 assert(!loadPageDataSource.includes('await loadUsageStatsWindow('), '窗口配置不得阻塞趋势业务请求')
 assert(loadPageDataSource.indexOf('void loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadData()'), '趋势请求必须在窗口配置请求启动后立即返回')
 assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
 assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
-assert.match(
-  statsRoutesSource,
-  /function backgroundJobsFromSnapshot[\s\S]+\.map\(\(job\) => \(\{ \.\.\.job, workerRole: snapshot\.workerRole \}\)\)/,
-  'system-metrics DTO 必须完整保留 scheduler job snapshot 的部分失败与恢复字段'
-)
+assert.match(statsRoutesSource, /backgroundJobs\?\.map\(systemMetricsRuntimeJobRow\)/, 'system-metrics runtime 必须通过页面场景 DTO 显式投影')
 assert(jobsCardSource.includes('backgroundJobStatusText'), '后台任务组件必须复用已验证的状态格式化函数')
 assert(jobsCardSource.includes("title: '部分失败（本进程）'"), '后台任务必须单独展示部分失败次数')
 assert(jobsCardSource.includes("title: '累计失败（本进程）'"), '后台任务历史失败必须明确计数作用域')
 assert(jobsCardSource.includes("title: '最近失败'"), '后台任务必须展示最近失败时间以区分当前异常和历史计数')
 assert(jobsCardSource.includes("title: '任务跳过 / 合并 / 超时'"), '后台任务必须区分任务主动跳过、合并补跑和超时次数')
 assert(jobsCardSource.includes("title: '下次运行'"), '后台任务必须展示 scheduler 计算的下次运行时间')
-for (const field of ['stablePhaseOffsetMs', 'scheduleMode', 'overlapPolicy', 'pending', 'queuedForLane', 'overdueMs', 'nextRunAt', 'lastOutcome', 'leaseState', 'taskSkippedCount', 'coalescedCount', 'timedOutCount']) {
+for (const field of ['pending', 'queuedForLane', 'nextRunAt', 'lastOutcome', 'leaseState', 'taskSkippedCount', 'coalescedCount', 'timedOutCount']) {
   assert(statsRoutesSource.includes(field), `system-metrics DTO 必须声明 scheduler 字段 ${field}`)
   assert(dbServiceTypesSource.includes(field), `DB service runtime DTO 必须声明 scheduler 字段 ${field}`)
   assert(frontendDomainSource.includes(field), `前端 runtime DTO 必须声明 scheduler 字段 ${field}`)

@@ -2,6 +2,7 @@ import type { Dayjs } from 'dayjs'
 import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { parseDateKey, recentDateRange } from '@/shared/dateRange'
 import type { UsageStatsWindow } from '@/types/domain'
 
@@ -24,6 +25,7 @@ const scopeStates: Record<UsageStatsWindowScope, UsageStatsWindowScopeState> = {
   self: { loadedAtMs: 0, generation: 0, lastLoadFailed: false }
 }
 let displayGeneration = 0
+let activeIdentitySignature = usageStatsWindowIdentitySignature()
 
 type UsageStatsWindowLoadOptions = {
   force?: boolean
@@ -42,6 +44,7 @@ function fallbackWindow(): UsageStatsWindow {
 }
 
 async function loadUsageStatsWindow(options: UsageStatsWindowLoadOptions = {}): Promise<UsageStatsWindow> {
+  ensureUsageStatsWindowIdentity()
   const scope = options.viewScope ?? 'self'
   const scopeState = scopeStates[scope]
 
@@ -89,19 +92,34 @@ async function loadUsageStatsWindow(options: UsageStatsWindowLoadOptions = {}): 
 }
 
 export function didUsageStatsWindowLoadFail(viewScope: UsageStatsWindowScope): boolean {
+  ensureUsageStatsWindowIdentity()
   return scopeStates[viewScope].lastLoadFailed
 }
 
 export function clearUsageStatsWindowCache() {
+  activeIdentitySignature = usageStatsWindowIdentitySignature()
+  resetUsageStatsWindowScopeStates()
+}
+
+function ensureUsageStatsWindowIdentity(): void {
+  const nextIdentitySignature = usageStatsWindowIdentitySignature()
+  if (nextIdentitySignature === activeIdentitySignature) return
+  activeIdentitySignature = nextIdentitySignature
+  resetUsageStatsWindowScopeStates()
+}
+
+function resetUsageStatsWindowScopeStates(): void {
   displayGeneration += 1
   windowState.value = undefined
-  for (const scopeState of Object.values(scopeStates)) {
-    scopeState.value = undefined
-    scopeState.loadedAtMs = 0
-    scopeState.request = undefined
-    scopeState.generation += 1
-    scopeState.lastLoadFailed = false
+  for (const scope of Object.keys(scopeStates) as UsageStatsWindowScope[]) {
+    const nextGeneration = scopeStates[scope].generation + 1
+    scopeStates[scope] = { loadedAtMs: 0, generation: nextGeneration, lastLoadFailed: false }
   }
+}
+
+function usageStatsWindowIdentitySignature(): string {
+  const user = authState.currentUser.value
+  return JSON.stringify([user?.id ?? '', user?.role ?? '', authState.revision.value])
 }
 
 export function useUsageStatsWindow() {

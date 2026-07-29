@@ -302,3 +302,18 @@ export interface SystemMetricsOverview {
     processHeapTotalBytesMax?: number
   }>
 }
+
+export interface SystemMetricsTrendOverview {
+  hourlyTrend: Array<Pick<SystemMetricsOverview['hourlyTrend'][number],
+    'statHour' | 'cpuPercentAvg' | 'memoryUsedPercentAvg' | 'networkRxBytesPerSecondAvg' | 'networkTxBytesPerSecondAvg'
+  >>
+  processEventLoopLatestStatus: Array<Pick<SystemMetricsOverview['processEventLoopLatestStatus'][number],
+    'processRole' | 'sampleAvailable' | 'processPid' | 'sampledAt' | 'eventLoopLagMs' | 'processRssBytes' | 'processHeapUsedBytes' | 'processHeapTotalBytes'
+  >>
+  processEventLoopPeakStatus: Array<Pick<SystemMetricsOverview['processEventLoopPeakStatus'][number],
+    'processRole' | 'sampleAvailable' | 'processPid' | 'sampledAt' | 'eventLoopLagMs'
+  >>
+  processEventLoopTrend: Array<Pick<SystemMetricsOverview['processEventLoopTrend'][number],
+    'statMinute' | 'processRole' | 'eventLoopLagMsAvg' | 'eventLoopLagMsMax' | 'processRssBytesAvg' | 'processRssBytesMax'
+  >>
+}

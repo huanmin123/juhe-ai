@@ -3,13 +3,14 @@ import { ref } from 'vue'
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import type {
-  AuditLogDetail,
+  AuditLogDisplayDetail,
+  AuditLogDetailSupplement,
   AuditLogPayloadDetail,
   AuditLogListItem
 } from '@/types/domain'
 
 type AuditLogDetailPayloadDependencies = {
-  loadDetail?: (id: string) => Promise<AuditLogDetail>
+  loadDetail?: (id: string) => Promise<AuditLogDetailSupplement>
   loadPayload?: typeof api.auditLogs.payload
   reportError?: (text: string) => void
 }
@@ -17,7 +18,7 @@ type AuditLogDetailPayloadDependencies = {
 export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDependencies = {}) {
   const detailLoading = ref(false)
   const payloadLoadingId = ref('')
-  const detail = ref<AuditLogDetail>()
+  const detail = ref<AuditLogDisplayDetail>()
   const selectedPayload = ref<AuditLogPayloadDetail>()
   const detailOpen = ref(false)
   let detailRequestId = 0
@@ -35,7 +36,7 @@ export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDepe
     try {
       const nextDetail = await (dependencies.loadDetail?.(record.id) ?? api.auditLogs.detail(record.id))
       if (requestId === detailRequestId) {
-        detail.value = nextDetail
+        detail.value = { ...record, ...nextDetail }
       }
     } catch (error) {
       if (requestId === detailRequestId) {

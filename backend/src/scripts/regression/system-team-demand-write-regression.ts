@@ -61,6 +61,14 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const secondMember = repositories.createSystemAccount({
+    username: 'system_team_demand_member_2',
+    displayName: '系统团队按需写成员二',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   const adminAccess = { systemAccountId: admin.id, role: 'admin' as const }
   const team = repositories.createSystemTeam({ name: '系统团队按需写回归', description: '原说明' }, adminAccess)
   repositories.addSystemTeamMembers(team.id, { systemAccountIds: [member.id] }, adminAccess)
@@ -120,6 +128,61 @@ try {
   assert.match(selectSql(crossScope.calls), /scoped_members\.system_account_id\s*=\s*\?/i, '作用域必须下推到 PATCH 定位 SQL')
   assert.deepEqual(systemTeamDml(crossScope.calls), [], '作用域外 PATCH 必须零 DML')
 
+  const memberMutationTeam = repositories.createSystemTeam({ name: '系统团队成员按需写回归' }, adminAccess)
+  repositories.addSystemTeamMembers(memberMutationTeam.id, { systemAccountIds: [member.id] }, adminAccess)
+  const added = await captureSql(() => repositories.addSystemTeamMembersAsync(memberMutationTeam.id, {
+    systemAccountIds: [secondMember.id],
+    expectedUpdatedAt: memberMutationTeam.updatedAt
+  }, adminAccess))
+  assert.equal(added.result.status, 'updated')
+  assert.deepEqual(added.result.status === 'updated' ? Object.keys(added.result.result).sort() : [], ['addedMembers', 'id', 'memberCount', 'updatedAt'])
+  assert.deepEqual(added.result.status === 'updated' ? added.result.result.addedMembers.map((item) => item.systemAccountId) : [], [secondMember.id])
+  assert.deepEqual(added.result.status === 'updated' ? [...(added.result.viewerSystemAccountIds ?? [])].sort() : [], [member.id, secondMember.id].sort(), '成员新增日志必须保留全体当前成员 viewer')
+  assert.equal(systemTeamDml(added.calls).length, 1, '新增成员只能推进一次团队版本')
+  assert.doesNotMatch(selectSql(added.calls), /SELECT\s+\*\s+FROM\s+["`]?system_teams["`]?|SELECT\s+system_team_members\.\*/i, '成员写不得读取完整团队或成员行')
+  const memberWriteVersion = added.result.status === 'updated' ? added.result.result.updatedAt : ''
+
+  const addNoOp = await captureSql(() => repositories.addSystemTeamMembersAsync(memberMutationTeam.id, {
+    systemAccountIds: [secondMember.id],
+    expectedUpdatedAt: memberWriteVersion
+  }, adminAccess))
+  assert.equal(addNoOp.result.status, 'noop')
+  assert.deepEqual(systemTeamDml(addNoOp.calls), [], '重复添加有效成员必须零团队 DML')
+  assert.deepEqual(systemTeamMemberDml(addNoOp.calls), [], '重复添加有效成员必须零成员 DML')
+  assert.equal(addNoOp.result.status === 'noop' ? addNoOp.result.result.updatedAt : '', memberWriteVersion, '成员 no-op 不得推进版本')
+
+  const addedMemberId = added.result.status === 'updated' ? added.result.result.addedMembers[0]?.id : undefined
+  assert(addedMemberId)
+  const removed = await captureSql(() => repositories.removeSystemTeamMemberAsync(memberMutationTeam.id, addedMemberId, {
+    expectedUpdatedAt: memberWriteVersion
+  }, adminAccess))
+  assert.equal(removed.result.status, 'updated')
+  assert.deepEqual(removed.result.status === 'updated' ? [...removed.result.viewerSystemAccountIds].sort() : [], [member.id, secondMember.id].sort(), '成员移除日志必须同时保留当前成员与被移除成员 viewer')
+  assert.deepEqual(removed.result.status === 'updated' ? Object.keys(removed.result.result).sort() : [], ['id', 'memberCount', 'removedMemberId', 'updatedAt'])
+  assert.equal(systemTeamDml(removed.calls).length, 1, '移除成员只能推进一次团队版本')
+  assert.equal(systemTeamMemberDml(removed.calls).length, 1, '移除成员只能更新目标成员一行')
+  const removedVersion = removed.result.status === 'updated' ? removed.result.result.updatedAt : ''
+
+  const batchMemberIds = Array.from({ length: 20 }, (_value, index) => repositories.createSystemAccount({
+    username: `system_team_demand_batch_${index}`,
+    displayName: `系统团队批量成员${index}`,
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  }).id)
+  const batchTeam = repositories.createSystemTeam({ name: '系统团队二十成员查询预算' }, adminAccess)
+  const batchAdd = await captureSql(() => repositories.addSystemTeamMembersAsync(batchTeam.id, {
+    systemAccountIds: batchMemberIds,
+    expectedUpdatedAt: batchTeam.updatedAt
+  }, adminAccess))
+  assert.equal(batchAdd.result.status, 'updated')
+  const activeGrantReads = batchAdd.calls.filter((call) => call.kind === 'all'
+    && /FROM\s+(?:[\w".]+\.)?["`]?resource_authorization_grants["`]?/i.test(call.sql)
+    && /grantee_type\s*=\s*'team'/i.test(call.sql))
+  assert.equal(activeGrantReads.length, 1, '批量添加 20 个成员只能预取一次团队有效授权')
+  assert.doesNotMatch(activeGrantReads[0]?.sql ?? '', /SELECT\s+\*/i, '团队有效授权预取必须使用必要字段窄投影')
+
   const app = express()
   app.use(requestContext.requestContextMiddleware)
   app.use(express.json({ limit: '1mb' }))
@@ -131,6 +194,35 @@ try {
   assert(address && typeof address !== 'string')
   const baseUrl = `http://127.0.0.1:${address.port}`
   const cookie = `juhe_ai_session=${repositories.createSession(admin.id, 1).token}`
+
+  const detailHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${team.id}`, { headers: { cookie } })
+  assert.equal(detailHttp.status, 200)
+  assert.deepEqual(Object.keys((await detailHttp.json()).data).sort(), ['createdAt', 'description', 'id', 'memberCount', 'name', 'status', 'updatedAt'], '基础详情不得提前返回成员集合')
+  const membersHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${team.id}/members`, { headers: { cookie } })
+  assert.equal(membersHttp.status, 200)
+  assert.deepEqual(Object.keys((await membersHttp.json()).data).sort(), ['id', 'items', 'memberCount', 'updatedAt'], '成员集合必须通过独立接口按需返回')
+  const historyHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${memberMutationTeam.id}/members/history?page=1&pageSize=20`, { headers: { cookie } })
+  assert.equal(historyHttp.status, 200)
+  const historyPayload = (await historyHttp.json()).data as { items: Array<Record<string, unknown>> }
+  assert.deepEqual(Object.keys(historyPayload).sort(), ['hasMore', 'id', 'items', 'page', 'pageSize', 'total'], '历史成员必须通过独立分页接口返回')
+  assert(historyPayload.items.length > 0, '历史成员接口必须返回已移除成员')
+  assert(historyPayload.items.every((item) => item.status === 'removed' && item.removedAt), '历史成员接口只能包含已移除状态与时间')
+
+  const addMemberHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${memberMutationTeam.id}/members`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ systemAccountIds: [secondMember.id], expectedUpdatedAt: removedVersion })
+  })
+  assert.equal(addMemberHttp.status, 200)
+  const addMemberPayload = (await addMemberHttp.json()).data as { id: string; memberCount: number; updatedAt: string; addedMembers: Array<{ id: string }> }
+  assert.deepEqual(Object.keys(addMemberPayload).sort(), ['addedMembers', 'id', 'memberCount', 'updatedAt'], '新增成员 HTTP 只返回增量结果')
+  const deleteMemberHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${memberMutationTeam.id}/members/${addMemberPayload.addedMembers[0]?.id}`, {
+    method: 'DELETE',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: addMemberPayload.updatedAt })
+  })
+  assert.equal(deleteMemberHttp.status, 200)
+  assert.deepEqual(Object.keys((await deleteMemberHttp.json()).data).sort(), ['id', 'memberCount', 'removedMemberId', 'updatedAt'], '移除成员 HTTP 只返回目标行补丁')
 
   const noOpHttp = await captureSql(() => fetch(`${baseUrl}/__aisys__/api/system-teams/${team.id}`, {
     method: 'PATCH',
@@ -171,6 +263,15 @@ try {
   const routeSource = readFileSync(resolve('src/modules/system-teams/system-teams.routes.ts'), 'utf8')
   assert.match(routeSource, /log:\s*outcome\.status === 'updated'/, '只有真实更新才允许生成操作日志')
   assert.doesNotMatch(sourceBetween(routeSource, "systemTeamsRouter.patch('/:id'", "systemTeamsRouter.post('/:id/members'"), /findSystemTeamSummaryAsync|teamMemberTargets|teamMemberViewers/, '编辑路由不得读取团队摘要或成员关系')
+  assert.match(routeSource, /outcome\.viewerSystemAccountIds[\s\S]*viewer\(systemAccountId, 'team_member'\)/, '成员日志必须用窄 ID 集合保留团队成员可见性')
+  const createRouteSource = sourceBetween(routeSource, "systemTeamsRouter.post('/',", "systemTeamsRouter.patch('/:id'")
+  for (const field of ['name', 'description', 'status']) {
+    assert.match(createRouteSource, new RegExp(`bodyField\\(req, '${field}'\\)`), `创建幂等指纹必须包含 ${field}`)
+  }
+  const memberRouteSource = sourceBetween(routeSource, "systemTeamsRouter.post('/:id/members'", "systemTeamsRouter.delete('/:id/members/:memberId'")
+  assert.match(memberRouteSource, /bodyField\(req, 'expectedUpdatedAt'\)/, '成员新增幂等指纹必须包含版本')
+  const removeRouteSource = sourceBetween(routeSource, "systemTeamsRouter.delete('/:id/members/:memberId'", 'function systemTeamPatchFieldLabel')
+  assert.match(removeRouteSource, /bodyField\(req, 'expectedUpdatedAt'\)/, '成员移除幂等指纹必须包含版本')
   assert.ok(changedVersion > currentVersion, 'HTTP 真实变更必须单调推进版本')
 
   console.log('系统团队按需写回归通过：字段级投影、作用域 CAS、no-op 零写入、最小 HTTP 响应均已验证')
@@ -220,7 +321,11 @@ async function captureSql<T>(operation: () => Promise<T>): Promise<{ result: T; 
 }
 
 function systemTeamDml(calls: SqlCall[]): SqlCall[] {
-  return calls.filter((call) => call.kind === 'run' && /(?:UPDATE|INSERT|DELETE)\s+(?:FROM\s+)?system_teams/i.test(call.sql))
+  return calls.filter((call) => call.kind === 'run' && /(?:UPDATE|INSERT|DELETE)\s+(?:FROM\s+)?(?:[\w".]+\.)?["`]?system_teams["`]?/i.test(call.sql))
+}
+
+function systemTeamMemberDml(calls: SqlCall[]): SqlCall[] {
+  return calls.filter((call) => call.kind === 'run' && /(?:UPDATE|INSERT|DELETE)\s+(?:FROM\s+)?(?:[\w".]+\.)?["`]?system_team_members["`]?/i.test(call.sql))
 }
 
 function selectSql(calls: SqlCall[]): string {

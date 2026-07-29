@@ -575,7 +575,7 @@ function readOperation(seeded: SeededGateway, sequence: number): { name: string;
     { name: 'GET /stats/usage-overview', path: '/__aisys__/api/stats/usage-overview?systemAccountId=sys_admin' },
     { name: 'GET /stats/usage-window', path: '/__aisys__/api/stats/usage-window?systemAccountId=sys_admin' },
     { name: 'GET /stats/ai-performance/accounts', path: `/__aisys__/api/stats/ai-performance/accounts?systemAccountId=sys_admin&limit=20&accountIds=${encodeURIComponent(accountId ?? '')}` },
-    { name: 'GET /table-monitor/overview', path: '/__aisys__/api/table-monitor/overview?limit=50' },
+    { name: 'GET /table-monitor/overview', path: '/__aisys__/api/table-monitor/overview?page=1&pageSize=50' },
     { name: 'GET /table-monitor/history usage_records', path: '/__aisys__/api/table-monitor/history?databaseRole=business&tableName=usage_records&limit=20' }
   ]
   return operations[sequence % operations.length] ?? operations[0]

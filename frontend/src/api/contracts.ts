@@ -107,6 +107,11 @@ export interface AiHealthParams extends ListParams {
   pageSize?: number
 }
 
+export interface AiHealthHourDetailParams extends ListParams {
+  accountId: string
+  statHour: string
+}
+
 export interface AiPerformanceAccountOptionsParams extends ListParams {
   keyword?: string
   accountIds?: string[]
@@ -315,7 +320,9 @@ export interface OperationLogListParams {
 }
 
 export interface TableMonitorOverviewParams {
-  limit?: number
+  page?: number
+  pageSize?: number
+  keyword?: string
 }
 
 export interface TableMonitorDatabaseHistoryParams {
@@ -324,10 +331,13 @@ export interface TableMonitorDatabaseHistoryParams {
   limit?: number
 }
 
+export interface TableMonitorHistoryParams extends TableMonitorDatabaseHistoryParams {
+  databaseRole: MonitoredDatabaseRole
+  tableName: string
+}
+
 export interface NonBusinessDataCleanupPayload {
   cutoffAt: string
-  batchSize?: number
-  maxBatches?: number
 }
 
 export interface ClientIpStatsListParams {
@@ -462,6 +472,14 @@ export interface AnnouncementPayload {
   content: string
   level?: AnnouncementLevel
   status?: AnnouncementStatus
+}
+
+export interface AnnouncementPatchPayload extends Partial<AnnouncementPayload> {
+  expectedRevision: string
+}
+
+export interface AnnouncementVersionPayload {
+  expectedRevision: string
 }
 
 export interface AnnouncementReadResult {

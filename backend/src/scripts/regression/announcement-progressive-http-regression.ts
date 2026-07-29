@@ -108,6 +108,22 @@ try {
   assert(adminItem, '管理公告列表应包含目标公告')
   assert.equal(typeof adminItem.contentPreview, 'string', '管理列表应返回显式正文预览字段')
   assert.equal('content' in adminItem, false, '管理列表不能伪装成完整详情返回 content')
+  assert.deepEqual(
+    Object.keys(adminItem).sort(),
+    ['id', 'title', 'contentPreview', 'contentTruncated', 'level', 'status', 'updatedByName', 'publishedAt', 'revision'].sort(),
+    '管理列表只能返回当前表格和并发写入需要的字段'
+  )
+
+  const adminDetailResponse = await fetch(`${baseUrl}/${published.id}`, {
+    headers: { 'x-test-role': 'admin' }
+  })
+  assert.equal(adminDetailResponse.status, 200, '管理公告编辑详情应成功')
+  const adminDetailPayload = await adminDetailResponse.json() as { data: Record<string, unknown> }
+  assert.deepEqual(
+    Object.keys(adminDetailPayload.data).sort(),
+    ['id', 'title', 'content', 'level', 'status', 'revision'].sort(),
+    '编辑详情只能返回表单字段和 revision'
+  )
 
   const forbiddenCreateResponse = await fetch(baseUrl, {
     method: 'POST',
@@ -125,36 +141,66 @@ try {
   const createPayload = await createResponse.json() as { data: Record<string, unknown> }
   assertAnnouncementMutationResult(createPayload.data, '创建')
   const createdId = String(createPayload.data.id)
+  let expectedRevision = String(createPayload.data.revision)
+
+  const missingRevisionResponse = await fetch(`${baseUrl}/${createdId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ title: '缺少版本的公告更新' })
+  })
+  assert.equal(missingRevisionResponse.status, 400, '公告 PATCH 缺少 expectedRevision 必须拒绝')
+
+  const noOpResponse = await fetch(`${baseUrl}/${createdId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ title: '轻量响应公告', expectedRevision })
+  })
+  assert.equal(noOpResponse.status, 200, '同值 PATCH 应作为成功 no-op')
+  const noOpPayload = await noOpResponse.json() as { data: Record<string, unknown> }
+  assert.equal(noOpPayload.data.revision, expectedRevision, '同值 PATCH 不得推进 revision')
 
   const updateResponse = await fetch(`${baseUrl}/${createdId}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
-    body: JSON.stringify({ content: '已更新但响应仍保持轻量' })
+    body: JSON.stringify({ content: '已更新但响应仍保持轻量', expectedRevision })
   })
   assert.equal(updateResponse.status, 200, '管理员应能更新公告')
   const updatePayload = await updateResponse.json() as { data: Record<string, unknown> }
   assertAnnouncementMutationResult(updatePayload.data, '更新')
   assert.equal(updatePayload.data.id, createdId, '更新响应应标识目标公告')
+  expectedRevision = String(updatePayload.data.revision)
+
+  const conflictResponse = await fetch(`${baseUrl}/${createdId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ level: 'warning', expectedRevision: String(createPayload.data.revision) })
+  })
+  assert.equal(conflictResponse.status, 409, '旧 revision 的公告 PATCH 必须返回冲突')
 
   const publishResponse = await fetch(`${baseUrl}/${createdId}/publish`, {
     method: 'POST',
-    headers: { 'x-test-role': 'admin' }
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ expectedRevision })
   })
   assert.equal(publishResponse.status, 200, '管理员应能发布公告')
   const publishPayload = await publishResponse.json() as { data: Record<string, unknown> }
   assertAnnouncementMutationResult(publishPayload.data, '发布')
+  expectedRevision = String(publishPayload.data.revision)
 
   const unpublishResponse = await fetch(`${baseUrl}/${createdId}/unpublish`, {
     method: 'POST',
-    headers: { 'x-test-role': 'admin' }
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ expectedRevision })
   })
   assert.equal(unpublishResponse.status, 200, '管理员应能下线公告')
   const unpublishPayload = await unpublishResponse.json() as { data: Record<string, unknown> }
   assertAnnouncementMutationResult(unpublishPayload.data, '下线')
+  expectedRevision = String(unpublishPayload.data.revision)
 
   const deleteResponse = await fetch(`${baseUrl}/${createdId}`, {
     method: 'DELETE',
-    headers: { 'x-test-role': 'admin' }
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ expectedRevision })
   })
   assert.equal(deleteResponse.status, 204, '删除公告应使用空响应')
   assert.equal(await deleteResponse.text(), '', '删除公告不能返回旧公告摘要')

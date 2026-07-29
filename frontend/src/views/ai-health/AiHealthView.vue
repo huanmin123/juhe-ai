@@ -9,15 +9,15 @@
       :mobile-action-count="1"
       @search="searchAccounts"
       @reset="resetFilters"
-      @refresh="loadData"
+      @refresh="refreshData"
     >
       <template #inline-filters>
         <a-select v-model:value="rangeHours" class="ai-health-range-select" :options="rangeOptions" @change="changeRange" />
       </template>
       <template #actions>
         <div class="ai-health-legend" aria-label="状态图例">
-          <span><i class="success" />检查成功</span>
-          <span><i class="failure" />检查失败</span>
+          <span><i class="success" />可用</span>
+          <span><i class="failure" />不可用</span>
           <span><i class="unknown" />无记录</span>
         </div>
       </template>
@@ -45,12 +45,12 @@
               <span>最近独立检查：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
               <span v-if="account.lastHealthSuccessAt">最近健康成功信号：{{ formatDateTime(account.lastHealthSuccessAt) }}</span>
               <span>下次独立检查：{{ formatDateTime(account.nextHealthCheckAt) }}</span>
-              <span class="success-text">检查成功 {{ account.successHours }}</span>
-              <span class="failure-text">检查失败 {{ account.failureHours }}</span>
+              <span class="success-text">可用 {{ account.successHours }}</span>
+              <span class="failure-text">不可用 {{ account.failureHours }}</span>
               <span class="unknown-text">无记录 {{ account.unknownHours }}</span>
             </div>
 
-            <AiHealthStatusBar :account-name="account.name" :hours="account.hours" @select="openHourDetail(account.name, $event)" />
+            <AiHealthStatusBar :account-name="account.name" :hours="account.hours" @select="openHourDetail(account, $event)" />
             <div class="ai-health-range-labels">
               <span>{{ formatHour(account.hours[0]?.statHour) }}</span>
               <span>{{ formatHour(account.hours[account.hours.length - 1]?.statHour) }}</span>
@@ -73,47 +73,53 @@
       />
     </div>
 
-    <a-drawer v-model:open="detailOpen" title="检查详情" width="420px">
-      <a-descriptions v-if="selectedDetail" bordered size="small" :column="1">
-        <a-descriptions-item label="账户">{{ selectedDetail.accountName }}</a-descriptions-item>
-        <a-descriptions-item label="状态">
-          <a-tag :color="healthStatusColor(selectedDetail.point.status)">{{ pointStatusLabel(selectedDetail.point.status) }}</a-tag>
-        </a-descriptions-item>
-        <a-descriptions-item label="统计小时">{{ formatHour(selectedDetail.point.statHour) }}</a-descriptions-item>
-        <a-descriptions-item label="检查时间">{{ formatDateTime(selectedDetail.point.lastObservedAt) }}</a-descriptions-item>
-        <a-descriptions-item label="HTTP 状态">{{ selectedDetail.point.statusCode ?? '-' }}</a-descriptions-item>
-        <a-descriptions-item label="错误码">{{ selectedDetail.point.errorCode || '-' }}</a-descriptions-item>
-        <a-descriptions-item label="原因">{{ detailReason(selectedDetail.point) }}</a-descriptions-item>
-      </a-descriptions>
+    <a-drawer :open="detailOpen" title="检查详情" width="420px" @update:open="setDetailOpen">
+      <a-alert v-if="detailError" class="ai-health-detail-error" type="error" show-icon :message="detailError" />
+      <a-spin :spinning="detailLoading">
+        <a-descriptions v-if="selectedDetail" bordered size="small" :column="1">
+          <a-descriptions-item label="账户">{{ selectedDetail.accountName }}</a-descriptions-item>
+          <a-descriptions-item label="状态">
+            <a-tag :color="healthStatusColor(selectedDetail.point.status)">{{ pointStatusLabel(selectedDetail.point.status) }}</a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="统计小时">{{ formatHour(selectedDetail.point.statHour) }}</a-descriptions-item>
+          <a-descriptions-item label="检查时间">{{ formatDateTime(selectedDetail.point.lastObservedAt) }}</a-descriptions-item>
+          <a-descriptions-item label="HTTP 状态">{{ selectedDetail.point.statusCode ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="错误码">{{ selectedDetail.point.errorCode || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="原因">{{ detailReason(selectedDetail.point) }}</a-descriptions-item>
+        </a-descriptions>
+      </a-spin>
     </a-drawer>
   </a-card>
 </template>
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { authState } from '@/composables/useAuth'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountStatus, AiHealthAccountRow, AiHealthHourPoint, AiHealthHourStatus } from '@/types/domain'
+import type { AccountStatus, AiHealthAccountRow, AiHealthHourDetail, AiHealthHourPoint, AiHealthHourStatus } from '@/types/domain'
 import AiHealthStatusBar from './AiHealthStatusBar.vue'
+import { createAiHealthRequestCoordinator, isAiHealthCanceledRequest } from './aiHealthRequestCoordinator'
 
 const pageSize = 20
 const keyword = ref('')
 const rangeHours = ref(7 * 24)
 const contentRef = ref<HTMLElement>()
-const selectedDetail = ref<{ accountName: string; point: AiHealthHourPoint }>()
-const detailOpen = computed({
-  get: () => Boolean(selectedDetail.value),
-  set: (open: boolean) => {
-    if (!open) selectedDetail.value = undefined
-  }
-})
+const selectedDetail = ref<{ accountId: string; accountName: string; point: AiHealthHourDetail }>()
+const detailOpen = ref(false)
+const detailLoading = ref(false)
+const detailError = ref('')
+const requestCoordinator = createAiHealthRequestCoordinator()
+let hasLoadedVisiblePage = false
+let pageActive = true
+let reloadOnActivate = false
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const rangeOptions = [
   { label: '最近一天', value: 24 },
@@ -123,19 +129,30 @@ const rangeOptions = [
 ]
 const hasActiveFilters = computed(() => Boolean(keyword.value.trim()) || rangeHours.value !== 7 * 24)
 
-const { items: accounts, loading, pagination, handleTableChange, loadData, resetPagination } = useResponsivePagedList<AiHealthAccountRow>({
+const { items: accounts, loading, pagination, handleTableChange, invalidatePendingLoads, loadData, resetPagination } = useResponsivePagedList<AiHealthAccountRow>({
   pageSize,
   showTotal: (total) => `共 ${total} 个账户`,
   fetchPage: async (_options, page) => {
+    hasLoadedVisiblePage = false
+    const token = requestCoordinator.beginList()
     const request = isManagementView.value ? api.stats.aiHealth : api.myStats.aiHealth
-    const result = await request({
-      hours: rangeHours.value,
-      keyword: keyword.value.trim() || undefined,
-      page: page.current,
-      pageSize: page.pageSize,
-      systemAccountId: scopedSystemAccountId()
-    })
-    return result
+    try {
+      const result = await request({
+        hours: rangeHours.value,
+        keyword: keyword.value.trim() || undefined,
+        page: page.current,
+        pageSize: page.pageSize,
+        systemAccountId: scopedSystemAccountId()
+      }, { signal: token.signal })
+      if (!token.isCurrent()) return supersededPage(page.current, page.pageSize)
+      hasLoadedVisiblePage = true
+      return result
+    } catch (error) {
+      if (isAiHealthCanceledRequest(error) || !token.isCurrent()) {
+        return supersededPage(page.current, page.pageSize)
+      }
+      throw error
+    }
   },
   onError: (error) => message.error(extractApiErrorMessage(error, '加载 AI 健康监控失败')),
   requestSignature: () => ({
@@ -147,12 +164,14 @@ const { items: accounts, loading, pagination, handleTableChange, loadData, reset
 })
 
 function searchAccounts(): void {
+  closeDetail()
   scrollContentToTop()
   resetPagination()
   void loadData()
 }
 
 function resetFilters(): void {
+  closeDetail()
   keyword.value = ''
   rangeHours.value = 7 * 24
   scrollContentToTop()
@@ -161,18 +180,25 @@ function resetFilters(): void {
 }
 
 function changeRange(): void {
+  closeDetail()
   scrollContentToTop()
   resetPagination()
   void loadData()
 }
 
 function changePage(page: number): void {
+  closeDetail()
   scrollContentToTop()
   handleTableChange({ current: page, pageSize: pagination.pageSize })
 }
 
 function scrollContentToTop(): void {
   contentRef.value?.scrollTo({ top: 0 })
+}
+
+function refreshData(): void {
+  closeDetail()
+  if (pageActive && document.visibilityState === 'visible') void loadData()
 }
 
 function healthStatusLabel(status: AiHealthHourStatus): string {
@@ -218,17 +244,110 @@ function formatHour(value?: string): string {
   return value ? value.replace('T', ' ') : '-'
 }
 
-function openHourDetail(accountName: string, point: AiHealthHourPoint): void {
-  selectedDetail.value = { accountName, point }
+async function openHourDetail(account: AiHealthAccountRow, point: AiHealthHourPoint): Promise<void> {
+  requestCoordinator.cancelDetail()
+  detailOpen.value = true
+  detailLoading.value = false
+  detailError.value = ''
+  selectedDetail.value = { accountId: account.id, accountName: account.name, point }
+  if (point.status === 'unknown') return
+
+  const token = requestCoordinator.beginDetail()
+  detailLoading.value = true
+  try {
+    const request = isManagementView.value ? api.stats.aiHealthHourDetail : api.myStats.aiHealthHourDetail
+    const detail = await request({
+      accountId: account.id,
+      statHour: point.statHour,
+      systemAccountId: scopedSystemAccountId()
+    }, { signal: token.signal })
+    if (!token.isCurrent() || !selectedDetailMatches(account.id, point.statHour)) return
+    selectedDetail.value = { accountId: account.id, accountName: account.name, point: detail }
+  } catch (error) {
+    if (isAiHealthCanceledRequest(error) || !token.isCurrent() || !selectedDetailMatches(account.id, point.statHour)) return
+    detailError.value = extractApiErrorMessage(error, '加载检查详情失败')
+  } finally {
+    if (token.isCurrent() && selectedDetailMatches(account.id, point.statHour)) detailLoading.value = false
+  }
 }
 
-function detailReason(point: AiHealthHourPoint): string {
+function setDetailOpen(open: boolean): void {
+  if (open) detailOpen.value = true
+  else closeDetail()
+}
+
+function closeDetail(): void {
+  requestCoordinator.cancelDetail()
+  detailOpen.value = false
+  detailLoading.value = false
+  detailError.value = ''
+  selectedDetail.value = undefined
+}
+
+function selectedDetailMatches(accountId: string, statHour: string): boolean {
+  return detailOpen.value
+    && selectedDetail.value?.accountId === accountId
+    && selectedDetail.value.point.statHour === statHour
+}
+
+function detailReason(point: AiHealthHourDetail): string {
   if (point.status === 'unknown') return '该小时没有检查记录'
   if (point.status === 'success') return '-'
   return point.errorMessage || point.errorCode || '检查未成功，未返回具体原因'
 }
 
-onMounted(() => void loadData())
+function supersededPage(page: number, currentPageSize: number) {
+  return { items: [], total: 0, hasMore: false, page, pageSize: currentPageSize, superseded: true }
+}
+
+function handleVisibilityChange(): void {
+  if (document.visibilityState === 'hidden') {
+    requestCoordinator.cancelList()
+    invalidatePendingLoads()
+    return
+  }
+  if (pageActive && !hasLoadedVisiblePage) void loadData()
+}
+
+onMounted(() => {
+  pageActive = true
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  if (document.visibilityState === 'visible') void loadData()
+})
+
+onDeactivated(() => {
+  pageActive = false
+  reloadOnActivate = true
+  requestCoordinator.cancelList()
+  requestCoordinator.cancelDetail()
+  invalidatePendingLoads()
+})
+
+onActivated(() => {
+  pageActive = true
+  if (!reloadOnActivate || document.visibilityState !== 'visible') return
+  reloadOnActivate = false
+  void loadData()
+})
+
+watch(() => authState.revision.value, () => {
+  requestCoordinator.cancelList()
+  invalidatePendingLoads()
+  closeDetail()
+  hasLoadedVisiblePage = false
+  accounts.value = []
+  pagination.current = 1
+  pagination.total = 0
+  if (pageActive && document.visibilityState === 'visible') void loadData()
+  else reloadOnActivate = true
+})
+
+onBeforeUnmount(() => {
+  pageActive = false
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  requestCoordinator.dispose()
+  invalidatePendingLoads()
+})
 </script>
 
 <style scoped>
@@ -252,6 +371,7 @@ onMounted(() => void loadData())
 .success-text { color: #059669; }
 .failure-text { color: #dc2626; }
 .unknown-text { color: #94a3b8; }
+.ai-health-detail-error { margin-bottom: 12px; }
 .ai-health-range-labels { display: flex; justify-content: space-between; margin-top: 3px; color: #94a3b8; font-size: 11px; }
 .ai-health-pagination { display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 16px; margin-top: 14px; padding-top: 14px; color: #64748b; border-top: 1px solid #edf1f7; }
 

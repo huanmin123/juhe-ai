@@ -168,7 +168,12 @@ try {
     .listResourceAuthorizations({ direction: 'inbound', status: 'all' }, granteeAccess)
     .find((authorization) => authorization.resourceType === 'account' && authorization.resourceId === seed.ownerAccountId && authorization.granteeSystemAccountId === seed.granteeId)
   assert.equal(inboundAccountGrant?.id, restoredAccountGrant.id, '个人授权列表应返回授权业务记录 ID')
-  await returnOk(baseUrl, `/__aisys__/api/my-authorizations/${inboundAccountGrant.id}/return`, seed.granteeCookie)
+  await returnOk(
+    baseUrl,
+    `/__aisys__/api/my-authorizations/${inboundAccountGrant.id}/return`,
+    seed.granteeCookie,
+    inboundAccountGrant.updatedAt
+  )
   assert.equal(
     repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.ownerAccountId),
     false,
@@ -194,7 +199,18 @@ try {
   assert.equal(mixedAuthorizedAccount?.permissions?.canDelete, false, '被团队覆盖的个人授权账户不应暴露删除权限')
   assert.equal(mixedAuthorizedAccount?.permissions?.canReturnAuthorization, false, '被团队覆盖的个人授权账户不应暴露账户归还权限')
   await postRejected(baseUrl, `/__aisys__/api/my-accounts/${mixedAuthorizedAccount.id}/return-authorization`, seed.granteeCookie, /授权账户不存在或不可归还/)
-  await deleteRejected(baseUrl, `/__aisys__/api/my-authorizations/${seed.mixedDirectGrantId}/return`, seed.granteeCookie, /授权记录不存在/)
+  const mixedDirectGrant = repositories
+    .listResourceAuthorizations({}, ownerAccess)
+    .find((authorization) => authorization.id === seed.mixedDirectGrantId)
+  assert(mixedDirectGrant, '被团队覆盖的个人授权负向归还前应存在授权记录')
+  assert(mixedDirectGrant.updatedAt, '被团队覆盖的个人授权负向归还必须携带列表 CAS 版本')
+  await deleteRejected(
+    baseUrl,
+    `/__aisys__/api/my-authorizations/${seed.mixedDirectGrantId}/return`,
+    seed.granteeCookie,
+    /授权记录不存在/,
+    mixedDirectGrant.updatedAt
+  )
   assert.equal(
     repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === seed.mixedAccountId),
     true,
@@ -295,7 +311,8 @@ try {
   await returnOk(
     baseUrl,
     `/__aisys__/api/authorizations/${adminManagedGrant.id}/return?systemAccountId=${seed.granteeId}`,
-    seed.adminCookie
+    seed.adminCookie,
+    adminManagedGrant.updatedAt
   )
   assert.equal(
     repositories.listAccounts(granteeAccess).some((account) => account.authorizationInstanceSourceAccountId === adminManagedAccount.id),
@@ -435,8 +452,12 @@ function authorizedAccountForSource(sourceAccountId: string, access: { systemAcc
     .find((account) => account.authorizationInstanceSourceAccountId === sourceAccountId)
 }
 
-async function returnOk(baseUrl: string, path: string, cookie: string): Promise<void> {
-  const response = await fetch(`${baseUrl}${path}`, { method: 'DELETE', headers: { cookie } })
+async function returnOk(baseUrl: string, path: string, cookie: string, expectedUpdatedAt: string): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'DELETE',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt })
+  })
   if (!response.ok) {
     throw new Error(`${path} HTTP ${response.status}: ${await response.text()}`)
   }
@@ -467,8 +488,18 @@ async function postRejected(baseUrl: string, path: string, cookie: string, patte
   assert.match(text, pattern, `${path} 应返回预期中文错误`)
 }
 
-async function deleteRejected(baseUrl: string, path: string, cookie: string, pattern: RegExp): Promise<void> {
-  const response = await fetch(`${baseUrl}${path}`, { method: 'DELETE', headers: { cookie } })
+async function deleteRejected(
+  baseUrl: string,
+  path: string,
+  cookie: string,
+  pattern: RegExp,
+  expectedUpdatedAt?: string
+): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'DELETE',
+    headers: expectedUpdatedAt ? { cookie, 'content-type': 'application/json' } : { cookie },
+    body: expectedUpdatedAt ? JSON.stringify({ expectedUpdatedAt }) : undefined
+  })
   const text = await response.text()
   assert.equal(response.ok, false, `${path} 应拒绝请求`)
   assert.match(text, pattern, `${path} 应返回预期中文错误`)

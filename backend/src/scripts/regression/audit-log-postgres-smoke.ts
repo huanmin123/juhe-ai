@@ -4,7 +4,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import {
   createAuditLogsBatchAsync,
-  getAuditLogDetailAsync
+  getAuditLogDetailAsync,
+  getAuditLogDetailSupplementAsync
 } from '../../storage/audit-logs.repository.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 
@@ -45,6 +46,14 @@ try {
   assert.equal(detail.httpCompletedAt, new Date(httpCompletedAtMs).toISOString(), 'PG 审计日志应读回 http_completed_at')
   assert.equal(detail.httpDurationMs, httpCompletedAtMs - startedAtMs, 'PG 审计日志应读回 http_duration_ms')
   assert.equal(detail.durationMs, endedAtMs - startedAtMs, 'PG 审计固化耗时应与 HTTP 客户端耗时保持独立')
+
+  const supplement = await getAuditLogDetailSupplementAsync(auditLogId)
+  assert(supplement, 'PG 审计管理详情应通过专用补充仓储读回')
+  assert.equal(supplement.sampleReason, 'postgres_smoke')
+  assert.equal(supplement.httpCompletedAt, new Date(httpCompletedAtMs).toISOString())
+  assert.equal('id' in supplement, false, 'PG 详情补充响应不得重复列表 id')
+  assert.equal('traceId' in supplement, false, 'PG 详情补充响应不得重复列表 traceId')
+  assert.equal('durationMs' in supplement, false, 'PG 详情补充响应不得重复列表 durationMs')
 
   console.log(JSON.stringify({
     message: '审计日志 PG smoke 通过',

@@ -63,6 +63,10 @@ export {
   listAuditLogsByIdsAsync,
   listAuditLogsByIds
 } from './audit-log-read.repository.js'
+export {
+  getAuditLogDetailSupplement,
+  getAuditLogDetailSupplementAsync
+} from './audit-log-detail-supplement.repository.js'
 export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
 export type {
   AuditErrorGroupListOptions,
@@ -71,6 +75,9 @@ export type {
   AuditLogAttemptInput,
   AuditLogAttemptSummary,
   AuditLogDetail,
+  AuditLogDetailAttemptSupplement,
+  AuditLogDetailPayloadSupplement,
+  AuditLogDetailSupplement,
   AuditLogInput,
   AuditLogListItem,
   AuditLogListOptions,

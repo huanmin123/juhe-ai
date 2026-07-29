@@ -7,13 +7,13 @@ import {
   addSystemTeamMembersAsync,
   createSystemTeamAsync,
   findSystemTeamDetailAsync,
-  findSystemTeamSummaryAsync,
+  listSystemTeamMemberHistoryAsync,
+  listSystemTeamMembersAsync,
   listSystemTeamsPageAsync,
   removeSystemTeamMemberAsync,
   updateSystemTeamAsync
 } from '../../storage/repositories.js'
 import { maxSystemTeamMemberBatchSize } from '../../storage/system-team-limits.js'
-import type { SystemTeamDetail, SystemTeamSummary } from '../../domain/types.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -48,7 +48,12 @@ const updateTeamSchema = z.object({
 })
 
 const teamMembersSchema = z.object({
-  systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员').max(maxSystemTeamMemberBatchSize, `单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`)
+  systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员').max(maxSystemTeamMemberBatchSize, `单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`),
+  expectedUpdatedAt: z.string().datetime({ message: '团队版本格式不正确' })
+}).strict()
+
+const teamMemberMutationSchema = z.object({
+  expectedUpdatedAt: z.string().datetime({ message: '团队版本格式不正确' })
 }).strict()
 
 function currentUserTeamScope() {
@@ -77,6 +82,42 @@ myTeamsRouter.get('/:id', async (req, res, next) => {
       return
     }
     res.json(ok(team))
+  } catch (error) {
+    next(error)
+  }
+})
+
+myTeamsRouter.get('/:id/members', async (req, res, next) => {
+  const paramsParsed = parseOrBadRequest(teamIdParamsSchema, req.params, '团队 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const members = await listSystemTeamMembersAsync(paramsParsed.data.id, currentUserTeamScope())
+    if (!members) {
+      sendNotFound(res, '团队不存在')
+      return
+    }
+    res.json(ok(members))
+  } catch (error) {
+    next(error)
+  }
+})
+
+myTeamsRouter.get('/:id/members/history', async (req, res, next) => {
+  const paramsParsed = parseOrBadRequest(teamIdParamsSchema, req.params, '团队 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const history = await listSystemTeamMemberHistoryAsync(paramsParsed.data.id, parseSystemTeamMemberHistoryOptions(req.query), currentUserTeamScope())
+    if (!history) {
+      sendNotFound(res, '团队不存在')
+      return
+    }
+    res.json(ok(history))
   } catch (error) {
     next(error)
   }
@@ -118,6 +159,56 @@ systemTeamsRouter.get('/:id', requireAdmin, async (req, res, next) => {
   }
 })
 
+systemTeamsRouter.get('/:id/members', requireAdmin, async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(teamIdParamsSchema, req.params, '团队 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const members = await listSystemTeamMembersAsync(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!members) {
+      sendNotFound(res, '团队不存在')
+      return
+    }
+    res.json(ok(members))
+  } catch (error) {
+    next(error)
+  }
+})
+
+systemTeamsRouter.get('/:id/members/history', requireAdmin, async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(teamIdParamsSchema, req.params, '团队 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  try {
+    const history = await listSystemTeamMemberHistoryAsync(
+      paramsParsed.data.id,
+      parseSystemTeamMemberHistoryOptions(req.query),
+      getRequestAccessScope(scopeQuery.data.systemAccountId)
+    )
+    if (!history) {
+      sendNotFound(res, '团队不存在')
+      return
+    }
+    res.json(ok(history))
+  } catch (error) {
+    next(error)
+  }
+})
+
 function parseSystemTeamListOptions(query: Record<string, unknown>) {
   return {
     page: integerQueryValue(query.page),
@@ -126,12 +217,21 @@ function parseSystemTeamListOptions(query: Record<string, unknown>) {
   }
 }
 
+function parseSystemTeamMemberHistoryOptions(query: Record<string, unknown>) {
+  return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize)
+  }
+}
+
 systemTeamsRouter.post('/', requireAdmin, mutationGuard({
   operationKey: 'system_teams.create',
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
-    name: normalizedText(bodyField(req, 'name'))
+    name: normalizedText(bodyField(req, 'name')),
+    description: normalizedText(bodyField(req, 'description')),
+    status: normalizedText(bodyField(req, 'status')) || 'active'
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -163,13 +263,11 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
             safeChange('name', '团队名称', undefined, team.name),
             safeChange('description', '说明', undefined, team.description),
             safeChange('status', '状态', undefined, team.status)
-          ],
-          targets: teamMemberTargets(team),
-          viewers: teamMemberViewers(team)
+          ]
         }
       }
     }, req)
-    res.status(201).json(ok(compactSystemTeamResult(team)))
+    res.status(201).json(ok(team))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建团队失败'))
   }
@@ -230,7 +328,8 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     teamId: req.params.id,
-    systemAccountIds: sortedTextValues(bodyField(req, 'systemAccountIds'))
+    systemAccountIds: sortedTextValues(bodyField(req, 'systemAccountIds')),
+    expectedUpdatedAt: normalizedText(bodyField(req, 'expectedUpdatedAt'))
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -250,51 +349,55 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = await runLoggedOperationAsync(async () => {
-      const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
-      const beforeMemberIds = new Set((before?.members ?? []).map((member) => member.systemAccountId))
-      const team = await addSystemTeamMembersAsync(paramsParsed.data.id, parsed.data, requestAccess)
-      if (!team) {
-        throw new Error('团队不存在或已停用')
-      }
-      const addedMembers = (team.members ?? []).filter((member) => !beforeMemberIds.has(member.systemAccountId))
+    const outcome = await runLoggedOperationAsync(async () => {
+      const outcome = await addSystemTeamMembersAsync(paramsParsed.data.id, parsed.data, requestAccess)
       return {
-        result: team,
-        log: {
+        result: outcome,
+        log: outcome.status === 'updated' ? {
           mode: operationMode(requestAccess),
           module: 'system_teams',
           action: 'add_members',
           operationKey: 'system_teams.add_members',
           resourceType: 'system_team',
-          resourceId: team.id,
-          resourceName: team.name,
-          summary: `添加团队成员：${team.name}`,
-          changes: [safeChange('members', '新增成员', undefined, addedMembers.map((member) => member.systemAccountName).filter(Boolean).join('、'))],
-          targets: [
-            ...teamMemberTargets(team),
-            ...addedMembers.map((member) => ownerTarget({
+          resourceId: outcome.result.id,
+          resourceName: outcome.name,
+          summary: `添加团队成员：${outcome.name}`,
+          changes: [safeChange('members', '新增成员', undefined, outcome.result.addedMembers.map((member) => member.systemAccountName).filter(Boolean).join('、'))],
+          targets: outcome.result.addedMembers.map((member) => ownerTarget({
               targetType: 'system_account',
               targetId: member.systemAccountId,
               targetName: member.systemAccountName,
               ownerSystemAccountId: member.systemAccountId,
               relation: 'team_member'
-            }))
-          ],
-          viewers: viewers(teamMemberViewers(team), ...addedMembers.map((member) => viewer(member.systemAccountId, 'team_member')))
-        }
+            })),
+          viewers: viewers(...(outcome.viewerSystemAccountIds ?? []).map((systemAccountId) => viewer(systemAccountId, 'team_member')))
+        } : undefined
       }
     }, req)
-    res.json(ok(compactSystemTeamResult(team)))
-  } catch (error) {
-    if (error instanceof Error && error.message === '团队不存在或已停用') {
+    if (outcome.status === 'not_found') {
       sendNotFound(res, '团队不存在或已停用')
       return
     }
+    if (outcome.status === 'conflict') {
+      res.status(409).json(badRequest('团队已被其他操作更新，请刷新后重试'))
+      return
+    }
+    res.json(ok(outcome.result))
+  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '添加团队成员失败'))
   }
 })
 
-systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, async (req, res) => {
+systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, mutationGuard({
+  operationKey: 'system_teams.remove_member',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    teamId: req.params.id,
+    memberId: req.params.memberId,
+    expectedUpdatedAt: normalizedText(bodyField(req, 'expectedUpdatedAt'))
+  })
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -305,83 +408,51 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, async (req, res
     sendBadRequest(res, paramsParsed.message)
     return
   }
+  const parsed = parseOrBadRequest(teamMemberMutationSchema, req.body, '团队成员参数不合法')
+  if (!parsed.success) {
+    sendBadRequest(res, parsed.message)
+    return
+  }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = await runLoggedOperationAsync(async () => {
-      const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
-      const removedMember = before?.members?.find((member) => member.id === paramsParsed.data.memberId)
-      const team = await removeSystemTeamMemberAsync(paramsParsed.data.id, paramsParsed.data.memberId, requestAccess)
-      if (!team) {
-        throw new Error('团队成员不存在')
-      }
+    const outcome = await runLoggedOperationAsync(async () => {
+      const outcome = await removeSystemTeamMemberAsync(paramsParsed.data.id, paramsParsed.data.memberId, parsed.data, requestAccess)
       return {
-        result: team,
-        log: {
+        result: outcome,
+        log: outcome.status === 'updated' ? {
           mode: operationMode(requestAccess),
           module: 'system_teams',
           action: 'remove_member',
           operationKey: 'system_teams.remove_member',
           resourceType: 'system_team',
-          resourceId: team.id,
-          resourceName: team.name,
-          summary: `移除团队成员：${team.name}`,
-          changes: [safeChange('member', '移除成员', removedMember?.systemAccountName, undefined)],
-          targets: [
-            ...teamMemberTargets(team),
-            ...(removedMember ? [ownerTarget({
+          resourceId: outcome.result.id,
+          resourceName: outcome.name,
+          summary: `移除团队成员：${outcome.name}`,
+          changes: [safeChange('member', '移除成员', outcome.removedMember.systemAccountName, undefined)],
+          targets: [ownerTarget({
               targetType: 'system_account',
-              targetId: removedMember.systemAccountId,
-              targetName: removedMember.systemAccountName,
-              ownerSystemAccountId: removedMember.systemAccountId,
+              targetId: outcome.removedMember.systemAccountId,
+              targetName: outcome.removedMember.systemAccountName,
+              ownerSystemAccountId: outcome.removedMember.systemAccountId,
               relation: 'team_member'
-            })] : [])
-          ],
-          viewers: viewers(teamMemberViewers(team), removedMember ? viewer(removedMember.systemAccountId, 'team_member') : [])
-        }
+            })],
+          viewers: viewers(...outcome.viewerSystemAccountIds.map((systemAccountId) => viewer(systemAccountId, 'team_member')))
+        } : undefined
       }
     }, req)
-    res.json(ok(compactSystemTeamResult(team)))
-  } catch (error) {
-    if (error instanceof Error && error.message === '团队成员不存在') {
+    if (outcome.status === 'not_found') {
       sendNotFound(res, '团队成员不存在')
       return
     }
+    if (outcome.status === 'conflict') {
+      res.status(409).json(badRequest('团队已被其他操作更新，请刷新后重试'))
+      return
+    }
+    res.json(ok(outcome.result))
+  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '移除团队成员失败'))
   }
 })
-
-function teamMemberTargets(team: SystemTeamSummary) {
-  return (team.members ?? []).map((member) => ownerTarget({
-    targetType: 'system_account',
-    targetId: member.systemAccountId,
-    targetName: member.systemAccountName,
-    ownerSystemAccountId: member.systemAccountId,
-    relation: 'team_member'
-  }))
-}
-
-function compactSystemTeamResult(team: SystemTeamSummary): SystemTeamDetail {
-  return {
-    id: team.id,
-    name: team.name,
-    description: team.description,
-    status: team.status,
-    memberCount: (team.members ?? []).filter((member) => member.status === 'active').length,
-    members: (team.members ?? [])
-      .filter((member) => member.status === 'active')
-      .map((member) => ({
-        id: member.id,
-        systemAccountId: member.systemAccountId,
-        systemAccountName: member.systemAccountName,
-        joinedAt: member.joinedAt
-      })),
-    createdAt: team.createdAt
-  }
-}
-
-function teamMemberViewers(team: SystemTeamSummary) {
-  return viewers(...(team.members ?? []).map((member) => viewer(member.systemAccountId, 'team_member')))
-}
 
 function systemTeamPatchFieldLabel(field: string): string {
   return ({

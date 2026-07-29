@@ -9,11 +9,11 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import { averageFromSum, hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { mapProcessEventLoopHourly, mapSystemMetricsHourly } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
 import { normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
-import type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput } from './usage-stats-types.js'
+import type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput, SystemMetricsTrendOverview } from './usage-stats-types.js'
 import {
   compareText,
   rangeWindowKey,
@@ -636,6 +636,65 @@ export async function getSystemMetricsOverviewAsync(range: AccountUsageStatsRang
   }
 }
 
+export function getSystemMetricsTrend(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsTrendOverview {
+  const database = getStatsDatabase()
+  const windowKey = rangeWindowKey(range)
+  const rows = database.prepare(`
+    SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, memory_used_percent_sum,
+      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_count,
+      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_count
+    FROM system_metrics_trend_windows
+    WHERE window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC
+  `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
+  const latestStatement = database.prepare(`
+    SELECT ${processEventLoopTrendLatestSelectColumns()}
+    FROM process_event_loop_samples
+    WHERE process_role = ?
+    ORDER BY sampled_at DESC, id DESC
+    LIMIT 1
+  `)
+  const latestRows = processEventLoopObservedRoles(database, processEventLoopLatestStartIso())
+    .map((role) => latestStatement.get(role) as unknown as Record<string, unknown> | undefined)
+    .filter((row): row is Record<string, unknown> => Boolean(row))
+  const peakStartedAt = processEventLoopPeakStartIso()
+  return {
+    hourlyTrend: rows.map(mapSystemMetricsTrendHourly),
+    processEventLoopLatestStatus: buildProcessEventLoopTrendLatestStatus(latestRows),
+    processEventLoopPeakStatus: buildProcessEventLoopTrendPeakStatus(processEventLoopTrendPeakRows(database, peakStartedAt)),
+    processEventLoopTrend: loadProcessEventLoopTrendRows(database, range)
+  }
+}
+
+export async function getSystemMetricsTrendAsync(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): Promise<SystemMetricsTrendOverview> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_system_metrics_trend_read_only', range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getSystemMetricsTrend(range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const windowKey = rangeWindowKey(range)
+  const peakStartedAt = processEventLoopPeakStartIso()
+  const [rows, latestRows, processRows, peakRows] = await Promise.all([
+    client.query<Record<string, unknown>>(`
+      SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, memory_used_percent_sum,
+        network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_count,
+        network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_count
+      FROM ${statsTable(client, 'system_metrics_trend_windows')}
+      WHERE window_key = ? AND start_date = ? AND end_date = ?
+      ORDER BY bucket_key ASC
+    `, [windowKey, range.startDate, range.endDate]),
+    processEventLoopTrendLatestRowsAsync(client),
+    loadProcessEventLoopTrendRowsAsync(client, range),
+    processEventLoopTrendPeakRowsAsync(client, peakStartedAt)
+  ])
+  return {
+    hourlyTrend: rows.map(mapSystemMetricsTrendHourly),
+    processEventLoopLatestStatus: buildProcessEventLoopTrendLatestStatus(latestRows),
+    processEventLoopPeakStatus: buildProcessEventLoopTrendPeakStatus(peakRows),
+    processEventLoopTrend: processRows
+  }
+}
+
 function refreshSystemMetricsTrendWindows(
   database: DatabaseSync,
   ranges: AccountUsageStatsRange[],
@@ -970,6 +1029,51 @@ function loadProcessEventLoopTrendWindowRows(database: DatabaseSync, range: Acco
     .map(mapProcessEventLoopHourly)
 }
 
+function mapSystemMetricsTrendHourly(row: Record<string, unknown>): SystemMetricsTrendOverview['hourlyTrend'][number] {
+  const sampleCount = Number(row.sample_count ?? 0)
+  return {
+    statHour: String(row.stat_hour),
+    cpuPercentAvg: averageFromSum(row.cpu_percent_sum, sampleCount),
+    memoryUsedPercentAvg: averageFromSum(row.memory_used_percent_sum, sampleCount),
+    networkRxBytesPerSecondAvg: averageFromSum(row.network_rx_bytes_per_sec_sum, row.network_rx_bytes_per_sec_count),
+    networkTxBytesPerSecondAvg: averageFromSum(row.network_tx_bytes_per_sec_sum, row.network_tx_bytes_per_sec_count)
+  }
+}
+
+function mapProcessEventLoopTrendRow(row: Record<string, unknown>): SystemMetricsTrendOverview['processEventLoopTrend'][number] {
+  const mapped = mapProcessEventLoopHourly(row)
+  return {
+    statMinute: mapped.statMinute,
+    processRole: mapped.processRole,
+    eventLoopLagMsAvg: mapped.eventLoopLagMsAvg,
+    eventLoopLagMsMax: mapped.eventLoopLagMsMax,
+    processRssBytesAvg: mapped.processRssBytesAvg,
+    processRssBytesMax: mapped.processRssBytesMax
+  }
+}
+
+function loadProcessEventLoopTrendRows(database: DatabaseSync, range: AccountUsageStatsRange): SystemMetricsTrendOverview['processEventLoopTrend'] {
+  const rows = database.prepare(`
+    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum,
+      event_loop_lag_ms_count, event_loop_lag_ms_max, process_rss_bytes_sum, process_rss_bytes_max
+    FROM process_event_loop_trend_windows
+    WHERE window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC, process_role ASC
+  `).all(rangeWindowKey(range), range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
+  return rows.filter((row) => Boolean(processRoleFromValue(row.process_role))).map(mapProcessEventLoopTrendRow)
+}
+
+async function loadProcessEventLoopTrendRowsAsync(client: DatabaseClient, range: AccountUsageStatsRange): Promise<SystemMetricsTrendOverview['processEventLoopTrend']> {
+  const rows = await client.query<Record<string, unknown>>(`
+    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum,
+      event_loop_lag_ms_count, event_loop_lag_ms_max, process_rss_bytes_sum, process_rss_bytes_max
+    FROM ${statsTable(client, 'process_event_loop_trend_windows')}
+    WHERE window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC, process_role ASC
+  `, [rangeWindowKey(range), range.startDate, range.endDate])
+  return rows.filter((row) => Boolean(processRoleFromValue(row.process_role))).map(mapProcessEventLoopTrendRow)
+}
+
 async function loadProcessEventLoopTrendWindowRowsAsync(client: DatabaseClient, range: AccountUsageStatsRange): Promise<SystemMetricsOverview['processEventLoopTrend']> {
   const rows = await client.query<Record<string, unknown>>(`
     SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum,
@@ -1001,9 +1105,33 @@ function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Ar
     .filter((row): row is Record<string, unknown> => Boolean(row))
 }
 
+function processEventLoopTrendPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {
+  const statement = database.prepare(`
+    SELECT process_role, process_pid, sampled_at, event_loop_lag_ms
+    FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_role_peak
+    WHERE process_role = ? AND sampled_at >= ? AND event_loop_lag_ms IS NOT NULL
+    ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
+    LIMIT 1
+  `)
+  return processEventLoopObservedRoles(database, startedAt)
+    .map((role) => statement.get(role, startedAt) as unknown as Record<string, unknown> | undefined)
+    .filter((row): row is Record<string, unknown> => Boolean(row))
+}
+
 async function processEventLoopLatestRowsAsync(client: DatabaseClient): Promise<Array<Record<string, unknown>>> {
   const rows = await client.query<Record<string, unknown>>(`
     SELECT DISTINCT ON (process_role) ${processEventLoopLatestSelectColumns()}
+    FROM ${statsTable(client, 'process_event_loop_samples')}
+    WHERE sampled_at >= ?
+    ORDER BY process_role, sampled_at DESC, id DESC
+    LIMIT 256
+  `, [processEventLoopLatestStartIso()])
+  return rows.filter((row) => Boolean(processRoleFromValue(row.process_role)))
+}
+
+async function processEventLoopTrendLatestRowsAsync(client: DatabaseClient): Promise<Array<Record<string, unknown>>> {
+  const rows = await client.query<Record<string, unknown>>(`
+    SELECT DISTINCT ON (process_role) ${processEventLoopTrendLatestSelectColumns()}
     FROM ${statsTable(client, 'process_event_loop_samples')}
     WHERE sampled_at >= ?
     ORDER BY process_role, sampled_at DESC, id DESC
@@ -1018,6 +1146,17 @@ async function processEventLoopPeakRowsAsync(client: DatabaseClient, startedAt: 
     FROM ${statsTable(client, 'process_event_loop_samples')}
     WHERE sampled_at >= ?
       AND event_loop_lag_ms IS NOT NULL
+    ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC
+    LIMIT 256
+  `, [startedAt])
+  return rows.filter((row) => Boolean(processRoleFromValue(row.process_role)))
+}
+
+async function processEventLoopTrendPeakRowsAsync(client: DatabaseClient, startedAt: string): Promise<Array<Record<string, unknown>>> {
+  const rows = await client.query<Record<string, unknown>>(`
+    SELECT DISTINCT ON (process_role) process_role, process_pid, sampled_at, event_loop_lag_ms
+    FROM ${statsTable(client, 'process_event_loop_samples')}
+    WHERE sampled_at >= ? AND event_loop_lag_ms IS NOT NULL
     ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC
     LIMIT 256
   `, [startedAt])
@@ -1087,6 +1226,60 @@ function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): Syst
   })
 }
 
+function trendStatusRoles<T extends { processRole: ProcessEventLoopRole }>(rows: T[]): ProcessEventLoopRole[] {
+  return runtimeConfig.runtimeMode === 'standalone'
+    ? PROCESS_EVENT_LOOP_ROLES
+    : rows.map((row) => row.processRole).sort(compareText)
+}
+
+function buildProcessEventLoopTrendLatestStatus(rows: Array<Record<string, unknown>>): SystemMetricsTrendOverview['processEventLoopLatestStatus'] {
+  const mapped = rows.flatMap((row) => {
+    const processRole = processRoleFromValue(row.process_role)
+    return processRole ? [{
+      processRole,
+      sampleAvailable: true,
+      processPid: nullableNumber(row.process_pid) ?? null,
+      sampledAt: String(row.sampled_at ?? ''),
+      eventLoopLagMs: nullableNumber(row.event_loop_lag_ms),
+      processRssBytes: nullableNumber(row.process_rss_bytes),
+      processHeapUsedBytes: nullableNumber(row.process_heap_used_bytes),
+      processHeapTotalBytes: nullableNumber(row.process_heap_total_bytes)
+    }] : []
+  })
+  const byRole = new Map(mapped.map((row) => [row.processRole, row]))
+  return trendStatusRoles(mapped).map((processRole) => byRole.get(processRole) ?? {
+    processRole,
+    sampleAvailable: false,
+    processPid: null,
+    sampledAt: null,
+    eventLoopLagMs: null,
+    processRssBytes: null,
+    processHeapUsedBytes: null,
+    processHeapTotalBytes: null
+  })
+}
+
+function buildProcessEventLoopTrendPeakStatus(rows: Array<Record<string, unknown>>): SystemMetricsTrendOverview['processEventLoopPeakStatus'] {
+  const mapped = rows.flatMap((row) => {
+    const processRole = processRoleFromValue(row.process_role)
+    return processRole ? [{
+      processRole,
+      sampleAvailable: true,
+      processPid: nullableNumber(row.process_pid) ?? null,
+      sampledAt: String(row.sampled_at ?? ''),
+      eventLoopLagMs: nullableNumber(row.event_loop_lag_ms)
+    }] : []
+  })
+  const byRole = new Map(mapped.map((row) => [row.processRole, row]))
+  return trendStatusRoles(mapped).map((processRole) => byRole.get(processRole) ?? {
+    processRole,
+    sampleAvailable: false,
+    processPid: null,
+    sampledAt: null,
+    eventLoopLagMs: null
+  })
+}
+
 function processEventLoopObservedRoles(database: DatabaseSync, startedAt?: string): ProcessEventLoopRole[] {
   const rows = startedAt
     ? database.prepare(`
@@ -1118,6 +1311,18 @@ function processEventLoopLatestSelectColumns(): string {
     'process_heap_total_bytes',
     'process_external_bytes',
     'process_array_buffers_bytes'
+  ].join(', ')
+}
+
+function processEventLoopTrendLatestSelectColumns(): string {
+  return [
+    'process_role',
+    'process_pid',
+    'sampled_at',
+    'event_loop_lag_ms',
+    'process_rss_bytes',
+    'process_heap_used_bytes',
+    'process_heap_total_bytes'
   ].join(', ')
 }
 

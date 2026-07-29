@@ -195,6 +195,12 @@ export function useScopedSystemTeamsApi(isManagementView: Ref<boolean>) {
       : api.myTeams.list(params),
     detail: (id: string, params?: SystemTeamListParams) => isManagementView.value
       ? api.systemTeams.detail(id, params)
-      : api.myTeams.detail(id)
+      : api.myTeams.detail(id),
+    members: (id: string, params?: SystemTeamListParams) => isManagementView.value
+      ? api.systemTeams.members(id, params)
+      : api.myTeams.members(id),
+    memberHistory: (id: string, params?: SystemTeamListParams) => isManagementView.value
+      ? api.systemTeams.memberHistory(id, params)
+      : api.myTeams.memberHistory(id, params)
   }
 }

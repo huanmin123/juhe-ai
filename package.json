@@ -232,7 +232,9 @@
     "test:account-proxy-options-lazy-loading": "pnpm --filter juhe-ai-frontend test:account-proxy-options-lazy-loading",
     "test:proxy-options-progressive-contract": "pnpm --filter juhe-ai-backend test:proxy-options-progressive-contract",
     "test:public-api-log-list-lightweight": "pnpm --filter juhe-ai-backend test:public-api-log-list-lightweight",
+    "test:public-api-log-detail-delta": "pnpm --filter juhe-ai-backend test:public-api-log-detail-delta && pnpm --filter juhe-ai-frontend test:public-api-log-detail-delta",
     "test:operation-log-list-lightweight": "pnpm --filter juhe-ai-backend test:operation-log-list-lightweight",
+    "test:operation-log-detail-supplement": "pnpm --filter juhe-ai-backend test:operation-log-detail-supplement && pnpm --filter juhe-ai-frontend test:operation-log-detail-supplement",
     "test:public-api-log-page-window": "pnpm --filter juhe-ai-frontend test:public-api-log-page-window",
     "test:operation-log-default-window": "pnpm --filter juhe-ai-backend test:operation-log-default-window && pnpm --filter juhe-ai-frontend test:operation-log-default-window"
   },

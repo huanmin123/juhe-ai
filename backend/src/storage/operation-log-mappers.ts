@@ -3,6 +3,7 @@ import type {
   OperationLogActorRole,
   OperationLogChange,
   OperationLogDetailLevel,
+  OperationLogDetailSupplement,
   OperationLogListItem,
   OperationLogMode,
   OperationLogSummary,
@@ -64,6 +65,22 @@ export function operationLogSummaryFromRow(row: OperationLogRow, systemAccountNa
     clientIp: optionalString(row.client_ip),
     userAgent: optionalString(row.user_agent),
     createdAt: String(row.created_at)
+  }
+}
+
+export function operationLogDetailSupplementFromRow(row: OperationLogRow): OperationLogDetailSupplement {
+  return {
+    operationKey: String(row.operation_key),
+    resourceType: String(row.resource_type),
+    resourceId: optionalString(row.resource_id),
+    resourceName: optionalString(row.resource_name),
+    visibilityScope: String(row.visibility_scope) as OperationLogVisibilityScope,
+    changes: parseJsonArray(row.changes_json),
+    method: optionalString(row.method),
+    path: optionalString(row.path),
+    clientIp: optionalString(row.client_ip),
+    targets: [],
+    viewers: []
   }
 }
 

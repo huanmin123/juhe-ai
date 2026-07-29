@@ -47,9 +47,7 @@ import dayjs from 'dayjs'
 import { formatDateTime } from '@/shared/formatters'
 import type { NonBusinessDataCleanupResult } from '@/types/domain'
 
-import { formatInteger } from './tableMonitorDisplay'
-
-type CleanupResultType = 'success' | 'info' | 'warning'
+type CleanupResultType = 'info' | 'warning'
 
 const open = defineModel<boolean>('open', { required: true })
 const cutoffAt = defineModel<Dayjs | undefined>('cutoffAt', { required: true })
@@ -66,8 +64,7 @@ const emit = defineEmits<{
 const cleanupResultType = computed<CleanupResultType>(() => {
   if (!props.result) return 'info'
   if (props.result.queued) return 'info'
-  if (props.result.blockedReason) return 'warning'
-  return props.result.deletedRows > 0 ? 'success' : 'info'
+  return 'warning'
 })
 
 const cleanupResultMessage = computed(() => {
@@ -76,10 +73,7 @@ const cleanupResultMessage = computed(() => {
   if (result.queued) {
     return '后台清理任务已提交'
   }
-  if (result.blockedReason) return '本次未清理'
-  return result.deletedRows > 0
-    ? `已清理 ${formatInteger(result.deletedRows)} 行非业务数据`
-    : '没有可清理的非业务数据'
+  return '清理任务未提交'
 })
 
 const cleanupResultDescription = computed(() => {
@@ -95,11 +89,7 @@ const cleanupResultDescription = computed(() => {
     ].filter((item): item is string => Boolean(item))
     return details.join('；')
   }
-  const details = [
-    `截止时间：${formatDateTime(result.cutoffAt)}`,
-    result.hasMore ? '本次达到批量上限，仍有可清理记录，可再次执行。' : '当前截止时间前没有更多待清理记录。'
-  ].filter((item): item is string => Boolean(item))
-  return details.join('；')
+  return `截止时间：${formatDateTime(result.cutoffAt)}`
 })
 
 function disabledCleanupDate(current: Dayjs) {

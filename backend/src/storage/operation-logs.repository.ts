@@ -3,6 +3,9 @@ export type {
   OperationLogChange,
   OperationLogDetail,
   OperationLogDetailLevel,
+  OperationLogDetailSupplement,
+  OperationLogDetailTarget,
+  OperationLogDetailViewer,
   OperationLogInput,
   OperationLogListOptions,
   OperationLogListResult,
@@ -16,6 +19,13 @@ export type {
   OperationLogVisibilityReason,
   OperationLogVisibilityScope
 } from './operation-log-types.js'
+
+export {
+  getOperationLogDetailSupplement,
+  getOperationLogDetailSupplementAsync,
+  getOperationLogDetailSupplementForViewer,
+  getOperationLogDetailSupplementForViewerAsync
+} from './operation-log-detail-supplement.repository.js'
 
 export {
   getOperationLogDetail,

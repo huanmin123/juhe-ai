@@ -2,8 +2,8 @@ import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
 import {
-  getOperationLogDetailAsync,
-  getOperationLogDetailForViewerAsync,
+  getOperationLogDetailSupplementAsync,
+  getOperationLogDetailSupplementForViewerAsync,
   listOperationLogsAsync,
   listOperationLogsForViewerAsync,
 } from '../../storage/repositories.js'
@@ -35,12 +35,12 @@ myOperationLogsRouter.get('/:id', async (req, res, next) => {
       res.status(401).json({ message: '请先登录' })
       return
     }
-    const detail = await getOperationLogDetailForViewerAsync(req.params.id, context.systemAccountId)
-    if (!detail) {
+    const supplement = await getOperationLogDetailSupplementForViewerAsync(req.params.id, context.systemAccountId)
+    if (!supplement) {
       sendNotFound(res, '操作日志不存在')
       return
     }
-    res.json(ok(detail))
+    res.json(ok(supplement))
   } catch (error) {
     next(error)
   }
@@ -57,12 +57,12 @@ operationLogsRouter.get('/', requireAdmin, async (req, res, next) => {
 
 operationLogsRouter.get('/:id', requireAdmin, async (req, res, next) => {
   try {
-    const detail = await getOperationLogDetailAsync(req.params.id)
-    if (!detail) {
+    const supplement = await getOperationLogDetailSupplementAsync(req.params.id)
+    if (!supplement) {
       sendNotFound(res, '操作日志不存在')
       return
     }
-    res.json(ok(detail))
+    res.json(ok(supplement))
   } catch (error) {
     next(error)
   }

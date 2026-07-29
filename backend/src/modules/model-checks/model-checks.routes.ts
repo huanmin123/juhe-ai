@@ -224,8 +224,8 @@ modelChecksRouter.get('/options/accounts', handleModelCheckAccountOptions)
 
 async function handleModelCheckAccountOptions(req: Request, res: Response, next: NextFunction) {
   const purpose = req.query.purpose
-  if (purpose !== 'run' && purpose !== 'history') {
-    res.status(400).json(badRequest('模型检测账户选项 purpose 仅支持 run 或 history'))
+  if (purpose !== 'run' && purpose !== 'history' && purpose !== 'schedule') {
+    res.status(400).json(badRequest('模型检测账户选项 purpose 仅支持 run、history 或 schedule'))
     return
   }
   if (req.query.keyword !== undefined && (typeof req.query.keyword !== 'string' || req.query.keyword.trim().length > 100)) {
@@ -233,6 +233,11 @@ async function handleModelCheckAccountOptions(req: Request, res: Response, next:
     return
   }
   const keyword = typeof req.query.keyword === 'string' ? req.query.keyword.trim() || undefined : undefined
+  const accountId = typeof req.query.accountId === 'string' ? req.query.accountId.trim() : undefined
+  if (req.query.accountId !== undefined && (!accountId || accountId.length > 120 || /[,[\]]/.test(accountId))) {
+    res.status(400).json(badRequest('模型检测账户选项 accountId 无效'))
+    return
+  }
   const limitRaw = req.query.limit
   const limit = limitRaw === undefined ? 50 : Number(limitRaw)
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
@@ -251,8 +256,12 @@ async function handleModelCheckAccountOptions(req: Request, res: Response, next:
     res.status(400).json(badRequest('模型检测账户选项 selectedIds 无效'))
     return
   }
+  if (accountId && (keyword || selectedValues.length > 0 || limit !== 1)) {
+    res.status(400).json(badRequest('模型检测账户定点模型选项只接受 accountId、purpose 和 limit=1'))
+    return
+  }
   try {
-    const values = await listModelCheckAccountOptions(getRequestAccessScope(req.query.systemAccountId), { purpose, keyword, selectedIds: selectedValues as string[], limit })
+    const values = await listModelCheckAccountOptions(getRequestAccessScope(req.query.systemAccountId), { purpose, accountId, keyword, selectedIds: selectedValues as string[], limit })
     res.json(ok(values))
   } catch (error) {
     next(error)

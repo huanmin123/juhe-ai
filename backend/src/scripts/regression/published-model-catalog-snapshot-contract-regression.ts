@@ -14,7 +14,7 @@ for (const file of sourceFiles) {
 }
 
 const chatRoutes = readFileSync(new URL('../../modules/chat/chat.routes.ts', import.meta.url), 'utf8')
-assert.match(chatRoutes, /listClientModelCatalogAsync/, 'Chat 必须使用动态模型目录')
+assert.match(chatRoutes, /loadChatModelCatalogSnapshot/, 'Chat 必须按当前账户与供应商目录动态构造模型快照')
 assert.match(chatRoutes, /chatRouter\.get\('\/conversations\/:conversationId\/models'/, 'Chat 模型列表接口必须存在')
 assert.match(chatRoutes, /chatRouter\.get\('\/conversations\/:conversationId\/models\/:modelId'/, 'Chat 模型能力接口必须存在')
 

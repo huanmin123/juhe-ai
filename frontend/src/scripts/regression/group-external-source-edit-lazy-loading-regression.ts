@@ -78,7 +78,11 @@ changedExternalSourceForm.notes = '新备注'
 assert.deepEqual(buildSourcePatch(changedExternalSourceForm, externalSourceRecord), { notes: '新备注' }, '编辑保存只应发送实际修改字段')
 const externalSourceSaveSource = sourceBetween(externalSourcesViewSource, 'async function saveSource', 'function addRateLimit')
 assert.match(externalSourceSaveSource, /buildSourcePatch\(sourceForm, original\)/, '外部来源编辑保存必须按列表快照构造差异 PATCH')
-assert.match(externalSourceSaveSource, /if \(!Object\.keys\(payload\)\.length\)[\s\S]*return/, '未修改外部来源不得发送 PATCH')
+assert.match(
+  externalSourceSaveSource,
+  /const\s+changes\s*=\s*buildSourcePatch\(sourceForm, original\)[\s\S]*if\s*\(!Object\.keys\(changes\)\.length\)[\s\S]*return[\s\S]*externalIntegrationSources\.update/,
+  '未修改外部来源不得发送 PATCH'
+)
 const externalListLoadSource = sourceBetween(externalSourcesViewSource, 'async function loadData', 'function isCurrentListRequest')
 assert.match(externalListLoadSource, /requestId = \+\+listRequestId[\s\S]*requestSignature = JSON\.stringify\(params\)/, '外部来源列表必须为每次筛选、翻页和刷新绑定请求代次与参数签名')
 assert.match(externalListLoadSource, /isCurrentListRequest\(requestId, requestSignature\)/, '外部来源列表写回和错误提示必须拒绝迟到响应')

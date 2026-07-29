@@ -2,7 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import type { AccountUsageStatsRange } from '../../domain/types.js'
-import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { badRequest, firstIssueMessage, ok, sendNotFound } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
   getAccountUsageStatsOverviewPageAsync,
@@ -10,7 +10,7 @@ import {
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
 import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync, listAccountUsageOptionsAsync } from '../../storage/account-usage.repository.js'
-import { getAiHealthListAsync } from '../../storage/account-health-monitor.repository.js'
+import { getAiHealthHourDetailAsync, getAiHealthListAsync } from '../../storage/account-health-monitor.repository.js'
 import {
   getAiPerformanceBaseAsync,
   getAiPerformanceSeriesAsync,
@@ -20,21 +20,21 @@ import {
   getUsageStatsOverviewModelDistributionAsync,
   getUsageStatsOverviewSummaryAsync,
   getSystemMetricsOverviewAsync,
+  getSystemMetricsTrendAsync,
   getUsageStatsOverviewAsync,
   listAiPerformanceAccountOptionsAsync,
 } from '../../storage/usage-stats.repository.js'
 import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
-import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
+import { DAY_MS, fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import type { RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { getAuditLogRedisStreamRuntime } from '../audit-logs/audit-log-queue.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { buildBackgroundQueueHealthSnapshot, type BackgroundQueueHealthItem } from '../background/background-queue-health.service.js'
-import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
-import type { DbServiceRuntimeQueueSnapshot, DbServiceServerRuntimeSnapshot } from '../db-service/db-service-types.js'
+import { requestServerSystemMetricsRuntimeSnapshot } from '../db-service/db-service-ipc.js'
+import type { DbServiceRuntimeQueueSnapshot, DbServiceSystemMetricsRuntimeSnapshot } from '../db-service/db-service-types.js'
 import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
-import { getGatewayRoutingObservabilitySnapshot } from '../gateway/observability/routing-observability.service.js'
 import { getOperationLogRedisStreamRuntime } from '../operation-logs/operation-log-queue.service.js'
 import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
 import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -58,6 +58,11 @@ const aiHealthQuerySchema = z.object({
   keyword: z.string().trim().max(200).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(10).max(50).optional()
+})
+
+const aiHealthHourDetailQuerySchema = z.object({
+  accountId: z.string().trim().min(1).max(200),
+  statHour: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$/, '统计小时格式应为 YYYY-MM-DDTHH')
 })
 
 const accountUsageOptionsQuerySchema = z.object({
@@ -281,6 +286,25 @@ statsRouter.get('/ai-health', async (req, res, next) => {
   }
 })
 
+statsRouter.get('/ai-health/hour-detail', async (req, res, next) => {
+  const parsed = aiHealthHourDetailQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'AI 健康详情参数不合法')))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const detail = await getAiHealthHourDetailAsync(access, parsed.data.accountId, parsed.data.statHour)
+    if (!detail) {
+      sendNotFound(res, 'AI 账户不存在或不可访问')
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
+  }
+})
+
 statsRouter.get('/account-usage', async (req, res, next) => {
   try {
     if (req.query.includeSummary !== undefined) {
@@ -484,7 +508,7 @@ function localQueueBackgroundJobRow(
   })
 }
 
-async function backgroundQueueRuntimeRows(runtime: DbServiceServerRuntimeSnapshot | undefined): Promise<BackgroundJobRuntimeRow[] | undefined> {
+async function backgroundQueueRuntimeRows(runtime: DbServiceSystemMetricsRuntimeSnapshot | undefined): Promise<BackgroundJobRuntimeRow[] | undefined> {
   if (!runtime) return undefined
   return [
     ...queueHealthRuntimeRows(runtime),
@@ -496,7 +520,7 @@ async function backgroundQueueRuntimeRows(runtime: DbServiceServerRuntimeSnapsho
   ]
 }
 
-function accountBalanceSnapshotCleanupRuntimeRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+function accountBalanceSnapshotCleanupRuntimeRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): BackgroundJobRuntimeRow[] {
   const state = runtime.accountBalanceSnapshotCleanup
   if (!state) return []
   return [
@@ -557,7 +581,7 @@ async function redisStreamRuntime(
   }, { queueType: 'redis' })
 }
 
-function queueHealthRuntimeRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+function queueHealthRuntimeRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): BackgroundJobRuntimeRow[] {
   const queueHealth = buildBackgroundQueueHealthSnapshot(runtime)
   return [...queueHealth.workerQueues, ...queueHealth.serverIpcQueues]
     .map(backgroundQueueHealthRuntimeRow)
@@ -613,7 +637,7 @@ function workerRoleFromQueueHealthItem(item: BackgroundQueueHealthItem): string 
   return 'ingest-worker'
 }
 
-function dbServiceRuntimeQueueRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+function dbServiceRuntimeQueueRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): BackgroundJobRuntimeRow[] {
   const dbService = runtime.dbService
   if (!dbService) return []
   const codexWriterPool = dbService.codexContextStateWriterPool
@@ -678,7 +702,7 @@ function dbServiceRuntimeQueueRows(runtime: DbServiceServerRuntimeSnapshot): Bac
   ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
 }
 
-function gatewayAccountSideEffectQueueRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+function gatewayAccountSideEffectQueueRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): BackgroundJobRuntimeRow[] {
   const state = runtime.gatewayAccountSideEffects
   if (!state) return []
   return [
@@ -702,7 +726,7 @@ function gatewayAccountSideEffectQueueRows(runtime: DbServiceServerRuntimeSnapsh
   ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
 }
 
-function highConcurrencyRuntimeQueueRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+function highConcurrencyRuntimeQueueRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): BackgroundJobRuntimeRow[] {
   return (runtime.highConcurrencyQueues ?? [])
     .map((queue) => localQueueBackgroundJobRow(`高并发短队列 ${queue.lane} ${queue.groupKey}`, 'server', {
       queueLength: queue.queueSize,
@@ -742,6 +766,76 @@ function emptyBackgroundJobRow(input: {
   }
 }
 
+function systemMetricsRuntimeJobRow(row: BackgroundJobRuntimeRow): BackgroundJobRuntimeRow {
+  const localQueue = row.localQueue as (BackgroundLocalQueueSnapshot & Record<string, unknown>) | undefined
+  return {
+    name: row.name,
+    workerRole: row.workerRole,
+    intervalMs: row.intervalMs,
+    resourceLane: row.resourceLane,
+    running: row.running,
+    pending: row.pending,
+    queuedForLane: row.queuedForLane,
+    timedOut: row.timedOut,
+    nextRunAt: row.nextRunAt,
+    lastStartedAt: row.lastStartedAt,
+    lastFinishedAt: row.lastFinishedAt,
+    lastSuccessAt: row.lastSuccessAt,
+    lastErrorAt: row.lastErrorAt,
+    lastError: row.lastError,
+    lastWarningAt: row.lastWarningAt,
+    lastWarning: row.lastWarning,
+    lastOutcome: row.lastOutcome,
+    leaseState: row.leaseState,
+    lastDurationMs: row.lastDurationMs,
+    maxDurationMs: row.maxDurationMs,
+    runCount: row.runCount,
+    successCount: row.successCount,
+    failureCount: row.failureCount,
+    partialCount: row.partialCount,
+    skippedCount: row.skippedCount,
+    taskSkippedCount: row.taskSkippedCount,
+    coalescedCount: row.coalescedCount,
+    timedOutCount: row.timedOutCount,
+    retryQueue: row.retryQueue
+      ? {
+        name: row.retryQueue.name,
+        pendingCount: row.retryQueue.pendingCount,
+        runningCount: row.retryQueue.runningCount,
+        nextRunAt: row.retryQueue.nextRunAt
+      }
+      : undefined,
+    localQueue: localQueue
+      ? {
+        name: row.localQueue?.name ?? row.name,
+        queueType: typeof localQueue.queueType === 'string' ? localQueue.queueType : undefined,
+        queueLength: optionalNumberValue(localQueue.queueLength),
+        queueBytes: optionalNumberValue(localQueue.queueBytes),
+        completedCount: optionalNumberValue(localQueue.completedCount),
+        droppedCount: optionalNumberValue(localQueue.droppedCount),
+        rejectedCount: optionalNumberValue(localQueue.rejectedCount),
+        expiredCount: optionalNumberValue(localQueue.expiredCount),
+        timedOutCount: optionalNumberValue(localQueue.timedOutCount),
+        failedCount: optionalNumberValue(localQueue.failedCount),
+        flushFailureCount: optionalNumberValue(localQueue.flushFailureCount),
+        oldestQueuedMs: optionalNumberValue(localQueue.oldestQueuedMs),
+        writerPoolQueueLength: optionalNumberValue(localQueue.writerPoolQueueLength),
+        writerPoolActiveJobs: optionalNumberValue(localQueue.writerPoolActiveJobs),
+        writerPoolFailedJobs: optionalNumberValue(localQueue.writerPoolFailedJobs),
+        writerPoolRejectedJobs: optionalNumberValue(localQueue.writerPoolRejectedJobs),
+        writerPoolOldestQueuedMs: optionalNumberValue(localQueue.writerPoolOldestQueuedMs),
+        pendingWriteRequestCount: optionalNumberValue(localQueue.pendingWriteRequestCount),
+        pendingWriteOldestQueuedMs: optionalNumberValue(localQueue.pendingWriteOldestQueuedMs),
+        runningCount: optionalNumberValue(localQueue.runningCount),
+        consumers: optionalNumberValue(localQueue.consumers),
+        nextRunAt: typeof localQueue.nextRunAt === 'string' ? localQueue.nextRunAt : undefined,
+        flushLastSuccessAt: row.localQueue?.flushLastSuccessAt,
+        flushLastError: row.localQueue?.flushLastError
+      }
+      : undefined
+  }
+}
+
 statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
@@ -763,13 +857,7 @@ statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) =>
     return
   }
   try {
-    const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
-    res.json(ok({
-      hourlyTrend: overview.hourlyTrend,
-      processEventLoopLatestStatus: overview.processEventLoopLatestStatus,
-      processEventLoopPeakStatus: overview.processEventLoopPeakStatus,
-      processEventLoopTrend: overview.processEventLoopTrend
-    }))
+    res.json(ok(await getSystemMetricsTrendAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))))
   } catch (error) {
     next(error)
   }
@@ -777,7 +865,7 @@ statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) =>
 
 statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next) => {
   try {
-    const liveRuntime = await requestServerRuntimeSnapshot(2500).catch(() => undefined)
+    const liveRuntime = await requestServerSystemMetricsRuntimeSnapshot(2500).catch(() => undefined)
     const runtime = liveRuntime
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
     const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
@@ -817,45 +905,17 @@ statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next)
     const backgroundJobs = backgroundJobGroups.some(Array.isArray)
       ? backgroundJobGroups.flatMap((items) => items ?? [])
       : undefined
-    const runtimeSnapshotObservedAt = runtime?.observedAt
-    const runtimeSnapshotAgeMs = runtimeSnapshotObservedAt
-      ? Math.max(0, Date.now() - Date.parse(runtimeSnapshotObservedAt))
+    const runtimeSnapshotAgeMs = runtime?.observedAt
+      ? Math.max(0, Date.now() - Date.parse(runtime.observedAt))
       : undefined
-    const gatewayRoutingObservability = await getGatewayRoutingObservabilitySnapshot().catch(() => undefined)
     res.json(ok({
       runtimeSnapshotAvailable: Boolean(runtime),
-      runtimeSnapshotSource: runtime ? 'live' as const : undefined,
-      runtimeSnapshotObservedAt,
-      runtimeSnapshotAgeMs,
       runtimeSnapshotStale: runtimeSnapshotAgeMs === undefined ? undefined : runtimeSnapshotAgeMs > 10_000,
       ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
       statsWorkerSnapshotAvailable: Boolean(statsWorkerSnapshot),
       opsWorkerSnapshotAvailable: Boolean(opsWorkerSnapshot),
-      gatewayRoutingObservabilityAvailable: Boolean(gatewayRoutingObservability),
-      gatewayRoutingObservability: gatewayRoutingObservability ?? null,
-      ingestWorker: runtime?.ingestWorker
-        ? {
-          pid: runtime.ingestWorker.pid ?? null,
-          ready: runtime.ingestWorker.ready,
-          snapshotAvailable: Boolean(ingestWorkerSnapshot)
-        }
-        : null,
-      statsWorker: runtime?.statsWorker
-        ? {
-          pid: runtime.statsWorker.pid ?? null,
-          ready: runtime.statsWorker.ready,
-          snapshotAvailable: Boolean(statsWorkerSnapshot)
-        }
-        : null,
-      opsWorker: runtime?.opsWorker
-        ? {
-          pid: runtime.opsWorker.pid ?? null,
-          ready: runtime.opsWorker.ready,
-          snapshotAvailable: Boolean(opsWorkerSnapshot)
-        }
-        : null,
       backgroundJobsAvailable: Array.isArray(backgroundJobs),
-      backgroundJobs: backgroundJobs ?? null
+      backgroundJobs: backgroundJobs?.map(systemMetricsRuntimeJobRow) ?? null
     }))
   } catch (error) {
     next(error)
@@ -864,7 +924,11 @@ statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next)
 
 async function normalizeStatsDateRangeAsync(input: { startDate?: string; endDate?: string }) {
   const timezone = await usageStatsTimezoneAsync()
-  const defaultRange = defaultAccountUsageDateRange(timezone)
+  const now = Date.now()
+  const defaultRange = {
+    startDate: dateKey(new Date(now - 2 * DAY_MS), timezone),
+    endDate: dateKey(new Date(now), timezone)
+  }
   const startDate = input.startDate ?? input.endDate ?? defaultRange.startDate
   const endDate = input.endDate ?? input.startDate ?? defaultRange.endDate
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)

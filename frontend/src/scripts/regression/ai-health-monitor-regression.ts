@@ -2,6 +2,8 @@ import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
+import { createAiHealthRequestCoordinator } from '@/views/ai-health/aiHealthRequestCoordinator'
+
 const frontendRoot = resolve(import.meta.dirname, '../..')
 const repositoryRoot = resolve(frontendRoot, '../..')
 const viewSource = readFileSync(resolve(frontendRoot, 'views/ai-health/AiHealthView.vue'), 'utf8')
@@ -34,8 +36,32 @@ assert.match(statusBarSource, /@click="handleClick"/, '小时状态槽必须支�
 assert.match(statusBarSource, /emit\('select', hour\)/, '小时状态槽点击后必须返回对应小时点')
 assert.match(viewSource, /<a-drawer[^>]+title="检查详情"/, '页面必须提供检查详情抽屉')
 assert.match(viewSource, /point\.errorMessage \|\| point\.errorCode/, '详情必须优先展示实际失败原因')
+assert.match(viewSource, /api\.(?:stats|myStats)\.aiHealthHourDetail/, '小时详情必须在用户点击后按需请求')
+assert.match(viewSource, /if \(point\.status === 'unknown'\) return/, '无记录小时不得发起无意义的详情请求')
+assert.match(viewSource, /document\.visibilityState === 'visible'/, '隐藏页面不得发起健康列表加载')
+assert.doesNotMatch(viewSource, /setInterval|setTimeout/, '健康监控页面不得建立无需求的定时轮询')
+assert.match(viewSource, /onDeactivated\(\(\) => \{[\s\S]*requestCoordinator\.cancelList\(\)[\s\S]*invalidatePendingLoads\(\)/, 'KeepAlive 失活必须取消健康列表并使旧响应失效')
+assert.match(viewSource, /onActivated\(\(\) => \{[\s\S]*reloadOnActivate[\s\S]*void loadData\(\)/, '重新激活健康页面必须按需刷新当前身份列表')
+assert.match(viewSource, /watch\(\(\) => authState\.revision\.value[\s\S]*accounts\.value = \[\][\s\S]*void loadData\(\)/, '身份变化必须先清空旧健康数据再加载新作用域')
 assert.doesNotMatch(monitorRepositorySource, /\busage_records\b/i, '页面查询不得扫描使用记录明细')
 assert.match(monitorRepositorySource, /31 \* 24/, '服务端必须限制最大 31 天')
 assert.match(monitorRepositorySource, /FROM account_health_hourly/, '页面查询必须读取小时预聚合')
+assert.match(monitorRepositorySource, /SELECT account_id, stat_hour, status, source_order/, '列表 SQL 必须只投影小时槽状态')
+assert.match(monitorRepositorySource, /loadAccountHealthHourDetail/, '错误正文必须移入单点详情查询')
+
+const coordinator = createAiHealthRequestCoordinator()
+const listA = coordinator.beginList()
+const listB = coordinator.beginList()
+assert.equal(listA.signal.aborted, true, '新列表请求必须取消旧列表请求')
+assert.equal(listA.isCurrent(), false, '旧列表响应不得覆盖新列表状态')
+assert.equal(listB.isCurrent(), true, '最新列表响应必须保留提交权')
+const detailA = coordinator.beginDetail()
+const detailB = coordinator.beginDetail()
+assert.equal(detailA.signal.aborted, true, '切换小时槽必须取消旧详情请求')
+assert.equal(detailA.isCurrent(), false, '旧详情响应不得覆盖新抽屉状态')
+assert.equal(detailB.isCurrent(), true, '最新详情响应必须保留提交权')
+coordinator.dispose()
+assert.equal(listB.isCurrent(), false, '卸载后列表请求不得提交')
+assert.equal(detailB.isCurrent(), false, '卸载后详情请求不得提交')
 
 console.log('AI 健康监控前端契约回归通过')

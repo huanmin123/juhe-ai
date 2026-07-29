@@ -77,7 +77,7 @@ export interface ModelCheckAccountOption {
   providerProtocolProfileId: string
   protocolCode?: string
   protocolVersion?: string
-  modelCheckModels: string[]
+  modelCheckModels?: string[]
 }
 
 export interface ModelCheckRunPayload {
@@ -266,8 +266,29 @@ export interface ModelCheckRunDetail extends ModelCheckRunSummary {
   checks: ModelCheckCheckResult[]
 }
 
+export type ModelCheckRunListItem = Pick<ModelCheckRunSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'providerCode'
+  | 'targetType'
+  | 'targetId'
+  | 'targetName'
+  | 'model'
+  | 'profile'
+  | 'triggerKind'
+  | 'trustedComparison'
+  | 'level'
+  | 'score'
+  | 'maxScore'
+  | 'status'
+  | 'message'
+  | 'durationMs'
+  | 'errorMessage'
+  | 'createdAt'
+>
+
 export interface ModelCheckRunListResult {
-  items: ModelCheckRunSummary[]
+  items: ModelCheckRunListItem[]
   page: number
   pageSize: number
   total: number

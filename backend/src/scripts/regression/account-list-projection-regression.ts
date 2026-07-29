@@ -122,7 +122,8 @@ try {
     'concurrencyLimit', 'priority', 'superPriorityEnabled', 'fallbackEnabled', 'clientCompatibility', 'tags',
     'healthCheckModel', 'healthCheckEndpointMode', 'proxyProfileId', 'proxyProfileName',
     'proxyProfileType', 'proxyProfileEnabled', 'proxyProfileUnavailable', 'proxyProfileErrorMessage',
-    'availabilitySchedule', 'accessType', 'accountAuthorizationId', 'boundGroupId', 'boundGroupName', 'groupBindStatus',
+    'availabilitySchedule', 'accessType', 'accountAuthorizationId', 'authorizationInstanceSourceAccountId',
+    'boundGroupId', 'boundGroupName', 'groupBindStatus',
     'bindingSystemAccountId', 'permissions'
   ])
   assert.deepEqual(

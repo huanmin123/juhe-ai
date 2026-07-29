@@ -39,6 +39,7 @@ try {
   await verifyRevisitedQueryRequestsCurrentData()
   await verifyUsageWindowAdminTtlAndInflightCache()
   await verifyUsageWindowScopeIsolationAndForceRace()
+  await verifyUsageWindowIdentityIsolation()
   assert.match(
     usageRecordsViewSource,
     /loadUsageStatsWindow\(\{ viewScope: isManagementView\.value \? 'admin' : 'self' \}\)/,
@@ -257,6 +258,27 @@ async function verifyUsageWindowScopeIsolationAndForceRace(): Promise<void> {
   assert.equal(adminCalls, 2, 'force 进行中时普通读取必须复用刷新请求，不能命中旧 TTL 缓存')
   assert.equal(joinedWindow.timezone, 'Asia/Shanghai')
   assert.equal(raceHarness.usageStatsWindow.value?.timezone, 'Asia/Shanghai', 'force 刷新期间的普通读取不得让共享窗口停留在旧值')
+}
+
+async function verifyUsageWindowIdentityIsolation(): Promise<void> {
+  clearUsageStatsWindowCache()
+  const oldIdentityPending = deferred<UsageStatsWindow>()
+  let selfCalls = 0
+  api.myStats.usageWindow = async () => {
+    selfCalls += 1
+    return selfCalls === 1 ? await oldIdentityPending.promise : usageWindow('Asia/Shanghai')
+  }
+  const harness = useUsageStatsWindow() as UsageStatsWindowHarness & { usageStatsWindow: Ref<UsageStatsWindow | undefined> }
+
+  authState.currentUser.value = currentUser('usage-window-user-a')
+  const oldIdentityRequest = harness.loadUsageStatsWindow({ viewScope: 'self' })
+  await Promise.resolve()
+  authState.currentUser.value = currentUser('usage-window-user-b')
+  assert.equal((await harness.loadUsageStatsWindow({ viewScope: 'self' })).timezone, 'Asia/Shanghai')
+  oldIdentityPending.resolve(usageWindow('UTC'))
+  await oldIdentityRequest
+  assert.equal(selfCalls, 2, '切换登录身份后不得复用上一个用户的 usage-window TTL 缓存')
+  assert.equal(harness.usageStatsWindow.value?.timezone, 'Asia/Shanghai', '旧身份迟到窗口不得覆盖当前身份')
 }
 
 async function createModelHarness(scopeParams: ComputedRef<ListParams | undefined>): Promise<UsageRecordModelOptionsHarness> {

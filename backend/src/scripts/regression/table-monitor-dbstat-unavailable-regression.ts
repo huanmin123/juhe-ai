@@ -65,7 +65,10 @@ try {
   assert.equal(tableRow?.total_bytes, null, 'dbstat 不可用时总大小应保持未知，而不是压成 0')
   assert.equal(tableRow?.page_count, null, 'dbstat 不可用时页数应保持未知，而不是压成 0')
 
-  const overview = tableMonitorRepository.getTableStorageOverview({ limit: 200 })
+  const overview = tableMonitorRepository.getTableStorageOverview({
+    pageSize: 1,
+    keyword: 'table_monitor_dbstat_unavailable_target'
+  })
   const overviewRow = overview.tables.find((row) => row.databaseRole === 'business' && row.tableName === 'table_monitor_dbstat_unavailable_target')
   assert(overviewRow, '概览应返回目标表')
   assert.equal(overviewRow?.tableBytes, undefined, '概览映射应保留不可用状态')

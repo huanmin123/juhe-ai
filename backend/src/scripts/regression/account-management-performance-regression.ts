@@ -7,11 +7,12 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type { AccountListItem } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 
-const fixtureAccountCount = 20
-const maxListResponseBytes = 64 * 1024
+const fixtureAccountCount = 100
+const maxListResponseBytes = 160 * 1024
 const maxEditBasicResponseBytes = 8 * 1024
 const maxMutationResponseBytes = 1 * 1024
-const expectedListBusinessQueries = 4
+const expectedListBusinessQueries = 2
+const expectedListCircuitQueries = 1
 const expectedListStatsQueries = 1
 const expectedEditBusinessQueries = 3
 
@@ -174,11 +175,20 @@ try {
       pageSize: fixtureAccountCount,
       sorts: [{ field: 'priority', order: 'asc' }]
     })
-    const projections = await statusSnapshotRepository.listAccountStatusProjectionsReadOnly(
-      access,
-      page.items.map((item) => item.id)
-    )
+    assert.equal(page.statusSeeds.length, page.items.length, '列表查询必须同时产出完整状态种子，避免按 ID 重查账户')
+    const projections = await statusSnapshotRepository.hydrateAccountManagementStatusSeedsReadOnly(page.statusSeeds)
     assert(projections.every((item) => item.balanceQueryEnabled !== true), '固定夹具不得额外触发余额快照查询')
+    await accountCircuitBridge.loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
+    return { page, projections }
+  })
+  const list20SqlCapture = await captureSql(async () => {
+    const page = await listRepository.listAccountManagementItemsPageReadOnly(access, {
+      page: 1,
+      pageSize: 20,
+      sorts: [{ field: 'priority', order: 'asc' }]
+    })
+    assert.equal(page.statusSeeds.length, page.items.length, '20 行列表也必须产出完整状态种子')
+    const projections = await statusSnapshotRepository.hydrateAccountManagementStatusSeedsReadOnly(page.statusSeeds)
     await accountCircuitBridge.loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
     return { page, projections }
   })
@@ -196,17 +206,30 @@ try {
   assert.equal(listResponse.data.pageSize, fixtureAccountCount)
   for (const item of listResponse.data.items) assertExactListItem(item)
 
-  const listBusinessQueries = queryCalls(listSqlCapture.calls, 'business')
+  const listBusinessQueries = listDataBusinessQueries(listSqlCapture.calls)
+  const listCircuitQueries = circuitQueryCalls(listSqlCapture.calls)
   const listStatsQueries = queryCalls(listSqlCapture.calls, 'stats')
+  const list20BusinessQueries = listDataBusinessQueries(list20SqlCapture.calls)
+  const list20CircuitQueries = circuitQueryCalls(list20SqlCapture.calls)
+  const list20StatsQueries = queryCalls(list20SqlCapture.calls, 'stats')
   assert.equal(
     listBusinessQueries.length,
     expectedListBusinessQueries,
-    `20 行列表业务查询预算应固定为 ${expectedListBusinessQueries}，实际 ${listBusinessQueries.length}`
+    `100 行列表业务查询预算应固定为 ${expectedListBusinessQueries}，实际 ${listBusinessQueries.length}: ${listBusinessQueries.map((call) => call.sql.trim().replace(/\s+/g, ' ').slice(0, 180)).join(' | ')}`
+  )
+  assert.equal(listCircuitQueries.length, expectedListCircuitQueries, '100 行列表熔断摘要必须保持单次批量查询')
+  assert.equal(list20BusinessQueries.length, expectedListBusinessQueries, '20 行列表业务查询预算必须与 100 行保持一致')
+  assert.equal(list20CircuitQueries.length, expectedListCircuitQueries, '20 行列表熔断摘要必须保持单次批量查询')
+  assert.equal(list20StatsQueries.length, expectedListStatsQueries, '20 行列表统计查询必须保持单次批量查询')
+  assert.equal(
+    listBusinessQueries.filter((call) => /account_status_snapshots|accounts.balance_query_enabled[\s\S]*accounts.id IN/i.test(call.sql)).length,
+    0,
+    '列表状态水合不得再按账户 ID 重查状态主表'
   )
   assert.equal(
     listStatsQueries.length,
     expectedListStatsQueries,
-    `20 行列表统计查询预算应固定为 ${expectedListStatsQueries}，实际 ${listStatsQueries.length}`
+    `100 行列表统计查询预算应固定为 ${expectedListStatsQueries}，实际 ${listStatsQueries.length}`
   )
   const listSql = listSqlCapture.calls.map((call) => call.sql).join('\n')
   assert.doesNotMatch(listSql, /credentials_encrypted|credential_mask/i, '列表不得读取任何凭据列')
@@ -222,7 +245,7 @@ try {
   const listResponseBytes = Buffer.byteLength(JSON.stringify(listResponse), 'utf8')
   assert(
     listResponseBytes <= maxListResponseBytes,
-    `20 行列表未压缩 JSON 必须不超过 ${maxListResponseBytes} 字节，实际 ${listResponseBytes}`
+    `100 行列表未压缩 JSON 必须不超过 ${maxListResponseBytes} 字节，实际 ${listResponseBytes}`
   )
 
   const editCapture = await captureSql(() => editBasicRepository.findAccountEditBasicDetailAsync(target.id, access))
@@ -287,8 +310,14 @@ try {
 
   const evidence = {
     fixtureAccounts: fixtureAccountCount,
-    list: {
+    list20: {
+      businessQueries: list20BusinessQueries.length,
+      circuitQueries: list20CircuitQueries.length,
+      statsQueries: list20StatsQueries.length
+    },
+    list100: {
       businessQueries: listBusinessQueries.length,
+      circuitQueries: listCircuitQueries.length,
       statsQueries: listStatsQueries.length,
       jsonBytes: listResponseBytes,
       elapsedMs: roundedMilliseconds(listCapture.elapsedMs)
@@ -485,6 +514,14 @@ function queryCalls(calls: SqlCall[], role: DatabaseRole): SqlCall[] {
     && (call.method === 'get' || call.method === 'all')
     && /^(?:SELECT|WITH|PRAGMA|EXPLAIN)\b/i.test(call.sql.trim())
   ))
+}
+
+function circuitQueryCalls(calls: SqlCall[]): SqlCall[] {
+  return queryCalls(calls, 'business').filter((call) => /\baccount_circuit_incidents\b/i.test(call.sql))
+}
+
+function listDataBusinessQueries(calls: SqlCall[]): SqlCall[] {
+  return queryCalls(calls, 'business').filter((call) => !/\baccount_circuit_incidents\b/i.test(call.sql))
 }
 
 function dmlCalls(calls: SqlCall[]): SqlCall[] {

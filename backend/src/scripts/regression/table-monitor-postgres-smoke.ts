@@ -36,7 +36,7 @@ try {
   await createSampledPostgresTable()
   await insertSmokeRows()
 
-  const overview = await getTableStorageOverviewAsync({ limit: 10 })
+  const overview = await getTableStorageOverviewAsync({ pageSize: 10 })
   const businessDatabase = overview.databases.find((row) => row.databaseRole === 'business')
   assert(businessDatabase, 'PG 表监控 overview 应返回 business 数据库快照')
   assert.equal(businessDatabase.sampledAt, middleAt, 'overview 应读取 business 最新数据库快照')
@@ -181,7 +181,14 @@ async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
   assert.equal(history[0]?.sampledAt, sampledAt, 'PG 表级快照应使用采样时间')
   assert((history[0]?.rowCount ?? 0) >= 2, 'PG 表级快照应读取 pg_stat 行数估算')
   assert((history[0]?.totalBytes ?? 0) > 0, 'PG 表级快照应记录 pg_total_relation_size')
-  assert((history[0]?.indexCount ?? 0) >= 1, 'PG 表级快照应记录索引数量')
+  const persistedSnapshot = await pool.query(`
+    SELECT index_count
+    FROM juhe_stats.table_storage_snapshots
+    WHERE database_role = 'dataset' AND table_name = $1 AND sampled_at = $2
+    LIMIT 1
+  `, [sampledTableName, sampledAt])
+  const persistedIndexCount = (persistedSnapshot.rows[0] as { index_count?: string | number } | undefined)?.index_count
+  assert(Number(persistedIndexCount ?? 0) >= 1, 'PG 表级快照应记录索引数量')
 
   const databaseHistory = await listDatabaseStorageHistoryAsync({
     startAt: sampledAt,

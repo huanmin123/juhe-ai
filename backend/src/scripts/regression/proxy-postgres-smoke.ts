@@ -11,6 +11,8 @@ import {
   listEnabledProxyTestConfigsAsync,
   listProxiesPageAsync,
   listProxyOptionsAsync,
+  patchProxyForManagementAsync,
+  ProxyProfileUpdateConflictError,
   resolveProxyUrlForProfileAsync,
   updateProxyAsync,
   updateProxyTestStateAsync
@@ -38,6 +40,24 @@ try {
 
   const listed = await listProxiesPageAsync({ page: 1, pageSize: 20, keyword: `代理 PG smoke ${marker}` })
   assert.ok(listed.items.some((proxy) => proxy.id === created.id), 'PG 代理列表应返回刚创建的代理')
+  const listedProxy = listed.items.find((proxy) => proxy.id === created.id)
+  assert(listedProxy?.updatedAt, 'PG 代理列表必须携带 CAS 版本')
+  assert.match(listedProxy.updatedAt, /\.\d{6}Z$/, 'PG 列表版本必须保留数据库微秒精度')
+
+  const narrowPatch = await patchProxyForManagementAsync(created.id, {
+    description: 'proxy postgres narrow patch'
+  }, listedProxy.updatedAt)
+  assert.deepEqual(narrowPatch?.mutation.values, { description: 'proxy postgres narrow patch' }, 'PG 字段级 PATCH 只返回真实变化字段')
+  const narrowVersion = narrowPatch?.mutation.updatedAt ?? ''
+  const narrowNoOp = await patchProxyForManagementAsync(created.id, {
+    description: 'proxy postgres narrow patch'
+  }, narrowVersion)
+  assert.deepEqual(narrowNoOp?.mutation, { id: created.id, updatedAt: narrowVersion, changed: false, values: {} }, 'PG 同值 PATCH 必须零写入并保留版本')
+  await assert.rejects(
+    () => patchProxyForManagementAsync(created.id, { description: 'stale overwrite' }, listedProxy.updatedAt),
+    (error: unknown) => error instanceof ProxyProfileUpdateConflictError,
+    'PG 陈旧版本 PATCH 必须返回 CAS 冲突'
+  )
 
   const options = await listProxyOptionsAsync({ keyword: `代理 PG smoke ${marker}` })
   assert.ok(options.some((proxy) => proxy.id === created.id), 'PG 代理 options 应返回刚创建的启用代理')
@@ -73,6 +93,13 @@ try {
   })
   assert.equal(tested?.testStatus, 'passed', 'PG updateProxyTestStateAsync 应更新检测状态')
   assert.equal(tested?.latencyMs, 12, 'PG updateProxyTestStateAsync 应保留检测延迟')
+
+  const microsecondSummary = await findProxyAsync(created.id)
+  assert.match(microsecondSummary?.updatedAt ?? '', /\.123456Z$/, 'PG 管理摘要不得把微秒版本截断成毫秒')
+  const microsecondPatch = await patchProxyForManagementAsync(created.id, {
+    description: 'proxy postgres microsecond CAS patch'
+  }, microsecondSummary?.updatedAt ?? '')
+  assert.equal(microsecondPatch?.mutation.changed, true, 'PG 六位微秒版本必须能直接完成字段级 CAS')
 
   await assertConcurrentDisjointProxyUpdatesAreMerged(created.id, marker)
   const configAfterConcurrentUpdate = await getProxyTestConfigAsync(created.id)

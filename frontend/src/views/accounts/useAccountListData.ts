@@ -11,18 +11,19 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountMutationResult, AccountSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
-import { countActiveAccountFilters, filterAccounts } from './accountListFilters'
+import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
 import {
-  accountListSortChanged,
+  accountListPageWindowChanged,
+  mergeAccountListPageWithRevisionOverlays,
   replaceAccountBalanceSnapshot,
   replaceAccountListRow,
-  sortAccountListRows
+  type AccountListRevisionOverlay
 } from './accountListMutations'
 
 interface AccountsPageState {
@@ -100,6 +101,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
   let listMutationRevision = 0
+  const listRevisionOverlays = new Map<string, AccountListRevisionOverlay>()
   const {
     items: accounts,
     loading,
@@ -140,6 +142,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         accountListParams(systemAccountId, pageState)
       ]
     },
+    transformItems: (nextItems, _loadOptions, _result, currentItems) => (
+      mergeAccountListPageWithRevisionOverlays(nextItems, currentItems, listRevisionOverlays)
+    ),
     onLoaded: () => {
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
@@ -234,6 +239,53 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return true
   }
 
+  function updateLoadedAccountRevision(accountId: string, configRevision: number): boolean {
+    const accountIndex = accounts.value.findIndex((account) => account.id === accountId)
+    if (accountIndex < 0) return false
+    const current = accounts.value[accountIndex]
+    if (Number.isInteger(current.configRevision) && Number(current.configRevision) >= configRevision) return false
+    listMutationRevision += 1
+    const nextAccounts = [...accounts.value]
+    const updated = { ...current, configRevision }
+    nextAccounts[accountIndex] = updated
+    accounts.value = nextAccounts
+    listRevisionOverlays.set(accountId, { configRevision, row: updated })
+    return true
+  }
+
+  function markAccountMutation(mutation: AccountMutationResult): boolean {
+    const current = accounts.value.find((account) => account.id === mutation.id)
+    const revision = Number(mutation.configRevision)
+    const currentRevision = Number(current?.configRevision)
+    const advancesRevision = Number.isInteger(revision)
+      && revision >= 1
+      && (!Number.isInteger(currentRevision) || revision > currentRevision)
+    if (!mutation.authorizationInstancesAffected && mutation.changedFields.length === 0 && !advancesRevision) return false
+    listMutationRevision += 1
+    if (!current || !Number.isInteger(revision) || revision < 1) return true
+    const overlayRow = advancesRevision ? { ...current, configRevision: revision } : current
+    if (advancesRevision) {
+      const nextAccounts = [...accounts.value]
+      nextAccounts[nextAccounts.findIndex((account) => account.id === mutation.id)] = overlayRow
+      accounts.value = nextAccounts
+    }
+    listRevisionOverlays.set(mutation.id, { configRevision: revision, row: overlayRow })
+    return true
+  }
+
+  function accountUpdateAffectsPageWindow(account: AccountListItem): boolean {
+    const current = accounts.value.find((item) => item.id === account.id)
+    return Boolean(current && accountListPageWindowChanged(current, account, {
+      filters,
+      isManagementView: options.isManagementView.value,
+      sorts: accountSorts.value
+    }))
+  }
+
+  async function reloadAccountPageAfterMutation(): Promise<boolean> {
+    return loadData({ forceData: true, quiet: true, requestIdentity: listMutationRevision })
+  }
+
   function updateLoadedAccount(account: AccountListItem): boolean {
     const current = accounts.value.find((item) => item.id === account.id)
     if (!current) return false
@@ -241,21 +293,18 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     if (nextAccounts === accounts.value) return false
     const updated = nextAccounts.find((item) => item.id === account.id)
     if (!updated) return false
-    const matchesCurrentFilters = filterAccounts({
-      accounts: [updated],
+    const pageWindowChanged = accountListPageWindowChanged(current, updated, {
       filters,
-      isManagementView: options.isManagementView.value
-    }).length === 1
-    const sortChanged = accountListSortChanged(current, updated, accountSorts.value)
+      isManagementView: options.isManagementView.value,
+      sorts: accountSorts.value
+    })
     listMutationRevision += 1
-    if (!matchesCurrentFilters) {
-      removeAccountItems((item) => item.id === account.id)
-    } else {
-      accounts.value = sortAccountListRows(nextAccounts, accountSorts.value)
+    accounts.value = nextAccounts
+    const updatedRevision = Number(updated.configRevision)
+    if (Number.isInteger(updatedRevision) && updatedRevision >= 1) {
+      listRevisionOverlays.set(account.id, { configRevision: updatedRevision, row: updated })
     }
-    if (!matchesCurrentFilters || sortChanged) {
-      void loadData({ forceData: true, quiet: true, requestIdentity: listMutationRevision })
-    }
+    if (pageWindowChanged) void reloadAccountPageAfterMutation()
     return true
   }
 
@@ -455,8 +504,12 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleSystemAccountFilterChange,
     focusCreatedAccount,
     removeLoadedAccount,
+    accountUpdateAffectsPageWindow,
+    markAccountMutation,
+    reloadAccountPageAfterMutation,
     updateLoadedAccount,
     updateLoadedAccountBalance,
+    updateLoadedAccountRevision,
     resetAccountPagination,
     resetFilters
   }

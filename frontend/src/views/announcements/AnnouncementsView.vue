@@ -27,10 +27,10 @@
           <span class="muted-cell">{{ formatDateTime(record.publishedAt) }}</span>
         </template>
         <template v-else-if="column.key === 'updatedAt'">
-          <span class="muted-cell">{{ formatDateTime(record.updatedAt) }}</span>
+          <span class="muted-cell">{{ formatDateTime(record.revision) }}</span>
         </template>
         <template v-else-if="column.key === 'updatedByName'">
-          <span>{{ record.updatedByName || record.createdByName || '-' }}</span>
+          <span>{{ record.updatedByName || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <RowActions :actions="rowActions(record)" @action-click="handleAction($event, record)" />
@@ -52,7 +52,7 @@
             </div>
             <div class="mobile-list-meta-item">
               <span>更新人</span>
-              <strong>{{ record.updatedByName || record.createdByName || '-' }}</strong>
+              <strong>{{ record.updatedByName || '-' }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>内容</span>
@@ -93,10 +93,12 @@
 </template>
 
 <script setup lang="ts">
+import axios from 'axios'
 import { message } from '@/lib/antd'
 import { onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import type { AnnouncementPatchPayload } from '@/api/contracts'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
@@ -104,6 +106,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
@@ -114,6 +117,12 @@ import {
   announcementStatusColor,
   announcementStatusText
 } from './announcementFormatters'
+import {
+  applyAnnouncementCreateMutation,
+  applyAnnouncementDeleteMutation,
+  applyAnnouncementPatchMutation,
+  type AnnouncementListMutationState
+} from './announcementListMutation'
 
 interface AnnouncementsPageState {
   pagination: PagePaginationState
@@ -124,7 +133,10 @@ const announcementSaving = submittingRef('announcements.save')
 const modalOpen = ref(false)
 const detailLoading = ref(false)
 const editingId = ref<string>()
+const editingRevision = ref<string>()
+const editBaseline = ref<AnnouncementFormSnapshot>()
 let announcementDetailRequestGeneration = 0
+let announcementMutationRevision = 0
 const pageSize = 50
 const pageStateCache = usePageStateCache<AnnouncementsPageState>(undefined, defaultAnnouncementsPageState, {
   sanitize: sanitizeAnnouncementsPageState,
@@ -138,6 +150,7 @@ const {
   mobileLoadingMore,
   pagination,
   tablePagination,
+  applyResult: applyAnnouncementPageResult,
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileAnnouncements,
@@ -148,10 +161,14 @@ const {
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条公告，还有更多`
     : `共 ${total} 条公告`,
-  fetchPage: (_options, pageState) => api.announcements.listPage({
-    page: pageState.current,
-    pageSize: pageState.pageSize
-  }),
+  fetchPage: async (_options, pageState) => {
+    const mutationRevision = announcementMutationRevision
+    const result = await api.announcements.listPage({
+      page: pageState.current,
+      pageSize: pageState.pageSize
+    })
+    return mutationRevision === announcementMutationRevision ? result : { ...result, superseded: true }
+  },
   onError: (error) => {
     console.error(error)
     message.error('加载公告失败')
@@ -164,6 +181,13 @@ const form = reactive({
   level: 'info' as AnnouncementLevel,
   status: 'draft' as AnnouncementStatus
 })
+
+interface AnnouncementFormSnapshot {
+  title: string
+  content: string
+  level: AnnouncementLevel
+  status: AnnouncementStatus
+}
 
 const levelOptions = [
   { label: '重要', value: 'critical' },
@@ -263,14 +287,30 @@ function openCreate() {
   announcementDetailRequestGeneration += 1
   detailLoading.value = false
   editingId.value = undefined
+  editingRevision.value = undefined
+  editBaseline.value = undefined
   Object.assign(form, { title: '', content: '', level: 'info', status: 'draft' })
   modalOpen.value = true
 }
 
 async function openEdit(record: AnnouncementListItem) {
   const requestGeneration = ++announcementDetailRequestGeneration
-  detailLoading.value = true
   editingId.value = record.id
+  if (!record.contentTruncated) {
+    const snapshot = {
+      title: record.title,
+      content: record.contentPreview,
+      level: record.level,
+      status: record.status
+    }
+    Object.assign(form, snapshot)
+    editingRevision.value = record.revision
+    editBaseline.value = snapshot
+    detailLoading.value = false
+    modalOpen.value = true
+    return
+  }
+  detailLoading.value = true
   try {
     const detail = await api.announcements.detail(record.id)
     if (requestGeneration !== announcementDetailRequestGeneration || editingId.value !== record.id) return
@@ -280,10 +320,19 @@ async function openEdit(record: AnnouncementListItem) {
       level: detail.level,
       status: detail.status
     })
+    editingRevision.value = detail.revision
+    editBaseline.value = {
+      title: detail.title,
+      content: detail.content,
+      level: detail.level,
+      status: detail.status
+    }
     modalOpen.value = true
   } catch (error) {
     if (requestGeneration !== announcementDetailRequestGeneration || editingId.value !== record.id) return
     editingId.value = undefined
+    editingRevision.value = undefined
+    editBaseline.value = undefined
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载公告详情失败'))
   } finally {
@@ -297,8 +346,26 @@ function invalidatePendingAnnouncementDetail(id: string): void {
   if (editingId.value !== id) return
   announcementDetailRequestGeneration += 1
   editingId.value = undefined
+  editingRevision.value = undefined
+  editBaseline.value = undefined
   detailLoading.value = false
   modalOpen.value = false
+}
+
+function commitAnnouncementListMutation(result: AnnouncementListMutationState): void {
+  announcementMutationRevision += 1
+  const total = Math.max(0, pagination.total + result.totalDelta)
+  applyAnnouncementPageResult({
+    items: result.items,
+    total,
+    hasMore: pagination.current * pagination.pageSize < total,
+    page: pagination.current,
+    pageSize: pagination.pageSize
+  })
+}
+
+function announcementMutationWindow() {
+  return { currentPage: pagination.current, pageSize: pagination.pageSize }
 }
 
 const saveAnnouncement = submitAction('announcements.save', async () => {
@@ -309,58 +376,98 @@ const saveAnnouncement = submitAction('announcements.save', async () => {
     return
   }
   try {
-    const payload = { title, content, level: form.level, status: form.status }
     if (editingId.value) {
       const targetId = editingId.value
-      await api.announcements.update(targetId, payload)
+      const expectedRevision = editingRevision.value
+      const baseline = editBaseline.value
+      if (!expectedRevision || !baseline) {
+        message.error('公告版本信息缺失，请重新打开编辑')
+        return
+      }
+      const payload: AnnouncementPatchPayload = { expectedRevision }
+      if (title !== baseline.title) payload.title = title
+      if (content !== baseline.content) payload.content = content
+      if (form.level !== baseline.level) payload.level = form.level
+      if (form.status !== baseline.status) payload.status = form.status
+      if (Object.keys(payload).length === 1) {
+        invalidatePendingAnnouncementDetail(targetId)
+        return
+      }
+      const receipt = await api.announcements.update(targetId, payload)
+      commitAnnouncementListMutation(applyAnnouncementPatchMutation(
+        announcements.value,
+        receipt,
+        payload,
+        authState.currentUser.value?.displayName,
+        announcementMutationWindow()
+      ))
       invalidatePendingAnnouncementDetail(targetId)
       message.success('公告已更新')
     } else {
-      await api.announcements.create(payload)
+      const payload = { title, content, level: form.level, status: form.status }
+      const receipt = await api.announcements.create(payload)
+      commitAnnouncementListMutation(applyAnnouncementCreateMutation(
+        announcements.value,
+        receipt,
+        payload,
+        authState.currentUser.value?.displayName,
+        announcementMutationWindow()
+      ))
       message.success(form.status === 'published' ? '公告已发布' : '公告草稿已创建')
     }
     modalOpen.value = false
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存公告失败'))
+    if (isRevisionConflict(error)) {
+      const targetId = editingId.value
+      if (targetId) invalidatePendingAnnouncementDetail(targetId)
+      await loadData()
+    }
   } finally {
   }
 })
 
-async function publishAnnouncement(id: string) {
+async function publishAnnouncement(record: AnnouncementListItem) {
   try {
-    await api.announcements.publish(id)
-    invalidatePendingAnnouncementDetail(id)
+    const receipt = await api.announcements.publish(record.id, { expectedRevision: record.revision })
+    commitAnnouncementListMutation(applyAnnouncementPatchMutation(
+      announcements.value, receipt, { status: 'published' }, authState.currentUser.value?.displayName, announcementMutationWindow()
+    ))
+    invalidatePendingAnnouncementDetail(record.id)
     message.success('公告已发布')
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '发布公告失败'))
+    if (isRevisionConflict(error)) await loadData()
   }
 }
 
-async function unpublishAnnouncement(id: string) {
+async function unpublishAnnouncement(record: AnnouncementListItem) {
   try {
-    await api.announcements.unpublish(id)
-    invalidatePendingAnnouncementDetail(id)
+    const receipt = await api.announcements.unpublish(record.id, { expectedRevision: record.revision })
+    commitAnnouncementListMutation(applyAnnouncementPatchMutation(
+      announcements.value, receipt, { status: 'archived' }, authState.currentUser.value?.displayName, announcementMutationWindow()
+    ))
+    invalidatePendingAnnouncementDetail(record.id)
     message.success('公告已下线')
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '下线公告失败'))
+    if (isRevisionConflict(error)) await loadData()
   }
 }
 
-async function removeAnnouncement(id: string) {
+async function removeAnnouncement(record: AnnouncementListItem) {
   try {
-    await api.announcements.delete(id)
-    invalidatePendingAnnouncementDetail(id)
+    await api.announcements.delete(record.id, { expectedRevision: record.revision })
+    commitAnnouncementListMutation(applyAnnouncementDeleteMutation(announcements.value, record.id))
+    invalidatePendingAnnouncementDetail(record.id)
     message.success('公告已删除')
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除公告失败'))
+    if (isRevisionConflict(error)) await loadData()
   }
 }
 
@@ -370,16 +477,20 @@ function handleAction(key: string, record: AnnouncementListItem) {
     return
   }
   if (key === 'publish') {
-    void publishAnnouncement(record.id)
+    void publishAnnouncement(record)
     return
   }
   if (key === 'unpublish') {
-    void unpublishAnnouncement(record.id)
+    void unpublishAnnouncement(record)
     return
   }
   if (key === 'delete') {
-    void removeAnnouncement(record.id)
+    void removeAnnouncement(record)
   }
+}
+
+function isRevisionConflict(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 409
 }
 
 onMounted(loadData)

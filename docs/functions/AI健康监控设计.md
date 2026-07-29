@@ -58,12 +58,19 @@ error_message
 updated_at
 ```
 
-页面小时点：
+列表小时点只保留 Canvas 绘制所需字段：
 
 ```ts
 interface AiHealthHourPoint {
   statHour: string
   status: 'success' | 'failure' | 'unknown'
+}
+```
+
+用户点击非 `unknown` 小时槽后，详情接口才返回：
+
+```ts
+interface AiHealthHourDetail extends AiHealthHourPoint {
   lastObservedAt?: string
   statusCode?: number
   errorCode?: string
@@ -86,6 +93,15 @@ GET /api/stats/ai-health
 ```text
 GET /api/my-stats/ai-health
 ```
+
+单点小时详情：
+
+```text
+GET /api/stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
+GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
+```
+
+列表响应只返回当前页面渲染字段以及 `items / total / hasMore / page / pageSize` 分页信息，不返回时区、范围重复元数据、所有者内部字段或小时错误正文。详情读取先按当前管理 / 自助作用域确认账户可见性；不可见统一返回 `404`。`unknown` 槽位直接由前端展示“无记录”，不发详情请求。
 
 查询参数：
 
@@ -115,13 +131,15 @@ GET /api/my-stats/ai-health
 - 每个账户展示当前状态、最近检查、下次检查、三态数量和账户可用率。
 - 正常账户默认每 1 小时主动检查一次，并按账户 ID 在 0 到 10 分钟内稳定错峰；小时状态条是展示粒度，不要求所有账户在同一分钟执行。
 - 小时状态使用单个 Canvas 绘制，避免 31 天产生 744 个 DOM 节点。
-- 鼠标悬停显示简要信息；点击状态槽打开详情，展示检查时间、状态、HTTP 状态、错误码和错误原因。
+- 鼠标悬停只显示列表已有的小时与状态；点击非缺测状态槽后按需加载详情，展示检查时间、状态、HTTP 状态、错误码和错误原因。
+- 页面隐藏时不发起首屏请求，并取消仍在途的列表读取；页面不建立自动轮询，仅用户主动刷新。
 
 ## 7. 性能边界
 
 - 单次最多返回 50 个账户、每账户最多 744 个小时点。
 - 查询只读取当前页账户，不加载全部账户后前端分页。
 - 小时结果通过账户 ID 分块批量查询，禁止逐账户查询。
+- 列表小时查询只投影 `account_id / stat_hour / status / source_order`；检查时间、状态码和错误正文只允许单点详情查询读取。
 - 状态条使用 Canvas；页面不为小时点创建大量组件或监听器。
 - 原始使用记录继续由 stats worker 增量聚合，接口请求不做临时统计。
 

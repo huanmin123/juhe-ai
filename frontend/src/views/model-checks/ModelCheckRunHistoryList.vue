@@ -195,7 +195,7 @@ import type {
   ModelCheckLevel,
   ModelCheckModel,
   ModelCheckOption,
-  ModelCheckRunSummary,
+  ModelCheckRunListItem,
   ModelCheckStatus,
   ModelCheckTriggerKind,
   SystemAccountPrincipalSummary
@@ -236,7 +236,7 @@ const props = defineProps<{
   mobileHasMore: boolean
   mobileLoadingMore: boolean
   modelOptions: Array<{ label: string; value: string }>
-  runs: ModelCheckRunSummary[]
+  runs: ModelCheckRunListItem[]
   selectedHistoryTargetAccount?: AccountSelection
   submitting: boolean
   supportedModels: ModelCheckOption[]
@@ -245,7 +245,7 @@ const props = defineProps<{
   systemAccountOptionsLoading: boolean
   systemAccounts: SystemAccountPrincipalSummary[]
   tablePagination: Record<string, any>
-  targetDisplayName: (run: Pick<ModelCheckRunSummary, 'targetName' | 'targetId'>) => string
+  targetDisplayName: (run: Pick<ModelCheckRunListItem, 'targetName' | 'targetId'>) => string
 }>()
 
 const emit = defineEmits<{

@@ -59,29 +59,19 @@ export interface AccountUsageStatsSummaryResult {
 export interface AiPerformanceAccount {
   id: string
   name: string
-  status: AccountStatus
   providerCode: ProviderCode
-  systemAccountId: string
   systemAccountName?: string
-  ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   accessType?: ResourceAccessType
-  requestCountLast7d: number
-  selected: boolean
-  defaultVisible: boolean
 }
 
 export interface AiPerformanceAccountOption {
   id: string
   name: string
-  status: AccountStatus
   providerCode: ProviderCode
-  systemAccountId: string
   systemAccountName?: string
-  ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   accessType?: ResourceAccessType
-  requestCountLast7d: number
 }
 
 export interface AiPerformancePoint {
@@ -97,7 +87,6 @@ export interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
   providerCode: ProviderCode
-  systemAccountId: string
   points: AiPerformancePoint[]
 }
 
@@ -127,6 +116,9 @@ export type AiHealthHourStatus = 'success' | 'failure' | 'unknown'
 export interface AiHealthHourPoint {
   statHour: string
   status: AiHealthHourStatus
+}
+
+export interface AiHealthHourDetail extends AiHealthHourPoint {
   lastObservedAt?: string
   statusCode?: number
   errorCode?: string
@@ -138,11 +130,7 @@ export interface AiHealthAccountRow {
   name: string
   providerCode: ProviderCode
   status: AccountStatus
-  systemAccountId?: string
   systemAccountName?: string
-  ownerSystemAccountId?: string
-  ownerSystemAccountName?: string
-  accessType?: ResourceAccessType
   lastHealthCheckAt?: string
   lastHealthSuccessAt?: string
   nextHealthCheckAt?: string
@@ -155,10 +143,6 @@ export interface AiHealthAccountRow {
 }
 
 export interface AiHealthListResult {
-  timezone: string
-  rangeHours: number
-  startHour: string
-  endHour: string
   items: AiHealthAccountRow[]
   total: number
   hasMore: boolean
@@ -305,53 +289,38 @@ export interface SystemMetricsOverview {
   }>
 }
 
-export type SystemMetricsTrendOverview = Pick<SystemMetricsOverview,
-  'hourlyTrend' | 'processEventLoopLatestStatus' | 'processEventLoopPeakStatus' | 'processEventLoopTrend'
->
+export interface SystemMetricsTrendOverview {
+  hourlyTrend: Array<Pick<SystemMetricsOverview['hourlyTrend'][number],
+    'statHour' | 'cpuPercentAvg' | 'memoryUsedPercentAvg' | 'networkRxBytesPerSecondAvg' | 'networkTxBytesPerSecondAvg'
+  >>
+  processEventLoopLatestStatus: Array<Pick<SystemMetricsOverview['processEventLoopLatestStatus'][number],
+    'processRole' | 'sampleAvailable' | 'processPid' | 'sampledAt' | 'eventLoopLagMs' | 'processRssBytes' | 'processHeapUsedBytes' | 'processHeapTotalBytes'
+  >>
+  processEventLoopPeakStatus: Array<Pick<SystemMetricsOverview['processEventLoopPeakStatus'][number],
+    'processRole' | 'sampleAvailable' | 'processPid' | 'sampledAt' | 'eventLoopLagMs'
+  >>
+  processEventLoopTrend: Array<Pick<SystemMetricsOverview['processEventLoopTrend'][number],
+    'statMinute' | 'processRole' | 'eventLoopLagMsAvg' | 'eventLoopLagMsMax' | 'processRssBytesAvg' | 'processRssBytesMax'
+  >>
+}
 
 export interface SystemMetricsRuntimeOverview {
   runtimeSnapshotAvailable: boolean
-  runtimeSnapshotSource?: 'live'
-  runtimeSnapshotObservedAt?: string
-  runtimeSnapshotAgeMs?: number
   runtimeSnapshotStale?: boolean
   ingestWorkerSnapshotAvailable?: boolean
   statsWorkerSnapshotAvailable?: boolean
   opsWorkerSnapshotAvailable?: boolean
-  ingestWorker?: {
-    pid: number | null
-    ready: boolean
-    snapshotAvailable: boolean
-  } | null
-  statsWorker?: {
-    pid: number | null
-    ready: boolean
-    snapshotAvailable: boolean
-  } | null
-  opsWorker?: {
-    pid: number | null
-    ready: boolean
-    snapshotAvailable: boolean
-  } | null
   backgroundJobsAvailable: boolean
   backgroundJobs: Array<{
     name: string
     workerRole?: ProcessRole
     intervalMs: number
-    initialDelayMs?: number
-    stablePhaseOffsetMs?: number
-    scheduleMode?: 'fixedRate' | 'fixedDelay'
-    overlapPolicy?: 'skip' | 'coalesceOne'
-    timeoutMs?: number
     resourceLane?: string
     running: boolean
     pending?: boolean
     queuedForLane?: boolean
     timedOut?: boolean
-    overdueMs?: number
     nextRunAt?: string
-    runningSince?: string
-    lastScheduledAt?: string
     lastStartedAt?: string
     lastFinishedAt?: string
     lastSuccessAt?: string
@@ -359,13 +328,10 @@ export interface SystemMetricsRuntimeOverview {
     lastError?: string
     lastWarningAt?: string
     lastWarning?: string
-    lastSkipAt?: string
-    lastSkipReason?: string
     lastOutcome?: 'success' | 'partial' | 'failure' | 'timeout' | 'skipped'
     leaseState?: 'not_required' | 'acquired' | 'busy' | 'lost'
     lastDurationMs?: number
     maxDurationMs?: number
-    consecutiveFailureCount?: number
     runCount: number
     successCount: number
     failureCount: number
@@ -382,19 +348,29 @@ export interface SystemMetricsRuntimeOverview {
     }
     localQueue?: {
       name: string
+      queueType?: string
       queueLength?: number
       queueBytes?: number
       flushLastSuccessAt?: string
       flushLastError?: string
       completedCount?: number
       droppedCount?: number
-      droppedSuccessCount?: number
-      droppedFailureCount?: number
-      droppedOverflowCount?: number
-      droppedOversizeCount?: number
-      retainedOverflowWarningCount?: number
+      rejectedCount?: number
+      expiredCount?: number
+      timedOutCount?: number
+      failedCount?: number
       flushFailureCount?: number
-      [key: string]: unknown
+      oldestQueuedMs?: number
+      writerPoolQueueLength?: number
+      writerPoolActiveJobs?: number
+      writerPoolFailedJobs?: number
+      writerPoolRejectedJobs?: number
+      writerPoolOldestQueuedMs?: number
+      pendingWriteRequestCount?: number
+      pendingWriteOldestQueuedMs?: number
+      runningCount?: number
+      consumers?: number
+      nextRunAt?: string
     }
   }> | null
 }

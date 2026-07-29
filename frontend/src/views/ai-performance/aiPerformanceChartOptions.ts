@@ -63,7 +63,6 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },
     series: orderedSeries.map((series, index) => {
-      const account = accountById.get(series.accountId)
       const seriesName = displayName(series.accountId, series.accountName)
       const color = colors[index]
       return {
@@ -82,9 +81,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
           accountName: series.accountName,
           accountDisplayName: seriesName,
           statHour: point.statHour,
-          requestCount: point.requestCount,
-          defaultVisible: account?.defaultVisible,
-          selected: account?.selected
+          requestCount: point.requestCount
         }))
       }
     })
@@ -92,20 +89,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
 }
 
 export function orderedAiPerformanceSeries(overview: AiPerformanceOverview): AiPerformanceSeries[] {
-  const accountById = new Map(overview.accounts.map((account) => [account.id, account]))
-  const originalIndexById = new Map(overview.hourlySeries.map((series, index) => [series.accountId, index]))
-  return [...overview.hourlySeries].sort((left, right) => {
-    const leftRank = accountLegendRank(accountById.get(left.accountId))
-    const rightRank = accountLegendRank(accountById.get(right.accountId))
-    return leftRank - rightRank
-      || (originalIndexById.get(left.accountId) ?? 0) - (originalIndexById.get(right.accountId) ?? 0)
-  })
-}
-
-function accountLegendRank(account?: AiPerformanceOverview['accounts'][number]) {
-  if (account?.defaultVisible) return 0
-  if (account?.selected) return 1
-  return 2
+  return [...overview.hourlySeries]
 }
 
 interface TooltipPoint {

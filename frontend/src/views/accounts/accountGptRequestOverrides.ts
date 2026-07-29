@@ -116,7 +116,10 @@ export function isAccountGptReasoningEffortOverrideAvailable(value: AccountGptRe
 
 export function accountGptRequestOverridesForForm(
   _providerCode: string,
-  credentials: Record<string, unknown>
+  credentials: {
+    service_tier_override?: unknown
+    reasoning_effort_override?: unknown
+  }
 ): Pick<AccountGptRequestOverrideForm, 'serviceTierOverride' | 'reasoningEffortOverride'> {
   return {
     serviceTierOverride: normalizeCapabilityToken(credentials.service_tier_override),

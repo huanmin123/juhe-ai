@@ -117,17 +117,17 @@ import {
   type OpenAIAccountSecret,
   updateAccount,
   updateAccountAsync,
-  updateOpenAIOAuthCredentialsIfCurrent,
-  updateOpenAIOAuthCredentialsIfCurrentAsync,
   updateProxyTestState,
   updateProxyTestStateAsync,
   validateGatewayApiKey,
   validateGatewayApiKeyAsync
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync } from '../../storage/oauth-credential-rotation.repository.js'
 import {
   getRuntimeLogFacetsAsync,
   getRuntimeLogDetailAsync,
+  getRuntimeLogDetailDeltaAsync,
   listRuntimeLogsAsync
 } from '../../storage/runtime-logs.repository.js'
 import {
@@ -738,19 +738,23 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     }
     case 'update_openai_oauth_credentials': {
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const updated = await updateOpenAIOAuthCredentialsIfCurrentAsync(
-          operation.accountId,
-          operation.credentials,
-          operation.expectedConfigRevision,
-          internalDbServiceAccountAccess
-        )
-        if (updated) {
-          clearGatewayRuntimeCacheLocal()
-        }
-        return { updated: Boolean(updated) }
+      const account = await findOAuthCredentialRotationAccountAsync(operation.accountId, internalDbServiceAccountAccess)
+      if (!account || account.providerCode !== 'gpt' || account.type !== 'oauth') return { updated: false }
+      const updated = await rotateOAuthCredentialsAsync({
+        accountId: account.id,
+        expectedConfigRevision: operation.expectedConfigRevision,
+        expectedProviderCode: account.providerCode,
+        expectedAccountType: 'oauth',
+        expectedProviderProtocolProfileId: account.providerProtocolProfileId,
+        credentials: operation.credentials,
+        access: internalDbServiceAccountAccess
+      })
+      if (updated?.changed) clearGatewayRuntimeCacheLocal()
+      return {
+        updated: Boolean(updated),
+        configRevision: updated?.configRevision,
+        updatedAt: updated?.updatedAt
       }
-      return handleDbServiceOperationSync(operation)
     }
     case 'mark_openai_oauth_local_configuration_exception': {
       if (runtimeConfig.databaseDriver === 'postgres') {
@@ -1083,6 +1087,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return await listRuntimeLogsAsync(operation.options)
     case 'get_runtime_log_detail':
       return await getRuntimeLogDetailAsync(operation.id)
+    case 'get_runtime_log_detail_delta':
+      return await getRuntimeLogDetailDeltaAsync(operation.id)
     case 'get_runtime_log_facets':
       return await getRuntimeLogFacetsAsync()
     case 'record_client_ip_policy_hits':
@@ -1429,25 +1435,14 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
             groupAuthorizationId: operation.groupAuthorizationId,
             accounts: operation.accounts
           })
-    case 'update_openai_oauth_credentials': {
-      const updated = updateOpenAIOAuthCredentialsIfCurrent(
-        operation.accountId,
-        operation.credentials,
-        operation.expectedConfigRevision,
-        internalDbServiceAccountAccess
-      )
-      if (updated) {
-        clearGatewayRuntimeCacheLocal()
-      }
-      return { updated: Boolean(updated) }
-    }
+    case 'update_openai_oauth_credentials':
+    case 'find_openai_oauth_account_for_refresh':
+      throw new Error(`${operation.type} 必须通过异步窄仓储处理`)
     case 'mark_openai_oauth_local_configuration_exception': {
       const updated = markOpenAIOAuthLocalConfigurationExceptionIfCurrent(operation)
       if (updated) clearGatewayRuntimeCacheLocal()
       return { updated }
     }
-    case 'find_openai_oauth_account_for_refresh':
-      return findOpenAIOAuthAccountForRefresh(operation.accountId)
     case 'persist_openai_codex_usage_headers':
       return {
         persisted: persistOpenAICodexUsageHeaders(operation.accountId, operation.headers, operation.source)
@@ -1831,6 +1826,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return listRuntimeLogsAsync(operation.options)
     case 'get_runtime_log_detail':
       return getRuntimeLogDetailAsync(operation.id)
+    case 'get_runtime_log_detail_delta':
+      return getRuntimeLogDetailDeltaAsync(operation.id)
     case 'get_runtime_log_facets':
       return getRuntimeLogFacetsAsync()
     case 'cleanup_chat_retention':
@@ -2008,22 +2005,8 @@ function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined
   }
 }
 
-function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
-  const account = findAccountForTest(accountId)
-  if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
-    return undefined
-  }
-  const proxyResolution = account.proxyProfileId
-    ? resolveProxyUrlsForProfiles([account.proxyProfileId]).get(account.proxyProfileId)
-    : undefined
-  return {
-    ...account,
-    ...openAIOAuthRefreshProxyResolutionFields(account.proxyProfileId, proxyResolution)
-  }
-}
-
 async function findOpenAIOAuthAccountForRefreshAsync(accountId: string): Promise<unknown> {
-  const account = await findAccountForTestAsync(accountId)
+  const account = await findOAuthCredentialRotationAccountAsync(accountId, internalDbServiceAccountAccess)
   if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
     return undefined
   }

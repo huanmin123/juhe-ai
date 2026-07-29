@@ -1,6 +1,9 @@
 import type {
   AuditErrorGroupSummary,
   AuditLogAttemptSummary,
+  AuditLogDetailSupplement,
+  AuditLogDetailAttemptSupplement,
+  AuditLogDetailPayloadSupplement,
   AuditLogListItem,
   AuditLogPayloadSummary,
   AuditLogSummary,
@@ -112,6 +115,53 @@ export function auditLogListItemFromRow(row: AuditLogRow, systemAccountNames: Ma
     durationMs: numberValue(row.duration_ms),
     httpDurationMs: numberValue(row.http_duration_ms),
     createdAt: String(row.created_at)
+  }
+}
+
+export function auditLogDetailSupplementFromRow(row: AuditLogRow): Omit<AuditLogDetailSupplement, 'attempts' | 'payloads'> {
+  return {
+    queryString: optionalString(row.query_string),
+    errorMessage: optionalString(row.error_message),
+    sampleBucket: Number(row.sample_bucket ?? 0),
+    sampleReason: String(row.sample_reason),
+    startedAt: String(row.started_at),
+    endedAt: String(row.ended_at),
+    httpCompletedAt: optionalString(row.http_completed_at),
+    conversationKey: optionalString(row.conversation_key)
+  }
+}
+
+export function auditLogDetailAttemptSupplementFromRow(
+  row: AuditLogRow,
+  accountNames: Map<string, string>
+): AuditLogDetailAttemptSupplement {
+  const accountId = optionalString(row.account_id)
+  return {
+    id: String(row.id),
+    attemptIndex: Number(row.attempt_index ?? 0),
+    accountId,
+    accountName: accountId ? accountNames.get(accountId) : undefined,
+    upstreamUrl: sanitizeUrlCredentialsForLog(String(row.upstream_url)) ?? String(row.upstream_url),
+    upstreamStatusCode: numberValue(row.upstream_status_code),
+    success: row.success === 1,
+    errorMessage: optionalString(row.error_message),
+    startedAt: String(row.started_at),
+    endedAt: optionalString(row.ended_at),
+    durationMs: numberValue(row.duration_ms)
+  }
+}
+
+export function auditLogDetailPayloadSupplementFromRow(row: AuditLogRow): AuditLogDetailPayloadSupplement {
+  return {
+    id: String(row.id),
+    attemptId: optionalString(row.attempt_id),
+    partType: String(row.part_type) as AuditPayloadPartType,
+    sequenceIndex: Number(row.sequence_index ?? 0),
+    sizeBytes: Number(row.raw_size_bytes ?? 0),
+    captureStatus: String(row.capture_status ?? 'complete') as AuditPayloadCaptureStatus,
+    createdAt: String(row.created_at),
+    hasHeaders: Boolean(optionalString(row.headers_blob_id)),
+    hasBody: Boolean(optionalString(row.body_blob_id))
   }
 }
 

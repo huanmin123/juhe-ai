@@ -1,4 +1,4 @@
-import type { SystemMetricsOverview } from '@/types/domain'
+import type { SystemMetricsTrendOverview } from '@/types/domain'
 
 export interface ProcessEventLoopRow {
   processRole: string
@@ -45,7 +45,7 @@ function processEventLoopRoleSortKey(role: string): string {
   return `${String(baseOrder).padStart(3, '0')}:${role}`
 }
 
-export function buildProcessEventLoopRows(metrics?: SystemMetricsOverview): ProcessEventLoopRow[] {
+export function buildProcessEventLoopRows(metrics?: SystemMetricsTrendOverview): ProcessEventLoopRow[] {
   const latestByRole = new Map((metrics?.processEventLoopLatestStatus ?? []).map((row) => [row.processRole, row]))
   const peakByRole = new Map((metrics?.processEventLoopPeakStatus ?? []).map((row) => [row.processRole, row]))
   const roles = [...new Set([...latestByRole.keys(), ...peakByRole.keys()])]

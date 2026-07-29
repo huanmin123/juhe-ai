@@ -2,7 +2,7 @@ import type { EChartsOption } from 'echarts'
 
 import { providerDisplayName } from '@/shared/providerDisplay'
 import { formatDateLabel, formatDateShortLabel } from '@/shared/dateRange'
-import type { SystemMetricsOverview, UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
+import type { SystemMetricsTrendOverview, UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import {
   axisNumberLabel,
   formatBytesMiB,
@@ -227,7 +227,7 @@ export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsO
   }
 }
 
-export function buildSystemMetricsOption(trend: SystemMetricsOverview['hourlyTrend']): EChartsOption {
+export function buildSystemMetricsOption(trend: SystemMetricsTrendOverview['hourlyTrend']): EChartsOption {
   return {
     color: ['#1677ff', '#52c41a', '#13c2c2', '#722ed1'],
     tooltip: {
@@ -304,7 +304,7 @@ export function buildSystemMetricsOption(trend: SystemMetricsOverview['hourlyTre
   }
 }
 
-export function buildProcessEventLoopOption(trend: SystemMetricsOverview['processEventLoopTrend']): EChartsOption {
+export function buildProcessEventLoopOption(trend: SystemMetricsTrendOverview['processEventLoopTrend']): EChartsOption {
   const roles = processEventLoopRoles(trend)
   return {
     color: ['#faad14', '#eb2f96', '#13c2c2', '#2f54eb', '#52c41a'],
@@ -345,7 +345,7 @@ export function buildProcessEventLoopOption(trend: SystemMetricsOverview['proces
   }
 }
 
-export function buildProcessMemoryOption(trend: SystemMetricsOverview['processEventLoopTrend']): EChartsOption {
+export function buildProcessMemoryOption(trend: SystemMetricsTrendOverview['processEventLoopTrend']): EChartsOption {
   const roles = processEventLoopRoles(trend).filter((role) => trend.some((item) => item.processRole === role && processMemoryValue(item) !== null))
   const buckets = processEventLoopBuckets(trend)
   return {
@@ -478,30 +478,30 @@ function processMemoryTooltip(params: unknown) {
   return lines.join('<br/>')
 }
 
-function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
+function processEventLoopRoles(trend: SystemMetricsTrendOverview['processEventLoopTrend']) {
   return [...new Set(trend.map((item) => item.processRole))].sort()
 }
 
-function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopTrend']) {
+function processEventLoopBuckets(trend: SystemMetricsTrendOverview['processEventLoopTrend']) {
   return [...new Set(trend.map(processEventLoopBucketKey))].sort()
 }
 
-function processEventLoopValue(trend: SystemMetricsOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
+function processEventLoopValue(trend: SystemMetricsTrendOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
   const row = trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)
   return row?.eventLoopLagMsMax ?? row?.eventLoopLagMsAvg ?? null
 }
 
-function processMemoryBucketValue(trend: SystemMetricsOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
+function processMemoryBucketValue(trend: SystemMetricsTrendOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
   const row = trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)
   return row ? processMemoryValue(row) : null
 }
 
-function processMemoryValue(row: SystemMetricsOverview['processEventLoopTrend'][number]) {
+function processMemoryValue(row: SystemMetricsTrendOverview['processEventLoopTrend'][number]) {
   return row.processRssBytesMax ?? row.processRssBytesAvg ?? null
 }
 
-function processEventLoopBucketKey(row: SystemMetricsOverview['processEventLoopTrend'][number]) {
-  return row.statMinute || row.statHour
+function processEventLoopBucketKey(row: SystemMetricsTrendOverview['processEventLoopTrend'][number]) {
+  return row.statMinute
 }
 
 export function processRoleLabel(processRole: string) {

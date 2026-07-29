@@ -457,7 +457,7 @@ try {
   const usageRecordsRoutesSource = readFileSync(resolve('src/modules/usage-records/usage-records.routes.ts'), 'utf8')
   assert.match(
     usageRecordsRoutesSource,
-    /const records = await listUsageRecordsAsync\(access, options\)/,
+    /res\.json\(ok\(await listUsageRecordsAsync\(access, options\)\)\)/,
     '使用记录列表路由必须直接读取最新仓储事实'
   )
   assert.doesNotMatch(

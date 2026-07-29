@@ -11,7 +11,7 @@
               :active-only="false"
               include-all
               allow-clear
-              :disabled="submitting"
+              :disabled="submitting || !targetId"
               :filter-option="false"
               :loading="systemAccountOptionsLoading"
               placeholder="请选择系统账户"
@@ -44,9 +44,10 @@
             <a-select
               :value="model"
               :options="modelOptions"
-              :loading="optionsLoading"
+              :loading="modelOptionsLoading"
               :disabled="submitting"
               placeholder="模型"
+              @dropdown-visible-change="emit('model-dropdown-visible-change', $event)"
               @update:value="handleModelValueUpdate"
             />
           </a-form-item>
@@ -135,6 +136,7 @@ defineProps<{
   isManagementView: boolean
   model: ModelCheckModel
   modelOptions: Array<{ label: string; value: string }>
+  modelOptionsLoading: boolean
   optionsLoading: boolean
   qualityPolicy: ModelQualityPolicy
   qualityActionsDisabled: boolean
@@ -161,6 +163,7 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'comparison-dropdown-visible-change', open: boolean): void
   (event: 'comparison-search', value: string): void
+  (event: 'model-dropdown-visible-change', open: boolean): void
   (event: 'refresh', force?: boolean): void
   (event: 'reset'): void
   (event: 'quality-policy-open'): void

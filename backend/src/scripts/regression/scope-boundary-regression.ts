@@ -292,6 +292,7 @@ interface ResourceAuthorizationSummary {
   granteeSystemAccountId?: string
   granteeTeamId?: string
   status: string
+  updatedAt: string
   permissions?: {
     canEdit: boolean
     canAuthorize: boolean
@@ -696,6 +697,8 @@ async function main(): Promise<void> {
     assert(userAAuthorizationPage1.hasMore === true && userAAuthorizationPage1.total >= 2, '用户 A 我的授权分页应提示还有更多')
     const userAInboundAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=inbound', seed.userACookie)).items
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权入站筛选没有返回授权给我的记录')
+    const inboundAuthorizationVersion = userAInboundAuthorizations.find((authorization) => authorization.id === seed.inboundAuthorizationId)?.updatedAt
+    assert(inboundAuthorizationVersion, '入站授权权限负向测试必须携带列表 CAS 版本')
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权入站筛选没有返回团队授权记录')
     assert(userAInboundAuthorizations.every((authorization) => authorization.granteeSystemAccountId === seed.userAId || authorization.granteeTeamId === seed.teamSharedId), '用户 A 我的授权入站筛选返回了非当前用户被授权记录')
     const userAOutboundAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=outbound', seed.userACookie)).items
@@ -708,8 +711,8 @@ async function main(): Promise<void> {
     assert(userATeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权团队来源筛选没有返回团队授权记录')
     assert(userATeamAuthorizations.every((authorization) => authorization.granteeTeamId === seed.teamSharedId), '用户 A 我的授权团队来源筛选返回了非目标团队授权')
     await getEnvelope<ResourceAuthorizationSummary>(baseUrl, `/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}/usage?systemAccountId=${seed.userBId}`, seed.userACookie)
-    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'PATCH', { status: 'paused' }, '入站授权不应允许普通用户暂停')
-    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'DELETE', { sourceType: 'manual' }, '入站授权不应允许普通用户回收')
+    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'PATCH', { status: 'paused', expectedUpdatedAt: inboundAuthorizationVersion }, '入站授权不应允许普通用户暂停')
+    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'DELETE', { expectedUpdatedAt: inboundAuthorizationVersion }, '入站授权不应允许普通用户回收')
     const adminAuthorization = await getEnvelope<ResourceAuthorizationSummary>(baseUrl, `/__aisys__/api/authorizations/${seed.inboundAuthorizationId}/usage`, seed.adminCookie)
     assert(adminAuthorization.permissions?.canEdit === true, '管理员统一授权管理应保留管理能力')
     const adminTeamAuthorizations = (await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&sourceType=team`, seed.adminCookie)).items

@@ -14,7 +14,9 @@ for (const field of ['activeMemberCount', 'createdBy']) {
 
 assert.match(repository, /SystemTeamListItem/, '系统团队列表必须使用独立轻量 DTO')
 assert.match(routes, /findSystemTeamDetailAsync/, '系统团队详情必须使用按需详情读取，不复用列表摘要')
-assert.match(routes, /compactSystemTeamResult/, '系统团队写接口必须投影轻量响应，避免内部摘要回流前端')
+assert.match(routes, /listSystemTeamMembersAsync/, '系统团队成员必须通过独立按需接口读取')
+assert.match(routes, /listSystemTeamMemberHistoryAsync/, '系统团队历史成员必须通过二级按需接口读取')
+assert.doesNotMatch(routes, /compactSystemTeamResult|findSystemTeamSummaryAsync/, '系统团队写接口不得为响应或日志装配完整成员摘要')
 
 const memberMapper = functionBody(repository, 'systemTeamMemberDetailFromRow')
 assert.match(memberMapper, /id:/, '成员详情必须返回成员 ID')
@@ -24,6 +26,13 @@ assert.match(memberMapper, /joinedAt:/, '成员详情必须返回加入时间')
 for (const field of ['teamId', 'username', 'memberRole', 'status', 'removedAt', 'createdAt', 'updatedAt']) {
   assert.doesNotMatch(memberMapper, new RegExp(`\\b${field}\\b`), `成员详情不得返回未使用字段 ${field}`)
 }
+
+const detailMapper = functionBody(repository, 'systemTeamDetailFromRow')
+assert.doesNotMatch(detailMapper, /members/, '系统团队基础详情不得提前返回成员集合')
+assert.match(detailMapper, /updatedAt/, '系统团队基础详情必须返回成员写 CAS 版本')
+assert.match(repository, /system_team_members\.status = 'removed'/, '历史成员分页只能读取已移除成员')
+assert.match(repository, /ORDER BY system_team_members\.joined_at DESC, system_team_members\.id DESC/, '历史成员分页必须使用稳定倒序')
+assert.match(repository, /Math\.min\(maxSystemTeamListPageSize/, '历史成员页大小必须受固定上限约束')
 
 console.log('系统团队轻量列表与成员详情契约回归通过')
 

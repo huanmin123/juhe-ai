@@ -61,7 +61,7 @@ try {
     limit: 10
   })
   assert.deepEqual(options.map((item) => item.id), [account.id], 'PG AI 性能账号选项应按名称前缀命中临时账号')
-  assert.equal(options[0]?.requestCountLast7d, 42, 'PG AI 性能账号选项应读取 TopN 请求数')
+  assert.equal('requestCountLast7d' in (options[0] ?? {}), false, 'PG AI 性能账号选项不得返回页面未渲染的 TopN 请求数')
 
   const selectedOptions = await listAiPerformanceAccountOptionsAsync(access, {
     keyword: 'not-found',

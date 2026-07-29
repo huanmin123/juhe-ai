@@ -224,12 +224,13 @@ try {
       marker
     }
   })
-  assert.equal(finished?.status, 'completed', 'PG model check run should finish')
-  assert.equal(finished?.level, 'likely', 'PG model check run level should update')
+  assert.equal(finished.applied && finished.status, 'completed', 'PG model check run should finish')
+  assert.deepEqual(Object.keys(finished).sort(), ['applied', 'finishedAt', 'id', 'status', 'updatedAt'], 'PG 终态写入只应返回最小 IPC 回执')
 
   const detail = await getModelCheckRunDetailAsync(run.id, access)
   assert.ok(detail, 'PG model check run detail should be readable')
   assert.equal(detail.status, 'completed', 'PG model check detail should expose final status')
+  assert.equal(detail.level, 'likely', 'PG model check run level should update')
   assert.equal(detail.checks.length, 2, 'PG model check detail should include checks')
   assert.equal(detail.systemAccountId, systemAccountId, 'admin filtered access should include system account fields')
 

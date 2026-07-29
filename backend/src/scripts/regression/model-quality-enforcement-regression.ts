@@ -233,11 +233,20 @@ try {
     message: '旧计划策略不得处罚'
   })
   assert.equal(staleScheduledEnforcement.result, 'stale')
-  const modelCheckAccountOptions = accountOptionsRepository.listModelCheckAccountOptions(access, { purpose: 'run', limit: 1 })
-  assert.deepEqual(modelCheckAccountOptions.find((item) => item.id === account.id)?.modelCheckModels, ['gpt-5.5'])
-  assert.equal(modelCheckAccountOptions.some((item) => item.id === accountWithoutRunnableModel.id), false, '运行账户选项不得返回没有任何可检测模型的账户')
+  const modelCheckAccountOptions = accountOptionsRepository.listModelCheckAccountOptions(access, { purpose: 'run', limit: 20 })
+  assert.equal(modelCheckAccountOptions.every((item) => item.modelCheckModels === undefined), true, '运行账户列表不得批量返回或预取模型关系')
+  const selectedModelCheckAccount = accountOptionsRepository.listModelCheckAccountOptions(access, { purpose: 'run', accountId: account.id, limit: 1 })
+  assert.deepEqual(selectedModelCheckAccount.find((item) => item.id === account.id)?.modelCheckModels, ['gpt-5.5'], '模型下拉展开后才按 accountId 定点解析模型')
+  const selectedAccountWithoutRunnableModel = accountOptionsRepository.listModelCheckAccountOptions(access, { purpose: 'run', accountId: accountWithoutRunnableModel.id, limit: 1 })
+  assert.deepEqual(selectedAccountWithoutRunnableModel.find((item) => item.id === accountWithoutRunnableModel.id)?.modelCheckModels, [], '定点模型解析必须保留空模型事实')
   const modelCheckHistoryAccountOptions = accountOptionsRepository.listModelCheckAccountOptions(access, { purpose: 'history', limit: 20 })
-  assert.deepEqual(modelCheckHistoryAccountOptions.find((item) => item.id === accountWithoutRunnableModel.id)?.modelCheckModels, [], '历史筛选仍应保留没有当前可运行模型的旧账户')
+  assert.equal(modelCheckHistoryAccountOptions.find((item) => item.id === accountWithoutRunnableModel.id)?.modelCheckModels, undefined, '历史筛选不得读取模型关系')
+  const scheduleAccountOptions = accountOptionsRepository.listModelCheckAccountOptions(access, { purpose: 'schedule', limit: 20 })
+  assert.equal(scheduleAccountOptions.every((item) => item.modelCheckModels === undefined), true, '计划账户列表不得批量读取模型关系')
+  assert.equal(scheduleAccountOptions.every((item) => {
+    const row = business.prepare('SELECT system_account_id, authorization_instance_authorization_id FROM accounts WHERE id = ?').get(item.id) as { system_account_id: string; authorization_instance_authorization_id: string | null }
+    return row.system_account_id === 'sys_admin' && row.authorization_instance_authorization_id === null
+  }), true, '计划账户候选必须只包含当前 owner 的自有账户')
 
   const row = business.prepare('SELECT config_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number }
   const enforcement = await qualityRepository.applyModelQualityEnforcementAsync({

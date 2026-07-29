@@ -61,6 +61,7 @@ interface SystemAccountSummary {
   status: 'active' | 'disabled'
   createdAt?: unknown
   updatedAt?: unknown
+  editVersion?: string
 }
 
 interface SystemAccountListResult {
@@ -75,10 +76,12 @@ interface SeedState {
   activeUserId: string
   adminCookie: string
   adminId: string
+  adminVersion: string
   disabledUserId: string
   middleNameUserId: string
   prefixUserId: string
   promotionTargetId: string
+  promotionTargetVersion: string
   readonlyAdminCookie: string
   readonlyAdminId: string
   userCookie: string
@@ -149,11 +152,13 @@ try {
     for (const account of readonlyAdminList.items) {
       assert.equal(Object.prototype.hasOwnProperty.call(account, 'createdAt'), false, '系统账户列表不应返回 createdAt')
       assert.equal(Object.prototype.hasOwnProperty.call(account, 'updatedAt'), false, '系统账户列表不应返回 updatedAt')
+      assert.equal(typeof account.editVersion, 'string', '系统账户列表应仅将 updated_at 暴露为编辑 CAS 版本')
     }
     const listProjectionSql = systemAccountOptionSqls.find((sql) => /\bLIMIT\s+\?\s+OFFSET\s+\?/i.test(sql) && /\bmust_change_password\b/i.test(sql))
     assert(listProjectionSql, '系统账户列表应执行轻量分页查询')
     const listSelectProjection = listProjectionSql.match(/\bSELECT\b([\s\S]*?)\bFROM\b/i)?.[1] ?? ''
-    assert.doesNotMatch(listSelectProjection, /\bcreated_at\b|\bupdated_at\b/i, '系统账户列表 SQL 不应读取未展示时间字段')
+    assert.doesNotMatch(listSelectProjection, /\bcreated_at\b/i, '系统账户列表 SQL 不应读取未展示的 created_at')
+    assert.match(listSelectProjection, /\bupdated_at\b/i, '系统账户列表 SQL 应读取 CAS 所需的 updated_at')
     const readonlyAdminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options?limit=10', seed.readonlyAdminCookie)
     assert(readonlyAdminOptions.some((account) => account.id === seed.activeUserId), '普通管理员应能查看系统账户选项')
     await assertJsonStatus(baseUrl, '/__aisys__/api/system-accounts', seed.readonlyAdminCookie, 'POST', {
@@ -171,12 +176,16 @@ try {
     await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.activeUserId}`, seed.readonlyAdminCookie, 'PATCH', {
       displayName: '普通管理员禁止更新'
     }, 403, '普通管理员不应更新系统账户')
-    const promoted = await patchEnvelope<SystemAccountSummary>(baseUrl, `/__aisys__/api/system-accounts/${seed.promotionTargetId}`, seed.adminCookie, { role: 'admin' })
+    const promoted = await patchEnvelope<SystemAccountSummary>(baseUrl, `/__aisys__/api/system-accounts/${seed.promotionTargetId}`, seed.adminCookie, {
+      expectedUpdatedAt: seed.promotionTargetVersion,
+      role: 'admin'
+    })
     assert.equal(promoted.role, 'admin', '超级管理员应能把普通用户升级为管理员')
     await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.promotionTargetId}`, seed.adminCookie, 'PATCH', {
       role: 'super_admin'
     }, 400, '系统账户接口不应把用户升级为超级管理员')
     await assertJsonStatus(baseUrl, `/__aisys__/api/system-accounts/${seed.adminId}`, seed.adminCookie, 'PATCH', {
+      expectedUpdatedAt: seed.adminVersion,
       role: 'admin'
     }, 409, '不能移除最后一个启用的超级管理员')
 
@@ -205,7 +214,8 @@ try {
 function seedData(): SeedState {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
-  repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
+  const currentAdmin = repositories.updateSystemAccount(admin.id, { mustChangePassword: false })
+  assert(currentAdmin, '默认管理员更新失败')
   const activeUser = repositories.createSystemAccount({
     username: 'system_account_options_user',
     displayName: '系统账户选项用户',
@@ -274,10 +284,12 @@ function seedData(): SeedState {
     activeUserId: activeUser.id,
     adminCookie: sessionCookie(admin.id),
     adminId: admin.id,
+    adminVersion: currentAdmin.updatedAt,
     disabledUserId: disabledUser.id,
     middleNameUserId: middleNameUser.id,
     prefixUserId: prefixUser.id,
     promotionTargetId: promotionTarget.id,
+    promotionTargetVersion: promotionTarget.updatedAt,
     readonlyAdminCookie: sessionCookie(readonlyAdmin.id),
     readonlyAdminId: readonlyAdmin.id,
     userCookie: sessionCookie(activeUser.id),

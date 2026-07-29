@@ -11,7 +11,7 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceBaseResult, AiPerformanceOverview, AiPerformanceSeriesResult } from '@/types/domain'
+import type { AiPerformanceAccountOption, AiPerformanceBaseResult, AiPerformanceOverview, AiPerformanceSeriesResult } from '@/types/domain'
 import { chartColors, orderedAiPerformanceSeries } from './aiPerformanceChartOptions'
 
 type AiPerformanceAccountRow = AiPerformanceOverview['accounts'][number]
@@ -41,10 +41,9 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   let loadingAccountOptionsPromise: Promise<void> | undefined
 
   const responseAccounts = computed(() => dedupePerformanceAccounts([
-    ...(options.base.value?.accounts ?? []).map((account) => ({ ...account, defaultVisible: true, selected: false })),
+    ...(options.base.value?.accounts ?? []),
     ...(options.series.value?.accounts ?? [])
       .filter((account) => addedAccountIds.value.includes(account.id))
-      .map((account) => ({ ...account, defaultVisible: false, selected: true }))
   ]))
   const responseAccountById = computed(() => new Map(responseAccounts.value.map((account) => [account.id, account])))
   const accountOptionById = computed(() => new Map(accounts.value.map((account) => [account.id, account])))
@@ -116,12 +115,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
         account: account ?? {
           id: series.accountId,
           name: series.accountName,
-          status: 'active' as AccountStatus,
-          providerCode: series.providerCode,
-          systemAccountId: series.systemAccountId,
-          requestCountLast7d: 0,
-          selected: false,
-          defaultVisible: false
+          providerCode: series.providerCode
         },
         label,
         color: chartColors[index % chartColors.length],
@@ -291,16 +285,10 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     return {
       id,
       name,
-      status: option?.status ?? 'active',
       providerCode: option.providerCode,
-      systemAccountId: option?.systemAccountId ?? options.selectedSystemAccountId() ?? '',
       systemAccountName: option?.systemAccountName,
-      ownerSystemAccountId: option?.ownerSystemAccountId,
       ownerSystemAccountName: option?.ownerSystemAccountName ?? selection?.ownerSystemAccountName,
-      accessType: option?.accessType ?? selection?.accessType,
-      requestCountLast7d: option?.requestCountLast7d ?? 0,
-      selected: true,
-      defaultVisible: false
+      accessType: option?.accessType ?? selection?.accessType
     }
   }
 
@@ -329,7 +317,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
       accountId: id,
       accountName: account.name,
       providerCode: account.providerCode,
-      systemAccountId: account.systemAccountId,
       points: []
     }
   }

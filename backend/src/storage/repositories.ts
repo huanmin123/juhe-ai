@@ -1,5 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
 
+import { AccountConfigRevisionConflictError } from './account-config-revision.js'
+export { AccountConfigRevisionConflictError } from './account-config-revision.js'
+
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsListResult, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { resolveHealthCheckEndpointMode } from '../domain/account-health-check-endpoint-mode.js'
@@ -191,15 +194,19 @@ export {
   returnGroupAuthorizationForGrantee,
   returnGroupAuthorizationForGranteeAsync,
   returnResourceAuthorizationForGrantee,
-  returnResourceAuthorizationForGranteeAsync
+  returnResourceAuthorizationForGranteeAsync,
+  returnResourceAuthorizationForGranteeMutationAsync
 } from './resource-authorization-return.repository.js'
 export {
   createResourceAuthorization,
   createResourceAuthorizationAsync,
+  createResourceAuthorizationMutation,
+  createResourceAuthorizationMutationAsync,
   expireDueResourceAuthorizationsAsync,
   patchResourceAuthorizationAsync,
   revokeResourceAuthorization,
   revokeResourceAuthorizationAsync,
+  revokeResourceAuthorizationMutationAsync,
   updateResourceAuthorizationAsync,
   updateResourceAuthorization
 } from './resource-authorization-write.repository.js'
@@ -219,7 +226,7 @@ import {
 } from './repository-lookups.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountRow, ResourceAuthorizationSourceRow } from './repository-row-types.js'
-export type { SystemTeamListOptions } from './system-team.repository.js'
+export type { SystemTeamListOptions, SystemTeamMemberHistoryOptions } from './system-team.repository.js'
 export {
   addSystemTeamMembers,
   addSystemTeamMembersAsync,
@@ -229,6 +236,10 @@ export {
   findSystemTeamSummaryAsync,
   findSystemTeamDetail,
   findSystemTeamDetailAsync,
+  listSystemTeamMembers,
+  listSystemTeamMembersAsync,
+  listSystemTeamMemberHistory,
+  listSystemTeamMemberHistoryAsync,
   listSystemTeams,
   listSystemTeamsAsync,
   listSystemTeamsPage,
@@ -448,6 +459,8 @@ export {
   deleteAnnouncementAsync,
   findAnnouncement,
   findAnnouncementAsync,
+  findAnnouncementEditDetail,
+  findAnnouncementEditDetailAsync,
   findPublicAnnouncement,
   findPublicAnnouncementAsync,
   listAnnouncements,
@@ -468,6 +481,19 @@ export {
   type AnnouncementInput,
   type AnnouncementListResult
 } from './announcements.repository.js'
+export {
+  AnnouncementRevisionConflictError,
+  createAnnouncementForManagementAsync,
+  deleteAnnouncementForManagementAsync,
+  patchAnnouncementForManagementAsync,
+  publishAnnouncementForManagementAsync,
+  unpublishAnnouncementForManagementAsync,
+  type AnnouncementManagementCreateInput,
+  type AnnouncementManagementMutationOutcome,
+  type AnnouncementManagementPatchInput,
+  type AnnouncementMutationReceipt,
+  type AnnouncementMutationState
+} from './announcement-management-write.repository.js'
 export {
   cleanupDeletedAccountDetachedStats,
   cleanupDeletedAccountRelatedRecordData,
@@ -792,6 +818,8 @@ export {
   createAuditLogsBatchAsync,
   getAuditLogDetail,
   getAuditLogDetailAsync,
+  getAuditLogDetailSupplement,
+  getAuditLogDetailSupplementAsync,
   getAuditLogPayload,
   listAuditErrorGroupEventsAsync,
   listAuditErrorGroupEvents,
@@ -807,6 +835,9 @@ export {
   type AuditLogAttemptInput,
   type AuditLogAttemptSummary,
   type AuditLogDetail,
+  type AuditLogDetailAttemptSupplement,
+  type AuditLogDetailPayloadSupplement,
+  type AuditLogDetailSupplement,
   type AuditLogInput,
   type AuditLogListResult,
   type AuditLogListOptions,
@@ -830,6 +861,10 @@ export {
   getOperationLogDetailAsync,
   getOperationLogDetailForViewer,
   getOperationLogDetailForViewerAsync,
+  getOperationLogDetailSupplement,
+  getOperationLogDetailSupplementAsync,
+  getOperationLogDetailSupplementForViewer,
+  getOperationLogDetailSupplementForViewerAsync,
   listOperationLogs,
   listOperationLogsAsync,
   listOperationLogsForViewer,
@@ -837,6 +872,9 @@ export {
   type OperationLogChange,
   type OperationLogDetail,
   type OperationLogDetailLevel,
+  type OperationLogDetailSupplement,
+  type OperationLogDetailTarget,
+  type OperationLogDetailViewer,
   type OperationLogInput,
   type OperationLogListOptions,
   type OperationLogListResult,
@@ -858,10 +896,13 @@ export {
   createPublicApiLogsBatchAsync,
   getPublicApiLogDetail,
   getPublicApiLogDetailAsync,
+  getPublicApiLogDetailSupplement,
+  getPublicApiLogDetailSupplementAsync,
   listPublicApiLogs,
   listPublicApiLogsAsync,
   type PublicApiLogCaptureStatus,
   type PublicApiLogDetail,
+  type PublicApiLogDetailSupplement,
   type PublicApiLogInput,
   type PublicApiLogListOptions,
   type PublicApiLogListResult,
@@ -876,12 +917,15 @@ export {
   getRuntimeLogFacets,
   getRuntimeLogFacetsAsync,
   getRuntimeLogDetailAsync,
+  getRuntimeLogDetailDeltaAsync,
   listRuntimeLogs,
   listRuntimeLogsAsync,
   runtimeLogIndexRetentionDays,
   type RuntimeLogDetail,
+  type RuntimeLogDetailDelta,
   type RuntimeLogFacets,
   type RuntimeLogIndexInput,
+  type RuntimeLogListItem,
   type RuntimeLogLevel,
   type RuntimeLogListResult,
   type RuntimeLogListOptions,
@@ -2868,17 +2912,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
 export interface UpdateAccountAsyncOptions {
   expectedConfigRevision?: number
-}
-
-export class AccountConfigRevisionConflictError extends Error {
-  constructor(
-    readonly accountId: string,
-    readonly expectedConfigRevision: number,
-    readonly actualConfigRevision?: number
-  ) {
-    super(`账户配置已发生并发变更，请重试：${accountId}`)
-    this.name = 'AccountConfigRevisionConflictError'
-  }
 }
 
 interface PreparedOpenAIOAuthCredentialRefresh {

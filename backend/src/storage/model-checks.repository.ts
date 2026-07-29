@@ -4,6 +4,7 @@ import type {
   ModelCheckLevel,
   ModelCheckProfile,
   ModelCheckRunDetail,
+  ModelCheckRunListItem,
   ModelCheckRunListResult,
   ModelCheckRunStatus,
   ModelCheckRunSummary,
@@ -62,13 +63,24 @@ export interface ModelCheckRunFinishInput {
   level: ModelCheckLevel
   score: number
   maxScore?: number
-  status: ModelCheckRunStatus
+  status: Exclude<ModelCheckRunStatus, 'running'>
   message: string
   finishedAt?: string
   durationMs?: number
   resultSummary?: unknown
   errorCode?: string
   errorMessage?: string
+}
+
+export type ModelCheckRunFinishResult = {
+  applied: true
+  id: string
+  status: Exclude<ModelCheckRunStatus, 'running'>
+  finishedAt: string
+  updatedAt: string
+} | {
+  applied: false
+  id: string
 }
 
 export interface ModelCheckItemCreateInput {
@@ -460,7 +472,7 @@ export async function createModelCheckItemsAsync(runId: string, items: ModelChec
   return rows.map(modelCheckItemFromRow)
 }
 
-export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInput): ModelCheckRunSummary | undefined {
+export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInput): ModelCheckRunFinishResult {
   const finishedAt = input.finishedAt ?? nowIso()
   const updatedAt = nowIso()
   const result = getDatasetDatabase()
@@ -468,7 +480,7 @@ export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInp
       UPDATE model_check_runs
       SET level = ?, score = ?, max_score = ?, status = ?, message = ?, finished_at = ?,
         duration_ms = ?, result_summary_json = ?, error_code = ?, error_message = ?, updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND status = 'running'
     `)
     .run(
       input.level,
@@ -484,10 +496,12 @@ export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInp
       updatedAt,
       runId
     )
-  return result.changes > 0 ? findModelCheckRun(runId) : undefined
+  return result.changes > 0
+    ? { applied: true, id: runId, status: input.status, finishedAt, updatedAt }
+    : { applied: false, id: runId }
 }
 
-export async function finishModelCheckRunAsync(runId: string, input: ModelCheckRunFinishInput): Promise<ModelCheckRunSummary | undefined> {
+export async function finishModelCheckRunAsync(runId: string, input: ModelCheckRunFinishInput): Promise<ModelCheckRunFinishResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return finishModelCheckRun(runId, input)
   }
@@ -498,7 +512,7 @@ export async function finishModelCheckRunAsync(runId: string, input: ModelCheckR
     UPDATE ${modelCheckTable(client, 'model_check_runs')}
     SET level = ?, score = ?, max_score = ?, status = ?, message = ?, finished_at = ?,
       duration_ms = ?, result_summary_json = ?, error_code = ?, error_message = ?, updated_at = ?
-    WHERE id = ?
+    WHERE id = ? AND status = 'running'
   `, [
     input.level,
     Math.max(0, Math.trunc(input.score)),
@@ -513,7 +527,9 @@ export async function finishModelCheckRunAsync(runId: string, input: ModelCheckR
     updatedAt,
     runId
   ])
-  return result.changes > 0 ? findModelCheckRunAsync(runId) : undefined
+  return result.changes > 0
+    ? { applied: true, id: runId, status: input.status, finishedAt, updatedAt }
+    : { applied: false, id: runId }
 }
 
 export function updateModelCheckQualityDecision(runId: string, decision: ModelQualityDecision): ModelCheckRunSummary | undefined {
@@ -575,7 +591,7 @@ export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunL
     .all(...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as ModelCheckRunRow[]
   const pageRows = takePageRows(rows, normalized.pageSize)
   const accountNames = loadModelCheckTargetNameMap(pageRows.rows)
-  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames, { includeSummaries: false }))
+  const items = pageRows.rows.map((row) => modelCheckRunListItemFromRow(row, includeSystemAccountFields(access), accountNames))
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -675,7 +691,7 @@ export async function listModelCheckRunsAsync(access?: AccessScope, options: Mod
   `, [...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
   const pageRows = takePageRows(rows, normalized.pageSize)
   const accountNames = await loadModelCheckTargetNameMapAsync(client, pageRows.rows)
-  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames, { includeSummaries: false }))
+  const items = pageRows.rows.map((row) => modelCheckRunListItemFromRow(row, includeSystemAccountFields(access), accountNames))
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -912,41 +928,52 @@ function modelCheckRunListSelectColumns(alias: string): string {
   return [
     'id',
     'system_account_id',
-    'actor_system_account_id',
     'provider_code',
     'target_type',
     'target_id',
     'target_name',
-    'target_owner_system_account_id',
     'account_id',
-    'group_id',
-    'api_key_id',
     'model',
     'profile',
     'trigger_kind',
-    'schedule_id',
     'trusted_comparison_enabled',
-    'trusted_comparison_available',
     'level',
     'score',
     'max_score',
     'status',
     'message',
-    'trace_id',
-    'probe_set_version',
-    'started_at',
-    'finished_at',
     'duration_ms',
-    'error_code',
     'error_message',
-    'created_at',
-    'updated_at'
-  ].map((column) => `${prefix}${column}`).concat([
-    "'{}' AS request_summary_json",
-    "'{}' AS result_summary_json",
-    "'{}' AS policy_snapshot_json",
-    "'{}' AS quality_decision_json"
-  ]).join(', ')
+    'created_at'
+  ].map((column) => `${prefix}${column}`).join(', ')
+}
+
+function modelCheckRunListItemFromRow(
+  row: ModelCheckRunRow,
+  showSystemAccountFields: boolean,
+  accountNames: Map<string, string>
+): ModelCheckRunListItem {
+  const targetName = row.target_name?.trim() || accountNames.get(row.account_id ?? row.target_id)
+  return {
+    id: row.id,
+    systemAccountId: showSystemAccountFields ? row.system_account_id : undefined,
+    providerCode: row.provider_code,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    targetName: targetName ?? undefined,
+    model: row.model,
+    profile: row.profile,
+    triggerKind: row.trigger_kind,
+    trustedComparison: row.trusted_comparison_enabled === 1,
+    level: row.level,
+    score: Number(row.score ?? 0),
+    maxScore: Number(row.max_score ?? 100),
+    status: row.status,
+    message: row.message,
+    durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
+    errorMessage: row.error_message ?? undefined,
+    createdAt: row.created_at
+  }
 }
 
 function modelCheckRunFromRow(

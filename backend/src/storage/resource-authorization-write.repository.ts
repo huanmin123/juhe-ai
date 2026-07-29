@@ -1,4 +1,14 @@
-import type { AuthorizationStatus, ResourceAuthorizationMutationResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type {
+  AuthorizationStatus,
+  ResourceAuthorizationCreateMutationResult,
+  ResourceAuthorizationListItem,
+  ResourceAuthorizationMutationResult,
+  ResourceAuthorizationResourceType,
+  ResourceAuthorizationSourceStatus,
+  ResourceAuthorizationSourceType,
+  ResourceAuthorizationSummary,
+  ResourceAuthorizationTerminalMutationResult
+} from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, manageableSystemAccountId, type AccessScope } from './access-scope.js'
@@ -42,6 +52,14 @@ const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'li
 const resourceAuthorizationPatchInputKeys = new Set(['status', 'expiresAt', 'limits', 'expectedUpdatedAt'])
 const businessSchemaName = 'juhe_business'
 
+function resourceAuthorizationGrantMutationSelectColumns(): string {
+  return [
+    'id', 'resource_type', 'resource_id', 'resource_owner_system_account_id', 'grantee_type',
+    'grantee_system_account_id', 'grantee_team_id', 'scope', 'status', 'remark', 'expires_at',
+    'limits_json', 'created_by', 'created_at', 'revoked_by', 'revoked_at', 'updated_at'
+  ].join(', ')
+}
+
 export type ResourceAuthorizationPatchOutcome =
   | { kind: 'not_found' }
   | { kind: 'conflict'; currentUpdatedAt?: string }
@@ -54,6 +72,35 @@ export interface ResourceAuthorizationPatchContext {
   granteeType: 'system_account' | 'team'
   granteeSystemAccountId?: string
   granteeTeamId?: string
+}
+
+export type ResourceAuthorizationTerminalMutationOutcome =
+  | { kind: 'not_found' }
+  | { kind: 'conflict'; currentUpdatedAt?: string }
+  | {
+    kind: 'unchanged' | 'updated'
+    result: ResourceAuthorizationTerminalMutationResult
+    previousStatus: AuthorizationStatus
+    context: ResourceAuthorizationPatchContext
+  }
+
+interface ResourceAuthorizationCreateResourceContext {
+  ownerSystemAccountId: string
+  ownerSystemAccountName?: string
+  resourceName?: string
+  resourceAccountExpiresAt?: string
+}
+
+interface ResourceAuthorizationCreatePrincipalContext {
+  systemAccountName?: string
+  username?: string
+  teamName?: string
+}
+
+interface ResourceAuthorizationGrantUpsertOutcome {
+  grant: ResourceAuthorizationGrantRow
+  created: boolean
+  previousStatus?: AuthorizationStatus
 }
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
@@ -188,6 +235,216 @@ export async function createResourceAuthorizationAsync(input: Record<string, unk
   throw new Error('创建资源授权失败')
 }
 
+export function createResourceAuthorizationMutation(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationCreateMutationResult {
+  const normalized = normalizeResourceAuthorizationCreateInput(input)
+  const database = getBusinessDatabase()
+  const resource = resourceAuthorizationCreateResourceContext(database, normalized.resourceType, normalized.resourceId, access)
+  if (!resource) throw new Error('授权资源不存在')
+  const now = nowIso()
+  validateResourceAuthorizationExpiresAtAgainstKnownResource(
+    normalized.resourceType,
+    normalized.expiresAt,
+    resource.resourceAccountExpiresAt,
+    Date.parse(now)
+  )
+  const actor = currentSystemAccountId(access)
+  const transactionStarted = beginDatabaseTransaction(database)
+  let result: ResourceAuthorizationCreateMutationResult
+  try {
+    if (normalized.granteeType === 'team') {
+      const team = database.prepare(`
+        SELECT id, name, status
+        FROM system_teams
+        WHERE id = ? AND status = 'active'
+        LIMIT 1
+      `).get(normalized.granteeId) as unknown as Pick<SystemTeamRow, 'id' | 'name' | 'status'> | undefined
+      if (!team) throw new Error('团队不存在或已停用')
+      const members = activeTeamMemberRows(normalized.granteeId, database)
+        .filter((member) => member.system_account_id !== resource.ownerSystemAccountId)
+      if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
+      const outcome = upsertResourceAuthorizationGrantMutation({
+        ...normalized,
+        ownerSystemAccountId: resource.ownerSystemAccountId,
+        actor,
+        now,
+        database
+      })
+      if (outcome.created || outcome.previousStatus) {
+        assertActiveTeamGrantFanoutWithinLimit(normalized.granteeId, database)
+        for (const member of members) {
+          upsertResourceAuthorizationForUser({
+            resourceType: normalized.resourceType,
+            resourceId: normalized.resourceId,
+            ownerSystemAccountId: resource.ownerSystemAccountId,
+            granteeSystemAccountId: member.system_account_id,
+            sourceType: 'team',
+            sourceTeamId: normalized.granteeId,
+            remark: normalized.remark,
+            expiresAt: normalized.expiresAt,
+            limits: normalized.limits,
+            actor,
+            now,
+            database
+          })
+        }
+        syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings(resourceAuthorizationQuotaBindingGrant(outcome.grant), database, now)
+      }
+      result = resourceAuthorizationCreateMutationResult(outcome, resource, { teamName: team.name }, access)
+    } else {
+      const grantee = database.prepare(`
+        SELECT id, username, display_name, status
+        FROM system_accounts
+        WHERE id = ? AND status = 'active'
+        LIMIT 1
+      `).get(normalized.granteeId) as unknown as { id: string; username: string; display_name: string; status: string } | undefined
+      if (!grantee) throw new Error('被授权用户不存在或已停用')
+      if (normalized.granteeId === resource.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
+      const outcome = upsertResourceAuthorizationGrantMutation({
+        ...normalized,
+        ownerSystemAccountId: resource.ownerSystemAccountId,
+        actor,
+        now,
+        database
+      })
+      if (!outcome.created && !outcome.previousStatus && normalized.resourceType === 'account') {
+        assertMatchingActiveAuthorizationTargetGroup(database, outcome.grant, normalized.targetGroupId)
+      }
+      if (outcome.created || outcome.previousStatus) {
+        upsertResourceAuthorizationForUser({
+          resourceType: normalized.resourceType,
+          resourceId: normalized.resourceId,
+          ownerSystemAccountId: resource.ownerSystemAccountId,
+          granteeSystemAccountId: normalized.granteeId,
+          sourceType: 'manual',
+          targetGroupId: normalized.targetGroupId,
+          remark: normalized.remark,
+          expiresAt: normalized.expiresAt,
+          limits: normalized.limits,
+          actor,
+          now,
+          database
+        })
+        syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings(resourceAuthorizationQuotaBindingGrant(outcome.grant), database, now)
+      }
+      result = resourceAuthorizationCreateMutationResult(outcome, resource, {
+        systemAccountName: grantee.display_name,
+        username: grantee.username
+      }, access)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  if (result.created || result.previousStatus) {
+    refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_created')
+  }
+  return result
+}
+
+export async function createResourceAuthorizationMutationAsync(input: Record<string, unknown>, access?: AccessScope): Promise<ResourceAuthorizationCreateMutationResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createResourceAuthorizationMutation(input, access)
+  }
+  const normalized = normalizeResourceAuthorizationCreateInput(input)
+  const client = await getResourceAuthorizationWriteClient()
+  const now = nowIso()
+  const actor = currentSystemAccountId(access)
+  const result = await client.transaction(async (tx): Promise<ResourceAuthorizationCreateMutationResult> => {
+    const resource = await resourceAuthorizationCreateResourceContextAsync(tx, normalized.resourceType, normalized.resourceId, access)
+    if (!resource) throw new Error('授权资源不存在')
+    validateResourceAuthorizationExpiresAtAgainstKnownResource(
+      normalized.resourceType,
+      normalized.expiresAt,
+      resource.resourceAccountExpiresAt,
+      Date.parse(now)
+    )
+    if (normalized.granteeType === 'team') {
+      const team = await tx.one<Pick<SystemTeamRow, 'id' | 'name' | 'status'>>(`
+        SELECT id, name, status
+        FROM ${resourceAuthorizationWriteTable(tx, 'system_teams')}
+        WHERE id = ? AND status = 'active'
+        LIMIT 1
+      `, [normalized.granteeId])
+      if (!team) throw new Error('团队不存在或已停用')
+      const members = (await activeTeamMemberRowsAsync(normalized.granteeId, tx))
+        .filter((member) => member.system_account_id !== resource.ownerSystemAccountId)
+      if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
+      const outcome = await upsertResourceAuthorizationGrantMutationAsync({
+        ...normalized,
+        ownerSystemAccountId: resource.ownerSystemAccountId,
+        actor,
+        now,
+        client: tx
+      })
+      if (outcome.created || outcome.previousStatus) {
+        await assertActiveTeamGrantFanoutWithinLimitAsync(normalized.granteeId, tx)
+        for (const member of members) {
+          await upsertResourceAuthorizationForUserAsync({
+            resourceType: normalized.resourceType,
+            resourceId: normalized.resourceId,
+            ownerSystemAccountId: resource.ownerSystemAccountId,
+            granteeSystemAccountId: member.system_account_id,
+            sourceType: 'team',
+            sourceTeamId: normalized.granteeId,
+            remark: normalized.remark,
+            expiresAt: normalized.expiresAt,
+            limits: normalized.limits,
+            actor,
+            now,
+            client: tx
+          })
+        }
+        await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(tx, resourceAuthorizationQuotaBindingGrant(outcome.grant), now)
+      }
+      return resourceAuthorizationCreateMutationResult(outcome, resource, { teamName: team.name }, access)
+    }
+    const grantee = await tx.one<{ id: string; username: string; display_name: string; status: string }>(`
+      SELECT id, username, display_name, status
+      FROM ${resourceAuthorizationWriteTable(tx, 'system_accounts')}
+      WHERE id = ? AND status = 'active'
+      LIMIT 1
+    `, [normalized.granteeId])
+    if (!grantee) throw new Error('被授权用户不存在或已停用')
+    if (normalized.granteeId === resource.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
+    const outcome = await upsertResourceAuthorizationGrantMutationAsync({
+      ...normalized,
+      ownerSystemAccountId: resource.ownerSystemAccountId,
+      actor,
+      now,
+      client: tx
+    })
+    if (!outcome.created && !outcome.previousStatus && normalized.resourceType === 'account') {
+      await assertMatchingActiveAuthorizationTargetGroupAsync(tx, outcome.grant, normalized.targetGroupId)
+    }
+    if (outcome.created || outcome.previousStatus) {
+      await upsertResourceAuthorizationForUserAsync({
+        resourceType: normalized.resourceType,
+        resourceId: normalized.resourceId,
+        ownerSystemAccountId: resource.ownerSystemAccountId,
+        granteeSystemAccountId: normalized.granteeId,
+        sourceType: 'manual',
+        targetGroupId: normalized.targetGroupId,
+        remark: normalized.remark,
+        expiresAt: normalized.expiresAt,
+        limits: normalized.limits,
+        actor,
+        now,
+        client: tx
+      })
+      await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(tx, resourceAuthorizationQuotaBindingGrant(outcome.grant), now)
+    }
+    return resourceAuthorizationCreateMutationResult(outcome, resource, {
+      systemAccountName: grantee.display_name,
+      username: grantee.username
+    }, access)
+  })
+  if (result.created || result.previousStatus) {
+    await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_created')
+  }
+  return result
+}
+
 export function revokeResourceAuthorization(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
   const database = getBusinessDatabase()
   const grant = database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationGrantRow | undefined
@@ -216,7 +473,7 @@ export async function revokeResourceAuthorizationAsync(authorizationId: string, 
   const now = nowIso()
   const revoked = await client.transaction(async (tx) => {
     const grant = await tx.one<ResourceAuthorizationGrantRow>(`
-      SELECT *
+      SELECT ${resourceAuthorizationGrantMutationSelectColumns()}
       FROM ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
       WHERE id = ?
       LIMIT 1
@@ -228,6 +485,91 @@ export async function revokeResourceAuthorizationAsync(authorizationId: string, 
   if (!revoked) return undefined
   await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_revoked')
   return findResourceAuthorizationAfterWriteAsync(authorizationId, access)
+}
+
+export async function revokeResourceAuthorizationMutationAsync(
+  authorizationId: string,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): Promise<ResourceAuthorizationTerminalMutationOutcome> {
+  const normalizedExpectedUpdatedAt = normalizeRequiredTextInput(expectedUpdatedAt, '授权配置版本')
+  if (!normalizedExpectedUpdatedAt) throw new Error('缺少授权配置版本')
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? revokeResourceAuthorizationMutationPostgresAsync(authorizationId, normalizedExpectedUpdatedAt, access)
+    : revokeResourceAuthorizationMutationSqlite(authorizationId, normalizedExpectedUpdatedAt, access)
+}
+
+function revokeResourceAuthorizationMutationSqlite(
+  authorizationId: string,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): ResourceAuthorizationTerminalMutationOutcome {
+  const database = getBusinessDatabase()
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const transactionStarted = beginDatabaseTransaction(database)
+  let outcome: ResourceAuthorizationTerminalMutationOutcome
+  try {
+    const grant = database.prepare(`
+      SELECT ${resourceAuthorizationGrantMutationSelectColumns()}
+      FROM resource_authorization_grants
+      WHERE id = ?
+        ${ownerSystemAccountId ? 'AND resource_owner_system_account_id = ?' : ''}
+      LIMIT 1
+    `).get(...(ownerSystemAccountId ? [authorizationId, ownerSystemAccountId] : [authorizationId])) as unknown as ResourceAuthorizationGrantRow | undefined
+    if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return { kind: 'not_found' }
+    }
+    if (grant.updated_at !== expectedUpdatedAt) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return { kind: 'conflict', currentUpdatedAt: grant.updated_at }
+    }
+    if (grant.status === 'revoked') {
+      commitDatabaseTransaction(database, transactionStarted)
+      return resourceAuthorizationTerminalMutationSuccess('unchanged', grant, 'revoked', grant.updated_at)
+    }
+    const now = nextResourceAuthorizationVersion(grant.updated_at)
+    revokeResourceAuthorizationGrant(grant, currentSystemAccountId(access), database, now)
+    commitDatabaseTransaction(database, transactionStarted)
+    outcome = resourceAuthorizationTerminalMutationSuccess('updated', grant, 'revoked', now)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_revoked')
+  return outcome
+}
+
+async function revokeResourceAuthorizationMutationPostgresAsync(
+  authorizationId: string,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): Promise<ResourceAuthorizationTerminalMutationOutcome> {
+  const client = await getResourceAuthorizationWriteClient()
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const actor = currentSystemAccountId(access)
+  const outcome = await client.transaction(async (tx): Promise<ResourceAuthorizationTerminalMutationOutcome> => {
+    const grant = await tx.one<ResourceAuthorizationGrantRow>(`
+      SELECT ${resourceAuthorizationGrantMutationSelectColumns()}
+      FROM ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
+      WHERE id = ?
+        ${ownerSystemAccountId ? 'AND resource_owner_system_account_id = ?' : ''}
+      LIMIT 1
+      FOR UPDATE
+    `, ownerSystemAccountId ? [authorizationId, ownerSystemAccountId] : [authorizationId])
+    if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return { kind: 'not_found' }
+    if (grant.updated_at !== expectedUpdatedAt) return { kind: 'conflict', currentUpdatedAt: grant.updated_at }
+    if (grant.status === 'revoked') {
+      return resourceAuthorizationTerminalMutationSuccess('unchanged', grant, 'revoked', grant.updated_at)
+    }
+    const now = nextResourceAuthorizationVersion(grant.updated_at)
+    await revokeResourceAuthorizationGrantAsync(grant, actor, tx, now)
+    return resourceAuthorizationTerminalMutationSuccess('updated', grant, 'revoked', now)
+  })
+  if (outcome.kind === 'updated') {
+    await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_revoked')
+  }
+  return outcome
 }
 
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
@@ -483,7 +825,7 @@ function resourceAuthorizationPatch(
   if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
     throw new Error('到期授权恢复时请同时调整过期时间')
   }
-  const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
+  const nextStatus: AuthorizationStatus = hasExpiresAtInput && isResourceAuthorizationExpired(nextExpiresAt)
     ? 'expired'
     : requestedStatus === 'active' || requestedStatus === 'paused'
       ? requestedStatus
@@ -496,8 +838,13 @@ function resourceAuthorizationPatch(
   const nextLimits = hasLimitsInput && resourceAuthorizationLimitsEqual(candidateLimits, grant.limits_json)
     ? grant.limits_json
     : candidateLimits
-  const nextRevokedAt = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_at ?? now
-  const nextRevokedBy = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_by ?? actor
+  const statusChanged = nextStatus !== grant.status
+  const nextRevokedAt = !statusChanged
+    ? grant.revoked_at
+    : nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_at ?? now
+  const nextRevokedBy = !statusChanged
+    ? grant.revoked_by
+    : nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_by ?? actor
   const assignments: string[] = []
   const values: Array<string | number | bigint | null> = []
   const add = (column: string, value: string | number | bigint | null) => {
@@ -513,7 +860,7 @@ function resourceAuthorizationPatch(
   return {
     assignments,
     values,
-    validateExpiresAt: hasExpiresAtInput || requestedStatus === 'active',
+    validateExpiresAt: hasExpiresAtInput || (requestedStatus === 'active' && requestedStatus !== grant.status),
     next: {
       ...grant,
       status: nextStatus,
@@ -550,8 +897,10 @@ function resourceAuthorizationMutationResult(grant: ResourceAuthorizationGrantRo
   return {
     id: grant.id,
     status: grant.status,
-    expiresAt: grant.expires_at ?? undefined,
-    limits: parseRequestQuotaLimitsJson(grant.limits_json),
+    expiresAt: grant.expires_at ?? null,
+    limits: resourceAuthorizationLimitsEqual(grant.limits_json, null)
+      ? null
+      : parseRequestQuotaLimitsJson(grant.limits_json) ?? null,
     updatedAt: grant.updated_at
   }
 }
@@ -685,7 +1034,7 @@ async function upsertResourceAuthorizationGrantAsync(input: {
     throw new Error(input.granteeType === 'team' ? '该资源已授权给该团队，请勿重复授权' : '该资源已授权给该用户，请勿重复授权')
   }
   const existing = await input.client.one<ResourceAuthorizationGrantRow>(`
-    SELECT *
+    SELECT ${resourceAuthorizationGrantMutationSelectColumns()}
     FROM ${resourceAuthorizationWriteTable(input.client, 'resource_authorization_grants')}
     WHERE resource_type = ?
       AND resource_id = ?
@@ -1193,9 +1542,13 @@ async function activeTeamMemberRowsAsync(teamId: string, client: DatabaseClient)
   return rows
 }
 
-async function activeTeamGrantRowsAsync(teamId: string, client: DatabaseClient): Promise<ResourceAuthorizationGrantRow[]> {
-  const rows = await client.query<ResourceAuthorizationGrantRow>(`
-    SELECT *
+type ActiveTeamGrantProjection = Pick<ResourceAuthorizationGrantRow,
+  'resource_type' | 'resource_id' | 'resource_owner_system_account_id' | 'remark' | 'expires_at' | 'limits_json'
+>
+
+async function activeTeamGrantRowsAsync(teamId: string, client: DatabaseClient): Promise<ActiveTeamGrantProjection[]> {
+  const rows = await client.query<ActiveTeamGrantProjection>(`
+    SELECT resource_type, resource_id, resource_owner_system_account_id, remark, expires_at, limits_json
     FROM ${resourceAuthorizationWriteTable(client, 'resource_authorization_grants')}
     WHERE grantee_type = 'team'
       AND grantee_team_id = ?
@@ -1210,24 +1563,30 @@ async function activeTeamGrantRowsAsync(teamId: string, client: DatabaseClient):
 }
 
 export async function applyActiveTeamGrantsToMemberAsync(teamId: string, systemAccountId: string, access: AccessScope | undefined, client: DatabaseClient, now: string): Promise<void> {
+  await applyActiveTeamGrantsToMembersAsync(teamId, [systemAccountId], access, client, now)
+}
+
+export async function applyActiveTeamGrantsToMembersAsync(teamId: string, systemAccountIds: string[], access: AccessScope | undefined, client: DatabaseClient, now: string): Promise<void> {
   const grants = await activeTeamGrantRowsAsync(teamId, client)
   const actor = currentSystemAccountId(access)
-  for (const grant of grants) {
-    if (grant.resource_owner_system_account_id === systemAccountId) continue
-    await upsertResourceAuthorizationForUserAsync({
-      resourceType: grant.resource_type,
-      resourceId: grant.resource_id,
-      ownerSystemAccountId: grant.resource_owner_system_account_id,
-      granteeSystemAccountId: systemAccountId,
-      sourceType: 'team',
-      sourceTeamId: teamId,
-      remark: grant.remark ?? undefined,
-      expiresAt: grant.expires_at,
-      limits: parseRequestQuotaLimitsJson(grant.limits_json),
-      actor,
-      now,
-      client
-    })
+  for (const systemAccountId of systemAccountIds) {
+    for (const grant of grants) {
+      if (grant.resource_owner_system_account_id === systemAccountId) continue
+      await upsertResourceAuthorizationForUserAsync({
+        resourceType: grant.resource_type,
+        resourceId: grant.resource_id,
+        ownerSystemAccountId: grant.resource_owner_system_account_id,
+        granteeSystemAccountId: systemAccountId,
+        sourceType: 'team',
+        sourceTeamId: teamId,
+        remark: grant.remark ?? undefined,
+        expiresAt: grant.expires_at,
+        limits: parseRequestQuotaLimitsJson(grant.limits_json),
+        actor,
+        now,
+        client
+      })
+    }
   }
 }
 
@@ -1297,9 +1656,7 @@ export async function revokeAllTeamSourcesAsync(teamId: string, actor: string, c
 
 export async function reactivateTeamGrantSourcesAsync(teamId: string, access: AccessScope | undefined, client: DatabaseClient, now: string): Promise<void> {
   const memberRows = await activeTeamMemberRowsAsync(teamId, client)
-  for (const member of memberRows) {
-    await applyActiveTeamGrantsToMemberAsync(teamId, member.system_account_id, access, client, now)
-  }
+  await applyActiveTeamGrantsToMembersAsync(teamId, memberRows.map((member) => member.system_account_id), access, client, now)
 }
 
 async function assertActiveTeamGrantFanoutWithinLimitAsync(teamId: string, client: DatabaseClient): Promise<void> {
@@ -1768,6 +2125,397 @@ async function refreshResourceAuthorizationEffectiveSourceAsync(
     now,
     authorizationId
   ])
+}
+
+interface NormalizedResourceAuthorizationCreateInput {
+  resourceType: ResourceAuthorizationResourceType
+  resourceId: string
+  granteeType: 'system_account' | 'team'
+  granteeId: string
+  targetGroupId?: string
+  remark?: string
+  expiresAt: string | null
+  limits?: unknown
+}
+
+function normalizeResourceAuthorizationCreateInput(input: Record<string, unknown>): NormalizedResourceAuthorizationCreateInput {
+  assertKnownInputKeys(input, resourceAuthorizationCreateInputKeys, '资源授权')
+  const resourceType = normalizeResourceType(input.resourceType)
+  const resourceId = normalizeRequiredTextInput(input.resourceId, '授权资源')
+  if (!resourceType || !resourceId) throw new Error('请选择授权资源')
+  const granteeType = normalizeResourceAuthorizationGranteeType(input.granteeType)
+  const granteeId = normalizeRequiredTextInput(input.granteeId, '被授权对象')
+  if (!granteeId) throw new Error('请选择被授权对象')
+  const targetGroupId = normalizeOptionalTextInput(input.targetGroupId, '目标分组')
+  if (!targetGroupId && resourceType === 'account' && granteeType === 'system_account') {
+    throw new Error('授权 AI 账户给个人时必须选择目标分组')
+  }
+  if (targetGroupId && (resourceType !== 'account' || granteeType !== 'system_account')) {
+    throw new Error('只有授权 AI 账户给个人时可以指定目标分组')
+  }
+  return {
+    resourceType, resourceId, granteeType, granteeId, targetGroupId,
+    remark: normalizeOptionalTextInput(input.remark, '授权备注', { allowBlank: true }),
+    expiresAt: normalizeResourceAuthorizationExpiresAtInput(input.expiresAt),
+    limits: input.limits
+  }
+}
+
+function resourceAuthorizationCreateResourceContext(
+  database: ReturnType<typeof getBusinessDatabase>,
+  resourceType: ResourceAuthorizationResourceType,
+  resourceId: string,
+  access?: AccessScope
+): ResourceAuthorizationCreateResourceContext | undefined {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const table = resourceType === 'account' ? 'accounts' : 'groups'
+  const extraColumns = resourceType === 'account'
+    ? ', resource.account_expires_at, resource.authorization_instance_authorization_id'
+    : ''
+  const extraWhere = resourceType === 'account'
+    ? 'AND resource.deleted_at IS NULL AND resource.authorization_instance_authorization_id IS NULL'
+    : ''
+  const row = database.prepare(`
+    SELECT resource.system_account_id, resource.name AS resource_name, owner.display_name AS owner_name${extraColumns}
+    FROM ${table} resource
+    INNER JOIN system_accounts owner ON owner.id = resource.system_account_id
+    WHERE resource.id = ?
+      ${extraWhere}
+      ${ownerSystemAccountId ? 'AND resource.system_account_id = ?' : ''}
+    LIMIT 1
+  `).get(...(ownerSystemAccountId ? [resourceId, ownerSystemAccountId] : [resourceId])) as unknown as {
+    system_account_id: string
+    resource_name: string
+    owner_name: string
+    account_expires_at?: string | null
+  } | undefined
+  if (!row || !canManageResourceOwner(row.system_account_id, access)) return undefined
+  return {
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: row.owner_name,
+    resourceName: row.resource_name,
+    resourceAccountExpiresAt: row.account_expires_at ?? undefined
+  }
+}
+
+async function resourceAuthorizationCreateResourceContextAsync(
+  client: DatabaseClient,
+  resourceType: ResourceAuthorizationResourceType,
+  resourceId: string,
+  access?: AccessScope
+): Promise<ResourceAuthorizationCreateResourceContext | undefined> {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const table = resourceType === 'account' ? 'accounts' : 'groups'
+  const extraColumns = resourceType === 'account'
+    ? ', resource.account_expires_at, resource.authorization_instance_authorization_id'
+    : ''
+  const extraWhere = resourceType === 'account'
+    ? 'AND resource.deleted_at IS NULL AND resource.authorization_instance_authorization_id IS NULL'
+    : ''
+  const row = await client.one<{
+    system_account_id: string
+    resource_name: string
+    owner_name: string
+    account_expires_at?: string | null
+  }>(`
+    SELECT resource.system_account_id, resource.name AS resource_name, owner.display_name AS owner_name${extraColumns}
+    FROM ${resourceAuthorizationWriteTable(client, table)} resource
+    INNER JOIN ${resourceAuthorizationWriteTable(client, 'system_accounts')} owner ON owner.id = resource.system_account_id
+    WHERE resource.id = ?
+      ${extraWhere}
+      ${ownerSystemAccountId ? 'AND resource.system_account_id = ?' : ''}
+    LIMIT 1 FOR UPDATE
+  `, ownerSystemAccountId ? [resourceId, ownerSystemAccountId] : [resourceId])
+  if (!row || !canManageResourceOwner(row.system_account_id, access)) return undefined
+  return {
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: row.owner_name,
+    resourceName: row.resource_name,
+    resourceAccountExpiresAt: row.account_expires_at ?? undefined
+  }
+}
+
+function upsertResourceAuthorizationGrantMutation(input: NormalizedResourceAuthorizationCreateInput & {
+  ownerSystemAccountId: string
+  actor: string
+  now: string
+  database: ReturnType<typeof getBusinessDatabase>
+}): ResourceAuthorizationGrantUpsertOutcome {
+  const existing = input.database.prepare(`
+    SELECT ${resourceAuthorizationGrantMutationSelectColumns()}
+    FROM resource_authorization_grants
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_type = ?
+      AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
+      AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
+    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 WHEN 'returned' THEN 4 ELSE 5 END,
+      created_at ASC, id ASC
+    LIMIT 1
+  `).get(
+    input.resourceType,
+    input.resourceId,
+    input.granteeType,
+    input.granteeType === 'system_account' ? input.granteeId : null,
+    input.granteeType === 'team' ? input.granteeId : null
+  ) as unknown as ResourceAuthorizationGrantRow | undefined
+  const outcome = prepareResourceAuthorizationGrantMutation(existing, input)
+  if (!outcome.writeKind) return outcome.result
+  const grant = outcome.result.grant
+  if (outcome.writeKind === 'insert') {
+    input.database.prepare(`
+      INSERT INTO resource_authorization_grants (
+        id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+        grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+        limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, NULL, NULL, ?)
+    `).run(
+      grant.id, grant.resource_type, grant.resource_id, grant.resource_owner_system_account_id,
+      grant.grantee_type, grant.grantee_system_account_id, grant.grantee_team_id, grant.remark,
+      grant.expires_at, grant.limits_json, grant.created_by, grant.created_at, grant.updated_at
+    )
+  } else {
+    const updateResult = input.database.prepare(`
+      UPDATE resource_authorization_grants
+      SET status = 'active', remark = ?, expires_at = ?, limits_json = ?,
+          revoked_by = NULL, revoked_at = NULL, updated_at = ?
+      WHERE id = ? AND updated_at = ?
+    `).run(grant.remark, grant.expires_at, grant.limits_json, grant.updated_at, grant.id, existing!.updated_at)
+    if (Number(updateResult.changes) === 0) throw new Error('授权配置已被其他操作更新，请重试')
+  }
+  return outcome.result
+}
+
+async function upsertResourceAuthorizationGrantMutationAsync(input: NormalizedResourceAuthorizationCreateInput & {
+  ownerSystemAccountId: string
+  actor: string
+  now: string
+  client: DatabaseClient
+}): Promise<ResourceAuthorizationGrantUpsertOutcome> {
+  const existing = await input.client.one<ResourceAuthorizationGrantRow>(`
+    SELECT ${resourceAuthorizationGrantMutationSelectColumns()}
+    FROM ${resourceAuthorizationWriteTable(input.client, 'resource_authorization_grants')}
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_type = ?
+      AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
+      AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
+    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 WHEN 'returned' THEN 4 ELSE 5 END,
+      created_at ASC, id ASC
+    LIMIT 1 FOR UPDATE
+  `, [
+    input.resourceType,
+    input.resourceId,
+    input.granteeType,
+    input.granteeType === 'system_account' ? input.granteeId : null,
+    input.granteeType === 'team' ? input.granteeId : null
+  ])
+  const outcome = prepareResourceAuthorizationGrantMutation(existing, input)
+  if (!outcome.writeKind) return outcome.result
+  const grant = outcome.result.grant
+  if (outcome.writeKind === 'insert') {
+    await input.client.execute(`
+      INSERT INTO ${resourceAuthorizationWriteTable(input.client, 'resource_authorization_grants')} (
+        id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+        grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+        limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, NULL, NULL, ?)
+    `, [
+      grant.id, grant.resource_type, grant.resource_id, grant.resource_owner_system_account_id,
+      grant.grantee_type, grant.grantee_system_account_id, grant.grantee_team_id, grant.remark,
+      grant.expires_at, grant.limits_json, grant.created_by, grant.created_at, grant.updated_at
+    ])
+  } else {
+    const updateResult = await input.client.execute(`
+      UPDATE ${resourceAuthorizationWriteTable(input.client, 'resource_authorization_grants')}
+      SET status = 'active', remark = ?, expires_at = ?, limits_json = ?,
+          revoked_by = NULL, revoked_at = NULL, updated_at = ?
+      WHERE id = ? AND updated_at = ?
+    `, [grant.remark, grant.expires_at, grant.limits_json, grant.updated_at, grant.id, existing?.updated_at])
+    if (updateResult.changes === 0) throw new Error('授权配置已被其他操作更新，请重试')
+  }
+  return outcome.result
+}
+
+function prepareResourceAuthorizationGrantMutation(
+  existing: ResourceAuthorizationGrantRow | undefined,
+  input: NormalizedResourceAuthorizationCreateInput & { ownerSystemAccountId: string; actor: string; now: string }
+): { result: ResourceAuthorizationGrantUpsertOutcome; writeKind?: 'insert' | 'update' } {
+  const nextRemark = input.remark ?? existing?.remark ?? null
+  const nextLimitsJson = requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
+  if (existing?.status === 'active') {
+    if (existing.remark === nextRemark && existing.expires_at === input.expiresAt && resourceAuthorizationLimitsEqual(existing.limits_json, nextLimitsJson)) {
+      return { result: { grant: existing, created: false } }
+    }
+    throw new Error(input.granteeType === 'team' ? '该资源已授权给该团队，请勿重复授权' : '该资源已授权给该用户，请勿重复授权')
+  }
+  if (existing) {
+    const grant: ResourceAuthorizationGrantRow = {
+      ...existing,
+      resource_owner_system_account_id: input.ownerSystemAccountId,
+      status: 'active',
+      remark: nextRemark,
+      expires_at: input.expiresAt,
+      limits_json: nextLimitsJson,
+      revoked_by: null,
+      revoked_at: null,
+      updated_at: nextResourceAuthorizationVersion(existing.updated_at)
+    }
+    return { result: { grant, created: false, previousStatus: existing.status }, writeKind: 'update' }
+  }
+  const grant: ResourceAuthorizationGrantRow = {
+    id: newId('rauthgrant'),
+    resource_type: input.resourceType,
+    resource_id: input.resourceId,
+    resource_owner_system_account_id: input.ownerSystemAccountId,
+    grantee_type: input.granteeType,
+    grantee_system_account_id: input.granteeType === 'system_account' ? input.granteeId : null,
+    grantee_team_id: input.granteeType === 'team' ? input.granteeId : null,
+    scope: 'use',
+    status: 'active',
+    remark: nextRemark,
+    expires_at: input.expiresAt,
+    limits_json: nextLimitsJson,
+    created_by: input.actor,
+    created_at: input.now,
+    revoked_by: null,
+    revoked_at: null,
+    updated_at: input.now
+  }
+  return { result: { grant, created: true }, writeKind: 'insert' }
+}
+
+function resourceAuthorizationCreateMutationResult(
+  outcome: ResourceAuthorizationGrantUpsertOutcome,
+  resource: ResourceAuthorizationCreateResourceContext,
+  principal: ResourceAuthorizationCreatePrincipalContext,
+  access?: AccessScope
+): ResourceAuthorizationCreateMutationResult {
+  const grant = outcome.grant
+  const canManage = canManageResourceOwner(grant.resource_owner_system_account_id, access)
+  const isTeam = grant.grantee_type === 'team'
+  return {
+    item: {
+      id: grant.id,
+      resourceType: grant.resource_type,
+      resourceId: grant.resource_id,
+      resourceName: resource.resourceName,
+      resourceOwnerSystemAccountId: grant.resource_owner_system_account_id,
+      resourceOwnerSystemAccountName: resource.ownerSystemAccountName,
+      granteeType: grant.grantee_type,
+      granteeSystemAccountId: grant.grantee_system_account_id ?? undefined,
+      granteeSystemAccountName: principal.systemAccountName,
+      granteeUsername: principal.username,
+      granteeTeamId: grant.grantee_team_id ?? undefined,
+      granteeTeamName: principal.teamName,
+      status: grant.status,
+      remark: grant.remark ?? undefined,
+      expiresAt: grant.expires_at ?? undefined,
+      limits: canManage ? parseRequestQuotaLimitsJson(grant.limits_json) : undefined,
+      resourceAccountExpiresAt: canManage ? resource.resourceAccountExpiresAt : undefined,
+      effectiveSourceType: isTeam ? 'team' : 'manual',
+      effectiveSourceTeamId: canManage && isTeam ? grant.grantee_team_id ?? undefined : undefined,
+      effectiveSourceTeamName: canManage && isTeam ? principal.teamName : undefined,
+      createdAt: grant.created_at,
+      updatedAt: grant.updated_at,
+      sourceSummary: {
+        activeSourceCount: 1,
+        hasManual: !isTeam,
+        hasTeam: isTeam,
+        teamSources: canManage && isTeam && grant.grantee_team_id
+          ? [{ sourceTeamId: grant.grantee_team_id, sourceTeamName: principal.teamName }]
+          : []
+      },
+      permissions: { canEdit: canManage, canAuthorize: canManage }
+    },
+    created: outcome.created,
+    ...(outcome.previousStatus ? { previousStatus: outcome.previousStatus } : {})
+  }
+}
+
+function assertMatchingActiveAuthorizationTargetGroup(
+  database: ReturnType<typeof getBusinessDatabase>,
+  grant: ResourceAuthorizationGrantRow,
+  expectedGroupId?: string
+): void {
+  const row = database.prepare(`
+    SELECT group_accounts.group_id
+    FROM resource_authorizations
+    INNER JOIN group_accounts
+      ON group_accounts.account_authorization_id = resource_authorizations.id
+      AND group_accounts.enabled = 1
+    WHERE resource_authorizations.resource_type = 'account'
+      AND resource_authorizations.resource_id = ?
+      AND resource_authorizations.resource_owner_system_account_id = ?
+      AND resource_authorizations.grantee_system_account_id = ?
+    ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
+    LIMIT 1
+  `).get(grant.resource_id, grant.resource_owner_system_account_id, grant.grantee_system_account_id) as unknown as { group_id?: string } | undefined
+  if (!row?.group_id || row.group_id !== expectedGroupId) {
+    throw new Error('该资源已授权给该用户，请勿重复授权')
+  }
+}
+
+async function assertMatchingActiveAuthorizationTargetGroupAsync(
+  client: DatabaseClient,
+  grant: ResourceAuthorizationGrantRow,
+  expectedGroupId?: string
+): Promise<void> {
+  const row = await client.one<{ group_id?: string }>(`
+    SELECT group_accounts.group_id
+    FROM ${resourceAuthorizationWriteTable(client, 'resource_authorizations')} resource_authorizations
+    INNER JOIN ${resourceAuthorizationWriteTable(client, 'group_accounts')} group_accounts
+      ON group_accounts.account_authorization_id = resource_authorizations.id
+      AND group_accounts.enabled = 1
+    WHERE resource_authorizations.resource_type = 'account'
+      AND resource_authorizations.resource_id = ?
+      AND resource_authorizations.resource_owner_system_account_id = ?
+      AND resource_authorizations.grantee_system_account_id = ?
+    ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
+    LIMIT 1
+  `, [grant.resource_id, grant.resource_owner_system_account_id, grant.grantee_system_account_id])
+  if (!row?.group_id || row.group_id !== expectedGroupId) {
+    throw new Error('该资源已授权给该用户，请勿重复授权')
+  }
+}
+
+function validateResourceAuthorizationExpiresAtAgainstKnownResource(
+  resourceType: ResourceAuthorizationResourceType,
+  expiresAt: string | null,
+  resourceAccountExpiresAt: string | undefined,
+  now: number,
+  options: { allowExpired?: boolean } = {}
+): void {
+  if (!expiresAt) return
+  const expiresAtMs = Date.parse(expiresAt)
+  if (!Number.isFinite(expiresAtMs)) throw new Error('授权到期时间格式不正确')
+  if (!options.allowExpired && expiresAtMs <= now) throw new Error('授权到期时间不能早于当前时间')
+  if (resourceType !== 'account' || !resourceAccountExpiresAt) return
+  const accountExpiresAtMs = Date.parse(resourceAccountExpiresAt)
+  if (Number.isFinite(accountExpiresAtMs) && expiresAtMs > accountExpiresAtMs) {
+    throw new Error('授权到期时间不能晚于账户到期时间')
+  }
+}
+
+function resourceAuthorizationTerminalMutationSuccess(
+  kind: 'unchanged' | 'updated',
+  grant: ResourceAuthorizationGrantRow,
+  status: 'revoked',
+  updatedAt: string
+): ResourceAuthorizationTerminalMutationOutcome {
+  return {
+    kind,
+    result: { id: grant.id, status, updatedAt },
+    previousStatus: grant.status,
+    context: {
+      resourceType: grant.resource_type,
+      resourceId: grant.resource_id,
+      resourceOwnerSystemAccountId: grant.resource_owner_system_account_id,
+      granteeType: grant.grantee_type,
+      granteeSystemAccountId: grant.grantee_system_account_id ?? undefined,
+      granteeTeamId: grant.grantee_team_id ?? undefined
+    }
+  }
 }
 
 function normalizeRequiredTextInput(value: unknown, label: string): string {

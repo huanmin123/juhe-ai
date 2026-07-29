@@ -14,7 +14,7 @@ import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, ty
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { normalizeAccountNameSearchText, accountNameSearchQueryTerms } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIdsAsync } from './account-tags.repository.js'
-import type { AccountStatusProjectionSeed } from './account-status-snapshot.repository.js'
+import type { AccountManagementStatusSeed } from './account-status-snapshot.repository.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { normalizeAccountListOptions, accountStatusFilterValues, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
@@ -64,7 +64,7 @@ export type AccountManagementListBaseItem = Pick<AccountListItem,
 
 export interface AccountManagementListPage {
   items: AccountManagementListBaseItem[]
-  statusSeeds: AccountStatusProjectionSeed[]
+  statusSeeds: AccountManagementStatusSeed[]
   total: number
   hasMore: boolean
   page: number
@@ -80,7 +80,7 @@ export interface AccountManagementListResult {
   generatedAt: string
 }
 
-interface AccountManagementListRow extends AccountStatusProjectionSeed {
+interface AccountManagementListRow extends AccountManagementStatusSeed {
   id: string
   config_revision: number | string
   system_account_id: string
@@ -219,26 +219,9 @@ async function listAccountManagementItemsPageDirect(
         accounts.account_expires_at,
         accounts.cooldown_until,
         accounts.last_error_code,
-        accounts.last_error_message,
-        accounts.last_error_trace_id,
         accounts.health_check_model,
         accounts.health_check_endpoint_mode,
-        accounts.last_health_check_at,
-        accounts.next_health_check_at,
-        accounts.last_health_check_status_code,
-        accounts.last_health_check_error_code,
-        accounts.last_health_check_error_message,
-        accounts.last_health_check_trace_id,
-        accounts.cooldown_retest_last_at,
-        accounts.cooldown_retest_last_status_code,
-        accounts.cooldown_retest_failure_count,
-        accounts.cooldown_retest_observation_started_at,
         accounts.last_used_at,
-        accounts.last_health_success_at,
-        accounts.health_check_failure_count,
-        accounts.health_check_failure_started_at,
-        accounts.stream_failure_count,
-        accounts.stream_failure_window_started_at,
         accounts.created_at,
         accounts.authorization_instance_owner_system_account_id,
         accounts.authorization_instance_source_account_id,
@@ -246,7 +229,6 @@ async function listAccountManagementItemsPageDirect(
         authorizations.id AS authorization_id,
         authorizations.status AS authorization_status,
         authorizations.expires_at AS authorization_expires_at,
-        authorizations.limits_json AS authorization_limits_json,
         authorizations.effective_source_type AS authorization_effective_source_type,
         authorizations.effective_source_team_id AS authorization_effective_source_team_id,
         authorizations.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
@@ -260,16 +242,6 @@ async function listAccountManagementItemsPageDirect(
         source_accounts.account_expires_at AS source_account_expires_at,
         source_accounts.cooldown_until AS source_cooldown_until,
         source_accounts.last_error_code AS source_last_error_code,
-        source_accounts.last_error_message AS source_last_error_message,
-        source_accounts.last_error_trace_id AS source_last_error_trace_id,
-        source_accounts.cooldown_retest_last_at AS source_cooldown_retest_last_at,
-        source_accounts.cooldown_retest_last_status_code AS source_cooldown_retest_last_status_code,
-        source_accounts.last_health_check_at AS source_last_health_check_at,
-        source_accounts.next_health_check_at AS source_next_health_check_at,
-        source_accounts.last_health_check_status_code AS source_last_health_check_status_code,
-        source_accounts.last_health_check_error_code AS source_last_health_check_error_code,
-        source_accounts.last_health_check_error_message AS source_last_health_check_error_message,
-        source_accounts.last_health_check_trace_id AS source_last_health_check_trace_id,
         source_accounts.proxy_profile_id AS source_proxy_profile_id,
         source_accounts.concurrency_limit AS source_concurrency_limit,
         source_accounts.client_compatibility AS source_client_compatibility
@@ -326,33 +298,15 @@ async function listAccountManagementItemsPageDirect(
       account_rows.account_expires_at,
       account_rows.cooldown_until,
       account_rows.last_error_code,
-      account_rows.last_error_message,
-      account_rows.last_error_trace_id,
       account_rows.health_check_model,
       account_rows.health_check_endpoint_mode,
-      account_rows.last_health_check_at,
-      account_rows.next_health_check_at,
-      account_rows.last_health_check_status_code,
-      account_rows.last_health_check_error_code,
-      account_rows.last_health_check_error_message,
-      account_rows.last_health_check_trace_id,
-      account_rows.cooldown_retest_last_at,
-      account_rows.cooldown_retest_last_status_code,
-      account_rows.cooldown_retest_failure_count,
-      account_rows.cooldown_retest_observation_started_at,
       account_rows.last_used_at,
-      account_rows.last_health_success_at,
-      account_rows.health_check_failure_count,
-      account_rows.health_check_failure_started_at,
-      account_rows.stream_failure_count,
-      account_rows.stream_failure_window_started_at,
       account_rows.authorization_instance_owner_system_account_id,
       account_rows.authorization_instance_source_account_id,
       account_rows.configured_proxy_profile_id,
       account_rows.authorization_id,
       account_rows.authorization_status,
       account_rows.authorization_expires_at,
-      account_rows.authorization_limits_json,
       account_rows.authorization_effective_source_type,
       account_rows.authorization_effective_source_team_id,
       account_rows.authorization_resource_owner_system_account_id,
@@ -366,16 +320,6 @@ async function listAccountManagementItemsPageDirect(
       account_rows.source_account_expires_at,
       account_rows.source_cooldown_until,
       account_rows.source_last_error_code,
-      account_rows.source_last_error_message,
-      account_rows.source_last_error_trace_id,
-      account_rows.source_cooldown_retest_last_at,
-      account_rows.source_cooldown_retest_last_status_code,
-      account_rows.source_last_health_check_at,
-      account_rows.source_next_health_check_at,
-      account_rows.source_last_health_check_status_code,
-      account_rows.source_last_health_check_error_code,
-      account_rows.source_last_health_check_error_message,
-      account_rows.source_last_health_check_trace_id,
       account_rows.source_proxy_profile_id,
       account_rows.source_concurrency_limit,
       account_rows.source_client_compatibility,

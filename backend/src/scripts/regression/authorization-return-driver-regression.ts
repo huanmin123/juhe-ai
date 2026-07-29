@@ -271,9 +271,10 @@ async function seedReturnableAccountAuthorization(client: DatabaseClient): Promi
     INSERT INTO ${table(client, 'accounts')} (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
       name, type, status, credentials_encrypted, credential_mask, concurrency_limit, schedulable,
+      health_check_model, health_check_endpoint_mode,
       authorization_instance_source_account_id, authorization_instance_authorization_id,
       authorization_instance_owner_system_account_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', ?, ?, 20, 1, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', ?, ?, 20, 1, 'gpt-5.1', 'responses_sse', ?, ?, ?, ?, ?)
   `, [
     instanceAccountId,
     granteeSystemAccountId,
@@ -290,6 +291,11 @@ async function seedReturnableAccountAuthorization(client: DatabaseClient): Promi
     now,
     now
   ])
+
+  await client.execute(`
+    INSERT INTO ${table(client, 'account_supported_models')} (account_id, provider_code, model, created_at)
+    VALUES (?, ?, 'gpt-5.1', ?), (?, ?, 'gpt-5.1', ?)
+  `, [sourceAccountId, profile.provider_code, now, instanceAccountId, profile.provider_code, now])
 
   return {
     authorizationId,
@@ -407,9 +413,11 @@ async function cleanupSeedRows(): Promise<void> {
   const client = await createCurrentDatabaseClient()
   for (const seed of createdSeedRows.splice(0)) {
     if (seed.instanceAccountId) {
+      await client.execute(`DELETE FROM ${table(client, 'account_supported_models')} WHERE account_id = ?`, [seed.instanceAccountId])
       await client.execute(`DELETE FROM ${table(client, 'accounts')} WHERE id = ?`, [seed.instanceAccountId])
     }
     if (seed.sourceAccountId) {
+      await client.execute(`DELETE FROM ${table(client, 'account_supported_models')} WHERE account_id = ?`, [seed.sourceAccountId])
       await client.execute(`DELETE FROM ${table(client, 'accounts')} WHERE id = ?`, [seed.sourceAccountId])
     }
     await client.execute(`DELETE FROM ${table(client, 'resource_authorization_sources')} WHERE authorization_id = ?`, [seed.authorizationId])

@@ -66,14 +66,49 @@ export interface SystemTeamMemberDetail {
   joinedAt: string
 }
 
+export interface SystemTeamMemberHistoryItem extends SystemTeamMemberDetail {
+  status: Extract<TeamMemberStatus, 'removed'>
+  removedAt?: string
+}
+
 export interface SystemTeamDetail {
   id: string
   name: string
   description?: string
   status: TeamStatus
   memberCount: number
-  members: SystemTeamMemberDetail[]
   createdAt: string
+  updatedAt: string
+}
+
+export interface SystemTeamMemberListResult {
+  id: string
+  memberCount: number
+  updatedAt: string
+  items: SystemTeamMemberDetail[]
+}
+
+export interface SystemTeamMemberHistoryResult {
+  id: string
+  items: SystemTeamMemberHistoryItem[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
+export interface SystemTeamMembersAddedResult {
+  id: string
+  memberCount: number
+  updatedAt: string
+  addedMembers: SystemTeamMemberDetail[]
+}
+
+export interface SystemTeamMemberRemovedResult {
+  id: string
+  memberCount: number
+  updatedAt: string
+  removedMemberId: string
 }
 
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
@@ -210,8 +245,20 @@ export interface ResourceAuthorizationListItem {
 export interface ResourceAuthorizationMutationResult {
   id: string
   status: AuthorizationStatus
-  expiresAt?: string
-  limits?: RequestQuotaLimits
+  expiresAt: string | null
+  limits: RequestQuotaLimits | null
+  updatedAt: string
+}
+
+export interface ResourceAuthorizationCreateMutationResult {
+  item: ResourceAuthorizationListItem
+  created: boolean
+  previousStatus?: AuthorizationStatus
+}
+
+export interface ResourceAuthorizationTerminalMutationResult {
+  id: string
+  status: Extract<AuthorizationStatus, 'revoked' | 'returned'>
   updatedAt: string
 }
 

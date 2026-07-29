@@ -19,7 +19,7 @@ import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { systemAccountListItemFromRow, systemAccountOptionSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
+import { systemAccountListItemFromRow, systemAccountOptionSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow, type SystemAccountSummaryRow } from './system-account-mappers.js'
 import { optionalString } from './value-utils.js'
 
 interface SystemSessionRow {
@@ -82,6 +82,7 @@ interface SystemAccountManagementPatchRow {
   must_change_password?: number | boolean
   image_generation_enabled?: number | boolean
   request_limits_json?: string | null
+  password_hash?: string
 }
 
 export interface SystemAccountOptionListOptions {
@@ -134,7 +135,7 @@ export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions
       ORDER BY updated_at DESC, id DESC
       LIMIT ? OFFSET ?
     `)
-    .all(...keywordFilter.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as SystemAccountRow[]
+    .all(...keywordFilter.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as Array<Omit<SystemAccountSummaryRow, 'created_at'>>
   const pageRows = takePageRows(rows, normalized.pageSize)
   const items = pageRows.rows.map(systemAccountListItemFromRow)
   return {
@@ -159,8 +160,9 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
   const normalized = normalizeSystemAccountListOptions(options)
   const client = await getSystemAccountDatabaseClient()
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
-  const rows = await client.query<SystemAccountRow>(`
-    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, updated_at
+  const rows = await client.query<Omit<SystemAccountSummaryRow, 'created_at'>>(`
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at,
+      to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     ${keywordFilter.clause}
     ORDER BY updated_at DESC, id DESC
@@ -342,7 +344,7 @@ export function findSystemAccountById(id: string): SystemAccountSummary | undefi
       FROM system_accounts
       WHERE id = ?
     `)
-    .get(id) as unknown as SystemAccountRow | undefined
+    .get(id) as unknown as SystemAccountSummaryRow | undefined
   return row ? systemAccountSummaryFromRow(row) : undefined
 }
 
@@ -377,8 +379,8 @@ export async function findSystemAccountByIdAsync(id: string): Promise<SystemAcco
 }
 
 async function findSystemAccountByIdWithClient(client: DatabaseClient, id: string): Promise<SystemAccountSummary | undefined> {
-  const row = await client.one<SystemAccountRow>(`
-    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
+  const row = await client.one<SystemAccountSummaryRow>(`
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     WHERE id = ?
   `, [id])
@@ -621,13 +623,13 @@ export async function patchSystemAccountManagementAsync(
   const outcome = await client.transaction(async (tx) => {
     const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
     const current = await tx.one<SystemAccountManagementPatchRow>(`
-      SELECT ${systemAccountManagementPatchSelectColumns(input).join(', ')}
+      SELECT ${systemAccountManagementPatchSelectColumns(input, tx.driver).join(', ')}
       FROM ${systemAccountTable(tx, 'system_accounts')}
       WHERE id = ?
       LIMIT 1${lockClause}
     `, [id])
     if (!current) return undefined
-    if (current.updated_at !== expectedUpdatedAt) {
+    if (!systemAccountRevisionsEqual(current.updated_at, expectedUpdatedAt)) {
       throw new SystemAccountManagementPatchConflictError(current.updated_at)
     }
 
@@ -711,9 +713,13 @@ export async function patchSystemAccountManagementAsync(
       }
     }
     if (Object.hasOwn(input, 'password')) {
-      assignments.push('password_hash = ?')
-      params.push(passwordHash)
-      changes.push({ field: 'password', before: undefined, after: input.password })
+      const currentPasswordHash = requiredSystemAccountPatchValue(current, 'password_hash', input, ['password'])
+      const password = typeof input.password === 'string' ? input.password : ''
+      if (!await verifyPasswordAsync(password, currentPasswordHash)) {
+        assignments.push('password_hash = ?')
+        params.push(passwordHash)
+        changes.push({ field: 'password', before: undefined, after: true })
+      }
     }
 
     if (!assignments.length) {
@@ -729,10 +735,16 @@ export async function patchSystemAccountManagementAsync(
     const applied = await tx.execute(`
       UPDATE ${systemAccountTable(tx, 'system_accounts')}
       SET ${assignments.join(', ')}, updated_at = ?
-      WHERE id = ? AND updated_at = ?
-    `, [...params, updatedAt, id, expectedUpdatedAt])
+      WHERE id = ? AND ${systemAccountPatchRevisionPredicate(tx.driver)}
+    `, [...params, updatedAt, id, current.updated_at])
     if (applied.changes !== 1) {
       throw new SystemAccountManagementPatchConflictError()
+    }
+    if (systemAccountPatchRevokesSessions(changes)) {
+      await tx.execute(`
+        DELETE FROM ${systemAccountTable(tx, 'system_sessions')}
+        WHERE system_account_id = ?
+      `, [id])
     }
     result.updatedAt = updatedAt
     return {
@@ -744,7 +756,9 @@ export async function patchSystemAccountManagementAsync(
   })
 
   if (!outcome || outcome.kind === 'no_op') return outcome
-  invalidateSystemAccountLookupCache(id)
+  if (outcome.changes.some((change) => change.field === 'displayName')) {
+    invalidateSystemAccountLookupCache(id)
+  }
   const runtimeReason = systemAccountManagementRuntimeInvalidationReason(outcome.changes)
   if (runtimeReason) {
     notifyGatewayRuntimeCacheInvalidation(runtimeReason)
@@ -753,15 +767,26 @@ export async function patchSystemAccountManagementAsync(
   return outcome
 }
 
-function systemAccountManagementPatchSelectColumns(input: Record<string, unknown>): string[] {
-  const columns = new Set(['id', 'updated_at', 'display_name'])
+function systemAccountManagementPatchSelectColumns(input: Record<string, unknown>, driver: DatabaseClient['driver']): string[] {
+  const columns = new Set([
+    'id',
+    driver === 'postgres'
+      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+      : 'updated_at',
+    'display_name'
+  ])
   if (Object.hasOwn(input, 'description')) columns.add('description')
   if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status') || Object.hasOwn(input, 'mustChangePassword')) columns.add('role')
   if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status')) columns.add('status')
   if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'mustChangePassword')) columns.add('must_change_password')
   if (Object.hasOwn(input, 'imageGenerationEnabled')) columns.add('image_generation_enabled')
   if (Object.hasOwn(input, 'requestLimits')) columns.add('request_limits_json')
+  if (Object.hasOwn(input, 'password')) columns.add('password_hash')
   return [...columns]
+}
+
+function systemAccountPatchRevisionPredicate(driver: DatabaseClient['driver']): string {
+  return driver === 'postgres' ? 'updated_at = CAST(? AS timestamptz)' : 'updated_at = ?'
 }
 
 function requiredSystemAccountPatchValue<K extends keyof SystemAccountManagementPatchRow>(
@@ -798,9 +823,21 @@ function systemAccountPatchBoolean(value: unknown): boolean {
 
 function nextSystemAccountUpdatedAt(currentUpdatedAt: string): string {
   const now = nowIso()
-  if (now > currentUpdatedAt) return now
+  const nowMs = Date.parse(now)
   const currentMs = Date.parse(currentUpdatedAt)
-  return Number.isFinite(currentMs) ? new Date(currentMs + 1).toISOString() : now
+  if (!Number.isFinite(currentMs) || nowMs > currentMs) return now
+  return new Date(currentMs + 1).toISOString()
+}
+
+function systemAccountRevisionsEqual(left: string, right: string): boolean {
+  return normalizedSystemAccountRevisionToken(left) === normalizedSystemAccountRevisionToken(right)
+}
+
+function normalizedSystemAccountRevisionToken(value: string): string {
+  const utcMatch = /^(.*?)(?:\.(\d+))?Z$/i.exec(value)
+  if (!utcMatch) return value
+  const fraction = (utcMatch[2] ?? '').replace(/0+$/, '')
+  return `${utcMatch[1]}${fraction ? `.${fraction}` : ''}Z`
 }
 
 function systemAccountManagementRuntimeInvalidationReason(changes: SystemAccountManagementPatchChange[]): string | undefined {
@@ -808,6 +845,11 @@ function systemAccountManagementRuntimeInvalidationReason(changes: SystemAccount
   if (changes.some((change) => change.field === 'imageGenerationEnabled')) return 'system_account_image_generation_changed'
   if (changes.some((change) => change.field === 'requestLimits')) return 'system_account_request_limits_changed'
   return undefined
+}
+
+function systemAccountPatchRevokesSessions(changes: SystemAccountManagementPatchChange[]): boolean {
+  return changes.some((change) => change.field === 'password'
+    || (change.field === 'status' && change.after === 'disabled'))
 }
 
 export function updateSystemAccount(id: string, input: {

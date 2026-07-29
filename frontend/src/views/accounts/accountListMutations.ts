@@ -6,6 +6,18 @@ import type {
   AccountListItem,
   AuthorizedAccountDispatchMutationResult
 } from '@/types/domain'
+import type { AccountFilters } from './accountFormTypes'
+
+export interface AccountListRevisionOverlay {
+  configRevision: number
+  row: AccountListItem
+}
+
+export interface AccountListPageWindowContext {
+  filters: AccountFilters
+  isManagementView: boolean
+  sorts: AccountListSortParam[]
+}
 
 export function cloneAccountListCacheResult<T>(value: T): T {
   return structuredClone(toRaw(value as object)) as T
@@ -62,6 +74,51 @@ export function replaceAccountListRow(
     todayUsage: current.todayUsage
   }
   return nextAccounts
+}
+
+export function mergeAccountListPageWithRevisionOverlays(
+  incoming: AccountListItem[],
+  current: AccountListItem[],
+  overlays: Map<string, AccountListRevisionOverlay>
+): AccountListItem[] {
+  if (overlays.size === 0) return incoming
+  const currentById = new Map(current.map((account) => [account.id, account]))
+  return incoming.map((account) => {
+    const overlay = overlays.get(account.id)
+    if (!overlay) return account
+    const incomingRevision = normalizedConfigRevision(account.configRevision)
+    if (incomingRevision !== undefined && incomingRevision >= overlay.configRevision) {
+      overlays.delete(account.id)
+      return account
+    }
+    const currentAccount = currentById.get(account.id)
+    const currentRevision = normalizedConfigRevision(currentAccount?.configRevision)
+    return currentAccount && currentRevision !== undefined && currentRevision >= overlay.configRevision
+      ? currentAccount
+      : overlay.row
+  })
+}
+
+export function accountListPageWindowChanged(
+  previous: AccountListItem,
+  updated: AccountListItem,
+  context: AccountListPageWindowContext
+): boolean {
+  if (accountListSortChanged(previous, updated, context.sorts)) return true
+  const { filters } = context
+  if (filters.keyword.trim() && previous.name !== updated.name) return true
+  if (filters.providerCode !== 'all' && previous.providerCode !== updated.providerCode) return true
+  if (filters.type !== 'all' && previous.type !== updated.type) return true
+  if (filters.groupId && previous.boundGroupId !== updated.boundGroupId) return true
+  if (filters.tagIds.length > 0 && selectedTagMembershipChanged(previous, updated, filters.tagIds)) return true
+  if (filters.status.length > 0 && accountStatusFilterFactsChanged(previous, updated)) return true
+  if (context.isManagementView
+    && filters.systemAccountId
+    && (previous.systemAccountId !== updated.systemAccountId
+      || previous.ownerSystemAccountId !== updated.ownerSystemAccountId)) {
+    return true
+  }
+  return false
 }
 
 export function accountListSortChanged(
@@ -124,6 +181,44 @@ function isOlderConfigRevision(current: number | undefined, incoming: number | u
   return Number.isInteger(current)
     && Number.isInteger(incoming)
     && Number(incoming) < Number(current)
+}
+
+function normalizedConfigRevision(value: number | undefined): number | undefined {
+  const revision = Number(value)
+  return Number.isInteger(revision) && revision >= 1 ? revision : undefined
+}
+
+function selectedTagMembershipChanged(
+  previous: AccountListItem,
+  updated: AccountListItem,
+  selectedTagIds: string[]
+): boolean {
+  const selected = new Set(selectedTagIds)
+  const previousIds = new Set((previous.tags ?? []).map((tag) => tag.id).filter((id) => selected.has(id)))
+  const updatedIds = new Set((updated.tags ?? []).map((tag) => tag.id).filter((id) => selected.has(id)))
+  return previousIds.size !== updatedIds.size || [...previousIds].some((id) => !updatedIds.has(id))
+}
+
+function accountStatusFilterFactsChanged(previous: AccountListItem, updated: AccountListItem): boolean {
+  return JSON.stringify([
+    previous.status,
+    previous.schedulable,
+    previous.effectiveAvailability,
+    previous.authorizationQuotaExceeded,
+    previous.authorizationInstanceSourceAccountStatus,
+    previous.authorizationInstanceSourceAccountSchedulable,
+    previous.authorizationInstanceSourceAccountExpiresAt,
+    previous.authorizationInstanceSourceAccountCooldownUntil
+  ]) !== JSON.stringify([
+    updated.status,
+    updated.schedulable,
+    updated.effectiveAvailability,
+    updated.authorizationQuotaExceeded,
+    updated.authorizationInstanceSourceAccountStatus,
+    updated.authorizationInstanceSourceAccountSchedulable,
+    updated.authorizationInstanceSourceAccountExpiresAt,
+    updated.authorizationInstanceSourceAccountCooldownUntil
+  ])
 }
 
 function accountListSortValue(account: AccountListItem, field: AccountListSortParam['field']): string | number | boolean | undefined {

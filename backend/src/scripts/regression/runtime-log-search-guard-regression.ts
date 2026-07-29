@@ -119,6 +119,29 @@ try {
 
   const datasetDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
+  const demandReadSql: string[] = []
+  datasetDatabase.prepare = ((sql: string) => {
+    demandReadSql.push(sql)
+    return originalPrepare(sql)
+  }) as typeof datasetDatabase.prepare
+  try {
+    const listPage = runtimeLogsRepository.listRuntimeLogs({ pageSize: 1 })
+    assert.equal(listPage.items.length, 1, '运行日志摘要列表应正常返回')
+    assert(!('rawJson' in listPage.items[0]!), '运行日志列表 DTO 不得包含 rawJson')
+    assert(!('createdAt' in listPage.items[0]!), '运行日志列表 DTO 不得包含未消费 createdAt')
+    const delta = runtimeLogsRepository.getRuntimeLogDetailDeltaReadOnly('rtlog_short_keyword_guard')
+    assert.deepEqual(Object.keys(delta ?? {}).sort(), ['id', 'rawJson'], '索引详情只应返回 id + rawJson 增量')
+  } finally {
+    datasetDatabase.prepare = originalPrepare
+  }
+  const listSql = demandReadSql.find((sql) => /FROM\s+runtime_logs\s+rl[\s\S]*ORDER BY/i.test(sql)) ?? ''
+  assert(listSql, '应捕获运行日志列表 SQL')
+  assert.doesNotMatch(listSql, /raw_json|created_at/i, '运行日志列表 SQL 不得读取原始正文或未消费创建时间')
+  assert.match(listSql, /SUBSTR\(rl\.message, 1, 1000\)/, '运行日志列表消息必须使用有界展示投影')
+  const deltaSql = demandReadSql.find((sql) => /SELECT\s+id, raw_json[\s\S]*WHERE id = \?/i.test(sql)) ?? ''
+  assert(deltaSql, '应捕获运行日志详情增量 SQL')
+  assert.doesNotMatch(deltaSql, /trace_id|event|message|error_message|created_at/i, '运行日志详情增量 SQL 不得重复读取列表字段')
+
   const facetMaintenanceSql: string[] = []
   datasetDatabase.prepare = ((sql: string) => {
     facetMaintenanceSql.push(sql)

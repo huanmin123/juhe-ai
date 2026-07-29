@@ -429,6 +429,7 @@ import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAcc
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
+  AccountBatchEditResult,
   AccountBatchEditContextField,
   AccountBatchEditContextItem,
   AccountListItem,
@@ -441,6 +442,7 @@ import AccountBatchEditField from './AccountBatchEditField.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import {
+  accountBatchEditContextFieldsForForm,
   buildAccountBatchEditRequest,
   createAccountBatchEditForm,
   enabledAccountBatchEditFieldLabels,
@@ -489,7 +491,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'proxyOptionsDropdown', open: boolean): void
   (event: 'proxyOptionsSearch', value: string): void
-  (event: 'saved'): void
+  (event: 'saved', result: AccountBatchEditResult): void
 }>()
 
 const activeTab = ref('general')
@@ -506,7 +508,7 @@ let loadToken = 0
 let modelOptionsRequestId = 0
 let modelContextPromise: Promise<void> | undefined
 let modelOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
-const loadedModelContextFields = new Set<AccountBatchEditContextField>()
+const loadedModelContextFields = reactive(new Set<AccountBatchEditContextField>())
 const pendingModelContextFields = new Set<AccountBatchEditContextField>()
 
 const tagOptions = computed(() => props.tags.map((tag) => ({ label: tag.name, value: tag.name })))
@@ -574,7 +576,16 @@ const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
 }))
 const requestOverridesSupported = computed(() => Boolean(
   homogeneousAccount.value
-  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, effectiveBatchEndpointModes.value)
+  && (
+    isAccountRequestOverrideProviderSupported(
+      homogeneousAccount.value.providerCode,
+      form.enabled.supportedEndpointModes || loadedModelContextFields.has('supportedEndpointModes')
+        ? effectiveBatchEndpointModes.value
+        : undefined
+    )
+    || form.enabled.serviceTierOverride
+    || form.enabled.reasoningEffortOverride
+  )
 ))
 const modelConfigurationLoading = computed(() => modelContextLoading.value || modelsLoading.value)
 const contextErrorMessage = computed(() => contextError.value || modelContextError.value)
@@ -685,12 +696,22 @@ async function ensureModelContext(fields: readonly AccountBatchEditContextField[
         if (token !== loadToken || !open.value) return
         if (details.length !== props.accounts.length) throw new Error('部分账户详情未能加载')
         const detailsById = new Map(details.map((detail) => [detail.id, detail]))
+        const revisionChanged = loadedModelContextFields.size > 0 && accountDetails.value.some((account) => {
+          const detail = detailsById.get(account.id)
+          return detail && detail.configRevision !== account.configRevision
+        })
+        if (revisionChanged) {
+          for (const field of loadedModelContextFields) pendingModelContextFields.add(field)
+          loadedModelContextFields.clear()
+          accountDetails.value = accountDetails.value.map(clearAccountModelContext)
+        }
         accountDetails.value = accountDetails.value.map((account) => ({
           ...account,
           ...detailsById.get(account.id)
         }))
         for (const field of requestedFields) loadedModelContextFields.add(field)
       } catch (error) {
+        if (token !== loadToken || !open.value) return
         console.error(error)
         modelContextError.value = extractApiErrorMessage(error, '获取批量编辑模型配置失败，请重试')
       } finally {
@@ -748,9 +769,10 @@ function handleHealthCheckModelOptionsOpen(nextOpen: boolean): void {
 
 function handleMappingModelOptionsOpen(nextOpen: boolean): void {
   if (!nextOpen) return
+  const token = loadToken
   void (async () => {
     await ensureModelContext(modelContextFieldsForEnabledForm())
-    if (!contextErrorMessage.value) await loadModelOptions(loadToken)
+    if (token === loadToken && open.value && !contextErrorMessage.value) await loadModelOptions(token)
   })()
 }
 
@@ -763,11 +785,14 @@ function scheduleModelOptionsSearch(
   contextFields: readonly AccountBatchEditContextField[] = []
 ): void {
   clearModelOptionsSearchTimer()
+  const token = loadToken
   modelOptionsSearchTimer = setTimeout(() => {
     modelOptionsSearchTimer = undefined
     void (async () => {
       await ensureModelContext(contextFields)
-      if (!contextErrorMessage.value) await loadModelOptions(loadToken, value.trim())
+      if (token === loadToken && open.value && !contextErrorMessage.value) {
+        await loadModelOptions(token, value.trim())
+      }
     })()
   }, 250)
 }
@@ -793,9 +818,10 @@ watch(
   () => [form.enabled.serviceTierOverride, form.enabled.reasoningEffortOverride] as const,
   ([serviceTierEnabled, reasoningEffortEnabled], [previousServiceTierEnabled, previousReasoningEffortEnabled]) => {
     if ((serviceTierEnabled && !previousServiceTierEnabled) || (reasoningEffortEnabled && !previousReasoningEffortEnabled)) {
+      const token = loadToken
       void (async () => {
         await ensureModelContext(modelContextFieldsForEnabledForm())
-        if (!contextErrorMessage.value) await loadModelOptions(loadToken)
+        if (token === loadToken && open.value && !contextErrorMessage.value) await loadModelOptions(token)
       })()
     }
   }
@@ -803,8 +829,9 @@ watch(
 
 async function save(): Promise<void> {
   if (saveDisabled.value) return
+  const token = loadToken
   await ensureModelContext(modelContextFieldsForEnabledForm())
-  if (contextErrorMessage.value) return
+  if (token !== loadToken || !open.value || contextErrorMessage.value) return
   const result = buildAccountBatchEditRequest(accountDetails.value, form, {
     mappingAnthropicSourceModelOptions: currentProviderModelOptions.value,
     mappingCurrentProviderSourceModelOptions: currentProviderModelOptions.value,
@@ -820,14 +847,12 @@ async function save(): Promise<void> {
   }
   saving.value = true
   try {
-    if (props.isManagementView) {
-      await api.accounts.batchUpdate(result.payload, managementScopeParams.value)
-    } else {
-      await api.myAccounts.batchUpdate(result.payload)
-    }
+    const updated = props.isManagementView
+      ? await api.accounts.batchUpdate(result.payload, managementScopeParams.value)
+      : await api.myAccounts.batchUpdate(result.payload)
     message.success(`已批量更新 ${accountDetails.value.length} 个账户`)
     open.value = false
-    emit('saved')
+    emit('saved', updated)
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '批量编辑账户失败'))
@@ -919,25 +944,7 @@ function normalizedTextList(values: string[]): string[] {
 }
 
 function modelContextFieldsForEnabledForm(): AccountBatchEditContextField[] {
-  const fields = new Set<AccountBatchEditContextField>()
-  if (!form.enabled.supportedModels && (
-    form.enabled.healthCheckModel
-    || form.enabled.modelMappings
-    || form.enabled.serviceTierOverride
-    || form.enabled.reasoningEffortOverride
-  )) {
-    fields.add('supportedModels')
-  }
-  if (!form.enabled.supportedEndpointModes && (
-    form.enabled.healthCheckEndpointMode
-    || form.enabled.modelMappings
-  )) {
-    fields.add('supportedEndpointModes')
-  }
-  if (form.enabled.supportedEndpointModes && !form.enabled.modelMappings) {
-    fields.add('modelMappings')
-  }
-  return [...fields]
+  return accountBatchEditContextFieldsForForm(form, homogeneousAccount.value?.providerCode)
 }
 
 function accountBatchEditContextFromListItem(account: AccountListItem): AccountBatchEditContextItem {
@@ -950,6 +957,16 @@ function accountBatchEditContextFromListItem(account: AccountListItem): AccountB
     protocolVersion: account.protocolVersion ?? '',
     type: account.type
   }
+}
+
+function clearAccountModelContext(account: AccountBatchEditContextItem): AccountBatchEditContextItem {
+  const {
+    supportedModels: _supportedModels,
+    modelMappings: _modelMappings,
+    supportedEndpointModes: _supportedEndpointModes,
+    ...identity
+  } = account
+  return identity
 }
 
 </script>

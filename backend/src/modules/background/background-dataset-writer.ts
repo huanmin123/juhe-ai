@@ -10,7 +10,8 @@ import {
   updateModelCheckQualityDecisionAsync,
   type ModelCheckItemCreateInput,
   type ModelCheckRunCreateInput,
-  type ModelCheckRunFinishInput
+  type ModelCheckRunFinishInput,
+  type ModelCheckRunFinishResult
 } from '../../storage/model-checks.repository.js'
 import { sqliteWriterBoundaryStrictModeEnabled } from '../../storage/database.js'
 import type { ModelCheckItemSummary, ModelCheckRunSummary } from '../../domain/types.js'
@@ -46,7 +47,7 @@ export type BackgroundDatasetWriteOperation =
 export type BackgroundDatasetWriteOperationResult<T extends BackgroundDatasetWriteOperation = BackgroundDatasetWriteOperation> =
   T extends { type: 'create_model_check_run' } ? ModelCheckRunSummary :
   T extends { type: 'create_model_check_items' } ? ModelCheckItemSummary[] :
-  T extends { type: 'finish_model_check_run' } ? ModelCheckRunSummary | undefined :
+  T extends { type: 'finish_model_check_run' } ? ModelCheckRunFinishResult :
   T extends { type: 'create_model_check_observations' } ? number :
   T extends { type: 'update_model_check_quality_decision' } ? ModelCheckRunSummary | undefined :
   unknown

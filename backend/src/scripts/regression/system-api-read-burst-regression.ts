@@ -52,6 +52,9 @@ try {
   logger.level = 'silent'
   closeStorageDatabases = databaseModule.closeStorageDatabases
   closeSqliteReadWorkerPool = readWorkerPool.closeSqliteReadWorkerPool
+  databaseModule.getDatasetDatabase()
+  databaseModule.getUsageCatalogDatabase()
+  databaseModule.getStatsDatabase()
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   repositories.updateSettings({

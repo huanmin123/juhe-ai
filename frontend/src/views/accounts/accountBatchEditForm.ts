@@ -2,6 +2,7 @@ import type { Dayjs } from 'dayjs'
 
 import { formatServerDateTimeInput } from '@/shared/formatters'
 import type {
+  AccountBatchEditContextField,
   AccountBatchEditContextItem,
   AccountBatchEditRequest,
   AccountGptReasoningEffortOverride,
@@ -142,6 +143,33 @@ export function enabledAccountBatchEditFieldLabels(form: AccountBatchEditForm): 
   return (Object.keys(form.enabled) as AccountBatchEditFieldKey[])
     .filter((key) => form.enabled[key])
     .map((key) => accountBatchEditFieldLabels[key])
+}
+
+export function accountBatchEditContextFieldsForForm(
+  form: Pick<AccountBatchEditForm, 'enabled'>,
+  providerCode?: string
+): AccountBatchEditContextField[] {
+  const fields = new Set<AccountBatchEditContextField>()
+  if (!form.enabled.supportedModels && (
+    form.enabled.healthCheckModel
+    || form.enabled.modelMappings
+    || form.enabled.serviceTierOverride
+    || form.enabled.reasoningEffortOverride
+  )) {
+    fields.add('supportedModels')
+  }
+  if (!form.enabled.supportedEndpointModes && (
+    form.enabled.healthCheckEndpointMode
+    || form.enabled.modelMappings
+    || ((form.enabled.serviceTierOverride || form.enabled.reasoningEffortOverride)
+      && providerCode === 'gemini')
+  )) {
+    fields.add('supportedEndpointModes')
+  }
+  if (form.enabled.supportedEndpointModes && !form.enabled.modelMappings) {
+    fields.add('modelMappings')
+  }
+  return [...fields]
 }
 
 export function buildAccountBatchEditRequest(

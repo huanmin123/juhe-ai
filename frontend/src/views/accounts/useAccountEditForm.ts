@@ -799,11 +799,17 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       message.warning('无法确定克隆目标系统账户，请先筛选目标系统账户后再克隆')
       return
     }
-    const [sourceAccount, advancedDetail] = await Promise.all([
-      loadAccountDetailForForm(account.id, cloneScopeParams, '加载克隆账户基础配置失败', 'edit-basic'),
-      loadAccountDetailForForm(account.id, cloneScopeParams, '加载克隆账户高级配置失败')
-    ])
-    if (!sourceAccount || !advancedDetail || advancedDetail.accessType !== 'owner' || !isCurrentFormOpenRequest(requestToken)) return
+    let sourceAccount
+    try {
+      sourceAccount = options.isManagementView.value
+        ? await api.accounts.cloneContext(account.id, cloneScopeParams)
+        : await api.myAccounts.cloneContext(account.id)
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '加载克隆账户配置失败'))
+      return
+    }
+    if (!isCurrentFormOpenRequest(requestToken)) return
     accountEditDetailLoading.value = false
     editingId.value = undefined
     editingAccountDetail.value = undefined
@@ -815,18 +821,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const selectedGroup = sourceAccount.boundGroupId
       ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
       : undefined
-    const fallbackGroupId = options.groupIdForAccount(sourceAccount.id)
     let formLoad: ReturnType<typeof buildAccountCloneFormLoad>
     try {
       formLoad = buildAccountCloneFormLoad({
         account: sourceAccount,
-        advanced: advancedDetail,
-        credentials: {
-          ...sourceAccount.credentials,
-          ...(advancedDetail.credentials ?? {})
-        },
         defaults,
-        fallbackGroupId,
         selectedGroup
       })
     } catch (error) {

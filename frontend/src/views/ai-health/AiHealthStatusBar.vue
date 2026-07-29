@@ -56,9 +56,6 @@ function handlePointerMove(event: PointerEvent): void {
   const hour = pointAtClientX(event.clientX)
   if (!hour) return
   const details = [hour.statHour.replace('T', ' '), statusLabel(hour.status)]
-  if (hour.statusCode) details.push(`HTTP ${hour.statusCode}`)
-  if (hour.errorCode) details.push(hour.errorCode)
-  if (hour.errorMessage) details.push(hour.errorMessage)
   if (canvasRef.value) canvasRef.value.title = details.join(' · ')
 }
 

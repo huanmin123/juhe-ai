@@ -98,6 +98,11 @@ try {
   const baseAccounts = base.accounts as Array<{ id: string }>
   assert(baseAccounts.length <= 10, 'base 默认账号不能超过 10 个')
   assert.deepEqual(baseAccounts.map((account) => account.id), [visibleAccount.id], 'base 应返回当前 scope 默认排行账号')
+  assert.deepEqual(Object.keys(baseAccounts[0] ?? {}).sort(), ['id', 'name', 'providerCode'], '自助 base 的自有账户不得返回管理端所属用户或授权标签字段')
+
+  const defaultRangeBase = await getData<{ range: { days: number; maxDays: number } }>(baseUrl, userCookie)
+  assert.equal(defaultRangeBase.range.days, 3, '未传日期时 AI 性能必须按 Node 统计时区返回默认最近 3 天')
+  assert.equal(defaultRangeBase.range.maxDays, 31)
 
   await assertStatus(`${baseUrl}?${dateQuery}&accountIds=${visibleAccount.id}`, userCookie, 400, 'base 必须拒绝 accountIds')
   await assertStatus(`${baseUrl}?${dateQuery}&accountIds[]=${visibleAccount.id}`, userCookie, 400, 'base 必须拒绝 bracket accountIds')
@@ -108,6 +113,7 @@ try {
   )
   assert.deepEqual(Object.keys(series).sort(), ['accounts', 'hourlySeries', 'range'], 'series 必须只返回 range/accounts/hourlySeries')
   assert.deepEqual((series.accounts as Array<{ id: string }>).map((account) => account.id), [visibleAccount.id], '不可见 accountId 必须静默省略')
+  assert.deepEqual(Object.keys((series.accounts as Array<Record<string, unknown>>)[0] ?? {}).sort(), ['id', 'name', 'providerCode'], '自助 series 的自有账户必须保持最小标签 DTO')
   assert.equal((series.hourlySeries as Array<{ accountId: string }>)[0]?.accountId, visibleAccount.id, 'series 应返回可见账号小时序列')
 
   const bracketSeries = await getData<Record<string, unknown>>(`${baseUrl}/series?${dateQuery}&accountIds[]=${visibleAccount.id}`, userCookie)

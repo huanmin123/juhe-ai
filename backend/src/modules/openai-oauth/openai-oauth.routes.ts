@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync } from '../../storage/repositories.js'
+import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync } from '../../storage/repositories.js'
 import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync, type OAuthCredentialRotationAccount, type OAuthCredentialRotationResult } from '../../storage/oauth-credential-rotation.repository.js'
 import { GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -11,7 +11,6 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
-import { sanitizeAccountCredentialCarrierResponse } from '../accounts/account-response-sanitizer.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
@@ -106,6 +105,10 @@ const reauthorizeFromCodeSchema = z.object({
 const reauthorizeFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
   clientId: z.string().trim().min(1).optional(),
+  expectedConfigRevision: z.number().int().min(1)
+}).strict()
+
+const refreshAccountTokenSchema = z.object({
   expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
@@ -330,13 +333,22 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const account = await findEditableOpenAIOAuthAccount(req.params.id, requestAccess)
+  const parsed = refreshAccountTokenSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('OpenAI OAuth 刷新参数无效'))
+    return
+  }
+  const account = await findRotatableOpenAIOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
     res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
+    return
+  }
+  if (account.configRevision !== parsed.data.expectedConfigRevision) {
+    res.status(409).json(badRequest('OpenAI OAuth 账户已被其他操作更新，请刷新页面后重试'))
     return
   }
 
@@ -353,7 +365,11 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       return
     }
     await recordOperationLogAsync(buildOAuthUpdateLog(account, updated, requestAccess, 'refresh_token', '刷新 OpenAI OAuth Token'), req)
-    res.json(ok(sanitizeAccountCredentialCarrierResponse(updated)))
+    res.json(ok({
+      id: updated.id,
+      configRevision: 'configRevision' in updated ? updated.configRevision : parsed.data.expectedConfigRevision + 1,
+      updatedAt: 'updatedAt' in updated ? updated.updatedAt : new Date().toISOString()
+    }))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
       return
@@ -537,14 +553,6 @@ export function buildSafeOpenAIOAuthCredentials(
   }
 }
 
-async function findEditableOpenAIOAuthAccount(accountId: string, access?: AccessScope) {
-  const account = await findAccountForTestAsync(accountId, access)
-  if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth' || account.permissions?.canEdit === false || account.permissions?.canViewCredentials === false) {
-    return undefined
-  }
-  return account
-}
-
 async function findRotatableOpenAIOAuthAccount(accountId: string, access?: AccessScope): Promise<OAuthCredentialRotationAccount | undefined> {
   const account = await findOAuthCredentialRotationAccountAsync(accountId, access)
   return account && isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.type === 'oauth'
@@ -586,7 +594,7 @@ export function buildReauthorizedOpenAIOAuthCredentials(
   }
 }
 
-function isBlockedOpenAIOAuthErrorAccount(account: NonNullable<Awaited<ReturnType<typeof findEditableOpenAIOAuthAccount>>>): boolean {
+function isBlockedOpenAIOAuthErrorAccount(account: OAuthCredentialRotationAccount): boolean {
   return account.status === 'error' && !isManagedOpenAIOAuthRefreshErrorCode(account.lastErrorCode)
 }
 
@@ -654,7 +662,7 @@ function buildOAuthCreateLog(
 }
 
 function buildOAuthUpdateLog(
-  before: NonNullable<Awaited<ReturnType<typeof findEditableOpenAIOAuthAccount>>> | OAuthCredentialRotationAccount,
+  before: OAuthCredentialRotationAccount,
   after: Awaited<ReturnType<typeof refreshOpenAIOAuthAccountAccessToken>> | OAuthCredentialRotationResult,
   access: AccessScope | undefined,
   action: string,

@@ -100,6 +100,7 @@ try {
     type: 'oauth',
     credentials: {
       access_token: 'access-stale',
+      account_id: 'acct-hot-path',
       refresh_token: 'refresh-hot-path',
       expires_at: new Date(Date.now() + 5_000).toISOString(),
       client_id: 'client-hot-path',
@@ -172,6 +173,7 @@ try {
     type: 'oauth',
     credentials: {
       access_token: 'access-near-stale',
+      account_id: 'acct-hot-path',
       refresh_token: 'refresh-near-hot-path',
       expires_at: new Date(Date.now() + 30_000).toISOString(),
       client_id: 'client-near-hot-path',
@@ -226,6 +228,7 @@ try {
     type: 'oauth',
     credentials: {
       access_token: 'access-expired-stale',
+      account_id: 'acct-hot-path',
       refresh_token: 'refresh-expired-hot-path',
       expires_at: new Date(Date.now() - 1_000).toISOString(),
       client_id: 'client-expired-hot-path',

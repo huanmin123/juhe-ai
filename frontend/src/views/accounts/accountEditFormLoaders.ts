@@ -1,4 +1,4 @@
-import type { AccountAdvancedDetail, AccountEditBasicDetail } from '@/types/domain'
+import type { AccountAdvancedDetail, AccountCloneContext, AccountCloneCredentialOptions, AccountEditBasicDetail } from '@/types/domain'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 
 import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
@@ -59,6 +59,12 @@ interface AccountBasicFormLoadInput {
 
 interface AccountFormLoadInput extends AccountBasicFormLoadInput {
   advanced: AccountAdvancedDetail
+}
+
+interface AccountCloneFormLoadInput {
+  account: AccountCloneContext
+  defaults: AccountFormModel
+  selectedGroup?: GroupSelection
 }
 
 export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEditFormLoadResult {
@@ -141,14 +147,15 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
   }
 }
 
-export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountEditFormLoadResult {
-  const { account, advanced, credentials, defaults, fallbackGroupId, selectedGroup } = input
+export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): AccountEditFormLoadResult {
+  const { account, defaults, selectedGroup } = input
+  const credentials = account.credentialOptions
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '克隆来源响应检查策略')
   const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
   const { accountExpiresAt, availabilitySchedule } = parseAccountScheduleFields(
-    advanced.accountExpiresAt,
-    advanced.availabilitySchedule,
+    account.accountExpiresAt,
+    account.availabilitySchedule,
     '克隆来源账户数据结构异常，请清理后再克隆'
   )
   const patch: AccountFormModel = {
@@ -165,9 +172,9 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
     codexResponsesSafeRepairEnabled: credentials.codex_responses_safe_repair_enabled !== false,
     codexResponsesStrictInterceptEnabled: credentials.codex_responses_strict_intercept_enabled === true,
     supportedEndpointModes: accountEndpointModesForForm(account, credentials),
-    proxyProfileId: advanced.proxyProfileId,
+    proxyProfileId: account.proxyProfileId,
     accountExpiresAt,
-    groupId: selectedGroup?.id ?? fallbackGroupId,
+    groupId: selectedGroup?.id,
     group: selectedGroup,
     apiKey: '',
     apiKeys: [''],
@@ -181,10 +188,10 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
     ssoTokens: '',
     supportedModels: [...(account.supportedModels ?? [])],
     healthCheckModel: account.healthCheckModel,
-    temporaryUnavailableContinuousProbeEnabled: advanced.temporaryUnavailableContinuousProbeEnabled !== false,
+    temporaryUnavailableContinuousProbeEnabled: account.temporaryUnavailableContinuousProbeEnabled !== false,
     healthCheckEndpointMode: account.healthCheckEndpointMode,
     ...accountGptRequestOverridesForForm(account.providerCode, credentials),
-    modelMappings: cloneAccountModelMappings(advanced.modelMappings),
+    modelMappings: cloneAccountModelMappings(account.modelMappings),
     tags: accountTagNames(account.tags),
     availabilitySchedule,
     notes: account.notes ?? ''
@@ -198,13 +205,14 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
   }
 }
 
-function accountClientCompatibilityForForm(account: AccountEditBasicDetail): AccountFormModel['clientCompatibility'] {
+function accountClientCompatibilityForForm(account: Pick<AccountEditBasicDetail, 'clientCompatibility'>): AccountFormModel['clientCompatibility'] {
   return account.clientCompatibility
 }
 
 function accountEndpointModesForForm(
-  account: AccountEditBasicDetail,
-  credentials: Record<string, unknown>
+  account: Pick<AccountEditBasicDetail, 'providerCode' | 'providerProtocolProfileId' | 'type'>
+    & Partial<Pick<AccountEditBasicDetail, 'protocolCode' | 'protocolVersion'>>,
+  credentials: Pick<AccountCloneCredentialOptions, 'supported_endpoint_modes'>
 ): AccountFormModel['supportedEndpointModes'] {
   return normalizeAccountEndpointModes(
     credentials.supported_endpoint_modes,
@@ -214,7 +222,7 @@ function accountEndpointModesForForm(
   )
 }
 
-function credentialBaseUrlForForm(credentials: Record<string, unknown>, label: string, allowMissing = false): string {
+function credentialBaseUrlForForm(credentials: { base_url?: unknown }, label: string, allowMissing = false): string {
   const baseUrl = asString(credentials.base_url)
   if (!baseUrl && allowMissing) return ''
   if (!baseUrl) {
@@ -223,9 +231,9 @@ function credentialBaseUrlForForm(credentials: Record<string, unknown>, label: s
   return baseUrl
 }
 
-function loadCredentialErrorPolicyRules(credentials: Record<string, unknown>, label: string): AccountErrorPolicyRuleForm[] {
+function loadCredentialErrorPolicyRules(credentials: { error_handling_rules?: unknown }, label: string): AccountErrorPolicyRuleForm[] {
   try {
-    return loadAccountErrorPolicyRules(credentials)
+    return loadAccountErrorPolicyRules(credentials as Record<string, unknown>)
   } catch (error) {
     throw new AccountEditFormLoadError(`${label}配置异常，请先修正已保存的账户凭据`, {
       cause: error,
@@ -234,9 +242,9 @@ function loadCredentialErrorPolicyRules(credentials: Record<string, unknown>, la
   }
 }
 
-function loadCredentialResponseInspectionRules(credentials: Record<string, unknown>, label: string): AccountResponseInspectionRuleForm[] {
+function loadCredentialResponseInspectionRules(credentials: { response_inspection_rules?: unknown }, label: string): AccountResponseInspectionRuleForm[] {
   try {
-    return loadAccountResponseInspectionRules(credentials)
+    return loadAccountResponseInspectionRules(credentials as Record<string, unknown>)
   } catch (error) {
     throw new AccountEditFormLoadError(`${label}配置异常，请先修正已保存的账户凭据`, {
       cause: error,

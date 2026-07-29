@@ -90,6 +90,32 @@ export interface AccountStatusProjectionSeed {
   bound_group_account_authorization_id: string | null
 }
 
+export interface AccountManagementStatusSeed {
+  id: string
+  system_account_id: string
+  status: AccountStatus
+  schedulable: number
+  balance_query_enabled: number
+  balance_query_next_refresh_at: string | null
+  account_expires_at: string | null
+  cooldown_until: string | null
+  last_error_code: string | null
+  last_used_at: string | null
+  authorization_instance_source_account_id: string | null
+  authorization_id: string | null
+  authorization_status: AuthorizationStatus | null
+  authorization_expires_at: string | null
+  authorization_effective_source_type: 'manual' | 'team' | null
+  source_status: AccountStatus | null
+  source_schedulable: number | null
+  source_account_expires_at: string | null
+  source_cooldown_until: string | null
+  source_last_error_code: string | null
+  binding_system_account_id: string | null
+  bound_group_id: string | null
+  bound_group_account_authorization_id: string | null
+}
+
 export interface AccountStatusProjection extends AccountEffectiveAvailabilityInput {
   id: string
   runtimeKey: string
@@ -127,12 +153,82 @@ export async function listAccountStatusProjectionsAsync(
   ))
 }
 
-export async function hydrateAccountStatusProjectionSeedsAsync(
-  seeds: AccountStatusProjectionSeed[]
+export async function hydrateAccountManagementStatusSeedsAsync(
+  seeds: AccountManagementStatusSeed[]
 ): Promise<AccountStatusProjection[]> {
   if (seeds.length === 0) return []
-  const client = await accountStatusDatabaseClient()
-  return hydrateAccountStatusProjectionSeedsDirect(client, seeds, seeds.map((seed) => seed.id))
+  if (runtimeConfig.databaseDriver === 'sqlite' && sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'hydrate_account_management_status_seeds_read_only',
+      seeds
+    })
+  }
+  return hydrateAccountManagementStatusSeedsDirect(seeds, seeds.map((seed) => seed.id))
+}
+
+export async function hydrateAccountManagementStatusSeedsReadOnly(
+  seeds: AccountManagementStatusSeed[]
+): Promise<AccountStatusProjection[]> {
+  if (seeds.length === 0) return []
+  return hydrateAccountManagementStatusSeedsDirect(seeds, seeds.map((seed) => seed.id))
+}
+
+async function hydrateAccountManagementStatusSeedsDirect(
+  rows: AccountManagementStatusSeed[],
+  orderedIds: string[]
+): Promise<AccountStatusProjection[]> {
+  const timezone = await usageStatsTimezoneAsync()
+  const todayScopes: AccountManagementListUsageScope[] = []
+  const authorizationTotalScopes: AccountManagementListUsageScope[] = []
+  for (const row of rows) {
+    const scope: AccountManagementListUsageScope = row.authorization_id
+      ? { rowKey: row.id, systemAccountId: row.system_account_id, scopeType: 'account_authorization', scopeId: row.authorization_id }
+      : { rowKey: row.id, systemAccountId: row.system_account_id, scopeType: 'account', scopeId: row.id }
+    todayScopes.push(scope)
+    if (row.authorization_id) authorizationTotalScopes.push(scope)
+  }
+  const [todayUsage, authorizationTotal] = await Promise.all([
+    loadAccountManagementListUsageAsync(todayScopes, todayDateKey(timezone)),
+    loadAccountManagementListUsageAsync(authorizationTotalScopes)
+  ])
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  return orderedIds.flatMap((id) => {
+    const row = byId.get(id)
+    if (!row) return []
+    const isAuthorized = Boolean(row.authorization_id)
+    const groupBinding = accountStatusGroupBinding(row)
+    const runtimeKey = isAuthorized && groupBinding && row.authorization_id
+      ? `${row.id}:authorized:${row.system_account_id}:${groupBinding.groupId}:${row.authorization_id}`
+      : row.id
+    return [{
+      id: row.id,
+      runtimeKey,
+      concurrencyAccountId: row.authorization_instance_source_account_id || row.id,
+      permissions: accountStatusPermissions(isAuthorized, row.authorization_effective_source_type),
+      accessType: isAuthorized ? 'authorized' as const : 'owner' as const,
+      boundGroupId: groupBinding?.groupId,
+      groupBindStatus: groupBinding?.groupBindStatus,
+      authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
+      authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,
+      authorizationInstanceSourceAccountSchedulable: row.source_schedulable === null ? undefined : row.source_schedulable === 1,
+      authorizationInstanceSourceAccountExpiresAt: row.source_account_expires_at ?? undefined,
+      authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
+      authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
+      accountExpiresAt: row.account_expires_at ?? undefined,
+      status: isAuthorized
+        ? authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
+        : row.status,
+      schedulable: row.schedulable === 1,
+      cooldownUntil: row.cooldown_until ?? undefined,
+      lastErrorCode: isAuthorized ? undefined : row.last_error_code ?? undefined,
+      balanceQueryEnabled: isAuthorized ? undefined : row.balance_query_enabled === 1,
+      balanceQueryNextRefreshAt: isAuthorized ? undefined : row.balance_query_next_refresh_at ?? undefined,
+      todayUsage: accountStatusTodayUsage(todayUsage.get(row.id)),
+      lastUsedAt: isAuthorized ? authorizationTotal.get(row.id)?.lastUsedAt : row.last_used_at ?? undefined
+    }]
+  })
 }
 
 export async function listAccountStatusProjectionsReadOnly(
@@ -446,7 +542,9 @@ async function loadAccountStatusTeamLimitJsonAsync(
   return output
 }
 
-function accountStatusGroupBinding(row: AccountStatusProjectionSeed): {
+function accountStatusGroupBinding(row: Pick<AccountStatusProjectionSeed,
+  'bound_group_id' | 'binding_system_account_id' | 'system_account_id' | 'bound_group_account_authorization_id' | 'authorization_id'
+>): {
   groupId: string
   groupBindStatus: 'bound' | 'authorization_unavailable'
 } | undefined {

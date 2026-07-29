@@ -93,6 +93,38 @@ export interface OperationLogDetail extends OperationLogSummary {
   viewers: OperationLogViewerSummary[]
 }
 
+export interface OperationLogDetailSupplement {
+  operationKey: string
+  resourceType: string
+  resourceId?: string
+  resourceName?: string
+  visibilityScope: OperationLogVisibilityScope
+  changes: OperationLogChange[]
+  method?: string
+  path?: string
+  clientIp?: string
+  targets: OperationLogDetailTarget[]
+  viewers: OperationLogDetailViewer[]
+}
+
+export interface OperationLogDetailTarget {
+  id: string
+  targetType: string
+  targetId?: string
+  targetName?: string
+  targetOwnerSystemAccountName?: string
+  relation: string
+}
+
+export interface OperationLogDetailViewer {
+  systemAccountId: string
+  systemAccountName?: string
+  visibilityReason: OperationLogVisibilityReason
+  detailLevel: OperationLogDetailLevel
+}
+
+export interface OperationLogRenderedDetail extends OperationLogListItem, OperationLogDetailSupplement {}
+
 export interface OperationLogListResult {
   items: OperationLogListItem[]
   total: number

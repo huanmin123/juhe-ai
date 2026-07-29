@@ -293,7 +293,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountListItem, AccountMutationResult, AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountBatchEditResult, AccountListItem, AccountMutationResult, AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -396,8 +396,12 @@ const {
   handleAccountSortChange: handleAccountListSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
   removeLoadedAccount,
+  accountUpdateAffectsPageWindow,
+  markAccountMutation,
+  reloadAccountPageAfterMutation,
   updateLoadedAccount,
   updateLoadedAccountBalance,
+  updateLoadedAccountRevision,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
@@ -482,20 +486,25 @@ async function loadData(options?: { append?: boolean; quiet?: boolean; forceOpti
 }
 
 async function refreshAccountMutationRows(mutation: AccountMutationResult): Promise<void> {
-  const loadedIds = new Set<string>([mutation.id])
+  markAccountMutation(mutation)
   if (mutation.authorizationInstancesAffected) {
-    for (const account of accounts.value) {
-      if (account.authorizationInstanceSourceAccountId === mutation.id) loadedIds.add(account.id)
-    }
+    await reloadAccountPageAfterMutation()
+    return
   }
-  const ids = [...loadedIds]
+  const ids = [mutation.id]
+  let pageReloadRequired = false
   for (let offset = 0; offset < ids.length; offset += 200) {
     const chunk = ids.slice(offset, offset + 200)
     const result = isManagementView.value
       ? await api.accounts.list({ ...accountScopeParams.value, ids: chunk, page: 1, pageSize: chunk.length })
       : await api.myAccounts.list({ ids: chunk, page: 1, pageSize: chunk.length })
-    for (const account of result.items) updateLoadedAccount(account)
+    if (result.items.length !== chunk.length) pageReloadRequired = true
+    for (const account of result.items) {
+      pageReloadRequired = accountUpdateAffectsPageWindow(account) || pageReloadRequired
+      if (!updateLoadedAccount(account)) pageReloadRequired = true
+    }
   }
+  if (pageReloadRequired) await reloadAccountPageAfterMutation()
 }
 
 function handleProviderFilterDropdown(open: boolean): void {
@@ -1106,7 +1115,8 @@ const {
   accountScopeParams,
   extractApiErrorMessage,
   isManagementView,
-  loadData
+  loadData,
+  updateLoadedAccountRevision
 })
 const {
   batchRestoreSelected,
@@ -1115,8 +1125,9 @@ const {
   accountScopeParams,
   clearSelection,
   isManagementView,
-  loadData,
-  selectedAccounts
+  reloadAccountPageAfterMutation,
+  selectedAccounts,
+  updateLoadedAccountRevision
 })
 const {
   handleAccountMenuClick
@@ -1125,10 +1136,13 @@ const {
   extractApiErrorMessage,
   isManagementView,
   loadData,
+  markAccountMutation,
+  reloadAccountPageAfterMutation,
   openReauthorizeModal,
   openTestModal,
   openTrafficMigration,
-  updateLoadedAccount
+  updateLoadedAccount,
+  updateLoadedAccountRevision
 })
 const {
   batchDeleteSelected,
@@ -1213,9 +1227,10 @@ function openBatchEdit(): void {
   batchEditOpen.value = true
 }
 
-async function handleBatchEditSaved(): Promise<void> {
+async function handleBatchEditSaved(result: AccountBatchEditResult): Promise<void> {
+  for (const item of result.items) updateLoadedAccountRevision(item.id, item.configRevision)
   clearSelection()
-  await loadData({ forceOptions: true })
+  await reloadAccountPageAfterMutation()
 }
 
 onMounted(() => {

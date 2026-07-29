@@ -72,6 +72,7 @@ try {
       api_key: 'sk-model-check-unbound-account',
       base_url: `http://127.0.0.1:${serverPort(upstream)}/v1`
     },
+    supportedModels: ['gpt-5.5', 'gpt-5.4'],
     status: 'active',
     schedulable: true,
     groupId: temporaryGroup.id

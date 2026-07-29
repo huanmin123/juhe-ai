@@ -28,7 +28,7 @@ const fileRuntimeFields = [
 
 for (const field of fileRuntimeFields) {
   assert.match(ipcTypesSource, new RegExp(`\\b${field}\\b`), `后台 IPC 运行日志契约必须暴露 ${field}`)
-  assert.match(frontendTypesSource, new RegExp(`\\b${field}\\b`), `前端运行日志契约必须暴露 ${field}`)
+  assert.doesNotMatch(frontendTypesSource, new RegExp(`\\b${field}\\b`), `前端运行日志页面不得暴露无人消费的 ${field}`)
 }
 
 for (const redisField of [

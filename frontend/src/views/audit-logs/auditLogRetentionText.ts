@@ -1,6 +1,9 @@
-import type { AuditLogRuntime } from '@/types/domain'
-
-type AuditRetentionSettings = AuditLogRuntime['settings']
+type AuditRetentionSettings = {
+  enabled: boolean
+  successHotRetentionHours: number
+  successRetentionDays: number
+  successSampleRate: number
+}
 
 export function auditLogEmptyDescription(settings?: AuditRetentionSettings): string {
   if (!settings) return '暂无审计日志。'

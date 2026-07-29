@@ -47,9 +47,15 @@ try {
 
   const detail = await repositories.findPublicAnnouncementAsync(announcement.id)
   assert.equal(detail?.content, 'SQLite DB service 公告完整正文', '公告正文详情应由 SQLite read worker 按 ID 返回')
+  const editDetail = await repositories.findAnnouncementEditDetailAsync(announcement.id)
+  assert.deepEqual(
+    Object.keys(editDetail ?? {}).sort(),
+    ['id', 'title', 'content', 'level', 'status', 'revision'].sort(),
+    '公告管理编辑详情应由 read worker 返回专用窄投影'
+  )
   assert(
-    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= handledJobsBefore + 2,
-    '公告摘要和公共详情必须分别进入 SQLite read worker'
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= handledJobsBefore + 3,
+    '公告摘要、公共详情和管理编辑详情必须分别进入 SQLite read worker'
   )
 
   repositories.unpublishAnnouncement(announcement.id, 'sys_admin')

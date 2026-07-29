@@ -1,5 +1,4 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../domain/route-strategy.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIdsReadOnly,
@@ -12,8 +11,12 @@ import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model
 import { logger } from '../shared/logger.js'
 import { findAccountSummary, listAccountItemsPageReadOnly, listAccountsPageReadOnly } from './account-summary.repository.js'
 import { listAccountManagementItemsPageReadOnly } from './account-management-list.repository.js'
-import { getAiHealthList } from './account-health-monitor.repository.js'
-import { listAccountStatusProjectionsReadOnly } from './account-status-snapshot.repository.js'
+import { findOAuthCredentialRotationAccountAsync } from './oauth-credential-rotation.repository.js'
+import { getAiHealthHourDetail, getAiHealthList } from './account-health-monitor.repository.js'
+import {
+  hydrateAccountManagementStatusSeedsReadOnly,
+  listAccountStatusProjectionsReadOnly
+} from './account-status-snapshot.repository.js'
 import { listAccountOptions, listModelCheckAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
 import {
@@ -23,7 +26,7 @@ import {
   isAccountTestTaskCancelRequested,
   listAccountTestTasks
 } from './account-test-tasks.repository.js'
-import { findAnnouncement, findPublicAnnouncement, listAnnouncementsPage, listPublicAnnouncements } from './announcements.repository.js'
+import { findAnnouncement, findAnnouncementEditDetail, findPublicAnnouncement, listAnnouncementsPage, listPublicAnnouncements } from './announcements.repository.js'
 import {
   findApiKeySecretReadOnly,
   findApiKeySummaryReadOnly,
@@ -38,6 +41,7 @@ import {
   listAuditLogs,
   listAuditLogsByIds
 } from './audit-log-read.repository.js'
+import { getAuditLogDetailSupplement } from './audit-log-detail-supplement.repository.js'
 import {
   listAuthorizationGranteeAccounts,
   listAuthorizationGranteeGroups,
@@ -62,6 +66,10 @@ import {
 } from './group-summary.repository.js'
 import { getModelCheckRunDetail, listModelCheckRuns } from './model-checks.repository.js'
 import {
+  getOperationLogDetailSupplement,
+  getOperationLogDetailSupplementForViewer
+} from './operation-log-detail-supplement.repository.js'
+import {
   getOperationLogDetail,
   getOperationLogDetailForViewer,
   listOperationLogs,
@@ -78,7 +86,11 @@ import {
   listProtocolProviderCodes,
   listProvidersReadOnly
 } from './provider.repository.js'
-import { getPublicApiLogDetail, listPublicApiLogs } from './public-api-logs.repository.js'
+import {
+  getPublicApiLogDetail,
+  getPublicApiLogDetailSupplement,
+  listPublicApiLogs
+} from './public-api-logs.repository.js'
 import { loadGatewayApiKeyForValidationReadOnly } from './gateway-api-key.repository.js'
 import { findOpenAICompatibleFile, listOpenAICompatibleFiles } from './openai-compatible-files.repository.js'
 import {
@@ -119,6 +131,7 @@ import {
 } from './route-strategy.repository.js'
 import {
   getRuntimeLogDetailReadOnly,
+  getRuntimeLogDetailDeltaReadOnly,
   getRuntimeLogFacetsReadOnly,
   listRuntimeLogsReadOnly
 } from './runtime-logs.repository.js'
@@ -146,8 +159,8 @@ import {
   listSystemAccountOptionsReadOnly,
   listSystemAccountsPageReadOnly
 } from './system-accounts.repository.js'
-import { findSystemTeamDetail, findSystemTeamSummary, listSystemTeams, listSystemTeamsPage } from './system-team.repository.js'
-import { getSystemMetricsOverview } from './system-metrics.repository.js'
+import { findSystemTeamDetail, findSystemTeamSummary, listSystemTeamMemberHistory, listSystemTeamMembers, listSystemTeams, listSystemTeamsPage } from './system-team.repository.js'
+import { getSystemMetricsOverview, getSystemMetricsTrend } from './system-metrics.repository.js'
 import {
   getUsageStatsOverview,
   getUsageStatsOverviewDailyTrend,
@@ -206,6 +219,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAccountManagementItemsPageReadOnly(operation.access, operation.options, operation.candidateLimit)
     case 'list_account_status_snapshots_read_only':
       return listAccountStatusProjectionsReadOnly(operation.access, operation.accountIds)
+    case 'hydrate_account_management_status_seeds_read_only':
+      return hydrateAccountManagementStatusSeedsReadOnly(operation.seeds)
     case 'find_account_summary_read_only':
       return findAccountSummary(operation.accountId, operation.access)
     case 'list_account_options_read_only':
@@ -252,6 +267,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAnnouncementsPage(operation.options)
     case 'find_announcement_read_only':
       return findAnnouncement(operation.id)
+    case 'find_announcement_edit_detail_read_only':
+      return findAnnouncementEditDetail(operation.id)
     case 'list_system_teams_read_only':
       return listSystemTeams(operation.access)
     case 'list_system_teams_page_read_only':
@@ -260,6 +277,10 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return findSystemTeamSummary(operation.id, operation.access)
     case 'find_system_team_detail_read_only':
       return findSystemTeamDetail(operation.id, operation.access)
+    case 'list_system_team_members_read_only':
+      return listSystemTeamMembers(operation.id, operation.access)
+    case 'list_system_team_member_history_read_only':
+      return listSystemTeamMemberHistory(operation.id, operation.options, operation.access)
     case 'list_audit_logs_read_only':
       return listAuditLogs(operation.options)
     case 'list_audit_logs_by_ids_read_only':
@@ -270,6 +291,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAuditErrorGroupEvents(operation.errorGroupId, operation.options)
     case 'get_audit_log_detail_read_only':
       return getAuditLogDetail(operation.id)
+    case 'get_audit_log_detail_supplement_read_only':
+      return getAuditLogDetailSupplement(operation.id)
     case 'get_audit_log_payload_read_only':
       return await getAuditLogPayloadReadOnly(operation.auditLogId, operation.payloadId, operation.options)
     case 'list_usage_records_read_only':
@@ -284,10 +307,16 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return getOperationLogDetail(operation.id)
     case 'get_operation_log_detail_for_viewer_read_only':
       return getOperationLogDetailForViewer(operation.id, operation.systemAccountId)
+    case 'get_operation_log_detail_supplement_read_only':
+      return getOperationLogDetailSupplement(operation.id)
+    case 'get_operation_log_detail_supplement_for_viewer_read_only':
+      return getOperationLogDetailSupplementForViewer(operation.id, operation.systemAccountId)
     case 'list_public_api_logs_read_only':
       return listPublicApiLogs(operation.options)
     case 'get_public_api_log_detail_read_only':
       return getPublicApiLogDetail(operation.id)
+    case 'get_public_api_log_detail_supplement_read_only':
+      return getPublicApiLogDetailSupplement(operation.id)
     case 'list_client_ip_stats_read_only':
       return listClientIpStats(operation.options)
     case 'get_client_ip_stats_detail_read_only':
@@ -342,10 +371,14 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAiPerformanceAccountOptions(operation.access, operation.options)
     case 'get_ai_health_list_read_only':
       return getAiHealthList(operation.access, operation.options)
+    case 'get_ai_health_hour_detail_read_only':
+      return getAiHealthHourDetail(operation.access, operation.accountId, operation.statHour)
     case 'get_account_usage_stats_overview_page_read_only':
       return getAccountUsageStatsOverviewPage(operation.access, operation.options)
     case 'get_system_metrics_overview_read_only':
       return getSystemMetricsOverview(operation.range)
+    case 'get_system_metrics_trend_read_only':
+      return getSystemMetricsTrend(operation.range)
     case 'resolve_group_usage_access_read_only':
       return resolveGroupUsageAccessMetadata(operation.groupId, operation.systemAccountId)
     case 'list_openai_accounts_for_group_read_only':
@@ -357,8 +390,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
     case 'find_account_for_test_read_only':
       return findAccountForTest(operation.accountId, operation.access)
     case 'find_openai_oauth_account_for_refresh_read_only': {
-      const account = findAccountForTest(operation.accountId)
-      if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
+      const account = await findOAuthCredentialRotationAccountAsync(operation.accountId)
+      if (!account || account.providerCode !== 'gpt' || account.type !== 'oauth') {
         return undefined
       }
       const proxyResolution = account.proxyProfileId
@@ -480,6 +513,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listRuntimeLogsReadOnly(operation.options)
     case 'get_runtime_log_detail_read_only':
       return getRuntimeLogDetailReadOnly(operation.id)
+    case 'get_runtime_log_detail_delta_read_only':
+      return getRuntimeLogDetailDeltaReadOnly(operation.id)
     case 'get_runtime_log_facets_read_only':
       return getRuntimeLogFacetsReadOnly()
     case 'list_provider_model_catalog_read_only':
