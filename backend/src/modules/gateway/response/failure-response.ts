@@ -30,8 +30,8 @@ interface SendGatewayFailureResponseInput {
   statusCode: number
   responsePayload: GatewayErrorPayload
   audit: {
-    outcome: 'gateway_failed' | 'upstream_failed'
-    errorPhase: 'authorization' | 'quota' | 'dispatch' | 'request_validation' | 'security'
+    outcome: 'gateway_failed' | 'upstream_failed' | 'stream_failed'
+    errorPhase: 'authorization' | 'quota' | 'dispatch' | 'request_validation' | 'security' | 'stream'
     errorCode?: string
     errorMessage?: string
   }

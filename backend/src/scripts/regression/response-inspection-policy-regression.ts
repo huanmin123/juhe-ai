@@ -276,10 +276,110 @@ async function assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode: 
   assert(!downstreamText.includes(`message_${errorCode}`), `${errorCode} 供应商错误文案不得泄露给客户端`)
 }
 
+async function assertCodexCompactionFailedTerminalIsOpaque(
+  failureEvent: Buffer,
+  forbiddenPayloadText: string
+): Promise<void> {
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_failed_terminal',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  policies.push(responsePolicy({
+    id: 'policy_must_not_intercept_codex_compaction_failed_terminal',
+    match: { rawTextIncludes: [forbiddenPayloadText] },
+    action: 'drop_event'
+  }))
+  let failureContext: { errorCode?: string; protocolFailureEventReceived?: boolean } | undefined
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write() {
+      throw new Error('Codex compact 失败终态不得在本请求切号前写给客户端')
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    yield sseEvent('response.output_item.done', {
+      output_index: 0,
+      item: {
+        id: 'opaque_compaction_marker',
+        type: 'compaction',
+        status: 'completed',
+        encrypted_content: 'opaque_compaction_marker'
+      }
+    })
+    yield failureEvent
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    timeoutProfile,
+    Date.now(),
+    async (_message, errorCode, context) => {
+      failureContext = {
+        errorCode,
+        protocolFailureEventReceived: context.protocolFailureEventReceived
+      }
+    },
+    undefined,
+    {
+      clientRetryEnabled: true,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      endpointFamily: 'responses',
+      responseInspectionPolicies: policies,
+      responseInspectionContext: {
+        clientProfile: 'codex',
+        accountClientCompatibility: 'codex_responses',
+        codexCompactionExpected: true
+      }
+    }
+  )
+  assert.equal(result.completed, false, 'Codex compact response.failed 必须结束当前 attempt')
+  assert.equal(result.errorCode, 'upstream_protocol_failure', 'Codex compact response.failed 必须走通用结构失败码')
+  assert.equal(result.responseInspection, undefined, 'Codex compact response.failed 不得命中本地 compact 契约规则')
+  assert.equal(result.downstreamBytesWritten, 0, 'Codex compact response.failed 前不得写出暂存 output 或失败 payload')
+  assert.equal(response.writableEnded, false, '预提交 Codex compact response.failed 必须交给调度层切号')
+  assert.deepEqual(failureContext, {
+    errorCode: 'upstream_protocol_failure',
+    protocolFailureEventReceived: true
+  }, 'Codex compact response.failed 只上报通用结构失败事实')
+  assert(!result.responseBodyText?.includes('opaque_compaction_marker'), '暂存 compact marker 不得泄露')
+  assert(!result.responseBodyText?.includes(forbiddenPayloadText), '失败 payload 不得泄露')
+}
+
 for (const errorCode of ['401', '429', '500', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'cyber_policy', 'vendor_invented_stream_error']) {
   await assertStructuralFailureIsCodeAgnosticBeforeOutput(errorCode)
   await assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode)
 }
+
+await assertCodexCompactionFailedTerminalIsOpaque(
+  sseEvent('arbitrary_payload_type', { opaque_payload_marker: 'opaque_payload_without_error_field' }, 'response.failed'),
+  'opaque_payload_without_error_field'
+)
+await assertCodexCompactionFailedTerminalIsOpaque(
+  sseEvent('response.failed', {
+    metadata: { error: { opaque_payload_marker: 'opaque_nested_error_payload' } },
+    response: { error: { opaque_payload_marker: 'opaque_response_error_payload' } }
+  }, 'arbitrary_event_name'),
+  'opaque_response_error_payload'
+)
 
 {
   const frames = extractOpenAIJsonSemanticFrames({
@@ -990,6 +1090,46 @@ assert.equal(validateAccountResponseInspectionRules([
     writableEnded: false,
     destroyed: false
   } as never), true, 'Codex compact 默认契约规则必须允许服务端换号重试')
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_nonterminal_error_fields',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const pending = buffer.pushChunk(sseEvent('response.output_item.done', {
+    output_index: 0,
+    error: { opaque_payload_marker: 'ordinary_data_error' },
+    metadata: { error: { opaque_payload_marker: 'ordinary_metadata_error' } },
+    item: {
+      id: 'item_compaction_nonterminal_error_fields',
+      type: 'compaction',
+      status: 'completed',
+      encrypted_content: 'opaque_compaction_nonterminal_error_fields'
+    }
+  }))
+  assert.equal(pending.intercepted, undefined, '普通 data.error 或 metadata.error 不得提前成为 compact 失败终态')
+  assert.equal(pending.chunks.length, 0, '普通嵌套错误字段仍必须保持 compact 暂存')
+  assert.equal(pending.pendingEvent, true, '普通嵌套错误字段后的 compact 事件仍应等待终态')
+  const eof = buffer.flushPendingOnEof()
+  assert.equal(eof.intercepted?.policyId, 'default_codex_compaction_contract', '两种精确终态均缺失的 EOF 仍必须生成本地 compact mismatch')
+  assert(!Buffer.concat(eof.chunks).toString('utf8').includes('opaque_compaction_nonterminal_error_fields'), 'EOF mismatch 不得泄露暂存 compact output')
 }
 
 {

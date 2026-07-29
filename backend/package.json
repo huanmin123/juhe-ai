@@ -61,6 +61,7 @@
     "test:image-provider-timeout-signal": "tsx src/scripts/regression/image-provider-timeout-signal-regression.ts",
     "test:gateway-downstream-commit": "tsx src/scripts/regression/gateway-downstream-commit-regression.ts",
     "test:gateway-stream-committed-failure": "tsx src/scripts/regression/gateway-stream-committed-failure-regression.ts",
+    "test:gateway-stream-attribution": "tsx src/scripts/regression/gateway-stream-attribution-regression.ts",
     "test:stream-event-token-estimate-boundary": "tsx src/scripts/regression/stream-event-token-estimate-boundary-regression.ts",
     "test:gateway-sse-shared-event-parse": "tsx src/scripts/regression/gateway-sse-shared-event-parse-regression.ts",
     "test:response-inspection-policy": "tsx src/scripts/regression/response-inspection-policy-regression.ts",

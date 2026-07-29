@@ -133,6 +133,69 @@ interface AuditAttemptState {
   completed: boolean
 }
 
+export interface ResolvedAuditFinalization {
+  outcome: AuditOutcome
+  success: boolean
+  errorPhase?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
+interface FailedAuditAttemptRoot {
+  errorPhase?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
+export function resolveAuditFinalization(
+  input: Pick<FinalizeAuditInput, 'outcome' | 'success' | 'errorPhase' | 'errorCode' | 'errorMessage'>,
+  downstreamClosed: boolean,
+  hadFailedAttempt: boolean,
+  failedAttemptRoot?: FailedAuditAttemptRoot
+): ResolvedAuditFinalization {
+  const isDownstreamClose = input.outcome === 'downstream_closed'
+    || input.outcome === 'client_aborted'
+    || input.errorPhase === 'downstream'
+    || input.errorPhase === 'client'
+    || input.errorCode === 'downstream_connection_closed'
+  const hasInputRootFailure = !isDownstreamClose && (
+    input.outcome === 'gateway_failed'
+    || input.outcome === 'upstream_failed'
+    || input.outcome === 'stream_failed'
+    || Boolean(input.errorPhase || input.errorCode || input.errorMessage)
+  )
+  const hasAttemptRootFailure = downstreamClosed
+    && !input.success
+    && Boolean(failedAttemptRoot)
+  const rootFailure = hasInputRootFailure
+    ? {
+        outcome: input.outcome,
+        errorPhase: input.errorPhase,
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage
+      }
+    : hasAttemptRootFailure
+      ? {
+          outcome: failedAttemptRoot?.errorPhase === 'stream' ? 'stream_failed' as const : 'upstream_failed' as const,
+          errorPhase: failedAttemptRoot?.errorPhase,
+          errorCode: failedAttemptRoot?.errorCode,
+          errorMessage: failedAttemptRoot?.errorMessage
+        }
+      : undefined
+  const outcome = downstreamClosed && !rootFailure
+    ? 'downstream_closed'
+    : input.success && hadFailedAttempt
+      ? 'success_after_retry'
+      : rootFailure?.outcome ?? input.outcome
+  return {
+    outcome,
+    success: input.success && outcome !== 'downstream_closed',
+    errorPhase: outcome === 'downstream_closed' ? 'downstream' : rootFailure?.errorPhase ?? input.errorPhase,
+    errorCode: outcome === 'downstream_closed' ? 'downstream_connection_closed' : rootFailure?.errorCode ?? input.errorCode,
+    errorMessage: outcome === 'downstream_closed' ? '下游连接提前关闭，触发方未识别' : rootFailure?.errorMessage ?? input.errorMessage
+  }
+}
+
 let activeAuditCaptureCount = 0
 const gatewayHttpCompletionObservers = new WeakMap<Response, GatewayHttpCompletionObserver>()
 
@@ -163,7 +226,7 @@ export class AuditCaptureContext {
   private activeAttemptByTempId = new Map<string, AuditAttemptState>()
   private finalized = false
   private hadFailedAttempt = false
-  private clientAborted = false
+  private downstreamClosed = false
   private overflowed = false
   private approximateBytes = 0
   private residentPayloadBytes = 0
@@ -232,8 +295,21 @@ export class AuditCaptureContext {
     }
   }
 
+  markDownstreamClosed(): void {
+    if (this.downstreamClosed) return
+    this.downstreamClosed = true
+    this.addGatewayMetadata({
+      label: 'downstream_connection_closed',
+      metadata: {
+        trigger: 'unknown_unproven',
+        clientActionConfirmed: false
+      }
+    })
+  }
+
+  // Kept for callers outside the gateway route while preserving neutral semantics.
   markClientAborted(): void {
-    this.clientAborted = true
+    this.markDownstreamClosed()
   }
 
   shouldCaptureSuccessPayloads(): boolean {
@@ -429,6 +505,21 @@ export class AuditCaptureContext {
     return tempId
   }
 
+  private latestFailedAttemptRoot(): FailedAuditAttemptRoot | undefined {
+    for (let index = this.attempts.length - 1; index >= 0; index -= 1) {
+      const attempt = this.attempts[index]
+      if (!attempt || attempt.success !== false) continue
+      if (attempt.errorPhase === 'client' || attempt.errorPhase === 'downstream') continue
+      if (!attempt.errorPhase && !attempt.errorCode && !attempt.errorMessage) continue
+      return {
+        errorPhase: attempt.errorPhase,
+        errorCode: attempt.errorCode,
+        errorMessage: attempt.errorMessage
+      }
+    }
+    return undefined
+  }
+
   finalize(input: FinalizeAuditInput): void {
     if (this.finalized) return
     this.finalized = true
@@ -476,13 +567,13 @@ export class AuditCaptureContext {
     this.releaseActiveCapture()
 
     const endedAtMs = Date.now()
-    const clientAborted = this.clientAborted && !input.success
-    const outcome = clientAborted
-      ? 'client_aborted'
-      : input.success && this.hadFailedAttempt
-        ? 'success_after_retry'
-        : input.outcome
-    const success = input.success && outcome !== 'client_aborted'
+    const finalization = resolveAuditFinalization(
+      input,
+      this.downstreamClosed,
+      this.hadFailedAttempt,
+      this.latestFailedAttemptRoot()
+    )
+    const { outcome, success } = finalization
     if (input.accountId) {
       this.bindContext({ accountId: input.accountId })
     }
@@ -534,11 +625,9 @@ export class AuditCaptureContext {
       auditOutcome: outcome,
       success,
       finalStatusCode: input.statusCode,
-      errorPhase: clientAborted ? input.errorPhase ?? 'client' : input.errorPhase,
-      errorCode: input.errorCode,
-      errorMessage: clientAborted
-        ? input.errorMessage ?? 'Client aborted request'
-        : input.errorMessage,
+      errorPhase: finalization.errorPhase,
+      errorCode: finalization.errorCode,
+      errorMessage: finalization.errorMessage,
       sampleBucket: this.sampleBucket,
       sampleReason: this.sampleReasonForOutcome(outcome),
       captureStatus: this.overflowed ? 'overflow' : this.metadataOnly || unsampledSuccessEnvelope ? 'metadata_only' : 'complete',
@@ -577,7 +666,7 @@ export class AuditCaptureContext {
           errorPhase: input.errorPhase,
           errorCode: input.errorCode,
           attemptCount: this.attempts.length,
-          clientAborted
+          downstreamClosed: this.downstreamClosed
         }
       } : {})
     }, success ? 'success' : 'expected_failure', finalizeStartedAt)

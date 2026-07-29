@@ -17,6 +17,7 @@ assert.match(schemaSql, /balance_query_enabled integer NOT NULL DEFAULT 0/, '账
 assert.match(schemaSql, /balance_query_config_json text NOT NULL DEFAULT '\{\}'/, '账户应保存余额查询配置')
 assert.match(schemaSql, /balance_query_next_refresh_at text/, '账户应保存下次余额刷新时间')
 assert.match(schemaSql, /CREATE INDEX IF NOT EXISTS idx_accounts_balance_query_due/, '账户应具备余额到期扫描索引')
+assert.match(schemaSql, /CREATE INDEX IF NOT EXISTS idx_accounts_balance_auto_detect_due/, '首次余额自动探测应具备持久到期扫描索引')
 assert.match(
   schemaSql,
   /account_usage_snapshots[\s\S]+kind text NOT NULL CHECK \(kind IN \([^)]+relay_balance[^)]+\)\)/,

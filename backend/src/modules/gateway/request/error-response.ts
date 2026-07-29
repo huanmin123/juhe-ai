@@ -21,11 +21,12 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
 
   if (isUpstreamRequestAbortedError(error) || signal.aborted) {
     auditCapture.finalize({
-      outcome: 'client_aborted',
+      outcome: 'downstream_closed',
       success: false,
       statusCode: res.statusCode,
       responseHeaders: responseHeadersToObject(res),
-      errorPhase: 'client',
+      errorPhase: 'downstream',
+      errorCode: 'downstream_connection_closed',
       errorMessage: downstreamConnectionClosedMessage
     })
     if (!res.writableEnded && !res.destroyed) {

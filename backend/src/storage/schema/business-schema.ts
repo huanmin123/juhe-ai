@@ -1124,6 +1124,15 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE balance_query_enabled = 1
         AND deleted_at IS NULL
         AND authorization_instance_authorization_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_balance_auto_detect_due
+      ON accounts(balance_query_next_refresh_at ASC, id ASC)
+      WHERE status = 'active'
+        AND schedulable = 1
+        AND type = 'api_key'
+        AND balance_query_enabled = 0
+        AND balance_query_config_json = '{}'
+        AND deleted_at IS NULL
+        AND authorization_instance_authorization_id IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_api_key_runtime_unique
       ON account_api_key_runtime_states(account_id, key_fingerprint);
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_status

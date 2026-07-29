@@ -72,6 +72,10 @@ export interface AccountBalanceRefreshResult {
   persisted: boolean
 }
 
+export type AccountBalanceLeaseResult<T> =
+  | { acquired: true; value: T }
+  | { acquired: false }
+
 interface AccountBalanceRefreshExecutionContext {
   signal?: AbortSignal
   deadlineAtMs?: number
@@ -106,28 +110,8 @@ export async function refreshAccountBalanceCandidateWithOutcome(
 ): Promise<AccountBalanceRefreshResult> {
   if (!candidate) throw new Error('余额刷新账户不存在')
   throwIfBalanceRefreshAborted(dependencies.signal)
-  const leaseKey = `account-balance:${candidate.id}`
-  const ownerId = `account-balance-${randomUUID()}`
   const startedAt = new Date().toISOString()
-  const leaseInput = {
-    leaseKey,
-    jobName: 'account-balance-refresh',
-    shardKey: candidate.systemAccountId,
-    ownerId,
-    leaseUntil: new Date(Date.now() + balanceRefreshLeaseMs).toISOString(),
-    now: startedAt
-  }
-  const acquired = await acquireBalanceLease(leaseInput)
-  if (!acquired) {
-    return {
-      outcome: 'lease_busy',
-      snapshot: await loadCurrentGenerationBalanceSnapshot(candidate)
-        ?? { status: 'refreshing', lastAttemptAt: startedAt },
-      persisted: false
-    }
-  }
-
-  try {
+  const lease = await runWithAccountBalanceLease(candidate, async () => {
     throwIfBalanceRefreshAborted(dependencies.signal)
     const attempt = await resolveAccountBalanceRefreshAttempt(candidate, dependencies)
     const persisted = await persistBalanceRefreshIfCurrent(
@@ -141,10 +125,17 @@ export async function refreshAccountBalanceCandidateWithOutcome(
       outcome: persisted ? accountBalanceRefreshOutcome(attempt.snapshot) : 'stale',
       snapshot: attempt.snapshot,
       persisted
+    } satisfies AccountBalanceRefreshResult
+  })
+  if (!lease.acquired) {
+    return {
+      outcome: 'lease_busy',
+      snapshot: await loadCurrentGenerationBalanceSnapshot(candidate)
+        ?? { status: 'refreshing', lastAttemptAt: startedAt },
+      persisted: false
     }
-  } finally {
-    await releaseBalanceLease(leaseKey, ownerId)
   }
+  return lease.value
 }
 
 async function resolveAccountBalanceRefreshAttempt(
@@ -517,6 +508,34 @@ async function commitBalanceRefresh(input: Parameters<typeof commitAccountBalanc
   }
   const result = await requestBackgroundWorkerDbService({ type: 'commit_account_balance_refresh', input })
   return result?.changed === true
+}
+
+/**
+ * Serializes every upstream balance query for one account, including first
+ * detection, automatic refresh, and manual refresh. The lease is deliberately
+ * acquired and released outside the caller's upstream I/O transaction.
+ */
+export async function runWithAccountBalanceLease<T>(
+  candidate: Pick<AccountBalanceRefreshCandidate, 'id' | 'systemAccountId'>,
+  run: () => Promise<T>
+): Promise<AccountBalanceLeaseResult<T>> {
+  const leaseKey = `account-balance:${candidate.id}`
+  const ownerId = `account-balance-${randomUUID()}`
+  const startedAt = new Date().toISOString()
+  const acquired = await acquireBalanceLease({
+    leaseKey,
+    jobName: 'account-balance-refresh',
+    shardKey: candidate.systemAccountId,
+    ownerId,
+    leaseUntil: new Date(Date.now() + balanceRefreshLeaseMs).toISOString(),
+    now: startedAt
+  })
+  if (!acquired) return { acquired: false }
+  try {
+    return { acquired: true, value: await run() }
+  } finally {
+    await releaseBalanceLease(leaseKey, ownerId)
+  }
 }
 
 async function acquireBalanceLease(input: Parameters<typeof acquireBackgroundJobLeaseAsync>[0]): Promise<boolean> {

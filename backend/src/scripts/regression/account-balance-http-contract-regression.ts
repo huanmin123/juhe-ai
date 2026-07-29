@@ -193,16 +193,20 @@ try {
   const enabledDisabledBefore = (await listAccounts(baseUrl, cookie)).find((item) => item.id === scheduledDisabled.id)
   assert.equal(enabledDisabledBefore?.balanceQueryEnabled, true, '开启后列表必须立即投影余额开关')
   assert.equal(enabledDisabledBefore?.balanceSnapshot, undefined, '首次 worker 刷新前列表应显示待查询，不得泄漏旧快照')
-  const scheduledDisabledCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(scheduledDisabled.id)
-  assert.ok(scheduledDisabledCandidate, '停用账户显式开启后必须进入后台余额刷新候选')
-  const scheduledDisabledRun = await balanceRefreshJob.runAccountBalanceRefresh({
-    listRecoveryCandidates: async () => [],
-    listDueCandidates: async () => [scheduledDisabledCandidate],
-    loadRuntimeAvailability: async () => ({ available: false, values: {} })
-  })
-  assert.equal(scheduledDisabledRun.refreshedCount, 1, '停用账户的后台余额刷新必须完成')
+  assert.equal(
+    await balanceRepository.findAccountBalanceRefreshCandidateAsync(scheduledDisabled.id),
+    undefined,
+    '停用账户显式开启后不得进入后台自动余额刷新候选'
+  )
+  const scheduledDisabledManualRefresh = await refreshAccountBalance(
+    baseUrl,
+    cookie,
+    `/__aisys__/api/accounts/${scheduledDisabled.id}/balance/refresh`
+  )
+  assert.equal(scheduledDisabledManualRefresh.status, 200, '停用账户显式开启后仍必须允许人工查询余额')
+  assert.equal(scheduledDisabledManualRefresh.body.data?.status, 'fresh')
   const enabledDisabledAfter = (await listAccounts(baseUrl, cookie)).find((item) => item.id === scheduledDisabled.id)
-  assert.equal(enabledDisabledAfter?.balanceSnapshot?.status, 'fresh', 'worker 写入后列表必须回显本次新余额快照')
+  assert.equal(enabledDisabledAfter?.balanceSnapshot?.status, 'fresh', '人工写入后列表必须回显本次新余额快照')
   assert.equal(enabledDisabledAfter?.balanceSnapshot?.remainingUsd, '42.500000')
 
   const busyAccount = repositories.createAccount({

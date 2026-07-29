@@ -117,10 +117,39 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000092_w7_oauth_refresh_runtime.sql",
+		Name:    "000093_w7_account_balance_auto_detect_due.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)
+	}
+}
+
+func TestAccountBalanceAutoDetectDueMigrationMatchesRecoveryPredicate(t *testing.T) {
+	const migrationName = "000093_w7_account_balance_auto_detect_due.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	sql := strings.ToLower(strings.ReplaceAll(string(source), "\r\n", "\n"))
+
+	for _, want := range []string{
+		"create index if not exists idx_accounts_balance_auto_detect_due",
+		"on juhe_business.accounts (balance_query_next_refresh_at asc, id asc)",
+		"where status = 'active'",
+		"and schedulable = true",
+		"and type = 'api_key'",
+		"and balance_query_enabled = false",
+		"and balance_query_config_json = '{}'",
+		"and deleted_at is null",
+		"and authorization_instance_authorization_id is null",
+		"and balance_query_next_refresh_at is not null",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing recovery predicate %q", migrationName, want)
+		}
+	}
+	if strings.Count(sql, "idx_accounts_balance_auto_detect_due") != 1 {
+		t.Fatalf("%s must define exactly one auto-detection due index", migrationName)
 	}
 }
 

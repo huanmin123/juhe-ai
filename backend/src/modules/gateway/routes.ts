@@ -274,14 +274,14 @@ export async function handleOpenAIGatewayRequest(
   }
   req.once('aborted', () => {
     if (isGatewayForcedDownstreamClose(res)) return
-    auditCapture.markClientAborted()
+    auditCapture.markDownstreamClosed()
     abortController.abort()
     clearActiveDownstreamSessionAffinity()
   })
   res.once('close', () => {
     if (!isGatewayForcedDownstreamClose(res)) {
       if (!res.writableFinished) {
-        auditCapture.markClientAborted()
+        auditCapture.markDownstreamClosed()
         abortController.abort()
       }
       if (abortController.signal.aborted) {
@@ -2255,18 +2255,7 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): Promise<void> {
-  const protocol = gatewayProtocolClientErrorProtocolForRequest(input.req)
   const clientVisibleMessage = gatewayStreamClientRetryMessage
-  const failureEvent = writeGatewayStreamFailureEvent(
-    input.res,
-    clientVisibleMessage,
-    input.errorCode,
-    protocol,
-    input.clientStrategy?.downstreamProtocol
-  )
-  const responseBody = input.uncommittedResponseBody
-    ? Buffer.concat([input.uncommittedResponseBody, failureEvent ?? Buffer.alloc(0)])
-    : failureEvent
   input.auditCapture.addGatewayMetadata({
     label: 'stream_server_retry_exhausted',
     metadata: {
@@ -2274,22 +2263,45 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
       errorCode: input.errorCode,
       clientProfile: input.clientStrategy?.clientProfile,
       downstreamProtocol: input.clientStrategy?.downstreamProtocol,
-      responseMode: input.clientStrategy?.clientProfile === 'codex'
-        ? 'codex_responses_retryable_sse'
-        : input.clientStrategy?.clientProfile === 'claude_code'
-          ? 'claude_code_messages_retryable_sse'
-          : input.clientStrategy?.clientProfile === 'gemini_cli'
-            ? 'gemini_cli_retryable_sse'
-            : 'protocol_retryable_sse'
+      responseMode: input.res.headersSent ? 'committed_retryable_sse' : 'pre_commit_http_error'
     }
   })
   await rememberCodexTurnFailureWhenClientRetryIsVisible(input)
   if (!input.res.headersSent) {
-    input.res.status(200)
-    input.res.setHeader('content-type', 'text/event-stream; charset=utf-8')
-    input.res.setHeader('cache-control', 'no-cache, no-transform')
-    input.res.setHeader('x-accel-buffering', 'no')
+    const responsePayload = gatewayErrorPayload(
+      clientVisibleMessage,
+      'service_unavailable',
+      input.errorCode ?? gatewayStreamClientRetryErrorCode
+    )
+    await sendGatewayFailureResponse({
+      req: input.req,
+      res: input.res,
+      auditCapture: input.auditCapture,
+      usageContext: input.usageContext,
+      startedAt: input.startedAt,
+      statusCode: 503,
+      responsePayload,
+      audit: {
+        outcome: 'stream_failed',
+        errorPhase: 'stream',
+        errorCode: input.errorCode ?? gatewayStreamClientRetryErrorCode,
+        errorMessage: clientVisibleMessage
+      },
+      recordUsage: false,
+      usageErrorMessage: clientVisibleMessage
+    })
+    return
   }
+  const failureEvent = writeGatewayStreamFailureEvent(
+    input.res,
+    clientVisibleMessage,
+    input.errorCode,
+    gatewayProtocolClientErrorProtocolForRequest(input.req),
+    input.clientStrategy?.downstreamProtocol
+  )
+  const responseBody = input.uncommittedResponseBody
+    ? Buffer.concat([input.uncommittedResponseBody, failureEvent ?? Buffer.alloc(0)])
+    : failureEvent
   if (!input.res.writableEnded && !input.res.destroyed && input.uncommittedResponseBody?.length) {
     input.res.write(input.uncommittedResponseBody)
   }
@@ -2302,7 +2314,7 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
   input.auditCapture.finalize({
     outcome: 'stream_failed',
     success: false,
-    statusCode: 200,
+    statusCode: input.res.statusCode,
     responseHeaders: responseHeadersToObject(input.res),
     responseBody,
     responsePartType: 'gateway_response',

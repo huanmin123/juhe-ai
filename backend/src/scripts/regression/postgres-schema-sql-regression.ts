@@ -11,6 +11,7 @@ const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/0000
 const providerAuthProtocolCatchUpMigration = readFileSync('../backend-go/db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql', 'utf8')
 const accountApiKeyRuntimeTraceMigration = readFileSync('../backend-go/db/migrations/000063_w1_account_api_key_runtime_trace_id.sql', 'utf8')
 const oauthRefreshRuntimeMigration = readFileSync('../backend-go/db/migrations/000092_w7_oauth_refresh_runtime.sql', 'utf8')
+const accountBalanceAutoDetectDueMigration = readFileSync('../backend-go/db/migrations/000093_w7_account_balance_auto_detect_due.sql', 'utf8')
 const healthCheckEndpointModeOfflineMigration = readFileSync(
   'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
   'utf8'
@@ -127,6 +128,7 @@ assert.match(oauthRefreshRuntimeMigration, /ADD COLUMN IF NOT EXISTS oauth_acces
 assert.match(oauthRefreshRuntimeMigration, /idx_accounts_openai_oauth_refresh_due[\s\S]+provider_code,[\s\S]+type,[\s\S]+oauth_refresh_token_present,[\s\S]+oauth_access_token_expires_at,[\s\S]+status,[\s\S]+id/, 'Goose 92 必须补齐通用 OAuth 刷新候选索引')
 assert.match(oauthRefreshRuntimeMigration, /idx_accounts_openai_oauth_refresh_pg_due[\s\S]+provider_protocol_profile_id,[\s\S]+type,[\s\S]+oauth_refresh_token_present,[\s\S]+\(oauth_access_token_expires_at IS NOT NULL\),[\s\S]+oauth_access_token_expires_at ASC,[\s\S]+updated_at ASC,[\s\S]+id ASC[\s\S]+WHERE authorization_instance_authorization_id IS NULL\s+AND deleted_at IS NULL/, 'Goose 92 必须补齐与 Node 一致的 OAuth 刷新 PG due partial 索引')
 assert.doesNotMatch(oauthRefreshRuntimeMigration, /oauth_refresh_token_present (?:boolean|[^\n]*CHECK)/i, 'Goose 92 不得擅自改变 Node 的 OAuth refresh-token 存储语义')
+assert.match(accountBalanceAutoDetectDueMigration, /CREATE INDEX IF NOT EXISTS idx_accounts_balance_auto_detect_due\s+ON juhe_business\.accounts \(balance_query_next_refresh_at ASC, id ASC\)\s+WHERE status = 'active'\s+AND schedulable = true\s+AND type = 'api_key'\s+AND balance_query_enabled = false\s+AND balance_query_config_json = '\{\}'\s+AND deleted_at IS NULL\s+AND authorization_instance_authorization_id IS NULL\s+AND balance_query_next_refresh_at IS NOT NULL/, 'Goose 93 必须为首次余额探测恢复扫描提供精确 partial due 索引')
 assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')

@@ -870,24 +870,35 @@ export type DbServiceOperation =
       failureThreshold: number
       statusCode?: number
       expectedConfigRevision?: number
+      scheduleBalanceAutoDetection?: boolean
       traceId?: string
     }
   }
   | {
     type: 'commit_account_balance_refresh'
-    input: {
-      accountId: string
-      expectedConfigRevision: number
-      expectedConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
-      nextConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
-      nextRefreshAt: string | null
-    }
+    input:
+      | {
+        accountId: string
+        expectedConfigRevision: number
+        expectedConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
+        nextConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
+        nextRefreshAt: string | null
+      }
+      | {
+        /** Durable first-detection intent; not a user balance configuration. */
+        detectionIntent: true
+        accountId: string
+        expectedConfigRevision: number
+        expectedNextRefreshAt: string
+        nextRefreshAt: string | null
+      }
   }
   | {
     type: 'enable_detected_account_balance_query'
     input: {
       accountId: string
       expectedConfigRevision: number
+      expectedNextRefreshAt?: string | null
       config: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
       nextRefreshAt: string
     }

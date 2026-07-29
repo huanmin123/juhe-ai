@@ -910,11 +910,12 @@ async function refreshConversationFromSync(conversationId: string): Promise<void
 function cloneMessage(value: ChatMessage): ChatMessage {
   return JSON.parse(JSON.stringify(value)) as ChatMessage
 }
-function requestRuntimeReconciliationSync(turn: RunningTurn): void {
-  if (!runtimeReconciliationScheduler.begin(turn)) return
+function requestRuntimeReconciliationSync(turn: RunningTurn): boolean {
+  if (!runtimeReconciliationScheduler.begin(turn)) return false
   void refreshConversationFromSync(turn.conversationId).finally(() => {
     runtimeReconciliationScheduler.complete(turn, chatGenerationRuntime.get(turn.systemAccountId, turn.conversationId))
   })
+  return true
 }
 function isCurrentConversationAccount(systemAccountId: string, conversationId: string, epoch: number): boolean {
   return authState.currentUser.value?.id === systemAccountId
@@ -1611,8 +1612,8 @@ function activateChatPage(): void {
     const conversation = selectedConversation.value
     const runtime = conversation && chatGenerationRuntime.get(conversation.systemAccountId, conversation.id)
     if (!conversation || !runtime?.reconciliationReason) return
+    if (!requestRuntimeReconciliationSync(runtime)) return
     void refreshContextStatus(conversation.id)
-    requestRuntimeReconciliationSync(runtime)
   }, 5_000)
   subscribeSelectedRuntime()
   broadcastUnsubscribe = cacheBroadcast.subscribe((payload) => {

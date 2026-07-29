@@ -311,6 +311,20 @@ export const backgroundScheduledJobs = [
     notes: '按账户租约刷新物理单 API Key 上游余额，单轮有界且不影响账户健康状态'
   }),
   scheduled({
+    jobName: 'account-balance-auto-detect-recovery',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'stats:account_usage_snapshots'],
+    notes: '补偿首次健康成功后未完成的单 API Key 余额自动探测，不扫描全部账户'
+  }),
+  scheduled({
     jobName: 'openai-oauth-access-token-refresh',
     category: 'scheduled',
     kind: 'probe',

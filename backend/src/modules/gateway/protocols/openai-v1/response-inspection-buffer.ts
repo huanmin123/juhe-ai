@@ -68,7 +68,7 @@ export class OpenAIResponseInspectionBuffer {
   private readonly deferredCodexCompactionChunks: Buffer[] = []
   private codexCompactionOutputItemCount = 0
   private codexCompactionItemCount = 0
-  private codexCompactionCompleted = false
+  private codexCompactionTerminalReceived = false
   private parserSkipped = false
   private downstreamWritten = false
 
@@ -144,6 +144,11 @@ export class OpenAIResponseInspectionBuffer {
         continue
       }
       const codexCompaction = this.prepareCodexCompactionEvent(event, outboundBuffer)
+      if (codexCompaction.structuralFailure) {
+        this.clearDeferredLeadingNoopChunks()
+        chunks.push(outboundBuffer)
+        continue
+      }
       const frames = this.extractSemanticFrames(event)
       if (codexCompaction.contractFrame) {
         frames.push(codexCompaction.contractFrame)
@@ -252,6 +257,14 @@ export class OpenAIResponseInspectionBuffer {
       }
     }
     const codexCompaction = this.prepareCodexCompactionEvent(event, outboundBuffer)
+    if (codexCompaction.structuralFailure) {
+      this.clearDeferredLeadingNoopChunks()
+      return {
+        chunks: [outboundBuffer],
+        pendingEvent: this.hasPendingProtocolEvent(),
+        parserSkipped: this.parserSkipped
+      }
+    }
     const frames = this.extractSemanticFrames(event)
     if (codexCompaction.contractFrame) {
       frames.push(codexCompaction.contractFrame)
@@ -371,14 +384,21 @@ export class OpenAIResponseInspectionBuffer {
   private prepareCodexCompactionEvent(
     event: ParsedOpenAIStreamEvent,
     rawBuffer: Buffer
-  ): { defer?: boolean; releaseChunks?: Buffer[]; contractFrame?: ResponseSemanticFrame } {
+  ): { defer?: boolean; releaseChunks?: Buffer[]; contractFrame?: ResponseSemanticFrame; structuralFailure?: boolean } {
     if (!this.shouldInspectCodexCompactionContract()) {
       return {}
     }
-    if (this.codexCompactionCompleted) {
+    if (this.codexCompactionTerminalReceived) {
       return {}
     }
     const eventType = event.eventType || event.eventName
+    if (isExactCodexCompactionFailedTerminal(event)) {
+      // The stream pipe owns structural failure handling. Do not turn this
+      // protocol terminal into a local compaction-contract mismatch.
+      this.codexCompactionTerminalReceived = true
+      this.clearDeferredCodexCompactionChunks()
+      return { structuralFailure: true }
+    }
     const eventCounts = countCodexCompactionOutputItemsFromStreamEvent(event)
     if (eventCounts) {
       this.rememberCodexCompactionCounts(eventCounts)
@@ -390,7 +410,7 @@ export class OpenAIResponseInspectionBuffer {
       return deferred ?? { defer: true }
     }
 
-    this.codexCompactionCompleted = true
+    this.codexCompactionTerminalReceived = true
     const response = objectValue(event.data?.response)
     if (typeof response?.id !== 'string') {
       this.clearDeferredCodexCompactionChunks()
@@ -485,6 +505,10 @@ export class OpenAIResponseInspectionBuffer {
       dataBytes
     })
   }
+}
+
+function isExactCodexCompactionFailedTerminal(event: ParsedOpenAIStreamEvent): boolean {
+  return event.eventType === 'response.failed' || event.eventName === 'response.failed'
 }
 
 function normalizeEventTransform(

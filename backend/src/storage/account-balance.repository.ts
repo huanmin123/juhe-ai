@@ -24,6 +24,11 @@ export interface AccountBalanceDetectionCandidate {
   systemAccountId: string
   configRevision: number
   credentials: Record<string, unknown>
+  /**
+   * A non-null value is the durable first-detection intent written when the
+   * account first passes health checking. Maintenance backfills omit it.
+   */
+  nextRefreshAt?: string | null
   proxyProfileId?: string
 }
 
@@ -54,18 +59,26 @@ interface BalanceDetectionCandidateRow {
   system_account_id: string
   config_revision: number
   credentials_encrypted: string
+  balance_query_next_refresh_at?: string | null
   proxy_profile_id?: string | null
 }
 
-const balanceDetectionCandidateWhere = `
-  status IN ('active', 'disabled')
-  AND schedulable = 1
-  AND type = 'api_key'
-  AND balance_query_enabled = 0
-  AND balance_query_config_json = '{}'
-  AND deleted_at IS NULL
-  AND authorization_instance_authorization_id IS NULL
-`
+/**
+ * Every first-detection read and writeback must retain this eligibility guard.
+ * Availability scheduling can revoke active/schedulable without changing the
+ * account configuration revision while an upstream query is still in flight.
+ */
+function balanceDetectionCandidateWhere(): string {
+  return `
+    status = 'active'
+    AND ${balanceBooleanPredicate('schedulable', true)}
+    AND type = 'api_key'
+    AND ${balanceBooleanPredicate('balance_query_enabled', false)}
+    AND balance_query_config_json = '{}'
+    AND deleted_at IS NULL
+    AND authorization_instance_authorization_id IS NULL
+  `
+}
 
 interface BalanceDueCursor {
   nextRefreshAt: string
@@ -74,6 +87,8 @@ interface BalanceDueCursor {
 
 let sqliteBalanceDueCursor: BalanceDueCursor | undefined
 let postgresBalanceDueCursor: BalanceDueCursor | undefined
+let sqliteBalanceDetectionDueCursor: BalanceDueCursor | undefined
+let postgresBalanceDetectionDueCursor: BalanceDueCursor | undefined
 
 export function listAccountsDueForBalanceRefresh(options: { now?: string; limit?: number } = {}): AccountBalanceRefreshCandidate[] {
   const limit = normalizedLimit(options.limit)
@@ -89,6 +104,8 @@ export function listAccountsDueForBalanceRefresh(options: { now?: string; limit?
              balance_query_next_refresh_at, updated_at, proxy_profile_id
       FROM accounts
       WHERE type = 'api_key'
+        AND status = 'active'
+        AND schedulable = 1
         AND balance_query_enabled = 1
         AND balance_query_next_refresh_at IS NOT NULL
         AND balance_query_next_refresh_at <= ?
@@ -132,7 +149,9 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
              balance_query_next_refresh_at, updated_at, proxy_profile_id
       FROM juhe_business.accounts
       WHERE type = 'api_key'
-        AND balance_query_enabled = 1
+        AND status = 'active'
+        AND schedulable = TRUE
+        AND balance_query_enabled = TRUE
         AND balance_query_next_refresh_at IS NOT NULL
         AND balance_query_next_refresh_at <= ?
         AND (? = '' OR balance_query_next_refresh_at > ? OR (balance_query_next_refresh_at = ? AND id > ?))
@@ -174,7 +193,9 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
       FROM juhe_business.accounts a
       WHERE a.id > ?
         AND a.type = 'api_key'
-        AND a.balance_query_enabled = 1
+        AND a.status = 'active'
+        AND a.schedulable = TRUE
+        AND a.balance_query_enabled = TRUE
         AND a.balance_query_next_refresh_at IS NULL
         AND a.deleted_at IS NULL
         AND a.authorization_instance_authorization_id IS NULL
@@ -213,6 +234,8 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
     FROM accounts
     WHERE id > ?
        AND type = 'api_key'
+      AND status = 'active'
+      AND schedulable = 1
       AND balance_query_enabled = 1
       AND balance_query_next_refresh_at IS NULL
       AND deleted_at IS NULL
@@ -245,7 +268,9 @@ export async function findAccountBalanceRefreshCandidateAsync(accountId: string)
     FROM accounts
     WHERE id = ?
        AND type = 'api_key'
-      AND balance_query_enabled = 1
+      AND status = 'active'
+      AND ${balanceBooleanPredicate('schedulable', true)}
+      AND ${balanceBooleanPredicate('balance_query_enabled', true)}
       AND deleted_at IS NULL
       AND authorization_instance_authorization_id IS NULL
     LIMIT 1
@@ -266,7 +291,7 @@ export async function findAccountBalanceManualRefreshCandidateAsync(accountId: s
     FROM accounts
     WHERE id = ?
       AND type = 'api_key'
-      AND balance_query_enabled = 1
+      AND ${balanceBooleanPredicate('balance_query_enabled', true)}
       AND deleted_at IS NULL
       AND authorization_instance_authorization_id IS NULL
     LIMIT 1
@@ -285,9 +310,10 @@ export async function findAccountBalanceDetectionCandidateAsync(
   expectedConfigRevision: number
 ): Promise<AccountBalanceDetectionCandidate | undefined> {
   const sql = `
-    SELECT id, system_account_id, config_revision, credentials_encrypted, proxy_profile_id
+    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
-    WHERE id = ? AND config_revision = ? AND ${balanceDetectionCandidateWhere}
+    WHERE id = ? AND config_revision = ?
+      AND ${balanceDetectionCandidateWhere()}
     LIMIT 1
   `
   if (runtimeConfig.databaseDriver === 'postgres') {
@@ -306,9 +332,9 @@ export async function listAccountBalanceDetectionCandidatePageAsync(options: {
   const limit = normalizedLimit(options.limit)
   const afterId = options.afterId ?? ''
   const sql = `
-    SELECT id, system_account_id, config_revision, credentials_encrypted, proxy_profile_id
+    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
-    WHERE id > ? AND ${balanceDetectionCandidateWhere}
+    WHERE id > ? AND ${balanceDetectionCandidateWhere()}
     ORDER BY id ASC
     LIMIT ?
   `
@@ -325,9 +351,73 @@ export async function listAccountBalanceDetectionCandidatePageAsync(options: {
   }
 }
 
+/**
+ * Recovers first-detection intents that survived an ops-worker restart or a
+ * transient upstream failure. It deliberately uses the same ordered, bounded
+ * scan shape as enabled-balance refreshes so an invalid prefix cannot starve
+ * later valid accounts.
+ */
+export async function listAccountsDueForBalanceAutoDetectionAsync(options: {
+  now?: string
+  limit?: number
+} = {}): Promise<AccountBalanceDetectionCandidate[]> {
+  const limit = normalizedLimit(options.limit)
+  const now = options.now ?? nowIso()
+  const scanPageSize = Math.max(40, limit * 4)
+  const selected: AccountBalanceDetectionCandidate[] = []
+  const selectedIds = new Set<string>()
+  let wrapped = false
+  for (let page = 0; page < 4 && selected.length < limit; page += 1) {
+    const cursor = runtimeConfig.databaseDriver === 'postgres'
+      ? postgresBalanceDetectionDueCursor
+      : sqliteBalanceDetectionDueCursor
+    const sql = `
+      SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
+      FROM accounts
+      WHERE balance_query_next_refresh_at IS NOT NULL
+        AND balance_query_next_refresh_at <= ?
+        AND (? = '' OR balance_query_next_refresh_at > ? OR (balance_query_next_refresh_at = ? AND id > ?))
+        AND ${balanceDetectionCandidateWhere()}
+      ORDER BY balance_query_next_refresh_at ASC, id ASC
+      LIMIT ?
+    `
+    let rows: BalanceDetectionCandidateRow[]
+    if (runtimeConfig.databaseDriver === 'postgres') {
+      const client = createPostgresDatabaseClient(await getPostgresPool())
+      rows = await client.query<BalanceDetectionCandidateRow>(sql.replace('FROM accounts', 'FROM juhe_business.accounts'), [
+        now, cursor?.nextRefreshAt ?? '', cursor?.nextRefreshAt ?? '', cursor?.nextRefreshAt ?? '', cursor?.id ?? '', scanPageSize
+      ])
+    } else {
+      rows = getBusinessDatabase().prepare(sql).all(
+        now, cursor?.nextRefreshAt ?? '', cursor?.nextRefreshAt ?? '', cursor?.nextRefreshAt ?? '', cursor?.id ?? '', scanPageSize
+      ) as unknown as BalanceDetectionCandidateRow[]
+    }
+    if (rows.length === 0) {
+      if (runtimeConfig.databaseDriver === 'postgres') postgresBalanceDetectionDueCursor = undefined
+      else sqliteBalanceDetectionDueCursor = undefined
+      if (wrapped) break
+      wrapped = true
+      page -= 1
+      continue
+    }
+    const appendResult = appendUniqueBalanceDetectionCandidates(selected, selectedIds, rows, limit)
+    const nextCursor = balanceDetectionDueCursorFromRow(appendResult.lastExamined)
+    if (runtimeConfig.databaseDriver === 'postgres') postgresBalanceDetectionDueCursor = nextCursor
+    else sqliteBalanceDetectionDueCursor = nextCursor
+    if (appendResult.consumedAll && rows.length < scanPageSize) {
+      if (runtimeConfig.databaseDriver === 'postgres') postgresBalanceDetectionDueCursor = undefined
+      else sqliteBalanceDetectionDueCursor = undefined
+      if (wrapped) break
+      wrapped = true
+    }
+  }
+  return selected
+}
+
 export async function enableDetectedAccountBalanceQueryAsync(input: {
   accountId: string
   expectedConfigRevision: number
+  expectedNextRefreshAt?: string | null
   config: AccountBalanceQueryConfig
   nextRefreshAt: string
 }): Promise<boolean> {
@@ -335,24 +425,65 @@ export async function enableDetectedAccountBalanceQueryAsync(input: {
   const updatedAt = nowIso()
   const sql = `
     UPDATE accounts
-    SET balance_query_enabled = 1,
+    SET balance_query_enabled = ${balanceBooleanLiteral(true)},
         balance_query_config_json = ?,
         balance_query_next_refresh_at = ?,
         updated_at = ?
     WHERE id = ?
       AND config_revision = ?
-      AND ${balanceDetectionCandidateWhere}
+      AND ${balanceDetectionCandidateWhere()}
+      ${input.expectedNextRefreshAt === undefined ? '' : input.expectedNextRefreshAt === null ? 'AND balance_query_next_refresh_at IS NULL' : 'AND balance_query_next_refresh_at = ?'}
   `
   let changed = false
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
     const result = await client.execute(sql.replace('UPDATE accounts', 'UPDATE juhe_business.accounts'), [
-      JSON.stringify(config), input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision
+      JSON.stringify(config), input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision,
+      ...(input.expectedNextRefreshAt !== undefined && input.expectedNextRefreshAt !== null ? [input.expectedNextRefreshAt] : [])
     ])
     changed = Number(result.changes ?? 0) > 0
   } else {
     const result = getBusinessDatabase().prepare(sql).run(
-      JSON.stringify(config), input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision
+      JSON.stringify(config), input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision,
+      ...(input.expectedNextRefreshAt !== undefined && input.expectedNextRefreshAt !== null ? [input.expectedNextRefreshAt] : [])
+    )
+    changed = Number(result.changes ?? 0) > 0
+  }
+  if (changed) invalidateAccountLookupCache(input.accountId)
+  return changed
+}
+
+/**
+ * Moves or clears a durable first-detection intent without touching a user's
+ * balance configuration. The expected due value fences concurrent recovery
+ * attempts and any later account save by config revision.
+ */
+export async function commitAccountBalanceDetectionDueAsync(input: {
+  accountId: string
+  expectedConfigRevision: number
+  expectedNextRefreshAt: string
+  nextRefreshAt: string | null
+}): Promise<boolean> {
+  const updatedAt = nowIso()
+  const sql = `
+    UPDATE accounts
+    SET balance_query_next_refresh_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND config_revision = ?
+      AND balance_query_next_refresh_at = ?
+      AND ${balanceDetectionCandidateWhere()}
+  `
+  let changed = false
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const result = await client.execute(sql.replace('UPDATE accounts', 'UPDATE juhe_business.accounts'), [
+      input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision, input.expectedNextRefreshAt
+    ])
+    changed = Number(result.changes ?? 0) > 0
+  } else {
+    const result = getBusinessDatabase().prepare(sql).run(
+      input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision, input.expectedNextRefreshAt
     )
     changed = Number(result.changes ?? 0) > 0
   }
@@ -457,7 +588,7 @@ async function commitAccountBalanceRefreshInClientAsync(
         updated_at = ?
     WHERE id = ?
       AND config_revision = ?
-      AND balance_query_enabled = 1
+      AND balance_query_enabled = TRUE
       AND balance_query_config_json::jsonb = ?::jsonb
       ${expectedNextRefreshClause}
       ${expectedUpdatedAtClause}
@@ -632,7 +763,7 @@ export async function saveAccountBalanceConfigurationAsync(input: {
   const now = nowIso()
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
-    const current = await client.one<{ balance_query_enabled: number; balance_query_config_json: string; balance_query_next_refresh_at?: string | null }>(`
+    const current = await client.one<{ balance_query_enabled: number | boolean; balance_query_config_json: string; balance_query_next_refresh_at?: string | null }>(`
       SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
       FROM juhe_business.accounts WHERE id = ? AND deleted_at IS NULL
     `, [input.accountId])
@@ -642,7 +773,7 @@ export async function saveAccountBalanceConfigurationAsync(input: {
       UPDATE juhe_business.accounts
       SET balance_query_enabled = ?, balance_query_config_json = ?, balance_query_next_refresh_at = ?, updated_at = ?
       WHERE id = ? AND deleted_at IS NULL
-    `, [input.enabled ? 1 : 0, JSON.stringify(config ?? {}), nextRefreshAt ?? null, now, input.accountId])
+    `, [input.enabled, JSON.stringify(config ?? {}), nextRefreshAt ?? null, now, input.accountId])
     return { enabled: input.enabled, config, nextRefreshAt }
   }
   const current = getBusinessDatabase().prepare(`
@@ -690,7 +821,7 @@ export async function loadAccountBalanceConfigurationsByAccountIdsAsync(accountI
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
     for (const chunk of chunkValues(ids, 900)) {
-      const rows = await client.query<{ id: string; balance_query_enabled: number; balance_query_config_json: string; balance_query_next_refresh_at?: string | null }>(`
+      const rows = await client.query<{ id: string; balance_query_enabled: number | boolean; balance_query_config_json: string; balance_query_next_refresh_at?: string | null }>(`
         SELECT id, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
         FROM juhe_business.accounts
         WHERE id = ANY(?::text[]) AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL
@@ -768,6 +899,11 @@ function balanceDueCursorFromRow(row: BalanceCandidateRow | undefined): BalanceD
   return row && nextRefreshAt ? { nextRefreshAt, id: row.id } : undefined
 }
 
+function balanceDetectionDueCursorFromRow(row: BalanceDetectionCandidateRow | undefined): BalanceDueCursor | undefined {
+  const nextRefreshAt = row?.balance_query_next_refresh_at
+  return row && nextRefreshAt ? { nextRefreshAt, id: row.id } : undefined
+}
+
 function nextBalanceMutationUpdatedAt(expectedUpdatedAt: string | undefined): string {
   if (!expectedUpdatedAt) return nowIso()
   const expectedMs = Date.parse(expectedUpdatedAt)
@@ -787,8 +923,30 @@ function balanceDetectionCandidateFromRow(row: BalanceDetectionCandidateRow): Ac
     systemAccountId: row.system_account_id,
     configRevision: Number(row.config_revision),
     credentials,
+    nextRefreshAt: row.balance_query_next_refresh_at ?? undefined,
     proxyProfileId: row.proxy_profile_id ?? undefined
   }
+}
+
+function appendUniqueBalanceDetectionCandidates(
+  output: AccountBalanceDetectionCandidate[],
+  selectedIds: Set<string>,
+  rows: BalanceDetectionCandidateRow[],
+  limit: number
+): { lastExamined?: BalanceDetectionCandidateRow; consumedAll: boolean } {
+  let lastExamined: BalanceDetectionCandidateRow | undefined
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    lastExamined = row
+    const candidate = balanceDetectionCandidateFromRow(row)
+    if (!candidate || selectedIds.has(candidate.id)) continue
+    selectedIds.add(candidate.id)
+    output.push(candidate)
+    if (output.length >= limit) {
+      return { lastExamined, consumedAll: index === rows.length - 1 }
+    }
+  }
+  return { lastExamined, consumedAll: true }
 }
 
 async function isAccountBalanceConfigurationCurrentAsync(input: {
@@ -802,7 +960,7 @@ async function isAccountBalanceConfigurationCurrentAsync(input: {
     FROM accounts
     WHERE id = ?
       AND config_revision = ?
-      AND balance_query_enabled = 1
+      AND ${balanceBooleanPredicate('balance_query_enabled', true)}
       AND deleted_at IS NULL
     LIMIT 1
   `
@@ -853,19 +1011,19 @@ function configurationChanged(currentJson: string, config: AccountBalanceQueryCo
 }
 
 function nextBalanceRefreshAt(
-  current: { balance_query_enabled: number; balance_query_config_json: string; balance_query_next_refresh_at?: string | null },
+  current: { balance_query_enabled: number | boolean; balance_query_config_json: string; balance_query_next_refresh_at?: string | null },
   enabled: boolean,
   config: AccountBalanceQueryConfig | undefined,
   now: string
 ): string | undefined {
   if (!enabled) return undefined
-  if (current.balance_query_enabled !== 1 || configurationChanged(current.balance_query_config_json, config)) return now
+  if (!databaseBoolean(current.balance_query_enabled) || configurationChanged(current.balance_query_config_json, config)) return now
   return current.balance_query_next_refresh_at ?? now
 }
 
 function addBalanceConfigurations(
   output: Map<string, { enabled: boolean; config?: AccountBalanceQueryConfig; nextRefreshAt?: string }>,
-  rows: Array<{ id: string; balance_query_enabled: number; balance_query_config_json: string; balance_query_next_refresh_at?: string | null }>
+  rows: Array<{ id: string; balance_query_enabled: number | boolean; balance_query_config_json: string; balance_query_next_refresh_at?: string | null }>
 ): void {
   for (const row of rows) {
     let config: AccountBalanceQueryConfig | undefined
@@ -876,9 +1034,22 @@ function addBalanceConfigurations(
       config = undefined
     }
     output.set(row.id, {
-      enabled: row.balance_query_enabled === 1,
+      enabled: databaseBoolean(row.balance_query_enabled),
       config,
       nextRefreshAt: row.balance_query_next_refresh_at ?? undefined
     })
   }
+}
+
+function balanceBooleanPredicate(column: 'schedulable' | 'balance_query_enabled', expected: boolean): string {
+  return `${column} = ${balanceBooleanLiteral(expected)}`
+}
+
+function balanceBooleanLiteral(value: boolean): 'TRUE' | 'FALSE' | '1' | '0' {
+  if (runtimeConfig.databaseDriver === 'postgres') return value ? 'TRUE' : 'FALSE'
+  return value ? '1' : '0'
+}
+
+function databaseBoolean(value: number | boolean): boolean {
+  return value === true || value === 1
 }

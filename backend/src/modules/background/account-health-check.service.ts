@@ -14,6 +14,7 @@ import {
   fixedAccountApiKeyPoolCandidate,
   isCandidateAccountApiKeyPoolTestable
 } from '../accounts/account-api-key-pool-runtime.js'
+import { effectiveAccountApiKeyCount } from '../accounts/account-balance-config.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { gatewayAccountRuntimeKey } from '../gateway/runtime/account-runtime-keys.js'
 import type { OpenAIAccountSecret } from '../../storage/openai-account-selector.types.js'
@@ -178,6 +179,7 @@ async function runAccountHealthCheckQueueItem(
     const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
 
     if (probeOutcome === 'complete_success') {
+      const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
       const healthCheckResult = await requestBackgroundWorkerDbService({
         type: 'record_account_health_check_success',
         accountId: account.id,
@@ -187,6 +189,7 @@ async function runAccountHealthCheckQueueItem(
           failureThreshold: item.failureThreshold,
           statusCode: result.statusCode,
           expectedConfigRevision: item.configRevision,
+          scheduleBalanceAutoDetection,
           traceId: result.traceId
         }
       }, backgroundProbeDbServiceTimeoutMs)
@@ -202,7 +205,7 @@ async function runAccountHealthCheckQueueItem(
         attemptIndex: context.attemptIndex,
         retryNumber: context.retryNumber
       }, '账号健康检测通过，已顺延下次检测')
-      if (changed && account.status === 'pending_test') {
+      if (changed && scheduleBalanceAutoDetection) {
         enqueueAccountBalanceAutoDetection(account.id, item.configRevision)
       }
       return true
@@ -271,6 +274,14 @@ async function runAccountHealthCheckQueueItem(
     }
     return true
   })
+}
+
+function shouldScheduleAccountBalanceAutoDetection(account: AccountSummary): boolean {
+  return account.status === 'pending_test'
+    && account.type === 'api_key'
+    && effectiveAccountApiKeyCount(account.credentials) === 1
+    && account.balanceQueryEnabled !== true
+    && (!account.balanceQueryConfig || Object.keys(account.balanceQueryConfig).length === 0)
 }
 
 export async function probeAccountHealthCheckApiKeyPool(

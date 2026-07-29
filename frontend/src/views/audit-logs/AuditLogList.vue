@@ -40,7 +40,7 @@
         <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'status'">
-        <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
+        <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ statusText(record.finalStatusCode, record.success) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'trafficSource'">
         <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
@@ -90,7 +90,7 @@
           <div class="mobile-list-card-title">{{ record.method }} {{ record.path }}</div>
           <div class="mobile-list-card-tags">
             <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
-            <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
+            <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ statusText(record.finalStatusCode, record.success) }}</a-tag>
             <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
             <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
             <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
@@ -153,6 +153,7 @@ import {
   outcomeText,
   sessionClientTypeText,
   statusColor,
+  statusText,
   trafficSourceColor,
   trafficSourceText
 } from './auditLogFormatters'

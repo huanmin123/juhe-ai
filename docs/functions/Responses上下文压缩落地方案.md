@@ -232,7 +232,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 明确识别为 Codex compact 期望的请求，包括 `/responses/compact` 以及带 `compaction_trigger` 的 Codex `/responses`，返回侧必须执行最小契约检查：`response.completed` 前按 Codex Remote Compaction V2 语义统计 `response.output_item.done` 中 Codex 可反序列化的 compact item 数量。
 - 可接受 compact item 最小形状为 `type = "compaction"` 或 Codex 接受的别名 `type = "compaction_summary"`，且 `encrypted_content` 必须是字符串；只有类型相同但字段缺失、为 `null` 或非字符串时不能算作合法 compact 输出。
 - Codex compact SSE 的 `response.completed.response.id` 必须是字符串；缺失或非字符串会导致 Codex SSE parser 解析失败，因此同样按 compact 契约错误拦截。非流式 `/responses/compact` JSON 只按 `output` 数组校验，不要求外层 `response.id`。
-- Codex compact 期望请求在最终确认前不得把暂存的 output item 先写给客户端；如果完成时不是恰好 1 个 Codex 可接受的 compact output item，则生成 `codex_compaction_contract_mismatch` 响应语义错误，交给“响应检查策略”的系统默认规则触发服务端换号重试或最终可重试失败。
+- Codex compact 期望请求在最终确认前不得把暂存的 output item 先写给客户端；精确 `eventType === "response.failed"` 或 `eventName === "response.failed"` 到达时清空暂存，只把当前失败事件交给通用结构失败路径并得到 `upstream_protocol_failure`，不创建或匹配 `default_codex_compaction_contract`，也不读取 payload 的错误字段。只有 `response.completed` 与该精确失败终态均未出现的 EOF，才生成本地 `codex_compaction_contract_mismatch`；普通 `data.error` / `metadata.error` 不是终态。如果完成时不是恰好 1 个 Codex 可接受的 compact output item，则生成 `codex_compaction_contract_mismatch` 响应语义错误，交给“响应检查策略”的系统默认规则触发服务端换号重试或最终可重试失败。
 - Chat-only gateway compact 只能发生在本轮可见输出开始前；网关可以返回自有 `compaction_summary` envelope，并在后续请求中由网关按 compact snapshot 恢复，不能把它标记为上游原生 compact。
 
 ## 性能边界
@@ -255,6 +255,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 | 上游不支持 `context_management` | 按上游失败处理，不标记本地 bug |
 | compact 请求自身超上下文 | 返回 compact 失败，不继续重试 |
 | Codex compact 期望请求完成时没有恰好 1 个 `compaction` output item | 命中系统默认响应检查规则 `default_codex_compaction_contract`，下游未写出时服务端换号重试；账号耗尽时按 Codex 客户端能力返回可重试失败 |
+| Codex compact 暂存期间收到精确 `response.failed` | 清空暂存，进入通用 `upstream_protocol_failure`；不读取 payload 错误字段，不匹配本地 compact 契约 |
 | `/responses` 请求出现 `context_length_exceeded` | 不触发自动 compact；按现有上游错误或流式失败处理 |
 | Chat-only `previous_response_id` 找不到、过期或跨授权边界 | 返回受控错误，不请求上游，不污染账号健康 |
 | Chat-only 内部摘要模型不可用 | 在当前分组和当前供应商内按普通调度切号；耗尽后返回 compact 失败 |
@@ -319,6 +320,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - `codex_responses` 请求形态：`/responses/compact` 只在账号能力允许时承接。
 - `codex_responses` 请求形态：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
 - Codex compact 响应契约：mock 上游返回 2 个非 compaction output item 时，网关不泄露坏 output，并切到下一个 Codex 兼容账号重试。
+- Codex compact 失败终态：暂存 output 后收到精确 `response.failed` 时零下游字节并进入通用 `upstream_protocol_failure`；不同 payload 形状以及普通 `data.error` / `metadata.error` 不得改变终态判定。
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
 - 流式失败处理：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。

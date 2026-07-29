@@ -63,7 +63,10 @@ function assertValidEntry(job: BackgroundJobRegistryEntry): void {
 function assertScheduledJobsAreRegisteredAndUsed(): void {
   assert(!/scheduler\.schedule\(\{\s*name:\s*['"]/.test(backgroundJobsSource), 'background-jobs.ts 禁止直接写 schedule name 字符串，必须使用 backgroundScheduledJobName(...)')
 
-  const scheduledNames = collectMatches(backgroundJobsSource, /scheduler\.schedule\(\{\s*name:\s*backgroundScheduledJobName\('([^']+)'\)/g)
+  const scheduledNames = [
+    ...collectMatches(backgroundJobsSource, /scheduler\.schedule\(\{\s*name:\s*backgroundScheduledJobName\('([^']+)'\)/g),
+    ...collectVariableScheduledJobNames(backgroundJobsSource)
+  ]
   const scheduleCallCount = countMatches(backgroundJobsSource, /scheduler\.schedule\(\{/g)
   assert(scheduledNames.length > 0, 'background-jobs.ts 应至少注册一个后台定时任务')
   assert.equal(scheduledNames.length, scheduleCallCount, 'background-jobs.ts 每个 scheduler.schedule 都必须用 backgroundScheduledJobName(...)')
@@ -81,6 +84,15 @@ function assertScheduledJobsAreRegisteredAndUsed(): void {
   for (const name of scheduledRegistryNames) {
     assert(scheduledNames.includes(name), `registry 中的定时任务 ${name} 未在 background-jobs.ts 注册`)
   }
+}
+
+function collectVariableScheduledJobNames(source: string): string[] {
+  const names: string[] = []
+  const pattern = /const\s+(\w+)\s*=\s*'([^']+)'[\s\S]*?scheduler\.schedule\(\{\s*name:\s*backgroundScheduledJobName\(\1\)/g
+  for (const match of source.matchAll(pattern)) {
+    names.push(match[2])
+  }
+  return names
 }
 
 function assertWorkerIpcMessagesAreRegistered(): void {

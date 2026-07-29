@@ -508,7 +508,7 @@ export async function handleUpstreamRequestError(
       attemptStartedAt,
       auditAttemptIndex,
       success: false,
-      errorPhase: 'client',
+      errorPhase: 'downstream',
       errorMessage: downstreamConnectionClosedMessage
     })
     throw error

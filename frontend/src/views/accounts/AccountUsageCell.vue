@@ -34,7 +34,7 @@ const props = defineProps<{
 
 defineEmits<{ (event: 'refresh-balance', accountId: string): void }>()
 
-const balanceDisplay = computed(() => formatAccountBalance(props.account.balanceSnapshot))
+const balanceDisplay = computed(() => formatAccountBalance(props.account.balanceSnapshot, props.account))
 const canRefresh = computed(() => canManuallyRefreshAccountBalance(props.account))
 </script>
 

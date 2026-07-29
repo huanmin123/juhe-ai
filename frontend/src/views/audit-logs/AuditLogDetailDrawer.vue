@@ -27,7 +27,7 @@
             </span>
             <span v-else>-</span>
           </a-descriptions-item>
-          <a-descriptions-item label="状态码">{{ detail.finalStatusCode ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="状态码">{{ statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="AI账户">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
           <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
@@ -185,6 +185,7 @@ import {
   payloadPartText,
   prettyJson,
   sessionClientTypeText,
+  statusText,
   trafficSourceText
 } from './auditLogFormatters'
 import {
@@ -437,7 +438,7 @@ function upstreamAttemptStatusText(attempt: AuditLogDetailAttemptSupplement): st
 }
 
 function gatewayStatusText(detail: AuditLogDisplayDetail): string {
-  if (detail.finalStatusCode !== undefined) return String(detail.finalStatusCode)
+  if (detail.finalStatusCode !== undefined) return statusText(detail.finalStatusCode, detail.success)
   return outcomeText(detail.auditOutcome)
 }
 

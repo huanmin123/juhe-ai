@@ -104,6 +104,7 @@ assertRoleBlockContainsOnly('ops-worker', [
   'chat-retention-cleanup',
   'proxy-latency-refresh',
   'account-balance-refresh',
+  'account-balance-auto-detect-recovery',
   'account-circuit-control-plane-maintenance',
   'account-circuit-recovery',
   'account-health-check',

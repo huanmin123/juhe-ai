@@ -11,6 +11,7 @@ import {
   recoverStaleChatContextCompactions
 } from '../../storage/chat-context.repository.js'
 import {
+  commitAccountBalanceDetectionDueAsync,
   commitAccountBalanceRefreshAsync,
   enableDetectedAccountBalanceQueryAsync
 } from '../../storage/account-balance.repository.js'
@@ -948,7 +949,9 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
       return handleDbServiceOperationSync(operation)
     case 'commit_account_balance_refresh':
-      return { changed: await commitAccountBalanceRefreshAsync(operation.input) }
+      return { changed: 'detectionIntent' in operation.input
+        ? await commitAccountBalanceDetectionDueAsync(operation.input)
+        : await commitAccountBalanceRefreshAsync(operation.input) }
     case 'enable_detected_account_balance_query':
       return { changed: await enableDetectedAccountBalanceQueryAsync(operation.input) }
     case 'record_account_health_check_failure':

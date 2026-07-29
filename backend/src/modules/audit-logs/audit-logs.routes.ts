@@ -168,6 +168,7 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'gateway_failed',
   'upstream_failed',
   'stream_failed',
+  'downstream_closed',
   'client_aborted'
 ])
 const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])

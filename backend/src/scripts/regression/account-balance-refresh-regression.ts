@@ -21,12 +21,14 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob] = await Promise.all([
+const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, accountHealthCheckRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-balance.repository.js'),
   import('../../modules/accounts/account-balance-query.service.js'),
-  import('../../modules/background/account-balance-refresh.job.js')
+  import('../../modules/background/account-balance-refresh.job.js'),
+  import('../../modules/background/account-balance-auto-detect.service.js'),
+  import('../../storage/account-health-check.repository.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -37,7 +39,9 @@ const balanceRepositorySource = readFileSync(resolve('src/storage/account-balanc
 const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
 const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
 const balanceRefreshJobSource = readFileSync(resolve('src/modules/background/account-balance-refresh.job.ts'), 'utf8')
+const autoDetectServiceSource = readFileSync(resolve('src/modules/background/account-balance-auto-detect.service.ts'), 'utf8')
 const backgroundJobsSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
+const accountHealthCheckRepositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
 assert.doesNotMatch(
   balanceServiceSource,
   /response\.status\s*===\s*(?:401|403|408|429)|status\s*>=\s*500|HTTP \(\?:401\|403\)/,
@@ -68,6 +72,12 @@ assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_js
   assert.match(accountRoutesSource, /if \(account\.balanceIdentityChanged\) \{[\s\S]*cleanupAccountBalanceSnapshotAfterSave/, '只有真实余额身份变化才允许清理旧快照')
 assert.match(balanceRepositorySource, /listAccountsNeedingBalanceRefreshRecoveryAsync/, '余额 worker 必须能自愈活动账户缺快照且无刷新计划的状态')
 assert.match(balanceRepositorySource, /postgresBalanceRecoveryAfterId/, 'PostgreSQL 自愈候选也必须使用轮转游标，不能固定扫描最小 ID 前缀')
+assert.match(balanceRepositorySource, /listAccountsDueForBalanceAutoDetectionAsync/, '首次余额自动探测必须有持久化到期补偿扫描')
+assert.match(balanceRepositorySource, /status = 'active'[\s\S]*schedulable = 1/, '自动余额任务只允许领取活动且可调度的账户')
+assert.match(balanceRepositorySource, /balanceBooleanLiteral[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*'TRUE'[\s\S]*'FALSE'/, 'PostgreSQL 余额查询必须用 boolean 谓词而非 SQLite 整数')
+assert.match(balanceRepositorySource, /listAccountsDueForBalanceRefreshAsync[\s\S]*schedulable = TRUE[\s\S]*balance_query_enabled = TRUE/, 'PostgreSQL 自动刷新候选必须匹配 boolean partial index')
+assert.match(balanceRepositorySource, /balanceDetectionCandidateWhere[\s\S]*balanceBooleanPredicate\('schedulable', true\)[\s\S]*balanceBooleanPredicate\('balance_query_enabled', false\)/, '首次探测候选及写回必须按当前方言核对可调度和关闭状态')
+assert.match(accountHealthCheckRepositorySource, /recordAccountHealthCheckSuccessAsync[\s\S]*schedulable = CASE WHEN status = 'pending_test' THEN TRUE[\s\S]*AND \? = TRUE[\s\S]*balance_query_enabled = FALSE/, 'PostgreSQL 健康成功必须能原子写入首次余额探测意图')
 assert.match(balanceRefreshJobSource, /const refreshBatchSize = 12/, '余额刷新单轮候选必须受最坏耗时约束')
 assert.match(balanceRefreshJobSource, /const recoveryBatchSize = 4/, '每轮余额刷新必须为缺失调度自愈保留固定小配额')
 assert.match(balanceRefreshJobSource, /const refreshRunBudgetMs = 45_000/, '余额刷新领取新候选必须受单轮运行预算约束')
@@ -76,6 +86,10 @@ assert.match(balanceRefreshJobSource, /signal: candidateController\.signal/, '�
 assert.match(balanceRefreshJobSource, /deadlineAtMs: candidateDeadlineAtMs/, '候选必须传递绝对截止时间')
 assert.match(balanceRefreshJobSource, /candidateFailureCount/, '候选级余额失败必须汇总到部分失败摘要')
 assert.match(backgroundJobsSource, /task: \([^)]*\) => runAccountBalanceRefresh\([^)]*\)/, '余额定时任务必须把结构化执行结果返回给 WorkerScheduler')
+assert.match(backgroundJobsSource, /account-balance-auto-detect-recovery/, 'ops-worker 必须注册余额自动探测补偿任务')
+assert.match(autoDetectServiceSource, /runAccountBalanceAutoDetectionRecovery/, '自动探测服务必须提供重启后的持久补偿入口')
+assert.match(autoDetectServiceSource, /runWithAccountBalanceLease/, '自动探测必须复用余额查询的共享账户租约')
+assert.match(balanceServiceSource, /export async function runWithAccountBalanceLease/, '余额查询服务必须提供共享账户租约入口')
 assert.match(balanceServiceSource, /loadCurrentGenerationBalanceSnapshot\(candidate\)/, '租约冲突与瞬时失败只能复用当前刷新代次的余额快照')
 assert.doesNotMatch(balanceServiceSource, /loadAccountBalanceSnapshotsByAccountIdsAsync/, '余额刷新 fallback 不能绕过刷新代次直接读取快照金额')
 
@@ -126,6 +140,11 @@ try {
   const multi = create('multi', 'api_key', { api_keys: ['sk-a', 'sk-b'], api_key: 'sk-a', base_url: 'https://relay.example/v1' })
   const future = create('future')
   const autoDetect = create('auto-detect')
+  const durableAutoDetect = create('durable-auto-detect')
+  const retryAutoDetect = create('retry-auto-detect')
+  const unsupportedAutoDetect = create('unsupported-auto-detect')
+  const stateTransitionAutoDetect = create('state-transition-auto-detect')
+  const leaseAutoDetect = create('lease-auto-detect')
   const transientFailure = create('transient-failure')
   const deterministicFailure = create('deterministic-failure')
   const untrustedStatusFailure = create('untrusted-status-failure', 'api_key', {
@@ -155,6 +174,185 @@ try {
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
   }, access)
   const database = databaseModule.getBusinessDatabase()
+
+  const activateFirstBalanceDetection = (account: { id: string; configRevision?: number }) => {
+    const checkedAt = new Date(Date.now() - 1_000).toISOString()
+    database.prepare(`
+      UPDATE accounts
+      SET status = 'pending_test', schedulable = 0, balance_query_enabled = 0,
+          balance_query_config_json = '{}', balance_query_next_refresh_at = NULL
+      WHERE id = ?
+    `).run(account.id)
+    assert.equal(accountHealthCheckRepository.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 1,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      checkedAt,
+      expectedConfigRevision: account.configRevision,
+      scheduleBalanceAutoDetection: true
+    }), true, '首次健康检查成功必须原子写入余额自动探测意图')
+    const row = database.prepare(`
+      SELECT status, schedulable, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+      FROM accounts WHERE id = ?
+    `).get(account.id) as Record<string, unknown>
+    assert.equal(row.status, 'active')
+    assert.equal(row.schedulable, 1)
+    assert.equal(row.balance_query_enabled, 0)
+    assert.equal(row.balance_query_config_json, '{}')
+    assert.equal(row.balance_query_next_refresh_at, checkedAt)
+    return checkedAt
+  }
+
+  const durableDetectionAt = activateFirstBalanceDetection(durableAutoDetect)
+  const durableCandidate = (await balanceRepository.listAccountsDueForBalanceAutoDetectionAsync({
+    now: durableDetectionAt,
+    limit: 10
+  })).find((candidate: { id: string }) => candidate.id === durableAutoDetect.id)
+  assert.ok(durableCandidate, '重启补偿扫描必须领取已经持久化的首次探测意图')
+  const durableRecovery = await autoDetectService.runAccountBalanceAutoDetectionRecovery({
+    listCandidates: async () => [durableCandidate],
+    autoDetect: async (candidate) => await autoDetectService.autoDetectAccountBalanceCandidate(candidate, {
+      queryBuiltin: async () => ({
+        adapter: 'sub2api',
+        snapshot: { status: 'fresh', remainingUsd: '15.750000', basis: 'wallet' }
+      })
+    })
+  })
+  assert.equal(durableRecovery.outcome, 'success')
+  assert.equal(durableRecovery.enabledCount, 1, '恢复任务必须自动开启严格命中的余额接口')
+  const durableAfter = database.prepare(`
+    SELECT balance_query_enabled, balance_query_config_json FROM accounts WHERE id = ?
+  `).get(durableAutoDetect.id) as Record<string, unknown>
+  assert.equal(durableAfter.balance_query_enabled, 1)
+  assert.deepEqual(JSON.parse(String(durableAfter.balance_query_config_json)), {
+    adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api'
+  })
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([durableAutoDetect.id]).get(durableAutoDetect.id)?.remainingUsd,
+    '15.750000',
+    '恢复探测写入后列表快照必须能回显新余额'
+  )
+
+  const retryDetectionAt = activateFirstBalanceDetection(retryAutoDetect)
+  const retryCandidate = (await balanceRepository.listAccountsDueForBalanceAutoDetectionAsync({
+    now: retryDetectionAt,
+    limit: 10
+  })).find((candidate: { id: string }) => candidate.id === retryAutoDetect.id)
+  assert.ok(retryCandidate)
+  assert.equal(await autoDetectService.autoDetectAccountBalanceCandidate(retryCandidate, {
+    queryBuiltin: async () => { throw new Error('temporary upstream outage') }
+  }), 'retry', '临时上游失败不能误判为不支持或丢弃探测意图')
+  const retryAfter = database.prepare(`
+    SELECT balance_query_enabled, balance_query_next_refresh_at FROM accounts WHERE id = ?
+  `).get(retryAutoDetect.id) as Record<string, unknown>
+  assert.equal(retryAfter.balance_query_enabled, 0)
+  assert.ok(Date.parse(String(retryAfter.balance_query_next_refresh_at)) > Date.now(), '临时失败必须把持久探测意图延后重试')
+
+  const unsupportedDetectionAt = activateFirstBalanceDetection(unsupportedAutoDetect)
+  const unsupportedCandidate = (await balanceRepository.listAccountsDueForBalanceAutoDetectionAsync({
+    now: unsupportedDetectionAt,
+    limit: 10
+  })).find((candidate: { id: string }) => candidate.id === unsupportedAutoDetect.id)
+  assert.ok(unsupportedCandidate)
+  assert.equal(await autoDetectService.autoDetectAccountBalanceCandidate(unsupportedCandidate, {
+    queryBuiltin: async () => ({ adapter: 'sub2api', snapshot: { status: 'unsupported', errorMessage: 'not supported' } })
+  }), 'unsupported', '确定不支持必须完成首次探测而不是无限重试')
+  assert.equal(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(unsupportedAutoDetect.id)?.balance_query_next_refresh_at,
+    null,
+    '确定不支持必须清除首次探测意图'
+  )
+
+  const stateTransitionDetectionAt = activateFirstBalanceDetection(stateTransitionAutoDetect)
+  const stateTransitionCandidate = await balanceRepository.findAccountBalanceDetectionCandidateAsync(
+    stateTransitionAutoDetect.id,
+    stateTransitionAutoDetect.configRevision ?? 1
+  )
+  assert.ok(stateTransitionCandidate)
+  let markStateTransitionQueryStarted: (() => void) | undefined
+  const stateTransitionQueryStarted = new Promise<void>((resolve) => {
+    markStateTransitionQueryStarted = resolve
+  })
+  let releaseStateTransitionQuery: (() => void) | undefined
+  const stateTransitionQueryGate = new Promise<void>((resolve) => {
+    releaseStateTransitionQuery = resolve
+  })
+  const stateTransitionResult = autoDetectService.autoDetectAccountBalanceCandidate(stateTransitionCandidate, {
+    queryBuiltin: async () => {
+      markStateTransitionQueryStarted?.()
+      await stateTransitionQueryGate
+      return { adapter: 'sub2api', snapshot: { status: 'unsupported', errorMessage: 'not supported' } }
+    }
+  })
+  await stateTransitionQueryStarted
+  const stateTransitionRevisionBefore = database.prepare(`SELECT config_revision FROM accounts WHERE id = ?`)
+    .get(stateTransitionAutoDetect.id)?.config_revision
+  database.prepare(`UPDATE accounts SET status = 'disabled', schedulable = 0 WHERE id = ?`).run(stateTransitionAutoDetect.id)
+  assert.equal(
+    database.prepare(`SELECT config_revision FROM accounts WHERE id = ?`).get(stateTransitionAutoDetect.id)?.config_revision,
+    stateTransitionRevisionBefore,
+    '可用性状态切换可以不改变余额配置版本'
+  )
+  releaseStateTransitionQuery?.()
+  assert.equal(
+    await stateTransitionResult,
+    'stale',
+    '查询在途期间变为不可调度后，不支持结果不得清除首次探测意图'
+  )
+  const stateTransitionAfter = database.prepare(`
+    SELECT status, schedulable, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    FROM accounts WHERE id = ?
+  `).get(stateTransitionAutoDetect.id) as Record<string, unknown>
+  assert.equal(stateTransitionAfter.status, 'disabled')
+  assert.equal(stateTransitionAfter.schedulable, 0)
+  assert.equal(stateTransitionAfter.balance_query_enabled, 0)
+  assert.equal(stateTransitionAfter.balance_query_config_json, '{}')
+  assert.equal(
+    stateTransitionAfter.balance_query_next_refresh_at,
+    stateTransitionDetectionAt,
+    '失效写回必须保留原始持久探测意图，等待账户重新可调度'
+  )
+
+  const leaseDetectionAt = activateFirstBalanceDetection(leaseAutoDetect)
+  const leaseCandidate = await balanceRepository.findAccountBalanceDetectionCandidateAsync(
+    leaseAutoDetect.id,
+    leaseAutoDetect.configRevision ?? 1
+  )
+  assert.ok(leaseCandidate)
+  let autoDetectUpstreamRequestCount = 0
+  let markLeaseAutoDetectQueryStarted: (() => void) | undefined
+  const leaseAutoDetectQueryStarted = new Promise<void>((resolve) => {
+    markLeaseAutoDetectQueryStarted = resolve
+  })
+  let releaseLeaseAutoDetectQuery: (() => void) | undefined
+  const leaseAutoDetectQueryGate = new Promise<void>((resolve) => {
+    releaseLeaseAutoDetectQuery = resolve
+  })
+  const firstLeaseAutoDetect = autoDetectService.autoDetectAccountBalanceCandidate(leaseCandidate, {
+    queryBuiltin: async () => {
+      autoDetectUpstreamRequestCount += 1
+      markLeaseAutoDetectQueryStarted?.()
+      await leaseAutoDetectQueryGate
+      return { adapter: 'sub2api', snapshot: { status: 'unsupported', errorMessage: 'not supported' } }
+    }
+  })
+  await leaseAutoDetectQueryStarted
+  const leaseBusyAutoDetect = await autoDetectService.autoDetectAccountBalanceCandidate(leaseCandidate, {
+    queryBuiltin: async () => {
+      autoDetectUpstreamRequestCount += 1
+      return { adapter: 'sub2api', snapshot: { status: 'unsupported', errorMessage: 'must not execute' } }
+    }
+  })
+  assert.equal(leaseBusyAutoDetect, 'lease_busy', '同一账户已有余额查询租约时，第二次自动探测不得写回或访问上游')
+  assert.equal(autoDetectUpstreamRequestCount, 1, '并发自动探测只允许一个上游余额请求')
+  assert.equal(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(leaseAutoDetect.id)?.balance_query_next_refresh_at,
+    leaseDetectionAt,
+    '租约占用不能清除或延后持久探测意图'
+  )
+  releaseLeaseAutoDetectQuery?.()
+  assert.equal(await firstLeaseAutoDetect, 'unsupported')
+
   databaseModule.getBusinessDatabase().prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(persistenceFailure.id)
   const persistenceFailureCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(persistenceFailure.id)
   assert.ok(persistenceFailureCandidate)
@@ -385,12 +583,13 @@ try {
   })
   assert.deepEqual(
     (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id),
-    [recoverInactive.id, recoverMissing.id, recoverPaused.id].sort(),
-    '历史 unsupported 停止计划必须进入自愈，余额失败不能永久移出调度'
+    [recoverMissing.id, recoverPaused.id].sort(),
+    '历史 unsupported 的活动账户必须进入自愈，余额失败不能永久移出调度'
   )
-  assert.ok(
+  assert.equal(
     (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).some((item: { id: string }) => item.id === recoverInactive.id),
-    '用户已开启余额查询的停用账户也必须进入自愈候选'
+    false,
+    '用户已开启余额查询的停用账户不得进入自动自愈候选'
   )
   const nullGenerationCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(recoverMissing.id)
   assert.ok(nullGenerationCandidate)
@@ -740,7 +939,7 @@ try {
   })
 
   const due = balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 100 })
-  assert.deepEqual(due.map((item: { id: string }) => item.id), [disabled.id, dueA.id, dueB.id].sort(), '显式开启余额的到期物理单 API Key 账户不得受调度状态阻塞')
+  assert.deepEqual(due.map((item: { id: string }) => item.id), [dueA.id, dueB.id].sort(), '自动余额刷新只能领取活动且可调度的物理单 API Key 账户')
 
   balanceRepository.replaceAccountBalanceSnapshot({
     accountId: dueA.id,

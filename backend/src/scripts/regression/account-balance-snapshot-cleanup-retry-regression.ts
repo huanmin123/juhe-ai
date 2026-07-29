@@ -237,7 +237,7 @@ await waitFor(() => boundedCoordinator.snapshot().completedCount === 100, 5_000)
 assert.equal(maxActiveDeletes, 2, '首次删除和后续重试必须共同遵守并发上限 2')
 
 const cleanupSource = readFileSync(new URL('../../modules/accounts/account-balance-snapshot-cleanup.service.ts', import.meta.url), 'utf8')
-const accountListSource = readFileSync(new URL('../../modules/accounts/account-list.routes.ts', import.meta.url), 'utf8')
+const accountStatusSnapshotSource = readFileSync(new URL('../../modules/accounts/account-status-snapshot.service.ts', import.meta.url), 'utf8')
 const balanceRepositorySource = readFileSync(new URL('../../storage/account-balance.repository.ts', import.meta.url), 'utf8')
 const accountRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
 const accountBatchEditSource = readFileSync(new URL('../../modules/accounts/account-batch-edit.service.ts', import.meta.url), 'utf8')
@@ -256,8 +256,8 @@ assert.doesNotMatch(
   /function cleanupChangedBalanceSnapshots\([\s\S]{0,500}Promise\.all/,
   '批量首次删除不能无界并发调用 stats-writer'
 )
-assert.match(accountListSource, /isAccountBalanceSnapshotSuppressed\(account\.id, \{ configuration, snapshotRecord \}\)/, '读取端必须用当前快照事实解析抑制状态')
-assert.match(accountListSource, /accountBalanceSnapshotMatchesConfiguration\(configuration, snapshotRecord\)/, '读取端必须校验持久化调度代次')
+assert.match(accountStatusSnapshotSource, /isAccountBalanceSnapshotSuppressed\(visibleProjection\.id, \{ configuration: balanceConfiguration, snapshotRecord: balanceSnapshotRecord \}\)/, '读取端必须用当前快照事实解析抑制状态')
+assert.match(accountStatusSnapshotSource, /accountBalanceSnapshotMatchesConfiguration\(balanceConfiguration, balanceSnapshotRecord\)/, '读取端必须校验持久化调度代次')
 assert.match(balanceRepositorySource, /SELECT account_id, snapshot_json, next_refresh_after, updated_at/, '快照读取必须携带持久化刷新代次和更新时间')
 assert.match(balanceRepositorySource, /AND updated_at <= \?/, '延迟清理只能删除保存时点前的旧快照，不能误删后续新快照')
 

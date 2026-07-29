@@ -69,7 +69,7 @@ AI 账户新增/编辑弹窗增加“余额查询”开关，交互与时间计�
 | --- | --- | --- | --- |
 | `balance_query_enabled` | INTEGER / boolean | `false` | 是否启用；供到期任务索引筛选 |
 | `balance_query_config_json` | TEXT / JSON | `{}` | 适配器、刷新间隔和自定义规则 |
-| `balance_query_next_refresh_at` | TEXT / timestamptz NULL | `NULL` | 自动刷新到期时间；业务库中的唯一调度事实 |
+| `balance_query_next_refresh_at` | TEXT / timestamptz NULL | `NULL` | 已开启余额的自动刷新到期时间，或首次激活后未配置单 Key 的自动探测意图；业务库中的唯一调度事实 |
 
 ```ts
 type AccountBalanceBuiltinAdapter =
@@ -102,6 +102,7 @@ interface AccountBalanceQueryConfig {
 
 - 关闭功能时 `balance_query_enabled=false`，配置可保留，重新开启时恢复表单。
 - 开启或修改适配器时把 `balance_query_next_refresh_at` 设为当前时间；关闭时清空。
+- `balance_query_enabled=false && balance_query_config_json='{}'` 时，非空的 `balance_query_next_refresh_at` 只表示首次自动探测尚未完成，不表示已开启周期余额刷新；该记录只能由首次健康检查成功创建，或由探测自身按条件延后 / 清除。
 - 创建或更新后的最终有效 API Key 数量大于 1 时，强制保存 `balance_query_enabled=false` 并清空 `balance_query_next_refresh_at`；即使请求省略余额字段或显式提交 `true`，也不能因为余额查询拒绝多 Key 凭据。
 - 多 Key 自动关闭时保留 `balance_query_config_json`，删除当前 `relay_balance` 快照；后续恢复为单 Key 时仍保持关闭，由用户明确重新开启，不能自动恢复查询。
 - `intervalMinutes` 必须为 1 至 10 的整数。
@@ -224,7 +225,7 @@ One API、New API、OneHub、DoneHub 和 Veloera 的当前源码将 API Key 不�
 5. 成功、临时失败、确定性失败和 `unsupported` 都写当前快照并按用户配置周期安排下次刷新；余额结果永远不改变账户状态、可调度性或用户开关。
 6. 自动刷新在业务状态活动且可调度的基础上读取运行态，只执行 `normal/degraded` 或无阻断记录的账户；短暂避让、待探针、半开和探针失败只延后本轮，不推进到期时间，恢复后立即补查。运行态存储不可用时按数据库状态 fail-open，避免辅助状态源故障饿死余额任务。
 
-账户停用或时间计划当前不可用时不领取。重新启用后，若快照已到期则下一轮立即刷新。worker 重启不丢任务，因为到期时间持久化在快照表中。
+账户停用或时间计划当前不可用时不领取。重新启用后，若账户表中的 `balance_query_next_refresh_at` 已到期则下一轮立即刷新。worker 重启不丢任务，因为到期时间持久化在账户表中；快照只记录展示状态与最近结果。
 
 首期不引入 Redis 队列、独立任务表、余额专用租约表或余额历史表，只复用现有后台任务租约。多实例部署不在本计划范围；后续真正启用多节点 worker 时再接入现有用户分片方案。
 
@@ -263,20 +264,20 @@ POST /__aisys__/api/accounts/balance/test-draft
 
 ## 7. 新账户非阻塞自动探测
 
-新建物理单 Key API Key 账户且用户没有开启余额查询时，在首次激活健康检查成功并完成账户状态写回后，把余额探测任务投入 ops-worker 内存队列。投递是常数时间操作，创建 HTTP 请求不等待健康检查或余额请求。
+新建物理单 Key API Key 账户且用户没有开启余额查询时，首次激活健康检查成功必须在同一账户条件写入中保存 `balance_query_next_refresh_at=checkedAt` 作为探测意图；成功提交后再把任务投入 ops-worker 内存队列。投递是常数时间操作，创建 HTTP 请求不等待健康检查或余额请求。内存队列只是低延迟路径，不能是唯一事实源。
 
 探测规则：
 
-1. 队列低并发执行；同一账户按 ID 去重，不重试，不改变健康检查结果。
-2. 领取时重新读取账户，只接受 `active`、可调度、未删除、非授权实例、单 API Key、`balance_query_enabled=false`、`balance_query_config_json='{}'` 且配置版本仍等于首次检查版本的账户。配置 JSON 非空表示用户关闭过余额或账户曾因多 Key 自动关闭，不能作为“从未配置”的新账户重新开启。
+1. 内存队列低并发、按账户 ID 去重以降低首次等待；ops-worker 每分钟再按持久到期意图有界扫描最多固定小批量，补偿进程重启、队列异常和临时上游失败。补偿只处理已有意图，不扫描所有旧账户或普通编辑账户。
+2. 领取时重新读取账户，只接受 `active`、可调度、未删除、非授权实例、单 API Key、`balance_query_enabled=false`、`balance_query_config_json='{}'` 且配置版本仍当前的账户。配置 JSON 非空表示用户关闭过余额或账户曾因多 Key 自动关闭，不能作为“从未配置”的新账户重新开启。时间计划关闭、`disabled`、`pending_test`、`error` 和不可调度账户不发起自动上游请求；意图保留到恢复活动可调度后再领取。
 3. 以 `adapter=builtin` 调用统一内置适配解析器：优先已有偏好，再尝试其余全部规则；复用账户 Base URL、代理、15 秒总超时、256 KiB 限制和严格 JSON 解析。HTML 200、字段缺失、鉴权失败和网络错误都不算支持。
-4. 只有得到 `fresh` 或 `unlimited` 快照才算命中。命中后以账户 ID、关闭状态和预期配置版本为条件写入 `{ adapter: 'builtin', preferredBuiltinAdapter, intervalMinutes }` 并开启功能，同时保存本次快照和下次刷新时间。
-5. 全部不命中时不写配置、不写失败快照，账户继续保持关闭，表示当前无法确认支持。
-6. 用户在探测期间编辑账户、主动开启或关闭余额查询时，条件更新失败，后台结果不得覆盖用户选择。
+4. 只有得到 `fresh` 或 `unlimited` 快照才算命中。命中后以账户 ID、关闭状态、预期配置版本和预期探测时间为条件写入 `{ adapter: 'builtin', preferredBuiltinAdapter, intervalMinutes }` 并开启功能，同时保存本次快照和下次刷新时间。
+5. 全部规则形成明确 `unsupported` 时，以同一条件清除探测意图但不写配置或失败快照，账户继续保持关闭，表示当前无法确认支持。`pending`、`failed`、查询异常和本地 transport 中断不是不支持结论，保留关闭状态并把探测意图延后固定短周期重试。
+6. 用户在探测期间编辑账户、主动开启或关闭余额查询时，配置版本、开关、空配置或预期探测时间条件更新失败；后台结果不得覆盖用户选择。
 
 SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：业务配置和调度时间通过 DB service 条件提交，租约与余额快照通过 stats-writer 写入；手动刷新所在的 DB service 也通过 server IPC 把统计写操作转交 stats-writer。查询结束时先按 `configRevision + balanceQueryConfig` 提交业务状态，stats-writer 写快照前再次核对当前配置。配置在请求期间发生变化时丢弃旧结果，不恢复旧快照和旧调度时间。
 
-自动探测只随新账户首次激活执行一次；周期健康检查、旧账户和普通编辑不触发全量探测，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
+自动探测意图只由新账户首次激活创建一次；它允许因 worker 重启或临时失败进行受控补偿尝试。周期健康检查、旧账户和普通编辑不创建新意图，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
 
 本功能首次上线后在 release 根目录执行一次维护命令 `pnpm --filter juhe-ai-backend maintenance:backfill-account-balance`，覆盖所有系统账户作用域下尚未开启余额查询的合格物理账户。发布包保留该命令和编译脚本。PostgreSQL 可在主服务运行时后台执行；SQLite 必须先停止主服务并设置 `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE_CONFIRMED=1`，由专用离线维护启动器独占 business/stats 写入，禁止与在线 DB service/worker 并行。命令按账户 ID 游标每页 50 条读取、并发 2 探测，逐页输出 `scanned/enabled/unsupported/stale` 进度；不把全部账户载入内存，也不阻塞 PostgreSQL 主服务。上线后的常态只保留新账户首次激活探测，不把全量扫描注册为周期任务。
 
@@ -321,6 +322,7 @@ SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：
 - 五类适配器都有成功、无限/未提供、鉴权失败、超时和字段异常回归。
 - 开启、关闭、修改间隔和修改适配器时，SQLite/PostgreSQL 读写一致。
 - 自动刷新只处理到期且可用的物理单 Key API Key 账户，单轮有界且稳定排序。
+- 自动刷新和首次探测恢复都只领取 `active && schedulable` 的物理账户；停用、错误和待检查账户保留用户配置或探测意图但不自动请求上游。人工刷新仍可跨账户状态用于诊断。
 - 后台临时错误前两次保留上次成功余额或显示“待重试”，连续第 3 次才显示“查询失败”并清空金额；每次临时失败都按账户配置的刷新周期继续查询，任意成功清零失败次数。
 - NewAPI `unlimited_quota=true` 不再显示“无限”；其他适配器仍未命中时显示“余额查询失败”，用户开关和后台周期保持开启。
 - 确定性不支持不关闭用户开关、不取消余额调度，也不改变账户状态。
@@ -329,7 +331,8 @@ SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：
 - 列表按页批量补齐快照，不出现 N+1 查询。
 - 前端桌面和移动端不重叠，刷新图标无按钮外观，加载旋转和悬浮错误正常。
 - 点击列表余额刷新图标后，当前行金额立即使用接口返回快照更新，分页、筛选、排序和其他行不重新加载。
-- 新账户创建响应不等待余额探测；首次激活后只在严格命中时自动开启，探测失败或配置版本变化时保持关闭。
+- 新账户创建响应不等待余额探测；首次健康成功原子保存探测意图，worker 重启后仍可恢复。首次激活后只在严格命中时自动开启，确定不支持或配置版本变化时保持关闭，临时失败仅延后重试。
+- 已开启但尚无快照的不可自动调度账户显示“待查询”并明确提示恢复可调度后自动查询、也可手动刷新，避免把状态边界误解为缓存未更新。
 - 新增和编辑弹窗“测试查询”使用当前表单草稿，无持久化副作用；成功金额只通过顶部消息显示。
 - 编辑弹窗的“测试查询”位于“刷新周期”输入框右侧，不再单独占据一行；桌面和移动端无重叠或横向溢出。
 - 新建多 Key 账户即使请求携带余额开启状态也能正常保存，最终返回 `balanceQueryEnabled=false` 且无余额刷新时间。

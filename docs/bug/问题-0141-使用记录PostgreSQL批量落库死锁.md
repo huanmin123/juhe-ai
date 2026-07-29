@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0141
-- 状态：待发布验证
+- 状态：本地修复完成，待统一上线
 - 严重程度：P1
 - 发现时间：2026-07-29
 - 发现方式：生产日志 / PostgreSQL 运行统计 / 代码审计
@@ -53,9 +53,9 @@
 | 专项回归 | 事务锁顺序 | usage PostgreSQL 锁顺序专项 | accounts 预锁在 usage 写前 | 通过 | 通过 |
 | 数据库边界 | PostgreSQL client / transaction | 现有数据库边界专项 | 事务及 SQL 绑定保持正确 | 通过 | 通过 |
 | 相邻回归 | usage 快照和请求时计价 | 现有专项 | 相邻写入边界保持正确 | 通过 | 通过 |
-| 类型检查 | 后端 TypeScript | `pnpm --filter juhe-ai-backend typecheck` | 通过 | 无关错误阻塞 | 未涉及本次文件 |
-| 构建配置检查 | 后端生产 tsconfig | `tsc -p tsconfig.build.json --noEmit` | 通过 | 无关错误阻塞 | 未涉及本次文件 |
-| 既有 SQLite 回归 | 批写、写入池、分片路由 | 现有专项 | 进入 usage 断言 | 账户模型校验提前阻塞 | 未涉及本次文件 |
+| 类型检查 | 后端 TypeScript | `pnpm --filter juhe-ai-backend typecheck` | 通过 | 已通过 | 当前 `master` 已复跑通过 |
+| 构建配置检查 | 后端生产构建 | `pnpm --filter juhe-ai-backend build` | 通过 | 已通过 | 当前 `master` 已复跑通过 |
+| 既有 SQLite 回归 | 批写、写入池、分片路由 | 现有专项 | 进入 usage 断言 | 已通过 | 已补齐旧夹具的有效模型目录后复跑通过 |
 | 发布后观察 | 死锁增量与队列 | 压力窗口观察日志、deadlock 计数和 Redis pending | 不再出现此锁图 | 待填 | 未执行 |
 
 ## 复发记录
@@ -70,6 +70,6 @@
 
 ## 完成总结
 
-- 完成时间：待发布验证
-- 结论：结构性锁顺序修复和针对性回归已完成；完整门禁受工作区无关错误阻塞，尚未发布。
-- 后续建议：修复现有统计 / system-team 类型错误及旧 SQLite 夹具后，完成生产构建、受控发布，并观察真实并发窗口内的 deadlock 累计计数。
+- 完成时间：2026-07-29（本地修复）
+- 结论：结构性锁顺序修复、针对性回归、TypeScript 类型检查和后端生产构建均已在当前 `master` 通过；按需求暂不发布。
+- 后续建议：统一上线时以最终发布提交复跑发布门禁，并观察真实并发窗口内的 deadlock 累计计数、`40P01` 日志和 Redis pending。

@@ -7,14 +7,17 @@ export function canManuallyRefreshAccountBalance(
   return account.balanceQueryEnabled === true && account.accessType !== 'authorized'
 }
 
-export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
+export function formatAccountBalance(
+  snapshot?: AccountBalanceSnapshot,
+  account?: Pick<AccountListItem, 'status' | 'schedulable'>
+): {
   text: string
   tone: 'pending' | 'refreshing' | 'fresh' | 'unlimited' | 'unsupported' | 'failed'
   tooltip?: string
   refreshing: boolean
   visible: boolean
 } {
-  if (!snapshot) return pendingBalanceDisplay('pending')
+  if (!snapshot) return pendingBalanceDisplay('pending', false, pendingBalanceTooltip(account))
   if (snapshot.status === 'failed') {
     return { text: '余额查询失败', tone: 'failed', tooltip: snapshot.errorMessage, refreshing: false, visible: true }
   }
@@ -54,7 +57,7 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
       visible: true
     }
   }
-  return pendingBalanceDisplay('pending')
+  return pendingBalanceDisplay('pending', false, pendingBalanceTooltip(account))
 }
 
 function formatUsdAmount(amount: number): string {
@@ -63,15 +66,21 @@ function formatUsdAmount(amount: number): string {
 
 function pendingBalanceDisplay(
   tone: 'pending' | 'refreshing',
-  refreshing = false
+  refreshing = false,
+  tooltip?: string
 ): ReturnType<typeof formatAccountBalance> {
   return {
     text: tone === 'refreshing' ? '查询中' : '待查询',
     tone,
-    tooltip: undefined,
+    tooltip,
     refreshing,
     visible: true
   }
+}
+
+function pendingBalanceTooltip(account?: Pick<AccountListItem, 'status' | 'schedulable'>): string | undefined {
+  if (!account || (account.status === 'active' && account.schedulable)) return undefined
+  return '账户当前不可自动调度；恢复可用后会自动查询，也可点击刷新图标手动查询'
 }
 
 function transientFailureTooltip(snapshot: AccountBalanceSnapshot, preservesResult: boolean): string | undefined {
