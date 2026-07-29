@@ -20,13 +20,18 @@ const frontendBackgroundJobsSource = readSource('../../../../frontend/src/views/
 const frontendBackgroundQueuesSource = readSource('../../../../frontend/src/views/stats/StatsBackgroundQueuesCard.vue')
 const frontendBackgroundQueuesHelperSource = readSource('../../../../frontend/src/views/stats/statsBackgroundQueues.ts')
 const frontendSystemMetricsSource = readSource('../../../../frontend/src/views/stats/SystemMetricsStatsView.vue')
-const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics',[\s\S]*?\n\}\)\n/)?.[0]
-const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/trend',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeSummaryRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime\/summary',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeJobsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime\/jobs',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeQueuesRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime\/queues',[\s\S]*?\n\}\)\n/)?.[0]
 
-assert(systemMetricsRouteSource, '系统指标趋势路由必须存在')
-assert(systemMetricsRuntimeRouteSource, '系统指标运行态路由必须存在')
+assert(systemMetricsRouteSource, '系统指标窄趋势路由必须存在')
+assert.doesNotMatch(statsRoutesSource, /statsRouter\.get\('\/system-metrics',/, '无页面消费者的旧宽系统指标路由必须退场')
+assert(systemMetricsRuntimeSummaryRouteSource && systemMetricsRuntimeJobsRouteSource && systemMetricsRuntimeQueuesRouteSource, '系统指标运行态分段路由必须存在')
 assert.doesNotMatch(systemMetricsRouteSource, /requestServerRuntimeSnapshot|backgroundQueueRuntimeRows/, '趋势路由不得等待 worker / 队列运行态')
-assert.match(systemMetricsRuntimeRouteSource, /requestServerRuntimeSnapshot\(2500\)/, '运行态路由必须独立请求 server snapshot')
+assert.match(systemMetricsRuntimeSummaryRouteSource, /loadSystemMetricsRuntimeSnapshot\(\)/, '运行态摘要必须独立请求专用窄 server snapshot')
+assert.match(systemMetricsRuntimeJobsRouteSource, /systemMetricsRuntimeJobRows\(runtime\)/, '运行态任务必须按分页 DTO 投影')
+assert.match(systemMetricsRuntimeQueuesRouteSource, /systemMetricsRuntimeQueueRows\(\[/, '运行态队列必须按分页 DTO 投影')
 
 const registryByName = new Map<string, typeof backgroundWorkerRegistry[number]>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
 const expectedSupervisedRoles = ['ingest-worker', 'stats-worker', 'ops-worker'] as const
@@ -146,7 +151,7 @@ assert(!statsRoutesSource.includes('getRuntimeLogRedisStreamRuntime'), '系统�
 assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
 assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
 assert(statsRoutesSource.includes('highConcurrencyRuntimeQueueRows(runtime)') && statsRoutesSource.includes('高并发短队列'), '系统指标接口必须接入高并发短队列')
-assert(frontendSystemMetricsSource.includes('api.stats.systemMetricsRuntime()') && frontendSystemMetricsSource.includes(':loading="runtimeInitialLoading"'), '前端后台任务 / 队列卡片必须独立异步加载运行态')
+assert(frontendSystemMetricsSource.includes('api.stats.systemMetricsRuntime({ signal: controller.signal })') && frontendSystemMetricsSource.includes(':loading="runtimeInitialLoading"'), '前端后台任务 / 队列卡片必须独立异步加载运行态')
 assert(frontendSystemMetricsSource.includes('filter(isBackgroundTaskRow)') && frontendSystemMetricsSource.includes("row.intervalMs > 0 && !row.name.endsWith('-queue')"), '前端后台任务表必须过滤队列伪行，只展示真实定时任务')
 assert(!frontendBackgroundJobsSource.includes('队列：') && !frontendBackgroundJobsSource.includes('队列状态') && !frontendBackgroundJobsSource.includes('backgroundJobQueueSummary'), '前端后台任务表不能展示队列摘要，避免把队列误认为任务')
 assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetricsRuntime.value)'), '系统指标页必须把后台队列拆到独立运行态列表')
@@ -154,8 +159,8 @@ assert(frontendBackgroundQueuesHelperSource.includes('.flatMap(backgroundQueueRo
 for (const columnTitle of ['积压', '活跃', '容量 / 处理', '异常累计', '最老等待', '调度 / 写入', 'Redis Stream']) {
   assert(frontendBackgroundQueuesSource.includes(columnTitle), `后台队列列表必须包含 ${columnTitle} 列`)
 }
-assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsChartCard\n          :title="`进程事件循环延迟'), '系统指标页进程事件循环延迟必须独占整行展示')
-assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsBackgroundJobsCard'), '系统指标页后台任务运行状态必须独占整行展示')
+assert.match(frontendSystemMetricsSource, /<a-col :xs="24">\s*<StatsChartCard\s+:title="`进程事件循环延迟/, '系统指标页进程事件循环延迟必须独占整行展示')
+assert.match(frontendSystemMetricsSource, /<a-col :xs="24">\s*<StatsBackgroundJobsCard/, '系统指标页后台任务运行状态必须独占整行展示')
 assert(!frontendSystemMetricsSource.includes(':xl="14"') && !frontendSystemMetricsSource.includes(':xl="10"'), '系统指标页不能把进程事件循环延迟和后台任务运行状态用大屏分栏挤在同一行')
 const processEventLoopCardIndex = frontendSystemMetricsSource.indexOf(':title="`进程事件循环延迟')
 const processMemoryCardIndex = frontendSystemMetricsSource.indexOf(':title="`进程 RSS 峰值趋势')
@@ -196,10 +201,10 @@ function readSource(path: string): string {
 
 function assertRoleBlockContainsOnly(role: string, jobNames: string[]): void {
   const block = roleCaseBlock(role)
+  const scheduledNames = collectScheduledJobNames(block)
   for (const jobName of jobNames) {
-    assert(block.includes(`backgroundScheduledJobName('${jobName}')`), `${role} 必须注册 ${jobName}`)
+    assert(scheduledNames.includes(jobName), `${role} 必须注册 ${jobName}`)
   }
-  const scheduledNames = [...new Set([...block.matchAll(/backgroundScheduledJobName\('([^']+)'\)/g)].map((match) => match[1]))]
   assert.deepEqual([...scheduledNames].sort(), [...jobNames].sort(), `${role} 注册任务必须和当前角色归属一致`)
   for (const jobName of jobNames) {
     assert.equal(registryByName.get(jobName)?.defaultRole, role, `${jobName} registry defaultRole 必须和 ${role} 实际挂载一致`)
@@ -235,6 +240,17 @@ function roleCaseBlock(role: string): string {
     return `${block}\n${functionBlock('scheduleAccountQualityRefreshJob')}`
   }
   return block
+}
+
+function collectScheduledJobNames(block: string): string[] {
+  const names = new Set([...block.matchAll(/backgroundScheduledJobName\('([^']+)'\)/g)].map((match) => match[1]))
+  if (/^\s*scheduleCooldownAccountRetestJob\(\)\s*$/m.test(block)) {
+    const helper = functionBlock('scheduleCooldownAccountRetestJob')
+    assert.match(helper, /const jobName = 'cooldown-account-retest'/, '冷却账户复测 helper 必须绑定稳定任务名')
+    assert.match(helper, /runIfNodeOwnsWorkerJob\(runtimeConfig\.ownerLock, jobName,[\s\S]*?scheduler\.schedule\(\{\s*name: backgroundScheduledJobName\(jobName\)/, '冷却账户复测 helper 必须通过 owner fencing 注册 scheduler 任务')
+    names.add('cooldown-account-retest')
+  }
+  return [...names]
 }
 
 function functionBlock(name: string): string {

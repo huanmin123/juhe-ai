@@ -69,8 +69,11 @@ try {
   }, access)
 
   const database = databaseModule.getBusinessDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const originalStatsPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
+  const capturedStatsCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/\bFROM\s+api_keys\b/i.test(sql) && /\bORDER\s+BY\s+(?:api_keys\.)?is_default\s+DESC,\s*(?:api_keys\.)?updated_at\s+DESC\b/i.test(sql)) {
@@ -82,9 +85,36 @@ try {
     }
     return statement
   }) as typeof database.prepare
+  statsDatabase.prepare = ((sql: string) => {
+    const statement = originalStatsPrepare(sql)
+    if (/\bJOIN\s+usage_stats_totals\b/i.test(sql) && /\bscope_type\s*=\s*'api_key'/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        capturedStatsCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof statsDatabase.prepare
+  const captureListQueryBudget = <T>(
+    operation: () => T,
+    expected: { businessQueries: number; statsQueries: number },
+    label: string
+  ): T => {
+    const businessBefore = capturedCalls.length
+    const statsBefore = capturedStatsCalls.length
+    const result = operation()
+    assert.equal(capturedCalls.length - businessBefore, expected.businessQueries, `${label}业务查询数必须有界`)
+    assert.equal(capturedStatsCalls.length - statsBefore, expected.statsQueries, `${label}统计查询数必须有界`)
+    return result
+  }
 
   try {
-    const nameResult = repositories.listApiKeysPage(access, { keyword: '检索目标 Key', page: 1, pageSize: 20 })
+    const nameResult = captureListQueryBudget(
+      () => repositories.listApiKeysPage(access, { keyword: '检索目标 Key', page: 1, pageSize: 20 }),
+      { businessQueries: 1, statsQueries: 1 },
+      '名称列表'
+    )
     const nameIds = nameResult.items.map((item) => item.id)
     assert(nameIds.includes(matchedByName.id), 'API Key 搜索应命中名称精确值')
     assert(nameIds.includes(matchedByNamePrefix.id), 'API Key 搜索应命中名称前缀值')
@@ -93,29 +123,46 @@ try {
     assert.equal(Object.prototype.hasOwnProperty.call(matchedListItem ?? {}, 'key'), false, 'API Key 列表不应包含完整本地密钥字段')
     assert.equal(Object.prototype.hasOwnProperty.call(matchedListItem ?? {}, 'usage'), true, 'API Key 列表 DTO 应同步返回累计用量')
     assert.equal(nameResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 0, '无用量记录的 API Key 应在列表中返回零值')
-    const inaccessibleList = repositories.listApiKeysPage({
-      systemAccountId: 'sys_other',
-      systemAccountFilterId: 'sys_other',
-      role: 'admin'
-    }, { keyword: '检索目标 Key', page: 1, pageSize: 20 })
+    const inaccessibleList = captureListQueryBudget(
+      () => repositories.listApiKeysPage({
+        systemAccountId: 'sys_other',
+        systemAccountFilterId: 'sys_other',
+        role: 'admin'
+      }, { keyword: '检索目标 Key', page: 1, pageSize: 20 }),
+      { businessQueries: 1, statsQueries: 0 },
+      '空权限列表'
+    )
     assert.deepEqual(inaccessibleList.items, [], 'API Key 列表内联用量不得跨系统账户泄露')
     assert.equal(matchedByName.key.startsWith(matchedByName.keyPrefix), true, 'API Key 创建响应仍应返回一次完整密钥供用户保存')
     assert.equal(matchedByName.key.endsWith(matchedByName.keySuffix), true, 'API Key 创建响应应返回后缀供列表安全识别')
 
-    const descriptionResult = repositories.listApiKeysPage(access, { keyword: '说明前缀', page: 1, pageSize: 20 })
+    const descriptionResult = captureListQueryBudget(
+      () => repositories.listApiKeysPage(access, { keyword: '说明前缀', page: 1, pageSize: 20 }),
+      { businessQueries: 1, statsQueries: 0 },
+      '说明不命中列表'
+    )
     const descriptionIds = descriptionResult.items.map((item) => item.id)
     assert(!descriptionIds.includes(matchedByDescription.id), 'API Key 搜索不应通过说明字段命中，避免通用关键词扫描长文本')
     assert(!descriptionIds.includes(middleDescriptionOnly.id), 'API Key 搜索不应命中说明中间包含值')
 
-    const keyPrefixResult = repositories.listApiKeysPage(access, { keyword: matchedByName.keyPrefix, page: 1, pageSize: 20 })
+    const keyPrefixResult = captureListQueryBudget(
+      () => repositories.listApiKeysPage(access, { keyword: matchedByName.keyPrefix, page: 1, pageSize: 20 }),
+      { businessQueries: 1, statsQueries: 0 },
+      '密钥前缀不命中列表'
+    )
     assert(!keyPrefixResult.items.some((item) => item.id === matchedByName.id), 'API Key 搜索不应通过 Key 前缀命中')
 
-    const wildcardResult = repositories.listApiKeysPage(access, { keyword: 'percent%', page: 1, pageSize: 20 })
+    const wildcardResult = captureListQueryBudget(
+      () => repositories.listApiKeysPage(access, { keyword: 'percent%', page: 1, pageSize: 20 }),
+      { businessQueries: 1, statsQueries: 1 },
+      '通配符字面量列表'
+    )
     const wildcardIds = wildcardResult.items.map((item) => item.id)
     assert(wildcardIds.includes(wildcardLiteral.id), 'API Key 搜索应把 % 当作字面量前缀处理')
     assert(!wildcardIds.includes(wildcardNeighbor.id), 'API Key 搜索不应把用户输入的 % 当作 LIKE 通配符')
   } finally {
     database.prepare = originalPrepare
+    statsDatabase.prepare = originalStatsPrepare
   }
 
   assert(capturedCalls.length >= 4, '回归应捕获 API Key 列表 SQL')

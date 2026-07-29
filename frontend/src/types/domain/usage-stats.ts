@@ -144,7 +144,6 @@ export interface AiHealthAccountRow {
 
 export interface AiHealthListResult {
   items: AiHealthAccountRow[]
-  total: number
   hasMore: boolean
   page: number
   pageSize: number
@@ -152,25 +151,22 @@ export interface AiHealthListResult {
 
 export interface UsageStatsOverview {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary & {
+  summary: {
+    requestCount: number
     successCount: number
     errorCount: number
     errorRate: number
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    totalTokens: number
+    totalCost: number
     averageDurationMs?: number
     averageFirstTokenMs?: number
   }
   hourlyTrend: Array<{
     statHour: string
     requestCount: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-    cacheWrite1hTokens?: number
-    cacheWriteCost?: number
-    thinkingTokens?: number
-    inputImageTokens?: number
-    outputImageTokens?: number
-    totalTokens: number
-    totalCost: number
     averageDurationMs?: number
     errorCount: number
   }>
@@ -179,13 +175,6 @@ export interface UsageStatsOverview {
     providerCode: string
     requestCount: number
     totalTokens: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-    cacheWrite1hTokens?: number
-    cacheWriteCost?: number
-    thinkingTokens?: number
-    inputImageTokens?: number
-    outputImageTokens?: number
     totalCost: number
   }>
   errors: Array<{
@@ -226,27 +215,13 @@ export interface UsageStatsOverviewErrorsResult {
   errors: UsageStatsOverview['errors']
 }
 
-export interface SystemMetricsOverview {
+export interface SystemMetricsTrendOverview {
   hourlyTrend: Array<{
     statHour: string
-    sampleCount: number
     cpuPercentAvg?: number
-    cpuPercentMax?: number
     memoryUsedPercentAvg?: number
-    memoryUsedPercentMax?: number
-    eventLoopLagMsSampleCount?: number
-    eventLoopLagMsAvg?: number
-    eventLoopLagMsMax?: number
     networkRxBytesPerSecondAvg?: number
-    networkRxBytesPerSecondMax?: number
     networkTxBytesPerSecondAvg?: number
-    networkTxBytesPerSecondMax?: number
-    networkRxTotalBytesMax?: number
-    networkTxTotalBytesMax?: number
-    processRssBytesMax?: number
-    processHeapUsedBytesMax?: number
-    dbFileBytesMax?: number
-    statsLagSecondsMax?: number
   }>
   processEventLoopLatestStatus: Array<{
     processRole: ProcessRole
@@ -257,8 +232,6 @@ export interface SystemMetricsOverview {
     processRssBytes: number | null
     processHeapUsedBytes: number | null
     processHeapTotalBytes: number | null
-    processExternalBytes: number | null
-    processArrayBuffersBytes: number | null
   }>
   processEventLoopPeakStatus: Array<{
     processRole: ProcessRole
@@ -266,111 +239,140 @@ export interface SystemMetricsOverview {
     processPid: number | null
     sampledAt: string | null
     eventLoopLagMs: number | null
-    processRssBytes: number | null
-    processHeapUsedBytes: number | null
-    processHeapTotalBytes: number | null
-    processExternalBytes: number | null
-    processArrayBuffersBytes: number | null
   }>
   processEventLoopTrend: Array<{
-    statHour: string
     statMinute: string
     processRole: ProcessRole
-    sampleCount: number
-    eventLoopLagMsSampleCount?: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
     processRssBytesAvg?: number
     processRssBytesMax?: number
-    processHeapUsedBytesAvg?: number
-    processHeapUsedBytesMax?: number
-    processHeapTotalBytesAvg?: number
-    processHeapTotalBytesMax?: number
   }>
 }
 
-export interface SystemMetricsTrendOverview {
-  hourlyTrend: Array<Pick<SystemMetricsOverview['hourlyTrend'][number],
-    'statHour' | 'cpuPercentAvg' | 'memoryUsedPercentAvg' | 'networkRxBytesPerSecondAvg' | 'networkTxBytesPerSecondAvg'
-  >>
-  processEventLoopLatestStatus: Array<Pick<SystemMetricsOverview['processEventLoopLatestStatus'][number],
-    'processRole' | 'sampleAvailable' | 'processPid' | 'sampledAt' | 'eventLoopLagMs' | 'processRssBytes' | 'processHeapUsedBytes' | 'processHeapTotalBytes'
-  >>
-  processEventLoopPeakStatus: Array<Pick<SystemMetricsOverview['processEventLoopPeakStatus'][number],
-    'processRole' | 'sampleAvailable' | 'processPid' | 'sampledAt' | 'eventLoopLagMs'
-  >>
-  processEventLoopTrend: Array<Pick<SystemMetricsOverview['processEventLoopTrend'][number],
-    'statMinute' | 'processRole' | 'eventLoopLagMsAvg' | 'eventLoopLagMsMax' | 'processRssBytesAvg' | 'processRssBytesMax'
-  >>
-}
-
-export interface SystemMetricsRuntimeOverview {
+export interface SystemMetricsRuntimeSummary {
   runtimeSnapshotAvailable: boolean
   runtimeSnapshotStale?: boolean
   ingestWorkerSnapshotAvailable?: boolean
   statsWorkerSnapshotAvailable?: boolean
   opsWorkerSnapshotAvailable?: boolean
-  backgroundJobsAvailable: boolean
-  backgroundJobs: Array<{
+  jobsAvailable: boolean
+  queuesAvailable: boolean
+}
+
+export interface SystemMetricsRuntimeJob {
+  name: string
+  workerRole?: ProcessRole
+  intervalMs: number
+  resourceLane?: string
+  running: boolean
+  pending?: boolean
+  queuedForLane?: boolean
+  timedOut?: boolean
+  nextRunAt?: string
+  lastStartedAt?: string
+  lastFinishedAt?: string
+  lastSuccessAt?: string
+  lastErrorAt?: string
+  lastError?: string
+  lastWarningAt?: string
+  lastWarning?: string
+  lastOutcome?: 'success' | 'partial' | 'failure' | 'timeout' | 'skipped'
+  leaseState?: 'not_required' | 'acquired' | 'busy' | 'lost'
+  lastDurationMs?: number
+  maxDurationMs?: number
+  runCount: number
+  successCount: number
+  failureCount: number
+  partialCount: number
+  skippedCount: number
+  taskSkippedCount?: number
+  coalescedCount?: number
+  timedOutCount?: number
+  retryQueue?: {
     name: string
-    workerRole?: ProcessRole
-    intervalMs: number
-    resourceLane?: string
-    running: boolean
-    pending?: boolean
-    queuedForLane?: boolean
-    timedOut?: boolean
+    pendingCount: number
+    runningCount: number
     nextRunAt?: string
-    lastStartedAt?: string
-    lastFinishedAt?: string
-    lastSuccessAt?: string
-    lastErrorAt?: string
-    lastError?: string
-    lastWarningAt?: string
-    lastWarning?: string
-    lastOutcome?: 'success' | 'partial' | 'failure' | 'timeout' | 'skipped'
-    leaseState?: 'not_required' | 'acquired' | 'busy' | 'lost'
-    lastDurationMs?: number
-    maxDurationMs?: number
-    runCount: number
-    successCount: number
-    failureCount: number
-    partialCount: number
-    skippedCount: number
-    taskSkippedCount?: number
-    coalescedCount?: number
+  }
+  localQueue?: {
+    name: string
+    queueType?: string
+    queueLength?: number
+    queueBytes?: number
+    flushLastSuccessAt?: string
+    flushLastError?: string
+    completedCount?: number
+    droppedCount?: number
+    rejectedCount?: number
+    expiredCount?: number
     timedOutCount?: number
-    retryQueue?: {
-      name: string
-      pendingCount: number
-      runningCount: number
-      nextRunAt?: string
-    }
-    localQueue?: {
-      name: string
-      queueType?: string
-      queueLength?: number
-      queueBytes?: number
-      flushLastSuccessAt?: string
-      flushLastError?: string
-      completedCount?: number
-      droppedCount?: number
-      rejectedCount?: number
-      expiredCount?: number
-      timedOutCount?: number
-      failedCount?: number
-      flushFailureCount?: number
-      oldestQueuedMs?: number
-      writerPoolQueueLength?: number
-      writerPoolActiveJobs?: number
-      writerPoolFailedJobs?: number
-      writerPoolRejectedJobs?: number
-      writerPoolOldestQueuedMs?: number
-      pendingWriteRequestCount?: number
-      pendingWriteOldestQueuedMs?: number
-      runningCount?: number
-      consumers?: number
-      nextRunAt?: string
-    }
-  }> | null
+    failedCount?: number
+    flushFailureCount?: number
+    oldestQueuedMs?: number
+    writerPoolQueueLength?: number
+    writerPoolActiveJobs?: number
+    writerPoolFailedJobs?: number
+    writerPoolRejectedJobs?: number
+    writerPoolOldestQueuedMs?: number
+    pendingWriteRequestCount?: number
+    pendingWriteOldestQueuedMs?: number
+    runningCount?: number
+    consumers?: number
+    nextRunAt?: string
+  }
+}
+
+export type SystemMetricsRuntimeQueueType = 'retry' | 'local' | 'ipc' | 'request' | 'gateway' | 'concurrency' | 'redis' | 'writer'
+
+export interface SystemMetricsRuntimeQueue {
+  key: string
+  name: string
+  queueType: SystemMetricsRuntimeQueueType
+  workerRole?: ProcessRole
+  pendingCount?: number
+  runningCount?: number
+  consumers?: number
+  queueLength?: number
+  queueBytes?: number
+  completedCount?: number
+  droppedCount?: number
+  rejectedCount?: number
+  expiredCount?: number
+  timedOutCount?: number
+  failedCount?: number
+  flushFailureCount?: number
+  oldestQueuedMs?: number
+  writerPoolQueueLength?: number
+  writerPoolActiveJobs?: number
+  writerPoolFailedJobs?: number
+  writerPoolRejectedJobs?: number
+  writerPoolOldestQueuedMs?: number
+  pendingWriteRequestCount?: number
+  pendingWriteOldestQueuedMs?: number
+  nextRunAt?: string
+  flushLastSuccessAt?: string
+  lastError?: string
+}
+
+export interface SystemMetricsRuntimeJobsResult {
+  items: SystemMetricsRuntimeJob[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+}
+
+export interface SystemMetricsRuntimeQueuesResult {
+  items: SystemMetricsRuntimeQueue[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+}
+
+// Compatibility for the runtime row formatter contracts. API consumers use the split DTOs above.
+export interface SystemMetricsRuntimeOverview extends Omit<SystemMetricsRuntimeSummary, 'jobsAvailable' | 'queuesAvailable'> {
+  backgroundJobsAvailable: boolean
+  backgroundJobs: SystemMetricsRuntimeJob[] | null
 }

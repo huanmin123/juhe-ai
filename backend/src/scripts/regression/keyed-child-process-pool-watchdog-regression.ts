@@ -141,6 +141,33 @@ try {
     await spreadPool.close()
   }
 
+  const cancelWorkers: FakeWorker[] = []
+  const cancelPool = new KeyedChildProcessPool<TestOperation>({
+    name: 'queued-cancel-test',
+    createWorker: () => {
+      const worker = new FakeWorker('stall')
+      cancelWorkers.push(worker)
+      return worker as unknown as ChildProcess
+    },
+    targetSize: () => 1,
+    queueMaxItems: () => 10,
+    shardIndexForOperation: () => 0,
+    operationType: (operation) => operation.id,
+    runTimeoutMs: () => 25
+  })
+  try {
+    const active = cancelPool.request({ id: 'active-before-cancel' })
+    const controller = new AbortController()
+    const queued = cancelPool.request({ id: 'cancel-while-queued' }, { signal: controller.signal })
+    controller.abort()
+    await assert.rejects(queued, (error: unknown) => error instanceof Error && error.name === 'AbortError', '取消信号应移除尚未开始的排队任务')
+    assert.equal(cancelPool.runtime().queueLength, 0, '取消后不应在 worker 队列中残留任务')
+    assert.equal(cancelWorkers[0]?.received.length, 1, '已取消的排队任务不得发送给子进程')
+    await assert.rejects(active, /queued-cancel-test writer 操作超时 25ms/)
+  } finally {
+    await cancelPool.close()
+  }
+
   const slowWorkers: SlowExitWorker[] = []
   const closeRacePool = new KeyedChildProcessPool<TestOperation>({
     name: 'close-race-test',

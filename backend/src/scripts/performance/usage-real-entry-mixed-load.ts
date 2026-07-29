@@ -572,7 +572,7 @@ function readOperation(seeded: SeededGateway, sequence: number): { name: string;
   const operations: Array<{ name: string; path: string }> = [
     { name: 'GET /usage-records today', path: '/__aisys__/api/usage-records?systemAccountId=sys_admin&page=1&pageSize=20&result=all&trafficSource=gateway' },
     { name: 'GET /usage-records trace', path: `/__aisys__/api/usage-records?systemAccountId=sys_admin&page=1&pageSize=20&result=all&traceId=${encodeURIComponent(tracePrefix)}&trafficSource=gateway` },
-    { name: 'GET /stats/usage-overview', path: '/__aisys__/api/stats/usage-overview?systemAccountId=sys_admin' },
+    { name: 'GET /stats/usage-overview/summary', path: '/__aisys__/api/stats/usage-overview/summary?systemAccountId=sys_admin' },
     { name: 'GET /stats/usage-window', path: '/__aisys__/api/stats/usage-window?systemAccountId=sys_admin' },
     { name: 'GET /stats/ai-performance/accounts', path: `/__aisys__/api/stats/ai-performance/accounts?systemAccountId=sys_admin&limit=20&accountIds=${encodeURIComponent(accountId ?? '')}` },
     { name: 'GET /table-monitor/overview', path: '/__aisys__/api/table-monitor/overview?page=1&pageSize=50' },

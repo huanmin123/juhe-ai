@@ -92,7 +92,10 @@ try {
   assert.equal(authDisabled.ok, false, 'PG 外部来源系统禁用后 token 应拒绝')
   assert.equal(authDisabled.ok ? undefined : authDisabled.code, 'external_source_disabled', 'PG 外部来源系统禁用后应返回固定错误码')
 
-  assert.equal(await deleteExternalIntegrationSourceAsync(sourceId), true, 'PG 外部来源系统应可删除')
+  assert.deepEqual(await deleteExternalIntegrationSourceAsync(sourceId), {
+    id: sourceId,
+    name: created.source.name
+  }, 'PG 外部来源系统应以窄回执确认删除')
   const afterDelete = await findExternalIntegrationSourceAsync(sourceId)
   assert.equal(afterDelete, undefined, 'PG 外部来源系统删除后应不可读取')
   sourceId = undefined

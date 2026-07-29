@@ -74,12 +74,13 @@ export async function closeSqliteReadWorkerPool(): Promise<void> {
 }
 
 export async function requestSqliteReadWorker<T extends SqliteReadWorkerOperation>(
-  operation: T
+  operation: T,
+  options: { signal?: AbortSignal } = {}
 ): Promise<SqliteReadWorkerOperationResult<T>> {
   if (!sqliteReadWorkerPoolEnabled()) {
     throw new Error(`SQLite read worker pool 未启用，不能投递 ${operation.type}`)
   }
-  return await readWorkerPool.request(operation) as SqliteReadWorkerOperationResult<T>
+  return await readWorkerPool.request(operation, options) as SqliteReadWorkerOperationResult<T>
 }
 
 function targetReadWorkerPoolSize(): number {

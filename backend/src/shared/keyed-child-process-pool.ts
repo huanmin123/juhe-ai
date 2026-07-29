@@ -34,12 +34,18 @@ export interface KeyedChildProcessPoolOptions<Operation> {
   slotSelection?: 'keyed' | 'least-loaded'
 }
 
+export interface KeyedChildProcessPoolRequestOptions {
+  signal?: AbortSignal
+}
+
 interface KeyedChildProcessPoolJob<Operation> {
   id: string
   operation: Operation
   queuedAt: number
   startedAt?: number
   timeout?: NodeJS.Timeout
+  signal?: AbortSignal
+  abortListener?: () => void
   resolve: (value: unknown) => void
   reject: (error: Error) => void
 }
@@ -110,9 +116,9 @@ export class KeyedChildProcessPool<Operation> {
     this.notifyIdle()
   }
 
-  async request(operation: Operation): Promise<unknown> {
+  async request(operation: Operation, options: KeyedChildProcessPoolRequestOptions = {}): Promise<unknown> {
     await this.exclusiveBarrier.catch(() => undefined)
-    return await this.enqueue(operation)
+    return await this.enqueue(operation, options)
   }
 
   requestExclusive(operation: Operation): Promise<unknown> {
@@ -127,7 +133,8 @@ export class KeyedChildProcessPool<Operation> {
     return run
   }
 
-  private async enqueue(operation: Operation): Promise<unknown> {
+  private async enqueue(operation: Operation, options: KeyedChildProcessPoolRequestOptions = {}): Promise<unknown> {
+    throwIfAborted(options.signal)
     this.ensurePool()
     const totalQueued = this.slots.reduce((sum, slot) => sum + slot.queue.length, 0)
     if (totalQueued >= this.options.queueMaxItems()) {
@@ -136,13 +143,26 @@ export class KeyedChildProcessPool<Operation> {
     }
     const slot = this.slotForOperation(operation)
     return await new Promise((resolve, reject) => {
-      slot.queue.push({
+      const job: KeyedChildProcessPoolJob<Operation> = {
         id: String(this.nextJobId++),
         operation,
         queuedAt: Date.now(),
+        signal: options.signal,
         resolve,
         reject
-      })
+      }
+      if (options.signal) {
+        job.abortListener = () => {
+          const queuedIndex = slot.queue.indexOf(job)
+          if (queuedIndex < 0) return
+          slot.queue.splice(queuedIndex, 1)
+          this.clearJobAbortListener(job)
+          reject(abortError())
+          this.notifyIdle()
+        }
+        options.signal.addEventListener('abort', job.abortListener, { once: true })
+      }
+      slot.queue.push(job)
       this.pumpSlot(slot)
     })
   }
@@ -202,6 +222,7 @@ export class KeyedChildProcessPool<Operation> {
     const job = slot.queue.shift()
     if (!job) return
     slot.active = job
+    this.clearJobAbortListener(job)
     job.startedAt = Date.now()
     this.maxQueueWaitMs = Math.max(this.maxQueueWaitMs, job.startedAt - job.queuedAt)
     try {
@@ -261,6 +282,7 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private failJob(job: KeyedChildProcessPoolJob<Operation>, error: unknown): void {
+    this.clearJobAbortListener(job)
     this.clearJobTimeout(job)
     this.recordRunDuration(job)
     this.failedJobs += 1
@@ -305,6 +327,12 @@ export class KeyedChildProcessPool<Operation> {
     }
     clearTimeout(job.timeout)
     job.timeout = undefined
+  }
+
+  private clearJobAbortListener(job: KeyedChildProcessPoolJob<Operation>): void {
+    if (!job.signal || !job.abortListener) return
+    job.signal.removeEventListener('abort', job.abortListener)
+    job.abortListener = undefined
   }
 
   private restartSlotWorker(slot: KeyedChildProcessPoolSlot<Operation>): void {
@@ -466,4 +494,14 @@ function unrefWriterChild(child: ChildProcess): void {
       unref.call(stream)
     }
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError()
+}
+
+function abortError(): Error {
+  const error = new Error('操作已取消')
+  error.name = 'AbortError'
+  return error
 }

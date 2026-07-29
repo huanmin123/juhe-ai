@@ -257,6 +257,16 @@ function assertSourceContracts(): void {
     assert.equal(projection.includes(forbidden), false, `详情增量主表投影不得重复列表字段 ${forbidden}`)
   }
   assert.equal(repositorySource.includes('SELECT *'), false, '详情增量及关联表查询不得使用 SELECT *')
+  assert.match(
+    repositorySource,
+    /loadSystemAccountNameMapByIdsAsync\(client, ids\)/,
+    'PostgreSQL 名称补充必须复用有界分块查询，避免 target/viewer 数量放大绑定参数'
+  )
+  assert.doesNotMatch(
+    repositorySource,
+    /WHERE id IN \(\$\{uniqueIds\.map/,
+    '详情仓储不得自行拼接无界系统账户名称 IN 查询'
+  )
   const viewerBaseProjection = repositorySource.match(/function operationLogViewerBaseSelectColumns[\s\S]*?\n\}/)?.[0] ?? ''
   for (const payloadColumn of ['changes_json', 'method', 'path', 'client_ip', 'user_agent']) {
     assert.equal(viewerBaseProjection.includes(payloadColumn), false, `普通用户权限/等级首查不得提前读取 ${payloadColumn}`)

@@ -49,6 +49,7 @@ export function mergeSystemAccountMutation(
   current: SystemAccountListItem,
   mutation: SystemAccountMutationResult
 ): SystemAccountListItem {
+  if (compareSystemAccountRevision(mutation.updatedAt, current.editVersion) < 0) return current
   const next: SystemAccountListItem = { ...current, editVersion: mutation.updatedAt }
   if (mutation.displayName !== undefined) next.displayName = mutation.displayName
   if (Object.hasOwn(mutation, 'description')) next.description = mutation.description ?? undefined
@@ -67,25 +68,113 @@ export function systemAccountMatchesListKeyword(item: Pick<SystemAccountListItem
     || item.displayName.toLowerCase().startsWith(normalizedKeyword)
 }
 
-export type SystemAccountMutationPageDisposition = 'not_found' | 'moved_to_first' | 'relocated_to_first_page' | 'filtered_out'
+export function mergeSystemAccountPageItems(
+  currentItems: SystemAccountListItem[],
+  nextItems: SystemAccountListItem[]
+): SystemAccountListItem[] {
+  const existingIds = new Set(currentItems.map((item) => item.id))
+  return [...currentItems, ...nextItems.filter((item) => !existingIds.has(item.id))]
+}
+
+export interface SystemAccountListMutationContext {
+  accumulated: boolean
+  hasMore: boolean
+  keyword: string
+  page: number
+  pageSize: number
+  total: number
+}
+
+export interface SystemAccountListMutationState {
+  currentPageCount: number
+  hasMore: boolean
+  items: SystemAccountListItem[]
+  requiresBackfill: boolean
+  requiresReload: boolean
+  total: number
+}
+
+export function reconcileCreatedSystemAccount(
+  items: SystemAccountListItem[],
+  created: SystemAccountListItem,
+  context: SystemAccountListMutationContext
+): SystemAccountListMutationState {
+  const alreadyPresent = items.some((item) => item.id === created.id)
+  if (!systemAccountMatchesListKeyword(created, context.keyword)) {
+    return mutationState(items, context, {
+      total: context.total,
+      requiresReload: false
+    })
+  }
+  const total = context.total + (!alreadyPresent && !context.hasMore ? 1 : 0)
+  if (context.page > 1 && !context.accumulated) {
+    return mutationState(items, context, { total, requiresReload: true })
+  }
+  const limit = context.accumulated ? context.page * context.pageSize : context.pageSize
+  const reorderedItems = sortSystemAccountItems([created, ...items.filter((item) => item.id !== created.id)])
+  const nextItems = reorderedItems.slice(0, limit)
+  return mutationState(nextItems, context, {
+    total,
+    hasMore: context.hasMore || reorderedItems.length > limit,
+    requiresReload: false
+  })
+}
 
 export function reconcileSystemAccountMutationPage(
   items: SystemAccountListItem[],
   mutation: SystemAccountMutationResult,
-  options: { keyword: string; page: number; pageSize: number }
-): { items: SystemAccountListItem[]; disposition: SystemAccountMutationPageDisposition } {
+  context: SystemAccountListMutationContext
+): SystemAccountListMutationState {
   const current = items.find((item) => item.id === mutation.id)
-  if (!current) return { items, disposition: 'not_found' }
+  if (!current || compareSystemAccountRevision(mutation.updatedAt, current.editVersion) < 0) {
+    return mutationState(items, context, { requiresReload: false })
+  }
   const merged = mergeSystemAccountMutation(current, mutation)
   const remaining = items.filter((item) => item.id !== mutation.id)
-  if (!systemAccountMatchesListKeyword(merged, options.keyword)) {
-    return { items: remaining, disposition: 'filtered_out' }
+  if (!systemAccountMatchesListKeyword(merged, context.keyword)) {
+    return mutationState(remaining, context, {
+      total: context.hasMore ? context.total : Math.max(0, context.total - 1),
+      requiresBackfill: context.accumulated && context.hasMore,
+      requiresReload: !context.accumulated && context.hasMore
+    })
   }
-  const accumulatedPages = items.length > options.pageSize
-  if (options.page > 1 && !accumulatedPages) {
-    return { items: remaining, disposition: 'relocated_to_first_page' }
+  const orderingChanged = compareSystemAccountRevision(merged.editVersion, current.editVersion) > 0
+  if (orderingChanged && context.page > 1 && !context.accumulated) {
+    return mutationState(items, context, { requiresReload: true })
   }
-  return { items: [merged, ...remaining], disposition: 'moved_to_first' }
+  return mutationState(orderingChanged ? sortSystemAccountItems([merged, ...remaining]) : items.map((item) => item.id === merged.id ? merged : item), context, {
+    requiresReload: false
+  })
+}
+
+function mutationState(
+  items: SystemAccountListItem[],
+  context: SystemAccountListMutationContext,
+  overrides: Partial<Omit<SystemAccountListMutationState, 'items' | 'currentPageCount'>>
+): SystemAccountListMutationState {
+  const currentPageCount = context.accumulated
+    ? Math.min(context.pageSize, Math.max(0, items.length - ((context.page - 1) * context.pageSize)))
+    : items.length
+  return {
+    items,
+    currentPageCount,
+    total: context.total,
+    hasMore: context.hasMore,
+    requiresBackfill: false,
+    requiresReload: false,
+    ...overrides
+  }
+}
+
+function sortSystemAccountItems(items: SystemAccountListItem[]): SystemAccountListItem[] {
+  return [...items].sort((left, right) => {
+    const revisionOrder = compareSystemAccountRevision(right.editVersion, left.editVersion)
+    return revisionOrder || compareSystemAccountRevision(right.id, left.id)
+  })
+}
+
+function compareSystemAccountRevision(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function sameSystemAccountEditableValue(left: unknown, right: unknown): boolean {

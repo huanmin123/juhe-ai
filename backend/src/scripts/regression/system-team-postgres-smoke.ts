@@ -44,8 +44,8 @@ try {
   assert.deepEqual(scopedListed.items.map((item) => item.id), [team.id], 'PG 系统团队成员作用域列表应只返回成员所在团队')
   const detail = await findSystemTeamDetailAsync(team.id, adminAccess)
   assert.deepEqual(Object.keys(detail ?? {}).sort(), ['createdAt', 'description', 'id', 'memberCount', 'name', 'status', 'updatedAt'], 'PG 系统团队基础详情不得提前返回成员集合')
-  const memberList = await listSystemTeamMembersAsync(team.id, adminAccess)
-  assert.deepEqual(Object.keys(memberList ?? {}).sort(), ['id', 'items', 'memberCount', 'updatedAt'], 'PG 系统团队成员必须独立按需读取')
+  const memberList = await listSystemTeamMembersAsync(team.id, {}, adminAccess)
+  assert.deepEqual(Object.keys(memberList ?? {}).sort(), ['hasMore', 'id', 'items', 'memberCount', 'page', 'pageSize', 'total', 'updatedAt'], 'PG 系统团队成员必须独立按需分页读取')
   assert.deepEqual(Object.keys(memberList?.items[0] ?? {}).sort(), ['id', 'joinedAt', 'systemAccountId', 'systemAccountName'], 'PG 系统团队成员 DTO 只应返回四个字段')
 
   const group = await createGroupAsync({

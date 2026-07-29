@@ -5,7 +5,7 @@ import { findAccountBalanceManualRefreshCandidateAsync } from '../../storage/acc
 import { findAccountForTestAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { refreshAccountBalanceCandidate, testAccountBalanceCandidate } from './account-balance-query.service.js'
+import { refreshAccountBalanceCandidateWithOutcome, testAccountBalanceCandidate } from './account-balance-query.service.js'
 import {
   MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE,
   normalizeAccountBalanceConfig,
@@ -75,7 +75,16 @@ export function registerAccountBalanceRoutes(router: Router): void {
         res.status(400).json(badRequest('账户未开启余额查询或当前账户类型不支持'))
         return
       }
-      res.json(ok(await refreshAccountBalanceCandidate(candidate, { mode: 'manual' })))
+      const result = await refreshAccountBalanceCandidateWithOutcome(candidate, { mode: 'manual' })
+      if (!result.persisted) {
+        res.status(409).json({
+          message: result.outcome === 'lease_busy'
+            ? '余额查询正在进行，请稍后刷新'
+            : '账户余额配置已变化，请刷新列表后重试'
+        })
+        return
+      }
+      res.json(ok(result.snapshot))
     } catch (error) {
       next(error)
     }

@@ -94,7 +94,7 @@ myTeamsRouter.get('/:id/members', async (req, res, next) => {
     return
   }
   try {
-    const members = await listSystemTeamMembersAsync(paramsParsed.data.id, currentUserTeamScope())
+    const members = await listSystemTeamMembersAsync(paramsParsed.data.id, parseSystemTeamMemberListOptions(req.query), currentUserTeamScope())
     if (!members) {
       sendNotFound(res, '团队不存在')
       return
@@ -171,7 +171,11 @@ systemTeamsRouter.get('/:id/members', requireAdmin, async (req, res, next) => {
     return
   }
   try {
-    const members = await listSystemTeamMembersAsync(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    const members = await listSystemTeamMembersAsync(
+      paramsParsed.data.id,
+      parseSystemTeamMemberListOptions(req.query),
+      getRequestAccessScope(scopeQuery.data.systemAccountId)
+    )
     if (!members) {
       sendNotFound(res, '团队不存在')
       return
@@ -218,6 +222,13 @@ function parseSystemTeamListOptions(query: Record<string, unknown>) {
 }
 
 function parseSystemTeamMemberHistoryOptions(query: Record<string, unknown>) {
+  return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize)
+  }
+}
+
+function parseSystemTeamMemberListOptions(query: Record<string, unknown>) {
   return {
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize)

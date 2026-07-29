@@ -1,4 +1,4 @@
-import type { SystemAccountListResult, SystemAccountMutationResult, SystemAccountOptionSummary, SystemAccountPatchPayload, SystemAccountPrincipalSummary, SystemAccountSummary } from '@/types/domain'
+import type { SystemAccountListItem, SystemAccountListResult, SystemAccountMutationResult, SystemAccountOptionSummary, SystemAccountPatchPayload, SystemAccountPrincipalSummary } from '@/types/domain'
 import type { SystemAccountListParams, SystemAccountOptionsParams } from '../contracts'
 import { http, unwrap } from '../http'
 import { systemAccountListParams, systemAccountOptionsParams } from '../params'
@@ -15,6 +15,6 @@ export const systemAccountsApi = {
       status: option.disabledReason ? 'disabled' : 'active'
     }))
   },
-  create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
+  create: (payload: Record<string, unknown>) => unwrap<SystemAccountListItem>(http.post('/system-accounts', payload)),
   update: (id: string, payload: SystemAccountPatchPayload) => unwrap<SystemAccountMutationResult>(http.patch(`/system-accounts/${id}`, payload))
 }

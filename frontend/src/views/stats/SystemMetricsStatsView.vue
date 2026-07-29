@@ -74,36 +74,38 @@
       </a-col>
     </a-row>
 
-    <div ref="runtimeSectionRef">
+    <div ref="backgroundJobsSectionRef">
       <a-row :gutter="[16, 16]" class="system-metrics-section">
         <a-col :xs="24">
           <StatsBackgroundJobsCard
             :empty-description="backgroundJobEmptyDescription"
             :has-data="hasBackgroundJobs"
-            :loading="runtimeInitialLoading"
+            :loading="backgroundJobsInitialLoading"
             :pagination="backgroundJobPagination"
             :rows="backgroundJobRows"
             :runtime-alert-description="systemRuntimeAlertDescription"
             :runtime-alert-visible="systemRuntimeAlertVisible"
-            :error="runtimeError"
-            :on-retry="loadRuntimeData"
+            :error="backgroundJobsError"
+            :on-retry="loadBackgroundJobs"
             @change="handleBackgroundJobTableChange"
           />
         </a-col>
       </a-row>
+    </div>
 
+    <div ref="backgroundQueuesSectionRef">
       <a-row :gutter="[16, 16]" class="system-metrics-section">
         <a-col :xs="24">
           <StatsBackgroundQueuesCard
             :empty-description="backgroundQueueEmptyDescription"
             :has-data="hasBackgroundQueues"
-            :loading="runtimeInitialLoading"
+            :loading="backgroundQueuesInitialLoading"
             :pagination="backgroundQueuePagination"
             :rows="backgroundQueueRows"
             :runtime-alert-description="systemRuntimeAlertDescription"
             :runtime-alert-visible="systemRuntimeAlertVisible"
-            :error="runtimeError"
-            :on-retry="loadRuntimeData"
+            :error="backgroundQueuesError"
+            :on-retry="loadBackgroundQueues"
             @change="handleBackgroundQueueTableChange"
           />
         </a-col>
@@ -124,9 +126,13 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
-import type { SystemMetricsTrendOverview, SystemMetricsRuntimeOverview } from '@/types/domain'
+import type {
+  SystemMetricsRuntimeJobsResult,
+  SystemMetricsRuntimeQueuesResult,
+  SystemMetricsRuntimeSummary,
+  SystemMetricsTrendOverview
+} from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
-import { buildBackgroundQueueRows } from './statsBackgroundQueues'
 import { buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption } from './statsChartOptions'
 import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
 
@@ -154,12 +160,15 @@ const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
-const runtimeLoading = ref(false)
+const backgroundJobsLoading = ref(false)
+const backgroundQueuesLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsTrendOverview>()
-const systemMetricsRuntime = ref<SystemMetricsRuntimeOverview>()
+const runtimeSummary = ref<SystemMetricsRuntimeSummary>()
+const backgroundJobsResult = ref<SystemMetricsRuntimeJobsResult>()
+const backgroundQueuesResult = ref<SystemMetricsRuntimeQueuesResult>()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const systemMetricsChartRef = ref<HTMLDivElement>()
@@ -168,16 +177,26 @@ const processMemoryChartRef = ref<HTMLDivElement>()
 const systemMetricsChart = shallowRef<ECharts>()
 const processEventLoopChart = shallowRef<ECharts>()
 const processMemoryChart = shallowRef<ECharts>()
-const runtimeSectionRef = ref<HTMLDivElement>()
-const runtimeSectionLoaded = ref(false)
+const backgroundJobsSectionRef = ref<HTMLDivElement>()
+const backgroundQueuesSectionRef = ref<HTMLDivElement>()
+const backgroundJobsSectionLoaded = ref(false)
+const backgroundQueuesSectionLoaded = ref(false)
 const backgroundJobPageSize = 10
 const backgroundJobPage = ref(1)
 const backgroundQueuePageSize = 10
 const backgroundQueuePage = ref(1)
 let requestSeq = 0
-let runtimeRequestSeq = 0
+let runtimeSummaryRequestSeq = 0
+let backgroundJobsRequestSeq = 0
+let backgroundQueuesRequestSeq = 0
+let trendAbortController: AbortController | undefined
+let runtimeSummaryAbortController: AbortController | undefined
+let backgroundJobsAbortController: AbortController | undefined
+let backgroundQueuesAbortController: AbortController | undefined
+let runtimeSummaryPromise: Promise<void> | undefined
 let needsReloadOnActivate = false
-let runtimeObserver: IntersectionObserver | undefined
+let backgroundJobsObserver: IntersectionObserver | undefined
+let backgroundQueuesObserver: IntersectionObserver | undefined
 let disposed = false
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
@@ -186,20 +205,31 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   disposeCharts,
   onMounted: loadPageData,
   onDeactivate: () => {
+    trendAbortController?.abort()
+    runtimeSummaryAbortController?.abort()
+    backgroundJobsAbortController?.abort()
+    backgroundQueuesAbortController?.abort()
+    trendAbortController = undefined
+    runtimeSummaryAbortController = undefined
+    backgroundJobsAbortController = undefined
+    backgroundQueuesAbortController = undefined
+    runtimeSummaryPromise = undefined
     requestSeq += 1
-    runtimeRequestSeq += 1
+    runtimeSummaryRequestSeq += 1
+    backgroundJobsRequestSeq += 1
+    backgroundQueuesRequestSeq += 1
     loading.value = false
-    runtimeLoading.value = false
+    backgroundJobsLoading.value = false
+    backgroundQueuesLoading.value = false
     needsReloadOnActivate = true
-    runtimeObserver?.disconnect()
-    runtimeObserver = undefined
+    disconnectRuntimeObservers()
   }
 })
 
 onMounted(async () => {
   disposed = false
   await nextTick()
-  setupRuntimeObserver()
+  setupRuntimeObservers()
 })
 
 onActivated(async () => {
@@ -208,14 +238,17 @@ onActivated(async () => {
     void loadPageData()
   }
   await nextTick()
-  setupRuntimeObserver()
+  setupRuntimeObservers()
 })
 
 const hasOverview = computed(() => Boolean(systemMetrics.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const trendError = ref('')
-const runtimeError = ref('')
-const runtimeInitialLoading = computed(() => runtimeLoading.value && !systemMetricsRuntime.value)
+const runtimeSummaryError = ref('')
+const backgroundJobsError = ref('')
+const backgroundQueuesError = ref('')
+const backgroundJobsInitialLoading = computed(() => backgroundJobsLoading.value && !backgroundJobsResult.value)
+const backgroundQueuesInitialLoading = computed(() => backgroundQueuesLoading.value && !backgroundQueuesResult.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const quickRangeValue = computed<QuickRange | undefined>(() => {
@@ -237,44 +270,42 @@ const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
 const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无事件循环趋势，等待后台窗口缓存刷新`)
 const processMemoryTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无进程内存趋势，等待后台窗口缓存刷新`)
-const backgroundJobsAvailable = computed(() => systemMetricsRuntime.value?.backgroundJobsAvailable === true)
-const backgroundJobRows = computed(() => {
-  return (systemMetricsRuntime.value?.backgroundJobs ?? []).filter(isBackgroundTaskRow).sort((left, right) => {
-    if (left.failureCount !== right.failureCount) return right.failureCount - left.failureCount
-    const leftDuration = left.maxDurationMs ?? -1
-    const rightDuration = right.maxDurationMs ?? -1
-    if (leftDuration !== rightDuration) return rightDuration - leftDuration
-    return left.name.localeCompare(right.name)
-  })
-})
+const backgroundJobsAvailable = computed(() => runtimeSummary.value?.jobsAvailable === true || Boolean(backgroundJobsResult.value))
+const backgroundJobRows = computed(() => backgroundJobsResult.value?.items ?? [])
 const backgroundJobPagination = computed(() => ({
   current: backgroundJobPage.value,
   pageSize: backgroundJobPageSize,
-  total: backgroundJobRows.value.length,
+  total: backgroundJobsResult.value?.total ?? 0,
   showSizeChanger: false
 }))
 const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
-const backgroundQueueRows = computed(() => buildBackgroundQueueRows(systemMetricsRuntime.value))
+const backgroundQueuesAvailable = computed(() => runtimeSummary.value?.queuesAvailable === true || Boolean(backgroundQueuesResult.value))
+const backgroundQueueRows = computed(() => backgroundQueuesResult.value?.items ?? [])
 const backgroundQueuePagination = computed(() => ({
   current: backgroundQueuePage.value,
   pageSize: backgroundQueuePageSize,
-  total: backgroundQueueRows.value.length,
+  total: backgroundQueuesResult.value?.total ?? 0,
   showSizeChanger: false
 }))
-const hasBackgroundQueues = computed(() => backgroundJobsAvailable.value && backgroundQueueRows.value.length > 0)
-const backgroundQueueEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台队列' : '暂时无法获取后台 worker 队列状态')
-const systemRuntimeAlertVisible = computed(() => Boolean(systemMetricsRuntime.value && (
-  !systemMetricsRuntime.value.runtimeSnapshotAvailable
-  || systemMetricsRuntime.value.runtimeSnapshotStale === true
-  || systemMetricsRuntime.value.ingestWorkerSnapshotAvailable === false
-  || systemMetricsRuntime.value.statsWorkerSnapshotAvailable === false
-  || systemMetricsRuntime.value.opsWorkerSnapshotAvailable === false
-  || !systemMetricsRuntime.value.backgroundJobsAvailable
-)))
+const hasBackgroundQueues = computed(() => backgroundQueuesAvailable.value && backgroundQueueRows.value.length > 0)
+const backgroundQueueEmptyDescription = computed(() => backgroundQueuesAvailable.value ? '暂无后台队列' : '暂时无法获取后台 worker 队列状态')
+const systemRuntimeAlertVisible = computed(() => Boolean(
+  runtimeSummaryError.value
+  || (runtimeSummary.value && (
+    !runtimeSummary.value.runtimeSnapshotAvailable
+    || runtimeSummary.value.runtimeSnapshotStale === true
+    || runtimeSummary.value.ingestWorkerSnapshotAvailable === false
+    || runtimeSummary.value.statsWorkerSnapshotAvailable === false
+    || runtimeSummary.value.opsWorkerSnapshotAvailable === false
+    || !runtimeSummary.value.jobsAvailable
+    || !runtimeSummary.value.queuesAvailable
+  ))
+))
 const systemRuntimeAlertDescription = computed(() => {
-  const metrics = systemMetricsRuntime.value
-  if (!metrics) return ''
+  if (runtimeSummaryError.value) return `${runtimeSummaryError.value}。`
+  const metrics = runtimeSummary.value
+  if (!metrics) return '正在获取后台运行态摘要。'
   const reasons: string[] = []
   if (metrics.runtimeSnapshotStale) reasons.push('运行态快照已过期')
   if (!metrics.runtimeSnapshotAvailable) {
@@ -283,27 +314,33 @@ const systemRuntimeAlertDescription = computed(() => {
     if (metrics.ingestWorkerSnapshotAvailable === false) reasons.push('写入 worker 快照不可用')
     if (metrics.statsWorkerSnapshotAvailable === false) reasons.push('统计 worker 快照不可用')
     if (metrics.opsWorkerSnapshotAvailable === false) reasons.push('运维 worker 快照不可用')
-    if (!metrics.backgroundJobsAvailable) reasons.push('后台任务状态不可用')
+    if (!metrics.jobsAvailable) reasons.push('后台任务状态不可用')
+    if (!metrics.queuesAvailable) reasons.push('后台队列状态不可用')
   }
   return `${reasons.join('；') || '运行态状态未知'}。`
 })
 
 async function loadData() {
+  trendAbortController?.abort()
+  const controller = new AbortController()
+  trendAbortController = controller
   const currentRequestSeq = ++requestSeq
   loading.value = true
   trendError.value = ''
   try {
     const rangeParams = selectedRangeParams()
-    const metrics = await api.stats.systemMetricsTrend(rangeParams)
+    const metrics = await api.stats.systemMetricsTrend(rangeParams, { signal: controller.signal })
     if (currentRequestSeq !== requestSeq) return
     syncImplicitDateRangeToStatsWindow()
     systemMetrics.value = metrics
   } catch (error) {
+    if (controller.signal.aborted) return
     if (currentRequestSeq !== requestSeq) return
     console.error(error)
     trendError.value = '系统指标趋势加载失败'
     message.error('系统指标统计加载失败')
   } finally {
+    if (trendAbortController === controller) trendAbortController = undefined
     if (currentRequestSeq === requestSeq) {
       loading.value = false
       renderCharts()
@@ -315,47 +352,136 @@ function loadPageData() {
   void loadUsageStatsWindow({ viewScope: 'admin' }).then(() => {
     if (!dateRangeExplicit.value) syncImplicitDateRangeToStatsWindow()
   }).catch(() => undefined)
-  if (runtimeSectionLoaded.value) void loadRuntimeData()
+  if (backgroundJobsSectionLoaded.value) void loadBackgroundJobs()
+  if (backgroundQueuesSectionLoaded.value) void loadBackgroundQueues()
   return loadData()
 }
 
-function setupRuntimeObserver(): void {
-  runtimeObserver?.disconnect()
+function setupRuntimeObservers(): void {
+  disconnectRuntimeObservers()
   if (disposed || !pageActive.value) return
-  const target = runtimeSectionRef.value
-  if (!target || runtimeSectionLoaded.value) return
   if (typeof IntersectionObserver === 'undefined') {
-    runtimeSectionLoaded.value = true
-    void loadRuntimeData()
+    if (!backgroundJobsSectionLoaded.value) {
+      backgroundJobsSectionLoaded.value = true
+      void loadBackgroundJobs()
+    }
+    if (!backgroundQueuesSectionLoaded.value) {
+      backgroundQueuesSectionLoaded.value = true
+      void loadBackgroundQueues()
+    }
     return
   }
-  runtimeObserver = new IntersectionObserver((entries) => {
-    if (disposed || !pageActive.value || !entries.some((entry) => entry.isIntersecting)) return
-    runtimeSectionLoaded.value = true
-    runtimeObserver?.disconnect()
-    runtimeObserver = undefined
-    void loadRuntimeData()
-  }, { rootMargin: '240px 0px' })
-  runtimeObserver.observe(target)
+  observeRuntimeSection(backgroundJobsSectionRef.value, backgroundJobsSectionLoaded, (observer) => {
+    backgroundJobsObserver = observer
+    void loadBackgroundJobs()
+  }, (observer) => {
+    if (backgroundJobsObserver === observer) backgroundJobsObserver = undefined
+  })
+  observeRuntimeSection(backgroundQueuesSectionRef.value, backgroundQueuesSectionLoaded, (observer) => {
+    backgroundQueuesObserver = observer
+    void loadBackgroundQueues()
+  }, (observer) => {
+    if (backgroundQueuesObserver === observer) backgroundQueuesObserver = undefined
+  })
 }
 
-async function loadRuntimeData() {
-  const currentRequestSeq = ++runtimeRequestSeq
-  runtimeLoading.value = true
-  runtimeError.value = ''
-  try {
-    const runtime = await api.stats.systemMetricsRuntime()
-    if (currentRequestSeq !== runtimeRequestSeq) return
-    systemMetricsRuntime.value = runtime
-  } catch (error) {
-    if (currentRequestSeq !== runtimeRequestSeq) return
-    console.error(error)
-    runtimeError.value = '后台运行状态加载失败'
-    message.error('后台运行状态加载失败')
-  } finally {
-    if (currentRequestSeq === runtimeRequestSeq) {
-      runtimeLoading.value = false
+function observeRuntimeSection(
+  target: HTMLDivElement | undefined,
+  loaded: { value: boolean },
+  onVisible: (observer: IntersectionObserver) => void,
+  onDisconnect: (observer: IntersectionObserver) => void
+): void {
+  if (!target || loaded.value) return
+  const observer = new IntersectionObserver((entries) => {
+    if (disposed || !pageActive.value || !entries.some((entry) => entry.isIntersecting)) return
+    loaded.value = true
+    observer.disconnect()
+    onDisconnect(observer)
+    onVisible(observer)
+  }, { rootMargin: '240px 0px' })
+  observer.observe(target)
+}
+
+function disconnectRuntimeObservers(): void {
+  backgroundJobsObserver?.disconnect()
+  backgroundQueuesObserver?.disconnect()
+  backgroundJobsObserver = undefined
+  backgroundQueuesObserver = undefined
+}
+
+async function loadRuntimeSummary(): Promise<void> {
+  if (runtimeSummaryPromise) return await runtimeSummaryPromise
+  const controller = new AbortController()
+  runtimeSummaryAbortController?.abort()
+  runtimeSummaryAbortController = controller
+  const currentRequestSeq = ++runtimeSummaryRequestSeq
+  const request = (async () => {
+    runtimeSummaryError.value = ''
+    try {
+      const summary = await api.stats.systemMetricsRuntimeSummary({ signal: controller.signal })
+      if (currentRequestSeq !== runtimeSummaryRequestSeq) return
+      runtimeSummary.value = summary
+    } catch (error) {
+      if (controller.signal.aborted || currentRequestSeq !== runtimeSummaryRequestSeq) return
+      console.error(error)
+      runtimeSummaryError.value = '后台运行状态摘要加载失败'
+    } finally {
+      if (runtimeSummaryAbortController === controller) runtimeSummaryAbortController = undefined
     }
+  })()
+  runtimeSummaryPromise = request
+  try {
+    await request
+  } finally {
+    if (runtimeSummaryPromise === request) runtimeSummaryPromise = undefined
+  }
+}
+
+async function loadBackgroundJobs() {
+  backgroundJobsAbortController?.abort()
+  const controller = new AbortController()
+  backgroundJobsAbortController = controller
+  const currentRequestSeq = ++backgroundJobsRequestSeq
+  backgroundJobsLoading.value = true
+  backgroundJobsError.value = ''
+  void loadRuntimeSummary()
+  try {
+    const result = await api.stats.systemMetricsRuntimeJobs({ page: backgroundJobPage.value, pageSize: backgroundJobPageSize }, { signal: controller.signal })
+    if (currentRequestSeq !== backgroundJobsRequestSeq) return
+    backgroundJobsResult.value = result
+  } catch (error) {
+    if (controller.signal.aborted) return
+    if (currentRequestSeq !== backgroundJobsRequestSeq) return
+    console.error(error)
+    backgroundJobsError.value = '后台任务状态加载失败'
+    message.error('后台任务状态加载失败')
+  } finally {
+    if (backgroundJobsAbortController === controller) backgroundJobsAbortController = undefined
+    if (currentRequestSeq === backgroundJobsRequestSeq) backgroundJobsLoading.value = false
+  }
+}
+
+async function loadBackgroundQueues() {
+  backgroundQueuesAbortController?.abort()
+  const controller = new AbortController()
+  backgroundQueuesAbortController = controller
+  const currentRequestSeq = ++backgroundQueuesRequestSeq
+  backgroundQueuesLoading.value = true
+  backgroundQueuesError.value = ''
+  void loadRuntimeSummary()
+  try {
+    const result = await api.stats.systemMetricsRuntimeQueues({ page: backgroundQueuePage.value, pageSize: backgroundQueuePageSize }, { signal: controller.signal })
+    if (currentRequestSeq !== backgroundQueuesRequestSeq) return
+    backgroundQueuesResult.value = result
+  } catch (error) {
+    if (controller.signal.aborted) return
+    if (currentRequestSeq !== backgroundQueuesRequestSeq) return
+    console.error(error)
+    backgroundQueuesError.value = '后台队列状态加载失败'
+    message.error('后台队列状态加载失败')
+  } finally {
+    if (backgroundQueuesAbortController === controller) backgroundQueuesAbortController = undefined
+    if (currentRequestSeq === backgroundQueuesRequestSeq) backgroundQueuesLoading.value = false
   }
 }
 
@@ -403,14 +529,20 @@ function handleBackgroundJobTableChange(paginationInfo: unknown) {
   if (!paginationInfo || typeof paginationInfo !== 'object') return
   const next = paginationInfo as { current?: unknown }
   const current = Number(next.current)
-  backgroundJobPage.value = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
+  const nextPage = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
+  if (nextPage === backgroundJobPage.value) return
+  backgroundJobPage.value = nextPage
+  void loadBackgroundJobs()
 }
 
 function handleBackgroundQueueTableChange(paginationInfo: unknown) {
   if (!paginationInfo || typeof paginationInfo !== 'object') return
   const next = paginationInfo as { current?: unknown }
   const current = Number(next.current)
-  backgroundQueuePage.value = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
+  const nextPage = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
+  if (nextPage === backgroundQueuePage.value) return
+  backgroundQueuePage.value = nextPage
+  void loadBackgroundQueues()
 }
 
 async function renderSystemCharts() {
@@ -474,10 +606,6 @@ function syncImplicitDateRangeToStatsWindow() {
   dateRange.value = [end, end]
 }
 
-function isBackgroundTaskRow(row: NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]): boolean {
-  return row.intervalMs > 0 && !row.name.endsWith('-queue')
-}
-
 function disabledDate(current: Dayjs) {
   return isRecentWindowDateDisabled(current, calendarRange.value, usageStatsWindowMaxDays.value, usageStatsWindowEndDate.value)
 }
@@ -511,39 +639,68 @@ function snapshotPageState(): SystemMetricsPageState {
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(() => authState.revision.value, () => {
+  trendAbortController?.abort()
+  runtimeSummaryAbortController?.abort()
+  backgroundJobsAbortController?.abort()
+  backgroundQueuesAbortController?.abort()
+  trendAbortController = undefined
+  runtimeSummaryAbortController = undefined
+  backgroundJobsAbortController = undefined
+  backgroundQueuesAbortController = undefined
+  runtimeSummaryPromise = undefined
   requestSeq += 1
-  runtimeRequestSeq += 1
+  runtimeSummaryRequestSeq += 1
+  backgroundJobsRequestSeq += 1
+  backgroundQueuesRequestSeq += 1
   loading.value = false
-  runtimeLoading.value = false
+  backgroundJobsLoading.value = false
+  backgroundQueuesLoading.value = false
   systemMetrics.value = undefined
-  systemMetricsRuntime.value = undefined
+  runtimeSummary.value = undefined
+  backgroundJobsResult.value = undefined
+  backgroundQueuesResult.value = undefined
   trendError.value = ''
-  runtimeError.value = ''
+  runtimeSummaryError.value = ''
+  backgroundJobsError.value = ''
+  backgroundQueuesError.value = ''
   if (pageActive.value) {
     void loadPageData()
+    void nextTick().then(setupRuntimeObservers)
   } else {
     needsReloadOnActivate = true
   }
 })
-watch(() => backgroundJobRows.value.length, (total) => {
-  const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
+watch(() => backgroundJobsResult.value?.total, (total) => {
+  const maxPage = Math.max(1, Math.ceil((total ?? 0) / backgroundJobPageSize))
   if (backgroundJobPage.value > maxPage) {
     backgroundJobPage.value = maxPage
+    void loadBackgroundJobs()
   }
 })
-watch(() => backgroundQueueRows.value.length, (total) => {
-  const maxPage = Math.max(1, Math.ceil(total / backgroundQueuePageSize))
+watch(() => backgroundQueuesResult.value?.total, (total) => {
+  const maxPage = Math.max(1, Math.ceil((total ?? 0) / backgroundQueuePageSize))
   if (backgroundQueuePage.value > maxPage) {
     backgroundQueuePage.value = maxPage
+    void loadBackgroundQueues()
   }
 })
 
 onBeforeUnmount(() => {
   disposed = true
+  trendAbortController?.abort()
+  runtimeSummaryAbortController?.abort()
+  backgroundJobsAbortController?.abort()
+  backgroundQueuesAbortController?.abort()
+  trendAbortController = undefined
+  runtimeSummaryAbortController = undefined
+  backgroundJobsAbortController = undefined
+  backgroundQueuesAbortController = undefined
+  runtimeSummaryPromise = undefined
   requestSeq += 1
-  runtimeRequestSeq += 1
-  runtimeObserver?.disconnect()
-  runtimeObserver = undefined
+  runtimeSummaryRequestSeq += 1
+  backgroundJobsRequestSeq += 1
+  backgroundQueuesRequestSeq += 1
+  disconnectRuntimeObservers()
 })
 </script>
 

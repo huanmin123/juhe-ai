@@ -55,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onActivated, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 import dayjs, { type Dayjs } from 'dayjs'
 
@@ -124,6 +124,7 @@ let reloadAfterActivate = false
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
+  invalidate: invalidateSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -140,6 +141,8 @@ const averageFirstTokenChart = shallowRef<ECharts>()
 const maxFirstTokenChart = shallowRef<ECharts>()
 const averageDurationChart = shallowRef<ECharts>()
 const maxDurationChart = shallowRef<ECharts>()
+const visibleChartMetrics = new Set<AiPerformanceMetric>()
+let chartObserver: IntersectionObserver | undefined
 let clearAccountSearchTimerFromSelection = () => {}
 
 function clearAccountSearchTimer() {
@@ -152,14 +155,19 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   disposeCharts,
   onMounted: () => {
     void loadPerformanceContext()
+    void nextTick(setupChartObserver)
   },
   onDeactivate: () => {
     clearAccountSearchTimer()
     invalidateAccountOptions()
+    invalidateSystemAccountOptions()
+    disconnectChartObserver()
     deactivatePerformanceRequests(true)
   },
   onBeforeUnmount: () => {
     clearAccountSearchTimer()
+    invalidateSystemAccountOptions()
+    disconnectChartObserver()
     deactivatePerformanceRequests(false)
   }
 })
@@ -305,7 +313,7 @@ async function loadPerformanceBase() {
     overview.value = result
     syncDateRangeFromResponse(result.range)
     pruneAccountState()
-    renderCharts()
+    observeAndRenderPerformanceCharts()
   } catch (error) {
     if (!performanceRequestGate.isCurrent(token, currentPerformanceRequest('base').signature)) return
     console.error(error)
@@ -319,6 +327,7 @@ async function loadPerformanceBase() {
 }
 
 async function loadAdditionalSeries(candidateIds: string[]) {
+  if (!overview.value) return
   const requestedIds = missingSeriesAccountIds(candidateIds)
   if (!requestedIds.length) return
   const request = currentPerformanceRequest('series', requestedIds)
@@ -332,7 +341,7 @@ async function loadAdditionalSeries(candidateIds: string[]) {
       : await api.myStats.aiPerformanceSeries(params)
     if (!performanceRequestGate.acceptsRange(token, currentPerformanceRequest('series', requestedIds).signature, result.range, request.params)) return
     mergeAdditionalSeries(result, requestedIds)
-    renderCharts()
+    observeAndRenderPerformanceCharts()
   } catch (error) {
     if (!performanceRequestGate.isCurrent(token, currentPerformanceRequest('series', requestedIds).signature)) return
     console.error(error)
@@ -347,8 +356,14 @@ async function loadAdditionalSeries(candidateIds: string[]) {
 
 function currentPerformanceRequest(channel: 'base' | 'series', accountIds: string[] = []) {
   const user = authState.currentUser.value
+  const rangeParams = channel === 'series' && overview.value
+    ? {
+        startDate: overview.value.range.startDate,
+        endDate: overview.value.range.endDate
+      }
+    : selectedRangeParams()
   const params = {
-    ...selectedRangeParams(),
+    ...rangeParams,
     systemAccountId: selectedPerformanceSystemAccountId()
   }
   return {
@@ -397,7 +412,7 @@ function missingSeriesAccountIds(accountIds: string[]) {
 }
 
 function retryBase() {
-  void loadPerformanceBase()
+  void loadPerformanceContext()
 }
 
 function retrySeries() {
@@ -498,7 +513,52 @@ function snapshotPageState(): AiPerformancePageState {
 }
 
 async function renderPerformanceCharts() {
-  await Promise.all(performanceCharts.value.map((chart) => renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)))
+  await Promise.all(performanceCharts.value
+    .filter((chart) => visibleChartMetrics.has(chart.metric))
+    .map((chart) => renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)))
+}
+
+function observeAndRenderPerformanceCharts(): void {
+  void nextTick(() => {
+    if (!pageActive.value) return
+    setupChartObserver()
+    renderCharts()
+  })
+}
+
+function setupChartObserver(): void {
+  disconnectChartObserver()
+  const pendingCharts = performanceCharts.value.filter((chart) => !visibleChartMetrics.has(chart.metric))
+  if (!pendingCharts.length) {
+    renderCharts()
+    return
+  }
+  if (typeof IntersectionObserver === 'undefined') {
+    for (const chart of pendingCharts) visibleChartMetrics.add(chart.metric)
+    renderCharts()
+    return
+  }
+  chartObserver = new IntersectionObserver((entries, observer) => {
+    let changed = false
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const chart = pendingCharts.find((candidate) => metricElementRef(candidate.metric).value === entry.target)
+      if (!chart) continue
+      visibleChartMetrics.add(chart.metric)
+      observer.unobserve(entry.target)
+      changed = true
+    }
+    if (changed && pageActive.value) renderCharts()
+  }, { rootMargin: '160px 0px' })
+  for (const chart of pendingCharts) {
+    const element = metricElementRef(chart.metric).value
+    if (element) chartObserver.observe(element)
+  }
+}
+
+function disconnectChartObserver(): void {
+  chartObserver?.disconnect()
+  chartObserver = undefined
 }
 
 async function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: ShallowRef<ECharts | undefined>, hasData: boolean) {
@@ -603,6 +663,7 @@ function dedupeById<T>(items: T[], idFor: (item: T) => string): T[] {
 
 onActivated(() => {
   performanceRequestGate.activate()
+  void nextTick(setupChartObserver)
   if (!reloadAfterActivate) return
   reloadAfterActivate = false
   void loadPerformanceContext()

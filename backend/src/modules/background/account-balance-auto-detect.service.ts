@@ -66,6 +66,7 @@ export async function detectAccountBalanceAdapter(
   const config: AccountBalanceQueryConfig = { adapter: 'builtin', intervalMinutes: detectionIntervalMinutes }
   try {
     const result = await (dependencies.queryBuiltin ?? queryBuiltinAccountBalance)({ ...candidate, config })
+    if (result.snapshot.status !== 'fresh' && result.snapshot.status !== 'unlimited') return undefined
     return {
       config: { ...config, preferredBuiltinAdapter: result.adapter },
       snapshot: result.snapshot

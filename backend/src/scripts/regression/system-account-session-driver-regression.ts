@@ -72,12 +72,37 @@ async function assertSystemAccountSessionAsync(repositories: typeof import('../.
   assert.equal(account.status, 'active')
   assert.equal(account.mustChangePassword, false, '默认管理员不应被强制初始改密')
 
+  const verifiedForSession = await repositories.verifySystemAccountCredentialsForSessionAsync('admin', 'admin')
+  assert.ok(verifiedForSession, '登录建会话前应返回不暴露密码哈希的凭据版本')
+  assert.equal(Object.hasOwn(verifiedForSession, 'passwordHash'), false, '登录凭据结果不得暴露密码哈希')
+  assert.equal(Object.hasOwn(verifiedForSession.account, 'passwordHash'), false, '登录账户摘要不得携带密码哈希')
+
   const byId = await repositories.findSystemAccountByIdAsync(account.id)
   assert.equal(byId?.username, 'admin', '应能按 ID 异步读取系统账户')
 
   const byUsername = await repositories.findSystemAccountByUsernameAsync('ADMIN')
   assert.equal(byUsername?.id, account.id, '用户名异步读取应大小写不敏感')
   assert.ok(byUsername?.passwordHash, '异步用户名读取应返回密码 hash 供校验')
+
+  const authenticatedSession = await repositories.createAuthenticatedSessionAsync(
+    account.id,
+    verifiedForSession.credentialRevision,
+    1
+  )
+  assert.ok(authenticatedSession, '未变化的凭据版本应能原子创建登录会话')
+  assert.ok(await repositories.findSessionByTokenAsync(authenticatedSession.token), '原子创建的登录会话应立即可用')
+
+  if (process.env.JUHE_AI_DATABASE_DRIVER !== 'postgres') {
+    const staleCredentials = await repositories.verifySystemAccountCredentialsForSessionAsync('admin', 'admin')
+    assert.ok(staleCredentials, '旧凭据竞态夹具应先完成密码校验')
+    await repositories.updateSystemAccountAsync(account.id, { password: 'temporary-password' })
+    assert.equal(
+      await repositories.createAuthenticatedSessionAsync(account.id, staleCredentials.credentialRevision, 1),
+      undefined,
+      '密码重置提交后，先前通过校验的旧密码不得再创建会话'
+    )
+    await repositories.updateSystemAccountAsync(account.id, { password: 'admin' })
+  }
 
   const session = await repositories.createSessionAsync(account.id, 1)
   assert.ok(session.token, '应创建 session token')
@@ -105,9 +130,11 @@ async function assertSystemAccountSessionAsync(repositories: typeof import('../.
   await repositories.revokeAllSessionsForAccountAsync(account.id)
   assert.equal(await repositories.findSessionByTokenAsync(finalSession.token), undefined, '撤销账户全部 session 后 token 不应可用')
 
+  const beforeLastLogin = await repositories.findSystemAccountByIdAsync(account.id)
   await repositories.updateSystemAccountLastLoginAsync(account.id)
   const accountAfterLogin = await repositories.findSystemAccountByIdAsync(account.id)
   assert.ok(accountAfterLogin?.lastLoginAt, '更新最近登录时间后应能读取 lastLoginAt')
+  assert.equal(accountAfterLogin?.updatedAt, beforeLastLogin?.updatedAt, '更新最近登录时间不得推进管理 CAS/排序版本')
 }
 
 async function closeSqliteStorageDatabases(): Promise<void> {

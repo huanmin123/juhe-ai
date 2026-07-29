@@ -41,6 +41,11 @@ export interface SystemTeamMemberHistoryOptions {
   pageSize?: number
 }
 
+export interface SystemTeamMemberListOptions {
+  page?: number
+  pageSize?: number
+}
+
 interface NormalizedSystemTeamListOptions {
   page: number
   pageSize: number
@@ -283,23 +288,46 @@ export async function findSystemTeamDetailAsync(id: string, access?: AccessScope
   return systemTeamDetailFromRow(row, memberCount)
 }
 
-export function listSystemTeamMembers(id: string, access?: AccessScope): SystemTeamMembersResult | undefined {
+export function listSystemTeamMembers(id: string, options: SystemTeamMemberListOptions = {}, access?: AccessScope): SystemTeamMembersResult | undefined {
   const row = findSystemTeamDetailRowForAccess(id, access)
   if (!row) return undefined
-  const items = listSystemTeamMemberDetailsForTeamIds([row.id], true).get(row.id) ?? []
-  return { id: row.id, memberCount: items.length, updatedAt: row.updated_at, items }
+  const normalized = normalizeSystemTeamMemberListOptions(options)
+  const memberCount = listSystemTeamMemberCountsForTeamIds([row.id]).get(row.id)?.memberCount ?? 0
+  const rows = getBusinessDatabase().prepare(`
+    SELECT system_team_members.id, system_team_members.team_id, system_team_members.system_account_id,
+      system_team_members.joined_at, system_accounts.display_name
+    FROM system_team_members
+    INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
+    WHERE system_team_members.team_id = ?
+      AND system_team_members.status = 'active'
+    ORDER BY system_team_members.joined_at ASC, system_team_members.id ASC
+    LIMIT ? OFFSET ?
+  `).all(id, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as SystemTeamMemberDetailRow[]
+  return systemTeamMembersResult(row, rows, memberCount, normalized)
 }
 
-export async function listSystemTeamMembersAsync(id: string, access?: AccessScope): Promise<SystemTeamMembersResult | undefined> {
+export async function listSystemTeamMembersAsync(id: string, options: SystemTeamMemberListOptions = {}, access?: AccessScope): Promise<SystemTeamMembersResult | undefined> {
   if (sqliteReadWorkerPoolEnabled()) {
-    return requestSqliteReadWorker({ type: 'list_system_team_members_read_only', id, access })
+    return requestSqliteReadWorker({ type: 'list_system_team_members_read_only', id, options, access })
   }
-  if (runtimeConfig.databaseDriver !== 'postgres') return listSystemTeamMembers(id, access)
+  if (runtimeConfig.databaseDriver !== 'postgres') return listSystemTeamMembers(id, options, access)
   const client = await getSystemTeamDatabaseClient()
   const row = await findSystemTeamDetailRowForAccessAsync(client, id, access)
   if (!row) return undefined
-  const items = (await listSystemTeamMemberDetailsForTeamIdsAsync(client, [row.id], true)).get(row.id) ?? []
-  return { id: row.id, memberCount: items.length, updatedAt: row.updated_at, items }
+  const normalized = normalizeSystemTeamMemberListOptions(options)
+  const memberCount = (await listSystemTeamMemberCountsForTeamIdsAsync(client, [row.id])).get(row.id)?.memberCount ?? 0
+  const rows = await client.query<SystemTeamMemberDetailRow>(`
+    SELECT system_team_members.id, system_team_members.team_id, system_team_members.system_account_id,
+      system_team_members.joined_at, system_accounts.display_name
+    FROM ${systemTeamTable(client, 'system_team_members')} system_team_members
+    INNER JOIN ${systemTeamTable(client, 'system_accounts')} system_accounts
+      ON system_accounts.id = system_team_members.system_account_id
+    WHERE system_team_members.team_id = ?
+      AND system_team_members.status = 'active'
+    ORDER BY system_team_members.joined_at ASC, system_team_members.id ASC
+    LIMIT ? OFFSET ?
+  `, [id, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
+  return systemTeamMembersResult(row, rows, memberCount, normalized)
 }
 
 export function listSystemTeamMemberHistory(id: string, options: SystemTeamMemberHistoryOptions = {}, access?: AccessScope): SystemTeamMemberHistoryResult | undefined {
@@ -998,6 +1026,13 @@ function normalizeSystemTeamMemberHistoryOptions(options: SystemTeamMemberHistor
   return { page: normalizeListPage(options.page, pageSize), pageSize }
 }
 
+function normalizeSystemTeamMemberListOptions(options: SystemTeamMemberListOptions): { page: number; pageSize: number } {
+  const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
+    ? Math.min(maxSystemTeamListPageSize, Math.max(1, options.pageSize))
+    : maxSystemTeamListPageSize
+  return { page: normalizeListPage(options.page, pageSize), pageSize }
+}
+
 function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[]): SystemTeamSummary {
   return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
 }
@@ -1182,6 +1217,25 @@ function systemTeamMemberHistoryResult(id: string, rows: SystemTeamMemberHistory
     id,
     items,
     total: pagedTotalUpperBound(options.page, options.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: options.page,
+    pageSize: options.pageSize
+  }
+}
+
+function systemTeamMembersResult(
+  team: SystemTeamDetailRow,
+  rows: SystemTeamMemberDetailRow[],
+  memberCount: number,
+  options: { page: number; pageSize: number }
+): SystemTeamMembersResult {
+  const pageRows = takePageRows(rows, options.pageSize)
+  return {
+    id: team.id,
+    items: pageRows.rows.map(systemTeamMemberDetailFromRow),
+    memberCount,
+    updatedAt: team.updated_at,
+    total: memberCount,
     hasMore: pageRows.hasMore,
     page: options.page,
     pageSize: options.pageSize

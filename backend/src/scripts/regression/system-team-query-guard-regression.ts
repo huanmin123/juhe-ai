@@ -54,7 +54,7 @@ try {
   const secondTeam = repositories.createSystemTeam({ name: '系统团队查询防护 2' }, access)
   repositories.addSystemTeamMembers(firstTeam.id, { systemAccountIds: [firstMember.id] }, access)
   repositories.addSystemTeamMembers(secondTeam.id, { systemAccountIds: [secondMember.id] }, access)
-  const firstTeamMemberId = repositories.listSystemTeamMembers(firstTeam.id, access)?.items[0]?.id
+  const firstTeamMemberId = repositories.listSystemTeamMembers(firstTeam.id, {}, access)?.items[0]?.id
   assert(firstTeamMemberId, '系统团队历史查询防护需要有效成员夹具')
   repositories.removeSystemTeamMember(firstTeam.id, firstTeamMemberId, access)
 

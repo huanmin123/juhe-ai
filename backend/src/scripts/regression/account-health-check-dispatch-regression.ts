@@ -115,10 +115,12 @@ try {
   }
 
   const accountRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
+  const accountManagementPatchSource = readFileSync(new URL('../../storage/account-management-patch.repository.ts', import.meta.url), 'utf8')
   assert(
-    accountRoutesSource.includes("dispatchAccountHealthCheck(account.id, 'configuration')"),
-    '账户连接配置变更必须按配置复检优先级即时投递'
+    accountRoutesSource.includes('dispatchAccountHealthCheck(account.id, account.healthCheckReason)'),
+    '账户路由必须投递集中写入层声明的配置复检优先级'
   )
+  assert(accountManagementPatchSource.includes("healthCheckReason: healthCheckRequired ? 'configuration' : undefined"), '账户连接配置变更必须声明配置复检优先级')
   const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
   const requestFailureDispatchSource = readFileSync(new URL('../../modules/gateway/response/request-failure-health-check.ts', import.meta.url), 'utf8')
   const nonStreamInspectionSource = readFileSync(new URL('../../modules/gateway/response/non-stream-json-inspection.ts', import.meta.url), 'utf8')

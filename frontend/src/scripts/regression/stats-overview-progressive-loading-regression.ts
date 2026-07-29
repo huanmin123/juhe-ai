@@ -8,13 +8,32 @@ const workerSource = readFileSync(new URL('../../../../backend/src/storage/sqlit
 const workerTypesSource = readFileSync(new URL('../../../../backend/src/storage/sqlite-read-worker-pool.types.ts', import.meta.url), 'utf8')
 const routesSource = readFileSync(new URL('../../../../backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
 
-assert.doesNotMatch(viewSource, /api\.(?:stats|myStats)\.usageOverview\(/, '统计首页不得继续调用兼容 usage-overview')
+assert.doesNotMatch(viewSource, /api\.(?:stats|myStats)\.usageOverview\(/, '统计首页不得继续调用旧组合 usage-overview')
 assert.match(viewSource, /usageOverviewSummary\(/, '统计首页首屏必须调用独立 summary')
 assert.match(viewSource, /if \(dateRangeExplicit\.value\) \{[\s\S]*void windowLoad\.catch\(\(\) => undefined\)[\s\S]*\} else \{[\s\S]*await windowLoad/, '显式日期范围不得等待 usage-window 才请求摘要')
 assert.match(viewSource, /IntersectionObserver/, '四个图表必须按视口触发加载')
 assert.match(viewSource, /const defaultDateRange = \(\) => recentDateRange\(MAX_RANGE_DAYS\)/, '统计概览浏览器初始展示必须为近 31 天')
 assert.match(viewSource, /usageOverviewDailyTrend\(\{ \.\.\.rangeParams, systemAccountId \}\)/, '管理端日趋势必须携带当前筛选范围')
 assert.match(viewSource, /api\.myStats\.usageOverviewDailyTrend\(rangeParams\)/, '个人端日趋势必须携带当前筛选范围')
+assert.match(viewSource, /const rangeParams = resolvedOverviewRangeParams\(\)/, '子图必须使用 summary 已归一化的权威日期范围')
+assert.match(viewSource, /function resolvedOverviewRangeParams\(\)[\s\S]*usageOverview\.value\?\.range[\s\S]*startDate: range\.startDate, endDate: range\.endDate/, '默认日期子图不得在跨日时重新推导服务端窗口')
+assert.match(viewSource, /async function loadDailyTrend[\s\S]*if \(!usageOverview\.value \|\|/, '日趋势进入视口早于摘要完成时不得提前发请求')
+const loadDataSource = viewSource.slice(
+  viewSource.indexOf('async function loadData'),
+  viewSource.indexOf('async function loadDailyTrend')
+)
+const clearOverviewIndex = loadDataSource.indexOf('usageOverview.value = undefined')
+const requestSummaryIndex = loadDataSource.indexOf('usageOverviewSummary(')
+const commitSummaryIndex = loadDataSource.indexOf('usageOverview.value = {')
+const requestDailyTrendIndex = loadDataSource.indexOf('if (dailyTrendLoaded.value) void loadDailyTrend(')
+assert(
+  clearOverviewIndex >= 0 && requestSummaryIndex >= 0 && clearOverviewIndex < requestSummaryIndex,
+  '刷新开始必须先清除旧 summary 上下文，避免日趋势复用上一代范围'
+)
+assert(
+  commitSummaryIndex >= 0 && requestDailyTrendIndex >= 0 && commitSummaryIndex < requestDailyTrendIndex,
+  'summary 必须先写入权威范围，再允许已进入视口的日趋势发请求'
+)
 assert.match(viewSource, /const signature = JSON\.stringify\(\[pageSeq, \.\.\.currentAuthSignature\(\), isManagementView\.value \? 'admin' : 'self', systemAccountId \?\? '', rangeParams\.startDate \?\? '', rangeParams\.endDate \?\? ''\]\)/, '日趋势请求签名必须包含页面序号、身份、统计主体和日期筛选')
 assert.match(viewSource, /resetDailyTrend\(\)[\s\S]*if \(dailyTrendLoaded\.value\) void loadDailyTrend\(options\.force === true\)/, '日期筛选刷新必须失效并重新请求日趋势')
 assert.match(viewSource, /usageOverviewHourlyTrend\(/, '小时趋势必须使用独立端点')
@@ -29,18 +48,22 @@ for (const description of [
 }
 assert.match(viewSource, /const chartRequestSeq = \{ hourlyTrend: 0, modelDistribution: 0, errors: 0 \}/, '三个图表必须拥有独立请求代次')
 assert.match(viewSource, /rangeSignature\(result\.range\) !== rangeSignature\(currentOverview\.range\)/, '图表结果必须校验服务端归一化 range')
+assert.match(viewSource, /dailyTrendError\.value = '图表范围已变化，请重试'/, '日趋势结果也必须执行 range fence')
 assert.match(viewSource, /chartObserver\?\.unobserve\(entry\.target\)/, '图表首次进入视口后不得重复观察并发请求')
 assert.match(viewSource, /if \(disposed \|\| !pageActive\.value\) return/, '失活或卸载后排队的视口回调不得重新发起图表请求')
 assert.match(viewSource, /await windowLoad\s+if \(requestSeq !== statsRequestSeq\) return/, '等待统计窗口期间失效的请求不得继续发起摘要请求')
 assert.match(viewSource, /\.\.\.currentAuthSignature\(\)/, '请求签名必须包含 auth revision 与当前用户身份')
 assert.match(viewSource, /onDeactivate:\s*handlePageDeactivate/, 'KeepAlive 失活必须使在途统计请求失效')
-assert.doesNotMatch(viewSource, /<a-alert[\s\S]*summaryError/, 'summary 加载失败不得显示页面横幅')
+assert.match(viewSource, /:error="summaryError"/, 'summary 加载失败必须显示可区分于零数据的区块错误态')
+assert.match(viewSource, /:on-retry="\(\) => loadData\(\{ force: true \}\)"/, 'summary 错误态必须允许定点重试')
 
 for (const path of ['summary', 'hourly-trend', 'model-distribution', 'errors']) {
   assert(routesSource.includes(`'/usage-overview/${path}'`), `Node 必须注册 usage-overview/${path}`)
   assert(apiSource.includes(`/stats/usage-overview/${path}`), `管理端 API 必须暴露 usage-overview/${path}`)
   assert(apiSource.includes(`/my-stats/usage-overview/${path}`), `个人端 API 必须暴露 usage-overview/${path}`)
 }
+assert(!routesSource.includes("statsRouter.get('/usage-overview',"), 'Node 不得继续公开无生产消费者的旧组合 usage-overview')
+assert(!apiSource.includes('usageOverview: '), '前端 API 不得继续暴露旧组合 usage-overview')
 assert(routesSource.includes("'/usage-overview/daily-trend'"), 'Node 必须注册 usage-overview/daily-trend')
 assert(apiSource.includes('/stats/usage-overview/daily-trend'), '管理端 API 必须暴露 usage-overview/daily-trend')
 assert(apiSource.includes('/my-stats/usage-overview/daily-trend'), '个人端 API 必须暴露 usage-overview/daily-trend')

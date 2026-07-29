@@ -280,6 +280,11 @@ try {
   )
   assert.match(
     asyncAccountOptionSnippet,
+    /loadDefaultAiPerformanceAccountCandidatesAsync[\s\S]+loadExplicitAiPerformanceAccountsAsync/,
+    'PG AI 性能默认选项必须先取排行候选 ID，再把默认项与显式已选项合并后统一读取一次标签元数据'
+  )
+  assert.match(
+    asyncAccountOptionSnippet,
     /accounts\.name COLLATE "C" >= \? AND accounts\.name COLLATE "C" < \? AND starts_with\(accounts\.name, \?\)/,
     'PG AI 性能账号选项名称搜索必须使用大小写敏感 C collation 范围 + starts_with 条件'
   )
@@ -305,8 +310,18 @@ try {
   )
   assert.match(
     asyncAccountOptionSnippet,
-    /ORDER BY accounts\.name COLLATE "C" ASC, accounts\.id ASC/,
-    'PG AI 性能账号选项名称搜索排序必须使用 C collation，避免受默认排序规则影响'
+    /UNION ALL/,
+    'PG AI 性能账号选项应在单条候选查询内合并自有、授权实例、分组授权和来源账号名称命中'
+  )
+  assert.match(
+    asyncAccountOptionSnippet,
+    /ROW_NUMBER\(\) OVER \([\s\S]+PARTITION BY id[\s\S]+ORDER BY source_priority ASC, sort_name COLLATE "C" ASC, id ASC/,
+    'PG AI 性能账号选项候选查询必须在数据库内按来源优先级和 C collation 稳定去重排序'
+  )
+  assert.equal(
+    asyncAccountOptionSnippet.match(/await client\.query/g)?.length,
+    1,
+    'PG AI 性能关键词搜索只能执行一条候选查询，账户标签统一由一次窄元数据读取补齐'
   )
   const postgresSchemaSource = readFileSync(new URL('../../storage/postgres-schema.ts', import.meta.url), 'utf8')
   assert.match(postgresSchemaSource, /idx_accounts_name_c_lookup/, 'PG AI 性能账号选项全局名称前缀查询必须有 C collation 索引')

@@ -17,6 +17,13 @@ import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForSta
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
+import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
+import {
+  initializeAddedAccountApiKeyRuntimeStates,
+  initializeAddedAccountApiKeyRuntimeStatesInClient,
+  loadAccountApiKeyRuntimeStatesByAccountIds,
+  loadAccountApiKeyRuntimeStatesForAccountInClient
+} from './account-api-key-runtime-state.repository.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { maxAccountNameLength, replaceAccountNameSearchTerms, replaceAccountNameSearchTermsAsync } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags, replaceAccountTagsAsync } from './account-tags.repository.js'
@@ -432,6 +439,7 @@ export {
   createGroup,
   createGroupAsync,
   createGroupInClientAsync,
+  createGroupWithReceiptAsync,
   deleteGroup,
   deleteGroupAsync,
   patchGroup,
@@ -442,6 +450,7 @@ export {
 export type {
   DeletedGroupRouteStrategyChange,
   DeleteGroupResult,
+  GroupCreateStorageReceipt,
   GroupManagementPatchChange,
   GroupManagementPatchResult
 } from './group-write.repository.js'
@@ -655,6 +664,7 @@ export {
 export {
   createSession,
   createSessionAsync,
+  createAuthenticatedSessionAsync,
   createSystemAccount,
   createSystemAccountAsync,
   createSystemAccountWithPasswordHash,
@@ -690,7 +700,9 @@ export {
   updateSystemAccountWithPasswordHashAsync,
   verifySystemAccountCredentials,
   verifySystemAccountCredentialsAsync,
+  verifySystemAccountCredentialsForSessionAsync,
   type SessionWithAccount,
+  type VerifiedSystemAccountCredentials,
   SystemAccountManagementPatchConflictError,
   type SystemAccountManagementPatchChange,
   type SystemAccountManagementPatchField,
@@ -1436,11 +1448,68 @@ function accountConnectionConfigurationChanged(input: {
   credentials: Record<string, unknown>
   nextProxyProfileId?: string
   credentialsInputPresent: boolean
+  retainedActiveApiKey?: boolean
 }): boolean {
   if (input.current.proxyProfileId !== input.nextProxyProfileId) return true
   if (!input.credentialsInputPresent) return false
-  return ['api_key', 'api_keys', 'base_url'].some((key) => (
-    !isDeepStrictEqual(input.current.credentials?.[key], input.credentials[key])
+  if (!isDeepStrictEqual(input.current.credentials?.base_url, input.credentials.base_url)) return true
+  return !accountApiKeyFingerprintSetsEqual(input.current.credentials, input.credentials)
+    && !input.retainedActiveApiKey
+}
+
+function accountApiKeyFingerprintSetsEqual(
+  currentCredentials: Record<string, unknown> | undefined,
+  nextCredentials: Record<string, unknown>
+): boolean {
+  const current = new Set(accountApiKeyEntries(currentCredentials ?? {}).map((entry) => entry.fingerprint))
+  const next = new Set(accountApiKeyEntries(nextCredentials).map((entry) => entry.fingerprint))
+  if (current.size !== next.size) return false
+  return [...current].every((fingerprint) => next.has(fingerprint))
+}
+
+function accountRetainsActiveApiKey(current: AccountSummary, nextCredentials: Record<string, unknown>): boolean {
+  if (current.status !== 'active' || !current.schedulable) return false
+  if (!isAccountApiKeyPoolIsolationEnabled({
+    providerCode: current.providerCode,
+    protocolCode: current.protocolCode,
+    protocolVersion: current.protocolVersion,
+    type: current.type,
+    credentials: nextCredentials
+  })) return false
+  const nextFingerprints = new Set(accountApiKeyEntries(nextCredentials).map((entry) => entry.fingerprint))
+  if (!nextFingerprints.size) return false
+  const runtimeStatusByFingerprint = new Map(
+    (loadAccountApiKeyRuntimeStatesByAccountIds([current.id]).get(current.id) ?? [])
+      .map((state) => [state.keyFingerprint, state.status])
+  )
+  return accountApiKeyEntries(current.credentials ?? {}).some((entry) => (
+    nextFingerprints.has(entry.fingerprint)
+    && (runtimeStatusByFingerprint.get(entry.fingerprint) ?? 'active') === 'active'
+  ))
+}
+
+async function accountRetainsActiveApiKeyInClient(
+  client: DatabaseClient,
+  current: AccountSummary,
+  nextCredentials: Record<string, unknown>
+): Promise<boolean> {
+  if (current.status !== 'active' || !current.schedulable) return false
+  if (!isAccountApiKeyPoolIsolationEnabled({
+    providerCode: current.providerCode,
+    protocolCode: current.protocolCode,
+    protocolVersion: current.protocolVersion,
+    type: current.type,
+    credentials: nextCredentials
+  })) return false
+  const nextFingerprints = new Set(accountApiKeyEntries(nextCredentials).map((entry) => entry.fingerprint))
+  if (!nextFingerprints.size) return false
+  const runtimeStatusByFingerprint = new Map(
+    (await loadAccountApiKeyRuntimeStatesForAccountInClient(client, current.id))
+      .map((state) => [state.keyFingerprint, state.status])
+  )
+  return accountApiKeyEntries(current.credentials ?? {}).some((entry) => (
+    nextFingerprints.has(entry.fingerprint)
+    && (runtimeStatusByFingerprint.get(entry.fingerprint) ?? 'active') === 'active'
   ))
 }
 
@@ -2535,11 +2604,20 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextProxyProfileId = hasOwnInput(input, 'proxyProfileId')
     ? globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
     : current.proxyProfileId
+  const apiKeyMembershipChanged = hasOwnInput(input, 'credentials') && !accountApiKeyFingerprintSetsEqual(
+    current.credentials,
+    credentials
+  )
+  const retainedActiveApiKey = hasOwnInput(input, 'credentials')
+    && current.proxyProfileId === nextProxyProfileId
+    && isDeepStrictEqual(current.credentials?.base_url, credentials.base_url)
+    && accountRetainsActiveApiKey(current, credentials)
   const requiresBackgroundRecheck = accountConnectionConfigurationChanged({
     current,
     credentials,
     nextProxyProfileId,
-    credentialsInputPresent: hasOwnInput(input, 'credentials')
+    credentialsInputPresent: hasOwnInput(input, 'credentials'),
+    retainedActiveApiKey
   })
   const requiresHealthCheckSchedule = requiresBackgroundRecheck
     || hasSupportedModelsInput
@@ -2796,6 +2874,19 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         id,
         systemAccountId
     )
+    if (Number(result.changes ?? 0) > 0 && retainedActiveApiKey) {
+      initializeAddedAccountApiKeyRuntimeStates({
+        accountId: id,
+        systemAccountId,
+        providerCode: current.providerCode,
+        protocolCode: current.protocolCode,
+        protocolVersion: current.protocolVersion,
+        type: current.type,
+        currentCredentials: current.credentials ?? {},
+        nextCredentials: credentials,
+        now: updatedAt
+      })
+    }
     if (Number(result.changes ?? 0) > 0 && requiresHealthCheckSchedule) {
       database.prepare(`
         UPDATE accounts
@@ -3324,11 +3415,20 @@ export async function updateAccountAsync(
     ? normalizeNullableIdInput(input.proxyProfileId, '代理配置')
     : current.proxyProfileId
   const proxyProfileId = await resolveEnabledProxyProfileIdForAccountWriteAsync(client, requestedProxyProfileId)
+  const apiKeyMembershipChanged = hasOwnInput(input, 'credentials') && !accountApiKeyFingerprintSetsEqual(
+    current.credentials,
+    credentials
+  )
+  const retainedActiveApiKey = hasOwnInput(input, 'credentials')
+    && current.proxyProfileId === proxyProfileId
+    && isDeepStrictEqual(current.credentials?.base_url, credentials.base_url)
+    && await accountRetainsActiveApiKeyInClient(client, current, credentials)
   const requiresBackgroundRecheck = accountConnectionConfigurationChanged({
     current,
     credentials,
     nextProxyProfileId: proxyProfileId,
-    credentialsInputPresent: hasOwnInput(input, 'credentials')
+    credentialsInputPresent: hasOwnInput(input, 'credentials'),
+    retainedActiveApiKey
   })
   const requiresHealthCheckSchedule = requiresBackgroundRecheck
     || hasSupportedModelsInput
@@ -3598,6 +3698,19 @@ export async function updateAccountAsync(
         return
       }
       updated = true
+      if (retainedActiveApiKey) {
+        await initializeAddedAccountApiKeyRuntimeStatesInClient(tx, {
+          accountId: id,
+          systemAccountId,
+          providerCode: current.providerCode,
+          protocolCode: current.protocolCode,
+          protocolVersion: current.protocolVersion,
+          type: current.type,
+          currentCredentials: current.credentials ?? {},
+          nextCredentials: credentials,
+          now: updatedAt
+        })
+      }
       if (requiresHealthCheckSchedule) {
         await tx.execute(`
           UPDATE ${accountWriteTable(tx, 'accounts')}

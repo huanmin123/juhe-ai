@@ -19,6 +19,14 @@ export interface AccountListPageWindowContext {
   sorts: AccountListSortParam[]
 }
 
+export function accountListHasAccumulatedPageWindow(
+  itemCount: number,
+  currentPage: number,
+  pageSize: number
+): boolean {
+  return currentPage > 1 && itemCount > pageSize
+}
+
 export function cloneAccountListCacheResult<T>(value: T): T {
   return structuredClone(toRaw(value as object)) as T
 }

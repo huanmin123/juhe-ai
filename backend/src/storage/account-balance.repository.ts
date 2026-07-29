@@ -58,7 +58,7 @@ interface BalanceDetectionCandidateRow {
 }
 
 const balanceDetectionCandidateWhere = `
-  status = 'active'
+  status IN ('active', 'disabled')
   AND schedulable = 1
   AND type = 'api_key'
   AND balance_query_enabled = 0
@@ -88,9 +88,7 @@ export function listAccountsDueForBalanceRefresh(options: { now?: string; limit?
       SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
              balance_query_next_refresh_at, updated_at, proxy_profile_id
       FROM accounts
-      WHERE status = 'active'
-        AND schedulable = 1
-        AND type = 'api_key'
+      WHERE type = 'api_key'
         AND balance_query_enabled = 1
         AND balance_query_next_refresh_at IS NOT NULL
         AND balance_query_next_refresh_at <= ?
@@ -133,9 +131,7 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
       SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
              balance_query_next_refresh_at, updated_at, proxy_profile_id
       FROM juhe_business.accounts
-      WHERE status = 'active'
-        AND schedulable = 1
-        AND type = 'api_key'
+      WHERE type = 'api_key'
         AND balance_query_enabled = 1
         AND balance_query_next_refresh_at IS NOT NULL
         AND balance_query_next_refresh_at <= ?
@@ -176,9 +172,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
       SELECT a.id, a.system_account_id, a.config_revision, a.credentials_encrypted, a.balance_query_config_json,
              a.balance_query_next_refresh_at, a.updated_at, a.proxy_profile_id
       FROM juhe_business.accounts a
-      WHERE a.status = 'active'
-        AND a.id > ?
-        AND a.schedulable = 1
+      WHERE a.id > ?
         AND a.type = 'api_key'
         AND a.balance_query_enabled = 1
         AND a.balance_query_next_refresh_at IS NULL
@@ -218,9 +212,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
            balance_query_next_refresh_at, updated_at, proxy_profile_id
     FROM accounts
     WHERE id > ?
-      AND status = 'active'
-      AND schedulable = 1
-      AND type = 'api_key'
+       AND type = 'api_key'
       AND balance_query_enabled = 1
       AND balance_query_next_refresh_at IS NULL
       AND deleted_at IS NULL
@@ -252,9 +244,7 @@ export async function findAccountBalanceRefreshCandidateAsync(accountId: string)
            balance_query_next_refresh_at, updated_at, proxy_profile_id
     FROM accounts
     WHERE id = ?
-      AND status = 'active'
-      AND schedulable = 1
-      AND type = 'api_key'
+       AND type = 'api_key'
       AND balance_query_enabled = 1
       AND deleted_at IS NULL
       AND authorization_instance_authorization_id IS NULL

@@ -10,6 +10,7 @@ const viewSource = readFileSync(resolve(frontendRoot, 'views/ai-health/AiHealthV
 const statusBarSource = readFileSync(resolve(frontendRoot, 'views/ai-health/AiHealthStatusBar.vue'), 'utf8')
 const routerSource = readFileSync(resolve(frontendRoot, 'router/index.ts'), 'utf8')
 const statsApiSource = readFileSync(resolve(frontendRoot, 'api/domains/stats.ts'), 'utf8')
+const statsTypesSource = readFileSync(resolve(frontendRoot, 'types/domain/usage-stats.ts'), 'utf8')
 const monitorRepositorySource = readFileSync(resolve(repositoryRoot, 'backend/src/storage/account-health-monitor.repository.ts'), 'utf8')
 
 assert.match(routerSource, /path: '\/ai-health'[\s\S]+title: 'AI健康监控'/, '管理菜单必须注册 AI 健康监控')
@@ -18,7 +19,10 @@ assert.match(statsApiSource, /http\.get\('\/stats\/ai-health'/, '管理视图必
 assert.match(statsApiSource, /http\.get\('\/my-stats\/ai-health'/, '用户视图必须调用自助健康接口')
 assert.match(viewSource, /ResponsiveListToolbar/, '页面必须复用现有列表工具栏')
 assert.match(viewSource, /search-placeholder="搜索账户名"/, '页面必须支持按账户名搜索')
-assert.match(viewSource, /<a-pagination/, '页面必须使用分页组件')
+assert.match(viewSource, />上一页<\/a-button>[\s\S]*>下一页<\/a-button>/, '页面必须使用与 hasMore 语义一致的上一页和下一页')
+assert.match(viewSource, /:disabled="loading \|\| !hasMore"/, '没有下一页或请求中时必须禁用下一页')
+assert.doesNotMatch(viewSource, /共 \{\{ pagination\.total \}\} 个账户|<a-pagination/, '页面不得把哨兵下界展示成真实总数或页码')
+assert.match(viewSource, /visibilityState === 'hidden'[\s\S]*cancelList\(\)[\s\S]*cancelDetail\(\)/, '页面隐藏时必须同时取消列表和详情请求')
 assert.match(viewSource, /<template #actions>[\s\S]*class="ai-health-legend"/, '状态图例必须位于工具栏最右侧 actions 区域')
 assert.match(viewSource, /<span><i class="success" \/>可用<\/span>/, '绿色图例必须使用“可用”文案')
 assert.match(viewSource, /<span><i class="failure" \/>不可用<\/span>/, '红色图例必须使用“不可用”文案')
@@ -26,6 +30,7 @@ assert.doesNotMatch(viewSource, /时区\s*\{\{/, '页面不应展示内部统计
 assert.match(viewSource, /class="ai-health-content"/, '账户列表必须使用独立的自适应内容区')
 assert.match(viewSource, /最近独立检查/, '健康监控必须区分独立探针时间与成功健康信号')
 assert.match(viewSource, /account\.lastHealthSuccessAt/, '健康监控必须展示会顺延下次探针的最近成功信号')
+assert.match(viewSource, /status === 'quality_isolated'\) return '质量隔离'/, '健康监控必须使用标准质量隔离文案')
 assert.match(viewSource, /\.ai-health-content\s*\{[^}]*min-height:\s*0;[^}]*flex:\s*1 1 auto;[^}]*overflow-y:\s*auto;/, '账户列表必须自适应剩余高度并内部滚动')
 assert.doesNotMatch(viewSource, /\.ai-health-page-card\s*\{[^}]*min-height:/, '页面不得覆盖通用响应式卡片高度')
 assert.doesNotMatch(viewSource, /<a-table|ResponsiveDataList/, '健康监控必须使用列表而不是表格')
@@ -48,6 +53,8 @@ assert.match(monitorRepositorySource, /31 \* 24/, '服务端必须限制最大 3
 assert.match(monitorRepositorySource, /FROM account_health_hourly/, '页面查询必须读取小时预聚合')
 assert.match(monitorRepositorySource, /SELECT account_id, stat_hour, status, source_order/, '列表 SQL 必须只投影小时槽状态')
 assert.match(monitorRepositorySource, /loadAccountHealthHourDetail/, '错误正文必须移入单点详情查询')
+const aiHealthResultType = statsTypesSource.match(/export interface AiHealthListResult \{[\s\S]*?\n\}/)?.[0] ?? ''
+assert.doesNotMatch(aiHealthResultType, /\btotal\b/, 'AI 健康响应类型不得声明未经 COUNT 证明的 total')
 
 const coordinator = createAiHealthRequestCoordinator()
 const listA = coordinator.beginList()
@@ -63,5 +70,33 @@ assert.equal(detailB.isCurrent(), true, '最新详情响应必须保留提交权
 coordinator.dispose()
 assert.equal(listB.isCurrent(), false, '卸载后列表请求不得提交')
 assert.equal(detailB.isCurrent(), false, '卸载后详情请求不得提交')
+
+const lateCoordinator = createAiHealthRequestCoordinator()
+let appliedList = ''
+const lateList = lateCoordinator.beginList()
+const lateCommit = Promise.resolve().then(async () => {
+  await Promise.resolve()
+  if (lateList.isCurrent()) appliedList = 'late'
+})
+const currentList = lateCoordinator.beginList()
+const currentCommit = Promise.resolve().then(() => {
+  if (currentList.isCurrent()) appliedList = 'current'
+})
+await Promise.all([lateCommit, currentCommit])
+assert.equal(appliedList, 'current', '迟到的旧列表响应不得覆盖当前请求结果')
+
+let appliedDetail = ''
+const lateDetail = lateCoordinator.beginDetail()
+const lateDetailCommit = Promise.resolve().then(async () => {
+  await Promise.resolve()
+  if (lateDetail.isCurrent()) appliedDetail = 'late'
+})
+const currentDetail = lateCoordinator.beginDetail()
+const currentDetailCommit = Promise.resolve().then(() => {
+  if (currentDetail.isCurrent()) appliedDetail = 'current'
+})
+await Promise.all([lateDetailCommit, currentDetailCommit])
+assert.equal(appliedDetail, 'current', '迟到的旧详情响应不得覆盖当前抽屉结果')
+lateCoordinator.dispose()
 
 console.log('AI 健康监控前端契约回归通过')

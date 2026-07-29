@@ -46,7 +46,6 @@
       <a-form-item v-if="!editing" class="dispatch-status-field" label="状态">
         <a-radio-group v-model:value="form.status" :disabled="authorizedEditing">
           <a-radio value="pending_test">待检查</a-radio>
-          <a-radio value="active">可调度</a-radio>
           <a-radio value="disabled">停用</a-radio>
         </a-radio-group>
       </a-form-item>

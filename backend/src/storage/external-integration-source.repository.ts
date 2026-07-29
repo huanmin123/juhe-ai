@@ -29,6 +29,7 @@ import {
 } from './external-integration-source-token.repository.js'
 import type {
   CreatedExternalIntegrationSourceAuthorization,
+  ExternalIntegrationSourceDeleteReceipt,
   ExternalIntegrationSourceInput,
   ExternalIntegrationSourceListOptions,
   ExternalIntegrationSourceListResult,
@@ -97,6 +98,7 @@ export type {
   CreatedExternalIntegrationSourceToken,
   ExternalIntegrationRateLimitRule,
   ExternalIntegrationSourceAuthContext,
+  ExternalIntegrationSourceDeleteReceipt,
   ExternalIntegrationSourceAuthResult,
   ExternalIntegrationSourceInput,
   ExternalIntegrationSourceListOptions,
@@ -138,8 +140,8 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    where.push('(sources.name = ? OR sources.name LIKE ?)')
-    params.push(keyword, `${keyword}%`)
+    where.push("(sources.name = ? OR sources.name LIKE ? ESCAPE '\\')")
+    params.push(keyword, `${escapeExternalIntegrationLikePrefix(keyword)}%`)
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
   const rows = getBusinessDatabase().prepare(`
@@ -273,26 +275,23 @@ async function findExternalIntegrationSourceInClientAsync(client: DatabaseClient
 }
 
 export function createExternalIntegrationSource(input: ExternalIntegrationSourceInput): ExternalIntegrationSourceRecord {
-  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
-  const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
-  const now = nowIso()
-  const id = newId('extsrc')
-  ensureSourceNameAvailable(name)
+  const row = buildExternalIntegrationSourceCreateRow(input)
+  ensureSourceNameAvailable(row.name)
   try {
     getBusinessDatabase().prepare(`
       INSERT INTO external_integration_sources (
         id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id,
-      name,
-      normalizeSourceStatusInput(input.status),
-      encodeScopes(input.scopes),
-      encodeRateLimits(input.rateLimits),
-      normalizeNullableIso(input.expiresAt),
-      normalizeNullableText(input.notes),
-      now,
-      now
+      row.id,
+      row.name,
+      row.status,
+      row.scopes_json,
+      row.rate_limits_json,
+      row.expires_at,
+      row.notes,
+      row.created_at,
+      row.updated_at
     )
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -300,7 +299,7 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
     }
     throw error
   }
-  return requiredSourceRecord(id)
+  return mapSourceRecord(row)
 }
 
 export async function createExternalIntegrationSourceAsync(input: ExternalIntegrationSourceInput): Promise<ExternalIntegrationSourceRecord> {
@@ -308,31 +307,27 @@ export async function createExternalIntegrationSourceAsync(input: ExternalIntegr
     return createExternalIntegrationSource(input)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const source = await createExternalIntegrationSourceInClientAsync(client, input)
-  return requiredSourceRecordAsync(client, source.id)
+  return createExternalIntegrationSourceInClientAsync(client, input)
 }
 
-async function createExternalIntegrationSourceInClientAsync(client: DatabaseClient, input: ExternalIntegrationSourceInput): Promise<{ id: string }> {
-  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
-  const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
-  const now = nowIso()
-  const id = newId('extsrc')
-  await ensureSourceNameAvailableAsync(client, name)
+async function createExternalIntegrationSourceInClientAsync(client: DatabaseClient, input: ExternalIntegrationSourceInput): Promise<ExternalIntegrationSourceRecord> {
+  const row = buildExternalIntegrationSourceCreateRow(input)
+  await ensureSourceNameAvailableAsync(client, row.name)
   try {
     await client.execute(`
       INSERT INTO ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} (
         id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      id,
-      name,
-      normalizeSourceStatusInput(input.status),
-      encodeScopes(input.scopes),
-      encodeRateLimits(input.rateLimits),
-      normalizeNullableIso(input.expiresAt),
-      normalizeNullableText(input.notes),
-      now,
-      now
+      row.id,
+      row.name,
+      row.status,
+      row.scopes_json,
+      row.rate_limits_json,
+      row.expires_at,
+      row.notes,
+      row.created_at,
+      row.updated_at
     ])
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -340,7 +335,7 @@ async function createExternalIntegrationSourceInClientAsync(client: DatabaseClie
     }
     throw error
   }
-  return { id }
+  return mapSourceRecord(row)
 }
 
 export function createExternalIntegrationSourceAuthorization(input: ExternalIntegrationSourceInput): CreatedExternalIntegrationSourceAuthorization {
@@ -368,8 +363,7 @@ export async function createExternalIntegrationSourceAuthorizationAsync(input: E
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return client.transaction(async (tx) => {
-    const createdSource = await createExternalIntegrationSourceInClientAsync(tx, input)
-    const source = await requiredSourceRecordAsync(tx, createdSource.id)
+    const source = await createExternalIntegrationSourceInClientAsync(tx, input)
     const token = await createExternalIntegrationSourceTokenInClientAsync(tx, {
       sourceRefId: source.id,
       name: `${source.name} 生产 Token`,
@@ -694,22 +688,21 @@ async function executeExternalIntegrationSourceUpdateAsync(
   if (result.changes !== 1) throw new ExternalIntegrationSourcePatchConflictError()
 }
 
-export function deleteExternalIntegrationSource(id: string): boolean {
+export function deleteExternalIntegrationSource(id: string): ExternalIntegrationSourceDeleteReceipt | undefined {
   if (isBuiltInExternalIntegrationTestSourceId(id)) {
     throw new Error('内置测试 Token 不支持删除')
   }
   return runInDatabaseTransaction(() => {
-    if (!findSourceRow(id)) {
-      return false
-    }
+    const source = findSourceDeleteRow(id)
+    if (!source) return undefined
     const database = getBusinessDatabase()
     database.prepare('DELETE FROM external_integration_source_tokens WHERE source_ref_id = ?').run(id)
     const result = database.prepare('DELETE FROM external_integration_sources WHERE id = ?').run(id)
-    return Number(result.changes ?? 0) > 0
+    return Number(result.changes ?? 0) > 0 ? source : undefined
   })
 }
 
-export async function deleteExternalIntegrationSourceAsync(id: string): Promise<boolean> {
+export async function deleteExternalIntegrationSourceAsync(id: string): Promise<ExternalIntegrationSourceDeleteReceipt | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return deleteExternalIntegrationSource(id)
   }
@@ -718,9 +711,8 @@ export async function deleteExternalIntegrationSourceAsync(id: string): Promise<
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return client.transaction(async (tx) => {
-    if (!await findSourceRowAsync(tx, id)) {
-      return false
-    }
+    const source = await findSourceDeleteRowAsync(tx, id)
+    if (!source) return undefined
     await tx.execute(`
       DELETE FROM ${externalIntegrationSourceBusinessTable(tx, 'external_integration_source_tokens')}
       WHERE source_ref_id = ?
@@ -729,7 +721,7 @@ export async function deleteExternalIntegrationSourceAsync(id: string): Promise<
       DELETE FROM ${externalIntegrationSourceBusinessTable(tx, 'external_integration_sources')}
       WHERE id = ?
     `, [id])
-    return Number(result.changes ?? 0) > 0
+    return Number(result.changes ?? 0) > 0 ? source : undefined
   })
 }
 
@@ -747,22 +739,6 @@ export async function findExternalIntegrationSourceRecordAsync(id: string): Prom
   return row ? mapSourceRecord(row) : undefined
 }
 
-function requiredSourceRecord(id: string): ExternalIntegrationSourceRecord {
-  const source = findExternalIntegrationSourceRecord(id)
-  if (!source) {
-    throw new Error('来源系统不存在')
-  }
-  return source
-}
-
-async function requiredSourceRecordAsync(client: DatabaseClient, id: string): Promise<ExternalIntegrationSourceRecord> {
-  const row = await findSourceRowAsync(client, id)
-  if (!row) {
-    throw new Error('来源系统不存在')
-  }
-  return mapSourceRecord(row)
-}
-
 function findSourceRow(id: string): ExternalIntegrationSourceRow | undefined {
   return getBusinessDatabase()
     .prepare('SELECT * FROM external_integration_sources WHERE id = ?')
@@ -775,6 +751,41 @@ async function findSourceRowAsync(client: DatabaseClient, id: string): Promise<E
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
     WHERE id = ?
   `, [id])
+}
+
+function findSourceDeleteRow(id: string): ExternalIntegrationSourceDeleteReceipt | undefined {
+  return getBusinessDatabase()
+    .prepare('SELECT id, name FROM external_integration_sources WHERE id = ?')
+    .get(id) as ExternalIntegrationSourceDeleteReceipt | undefined
+}
+
+async function findSourceDeleteRowAsync(
+  client: DatabaseClient,
+  id: string
+): Promise<ExternalIntegrationSourceDeleteReceipt | undefined> {
+  return await client.one<ExternalIntegrationSourceDeleteReceipt>(`
+    SELECT id, name
+    FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
+    WHERE id = ?
+    FOR UPDATE
+  `, [id])
+}
+
+function buildExternalIntegrationSourceCreateRow(input: ExternalIntegrationSourceInput): ExternalIntegrationSourceRow {
+  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
+  const now = nowIso()
+  return {
+    id: newId('extsrc'),
+    name: normalizeNameOrThrow(input.name, '来源系统名称不能为空'),
+    status: normalizeSourceStatusInput(input.status),
+    scopes_json: encodeScopes(input.scopes),
+    rate_limits_json: encodeRateLimits(input.rateLimits),
+    expires_at: normalizeNullableIso(input.expiresAt),
+    notes: normalizeNullableText(input.notes),
+    last_used_at: null,
+    created_at: now,
+    updated_at: now
+  }
 }
 
 function assertBuiltInSourceUpdateInput(input: ExternalIntegrationSourceUpdateInput): void {

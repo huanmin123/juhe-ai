@@ -58,6 +58,11 @@ import {
 } from './account-circuit-control-plane.repository.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
+import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
+import {
+  initializeAddedAccountApiKeyRuntimeStatesInClient,
+  loadAccountApiKeyRuntimeStatesForAccountInClient
+} from './account-api-key-runtime-state.repository.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   assertAccountSupportedModelsRequired,
@@ -514,15 +519,34 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   setColumn('account_expires_at', currentExpiresAt, nextExpiresAt, nextExpiresAt ?? null)
   addChange('accountExpiresAt', currentExpiresAt ?? undefined, nextExpiresAt ?? undefined)
 
+  const currentSchedulable = databaseBoolean(row.schedulable)
+  const apiKeyMembershipChanged = credentialsChanged && !accountApiKeyFingerprintSetsEqual(
+    currentCredentials,
+    nextCredentials
+  )
+  const baseUrlChanged = credentialsChanged && !isDeepStrictEqual(
+    currentCredentials.base_url,
+    nextCredentials.base_url
+  )
+  const retainedActiveApiKey = !baseUrlChanged
+    && currentProxyProfileId === nextProxyProfileId
+    && isAccountApiKeyPoolIsolationEnabled({
+      providerCode: row.provider_code,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
+      type: row.type,
+      credentials: nextCredentials
+    })
+    && row.status === 'active'
+    && currentSchedulable
+    && await hasRetainedActiveAccountApiKeyInClient(client, row.id, currentCredentials, nextCredentials)
   const connectionChanged = currentProxyProfileId !== nextProxyProfileId
-    || (credentialsChanged && ['api_key', 'api_keys', 'base_url'].some((key) => (
-      !isDeepStrictEqual(currentCredentials[key], nextCredentials[key])
-    )))
+    || baseUrlChanged
+    || (apiKeyMembershipChanged && !retainedActiveApiKey)
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = normalizedAccountStatusInput(input.status, row.status)
   assertStatusMutationAllowed(row.status, requestedStatus, hasStatusInput)
   const expiresAtChanged = currentExpiresAt !== nextExpiresAt
-  const currentSchedulable = databaseBoolean(row.schedulable)
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', currentSchedulable, '账户是否参与调度')
   const expiredByPackage = expiresAtChanged && isAccountExpired(nextExpiresAt, nowMs)
   const scheduledStatus = expiredByPackage
@@ -720,6 +744,19 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   if (updateResult !== 1) {
     throw new AccountManagementPatchRevisionConflictError(row.id, integerValue(row.config_revision))
   }
+  const apiKeyProbeScheduled = retainedActiveApiKey
+    && credentialsChanged
+    && await initializeAddedAccountApiKeyRuntimeStatesInClient(client, {
+      accountId: row.id,
+      systemAccountId: row.system_account_id,
+      providerCode: row.provider_code,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
+      type: row.type,
+      currentCredentials,
+      nextCredentials,
+      now
+    })
 
   let renamedAuthorizationInstanceIds: string[] = []
   if (row.name !== nextName) {
@@ -812,7 +849,7 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   }
 
   const statsFields = new Set(['status', 'schedulable', 'concurrencyLimit', 'runtimeState'])
-  const groupStatsAffected = groupChanged || [...changedFields].some((field) => statsFields.has(field))
+  const groupStatsAffected = apiKeyProbeScheduled || groupChanged || [...changedFields].some((field) => statsFields.has(field))
   const gatewayFields = new Set([
     'status', 'schedulable', 'concurrencyLimit', 'priority', 'superPriorityEnabled', 'fallbackEnabled',
     'proxyProfileId', 'clientCompatibility', 'supportedModels', 'modelMappings', 'healthCheckModel',
@@ -1278,6 +1315,34 @@ async function executeAccountCasUpdate(
       AND deleted_at IS NULL
   `, [...columns.values(), updatedAt, row.id, row.system_account_id, integerValue(row.config_revision)])
   return result.changes
+}
+
+function accountApiKeyFingerprintSetsEqual(
+  currentCredentials: Record<string, unknown>,
+  nextCredentials: Record<string, unknown>
+): boolean {
+  const current = new Set(accountApiKeyEntries(currentCredentials).map((entry) => entry.fingerprint))
+  const next = new Set(accountApiKeyEntries(nextCredentials).map((entry) => entry.fingerprint))
+  if (current.size !== next.size) return false
+  return [...current].every((fingerprint) => next.has(fingerprint))
+}
+
+async function hasRetainedActiveAccountApiKeyInClient(
+  client: DatabaseClient,
+  accountId: string,
+  currentCredentials: Record<string, unknown>,
+  nextCredentials: Record<string, unknown>
+): Promise<boolean> {
+  const nextFingerprints = new Set(accountApiKeyEntries(nextCredentials).map((entry) => entry.fingerprint))
+  if (!nextFingerprints.size) return false
+  const runtimeStatusByFingerprint = new Map(
+    (await loadAccountApiKeyRuntimeStatesForAccountInClient(client, accountId))
+      .map((state) => [state.keyFingerprint, state.status])
+  )
+  return accountApiKeyEntries(currentCredentials).some((entry) => (
+    nextFingerprints.has(entry.fingerprint)
+    && (runtimeStatusByFingerprint.get(entry.fingerprint) ?? 'active') === 'active'
+  ))
 }
 
 async function normalizedSupportedModelsForPatch(

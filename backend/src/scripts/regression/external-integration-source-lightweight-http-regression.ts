@@ -43,15 +43,39 @@ try {
   if (!address || typeof address === 'string') throw new Error('HTTP 回归服务地址不可用')
   const baseUrl = `http://127.0.0.1:${address.port}/external-integration-sources`
 
-  const created = await request<{ token: { id: string; token: string } }>(baseUrl, '', 'POST', {
+  const created = await request<{
+    item: {
+      id: string
+      name: string
+      status: string
+      scopes: string[]
+      rateLimits: Array<{ windowSeconds: number; maxRequests: number }>
+      notes?: string
+      updatedAt: string
+      primaryToken?: { id: string; tokenPrefix: string; tokenSuffix: string }
+      isBuiltIn: boolean
+    }
+    token: { id: string; token: string; tokenPrefix: string; tokenSuffix: string }
+  }>(baseUrl, '', 'POST', {
     name: '轻量响应来源',
     status: 'active',
     scopes: ['juhe_ai_public:group_list:read'],
     rateLimits: [{ windowSeconds: 60, maxRequests: 10 }],
     notes: '详情字段不应跟随 mutation 返回'
   }, 201)
-  assert.deepEqual(Object.keys(created).sort(), ['token'], '创建响应只应返回页面立即展示的明文 Token')
+  assert.deepEqual(Object.keys(created).sort(), ['item', 'token'], '创建响应只应返回页面可本地插入的窄列表行和一次性 Token')
   assert(created.token.token, '创建响应必须保留只显示一次的明文 Token')
+  assert.equal(created.item.id.startsWith('extsrc_'), true, '创建响应必须返回来源列表行 ID')
+  assert.equal(created.item.name, '轻量响应来源')
+  assert.equal(created.item.updatedAt.length > 0, true, '创建响应列表行必须携带分页排序版本')
+  assert.deepEqual(created.item.primaryToken, {
+    id: created.token.id,
+    tokenPrefix: created.token.tokenPrefix,
+    tokenSuffix: created.token.tokenSuffix
+  }, '创建响应列表行必须直接携带安全主 Token 预览')
+  assert.equal('createdAt' in created.item, false, '创建响应窄列表行不应返回详情专用 createdAt')
+  assert.equal('tokens' in created.item, false, '创建响应窄列表行不应返回详情 Token 数组')
+  assert.equal('tokenCount' in created.item, false, '创建响应窄列表行不应返回详情 Token 统计')
 
   const list = await request<{ items: Array<{ id: string; updatedAt: string }> }>(baseUrl, '?keyword=轻量响应来源', 'GET', undefined, 200)
   const sourceId = list.items[0]?.id
@@ -110,7 +134,12 @@ try {
   assert.deepEqual(Object.keys(reset).sort(), ['token'], '重置 Token 响应不应附带完整来源详情')
   assert(reset.token.token, '重置响应必须保留新明文 Token')
 
-  console.log('外部来源 mutation 轻量 HTTP 回归通过：create/update/reset/createToken 均只返回页面消费字段')
+  const deleted = await fetch(`${baseUrl}/${sourceId}`, { method: 'DELETE' })
+  assert.equal(deleted.status, 204, '删除来源必须保持 204 空响应契约')
+  assert.equal(await deleted.text(), '', '删除来源不得为了前端本地协调扩展 HTTP 响应体')
+  await requestError(baseUrl, `/${sourceId}`, 'GET', undefined, 404)
+
+  console.log('外部来源 mutation 轻量 HTTP 回归通过：create 返回窄列表行与 Token，delete 保持 204 空响应')
 } finally {
   await closeServer(server)
   await closeSqliteReadWorkerPool()
@@ -136,8 +165,8 @@ async function request<T>(baseUrl: string, path: string, method: string, body: u
 async function requestError(baseUrl: string, path: string, method: string, body: unknown, expectedStatus: number): Promise<void> {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
   })
   const payload = await response.json() as { message?: string }
   assert.equal(response.status, expectedStatus, payload.message ?? `${method} ${path} 状态码不符合预期`)

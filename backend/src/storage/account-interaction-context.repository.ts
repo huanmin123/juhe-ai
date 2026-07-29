@@ -312,6 +312,13 @@ export async function findAccountCloneContextAsync(
     }
 
     const relationRows = await client.query<AccountCloneRelationRow>(`
+      WITH scoped_account AS (
+        SELECT id, system_account_id
+        FROM ${accountInteractionContextTable(client, 'accounts')}
+        WHERE id = ?
+          AND system_account_id = ?
+          AND deleted_at IS NULL
+      )
       SELECT
         'model' AS relation_kind,
         model AS value_a,
@@ -319,8 +326,9 @@ export async function findAccountCloneContextAsync(
         NULL AS value_c,
         NULL AS value_d,
         NULL AS enabled
-      FROM ${accountInteractionContextTable(client, 'account_supported_models')}
-      WHERE account_id = ?
+      FROM ${accountInteractionContextTable(client, 'account_supported_models')} account_supported_models
+      INNER JOIN scoped_account
+        ON scoped_account.id = account_supported_models.account_id
       UNION ALL
       SELECT
         'tag' AS relation_kind,
@@ -330,11 +338,12 @@ export async function findAccountCloneContextAsync(
         NULL AS value_d,
         NULL AS enabled
       FROM ${accountInteractionContextTable(client, 'account_tag_bindings')} account_tag_bindings
+      INNER JOIN scoped_account
+        ON scoped_account.id = account_tag_bindings.account_id
+        AND scoped_account.system_account_id = account_tag_bindings.system_account_id
       INNER JOIN ${accountInteractionContextTable(client, 'account_tags')} account_tags
         ON account_tags.id = account_tag_bindings.tag_id
-        AND account_tags.system_account_id = ?
-      WHERE account_tag_bindings.account_id = ?
-        AND account_tag_bindings.system_account_id = ?
+        AND account_tags.system_account_id = scoped_account.system_account_id
       UNION ALL
       SELECT
         'mapping' AS relation_kind,
@@ -343,10 +352,11 @@ export async function findAccountCloneContextAsync(
         upstream_model AS value_c,
         upstream_endpoint_family AS value_d,
         enabled
-      FROM ${accountInteractionContextTable(client, 'account_model_mappings')}
-      WHERE account_id = ?
+      FROM ${accountInteractionContextTable(client, 'account_model_mappings')} account_model_mappings
+      INNER JOIN scoped_account
+        ON scoped_account.id = account_model_mappings.account_id
       ORDER BY relation_kind ASC, value_a ASC, value_b ASC
-    `, [row.id, row.system_account_id, row.id, row.system_account_id, row.id])
+    `, [row.id, row.system_account_id])
     const revision = await client.one<AccountCloneRevisionRow>(`
       SELECT
         accounts.config_revision,

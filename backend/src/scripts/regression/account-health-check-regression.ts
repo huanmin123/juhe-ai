@@ -23,10 +23,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, healthCheckRepository] = await Promise.all([
+const [databaseModule, repositories, healthCheckRepository, healthCheckService, apiKeyRotation] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-health-check.repository.js')
+  import('../../storage/account-health-check.repository.js'),
+  import('../../modules/background/account-health-check.service.js'),
+  import('../../storage/account-api-key-rotation.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -94,6 +96,7 @@ try {
   assert.match(serviceSource, /queuedConfigRevision[\s\S]+currentConfigRevision/, '健康检查队列执行前必须丢弃旧配置版本任务')
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
+  assert.match(serviceSource, /probeAccountHealthCheckApiKeyPool/, '多 Key 健康检查必须通过固定 Key 聚合探测')
   assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
   assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
   assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
@@ -111,6 +114,53 @@ try {
   )
 
   const database = databaseModule.getBusinessDatabase()
+  const healthyPoolKey = 'sk-health-pool-key-healthy'
+  const disabledPoolKey = 'sk-health-pool-key-disabled'
+  const recoveredPoolKey = 'sk-health-pool-key-recovered'
+  const poolCandidate = {
+    id: 'account-health-pool-probe',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    type: 'api_key',
+    apiKey: healthyPoolKey,
+    apiKeys: [healthyPoolKey, disabledPoolKey, recoveredPoolKey],
+    credentials: {
+      api_key: healthyPoolKey,
+      api_keys: [healthyPoolKey, disabledPoolKey, recoveredPoolKey],
+      base_url: 'https://api.openai.com/v1'
+    },
+    apiKeyRuntimeStates: [{
+      keyFingerprint: apiKeyRotation.fingerprintAccountApiKey(disabledPoolKey),
+      status: 'disabled'
+    }]
+  } as unknown as import('../../storage/openai-account-selector.types.js').OpenAIAccountSecret
+  const testedPoolKeys: string[] = []
+  const poolProbeResult = await healthCheckService.probeAccountHealthCheckApiKeyPool(poolCandidate, async (fixedCandidate) => {
+    testedPoolKeys.push(fixedCandidate.apiKey)
+    const success = fixedCandidate.apiKey === recoveredPoolKey
+    return {
+      result: {
+        accountId: poolCandidate.id,
+        accountName: '多 Key 健康检查聚合',
+        providerCode: 'gpt',
+        type: 'api_key',
+        success,
+        statusCode: success ? 200 : 401,
+        errorCode: success ? undefined : 'invalid_api_key',
+        message: success ? 'ok' : 'invalid api key',
+        accountFailureEligible: !success
+      }
+    }
+  })
+  assert(poolProbeResult, '多 Key 账户应生成至少一个固定 Key 探测结果')
+  assert.equal(poolProbeResult.result.success, true, '任一固定 Key 探测成功即应判定账户健康检查成功')
+  assert.deepEqual(
+    testedPoolKeys,
+    [healthyPoolKey, recoveredPoolKey],
+    '健康检查必须按固定 Key 顺序探测，跳过已停用 Key，并在首个成功后停止'
+  )
   const accountColumns = database.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
   for (const column of [
     'last_health_check_at',
@@ -469,6 +519,66 @@ try {
   assert.equal(pendingAfterInflightSuccess?.status, 'pending_test', '旧在途成功请求不得激活新配置')
   assert.equal(pendingAfterInflightSuccess?.nextHealthCheckAt, undefined, '旧在途成功请求不得把待检查推迟到正常周期')
   assert(repositories.listAccountsDueForHealthCheck({ limit: 100, ...healthSettings }).some((item) => item.id === credentialChangedAccount.id), '修改 Key 的待检查账户应立即进入健康检查候选')
+
+  const legacyMultiKeyAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '健康检测旧入口多 Key 增量账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-health-legacy-multi-a',
+      api_keys: ['sk-health-legacy-multi-a', 'sk-health-legacy-multi-b'],
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id,
+    supportedModels: ['gpt-5.5'],
+    status: 'active'
+  }, access)
+  assert.equal(repositories.recordAccountHealthCheckSuccess(legacyMultiKeyAccount.id, {
+    ...healthSettings,
+    statusCode: 200
+  }), true)
+  const legacyMultiKeyBeforeUpdate = repositories.findAccountSummary(legacyMultiKeyAccount.id, access)
+  assert.equal(legacyMultiKeyBeforeUpdate?.status, 'active')
+  database.prepare(`
+    UPDATE accounts
+    SET last_health_check_at = ?, last_health_success_at = ?
+    WHERE id = ?
+  `).run('2026-07-29T09:00:00.000Z', '2026-07-29T09:00:00.000Z', legacyMultiKeyAccount.id)
+  const legacyMultiKeyUpdated = repositories.updateAccount(legacyMultiKeyAccount.id, {
+    credentials: {
+      api_key: 'sk-health-legacy-multi-a',
+      api_keys: [
+        'sk-health-legacy-multi-a',
+        'sk-health-legacy-multi-b',
+        'sk-health-legacy-multi-c'
+      ],
+      base_url: 'https://api.openai.com/v1'
+    }
+  }, access)
+  assert.equal(legacyMultiKeyUpdated?.status, 'active', '旧更新入口保留正常 Key 时不得把账户改为待检查')
+  const legacyMultiKeyRow = database.prepare(`
+    SELECT status, schedulable, last_health_check_at, last_health_success_at
+    FROM accounts
+    WHERE id = ?
+  `).get(legacyMultiKeyAccount.id) as {
+    status: string
+    schedulable: number
+    last_health_check_at: string | null
+    last_health_success_at: string | null
+  }
+  assert.equal(legacyMultiKeyRow.status, 'active')
+  assert.equal(legacyMultiKeyRow.schedulable, 1)
+  assert.equal(legacyMultiKeyRow.last_health_check_at, '2026-07-29T09:00:00.000Z')
+  assert.equal(legacyMultiKeyRow.last_health_success_at, '2026-07-29T09:00:00.000Z')
+  const legacyUnverifiedKey = database.prepare(`
+    SELECT status, next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ?
+      AND key_index = 2
+  `).get(legacyMultiKeyAccount.id) as { status?: string; next_probe_at?: string | null } | undefined
+  assert.equal(legacyUnverifiedKey?.status, 'unverified', '旧更新入口新增 Key 必须隔离为未验证')
+  assert(legacyUnverifiedKey?.next_probe_at, '旧更新入口新增 Key 必须进入 Key 级探测队列')
   repositories.recordAccountHealthCheckFailure(credentialChangedAccount.id, {
     ...healthSettings,
     errorCode: 'probe_task_failure',

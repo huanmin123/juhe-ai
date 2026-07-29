@@ -215,6 +215,13 @@ account-api-key-cooldown-retest
 
 ### 新增 / 编辑后的 Key 探测
 
+对已激活的多 Key 账户，Key 集合变更必须区分账户级连接变化和 Key 级增量变化：
+
+- 仅新增、删除、替换或重排 Key 时，按 Key 指纹比较变更前后集合。只要至少一个变更前已验证为 `active` 且变更后仍存在的 Key 保留，账户继续保持原有 `status` 与 `schedulable`，不触发账户级待检查或账户级健康检查；已存在运行态行的 `key_index` 随新顺序同步，避免管理页按位置错贴状态。
+- 新增或替换得到的 Key 初始为 `unverified`，在独立 Key 探测完成前不得进入生产选择器；探测成功后才转为 `active`。该 Key 的探测失败不得覆盖仍可用的账户状态。
+- 只有所有此前正常 Key 都被删除或替换时，才将账户转入 `pending_test` 并执行激活检查。Base URL、代理、协议能力、检查模型或检查请求形态变化会影响全部 Key，始终属于账户级检查。
+- 多 Key 账户的后台账户健康检查必须固定探测 Key 池中的当前可执行成员，任一 `complete_success` 即为账户级成功。不得把普通轮询恰好命中一个失败 Key 的结果作为账户级失败事实。
+
 为了避免 100 个新 Key 全部异常但只能靠用户请求逐个发现，新建和关键 Key 配置变更由后台系统检查承担：
 
 - 创建账户先保存为 `pending_test`，后台激活检查按系统策略检查 Key 池；至少一个 Key 得到 `complete_success` 后账户才进入 `active`。完整 framing 中性 Key 只保留诊断，只有独立 `transport_incomplete` Key 才写自动 transport 运行态并等待后台恢复。

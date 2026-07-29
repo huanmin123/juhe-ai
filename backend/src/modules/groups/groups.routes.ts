@@ -1,13 +1,14 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
+import type { GroupListItem } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, GroupPatchConflictError, createGroupAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, listRouteStrategyGroupOptionsAsync, patchGroupAsync, returnGroupAuthorizationForGranteeAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, GroupPatchConflictError, createGroupWithReceiptAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, findProviderOptionByCodeAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listRouteStrategyGroupOptionsAsync, patchGroupAsync, returnGroupAuthorizationForGranteeAsync, type DeletedGroupRouteStrategyChange, type GroupCreateStorageReceipt } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { operationMode, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import { hydrateGroupListPage } from './group-status-snapshot.service.js'
 
 export const groupsRouter = Router()
@@ -197,9 +198,9 @@ groupsRouter.post('/', mutationGuard({
     return
   }
   const providerCode = parsed.data.providerCode.trim()
-  let provider: Awaited<ReturnType<typeof listProvidersAsync>>[number] | undefined
+  let provider: Awaited<ReturnType<typeof findProviderOptionByCodeAsync>>
   try {
-    provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
+    provider = await findProviderOptionByCodeAsync(providerCode)
   } catch (error) {
     next(error)
     return
@@ -214,10 +215,11 @@ groupsRouter.post('/', mutationGuard({
   }
   try {
     const group = await runLoggedOperationAsync(async () => {
-      const group = await createGroupAsync({ ...parsed.data, providerCode }, requestAccess)
-      const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
+      const receipt = await createGroupWithReceiptAsync({ ...parsed.data, providerCode }, requestAccess)
+      const group = receipt.group
+      const ownerSystemAccountId = receipt.ownerSystemAccountId
       return {
-        result: group,
+        result: groupCreateListItem(receipt),
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -244,6 +246,38 @@ groupsRouter.post('/', mutationGuard({
     res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
+
+function groupCreateListItem(receipt: GroupCreateStorageReceipt): GroupListItem {
+  const { group, ownerSystemAccountId, updatedAt } = receipt
+  return {
+    id: group.id,
+    systemAccountId: group.systemAccountId,
+    systemAccountName: group.systemAccountName,
+    ownerSystemAccountId,
+    ownerSystemAccountName: group.systemAccountName,
+    name: group.name,
+    providerCode: group.providerCode,
+    description: group.description,
+    enabled: group.enabled,
+    isDefault: false,
+    groupType: group.groupType,
+    accessType: 'owner',
+    updatedAt,
+    accountStats: {
+      total: group.accountStats.total,
+      available: group.accountStats.available,
+      active: group.accountStats.active,
+      disabled: group.accountStats.disabled,
+      error: group.accountStats.error,
+      rateLimited: group.accountStats.rateLimited,
+      concurrencyLimit: group.accountStats.concurrencyLimit,
+      currentConcurrency: 0
+    },
+    canEdit: true,
+    canDelete: true,
+    canReturn: false
+  }
+}
 
 groupsRouter.patch('/:id', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)

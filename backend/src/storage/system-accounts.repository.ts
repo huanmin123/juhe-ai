@@ -112,6 +112,11 @@ export interface SessionWithAccount {
   account: SystemAccountSummary
 }
 
+export interface VerifiedSystemAccountCredentials {
+  account: SystemAccountSummary
+  credentialRevision: string
+}
+
 export function listSystemAccounts(): SystemAccountListItem[] {
   return listSystemAccountsPage({ page: 1, pageSize: maxSystemAccountPageSize }).items
 }
@@ -378,11 +383,11 @@ export async function findSystemAccountByIdAsync(id: string): Promise<SystemAcco
   return findSystemAccountByIdWithClient(client, id)
 }
 
-async function findSystemAccountByIdWithClient(client: DatabaseClient, id: string): Promise<SystemAccountSummary | undefined> {
+async function findSystemAccountByIdWithClient(client: DatabaseClient, id: string, lockRow = false): Promise<SystemAccountSummary | undefined> {
   const row = await client.one<SystemAccountSummaryRow>(`
     SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
-    WHERE id = ?
+    WHERE id = ?${lockRow && client.driver === 'postgres' ? ' FOR UPDATE' : ''}
   `, [id])
   return row ? systemAccountSummaryFromRow(row) : undefined
 }
@@ -470,11 +475,25 @@ export function verifySystemAccountCredentials(username: string, password: strin
 }
 
 export async function verifySystemAccountCredentialsAsync(username: string, password: string): Promise<SystemAccountSummary | undefined> {
+  return (await verifySystemAccountCredentialsForSessionAsync(username, password))?.account
+}
+
+export async function verifySystemAccountCredentialsForSessionAsync(
+  username: string,
+  password: string
+): Promise<VerifiedSystemAccountCredentials | undefined> {
   const account = await findSystemAccountByUsernameAsync(username)
   if (!account || account.status !== 'active') {
     return undefined
   }
-  return await verifyPasswordAsync(password, account.passwordHash) ? account : undefined
+  if (!await verifyPasswordAsync(password, account.passwordHash)) {
+    return undefined
+  }
+  const { passwordHash, ...summary } = account
+  return {
+    account: summary,
+    credentialRevision: hashSecret(passwordHash)
+  }
 }
 
 export function createSystemAccount(input: {
@@ -621,6 +640,7 @@ export async function patchSystemAccountManagementAsync(
 
   const client = await getSystemAccountDatabaseClient()
   const outcome = await client.transaction(async (tx) => {
+    await lockActiveSuperAdminInvariantForPatchAsync(tx, input)
     const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
     const current = await tx.one<SystemAccountManagementPatchRow>(`
       SELECT ${systemAccountManagementPatchSelectColumns(input, tx.driver).join(', ')}
@@ -964,7 +984,8 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
   let current: SystemAccountSummary | undefined
   let updated: SystemAccountSummary | undefined
   await client.transaction(async (tx) => {
-    current = await findSystemAccountByIdWithClient(tx, id)
+    await lockActiveSuperAdminInvariantForPatchAsync(tx, input)
+    current = await findSystemAccountByIdWithClient(tx, id, true)
     if (!current) {
       return
     }
@@ -1011,8 +1032,8 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
 
 export function updateSystemAccountLastLogin(id: string): void {
   getBusinessDatabase()
-    .prepare('UPDATE system_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?')
-    .run(nowIso(), nowIso(), id)
+    .prepare('UPDATE system_accounts SET last_login_at = ? WHERE id = ?')
+    .run(nowIso(), id)
 }
 
 export async function updateSystemAccountLastLoginAsync(id: string): Promise<void> {
@@ -1020,9 +1041,9 @@ export async function updateSystemAccountLastLoginAsync(id: string): Promise<voi
   const now = nowIso()
   await client.execute(`
     UPDATE ${systemAccountTable(client, 'system_accounts')}
-    SET last_login_at = ?, updated_at = ?
+    SET last_login_at = ?
     WHERE id = ?
-  `, [now, now, id])
+  `, [now, id])
 }
 
 export function createSession(systemAccountId: string, ttlDays = 14): { token: string; sessionId: string; expiresAt: string } {
@@ -1050,6 +1071,41 @@ export async function createSessionAsync(systemAccountId: string, ttlDays = 14):
     VALUES (?, ?, ?, ?, ?, ?)
   `, [sessionId, systemAccountId, hashSecret(token), expiresAt, now.toISOString(), now.toISOString()])
   return { token, sessionId, expiresAt }
+}
+
+export async function createAuthenticatedSessionAsync(
+  systemAccountId: string,
+  credentialRevision: string,
+  ttlDays = 14
+): Promise<{ token: string; sessionId: string; expiresAt: string } | undefined> {
+  const token = randomBytes(32).toString('base64url')
+  const sessionId = newId('sess')
+  const now = new Date()
+  const nowText = now.toISOString()
+  const expiresAt = new Date(now.getTime() + Math.max(1, ttlDays) * 24 * 60 * 60 * 1000).toISOString()
+  const client = await getSystemAccountDatabaseClient()
+  return client.transaction(async (tx) => {
+    const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const account = await tx.one<Pick<SystemAccountRow, 'status' | 'password_hash'>>(`
+      SELECT status, password_hash
+      FROM ${systemAccountTable(tx, 'system_accounts')}
+      WHERE id = ?
+      LIMIT 1${lockClause}
+    `, [systemAccountId])
+    if (!account || account.status !== 'active' || hashSecret(account.password_hash) !== credentialRevision) {
+      return undefined
+    }
+    await tx.execute(`
+      INSERT INTO ${systemAccountTable(tx, 'system_sessions')} (id, system_account_id, token_hash, expires_at, created_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [sessionId, systemAccountId, hashSecret(token), expiresAt, nowText, nowText])
+    await tx.execute(`
+      UPDATE ${systemAccountTable(tx, 'system_accounts')}
+      SET last_login_at = ?
+      WHERE id = ?
+    `, [nowText, systemAccountId])
+    return { token, sessionId, expiresAt }
+  })
 }
 
 export function findSessionByToken(token: string): (SessionWithAccount & { tokenHash: string }) | undefined {
@@ -1318,6 +1374,19 @@ async function ensureActiveSuperAdminRemainsAsync(
   if (Number(row?.count ?? 0) < 1) {
     throw new Error('至少保留一个启用的超级管理员')
   }
+}
+
+async function lockActiveSuperAdminInvariantForPatchAsync(
+  client: DatabaseClient,
+  input: Record<string, unknown>
+): Promise<void> {
+  if (client.driver !== 'postgres' || (!Object.hasOwn(input, 'role') && !Object.hasOwn(input, 'status'))) {
+    return
+  }
+  await client.execute(
+    'SELECT pg_advisory_xact_lock(hashtextextended(?, 0))',
+    ['juhe-ai:system-accounts:active-super-admin']
+  )
 }
 
 function gatewayAccountRuntimeChanged(current: SystemAccountSummary, next: SystemAccountSummary): boolean {

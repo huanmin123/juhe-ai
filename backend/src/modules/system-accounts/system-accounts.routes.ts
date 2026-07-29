@@ -136,7 +136,8 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
         }
       }
     }, req)
-    res.status(201).json(ok(account))
+    const { createdAt: _createdAt, updatedAt, ...listValues } = account
+    res.status(201).json(ok({ ...listValues, editVersion: updatedAt }))
   } catch (error) {
     res.status(409).json({ message: error instanceof Error ? error.message : '创建系统账户失败' })
   }

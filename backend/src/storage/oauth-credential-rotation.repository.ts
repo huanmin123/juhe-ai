@@ -11,6 +11,7 @@ import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { AccountConfigRevisionConflictError } from './account-config-revision.js'
@@ -31,6 +32,7 @@ export interface OAuthCredentialRotationAccount {
   proxyProfileId?: string
   credentials: Record<string, unknown>
   credentialFingerprint?: string
+  accountExpiresAt?: string
   configRevision: number
   updatedAt: string
 }
@@ -71,6 +73,7 @@ export async function rotateOAuthCredentialsAsync(input: {
   expectedAccountType: 'oauth' | 'google_oauth'
   expectedProviderProtocolProfileId: string
   credentials: Record<string, unknown>
+  recoverableLastErrorCodes?: readonly string[]
   access?: AccessScope
 }): Promise<OAuthCredentialRotationResult | undefined> {
   if (!Number.isInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
@@ -82,7 +85,7 @@ export async function rotateOAuthCredentialsAsync(input: {
     const row = await tx.one<OAuthCredentialRotationRow>(`
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id,
         protocol_code, protocol_version, name, type, status, last_error_code,
-        proxy_profile_id, credentials_encrypted, credential_fingerprint,
+        proxy_profile_id, credentials_encrypted, credential_fingerprint, account_expires_at,
         config_revision, updated_at
       FROM ${tableName(tx, 'accounts')}
       WHERE id = ?
@@ -108,7 +111,11 @@ export async function rotateOAuthCredentialsAsync(input: {
       protocolCode: current.protocolCode,
       protocolVersion: current.protocolVersion
     })
-    if (isDeepStrictEqual(current.credentials, credentials)) {
+    const credentialsChanged = !isDeepStrictEqual(current.credentials, credentials)
+    const recoverableLastErrorCodes = normalizedRecoverableLastErrorCodes(input.recoverableLastErrorCodes)
+    const recoverFailureState = current.status === 'error'
+      && Boolean(current.lastErrorCode && recoverableLastErrorCodes.includes(current.lastErrorCode))
+    if (!credentialsChanged && !recoverFailureState) {
       return {
         id: current.id,
         configRevision: current.configRevision,
@@ -119,14 +126,46 @@ export async function rotateOAuthCredentialsAsync(input: {
     }
     const credentialSource = requiredAccountCredentialSource(current.type, credentials)
     const updatedAt = nowIso()
-    const update = await tx.execute(`
-      UPDATE ${tableName(tx, 'accounts')}
-      SET credentials_encrypted = ?,
+    const expiredAtRecovery = recoverFailureState && isExpiredAt(current.accountExpiresAt, updatedAt)
+    const configRevisionChanged = credentialsChanged || (recoverFailureState && !expiredAtRecovery)
+    const credentialAssignments = credentialsChanged
+      ? `credentials_encrypted = ?,
           credential_fingerprint = ?,
           credential_mask = ?,
           oauth_access_token_expires_at = ?,
-          oauth_refresh_token_present = ?,
-          config_revision = config_revision + 1,
+          oauth_refresh_token_present = ?,`
+      : ''
+    const recoveryAssignments = recoverFailureState
+      ? `status = '${expiredAtRecovery ? 'disabled' : 'pending_test'}',
+          schedulable = 0,
+          cooldown_until = NULL,
+          last_error_code = ${expiredAtRecovery ? "'account_expired'" : 'NULL'},
+          last_error_message = ${expiredAtRecovery ? "'账户套餐已过期，已自动停用'" : "'账户已重置，等待后台健康检查'"},
+          last_error_trace_id = NULL,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
+          ${expiredAtRecovery ? '' : `last_health_check_at = NULL,
+          next_health_check_at = NULL,
+          last_health_success_at = NULL,
+          health_check_failure_count = 0,
+          health_check_failure_started_at = NULL,
+          last_health_check_status_code = NULL,
+          last_health_check_error_code = NULL,
+          last_health_check_error_message = NULL,
+          last_health_check_trace_id = NULL,`}
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,`
+      : ''
+    const revisionAssignment = configRevisionChanged
+      ? 'config_revision = config_revision + 1,'
+      : ''
+    const update = await tx.execute(`
+      UPDATE ${tableName(tx, 'accounts')}
+      SET ${credentialAssignments}
+          ${recoveryAssignments}
+          ${revisionAssignment}
           updated_at = ?
       WHERE id = ?
         AND system_account_id = ?
@@ -137,11 +176,13 @@ export async function rotateOAuthCredentialsAsync(input: {
         AND deleted_at IS NULL
         AND authorization_instance_authorization_id IS NULL
     `, [
-      encryptJson(credentials),
-      accountCredentialFingerprint(credentialSource),
-      maskSecret(credentialSource),
-      optionalIso(credentials.expires_at),
-      typeof credentials.refresh_token === 'string' && credentials.refresh_token.trim() ? 1 : 0,
+      ...(credentialsChanged ? [
+        encryptJson(credentials),
+        accountCredentialFingerprint(credentialSource),
+        maskSecret(credentialSource),
+        optionalIso(credentials.expires_at),
+        typeof credentials.refresh_token === 'string' && credentials.refresh_token.trim() ? 1 : 0
+      ] : []),
       updatedAt,
       current.id,
       current.systemAccountId,
@@ -153,7 +194,10 @@ export async function rotateOAuthCredentialsAsync(input: {
     if (update.changes !== 1) {
       throw new AccountConfigRevisionConflictError(input.accountId, input.expectedConfigRevision)
     }
-    if (!isDeepStrictEqual(
+    if (recoverFailureState) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [current.id], reason: 'oauth_credentials_reauthorized' }, tx)
+    }
+    if (credentialsChanged && !isDeepStrictEqual(
       accountCircuitCredentialOwnerIdentity(current.credentials),
       accountCircuitCredentialOwnerIdentity(credentials)
     )) {
@@ -166,7 +210,7 @@ export async function rotateOAuthCredentialsAsync(input: {
     }
     return {
       id: current.id,
-      configRevision: current.configRevision + 1,
+      configRevision: current.configRevision + (configRevisionChanged ? 1 : 0),
       updatedAt,
       changed: true,
       credentials
@@ -177,6 +221,12 @@ export async function rotateOAuthCredentialsAsync(input: {
     invalidateGatewayRuntimeAfterBusinessWrite('oauth_credentials_rotated')
   }
   return result
+}
+
+function normalizedRecoverableLastErrorCodes(value: readonly string[] | undefined): string[] {
+  return value
+    ? [...new Set(value.map((item) => item.trim()).filter(Boolean))]
+    : []
 }
 
 interface OAuthCredentialRotationRow {
@@ -193,6 +243,7 @@ interface OAuthCredentialRotationRow {
   proxy_profile_id: string | null
   credentials_encrypted: string
   credential_fingerprint: string | null
+  account_expires_at?: string | null
   config_revision: number
   updated_at: string
 }
@@ -212,6 +263,7 @@ function mapRotationAccount(row: OAuthCredentialRotationRow): OAuthCredentialRot
     proxyProfileId: row.proxy_profile_id ?? undefined,
     credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
     credentialFingerprint: row.credential_fingerprint ?? undefined,
+    accountExpiresAt: row.account_expires_at ?? undefined,
     configRevision: Math.max(1, Number(row.config_revision) || 1),
     updatedAt: row.updated_at
   }
@@ -233,4 +285,10 @@ function optionalIso(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+}
+
+function isExpiredAt(value: string | undefined, now: string): boolean {
+  if (!value) return false
+  const expiresAt = Date.parse(value)
+  return Number.isFinite(expiresAt) && expiresAt <= Date.parse(now)
 }

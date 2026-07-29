@@ -34,7 +34,7 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'interactions_json'
   | 'interactions_sse'
 >
-export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
+export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountCredentials {
   api_key?: string

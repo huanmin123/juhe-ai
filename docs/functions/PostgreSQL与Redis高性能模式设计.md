@@ -411,6 +411,19 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - 统计结果和统计游标必须同事务提交。
 - Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态；Redis queue 承接 usage、audit、operation log、public API log 和 record maintenance 等未落库消息，未 ACK 前不能当作可丢缓存处理。`redis-queue` 必须使用 `noeviction`、持久化和 pending / lag 监控；事实最终以 PostgreSQL 落库为准。普通运行日志只追加到角色 JSONL 文件，由 ingest-worker 按持久 cursor 批量索引，不进入 Redis queue。
 
+### 使用记录批量落库锁顺序
+
+高性能模式下，多个 usage worker 会并行消费同一个 Redis Stream consumer group，并且只有 PostgreSQL 事务提交后才会确认消息。`usage_records` 的唯一键保证重复投递幂等，但不能替代锁顺序：若事务先写 usage 分区的唯一索引、再按输入顺序更新多个 `juhe_business.accounts` 行，两个批次就可能分别持有 usage 索引和账户行锁，形成 `40P01` 循环等待。
+
+PostgreSQL 使用记录批事务必须遵守以下边界：
+
+- 在事务外完成批次归属、价格和账户副作用的汇总，不持有数据库锁。
+- 事务开始后，先对所有将写入副作用的未删除账户执行 `ORDER BY id FOR NO KEY UPDATE`，由数据库按唯一稳定顺序获取行锁。
+- 账户行锁持有后，才写入 `juhe_usage.usage_records` 及其分区元数据，最后执行 `last_used_at` 和健康成功信号的条件更新。
+- 事务失败时整体回滚；Redis Stream 消息不确认，保持 pending 以便按既有至少一次语义重试。不得以降低 usage worker 数量、关闭幂等写入或删除历史记录规避竞争。
+
+该顺序仅约束使用记录批写事务，不要求把所有账户写入路径串行化；其他账户变更仍须避免在同一事务中先持有其他互斥资源、再反向等待 usage 写入。
+
 ## PostgreSQL 调优基线
 
 具体数值按 `<测试主机IP>` 和生产机器 CPU / 内存 / 磁盘测试后写入部署文档。默认基线：

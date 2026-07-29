@@ -22,12 +22,15 @@ logger.level = 'silent'
 const statsRoutesSource = readFileSync(resolve('src/modules/stats/stats.routes.ts'), 'utf8')
 const dbServiceIpcSource = readFileSync(resolve('src/modules/db-service/db-service-ipc.ts'), 'utf8')
 const workerSchedulerSource = readFileSync(resolve('src/modules/background/worker-scheduler.ts'), 'utf8')
-const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics',[\s\S]*?\n\}\)\n/)?.[0]
-const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime',[\s\S]*?\n\}\)\n/)?.[0]
-assert(systemMetricsRouteSource, '应定义系统指标首屏路由')
-assert(systemMetricsRuntimeRouteSource, '应定义系统指标运行态独立路由')
+const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/trend',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeSummaryRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime\/summary',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeJobsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime\/jobs',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeQueuesRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime\/queues',[\s\S]*?\n\}\)\n/)?.[0]
+assert(systemMetricsRouteSource, '应定义系统指标首屏窄趋势路由')
+assert.doesNotMatch(statsRoutesSource, /statsRouter\.get\('\/system-metrics',/, '无消费者的旧宽系统指标路由不应继续公开')
+assert(systemMetricsRuntimeSummaryRouteSource && systemMetricsRuntimeJobsRouteSource && systemMetricsRuntimeQueuesRouteSource, '应定义系统指标运行态分段路由')
 assert.doesNotMatch(systemMetricsRouteSource, /requestServerRuntimeSnapshot|get[A-Za-z]+RedisStreamRuntime|backgroundQueueRuntimeRows/, '首屏趋势路由不得采集 server / Redis 运行态')
-assert.match(systemMetricsRuntimeRouteSource, /requestServerSystemMetricsRuntimeSnapshot\(2500\)/, '独立运行态路由快照预算必须大于内部 worker 快照预算')
+assert.match(statsRoutesSource, /requestServerSystemMetricsRuntimeSnapshot\(2500\)/, '独立运行态路由快照预算必须大于内部 worker 快照预算')
 assert.match(dbServiceIpcSource, /requestIngestWorkerSnapshot\(1500\)/)
 assert.match(dbServiceIpcSource, /requestStatsWorkerSnapshot\(1500\)/)
 assert.match(dbServiceIpcSource, /requestOpsWorkerSnapshot\(1500\)/)
@@ -35,7 +38,7 @@ assert.match(statsRoutesSource, /consumers: optionalNumberValue\(queue\.consumer
 assert.match(statsRoutesSource, /expiredCount: numberValue\(state\.expiredCount\)/, '网关过期必须与丢弃分别展示')
 assert.match(dbServiceIpcSource, /observedAt: new Date\(\)\.toISOString\(\)/, '运行态快照必须记录采集时间')
 assert.match(statsRoutesSource, /const runtimeSnapshotAgeMs/, '系统指标接口必须计算快照年龄用于过期判断')
-assert.doesNotMatch(systemMetricsRuntimeRouteSource, /runtimeSnapshotAgeMs,/, '系统指标接口不得返回页面未展示的快照年龄')
+assert.doesNotMatch(systemMetricsRuntimeSummaryRouteSource, /runtimeSnapshotAgeMs,/, '系统指标接口不得返回页面未展示的快照年龄')
 assert.match(statsRoutesSource, /runtimeSnapshotStale/, '系统指标接口必须明确快照过期状态')
 assert.doesNotMatch(workerSchedulerSource, /state\.lastErrorAt = undefined/, '任务成功后必须保留最近失败时间供恢复状态判断')
 
@@ -111,13 +114,21 @@ interface SystemMetricsResponse {
   }>
 }
 
-interface SystemMetricsRuntimeResponse {
+interface SystemMetricsRuntimeSummaryResponse {
   runtimeSnapshotAvailable: boolean
   ingestWorkerSnapshotAvailable: boolean
   statsWorkerSnapshotAvailable: boolean
   opsWorkerSnapshotAvailable: boolean
-  backgroundJobsAvailable: boolean
-  backgroundJobs: unknown
+  jobsAvailable: boolean
+  queuesAvailable: boolean
+}
+
+interface SystemMetricsRuntimePageResponse {
+  items: unknown[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
 }
 
 interface AccountListResponse {
@@ -196,14 +207,22 @@ try {
   const runtimeLogGrepOptions = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/runtime-logs/grep-options', seed.adminCookie)
   assert('defaultRangeDays' in runtimeLogGrepOptions, 'grep 模式应通过独立接口读取文件时间范围')
 
-  const systemMetricsRuntime = await getEnvelope<SystemMetricsRuntimeResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/runtime', seed.adminCookie)
+  const systemMetricsRuntime = await getEnvelope<SystemMetricsRuntimeSummaryResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/runtime/summary', seed.adminCookie)
   assert.equal(systemMetricsRuntime.runtimeSnapshotAvailable, false, '系统指标应标记 runtime snapshot 不可用')
   assert.equal(systemMetricsRuntime.ingestWorkerSnapshotAvailable, false, '系统指标应标记 ingest-worker snapshot 不可用')
   assert.equal(systemMetricsRuntime.statsWorkerSnapshotAvailable, false, '系统指标应标记 stats-worker snapshot 不可用')
   assert.equal(systemMetricsRuntime.opsWorkerSnapshotAvailable, false, '系统指标应标记 ops-worker snapshot 不可用')
-  assert.equal(systemMetricsRuntime.backgroundJobsAvailable, false, '后台任务不可用时应有显式标记')
-  assert.equal(systemMetricsRuntime.backgroundJobs, null, '后台任务不可用时不能伪装成空数组')
-  const systemMetrics = await getEnvelope<SystemMetricsResponse>(baseUrl, '/__aisys__/api/stats/system-metrics', seed.adminCookie)
+  assert.equal(systemMetricsRuntime.jobsAvailable, false, '后台任务不可用时应有显式标记')
+  assert.equal(systemMetricsRuntime.queuesAvailable, false, '后台队列不可用时应有显式标记')
+  const systemMetricsRuntimeJobs = await getEnvelope<SystemMetricsRuntimePageResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/runtime/jobs?page=1&pageSize=10', seed.adminCookie)
+  assert.deepEqual(systemMetricsRuntimeJobs, { items: [], total: 0, page: 1, pageSize: 10, hasMore: false }, '不可用运行态的 jobs 分段必须返回空分页，不能伪装任务数据')
+  const systemMetricsRuntimeQueues = await getEnvelope<SystemMetricsRuntimePageResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/runtime/queues?page=1&pageSize=10', seed.adminCookie)
+  assert.deepEqual(systemMetricsRuntimeQueues, { items: [], total: 0, page: 1, pageSize: 10, hasMore: false }, '不可用运行态的 queues 分段必须返回空分页，不能伪装队列数据')
+  const retiredSystemMetricsResponse = await fetch(`${baseUrl}/__aisys__/api/stats/system-metrics`, {
+    headers: { cookie: seed.adminCookie }
+  })
+  assert.equal(retiredSystemMetricsResponse.status, 404, '无页面消费者的旧宽系统指标端点必须返回 404')
+  const systemMetrics = await getEnvelope<SystemMetricsResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/trend', seed.adminCookie)
   assert.deepEqual(
     systemMetrics.processEventLoopLatestStatus.map((item) => item.processRole),
     ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'],

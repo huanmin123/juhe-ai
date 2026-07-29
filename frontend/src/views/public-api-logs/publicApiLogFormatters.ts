@@ -27,6 +27,13 @@ export function formatPublicApiLogDuration(value?: number): string {
   return formatMillisecondsAsSeconds(value)
 }
 
+export function formatPublicApiLogBytes(value: number): string {
+  const bytes = Math.max(0, Math.trunc(value))
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+}
+
 export function getPublicApiLogStatusColor(value?: number): string {
   if (!value) return 'default'
   if (value >= 200 && value < 300) return 'green'

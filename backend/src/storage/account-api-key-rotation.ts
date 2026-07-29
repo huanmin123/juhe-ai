@@ -13,7 +13,7 @@ import {
 } from '../domain/provider-protocol.js'
 
 export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
-export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
+export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountApiKeyEntry {
   id: string

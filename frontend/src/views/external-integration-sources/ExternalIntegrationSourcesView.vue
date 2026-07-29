@@ -107,6 +107,12 @@ import {
   DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS,
   type ExternalSourceForm
 } from './externalSourceFormModel'
+import {
+  reconcileCreatedExternalSource,
+  reconcileDeletedExternalSource,
+  reconcilePatchedExternalSource,
+  type ExternalSourceListMutationState
+} from './externalSourceListMutation'
 import { mergeExternalSourceMutation } from './externalSourceMutation'
 import { useExternalSourceTokenActions } from './useExternalSourceTokenActions'
 
@@ -126,8 +132,10 @@ const loading = ref(false)
 const keyword = ref(initialPageState.keyword)
 const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>(initialPageState.statusFilter)
 let listRequestId = 0
+let listMutationRevision = 0
 const rows = ref<ExternalIntegrationSourceListItem[]>([])
 const paginationUpperBound = ref(0)
+const hasMore = ref(false)
 const pagination = reactive({ ...initialPageState.pagination })
 const scopeOptions = ref<ExternalIntegrationScopeOption[]>([...DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS])
 const scopeOptionsLoading = ref(false)
@@ -237,26 +245,30 @@ function openApiDocs(): void {
 
 async function loadData(): Promise<void> {
   const requestId = ++listRequestId
+  const requestMutationRevision = listMutationRevision
   const params = buildListParams()
   const requestSignature = JSON.stringify(params)
   loading.value = true
   try {
     const result = await api.externalIntegrationSources.list(params)
-    if (!isCurrentListRequest(requestId, requestSignature)) return
+    if (!isCurrentListRequest(requestId, requestSignature, requestMutationRevision)) return
     rows.value = result.items
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     paginationUpperBound.value = result.pageUpperBound
+    hasMore.value = result.hasMore
   } catch (error) {
-    if (!isCurrentListRequest(requestId, requestSignature)) return
+    if (!isCurrentListRequest(requestId, requestSignature, requestMutationRevision)) return
     message.error(extractApiErrorMessage(error, '加载公开接口授权失败'))
   } finally {
     if (requestId === listRequestId) loading.value = false
   }
 }
 
-function isCurrentListRequest(requestId: number, signature: string): boolean {
-  return requestId === listRequestId && signature === JSON.stringify(buildListParams())
+function isCurrentListRequest(requestId: number, signature: string, requestMutationRevision: number): boolean {
+  return requestId === listRequestId
+    && requestMutationRevision === listMutationRevision
+    && signature === JSON.stringify(buildListParams())
 }
 
 function buildListParams(): ExternalIntegrationSourceListParams {
@@ -359,17 +371,36 @@ async function saveSource(): Promise<void> {
         return
       }
       const payload = { expectedUpdatedAt: original.updatedAt, ...changes }
+      const mutationSignature = currentListSignature()
       const result = await api.externalIntegrationSources.update(editingSourceId.value, payload)
-      mergeSourceRow(result.id, (item) => mergeExternalSourceMutation(item, payload, result))
+      markListMutation()
+      const contextChanged = mutationSignature !== currentListSignature()
+      const current = rows.value.find((item) => item.id === original.id) ?? original
+      const reconciliation = contextChanged
+        ? undefined
+        : reconcilePatchedExternalSource(
+            rows.value,
+            mergeExternalSourceMutation(current, payload, result),
+            externalSourceListMutationContext()
+          )
+      if (reconciliation) applyListMutationState(reconciliation)
       message.success('来源授权已更新')
       sourceModalOpen.value = false
+      if (contextChanged || reconciliation?.requiresReload) await loadData()
     } else {
       const payload = buildSourcePayload(sourceForm)
+      const mutationSignature = currentListSignature()
       const result = await api.externalIntegrationSources.create(payload)
+      markListMutation()
+      const contextChanged = mutationSignature !== currentListSignature()
+      const reconciliation = contextChanged || !result.item
+        ? undefined
+        : reconcileCreatedExternalSource(rows.value, result.item, externalSourceListMutationContext())
+      if (reconciliation) applyListMutationState(reconciliation)
       sourceModalOpen.value = false
       showCreatedToken(result.token.token)
       message.success('来源授权已创建')
-      await loadData()
+      if (contextChanged || !result.item || reconciliation?.requiresReload) await loadData()
     }
   } catch (error) {
     message.error(extractApiErrorMessage(error, '保存来源授权失败'))
@@ -447,31 +478,68 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceListIt
 async function updateSourceStatus(record: ExternalIntegrationSourceListItem, status: ExternalIntegrationSourceStatus): Promise<void> {
   try {
     const payload = { expectedUpdatedAt: record.updatedAt, status }
+    const mutationSignature = currentListSignature()
     const result = await api.externalIntegrationSources.update(record.id, payload)
-    mergeSourceRow(result.id, (item) => mergeExternalSourceMutation(item, payload, result))
+    markListMutation()
+    const contextChanged = mutationSignature !== currentListSignature()
+    const current = rows.value.find((item) => item.id === record.id) ?? record
+    const reconciliation = contextChanged
+      ? undefined
+      : reconcilePatchedExternalSource(
+          rows.value,
+          mergeExternalSourceMutation(current, payload, result),
+          externalSourceListMutationContext()
+        )
+    if (reconciliation) applyListMutationState(reconciliation)
     message.success(status === 'active' ? '来源授权已启用' : '来源授权已停用')
+    if (contextChanged || reconciliation?.requiresReload) await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '更新来源授权状态失败'))
   }
 }
 
-function mergeSourceRow(id: string, merge: (item: ExternalIntegrationSourceListItem) => ExternalIntegrationSourceListItem): void {
-  const index = rows.value.findIndex((item) => item.id === id)
-  if (index < 0) return
-  rows.value[index] = merge(rows.value[index]!)
-}
-
 async function deleteSource(record: ExternalIntegrationSourceListItem): Promise<void> {
   try {
+    const mutationSignature = currentListSignature()
     await api.externalIntegrationSources.delete(record.id)
-    if (rows.value.length <= 1 && pagination.current > 1) {
-      pagination.current -= 1
-    }
+    markListMutation()
+    const contextChanged = mutationSignature !== currentListSignature()
+    const reconciliation = contextChanged
+      ? undefined
+      : reconcileDeletedExternalSource(rows.value, record.id, externalSourceListMutationContext())
+    if (reconciliation) applyListMutationState(reconciliation)
     message.success('来源授权已删除')
-    await loadData()
+    if (contextChanged || reconciliation?.requiresReload) await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '删除来源授权失败'))
   }
+}
+
+function markListMutation(): void {
+  listMutationRevision += 1
+}
+
+function currentListSignature(): string {
+  return JSON.stringify(buildListParams())
+}
+
+function externalSourceListMutationContext() {
+  return {
+    accumulated: pagination.current > 1 && rows.value.length > pagination.pageSize,
+    hasMore: hasMore.value,
+    keyword: keyword.value,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    pageUpperBound: paginationUpperBound.value,
+    status: statusFilter.value
+  }
+}
+
+function applyListMutationState(state: ExternalSourceListMutationState): void {
+  rows.value = state.items
+  pagination.current = state.page
+  paginationUpperBound.value = state.pageUpperBound
+  hasMore.value = state.hasMore
 }
 
 function sourceNotes(record: ExternalIntegrationSourceListItem): string {

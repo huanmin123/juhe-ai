@@ -85,7 +85,7 @@ assert.match(
 )
 const externalListLoadSource = sourceBetween(externalSourcesViewSource, 'async function loadData', 'function isCurrentListRequest')
 assert.match(externalListLoadSource, /requestId = \+\+listRequestId[\s\S]*requestSignature = JSON\.stringify\(params\)/, '外部来源列表必须为每次筛选、翻页和刷新绑定请求代次与参数签名')
-assert.match(externalListLoadSource, /isCurrentListRequest\(requestId, requestSignature\)/, '外部来源列表写回和错误提示必须拒绝迟到响应')
+assert.match(externalListLoadSource, /isCurrentListRequest\(requestId, requestSignature, requestMutationRevision\)/, '外部来源列表写回和错误提示必须拒绝迟到响应及写后旧 GET')
 assert.match(externalSourcesViewSource, /onBeforeUnmount\([\s\S]*listRequestId \+= 1/, '卸载外部来源页面必须作废列表请求')
 
 console.log('Group and external source modal lazy-loading regression passed')

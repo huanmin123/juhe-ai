@@ -139,6 +139,17 @@ try {
     '权重模式下不可用 Key 应从候选集中剔除，不能因为权重大继续被调度'
   )
 
+  const availableAfterUnverifiedIsolation = rotation.selectAccountRuntimeApiKey({
+    accountId: weightedAccount.id,
+    credentials: weightedAccount.credentials,
+    runtimeStates: [{
+      keyFingerprint: rotation.fingerprintAccountApiKey('sk-weight-a'),
+      status: 'unverified',
+      keyIndex: 0
+    }]
+  })
+  assert.equal(availableAfterUnverifiedIsolation, 'sk-weight-b', '未验证 Key 在探测成功前不得进入账户内调度')
+
   console.log('账户内 API Key 轮询回归通过：多个上游 Key 保存为单个 AI 账户，并按轮询或权重在账户内部选择')
 } finally {
   databaseModule.closeStorageDatabases()

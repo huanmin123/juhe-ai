@@ -17,12 +17,21 @@ const listKeys = [
   'traceId'
 ].sort()
 const detailSupplementKeys = [
+  'sourceRefId',
+  'tokenId',
   'tokenName',
   'tokenPrefix',
   'isTestToken',
+  'queryString',
   'userAgent',
+  'requestSizeBytes',
+  'responseSizeBytes',
+  'requestCaptureStatus',
+  'responseCaptureStatus',
   'errorCode',
   'errorMessage',
+  'startedAt',
+  'endedAt',
   'requestData',
   'responseData'
 ].sort()
@@ -41,7 +50,8 @@ try {
     getPublicApiLogDetail,
     getPublicApiLogDetailSupplement,
     getPublicApiLogDetailSupplementAsync,
-    listPublicApiLogs
+    listPublicApiLogs,
+    listPublicApiLogsAsync
   } = await import('../../storage/public-api-logs.repository.js')
 
   const fixtures = Array.from({ length: 51 }, (_, index) => {
@@ -114,6 +124,16 @@ try {
   assert.equal(getPublicApiLogDetailSupplement('missing-public-api-log'), undefined, '不存在的日志补充读取应返回 undefined')
 
   runtimeConfig.processRole = 'db-service'
+  const readWorkerPool = await import('../../storage/sqlite-read-worker-pool.js')
+  const handledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  const workerFirstPage = await listPublicApiLogsAsync({ page: 1, pageSize: 50, sourceRefId: 'source-ref' })
+  const workerSecondPage = await listPublicApiLogsAsync({ page: 2, pageSize: 50, sourceRefId: 'source-ref' })
+  assert.deepEqual(workerFirstPage, defaultPage, 'SQLite read worker 列表第一页必须与同步轻量投影一致')
+  assert.deepEqual(workerSecondPage, secondPage, 'SQLite read worker 列表第二页必须与同步轻量投影一致')
+  assert(
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= handledJobsBefore + 2,
+    '公开 API 日志分页列表必须进入 SQLite read worker'
+  )
   const workerSupplement = await getPublicApiLogDetailSupplementAsync(fixtures[0]!.id)
   const serializableSupplement = Object.fromEntries(Object.entries(supplement).filter(([, value]) => value !== undefined))
   assert.deepEqual(workerSupplement, serializableSupplement, 'SQLite DB service 模式必须通过专用只读 worker 返回相同详情增量')
@@ -128,14 +148,17 @@ try {
   const detailProjection = source.match(/function publicApiLogDetailSupplementSelectColumns[\s\S]*?\n\}/)?.[0] ?? ''
   assert(detailProjection, '详情补充 SQL 必须使用显式投影')
   for (const forbidden of [
-    'id', 'created_at', 'source_ref_id', 'source_name', 'token_id', 'method', 'path',
-    'query_string', 'client_ip', 'status_code', 'success', 'duration_ms',
-    'request_size_bytes', 'response_size_bytes', 'request_capture_status',
-    'response_capture_status', 'started_at', 'ended_at', 'trace_id'
+    'id', 'created_at', 'source_name', 'method', 'path', 'client_ip', 'status_code',
+    'success', 'duration_ms', 'trace_id'
   ]) {
     assert.equal(new RegExp(`['\"]${forbidden}['\"]`).test(detailProjection), false, `详情补充 SQL 不得重复列表列 ${forbidden}`)
   }
-  for (const required of ['token_name', 'user_agent', 'request_data_json', 'response_data_json']) {
+  for (const required of [
+    'source_ref_id', 'token_id', 'token_name', 'query_string', 'user_agent',
+    'request_size_bytes', 'response_size_bytes', 'request_capture_status',
+    'response_capture_status', 'started_at', 'ended_at',
+    'request_data_json', 'response_data_json'
+  ]) {
     assert.equal(new RegExp(`['\"]${required}['\"]`).test(detailProjection), true, `详情补充 SQL 必须投影 ${required}`)
   }
   assert.match(source, /pal\.success = 1/, 'Node PostgreSQL 与 SQLite 的 success 均为整数列')

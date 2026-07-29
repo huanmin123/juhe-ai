@@ -240,6 +240,197 @@ export async function loadAccountApiKeyRuntimeStatesByAccountIdsAsync(
   return result
 }
 
+export async function loadAccountApiKeyRuntimeStatesForAccountInClient(
+  client: DatabaseClient,
+  accountId: string
+): Promise<AccountApiKeyRuntimeSelectionState[]> {
+  const rows = await client.query<{
+    key_fingerprint: string
+    key_index: number
+    status: AccountApiKeyRuntimeStatus
+    cooldown_until: string | null
+    next_probe_at: string | null
+  }>(`
+    SELECT key_fingerprint, key_index, status, cooldown_until, next_probe_at
+    FROM ${accountApiKeyRuntimeStatesTable(client)}
+    WHERE account_id = ?
+  `, [accountId])
+  return rows.map((row) => ({
+    keyFingerprint: row.key_fingerprint,
+    status: row.status,
+    keyIndex: Number.isInteger(row.key_index) ? row.key_index : undefined,
+    cooldownUntil: row.cooldown_until ?? undefined,
+    nextProbeAt: row.next_probe_at ?? undefined
+  }))
+}
+
+export async function initializeAddedAccountApiKeyRuntimeStatesInClient(
+  client: DatabaseClient,
+  input: {
+    accountId: string
+    systemAccountId: string
+    providerCode: string
+    protocolCode?: string
+    protocolVersion?: string
+    type: string
+    currentCredentials: Record<string, unknown>
+    nextCredentials: Record<string, unknown>
+    now: string
+  }
+): Promise<boolean> {
+  if (!isAccountApiKeyPoolIsolationEnabled({
+    providerCode: input.providerCode,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
+    type: input.type,
+    credentials: input.nextCredentials
+  })) {
+    return false
+  }
+  const currentFingerprints = new Set(accountApiKeyEntries(input.currentCredentials).map((entry) => entry.fingerprint))
+  const nextEntries = accountApiKeyEntries(input.nextCredentials)
+  let changed = false
+  for (const entry of nextEntries) {
+    if (currentFingerprints.has(entry.fingerprint)) {
+      const result = await client.execute(`
+        UPDATE ${accountApiKeyRuntimeStatesTable(client)}
+        SET key_index = ?, updated_at = ?
+        WHERE account_id = ?
+          AND key_fingerprint = ?
+          AND key_index <> ?
+      `, [entry.index, input.now, input.accountId, entry.fingerprint, entry.index])
+      changed = Number(result.changes ?? 0) > 0 || changed
+      continue
+    }
+    await client.execute(`
+      INSERT INTO ${accountApiKeyRuntimeStatesTable(client)} (
+        id, system_account_id, account_id, key_fingerprint, key_index,
+        status, failure_count, consecutive_failures, success_count,
+        cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
+        last_attempt_at, last_success_at, last_failure_at, last_error_code,
+        last_error_message, last_trace_id, last_probe_at,
+        probe_claim_token, probe_claimed_until, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, 'unverified', 0, 0, 0, NULL, ?, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+      ON CONFLICT (account_id, key_fingerprint) DO UPDATE SET
+        system_account_id = excluded.system_account_id,
+        key_index = excluded.key_index,
+        status = 'unverified',
+        failure_count = 0,
+        consecutive_failures = 0,
+        success_count = 0,
+        cooldown_until = NULL,
+        next_probe_at = excluded.next_probe_at,
+        probe_backoff_seconds = 0,
+        recovery_started_at = NULL,
+        last_attempt_at = NULL,
+        last_success_at = NULL,
+        last_failure_at = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_trace_id = NULL,
+        last_probe_at = NULL,
+        probe_claim_token = NULL,
+        probe_claimed_until = NULL,
+        updated_at = excluded.updated_at
+    `, [
+      newId('account_api_key_runtime_state'),
+      input.systemAccountId,
+      input.accountId,
+      entry.fingerprint,
+      entry.index,
+      input.now,
+      input.now,
+      input.now
+    ])
+    changed = true
+  }
+  return changed
+}
+
+export function initializeAddedAccountApiKeyRuntimeStates(input: {
+  accountId: string
+  systemAccountId: string
+  providerCode: string
+  protocolCode?: string
+  protocolVersion?: string
+  type: string
+  currentCredentials: Record<string, unknown>
+  nextCredentials: Record<string, unknown>
+  now: string
+}): boolean {
+  if (!isAccountApiKeyPoolIsolationEnabled({
+    providerCode: input.providerCode,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
+    type: input.type,
+    credentials: input.nextCredentials
+  })) {
+    return false
+  }
+  const currentFingerprints = new Set(accountApiKeyEntries(input.currentCredentials).map((entry) => entry.fingerprint))
+  const nextEntries = accountApiKeyEntries(input.nextCredentials)
+  let changed = false
+  const statement = getBusinessDatabase().prepare(`
+    INSERT INTO account_api_key_runtime_states (
+      id, system_account_id, account_id, key_fingerprint, key_index,
+      status, failure_count, consecutive_failures, success_count,
+      cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
+      last_attempt_at, last_success_at, last_failure_at, last_error_code,
+      last_error_message, last_trace_id, last_probe_at,
+      probe_claim_token, probe_claimed_until, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, 'unverified', 0, 0, 0, NULL, ?, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+    ON CONFLICT (account_id, key_fingerprint) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      key_index = excluded.key_index,
+      status = 'unverified',
+      failure_count = 0,
+      consecutive_failures = 0,
+      success_count = 0,
+      cooldown_until = NULL,
+      next_probe_at = excluded.next_probe_at,
+      probe_backoff_seconds = 0,
+      recovery_started_at = NULL,
+      last_attempt_at = NULL,
+      last_success_at = NULL,
+      last_failure_at = NULL,
+      last_error_code = NULL,
+      last_error_message = NULL,
+      last_trace_id = NULL,
+      last_probe_at = NULL,
+      probe_claim_token = NULL,
+      probe_claimed_until = NULL,
+      updated_at = excluded.updated_at
+  `)
+  const updateIndexStatement = getBusinessDatabase().prepare(`
+    UPDATE account_api_key_runtime_states
+    SET key_index = ?, updated_at = ?
+    WHERE account_id = ?
+      AND key_fingerprint = ?
+      AND key_index <> ?
+  `)
+  for (const entry of nextEntries) {
+    if (currentFingerprints.has(entry.fingerprint)) {
+      const result = updateIndexStatement.run(entry.index, input.now, input.accountId, entry.fingerprint, entry.index)
+      changed = Number(result.changes ?? 0) > 0 || changed
+      continue
+    }
+    statement.run(
+      newId('account_api_key_runtime_state'),
+      input.systemAccountId,
+      input.accountId,
+      entry.fingerprint,
+      entry.index,
+      input.now,
+      input.now,
+      input.now
+    )
+    changed = true
+  }
+  return changed
+}
+
 export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountApiKeyRuntimeProbeCandidate[] {
   const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
   const now = nowIso()
@@ -253,7 +444,7 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
         states.probe_claim_token, states.probe_claimed_until
       FROM account_api_key_runtime_states states
       JOIN accounts ON accounts.id = states.account_id
-      WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
+      WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited', 'error')
         AND states.next_probe_at IS NOT NULL
         AND states.next_probe_at <= ?
         AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
@@ -284,7 +475,7 @@ export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20)
       states.probe_claim_token, states.probe_claimed_until
     FROM ${accountApiKeyRuntimeStatesTable(client)} states
     JOIN ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} accounts ON accounts.id = states.account_id
-    WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
+    WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited', 'error')
       AND states.next_probe_at IS NOT NULL
       AND states.next_probe_at <= ?
       AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)

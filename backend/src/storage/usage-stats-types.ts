@@ -1,4 +1,4 @@
-import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import type { AccountUsageStatsRange } from '../domain/types.js'
 import type { ProcessEventLoopRole } from '../shared/process-event-loop-monitor.js'
 
 export const GLOBAL_STATS_SYSTEM_ACCOUNT_ID = 'global'
@@ -205,9 +205,21 @@ export interface ProcessEventLoopSampleInput {
 
 export interface UsageStatsOverview {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
-  hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number; cacheWriteCost?: number; thinkingTokens?: number; inputImageTokens?: number; outputImageTokens?: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
-  modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number; cacheWriteCost?: number; thinkingTokens?: number; inputImageTokens?: number; outputImageTokens?: number; totalCost: number }>
+  summary: {
+    requestCount: number
+    successCount: number
+    errorCount: number
+    errorRate: number
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    totalTokens: number
+    totalCost: number
+    averageDurationMs?: number
+    averageFirstTokenMs?: number
+  }
+  hourlyTrend: Array<{ statHour: string; requestCount: number; averageDurationMs?: number; errorCount: number }>
+  modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; totalCost: number }>
   errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
 }
 

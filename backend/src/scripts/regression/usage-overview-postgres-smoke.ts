@@ -9,7 +9,6 @@ import {
   getUsageStatsOverviewErrorsAsync,
   getUsageStatsOverviewHourlyTrendAsync,
   getUsageStatsOverviewModelDistributionAsync,
-  getUsageStatsOverviewAsync,
   getUsageStatsOverviewSummaryAsync,
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
@@ -129,7 +128,18 @@ try {
   assert.equal(refreshed.skipped, false, '首次 PG overview window refresh 不应跳过')
   assert.equal(refreshed.stages.length, 1, 'PG overview window refresh 应只执行一个阶段')
 
-  const overview = await getUsageStatsOverviewAsync(access, range)
+  const [summaryResult, hourlyTrendResult, modelDistributionResult, errorsResult] = await Promise.all([
+    getUsageStatsOverviewSummaryAsync(access, range),
+    getUsageStatsOverviewHourlyTrendAsync(access, range),
+    getUsageStatsOverviewModelDistributionAsync(access, range),
+    getUsageStatsOverviewErrorsAsync(access, range)
+  ])
+  const overview = {
+    summary: summaryResult.summary,
+    hourlyTrend: hourlyTrendResult.hourlyTrend,
+    modelDistribution: modelDistributionResult.modelDistribution,
+    errors: errorsResult.errors
+  }
   assert.equal(overview.summary.requestCount, 7, 'PG overview summary request_count 应来自日聚合表')
   assert.equal(overview.summary.successCount, 6, 'PG overview summary success_count 应来自日聚合表')
   assert.equal(overview.summary.errorCount, 1, 'PG overview summary error_count 应来自日聚合表')
@@ -137,10 +147,6 @@ try {
   assert.equal(overview.hourlyTrend[0]?.requestCount, 7, 'PG overview trend request_count 应来自窗口表')
   assert.equal(overview.modelDistribution[0]?.model, 'gpt-5.5-smoke', 'PG overview model rank 应来自窗口表')
   assert.equal(overview.errors[0]?.errorCode, 'smoke_error', 'PG overview error rank 应来自窗口表')
-  assert.deepEqual(await getUsageStatsOverviewSummaryAsync(access, range), { range, summary: overview.summary }, 'PG 独立 summary 应与兼容 overview 一致')
-  assert.deepEqual(await getUsageStatsOverviewHourlyTrendAsync(access, range), { range, hourlyTrend: overview.hourlyTrend }, 'PG 独立 hourly trend 应与兼容 overview 一致')
-  assert.deepEqual(await getUsageStatsOverviewModelDistributionAsync(access, range), { range, modelDistribution: overview.modelDistribution }, 'PG 独立 model distribution 应与兼容 overview 一致')
-  assert.deepEqual(await getUsageStatsOverviewErrorsAsync(access, range), { range, errors: overview.errors }, 'PG 独立 errors 应与兼容 overview 一致')
 
   const sentinelUpdatedAt = '1999-12-31T00:00:00.000Z'
   await markOverviewWindowUpdatedAt(client, yesterday, sentinelUpdatedAt)
@@ -174,13 +180,13 @@ try {
       AND stat_date = ?
   `, [fresherUpdatedAt, systemAccountId, systemAccountId, today])
 
-  const freshSummaryOverview = await getUsageStatsOverviewAsync(access, range)
+  const freshSummaryOverview = await getUsageStatsOverviewSummaryAsync(access, range)
   assert.equal(freshSummaryOverview.summary.requestCount, 9, 'PG overview summary 应读取最新日聚合，不等待 30 分钟窗口刷新')
   assert.equal(freshSummaryOverview.summary.inputTokens, 90, 'PG overview summary inputTokens 应读取最新日聚合')
   assert.equal(freshSummaryOverview.summary.outputTokens, 45, 'PG overview summary outputTokens 应读取最新日聚合')
   assert.equal(freshSummaryOverview.summary.cacheReadTokens, 8, 'PG overview summary cacheReadTokens 应读取最新日聚合')
   assert.equal(freshSummaryOverview.summary.totalCost, 0.456, 'PG overview summary totalCost 应读取最新日聚合')
-  assert.equal(freshSummaryOverview.hourlyTrend[0]?.requestCount, 7, 'PG overview trend 仍来自窗口表')
+  assert.equal((await getUsageStatsOverviewHourlyTrendAsync(access, range)).hourlyTrend[0]?.requestCount, 7, 'PG overview trend 仍来自窗口表')
   assert.equal((await getUsageStatsOverviewSummaryAsync(access, range)).summary.requestCount, 9, 'PG 独立 summary 应立即读取最新日聚合')
 
   const incremental = await refreshUsageRankSnapshotsInStages({

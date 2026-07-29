@@ -49,7 +49,14 @@ try {
   assert.equal(refreshed.skipped, false, '首次热用量窗口刷新不应跳过')
   assert.deepEqual(refreshed.stages.map((stage) => stage.name), ['usage_overview_windows', 'usage_scope_range_windows'], '热刷新应同时更新概览窗口和今天结束的账号范围窗口')
 
-  const overview = await usageStatsRepository.getUsageStatsOverviewAsync(adminAccess, usageStatsRepository.normalizeDefaultUsageStatsRange())
+  const overviewRange = usageStatsRepository.normalizeDefaultUsageStatsRange()
+  const [summary, hourlyTrend, modelDistribution, errors] = await Promise.all([
+    usageStatsRepository.getUsageStatsOverviewSummaryAsync(adminAccess, overviewRange),
+    usageStatsRepository.getUsageStatsOverviewHourlyTrendAsync(adminAccess, overviewRange),
+    usageStatsRepository.getUsageStatsOverviewModelDistributionAsync(adminAccess, overviewRange),
+    usageStatsRepository.getUsageStatsOverviewErrorsAsync(adminAccess, overviewRange)
+  ])
+  const overview = { summary: summary.summary, hourlyTrend: hourlyTrend.hourlyTrend, modelDistribution: modelDistribution.modelDistribution, errors: errors.errors }
   assert.equal(overview.summary.requestCount, 7, '热刷新后统计首页 summary 应读取今日窗口')
   assert.equal(overview.hourlyTrend[0]?.requestCount, 7, '热刷新后统计首页趋势应读取今日窗口')
   assert.equal(overview.modelDistribution[0]?.requestCount, 7, '热刷新后模型排行应读取今日窗口')

@@ -5,6 +5,7 @@ import {
   type AccountBalanceRefreshCandidate
 } from '../../storage/account-balance.repository.js'
 import {
+  deferAccountBalanceRefreshCandidate,
   refreshAccountBalanceCandidateWithOutcome,
   type AccountBalanceRefreshOutcome,
   type AccountBalanceRefreshResult
@@ -39,6 +40,7 @@ interface AccountBalanceRefreshDependencies {
     candidate: AccountBalanceRefreshCandidate,
     context: { signal: AbortSignal; deadlineAtMs: number }
   ) => Promise<AccountBalanceRefreshResult | unknown>
+  deferCandidate?: (candidate: AccountBalanceRefreshCandidate) => Promise<boolean>
   loadRuntimeAvailability?: typeof loadAccountRuntimeAvailabilityByKeys
   runBudgetMs?: number
   candidateTimeoutMs?: number
@@ -62,15 +64,19 @@ export async function runAccountBalanceRefresh(
   const runBudgetMs = dependencies.runBudgetMs ?? refreshRunBudgetMs
   const candidateTimeoutMs = dependencies.candidateTimeoutMs ?? refreshCandidateTimeoutMs
   const refreshCandidate = dependencies.refreshCandidate ?? refreshAccountBalanceCandidateWithOutcome
+  const deferCandidate = dependencies.deferCandidate ?? deferAccountBalanceRefreshCandidate
   const startedAtMs = now()
   const recoveryCandidates = await (dependencies.listRecoveryCandidates ?? listAccountsNeedingBalanceRefreshRecoveryAsync)({ limit: recoveryBatchSize })
   const selectedCandidates = await (dependencies.listDueCandidates ?? listAccountsDueForBalanceRefreshAsync)({ limit: refreshBatchSize - recoveryCandidates.length })
   selectedCandidates.push(...recoveryCandidates)
-  const candidates = await filterCallableBalanceRefreshCandidates(
+  const { callableCandidates: candidates, deferredCandidates } = await partitionCallableBalanceRefreshCandidates(
     selectedCandidates,
     dependencies.loadRuntimeAvailability ?? loadAccountRuntimeAvailabilityByKeys
   )
-  const runtimeDeferredCount = Math.max(0, selectedCandidates.length - candidates.length)
+  await Promise.all(deferredCandidates.map(async (candidate) => {
+    await deferCandidate(candidate).catch(() => false)
+  }))
+  const runtimeDeferredCount = deferredCandidates.length
   let cursor = 0
   let processedCount = 0
   const outcomeCounts: Record<AccountBalanceRefreshOutcome, number> = {
@@ -148,17 +154,22 @@ export async function runAccountBalanceRefresh(
   return summary
 }
 
-async function filterCallableBalanceRefreshCandidates(
+async function partitionCallableBalanceRefreshCandidates(
   candidates: AccountBalanceRefreshCandidate[],
   loadRuntimeAvailability: typeof loadAccountRuntimeAvailabilityByKeys
-): Promise<AccountBalanceRefreshCandidate[]> {
-  if (candidates.length === 0) return candidates
+): Promise<{ callableCandidates: AccountBalanceRefreshCandidate[]; deferredCandidates: AccountBalanceRefreshCandidate[] }> {
+  if (candidates.length === 0) return { callableCandidates: candidates, deferredCandidates: [] }
   const runtime = await loadRuntimeAvailability(candidates.map((candidate) => candidate.id))
-  if (!runtime.available) return candidates
-  return candidates.filter((candidate) => {
+  if (!runtime.available) return { callableCandidates: candidates, deferredCandidates: [] }
+  const callableCandidates = candidates.filter((candidate) => {
     const status = runtime.values[candidate.id]?.status
     return status === undefined || status === 'normal' || status === 'degraded'
   })
+  const callableIds = new Set(callableCandidates.map((candidate) => candidate.id))
+  return {
+    callableCandidates,
+    deferredCandidates: candidates.filter((candidate) => !callableIds.has(candidate.id))
+  }
 }
 
 function accountBalanceRefreshCandidateOutcome(result: unknown): AccountBalanceRefreshOutcome {

@@ -93,6 +93,21 @@ try {
   )
   assert(!listImplementation.includes('loadExternalIntegrationSourceTokenStatsBySourceIds'), '列表实现不得执行 Token COUNT/SUM/GROUP BY 聚合')
 
+  const literalPercent = externalSources.createExternalIntegrationSource({ name: '字面%前缀来源' })
+  externalSources.createExternalIntegrationSource({ name: '字面X前缀来源' })
+  assert.deepEqual(
+    externalSources.listExternalIntegrationSources({ keyword: '字面%', pageSize: 20 }).items.map((row) => row.id),
+    [literalPercent.id],
+    'SQLite 关键词中的 % 必须按字面前缀匹配，与 PostgreSQL 和前端协调语义一致'
+  )
+  const literalUnderscore = externalSources.createExternalIntegrationSource({ name: '下划_前缀来源' })
+  externalSources.createExternalIntegrationSource({ name: '下划X前缀来源' })
+  assert.deepEqual(
+    externalSources.listExternalIntegrationSources({ keyword: '下划_', pageSize: 20 }).items.map((row) => row.id),
+    [literalUnderscore.id],
+    'SQLite 关键词中的 _ 必须按字面前缀匹配'
+  )
+
   const emptyPage = externalSources.listExternalIntegrationSources({
     keyword: '不存在的外部来源',
     page: 999999,

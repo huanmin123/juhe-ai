@@ -31,6 +31,7 @@ const [
   databaseModule,
   repositories,
   balanceRepository,
+  balanceRefreshJob,
   { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
@@ -39,6 +40,7 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-balance.repository.js'),
+  import('../../modules/background/account-balance-refresh.job.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -51,6 +53,14 @@ app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 
 let apiServer: http.Server | undefined
 let mockBalanceServer: http.Server | undefined
+let resolveBusyBalanceRequest: (() => void) | undefined
+const busyBalanceRequestStarted = new Promise<void>((resolvePromise) => {
+  resolveBusyBalanceRequest = resolvePromise
+})
+let releaseBusyBalanceResponse: (() => void) | undefined
+const busyBalanceResponseGate = new Promise<void>((resolvePromise) => {
+  releaseBusyBalanceResponse = resolvePromise
+})
 
 try {
   mockBalanceServer = createMockBalanceServer()
@@ -118,6 +128,30 @@ try {
   await onceListening(apiServer)
   const baseUrl = `http://127.0.0.1:${serverPort(apiServer)}`
 
+  const requestedActive = await createAccount(baseUrl, cookie, {
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '余额自动探测激活契约账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-http-pending-activation', base_url: mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: group.id,
+    status: 'active'
+  })
+  assert.equal(requestedActive.status, 201, '请求 active 的新账户必须创建成功')
+  assert.equal(requestedActive.body.data?.status, 'pending_test', '请求 active 的新账户仍必须等待后台激活检查')
+  assert.ok(requestedActive.body.data?.id, '创建响应必须返回账户 ID')
+  const requestedActiveStored = businessDatabase.prepare(`
+    SELECT status, schedulable, balance_query_enabled, balance_query_config_json
+    FROM accounts
+    WHERE id = ?
+  `).get(requestedActive.body.data.id) as Record<string, unknown> | undefined
+  assert.equal(requestedActiveStored?.status, 'pending_test', '创建路由不得绕过首次健康检查直接激活账户')
+  assert.equal(requestedActiveStored?.schedulable, 0, '首次健康检查成功前新账户不得参与调度')
+  assert.equal(requestedActiveStored?.balance_query_enabled, 0, '未显式开启余额的新账户应等待首次激活后的自动探测')
+  assert.equal(requestedActiveStored?.balance_query_config_json, '{}', '从未配置的余额账户必须保留自动探测资格')
+
   const disabledRefresh = await refreshAccountBalance(baseUrl, cookie, `/__aisys__/api/accounts/${account.id}/balance/refresh`)
   assert.equal(disabledRefresh.status, 200, '停用的自有账户必须可人工刷新余额')
   assert.equal(disabledRefresh.body.data?.status, 'fresh')
@@ -125,7 +159,7 @@ try {
 
   const errorRefresh = await refreshAccountBalance(baseUrl, cookie, `/__aisys__/api/accounts/${errorAccount.id}/balance/refresh`)
   assert.equal(errorRefresh.status, 200, '错误状态的自有账户必须可人工刷新余额并返回诊断结果')
-  assert.equal(errorRefresh.body.data?.status, 'failed', '上游 HTTP 非 2xx 不得被内部解读为余额能力 unsupported')
+  assert.equal(errorRefresh.body.data?.status, 'unsupported', '完整 HTTP 非 2xx 只能作为余额查询未命中的中性诊断')
   assert.match(errorRefresh.body.data?.errorMessage ?? '', /HTTP \d{3}/, '诊断可记录观测到的状态码，但不赋予业务语义')
   const errorAccountAfterRefresh = businessDatabase.prepare(`
     SELECT status, schedulable, balance_query_enabled, balance_query_config_json
@@ -136,8 +170,60 @@ try {
   assert.equal(errorAccountAfterRefresh.schedulable, 0, '余额 HTTP 失败不得改写账户调度属性')
   assert.equal(errorAccountAfterRefresh.balance_query_enabled, 1, '余额 HTTP 失败不得关闭用户开关')
   assert.deepEqual(JSON.parse(String(errorAccountAfterRefresh.balance_query_config_json)), {
-    adapter: 'builtin', intervalMinutes: 7, preferredBuiltinAdapter: 'sub2api'
-  }, '余额 HTTP 失败不得清除用户配置或首选适配器')
+    adapter: 'builtin', intervalMinutes: 7
+  }, '完整 HTTP 未命中应保留用户配置，但清除已失效的内置适配偏好')
+
+  const scheduledDisabled = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '余额显式开启停用账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-http-scheduled-disabled', base_url: mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    groupId: group.id,
+    status: 'disabled'
+  }, access)
+  const enabledDisabledResponse = await patchAccount(baseUrl, cookie, scheduledDisabled.id, {
+    expectedConfigRevision: scheduledDisabled.configRevision ?? 1,
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+  })
+  assert.equal(enabledDisabledResponse.status, 200, '停用账户显式开启余额查询必须保存成功')
+  assert(enabledDisabledResponse.body.data?.changedFields?.includes('balanceQueryEnabled'), '开启余额查询必须产生集中写入变更')
+  const enabledDisabledBefore = (await listAccounts(baseUrl, cookie)).find((item) => item.id === scheduledDisabled.id)
+  assert.equal(enabledDisabledBefore?.balanceQueryEnabled, true, '开启后列表必须立即投影余额开关')
+  assert.equal(enabledDisabledBefore?.balanceSnapshot, undefined, '首次 worker 刷新前列表应显示待查询，不得泄漏旧快照')
+  const scheduledDisabledCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(scheduledDisabled.id)
+  assert.ok(scheduledDisabledCandidate, '停用账户显式开启后必须进入后台余额刷新候选')
+  const scheduledDisabledRun = await balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [scheduledDisabledCandidate],
+    loadRuntimeAvailability: async () => ({ available: false, values: {} })
+  })
+  assert.equal(scheduledDisabledRun.refreshedCount, 1, '停用账户的后台余额刷新必须完成')
+  const enabledDisabledAfter = (await listAccounts(baseUrl, cookie)).find((item) => item.id === scheduledDisabled.id)
+  assert.equal(enabledDisabledAfter?.balanceSnapshot?.status, 'fresh', 'worker 写入后列表必须回显本次新余额快照')
+  assert.equal(enabledDisabledAfter?.balanceSnapshot?.remainingUsd, '42.500000')
+
+  const busyAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '余额并发刷新账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-http-busy', base_url: mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    groupId: group.id,
+    status: 'disabled',
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+  }, access)
+  const firstBusyRefresh = refreshAccountBalance(baseUrl, cookie, `/__aisys__/api/accounts/${busyAccount.id}/balance/refresh`)
+  await busyBalanceRequestStarted
+  const busyConflict = await refreshAccountBalance(baseUrl, cookie, `/__aisys__/api/accounts/${busyAccount.id}/balance/refresh`)
+  assert.equal(busyConflict.status, 409, '已有余额查询租约时人工刷新不得返回未落盘的成功快照')
+  assert.match(busyConflict.body.message ?? '', /正在进行/)
+  releaseBusyBalanceResponse?.()
+  assert.equal((await firstBusyRefresh).status, 200, '首个持有租约的人工刷新完成后应返回已落盘快照')
 
   const grantee = repositories.createSystemAccount({
     username: `balance_http_grantee_${Date.now()}`,
@@ -170,6 +256,7 @@ try {
   assert.match(authorizedRefresh.body.message ?? '', /无权刷新/)
 
   const multiResponse = await patchAccount(baseUrl, cookie, account.id, {
+    expectedConfigRevision: account.configRevision ?? 1,
     credentials: {
       api_key: 'sk-http-single',
       api_keys: ['sk-http-single', 'sk-http-second'],
@@ -178,13 +265,14 @@ try {
     }
   })
   assert.equal(multiResponse.status, 200, '单 Key 改为多 Key 必须保存成功')
-  assert.equal(multiResponse.body.data?.balanceQueryEnabled, false, 'PATCH 响应必须即时返回余额已关闭')
-  assert.equal(multiResponse.body.data?.balanceQueryNextRefreshAt, undefined, 'PATCH 响应不得保留旧调度时间')
+  assert.equal(multiResponse.body.data?.id, account.id, 'PATCH 响应必须返回目标账户 ID')
+  assert(multiResponse.body.data?.configRevision, 'PATCH 响应必须返回最新配置版本')
+  assert(multiResponse.body.data?.changedFields?.includes('balanceQueryEnabled'), '多 Key 自动关闭必须声明余额开关变化')
 
   const multiList = await listAccounts(baseUrl, cookie)
   const listedMulti = multiList.find((item) => item.id === account.id)
   assert(listedMulti, '账户列表必须返回刚更新的账户')
-  assert.equal(listedMulti.balanceQueryEnabled, false, '轻量列表必须返回当前余额开关状态')
+  assert.notEqual(listedMulti.balanceQueryEnabled, true, '轻量列表不得把已关闭余额的账户投影为开启')
   assert.equal(Object.hasOwn(listedMulti, 'balanceQueryConfig'), false, '轻量列表不应夹带余额配置详情')
   assert.equal(listedMulti.balanceSnapshot, undefined, '即使跨库快照尚未删除，列表也不得回显旧 Key 金额')
   assert.equal(
@@ -194,6 +282,7 @@ try {
   )
 
   const singleResponse = await patchAccount(baseUrl, cookie, account.id, {
+    expectedConfigRevision: multiResponse.body.data?.configRevision,
     credentials: {
       api_key: 'sk-http-single',
       api_keys: ['sk-http-single'],
@@ -201,12 +290,12 @@ try {
     }
   })
   assert.equal(singleResponse.status, 200, '多 Key 恢复单 Key 必须保存成功')
-  assert.equal(singleResponse.body.data?.balanceQueryEnabled, false, '恢复单 Key 后不得自动重新开启余额查询')
+  assert.equal(singleResponse.body.data?.id, account.id, '恢复单 Key 的 PATCH 响应必须返回目标账户 ID')
 
   const singleList = await listAccounts(baseUrl, cookie)
   const listedSingle = singleList.find((item) => item.id === account.id)
   assert(listedSingle, '恢复单 Key 后账户仍应存在')
-  assert.equal(listedSingle.balanceQueryEnabled, false, '轻量列表必须返回恢复单 Key 后的余额开关状态')
+  assert.notEqual(listedSingle.balanceQueryEnabled, true, '轻量列表不得把恢复单 Key但未重开余额的账户投影为开启')
   assert.equal(Object.hasOwn(listedSingle, 'balanceQueryConfig'), false, '轻量列表仍不返回余额配置详情')
   assert.equal(listedSingle.balanceSnapshot, undefined, '恢复单 Key 但未人工开启时仍不得回显旧快照')
   assert.equal(
@@ -226,9 +315,12 @@ console.log('账户余额 HTTP 契约回归通过：停用/错误自有账户可
 
 type AccountResponse = {
   id?: string
+  status?: string
+  configRevision?: number
+  changedFields?: string[]
   balanceQueryEnabled?: boolean
   balanceQueryNextRefreshAt?: string
-  balanceSnapshot?: unknown
+  balanceSnapshot?: BalanceRefreshResponse
 }
 
 type BalanceRefreshResponse = {
@@ -238,7 +330,7 @@ type BalanceRefreshResponse = {
 }
 
 function createMockBalanceServer(): http.Server {
-  return http.createServer((req, res) => {
+  return http.createServer(async (req, res) => {
     if (req.method !== 'GET' || req.url?.split('?', 1)[0] !== '/v1/usage') {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'not found' } }))
@@ -249,9 +341,29 @@ function createMockBalanceServer(): http.Server {
       res.end(JSON.stringify({ error: { message: 'invalid api key' } }))
       return
     }
+    if (req.headers.authorization === 'Bearer sk-http-busy') {
+      resolveBusyBalanceRequest?.()
+      await busyBalanceResponseGate
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ unit: 'USD', remaining: '42.50', mode: 'quota_limited' }))
   })
+}
+
+async function createAccount(
+  baseUrl: string,
+  cookie: string,
+  body: Record<string, unknown>
+): Promise<{ status: number; body: { data?: AccountResponse; message?: string } }> {
+  const response = await fetch(`${baseUrl}/__aisys__/api/accounts`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  return {
+    status: response.status,
+    body: await response.json() as { data?: AccountResponse; message?: string }
+  }
 }
 
 async function refreshAccountBalance(

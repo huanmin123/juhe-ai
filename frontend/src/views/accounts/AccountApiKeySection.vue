@@ -290,6 +290,8 @@ function runtimeStatusMeta(status: AccountApiKeyRuntimeStatus | undefined): { la
   switch (status) {
     case 'active':
       return { label: '可调度', color: 'green' }
+    case 'unverified':
+      return { label: '待验证', color: 'blue' }
     case 'temporary_unavailable':
       return { label: '临时避让', color: 'gold' }
     case 'rate_limited':

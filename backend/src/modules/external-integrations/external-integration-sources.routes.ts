@@ -20,6 +20,11 @@ import {
   updateExternalIntegrationSourceAsync,
   updateExternalIntegrationSourceTokenAsync
 } from '../../storage/external-integration-source.repository.js'
+import type {
+  CreatedExternalIntegrationSourceToken,
+  ExternalIntegrationSourceListItem,
+  ExternalIntegrationSourceRecord
+} from '../../storage/external-integration-source-types.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
@@ -162,7 +167,10 @@ externalIntegrationSourcesRouter.post('/', mutationGuard({
       ]
     })
     setSecretResponseHeaders(res)
-    res.status(201).json(ok({ token: created.token }))
+    res.status(201).json(ok({
+      item: createdSourceListItem(source, created.token),
+      token: created.token
+    }))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统创建失败'))
   }
@@ -248,9 +256,10 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
     return
   }
-  const before = await findExternalIntegrationSourceRecordAsync(params.data.id)
+  let deleted: Awaited<ReturnType<typeof deleteExternalIntegrationSourceAsync>>
   try {
-    if (!await deleteExternalIntegrationSourceAsync(params.data.id)) {
+    deleted = await deleteExternalIntegrationSourceAsync(params.data.id)
+    if (!deleted) {
       res.status(404).json({ message: '来源系统不存在' })
       return
     }
@@ -262,8 +271,8 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
     action: 'delete',
     operationKey: 'external_integration_sources.delete',
     sourceRefId: params.data.id,
-    sourceName: before?.name ?? params.data.id,
-    summary: `删除外部来源系统：${before?.name ?? params.data.id}`,
+    sourceName: deleted.name,
+    summary: `删除外部来源系统：${deleted.name}`,
     changes: [
       safeChange('deleted', '删除状态', false, true)
     ]
@@ -469,6 +478,29 @@ function asRateLimitRules(value: unknown): Array<{ windowSeconds: number; maxReq
 
 function formatScopes(value: unknown): string {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').join(', ') : ''
+}
+
+function createdSourceListItem(
+  source: ExternalIntegrationSourceRecord,
+  token: CreatedExternalIntegrationSourceToken
+): ExternalIntegrationSourceListItem {
+  return {
+    id: source.id,
+    name: source.name,
+    status: source.status,
+    scopes: source.scopes,
+    rateLimits: source.rateLimits,
+    expiresAt: source.expiresAt,
+    notes: source.notes,
+    lastUsedAt: source.lastUsedAt,
+    updatedAt: source.updatedAt,
+    primaryToken: {
+      id: token.id,
+      tokenPrefix: token.tokenPrefix,
+      tokenSuffix: token.tokenSuffix
+    },
+    isBuiltIn: source.isBuiltIn
+  }
 }
 
 function setSecretResponseHeaders(res: Response): void {

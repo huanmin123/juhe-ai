@@ -139,8 +139,9 @@ assert.equal(accountCreateSchema.safeParse({
   type: 'api_key',
   ...balanceFields
 }).success, true, '创建账户契约应接受余额查询配置')
-assert.equal(accountUpdateSchema.safeParse(balanceFields).success, true, '编辑账户契约应接受余额查询配置')
+assert.equal(accountUpdateSchema.safeParse({ expectedConfigRevision: 1, ...balanceFields }).success, true, '编辑账户契约应接受带版本保护的余额查询配置')
 assert.equal(accountUpdateSchema.safeParse({
+  expectedConfigRevision: 1,
   balanceQueryEnabled: true,
   balanceQueryConfig: { adapter: 'oneapi_compatible' }
 }).success, false, '编辑账户契约必须拒绝 oneapi_compatible')

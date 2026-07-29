@@ -211,8 +211,7 @@ accountsRouter.post('/', mutationGuard({
         balanceQueryConfig,
         providerCode,
         providerProtocolProfileId: parsed.data.providerProtocolProfileId,
-        status: parsed.data.status === 'disabled' ? 'disabled' : parsed.data.status === 'active' ? 'active' : 'pending_test',
-        skipInitialHealthCheck: parsed.data.status === 'active'
+        status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test'
       }, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {

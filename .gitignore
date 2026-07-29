@@ -25,6 +25,6 @@ Thumbs.db
 /.codex-artifacts/
 /.codex-tmp/
 .worktrees/
-.local/
-.codex-temp
-.tmp
+/.local/
+/.codex-temp/
+/.tmp/

@@ -116,6 +116,7 @@ export interface CreatedExternalIntegrationSourceToken {
 }
 
 export interface CreatedExternalIntegrationSourceAuthorization {
+  item?: ExternalIntegrationSourceListItem
   token: CreatedExternalIntegrationSourceToken
 }
 

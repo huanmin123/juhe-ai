@@ -35,12 +35,21 @@ export interface PublicApiLogDetail extends PublicApiLogSummary {
 }
 
 export interface PublicApiLogDetailSupplement {
+  sourceRefId?: string
+  tokenId?: string
   tokenName?: string
   tokenPrefix?: string
   isTestToken: boolean
+  queryString?: string
   userAgent?: string
+  requestSizeBytes: number
+  responseSizeBytes: number
+  requestCaptureStatus: PublicApiLogCaptureStatus
+  responseCaptureStatus: PublicApiLogCaptureStatus
   errorCode?: string
   errorMessage?: string
+  startedAt: string
+  endedAt: string
   requestData: Record<string, unknown>
   responseData: Record<string, unknown>
 }

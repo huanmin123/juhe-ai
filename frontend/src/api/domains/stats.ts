@@ -10,13 +10,13 @@ import type {
   AiHealthHourDetail,
   DatabaseStorageHistoryPoint,
   NonBusinessDataCleanupResult,
-  SystemMetricsOverview,
+  SystemMetricsRuntimeJobsResult,
+  SystemMetricsRuntimeQueuesResult,
+  SystemMetricsRuntimeSummary,
   SystemMetricsTrendOverview,
-  SystemMetricsRuntimeOverview,
   TableStorageHistoryPoint,
   TableStorageOverview,
   UsageStatsWindow,
-  UsageStatsOverview,
   UsageStatsOverviewDailyTrendResult,
   UsageStatsOverviewErrorsResult,
   UsageStatsOverviewHourlyTrendResult,
@@ -42,7 +42,6 @@ import { accountUsageStatsOptionParams, accountUsageStatsParams, aiPerformanceAc
 
 export const statsApi = {
   usageWindow: () => unwrap<UsageStatsWindow>(http.get('/stats/usage-window')),
-  usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
   usageOverviewSummary: (params?: UsageOverviewParams) => unwrap<UsageStatsOverviewSummaryResult>(http.get('/stats/usage-overview/summary', { params })),
   usageOverviewDailyTrend: (params?: UsageOverviewParams) => unwrap<UsageStatsOverviewDailyTrendResult>(http.get('/stats/usage-overview/daily-trend', { params })),
   usageOverviewHourlyTrend: (params?: UsageOverviewParams) => unwrap<UsageStatsOverviewHourlyTrendResult>(http.get('/stats/usage-overview/hourly-trend', { params })),
@@ -57,9 +56,10 @@ export const statsApi = {
   aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/stats/ai-performance/series', { params: aiPerformanceSeriesParams(params) })),
   aiHealth: (params?: AiHealthParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthListResult>(http.get('/stats/ai-health', { params, signal: options?.signal })),
   aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/stats/ai-health/hour-detail', { params, signal: options?.signal })),
-  systemMetrics: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params })),
-  systemMetricsTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsTrendOverview>(http.get('/stats/system-metrics/trend', { params })),
-  systemMetricsRuntime: () => unwrap<SystemMetricsRuntimeOverview>(http.get('/stats/system-metrics/runtime'))
+  systemMetricsTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsTrendOverview>(http.get('/stats/system-metrics/trend', { params, signal: options?.signal })),
+  systemMetricsRuntimeSummary: (options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeSummary>(http.get('/stats/system-metrics/runtime/summary', { signal: options?.signal })),
+  systemMetricsRuntimeJobs: (params: { page: number; pageSize: number }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeJobsResult>(http.get('/stats/system-metrics/runtime/jobs', { params, signal: options?.signal })),
+  systemMetricsRuntimeQueues: (params: { page: number; pageSize: number }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeQueuesResult>(http.get('/stats/system-metrics/runtime/queues', { params, signal: options?.signal }))
 }
 
 export const tableMonitorApi = {
@@ -71,7 +71,6 @@ export const tableMonitorApi = {
 
 export const myStatsApi = {
   usageWindow: () => unwrap<UsageStatsWindow>(http.get('/my-stats/usage-window')),
-  usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
   usageOverviewSummary: (params?: UsageOverviewParams) => unwrap<UsageStatsOverviewSummaryResult>(http.get('/my-stats/usage-overview/summary', { params: stripSystemAccountParam(params) })),
   usageOverviewDailyTrend: (params?: UsageOverviewParams) => unwrap<UsageStatsOverviewDailyTrendResult>(http.get('/my-stats/usage-overview/daily-trend', { params: stripSystemAccountParam(params) })),
   usageOverviewHourlyTrend: (params?: UsageOverviewParams) => unwrap<UsageStatsOverviewHourlyTrendResult>(http.get('/my-stats/usage-overview/hourly-trend', { params: stripSystemAccountParam(params) })),

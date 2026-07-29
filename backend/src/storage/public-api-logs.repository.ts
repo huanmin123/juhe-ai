@@ -80,12 +80,21 @@ export interface PublicApiLogDetail extends PublicApiLogSummary {
 }
 
 export interface PublicApiLogDetailSupplement {
+  sourceRefId?: string
+  tokenId?: string
   tokenName?: string
   tokenPrefix?: string
   isTestToken: boolean
+  queryString?: string
   userAgent?: string
+  requestSizeBytes: number
+  responseSizeBytes: number
+  requestCaptureStatus: PublicApiLogCaptureStatus
+  responseCaptureStatus: PublicApiLogCaptureStatus
   errorCode?: string
   errorMessage?: string
+  startedAt: string
+  endedAt: string
   requestData: Record<string, unknown>
   responseData: Record<string, unknown>
 }
@@ -557,12 +566,21 @@ function publicApiLogListSelectColumns(alias: string): string {
 
 function publicApiLogDetailSupplementSelectColumns(alias: string): string {
   return [
+    'source_ref_id',
+    'token_id',
     'token_name',
     'token_prefix',
     'is_test_token',
+    'query_string',
     'user_agent',
+    'request_size_bytes',
+    'response_size_bytes',
+    'request_capture_status',
+    'response_capture_status',
     'error_code',
     'error_message',
+    'started_at',
+    'ended_at',
     'request_data_json',
     'response_data_json'
   ].map((column) => `${alias}.${column}`).join(', ')
@@ -623,12 +641,21 @@ function publicApiLogDetailFromRow(row: PublicApiLogRow): PublicApiLogDetail {
 
 function publicApiLogDetailSupplementFromRow(row: PublicApiLogRow): PublicApiLogDetailSupplement {
   return {
+    sourceRefId: optionalString(row.source_ref_id),
+    tokenId: optionalString(row.token_id),
     tokenName: optionalString(row.token_name),
     tokenPrefix: optionalString(row.token_prefix),
     isTestToken: Number(row.is_test_token ?? 0) === 1,
+    queryString: optionalString(row.query_string),
     userAgent: optionalString(row.user_agent),
+    requestSizeBytes: nonNegativeNumberValue(row.request_size_bytes),
+    responseSizeBytes: nonNegativeNumberValue(row.response_size_bytes),
+    requestCaptureStatus: normalizeCaptureStatus(row.request_capture_status),
+    responseCaptureStatus: normalizeCaptureStatus(row.response_capture_status),
     errorCode: optionalString(row.error_code),
     errorMessage: optionalString(row.error_message),
+    startedAt: String(row.started_at),
+    endedAt: String(row.ended_at),
     requestData: parseJsonObject(row.request_data_json),
     responseData: parseJsonObject(row.response_data_json)
   }

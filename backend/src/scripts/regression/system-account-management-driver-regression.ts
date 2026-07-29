@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -129,6 +129,64 @@ async function assertSystemAccountManagementAsync(repositories: typeof import('.
 
   const disabled = await repositories.updateSystemAccountAsync(created.id, { status: 'disabled' })
   assert.equal(disabled?.status, 'disabled', '异步更新系统账户应能禁用账户')
+
+  if (process.env.JUHE_AI_DATABASE_DRIVER !== 'postgres') {
+    await assertConcurrentLastSuperAdminProtection(repositories, suffix)
+  }
+  assertConcurrentSourceContract()
+}
+
+async function assertConcurrentLastSuperAdminProtection(
+  repositories: typeof import('../../storage/repositories.js'),
+  suffix: string
+): Promise<void> {
+  const left = await repositories.createSystemAccountAsync({
+    username: `sys_super_left_${suffix}`,
+    displayName: `并发超级管理员左${suffix}`,
+    password: `PwdLeft${suffix}`,
+    role: 'super_admin',
+    status: 'active'
+  })
+  const right = await repositories.createSystemAccountAsync({
+    username: `sys_super_right_${suffix}`,
+    displayName: `并发超级管理员右${suffix}`,
+    password: `PwdRight${suffix}`,
+    role: 'super_admin',
+    status: 'active'
+  })
+  createdSystemAccountIds.push(left.id, right.id)
+  const defaultAdmin = await repositories.findSystemAccountByIdAsync('sys_admin')
+  assert.ok(defaultAdmin, '并发超级管理员回归需要默认管理员')
+  try {
+    await repositories.updateSystemAccountAsync(defaultAdmin.id, { status: 'disabled' })
+    const outcomes = await Promise.allSettled([
+      repositories.patchSystemAccountManagementAsync(left.id, { status: 'disabled' }, left.updatedAt),
+      repositories.patchSystemAccountManagementAsync(right.id, { role: 'admin' }, right.updatedAt)
+    ])
+    assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1, '并发降级/停用只能有一个事务提交')
+    assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1, '归零最后超级管理员的并发事务必须被拒绝')
+    const activeSuperAdminCount = await countActiveSuperAdmins()
+    assert.equal(activeSuperAdminCount, 1, '并发角色/状态变更后必须仍保留一个启用的超级管理员')
+  } finally {
+    await repositories.updateSystemAccountAsync(defaultAdmin.id, { status: 'active' })
+  }
+}
+
+function assertConcurrentSourceContract(): void {
+  const source = readFileSync(new URL('../../storage/system-accounts.repository.ts', import.meta.url), 'utf8')
+  assert.match(source, /pg_advisory_xact_lock\(hashtextextended\(\?, 0\)\)/, 'PostgreSQL 最后超级管理员不变量必须使用事务级共享锁串行化')
+  const patchStart = source.indexOf('export async function patchSystemAccountManagementAsync')
+  const targetLock = source.indexOf("const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''", patchStart)
+  const invariantLock = source.indexOf('await lockActiveSuperAdminInvariantForPatchAsync(tx, input)', patchStart)
+  assert(patchStart >= 0 && invariantLock > patchStart && invariantLock < targetLock, '共享不变量锁必须在目标账户行锁之前获取，避免交叉更新绕过或死锁')
+}
+
+async function countActiveSuperAdmins(): Promise<number> {
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const row = getBusinessDatabase()
+    .prepare("SELECT COUNT(*) AS count FROM system_accounts WHERE role = 'super_admin' AND status = 'active'")
+    .get() as { count?: number } | undefined
+  return Number(row?.count ?? 0)
 }
 
 async function defaultGroupCountForSystemAccount(systemAccountId: string): Promise<number> {

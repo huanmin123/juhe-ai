@@ -19,9 +19,7 @@ import {
   getUsageStatsOverviewHourlyTrendAsync,
   getUsageStatsOverviewModelDistributionAsync,
   getUsageStatsOverviewSummaryAsync,
-  getSystemMetricsOverviewAsync,
   getSystemMetricsTrendAsync,
-  getUsageStatsOverviewAsync,
   listAiPerformanceAccountOptionsAsync,
 } from '../../storage/usage-stats.repository.js'
 import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
@@ -63,6 +61,11 @@ const aiHealthQuerySchema = z.object({
 const aiHealthHourDetailQuerySchema = z.object({
   accountId: z.string().trim().min(1).max(200),
   statHour: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$/, '统计小时格式应为 YYYY-MM-DDTHH')
+})
+
+const systemMetricsRuntimePageQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(10).max(50).optional()
 })
 
 const accountUsageOptionsQuerySchema = z.object({
@@ -161,21 +164,37 @@ interface BackgroundJobsSnapshot {
   jobs?: BackgroundScheduledJobSnapshot[]
 }
 
-statsRouter.get('/usage-overview', async (req, res, next) => {
-  const parsed = usageOverviewQuerySchema.safeParse(req.query)
-  if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '统计日期范围不合法')))
-    return
-  }
-  try {
-    const access = getRequestAccessScope(req.query.systemAccountId)
-    const range = await normalizeUsageOverviewDateRangeAsync(parsed.data)
-    const overview = await getUsageStatsOverviewAsync(access, range)
-    res.json(ok(overview))
-  } catch (error) {
-    next(error)
-  }
-})
+interface SystemMetricsRuntimeQueueRow {
+  key: string
+  name: string
+  queueType: 'retry' | 'local' | 'ipc' | 'request' | 'gateway' | 'concurrency' | 'redis' | 'writer'
+  workerRole?: string
+  pendingCount?: number
+  runningCount?: number
+  consumers?: number
+  queueLength?: number
+  queueBytes?: number
+  completedCount?: number
+  droppedCount?: number
+  rejectedCount?: number
+  expiredCount?: number
+  timedOutCount?: number
+  failedCount?: number
+  flushFailureCount?: number
+  oldestQueuedMs?: number
+  writerPoolQueueLength?: number
+  writerPoolActiveJobs?: number
+  writerPoolFailedJobs?: number
+  writerPoolRejectedJobs?: number
+  writerPoolOldestQueuedMs?: number
+  pendingWriteRequestCount?: number
+  pendingWriteOldestQueuedMs?: number
+  nextRunAt?: string
+  flushLastSuccessAt?: string
+  lastError?: string
+}
+
+let systemMetricsRuntimeSnapshotRequest: Promise<DbServiceSystemMetricsRuntimeSnapshot | undefined> | undefined
 
 statsRouter.get('/usage-overview/summary', async (req, res, next) => {
   await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewSummaryAsync(access, range))
@@ -836,19 +855,168 @@ function systemMetricsRuntimeJobRow(row: BackgroundJobRuntimeRow): BackgroundJob
   }
 }
 
-statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
-  const parsed = usageOverviewQuerySchema.safeParse(req.query)
-  if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控日期范围不合法')))
-    return
-  }
+async function loadSystemMetricsRuntimeSnapshot(): Promise<DbServiceSystemMetricsRuntimeSnapshot | undefined> {
+  if (systemMetricsRuntimeSnapshotRequest) return await systemMetricsRuntimeSnapshotRequest
+  const request = requestServerSystemMetricsRuntimeSnapshot(2500).catch(() => undefined)
+  systemMetricsRuntimeSnapshotRequest = request
   try {
-    const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
-    res.json(ok(overview))
-  } catch (error) {
-    next(error)
+    return await request
+  } finally {
+    if (systemMetricsRuntimeSnapshotRequest === request) {
+      systemMetricsRuntimeSnapshotRequest = undefined
+    }
   }
-})
+}
+
+function systemMetricsRuntimeJobRows(runtime: DbServiceSystemMetricsRuntimeSnapshot | undefined): BackgroundJobRuntimeRow[] {
+  const rows = [
+    ...backgroundJobsFromSnapshot(runtime?.ingestWorker?.snapshot) ?? [],
+    ...backgroundJobsFromSnapshot(runtime?.statsWorker?.snapshot) ?? [],
+    ...backgroundJobsFromSnapshot(runtime?.opsWorker?.snapshot) ?? []
+  ].map(systemMetricsRuntimeJobRow)
+  return rows.sort((left, right) => {
+    if (left.failureCount !== right.failureCount) return right.failureCount - left.failureCount
+    const leftDuration = left.maxDurationMs ?? -1
+    const rightDuration = right.maxDurationMs ?? -1
+    if (leftDuration !== rightDuration) return rightDuration - leftDuration
+    return left.name.localeCompare(right.name)
+  })
+}
+
+function runtimeRetryQueueRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+  const statsWorkerSnapshot = runtime.statsWorker?.snapshot
+  const opsWorkerSnapshot = runtime.opsWorker?.snapshot
+  const accountQualityFailurePrecheckSnapshot = opsWorkerSnapshot?.accountQualityFailurePrecheckQueue
+    ?? statsWorkerSnapshot?.accountQualityFailurePrecheckQueue
+  return [
+    retryQueueBackgroundJobRow('manual-account-test-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.manualAccountTestQueue),
+    retryQueueBackgroundJobRow(
+      'account-quality-failure-precheck-queue',
+      accountQualityFailurePrecheckSnapshot ? (opsWorkerSnapshot?.workerRole ?? statsWorkerSnapshot?.workerRole) : undefined,
+      accountQualityFailurePrecheckSnapshot
+    ),
+    retryQueueBackgroundJobRow('account-health-check-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.accountHealthCheckQueue),
+    retryQueueBackgroundJobRow('cooldown-account-retest-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.cooldownAccountRetestQueue),
+    retryQueueBackgroundJobRow('account-api-key-cooldown-retest-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.accountApiKeyCooldownRetestQueue),
+    retryQueueBackgroundJobRow(
+      'normal-route-speed-first-recovery-probe-queue',
+      opsWorkerSnapshot?.workerRole,
+      opsWorkerSnapshot?.normalRouteSpeedFirstRecoveryProbeQueue
+    )
+  ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
+}
+
+function systemMetricsRuntimeQueueRows(rows: BackgroundJobRuntimeRow[]): SystemMetricsRuntimeQueueRow[] {
+  return rows.flatMap((row) => {
+    const sanitized = systemMetricsRuntimeJobRow(row)
+    const queueRows: SystemMetricsRuntimeQueueRow[] = []
+    if (sanitized.retryQueue) {
+      const name = sanitized.retryQueue.name || sanitized.name
+      queueRows.push({
+        key: `retry:${sanitized.workerRole ?? 'worker'}:${name}`,
+        name,
+        queueType: 'retry',
+        workerRole: sanitized.workerRole,
+        pendingCount: optionalNumberValue(sanitized.retryQueue.pendingCount),
+        runningCount: optionalNumberValue(sanitized.retryQueue.runningCount),
+        nextRunAt: sanitized.retryQueue.nextRunAt
+      })
+    }
+    if (sanitized.localQueue) {
+      const name = sanitized.localQueue.name || sanitized.name
+      const queueType = systemMetricsRuntimeQueueType(sanitized.localQueue.queueType)
+      queueRows.push({
+        key: `${queueType}:${sanitized.workerRole ?? 'worker'}:${name}`,
+        name,
+        queueType,
+        workerRole: sanitized.workerRole,
+        queueLength: sanitized.localQueue.queueLength,
+        queueBytes: sanitized.localQueue.queueBytes,
+        completedCount: sanitized.localQueue.completedCount,
+        droppedCount: sanitized.localQueue.droppedCount,
+        rejectedCount: sanitized.localQueue.rejectedCount,
+        expiredCount: sanitized.localQueue.expiredCount,
+        timedOutCount: sanitized.localQueue.timedOutCount,
+        failedCount: sanitized.localQueue.failedCount,
+        flushFailureCount: sanitized.localQueue.flushFailureCount,
+        oldestQueuedMs: sanitized.localQueue.oldestQueuedMs,
+        writerPoolQueueLength: sanitized.localQueue.writerPoolQueueLength,
+        writerPoolActiveJobs: sanitized.localQueue.writerPoolActiveJobs,
+        writerPoolFailedJobs: sanitized.localQueue.writerPoolFailedJobs,
+        writerPoolRejectedJobs: sanitized.localQueue.writerPoolRejectedJobs,
+        writerPoolOldestQueuedMs: sanitized.localQueue.writerPoolOldestQueuedMs,
+        pendingWriteRequestCount: optionalNumberValue(sanitized.localQueue.pendingWriteRequestCount),
+        pendingWriteOldestQueuedMs: optionalNumberValue(sanitized.localQueue.pendingWriteOldestQueuedMs),
+        runningCount: sanitized.localQueue.runningCount,
+        consumers: sanitized.localQueue.consumers,
+        nextRunAt: sanitized.localQueue.nextRunAt,
+        flushLastSuccessAt: sanitized.localQueue.flushLastSuccessAt,
+        lastError: sanitized.localQueue.flushLastError
+      })
+    }
+    return queueRows
+  }).sort(compareSystemMetricsRuntimeQueueRows)
+}
+
+function systemMetricsRuntimeQueueType(value: unknown): SystemMetricsRuntimeQueueRow['queueType'] {
+  return value === 'ipc'
+    || value === 'request'
+    || value === 'gateway'
+    || value === 'concurrency'
+    || value === 'redis'
+    || value === 'writer'
+    ? value
+    : 'local'
+}
+
+function compareSystemMetricsRuntimeQueueRows(
+  left: SystemMetricsRuntimeQueueRow,
+  right: SystemMetricsRuntimeQueueRow
+): number {
+  const leftProblems = systemMetricsRuntimeQueueProblemCount(left)
+  const rightProblems = systemMetricsRuntimeQueueProblemCount(right)
+  if (leftProblems !== rightProblems) return rightProblems - leftProblems
+  const leftBacklog = systemMetricsRuntimeQueueBacklog(left) + numberValue(left.runningCount)
+  const rightBacklog = systemMetricsRuntimeQueueBacklog(right) + numberValue(right.runningCount)
+  if (leftBacklog !== rightBacklog) return rightBacklog - leftBacklog
+  return left.name.localeCompare(right.name)
+}
+
+function systemMetricsRuntimeQueueProblemCount(row: SystemMetricsRuntimeQueueRow): number {
+  return numberValue(row.flushFailureCount)
+    + numberValue(row.droppedCount)
+    + numberValue(row.rejectedCount)
+    + numberValue(row.expiredCount)
+    + numberValue(row.timedOutCount)
+    + numberValue(row.failedCount)
+    + numberValue(row.writerPoolFailedJobs)
+    + numberValue(row.writerPoolRejectedJobs)
+    + (row.lastError ? 1 : 0)
+}
+
+function systemMetricsRuntimeQueueBacklog(row: SystemMetricsRuntimeQueueRow): number {
+  return row.queueType === 'retry'
+    ? numberValue(row.pendingCount)
+    : numberValue(row.queueLength)
+      + numberValue(row.writerPoolQueueLength)
+      + numberValue(row.pendingWriteRequestCount)
+}
+
+function paginateSystemMetricsRuntimeRows<T>(
+  rows: T[],
+  input: { page?: number; pageSize?: number }
+): { items: T[]; total: number; page: number; pageSize: number; hasMore: boolean } {
+  const page = input.page ?? 1
+  const pageSize = input.pageSize ?? 10
+  const offset = (page - 1) * pageSize
+  return {
+    items: rows.slice(offset, offset + pageSize),
+    total: rows.length,
+    page,
+    pageSize,
+    hasMore: offset + pageSize < rows.length
+  }
+}
 
 statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
@@ -863,60 +1031,62 @@ statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) =>
   }
 })
 
-statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next) => {
+statsRouter.get('/system-metrics/runtime/summary', requireAdmin, async (_req, res, next) => {
   try {
-    const liveRuntime = await requestServerSystemMetricsRuntimeSnapshot(2500).catch(() => undefined)
-    const runtime = liveRuntime
+    const runtime = await loadSystemMetricsRuntimeSnapshot()
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
     const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
     const opsWorkerSnapshot = runtime?.opsWorker?.snapshot
-    const accountQualityFailurePrecheckSnapshot = opsWorkerSnapshot?.accountQualityFailurePrecheckQueue
-      ?? statsWorkerSnapshot?.accountQualityFailurePrecheckQueue
-    const backgroundQueueRows = [
-      retryQueueBackgroundJobRow('manual-account-test-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.manualAccountTestQueue),
-      retryQueueBackgroundJobRow(
-        'account-quality-failure-precheck-queue',
-        accountQualityFailurePrecheckSnapshot ? (opsWorkerSnapshot?.workerRole ?? statsWorkerSnapshot?.workerRole) : undefined,
-        accountQualityFailurePrecheckSnapshot
-      )
-    ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
-    const backgroundJobGroups = [
-      backgroundJobsFromSnapshot(ingestWorkerSnapshot),
-      backgroundJobsFromSnapshot(statsWorkerSnapshot),
-      opsWorkerSnapshot?.jobs?.map((job) => {
-        const roleAwareJob = { ...job, workerRole: opsWorkerSnapshot.workerRole }
-        if (job.name === 'account-health-check' && opsWorkerSnapshot.accountHealthCheckQueue) {
-          return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.accountHealthCheckQueue }
-        }
-        if (job.name === 'cooldown-account-retest' && opsWorkerSnapshot.cooldownAccountRetestQueue) {
-          return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.cooldownAccountRetestQueue }
-        }
-        if (job.name === 'account-api-key-cooldown-retest' && opsWorkerSnapshot.accountApiKeyCooldownRetestQueue) {
-          return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue }
-        }
-        if (job.name === 'normal-route-speed-first-recovery-probe' && opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue) {
-          return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue }
-        }
-        return roleAwareJob
-      }),
-      await backgroundQueueRuntimeRows(runtime),
-      backgroundQueueRows.length > 0 ? backgroundQueueRows : undefined
-    ]
-    const backgroundJobs = backgroundJobGroups.some(Array.isArray)
-      ? backgroundJobGroups.flatMap((items) => items ?? [])
-      : undefined
     const runtimeSnapshotAgeMs = runtime?.observedAt
       ? Math.max(0, Date.now() - Date.parse(runtime.observedAt))
       : undefined
+    res.setHeader('Cache-Control', 'no-store')
     res.json(ok({
       runtimeSnapshotAvailable: Boolean(runtime),
       runtimeSnapshotStale: runtimeSnapshotAgeMs === undefined ? undefined : runtimeSnapshotAgeMs > 10_000,
       ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
       statsWorkerSnapshotAvailable: Boolean(statsWorkerSnapshot),
       opsWorkerSnapshotAvailable: Boolean(opsWorkerSnapshot),
-      backgroundJobsAvailable: Array.isArray(backgroundJobs),
-      backgroundJobs: backgroundJobs?.map(systemMetricsRuntimeJobRow) ?? null
+      jobsAvailable: Boolean(ingestWorkerSnapshot || statsWorkerSnapshot || opsWorkerSnapshot),
+      queuesAvailable: Boolean(runtime)
     }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/system-metrics/runtime/jobs', requireAdmin, async (req, res, next) => {
+  const parsed = systemMetricsRuntimePageQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '后台任务分页参数不合法')))
+    return
+  }
+  try {
+    const runtime = await loadSystemMetricsRuntimeSnapshot()
+    const rows = systemMetricsRuntimeJobRows(runtime)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(ok(paginateSystemMetricsRuntimeRows(rows, parsed.data)))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/system-metrics/runtime/queues', requireAdmin, async (req, res, next) => {
+  const parsed = systemMetricsRuntimePageQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '后台队列分页参数不合法')))
+    return
+  }
+  try {
+    const runtime = await loadSystemMetricsRuntimeSnapshot()
+    const rows = runtime
+      ? systemMetricsRuntimeQueueRows([
+        ...runtimeRetryQueueRows(runtime),
+        ...(await backgroundQueueRuntimeRows(runtime) ?? [])
+      ])
+      : []
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(ok(paginateSystemMetricsRuntimeRows(rows, parsed.data)))
   } catch (error) {
     next(error)
   }

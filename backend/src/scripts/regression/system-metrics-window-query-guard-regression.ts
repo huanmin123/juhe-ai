@@ -24,6 +24,11 @@ assert.match(repositorySource, /Promise\.all\(\[[\s\S]*processEventLoopLatestRow
 assert.match(repositorySource, /SELECT DISTINCT ON \(process_role\)[\s\S]*ORDER BY process_role, sampled_at DESC, id DESC/, 'PG latest 必须单查询按角色取最新采样')
 assert.match(repositorySource, /SELECT DISTINCT ON \(process_role\)[\s\S]*ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC/, 'PG peak 必须单查询按角色取峰值采样')
 assert.doesNotMatch(repositorySource, /for \(const role of PROCESS_EVENT_LOOP_ROLES\)[\s\S]*await client\.one/, 'PG latest / peak 不得按角色串行往返')
+assert.match(repositorySource, /ROW_NUMBER\(\) OVER \([\s\S]*PARTITION BY process_role[\s\S]*ORDER BY sampled_at DESC, id DESC/, 'SQLite latest 必须用集合查询按角色取最新采样')
+assert.match(repositorySource, /ROW_NUMBER\(\) OVER \([\s\S]*PARTITION BY process_role[\s\S]*ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC/, 'SQLite peak 必须用集合查询按角色取峰值采样')
+assert.doesNotMatch(repositorySource, /processEventLoopObservedRoles/, 'SQLite latest / peak 不得先发现角色再逐角色查询')
+assert.match(repositorySource, /FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_sampled_at\s+WHERE sampled_at >= \?/, 'SQLite latest / peak 必须先按时间窗口缩小原始采样集合')
+assert.doesNotMatch(repositorySource, /INDEXED BY idx_process_event_loop_samples_role_(?:latest|peak)/, 'SQLite 时间窗口查询不得强制扫描 role 前导索引')
 
 const [databaseModule, usageStatsRepository] = await Promise.all([
   import('../../storage/database.js'),
@@ -48,6 +53,21 @@ try {
       sampled_at, process_role, process_pid, event_loop_lag_ms, id, created_at
     ) VALUES (?, 'server', 12345, 12, 'process_metric_query_guard', ?)
   `).run(sampledAt, sampledAt)
+  const insertRoleSample = database.prepare(`
+    INSERT INTO process_event_loop_samples (
+      sampled_at, process_role, process_pid, event_loop_lag_ms, id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  for (let index = 1; index <= 12; index += 1) {
+    insertRoleSample.run(
+      sampledAt,
+      `gateway:query-guard-${index}`,
+      20_000 + index,
+      index,
+      `process_metric_query_guard_${index}`,
+      sampledAt
+    )
+  }
 
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: SQLInputValue[] }> = []
@@ -106,17 +126,19 @@ try {
     '系统指标首屏不应查询前端未使用的最新系统采样'
   )
 
+  const processSampleCalls = capturedCalls.filter((call) => /\bFROM\s+process_event_loop_samples\b/i.test(call.sql))
+  assert.equal(processSampleCalls.length, 2, 'SQLite trend 的 latest / peak 查询总数必须固定为 2，不得随角色数量增长')
+  assert(processSampleCalls.every((call) => call.params.length === 1), 'SQLite latest / peak 只能绑定时间边界，不得逐角色绑定查询')
+
   const processLatestCall = capturedCalls.find((call) => /\bFROM\s+process_event_loop_samples\b/i.test(call.sql) && /\bORDER\s+BY\s+sampled_at\s+DESC,\s*id\s+DESC\b/i.test(call.sql))
   assert(processLatestCall, '系统指标接口应按进程角色读取最新事件循环采样')
   const processLatestPlan = explainQueryPlan(database, processLatestCall.sql, processLatestCall.params)
-  assertNoTempBtree(processLatestPlan, '进程事件循环最新采样查询')
-  assert(processLatestPlan.includes('idx_process_event_loop_samples_role_latest'), `进程事件循环最新采样应使用 role latest 索引，实际计划：${processLatestPlan}`)
+  assertTimeWindowIndexSearch(processLatestPlan, '进程事件循环最新采样查询')
 
   const processPeakCall = capturedCalls.find((call) => /\bFROM\s+process_event_loop_samples\b/i.test(call.sql) && /\bORDER\s+BY\s+event_loop_lag_ms\s+DESC,\s*sampled_at\s+DESC,\s*id\s+DESC\b/i.test(call.sql))
   assert(processPeakCall, '系统指标接口应按进程角色读取最近 24 小时事件循环峰值')
   const processPeakPlan = explainQueryPlan(database, processPeakCall.sql, processPeakCall.params)
-  assertNoTempBtree(processPeakPlan, '进程事件循环峰值查询')
-  assert(processPeakPlan.includes('idx_process_event_loop_samples_role_peak'), `进程事件循环峰值应使用 role peak 索引，实际计划：${processPeakPlan}`)
+  assertTimeWindowIndexSearch(processPeakPlan, '进程事件循环峰值查询')
 
   console.log('系统指标窗口查询回归通过：统计概览不再按时间窗扫描进程事件循环原始采样')
 } finally {
@@ -135,6 +157,13 @@ function explainQueryPlan(database: DatabaseSync, sql: string, params: SQLInputV
   return rows.map((row) => row.detail ?? '').filter(Boolean).join('\n')
 }
 
-function assertNoTempBtree(details: string, label: string): void {
-  assert(!/USE TEMP B-TREE/i.test(details), `${label}不应创建临时排序树，实际计划：${details}`)
+function assertTimeWindowIndexSearch(details: string, label: string): void {
+  const sourceSteps = details
+    .split('\n')
+    .filter((detail) => /\bprocess_event_loop_samples\b/i.test(detail))
+  assert(sourceSteps.length > 0, `${label}必须读取进程事件循环采样，实际计划：${details}`)
+  assert(
+    sourceSteps.every((detail) => /\bSEARCH process_event_loop_samples USING INDEX idx_process_event_loop_samples_sampled_at \(sampled_at>\?\)/i.test(detail)),
+    `${label}必须按 sampled_at 时间边界执行索引 SEARCH，不能 SCAN 全量历史索引，实际计划：${details}`
+  )
 }

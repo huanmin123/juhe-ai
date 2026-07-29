@@ -24,11 +24,13 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
-  accountTestTasks
+  accountTestTasks,
+  oauthRotationRepository
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-test-tasks.repository.js')
+  import('../../storage/account-test-tasks.repository.js'),
+  import('../../storage/oauth-credential-rotation.repository.js')
 ])
 
 try {
@@ -79,6 +81,93 @@ try {
   assert.equal(created.status, 'pending_test', 'OAuth 草稿人工测试成功不能直接激活新账户')
   assert.equal(created.schedulable, false, 'OAuth 新账户必须等待后台检查成功后参与调度')
   assert.equal(created.healthCheckModel, 'gpt-5.5', 'OAuth 新账户应保存表单检查模型')
+
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'error',
+        schedulable = 0,
+        last_error_code = 'oauth_token_refresh_failed',
+        last_error_message = '受管刷新错误'
+    WHERE id = ?
+  `).run(created.id)
+  const recoverable = await oauthRotationRepository.rotateOAuthCredentialsAsync({
+    accountId: created.id,
+    expectedConfigRevision: created.configRevision ?? 1,
+    expectedProviderCode: 'gpt',
+    expectedAccountType: 'oauth',
+    expectedProviderProtocolProfileId: created.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+    credentials: created.credentials,
+    recoverableLastErrorCodes: ['oauth_token_refresh_failed'],
+    access
+  })
+  assert.equal(recoverable?.changed, true, '凭据同值时仍应恢复受管 OAuth 刷新错误')
+  assert.equal(recoverable?.configRevision, (created.configRevision ?? 1) + 1, '恢复健康检查状态必须推进配置版本')
+  const recoveredRow = databaseModule.getBusinessDatabase().prepare(`
+    SELECT status, schedulable, last_error_code
+    FROM accounts
+    WHERE id = ?
+  `).get(created.id) as { status: string; schedulable: number; last_error_code: string | null }
+  assert.equal(recoveredRow.status, 'pending_test', '受管 OAuth 错误恢复后必须等待后台健康检查')
+  assert.equal(recoveredRow.schedulable, 0, '后台健康检查通过前不得参与调度')
+  assert.equal(recoveredRow.last_error_code, null, '受管 OAuth 错误必须在 rotation 事务内清理')
+
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'error',
+        schedulable = 0,
+        last_error_code = 'manual_operator_error',
+        last_error_message = '人工错误不得自动恢复'
+    WHERE id = ?
+  `).run(created.id)
+  const unmanaged = await oauthRotationRepository.rotateOAuthCredentialsAsync({
+    accountId: created.id,
+    expectedConfigRevision: recoverable?.configRevision ?? (created.configRevision ?? 1) + 1,
+    expectedProviderCode: 'gpt',
+    expectedAccountType: 'oauth',
+    expectedProviderProtocolProfileId: created.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+    credentials: created.credentials,
+    recoverableLastErrorCodes: ['oauth_token_refresh_failed'],
+    access
+  })
+  assert.equal(unmanaged?.changed, false, '凭据同值且错误码不在白名单时必须零写入')
+  const unmanagedRow = databaseModule.getBusinessDatabase().prepare(`
+    SELECT status, schedulable, last_error_code
+    FROM accounts
+    WHERE id = ?
+  `).get(created.id) as { status: string; schedulable: number; last_error_code: string | null }
+  assert.equal(unmanagedRow.status, 'error', '非受管错误状态不得被重新授权隐式清理')
+  assert.equal(unmanagedRow.schedulable, 0, '非受管错误不得被重新授权恢复调度')
+  assert.equal(unmanagedRow.last_error_code, 'manual_operator_error', '非受管错误码必须保持不变')
+
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'error',
+        schedulable = 0,
+        account_expires_at = ?,
+        last_error_code = 'oauth_token_refresh_failed',
+        last_error_message = '过期账户不得恢复调度'
+    WHERE id = ?
+  `).run(new Date(Date.now() - 60_000).toISOString(), created.id)
+  const expired = await oauthRotationRepository.rotateOAuthCredentialsAsync({
+    accountId: created.id,
+    expectedConfigRevision: recoverable?.configRevision ?? (created.configRevision ?? 1) + 1,
+    expectedProviderCode: 'gpt',
+    expectedAccountType: 'oauth',
+    expectedProviderProtocolProfileId: created.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+    credentials: created.credentials,
+    recoverableLastErrorCodes: ['oauth_token_refresh_failed'],
+    access
+  })
+  assert.equal(expired?.changed, true, '过期账户的受管 OAuth 错误仍应归一化为过期状态')
+  assert.equal(expired?.configRevision, recoverable?.configRevision, '仅归一化过期运行态不得再次推进配置版本')
+  const expiredRow = databaseModule.getBusinessDatabase().prepare(`
+    SELECT status, schedulable, last_error_code
+    FROM accounts
+    WHERE id = ?
+  `).get(created.id) as { status: string; schedulable: number; last_error_code: string | null }
+  assert.equal(expiredRow.status, 'disabled', '已过期账户重新授权后必须保持停用')
+  assert.equal(expiredRow.schedulable, 0, '已过期账户重新授权后不得参与调度')
+  assert.equal(expiredRow.last_error_code, 'account_expired', '已过期账户必须保留明确的过期原因')
 
   const storedTask = accountTestTasks.getAccountTestTaskRecord(task.id)
   assert.equal(storedTask?.status, 'success', '创建 OAuth 账户不应消费或改写人工测试任务')

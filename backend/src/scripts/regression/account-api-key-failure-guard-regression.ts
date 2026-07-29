@@ -680,7 +680,7 @@ function runtimeSelectionStates(accountId: string) {
     .all(accountId) as Array<{
       key_fingerprint: string
       key_index: number
-      status: 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
+      status: 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
       cooldown_until: string | null
       next_probe_at: string | null
     }>

@@ -186,7 +186,9 @@ async function testSystemApiAccountBinding(): Promise<void> {
         preservedCredentialValue,
         `${route} OAuth 非 token 凭据必须先成功落库`
       )
-      await postJson(`${baseUrl}/${route}-oauth/accounts/${created.id}/refresh-token`, {})
+      await postJson(`${baseUrl}/${route}-oauth/accounts/${created.id}/refresh-token`, {
+        expectedConfigRevision: edited.configRevision
+      })
       const refreshedPersisted = repositories.findAccountForTest(created.id, { systemAccountId: 'sys_admin', role: 'admin' })
       assert(refreshedPersisted, `${route} OAuth 刷新后账户必须仍存在`)
       assert.notEqual(requiredCredential(refreshedPersisted.credentials, 'access_token', route), initialAccessToken, `${route} 刷新后的 access_token 必须落库`)

@@ -101,7 +101,7 @@ GET /api/stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 ```
 
-列表响应只返回当前页面渲染字段以及 `items / total / hasMore / page / pageSize` 分页信息，不返回时区、范围重复元数据、所有者内部字段或小时错误正文。详情读取先按当前管理 / 自助作用域确认账户可见性；不可见统一返回 `404`。`unknown` 槽位直接由前端展示“无记录”，不发详情请求。
+列表响应只返回当前页面渲染字段以及 `items / hasMore / page / pageSize` 分页信息，不执行总数查询，也不以渐进下界伪装真实 `total`；页面只展示明确的上一页 / 下一页交互。不返回时区、范围重复元数据、所有者内部字段或小时错误正文。详情读取先按当前管理 / 自助作用域确认账户可见性；不可见统一返回 `404`。`unknown` 槽位直接由前端展示“无记录”，不发详情请求。
 
 查询参数：
 
@@ -112,7 +112,7 @@ GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 | `page` | `1` | 正整数 |
 | `pageSize` | `20` | `10..50` |
 
-后端先按权限、账户名搜索和使用热度稳定分页，再批量读取当前页账户的小时结果。默认先按 `account_quality_scores.recent_request_count` 降序，再按 `accounts.last_used_at` 降序，最后按 `name, id` 兜底；没有近期使用记录的账户自然排在后面。`recent_request_count` 默认是近 10 分钟带 API Key 的实际上游调用/尝试次数，由 stats worker 每 10 分钟刷新；恢复探测、冷却复测和混合评分不进入该口径。排序只读取预聚合和账户快照，不扫描使用记录明细。
+后端先按权限、账户名搜索和最近使用时间稳定分页，再批量读取当前页账户的小时结果。账户名包含搜索复用增量维护的 `account_name_search_terms / account_name_search_documents` 候选表，不扫描 `lower(accounts.name)`；默认按 `accounts.last_used_at DESC NULLS LAST` 的等价跨存储表达式排序，最后按 `name, id` 兜底，没有近期使用记录的账户自然排在后面。列表排序只读取业务库账户快照，并由管理 / 自助作用域各自的窄排序索引承接，不跨库读取质量统计，也不扫描使用记录明细。
 
 ## 6. 页面
 
@@ -127,7 +127,7 @@ GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 - 图例位于刷新按钮同一行最右侧，显示“可用、不可用、无记录”。
 - 页面不显示内部统计时区。
 - 中间账户列表占用剩余高度并独立滚动。
-- 底部分页保持可见，翻页、搜索和切换范围后列表回到顶部。
+- 底部上一页 / 下一页保持可见，翻页、搜索和切换范围后列表回到顶部；不展示未经总数查询证明的伪总数。
 - 每个账户展示当前状态、最近检查、下次检查、三态数量和账户可用率。
 - 正常账户默认每 1 小时主动检查一次，并按账户 ID 在 0 到 10 分钟内稳定错峰；小时状态条是展示粒度，不要求所有账户在同一分钟执行。
 - 小时状态使用单个 Canvas 绘制，避免 31 天产生 744 个 DOM 节点。

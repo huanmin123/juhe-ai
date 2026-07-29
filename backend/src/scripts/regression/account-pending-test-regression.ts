@@ -49,14 +49,12 @@ let mockOpenAIServer: http.Server | undefined
 
 try {
   const accountsRouteSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  const accountManagementPatchSource = readFileSync(resolve('src/storage/account-management-patch.repository.ts'), 'utf8')
   const openAIOAuthRouteSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.routes.ts'), 'utf8')
   const forceActivateRouteSource = readFileSync(resolve('src/modules/accounts/account-force-activate.routes.ts'), 'utf8')
   const accountRuntimeMutationSource = readFileSync(resolve('src/storage/account-runtime-mutation.repository.ts'), 'utf8')
-  assert.match(
-    accountsRouteSource,
-    /requestedClearFailureState === true && account\.status === 'pending_test'[\s\S]+dispatchAccountHealthCheck\(account\.id, 'activation'\)/,
-    '重新检查和异常恢复进入 pending_test 后必须立即投递后台激活检查'
-  )
+  assert.match(accountManagementPatchSource, /healthCheckReason: nextStatus === 'pending_test' \? 'activation' : undefined/, '重新检查和异常恢复进入 pending_test 后必须标记后台激活检查')
+  assert.match(accountsRouteSource, /account\.healthCheckRequired && account\.healthCheckReason[\s\S]+dispatchAccountHealthCheck\(account\.id, account\.healthCheckReason\)/, '路由必须投递集中写入层声明的健康检查')
   setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   mockOpenAIServer = createMockOpenAIServer()
   mockOpenAIServer.listen(0, '127.0.0.1')
@@ -100,7 +98,8 @@ try {
     '普通恢复入口不应激活待检查账户'
   )
   assert.match(forceActivateRouteSource, /acknowledgedAccountAvailable !== true/, '人工恢复必须要求用户明确确认账户当前可用')
-  assert.match(accountsRouteSource, /status: parsed\.data\.status === 'disabled' \? 'disabled' : parsed\.data\.status === 'active' \? 'active' : 'pending_test',[\s\S]+skipInitialHealthCheck: parsed\.data\.status === 'active'/, '普通账户创建仅在显式选择可调度时跳过初始检查')
+  assert.match(accountsRouteSource, /status: parsed\.data\.status === 'disabled' \? 'disabled' : 'pending_test'/, '普通账户创建必须进入待检查，不能直接跳过初始检查')
+  assert.doesNotMatch(accountsRouteSource, /skipInitialHealthCheck/, '普通账户创建不得绕过首次健康检查')
   assert.match(openAIOAuthRouteSource, /status: z\.enum\(\['active', 'pending_test', 'disabled'\]\)\.optional\(\)/, 'OpenAI OAuth 创建应接受待检查状态')
   assert.equal((openAIOAuthRouteSource.match(/status: 'pending_test',[\s\S]*?skipInitialHealthCheck: false,[\s\S]*?schedulable: false/g) ?? []).length, 2, 'OpenAI OAuth 两个创建入口都必须强制进入待检查且不可调度')
   assert.match(forceActivateRouteSource, /accounts\.force_activate_pending/, '人工恢复必须写入独立操作审计键')

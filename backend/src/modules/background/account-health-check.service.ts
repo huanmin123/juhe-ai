@@ -9,8 +9,14 @@ import {
   automaticAccountAvailabilityProbeFailed,
   automaticAccountProbeOutcome
 } from '../accounts/automatic-account-probe-outcome.js'
+import {
+  accountApiKeyPoolEntriesForCandidate,
+  fixedAccountApiKeyPoolCandidate,
+  isCandidateAccountApiKeyPoolTestable
+} from '../accounts/account-api-key-pool-runtime.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { gatewayAccountRuntimeKey } from '../gateway/runtime/account-runtime-keys.js'
+import type { OpenAIAccountSecret } from '../../storage/openai-account-selector.types.js'
 import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer } from './background-ipc.js'
 import {
   accountHealthCheckTriggerPriority,
@@ -35,6 +41,11 @@ const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check'
 const requestFailureHealthCheckCooldownMs = 5 * 60_000
 const recentRequestFailureHealthChecks = new Map<string, number>()
 let lastRequestFailureHealthCheckCleanupAt = 0
+
+export interface AccountHealthCheckProbeResult {
+  result: AccountTestResult
+  upstreamAttempt?: UpstreamAttempt
+}
 
 const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
   name: 'account-health-check',
@@ -153,28 +164,7 @@ async function runAccountHealthCheckQueueItem(
   const groupId = account.boundGroupId
   const observedAt = new Date().toISOString()
   return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
-    let upstreamAttempt: UpstreamAttempt | undefined
-    const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-      diagnostics: 'limited',
-      groupId,
-      trafficSource: 'account_health_check',
-      testEndpointMode: account.healthCheckEndpointMode,
-      disableAccountStateMutation: true,
-      retryAllFailures: true,
-      onDiagnosticAttemptProgress: () => {
-        upstreamAttempt = undefined
-      },
-      onUpstreamAttempt: (attempt) => {
-        upstreamAttempt = attempt
-      },
-      findAccountForTest: loadAccountForTestViaDbService,
-      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-      gatewaySettingsOverride: {
-        temporaryUnschedulableRetryAttempts: 0,
-        temporaryUnschedulableRetryIntervalSeconds: 0
-      }
-    })
-    return { result, upstreamAttempt }
+    return await runAccountHealthCheckProbe(account, groupId)
   }, async ({ result, upstreamAttempt }, { joined }) => {
     if (joined) {
       logger.debug({
@@ -281,6 +271,79 @@ async function runAccountHealthCheckQueueItem(
     }
     return true
   })
+}
+
+export async function probeAccountHealthCheckApiKeyPool(
+  candidate: OpenAIAccountSecret,
+  probe: (fixedCandidate: OpenAIAccountSecret) => Promise<AccountHealthCheckProbeResult>
+): Promise<AccountHealthCheckProbeResult | undefined> {
+  const entries = accountApiKeyPoolEntriesForCandidate(candidate)
+  if (!isCandidateAccountApiKeyPoolTestable(candidate, entries)) return undefined
+  const runtimeStatusByFingerprint = new Map(
+    (candidate.apiKeyRuntimeStates ?? []).map((state) => [state.keyFingerprint, state.status])
+  )
+  let fallback: AccountHealthCheckProbeResult | undefined
+  let upstreamFailure: AccountHealthCheckProbeResult | undefined
+  for (const entry of entries) {
+    if (runtimeStatusByFingerprint.get(entry.fingerprint) === 'disabled') continue
+    const attempt = await probe(fixedAccountApiKeyPoolCandidate(candidate, entry, {
+      apiKeyRuntimeStateDisabled: true
+    }))
+    if (attempt.result.success) {
+      return attempt
+    }
+    fallback ??= attempt
+    if (automaticAccountProbeOutcome(attempt.result, { upstreamAttempt: attempt.upstreamAttempt }) === 'upstream_failure') {
+      upstreamFailure ??= attempt
+    }
+  }
+  return upstreamFailure ?? fallback
+}
+
+async function runAccountHealthCheckProbe(
+  account: AccountSummary,
+  groupId: string
+): Promise<AccountHealthCheckProbeResult> {
+  const systemAccountId = account.systemAccountId?.trim()
+  const candidate = systemAccountId
+    ? await loadOpenAIAccountForGroupViaDbService(groupId, account.id, systemAccountId, { ignoreAvailability: true })
+    : undefined
+  const poolResult = candidate
+    ? await probeAccountHealthCheckApiKeyPool(candidate, async (fixedCandidate) => (
+        await runAccountHealthCheckDiagnostic(account, groupId, fixedCandidate)
+      ))
+    : undefined
+  return poolResult ?? await runAccountHealthCheckDiagnostic(account, groupId)
+}
+
+async function runAccountHealthCheckDiagnostic(
+  account: AccountSummary,
+  groupId: string,
+  candidateAccount?: OpenAIAccountSecret
+): Promise<AccountHealthCheckProbeResult> {
+  let upstreamAttempt: UpstreamAttempt | undefined
+  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
+    diagnostics: 'limited',
+    groupId,
+    trafficSource: 'account_health_check',
+    testEndpointMode: account.healthCheckEndpointMode,
+    disableAccountStateMutation: true,
+    candidateAccount,
+    retryAllFailures: true,
+    onDiagnosticAttemptProgress: () => {
+      upstreamAttempt = undefined
+    },
+    onUpstreamAttempt: (attempt) => {
+      upstreamAttempt = attempt
+    },
+    findAccountForTest: loadAccountForTestViaDbService,
+    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
+    gatewaySettingsOverride: {
+      temporaryUnschedulableRetryAttempts: 0,
+      temporaryUnschedulableRetryIntervalSeconds: 0
+    }
+  })
+  return { result, upstreamAttempt }
 }
 
 async function accountForHealthCheckQueueItem(item: AccountHealthCheckQueueItem): Promise<AccountSummary | undefined> {

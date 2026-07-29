@@ -7,6 +7,7 @@ import type { AccountListItem } from '@/types/domain'
 import type { AccountFilters } from '@/views/accounts/accountFormTypes'
 import { filterAccounts } from '@/views/accounts/accountListFilters'
 import {
+  accountListHasAccumulatedPageWindow,
   accountListPageWindowChanged,
   accountListSortChanged,
   mergeAccountListPageWithRevisionOverlays,
@@ -40,6 +41,8 @@ const original = fixture({ id: 'account-a', name: 'Alpha', configRevision: 4, pr
 const stale = fixture({ id: 'account-a', name: 'Stale', configRevision: 3, priority: 1 })
 const currentRows = [original, fixture({ id: 'account-b', name: 'Beta', priority: 10 })]
 assert.equal(replaceAccountListRow(currentRows, stale), currentRows, '旧 PATCH/GET revision 不得覆盖当前账户行')
+assert.equal(accountListHasAccumulatedPageWindow(40, 2, 20), true, '移动端累计加载窗口必须被识别')
+assert.equal(accountListHasAccumulatedPageWindow(20, 2, 20), false, '桌面端普通第 2 页不得误判为累计窗口')
 
 const overlays = new Map<string, AccountListRevisionOverlay>([
   [original.id, { configRevision: 4, row: original }]
@@ -123,6 +126,11 @@ assert.match(
   listDataSource,
   /get superseded\(\) \{ return requestMutationRevision !== listMutationRevision \}/,
   '列表 GET 应在真正提交响应时检查本地写入代次'
+)
+assert.match(
+  listDataSource,
+  /accountListHasAccumulatedPageWindow\([\s\S]{0,160}resetAccountPagination\(\)[\s\S]{0,120}loadData\(\{ forceData: true, quiet: true, requestIdentity: listMutationRevision \}\)/,
+  '移动端累计窗口 mutation 后必须先回到第 1 页再做权威刷新'
 )
 assert.match(listDataSource, /transformItems:[\s\S]{0,180}mergeAccountListPageWithRevisionOverlays/)
 assert.doesNotMatch(

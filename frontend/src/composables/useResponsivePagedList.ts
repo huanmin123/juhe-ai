@@ -7,6 +7,7 @@ export type ResponsivePagedListResult<T> = {
   pageSize: number
   total: number
   hasMore?: boolean
+  currentPageCount?: number
   superseded?: boolean
 }
 
@@ -89,6 +90,8 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
 
   function invalidatePendingLoads(): void {
     loadRequestId += 1
+    mobileLoadingRequestId = 0
+    mobileLoadingMore.value = false
     inflightLoadKey = ''
     inflightLoadPromise = undefined
   }
@@ -155,7 +158,7 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     pagination.pageSize = result.pageSize
     pagination.total = result.total
     hasMore.value = typeof result.hasMore === 'boolean' ? result.hasMore : loadedCount < result.total
-    currentPageCount.value = transformedItems.length
+    currentPageCount.value = result.currentPageCount ?? transformedItems.length
     items.value = nextItems
     options.onLoaded?.(result, loadOptions)
   }

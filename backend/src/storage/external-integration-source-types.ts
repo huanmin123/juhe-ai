@@ -209,6 +209,11 @@ export interface ExternalIntegrationSourceMutationResult {
   updatedAt: string
 }
 
+export interface ExternalIntegrationSourceDeleteReceipt {
+  id: string
+  name: string
+}
+
 export interface ExternalIntegrationSourcePatchChange {
   field: 'name' | 'status' | 'scopes' | 'rateLimits' | 'expiresAt' | 'notes'
   before: unknown

@@ -26,6 +26,7 @@ const [
   repositories,
   patchRepository,
   { decryptJson },
+  apiKeyRuntimeStateRepository,
   { accountsRouter },
   authRequestContext,
   { registerGatewayRuntimeCacheInvalidator }
@@ -34,6 +35,7 @@ const [
   import('../../storage/repositories.js'),
   import('../../storage/account-management-patch.repository.js'),
   import('../../storage/crypto.js'),
+  import('../../storage/account-api-key-runtime-state.repository.js'),
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/request-context.js'),
   import('../../shared/gateway-cache-invalidation.js')
@@ -278,6 +280,141 @@ try {
   assert.equal(oauthNoOp.result.configRevision, 3)
   assert.deepEqual(oauthNoOp.result.changedFields, [])
   assert.deepEqual(oauthNoOp.dml, [], '重复清除 OAuth 可编辑字段不得覆盖凭据或推进版本')
+
+  const multiKeyAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '多 Key 增量 PATCH 账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-management-patch-key-a',
+      api_keys: [
+        'sk-account-management-patch-key-a',
+        'sk-account-management-patch-key-b'
+      ],
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: targetGroup.id,
+    status: 'active',
+    skipInitialHealthCheck: true
+  }, access)
+  database.prepare(`
+    UPDATE accounts
+    SET last_health_check_at = ?,
+        last_health_success_at = ?,
+        health_check_failure_count = 0
+    WHERE id = ?
+  `).run('2026-07-29T09:00:00.000Z', '2026-07-29T09:00:00.000Z', multiKeyAccount.id)
+  const addUnverifiedKey = await patchRepository.patchAccountManagementAsync(multiKeyAccount.id, {
+    expectedConfigRevision: 1,
+    credentialsPatch: {
+      api_keys: [
+        'sk-account-management-patch-key-a',
+        'sk-account-management-patch-key-b',
+        'sk-account-management-patch-key-c'
+      ]
+    }
+  }, access)
+  assert(addUnverifiedKey)
+  assert.equal(addUnverifiedKey.status, 'active', '保留正常 Key 后新增 Key 不得改变账户状态')
+  assert.equal(addUnverifiedKey.healthCheckRequired, false, '保留正常 Key 后新增 Key 不得投递账户级健康检查')
+  const multiKeyRowAfterAdd = database.prepare(`
+    SELECT status, schedulable, last_health_check_at, last_health_success_at
+    FROM accounts
+    WHERE id = ?
+  `).get(multiKeyAccount.id) as unknown as {
+    status: string
+    schedulable: number
+    last_health_check_at: string | null
+    last_health_success_at: string | null
+  }
+  assert.equal(multiKeyRowAfterAdd.status, 'active')
+  assert.equal(multiKeyRowAfterAdd.schedulable, 1)
+  assert.equal(multiKeyRowAfterAdd.last_health_check_at, '2026-07-29T09:00:00.000Z')
+  assert.equal(multiKeyRowAfterAdd.last_health_success_at, '2026-07-29T09:00:00.000Z')
+  const unverifiedRows = database.prepare(`
+    SELECT key_index, status, next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ?
+    ORDER BY key_index ASC
+  `).all(multiKeyAccount.id) as Array<{
+    key_index: number
+    status: string
+    next_probe_at: string | null
+  }>
+  assert.deepEqual(unverifiedRows.map((row) => ({ keyIndex: row.key_index, status: row.status })), [
+    { keyIndex: 2, status: 'unverified' }
+  ], '新增 Key 必须在同一事务中写入未验证运行态')
+  assert(unverifiedRows[0]?.next_probe_at, '新增 Key 必须立即进入 Key 级探测队列')
+  const dueKeyProbe = apiKeyRuntimeStateRepository.listAccountApiKeyRuntimeStatesDueForProbe(10)
+    .find((item) => item.accountId === multiKeyAccount.id)
+  assert(dueKeyProbe, '新增 Key 必须可由 Key 级后台探测领取')
+  assert.equal(dueKeyProbe.status, 'unverified')
+  assert.equal(dueKeyProbe.keyIndex, 2)
+
+  const replaceOneKey = await patchRepository.patchAccountManagementAsync(multiKeyAccount.id, {
+    expectedConfigRevision: 2,
+    credentialsPatch: {
+      api_keys: [
+        'sk-account-management-patch-key-a',
+        'sk-account-management-patch-key-c',
+        'sk-account-management-patch-key-d'
+      ]
+    }
+  }, access)
+  assert(replaceOneKey)
+  assert.equal(replaceOneKey.status, 'active', '仍保留正常 Key 时替换其他 Key 不得改变账户状态')
+  assert.equal(replaceOneKey.healthCheckRequired, false)
+  const replacementState = database.prepare(`
+    SELECT status
+    FROM account_api_key_runtime_states
+    WHERE account_id = ?
+      AND key_index = 2
+  `).get(multiKeyAccount.id) as { status?: string } | undefined
+  assert.equal(replacementState?.status, 'unverified', '替换进来的 Key 必须保持未验证')
+  const replacementIndexes = database.prepare(`
+    SELECT key_index
+    FROM account_api_key_runtime_states
+    WHERE account_id = ?
+    ORDER BY key_index ASC
+  `).all(multiKeyAccount.id) as Array<{ key_index: number }>
+  assert.deepEqual(replacementIndexes.map((row) => row.key_index), [1, 2], '保留 Key 的运行态索引必须随替换后的顺序同步')
+
+  const reorderKeys = await patchRepository.patchAccountManagementAsync(multiKeyAccount.id, {
+    expectedConfigRevision: 3,
+    credentialsPatch: {
+      api_keys: [
+        'sk-account-management-patch-key-d',
+        'sk-account-management-patch-key-c',
+        'sk-account-management-patch-key-a'
+      ]
+    }
+  }, access)
+  assert(reorderKeys)
+  assert.equal(reorderKeys.status, 'active', '仅重排 Key 不得触发账户级检查')
+  assert.equal(reorderKeys.healthCheckRequired, false)
+  const reorderedIndexes = database.prepare(`
+    SELECT key_index
+    FROM account_api_key_runtime_states
+    WHERE account_id = ?
+    ORDER BY key_index ASC
+  `).all(multiKeyAccount.id) as Array<{ key_index: number }>
+  assert.deepEqual(reorderedIndexes.map((row) => row.key_index), [0, 1], '重排 Key 后运行态索引必须同步到管理页输入顺序')
+
+  const replaceAllNormalKeys = await patchRepository.patchAccountManagementAsync(multiKeyAccount.id, {
+    expectedConfigRevision: 4,
+    credentialsPatch: {
+      api_keys: [
+        'sk-account-management-patch-key-c',
+        'sk-account-management-patch-key-d'
+      ]
+    }
+  }, access)
+  assert(replaceAllNormalKeys)
+  assert.equal(replaceAllNormalKeys.status, 'pending_test', '所有正常 Key 均被替换后必须回到账户级检查')
+  assert.equal(replaceAllNormalKeys.healthCheckRequired, true)
 
   database.prepare(`
     UPDATE accounts

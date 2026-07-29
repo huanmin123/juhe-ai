@@ -122,7 +122,7 @@ import type {
 import type { ResourceAuthorizationUsageOptions } from './resource-authorization-usage.repository.js'
 import type { RouteStrategyListOptions, RouteStrategyOptionListOptions } from './route-strategy.repository.js'
 import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from './runtime-logs.repository.js'
-import type { SystemTeamListOptions, SystemTeamMemberHistoryOptions } from './system-team.repository.js'
+import type { SystemTeamListOptions, SystemTeamMemberHistoryOptions, SystemTeamMemberListOptions } from './system-team.repository.js'
 import type { SystemAccountListOptions, SystemAccountListResult, SystemAccountOptionListOptions } from './system-accounts.repository.js'
 import type { SessionWithAccount } from './system-accounts.repository.js'
 import type {
@@ -140,7 +140,6 @@ import type {
 import type {
   SystemMetricsOverview,
   SystemMetricsTrendOverview,
-  UsageStatsOverview,
   UsageStatsOverviewDailyTrendResult,
   UsageStatsOverviewErrorsResult,
   UsageStatsOverviewHourlyTrendResult,
@@ -350,6 +349,7 @@ export type SqliteReadWorkerOperation =
   | {
     type: 'list_system_team_members_read_only'
     id: string
+    options?: SystemTeamMemberListOptions
     access?: AccessScope
   }
   | {
@@ -509,11 +509,6 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'get_usage_stats_timezone_read_only'
-  }
-  | {
-    type: 'get_usage_stats_overview_read_only'
-    access?: AccessScope
-    range: AccountUsageStatsRange
   }
   | {
     type: 'get_usage_stats_overview_summary_read_only'
@@ -968,7 +963,6 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'find_external_integration_source_token_secret_read_only' } ? ExternalIntegrationSourceTokenSecret | undefined :
   T extends { type: 'load_external_integration_source_token_for_auth_read_only' } ? ExternalIntegrationSourceTokenRow | undefined :
   T extends { type: 'get_usage_stats_timezone_read_only' } ? string :
-  T extends { type: 'get_usage_stats_overview_read_only' } ? UsageStatsOverview :
   T extends { type: 'get_usage_stats_overview_summary_read_only' } ? UsageStatsOverviewSummaryResult :
   T extends { type: 'get_usage_stats_overview_daily_trend_read_only' } ? UsageStatsOverviewDailyTrendResult :
   T extends { type: 'get_usage_stats_overview_hourly_trend_read_only' } ? UsageStatsOverviewHourlyTrendResult :

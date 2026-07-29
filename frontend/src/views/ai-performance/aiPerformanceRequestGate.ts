@@ -55,6 +55,9 @@ export function createAiPerformanceRequestGate() {
     expectedRange: { startDate?: string; endDate?: string }
   ): boolean {
     if (!isCurrent(token, currentSignature)) return false
+    if (expectedRange.startDate === undefined && expectedRange.endDate === undefined) {
+      return token.channel === 'base'
+    }
     return expectedRange.startDate === range.startDate && expectedRange.endDate === range.endDate
   }
 

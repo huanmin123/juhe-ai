@@ -162,7 +162,6 @@ import {
 import { findSystemTeamDetail, findSystemTeamSummary, listSystemTeamMemberHistory, listSystemTeamMembers, listSystemTeams, listSystemTeamsPage } from './system-team.repository.js'
 import { getSystemMetricsOverview, getSystemMetricsTrend } from './system-metrics.repository.js'
 import {
-  getUsageStatsOverview,
   getUsageStatsOverviewDailyTrend,
   getUsageStatsOverviewErrors,
   getUsageStatsOverviewHourlyTrend,
@@ -278,7 +277,7 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
     case 'find_system_team_detail_read_only':
       return findSystemTeamDetail(operation.id, operation.access)
     case 'list_system_team_members_read_only':
-      return listSystemTeamMembers(operation.id, operation.access)
+      return listSystemTeamMembers(operation.id, operation.options, operation.access)
     case 'list_system_team_member_history_read_only':
       return listSystemTeamMemberHistory(operation.id, operation.options, operation.access)
     case 'list_audit_logs_read_only':
@@ -349,8 +348,6 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return loadExternalIntegrationSourceTokenForAuthReadOnly(operation.token)
     case 'get_usage_stats_timezone_read_only':
       return usageStatsTimezone()
-    case 'get_usage_stats_overview_read_only':
-      return getUsageStatsOverview(operation.access, operation.range)
     case 'get_usage_stats_overview_summary_read_only':
       return getUsageStatsOverviewSummary(operation.access, operation.range)
     case 'get_usage_stats_overview_daily_trend_read_only':

@@ -45,6 +45,7 @@ try {
       api_key: 'sk-usage-record-batch-lookup',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.1'],
     groupId: group.id
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {

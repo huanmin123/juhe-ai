@@ -510,10 +510,14 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[], clien
     ? await readUsageHealthCheckSettingsSnapshot()
     : undefined
 
+  for (const shardRows of writePlan.rowsByShard.values()) {
+    collectPostgresUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, shardRows.rows)
+  }
+
   await client.transaction(async (tx) => {
+    await lockPostgresUsageRecordBusinessSideEffectAccounts(tx, accountLastUsedAt, accountHealthSuccessAt)
     for (const shardRows of writePlan.rowsByShard.values()) {
       await insertPostgresUsageRecordRows(tx, shardRows.rows)
-      collectPostgresUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, shardRows.rows)
     }
     await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt, healthCheckSettings)
   })
@@ -1163,6 +1167,23 @@ function collectPostgresUsageRecordBusinessSideEffects(
       mergePostgresMaxIsoValue(accountHealthSuccessAt, row.accountId, row.accountHealthSuccessAt)
     }
   }
+}
+
+async function lockPostgresUsageRecordBusinessSideEffectAccounts(
+  client: DatabaseClient,
+  accountLastUsedAt: Map<string, string>,
+  accountHealthSuccessAt: Map<string, string>
+): Promise<void> {
+  const accountIds = [...new Set([...accountLastUsedAt.keys(), ...accountHealthSuccessAt.keys()])]
+  if (accountIds.length === 0) return
+  await client.query(`
+    SELECT id
+    FROM juhe_business.accounts
+    WHERE id IN (${client.dialect.bindPlaceholders(accountIds.length)})
+      AND deleted_at IS NULL
+    ORDER BY id
+    FOR NO KEY UPDATE
+  `, accountIds)
 }
 
 function mergePostgresMaxIsoValue(target: Map<string, string>, key: string, value: string): void {

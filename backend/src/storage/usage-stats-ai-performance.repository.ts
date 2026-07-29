@@ -235,16 +235,10 @@ export function getAiPerformanceSeries(
   accountIds: string[]
 ): AiPerformanceSeries {
   const database = getStatsDatabase()
-  const timezone = usageStatsTimezone()
   const scope = aiPerformanceScope(access)
   const hourBuckets = hourBucketsForRange(range)
   const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
-  const selectedRows = loadSelectedAiPerformanceAccounts(
-    database,
-    scope,
-    hourKey(new Date(Date.now() - 6 * DAY_MS), timezone),
-    selectedAccountIds
-  )
+  const selectedRows = loadExplicitAiPerformanceAccounts(scope, selectedAccountIds)
   const accounts = selectedRows.map((row) => mapAiPerformanceAccount(row, scope))
   const hourlyRows = accounts.length
     ? loadAiPerformanceHourlyRows(database, scope, accounts.map((account) => account.id), firstHour(range, hourBuckets), lastHour(range, hourBuckets))
@@ -278,12 +272,7 @@ export async function getAiPerformanceSeriesAsync(
   const scope = aiPerformanceScope(access)
   const hourBuckets = hourBucketsForRange(normalizedRange)
   const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
-  const selectedRows = await loadSelectedAiPerformanceAccountsAsync(
-    client,
-    scope,
-    hourKey(new Date(Date.now() - 6 * DAY_MS), timezone),
-    selectedAccountIds
-  )
+  const selectedRows = await loadExplicitAiPerformanceAccountsAsync(client, scope, selectedAccountIds)
   const accounts = selectedRows.map((row) => mapAiPerformanceAccount(row, scope))
   const hourlyRows = accounts.length
     ? await loadAiPerformanceHourlyRowsAsync(client, scope, accounts.map((account) => account.id), firstHour(normalizedRange, hourBuckets), lastHour(normalizedRange, hourBuckets))
@@ -300,17 +289,15 @@ export function listAiPerformanceAccountOptions(
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): AiPerformanceAccountOption[] {
   const database = getStatsDatabase()
-  const timezone = usageStatsTimezone()
   const scope = aiPerformanceScope(access)
-  const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
   const searchLimit = boundedAccountOptionLimit(options.limit)
-  const searchRows = loadAiPerformanceAccountOptionRows(database, scope, activeSinceHour, {
+  const searchRows = loadAiPerformanceAccountOptionRows(database, scope, {
     keyword: options.keyword?.trim(),
     limit: searchLimit
   })
   const selectedRows = selectedAccountIds.length
-    ? loadSelectedAiPerformanceAccounts(database, scope, activeSinceHour, selectedAccountIds)
+    ? loadExplicitAiPerformanceAccounts(scope, selectedAccountIds)
     : []
   const rows = dedupeAiPerformanceAccountRows([...searchRows, ...selectedRows])
   return rows.map((row) => mapAiPerformanceAccount(row, scope))
@@ -331,21 +318,14 @@ export async function listAiPerformanceAccountOptionsAsync(
     return listAiPerformanceAccountOptions(access, options)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const timezone = await usageStatsTimezoneAsync()
   const scope = aiPerformanceScope(access)
-  const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
   const searchLimit = boundedAccountOptionLimit(options.limit)
-  const [searchRows, selectedRows] = await Promise.all([
-    loadAiPerformanceAccountOptionRowsAsync(client, scope, activeSinceHour, {
-      keyword: options.keyword?.trim(),
-      limit: searchLimit
-    }),
-    selectedAccountIds.length
-      ? loadSelectedAiPerformanceAccountsAsync(client, scope, activeSinceHour, selectedAccountIds)
-      : Promise.resolve([])
-  ])
-  const rows = dedupeAiPerformanceAccountRows([...searchRows, ...selectedRows])
+  const rows = await loadAiPerformanceAccountOptionRowsAsync(client, scope, {
+    keyword: options.keyword?.trim(),
+    limit: searchLimit,
+    selectedAccountIds
+  })
   return rows.map((row) => mapAiPerformanceAccount(row, scope))
 }
 
@@ -460,6 +440,18 @@ function loadDefaultAiPerformanceAccountsFromRankSnapshot(database: DatabaseSync
 }
 
 async function loadDefaultAiPerformanceAccountsFromRankSnapshotAsync(client: DatabaseClient, scope: AiPerformanceScope, limit: number): Promise<AiPerformanceAccountRow[]> {
+  return mergeAiPerformanceStatsWithAccountsAsync(
+    client,
+    await loadDefaultAiPerformanceAccountCandidatesAsync(client, scope, limit),
+    scope
+  )
+}
+
+async function loadDefaultAiPerformanceAccountCandidatesAsync(
+  client: DatabaseClient,
+  scope: AiPerformanceScope,
+  limit: number
+): Promise<Array<{ id: string; requestCountLast7d: number; lastStatHour: string | null; rank: number }>> {
   const rows = await client.query<{ scope_id: string; request_count_last_7d: number | string; last_stat_hour: string | null; rank: number | string }>(`
     SELECT scope_id, metric_value AS request_count_last_7d, snapshot_at AS last_stat_hour, rank
     FROM ${statsTable(client, 'usage_rank_snapshots')}
@@ -478,12 +470,12 @@ async function loadDefaultAiPerformanceAccountsFromRankSnapshotAsync(client: Dat
     ORDER BY rank ASC
     LIMIT ?
   `, [scope.systemAccountId, scope.scopeType, scope.systemAccountId, scope.scopeType, limit])
-  return mergeAiPerformanceStatsWithAccountsAsync(client, rows.map((row) => ({
+  return rows.map((row) => ({
     id: row.scope_id,
     requestCountLast7d: Number(row.request_count_last_7d ?? 0),
     lastStatHour: row.last_stat_hour ?? null,
     rank: Number(row.rank ?? 0)
-  })), scope)
+  }))
 }
 
 function loadSelectedAiPerformanceAccounts(database: DatabaseSync, scope: AiPerformanceScope, activeSinceHour: string, accountIds: string[]): AiPerformanceAccountRow[] {
@@ -501,6 +493,16 @@ function loadSelectedAiPerformanceAccounts(database: DatabaseSync, scope: AiPerf
   return merged.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
 }
 
+function loadExplicitAiPerformanceAccounts(scope: AiPerformanceScope, accountIds: string[]): AiPerformanceAccountRow[] {
+  const merged = mergeAiPerformanceStatsWithAccounts(accountIds.map((id) => ({
+    id,
+    requestCountLast7d: 0,
+    lastStatHour: null
+  })), scope)
+  const order = new Map(accountIds.map((id, index) => [id, index]))
+  return merged.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+}
+
 async function loadSelectedAiPerformanceAccountsAsync(client: DatabaseClient, scope: AiPerformanceScope, activeSinceHour: string, accountIds: string[]): Promise<AiPerformanceAccountRow[]> {
   void activeSinceHour
   const rows = await loadUsageRankMetricsByScopeIdsAsync(client, scope.systemAccountId, scope.scopeType, 'last7d', 'request_count', accountIds)
@@ -512,6 +514,16 @@ async function loadSelectedAiPerformanceAccountsAsync(client: DatabaseClient, sc
       lastStatHour: row?.snapshotAt ?? null
     }
   }), scope)
+  const order = new Map(accountIds.map((id, index) => [id, index]))
+  return merged.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+}
+
+async function loadExplicitAiPerformanceAccountsAsync(client: DatabaseClient, scope: AiPerformanceScope, accountIds: string[]): Promise<AiPerformanceAccountRow[]> {
+  const merged = await mergeAiPerformanceStatsWithAccountsAsync(client, accountIds.map((id) => ({
+    id,
+    requestCountLast7d: 0,
+    lastStatHour: null
+  })), scope)
   const order = new Map(accountIds.map((id, index) => [id, index]))
   return merged.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
 }
@@ -641,7 +653,6 @@ function loadAiPerformanceHourlyRowsAsync(client: DatabaseClient, scope: AiPerfo
 function loadAiPerformanceAccountOptionRows(
   database: DatabaseSync,
   scope: AiPerformanceScope,
-  activeSinceHour: string,
   options: { keyword?: string; limit: number }
 ): AiPerformanceAccountRow[] {
   const keyword = options.keyword?.trim()
@@ -678,77 +689,79 @@ function loadAiPerformanceAccountOptionRows(
     ...sourceInstanceRows.map((row) => row.id)
   ]).slice(0, options.limit)
   return accountIds.length
-    ? loadSelectedAiPerformanceAccounts(database, scope, activeSinceHour, accountIds)
+    ? loadExplicitAiPerformanceAccounts(scope, accountIds)
     : []
 }
 
 async function loadAiPerformanceAccountOptionRowsAsync(
   client: DatabaseClient,
   scope: AiPerformanceScope,
-  activeSinceHour: string,
-  options: { keyword?: string; limit: number }
+  options: { keyword?: string; limit: number; selectedAccountIds: string[] }
 ): Promise<AiPerformanceAccountRow[]> {
   const keyword = options.keyword?.trim()
   if (!keyword) {
-    return loadDefaultAiPerformanceAccountsAsync(client, scope, options.limit)
+    const defaultCandidates = await loadDefaultAiPerformanceAccountCandidatesAsync(client, scope, options.limit)
+    const accountIds = uniqueNonEmpty([
+      ...defaultCandidates.map((row) => row.id),
+      ...options.selectedAccountIds
+    ])
+    return loadExplicitAiPerformanceAccountsAsync(client, scope, accountIds)
   }
 
   const keywordPrefix = normalizeAccountNamePrefix(keyword)
   const accountsTable = businessTable(client, 'accounts')
-  const accountRows = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID
-    ? await client.query<{ id: string }>(`
-      SELECT accounts.id
+  const prefixParams = () => [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start]
+  const candidateSql: string[] = []
+  const candidateParams: unknown[] = []
+  if (scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID) {
+    candidateSql.push(`
+      SELECT accounts.id, accounts.name AS sort_name, 0 AS source_priority
       FROM ${accountsTable} accounts
       WHERE accounts.deleted_at IS NULL
         AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
-      ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
-      LIMIT ?
-    `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])
-    : uniqueNonEmpty([
-      ...(await client.query<{ id: string }>(`
-        SELECT accounts.id
-        FROM ${accountsTable} accounts
-        WHERE accounts.system_account_id = ?
-          AND accounts.deleted_at IS NULL
-          AND accounts.authorization_instance_authorization_id IS NULL
-          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
-        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
-        LIMIT ?
-      `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
-      ...(await client.query<{ id: string }>(`
-        SELECT accounts.id
-        FROM ${accountsTable} accounts
-        WHERE accounts.system_account_id = ?
-          AND accounts.deleted_at IS NULL
-          AND accounts.authorization_instance_authorization_id IS NOT NULL
-          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
-        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
-        LIMIT ?
-      `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
-      ...(await client.query<{ id: string }>(`
-        SELECT accounts.id
-        FROM ${accountsTable} accounts
-        WHERE accounts.deleted_at IS NULL
-          AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
-          AND EXISTS (
-            SELECT 1
-            FROM ${businessTable(client, 'group_accounts')} visible_group_accounts
-            INNER JOIN ${businessTable(client, 'resource_authorizations')} visible_group_authorization_rows
-              ON visible_group_authorization_rows.resource_type = 'group'
-              AND visible_group_authorization_rows.resource_id = visible_group_accounts.group_id
-              AND visible_group_authorization_rows.grantee_system_account_id = ?
-              AND visible_group_authorization_rows.status = 'active'
-              AND (visible_group_authorization_rows.expires_at IS NULL OR visible_group_authorization_rows.expires_at > ?)
-            WHERE visible_group_accounts.account_id = accounts.id
-              AND visible_group_accounts.enabled = 1
-          )
-        ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
-        LIMIT ?
-      `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, scope.systemAccountId, nowIso(), options.limit])).map((row) => row.id)
-    ]).slice(0, options.limit).map((id) => ({ id }))
-  const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
-  const sourceInstanceRows = await client.query<{ id: string }>(`
-    SELECT instance_accounts.id
+    `)
+    candidateParams.push(...prefixParams())
+  } else {
+    candidateSql.push(`
+      SELECT accounts.id, accounts.name AS sort_name, 0 AS source_priority
+      FROM ${accountsTable} accounts
+      WHERE accounts.system_account_id = ?
+        AND accounts.deleted_at IS NULL
+        AND accounts.authorization_instance_authorization_id IS NULL
+        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+    `)
+    candidateParams.push(scope.systemAccountId, ...prefixParams())
+    candidateSql.push(`
+      SELECT accounts.id, accounts.name AS sort_name, 1 AS source_priority
+      FROM ${accountsTable} accounts
+      WHERE accounts.system_account_id = ?
+        AND accounts.deleted_at IS NULL
+        AND accounts.authorization_instance_authorization_id IS NOT NULL
+        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+    `)
+    candidateParams.push(scope.systemAccountId, ...prefixParams())
+    candidateSql.push(`
+      SELECT accounts.id, accounts.name AS sort_name, 2 AS source_priority
+      FROM ${accountsTable} accounts
+      WHERE accounts.deleted_at IS NULL
+        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        AND EXISTS (
+          SELECT 1
+          FROM ${businessTable(client, 'group_accounts')} visible_group_accounts
+          INNER JOIN ${businessTable(client, 'resource_authorizations')} visible_group_authorization_rows
+            ON visible_group_authorization_rows.resource_type = 'group'
+            AND visible_group_authorization_rows.resource_id = visible_group_accounts.group_id
+            AND visible_group_authorization_rows.grantee_system_account_id = ?
+            AND visible_group_authorization_rows.status = 'active'
+            AND (visible_group_authorization_rows.expires_at IS NULL OR visible_group_authorization_rows.expires_at > ?)
+          WHERE visible_group_accounts.account_id = accounts.id
+            AND visible_group_accounts.enabled = 1
+        )
+    `)
+    candidateParams.push(...prefixParams(), scope.systemAccountId, nowIso())
+  }
+  candidateSql.push(`
+    SELECT instance_accounts.id, source_accounts.name AS sort_name, ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? 1 : 3} AS source_priority
     FROM ${accountsTable} source_accounts
     INNER JOIN ${accountsTable} instance_accounts
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
@@ -756,15 +769,31 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       AND instance_accounts.deleted_at IS NULL
       AND source_accounts.name COLLATE "C" >= ? AND source_accounts.name COLLATE "C" < ? AND starts_with(source_accounts.name, ?)
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
-    ORDER BY source_accounts.name COLLATE "C" ASC, instance_accounts.id ASC
+  `)
+  candidateParams.push(...prefixParams(), ...(scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]))
+  const candidateRows = await client.query<{ id: string }>(`
+    SELECT id
+    FROM (
+      SELECT
+        id,
+        sort_name,
+        source_priority,
+        ROW_NUMBER() OVER (
+          PARTITION BY id
+          ORDER BY source_priority ASC, sort_name COLLATE "C" ASC, id ASC
+        ) AS duplicate_rank
+      FROM (${candidateSql.join('\nUNION ALL\n')}) candidate_rows
+    ) ranked_candidates
+    WHERE duplicate_rank = 1
+    ORDER BY source_priority ASC, sort_name COLLATE "C" ASC, id ASC
     LIMIT ?
-  `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...sourceInstanceParams, options.limit])
+  `, [...candidateParams, options.limit])
   const accountIds = uniqueNonEmpty([
-    ...accountRows.map((row) => row.id),
-    ...sourceInstanceRows.map((row) => row.id)
-  ]).slice(0, options.limit)
+    ...candidateRows.map((row) => row.id),
+    ...options.selectedAccountIds
+  ])
   return accountIds.length
-    ? loadSelectedAiPerformanceAccountsAsync(client, scope, activeSinceHour, accountIds)
+    ? loadExplicitAiPerformanceAccountsAsync(client, scope, accountIds)
     : []
 }
 

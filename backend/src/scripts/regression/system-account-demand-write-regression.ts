@@ -88,6 +88,26 @@ try {
   assert(address && typeof address !== 'string', '系统账户按需写回归服务地址不可用')
   const baseUrl = `http://127.0.0.1:${address.port}`
 
+  const created = await postEnvelope<Record<string, unknown>>(
+    baseUrl,
+    '/__aisys__/api/system-accounts',
+    cookie,
+    {
+      username: `system_account_created_${Date.now()}`,
+      displayName: `创建回执用户${Date.now()}`,
+      description: '创建回执说明',
+      password: 'password',
+      role: 'user',
+      status: 'active',
+      mustChangePassword: true,
+      imageGenerationEnabled: false
+    }
+  )
+  assert.equal(typeof created.editVersion, 'string', '创建回执必须直接携带列表编辑版本')
+  assert.equal(Object.hasOwn(created, 'createdAt'), false, '创建回执不得返回列表不使用的 createdAt')
+  assert.equal(Object.hasOwn(created, 'updatedAt'), false, '创建回执必须以 editVersion 代替详情 updatedAt')
+  assert.equal(Object.hasOwn(created, 'lastLoginAt'), false, '创建回执不得返回无消费者的登录详情')
+
   const page = await getEnvelope<SystemAccountListResult>(
     baseUrl,
     `/__aisys__/api/system-accounts?keyword=${encodeURIComponent(target.username)}&page=1&pageSize=20`,
@@ -351,6 +371,17 @@ async function patchEnvelope<T>(baseUrl: string, path: string, cookie: string, b
   const response = await patchRawEnvelope(baseUrl, path, cookie, body)
   assert.equal(response.status, 200, `PATCH ${path} 失败：${response.text}`)
   return (JSON.parse(response.text) as ApiEnvelope<T>).data
+}
+
+async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert.equal(response.status, 201, `POST ${path} 失败：${text}`)
+  return (JSON.parse(text) as ApiEnvelope<T>).data
 }
 
 async function patchRawEnvelope(baseUrl: string, path: string, cookie: string, body: unknown): Promise<{ status: number; text: string }> {

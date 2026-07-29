@@ -45,9 +45,9 @@ try {
   const detail = repositories.findSystemTeamDetail(team.id, access)
   assert(detail, '详情应返回新建团队')
   assert.deepEqual(Object.keys(detail).sort(), ['createdAt', 'description', 'id', 'memberCount', 'name', 'status', 'updatedAt'], '基础详情不得提前返回成员集合')
-  const members = repositories.listSystemTeamMembers(team.id, access)
+  const members = repositories.listSystemTeamMembers(team.id, {}, access)
   assert(members, '成员接口应返回新建团队成员')
-  assert.deepEqual(Object.keys(members).sort(), ['id', 'items', 'memberCount', 'updatedAt'], '成员集合必须走独立按需响应')
+  assert.deepEqual(Object.keys(members).sort(), ['hasMore', 'id', 'items', 'memberCount', 'page', 'pageSize', 'total', 'updatedAt'], '成员集合必须走独立按需分页响应')
   assert.equal(members.items.length, 1, '成员接口应返回有效成员')
   assert.deepEqual(Object.keys(members.items[0] ?? {}).sort(), ['id', 'joinedAt', 'systemAccountId', 'systemAccountName'], '成员 DTO 只返回四个字段')
   const activeMemberId = members.items[0]?.id

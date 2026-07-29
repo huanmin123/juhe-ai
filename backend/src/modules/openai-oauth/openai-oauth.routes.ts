@@ -25,7 +25,7 @@ import {
   type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
-import { isManagedOpenAIOAuthRefreshErrorCode, isOpenAIOAuthRefreshLocalConfigurationError, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
+import { isManagedOpenAIOAuthRefreshErrorCode, isOpenAIOAuthRefreshLocalConfigurationError, openAIOAuthRefreshManagedErrorCodes, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
 
 export const openAIOAuthRouter = Router()
 
@@ -575,6 +575,7 @@ async function rotateOpenAIOAuthAccountCredentials(
     expectedAccountType: 'oauth',
     expectedProviderProtocolProfileId: account.providerProtocolProfileId,
     credentials,
+    recoverableLastErrorCodes: openAIOAuthRefreshManagedErrorCodes,
     access
   })
   if (!updated) {

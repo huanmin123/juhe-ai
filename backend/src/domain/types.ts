@@ -1,7 +1,7 @@
 export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' | 'quality_isolated'
-export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
+export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled' | 'unchanged'
 export const ACCOUNT_CLIENT_COMPATIBILITIES = ['openai_standard', 'codex_responses'] as const
 export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[number]
@@ -281,6 +281,10 @@ export interface SystemTeamMembersResult {
   memberCount: number
   updatedAt: string
   items: SystemTeamMemberDetail[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export interface SystemTeamMemberHistoryItem extends SystemTeamMemberDetail {
@@ -590,7 +594,6 @@ export interface AiHealthAccountRow {
 
 export interface AiHealthListResult {
   items: AiHealthAccountRow[]
-  total: number
   hasMore: boolean
   page: number
   pageSize: number

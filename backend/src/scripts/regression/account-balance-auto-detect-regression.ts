@@ -46,10 +46,32 @@ assert.deepEqual(detected, {
   snapshot: { status: 'fresh', remainingUsd: '7.310000', rawRemaining: '7.31', rawUnit: 'usd', basis: 'budget' }
 })
 
-const unsupported = await detectAccountBalanceAdapter(candidate, {
-  queryBuiltin: async () => { throw new Error('all adapters unsupported') }
+const unlimited = await detectAccountBalanceAdapter(candidate, {
+  queryBuiltin: async () => ({
+    adapter: 'user_balance',
+    snapshot: { status: 'unlimited', basis: 'api_key_quota' }
+  })
 })
-assert.equal(unsupported, undefined, '只有 fresh 或 unlimited 才能自动开启')
+assert.deepEqual(unlimited, {
+  config: { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'user_balance' },
+  snapshot: { status: 'unlimited', basis: 'api_key_quota' }
+}, '账户级 unlimited 应作为严格命中自动开启')
+
+for (const snapshot of [
+  { status: 'unsupported', errorMessage: 'all adapters unsupported' },
+  { status: 'failed', errorMessage: 'upstream failed' },
+  { status: 'pending', consecutiveTransientFailures: 1 }
+] as const) {
+  const unsupported = await detectAccountBalanceAdapter(candidate, {
+    queryBuiltin: async () => ({ adapter: 'user_balance', snapshot })
+  })
+  assert.equal(unsupported, undefined, `业务状态 ${snapshot.status} 不能自动开启`)
+}
+
+const rejected = await detectAccountBalanceAdapter(candidate, {
+  queryBuiltin: async () => { throw new Error('upstream request failed') }
+})
+assert.equal(rejected, undefined, '查询异常不能自动开启')
 
 const healthSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
 assert.match(healthSource, /account\.status === 'pending_test'.*enqueueAccountBalanceAutoDetection/s, '只有首次激活成功应投递余额自动探测')

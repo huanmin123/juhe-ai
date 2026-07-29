@@ -41,6 +41,7 @@
           :max="20"
           max-tag-count="responsive"
           placeholder="输入账户名称添加账户"
+          :record-preference="false"
           @change="handleAddedAccountsChange"
           @search="emit('account-search', $event)"
           @dropdown-visible-change="emit('account-dropdown-visible-change', $event)"

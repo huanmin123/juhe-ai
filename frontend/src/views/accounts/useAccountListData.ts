@@ -19,6 +19,7 @@ import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
 import {
+  accountListHasAccumulatedPageWindow,
   accountListPageWindowChanged,
   mergeAccountListPageWithRevisionOverlays,
   replaceAccountBalanceSnapshot,
@@ -283,6 +284,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   async function reloadAccountPageAfterMutation(): Promise<boolean> {
+    if (accountListHasAccumulatedPageWindow(
+      accounts.value.length,
+      accountPagination.current,
+      accountPagination.pageSize
+    )) {
+      resetAccountPagination()
+    }
     return loadData({ forceData: true, quiet: true, requestIdentity: listMutationRevision })
   }
 

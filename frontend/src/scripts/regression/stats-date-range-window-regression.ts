@@ -73,8 +73,8 @@ assert.match(
 
 assert.match(
   systemMetricsViewSource,
-  /api\.stats\.systemMetricsTrend\(rangeParams\)/,
-  'system metrics must load the split trend endpoint'
+  /api\.stats\.systemMetricsTrend\(rangeParams,\s*\{\s*signal:\s*controller\.signal\s*\}\)/,
+  'system metrics must load the split trend endpoint with cancellation'
 )
 
 assert.match(

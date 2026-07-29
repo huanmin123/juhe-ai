@@ -1608,10 +1608,11 @@ function activateChatPage(): void {
   window.addEventListener('click', handleWindowConversationMenuDismiss)
   window.addEventListener('blur', handleWindowConversationMenuDismiss)
   contextStatusTimer = window.setInterval(() => {
-    void refreshContextStatus()
     const conversation = selectedConversation.value
     const runtime = conversation && chatGenerationRuntime.get(conversation.systemAccountId, conversation.id)
-    if (conversation && runtime?.reconciliationReason) requestRuntimeReconciliationSync(runtime)
+    if (!conversation || !runtime?.reconciliationReason) return
+    void refreshContextStatus(conversation.id)
+    requestRuntimeReconciliationSync(runtime)
   }, 5_000)
   subscribeSelectedRuntime()
   broadcastUnsubscribe = cacheBroadcast.subscribe((payload) => {

@@ -1,5 +1,10 @@
 <template>
-  <div v-if="compact" class="metric-card-grid compact">
+  <a-alert v-if="error" :message="error" type="error" show-icon class="summary-error">
+    <template v-if="onRetry" #action>
+      <a-button size="small" @click="onRetry">重试</a-button>
+    </template>
+  </a-alert>
+  <div v-else-if="compact" class="metric-card-grid compact">
     <a-card v-for="item in cards" :key="item.key" class="metric-card compact-card" :loading="loading">
       <div class="metric-label">{{ item.label }}</div>
       <div class="metric-value">{{ item.value }}</div>
@@ -29,6 +34,8 @@ defineProps<{
   cards: StatsSummaryCardItem[]
   loading: boolean
   compact?: boolean
+  error?: string
+  onRetry?: () => void
 }>()
 </script>
 
@@ -37,6 +44,10 @@ defineProps<{
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 16px;
+}
+
+.summary-error {
+  margin-bottom: 16px;
 }
 
 .metric-card {

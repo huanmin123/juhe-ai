@@ -52,7 +52,8 @@ assert.match(
 assert.match(balanceRoutesSource, /post\('\/balance\/test-draft'/, '新增和编辑表单必须使用独立草稿余额测试接口')
 assert.match(balanceRoutesSource, /prepareAccountDraftTestSnapshotAsync/, '草稿余额测试必须使用当前表单账户快照')
 assert.match(balanceRoutesSource, /testAccountBalanceCandidate/, '草稿余额测试必须调用无持久化查询入口')
-assert.match(balanceRoutesSource, /refreshAccountBalanceCandidate\(candidate, \{ mode: 'manual' \}\)/, '列表人工刷新必须使用独立 manual 模式')
+  assert.match(balanceRoutesSource, /refreshAccountBalanceCandidateWithOutcome\(candidate, \{ mode: 'manual' \}\)/, '列表人工刷新必须使用可验证持久化结果的 manual 模式')
+  assert.match(balanceRoutesSource, /if \(!result\.persisted\)[\s\S]*res\.status\(409\)/, '人工刷新未落盘时必须返回冲突，不能冒充刷新成功')
 assert.match(balanceRoutesSource, /findAccountBalanceManualRefreshCandidateAsync/, '列表人工刷新必须使用不受账户运行状态限制的候选入口')
 assert.ok(!balanceRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '余额路由不能在查询时保存账户配置')
 assert.ok(!balanceRoutesSource.includes('delete_account_balance_snapshot'), '余额测试不能删除或替换已保存快照')
@@ -61,9 +62,10 @@ assert.match(balanceRepositorySource, /persistAccountBalanceRefreshWithSnapshotA
 assert.match(balanceServiceSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]+persistAccountBalanceRefreshWithSnapshotAsync/, 'PostgreSQL 余额刷新必须使用跨 schema 原子提交入口')
 assert.ok(!accountRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '账户路由不应在账户保存后进行第二次余额配置写入')
 assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at/)
-assert.match(accountRoutesSource, /balanceDecision\.autoDisabledForMultipleApiKeys/, '账户编辑路由必须接受 repository 之前的多 Key 自动关闭决策')
-assert.match(accountRoutesSource, /const balanceIdentityChanged = !isDeepStrictEqual/, '账户保存必须按余额查询身份变化决定是否清理旧快照')
-assert.match(accountRoutesSource, /if \(balanceIdentityChanged\) \{[\s\S]*cleanupAccountBalanceSnapshotAfterSave/, '只有真实余额身份变化才允许清理旧快照')
+  const accountManagementPatchSource = readFileSync(resolve('src/storage/account-management-patch.repository.ts'), 'utf8')
+  assert.match(accountManagementPatchSource, /balanceDecision\.autoDisabledForMultipleApiKeys/, '账户更新必须接受集中写入层的多 Key 自动关闭决策')
+  assert.match(accountManagementPatchSource, /balanceIdentityChanged = !isDeepStrictEqual/, '账户保存必须按余额查询身份变化决定是否清理旧快照')
+  assert.match(accountRoutesSource, /if \(account\.balanceIdentityChanged\) \{[\s\S]*cleanupAccountBalanceSnapshotAfterSave/, '只有真实余额身份变化才允许清理旧快照')
 assert.match(balanceRepositorySource, /listAccountsNeedingBalanceRefreshRecoveryAsync/, '余额 worker 必须能自愈活动账户缺快照且无刷新计划的状态')
 assert.match(balanceRepositorySource, /postgresBalanceRecoveryAfterId/, 'PostgreSQL 自愈候选也必须使用轮转游标，不能固定扫描最小 ID 前缀')
 assert.match(balanceRefreshJobSource, /const refreshBatchSize = 12/, '余额刷新单轮候选必须受最坏耗时约束')
@@ -120,7 +122,7 @@ try {
   const dueA = create('due-a')
   const dueB = create('due-b')
   const disabled = create('disabled')
-  const oauth = create('oauth', 'oauth', { access_token: 'oauth-token', refresh_token: 'refresh-token', base_url: 'https://relay.example/v1' })
+  const oauth = create('oauth', 'oauth', { access_token: 'oauth-token', refresh_token: 'refresh-token', account_id: 'oauth-balance-regression', base_url: 'https://relay.example/v1' })
   const multi = create('multi', 'api_key', { api_keys: ['sk-a', 'sk-b'], api_key: 'sk-a', base_url: 'https://relay.example/v1' })
   const future = create('future')
   const autoDetect = create('auto-detect')
@@ -182,6 +184,12 @@ try {
     /stats snapshot write failed/,
     '余额配置或快照持久化失败必须冒泡，不能改写成账户级 transient 失败'
   )
+  const persistenceRecoveryAt = database.prepare(`
+    SELECT balance_query_next_refresh_at
+    FROM accounts
+    WHERE id = ?
+  `).get(persistenceFailure.id)?.balance_query_next_refresh_at as string | undefined
+  assert.ok(persistenceRecoveryAt && Date.parse(persistenceRecoveryAt) <= Date.now(), '快照写入失败后必须把余额刷新重新安排为立即可恢复')
   statsDatabase.exec('DROP TRIGGER reject_balance_snapshot_insert')
 
   mockState.hang = true
@@ -264,20 +272,23 @@ try {
   }
   for (const status of ['local_suppressed', 'precheck_pending', 'half_open', 'precheck_failed'] as const) {
     const refreshedIds: string[] = []
-    const nextRefreshBefore = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(dueA.id)?.balance_query_next_refresh_at
+    const deferredIds: string[] = []
     const summary = await balanceRefreshJob.runAccountBalanceRefresh({
       listRecoveryCandidates: async () => [],
       listDueCandidates: async () => [runtimeCandidate],
       loadRuntimeAvailability: async () => ({ available: true, values: { [dueA.id]: { status } } }),
-      refreshCandidate: async (candidate) => { refreshedIds.push(candidate.id) }
+      refreshCandidate: async (candidate) => { refreshedIds.push(candidate.id) },
+      deferCandidate: async (candidate) => {
+        deferredIds.push(candidate.id)
+        return true
+      }
     })
-    const nextRefreshAfter = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(dueA.id)?.balance_query_next_refresh_at
     assert.deepEqual(refreshedIds, [], `${status} 账户必须延后且不得调用余额刷新`)
+    assert.deepEqual(deferredIds, [dueA.id], `${status} 账户必须写入可恢复的下一次余额刷新计划`)
     assert.equal(summary.selectedCount, 1)
     assert.equal(summary.processedCount, 0)
     assert.equal(summary.deferredCount, 1)
     assert.equal(summary.outcome, 'partial', `${status} 账户延后应显示部分完成，不能冒充全部成功`)
-    assert.equal(nextRefreshAfter, nextRefreshBefore, `${status} 账户延后时不得推进余额刷新周期`)
   }
 
   const isolatedFailureSummary = await balanceRefreshJob.runAccountBalanceRefresh({
@@ -374,14 +385,12 @@ try {
   })
   assert.deepEqual(
     (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id),
-    [recoverMissing.id, recoverPaused.id].sort(),
+    [recoverInactive.id, recoverMissing.id, recoverPaused.id].sort(),
     '历史 unsupported 停止计划必须进入自愈，余额失败不能永久移出调度'
   )
-  database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(recoverInactive.id)
-  assert.deepEqual(
-    new Set((await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id)),
-    new Set([recoverMissing.id, recoverPaused.id, recoverInactive.id]),
-    '非活动缺快照账户恢复活动后应进入自愈候选'
+  assert.ok(
+    (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).some((item: { id: string }) => item.id === recoverInactive.id),
+    '用户已开启余额查询的停用账户也必须进入自愈候选'
   )
   const nullGenerationCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(recoverMissing.id)
   assert.ok(nullGenerationCandidate)
@@ -648,7 +657,7 @@ try {
   const cursorStarvationDueAt = '2026-07-09T00:00:00.000Z'
   for (const account of dueCursorCandidates) configure.run('active', builtinConfig, cursorStarvationDueAt, account.id)
   const dueAcrossSmallPages = new Set<string>()
-  for (let round = 0; round < 4; round += 1) {
+  for (let round = 0; round < 12; round += 1) {
     for (const candidate of balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 2 })) {
       dueAcrossSmallPages.add(candidate.id)
     }
@@ -731,7 +740,7 @@ try {
   })
 
   const due = balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 100 })
-  assert.deepEqual(due.map((item: { id: string }) => item.id), [dueA.id, dueB.id].sort(), '只应领取到期的 active 物理单 API Key 账户')
+  assert.deepEqual(due.map((item: { id: string }) => item.id), [disabled.id, dueA.id, dueB.id].sort(), '显式开启余额的到期物理单 API Key 账户不得受调度状态阻塞')
 
   balanceRepository.replaceAccountBalanceSnapshot({
     accountId: dueA.id,
@@ -807,15 +816,15 @@ try {
       5,
       `HTTP ${upstreamStatus} 不得被解读为鉴权或能力结论，应试完五个内置适配器`
     )
-    assert.equal(statusResult.status, 'fresh', `HTTP ${upstreamStatus} 首次失败应保留最后成功余额`)
-    assert.equal(statusResult.remainingUsd, '6.250000')
-    assert.equal(statusResult.consecutiveTransientFailures, 1)
-    assert.match(statusResult.lastTransientErrorMessage ?? '', new RegExp(`HTTP ${upstreamStatus}`))
+    assert.equal(statusResult.status, 'unsupported', `HTTP ${upstreamStatus} 必须作为完整响应未命中保存，而非伪造 transport 失败`)
+    assert.equal(statusResult.remainingUsd, undefined)
+    assert.equal(statusResult.consecutiveTransientFailures, undefined)
+    assert.match(statusResult.errorMessage ?? '', new RegExp(`HTTP ${upstreamStatus}`))
     const storedCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(untrustedStatusFailure.id)
     assert.deepEqual(
       storedCandidate?.config,
-      { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api' },
-      `HTTP ${upstreamStatus} 不得清除余额配置或首选适配器`
+      { adapter: 'builtin', intervalMinutes: 5 },
+      `HTTP ${upstreamStatus} 必须保留用户配置但清除不再命中的内置适配偏好`
     )
     assertAccountDispatchState(database, untrustedStatusFailure.id, 'active', 1, `HTTP ${upstreamStatus} 余额查询失败后`)
   }

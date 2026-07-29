@@ -80,6 +80,10 @@ try {
 
   const adminSummary = await getData<Record<string, unknown>>(`${baseUrl}/stats/usage-overview/summary?${query}`, adminCookie)
   assert.deepEqual(Object.keys(adminSummary).sort(), ['range', 'summary'], 'summary 端点必须只返回 range/summary')
+  assert.deepEqual(Object.keys(adminSummary.summary as Record<string, unknown>).sort(), [
+    'averageDurationMs', 'averageFirstTokenMs', 'cacheReadTokens', 'errorCount', 'errorRate',
+    'inputTokens', 'outputTokens', 'requestCount', 'successCount', 'totalCost', 'totalTokens'
+  ], 'summary 必须只返回首页实际渲染字段')
   assert.equal((adminSummary.summary as { requestCount?: number }).requestCount, 10, `管理全局 summary 应读取 global scope，实际：${JSON.stringify(adminSummary)}`)
 
   const scopedSummary = await getData<Record<string, unknown>>(`${baseUrl}/stats/usage-overview/summary?${query}&systemAccountId=${user.id}`, adminCookie)
@@ -107,12 +111,23 @@ try {
 
   const hourly = await getData<Record<string, unknown>>(`${baseUrl}/my-stats/usage-overview/hourly-trend?${query}`, userCookie)
   assert.deepEqual(Object.keys(hourly).sort(), ['hourlyTrend', 'range'], 'hourly trend 端点必须只返回 range/hourlyTrend')
+  assert.deepEqual(Object.keys((hourly.hourlyTrend as Array<Record<string, unknown>>)[0] ?? {}).sort(), [
+    'averageDurationMs', 'errorCount', 'requestCount', 'statHour'
+  ], 'hourly trend 行必须只返回图表实际渲染字段')
   const models = await getData<Record<string, unknown>>(`${baseUrl}/my-stats/usage-overview/model-distribution?${query}`, userCookie)
   assert.deepEqual(Object.keys(models).sort(), ['modelDistribution', 'range'], 'model distribution 端点必须只返回 range/modelDistribution')
+  assert.deepEqual(Object.keys((models.modelDistribution as Array<Record<string, unknown>>)[0] ?? {}).sort(), [
+    'model', 'providerCode', 'requestCount', 'totalCost', 'totalTokens'
+  ], 'model distribution 行必须只返回图表实际渲染字段')
   const errors = await getData<Record<string, unknown>>(`${baseUrl}/my-stats/usage-overview/errors?${query}`, userCookie)
   assert.deepEqual(Object.keys(errors).sort(), ['errors', 'range'], 'errors 端点必须只返回 range/errors')
+  assert.deepEqual(Object.keys((errors.errors as Array<Record<string, unknown>>)[0] ?? {}).sort(), [
+    'errorCode', 'errorCount', 'errorMessage', 'providerCode', 'statusCode'
+  ], 'errors 行必须只返回页面实际渲染字段')
 
   await assertStatus(`${baseUrl}/stats/usage-overview/summary?${query}`, userCookie, 403, '普通用户不能访问管理统计端点')
+  await assertStatus(`${baseUrl}/stats/usage-overview?${query}`, adminCookie, 404, '旧组合管理端点必须退场')
+  await assertStatus(`${baseUrl}/my-stats/usage-overview?${query}`, userCookie, 404, '旧组合自助端点必须退场')
   await assertStatus(`${baseUrl}/my-stats/usage-overview/summary?startDate=bad`, userCookie, 400, '非法日期必须返回 400')
   await assertStatus(`${baseUrl}/my-stats/usage-overview/daily-trend?startDate=bad`, userCookie, 400, '日趋势非法日期必须返回 400')
 
@@ -140,6 +155,19 @@ function assertOverviewQueryBoundaries(): void {
   )
   assert.match(summarySource, /FROM (?:juhe_stats\.)?usage_overview_summary_windows/, '摘要必须直读 usage_overview_summary_windows')
   assert.doesNotMatch(summarySource, /usage_stats_daily|aggregateUsageRowsForRange|\bSUM\s*\(|\bGROUP BY\b/i, '摘要请求路径不得读取日表或临时聚合')
+  assert.doesNotMatch(summarySource, /cache_read_cost_usd|cache_write_|thinking_tokens|image_tokens|last_used_at/i, '摘要 SQL 不得读取页面未展示字段')
+
+  const hourlySource = source.slice(
+    source.indexOf('export function getUsageStatsOverviewHourlyTrend'),
+    source.indexOf('export function getUsageStatsOverviewModelDistribution')
+  )
+  assert.doesNotMatch(hourlySource, /input_tokens|output_tokens|cache_read_|cache_write_|thinking_tokens|image_tokens|total_cost/i, '小时趋势 SQL 不得读取页面未展示字段')
+
+  const modelSource = source.slice(
+    source.indexOf('export function getUsageStatsOverviewModelDistribution'),
+    source.indexOf('export function getUsageStatsOverviewErrors')
+  )
+  assert.doesNotMatch(modelSource, /cache_read_|cache_write_|thinking_tokens|image_tokens/i, '模型分布 SQL 不得读取页面未展示字段')
 
   const dailyTrendSource = source.slice(
     source.indexOf('export function getUsageStatsOverviewDailyTrend'),

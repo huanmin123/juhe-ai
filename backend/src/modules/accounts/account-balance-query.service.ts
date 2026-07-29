@@ -62,7 +62,7 @@ interface AccountBalanceRefreshAttempt {
 }
 
 type AccountBalanceRefreshMode = 'automatic' | 'manual'
-type AccountBalanceFailureKind = 'transient' | 'deterministic'
+type AccountBalanceFailureKind = 'transient' | 'deterministic' | 'neutral'
 
 export type AccountBalanceRefreshOutcome = 'refreshed' | 'lease_busy' | 'stale' | 'failed' | 'unsupported'
 
@@ -192,7 +192,7 @@ async function resolveAccountBalanceRefreshAttempt(
       lastAttemptAt: completedAt
     }
     if (dependencies.mode === 'manual') {
-      if (accountBalanceFailureKind(error) === 'deterministic') {
+      if (accountBalanceFailureKind(error) !== 'transient') {
         return {
           snapshot: { ...failedSnapshot, status: 'unsupported' },
           nextConfig: resolvedBalanceConfig(candidate.config, undefined),
@@ -205,7 +205,7 @@ async function resolveAccountBalanceRefreshAttempt(
         nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
       }
     }
-    if (accountBalanceFailureKind(error) === 'deterministic') {
+    if (accountBalanceFailureKind(error) !== 'transient') {
       return {
         snapshot: { status: 'unsupported', errorMessage, lastAttemptAt: completedAt },
         nextConfig: resolvedBalanceConfig(candidate.config, undefined),
@@ -453,10 +453,51 @@ async function persistBalanceRefreshIfCurrent(
     ...(nextRefreshAfter ? { nextRefreshAfter } : {})
   }
   if (!mainDatabaseRuntimeInfo('stats').queryOnly) {
-    return await replaceAccountBalanceSnapshotIfCurrentAsync(input)
+    try {
+      return await replaceAccountBalanceSnapshotIfCurrentAsync(input)
+    } catch (error) {
+      await rescheduleBalanceRefreshAfterSnapshotWriteFailure(candidate, nextConfig, nextRefreshAfter)
+      throw error
+    }
   }
-  const result = await requestStatsWriter({ type: 'replace_account_balance_snapshot_if_current', input })
-  return result.written
+  try {
+    const result = await requestStatsWriter({ type: 'replace_account_balance_snapshot_if_current', input })
+    return result.written
+  } catch (error) {
+    await rescheduleBalanceRefreshAfterSnapshotWriteFailure(candidate, nextConfig, nextRefreshAfter)
+    throw error
+  }
+}
+
+export async function deferAccountBalanceRefreshCandidate(
+  candidate: AccountBalanceRefreshCandidate,
+  retryAt = new Date(Date.now() + 60_000).toISOString()
+): Promise<boolean> {
+  return await commitBalanceRefresh({
+    accountId: candidate.id,
+    expectedConfigRevision: candidate.configRevision,
+    expectedConfig: candidate.config,
+    expectedNextRefreshAt: candidate.nextRefreshAt,
+    expectedUpdatedAt: candidate.stateUpdatedAt,
+    nextConfig: candidate.config,
+    nextRefreshAt: retryAt
+  })
+}
+
+async function rescheduleBalanceRefreshAfterSnapshotWriteFailure(
+  candidate: AccountBalanceRefreshCandidate,
+  nextConfig: AccountBalanceQueryConfig,
+  nextRefreshAfter: string | null
+): Promise<void> {
+  if (!nextRefreshAfter) return
+  await commitBalanceRefresh({
+    accountId: candidate.id,
+    expectedConfigRevision: candidate.configRevision,
+    expectedConfig: nextConfig,
+    expectedNextRefreshAt: nextRefreshAfter,
+    nextConfig,
+    nextRefreshAt: new Date().toISOString()
+  }).catch(() => undefined)
 }
 
 async function loadCurrentGenerationBalanceSnapshot(
@@ -505,7 +546,7 @@ async function requestJson(url: URL, context: AccountBalanceRequestContext): Pro
     requestTimeoutMs: remainingMs,
     signal: context.signal ? AbortSignal.any([context.signal, deadlineSignal]) : deadlineSignal
   })
-  if (!response.ok) throw transientBalanceError(`上游余额接口返回非成功响应（HTTP ${response.status}）`)
+  if (!response.ok) throw neutralBalanceError(`上游余额接口返回非成功响应（HTTP ${response.status}）`)
   if (!response.body) throw deterministicBalanceError('上游余额接口响应为空')
   const chunks: Buffer[] = []
   let totalBytes = 0
@@ -600,6 +641,10 @@ function isSuccessfulBalanceSnapshot(snapshot: AccountBalanceSnapshot): boolean 
 
 function deterministicBalanceError(message: string): AccountBalanceQueryFailure {
   return new AccountBalanceQueryFailure('deterministic', message)
+}
+
+function neutralBalanceError(message: string): AccountBalanceQueryFailure {
+  return new AccountBalanceQueryFailure('neutral', message)
 }
 
 function transientBalanceError(message: string): AccountBalanceQueryFailure {

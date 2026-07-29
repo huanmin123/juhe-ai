@@ -110,6 +110,7 @@ import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
 import {
   groupStats
 } from './groupDisplay'
+import { reconcileCreatedGroup } from './groupListMutation'
 import GroupEditModal from './GroupEditModal.vue'
 import GroupsList from './GroupsList.vue'
 import {
@@ -189,11 +190,13 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
+  invalidatePendingLoads,
   loadData: loadGroupPage,
   loadMoreMobile: loadMoreMobileGroups,
   removeItems: removeGroupItems,
   refreshMobile: refreshMobileGroupsData,
   resetPagination,
+  applyResult: applyGroupPageResult,
   updateItems: updateGroupItems
 } = useResponsivePagedList<GroupListItem, { forceOptions?: boolean }>({
   pageSize: groupsPageSize,
@@ -223,6 +226,14 @@ const {
 
 async function loadData(loadOptions: { forceOptions?: boolean; quiet?: boolean } = {}): Promise<void> {
   await loadGroupPage(loadOptions)
+}
+
+function groupListScopeKey(): string {
+  return [
+    isManagementView.value ? 'management' : 'self',
+    authState.revision.value,
+    groupScopeParams.value?.systemAccountId ?? ''
+  ].join(':')
 }
 
 const rawColumns = computed(() => groupsTableColumns(isManagementView.value))
@@ -506,9 +517,33 @@ const saveGroup = submitAction('groups.save', async () => {
       message.success(target.accessType === 'authorized' ? '授权分组使用配置已更新' : '分组已更新')
     } else {
       const payload = groupCreatePayload()
-      await groupsApi.create(payload, groupScopeParams.value)
+      const createScopeKey = groupListScopeKey()
+      const created = await groupsApi.create(payload, groupScopeParams.value)
       message.success('分组已创建')
-      await loadData()
+      if (createScopeKey === groupListScopeKey()) {
+        const mobileLoadWasPending = mobileLoadingMore.value
+        invalidatePendingLoads()
+        const accumulated = mobileLoadWasPending || (pagination.current > 1 && groups.value.length > pagination.pageSize)
+        const state = reconcileCreatedGroup(groups.value, created, {
+          accumulated,
+          hasMore: mobileHasMore.value,
+          page: pagination.current,
+          pageSize: pagination.pageSize,
+          total: pagination.total
+        })
+        if (state.requiresReload) {
+          await loadData({ quiet: true })
+        } else {
+          applyGroupPageResult({
+            items: state.items,
+            page: pagination.current,
+            pageSize: pagination.pageSize,
+            total: state.total,
+            hasMore: state.hasMore,
+            currentPageCount: state.currentPageCount
+          })
+        }
+      }
     }
     modalOpen.value = false
   } catch (error) {

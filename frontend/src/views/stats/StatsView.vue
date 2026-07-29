@@ -51,7 +51,12 @@
       </div>
     </a-card>
 
-    <StatsSummaryCards :cards="summaryCards" :loading="summaryLoading" />
+    <StatsSummaryCards
+      :cards="summaryCards"
+      :loading="summaryLoading"
+      :error="summaryError"
+      :on-retry="() => loadData({ force: true })"
+    />
 
     <div ref="dailyTrendSectionRef" class="stats-chart-section">
       <StatsChartCard
@@ -344,11 +349,11 @@ async function loadData(options: { force?: boolean } = {}) {
 }
 
 async function loadDailyTrend(force = false): Promise<void> {
-  if ((!force && dailyTrendResolved) || dailyTrendLoading.value) return
+  if (!usageOverview.value || (!force && dailyTrendResolved) || dailyTrendLoading.value) return
   const requestSeq = ++dailyTrendRequestSeq
   const pageSeq = statsRequestSeq
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
-  const rangeParams = selectedRangeParams()
+  const rangeParams = resolvedOverviewRangeParams()
   const signature = JSON.stringify([pageSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', systemAccountId ?? '', rangeParams.startDate ?? '', rangeParams.endDate ?? ''])
   dailyTrendLoading.value = true
   dailyTrendError.value = ''
@@ -357,9 +362,14 @@ async function loadDailyTrend(force = false): Promise<void> {
       ? await api.stats.usageOverviewDailyTrend({ ...rangeParams, systemAccountId })
       : await api.myStats.usageOverviewDailyTrend(rangeParams)
     const currentSystemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
-    const currentRangeParams = selectedRangeParams()
+    const currentRangeParams = resolvedOverviewRangeParams()
     const currentSignature = JSON.stringify([statsRequestSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', currentSystemAccountId ?? '', currentRangeParams.startDate ?? '', currentRangeParams.endDate ?? ''])
     if (requestSeq !== dailyTrendRequestSeq || signature !== currentSignature) return
+    const currentOverview = usageOverview.value
+    if (!currentOverview || rangeSignature(result.range) !== rangeSignature(currentOverview.range)) {
+      dailyTrendError.value = '图表范围已变化，请重试'
+      return
+    }
     dailyTrend.value = result
     dailyTrendResolved = true
     renderCharts()
@@ -381,7 +391,7 @@ async function loadChartSection(section: StatsChartSection, force = false): Prom
   const requestSeq = ++chartRequestSeq[section]
   const pageSeq = statsRequestSeq
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
-  const rangeParams = selectedRangeParams()
+  const rangeParams = resolvedOverviewRangeParams()
   const signature = JSON.stringify([pageSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', systemAccountId ?? '', rangeParams.startDate ?? '', rangeParams.endDate ?? '', section])
   sectionLoading.value = true
   sectionErrorRef(section).value = ''
@@ -389,7 +399,8 @@ async function loadChartSection(section: StatsChartSection, force = false): Prom
     const result = isManagementView.value
       ? await loadAdminChartSection(section, { ...rangeParams, systemAccountId })
       : await loadSelfChartSection(section, rangeParams)
-    const currentSignature = JSON.stringify([statsRequestSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) ?? '' : '', selectedRangeParams().startDate ?? '', selectedRangeParams().endDate ?? '', section])
+    const currentRangeParams = resolvedOverviewRangeParams()
+    const currentSignature = JSON.stringify([statsRequestSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) ?? '' : '', currentRangeParams.startDate ?? '', currentRangeParams.endDate ?? '', section])
     if (requestSeq !== chartRequestSeq[section] || signature !== currentSignature) return
     const currentOverview = usageOverview.value
     if (!currentOverview) return
@@ -635,6 +646,11 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
   if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
+}
+
+function resolvedOverviewRangeParams(): { startDate?: string; endDate?: string } {
+  const range = usageOverview.value?.range
+  return range ? { startDate: range.startDate, endDate: range.endDate } : selectedRangeParams()
 }
 
 async function handleQuickRangeChange(value: string | number) {

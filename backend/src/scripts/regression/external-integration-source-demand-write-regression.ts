@@ -215,6 +215,18 @@ function assertStaticDemandWriteContract(): void {
     sourceRepository.indexOf('export function updateExternalIntegrationSource('),
     sourceRepository.indexOf('export function deleteExternalIntegrationSource(')
   )
+  const sourceCreateSection = sourceRepository.slice(
+    sourceRepository.indexOf('export function createExternalIntegrationSource('),
+    sourceRepository.indexOf('export function upsertExternalIntegrationSource(')
+  )
+  const sourceDeleteSection = sourceRepository.slice(
+    sourceRepository.indexOf('export function deleteExternalIntegrationSource('),
+    sourceRepository.indexOf('export function findExternalIntegrationSourceRecord(')
+  )
+  const routeDeleteSection = routes.slice(
+    routes.indexOf("externalIntegrationSourcesRouter.delete('/:id'"),
+    routes.indexOf("externalIntegrationSourcesRouter.post('/:id/tokens'")
+  )
   const tokenPatchSection = tokenRepository.slice(
     tokenRepository.indexOf('export function updateExternalIntegrationSourceToken('),
     tokenRepository.indexOf('export function findExternalIntegrationSourceTokenSecret(')
@@ -236,6 +248,11 @@ function assertStaticDemandWriteContract(): void {
   assert.match(sourcePatchSection, /FOR UPDATE/, 'PostgreSQL 来源 PATCH 必须锁定目标来源行')
   assert.match(sourcePatchSection, /WHERE id = \? AND updated_at = \?/, '来源 UPDATE 必须使用 updated_at CAS')
   assert.doesNotMatch(sourcePatchSection, /syncExternalIntegrationSourceTokenState/, '来源 PATCH 不得恢复全量 Token 状态同步')
+  assert.doesNotMatch(sourceCreateSection, /requiredSourceRecord/, '来源创建不得在 INSERT 后按 ID 宽回读自己刚写入的来源行')
+  assert.match(sourceCreateSection, /buildExternalIntegrationSourceCreateRow/, '来源创建必须复用已规范化的写入行组装返回 DTO')
+  assert.match(sourceDeleteSection, /findSourceDeleteRow/, '删除来源必须使用窄 id/name 行作为事务内回执')
+  assert.doesNotMatch(sourceDeleteSection, /findSourceRow(?:Async)?\(/, '删除来源不得读取完整来源记录')
+  assert.doesNotMatch(routeDeleteSection, /findExternalIntegrationSourceRecordAsync/, '删除路由不得为了操作日志重复宽查来源详情')
   for (const field of ['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'expectedUpdatedAt']) {
     assert.match(routes, new RegExp(`${field}: bodyField\\(req, '${field}'\\)`), `来源 mutation 指纹必须包含 ${field}`)
   }

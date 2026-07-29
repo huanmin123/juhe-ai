@@ -85,7 +85,7 @@ try {
     assertNoTempBtree(plan, 'AI 性能小时趋势查询')
     assert(plan.includes('idx_usage_stats_hourly_scope_hour'), `AI 性能小时趋势应使用账号维度小时索引，实际计划：${plan}`)
     assert(!capturedSql.some((sql) => /\bFROM\s+ai_performance_summary_windows\b/i.test(sql)), 'series 不应读取 summary window')
-    assert(!capturedSql.some((sql) => /\bFROM\s+usage_rank_snapshots\b[\s\S]*\bORDER\s+BY\s+rank\b/i.test(sql)), 'series 不应读取默认排行')
+    assert(!capturedSql.some((sql) => /\bFROM\s+usage_rank_snapshots\b/i.test(sql)), 'series 不应以任何形式读取排行快照')
   } finally {
     database.prepare = originalPrepare
   }

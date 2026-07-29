@@ -16,7 +16,8 @@ import { findGroupSummary, findGroupSummaryAsync } from './group-summary.reposit
 import { getPostgresPool } from './postgres-client.js'
 import {
   invalidateGroupLookupCache,
-  loadSystemAccountNameMapByIds
+  loadSystemAccountNameMapByIds,
+  loadSystemAccountNameMapByIdsAsync
 } from './repository-lookups.js'
 import {
   assertKnownInputKeys,
@@ -125,9 +126,19 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   return group
 }
 
+export interface GroupCreateStorageReceipt {
+  group: GroupSummary
+  ownerSystemAccountId: string
+  updatedAt: string
+}
+
 export async function createGroupAsync(input: Record<string, unknown>, access?: AccessScope): Promise<GroupSummary> {
+  return (await createGroupWithReceiptAsync(input, access)).group
+}
+
+export async function createGroupWithReceiptAsync(input: Record<string, unknown>, access?: AccessScope): Promise<GroupCreateStorageReceipt> {
   const client = await getGroupWriteDatabaseClient()
-  return client.transaction(async (tx) => createGroupInClientAsync(tx, input, access))
+  return client.transaction(async (tx) => createGroupWithReceiptInClientAsync(tx, input, access))
 }
 
 export class GroupPatchConflictError extends Error {
@@ -138,6 +149,10 @@ export class GroupPatchConflictError extends Error {
 }
 
 export async function createGroupInClientAsync(client: DatabaseClient, input: Record<string, unknown>, access?: AccessScope): Promise<GroupSummary> {
+  return (await createGroupWithReceiptInClientAsync(client, input, access)).group
+}
+
+async function createGroupWithReceiptInClientAsync(client: DatabaseClient, input: Record<string, unknown>, access?: AccessScope): Promise<GroupCreateStorageReceipt> {
   assertKnownInputKeys(input, groupCreateInputKeys, '分组创建参数')
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
@@ -146,10 +161,13 @@ export async function createGroupInClientAsync(client: DatabaseClient, input: Re
   const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
   const name = requiredTextInput(input.name, '分组名称')
   const enabled = normalizeOptionalBooleanInput(input, 'enabled', true, '分组启用状态')
+  const systemAccountName = includeSystemAccountFields(access)
+    ? (await loadSystemAccountNameMapByIdsAsync(client, [systemAccountId])).get(systemAccountId)
+    : undefined
   const group: GroupSummary = {
     id: newId('grp'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName: undefined,
+    systemAccountName,
     name,
     providerCode,
     description: normalizeNullableTextInput(input.description, '分组说明'),
@@ -186,7 +204,7 @@ export async function createGroupInClientAsync(client: DatabaseClient, input: Re
   }
   invalidateGroupLookupCache(group.id)
   invalidateGatewayRuntimeAfterBusinessWrite('group_created')
-  return group
+  return { group, ownerSystemAccountId: systemAccountId, updatedAt: now }
 }
 
 export function updateGroup(id: string, input: Record<string, unknown>, access?: AccessScope): GroupSummary | undefined {

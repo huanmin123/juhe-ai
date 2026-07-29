@@ -103,19 +103,27 @@ const statsRoutesSource = readFileSync(new URL('../../../../backend/src/modules/
 const dbServiceTypesSource = readFileSync(new URL('../../../../backend/src/modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
 const mockBackgroundRuntimeSource = readFileSync(new URL('../../../../backend/src/modules/stats/mock-background-runtime.ts', import.meta.url), 'utf8')
 const loadPageDataStart = systemMetricsViewSource.indexOf('function loadPageData(')
-const loadPageDataEnd = systemMetricsViewSource.indexOf('async function loadRuntimeData', loadPageDataStart)
+const loadPageDataEnd = systemMetricsViewSource.indexOf('function setupRuntimeObservers', loadPageDataStart)
 const loadPageDataSource = loadPageDataStart >= 0 && loadPageDataEnd > loadPageDataStart
   ? systemMetricsViewSource.slice(loadPageDataStart, loadPageDataEnd)
   : ''
-assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '跨层门禁必须绑定真实 system-metrics 接口')
-assert.match(statsApiSource, /systemMetricsRuntime:[\s\S]*\/stats\/system-metrics\/runtime/, '后台运行态必须使用独立 API')
-assert.match(systemMetricsViewSource, /if \(runtimeSectionLoaded\.value\) void loadRuntimeData\(\)[\s\S]*return loadData\(\)/, '只有运行态区块进入视口后，页面刷新才应并行刷新运行态')
+assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics\/trend'/, '跨层门禁必须绑定真实 system-metrics 趋势窄接口')
+for (const path of ['runtime/summary', 'runtime/jobs', 'runtime/queues']) {
+  assert.match(statsRoutesSource, new RegExp(`statsRouter\\.get\\('\\/system-metrics\\/${path.replace('/', '\\/')}'`), `跨层门禁必须绑定真实 system-metrics ${path} 窄接口`)
+}
+assert.doesNotMatch(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '旧宽 system-metrics 接口必须退场')
+assert.match(statsApiSource, /systemMetricsTrend:[\s\S]*\/stats\/system-metrics\/trend/, '趋势数据必须使用独立 API')
+for (const apiName of ['systemMetricsRuntimeSummary', 'systemMetricsRuntimeJobs', 'systemMetricsRuntimeQueues']) {
+  assert.match(statsApiSource, new RegExp(`${apiName}:[\\s\\S]*\\/stats\\/system-metrics\\/runtime`), `后台运行态必须暴露 ${apiName} 独立 API`)
+}
+assert.match(systemMetricsViewSource, /if \(backgroundJobsSectionLoaded\.value\) void loadBackgroundJobs\(\)[\s\S]*if \(backgroundQueuesSectionLoaded\.value\) void loadBackgroundQueues\(\)[\s\S]*return loadData\(\)/, '只有运行态区块进入视口后，页面刷新才应并行刷新已加载的分段运行态')
 assert(loadPageDataSource.includes('void loadUsageStatsWindow('), '页面加载必须并行启动窗口配置请求')
 assert(!loadPageDataSource.includes('await loadUsageStatsWindow('), '窗口配置不得阻塞趋势业务请求')
 assert(loadPageDataSource.indexOf('void loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadData()'), '趋势请求必须在窗口配置请求启动后立即返回')
 assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
 assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
-assert.match(statsRoutesSource, /backgroundJobs\?\.map\(systemMetricsRuntimeJobRow\)/, 'system-metrics runtime 必须通过页面场景 DTO 显式投影')
+assert.match(statsRoutesSource, /systemMetricsRuntimeJobRows\(runtime\)/, 'system-metrics jobs 必须通过页面场景 DTO 显式投影')
+assert.match(statsRoutesSource, /systemMetricsRuntimeQueueRows\(\[/, 'system-metrics queues 必须通过页面场景 DTO 显式投影')
 assert(jobsCardSource.includes('backgroundJobStatusText'), '后台任务组件必须复用已验证的状态格式化函数')
 assert(jobsCardSource.includes("title: '部分失败（本进程）'"), '后台任务必须单独展示部分失败次数')
 assert(jobsCardSource.includes("title: '累计失败（本进程）'"), '后台任务历史失败必须明确计数作用域')

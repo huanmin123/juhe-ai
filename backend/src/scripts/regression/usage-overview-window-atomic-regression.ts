@@ -33,11 +33,7 @@ try {
   seedPublishedOverviewWindows(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, windowKey, range.startDate, range.endDate)
   seedNewUsageSources(range.endDate)
 
-  const before = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
-  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range), { range, summary: before.summary }, '独立 summary 应与兼容 overview 保持一致')
-  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewHourlyTrend(adminAccess, range), { range, hourlyTrend: before.hourlyTrend }, '独立 hourly trend 应与兼容 overview 保持一致')
-  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewModelDistribution(adminAccess, range), { range, modelDistribution: before.modelDistribution }, '独立 model distribution 应与兼容 overview 保持一致')
-  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewErrors(adminAccess, range), { range, errors: before.errors }, '独立 errors 应与兼容 overview 保持一致')
+  const before = readOverviewSections(range)
   assertSectionQueryBoundary('summary', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range)), 'usage_overview_summary_windows')
   assertSectionQueryBoundary('hourly trend', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewHourlyTrend(adminAccess, range)), 'usage_overview_trend_windows')
   assertSectionQueryBoundary('model distribution', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewModelDistribution(adminAccess, range)), 'usage_model_rank_windows')
@@ -64,7 +60,7 @@ try {
     statsDatabase.prepare = originalPrepare
   }
 
-  const afterFailure = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
+  const afterFailure = readOverviewSections(range)
   assert.equal(afterFailure.summary.requestCount, 1, '概览窗口 stage 失败后 summary 应保留原有窗口数据')
   assert.equal(afterFailure.hourlyTrend[0]?.requestCount, 1, '概览窗口 stage 失败后 trend 应保留原有数据')
   assert.equal(afterFailure.modelDistribution[0]?.requestCount, 1, '概览窗口 stage 失败后 model 排行应保留原有数据')
@@ -81,7 +77,7 @@ try {
   })
 
   await usageStatsRepository.refreshUsageRankSnapshotsInStages({ yieldToEventLoop: async () => {} })
-  const afterSuccess = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
+  const afterSuccess = readOverviewSections(range)
   assert.equal(afterSuccess.summary.requestCount, 5, '恢复后 summary 应发布新数据')
   assert.equal(afterSuccess.hourlyTrend[0]?.requestCount, 5, '恢复后 trend 应发布新数据')
   assert.equal(afterSuccess.modelDistribution[0]?.requestCount, 5, '恢复后 model 排行应发布新数据')
@@ -136,6 +132,15 @@ function seedPublishedOverviewWindows(systemAccountId: string, windowKey: string
       status_code, error_message, error_count, updated_at
     ) VALUES (?, ?, ?, ?, 1, 'gpt', 'published_error', 500, 'published error', 1, ?)
   `).run(systemAccountId, windowKey, startDate, endDate, updatedAt)
+}
+
+function readOverviewSections(range: ReturnType<typeof usageStatsRepository.normalizeDefaultUsageStatsRange>) {
+  return {
+    summary: usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range).summary,
+    hourlyTrend: usageStatsRepository.getUsageStatsOverviewHourlyTrend(adminAccess, range).hourlyTrend,
+    modelDistribution: usageStatsRepository.getUsageStatsOverviewModelDistribution(adminAccess, range).modelDistribution,
+    errors: usageStatsRepository.getUsageStatsOverviewErrors(adminAccess, range).errors
+  }
 }
 
 function seedNewUsageSources(statDate: string): void {

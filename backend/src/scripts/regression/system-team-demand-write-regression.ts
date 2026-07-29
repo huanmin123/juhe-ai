@@ -200,7 +200,7 @@ try {
   assert.deepEqual(Object.keys((await detailHttp.json()).data).sort(), ['createdAt', 'description', 'id', 'memberCount', 'name', 'status', 'updatedAt'], '基础详情不得提前返回成员集合')
   const membersHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${team.id}/members`, { headers: { cookie } })
   assert.equal(membersHttp.status, 200)
-  assert.deepEqual(Object.keys((await membersHttp.json()).data).sort(), ['id', 'items', 'memberCount', 'updatedAt'], '成员集合必须通过独立接口按需返回')
+  assert.deepEqual(Object.keys((await membersHttp.json()).data).sort(), ['hasMore', 'id', 'items', 'memberCount', 'page', 'pageSize', 'total', 'updatedAt'], '成员集合必须通过独立接口按需分页返回')
   const historyHttp = await fetch(`${baseUrl}/__aisys__/api/system-teams/${memberMutationTeam.id}/members/history?page=1&pageSize=20`, { headers: { cookie } })
   assert.equal(historyHttp.status, 200)
   const historyPayload = (await historyHttp.json()).data as { items: Array<Record<string, unknown>> }

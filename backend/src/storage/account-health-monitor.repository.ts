@@ -6,7 +6,8 @@ import { includeSystemAccountFields, scopedSystemAccountId, type AccessScope } f
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { hourBucketsUntilNow } from './usage-stats-window-helpers.js'
@@ -25,7 +26,8 @@ interface AccountHealthSlotRow {
   source_order?: number
 }
 
-interface AccountHealthHourRow extends AccountHealthSlotRow {
+interface AccountHealthHourRow {
+  status: 'success' | 'failure'
   last_observed_at: string
   status_code: number | null
   error_code: string | null
@@ -45,7 +47,6 @@ interface AiHealthAccountProjection {
 
 interface AiHealthAccountPage {
   items: AiHealthAccountProjection[]
-  total: number
   hasMore: boolean
   page: number
   pageSize: number
@@ -141,10 +142,9 @@ async function loadAiHealthAccountPage(
     params.push(scopeId)
   }
   if (options.keyword) {
-    clauses.push(client.driver === 'postgres'
-      ? 'position(lower(?) in lower(accounts.name)) > 0'
-      : 'instr(lower(accounts.name), lower(?)) > 0')
-    params.push(options.keyword)
+    const filter = aiHealthAccountNameContainsFilter(options.keyword, scopeId, client)
+    clauses.push(filter.clause)
+    params.push(...filter.params)
   }
   const currentIso = client.driver === 'postgres'
     ? `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
@@ -187,7 +187,7 @@ async function loadAiHealthAccountPage(
         OR authorizations.status IN ('active', 'paused', 'expired')
       )
     ORDER BY
-      CASE WHEN accounts.last_used_at IS NULL THEN 1 ELSE 0 END ASC,
+      (accounts.last_used_at IS NULL) ASC,
       accounts.last_used_at DESC,
       accounts.name ASC,
       accounts.id ASC
@@ -196,7 +196,6 @@ async function loadAiHealthAccountPage(
   const pageRows = takePageRows(rows, options.pageSize)
   return {
     items: pageRows.rows,
-    total: pagedTotalUpperBound(options.page, options.pageSize, pageRows.rows.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: options.page,
     pageSize: options.pageSize
@@ -216,8 +215,9 @@ function loadAiHealthAccountPageReadOnly(
     params.push(scopeId)
   }
   if (options.keyword) {
-    clauses.push('instr(lower(accounts.name), lower(?)) > 0')
-    params.push(options.keyword)
+    const filter = aiHealthAccountNameContainsFilter(options.keyword, scopeId)
+    clauses.push(filter.clause)
+    params.push(...filter.params)
   }
   const rows = getBusinessDatabase().prepare(`
     SELECT
@@ -254,7 +254,7 @@ function loadAiHealthAccountPageReadOnly(
         OR authorizations.status IN ('active', 'paused', 'expired')
       )
     ORDER BY
-      CASE WHEN accounts.last_used_at IS NULL THEN 1 ELSE 0 END ASC,
+      (accounts.last_used_at IS NULL) ASC,
       accounts.last_used_at DESC,
       accounts.name ASC,
       accounts.id ASC
@@ -263,7 +263,6 @@ function loadAiHealthAccountPageReadOnly(
   const pageRows = takePageRows(rows, options.pageSize)
   return {
     items: pageRows.rows,
-    total: pagedTotalUpperBound(options.page, options.pageSize, pageRows.rows.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: options.page,
     pageSize: options.pageSize
@@ -364,13 +363,13 @@ function loadAccountHealthHourDetail(
   statHour: string
 ): AccountHealthHourRow | undefined {
   return database.prepare(`
-    SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, source_order
+    SELECT status, last_observed_at, status_code, error_code, error_message
     FROM (
-      SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
+      SELECT status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
       FROM account_health_hourly
       WHERE account_id = ? AND stat_hour = ?
       UNION ALL
-      SELECT account_id, stat_hour, 'failure' AS status, observed_at AS last_observed_at,
+      SELECT 'failure' AS status, observed_at AS last_observed_at,
              NULL AS status_code, 'model_quality_failed' AS error_code,
              '模型质量检查不达标：' || score || ' 分，阈值 ' || threshold || ' 分' AS error_message,
              1 AS source_order
@@ -388,13 +387,13 @@ async function loadAccountHealthHourDetailAsync(
   statHour: string
 ): Promise<AccountHealthHourRow | undefined> {
   const rows = await client.query<AccountHealthHourRow>(`
-    SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, source_order
+    SELECT status, last_observed_at, status_code, error_code, error_message
     FROM (
-      SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
+      SELECT status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
       FROM ${client.dialect.qualifyTable('juhe_stats', 'account_health_hourly')}
       WHERE account_id = ? AND stat_hour = ?
       UNION ALL
-      SELECT account_id, stat_hour, 'failure' AS status, observed_at AS last_observed_at,
+      SELECT 'failure' AS status, observed_at AS last_observed_at,
              NULL AS status_code, 'model_quality_failed' AS error_code,
              '模型质量检查不达标：' || score || ' 分，阈值 ' || threshold || ' 分' AS error_message,
              1 AS source_order
@@ -407,6 +406,46 @@ async function loadAccountHealthHourDetailAsync(
   return rows[0]
 }
 
+function aiHealthAccountNameContainsFilter(
+  keyword: string,
+  scopedAccountId: string | undefined,
+  client?: DatabaseClient
+): { clause: string; params: SQLInputValue[] } {
+  const terms = accountNameSearchQueryTerms(keyword)
+  if (!terms.length) return { clause: '0 = 1', params: [] }
+  const normalizedKeyword = normalizeAccountNameSearchText(keyword)
+  const searchTermsTable = client
+    ? client.dialect.qualifyTable('juhe_business', 'account_name_search_terms')
+    : 'account_name_search_terms'
+  const searchDocumentsTable = client
+    ? client.dialect.qualifyTable('juhe_business', 'account_name_search_documents')
+    : 'account_name_search_documents'
+  const indexHint = client ? '' : ' INDEXED BY idx_account_name_search_terms_term_owner'
+  const scopeClause = scopedAccountId ? 'search.system_account_id = ? AND' : ''
+  const containsExpression = client?.driver === 'postgres'
+    ? 'position(? in documents.normalized_name) > 0'
+    : 'instr(documents.normalized_name, ?) > 0'
+  return {
+    clause: `accounts.id IN (
+      SELECT search.account_id
+      FROM ${searchTermsTable} search${indexHint}
+      INNER JOIN ${searchDocumentsTable} documents
+        ON documents.account_id = search.account_id
+        AND documents.system_account_id = search.system_account_id
+      WHERE ${scopeClause} search.term IN (${sqlPlaceholders(terms.length)})
+        AND ${containsExpression}
+      GROUP BY search.account_id
+      HAVING COUNT(DISTINCT search.term) = ?
+    )`,
+    params: [
+      ...(scopedAccountId ? [scopedAccountId] : []),
+      ...terms,
+      normalizedKeyword,
+      terms.length
+    ]
+  }
+}
+
 function mapAiHealthList(
   page: AiHealthAccountPage,
   rows: AccountHealthSlotRow[],
@@ -415,7 +454,6 @@ function mapAiHealthList(
   const rowsByAccountHour = new Map(rows.map((row) => [`${row.account_id}\u0000${row.stat_hour}`, row]))
   return {
     items: page.items.map((account) => mapAiHealthAccount(account, hourBuckets, rowsByAccountHour)),
-    total: page.total,
     hasMore: page.hasMore,
     page: page.page,
     pageSize: page.pageSize

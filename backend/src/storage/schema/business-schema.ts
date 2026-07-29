@@ -1061,6 +1061,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_proxy_profile ON accounts(proxy_profile_id, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);
+    CREATE INDEX IF NOT EXISTS idx_accounts_health_monitor_order
+      ON accounts((last_used_at IS NULL) ASC, last_used_at DESC, name ASC, id ASC)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_owner_health_monitor_order
+      ON accounts(system_account_id, (last_used_at IS NULL) ASC, last_used_at DESC, name ASC, id ASC)
+      WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);
     CREATE INDEX IF NOT EXISTS idx_accounts_expiry_sweep
       ON accounts(account_expires_at ASC, updated_at ASC, id ASC)

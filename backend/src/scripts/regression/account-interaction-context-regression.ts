@@ -229,6 +229,10 @@ try {
   assert(cloneCapture.result, '克隆上下文应返回账户')
   assert.equal(cloneCapture.sql.length, 3, `克隆上下文应固定为主投影、关系合并和 revision fence 三条查询，实际 ${cloneCapture.sql.length} 条`)
   assert.match(cloneCapture.sql[1]!, /UNION ALL/i)
+  assert.match(cloneCapture.sql[1]!, /WITH\s+scoped_account\s+AS[\s\S]*system_account_id\s*=\s*\?/i, '克隆关系投影必须先建立 owner 作用域')
+  assert.match(cloneCapture.sql[1]!, /account_supported_models[\s\S]*INNER JOIN scoped_account/i, '支持模型关系必须复用 owner 作用域')
+  assert.match(cloneCapture.sql[1]!, /account_tag_bindings[\s\S]*INNER JOIN scoped_account[\s\S]*account_tag_bindings\.system_account_id/i, '标签关系必须同时约束账户和绑定 owner')
+  assert.match(cloneCapture.sql[1]!, /account_model_mappings[\s\S]*INNER JOIN scoped_account/i, '模型映射关系必须复用 owner 作用域')
   assert.deepEqual(cloneCapture.result.supportedModels, ['gemini-2.5-pro'])
   assert.deepEqual(cloneCapture.result.tags.map((item) => item.name), ['clone-tag'])
   assert.deepEqual(Object.keys(cloneCapture.result.credentialOptions).sort(), [

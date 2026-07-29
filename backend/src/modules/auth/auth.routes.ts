@@ -5,7 +5,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { resolveEffectiveUserRequestLimits, type GlobalUserRequestLimitSettings } from '../../domain/user-request-limits.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
-import { createSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { createAuthenticatedSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, verifySystemAccountCredentialsAsync, verifySystemAccountCredentialsForSessionAsync } from '../../storage/repositories.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { consumeCaptchaIssueAllowanceAsync, createCaptchaChallengeAsync, verifyCaptchaChallengeAsync } from './captcha.service.js'
@@ -92,8 +92,8 @@ authRouter.post('/login', async (req, res, next) => {
       return
     }
 
-    const account = await verifySystemAccountCredentialsAsync(parsed.data.username, parsed.data.password)
-    if (!account) {
+    const verified = await verifySystemAccountCredentialsForSessionAsync(parsed.data.username, parsed.data.password)
+    if (!verified) {
       const loginBlock = await recordFailedLoginAsync(clientIp, parsed.data.username)
       if (loginBlock.blocked) {
         if (loginBlock.retryAfterSeconds) {
@@ -106,11 +106,22 @@ authRouter.post('/login', async (req, res, next) => {
       return
     }
 
-    await recordSuccessfulLoginAsync(clientIp, account.username)
-    const session = await createSessionAsync(account.id)
-    await updateSystemAccountLastLoginAsync(account.id)
+    const session = await createAuthenticatedSessionAsync(verified.account.id, verified.credentialRevision)
+    if (!session) {
+      const loginBlock = await recordFailedLoginAsync(clientIp, parsed.data.username)
+      if (loginBlock.blocked) {
+        if (loginBlock.retryAfterSeconds) {
+          res.setHeader('Retry-After', String(loginBlock.retryAfterSeconds))
+        }
+        res.status(429).json({ message: loginBlock.message ?? '尝试过于频繁，请稍后再试' })
+        return
+      }
+      res.status(401).json({ message: '账号或密码已变更，请重新登录' })
+      return
+    }
+    await recordSuccessfulLoginAsync(clientIp, verified.account.username)
     res.cookie(sessionCookieName, session.token, sessionCookieOptions({ maxAge: sessionMaxAgeMs }))
-    res.json(ok(currentUserSummary(account)))
+    res.json(ok(currentUserSummary(verified.account)))
   } catch (error) {
     next(error)
   }

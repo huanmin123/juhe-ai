@@ -13,7 +13,10 @@ import type {
   OperationLogVisibilityReason
 } from './operation-log-types.js'
 import { getPostgresPool } from './postgres-client.js'
-import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
+import {
+  loadSystemAccountNameMapByIds,
+  loadSystemAccountNameMapByIdsAsync
+} from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalString } from './value-utils.js'
 
@@ -305,12 +308,5 @@ async function loadSystemAccountNamesAsync(
   client: DatabaseClient,
   ids: Array<string | undefined>
 ): Promise<Map<string, string>> {
-  const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id?.trim())))]
-  if (uniqueIds.length === 0) return new Map()
-  const rows = await client.query<{ id: string; display_name: string }>(`
-    SELECT id, display_name
-    FROM juhe_business.system_accounts
-    WHERE id IN (${uniqueIds.map(() => '?').join(', ')})
-  `, uniqueIds)
-  return new Map(rows.map((row) => [row.id, row.display_name]))
+  return loadSystemAccountNameMapByIdsAsync(client, ids)
 }

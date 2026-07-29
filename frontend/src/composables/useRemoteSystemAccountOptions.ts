@@ -58,11 +58,11 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
         console.error(error)
         message.error(config.errorMessage ?? '加载系统账户筛选项失败')
       } finally {
-        if (loadingKey === requestKey) {
-          loadingKey = undefined
-          loadingPromise = undefined
-        }
         if (currentRequestId === requestId) {
+          if (loadingKey === requestKey) {
+            loadingKey = undefined
+            loadingPromise = undefined
+          }
           loading.value = false
         }
       }
@@ -88,6 +88,14 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
   function resetSearch(): void {
     keyword.value = ''
     clearSearchTimer()
+  }
+
+  function invalidate(): void {
+    clearSearchTimer()
+    requestId += 1
+    loadingKey = undefined
+    loadingPromise = undefined
+    loading.value = false
   }
 
   function clearSearchTimer(): void {
@@ -134,12 +142,13 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
       .sort())]
   }
 
-  onBeforeUnmount(clearSearchTimer)
+  onBeforeUnmount(invalidate)
 
   return {
     clearSearchTimer,
     handleDropdown,
     handleSearch,
+    invalidate,
     keyword,
     load,
     loading,

@@ -574,16 +574,7 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
   `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
-  const processLatestStatement = database.prepare(`
-    SELECT ${processEventLoopLatestSelectColumns()}
-    FROM process_event_loop_samples
-    WHERE process_role = ?
-    ORDER BY sampled_at DESC, id DESC
-    LIMIT 1
-  `)
-  const processLatestRows = processEventLoopObservedRoles(database, processEventLoopLatestStartIso())
-    .map((role) => processLatestStatement.get(role) as unknown as Record<string, unknown> | undefined)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
+  const processLatestRows = processEventLoopLatestRows(database)
   const processEventLoopStartedAt = processEventLoopPeakStartIso()
   const processRows = loadProcessEventLoopTrendWindowRows(database, range)
   const processEventLoopLatestStatus = buildProcessEventLoopStatus(processLatestRows)
@@ -647,16 +638,7 @@ export function getSystemMetricsTrend(range: AccountUsageStatsRange = normalizeD
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
   `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
-  const latestStatement = database.prepare(`
-    SELECT ${processEventLoopTrendLatestSelectColumns()}
-    FROM process_event_loop_samples
-    WHERE process_role = ?
-    ORDER BY sampled_at DESC, id DESC
-    LIMIT 1
-  `)
-  const latestRows = processEventLoopObservedRoles(database, processEventLoopLatestStartIso())
-    .map((role) => latestStatement.get(role) as unknown as Record<string, unknown> | undefined)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
+  const latestRows = processEventLoopTrendLatestRows(database)
   const peakStartedAt = processEventLoopPeakStartIso()
   return {
     hourlyTrend: rows.map(mapSystemMetricsTrendHourly),
@@ -1091,31 +1073,71 @@ async function loadProcessEventLoopTrendWindowRowsAsync(client: DatabaseClient, 
 }
 
 function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {
-  const peakStatement = database.prepare(`
+  return database.prepare(`
     SELECT ${processEventLoopLatestSelectColumns()}
-    FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_role_peak
-    WHERE process_role = ?
-      AND sampled_at >= ?
-      AND event_loop_lag_ms IS NOT NULL
-    ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
-    LIMIT 1
-  `)
-  return processEventLoopObservedRoles(database, startedAt)
-    .map((role) => peakStatement.get(role, startedAt) as unknown as Record<string, unknown> | undefined)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
+    FROM (
+      SELECT ${processEventLoopLatestSelectColumns()},
+        ROW_NUMBER() OVER (
+          PARTITION BY process_role
+          ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
+        ) AS role_rank
+      FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_sampled_at
+      WHERE sampled_at >= ? AND event_loop_lag_ms IS NOT NULL
+    )
+    WHERE role_rank = 1
+    LIMIT 256
+  `).all(startedAt) as unknown as Array<Record<string, unknown>>
 }
 
 function processEventLoopTrendPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {
-  const statement = database.prepare(`
+  return database.prepare(`
     SELECT process_role, process_pid, sampled_at, event_loop_lag_ms
-    FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_role_peak
-    WHERE process_role = ? AND sampled_at >= ? AND event_loop_lag_ms IS NOT NULL
-    ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
-    LIMIT 1
-  `)
-  return processEventLoopObservedRoles(database, startedAt)
-    .map((role) => statement.get(role, startedAt) as unknown as Record<string, unknown> | undefined)
-    .filter((row): row is Record<string, unknown> => Boolean(row))
+    FROM (
+      SELECT process_role, process_pid, sampled_at, event_loop_lag_ms,
+        ROW_NUMBER() OVER (
+          PARTITION BY process_role
+          ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
+        ) AS role_rank
+      FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_sampled_at
+      WHERE sampled_at >= ? AND event_loop_lag_ms IS NOT NULL
+    )
+    WHERE role_rank = 1
+    LIMIT 256
+  `).all(startedAt) as unknown as Array<Record<string, unknown>>
+}
+
+function processEventLoopLatestRows(database: DatabaseSync): Array<Record<string, unknown>> {
+  return database.prepare(`
+    SELECT ${processEventLoopLatestSelectColumns()}
+    FROM (
+      SELECT ${processEventLoopLatestSelectColumns()},
+        ROW_NUMBER() OVER (
+          PARTITION BY process_role
+          ORDER BY sampled_at DESC, id DESC
+        ) AS role_rank
+      FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_sampled_at
+      WHERE sampled_at >= ?
+    )
+    WHERE role_rank = 1
+    LIMIT 256
+  `).all(processEventLoopLatestStartIso()) as unknown as Array<Record<string, unknown>>
+}
+
+function processEventLoopTrendLatestRows(database: DatabaseSync): Array<Record<string, unknown>> {
+  return database.prepare(`
+    SELECT ${processEventLoopTrendLatestSelectColumns()}
+    FROM (
+      SELECT ${processEventLoopTrendLatestSelectColumns()},
+        ROW_NUMBER() OVER (
+          PARTITION BY process_role
+          ORDER BY sampled_at DESC, id DESC
+        ) AS role_rank
+      FROM process_event_loop_samples INDEXED BY idx_process_event_loop_samples_sampled_at
+      WHERE sampled_at >= ?
+    )
+    WHERE role_rank = 1
+    LIMIT 256
+  `).all(processEventLoopLatestStartIso()) as unknown as Array<Record<string, unknown>>
 }
 
 async function processEventLoopLatestRowsAsync(client: DatabaseClient): Promise<Array<Record<string, unknown>>> {
@@ -1278,26 +1300,6 @@ function buildProcessEventLoopTrendPeakStatus(rows: Array<Record<string, unknown
     sampledAt: null,
     eventLoopLagMs: null
   })
-}
-
-function processEventLoopObservedRoles(database: DatabaseSync, startedAt?: string): ProcessEventLoopRole[] {
-  const rows = startedAt
-    ? database.prepare(`
-        SELECT DISTINCT process_role
-        FROM process_event_loop_samples
-        WHERE sampled_at >= ?
-        ORDER BY process_role ASC
-        LIMIT 256
-      `).all(startedAt) as unknown as Array<Record<string, unknown>>
-    : database.prepare(`
-        SELECT DISTINCT process_role
-        FROM process_event_loop_samples
-        ORDER BY process_role ASC
-        LIMIT 256
-      `).all() as unknown as Array<Record<string, unknown>>
-  return rows
-    .map((row) => processRoleFromValue(row.process_role))
-    .filter((role): role is ProcessEventLoopRole => Boolean(role))
 }
 
 function processEventLoopLatestSelectColumns(): string {

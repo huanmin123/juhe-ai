@@ -144,7 +144,7 @@ import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus, UserRequestLimits } from '@/types/domain'
-import { buildSystemAccountEditablePatch, cloneSystemAccountEditableValues, hasSystemAccountEditableChanges, reconcileSystemAccountMutationPage, type SystemAccountEditableValues } from './systemAccountEditForm'
+import { buildSystemAccountEditablePatch, cloneSystemAccountEditableValues, hasSystemAccountEditableChanges, mergeSystemAccountPageItems, reconcileCreatedSystemAccount, reconcileSystemAccountMutationPage, type SystemAccountEditableValues } from './systemAccountEditForm'
 
 interface SystemAccountsPageState {
   keyword: string
@@ -240,8 +240,8 @@ const {
   loadData,
   loadMoreMobile: loadMoreMobileAccounts,
   refreshMobile: refreshMobileAccounts,
-  removeItems,
   resetPagination,
+  applyResult: applySystemAccountPageResult
 } = useResponsivePagedList<SystemAccountListItem>({
   pageSize,
   initialPagination: initialPageState.pagination,
@@ -253,6 +253,7 @@ const {
     page: pageState.current,
     pageSize: pageState.pageSize
   }),
+  mergeItems: mergeSystemAccountPageItems,
   onError: (error) => {
     console.error(error)
     message.error('加载系统账户失败')
@@ -368,14 +369,14 @@ const handleSave = submitAction('system_accounts.save', async () => {
       message.success('系统账户已更新')
     } else {
       const payload = { ...basePayload, username, password: form.password }
-      await api.systemAccounts.create(payload)
+      const createScopeKey = systemAccountListScopeKey()
+      const created = await api.systemAccounts.create(payload)
+      if (createScopeKey === systemAccountListScopeKey()) {
+        await applyCreatedSystemAccount(created)
+      }
       message.success('系统账户已创建')
     }
     modalOpen.value = false
-    if (!editingId.value) {
-      resetPagination()
-      await loadData()
-    }
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存系统账户失败'))
@@ -418,32 +419,78 @@ function searchAccounts() {
   void loadData()
 }
 
-async function applySystemAccountMutation(mutation: Parameters<typeof reconcileSystemAccountMutationPage>[1]): Promise<void> {
-  invalidatePendingLoads()
-  const reconciliation = reconcileSystemAccountMutationPage(accounts.value, mutation, {
+async function applyCreatedSystemAccount(created: SystemAccountListItem): Promise<void> {
+  cancelPendingSystemAccountLoads()
+  const accumulated = pagination.current > 1 && accounts.value.length > pagination.pageSize
+  const reconciliation = reconcileCreatedSystemAccount(accounts.value, created, {
+    accumulated,
+    hasMore: mobileHasMore.value,
     keyword: keyword.value,
     page: pagination.current,
-    pageSize: pagination.pageSize
+    pageSize: pagination.pageSize,
+    total: pagination.total
   })
-  if (reconciliation.disposition === 'filtered_out') {
-    const accumulatedMobilePages = accounts.value.length > pagination.pageSize
-    if (accumulatedMobilePages) {
-      accounts.value = reconciliation.items
-      pagination.total = Math.max(0, pagination.total - 1)
-    } else if (mobileHasMore.value) {
-      await loadData({ quiet: true })
-    } else {
-      removeItems((item) => item.id === mutation.id)
-    }
-    return
-  }
-  if (reconciliation.disposition === 'relocated_to_first_page') {
+  if (reconciliation.requiresReload) {
     await loadData({ quiet: true })
     return
   }
-  if (reconciliation.disposition !== 'not_found') {
-    accounts.value = reconciliation.items
+  applySystemAccountPageResult({
+    items: reconciliation.items,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: reconciliation.total,
+    hasMore: reconciliation.hasMore,
+    currentPageCount: reconciliation.currentPageCount
+  })
+}
+
+async function applySystemAccountMutation(mutation: Parameters<typeof reconcileSystemAccountMutationPage>[1]): Promise<void> {
+  const current = accounts.value.find((item) => item.id === mutation.id)
+  const mutationApplies = current !== undefined && mutation.updatedAt >= current.editVersion
+  const orderingChanged = current !== undefined && mutation.updatedAt > current.editVersion
+  if (mutationApplies) {
+    cancelPendingSystemAccountLoads()
   }
+  const accumulated = pagination.current > 1 && accounts.value.length > pagination.pageSize
+  const reconciliation = reconcileSystemAccountMutationPage(accounts.value, mutation, {
+    accumulated,
+    hasMore: mobileHasMore.value,
+    keyword: keyword.value,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: pagination.total
+  })
+  if (!mutationApplies || !orderingChanged) {
+    accounts.value = reconciliation.items
+    return
+  }
+  if (reconciliation.requiresReload) {
+    await loadData({ quiet: true })
+    return
+  }
+  applySystemAccountPageResult({
+    items: reconciliation.items,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: reconciliation.total,
+    hasMore: reconciliation.hasMore,
+    currentPageCount: reconciliation.currentPageCount
+  })
+  if (reconciliation.requiresBackfill) {
+    await loadData({ append: true, quiet: true })
+  }
+}
+
+function cancelPendingSystemAccountLoads(): void {
+  const mobileLoadWasPending = mobileLoadingMore.value
+  invalidatePendingLoads()
+  if (mobileLoadWasPending) {
+    pagination.current = Math.max(1, pagination.current - 1)
+  }
+}
+
+function systemAccountListScopeKey(): string {
+  return keyword.value.trim()
 }
 
 function resetSearch() {

@@ -145,8 +145,9 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
         const result = options.isManagementView.value
           ? await api.stats.aiPerformanceAccounts(accountParams)
           : await api.myStats.aiPerformanceAccounts(accountParams)
-        applyAccountOptions(result, requestSeq)
+        applyAccountOptions(result, requestSeq, request.key)
       } catch (error) {
+        if (!isCurrentAccountOptionsRequest(requestSeq, request.key)) return
         console.error(error)
         message.error(extractApiErrorMessage(error, 'AI 账户列表加载失败'))
       } finally {
@@ -163,9 +164,13 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     return loadingPromise
   }
 
-  function applyAccountOptions(nextAccounts: AiPerformanceAccountOption[], requestSeq: number): void {
-    if (requestSeq !== accountSearchSeq) return
+  function applyAccountOptions(nextAccounts: AiPerformanceAccountOption[], requestSeq: number, requestKey: string): void {
+    if (!isCurrentAccountOptionsRequest(requestSeq, requestKey)) return
     accounts.value = nextAccounts
+  }
+
+  function isCurrentAccountOptionsRequest(requestSeq: number, requestKey: string): boolean {
+    return requestSeq === accountSearchSeq && requestKey === currentAccountOptionsRequest().key
   }
 
   function handleAddedAccountsChange(value: string[], previousValue: string[]) {

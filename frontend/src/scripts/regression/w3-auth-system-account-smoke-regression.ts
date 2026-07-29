@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { api } from '@/api/client'
 import { http } from '@/api/http'
-import type { CurrentUserSummary, SystemAccountListResult, SystemAccountPrincipalSummary, SystemAccountSummary } from '@/types/domain'
+import type { CurrentUserSummary, SystemAccountListItem, SystemAccountListResult, SystemAccountPrincipalSummary } from '@/types/domain'
 
 type HttpMethod = 'get' | 'post' | 'patch' | 'delete'
 
@@ -205,7 +205,7 @@ function systemAccountListFixture(): SystemAccountListResult {
   }
 }
 
-function systemAccountFixture(): SystemAccountSummary {
+function systemAccountFixture(): SystemAccountListItem {
   return {
     id: 'sys_target',
     username: 'created-user',
@@ -215,8 +215,7 @@ function systemAccountFixture(): SystemAccountSummary {
     status: 'active',
     mustChangePassword: true,
     imageGenerationEnabled: true,
-    createdAt: '2026-07-09T09:00:00Z',
-    updatedAt: '2026-07-09T09:00:00Z'
+    editVersion: '2026-07-09T09:00:00Z'
   }
 }
 

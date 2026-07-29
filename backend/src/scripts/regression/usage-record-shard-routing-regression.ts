@@ -41,6 +41,7 @@ try {
       api_key: 'sk-usage-record-shard-routing',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {

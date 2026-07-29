@@ -61,16 +61,12 @@
       </a-spin>
     </div>
 
-    <div v-if="pagination.total > pagination.pageSize" class="ai-health-pagination">
-      <span>共 {{ pagination.total }} 个账户</span>
-      <a-pagination
-        :current="pagination.current"
-        :page-size="pagination.pageSize"
-        :total="pagination.total"
-        :show-size-changer="false"
-        show-less-items
-        @change="changePage"
-      />
+    <div v-if="pagination.current > 1 || hasMore" class="ai-health-pagination">
+      <span>第 {{ pagination.current }} 页</span>
+      <a-space>
+        <a-button :disabled="loading || pagination.current <= 1" @click="changePage(pagination.current - 1)">上一页</a-button>
+        <a-button :disabled="loading || !hasMore" @click="changePage(pagination.current + 1)">下一页</a-button>
+      </a-space>
     </div>
 
     <a-drawer :open="detailOpen" title="检查详情" width="420px" @update:open="setDetailOpen">
@@ -129,9 +125,9 @@ const rangeOptions = [
 ]
 const hasActiveFilters = computed(() => Boolean(keyword.value.trim()) || rangeHours.value !== 7 * 24)
 
-const { items: accounts, loading, pagination, handleTableChange, invalidatePendingLoads, loadData, resetPagination } = useResponsivePagedList<AiHealthAccountRow>({
+const { hasMore, items: accounts, loading, pagination, handleTableChange, invalidatePendingLoads, loadData, resetPagination } = useResponsivePagedList<AiHealthAccountRow>({
   pageSize,
-  showTotal: (total) => `共 ${total} 个账户`,
+  showTotal: (_total, _range, context) => context ? `当前页 ${context.currentPageCount} 个账户` : '',
   fetchPage: async (_options, page) => {
     hasLoadedVisiblePage = false
     const token = requestCoordinator.beginList()
@@ -146,7 +142,10 @@ const { items: accounts, loading, pagination, handleTableChange, invalidatePendi
       }, { signal: token.signal })
       if (!token.isCurrent()) return supersededPage(page.current, page.pageSize)
       hasLoadedVisiblePage = true
-      return result
+      return {
+        ...result,
+        total: knownPageLowerBound(result.page, result.pageSize, result.items.length, result.hasMore)
+      }
     } catch (error) {
       if (isAiHealthCanceledRequest(error) || !token.isCurrent()) {
         return supersededPage(page.current, page.pageSize)
@@ -167,6 +166,7 @@ function searchAccounts(): void {
   closeDetail()
   scrollContentToTop()
   resetPagination()
+  hasMore.value = false
   void loadData()
 }
 
@@ -176,6 +176,7 @@ function resetFilters(): void {
   rangeHours.value = 7 * 24
   scrollContentToTop()
   resetPagination()
+  hasMore.value = false
   void loadData()
 }
 
@@ -183,6 +184,7 @@ function changeRange(): void {
   closeDetail()
   scrollContentToTop()
   resetPagination()
+  hasMore.value = false
   void loadData()
 }
 
@@ -225,6 +227,7 @@ function accountStatusLabel(status: AccountStatus): string {
   if (status === 'disabled') return '已停用'
   if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
+  if (status === 'quality_isolated') return '质量隔离'
   return '临时不可用'
 }
 
@@ -300,9 +303,14 @@ function supersededPage(page: number, currentPageSize: number) {
   return { items: [], total: 0, hasMore: false, page, pageSize: currentPageSize, superseded: true }
 }
 
+function knownPageLowerBound(page: number, currentPageSize: number, itemCount: number, pageHasMore: boolean): number {
+  return (page - 1) * currentPageSize + itemCount + (pageHasMore ? 1 : 0)
+}
+
 function handleVisibilityChange(): void {
   if (document.visibilityState === 'hidden') {
     requestCoordinator.cancelList()
+    requestCoordinator.cancelDetail()
     invalidatePendingLoads()
     return
   }
@@ -338,6 +346,7 @@ watch(() => authState.revision.value, () => {
   accounts.value = []
   pagination.current = 1
   pagination.total = 0
+  hasMore.value = false
   if (pageActive && document.visibilityState === 'visible') void loadData()
   else reloadOnActivate = true
 })

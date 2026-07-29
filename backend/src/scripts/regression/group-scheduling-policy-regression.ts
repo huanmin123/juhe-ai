@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
+import type { SQLInputValue } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -60,6 +61,21 @@ interface GroupSummaryResponse {
   }
 }
 
+interface GroupCreateListItemResponse {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  ownerSystemAccountId?: string
+  name: string
+  providerCode: string
+  groupType: string
+  updatedAt: string
+  accountStats: Record<string, number>
+  canEdit: boolean
+  canDelete: boolean
+  canReturn: boolean
+}
+
 interface GroupMutationResponse {
   id: string
   changedFields: string[]
@@ -107,21 +123,65 @@ try {
   ])
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const routeCreatedGroup = await postEnvelope<GroupSummaryResponse>(baseUrl, '/__aisys__/api/groups', adminCookie, {
-    name: '路由分组字段回归分组',
-    providerCode: 'gpt',
-    enabled: true,
-    groupType: 'high_concurrency',
-    schedulingPolicy: {
-      defaultSoftConcurrency: 2,
-      maxQueueWaitMs: 30000,
-      clientIpConcurrencyLimit: 0,
-      clientIpConcurrencyOverflowMode: 'reject',
-      imageLaneMaxConcurrency: 0
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const createProviderReads: Array<{ sql: string; params: SQLInputValue[] }> = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/\bFROM\s+\"?providers\"?\b/i.test(sql) && /^\s*SELECT\b/i.test(sql)) {
+      const originalGet = statement.get.bind(statement) as typeof statement.get
+      statement.get = ((...params: SQLInputValue[]) => {
+        createProviderReads.push({ sql, params })
+        return originalGet(...params)
+      }) as typeof statement.get
     }
-  })
+    return statement
+  }) as typeof database.prepare
+  let routeCreatedGroup: GroupCreateListItemResponse
+  try {
+    routeCreatedGroup = await postEnvelope<GroupCreateListItemResponse>(baseUrl, '/__aisys__/api/groups', adminCookie, {
+      name: '路由分组字段回归分组',
+      providerCode: 'gpt',
+      enabled: true,
+      groupType: 'high_concurrency',
+      schedulingPolicy: {
+        defaultSoftConcurrency: 2,
+        maxQueueWaitMs: 30000,
+        clientIpConcurrencyLimit: 0,
+        clientIpConcurrencyOverflowMode: 'reject',
+        imageLaneMaxConcurrency: 0
+      }
+    })
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assert.equal(createProviderReads.length, 1, '分组创建只能按目标 providerCode 查询一次供应商')
+  assert.match(createProviderReads[0]?.sql ?? '', /SELECT\s+id,\s*code,\s*name,\s*enabled[\s\S]*WHERE\s+code\s*=\s*\?[\s\S]*LIMIT\s+1/i, '分组创建必须使用单供应商窄投影')
+  assert.deepEqual(createProviderReads[0]?.params, ['gpt'], '分组创建供应商校验只能携带当前 providerCode')
+  assert.doesNotMatch(createProviderReads[0]?.sql ?? '', /provider_protocol_profiles|default_supported_models_json|description/i, '分组创建不得装配协议档案、默认模型或说明')
   assert.equal('providerProtocolProfileId' in routeCreatedGroup, false, '分组创建路由不应返回 providerProtocolProfileId')
-  assert.equal(routeCreatedGroup.schedulingPolicy?.defaultSoftConcurrency, 2, '分组创建路由应保留高并发调度策略')
+  assert.equal('schedulingPolicy' in routeCreatedGroup, false, '分组创建回执不得提前返回编辑专用调度策略')
+  assert.equal('accountIds' in routeCreatedGroup, false, '分组创建回执不得返回账户关系')
+  assert.equal('usage' in routeCreatedGroup.accountStats, false, '分组创建回执不得返回列表不消费的累计用量')
+  assert.equal('todayUsage' in routeCreatedGroup.accountStats, false, '空分组创建回执不得返回无意义的今日用量对象')
+  assert.deepEqual(Object.keys(routeCreatedGroup.accountStats).sort(), [
+    'active',
+    'available',
+    'concurrencyLimit',
+    'currentConcurrency',
+    'disabled',
+    'error',
+    'rateLimited',
+    'total'
+  ], '分组创建回执只返回列表首屏直接消费的空统计字段')
+  assert.equal(routeCreatedGroup.canEdit, true, '新建自有分组应直接返回列表操作权限')
+  assert.equal(routeCreatedGroup.canDelete, true, '新建自有分组应直接返回列表删除权限')
+  assert.equal(routeCreatedGroup.canReturn, false, '新建自有分组不应返回授权归还权限')
+  assert.equal(routeCreatedGroup.systemAccountId, admin.id, '管理端创建回执应直接返回当前列表作用域的系统账户 ID')
+  assert.equal(routeCreatedGroup.ownerSystemAccountId, admin.id, '创建回执应直接返回资源所有者 ID')
+  assert.ok(routeCreatedGroup.systemAccountName, '管理端创建回执应直接返回可显示的系统账户名称')
+  assert.match(routeCreatedGroup.updatedAt, /^\d{4}-\d{2}-\d{2}T/, '分组创建回执应返回可用于编辑版本与列表排序的更新时间')
+  const routeCreatedGroupEdit = await getEnvelope<GroupSummaryResponse>(baseUrl, `/__aisys__/api/groups/${routeCreatedGroup.id}/edit-basic`, adminCookie)
+  assert.equal(routeCreatedGroupEdit.schedulingPolicy?.defaultSoftConcurrency, 2, '高并发调度策略只在用户打开编辑时按需读取')
 
   assert.throws(
     () => repositories.createGroup({
@@ -296,7 +356,7 @@ try {
   assert.equal(personalStored.group_type, 'personal')
   assert.equal(personalStored.scheduling_policy_json, null)
 
-  console.log('分组调度策略回归通过：schema、创建/更新、选项和运行态元数据均携带高并发分组配置')
+  console.log('分组调度策略回归通过：创建返回窄列表行，编辑、选项和运行态按需读取高并发配置')
 } finally {
   await closeServer(server)
   try {
@@ -340,6 +400,13 @@ function sessionCookie(systemAccountId: string): string {
 
 async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
   return requestEnvelope<T>(baseUrl, path, cookie, 'POST', body)
+}
+
+async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
+  const payload = await response.json() as ApiEnvelope<T>
+  assert.equal(response.status, 200, payload.message ?? `${path} 请求失败`)
+  return payload.data
 }
 
 async function patchEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {

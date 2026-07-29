@@ -406,7 +406,7 @@ async function assertProbeExplainUsesIndex(dueAt: string): Promise<void> {
        SELECT states.account_id, states.key_fingerprint
        FROM juhe_business.account_api_key_runtime_states states
        JOIN juhe_business.accounts accounts ON accounts.id = states.account_id
-       WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
+       WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited', 'error')
          AND states.next_probe_at IS NOT NULL
          AND states.next_probe_at <= $1
          AND accounts.deleted_at IS NULL
