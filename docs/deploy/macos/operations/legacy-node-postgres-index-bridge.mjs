@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const catalogPath = resolve(scriptDirectory, 'legacy-node-postgres-index-bridge.catalog.json')
 const backendRequire = createRequire(resolve(scriptDirectory, '../../../../backend/package.json'))
-const catalogFingerprint = '725c665427bdf55cad9e83398c323ba3bb77ed1b29f3b9467cfe9776bc67fcec'
+const catalogFingerprint = '8dddd3067d514bd8fc9afc7067a3587e514374ba65be0d8690aa792f4c9bfc9f'
 const advisoryLockKey = 'juhe-ai:legacy-node-postgres-index-bridge:v1'
 const actions = new Set(['inspect', 'apply', 'verify', 'cleanup-invalid'])
 
@@ -109,7 +109,6 @@ function validateCatalogIndex(index) {
     throw new BridgeError('invalid_catalog')
   }
   if (index.accessMethod !== 'btree') throw new BridgeError('invalid_catalog')
-  if (index.skipWhenRequiredColumnsMissing !== undefined && index.skipWhenRequiredColumnsMissing !== true) throw new BridgeError('invalid_catalog')
   if (/\bIF\s+NOT\s+EXISTS\b|\bDROP\s+INDEX\b|;|--|\/\*|\*\//i.test(index.createSql) || !index.createSql.includes(`${index.schema}.${index.table}`)) {
     throw new BridgeError('invalid_catalog')
   }
@@ -124,6 +123,20 @@ function validateCatalogIndex(index) {
   }
   if (!Array.isArray(index.requiredKeyExpressions) || index.requiredKeyExpressions.length === 0 || index.requiredKeyExpressions.some((expression) => typeof expression !== 'string' || expression.trim() === '')) {
     throw new BridgeError('invalid_catalog')
+  }
+  const properties = index.requiredIndexProperties
+  if (!properties || properties.indisunique !== false || properties.indisexclusion !== false ||
+    !Number.isInteger(properties.indnkeyatts) || !Number.isInteger(properties.indnatts) ||
+    properties.indnkeyatts !== index.requiredKeyExpressions.length || properties.indnatts !== properties.indnkeyatts) {
+    throw new BridgeError('invalid_catalog')
+  }
+  if (index.notApplicableWhenAllColumnsMissing !== undefined) {
+    const optionalColumns = index.notApplicableWhenAllColumnsMissing
+    if (!Array.isArray(optionalColumns) || optionalColumns.length === 0 ||
+      new Set(optionalColumns).size !== optionalColumns.length ||
+      optionalColumns.some((column) => !identifier(column) || !(column in index.requiredColumns))) {
+      throw new BridgeError('invalid_catalog')
+    }
   }
 }
 
@@ -161,16 +174,11 @@ async function inspectCatalog(client, catalog, currentUser) {
 }
 
 async function inspectIndex(client, target, currentUser) {
-  let tableOid
-  try {
-    tableOid = await assertTableContract(client, target, currentUser)
-  } catch (error) {
-    if (error instanceof BridgeError && error.code === 'missing_required_columns' && target.skipWhenRequiredColumnsMissing === true) {
-      return { name: target.name, state: 'not_applicable', reason: error.code }
-    }
-    throw error
+  const tableContract = await assertTableContract(client, target, currentUser)
+  if (tableContract.state === 'not_applicable') {
+    return { name: target.name, state: 'not_applicable', reason: tableContract.reason }
   }
-  const existing = await readIndex(client, target, tableOid)
+  const existing = await readIndex(client, target, tableContract.tableOid)
   if (!existing) return { name: target.name, state: 'missing' }
   if (!existing.indisvalid || !existing.indisready || !existing.indislive) return { name: target.name, state: 'invalid' }
   if (existing.owner !== currentUser || !definitionMatches(existing, target)) return { name: target.name, state: 'mismatched' }
@@ -197,10 +205,20 @@ async function assertTableContract(client, target, currentUser) {
     WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
   `, [target.schema, target.table])
   const columns = new Map(columnsResult.rows.map((row) => [row.attname, row]))
+  const optionalColumns = target.notApplicableWhenAllColumnsMissing ?? []
+  const missingOptionalColumns = optionalColumns.filter((column) => !columns.has(column))
   for (const [column, type] of Object.entries(target.requiredColumns)) {
+    if (optionalColumns.includes(column)) continue
     const actual = columns.get(column)
     if (!actual) throw new BridgeError('missing_required_columns')
     if (actual.type !== type) throw new BridgeError('column_type_mismatch')
+  }
+  if (missingOptionalColumns.length === optionalColumns.length && optionalColumns.length > 0) {
+    return { tableOid: table.oid, state: 'not_applicable', reason: 'pure_node_schema' }
+  }
+  if (missingOptionalColumns.length > 0) throw new BridgeError('partial_goose_schema_detected')
+  for (const column of optionalColumns) {
+    if (columns.get(column)?.type !== target.requiredColumns[column]) throw new BridgeError('column_type_mismatch')
   }
   for (const [column, expectedDefault] of Object.entries(target.requiredColumnDefaults ?? {})) {
     if (normalizeSql(columns.get(column)?.column_default ?? '') !== normalizeSql(expectedDefault)) {
@@ -213,12 +231,13 @@ async function assertTableContract(client, target, currentUser) {
     const result = await client.query(`SELECT COUNT(*)::text AS count FROM ${qualified(target.schema, target.table)} WHERE ${quoted(column)} IS NULL OR ${quoted(column)} <> ALL($1::integer[])`, [allowed])
     if (result.rows[0].count !== '0') throw new BridgeError('integer_value_precondition_failed')
   }
-  return table.oid
+  return { tableOid: table.oid }
 }
 
 async function readIndex(client, target, tableOid) {
   const result = await client.query(`
-    SELECT i.indisvalid, i.indisready, i.indislive, i.indnkeyatts, am.amname AS access_method,
+    SELECT i.indisvalid, i.indisready, i.indislive, i.indisunique, i.indisexclusion,
+           i.indnkeyatts, i.indnatts, am.amname AS access_method,
            i.indoption::text AS key_options,
            pg_get_expr(i.indpred, i.indrelid, false) AS predicate,
            ARRAY_AGG(pg_get_indexdef(i.indexrelid, key_position, false) ORDER BY key_position)
@@ -230,7 +249,8 @@ async function readIndex(client, target, tableOid) {
     INNER JOIN pg_am am ON am.oid = c.relam
     LEFT JOIN LATERAL generate_series(1, i.indnkeyatts) AS key_position ON TRUE
     WHERE n.nspname = $1 AND c.relname = $2 AND i.indrelid = $3::oid
-    GROUP BY c.oid, i.indexrelid, i.indisvalid, i.indisready, i.indislive, i.indnkeyatts, i.indoption, am.amname
+    GROUP BY c.oid, i.indexrelid, i.indisvalid, i.indisready, i.indislive, i.indisunique,
+             i.indisexclusion, i.indnkeyatts, i.indnatts, i.indoption, am.amname
   `, [target.schema, target.name, tableOid])
   return result.rows[0]
 }
@@ -239,7 +259,14 @@ function definitionMatches(existing, target) {
   const expectedPredicate = target.createSql.match(/\sWHERE\s(.+)$/u)?.[1]
   const actualKeys = Array.isArray(existing.key_expressions) ? existing.key_expressions : []
   const keyOptions = String(existing.key_options ?? '').match(/-?\d+/gu)?.map(Number) ?? []
-  if (!expectedPredicate || existing.access_method !== target.accessMethod || Number(existing.indnkeyatts) !== target.requiredKeyExpressions.length || actualKeys.length !== target.requiredKeyExpressions.length) return false
+  const requiredProperties = target.requiredIndexProperties
+  if (!expectedPredicate || existing.access_method !== target.accessMethod ||
+    existing.indisunique !== requiredProperties.indisunique ||
+    existing.indisexclusion !== requiredProperties.indisexclusion ||
+    Number(existing.indnkeyatts) !== requiredProperties.indnkeyatts ||
+    Number(existing.indnatts) !== requiredProperties.indnatts ||
+    Number(existing.indnatts) !== Number(existing.indnkeyatts) ||
+    actualKeys.length !== target.requiredKeyExpressions.length) return false
   if (keyOptions.length !== target.requiredKeyExpressions.length || keyOptions.some((option) => option !== 0)) return false
   if (!actualKeys.every((expression, index) => canonicalKeyExpression(expression) === canonicalKeyExpression(target.requiredKeyExpressions[index]))) return false
   return canonicalBooleanExpression(existing.predicate) === canonicalBooleanExpression(expectedPredicate)
@@ -265,11 +292,12 @@ function isVerifiedState(state) {
 async function cleanupInvalidIndex(client, catalog, currentUser, requestedIndex) {
   const target = catalog.indexes.find((index) => index.name === requestedIndex)
   if (!target) throw new BridgeError('cleanup_index_not_allowlisted')
-  const tableOid = await assertTableContract(client, target, currentUser)
-  const existing = await readIndex(client, target, tableOid)
+  const tableContract = await assertTableContract(client, target, currentUser)
+  if (tableContract.state === 'not_applicable') throw new BridgeError('cleanup_precondition_failed')
+  const existing = await readIndex(client, target, tableContract.tableOid)
   if (!existing || (existing.indisvalid && existing.indisready && existing.indislive) || existing.owner !== currentUser) throw new BridgeError('cleanup_precondition_failed')
   await client.query(`DROP INDEX CONCURRENTLY ${qualified(target.schema, target.name)}`)
-  if (await readIndex(client, target, tableOid)) throw new BridgeError('cleanup_verification_failed')
+  if (await readIndex(client, target, tableContract.tableOid)) throw new BridgeError('cleanup_verification_failed')
   return { indexes: [{ name: target.name, state: 'removed_invalid' }] }
 }
 

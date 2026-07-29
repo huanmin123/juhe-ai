@@ -33,13 +33,30 @@ assert.deepEqual(catalog.indexes.map((index) => index.name), [
   'idx_accounts_balance_auto_detect_due'
 ])
 assert.equal(catalog.indexes.length, 3, '遗留桥接目录只能包含批准的三条索引')
-assert.equal(catalog.indexes[0].skipWhenRequiredColumnsMissing, true, 'Go 专用索引缺字段时必须明确跳过')
-assert.equal(catalog.indexes[1].skipWhenRequiredColumnsMissing, true, 'Go 专用索引缺字段时必须明确跳过')
-assert.equal(catalog.indexes[2].skipWhenRequiredColumnsMissing, undefined, 'Node 账户索引不得因缺字段而被跳过')
+assert.deepEqual(catalog.indexes[0].notApplicableWhenAllColumnsMissing, [
+  'quality_health_sync_next_attempt_at',
+  'quality_health_sync_claim_until',
+  'quality_health_sync_claim_epoch',
+  'quality_health_sync_attempt_count'
+], 'due 索引只能在完整的纯 Node 缺列形态下不适用')
+assert.deepEqual(catalog.indexes[1].notApplicableWhenAllColumnsMissing, [
+  'quality_health_sync_next_attempt_at',
+  'quality_health_sync_claim_until',
+  'quality_health_sync_claim_epoch',
+  'quality_health_sync_attempt_count',
+  'quality_health_sync_last_error_class'
+], 'invalid-time 索引只能在完整的纯 Node 缺列形态下不适用')
+assert.equal(catalog.indexes[2].notApplicableWhenAllColumnsMissing, undefined, 'Node 账户索引不得因缺字段而被跳过')
 for (const index of catalog.indexes) {
   assert.equal(index.accessMethod, 'btree', `${index.name} 必须声明 btree 访问方法`)
   assert.match(index.createSql, /^CREATE INDEX CONCURRENTLY /, `${index.name} 必须并发创建`)
   assert.doesNotMatch(index.createSql, /\bIF\s+NOT\s+EXISTS\b|\bDROP\s+INDEX\b/i, `${index.name} 不得掩盖冲突或携带删除`)
+  assert.deepEqual(index.requiredIndexProperties, {
+    indisunique: false,
+    indisexclusion: false,
+    indnkeyatts: index.requiredKeyExpressions.length,
+    indnatts: index.requiredKeyExpressions.length
+  }, `${index.name} 必须锁定非唯一、非 exclusion、无 INCLUDE 列的物理属性`)
 }
 
 const migration87Creates = migration87.match(/CREATE INDEX idx_model_check_runs_quality_health_sync_[\s\S]*?;/g) ?? []
@@ -78,6 +95,13 @@ for (const contract of [
   'pg_get_userbyid(c.relowner)',
   'indisvalid',
   'indislive',
+  'i.indisunique',
+  'i.indisexclusion',
+  'i.indnatts',
+  'partial_goose_schema_detected',
+  "reason: 'pure_node_schema'",
+  'notApplicableWhenAllColumnsMissing',
+  'requiredIndexProperties',
   'canonicalBooleanExpression',
   'canonicalKeyExpression',
   'i.indrelid = $3::oid',
@@ -94,12 +118,21 @@ for (const contract of [
   assert.ok(script.includes(contract), `索引桥接缺少安全契约：${contract}`)
 }
 assert.match(script, /\(existing\.indisvalid && existing\.indisready && existing\.indislive\)/, '清理无效索引必须和检查状态使用同一有效性定义')
+assert.match(script, /missingOptionalColumns\.length === optionalColumns\.length && optionalColumns\.length > 0/, '只有全部纯 Node 专用字段缺失时才允许 not_applicable')
+assert.match(script, /if \(missingOptionalColumns\.length > 0\) throw new BridgeError\('partial_goose_schema_detected'\)/, '半套 Goose 字段不得被当作 not_applicable')
+assert.match(script, /existing\.indisunique !== requiredProperties\.indisunique/, '同名索引必须核验唯一属性')
+assert.match(script, /existing\.indisexclusion !== requiredProperties\.indisexclusion/, '同名索引必须核验 exclusion 属性')
+assert.match(script, /Number\(existing\.indnatts\) !== Number\(existing\.indnkeyatts\)/, '同名索引不得带 INCLUDE 列')
 assert.doesNotMatch(script, /INSERT\s+INTO\s+.*goose|UPDATE\s+.*goose|DELETE\s+FROM\s+.*goose/i, '桥接不得写入 Goose ledger')
 assert.doesNotMatch(script, /\bIF\s+NOT\s+EXISTS\b/i, '桥接不得用 IF NOT EXISTS 掩盖索引冲突')
 assert.doesNotMatch(catalog.indexes.map((index) => index.createSql).join('\n'), /;/, '桥接目录 DDL 不得包含多语句')
 assert.match(operationsReadme, /遗留NodePostgreSQL索引桥接说明\.md/, 'macOS 运维目录 README 必须链接桥接说明')
 assert.match(guide, /不得存在 `goose_db_version`/, '说明必须拒绝 Goose ledger')
 assert.match(guide, /`CREATE\/DROP INDEX CONCURRENTLY`/, '说明必须保留并发索引边界')
+assert.match(guide, new RegExp(catalogFingerprint), '说明中的 apply 指纹必须与目录、脚本一致')
+assert.match(guide, /not_applicable` \/ `pure_node_schema/, '说明必须明确纯 Node quality 索引是不适用而非已创建')
+assert.match(guide, /partial_goose_schema_detected/, '说明必须明确半套 Goose schema 不能跳过')
+assert.match(guide, /postgres:init-schema/, '说明必须约束桥接早于 Node schema 初始化')
 assert.match(script, /actualKeys\.every\(\(expression, index\) => canonicalKeyExpression\(expression\) === canonicalKeyExpression\(target\.requiredKeyExpressions\[index\]\)\)/, '同名索引必须逐项匹配键表达式，不能只命中若干 token')
 assert.match(script, /canonicalBooleanExpression\(existing\.predicate\) === canonicalBooleanExpression\(expectedPredicate\)/, '同名索引必须完整匹配 partial predicate')
 
