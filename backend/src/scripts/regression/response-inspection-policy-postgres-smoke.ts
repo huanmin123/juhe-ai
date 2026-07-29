@@ -55,7 +55,7 @@ try {
   for (const option of providerOptions) {
     assert.deepEqual(Object.keys(option).sort(), ['code', 'name'], 'PG provider option 只能返回 code/name')
   }
-  assert.equal(new Set(providerOptions.map((option) => `${option.code}\u0000${option.protocolCode}`)).size, providerOptions.length, 'PG provider options 必须去重')
+  assert.equal(new Set(providerOptions.map((option) => option.code)).size, providerOptions.length, 'PG 单协议 provider options 必须按 code 去重')
 
   const activeProtocolPolicies = await listActiveResponseInspectionPoliciesForGatewayAsync({
     protocolCode: OPENAI_PROTOCOL_CODE

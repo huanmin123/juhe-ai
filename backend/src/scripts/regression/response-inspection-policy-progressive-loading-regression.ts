@@ -222,13 +222,16 @@ try {
   assert.equal(Object.hasOwn(defaultDetail, 'createdAt'), false, '默认规则 detail 不得返回未展示的 createdAt')
   assert.equal((await fetch(`${baseUrl}/missing_policy_id`, { headers: { cookie: adminCookie } })).status, 404, '不存在策略 detail 必须返回 404')
 
-  const providerOptionsSql: string[] = []
+  assert.equal((await fetch(`${baseUrl}/provider-options`, { headers: { cookie: adminCookie } })).status, 400, 'provider-options 缺少协议上下文必须返回 400')
+  assert.equal((await fetch(`${baseUrl}/provider-options?protocolCode=openai&scopeType=invalid`, { headers: { cookie: adminCookie } })).status, 400, 'provider-options 非法层级必须返回 400')
+
+  const providerOptionsSql: Array<{ sql: string; params: SQLInputValue[] }> = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/\bINNER\s+JOIN\s+provider_protocol_profiles\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
-        providerOptionsSql.push(sql)
+        providerOptionsSql.push({ sql, params })
         return originalAll(...params)
       }) as typeof statement.all
     }
@@ -236,33 +239,44 @@ try {
   }) as typeof database.prepare
   let providerOptionsBody: unknown
   try {
-    providerOptionsBody = await requestData(`${baseUrl}/provider-options`, adminCookie)
+    const protocolScopeOptions = await requestData(`${baseUrl}/provider-options?protocolCode=openai&scopeType=protocol`, adminCookie)
+    assert.deepEqual(protocolScopeOptions, [], '协议层不需要供应商候选且不得查询 provider 表')
+    providerOptionsBody = await requestData(`${baseUrl}/provider-options?protocolCode=openai&scopeType=provider`, adminCookie)
   } finally {
     database.prepare = originalPrepare
   }
   const providerOptions = asRecordArray(providerOptionsBody, 'provider options')
   assert(providerOptions.length > 0, 'provider options 必须返回启用的受支持供应商')
   for (const option of providerOptions) {
-    assert.deepEqual(Object.keys(option).sort(), ['code', 'name', 'protocolCode'], 'provider option 只能返回 code/name/protocolCode')
+    assert.deepEqual(Object.keys(option).sort(), ['code', 'name'], 'provider option 只能返回 code/name')
   }
-  assert.deepEqual(providerOptions, [...providerOptions].sort(compareProviderOption), 'provider options 必须按 name/code/protocolCode 稳定排序')
-  assert.equal(new Set(providerOptions.map((option) => `${option.code}\u0000${option.protocolCode}`)).size, providerOptions.length, 'provider options 必须按 code/protocolCode 去重')
+  assert.deepEqual(providerOptions, [...providerOptions].sort(compareProviderOption), 'provider options 必须按 name/code 稳定排序')
+  assert.equal(new Set(providerOptions.map((option) => option.code)).size, providerOptions.length, '单协议 provider options 必须按 code 去重')
   assert(providerOptions.length > 200, 'provider options 超过 200 条时不得静默截断')
-  for (const pair of insertedProviderFixture.expectedPairs) {
-    assert(providerOptions.some((option) => `${option.code}\u0000${option.protocolCode}` === pair), `provider options 不得遗漏夹具 ${pair}`)
+  for (const code of insertedProviderFixture.expectedCodes) {
+    assert(providerOptions.some((option) => option.code === code), `OpenAI provider options 不得遗漏夹具 ${code}`)
   }
   assert(!providerOptions.some((option) => option.code === insertedProviderFixture.disabledProviderCode), '停用 provider 必须排除')
   assert(!providerOptions.some((option) => option.code === insertedProviderFixture.disabledProfileProviderCode), '只有停用 profile 的 provider 必须排除')
 
   assert.equal(providerOptionsSql.length, 1, '一次 provider-options HTTP 请求只应执行一次专用 options SQL')
-  const optionSql = providerOptionsSql[0] ?? ''
-  assert.match(optionSql, /SELECT\s+DISTINCT\s+p\.code\s*,\s*p\.name\s*,\s*ppp\.protocol_code\s+FROM/is, 'provider-options SQL 只能投影 code/name/protocol_code')
+  const optionQuery = providerOptionsSql[0]
+  assert(optionQuery, '必须捕获 provider-options SQL')
+  const optionSql = optionQuery.sql
+  assert.deepEqual(optionQuery.params, ['openai'], 'provider-options SQL 必须只绑定当前协议')
+  assert.match(optionSql, /SELECT\s+DISTINCT\s+p\.code\s*,\s*p\.name\s+FROM/is, 'provider-options SQL 只能投影 code/name')
+  assert.match(optionSql, /ppp\.protocol_code\s*=\s*\?/i, 'provider-options SQL 必须按单协议等值过滤')
+  assert.doesNotMatch(optionSql, /ppp\.protocol_code\s+IN\s*\(/i, 'provider-options SQL 不得再读取全部协议')
   assert.doesNotMatch(optionSql, /SELECT\s+(?:\w+\.)?\*/i, 'provider-options SQL 禁止 SELECT *')
   assert.doesNotMatch(optionSql, /\b(?:description|base_url|capabilities_json|account_types_json|default_supported_models_json)\b/i, 'provider-options SQL 禁止读取完整 provider/profile 字段')
   assert.doesNotMatch(optionSql, /\bLIMIT\b/i, 'provider-options SQL 不得用固定窗口静默截断')
+
+  const keywordOptions = asRecordArray(await requestData(`${baseUrl}/provider-options?protocolCode=openai&scopeType=provider&keyword=Fixture%20Provider%2000`, adminCookie), 'keyword provider options')
+  assert(keywordOptions.length > 0 && keywordOptions.length < providerOptions.length, 'provider-options keyword 必须在数据库侧缩小候选集')
+  assert(keywordOptions.every((option) => String(option.name).startsWith('Fixture Provider 00')), 'provider-options keyword 不得返回不匹配供应商')
   assertProviderOptionsDoesNotUseFullProviderLoader()
 
-  console.log('响应检查策略渐进加载回归通过：overview/detail/options、权限、SQLite 双读路径与窄 SQL 投影均符合契约')
+  console.log('响应检查策略渐进加载回归通过：overview/detail、按协议/关键词 options、权限、SQLite 双读路径与窄 SQL 投影均符合契约')
 } finally {
   if (httpCreatedPolicyId) policyRepository.deleteResponseInspectionPolicy(httpCreatedPolicyId)
   if (providerFixture) cleanupProviderFixture(databaseModule.getBusinessDatabase(), providerFixture)
@@ -286,12 +300,13 @@ try {
 async function assertSqliteMainAndReadWorkerParity(customId: string): Promise<void> {
   const mainList = policyRepository.listResponseInspectionPolicies()
   const mainDetail = policyRepository.getResponseInspectionPolicyDetail(customId)
-  const mainOptions = policyRepository.listResponseInspectionPolicyProviderOptions()
+  const providerOptionsQuery = { protocolCode: OPENAI_PROTOCOL_CODE, scopeType: 'provider' as const, keyword: 'Fixture' }
+  const mainOptions = policyRepository.listResponseInspectionPolicyProviderOptions(providerOptionsQuery)
   runtimeConfig.processRole = 'db-service'
   try {
     assert.deepEqual(jsonValue(await policyRepository.listResponseInspectionPoliciesAsync()), jsonValue(mainList), 'SQLite read worker overview 必须与主线程 JSON 逐字段一致')
     assert.deepEqual(jsonValue(await policyRepository.getResponseInspectionPolicyDetailAsync(customId)), jsonValue(mainDetail), 'SQLite read worker detail 必须与主线程 JSON 逐字段一致')
-    assert.deepEqual(jsonValue(await policyRepository.listResponseInspectionPolicyProviderOptionsAsync()), jsonValue(mainOptions), 'SQLite read worker provider options 必须与主线程 JSON 逐字段一致')
+    assert.deepEqual(jsonValue(await policyRepository.listResponseInspectionPolicyProviderOptionsAsync(providerOptionsQuery)), jsonValue(mainOptions), 'SQLite read worker provider options 必须与主线程 JSON 逐字段一致')
   } finally {
     runtimeConfig.processRole = 'worker'
   }
@@ -340,7 +355,6 @@ function assertOverviewShape(item: Record<string, unknown>): void {
 function compareProviderOption(left: Record<string, unknown>, right: Record<string, unknown>): number {
   return compareText(String(left.name), String(right.name))
     || compareText(String(left.code), String(right.code))
-    || compareText(String(left.protocolCode), String(right.protocolCode))
 }
 
 function compareText(left: string, right: string): number {
@@ -364,7 +378,7 @@ function jsonValue<T>(value: T): T {
 interface ProviderFixture {
   providerCodes: string[]
   profileIds: string[]
-  expectedPairs: Set<string>
+  expectedCodes: Set<string>
   disabledProviderCode: string
   disabledProfileProviderCode: string
 }
@@ -376,7 +390,7 @@ function insertProviderFixture(
   const now = new Date().toISOString()
   const providerCodes: string[] = []
   const profileIds: string[] = []
-  const expectedPairs = new Set<string>()
+  const expectedCodes = new Set<string>()
   const insertProvider = database.prepare(`
     INSERT INTO providers (
       id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at
@@ -397,7 +411,7 @@ function insertProviderFixture(
     insertProfile.run(profileId, code, `Fixture Profile ${suffix}`, 1, now, now)
     providerCodes.push(code)
     profileIds.push(profileId)
-    expectedPairs.add(`${code}\u0000openai`)
+    expectedCodes.add(code)
   }
 
   const duplicateProfileId = 'rip_option_profile_duplicate'
@@ -418,7 +432,7 @@ function insertProviderFixture(
   providerCodes.push(disabledProfileProviderCode)
   profileIds.push(disabledProfileId)
 
-  return { providerCodes, profileIds, expectedPairs, disabledProviderCode, disabledProfileProviderCode }
+  return { providerCodes, profileIds, expectedCodes, disabledProviderCode, disabledProfileProviderCode }
 }
 
 function cleanupProviderFixture(
@@ -433,8 +447,8 @@ function cleanupProviderFixture(
 
 function assertProviderOptionsDoesNotUseFullProviderLoader(): void {
   const source = readFileSync(resolve('src/storage/response-inspection-policy.repository.ts'), 'utf8')
-  const start = source.indexOf('export function listResponseInspectionPolicyProviderOptions()')
-  const end = source.indexOf('export async function listResponseInspectionPolicyProviderOptionsAsync()', start)
+  const start = source.indexOf('export function listResponseInspectionPolicyProviderOptions(')
+  const end = source.indexOf('export async function listResponseInspectionPolicyProviderOptionsAsync(', start)
   assert(start >= 0 && end > start, '必须能定位同步 provider-options repository 函数')
   const snippet = source.slice(start, end)
   assert.doesNotMatch(snippet, /\b(?:listProviders|listProviderDefinitions|loadProviders|loadProviderDefinitions)\b/, 'provider-options 不得调用完整 provider loader')
