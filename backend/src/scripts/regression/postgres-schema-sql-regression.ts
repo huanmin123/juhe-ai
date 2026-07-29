@@ -80,6 +80,12 @@ const listBuiltInProviderModelsAsyncSqlMatch = listBuiltInProviderModelsAsyncSou
 )
 assert.ok(listBuiltInProviderModelsAsyncSqlMatch, '必须精确提取 listBuiltInProviderModelsAsync 的 PostgreSQL SQL 模板')
 const listBuiltInProviderModelsAsyncSql = listBuiltInProviderModelsAsyncSqlMatch[1]
+const listBuiltInProviderModelsAsyncAvailabilityFilterMatch = listBuiltInProviderModelsAsyncSource.match(
+  /const availabilityFilter = options\.includeInactive \? '' : `([\s\S]*?)`\s+const rows = await client\.query<ProviderModelCatalogRow>/
+)
+assert.ok(listBuiltInProviderModelsAsyncAvailabilityFilterMatch, '必须提取 listBuiltInProviderModelsAsync 的 PostgreSQL 可用性过滤条件')
+const listBuiltInProviderModelsAsyncAvailabilityFilter = listBuiltInProviderModelsAsyncAvailabilityFilterMatch[1]
+assert.match(listBuiltInProviderModelsAsyncSql, /\$\{availabilityFilter\}/, 'Node PG 模型目录查询必须插入可用性过滤条件')
 
 assertFreshSqliteAllowsGeminiInteractionsHealthModes()
 
@@ -137,11 +143,15 @@ assert.match(proxyProfilesCreateSql, /enabled boolean NOT NULL DEFAULT true/, 'N
 assert.match(proxyProfilesCreateSql, /last_tested_at timestamptz[\s\S]+created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 代理检测与配置时间必须与 Goose 6 保持 timestamptz')
 assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
 assert.match(
-  listBuiltInProviderModelsAsyncSql,
+  listBuiltInProviderModelsAsyncAvailabilityFilter,
   /catalog_visible = TRUE(?=\s|,|\)|;|$)/,
-  'Node PG 模型目录查询必须对 boolean 可见性字段使用 boolean 谓词'
+  'Node PG 模型目录可用性过滤必须对 boolean 可见性字段使用 boolean 谓词'
 )
-assert.doesNotMatch(listBuiltInProviderModelsAsyncSql, /catalog_visible = 1\b/, 'Node PG 模型目录查询不得对 boolean 字段使用整数谓词')
+assert.doesNotMatch(
+  `${listBuiltInProviderModelsAsyncSql}\n${listBuiltInProviderModelsAsyncAvailabilityFilter}`,
+  /catalog_visible = 1\b/,
+  'Node PG 模型目录查询及其可用性过滤不得对 boolean 字段使用整数谓词'
+)
 assert.match(
   postgresSeedDefaultsSource,
   /model\.longContextInputTokenThreshold \?\? null,\s*model\.longContextInputTokenThresholdInclusive === true,\s*model\.longContextInputCostMultiplier \?\? null/,
