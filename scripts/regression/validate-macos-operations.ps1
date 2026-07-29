@@ -32,6 +32,9 @@ function Get-ShellFunctionBlock {
 
 $requiredFiles = @(
   'README.md',
+  'legacy-node-postgres-index-bridge.catalog.json',
+  'legacy-node-postgres-index-bridge.mjs',
+  '遗留NodePostgreSQL索引桥接说明.md',
   'install-launchd-service.sh',
   'install-performance-topology.sh',
   'performance-handover-controller.sh',

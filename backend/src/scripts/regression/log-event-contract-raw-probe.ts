@@ -13,9 +13,11 @@ import { GATEWAY_SLOW_STAGE_THRESHOLD_MS } from '../../shared/logging/runtime-lo
 
 class ProbeResponse extends EventEmitter {
   statusCode = 200
+  headersSent = false
 
-  constructor(public writableEnded: boolean) {
+  constructor(public writableEnded: boolean, headersSent = false) {
     super()
+    this.headersSent = headersSent
   }
 
   setHeader(): this {
@@ -34,7 +36,7 @@ const req = {
     return undefined
   }
 } as unknown as Request
-const res = new ProbeResponse(true) as unknown as Response
+const res = new ProbeResponse(true, true) as unknown as Response
 
 requestContextMiddleware(req, res, () => {
   bindRequestContextFields({

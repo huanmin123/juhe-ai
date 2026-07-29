@@ -12,6 +12,7 @@
 - `performance-handover-controller.sh`：针对多 gateway 性能槽的外层 Nginx route-fragment 控制器。它只接受由当前部署控制器私有持有的非秘密 plan；切换前先连续验证两套 slot 的 loopback control 和三个独立 gateway health，再验证外层 route header、内层 `X-Juhe-Topology-Install` identity、固定 control/DB/worker PID 集合和 access-log 增量。失败时恢复同一个先前 fragment，且不停止任一槽位。
 - `install-redis-role-services.sh`：默认 dry-run，按 cache/state/queue 角色渲染独立 Redis 配置与 system LaunchDaemon；apply 使用 bootout、端口释放、原子替换、bootstrap、kickstart 和失败恢复。
 - `verify-redis-role-isolation.sh`：只读验证 main `6379/6380/6381` 或 temporary `16379/16380/16381` 的三个 URL、PID、launchd job、PING、AOF/RDB 和淘汰策略，不输出密码。
+- `legacy-node-postgres-index-bridge.mjs`：历史 Node PostgreSQL 的固定索引桥接。默认只读 inspect；apply 和 cleanup-invalid 使用独立 PG 会话与 advisory lock，只允许固定目录内三条索引，不写 Goose ledger、表或业务行。详细操作见 [遗留 Node PostgreSQL 索引桥接说明](遗留NodePostgreSQL索引桥接说明.md)。
 - `templates/`：无用户、域名、IP、密钥或生产路径的 plist 模板。
 
 ## 安全边界

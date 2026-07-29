@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20260729T202347505Z](计划-20260729T202347505Z-遗留NodePostgreSQL整数标志与索引桥接.md)：修复历史 Node PostgreSQL `INTEGER(0/1)` 标志谓词/参数错配，并交付不写 Goose ledger 的受控索引桥接。
+
 - [PLAN-20260729T130300133Z](计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md)：修复 Codex Remote Compaction V2 将精确 `response.failed` 延后到 EOF 并错误改写为本地 compact 契约 mismatch 的状态机缺陷。
 
 - [PLAN-20260729T094521796Z](计划-20260729T094521796Z-使用记录PostgreSQL死锁修复.md)：修复高性能模式下 usage 批量落库先写唯一索引、后按非固定顺序更新账户引发的 PostgreSQL `40P01` 死锁，统一为账户行稳定锁定后再写使用记录。

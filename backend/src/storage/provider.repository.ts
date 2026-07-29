@@ -831,7 +831,9 @@ function providerTable(client: DatabaseClient, tableName: string): string {
 }
 
 function providerEnabledPredicate(client: DatabaseClient, column: string): string {
-  return `${column} = ${client.driver === 'postgres' ? 'TRUE' : '1'}`
+  // These Node-owned catalog tables retain INTEGER 0/1 in PostgreSQL.
+  void client
+  return `${column} = 1`
 }
 
 function isProviderEnabled(value: number | boolean): boolean {

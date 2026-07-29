@@ -223,7 +223,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
-  const scheduleBalanceAutoDetection = input.scheduleBalanceAutoDetection === true
+  const scheduleBalanceAutoDetection = input.scheduleBalanceAutoDetection === true ? 1 : 0
   const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const mutationGuard = postgresHealthCheckMutationGuard({
     expectedConfigRevision
@@ -245,16 +245,16 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
     const result = await tx.execute(`
       UPDATE ${healthCheckTable(tx, 'accounts')}
       SET status = CASE WHEN status = 'pending_test' THEN ? ELSE status END,
-          schedulable = CASE WHEN status = 'pending_test' THEN TRUE ELSE schedulable END,
+          schedulable = CASE WHEN status = 'pending_test' THEN 1 ELSE schedulable END,
           cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
           last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
           last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
           last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
           balance_query_next_refresh_at = CASE
             WHEN status = 'pending_test'
-              AND ? = TRUE
+              AND ? = 1
               AND type = 'api_key'
-              AND balance_query_enabled = FALSE
+              AND balance_query_enabled = 0
               AND balance_query_config_json = '{}'
             THEN ?
             ELSE balance_query_next_refresh_at
@@ -929,7 +929,7 @@ async function queryAccountsDueForHealthCheckAsync(
       FROM ${healthCheckTable(client, 'group_accounts')} group_accounts
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = accounts.system_account_id
-        AND group_accounts.enabled = TRUE
+        AND group_accounts.enabled = 1
         AND (
           accounts.authorization_instance_authorization_id IS NULL
           OR group_accounts.account_authorization_id = accounts.authorization_instance_authorization_id
@@ -943,7 +943,7 @@ async function queryAccountsDueForHealthCheckAsync(
       AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'pending_test')
-      AND (accounts.status = 'pending_test' OR accounts.schedulable = TRUE)
+      AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
       AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       AND (

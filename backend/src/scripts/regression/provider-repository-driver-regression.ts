@@ -90,13 +90,13 @@ function assertProviderEnabledPredicateBoundary(): void {
   const source = readFileSync(join(srcRoot, 'storage/provider.repository.ts'), 'utf8')
   assert.match(
     source,
-    /function providerEnabledPredicate\(client: DatabaseClient, column: string\): string \{[\s\S]*?client\.driver === 'postgres' \? 'TRUE' : '1'/,
-    '供应商 enabled 谓词必须匹配 SQLite INTEGER 与 PostgreSQL boolean 的实际列类型'
+    /function providerEnabledPredicate\(client: DatabaseClient, column: string\): string \{[\s\S]*?return `\$\{column\} = 1`/,
+    '供应商目录 enabled 字段在 Node PostgreSQL 中保留 INTEGER 0/1'
   )
   assert.doesNotMatch(
     source,
-    /function providerEnabledPredicate\(_client:[\s\S]{0,200}return `\$\{column\} = 1`/,
-    'PostgreSQL boolean enabled 字段不得与 integer 1 比较'
+    /function providerEnabledPredicate[\s\S]{0,300}TRUE/,
+    'Node INTEGER enabled 谓词不得回退为 PostgreSQL boolean 字面量'
   )
   assert.equal(
     source.match(/providerEnabledPredicate\(client, '[^']+'\)/g)?.length,

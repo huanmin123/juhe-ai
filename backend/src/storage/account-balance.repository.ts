@@ -150,8 +150,8 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
       FROM juhe_business.accounts
       WHERE type = 'api_key'
         AND status = 'active'
-        AND schedulable = TRUE
-        AND balance_query_enabled = TRUE
+        AND schedulable = 1
+        AND balance_query_enabled = 1
         AND balance_query_next_refresh_at IS NOT NULL
         AND balance_query_next_refresh_at <= ?
         AND (? = '' OR balance_query_next_refresh_at > ? OR (balance_query_next_refresh_at = ? AND id > ?))
@@ -194,8 +194,8 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
       WHERE a.id > ?
         AND a.type = 'api_key'
         AND a.status = 'active'
-        AND a.schedulable = TRUE
-        AND a.balance_query_enabled = TRUE
+        AND a.schedulable = 1
+        AND a.balance_query_enabled = 1
         AND a.balance_query_next_refresh_at IS NULL
         AND a.deleted_at IS NULL
         AND a.authorization_instance_authorization_id IS NULL
@@ -588,7 +588,7 @@ async function commitAccountBalanceRefreshInClientAsync(
         updated_at = ?
     WHERE id = ?
       AND config_revision = ?
-      AND balance_query_enabled = TRUE
+      AND balance_query_enabled = 1
       AND balance_query_config_json::jsonb = ?::jsonb
       ${expectedNextRefreshClause}
       ${expectedUpdatedAtClause}
@@ -773,7 +773,7 @@ export async function saveAccountBalanceConfigurationAsync(input: {
       UPDATE juhe_business.accounts
       SET balance_query_enabled = ?, balance_query_config_json = ?, balance_query_next_refresh_at = ?, updated_at = ?
       WHERE id = ? AND deleted_at IS NULL
-    `, [input.enabled, JSON.stringify(config ?? {}), nextRefreshAt ?? null, now, input.accountId])
+    `, [input.enabled ? 1 : 0, JSON.stringify(config ?? {}), nextRefreshAt ?? null, now, input.accountId])
     return { enabled: input.enabled, config, nextRefreshAt }
   }
   const current = getBusinessDatabase().prepare(`
@@ -1045,8 +1045,7 @@ function balanceBooleanPredicate(column: 'schedulable' | 'balance_query_enabled'
   return `${column} = ${balanceBooleanLiteral(expected)}`
 }
 
-function balanceBooleanLiteral(value: boolean): 'TRUE' | 'FALSE' | '1' | '0' {
-  if (runtimeConfig.databaseDriver === 'postgres') return value ? 'TRUE' : 'FALSE'
+function balanceBooleanLiteral(value: boolean): '1' | '0' {
   return value ? '1' : '0'
 }
 

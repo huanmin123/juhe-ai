@@ -20,6 +20,7 @@ import {
 import {
   GATEWAY_REQUEST_STAGES,
   buildRequestStageLogFields,
+  captureDownstreamResponseState,
   logRequestStage,
   normalizeHeaderId,
   parseTraceParent,
@@ -39,6 +40,20 @@ assert.equal(
 )
 assert.equal(parseTraceParent('00-00000000000000000000000000000000-00f067aa0ba902b7-01'), undefined)
 assert.equal(parseTraceParent('ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'), undefined)
+assert.deepEqual(captureDownstreamResponseState({ headersSent: true, writableEnded: false, statusCode: 201 }, 'finish'), {
+  downstreamEvent: 'finish',
+  responseCommitted: true,
+  statusCode: 201
+})
+assert.deepEqual(captureDownstreamResponseState({ headersSent: false, writableEnded: false, statusCode: 200 }, 'close'), {
+  downstreamEvent: 'close',
+  responseCommitted: false
+})
+assert.deepEqual(captureDownstreamResponseState({ headersSent: false, writableEnded: true, statusCode: 204 }, 'finish'), {
+  downstreamEvent: 'finish',
+  responseCommitted: true,
+  statusCode: 204
+})
 
 assert.equal(new Set(GATEWAY_REQUEST_STAGES).size, GATEWAY_REQUEST_STAGES.length)
 for (const stage of [
@@ -351,6 +366,9 @@ for (const key of [
 assert.equal(timingSummary.stageCount, 70, 'stageCount 必须保留超过摘要数组上限后的真实阶段总数')
 assert.equal((timingSummary.stages as unknown[]).length, 64, 'summary 内嵌阶段数组必须保持有界')
 assert.equal(timingSummary.droppedStageSummaries, 6, 'summary 必须明确内嵌阶段摘要丢弃数')
+assert.equal(timingSummary.downstreamEvent, 'finish')
+assert.equal(timingSummary.responseCommitted, true)
+assert.equal(timingSummary.statusCode, 200)
 
 const performanceRequestContextProbe = spawnSync(process.execPath, [
   '--import',
@@ -406,7 +424,11 @@ assert.equal(
 )
 const terminalTimingLine = terminalCloseLines.find((line) => line.includes('"event":"gateway.request.timing_summary"'))
 assert(terminalTimingLine, '协议成功终止后的 close 仍必须产出耗时汇总')
-assert.equal((JSON.parse(terminalTimingLine) as Record<string, unknown>).outcome, 'success')
+const terminalTiming = JSON.parse(terminalTimingLine) as Record<string, unknown>
+assert.equal(terminalTiming.outcome, 'success')
+assert.equal(terminalTiming.downstreamEvent, 'close')
+assert.equal(terminalTiming.responseCommitted, false)
+assert.equal('statusCode' in terminalTiming, false, '未提交的协议终态 close 不得记录默认 HTTP 200')
 
 const abortedCloseLines = requestContextRawLines
   .filter((line) => line.includes('"traceId":"trace-aborted-close-probe"'))
@@ -416,7 +438,20 @@ assert(
 )
 const abortedTimingLine = abortedCloseLines.find((line) => line.includes('"event":"gateway.request.timing_summary"'))
 assert(abortedTimingLine, '真正中断仍必须产出耗时汇总')
-assert.equal((JSON.parse(abortedTimingLine) as Record<string, unknown>).outcome, 'aborted')
+const abortedTiming = JSON.parse(abortedTimingLine) as Record<string, unknown>
+assert.equal(abortedTiming.outcome, 'aborted')
+assert.equal(abortedTiming.downstreamEvent, 'close')
+assert.equal(abortedTiming.responseCommitted, false)
+assert.equal('statusCode' in abortedTiming, false, '未提交的常规 close 不得记录默认 HTTP 200')
+const abortedCloseLine = abortedCloseLines.find((line) => line.includes('"event":"http_request_closed"'))
+assert(abortedCloseLine, '真正中断必须保留 downstream close 日志')
+const abortedClose = JSON.parse(abortedCloseLine) as Record<string, unknown>
+assert.equal(abortedClose.downstreamClose, true)
+assert.equal(abortedClose.closeTrigger, 'unknown_unproven')
+assert.equal(abortedClose.clientActionConfirmed, false)
+assert.equal(abortedClose.downstreamEvent, 'close')
+assert.equal(abortedClose.responseCommitted, false)
+assert.equal('statusCode' in abortedClose, false, '未提交的 close 日志不得记录默认 HTTP 200')
 
 const failedTerminalLines = requestContextRawLines
   .filter((line) => line.includes('"traceId":"trace-failed-terminal-close-probe"'))
@@ -427,6 +462,10 @@ assert.equal(
 )
 const failedTerminalTimingLine = failedTerminalLines.find((line) => line.includes('"event":"gateway.request.timing_summary"'))
 assert(failedTerminalTimingLine, '协议失败终态后的 close 必须产出失败耗时汇总')
-assert.equal((JSON.parse(failedTerminalTimingLine) as Record<string, unknown>).outcome, 'expected_failure')
+const failedTerminalTiming = JSON.parse(failedTerminalTimingLine) as Record<string, unknown>
+assert.equal(failedTerminalTiming.outcome, 'expected_failure')
+assert.equal(failedTerminalTiming.downstreamEvent, 'close')
+assert.equal(failedTerminalTiming.responseCommitted, false)
+assert.equal('statusCode' in failedTerminalTiming, false, '未提交的失败协议终态不得记录默认 HTTP 200')
 
 console.log('日志事件契约回归通过')

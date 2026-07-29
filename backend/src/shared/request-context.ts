@@ -82,6 +82,14 @@ export interface RequestContextFields {
   trafficSource?: string
 }
 
+export type DownstreamResponseEvent = 'finish' | 'close'
+
+export interface DownstreamResponseState {
+  downstreamEvent: DownstreamResponseEvent
+  responseCommitted: boolean
+  statusCode?: number
+}
+
 export const GATEWAY_REQUEST_STAGES = [
   'runtime_resolution',
   'body.admission',
@@ -433,28 +441,49 @@ export function extractClientIp(req: Request): string | undefined {
   return normalizeClientIp(req.ip) ?? normalizeClientIp(req.socket.remoteAddress)
 }
 
+export function captureDownstreamResponseState(
+  response: Pick<Response, 'headersSent' | 'writableEnded' | 'statusCode'>,
+  downstreamEvent: DownstreamResponseEvent
+): DownstreamResponseState {
+  const responseCommitted = response.headersSent === true || response.writableEnded === true
+  if (!responseCommitted) {
+    return {
+      downstreamEvent,
+      responseCommitted
+    }
+  }
+  return {
+    downstreamEvent,
+    responseCommitted,
+    statusCode: response.statusCode
+  }
+}
+
 function logRequestFinished(req: Request, res: Response, context: RequestContext): void {
-  setImmediate(() => logRequestTimingSummary(context, res.statusCode, resolveRequestSummaryOutcome(context, res.statusCode)))
+  const responseState = captureDownstreamResponseState(res, 'finish')
+  const statusCode = responseState.statusCode ?? res.statusCode
+  const committedResponseState = { ...responseState, statusCode }
+  setImmediate(() => logRequestTimingSummary(context, committedResponseState, resolveRequestSummaryOutcome(context, statusCode)))
   const durationMs = Date.now() - context.startedAt
   const fields = {
     event: 'http_request_completed',
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl),
-    statusCode: res.statusCode,
+    ...committedResponseState,
     durationMs,
     clientIp: context.clientIp,
     userAgent: req.header('user-agent')
   }
 
-  if (isHealthPath(req.path) && res.statusCode < 400) {
+  if (isHealthPath(req.path) && statusCode < 400) {
     context.logger.debug(fields, 'HTTP 请求已结束')
     return
   }
 
-  if (res.statusCode >= 500) {
+  if (statusCode >= 500) {
     context.logger.error(fields, 'HTTP 请求已结束')
-  } else if (res.statusCode >= 400) {
+  } else if (statusCode >= 400) {
     context.logger.warn(fields, 'HTTP 请求已结束')
   } else {
     context.logger.info(fields, 'HTTP 请求已结束')
@@ -462,15 +491,22 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
 }
 
 function logRequestClosed(req: Request, res: Response, context: RequestContext): void {
+  const responseState = captureDownstreamResponseState(res, 'close')
+  const downstreamCloseFields = {
+    ...responseState,
+    downstreamClose: true,
+    closeTrigger: 'unknown_unproven',
+    clientActionConfirmed: false
+  }
   if (context.protocolTerminalOutcome) {
     setImmediate(() => {
-      const resolvedOutcome = resolveRequestSummaryOutcome(context, res.statusCode)
+      const resolvedOutcome = resolveRequestSummaryOutcome(context, responseState.statusCode)
       const summaryOutcome = context.protocolTerminalOutcome === 'success'
         ? 'success'
         : resolvedOutcome === 'success'
           ? 'expected_failure'
           : resolvedOutcome
-      logRequestTimingSummary(context, res.statusCode, summaryOutcome)
+      logRequestTimingSummary(context, responseState, summaryOutcome)
     })
     context.logger.debug({
       event: 'http_request_closed_after_protocol_terminal',
@@ -478,24 +514,24 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
       method: req.method,
       path: req.path,
       originalUrl: sanitizeUrlForLog(req.originalUrl),
-      statusCode: res.statusCode,
+      ...downstreamCloseFields,
       durationMs: Date.now() - context.startedAt,
       clientIp: context.clientIp,
       userAgent: req.header('user-agent')
-    }, 'HTTP 连接在协议终止后关闭')
+    }, '下游连接在协议终态后关闭，触发方未识别')
     return
   }
-  setImmediate(() => logRequestTimingSummary(context, res.statusCode, 'aborted'))
+  setImmediate(() => logRequestTimingSummary(context, responseState, 'aborted'))
   context.logger.warn({
     event: 'http_request_closed',
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl),
-    statusCode: res.statusCode,
+    ...downstreamCloseFields,
     durationMs: Date.now() - context.startedAt,
     clientIp: context.clientIp,
     userAgent: req.header('user-agent')
-  }, 'HTTP 请求在完成前关闭')
+  }, '下游连接在请求完成前关闭，触发方未识别')
 }
 
 export function markRequestProtocolTerminalOutcome(outcome: 'success' | 'failure'): void {
@@ -504,7 +540,11 @@ export function markRequestProtocolTerminalOutcome(outcome: 'success' | 'failure
   context.protocolTerminalOutcome = outcome
 }
 
-function logRequestTimingSummary(context: RequestContext, statusCode: number, outcome: GatewayRequestStageOutcome): void {
+function logRequestTimingSummary(
+  context: RequestContext,
+  responseState: DownstreamResponseState,
+  outcome: GatewayRequestStageOutcome
+): void {
   if (context.timingSummaryLogged || (!context.stageSummaries?.length && !context.gatewayRoutingDispatchSummary)) return
   context.timingSummaryLogged = true
   captureTimingLogQueueSnapshot(context)
@@ -525,7 +565,7 @@ function logRequestTimingSummary(context: RequestContext, statusCode: number, ou
     model: context.model ?? null,
     stream: context.stream ?? null,
     outcome,
-    statusCode,
+    ...responseState,
     accountId: context.accountId ?? null,
     groupId: context.groupId ?? null,
     attemptCount,
@@ -607,14 +647,14 @@ function sumStageDurations(context: RequestContext, stage: string): number | und
     : undefined
 }
 
-export function resolveRequestSummaryOutcome(context: RequestContext, statusCode: number): GatewayRequestStageOutcome {
+export function resolveRequestSummaryOutcome(context: RequestContext, statusCode?: number): GatewayRequestStageOutcome {
   if (context.stageSummaries?.some((stage) => stage.outcome === 'unexpected_failure')) {
     return 'unexpected_failure'
   }
-  if (statusCode >= 500) {
+  if (statusCode !== undefined && statusCode >= 500) {
     return context.terminalExpectedFailure ? 'expected_failure' : 'unexpected_failure'
   }
-  if (statusCode >= 400) {
+  if (statusCode !== undefined && statusCode >= 400) {
     return 'expected_failure'
   }
   return 'success'
