@@ -187,7 +187,9 @@ func sameExecutionCandidate(left, right gatewaycandidatewindow.Candidate) bool {
 		leftProjection.ResourceClientCompatibility != rightProjection.ResourceClientCompatibility ||
 		leftProjection.ProxyProfileID != rightProjection.ProxyProfileID ||
 		leftProjection.ResourceProxyProfileID != rightProjection.ResourceProxyProfileID ||
-		left.DefaultBaseURL != right.DefaultBaseURL {
+		left.DefaultBaseURL != right.DefaultBaseURL ||
+		!slices.Equal(left.SupportedModels, right.SupportedModels) ||
+		!slices.Equal(left.ModelMappings, right.ModelMappings) {
 		return false
 	}
 	return sameProxy(left.Proxy, right.Proxy)

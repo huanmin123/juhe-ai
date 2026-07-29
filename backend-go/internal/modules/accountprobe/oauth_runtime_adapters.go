@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,6 +82,7 @@ func (r RedisOAuthRefreshLockRunner) WithOAuthRefreshLock(
 type OAuthRefreshTransportExecutor struct {
 	Factory   CandidateTransportFactory
 	URLPolicy upstreamurlpolicy.Config
+	Guard     RevocationProtector
 }
 
 func (e OAuthRefreshTransportExecutor) ExecuteOAuthRefresh(
@@ -88,6 +90,10 @@ func (e OAuthRefreshTransportExecutor) ExecuteOAuthRefresh(
 	candidate gatewaycandidatewindow.Candidate,
 	request OAuthRefreshRequest,
 ) (OAuthRefreshHTTPResponse, error) {
+	executionFence := oauthHTTPExecutionFenceFromContext(ctx)
+	if e.Guard == nil || executionFence == nil {
+		return OAuthRefreshHTTPResponse{}, fmt.Errorf("OAuth refresh revocation guard and execution fence are required")
+	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, request.URL(), bytes.NewReader(request.Body()))
 	if err != nil {
 		return OAuthRefreshHTTPResponse{}, fmt.Errorf("build OAuth refresh request: %w", err)
@@ -106,7 +112,15 @@ func (e OAuthRefreshTransportExecutor) ExecuteOAuthRefresh(
 	if closer, ok := transport.(interface{ CloseIdleConnections() }); ok {
 		defer closer.CloseIdleConnections()
 	}
-	result, executeErr := transport.ExecuteWithFence(ctx, httpRequest, nil)
+	var result upstreamtransport.Result
+	var executeErr error
+	guardErr := e.Guard.ProtectExternal(ctx, executionFence, func(sendCtx context.Context) error {
+		result, executeErr = transport.ExecuteWithFence(sendCtx, httpRequest, nil)
+		return executeErr
+	})
+	if guardErr != nil {
+		return OAuthRefreshHTTPResponse{}, errors.Join(executeErr, guardErr)
+	}
 	if !result.FramingComplete {
 		if executeErr == nil {
 			executeErr = fmt.Errorf("OAuth refresh response framing is incomplete")
@@ -186,12 +200,17 @@ type OAuthGeminiRefreshEnricher struct{ Enricher *GeminiOAuthEnricher }
 
 type GeminiOAuthEnrichmentTransportExecutor struct {
 	URLPolicy upstreamurlpolicy.Config
+	Guard     RevocationProtector
 }
 
 func (e GeminiOAuthEnrichmentTransportExecutor) ExecuteGeminiOAuthEnrichment(
 	ctx context.Context,
 	request GeminiOAuthEnrichmentHTTPRequest,
 ) (GeminiOAuthEnrichmentHTTPResponse, error) {
+	executionFence := oauthHTTPExecutionFenceFromContext(ctx)
+	if e.Guard == nil || executionFence == nil {
+		return GeminiOAuthEnrichmentHTTPResponse{}, fmt.Errorf("Gemini OAuth enrichment revocation guard and execution fence are required")
+	}
 	httpRequest, err := http.NewRequestWithContext(ctx, request.Method(), request.URL(), bytes.NewReader(request.Body()))
 	if err != nil {
 		return GeminiOAuthEnrichmentHTTPResponse{}, fmt.Errorf("build Gemini OAuth enrichment request: %w", err)
@@ -205,7 +224,15 @@ func (e GeminiOAuthEnrichmentTransportExecutor) ExecuteGeminiOAuthEnrichment(
 		return GeminiOAuthEnrichmentHTTPResponse{}, fmt.Errorf("create Gemini OAuth enrichment transport: %w", err)
 	}
 	defer transport.CloseIdleConnections()
-	result, executeErr := transport.ExecuteWithFence(ctx, httpRequest, nil)
+	var result upstreamtransport.Result
+	var executeErr error
+	guardErr := e.Guard.ProtectExternal(ctx, executionFence, func(sendCtx context.Context) error {
+		result, executeErr = transport.ExecuteWithFence(sendCtx, httpRequest, nil)
+		return executeErr
+	})
+	if guardErr != nil {
+		return GeminiOAuthEnrichmentHTTPResponse{}, errors.Join(executeErr, guardErr)
+	}
 	if !result.FramingComplete {
 		if executeErr == nil {
 			executeErr = fmt.Errorf("Gemini OAuth enrichment response framing is incomplete")
