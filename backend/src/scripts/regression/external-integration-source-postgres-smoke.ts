@@ -43,7 +43,7 @@ try {
   })
   assert.equal(listed.items.length, 1, 'PG 外部来源系统列表应按名称前缀命中临时来源')
   assert.deepEqual(Object.keys(listed.items[0] ?? {}).sort(), [
-    'id', 'name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'lastUsedAt', 'primaryToken', 'isBuiltIn'
+    'id', 'name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'lastUsedAt', 'updatedAt', 'primaryToken', 'isBuiltIn'
   ].sort(), 'PG 外部来源系统列表应保持轻量字段契约')
 
   const secret = await findExternalIntegrationSourceTokenSecretAsync(sourceId, tokenId)
@@ -63,15 +63,26 @@ try {
   assert.equal(authForbidden.ok, false, 'PG 外部来源系统 token scope 不足应拒绝')
   assert.equal(authForbidden.ok ? undefined : authForbidden.code, 'external_source_scope_forbidden', 'PG 外部来源系统 token scope 不足应返回固定错误码')
 
+  const tokenBeforePatch = (await findExternalIntegrationSourceAsync(sourceId))?.tokens.find((item) => item.id === tokenId)
+  assert(tokenBeforePatch?.updatedAt, 'PG Token 详情应返回 PATCH 版本')
   const token = await updateExternalIntegrationSourceTokenAsync(sourceId, tokenId, {
+    expectedUpdatedAt: tokenBeforePatch.updatedAt,
     name: `外部来源 PG smoke token ${marker}`,
     scopes: [externalIntegrationGroupListReadScope]
   })
-  assert.equal(token?.name, `外部来源 PG smoke token ${marker}`, 'PG 外部来源系统 token 应可更新名称')
-  assert.deepEqual(token?.scopes, [externalIntegrationGroupListReadScope], 'PG 外部来源系统 token 应可更新 scopes')
+  assert(token?.mutation.updatedAt, 'PG 外部来源系统 token PATCH 应返回新版本')
+  const tokenAfterPatch = (await findExternalIntegrationSourceAsync(sourceId))?.tokens.find((item) => item.id === tokenId)
+  assert.equal(tokenAfterPatch?.name, `外部来源 PG smoke token ${marker}`, 'PG 外部来源系统 token 应可更新名称')
+  assert.deepEqual(tokenAfterPatch?.scopes, [externalIntegrationGroupListReadScope], 'PG 外部来源系统 token 应可更新 scopes')
 
-  const disabled = await updateExternalIntegrationSourceAsync(sourceId, { status: 'disabled' })
-  assert.equal(disabled?.status, 'disabled', 'PG 外部来源系统应可禁用')
+  const sourceBeforeDisable = await findExternalIntegrationSourceAsync(sourceId)
+  assert(sourceBeforeDisable?.updatedAt, 'PG 来源详情应返回 PATCH 版本')
+  const disabled = await updateExternalIntegrationSourceAsync(sourceId, {
+    expectedUpdatedAt: sourceBeforeDisable.updatedAt,
+    status: 'disabled'
+  })
+  assert(disabled?.mutation.updatedAt, 'PG 外部来源系统禁用应返回新版本')
+  assert.equal((await findExternalIntegrationSourceAsync(sourceId))?.status, 'disabled', 'PG 外部来源系统应可禁用')
   assert.equal((await findExternalIntegrationSourceAsync(sourceId))?.tokens[0]?.status, 'disabled', 'PG 外部来源系统禁用后应同步禁用非 revoked token')
 
   const authDisabled = await validateExternalIntegrationSourceTokenAsync({

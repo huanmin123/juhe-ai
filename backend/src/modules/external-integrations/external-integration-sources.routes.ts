@@ -11,6 +11,7 @@ import {
   createExternalIntegrationSourceAuthorizationAsync,
   createExternalIntegrationSourceTokenAsync,
   deleteExternalIntegrationSourceAsync,
+  ExternalIntegrationSourcePatchConflictError,
   findExternalIntegrationSourceAsync,
   findExternalIntegrationSourceRecordAsync,
   findExternalIntegrationSourceTokenSecretAsync,
@@ -45,7 +46,12 @@ const sourceBodySchema = z.object({
   notes: z.string().trim().max(500, '备注不能超过 500 个字符').nullable().optional()
 }).strict()
 
-const sourceUpdateBodySchema = sourceBodySchema.partial()
+const expectedUpdatedAtSchema = z.string().datetime({ message: '外部来源配置版本格式不正确' })
+const sourceUpdateBodySchema = sourceBodySchema.partial().extend({
+  expectedUpdatedAt: expectedUpdatedAtSchema
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '请提供要修改的来源配置字段'
+})
 
 const tokenBodySchema = z.object({
   name: z.string().trim().min(1, 'Token 名称不能为空').max(80, 'Token 名称不能超过 80 个字符'),
@@ -54,7 +60,11 @@ const tokenBodySchema = z.object({
   expiresAt: expiresAtSchema
 }).strict()
 
-const tokenUpdateBodySchema = tokenBodySchema.partial()
+const tokenUpdateBodySchema = tokenBodySchema.partial().extend({
+  expectedUpdatedAt: expectedUpdatedAtSchema
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '请提供要修改的 Token 字段'
+})
 
 const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
@@ -122,7 +132,12 @@ externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuar
 externalIntegrationSourcesRouter.post('/', mutationGuard({
   operationKey: 'external_integration_sources.create',
   fingerprint: (req) => ({
-    name: bodyField(req, 'name')
+    name: bodyField(req, 'name'),
+    status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
+    rateLimits: bodyField(req, 'rateLimits'),
+    expiresAt: bodyField(req, 'expiresAt'),
+    notes: bodyField(req, 'notes')
   })
 }), async (req, res) => {
   const parsed = sourceBodySchema.safeParse(req.body ?? {})
@@ -177,8 +192,11 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     id: req.params.id,
     name: bodyField(req, 'name'),
     status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
     expiresAt: bodyField(req, 'expiresAt'),
-    rateLimits: bodyField(req, 'rateLimits')
+    rateLimits: bodyField(req, 'rateLimits'),
+    notes: bodyField(req, 'notes'),
+    expectedUpdatedAt: bodyField(req, 'expectedUpdatedAt')
   })
 }), async (req, res) => {
   const params = idParamSchema.safeParse(req.params)
@@ -191,32 +209,32 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(body.error, '来源系统参数无效')))
     return
   }
-  const before = await findExternalIntegrationSourceRecordAsync(params.data.id)
-  let source: Awaited<ReturnType<typeof updateExternalIntegrationSourceAsync>>
+  let outcome: Awaited<ReturnType<typeof updateExternalIntegrationSourceAsync>>
   try {
-    source = await updateExternalIntegrationSourceAsync(params.data.id, body.data)
+    outcome = await updateExternalIntegrationSourceAsync(params.data.id, body.data)
   } catch (error) {
+    if (error instanceof ExternalIntegrationSourcePatchConflictError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
     res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统更新失败'))
     return
   }
-  if (!source) {
+  if (!outcome) {
     res.status(404).json({ message: '来源系统不存在' })
     return
   }
-  await recordSourceOperation(req, {
-    action: 'update',
-    operationKey: 'external_integration_sources.update',
-    sourceRefId: source.id,
-    sourceName: source.name,
-    summary: `更新外部来源系统：${source.name}`,
-    changes: [
-      safeChange('name', '名称', before?.name, source.name),
-      safeChange('status', '状态', before?.status, source.status),
-      safeChange('expiresAt', '到期时间', before?.expiresAt, source.expiresAt),
-      safeChange('rateLimits', '限频规则', formatRateLimits(before?.rateLimits ?? []), formatRateLimits(source.rateLimits))
-    ]
-  })
-  res.json(ok({ id: source.id }))
+  if (outcome.changes.length) {
+    await recordSourceOperation(req, {
+      action: 'update',
+      operationKey: 'external_integration_sources.update',
+      sourceRefId: outcome.mutation.id,
+      sourceName: outcome.sourceName,
+      summary: `更新外部来源系统：${outcome.sourceName}`,
+      changes: sourcePatchOperationChanges(outcome.changes)
+    })
+  }
+  res.json(ok(outcome.mutation))
 })
 
 externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
@@ -258,6 +276,8 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
   fingerprint: (req) => ({
     id: req.params.id,
     name: bodyField(req, 'name'),
+    status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
     expiresAt: bodyField(req, 'expiresAt')
   })
 }), async (req, res) => {
@@ -322,7 +342,9 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     tokenId: req.params.tokenId,
     name: bodyField(req, 'name'),
     status: bodyField(req, 'status'),
-    expiresAt: bodyField(req, 'expiresAt')
+    scopes: bodyField(req, 'scopes'),
+    expiresAt: bodyField(req, 'expiresAt'),
+    expectedUpdatedAt: bodyField(req, 'expectedUpdatedAt')
   })
 }), async (req, res) => {
   const params = tokenParamSchema.safeParse(req.params)
@@ -335,31 +357,32 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(body.error, 'Token 参数无效')))
     return
   }
-  let token: Awaited<ReturnType<typeof updateExternalIntegrationSourceTokenAsync>>
+  let outcome: Awaited<ReturnType<typeof updateExternalIntegrationSourceTokenAsync>>
   try {
-    token = await updateExternalIntegrationSourceTokenAsync(params.data.id, params.data.tokenId, body.data)
+    outcome = await updateExternalIntegrationSourceTokenAsync(params.data.id, params.data.tokenId, body.data)
   } catch (error) {
+    if (error instanceof ExternalIntegrationSourcePatchConflictError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 更新失败'))
     return
   }
-  if (!token) {
+  if (!outcome) {
     res.status(404).json({ message: 'Token 不存在' })
     return
   }
-  const source = await findExternalIntegrationSourceRecordAsync(params.data.id)
-  await recordSourceOperation(req, {
-    action: 'update_token',
-    operationKey: 'external_integration_sources.update_token',
-    sourceRefId: params.data.id,
-    sourceName: source?.name ?? params.data.id,
-    summary: `更新外部来源系统 Token：${token.name}`,
-    changes: [
-      safeChange('tokenName', 'Token 名称', undefined, token.name),
-      safeChange('tokenStatus', 'Token 状态', undefined, token.status),
-      safeChange('expiresAt', '到期时间', undefined, token.expiresAt)
-    ]
-  })
-  res.json(ok(token))
+  if (outcome.changes.length) {
+    await recordSourceOperation(req, {
+      action: 'update_token',
+      operationKey: 'external_integration_sources.update_token',
+      sourceRefId: params.data.id,
+      sourceName: outcome.sourceName,
+      summary: `更新外部来源系统 Token：${outcome.tokenName}`,
+      changes: tokenPatchOperationChanges(outcome.changes)
+    })
+  }
+  res.json(ok(outcome.mutation))
 })
 
 async function recordSourceOperation(req: Request, input: {
@@ -392,6 +415,60 @@ function formatRateLimits(rules: Array<{ windowSeconds: number; maxRequests: num
   return rules.length
     ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join(', ')
     : '不限制'
+}
+
+function sourcePatchOperationChanges(changes: Array<{ field: string; before: unknown; after: unknown }>): ReturnType<typeof safeChange>[] {
+  return changes.map((change) => {
+    if (change.field === 'rateLimits') {
+      return safeChange(
+        change.field,
+        '限频规则',
+        formatRateLimits(asRateLimitRules(change.before)),
+        formatRateLimits(asRateLimitRules(change.after))
+      )
+    }
+    if (change.field === 'scopes') {
+      return safeChange(change.field, '接口资源授权', formatScopes(change.before), formatScopes(change.after))
+    }
+    const label = change.field === 'name'
+      ? '名称'
+      : change.field === 'status'
+        ? '状态'
+        : change.field === 'expiresAt'
+          ? '到期时间'
+          : '备注'
+    return safeChange(change.field, label, change.before, change.after)
+  })
+}
+
+function tokenPatchOperationChanges(changes: Array<{ field: string; before: unknown; after: unknown }>): ReturnType<typeof safeChange>[] {
+  return changes.map((change) => safeChange(
+    `token${change.field.slice(0, 1).toUpperCase()}${change.field.slice(1)}`,
+    change.field === 'name'
+      ? 'Token 名称'
+      : change.field === 'status'
+        ? 'Token 状态'
+        : change.field === 'scopes'
+          ? 'Token 接口资源授权'
+          : 'Token 到期时间',
+    change.field === 'scopes' ? formatScopes(change.before) : change.before,
+    change.field === 'scopes' ? formatScopes(change.after) : change.after
+  ))
+}
+
+function asRateLimitRules(value: unknown): Array<{ windowSeconds: number; maxRequests: number }> {
+  return Array.isArray(value)
+    ? value.filter((item): item is { windowSeconds: number; maxRequests: number } => (
+        Boolean(item)
+        && typeof item === 'object'
+        && typeof (item as { windowSeconds?: unknown }).windowSeconds === 'number'
+        && typeof (item as { maxRequests?: unknown }).maxRequests === 'number'
+      ))
+    : []
+}
+
+function formatScopes(value: unknown): string {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').join(', ') : ''
 }
 
 function setSecretResponseHeaders(res: Response): void {

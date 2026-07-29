@@ -74,7 +74,7 @@ try {
   assert(item)
   assert.deepEqual(
     Object.keys(item).sort(),
-    ['expiresAt', 'id', 'isBuiltIn', 'lastUsedAt', 'name', 'notes', 'primaryToken', 'rateLimits', 'scopes', 'status'].sort(),
+    ['expiresAt', 'id', 'isBuiltIn', 'lastUsedAt', 'name', 'notes', 'primaryToken', 'rateLimits', 'scopes', 'status', 'updatedAt'].sort(),
     '列表只应返回页面展示和操作所需字段'
   )
   assert.equal(item.primaryToken?.id, activeExpired.id, 'active Token 应优先于创建时间更晚的 disabled/revoked Token')

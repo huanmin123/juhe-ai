@@ -53,24 +53,58 @@ try {
   assert.deepEqual(Object.keys(created).sort(), ['token'], '创建响应只应返回页面立即展示的明文 Token')
   assert(created.token.token, '创建响应必须保留只显示一次的明文 Token')
 
-  const list = await request<{ items: Array<{ id: string }> }>(baseUrl, '?keyword=轻量响应来源', 'GET', undefined, 200)
+  const list = await request<{ items: Array<{ id: string; updatedAt: string }> }>(baseUrl, '?keyword=轻量响应来源', 'GET', undefined, 200)
   const sourceId = list.items[0]?.id
+  const sourceUpdatedAt = list.items[0]?.updatedAt
   assert(sourceId, '新建来源必须能通过列表读取')
+  assert(sourceUpdatedAt, '列表必须返回 PATCH 所需的 updatedAt 版本')
 
-  const updated = await request<{ id: string }>(baseUrl, `/${sourceId}`, 'PATCH', { status: 'disabled' }, 200)
-  assert.deepEqual(Object.keys(updated).sort(), ['id'], '更新响应只应确认受影响资源 id')
+  const updated = await request<{ id: string; updatedAt: string }>(baseUrl, `/${sourceId}`, 'PATCH', {
+    status: 'disabled',
+    expectedUpdatedAt: sourceUpdatedAt
+  }, 200)
+  assert.deepEqual(Object.keys(updated).sort(), ['id', 'updatedAt'], '更新响应只应返回资源 id 与新版本')
   assert.equal(updated.id, sourceId)
-  const patchedSource = await request<{ status: string; notes?: string }>(baseUrl, `/${sourceId}`, 'GET', undefined, 200)
+  assert.notEqual(updated.updatedAt, sourceUpdatedAt, '实际 PATCH 必须推进版本')
+  const patchedSource = await request<{
+    status: string
+    notes?: string
+    updatedAt: string
+    tokens: Array<{ id: string; name: string; updatedAt: string }>
+  }>(baseUrl, `/${sourceId}`, 'GET', undefined, 200)
   assert.equal(patchedSource.status, 'disabled', 'PATCH 应更新指定字段')
   assert.equal(patchedSource.notes, '详情字段不应跟随 mutation 返回', '单字段 PATCH 不得覆盖无关字段')
+  const sourceNoop = await request<{ id: string; updatedAt: string }>(baseUrl, `/${sourceId}`, 'PATCH', {
+    status: 'disabled',
+    expectedUpdatedAt: patchedSource.updatedAt
+  }, 200)
+  assert.equal(sourceNoop.updatedAt, patchedSource.updatedAt, 'HTTP 同值来源 PATCH 不得推进版本')
+  await requestError(baseUrl, `/${sourceId}`, 'PATCH', {
+    notes: '过期请求',
+    expectedUpdatedAt: sourceUpdatedAt
+  }, 409)
 
-  const tokenCreated = await request<{ token: { token: string } }>(baseUrl, `/${sourceId}/tokens`, 'POST', {
+  const tokenCreated = await request<{ token: { id: string; token: string } }>(baseUrl, `/${sourceId}/tokens`, 'POST', {
     name: '轻量响应新增 Token',
     status: 'active',
     scopes: ['juhe_ai_public:group_list:read']
   }, 201)
   assert.deepEqual(Object.keys(tokenCreated).sort(), ['token'], '生成 Token 响应不应附带完整来源详情')
   assert(tokenCreated.token.token, '生成 Token 响应必须保留只显示一次的明文 Token')
+  const sourceWithToken = await request<{
+    tokens: Array<{ id: string; updatedAt: string }>
+  }>(baseUrl, `/${sourceId}`, 'GET', undefined, 200)
+  const tokenVersion = sourceWithToken.tokens.find((item) => item.id === tokenCreated.token.id)?.updatedAt
+  assert(tokenVersion, 'Token 详情必须提供 PATCH 所需版本')
+  const tokenUpdated = await request<{ id: string; updatedAt: string }>(baseUrl, `/${sourceId}/tokens/${tokenCreated.token.id}`, 'PATCH', {
+    name: '轻量响应改名 Token',
+    expectedUpdatedAt: tokenVersion
+  }, 200)
+  assert.deepEqual(Object.keys(tokenUpdated).sort(), ['id', 'updatedAt'], 'Token PATCH 响应只应返回 id 与新版本')
+  await requestError(baseUrl, `/${sourceId}/tokens/${tokenCreated.token.id}`, 'PATCH', {
+    status: 'disabled',
+    expectedUpdatedAt: tokenVersion
+  }, 409)
 
   const reset = await request<{ token: { token: string } }>(baseUrl, '/built-in-test-token/reset', 'POST', {}, 200)
   assert.deepEqual(Object.keys(reset).sort(), ['token'], '重置 Token 响应不应附带完整来源详情')
@@ -97,6 +131,16 @@ async function request<T>(baseUrl: string, path: string, method: string, body: u
   assert.equal(response.status, expectedStatus, payload.message ?? `${method} ${path} 状态码不符合预期`)
   assert(payload.data !== undefined, `${method} ${path} 缺少 data`)
   return payload.data
+}
+
+async function requestError(baseUrl: string, path: string, method: string, body: unknown, expectedStatus: number): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const payload = await response.json() as { message?: string }
+  assert.equal(response.status, expectedStatus, payload.message ?? `${method} ${path} 状态码不符合预期`)
 }
 
 function listen(server: Server): Promise<void> {

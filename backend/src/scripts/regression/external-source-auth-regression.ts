@@ -88,6 +88,7 @@ async function runChild(): Promise<void> {
   const { updatePublicWelfareAccount } = await import('../../modules/external-integrations/external-public-account-push.service.js')
   const { closeStorageDatabases, getBusinessDatabase } = await import('../../storage/database.js')
   const { closeSqliteReadWorkerPool } = await import('../../storage/sqlite-read-worker-pool.js')
+  const { registerGatewayApiKeyValidationServerInvalidator } = await import('../../shared/gateway-cache-invalidation.js')
 
   const groupReadToken = 'juis_valid_group_read_public_token_32_chars'
   const noScopeToken = 'juis_no_scope_external_source_token_32_chars'
@@ -175,6 +176,10 @@ async function runChild(): Promise<void> {
   let builtInTestToken = builtInTokenSecret.token
 
   const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' })
+  let serverApiKeyValidationInvalidations = 0
+  const unregisterServerApiKeyValidationInvalidator = registerGatewayApiKeyValidationServerInvalidator(async () => {
+    serverApiKeyValidationInvalidations += 1
+  })
   const server = await listen(app)
   const address = server.address()
   assert(address && typeof address !== 'string', '测试 HTTP 服务地址无效')
@@ -205,7 +210,14 @@ async function runChild(): Promise<void> {
     const routeStrategy = await createPublicRouteStrategy(baseUrl, resourceToken, targetUsername, publicGroup.id)
     const roundRobinRouteStrategy = await createPublicRouteStrategy(baseUrl, resourceToken, targetUsername, publicGroup.id, '公开轮询路由', 'round_robin')
     await assertPublicRouteStrategyCrud(baseUrl, resourceToken, targetUsername, publicGroup.id, routeStrategy.id)
-    const apiKeyId = await assertPublicApiKeyCrud(baseUrl, resourceToken, targetUsername, routeStrategy.id, roundRobinRouteStrategy.id)
+    const apiKeyId = await assertPublicApiKeyCrud(
+      baseUrl,
+      resourceToken,
+      targetUsername,
+      routeStrategy.id,
+      roundRobinRouteStrategy.id,
+      () => serverApiKeyValidationInvalidations
+    )
     const accountId = await assertPublicAccountCrud(baseUrl, resourceToken, targetUsername, {
       repositories: {
         AccountConfigRevisionConflictError,
@@ -250,6 +262,7 @@ async function runChild(): Promise<void> {
     assert(lastUsedRow?.token_last_used_at, '成功鉴权后应低频记录 token 最近调用时间')
     assert(lastUsedRow?.source_last_used_at, '成功鉴权后应低频记录来源系统最近调用时间')
   } finally {
+    unregisterServerApiKeyValidationInvalidator()
     await closeServer(server)
     await closeSqliteReadWorkerPool().catch(() => undefined)
     closeStorageDatabases()
@@ -314,7 +327,7 @@ async function assertBuiltInSourceManagement(baseUrl: string, adminCookie: strin
 
   const disabledBuiltIn = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInSourceId}`, {
     Cookie: adminCookie
-  }, 'PATCH', { status: 'disabled' })
+  }, 'PATCH', { status: 'disabled', expectedUpdatedAt: builtInSource.updatedAt })
   assert.equal(disabledBuiltIn.status, 200, '内置测试来源应允许停用')
   const disabledBuiltInAuth = await requestJson(baseUrl, '/__aipublic__/group/list?targetUsername=huanmin', {
     Authorization: `Bearer ${builtInTestToken}`
@@ -323,12 +336,12 @@ async function assertBuiltInSourceManagement(baseUrl: string, adminCookie: strin
   assert.equal(disabledBuiltInAuth.body.code, 'external_source_disabled')
   const enabledBuiltIn = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInSourceId}`, {
     Cookie: adminCookie
-  }, 'PATCH', { status: 'active' })
+  }, 'PATCH', { status: 'active', expectedUpdatedAt: disabledBuiltIn.body.data.updatedAt })
   assert.equal(enabledBuiltIn.status, 200, '内置测试来源应允许重新启用')
 
   const builtInSourceEdit = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInSourceId}`, {
     Cookie: adminCookie
-  }, 'PATCH', { name: '不应允许改名' })
+  }, 'PATCH', { name: '不应允许改名', expectedUpdatedAt: enabledBuiltIn.body.data.updatedAt })
   assert.equal(builtInSourceEdit.status, 400, '内置测试来源不应允许编辑基础信息')
   const builtInTokenCreate = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${builtInSourceId}/tokens`, {
     Cookie: adminCookie
@@ -463,7 +476,14 @@ async function assertPublicRouteStrategyCrud(baseUrl: string, token: string, tar
   assert.equal(missingUpdate.status, 404, '公开路由策略修改找不到策略时应返回 404')
 }
 
-async function assertPublicApiKeyCrud(baseUrl: string, token: string, targetUsername: string, routeStrategyId: string, nextRouteStrategyId: string): Promise<string> {
+async function assertPublicApiKeyCrud(
+  baseUrl: string,
+  token: string,
+  targetUsername: string,
+  routeStrategyId: string,
+  nextRouteStrategyId: string,
+  serverApiKeyValidationInvalidationCount: () => number
+): Promise<string> {
   const add = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
     Authorization: `Bearer ${token}`
   }, 'POST', {
@@ -483,6 +503,7 @@ async function assertPublicApiKeyCrud(baseUrl: string, token: string, targetUser
   assert.equal(list.status, 200)
   assert(list.body.data.items.some((item: any) => item.id === apiKeyId), '公开 API Key 列表应返回新增 Key')
 
+  const invalidationsBeforeUpdate = serverApiKeyValidationInvalidationCount()
   const update = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
     Authorization: `Bearer ${token}`
   }, 'POST', {
@@ -494,6 +515,10 @@ async function assertPublicApiKeyCrud(baseUrl: string, token: string, targetUser
   assert.equal(update.body.data.apiKey.routeStrategyId, nextRouteStrategyId)
   assert.equal(update.body.data.apiKey.routeStrategyMode, 'round_robin')
   assert.equal(Object.prototype.hasOwnProperty.call(update.body.data.apiKey, 'key'), false, 'API Key 修改响应不应返回明文密钥')
+  assert(
+    serverApiKeyValidationInvalidationCount() > invalidationsBeforeUpdate,
+    '公开 API Key 修改应等待 server validation cache IPC 失效确认'
+  )
   return apiKeyId
 }
 

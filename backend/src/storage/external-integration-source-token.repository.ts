@@ -16,7 +16,6 @@ import {
   encodeScopes,
   normalizeNullableIso,
   normalizeScopes,
-  normalizeSourceStatus,
   normalizeTokenStatus,
   normalizeTokenStatusInput
 } from './external-integration-source-normalizers.js'
@@ -154,80 +153,168 @@ export async function createExternalIntegrationSourceTokenInClientAsync(client: 
   }
 }
 
-export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenId: string, input: ExternalIntegrationSourceTokenUpdateInput): ExternalIntegrationSourceTokenSummary | undefined {
-  assertKnownInputKeys(input, externalIntegrationSourceTokenUpdateInputKeys, '来源系统 token')
-  if (isBuiltInExternalIntegrationTestSourceId(sourceRefId) || isBuiltInExternalIntegrationTestTokenId(tokenId)) {
-    throw new Error('内置测试 Token 不支持编辑')
-  }
-  const existing = getBusinessDatabase().prepare(`
-    SELECT tokens.*
-    FROM external_integration_source_tokens AS tokens
-    JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
-    WHERE sources.id = ? AND tokens.id = ?
-  `).get(sourceRefId, tokenId) as ExternalIntegrationSourceTokenListRow | undefined
-  if (!existing) {
-    return undefined
-  }
-  const nextStatus = input.status === undefined ? normalizeTokenStatus(existing.status) : normalizeTokenStatusInput(input.status)
-  const revokedAt = nextStatus === 'revoked' && existing.status !== 'revoked'
-    ? nowIso()
-    : nextStatus === 'revoked'
-      ? existing.revoked_at
-      : null
-  getBusinessDatabase().prepare(`
+export function updateExternalIntegrationSourceToken(
+  sourceRefId: string,
+  tokenId: string,
+  input: ExternalIntegrationSourceTokenUpdateInput
+): ExternalIntegrationSourceTokenPatchOutcome | undefined {
+  assertExternalIntegrationSourceTokenPatchInput(sourceRefId, tokenId, input)
+  const existing = findExternalIntegrationSourceTokenPatchRow(sourceRefId, tokenId, input)
+  if (!existing) return undefined
+  if (existing.updated_at !== input.expectedUpdatedAt) throw new ExternalIntegrationSourcePatchConflictError()
+  const updatedAt = nextExternalIntegrationUpdatedAt(existing.updated_at)
+  const patch = buildExternalIntegrationSourceTokenPatch(input, existing, updatedAt)
+  if (!patch.columns.length) return tokenPatchOutcome(existing, patch.changes, existing.updated_at)
+  const assignments = patch.columns.map(({ column }) => `${column} = ?`)
+  const result = getBusinessDatabase().prepare(`
     UPDATE external_integration_source_tokens
-    SET name = ?, status = ?, scopes_json = ?, expires_at = ?, revoked_at = ?, updated_at = ?
-    WHERE id = ?
-  `).run(
-    input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符'),
-    nextStatus,
-    input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes),
-    input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt),
-    revokedAt,
-    nowIso(),
-    tokenId
-  )
-  return findExternalIntegrationSourceTokenSummary(sourceRefId, tokenId)
+    SET ${assignments.join(', ')}, updated_at = ?
+    WHERE id = ? AND source_ref_id = ? AND updated_at = ?
+  `).run(...patch.columns.map(({ value }) => value), updatedAt, tokenId, sourceRefId, input.expectedUpdatedAt)
+  if (Number(result.changes ?? 0) !== 1) throw new ExternalIntegrationSourcePatchConflictError()
+  return tokenPatchOutcome(existing, patch.changes, updatedAt)
 }
 
-export async function updateExternalIntegrationSourceTokenAsync(sourceRefId: string, tokenId: string, input: ExternalIntegrationSourceTokenUpdateInput): Promise<ExternalIntegrationSourceTokenSummary | undefined> {
+export async function updateExternalIntegrationSourceTokenAsync(
+  sourceRefId: string,
+  tokenId: string,
+  input: ExternalIntegrationSourceTokenUpdateInput
+): Promise<ExternalIntegrationSourceTokenPatchOutcome | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return updateExternalIntegrationSourceToken(sourceRefId, tokenId, input)
   }
+  assertExternalIntegrationSourceTokenPatchInput(sourceRefId, tokenId, input)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return client.transaction(async (tx) => {
+    const existing = await findExternalIntegrationSourceTokenPatchRowAsync(tx, sourceRefId, tokenId, input)
+    if (!existing) return undefined
+    if (existing.updated_at !== input.expectedUpdatedAt) throw new ExternalIntegrationSourcePatchConflictError()
+    const updatedAt = nextExternalIntegrationUpdatedAt(existing.updated_at)
+    const patch = buildExternalIntegrationSourceTokenPatch(input, existing, updatedAt)
+    if (!patch.columns.length) return tokenPatchOutcome(existing, patch.changes, existing.updated_at)
+    const assignments = patch.columns.map(({ column }) => `${column} = ?`)
+    const result = await tx.execute(`
+      UPDATE ${externalIntegrationTokenBusinessTable(tx, 'external_integration_source_tokens')}
+      SET ${assignments.join(', ')}, updated_at = ?
+      WHERE id = ? AND source_ref_id = ? AND updated_at = ?
+    `, [...patch.columns.map(({ value }) => value), updatedAt, tokenId, sourceRefId, input.expectedUpdatedAt])
+    if (result.changes !== 1) throw new ExternalIntegrationSourcePatchConflictError()
+    return tokenPatchOutcome(existing, patch.changes, updatedAt)
+  })
+}
+
+type ExternalIntegrationSourceTokenPatchRow = Pick<
+  ExternalIntegrationSourceTokenListRow,
+  'id' | 'source_ref_id' | 'name' | 'updated_at'
+> & Partial<Pick<ExternalIntegrationSourceTokenListRow, 'status' | 'scopes_json' | 'expires_at'>> & {
+  source_name: string
+}
+
+interface ExternalIntegrationSourceTokenUpdateColumn {
+  column: 'name' | 'status' | 'scopes_json' | 'expires_at' | 'revoked_at'
+  value: string | null
+}
+
+function assertExternalIntegrationSourceTokenPatchInput(
+  sourceRefId: string,
+  tokenId: string,
+  input: ExternalIntegrationSourceTokenUpdateInput
+): void {
   assertKnownInputKeys(input, externalIntegrationSourceTokenUpdateInputKeys, '来源系统 token')
   if (isBuiltInExternalIntegrationTestSourceId(sourceRefId) || isBuiltInExternalIntegrationTestTokenId(tokenId)) {
     throw new Error('内置测试 Token 不支持编辑')
   }
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const existing = await client.one<ExternalIntegrationSourceTokenListRow>(`
-    SELECT tokens.*
+  if (!input.expectedUpdatedAt?.trim()) throw new Error('来源系统 token 版本不能为空')
+}
+
+function externalIntegrationSourceTokenPatchProjection(input: ExternalIntegrationSourceTokenUpdateInput): string[] {
+  const columns = ['tokens.id', 'tokens.source_ref_id', 'tokens.name', 'tokens.updated_at', 'sources.name AS source_name']
+  if (input.status !== undefined) columns.push('tokens.status')
+  if (input.scopes !== undefined) columns.push('tokens.scopes_json')
+  if (input.expiresAt !== undefined) columns.push('tokens.expires_at')
+  return columns
+}
+
+function findExternalIntegrationSourceTokenPatchRow(
+  sourceRefId: string,
+  tokenId: string,
+  input: ExternalIntegrationSourceTokenUpdateInput
+): ExternalIntegrationSourceTokenPatchRow | undefined {
+  return getBusinessDatabase().prepare(`
+    SELECT ${externalIntegrationSourceTokenPatchProjection(input).join(', ')}
+    FROM external_integration_source_tokens AS tokens
+    INNER JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
+    WHERE tokens.id = ? AND tokens.source_ref_id = ?
+  `).get(tokenId, sourceRefId) as ExternalIntegrationSourceTokenPatchRow | undefined
+}
+
+async function findExternalIntegrationSourceTokenPatchRowAsync(
+  client: DatabaseClient,
+  sourceRefId: string,
+  tokenId: string,
+  input: ExternalIntegrationSourceTokenUpdateInput
+): Promise<ExternalIntegrationSourceTokenPatchRow | undefined> {
+  return client.one<ExternalIntegrationSourceTokenPatchRow>(`
+    SELECT ${externalIntegrationSourceTokenPatchProjection(input).join(', ')}
     FROM ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')} AS tokens
-    JOIN ${externalIntegrationTokenBusinessTable(client, 'external_integration_sources')} AS sources ON sources.id = tokens.source_ref_id
-    WHERE sources.id = ? AND tokens.id = ?
-  `, [sourceRefId, tokenId])
-  if (!existing) {
-    return undefined
+    INNER JOIN ${externalIntegrationTokenBusinessTable(client, 'external_integration_sources')} AS sources ON sources.id = tokens.source_ref_id
+    WHERE tokens.id = ? AND tokens.source_ref_id = ?
+    FOR UPDATE OF tokens
+  `, [tokenId, sourceRefId])
+}
+
+function buildExternalIntegrationSourceTokenPatch(
+  input: ExternalIntegrationSourceTokenUpdateInput,
+  existing: ExternalIntegrationSourceTokenPatchRow,
+  updatedAt: string
+): { columns: ExternalIntegrationSourceTokenUpdateColumn[]; changes: ExternalIntegrationSourceTokenPatchChange[] } {
+  const columns: ExternalIntegrationSourceTokenUpdateColumn[] = []
+  const changes: ExternalIntegrationSourceTokenPatchChange[] = []
+  if (input.name !== undefined) {
+    const value = normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符')
+    if (value !== existing.name) {
+      columns.push({ column: 'name', value })
+      changes.push({ field: 'name', before: existing.name, after: value })
+    }
   }
-  const nextStatus = input.status === undefined ? normalizeTokenStatus(existing.status) : normalizeTokenStatusInput(input.status)
-  const revokedAt = nextStatus === 'revoked' && existing.status !== 'revoked'
-    ? nowIso()
-    : nextStatus === 'revoked'
-      ? existing.revoked_at
-      : null
-  await client.execute(`
-    UPDATE ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')}
-    SET name = ?, status = ?, scopes_json = ?, expires_at = ?, revoked_at = ?, updated_at = ?
-    WHERE id = ?
-  `, [
-    input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符'),
-    nextStatus,
-    input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes),
-    input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt),
-    revokedAt,
-    nowIso(),
-    tokenId
-  ])
-  return findExternalIntegrationSourceTokenSummaryAsync(client, sourceRefId, tokenId)
+  if (input.status !== undefined) {
+    const before = normalizeTokenStatus(existing.status)
+    const value = normalizeTokenStatusInput(input.status)
+    if (value !== before) {
+      const revokedAt = value === 'revoked' ? updatedAt : null
+      columns.push({ column: 'status', value }, { column: 'revoked_at', value: revokedAt })
+      changes.push({ field: 'status', before, after: value })
+    }
+  }
+  if (input.scopes !== undefined) {
+    const value = encodeScopes(input.scopes)
+    if (value !== existing.scopes_json) {
+      columns.push({ column: 'scopes_json', value })
+      changes.push({ field: 'scopes', before: decodeScopes(existing.scopes_json ?? '[]'), after: decodeScopes(value) })
+    }
+  }
+  if (input.expiresAt !== undefined) {
+    const value = normalizeNullableIso(input.expiresAt)
+    if (value !== existing.expires_at) {
+      columns.push({ column: 'expires_at', value })
+      changes.push({ field: 'expiresAt', before: existing.expires_at ?? undefined, after: value ?? undefined })
+    }
+  }
+  return { columns, changes }
+}
+
+function tokenPatchOutcome(
+  existing: ExternalIntegrationSourceTokenPatchRow,
+  changes: ExternalIntegrationSourceTokenPatchChange[],
+  updatedAt: string
+): ExternalIntegrationSourceTokenPatchOutcome {
+  const renamed = changes.find((change) => change.field === 'name')?.after
+  return {
+    mutation: { id: existing.id, updatedAt },
+    sourceName: existing.source_name,
+    tokenName: typeof renamed === 'string' ? renamed : existing.name,
+    changes
+  }
 }
 
 export function findExternalIntegrationSourceTokenSecret(sourceRefId: string, tokenId: string): ExternalIntegrationSourceTokenSecret | undefined {
@@ -373,63 +460,73 @@ export async function resetBuiltInExternalIntegrationTestTokenAsync(): Promise<C
   }
 }
 
-export function syncExternalIntegrationSourceTokenState(sourceRefId: string): void {
-  const source = getBusinessDatabase()
-    .prepare('SELECT * FROM external_integration_sources WHERE id = ?')
-    .get(sourceRefId) as ExternalIntegrationSourceRow | undefined
-  if (!source) {
-    return
-  }
-  const sourceStatus = normalizeSourceStatus(source.status)
-  getBusinessDatabase().prepare(`
-    UPDATE external_integration_source_tokens
-    SET name = ?,
-        status = CASE WHEN status = 'revoked' THEN status ELSE ? END,
-        scopes_json = ?,
-        expires_at = ?,
-        updated_at = ?
+type ExternalIntegrationSourceTokenUpdatedAtRow = Pick<ExternalIntegrationSourceTokenListRow, 'updated_at'>
+
+export function latestExternalIntegrationSourceTokenUpdatedAt(sourceRefId: string): string | undefined {
+  const row = getBusinessDatabase().prepare(`
+    SELECT updated_at
+    FROM external_integration_source_tokens
     WHERE source_ref_id = ?
-  `).run(
-    `${source.name} 生产 Token`,
-    sourceStatus,
-    source.scopes_json,
-    source.expires_at,
-    nowIso(),
-    sourceRefId
-  )
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(sourceRefId) as ExternalIntegrationSourceTokenUpdatedAtRow | undefined
+  return row?.updated_at
 }
 
-export async function syncExternalIntegrationSourceTokenStateAsync(sourceRefId: string, clientInput?: DatabaseClient): Promise<void> {
+export async function lockExternalIntegrationSourceTokenUpdatedAtAsync(
+  client: DatabaseClient,
+  sourceRefId: string
+): Promise<string | undefined> {
+  const rows = await client.query<ExternalIntegrationSourceTokenUpdatedAtRow>(`
+    SELECT tokens.updated_at
+    FROM ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')} AS tokens
+    WHERE tokens.source_ref_id = ?
+    FOR UPDATE OF tokens
+  `, [sourceRefId])
+  return rows.reduce<string | undefined>((latest, row) => (
+    !latest || row.updated_at > latest ? row.updated_at : latest
+  ), undefined)
+}
+
+export function syncExternalIntegrationSourceTokenStatus(
+  sourceRefId: string,
+  sourceStatus: 'active' | 'disabled',
+  updatedAt: string
+): number {
+  const result = getBusinessDatabase().prepare(`
+    UPDATE external_integration_source_tokens
+    SET status = ?, updated_at = ?
+    WHERE source_ref_id = ? AND status <> 'revoked' AND status <> ?
+  `).run(
+    sourceStatus,
+    updatedAt,
+    sourceRefId,
+    sourceStatus
+  )
+  return Number(result.changes ?? 0)
+}
+
+export async function syncExternalIntegrationSourceTokenStatusAsync(
+  sourceRefId: string,
+  sourceStatus: 'active' | 'disabled',
+  updatedAt: string,
+  clientInput?: DatabaseClient
+): Promise<number> {
   if (runtimeConfig.databaseDriver !== 'postgres' && !clientInput) {
-    syncExternalIntegrationSourceTokenState(sourceRefId)
-    return
+    return syncExternalIntegrationSourceTokenStatus(sourceRefId, sourceStatus, updatedAt)
   }
   const client = clientInput ?? createPostgresDatabaseClient(await getPostgresPool())
-  const source = await client.one<ExternalIntegrationSourceRow>(`
-    SELECT *
-    FROM ${externalIntegrationTokenBusinessTable(client, 'external_integration_sources')}
-    WHERE id = ?
-  `, [sourceRefId])
-  if (!source) {
-    return
-  }
-  const sourceStatus = normalizeSourceStatus(source.status)
-  await client.execute(`
+  const result = await client.execute(`
     UPDATE ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')}
-    SET name = ?,
-        status = CASE WHEN status = 'revoked' THEN status ELSE ? END,
-        scopes_json = ?,
-        expires_at = ?,
-        updated_at = ?
-    WHERE source_ref_id = ?
+    SET status = ?, updated_at = ?
+    WHERE source_ref_id = ? AND status <> 'revoked' AND status <> ?
   `, [
-    `${source.name} 生产 Token`,
     sourceStatus,
-    source.scopes_json,
-    source.expires_at,
-    nowIso(),
-    sourceRefId
+    updatedAt,
+    sourceRefId,
+    sourceStatus
   ])
+  return result.changes
 }
 
 export function loadExternalIntegrationSourceTokensBySourceIds(sourceIds: string[]): Map<string, ExternalIntegrationSourceTokenSummary[]> {
@@ -628,22 +725,6 @@ export async function loadExternalIntegrationSourceTokenStatsBySourceIdsAsync(
     })
   }
   return result
-}
-
-function findExternalIntegrationSourceTokenSummary(sourceRefId: string, tokenId: string): ExternalIntegrationSourceTokenSummary | undefined {
-  const row = getBusinessDatabase()
-    .prepare('SELECT * FROM external_integration_source_tokens WHERE source_ref_id = ? AND id = ?')
-    .get(sourceRefId, tokenId) as ExternalIntegrationSourceTokenListRow | undefined
-  return row ? mapTokenSummary(row) : undefined
-}
-
-async function findExternalIntegrationSourceTokenSummaryAsync(client: DatabaseClient, sourceRefId: string, tokenId: string): Promise<ExternalIntegrationSourceTokenSummary | undefined> {
-  const row = await client.one<ExternalIntegrationSourceTokenListRow>(`
-    SELECT *
-    FROM ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')}
-    WHERE source_ref_id = ? AND id = ?
-  `, [sourceRefId, tokenId])
-  return row ? mapTokenSummary(row) : undefined
 }
 
 function resolveSourceForToken(input: ExternalIntegrationSourceTokenInput): Pick<ExternalIntegrationSourceRow, 'id'> {

@@ -6,6 +6,8 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { isBuiltInExternalIntegrationTestSourceId } from './external-integration-source-constants.js'
 import { mapSourceListItem, mapSourceRecord, mapSourceSummary } from './external-integration-source-mappers.js'
 import {
+  decodeRateLimits,
+  decodeScopes,
   encodeRateLimits,
   encodeScopes,
   normalizeNullableIso,
@@ -20,8 +22,10 @@ import {
   loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync,
   loadExternalIntegrationSourceTokensBySourceIds,
   loadExternalIntegrationSourceTokensBySourceIdsAsync,
-  syncExternalIntegrationSourceTokenState,
-  syncExternalIntegrationSourceTokenStateAsync
+  latestExternalIntegrationSourceTokenUpdatedAt,
+  lockExternalIntegrationSourceTokenUpdatedAtAsync,
+  syncExternalIntegrationSourceTokenStatus,
+  syncExternalIntegrationSourceTokenStatusAsync
 } from './external-integration-source-token.repository.js'
 import type {
   CreatedExternalIntegrationSourceAuthorization,
@@ -30,6 +34,8 @@ import type {
   ExternalIntegrationSourceListResult,
   ExternalIntegrationSourceListProjectionRow,
   ExternalIntegrationSourceListRow,
+  ExternalIntegrationSourcePatchChange,
+  ExternalIntegrationSourcePatchOutcome,
   ExternalIntegrationSourceRecord,
   ExternalIntegrationSourceRow,
   ExternalIntegrationSourceSummary,
@@ -37,7 +43,9 @@ import type {
 } from './external-integration-source-types.js'
 import {
   assertKnownInputKeys,
+  ExternalIntegrationSourcePatchConflictError,
   isUniqueConstraintError,
+  nextExternalIntegrationUpdatedAt,
   normalizeNameOrThrow
 } from './external-integration-source-write-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -72,6 +80,7 @@ export {
   validateExternalIntegrationSourceToken,
   validateExternalIntegrationSourceTokenAsync
 } from './external-integration-source-auth.repository.js'
+export { ExternalIntegrationSourcePatchConflictError } from './external-integration-source-write-helpers.js'
 export {
   createExternalIntegrationSourceToken,
   createExternalIntegrationSourceTokenAsync,
@@ -93,6 +102,8 @@ export type {
   ExternalIntegrationSourceListOptions,
   ExternalIntegrationSourceListResult,
   ExternalIntegrationSourceListItem,
+  ExternalIntegrationSourceMutationResult,
+  ExternalIntegrationSourcePatchOutcome,
   ExternalIntegrationSourcePrimaryTokenSummary,
   ExternalIntegrationSourceRecord,
   ExternalIntegrationSourceListRow,
@@ -101,6 +112,7 @@ export type {
   ExternalIntegrationSourceSummary,
   ExternalIntegrationSourceTokenInput,
   ExternalIntegrationSourceTokenListRow,
+  ExternalIntegrationSourceTokenPatchOutcome,
   ExternalIntegrationSourceTokenRow,
   ExternalIntegrationSourceTokenSecret,
   ExternalIntegrationSourceTokenStatus,
@@ -112,6 +124,7 @@ export type {
 const defaultPageSize = 20
 const maxPageSize = 100
 const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes'])
+const externalIntegrationSourceUpdateInputKeys = new Set(['expectedUpdatedAt', ...externalIntegrationSourceInputKeys])
 
 export function listExternalIntegrationSources(options: ExternalIntegrationSourceListOptions = {}): ExternalIntegrationSourceListResult {
   const pageSize = Math.max(1, Math.min(Math.trunc(options.pageSize ?? defaultPageSize), maxPageSize))
@@ -138,7 +151,8 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
       sources.rate_limits_json,
       sources.expires_at,
       sources.notes,
-      sources.last_used_at
+      sources.last_used_at,
+      sources.updated_at
     FROM external_integration_sources AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -192,7 +206,8 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
       sources.rate_limits_json,
       sources.expires_at,
       sources.notes,
-      sources.last_used_at
+      sources.last_used_at,
+      sources.updated_at
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -463,46 +478,116 @@ export async function upsertExternalIntegrationSourceAsync(input: ExternalIntegr
   return { id, name }
 }
 
-export function updateExternalIntegrationSource(id: string, input: ExternalIntegrationSourceUpdateInput): ExternalIntegrationSourceRecord | undefined {
-  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
-  const existing = findSourceRow(id)
-  if (!existing) {
-    return undefined
-  }
-  if (isBuiltInExternalIntegrationTestSourceId(id)) {
-    assertBuiltInSourceUpdateInput(input)
-  }
-  const update = buildExternalIntegrationSourceUpdate(input, existing)
-  if (update.nameChanged) ensureSourceNameAvailable(update.name, id)
-  executeExternalIntegrationSourceUpdate(getBusinessDatabase(), id, update.columns)
-  if (!isBuiltInExternalIntegrationTestSourceId(id) && update.syncTokenState) {
-    syncExternalIntegrationSourceTokenState(id)
-  }
-  return requiredSourceRecord(id)
+export function updateExternalIntegrationSource(
+  id: string,
+  input: ExternalIntegrationSourceUpdateInput
+): ExternalIntegrationSourcePatchOutcome | undefined {
+  assertExternalIntegrationSourcePatchInput(id, input)
+  return runInDatabaseTransaction(() => {
+    const existing = findExternalIntegrationSourcePatchRow(id, input)
+    if (!existing) return undefined
+    if (existing.updated_at !== input.expectedUpdatedAt) throw new ExternalIntegrationSourcePatchConflictError()
+    const update = buildExternalIntegrationSourceUpdate(input, existing)
+    if (!update.columns.length) return sourcePatchOutcome(existing, update.changes, existing.updated_at)
+    if (update.nameChanged) ensureSourceNameAvailable(update.sourceName, id)
+    const tokenUpdatedAt = !isBuiltInExternalIntegrationTestSourceId(id) && update.nextStatus
+      ? latestExternalIntegrationSourceTokenUpdatedAt(id)
+      : undefined
+    const updatedAt = nextExternalIntegrationUpdatedAt(latestExternalIntegrationUpdatedAt(existing.updated_at, tokenUpdatedAt))
+    executeExternalIntegrationSourceUpdate(getBusinessDatabase(), id, input.expectedUpdatedAt, updatedAt, update.columns)
+    if (!isBuiltInExternalIntegrationTestSourceId(id) && update.nextStatus) {
+      syncExternalIntegrationSourceTokenStatus(id, update.nextStatus, updatedAt)
+    }
+    return sourcePatchOutcome(existing, update.changes, updatedAt)
+  })
 }
 
-export async function updateExternalIntegrationSourceAsync(id: string, input: ExternalIntegrationSourceUpdateInput): Promise<ExternalIntegrationSourceRecord | undefined> {
+export async function updateExternalIntegrationSourceAsync(
+  id: string,
+  input: ExternalIntegrationSourceUpdateInput
+): Promise<ExternalIntegrationSourcePatchOutcome | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return updateExternalIntegrationSource(id, input)
   }
-  assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
+  assertExternalIntegrationSourcePatchInput(id, input)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return client.transaction(async (tx) => {
-    const existing = await findSourceRowAsync(tx, id)
-    if (!existing) {
-      return undefined
-    }
-    if (isBuiltInExternalIntegrationTestSourceId(id)) {
-      assertBuiltInSourceUpdateInput(input)
-    }
+    const existing = await findExternalIntegrationSourcePatchRowAsync(tx, id, input)
+    if (!existing) return undefined
+    if (existing.updated_at !== input.expectedUpdatedAt) throw new ExternalIntegrationSourcePatchConflictError()
     const update = buildExternalIntegrationSourceUpdate(input, existing)
-    if (update.nameChanged) await ensureSourceNameAvailableAsync(tx, update.name, id)
-    await executeExternalIntegrationSourceUpdateAsync(tx, id, update.columns)
-    if (!isBuiltInExternalIntegrationTestSourceId(id) && update.syncTokenState) {
-      await syncExternalIntegrationSourceTokenStateAsync(id, tx)
+    if (!update.columns.length) return sourcePatchOutcome(existing, update.changes, existing.updated_at)
+    if (update.nameChanged) await ensureSourceNameAvailableAsync(tx, update.sourceName, id)
+    const tokenUpdatedAt = !isBuiltInExternalIntegrationTestSourceId(id) && update.nextStatus
+      ? await lockExternalIntegrationSourceTokenUpdatedAtAsync(tx, id)
+      : undefined
+    const updatedAt = nextExternalIntegrationUpdatedAt(latestExternalIntegrationUpdatedAt(existing.updated_at, tokenUpdatedAt))
+    await executeExternalIntegrationSourceUpdateAsync(tx, id, input.expectedUpdatedAt, updatedAt, update.columns)
+    if (!isBuiltInExternalIntegrationTestSourceId(id) && update.nextStatus) {
+      await syncExternalIntegrationSourceTokenStatusAsync(id, update.nextStatus, updatedAt, tx)
     }
-    return requiredSourceRecordAsync(tx, id)
+    return sourcePatchOutcome(existing, update.changes, updatedAt)
   })
+}
+
+type ExternalIntegrationSourcePatchRow = Pick<ExternalIntegrationSourceRow, 'id' | 'name' | 'updated_at'>
+  & Partial<Pick<ExternalIntegrationSourceRow, 'status' | 'scopes_json' | 'rate_limits_json' | 'expires_at' | 'notes'>>
+
+function assertExternalIntegrationSourcePatchInput(id: string, input: ExternalIntegrationSourceUpdateInput): void {
+  assertKnownInputKeys(input, externalIntegrationSourceUpdateInputKeys, '来源系统')
+  if (!input.expectedUpdatedAt?.trim()) throw new Error('外部来源配置版本不能为空')
+  if (isBuiltInExternalIntegrationTestSourceId(id)) assertBuiltInSourceUpdateInput(input)
+}
+
+function externalIntegrationSourcePatchProjection(input: ExternalIntegrationSourceUpdateInput): string[] {
+  const columns = ['id', 'name', 'updated_at']
+  if (input.status !== undefined) columns.push('status')
+  if (input.scopes !== undefined) columns.push('scopes_json')
+  if (input.rateLimits !== undefined) columns.push('rate_limits_json')
+  if (input.expiresAt !== undefined) columns.push('expires_at')
+  if (input.notes !== undefined) columns.push('notes')
+  return columns
+}
+
+function findExternalIntegrationSourcePatchRow(
+  id: string,
+  input: ExternalIntegrationSourceUpdateInput
+): ExternalIntegrationSourcePatchRow | undefined {
+  return getBusinessDatabase().prepare(`
+    SELECT ${externalIntegrationSourcePatchProjection(input).join(', ')}
+    FROM external_integration_sources
+    WHERE id = ?
+  `).get(id) as ExternalIntegrationSourcePatchRow | undefined
+}
+
+async function findExternalIntegrationSourcePatchRowAsync(
+  client: DatabaseClient,
+  id: string,
+  input: ExternalIntegrationSourceUpdateInput
+): Promise<ExternalIntegrationSourcePatchRow | undefined> {
+  return client.one<ExternalIntegrationSourcePatchRow>(`
+    SELECT ${externalIntegrationSourcePatchProjection(input).join(', ')}
+    FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
+    WHERE id = ?
+    FOR UPDATE
+  `, [id])
+}
+
+function sourcePatchOutcome(
+  existing: ExternalIntegrationSourcePatchRow,
+  changes: ExternalIntegrationSourcePatchChange[],
+  updatedAt: string
+): ExternalIntegrationSourcePatchOutcome {
+  const renamed = changes.find((change) => change.field === 'name')?.after
+  return {
+    mutation: { id: existing.id, updatedAt },
+    sourceName: typeof renamed === 'string' ? renamed : existing.name,
+    changes
+  }
+}
+
+function latestExternalIntegrationUpdatedAt(sourceUpdatedAt: string, tokenUpdatedAt: string | undefined): string {
+  return tokenUpdatedAt && tokenUpdatedAt > sourceUpdatedAt ? tokenUpdatedAt : sourceUpdatedAt
 }
 
 interface ExternalIntegrationSourceUpdateColumn {
@@ -512,46 +597,101 @@ interface ExternalIntegrationSourceUpdateColumn {
 
 function buildExternalIntegrationSourceUpdate(
   input: ExternalIntegrationSourceUpdateInput,
-  existing: ExternalIntegrationSourceRow
-): { columns: ExternalIntegrationSourceUpdateColumn[]; name: string; nameChanged: boolean; syncTokenState: boolean } {
+  existing: ExternalIntegrationSourcePatchRow
+): {
+  columns: ExternalIntegrationSourceUpdateColumn[]
+  sourceName: string
+  nameChanged: boolean
+  nextStatus?: 'active' | 'disabled'
+  changes: ExternalIntegrationSourcePatchChange[]
+} {
   const columns: ExternalIntegrationSourceUpdateColumn[] = []
-  const name = input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统名称不能为空')
-  if (input.name !== undefined) columns.push({ column: 'name', value: name })
-  if (input.status !== undefined) columns.push({ column: 'status', value: normalizeSourceStatusInput(input.status) })
-  if (input.scopes !== undefined) columns.push({ column: 'scopes_json', value: encodeScopes(input.scopes) })
-  if (input.rateLimits !== undefined) columns.push({ column: 'rate_limits_json', value: encodeRateLimits(input.rateLimits) })
-  if (input.expiresAt !== undefined) columns.push({ column: 'expires_at', value: normalizeNullableIso(input.expiresAt) })
-  if (input.notes !== undefined) columns.push({ column: 'notes', value: normalizeNullableText(input.notes) })
+  const changes: ExternalIntegrationSourcePatchChange[] = []
+  let sourceName = existing.name
+  let nextStatus: 'active' | 'disabled' | undefined
+  if (input.name !== undefined) {
+    const value = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
+    sourceName = value
+    if (value !== existing.name) {
+      columns.push({ column: 'name', value })
+      changes.push({ field: 'name', before: existing.name, after: value })
+    }
+  }
+  if (input.status !== undefined) {
+    const before = normalizeSourceStatus(existing.status)
+    const value = normalizeSourceStatusInput(input.status)
+    if (value !== before) {
+      columns.push({ column: 'status', value })
+      changes.push({ field: 'status', before, after: value })
+      nextStatus = value
+    }
+  }
+  if (input.scopes !== undefined) {
+    const value = encodeScopes(input.scopes)
+    if (value !== existing.scopes_json) {
+      columns.push({ column: 'scopes_json', value })
+      changes.push({ field: 'scopes', before: decodeScopes(existing.scopes_json ?? '[]'), after: decodeScopes(value) })
+    }
+  }
+  if (input.rateLimits !== undefined) {
+    const value = encodeRateLimits(input.rateLimits)
+    if (value !== existing.rate_limits_json) {
+      columns.push({ column: 'rate_limits_json', value })
+      changes.push({ field: 'rateLimits', before: decodeRateLimits(existing.rate_limits_json), after: decodeRateLimits(value) })
+    }
+  }
+  if (input.expiresAt !== undefined) {
+    const value = normalizeNullableIso(input.expiresAt)
+    if (value !== existing.expires_at) {
+      columns.push({ column: 'expires_at', value })
+      changes.push({ field: 'expiresAt', before: existing.expires_at ?? undefined, after: value ?? undefined })
+    }
+  }
+  if (input.notes !== undefined) {
+    const value = normalizeNullableText(input.notes)
+    if (value !== existing.notes) {
+      columns.push({ column: 'notes', value })
+      changes.push({ field: 'notes', before: existing.notes ?? undefined, after: value ?? undefined })
+    }
+  }
   return {
     columns,
-    name,
-    nameChanged: input.name !== undefined && name !== existing.name,
-    syncTokenState: input.name !== undefined || input.status !== undefined || input.scopes !== undefined || input.expiresAt !== undefined
+    sourceName,
+    nameChanged: sourceName !== existing.name,
+    nextStatus,
+    changes
   }
 }
 
 function executeExternalIntegrationSourceUpdate(
   database: ReturnType<typeof getBusinessDatabase>,
   id: string,
+  expectedUpdatedAt: string,
+  updatedAt: string,
   columns: ExternalIntegrationSourceUpdateColumn[]
 ): void {
-  if (!columns.length) return
   const assignments = columns.map(({ column }) => `${column} = ?`)
-  database.prepare(`UPDATE external_integration_sources SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`)
-    .run(...columns.map(({ value }) => value), nowIso(), id)
+  const result = database.prepare(`
+    UPDATE external_integration_sources
+    SET ${assignments.join(', ')}, updated_at = ?
+    WHERE id = ? AND updated_at = ?
+  `).run(...columns.map(({ value }) => value), updatedAt, id, expectedUpdatedAt)
+  if (Number(result.changes ?? 0) !== 1) throw new ExternalIntegrationSourcePatchConflictError()
 }
 
 async function executeExternalIntegrationSourceUpdateAsync(
   client: DatabaseClient,
   id: string,
+  expectedUpdatedAt: string,
+  updatedAt: string,
   columns: ExternalIntegrationSourceUpdateColumn[]
 ): Promise<void> {
-  if (!columns.length) return
   const assignments = columns.map(({ column }) => `${column} = ?`)
-  await client.execute(
-    `UPDATE ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`,
-    [...columns.map(({ value }) => value), nowIso(), id]
+  const result = await client.execute(
+    `UPDATE ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} SET ${assignments.join(', ')}, updated_at = ? WHERE id = ? AND updated_at = ?`,
+    [...columns.map(({ value }) => value), updatedAt, id, expectedUpdatedAt]
   )
+  if (result.changes !== 1) throw new ExternalIntegrationSourcePatchConflictError()
 }
 
 export function deleteExternalIntegrationSource(id: string): boolean {
@@ -639,7 +779,7 @@ async function findSourceRowAsync(client: DatabaseClient, id: string): Promise<E
 
 function assertBuiltInSourceUpdateInput(input: ExternalIntegrationSourceUpdateInput): void {
   const keys = Object.keys(input)
-  const disallowed = keys.filter((key) => key !== 'status')
+  const disallowed = keys.filter((key) => key !== 'status' && key !== 'expectedUpdatedAt')
   if (disallowed.length) {
     throw new Error('内置测试 Token 只支持启用或停用，不支持编辑名称、授权范围、限频、到期时间或备注')
   }
