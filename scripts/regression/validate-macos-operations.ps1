@@ -34,6 +34,7 @@ $requiredFiles = @(
   'README.md',
   'install-launchd-service.sh',
   'install-performance-topology.sh',
+  'performance-handover-controller.sh',
   'manage-sing-box.sh',
   'diagnose-proxy-dns.sh',
   'temporary-cutover.sh',
@@ -180,6 +181,12 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
   throw 'Temporary cutover must prove the real rollback ingress before attempting a switch'
 }
 
+$performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'nginx_test_reload', 'route-before-switch.conf', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+  if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
+}
+if ($performanceHandover -match '\\beval\\b') { throw 'Performance handover must not evaluate plan values as shell code' }
+
 $diagnostic = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'diagnose-proxy-dns.sh')
 foreach ($mutation in @('kill ', 'launchctl bootstrap', 'launchctl bootout', 'networksetup -set', 'scutil --set', 'rm -rf')) {
   if ($diagnostic.Contains($mutation, [StringComparison]::OrdinalIgnoreCase)) { throw "Diagnostic script is not read-only: $mutation" }
@@ -214,6 +221,36 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
+    $performanceHandoverHarness = @'
+set -euo pipefail
+root="/tmp/juhe-ai-handover-$$"
+mkdir -p "$root"
+trap 'rm -rf -- "$root"' EXIT
+mkdir -p "$root/plan"
+for file in route main temporary nginx.conf; do : > "$root/$file"; done
+cat > "$root/plan/handover.conf" <<EOF
+route_file=$root/route
+main_fragment=$root/main
+temporary_fragment=$root/temporary
+nginx_bin=/bin/true
+nginx_main_config=$root/nginx.conf
+ingress_health_url=http://127.0.0.1:3099/__aisys__/health
+access_log=$root/access.log
+main_label=main
+temporary_label=temporary
+EOF
+chmod 600 "$root/plan/handover.conf"
+for action in status preflight takeover switchback recover; do
+  bash '__CONTROLLER__' --dry-run --action "$action" --plan-dir "$root/plan" >/dev/null
+done
+printf 'redis_password=forbidden\n' >> "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --dry-run --action status --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a secret-like plan key' >&2
+  exit 69
+fi
+'@
+    & $bash.Source -c ($performanceHandoverHarness.Replace('__CONTROLLER__', ((Join-Path $operationsRoot 'performance-handover-controller.sh') -replace '\\', '/')))
+    if ($LASTEXITCODE -ne 0) { throw 'performance handover controller dry-run harness failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted a missing service user' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
