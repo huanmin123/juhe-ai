@@ -18,6 +18,7 @@
 - 外部 HTTP watchdog 已退役，不提供安装、恢复或启动脚本。主进程退出由 launchd `KeepAlive` 拉起，DB service 和 worker 继续由主进程 supervisor 管理。
 - 真实路径、label、用户、入口域名、端口、代理订阅和凭据由部署人员通过参数或服务器私有配置提供，不写入仓库。
 - 高性能拓扑脚本不会安装 Nginx，也不会修改 Nginx 主配置；`--nginx-config` 必须是主配置已 include 的绝对路径，并应通过 `--nginx-bin` 与 `--nginx-main-config` 明确绑定实际运行实例。生产 apply 还应通过 `--release-dir` 绑定不可变发布目录，脚本会解析物理路径后再生成运行脚本，避免 `current` 并发切换造成进程版本混用。默认仅 dry-run，`--apply` 要求构建产物、共享 `backend/.env`、Node、launchd、Nginx 和所有目标端口均可用。
+- 默认单槽路径保持 `bin/performance`、`logs` 与 `shared/usage-spool`。主槽与临时槽并存时，临时槽必须额外提供唯一的 `--runtime-dir` 和 `--nginx-upstream-suffix`：运行根目录必须是 base 物理目录内的真实子目录，运行脚本、launchd 日志和 usage spool 都从该根目录派生；suffix 只能是 `A-Za-z0-9_` 且长度为 1 到 48，生成的 gateway/control Nginx upstream 名称会带上该 suffix。调用方仍须同时使用独立的 release、label prefix、端口、Nginx include 文件、数据库与 Redis 身份；脚本不会替这些外部隔离资源做推断。
 - 高性能槽位 Nginx 是外层可信反向代理与 Node 之间的本机路由层，必须原样传递外层写入的 `X-Real-IP`、`X-Forwarded-For` 和 `X-Forwarded-Proto`。不得用 `$remote_addr` 或 `$proxy_add_x_forwarded_for` 重建来源链，否则 Express 在 `trust proxy=1` 下会把本机回环地址识别为客户端 IP。
 - `install-launchd-service.sh --apply` 必须显式传 `--health-port` 或 loopback `--health-base-url`；加载后在有界窗口内连续确认 `/__aisys__/health` 与 `/__aisys__/api/health`，失败会恢复旧定义和 loaded 状态。
 - `manage-sing-box.sh` 的 `launchd` 更新在 bootstrap、kickstart、监听身份或代理探测失败时恢复旧 plist 与原 loaded 状态；`existing` 不会因为任意进程占用端口就接管。
@@ -60,6 +61,23 @@ bash ./install-performance-topology.sh --dry-run \
   --log-workers 2 \
   --ingress-port 3000 \
   --nginx-config /opt/homebrew/etc/nginx/servers/juhe-ai-performance.conf \
+  --nginx-bin /opt/homebrew/bin/nginx \
+  --nginx-main-config /opt/homebrew/etc/nginx/nginx.conf
+
+# 临时性能槽必须使用独立运行目录和 Nginx upstream 名称，避免与主槽碰撞。
+bash ./install-performance-topology.sh --dry-run \
+  --scope system \
+  --service-user '<运行用户>' \
+  --base-dir "$HOME/juhe-ai-lite" \
+  --release-dir "$HOME/juhe-ai-lite/temporary/releases/<commit>/juhe-ai-release" \
+  --label-prefix com.example.juhe-ai.temporary \
+  --runtime-dir "$HOME/juhe-ai-lite/temporary-runtime-<stamp>" \
+  --nginx-upstream-suffix "temporary_<stamp>" \
+  --control-port '<临时control端口>' \
+  --gateway-base-port '<临时gateway起始端口>' \
+  --gateway-count 3 \
+  --ingress-port '<临时ingress端口>' \
+  --nginx-config /opt/homebrew/etc/nginx/servers/juhe-ai-temporary.conf \
   --nginx-bin /opt/homebrew/bin/nginx \
   --nginx-main-config /opt/homebrew/etc/nginx/nginx.conf
 

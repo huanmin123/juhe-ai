@@ -16,6 +16,8 @@ INGRESS_PORT=3000
 NGINX_CONFIG=
 NGINX_BIN=nginx
 NGINX_MAIN_CONFIG=
+RUNTIME_DIR=
+NGINX_UPSTREAM_SUFFIX=
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 VERIFIED_HEALTH_JSON=
 VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
@@ -37,6 +39,8 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --nginx-config ABSOLUTE_INCLUDED_CONF_PATH
   --nginx-bin ABSOLUTE_PATH
   --nginx-main-config ABSOLUTE_PATH
+  --runtime-dir ABSOLUTE_ISOLATED_RUNTIME_ROOT
+  --nginx-upstream-suffix [A-Za-z0-9_]{1,48}
   --node-path PATH_VALUE
 EOF
 }
@@ -59,6 +63,8 @@ while [ "$#" -gt 0 ]; do
     --nginx-config) NGINX_CONFIG="${2:-}"; shift 2 ;;
     --nginx-bin) NGINX_BIN="${2:-}"; shift 2 ;;
     --nginx-main-config) NGINX_MAIN_CONFIG="${2:-}"; shift 2 ;;
+    --runtime-dir) RUNTIME_DIR="${2:-}"; shift 2 ;;
+    --nginx-upstream-suffix) NGINX_UPSTREAM_SUFFIX="${2:-}"; shift 2 ;;
     --node-path) NODE_PATH="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -78,7 +84,19 @@ fi
 case "$BASE_DIR" in /*) ;; *) echo '--base-dir must be absolute' >&2; exit 2 ;; esac
 if [ -z "$RELEASE_DIR" ]; then RELEASE_DIR="$BASE_DIR/current"; fi
 case "$RELEASE_DIR" in /*) ;; *) echo '--release-dir must be absolute' >&2; exit 2 ;; esac
-case "$BASE_DIR$RELEASE_DIR$NODE_PATH$NGINX_CONFIG$NGINX_BIN$NGINX_MAIN_CONFIG" in
+if [ -n "$RUNTIME_DIR" ]; then
+  case "$RUNTIME_DIR" in /*) ;; *) echo '--runtime-dir must be absolute' >&2; exit 2 ;; esac
+fi
+if [ -n "$NGINX_UPSTREAM_SUFFIX" ]; then
+  printf '%s' "$NGINX_UPSTREAM_SUFFIX" | grep -Eq '^[A-Za-z0-9_]{1,48}$' \
+    || { echo 'invalid nginx upstream suffix' >&2; exit 2; }
+fi
+if { [ -n "$RUNTIME_DIR" ] && [ -z "$NGINX_UPSTREAM_SUFFIX" ]; } \
+  || { [ -z "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ]; }; then
+  echo '--runtime-dir and --nginx-upstream-suffix must be provided together' >&2
+  exit 2
+fi
+case "$BASE_DIR$RELEASE_DIR$RUNTIME_DIR$NODE_PATH$NGINX_CONFIG$NGINX_BIN$NGINX_MAIN_CONFIG" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
     echo 'paths contain unsafe shell characters' >&2
     exit 2
@@ -109,10 +127,24 @@ LAST_GATEWAY_PORT=$((GATEWAY_BASE_PORT + GATEWAY_COUNT - 1))
 [ "$INGRESS_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$INGRESS_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'ingress port overlaps gateway ports' >&2; exit 2; }
 
 CURRENT_DIR="$RELEASE_DIR"
-BIN_DIR="$BASE_DIR/bin/performance"
-LOG_DIR="$BASE_DIR/logs"
-RUNTIME_LOG_DIR="$LOG_DIR/runtime"
-SPOOL_DIR="$BASE_DIR/shared/usage-spool"
+if [ -n "$RUNTIME_DIR" ]; then
+  BIN_DIR="$RUNTIME_DIR/bin"
+  LOG_DIR="$RUNTIME_DIR/logs"
+  RUNTIME_LOG_DIR="$LOG_DIR/runtime"
+  SPOOL_DIR="$RUNTIME_DIR/usage-spool"
+else
+  BIN_DIR="$BASE_DIR/bin/performance"
+  LOG_DIR="$BASE_DIR/logs"
+  RUNTIME_LOG_DIR="$LOG_DIR/runtime"
+  SPOOL_DIR="$BASE_DIR/shared/usage-spool"
+fi
+if [ -n "$NGINX_UPSTREAM_SUFFIX" ]; then
+  GATEWAY_UPSTREAM="juhe_ai_gateway_pool_${NGINX_UPSTREAM_SUFFIX}"
+  CONTROL_UPSTREAM="juhe_ai_control_${NGINX_UPSTREAM_SUFFIX}"
+else
+  GATEWAY_UPSTREAM=juhe_ai_gateway_pool
+  CONTROL_UPSTREAM=juhe_ai_control
+fi
 if [ "$SCOPE" = user ]; then
   DOMAIN="gui/$(id -u)"
   PLIST_DIR="$HOME/Library/LaunchAgents"
@@ -131,8 +163,8 @@ if [ -n "$NGINX_MAIN_CONFIG" ]; then
   case "$NGINX_MAIN_CONFIG" in /*) ;; *) echo '--nginx-main-config must be absolute' >&2; exit 2 ;; esac
 fi
 
-printf 'mode=%s scope=%s base=%s release=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
-  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
+printf 'mode=%s scope=%s base=%s release=%s runtime=%s upstream_suffix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
+  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "${NGINX_UPSTREAM_SUFFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
 printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
@@ -177,6 +209,32 @@ assert_runtime_directory() {
   esac
 }
 
+assert_isolated_runtime_parent() {
+  isolated_runtime_root="$1"
+  probe_path="$isolated_runtime_root"
+  while [ ! -e "$probe_path" ]; do
+    parent_path="$(dirname "$probe_path")"
+    [ "$parent_path" != "$probe_path" ] \
+      || { echo "isolated runtime root has no existing parent: $isolated_runtime_root" >&2; return 1; }
+    probe_path="$parent_path"
+  done
+  [ -d "$probe_path" ] && [ ! -L "$probe_path" ] \
+    || { echo "isolated runtime root has an unsafe existing ancestor: $probe_path" >&2; return 1; }
+  resolved_probe_path="$(cd "$probe_path" && pwd -P)" || return 1
+  case "$resolved_probe_path" in
+    "$RESOLVED_BASE_DIR"|"$RESOLVED_BASE_DIR"/*) ;;
+    *) echo "isolated runtime root escapes the physical base directory: $isolated_runtime_root" >&2; return 1 ;;
+  esac
+}
+
+runtime_managed_paths() {
+  if [ -n "$RUNTIME_DIR" ]; then
+    printf '%s\n' "$BASE_DIR" "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"
+  else
+    printf '%s\n' "$BASE_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$BASE_DIR/shared" "$SPOOL_DIR"
+  fi
+}
+
 migrate_runtime_ownership() {
   for runtime_root in "$LOG_DIR" "$SPOOL_DIR"; do
     find "$runtime_root" -xdev -exec chown -h "$SERVICE_USER" {} +
@@ -193,11 +251,22 @@ assert_release_read_only() {
 }
 
 if [ "$SCOPE" = system ]; then
-  for managed_path in "$BASE_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$BASE_DIR/shared" "$SPOOL_DIR"; do
+  while IFS= read -r managed_path; do
     [ ! -L "$managed_path" ] || { echo "system runtime path must not be a symbolic link: $managed_path" >&2; exit 1; }
-  done
+  done <<EOF
+$(runtime_managed_paths)
+EOF
+fi
+if [ -n "$RUNTIME_DIR" ]; then
+  [ -d "$BASE_DIR" ] || { echo '--runtime-dir requires an existing base directory' >&2; exit 1; }
+  RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)" || exit 1
+  [ "$RESOLVED_BASE_DIR" != / ] || { echo 'isolated runtime base directory must not resolve to /' >&2; exit 1; }
+  assert_isolated_runtime_parent "$RUNTIME_DIR"
 fi
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
+if [ -n "$RUNTIME_DIR" ]; then
+  for runtime_path in "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
+fi
 if [ "$SCOPE" = system ]; then
   [ -x /usr/bin/sudo ] && [ -x /usr/bin/test ] || { echo 'system scope requires sudo and test' >&2; exit 1; }
   /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -d "$BASE_DIR" \
@@ -352,13 +421,15 @@ EOF
 render_nginx() {
   output="$1"
   {
-    printf '%s\n' 'upstream juhe_ai_gateway_pool {' '    least_conn;'
+    printf 'upstream %s {\n' "$GATEWAY_UPSTREAM"
+    printf '%s\n' '    least_conn;'
     index=1
     while [ "$index" -le "$GATEWAY_COUNT" ]; do
       printf '    server 127.0.0.1:%s max_fails=2 fail_timeout=5s;\n' "$((GATEWAY_BASE_PORT + index - 1))"
       index=$((index + 1))
     done
-    printf '%s\n' '    keepalive 256;' '}' '' 'upstream juhe_ai_control {'
+    printf '%s\n' '    keepalive 256;' '}' ''
+    printf 'upstream %s {\n' "$CONTROL_UPSTREAM"
     printf '    server 127.0.0.1:%s;\n' "$CONTROL_PORT"
     printf '%s\n' '    keepalive 32;' '}' '' 'server {'
     printf '    listen 127.0.0.1:%s;\n' "$INGRESS_PORT"
@@ -366,10 +437,10 @@ render_nginx() {
     printf '%s\n' \
       '    client_max_body_size 256m;' \
       '    location = /__aisys__ {' \
-      '        proxy_pass http://juhe_ai_control;' \
+      "        proxy_pass http://$CONTROL_UPSTREAM;" \
       '    }' \
       '    location ^~ /__aisys__/ {' \
-      '        proxy_pass http://juhe_ai_control;' \
+      "        proxy_pass http://$CONTROL_UPSTREAM;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \
@@ -377,10 +448,10 @@ render_nginx() {
       '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location = /__aipublic__ {' \
-      '        proxy_pass http://juhe_ai_control;' \
+      "        proxy_pass http://$CONTROL_UPSTREAM;" \
       '    }' \
       '    location ^~ /__aipublic__/ {' \
-      '        proxy_pass http://juhe_ai_control;' \
+      "        proxy_pass http://$CONTROL_UPSTREAM;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \
@@ -388,10 +459,10 @@ render_nginx() {
       '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location = /__aiinternal__ {' \
-      '        proxy_pass http://juhe_ai_control;' \
+      "        proxy_pass http://$CONTROL_UPSTREAM;" \
       '    }' \
       '    location ^~ /__aiinternal__/ {' \
-      '        proxy_pass http://juhe_ai_control;' \
+      "        proxy_pass http://$CONTROL_UPSTREAM;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \
@@ -399,7 +470,7 @@ render_nginx() {
       '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location / {' \
-      '        proxy_pass http://juhe_ai_gateway_pool;' \
+      "        proxy_pass http://$GATEWAY_UPSTREAM;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \

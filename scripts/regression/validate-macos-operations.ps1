@@ -8,6 +8,28 @@ Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $operationsRoot = Join-Path $repoRoot 'docs\deploy\macos\operations'
+
+function Get-ShellFunctionBlock {
+  param(
+    [string]$Content,
+    [string]$FunctionName
+  )
+
+  $start = $Content.IndexOf("$FunctionName() {", [StringComparison]::Ordinal)
+  if ($start -lt 0) { throw "Shell function not found: $FunctionName" }
+  $openingBrace = $Content.IndexOf('{', $start)
+  $depth = 0
+  for ($index = $openingBrace; $index -lt $Content.Length; $index += 1) {
+    $character = $Content[$index]
+    if ($character -eq '{') { $depth += 1 }
+    elseif ($character -eq '}') {
+      $depth -= 1
+      if ($depth -eq 0) { return $Content.Substring($start, $index - $start + 1) }
+    }
+  }
+  throw "Shell function has unbalanced braces: $FunctionName"
+}
+
 $requiredFiles = @(
   'README.md',
   'install-launchd-service.sh',
@@ -48,7 +70,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', '/usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test', 'assert_runtime_directory', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', '/usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 if ($performanceInstaller -match 'proxy_next_upstream_tries') {
@@ -132,12 +154,17 @@ if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performa
 $rollbackFunctionStart = $performanceInstaller.IndexOf('rollback() {', [StringComparison]::Ordinal)
 $onExitFunctionStart = $performanceInstaller.IndexOf('on_exit() {', $rollbackFunctionStart, [StringComparison]::Ordinal)
 $rollbackFunction = $performanceInstaller.Substring($rollbackFunctionStart, $onExitFunctionStart - $rollbackFunctionStart)
-$runtimeDirectoryFunctionStart = $performanceInstaller.IndexOf('assert_runtime_directory() {', [StringComparison]::Ordinal)
-$runtimeDirectoryFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeDirectoryFunctionStart, [StringComparison]::Ordinal) + 3
-$runtimeDirectoryFunction = $performanceInstaller.Substring($runtimeDirectoryFunctionStart, $runtimeDirectoryFunctionEnd - $runtimeDirectoryFunctionStart)
+$runtimeDirectoryFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_runtime_directory'
+$isolatedRuntimeParentFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_isolated_runtime_parent'
 $runtimeOwnershipFunctionStart = $performanceInstaller.IndexOf('migrate_runtime_ownership() {', [StringComparison]::Ordinal)
 $runtimeOwnershipFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeOwnershipFunctionStart, [StringComparison]::Ordinal) + 3
 $runtimeOwnershipFunction = $performanceInstaller.Substring($runtimeOwnershipFunctionStart, $runtimeOwnershipFunctionEnd - $runtimeOwnershipFunctionStart)
+$renderRunScriptFunctionStart = $performanceInstaller.IndexOf('render_run_script() {', [StringComparison]::Ordinal)
+$renderRunScriptFunctionEnd = $performanceInstaller.IndexOf("`n}", $renderRunScriptFunctionStart, [StringComparison]::Ordinal) + 3
+$renderRunScriptFunction = $performanceInstaller.Substring($renderRunScriptFunctionStart, $renderRunScriptFunctionEnd - $renderRunScriptFunctionStart)
+$renderNginxFunctionStart = $performanceInstaller.IndexOf('render_nginx() {', [StringComparison]::Ordinal)
+$renderNginxFunctionEnd = $performanceInstaller.IndexOf("`n}", $renderNginxFunctionStart, [StringComparison]::Ordinal) + 3
+$renderNginxFunction = $performanceInstaller.Substring($renderNginxFunctionStart, $renderNginxFunctionEnd - $renderNginxFunctionStart)
 
 $cutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'temporary-cutover.sh')
 foreach ($contract in @('assert_pid_cwd_port_health', 'API_HEALTH_PATH', 'rollback_target', "trap 'on_exit", '--dry-run', '--apply')) {
@@ -180,6 +207,11 @@ if ($bash) {
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
+    $isolatedDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.temporary' --runtime-dir '/tmp/juhe-ai-performance-test/runtime-temporary' --nginx-upstream-suffix 'temporary_20260730' --nginx-config '/tmp/juhe-ai-performance-test/temporary.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
+    if ($LASTEXITCODE -ne 0) { throw 'isolated performance topology installer dry-run failed' }
+    if (-not ($isolatedDryRun -join "`n").Contains('runtime=/tmp/juhe-ai-performance-test/runtime-temporary upstream_suffix=temporary_20260730', [StringComparison]::Ordinal)) {
+      throw 'isolated performance topology dry-run did not report its explicit runtime and upstream identity'
+    }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
@@ -190,6 +222,14 @@ if ($bash) {
     if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted root as its service user' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir 'relative/release' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a relative release directory' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --runtime-dir 'relative/runtime' --nginx-upstream-suffix 'temporary_20260730' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a relative isolated runtime directory' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --runtime-dir '/tmp/juhe-ai-performance-test/runtime' --nginx-upstream-suffix 'temporary-slot' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted an invalid nginx upstream suffix' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --runtime-dir '/tmp/juhe-ai-performance-test/runtime' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a runtime directory without an upstream suffix' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --nginx-upstream-suffix 'temporary_20260730' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted an upstream suffix without a runtime directory' }
     $resolvedReleaseHarness = @'
 set -euo pipefail
 installer="$1"
@@ -221,18 +261,29 @@ trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root/base/inside" "$root/outside/nested"
 RESOLVED_BASE_DIR="$(cd "$root/base" && pwd -P)"
 __RUNTIME_DIRECTORY_FUNCTION__
+__ISOLATED_RUNTIME_PARENT_FUNCTION__
 assert_runtime_directory "$root/base/inside"
+assert_isolated_runtime_parent "$root/base/isolated/nested"
 ln -s "$root/outside" "$root/base/direct-link"
 if assert_runtime_directory "$root/base/direct-link" 2>/dev/null; then
   echo 'runtime directory guard accepted a symbolic link' >&2
   exit 61
+fi
+ln -s "$root/outside" "$root/base/isolated-link"
+if assert_isolated_runtime_parent "$root/base/isolated-link" 2>/dev/null; then
+  echo 'isolated runtime parent guard accepted a symbolic-link ancestor' >&2
+  exit 63
 fi
 RESOLVED_BASE_DIR="$(cd "$root/outside" && pwd -P)"
 if assert_runtime_directory "$root/base/inside" 2>/dev/null; then
   echo 'runtime directory guard accepted a physical path outside the base' >&2
   exit 62
 fi
-'@.Replace('__RUNTIME_DIRECTORY_FUNCTION__', $runtimeDirectoryFunction)
+if assert_isolated_runtime_parent "$root/base/isolated/nested" 2>/dev/null; then
+  echo 'isolated runtime parent guard accepted a physical path outside the base' >&2
+  exit 64
+fi
+'@.Replace('__RUNTIME_DIRECTORY_FUNCTION__', $runtimeDirectoryFunction).Replace('__ISOLATED_RUNTIME_PARENT_FUNCTION__', $isolatedRuntimeParentFunction)
     & $bash.Source -c $runtimeDirectoryHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology runtime directory containment harness failed' }
 
@@ -273,6 +324,58 @@ fi
 '@.Replace('__RUNTIME_OWNERSHIP_FUNCTION__', $runtimeOwnershipFunction)
     & $bash.Source -c $runtimeOwnershipHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology root-to-nonroot runtime ownership harness failed' }
+
+    $isolatedRenderHarness = @'
+set -euo pipefail
+root="$(mktemp -d)"
+trap 'rm -rf -- "$root"' EXIT
+RUNTIME_DIR="$root/base/runtime-temporary"
+BIN_DIR="$RUNTIME_DIR/bin"
+LOG_DIR="$RUNTIME_DIR/logs"
+RUNTIME_LOG_DIR="$LOG_DIR/runtime"
+SPOOL_DIR="$RUNTIME_DIR/usage-spool"
+CURRENT_DIR="$root/release"
+NODE_PATH=/usr/local/opt/node@22/bin:/usr/bin:/bin
+GATEWAY_COUNT=3
+USAGE_WORKERS=2
+LOG_WORKERS=2
+GATEWAY_BASE_PORT=3501
+CONTROL_PORT=3600
+INGRESS_PORT=3599
+GATEWAY_UPSTREAM=juhe_ai_gateway_pool_temporary_20260730
+CONTROL_UPSTREAM=juhe_ai_control_temporary_20260730
+INSTALL_TOKEN=temporary-install-token
+service_role() { printf gateway; }
+service_port() { printf 3501; }
+__RENDER_RUN_SCRIPT_FUNCTION__
+__RENDER_NGINX_FUNCTION__
+render_run_script gateway-1 "$root/gateway-1.sh"
+render_nginx "$root/nginx.conf"
+rg -Fqx "export JUHE_AI_LOG_DIR=\"$RUNTIME_LOG_DIR\"" "$root/gateway-1.sh"
+rg -Fqx "export JUHE_AI_USAGE_SPOOL_DIR=\"$SPOOL_DIR\"" "$root/gateway-1.sh"
+rg -Fq "upstream $GATEWAY_UPSTREAM {" "$root/nginx.conf"
+rg -Fq "upstream $CONTROL_UPSTREAM {" "$root/nginx.conf"
+rg -Fq "proxy_pass http://$CONTROL_UPSTREAM;" "$root/nginx.conf"
+rg -Fq "proxy_pass http://$GATEWAY_UPSTREAM;" "$root/nginx.conf"
+if rg -Fq "$root/base/bin/performance" "$root/gateway-1.sh" "$root/nginx.conf"; then
+  echo 'isolated topology retained the fixed performance run-script directory' >&2
+  exit 65
+fi
+if rg -Fq "$root/base/logs" "$root/gateway-1.sh" "$root/nginx.conf"; then
+  echo 'isolated topology retained the fixed shared log directory' >&2
+  exit 66
+fi
+if rg -Fq "$root/base/shared/usage-spool" "$root/gateway-1.sh" "$root/nginx.conf"; then
+  echo 'isolated topology retained the fixed shared usage spool directory' >&2
+  exit 67
+fi
+if rg -Fq 'proxy_pass http://juhe_ai_control;' "$root/nginx.conf" || rg -Fq 'proxy_pass http://juhe_ai_gateway_pool;' "$root/nginx.conf"; then
+  echo 'isolated topology retained an unsuffixed nginx upstream reference' >&2
+  exit 68
+fi
+'@.Replace('__RENDER_RUN_SCRIPT_FUNCTION__', $renderRunScriptFunction).Replace('__RENDER_NGINX_FUNCTION__', $renderNginxFunction)
+    & $bash.Source -c $isolatedRenderHarness
+    if ($LASTEXITCODE -ne 0) { throw 'Performance topology isolated runtime and nginx rendering harness failed' }
 
     $rollbackHarness = @'
 set -euo pipefail
