@@ -27,3 +27,4 @@ Thumbs.db
 .worktrees/
 .local/
 .codex-temp
+.tmp
