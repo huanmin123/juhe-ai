@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   gatewayTimeoutProfileForLane,
@@ -47,5 +48,19 @@ assert.equal(upstreamRequestTimeoutMs(textProfile), 120_000, '文本 lane 上游
 assert.equal(upstreamRequestTimeoutMs(imageProfile), 600_000, '图像 lane 上游首响应应使用 600 秒')
 assert.equal(upstreamSocketTimeoutMs(streamRequest as never, textProfile), 120_000, '文本流 transport timeout 不应短于首响应等待')
 assert.equal(upstreamSocketTimeoutMs(streamRequest as never, imageProfile), 600_000, '图像流 transport timeout 不应短于首响应等待')
+
+const upstreamAttemptsSource = readFileSync(
+  new URL('../../modules/gateway/dispatch/upstream-attempts.ts', import.meta.url),
+  'utf8'
+)
+const grokFallbackRequestBlock = upstreamAttemptsSource.match(
+  /requestFallback:\s*async[\s\S]*?requestUpstream\(fallbackUrl,[\s\S]*?\n\s*}\)\n\s*}/
+)?.[0]
+assert(grokFallbackRequestBlock, 'Grok Access denied fallback 必须继续通过独立的上游请求回调发送')
+assert.match(
+  grokFallbackRequestBlock,
+  /disableTimeouts:\s*timeoutProfile\.timeoutsDisabled\s*===\s*true/,
+  'Grok Access denied 官方 API fallback 必须继承 compact unbounded 的禁用超时配置'
+)
 
 console.log('gateway timeout profile regression passed')

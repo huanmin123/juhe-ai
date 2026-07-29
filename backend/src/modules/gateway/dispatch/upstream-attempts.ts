@@ -116,6 +116,7 @@ export async function performUpstreamRequestAttempt(
         firstByteDeadlineMs,
         firstByteDeadlineTransport: isEffectiveOpenAIStreamRequest(req, account) ? 'stream' : 'non_stream',
         onFirstByteDeadline,
+        disableTimeouts: timeoutProfile.timeoutsDisabled === true,
         signal,
         transport: upstreamTransportForAttempt(fallbackHeaders, fallbackUrl)
       })
