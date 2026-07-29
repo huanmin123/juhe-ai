@@ -37,6 +37,7 @@ try {
     type: 'api_key',
     status: 'active',
     schedulable: true,
+    supportedModels: ['gpt-5.5'],
     credentials: {
       api_key: apiKeys[0],
       api_keys: apiKeys,
@@ -473,6 +474,7 @@ try {
       type: 'api_key',
       status: 'active',
       schedulable: true,
+      supportedModels: ['gpt-5.5'],
       credentials: {
         api_key: poolKeys[0],
         api_keys: poolKeys,
