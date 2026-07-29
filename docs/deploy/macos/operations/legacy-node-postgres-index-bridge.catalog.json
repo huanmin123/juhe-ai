@@ -7,6 +7,7 @@
       "schema": "juhe_dataset",
       "table": "model_check_runs",
       "accessMethod": "btree",
+      "skipWhenRequiredColumnsMissing": true,
       "requiredColumns": {
         "account_id": "text",
         "status": "text",
@@ -43,6 +44,7 @@
       "schema": "juhe_dataset",
       "table": "model_check_runs",
       "accessMethod": "btree",
+      "skipWhenRequiredColumnsMissing": true,
       "requiredColumns": {
         "account_id": "text",
         "status": "text",

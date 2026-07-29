@@ -33,6 +33,9 @@ assert.deepEqual(catalog.indexes.map((index) => index.name), [
   'idx_accounts_balance_auto_detect_due'
 ])
 assert.equal(catalog.indexes.length, 3, '遗留桥接目录只能包含批准的三条索引')
+assert.equal(catalog.indexes[0].skipWhenRequiredColumnsMissing, true, 'Go 专用索引缺字段时必须明确跳过')
+assert.equal(catalog.indexes[1].skipWhenRequiredColumnsMissing, true, 'Go 专用索引缺字段时必须明确跳过')
+assert.equal(catalog.indexes[2].skipWhenRequiredColumnsMissing, undefined, 'Node 账户索引不得因缺字段而被跳过')
 for (const index of catalog.indexes) {
   assert.equal(index.accessMethod, 'btree', `${index.name} 必须声明 btree 访问方法`)
   assert.match(index.createSql, /^CREATE INDEX CONCURRENTLY /, `${index.name} 必须并发创建`)

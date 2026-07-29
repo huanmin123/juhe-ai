@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const catalogPath = resolve(scriptDirectory, 'legacy-node-postgres-index-bridge.catalog.json')
 const backendRequire = createRequire(resolve(scriptDirectory, '../../../../backend/package.json'))
-const catalogFingerprint = 'fa917ac1afe7ad8bf8475db79f7158d115974099999a6efc4b0a412ea9500d40'
+const catalogFingerprint = '725c665427bdf55cad9e83398c323ba3bb77ed1b29f3b9467cfe9776bc67fcec'
 const advisoryLockKey = 'juhe-ai:legacy-node-postgres-index-bridge:v1'
 const actions = new Set(['inspect', 'apply', 'verify', 'cleanup-invalid'])
 
@@ -41,7 +41,7 @@ try {
     let report
     if (options.action === 'inspect' || options.action === 'verify') {
       report = await inspectCatalog(client, catalog, identity.currentUser)
-      if (options.action === 'verify' && report.indexes.some((index) => index.state !== 'valid')) {
+      if (options.action === 'verify' && report.indexes.some((index) => !isVerifiedState(index.state))) {
         throw new BridgeError('verification_failed')
       }
     } else {
@@ -109,6 +109,7 @@ function validateCatalogIndex(index) {
     throw new BridgeError('invalid_catalog')
   }
   if (index.accessMethod !== 'btree') throw new BridgeError('invalid_catalog')
+  if (index.skipWhenRequiredColumnsMissing !== undefined && index.skipWhenRequiredColumnsMissing !== true) throw new BridgeError('invalid_catalog')
   if (/\bIF\s+NOT\s+EXISTS\b|\bDROP\s+INDEX\b|;|--|\/\*|\*\//i.test(index.createSql) || !index.createSql.includes(`${index.schema}.${index.table}`)) {
     throw new BridgeError('invalid_catalog')
   }
@@ -160,7 +161,15 @@ async function inspectCatalog(client, catalog, currentUser) {
 }
 
 async function inspectIndex(client, target, currentUser) {
-  const tableOid = await assertTableContract(client, target, currentUser)
+  let tableOid
+  try {
+    tableOid = await assertTableContract(client, target, currentUser)
+  } catch (error) {
+    if (error instanceof BridgeError && error.code === 'missing_required_columns' && target.skipWhenRequiredColumnsMissing === true) {
+      return { name: target.name, state: 'not_applicable', reason: error.code }
+    }
+    throw error
+  }
   const existing = await readIndex(client, target, tableOid)
   if (!existing) return { name: target.name, state: 'missing' }
   if (!existing.indisvalid || !existing.indisready || !existing.indislive) return { name: target.name, state: 'invalid' }
@@ -189,7 +198,9 @@ async function assertTableContract(client, target, currentUser) {
   `, [target.schema, target.table])
   const columns = new Map(columnsResult.rows.map((row) => [row.attname, row]))
   for (const [column, type] of Object.entries(target.requiredColumns)) {
-    if (columns.get(column)?.type !== type) throw new BridgeError('column_type_mismatch')
+    const actual = columns.get(column)
+    if (!actual) throw new BridgeError('missing_required_columns')
+    if (actual.type !== type) throw new BridgeError('column_type_mismatch')
   }
   for (const [column, expectedDefault] of Object.entries(target.requiredColumnDefaults ?? {})) {
     if (normalizeSql(columns.get(column)?.column_default ?? '') !== normalizeSql(expectedDefault)) {
@@ -243,8 +254,12 @@ async function applyCatalog(client, catalog, currentUser) {
     if (report.indexes.find((index) => index.name === target.name)?.state === 'missing') await client.query(target.createSql)
   }
   const verified = await inspectCatalog(client, catalog, currentUser)
-  if (verified.indexes.some((index) => index.state !== 'valid')) throw new BridgeError('verification_failed')
+  if (verified.indexes.some((index) => !isVerifiedState(index.state))) throw new BridgeError('verification_failed')
   return verified
+}
+
+function isVerifiedState(state) {
+  return state === 'valid' || state === 'not_applicable'
 }
 
 async function cleanupInvalidIndex(client, catalog, currentUser, requestedIndex) {
