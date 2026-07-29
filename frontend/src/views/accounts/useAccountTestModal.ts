@@ -104,6 +104,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   let activeTestRun: AccountTestRunContext | undefined
   let testViewToken = 0
+  let modelSearchTimer: ReturnType<typeof setTimeout> | undefined
+  let pendingModelSearchResolve: (() => void) | undefined
 
   async function openTestModal(account: AccountListItem): Promise<void> {
     if (!canTestAccount(account)) {
@@ -262,6 +264,24 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function loadAccountTestModelOptions(open: boolean, keyword = ''): Promise<void> {
     const account = testingAccount.value
     if (!open || !account || testModelReadonly.value) return
+    const normalizedKeyword = keyword.trim()
+    if (normalizedKeyword) {
+      clearModelSearchTimer()
+      await new Promise<void>((resolve) => {
+        pendingModelSearchResolve = resolve
+        modelSearchTimer = setTimeout(() => {
+          modelSearchTimer = undefined
+          pendingModelSearchResolve = undefined
+          void loadAccountTestModelOptionsNow(account, normalizedKeyword).finally(resolve)
+        }, 250)
+      })
+      return
+    }
+    clearModelSearchTimer()
+    await loadAccountTestModelOptionsNow(account, '')
+  }
+
+  async function loadAccountTestModelOptionsNow(account: AccountListItem, keyword: string): Promise<void> {
     try {
       await loadTestModelOptions(account, keyword)
     } catch (error) {
@@ -321,13 +341,24 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     nextTestViewToken()
     resetTestModels()
     testModalOpen.value = false
+    clearModelSearchTimer()
   }
 
   onBeforeUnmount(() => {
+    clearModelSearchTimer()
     nextTestViewToken()
     resetTestModels()
     detachCurrentTestView()
   })
+
+  function clearModelSearchTimer(): void {
+    if (modelSearchTimer) {
+      clearTimeout(modelSearchTimer)
+      modelSearchTimer = undefined
+    }
+    pendingModelSearchResolve?.()
+    pendingModelSearchResolve = undefined
+  }
 
   function beginTestView(account: AccountListItem): number {
     const viewToken = nextTestViewToken()

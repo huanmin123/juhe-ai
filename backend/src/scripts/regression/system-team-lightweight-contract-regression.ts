@@ -7,7 +7,8 @@ const routes = readFileSync(resolve('src/modules/system-teams/system-teams.route
 
 const listMapper = functionBody(repository, 'systemTeamListItemFromRow')
 assert.match(listMapper, /memberCount/, '系统团队列表必须保留成员数')
-for (const field of ['activeMemberCount', 'createdBy', 'updatedAt']) {
+assert.match(listMapper, /updatedAt/, '系统团队列表必须返回编辑 PATCH 所需版本')
+for (const field of ['activeMemberCount', 'createdBy']) {
   assert.doesNotMatch(listMapper, new RegExp(`\\b${field}\\b`), `系统团队列表不得返回未使用字段 ${field}`)
 }
 

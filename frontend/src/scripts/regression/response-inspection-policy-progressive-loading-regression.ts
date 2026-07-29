@@ -20,10 +20,13 @@ import {
 
 const emptyList: ResponseInspectionPolicyListResult = { defaultRules: [], policies: [] }
 const options: ResponseInspectionPolicyProviderOption[] = [
-  { code: 'openai', name: 'OpenAI 兼容', protocolCode: 'openai' },
-  { code: 'anthropic', name: 'Anthropic', protocolCode: 'anthropic' },
-  { code: 'gemini', name: 'Gemini', protocolCode: 'gemini' }
+  { code: 'openai', name: 'OpenAI 兼容' },
+  { code: 'anthropic', name: 'Anthropic' },
+  { code: 'gemini', name: 'Gemini' }
 ]
+
+const openAiProviderQuery = { protocolCode: 'openai' as const, scopeType: 'provider' as const }
+const anthropicProviderQuery = { protocolCode: 'anthropic' as const, scopeType: 'provider' as const }
 
 await verifyRequestMatrix()
 await verifyListRaceIsolation()
@@ -62,7 +65,7 @@ async function verifyRequestMatrix(): Promise<void> {
 
   const createIntent = coordinator.beginModalIntent()
   assert.deepEqual(calls, { list: 1, detail: ['policy_view'], options: 0 }, '打开创建弹窗不得请求 provider options')
-  assert.deepEqual(await coordinator.loadProviderOptions(createIntent), options)
+  assert.deepEqual(await coordinator.loadProviderOptions(createIntent, openAiProviderQuery), options)
   assert.deepEqual(calls, { list: 1, detail: ['policy_view'], options: 1 }, '创建时只有展开供应商下拉才请求 provider options')
 
   coordinator.dispose()
@@ -86,9 +89,9 @@ async function verifyRequestMatrix(): Promise<void> {
   const editDetail = await editCoordinator.loadDetail(editIntent, 'policy_edit')
   assert.equal(editDetail?.id, 'policy_edit')
   assert.deepEqual(editCalls, { list: 0, detail: 1, options: 0 }, '打开编辑弹窗只能请求 detail，不得预取 provider options')
-  assert.deepEqual(await editCoordinator.loadProviderOptions(editIntent), options)
+  assert.deepEqual(await editCoordinator.loadProviderOptions(editIntent, openAiProviderQuery), options)
   assert.deepEqual(editCalls, { list: 0, detail: 1, options: 1 }, '编辑时只有展开供应商下拉才请求 provider options')
-  assert.deepEqual(await editCoordinator.loadProviderOptions(editIntent), options)
+  assert.deepEqual(await editCoordinator.loadProviderOptions(editIntent, openAiProviderQuery), options)
   assert.deepEqual(editCalls, { list: 0, detail: 1, options: 1 }, '同一编辑 intent 重复展开不得重复请求 provider options')
   editCoordinator.dispose()
 }
@@ -152,12 +155,14 @@ async function verifyModalIntentAndDetailRaceIsolation(): Promise<void> {
 
 async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
   let calls = 0
+  const queries: Array<{ protocolCode: string; scopeType: string; keyword?: string }> = []
   const requests: Array<Deferred<ResponseInspectionPolicyProviderOption[]>> = []
   const coordinator = createResponseInspectionPolicyLoadCoordinator({
     list: async () => emptyList,
     detail: async (id) => detail(id),
-    providerOptions: async () => {
+    providerOptions: async (query) => {
       calls += 1
+      queries.push(query)
       const request = deferred<ResponseInspectionPolicyProviderOption[]>()
       requests.push(request)
       return request.promise
@@ -165,20 +170,28 @@ async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
   })
 
   const firstIntent = coordinator.beginModalIntent()
-  const first = coordinator.loadProviderOptions(firstIntent)
-  const sameFlight = coordinator.loadProviderOptions(firstIntent)
+  const first = coordinator.loadProviderOptions(firstIntent, openAiProviderQuery)
+  const sameFlight = coordinator.loadProviderOptions(firstIntent, openAiProviderQuery)
   assert.equal(calls, 1, '同一页面的并发 options 请求必须 singleflight')
   requests[0]?.resolve(options)
   assert.deepEqual(await first, options)
   assert.deepEqual(await sameFlight, options)
-  assert.deepEqual(await coordinator.loadProviderOptions(firstIntent), options)
+  assert.deepEqual(await coordinator.loadProviderOptions(firstIntent, openAiProviderQuery), options)
   assert.equal(calls, 1, '同一 modal intent 成功后可以复用本次 options 结果')
 
   const secondIntent = coordinator.beginModalIntent('edit-after-create')
-  const second = coordinator.loadProviderOptions(secondIntent)
-  assert.equal(calls, 2, '新 modal intent 必须重新请求 provider options，不能复用页面生命周期缓存')
+  const second = coordinator.loadProviderOptions(secondIntent, anthropicProviderQuery)
+  assert.equal(calls, 2, '不同协议必须使用独立 provider options 缓存')
   requests[1]?.resolve(options)
   assert.deepEqual(await second, options)
+  const cachedIntent = coordinator.beginModalIntent('cached-openai')
+  assert.deepEqual(await coordinator.loadProviderOptions(cachedIntent, openAiProviderQuery), options)
+  assert.equal(calls, 2, '同 protocol/scope/keyword 的成功结果必须跨 modal intent 复用')
+  const searched = coordinator.loadProviderOptions(cachedIntent, { ...openAiProviderQuery, keyword: 'open' })
+  assert.equal(calls, 3, '不同 keyword 必须使用独立 provider options 缓存键')
+  requests[2]?.resolve([{ code: 'openai', name: 'OpenAI 兼容' }])
+  assert.deepEqual(await searched, [{ code: 'openai', name: 'OpenAI 兼容' }])
+  assert.deepEqual(queries, [openAiProviderQuery, anthropicProviderQuery, { ...openAiProviderQuery, keyword: 'open' }], 'loader 必须收到完整 protocol/scope/keyword 查询矩阵')
   coordinator.dispose()
 
   const raceRequests: Array<Deferred<ResponseInspectionPolicyProviderOption[]>> = []
@@ -186,7 +199,7 @@ async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
   const raceCoordinator = createResponseInspectionPolicyLoadCoordinator({
     list: async () => emptyList,
     detail: async (id) => detail(id),
-    providerOptions: async (signal) => {
+    providerOptions: async (_query, signal) => {
       raceSignals.push(signal)
       const request = deferred<ResponseInspectionPolicyProviderOption[]>()
       raceRequests.push(request)
@@ -194,15 +207,14 @@ async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
     }
   })
   const staleIntent = raceCoordinator.beginModalIntent()
-  const stale = raceCoordinator.loadProviderOptions(staleIntent)
-  const freshIntent = raceCoordinator.beginModalIntent('fresh-edit')
-  const fresh = raceCoordinator.loadProviderOptions(freshIntent)
-  assert.equal(raceSignals[0]?.aborted, true, '新 modal intent 必须中止旧 options 请求')
-  assert.equal(raceRequests.length, 2, '新 modal intent 不得复用旧 intent 的在途 options')
-  raceRequests[0]?.resolve([{ code: 'stale', name: 'Stale', protocolCode: 'openai' }])
+  const stale = raceCoordinator.loadProviderOptions(staleIntent, openAiProviderQuery)
+  const fresh = raceCoordinator.loadProviderOptions(staleIntent, anthropicProviderQuery)
+  assert.equal(raceSignals[0]?.aborted, true, '同一弹窗切换协议必须中止旧 options 请求')
+  assert.equal(raceRequests.length, 2, '不同协议不得复用旧协议的在途 options')
+  raceRequests[0]?.resolve([{ code: 'stale', name: 'Stale' }])
   assert.equal(await stale, undefined, '旧 intent 的 options 迟到响应必须丢弃')
   raceRequests[1]?.resolve(options)
-  assert.deepEqual(await fresh, options, '当前 intent 必须接收自己的 options 响应')
+  assert.deepEqual(await fresh, options, '当前协议必须接收自己的 options 响应')
   raceCoordinator.dispose()
 
   let retryCalls = 0
@@ -216,8 +228,8 @@ async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
     }
   })
   const retryIntent = retryCoordinator.beginModalIntent()
-  await assert.rejects(retryCoordinator.loadProviderOptions(retryIntent), /expected options failure/)
-  assert.deepEqual(await retryCoordinator.loadProviderOptions(retryIntent), options)
+  await assert.rejects(retryCoordinator.loadProviderOptions(retryIntent, openAiProviderQuery), /expected options failure/)
+  assert.deepEqual(await retryCoordinator.loadProviderOptions(retryIntent, openAiProviderQuery), options)
   assert.equal(retryCalls, 2, 'provider options 失败不得被缓存，当前操作必须可重试')
   retryCoordinator.dispose()
 }
@@ -228,17 +240,17 @@ function verifyLocalProviderDefaultsAndSelectedOptions(): void {
   assert.equal(defaultResponseInspectionProviderCode([], 'gemini'), 'gemini', 'Gemini 协议在 options 未加载时必须使用本地默认值')
   assert.equal(defaultResponseInspectionProviderCode([], 'openai', true), '', '远程 options 已确认当前协议没有可用供应商时不得继续提交本地默认代码')
   assert.equal(
-    defaultResponseInspectionProviderCode([{ code: 'custom-openai', name: 'Custom', protocolCode: 'openai' }], 'openai'),
+    defaultResponseInspectionProviderCode([{ code: 'custom-openai', name: 'Custom' }], 'openai'),
     'custom-openai',
     '远程 options 不含本地默认值时必须回落到当前协议首个可用供应商'
   )
   assert.deepEqual(
-    responseInspectionProviderSelectOptions([], 'anthropic', { code: 'anthropic', name: 'Anthropic' }),
+    responseInspectionProviderSelectOptions([], { code: 'anthropic', name: 'Anthropic' }),
     [{ label: 'Anthropic', value: 'anthropic' }],
     'options 未加载时必须保留创建或编辑表单的已选供应商回显'
   )
   assert.deepEqual(
-    responseInspectionProviderSelectOptions(options, 'openai', { code: 'custom-selected', name: '已选自定义供应商' }).at(-1),
+    responseInspectionProviderSelectOptions(options, { code: 'custom-selected', name: '已选自定义供应商' }).at(-1),
     { label: '已选自定义供应商', value: 'custom-selected' },
     '远程候选不含当前值时不得清空用户已选供应商'
   )
@@ -294,20 +306,31 @@ function verifyViewUsesCoordinator(): void {
   const removeFunction = functionSource(source, 'async function removePolicy')
   assert.doesNotMatch(removeFunction, /loadPolicies\(/, '删除成功后必须本地移除，不得重拉列表')
   const dropdownFunction = functionSource(source, 'async function loadProviderOptionsOnDropdown')
-  assert.match(dropdownFunction, /!open \|\| modalMode\.value === 'view'/, '关闭下拉和查看模式不得加载 provider options')
-  assert.match(dropdownFunction, /activeProviderOptionsRequest/, '同一 intent 的在途下拉加载必须在页面层复用，避免重复错误提示')
-  assert.match(dropdownFunction, /loadCoordinator\.loadProviderOptions\(intent\)/, '只有供应商下拉展开后才加载 provider options')
-  assert.equal((dropdownFunction.match(/message\.error\(/g) ?? []).length, 1, '同一 provider options 请求只能在一个 UI 边界提示一次错误')
+  assert.match(dropdownFunction, /if \(!open\)[\s\S]*cancelActiveProviderOptionsRequest\(\)/, '关闭下拉必须取消在途 provider options 请求')
+  assert.match(dropdownFunction, /await loadProviderOptions\(query\)/, '只有供应商下拉展开后才加载当前上下文 provider options')
+  const optionsFunction = functionSource(source, 'async function loadProviderOptions')
+  assert.match(optionsFunction, /query\.scopeType !== 'provider'/, '协议层不得发起 provider options 请求')
+  assert.match(optionsFunction, /loadCoordinator\.loadProviderOptions\(intent, query\)/, 'provider options 必须携带 protocol/scope/keyword 查询')
+  assert.equal((optionsFunction.match(/message\.error\(/g) ?? []).length, 1, '同一 provider options 请求只能在一个 UI 边界提示一次错误')
+  const contextFunction = functionSource(source, 'function handleProviderOptionsContextChange')
+  assert.match(contextFunction, /cancelActiveProviderOptionsRequest\(\)/, '切换协议或层级必须取消旧 provider options 请求')
+  assert.match(contextFunction, /clearProviderOptionsPresentation\(\)/, '切换协议或层级必须清空旧协议候选')
+  const searchFunction = functionSource(source, 'function scheduleProviderOptionsSearch')
+  assert.match(searchFunction, /setTimeout\([\s\S]*loadProviderOptions\(query\)/, '供应商搜索必须防抖后按需请求')
   assert.match(source, /:provider-options-loading="providerOptionsLoading"/, '父层必须向供应商下拉传递 loading 状态')
   assert.match(source, /:provider-options-ready="providerOptionsReady"/, '父层必须区分 options 未加载与远程已确认为空')
   assert.match(source, /@provider-options-dropdown-visible-change="loadProviderOptionsOnDropdown"/, '父层必须监听供应商下拉展开事件')
+  assert.match(source, /@provider-options-search="scheduleProviderOptionsSearch"/, '父层必须监听远程供应商搜索')
   assert.doesNotMatch(source, /default-provider-code/, '父层不得把 OpenAI 默认供应商硬编码传给所有协议')
   assert.match(modalSource, /:loading="providerOptionsLoading"/, '供应商下拉必须展示按需加载状态')
-  assert.match(modalSource, /@dropdown-visible-change="emit\('provider-options-dropdown-visible-change', \$event\)"/, '供应商下拉必须在展开时通知父层')
+  assert.match(modalSource, /:filter-option="false"/, '供应商下拉必须使用服务端关键词过滤')
+  assert.match(modalSource, /@dropdown-visible-change="handleProviderDropdownVisibleChange"/, '供应商下拉必须在展开时通知父层')
+  assert.match(modalSource, /@search="handleProviderSearch"/, '供应商下拉搜索必须通知父层按需查询')
   assert.match(modalSource, /@change="handleProviderChange"/, '用户手动选择供应商后必须保护该选择')
   assert.match(modalSource, /responseInspectionProviderSelectOptions\([\s\S]{0,300}code: form\.providerCode/, '编辑已选供应商在 options 未加载时必须仍可显示名称')
   assert.match(modalSource, /watch\(\[\(\) => props\.providerOptions, \(\) => props\.providerOptionsReady\][\s\S]{0,600}form\.providerCode = defaultProviderCodeForProtocol\(\)/, 'options 返回后必须按当前协议补默认供应商或清空不可用本地默认值')
   assert.match(modalSource, /defaultResponseInspectionProviderCode\(props\.providerOptions, form\.protocolCode, props\.providerOptionsReady\)/, '协议切换必须区分本地默认与远程已确认为空')
+  assert.match(apiSource, /providerOptions:[\s\S]{0,320}params, signal: options\?\.signal/, 'provider options API 必须携带 protocol/scope/keyword 与 AbortSignal')
   const mountedFunction = functionSource(source, 'async function loadPolicies')
   assert.doesNotMatch(mountedFunction, /\.detail\(|providerOptions|loadProviderOptions/, '首屏 overview loader 不得夹带 detail 或 provider options')
 }

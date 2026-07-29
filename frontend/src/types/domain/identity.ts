@@ -57,7 +57,37 @@ export interface CurrentUserProfile extends SystemAccountSummary {
   effectiveRequestLimits: EffectiveUserRequestLimits
 }
 
-export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'>
+export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'> & {
+  editVersion: string
+}
+
+export type SystemAccountPatchPayload = {
+  expectedUpdatedAt: string
+} & Partial<Pick<SystemAccountSummary,
+  'displayName'
+  | 'role'
+  | 'status'
+  | 'mustChangePassword'
+  | 'imageGenerationEnabled'
+>> & {
+  password?: string
+  description?: string | null
+  requestLimits?: UserRequestLimits | null
+}
+
+export type SystemAccountMutationResult = {
+  id: string
+  updatedAt: string
+} & Partial<Pick<SystemAccountSummary,
+  'displayName'
+  | 'role'
+  | 'status'
+  | 'mustChangePassword'
+  | 'imageGenerationEnabled'
+>> & {
+  description?: string | null
+  requestLimits?: UserRequestLimits | null
+}
 
 export interface SystemAccountOptionSummary {
   id: string

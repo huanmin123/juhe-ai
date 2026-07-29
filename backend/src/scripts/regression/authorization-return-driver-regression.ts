@@ -122,6 +122,11 @@ async function assertAuthorizationReturnAsync(): Promise<void> {
   assert(groupSeed.groupId, '分组授权种子应包含分组 ID')
   const groupAccess: AccessScope = { systemAccountId: groupSeed.granteeSystemAccountId, role: 'user' }
   const groupReturned = await repositories.returnGroupAuthorizationForGranteeAsync(groupSeed.groupId, groupAccess)
+  assert.deepEqual(
+    Object.keys(groupReturned ?? {}).sort(),
+    ['grantee_system_account_id', 'id', 'resource_id', 'resource_name', 'resource_owner_system_account_id', 'resource_type'],
+    '分组归还只应返回操作日志所需的窄收据'
+  )
   await assertReturnedAuthorization(client, groupSeed, groupReturned, '分组个人归还')
   const secondGroupReturn = await repositories.returnGroupAuthorizationForGranteeAsync(groupSeed.groupId, groupAccess)
   assert.equal(secondGroupReturn, undefined, '分组授权已归还后不应重复归还')
@@ -130,13 +135,18 @@ async function assertAuthorizationReturnAsync(): Promise<void> {
 async function assertReturnedAuthorization(
   client: DatabaseClient,
   seed: SeedIds,
-  returned: { id?: string; status?: string; effective_source_type?: string | null; revoked_reason?: string | null } | undefined,
+  returned: { id?: string } | undefined,
   label: string
 ): Promise<void> {
   assert.equal(returned?.id, seed.authorizationId, `${label} 应返回运行态授权记录`)
-  assert.equal(returned?.status, 'returned', `${label} 应把运行态授权标记为 returned`)
-  assert.equal(returned?.effective_source_type, null, `${label} 后运行态授权不应保留有效来源`)
-  assert.equal(returned?.revoked_reason, 'grantee_returned', `${label} 应记录被授权人归还原因`)
+  const runtime = await client.one<{ status?: string; effective_source_type?: string | null; revoked_reason?: string | null }>(`
+    SELECT status, effective_source_type, revoked_reason
+    FROM ${table(client, 'resource_authorizations')}
+    WHERE id = ?
+  `, [seed.authorizationId])
+  assert.equal(runtime?.status, 'returned', `${label} 应把运行态授权标记为 returned`)
+  assert.equal(runtime?.effective_source_type, null, `${label} 后运行态授权不应保留有效来源`)
+  assert.equal(runtime?.revoked_reason, 'grantee_returned', `${label} 应记录被授权人归还原因`)
 
   const grant = await client.one<{ status?: string; revoked_by?: string | null; revoked_at?: string | null }>(`
     SELECT status, revoked_by, revoked_at
@@ -195,9 +205,10 @@ async function seedReturnableAccountAuthorization(client: DatabaseClient): Promi
     INSERT INTO ${table(client, 'accounts')} (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
       name, type, status, credentials_encrypted, credential_mask, concurrency_limit, schedulable,
+      health_check_model, health_check_endpoint_mode,
       authorization_instance_source_account_id, authorization_instance_authorization_id,
       authorization_instance_owner_system_account_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', ?, ?, 20, 1, NULL, NULL, NULL, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', ?, ?, 20, 1, 'gpt-5.1', 'responses_sse', NULL, NULL, NULL, ?, ?)
   `, [
     sourceAccountId,
     ownerSystemAccountId,

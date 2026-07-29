@@ -1185,10 +1185,10 @@ async function saveRouteStrategy() {
       message.success('策略路由已更新')
       modalOpen.value = false
     } else {
-      await routeStrategiesApi.create(payload, operationScopeParams)
+      const created = await routeStrategiesApi.create(payload, operationScopeParams)
+      applyCreatedRouteStrategyListItem(created, operationScopeParams?.systemAccountId)
       message.success('策略路由已创建')
       modalOpen.value = false
-      await loadRouteStrategies()
     }
   } catch (error) {
     message.error(extractApiErrorMessage(error, '策略路由保存失败'))
@@ -1207,6 +1207,22 @@ function applyRouteStrategyMutationResult(result: RouteStrategyMutationResult): 
     return
   }
   items.value[index] = updated
+}
+
+function applyCreatedRouteStrategyListItem(result: RouteStrategyListItem, selectedSystemAccountId?: string): void {
+  const created = isManagementView.value && result.systemAccountId && !result.systemAccountName
+    ? {
+        ...result,
+        systemAccountName: systemAccountFilterSelection.value?.id === result.systemAccountId
+          ? systemAccountFilterSelection.value.name
+          : principalLabelForId('system_account', result.systemAccountId) ?? undefined
+      }
+    : result
+  if (isManagementView.value && selectedSystemAccountId && created.systemAccountId !== selectedSystemAccountId) return
+  if (!routeStrategyMatchesCurrentFilters(created)) return
+  total.value += 1
+  if (page.value !== 1) return
+  items.value = [created, ...items.value].slice(0, pageSize.value)
 }
 
 function routeStrategyMatchesCurrentFilters(record: RouteStrategyListItem): boolean {

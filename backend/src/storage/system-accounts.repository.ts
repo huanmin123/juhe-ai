@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 
-import { isAdminRole, isSuperAdminRole, type SystemAccountListItem, type SystemAccountOptionSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary, type UserRequestLimits } from '../domain/types.js'
-import { normalizeUserRequestLimits, serializeUserRequestLimits } from '../domain/user-request-limits.js'
+import { isAdminRole, isSuperAdminRole, type SystemAccountListItem, type SystemAccountMutationResult, type SystemAccountOptionSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary, type UserRequestLimits } from '../domain/types.js'
+import { normalizeUserRequestLimits, parseUserRequestLimitsJson, serializeUserRequestLimits } from '../domain/user-request-limits.js'
 import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPasswordAsync } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -41,6 +41,48 @@ const businessSchemaName = 'juhe_business'
 const whitespacePattern = /\s/
 const systemAccountCreateInputKeys = new Set(['username', 'displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'requestLimits'])
 const systemAccountUpdateInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'requestLimits'])
+const systemAccountManagementPatchInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'requestLimits'])
+
+export type SystemAccountManagementPatchField = 'displayName'
+  | 'description'
+  | 'password'
+  | 'role'
+  | 'status'
+  | 'mustChangePassword'
+  | 'imageGenerationEnabled'
+  | 'requestLimits'
+
+export interface SystemAccountManagementPatchChange {
+  field: SystemAccountManagementPatchField
+  before: unknown
+  after: unknown
+}
+
+export interface SystemAccountManagementPatchOutcome {
+  kind: 'no_op' | 'updated'
+  result: SystemAccountMutationResult
+  resourceName: string
+  changes: SystemAccountManagementPatchChange[]
+}
+
+export class SystemAccountManagementPatchConflictError extends Error {
+  constructor(readonly currentUpdatedAt?: string) {
+    super('系统账户已被其他操作修改，请刷新后重试')
+    this.name = 'SystemAccountManagementPatchConflictError'
+  }
+}
+
+interface SystemAccountManagementPatchRow {
+  id: string
+  updated_at: string
+  display_name: string
+  description?: string | null
+  role?: SystemAccountRole
+  status?: SystemAccountStatus
+  must_change_password?: number | boolean
+  image_generation_enabled?: number | boolean
+  request_limits_json?: string | null
+}
 
 export interface SystemAccountOptionListOptions {
   ids?: string[]
@@ -86,7 +128,7 @@ export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, updated_at
       FROM system_accounts
       ${keywordFilter.clause}
       ORDER BY updated_at DESC, id DESC
@@ -118,7 +160,7 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
   const client = await getSystemAccountDatabaseClient()
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
   const rows = await client.query<SystemAccountRow>(`
-    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     ${keywordFilter.clause}
     ORDER BY updated_at DESC, id DESC
@@ -559,6 +601,213 @@ export async function createSystemAccountWithPasswordHashInClientAsync(
   await ensureDefaultApiKeysForSystemAccountAsync(client, summary.id, now)
   await ensureChatApiKeyForSystemAccountAsync(summary.id, now, client)
   return summary
+}
+
+export async function patchSystemAccountManagementAsync(
+  id: string,
+  input: Record<string, unknown>,
+  expectedUpdatedAt: string,
+  passwordHash?: string
+): Promise<SystemAccountManagementPatchOutcome | undefined> {
+  assertKnownInputKeys(input, systemAccountManagementPatchInputKeys, '系统账户更新参数')
+  if (Object.hasOwn(input, 'password') && typeof input.password === 'string') {
+    normalizeSystemAccountPassword(input.password)
+  }
+  if (Object.hasOwn(input, 'password') && !passwordHash) {
+    throw new Error('登录密码不能为空')
+  }
+
+  const client = await getSystemAccountDatabaseClient()
+  const outcome = await client.transaction(async (tx) => {
+    const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const current = await tx.one<SystemAccountManagementPatchRow>(`
+      SELECT ${systemAccountManagementPatchSelectColumns(input).join(', ')}
+      FROM ${systemAccountTable(tx, 'system_accounts')}
+      WHERE id = ?
+      LIMIT 1${lockClause}
+    `, [id])
+    if (!current) return undefined
+    if (current.updated_at !== expectedUpdatedAt) {
+      throw new SystemAccountManagementPatchConflictError(current.updated_at)
+    }
+
+    const assignments: string[] = []
+    const params: unknown[] = []
+    const changes: SystemAccountManagementPatchChange[] = []
+    const result: SystemAccountMutationResult = { id, updatedAt: current.updated_at }
+    const roleRelevant = Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status') || Object.hasOwn(input, 'mustChangePassword')
+    const currentRole = roleRelevant
+      ? requiredSystemAccountPatchValue(current, 'role', input, ['role', 'status', 'mustChangePassword'])
+      : undefined
+    const nextRole = Object.hasOwn(input, 'role') && currentRole
+      ? normalizeSystemAccountRole(input.role, currentRole)
+      : currentRole
+
+    if (Object.hasOwn(input, 'displayName')) {
+      const nextValue = normalizeRequiredText(input.displayName, '用户名称')
+      if (nextValue !== current.display_name) {
+        await ensureSystemAccountDisplayNameUniqueAsync(tx, nextValue, id)
+        appendSystemAccountPatchChange(assignments, params, changes, 'displayName', 'display_name', current.display_name, nextValue, nextValue)
+        result.displayName = nextValue
+      }
+    }
+    if (Object.hasOwn(input, 'description')) {
+      const currentValue = current.description ?? null
+      const nextValue = normalizeNullableText(input.description, '说明')
+      if (nextValue !== currentValue) {
+        appendSystemAccountPatchChange(assignments, params, changes, 'description', 'description', currentValue, nextValue, nextValue)
+        result.description = nextValue
+      }
+    }
+    if (Object.hasOwn(input, 'role') && currentRole && nextRole && nextRole !== currentRole) {
+      appendSystemAccountPatchChange(assignments, params, changes, 'role', 'role', currentRole, nextRole, nextRole)
+      result.role = nextRole
+    }
+
+    const statusRelevant = Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status')
+    const currentStatus = statusRelevant
+      ? requiredSystemAccountPatchValue(current, 'status', input, ['role', 'status'])
+      : undefined
+    const nextStatus = Object.hasOwn(input, 'status') && currentStatus
+      ? normalizeSystemAccountStatus(input.status, currentStatus)
+      : currentStatus
+    if (Object.hasOwn(input, 'status') && currentStatus && nextStatus && nextStatus !== currentStatus) {
+      appendSystemAccountPatchChange(assignments, params, changes, 'status', 'status', currentStatus, nextStatus, nextStatus)
+      result.status = nextStatus
+    }
+    if ((Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status')) && currentRole && nextRole && currentStatus && nextStatus) {
+      await ensureActiveSuperAdminRemainsAsync(tx, { role: currentRole, status: currentStatus }, { role: nextRole, status: nextStatus }, id)
+    }
+
+    if (Object.hasOwn(input, 'mustChangePassword') || Object.hasOwn(input, 'role')) {
+      if (!currentRole || !nextRole) throw new Error('系统账户 PATCH 内部投影缺少角色')
+      const currentValue = systemAccountPatchBoolean(requiredSystemAccountPatchValue(current, 'must_change_password', input, ['mustChangePassword', 'role'])) && !isAdminRole(currentRole)
+      const nextValue = normalizeSystemAccountMustChangePassword(
+        Object.hasOwn(input, 'mustChangePassword') ? input.mustChangePassword : currentValue,
+        currentValue,
+        nextRole
+      )
+      if (nextValue !== currentValue) {
+        appendSystemAccountPatchChange(assignments, params, changes, 'mustChangePassword', 'must_change_password', currentValue, nextValue, nextValue ? 1 : 0)
+        result.mustChangePassword = nextValue
+      }
+    }
+    if (Object.hasOwn(input, 'imageGenerationEnabled')) {
+      const currentValue = systemAccountPatchBoolean(requiredSystemAccountPatchValue(current, 'image_generation_enabled', input, ['imageGenerationEnabled']))
+      const nextValue = normalizeOptionalBoolean(input.imageGenerationEnabled, currentValue, '支持图像生成')
+      if (nextValue !== currentValue) {
+        appendSystemAccountPatchChange(assignments, params, changes, 'imageGenerationEnabled', 'image_generation_enabled', currentValue, nextValue, nextValue ? 1 : 0)
+        result.imageGenerationEnabled = nextValue
+      }
+    }
+    if (Object.hasOwn(input, 'requestLimits')) {
+      const currentValue = parseUserRequestLimitsJson(requiredSystemAccountPatchValue(current, 'request_limits_json', input, ['requestLimits']))
+      const nextValue = normalizeUserRequestLimits(input.requestLimits)
+      const currentSerialized = serializeUserRequestLimits(currentValue)
+      const nextSerialized = serializeUserRequestLimits(nextValue)
+      if (nextSerialized !== currentSerialized) {
+        appendSystemAccountPatchChange(assignments, params, changes, 'requestLimits', 'request_limits_json', currentValue, nextValue, nextSerialized)
+        result.requestLimits = nextValue ?? null
+      }
+    }
+    if (Object.hasOwn(input, 'password')) {
+      assignments.push('password_hash = ?')
+      params.push(passwordHash)
+      changes.push({ field: 'password', before: undefined, after: input.password })
+    }
+
+    if (!assignments.length) {
+      return {
+        kind: 'no_op' as const,
+        result,
+        resourceName: current.display_name,
+        changes
+      }
+    }
+
+    const updatedAt = nextSystemAccountUpdatedAt(current.updated_at)
+    const applied = await tx.execute(`
+      UPDATE ${systemAccountTable(tx, 'system_accounts')}
+      SET ${assignments.join(', ')}, updated_at = ?
+      WHERE id = ? AND updated_at = ?
+    `, [...params, updatedAt, id, expectedUpdatedAt])
+    if (applied.changes !== 1) {
+      throw new SystemAccountManagementPatchConflictError()
+    }
+    result.updatedAt = updatedAt
+    return {
+      kind: 'updated' as const,
+      result,
+      resourceName: result.displayName ?? current.display_name,
+      changes
+    }
+  })
+
+  if (!outcome || outcome.kind === 'no_op') return outcome
+  invalidateSystemAccountLookupCache(id)
+  const runtimeReason = systemAccountManagementRuntimeInvalidationReason(outcome.changes)
+  if (runtimeReason) {
+    notifyGatewayRuntimeCacheInvalidation(runtimeReason)
+    await notifyGatewayApiKeyValidationCacheInvalidationAsync(undefined, runtimeReason)
+  }
+  return outcome
+}
+
+function systemAccountManagementPatchSelectColumns(input: Record<string, unknown>): string[] {
+  const columns = new Set(['id', 'updated_at', 'display_name'])
+  if (Object.hasOwn(input, 'description')) columns.add('description')
+  if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status') || Object.hasOwn(input, 'mustChangePassword')) columns.add('role')
+  if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status')) columns.add('status')
+  if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'mustChangePassword')) columns.add('must_change_password')
+  if (Object.hasOwn(input, 'imageGenerationEnabled')) columns.add('image_generation_enabled')
+  if (Object.hasOwn(input, 'requestLimits')) columns.add('request_limits_json')
+  return [...columns]
+}
+
+function requiredSystemAccountPatchValue<K extends keyof SystemAccountManagementPatchRow>(
+  row: SystemAccountManagementPatchRow,
+  key: K,
+  input: Record<string, unknown>,
+  requiredFor: SystemAccountManagementPatchField[]
+): Exclude<SystemAccountManagementPatchRow[K], undefined> {
+  if (!Object.hasOwn(row, key)) {
+    const submitted = requiredFor.find((field) => Object.hasOwn(input, field)) ?? String(key)
+    throw new Error(`系统账户 PATCH 内部投影缺少字段：${submitted}`)
+  }
+  return row[key] as Exclude<SystemAccountManagementPatchRow[K], undefined>
+}
+
+function appendSystemAccountPatchChange(
+  assignments: string[],
+  params: unknown[],
+  changes: SystemAccountManagementPatchChange[],
+  field: SystemAccountManagementPatchField,
+  column: string,
+  before: unknown,
+  after: unknown,
+  databaseValue: unknown
+): void {
+  assignments.push(`${column} = ?`)
+  params.push(databaseValue)
+  changes.push({ field, before, after })
+}
+
+function systemAccountPatchBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === '1' || value === 'true'
+}
+
+function nextSystemAccountUpdatedAt(currentUpdatedAt: string): string {
+  const now = nowIso()
+  if (now > currentUpdatedAt) return now
+  const currentMs = Date.parse(currentUpdatedAt)
+  return Number.isFinite(currentMs) ? new Date(currentMs + 1).toISOString() : now
+}
+
+function systemAccountManagementRuntimeInvalidationReason(changes: SystemAccountManagementPatchChange[]): string | undefined {
+  if (changes.some((change) => change.field === 'status')) return 'system_account_status_changed'
+  if (changes.some((change) => change.field === 'imageGenerationEnabled')) return 'system_account_image_generation_changed'
+  if (changes.some((change) => change.field === 'requestLimits')) return 'system_account_request_limits_changed'
+  return undefined
 }
 
 export function updateSystemAccount(id: string, input: {

@@ -223,13 +223,25 @@ export const authorizedAccountDispatchSchema = z.object({
 })
 
 export const accountBatchEditContextSchema = z.object({
-  accountIds: z.array(z.string().trim().min(1)).min(2).max(100)
+  accountIds: z.array(z.string().trim().min(1)).min(2).max(100),
+  fields: z.array(z.enum([
+    'supportedModels',
+    'modelMappings',
+    'supportedEndpointModes'
+  ])).max(3)
 }).strict().superRefine((value, context) => {
   if (new Set(value.accountIds).size !== value.accountIds.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['accountIds'],
       message: '批量编辑账户不能重复'
+    })
+  }
+  if (new Set(value.fields).size !== value.fields.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['fields'],
+      message: '批量编辑上下文字段不能重复'
     })
   }
 })

@@ -32,13 +32,15 @@
             <a-select
               v-model:value="form.providerCode"
               :disabled="readOnly"
+              :filter-option="false"
               :loading="providerOptionsLoading"
               :options="protocolProviderOptions"
               placeholder="选择同协议供应商"
               show-search
               option-filter-prop="label"
               @change="handleProviderChange"
-              @dropdown-visible-change="emit('provider-options-dropdown-visible-change', $event)"
+              @dropdown-visible-change="handleProviderDropdownVisibleChange"
+              @search="handleProviderSearch"
             />
           </a-form-item>
           <a-form-item label="优先级">
@@ -94,6 +96,7 @@ import {
   type ResponseInspectionMatchFormFields,
   validateResponseInspectionMatchFields
 } from './responseInspectionPolicyForm'
+import type { ResponseInspectionPolicyProviderOptionsQuery } from './responseInspectionPolicyLoadCoordinator'
 
 type ResponseInspectionPolicyFormMode = 'create' | 'edit' | 'view'
 
@@ -136,7 +139,9 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   submit: [payload: ResponseInspectionPolicyCreatePayload]
   cancel: []
-  'provider-options-dropdown-visible-change': [open: boolean]
+  'provider-options-context-change': [query: ResponseInspectionPolicyProviderOptionsQuery]
+  'provider-options-dropdown-visible-change': [open: boolean, query: ResponseInspectionPolicyProviderOptionsQuery]
+  'provider-options-search': [query: ResponseInspectionPolicyProviderOptionsQuery]
 }>()
 
 const scopeOptions = [
@@ -153,7 +158,6 @@ const providerSelectionTouched = ref(false)
 const readOnly = computed(() => props.mode === 'view')
 const protocolProviderOptions = computed(() => responseInspectionProviderSelectOptions(
   props.providerOptions,
-  form.protocolCode,
   {
     code: form.providerCode,
     name: props.policy?.providerCode === form.providerCode ? props.policy.providerName : undefined
@@ -276,8 +280,9 @@ function validateForm(): string | undefined {
 function handleScopeChange(): void {
   if (readOnly.value) return
   providerSelectionTouched.value = false
+  emit('provider-options-context-change', providerOptionsQuery())
   if (form.scopeType === 'provider' && !form.providerCode) {
-    form.providerCode = defaultProviderCodeForProtocol()
+    form.providerCode = defaultResponseInspectionProviderCode([], form.protocolCode)
   }
   if (form.scopeType === 'protocol') {
     form.providerCode = ''
@@ -286,10 +291,19 @@ function handleScopeChange(): void {
 
 function handleProtocolChange(): void {
   if (readOnly.value) return
+  emit('provider-options-context-change', providerOptionsQuery())
   if (form.scopeType === 'provider') {
     providerSelectionTouched.value = false
-    form.providerCode = defaultProviderCodeForProtocol()
+    form.providerCode = defaultResponseInspectionProviderCode([], form.protocolCode)
   }
+}
+
+function handleProviderDropdownVisibleChange(isOpen: boolean): void {
+  emit('provider-options-dropdown-visible-change', isOpen, providerOptionsQuery())
+}
+
+function handleProviderSearch(keyword: string): void {
+  emit('provider-options-search', providerOptionsQuery(keyword))
 }
 
 function handleProviderChange(): void {
@@ -299,6 +313,14 @@ function handleProviderChange(): void {
 
 function defaultProviderCodeForProtocol(): string {
   return defaultResponseInspectionProviderCode(props.providerOptions, form.protocolCode, props.providerOptionsReady)
+}
+
+function providerOptionsQuery(keyword?: string): ResponseInspectionPolicyProviderOptionsQuery {
+  return {
+    protocolCode: form.protocolCode,
+    scopeType: form.scopeType,
+    ...(keyword?.trim() ? { keyword: keyword.trim() } : {})
+  }
 }
 
 function positiveInt(value: unknown, max = Number.POSITIVE_INFINITY): number | undefined {

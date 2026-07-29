@@ -45,6 +45,18 @@ export interface SystemTeamListItem {
   status: TeamStatus
   memberCount: number
   createdAt: string
+  updatedAt: string
+}
+
+export interface SystemTeamMutationResult {
+  id: string
+  changedFields: Array<'name' | 'description' | 'status'>
+  rowPatch: Partial<{
+    name: string
+    description: string | null
+    status: TeamStatus
+  }>
+  updatedAt: string
 }
 
 export interface SystemTeamMemberDetail {
@@ -54,8 +66,14 @@ export interface SystemTeamMemberDetail {
   joinedAt: string
 }
 
-export interface SystemTeamDetail extends SystemTeamListItem {
+export interface SystemTeamDetail {
+  id: string
+  name: string
+  description?: string
+  status: TeamStatus
+  memberCount: number
   members: SystemTeamMemberDetail[]
+  createdAt: string
 }
 
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>

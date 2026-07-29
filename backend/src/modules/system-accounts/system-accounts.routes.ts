@@ -7,9 +7,9 @@ import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gate
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
-import { createSystemAccountWithPasswordHashAsync, findSystemAccountByIdAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, revokeAllSessionsForAccountAsync, updateSystemAccountWithPasswordHashAsync } from '../../storage/repositories.js'
+import { createSystemAccountWithPasswordHashAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, patchSystemAccountManagementAsync, revokeAllSessionsForAccountAsync, SystemAccountManagementPatchConflictError, type SystemAccountManagementPatchField } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
@@ -41,6 +41,7 @@ const createSchema = z.object({
 }).strict()
 
 const updateSchema = z.object({
+  expectedUpdatedAt: z.string().min(1),
   displayName: z.string().min(1).optional(),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),
@@ -49,7 +50,7 @@ const updateSchema = z.object({
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional(),
   requestLimits: requestLimitsSchema.nullable().optional()
-}).strict()
+}).strict().refine((input) => Object.keys(input).some((key) => key !== 'expectedUpdatedAt'), '至少提交一个修改字段')
 
 systemAccountsRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
@@ -157,45 +158,35 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
       res.status(400).json(badRequest(whitespaceError))
       return
     }
-    const passwordHash = parsed.data.password ? await hashPasswordAsync(parsed.data.password) : undefined
-    const before = await findSystemAccountByIdAsync(req.params.id)
-    const account = await runLoggedOperationAsync(async () => {
-      const account = await updateSystemAccountWithPasswordHashAsync(req.params.id, parsed.data, passwordHash)
-      if (!account) {
+    const { expectedUpdatedAt, ...patch } = parsed.data
+    const passwordHash = patch.password ? await hashPasswordAsync(patch.password) : undefined
+    const result = await runLoggedOperationAsync(async () => {
+      const outcome = await patchSystemAccountManagementAsync(req.params.id, patch, expectedUpdatedAt, passwordHash)
+      if (!outcome) {
         throw new Error('系统账户不存在')
       }
-      if (parsed.data.status === 'disabled' || parsed.data.password) {
+      const disabled = outcome.changes.some((change) => change.field === 'status' && change.after === 'disabled')
+      if (disabled || outcome.changes.some((change) => change.field === 'password')) {
         await revokeAllSessionsForAccountAsync(req.params.id)
       }
       return {
-        result: account,
-        log: {
-          operationScopeSystemAccountId: account.id,
+        result: outcome.result,
+        log: outcome.changes.length ? {
+          operationScopeSystemAccountId: outcome.result.id,
           mode: 'admin',
           module: 'system_accounts',
-          action: parsed.data.password ? 'reset_password' : 'update',
-          operationKey: parsed.data.password ? 'system_accounts.reset_password' : 'system_accounts.update',
+          action: patch.password ? 'reset_password' : 'update',
+          operationKey: patch.password ? 'system_accounts.reset_password' : 'system_accounts.update',
           resourceType: 'system_account',
-          resourceId: account.id,
-          resourceName: account.displayName,
-          summary: parsed.data.password ? `重置系统账户密码：${account.displayName}` : `更新系统账户：${account.displayName}`,
-          changes: [
-            ...diffSafeFields(before as unknown as Record<string, unknown> | undefined, account as unknown as Record<string, unknown>, {
-              displayName: '用户名称',
-              description: '说明',
-              role: '角色',
-              status: '状态',
-              mustChangePassword: '下次登录改密',
-              imageGenerationEnabled: '支持图像生成',
-              requestLimits: '用户请求限制'
-            }),
-            ...(parsed.data.password ? [safeChange('password', '登录密码', undefined, parsed.data.password)] : [])
-          ],
-          viewers: viewer(account.id, 'admin_managed_my_resource')
-        }
+          resourceId: outcome.result.id,
+          resourceName: outcome.resourceName,
+          summary: patch.password ? `重置系统账户密码：${outcome.resourceName}` : `更新系统账户：${outcome.resourceName}`,
+          changes: outcome.changes.map((change) => safeChange(change.field, systemAccountPatchFieldLabel(change.field), change.before, change.after)),
+          viewers: viewer(outcome.result.id, 'admin_managed_my_resource')
+        } : undefined
       }
     }, req)
-    res.json(ok(account))
+    res.json(ok(result))
   } catch (error) {
     if (error instanceof GatewayApiKeyValidationCacheInvalidationError) {
       res.status(500).json({ message: '系统账户已更新，但 API Key validation cache 失效失败' })
@@ -203,6 +194,10 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
     }
     if (error instanceof Error && error.message === '系统账户不存在') {
       res.status(404).json({ message: '系统账户不存在' })
+      return
+    }
+    if (error instanceof SystemAccountManagementPatchConflictError) {
+      res.status(409).json({ message: error.message })
       return
     }
     res.status(409).json({ message: error instanceof Error ? error.message : '更新系统账户失败' })
@@ -218,4 +213,17 @@ function systemAccountWhitespaceError(input: { username?: string; displayName?: 
 
 function hasWhitespace(value: string): boolean {
   return whitespacePattern.test(value)
+}
+
+function systemAccountPatchFieldLabel(field: SystemAccountManagementPatchField): string {
+  return {
+    displayName: '用户名称',
+    description: '说明',
+    password: '登录密码',
+    role: '角色',
+    status: '状态',
+    mustChangePassword: '下次登录改密',
+    imageGenerationEnabled: '支持图像生成',
+    requestLimits: '用户请求限制'
+  }[field]
 }

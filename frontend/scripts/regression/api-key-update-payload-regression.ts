@@ -14,6 +14,7 @@ import {
 const frontendRoot = resolve(import.meta.dirname, '../..')
 const apiSource = readFileSync(resolve(frontendRoot, 'src/api/domains/apiKeys.ts'), 'utf8')
 const modalSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/ApiKeyEditModal.vue'), 'utf8')
+const rowActionsSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/useApiKeyRowActions.ts'), 'utf8')
 
 const baseline: ApiKeyEditableSnapshot = {
   name: 'Key A',
@@ -111,6 +112,9 @@ assert.doesNotMatch(updateBranch, /emit\('reload'/, '编辑成功后不得追加
 assert.match(modalSource, /@update:value="markRouteStrategyTouched"/, '只有用户实际选择路由时才标记交互')
 assert.match(createBranch, /buildApiKeyCreatePayload\(snapshot,[\s\S]*routeStrategyTouched:\s*routeStrategyTouched\.value/, '新建必须通过最小命令构造器区分缓存默认路由与用户交互')
 assert.doesNotMatch(createBranch, /\.\.\.\(snapshot\.routeStrategyId\s*\?/, '新建不得因缓存默认值自动提交路由')
+const deleteBranch = sourceBetween(rowActionsSource, 'async function removeApiKey', '\n\n  return {')
+assert.match(deleteBranch, /await input\.apiKeysApi\.delete[\s\S]*input\.removeItems/, '删除成功必须按本地结果移除列表行')
+assert.doesNotMatch(deleteBranch, /input\.reload\s*\(/, '删除成功后不得重复刷新 API Key 列表')
 
 assert(
   apiSource.includes("http.patch(`/api-keys/${encodeURIComponent(id)}`, payload, { params })"),

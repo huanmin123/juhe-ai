@@ -169,18 +169,18 @@ assert.match(
 )
 assert.match(
   sourceBetween(groupWriteRepositorySource, 'export function deleteGroup', 'export async function deleteGroupAsync'),
-  /beginDatabaseTransaction\(database\)[\s\S]+preserveRouteStrategiesBeforeGroupDelete\(database, id, current\?\.name\)/,
-  '同步删除分组必须在写事务内完成策略路由可用性 guard，避免 guard 与删除之间出现并发绑定窗口'
+  /beginDatabaseTransaction\(database\)[\s\S]+findGroupDeleteLocator\(database, id, access\)[\s\S]+preserveRouteStrategiesBeforeGroupDelete\(database, id, current\.name\)/,
+  '同步删除分组必须在写事务内窄定位目标并完成策略路由可用性 guard，避免 guard 与删除之间出现并发绑定窗口'
 )
 assert.match(
   sourceBetween(groupWriteRepositorySource, 'export async function deleteGroupAsync', 'function preserveRouteStrategiesBeforeGroupDelete'),
-  /await client\.transaction\(async \(tx\) => \{[\s\S]+await lockGroupMutationRowAsync\(tx, id, owner\.systemAccountId\)[\s\S]+await preserveRouteStrategiesBeforeGroupDeleteAsync\(tx, id, current\?\.name\)/,
-  '异步删除分组必须在事务内锁定分组行后完成策略路由可用性 guard，避免 PostgreSQL TOCTOU'
+  /await client\.transaction\(async \(tx\) => \{[\s\S]+await findGroupDeleteLocatorAsync\(tx, id, access\)[\s\S]+await preserveRouteStrategiesBeforeGroupDeleteAsync\(tx, id, current\.name\)/,
+  '异步删除分组必须在事务内按 owner 锁定窄目标后完成策略路由可用性 guard，避免 PostgreSQL TOCTOU'
 )
-assert.match(
+assert.doesNotMatch(
   groupWriteRepositorySource,
-  /maxDeletedGroupAffectedApiKeyRouteSamples = 500[\s\S]+affectedApiKeyRouteCount[\s\S]+affectedApiKeyRoutesTruncated/s,
-  '删除分组返回的 API Key 影响明细必须有采样上限和总数标记，避免大账户一次性展开全部 API Key'
+  /affectedApiKeyRoutes|loadDeletedGroupApiKeyRouteChanges|FROM\s+\$\{?[^\n]*api_keys/i,
+  '删除分组不得查询或返回没有消费者的 API Key 影响明细'
 )
 const routeStrategyBindingNormalizeSource = sourceBetween(routeStrategyRepositorySource, 'function normalizeRouteStrategyGroupBindings', 'function normalizeRouteStrategyGroupBindingBasics')
 assert.match(

@@ -165,6 +165,7 @@ import { formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { ProxyProfileSummary, ProxyTestReport } from '@/types/domain'
 import ProxyTestReportModal from './ProxyTestReportModal.vue'
+import { applyProxyMutation, buildProxyCreatePayload, buildProxyPatchPayload, type ProxyFormState } from './proxyMutation'
 import {
   formatLatency,
   latencyTooltip,
@@ -189,6 +190,8 @@ const pageStateCache = usePageStateCache<ProxiesPageState>(undefined, defaultPro
 const initialPageState = pageStateCache.read()
 const modalOpen = ref(false)
 const editingId = ref<string>()
+const editingUpdatedAt = ref<string>()
+const editingBaseline = ref<ProxyFormState>()
 const { submitAction, submittingRef } = useSubmitAction('proxies')
 const proxySaving = submittingRef('proxies.save')
 const keyword = ref(initialPageState.keyword)
@@ -198,15 +201,7 @@ const selectedTestProxy = ref<ProxyProfileSummary>()
 const testReport = ref<ProxyTestReport>()
 const DEFAULT_PROXY_TYPE = 'socks5h'
 
-const form = reactive({ name: '', description: '', type: DEFAULT_PROXY_TYPE, host: '', port: 7890, username: '', password: '', enabled: true })
-
-function proxySavePayload(): Record<string, unknown> {
-  const payload: Record<string, unknown> = { ...form }
-  if (!form.password.trim()) {
-    delete payload.password
-  }
-  return payload
-}
+const form = reactive<ProxyFormState>(defaultProxyForm())
 
 const {
   items: proxies,
@@ -221,7 +216,8 @@ const {
   removeItems: removeProxyItems,
   refreshMobile: refreshMobileProxies,
   resetPagination,
-  updateItems: updateProxyItems
+  updateItems: updateProxyItems,
+  applyResult: applyProxyListResult
 } = useResponsivePagedList<ProxyProfileSummary>({
   pageSize,
   initialPagination: initialPageState.pagination,
@@ -241,13 +237,18 @@ const {
 
 function openCreate() {
   editingId.value = undefined
-  Object.assign(form, { name: '', description: '', type: DEFAULT_PROXY_TYPE, host: '', port: 7890, username: '', password: '', enabled: true })
+  editingUpdatedAt.value = undefined
+  editingBaseline.value = undefined
+  Object.assign(form, defaultProxyForm())
   modalOpen.value = true
 }
 
 function openEdit(proxy: ProxyProfileSummary) {
   editingId.value = proxy.id
-  Object.assign(form, { name: proxy.name, description: proxy.description ?? '', type: proxy.type, host: proxy.host, port: proxy.port, username: proxy.username ?? '', password: '', enabled: proxy.enabled })
+  editingUpdatedAt.value = proxy.updatedAt
+  const nextForm = proxyFormFromSummary(proxy)
+  editingBaseline.value = { ...nextForm }
+  Object.assign(form, nextForm)
   modalOpen.value = true
 }
 
@@ -278,17 +279,25 @@ const saveProxy = submitAction('proxies.save', async () => {
   }
   try {
     const targetId = editingId.value
-    const payload = proxySavePayload()
     if (targetId) {
-      const updated = await api.proxies.update(targetId, payload)
-      updateProxyItems((item) => item.id === targetId, () => updated)
+      const baseline = editingBaseline.value
+      const expectedUpdatedAt = editingUpdatedAt.value
+      if (!baseline || !expectedUpdatedAt) {
+        message.error('代理编辑版本缺失，请重新打开编辑窗口')
+        return
+      }
+      const patch = buildProxyPatchPayload(baseline, form)
+      if (Object.keys(patch).length === 0) {
+        modalOpen.value = false
+        return
+      }
+      const mutation = await api.proxies.update(targetId, { ...patch, expectedUpdatedAt })
+      updateProxyItems((item) => item.id === targetId, (item) => applyProxyMutation(item, mutation))
       message.success('代理已更新')
-      void loadData({ quiet: true })
     } else {
-      await api.proxies.create(payload)
+      const created = await api.proxies.create(buildProxyCreatePayload(form))
+      insertCreatedProxy(created)
       message.success('代理已创建')
-      resetPagination()
-      await loadData()
     }
     modalOpen.value = false
   } catch (error) {
@@ -304,7 +313,16 @@ async function runProxyTest() {
   try {
     testReport.value = await api.proxies.test(id)
     testReportOpen.value = true
-    void loadData({ quiet: true })
+    const report = testReport.value
+    updateProxyItems((item) => item.id === id, (item) => ({
+      ...item,
+      testStatus: report.status,
+      latencyMs: report.baseLatencyMs,
+      outboundIp: report.outboundIp,
+      outboundRegion: report.outboundRegion,
+      lastTestMessage: report.message,
+      lastTestedAt: report.testedAt
+    }))
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '代理检测失败'))
@@ -318,7 +336,6 @@ async function removeProxy(id: string) {
     await api.proxies.delete(id)
     removeProxyItems((item) => item.id === id)
     message.success('代理已删除')
-    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除代理失败'))
@@ -334,6 +351,37 @@ function resetSearch() {
   keyword.value = ''
   pageStateCache.clear()
   searchProxies()
+}
+
+function defaultProxyForm(): ProxyFormState {
+  return { name: '', description: '', type: DEFAULT_PROXY_TYPE, host: '', port: 7890, username: '', password: '', enabled: true }
+}
+
+function proxyFormFromSummary(proxy: ProxyProfileSummary): ProxyFormState {
+  return {
+    name: proxy.name,
+    description: proxy.description ?? '',
+    type: proxy.type,
+    host: proxy.host,
+    port: proxy.port,
+    username: proxy.username ?? '',
+    password: '',
+    enabled: proxy.enabled
+  }
+}
+
+function insertCreatedProxy(proxy: ProxyProfileSummary): void {
+  const search = keyword.value.trim()
+  if (pagination.current !== 1 || (search && !proxy.name.startsWith(search))) return
+  const nextItems = [proxy, ...proxies.value.filter((item) => item.id !== proxy.id)].slice(0, pagination.pageSize)
+  const nextTotal = pagination.total + 1
+  applyProxyListResult({
+    items: nextItems,
+    page: 1,
+    pageSize: pagination.pageSize,
+    total: nextTotal,
+    hasMore: nextTotal > nextItems.length
+  })
 }
 
 function defaultProxiesPageState(): ProxiesPageState {

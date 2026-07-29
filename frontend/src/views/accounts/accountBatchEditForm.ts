@@ -2,12 +2,12 @@ import type { Dayjs } from 'dayjs'
 
 import { formatServerDateTimeInput } from '@/shared/formatters'
 import type {
+  AccountBatchEditContextItem,
   AccountBatchEditRequest,
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride,
   AccountHealthCheckEndpointMode,
   AccountModelMapping,
-  AccountSummary,
   AccountSupportedEndpointMode
 } from '@/types/domain'
 import {
@@ -145,7 +145,7 @@ export function enabledAccountBatchEditFieldLabels(form: AccountBatchEditForm): 
 }
 
 export function buildAccountBatchEditRequest(
-  accounts: AccountSummary[],
+  accounts: AccountBatchEditContextItem[],
   form: AccountBatchEditForm,
   modelMappingOptions: AccountBatchEditModelMappingOptions = {}
 ): AccountBatchEditBuildResult {
@@ -283,7 +283,7 @@ export function buildAccountBatchEditRequest(
 }
 
 export function intersectAccountSupportedEndpointModes(
-  accounts: AccountSummary[]
+  accounts: AccountBatchEditContextItem[]
 ): AccountSupportedEndpointMode[] {
   if (!accounts.length) return []
   const [first, ...rest] = accounts.map((account) => accountSupportedEndpointModes(account))
@@ -291,7 +291,7 @@ export function intersectAccountSupportedEndpointModes(
 }
 
 function validateBatchAccountModelMappings(
-  accounts: AccountSummary[],
+  accounts: AccountBatchEditContextItem[],
   form: AccountBatchEditForm,
   modelMappingOptions: AccountBatchEditModelMappingOptions
 ): string | undefined {
@@ -329,15 +329,14 @@ function validateBatchAccountModelMappings(
   return undefined
 }
 
-function intersectAccountSupportedModels(accounts: AccountSummary[]): string[] {
+function intersectAccountSupportedModels(accounts: AccountBatchEditContextItem[]): string[] {
   if (!accounts.length) return []
   const [first, ...rest] = accounts.map((account) => normalizedTextList(account.supportedModels ?? []))
   return first.filter((model) => rest.every((models) => models.includes(model)))
 }
 
-function accountSupportedEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
-  const value = account.credentials?.supported_endpoint_modes
-  return Array.isArray(value) ? value as AccountSupportedEndpointMode[] : []
+function accountSupportedEndpointModes(account: AccountBatchEditContextItem): AccountSupportedEndpointMode[] {
+  return account.supportedEndpointModes ?? []
 }
 
 function addUpdate<TKey extends keyof AccountBatchEditRequest['updates']>(

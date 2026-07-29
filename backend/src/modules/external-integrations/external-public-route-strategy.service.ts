@@ -1,6 +1,7 @@
 import {
   createRouteStrategyAsync,
   deleteRouteStrategyAsync,
+  findRouteStrategyMutationVersionAsync,
   findRouteStrategySummaryAsync,
   listRouteStrategiesPageAsync,
   updateRouteStrategyAsync
@@ -70,7 +71,11 @@ export async function updatePublicRouteStrategyAsync(input: PublicRouteStrategyU
     return publicRouteStrategyNotFoundResponse(input.targetUsername)
   }
   assertTargetActive(target.account)
-  const updated = await updateRouteStrategyAsync(routeStrategyId, publicRouteStrategyPayload(input, true), targetAccess(target.account.id))
+  const access = targetAccess(target.account.id)
+  const updated = await updateRouteStrategyAsync(routeStrategyId, {
+    ...publicRouteStrategyPayload(input, true),
+    expectedUpdatedAt: owner.updatedAt
+  }, access)
   return publicRouteStrategyResponse(updated ? 'updated' : 'not_found', target, updated ? sanitizeRouteStrategy(updated) : null)
 }
 
@@ -95,10 +100,10 @@ export async function deletePublicRouteStrategyAsync(input: PublicRouteStrategyD
   return publicRouteStrategyResponse(deleted ? 'deleted' : 'not_found', target, deleted ? deletedRouteStrategy : null)
 }
 
-async function findPublicRouteStrategyOwnerByIdAsync(routeStrategyId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
-  const routeStrategy = await findRouteStrategySummaryAsync(routeStrategyId, publicRouteStrategyLookupAccess)
+async function findPublicRouteStrategyOwnerByIdAsync(routeStrategyId: string): Promise<{ id: string; systemAccountId: string; updatedAt: string } | undefined> {
+  const routeStrategy = await findRouteStrategyMutationVersionAsync(routeStrategyId, publicRouteStrategyLookupAccess)
   return routeStrategy?.systemAccountId
-    ? { id: routeStrategy.id, systemAccountId: routeStrategy.systemAccountId }
+    ? { id: routeStrategy.id, systemAccountId: routeStrategy.systemAccountId, updatedAt: routeStrategy.updatedAt }
     : undefined
 }
 

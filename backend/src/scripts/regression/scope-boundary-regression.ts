@@ -258,6 +258,7 @@ interface SystemTeamSummary {
   id: string
   name: string
   status: string
+  updatedAt: string
   memberCount?: number
   members?: SystemTeamMemberSummary[]
 }
@@ -645,9 +646,11 @@ async function main(): Promise<void> {
     const adminTeams = adminTeamsPage.items
     assert(adminTeams.some((team) => team.id === seed.teamSharedId) && adminTeams.some((team) => team.id === seed.teamUserBOnlyId), '管理员系统团队管理没有返回全量团队')
     const userBOnlyTeam = await getEnvelope<SystemTeamSummary>(baseUrl, `/__aisys__/api/system-teams/${seed.teamUserBOnlyId}`, seed.adminCookie)
+    const userBOnlyTeamVersion = adminTeams.find((team) => team.id === seed.teamUserBOnlyId)?.updatedAt
+    assert(userBOnlyTeamVersion, '回归需要用户 B 专属团队列表版本')
     const userBOnlyMemberId = userBOnlyTeam?.members?.find((member) => member.systemAccountId === seed.userBId)?.id
     assert(userBOnlyMemberId, '回归需要用户 B 专属团队成员 ID')
-    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'PATCH', { name: '不应跨作用域更新团队' }, '管理员按用户 A 作用域写入时不应能更新用户 A 不可见团队')
+    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'PATCH', { name: '不应跨作用域更新团队', expectedUpdatedAt: userBOnlyTeamVersion }, '管理员按用户 A 作用域写入时不应能更新用户 A 不可见团队')
     await assertJsonStatus(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members?systemAccountId=${seed.userAId}`, seed.adminCookie, 'POST', { systemAccountIds: [seed.userCId] }, 404, '管理员按用户 A 作用域写入时不应能向用户 A 不可见团队添加成员')
     await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members/${userBOnlyMemberId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'DELETE', {}, '管理员按用户 A 作用域写入时不应能移除用户 A 不可见团队成员')
     const scopedWriteBlockedTeam = repositories.findSystemTeamSummary(seed.teamUserBOnlyId)

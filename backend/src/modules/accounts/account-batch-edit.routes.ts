@@ -15,7 +15,6 @@ import {
   viewer
 } from '../operation-logs/operation-log.service.js'
 import { accountBatchEditContextSchema, accountBatchEditSchema } from './account-request.schemas.js'
-import { sanitizeAccountBatchEditDetailResponse } from './account-response-sanitizer.js'
 import { batchEditAccountsAsync, loadAccountBatchEditContextAsync } from './account-batch-edit.service.js'
 
 export function registerAccountBatchEditRoutes(router: Router): void {
@@ -36,8 +35,8 @@ export function registerAccountBatchEditRoutes(router: Router): void {
       return
     }
     try {
-      const accounts = await loadAccountBatchEditContextAsync(parsed.data.accountIds, requestAccess)
-      res.json(ok(accounts.map(sanitizeAccountBatchEditDetailResponse)))
+      const accounts = await loadAccountBatchEditContextAsync(parsed.data.accountIds, parsed.data.fields, requestAccess)
+      res.json(ok(accounts))
     } catch (error) {
       if (error instanceof AccountBatchUpdateAccessError) {
         const status = error.message.includes('同一系统账户作用域') ? 400 : 404

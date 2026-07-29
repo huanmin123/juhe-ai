@@ -1,4 +1,4 @@
-import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import type { AccountUsageStatsRange, AccountUsageSummary, GroupType, ProviderCode } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -41,6 +41,16 @@ export interface RouteStrategyGroupOptionRow {
   name: string
   provider_code: string
   enabled: number | boolean
+}
+
+export interface GroupEditRow {
+  name: string
+  provider_code: ProviderCode
+  description?: string | null
+  enabled: number | boolean | string
+  group_type: GroupType | null
+  scheduling_policy_json: string | null
+  updated_at: string
 }
 
 interface NormalizedGroupListOptions {
@@ -436,6 +446,127 @@ export async function findGroupRowForAccessInClientAsync(client: DatabaseClient,
     ) group_rows
     LIMIT 1
   `, [groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId])
+}
+
+export function findGroupEditRowForAccess(access: AccessScope | undefined, groupId: string): GroupEditRow | undefined {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return getBusinessDatabase()
+      .prepare(`
+        SELECT ${groupEditOwnerSelectColumns('groups')}
+        FROM groups
+        WHERE groups.id = ?
+        LIMIT 1
+      `)
+      .get(groupId) as unknown as GroupEditRow | undefined
+  }
+  if (!viewerSystemAccountId) throw new Error('缺少系统账户上下文')
+  return getBusinessDatabase()
+    .prepare(`
+      SELECT ${groupEditOuterSelectColumns()} FROM (
+        SELECT ${groupEditOwnerSelectColumns('groups')}
+        FROM groups
+        WHERE groups.id = ?
+          AND groups.system_account_id = ?
+        UNION ALL
+        SELECT ${groupEditAuthorizedSelectColumns('groups', 'authorization_settings')}
+        FROM resource_authorizations ra
+        INNER JOIN groups ON groups.id = ra.resource_id
+        LEFT JOIN group_authorization_settings authorization_settings
+          ON authorization_settings.authorization_id = ra.id
+          AND authorization_settings.system_account_id = ra.grantee_system_account_id
+          AND authorization_settings.group_id = ra.resource_id
+        WHERE groups.id = ?
+          AND ra.resource_type = 'group'
+          AND ra.grantee_system_account_id = ?
+          AND ra.status IN ('active', 'paused', 'expired')
+          AND groups.system_account_id <> ?
+      ) group_edit_rows
+      LIMIT 1
+    `)
+    .get(groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupEditRow | undefined
+}
+
+export async function findGroupEditRowForAccessAsync(access: AccessScope | undefined, groupId: string): Promise<GroupEditRow | undefined> {
+  const client = await getGroupReadDatabaseClient()
+  return findGroupEditRowForAccessInClientAsync(client, access, groupId)
+}
+
+export async function findGroupEditRowForAccessInClientAsync(client: DatabaseClient, access: AccessScope | undefined, groupId: string): Promise<GroupEditRow | undefined> {
+  const groupsTable = groupTable(client, 'groups')
+  const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
+  const groupAuthorizationSettingsTable = groupTable(client, 'group_authorization_settings')
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return client.one<GroupEditRow>(`
+      SELECT ${groupEditOwnerSelectColumns('groups')}
+      FROM ${groupsTable} groups
+      WHERE groups.id = ?
+      LIMIT 1
+    `, [groupId])
+  }
+  if (!viewerSystemAccountId) throw new Error('缺少系统账户上下文')
+  return client.one<GroupEditRow>(`
+    SELECT ${groupEditOuterSelectColumns()} FROM (
+      SELECT ${groupEditOwnerSelectColumns('groups')}
+      FROM ${groupsTable} groups
+      WHERE groups.id = ?
+        AND groups.system_account_id = ?
+      UNION ALL
+      SELECT ${groupEditAuthorizedSelectColumns('groups', 'authorization_settings')}
+      FROM ${resourceAuthorizationsTable} ra
+      INNER JOIN ${groupsTable} groups ON groups.id = ra.resource_id
+      LEFT JOIN ${groupAuthorizationSettingsTable} authorization_settings
+        ON authorization_settings.authorization_id = ra.id
+        AND authorization_settings.system_account_id = ra.grantee_system_account_id
+        AND authorization_settings.group_id = ra.resource_id
+      WHERE groups.id = ?
+        AND ra.resource_type = 'group'
+        AND ra.grantee_system_account_id = ?
+        AND ra.status IN ('active', 'paused', 'expired')
+        AND groups.system_account_id <> ?
+    ) group_edit_rows
+    LIMIT 1
+  `, [groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId])
+}
+
+function groupEditOwnerSelectColumns(alias: string): string {
+  return [
+    `${alias}.name`,
+    `${alias}.provider_code`,
+    `${alias}.description`,
+    `${alias}.enabled`,
+    `${alias}.group_type`,
+    `${alias}.scheduling_policy_json`,
+    `${alias}.updated_at`
+  ].join(', ')
+}
+
+function groupEditAuthorizedSelectColumns(groupAlias: string, settingsAlias: string): string {
+  const localGroupType = `COALESCE(${settingsAlias}.group_type, ${groupAlias}.group_type)`
+  return [
+    `${groupAlias}.name`,
+    `${groupAlias}.provider_code`,
+    `${groupAlias}.description`,
+    `CASE WHEN ${groupAlias}.enabled = 1 THEN COALESCE(${settingsAlias}.enabled, 1) ELSE 0 END AS enabled`,
+    `${localGroupType} AS group_type`,
+    `CASE WHEN ${localGroupType} = 'high_concurrency' THEN COALESCE(${settingsAlias}.scheduling_policy_json, ${groupAlias}.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json`,
+    `COALESCE(${settingsAlias}.updated_at, ${groupAlias}.updated_at) AS updated_at`
+  ].join(', ')
+}
+
+function groupEditOuterSelectColumns(): string {
+  return [
+    'name',
+    'provider_code',
+    'description',
+    'enabled',
+    'group_type',
+    'scheduling_policy_json',
+    'updated_at'
+  ].join(', ')
 }
 
 function ownerAuthorizationColumns(): string {

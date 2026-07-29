@@ -34,7 +34,7 @@ import { chunkValues } from './query-utils.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
-interface AccountStatusProjectionRow {
+export interface AccountStatusProjectionSeed {
   id: string
   system_account_id: string
   status: AccountStatus
@@ -87,11 +87,7 @@ interface AccountStatusProjectionRow {
   source_last_health_check_trace_id: string | null
   binding_system_account_id: string | null
   bound_group_id: string | null
-  bound_group_name: string | null
   bound_group_account_authorization_id: string | null
-  bound_group_local_priority: number | null
-  bound_group_local_super_priority_enabled: number | null
-  bound_group_local_fallback_enabled: number | null
 }
 
 export interface AccountStatusProjection extends AccountEffectiveAvailabilityInput {
@@ -131,6 +127,14 @@ export async function listAccountStatusProjectionsAsync(
   ))
 }
 
+export async function hydrateAccountStatusProjectionSeedsAsync(
+  seeds: AccountStatusProjectionSeed[]
+): Promise<AccountStatusProjection[]> {
+  if (seeds.length === 0) return []
+  const client = await accountStatusDatabaseClient()
+  return hydrateAccountStatusProjectionSeedsDirect(client, seeds, seeds.map((seed) => seed.id))
+}
+
 export async function listAccountStatusProjectionsReadOnly(
   access: AccessScope | undefined,
   accountIds: string[]
@@ -164,9 +168,8 @@ async function listAccountStatusProjectionsDirect(
   const accounts = businessTable(client, 'accounts')
   const authorizations = businessTable(client, 'resource_authorizations')
   const groupAccounts = businessTable(client, 'group_accounts')
-  const groups = businessTable(client, 'groups')
   const systemAccountId = scopedSystemAccountId(access)
-  const rows = await client.query<AccountStatusProjectionRow>(`
+  const rows = await client.query<AccountStatusProjectionSeed>(`
     SELECT
       accounts.id, accounts.system_account_id, accounts.status, accounts.schedulable,
       accounts.balance_query_enabled, accounts.balance_query_next_refresh_at,
@@ -199,19 +202,15 @@ async function listAccountStatusProjectionsDirect(
       source_accounts.last_health_check_error_message AS source_last_health_check_error_message,
       source_accounts.last_health_check_trace_id AS source_last_health_check_trace_id,
       group_bindings.system_account_id AS binding_system_account_id,
-      group_bindings.group_id AS bound_group_id, bound_groups.name AS bound_group_name,
-      group_bindings.account_authorization_id AS bound_group_account_authorization_id,
-      group_bindings.local_priority AS bound_group_local_priority,
-      group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,
-      group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled
+      group_bindings.group_id AS bound_group_id,
+      group_bindings.account_authorization_id AS bound_group_account_authorization_id
     FROM ${accounts} accounts
     LEFT JOIN ${authorizations} ra ON ra.id = accounts.authorization_instance_authorization_id
     LEFT JOIN ${accounts} source_accounts
       ON source_accounts.id = accounts.authorization_instance_source_account_id
       AND source_accounts.deleted_at IS NULL
     LEFT JOIN (
-      SELECT account_id, system_account_id, group_id, account_authorization_id,
-        local_priority, local_super_priority_enabled, local_fallback_enabled
+      SELECT account_id, system_account_id, group_id, account_authorization_id
       FROM (
         SELECT group_accounts.*,
           ROW_NUMBER() OVER (
@@ -225,13 +224,20 @@ async function listAccountStatusProjectionsDirect(
     ) group_bindings
       ON group_bindings.account_id = accounts.id
       AND group_bindings.system_account_id = accounts.system_account_id
-    LEFT JOIN ${groups} bound_groups ON bound_groups.id = group_bindings.group_id
     WHERE accounts.deleted_at IS NULL
       AND accounts.id IN (${ids.map(() => '?').join(', ')})
       ${systemAccountId ? 'AND accounts.system_account_id = ?' : ''}
       AND (accounts.authorization_instance_authorization_id IS NULL OR ra.status IN ('active', 'paused', 'expired'))
   `, [...ids, ...(systemAccountId ? [systemAccountId] : [])])
 
+  return hydrateAccountStatusProjectionSeedsDirect(client, rows, ids)
+}
+
+async function hydrateAccountStatusProjectionSeedsDirect(
+  client: DatabaseClient,
+  rows: AccountStatusProjectionSeed[],
+  orderedIds: string[]
+): Promise<AccountStatusProjection[]> {
   const timezone = await usageStatsTimezoneAsync()
   const todayScopes: AccountManagementListUsageScope[] = []
   const authorizationTotalScopes: AccountManagementListUsageScope[] = []
@@ -260,7 +266,7 @@ async function listAccountStatusProjectionsDirect(
     loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
   ])
   const byId = new Map(rows.map((row) => [row.id, row]))
-  return ids.flatMap((id) => {
+  return orderedIds.flatMap((id) => {
     const row = byId.get(id)
     if (!row) return []
     const isAuthorized = Boolean(row.authorization_id)
@@ -324,7 +330,7 @@ async function listAccountStatusProjectionsDirect(
 
 function accountStatusSourceAccountProbe(
   projection: AccountStatusProjection,
-  row: AccountStatusProjectionRow,
+  row: AccountStatusProjectionSeed,
   now = new Date()
 ): AccountProbeSummary | undefined {
   const effectiveAvailability = accountEffectiveAvailability(projection, now.getTime())
@@ -357,7 +363,7 @@ function accountStatusTodayUsage(
 
 async function loadAccountStatusAuthorizationQuotaExceededAsync(
   client: DatabaseClient,
-  rows: AccountStatusProjectionRow[]
+  rows: AccountStatusProjectionSeed[]
 ): Promise<Map<string, boolean>> {
   const output = new Map<string, boolean>()
   const teamLimits = await loadAccountStatusTeamLimitJsonAsync(client, rows)
@@ -412,7 +418,7 @@ async function loadAccountStatusAuthorizationQuotaExceededAsync(
 
 async function loadAccountStatusTeamLimitJsonAsync(
   client: DatabaseClient,
-  rows: AccountStatusProjectionRow[]
+  rows: AccountStatusProjectionSeed[]
 ): Promise<Map<string, string | null>> {
   const ids = [...new Set(rows
     .filter((row) => row.authorization_id && row.authorization_effective_source_team_id)
@@ -440,7 +446,7 @@ async function loadAccountStatusTeamLimitJsonAsync(
   return output
 }
 
-function accountStatusGroupBinding(row: AccountStatusProjectionRow): {
+function accountStatusGroupBinding(row: AccountStatusProjectionSeed): {
   groupId: string
   groupBindStatus: 'bound' | 'authorization_unavailable'
 } | undefined {
@@ -455,7 +461,7 @@ function accountStatusGroupBinding(row: AccountStatusProjectionRow): {
 
 function accountStatusPermissions(
   authorized: boolean,
-  sourceType: AccountStatusProjectionRow['authorization_effective_source_type']
+  sourceType: AccountStatusProjectionSeed['authorization_effective_source_type']
 ): AccountListPermissions {
   return authorized
     ? {

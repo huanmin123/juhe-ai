@@ -16,6 +16,7 @@ export interface ExternalIntegrationSourceInput {
 }
 
 export interface ExternalIntegrationSourceUpdateInput {
+  expectedUpdatedAt: string
   name?: string
   status?: ExternalIntegrationSourceStatus
   scopes?: string[]
@@ -34,6 +35,7 @@ export interface ExternalIntegrationSourceTokenInput {
 }
 
 export interface ExternalIntegrationSourceTokenUpdateInput {
+  expectedUpdatedAt: string
   name?: string
   status?: ExternalIntegrationSourceTokenStatus
   scopes?: string[]
@@ -103,6 +105,7 @@ export interface ExternalIntegrationSourceListItem {
   expiresAt?: string
   notes?: string
   lastUsedAt?: string
+  updatedAt: string
   primaryToken?: ExternalIntegrationSourcePrimaryTokenSummary
   isBuiltIn: boolean
 }
@@ -198,8 +201,38 @@ export interface ExternalIntegrationSourceTokenListRow {
 
 export type ExternalIntegrationSourceListProjectionRow = Pick<
   ExternalIntegrationSourceRow,
-  'id' | 'name' | 'status' | 'scopes_json' | 'rate_limits_json' | 'expires_at' | 'notes' | 'last_used_at'
+  'id' | 'name' | 'status' | 'scopes_json' | 'rate_limits_json' | 'expires_at' | 'notes' | 'last_used_at' | 'updated_at'
 >
+
+export interface ExternalIntegrationSourceMutationResult {
+  id: string
+  updatedAt: string
+}
+
+export interface ExternalIntegrationSourcePatchChange {
+  field: 'name' | 'status' | 'scopes' | 'rateLimits' | 'expiresAt' | 'notes'
+  before: unknown
+  after: unknown
+}
+
+export interface ExternalIntegrationSourcePatchOutcome {
+  mutation: ExternalIntegrationSourceMutationResult
+  sourceName: string
+  changes: ExternalIntegrationSourcePatchChange[]
+}
+
+export interface ExternalIntegrationSourceTokenPatchChange {
+  field: 'name' | 'status' | 'scopes' | 'expiresAt'
+  before: unknown
+  after: unknown
+}
+
+export interface ExternalIntegrationSourceTokenPatchOutcome {
+  mutation: ExternalIntegrationSourceMutationResult
+  sourceName: string
+  tokenName: string
+  changes: ExternalIntegrationSourceTokenPatchChange[]
+}
 
 export interface ExternalIntegrationSourcePrimaryTokenRow {
   id: string

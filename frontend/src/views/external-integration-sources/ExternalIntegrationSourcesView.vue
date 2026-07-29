@@ -107,6 +107,7 @@ import {
   DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS,
   type ExternalSourceForm
 } from './externalSourceFormModel'
+import { mergeExternalSourceMutation } from './externalSourceMutation'
 import { useExternalSourceTokenActions } from './useExternalSourceTokenActions'
 
 interface ExternalIntegrationSourcesPageState {
@@ -351,13 +352,15 @@ async function saveSource(): Promise<void> {
       if (!original || original.id !== editingSourceId.value) {
         throw new Error('来源授权编辑快照已失效，请关闭弹窗后重试')
       }
-      const payload = buildSourcePatch(sourceForm, original)
-      if (!Object.keys(payload).length) {
+      const changes = buildSourcePatch(sourceForm, original)
+      if (!Object.keys(changes).length) {
         message.info('未检测到来源授权修改')
         sourceModalOpen.value = false
         return
       }
-      await api.externalIntegrationSources.update(editingSourceId.value, payload)
+      const payload = { expectedUpdatedAt: original.updatedAt, ...changes }
+      const result = await api.externalIntegrationSources.update(editingSourceId.value, payload)
+      mergeSourceRow(result.id, (item) => mergeExternalSourceMutation(item, payload, result))
       message.success('来源授权已更新')
       sourceModalOpen.value = false
     } else {
@@ -366,8 +369,8 @@ async function saveSource(): Promise<void> {
       sourceModalOpen.value = false
       showCreatedToken(result.token.token)
       message.success('来源授权已创建')
+      await loadData()
     }
-    await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '保存来源授权失败'))
   } finally {
@@ -443,12 +446,19 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceListIt
 
 async function updateSourceStatus(record: ExternalIntegrationSourceListItem, status: ExternalIntegrationSourceStatus): Promise<void> {
   try {
-    await api.externalIntegrationSources.update(record.id, { status })
+    const payload = { expectedUpdatedAt: record.updatedAt, status }
+    const result = await api.externalIntegrationSources.update(record.id, payload)
+    mergeSourceRow(result.id, (item) => mergeExternalSourceMutation(item, payload, result))
     message.success(status === 'active' ? '来源授权已启用' : '来源授权已停用')
-    await loadData()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '更新来源授权状态失败'))
   }
+}
+
+function mergeSourceRow(id: string, merge: (item: ExternalIntegrationSourceListItem) => ExternalIntegrationSourceListItem): void {
+  const index = rows.value.findIndex((item) => item.id === id)
+  if (index < 0) return
+  rows.value[index] = merge(rows.value[index]!)
 }
 
 async function deleteSource(record: ExternalIntegrationSourceListItem): Promise<void> {

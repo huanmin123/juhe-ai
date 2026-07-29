@@ -1,5 +1,5 @@
 import { decryptJson, encryptJson } from './crypto.js'
-import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
@@ -34,6 +34,7 @@ interface ProxyRow {
   outbound_region?: string | null
   last_test_message?: string | null
   last_tested_at: string | null
+  updated_at: string
 }
 
 interface ProxyTestConfigRow extends ProxyRow {
@@ -55,6 +56,44 @@ export interface ProxyProfileSummary {
   outboundRegion?: string
   lastTestMessage?: string
   lastTestedAt?: string
+  updatedAt: string
+}
+
+export interface ProxyProfileMutationValues {
+  name?: string
+  description?: string | null
+  type?: string
+  host?: string
+  port?: number
+  username?: string | null
+  enabled?: boolean
+  testStatus?: ProxyProfileTestStatus
+  latencyMs?: number | null
+  outboundIp?: string | null
+  outboundRegion?: string | null
+  lastTestMessage?: string | null
+  lastTestedAt?: string | null
+}
+
+export interface ProxyProfileMutationResult {
+  id: string
+  updatedAt: string
+  changed: boolean
+  values: ProxyProfileMutationValues
+}
+
+export interface ProxyProfileManagementPatchOutcome {
+  mutation: ProxyProfileMutationResult
+  name: string
+  before: Record<string, unknown>
+  after: Record<string, unknown>
+}
+
+export class ProxyProfileUpdateConflictError extends Error {
+  constructor(readonly proxyProfileId: string) {
+    super('代理已被其他操作更新，请刷新后重试')
+    this.name = 'ProxyProfileUpdateConflictError'
+  }
 }
 
 export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>
@@ -63,6 +102,7 @@ export interface ProxyProfileListOptions {
   page?: number
   pageSize?: number
   keyword?: string
+  systemAccountId?: string
 }
 
 export interface ProxyProfileOptionListOptions {
@@ -291,12 +331,14 @@ function proxyOptionEnabled(value: number | boolean): boolean {
 function queryProxies(options: ProxyProfileListOptions = {}, paged = false): ProxyProfileListResult {
   const normalized = normalizeProxyListOptions(options)
   const keywordFilter = buildProxyKeywordFilter(normalized.keyword)
-  const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
+  const scopeFilter = buildProxySystemAccountFilter(normalized.systemAccountId)
+  const filters = [keywordFilter.clause, scopeFilter.clause].filter(Boolean)
+  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
   const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = getBusinessDatabase()
     .prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ${whereClause} ORDER BY updated_at DESC, id DESC${pageClause}`)
-    .all(...keywordFilter.params, ...pageParams) as unknown as ProxyRow[]
+    .all(...keywordFilter.params, ...scopeFilter.params, ...pageParams) as unknown as ProxyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = pageRows.rows.map(proxySummaryFromRow)
   return {
@@ -311,7 +353,9 @@ function queryProxies(options: ProxyProfileListOptions = {}, paged = false): Pro
 async function queryProxiesAsync(options: ProxyProfileListOptions = {}, paged = false): Promise<ProxyProfileListResult> {
   const normalized = normalizeProxyListOptions(options)
   const keywordFilter = buildProxyKeywordFilterAsync(normalized.keyword)
-  const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
+  const scopeFilter = buildProxySystemAccountFilter(normalized.systemAccountId)
+  const filters = [keywordFilter.clause, scopeFilter.clause].filter(Boolean)
+  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
   const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const client = await getProxyDatabaseClient()
@@ -320,7 +364,7 @@ async function queryProxiesAsync(options: ProxyProfileListOptions = {}, paged = 
      FROM ${proxyProfilesTable(client)}
      ${whereClause}
      ORDER BY updated_at DESC, id DESC${pageClause}`,
-    [...keywordFilter.params, ...pageParams]
+    [...keywordFilter.params, ...scopeFilter.params, ...pageParams]
   )
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = pageRows.rows.map(proxySummaryFromRow)
@@ -333,7 +377,7 @@ async function queryProxiesAsync(options: ProxyProfileListOptions = {}, paged = 
   }
 }
 
-function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<Pick<ProxyProfileListOptions, 'page' | 'pageSize'>> & Pick<ProxyProfileListOptions, 'keyword'> {
+function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<Pick<ProxyProfileListOptions, 'page' | 'pageSize'>> & Pick<ProxyProfileListOptions, 'keyword' | 'systemAccountId'> {
   const rawPageSize = options.pageSize
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(200, Math.max(1, rawPageSize))
@@ -342,8 +386,14 @@ function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<P
   return {
     page,
     pageSize,
-    keyword: optionalString(options.keyword)
+    keyword: optionalString(options.keyword),
+    systemAccountId: optionalString(options.systemAccountId)
   }
+}
+
+function buildProxySystemAccountFilter(systemAccountId?: string): { clause: string; params: string[] } {
+  const value = optionalString(systemAccountId)
+  return value ? { clause: 'system_account_id = ?', params: [value] } : { clause: '', params: [] }
 }
 
 function buildProxyKeywordFilter(keyword?: string): { clause: string; params: string[] } {
@@ -389,7 +439,8 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
     outboundIp: row.outbound_ip ?? undefined,
     outboundRegion: row.outbound_region ?? undefined,
     lastTestMessage: row.last_test_message ?? undefined,
-    lastTestedAt: row.last_tested_at ?? undefined
+    lastTestedAt: row.last_tested_at ?? undefined,
+    updatedAt: proxyPatchTimestamp(row.updated_at)
   }
 }
 
@@ -408,7 +459,8 @@ function proxySummarySelectColumns(): string {
     'outbound_ip',
     'outbound_region',
     'last_test_message',
-    'last_tested_at'
+    'last_tested_at',
+    'updated_at'
   ].join(', ')
 }
 
@@ -429,6 +481,9 @@ function proxyTestConfigSelectColumns(driver: DatabaseClient['driver']): string 
     'outbound_region',
     'last_test_message',
     'last_tested_at',
+    driver === 'postgres'
+      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+      : 'updated_at',
     driver === 'postgres'
       ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS config_revision`
       : 'updated_at AS config_revision'
@@ -462,7 +517,8 @@ export function createProxy(input: Record<string, unknown>, access: AccessScope)
     latencyMs: undefined,
     outboundIp: undefined,
     outboundRegion: undefined,
-    lastTestMessage: undefined
+    lastTestMessage: undefined,
+    updatedAt: now
   }
   try {
     getBusinessDatabase()
@@ -503,7 +559,8 @@ export async function createProxyAsync(input: Record<string, unknown>, access: A
     latencyMs: undefined,
     outboundIp: undefined,
     outboundRegion: undefined,
-    lastTestMessage: undefined
+    lastTestMessage: undefined,
+    updatedAt: now
   }
   const client = await getProxyDatabaseClient()
   try {
@@ -683,6 +740,308 @@ export async function updateProxyAsync(id: string, input: Record<string, unknown
   return updated
 }
 
+interface ProxyManagementPatchPlan {
+  assignments: Array<{ column: string; value: unknown }>
+  before: Record<string, unknown>
+  after: Record<string, unknown>
+  values: ProxyProfileMutationValues
+  connectionChanged: boolean
+  name: string
+}
+
+export function patchProxyForManagement(
+  id: string,
+  input: Record<string, unknown>,
+  expectedUpdatedAt: string,
+  systemAccountId: string
+): ProxyProfileManagementPatchOutcome | undefined {
+  assertKnownInputKeys(input, proxyInputKeys, '代理')
+  const expectedRevision = normalizeProxyConfigRevision(expectedUpdatedAt)
+  const ownerId = normalizedRequiredSystemAccountId(systemAccountId)
+  const database = getBusinessDatabase()
+  let changed = false
+  let outcome: ProxyProfileManagementPatchOutcome | undefined
+  const transactionStarted = beginImmediateDatabaseTransaction(database)
+  try {
+      const selectColumns = proxyManagementPatchSelectColumns(input, 'sqlite')
+      const currentRow = database.prepare(`
+        SELECT ${selectColumns}
+        FROM proxy_profiles
+        WHERE id = ? AND system_account_id = ?
+      `).get(id, ownerId) as unknown as Record<string, unknown> | undefined
+      if (!currentRow) return
+      const currentUpdatedAt = proxyPatchTimestamp(currentRow.updated_at)
+      if (currentUpdatedAt !== expectedRevision) {
+        throw new ProxyProfileUpdateConflictError(id)
+      }
+      const plan = buildProxyManagementPatchPlan(input, currentRow)
+      if (plan.assignments.length === 0) {
+        outcome = proxyManagementPatchOutcome(id, currentUpdatedAt, plan, false)
+        return
+      }
+      appendProxyTestResetAssignments(plan)
+      const updatedAtCandidate = nowIso()
+      const setClauses = plan.assignments.map(({ column }) => `${column} = ?`)
+      setClauses.push(`updated_at = CASE
+        WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
+        ELSE ?
+      END`)
+      const updatedRow = database.prepare(`
+        UPDATE proxy_profiles
+        SET ${setClauses.join(', ')}
+        WHERE id = ? AND system_account_id = ? AND updated_at = ?
+        RETURNING updated_at
+      `).get(
+        ...plan.assignments.map(({ value }) => value as never),
+        updatedAtCandidate,
+        updatedAtCandidate,
+        id,
+        ownerId,
+        expectedRevision
+      ) as unknown as { updated_at?: unknown } | undefined
+      if (!updatedRow) {
+        throw new ProxyProfileUpdateConflictError(id)
+      }
+      changed = true
+      outcome = proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    if (isDuplicateProxyNameError(error)) {
+      throw new Error(`代理名称已存在：${normalizedAttemptedProxyName(input)}`)
+    }
+    throw error
+  }
+  if (changed) {
+    notifyGatewayRuntimeCacheInvalidation('proxy_updated')
+  }
+  return outcome
+}
+
+export async function patchProxyForManagementAsync(
+  id: string,
+  input: Record<string, unknown>,
+  expectedUpdatedAt: string,
+  systemAccountId: string
+): Promise<ProxyProfileManagementPatchOutcome | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return patchProxyForManagement(id, input, expectedUpdatedAt, systemAccountId)
+  }
+  assertKnownInputKeys(input, proxyInputKeys, '代理')
+  const expectedRevision = normalizeProxyConfigRevision(expectedUpdatedAt)
+  const ownerId = normalizedRequiredSystemAccountId(systemAccountId)
+  const client = await getProxyDatabaseClient()
+  let changed = false
+  let outcome: ProxyProfileManagementPatchOutcome | undefined
+  try {
+    outcome = await client.transaction(async (tx) => {
+      const currentRow = await tx.one<Record<string, unknown>>(`
+        SELECT ${proxyManagementPatchSelectColumns(input, 'postgres')}
+        FROM ${proxyProfilesTable(tx)}
+        WHERE id = ? AND system_account_id = ?
+        FOR UPDATE
+      `, [id, ownerId])
+      if (!currentRow) return undefined
+      const currentUpdatedAt = proxyPatchTimestamp(currentRow.updated_at)
+      if (currentUpdatedAt !== expectedRevision) {
+        throw new ProxyProfileUpdateConflictError(id)
+      }
+      const plan = buildProxyManagementPatchPlan(input, currentRow)
+      if (plan.assignments.length === 0) {
+        return proxyManagementPatchOutcome(id, currentUpdatedAt, plan, false)
+      }
+      appendProxyTestResetAssignments(plan)
+      const setClauses = plan.assignments.map(({ column }) => `${column} = ?`)
+      setClauses.push(`updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST(? AS timestamptz))`)
+      const updatedAtCandidate = nowIso()
+      const updatedRow = await tx.one<{ updated_at?: unknown }>(`
+        UPDATE ${proxyProfilesTable(tx)}
+        SET ${setClauses.join(', ')}
+        WHERE id = ?
+          AND system_account_id = ?
+          AND updated_at = CAST(? AS timestamptz)
+        RETURNING to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+      `, [
+        ...plan.assignments.map(({ value }) => value),
+        updatedAtCandidate,
+        id,
+        ownerId,
+        expectedRevision
+      ])
+      if (!updatedRow) {
+        throw new ProxyProfileUpdateConflictError(id)
+      }
+      changed = true
+      return proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
+    })
+  } catch (error) {
+    if (isDuplicateProxyNameError(error)) {
+      throw new Error(`代理名称已存在：${normalizedAttemptedProxyName(input)}`)
+    }
+    throw error
+  }
+  if (changed) {
+    notifyGatewayRuntimeCacheInvalidation('proxy_updated')
+  }
+  return outcome
+}
+
+function proxyManagementPatchSelectColumns(input: Record<string, unknown>, driver: DatabaseClient['driver']): string {
+  const columns = new Set<string>([
+    'id',
+    'name',
+    driver === 'postgres'
+      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+      : 'updated_at'
+  ])
+  const fieldColumns: Record<string, string> = {
+    name: 'name',
+    description: 'description',
+    type: 'type',
+    host: 'host',
+    port: 'port',
+    username: 'username',
+    password: 'password_encrypted',
+    enabled: 'enabled'
+  }
+  for (const key of Object.keys(input)) {
+    const column = fieldColumns[key]
+    if (column) columns.add(column)
+  }
+  return [...columns].join(', ')
+}
+
+function buildProxyManagementPatchPlan(input: Record<string, unknown>, row: Record<string, unknown>): ProxyManagementPatchPlan {
+  const assignments: ProxyManagementPatchPlan['assignments'] = []
+  const before: Record<string, unknown> = {}
+  const after: Record<string, unknown> = {}
+  const values: ProxyProfileMutationValues = {}
+  let connectionChanged = false
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(input, key)
+  const add = (
+    key: keyof ProxyProfileMutationValues,
+    column: string,
+    currentValue: unknown,
+    nextValue: unknown,
+    databaseValue: unknown,
+    affectsConnection = false
+  ) => {
+    before[key] = currentValue
+    after[key] = nextValue
+    if (currentValue === nextValue) return
+    assignments.push({ column, value: databaseValue })
+    Object.assign(values, { [key]: nextValue })
+    if (affectsConnection) connectionChanged = true
+  }
+  if (has('name')) {
+    const next = normalizedRequiredProxyName(input.name)
+    add('name', 'name', String(row.name), next, next)
+  }
+  if (has('description')) {
+    const current = optionalStringValue(row.description)
+    const next = normalizeOptionalText(input.description, '代理描述')
+    add('description', 'description', current ?? null, next ?? null, next ?? null)
+  }
+  if (has('type')) {
+    const next = normalizedProxyType(input.type)
+    add('type', 'type', String(row.type), next, next, true)
+  }
+  if (has('host')) {
+    const next = normalizedRequiredProxyHost(input.host)
+    add('host', 'host', String(row.host), next, next, true)
+  }
+  if (has('port')) {
+    const next = normalizedProxyPort(input.port)
+    add('port', 'port', Number(row.port), next, next, true)
+  }
+  if (has('username')) {
+    const current = optionalStringValue(row.username)
+    const next = normalizeOptionalText(input.username, '代理用户名')
+    add('username', 'username', current ?? null, next ?? null, next ?? null, true)
+  }
+  if (has('password')) {
+    const nextPassword = normalizeProxyPassword(input.password, true)
+    const currentPassword = proxyPassword({ password_encrypted: optionalStringValue(row.password_encrypted) })
+    before.password = currentPassword ? '[已设置]' : null
+    after.password = '[已设置]'
+    if (currentPassword !== nextPassword) {
+      assignments.push({ column: 'password_encrypted', value: encryptJson({ password: nextPassword }) })
+      connectionChanged = true
+    }
+  }
+  if (has('enabled')) {
+    const current = proxyOptionEnabled(row.enabled as number | boolean)
+    const next = normalizeOptionalBoolean(input.enabled, current, '代理启用状态')
+    add('enabled', 'enabled', current, next, next)
+  }
+  return {
+    assignments,
+    before,
+    after,
+    values,
+    connectionChanged,
+    name: has('name') ? String(after.name) : String(row.name)
+  }
+}
+
+function appendProxyTestResetAssignments(plan: ProxyManagementPatchPlan): void {
+  if (!plan.connectionChanged) return
+  plan.assignments.push(
+    { column: 'test_status', value: 'unknown' },
+    { column: 'latency_ms', value: null },
+    { column: 'outbound_ip', value: null },
+    { column: 'outbound_region', value: null },
+    { column: 'last_test_message', value: null },
+    { column: 'last_tested_at', value: null }
+  )
+  Object.assign(plan.values, {
+    testStatus: 'unknown',
+    latencyMs: null,
+    outboundIp: null,
+    outboundRegion: null,
+    lastTestMessage: null,
+    lastTestedAt: null
+  } satisfies ProxyProfileMutationValues)
+}
+
+function proxyManagementPatchOutcome(
+  id: string,
+  updatedAt: string,
+  plan: ProxyManagementPatchPlan,
+  changed: boolean
+): ProxyProfileManagementPatchOutcome {
+  return {
+    mutation: {
+      id,
+      updatedAt,
+      changed,
+      values: changed ? plan.values : {}
+    },
+    name: plan.name,
+    before: plan.before,
+    after: plan.after
+  }
+}
+
+function proxyPatchTimestamp(value: unknown): string {
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'string' && value) return value
+  throw new Error('代理配置版本无效')
+}
+
+function optionalStringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function normalizedRequiredSystemAccountId(value: unknown): string {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  throw new Error('缺少系统账户上下文')
+}
+
+function normalizedAttemptedProxyName(input: Record<string, unknown>): string {
+  return typeof input.name === 'string' && input.name.trim() ? input.name.trim() : ''
+}
+
 export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
   const row = getBusinessDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns('sqlite')} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyTestConfigRow | undefined
   return row ? proxyTestConfigFromRow(row) : undefined
@@ -831,6 +1190,52 @@ export async function deleteProxyAsync(id: string): Promise<boolean> {
     notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
   }
   return result.changes > 0
+}
+
+export async function deleteProxyForManagementAsync(id: string, systemAccountId: string): Promise<{ id: string; name: string } | undefined> {
+  const ownerId = normalizedRequiredSystemAccountId(systemAccountId)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const database = getBusinessDatabase()
+    const current = database.prepare('SELECT id, name FROM proxy_profiles WHERE id = ? AND system_account_id = ?')
+      .get(id, ownerId) as unknown as { id?: string; name?: string } | undefined
+    if (!current?.id || !current.name) return undefined
+    const usage = proxyUsageSummary(id)
+    if (usage.accountCount > 0) {
+      throw new ProxyInUseError(usage.accountCount, usage.accountNames, usage.accountCountIsLowerBound)
+    }
+    const deleted = database.prepare('DELETE FROM proxy_profiles WHERE id = ? AND system_account_id = ?').run(id, ownerId)
+    if (Number(deleted.changes ?? 0) !== 1) return undefined
+    notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
+    return { id, name: current.name }
+  }
+  const client = await getProxyDatabaseClient()
+  const result = await client.transaction(async (tx) => {
+    const current = await tx.one<{ id?: string; name?: string }>(`
+      SELECT id, name
+      FROM ${proxyProfilesTable(tx)}
+      WHERE id = ? AND system_account_id = ?
+      FOR UPDATE
+    `, [id, ownerId])
+    if (!current?.id || !current.name) return undefined
+    const rows = await tx.query<Array<{ id?: string; name?: string }>[number]>(`
+      SELECT id, name
+      FROM ${tx.dialect.qualifyTable(businessSchemaName, 'accounts')}
+      WHERE proxy_profile_id = ? AND deleted_at IS NULL
+      ORDER BY id ASC
+      LIMIT ?
+    `, [id, proxyUsageWindowLimit])
+    if (rows.length > 0) {
+      throw new ProxyInUseError(
+        rows.length,
+        rows.slice(0, proxyUsagePreviewLimit).map((item) => item.name).filter((name): name is string => Boolean(name)),
+        rows.length >= proxyUsageWindowLimit
+      )
+    }
+    const deleted = await tx.execute(`DELETE FROM ${proxyProfilesTable(tx)} WHERE id = ? AND system_account_id = ?`, [id, ownerId])
+    return Number(deleted.changes ?? 0) === 1 ? { id, name: current.name } : undefined
+  })
+  if (result) notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
+  return result
 }
 
 function proxyUsageSummary(id: string): { accountCount: number; accountCountIsLowerBound: boolean; accountNames: string[] } {

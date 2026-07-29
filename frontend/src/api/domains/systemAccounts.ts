@@ -1,4 +1,4 @@
-import type { SystemAccountListResult, SystemAccountOptionSummary, SystemAccountPrincipalSummary, SystemAccountSummary } from '@/types/domain'
+import type { SystemAccountListResult, SystemAccountMutationResult, SystemAccountOptionSummary, SystemAccountPatchPayload, SystemAccountPrincipalSummary, SystemAccountSummary } from '@/types/domain'
 import type { SystemAccountListParams, SystemAccountOptionsParams } from '../contracts'
 import { http, unwrap } from '../http'
 import { systemAccountListParams, systemAccountOptionsParams } from '../params'
@@ -16,5 +16,5 @@ export const systemAccountsApi = {
     }))
   },
   create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
-  update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
+  update: (id: string, payload: SystemAccountPatchPayload) => unwrap<SystemAccountMutationResult>(http.patch(`/system-accounts/${id}`, payload))
 }

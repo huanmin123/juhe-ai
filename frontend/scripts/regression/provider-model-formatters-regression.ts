@@ -110,6 +110,42 @@ assert.deepEqual(
   ['chat_completions'],
   'DeepSeek 文本自定义模型默认协议应只来自 Chat Completions 档案'
 )
+const multiProfileDeepSeekProvider = providerFixture({
+  code: 'deepseek',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  endpointFamilies: ['chat_completions']
+})
+multiProfileDeepSeekProvider.protocolProfiles.push({
+  ...multiProfileDeepSeekProvider.protocolProfiles[0]!,
+  id: 'profile_deepseek_anthropic_v1',
+  name: 'DeepSeek Anthropic v1',
+  protocolCode: 'anthropic',
+  endpointFamilies: [{ code: 'messages', name: 'messages' }]
+})
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(multiProfileDeepSeekProvider, 'text'),
+  ['chat_completions'],
+  'DeepSeek 空目录回退不能把备用 Anthropic Messages 档案合并进新模型默认协议'
+)
+const multiProfileGlmProvider = providerFixture({
+  code: 'glm',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  endpointFamilies: ['chat_completions']
+})
+multiProfileGlmProvider.protocolProfiles.push({
+  ...multiProfileGlmProvider.protocolProfiles[0]!,
+  id: 'profile_glm_coding_anthropic_v1',
+  name: 'GLM Coding Anthropic v1',
+  protocolCode: 'anthropic',
+  endpointFamilies: [{ code: 'messages', name: 'messages' }]
+})
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(multiProfileGlmProvider, 'text'),
+  ['chat_completions'],
+  'GLM 空目录回退不能把 Coding Anthropic Messages 档案合并进新模型默认协议'
+)
 assert.deepEqual(
   defaultProtocolsForProviderModelCategory(providerFixture({
     code: 'gpt',

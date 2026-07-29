@@ -60,6 +60,7 @@ export interface ExternalIntegrationSourceListItem {
   lastUsedAt?: string
   primaryToken?: ExternalIntegrationSourcePrimaryTokenSummary
   isBuiltIn: boolean
+  updatedAt: string
 }
 
 export interface ExternalIntegrationSourceListResult {
@@ -79,11 +80,29 @@ export interface ExternalIntegrationSourcePayload {
   notes?: string | null
 }
 
+export type ExternalIntegrationSourcePatchPayload = Partial<ExternalIntegrationSourcePayload> & {
+  expectedUpdatedAt: string
+}
+
+export interface ExternalIntegrationSourceMutationResult {
+  id: string
+  updatedAt: string
+}
+
 export interface ExternalIntegrationSourceTokenPayload {
   name: string
   status?: ExternalIntegrationSourceTokenStatus
   scopes: string[]
   expiresAt?: string | null
+}
+
+export type ExternalIntegrationSourceTokenPatchPayload = Partial<ExternalIntegrationSourceTokenPayload> & {
+  expectedUpdatedAt: string
+}
+
+export interface ExternalIntegrationSourceTokenMutationResult {
+  id: string
+  updatedAt: string
 }
 
 export interface CreatedExternalIntegrationSourceToken {

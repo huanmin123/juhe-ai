@@ -114,6 +114,12 @@ const policyPatchSchema = z.object({
   message: '至少需要提交一个变化字段'
 })
 
+const providerOptionsQuerySchema = z.object({
+  protocolCode: z.enum([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE]),
+  scopeType: z.enum(['provider', 'protocol']),
+  keyword: z.string().trim().max(80).optional()
+}).strict()
+
 responseInspectionPoliciesRouter.get('/', async (_req, res, next) => {
   try {
     const result = await listResponseInspectionPoliciesAsync()
@@ -123,9 +129,14 @@ responseInspectionPoliciesRouter.get('/', async (_req, res, next) => {
   }
 })
 
-responseInspectionPoliciesRouter.get('/provider-options', async (_req, res, next) => {
+responseInspectionPoliciesRouter.get('/provider-options', async (req, res, next) => {
+  const parsed = providerOptionsQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略供应商选项参数无效')))
+    return
+  }
   try {
-    res.json(ok(await listResponseInspectionPolicyProviderOptionsAsync()))
+    res.json(ok(await listResponseInspectionPolicyProviderOptionsAsync(parsed.data)))
   } catch (error) {
     next(error)
   }

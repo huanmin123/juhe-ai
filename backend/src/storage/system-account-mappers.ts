@@ -36,7 +36,7 @@ export function systemAccountSummaryFromRow(row: SystemAccountSummaryRow): Syste
   }
 }
 
-export function systemAccountListItemFromRow(row: Omit<SystemAccountSummaryRow, 'created_at' | 'updated_at'>): SystemAccountListItem {
+export function systemAccountListItemFromRow(row: Omit<SystemAccountSummaryRow, 'created_at'>): SystemAccountListItem {
   return {
     id: row.id,
     username: row.username,
@@ -47,7 +47,8 @@ export function systemAccountListItemFromRow(row: Omit<SystemAccountSummaryRow, 
     mustChangePassword: effectiveMustChangePassword(row.role, row.must_change_password === 1),
     imageGenerationEnabled: row.image_generation_enabled === 1,
     requestLimits: parseUserRequestLimitsJson(row.request_limits_json),
-    lastLoginAt: row.last_login_at ?? undefined
+    lastLoginAt: row.last_login_at ?? undefined,
+    editVersion: row.updated_at
   }
 }
 

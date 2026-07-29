@@ -39,7 +39,9 @@
       :default-priority="nextPriority()"
       @submit="savePolicy"
       @cancel="resetModal"
+      @provider-options-context-change="handleProviderOptionsContextChange"
       @provider-options-dropdown-visible-change="loadProviderOptionsOnDropdown"
+      @provider-options-search="scheduleProviderOptionsSearch"
     />
 
     <ResponseInspectionPolicyGuideModal
@@ -75,7 +77,8 @@ import {
 import ResponseInspectionPolicyList from './ResponseInspectionPolicyList.vue'
 import {
   createResponseInspectionPolicyLoadCoordinator,
-  type ResponseInspectionPolicyModalIntent
+  type ResponseInspectionPolicyModalIntent,
+  type ResponseInspectionPolicyProviderOptionsQuery
 } from './responseInspectionPolicyLoadCoordinator'
 import {
   buildResponseInspectionPolicyPatch,
@@ -114,11 +117,15 @@ const editingExpectedUpdatedAt = ref<string>()
 const loadCoordinator = createResponseInspectionPolicyLoadCoordinator({
   list: (signal) => api.responseInspectionPolicies.list({ signal }),
   detail: (policyId, signal) => api.responseInspectionPolicies.detail(policyId, { signal }),
-  providerOptions: (signal) => api.responseInspectionPolicies.providerOptions({ signal })
+  providerOptions: (query, signal) => api.responseInspectionPolicies.providerOptions(query, { signal })
 })
 let activeListRequest: Promise<unknown> | undefined
 let activeModalIntent: ResponseInspectionPolicyModalIntent | undefined
-let activeProviderOptionsRequest: Promise<ResponseInspectionPolicyProviderOption[] | undefined> | undefined
+let activeProviderOptionsRequest: {
+  request: Promise<ResponseInspectionPolicyProviderOption[] | undefined>
+  query: ResponseInspectionPolicyProviderOptionsQuery
+} | undefined
+let providerOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
 
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
 const filteredPolicies = computed(() => {
@@ -193,24 +200,52 @@ async function openEdit(policy: ResponseInspectionPolicyOverview): Promise<void>
   modalOpen.value = true
 }
 
-async function loadProviderOptionsOnDropdown(open: boolean): Promise<void> {
-  if (!open || modalMode.value === 'view' || providerOptionsReady.value || activeProviderOptionsRequest) return
+async function loadProviderOptionsOnDropdown(
+  open: boolean,
+  query: ResponseInspectionPolicyProviderOptionsQuery
+): Promise<void> {
+  clearProviderOptionsSearchTimer()
+  if (!open) {
+    cancelActiveProviderOptionsRequest()
+    return
+  }
+  await loadProviderOptions(query)
+}
+
+function scheduleProviderOptionsSearch(query: ResponseInspectionPolicyProviderOptionsQuery): void {
+  if (modalMode.value === 'view' || query.scopeType !== 'provider') return
+  clearProviderOptionsSearchTimer()
+  providerOptionsSearchTimer = setTimeout(() => {
+    providerOptionsSearchTimer = undefined
+    void loadProviderOptions(query)
+  }, 250)
+}
+
+function handleProviderOptionsContextChange(): void {
+  clearProviderOptionsSearchTimer()
+  cancelActiveProviderOptionsRequest()
+  clearProviderOptionsPresentation()
+}
+
+async function loadProviderOptions(query: ResponseInspectionPolicyProviderOptionsQuery): Promise<void> {
+  if (modalMode.value === 'view' || query.scopeType !== 'provider') return
   const intent = activeModalIntent
   if (!intent || !loadCoordinator.isCurrentModalIntent(intent)) return
-  const request = loadCoordinator.loadProviderOptions(intent)
-  activeProviderOptionsRequest = request
+  const request = loadCoordinator.loadProviderOptions(intent, query)
+  const activeRequest = { request, query }
+  activeProviderOptionsRequest = activeRequest
   providerOptionsLoading.value = true
   try {
     const options = await request
-    if (activeProviderOptionsRequest !== request || !loadCoordinator.isCurrentModalIntent(intent) || !options) return
+    if (activeProviderOptionsRequest !== activeRequest || !loadCoordinator.isCurrentModalIntent(intent) || !options) return
     providerOptions.value = options
-    providerOptionsReady.value = true
+    providerOptionsReady.value = !query.keyword
   } catch (error) {
-    if (activeProviderOptionsRequest !== request || !loadCoordinator.isCurrentModalIntent(intent)) return
+    if (activeProviderOptionsRequest !== activeRequest || !loadCoordinator.isCurrentModalIntent(intent)) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载响应检查策略供应商选项失败，请重试'))
   } finally {
-    if (activeProviderOptionsRequest === request) {
+    if (activeProviderOptionsRequest === activeRequest) {
       activeProviderOptionsRequest = undefined
       providerOptionsLoading.value = false
     }
@@ -219,13 +254,12 @@ async function loadProviderOptionsOnDropdown(open: boolean): Promise<void> {
 
 function resetModal(): void {
   loadCoordinator.cancelModalIntent()
+  clearProviderOptionsSearchTimer()
   modalOpen.value = false
   openingPolicyId.value = undefined
   activeModalIntent = undefined
   activeProviderOptionsRequest = undefined
-  providerOptions.value = []
-  providerOptionsLoading.value = false
-  providerOptionsReady.value = false
+  clearProviderOptionsPresentation()
   editingId.value = undefined
   editingBaseline.value = undefined
   editingExpectedUpdatedAt.value = undefined
@@ -351,9 +385,8 @@ function prepareModalIntent(policyId?: string): ResponseInspectionPolicyModalInt
   editingBaseline.value = undefined
   editingExpectedUpdatedAt.value = undefined
   activeProviderOptionsRequest = undefined
-  providerOptions.value = []
-  providerOptionsLoading.value = false
-  providerOptionsReady.value = false
+  clearProviderOptionsSearchTimer()
+  clearProviderOptionsPresentation()
   openingPolicyId.value = policyId
   activeModalIntent = loadCoordinator.beginModalIntent(policyId)
   return activeModalIntent
@@ -375,8 +408,27 @@ function upsertOverview(items: ResponseInspectionPolicyOverview[], overview: Res
 
 onMounted(loadPolicies)
 onBeforeUnmount(() => {
+  clearProviderOptionsSearchTimer()
   loadCoordinator.dispose()
 })
+
+function cancelActiveProviderOptionsRequest(): void {
+  loadCoordinator.cancelProviderOptionsRequest()
+  activeProviderOptionsRequest = undefined
+  providerOptionsLoading.value = false
+}
+
+function clearProviderOptionsPresentation(): void {
+  providerOptions.value = []
+  providerOptionsLoading.value = false
+  providerOptionsReady.value = false
+}
+
+function clearProviderOptionsSearchTimer(): void {
+  if (!providerOptionsSearchTimer) return
+  clearTimeout(providerOptionsSearchTimer)
+  providerOptionsSearchTimer = undefined
+}
 </script>
 
 <style scoped>

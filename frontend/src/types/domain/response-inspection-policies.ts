@@ -62,7 +62,6 @@ export interface ResponseInspectionPolicyDetail {
 export interface ResponseInspectionPolicyProviderOption {
   code: string
   name: string
-  protocolCode: ResponseInspectionPolicyProtocolCode
 }
 
 export interface ResponseInspectionPolicyListResult {

@@ -47,7 +47,44 @@ interface SystemTeamMemberCounts {
 }
 
 type SystemTeamDetailRow = Pick<SystemTeamRow, 'id' | 'name' | 'description' | 'status' | 'created_at'>
-type SystemTeamListRow = SystemTeamDetailRow
+type SystemTeamListRow = Pick<SystemTeamRow, 'id' | 'name' | 'description' | 'status' | 'created_at' | 'updated_at'>
+
+type SystemTeamPatchField = 'name' | 'description' | 'status'
+
+interface SystemTeamPatchRow {
+  id: string
+  name: string
+  description?: string | null
+  status?: 'active' | 'disabled'
+  updated_at: string
+}
+
+interface SystemTeamPatchChange {
+  field: SystemTeamPatchField
+  before: unknown
+  after: unknown
+}
+
+export interface SystemTeamMutationResult {
+  id: string
+  changedFields: SystemTeamPatchField[]
+  rowPatch: Partial<{
+    name: string
+    description: string | null
+    status: 'active' | 'disabled'
+  }>
+  updatedAt: string
+}
+
+export type SystemTeamPatchOutcome =
+  | { status: 'not_found' }
+  | { status: 'conflict' }
+  | {
+      status: 'noop' | 'updated'
+      name: string
+      changes: SystemTeamPatchChange[]
+      result: SystemTeamMutationResult
+    }
 
 interface SystemTeamMemberDetailRow {
   id: string
@@ -57,7 +94,8 @@ interface SystemTeamMemberDetailRow {
   joined_at: string
 }
 
-const systemTeamInputKeys = new Set(['name', 'description', 'status'])
+const systemTeamCreateInputKeys = new Set(['name', 'description', 'status'])
+const systemTeamPatchInputKeys = new Set(['name', 'description', 'status', 'expectedUpdatedAt'])
 const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
 const businessSchemaName = 'juhe_business'
 
@@ -188,7 +226,7 @@ export async function findSystemTeamDetailAsync(id: string, access?: AccessScope
 }
 
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
-  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+  assertKnownInputKeys(input, systemTeamCreateInputKeys, '系统团队')
   const name = normalizeSystemTeamName(input.name)
   const database = getBusinessDatabase()
   const now = nowIso()
@@ -213,7 +251,7 @@ export async function createSystemTeamAsync(input: Record<string, unknown>, acce
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return createSystemTeam(input, access)
   }
-  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+  assertKnownInputKeys(input, systemTeamCreateInputKeys, '系统团队')
   const name = normalizeSystemTeamName(input.name)
   const client = await getSystemTeamDatabaseClient()
   const now = nowIso()
@@ -246,26 +284,40 @@ export async function createSystemTeamAsync(input: Record<string, unknown>, acce
   return created
 }
 
-export function updateSystemTeam(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
-  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+export function updateSystemTeam(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamPatchOutcome {
+  assertKnownInputKeys(input, systemTeamPatchInputKeys, '系统团队')
+  const expectedUpdatedAt = requiredSystemTeamPatchVersion(input.expectedUpdatedAt)
   const database = getBusinessDatabase()
-  const row = findSystemTeamRowForAccess(id, access)
-  if (!row) return undefined
-  const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-  const status = normalizeSystemTeamStatus(input.status, row.status)
-  const now = nowIso()
+  const row = findSystemTeamPatchRowForAccess(id, input, access)
+  if (!row) return { status: 'not_found' }
+  if (row.updated_at !== expectedUpdatedAt) return { status: 'conflict' }
+  const mutation = buildSystemTeamPatchMutation(row, input)
+  if (!mutation.changedFields.length) {
+    return systemTeamPatchSuccess('noop', row, mutation, expectedUpdatedAt)
+  }
+  const updatedAt = nextSystemTeamUpdatedAt(expectedUpdatedAt)
   let authorizationChanged = false
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database
-      .prepare('UPDATE system_teams SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
-      .run(name, input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description), status, now, id)
-    if (row.status !== 'disabled' && status === 'disabled') {
-      revokeAllTeamSources(id, currentSystemAccountId(access), database, now, 'team_disabled')
+    const scope = systemTeamPatchScope(access)
+    const result = database.prepare(`
+      UPDATE system_teams
+      SET ${mutation.assignments.join(', ')}, updated_at = ?
+      WHERE id = ?
+        AND updated_at = ?
+        ${scope.clause}
+    `).run(...mutation.values, updatedAt, id, expectedUpdatedAt, ...scope.params)
+    if (Number(result.changes) !== 1) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      return { status: 'conflict' }
+    }
+    const nextStatus = mutation.rowPatch.status
+    if (row.status !== 'disabled' && nextStatus === 'disabled') {
+      revokeAllTeamSources(id, currentSystemAccountId(access), database, updatedAt, 'team_disabled')
       authorizationChanged = true
     }
-    if (row.status === 'disabled' && status === 'active') {
-      reactivateTeamGrantSources(id, access, database, now)
+    if (row.status === 'disabled' && nextStatus === 'active') {
+      reactivateTeamGrantSources(id, access, database, updatedAt)
       authorizationChanged = true
     }
     commitDatabaseTransaction(database, transactionStarted)
@@ -280,63 +332,62 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
     refreshGroupAccountStatsAfterWrite('team_authorization_changed')
     invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
   }
-  invalidateSystemTeamLookupCache(id)
-  invalidateSystemAccountTeamMembershipLookupCache()
-  clearResourceAuthorizationLookupCaches()
-  return findSystemTeamSummary(id, access)
+  invalidateSystemTeamPatchCaches(id, mutation.changedFields)
+  return systemTeamPatchSuccess('updated', row, mutation, updatedAt)
 }
 
-export async function updateSystemTeamAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<SystemTeamSummary | undefined> {
+export async function updateSystemTeamAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<SystemTeamPatchOutcome> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return updateSystemTeam(id, input, access)
   }
-  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+  assertKnownInputKeys(input, systemTeamPatchInputKeys, '系统团队')
+  const expectedUpdatedAt = requiredSystemTeamPatchVersion(input.expectedUpdatedAt)
   const client = await getSystemTeamDatabaseClient()
   let authorizationChanged = false
-  await client.transaction(async (tx) => {
-    const row = await findSystemTeamRowForAccessAsync(tx, id, access)
-    if (!row) return
-    const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
-    const status = normalizeSystemTeamStatus(input.status, row.status)
-    const now = nowIso()
+  const outcome = await client.transaction(async (tx): Promise<SystemTeamPatchOutcome> => {
+    const row = await findSystemTeamPatchRowForAccessAsync(tx, id, input, access)
+    if (!row) return { status: 'not_found' }
+    if (row.updated_at !== expectedUpdatedAt) return { status: 'conflict' }
+    const mutation = buildSystemTeamPatchMutation(row, input)
+    if (!mutation.changedFields.length) {
+      return systemTeamPatchSuccess('noop', row, mutation, expectedUpdatedAt)
+    }
+    const updatedAt = nextSystemTeamUpdatedAt(expectedUpdatedAt)
     try {
-      await tx.execute(`
+      const scope = systemTeamPatchScope(access, tx)
+      const result = await tx.execute(`
         UPDATE ${systemTeamTable(tx, 'system_teams')}
-        SET name = ?,
-            description = ?,
-            status = ?,
-            updated_at = ?
+        SET ${mutation.assignments.join(', ')}, updated_at = ?
         WHERE id = ?
-      `, [
-        name,
-        input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description),
-        status,
-        now,
-        id
-      ])
+          AND updated_at = ?
+          ${scope.clause}
+      `, [...mutation.values, updatedAt, id, expectedUpdatedAt, ...scope.params])
+      if (result.changes !== 1) return { status: 'conflict' }
     } catch (error) {
       if (isDuplicateSystemTeamNameError(error)) {
         throw new Error('团队名称已存在')
       }
       throw error
     }
-    if (row.status !== 'disabled' && status === 'disabled') {
-      await revokeAllTeamSourcesAsync(id, currentSystemAccountId(access), tx, now, 'team_disabled')
+    const nextStatus = mutation.rowPatch.status
+    if (row.status !== 'disabled' && nextStatus === 'disabled') {
+      await revokeAllTeamSourcesAsync(id, currentSystemAccountId(access), tx, updatedAt, 'team_disabled')
       authorizationChanged = true
     }
-    if (row.status === 'disabled' && status === 'active') {
-      await reactivateTeamGrantSourcesAsync(id, access, tx, now)
+    if (row.status === 'disabled' && nextStatus === 'active') {
+      await reactivateTeamGrantSourcesAsync(id, access, tx, updatedAt)
       authorizationChanged = true
     }
+    return systemTeamPatchSuccess('updated', row, mutation, updatedAt)
   })
   if (authorizationChanged) {
     await refreshGroupAccountStatsAfterWriteAsync('team_authorization_changed')
     invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
   }
-  invalidateSystemTeamLookupCache(id)
-  invalidateSystemAccountTeamMembershipLookupCache()
-  clearResourceAuthorizationLookupCaches()
-  return findSystemTeamSummaryAsync(id, access)
+  if (outcome.status === 'updated') {
+    invalidateSystemTeamPatchCaches(id, outcome.result.changedFields)
+  }
+  return outcome
 }
 
 export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
@@ -557,6 +608,27 @@ function findSystemTeamRowForAccess(id: string, access?: AccessScope, options: {
   `).get(id) as unknown as SystemTeamRow | undefined
 }
 
+function findSystemTeamPatchRowForAccess(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamPatchRow | undefined {
+  const scopedId = scopedSystemAccountId(access)
+  const columns = systemTeamPatchProjection(input)
+  const scopeJoin = scopedId
+    ? `INNER JOIN system_team_members scoped_members
+        ON scoped_members.team_id = system_teams.id`
+    : ''
+  const scopeClause = scopedId
+    ? `AND scoped_members.system_account_id = ?
+       AND scoped_members.status = 'active'`
+    : ''
+  return getBusinessDatabase().prepare(`
+    SELECT ${columns.map((column) => `system_teams.${column}`).join(', ')}
+    FROM system_teams
+    ${scopeJoin}
+    WHERE system_teams.id = ?
+      ${scopeClause}
+    LIMIT 1
+  `).get(...(scopedId ? [id, scopedId] : [id])) as unknown as SystemTeamPatchRow | undefined
+}
+
 function findActiveSystemTeamMemberForAccess(teamId: string, memberId: string, access?: AccessScope): SystemTeamMemberRow | undefined {
   const scopedId = scopedSystemAccountId(access)
   const scopedClause = scopedId
@@ -605,7 +677,7 @@ function querySystemTeamRows(access: AccessScope | undefined, pagination: { limi
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   const rows = getBusinessDatabase()
-    .prepare(`SELECT id, name, description, status, created_at FROM system_teams${whereClause} ORDER BY status ASC, updated_at DESC, name ASC, id ASC${pageClause}`)
+    .prepare(`SELECT id, name, description, status, created_at, updated_at FROM system_teams${whereClause} ORDER BY status ASC, updated_at DESC, name ASC, id ASC${pageClause}`)
     .all(...params, ...pageParams) as unknown as SystemTeamListRow[]
   return { rows }
 }
@@ -642,7 +714,7 @@ async function querySystemTeamRowsAsync(client: DatabaseClient, access: AccessSc
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   const rows = await client.query<SystemTeamListRow>(`
-    SELECT id, name, description, status, created_at
+    SELECT id, name, description, status, created_at, updated_at
     FROM ${systemTeamTable(client, 'system_teams')} system_teams
     ${whereClause}
     ORDER BY status ASC, updated_at DESC, name ASC, id ASC
@@ -673,6 +745,29 @@ async function findSystemTeamRowForAccessAsync(client: DatabaseClient, id: strin
     WHERE system_teams.id = ?${activeClause}
     LIMIT 1
   `, [id])
+}
+
+async function findSystemTeamPatchRowForAccessAsync(client: DatabaseClient, id: string, input: Record<string, unknown>, access?: AccessScope): Promise<SystemTeamPatchRow | undefined> {
+  const scopedId = scopedSystemAccountId(access)
+  const columns = systemTeamPatchProjection(input)
+  const membersTable = systemTeamTable(client, 'system_team_members')
+  const scopeJoin = scopedId
+    ? `INNER JOIN ${membersTable} scoped_members
+        ON scoped_members.team_id = system_teams.id`
+    : ''
+  const scopeClause = scopedId
+    ? `AND scoped_members.system_account_id = ?
+       AND scoped_members.status = 'active'`
+    : ''
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE OF system_teams' : ''
+  return client.one<SystemTeamPatchRow>(`
+    SELECT ${columns.map((column) => `system_teams.${column}`).join(', ')}
+    FROM ${systemTeamTable(client, 'system_teams')} system_teams
+    ${scopeJoin}
+    WHERE system_teams.id = ?
+      ${scopeClause}
+    LIMIT 1${lockClause}
+  `, scopedId ? [id, scopedId] : [id])
 }
 
 async function lockSystemTeamRowForUpdateAsync(client: DatabaseClient, teamId: string): Promise<void> {
@@ -735,7 +830,8 @@ function systemTeamListItemFromRow(row: SystemTeamListRow, counts?: SystemTeamMe
     description: row.description ?? undefined,
     status: row.status,
     memberCount: counts?.memberCount ?? 0,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   }
 }
 
@@ -966,6 +1062,104 @@ function systemTeamMemberSelectColumns(alias: string): string {
     'created_at',
     'updated_at'
   ].map((column) => `${alias}.${column}`).join(', ')
+}
+
+function systemTeamPatchProjection(input: Record<string, unknown>): string[] {
+  const columns = ['id', 'name', 'updated_at']
+  if (Object.prototype.hasOwnProperty.call(input, 'description')) columns.push('description')
+  if (Object.prototype.hasOwnProperty.call(input, 'status')) columns.push('status')
+  return columns
+}
+
+function buildSystemTeamPatchMutation(row: SystemTeamPatchRow, input: Record<string, unknown>): {
+  assignments: string[]
+  values: Array<string | null>
+  changedFields: SystemTeamPatchField[]
+  rowPatch: SystemTeamMutationResult['rowPatch']
+  changes: SystemTeamPatchChange[]
+} {
+  const assignments: string[] = []
+  const values: Array<string | null> = []
+  const changedFields: SystemTeamPatchField[] = []
+  const rowPatch: SystemTeamMutationResult['rowPatch'] = {}
+  const changes: SystemTeamPatchChange[] = []
+  const append = (field: SystemTeamPatchField, column: string, before: unknown, after: string | null): void => {
+    if (before === after) return
+    assignments.push(`${column} = ?`)
+    values.push(after)
+    changedFields.push(field)
+    rowPatch[field] = after as never
+    changes.push({ field, before, after })
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'name')) {
+    append('name', 'name', row.name, normalizeSystemTeamName(input.name))
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'description')) {
+    append('description', 'description', row.description ?? null, normalizeSystemTeamDescription(input.description))
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'status')) {
+    append('status', 'status', row.status, normalizeSystemTeamStatus(input.status, row.status ?? 'active'))
+  }
+  return { assignments, values, changedFields, rowPatch, changes }
+}
+
+function systemTeamPatchSuccess(
+  status: 'noop' | 'updated',
+  row: SystemTeamPatchRow,
+  mutation: ReturnType<typeof buildSystemTeamPatchMutation>,
+  updatedAt: string
+): Extract<SystemTeamPatchOutcome, { status: 'noop' | 'updated' }> {
+  return {
+    status,
+    name: mutation.rowPatch.name ?? row.name,
+    changes: mutation.changes,
+    result: {
+      id: row.id,
+      changedFields: mutation.changedFields,
+      rowPatch: mutation.rowPatch,
+      updatedAt
+    }
+  }
+}
+
+function systemTeamPatchScope(access?: AccessScope, client?: DatabaseClient): { clause: string; params: string[] } {
+  const scopedId = scopedSystemAccountId(access)
+  if (!scopedId) return { clause: '', params: [] }
+  const membersTable = client ? systemTeamTable(client, 'system_team_members') : 'system_team_members'
+  return {
+    clause: `AND EXISTS (
+      SELECT 1
+      FROM ${membersTable} scoped_members
+      WHERE scoped_members.team_id = system_teams.id
+        AND scoped_members.system_account_id = ?
+        AND scoped_members.status = 'active'
+    )`,
+    params: [scopedId]
+  }
+}
+
+function requiredSystemTeamPatchVersion(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('缺少团队版本')
+  return value.trim()
+}
+
+function nextSystemTeamUpdatedAt(expectedUpdatedAt: string): string {
+  const now = nowIso()
+  if (now > expectedUpdatedAt) return now
+  const expectedMs = Date.parse(expectedUpdatedAt)
+  return Number.isFinite(expectedMs) ? new Date(expectedMs + 1).toISOString() : now
+}
+
+function invalidateSystemTeamPatchCaches(id: string, changedFields: SystemTeamPatchField[]): void {
+  if (changedFields.includes('name') || changedFields.includes('status')) {
+    invalidateSystemTeamLookupCache(id)
+  }
+  if (changedFields.includes('name')) {
+    invalidateSystemAccountTeamMembershipLookupCache()
+  }
+  if (changedFields.includes('status')) {
+    clearResourceAuthorizationLookupCaches()
+  }
 }
 
 function normalizeSystemTeamName(value: unknown): string {

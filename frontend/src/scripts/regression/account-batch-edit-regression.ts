@@ -9,7 +9,7 @@ import {
   createAccountBatchEditForm,
   intersectAccountSupportedEndpointModes
 } from '../../views/accounts/accountBatchEditForm'
-import type { AccountSummary } from '../../types/domain'
+import type { AccountBatchEditContextItem, AccountSupportedEndpointMode } from '../../types/domain'
 
 const accounts = [
   accountFixture('account_batch_frontend_a', 3),
@@ -135,6 +135,8 @@ const accountGptOverridesSource = readFileSync(resolve(frontendRoot, 'src/views/
 const generalTabSource = modalSource.match(/<a-tab-pane key="general"[\s\S]*?<a-tab-pane key="rules"/)?.[0] ?? ''
 const modelsTabSource = modalSource.match(/<a-tab-pane key="models"[\s\S]*?<\/a-tab-pane>/)?.[0] ?? ''
 assert.match(modalSource, /batchEditContext\(/, '批量编辑应在打开弹窗后一次性按需读取去敏上下文')
+assert.match(modalSource, /'supportedModels'[\s\S]*'modelMappings'[\s\S]*'supportedEndpointModes'/, '批量上下文必须显式声明模型校验依赖字段')
+assert.doesNotMatch(formSource, /account\.credentials/, '批量编辑表单不得依赖完整 credentials')
 assert.match(modalSource, /label="上游接口能力"/, '批量编辑必须使用上游接口能力标签')
 assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批量编辑说明必须表达真实上游能力')
 assert.doesNotMatch(modalSource, /接口能力限制|可承接的请求形态/, '批量编辑不得继续展示旧能力文案')
@@ -208,8 +210,8 @@ console.log('账户批量编辑前端回归通过：显式覆盖、清空语义�
 function accountFixture(
   id: string,
   configRevision: number,
-  supportedEndpointModes: AccountSummary['credentials']['supported_endpoint_modes'] = ['chat_sse']
-): AccountSummary {
+  supportedEndpointModes: AccountSupportedEndpointMode[] = ['chat_sse']
+): AccountBatchEditContextItem {
   return {
     id,
     configRevision,
@@ -217,38 +219,9 @@ function accountFixture(
     providerProtocolProfileId: 'gpt-openai-v1',
     protocolCode: 'openai',
     protocolVersion: 'v1',
-    name: id,
     type: 'api_key',
-    credentials: { supported_endpoint_modes: supportedEndpointModes },
-    status: 'active',
-    concurrencyLimit: 1,
-    currentConcurrency: 0,
-    priority: 0,
-    superPriorityEnabled: false,
-    fallbackEnabled: false,
-    clientCompatibility: 'openai_standard',
     supportedModels: ['gpt-5.5', 'gpt-5.4'],
-    healthCheckModel: 'gpt-5.5',
-    schedulable: true,
-    todayUsage: emptyUsage(),
-    usage: emptyUsage()
-  }
-}
-
-function emptyUsage() {
-  return {
-    requestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheReadCost: 0,
-    cacheWriteTokens: 0,
-    cacheWrite1hTokens: 0,
-    cacheWriteCost: 0,
-    thinkingTokens: 0,
-    inputImageTokens: 0,
-    outputImageTokens: 0,
-    totalTokens: 0,
-    totalCost: 0
+    modelMappings: [],
+    supportedEndpointModes
   }
 }

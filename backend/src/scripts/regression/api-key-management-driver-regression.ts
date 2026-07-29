@@ -101,9 +101,17 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   )
   const defaultRouteStrategy = await repositories.findRouteStrategySummaryAsync(defaultApiKey.routeStrategyId, adminAccess)
   assert(defaultRouteStrategy, '默认策略路由名称保护回归需要默认 Key 绑定的策略路由')
-  assert.equal((await repositories.updateRouteStrategyAsync(defaultRouteStrategy.id, { name: defaultRouteStrategy.name }, adminAccess))?.name, defaultRouteStrategy.name, '默认策略路由携带原名称更新其他字段时不应被误拦截')
+  assert.equal((await repositories.updateRouteStrategyAsync(defaultRouteStrategy.id, {
+    name: defaultRouteStrategy.name,
+    expectedUpdatedAt: defaultRouteStrategy.updatedAt
+  }, adminAccess))?.name, defaultRouteStrategy.name, '默认策略路由携带原名称更新其他字段时不应被误拦截')
+  const defaultRouteStrategyAfterNoop = await repositories.findRouteStrategySummaryAsync(defaultRouteStrategy.id, adminAccess)
+  assert(defaultRouteStrategyAfterNoop, '默认策略路由名称保护回归需要刷新 CAS 版本')
   await assert.rejects(
-    repositories.updateRouteStrategyAsync(defaultRouteStrategy.id, { name: `${defaultRouteStrategy.name}改` }, adminAccess),
+    repositories.updateRouteStrategyAsync(defaultRouteStrategy.id, {
+      name: `${defaultRouteStrategy.name}改`,
+      expectedUpdatedAt: defaultRouteStrategyAfterNoop.updatedAt
+    }, adminAccess),
     /默认策略路由不允许修改名称/,
     '默认策略路由必须拒绝修改名称'
   )
@@ -197,8 +205,11 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   }, adminAccess)
   assert.equal(await repositories.findChatApiKeySecretAsync(created.id, adminAccess.systemAccountId), undefined, '已过期 Key 不得供聊天链路读取')
 
+  const routeStrategyBeforeBindingPatch = await repositories.findRouteStrategySummaryAsync(routeStrategy.id, adminAccess)
+  assert(routeStrategyBeforeBindingPatch, 'API Key driver 绑定 PATCH 需要当前 CAS 版本')
   await repositories.updateRouteStrategyAsync(routeStrategy.id, {
-    groupBindings: [{ groupId: group.id, priority: 1, weight: 20, status: 'active' }]
+    groupBindings: [{ groupId: group.id, priority: 1, weight: 20, status: 'active' }],
+    expectedUpdatedAt: routeStrategyBeforeBindingPatch.updatedAt
   }, adminAccess)
   const updated = await repositories.updateApiKeyAsync(created.id, {
     name: `${name}改`,

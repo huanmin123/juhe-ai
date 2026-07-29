@@ -6,7 +6,8 @@ import { ref } from 'vue'
 import {
   myRouteStrategiesApi,
   routeStrategiesApi,
-  type RouteStrategyMutationPayload
+  type RouteStrategyMutationPayload,
+  type RouteStrategyPatchPayload
 } from '../../src/api/domains/routeStrategies'
 import { http } from '../../src/api/http'
 import { useScopedRouteStrategiesApi } from '../../src/composables/useScopedDomainApi'
@@ -41,6 +42,10 @@ const payload: RouteStrategyMutationPayload = {
   ],
   normalRoutingConfig: null,
   hybridRoutingConfig: null
+}
+const patchPayload: RouteStrategyPatchPayload = {
+  description: '仅更新说明',
+  expectedUpdatedAt: '2026-07-29T00:00:00.000Z'
 }
 const capturedRequests: CapturedRequest[] = []
 const originalAdapter = http.defaults.adapter
@@ -78,10 +83,10 @@ try {
   const personalApi = useScopedRouteStrategiesApi(ref(false))
   await personalApi.create(payload, { systemAccountId: 'must_not_leak' })
 
-  await routeStrategiesApi.update(routeStrategyId, payload, { systemAccountId })
-  await myRouteStrategiesApi.update(routeStrategyId, payload)
-  await managementApi.update(routeStrategyId, payload, { systemAccountId })
-  await personalApi.update(routeStrategyId, payload, { systemAccountId: 'must_not_leak' })
+  await routeStrategiesApi.update(routeStrategyId, patchPayload, { systemAccountId })
+  await myRouteStrategiesApi.update(routeStrategyId, patchPayload)
+  await managementApi.update(routeStrategyId, patchPayload, { systemAccountId })
+  await personalApi.update(routeStrategyId, patchPayload, { systemAccountId: 'must_not_leak' })
 
   await routeStrategiesApi.delete(routeStrategyId)
   await routeStrategiesApi.delete(routeStrategyId, { systemAccountId })
@@ -148,7 +153,7 @@ function assertManagementUpdate(request: CapturedRequest, source: string): void 
     { systemAccountId },
     `${source} 必须仅发送 systemAccountId query`
   )
-  assertMutationBody(request.body, source, '更新')
+  assert.deepEqual(request.body, patchPayload, `${source} 必须只发送字段级 PATCH 与 expectedUpdatedAt`)
 }
 
 function assertPersonalUpdate(request: CapturedRequest, source: string): void {
@@ -159,7 +164,7 @@ function assertPersonalUpdate(request: CapturedRequest, source: string): void {
     `${source} 必须请求固定个人策略路由路径`
   )
   assert.equal(request.params, undefined, `${source} 不得发送任何 query`)
-  assertMutationBody(request.body, source, '更新')
+  assert.deepEqual(request.body, patchPayload, `${source} 必须只发送字段级 PATCH 与 expectedUpdatedAt`)
 }
 
 function assertManagementDelete(

@@ -328,20 +328,13 @@ groupsRouter.post('/:id/return-authorization', mutationGuard({
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  let before: Awaited<ReturnType<typeof findGroupSummaryAsync>>
-  try {
-    before = await findGroupSummaryAsync(req.params.id, requestAccess)
-  } catch (error) {
-    next(error)
-    return
-  }
   try {
     await runLoggedOperationAsync(async () => {
       const authorization = await returnGroupAuthorizationForGranteeAsync(req.params.id, requestAccess)
       if (!authorization) {
         throw new Error('授权分组不存在或不可归还')
       }
-      const resourceName = before?.name ?? authorization.resource_id
+      const resourceName = authorization.resource_name
       return {
         result: true,
         log: {
@@ -394,20 +387,14 @@ groupsRouter.delete('/:id', async (req, res, next) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  let before: Awaited<ReturnType<typeof findGroupSummaryAsync>>
-  try {
-    before = await findGroupSummaryAsync(req.params.id, requestAccess)
-  } catch (error) {
-    next(error)
-    return
-  }
-  const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
     await runLoggedOperationAsync(async () => {
       const deleteResult = await deleteGroupAsync(req.params.id, requestAccess)
       if (!deleteResult.deleted) {
         throw new Error('分组不存在')
       }
+      const ownerSystemAccountId = deleteResult.ownerSystemAccountId
+      const resourceName = deleteResult.name ?? req.params.id
       const affectedRouteStrategies = deleteResult.affectedRouteStrategies
       return {
         result: true,
@@ -419,8 +406,8 @@ groupsRouter.delete('/:id', async (req, res, next) => {
           operationKey: 'groups.delete',
           resourceType: 'group',
           resourceId: req.params.id,
-          resourceName: before?.name ?? req.params.id,
-          summary: `删除分组：${before?.name ?? req.params.id}`,
+          resourceName,
+          summary: `删除分组：${resourceName}`,
           changes: [
             safeChange('deleted', '删除状态', false, true),
             ...(affectedRouteStrategies.length

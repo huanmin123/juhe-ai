@@ -12,6 +12,8 @@ import {
   findGroupRowForAccess,
   findGroupRowForAccessAsync,
   findGroupRowForAccessInClientAsync,
+  findGroupEditRowForAccess,
+  findGroupEditRowForAccessAsync,
   listGroupOptionRowsForAccess,
   listGroupOptionRowsForAccessAsync,
   listGroupOptionRowsForAccessInClientAsync,
@@ -22,6 +24,7 @@ import {
   listRouteStrategyGroupOptionRowsForAccessAsync,
   loadGroupAuthorizationUsageSummaries,
   loadGroupAuthorizationUsageSummariesAsync,
+  type GroupEditRow,
   type GroupListOptions,
   type GroupOptionListOptions
 } from './group-read.repository.js'
@@ -378,28 +381,23 @@ export async function findGroupEditDetailAsync(id: string, access?: AccessScope)
     }
     return findGroupEditDetailReadOnly(id, access)
   }
-  const row = await findGroupRowForAccessAsync(access, id)
-  return row ? groupEditDetailFromRow(row, access) : undefined
+  const row = await findGroupEditRowForAccessAsync(access, id)
+  return row ? groupEditDetailFromRow(row) : undefined
 }
 
 export function findGroupEditDetailReadOnly(id: string, access?: AccessScope): GroupEditDetail | undefined {
-  const row = findGroupRowForAccess(access, id)
-  return row ? groupEditDetailFromRow(row, access) : undefined
+  const row = findGroupEditRowForAccess(access, id)
+  return row ? groupEditDetailFromRow(row) : undefined
 }
 
-function groupEditDetailFromRow(row: GroupListRow, access?: AccessScope): GroupEditDetail {
-  const authorized = row.access_type === 'authorized'
+function groupEditDetailFromRow(row: GroupEditRow): GroupEditDetail {
   return {
-    id: row.id,
-    systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
     name: row.name,
     providerCode: row.provider_code,
     description: row.description ?? undefined,
     enabled: Number(row.enabled) === 1,
-    isDefault: authorized ? false : Number(row.is_default) === 1,
     groupType: groupTypeFromRow(row),
     schedulingPolicy: groupSchedulingPolicyFromRow(row),
-    accessType: row.access_type ?? 'owner',
     updatedAt: row.updated_at
   }
 }

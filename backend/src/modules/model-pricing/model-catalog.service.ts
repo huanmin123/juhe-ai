@@ -406,15 +406,19 @@ export function findCustomProviderModel(id: string): CustomProviderModelRecord |
   return findCustomProviderModelById(id)
 }
 
-export async function findCustomProviderModelAsync(id: string): Promise<CustomProviderModelRecord | undefined> {
-  return findCustomProviderModelByIdAsync(id)
+export async function findCustomProviderModelAsync(
+  id: string,
+  ownerSystemAccountId?: string
+): Promise<CustomProviderModelRecord | undefined> {
+  return findCustomProviderModelByIdAsync(id, ownerSystemAccountId)
 }
 
 export async function findCustomProviderModelPatchState(
   id: string,
-  submitted: Record<string, unknown>
+  submitted: Record<string, unknown>,
+  ownerSystemAccountId?: string
 ): Promise<CustomProviderModelPatchState | undefined> {
-  return findCustomProviderModelPatchStateAsync(id, submitted)
+  return findCustomProviderModelPatchStateAsync(id, submitted, ownerSystemAccountId)
 }
 
 export type ProviderModelPatchField = CustomProviderModelPatchField
@@ -424,6 +428,8 @@ export async function patchCustomProviderModelConfigurationAsync(input: {
   next: UpsertCustomProviderModelInput
   fields: ProviderModelPatchField[]
   expectedUpdatedAt: string
+  ownerSystemAccountId?: string
+  defaultReferenceCleanup?: import('../../storage/provider-model-default-reference-cleanup.repository.js').ProviderModelDefaultReferenceCleanupInput
 }): Promise<CustomProviderModelPatchOutcome> {
   return patchCustomProviderModelAsync(input)
 }
@@ -432,8 +438,11 @@ export function removeCustomProviderModel(id: string): boolean {
   return deleteCustomProviderModel(id)
 }
 
-export async function removeCustomProviderModelAsync(id: string): Promise<boolean> {
-  return deleteCustomProviderModelAsync(id)
+export async function removeCustomProviderModelAsync(
+  id: string,
+  options: Parameters<typeof deleteCustomProviderModelAsync>[1] = {}
+): Promise<boolean> {
+  return deleteCustomProviderModelAsync(id, options)
 }
 
 export function customProviderModelBindings(input: {
@@ -763,7 +772,6 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: item.supportedServiceTiers.length > 0,
-    catalogVisible: item.catalogVisible,
     source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
     status: item.status,

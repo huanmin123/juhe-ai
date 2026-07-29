@@ -29,19 +29,23 @@ import type {
   ExternalIntegrationSourcePrimaryTokenSummary,
   ExternalIntegrationSourceTokenSecret,
   ExternalIntegrationSourceTokenStats,
+  ExternalIntegrationSourceTokenPatchChange,
+  ExternalIntegrationSourceTokenPatchOutcome,
   ExternalIntegrationSourceTokenSummary,
   ExternalIntegrationSourceTokenUpdateInput
 } from './external-integration-source-types.js'
 import {
   assertKnownInputKeys,
+  ExternalIntegrationSourcePatchConflictError,
   isUniqueConstraintError,
+  nextExternalIntegrationUpdatedAt,
   normalizeNameOrThrow
 } from './external-integration-source-write-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
-const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
+const externalIntegrationSourceTokenUpdateInputKeys = new Set(['expectedUpdatedAt', 'name', 'status', 'scopes', 'expiresAt'])
 
 export function createExternalIntegrationSourceToken(input: ExternalIntegrationSourceTokenInput): CreatedExternalIntegrationSourceToken {
   assertKnownInputKeys(input, externalIntegrationSourceTokenInputKeys, '来源系统 token')

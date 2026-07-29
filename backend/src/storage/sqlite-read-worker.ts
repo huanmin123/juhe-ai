@@ -307,7 +307,7 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
     case 'get_response_inspection_policy_detail_read_only':
       return getResponseInspectionPolicyDetail(operation.id)
     case 'list_response_inspection_policy_provider_options_read_only':
-      return listResponseInspectionPolicyProviderOptions()
+      return listResponseInspectionPolicyProviderOptions(operation.input)
     case 'list_active_response_inspection_policies_read_only':
       return listActiveResponseInspectionPoliciesForGateway(operation.input)
     case 'list_external_integration_sources_read_only':

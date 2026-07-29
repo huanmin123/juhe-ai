@@ -162,6 +162,7 @@ import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemTeamDetail, SystemTeamListItem, SystemTeamMemberDetail } from '@/types/domain'
+import { buildSystemTeamEditPatch, type SystemTeamEditableSnapshot } from './systemTeamEditPatch'
 
 interface SystemTeamsPageState {
   keyword: string
@@ -179,8 +180,12 @@ const teamSaving = submittingRef('system_teams.save')
 const memberSaving = submittingRef('system_teams.add_members')
 
 const keyword = ref(initialPageState.keyword)
-const { isManagementView } = useScopedMenuView()
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)
+const teamScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId()
+  return systemAccountId ? { systemAccountId } : undefined
+})
 const {
   handleDropdown: handleMemberOptionsDropdown,
   handleSearch: handleMemberOptionsSearch,
@@ -197,6 +202,7 @@ const teamModalOpen = ref(false)
 const memberModalOpen = ref(false)
 const memberDetailLoading = ref(false)
 const editingTeamId = ref<string>()
+const editingTeamBaseline = ref<(SystemTeamEditableSnapshot & { id: string; updatedAt: string })>()
 const selectedTeamId = ref<string>()
 const selectedTeamDetail = ref<SystemTeamDetail>()
 
@@ -308,6 +314,7 @@ function resetSearch() {
 function openCreateTeam() {
   if (!ensureManagementAction()) return
   editingTeamId.value = undefined
+  editingTeamBaseline.value = undefined
   Object.assign(teamForm, {
     name: '',
     description: '',
@@ -319,6 +326,13 @@ function openCreateTeam() {
 function openEditTeam(team: SystemTeamListItem) {
   if (!ensureManagementAction()) return
   editingTeamId.value = team.id
+  editingTeamBaseline.value = {
+    id: team.id,
+    name: team.name,
+    description: team.description,
+    status: team.status,
+    updatedAt: team.updatedAt
+  }
   Object.assign(teamForm, {
     name: team.name,
     description: team.description ?? '',
@@ -338,22 +352,46 @@ const saveTeam = submitAction('system_teams.save', async () => {
     message.warning('授权团队名称已存在')
     return
   }
-  const payload = {
-    name: teamName,
-    description: teamForm.description.trim() || undefined,
-    status: (teamForm.statusActive ? 'active' : 'disabled') as 'active' | 'disabled'
-  }
   try {
     if (editingTeamId.value) {
-      await api.systemTeams.update(editingTeamId.value, payload)
+      const baseline = editingTeamBaseline.value
+      if (!baseline || baseline.id !== editingTeamId.value) {
+        teamModalOpen.value = false
+        message.warning('团队列表已变化，请重新打开编辑弹窗')
+        return
+      }
+      const patch = buildSystemTeamEditPatch(baseline, teamForm)
+      if (!Object.keys(patch).length) {
+        teamModalOpen.value = false
+        message.info('授权团队未发生变化')
+        return
+      }
+      const updated = await api.systemTeams.update(editingTeamId.value, {
+        ...patch,
+        expectedUpdatedAt: baseline.updatedAt
+      }, teamScopeParams.value)
+      const changedFields = new Set(updated.changedFields)
+      teams.value = teams.value.map((team) => team.id === updated.id
+        ? {
+            ...team,
+            updatedAt: updated.updatedAt,
+            ...(changedFields.has('name') && updated.rowPatch.name !== undefined ? { name: updated.rowPatch.name } : {}),
+            ...(changedFields.has('description') ? { description: updated.rowPatch.description ?? undefined } : {}),
+            ...(changedFields.has('status') && updated.rowPatch.status !== undefined ? { status: updated.rowPatch.status } : {})
+          }
+        : team)
       message.success('授权团队已更新')
     } else {
-      await api.systemTeams.create(payload)
+      await api.systemTeams.create({
+        name: teamName,
+        description: teamForm.description.trim() || undefined,
+        status: teamForm.statusActive ? 'active' : 'disabled'
+      })
       message.success('授权团队已创建')
+      resetPagination()
+      await loadData()
     }
     teamModalOpen.value = false
-    resetPagination()
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存授权团队失败'))

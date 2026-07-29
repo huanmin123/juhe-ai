@@ -374,6 +374,12 @@ export interface ResponseInspectionPolicyCreatePayload {
   notes?: string
 }
 
+export interface ResponseInspectionPolicyProviderOptionsParams {
+  protocolCode: ResponseInspectionPolicyProtocolCode
+  scopeType: ResponseInspectionPolicyScopeType
+  keyword?: string
+}
+
 export type ResponseInspectionPolicyPatchChanges = Partial<Omit<ResponseInspectionPolicyCreatePayload, 'providerCode' | 'notes'>> & {
   providerCode?: string | null
   notes?: string | null

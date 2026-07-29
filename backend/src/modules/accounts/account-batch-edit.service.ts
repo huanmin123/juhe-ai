@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from 'node:util'
 
 import type {
+  AccountBatchEditContextField,
+  AccountBatchEditContextItem,
   AccountBatchEditResult,
   AccountModelMapping,
-  AccountSummary,
   AccountSupportedEndpointMode
 } from '../../domain/types.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
@@ -38,7 +39,7 @@ import {
   normalizeAccountSupportedModelsForProviderAsync
 } from '../../storage/account-model-normalization.js'
 import { normalizeAccountTagNamesInput } from '../../storage/account-tags.repository.js'
-import { findAccountSummaryAsync } from '../../storage/account-summary.repository.js'
+import { loadAccountBatchEditContextRecordsAsync } from '../../storage/account-batch-edit-context.repository.js'
 import { isAccountExpired } from '../../storage/account-runtime-mutation-helpers.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { normalizeNullableTextInput } from '../../storage/repository-input-normalization.js'
@@ -66,28 +67,14 @@ export interface AccountBatchEditServiceResult extends AccountBatchEditResult {
 
 export async function loadAccountBatchEditContextAsync(
   accountIds: string[],
+  fields: readonly AccountBatchEditContextField[],
   access?: AccessScope
-): Promise<AccountSummary[]> {
-  const accounts = await Promise.all(accountIds.map((accountId) => findAccountSummaryAsync(accountId, access)))
-  if (accounts.some((account) => !account)) throw new AccountBatchUpdateAccessError()
-  const resolved = accounts.filter((account): account is NonNullable<typeof account> => Boolean(account))
-  const owners = new Set<string>()
-  for (const account of resolved) {
-    if (
-      account.accessType === 'authorized'
-      || account.accountAuthorizationId
-      || account.authorizationInstanceSourceAccountId
-      || account.permissions?.canEdit === false
-      || account.permissions?.canViewCredentials === false
-    ) {
-      throw new AccountBatchUpdateAccessError()
-    }
-    const ownerSystemAccountId = account.ownerSystemAccountId ?? account.systemAccountId
-    if (!ownerSystemAccountId) throw new AccountBatchUpdateAccessError()
-    owners.add(ownerSystemAccountId)
-  }
+): Promise<AccountBatchEditContextItem[]> {
+  const records = await loadAccountBatchEditContextRecordsAsync(accountIds, fields, access)
+  if (records.length !== accountIds.length) throw new AccountBatchUpdateAccessError()
+  const owners = new Set(records.map((account) => account.ownerSystemAccountId))
   if (owners.size !== 1) throw new AccountBatchUpdateAccessError('批量编辑账户必须属于同一系统账户作用域')
-  return resolved
+  return records.map(({ ownerSystemAccountId: _ownerSystemAccountId, ...item }) => item)
 }
 
 export async function batchEditAccountsAsync(

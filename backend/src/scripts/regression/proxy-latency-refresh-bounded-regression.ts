@@ -12,6 +12,7 @@ function proxy(id: string): ProxyProfileTestConfig {
     port: 10_000 + Number(id.replace(/\D/g, '') || 0),
     enabled: true,
     testStatus: 'unknown',
+    updatedAt: '2026-07-26T00:00:00.000Z',
     proxyUrl: `http://127.0.0.1:${10_000 + Number(id.replace(/\D/g, '') || 0)}`,
     configUpdatedAt: '2026-07-26T00:00:00.000Z'
   }

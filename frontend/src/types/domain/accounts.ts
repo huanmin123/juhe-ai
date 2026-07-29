@@ -566,6 +566,24 @@ export interface AccountBatchEditTarget {
   configRevision: number
 }
 
+export type AccountBatchEditContextField =
+  | 'supportedModels'
+  | 'modelMappings'
+  | 'supportedEndpointModes'
+
+export interface AccountBatchEditContextItem {
+  id: string
+  configRevision: number
+  providerCode: ProviderCode
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  type: AccountType
+  supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
+}
+
 export interface AccountBatchEditField<TValue> {
   enabled: boolean
   value: TValue
@@ -963,7 +981,7 @@ export interface GroupListItem extends Omit<
 
 export type GroupEditDetail = Pick<
   GroupSummary,
-  'id' | 'systemAccountId' | 'name' | 'providerCode' | 'description' | 'enabled' | 'isDefault' | 'groupType' | 'schedulingPolicy' | 'accessType'
+  'name' | 'providerCode' | 'description' | 'enabled' | 'groupType' | 'schedulingPolicy'
 > & { updatedAt: string }
 
 export interface GroupMutationResult {

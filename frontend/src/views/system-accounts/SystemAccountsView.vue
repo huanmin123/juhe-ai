@@ -144,6 +144,7 @@ import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus, UserRequestLimits } from '@/types/domain'
+import { buildSystemAccountEditablePatch, cloneSystemAccountEditableValues, hasSystemAccountEditableChanges, mergeSystemAccountMutation, type SystemAccountEditableValues } from './systemAccountEditForm'
 
 interface SystemAccountsPageState {
   keyword: string
@@ -162,7 +163,10 @@ const resetPasswordSaving = submittingRef('system_accounts.reset_password')
 const modalOpen = ref(false)
 const passwordModalOpen = ref(false)
 const editingId = ref<string>()
+const editingVersion = ref<string>()
+const editingBaseline = ref<SystemAccountEditableValues>()
 const resettingId = ref<string>()
+const resettingVersion = ref<string>()
 const resettingAccountRole = ref<SystemAccountRole>()
 const resetPassword = ref('')
 const keyword = ref(initialPageState.keyword)
@@ -257,6 +261,8 @@ const {
 function openCreate() {
   if (!canManageSystemAccounts.value) return
   editingId.value = undefined
+  editingVersion.value = undefined
+  editingBaseline.value = undefined
   Object.assign(form, {
     username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true,
     imageGenerationEnabled: false, requestLimitPerMinute: null, requestLimitPerDay: null, requestLimitPerWeek: null, requestLimitPerMonth: null,
@@ -268,6 +274,7 @@ function openCreate() {
 function openEdit(record: SystemAccountListItem) {
   if (!canManageSystemAccounts.value) return
   editingId.value = record.id
+  editingVersion.value = record.editVersion
   Object.assign(form, {
     username: record.username,
     displayName: record.displayName,
@@ -283,12 +290,14 @@ function openEdit(record: SystemAccountListItem) {
     requestLimitPerMonth: record.requestLimits?.perMonth ?? null,
     requestLimitExpiresOn: record.requestLimits?.expiresOn ?? null
   })
+  editingBaseline.value = cloneSystemAccountEditableValues(systemAccountEditableValues(record.displayName))
   modalOpen.value = true
 }
 
 function openResetPassword(record: SystemAccountListItem) {
   if (!canManageSystemAccounts.value) return
   resettingId.value = record.id
+  resettingVersion.value = record.editVersion
   resettingAccountRole.value = record.role
   resetPassword.value = ''
   passwordModalOpen.value = true
@@ -328,6 +337,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
     return
   }
   try {
+    const editableValues = systemAccountEditableValues(displayName)
     const basePayload: {
       displayName: string
       description: string
@@ -337,24 +347,23 @@ const handleSave = submitAction('system_accounts.save', async () => {
       imageGenerationEnabled: boolean
       requestLimits: UserRequestLimits | null
     } = {
-      displayName,
-      description: form.description,
-      role: form.role,
-      status: form.status,
-      mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword,
-      imageGenerationEnabled: form.imageGenerationEnabled,
-      requestLimits: requestLimitsPayload()
+      ...editableValues
     }
     if (basePayload.role === 'super_admin') {
       delete basePayload.role
     }
     if (editingId.value) {
-      const updated = await api.systemAccounts.update(editingId.value, basePayload)
-      updateItems((item) => item.id === updated.id, (item) => ({
-        ...item,
-        ...updated,
-        requestLimits: updated.requestLimits
-      }))
+      if (!editingBaseline.value || !editingVersion.value) throw new Error('系统账户编辑基线缺失，请重新打开编辑窗口')
+      const patch = buildSystemAccountEditablePatch(editingBaseline.value, editableValues)
+      if (!hasSystemAccountEditableChanges(patch)) {
+        modalOpen.value = false
+        return
+      }
+      const updated = await api.systemAccounts.update(editingId.value, {
+        expectedUpdatedAt: editingVersion.value,
+        ...patch
+      })
+      updateItems((item) => item.id === updated.id, (item) => mergeSystemAccountMutation(item, updated))
       message.success('系统账户已更新')
     } else {
       const payload = { ...basePayload, username, password: form.password }
@@ -387,10 +396,15 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
     return
   }
   try {
-    await api.systemAccounts.update(resettingId.value, { password: resetPassword.value, mustChangePassword: !isAdminRole(resettingAccountRole.value) })
+    if (!resettingVersion.value) throw new Error('系统账户编辑版本缺失，请重新打开重置密码窗口')
+    const updated = await api.systemAccounts.update(resettingId.value, {
+      expectedUpdatedAt: resettingVersion.value,
+      password: resetPassword.value,
+      mustChangePassword: !isAdminRole(resettingAccountRole.value)
+    })
+    updateItems((item) => item.id === updated.id, (item) => mergeSystemAccountMutation(item, updated))
     message.success('密码已重置')
     passwordModalOpen.value = false
-    await loadData()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '重置密码失败'))
@@ -431,6 +445,18 @@ function requestLimitsPayload(): UserRequestLimits | null {
   const expiresOn = normalizedOptionalRequestLimitDate(form.requestLimitExpiresOn)
   if (expiresOn) output.expiresOn = expiresOn
   return output
+}
+
+function systemAccountEditableValues(displayName: string): SystemAccountEditableValues {
+  return {
+    displayName,
+    description: form.description.trim(),
+    role: form.role,
+    status: form.status,
+    mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword,
+    imageGenerationEnabled: form.imageGenerationEnabled,
+    requestLimits: requestLimitsPayload()
+  }
 }
 
 function normalizedOptionalRequestLimit(value: number | null, label: string): number | null {

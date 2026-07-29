@@ -1,4 +1,4 @@
-import type { UsageRecordSummary } from '@/types/domain'
+import type { UsageRecordListItem, UsageRecordSummary } from '@/types/domain'
 import { displayGroupName } from '@/shared/groupLabelCache'
 import { formatMillisecondsAsSeconds } from '@/shared/formatters'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -14,7 +14,7 @@ export function displayUsageRecordGroupName(name?: string, id?: string): string 
   return displayGroupName(name, id)
 }
 
-export function accountDisplayText(record: UsageRecordSummary): string {
+export function accountDisplayText(record: UsageRecordListItem): string {
   if (record.accountName) return record.accountName
   if (record.accountId) return '已删除或未知'
   if (!record.success) return '未分配账号'
@@ -29,7 +29,7 @@ export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
   return record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
 }
 
-export function usageRecordTokenParts(record: UsageRecordSummary): string[] {
+export function usageRecordTokenParts(record: UsageRecordListItem): string[] {
   return [
     `输入 ${formatTokens(record.inputTokens)}`,
     `输出 ${formatTokens(record.outputTokens)}`,
@@ -37,7 +37,7 @@ export function usageRecordTokenParts(record: UsageRecordSummary): string[] {
   ]
 }
 
-export function formatRecordTokens(record: UsageRecordSummary): string {
+export function formatRecordTokens(record: UsageRecordListItem): string {
   return usageRecordTokenParts(record).join(' / ')
 }
 
@@ -51,8 +51,8 @@ export function formatCost(value?: unknown): string {
   return `$${numericValue.toFixed(6)}`
 }
 
-export function usageRecordDisplayCostUsd(record: UsageRecordSummary): number | undefined {
-  return record.costUsd ?? record.costBreakdown?.accountChargeUsd
+export function usageRecordDisplayCostUsd(record: UsageRecordListItem): number | undefined {
+  return record.costUsd
 }
 
 export function formatUnitPrice(value?: unknown): string {
@@ -75,20 +75,20 @@ export function formatDuration(value?: unknown): string {
   return formatMillisecondsAsSeconds(numberValue(value))
 }
 
-export function usageRecordLatencyParts(record: UsageRecordSummary): string[] {
+export function usageRecordLatencyParts(record: UsageRecordListItem): string[] {
   return [
     `首 token ${formatDuration(record.firstTokenMs)}`,
     `总耗时 ${formatDuration(record.durationMs)}`
   ]
 }
 
-export function usageRecordServiceTierText(record: UsageRecordSummary): string | undefined {
+export function usageRecordServiceTierText(record: UsageRecordListItem): string | undefined {
   if (record.billedServiceTier === 'priority') return 'Priority'
   if (record.billedServiceTier === 'flex') return 'Flex'
   return undefined
 }
 
-export function usageRecordReasoningEffortText(record: UsageRecordSummary): string | undefined {
+export function usageRecordReasoningEffortText(record: UsageRecordListItem): string | undefined {
   const effort = record.effectiveReasoningEffort
   if (!effort) return undefined
   return {
@@ -102,7 +102,7 @@ export function usageRecordReasoningEffortText(record: UsageRecordSummary): stri
   }[effort]
 }
 
-export function statusCodeColor(record: UsageRecordSummary): string {
+export function statusCodeColor(record: UsageRecordListItem): string {
   const value = record.statusCode
   if (!value) return 'default'
   if (value >= 200 && value < 300) return 'green'
@@ -111,7 +111,7 @@ export function statusCodeColor(record: UsageRecordSummary): string {
   return 'blue'
 }
 
-export function statusCodeText(record: UsageRecordSummary): string {
+export function statusCodeText(record: UsageRecordListItem): string {
   if (typeof record.statusCode === 'number') return String(record.statusCode)
   return '-'
 }
@@ -121,7 +121,7 @@ function numberValue(value: unknown): number | undefined {
   return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : undefined
 }
 
-export function trafficSourceText(record: UsageRecordSummary): string {
+export function trafficSourceText(record: UsageRecordListItem): string {
   return {
     gateway: '网关请求',
     manual_account_test: '账号测试',
@@ -133,7 +133,7 @@ export function trafficSourceText(record: UsageRecordSummary): string {
   }[record.trafficSource] ?? '网关请求'
 }
 
-export function trafficSourceColor(record: UsageRecordSummary): string {
+export function trafficSourceColor(record: UsageRecordListItem): string {
   if (record.trafficSource === 'hybrid_quality_scoring') return 'purple'
   if (record.trafficSource === 'hybrid_scoring') return 'blue'
   if (record.trafficSource === 'runtime_recovery_probe') return 'orange'
@@ -179,6 +179,6 @@ export function usageRecordCodexGuardStatus(record: UsageRecordSummary): UsageRe
   }
 }
 
-export function usageRecordSystemAccountText(record: UsageRecordSummary): string {
+export function usageRecordSystemAccountText(record: UsageRecordListItem): string {
   return systemAccountDisplayText(record)
 }

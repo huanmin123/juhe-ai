@@ -7,6 +7,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './data
 import { getPostgresPool } from './postgres-client.js'
 import { isProtocolProviderCode, isProtocolProviderCodeAsync } from './provider.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { escapeLikePrefix } from './query-utils.js'
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
 export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
 export type ResponseInspectionPolicyClientProfile =
@@ -91,7 +92,6 @@ export interface ResponseInspectionPolicyDetail {
 export interface ResponseInspectionPolicyProviderOption {
   code: string
   name: string
-  protocolCode: string
 }
 
 export interface ResponseInspectionPolicyInput {
@@ -155,7 +155,12 @@ interface ResponseInspectionPolicyDetailRow extends Omit<ResponseInspectionPolic
 interface ResponseInspectionPolicyProviderOptionRow {
   code: string
   name: string
-  protocol_code: string
+}
+
+export interface ResponseInspectionPolicyProviderOptionsQuery {
+  protocolCode: string
+  scopeType: ResponseInspectionPolicyScopeType
+  keyword?: string
 }
 
 export interface ResponseInspectionPolicyListResult {
@@ -331,42 +336,56 @@ export async function getResponseInspectionPolicyDetailAsync(id: string): Promis
   return row ? policyDetailFromRow(row) : undefined
 }
 
-export function listResponseInspectionPolicyProviderOptions(): ResponseInspectionPolicyProviderOption[] {
-  const placeholders = responseInspectionProtocolCodes.map(() => '?').join(', ')
+export function listResponseInspectionPolicyProviderOptions(input: ResponseInspectionPolicyProviderOptionsQuery): ResponseInspectionPolicyProviderOption[] {
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  if (!protocolCode || input.scopeType !== 'provider') return []
+  const keyword = input.keyword?.trim()
+  const where = ['p.enabled = 1', 'ppp.enabled = 1', 'ppp.protocol_code = ?']
+  const params: string[] = [protocolCode]
+  if (keyword) {
+    where.push("(lower(p.code) LIKE lower(?) ESCAPE '\\' OR lower(p.name) LIKE lower(?) ESCAPE '\\')")
+    const pattern = `${escapeLikePrefix(keyword)}%`
+    params.push(pattern, pattern)
+  }
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT DISTINCT p.code, p.name, ppp.protocol_code
+      SELECT DISTINCT p.code, p.name
       FROM providers p
       INNER JOIN provider_protocol_profiles ppp ON ppp.provider_code = p.code
-      WHERE p.enabled = 1
-        AND ppp.enabled = 1
-        AND ppp.protocol_code IN (${placeholders})
-      ORDER BY p.name ASC, p.code ASC, ppp.protocol_code ASC
+      WHERE ${where.join('\n        AND ')}
+      ORDER BY p.name ASC, p.code ASC
     `)
-    .all(...responseInspectionProtocolCodes) as unknown as ResponseInspectionPolicyProviderOptionRow[]
+    .all(...params) as unknown as ResponseInspectionPolicyProviderOptionRow[]
   return rows.map(responseInspectionPolicyProviderOptionFromRow)
 }
 
-export async function listResponseInspectionPolicyProviderOptionsAsync(): Promise<ResponseInspectionPolicyProviderOption[]> {
+export async function listResponseInspectionPolicyProviderOptionsAsync(input: ResponseInspectionPolicyProviderOptionsQuery): Promise<ResponseInspectionPolicyProviderOption[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
-      type: 'list_response_inspection_policy_provider_options_read_only'
+      type: 'list_response_inspection_policy_provider_options_read_only',
+      input
     })
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listResponseInspectionPolicyProviderOptions()
+    return listResponseInspectionPolicyProviderOptions(input)
   }
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  if (!protocolCode || input.scopeType !== 'provider') return []
+  const keyword = input.keyword?.trim()
   const client = await getResponseInspectionPolicyDatabaseClient()
-  const placeholders = client.dialect.bindPlaceholders(responseInspectionProtocolCodes.length)
+  const where = ['p.enabled = 1', 'ppp.enabled = 1', 'ppp.protocol_code = $1']
+  const params: string[] = [protocolCode]
+  if (keyword) {
+    where.push("(lower(p.code) LIKE lower($2) ESCAPE '\\' OR lower(p.name) LIKE lower($2) ESCAPE '\\')")
+    params.push(`${escapeLikePrefix(keyword)}%`)
+  }
   const rows = await client.query<ResponseInspectionPolicyProviderOptionRow>(`
-    SELECT DISTINCT p.code, p.name, ppp.protocol_code
+    SELECT DISTINCT p.code, p.name
     FROM ${providersTable(client)} p
     INNER JOIN ${providerProtocolProfilesTable(client)} ppp ON ppp.provider_code = p.code
-    WHERE p.enabled = 1
-      AND ppp.enabled = 1
-      AND ppp.protocol_code IN (${placeholders})
-    ORDER BY p.name ASC, p.code ASC, ppp.protocol_code ASC
-  `, responseInspectionProtocolCodes)
+    WHERE ${where.join('\n      AND ')}
+    ORDER BY p.name ASC, p.code ASC
+  `, params)
   return rows.map(responseInspectionPolicyProviderOptionFromRow)
 }
 
@@ -1077,8 +1096,7 @@ function responseInspectionPolicyProviderOptionFromRow(
 ): ResponseInspectionPolicyProviderOption {
   return {
     code: row.code,
-    name: row.name,
-    protocolCode: row.protocol_code
+    name: row.name
   }
 }
 

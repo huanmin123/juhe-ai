@@ -10,9 +10,7 @@
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
         <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
         <a-tag v-if="!record.success" color="red">失败</a-tag>
-        <a-tag v-else :title="usageRecordCodexGuardStatus(record)?.detail" :color="usageRecordCodexGuardStatus(record) ? 'gold' : 'green'">
-          {{ usageRecordCodexGuardStatus(record)?.label ?? '成功' }}
-        </a-tag>
+        <a-tag v-else color="green">成功</a-tag>
         <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">状态码 {{ statusCodeText(record) }}</a-tag>
       </div>
     </div>
@@ -77,7 +75,7 @@
 <script setup lang="ts">
 import { CopyOutlined } from '@ant-design/icons-vue'
 
-import type { UsageRecordSummary } from '@/types/domain'
+import type { UsageRecordListItem } from '@/types/domain'
 import {
   accountDisplayText,
   displayName,
@@ -94,13 +92,12 @@ import {
   usageRecordDisplayCostUsd,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
-  usageRecordSystemAccountText,
-  usageRecordCodexGuardStatus
+  usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
 const props = defineProps<{
   isManagementView: boolean
-  record: UsageRecordSummary
+  record: UsageRecordListItem
 }>()
 
 const emit = defineEmits<{

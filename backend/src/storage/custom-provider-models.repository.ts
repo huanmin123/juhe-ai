@@ -4,11 +4,15 @@ import type { ProviderModelPricing } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
-import { createPostgresDatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { normalizeServiceTierPrices } from './provider-model-catalog.repository.js'
 import { notifyCommittedModelCacheInvalidationAsync } from './model-cache-sync-warning.js'
+import {
+  clearUnavailableProviderModelDefaultReferencesInTransaction,
+  type ProviderModelDefaultReferenceCleanupInput
+} from './provider-model-default-reference-cleanup.repository.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
 type CustomProviderModelServiceTier = string
@@ -280,6 +284,7 @@ export type CustomProviderModelMutationRecord = Pick<CustomProviderModelRecord,
 export interface CustomProviderModelPatchOutcome {
   kind: 'updated' | 'no_op' | 'conflict'
   record: CustomProviderModelMutationRecord
+  clearedDefaultHealthCheckProviderCodes?: string[]
 }
 
 interface CustomProviderModelRow {
@@ -331,7 +336,6 @@ export function listCustomProviderModelsForCatalog(input: {
   const params: SQLInputValue[] = [input.providerCode]
   if (!input.includeInactive) {
     clauses.push("status = 'active'")
-    clauses.push('catalog_visible = 1')
     clauses.push("(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))")
   }
   if (input.systemAccountId) {
@@ -364,7 +368,6 @@ export async function listCustomProviderModelsForCatalogAsync(input: {
   const params: unknown[] = [input.providerCode]
   if (!input.includeInactive) {
     clauses.push("status = 'active'")
-    clauses.push('catalog_visible = TRUE')
     clauses.push("(shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)")
   }
   if (input.systemAccountId) {
@@ -399,7 +402,6 @@ export async function listCustomProviderModelTestCatalogAsync(input: {
       FROM custom_provider_models
       WHERE provider_code IN (${placeholders})
         AND status = 'active'
-        AND catalog_visible = 1
         AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
         ${clause}
       ORDER BY provider_code ASC, scope ASC, model COLLATE NOCASE ASC, id ASC
@@ -413,7 +415,6 @@ export async function listCustomProviderModelTestCatalogAsync(input: {
     FROM ${customProviderModelsTable(client)}
     WHERE provider_code = ANY(?::text[])
       AND status = 'active'
-      AND catalog_visible = TRUE
       AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
       ${clause}
     ORDER BY provider_code ASC, scope ASC, lower(model) ASC, id ASC
@@ -443,7 +444,6 @@ export async function findCustomProviderModelTestCatalogAsync(input: {
       WHERE provider_code IN (${placeholders})
         AND model = ?
         AND status = 'active'
-        AND catalog_visible = 1
         AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
         ${clause}
       ORDER BY provider_code ASC, scope ASC, id ASC
@@ -457,7 +457,6 @@ export async function findCustomProviderModelTestCatalogAsync(input: {
     WHERE provider_code = ANY(?::text[])
       AND model = ?
       AND status = 'active'
-      AND catalog_visible = TRUE
       AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
       ${clause}
     ORDER BY provider_code ASC, scope ASC, id ASC
@@ -472,38 +471,49 @@ export function findCustomProviderModelById(id: string): CustomProviderModelReco
   return row ? customProviderModelFromRow(row) : undefined
 }
 
-export async function findCustomProviderModelByIdAsync(id: string): Promise<CustomProviderModelRecord | undefined> {
+export async function findCustomProviderModelByIdAsync(
+  id: string,
+  ownerSystemAccountId?: string
+): Promise<CustomProviderModelRecord | undefined> {
+  const owner = optionalText(ownerSystemAccountId)
+  const ownerPredicate = owner ? " AND scope = 'personal' AND system_account_id = ?" : ''
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findCustomProviderModelById(id)
+    const row = getBusinessDatabase()
+      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE id = ?${ownerPredicate} LIMIT 1`)
+      .get(id, ...(owner ? [owner] : [])) as unknown as CustomProviderModelRow | undefined
+    return row ? customProviderModelFromRow(row) : undefined
   }
   const client = await getCustomProviderModelsDatabaseClient()
   const row = await client.one<CustomProviderModelRow>(`
     SELECT ${customProviderModelColumns()}
     FROM ${customProviderModelsTable(client)}
-    WHERE id = ?
+    WHERE id = ?${ownerPredicate}
     LIMIT 1
-  `, [id])
+  `, [id, ...(owner ? [owner] : [])])
   return row ? customProviderModelFromRow(row) : undefined
 }
 
 export async function findCustomProviderModelPatchStateAsync(
   id: string,
-  submitted: Record<string, unknown>
+  submitted: Record<string, unknown>,
+  ownerSystemAccountId?: string
 ): Promise<CustomProviderModelPatchState | undefined> {
   const selectedColumns = customProviderModelPatchColumns(submitted)
+  const owner = optionalText(ownerSystemAccountId)
+  const ownerPredicate = owner ? " AND scope = 'personal' AND system_account_id = ?" : ''
   if (runtimeConfig.databaseDriver !== 'postgres') {
     const row = getBusinessDatabase()
-      .prepare(`SELECT ${selectedColumns} FROM custom_provider_models WHERE id = ? LIMIT 1`)
-      .get(id) as unknown as CustomProviderModelRow | undefined
+      .prepare(`SELECT ${selectedColumns} FROM custom_provider_models WHERE id = ?${ownerPredicate} LIMIT 1`)
+      .get(id, ...(owner ? [owner] : [])) as unknown as CustomProviderModelRow | undefined
     return row ? customProviderModelFromRow(row) : undefined
   }
   const client = await getCustomProviderModelsDatabaseClient()
   const row = await client.one<CustomProviderModelRow>(`
     SELECT ${selectedColumns}
     FROM ${customProviderModelsTable(client)}
-    WHERE id = ?
+    WHERE id = ?${ownerPredicate}
     LIMIT 1
-  `, [id])
+  `, [id, ...(owner ? [owner] : [])])
   return row ? customProviderModelFromRow(row) : undefined
 }
 
@@ -749,6 +759,8 @@ export async function patchCustomProviderModelAsync(input: {
   next: UpsertCustomProviderModelInput
   fields: CustomProviderModelPatchField[]
   expectedUpdatedAt: string
+  ownerSystemAccountId?: string
+  defaultReferenceCleanup?: ProviderModelDefaultReferenceCleanupInput
 }): Promise<CustomProviderModelPatchOutcome> {
   if (input.current.updatedAt !== input.expectedUpdatedAt) {
     return { kind: 'conflict', record: customProviderModelMutationRecord(input.current) }
@@ -762,28 +774,34 @@ export async function patchCustomProviderModelAsync(input: {
     input.next.actorSystemAccountId,
     updatedAt,
     input.current.id,
-    input.expectedUpdatedAt
+    input.expectedUpdatedAt,
+    ...(input.ownerSystemAccountId?.trim() ? [input.ownerSystemAccountId.trim()] : [])
   ]
+  const ownerPredicate = input.ownerSystemAccountId?.trim()
+    ? " AND scope = 'personal' AND system_account_id = ?"
+    : ''
   const updateSql = `
     UPDATE custom_provider_models
     SET ${assignments.join(', ')}, updated_by = ?, updated_at = ?
-    WHERE id = ? AND updated_at = ?
+    WHERE id = ? AND updated_at = ?${ownerPredicate}
   `
-  let changes = 0
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    changes = Number(
-      getBusinessDatabase().prepare(updateSql).run(...writeParams as SQLInputValue[]).changes
-    )
-  } else {
-    const client = await getCustomProviderModelsDatabaseClient()
-    changes = Number(
-      (await client.execute(
-        updateSql.replace('custom_provider_models', customProviderModelsTable(client)),
-        writeParams
-      )).changes
-    )
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? await getCustomProviderModelsDatabaseClient()
+    : createSqliteDatabaseClient(getBusinessDatabase())
+  const transactionResult = await client.transaction(async (tx) => {
+    const changes = Number((await tx.execute(
+      updateSql.replace('custom_provider_models', customProviderModelsTable(tx)),
+      writeParams
+    )).changes)
+    if (changes === 0) return { changes, clearedProviderCodes: [] as string[] }
+    const clearedProviderCodes = input.defaultReferenceCleanup
+      ? await clearUnavailableProviderModelDefaultReferencesInTransaction(tx, input.defaultReferenceCleanup)
+      : []
+    return { changes, clearedProviderCodes }
+  })
+  if (transactionResult.changes === 0) {
+    return { kind: 'conflict', record: customProviderModelMutationRecord(input.current) }
   }
-  if (changes === 0) return { kind: 'conflict', record: customProviderModelMutationRecord(input.current) }
 
   const saved = customProviderModelMutationRecord({
     ...input.current,
@@ -791,7 +809,13 @@ export async function patchCustomProviderModelAsync(input: {
     updatedAt
   })
   await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_saved')
-  return { kind: 'updated', record: saved }
+  return {
+    kind: 'updated',
+    record: saved,
+    ...(transactionResult.clearedProviderCodes.length
+      ? { clearedDefaultHealthCheckProviderCodes: transactionResult.clearedProviderCodes }
+      : {})
+  }
 }
 
 export function deleteCustomProviderModel(
@@ -807,16 +831,27 @@ export function deleteCustomProviderModel(
   return result.changes > 0
 }
 
-export async function deleteCustomProviderModelAsync(id: string): Promise<boolean> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    const deleted = deleteCustomProviderModel(id, { notifyCache: false })
-    if (deleted) {
-      await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
+export async function deleteCustomProviderModelAsync(
+  id: string,
+  options: {
+    ownerSystemAccountId?: string
+    defaultReferenceCleanup?: ProviderModelDefaultReferenceCleanupInput
+  } = {}
+): Promise<boolean> {
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? await getCustomProviderModelsDatabaseClient()
+    : createSqliteDatabaseClient(getBusinessDatabase())
+  const owner = optionalText(options.ownerSystemAccountId)
+  const result = await client.transaction(async (tx) => {
+    const deleted = await tx.execute(`
+      DELETE FROM ${customProviderModelsTable(tx)}
+      WHERE id = ?${owner ? " AND scope = 'personal' AND system_account_id = ?" : ''}
+    `, [id, ...(owner ? [owner] : [])])
+    if (deleted.changes > 0 && options.defaultReferenceCleanup) {
+      await clearUnavailableProviderModelDefaultReferencesInTransaction(tx, options.defaultReferenceCleanup)
     }
     return deleted
-  }
-  const client = await getCustomProviderModelsDatabaseClient()
-  const result = await client.execute(`DELETE FROM ${customProviderModelsTable(client)} WHERE id = ?`, [id])
+  })
   if (result.changes > 0) {
     await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
   }
@@ -1037,7 +1072,6 @@ function customProviderModelColumns(): string {
 
 const customProviderModelPatchColumnByField: Partial<Record<CustomProviderModelPatchField, string>> = {
   status: 'status',
-  catalogVisible: 'catalog_visible',
   mode: 'mode',
   supportedApiProtocols: 'supported_api_protocols_json',
   supportedServiceTiers: 'supported_service_tiers_json',
@@ -1260,12 +1294,6 @@ function customProviderModelPatchAssignments(
   const nullableOptionalNumber = (value: unknown) => optionalNumber(value) ?? null
 
   add('status', 'status', next.status ?? current.status, current.status)
-  add(
-    'catalogVisible',
-    'catalog_visible',
-    runtimeConfig.databaseDriver === 'postgres' ? next.catalogVisible !== false : (next.catalogVisible === false ? 0 : 1),
-    runtimeConfig.databaseDriver === 'postgres' ? current.catalogVisible : (current.catalogVisible ? 1 : 0)
-  )
   add('mode', 'mode', nullableOptionalText(next.mode), nullableOptionalText(current.mode))
   add('supportedApiProtocols', 'supported_api_protocols_json', JSON.stringify(normalizeProtocols(next.supportedApiProtocols)), JSON.stringify(normalizeProtocols(current.supportedApiProtocols)))
   add('supportedServiceTiers', 'supported_service_tiers_json', JSON.stringify(capabilities.supportedServiceTiers), JSON.stringify(current.supportedServiceTiers))

@@ -3,7 +3,8 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createProxyAsync, deleteProxyAsync, findProxyAsync, listProxiesPageAsync, listProxyOptionsAsync, ProxyInUseError, updateProxyAsync } from '../../storage/repositories.js'
+import { createProxyAsync, deleteProxyForManagementAsync, findProxyAsync, listProxiesPageAsync, listProxyOptionsAsync, patchProxyForManagementAsync, ProxyInUseError, ProxyProfileUpdateConflictError } from '../../storage/repositories.js'
+import { currentSystemAccountId } from '../../storage/access-scope.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
@@ -25,7 +26,11 @@ const proxySchema = z.object({
   enabled: z.boolean().optional()
 }).strict()
 
-const proxyUpdateSchema = proxySchema.partial().strict()
+const proxyUpdateSchema = proxySchema.partial().extend({
+  expectedUpdatedAt: z.string().datetime({ message: '代理配置版本无效' })
+}).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '代理更新内容不能为空'
+})
 
 proxiesRouter.get('/options', async (req, res, next) => {
   try {
@@ -41,7 +46,15 @@ proxiesRouter.get('/options', async (req, res, next) => {
 
 proxiesRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
-    res.json(ok(await listProxiesPageAsync(parseProxyListOptions(req.query))))
+    const requestAccess = getRequestAccessScope()
+    if (!requestAccess) {
+      res.status(401).json(badRequest('缺少系统账户上下文'))
+      return
+    }
+    res.json(ok(await listProxiesPageAsync({
+      ...parseProxyListOptions(req.query),
+      systemAccountId: currentSystemAccountId(requestAccess)
+    })))
   } catch (error) {
     next(error)
   }
@@ -184,27 +197,41 @@ proxiesRouter.patch('/:id', requireAdmin, async (req, res) => {
       res.status(400).json(badRequest('代理参数无效'))
       return
     }
-    const body = parsed.data as Record<string, unknown>
-    const proxy = await runLoggedOperationAsync(async () => {
-      const before = await findProxyAsync(req.params.id)
-      const proxy = await updateProxyAsync(req.params.id, body)
-      if (!proxy) {
-        throw new Error('代理不存在')
-      }
+    const requestAccess = getRequestAccessScope()
+    if (!requestAccess) {
+      res.status(401).json(badRequest('缺少系统账户上下文'))
+      return
+    }
+    const { expectedUpdatedAt, ...body } = parsed.data
+    const outcome = await patchProxyForManagementAsync(
+      req.params.id,
+      body,
+      expectedUpdatedAt,
+      currentSystemAccountId(requestAccess)
+    )
+    if (!outcome) {
+      res.status(404).json({ message: '代理不存在' })
+      return
+    }
+    if (!outcome.mutation.changed) {
+      res.json(ok(outcome.mutation))
+      return
+    }
+    const mutation = await runLoggedOperationAsync(async () => {
       return {
-        result: proxy,
+        result: outcome.mutation,
         log: {
           mode: 'admin',
           module: 'proxies',
           action: 'update',
           operationKey: 'proxies.update',
           resourceType: 'proxy',
-          resourceId: proxy.id,
-          resourceName: proxy.name,
-          summary: `更新代理：${proxy.name}`,
+          resourceId: outcome.mutation.id,
+          resourceName: outcome.name,
+          summary: `更新代理：${outcome.name}`,
           visibilityScope: 'admin_only',
           changes: [
-            ...diffSafeFields(before as unknown as Record<string, unknown> | undefined, proxy as unknown as Record<string, unknown>, {
+            ...diffSafeFields(outcome.before, outcome.after, {
               name: '名称',
               description: '说明',
               type: '类型',
@@ -213,17 +240,21 @@ proxiesRouter.patch('/:id', requireAdmin, async (req, res) => {
               username: '用户名',
               enabled: '启用状态'
             }),
-            ...(typeof body.password === 'string' && String(body.password).trim()
+            ...(typeof body.password === 'string' && body.password.trim()
               ? [safeChange('password', '密码', undefined, body.password)]
               : [])
           ]
         }
       }
     }, req)
-    res.json(ok(proxy))
+    res.json(ok(mutation))
   } catch (error) {
     if (error instanceof Error && error.message === '代理不存在') {
       res.status(404).json({ message: '代理不存在' })
+      return
+    }
+    if (error instanceof ProxyProfileUpdateConflictError) {
+      res.status(409).json({ message: error.message })
       return
     }
     const message = error instanceof Error ? error.message : '更新代理失败'
@@ -312,9 +343,14 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
 
 proxiesRouter.delete('/:id', requireAdmin, async (req, res) => {
   try {
+    const requestAccess = getRequestAccessScope()
+    if (!requestAccess) {
+      res.status(401).json(badRequest('缺少系统账户上下文'))
+      return
+    }
     await runLoggedOperationAsync(async () => {
-      const before = await findProxyAsync(req.params.id)
-      if (!await deleteProxyAsync(req.params.id)) {
+      const deleted = await deleteProxyForManagementAsync(req.params.id, currentSystemAccountId(requestAccess))
+      if (!deleted) {
         throw new Error('代理不存在')
       }
       return {
@@ -326,8 +362,8 @@ proxiesRouter.delete('/:id', requireAdmin, async (req, res) => {
           operationKey: 'proxies.delete',
           resourceType: 'proxy',
           resourceId: req.params.id,
-          resourceName: before?.name ?? req.params.id,
-          summary: `删除代理：${before?.name ?? req.params.id}`,
+          resourceName: deleted.name,
+          summary: `删除代理：${deleted.name}`,
           visibilityScope: 'admin_only',
           changes: [safeChange('deleted', '删除状态', false, true)]
         }

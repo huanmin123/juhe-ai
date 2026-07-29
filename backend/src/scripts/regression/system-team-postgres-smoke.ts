@@ -36,6 +36,7 @@ try {
 
   const listed = await listSystemTeamsPageAsync(adminAccess, { keyword, page: 1, pageSize: 10 })
   assert.ok(listed.items.some((item) => item.id === team.id), 'PG 系统团队列表关键词应返回刚创建的团队')
+  assert.equal(listed.items.find((item) => item.id === team.id)?.updatedAt, team.updatedAt, 'PG 系统团队列表必须携带编辑 CAS 版本')
   const scopedListed = await listSystemTeamsPageAsync({ systemAccountId: memberIds[0], role: 'user' }, { keyword, page: 1, pageSize: 10 })
   assert.deepEqual(scopedListed.items.map((item) => item.id), [team.id], 'PG 系统团队成员作用域列表应只返回成员所在团队')
   const detail = await findSystemTeamDetailAsync(team.id, adminAccess)
@@ -65,13 +66,23 @@ try {
   assert.ok(afterRemove?.members?.every((member) => member.systemAccountId !== memberIds[0]), 'PG 系统团队移除成员后摘要不应包含该成员')
   await assertRuntimeAuthorization(group.id, memberIds[0], 'revoked', null)
 
-  const disabled = await updateSystemTeamAsync(team.id, { status: 'disabled' }, adminAccess)
-  assert.equal(disabled?.status, 'disabled', 'PG 系统团队应可停用')
+  const disabled = await updateSystemTeamAsync(team.id, { status: 'disabled', expectedUpdatedAt: team.updatedAt }, adminAccess)
+  assert.equal(disabled.status, 'updated', 'PG 系统团队应可停用')
+  assert.equal(disabled.status === 'updated' ? disabled.result.rowPatch.status : undefined, 'disabled', 'PG 系统团队停用应返回状态行补丁')
   await assertRuntimeAuthorization(group.id, memberIds[1], 'revoked', null)
 
-  const reactivated = await updateSystemTeamAsync(team.id, { status: 'active' }, adminAccess)
-  assert.equal(reactivated?.status, 'active', 'PG 系统团队应可重新启用')
+  assert.equal(disabled.status, 'updated')
+  const reactivated = await updateSystemTeamAsync(team.id, { status: 'active', expectedUpdatedAt: disabled.result.updatedAt }, adminAccess)
+  assert.equal(reactivated.status, 'updated', 'PG 系统团队应可重新启用')
+  assert.equal(reactivated.status === 'updated' ? reactivated.result.rowPatch.status : undefined, 'active', 'PG 系统团队重新启用应返回状态行补丁')
   await assertRuntimeAuthorization(group.id, memberIds[1], 'active', team.id)
+
+  assert.equal(reactivated.status, 'updated')
+  const noOp = await updateSystemTeamAsync(team.id, { status: 'active', expectedUpdatedAt: reactivated.result.updatedAt }, adminAccess)
+  assert.equal(noOp.status, 'noop', 'PG 同值团队 PATCH 必须成为 no-op')
+  assert.equal(noOp.status === 'noop' ? noOp.result.updatedAt : undefined, reactivated.result.updatedAt, 'PG no-op 不得推进版本')
+  const stale = await updateSystemTeamAsync(team.id, { description: '过期版本不得覆盖', expectedUpdatedAt: disabled.result.updatedAt }, adminAccess)
+  assert.equal(stale.status, 'conflict', 'PG 过期版本必须返回 CAS 冲突')
 
   await assertSystemTeamIndexedPlans(keyword, team.id)
 
@@ -79,7 +90,7 @@ try {
     message: '系统团队 PG smoke 通过',
     teamId: team.id,
     groupId: group.id,
-    memberCount: reactivated?.members?.length ?? 0,
+    changedFields: reactivated.status === 'updated' ? reactivated.result.changedFields : [],
     explainIndexed: true
   }))
 } finally {
