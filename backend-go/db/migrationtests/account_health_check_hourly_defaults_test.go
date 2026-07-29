@@ -17,10 +17,10 @@ func TestAccountHealthCheckHourlyDefaultsMigration(t *testing.T) {
 	}
 	for _, required := range []string{
 		"legacy_defaults",
-		"key = 'accountHealthCheckIntervalHours' AND value_json = '12'",
-		"key = 'accountHealthCheckJitterMinutes' AND value_json = '120'",
-		"WHEN 'accountHealthCheckIntervalHours' THEN '1'",
-		"WHEN 'accountHealthCheckJitterMinutes' THEN '10'",
+		"key = 'accountHealthCheckIntervalHours' AND value_json = '12'::jsonb",
+		"key = 'accountHealthCheckJitterMinutes' AND value_json = '120'::jsonb",
+		"WHEN 'accountHealthCheckIntervalHours' THEN '1'::jsonb",
+		"WHEN 'accountHealthCheckJitterMinutes' THEN '10'::jsonb",
 		"UPDATE juhe_business.accounts AS accounts",
 		"accounts.next_health_check_at <= now()",
 		"hashtextextended(accounts.id, 0)",
@@ -33,8 +33,8 @@ func TestAccountHealthCheckHourlyDefaultsMigration(t *testing.T) {
 	}
 	for _, required := range []string{
 		"hourly_defaults",
-		"WHEN 'accountHealthCheckIntervalHours' THEN '12'",
-		"WHEN 'accountHealthCheckJitterMinutes' THEN '120'",
+		"WHEN 'accountHealthCheckIntervalHours' THEN '12'::jsonb",
+		"WHEN 'accountHealthCheckJitterMinutes' THEN '120'::jsonb",
 	} {
 		if !strings.Contains(down, required) {
 			t.Fatalf("migration Down section missing %q", required)

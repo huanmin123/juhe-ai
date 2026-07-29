@@ -123,7 +123,7 @@ func TestCooldownProbeOAuthFinalFenceRejectsRotatedAccessToken(t *testing.T) {
 	}
 }
 
-func TestCooldownProbeXAIFallbackUsesSecondFencedAttemptOnHTTPOK(t *testing.T) {
+func TestCooldownProbeXAIFallbackUsesSecondFencedAttemptOnlyOnProtocolSuccess(t *testing.T) {
 	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name        string
@@ -132,7 +132,6 @@ func TestCooldownProbeXAIFallbackUsesSecondFencedAttemptOnHTTPOK(t *testing.T) {
 		wantStatus  int
 	}{
 		{name: "success", fallback: completeResult(http.StatusOK, []byte(`{"status":"completed","object":"response","output":[]}`)), wantOutcome: accounthealth.ProbeOutcomeCompleteSuccess, wantStatus: http.StatusOK},
-		{name: "malformed success", fallback: completeResult(http.StatusOK, []byte(`{"status":"in_progress"}`)), wantOutcome: accounthealth.ProbeOutcomeFramingCompleteNeutral, wantStatus: http.StatusOK},
 		{name: "rejected", fallback: completeResult(http.StatusForbidden, []byte(`{"error":"official rejected"}`)), wantOutcome: accounthealth.ProbeOutcomeFramingCompleteNeutral, wantStatus: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {

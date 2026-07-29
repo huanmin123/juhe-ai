@@ -394,6 +394,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagDeleteHandler:               managementHandlers.MyAccountTagDeleteHandler,
 		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
+		ManagementAccountDetailHandler:                    managementHandlers.AccountDetailHandler,
+		ManagementMyAccountDetailHandler:                  managementHandlers.MyAccountDetailHandler,
 		ManagementAccountEditBasicDetailHandler:           managementHandlers.AccountEditBasicDetailHandler,
 		ManagementMyAccountEditBasicDetailHandler:         managementHandlers.MyAccountEditBasicDetailHandler,
 		ManagementAccountAdvancedDetailHandler:            managementHandlers.AccountAdvancedDetailHandler,
@@ -666,6 +668,8 @@ type managementAPIHandlers struct {
 	MyAccountTagDeleteHandler               http.Handler
 	AccountTagUpdateHandler                 http.Handler
 	MyAccountTagUpdateHandler               http.Handler
+	AccountDetailHandler                    http.Handler
+	MyAccountDetailHandler                  http.Handler
 	AccountEditBasicDetailHandler           http.Handler
 	MyAccountEditBasicDetailHandler         http.Handler
 	AccountAdvancedDetailHandler            http.Handler
@@ -975,9 +979,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		FingerprintSecret:  cfg.Secret,
 		UsageStatsTimezone: store,
 	})
-	accountListService := managementaccountlist.NewServiceWithOptions(managementaccountlist.ServiceOptions{
-		Reader: store, StatusSnapshot: accountStatusSnapshotService,
-	})
+	accountListService := managementaccountlist.NewService(store)
 	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{
 		Reader:          store,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
@@ -1238,6 +1240,8 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		MyAccountTagDeleteHandler:               httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
 		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		AccountDetailHandler:                    httpapi.NewManagementAccountDetailHandler(accountDetailService),
+		MyAccountDetailHandler:                  httpapi.NewManagementMyAccountDetailHandler(accountDetailService),
 		AccountEditBasicDetailHandler:           httpapi.NewManagementAccountEditBasicDetailHandler(accountDetailService),
 		MyAccountEditBasicDetailHandler:         httpapi.NewManagementMyAccountEditBasicDetailHandler(accountDetailService),
 		AccountAdvancedDetailHandler:            httpapi.NewManagementAccountAdvancedDetailHandler(accountDetailService),

@@ -144,6 +144,8 @@ type RouterOptions struct {
 	ManagementMyAccountTagDeleteHandler               http.Handler
 	ManagementAccountTagUpdateHandler                 http.Handler
 	ManagementMyAccountTagUpdateHandler               http.Handler
+	ManagementAccountDetailHandler                    http.Handler
+	ManagementMyAccountDetailHandler                  http.Handler
 	ManagementAccountEditBasicDetailHandler           http.Handler
 	ManagementMyAccountEditBasicDetailHandler         http.Handler
 	ManagementAccountAdvancedDetailHandler            http.Handler
@@ -472,6 +474,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagDeleteHandler == nil &&
 				opts.ManagementMyAccountTagDeleteHandler == nil &&
 				opts.ManagementAccountTagUpdateHandler == nil &&
+				opts.ManagementAccountDetailHandler == nil &&
+				opts.ManagementMyAccountDetailHandler == nil &&
 				opts.ManagementAccountEditBasicDetailHandler == nil &&
 				opts.ManagementMyAccountEditBasicDetailHandler == nil &&
 				opts.ManagementAccountAdvancedDetailHandler == nil &&
@@ -1023,6 +1027,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}", opts.ManagementAccountDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}", opts.ManagementMyAccountDetailHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountEditBasicDetailHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/edit-basic", opts.ManagementAccountEditBasicDetailHandler.ServeHTTP)
@@ -1744,6 +1754,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementAccountDetailHandler != nil ||
+		opts.ManagementMyAccountDetailHandler != nil ||
 		opts.ManagementAccountEditBasicDetailHandler != nil ||
 		opts.ManagementMyAccountEditBasicDetailHandler != nil ||
 		opts.ManagementAccountAdvancedDetailHandler != nil ||

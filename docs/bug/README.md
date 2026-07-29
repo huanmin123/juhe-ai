@@ -1,7 +1,5 @@
 # Bug 记录目录
 
-- [BUG-0139](问题-0139-GooseFreshSchema迁移链断裂.md)：W7 fresh PostgreSQL 连续暴露 migration 77 依赖未迁入的 Node Chat 表、migration 80 把 JSON 文本列误当 `jsonb`；修复所有权边界、物理类型和隔离 harness，并从零验证 Goose 92。
-
 - [BUG-0138](问题-0138-CodexResponses双向ID防护失效.md)：Codex Responses 错误 `item_*` 工具 identity 未在响应侧实际修复，并污染下一轮请求；补齐请求双检查点、按 identity 暴露边界修复和严格拦截换号边界。
 
 - [BUG-0137](问题-0137-管理弹窗无交互预加载与全量读写.md)：Node + Vue 管理弹窗在无交互时预取候选，列表 / 编辑 / PATCH 又复用宽摘要并扩大查询、写入和缓存失效范围；Go 不在修复范围。

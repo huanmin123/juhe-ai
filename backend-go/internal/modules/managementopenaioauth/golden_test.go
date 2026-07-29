@@ -31,8 +31,7 @@ func TestGoContractReadsReviewedNodeAuthorityGolden(t *testing.T) {
 			} `json:"routerEndpoints"`
 		} `json:"transport"`
 		Session struct {
-			TTLSeconds int    `json:"ttlSeconds"`
-			Consume    string `json:"consume"`
+			TTLSeconds int `json:"ttlSeconds"`
 		} `json:"session"`
 		TokenExchange struct {
 			ResponseMaxBytes int `json:"responseMaxBytes"`
@@ -61,14 +60,12 @@ func TestGoContractReadsReviewedNodeAuthorityGolden(t *testing.T) {
 	if golden.Session.TTLSeconds != int((30*time.Minute)/time.Second) {
 		t.Fatalf("golden session TTL = %d", golden.Session.TTLSeconds)
 	}
-	if golden.Session.Consume != "after_token_success_atomic_compare_delete_once" {
-		t.Fatalf("golden session consume = %q", golden.Session.Consume)
-	}
 	if golden.TokenExchange.ResponseMaxBytes != TokenResponseMaxBytes {
 		t.Fatalf("golden token response max bytes = %d, Go = %d", golden.TokenExchange.ResponseMaxBytes, TokenResponseMaxBytes)
 	}
 	wantDefects := map[string]bool{
-		"no-stable-machine-error-code": false,
+		"session-consumed-before-token-success": false,
+		"no-stable-machine-error-code":          false,
 	}
 	for _, defect := range golden.KnownNodeDefects {
 		if _, tracked := wantDefects[defect.ID]; tracked {

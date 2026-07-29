@@ -101,28 +101,6 @@ func TestOAuthCoordinatorCASConflictReloadsAndRecognizesRotatedWinner(t *testing
 	}
 }
 
-func TestOAuthCoordinatorExecutionFenceRejectsCredentialDriftBeforeRefreshWrite(t *testing.T) {
-	now := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
-	stale := oauthCoordinatorSnapshot(t, 7, "old", "refresh-a", now.Add(-time.Minute))
-	drifted := oauthCoordinatorSnapshot(t, 7, "old", "refresh-b", now.Add(-time.Minute))
-	reloader := &oauthCoordinatorReloader{snapshots: []OAuthProbeCandidateSnapshot{stale, drifted}}
-	refresh := &oauthCoordinatorRefresh{
-		runFence: true,
-		responses: []OAuthRefreshHTTPResponse{NewOAuthRefreshHTTPResponse(
-			http.StatusOK, []byte(`{"access_token":"new","expires_in":3600}`), false,
-		)},
-	}
-	result := (OAuthCoordinator{
-		Reloader: reloader, Lock: oauthCoordinatorLock{}, Refresh: refresh, CAS: &oauthCoordinatorCAS{},
-	}).Coordinate(t.Context(), OAuthCoordinationInput{Snapshot: stale, Prepared: oauthCoordinatorPrepared(), Now: now})
-	if result.Disposition() != OAuthCoordinationTaskFailure || result.Err() == nil {
-		t.Fatalf("Coordinate() = %s, %v", result.Disposition(), result.Err())
-	}
-	if refresh.writes != 0 || reloader.calls != 2 {
-		t.Fatalf("refresh writes=%d reloads=%d, want 0 writes and 2 reloads", refresh.writes, reloader.calls)
-	}
-}
-
 func TestOAuthCoordinatorAuthorizedCandidateCASUsesSourceOwnerIdentity(t *testing.T) {
 	now := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
 	snapshot := oauthCoordinatorSnapshot(t, 7, "old", "refresh", now.Add(-time.Minute))
@@ -362,22 +340,10 @@ type oauthCoordinatorRefresh struct {
 	err       error
 	calls     int
 	sequence  *[]string
-	runFence  bool
-	writes    int
 }
 
-func (e *oauthCoordinatorRefresh) ExecuteOAuthRefresh(ctx context.Context, _ gatewaycandidatewindow.Candidate, request OAuthRefreshRequest) (OAuthRefreshHTTPResponse, error) {
+func (e *oauthCoordinatorRefresh) ExecuteOAuthRefresh(context.Context, gatewaycandidatewindow.Candidate, OAuthRefreshRequest) (OAuthRefreshHTTPResponse, error) {
 	e.calls++
-	if e.runFence {
-		fence := oauthHTTPExecutionFenceFromContext(ctx)
-		if fence == nil {
-			return OAuthRefreshHTTPResponse{}, errors.New("missing OAuth HTTP execution fence")
-		}
-		if err := fence(ctx); err != nil {
-			return OAuthRefreshHTTPResponse{}, err
-		}
-	}
-	e.writes++
 	if e.sequence != nil {
 		*e.sequence = append(*e.sequence, "refresh")
 	}

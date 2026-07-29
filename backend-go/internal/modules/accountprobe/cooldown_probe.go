@@ -3,7 +3,6 @@ package accountprobe
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -167,7 +166,7 @@ func (p CooldownProbe) Probe(ctx context.Context, target port.CooldownAccountRet
 				Candidate: candidate, Prepared: prepared, Attempt: fallback, Fallback: true, Now: p.Now,
 			}).Recheck
 			fallbackOutcome, fallbackResult, fallbackErr := (Executor{Transport: transport, Fence: fallbackFence}).ExecuteAttempt(ctx, fallback.EvidenceMode(), fallback)
-			if fallbackResult.StatusCode >= http.StatusOK && fallbackResult.StatusCode < http.StatusMultipleChoices {
+			if fallbackOutcome == accounthealth.ProbeOutcomeCompleteSuccess {
 				outcome, transportResult, executeErr = fallbackOutcome, fallbackResult, fallbackErr
 			}
 		}
