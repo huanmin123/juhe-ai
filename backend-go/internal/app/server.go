@@ -975,9 +975,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		FingerprintSecret:  cfg.Secret,
 		UsageStatsTimezone: store,
 	})
-	accountListService := managementaccountlist.NewServiceWithOptions(managementaccountlist.ServiceOptions{
-		Reader: store, StatusSnapshot: accountStatusSnapshotService,
-	})
+	accountListService := managementaccountlist.NewService(store)
 	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{
 		Reader:          store,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),

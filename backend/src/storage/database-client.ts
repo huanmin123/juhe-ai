@@ -49,6 +49,19 @@ interface SqliteTransactionContext {
 
 const sqliteTransactionContext = new AsyncLocalStorage<SqliteTransactionContext>()
 const sqliteTransactionTails = new WeakMap<DatabaseSync, Promise<void>>()
+const definitelyRolledBackTransactionErrors = new WeakMap<object, boolean>()
+
+export function databaseTransactionDefinitelyRolledBack(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && definitelyRolledBackTransactionErrors.get(error) === true
+}
+
+function setDatabaseTransactionDefinitelyRolledBack(error: unknown, definitelyRolledBack: boolean): void {
+  if (typeof error === 'object' && error !== null) {
+    definitelyRolledBackTransactionErrors.set(error, definitelyRolledBack)
+  }
+}
 
 export const sqliteDialect: SqlDialect = {
   driver: 'sqlite',
@@ -303,6 +316,7 @@ function createPostgresDatabaseClientInternal(
           connection.removeListener?.('error', onConnectionError)
         }
       }
+      let commitStarted = false
       try {
         await connection.query('BEGIN')
         await connection.query(postgresTransactionLocalTimeoutSetSql())
@@ -310,11 +324,14 @@ function createPostgresDatabaseClientInternal(
         const tx = createPostgresDatabaseClientInternal(connection, true, queryState)
         const result = await Promise.race([operation(tx), connectionError])
         await queryState.tail
+        commitStarted = true
         await connection.query('COMMIT')
         return result
       } catch (error) {
+        let rollbackSucceeded = false
         try {
           await connection.query('ROLLBACK')
+          rollbackSucceeded = true
         } catch (rollbackError) {
           // A server-terminated or already closed transaction connection cannot
           // accept ROLLBACK. Preserve the first failure that explains why the
@@ -325,6 +342,7 @@ function createPostgresDatabaseClientInternal(
         } finally {
           releaseConnection()
         }
+        setDatabaseTransactionDefinitelyRolledBack(error, !commitStarted && rollbackSucceeded)
         throw error
       } finally {
         releaseConnection()

@@ -598,6 +598,7 @@ function assertAuditPayloadCleanupUsesAsyncFiles(): void {
   assert(recordMaintenanceSource.includes('Math.min(positiveBatchSize(input.batchSize), auditRetainedDataCleanupBatchSizeLimit)'), '审计保留维护任务必须裁剪 batchSize 后再清理')
   assert(recordMaintenanceSource.includes('Math.min(normalizeMaxBatches(input.maxBatches), auditRetainedDataCleanupMaxBatchesLimit)'), '审计保留维护任务必须裁剪 maxBatches 后再清理')
   assert(auditRepositorySource.includes('cleanupAuditLogsByRetentionAsync'), '审计日志保留清理应提供异步入口')
+  assert.match(auditRepositorySource, /databaseTransactionDefinitelyRolledBack\(error\)[\s\S]*cleanupCreatedAuditBlobFilesAsync\(\[\.\.\.createdStorageKeys\]\)/, 'PG 审计写入明确回滚后必须清理本次新建的无引用文件')
   assert(auditRepositorySource.includes('audit_payload_commit_outcome_uncertain_files_retained'), 'PG 审计写入的 COMMIT 结果不确定时必须保守保留已创建文件')
   assert.match(
     auditRepositorySource,

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { convertQuestionPlaceholdersToPostgres, createPostgresDatabaseClient, createSqliteDatabaseClient, postgresDialect, sqliteDialect } from '../../storage/database-client.js'
+import { convertQuestionPlaceholdersToPostgres, createPostgresDatabaseClient, createSqliteDatabaseClient, databaseTransactionDefinitelyRolledBack, postgresDialect, sqliteDialect } from '../../storage/database-client.js'
 import type { PostgresPoolClient, PostgresQueryResult } from '../../storage/postgres-client.js'
 
 async function testSqliteDatabaseClient(): Promise<void> {
@@ -159,12 +159,13 @@ async function testPostgresDatabaseClient(): Promise<void> {
   assert.equal(committedConnection.releaseError, undefined)
 
   pool.connection = undefined
+  const operationError = new Error('shared transaction failure')
   await assert.rejects(
     client.transaction(async (tx) => {
       await tx.execute('INSERT INTO demo (id, name) VALUES (?, ?)', ['id_2', 'name_2'])
-      throw new Error('tx failed')
+      throw operationError
     }),
-    /tx failed/
+    /shared transaction failure/
   )
   const rolledBackConnection = assertConnection(pool.connection)
   assert.equal(rolledBackConnection.queries[0]?.sql, 'BEGIN')
@@ -172,6 +173,19 @@ async function testPostgresDatabaseClient(): Promise<void> {
   assert.equal(rolledBackConnection.queries[2]?.sql, 'INSERT INTO demo (id, name) VALUES ($1, $2)')
   assert.equal(rolledBackConnection.queries[3]?.sql, 'ROLLBACK')
   assert.equal(rolledBackConnection.releaseCount, 1)
+  assert.equal(databaseTransactionDefinitelyRolledBack(operationError), true, '业务错误且 ROLLBACK 成功时应标记为明确回滚')
+
+  pool.connection = undefined
+  pool.nextConnectionQueryError = { sql: 'COMMIT', error: operationError }
+  let commitError: unknown
+  try {
+    await client.transaction(async () => 'commit-outcome-unknown')
+  } catch (error) {
+    commitError = error
+  }
+  assert.equal(commitError, operationError)
+  assert.equal(databaseTransactionDefinitelyRolledBack(commitError), false, 'COMMIT 已开始时结果不确定，禁止标记为明确回滚')
+  assert.equal(assertConnection(pool.connection).queries.at(-1)?.sql, 'ROLLBACK')
 
   pool.connection = undefined
   let releaseBlockedOperation: (() => void) | undefined
@@ -205,6 +219,7 @@ class FakePostgresPool {
   nextRows: Array<Record<string, unknown>> = []
   nextRowCount = 0
   nextMultiResults: PostgresQueryResult[] | undefined
+  nextConnectionQueryError: { sql: string; error: Error } | undefined
 
   async query(sql: string, params: readonly unknown[] = []): Promise<PostgresQueryResult | PostgresQueryResult[]> {
     this.queries.push({ sql, params })
@@ -221,7 +236,8 @@ class FakePostgresPool {
   }
 
   async connect(): Promise<PostgresPoolClient> {
-    this.connection = new FakePostgresConnection()
+    this.connection = new FakePostgresConnection(this.nextConnectionQueryError)
+    this.nextConnectionQueryError = undefined
     return this.connection
   }
 }
@@ -233,12 +249,17 @@ class FakePostgresConnection extends EventEmitter implements PostgresPoolClient 
   maxConcurrentQueries = 0
   private activeQueries = 0
 
+  constructor(private readonly queryError?: { sql: string; error: Error }) {
+    super()
+  }
+
   async query(sql: string, params: readonly unknown[] = []): Promise<PostgresQueryResult> {
     this.activeQueries += 1
     this.maxConcurrentQueries = Math.max(this.maxConcurrentQueries, this.activeQueries)
     try {
       this.queries.push({ sql, params })
       await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+      if (this.queryError?.sql === sql) throw this.queryError.error
       return { rows: [], rowCount: 1 }
     } finally {
       this.activeQueries -= 1

@@ -23,7 +23,7 @@ import type {
 } from './audit-log-types.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, databaseTransactionDefinitelyRolledBack, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { resolveCatalogPricingModelAsync } from '../modules/model-pricing/model-catalog.service.js'
 import { errorLogFields, logger } from '../shared/logger.js'
@@ -596,12 +596,18 @@ async function createAuditLogsBatchPostgres(inputs: AuditLogInput[]): Promise<vo
     await appendAuditHotSearchEntriesAsync(insertedHotSearchLogs)
   } catch (error) {
     if (!transactionCommitted && createdStorageKeys.size > 0) {
-      // PostgreSQL 在网络中断等场景下可能已经提交但客户端未收到 COMMIT ACK。
-      // 此处保守保留文件，避免误删已提交引用；无引用文件由后续维护清理回收。
-      logger.warn({
-        event: 'audit_payload_commit_outcome_uncertain_files_retained',
-        retainedFileCount: createdStorageKeys.size
-      }, '审计 payload 写入失败，保留已创建文件等待引用对账或维护清理')
+      if (databaseTransactionDefinitelyRolledBack(error)) {
+        await cleanupCreatedAuditBlobFilesAsync([...createdStorageKeys]).catch((cleanupError) => {
+          logger.warn(errorLogFields(cleanupError, { event: 'audit_payload_rolled_back_file_cleanup_failed' }), '审计 payload 事务已回滚，但新建文件清理失败')
+        })
+      } else {
+        // PostgreSQL 在网络中断等场景下可能已经提交但客户端未收到 COMMIT ACK。
+        // 此处保守保留文件，避免误删已提交引用；无引用文件由后续维护清理回收。
+        logger.warn({
+          event: 'audit_payload_commit_outcome_uncertain_files_retained',
+          retainedFileCount: createdStorageKeys.size
+        }, '审计 payload 写入失败，保留已创建文件等待引用对账或维护清理')
+      }
     }
     throw error
   }
