@@ -182,7 +182,7 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
 }
 
 $performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
-foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'nginx_test_reload', 'route-before-switch.conf', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'nginx_test_reload', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
   if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
 }
 if ($performanceHandover -match '\\beval\\b') { throw 'Performance handover must not evaluate plan values as shell code' }
@@ -221,25 +221,107 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
-    $performanceHandoverHarness = @'
+$performanceHandoverHarness = @'
 set -euo pipefail
-root="/tmp/juhe-ai-handover-$$"
+root="${HOME}/.juhe-ai-handover-$$"
+NODE_BIN="$(command -v node)"
 mkdir -p "$root"
 trap 'rm -rf -- "$root"' EXIT
-mkdir -p "$root/plan"
-for file in route main temporary nginx.conf; do : > "$root/$file"; done
+mkdir -p "$root/plan" "$root/fakebin"
+printf 'main\n' > "$root/route"
+printf 'main\n' > "$root/main"
+printf 'temporary\n' > "$root/temporary"
+: > "$root/nginx.conf"
+: > "$root/access.log"
 cat > "$root/plan/handover.conf" <<EOF
 route_file=$root/route
 main_fragment=$root/main
 temporary_fragment=$root/temporary
-nginx_bin=/bin/true
+nginx_bin=$root/fakebin/nginx
+node_bin=/bin/true
 nginx_main_config=$root/nginx.conf
 ingress_health_url=http://127.0.0.1:3099/__aisys__/health
 access_log=$root/access.log
 main_label=main
 temporary_label=temporary
+main_instance_id=control-1
+temporary_instance_id=control-1
+main_topology_identity=main-identity
+temporary_topology_identity=temporary-identity
+main_control_health_url=http://127.0.0.1:3099/main-control/health
+temporary_control_health_url=http://127.0.0.1:3099/temporary-control/health
+main_gateway_health_urls=http://127.0.0.1:3301/main-gateway-1/health,http://127.0.0.1:3302/main-gateway-2/health,http://127.0.0.1:3303/main-gateway-3/health
+temporary_gateway_health_urls=http://127.0.0.1:3501/temporary-gateway-1/health,http://127.0.0.1:3502/temporary-gateway-2/health,http://127.0.0.1:3503/temporary-gateway-3/health
 EOF
 chmod 600 "$root/plan/handover.conf"
+
+cat > "$root/fakebin/stat" <<'EOF'
+#!/usr/bin/env bash
+case "$1:$2" in
+  -f:%z) wc -c < "$3" | tr -d ' '; exit 0 ;;
+  -f:%Lp) printf '600\n'; exit 0 ;;
+  -f:%u) id -u; exit 0 ;;
+  -f:%u:%Lp) printf '%s:600\n' "$(id -u)"; exit 0 ;;
+esac
+exit 64
+EOF
+cat > "$root/fakebin/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$root/fakebin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+headers= output= url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D) headers="$2"; shift 2 ;;
+    -o) output="$2"; shift 2 ;;
+    --max-time) shift 2 ;;
+    -f|-s|-S|-fsS) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "$url" in
+  */main-control/health) label=main; topology=main-identity; control_pid=101 ;;
+  */temporary-control/health) label=temporary; topology=temporary-identity; control_pid=201 ;;
+  */__aisys__/health)
+    label="$(tr -d '\n' < "$HANDOVER_ROUTE_FILE")"
+    case "$label" in main) topology=main-identity ;; temporary) topology=temporary-identity ;; *) exit 23 ;; esac
+    case "$label" in main) control_pid=101 ;; temporary) control_pid=201 ;; esac
+    ;;
+  */main-gateway-1/health|*/temporary-gateway-1/health) gateway_instance=gateway-1; gateway_pid=301 ;;
+  */main-gateway-2/health|*/temporary-gateway-2/health) gateway_instance=gateway-2; gateway_pid=302 ;;
+  */main-gateway-3/health|*/temporary-gateway-3/health) gateway_instance=gateway-3; gateway_pid=303 ;;
+  */__aisys__/api/health) ;;
+  *) exit 22 ;;
+esac
+case "$url" in
+  */main-control/health|*/temporary-control/health|*/__aisys__/health)
+    [ "${HANDOVER_BAD_TOPOLOGY:-0}" = 0 ] || topology=wrong-identity
+    printf '%s: %s\nX-Juhe-Topology-Install: %s\n' "$HANDOVER_HEADER" "$label" "$topology" > "$headers"
+    printf '{"status":"ok","runtimeMode":"performance","nodeRole":"control","instanceId":"control-1","processPid":%s,"dbServicePid":%s,"workerProcesses":[{"role":"usage-worker","replicaIndex":0,"pid":%s,"ready":true}],"workerTopologyReady":true}' "$control_pid" "$((control_pid + 1))" "$((control_pid + 2))" > "$output"
+    printf '%s\n' "$label" >> "$HANDOVER_ACCESS_LOG"
+    ;;
+  */gateway-*/health)
+    printf '{"status":"ok","runtimeMode":"performance","nodeRole":"gateway","instanceId":"%s","processPid":%s,"dbServicePid":%s,"workerProcesses":[],"workerTopologyReady":true}' "$gateway_instance" "$gateway_pid" "$((gateway_pid + 100))" > "$output"
+    ;;
+esac
+EOF
+cat > "$root/fakebin/nginx" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = -t ]; then exit 0; fi
+if [ "$1" = -s ]; then
+  if [ -n "${HANDOVER_FAIL_ONCE_FILE:-}" ] && [ ! -e "$HANDOVER_FAIL_ONCE_FILE" ]; then touch "$HANDOVER_FAIL_ONCE_FILE"; exit 1; fi
+  exit 0
+fi
+exit 64
+EOF
+chmod 700 "$root/fakebin"/*
+export PATH="$root/fakebin:$PATH"
+export HANDOVER_ROUTE_FILE="$root/route" HANDOVER_ACCESS_LOG="$root/access.log" HANDOVER_HEADER='X-Juhe-Active-Upstream'
+
 for action in status preflight takeover switchback recover; do
   bash '__CONTROLLER__' --dry-run --action "$action" --plan-dir "$root/plan" >/dev/null
 done
@@ -248,9 +330,69 @@ if bash '__CONTROLLER__' --dry-run --action status --plan-dir "$root/plan" >/dev
   echo 'handover accepted a secret-like plan key' >&2
   exit 69
 fi
+sed '$d' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed "s#^node_bin=.*#node_bin=$NODE_BIN#" "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted takeover without preflight' >&2
+  exit 70
+fi
+mkdir "$root/plan/handover.lock"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover ignored an existing lock' >&2
+  exit 71
+fi
+rmdir "$root/plan/handover.lock"
+export HANDOVER_BAD_TOPOLOGY=1
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a wrong topology identity' >&2
+  exit 72
+fi
+unset HANDOVER_BAD_TOPOLOGY
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null
+cmp "$root/temporary" "$root/route"
+grep -qx 'state=committed' "$root/plan/handover.journal"
+
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action switchback --plan-dir "$root/plan" >/dev/null
+cmp "$root/main" "$root/route"
+if bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted recover from committed state' >&2
+  exit 74
+fi
+
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+grep -qx 'state=preflight-cancelled' "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted repeated recover after a cancelled preflight' >&2
+  exit 75
+fi
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+export HANDOVER_FAIL_ONCE_FILE="$root/fail-once"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover unexpectedly succeeded after injected reload failure' >&2
+  exit 73
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
+unset HANDOVER_FAIL_ONCE_FILE
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+grep -qx 'state=preflight' "$root/plan/handover.journal"
 '@
-    & $bash.Source -c ($performanceHandoverHarness.Replace('__CONTROLLER__', ((Join-Path $operationsRoot 'performance-handover-controller.sh') -replace '\\', '/')))
-    if ($LASTEXITCODE -ne 0) { throw 'performance handover controller dry-run harness failed' }
+    $handoverUnixName = (& $bash.Source -c 'uname -s').Trim()
+    if ($handoverUnixName -in @('Darwin', 'Linux')) {
+      & $bash.Source -c ($performanceHandoverHarness.Replace('__CONTROLLER__', ((Join-Path $operationsRoot 'performance-handover-controller.sh') -replace '\\', '/')))
+      if ($LASTEXITCODE -ne 0) { throw 'performance handover controller apply/rollback harness failed' }
+    } else {
+      Write-Verbose "Performance handover apply harness requires Darwin/Linux bash; current shell reports $handoverUnixName."
+    }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted a missing service user' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null

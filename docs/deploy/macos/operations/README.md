@@ -9,7 +9,7 @@
 - `manage-sing-box.sh`：只接管已证明为 loopback、唯一且由 `sing-box` 持有的监听，并通过实际 SOCKS5 代理探测；也可显式选择 Homebrew service 或 user launchd。
 - `diagnose-proxy-dns.sh`：只读检查 DNS、监听端口、launchd 状态和直连/代理连通性。
 - `temporary-cutover.sh`：在已经准备好的主服务与临时服务之间调用环境私有 switch adapter，切换失败自动回滚入口。
-- `performance-handover-controller.sh`：针对多 gateway 性能槽的外层 Nginx route-fragment 控制器。它只接受非秘密 plan 文件中已准备好的 main/temporary fragment；切换前后连续验证应用、DB service、route header 和 access-log 增量，失败时恢复同一个先前 fragment，且不停止任一槽位。
+- `performance-handover-controller.sh`：针对多 gateway 性能槽的外层 Nginx route-fragment 控制器。它只接受由当前部署控制器私有持有的非秘密 plan；切换前先连续验证两套 slot 的 loopback control 和三个独立 gateway health，再验证外层 route header、内层 `X-Juhe-Topology-Install` identity、固定 control/DB/worker PID 集合和 access-log 增量。失败时恢复同一个先前 fragment，且不停止任一槽位。
 - `install-redis-role-services.sh`：默认 dry-run，按 cache/state/queue 角色渲染独立 Redis 配置与 system LaunchDaemon；apply 使用 bootout、端口释放、原子替换、bootstrap、kickstart 和失败恢复。
 - `verify-redis-role-isolation.sh`：只读验证 main `6379/6380/6381` 或 temporary `16379/16380/16381` 的三个 URL、PID、launchd job、PING、AOF/RDB 和淘汰策略，不输出密码。
 - `templates/`：无用户、域名、IP、密钥或生产路径的 plist 模板。
@@ -27,7 +27,7 @@
 - Redis 角色安装器不接受共享 host:port，不执行运行时参数热改；持久化和角色变化必须通过配置文件与 launchd 有界替换。temporary 必须使用独立三实例，不能只换 namespace 后复用生产 PID。
 - apply 前必须保留当前可用入口和回滚目标，并先证明回滚目标当前确实是入口。主服务和临时服务必须使用不同 PID、端口和实际 release 目录，并同时通过 `/__aisys__/health`、`/__aisys__/api/health`。入口证明依赖 switch adapter 写入的响应头，不能只凭某个 health 返回 200 放行。
 - 调用 switch adapter 前就会启用失败 trap；即使适配器已经部分改动入口后以非零状态退出，也会调用相反目标执行反向回滚并重新证明入口。
-- 高性能多槽位不得把应用 upstream、DB upstream 与 active label 分别替换。外层 Nginx 必须先迁移到单个已 include 的 route fragment，再由 `performance-handover-controller.sh` 原子替换、`nginx -t`、reload 和路由证明。controller plan 仅允许路径、标签和入口 URL，不接受密码、token、数据库或 Redis URL；失败或中断时保留两个槽位和 journal，只有 `recover` 能复原未完成的切换。
+- 高性能多槽位不得把应用 upstream、DB upstream 与 active label 分别替换。外层 Nginx 必须先迁移到单个已 include 的 route fragment，再由 `performance-handover-controller.sh` 原子替换、`nginx -t`、reload 和路由证明。controller plan 仅允许路径、标签、Node 路径、入口 URL，以及两套 slot 的 control instance ID、`X-Juhe-Topology-Install` identity、internal control health URL 和每套三个 direct gateway health URL，不接受密码、认证 token、数据库或 Redis URL。apply 要求 plan、route、fragment、Nginx 配置和 access log 都归当前控制器所有、不是链接且不允许组或其他用户写入；一次状态转换由目录锁串行化。失败或中断时保留两个槽位和 journal，`rollback-proven` 可再次预检，`recover` 只接受未完成状态，避免陈旧 rollback fragment 重写已提交路由。
 
 ## 静态验证
 
