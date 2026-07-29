@@ -20,6 +20,7 @@ import {
 } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
+import { requireUsageRecordDetails } from '../shared/usage-record-detail.js'
 
 type ProtocolKind = 'openai' | 'anthropic'
 
@@ -358,7 +359,11 @@ function caseAuthorizations(start: number, providerLabel: string): string[] {
 }
 
 function assertUsageRecords(runtimes: CaseRuntime[]): void {
-  const records = repositories.listUsageRecords(access, { pageSize: 500, result: 'all' }).items
+  const records = requireUsageRecordDetails(
+    repositories,
+    repositories.listUsageRecords(access, { pageSize: 500, result: 'all' }).items,
+    access
+  )
   for (const runtime of runtimes) {
     const { item } = runtime
     const providerRecords = records.filter((record) => record.providerCode === item.providerCode && record.groupId === runtime.groupId)

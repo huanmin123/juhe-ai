@@ -18,6 +18,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
+import { requireUsageRecordDetails } from '../shared/usage-record-detail.js'
 
 const untrustedImageFailureScenarios = [
   {
@@ -840,12 +841,13 @@ try {
   assert.equal(upstreamAuthorizations[2], 'Bearer sk-generic-opaque-good')
   assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, '失败使用记录异步收尾必须在有界时间内排空')
   await usageRecordQueue.flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false })
-  const allFailedUsageRecords = repositories.listUsageRecords(access, {
+  const allFailedUsageRecordListItems = repositories.listUsageRecords(access, {
     page: 1,
     pageSize: 20,
     result: 'failed',
     trafficSource: 'gateway'
   }).items
+  const allFailedUsageRecords = requireUsageRecordDetails(repositories, allFailedUsageRecordListItems, access)
   const failedUsageRecords = allFailedUsageRecords.filter((item) => item.accountId === account.id)
   assert.equal(failedUsageRecords.length, 2, `同账户两个失败 Key 都必须写入失败使用记录：${JSON.stringify(allFailedUsageRecords.map((item) => ({ accountId: item.accountId, errorCode: item.errorCode, errorMessage: item.errorMessage })))}`)
   assert(failedUsageRecords.every((item) => item.errorCode === 'made_up_418'), '失败使用记录必须保留上游 error code')

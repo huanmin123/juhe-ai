@@ -11,6 +11,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { requireUsageRecordDetail, requireUsageRecordDetails } from '../shared/usage-record-detail.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-stream-first-output-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'stream-first-output.sqlite3')
@@ -1455,7 +1456,8 @@ function assertFailedUsageRecordErrorCode(accountId: string, errorCode: string):
   const records = repositories.listUsageRecords(undefined, { result: 'failed', page: 1, pageSize: 50 })
   const record = records.items.find((item) => item.accountId === accountId && item.success === false)
   assert(record, `未找到账号 ${accountId} 的失败使用记录`)
-  assert.equal(record.errorCode, errorCode, `失败使用记录错误码不正确：${record.errorCode}`)
+  const detail = requireUsageRecordDetail(repositories, record)
+  assert.equal(detail.errorCode, errorCode, `失败使用记录错误码不正确：${detail.errorCode}`)
 }
 
 function assertFailedUsageRecordExists(accountId: string): void {
@@ -1493,13 +1495,17 @@ function assertSuccessfulUsageRecord(
   const records = repositories.listUsageRecords(undefined, { result: 'success', page: 1, pageSize: 50 })
   const record = records.items.find((item) => item.accountId === accountId && item.success === true)
   const account = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === accountId)
-  const accountRecords = repositories
-    .listUsageRecords(undefined, { page: 1, pageSize: 200 })
-    .items
-    .filter((item) => item.accountId === accountId)
+  const accountRecords = requireUsageRecordDetails(
+    repositories,
+    repositories
+      .listUsageRecords(undefined, { page: 1, pageSize: 200 })
+      .items
+      .filter((item) => item.accountId === accountId)
+  )
     .map((item) => `${item.success ? 'success' : 'failed'}:${item.statusCode ?? 'no_status'}:${item.errorCode ?? 'no_error'}`)
   assert(record, `账号 ${account?.name ?? accountId} (${accountId}) 未找到成功使用记录；该账号已有记录：${accountRecords.join(', ') || '无'}`)
-  assert.equal(record.errorCode, undefined, `成功使用记录不应写错误码：${record.errorCode}`)
+  const detail = requireUsageRecordDetail(repositories, record)
+  assert.equal(detail.errorCode, undefined, `成功使用记录不应写错误码：${detail.errorCode}`)
   assert.equal(record.statusCode, 200, `成功使用记录应保留 200 状态码：${record.statusCode}`)
   if (expectedUsage?.inputTokens !== undefined) {
     assert.equal(record.inputTokens, expectedUsage.inputTokens, `成功使用记录 input token 不正确：${record.inputTokens}`)

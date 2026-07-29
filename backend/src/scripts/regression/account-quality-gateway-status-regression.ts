@@ -14,6 +14,7 @@ import {
 } from '../../domain/provider-protocol.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { logger } from '../../shared/logger.js'
+import { requireUsageRecordDetails } from '../shared/usage-record-detail.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-quality-gateway-status-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -141,7 +142,8 @@ try {
     const opaqueUsageRecords = repositories.listUsageRecords(access, { page: 1, pageSize: 50, result: 'failed' }).items
       .filter((record) => record.accountId === account.id)
     assert.equal(opaqueUsageRecords.length, 5, '未知完整 HTTP 应保留 5 条中性失败使用记录')
-    assert.equal(opaqueUsageRecords.every((record) => record.failureAttribution === 'opaque_upstream'), true, '未知完整 HTTP 必须使用不参与共享质量的中性归因')
+    const opaqueUsageRecordDetails = requireUsageRecordDetails(repositories, opaqueUsageRecords, access)
+    assert.equal(opaqueUsageRecordDetails.every((record) => record.failureAttribution === 'opaque_upstream'), true, '未知完整 HTTP 必须使用不参与共享质量的中性归因')
     assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100, usageStatsSafeCreatedBeforeForTest()), 6, '真实网关使用记录应进入统计聚合')
     const qualityResult = accountQualityRepository.refreshAccountQualityFromUsage(10)
     assert.equal(qualityResult.refreshed, 1, '账号质量刷新应处理 mock AI 命中的账户')
@@ -205,7 +207,8 @@ try {
     const capacityUsageRecords = repositories.listUsageRecords(access, { page: 1, pageSize: 50, result: 'failed' }).items
       .filter((record) => record.accountId === capacityAccount.id)
     assert.equal(capacityUsageRecords.length, 5, '账号并发满应保留 5 条失败使用记录')
-    assert.equal(capacityUsageRecords.every((record) => record.failureAttribution === 'gateway_capacity'), true, '账号并发满使用记录必须归因为本地容量失败')
+    const capacityUsageRecordDetails = requireUsageRecordDetails(repositories, capacityUsageRecords, access)
+    assert.equal(capacityUsageRecordDetails.every((record) => record.failureAttribution === 'gateway_capacity'), true, '账号并发满使用记录必须归因为本地容量失败')
     assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100, usageStatsSafeCreatedBeforeForTest()), 5, '账号并发满使用记录应进入通用统计聚合')
     accountQualityRepository.refreshAccountQualityFromUsage(10)
     const capacityQualityStats = databaseModule.getStatsDatabase()
@@ -456,20 +459,21 @@ async function requestAndAbortAfterUpstreamHit(
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
 }
 
-async function waitForUsageRecords(accountId: string, expectedCount: number, timeoutMs = 3_000): Promise<ReturnType<typeof repositories.listUsageRecords>['items']> {
+async function waitForUsageRecords(accountId: string, expectedCount: number, timeoutMs = 3_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     usageRecordQueue.flushAllUsageRecordQueue()
     const records = repositories.listUsageRecords(access, { page: 1, pageSize: 100, result: 'failed' }).items
       .filter((record) => record.accountId === accountId)
     if (records.length >= expectedCount) {
-      return records
+      return requireUsageRecordDetails(repositories, records, access)
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
   }
   usageRecordQueue.flushAllUsageRecordQueue()
-  return repositories.listUsageRecords(access, { page: 1, pageSize: 100, result: 'failed' }).items
+  const records = repositories.listUsageRecords(access, { page: 1, pageSize: 100, result: 'failed' }).items
     .filter((record) => record.accountId === accountId)
+  return requireUsageRecordDetails(repositories, records, access)
 }
 
 function listen(server: http.Server): Promise<void> {

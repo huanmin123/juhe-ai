@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import type { RuntimeConfig } from '../../config/runtime.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
+import { requireUsageRecordDetailAsync, requireUsageRecordDetailsAsync } from '../shared/usage-record-detail.js'
 import {
   buildChatLongSessionFixture,
   buildSafeFixtureSummary,
@@ -955,7 +956,8 @@ async function waitForAcceptanceSnapshotStable(
     const audit = databaseModule.getDatasetDatabase().prepare('SELECT COUNT(*) AS total FROM audit_logs').get() as { total?: unknown } | undefined
     const attempts = databaseModule.getDatasetDatabase().prepare('SELECT COUNT(*) AS total FROM audit_log_attempts').get() as { total?: unknown } | undefined
     const persistedUsage = await options.repositories.listUsageRecordsAsync(options.access, { page: 1, pageSize: 100, trafficSource: 'gateway', result: 'all' })
-    const usageWhitelist = persistedUsage.items.map((item) => ({
+    const persistedUsageDetails = await requireUsageRecordDetailsAsync(options.repositories, persistedUsage.items, options.access)
+    const usageWhitelist = persistedUsageDetails.map((item) => ({
       traceHash: hashId(item.traceId), success: item.success, statusCode: item.statusCode, model: item.model,
       serviceTier: item.billedServiceTier, inputTokens: item.inputTokens, outputTokens: item.outputTokens,
       cacheReadTokens: item.cacheReadTokens, cacheWriteTokens: item.cacheWriteTokens, cacheWrite1hTokens: item.cacheWrite1hTokens,
@@ -1452,19 +1454,20 @@ async function waitForPersistedUsage(
     const result = await repositories.listUsageRecordsAsync(access, { traceId, page: 1, pageSize: 5, result: 'all' })
     const record = result.items.find((item) => item.traceId === traceId && item.trafficSource === 'gateway' && item.success)
     if (record) {
+      const detail = await requireUsageRecordDetailAsync(repositories, record, access)
       return {
         status: 'available',
-        cacheStatus: record.cacheReadTokens !== undefined || record.cacheWriteTokens !== undefined || record.cacheWrite1hTokens !== undefined ? 'available' : 'unavailable',
-        ...numberField('inputTokens', record.inputTokens),
-        ...numberField('outputTokens', record.outputTokens),
-        ...numberField('cacheReadTokens', record.cacheReadTokens),
-        ...numberField('cacheWriteTokens', record.cacheWriteTokens),
-        ...numberField('cacheWrite1hTokens', record.cacheWrite1hTokens),
-        ...numberField('costUsd', record.costUsd),
-        ...numberField('firstTokenMs', record.firstTokenMs),
-        ...numberField('durationMs', record.durationMs),
-        ...(record.model ? { model: record.model } : {}),
-        ...(record.billedServiceTier ? { serviceTier: record.billedServiceTier } : {})
+        cacheStatus: detail.cacheReadTokens !== undefined || detail.cacheWriteTokens !== undefined || detail.cacheWrite1hTokens !== undefined ? 'available' : 'unavailable',
+        ...numberField('inputTokens', detail.inputTokens),
+        ...numberField('outputTokens', detail.outputTokens),
+        ...numberField('cacheReadTokens', detail.cacheReadTokens),
+        ...numberField('cacheWriteTokens', detail.cacheWriteTokens),
+        ...numberField('cacheWrite1hTokens', detail.cacheWrite1hTokens),
+        ...numberField('costUsd', detail.costUsd),
+        ...numberField('firstTokenMs', detail.firstTokenMs),
+        ...numberField('durationMs', detail.durationMs),
+        ...(detail.model ? { model: detail.model } : {}),
+        ...(detail.billedServiceTier ? { serviceTier: detail.billedServiceTier } : {})
       }
     }
     await sleep(250)

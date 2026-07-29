@@ -27,6 +27,7 @@ import {
 } from '../../shared/account-concurrency.js'
 import { logger } from '../../shared/logger.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
+import { requireUsageRecordDetails } from '../shared/usage-record-detail.js'
 
 type UpstreamBehavior =
   | 'reset_once_then_success'
@@ -835,8 +836,12 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
       assert(!JSON.stringify(auditAttempts[0]).includes('account_upstream'), '中间 audit attempt 不得携带共享 account_upstream 归因')
     })
 
-    const usageItems = repositories.listUsageRecords(access, { page: 1, pageSize: 100 }).items
-      .filter((item) => item.traceId === traceId)
+    const usageItems = requireUsageRecordDetails(
+      repositories,
+      repositories.listUsageRecords(access, { page: 1, pageSize: 100 }).items
+        .filter((item) => item.traceId === traceId),
+      access
+    )
     const intermediateUsage = usageItems.filter((item) => item.success === false)
     await verifyContract(auditFailures, 'usage 请求局部归因', async () => {
       assert(

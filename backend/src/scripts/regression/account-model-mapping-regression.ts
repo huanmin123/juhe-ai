@@ -45,6 +45,7 @@ import { withRequestAuthContext } from '../../modules/auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../../modules/gateway/routes.js'
 import { MemoryGatewayRequest, MemoryGatewayResponse } from '../../modules/gateway/testing/memory-gateway-http.js'
 import { createGatewayRequestBodyState, type GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+import { requireUsageRecordDetail } from '../shared/usage-record-detail.js'
 import {
   accountModelMappingProtocolRules,
   assertAccountModelMappingProtocolAllowed
@@ -1603,12 +1604,13 @@ async function assertUsageRecordFields(
     .items
     .find((item) => item.traceId === traceId)
   assert(record, '模型映射调用应写入使用记录')
+  const recordDetail = requireUsageRecordDetail(repositories, record)
   assert.equal(record.model, sourceModel, '使用记录 model 应保留下游模型')
   assert.equal(record.upstreamModel, upstreamModel, '使用记录 upstreamModel 应记录实际上游模型')
-  assert.equal(record.pricingModel, upstreamModel, '使用记录 pricingModel 应记录实际计价模型')
+  assert.equal(recordDetail.pricingModel, upstreamModel, '使用记录 pricingModel 应记录实际计价模型')
   assert.equal(record.modelMappingApplied, true, '使用记录应标记命中模型映射')
-  assert.equal(record.modelMappingSource, 'account', '使用记录映射来源应固定为 account')
-  assert.equal(record.requestedReasoningEffort, 'low', '使用记录应保存客户端请求思考级别')
+  assert.equal(recordDetail.modelMappingSource, 'account', '使用记录映射来源应固定为 account')
+  assert.equal(recordDetail.requestedReasoningEffort, 'low', '使用记录应保存客户端请求思考级别')
   assert.equal(record.effectiveReasoningEffort, 'high', '使用记录应保存最终上游思考级别')
   assert.equal(record.costUsd, 12, '授权调用应按资源账号所有者个人映射目标模型计价')
 
@@ -1671,9 +1673,10 @@ async function assertUsageRecordFields(
     .items
     .find((item) => item.traceId === unpricedTraceId)
   assert(unpricedRecord, '上游别名未在价格目录命中时也应写入使用记录')
+  const unpricedRecordDetail = requireUsageRecordDetail(repositories, unpricedRecord)
   assert.equal(unpricedRecord.model, sourceModel, '上游别名未定价时使用记录仍应保留下游模型')
   assert.equal(unpricedRecord.upstreamModel, unpricedUpstreamModel, '上游别名未定价时使用记录仍应记录实际上游模型')
-  assert.equal(unpricedRecord.pricingModel, undefined, '实际上游模型未定价时不能虚构下游计价模型')
+  assert.equal(unpricedRecordDetail.pricingModel, undefined, '实际上游模型未定价时不能虚构下游计价模型')
   assert.equal(unpricedRecord.costUsd, undefined, '实际上游模型未定价时成本必须保持未知，不能回落到下游价格')
 }
 

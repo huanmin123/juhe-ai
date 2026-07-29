@@ -14,6 +14,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { resolveGatewaySessionIdentity } from '../../modules/gateway/session-identity/index.js'
 import { logger } from '../../shared/logger.js'
+import type { UsageRecordSummary } from '../../storage/repositories.js'
+import { requireUsageRecordDetails } from '../shared/usage-record-detail.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-codex-turn-switch-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'codex-turn-switch.sqlite3')
@@ -1315,10 +1317,10 @@ function assertUsageRecords(seeded: SeededGateway): void {
 }
 
 function allUsageRecordsForRegression() {
-  const records: ReturnType<typeof repositories.listUsageRecords>['items'] = []
+  const records: UsageRecordSummary[] = []
   for (let page = 1; page <= 20; page += 1) {
     const result = repositories.listUsageRecords(undefined, { page, pageSize: 500 })
-    records.push(...result.items)
+    records.push(...requireUsageRecordDetails(repositories, result.items))
     if (!result.hasMore) return records
   }
   assert.fail('Codex turn 回归使用记录超过 10000 条，测试夹具可能出现无界重试')

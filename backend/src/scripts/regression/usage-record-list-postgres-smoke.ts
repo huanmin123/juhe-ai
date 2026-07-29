@@ -198,7 +198,6 @@ try {
   assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[5], usageIds[4], usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按用户范围直接读取 usage_records 主表')
   const pricedListItem = traceList.items.find((item) => item.id === usageIds[3])
   assert.equal(pricedListItem?.billedServiceTier, 'priority', 'PG 使用记录列表投影必须保留实际计费服务档位')
-  assert.equal(pricedListItem?.requestedReasoningEffort, 'low', 'PG 使用记录列表投影必须保留请求思考级别')
   assert.equal(pricedListItem?.effectiveReasoningEffort, 'high', 'PG 使用记录列表投影必须保留实际上游思考级别')
 
   const traceAccountList = await listUsageRecordsAsync(smokeAccess, {
@@ -233,6 +232,7 @@ try {
 
   const pricedDetail = await getUsageRecordDetailAsync(usageIds[3], smokeAccess)
   assert(pricedDetail, 'PG 使用记录详情应读取补价记录')
+  assert.equal(pricedDetail.requestedReasoningEffort, 'low', 'PG 使用记录详情必须保留请求思考级别')
   const expectedCost = await estimateCatalogCostUsdAsync({
     providerCode: 'gpt',
     model: pricedModel,

@@ -6,6 +6,7 @@ import type { SQLInputValue } from 'node:sqlite'
 
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
+import { requireUsageRecordDetail } from '../shared/usage-record-detail.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -41,7 +42,8 @@ try {
       api_key: 'sk-usage-record-catalog-window',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '使用记录 catalog 窗口回归 Key',
@@ -107,7 +109,8 @@ try {
     assert.equal(deepPage.items.length, 1, '深翻页仍应返回窗口内最后一条记录')
     assert.equal(deepPage.items[0]?.id, records[300].id, '深翻页应只读取固定 shard 候选窗口内的末尾记录')
     assert.equal(deepPage.items[0]?.billedServiceTier, 'priority', 'SQLite 使用记录列表投影必须保留实际服务档位')
-    assert.equal(deepPage.items[0]?.requestedReasoningEffort, 'low', 'SQLite 使用记录列表投影必须保留请求思考级别')
+    const deepPageDetail = requireUsageRecordDetail(repositories, deepPage.items[0], access)
+    assert.equal(deepPageDetail.requestedReasoningEffort, 'low', 'SQLite 使用记录详情必须保留请求思考级别')
     assert.equal(deepPage.items[0]?.effectiveReasoningEffort, 'high', 'SQLite 使用记录列表投影必须保留实际上游思考级别')
     assert.equal(deepPage.hasMore, true, 'shard 多取一条应标记窗口内还有后续记录')
   } finally {
