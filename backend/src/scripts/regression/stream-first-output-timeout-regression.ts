@@ -169,11 +169,11 @@ async function main(): Promise<void> {
         stream: true
       })
     })
-    assert.equal(response.status, 200)
-    assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+    assert.equal(response.status, 503)
+    assert(response.headers.get('content-type')?.includes('application/json'), '预提交失败应返回 JSON 错误响应')
     const streamText = await response.text()
     const durationMs = Date.now() - startedAt
-    assert(streamText.includes('response.failed'), `客户端未收到网关失败事件：${streamText}`)
+    assert(!streamText.includes('response.failed'), `预提交失败不应伪造 SSE failure event：${streamText}`)
     assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段等待超时应返回统一可重试文案：${streamText}`)
     assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应改写为可重试错误码：${streamText}`)
     assert.equal(
@@ -208,8 +208,8 @@ async function main(): Promise<void> {
     assertFailedUsageRecordExists(noFirstChunkServerRetryCredential.primaryAccount.id)
     assertSuccessfulUsageRecord(noFirstChunkServerRetryCredential.backupAccount.id, { inputTokens: 2, outputTokens: 1 })
     const firstChunkThenIdleResult = await requestFirstChunkThenIdleTimeout(baseUrl, firstChunkIdleCredential.apiKey.key)
-    assert(firstChunkThenIdleResult.streamText.includes('response.created'), `客户端未收到首段上游事件：${firstChunkThenIdleResult.streamText}`)
-    assert(firstChunkThenIdleResult.streamText.includes('response.failed'), `客户端未收到首段后空闲失败事件：${firstChunkThenIdleResult.streamText}`)
+    assert(!firstChunkThenIdleResult.streamText.includes('response.created'), `预提交失败不应透传首段上游事件：${firstChunkThenIdleResult.streamText}`)
+    assert(!firstChunkThenIdleResult.streamText.includes('response.failed'), `预提交失败不应伪造 SSE failure event：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段后空闲应返回统一可重试文案：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('"code":"upstream_retryable_error"'), `首段后空闲应改写为可重试错误码：${firstChunkThenIdleResult.streamText}`)
     assert(
@@ -287,8 +287,8 @@ async function main(): Promise<void> {
     await assertImageStreamAuditBodyOmitted(largeImageApiEofTraceId, 'image_generation.completed')
 
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
-    assert(missingTerminalResult.streamText.includes('response.created'), `客户端未收到缺少终止事件场景的首段上游事件：${missingTerminalResult.streamText}`)
-    assert(missingTerminalResult.streamText.includes('response.failed'), `缺少终止事件场景未收到网关失败事件：${missingTerminalResult.streamText}`)
+    assert(!missingTerminalResult.streamText.includes('response.created'), `预提交失败不应透传首段上游事件：${missingTerminalResult.streamText}`)
+    assert(!missingTerminalResult.streamText.includes('response.failed'), `预提交失败不应伪造 SSE failure event：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('上游流式响应在输出前失败，请重试'), `缺少终止事件场景应返回统一可重试文案：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('"code":"upstream_retryable_error"'), `缺少终止事件应改写为可重试错误码：${missingTerminalResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -439,7 +439,7 @@ async function main(): Promise<void> {
     assert.equal(overloadedAfterOutputAccount?.streamFailureCount, 0, '真实网关流量输出后容量错误不应直接写入账号流失败计数')
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().precheckPendingAccountCount, 0, '单次输出后容量错误不应触发账号事前确认')
 
-    const outputItemThenFailureResult = await requestStreamScenario(baseUrl, outputItemThenFailureCredential.apiKey.key, 'output-item-then-failure')
+    const outputItemThenFailureResult = await requestStreamFailureBeforeOutput(baseUrl, outputItemThenFailureCredential.apiKey.key, 'output-item-then-failure')
     assert(!outputItemThenFailureResult.streamText.includes('response.output_item.added'), `尚未提交的 output item 在同批次失败时不得泄漏：${outputItemThenFailureResult.streamText}`)
     assert(!outputItemThenFailureResult.streamText.includes('internal_server_error'), `output item 后不得泄漏不可信上游错误：${outputItemThenFailureResult.streamText}`)
     assert(outputItemThenFailureResult.streamText.includes('upstream_retryable_error'), `尚未提交的 output item 失败后应返回稳定可重试错误：${outputItemThenFailureResult.streamText}`)
@@ -454,15 +454,11 @@ async function main(): Promise<void> {
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
     const jsonResponseForStreamResult = await requestJsonResponseForStreamRequest(baseUrl, jsonResponseForStreamCredential.apiKey.key)
-    if (jsonResponseForStreamResult.contentType.includes('application/json')) {
-      assert(jsonResponseForStreamResult.text.includes('json response ok'), `尚未提交 SSE 时，明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
-      assert(!jsonResponseForStreamResult.text.includes('response.failed'), `JSON 响应不应被追加 SSE 失败事件：${jsonResponseForStreamResult.text}`)
-    } else {
-      assert(jsonResponseForStreamResult.contentType.includes('text/event-stream'), `已提交的 stream:true 响应必须保持 SSE content-type：${jsonResponseForStreamResult.contentType}`)
-      assert(jsonResponseForStreamResult.text.includes('response.failed'), `SSE heartbeat 已提交后遇到 JSON 上游应返回失败事件：${jsonResponseForStreamResult.text}`)
-      assert(jsonResponseForStreamResult.text.includes('upstream_retryable_error'), `SSE heartbeat 已提交后的 JSON 上游应给出可重试信号：${jsonResponseForStreamResult.text}`)
-      assert(!jsonResponseForStreamResult.text.includes('json response ok'), `已提交 SSE 后不得混入原始 JSON 正文：${jsonResponseForStreamResult.text}`)
-    }
+    assert.equal(jsonResponseForStreamResult.status, 503, `stream:true 的预提交 JSON 上游响应应返回网关错误：${jsonResponseForStreamResult.text}`)
+    assert(jsonResponseForStreamResult.contentType.includes('application/json'), `stream:true 的预提交失败应保持 JSON 错误契约：${jsonResponseForStreamResult.contentType}`)
+    assert(jsonResponseForStreamResult.text.includes('upstream_retryable_error'), `stream:true 的预提交 JSON 上游响应应给出可重试错误码：${jsonResponseForStreamResult.text}`)
+    assert(!jsonResponseForStreamResult.text.includes('response.failed'), `预提交 JSON 上游响应不应伪造 SSE failure event：${jsonResponseForStreamResult.text}`)
+    assert(!jsonResponseForStreamResult.text.includes('json response ok'), `预提交失败不得混入原始 JSON 正文：${jsonResponseForStreamResult.text}`)
 
     console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、任意错误统一按写出边界兜底、未知 error 事件兜底、普通客户端不泄漏上游 SSE 错误、输出后保留已提交内容且不重放、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
@@ -1108,11 +1104,9 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
       stream: true
     })
   })
-  if (response.status !== 200) {
-    throw new Error(`首段后空闲场景状态码异常：${response.status} ${await response.text()}`)
-  }
-  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   const streamText = await response.text()
+  assert.equal(response.status, 503, `首段后无语义输出应返回 HTTP 错误：${streamText}`)
+  assert(response.headers.get('content-type')?.includes('application/json'), '首段后无语义输出应返回 JSON 错误响应')
   return {
     streamText,
     durationMs: Date.now() - startedAt
@@ -1194,12 +1188,10 @@ async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promi
       stream: true
     })
   })
-  if (response.status !== 200) {
-    throw new Error(`缺少终止事件场景状态码异常：${response.status} ${await response.text()}`)
-  }
-  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   const startedAt = Date.now()
   const streamText = await response.text()
+  assert.equal(response.status, 503, `仅 response.created 后 EOF 应返回 HTTP 错误：${streamText}`)
+  assert(response.headers.get('content-type')?.includes('application/json'), '仅 response.created 后 EOF 应返回 JSON 错误响应')
   return {
     streamText,
     durationMs: Date.now() - startedAt
@@ -1285,7 +1277,7 @@ async function requestAndCloseAfterTerminal(baseUrl: string, apiKey: string): Pr
       stream: true
     })
   })
-  assert.equal(response.status, 200)
+  assert.equal(response.status, 200, '终止后客户端关闭场景应保持成功 SSE')
   assert(response.body, '终止后关闭场景应返回响应流')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -1342,10 +1334,12 @@ async function requestStreamFailureBeforeOutput(
       stream: true
     })
   })
-  assert.equal(response.status, 200)
-  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  assert.equal(response.status, 503, `预提交流失败应返回 HTTP 错误：${streamText}`)
+  assert(response.headers.get('content-type')?.includes('application/json'), '预提交流失败应返回 JSON 错误响应')
+  assert(!streamText.includes('response.failed'), `预提交流失败不应伪造 SSE failure event：${streamText}`)
   return {
-    streamText: await response.text(),
+    streamText,
     durationMs: Date.now() - startedAt
   }
 }
@@ -1417,10 +1411,11 @@ async function requestStreamScenario(
       stream: true
     })
   })
-  assert.equal(response.status, 200)
+  const streamText = await response.text()
+  assert.equal(response.status, 200, `${scenario} 场景应保持成功 SSE：${streamText}`)
   assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   return {
-    streamText: await response.text(),
+    streamText,
     durationMs: Date.now() - startedAt
   }
 }
@@ -1428,7 +1423,7 @@ async function requestStreamScenario(
 async function requestJsonResponseForStreamRequest(
   baseUrl: string,
   apiKey: string
-): Promise<{ text: string; contentType: string }> {
+): Promise<{ status: number; text: string; contentType: string }> {
   settingsRepository.updateSettings({
     textFirstResponseTimeoutSeconds: 10,
     textStreamIdleTimeoutSeconds: 10,
@@ -1445,8 +1440,8 @@ async function requestJsonResponseForStreamRequest(
       stream: true
     })
   })
-  assert.equal(response.status, 200)
   return {
+    status: response.status,
     text: await response.text(),
     contentType: response.headers.get('content-type') ?? ''
   }
