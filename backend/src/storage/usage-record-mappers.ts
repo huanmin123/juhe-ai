@@ -231,8 +231,6 @@ function usageRecordListFailureReasonForErrorCode(errorCode: string | undefined)
     unproven_upstream_transport_failure: '上游传输失败，具体原因未确认',
     upstream_protocol_failure: '上游流式响应返回失败终态',
     upstream_protocol_error: '上游响应协议异常',
-    codex_responses_protocol_blocked: '响应命中检查策略',
-    codex_responses_protocol_intercepted: '响应被协议检查拦截',
     invalid_api_key: 'API Key 无效',
     forbidden: '请求无权限',
     invalid_json: '请求 JSON 无效',

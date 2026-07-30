@@ -33,7 +33,7 @@ Codex Responses 的历史 `input` 可能包含只属于原上游账户、旧会�
 ```powershell
 pnpm --filter juhe-ai-backend test:codex-responses-tool-item-identity
 pnpm --filter juhe-ai-backend test:codex-responses-history-sanitizer
-pnpm --filter juhe-ai-backend test:codex-responses-bridge-native-switch
+pnpm --filter juhe-ai-backend test:codex-cross-protocol-context
 pnpm --filter juhe-ai-backend test:codex-responses-response-passthrough
 ```
 

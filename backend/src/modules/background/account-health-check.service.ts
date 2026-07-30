@@ -5,6 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountHealthCheckSettings } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { isDiagnosticTimeoutSignal } from '../accounts/account-diagnostic-retry-policy.js'
 import {
   automaticAccountAvailabilityProbeFailed,
   automaticAccountProbeOutcome
@@ -46,6 +47,7 @@ let lastRequestFailureHealthCheckCleanupAt = 0
 export interface AccountHealthCheckProbeResult {
   result: AccountTestResult
   upstreamAttempt?: UpstreamAttempt
+  diagnosticTimedOut?: boolean
 }
 
 const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
@@ -166,7 +168,7 @@ async function runAccountHealthCheckQueueItem(
   const observedAt = new Date().toISOString()
   return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
     return await runAccountHealthCheckProbe(account, groupId)
-  }, async ({ result, upstreamAttempt }, { joined }) => {
+  }, async ({ result, upstreamAttempt, diagnosticTimedOut }, { joined }) => {
     if (joined) {
       logger.debug({
         event: 'background_account_health_check_singleflight_joined',
@@ -175,7 +177,7 @@ async function runAccountHealthCheckQueueItem(
         reason: item.reason
       }, '同一账户已有可用性探针执行，本轮健康检查复用其结果')
     }
-    const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
+    const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt, timeout: diagnosticTimedOut })
     const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
 
     if (probeOutcome === 'complete_success') {
@@ -304,7 +306,10 @@ export async function probeAccountHealthCheckApiKeyPool(
       return attempt
     }
     fallback ??= attempt
-    if (automaticAccountProbeOutcome(attempt.result, { upstreamAttempt: attempt.upstreamAttempt }) === 'upstream_failure') {
+    if (automaticAccountProbeOutcome(attempt.result, {
+      upstreamAttempt: attempt.upstreamAttempt,
+      timeout: attempt.diagnosticTimedOut
+    }) === 'upstream_failure') {
       upstreamFailure ??= attempt
     }
   }
@@ -333,6 +338,7 @@ async function runAccountHealthCheckDiagnostic(
   candidateAccount?: OpenAIAccountSecret
 ): Promise<AccountHealthCheckProbeResult> {
   let upstreamAttempt: UpstreamAttempt | undefined
+  let diagnosticTimedOut = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'limited',
     groupId,
@@ -344,6 +350,9 @@ async function runAccountHealthCheckDiagnostic(
     onDiagnosticAttemptProgress: () => {
       upstreamAttempt = undefined
     },
+    onDiagnosticAttemptResult: ({ signal }) => {
+      diagnosticTimedOut = isDiagnosticTimeoutSignal(signal)
+    },
     onUpstreamAttempt: (attempt) => {
       upstreamAttempt = attempt
     },
@@ -354,7 +363,7 @@ async function runAccountHealthCheckDiagnostic(
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
-  return { result, upstreamAttempt }
+  return { result, upstreamAttempt, diagnosticTimedOut }
 }
 
 async function accountForHealthCheckQueueItem(item: AccountHealthCheckQueueItem): Promise<AccountSummary | undefined> {

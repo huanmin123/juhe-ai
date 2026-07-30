@@ -96,6 +96,7 @@ export type AccountTestInput = {
   disableAccountStateMutation?: boolean
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
+  onDiagnosticAttemptResult?: AccountDiagnosticAttemptResultHandler
   onUpstreamAttempt?: (attempt: UpstreamAttempt) => void
   retryAllFailures?: boolean
   forceProbeKind?: AccountTestProbeKind
@@ -104,6 +105,13 @@ export type AccountTestInput = {
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
   findOpenAIAccountForGroup?: (groupId: string, accountId: string, systemAccountId: string, options?: { includeUnavailable?: boolean; ignoreAvailability?: boolean }) => OpenAIAccountSecret | undefined | Promise<OpenAIAccountSecret | undefined>
 }
+
+export interface AccountDiagnosticAttemptResult {
+  result: AccountTestResult
+  signal: AbortSignal
+}
+
+export type AccountDiagnosticAttemptResultHandler = (attempt: AccountDiagnosticAttemptResult) => void
 
 export type AccountUpstreamModelCatalogResult = {
   modelIds: string[]
@@ -126,6 +134,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     signal: preflightSignal
   })
   if (preflightFailure) {
+    notifyDiagnosticAttemptResult(input.onDiagnosticAttemptResult, preflightFailure, preflightSignal)
     return accountTestResultWithTotalDuration(preflightFailure, startedAt)
   }
   const model = await resolveAccountTestModelAsync(account, {
@@ -148,6 +157,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
       signal: attemptSignal,
       gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
     })
+    notifyDiagnosticAttemptResult(input.onDiagnosticAttemptResult, result, attemptSignal)
     lastResult = result
     const shouldRetryFailure = input.shouldRetryFailure
       ? input.shouldRetryFailure(result, attemptIndex)
@@ -251,6 +261,19 @@ function notifyDiagnosticAttemptProgress(
     handler(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt, timeoutSchedule))
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'account_diagnostic_attempt_progress_callback_failed' }), '账户诊断进度回调执行失败')
+  }
+}
+
+function notifyDiagnosticAttemptResult(
+  handler: AccountDiagnosticAttemptResultHandler | undefined,
+  result: AccountTestResult,
+  signal: AbortSignal
+): void {
+  if (!handler) return
+  try {
+    handler({ result, signal })
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'account_diagnostic_attempt_result_callback_failed' }), '账户诊断结果回调执行失败')
   }
 }
 

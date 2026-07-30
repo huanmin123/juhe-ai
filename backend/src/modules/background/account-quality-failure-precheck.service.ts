@@ -5,6 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { isDiagnosticTimeoutSignal } from '../accounts/account-diagnostic-retry-policy.js'
 import {
   automaticAccountAvailabilityProbeFailed,
   automaticAccountProbeOutcome
@@ -105,6 +106,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
   const precheckStartedAt = new Date().toISOString()
   return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
     let upstreamAttempt: UpstreamAttempt | undefined
+    let diagnosticTimedOut = false
     const result = await testOpenAIAccountWithDiagnosticRetries(account, {
       diagnostics: 'full',
       groupId,
@@ -115,6 +117,9 @@ async function runAccountQualityFailurePrecheckQueueItem(
       retryAllFailures: true,
       onDiagnosticAttemptProgress: () => {
         upstreamAttempt = undefined
+      },
+      onDiagnosticAttemptResult: ({ signal }) => {
+        diagnosticTimedOut = isDiagnosticTimeoutSignal(signal)
       },
       onUpstreamAttempt: (attempt) => {
         upstreamAttempt = attempt
@@ -127,8 +132,8 @@ async function runAccountQualityFailurePrecheckQueueItem(
         temporaryUnschedulableRetryIntervalSeconds: 0
       }
     })
-    return { result, upstreamAttempt }
-  }, async ({ result, upstreamAttempt }, { joined }) => {
+    return { result, upstreamAttempt, diagnosticTimedOut }
+  }, async ({ result, upstreamAttempt, diagnosticTimedOut }, { joined }) => {
     if (joined) {
       logger.debug({
         event: 'background_account_quality_failure_precheck_singleflight_joined',
@@ -137,7 +142,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
       }, '同一账户已有可用性探针执行，本轮质量失败确认复用其结果')
     }
     rememberQualityFailurePrechecked(item.accountId)
-    const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
+    const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt, timeout: diagnosticTimedOut })
 
     if (probeOutcome === 'complete_success') {
       logger.info({

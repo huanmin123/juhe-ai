@@ -30,6 +30,7 @@ const upstreamState = {
 const [
   { testOpenAIAccountWithDiagnosticRetries },
   { probeCodexSwitchCandidateAccount },
+  healthCheckService,
   { readGatewaySettings },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
@@ -39,6 +40,7 @@ const [
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/client-profiles/codex-switch-probe.js'),
+  import('../../modules/background/account-health-check.service.js'),
   import('../../modules/gateway/policy/account-error-policy.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
@@ -142,7 +144,34 @@ try {
   assert.equal(codexTimeoutResult.success, false, '持续本地超时的 Codex 切号探针不应通过')
   assert.equal(hitCount('codex-timeout'), 3, 'Codex 切号探针只有本地超时时才应在同一候选账号递进三档')
 
-  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号和本地超时三档递进')
+  const healthTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'health-timeout', access)
+  requiredRuntimeAccount(group.id, healthTimeoutAccount.id, admin.id)
+  const activeHealthTimeoutAccount = repositories.findAccountSummary(healthTimeoutAccount.id, access)
+  assert(activeHealthTimeoutAccount, '激活后的超时回归账户必须可读取')
+  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
+  try {
+    assert.equal(healthCheckService.enqueueAccountHealthCheck(activeHealthTimeoutAccount, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      maxPauseMinutes: 60
+    }, 'request_failure'), true, '客户请求失败必须投递独立健康检查')
+    await waitForAccountHealthCheckQueueIdle(healthCheckService)
+  } finally {
+    AbortSignal.timeout = originalAbortSignalTimeout
+  }
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  const healthTimeoutAfterProbe = repositories.findAccountSummary(healthTimeoutAccount.id, access)
+  assert.equal(hitCount('health-timeout'), 3, '后台健康检查在响应头前超时时必须完整执行三档探测')
+  assert.equal(healthTimeoutAfterProbe?.status, 'temporary_unavailable', '客户请求失败后的三档本地超时必须直接标记临时不可调用')
+  assert.equal(
+    repositories.findOpenAIAccountForGroup(group.id, healthTimeoutAccount.id, admin.id),
+    undefined,
+    'temporary_unavailable 账户必须被普通路由候选排除'
+  )
+
+  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号，以及客户请求失败后的健康检查本地超时隔离')
 } finally {
   AbortSignal.timeout = originalAbortSignalTimeout
   auditLogQueue.flushAllAuditLogQueue()
@@ -238,6 +267,14 @@ function createMockAIUpstream(): http.Server {
         return
       }
       if (key === 'codex-timeout') {
+        setTimeout(() => {
+          if (!res.destroyed) {
+            sendMockCompleted(res, responseMode, 'OK')
+          }
+        }, 200)
+        return
+      }
+      if (key === 'health-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
             sendMockCompleted(res, responseMode, 'OK')
@@ -360,4 +397,16 @@ async function closeServer(server?: http.Server): Promise<void> {
       resolvePromise()
     })
   })
+}
+
+async function waitForAccountHealthCheckQueueIdle(
+  healthCheckService: typeof import('../../modules/background/account-health-check.service.js')
+): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const snapshot = healthCheckService.getAccountHealthCheckQueueSnapshot()
+    if (snapshot.pendingCount === 0 && snapshot.runningCount === 0) return
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
+  }
+  throw new Error('账户健康检查队列未在 5 秒内完成')
 }

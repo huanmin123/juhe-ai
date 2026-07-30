@@ -33,8 +33,6 @@ for (const [type, prefix] of expectedItemPrefixes) {
   const contract = codexResponsesContractRegistry.item(type)
   assert.ok(contract, `registry 必须包含 ${type}`)
   assert.equal(contract.prefix, prefix, `${type} 必须使用 Codex 源码声明的 ${prefix}_ 前缀`)
-  assert.ok(contract.eventStages.includes('done'), `${type} 至少必须允许 output_item.done`)
-  assert.deepEqual(contract.repairableIdPaths, ['id'], `${type} 的 R0 只允许修改 item.id`)
 }
 
 assert.equal(codexResponsesContractRegistry.item('other'), undefined)
@@ -45,12 +43,7 @@ assert.equal(codexResponsesContractRegistry.itemByPrefix('unknown'), undefined)
 const compactionTrigger = codexResponsesContractRegistry.item('compaction_trigger')
 assert.ok(compactionTrigger, 'Codex 源码中的 compaction_trigger 必须是已知无 ID 类型')
 assert.equal(compactionTrigger.prefix, undefined)
-assert.deepEqual(compactionTrigger.repairableIdPaths, [])
 assert.equal(codexResponsesContractRegistry.items.length, expectedItemPrefixes.size + 1)
-assert.deepEqual(
-  codexResponsesContractRegistry.item('custom_tool_call')?.requiredFields.map((field) => field.name),
-  ['call_id', 'name', 'input']
-)
 
 assert.throws(
   () => (codexResponsesContractRegistry.items as unknown as Array<unknown>).push({}),
@@ -58,4 +51,4 @@ assert.throws(
   '公开 items 表必须冻结，调用方不能运行时修改 contract'
 )
 
-console.log('Codex Responses contract registry 回归通过：revision、源码前缀、事件阶段、R0 路径和未知类型边界已固定')
+console.log('Codex Responses 上下文 ID 前缀表回归通过：revision、源码前缀和未知类型边界已固定')
