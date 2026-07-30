@@ -244,12 +244,20 @@ migrate_runtime_ownership() {
 }
 
 assert_release_read_only() {
-  while IFS= read -r -d '' release_entry; do
-    if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$release_entry"; then
-      echo "release entry must not be writable by the service user: $release_entry" >&2
-      return 1
-    fi
-  done < <(find "$CURRENT_DIR" -xdev \( -type d -o -type f \) -print0)
+  if ! "$SUDO_BIN" -n -u "$SERVICE_USER" /bin/bash -s -- "$CURRENT_DIR" <<'EOF'
+set -euo pipefail
+release_dir="$1"
+while IFS= read -r -d '' release_entry; do
+  if [ -w "$release_entry" ]; then
+    printf '%s\n' "$release_entry" >&2
+    exit 1
+  fi
+done < <(find "$release_dir" -xdev \( -type d -o -type f \) -print0)
+EOF
+  then
+    echo 'release entry must not be writable by the service user' >&2
+    return 1
+  fi
 }
 
 if [ "$SCOPE" = system ]; then
