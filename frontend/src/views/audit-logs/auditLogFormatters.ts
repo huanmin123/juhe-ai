@@ -64,8 +64,13 @@ export function statusColor(statusCode: number | undefined, success: boolean): s
 }
 
 export function statusText(statusCode: number | undefined, success: boolean): string {
+  if (!success) return '失败'
+  return statusCode === undefined ? '-' : String(statusCode)
+}
+
+export function transportStatusText(statusCode: number | undefined, success: boolean): string {
   if (statusCode === undefined) return '-'
-  return success ? String(statusCode) : `${statusCode}（语义失败）`
+  return success ? String(statusCode) : `HTTP ${statusCode}（头已提交）`
 }
 
 export function displayName(name?: string, _id?: string): string {

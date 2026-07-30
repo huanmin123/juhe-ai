@@ -50,7 +50,7 @@
         @change="handleAdvancedApply"
       />
     </a-form-item>
-    <a-form-item label="状态码">
+    <a-form-item label="HTTP 状态码">
       <a-input v-model:value="statusCodeValue" allow-clear placeholder="401 / 503" @press-enter="handleAdvancedApply" />
     </a-form-item>
   </a-form>

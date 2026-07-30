@@ -27,7 +27,8 @@
             </span>
             <span v-else>-</span>
           </a-descriptions-item>
-          <a-descriptions-item label="状态码">{{ statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
+          <a-descriptions-item label="结果状态">{{ statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
+          <a-descriptions-item label="HTTP 状态">{{ transportStatusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="AI账户">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
           <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
@@ -186,6 +187,7 @@ import {
   prettyJson,
   sessionClientTypeText,
   statusText,
+  transportStatusText,
   trafficSourceText
 } from './auditLogFormatters'
 import {

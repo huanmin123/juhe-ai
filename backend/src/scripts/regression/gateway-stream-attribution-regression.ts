@@ -95,7 +95,8 @@ capture.cancel()
 
 assert.match(formatterSource, /downstream_closed: '下游连接关闭（触发方未识别）'/, '新下游关闭终态必须使用中性文案')
 assert.match(formatterSource, /client_aborted: '下游连接关闭（历史记录）'/, '历史 client_aborted 记录必须使用中性文案')
-assert.match(formatterSource, /return success \? String\(statusCode\) : `\$\{statusCode\}（语义失败）`/, 'HTTP 200 的语义失败必须有可见失败标识')
+assert.match(formatterSource, /if \(!success\) return '失败'/, '失败记录不得把 HTTP 200 显示为成功状态码')
+assert.match(formatterSource, /return success \? String\(statusCode\) : `HTTP \$\{statusCode\}（头已提交）`/, 'HTTP 200 只能作为详情中的已提交传输状态保留')
 assert.match(listSource, /statusText\(record\.finalStatusCode, record\.success\)/, '审计列表必须使用语义状态展示')
 
 console.log('网关流式失败与下游关闭归因回归通过')
