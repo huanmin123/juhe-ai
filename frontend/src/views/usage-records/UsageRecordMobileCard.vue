@@ -11,10 +11,15 @@
         <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
         <a-tag v-if="!record.success" color="red">失败</a-tag>
         <a-tag v-else color="green">成功</a-tag>
-        <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">状态码 {{ statusCodeText(record) }}</a-tag>
+        <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
       </div>
     </div>
     <div class="mobile-list-meta-grid">
+      <div v-if="record.failureReason" class="mobile-list-meta-item mobile-list-meta-wide">
+        <span>失败说明</span>
+        <strong class="failure-summary">{{ record.failureReason }}</strong>
+        <small v-if="failureAttribution">{{ failureAttribution }}</small>
+      </div>
       <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
         <span>系统账户</span>
         <strong>{{ usageRecordSystemAccountText(record) }}</strong>
@@ -90,10 +95,12 @@ import {
   trafficSourceText,
   usageRecordLatencyParts,
   usageRecordDisplayCostUsd,
+  usageRecordFailureAttributionText,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
+import { computed } from 'vue'
 
 const props = defineProps<{
   isManagementView: boolean
@@ -103,6 +110,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'copyTraceId', traceId: string): void
 }>()
+
+const failureAttribution = computed(() => usageRecordFailureAttributionText(props.record))
 </script>
 
 <style scoped>
@@ -122,5 +131,15 @@ const emit = defineEmits<{
 .mobile-trace-id > span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.failure-summary {
+  color: #b42318;
+  overflow-wrap: anywhere;
+}
+
+.mobile-list-meta-item small {
+  color: #667085;
+  font-size: 12px;
 }
 </style>

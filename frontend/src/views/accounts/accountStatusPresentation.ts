@@ -9,6 +9,8 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
 
   if (observation) {
     lines.push(`最近检查：${formatDateTime(observation.attemptedAt)}（${observation.result === 'success' ? '成功' : '失败'}）`)
+    if (typeof observation.httpStatus === 'number') lines.push(`HTTP 状态：${observation.httpStatus}`)
+    if (observation.errorCode) lines.push(`错误码：${observation.errorCode}`)
   }
   const schedule = presentation?.probe?.schedule
   if (schedule?.state === 'scheduled' && schedule.nextAttemptAt) {
@@ -19,6 +21,8 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
       : '下次检查：等待执行')
   } else if (schedule?.state === 'running') {
     lines.push('下次检查：正在检查')
+  } else if (schedule?.state === 'none' && presentation?.probe) {
+    lines.push('下次检查：暂无计划')
   } else if (presentation?.probe && !observation) {
     lines.push('下次检查：暂无计划')
   }

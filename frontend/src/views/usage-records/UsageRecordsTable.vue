@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2408 : 2228"
+    :scroll-x="isManagementView ? 2588 : 2408"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -186,8 +186,9 @@ function handleTableChange(...args: unknown[]): void {
 
 .status-cell {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
+  white-space: normal;
 }
 
 .latency-cell {

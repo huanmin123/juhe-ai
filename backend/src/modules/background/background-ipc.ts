@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { normalizeHeaderId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
@@ -87,6 +88,10 @@ const usageRecordMessageQueueMaxMessages = 10_000
 const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
 const regularWorkerMessageQueueMaxMessages = 5_000
 const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
+export const accountHealthCheckWorkerIpcQueueLimits = {
+  maxQueueMessages: regularWorkerMessageQueueMaxMessages,
+  maxQueueBytes: regularWorkerMessageQueueMaxBytes
+} as const
 const pendingDatasetWriteRequestMaxCount = 1000
 const pendingStatsWriteRequestMaxCount = 1000
 const pendingBackgroundDbServiceRequestMaxCount = 1000
@@ -333,16 +338,81 @@ export function sendAccountTestCancelToWorker(taskId: string): boolean {
 
 export function sendAccountHealthCheckTriggerToWorker(
   accountId: string,
-  reason: AccountHealthCheckTriggerReason
+  reason: AccountHealthCheckTriggerReason,
+  traceId?: string
 ): boolean {
-  if (runtimeConfig.processRole === 'worker') return false
+  return sendAccountHealthCheckTriggerToWorkerWithOutcome(accountId, reason, traceId).accepted
+}
+
+export type AccountHealthCheckWorkerDispatchOutcome =
+  | {
+    accepted: true
+    targetRole: 'ops-worker'
+    queueLength: number
+    queueBytes: number
+    messageBytes: number
+  }
+  | {
+    accepted: false
+    targetRole: 'ops-worker'
+    decisionCode: 'ops_ipc_message_limit' | 'ops_ipc_byte_limit' | 'ops_ipc_unavailable'
+    queueLength: number
+    queueBytes: number
+    messageBytes: number
+  }
+
+/**
+ * Returns the bounded ops-worker queue decision for the health-check bridge.
+ * Existing callers retain the boolean API above; this is deliberately scoped to
+ * health-check triggers so other IPC producers keep their current contract.
+ */
+export function sendAccountHealthCheckTriggerToWorkerWithOutcome(
+  accountId: string,
+  reason: AccountHealthCheckTriggerReason,
+  traceId?: string
+): AccountHealthCheckWorkerDispatchOutcome {
+  if (runtimeConfig.processRole === 'worker') return unavailableAccountHealthCheckWorkerDispatchOutcome()
   const normalizedId = normalizedString(accountId)
-  if (!normalizedId) return false
-  return sendBackgroundWorkerMessage({
+  if (!normalizedId) return unavailableAccountHealthCheckWorkerDispatchOutcome()
+  if (!opsWorkerProcess || !opsWorkerProcess.connected || !opsWorkerReady) {
+    return unavailableAccountHealthCheckWorkerDispatchOutcome()
+  }
+  const normalizedTraceId = normalizeHeaderId(traceId)
+  const outcome = queueWorkerMessageWithOutcome({
     type: 'background_worker_account_health_check_trigger',
     accountId: normalizedId,
-    reason
+    reason,
+    ...(normalizedTraceId ? { traceId: normalizedTraceId } : {})
   })
+  if (outcome.targetRole !== 'ops-worker') return unavailableAccountHealthCheckWorkerDispatchOutcome()
+  if (outcome.accepted) {
+    return {
+      accepted: true,
+      targetRole: 'ops-worker',
+      queueLength: outcome.queueLength,
+      queueBytes: outcome.queueBytes,
+      messageBytes: outcome.messageBytes
+    }
+  }
+  return {
+    accepted: false,
+    targetRole: 'ops-worker',
+    decisionCode: outcome.decisionCode === 'message_limit' ? 'ops_ipc_message_limit' : 'ops_ipc_byte_limit',
+    queueLength: outcome.queueLength,
+    queueBytes: outcome.queueBytes,
+    messageBytes: outcome.messageBytes
+  }
+}
+
+function unavailableAccountHealthCheckWorkerDispatchOutcome(): AccountHealthCheckWorkerDispatchOutcome {
+  return {
+    accepted: false,
+    targetRole: 'ops-worker',
+    decisionCode: 'ops_ipc_unavailable',
+    queueLength: 0,
+    queueBytes: 0,
+    messageBytes: 0
+  }
 }
 
 export function sendGatewayQuotaSnapshotToServer(snapshot: GatewayQuotaSnapshot): void {
@@ -1018,23 +1088,61 @@ function rejectPendingBackgroundRequest(
   }, '后台直连 IPC pending 请求已达上限，已拒绝本次请求')
 }
 
+type WorkerMessageQueueOutcome =
+  | {
+    accepted: true
+    targetRole: BackgroundWorkerQueueTargetRole
+    queueLength: number
+    queueBytes: number
+    messageBytes: number
+  }
+  | {
+    accepted: false
+    targetRole: BackgroundWorkerQueueTargetRole
+    decisionCode: 'message_limit' | 'byte_limit'
+    queueLength: number
+    queueBytes: number
+    messageBytes: number
+  }
+
 function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
+  return queueWorkerMessageWithOutcome(inputMessage).accepted
+}
+
+function queueWorkerMessageWithOutcome(inputMessage: BackgroundWorkerMessage): WorkerMessageQueueOutcome {
   if (runtimeConfig.queueDriver === 'redis_stream' && isRedisStreamManagedIngestQueueMessage(inputMessage)) {
     rejectRedisStreamLocalQueueMessage(inputMessage, 'queueWorkerMessage')
-    return false
+    const targetRole = workerMessageTargetRole(inputMessage)
+    return {
+      accepted: false,
+      targetRole,
+      decisionCode: 'byte_limit',
+      queueLength: 0,
+      queueBytes: 0,
+      messageBytes: estimateWorkerMessageBytes(inputMessage)
+    }
   }
   const message = coalesceWorkerMessage(inputMessage)
   if (!message) {
     flushWorkerMessageQueue()
-    return true
+    const targetRole = workerMessageTargetRole(inputMessage)
+    const queue = regularQueueCapacityRuntimeForMessage(targetRole, ipcQueueKeyForMessage(inputMessage))
+    return {
+      accepted: true,
+      targetRole,
+      queueLength: queue.queueLength,
+      queueBytes: queue.queueBytes,
+      messageBytes: estimateWorkerMessageBytes(inputMessage)
+    }
   }
   const targetRole = workerMessageTargetRole(message)
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
-  if (!canQueueWorkerMessage(targetRole, message, messageBytes, queueKey)) {
+  const queueDecision = workerMessageQueueDecision(targetRole, message, messageBytes, queueKey)
+  if (!queueDecision.accepted) {
     const runtime = pendingQueueRuntimeForTarget(targetRole)
     runtime[queueKey].rejectedCount = (runtime[queueKey].rejectedCount ?? 0) + 1
-    return false
+    return queueDecision
   }
   if (targetRole === 'ingest-worker') {
     if (message.type === 'background_worker_usage_records') {
@@ -1054,7 +1162,7 @@ function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
   addPendingQueueRuntimeMessage(targetRole, queueKey, messageBytes)
 
   flushTargetWorkerMessageQueue(targetRole)
-  return true
+  return queueDecision
 }
 
 function coalesceWorkerMessage(message: BackgroundWorkerMessage): BackgroundWorkerMessage | undefined {
@@ -1167,34 +1275,56 @@ function recordMaintenanceJobCoalescingKey(job: RecordMaintenanceJob): string | 
     : undefined
 }
 
-function canQueueWorkerMessage(
+function workerMessageQueueDecision(
   targetRole: BackgroundWorkerQueueTargetRole,
   message: BackgroundWorkerMessage,
   messageBytes: number,
   queueKey: IpcQueueKey
-): boolean {
+): WorkerMessageQueueOutcome {
   if (message.type === 'background_worker_usage_records') {
-    return targetRole === 'ingest-worker'
-      && ingestUsageRecordMessageQueue.length < usageRecordMessageQueueMaxMessages
-      && messageBytes <= usageRecordWorkerMessageMaxBytes
-      && ingestUsageRecordMessageQueueBytes + messageBytes <= usageRecordMessageQueueMaxBytes
+    const queueLength = ingestUsageRecordMessageQueue.length
+    const queueBytes = ingestUsageRecordMessageQueueBytes
+    if (targetRole !== 'ingest-worker' || queueLength >= usageRecordMessageQueueMaxMessages) {
+      return { accepted: false, targetRole, decisionCode: 'message_limit', queueLength, queueBytes, messageBytes }
+    }
+    if (messageBytes > usageRecordWorkerMessageMaxBytes || queueBytes + messageBytes > usageRecordMessageQueueMaxBytes) {
+      return { accepted: false, targetRole, decisionCode: 'byte_limit', queueLength, queueBytes, messageBytes }
+    }
+    return { accepted: true, targetRole, queueLength, queueBytes, messageBytes }
   }
   const regularQueueRuntime = regularQueueCapacityRuntimeForMessage(targetRole, queueKey)
   const regularQueueLength = regularQueueRuntime.queueLength
   const regularQueueBytes = regularQueueRuntime.queueBytes
-  if (message.type === 'background_worker_audit_logs') {
-    return regularQueueLength < regularWorkerMessageQueueMaxMessages
-      && messageBytes <= auditWorkerMessageMaxBytes
-      && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
+  const maxMessageBytes = message.type === 'background_worker_audit_logs'
+    ? auditWorkerMessageMaxBytes
+    : regularWorkerMessageMaxBytes
+  if (regularQueueLength >= regularWorkerMessageQueueMaxMessages) {
+    return {
+      accepted: false,
+      targetRole,
+      decisionCode: 'message_limit',
+      queueLength: regularQueueLength,
+      queueBytes: regularQueueBytes,
+      messageBytes
+    }
   }
-  if (message.type === 'background_worker_public_api_logs') {
-    return regularQueueLength < regularWorkerMessageQueueMaxMessages
-      && messageBytes <= regularWorkerMessageMaxBytes
-      && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
+  if (messageBytes > maxMessageBytes || regularQueueBytes + messageBytes > regularWorkerMessageQueueMaxBytes) {
+    return {
+      accepted: false,
+      targetRole,
+      decisionCode: 'byte_limit',
+      queueLength: regularQueueLength,
+      queueBytes: regularQueueBytes,
+      messageBytes
+    }
   }
-  return regularQueueLength < regularWorkerMessageQueueMaxMessages
-    && messageBytes <= regularWorkerMessageMaxBytes
-    && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
+  return {
+    accepted: true,
+    targetRole,
+    queueLength: regularQueueLength,
+    queueBytes: regularQueueBytes,
+    messageBytes
+  }
 }
 
 function regularQueueCapacityRuntimeForMessage(

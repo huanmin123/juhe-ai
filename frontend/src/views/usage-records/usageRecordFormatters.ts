@@ -105,6 +105,7 @@ export function usageRecordReasoningEffortText(record: UsageRecordListItem): str
 export function statusCodeColor(record: UsageRecordListItem): string {
   const value = record.statusCode
   if (!value) return 'default'
+  if (!record.success && value >= 200 && value < 300) return 'orange'
   if (value >= 200 && value < 300) return 'green'
   if (value >= 400 && value < 500) return 'orange'
   if (value >= 500) return 'red'
@@ -112,8 +113,24 @@ export function statusCodeColor(record: UsageRecordListItem): string {
 }
 
 export function statusCodeText(record: UsageRecordListItem): string {
-  if (typeof record.statusCode === 'number') return String(record.statusCode)
+  if (typeof record.statusCode === 'number') {
+    return !record.success && record.statusCode >= 200 && record.statusCode < 300
+      ? `HTTP ${record.statusCode}（非成功终态）`
+      : `HTTP ${record.statusCode}`
+  }
   return '-'
+}
+
+export function usageRecordFailureAttributionText(record: UsageRecordListItem): string | undefined {
+  if (record.success) return undefined
+  if (record.failureAttribution === 'downstream_unconfirmed') return '归因：下游连接关闭，触发方未知'
+  if (record.failureAttribution === 'client_lifecycle') return '归因：下游连接关闭（历史记录，触发方未识别）'
+  if (record.failureAttribution === 'account_upstream') return '归因：上游账户'
+  if (record.failureAttribution === 'account_dependency') return '归因：账户依赖'
+  if (record.failureAttribution === 'opaque_upstream') return '归因：上游未识别失败'
+  if (record.failureAttribution === 'gateway_capacity') return '归因：网关容量'
+  if (record.failureAttribution === 'gateway_policy') return '归因：网关策略'
+  return undefined
 }
 
 function numberValue(value: unknown): number | undefined {

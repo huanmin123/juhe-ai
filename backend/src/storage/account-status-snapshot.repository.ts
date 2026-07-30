@@ -100,7 +100,24 @@ export interface AccountManagementStatusSeed {
   account_expires_at: string | null
   cooldown_until: string | null
   last_error_code: string | null
+  last_error_message: string | null
+  last_error_trace_id: string | null
+  last_health_check_at: string | null
+  next_health_check_at: string | null
+  last_health_check_status_code: number | null
+  last_health_check_error_code: string | null
+  last_health_check_error_message: string | null
+  last_health_check_trace_id: string | null
+  cooldown_retest_last_at: string | null
+  cooldown_retest_last_status_code: number | null
+  cooldown_retest_failure_count: number
+  cooldown_retest_observation_started_at: string | null
   last_used_at: string | null
+  last_health_success_at: string | null
+  health_check_failure_count: number
+  health_check_failure_started_at: string | null
+  stream_failure_count: number
+  stream_failure_window_started_at: string | null
   authorization_instance_source_account_id: string | null
   authorization_id: string | null
   authorization_status: AuthorizationStatus | null
@@ -111,6 +128,16 @@ export interface AccountManagementStatusSeed {
   source_account_expires_at: string | null
   source_cooldown_until: string | null
   source_last_error_code: string | null
+  source_last_error_message: string | null
+  source_last_error_trace_id: string | null
+  source_cooldown_retest_last_at: string | null
+  source_cooldown_retest_last_status_code: number | null
+  source_last_health_check_at: string | null
+  source_next_health_check_at: string | null
+  source_last_health_check_status_code: number | null
+  source_last_health_check_error_code: string | null
+  source_last_health_check_error_message: string | null
+  source_last_health_check_trace_id: string | null
   binding_system_account_id: string | null
   bound_group_id: string | null
   bound_group_account_authorization_id: string | null
@@ -200,7 +227,7 @@ async function hydrateAccountManagementStatusSeedsDirect(
     const runtimeKey = isAuthorized && groupBinding && row.authorization_id
       ? `${row.id}:authorized:${row.system_account_id}:${groupBinding.groupId}:${row.authorization_id}`
       : row.id
-    return [{
+    const projection: AccountStatusProjection = {
       id: row.id,
       runtimeKey,
       concurrencyAccountId: row.authorization_instance_source_account_id || row.id,
@@ -216,18 +243,38 @@ async function hydrateAccountManagementStatusSeedsDirect(
       authorizationInstanceSourceAccountExpiresAt: row.source_account_expires_at ?? undefined,
       authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
       authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
+      authorizationInstanceSourceAccountLastErrorMessage: accountListDiagnosticText(row.source_last_error_message),
       accountExpiresAt: row.account_expires_at ?? undefined,
       status: isAuthorized
         ? authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
         : row.status,
       schedulable: row.schedulable === 1,
       cooldownUntil: row.cooldown_until ?? undefined,
-      lastErrorCode: isAuthorized ? undefined : row.last_error_code ?? undefined,
+      lastErrorCode: row.last_error_code ?? undefined,
+      lastErrorMessage: accountListDiagnosticText(row.last_error_message),
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
+      cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)) || undefined,
+      cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+      lastHealthCheckAt: row.last_health_check_at ?? undefined,
+      nextHealthCheckAt: row.next_health_check_at ?? undefined,
+      lastHealthSuccessAt: row.last_health_success_at ?? undefined,
+      healthCheckFailureCount: Math.max(0, Number(row.health_check_failure_count ?? 0)) || undefined,
+      healthCheckFailureStartedAt: row.health_check_failure_started_at ?? undefined,
+      lastHealthCheckStatusCode: row.last_health_check_status_code ?? undefined,
+      lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
+      lastHealthCheckErrorMessage: accountListDiagnosticText(row.last_health_check_error_message),
+      lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
+      cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
+      cooldownRetestLastStatusCode: row.cooldown_retest_last_status_code ?? undefined,
+      streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)) || undefined,
+      streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       balanceQueryEnabled: isAuthorized ? undefined : row.balance_query_enabled === 1,
       balanceQueryNextRefreshAt: isAuthorized ? undefined : row.balance_query_next_refresh_at ?? undefined,
       todayUsage: accountStatusTodayUsage(todayUsage.get(row.id)),
       lastUsedAt: isAuthorized ? authorizationTotal.get(row.id)?.lastUsedAt : row.last_used_at ?? undefined
-    }]
+    }
+    projection.sourceAccountProbe = accountStatusSourceAccountProbe(projection, row)
+    return [projection]
   })
 }
 
@@ -391,14 +438,14 @@ async function hydrateAccountStatusProjectionSeedsDirect(
       authorizationInstanceSourceAccountExpiresAt: row.source_account_expires_at ?? undefined,
       authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
       authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
-      authorizationInstanceSourceAccountLastErrorMessage: row.source_last_error_message ?? undefined,
+      authorizationInstanceSourceAccountLastErrorMessage: accountListDiagnosticText(row.source_last_error_message),
       accountExpiresAt: row.account_expires_at ?? undefined,
       status: effectiveStatus,
       schedulable: row.schedulable === 1,
       cooldownUntil: row.cooldown_until ?? undefined,
-      lastErrorCode: row.authorization_id ? undefined : row.last_error_code ?? undefined,
-      lastErrorMessage: row.last_error_message ?? undefined,
-      lastErrorTraceId: row.authorization_id ? undefined : row.last_error_trace_id ?? undefined,
+      lastErrorCode: row.last_error_code ?? undefined,
+      lastErrorMessage: accountListDiagnosticText(row.last_error_message),
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)) || undefined,
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
       lastHealthCheckAt: row.last_health_check_at ?? undefined,
@@ -408,10 +455,10 @@ async function hydrateAccountStatusProjectionSeedsDirect(
       healthCheckFailureStartedAt: row.health_check_failure_started_at ?? undefined,
       lastHealthCheckStatusCode: row.last_health_check_status_code ?? undefined,
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
-      lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      lastHealthCheckErrorMessage: accountListDiagnosticText(row.last_health_check_error_message),
       lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
-      cooldownRetestLastAt: row.authorization_id ? undefined : row.cooldown_retest_last_at ?? undefined,
-      cooldownRetestLastStatusCode: row.authorization_id ? undefined : row.cooldown_retest_last_status_code ?? undefined,
+      cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
+      cooldownRetestLastStatusCode: row.cooldown_retest_last_status_code ?? undefined,
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)) || undefined,
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       balanceQueryEnabled: isAuthorized ? undefined : row.balance_query_enabled === 1,
@@ -426,7 +473,17 @@ async function hydrateAccountStatusProjectionSeedsDirect(
 
 function accountStatusSourceAccountProbe(
   projection: AccountStatusProjection,
-  row: AccountStatusProjectionSeed,
+  row: Pick<AccountStatusProjectionSeed,
+    | 'source_last_error_trace_id'
+    | 'source_cooldown_retest_last_at'
+    | 'source_cooldown_retest_last_status_code'
+    | 'source_last_health_check_at'
+    | 'source_next_health_check_at'
+    | 'source_last_health_check_status_code'
+    | 'source_last_health_check_error_code'
+    | 'source_last_health_check_error_message'
+    | 'source_last_health_check_trace_id'
+  >,
   now = new Date()
 ): AccountProbeSummary | undefined {
   const effectiveAvailability = accountEffectiveAvailability(projection, now.getTime())
@@ -441,9 +498,16 @@ function accountStatusSourceAccountProbe(
     authorizationInstanceSourceAccountNextHealthCheckAt: row.source_next_health_check_at ?? undefined,
     authorizationInstanceSourceAccountLastHealthCheckStatusCode: row.source_last_health_check_status_code ?? undefined,
     authorizationInstanceSourceAccountLastHealthCheckErrorCode: row.source_last_health_check_error_code ?? undefined,
-    authorizationInstanceSourceAccountLastHealthCheckErrorMessage: row.source_last_health_check_error_message ?? undefined,
+    authorizationInstanceSourceAccountLastHealthCheckErrorMessage: accountListDiagnosticText(row.source_last_health_check_error_message),
     authorizationInstanceSourceAccountLastHealthCheckTraceId: row.source_last_health_check_trace_id ?? undefined
   }, now).probe
+}
+
+/** Keep fast-list diagnostics useful without allowing 100 records to exceed its response budget. */
+function accountListDiagnosticText(value: string | null | undefined): string | undefined {
+  const text = value?.trim()
+  if (!text) return undefined
+  return text.length <= 96 ? text : `${text.slice(0, 95)}…`
 }
 
 function accountStatusTodayUsage(

@@ -88,6 +88,8 @@ export interface UsageRecordSummary {
   statusCode?: number
   success: boolean
   failureAttribution?: UsageFailureAttribution
+  /** Bounded list-only diagnostic category derived from structured failure fields. */
+  failureReason?: string
   firstTokenMs?: number
   durationMs?: number
   inputTokens?: number
@@ -134,6 +136,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'stream'
   | 'statusCode'
   | 'success'
+  | 'failureAttribution'
+  | 'failureReason'
   | 'firstTokenMs'
   | 'durationMs'
   | 'inputTokens'
@@ -144,7 +148,7 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
 >
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
-export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'opaque_upstream' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
+export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'opaque_upstream' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle' | 'downstream_unconfirmed'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
@@ -257,6 +261,8 @@ export const usageRecordListSelectColumns = [
   'ur.stream',
   'ur.status_code',
   'ur.success',
+  'ur.failure_attribution',
+  'ur.error_code',
   'ur.first_token_ms',
   'ur.duration_ms',
   'ur.input_tokens',
@@ -1677,6 +1683,7 @@ function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttributi
     || value === 'gateway_capacity'
     || value === 'gateway_policy'
     || value === 'client_lifecycle'
+    || value === 'downstream_unconfirmed'
   ) {
     return value
   }

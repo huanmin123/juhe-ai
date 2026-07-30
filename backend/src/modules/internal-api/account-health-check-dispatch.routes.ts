@@ -10,6 +10,8 @@ import express, {
   type Response
 } from 'express'
 
+import { getRequestLogger, getTraceId } from '../../shared/request-context.js'
+
 export const accountHealthCheckDispatchSignatureDomain = 'juhe-ai:account-health-check-dispatch:v1\n'
 export const accountHealthCheckDispatchInternalPrefix = '/__aiinternal__'
 
@@ -23,9 +25,36 @@ loopbackAddresses.addAddress('::1', 'ipv6')
 
 export type AccountHealthCheckDispatchReason = 'activation' | 'configuration' | 'request_failure'
 
+interface AccountHealthCheckDispatchQueueDetails {
+  targetRole?: 'ops-worker'
+  queueLength?: number
+  queueBytes?: number
+  messageBytes?: number
+  maxQueueMessages?: number
+  maxQueueBytes?: number
+}
+
+export type AccountHealthCheckDispatchOutcome = AccountHealthCheckDispatchQueueDetails & (
+  | {
+    outcome: 'queued'
+    decisionCode: 'queued'
+    targetRole: 'ops-worker'
+  }
+  | {
+    outcome: 'coalesced'
+    decisionCode: 'request_failure_cooldown'
+    targetRole: 'ops-worker'
+    cooldownRemainingMs: number
+  }
+  | {
+    outcome: 'rejected'
+    decisionCode: 'ops_ipc_message_limit' | 'ops_ipc_byte_limit' | 'ops_ipc_unavailable' | 'dispatch_rejected'
+  }
+)
+
 export interface AccountHealthCheckDispatchRouterOptions {
   secret: string
-  dispatch: (accountId: string, reason: AccountHealthCheckDispatchReason) => boolean
+  dispatch: (accountId: string, reason: AccountHealthCheckDispatchReason, traceId?: string) => boolean | AccountHealthCheckDispatchOutcome
 }
 
 export interface AccountHealthCheckDispatchBridgeOptions extends AccountHealthCheckDispatchRouterOptions {
@@ -197,7 +226,10 @@ function handleDispatchRequest(
   }
 
   try {
-    if (!options.dispatch(payload.accountId, payload.reason)) {
+    const outcome = normalizeDispatchOutcome(options.dispatch(payload.accountId, payload.reason, getTraceId()))
+    const statusCode = outcome.outcome === 'rejected' ? 503 : 202
+    logDispatchOutcome(payload.reason, outcome, statusCode)
+    if (statusCode === 503) {
       res.status(503).json({ message: '服务暂不可用' })
       return
     }
@@ -205,6 +237,42 @@ function handleDispatchRequest(
   } catch (error) {
     next(error)
   }
+}
+
+function normalizeDispatchOutcome(value: boolean | AccountHealthCheckDispatchOutcome): AccountHealthCheckDispatchOutcome {
+  if (typeof value !== 'boolean') return value
+  if (value) {
+    return {
+      outcome: 'queued',
+      decisionCode: 'queued',
+      targetRole: 'ops-worker'
+    }
+  }
+  return {
+    outcome: 'rejected',
+    decisionCode: 'dispatch_rejected'
+  }
+}
+
+function logDispatchOutcome(
+  triggerReason: AccountHealthCheckDispatchReason,
+  outcome: AccountHealthCheckDispatchOutcome,
+  statusCode: number
+): void {
+  getRequestLogger().info({
+    event: 'account_health_check_dispatch_decision',
+    outcome: outcome.outcome,
+    triggerReason,
+    decisionCode: outcome.decisionCode,
+    targetRole: outcome.targetRole ?? null,
+    queueLength: outcome.queueLength ?? null,
+    queueBytes: outcome.queueBytes ?? null,
+    messageBytes: outcome.messageBytes ?? null,
+    maxQueueMessages: outcome.maxQueueMessages ?? null,
+    maxQueueBytes: outcome.maxQueueBytes ?? null,
+    cooldownRemainingMs: outcome.outcome === 'coalesced' ? outcome.cooldownRemainingMs : null,
+    statusCode
+  }, '账户健康检查派发决策')
 }
 
 function hasValidSignature(req: Request, secret: string, rawBody: Buffer): boolean {

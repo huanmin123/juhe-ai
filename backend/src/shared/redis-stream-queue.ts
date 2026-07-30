@@ -27,6 +27,8 @@ export interface RedisStreamQueueOptions<T> {
   producerClient?: () => Promise<RedisCommandClient>
   producerTimeoutMs?: number
   backlogCreatedAt?: (payload: T) => string | undefined
+  maxItems?: number
+  maxStreamMemoryBytes?: number
 }
 
 export interface RedisStreamMessage<T> {
@@ -59,6 +61,13 @@ export interface RedisStreamBacklogWatermark {
   failureReason?: 'backfill_incomplete' | 'unreadable_message' | 'invalid_created_at'
 }
 
+export class RedisStreamQueueCapacityExceededError extends Error {
+  constructor(message = 'Redis Stream 队列容量已满') {
+    super(message)
+    this.name = 'RedisStreamQueueCapacityExceededError'
+  }
+}
+
 export class RedisStreamQueue<T> {
   private readonly streamKey: string
   private readonly groupName: string
@@ -76,6 +85,8 @@ export class RedisStreamQueue<T> {
   private readonly backlogCreatedAtIndexKey: string
   private readonly backlogCreatedAtCursorKey: string
   private readonly backlogCreatedAtReadyKey: string
+  private readonly capacityMaxItems: number | undefined
+  private readonly capacityMaxStreamMemoryBytes: number | undefined
   private consumerClientPromise: Promise<RedisCommandClient> | undefined
   private groupReadyPromise: Promise<void> | undefined
 
@@ -98,6 +109,8 @@ export class RedisStreamQueue<T> {
     this.backlogCreatedAtIndexKey = `${this.streamKey}:backlog-created-at`
     this.backlogCreatedAtCursorKey = `${this.backlogCreatedAtIndexKey}:backfill-cursor`
     this.backlogCreatedAtReadyKey = `${this.backlogCreatedAtIndexKey}:ready`
+    this.capacityMaxItems = normalizeRedisStreamQueueCapacity(options.maxItems, 'maxItems')
+    this.capacityMaxStreamMemoryBytes = normalizeRedisStreamQueueCapacity(options.maxStreamMemoryBytes, 'maxStreamMemoryBytes')
   }
 
   async enqueue(payload: T): Promise<string> {
@@ -117,21 +130,44 @@ export class RedisStreamQueue<T> {
   }
 
   private async enqueueEncodedInternal(encodedPayload: string, backlogCreatedAtScore?: number): Promise<string> {
-    const enqueue = (client: RedisCommandClient) => backlogCreatedAtScore === undefined
-      ? client.eval(redisEnqueueWithFenceScript, {
-          keys: [this.fenceKey, this.streamKey],
-          arguments: ['payload', encodedPayload]
-        })
-      : client.eval(redisEnqueueWithFenceAndBacklogIndexScript, {
-          keys: [this.fenceKey, this.streamKey, this.backlogCreatedAtIndexKey],
-          arguments: ['payload', encodedPayload, String(backlogCreatedAtScore)]
-        })
+    const enqueue = (client: RedisCommandClient) => {
+      if (this.capacityMaxItems !== undefined || this.capacityMaxStreamMemoryBytes !== undefined) {
+        const capacityArguments = [
+          'payload',
+          encodedPayload,
+          String(this.capacityMaxItems ?? -1),
+          String(this.capacityMaxStreamMemoryBytes ?? -1)
+        ]
+        return backlogCreatedAtScore === undefined
+          ? client.eval(redisEnqueueWithFenceAndCapacityScript, {
+              keys: [this.fenceKey, this.streamKey],
+              arguments: capacityArguments
+            })
+          : client.eval(redisEnqueueWithFenceBacklogIndexAndCapacityScript, {
+              keys: [this.fenceKey, this.streamKey, this.backlogCreatedAtIndexKey],
+              arguments: [...capacityArguments, String(backlogCreatedAtScore)]
+            })
+      }
+      return backlogCreatedAtScore === undefined
+        ? client.eval(redisEnqueueWithFenceScript, {
+            keys: [this.fenceKey, this.streamKey],
+            arguments: ['payload', encodedPayload]
+          })
+        : client.eval(redisEnqueueWithFenceAndBacklogIndexScript, {
+            keys: [this.fenceKey, this.streamKey, this.backlogCreatedAtIndexKey],
+            arguments: ['payload', encodedPayload, String(backlogCreatedAtScore)]
+          })
+    }
     if (!this.producerClient) {
-      const id = await runRedisOperationWithDeadline(this.redisUrl, {
-        operationName: 'Redis Stream 入队',
-        timeoutMs: this.producerTimeoutMs
-      }, enqueue)
-      return String(id ?? '')
+      try {
+        const id = await runRedisOperationWithDeadline(this.redisUrl, {
+          operationName: 'Redis Stream 入队',
+          timeoutMs: this.producerTimeoutMs
+        }, enqueue)
+        return String(id ?? '')
+      } catch (error) {
+        throw normalizeRedisStreamQueueCapacityError(error)
+      }
     }
 
     const deadlineAtMs = Date.now() + this.producerTimeoutMs
@@ -142,6 +178,10 @@ export class RedisStreamQueue<T> {
       const id = await awaitRedisStreamProducerStep(enqueue(client), deadlineAtMs, 'Redis Stream 入队')
       return String(id ?? '')
     } catch (error) {
+      const normalizedError = normalizeRedisStreamQueueCapacityError(error)
+      if (normalizedError !== error) {
+        throw normalizedError
+      }
       if (error instanceof RedisOperationDeadlineError) {
         if (client) {
           client.destroy?.()
@@ -621,6 +661,25 @@ function backlogCreatedAtScore(value: string): number | undefined {
   return Number.isFinite(time) ? time : undefined
 }
 
+function normalizeRedisStreamQueueCapacity(value: number | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Redis Stream ${name} 必须是非负安全整数`)
+  }
+  return value
+}
+
+function normalizeRedisStreamQueueCapacityError(error: unknown): unknown {
+  if (error instanceof RedisStreamQueueCapacityExceededError) return error
+  const message = error instanceof Error ? error.message : String(error)
+  if (
+    message.includes('QUEUE_CAPACITY_EXCEEDED')
+  ) {
+    return new RedisStreamQueueCapacityExceededError(message)
+  }
+  return error
+}
+
 const redisInspectPendingMessagesScript = `
 local pending = redis.call('XPENDING', KEYS[1], ARGV[1], '-', '+', ARGV[2])
 local output = {}
@@ -645,6 +704,42 @@ if redis.call('GET', KEYS[1]) then
 end
 local id = redis.call('XADD', KEYS[2], '*', ARGV[1], ARGV[2])
 redis.call('ZADD', KEYS[3], ARGV[3], id)
+return id
+`
+
+const redisEnqueueWithFenceAndCapacityScript = `
+if redis.call('GET', KEYS[1]) then
+  return redis.error_reply('QUEUE_QUIESCED')
+end
+local stream_length = redis.call('XLEN', KEYS[2])
+local max_items = tonumber(ARGV[3])
+if max_items >= 0 and stream_length >= max_items then
+  return redis.error_reply('QUEUE_CAPACITY_EXCEEDED')
+end
+local max_stream_memory_bytes = tonumber(ARGV[4])
+local stream_memory_bytes = redis.call('MEMORY', 'USAGE', KEYS[2]) or 0
+if max_stream_memory_bytes >= 0 and stream_memory_bytes + string.len(ARGV[2]) > max_stream_memory_bytes then
+  return redis.error_reply('QUEUE_CAPACITY_EXCEEDED')
+end
+return redis.call('XADD', KEYS[2], '*', ARGV[1], ARGV[2])
+`
+
+const redisEnqueueWithFenceBacklogIndexAndCapacityScript = `
+if redis.call('GET', KEYS[1]) then
+  return redis.error_reply('QUEUE_QUIESCED')
+end
+local stream_length = redis.call('XLEN', KEYS[2])
+local max_items = tonumber(ARGV[3])
+if max_items >= 0 and stream_length >= max_items then
+  return redis.error_reply('QUEUE_CAPACITY_EXCEEDED')
+end
+local max_stream_memory_bytes = tonumber(ARGV[4])
+local stream_memory_bytes = redis.call('MEMORY', 'USAGE', KEYS[2]) or 0
+if max_stream_memory_bytes >= 0 and stream_memory_bytes + string.len(ARGV[2]) > max_stream_memory_bytes then
+  return redis.error_reply('QUEUE_CAPACITY_EXCEEDED')
+end
+local id = redis.call('XADD', KEYS[2], '*', ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[3], ARGV[5], id)
 return id
 `
 

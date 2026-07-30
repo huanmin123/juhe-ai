@@ -118,7 +118,7 @@ import {
   type HybridQualityInspectionOutcome
 } from '../hybrid/quality-inspection.service.js'
 import {
-  recordClientAbortedUpstreamAttempt,
+  recordDownstreamClosedUpstreamAttempt,
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
 } from '../usage/records.js'
@@ -442,7 +442,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     codexResponsesGuard?.dispose()
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-      await recordClientAbortedUpstreamAttempt(req, {
+      await recordDownstreamClosedUpstreamAttempt(req, {
         ...usageContext,
         account,
         statusCode: upstreamResponse.status,
@@ -460,7 +460,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         statusCode: upstreamResponse.status,
         responseHeaders: upstreamResponse.headers,
         success: false,
-        errorPhase: 'client',
+        errorPhase: 'downstream',
         errorMessage: downstreamConnectionClosedMessage
       })
     }
@@ -1120,7 +1120,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       }
     }
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
-      await recordClientAbortedUpstreamAttempt(req, {
+      await recordDownstreamClosedUpstreamAttempt(req, {
         ...usageContext,
         account,
         statusCode: upstreamResponse.status,
@@ -1140,7 +1140,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         statusCode: upstreamResponse.status,
         responseHeaders: upstreamResponse.headers,
         success: false,
-        errorPhase: 'client',
+        errorPhase: 'downstream',
         errorMessage: downstreamConnectionClosedMessage
       })
     } else if (error instanceof NonStreamUpstreamBodyPipeError && (res.headersSent || res.writableEnded || res.destroyed)) {

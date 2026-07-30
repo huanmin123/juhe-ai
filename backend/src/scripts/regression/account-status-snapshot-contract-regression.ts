@@ -380,8 +380,27 @@ try {
   assert.equal(sourceHealthSnapshot.items[0]?.effectiveAvailability.status, 'source_pending_test')
   assert.equal(sourceHealthSnapshot.items[0]?.availabilityPresentation?.probe?.lastObservation?.traceId, 'trace-source-health', '来源健康探针压缩后必须保留 traceId')
   assert.equal(sourceHealthSnapshot.items[0]?.availabilityPresentation?.probe?.schedule.nextAttemptAt, '2026-07-20T14:00:00.000Z', '来源健康探针压缩后必须保留下次检查时间')
-  databaseModule.getBusinessDatabase().prepare("UPDATE accounts SET status = 'rate_limited', schedulable = 0 WHERE id = ?")
-    .run(account.id)
+  const sourceHealthListBasePage = await repositories.listAccountManagementItemsPageReadOnly(granteeAccess, {
+    ids: [authorizedInstance.id], page: 1, pageSize: 20
+  })
+  const sourceHealthListPage = await hydrateAccountListPage(granteeAccess, sourceHealthListBasePage)
+  assert.equal(sourceHealthListPage.items[0]?.availabilityPresentation?.probe?.lastObservation?.traceId, 'trace-source-health', 'fast list seed 必须保留来源健康检查 traceId')
+  assert.equal(sourceHealthListPage.items[0]?.availabilityPresentation?.probe?.schedule.nextAttemptAt, '2026-07-20T14:00:00.000Z', 'fast list seed 必须保留来源下次检查时间')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'rate_limited', schedulable = 0,
+        last_error_code = 'cooldown_retest_failed', last_error_message = '来源冷却复测失败', last_error_trace_id = 'trace-source-cooldown',
+        cooldown_retest_last_at = '2026-07-20T03:00:00.000Z', cooldown_retest_last_status_code = 429,
+        cooldown_until = '2099-07-20T14:00:00.000Z'
+    WHERE id = ?
+  `).run(account.id)
+  const sourceCooldownListBasePage = await repositories.listAccountManagementItemsPageReadOnly(granteeAccess, {
+    ids: [authorizedInstance.id], page: 1, pageSize: 20
+  })
+  const sourceCooldownListPage = await hydrateAccountListPage(granteeAccess, sourceCooldownListBasePage)
+  assert.equal(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.lastObservation?.traceId, 'trace-source-cooldown', 'fast list seed 必须保留来源冷却复测 traceId')
+  assert.equal(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.lastObservation?.httpStatus, 429, 'fast list seed 必须保留来源冷却复测 HTTP 状态')
+  assert.equal(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.schedule.state, 'none', '冷却截止时间不是实际复测计划，fast list 不得把它伪造为下次检查')
 
   for (let index = 0; index < 140; index += 1) {
     repositories.createAccount({

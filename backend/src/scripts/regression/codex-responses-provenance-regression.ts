@@ -547,42 +547,64 @@ assert.equal(strictStreamResult.responseInspection?.retryEnabled, true)
 assert.equal(strictStreamResult.responseInspection?.accountSwitch, 'request_next_account')
 assert.equal(strictStreamChunks.length, 0, '严格拦截必须在下游写入前阻止污染事件')
 
-const strictLateCommitState = new GatewayDownstreamCommitState()
-strictLateCommitState.markSemanticCommitted(16)
-const strictLateGuard = createCodexResponsesResponseGuard({
-  marker: createCodexResponsesGuardMarker('raw_upstream'),
-  downstreamCommitState: strictLateCommitState,
-  mode: 'strict_intercept'
-})
-const strictLateResponse = {
-  ...strictStreamResponse,
-  headersSent: true,
-  writableEnded: false
+async function* lateViolationUpstream(): AsyncIterable<Uint8Array> {
+  const events = [
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { id: 'ctc_late_missing_name', type: 'custom_tool_call', call_id: 'call_late', input: '' }
+    },
+    { type: 'response.completed', response: { id: 'resp_late', object: 'response', output: [] } }
+  ]
+  yield Buffer.from(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), 'utf8')
 }
-const strictLateResult = await pipeUpstreamStream(
-  strictStreamUpstream(),
-  strictLateResponse as never,
-  {
-    firstResponseTimeoutMs: 5_000,
-    firstByteTimeoutMs: 5_000,
-    idleTimeoutMs: 5_000,
-    uncommittedAttemptMaxLifetimeMs: 30_000,
-    noAvailableAccountWaitMs: 5_000
-  },
-  Date.now(),
-  async () => {},
-  undefined,
-  {
-    responseProtocol: 'openai_v1',
-    endpointFamily: 'responses',
-    interpretProtocolFailures: false,
-    downstreamCommitState: strictLateCommitState,
-    codexResponsesGuard: strictLateGuard
+for (const mode of ['safe_repair', 'strict_intercept'] as const) {
+  const lateCommitState = new GatewayDownstreamCommitState()
+  lateCommitState.markSemanticCommitted(16)
+  const lateGuard = createCodexResponsesResponseGuard({
+    marker: createCodexResponsesGuardMarker('raw_upstream'),
+    downstreamCommitState: lateCommitState,
+    mode
+  })
+  const lateChunks: Buffer[] = []
+  const lateResponse = {
+    ...strictStreamResponse,
+    headersSent: true,
+    writableEnded: false,
+    write(chunk: Buffer) {
+      lateChunks.push(Buffer.from(chunk))
+      return true
+    }
   }
-)
-assert.equal(strictLateResult.completed, false)
-assert.equal(strictLateResult.responseInspection?.retryEnabled, false)
-assert.equal(strictLateResult.responseInspection?.accountSwitch, 'none', '语义提交后严格拦截不得拼接另一账户响应')
+  const lateResult = await pipeUpstreamStream(
+    lateViolationUpstream(),
+    lateResponse as never,
+    {
+      firstResponseTimeoutMs: 5_000,
+      firstByteTimeoutMs: 5_000,
+      idleTimeoutMs: 5_000,
+      uncommittedAttemptMaxLifetimeMs: 30_000,
+      noAvailableAccountWaitMs: 5_000
+    },
+    Date.now(),
+    async () => {},
+    undefined,
+    {
+      responseProtocol: 'openai_v1',
+      endpointFamily: 'responses',
+      interpretProtocolFailures: false,
+      downstreamCommitState: lateCommitState,
+      codexResponsesGuard: lateGuard
+    }
+  )
+  assert.equal(lateResult.completed, true, `${mode} 在语义提交后的协议违规必须继续读取并完成上游流`)
+  assert.equal(lateResult.responseInspection, undefined, `${mode} 不得把 late_violation 变成失败响应`)
+  assert.equal(lateResult.codexResponsesGuard?.outcome, 'late_violation')
+  assert.equal(lateResult.codexResponsesGuard?.retryable, false)
+  const lateText = Buffer.concat(lateChunks).toString('utf8')
+  assert.match(lateText, /ctc_late_missing_name/, `${mode} 不得吞掉已提交后的违规事件`)
+  assert.match(lateText, /response\.completed/, `${mode} 必须原样继续透传后续终态`)
+}
 
 const safeBlockedCommitState = new GatewayDownstreamCommitState()
 const safeBlockedGuard = createCodexResponsesResponseGuard({

@@ -52,7 +52,7 @@ import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from '.
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
-import { dispatchAccountHealthCheck } from './modules/internal-api/account-health-check-dispatch.service.js'
+import { dispatchAccountHealthCheckWithOutcome } from './modules/internal-api/account-health-check-dispatch.service.js'
 import { dispatchAccountTestTask } from './modules/internal-api/account-test-dispatch.service.js'
 import {
   accountTestDispatchInternalPrefix,
@@ -197,7 +197,7 @@ mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,
   compressionMiddleware: createHttpCompressionMiddleware(),
   secret: runtimeConfig.secret,
-  dispatch: dispatchAccountHealthCheck
+  dispatch: dispatchAccountHealthCheckWithOutcome
 })
 
 app.get(`${systemPrefix}/health`, (_req, res) => {

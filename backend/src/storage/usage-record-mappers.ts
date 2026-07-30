@@ -62,6 +62,8 @@ export function usageRecordListItemFromRow(
     stream: row.stream === 1,
     statusCode: numberValue(row.status_code),
     success: row.success === 1,
+    failureAttribution: usageFailureAttribution(row.failure_attribution),
+    failureReason: usageRecordListFailureReason(row),
     firstTokenMs: numberValue(row.first_token_ms),
     durationMs: numberValue(row.duration_ms),
     inputTokens: numberValue(row.input_tokens),
@@ -186,10 +188,62 @@ function usageFailureAttribution(value: unknown): UsageRecordSummary['failureAtt
     || value === 'gateway_capacity'
     || value === 'gateway_policy'
     || value === 'client_lifecycle'
+    || value === 'downstream_unconfirmed'
   ) {
     return value
   }
   return undefined
+}
+
+/** List rows expose a bounded category, never persisted error text or snapshots. */
+function usageRecordListFailureReason(row: UsageRecordRow): string | undefined {
+  if (row.success === 1) return undefined
+  const errorCode = optionalString(row.error_code)
+  const attribution = usageFailureAttribution(row.failure_attribution)
+  if (errorCode === 'downstream_connection_closed' || errorCode === 'client_aborted' || attribution === 'downstream_unconfirmed' || attribution === 'client_lifecycle') {
+    return '下游连接关闭，触发方未识别'
+  }
+  const errorCodeReason = usageRecordListFailureReasonForErrorCode(errorCode)
+  if (errorCodeReason) return errorCodeReason
+  if (attribution === 'account_dependency') return '账户依赖不可用'
+  if (attribution === 'opaque_upstream') return '上游返回未识别失败'
+  if (attribution === 'account_upstream') return '上游请求失败'
+  if (attribution === 'gateway_capacity') return '网关容量不足'
+  if (attribution === 'gateway_policy') return '网关策略拒绝请求'
+  return '请求未正常完成'
+}
+
+function usageRecordListFailureReasonForErrorCode(errorCode: string | undefined): string | undefined {
+  if (!errorCode) return undefined
+  return {
+    request_timeout: '请求体上传未完成',
+    request_too_large: '请求体超过网关限制',
+    request_body_too_large: '请求体超过网关限制',
+    gateway_body_in_flight_limit_exceeded: '网关正在处理过多请求体',
+    gateway_json_parser_busy: '网关请求体解析繁忙',
+    gateway_json_parser_failed: '网关请求体解析失败',
+    rate_limit_exceeded: '请求被限流',
+    user_request_limit_exceeded: '请求超过用户限额',
+    no_available_upstream_account: '没有可调度的上游账户',
+    account_concurrency_limit: '上游账户并发已满',
+    normal_route_first_byte_timeout: '上游未在首段时限内响应',
+    upstream_retryable_error: '上游暂时不可用',
+    unproven_upstream_transport_failure: '上游传输失败，具体原因未确认',
+    upstream_protocol_failure: '上游流式响应返回失败终态',
+    upstream_protocol_error: '上游响应协议异常',
+    codex_responses_protocol_blocked: '响应命中检查策略',
+    codex_responses_protocol_intercepted: '响应被协议检查拦截',
+    invalid_api_key: 'API Key 无效',
+    forbidden: '请求无权限',
+    invalid_json: '请求 JSON 无效',
+    model_not_routable_for_api_key: '当前 API Key 无权使用该模型',
+    model_route_ambiguous: '模型路由不唯一',
+    model_route_unavailable: '模型当前不可用',
+    model_target_group_not_bound: '模型未绑定可用分组',
+    model_target_group_unavailable: '模型目标分组不可用',
+    proxy_unavailable: '账户代理不可用',
+    server_overloaded: '网关当前负载过高'
+  }[errorCode]
 }
 
 function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {

@@ -485,7 +485,7 @@ export async function handleUpstreamRequestError(
         startedAt: attemptStartedAt,
         statusCode,
         errorMessage: downstreamConnectionClosedMessage,
-        failureAttribution: 'client_lifecycle'
+        failureAttribution: 'downstream_unconfirmed'
       })
       lastAttempt = {
         accountId: account.id,

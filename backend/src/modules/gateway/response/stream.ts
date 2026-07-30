@@ -259,10 +259,7 @@ export async function pipeUpstreamStream(
         ? {
             transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
               const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
-              if (
-                (result.outcome === 'blocked' && result.retryable)
-                || result.outcome === 'late_violation'
-              ) {
+              if (result.outcome === 'blocked' && result.retryable) {
                 return { intercepted: codexResponsesProtocolDecision(result, false) }
               }
               const rewritten = rewriteCodexResponsesSseEvent(event, result.repairs)
@@ -280,7 +277,6 @@ export async function pipeUpstreamStream(
               if (
                 result.outcome !== 'repairable'
                 && result.outcome !== 'blocked'
-                && result.outcome !== 'late_violation'
               ) return undefined
               return { intercepted: codexResponsesProtocolDecision(result, true) }
             }

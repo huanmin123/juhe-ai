@@ -167,7 +167,7 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
   const rows = await client.query<Omit<SystemAccountSummaryRow, 'created_at'>>(`
     SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at,
-      to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+      updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     ${keywordFilter.clause}
     ORDER BY updated_at DESC, id DESC
@@ -643,7 +643,7 @@ export async function patchSystemAccountManagementAsync(
     await lockActiveSuperAdminInvariantForPatchAsync(tx, input)
     const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
     const current = await tx.one<SystemAccountManagementPatchRow>(`
-      SELECT ${systemAccountManagementPatchSelectColumns(input, tx.driver).join(', ')}
+      SELECT ${systemAccountManagementPatchSelectColumns(input).join(', ')}
       FROM ${systemAccountTable(tx, 'system_accounts')}
       WHERE id = ?
       LIMIT 1${lockClause}
@@ -755,7 +755,7 @@ export async function patchSystemAccountManagementAsync(
     const applied = await tx.execute(`
       UPDATE ${systemAccountTable(tx, 'system_accounts')}
       SET ${assignments.join(', ')}, updated_at = ?
-      WHERE id = ? AND ${systemAccountPatchRevisionPredicate(tx.driver)}
+      WHERE id = ? AND ${systemAccountPatchRevisionPredicate()}
     `, [...params, updatedAt, id, current.updated_at])
     if (applied.changes !== 1) {
       throw new SystemAccountManagementPatchConflictError()
@@ -787,12 +787,10 @@ export async function patchSystemAccountManagementAsync(
   return outcome
 }
 
-function systemAccountManagementPatchSelectColumns(input: Record<string, unknown>, driver: DatabaseClient['driver']): string[] {
+function systemAccountManagementPatchSelectColumns(input: Record<string, unknown>): string[] {
   const columns = new Set([
     'id',
-    driver === 'postgres'
-      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
-      : 'updated_at',
+    'updated_at',
     'display_name'
   ])
   if (Object.hasOwn(input, 'description')) columns.add('description')
@@ -805,8 +803,8 @@ function systemAccountManagementPatchSelectColumns(input: Record<string, unknown
   return [...columns]
 }
 
-function systemAccountPatchRevisionPredicate(driver: DatabaseClient['driver']): string {
-  return driver === 'postgres' ? 'updated_at = CAST(? AS timestamptz)' : 'updated_at = ?'
+function systemAccountPatchRevisionPredicate(): string {
+  return 'updated_at = ?'
 }
 
 function requiredSystemAccountPatchValue<K extends keyof SystemAccountManagementPatchRow>(

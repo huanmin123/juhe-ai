@@ -74,7 +74,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 if ($performanceInstaller -match 'proxy_next_upstream_tries') {
@@ -166,15 +166,41 @@ $onExitFunctionStart = $performanceInstaller.IndexOf('on_exit() {', $rollbackFun
 $rollbackFunction = $performanceInstaller.Substring($rollbackFunctionStart, $onExitFunctionStart - $rollbackFunctionStart)
 $runtimeDirectoryFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_runtime_directory'
 $isolatedRuntimeParentFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_isolated_runtime_parent'
+$runtimeDirectoryComponentFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_runtime_directory_component'
+$auditBlobDirectoryFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'ensure_audit_payload_blob_directory'
+$runtimeManagedPathsFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'runtime_managed_paths'
 $runtimeOwnershipFunctionStart = $performanceInstaller.IndexOf('migrate_runtime_ownership() {', [StringComparison]::Ordinal)
 $runtimeOwnershipFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeOwnershipFunctionStart, [StringComparison]::Ordinal) + 3
 $runtimeOwnershipFunction = $performanceInstaller.Substring($runtimeOwnershipFunctionStart, $runtimeOwnershipFunctionEnd - $runtimeOwnershipFunctionStart)
+$auditBlobWritePreflightFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_audit_payload_blob_write_preflight'
 $renderRunScriptFunctionStart = $performanceInstaller.IndexOf('render_run_script() {', [StringComparison]::Ordinal)
 $renderRunScriptFunctionEnd = $performanceInstaller.IndexOf("`n}", $renderRunScriptFunctionStart, [StringComparison]::Ordinal) + 3
 $renderRunScriptFunction = $performanceInstaller.Substring($renderRunScriptFunctionStart, $renderRunScriptFunctionEnd - $renderRunScriptFunctionStart)
 $renderNginxFunctionStart = $performanceInstaller.IndexOf('render_nginx() {', [StringComparison]::Ordinal)
 $renderNginxFunctionEnd = $performanceInstaller.IndexOf("`n}", $renderNginxFunctionStart, [StringComparison]::Ordinal) + 3
 $renderNginxFunction = $performanceInstaller.Substring($renderNginxFunctionStart, $renderNginxFunctionEnd - $renderNginxFunctionStart)
+if (-not $runtimeManagedPathsFunction.Contains('"$DATA_DIR"', [StringComparison]::Ordinal) -or -not $runtimeOwnershipFunction.Contains('"$DATA_DIR"', [StringComparison]::Ordinal)) {
+  throw 'Performance topology must manage and transfer ownership of the release-external data directory'
+}
+if (-not $auditBlobDirectoryFunction.Contains('mkdir "$next_path"', [StringComparison]::Ordinal) -or $auditBlobDirectoryFunction.Contains('mkdir -p', [StringComparison]::Ordinal)) {
+  throw 'Performance topology must create audit payload directories one level at a time'
+}
+if ($performanceInstaller -match 'mkdir -p[^\r\n]*\$DATA_DIR/audit/blobs') {
+  throw 'Performance topology must not follow data-directory symbolic links with mkdir -p'
+}
+foreach ($contract in @('audit_blob_dir="$DATA_DIR/audit/blobs"', ': > "$temporary_path"', 'mv "$temporary_path" "$renamed_path"', 'rm -f "$renamed_path"', '"$SUDO_BIN" -n -u "$SERVICE_USER" /bin/bash -s -- "$audit_blob_dir"')) {
+  if (-not $auditBlobWritePreflightFunction.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology audit payload write preflight missing: $contract"
+  }
+}
+$auditBlobWritePreflightCall = $performanceInstaller.LastIndexOf('assert_audit_payload_blob_write_preflight', [StringComparison]::Ordinal)
+$stageDirectoryCreation = $performanceInstaller.IndexOf('STAGE_DIR=', [StringComparison]::Ordinal)
+if ($auditBlobWritePreflightCall -lt 0 -or $stageDirectoryCreation -lt 0 -or $auditBlobWritePreflightCall -gt $stageDirectoryCreation) {
+  throw 'Performance topology must verify audit payload writes before staging launchd or nginx changes'
+}
+if (-not $renderRunScriptFunction.Contains('export JUHE_AI_DATASET_DATABASE_PATH="%s/juhe-ai-dataset.sqlite3"', [StringComparison]::Ordinal)) {
+  throw 'Performance topology run scripts must keep the dataset store outside the read-only release'
+}
 
 $cutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'temporary-cutover.sh')
 foreach ($contract in @('assert_pid_cwd_port_health', 'API_HEALTH_PATH', 'rollback_target', "trap 'on_exit", '--dry-run', '--apply')) {
@@ -221,12 +247,15 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-ops-test' --label 'com.example.juhe-ai'
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
-    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf'
+    $defaultDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
+    if (-not ($defaultDryRun -join "`n").Contains('data=/tmp/juhe-ai-performance-test/shared/data', [StringComparison]::Ordinal)) {
+      throw 'default performance topology dry-run did not use the shared release-external data directory'
+    }
     $isolatedDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.temporary' --runtime-dir '/tmp/juhe-ai-performance-test/runtime-temporary' --nginx-upstream-suffix 'temporary_20260730' --nginx-config '/tmp/juhe-ai-performance-test/temporary.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
     if ($LASTEXITCODE -ne 0) { throw 'isolated performance topology installer dry-run failed' }
-    if (-not ($isolatedDryRun -join "`n").Contains('runtime=/tmp/juhe-ai-performance-test/runtime-temporary upstream_suffix=temporary_20260730', [StringComparison]::Ordinal)) {
-      throw 'isolated performance topology dry-run did not report its explicit runtime and upstream identity'
+    if (-not ($isolatedDryRun -join "`n").Contains('runtime=/tmp/juhe-ai-performance-test/runtime-temporary data=/tmp/juhe-ai-performance-test/runtime-temporary/data upstream_suffix=temporary_20260730', [StringComparison]::Ordinal)) {
+      throw 'isolated performance topology dry-run did not report its explicit runtime, data and upstream identity'
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
@@ -554,10 +583,16 @@ root="$(mktemp -d)"
 trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root/base/inside" "$root/outside/nested"
 RESOLVED_BASE_DIR="$(cd "$root/base" && pwd -P)"
+BASE_DIR="$root/base"
 __RUNTIME_DIRECTORY_FUNCTION__
 __ISOLATED_RUNTIME_PARENT_FUNCTION__
+__RUNTIME_DIRECTORY_COMPONENT_FUNCTION__
+__AUDIT_BLOB_DIRECTORY_FUNCTION__
 assert_runtime_directory "$root/base/inside"
 assert_isolated_runtime_parent "$root/base/isolated/nested"
+DATA_DIR="$root/base/new-data"
+ensure_audit_payload_blob_directory
+assert_runtime_directory "$DATA_DIR/audit/blobs"
 ln -s "$root/outside" "$root/base/direct-link"
 if assert_runtime_directory "$root/base/direct-link" 2>/dev/null; then
   echo 'runtime directory guard accepted a symbolic link' >&2
@@ -568,6 +603,28 @@ if assert_isolated_runtime_parent "$root/base/isolated-link" 2>/dev/null; then
   echo 'isolated runtime parent guard accepted a symbolic-link ancestor' >&2
   exit 63
 fi
+ln -s "$root/outside" "$root/base/data-link"
+DATA_DIR="$root/base/data-link"
+if ensure_audit_payload_blob_directory 2>/dev/null; then
+  echo 'audit payload directory creation accepted a DATA_DIR symbolic link' >&2
+  exit 65
+fi
+[ ! -e "$root/outside/audit" ] || { echo 'DATA_DIR symbolic link caused a path to be created outside the base' >&2; exit 66; }
+mkdir "$root/base/audit-link-data"
+ln -s "$root/outside" "$root/base/audit-link-data/audit"
+DATA_DIR="$root/base/audit-link-data"
+if ensure_audit_payload_blob_directory 2>/dev/null; then
+  echo 'audit payload directory creation accepted an audit symbolic link' >&2
+  exit 67
+fi
+[ ! -e "$root/outside/blobs" ] || { echo 'audit symbolic link caused a path to be created outside the base' >&2; exit 68; }
+mkdir -p "$root/base/blobs-link-data/audit"
+ln -s "$root/outside" "$root/base/blobs-link-data/audit/blobs"
+DATA_DIR="$root/base/blobs-link-data"
+if ensure_audit_payload_blob_directory 2>/dev/null; then
+  echo 'audit payload directory creation accepted a blobs symbolic link' >&2
+  exit 69
+fi
 RESOLVED_BASE_DIR="$(cd "$root/outside" && pwd -P)"
 if assert_runtime_directory "$root/base/inside" 2>/dev/null; then
   echo 'runtime directory guard accepted a physical path outside the base' >&2
@@ -577,7 +634,7 @@ if assert_isolated_runtime_parent "$root/base/isolated/nested" 2>/dev/null; then
   echo 'isolated runtime parent guard accepted a physical path outside the base' >&2
   exit 64
 fi
-'@.Replace('__RUNTIME_DIRECTORY_FUNCTION__', $runtimeDirectoryFunction).Replace('__ISOLATED_RUNTIME_PARENT_FUNCTION__', $isolatedRuntimeParentFunction)
+'@.Replace('__RUNTIME_DIRECTORY_FUNCTION__', $runtimeDirectoryFunction).Replace('__ISOLATED_RUNTIME_PARENT_FUNCTION__', $isolatedRuntimeParentFunction).Replace('__RUNTIME_DIRECTORY_COMPONENT_FUNCTION__', $runtimeDirectoryComponentFunction).Replace('__AUDIT_BLOB_DIRECTORY_FUNCTION__', $auditBlobDirectoryFunction)
     & $bash.Source -c $runtimeDirectoryHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology runtime directory containment harness failed' }
 
@@ -587,13 +644,15 @@ root="$(mktemp -d)"
 trap 'rm -rf -- "$root"' EXIT
 LOG_DIR="$root/logs"
 SPOOL_DIR="$root/spool"
+DATA_DIR="$root/data"
 SERVICE_USER=juhe-runtime
 outside="$root/outside"
-mkdir -p "$LOG_DIR/runtime" "$SPOOL_DIR/gateway-1" "$outside" "$root/bin"
+mkdir -p "$LOG_DIR/runtime" "$SPOOL_DIR/gateway-1" "$DATA_DIR/audit/blobs" "$outside" "$root/bin"
 printf 'log\n' > "$LOG_DIR/runtime/root-owned.log"
 printf 'spool\n' > "$SPOOL_DIR/gateway-1/root-owned.json"
+printf 'blob\n' > "$DATA_DIR/audit/blobs/root-owned.blob"
 printf 'outside\n' > "$outside/untouched"
-chmod 600 "$LOG_DIR/runtime/root-owned.log" "$SPOOL_DIR/gateway-1/root-owned.json" "$outside/untouched"
+chmod 600 "$LOG_DIR/runtime/root-owned.log" "$SPOOL_DIR/gateway-1/root-owned.json" "$DATA_DIR/audit/blobs/root-owned.blob" "$outside/untouched"
 ln -s "$outside" "$SPOOL_DIR/external-link"
 export CHOWN_LOG="$root/chown.log"
 cat > "$root/bin/chown" <<'EOF'
@@ -610,6 +669,7 @@ __RUNTIME_OWNERSHIP_FUNCTION__
 migrate_runtime_ownership
 grep -Fxq "$LOG_DIR/runtime/root-owned.log" "$CHOWN_LOG"
 grep -Fxq "$SPOOL_DIR/gateway-1/root-owned.json" "$CHOWN_LOG"
+grep -Fxq "$DATA_DIR/audit/blobs/root-owned.blob" "$CHOWN_LOG"
 grep -Fxq "$SPOOL_DIR/external-link" "$CHOWN_LOG"
 if grep -Fxq "$outside/untouched" "$CHOWN_LOG"; then
   echo 'runtime ownership migration followed a symbolic link outside the managed trees' >&2
@@ -628,6 +688,7 @@ BIN_DIR="$RUNTIME_DIR/bin"
 LOG_DIR="$RUNTIME_DIR/logs"
 RUNTIME_LOG_DIR="$LOG_DIR/runtime"
 SPOOL_DIR="$RUNTIME_DIR/usage-spool"
+DATA_DIR="$RUNTIME_DIR/data"
 CURRENT_DIR="$root/release"
 NODE_PATH=/usr/local/opt/node@22/bin:/usr/bin:/bin
 GATEWAY_COUNT=3
@@ -647,6 +708,7 @@ render_run_script gateway-1 "$root/gateway-1.sh"
 render_nginx "$root/nginx.conf"
 rg -Fqx "export JUHE_AI_LOG_DIR=\"$RUNTIME_LOG_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_USAGE_SPOOL_DIR=\"$SPOOL_DIR\"" "$root/gateway-1.sh"
+rg -Fqx "export JUHE_AI_DATASET_DATABASE_PATH=\"$DATA_DIR/juhe-ai-dataset.sqlite3\"" "$root/gateway-1.sh"
 rg -Fq "upstream $GATEWAY_UPSTREAM {" "$root/nginx.conf"
 rg -Fq "upstream $CONTROL_UPSTREAM {" "$root/nginx.conf"
 rg -Fq "proxy_pass http://$CONTROL_UPSTREAM;" "$root/nginx.conf"

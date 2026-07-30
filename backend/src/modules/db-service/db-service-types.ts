@@ -1477,6 +1477,7 @@ export type DbServiceChildMessage =
     type: 'background_worker_account_health_check_trigger'
     accountId: string
     reason: AccountHealthCheckTriggerReason
+    traceId?: string
   }
   | {
     type: 'background_worker_dataset_write_request'

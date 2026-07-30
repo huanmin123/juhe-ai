@@ -5,7 +5,12 @@ import { nowIso } from '../../storage/database.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import {
+  RedisStreamQueue,
+  RedisStreamQueueCapacityExceededError,
+  type RedisStreamMessage,
+  type RedisStreamQueueRuntime
+} from '../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { runRedisEnqueueWithBoundedRetry } from '../../shared/redis-enqueue-retry.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
@@ -35,6 +40,8 @@ const auditLogPostgresRedisConsumerConcurrency = 1
 const auditLogRedisStreamKey = redisStreamQueueContracts.auditLogs.streamKey
 const auditLogRedisStreamGroup = redisStreamQueueContracts.auditLogs.groupName
 const auditLogRedisConsumerErrorRetryMs = 1000
+const auditLogRedisStreamMaxItems = 50_000
+const auditLogRedisStreamMaxMemoryBytes = 256 * 1024 * 1024
 
 let pendingAuditLogs: QueuedAuditLog[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -708,6 +715,9 @@ async function enqueueAuditLogToRedisStream(input: AuditLogInput, encodedPayload
       await runRedisEnqueueWithBoundedRetry(() => queue.enqueueEncoded(encodedPayload))
     }
   } catch (error) {
+    if (error instanceof RedisStreamQueueCapacityExceededError) {
+      throw new AuditLogTransportQueueFullError('审计 Redis Stream 已达到容量预算')
+    }
     logger.error(errorLogFields(error, {
       event: 'audit_log_redis_stream_enqueue_failed',
       auditLogId: input.id,
@@ -728,7 +738,10 @@ async function runAuditLogRedisStreamConsumer(consumerIndex: number): Promise<vo
       if (messages.length === 0) {
         continue
       }
-      await flushAuditLogRedisStreamMessages(queue, messages)
+      const flushed = await flushAuditLogRedisStreamMessages(queue, messages)
+      if (!flushed) {
+        await delay(auditLogRedisConsumerErrorRetryMs)
+      }
     } catch (error) {
       if (auditLogRedisConsumerStopping) {
         break
@@ -746,14 +759,15 @@ async function runAuditLogRedisStreamConsumer(consumerIndex: number): Promise<vo
 async function flushAuditLogRedisStreamMessages(
   queue: RedisStreamQueue<AuditLogInput>,
   messages: Array<RedisStreamMessage<AuditLogInput>>
-): Promise<void> {
-  if (messages.length === 0) return
+): Promise<boolean> {
+  if (messages.length === 0) return true
   const inputs = messages.map((message) => normalizeAuditLogInput(message.payload))
   try {
     await createAuditLogsBatchAsync(inputs)
     lastFlushSuccessAt = nowIso()
     lastFlushError = undefined
     await queue.ack(messages.map((message) => message.id))
+    return true
   } catch (error) {
     lastFlushError = error instanceof Error ? error.message : String(error)
     logger.error(errorLogFields(error, {
@@ -761,6 +775,7 @@ async function flushAuditLogRedisStreamMessages(
       batchSize: messages.length,
       firstMessageId: messages[0]?.id
     }), 'Redis Stream 审计日志落库失败，消息保持 pending 等待重投')
+    return false
   }
 }
 
@@ -772,6 +787,8 @@ function auditLogRedisStreamQueue(consumerIndex?: number): RedisStreamQueue<Audi
         groupName: auditLogRedisStreamGroup,
         consumerName: `${auditLogRedisStreamGroup}:${process.pid}:${consumerIndex}`,
         readCount: runtimeConfig.databaseDriver === 'postgres' ? auditLogPostgresFlushBatchSize : undefined,
+        maxItems: auditLogRedisStreamMaxItems,
+        maxStreamMemoryBytes: auditLogRedisStreamMaxMemoryBytes,
         encode: encodeAuditLogStreamPayload,
         decode: decodeAuditLogStreamPayload
       })
@@ -783,6 +800,8 @@ function auditLogRedisStreamQueue(consumerIndex?: number): RedisStreamQueue<Audi
       streamKey: auditLogRedisStreamKey,
       groupName: auditLogRedisStreamGroup,
       readCount: runtimeConfig.databaseDriver === 'postgres' ? auditLogPostgresFlushBatchSize : undefined,
+      maxItems: auditLogRedisStreamMaxItems,
+      maxStreamMemoryBytes: auditLogRedisStreamMaxMemoryBytes,
       encode: encodeAuditLogStreamPayload,
       decode: decodeAuditLogStreamPayload
     })

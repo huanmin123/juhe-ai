@@ -261,7 +261,7 @@ try {
     assert.equal(upstreamState.hits, abortHitsBefore + 1, '客户端断开前应已经命中 mock 上游一次')
 
     const abortUsageRecords = await waitForUsageRecords(abortAccount.id, 1)
-    assert.equal(abortUsageRecords[0]?.failureAttribution, 'client_lifecycle', '客户端断开后的使用记录必须归因为客户端生命周期')
+    assert.equal(abortUsageRecords[0]?.failureAttribution, 'downstream_unconfirmed', '未证实触发方的下游关闭必须使用中性归因')
     assert.match(abortUsageRecords[0]?.errorMessage ?? '', /下游连接提前关闭/, '客户端断开后的使用记录应保留下游断开原因')
     assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100, usageStatsSafeCreatedBeforeForTest()), 1, '客户端断开使用记录应进入通用统计聚合')
     accountQualityRepository.refreshAccountQualityFromUsage(10)

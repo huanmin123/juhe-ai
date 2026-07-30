@@ -67,6 +67,7 @@ import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, stats
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
+import { createTraceId, getRequestLogger, normalizeHeaderId, withRequestContext } from './shared/request-context.js'
 import { isAccountHealthCheckTriggerReason } from './modules/accounts/account-health-check-trigger.js'
 
 type WorkerIncomingMessage =
@@ -77,7 +78,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown; traceId?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
   | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_stats_write_request'; requestId: unknown; operation: unknown }
@@ -183,14 +184,7 @@ process.on('message', (message: unknown) => {
       }
       break
     case 'background_worker_account_health_check_trigger':
-      if (typeof message.accountId === 'string' && isAccountHealthCheckTriggerReason(message.reason)) {
-        void triggerAccountHealthCheckNow(message.accountId, message.reason).catch((error) => {
-          logger.warn(errorLogFields(error, {
-            event: 'background_account_health_check_trigger_failed',
-            accountId: message.accountId
-          }), '立即触发账户健康检查失败，等待周期任务兜底')
-        })
-      }
+      void triggerAccountHealthCheckFromIpcMessage(message)
       break
     case 'background_worker_status_request':
       if (typeof message.requestId === 'string') {
@@ -230,6 +224,47 @@ sendWorkerMessage({
   pid: process.pid,
   workerRole: runtimeConfig.workerRole
 })
+
+async function triggerAccountHealthCheckFromIpcMessage(
+  message: Extract<WorkerIncomingMessage, { type: 'background_worker_account_health_check_trigger' }>
+): Promise<void> {
+  if (typeof message.accountId !== 'string' || !isAccountHealthCheckTriggerReason(message.reason)) return
+
+  const accountId = message.accountId
+  const reason = message.reason
+  const parentTraceId = typeof message.traceId === 'string' ? normalizeHeaderId(message.traceId) : undefined
+  const traceId = createTraceId()
+  const contextLogger = logger.child({
+    traceId,
+    ...(parentTraceId ? { parentTraceId } : {})
+  })
+
+  await withRequestContext({
+    traceId,
+    startedAt: Date.now(),
+    method: 'IPC',
+    path: 'background_worker_account_health_check_trigger',
+    originalUrl: 'background_worker_account_health_check_trigger',
+    logger: contextLogger
+  }, async () => {
+    getRequestLogger().info({
+      event: 'background_account_health_check_trigger_received',
+      accountId,
+      reason,
+      parentTraceId: parentTraceId ?? null
+    }, '已接收账户健康检查触发')
+    try {
+      await triggerAccountHealthCheckNow(accountId, reason)
+    } catch (error) {
+      getRequestLogger().warn(errorLogFields(error, {
+        event: 'background_account_health_check_trigger_failed',
+        accountId,
+        reason,
+        parentTraceId: parentTraceId ?? null
+      }), '立即触发账户健康检查失败，等待周期任务兜底')
+    }
+  })
+}
 
 logger.info({
   event: 'background_worker_started',

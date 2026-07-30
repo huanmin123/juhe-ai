@@ -1,43 +1,64 @@
 import { runtimeConfig } from '../../config/runtime.js'
+import { getTraceId } from '../../shared/request-context.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { sendAccountHealthCheckTriggerToWorker } from '../background/background-ipc.js'
+import {
+  accountHealthCheckWorkerIpcQueueLimits,
+  sendAccountHealthCheckTriggerToWorkerWithOutcome
+} from '../background/background-ipc.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import {
   accountHealthCheckDispatchInternalPrefix,
-  createAccountHealthCheckDispatchSignature
+  createAccountHealthCheckDispatchSignature,
+  type AccountHealthCheckDispatchOutcome
 } from './account-health-check-dispatch.routes.js'
 
 const accountHealthCheckDispatchPath = '/v1/account-health-check/dispatch'
 const accountHealthCheckDispatchTimeoutMs = 2_000
 const requestFailureDispatchCooldownMs = 5 * 60_000
 const requestFailureDispatchInFlight = new Set<string>()
+const requestFailureDispatchInFlightAt = new Map<string, number>()
 const requestFailureDispatchAcceptedAt = new Map<string, number>()
 let missingGatewayDispatchTargetLogged = false
 
-export function dispatchAccountHealthCheck(accountId: string, reason: AccountHealthCheckTriggerReason): boolean {
+export function dispatchAccountHealthCheck(accountId: string, reason: AccountHealthCheckTriggerReason, traceId = getTraceId()): boolean {
+  return dispatchAccountHealthCheckWithOutcome(accountId, reason, traceId).outcome === 'queued'
+}
+
+export function dispatchAccountHealthCheckWithOutcome(
+  accountId: string,
+  reason: AccountHealthCheckTriggerReason,
+  traceId = getTraceId()
+): AccountHealthCheckDispatchOutcome {
   const normalizedId = accountId.trim()
-  if (!normalizedId) return false
-  if (requestFailureDispatchIsCoolingDown(normalizedId, reason)) return false
+  if (!normalizedId) return rejectedDispatchOutcome('ops_ipc_unavailable')
+  const cooldownRemainingMs = requestFailureDispatchCooldownRemainingMs(normalizedId, reason)
+  if (cooldownRemainingMs !== undefined) return {
+    outcome: 'coalesced',
+    decisionCode: 'request_failure_cooldown',
+    targetRole: 'ops-worker',
+    cooldownRemainingMs
+  }
   if (
     runtimeConfig.runtimeMode === 'performance'
     && runtimeConfig.performanceNodeRole === 'gateway'
     && runtimeConfig.processRole === 'server'
   ) {
-    return dispatchAccountHealthCheckToControl(normalizedId, reason)
+    return dispatchAccountHealthCheckToControl(normalizedId, reason, traceId)
   }
   if (runtimeConfig.processRole !== 'db-service') {
-    return rememberAcceptedRequestFailureDispatch(
+    return rememberAccountHealthCheckDispatchOutcome(
       normalizedId,
       reason,
-      sendAccountHealthCheckTriggerToWorker(normalizedId, reason)
+      workerDispatchOutcome(sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId))
     )
   }
-  if (!process.send || process.connected === false) return false
+  if (!process.send || process.connected === false) return rejectedDispatchOutcome('ops_ipc_unavailable')
   try {
     process.send({
       type: 'background_worker_account_health_check_trigger',
       accountId: normalizedId,
-      reason
+      reason,
+      ...(traceId ? { traceId } : {})
     }, (error) => {
       if (error) {
         logger.warn(errorLogFields(error, {
@@ -46,20 +67,21 @@ export function dispatchAccountHealthCheck(accountId: string, reason: AccountHea
         }), 'DB service 投递账户健康检查触发消息失败')
       }
     })
-    return rememberAcceptedRequestFailureDispatch(normalizedId, reason, true)
+    return rememberAccountHealthCheckDispatchOutcome(normalizedId, reason, queuedDispatchOutcome())
   } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'account_health_check_db_service_dispatch_failed',
       accountId: normalizedId
     }), 'DB service 投递账户健康检查触发消息失败')
-    return false
+    return rejectedDispatchOutcome('ops_ipc_unavailable')
   }
 }
 
 function dispatchAccountHealthCheckToControl(
   accountId: string,
-  reason: AccountHealthCheckTriggerReason
-): boolean {
+  reason: AccountHealthCheckTriggerReason,
+  traceId?: string
+): AccountHealthCheckDispatchOutcome {
   const dispatchUrl = accountHealthCheckDispatchTargetUrl()
   if (!dispatchUrl) {
     if (!missingGatewayDispatchTargetLogged) {
@@ -68,12 +90,19 @@ function dispatchAccountHealthCheckToControl(
         event: 'account_health_check_control_dispatch_unconfigured'
       }, 'Gateway 未配置 control 健康检查投递地址，无法触发独立账户检查')
     }
-    return false
+    return rejectedDispatchOutcome('ops_ipc_unavailable')
   }
-  if (reason === 'request_failure') requestFailureDispatchInFlight.add(accountId)
-  void postAccountHealthCheckDispatch(dispatchUrl, accountId, reason)
+  if (reason === 'request_failure') {
+    requestFailureDispatchInFlight.add(accountId)
+    requestFailureDispatchInFlightAt.set(accountId, Date.now())
+  }
+  void postAccountHealthCheckDispatch(dispatchUrl, accountId, reason, traceId)
     .then((accepted) => {
-      rememberAcceptedRequestFailureDispatch(accountId, reason, accepted)
+      rememberAccountHealthCheckDispatchOutcome(
+        accountId,
+        reason,
+        accepted ? queuedDispatchOutcome() : rejectedDispatchOutcome('ops_ipc_unavailable')
+      )
     })
     .catch((error) => {
       logger.warn(errorLogFields(error, {
@@ -82,16 +111,20 @@ function dispatchAccountHealthCheckToControl(
       }), 'Gateway 向 control 投递账户健康检查失败')
     })
     .finally(() => {
-      if (reason === 'request_failure') requestFailureDispatchInFlight.delete(accountId)
+      if (reason === 'request_failure') {
+        requestFailureDispatchInFlight.delete(accountId)
+        requestFailureDispatchInFlightAt.delete(accountId)
+      }
       cleanupRequestFailureDispatchCooldowns(Date.now())
     })
-  return true
+  return queuedDispatchOutcome()
 }
 
 async function postAccountHealthCheckDispatch(
   url: URL,
   accountId: string,
-  reason: AccountHealthCheckTriggerReason
+  reason: AccountHealthCheckTriggerReason,
+  traceId?: string
 ): Promise<boolean> {
   const body = Buffer.from(JSON.stringify({ accountId, reason }), 'utf8')
   const response = await fetch(url, {
@@ -99,7 +132,8 @@ async function postAccountHealthCheckDispatch(
     headers: {
       'content-type': 'application/json',
       'content-length': String(body.byteLength),
-      'x-juhe-ai-signature': createAccountHealthCheckDispatchSignature(runtimeConfig.secret, body)
+      'x-juhe-ai-signature': createAccountHealthCheckDispatchSignature(runtimeConfig.secret, body),
+      ...(traceId ? { 'x-trace-id': traceId } : {})
     },
     body,
     signal: AbortSignal.timeout(accountHealthCheckDispatchTimeoutMs)
@@ -140,27 +174,79 @@ function accountHealthCheckDispatchTargetUrl(): URL | undefined {
   }
 }
 
-function requestFailureDispatchIsCoolingDown(
+function requestFailureDispatchCooldownRemainingMs(
   accountId: string,
   reason: AccountHealthCheckTriggerReason
-): boolean {
-  if (reason !== 'request_failure') return false
-  if (requestFailureDispatchInFlight.has(accountId)) return true
+): number | undefined {
+  if (reason !== 'request_failure') return undefined
   const now = Date.now()
+  const inFlightAt = requestFailureDispatchInFlightAt.get(accountId)
+  if (requestFailureDispatchInFlight.has(accountId)) {
+    return Math.max(1, requestFailureDispatchCooldownMs - Math.max(0, now - (inFlightAt ?? now)))
+  }
   cleanupRequestFailureDispatchCooldowns(now)
   const acceptedAt = requestFailureDispatchAcceptedAt.get(accountId)
-  return acceptedAt !== undefined && now - acceptedAt < requestFailureDispatchCooldownMs
+  if (acceptedAt === undefined) return undefined
+  const remainingMs = requestFailureDispatchCooldownMs - (now - acceptedAt)
+  return remainingMs > 0 ? remainingMs : undefined
 }
 
-function rememberAcceptedRequestFailureDispatch(
+function rememberAccountHealthCheckDispatchOutcome(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  accepted: boolean
-): boolean {
-  if (accepted && reason === 'request_failure') {
+  outcome: AccountHealthCheckDispatchOutcome
+): AccountHealthCheckDispatchOutcome {
+  if (outcome.outcome === 'queued' && reason === 'request_failure') {
     requestFailureDispatchAcceptedAt.set(accountId, Date.now())
   }
-  return accepted
+  return outcome
+}
+
+function queuedDispatchOutcome(): AccountHealthCheckDispatchOutcome {
+  return {
+    outcome: 'queued',
+    decisionCode: 'queued',
+    targetRole: 'ops-worker'
+  }
+}
+
+function rejectedDispatchOutcome(
+  decisionCode: Extract<AccountHealthCheckDispatchOutcome, { outcome: 'rejected' }>['decisionCode']
+): AccountHealthCheckDispatchOutcome {
+  return {
+    outcome: 'rejected',
+    decisionCode,
+    targetRole: 'ops-worker',
+    maxQueueMessages: accountHealthCheckWorkerIpcQueueLimits.maxQueueMessages,
+    maxQueueBytes: accountHealthCheckWorkerIpcQueueLimits.maxQueueBytes
+  }
+}
+
+function workerDispatchOutcome(
+  outcome: ReturnType<typeof sendAccountHealthCheckTriggerToWorkerWithOutcome>
+): AccountHealthCheckDispatchOutcome {
+  if (outcome.accepted) {
+    return {
+      outcome: 'queued',
+      decisionCode: 'queued',
+      targetRole: 'ops-worker',
+      queueLength: outcome.queueLength,
+      queueBytes: outcome.queueBytes,
+      messageBytes: outcome.messageBytes,
+      maxQueueMessages: accountHealthCheckWorkerIpcQueueLimits.maxQueueMessages,
+      maxQueueBytes: accountHealthCheckWorkerIpcQueueLimits.maxQueueBytes
+    }
+  }
+  return {
+    outcome: 'rejected',
+    decisionCode: outcome.decisionCode,
+    targetRole: 'ops-worker',
+    queueLength: outcome.queueLength,
+    queueBytes: outcome.queueBytes,
+    messageBytes: outcome.messageBytes,
+    maxQueueMessages: accountHealthCheckWorkerIpcQueueLimits.maxQueueMessages,
+    maxQueueBytes: accountHealthCheckWorkerIpcQueueLimits.maxQueueBytes
+  }
 }
 
 function cleanupRequestFailureDispatchCooldowns(now: number): void {

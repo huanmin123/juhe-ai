@@ -2,7 +2,10 @@ import type { AccountSummary } from '../../domain/types.js'
 import type { AccountHealthCheckTriggerReason } from './account-health-check-trigger.js'
 import { dispatchAccountHealthCheck } from '../internal-api/account-health-check-dispatch.service.js'
 
-export { dispatchAccountHealthCheck } from '../internal-api/account-health-check-dispatch.service.js'
+export {
+  dispatchAccountHealthCheck,
+  dispatchAccountHealthCheckWithOutcome
+} from '../internal-api/account-health-check-dispatch.service.js'
 
 export function dispatchPendingAccountHealthCheck(
   account: Pick<AccountSummary, 'id' | 'status'>

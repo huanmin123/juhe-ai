@@ -191,8 +191,15 @@ export function accountAvailabilityPresentation(account: AccountStatusPresentati
     observationId: accountProbeObservationId({ kind: 'cooldown_retest', identity: account.id, attemptedAt: account.cooldownRetestLastAt, traceId: account.lastErrorTraceId, errorCode: account.lastErrorCode, reason: account.lastErrorMessage }),
     attemptedAt: account.cooldownRetestLastAt, result: 'failed', httpStatus: account.cooldownRetestLastStatusCode, errorCode: account.lastErrorCode, reason: account.lastErrorMessage, traceId: account.lastErrorTraceId
   } : undefined, schedule: cooldownProbeSchedule }
+  else if (effective.status === 'instance_error') probe = {
+    kind: 'health_check',
+    lastObservation: healthObservation(account, 'health_check'),
+    // Generic account errors have no automatic recovery policy. Keep the
+    // observed probe fact visible without inventing a future check time.
+    schedule: { state: 'none' }
+  }
   else if (effective.status === 'available') probe = { kind: 'health_check', lastObservation: healthObservation(account, 'health_check'), schedule: schedule(account.nextHealthCheckAt, now) }
-  if (hasProbeFact(probe)) presentation.probe = probe
+  if (hasProbeFact(probe) || effective.status === 'instance_error') presentation.probe = probe
   return presentation
 }
 

@@ -264,9 +264,18 @@ const terminalError = accountAvailabilityPresentation({
   lastErrorMessage: '凭据已失效',
   lastErrorTraceId: 'trace-terminal',
   lastHealthCheckAt: '2026-07-19T01:00:00.000Z',
+  lastHealthCheckStatusCode: 401,
+  lastHealthCheckErrorCode: 'invalid_credentials',
+  lastHealthCheckErrorMessage: '最近健康检查确认凭据已失效',
+  lastHealthCheckTraceId: 'trace-terminal-health',
   nextHealthCheckAt: '2026-07-20T01:10:00.000Z'
 }, now)
-assert.equal(terminalError.probe, undefined, '无法绑定检查来源的终态异常不得套用旧健康检查')
+assert.equal(terminalError.probe?.kind, 'health_check', '通用账户异常必须保留最近健康检查事实')
+assert.equal(terminalError.probe?.lastObservation?.attemptedAt, '2026-07-19T01:00:00.000Z')
+assert.equal(terminalError.probe?.lastObservation?.httpStatus, 401)
+assert.equal(terminalError.probe?.lastObservation?.errorCode, 'invalid_credentials')
+assert.equal(terminalError.probe?.lastObservation?.traceId, 'trace-terminal-health')
+assert.deepEqual(terminalError.probe?.schedule, { state: 'none' }, '通用账户异常不得伪造自动复检计划')
 
 const instanceCooldownWithoutProbe = accountAvailabilityPresentation({
   id: 'account-instance-cooldown',
@@ -350,5 +359,7 @@ const invalidCredentialError = accountAvailabilityPresentation({
   lastErrorMessage: '凭据无效'
 }, now)
 assert.equal(invalidCredentialError.action, 'fix_configuration')
+assert.deepEqual(invalidCredentialError.probe?.schedule, { state: 'none' }, '没有检查事实的账户异常必须明确没有自动计划')
+assert.equal(invalidCredentialError.probe?.lastObservation, undefined)
 
 console.log('account status presentation regression passed')

@@ -25,7 +25,7 @@ const secret = 'account-health-check-dispatch-http-secret'
 const internalApiPrefix = accountHealthCheckDispatchInternalPrefix
 const allowedCorsOrigin = 'https://bridge.example'
 const originalLoggerLevel = logger.level
-const dispatchCalls: Array<{ accountId: string; reason: string }> = []
+const dispatchCalls: Array<{ accountId: string; reason: string; traceId?: string }> = []
 const handledErrors: unknown[] = []
 const app = express()
 const corsMiddleware = cors({
@@ -50,8 +50,40 @@ mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,
   compressionMiddleware: createHttpCompressionMiddleware(),
   secret,
-  dispatch: (accountId, reason) => {
-    dispatchCalls.push({ accountId, reason })
+  dispatch: (accountId, reason, traceId) => {
+    dispatchCalls.push({ accountId, reason, traceId })
+    if (accountId === 'dispatch-coalesced') {
+      return {
+        outcome: 'coalesced' as const,
+        decisionCode: 'request_failure_cooldown' as const,
+        targetRole: 'ops-worker' as const,
+        cooldownRemainingMs: 299_000
+      }
+    }
+    if (accountId === 'dispatch-queue-full') {
+      return {
+        outcome: 'rejected' as const,
+        decisionCode: 'ops_ipc_message_limit' as const,
+        targetRole: 'ops-worker' as const,
+        queueLength: 5_000,
+        queueBytes: 12_345,
+        messageBytes: 128,
+        maxQueueMessages: 5_000,
+        maxQueueBytes: 64 * 1024 * 1024
+      }
+    }
+    if (accountId === 'dispatch-unavailable') {
+      return {
+        outcome: 'rejected' as const,
+        decisionCode: 'ops_ipc_unavailable' as const,
+        targetRole: 'ops-worker' as const,
+        queueLength: 0,
+        queueBytes: 0,
+        messageBytes: 0,
+        maxQueueMessages: 5_000,
+        maxQueueBytes: 64 * 1024 * 1024
+      }
+    }
     if (accountId === 'dispatch-false') return false
     if (accountId === 'dispatch-throws') {
       throw Object.assign(new Error('dispatch failed'), {
@@ -184,6 +216,7 @@ try {
     body: activationBody,
     headers: {
       'x-forwarded-for': '198.51.100.25',
+      'x-trace-id': 'gateway-control-trace-activation',
       'x-juhe-ai-signature': createAccountHealthCheckDispatchSignature(secret, activationBody)
     }
   })
@@ -191,8 +224,9 @@ try {
   assert.equal(activation.body.length, 0, '202 响应必须为空 body')
   assert.deepEqual(dispatchCalls.at(-1), {
     accountId: 'account-activation',
-    reason: 'activation'
-  }, 'dispatch 应收到 trim 后账户 ID，且不能信任转发头拒绝本机请求')
+    reason: 'activation',
+    traceId: 'gateway-control-trace-activation'
+  }, 'dispatch 应收到 trim 后账户 ID 与请求上下文 trace，且不能信任转发头拒绝本机请求')
 
   const configurationBody = Buffer.from(JSON.stringify({
     accountId: 'account-configuration',
@@ -200,10 +234,14 @@ try {
   }))
   const configuration = await request(baseUrl, { body: configurationBody })
   assert.equal(configuration.statusCode, 202, '合法 configuration 请求应返回 202')
-  assert.deepEqual(dispatchCalls.at(-1), {
+  assert.deepEqual({
+    accountId: dispatchCalls.at(-1)?.accountId,
+    reason: dispatchCalls.at(-1)?.reason
+  }, {
     accountId: 'account-configuration',
     reason: 'configuration'
   })
+  assert.equal(typeof dispatchCalls.at(-1)?.traceId, 'string', 'control dispatch 必须为无显式 header 的请求提供 trace')
 
   const requestFailureBody = Buffer.from(JSON.stringify({
     accountId: 'account-request-failure',
@@ -211,10 +249,14 @@ try {
   }))
   const requestFailure = await request(baseUrl, { body: requestFailureBody })
   assert.equal(requestFailure.statusCode, 202, '合法 request_failure 请求应返回 202')
-  assert.deepEqual(dispatchCalls.at(-1), {
+  assert.deepEqual({
+    accountId: dispatchCalls.at(-1)?.accountId,
+    reason: dispatchCalls.at(-1)?.reason
+  }, {
     accountId: 'account-request-failure',
     reason: 'request_failure'
   })
+  assert.equal(typeof dispatchCalls.at(-1)?.traceId, 'string', 'request_failure dispatch 必须保留请求 trace')
 
   await assertStatus(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'account-scheduled', reason: 'scheduled' }))
@@ -222,6 +264,11 @@ try {
   await assertStatus(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'account-extra', reason: 'activation', extra: true }))
   }, 400, '额外字段必须被拒绝')
+  const dispatchCountBeforeBodyTrace = dispatchCalls.length
+  await assertStatus(baseUrl, {
+    body: Buffer.from(JSON.stringify({ accountId: 'account-body-trace', reason: 'activation', traceId: 'body-controlled-trace' }))
+  }, 400, 'body traceId 不得成为健康检查 IPC 控制输入')
+  assert.equal(dispatchCalls.length, dispatchCountBeforeBodyTrace, 'body traceId 被拒绝时不得触发 dispatch')
   await assertStatus(baseUrl, {
     body: Buffer.from('{"accountId":')
   }, 400, 'malformed JSON 必须被拒绝')
@@ -342,6 +389,24 @@ try {
   assert.equal(dispatchFalse.statusCode, 503, 'dispatch false 必须返回 503')
   assert.deepEqual(parseJson(dispatchFalse), { message: '服务暂不可用' })
 
+  const dispatchCoalesced = await request(baseUrl, {
+    body: Buffer.from(JSON.stringify({ accountId: 'dispatch-coalesced', reason: 'request_failure' }))
+  })
+  assert.equal(dispatchCoalesced.statusCode, 202, '请求失败冷却去重仍应表示为已受理')
+  assert.equal(dispatchCoalesced.body.length, 0, '去重后的 202 响应必须为空 body')
+
+  const dispatchQueueFull = await request(baseUrl, {
+    body: Buffer.from(JSON.stringify({ accountId: 'dispatch-queue-full', reason: 'request_failure' }))
+  })
+  assert.equal(dispatchQueueFull.statusCode, 503, '真实 ops IPC 队列满必须返回 503')
+  assert.deepEqual(parseJson(dispatchQueueFull), { message: '服务暂不可用' }, '外部响应不得泄露内部队列状态')
+
+  const dispatchUnavailable = await request(baseUrl, {
+    body: Buffer.from(JSON.stringify({ accountId: 'dispatch-unavailable', reason: 'request_failure' }))
+  })
+  assert.equal(dispatchUnavailable.statusCode, 503, 'ops IPC 不可用必须返回 503')
+  assert.deepEqual(parseJson(dispatchUnavailable), { message: '服务暂不可用' }, '不可用响应不得泄露内部 decision code')
+
   const dispatchThrows = await request(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'dispatch-throws', reason: 'configuration' }))
   })
@@ -439,6 +504,15 @@ function assertRouterConfiguration(): void {
     'internal Router 必须启用 caseSensitive 与 strict'
   )
   assert(source.includes('inflate: false'), 'internal raw body parser 必须显式禁用 inflate')
+  assert.match(source, /event: 'account_health_check_dispatch_decision'/, 'control 必须记录健康检查派发决策事件')
+  for (const field of [
+    'outcome:', 'triggerReason:', 'decisionCode:', 'targetRole:',
+    'queueLength:', 'queueBytes:', 'messageBytes:', 'maxQueueMessages:',
+    'maxQueueBytes:', 'cooldownRemainingMs:', 'statusCode'
+  ]) {
+    assert(source.includes(field), `派发决策日志必须包含 ${field}`)
+  }
+  assert(!/accountId:\s*payload\.accountId/.test(source), 'control 派发决策日志不得写入账户 ID')
 }
 
 function assertBodyParserErrorMiddleware(): void {

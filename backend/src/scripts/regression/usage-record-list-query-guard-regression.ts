@@ -331,6 +331,26 @@ try {
       statusCode: 200,
       success: true,
       createdAt: '2026-01-02T00:00:06.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_downstream_unknown',
+      traceId: 'trace-usage-list-query-guard-downstream-unknown',
+      trafficSource: 'gateway',
+      apiKeyId: otherApiKey.id,
+      groupId: otherGroup.id,
+      accountId: otherGroupAccount.id,
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: 'gpt-5.6-downstream-unknown',
+      stream: true,
+      statusCode: 200,
+      success: false,
+      failureAttribution: 'downstream_unconfirmed',
+      errorCode: 'downstream_connection_closed',
+      errorMessage: '不应从列表返回的原始连接错误',
+      requestSnapshot: { secret: 'request snapshot must stay hidden' },
+      responseSnapshot: { secret: 'response snapshot must stay hidden' },
+      createdAt: '2026-01-02T00:00:08.000Z'
     }
   ])
   const inferredAuthorizedRecord = usageRecordShards.queryUsageRecordShardById<{
@@ -399,6 +419,14 @@ try {
   try {
     const exactModel = repositories.listUsageRecords(access, { model: 'gpt-5.5', page: 1, pageSize: 10 })
     assert.deepEqual(exactModel.items.map((item) => item.id), ['usage_list_query_guard_exact'], 'model 筛选应按精确值匹配，不应把前缀模型一并查出')
+
+    const downstreamUnknown = repositories.listUsageRecords(access, { model: 'gpt-5.6-downstream-unknown', page: 1, pageSize: 10 }).items[0]
+    assert.equal(downstreamUnknown?.failureAttribution, 'downstream_unconfirmed', '未证实下游关闭必须保留中性归因')
+    assert.equal(downstreamUnknown?.failureReason, '下游连接关闭，触发方未识别', '列表必须从结构化失败码生成安全摘要')
+    assert.equal('errorCode' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误码')
+    assert.equal('errorMessage' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误文本')
+    assert.equal('requestSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回请求快照')
+    assert.equal('responseSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回响应快照')
 
     const accountNamePrefix = repositories.listUsageRecords(access, { accountKeyword: '使用记录查询防护', page: 1, pageSize: 10 })
     assert.deepEqual(accountNamePrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '账号名称关键字应按前缀匹配，不应命中中间包含名称')

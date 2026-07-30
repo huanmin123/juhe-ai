@@ -174,6 +174,9 @@ async function assertConcurrentLastSuperAdminProtection(
 
 function assertConcurrentSourceContract(): void {
   const source = readFileSync(new URL('../../storage/system-accounts.repository.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /updated_at\s+AT\s+TIME\s+ZONE/i, 'system_accounts.updated_at 是 ISO 文本版本，不得按 timestamptz 投影')
+  assert.doesNotMatch(source, /updated_at\s*=\s*CAST\(\?\s+AS\s+timestamptz\)/i, 'system_accounts.updated_at 的 PostgreSQL CAS 必须精确比较文本版本')
+  assert.match(source, /SELECT id, username,[\s\S]{0,400}\bupdated_at\s*\n\s*FROM/, 'PostgreSQL 系统账户列表必须原样读取文本版本')
   assert.match(source, /pg_advisory_xact_lock\(hashtextextended\(\?, 0\)\)/, 'PostgreSQL 最后超级管理员不变量必须使用事务级共享锁串行化')
   const patchStart = source.indexOf('export async function patchSystemAccountManagementAsync')
   const targetLock = source.indexOf("const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''", patchStart)

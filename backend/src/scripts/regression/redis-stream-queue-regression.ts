@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
+import {
+  RedisStreamQueue,
+  RedisStreamQueueCapacityExceededError,
+  type RedisStreamMessage
+} from '../../shared/redis-stream-queue.js'
+import type { RedisCommandClient } from '../../shared/redis-client.js'
 
 interface TestPayload {
   id: string
@@ -82,6 +87,8 @@ assert.deepEqual(pendingInspection, {
   ]
 }, 'Lua XPENDING/XRANGE inspection result should parse pending ids and payloads')
 
+await assertRedisStreamQueueCapacityBudget()
+
 const runtimeSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
 assert.match(runtimeSource, /export type QueueDriver = 'memory' \| 'redis_stream'/, 'runtime config should expose queue driver')
 assert.match(runtimeSource, /JUHE_AI_QUEUE_DRIVER/, 'runtime config should read JUHE_AI_QUEUE_DRIVER')
@@ -106,8 +113,17 @@ assert.match(redisStreamQueueSource, /async enqueueEncoded\(encodedPayload: stri
 assert.match(redisStreamQueueSource, /const redisEnqueueWithFenceScript = `[\s\S]*GET[\s\S]*QUEUE_QUIESCED[\s\S]*XADD/, 'Redis Stream enqueue must check the queue fence and XADD atomically')
 assert.match(redisStreamQueueSource, /async ack\(ids: string\[\]\): Promise<number>[\s\S]*redisAckAndDeleteMessagesScript/, 'Redis Stream ack should use a single Lua script for XACK and XDEL')
 assert.match(redisStreamQueueSource, /const redisAckAndDeleteMessagesScript = `[\s\S]*XACK[\s\S]*if result > 0 then[\s\S]*XDEL/, 'Redis Stream ack should delete only messages successfully acknowledged by XACK')
+assert.match(redisStreamQueueSource, /export class RedisStreamQueueCapacityExceededError/, 'Redis Stream capacity rejection should have a typed error for bounded producer fallbacks')
+assert.match(redisStreamQueueSource, /maxItems\?: number[\s\S]*maxStreamMemoryBytes\?: number/, 'Redis Stream queue should expose optional item and Stream-memory capacity budgets')
+assert.match(redisStreamQueueSource, /const redisEnqueueWithFenceAndCapacityScript = `[\s\S]*XLEN[\s\S]*MEMORY', 'USAGE'[\s\S]*string\.len\(ARGV\[2\]\)[\s\S]*QUEUE_CAPACITY_EXCEEDED[\s\S]*XADD/, 'capacity-enabled enqueue must atomically check stream length and actual Stream memory before XADD')
+assert.match(redisStreamQueueSource, /const redisEnqueueWithFenceBacklogIndexAndCapacityScript = `[\s\S]*MEMORY', 'USAGE'[\s\S]*ZADD/, 'backlog-indexed capacity enqueue must use the same actual Stream memory budget')
+assert.doesNotMatch(redisStreamQueueSource, /payload-bytes|payloadByteCounter|INCRBY|DECRBY|QUEUE_CAPACITY_COUNTER_UNINITIALIZED/, 'capacity budgets must not depend on a payload-byte sidecar that old XADD writers can desynchronize')
 assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*'XLEN', this\.streamKey[\s\S]*streamLength:/, 'Redis Stream runtime should expose XLEN for queue capacity monitoring')
 assert.doesNotMatch(redisStreamQueueSource, /MAXLEN|redisStreamMaxLen|maxLen/, 'Redis Stream reliable queue must not expose trimming controls')
+
+const auditLogQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
+assert.match(auditLogQueueSource, /const flushed = await flushAuditLogRedisStreamMessages\(queue, messages\)[\s\S]*if \(!flushed\) \{[\s\S]*await delay\(auditLogRedisConsumerErrorRetryMs\)/, '审计 Redis Stream 落库失败必须进入消费者退避，避免立即重复 claim pending 消息')
+assert.match(auditLogQueueSource, /async function flushAuditLogRedisStreamMessages[\s\S]*\): Promise<boolean> \{[\s\S]*await queue\.ack[\s\S]*return true[\s\S]*catch \(error\) \{[\s\S]*audit_log_redis_stream_flush_failed[\s\S]*return false/, '审计 Redis Stream 仅在成功 ACK 后报告成功，落库失败必须保留 pending 并反馈给重试循环')
 
 const usageQueueSource = readFileSync(new URL('../../modules/gateway/usage/record-queue.service.ts', import.meta.url), 'utf8')
 assert.match(usageQueueSource, /shouldEnqueueUsageRecordToRedisStream/, 'usage record queue should route producers through Redis Stream in redis_stream mode')
@@ -139,6 +155,9 @@ assert.match(auditQueueSource, /decode: decodeAuditLogStreamPayload/, 'audit log
 assert.match(auditQueueSource, /readCount: runtimeConfig\.databaseDriver === 'postgres' \? auditLogPostgresFlushBatchSize : undefined/, 'audit log Redis Stream consumer should keep PG audit batches bounded')
 assert.match(auditQueueSource, /auditLogPostgresFlushBatchSize = 25/, 'audit log Redis Stream consumer should keep PG audit batches short to avoid long transactions')
 assert.match(auditQueueSource, /auditLogPostgresRedisConsumerConcurrency = 1/, 'audit log Redis Stream consumer should stay single-lane to avoid PG audit write lock pressure')
+assert.match(auditQueueSource, /auditLogRedisStreamMaxItems = 50_000/, 'audit Redis Stream should have a bounded item budget')
+assert.match(auditQueueSource, /auditLogRedisStreamMaxMemoryBytes = 256 \* 1024 \* 1024/, 'audit Redis Stream should have a bounded actual-memory budget')
+assert.match(auditQueueSource, /error instanceof RedisStreamQueueCapacityExceededError[\s\S]*new AuditLogTransportQueueFullError/, 'audit Redis Stream capacity rejection must enter the existing bounded body-removal fallback')
 assert.match(auditQueueSource, /Array\.from\(\{ length: concurrency \}/, 'audit log Redis Stream consumer should start all bounded consumer loops')
 assert.match(auditCodecSource, /__juheAuditBuffer/, 'audit log Redis Stream payload encoding should preserve Buffer bodies')
 assert.match(auditCodecSource, /Buffer\.from\(body\.base64, 'base64'\)/, 'audit log Redis Stream payload decoding should restore Buffer bodies')
@@ -261,4 +280,91 @@ function sourceFunctionBlock(source: string, functionName: string): string {
     }
   }
   throw new Error(`unclosed function body for ${functionName}`)
+}
+
+async function assertRedisStreamQueueCapacityBudget(): Promise<void> {
+  const entries = new Map<string, string>()
+  const pending = new Set<string>()
+  let nextId = 0
+  const streamMemoryBytes = () => Array.from(entries.values())
+    .reduce((total, payload) => total + Buffer.byteLength(payload, 'utf8'), 0)
+  const client = {
+    connect: async () => undefined,
+    get: async () => null,
+    set: async () => 'OK',
+    del: async () => 0,
+    sendCommand: async () => null,
+    on: () => undefined,
+    eval: async (script, options) => {
+      if (script.includes('QUEUE_CAPACITY_EXCEEDED')) {
+        assert.equal(options.keys.length, 2, 'capacity enqueue must keep only the fence and Stream in one Lua invocation')
+        const [field, encodedPayload, maxItemsValue, maxStreamMemoryBytesValue] = options.arguments
+        assert.equal(field, 'payload')
+        const maxItems = Number(maxItemsValue)
+        const maxStreamMemoryBytes = Number(maxStreamMemoryBytesValue)
+        const bytes = Buffer.byteLength(encodedPayload ?? '', 'utf8')
+        if (maxItems >= 0 && entries.size >= maxItems) {
+          throw new Error('QUEUE_CAPACITY_EXCEEDED')
+        }
+        if (maxStreamMemoryBytes >= 0 && streamMemoryBytes() + bytes > maxStreamMemoryBytes) {
+          throw new Error('QUEUE_CAPACITY_EXCEEDED')
+        }
+        nextId += 1
+        const id = `${nextId}-0`
+        entries.set(id, encodedPayload ?? '')
+        pending.add(id)
+        return id
+      }
+      if (script.includes("redis.call('XACK'")) {
+        assert.equal(options.keys.length, 1, 'capacity ACK must not mutate a sidecar counter')
+        const [, ...ids] = options.arguments
+        let acked = 0
+        for (const id of ids) {
+          if (!pending.delete(id)) continue
+          entries.delete(id)
+          acked += 1
+        }
+        return acked
+      }
+      throw new Error('unexpected Redis Stream queue script')
+    }
+  } satisfies RedisCommandClient
+
+  const queue = new RedisStreamQueue<string>({
+    streamKey: 'juhe-ai:test:capacity-stream',
+    groupName: 'juhe-ai:test:capacity-group',
+    redisUrl: 'redis://127.0.0.1:6381/0',
+    producerClient: async () => client,
+    maxItems: 10,
+    maxStreamMemoryBytes: 6
+  })
+
+  const firstId = await queue.enqueueEncoded('abc')
+  entries.set('old-writer-0', 'def')
+  await assert.rejects(
+    queue.enqueueEncoded('g'),
+    (error: unknown) => error instanceof RedisStreamQueueCapacityExceededError,
+    'a new writer must reject against actual Stream memory after an old direct XADD writer adds data'
+  )
+  assert.equal(await queue.ack([firstId]), 1, 'successful ACK must use the normal XACK/XDEL path without a sidecar update')
+  assert.equal(await queue.enqueueEncoded('a'), '2-0', 'after ACK, the actual remaining Stream memory must admit a bounded new write')
+
+  entries.clear()
+  pending.clear()
+  const itemQueue = new RedisStreamQueue<string>({
+    streamKey: 'juhe-ai:test:item-capacity-stream',
+    groupName: 'juhe-ai:test:item-capacity-group',
+    redisUrl: 'redis://127.0.0.1:6381/0',
+    producerClient: async () => client,
+    maxItems: 2,
+    maxStreamMemoryBytes: 100
+  })
+  const secondId = await itemQueue.enqueueEncoded('a')
+  const thirdId = await itemQueue.enqueueEncoded('b')
+  await assert.rejects(
+    itemQueue.enqueueEncoded('c'),
+    (error: unknown) => error instanceof RedisStreamQueueCapacityExceededError,
+    'item budget must reject the next producer without trimming pending messages'
+  )
+  assert.equal(await itemQueue.ack([secondId, thirdId]), 2)
 }

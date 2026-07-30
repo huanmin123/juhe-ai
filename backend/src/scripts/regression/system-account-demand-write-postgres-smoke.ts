@@ -39,8 +39,7 @@ try {
   assert.deepEqual(Object.keys(updated?.result ?? {}).sort(), ['description', 'id', 'updatedAt'], 'PG PATCH 必须返回最小回执')
 
   const rowResult = await pool.query(`
-    SELECT description, status,
-      to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at
+    SELECT description, status, updated_at
     FROM juhe_business.system_accounts
     WHERE id = $1
   `, [systemAccountId])

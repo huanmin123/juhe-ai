@@ -155,7 +155,7 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
   | { type: 'background_worker_account_test_cancel'; taskId: string }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: string; reason: AccountHealthCheckTriggerReason }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: string; reason: AccountHealthCheckTriggerReason; traceId?: string }
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
   | { type: 'background_worker_ingest_status_request'; requestId: string }

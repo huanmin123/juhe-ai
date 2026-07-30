@@ -1,4 +1,6 @@
 import { strict as assert } from 'node:assert'
+import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -6,9 +8,16 @@ import type { AccountTestResult } from '../../domain/types.js'
 import {
   accountUpdateNeedsImmediateHealthCheck,
   dispatchAccountHealthCheck,
+  dispatchAccountHealthCheckWithOutcome,
   dispatchPendingAccountHealthCheck
 } from '../../modules/accounts/account-health-check-dispatch.service.js'
 import { accountHealthCheckTriggerPriority } from '../../modules/accounts/account-health-check-trigger.js'
+import {
+  accountHealthCheckWorkerIpcQueueLimits,
+  attachBackgroundWorkerProcess,
+  getBackgroundWorkerState,
+  sendAccountHealthCheckTriggerToWorkerWithOutcome
+} from '../../modules/background/background-ipc.js'
 import { runWithBackgroundAccountAvailabilityProbe } from '../../modules/background/account-probe-limits.js'
 import { dispatchRequestFailureAccountHealthCheck } from '../../modules/gateway/response/request-failure-health-check.js'
 
@@ -19,6 +28,98 @@ const messages: unknown[] = []
 let nowMs = originalDateNow()
 
 try {
+  runtimeConfig.processRole = 'server'
+  assert.deepEqual(
+    sendAccountHealthCheckTriggerToWorkerWithOutcome('acc_ops_unavailable', 'request_failure'),
+    {
+      accepted: false,
+      targetRole: 'ops-worker',
+      decisionCode: 'ops_ipc_unavailable',
+      queueLength: 0,
+      queueBytes: 0,
+      messageBytes: 0
+    },
+    'ops-worker 未连接时不得假装已受理健康检查，也不得写入冷却状态'
+  )
+  const unavailableDispatch = dispatchAccountHealthCheckWithOutcome('acc_ops_unavailable_cooldown', 'request_failure')
+  assert.deepEqual(
+    { outcome: unavailableDispatch.outcome, decisionCode: unavailableDispatch.decisionCode },
+    { outcome: 'rejected', decisionCode: 'ops_ipc_unavailable' },
+    '不可用 ops IPC 的 request_failure 不得被标记为已受理'
+  )
+  assert.equal(
+    dispatchAccountHealthCheckWithOutcome('acc_ops_unavailable_cooldown', 'request_failure').outcome,
+    'rejected',
+    '不可用 ops IPC 不得写入 5 分钟 accepted 冷却'
+  )
+  const missingOpsQueueState = getBackgroundWorkerState().opsWorker
+  assert.deepEqual(
+    {
+      pendingMessageCount: missingOpsQueueState?.pendingMessageCount,
+      pendingMessageBytes: missingOpsQueueState?.pendingMessageBytes
+    },
+    { pendingMessageCount: 0, pendingMessageBytes: 0 },
+    '缺失 ops child 时健康触发不得增加本地队列'
+  )
+
+  const disconnectedOpsChild = createFakeOpsChild(false, () => true)
+  attachBackgroundWorkerProcess(disconnectedOpsChild as ChildProcess, { role: 'ops-worker' })
+  disconnectedOpsChild.emit('message', { type: 'background_worker_ready', pid: 41001, workerRole: 'ops-worker' })
+  const disconnectedOutcome = sendAccountHealthCheckTriggerToWorkerWithOutcome('acc_ops_disconnected', 'activation')
+  assert.equal(
+    !disconnectedOutcome.accepted && disconnectedOutcome.decisionCode,
+    'ops_ipc_unavailable',
+    'IPC 已断开的 ops child 不得接受健康触发'
+  )
+
+  const traceMessages: unknown[] = []
+  const readyOpsChild = createFakeOpsChild(true, (message, callback) => {
+    traceMessages.push(message)
+    callback?.(null)
+    return true
+  })
+  attachBackgroundWorkerProcess(readyOpsChild as ChildProcess, { role: 'ops-worker' })
+  const notReadyOutcome = sendAccountHealthCheckTriggerToWorkerWithOutcome('acc_ops_not_ready', 'activation')
+  assert.equal(
+    !notReadyOutcome.accepted && notReadyOutcome.decisionCode,
+    'ops_ipc_unavailable',
+    '尚未 ready 的 ops child 不得接受健康触发'
+  )
+  readyOpsChild.emit('message', { type: 'background_worker_ready', pid: 41002, workerRole: 'ops-worker' })
+  assert.equal(
+    sendAccountHealthCheckTriggerToWorkerWithOutcome('acc_ops_trace', 'activation', 'control-trace-ipc').accepted,
+    true,
+    'ready 且已连接的 ops child 必须接受健康触发'
+  )
+  assert.deepEqual(traceMessages.at(-1), {
+    type: 'background_worker_account_health_check_trigger',
+    accountId: 'acc_ops_trace',
+    reason: 'activation',
+    traceId: 'control-trace-ipc'
+  }, '健康检查 IPC payload 必须保留 control trace 作为观测关联')
+
+  const holdingOpsChild = createFakeOpsChild(true, () => true)
+  attachBackgroundWorkerProcess(holdingOpsChild as ChildProcess, { role: 'ops-worker' })
+  holdingOpsChild.emit('message', { type: 'background_worker_ready', pid: 41003, workerRole: 'ops-worker' })
+  for (let index = 0; index <= accountHealthCheckWorkerIpcQueueLimits.maxQueueMessages; index += 1) {
+    assert.equal(
+      sendAccountHealthCheckTriggerToWorkerWithOutcome(`acc_ops_queue_${index}`, 'activation').accepted,
+      true,
+      '真实 ops IPC 消息数容量上限前必须持续受理'
+    )
+  }
+  const messageLimit = sendAccountHealthCheckTriggerToWorkerWithOutcome('acc_ops_queue_limit', 'activation')
+  assert.deepEqual(
+    { accepted: messageLimit.accepted, decisionCode: messageLimit.accepted ? undefined : messageLimit.decisionCode },
+    { accepted: false, decisionCode: 'ops_ipc_message_limit' },
+    'ready ops child 的真实容量已满时必须保留 ops_ipc_message_limit'
+  )
+  assert.equal(
+    getBackgroundWorkerState().opsWorker?.pendingMessageCount,
+    accountHealthCheckWorkerIpcQueueLimits.maxQueueMessages,
+    '容量拒绝不得令 ops IPC 本地队列超过上限'
+  )
+
   runtimeConfig.processRole = 'db-service'
   Date.now = () => nowMs
   process.send = ((message: unknown, ...args: unknown[]) => {
@@ -48,6 +149,16 @@ try {
   const requestFailureMessageCount = messages.length
   assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), false, '本地投递端必须在 worker 前执行请求失败冷却')
   assert.equal(messages.length, requestFailureMessageCount, '冷却中的请求失败不得重复写入 worker IPC')
+  const coalescedDispatch = dispatchAccountHealthCheckWithOutcome('acc_request_failed', 'request_failure')
+  assert.deepEqual(
+    { outcome: coalescedDispatch.outcome, decisionCode: coalescedDispatch.decisionCode },
+    { outcome: 'coalesced', decisionCode: 'request_failure_cooldown' },
+    '请求失败冷却必须通过结构化结果明确标为已合并，而不是服务不可用'
+  )
+  assert(
+    coalescedDispatch.outcome !== 'coalesced' || coalescedDispatch.cooldownRemainingMs > 0,
+    '冷却去重结果必须记录剩余冷却时间供内部日志使用'
+  )
   nowMs += 5 * 60_000 - 1
   assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), false, '请求失败探针在 5 分钟边界前必须继续限流')
   nowMs += 1
@@ -128,6 +239,12 @@ try {
   const healthCheckServiceSource = readFileSync(new URL('../../modules/background/account-health-check.service.ts', import.meta.url), 'utf8')
   const probeLimitsSource = readFileSync(new URL('../../modules/background/account-probe-limits.ts', import.meta.url), 'utf8')
   const internalDispatchSource = readFileSync(new URL('../../modules/internal-api/account-health-check-dispatch.service.ts', import.meta.url), 'utf8')
+  const backgroundIpcSource = readFileSync(new URL('../../modules/background/background-ipc.ts', import.meta.url), 'utf8')
+  const backgroundIpcTypesSource = readFileSync(new URL('../../modules/background/background-ipc.types.ts', import.meta.url), 'utf8')
+  const dbServiceIpcSource = readFileSync(new URL('../../modules/db-service/db-service-ipc.ts', import.meta.url), 'utf8')
+  const dbServiceTypesSource = readFileSync(new URL('../../modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
+  const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
+  const serverSource = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8')
   const runtimeConfigSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
   assert(failureDispatchSource.match(/dispatchRequestFailureAccountHealthCheck\(req, usageContext\.trafficSource, account\.id\)/g)?.length === 3,
     '普通完整 HTTP 失败、retry_next 显式策略和最终 transport failure 都必须投递去重的独立账户可用性确认')
@@ -149,7 +266,18 @@ try {
   assert(probeLimitsSource.includes('backgroundAccountAvailabilityProbesInFlight'), '后台可用性探针必须共享同一账户占用表')
   assert(internalDispatchSource.includes('createAccountHealthCheckDispatchSignature'), 'performance gateway 必须通过 HMAC 内部通道投递到 control')
   assert(internalDispatchSource.includes("runtimeConfig.performanceNodeRole === 'gateway'"), '独立 gateway 节点不得把触发消息留在本进程 IPC 队列')
-  assert(internalDispatchSource.includes('rememberAcceptedRequestFailureDispatch'), 'standalone 与 performance 必须在投递端共享请求失败冷却语义')
+  assert(internalDispatchSource.includes('rememberAccountHealthCheckDispatchOutcome'), 'standalone 与 performance 必须在投递端共享请求失败冷却语义')
+  assert(internalDispatchSource.includes('getTraceId'), 'gateway 到 control 的内部派发必须读取已验证请求 traceId')
+  assert(internalDispatchSource.includes("'x-trace-id': traceId"), 'gateway 到 control 的内部派发必须透传已验证 traceId')
+  assert(internalDispatchSource.includes('sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId)'), 'control 到 ops-worker 的健康检查投递必须继续携带 traceId')
+  assert(backgroundIpcSource.includes('sendAccountHealthCheckTriggerToWorkerWithOutcome'), '健康检查 IPC 必须返回精确队列决定')
+  assert(backgroundIpcSource.includes('!opsWorkerProcess || !opsWorkerProcess.connected || !opsWorkerReady'), 'ops-worker 未连接或未 ready 时不得把健康检查错误标记为已受理')
+  assert(backgroundIpcTypesSource.includes("reason: AccountHealthCheckTriggerReason; traceId?: string"), '健康检查 IPC 消息必须声明可选 traceId')
+  assert(dbServiceTypesSource.includes("type: 'background_worker_account_health_check_trigger'") && dbServiceTypesSource.includes('traceId?: string'), 'DB service 健康检查转发消息必须声明可选 traceId')
+  assert(dbServiceIpcSource.includes('forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason, record.traceId)') && dbServiceIpcSource.includes('sendAccountHealthCheckTriggerToWorker(normalizedId, reason, typeof traceId === \'string\' ? traceId : undefined)'), 'DB service 转发健康检查消息时必须继续携带 traceId')
+  assert(workerSource.includes('background_account_health_check_trigger_received') && workerSource.includes('withRequestContext({') && workerSource.includes('parentTraceId'), 'ops-worker 接收和失败日志必须创建子 trace 并记录派发 trace 父关联')
+  assert(backgroundIpcSource.includes("'ops_ipc_message_limit'") && backgroundIpcSource.includes("'ops_ipc_byte_limit'"), '健康检查 IPC 必须区分消息数和字节数容量拒绝')
+  assert(serverSource.includes('dispatch: dispatchAccountHealthCheckWithOutcome'), 'control bridge 必须使用结构化健康检查派发结果')
   assert(runtimeConfigSource.includes("throw new Error(`${name} 在 performance gateway server 模式下必须配置为 control 的 loopback Origin`)"), 'performance gateway 缺少 control 投递地址时必须拒绝启动')
 
   console.log('账户健康检查即时投递回归通过：所有新增入口统一投递，非健康配置编辑不误触发')
@@ -157,4 +285,15 @@ try {
   runtimeConfig.processRole = originalProcessRole
   process.send = originalSend
   Date.now = originalDateNow
+}
+
+function createFakeOpsChild(
+  connected: boolean,
+  send: (message: unknown, callback?: (error: Error | null) => void) => boolean
+): EventEmitter & { connected: boolean; pid: number; send: typeof send } {
+  return Object.assign(new EventEmitter(), {
+    connected,
+    pid: 41000,
+    send
+  })
 }

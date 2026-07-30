@@ -170,7 +170,7 @@ export async function recordFailedUpstreamAttempt(
       ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
       ?? input.bodyText
   ) ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
-  const failureObservation = interpretUpstreamSemantics
+  const failureObservation = interpretUpstreamSemantics && input.failureAttribution !== 'downstream_unconfirmed'
       ? classifyGatewayUpstreamFailure({
           phase: input.failureAttribution === 'client_lifecycle'
             ? 'client_lifecycle'
@@ -466,7 +466,7 @@ export async function recordHybridScoringAttempt(input: {
   })
 }
 
-export async function recordClientAbortedUpstreamAttempt(
+export async function recordDownstreamClosedUpstreamAttempt(
   req: Request,
   input: {
     traceId: string
@@ -487,15 +487,17 @@ export async function recordClientAbortedUpstreamAttempt(
     effectiveReasoningEffort?: UsageReasoningEffort
     requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+    /** Only set where the caller has affirmative evidence of a client action. */
+    clientActionConfirmed?: boolean
   }
 ): Promise<void> {
   await recordCompletedUpstreamAttempt(req, {
     ...input,
     success: false,
     usage: emptyUsage(),
-    errorCode: 'client_aborted',
-    errorMessage: downstreamConnectionClosedMessage,
-    failureAttribution: 'client_lifecycle'
+    errorCode: input.clientActionConfirmed ? 'client_aborted' : 'downstream_connection_closed',
+    errorMessage: input.clientActionConfirmed ? '客户端主动取消请求' : downstreamConnectionClosedMessage,
+    failureAttribution: input.clientActionConfirmed ? 'client_lifecycle' : 'downstream_unconfirmed'
   })
 }
 

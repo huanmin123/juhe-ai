@@ -134,11 +134,13 @@ if [ -n "$RUNTIME_DIR" ]; then
   LOG_DIR="$RUNTIME_DIR/logs"
   RUNTIME_LOG_DIR="$LOG_DIR/runtime"
   SPOOL_DIR="$RUNTIME_DIR/usage-spool"
+  DATA_DIR="$RUNTIME_DIR/data"
 else
   BIN_DIR="$BASE_DIR/bin/performance"
   LOG_DIR="$BASE_DIR/logs"
   RUNTIME_LOG_DIR="$LOG_DIR/runtime"
   SPOOL_DIR="$BASE_DIR/shared/usage-spool"
+  DATA_DIR="$BASE_DIR/shared/data"
 fi
 if [ -n "$NGINX_UPSTREAM_SUFFIX" ]; then
   GATEWAY_UPSTREAM="juhe_ai_gateway_pool_${NGINX_UPSTREAM_SUFFIX}"
@@ -165,8 +167,8 @@ if [ -n "$NGINX_MAIN_CONFIG" ]; then
   case "$NGINX_MAIN_CONFIG" in /*) ;; *) echo '--nginx-main-config must be absolute' >&2; exit 2 ;; esac
 fi
 
-printf 'mode=%s scope=%s base=%s release=%s runtime=%s upstream_suffix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
-  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "${NGINX_UPSTREAM_SUFFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
+printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
+  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
 printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
@@ -184,6 +186,9 @@ esac
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" ] || { echo 'missing runtime preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" ] || { echo 'missing performance metrics registry preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/.env" ] || { echo 'missing release backend/.env' >&2; exit 1; }
+[ -d "$BASE_DIR" ] || { echo "missing base directory: $BASE_DIR" >&2; exit 1; }
+RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)" || exit 1
+[ "$RESOLVED_BASE_DIR" != / ] || { echo 'runtime base directory must not resolve to /' >&2; exit 1; }
 NODE_BIN="$(command -v node)"
 command -v launchctl >/dev/null
 command -v plutil >/dev/null
@@ -229,18 +234,103 @@ assert_isolated_runtime_parent() {
   esac
 }
 
+assert_runtime_directory_component() {
+  component_path="$1"
+  [ -d "$component_path" ] && [ ! -L "$component_path" ] \
+    || { echo "runtime data path must be a real directory: $component_path" >&2; return 1; }
+  resolved_component_path="$(cd "$component_path" && pwd -P)" || return 1
+  case "$resolved_component_path" in
+    "$RESOLVED_BASE_DIR"|"$RESOLVED_BASE_DIR"/*) ;;
+    *) echo "runtime data path escapes the physical base directory: $component_path" >&2; return 1 ;;
+  esac
+}
+
+ensure_audit_payload_blob_directory() {
+  audit_blob_dir="$DATA_DIR/audit/blobs"
+  case "$audit_blob_dir" in
+    "$BASE_DIR"/*) ;;
+    *) echo "audit payload blob path is outside the runtime base directory: $audit_blob_dir" >&2; return 1 ;;
+  esac
+
+  relative_path="${audit_blob_dir#"$BASE_DIR"/}"
+  current_path="$BASE_DIR"
+  assert_runtime_directory_component "$current_path"
+  while [ -n "$relative_path" ]; do
+    component_name="${relative_path%%/*}"
+    case "$component_name" in
+      ''|.|..) echo "audit payload blob path has an invalid component: $audit_blob_dir" >&2; return 1 ;;
+    esac
+    next_path="$current_path/$component_name"
+    if [ -L "$next_path" ]; then
+      echo "audit payload blob path has a symbolic-link component: $next_path" >&2
+      return 1
+    fi
+    if [ -e "$next_path" ]; then
+      [ -d "$next_path" ] \
+        || { echo "audit payload blob path has a non-directory component: $next_path" >&2; return 1; }
+    else
+      mkdir "$next_path" || return 1
+    fi
+    assert_runtime_directory_component "$next_path"
+    current_path="$next_path"
+    if [ "$relative_path" = "$component_name" ]; then
+      relative_path=
+    else
+      relative_path="${relative_path#*/}"
+    fi
+  done
+}
+
 runtime_managed_paths() {
   if [ -n "$RUNTIME_DIR" ]; then
-    printf '%s\n' "$BASE_DIR" "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"
+    printf '%s\n' "$BASE_DIR" "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"
   else
-    printf '%s\n' "$BASE_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$BASE_DIR/shared" "$SPOOL_DIR"
+    printf '%s\n' "$BASE_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$BASE_DIR/shared" "$SPOOL_DIR" "$DATA_DIR"
   fi
 }
 
 migrate_runtime_ownership() {
-  for runtime_root in "$LOG_DIR" "$SPOOL_DIR"; do
+  for runtime_root in "$LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do
     find "$runtime_root" -xdev -exec chown -h "$SERVICE_USER" {} +
   done
+}
+
+assert_audit_payload_blob_write_preflight() {
+  audit_blob_dir="$DATA_DIR/audit/blobs"
+  [ -d "$audit_blob_dir" ] && [ ! -L "$audit_blob_dir" ] \
+    || { echo "audit payload blob path must be a real directory: $audit_blob_dir" >&2; return 1; }
+  resolved_audit_blob_dir="$(cd "$audit_blob_dir" && pwd -P)" || return 1
+  case "$resolved_audit_blob_dir" in
+    "$RESOLVED_BASE_DIR"/*) ;;
+    *) echo "audit payload blob path escapes the physical base directory: $audit_blob_dir" >&2; return 1 ;;
+  esac
+  if [ "$SCOPE" = system ]; then
+    "$SUDO_BIN" -n -u "$SERVICE_USER" /bin/bash -s -- "$audit_blob_dir" <<'EOF'
+set -eu
+audit_blob_dir="$1"
+temporary_path="$audit_blob_dir/.juhe-ai-audit-write-check.$$.tmp"
+renamed_path="$audit_blob_dir/.juhe-ai-audit-write-check.$$.ready"
+cleanup() { rm -f "$temporary_path" "$renamed_path"; }
+trap cleanup EXIT
+: > "$temporary_path"
+mv "$temporary_path" "$renamed_path"
+rm -f "$renamed_path"
+trap - EXIT
+EOF
+  else
+    /bin/bash -s -- "$audit_blob_dir" <<'EOF'
+set -eu
+audit_blob_dir="$1"
+temporary_path="$audit_blob_dir/.juhe-ai-audit-write-check.$$.tmp"
+renamed_path="$audit_blob_dir/.juhe-ai-audit-write-check.$$.ready"
+cleanup() { rm -f "$temporary_path" "$renamed_path"; }
+trap cleanup EXIT
+: > "$temporary_path"
+mv "$temporary_path" "$renamed_path"
+rm -f "$renamed_path"
+trap - EXIT
+EOF
+  fi
 }
 
 assert_release_read_only() {
@@ -269,13 +359,12 @@ EOF
 fi
 if [ -n "$RUNTIME_DIR" ]; then
   [ -d "$BASE_DIR" ] || { echo '--runtime-dir requires an existing base directory' >&2; exit 1; }
-  RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)" || exit 1
-  [ "$RESOLVED_BASE_DIR" != / ] || { echo 'isolated runtime base directory must not resolve to /' >&2; exit 1; }
   assert_isolated_runtime_parent "$RUNTIME_DIR"
 fi
+ensure_audit_payload_blob_directory
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
 if [ -n "$RUNTIME_DIR" ]; then
-  for runtime_path in "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
+  for runtime_path in "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
 fi
 if [ "$SCOPE" = system ]; then
   SUDO_BIN="$(command -v sudo 2>/dev/null || true)"
@@ -289,9 +378,7 @@ if [ "$SCOPE" = system ]; then
     echo 'system base directory must not be writable by the service user' >&2
     exit 1
   fi
-  RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)"
-  [ "$RESOLVED_BASE_DIR" != / ] || { echo 'system base directory must not resolve to /' >&2; exit 1; }
-  for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
+  for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
   if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$CURRENT_DIR"; then
     echo 'release directory must not be writable by the service user' >&2
     exit 1
@@ -311,12 +398,13 @@ if [ "$SCOPE" = system ]; then
   "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$NODE_BIN" \
     || { echo "service user cannot execute node: $NODE_BIN" >&2; exit 1; }
   migrate_runtime_ownership
-  for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
-  for writable in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do
+  for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
+  for writable in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do
     "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$writable" \
       || { echo "service user cannot write runtime directory: $writable" >&2; exit 1; }
   done
 fi
+assert_audit_payload_blob_write_preflight
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/juhe-ai-performance.XXXXXX")"
 MUTATED=0
 NGINX_BACKUP="$NGINX_CONFIG.performance-backup.$$"
@@ -395,6 +483,7 @@ render_run_script() {
     printf 'export JUHE_AI_OPS_WORKER_REPLICAS=1\n'
     printf 'export JUHE_AI_LOG_DIR="%s"\n' "$RUNTIME_LOG_DIR"
     printf 'export JUHE_AI_USAGE_SPOOL_DIR="%s"\n' "$SPOOL_DIR"
+    printf 'export JUHE_AI_DATASET_DATABASE_PATH="%s/juhe-ai-dataset.sqlite3"\n' "$DATA_DIR"
     printf 'cd "%s"\n' "$CURRENT_DIR"
     printf '%s\n' 'node backend/dist/scripts/preflight/check-node-sqlite.js'
     printf '%s\n' 'exec node backend/dist/server.js'

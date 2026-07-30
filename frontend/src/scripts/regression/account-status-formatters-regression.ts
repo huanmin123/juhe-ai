@@ -243,9 +243,49 @@ const errorAccount = accountFixture({
     color: 'red',
     blockerScope: 'account',
     reason: 'mock account error for formatter regression'
+  },
+  availabilityPresentation: {
+    status: 'error',
+    label: '异常',
+    reason: 'mock account error for formatter regression',
+    probe: {
+      kind: 'health_check',
+      lastObservation: {
+        observationId: 'generic-error-health-check',
+        attemptedAt: '2026-07-11T01:00:00.000Z',
+        result: 'failed',
+        httpStatus: 401,
+        errorCode: 'invalid_credentials',
+        reason: '最近健康检查确认凭据无效',
+        traceId: 'trace-generic-error-health-check'
+      },
+      schedule: { state: 'none' }
+    }
   }
 })
 assertStatus('异常账户', errorAccount, '异常', 'red')
+const errorAccountTooltip = accountStatusTooltipLines(errorAccount)
+assertTrue(errorAccountTooltip.some((line) => line.includes('最近检查：')), '通用异常 tooltip 应显示最近检查时间')
+assertTrue(errorAccountTooltip.some((line) => line.includes('HTTP 状态：401')), '通用异常 tooltip 应显示检查 HTTP 状态')
+assertTrue(errorAccountTooltip.some((line) => line.includes('错误码：invalid_credentials')), '通用异常 tooltip 应显示检查错误码')
+assertTrue(errorAccountTooltip.some((line) => line.includes('traceId：trace-generic-error-health-check')), '通用异常 tooltip 应显示检查 traceId')
+assertTrue(errorAccountTooltip.some((line) => line.includes('下次检查：暂无计划')), '有检查事实但没有计划的通用异常必须明确暂无计划')
+const errorWithoutProbeTooltip = accountStatusTooltipLines(accountFixture({
+  status: 'error',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_error',
+    label: '账户异常',
+    color: 'red',
+    blockerScope: 'account'
+  },
+  availabilityPresentation: {
+    status: 'error',
+    label: '异常',
+    probe: { kind: 'health_check', schedule: { state: 'none' } }
+  }
+}))
+assertTrue(errorWithoutProbeTooltip.some((line) => line.includes('下次检查：暂无计划')), '没有检查事实和计划的通用异常必须明确暂无计划')
 assertTrue(
   accountMenuItems(errorAccount).some((item) => item.key === 'restore-normal' && item.label === '异常恢复'),
   '异常账户操作名称应为异常恢复'
