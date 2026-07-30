@@ -21,6 +21,8 @@ NGINX_UPSTREAM_SUFFIX=
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 VERIFIED_HEALTH_JSON=
 VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
+SUDO_BIN=
+TEST_BIN=
 
 usage() {
   cat <<'EOF'
@@ -243,7 +245,7 @@ migrate_runtime_ownership() {
 
 assert_release_read_only() {
   while IFS= read -r -d '' release_entry; do
-    if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$release_entry"; then
+    if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$release_entry"; then
       echo "release entry must not be writable by the service user: $release_entry" >&2
       return 1
     fi
@@ -268,17 +270,21 @@ if [ -n "$RUNTIME_DIR" ]; then
   for runtime_path in "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
 fi
 if [ "$SCOPE" = system ]; then
-  [ -x /usr/bin/sudo ] && [ -x /usr/bin/test ] || { echo 'system scope requires sudo and test' >&2; exit 1; }
-  /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -d "$BASE_DIR" \
+  SUDO_BIN="$(command -v sudo 2>/dev/null || true)"
+  for candidate in /usr/bin/test /bin/test; do
+    if [ -x "$candidate" ]; then TEST_BIN="$candidate"; break; fi
+  done
+  [ -n "$SUDO_BIN" ] && [ -n "$TEST_BIN" ] || { echo 'system scope requires sudo and test' >&2; exit 1; }
+  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -d "$BASE_DIR" \
     || { echo 'service user cannot access the base directory' >&2; exit 1; }
-  if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$BASE_DIR"; then
+  if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$BASE_DIR"; then
     echo 'system base directory must not be writable by the service user' >&2
     exit 1
   fi
   RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)"
   [ "$RESOLVED_BASE_DIR" != / ] || { echo 'system base directory must not resolve to /' >&2; exit 1; }
   for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
-  if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$CURRENT_DIR"; then
+  if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$CURRENT_DIR"; then
     echo 'release directory must not be writable by the service user' >&2
     exit 1
   fi
@@ -287,19 +293,19 @@ if [ "$SCOPE" = system ]; then
     "$CURRENT_DIR/backend/dist/server.js" \
     "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" \
     "$CURRENT_DIR/backend/.env"; do
-    /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -r "$readable" \
+    "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -r "$readable" \
       || { echo "service user cannot read required release file: $readable" >&2; exit 1; }
-    if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$readable"; then
+    if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$readable"; then
       echo "required release file must not be writable by the service user: $readable" >&2
       exit 1
     fi
   done
-  /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -x "$NODE_BIN" \
+  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$NODE_BIN" \
     || { echo "service user cannot execute node: $NODE_BIN" >&2; exit 1; }
   migrate_runtime_ownership
   for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
   for writable in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do
-    /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$writable" \
+    "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$writable" \
       || { echo "service user cannot write runtime directory: $writable" >&2; exit 1; }
   done
 fi
