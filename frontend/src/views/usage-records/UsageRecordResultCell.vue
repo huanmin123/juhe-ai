@@ -1,6 +1,6 @@
 <template>
   <span class="usage-result-cell">
-    <a-tooltip v-if="failureDetail" placement="topLeft">
+    <a-tooltip v-if="failureDetail" placement="topLeft" :trigger="['hover', 'focus', 'click']">
       <template #title>
         <div class="usage-failure-detail">{{ failureDetail }}</div>
       </template>
@@ -15,18 +15,16 @@ import { computed } from 'vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import type { UsageRecordListItem } from '@/types/domain'
-import { usageRecordFailureAttributionText } from './usageRecordFormatters'
 
 const props = defineProps<{
   record: UsageRecordListItem
 }>()
 
-const failureAttribution = computed(() => usageRecordFailureAttributionText(props.record))
 const failureDetail = computed(() => {
   if (props.record.success) return undefined
   const reason = props.record.failureReason?.trim()
   if (reason) return reason
-  return failureAttribution.value?.replace(/^归因：/u, '').trim()
+  return '请求失败，暂未获取到具体错误说明'
 })
 </script>
 

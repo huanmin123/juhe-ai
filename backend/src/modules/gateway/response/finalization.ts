@@ -142,7 +142,10 @@ import {
   publishGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
-import { responsesFailureStatusFromCapturedJson } from './responses-failure-status.js'
+import {
+  ResponsesRootStatusTracker,
+  responsesFailureStatusFromCapturedJson
+} from './responses-failure-status.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
@@ -798,7 +801,18 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  const forwardedResponseSuccessful = upstreamResponse.ok
+  const responseEndpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(req, account)
+  const responsesFailureStatusTracker = responseEndpointFamily === 'responses'
+    ? new ResponsesRootStatusTracker()
+    : undefined
+  const transportResponseSuccessful = upstreamResponse.ok
+  const markTrackedResponsesFailure = () => {
+    if (!transportResponseSuccessful || !responsesFailureStatusTracker?.hasFailedStatus()) return
+    errorPayload = {
+      code: 'upstream_protocol_failure',
+      message: '上游 Responses 返回失败终态'
+    }
+  }
   try {
     if (upstreamResponse.ok && isGeminiInteractionDeleteRequest(req, account)) {
       await deleteGeminiInteractionBeforeDownstreamCommit({ req, auditCapture, account, usageContext })
@@ -821,7 +835,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads()
-            || gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses',
+            || responseEndpointFamily === 'responses',
           signal,
           firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
             ? undefined
@@ -841,6 +855,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
             input.downstreamCommitState.markTransportCommitted()
           },
+          onChunkRead: (chunk) => responsesFailureStatusTracker?.push(chunk),
           onChunkWritten: (bytesWritten) => {
             input.downstreamCommitState.markSemanticCommitted(bytesWritten)
             markSemanticOutput()
@@ -862,14 +877,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
         responseBody = pipeResult.capturedBody
         responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
-        if (pipeResult.captureTruncated
-          && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
-          && hasResponsesFailedTerminal(pipeResult.capturedBodyText)) {
-          errorPayload = {
-            code: 'upstream_protocol_failure',
-            message: '上游 Responses 返回失败终态'
-          }
-        }
+        markTrackedResponsesFailure()
         responseUsageText = pipeResult.usageTailText
         firstTokenMs = pipeResult.firstByteMs
         if (pipeResult.fullyBuffered) {
@@ -964,7 +972,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads()
-            || gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses',
+            || responseEndpointFamily === 'responses',
           signal,
           firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
             ? undefined
@@ -984,6 +992,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
             input.downstreamCommitState.markTransportCommitted()
           },
+          onChunkRead: (chunk) => responsesFailureStatusTracker?.push(chunk),
           onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
           onBodyCompleted: (transferredBytes) => {
             if (transferredBytes === 0) input.downstreamCommitState.markSemanticCommitted()
@@ -995,14 +1004,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
         responseBody = pipeResult.capturedBody
         responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
-        if (pipeResult.captureTruncated
-          && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
-          && hasResponsesFailedTerminal(pipeResult.capturedBodyText)) {
-          errorPayload = {
-            code: 'upstream_protocol_failure',
-            message: '上游 Responses 返回失败终态'
-          }
-        }
+        markTrackedResponsesFailure()
         responseUsageText = pipeResult.usageTailText
         firstTokenMs = pipeResult.firstByteMs
         if (pipeResult.captureTruncated) {
@@ -1221,20 +1223,41 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   if (
     !parsedJsonBody
     && availableJsonBodyText !== undefined
-    && (forwardedResponseSuccessful || interpretUpstreamResponseSemantics)
+    && (transportResponseSuccessful || interpretUpstreamResponseSemantics)
   ) {
     parsedJsonBody = parseGatewayNonStreamJsonBody(availableJsonBodyText, upstreamResponse.headers)
   }
   if (parsedJsonBody?.status === 'valid') {
-    usage = forwardedResponseSuccessful
+    usage = transportResponseSuccessful
       ? parseGatewayProtocolUsageFromJsonValueForRequest(req, account, parsedJsonBody.value)
       : parseGatewayProtocolUsageFromJsonValue(account, parsedJsonBody.value)
   } else if (responseUsageText) {
-    const skipFullDocumentParse = parsedJsonBody?.status === 'invalid' || !forwardedResponseSuccessful
-    usage = forwardedResponseSuccessful
+    const skipFullDocumentParse = parsedJsonBody?.status === 'invalid' || !transportResponseSuccessful
+    usage = transportResponseSuccessful
       ? parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText, skipFullDocumentParse)
       : parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText, skipFullDocumentParse)
   }
+  if (interpretUpstreamResponseSemantics && !upstreamResponse.ok) {
+    errorPayload = parsedJsonBody?.status === 'valid'
+      ? parseGatewayProtocolErrorPayloadFromJsonValue(account, parsedJsonBody.value)
+      : parsedJsonBody
+        ? {}
+        : parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
+  }
+  const responsesFailedTerminal = transportResponseSuccessful
+    && responseEndpointFamily === 'responses'
+    && (
+      responsesFailureStatusTracker?.hasFailedStatus() === true
+      || errorPayload.code === 'upstream_protocol_failure'
+      || hasResponsesFailedTerminal(responseBodyText ?? responseSemanticText)
+    )
+  if (responsesFailedTerminal && errorPayload.code !== 'upstream_protocol_failure') {
+    errorPayload = {
+      code: 'upstream_protocol_failure',
+      message: '上游 Responses 返回失败终态'
+    }
+  }
+  const forwardedResponseSuccessful = transportResponseSuccessful && !responsesFailedTerminal
   if (forwardedResponseSuccessful) {
     usage = applyNonStreamUsageFallback({
       req,
@@ -1243,13 +1266,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       parsedJsonBody,
       endpoint: usageContext.endpoint
     })
-  }
-  if (interpretUpstreamResponseSemantics && !upstreamResponse.ok) {
-    errorPayload = parsedJsonBody?.status === 'valid'
-      ? parseGatewayProtocolErrorPayloadFromJsonValue(account, parsedJsonBody.value)
-      : parsedJsonBody
-        ? {}
-        : parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
   }
   if (forwardedResponseSuccessful) {
     bodyOmission = nonStreamImageResponseBodyOmission(

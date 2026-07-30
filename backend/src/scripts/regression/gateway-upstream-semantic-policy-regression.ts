@@ -1,7 +1,13 @@
 import { strict as assert } from 'node:assert'
-import { readFileSync } from 'node:fs'
-import type { Request } from 'express'
+import { EventEmitter } from 'node:events'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import type { Request, Response } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { logger } from '../../shared/logger.js'
 import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
   type OpenAIGatewayClientProfile
@@ -21,12 +27,26 @@ import {
   isOpenAIGatewayImageGenerationModel,
   resolveOpenAIGatewayRequestLane
 } from '../../modules/gateway/protocols/openai-v1/request-lane.js'
-import { responsesFailureStatusFromCapturedJson } from '../../modules/gateway/response/responses-failure-status.js'
+import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
+import {
+  finalizeHandledUpstreamResponse,
+  handleNonStreamUpstreamResponse
+} from '../../modules/gateway/response/finalization.js'
+import { GatewayDownstreamCommitState } from '../../modules/gateway/response/downstream-commit-state.js'
+import {
+  ResponsesRootStatusTracker,
+  responsesFailureStatusFromCapturedJson
+} from '../../modules/gateway/response/responses-failure-status.js'
+import type { GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
 
 const oversizedFailurePrefix = `{"id":"resp_test","status":"failed","error":{"message":"failed"},"output":"${'x'.repeat(1024 * 1024)}`
 assert.equal(responsesFailureStatusFromCapturedJson(oversizedFailurePrefix), true, '超大 Responses 根级 failed 终态仍必须判定为失败')
 const oversizedNestedFailurePrefix = `{"id":"resp_test","status":"completed","output":[{"status":"failed","value":"${'x'.repeat(1024 * 1024)}`
 assert.equal(responsesFailureStatusFromCapturedJson(oversizedNestedFailurePrefix), false, '嵌套失败状态不得误判为根级失败')
+const deferredStatusTracker = new ResponsesRootStatusTracker()
+deferredStatusTracker.push(Buffer.from(`{"id":"resp_test","output":"${'x'.repeat(2 * 1024 * 1024)}","sta`, 'utf8'))
+deferredStatusTracker.push(Buffer.from('tus":"failed"}', 'utf8'))
+assert.equal(deferredStatusTracker.hasFailedStatus(), true, '跨 chunk 的根级 failed 状态必须在大字段之后仍可识别')
 
 const genericProfiles: OpenAIGatewayClientProfile[] = ['generic_openai', 'generic_anthropic', 'generic_gemini']
 const explicitProfiles: OpenAIGatewayClientProfile[] = ['codex', 'claude_code', 'gemini_cli']
@@ -303,8 +323,8 @@ assert.match(
 )
 assert.match(
   finalizationSource,
-  /pipeResult\.captureTruncated[\s\S]*hasResponsesFailedTerminal\(pipeResult\.capturedBodyText\)/,
-  '超大 Responses 失败正文的根级失败终态必须在截断窗口内保留失败证据'
+  /const responsesFailureStatusTracker = responseEndpointFamily === 'responses'[\s\S]*onChunkRead: \(chunk\) => responsesFailureStatusTracker\?\.push\(chunk\)[\s\S]*markTrackedResponsesFailure\(\)/,
+  '超大 Responses 失败正文必须逐 chunk 检查根级失败终态，不能只依赖截断正文前缀'
 )
 assert.match(
   nonStreamInspectionSource,
@@ -348,4 +368,256 @@ for (const [label, source] of [['scoring', hybridScoringSource], ['quality', hyb
   )
 }
 
+async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promise<void> {
+  const tempRoot = resolve(tmpdir(), `juhe-ai-responses-failed-audit-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  mkdirSync(tempRoot, { recursive: true })
+  runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+  runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+  runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+  runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
+  runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
+  runtimeConfig.runtimeMode = 'standalone'
+  runtimeConfig.cacheDriver = 'memory'
+  runtimeConfig.runtimeStateDriver = 'memory'
+  runtimeConfig.processRole = 'worker'
+  runtimeConfig.workerRole = 'ingest-worker'
+  runtimeConfig.log.consoleEnabled = false
+  runtimeConfig.log.fileEnabled = false
+  logger.level = 'silent'
+
+  const [database, repositories, auditQueue, usageRecordQueue, auditCaptureModule] = await Promise.all([
+    import('../../storage/database.js'),
+    import('../../storage/repositories.js'),
+    import('../../modules/audit-logs/audit-log-queue.service.js'),
+    import('../../modules/gateway/usage/record-queue.service.js'),
+    import('../../modules/gateway/audit/capture.service.js')
+  ])
+  const response = new OversizedResponsesMockResponse()
+  const request = oversizedResponsesRequest()
+  const account = oversizedResponsesAccount()
+  const traceId = 'trace-oversized-responses-failed-terminal'
+  const auditCapture = auditCaptureModule.createAuditCapture({
+    req: request,
+    res: response as unknown as Response,
+    traceId,
+    startedAtMs: Date.now() - 50,
+    captureMode: 'metadata_only'
+  })
+  const auditAttemptId = auditCapture.startAttempt({
+    account,
+    attemptIndex: 0,
+    upstreamUrl: 'https://upstream.invalid/v1/responses',
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify(request.body)
+  })
+  try {
+    const result = await handleNonStreamUpstreamResponse({
+      req: request,
+      res: response as unknown as Response,
+      account,
+      upstreamResponse: oversizedFailedResponsesUpstreamResponse(),
+      upstreamUrl: 'https://upstream.invalid/v1/responses',
+      auditAttemptId,
+      auditCapture,
+      settings: {} as GatewaySettings,
+      usageContext: {
+        traceId,
+        trafficSource: 'gateway',
+        systemAccountId: 'sys_semantic_regression',
+        apiKeyId: 'key_semantic_regression',
+        groupId: 'group_semantic_regression',
+        endpoint: 'POST /v1/responses',
+        requestSnapshot: {
+          method: 'POST',
+          path: '/v1/responses',
+          originalUrl: '/v1/responses',
+          traceId,
+          headers: {},
+          body: request.body
+        }
+      },
+      startedAt: Date.now() - 50,
+      timeoutProfile: { timeoutsDisabled: true } as never,
+      signal: new AbortController().signal,
+      downstreamCommitState: new GatewayDownstreamCommitState(),
+      accountStateMutationEnabled: false,
+      automaticAccountStateMutationEnabled: false
+    })
+
+    if (result.alreadyFinalized || result.retryUpstream === true) {
+      throw new Error('超大 Responses 失败终态已向下游转发后必须进入统一最终化，不能再次重试或提前结束')
+    }
+    const completedResult = result
+    assert.equal(completedResult.errorPayload.code, 'upstream_protocol_failure', '大字段后的根级 failed 必须形成协议失败码')
+
+    await finalizeHandledUpstreamResponse({
+      req: request,
+      res: response as unknown as Response,
+      account,
+      upstreamResponse: oversizedFailedResponsesUpstreamResponse(),
+      upstreamUrl: 'https://upstream.invalid/v1/responses',
+      auditAttemptId,
+      auditCapture,
+      settings: {} as GatewaySettings,
+      usageContext: {
+        traceId,
+        trafficSource: 'gateway',
+        systemAccountId: 'sys_semantic_regression',
+        apiKeyId: 'key_semantic_regression',
+        groupId: 'group_semantic_regression',
+        endpoint: 'POST /v1/responses',
+        requestSnapshot: {
+          method: 'POST',
+          path: '/v1/responses',
+          originalUrl: '/v1/responses',
+          traceId,
+          headers: {},
+          body: request.body
+        }
+      },
+      startedAt: Date.now() - 50,
+      timeoutProfile: { timeoutsDisabled: true } as never,
+      signal: new AbortController().signal,
+      downstreamCommitState: new GatewayDownstreamCommitState(),
+      accountStateMutationEnabled: false,
+      automaticAccountStateMutationEnabled: false,
+      result: completedResult,
+      routingEffectsApplied: true
+    })
+
+    auditQueue.flushAllAuditLogQueue()
+    const auditLog = repositories.listAuditLogs({ traceId }).items[0]
+    assert(auditLog, '超大失败终态必须保留失败审计')
+    assert.equal(auditLog.success, false, '超大失败终态审计总结果不得记为成功')
+    const auditDetail = repositories.getAuditLogDetail(auditLog.id)
+    assert.equal(auditDetail?.attempts.length, 1, '超大失败终态必须保留唯一上游 attempt')
+    assert.equal(auditDetail?.attempts[0]?.success, false, '超大失败终态的 audit attempt 不得记为成功')
+    assert.equal(auditDetail?.attempts[0]?.errorCode, 'upstream_protocol_failure', 'audit attempt 必须记录协议失败码')
+    const usageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
+    assert.equal(usageRecord?.success, false, '超大失败终态使用记录不得记为成功')
+    assert.equal(usageRecord?.errorCode, 'upstream_protocol_failure', '使用记录必须记录协议失败码')
+  } finally {
+    auditQueue.clearAuditLogQueueForTest()
+    usageRecordQueue.clearUsageRecordQueueForTest()
+    database.closeStorageDatabases()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+class OversizedResponsesMockResponse extends EventEmitter {
+  locals: Record<string, unknown> = {}
+  headersSent = false
+  destroyed = false
+  writableEnded = false
+  writableFinished = false
+  statusCode = 200
+  private readonly headers = new Map<string, string | number | readonly string[]>()
+
+  status(statusCode: number): this {
+    this.statusCode = statusCode
+    return this
+  }
+
+  setHeader(name: string, value: string | number | readonly string[]): this {
+    this.headers.set(name.toLowerCase(), value)
+    return this
+  }
+
+  getHeader(name: string): string | number | readonly string[] | undefined {
+    return this.headers.get(name.toLowerCase())
+  }
+
+  getHeaders(): Record<string, string | number | readonly string[]> {
+    return Object.fromEntries(this.headers)
+  }
+
+  hasHeader(name: string): boolean {
+    return this.headers.has(name.toLowerCase())
+  }
+
+  write(_chunk: Uint8Array): boolean {
+    this.headersSent = true
+    return true
+  }
+
+  send(_body: Uint8Array): this {
+    this.headersSent = true
+    this.writableEnded = true
+    this.writableFinished = true
+    this.emit('finish')
+    return this
+  }
+
+  end(): this {
+    this.writableEnded = true
+    this.writableFinished = true
+    this.emit('finish')
+    return this
+  }
+
+  destroy(): this {
+    this.destroyed = true
+    this.emit('close')
+    return this
+  }
+}
+
+function oversizedResponsesRequest(): Request {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  return {
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    headers,
+    body: { model: 'gpt-5.6-sol', input: 'semantic failure regression' },
+    header(name: string): string | undefined {
+      return headers[name.toLowerCase()]
+    }
+  } as unknown as Request
+}
+
+function oversizedResponsesAccount(): UpstreamAccount {
+  return {
+    id: 'account_semantic_regression',
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    systemAccountId: 'sys_semantic_regression',
+    accountOwnerSystemAccountId: 'sys_semantic_regression',
+    groupOwnerSystemAccountId: 'sys_semantic_regression',
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    name: 'oversized responses semantic regression account',
+    type: 'api_key',
+    status: 'active',
+    concurrencyLimit: 1,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'openai_standard',
+    healthCheckEndpointMode: 'responses_json',
+    baseUrl: 'https://upstream.invalid/v1',
+    apiKey: 'sk-semantic-regression',
+    streamFailureCount: 0,
+    credentials: {}
+  }
+}
+
+function oversizedFailedResponsesUpstreamResponse(): GatewayUpstreamResponse {
+  const prefix = Buffer.from(`{"id":"resp_oversized","object":"response","output":[{"type":"message","content":"${'x'.repeat(2 * 1024 * 1024 + 256)}"}],"sta`, 'utf8')
+  const suffix = Buffer.from('tus":"failed","error":{"message":"upstream failed"}}', 'utf8')
+  return {
+    status: 200,
+    ok: true,
+    headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
+    body: (async function* (): AsyncGenerator<Uint8Array> {
+      yield prefix
+      yield suffix
+    })()
+  }
+}
+
+await assertOversizedResponsesFailureMarksAuditAndUsageFailed()
 console.log('gateway upstream semantic policy regression passed')

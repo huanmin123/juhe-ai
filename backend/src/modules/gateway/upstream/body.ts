@@ -130,6 +130,7 @@ export async function pipeNonStreamUpstreamResponse(
     onFirstByteDeadline?: FirstByteDeadlineHandler
     onFirstByteDeadlineSuperseded?: () => void
     prepareDownstream?: () => void
+    onChunkRead?: (buffer: Buffer) => void
     onChunkWritten?: (bytesWritten: number) => void
     onBodyCompleted?: (transferredBytes: number) => void
   }
@@ -196,6 +197,7 @@ export async function pipeNonStreamUpstreamResponse(
       transferredBytes += buffer.length
       capture.push(buffer)
       usageTailCapture.push(buffer)
+      input.onChunkRead?.(buffer)
       await writeResponseChunk(res, buffer)
       input.onChunkWritten?.(buffer.length)
     }
@@ -246,6 +248,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     onFirstByteDeadline?: FirstByteDeadlineHandler
     onFirstByteDeadlineSuperseded?: () => void
     prepareDownstream?: () => void
+    onChunkRead?: (buffer: Buffer) => void
     onChunkWritten?: (bytesWritten: number) => void
     beforeDownstreamCommit?: (inspectionBody: Buffer) => Promise<void>
   }
@@ -325,6 +328,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
       transferredBytes += buffer.length
       capture.push(buffer)
       usageTailCapture.push(buffer)
+      input.onChunkRead?.(buffer)
 
       if (!downstreamWriting && inspectionBytes + buffer.length <= inspectBytes) {
         inspectionChunks.push(buffer)
