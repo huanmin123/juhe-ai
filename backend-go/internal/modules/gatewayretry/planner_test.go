@@ -115,18 +115,18 @@ func TestPlannerDoesNotRotateOnCompleteResponseWithoutExplicitPolicy(t *testing.
 	}
 }
 
-func TestPlannerStopsOnClientCancelAndContextDeadline(t *testing.T) {
+func TestPlannerStopsOnDownstreamCloseAndContextDeadline(t *testing.T) {
 	t.Parallel()
 
-	t.Run("client cancel failure", func(t *testing.T) {
+	t.Run("downstream close failure", func(t *testing.T) {
 		planner := mustPlanner(t, testPlan(3, "a", "b"))
 		first := planner.Start(context.Background())
 		terminal := planner.Fail(context.Background(), *first.Attempt, Failure{
-			Phase:          PhaseUpstreamRequest,
-			Err:            context.Canceled,
-			ClientCanceled: true,
+			Phase:            PhaseUpstreamRequest,
+			Err:              context.Canceled,
+			DownstreamClosed: true,
 		})
-		if terminal.Action != ActionStopped || terminal.Reason != ReasonClientCanceled {
+		if terminal.Action != ActionStopped || terminal.Reason != ReasonDownstreamClosed {
 			t.Fatalf("terminal decision = %+v", terminal)
 		}
 	})
@@ -188,7 +188,7 @@ func TestPlannerRetriesOnlyNodeEquivalentFailureClasses(t *testing.T) {
 		{name: "request semantic code", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 500, ErrorCode: "model_not_found", ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassRequestSemantic, wantRetry: false},
 		{name: "unknown client response", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 400, ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassUnknown, wantRetry: false},
 		{name: "invalid phase is fail closed", failure: Failure{Phase: FailurePhase("typo"), StatusCode: 503}, wantClass: FailureClassUnknown, wantRetry: false},
-		{name: "client lifecycle", failure: Failure{Phase: PhaseClientLifecycle}, wantClass: FailureClassClientLifecycle, wantRetry: false},
+		{name: "downstream closed", failure: Failure{Phase: PhaseDownstreamClosed}, wantClass: FailureClassDownstreamClosed, wantRetry: false},
 		{name: "gateway policy", failure: Failure{Phase: PhaseGatewayPolicy}, wantClass: FailureClassGatewayPolicy, wantRetry: false},
 	}
 

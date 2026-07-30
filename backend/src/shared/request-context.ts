@@ -494,9 +494,7 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
   const responseState = captureDownstreamResponseState(res, 'close')
   const downstreamCloseFields = {
     ...responseState,
-    downstreamClose: true,
-    closeTrigger: 'unknown_unproven',
-    clientActionConfirmed: false
+    downstreamClose: true
   }
   if (context.protocolTerminalOutcome) {
     setImmediate(() => {

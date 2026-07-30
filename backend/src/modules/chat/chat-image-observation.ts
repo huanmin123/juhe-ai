@@ -3,6 +3,7 @@ import { claimChatAssetObservation, setChatAssetObservation } from '../../storag
 import { readChatJsonResponse } from './chat-bounded-json.js'
 import { resolveChatAssetInput } from './chat-asset-input.js'
 import { listActiveChatObservationTasks, trackActiveChatObservation } from './chat-active-observations.js'
+import type { ChatGatewayDispatch } from './chat-gateway-dispatch.js'
 
 const activeObservations = new Map<string, Set<Promise<void>>>()
 const imageObservationTimeoutMs = 90_000
@@ -19,7 +20,7 @@ export function scheduleChatImageObservations(input: {
   conversationId: string
   systemAccountId: string
   apiKeySecret: string
-  gatewayBaseUrl: string
+  gatewayRequest: ChatGatewayDispatch
   model: string
   userContent: string
   assistantContent: string
@@ -77,7 +78,7 @@ async function runObservation(input: Parameters<typeof scheduleChatImageObservat
       userQuestion: input.userContent.slice(0, 16_000),
       visibleAnswer: input.assistantContent.slice(0, 16_000)
     })
-    const response = await fetch(`${input.gatewayBaseUrl}/v1/responses`, {
+    const response = await input.gatewayRequest('/v1/responses', {
       method: 'POST',
       headers: {
         authorization: `Bearer ${input.apiKeySecret}`,

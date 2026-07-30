@@ -91,7 +91,7 @@ const formatterSource = readFileSync(resolve('../frontend/src/views/usage-record
 assert.match(formatterSource, /return String\(record\.statusCode\)/, '状态码必须展示上游原始数字')
 assert.doesNotMatch(formatterSource, /HTTP \$\{record\.statusCode\}|上游非成功终态/, '状态码不得混入 HTTP 或语义解释文案')
 assert.match(formatterSource, /return 'orange'/, '失败 2xx 状态码必须使用非成功颜色')
-assert.match(formatterSource, /client_lifecycle.*下游连接关闭/s, '历史 client_aborted 必须统一展示为下游连接关闭')
+assert.match(formatterSource, /downstream_closed.*下游连接关闭/s, '下游关闭必须统一展示为下游连接关闭')
 assert.doesNotMatch(formatterSource, /触发方未识别|历史记录.*下游连接关闭/, '下游连接关闭文案不得附带触发方或历史记录分类')
 
 const costCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordCostCell.vue'), 'utf8')

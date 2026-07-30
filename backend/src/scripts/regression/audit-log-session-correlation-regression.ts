@@ -179,6 +179,7 @@ try {
   assertSessionIdentity(buildAuditLogTransportCapacityFallback(first), first, '容量降级')
   assertSessionIdentity(prepareAuditLogsForBoundedTransport([first])[0]!, first, 'IPC 有界传输')
   assert.equal(isAuditLogInput(first), true, '带 session 字段的审计输入应通过队列校验')
+  assert.equal(isAuditLogInput({ ...first, auditOutcome: 'removed_outcome' }), false, '队列不得接收已删除的审计终态')
   assert.equal(isAuditLogInput({ ...first, sessionId: 123 }), false, '队列应拒绝非字符串 sessionId')
   assert.equal(isAuditLogInput({ ...first, sessionClientType: false }), false, '队列应拒绝非字符串 sessionClientType')
 

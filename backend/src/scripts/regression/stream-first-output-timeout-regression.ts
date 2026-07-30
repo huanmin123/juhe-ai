@@ -1532,10 +1532,10 @@ function assertNoClientAbortedAuditLogForAccount(accountId: string): void {
       FROM audit_logs audit_logs
       INNER JOIN audit_log_attempts attempts ON attempts.audit_log_id = audit_logs.id
       WHERE attempts.account_id = ?
-        AND audit_logs.audit_outcome = 'client_aborted'
+        AND audit_logs.audit_outcome = 'downstream_closed'
     `)
     .get(accountId) as { count?: number } | undefined
-  assert.equal(Number(row?.count ?? 0), 0, '收到 response.completed 后客户端关闭不应写 client_aborted 审计')
+  assert.equal(Number(row?.count ?? 0), 0, '收到 response.completed 后客户端关闭不应写 downstream_closed 审计')
 }
 
 function assertUsageRecordBodyOmitted(accountId: string, traceId: string): void {

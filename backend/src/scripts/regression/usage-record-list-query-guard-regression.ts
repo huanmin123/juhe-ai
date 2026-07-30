@@ -345,7 +345,7 @@ try {
       stream: true,
       statusCode: 200,
       success: false,
-      failureAttribution: 'downstream_unconfirmed',
+      failureAttribution: 'downstream_closed',
       errorCode: 'downstream_connection_closed',
       errorMessage: '不应从列表返回的原始连接错误',
       requestSnapshot: { secret: 'request snapshot must stay hidden' },
@@ -421,7 +421,7 @@ try {
     assert.deepEqual(exactModel.items.map((item) => item.id), ['usage_list_query_guard_exact'], 'model 筛选应按精确值匹配，不应把前缀模型一并查出')
 
     const downstreamUnknown = repositories.listUsageRecords(access, { model: 'gpt-5.6-downstream-unknown', page: 1, pageSize: 10 }).items[0]
-    assert.equal(downstreamUnknown?.failureAttribution, 'downstream_unconfirmed', '未证实下游关闭必须保留中性归因')
+    assert.equal(downstreamUnknown?.failureAttribution, 'downstream_closed', '下游关闭必须使用统一归因')
     assert.equal(downstreamUnknown?.failureReason, '下游连接关闭', '列表必须从结构化失败码生成统一安全摘要')
     assert.equal('errorCode' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误码')
     assert.equal('errorMessage' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误文本')

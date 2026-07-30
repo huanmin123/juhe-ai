@@ -490,18 +490,17 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
   )
   let candidateAccount: OpenAIAccountSecret | undefined
   try {
-    const preflightSignal = diagnosticAttemptSignal(input.signal, timeoutSchedule[0] ?? 10_000)
-    candidateAccount = await openAIDraftAccountSecret(draft, preflightSignal)
+    candidateAccount = await openAIDraftAccountSecret(draft, input.signal)
     const preflightFailure = await preflightAccountModelCatalog(account, {
       model,
       groupId: draft.groupId,
       systemAccountId: draft.ownerSystemAccountId,
       testEndpointMode: input.testEndpointMode,
       diagnostics: input.diagnostics,
-      signal: preflightSignal,
+      signal: input.signal,
       candidateAccount,
       disableAccountStateMutation: true,
-      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutSchedule[0] ?? 10_000)
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, accountDiagnosticRetryTimeouts('models_catalog')[0] ?? 10_000)
     })
     if (preflightFailure) return accountTestResultWithTotalDuration(preflightFailure, startedAt)
   } catch (error) {
@@ -734,37 +733,21 @@ async function runAccountApiKeyPoolEntryTest(
     systemAccountId: string
   }
 ): Promise<AccountApiKeyPoolEntryTestResult> {
-  const timeoutSchedule = accountDiagnosticRetryTimeouts(input.testEndpointMode === 'images_json' ? 'image_generation' : 'generation')
-  const timeoutMs = timeoutSchedule[0] ?? 10_000
   const startedAt = Date.now()
   const fixedCandidate = fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })
   try {
-    const preflightSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
-    const preflightFailure = await preflightAccountModelCatalog(account, {
+    const result = await testOpenAIAccountWithDiagnosticRetries(account, {
       model: input.model,
       groupId: input.groupId,
       systemAccountId: input.systemAccountId,
       testEndpointMode: input.testEndpointMode,
       diagnostics: input.diagnostics,
-      signal: preflightSignal,
+      signal: input.signal,
       candidateAccount: fixedCandidate,
       disableAccountStateMutation: true,
-      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
-    })
-    if (preflightFailure) return accountApiKeyPoolEntryTestResult(entry, preflightFailure)
-    const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
-    const result = await testOpenAIAccount(account, {
-      model: input.model,
-      groupId: input.groupId,
-      systemAccountId: input.systemAccountId,
-      testEndpointMode: input.testEndpointMode,
-      diagnostics: input.diagnostics,
-      signal: attemptSignal,
-      candidateAccount: fixedCandidate,
-      disableAccountStateMutation: true,
+      retryAllFailures: true,
       findAccountForTest: loadAccountForTestViaDbService,
-      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
+      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
     })
     return accountApiKeyPoolEntryTestResult(entry, result)
   } catch (error) {

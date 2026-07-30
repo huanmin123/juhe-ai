@@ -743,7 +743,7 @@ func trimRequiredURL(value string) string {
 
 func normalizeOutcome(value string) string {
 	switch trim(value) {
-	case "success", "success_after_retry", "gateway_succeeded", "gateway_failed", "upstream_failed", "stream_failed", "client_aborted":
+	case "success", "success_after_retry", "gateway_succeeded", "gateway_failed", "upstream_failed", "stream_failed", "downstream_closed":
 		return trim(value)
 	default:
 		return ""

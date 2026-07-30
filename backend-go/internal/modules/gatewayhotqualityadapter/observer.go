@@ -181,8 +181,7 @@ func terminalInput(attemptID string, terminal gatewayattemptloop.AttemptTerminal
 		result.Source = gatewayhotquality.TerminalSourceTransport
 		return result
 	}
-	if terminal.FailureAttribution == gatewayusage.FailureAttributionClientLifecycle {
-		result.Outcome = gatewayhotquality.OutcomeClientCanceled
+	if terminal.FailureAttribution == gatewayusage.FailureAttributionDownstreamClosed {
 		return result
 	}
 	// The generic observer intentionally has no typed protocol disposition or

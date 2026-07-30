@@ -148,7 +148,7 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
 >
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
-export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'opaque_upstream' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle' | 'downstream_unconfirmed'
+export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'opaque_upstream' | 'gateway_capacity' | 'gateway_policy' | 'downstream_closed'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
@@ -1682,8 +1682,7 @@ function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttributi
     || value === 'opaque_upstream'
     || value === 'gateway_capacity'
     || value === 'gateway_policy'
-    || value === 'client_lifecycle'
-    || value === 'downstream_unconfirmed'
+    || value === 'downstream_closed'
   ) {
     return value
   }

@@ -62,6 +62,21 @@ const upstreamFailure = automaticAccountProbeOutcome({ success: false, accountFa
 })
 assert.equal(upstreamFailure, 'upstream_failure')
 
+assert.equal(automaticAccountProbeOutcome({ success: false, accountFailureEligible: true }, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses'
+  },
+  timeout: true,
+  diagnosticTimeoutExhausted: true
+}), 'upstream_failure', '完整诊断阶梯的每档真实上游超时必须成为上游不可访问证据')
+
+assert.equal(automaticAccountProbeOutcome({ success: false, accountFailureEligible: true }, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses'
+  },
+  timeout: true
+}), 'probe_task_failure', '未耗尽完整诊断阶梯的本地 deadline 不得凭一次已开始请求升级为上游失败')
+
 assert.equal(automaticAccountProbeOutcome({ success: true, accountFailureEligible: false }, {
   upstreamAttempt: {
     upstreamUrl: 'https://api.openai.com/v1/responses',
@@ -353,17 +368,13 @@ for (const [name, source] of [
   ['账户冷却复测', cooldownRetestSource],
   ['账户 Key 冷却复测', apiKeyRetestSource]
 ] as const) {
-  if (name === '主动健康检查' || name === '质量失败复核' || name === '账户冷却复测') {
-    assert.match(source, /onDiagnosticAttemptResult: \(\{ signal \}\) => \{\s*diagnosticTimedOut = isDiagnosticTimeoutSignal\(signal\)/, `${name}必须保留本地诊断超时这一结构化事实`)
-    assert.match(source, /automaticAccountProbeOutcome\(result, \{ upstreamAttempt, timeout: diagnosticTimedOut \}\)/, `${name}必须同时传递最后一次真实上游 attempt 和本地超时事实`)
-  } else {
-    assert.match(source, /automaticAccountProbeOutcome\(result, \{ upstreamAttempt \}\)/, `${name}必须携带最后一次真实上游 attempt 判断传输结果`)
+  if (name === '主动健康检查' || name === '质量失败复核' || name === '账户冷却复测' || name === '账户 Key 冷却复测') {
+    assert.match(source, /onDiagnosticAttemptResult: \(attempt\) => \{[\s\S]{0,240}upstreamAttempt = attempt\.upstreamAttempt[\s\S]{0,240}diagnosticTimeoutExhausted = attempt\.diagnosticTimeoutExhausted/, `${name}必须保留完整诊断阶梯超时与当前真实上游 attempt 的结构化事实`)
+    assert.match(source, /automaticAccountProbeOutcome\(result, \{[\s\S]{0,160}upstreamAttempt,[\s\S]{0,160}diagnosticTimeoutExhausted[\s\S]{0,160}\}\)/, `${name}必须同时传递最后一次真实上游 attempt 和完整诊断阶梯超时事实`)
   }
   assert.match(source, /let upstreamAttempt: UpstreamAttempt \| undefined/, `${name}必须保存结构化传输证据，不能只保存是否见过响应头`)
   assert.doesNotMatch(source, /upstreamResponseObserved|isCompletedRealUpstreamAttempt/, `${name}不得把任意完整 HTTP 响应头直接解释成失败`)
-  if (name !== '账户 Key 冷却复测') {
-    assert.match(source, /retryAllFailures: true/, `${name}必须完成通用后台诊断轮次，不能被错误类型提前截断`)
-  }
+  assert.match(source, /retryAllFailures: true/, `${name}必须完成通用后台诊断轮次，不能被错误类型提前截断`)
   assert.doesNotMatch(
     source,
     /probeOutcome === 'probe_task_failure'\s*\|\|\s*result\.accountFailureEligible === false/,

@@ -59,10 +59,10 @@ func TestObserverFailsClosedAndKeepsUntypedFailuresNeutral(t *testing.T) {
 	observer.Start(context.Background(), invalid)
 	observer.FirstByte(context.Background(), invalid, now.Add(time.Millisecond))
 	observer.Terminal(context.Background(), invalid, gatewayattemptloop.AttemptTerminalObservation{ErrorCode: "first_byte_timeout", CompletedAt: now})
-	client := testObservation("client", now)
-	observer.Start(context.Background(), client)
-	observer.FirstByte(context.Background(), client, now.Add(time.Millisecond))
-	observer.Terminal(context.Background(), client, gatewayattemptloop.AttemptTerminalObservation{Valid: true, FailureAttribution: gatewayusage.FailureAttributionClientLifecycle, CompletedAt: now})
+	downstream := testObservation("downstream", now)
+	observer.Start(context.Background(), downstream)
+	observer.FirstByte(context.Background(), downstream, now.Add(time.Millisecond))
+	observer.Terminal(context.Background(), downstream, gatewayattemptloop.AttemptTerminalObservation{Valid: true, FailureAttribution: gatewayusage.FailureAttributionDownstreamClosed, CompletedAt: now})
 	upstream := testObservation("upstream", now)
 	observer.Start(context.Background(), upstream)
 	observer.FirstByte(context.Background(), upstream, now.Add(time.Millisecond))
@@ -72,7 +72,7 @@ func TestObserverFailsClosedAndKeepsUntypedFailuresNeutral(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("snapshot found=%v err=%v", found, err)
 	}
-	if snapshot.Window5m.Attempts != 3 || snapshot.Window5m.QualityAttempts != 0 || snapshot.Window5m.FirstByteSampleCount != 0 || snapshot.Window5m.UnknownOutcomes != 2 || snapshot.Window5m.ClientCancellations != 1 {
+	if snapshot.Window5m.Attempts != 3 || snapshot.Window5m.QualityAttempts != 0 || snapshot.Window5m.FirstByteSampleCount != 0 || snapshot.Window5m.UnknownOutcomes != 3 || snapshot.Window5m.ClientCancellations != 0 {
 		t.Fatalf("untyped terminal projection=%#v", snapshot.Window5m)
 	}
 }

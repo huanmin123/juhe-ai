@@ -18,7 +18,8 @@ const backgroundAccountAvailabilityProbesInFlight = new Map<string, {
 export interface BackgroundAccountAvailabilityProbeObservation {
   result: AccountTestResult
   upstreamAttempt?: UpstreamAttempt
-  diagnosticTimedOut?: boolean
+  diagnosticCanceled?: boolean
+  diagnosticTimeoutExhausted?: boolean
 }
 
 export function backgroundFullDiagnosticQueueConcurrency(batchSize: number): number {

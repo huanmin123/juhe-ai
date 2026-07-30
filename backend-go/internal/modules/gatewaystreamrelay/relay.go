@@ -29,7 +29,7 @@ var (
 	ErrStreamTooLarge           = errors.New("网关流式响应超过 64 MiB 上限")
 	ErrIdleDeadline             = errors.New("网关流式中转空闲超时")
 	ErrTotalDeadline            = errors.New("网关流式中转总时长超时")
-	ErrClientCanceled           = errors.New("客户端已取消流式请求")
+	ErrDownstreamClosed         = errors.New("下游连接关闭")
 	ErrSourceRead               = errors.New("读取上游流式响应失败")
 	ErrDestinationWrite         = errors.New("写入客户端流式响应失败")
 	ErrInspector                = errors.New("流式协议检查失败")
@@ -169,13 +169,13 @@ type Result struct {
 }
 
 type failure struct {
-	err         error
-	code        string
-	message     string
-	phase       string
-	attribution gatewayusage.FailureAttribution
-	audit       gatewayaudit.Outcome
-	clientAbort bool
+	err              error
+	code             string
+	message          string
+	phase            string
+	attribution      gatewayusage.FailureAttribution
+	audit            gatewayaudit.Outcome
+	downstreamClosed bool
 }
 
 // Relay synchronously moves one upstream stream to one downstream sink. A
@@ -379,9 +379,9 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 		}
 		if err != nil {
 			return &failure{
-				err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: "client_response_header_commit_failed",
-				message: "提交客户端响应头失败", phase: "client",
-				attribution: gatewayusage.FailureAttributionClientLifecycle, audit: gatewayaudit.OutcomeClientAborted, clientAbort: true,
+				err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: "downstream_connection_closed",
+				message: "下游连接关闭", phase: "downstream",
+				attribution: gatewayusage.FailureAttributionDownstreamClosed, audit: gatewayaudit.OutcomeDownstreamClosed, downstreamClosed: true,
 			}
 		}
 	}
@@ -393,8 +393,8 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 		if n < 0 || n > len(chunk)-offset {
 			return &failure{
 				err:  fmt.Errorf("%w: sink returned invalid byte count %d", ErrDestinationWrite, n),
-				code: "invalid_destination_write", message: "客户端流式写入返回了无效字节数", phase: "client",
-				attribution: gatewayusage.FailureAttributionClientLifecycle, audit: gatewayaudit.OutcomeClientAborted, clientAbort: true,
+				code: "downstream_connection_closed", message: "下游连接关闭", phase: "downstream",
+				attribution: gatewayusage.FailureAttributionDownstreamClosed, audit: gatewayaudit.OutcomeDownstreamClosed, downstreamClosed: true,
 			}
 		}
 		if n > 0 {
@@ -435,16 +435,16 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 		}
 		if err != nil {
 			return &failure{
-				err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: "client_stream_write_failed",
-				message: "写入客户端流式响应失败", phase: "client",
-				attribution: gatewayusage.FailureAttributionClientLifecycle, audit: gatewayaudit.OutcomeClientAborted, clientAbort: true,
+				err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: "downstream_connection_closed",
+				message: "下游连接关闭", phase: "downstream",
+				attribution: gatewayusage.FailureAttributionDownstreamClosed, audit: gatewayaudit.OutcomeDownstreamClosed, downstreamClosed: true,
 			}
 		}
 		if n == 0 {
 			return &failure{
-				err: fmt.Errorf("%w: %w", ErrDestinationWrite, io.ErrShortWrite), code: "client_stream_no_progress",
-				message: "客户端流式写入未产生进展", phase: "client",
-				attribution: gatewayusage.FailureAttributionClientLifecycle, audit: gatewayaudit.OutcomeClientAborted, clientAbort: true,
+				err: fmt.Errorf("%w: %w", ErrDestinationWrite, io.ErrShortWrite), code: "downstream_connection_closed",
+				message: "下游连接关闭", phase: "downstream",
+				attribution: gatewayusage.FailureAttributionDownstreamClosed, audit: gatewayaudit.OutcomeDownstreamClosed, downstreamClosed: true,
 			}
 		}
 	}
@@ -542,7 +542,7 @@ func finalizeFailureWithInspection(result Result, options Options, startedAt tim
 		result.RetryAllowed = false
 	} else {
 		result.State = StateFailedBeforeFirstByte
-		result.RetryAllowed = !value.clientAbort && value.attribution != gatewayusage.FailureAttributionClientLifecycle
+		result.RetryAllowed = !value.downstreamClosed && value.attribution != gatewayusage.FailureAttributionDownstreamClosed
 	}
 	result.Handoff = makeHandoff(result, options, startedAt, false, value)
 	return result, value.err
@@ -585,7 +585,7 @@ func makeHandoff(result Result, options Options, startedAt time.Time, success bo
 	usage.ErrorCode = value.code
 	usage.ErrorMessage = value.message
 	audit.RequestedOutcome = value.audit
-	audit.ClientAborted = value.clientAbort
+	audit.DownstreamClosed = value.downstreamClosed
 	audit.ErrorPhase = value.phase
 	audit.ErrorCode = value.code
 	audit.ErrorMessage = value.message
@@ -611,9 +611,9 @@ func classifyContextFailure(cause error) failure {
 		}
 	default:
 		return failure{
-			err: fmt.Errorf("%w: %w", ErrClientCanceled, cause), code: "client_canceled",
-			message: "客户端已取消流式请求", phase: "client",
-			attribution: gatewayusage.FailureAttributionClientLifecycle, audit: gatewayaudit.OutcomeClientAborted, clientAbort: true,
+			err: fmt.Errorf("%w: %w", ErrDownstreamClosed, cause), code: "downstream_connection_closed",
+			message: "下游连接关闭", phase: "downstream",
+			attribution: gatewayusage.FailureAttributionDownstreamClosed, audit: gatewayaudit.OutcomeDownstreamClosed, downstreamClosed: true,
 		}
 	}
 }
@@ -626,26 +626,24 @@ func classifyWriteContextFailure(cause error) failure {
 			return classified
 		}
 		return failure{
-			err: fmt.Errorf("%w: %w", ErrDestinationWrite, cause), code: "client_stream_write_canceled",
-			message: "客户端流式写入已取消", phase: "client",
-			attribution: gatewayusage.FailureAttributionClientLifecycle,
-			audit:       gatewayaudit.OutcomeClientAborted,
-			clientAbort: true,
+			err: fmt.Errorf("%w: %w", ErrDestinationWrite, cause), code: "downstream_connection_closed",
+			message: "下游连接关闭", phase: "downstream",
+			attribution:      gatewayusage.FailureAttributionDownstreamClosed,
+			audit:            gatewayaudit.OutcomeDownstreamClosed,
+			downstreamClosed: true,
 		}
 	}
-	code := "client_stream_idle_timeout"
-	message := "客户端流式写入空闲超时"
+	code := "downstream_connection_closed"
+	message := "下游连接关闭"
 	err := ErrIdleDeadline
 	if errors.Is(cause, ErrTotalDeadline) {
-		code = "client_stream_total_timeout"
-		message = "客户端流式写入超过请求总时长"
 		err = ErrTotalDeadline
 	}
 	return failure{
-		err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: code, message: message, phase: "client",
-		attribution: gatewayusage.FailureAttributionClientLifecycle,
-		audit:       gatewayaudit.OutcomeClientAborted,
-		clientAbort: true,
+		err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: code, message: message, phase: "downstream",
+		attribution:      gatewayusage.FailureAttributionDownstreamClosed,
+		audit:            gatewayaudit.OutcomeDownstreamClosed,
+		downstreamClosed: true,
 	}
 }
 

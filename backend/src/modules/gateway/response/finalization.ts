@@ -12,6 +12,7 @@ import {
 } from '../runtime/account-effects.js'
 import { rememberCodexTurnStreamFailureAsync } from '../client-profiles/codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
+import { gatewayRequestAbortSource } from '../request/abort-attribution.js'
 import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
   type OpenAIGatewayClientStrategyContext
@@ -433,6 +434,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }
     )
   } catch (error) {
+    if (signal.aborted && gatewayRequestAbortSource(req)) {
+      throw error
+    }
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       await recordDownstreamClosedUpstreamAttempt(req, {
@@ -1095,6 +1099,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         message: errorMessage,
         errorCode
       }
+    }
+    if (signal.aborted && gatewayRequestAbortSource(req)) {
+      throw error
     }
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
       await recordDownstreamClosedUpstreamAttempt(req, {

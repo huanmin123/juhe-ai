@@ -1,11 +1,10 @@
 export type GatewayUpstreamFailureClass =
-  | 'client_lifecycle'
   | 'opaque_upstream_response'
   | 'transport'
   | 'unknown'
 
 export interface GatewayUpstreamFailureClassificationInput {
-  phase: 'client_lifecycle' | 'upstream_request' | 'upstream_response'
+  phase: 'upstream_request' | 'upstream_response'
 }
 
 export interface GatewayUpstreamFailureClassification {
@@ -16,10 +15,6 @@ export interface GatewayUpstreamFailureClassification {
 export function classifyGatewayUpstreamFailure(
   input: GatewayUpstreamFailureClassificationInput
 ): GatewayUpstreamFailureClassification {
-  if (input.phase === 'client_lifecycle') {
-    return observation('client_lifecycle', 'client_lifecycle_failure')
-  }
-
   if (input.phase === 'upstream_request') {
     return observation('transport', 'upstream_transport_failure')
   }

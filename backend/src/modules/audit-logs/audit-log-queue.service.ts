@@ -97,7 +97,7 @@ export interface AuditLogQueueRuntime {
 export function recordDroppedAuditCapture(input: {
   traceId: string
   trafficSource?: AuditLogInput['trafficSource']
-  auditOutcome: string
+  auditOutcome: AuditLogInput['auditOutcome']
   success: boolean
   bytes: number
   reason: 'active_capture_overflow' | 'gateway_auth_rejected' | 'gateway_body_rejected' | 'gateway_permission_rejected' | 'user_request_limit_exceeded'
@@ -123,7 +123,7 @@ export function recordDroppedAuditCapture(input: {
     id: `audit_${Date.now()}_${randomUUID()}`,
     traceId: input.traceId,
     trafficSource: input.trafficSource,
-    auditOutcome: input.auditOutcome as AuditLogInput['auditOutcome'],
+    auditOutcome: input.auditOutcome,
     success: input.success,
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
@@ -850,12 +850,22 @@ export function isAuditLogInput(value: unknown): value is AuditLogInput {
     && optionalAuditLogString(record.sessionClientType)
     && typeof record.method === 'string'
     && typeof record.path === 'string'
-    && typeof record.auditOutcome === 'string'
+    && isAuditOutcome(record.auditOutcome)
     && typeof record.success === 'boolean'
     && typeof record.sampleBucket === 'number'
     && typeof record.sampleReason === 'string'
     && Array.isArray(record.attempts)
     && Array.isArray(record.payloads)
+}
+
+function isAuditOutcome(value: unknown): value is AuditLogInput['auditOutcome'] {
+  return value === 'success'
+    || value === 'success_after_retry'
+    || value === 'gateway_succeeded'
+    || value === 'gateway_failed'
+    || value === 'upstream_failed'
+    || value === 'stream_failed'
+    || value === 'downstream_closed'
 }
 
 function optionalAuditLogString(value: unknown): boolean {

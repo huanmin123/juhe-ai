@@ -17,7 +17,7 @@ import (
 type FailurePhase string
 
 const (
-	PhaseClientLifecycle  FailurePhase = "client_lifecycle"
+	PhaseDownstreamClosed FailurePhase = "downstream_closed"
 	PhaseGatewayPolicy    FailurePhase = "gateway_policy"
 	PhaseUpstreamRequest  FailurePhase = "upstream_request"
 	PhaseUpstreamResponse FailurePhase = "upstream_response"
@@ -26,7 +26,7 @@ const (
 type FailureClass string
 
 const (
-	FailureClassClientLifecycle  FailureClass = "client_lifecycle"
+	FailureClassDownstreamClosed FailureClass = "downstream_closed"
 	FailureClassGatewayPolicy    FailureClass = "gateway_policy"
 	FailureClassRequestSemantic  FailureClass = "request_semantic"
 	FailureClassCredential       FailureClass = "credential"
@@ -65,7 +65,7 @@ type Failure struct {
 	ErrorCode             string
 	ErrorType             string
 	Err                   error
-	ClientCanceled        bool
+	DownstreamClosed      bool
 	FirstByteForwarded    bool
 	DownstreamCommitted   bool
 	HasAlternativeAPIKeys bool
@@ -100,7 +100,7 @@ const (
 	ReasonNoCandidates        Reason = "no_candidates"
 	ReasonCandidatesExhausted Reason = "candidates_exhausted"
 	ReasonMaxAttempts         Reason = "max_attempts"
-	ReasonClientCanceled      Reason = "client_canceled"
+	ReasonDownstreamClosed    Reason = "downstream_closed"
 	ReasonContextDeadline     Reason = "context_deadline"
 	ReasonDownstreamCommitted Reason = "downstream_committed"
 	ReasonNonRetryableFailure Reason = "non_retryable_failure"
@@ -241,8 +241,8 @@ func (p *Planner) Fail(ctx context.Context, attempt Attempt, failure Failure) De
 	if classification.Reason == "context_deadline" {
 		return p.stopLocked(ReasonContextDeadline, classification)
 	}
-	if classification.Reason == "client_canceled" {
-		return p.stopLocked(ReasonClientCanceled, classification)
+	if classification.Reason == "downstream_closed" {
+		return p.stopLocked(ReasonDownstreamClosed, classification)
 	}
 	if failure.FirstByteForwarded || failure.DownstreamCommitted {
 		return p.stopLocked(ReasonDownstreamCommitted, classification)
@@ -354,23 +354,23 @@ func contextStop(ctx context.Context) (FailureClassification, Reason, bool) {
 	}
 	cause := context.Cause(ctx)
 	if errors.Is(cause, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return lifecycleClassification("context_deadline"), ReasonContextDeadline, true
+		return downstreamClosedClassification(), ReasonContextDeadline, true
 	}
 	if ctx.Err() != nil {
-		return lifecycleClassification("client_canceled"), ReasonClientCanceled, true
+		return downstreamClosedClassification(), ReasonDownstreamClosed, true
 	}
 	return FailureClassification{}, "", false
 }
 
 func ClassifyFailure(failure Failure) FailureClassification {
-	if failure.ClientCanceled || errors.Is(failure.Err, context.Canceled) {
-		return lifecycleClassification("client_canceled")
+	if failure.DownstreamClosed || errors.Is(failure.Err, context.Canceled) {
+		return downstreamClosedClassification()
 	}
 	if errors.Is(failure.Err, context.DeadlineExceeded) {
-		return lifecycleClassification("context_deadline")
+		return downstreamClosedClassification()
 	}
-	if failure.Phase == PhaseClientLifecycle {
-		return lifecycleClassification("client_lifecycle_failure")
+	if failure.Phase == PhaseDownstreamClosed {
+		return downstreamClosedClassification()
 	}
 	if failure.Phase == PhaseGatewayPolicy {
 		return FailureClassification{Class: FailureClassGatewayPolicy, Reason: "gateway_policy_failure"}
@@ -451,8 +451,8 @@ func ClassifyFailure(failure Failure) FailureClassification {
 	return FailureClassification{Class: FailureClassUnknown, Reason: "unclassified_upstream_response"}
 }
 
-func lifecycleClassification(reason string) FailureClassification {
-	return FailureClassification{Class: FailureClassClientLifecycle, Reason: reason}
+func downstreamClosedClassification() FailureClassification {
+	return FailureClassification{Class: FailureClassDownstreamClosed, Reason: "downstream_closed"}
 }
 
 func normalizeIdentifier(value string) string {

@@ -6,9 +6,11 @@ import { decodeBase64FieldToTempFile, type ChatImageResultTempFile } from './cha
 import { readChatJsonResponse } from './chat-bounded-json.js'
 import { normalizeChatImageOutputFormat, normalizeChatImageQuality, normalizeChatImageSize } from './chat-image-policy.js'
 import { validateChatImageEditReferenceLimits, type ChatImageEditReference } from './chat-image-edit-references.js'
+import type { ChatGatewayDispatch } from './chat-gateway-dispatch.js'
 
 export interface ChatImageGenerationRequestInput {
-  gatewayBaseUrl: string
+  gatewayBaseUrl?: string
+  gatewayRequest?: ChatGatewayDispatch
   apiKey: string
   model: string
   prompt: string
@@ -58,8 +60,11 @@ export async function generateChatImage(input: ChatImageGenerationRequestInput):
   const request = buildChatImageGenerationRequest(input)
   const fetchImpl = input.fetchImpl ?? fetch
   const references = input.references ?? []
+  const send = input.gatewayRequest
+    ? (path: string, init: RequestInit) => input.gatewayRequest!(path, init)
+    : (path: string, init: RequestInit) => fetchImpl(joinUrl(input.gatewayBaseUrl ?? '', path), init)
   const response = references.length > 0
-    ? await fetchImpl(joinUrl(input.gatewayBaseUrl, '/v1/images/edits'), {
+    ? await send('/v1/images/edits', {
         method: 'POST',
         headers: {
           authorization: `Bearer ${input.apiKey}`,
@@ -69,7 +74,7 @@ export async function generateChatImage(input: ChatImageGenerationRequestInput):
         body: await buildChatImageEditForm(request.body, references, input.signal),
         signal: input.signal
       })
-    : await fetchImpl(joinUrl(input.gatewayBaseUrl, request.path), {
+    : await send(request.path, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${input.apiKey}`,

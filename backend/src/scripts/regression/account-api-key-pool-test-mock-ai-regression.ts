@@ -288,7 +288,7 @@ function assertKeyPoolPreview(result: AccountTestResult | undefined, keyIndex: n
 function assertKeyHitBound(hitsByKey: Map<string, number>, key: string, label: string): void {
   const hits = hitsByKey.get(key) ?? 0
   assert.ok(hits >= 1, `${label}至少应被探测一次`)
-  assert.ok(hits <= 2, `${label}不应在一次流程内被重复探测超过两次，实际 ${hits}`)
+  assert.ok(hits <= 3, `${label}在完整诊断阶梯内最多应被探测三次，实际 ${hits}`)
 }
 
 function startBackendServer(port: number): ChildProcess {
@@ -394,6 +394,11 @@ function createMockAIUpstream(): http.Server {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     req.on('data', () => {})
     req.on('end', () => {
+      if (req.method === 'GET' && url.pathname === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.5', object: 'model' }] }))
+        return
+      }
       if (req.method !== 'POST' || (url.pathname !== '/v1/responses' && url.pathname !== '/v1/chat/completions')) {
         sendJsonError(res, 404, 'mock path not found')
         return

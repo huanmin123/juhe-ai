@@ -46,6 +46,7 @@ import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
+import { startInternalGatewayRegistry, stopInternalGatewayRegistry } from './modules/gateway/runtime/internal-gateway-registry.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
@@ -86,6 +87,8 @@ const chatHttpProxy = createDbServiceHttpProxy({ maxInFlight: 128, timeoutMs: 15
 const backgroundWorkerStartupFallbackMs = 15_000
 let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false
+let dbServiceReady = false
+let httpServerListening = false
 let serverShutdownInProgress = false
 const serverShutdownGraceMs = 40_000
 const httpShutdownGraceMs = 10_000
@@ -163,6 +166,8 @@ backgroundWorkerStartupFallbackTimer = setTimeout(() => {
 backgroundWorkerStartupFallbackTimer.unref()
 
 function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
+  dbServiceReady = true
+  startInternalGatewayRegistryWhenReady()
   if (!backgroundWorkerSupervisorStarted) {
     backgroundWorkerSupervisorStarted = true
     if (backgroundWorkerStartupFallbackTimer) {
@@ -485,6 +490,8 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
 })
 
 const server = app.listen(port, host, httpListenBacklog, () => {
+  httpServerListening = true
+  startInternalGatewayRegistryWhenReady()
   logger.info({
     event: 'server_started',
     host,
@@ -493,6 +500,10 @@ const server = app.listen(port, host, httpListenBacklog, () => {
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
 })
+
+function startInternalGatewayRegistryWhenReady(): void {
+  if (dbServiceReady && httpServerListening) startInternalGatewayRegistry()
+}
 
 server.on('error', (error: NodeJS.ErrnoException) => {
   logger.fatal({
@@ -550,6 +561,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
   } finally {
+    stopInternalGatewayRegistry()
     stopPerformanceProcessMetricsPublisher()
     stopBackgroundWorkerSupervisor()
     stopDbServiceSupervisor()

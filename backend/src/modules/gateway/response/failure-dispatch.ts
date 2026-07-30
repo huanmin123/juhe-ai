@@ -22,6 +22,7 @@ import {
   type ReplayableLimitedBodyReadResult
 } from '../upstream/body.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
+import { gatewayRequestAbortSource } from '../request/abort-attribution.js'
 import { forgetOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
 import {
   isEffectiveOpenAIStreamRequest,
@@ -473,6 +474,10 @@ export async function handleUpstreamRequestError(
     error
   } = input
 
+  if (signal?.aborted && gatewayRequestAbortSource(req)) {
+    throw error
+  }
+
   if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
     let lastAttempt = input.lastAttempt
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
@@ -485,7 +490,7 @@ export async function handleUpstreamRequestError(
         startedAt: attemptStartedAt,
         statusCode,
         errorMessage: downstreamConnectionClosedMessage,
-        failureAttribution: 'downstream_unconfirmed'
+        failureAttribution: 'downstream_closed'
       })
       lastAttempt = {
         accountId: account.id,

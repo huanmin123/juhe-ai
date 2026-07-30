@@ -34,7 +34,7 @@ const (
 	FailureAttributionAccountDependency FailureAttribution = "account_dependency"
 	FailureAttributionGatewayCapacity   FailureAttribution = "gateway_capacity"
 	FailureAttributionGatewayPolicy     FailureAttribution = "gateway_policy"
-	FailureAttributionClientLifecycle   FailureAttribution = "client_lifecycle"
+	FailureAttributionDownstreamClosed  FailureAttribution = "downstream_closed"
 )
 
 type AccountAccessType string
@@ -515,7 +515,7 @@ func (value FailureAttribution) valid() bool {
 	switch value {
 	case FailureAttributionAccountUpstream, FailureAttributionAccountDependency,
 		FailureAttributionGatewayCapacity, FailureAttributionGatewayPolicy,
-		FailureAttributionClientLifecycle:
+		FailureAttributionDownstreamClosed:
 		return true
 	default:
 		return false

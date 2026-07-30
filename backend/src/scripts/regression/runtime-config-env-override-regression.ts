@@ -25,7 +25,6 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.runtimeStateDriver, 'memory', 'standalone 默认运行态 driver 应为 memory')
   assert.equal(runtimeConfig.queueDriver, 'memory', 'standalone 默认队列 driver 应为 memory')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 64, 'standalone 默认 System API DB service 在途上限应为 64')
-  assert.equal(runtimeConfig.internalGatewayOrigin, 'http://127.0.0.1:39123', 'standalone 未配置时内部 Gateway Origin 应回落到自身端口')
   assert.equal('readOnly' in runtimeConfig.systemApi, false, '运行时配置不得保留临时发布只读开关')
   assert.equal(runtimeConfig.chat.retentionDays, 3, '聊天数据默认应保留 3 天')
   assert.equal(runtimeConfig.chat.maxConversationsPerUser, 50, '每用户默认最多应创建 50 个会话')
@@ -98,9 +97,13 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
   process.exit(0)
 }
 
-if (process.env.JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_CHILD === '1') {
+if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CONTROL_CHILD === '1') {
   const { runtimeConfig } = await import('../../config/runtime.js')
-  assert.equal(runtimeConfig.internalGatewayOrigin, process.env.JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_EXPECTED)
+
+  assert.equal(runtimeConfig.runtimeMode, 'performance', 'control 节点必须运行在高性能模式')
+  assert.equal(runtimeConfig.performanceNodeRole, 'control', 'control 节点角色必须正确读取')
+  assert.equal(runtimeConfig.processRole, 'db-service', '聊天控制面必须运行 DB service 进程')
+
   process.exit(0)
 }
 
@@ -221,34 +224,11 @@ const performanceDefaultResult = spawnRegression({
 
 assertRegressionSuccess(performanceDefaultResult)
 
-const performanceControlOrigin = spawnRegression({
-  JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_CHILD: '1',
-  JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_EXPECTED: 'http://127.0.0.1:3000',
-  JUHE_AI_RUNTIME_MODE: 'performance',
-  JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
-  JUHE_AI_PROCESS_ROLE: 'server',
-  JUHE_AI_PORT: '3200',
-  JUHE_AI_INTERNAL_GATEWAY_ORIGIN: 'http://127.0.0.1:3000',
-  JUHE_AI_DATABASE_DRIVER: 'postgres',
-  JUHE_AI_CACHE_DRIVER: 'redis',
-  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
-  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
-  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
-  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
-  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
-  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
-})
-
-assertRegressionSuccess(performanceControlOrigin)
-
-const performanceControlDbServiceOrigin = spawnRegression({
-  JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_CHILD: '1',
-  JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_EXPECTED: 'http://127.0.0.1:3000',
+const performanceControlResult = spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CONTROL_CHILD: '1',
   JUHE_AI_RUNTIME_MODE: 'performance',
   JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
   JUHE_AI_PROCESS_ROLE: 'db-service',
-  JUHE_AI_PORT: '3200',
-  JUHE_AI_INTERNAL_GATEWAY_ORIGIN: 'http://127.0.0.1:3000',
   JUHE_AI_DATABASE_DRIVER: 'postgres',
   JUHE_AI_CACHE_DRIVER: 'redis',
   JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
@@ -259,66 +239,7 @@ const performanceControlDbServiceOrigin = spawnRegression({
   JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
 })
 
-assertRegressionSuccess(performanceControlDbServiceOrigin)
-
-assertRegressionFailure(spawnRegression({
-  JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_CHILD: '1',
-  JUHE_AI_RUNTIME_MODE: 'performance',
-  JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
-  JUHE_AI_PROCESS_ROLE: 'server',
-  JUHE_AI_DATABASE_DRIVER: 'postgres',
-  JUHE_AI_CACHE_DRIVER: 'redis',
-  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
-  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
-  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
-  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
-  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
-  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
-}), /JUHE_AI_INTERNAL_GATEWAY_ORIGIN/, 'performance control server 未显式配置内部 Gateway Origin 必须 fail-fast')
-
-for (const processRole of ['server', 'db-service'] as const) {
-  assertRegressionFailure(spawnRegression({
-    JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_CHILD: '1',
-    JUHE_AI_RUNTIME_MODE: 'performance',
-    JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
-    JUHE_AI_PROCESS_ROLE: processRole,
-    JUHE_AI_PORT: '3200',
-    JUHE_AI_INTERNAL_GATEWAY_ORIGIN: 'http://127.0.0.1:3200',
-    JUHE_AI_DATABASE_DRIVER: 'postgres',
-    JUHE_AI_CACHE_DRIVER: 'redis',
-    JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
-    JUHE_AI_QUEUE_DRIVER: 'redis_stream',
-    JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
-    JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
-    JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
-    JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
-  }), /不能指向自身 JUHE_AI_PORT/, `performance control ${processRole} 指向自身 JUHE_AI_PORT 必须 fail-fast`)
-}
-
-for (const value of [
-  'https://127.0.0.1:3000',
-  'http://localhost:3000',
-  'http://127.0.0.1',
-  'http://127.0.0.1:3000/v1',
-  'http://127.0.0.1:3000?x=1',
-  'http://user:pass@127.0.0.1:3000'
-]) {
-  assertRegressionFailure(spawnRegression({
-    JUHE_AI_RUNTIME_CONFIG_INTERNAL_GATEWAY_CHILD: '1',
-    JUHE_AI_RUNTIME_MODE: 'performance',
-    JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
-    JUHE_AI_PROCESS_ROLE: 'server',
-    JUHE_AI_INTERNAL_GATEWAY_ORIGIN: value,
-    JUHE_AI_DATABASE_DRIVER: 'postgres',
-    JUHE_AI_CACHE_DRIVER: 'redis',
-    JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
-    JUHE_AI_QUEUE_DRIVER: 'redis_stream',
-    JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
-    JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
-    JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
-    JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
-  }), /JUHE_AI_INTERNAL_GATEWAY_ORIGIN/, `非法内部 Gateway Origin ${value} 必须 fail-fast`)
-}
+assertRegressionSuccess(performanceControlResult)
 
 const performanceHintDefaultResult = spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',

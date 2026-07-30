@@ -8,7 +8,7 @@ import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
-import type { AccountSummary } from '../../domain/types.js'
+import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 import { isDiagnosticTimeoutSignal } from '../../modules/accounts/account-diagnostic-retry-policy.js'
 import {
@@ -132,7 +132,46 @@ try {
   flushAllUsageRecordQueue()
   assert.equal(transientResult.success, true, `瞬态 mock AI 两次失败后应在第 3 次恢复：${transientResult.message}`)
   assert.equal(hitCount('manual-transient'), 3, '手动账号测试应在同一账号真实请求失败后按 10/20/30 三档重试到成功')
-  assert.deepEqual(transientProgress, [10_000, 20_000, 30_000], '手动账号测试进度应按 10s、20s、30s 上报')
+  assert.deepEqual(transientProgress, [10_000, 10_000, 20_000, 30_000], '模型目录预检和文本测试都应按各自的 10/20/30 秒诊断阶梯上报')
+
+  const catalogTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'catalog-timeout', access)
+  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
+  let catalogTimeoutResult: AccountTestResult
+  try {
+    catalogTimeoutResult = await testOpenAIAccountWithDiagnosticRetries(catalogTimeoutAccount, {
+      model: 'gpt-5.5',
+      testEndpointMode: 'responses_sse'
+    })
+  } finally {
+    AbortSignal.timeout = originalAbortSignalTimeout
+  }
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(catalogTimeoutResult.success, false, '模型目录持续超时不应继续执行真实模型测试')
+  assert.equal(catalogTimeoutResult.errorCode, 'server_diagnostic_timeout', '模型目录诊断超时必须保留服务端 deadline 错误码')
+  assert.equal(hitCount('catalog-timeout:models'), 3, '模型目录预检必须完整执行 10/20/30 三档探测')
+  assert.equal(hitCount('catalog-timeout'), 0, '模型目录预检失败后不得继续发起真实模型测试')
+
+  requiredRuntimeAccount(group.id, catalogTimeoutAccount.id, admin.id)
+  const activeCatalogTimeoutAccount = repositories.findAccountSummary(catalogTimeoutAccount.id, access)
+  assert(activeCatalogTimeoutAccount, '模型目录超时账户激活后必须可读取')
+  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
+  try {
+    assert.equal(healthCheckService.enqueueAccountHealthCheck(activeCatalogTimeoutAccount, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      maxPauseMinutes: 60
+    }, 'request_failure'), true, '模型目录超时的独立健康检查必须成功投递')
+    await waitForAccountHealthCheckQueueIdle(healthCheckService)
+  } finally {
+    AbortSignal.timeout = originalAbortSignalTimeout
+  }
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  const catalogTimeoutAfterHealthCheck = repositories.findAccountSummary(catalogTimeoutAccount.id, access)
+  assert.equal(hitCount('catalog-timeout:models'), 6, '自动健康检查的模型目录预检也必须完整执行三档探测')
+  assert.equal(catalogTimeoutAfterHealthCheck?.status, 'temporary_unavailable', '模型目录完整诊断阶梯超时也必须立即临时不可调度')
 
   const persistentAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-persistent-401', access)
   const persistentResult = await testOpenAIAccountWithDiagnosticRetries(persistentAccount, { model: 'gpt-5.5', testEndpointMode: 'responses_sse' })
@@ -217,10 +256,12 @@ try {
   flushAllUsageRecordQueue()
   const healthTimeoutAfterProbe = repositories.findAccountSummary(healthTimeoutAccount.id, access)
   assert.equal(hitCount('health-timeout'), 3, '后台健康检查在响应头前超时时必须完整执行三档探测')
-  assert.equal(healthTimeoutAfterProbe?.status, 'active', '客户请求失败后的三档本地超时不得改变账户健康状态')
-  assert.ok(
+  assert.equal(healthTimeoutAfterProbe?.status, 'temporary_unavailable', '真实上游尝试完整耗尽诊断阶梯后必须立即临时不可调度')
+  assert.equal(healthTimeoutAfterProbe?.healthCheckFailureCount, 1, '完整诊断阶梯超时必须累计健康检查失败次数')
+  assert.equal(
     repositories.findOpenAIAccountForGroup(group.id, healthTimeoutAccount.id, admin.id),
-    '健康检查本地任务失败后，账户仍应保持可调度，不能伪造上游失败可用性证据'
+    undefined,
+    '健康检查完整阶梯超时后账户不得继续作为可调度候选返回'
   )
 
   const cooldownTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'cooldown-timeout', access)
@@ -250,9 +291,9 @@ try {
   const cooldownTimeoutAfterProbe = repositories.findAccountSummary(cooldownTimeoutAccount.id, access)
   assert.equal(hitCount('cooldown-timeout'), 3, '冷却复测在响应头前超时时必须完整执行三档探测')
   assert.equal(cooldownTimeoutAfterProbe?.status, 'temporary_unavailable', '冷却复测超时不得提前恢复账户')
-  assert.equal(cooldownTimeoutAfterProbe?.cooldownRetestFailureCount, 0, '冷却复测本地任务超时不得累计上游失败次数')
+  assert.equal(cooldownTimeoutAfterProbe?.cooldownRetestFailureCount, 1, '冷却复测完整诊断阶梯超时必须累计上游失败次数')
 
-  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号、客户请求失败健康检查和冷却复测的本地超时隔离')
+  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖模型目录与手动测试三档重试、持续失败不分类、完整诊断阶梯超时的健康检查立即临时不可调度，以及冷却复测失败退避')
 } finally {
   AbortSignal.timeout = originalAbortSignalTimeout
   auditLogQueue.flushAllAuditLogQueue()
@@ -323,17 +364,27 @@ function createMockAIUpstream(): http.Server {
       chunks.push(Buffer.from(chunk))
     })
     req.on('end', () => {
-      if (req.method === 'GET' && url.pathname === '/v1/models') {
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2', object: 'model' }] }))
+    const key = upstreamKey(req.headers.authorization)
+    if (req.method === 'GET' && url.pathname === '/v1/models') {
+      incrementHit(`${key}:models`)
+      if (key === 'catalog-timeout') {
+        setTimeout(() => {
+          if (!res.destroyed) {
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2', object: 'model' }] }))
+          }
+        }, 200)
         return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2', object: 'model' }] }))
+      return
       }
       const responseMode = mockResponseMode(url.pathname)
       if (req.method !== 'POST' || !responseMode) {
         sendJsonError(res, 404, 'mock path not found')
         return
       }
-      const key = upstreamKey(req.headers.authorization)
       const hit = incrementHit(key)
       if (key === 'manual-transient' && hit <= 2) {
         sendJsonError(res, 503, `manual transient failure ${hit}`)

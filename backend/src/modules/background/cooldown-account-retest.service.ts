@@ -4,7 +4,6 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
-import { isDiagnosticTimeoutSignal } from '../accounts/account-diagnostic-retry-policy.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -128,7 +127,8 @@ async function runCooldownAccountRetestQueueItem(
   const groupId = account.boundGroupId
   const diagnosticStartedAt = Date.now()
   let upstreamAttempt: UpstreamAttempt | undefined
-  let diagnosticTimedOut = false
+  let diagnosticCanceled = false
+  let diagnosticTimeoutExhausted = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -139,8 +139,10 @@ async function runCooldownAccountRetestQueueItem(
     onDiagnosticAttemptProgress: () => {
       upstreamAttempt = undefined
     },
-    onDiagnosticAttemptResult: ({ signal }) => {
-      diagnosticTimedOut = isDiagnosticTimeoutSignal(signal)
+    onDiagnosticAttemptResult: (attempt) => {
+      upstreamAttempt = attempt.upstreamAttempt
+      diagnosticCanceled = attempt.canceled
+      diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
     },
     onUpstreamAttempt: (attempt) => {
       upstreamAttempt = attempt
@@ -148,10 +150,12 @@ async function runCooldownAccountRetestQueueItem(
     shouldRetryFailure: (attemptResult) => {
       const probeOutcome = automaticAccountProbeOutcome(attemptResult, {
         upstreamAttempt,
-        timeout: diagnosticTimedOut
+        canceled: diagnosticCanceled,
+        timeout: diagnosticTimeoutExhausted,
+        diagnosticTimeoutExhausted
       })
-      // Keep retrying a server-side task timeout, but never turn it into
-      // account/upstream failure evidence when the diagnostic finishes.
+      // Keep retrying incomplete diagnostics so the completed phase can
+      // distinguish a real upstream timeout ladder from a local task failure.
       return probeOutcome === 'upstream_failure' || probeOutcome === 'probe_task_failure'
     },
     findAccountForTest: loadAccountForTestViaDbService,
@@ -170,7 +174,12 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: undefined,
     traceId: undefined
   }))
-  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt, timeout: diagnosticTimedOut })
+  const probeOutcome = automaticAccountProbeOutcome(result, {
+    upstreamAttempt,
+    canceled: diagnosticCanceled,
+    timeout: diagnosticTimeoutExhausted,
+    diagnosticTimeoutExhausted
+  })
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_cooldown_account_retest_success',

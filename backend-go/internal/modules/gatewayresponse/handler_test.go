@@ -255,10 +255,10 @@ func TestHandleJSONPartialWriteDisablesRetry(t *testing.T) {
 	if !errors.Is(err, ErrDestinationWrite) || result.State != StateFailedAfterCommit || result.BytesWritten != 3 || result.RetryAllowed || !result.TransportCommitted {
 		t.Fatalf("result/error = %#v/%v", result, err)
 	}
-	if result.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
+	if result.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionDownstreamClosed || result.Handoff.Usage.ErrorMessage != "下游连接关闭" {
 		t.Fatalf("handoff = %#v", result.Handoff)
 	}
-	if result.Handoff.Audit.ErrorPhase != "client" {
+	if result.Handoff.Audit.ErrorPhase != "downstream" {
 		t.Fatalf("audit = %#v", result.Handoff.Audit)
 	}
 	if _, ok := result.Handoff.Usage.ResponseSnapshot.(*GuardSummary); !ok {

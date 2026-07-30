@@ -113,8 +113,8 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	}
 	handled, handleErr := e.Handler.Handle(responseInput)
 	if causedByFirstByteDeadline(attemptCtx, handleErr) &&
-		handled.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle &&
-		!handled.Handoff.Audit.ClientAborted &&
+		handled.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionDownstreamClosed &&
+		!handled.Handoff.Audit.DownstreamClosed &&
 		!handled.TransportCommitted && !handled.SemanticCommitted && handled.BytesWritten == 0 {
 		return firstByteDeadlineResult(attempt, AttemptResult{Usage: handled.Handoff.Usage, Audit: handled.Handoff.Audit}), gatewaydeadline.ErrFirstByteDeadline
 	}

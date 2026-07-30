@@ -13,7 +13,7 @@ const (
 	OutcomeGatewayFailed     Outcome = "gateway_failed"
 	OutcomeUpstreamFailed    Outcome = "upstream_failed"
 	OutcomeStreamFailed      Outcome = "stream_failed"
-	OutcomeClientAborted     Outcome = "client_aborted"
+	OutcomeDownstreamClosed  Outcome = "downstream_closed"
 )
 
 type TerminalInput struct {
@@ -23,7 +23,7 @@ type TerminalInput struct {
 	TerminalRequired bool
 	TerminalReceived bool
 	HadFailedAttempt bool
-	ClientAborted    bool
+	DownstreamClosed bool
 	ErrorPhase       string
 	ErrorCode        string
 	ErrorMessage     string
@@ -40,13 +40,13 @@ type Terminal struct {
 // ResolveTerminal derives success from the final outcome instead of accepting
 // the contradictory outcome/success combinations possible in the Node caller API.
 func ResolveTerminal(input TerminalInput) Terminal {
-	if input.ClientAborted {
+	if input.DownstreamClosed {
 		return Terminal{
-			Outcome:      OutcomeClientAborted,
+			Outcome:      OutcomeDownstreamClosed,
 			Success:      false,
-			ErrorPhase:   firstNonEmpty(input.ErrorPhase, "client"),
-			ErrorCode:    input.ErrorCode,
-			ErrorMessage: firstNonEmpty(input.ErrorMessage, "客户端已中断请求"),
+			ErrorPhase:   "downstream",
+			ErrorCode:    "downstream_connection_closed",
+			ErrorMessage: "下游连接关闭",
 		}
 	}
 
@@ -84,7 +84,7 @@ func ResolveTerminal(input TerminalInput) Terminal {
 
 func isFailureOutcome(outcome Outcome) bool {
 	switch outcome {
-	case OutcomeGatewayFailed, OutcomeUpstreamFailed, OutcomeStreamFailed, OutcomeClientAborted:
+	case OutcomeGatewayFailed, OutcomeUpstreamFailed, OutcomeStreamFailed, OutcomeDownstreamClosed:
 		return true
 	default:
 		return false

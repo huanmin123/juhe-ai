@@ -6,7 +6,7 @@ import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
-import { testOpenAIAccount } from '../accounts/account-test.service.js'
+import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -98,7 +98,9 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   }
   const probeStartedAt = new Date().toISOString()
   let upstreamAttempt: UpstreamAttempt | undefined
-  const result = await testOpenAIAccount(account, {
+  let diagnosticCanceled = false
+  let diagnosticTimeoutExhausted = false
+  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'limited',
     testEndpointMode: account.healthCheckEndpointMode,
     groupId: account.boundGroupId,
@@ -106,6 +108,12 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     trafficSource: 'cooldown_retest',
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
+    retryAllFailures: true,
+    onDiagnosticAttemptResult: (attempt) => {
+      upstreamAttempt = attempt.upstreamAttempt
+      diagnosticCanceled = attempt.canceled
+      diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
+    },
     onUpstreamAttempt: (attempt) => {
       upstreamAttempt = attempt
     },
@@ -117,7 +125,12 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     }
   })
 
-  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
+  const probeOutcome = automaticAccountProbeOutcome(result, {
+    upstreamAttempt,
+    canceled: diagnosticCanceled,
+    timeout: diagnosticTimeoutExhausted,
+    diagnosticTimeoutExhausted
+  })
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',

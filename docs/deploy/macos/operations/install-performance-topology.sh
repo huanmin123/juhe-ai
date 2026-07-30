@@ -472,9 +472,6 @@ render_run_script() {
     printf 'export JUHE_AI_INSTANCE_ID=%s\n' "$name"
     printf 'export JUHE_AI_HOST=127.0.0.1\n'
     printf 'export JUHE_AI_PORT=%s\n' "$port"
-    if [ "$role" = control ]; then
-      printf 'export JUHE_AI_INTERNAL_GATEWAY_ORIGIN=http://127.0.0.1:%s\n' "$INGRESS_PORT"
-    fi
     if [ "$role" = gateway ]; then
       printf 'export JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL=http://127.0.0.1:%s\n' "$CONTROL_PORT"
     fi
@@ -678,7 +675,6 @@ EOF
     JUHE_AI_RUNTIME_MODE=performance \
     JUHE_AI_PERFORMANCE_NODE_ROLE=control \
     JUHE_AI_PROCESS_ROLE=server \
-    JUHE_AI_INTERNAL_GATEWAY_ORIGIN="http://127.0.0.1:$INGRESS_PORT" \
     JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
     JUHE_AI_GATEWAY_REPLICAS="$GATEWAY_COUNT" \
     JUHE_AI_USAGE_WORKER_REPLICAS="$USAGE_WORKERS" \
@@ -723,7 +719,6 @@ performance_metrics_registry_time_ms() {
   JUHE_AI_RUNTIME_MODE=performance \
   JUHE_AI_PERFORMANCE_NODE_ROLE=control \
   JUHE_AI_PROCESS_ROLE=server \
-  JUHE_AI_INTERNAL_GATEWAY_ORIGIN="http://127.0.0.1:$INGRESS_PORT" \
   JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
   JUHE_AI_LOG_FILE_ENABLED=false \
   JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=false \

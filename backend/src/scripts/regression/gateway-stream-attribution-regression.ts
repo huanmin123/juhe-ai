@@ -86,15 +86,11 @@ const downstreamClosePayload = payloads
 assert.deepEqual(downstreamClosePayload, {
   type: 'gateway_metadata',
   label: 'downstream_connection_closed',
-  metadata: {
-    trigger: 'unknown_unproven',
-    clientActionConfirmed: false
-  }
-}, '下游关闭元信息不得归责客户端')
+  metadata: {}
+}, '下游关闭元信息只能保留统一事件')
 capture.cancel()
 
 assert.match(formatterSource, /downstream_closed: '下游连接关闭'/, '新下游关闭终态必须使用统一文案')
-assert.match(formatterSource, /client_aborted: '下游连接关闭'/, '历史 client_aborted 记录必须使用统一文案')
 assert.doesNotMatch(formatterSource, /触发方未识别|下游连接关闭（历史记录）/, '下游关闭展示不得附带内部归因分类')
 assert.match(formatterSource, /if \(!success\) return '失败'/, '失败记录不得把 HTTP 200 显示为成功状态码')
 assert.match(formatterSource, /return success \? String\(statusCode\) : `HTTP \$\{statusCode\}（头已提交）`/, 'HTTP 200 只能作为详情中的已提交传输状态保留')

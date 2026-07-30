@@ -182,7 +182,7 @@ async function main(): Promise<void> {
       freshUpstreamKey: nonCodexHttpAllFail.probeFailedUpstreamKey
     }])
 
-    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，同一坏会话 64 路并发不会误杀账户且独立会话会重新按当前优先级选号，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后返回稳定可重试错误，client_aborted 会释放会话亲和且不继续切号')
+    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，同一坏会话 64 路并发不会误杀账户且独立会话会重新按当前优先级选号，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后返回稳定可重试错误，下游连接关闭会释放会话亲和且不继续切号')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -581,9 +581,9 @@ async function assertClientAbortClearsSessionAffinity(
   assert.equal(
     hitCount(upstreamState, seeded.failedUpstreamKey) - beforePrimaryHits,
     0,
-    `client_aborted 请求不应先走正常顺序主账号：${JSON.stringify(upstreamState.requests.slice(-4))}`
+    `下游连接关闭请求不应先走正常顺序主账号：${JSON.stringify(upstreamState.requests.slice(-4))}`
   )
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 1, 'client_aborted 请求应命中已绑定的备用账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 1, '下游连接关闭请求应命中已绑定的备用账号')
 
   const postAbortCandidates = repositories.listOpenAIAccountsForGroup(seeded.groupId, seeded.systemAccountId)
   const postAbortFreshAccount = postAbortCandidates.find((account) => account.id === seeded.freshAccountId)
@@ -591,9 +591,9 @@ async function assertClientAbortClearsSessionAffinity(
   const postAbortCircuitState = await accountCircuit.getGatewayAccountCircuitStore().get(
     accountCircuit.gatewayAccountProtocolModelScope(postAbortFreshAccount, 'text', codexSwitchTestModel)
   )
-  assert.equal(postAbortCircuitState.phase, 'CLOSED', 'client_aborted 不得把账户电路推进到 SUSPECT/OPEN')
+  assert.equal(postAbortCircuitState.phase, 'CLOSED', '下游连接关闭不得把账户电路推进到 SUSPECT/OPEN')
   const postAbortRuntimeFilter = await accountSideEffects.filterGatewayAccountRuntimeSuppressionsAsync(postAbortCandidates)
-  assert(postAbortRuntimeFilter.accounts.some((account) => account.id === seeded.freshAccountId), 'client_aborted 不得把账户加入运行时抑制')
+  assert(postAbortRuntimeFilter.accounts.some((account) => account.id === seeded.freshAccountId), '下游连接关闭不得把账户加入运行时抑制')
 
   const beforeRetryPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeRetryStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
@@ -603,9 +603,9 @@ async function assertClientAbortClearsSessionAffinity(
     codex: true,
     sessionId
   })
-  assert(retryText.includes('response.completed'), `client_aborted 后下一次请求应完成：${retryText}`)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeRetryPrimaryHits, 1, 'client_aborted 后应释放会话亲和并回到正常账号顺序')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeRetryStickyHits, 0, 'client_aborted 后不应继续粘住已断开的备用账号')
+  assert(retryText.includes('response.completed'), `下游连接关闭后下一次请求应完成：${retryText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeRetryPrimaryHits, 1, '下游连接关闭后应释放会话亲和并回到正常账号顺序')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeRetryStickyHits, 0, '下游连接关闭后不应继续粘住已断开的备用账号')
 
   const weakTurnId = `turn-client-abort-weak-threshold-${Date.now()}`
   const beforeWeakPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
@@ -659,8 +659,8 @@ async function assertClientAbortClearsSessionAffinity(
     hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortStickyHits >= 1
     || hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits >= 1
   ))
-  assert.equal(hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits, 0, '响应头前 client_aborted 请求不应先走正常顺序主账号')
-  assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortStickyHits, 1, '响应头前 client_aborted 请求应命中已绑定的备用账号')
+  assert.equal(hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits, 0, '响应头前下游连接关闭请求不应先走正常顺序主账号')
+  assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortStickyHits, 1, '响应头前下游连接关闭请求应命中已绑定的备用账号')
 
   const beforeHeaderAbortRetryPrimaryHits = hitCount(upstreamState, headerSeeded.failedUpstreamKey)
   const beforeHeaderAbortRetryStickyHits = hitCount(upstreamState, headerSeeded.freshUpstreamKey)
@@ -670,19 +670,19 @@ async function assertClientAbortClearsSessionAffinity(
     codex: true,
     sessionId: headerDelaySessionId
   })
-  assert(headerAbortRetryText.includes('response.completed'), `响应头前 client_aborted 后下一次请求应完成：${headerAbortRetryText}`)
-  assert.equal(hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortRetryPrimaryHits, 1, '响应头前 client_aborted 后应释放会话亲和并回到正常账号顺序')
-  assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortRetryStickyHits, 0, '响应头前 client_aborted 后不应继续粘住已断开的备用账号')
+  assert(headerAbortRetryText.includes('response.completed'), `响应头前下游连接关闭后下一次请求应完成：${headerAbortRetryText}`)
+  assert.equal(hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortRetryPrimaryHits, 1, '响应头前下游连接关闭后应释放会话亲和并回到正常账号顺序')
+  assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortRetryStickyHits, 0, '响应头前下游连接关闭后不应继续粘住已断开的备用账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
   const records = allUsageRecordsForRegression()
   assert(
     records.some((record) => (
       (record.accountId === seeded.freshAccountId || record.accountId === headerSeeded.freshAccountId)
-      && record.errorCode === 'client_aborted'
+      && record.errorCode === 'downstream_connection_closed'
       && record.errorMessage === '下游连接关闭'
     )),
-    'client_aborted 使用记录应使用“下游连接关闭”文案，避免误导为用户手动取消'
+    '下游连接关闭使用记录应使用统一文案，避免误导为用户手动取消'
   )
 }
 

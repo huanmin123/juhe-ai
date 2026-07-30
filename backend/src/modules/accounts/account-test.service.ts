@@ -52,7 +52,7 @@ import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import type { GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/runtime/account-side-effects.service.js'
-import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
   createMemoryGatewayRequest,
   createGatewayTestRequest,
@@ -109,6 +109,12 @@ export type AccountTestInput = {
 export interface AccountDiagnosticAttemptResult {
   result: AccountTestResult
   signal: AbortSignal
+  probeKind: AccountTestProbeKind
+  attemptIndex: number
+  totalAttempts: number
+  upstreamAttempt?: UpstreamAttempt
+  canceled: boolean
+  diagnosticTimeoutExhausted: boolean
 }
 
 export type AccountDiagnosticAttemptResultHandler = (attempt: AccountDiagnosticAttemptResult) => void
@@ -128,13 +134,10 @@ export async function testOpenAIAccountWithDiagnosticRetries(
   input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const startedAt = Date.now()
-  const preflightSignal = diagnosticAttemptSignal(input.signal, accountDiagnosticRetryTimeouts('models_catalog')[0] ?? accountModelCatalogPreflightTtlMs)
   const preflightFailure = await preflightAccountModelCatalog(account, {
-    ...input,
-    signal: preflightSignal
+    ...input
   })
   if (preflightFailure) {
-    notifyDiagnosticAttemptResult(input.onDiagnosticAttemptResult, preflightFailure, preflightSignal)
     return accountTestResultWithTotalDuration(preflightFailure, startedAt)
   }
   const model = await resolveAccountTestModelAsync(account, {
@@ -142,57 +145,40 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     systemAccountId: input.systemAccountId,
     testEndpointMode: input.testEndpointMode
   })
-  const timeoutSchedule = accountDiagnosticRetryTimeouts(await accountTestProbeKindAsync(account, model, {
+  const probeKind = await accountTestProbeKindAsync(account, model, {
     systemAccountId: input.systemAccountId,
     testEndpointMode: input.testEndpointMode
-  }))
-  let lastResult: AccountTestResult | undefined
-  for (let attemptIndex = 0; attemptIndex < timeoutSchedule.length; attemptIndex += 1) {
-    const timeoutMs = timeoutSchedule[attemptIndex] ?? timeoutSchedule[timeoutSchedule.length - 1]
-    notifyDiagnosticAttemptProgress(input.onDiagnosticAttemptProgress, attemptIndex, timeoutMs, startedAt, timeoutSchedule)
-    const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
-    const result = await testOpenAIAccount(account, {
-      ...input,
-      model,
-      signal: attemptSignal,
-      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
-    })
-    notifyDiagnosticAttemptResult(input.onDiagnosticAttemptResult, result, attemptSignal)
-    lastResult = result
-    const shouldRetryFailure = input.shouldRetryFailure
-      ? input.shouldRetryFailure(result, attemptIndex)
-      : input.retryAllFailures || result.accountFailureEligible !== false
-    if (result.success || !shouldRetryFailure || input.signal?.aborted) {
-      return accountTestResultWithTotalDuration(result, startedAt)
-    }
-    if (attemptIndex + 1 < timeoutSchedule.length) {
-      logger.debug({
-        event: 'account_diagnostic_test_retry_scheduled',
-        accountId: account.id,
-        accountName: account.name,
-        attemptNumber: attemptIndex + 1,
-        nextAttemptNumber: attemptIndex + 2,
-        attemptTimeoutMs: timeoutMs,
-        nextAttemptTimeoutMs: timeoutSchedule[attemptIndex + 1],
-        durationMs: result.durationMs,
-        totalElapsedMs: Date.now() - startedAt,
-        traceId: result.traceId
-      }, '账户诊断请求未通过，将继续使用真实网关链路重试')
-    }
-  }
-  return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, { ...input, model }), startedAt)
+  })
+  const timeoutSchedule = accountDiagnosticRetryTimeouts(probeKind)
+  const result = await runAccountDiagnosticAttempts(account, input, {
+    model,
+    probeKind,
+    timeoutSchedule,
+    startedAt,
+    retryEvent: 'account_diagnostic_test_retry_scheduled',
+    retryMessage: '账户诊断请求未通过，将继续使用真实网关链路重试'
+  })
+  return accountTestResultWithTotalDuration(result, startedAt)
 }
 
 export async function discoverAccountUpstreamModels(
   account: AccountSummary,
   input: AccountTestInput = {}
 ): Promise<AccountUpstreamModelCatalogResult> {
-  const result = await testOpenAIAccount(account, {
-    ...input,
-    diagnostics: 'full',
-    forceProbeKind: 'models_catalog',
-    requireCatalogModelEvidence: false,
-    disableAccountStateMutation: true
+  const startedAt = Date.now()
+  const result = await runAccountDiagnosticAttempts(account, input, {
+    probeKind: 'models_catalog',
+    timeoutSchedule: accountDiagnosticRetryTimeouts('models_catalog'),
+    startedAt,
+    retryEvent: 'account_model_catalog_discovery_retry_scheduled',
+    retryMessage: '账户模型目录获取未通过，将继续使用真实网关链路重试',
+    forceRetryAllFailures: true,
+    accountTestInput: {
+      diagnostics: 'full',
+      forceProbeKind: 'models_catalog',
+      requireCatalogModelEvidence: false,
+      disableAccountStateMutation: true
+    }
   })
   if (!result.success) {
     throw new Error(result.message || '获取上游模型目录失败')
@@ -209,11 +195,18 @@ export async function preflightAccountModelCatalog(account: AccountSummary, inpu
   const now = Date.now()
   if (cacheKey && (accountModelCatalogPreflightCache.get(cacheKey) ?? 0) > now) return undefined
 
-  const result = await testOpenAIAccount(account, {
-    ...input,
-    forceProbeKind: 'models_catalog',
-    requireCatalogModelEvidence: false,
-    disableAccountStateMutation: true
+  const result = await runAccountDiagnosticAttempts(account, input, {
+    probeKind: 'models_catalog',
+    timeoutSchedule: accountDiagnosticRetryTimeouts('models_catalog'),
+    startedAt: now,
+    retryEvent: 'account_model_catalog_preflight_retry_scheduled',
+    retryMessage: '账户模型目录预检未通过，将继续使用真实网关链路重试',
+    forceRetryAllFailures: true,
+    accountTestInput: {
+      forceProbeKind: 'models_catalog',
+      requireCatalogModelEvidence: false,
+      disableAccountStateMutation: true
+    }
   })
   if (result.success) {
     if (cacheKey) setAccountModelCatalogPreflightCache(cacheKey, now + accountModelCatalogPreflightTtlMs)
@@ -227,6 +220,86 @@ export async function preflightAccountModelCatalog(account: AccountSummary, inpu
     errorCode: result.errorCode
   }, '账户模型目录预检未通过，终止真实模型测试')
   return result
+}
+
+async function runAccountDiagnosticAttempts(
+  account: AccountSummary,
+  input: AccountTestInput,
+  options: {
+    model?: string
+    probeKind: AccountTestProbeKind
+    timeoutSchedule: readonly number[]
+    startedAt: number
+    retryEvent: string
+    retryMessage: string
+    forceRetryAllFailures?: boolean
+    accountTestInput?: Partial<AccountTestInput>
+  }
+): Promise<AccountTestResult> {
+  let lastResult: AccountTestResult | undefined
+  let everyAttemptTimedOutAfterRealUpstreamAttempt = true
+  for (let attemptIndex = 0; attemptIndex < options.timeoutSchedule.length; attemptIndex += 1) {
+    const timeoutMs = options.timeoutSchedule[attemptIndex] ?? options.timeoutSchedule[options.timeoutSchedule.length - 1]
+    notifyDiagnosticAttemptProgress(input.onDiagnosticAttemptProgress, attemptIndex, timeoutMs, options.startedAt, options.timeoutSchedule)
+    const signal = diagnosticAttemptSignal(input.signal, timeoutMs)
+    let upstreamAttempt: UpstreamAttempt | undefined
+    const result = await testOpenAIAccount(account, {
+      ...input,
+      ...options.accountTestInput,
+      model: options.model,
+      signal,
+      forceProbeKind: options.probeKind,
+      onUpstreamAttempt: (attempt) => {
+        upstreamAttempt = attempt
+        input.onUpstreamAttempt?.(attempt)
+      },
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
+    })
+    const timedOutAfterRealUpstreamAttempt = isDiagnosticTimeoutSignal(signal)
+      && Boolean(upstreamAttempt && isRealUpstreamAttempt(upstreamAttempt))
+    everyAttemptTimedOutAfterRealUpstreamAttempt &&= timedOutAfterRealUpstreamAttempt
+    const diagnosticTimeoutExhausted = attemptIndex + 1 === options.timeoutSchedule.length
+      && everyAttemptTimedOutAfterRealUpstreamAttempt
+    notifyDiagnosticAttemptResult(input.onDiagnosticAttemptResult, {
+      result,
+      signal,
+      probeKind: options.probeKind,
+      attemptIndex,
+      totalAttempts: options.timeoutSchedule.length,
+      upstreamAttempt,
+      canceled: signal.aborted && !isDiagnosticTimeoutSignal(signal),
+      diagnosticTimeoutExhausted
+    })
+    lastResult = result
+    const shouldRetryFailure = options.forceRetryAllFailures
+      || (input.shouldRetryFailure
+        ? input.shouldRetryFailure(result, attemptIndex)
+        : input.retryAllFailures || result.accountFailureEligible !== false)
+    if (result.success || !shouldRetryFailure || input.signal?.aborted) {
+      return result
+    }
+    if (attemptIndex + 1 < options.timeoutSchedule.length) {
+      logger.debug({
+        event: options.retryEvent,
+        accountId: account.id,
+        accountName: account.name,
+        probeKind: options.probeKind,
+        attemptNumber: attemptIndex + 1,
+        nextAttemptNumber: attemptIndex + 2,
+        attemptTimeoutMs: timeoutMs,
+        nextAttemptTimeoutMs: options.timeoutSchedule[attemptIndex + 1],
+        durationMs: result.durationMs,
+        totalElapsedMs: Date.now() - options.startedAt,
+        traceId: result.traceId
+      }, options.retryMessage)
+    }
+  }
+  return lastResult ?? await testOpenAIAccount(account, {
+    ...input,
+    ...options.accountTestInput,
+    model: options.model,
+    forceProbeKind: options.probeKind
+  })
 }
 
 function accountModelCatalogPreflightCacheKey(account: AccountSummary): string | undefined {
@@ -266,12 +339,11 @@ function notifyDiagnosticAttemptProgress(
 
 function notifyDiagnosticAttemptResult(
   handler: AccountDiagnosticAttemptResultHandler | undefined,
-  result: AccountTestResult,
-  signal: AbortSignal
+  attempt: AccountDiagnosticAttemptResult
 ): void {
   if (!handler) return
   try {
-    handler({ result, signal })
+    handler(attempt)
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'account_diagnostic_attempt_result_callback_failed' }), '账户诊断结果回调执行失败')
   }
@@ -429,6 +501,17 @@ export async function testOpenAIAccount(
       onUpstreamAttemptDiagnostic: (lastAttempt) => {
         diagnosticLastAttempt = lastAttempt
         notifyUpstreamAttempt(input.onUpstreamAttempt, lastAttempt)
+      },
+      onUpstreamAttemptStartedDiagnostic: (startedAccount, upstreamUrl) => {
+        notifyUpstreamAttempt(input.onUpstreamAttempt, {
+          accountId: startedAccount.id,
+          accountName: startedAccount.name,
+          providerCode: startedAccount.providerCode,
+          providerProtocolProfileId: startedAccount.providerProtocolProfileId,
+          protocolCode: startedAccount.protocolCode,
+          protocolVersion: startedAccount.protocolVersion,
+          upstreamUrl
+        })
       }
     })))
     if (input.signal?.aborted) {

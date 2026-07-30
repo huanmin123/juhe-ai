@@ -12,11 +12,6 @@ const cases: Array<{
   expected: GatewayUpstreamFailureClassification
 }> = [
   {
-    name: '客户端生命周期中断不归因给上游',
-    input: { phase: 'client_lifecycle' },
-    expected: observation('client_lifecycle', 'client_lifecycle_failure')
-  },
-  {
     name: '完整响应不解释状态码和错误体',
     input: { phase: 'upstream_response' },
     expected: observation('opaque_upstream_response', 'opaque_upstream_response_failure')

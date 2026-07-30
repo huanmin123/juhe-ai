@@ -119,7 +119,7 @@ export function statusCodeText(record: UsageRecordListItem): string {
 
 export function usageRecordFailureAttributionText(record: UsageRecordListItem): string | undefined {
   if (record.success) return undefined
-  if (record.failureAttribution === 'downstream_unconfirmed' || record.failureAttribution === 'client_lifecycle') return '下游连接关闭'
+  if (record.failureAttribution === 'downstream_closed') return '下游连接关闭'
   if (record.failureAttribution === 'account_upstream') return '归因：上游账户'
   if (record.failureAttribution === 'account_dependency') return '归因：账户依赖'
   if (record.failureAttribution === 'opaque_upstream') return '归因：上游未识别失败'
@@ -157,9 +157,7 @@ export function trafficSourceColor(record: UsageRecordListItem): string {
 
 export function errorText(record: UsageRecordSummary): string {
   if (record.errorMessage) {
-    return record.errorMessage.includes('下游连接') && record.errorMessage.includes('关闭')
-      ? '下游连接关闭'
-      : record.errorMessage
+    return record.errorMessage
   }
   if (record.responseSnapshot) return JSON.stringify(record.responseSnapshot, null, 2)
   if (!record.accountId && !record.success) return '没有可调度的上游账号'

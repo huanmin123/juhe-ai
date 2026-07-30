@@ -82,6 +82,7 @@ import { loadChatImageEditReferences } from './chat-image-edit-references.js'
 import type { ChatToolExecutionEvent, ChatToolRuntimeEnvironment } from './tools/contracts.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
+import { dispatchChatGatewayRequest } from './chat-gateway-dispatch.js'
 
 export const chatRouter = Router()
 export { isActiveChatGeneration, shutdownChatGenerationRegistry }
@@ -775,7 +776,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       conversationId: conversation.id,
       systemAccountId: ownerId,
       apiKeySecret,
-      gatewayBaseUrl: gatewayUrl(''),
+      gatewayRequest: dispatchChatGatewayRequest,
       model: body.model,
       protocol,
       effectiveContextLimitTokens: modelRequestOptions.maxInputTokens
@@ -818,7 +819,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         conversationId: conversation.id,
         systemAccountId: ownerId,
         apiKeySecret,
-        gatewayBaseUrl: gatewayUrl(''),
+        gatewayRequest: dispatchChatGatewayRequest,
         model: body.model,
         userContent: '补全此前对话中的图片语义说明',
         assistantContent: ''
@@ -955,7 +956,6 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               assistantMessageId: accepted!.assistantMessage.id,
               signal,
               apiKey: apiKeySecret,
-              gatewayBaseUrl: gatewayUrl(''),
               traceId,
               defaultImageModel: conversation.defaultImageModel,
               loadImageEditReferences: (assetIds) => loadChatImageEditReferences(client, {
@@ -968,7 +968,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               imageGeneration: async (imageRequest) => {
                 failureCode = 'image_generation_failed'
                 const generated = await generateChatImage({
-                  gatewayBaseUrl: gatewayUrl(''),
+                  gatewayRequest: dispatchChatGatewayRequest,
                   apiKey: apiKeySecret,
                   model: imageRequest.model,
                   prompt: imageRequest.prompt,
@@ -1020,7 +1020,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
                 throw new ChatRequestError('chat_request_body_too_large', '工具续答请求体超过安全上限，请减少上下文后重试')
               }
               failureCode = 'upstream_http_error'
-              const upstream = await fetch(gatewayUrl(roundTransport.path), {
+              const upstream = await dispatchChatGatewayRequest(roundTransport.path, {
                 method: 'POST',
                 headers: {
                   authorization: `Bearer ${apiKeySecret}`,
@@ -1106,7 +1106,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               conversationId: conversation.id,
               systemAccountId: ownerId,
               apiKeySecret,
-              gatewayBaseUrl: gatewayUrl(''),
+              gatewayRequest: dispatchChatGatewayRequest,
               model: body.model,
               userContent: body.content,
               assistantContent
@@ -1115,7 +1115,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           if (effectiveContextLimitTokens && activeContextTokens / effectiveContextLimitTokens >= 0.7) {
             scheduleChatContextCompaction({
               client, conversationId: conversation.id, systemAccountId: ownerId, apiKeySecret,
-              gatewayBaseUrl: gatewayUrl(''), model: body.model, protocol, effectiveContextLimitTokens
+              gatewayRequest: dispatchChatGatewayRequest, model: body.model, protocol, effectiveContextLimitTokens
             })
           }
           return { status: 'completed', data: { messageId: accepted!.assistantMessage.id, finishReason, traceId } }
@@ -1433,7 +1433,7 @@ async function resolveChatCompactionInput(
     conversationId: conversation.id,
     systemAccountId: ownerId,
     apiKeySecret: String(apiKey.key),
-    gatewayBaseUrl: gatewayUrl(''),
+    gatewayRequest: dispatchChatGatewayRequest,
     model,
     protocol,
     effectiveContextLimitTokens: resolveChatModelRequestOptions(modelOption, {}).maxInputTokens
@@ -1663,7 +1663,6 @@ function isChatModelProtocol(protocol: string): boolean {
   return protocol === 'chat_completions' || protocol === 'responses'
 }
 
-function gatewayUrl(path: string): string { return `${runtimeConfig.internalGatewayOrigin}${path}` }
 async function hasChatImageGenerationRoute(groupIds: readonly string[], systemAccountId: string): Promise<boolean> {
   const accountLists = await Promise.all([...new Set(groupIds.filter(Boolean))].map((groupId) => (
     listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: chatImageGenerationGatewayModel })

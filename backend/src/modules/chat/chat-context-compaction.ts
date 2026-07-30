@@ -18,6 +18,7 @@ import {
 import { readChatJsonResponse } from './chat-bounded-json.js'
 import type { ChatTransportProtocol } from './chat-transport.js'
 import { countChatJsonTokens } from './chat-token-count.js'
+import type { ChatGatewayDispatch } from './chat-gateway-dispatch.js'
 
 const compactionPromptVersion = 'chat-context-summary-v1'
 const compactionSourcePageRows = 40
@@ -62,7 +63,9 @@ export function compactChatContextOnce(input: {
   conversationId: string
   systemAccountId: string
   apiKeySecret: string
-  gatewayBaseUrl: string
+  gatewayRequest?: ChatGatewayDispatch
+  /** 仅保留给已有回归夹具；生产调用必须提供 gatewayRequest。 */
+  gatewayBaseUrl?: string
   model: string
   protocol: ChatTransportProtocol
   effectiveContextLimitTokens?: number
@@ -290,7 +293,7 @@ async function summarizePage(
   ))
   const timeoutSignal = AbortSignal.timeout(requestTimeoutMs)
   const requestSignal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal
-  const response = await fetch(`${input.gatewayBaseUrl}${input.protocol === 'responses' ? '/v1/responses' : '/v1/chat/completions'}`, {
+  const response = await dispatchGatewayRequest(input, input.protocol === 'responses' ? '/v1/responses' : '/v1/chat/completions', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${input.apiKeySecret}`,
@@ -303,6 +306,16 @@ async function summarizePage(
   const payload = await readChatJsonResponse(response, compactionResponseBytes)
   if (!response.ok) throw new Error(`chat_context_model_http_${response.status}`)
   return fillRequiredSnapshotFields(parseSnapshot(extractResponseText(payload, input.protocol)), prior, messages)
+}
+
+function dispatchGatewayRequest(
+  input: Pick<Parameters<typeof compactChatContextOnce>[0], 'gatewayRequest' | 'gatewayBaseUrl'>,
+  path: string,
+  init: RequestInit
+): Promise<Response> {
+  if (input.gatewayRequest) return input.gatewayRequest(path, init)
+  if (!input.gatewayBaseUrl) throw new Error('chat_gateway_dispatch_missing')
+  return fetch(`${input.gatewayBaseUrl}${path}`, init)
 }
 
 function fillRequiredSnapshotFields(snapshot: ChatMemorySnapshot, prior: ChatMemorySnapshot, messages: unknown[]): ChatMemorySnapshot {

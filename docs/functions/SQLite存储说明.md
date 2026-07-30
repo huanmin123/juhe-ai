@@ -628,7 +628,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `stream`
 - `client_ip`
 - `user_agent`
-- `audit_outcome`：`success`、`success_after_retry`、`gateway_failed`、`upstream_failed`、`stream_failed`、`client_aborted`
+- `audit_outcome`：`success`、`success_after_retry`、`gateway_failed`、`upstream_failed`、`stream_failed`、`downstream_closed`
 - `success`
 - `final_status_code`
 - `error_phase`

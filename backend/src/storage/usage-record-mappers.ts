@@ -187,8 +187,7 @@ function usageFailureAttribution(value: unknown): UsageRecordSummary['failureAtt
     || value === 'opaque_upstream'
     || value === 'gateway_capacity'
     || value === 'gateway_policy'
-    || value === 'client_lifecycle'
-    || value === 'downstream_unconfirmed'
+    || value === 'downstream_closed'
   ) {
     return value
   }
@@ -200,7 +199,7 @@ function usageRecordListFailureReason(row: UsageRecordRow): string | undefined {
   if (row.success === 1) return undefined
   const errorCode = optionalString(row.error_code)
   const attribution = usageFailureAttribution(row.failure_attribution)
-  if (errorCode === 'downstream_connection_closed' || errorCode === 'client_aborted' || attribution === 'downstream_unconfirmed' || attribution === 'client_lifecycle') {
+  if (errorCode === 'downstream_connection_closed' || attribution === 'downstream_closed') {
     return '下游连接关闭'
   }
   const errorCodeReason = usageRecordListFailureReasonForErrorCode(errorCode)

@@ -73,22 +73,22 @@ func TestResolveTerminalEnforcesStreamTerminalAndRetrySemantics(t *testing.T) {
 		t.Fatalf("retry result = %#v", retried)
 	}
 
-	aborted := ResolveTerminal(TerminalInput{
+	downstreamClosed := ResolveTerminal(TerminalInput{
 		RequestedOutcome: OutcomeUpstreamFailed,
 		Success:          false,
-		ClientAborted:    true,
+		DownstreamClosed: true,
 	})
-	if aborted.Outcome != OutcomeClientAborted || aborted.ErrorPhase != "client" {
-		t.Fatalf("aborted result = %#v", aborted)
+	if downstreamClosed.Outcome != OutcomeDownstreamClosed || downstreamClosed.ErrorPhase != "downstream" || downstreamClosed.ErrorCode != "downstream_connection_closed" || downstreamClosed.ErrorMessage != "下游连接关闭" {
+		t.Fatalf("downstream closed result = %#v", downstreamClosed)
 	}
 
-	contradictoryAbort := ResolveTerminal(TerminalInput{
+	contradictoryDownstreamClose := ResolveTerminal(TerminalInput{
 		RequestedOutcome: OutcomeSuccess,
 		Success:          true,
-		ClientAborted:    true,
+		DownstreamClosed: true,
 	})
-	if contradictoryAbort.Outcome != OutcomeClientAborted || contradictoryAbort.Success {
-		t.Fatalf("contradictory aborted result = %#v", contradictoryAbort)
+	if contradictoryDownstreamClose.Outcome != OutcomeDownstreamClosed || contradictoryDownstreamClose.Success {
+		t.Fatalf("contradictory downstream-close result = %#v", contradictoryDownstreamClose)
 	}
 }
 

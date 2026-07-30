@@ -5,7 +5,6 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountHealthCheckSettings } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
-import { isDiagnosticTimeoutSignal } from '../accounts/account-diagnostic-retry-policy.js'
 import {
   automaticAccountAvailabilityProbeFailed,
   automaticAccountProbeOutcome
@@ -47,7 +46,8 @@ let lastRequestFailureHealthCheckCleanupAt = 0
 export interface AccountHealthCheckProbeResult {
   result: AccountTestResult
   upstreamAttempt?: UpstreamAttempt
-  diagnosticTimedOut?: boolean
+  diagnosticCanceled?: boolean
+  diagnosticTimeoutExhausted?: boolean
 }
 
 const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
@@ -168,7 +168,7 @@ async function runAccountHealthCheckQueueItem(
   const observedAt = new Date().toISOString()
   return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
     return await runAccountHealthCheckProbe(account, groupId)
-  }, async ({ result, upstreamAttempt, diagnosticTimedOut }, { joined }) => {
+  }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted }, { joined }) => {
     if (joined) {
       logger.debug({
         event: 'background_account_health_check_singleflight_joined',
@@ -177,8 +177,14 @@ async function runAccountHealthCheckQueueItem(
         reason: item.reason
       }, '同一账户已有可用性探针执行，本轮健康检查复用其结果')
     }
-    const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt, timeout: diagnosticTimedOut })
+    const probeOutcome = automaticAccountProbeOutcome(result, {
+      upstreamAttempt,
+      canceled: diagnosticCanceled,
+      timeout: diagnosticTimeoutExhausted,
+      diagnosticTimeoutExhausted
+    })
     const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
+    const immediateTemporaryUnavailable = diagnosticTimeoutExhausted === true && probeOutcome === 'upstream_failure'
 
     if (probeOutcome === 'complete_success') {
       const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
@@ -231,11 +237,13 @@ async function runAccountHealthCheckQueueItem(
     }, backgroundProbeDbServiceTimeoutMs)
 
     let markedTemporaryUnavailable = false
-    if (account.status !== 'pending_test' && failure?.reachedThreshold && availabilityProbeFailed) {
+    if (failure && account.status !== 'pending_test' && availabilityProbeFailed && (failure.reachedThreshold || immediateTemporaryUnavailable)) {
       const updated = await requestBackgroundWorkerDbService({
         type: 'mark_account_test_temporary_unavailable',
         accountId: account.id,
-        reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result),
+        reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result, {
+          diagnosticTimeoutExhausted: immediateTemporaryUnavailable
+        }),
         traceId: result.traceId,
         access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
         healthCheckGuard: {
@@ -260,6 +268,7 @@ async function runAccountHealthCheckQueueItem(
       failureStartedAt: failure?.failureStartedAt,
       transitionedToError: failure?.transitionedToError ?? false,
       accountFailureEligible: result.accountFailureEligible,
+      diagnosticTimeoutExhausted,
       nextHealthCheckAt: failure?.nextHealthCheckAt,
       markedTemporaryUnavailable,
       attemptIndex: context.attemptIndex,
@@ -269,7 +278,7 @@ async function runAccountHealthCheckQueueItem(
     }
     if (failure?.transitionedToError) {
       logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
-    } else if (account.status !== 'pending_test' && failure?.reachedThreshold && availabilityProbeFailed) {
+    } else if (account.status !== 'pending_test' && availabilityProbeFailed && (failure?.reachedThreshold || immediateTemporaryUnavailable)) {
       logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
     } else {
       logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')
@@ -308,7 +317,9 @@ export async function probeAccountHealthCheckApiKeyPool(
     fallback ??= attempt
     if (automaticAccountProbeOutcome(attempt.result, {
       upstreamAttempt: attempt.upstreamAttempt,
-      timeout: attempt.diagnosticTimedOut
+      canceled: attempt.diagnosticCanceled,
+      timeout: attempt.diagnosticTimeoutExhausted,
+      diagnosticTimeoutExhausted: attempt.diagnosticTimeoutExhausted
     }) === 'upstream_failure') {
       upstreamFailure ??= attempt
     }
@@ -338,7 +349,8 @@ async function runAccountHealthCheckDiagnostic(
   candidateAccount?: OpenAIAccountSecret
 ): Promise<AccountHealthCheckProbeResult> {
   let upstreamAttempt: UpstreamAttempt | undefined
-  let diagnosticTimedOut = false
+  let diagnosticCanceled = false
+  let diagnosticTimeoutExhausted = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'limited',
     groupId,
@@ -350,8 +362,10 @@ async function runAccountHealthCheckDiagnostic(
     onDiagnosticAttemptProgress: () => {
       upstreamAttempt = undefined
     },
-    onDiagnosticAttemptResult: ({ signal }) => {
-      diagnosticTimedOut = isDiagnosticTimeoutSignal(signal)
+    onDiagnosticAttemptResult: (attempt) => {
+      upstreamAttempt = attempt.upstreamAttempt
+      diagnosticCanceled = attempt.canceled
+      diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
     },
     onUpstreamAttempt: (attempt) => {
       upstreamAttempt = attempt
@@ -363,7 +377,7 @@ async function runAccountHealthCheckDiagnostic(
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
-  return { result, upstreamAttempt, diagnosticTimedOut }
+  return { result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted }
 }
 
 async function accountForHealthCheckQueueItem(item: AccountHealthCheckQueueItem): Promise<AccountSummary | undefined> {
@@ -417,8 +431,14 @@ function isAccountHealthCheckEligible(
   return true
 }
 
-function accountHealthCheckTemporaryUnavailableReason(failureCount: number, result: AccountTestResult): string {
-  const parts = [`后台健康检测连续失败 ${failureCount} 次，已标记为临时不可调用`]
+function accountHealthCheckTemporaryUnavailableReason(
+  failureCount: number,
+  result: AccountTestResult,
+  options: { diagnosticTimeoutExhausted?: boolean } = {}
+): string {
+  const parts = [options.diagnosticTimeoutExhausted
+    ? '后台健康检查完整诊断阶梯均在真实上游尝试后超时，已标记为临时不可调用'
+    : `后台健康检测连续失败 ${failureCount} 次，已标记为临时不可调用`]
   if (typeof result.statusCode === 'number') {
     parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
   }

@@ -31,7 +31,7 @@ assert.deepEqual(aborted, {
   statusCode: 408,
   message: '请求体上传未完成，请重试',
   errorType: 'request_timeout',
-  failureAttribution: 'downstream_unconfirmed'
+  failureAttribution: 'downstream_closed'
 })
 
 const lengthMismatch = classifyGatewayRawBodyParserError(Object.assign(new Error('request size did not match content length'), {
@@ -113,7 +113,7 @@ async function testRealHttpBodyLifecycle(): Promise<void> {
       statusCode: 408,
       message: '请求体上传未完成，请重试',
       errorType: 'request_timeout',
-      failureAttribution: 'downstream_unconfirmed'
+      failureAttribution: 'downstream_closed'
     })
     assert.equal(accountPolicySideEffectCount, 0, '请求体生命周期失败不得进入账户策略路由')
 

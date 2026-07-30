@@ -113,7 +113,7 @@ export function classifyGatewayRawBodyParserError(error: GatewayRawBodyParserErr
       statusCode: 408,
       message: '请求体上传未完成，请重试',
       errorType: 'request_timeout',
-      failureAttribution: 'downstream_unconfirmed'
+      failureAttribution: 'downstream_closed'
     }
   }
   const statusCode = Number.isInteger(error.statusCode)

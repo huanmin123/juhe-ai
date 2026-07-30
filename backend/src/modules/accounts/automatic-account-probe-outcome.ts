@@ -46,6 +46,7 @@ export function transportProbeOutcomeFromAccountTestResult(
     upstreamAttempt?: TransportProbeUpstreamAttempt
     canceled?: boolean
     timeout?: boolean
+    diagnosticTimeoutExhausted?: boolean
   } = {}
 ): TransportProbeOutcome {
   if (evidence.canceled) {
@@ -59,7 +60,12 @@ export function transportProbeOutcomeFromAccountTestResult(
   const statusCode = realUpstreamAttempt && isCompletedRealUpstreamAttempt(realUpstreamAttempt)
     ? realUpstreamAttempt.status
     : undefined
-  const localFailureKind = transportProbeLocalFailureKind(realUpstreamAttempt, statusCode, evidence.timeout === true)
+  const localFailureKind = transportProbeLocalFailureKind(
+    realUpstreamAttempt,
+    statusCode,
+    evidence.timeout === true,
+    evidence.diagnosticTimeoutExhausted === true
+  )
 
   if (localFailureKind) {
     return {
@@ -70,6 +76,9 @@ export function transportProbeOutcomeFromAccountTestResult(
   }
   if (statusCode !== undefined) {
     return { kind: 'framing_complete', statusCode }
+  }
+  if (evidence.timeout === true && evidence.diagnosticTimeoutExhausted !== true && !localFailureKind) {
+    return { kind: 'unknown', failureKind: 'task_failure' }
   }
   if (realUpstreamAttempt) {
     return { kind: 'transport_incomplete', failureKind: 'connection' }
@@ -91,15 +100,16 @@ export function transportProbeMeetsFirstByteTarget(
 function transportProbeLocalFailureKind(
   upstreamAttempt: TransportProbeUpstreamAttempt | undefined,
   statusCode: number | undefined,
-  timedOut: boolean
+  timedOut: boolean,
+  diagnosticTimeoutExhausted: boolean
 ): 'timeout' | 'connection' | 'read' | undefined {
-  // A diagnostic/lease deadline is a server task failure until the probe has
-  // produced structured evidence that the upstream itself timed out.
+  // A diagnostic deadline becomes upstream timeout evidence only after every
+  // tier in the current probe phase made a real HTTP(S) attempt and timed out.
   if (upstreamAttempt?.transportFailureKind === 'timeout') return 'timeout'
   if (upstreamAttempt?.transportFailureKind === 'read_incomplete') return 'read'
   if (upstreamAttempt?.transportFailureKind === 'connection') return 'connection'
   if (statusCode !== undefined) return undefined
-  if (timedOut) return undefined
+  if (timedOut) return diagnosticTimeoutExhausted ? 'timeout' : undefined
   return upstreamAttempt ? 'connection' : undefined
 }
 
@@ -109,6 +119,7 @@ export function automaticAccountProbeOutcome(
     upstreamAttempt?: TransportProbeUpstreamAttempt
     canceled?: boolean
     timeout?: boolean
+    diagnosticTimeoutExhausted?: boolean
   } = {}
 ): Exclude<AutomaticAccountProbeOutcome, 'stale'> {
   const transportOutcome = transportProbeOutcomeFromAccountTestResult(result, evidence)

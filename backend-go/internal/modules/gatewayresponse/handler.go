@@ -256,16 +256,16 @@ func (h Handler) handleJSON(input Input) (Result, error) {
 		return h.failureWithGuard(input, StateFailedBeforeCommit, status, int64(len(body)), guardSummary, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_response_stage_failed", "准备下游响应头失败", false)
 	}
 	if _, err := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit); err != nil {
-		return h.failureWithGuard(input, StateFailedBeforeCommit, status, int64(len(body)), guardSummary, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_header_commit_failed", "提交下游响应头失败", false)
+		return h.failureWithGuard(input, StateFailedBeforeCommit, status, int64(len(body)), guardSummary, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionDownstreamClosed, gatewayaudit.OutcomeDownstreamClosed, "downstream_connection_closed", "下游连接关闭", false)
 	}
 	written, writeErr := writeAll(input.Context, input.Sink, body, firstOutputCallback(input.OnFirstByte, input.OnFirstSemanticOutput))
 	if writeErr != nil {
-		result, returnedErr := h.failureWithGuard(input, stateForBytes(written), status, int64(len(body)), guardSummary, fmt.Errorf("%w: %v", ErrDestinationWrite, writeErr), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
+		result, returnedErr := h.failureWithGuard(input, stateForBytes(written), status, int64(len(body)), guardSummary, fmt.Errorf("%w: %v", ErrDestinationWrite, writeErr), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionDownstreamClosed, gatewayaudit.OutcomeDownstreamClosed, "downstream_connection_closed", "下游连接关闭", false)
 		result.BytesWritten = written
 		commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, written, written > 0))
 		result.TransportCommitted = commit.TransportCommitted
 		result.SemanticCommitted = commit.SemanticCommitted
-		result.Handoff = h.failureHandoff(input, status, result, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败")
+		result.Handoff = h.failureHandoff(input, status, result, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionDownstreamClosed, gatewayaudit.OutcomeDownstreamClosed, "downstream_connection_closed", "下游连接关闭")
 		result.Handoff.Commit = commit
 		result.Handoff.Usage.Usage = usage
 		result.Handoff.Usage.ResponseSnapshot = guardSummary
@@ -368,12 +368,12 @@ func (h Handler) finishStreamFailure(input Input, result Result, err error) (Res
 		signal = gatewayretry.ResponseSignalProtocolContract
 		code = firstText(code, "upstream_protocol_contract")
 		message = firstText(message, "上游流式协议检查失败")
-	} else if errors.Is(err, gatewaystreamrelay.ErrClientCanceled) || errors.Is(err, gatewaystreamrelay.ErrDestinationWrite) {
-		phase = gatewayretry.PhaseClientLifecycle
-		attribution = gatewayusage.FailureAttributionClientLifecycle
-		auditOutcome = gatewayaudit.OutcomeClientAborted
-		code = firstText(code, "client_stream_interrupted")
-		message = firstText(message, "客户端流式连接已中断")
+	} else if errors.Is(err, gatewaystreamrelay.ErrDownstreamClosed) || errors.Is(err, gatewaystreamrelay.ErrDestinationWrite) {
+		phase = gatewayretry.PhaseDownstreamClosed
+		attribution = gatewayusage.FailureAttributionDownstreamClosed
+		auditOutcome = gatewayaudit.OutcomeDownstreamClosed
+		code = "downstream_connection_closed"
+		message = "下游连接关闭"
 	} else if errors.Is(err, gatewaystreamrelay.ErrPreCommitBufferExceeded) {
 		phase = gatewayretry.PhaseGatewayPolicy
 		attribution = gatewayusage.FailureAttributionGatewayCapacity
@@ -454,8 +454,8 @@ func streamTerminalKind(err error) gatewaystreamrelay.TerminalKind {
 		return gatewaystreamrelay.TerminalKindUpstreamProtocolFailure
 	case errors.Is(err, gatewaystreamrelay.ErrMissingTerminal):
 		return gatewaystreamrelay.TerminalKindMissingTerminal
-	case errors.Is(err, gatewaystreamrelay.ErrClientCanceled), errors.Is(err, gatewaystreamrelay.ErrDestinationWrite):
-		return gatewaystreamrelay.TerminalKindClientCanceled
+	case errors.Is(err, gatewaystreamrelay.ErrDownstreamClosed), errors.Is(err, gatewaystreamrelay.ErrDestinationWrite):
+		return gatewaystreamrelay.TerminalKindDownstreamClosed
 	case errors.Is(err, gatewaystreamrelay.ErrSourceRead), errors.Is(err, gatewaystreamrelay.ErrIdleDeadline), errors.Is(err, gatewaystreamrelay.ErrTotalDeadline), errors.Is(err, gatewaydeadline.ErrFirstByteDeadline), errors.Is(err, gatewaystreamrelay.ErrPreCommitEvidenceMissing):
 		return gatewaystreamrelay.TerminalKindReadFailure
 	default:
@@ -489,16 +489,16 @@ func (h Handler) forwardUpstreamFailure(input Input, status int, body []byte) (R
 		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_response_stage_failed", "准备下游响应头失败", false)
 	}
 	if _, err := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit); err != nil {
-		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_header_commit_failed", "提交下游响应头失败", false)
+		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionDownstreamClosed, gatewayaudit.OutcomeDownstreamClosed, "downstream_connection_closed", "下游连接关闭", false)
 	}
 	written, err := writeAll(input.Context, input.Sink, body, input.OnFirstByte)
 	if err != nil {
-		result, returnedErr := h.failure(input, stateForBytes(written), status, int64(len(body)), nil, fmt.Errorf("%w: %v", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
+		result, returnedErr := h.failure(input, stateForBytes(written), status, int64(len(body)), nil, fmt.Errorf("%w: %v", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionDownstreamClosed, gatewayaudit.OutcomeDownstreamClosed, "downstream_connection_closed", "下游连接关闭", false)
 		result.BytesWritten = written
 		commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, written, written > 0))
 		result.TransportCommitted = commit.TransportCommitted
 		result.SemanticCommitted = commit.SemanticCommitted
-		result.Handoff = h.failureHandoff(input, status, result, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败")
+		result.Handoff = h.failureHandoff(input, status, result, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionDownstreamClosed, gatewayaudit.OutcomeDownstreamClosed, "downstream_connection_closed", "下游连接关闭")
 		result.Handoff.Commit = commit
 		return result, returnedErr
 	}
@@ -562,20 +562,20 @@ func (h Handler) failureHandoff(input Input, status int, result Result, signal g
 			failure.ResponseDisposition = gatewayretry.ResponseDispositionCompleteTransparent
 		}
 	}
-	if attribution == gatewayusage.FailureAttributionClientLifecycle {
-		failure.Phase = gatewayretry.PhaseClientLifecycle
+	if attribution == gatewayusage.FailureAttributionDownstreamClosed {
+		failure.Phase = gatewayretry.PhaseDownstreamClosed
 	} else if attribution == gatewayusage.FailureAttributionGatewayPolicy || attribution == gatewayusage.FailureAttributionGatewayCapacity {
 		failure.Phase = gatewayretry.PhaseGatewayPolicy
 	}
 	classification := gatewayretry.ClassifyFailure(failure)
 	allowed := classification.Retryable && input.InitialCommit.CanRetryUpstream() && !result.TransportCommitted
-	return Handoff{Retry: RetryHandoff{Allowed: allowed, Failure: failure, Classification: classification}, Commit: input.InitialCommit, Usage: gatewayusage.TerminalFacts{Outcome: gatewayusage.OutcomeFailed, CompletedAt: h.now(), StatusCode: intPtrIfValid(status), FailureAttribution: attribution, ErrorCode: recordedCode, ErrorMessage: recordedMessage}, Audit: gatewayaudit.TerminalInput{RequestedOutcome: auditOutcome, Stream: input.Transport == TransportStream, HadFailedAttempt: input.HadFailedAttempt, ClientAborted: attribution == gatewayusage.FailureAttributionClientLifecycle, ErrorPhase: failurePhase(attribution), ErrorCode: recordedCode, ErrorMessage: recordedMessage}}
+	return Handoff{Retry: RetryHandoff{Allowed: allowed, Failure: failure, Classification: classification}, Commit: input.InitialCommit, Usage: gatewayusage.TerminalFacts{Outcome: gatewayusage.OutcomeFailed, CompletedAt: h.now(), StatusCode: intPtrIfValid(status), FailureAttribution: attribution, ErrorCode: recordedCode, ErrorMessage: recordedMessage}, Audit: gatewayaudit.TerminalInput{RequestedOutcome: auditOutcome, Stream: input.Transport == TransportStream, HadFailedAttempt: input.HadFailedAttempt, DownstreamClosed: attribution == gatewayusage.FailureAttributionDownstreamClosed, ErrorPhase: failurePhase(attribution), ErrorCode: recordedCode, ErrorMessage: recordedMessage}}
 }
 
 func failurePhase(attribution gatewayusage.FailureAttribution) string {
 	switch attribution {
-	case gatewayusage.FailureAttributionClientLifecycle:
-		return "client"
+	case gatewayusage.FailureAttributionDownstreamClosed:
+		return "downstream"
 	case gatewayusage.FailureAttributionGatewayPolicy, gatewayusage.FailureAttributionGatewayCapacity:
 		return "gateway"
 	default:

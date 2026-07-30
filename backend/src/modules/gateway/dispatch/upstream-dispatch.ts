@@ -198,7 +198,7 @@ export interface GatewayUpstreamRequestCoordinationContext {
     coordinator: NormalRouteFirstByteAttemptCoordinator
   }) => FirstByteDeadlineAction | Promise<FirstByteDeadlineAction>
   /** Called once when an account attempt is about to invoke the upstream transport. */
-  onUpstreamAttemptStarted?: (account: UpstreamAccount) => void | Promise<void>
+  onUpstreamAttemptStarted?: (account: UpstreamAccount, upstreamUrl: string) => void | Promise<void>
 }
 
 export class UpstreamAttemptError extends Error {
@@ -836,7 +836,7 @@ export async function fetchFirstAvailableUpstream(
               try {
                 // Settlement/observability must not add latency to the upstream
                 // request or turn a successful dispatch into a gateway failure.
-                void Promise.resolve(requestCoordination.onUpstreamAttemptStarted?.(account)).catch((error) => {
+                void Promise.resolve(requestCoordination.onUpstreamAttemptStarted?.(account, upstreamUrl)).catch((error) => {
                   getRequestLogger().warn({
                     event: 'gateway_upstream_attempt_started_callback_failed',
                     accountId: account.id,

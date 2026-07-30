@@ -22,7 +22,7 @@ const (
 	TerminalKindUpstreamProtocolFailure TerminalKind = "upstream_protocol_failure"
 	TerminalKindMissingTerminal         TerminalKind = "missing_terminal"
 	TerminalKindReadFailure             TerminalKind = "read_failure"
-	TerminalKindClientCanceled          TerminalKind = "client_canceled"
+	TerminalKindDownstreamClosed        TerminalKind = "downstream_closed"
 	TerminalKindGatewayLocal            TerminalKind = "gateway_local"
 )
 

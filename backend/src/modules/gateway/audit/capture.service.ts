@@ -112,7 +112,7 @@ interface FailedDispatchAttemptInput {
 }
 
 interface AddGatewayMetadataInput {
-  metadata: Record<string, unknown>
+  metadata?: Record<string, unknown>
   label?: string
 }
 
@@ -154,9 +154,7 @@ export function resolveAuditFinalization(
   failedAttemptRoot?: FailedAuditAttemptRoot
 ): ResolvedAuditFinalization {
   const isDownstreamClose = input.outcome === 'downstream_closed'
-    || input.outcome === 'client_aborted'
     || input.errorPhase === 'downstream'
-    || input.errorPhase === 'client'
     || input.errorCode === 'downstream_connection_closed'
   const hasInputRootFailure = !isDownstreamClose && (
     input.outcome === 'gateway_failed'
@@ -301,11 +299,7 @@ export class AuditCaptureContext {
     if (this.downstreamClosed) return
     this.downstreamClosed = true
     this.addGatewayMetadata({
-      label: 'downstream_connection_closed',
-      metadata: {
-        trigger: 'unknown_unproven',
-        clientActionConfirmed: false
-      }
+      label: 'downstream_connection_closed'
     })
   }
 
@@ -316,8 +310,7 @@ export class AuditCaptureContext {
       label: 'server_diagnostic_timeout',
       metadata: {
         source: 'server_diagnostic',
-        trigger: 'diagnostic_deadline',
-        clientActionConfirmed: false
+        trigger: 'diagnostic_deadline'
       }
     })
   }
@@ -329,15 +322,9 @@ export class AuditCaptureContext {
       label: 'server_diagnostic_cancelled',
       metadata: {
         source: 'server_diagnostic',
-        trigger: 'server_task_cancelled',
-        clientActionConfirmed: false
+        trigger: 'server_task_cancelled'
       }
     })
-  }
-
-  // Kept for callers outside the gateway route while preserving neutral semantics.
-  markClientAborted(): void {
-    this.markDownstreamClosed()
   }
 
   shouldCaptureSuccessPayloads(): boolean {
@@ -360,7 +347,7 @@ export class AuditCaptureContext {
       body: JSON.stringify({
         type: 'gateway_metadata',
         label: input.label,
-        metadata: input.metadata
+        metadata: input.metadata ?? {}
       }),
       contentType: 'application/json; audit=gateway-metadata'
     })
@@ -537,7 +524,7 @@ export class AuditCaptureContext {
     for (let index = this.attempts.length - 1; index >= 0; index -= 1) {
       const attempt = this.attempts[index]
       if (!attempt || attempt.success !== false) continue
-      if (attempt.errorPhase === 'client' || attempt.errorPhase === 'downstream') continue
+      if (attempt.errorPhase === 'downstream') continue
       if (!attempt.errorPhase && !attempt.errorCode && !attempt.errorMessage) continue
       return {
         errorPhase: attempt.errorPhase,

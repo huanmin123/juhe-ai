@@ -66,20 +66,20 @@ func TestRelayCompletesBoundedStreamAndBuildsTerminalHandoff(t *testing.T) {
 	}
 }
 
-func TestRelayClientCancelBeforeFirstByteDoesNotRetry(t *testing.T) {
+func TestRelayDownstreamCloseBeforeFirstByteDoesNotRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result, err := Relay(ctx, blockingSource{}, &recordingSink{}, Options{Limits: testLimits(), StartedAt: time.Now()})
-	if !errors.Is(err, ErrClientCanceled) {
-		t.Fatalf("Relay() error = %v, want client canceled", err)
+	if !errors.Is(err, ErrDownstreamClosed) {
+		t.Fatalf("Relay() error = %v, want downstream closed", err)
 	}
 	if result.State != StateFailedBeforeFirstByte || result.RetryAllowed || result.FirstByteSent {
 		t.Fatalf("result = %#v", result)
 	}
-	if !result.Handoff.Audit.ClientAborted || result.Handoff.Audit.RequestedOutcome != gatewayaudit.OutcomeClientAborted {
+	if !result.Handoff.Audit.DownstreamClosed || result.Handoff.Audit.RequestedOutcome != gatewayaudit.OutcomeDownstreamClosed {
 		t.Fatalf("audit = %#v", result.Handoff.Audit)
 	}
-	if result.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
+	if result.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionDownstreamClosed || result.Handoff.Usage.ErrorMessage != "下游连接关闭" {
 		t.Fatalf("usage = %#v", result.Handoff.Usage)
 	}
 }
@@ -151,7 +151,7 @@ func TestRelayPartialDestinationWriteCommitsFirstByteAndDisablesRetry(t *testing
 	if result.BytesWritten != 2 || result.State != StateFailedAfterFirstByte || result.RetryAllowed {
 		t.Fatalf("result = %#v", result)
 	}
-	if !result.Handoff.Audit.ClientAborted {
+	if !result.Handoff.Audit.DownstreamClosed {
 		t.Fatalf("audit = %#v", result.Handoff.Audit)
 	}
 	if inspector.commitCalls != 1 || !inspector.transportCommitted || !inspector.semanticCommitted || inspector.downstreamBytes != 2 {
@@ -216,7 +216,7 @@ func TestRelayCancellationInterruptsBackpressuredSink(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Relay did not stop after client cancellation")
 	}
-	if !errors.Is(relayErr, ErrClientCanceled) || result.FirstByteSent || result.RetryAllowed {
+	if !errors.Is(relayErr, ErrDownstreamClosed) || result.FirstByteSent || result.RetryAllowed {
 		t.Fatalf("result/error = %#v %v", result, relayErr)
 	}
 }

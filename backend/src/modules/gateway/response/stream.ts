@@ -1165,7 +1165,7 @@ export async function pipeUpstreamStream(
             failedReceived: false,
             parserSkipped: false
           }).catch((callbackError) => {
-            streamLogger.warn({ error: callbackError }, 'Codex turn 不完整下游断流状态记录失败，按 client_aborted 继续')
+            streamLogger.warn({ error: callbackError }, 'Codex turn 不完整下游断流状态记录失败，按 downstream_closed 继续')
           })
         : Promise.resolve()
       await Promise.all([closeIteratorPromise, incompleteAbortPromise])

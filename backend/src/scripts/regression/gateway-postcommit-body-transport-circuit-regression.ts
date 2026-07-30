@@ -478,7 +478,7 @@ function assertCommittedClientBoundary(
   assert.match(result.text, new RegExp(`postcommit-partial-${scenario.responseKind}-${attemptKind}`), `${label} 必须真实提交首段正文`)
   assert.doesNotMatch(
     result.text,
-    /postcommit-backup-must-not-run|response\.failed|upstream_retryable_error|service_unavailable|gateway_request_wall_budget_exhausted|client_aborted|上游暂时不可用/u,
+    /postcommit-backup-must-not-run|response\.failed|upstream_retryable_error|service_unavailable|gateway_request_wall_budget_exhausted|downstream_connection_closed|上游暂时不可用/u,
     `${label} 已提交后不得拼接备用账户或网关错误正文`
   )
   const hits = hitsFor(scenario.responseKind, attemptKind)

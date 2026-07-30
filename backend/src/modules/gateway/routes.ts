@@ -144,6 +144,7 @@ export interface OpenAIGatewayHandleOptions {
   forwardModelsRequestToUpstream?: boolean
   accountProbeModel?: string
   onUpstreamAttemptDiagnostic?: (lastAttempt: UpstreamAttempt) => void
+  onUpstreamAttemptStartedDiagnostic?: (account: UpstreamAccount, upstreamUrl: string) => void
 }
 
 interface NormalRouteSpeedFirstDecisionOperations {
@@ -947,7 +948,10 @@ export async function handleOpenAIGatewayRequest(
             requestAttemptTracker: currentPreflight.requestAttemptTracker,
             semanticRetryId,
             normalRouteFirstByteConfig,
-            onNormalRouteFirstByteDeadline
+            onNormalRouteFirstByteDeadline,
+            onUpstreamAttemptStarted: (account, upstreamUrl) => {
+              options.onUpstreamAttemptStartedDiagnostic?.(account, upstreamUrl)
+            }
           },
           gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy),
           forceRecoverableFailureWait
@@ -1386,7 +1390,7 @@ export async function handleOpenAIGatewayRequest(
           )
         const circuitDecision = transportFailure
           && !requestExecutionSignal.aborted
-          && responseErrorCode !== 'client_aborted'
+          && responseErrorCode !== 'downstream_connection_closed'
           && accountCircuitAttempt
           ? await accountCircuitAttempt.reportTransportFailure({
               kind: transportFailure.kind,

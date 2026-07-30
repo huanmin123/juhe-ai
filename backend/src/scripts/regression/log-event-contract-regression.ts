@@ -447,8 +447,8 @@ const abortedCloseLine = abortedCloseLines.find((line) => line.includes('"event"
 assert(abortedCloseLine, '真正中断必须保留 downstream close 日志')
 const abortedClose = JSON.parse(abortedCloseLine) as Record<string, unknown>
 assert.equal(abortedClose.downstreamClose, true)
-assert.equal(abortedClose.closeTrigger, 'unknown_unproven')
-assert.equal(abortedClose.clientActionConfirmed, false)
+assert.equal('closeTrigger' in abortedClose, false)
+assert.equal('clientActionConfirmed' in abortedClose, false)
 assert.equal(abortedClose.downstreamEvent, 'close')
 assert.equal(abortedClose.responseCommitted, false)
 assert.equal('statusCode' in abortedClose, false, '未提交的 close 日志不得记录默认 HTTP 200')

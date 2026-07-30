@@ -149,7 +149,7 @@ func TestHTTPExecutorDoesNotRetrySlowDownstreamAsUpstreamTimeout(t *testing.T) {
 		},
 	}
 	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
-	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
+	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionDownstreamClosed {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
 }
@@ -171,7 +171,7 @@ func TestHTTPExecutorDoesNotRetrySlowStreamSinkAsUpstreamTimeout(t *testing.T) {
 		},
 	}
 	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
-	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
+	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionDownstreamClosed {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
 }
