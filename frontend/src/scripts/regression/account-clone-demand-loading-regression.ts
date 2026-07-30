@@ -62,9 +62,7 @@ const context: AccountCloneContext = {
     base_url: 'https://api.openai.com/v1',
     supported_endpoint_modes: ['responses_json', 'responses_sse'],
     service_tier_override: 'priority',
-    reasoning_effort_override: 'high',
-    codex_responses_safe_repair_enabled: false,
-    codex_responses_strict_intercept_enabled: true
+    reasoning_effort_override: 'high'
   },
   concurrencyLimit: 12,
   priority: 3,
@@ -89,8 +87,6 @@ assert.equal(loaded.patch.googleClientSecret, '')
 assert.equal(loaded.patch.googleQuotaProjectId, '')
 assert.equal(loaded.patch.serviceTierOverride, 'priority')
 assert.equal(loaded.patch.reasoningEffortOverride, 'high')
-assert.equal(loaded.patch.codexResponsesSafeRepairEnabled, false)
-assert.equal(loaded.patch.codexResponsesStrictInterceptEnabled, true)
 
 console.log('账户克隆按需加载回归通过：单 clone-context 请求、窄 credentialOptions、建号秘密不回填')
 

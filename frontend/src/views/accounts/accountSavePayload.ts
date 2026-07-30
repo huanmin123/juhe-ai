@@ -98,8 +98,6 @@ export type AccountOAuthCreateCommonPayload = {
     reasoning_effort_override?: Exclude<AccountFormModel['reasoningEffortOverride'], ''>
     error_handling_rules?: unknown
     response_inspection_rules?: unknown
-    codex_responses_safe_repair_enabled?: boolean
-    codex_responses_strict_intercept_enabled?: boolean
   }
   notes?: string
 }
@@ -329,12 +327,6 @@ export function buildOAuthCreateCommonPayload(input: {
   }
   if (Object.prototype.hasOwnProperty.call(credentials, 'response_inspection_rules')) {
     credentialsPatch.response_inspection_rules = credentials.response_inspection_rules
-  }
-  if (typeof credentials.codex_responses_safe_repair_enabled === 'boolean') {
-    credentialsPatch.codex_responses_safe_repair_enabled = credentials.codex_responses_safe_repair_enabled
-  }
-  if (typeof credentials.codex_responses_strict_intercept_enabled === 'boolean') {
-    credentialsPatch.codex_responses_strict_intercept_enabled = credentials.codex_responses_strict_intercept_enabled
   }
   if (Object.keys(credentialsPatch).length) {
     payload.credentialsPatch = credentialsPatch

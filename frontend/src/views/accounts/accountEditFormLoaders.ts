@@ -79,8 +79,6 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
   )
   const patch: AccountFormModel = {
     ...basicPatch,
-    codexResponsesSafeRepairEnabled: credentials.codex_responses_safe_repair_enabled !== false,
-    codexResponsesStrictInterceptEnabled: credentials.codex_responses_strict_intercept_enabled === true,
     proxyProfileId: advanced.proxyProfileId,
     accountExpiresAt,
     temporaryUnavailableContinuousProbeEnabled: advanced.temporaryUnavailableContinuousProbeEnabled !== false,
@@ -169,8 +167,6 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     privilege: account.superPriorityEnabled ? 'super_priority' : account.fallbackEnabled ? 'fallback' : 'normal',
     status: 'pending_test',
     clientCompatibility: accountClientCompatibilityForForm(account),
-    codexResponsesSafeRepairEnabled: credentials.codex_responses_safe_repair_enabled !== false,
-    codexResponsesStrictInterceptEnabled: credentials.codex_responses_strict_intercept_enabled === true,
     supportedEndpointModes: accountEndpointModesForForm(account, credentials),
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt,

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 
-import { rewriteCodexResponsesSseEvent } from '../../modules/gateway/codex-responses/response-guard.js'
 import { AnthropicStreamInspector } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import { GeminiStreamInspector } from '../../modules/gateway/protocols/gemini-v1beta/stream-inspection.js'
 import type { GatewayStreamInspector } from '../../modules/gateway/protocols/_shared/types.js'
@@ -207,40 +206,6 @@ function testDecodedByteExpansionAndBareCrKeepLegacyFallback(): void {
   assert.deepEqual(sharedBareCrInspector.finish(), directBareCrInspector.finish(), '裸 CR 事件共享路径不得改变既有 inspector 语义')
 }
 
-function testCodexRewriteSharesRepairedObjectAndActualSize(): void {
-  const interceptor = new OpenAIResponseInspectionBuffer({
-    endpointFamily: 'responses',
-    transformEvent: (event) => {
-      const rewritten = rewriteCodexResponsesSseEvent(event, [{
-        outputIndex: 0,
-        itemType: 'function_call',
-        field: 'item.id',
-        clientItemId: 'item_client_identity_with_different_length'
-      }])
-      return rewritten
-        ? { buffer: rewritten.buffer, parsedEvent: rewritten.event }
-        : undefined
-    }
-  })
-  const inspector = new OpenAIStreamInspector()
-  const original = Buffer.from('event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"id":"x","type":"function_call","name":"tool"}}\n\n', 'utf8')
-  let output: Buffer | undefined
-
-  const parseCount = countJsonParses(() => {
-    const result = interceptor.pushChunk(original)
-    output = result.chunks[0]
-    inspectOutput(interceptor, inspector, result.chunks)
-  })
-
-  assert(output)
-  const shared = interceptor.parsedEventForChunk(output)
-  assert(shared)
-  const actualDataBytes = Buffer.byteLength(output.toString('utf8').match(/^data: (.*)$/m)?.[1] ?? '', 'utf8')
-  assert.equal(shared.dataBytes, actualDataBytes, '改写后的 dataBytes 必须对应实际下游事件')
-  assert.equal(parseCount, 1, 'Codex safe-repair 改写不得触发第二次 JSON 解码')
-  assert.equal(inspector.finish().eventCount, 1)
-}
-
 function testDeferredEventsKeepSharedParseIdentity(): void {
   const noopInterceptor = new OpenAIResponseInspectionBuffer({
     clientRetryEnabled: true,
@@ -289,7 +254,6 @@ testAnthropicAndGeminiInspectorsReuseParsedEvents()
 testEofIncompleteEventKeepsFallbackSemanticsAndSharesParse()
 testEmptyDataAndOversizedEventsKeepInspectorBoundaries()
 testDecodedByteExpansionAndBareCrKeepLegacyFallback()
-testCodexRewriteSharesRepairedObjectAndActualSize()
 testDeferredEventsKeepSharedParseIdentity()
 
 console.log('gateway SSE shared event parse regression passed')

@@ -3,7 +3,6 @@ import type { ResponseInspectionDecision } from './inspection.js'
 import type { StreamBodyOmissionSummary, StreamTransportFailure } from './stream-result.js'
 import type { ParsedUsage } from '../usage/types.js'
 import type { HybridQualityInspectionOutcome } from '../hybrid/quality-inspection.service.js'
-import type { CodexResponsesGuardUsageSummary } from '../codex-responses/response-guard.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true; errorCode?: string; transportFailure?: StreamTransportFailure; gatewayLocalFailure?: boolean }
@@ -29,7 +28,6 @@ export type UpstreamResponseHandlingResult =
     responseBodyText?: string
     responseResourceId?: string
     bodyOmission?: StreamBodyOmissionSummary
-    codexResponsesGuard?: CodexResponsesGuardUsageSummary
     protocolValidatedSuccess?: boolean
     errorPayload: Record<string, unknown>
     transportFailure?: StreamTransportFailure

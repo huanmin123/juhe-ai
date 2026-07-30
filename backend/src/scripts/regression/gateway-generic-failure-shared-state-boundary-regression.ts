@@ -344,7 +344,7 @@ function assertSourceBoundaries(): void {
   const incompleteStreamSource = sourceBetween(
     finalizationSource,
     'if (!streamResult.completed) {',
-    '\n  const codexResponsesGuardSnapshot'
+    '\n  return {\n    alreadyFinalized: false,'
   )
   assert.doesNotMatch(
     incompleteStreamSource,

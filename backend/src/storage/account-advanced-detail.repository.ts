@@ -24,9 +24,7 @@ const advancedEditableCredentialKeys = [
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules',
-  'codex_responses_safe_repair_enabled',
-  'codex_responses_strict_intercept_enabled'
+  'response_inspection_rules'
 ] as const
 
 interface AccountAdvancedDetailRow {

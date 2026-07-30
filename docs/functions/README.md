@@ -118,7 +118,7 @@
 - [OpenAI API Key 透传细节统计与比较](OpenAI%20API%20Key透传细节统计与比较.md)
 - [流式中断与客户端重试调研](流式中断与客户端重试调研.md)
 - [响应语义检查管线设计](响应语义检查管线设计.md)
-- [Responses 协议防火墙与历史会话自愈设计](Responses协议防火墙与历史会话自愈设计.md)
+- [Responses 历史会话与请求修复](Responses历史会话与请求修复.md)
 - [SQLite 存储说明](SQLite存储说明.md)
 
 ## 客户端模型目录规则

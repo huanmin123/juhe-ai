@@ -85,10 +85,6 @@ import {
 } from './stream-result.js'
 import { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 import {
-  rewriteCodexResponsesSseEvent,
-  type CodexResponsesResponseGuard
-} from '../codex-responses/response-guard.js'
-import {
   hasGatewayStreamParsedEventReceiver,
   publishGatewayStreamInspection,
   publishGatewayStreamParsedEvent
@@ -138,7 +134,6 @@ export interface StreamPipeOptions {
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
   downstreamCommitState?: GatewayDownstreamCommitState
-  codexResponsesGuard?: CodexResponsesResponseGuard
   beforeCommittedFailureSignal?: (context: CommittedStreamFailureSignalContext) => Promise<void>
   onIncompleteClientAbort?: (context: IncompleteClientAbortContext) => Promise<void>
 }
@@ -209,30 +204,12 @@ export async function pipeUpstreamStream(
       ?? (options.clientRetryEnabled === true ? 'protocol_error_event' : 'disconnect')
   ) === 'protocol_error_event'
   const inspector = protocolDriver.createStreamInspector()
-  const codexResponsesGuard = options.codexResponsesGuard
-  const codexSafeRepairEnabled = codexResponsesGuard?.mode === 'safe_repair'
-  const codexStrictInterceptEnabled = codexResponsesGuard?.mode === 'strict_intercept'
   const publishParsedEvents = hasGatewayStreamParsedEventReceiver(res)
-  const inspectCodexShadowEvents = Boolean(
-    codexResponsesGuard && !codexSafeRepairEnabled && !codexStrictInterceptEnabled
-  )
-  if ((publishParsedEvents || inspectCodexShadowEvents) && inspector.setParsedEventObserver) {
+  if (publishParsedEvents && inspector.setParsedEventObserver) {
     inspector.setParsedEventObserver((event) => {
       if (publishParsedEvents) {
         publishGatewayStreamParsedEvent(res, event)
       }
-      if (inspectCodexShadowEvents && codexResponsesGuard) {
-        try {
-          codexResponsesGuard.inspectOpenAiSseEvent(event)
-        } catch (error) {
-          getRequestLogger().error({ error }, 'Codex Responses 流式协议检查失败，shadow 模式继续透传')
-        }
-      }
-    })
-  }
-  if (codexResponsesGuard && inspector.setParserCoverageObserver) {
-    inspector.setParserCoverageObserver(() => {
-      codexResponsesGuard.observeCoverageGap()
     })
   }
   const interpretProtocolFailures = options.interpretProtocolFailures !== false
@@ -241,8 +218,6 @@ export async function pipeUpstreamStream(
     && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
     && (options.clientRetryEnabled === true || hasResponseInspectionPolicies)
     || hasResponseInspectionPolicies
-    || codexSafeRepairEnabled
-    || codexStrictInterceptEnabled
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,
@@ -255,33 +230,6 @@ export async function pipeUpstreamStream(
             buildFailureEvent: () => undefined
           }
         : {}),
-      ...(codexSafeRepairEnabled && codexResponsesGuard
-        ? {
-            transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
-              const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
-              if (result.outcome === 'blocked' && result.retryable) {
-                return { intercepted: codexResponsesProtocolDecision(result, false) }
-              }
-              const rewritten = rewriteCodexResponsesSseEvent(event, result.repairs)
-              if (rewritten) codexResponsesGuard.recordAppliedSseRepairs(result.repairs.length)
-              return rewritten
-                ? { buffer: rewritten.buffer, parsedEvent: rewritten.event }
-                : undefined
-            }
-          }
-        : {}),
-      ...(codexStrictInterceptEnabled && codexResponsesGuard
-        ? {
-            transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
-              const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
-              if (
-                result.outcome !== 'repairable'
-                && result.outcome !== 'blocked'
-              ) return undefined
-              return { intercepted: codexResponsesProtocolDecision(result, true) }
-            }
-          }
-        : {})
     })
     : undefined
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
@@ -508,8 +456,6 @@ export async function pipeUpstreamStream(
     captureSuccessPayloads = true,
     bodyOmission?: StreamBodyOmissionSummary
   ): StreamPipeResult => {
-    const guardSnapshot = codexResponsesGuard?.snapshot()
-    codexResponsesGuard?.dispose()
     return streamResult(
       completed,
       message,
@@ -533,7 +479,6 @@ export async function pipeUpstreamStream(
       downstreamCommit.semanticCommitted,
       uncommittedStreamResponseBody(preCommitBuffer),
       responseResourceId,
-      guardSnapshot,
       completed && protocolTerminalReceived && !streamParserSkipped
     )
   }
@@ -1549,38 +1494,6 @@ export async function pipeUpstreamStream(
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
   return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
-}
-
-function codexResponsesProtocolDecision(
-  result: import('../codex-responses/response-guard.js').CodexResponsesGuardSseResult,
-  strict: boolean
-): ResponseInspectionDecision {
-  const codes = [...new Set(result.issues.map((issue) => issue.code))]
-  const detail = codes.length > 0 ? `：${codes.join(', ')}` : ''
-  const canSwitchAccount = !result.commit.semanticCommitted
-  return {
-    reason: 'configured_response_policy',
-    action: 'replace_with_failure',
-    transport: 'sse',
-    triggerPhase: result.commit.semanticCommitted ? 'after_downstream_write' : 'before_downstream_write',
-    endpointFamily: 'responses',
-    frameType: 'raw_json_path',
-    upstreamErrorCode: strict ? 'codex_responses_protocol_intercepted' : 'codex_responses_protocol_blocked',
-    upstreamErrorMessage: strict
-      ? `Codex Responses 流式响应协议异常，严格模式已拦截并请求更换账户${detail}`
-      : `Codex Responses 流式响应协议异常，安全模式已阻止本次响应并请求下一账户${detail}`,
-    clientProfile: 'codex',
-    downstreamWritten: result.commit.semanticCommitted,
-    policyId: strict ? 'codex_responses_strict_intercept' : 'codex_responses_protocol_blocked',
-    policyName: strict ? 'Codex Responses 严格拦截' : 'Codex Responses 协议阻断',
-    policySource: 'account',
-    policyProtocolCode: 'openai_v1',
-    executionMode: 'intercept',
-    dataHandling: 'replace_with_failure',
-    retryEnabled: canSwitchAccount,
-    accountSwitch: canSwitchAccount ? 'request_next_account' : 'none',
-    accountState: strict ? 'runtime_avoidance' : 'none'
-  }
 }
 
 function withTransportFailureIfProven(

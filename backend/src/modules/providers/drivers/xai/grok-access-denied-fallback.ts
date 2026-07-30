@@ -50,7 +50,6 @@ export async function applyGrokAccessDeniedFallback(
     ok: input.response.ok,
     headers: input.response.headers,
     body: inspected.replayBody,
-    codexResponsesGuardMarker: input.response.codexResponsesGuardMarker
   }
   if (!inspected.complete || !inspected.bodyText.toLowerCase().includes('access denied')) {
     return { response: originalResponse, usedFallback: false }

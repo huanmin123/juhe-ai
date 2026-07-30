@@ -69,8 +69,6 @@ export function defaultAccountForm(
     privilege: 'normal',
     status: 'pending_test',
     clientCompatibility,
-    codexResponsesSafeRepairEnabled: true,
-    codexResponsesStrictInterceptEnabled: false,
     supportedEndpointModes,
     supportedModels,
     healthCheckModel: '',

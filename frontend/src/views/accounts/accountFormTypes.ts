@@ -43,8 +43,6 @@ export interface AccountFormModel {
   privilege: 'normal' | 'super_priority' | 'fallback'
   status: 'active' | 'pending_test' | 'disabled'
   clientCompatibility: AccountClientCompatibility
-  codexResponsesSafeRepairEnabled: boolean
-  codexResponsesStrictInterceptEnabled: boolean
   supportedEndpointModes: AccountSupportedEndpointMode[]
   supportedModels: string[]
   healthCheckModel: string

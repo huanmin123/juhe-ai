@@ -56,8 +56,7 @@ try {
       base_url: 'https://api.openai.com/v1',
       supported_endpoint_modes: ['responses_sse'],
       service_tier_override: 'priority',
-      reasoning_effort_override: 'high',
-      codex_responses_safe_repair_enabled: true
+      reasoning_effort_override: 'high'
     },
     supportedModels: ['gpt-5.4-mini'],
     modelMappings: [],
@@ -131,8 +130,6 @@ try {
   assert.deepEqual(Object.keys(detail).sort(), expectedKeys, 'advanced 必须使用独立字段白名单')
   assert.deepEqual(detail.modelMappings, [])
   assert.deepEqual(Object.keys(detail.credentials ?? {}).sort(), [
-    'codex_responses_safe_repair_enabled',
-    'codex_responses_strict_intercept_enabled',
     'reasoning_effort_override',
     'service_tier_override'
   ])

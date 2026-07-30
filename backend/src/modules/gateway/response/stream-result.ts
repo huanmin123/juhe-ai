@@ -3,7 +3,6 @@ import {
 } from '../upstream/body.js'
 import type { ParsedUsage } from '../usage/types.js'
 import type { ResponseInspectionDecision } from './inspection.js'
-import type { CodexResponsesGuardSnapshot } from '../codex-responses/response-guard.js'
 
 export interface StreamPipeResult {
   completed: boolean
@@ -18,7 +17,6 @@ export interface StreamPipeResult {
   estimatedOutputTokens?: number
   responseBodyText?: string
   responseResourceId?: string
-  codexResponsesGuard?: CodexResponsesGuardSnapshot
   auditResponseBody?: Buffer
   auditUpstreamBody?: Buffer
   downstreamBytesWritten: number
@@ -87,7 +85,6 @@ export function streamResult(
   semanticCommitted = outputReceived || imageOutputReceived,
   uncommittedResponseBody?: Buffer,
   responseResourceId?: string,
-  codexResponsesGuard?: CodexResponsesGuardSnapshot,
   protocolValidated = false
 ): StreamPipeResult {
   const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
@@ -110,7 +107,6 @@ export function streamResult(
     estimatedOutputTokens,
     responseBodyText,
     responseResourceId,
-    codexResponsesGuard,
     auditResponseBody,
     auditUpstreamBody: auditUpstreamBodyForResult(upstreamCapture, completed, captureSuccessPayloads, bodyOmission),
     downstreamBytesWritten,

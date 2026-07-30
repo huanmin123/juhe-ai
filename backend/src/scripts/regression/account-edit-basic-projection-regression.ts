@@ -49,8 +49,7 @@ try {
       base_url: 'https://api.openai.com/v1',
       supported_endpoint_modes: ['responses_sse'],
       service_tier_override: 'priority',
-      reasoning_effort_override: 'high',
-      codex_responses_safe_repair_enabled: true
+      reasoning_effort_override: 'high'
     },
     supportedModels: ['gpt-5.4-mini'],
     healthCheckModel: 'gpt-5.4-mini',

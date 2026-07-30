@@ -228,37 +228,6 @@
                 :readonly="authorizedEditing"
               />
 
-              <section v-if="form.clientCompatibility === 'codex_responses'" class="form-section codex-guard-section">
-                <div class="codex-guard-heading">Codex Responses 响应防护</div>
-                <div class="probe-toggle-row">
-                  <div class="probe-toggle-label">
-                    <span>默认安全修复</span>
-                    <a-tooltip title="识别到确定的历史或响应 ID 问题时复制并修复后再下发；未知类型只记录，不修改正文。">
-                      <QuestionCircleOutlined class="probe-toggle-help" />
-                    </a-tooltip>
-                  </div>
-                  <a-switch
-                    v-model:checked="form.codexResponsesSafeRepairEnabled"
-                    :disabled="authorizedEditing || form.codexResponsesStrictInterceptEnabled"
-                    checked-children="开启"
-                    un-checked-children="关闭"
-                  />
-                </div>
-                <div class="probe-toggle-row">
-                  <div class="probe-toggle-label">
-                    <span>严格拦截并换号</span>
-                    <a-tooltip title="识别到确定的协议异常时不向客户端下发，直接将账户置为运行态异常并请求下一账户。未知类型不会误拦截。">
-                      <QuestionCircleOutlined class="probe-toggle-help" />
-                    </a-tooltip>
-                  </div>
-                  <a-switch
-                    v-model:checked="form.codexResponsesStrictInterceptEnabled"
-                    :disabled="authorizedEditing"
-                    checked-children="开启"
-                    un-checked-children="关闭"
-                  />
-                </div>
-              </section>
             </div>
           </a-collapse-panel>
         </a-collapse>
@@ -525,20 +494,6 @@ const emit = defineEmits<{
 .probe-toggle-help {
   color: #8c8c8c;
   cursor: help;
-}
-
-.codex-guard-section {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid #fde68a;
-  border-radius: 8px;
-  background: #fffbeb;
-}
-
-.codex-guard-heading {
-  color: #92400e;
-  font-weight: 600;
 }
 
 .readonly-config-section {

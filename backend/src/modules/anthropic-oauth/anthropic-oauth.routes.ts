@@ -34,9 +34,7 @@ const oauthCredentialsPatchSchema = z.object({
   service_tier_override: z.string().trim().min(1).optional(),
   reasoning_effort_override: z.string().trim().min(1).optional(),
   error_handling_rules: z.unknown().optional(),
-  response_inspection_rules: z.unknown().optional(),
-  codex_responses_safe_repair_enabled: z.boolean().optional(),
-  codex_responses_strict_intercept_enabled: z.boolean().optional()
+  response_inspection_rules: z.unknown().optional()
 }).strict()
 
 const accountModelMappingSchema = z.object({
@@ -524,8 +522,6 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
   if (patch?.reasoning_effort_override !== undefined) output.reasoning_effort_override = patch.reasoning_effort_override
   if (patch?.error_handling_rules !== undefined) output.error_handling_rules = patch.error_handling_rules
   if (patch?.response_inspection_rules !== undefined) output.response_inspection_rules = patch.response_inspection_rules
-  if (patch?.codex_responses_safe_repair_enabled !== undefined) output.codex_responses_safe_repair_enabled = patch.codex_responses_safe_repair_enabled
-  if (patch?.codex_responses_strict_intercept_enabled !== undefined) output.codex_responses_strict_intercept_enabled = patch.codex_responses_strict_intercept_enabled
   return output
 }
 

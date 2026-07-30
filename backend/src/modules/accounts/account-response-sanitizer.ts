@@ -12,9 +12,7 @@ const publicCredentialKeys = new Set([
   'email',
   'account_id',
   'chatgpt_user_id',
-  'plan_type',
-  'codex_responses_safe_repair_enabled',
-  'codex_responses_strict_intercept_enabled'
+  'plan_type'
 ])
 
 const editBasicCredentialKeys = new Set([
@@ -27,9 +25,7 @@ const editBasicCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules',
-  'codex_responses_safe_repair_enabled',
-  'codex_responses_strict_intercept_enabled'
+  'response_inspection_rules'
 ])
 
 export function sanitizeAccountCredentialsForResponse(credentials: Record<string, unknown> | undefined): Record<string, unknown> {

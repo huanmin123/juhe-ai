@@ -10,16 +10,8 @@ import {
   type AuditCaptureContext
 } from '../audit/capture.service.js'
 import {
-  codexResponsesGuardAuditMetadata,
   responseInspectionAuditMetadata
 } from '../audit/metadata.js'
-import {
-  codexResponsesGuardUsageSummary,
-  createCodexResponsesResponseGuard,
-  type CodexResponsesGuardJsonResult,
-  type CodexResponsesGuardUsageSummary
-} from '../codex-responses/response-guard.js'
-import { resolveCodexResponsesGuardMode } from '../codex-responses/account-policy.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
@@ -64,7 +56,6 @@ import {
   shouldExcludeCurrentAccountForStreamServerRetry
 } from './stream-finalization-retry-decision.js'
 import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
-import { runtimeConfig } from '../../../config/runtime.js'
 import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
 import {
   parseGatewayNonStreamJsonBody,
@@ -91,67 +82,14 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   automaticAccountStateMutationEnabled: boolean
   protocolValidationEnabled: boolean
   downstreamCommitState: GatewayDownstreamCommitState
-  onCodexResponsesGuardResult?: (result: CodexResponsesGuardJsonResult) => void
   sessionAffinityKey?: string
 }): Promise<UpstreamResponseHandlingResult | undefined> {
   const parsedJsonBody = input.parsedJsonBody
     ?? parseGatewayNonStreamJsonBody(input.responseBody.length > 0 ? input.responseBodyText : undefined, input.upstreamResponse.headers)
   if (parsedJsonBody.status !== 'valid') {
-    const guardResult = inspectCodexResponsesJsonAtMarkedBoundary(input, {})
-    if (guardResult) input.onCodexResponsesGuardResult?.(guardResult)
-    if (
-      guardResult?.mode === 'strict_intercept'
-      && (guardResult.outcome === 'repairable' || guardResult.outcome === 'blocked')
-    ) {
-      return finalizeBufferedJsonProtocolFailure({
-        ...input,
-        parsedJsonBody,
-        codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
-      }, {
-        message: codexResponsesStrictInterceptMessage(guardResult),
-        errorCode: 'codex_responses_protocol_intercepted'
-      })
-    }
-    if (guardResult?.mode === 'safe_repair' && guardResult.outcome === 'blocked' && guardResult.retryable) {
-      return finalizeBufferedJsonProtocolFailure({
-        ...input,
-        parsedJsonBody,
-        accountStateMutationEnabled: false,
-        codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
-      }, {
-        message: codexResponsesBlockedMessage(guardResult),
-        errorCode: 'codex_responses_protocol_blocked'
-      })
-    }
     return undefined
   }
   const parsedJson = parsedJsonBody.value
-  const guardResult = inspectCodexResponsesJsonAtMarkedBoundary(input, parsedJson)
-  if (guardResult) input.onCodexResponsesGuardResult?.(guardResult)
-  if (
-    guardResult?.mode === 'strict_intercept'
-    && (guardResult.outcome === 'repairable' || guardResult.outcome === 'blocked')
-  ) {
-    return finalizeBufferedJsonProtocolFailure({
-      ...input,
-      parsedJsonBody,
-      codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
-    }, {
-      message: codexResponsesStrictInterceptMessage(guardResult),
-      errorCode: 'codex_responses_protocol_intercepted'
-    })
-  }
-  if (guardResult?.mode === 'safe_repair' && guardResult.outcome === 'blocked' && guardResult.retryable) {
-    return finalizeBufferedJsonProtocolFailure({
-      ...input,
-      parsedJsonBody,
-      accountStateMutationEnabled: false,
-      codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
-    }, {
-      message: codexResponsesBlockedMessage(guardResult),
-      errorCode: 'codex_responses_protocol_blocked'
-    })
-  }
   const protocolFailure = input.protocolValidationEnabled
     ? validateBufferedJsonProtocolResponse(parsedJson, input)
     : undefined
@@ -291,68 +229,6 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   return { alreadyFinalized: true }
 }
 
-export function inspectCodexResponsesJsonAtMarkedBoundary(
-  input: {
-    req: Request
-    upstreamResponse: GatewayUpstreamResponse
-    auditCapture: AuditCaptureContext
-    clientStrategy?: OpenAIGatewayClientStrategyContext
-    downstreamCommitState: GatewayDownstreamCommitState
-    account?: UpstreamAccount
-    guardMode?: 'off' | 'shadow' | 'safe_repair' | 'strict_intercept'
-  },
-  parsedJson: unknown
-): CodexResponsesGuardJsonResult | undefined {
-  const marker = input.upstreamResponse.codexResponsesGuardMarker
-  const mode = input.guardMode ?? resolveCodexResponsesGuardMode({
-    globalMode: runtimeConfig.codexProtocolGuard.mode,
-    credentials: input.account?.credentials
-  })
-  if (
-    mode === 'off'
-    ||
-    !input.upstreamResponse.ok
-    || !marker
-    || input.clientStrategy?.clientProfile !== 'codex'
-    || gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) !== 'responses'
-  ) return undefined
-  const guard = createCodexResponsesResponseGuard({
-    marker,
-    downstreamCommitState: input.downstreamCommitState,
-    mode,
-    envelopeKind: isResponsesCompactRequest(input.req) ? 'compact' : 'response'
-  })
-  try {
-    const result = guard.inspectJson(plainObject(parsedJson) ?? {})
-    if (result.outcome !== 'clean') {
-      input.auditCapture.addGatewayMetadata({
-        label: 'codex_responses_protocol_guard',
-        metadata: codexResponsesGuardAuditMetadata(result)
-      })
-    }
-    return result
-  } finally {
-    guard.dispose()
-  }
-}
-
-function codexResponsesStrictInterceptMessage(result: CodexResponsesGuardJsonResult): string {
-  const codes = [...new Set(result.issues.map((issue) => issue.code))]
-  const detail = codes.length > 0 ? `：${codes.join(', ')}` : ''
-  return `Codex Responses 响应协议异常，严格模式已拦截并请求更换账户${detail}`
-}
-
-function codexResponsesBlockedMessage(result: CodexResponsesGuardJsonResult): string {
-  const codes = [...new Set(result.issues.map((issue) => issue.code))]
-  const detail = codes.length > 0 ? `：${codes.join(', ')}` : ''
-  return `Codex Responses 响应协议异常，安全模式已阻止本次响应并请求下一账户${detail}`
-}
-
-function isResponsesCompactRequest(req: Request): boolean {
-  const path = (req.originalUrl || req.path || '').split('?', 1)[0].replace(/^\/v1(?=\/|$)/, '') || '/'
-  return req.method?.toUpperCase() === 'POST' && path === '/responses/compact'
-}
-
 function validateBufferedJsonProtocolResponse(
   parsedJson: unknown,
   input: {
@@ -413,7 +289,6 @@ async function finalizeBufferedJsonProtocolFailure(
     firstTokenMs?: number
     settings: GatewaySettings
     accountStateMutationEnabled: boolean
-    codexResponsesGuard?: CodexResponsesGuardUsageSummary
     sessionAffinityKey?: string
   },
   failure: { message: string; errorCode: string }
@@ -448,8 +323,7 @@ async function finalizeBufferedJsonProtocolFailure(
       statusCode: input.upstreamResponse.status,
       headers: input.upstreamResponse.headers,
       bodyText: input.responseBodyText,
-      errorMessage: failure.message,
-      codexResponsesGuard: input.codexResponsesGuard
+      errorMessage: failure.message
     }),
     errorMessage: failure.message
   })

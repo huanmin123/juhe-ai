@@ -18,7 +18,6 @@ import {
   getCodexResponsesContextState
 } from '../codex-responses/chat-bridge-state.js'
 import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
-import { createCodexResponsesGuardMarker } from '../codex-responses/response-guard.js'
 import { prepareAnthropicMessagesBodyForAttempt } from '../upstream/body-preparation.js'
 import { applyGrokAccessDeniedFallback } from '../../providers/drivers/xai/grok-access-denied-fallback.js'
 
@@ -210,19 +209,7 @@ export async function performUpstreamRequestAttempt(
       return continueUpstreamJsonRequest(nextBody, 'gateway_codex_bridge_continue_chat_request_started')
     }
   })
-  if (
-    requestClientCompatibility !== 'codex_responses'
-    || transformedResponse.codexResponsesGuardMarker
-  ) {
-    return transformedResponse
-  }
-  return {
-    status: transformedResponse.status,
-    ok: transformedResponse.ok,
-    headers: transformedResponse.headers,
-    body: transformedResponse.body,
-    codexResponsesGuardMarker: createCodexResponsesGuardMarker('raw_upstream')
-  }
+  return transformedResponse
 }
 
 function isWeakSetValue(value: unknown): value is object {

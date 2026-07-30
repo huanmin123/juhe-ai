@@ -2,7 +2,6 @@ import type { Request, Response } from 'express'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
-import { runtimeConfig } from '../../../config/runtime.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
@@ -30,17 +29,7 @@ import {
   pipeNonStreamUpstreamResponseForInspection,
   nonStreamResponseCaptureBytes
 } from '../upstream/body.js'
-import {
-  codexResponsesGuardAuditMetadata,
-  responseInspectionAuditMetadata
-} from '../audit/metadata.js'
-import {
-  codexResponsesGuardUsageSummary,
-  createCodexResponsesResponseGuard,
-  type CodexResponsesGuardUsageSummary,
-  type CodexResponsesResponseGuard
-} from '../codex-responses/response-guard.js'
-import { resolveCodexResponsesGuardMode } from '../codex-responses/account-policy.js'
+import { responseInspectionAuditMetadata } from '../audit/metadata.js'
 import {
   forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
@@ -149,7 +138,6 @@ import {
   rememberGeminiInteractionAffinityAsync
 } from '../protocols/gemini-v1beta/interaction-affinity.service.js'
 import {
-  gatewayNonStreamJsonBodyFromValue,
   parseGatewayNonStreamJsonBody,
   publishGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
@@ -309,7 +297,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
 
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
   let codexTurnFailureRemembered = false
-  const codexResponsesGuard = createCodexResponsesGuardForInput(input)
   const responseTimeoutsDisabled = input.timeoutProfile.timeoutsDisabled === true
   const shouldMutateAccountForStreamFailure = (
     errorCode: string | undefined,
@@ -362,7 +349,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         endpointFamily: responseEndpointFamily,
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true),
         downstreamCommitState: input.downstreamCommitState,
-        codexResponsesGuard,
         beforeCommittedFailureSignal: async (context) => {
           if (
             isAccountDiagnosticTrafficSource(usageContext.trafficSource)
@@ -439,7 +425,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }
     )
   } catch (error) {
-    codexResponsesGuard?.dispose()
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       await recordDownstreamClosedUpstreamAttempt(req, {
@@ -472,12 +457,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     outputReceived: streamResult.outputReceived,
     estimatedOutputTokens: streamResult.estimatedOutputTokens
   })
-  if (streamResult.codexResponsesGuard && streamResult.codexResponsesGuard.outcome !== 'clean') {
-    auditCapture.addGatewayMetadata({
-      label: 'codex_responses_protocol_guard',
-      metadata: codexResponsesGuardAuditMetadata(streamResult.codexResponsesGuard)
-    })
-  }
   if (streamUsageFallback.estimated) {
     logger.warn({
       event: 'gateway_stream_usage_estimated',
@@ -552,10 +531,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         headers: upstreamResponse.headers,
         bodyText: streamResult.bodyOmission ? undefined : streamResult.responseBodyText,
         bodyOmission: streamResult.bodyOmission,
-        errorMessage: streamResult.message,
-        codexResponsesGuard: streamResult.codexResponsesGuard
-          ? codexResponsesGuardUsageSummary(streamResult.codexResponsesGuard)
-          : undefined
+        errorMessage: streamResult.message
       }),
       errorMessage: streamResult.message
     })
@@ -689,7 +665,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     }
   }
 
-  const codexResponsesGuardSnapshot = streamResult.codexResponsesGuard
   return {
     alreadyFinalized: false,
     usage: streamUsageFallback.usage,
@@ -697,9 +672,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     responseBodyText: streamResult.responseBodyText,
     responseResourceId: streamResult.responseResourceId,
     bodyOmission: streamResult.bodyOmission,
-    codexResponsesGuard: codexResponsesGuardSnapshot && codexResponsesGuardSnapshot.outcome !== 'clean'
-      ? codexResponsesGuardUsageSummary(codexResponsesGuardSnapshot)
-      : undefined,
     protocolValidatedSuccess: upstreamResponse.ok && streamResult.protocolValidated,
     errorPayload: {}
   }
@@ -807,9 +779,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let responseUsageText: string | undefined
   let responseSemanticText: string | undefined
   let parsedJsonBody: GatewayNonStreamJsonBody | undefined
-  let codexGuardedCompleteBody: Buffer | undefined
-  let codexGuardedCompleteBodyText: string | undefined
-  let codexResponsesGuard: CodexResponsesGuardUsageSummary | undefined
   let bodyOmission: StreamBodyOmissionSummary | undefined
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
@@ -840,11 +809,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const protocolValidationEnabled = isOpenAIJsonResponseContentType(contentType)
         && nonStreamJsonProtocolValidationAllowed(input)
-      const inspectJsonResponse = isCodexResponsesGuardEligible(input)
-        || (
-          isOpenAIJsonResponseContentType(contentType)
-          && (protocolValidationEnabled || shouldBufferNonStreamJsonResponse(input))
-        )
+      const inspectJsonResponse = isOpenAIJsonResponseContentType(contentType)
+        && (protocolValidationEnabled || shouldBufferNonStreamJsonResponse(input))
       if (inspectJsonResponse) {
         const pipeResult = await pipeNonStreamUpstreamResponseForInspection(upstreamResponse.body, res, {
           startedAt,
@@ -922,16 +888,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             automaticAccountStateMutationEnabled: input.automaticAccountStateMutationEnabled !== false,
             protocolValidationEnabled,
             downstreamCommitState: input.downstreamCommitState,
-            onCodexResponsesGuardResult: (result) => {
-              if (result.outcome !== 'clean') {
-                codexResponsesGuard = codexResponsesGuardUsageSummary(result)
-              }
-              if (result.outcome === 'repaired_safe' || result.outcome === 'repaired_bridge') {
-                codexGuardedCompleteBodyText = JSON.stringify(result.value)
-                codexGuardedCompleteBody = Buffer.from(codexGuardedCompleteBodyText, 'utf8')
-                parsedJsonBody = gatewayNonStreamJsonBodyFromValue(result.value)
-              }
-            },
             sessionAffinityKey
           })
           if (jsonInspectionResult) {
@@ -955,17 +911,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
               responseResourceId
             })
           }
-          const downstreamBody = codexGuardedCompleteBody ?? completeBody
-          const downstreamBodyText = codexGuardedCompleteBodyText ?? completeBodyText
+          const downstreamBody = completeBody
+          const downstreamBodyText = completeBodyText
           responseSemanticText = downstreamBodyText
           if (firstTokenMs === undefined) {
             firstTokenMs = Date.now() - startedAt
           }
           markSemanticOutput()
           prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-          if (codexGuardedCompleteBody) {
-            res.setHeader('content-length', String(downstreamBody.length))
-          }
           input.downstreamCommitState.markTransportCommitted()
           res.send(downstreamBody)
           input.downstreamCommitState.markSemanticCommitted(downstreamBody.length)
@@ -975,7 +928,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           }
           responseUsageText = downstreamBodyText
           } else {
-            codexResponsesGuard = recordCodexResponsesGuardCoverageGap(input)
           logger.warn({
             event: 'gateway_non_stream_response_inspection_omitted',
             accountId: account.id,
@@ -1307,7 +1259,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     responseResourceId,
     bodyOmission,
-    codexResponsesGuard,
     protocolValidatedSuccess: forwardedResponseSuccessful && protocolValidatedNonStreamResponse({
       req,
       account,
@@ -1350,55 +1301,6 @@ export function nonStreamJsonProtocolValidationAllowed(input: {
   if (endpointFamily !== 'chat_completions' && endpointFamily !== 'messages') return false
   const requestLane = resolveOpenAIGatewayRequestLane(input.req)
   return automaticUpstreamReplayAllowedAfterDispatch(input.req, requestLane)
-}
-
-function isCodexResponsesGuardEligible(input: HandleUpstreamResponseInput): boolean {
-  return Boolean(
-    runtimeConfig.codexProtocolGuard.mode !== 'off'
-    && input.upstreamResponse.ok
-    && input.upstreamResponse.codexResponsesGuardMarker
-    && input.clientStrategy?.clientProfile === 'codex'
-    && gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) === 'responses'
-  )
-}
-
-function createCodexResponsesGuardForInput(
-  input: HandleUpstreamResponseInput
-): CodexResponsesResponseGuard | undefined {
-  if (!isCodexResponsesGuardEligible(input)) return undefined
-  const mode = resolveCodexResponsesGuardMode({
-    globalMode: runtimeConfig.codexProtocolGuard.mode,
-    credentials: input.account.credentials
-  })
-  if (mode === 'off') return undefined
-  const marker = input.upstreamResponse.codexResponsesGuardMarker
-  if (!marker) return undefined
-  return createCodexResponsesResponseGuard({
-    marker,
-    downstreamCommitState: input.downstreamCommitState,
-    mode,
-    envelopeKind: isCodexResponsesCompactRequest(input.req) ? 'compact' : 'response'
-  })
-}
-
-function isCodexResponsesCompactRequest(req: Request): boolean {
-  const path = (req.originalUrl || req.path || '').split('?', 1)[0].replace(/^\/v1(?=\/|$)/, '') || '/'
-  return req.method.toUpperCase() === 'POST' && path === '/responses/compact'
-}
-
-function recordCodexResponsesGuardCoverageGap(input: HandleUpstreamResponseInput): CodexResponsesGuardUsageSummary | undefined {
-  const guard = createCodexResponsesGuardForInput(input)
-  if (!guard) return undefined
-  try {
-    const result = guard.observeCoverageGap()
-    input.auditCapture.addGatewayMetadata({
-      label: 'codex_responses_protocol_guard',
-      metadata: codexResponsesGuardAuditMetadata(result)
-    })
-    return codexResponsesGuardUsageSummary(result)
-  } finally {
-    guard.dispose()
-  }
 }
 
 function managementResponseInspectionPoliciesForInput(
@@ -1998,24 +1900,15 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
         upstreamUrl,
         statusCode: upstreamResponse.status,
         headers: upstreamResponse.headers,
-        bodyOmission: result.bodyOmission,
-        codexResponsesGuard: result.codexResponsesGuard
+        bodyOmission: result.bodyOmission
       })
       : forwardedResponseSuccessful
-        ? result.codexResponsesGuard
-          ? buildUsageResponseSnapshot({
-            upstreamUrl,
-            statusCode: upstreamResponse.status,
-            headers: upstreamResponse.headers,
-            codexResponsesGuard: result.codexResponsesGuard
-          })
-          : undefined
+        ? undefined
         : buildUsageResponseSnapshot({
           upstreamUrl,
           statusCode: upstreamResponse.status,
           headers: upstreamResponse.headers,
-          bodyText: result.responseBodyText,
-          codexResponsesGuard: result.codexResponsesGuard
+          bodyText: result.responseBodyText
         })
   })
   if (result.bodyOmission) {

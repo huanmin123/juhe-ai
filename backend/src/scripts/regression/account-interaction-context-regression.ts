@@ -73,9 +73,7 @@ try {
         priority: 1,
         match: { outputTextIncludes: ['blocked'] },
         action: 'retry_next_account'
-      }],
-      codex_responses_safe_repair_enabled: true,
-      codex_responses_strict_intercept_enabled: true
+      }]
     },
     supportedModels: ['gemini-2.5-pro'],
     healthCheckModel: 'gemini-2.5-pro',
@@ -237,8 +235,6 @@ try {
   assert.deepEqual(cloneCapture.result.tags.map((item) => item.name), ['clone-tag'])
   assert.deepEqual(Object.keys(cloneCapture.result.credentialOptions).sort(), [
     'base_url',
-    'codex_responses_safe_repair_enabled',
-    'codex_responses_strict_intercept_enabled',
     'error_handling_rules',
     'reasoning_effort_override',
     'response_inspection_rules',

@@ -285,10 +285,8 @@ try {
   for (const forbiddenField of ['supportedModels', 'tags', 'runtimeAvailability', 'usage', 'todayUsage', 'permissions']) {
     assert.equal(Object.prototype.hasOwnProperty.call(multiKeyDetail, forbiddenField), false, `多 Key 高级详情不得混入 ${forbiddenField}`)
   }
-  assert.deepEqual(Object.keys(multiKeyDetail.credentials ?? {}).sort(), [
-    'codex_responses_safe_repair_enabled',
-    'codex_responses_strict_intercept_enabled'
-  ], '多 Key 高级详情只应返回高级策略开关')
+  assert.equal(Object.hasOwn(multiKeyDetail.credentials ?? {}, 'codex_responses_safe_repair_enabled'), false, '高级详情不得投影已移除的安全修复开关')
+  assert.equal(Object.hasOwn(multiKeyDetail.credentials ?? {}, 'codex_responses_strict_intercept_enabled'), false, '高级详情不得投影已移除的严格拦截开关')
   assertNoForbiddenCredentialKeysExcept(
     multiKeyDetail,
     '多 API Key 账户高级详情响应',
