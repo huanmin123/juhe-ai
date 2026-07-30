@@ -143,6 +143,12 @@ if ($performanceInstaller.Contains('for role_pid in $(metrics_registry_role_pids
 $metricsGateFunctionStart = $performanceInstaller.IndexOf('wait_for_metrics_registry() {', [StringComparison]::Ordinal)
 $metricsRolePidFunctionStart = $performanceInstaller.IndexOf('metrics_registry_role_pids() {', $metricsGateFunctionStart, [StringComparison]::Ordinal)
 $metricsGateFunction = $performanceInstaller.Substring($metricsGateFunctionStart, $metricsRolePidFunctionStart - $metricsGateFunctionStart)
+$metricsTimeFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'performance_metrics_registry_time_ms'
+foreach ($metricsFunction in @($metricsGateFunction, $metricsTimeFunction)) {
+  if ($metricsFunction -notmatch '(?m)^\s*JUHE_AI_LOG_FILE_ENABLED=false \\\r?\n\s*JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=false \\$') {
+    throw 'Performance topology metrics preflight must disable runtime log indexing together with file logging'
+  }
+}
 if ($metricsGateFunction -notmatch '(?m)^  current_role_pid_lines="\$\(metrics_registry_role_pids "\$VERIFIED_HEALTH_JSON"\)"$') {
   throw 'Performance topology must propagate PID mapping helper failures without a fallback suffix'
 }
@@ -747,7 +753,11 @@ metrics_registry_role_pids() {
     *) return 2 ;;
   esac
 }
-node() { printf '%s\n' "$@" > "$HARNESS_ROOT/$VERIFIED_HEALTH_JSON.args"; }
+node() {
+  [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]
+  [ "$JUHE_AI_RUNTIME_LOG_INDEX_ENABLED" = false ]
+  printf '%s\n' "$@" > "$HARNESS_ROOT/$VERIFIED_HEALTH_JSON.args"
+}
 for instance in gateway-1 gateway-2 gateway-3 control-1; do
   VERIFIED_HEALTH_JSON="$instance"
   wait_for_metrics_registry "$instance" 123456789
@@ -759,6 +769,25 @@ done
 '@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction)
     & $bash.Source -c $metricsGateHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology PID accumulation executable harness failed' }
+
+    $metricsTimeHarness = @'
+set -euo pipefail
+CURRENT_DIR=/tmp/juhe-ai-performance-harness
+__METRICS_TIME_FUNCTION__
+node() {
+  [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]
+  [ "$JUHE_AI_RUNTIME_LOG_INDEX_ENABLED" = false ]
+  [ "$1" = "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" ]
+  [ "$2" = --print-redis-time-ms ]
+  printf '%s\n' 123456789
+}
+observed_after_ms="$(performance_metrics_registry_time_ms)"
+case "$observed_after_ms" in
+  ''|*[!0-9]*) exit 1 ;;
+esac
+'@.Replace('__METRICS_TIME_FUNCTION__', $metricsTimeFunction)
+    & $bash.Source -c $metricsTimeHarness
+    if ($LASTEXITCODE -ne 0) { throw 'Performance topology metrics timestamp preflight harness failed' }
 
     $metricsMapperFailureHarness = @'
 set -euo pipefail

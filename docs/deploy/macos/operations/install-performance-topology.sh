@@ -593,6 +593,7 @@ EOF
     JUHE_AI_STATS_WORKER_REPLICAS=1 \
     JUHE_AI_OPS_WORKER_REPLICAS=1 \
     JUHE_AI_LOG_FILE_ENABLED=false \
+    JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=false \
     JUHE_AI_LOG_CONSOLE_ENABLED=false \
     "$@"; then
     return 1
@@ -631,6 +632,7 @@ performance_metrics_registry_time_ms() {
   JUHE_AI_PROCESS_ROLE=server \
   JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
   JUHE_AI_LOG_FILE_ENABLED=false \
+  JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=false \
   JUHE_AI_LOG_CONSOLE_ENABLED=false \
   node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --print-redis-time-ms
 }
