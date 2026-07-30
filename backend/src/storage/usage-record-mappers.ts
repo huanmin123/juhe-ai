@@ -229,7 +229,7 @@ function usageRecordListFailureReasonForErrorCode(errorCode: string | undefined)
     normal_route_first_byte_timeout: '上游未在首段时限内响应',
     upstream_retryable_error: '上游暂时不可用',
     unproven_upstream_transport_failure: '上游传输失败，具体原因未确认',
-    upstream_protocol_failure: '上游流式响应返回失败终态',
+    upstream_protocol_failure: '上游响应返回失败终态',
     upstream_protocol_error: '上游响应协议异常',
     invalid_api_key: 'API Key 无效',
     forbidden: '请求无权限',

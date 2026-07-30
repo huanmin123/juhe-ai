@@ -227,6 +227,8 @@ export class AuditCaptureContext {
   private finalized = false
   private hadFailedAttempt = false
   private downstreamClosed = false
+  private serverDiagnosticTimeout = false
+  private serverDiagnosticCancellation = false
   private overflowed = false
   private approximateBytes = 0
   private residentPayloadBytes = 0
@@ -302,6 +304,32 @@ export class AuditCaptureContext {
       label: 'downstream_connection_closed',
       metadata: {
         trigger: 'unknown_unproven',
+        clientActionConfirmed: false
+      }
+    })
+  }
+
+  markServerDiagnosticTimeout(): void {
+    if (this.serverDiagnosticTimeout) return
+    this.serverDiagnosticTimeout = true
+    this.addGatewayMetadata({
+      label: 'server_diagnostic_timeout',
+      metadata: {
+        source: 'server_diagnostic',
+        trigger: 'diagnostic_deadline',
+        clientActionConfirmed: false
+      }
+    })
+  }
+
+  markServerDiagnosticCancellation(): void {
+    if (this.serverDiagnosticCancellation) return
+    this.serverDiagnosticCancellation = true
+    this.addGatewayMetadata({
+      label: 'server_diagnostic_cancelled',
+      metadata: {
+        source: 'server_diagnostic',
+        trigger: 'server_task_cancelled',
         clientActionConfirmed: false
       }
     })

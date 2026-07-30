@@ -7,6 +7,7 @@ import { isUpstreamRequestAbortedError } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from './validation-error.js'
+import { gatewayRequestAbortSource } from './abort-attribution.js'
 
 interface HandleGatewayRequestKnownErrorResponseInput {
   req: Request
@@ -18,6 +19,55 @@ interface HandleGatewayRequestKnownErrorResponseInput {
 
 export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayRequestKnownErrorResponseInput): boolean {
   const { req, res, auditCapture, error, signal } = input
+
+  const abortSource = gatewayRequestAbortSource(req)
+  if (signal.aborted && abortSource === 'server_diagnostic_timeout') {
+    const statusCode = 504
+    const responsePayload = gatewayErrorPayload(
+      '服务端账户诊断超时',
+      'gateway_timeout',
+      'server_diagnostic_timeout'
+    )
+    const protocol = gatewayProtocolClientErrorProtocolForRequest(req)
+    const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+    sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(clientPayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'server_diagnostic',
+      errorCode: 'server_diagnostic_timeout',
+      errorMessage: responsePayload.error.message
+    })
+    return true
+  }
+
+  if (signal.aborted && abortSource === 'server_diagnostic_cancel') {
+    const statusCode = 500
+    const responsePayload = gatewayErrorPayload(
+      '服务端账户诊断已取消',
+      'gateway_cancelled',
+      'server_diagnostic_cancelled'
+    )
+    const protocol = gatewayProtocolClientErrorProtocolForRequest(req)
+    const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+    sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(clientPayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'server_diagnostic',
+      errorCode: 'server_diagnostic_cancelled',
+      errorMessage: responsePayload.error.message
+    })
+    return true
+  }
 
   if (isUpstreamRequestAbortedError(error) || signal.aborted) {
     auditCapture.finalize({

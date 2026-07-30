@@ -145,10 +145,15 @@ async function runCooldownAccountRetestQueueItem(
     onUpstreamAttempt: (attempt) => {
       upstreamAttempt = attempt
     },
-    shouldRetryFailure: (attemptResult) => automaticAccountProbeOutcome(attemptResult, {
-      upstreamAttempt,
-      timeout: diagnosticTimedOut
-    }) === 'upstream_failure',
+    shouldRetryFailure: (attemptResult) => {
+      const probeOutcome = automaticAccountProbeOutcome(attemptResult, {
+        upstreamAttempt,
+        timeout: diagnosticTimedOut
+      })
+      // Keep retrying a server-side task timeout, but never turn it into
+      // account/upstream failure evidence when the diagnostic finishes.
+      return probeOutcome === 'upstream_failure' || probeOutcome === 'probe_task_failure'
+    },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {

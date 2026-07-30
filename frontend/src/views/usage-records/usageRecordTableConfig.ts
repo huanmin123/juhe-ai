@@ -13,7 +13,7 @@ export function usageRecordTableColumns(input: {
   baseColumns.push(
     { title: '模型', dataIndex: 'model', key: 'model', width: 240 },
     { title: '类型', key: 'stream', width: 90 },
-    { title: '状态', key: 'status', width: 330 },
+    { title: '状态', key: 'status', width: 220 },
     { title: 'Token 用量', key: 'tokens', width: 150 },
     { title: '成本', key: 'cost', width: 110 },
     { title: '延迟', key: 'latency', width: 150 },

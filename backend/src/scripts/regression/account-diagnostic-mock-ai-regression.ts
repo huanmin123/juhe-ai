@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -10,6 +10,13 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
+import { isDiagnosticTimeoutSignal } from '../../modules/accounts/account-diagnostic-retry-policy.js'
+import {
+  gatewayDiagnosticAbortSourceFromSignal,
+  markGatewayRequestAbortSource,
+  gatewayRequestAbortSource
+} from '../../modules/gateway/request/abort-attribution.js'
+import { createMemoryGatewayRequest } from '../../modules/gateway/testing/memory-gateway-http.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-diagnostic-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -53,6 +60,49 @@ const [
 
 let upstream: http.Server | undefined
 const originalAbortSignalTimeout = AbortSignal.timeout
+
+const diagnosticAbortController = new AbortController()
+const diagnosticAbortRequest = createMemoryGatewayRequest({
+  method: 'POST',
+  path: '/v1/responses',
+  signal: diagnosticAbortController.signal,
+  serverDiagnostic: true
+})
+const diagnosticAbortSourcePromise = new Promise<void>((resolve) => {
+  diagnosticAbortRequest.once('aborted', () => resolve())
+})
+diagnosticAbortController.abort('account_diagnostic_deadline')
+await diagnosticAbortSourcePromise
+assert.equal(
+  gatewayRequestAbortSource(diagnosticAbortRequest),
+  'server_diagnostic_timeout',
+  '服务端诊断 deadline 必须携带 server_diagnostic_timeout 来源，不能落为客户端断开'
+)
+assert.equal(
+  gatewayDiagnosticAbortSourceFromSignal(AbortSignal.abort('manual_server_cancel')),
+  'server_diagnostic_cancel'
+)
+assert.equal(
+  isDiagnosticTimeoutSignal(AbortSignal.abort('account_circuit_probe_lease_deadline')),
+  true,
+  '服务端租约 deadline 必须保留为诊断超时，而不能降级为取消'
+)
+const ordinaryRequest = createMemoryGatewayRequest({ method: 'POST', path: '/v1/responses' })
+markGatewayRequestAbortSource(ordinaryRequest, 'server_diagnostic_cancel')
+assert.equal(gatewayRequestAbortSource(ordinaryRequest), 'server_diagnostic_cancel')
+
+const finalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
+const nonStreamInspectionSource = readFileSync(new URL('../../modules/gateway/response/non-stream-json-inspection.ts', import.meta.url), 'utf8')
+const usageRecordMapperSource = readFileSync(new URL('../../storage/usage-record-mappers.ts', import.meta.url), 'utf8')
+assert.match(finalizationSource, /server_diagnostic_timeout|responsesFailedTerminal/)
+assert.match(nonStreamInspectionSource, /upstream_protocol_failure/)
+assert.match(usageRecordMapperSource, /upstream_protocol_failure:\s*'上游响应返回失败终态'/)
+assert.doesNotMatch(usageRecordMapperSource, /upstream_protocol_failure:\s*'上游流式响应返回失败终态'/)
+assert.doesNotMatch(
+  readFileSync(new URL('../../modules/gateway/request/error-response.ts', import.meta.url), 'utf8'),
+  /const statusCode = 499/,
+  '服务端诊断取消不得使用客户端断开语义的 HTTP 499'
+)
 
 try {
   setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -144,6 +194,7 @@ try {
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
   assert.equal(codexTimeoutResult.success, false, '持续本地超时的 Codex 切号探针不应通过')
+  assert.equal(codexTimeoutResult.errorCode, 'server_diagnostic_timeout', '账户诊断结果必须明确记录服务端诊断超时来源')
   assert.equal(hitCount('codex-timeout'), 3, 'Codex 切号探针只有本地超时时才应在同一候选账号递进三档')
 
   const healthTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'health-timeout', access)
@@ -166,11 +217,10 @@ try {
   flushAllUsageRecordQueue()
   const healthTimeoutAfterProbe = repositories.findAccountSummary(healthTimeoutAccount.id, access)
   assert.equal(hitCount('health-timeout'), 3, '后台健康检查在响应头前超时时必须完整执行三档探测')
-  assert.equal(healthTimeoutAfterProbe?.status, 'temporary_unavailable', '客户请求失败后的三档本地超时必须直接标记临时不可调用')
-  assert.equal(
+  assert.equal(healthTimeoutAfterProbe?.status, 'active', '客户请求失败后的三档本地超时不得改变账户健康状态')
+  assert.ok(
     repositories.findOpenAIAccountForGroup(group.id, healthTimeoutAccount.id, admin.id),
-    undefined,
-    'temporary_unavailable 账户必须被普通路由候选排除'
+    '健康检查本地任务失败后，账户仍应保持可调度，不能伪造上游失败可用性证据'
   )
 
   const cooldownTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'cooldown-timeout', access)
@@ -200,7 +250,7 @@ try {
   const cooldownTimeoutAfterProbe = repositories.findAccountSummary(cooldownTimeoutAccount.id, access)
   assert.equal(hitCount('cooldown-timeout'), 3, '冷却复测在响应头前超时时必须完整执行三档探测')
   assert.equal(cooldownTimeoutAfterProbe?.status, 'temporary_unavailable', '冷却复测超时不得提前恢复账户')
-  assert.equal(cooldownTimeoutAfterProbe?.cooldownRetestFailureCount, 1, '冷却复测本地超时必须累计失败并推进恢复退避')
+  assert.equal(cooldownTimeoutAfterProbe?.cooldownRetestFailureCount, 0, '冷却复测本地任务超时不得累计上游失败次数')
 
   console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号、客户请求失败健康检查和冷却复测的本地超时隔离')
 } finally {

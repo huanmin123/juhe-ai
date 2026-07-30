@@ -115,7 +115,7 @@ export function statusCodeColor(record: UsageRecordListItem): string {
 export function statusCodeText(record: UsageRecordListItem): string {
   if (typeof record.statusCode === 'number') {
     return !record.success && record.statusCode >= 200 && record.statusCode < 300
-      ? `HTTP ${record.statusCode}（非成功终态）`
+      ? '上游非成功终态'
       : `HTTP ${record.statusCode}`
   }
   return '-'

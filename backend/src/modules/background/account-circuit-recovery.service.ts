@@ -508,7 +508,9 @@ async function runProbeWithinLease(
   const deadline = new Promise<TransportProbeOutcome>((resolve) => {
     timer = setTimeout(() => {
       controller.abort('account_circuit_probe_lease_deadline')
-      resolve({ kind: 'transport_incomplete', failureKind: 'timeout' })
+      // The lease belongs to this server-side task.  It does not prove that
+      // the upstream timed out, so keep it out of account failure evidence.
+      resolve({ kind: 'unknown', failureKind: 'task_failure' })
     }, leaseDurationMs)
     timer.unref()
   })

@@ -142,6 +142,7 @@ import {
   publishGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
+import { responsesFailureStatusFromCapturedJson } from './responses-failure-status.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
@@ -211,6 +212,10 @@ export function protocolValidatedNonStreamResponse(input: {
       return (path.includes('/embeddings') || path.includes('/images')) && Array.isArray(root.data)
     }
   }
+}
+
+function hasResponsesFailedTerminal(responseBodyText: string | undefined): boolean {
+  return responsesFailureStatusFromCapturedJson(responseBodyText)
 }
 
 function isRecordValue(value: unknown): value is Record<string, unknown> {
@@ -815,7 +820,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         const pipeResult = await pipeNonStreamUpstreamResponseForInspection(upstreamResponse.body, res, {
           startedAt,
           inspectBytes: nonStreamResponseInspectionMaxBytes,
-          captureBody: auditCapture.shouldCaptureSuccessPayloads(),
+          captureBody: auditCapture.shouldCaptureSuccessPayloads()
+            || gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses',
           signal,
           firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
             ? undefined
@@ -856,6 +862,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
         responseBody = pipeResult.capturedBody
         responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+        if (pipeResult.captureTruncated
+          && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
+          && hasResponsesFailedTerminal(pipeResult.capturedBodyText)) {
+          errorPayload = {
+            code: 'upstream_protocol_failure',
+            message: '上游 Responses 返回失败终态'
+          }
+        }
         responseUsageText = pipeResult.usageTailText
         firstTokenMs = pipeResult.firstByteMs
         if (pipeResult.fullyBuffered) {
@@ -949,7 +963,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       } else {
         const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
           startedAt,
-          captureBody: auditCapture.shouldCaptureSuccessPayloads(),
+          captureBody: auditCapture.shouldCaptureSuccessPayloads()
+            || gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses',
           signal,
           firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
             ? undefined
@@ -980,6 +995,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
         responseBody = pipeResult.capturedBody
         responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+        if (pipeResult.captureTruncated
+          && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
+          && hasResponsesFailedTerminal(pipeResult.capturedBodyText)) {
+          errorPayload = {
+            code: 'upstream_protocol_failure',
+            message: '上游 Responses 返回失败终态'
+          }
+        }
         responseUsageText = pipeResult.usageTailText
         firstTokenMs = pipeResult.firstByteMs
         if (pipeResult.captureTruncated) {
@@ -1298,7 +1321,7 @@ export function nonStreamJsonProtocolValidationAllowed(input: {
 }): boolean {
   if (!input.upstreamResponse.ok) return false
   const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
-  if (endpointFamily !== 'chat_completions' && endpointFamily !== 'messages') return false
+  if (endpointFamily !== 'chat_completions' && endpointFamily !== 'messages' && endpointFamily !== 'responses') return false
   const requestLane = resolveOpenAIGatewayRequestLane(input.req)
   return automaticUpstreamReplayAllowedAfterDispatch(input.req, requestLane)
 }
@@ -1875,8 +1898,20 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   if (input.routingEffectsApplied !== true) {
     await applyHandledUpstreamRoutingEffects(input)
   }
-  const forwardedResponseSuccessful = upstreamResponse.ok
+  const responsesFailedTerminal = upstreamResponse.ok
+    && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
+    && (
+      result.errorPayload.code === 'upstream_protocol_failure'
+      || hasResponsesFailedTerminal(result.responseBodyText)
+    )
+  const forwardedResponseSuccessful = upstreamResponse.ok && !responsesFailedTerminal
   const protocolValidatedSuccess = forwardedResponseSuccessful && result.protocolValidatedSuccess === true
+  const finalErrorCode = typeof result.errorPayload.code === 'string'
+    ? result.errorPayload.code
+    : responsesFailedTerminal ? 'upstream_protocol_failure' : undefined
+  const finalErrorMessage = typeof result.errorPayload.message === 'string'
+    ? result.errorPayload.message
+    : responsesFailedTerminal ? '上游 Responses 返回失败终态' : undefined
 
   await recordCompletedUpstreamAttempt(req, {
     ...usageContext,
@@ -1890,8 +1925,8 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     startedAt,
     completedAtMs: input.completedAtMs,
     usage: result.usage,
-    errorCode: typeof result.errorPayload.code === 'string' ? result.errorPayload.code : undefined,
-    errorMessage: typeof result.errorPayload.message === 'string' ? result.errorPayload.message : undefined,
+    errorCode: finalErrorCode,
+    errorMessage: finalErrorMessage,
     requestSnapshot: result.bodyOmission
       ? usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, result.bodyOmission)
       : forwardedResponseSuccessful ? undefined : usageContext.requestSnapshot,
@@ -1926,8 +1961,8 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     responseBody: result.bodyOmission ? undefined : result.responseBodyText,
     responsePartType: forwardedResponseSuccessful ? 'gateway_response' : 'gateway_error',
     errorPhase: forwardedResponseSuccessful ? undefined : 'upstream_response',
-    errorCode: typeof result.errorPayload.code === 'string' ? result.errorPayload.code : undefined,
-    errorMessage: typeof result.errorPayload.message === 'string' ? result.errorPayload.message : undefined,
+    errorCode: finalErrorCode,
+    errorMessage: finalErrorMessage,
     accountId: account.id,
     firstTokenMs: result.firstTokenMs
   })

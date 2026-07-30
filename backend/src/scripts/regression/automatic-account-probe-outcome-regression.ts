@@ -52,7 +52,7 @@ assert.equal(automaticAccountProbeOutcome({
   accountFailureEligible: true
 }, {
   timeout: true
-}), 'upstream_failure', '响应头前的本地诊断超时必须作为上游不可用证据')
+}), 'probe_task_failure', '没有真实上游 attempt 证据时，本地诊断超时必须归为服务端探针任务失败')
 
 const upstreamFailure = automaticAccountProbeOutcome({ success: false, accountFailureEligible: true }, {
   upstreamAttempt: {
@@ -144,13 +144,24 @@ assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
 }, {
   upstreamAttempt: {
     upstreamUrl: 'https://api.openai.com/v1/responses',
-    message: 'first_byte_timeout'
+    message: 'first_byte_timeout',
+    transportFailureKind: 'timeout'
   },
   timeout: true
 }), {
   kind: 'transport_incomplete',
   failureKind: 'timeout'
 })
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  message: '账户测试超时'
+}, {
+  timeout: true
+}), {
+  kind: 'unknown',
+  failureKind: 'task_failure'
+}, '本地 deadline/lease timeout 不能在没有真实 upstream attempt 时伪造成上游超时')
 
 assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
   success: false,

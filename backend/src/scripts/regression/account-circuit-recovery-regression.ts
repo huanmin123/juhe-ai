@@ -299,7 +299,9 @@ const leaseTimeoutSweep = await new AccountCircuitRecoveryService(
   leaseTimeoutStore,
   async () => ({
     dispatchRevision: 'r1',
-    probe: async () => await new Promise<TransportProbeOutcome>(() => undefined)
+    probe: async () => await new Promise<TransportProbeOutcome>((resolve) => {
+      setTimeout(() => resolve({ kind: 'unknown', failureKind: 'task_failure' }), 100)
+    })
   }),
   {
     batchSize: 10,
@@ -308,10 +310,10 @@ const leaseTimeoutSweep = await new AccountCircuitRecoveryService(
     createId
   }
 ).sweep()
-assert.equal(leaseTimeoutSweep.transportIncompleteCount, 1, '恢复租约超时必须形成传输失败而非无结论')
+assert.equal(leaseTimeoutSweep.unknownCount, 1, '恢复租约超时必须形成服务端任务失败而非上游传输失败')
 const leaseTimeoutState = await leaseTimeoutStore.get(leaseTimeoutScope, now)
 assert.equal(leaseTimeoutState.phase, 'SUSPECT', '首次租约超时应保持 SUSPECT 等待独立确认')
-assert.equal(leaseTimeoutState.confirmationFailureCount, 1, '租约超时必须贡献独立 timeout 证据')
+assert.equal(leaseTimeoutState.confirmationFailureCount, 0, '租约超时不得贡献上游 timeout 证据')
 
 now += 3_000
 const secondTaskFailureSweep = await service(taskFailureStore, async () => ({

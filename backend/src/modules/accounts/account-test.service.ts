@@ -374,7 +374,7 @@ export async function testOpenAIAccount(
     requestUrl = probeKind === 'models_catalog' ? modelsUrl : testRequest!.path
     const request = probeKind === 'models_catalog'
       ? markGatewayUpstreamModelsProbe(
-          createMemoryGatewayRequest({ method: 'GET', path: requestUrl, signal: input.signal })
+          createMemoryGatewayRequest({ method: 'GET', path: requestUrl, signal: input.signal, serverDiagnostic: true })
         )
       : createGatewayTestRequest(
         requestUrl,
@@ -383,7 +383,8 @@ export async function testOpenAIAccount(
         account.type === 'oauth',
         input.signal,
         clientCompatibility,
-        testRequest?.headers
+        testRequest?.headers,
+        true
       )
     const diagnosticCandidate = explicitModel
       ? {
@@ -584,6 +585,7 @@ export async function testOpenAIAccount(
       type: account.type,
       traceId,
       success: false,
+      errorCode: normalizedError instanceof AccountTestAbortError ? normalizedError.errorCode : undefined,
       message,
       model: testedModel,
       ...accountTestModelMappingFields(modelMapping),
@@ -846,8 +848,13 @@ class AccountTestConfigurationError extends Error {
 }
 
 class AccountTestAbortError extends Error {
-  constructor(message: string, readonly accountFailureEligible: boolean) {
+  readonly accountFailureEligible: boolean
+  readonly errorCode: 'server_diagnostic_timeout' | 'server_diagnostic_cancelled'
+
+  constructor(message: string, timedOut: boolean) {
     super(message)
+    this.accountFailureEligible = timedOut
+    this.errorCode = timedOut ? 'server_diagnostic_timeout' : 'server_diagnostic_cancelled'
   }
 }
 

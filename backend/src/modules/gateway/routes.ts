@@ -98,6 +98,7 @@ import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-l
 import { forgetOpenAIAccountForSessionAsync } from './runtime/session-affinity.service.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 import { gatewayClientAllowsUpstreamSemanticInterpretation } from './client-profiles/strategy.js'
+import { gatewayRequestAbortSource } from './request/abort-attribution.js'
 import {
   normalRouteLatencyDegradationScope,
   isNormalRouteAccountLatencyDegradedAsync,
@@ -274,6 +275,19 @@ export async function handleOpenAIGatewayRequest(
   }
   req.once('aborted', () => {
     if (isGatewayForcedDownstreamClose(res)) return
+    const abortSource = gatewayRequestAbortSource(req)
+    if (abortSource === 'server_diagnostic_timeout') {
+      auditCapture.markServerDiagnosticTimeout()
+      abortController.abort(abortSource)
+      clearActiveDownstreamSessionAffinity()
+      return
+    }
+    if (abortSource === 'server_diagnostic_cancel') {
+      auditCapture.markServerDiagnosticCancellation()
+      abortController.abort(abortSource)
+      clearActiveDownstreamSessionAffinity()
+      return
+    }
     auditCapture.markDownstreamClosed()
     abortController.abort()
     clearActiveDownstreamSessionAffinity()
@@ -281,8 +295,17 @@ export async function handleOpenAIGatewayRequest(
   res.once('close', () => {
     if (!isGatewayForcedDownstreamClose(res)) {
       if (!res.writableFinished) {
-        auditCapture.markDownstreamClosed()
-        abortController.abort()
+        const abortSource = gatewayRequestAbortSource(req)
+        if (abortSource === 'server_diagnostic_timeout') {
+          auditCapture.markServerDiagnosticTimeout()
+          abortController.abort(abortSource)
+        } else if (abortSource === 'server_diagnostic_cancel') {
+          auditCapture.markServerDiagnosticCancellation()
+          abortController.abort(abortSource)
+        } else {
+          auditCapture.markDownstreamClosed()
+          abortController.abort()
+        }
       }
       if (abortController.signal.aborted) {
         clearActiveDownstreamSessionAffinity()

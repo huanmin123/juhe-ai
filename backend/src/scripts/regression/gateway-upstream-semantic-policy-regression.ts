@@ -21,6 +21,12 @@ import {
   isOpenAIGatewayImageGenerationModel,
   resolveOpenAIGatewayRequestLane
 } from '../../modules/gateway/protocols/openai-v1/request-lane.js'
+import { responsesFailureStatusFromCapturedJson } from '../../modules/gateway/response/responses-failure-status.js'
+
+const oversizedFailurePrefix = `{"id":"resp_test","status":"failed","error":{"message":"failed"},"output":"${'x'.repeat(1024 * 1024)}`
+assert.equal(responsesFailureStatusFromCapturedJson(oversizedFailurePrefix), true, '超大 Responses 根级 failed 终态仍必须判定为失败')
+const oversizedNestedFailurePrefix = `{"id":"resp_test","status":"completed","output":[{"status":"failed","value":"${'x'.repeat(1024 * 1024)}`
+assert.equal(responsesFailureStatusFromCapturedJson(oversizedNestedFailurePrefix), false, '嵌套失败状态不得误判为根级失败')
 
 const genericProfiles: OpenAIGatewayClientProfile[] = ['generic_openai', 'generic_anthropic', 'generic_gemini']
 const explicitProfiles: OpenAIGatewayClientProfile[] = ['codex', 'claude_code', 'gemini_cli']
@@ -132,6 +138,7 @@ const streamSource = readFileSync(new URL('../../modules/gateway/response/stream
 const compactPreflightSource = readFileSync(new URL('../../modules/gateway/codex-responses/compact-preflight.ts', import.meta.url), 'utf8')
 const candidateSelectionSource = readFileSync(new URL('../../modules/gateway/routing/hot-quality-candidate-selection.ts', import.meta.url), 'utf8')
 const finalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
+const nonStreamInspectionSource = readFileSync(new URL('../../modules/gateway/response/non-stream-json-inspection.ts', import.meta.url), 'utf8')
 const auxiliarySource = readFileSync(new URL('../../modules/gateway/hybrid/auxiliary-dispatch.service.ts', import.meta.url), 'utf8')
 const hybridScoringSource = readFileSync(new URL('../../modules/gateway/hybrid/scoring.service.ts', import.meta.url), 'utf8')
 const hybridQualitySource = readFileSync(new URL('../../modules/gateway/hybrid/quality-inspection.service.ts', import.meta.url), 'utf8')
@@ -291,8 +298,18 @@ assert.doesNotMatch(
 )
 assert.match(
   finalizationSource,
-  /forwardedResponseSuccessful = upstreamResponse\.ok/,
-  '响应最终成功必须统一取决于 HTTP 成功条件'
+  /responsesFailedTerminal = upstreamResponse\.ok[\s\S]*result\.errorPayload\.code === 'upstream_protocol_failure'[\s\S]*hasResponsesFailedTerminal\(result\.responseBodyText\)[\s\S]*forwardedResponseSuccessful = upstreamResponse\.ok && !responsesFailedTerminal/,
+  'Responses 非流失败终态不得因 HTTP 200 被记为成功'
+)
+assert.match(
+  finalizationSource,
+  /pipeResult\.captureTruncated[\s\S]*hasResponsesFailedTerminal\(pipeResult\.capturedBodyText\)/,
+  '超大 Responses 失败正文的根级失败终态必须在截断窗口内保留失败证据'
+)
+assert.match(
+  nonStreamInspectionSource,
+  /endpointFamily === 'responses'[\s\S]*root\.status === 'failed'[\s\S]*upstream_protocol_failure/,
+  'Responses JSON 失败终态必须形成 upstream_protocol_failure'
 )
 assert.match(
   finalizationSource,

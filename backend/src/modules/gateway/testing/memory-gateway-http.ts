@@ -14,6 +14,10 @@ import {
   gatewayStreamInspectionReceiver,
   gatewayStreamParsedEventReceiver
 } from '../response/stream-observer.js'
+import {
+  gatewayDiagnosticAbortSourceFromSignal,
+  markGatewayRequestAbortSource
+} from '../request/abort-attribution.js'
 
 export const accountTestResponsePreviewBytes = 256 * 1024
 
@@ -22,6 +26,7 @@ export type MemoryGatewayRequestInput = {
   path: string
   body?: Record<string, unknown>
   signal?: AbortSignal
+  serverDiagnostic?: boolean
 }
 
 type MemoryGatewayRequestAdapterInput = {
@@ -33,6 +38,7 @@ type MemoryGatewayRequestAdapterInput = {
   rawBody: Buffer
   ip: string
   signal?: AbortSignal
+  serverDiagnostic?: boolean
 }
 
 export function createGatewayTestRequest(
@@ -42,7 +48,8 @@ export function createGatewayTestRequest(
   isOAuth: boolean,
   signal?: AbortSignal,
   clientCompatibility?: AccountClientCompatibility,
-  extraHeaders?: IncomingHttpHeaders
+  extraHeaders?: IncomingHttpHeaders,
+  serverDiagnostic = false
 ): Request {
   const stream = body.stream === true || /:streamGenerateContent\b/i.test(path)
   const headers: IncomingHttpHeaders = {
@@ -71,7 +78,8 @@ export function createGatewayTestRequest(
     body,
     rawBody: Buffer.from(rawBodyText),
     ip: '127.0.0.1',
-    signal
+    signal,
+    serverDiagnostic
   })
 }
 
@@ -92,7 +100,8 @@ export function createMemoryGatewayRequest(input: MemoryGatewayRequestInput): Re
     body: input.body,
     rawBody,
     ip: '127.0.0.1',
-    signal: input.signal
+    signal: input.signal,
+    serverDiagnostic: input.serverDiagnostic
   })
 }
 
@@ -109,10 +118,20 @@ export class MemoryGatewayRequest extends EventEmitter {
     this.currentBody = input.body
     this.currentRawBody = input.rawBody
     if (this.input.signal?.aborted) {
-      queueMicrotask(() => this.emit('aborted'))
+      queueMicrotask(() => this.emitAbort())
     } else {
-      this.input.signal?.addEventListener('abort', () => this.emit('aborted'), { once: true })
+      this.input.signal?.addEventListener('abort', () => this.emitAbort(), { once: true })
     }
+  }
+
+  private emitAbort(): void {
+    if (this.input.serverDiagnostic && this.input.signal) {
+      markGatewayRequestAbortSource(
+        this.asRequest(),
+        gatewayDiagnosticAbortSourceFromSignal(this.input.signal)
+      )
+    }
+    this.emit('aborted')
   }
 
   get method(): string {

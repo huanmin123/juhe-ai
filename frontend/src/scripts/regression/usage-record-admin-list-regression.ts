@@ -82,11 +82,13 @@ assert.match(tableSource, /<a-tag v-if="typeof record\.statusCode === 'number'" 
 
 const resultCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordResultCell.vue'), 'utf8')
 assert.match(resultCellSource, /record\.success \? '成功' : '失败'/, '结果单元格必须显示语义成功或失败')
-assert.match(resultCellSource, /record\.failureReason/, '失败结果必须直接显示安全失败摘要')
-assert.match(resultCellSource, /usageRecordFailureAttributionText/, '失败结果必须直接显示中性归因')
-assert.doesNotMatch(resultCellSource, /a-tooltip|errorMessage|errorCode/, '轻量列表不得依赖悬浮详情、原始错误文本或错误码')
+assert.match(resultCellSource, /InfoCircleOutlined/, '失败结果必须显示错误详情信息图标')
+assert.match(resultCellSource, /failureDetail/, '失败详情必须通过单条摘要悬浮内容展示')
+assert.match(resultCellSource, /record\.failureReason|usageRecordFailureAttributionText/, '错误详情悬浮内容必须保留安全失败摘要或归因')
+assert.match(resultCellSource, /a-tooltip/, '错误详情必须通过悬浮提示展示')
+assert.doesNotMatch(resultCellSource, /usage-failure-reason|usage-failure-attribution/, '失败详情不得直接撑开列表单元格')
 const formatterSource = readFileSync(resolve('../frontend/src/views/usage-records/usageRecordFormatters.ts'), 'utf8')
-assert.match(formatterSource, /HTTP \$\{record\.statusCode\}（非成功终态）/, '失败 2xx 必须明确为非成功终态')
+assert.match(formatterSource, /'上游非成功终态'/, '失败 2xx 不得在结果列表中伪装成成功 HTTP 200')
 assert.match(formatterSource, /return 'orange'/, '失败 2xx 状态码必须使用非成功颜色')
 assert.match(formatterSource, /client_lifecycle.*历史记录，触发方未识别/s, '历史 client_aborted 不得展示为客户端主动断开')
 

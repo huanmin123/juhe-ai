@@ -253,6 +253,16 @@ function validateBufferedJsonProtocolResponse(
       errorCode: 'upstream_protocol_error'
     }
   }
+  if (endpointFamily === 'responses' && root.status === 'failed') {
+    const error = plainObject(root.error)
+    const upstreamMessage = typeof error?.message === 'string' ? error.message.trim() : ''
+    return {
+      message: upstreamMessage
+        ? `上游 Responses 返回失败终态：${upstreamMessage}`
+        : '上游 Responses 返回失败终态',
+      errorCode: 'upstream_protocol_failure'
+    }
+  }
   return undefined
 }
 

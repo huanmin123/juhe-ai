@@ -50,7 +50,11 @@ export function diagnosticAttemptSignal(signal: AbortSignal | undefined, timeout
 
 export function isDiagnosticTimeoutSignal(signal: AbortSignal): boolean {
   const reason = signal.reason
-  return Boolean(reason && typeof reason === 'object' && 'name' in reason && reason.name === 'TimeoutError')
+  if (typeof reason === 'string') return /timeout|deadline/i.test(reason)
+  if (!reason || typeof reason !== 'object') return false
+  const candidate = reason as { name?: unknown; message?: unknown }
+  return candidate.name === 'TimeoutError'
+    || (typeof candidate.message === 'string' && /timeout|deadline/i.test(candidate.message))
 }
 
 export function accountDiagnosticAttemptProgress(

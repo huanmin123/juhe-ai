@@ -59,7 +59,7 @@ export function transportProbeOutcomeFromAccountTestResult(
   const statusCode = realUpstreamAttempt && isCompletedRealUpstreamAttempt(realUpstreamAttempt)
     ? realUpstreamAttempt.status
     : undefined
-  const localFailureKind = transportProbeLocalFailureKind(result, realUpstreamAttempt, statusCode, evidence.timeout === true)
+  const localFailureKind = transportProbeLocalFailureKind(realUpstreamAttempt, statusCode, evidence.timeout === true)
 
   if (localFailureKind) {
     return {
@@ -89,16 +89,17 @@ export function transportProbeMeetsFirstByteTarget(
 }
 
 function transportProbeLocalFailureKind(
-  _result: TransportProbeAccountTestResult,
   upstreamAttempt: TransportProbeUpstreamAttempt | undefined,
   statusCode: number | undefined,
   timedOut: boolean
 ): 'timeout' | 'connection' | 'read' | undefined {
-  if (timedOut) return 'timeout'
+  // A diagnostic/lease deadline is a server task failure until the probe has
+  // produced structured evidence that the upstream itself timed out.
   if (upstreamAttempt?.transportFailureKind === 'timeout') return 'timeout'
   if (upstreamAttempt?.transportFailureKind === 'read_incomplete') return 'read'
   if (upstreamAttempt?.transportFailureKind === 'connection') return 'connection'
   if (statusCode !== undefined) return undefined
+  if (timedOut) return undefined
   return upstreamAttempt ? 'connection' : undefined
 }
 
