@@ -342,7 +342,7 @@ for (const [name, source] of [
   ['账户冷却复测', cooldownRetestSource],
   ['账户 Key 冷却复测', apiKeyRetestSource]
 ] as const) {
-  if (name === '主动健康检查' || name === '质量失败复核') {
+  if (name === '主动健康检查' || name === '质量失败复核' || name === '账户冷却复测') {
     assert.match(source, /onDiagnosticAttemptResult: \(\{ signal \}\) => \{\s*diagnosticTimedOut = isDiagnosticTimeoutSignal\(signal\)/, `${name}必须保留本地诊断超时这一结构化事实`)
     assert.match(source, /automaticAccountProbeOutcome\(result, \{ upstreamAttempt, timeout: diagnosticTimedOut \}\)/, `${name}必须同时传递最后一次真实上游 attempt 和本地超时事实`)
   } else {

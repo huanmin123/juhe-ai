@@ -25,7 +25,7 @@ const [
   databaseModule,
   repositories,
   patchRepository,
-  { decryptJson },
+  { decryptJson, encryptJson },
   apiKeyRuntimeStateRepository,
   { accountsRouter },
   authRequestContext,
@@ -253,6 +253,16 @@ try {
     status: 'active',
     skipInitialHealthCheck: true
   }, access)
+  writeLegacyCredentials(oauthAccount.id, {
+    refresh_token: 'oauth-refresh-preserved',
+    client_id: 'oauth-client-preserved',
+    id_token: 'oauth-id-token-preserved',
+    email: 'owner@example.com',
+    base_url: 'https://api.openai.com/v1',
+    service_tier_override: 'default',
+    codex_responses_safe_repair_enabled: true,
+    codex_responses_strict_intercept_enabled: true
+  })
 
   const oauthPatch = await patchRepository.patchAccountManagementAsync(oauthAccount.id, {
     expectedConfigRevision: 1,
@@ -280,6 +290,36 @@ try {
   assert.equal(oauthNoOp.result.configRevision, 3)
   assert.deepEqual(oauthNoOp.result.changedFields, [])
   assert.deepEqual(oauthNoOp.dml, [], '重复清除 OAuth 可编辑字段不得覆盖凭据或推进版本')
+
+  const unknownLegacyCredentialAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'PATCH 未知历史凭据账户',
+    type: 'oauth',
+    credentials: {
+      refresh_token: 'oauth-refresh-unknown-legacy',
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: targetGroup.id,
+    status: 'active',
+    skipInitialHealthCheck: true
+  }, access)
+  writeLegacyCredentials(unknownLegacyCredentialAccount.id, {
+    refresh_token: 'oauth-refresh-unknown-legacy',
+    base_url: 'https://api.openai.com/v1',
+    unsupported_legacy_credential: true
+  })
+  await assert.rejects(
+    patchRepository.patchAccountManagementAsync(unknownLegacyCredentialAccount.id, {
+      expectedConfigRevision: 1,
+      credentialsPatch: { service_tier_override: 'priority' }
+    }, access),
+    /账户凭据包含不支持的字段：unsupported_legacy_credential/,
+    '单账户 PATCH 不得放宽其他历史未知凭据键'
+  )
+  assert.equal(accountRow(unknownLegacyCredentialAccount.id).config_revision, 1, '未知历史凭据被拒绝后不得更新账户')
 
   const multiKeyAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -873,6 +913,16 @@ function assertPreservedOAuthCredentials(accountId: string, expectedTier: string
   assert.equal(credentials.email, 'owner@example.com')
   assert.equal(credentials.base_url, 'https://api.openai.com/v1')
   assert.equal(credentials.service_tier_override, expectedTier)
+  assert.equal(credentials.codex_responses_safe_repair_enabled, undefined, '历史安全修复开关必须在写入时清除')
+  assert.equal(credentials.codex_responses_strict_intercept_enabled, undefined, '历史严格拦截开关必须在写入时清除')
+}
+
+function writeLegacyCredentials(accountId: string, credentials: Record<string, unknown>): void {
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET credentials_encrypted = ?
+    WHERE id = ?
+  `).run(encryptJson(credentials), accountId)
 }
 
 async function onceListening(target: NonNullable<typeof server>): Promise<void> {

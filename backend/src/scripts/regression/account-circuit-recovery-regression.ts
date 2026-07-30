@@ -283,6 +283,36 @@ assert.equal(taskFailureState.backoffAttempt, 1)
 assert.equal(taskFailureState.retryAtMs, now + 3_000, '首次 unknown 只延后 3 秒，不改变账户失败计数')
 assert.equal(taskFailureState.lease, undefined)
 assert.equal((await taskFailureStore.listDue(now, 10)).length, 0, 'unknown 结果必须延后下一轮而非同一 sweep 热循环')
+
+const leaseTimeoutStore = new MemoryAccountCircuitStore({ capacity: 10, now: () => now })
+const leaseTimeoutScope = scope('suspect-lease-timeout')
+await leaseTimeoutStore.suspect({
+  scope: leaseTimeoutScope,
+  dispatchRevision: 'r1',
+  transitionId: createId(),
+  reason: 'timeout',
+  confirmationFailuresRequired: 2,
+  nowMs: now
+})
+now += 3_000
+const leaseTimeoutSweep = await new AccountCircuitRecoveryService(
+  leaseTimeoutStore,
+  async () => ({
+    dispatchRevision: 'r1',
+    probe: async () => await new Promise<TransportProbeOutcome>(() => undefined)
+  }),
+  {
+    batchSize: 10,
+    leaseDurationMs: 1,
+    now: () => now,
+    createId
+  }
+).sweep()
+assert.equal(leaseTimeoutSweep.transportIncompleteCount, 1, '恢复租约超时必须形成传输失败而非无结论')
+const leaseTimeoutState = await leaseTimeoutStore.get(leaseTimeoutScope, now)
+assert.equal(leaseTimeoutState.phase, 'SUSPECT', '首次租约超时应保持 SUSPECT 等待独立确认')
+assert.equal(leaseTimeoutState.confirmationFailureCount, 1, '租约超时必须贡献独立 timeout 证据')
+
 now += 3_000
 const secondTaskFailureSweep = await service(taskFailureStore, async () => ({
   dispatchRevision: 'r1',

@@ -30,6 +30,7 @@ const [
   },
   { accountBatchEditContextSchema, accountBatchEditSchema },
   { invalidateAccountLookupCache },
+  { encryptJson },
   { buildPostgresSchemaSql }
 ] = await Promise.all([
   import('../../storage/database.js'),
@@ -39,6 +40,7 @@ const [
   import('../../storage/account-batch-update.repository.js'),
   import('../../modules/accounts/account-request.schemas.js'),
   import('../../storage/repository-lookups.js'),
+  import('../../storage/crypto.js'),
   import('../../storage/postgres-schema.js')
 ])
 
@@ -76,6 +78,8 @@ try {
     healthCheckModel: 'gpt-5.4',
     groupId: group.id
   }, access)
+  writeLegacyCredentials(accountA.id, 'sk-account-batch-edit-a')
+  writeLegacyCredentials(accountB.id, 'sk-account-batch-edit-b')
   setAccountsActive([accountA.id, accountB.id])
 
   const initialA = requiredAccount(accountA.id)
@@ -604,6 +608,21 @@ function assertCredentialPoliciesMerged(accountId: string, expectedApiKey: strin
     action: 'retry_next',
     status_codes: [429]
   }], '批量规则覆盖应只 merge 指定凭据键')
+  assert.equal(account.credentials.codex_responses_safe_repair_enabled, undefined, '批量编辑必须清除历史安全修复开关')
+  assert.equal(account.credentials.codex_responses_strict_intercept_enabled, undefined, '批量编辑必须清除历史严格拦截开关')
+}
+
+function writeLegacyCredentials(accountId: string, apiKey: string): void {
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET credentials_encrypted = ?
+    WHERE id = ?
+  `).run(encryptJson({
+    api_key: apiKey,
+    base_url: 'https://api.openai.com/v1',
+    codex_responses_safe_repair_enabled: true,
+    codex_responses_strict_intercept_enabled: true
+  }), accountId)
 }
 
 async function assertBatchModelMappingTargetCapabilities(groupId: string): Promise<void> {

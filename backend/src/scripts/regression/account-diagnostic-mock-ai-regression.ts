@@ -31,6 +31,7 @@ const [
   { testOpenAIAccountWithDiagnosticRetries },
   { probeCodexSwitchCandidateAccount },
   healthCheckService,
+  cooldownRetestService,
   { readGatewaySettings },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
@@ -41,6 +42,7 @@ const [
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/client-profiles/codex-switch-probe.js'),
   import('../../modules/background/account-health-check.service.js'),
+  import('../../modules/background/cooldown-account-retest.service.js'),
   import('../../modules/gateway/policy/account-error-policy.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
@@ -171,7 +173,36 @@ try {
     'temporary_unavailable 账户必须被普通路由候选排除'
   )
 
-  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号，以及客户请求失败后的健康检查本地超时隔离')
+  const cooldownTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'cooldown-timeout', access)
+  requiredRuntimeAccount(group.id, cooldownTimeoutAccount.id, admin.id)
+  assert.equal(
+    repositories.markAccountTemporaryUnavailable(cooldownTimeoutAccount.id, '模拟冷却复测')?.status,
+    'temporary_unavailable',
+    '账户冷却写入必须成功'
+  )
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1_000).toISOString(), cooldownTimeoutAccount.id)
+  const cooldownCandidate = repositories.findAccountForCooldownRetest(cooldownTimeoutAccount.id)
+  assert(cooldownCandidate, '进入冷却的超时账户必须成为复测候选')
+  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
+  try {
+    assert.equal(cooldownRetestService.enqueueCooldownAccountRetest(cooldownCandidate, {
+      maxPauseMinutes: 60,
+      maxRecoveryHours: 1
+    }), true, '冷却超时账户必须投递复测')
+    await waitForCooldownRetestQueueIdle(cooldownRetestService)
+  } finally {
+    AbortSignal.timeout = originalAbortSignalTimeout
+  }
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  const cooldownTimeoutAfterProbe = repositories.findAccountSummary(cooldownTimeoutAccount.id, access)
+  assert.equal(hitCount('cooldown-timeout'), 3, '冷却复测在响应头前超时时必须完整执行三档探测')
+  assert.equal(cooldownTimeoutAfterProbe?.status, 'temporary_unavailable', '冷却复测超时不得提前恢复账户')
+  assert.equal(cooldownTimeoutAfterProbe?.cooldownRetestFailureCount, 1, '冷却复测本地超时必须累计失败并推进恢复退避')
+
+  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号、客户请求失败健康检查和冷却复测的本地超时隔离')
 } finally {
   AbortSignal.timeout = originalAbortSignalTimeout
   auditLogQueue.flushAllAuditLogQueue()
@@ -275,6 +306,14 @@ function createMockAIUpstream(): http.Server {
         return
       }
       if (key === 'health-timeout') {
+        setTimeout(() => {
+          if (!res.destroyed) {
+            sendMockCompleted(res, responseMode, 'OK')
+          }
+        }, 200)
+        return
+      }
+      if (key === 'cooldown-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
             sendMockCompleted(res, responseMode, 'OK')
@@ -409,4 +448,16 @@ async function waitForAccountHealthCheckQueueIdle(
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
   }
   throw new Error('账户健康检查队列未在 5 秒内完成')
+}
+
+async function waitForCooldownRetestQueueIdle(
+  cooldownRetestService: typeof import('../../modules/background/cooldown-account-retest.service.js')
+): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const snapshot = cooldownRetestService.getCooldownAccountRetestQueueSnapshot()
+    if (snapshot.pendingCount === 0 && snapshot.runningCount === 0) return
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
+  }
+  throw new Error('冷却账户复测队列未在 5 秒内完成')
 }

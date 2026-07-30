@@ -4,6 +4,7 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { isDiagnosticTimeoutSignal } from '../accounts/account-diagnostic-retry-policy.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -127,6 +128,7 @@ async function runCooldownAccountRetestQueueItem(
   const groupId = account.boundGroupId
   const diagnosticStartedAt = Date.now()
   let upstreamAttempt: UpstreamAttempt | undefined
+  let diagnosticTimedOut = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -137,10 +139,16 @@ async function runCooldownAccountRetestQueueItem(
     onDiagnosticAttemptProgress: () => {
       upstreamAttempt = undefined
     },
+    onDiagnosticAttemptResult: ({ signal }) => {
+      diagnosticTimedOut = isDiagnosticTimeoutSignal(signal)
+    },
     onUpstreamAttempt: (attempt) => {
       upstreamAttempt = attempt
     },
-    shouldRetryFailure: (attemptResult) => automaticAccountProbeOutcome(attemptResult, { upstreamAttempt }) === 'upstream_failure',
+    shouldRetryFailure: (attemptResult) => automaticAccountProbeOutcome(attemptResult, {
+      upstreamAttempt,
+      timeout: diagnosticTimedOut
+    }) === 'upstream_failure',
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
@@ -157,7 +165,7 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: undefined,
     traceId: undefined
   }))
-  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
+  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt, timeout: diagnosticTimedOut })
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_cooldown_account_retest_success',

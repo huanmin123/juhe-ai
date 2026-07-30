@@ -75,13 +75,17 @@ const accountCredentialSecretMaxBytes = 16 * 1024
 const accountCredentialMetadataMaxBytes = 4096
 const accountCredentialsJsonMaxBytes = 32 * 1024
 const accountApiKeyListMaxItems = 50
+const deprecatedAccountCredentialKeys = new Set([
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
+])
 
 export function normalizeAccountCredentialsForWrite(
   accountType: string,
   value: unknown,
   endpointModeDefaults: AccountEndpointModeDefaultContext = { accountType }
 ): Record<string, unknown> {
-  const input = accountCredentialsRecord(value)
+  const input = stripDeprecatedAccountCredentialKeys(accountCredentialsRecord(value))
   assertKnownInputKeys(input, accountCredentialAllowedKeys(accountType), '账户凭据')
   if (accountType === 'api_key') {
     return normalizeApiKeyAccountCredentials(input, endpointModeDefaults)
@@ -114,6 +118,13 @@ function accountCredentialsRecord(value: unknown): Record<string, unknown> {
     throw new Error('账户凭据必须是对象')
   }
   return value as Record<string, unknown>
+}
+
+function stripDeprecatedAccountCredentialKeys(input: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.keys(input).some((key) => deprecatedAccountCredentialKeys.has(key))) return input
+  const sanitized = { ...input }
+  for (const key of deprecatedAccountCredentialKeys) delete sanitized[key]
+  return sanitized
 }
 
 function accountCredentialAllowedKeys(accountType: string): ReadonlySet<string> {

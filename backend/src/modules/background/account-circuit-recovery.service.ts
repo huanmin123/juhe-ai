@@ -508,7 +508,7 @@ async function runProbeWithinLease(
   const deadline = new Promise<TransportProbeOutcome>((resolve) => {
     timer = setTimeout(() => {
       controller.abort('account_circuit_probe_lease_deadline')
-      resolve({ kind: 'unknown', failureKind: 'canceled' })
+      resolve({ kind: 'transport_incomplete', failureKind: 'timeout' })
     }, leaseDurationMs)
     timer.unref()
   })
