@@ -15,6 +15,7 @@ import {
   hashExternalIntegrationSourceTokenValue
 } from './external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
+import { parseJsonArray } from './value-utils.js'
 import {
   DEFAULT_BUILT_IN_GROUPS,
   DEFAULT_GLOBAL_SETTINGS,
@@ -368,6 +369,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
       ]
     )
   }
+  await repairBuiltInProviderProfileAccountTypes(client, profileSeeds, now, query)
 
   for (const profile of profileSeeds) {
     for (const familyCode of profile.endpointFamilies) {
@@ -438,6 +440,41 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
   }
 
   return { statementCount }
+}
+
+async function repairBuiltInProviderProfileAccountTypes(
+  client: Pick<DatabaseClient, 'one'>,
+  profiles: ReadonlyArray<{ id: string; accountTypes: readonly string[] }>,
+  timestamp: string,
+  update: (sql: string, values?: readonly unknown[]) => Promise<void>
+): Promise<void> {
+  for (const profile of profiles) {
+    const row = await client.one<{ account_types_json?: unknown }>(
+      `
+        SELECT account_types_json
+        FROM ${businessTable('provider_protocol_profiles')}
+        WHERE id = $1
+      `,
+      [profile.id]
+    )
+    if (!row || typeof row.account_types_json !== 'string') continue
+    let current: string[]
+    try {
+      current = parseJsonArray(row.account_types_json)
+    } catch {
+      continue
+    }
+    const merged = [...new Set([...current, ...profile.accountTypes])]
+    if (merged.length === current.length && merged.every((item, index) => item === current[index])) continue
+    await update(
+      `
+        UPDATE ${businessTable('provider_protocol_profiles')}
+        SET account_types_json = $1, updated_at = $2
+        WHERE id = $3
+      `,
+      [JSON.stringify(merged), timestamp, profile.id]
+    )
+  }
 }
 
 async function seedAdminChatApiKey(

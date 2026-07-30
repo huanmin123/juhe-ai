@@ -16,6 +16,7 @@ import {
   hashExternalIntegrationSourceTokenValue
 } from '../external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from '../request-quota-limits.js'
+import { parseJsonArray } from '../value-utils.js'
 import {
   DEFAULT_BUILT_IN_GROUPS,
   DEFAULT_GLOBAL_SETTINGS,
@@ -367,6 +368,7 @@ export function seedDefaults(database: DatabaseSync): void {
       profileUpdatedAt
     )
   }
+  repairBuiltInProviderProfileAccountTypes(database, profileSeeds, now)
 
   const profileFamilyStatement = database.prepare(`
     INSERT OR IGNORE INTO provider_protocol_profile_families (
@@ -391,6 +393,36 @@ export function seedDefaults(database: DatabaseSync): void {
 
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
+  }
+}
+
+function repairBuiltInProviderProfileAccountTypes(
+  database: DatabaseSync,
+  profiles: ReadonlyArray<{ id: string; accountTypes: readonly string[] }>,
+  timestamp: string
+): void {
+  const selectStatement = database.prepare(`
+    SELECT account_types_json
+    FROM provider_protocol_profiles
+    WHERE id = ?
+  `)
+  const updateStatement = database.prepare(`
+    UPDATE provider_protocol_profiles
+    SET account_types_json = ?, updated_at = ?
+    WHERE id = ?
+  `)
+  for (const profile of profiles) {
+    const row = selectStatement.get(profile.id) as { account_types_json?: unknown } | undefined
+    if (!row || typeof row.account_types_json !== 'string') continue
+    let current: string[]
+    try {
+      current = parseJsonArray(row.account_types_json)
+    } catch {
+      continue
+    }
+    const merged = [...new Set([...current, ...profile.accountTypes])]
+    if (merged.length === current.length && merged.every((item, index) => item === current[index])) continue
+    updateStatement.run(JSON.stringify(merged), timestamp, profile.id)
   }
 }
 

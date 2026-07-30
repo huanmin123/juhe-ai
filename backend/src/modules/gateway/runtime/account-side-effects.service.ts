@@ -2879,12 +2879,6 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
 
 function accountPrecheckFailureReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {
   const parts = ['最近事前确认探针失败']
-  if (typeof result.statusCode === 'number' && Number.isFinite(result.statusCode)) {
-    parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
-  }
-  if (result.errorCode) {
-    parts.push(result.errorCode)
-  }
   if (result.message) {
     parts.push(result.message)
   }

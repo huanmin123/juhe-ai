@@ -171,6 +171,8 @@
     "test:gemini-code-assist-runtime": "tsx src/scripts/regression/gemini-code-assist-runtime-regression.ts",
     "test:gemini-interactions": "tsx src/scripts/regression/gemini-interactions-regression.ts",
     "test:provider-auth-account-credential": "tsx src/scripts/regression/provider-auth-account-credential-regression.ts",
+    "test:provider-profile-account-types-seed": "tsx src/scripts/regression/provider-profile-account-types-seed-regression.ts",
+    "test:postgres-provider-profile-account-types-seed": "tsx src/scripts/regression/postgres-provider-profile-account-types-seed-regression.ts",
     "test:xai-provider": "tsx src/scripts/regression/xai-provider-regression.ts",
     "test:glm-gateway-mock-ai": "tsx src/scripts/regression/glm-gateway-mock-ai-regression.ts",
     "test:glm-real-gateway-e2e": "tsx src/scripts/regression/glm-real-gateway-e2e.ts",

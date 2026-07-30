@@ -43,7 +43,7 @@ assert.deepEqual(closeOnly, {
   success: false,
   errorPhase: 'downstream',
   errorCode: 'downstream_connection_closed',
-  errorMessage: '下游连接提前关闭，触发方未识别'
+  errorMessage: '下游连接关闭'
 }, '无既有根因的下游关闭必须记录为中性终态')
 
 const retryThenClose = resolveAuditFinalization({
@@ -51,7 +51,7 @@ const retryThenClose = resolveAuditFinalization({
   success: false,
   errorPhase: 'downstream',
   errorCode: 'downstream_connection_closed',
-  errorMessage: '下游连接提前关闭，触发方未识别'
+  errorMessage: '下游连接关闭'
 }, true, true, {
   errorPhase: 'stream',
   errorCode: 'upstream_stream_interrupted',
@@ -93,8 +93,9 @@ assert.deepEqual(downstreamClosePayload, {
 }, '下游关闭元信息不得归责客户端')
 capture.cancel()
 
-assert.match(formatterSource, /downstream_closed: '下游连接关闭（触发方未识别）'/, '新下游关闭终态必须使用中性文案')
-assert.match(formatterSource, /client_aborted: '下游连接关闭（历史记录）'/, '历史 client_aborted 记录必须使用中性文案')
+assert.match(formatterSource, /downstream_closed: '下游连接关闭'/, '新下游关闭终态必须使用统一文案')
+assert.match(formatterSource, /client_aborted: '下游连接关闭'/, '历史 client_aborted 记录必须使用统一文案')
+assert.doesNotMatch(formatterSource, /触发方未识别|下游连接关闭（历史记录）/, '下游关闭展示不得附带内部归因分类')
 assert.match(formatterSource, /if \(!success\) return '失败'/, '失败记录不得把 HTTP 200 显示为成功状态码')
 assert.match(formatterSource, /return success \? String\(statusCode\) : `HTTP \$\{statusCode\}（头已提交）`/, 'HTTP 200 只能作为详情中的已提交传输状态保留')
 assert.match(listSource, /statusText\(record\.finalStatusCode, record\.success\)/, '审计列表必须使用语义状态展示')

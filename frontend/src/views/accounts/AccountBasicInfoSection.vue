@@ -45,9 +45,11 @@
       </a-form-item>
       <a-form-item v-if="!editing" class="dispatch-status-field" label="状态">
         <a-radio-group v-model:value="form.status" :disabled="authorizedEditing">
+          <a-radio value="active">可调度</a-radio>
           <a-radio value="pending_test">待检查</a-radio>
           <a-radio value="disabled">停用</a-radio>
         </a-radio-group>
+        <div v-if="form.status === 'active'" class="form-help">保存后跳过首次健康检查，立即参与调度；账户过期或时间计划仍会限制可用状态。</div>
       </a-form-item>
     </div>
     <div v-if="showMetaFields" class="form-grid meta-fields-grid">

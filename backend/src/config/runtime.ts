@@ -28,6 +28,7 @@ export interface RuntimeConfig {
   queueDriver: QueueDriver
   host: string
   port: number
+  internalGatewayOrigin: string
   development: {
     autoLoginUsername?: string
   }
@@ -285,6 +286,16 @@ const configuredAccountHealthCheckDispatchUrl = accountHealthCheckDispatchUrlCon
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
+const configuredPort = numberConfig('JUHE_AI_PORT', 3000, 1, 65535)
+const configuredInternalGatewayOrigin = internalGatewayOriginConfig(
+  'JUHE_AI_INTERNAL_GATEWAY_ORIGIN',
+  {
+    runtimeMode: configuredRuntimeMode,
+    performanceNodeRole: configuredPerformanceNodeRole,
+    processRole: configuredProcessRole,
+    fallbackPort: configuredPort
+  }
+)
 const configuredDevelopmentAutoLoginUsername = optionalStringConfig('JUHE_AI_DEV_AUTO_LOGIN_USERNAME')
 const configuredLogFileEnabled = booleanConfig('JUHE_AI_LOG_FILE_ENABLED', true)
 const configuredRuntimeLogIndexEnabled = strictDeploymentBooleanConfig('JUHE_AI_RUNTIME_LOG_INDEX_ENABLED', true)
@@ -343,7 +354,8 @@ export const runtimeConfig: RuntimeConfig = {
   runtimeStateDriver: configuredRuntimeStateDriver,
   queueDriver: configuredQueueDriver,
   host: configuredHost,
-  port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
+  port: configuredPort,
+  internalGatewayOrigin: configuredInternalGatewayOrigin,
   development: {
     autoLoginUsername: configuredDevelopmentAutoLoginUsername
   },
@@ -746,6 +758,50 @@ function accountHealthCheckDispatchUrlConfig(
     || url.hash
   ) {
     throw new Error(`${name} 只能配置为带显式端口的 loopback HTTP Origin，不能包含路径、用户名密码、查询参数或片段`)
+  }
+  return url.origin
+}
+
+function internalGatewayOriginConfig(
+  name: string,
+  runtime: {
+    runtimeMode: RuntimeMode
+    performanceNodeRole: PerformanceNodeRole
+    processRole: ProcessRole
+    fallbackPort: number
+  }
+): string {
+  const fallback = `http://127.0.0.1:${runtime.fallbackPort}`
+  const required = runtime.runtimeMode === 'performance'
+    && runtime.performanceNodeRole === 'control'
+    && (runtime.processRole === 'server' || runtime.processRole === 'db-service')
+  const configuredValue = rawStringConfig(name)?.trim()
+  if (!configuredValue) {
+    if (required) {
+      throw new Error(`${name} 在 performance control server/db-service 模式下必须显式配置为 Gateway ingress loopback Origin`)
+    }
+    return fallback
+  }
+  let url: URL
+  try {
+    url = new URL(configuredValue)
+  } catch {
+    throw new Error(`${name} 必须是有效 URL`)
+  }
+  if (
+    url.protocol !== 'http:'
+    || url.hostname !== '127.0.0.1'
+    || !url.port
+    || url.username
+    || url.password
+    || (url.pathname !== '/' && url.pathname !== '')
+    || url.search
+    || url.hash
+  ) {
+    throw new Error(`${name} 只能配置为带显式端口的 127.0.0.1 HTTP Origin，不能包含路径、用户名密码、查询参数或片段`)
+  }
+  if (required && url.port === String(runtime.fallbackPort)) {
+    throw new Error(`${name} 在 performance control server/db-service 模式下不能指向自身 JUHE_AI_PORT`)
   }
   return url.origin
 }

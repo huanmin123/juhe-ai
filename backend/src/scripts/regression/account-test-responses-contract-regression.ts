@@ -148,10 +148,11 @@ try {
   for (const option of manualTestOptions) {
     assert.deepEqual(
       Object.keys(option).sort(),
-      ['id', 'name'],
-      '人工测试模型下拉只能返回可显示的模型标识与名称'
+      ['id', 'name', 'testEndpointModes'],
+      '人工测试模型下拉必须返回模型标识、名称和可执行请求形态'
     )
     assert(option.id.trim(), '模型下拉 ID 不得为空')
+    assert(option.testEndpointModes.length > 0, '人工测试模型下拉不得返回无可执行请求形态的模型')
     assert(option.name.trim(), `模型 ${option.id} 的下拉展示名称不得为空`)
   }
   assert(manualTestOptions.some((option) => option.id === providerDefaultHealthCheckModel), '模型下拉必须保留当前账户检查模型的 ID 映射')
@@ -420,7 +421,7 @@ try {
   assert.equal(systemFallbackAccount.healthCheckModel, providerDefaultHealthCheckModel, '显式检查模型应按账户支持模型保存')
   assert.equal(systemFallbackTested.model, providerDefaultHealthCheckModel, '系统复测应使用账户已保存的系统默认初始化值')
 
-  console.log('账户测试 Responses 当前契约回归通过：人工显式模型不持久化，系统复测严格使用账户检查模型，轻量模型选项、定点能力与 POST 最终校验符合预期')
+  console.log('账户测试 Responses 当前契约回归通过：人工显式模型不持久化，系统复测严格使用账户检查模型，模型选项请求形态与 POST 最终校验符合预期')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)

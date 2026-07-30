@@ -201,7 +201,7 @@ function usageRecordListFailureReason(row: UsageRecordRow): string | undefined {
   const errorCode = optionalString(row.error_code)
   const attribution = usageFailureAttribution(row.failure_attribution)
   if (errorCode === 'downstream_connection_closed' || errorCode === 'client_aborted' || attribution === 'downstream_unconfirmed' || attribution === 'client_lifecycle') {
-    return '下游连接关闭，触发方未识别'
+    return '下游连接关闭'
   }
   const errorCodeReason = usageRecordListFailureReasonForErrorCode(errorCode)
   if (errorCodeReason) return errorCodeReason

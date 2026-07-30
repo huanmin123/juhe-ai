@@ -84,6 +84,25 @@ assertLineIncludes(successLines, '实际请求形态：Chat Completions (Streami
 assertLineIncludes(successLines, 'API Key 池结果：可用 1/2，已测试 2 个', 'Key 池输出应展示汇总')
 assertLineIncludes(successLines, 'API Key sk-a...good 测试结果：通过，HTTP 200，耗时 0.90s', 'Key 池输出应展示成功 Key 的前后缀和结果')
 assertLineIncludes(successLines, 'API Key sk-b...fail 测试结果：失败，HTTP 401，耗时 0.12s，错误码 invalid_api_key，invalid api key', 'Key 池输出应展示失败 Key 的前后缀和结果')
+const duplicatedApiKeyPoolResult = {
+  ...successResult,
+  apiKeyPool: {
+    ...successResult.apiKeyPool!,
+    results: successResult.apiKeyPool!.results.map((item) => item.keyIndex === 1
+      ? { ...item, message: 'HTTP 401；invalid_api_key；invalid api key' }
+      : item)
+  }
+}
+const duplicatedApiKeyPoolLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  testEndpointMode: 'account_default',
+  selectedEndpointModeText: 'Chat Completions (Streaming)',
+  model: 'gpt-5.1',
+  providerLabel: () => 'OpenAI',
+  result: duplicatedApiKeyPoolResult,
+  running: false
+})
+assertLineIncludes(duplicatedApiKeyPoolLines, 'API Key sk-b...fail 测试结果：失败，HTTP 401，耗时 0.12s，错误码 invalid_api_key，invalid api key', 'Key 池行不应在消息中重复状态码和错误码')
 assertLineIncludes(successLines, 'pong', '成功输出应展示返回内容')
 assertLineIncludes(successLines, '✓ 测试完成！  总耗时：1.2s，首 token：0.32s', '成功输出应展示总耗时和首 token')
 const mappedResult = resultFixture(apiKeyAccount, {
@@ -260,6 +279,7 @@ const failedLines = accountTestSingleOutputLines({
   result: failedResult,
   running: false
 })
+assertLineIncludes(failedLines, 'API 返回 HTTP 500', '失败输出应独立展示 HTTP 状态')
 assertLineIncludes(failedLines, 'upstream failed', '失败输出应展示诊断响应')
 assertLineExcludes(failedLines, '账号状态：', '人工测试结果不应展示或暗示账户状态变更')
 

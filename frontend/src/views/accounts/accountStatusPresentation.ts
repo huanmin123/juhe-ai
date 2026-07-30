@@ -1,5 +1,6 @@
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountListItem } from '@/types/domain'
+import { accountDiagnosticMessageWithoutRepeatedFields } from './accountDiagnosticMessages'
 
 export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const presentation = account.availabilityPresentation
@@ -30,9 +31,24 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const reason = observation?.result === 'failed'
     ? (observation.reason ?? presentation?.reason ?? effective?.reason)
     : (presentation?.reason ?? observation?.reason ?? effective?.reason)
-  if (reason) lines.push(`原因：${reason}`)
+  const normalizedReason = normalizeAccountStatusReason(reason, observation)
+  if (normalizedReason) lines.push(`原因：${normalizedReason}`)
   if (observation?.traceId) lines.push(`traceId：${observation.traceId}`)
   return lines
+}
+
+function normalizeAccountStatusReason(
+  reason: string | undefined,
+  observation: { httpStatus?: number; errorCode?: string } | undefined
+): string {
+  let value = reason?.trim() ?? ''
+  if (!value) return ''
+
+  value = value.replace(/请联系授权人或管理员查看完整诊断/g, '')
+  return accountDiagnosticMessageWithoutRepeatedFields(value, {
+    statusCode: observation?.httpStatus,
+    errorCode: observation?.errorCode
+  })
 }
 
 function accountStatusFallbackLabel(status: AccountListItem['status']): string {

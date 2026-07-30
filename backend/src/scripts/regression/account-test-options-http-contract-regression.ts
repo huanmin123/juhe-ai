@@ -57,6 +57,7 @@ interface ApiEnvelope<T> {
 type TestOptions = Array<{
   id: string
   name: string
+  testEndpointModes: string[]
 }>
 
 interface ModelCapabilities {
@@ -96,6 +97,10 @@ try {
   const imageModelId = 'vendor/image-only'
   const mixedImageResponsesModelId = 'vendor/image-responses'
   const messagesOnlyModelId = 'vendor/messages-only'
+  const responsesToChatModelId = 'vendor/responses-to-chat'
+  const chatUpstreamModelId = 'vendor/chat-upstream'
+  const missingMappedTargetModelId = 'vendor/responses-to-missing-target'
+  const missingUpstreamTargetModelId = 'vendor/missing-upstream-target'
   for (const model of [encodedModelId, responsesOnlyModelId]) {
     saveCustomProviderModel({
       providerCode: 'openai',
@@ -140,6 +145,19 @@ try {
     supportedApiProtocols: ['messages'],
     actorSystemAccountId: user.id
   })
+  for (const model of [responsesToChatModelId, chatUpstreamModelId, missingMappedTargetModelId, missingUpstreamTargetModelId]) {
+    saveCustomProviderModel({
+      providerCode: 'openai',
+      model,
+      scope: 'personal',
+      systemAccountId: user.id,
+      status: 'active',
+      supportedApiProtocols: ['chat_completions'],
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2,
+      actorSystemAccountId: user.id
+    })
+  }
   const group = repositories.createGroup({ name: '账户测试选项 HTTP 分组', providerCode: 'openai' }, userAccess)
   const account = repositories.createAccount({
     providerCode: 'openai',
@@ -147,7 +165,7 @@ try {
     name: '账户测试选项 HTTP 账户',
     type: 'api_key',
     groupId: group.id,
-    supportedModels: [encodedModelId, responsesOnlyModelId],
+    supportedModels: [encodedModelId, responsesOnlyModelId, chatUpstreamModelId, missingUpstreamTargetModelId],
     modelMappings: [{
       sourceModel: encodedModelId,
       sourceEndpointFamily: 'responses',
@@ -160,14 +178,35 @@ try {
       upstreamModel: encodedModelId,
       upstreamEndpointFamily: 'responses',
       enabled: true
+    }, {
+      sourceModel: responsesToChatModelId,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: chatUpstreamModelId,
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }, {
+      sourceModel: missingMappedTargetModelId,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'vendor/missing-upstream-target',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
     }],
     healthCheckModel: encodedModelId,
     credentials: {
       api_key: 'sk-account-test-options-http',
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_json', 'responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse', 'chat_json']
     }
   }, userAccess)
+  saveCustomProviderModel({
+    providerCode: 'openai',
+    model: missingUpstreamTargetModelId,
+    scope: 'personal',
+    systemAccountId: user.id,
+    status: 'disabled',
+    supportedApiProtocols: ['chat_completions'],
+    actorSystemAccountId: user.id
+  })
   assert.deepEqual(
     loadModelMappingsForAccountModel(account.id, encodedModelId).map((mapping) => mapping.sourceModel),
     [encodedModelId],
@@ -182,6 +221,16 @@ try {
     await resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, mixedImageResponsesModelId, 'responses_sse'),
     { model: mixedImageResponsesModelId, testEndpointMode: 'responses_sse' },
     '同时声明 Responses 与 Images 的模型必须保留用户选择的 Responses 形态'
+  )
+  assert.deepEqual(
+    await resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, responsesToChatModelId, 'responses_sse'),
+    { model: responsesToChatModelId, testEndpointMode: 'responses_sse' },
+    'Responses 到 Chat 映射必须按上游 Chat 目标能力接受 source model 未声明的 Responses 形态'
+  )
+  await assert.rejects(
+    resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, missingMappedTargetModelId, 'responses_sse'),
+    /不支持本次检查协议/,
+    '映射上游模型不存在时最终提交不得放行请求形态'
   )
   const draftImageContext = accountManualTestCapabilitiesContextFromDraft({
     id: 'acctdraft_image_protocol',
@@ -258,13 +307,14 @@ try {
     assert(selected, `${target.label}模型摘要必须保留请求模型 ID`)
     assert.deepEqual(
       Object.keys(selected).sort(),
-      ['id', 'name'],
-      `${target.label}模型选项只能返回下拉显示字段`
+      ['id', 'name', 'testEndpointModes'],
+      `${target.label}模型选项必须返回显示字段和可执行请求形态`
     )
     assert(selected.name.trim(), `${target.label}模型摘要展示名称不得为空`)
+    assert(selected.testEndpointModes.length > 0, `${target.label}模型选项必须至少有一个可执行请求形态`)
     assert(options.some((item) => item.id === responsesOnlyModelId), `${target.label}已选模型不得被 keyword/limit 窗口截断`)
     assert(options.length <= 2, `${target.label}limit=1 时除已选补齐外最多返回一条搜索结果`)
-    assertListQueryBoundary(capturedSelectSql, target.label)
+    assertListQueryBoundary(capturedSelectSql, target.label, options.length)
 
     const defaultModelOptions = await requestEnvelope<TestOptions>(
       baseUrl,
@@ -291,8 +341,21 @@ try {
     assert.equal(protocolEligibleOptions.some((item) => item.id === imageModelId), true, `${target.label}模型候选应包含可使用 Images API 测试的图片模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === mixedImageResponsesModelId), true, `${target.label}模型候选应包含同时支持 Images 与 Responses 的模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === messagesOnlyModelId), false, `${target.label}OpenAI 档案模型候选不得包含仅支持 Messages 的模型`)
+    const responsesToChatOption = protocolEligibleOptions.find((item) => item.id === responsesToChatModelId)
+    assert.deepEqual(
+      [...(responsesToChatOption?.testEndpointModes ?? [])].sort(),
+      ['chat_json', 'responses_json', 'responses_sse'],
+      `${target.label}Responses 到 Chat 映射必须按上游目标协议生成请求形态`
+    )
+    const missingTargetOption = protocolEligibleOptions.find((item) => item.id === missingMappedTargetModelId)
+    assert.equal(
+      missingTargetOption?.testEndpointModes.includes('responses_json') || missingTargetOption?.testEndpointModes.includes('responses_sse'),
+      false,
+      `${target.label}映射上游模型不存在时不得在列表宣告对应的 Responses 请求形态`
+    )
     const imageOption = protocolEligibleOptions.find((item) => item.id === imageModelId)
-    assert.deepEqual(Object.keys(imageOption ?? {}).sort(), ['id', 'name'], `${target.label}图片模型同样只能返回下拉显示字段`)
+    assert.deepEqual(Object.keys(imageOption ?? {}).sort(), ['id', 'name', 'testEndpointModes'], `${target.label}图片模型同样必须返回请求形态`)
+    assert.deepEqual(imageOption?.testEndpointModes, ['images_json'], `${target.label}图片模型请求形态必须来自服务端交集`)
 
     await requestEnvelope(
       baseUrl,
@@ -402,13 +465,15 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function assertListQueryBoundary(sqlList: string[], label: string): void {
+function assertListQueryBoundary(sqlList: string[], label: string, optionCount: number): void {
   const contextQueries = sqlList.filter((sql) => sql.includes('AS view_account_id'))
   assert.equal(contextQueries.length, 1, `${label}模型列表只能读取一次最小账户上下文`)
-  assert.doesNotMatch(contextQueries[0] ?? '', /credentials_encrypted/i, `${label}模型列表不得提前读取账户凭据`)
+  assert.match(contextQueries[0] ?? '', /credentials_encrypted/i, `${label}模型列表必须受控读取 endpoint mode 配置`)
   assert.doesNotMatch(contextQueries[0] ?? '', /SELECT\s+\*/i, `${label}模型列表不得读取完整账户行`)
-  assert.equal(sqlList.filter((sql) => /FROM\s+account_model_mappings/i.test(sql)).length, 0, `${label}模型列表不得提前读取模型映射`)
-  assertLightweightCatalogQueries(sqlList, label, false)
+  const mappingQueries = sqlList.filter((sql) => /FROM\s+account_model_mappings/i.test(sql))
+  assert.equal(mappingQueries.length, 1, `${label}模型列表必须读取当前账户完整模型映射`)
+  assert.match(mappingQueries[0] ?? '', /account_id\s+IN\s*\(/i, `${label}模型列表映射查询必须限定当前账户`)
+  assertLightweightCatalogQueries(sqlList, label, false, 2 + optionCount * 2)
 }
 
 function assertCapabilitiesQueryBoundary(sqlList: string[], label: string): void {
@@ -420,12 +485,18 @@ function assertCapabilitiesQueryBoundary(sqlList: string[], label: string): void
   assert.equal(mappingQueries.length, 1, `${label}模型能力只能定点读取一次当前账户当前模型映射`)
   assert.match(mappingQueries[0] ?? '', /WHERE\s+account_id\s*=\s*\?\s+AND\s+source_model\s*=\s*\?/i, `${label}模型映射查询必须同时按 accountId 和 modelId 过滤`)
   assert.doesNotMatch(mappingQueries[0] ?? '', /account_id\s+IN\s*\(/i, `${label}模型能力不得复用账户批量映射查询`)
-  assertLightweightCatalogQueries(sqlList, label, true)
+  assertLightweightCatalogQueries(sqlList, label, true, 4)
 }
 
-function assertLightweightCatalogQueries(sqlList: string[], label: string, targeted: boolean): void {
+function assertLightweightCatalogQueries(
+  sqlList: string[],
+  label: string,
+  targeted: boolean,
+  maxCatalogQueries: number
+): void {
   const catalogQueries = sqlList.filter((sql) => /FROM\s+(?:provider_model_catalog|custom_provider_models)/i.test(sql))
-  const maxCatalogQueries = targeted ? 4 : 2
+  // Windowed options read both built-in and custom catalogs. Each returned
+  // mapped model may additionally resolve one upstream target through them.
   assert(
     catalogQueries.length <= maxCatalogQueries,
     `${label}模型目录最多允许按当前模型${targeted ? '及其映射目标模型' : ''}定点读取内置与自定义目录，实际 ${catalogQueries.length}`
@@ -437,7 +508,7 @@ function assertLightweightCatalogQueries(sqlList: string[], label: string, targe
       /input_usd_per_1m|output_usd_per_1m|service_tier_prices_json|capability_notes|pricing_notes|notes/i,
       `${label}模型选项目录不得读取定价或说明字段`
     )
-    if (targeted) {
+    if (targeted || /model\s*=\s*\?/i.test(sql)) {
       assert.match(sql, /model\s*=\s*\?/i, `${label}模型能力目录查询必须按 modelId 定点过滤`)
     } else {
       assert.match(sql, /LIMIT\s+\?/i, `${label}模型列表目录查询必须在 SQL 层限制窗口`)

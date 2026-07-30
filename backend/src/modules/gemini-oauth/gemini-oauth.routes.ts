@@ -15,6 +15,7 @@ import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules 
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import { accountCreationStatusInput } from '../accounts/account-creation-status.js'
 import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
 import {
   GEMINI_CLI_OAUTH_CLIENT_ID,
@@ -189,7 +190,8 @@ geminiOAuthRouter.post('/create-from-code', mutationGuard({
     projectId: normalizedText(bodyField(req, 'projectId')),
     tierId: normalizedText(bodyField(req, 'tierId')),
     clientId: normalizedText(bodyField(req, 'clientId')),
-    clientSecret: sensitiveFingerprint(bodyField(req, 'clientSecret'))
+    clientSecret: sensitiveFingerprint(bodyField(req, 'clientSecret')),
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -247,8 +249,7 @@ geminiOAuthRouter.post('/create-from-code', mutationGuard({
         name: parsed.data.name ?? 'Gemini OAuth Account',
         type: 'google_oauth',
         credentials: buildSafeGeminiOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
-        status: 'pending_test',
-        skipInitialHealthCheck: false,
+        ...accountCreationStatusInput(parsed.data.status),
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -262,7 +263,6 @@ geminiOAuthRouter.post('/create-from-code', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -299,7 +299,7 @@ geminiOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     tierId: normalizedText(bodyField(req, 'tierId')),
     clientId: normalizedText(bodyField(req, 'clientId')),
     clientSecret: sensitiveFingerprint(bodyField(req, 'clientSecret')),
-    status: 'pending_test'
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -354,8 +354,7 @@ geminiOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         name: parsed.data.name ?? 'Gemini OAuth Account',
         type: 'google_oauth',
         credentials: buildSafeGeminiOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
-        status: 'pending_test',
-        skipInitialHealthCheck: false,
+        ...accountCreationStatusInput(parsed.data.status),
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -369,7 +368,6 @@ geminiOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)

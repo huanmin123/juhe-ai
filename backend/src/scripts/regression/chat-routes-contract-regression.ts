@@ -83,6 +83,8 @@ assert.match(modelsRouteSource, /buildChatModelOptions/, '聊天模型能力必�
 assert.match(modelsRouteSource, /res\.json\(ok\(modelOptions\)\)/, '聊天模型列表响应必须直接返回轻量 id 和 name 列表')
 assert.match(modelsRouteSource, /chatRouter\.get\('\/conversations\/:conversationId\/models\/:modelId'[\s\S]*chat_model_not_found/, '聊天模型能力必须通过独立接口读取并保留稳定 404')
 assert.match(routesSource, /buildChatTransportRequest/, 'AI 问答模型调用必须通过 Chat\/Responses transport 重新进入现有网关')
+assert.match(routesSource, /function gatewayUrl\(path: string\): string \{ return `\$\{runtimeConfig\.internalGatewayOrigin\}\$\{path\}` \}/, 'AI 问答内部网关调用必须使用运行时解析后的内部 Gateway Origin')
+assert.doesNotMatch(routesSource, /runtimeConfig\.port/, 'AI 问答路由不得直接使用自身监听端口拼接内部 Gateway 请求')
 assert.match(routesSource, /event:\s*'chat_generation_failed'/, 'AI 问答生成失败必须写入带会话和 trace 定位信息的服务端日志')
 assert.match(routesSource, /event:\s*'chat_internal_tool_failed'/, 'AI 问答内部工具失败必须写入带会话和 trace 定位信息的服务端日志')
 assert.match(routesSource, /errorMessage:\s*publicError\.message/, 'AI 问答生成失败必须持久化脱敏诊断详情，不能只保存错误码')

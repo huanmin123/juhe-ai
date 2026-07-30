@@ -192,7 +192,7 @@ export function resolveAuditFinalization(
     success: input.success && outcome !== 'downstream_closed',
     errorPhase: outcome === 'downstream_closed' ? 'downstream' : rootFailure?.errorPhase ?? input.errorPhase,
     errorCode: outcome === 'downstream_closed' ? 'downstream_connection_closed' : rootFailure?.errorCode ?? input.errorCode,
-    errorMessage: outcome === 'downstream_closed' ? '下游连接提前关闭，触发方未识别' : rootFailure?.errorMessage ?? input.errorMessage
+    errorMessage: outcome === 'downstream_closed' ? '下游连接关闭' : rootFailure?.errorMessage ?? input.errorMessage
   }
 }
 

@@ -647,7 +647,7 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
 function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
   const current = findAccountCooldownRetestState(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
-  const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
+  const testErrorMessage = normalizedCooldownRetestErrorMessage(input)
   const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   if (!current || !isCoolingAccountStatus(current.status) || !cooldownRetestExpectedStateMatchesAccount(current, input)) {
     return {
@@ -774,7 +774,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
     return recordCooldownAccountRetestFailure(id, input)
   }
   const errorCode = normalizedCooldownRetestErrorCode(input)
-  const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
+  const testErrorMessage = normalizedCooldownRetestErrorMessage(input)
   const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const maxPauseMinutes = input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -1512,21 +1512,8 @@ function failureAccountSummary(id: string, fallback: AccountSummary): AccountSum
   return findAccountCooldownRetestState(id) ?? fallback
 }
 
-function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailureInput, errorCode: string): string {
-  const message = optionalString(input.errorMessage) ?? '后台冷却复测失败'
-  const parts: string[] = []
-  const traceId = optionalString(input.traceId)
-  if (traceId && !message.includes(traceId)) {
-    parts.push(`traceId ${traceId}`)
-  }
-  if (typeof input.statusCode === 'number' && Number.isFinite(input.statusCode)) {
-    parts.push(`HTTP ${Math.trunc(input.statusCode)}`)
-  }
-  if (errorCode && !errorCode.startsWith('http_') && !message.includes(errorCode)) {
-    parts.push(errorCode)
-  }
-  parts.push(message)
-  return parts.join('；').slice(0, 1000)
+function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailureInput): string {
+  return (optionalString(input.errorMessage) ?? '后台冷却复测失败').slice(0, 1000)
 }
 
 interface CooldownRetestRecoveryPlan {

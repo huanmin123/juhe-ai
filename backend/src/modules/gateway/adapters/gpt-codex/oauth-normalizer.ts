@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
 import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
-import { codexResponsesContractRevision } from '../../codex-responses/contract-registry.js'
 import { sanitizeCodexResponseHistoryItems } from '../../codex-responses/request-history-sanitizer.js'
 import { normalizeOpenAICodexResponsesLiteBody } from './client-headers.js'
 
@@ -107,8 +106,7 @@ function sanitizeOpenAIOAuthCodexHistory(body: Record<string, unknown>, accountI
   const result = sanitizeCodexResponseHistoryItems(body.input, {
     store: false,
     targetScopeKey: accountId ? `account:${accountId}` : undefined,
-    targetPersistenceScope: 'none',
-    contractRevision: codexResponsesContractRevision
+    targetPersistenceScope: 'none'
   })
   if (result.changed) body.input = result.items
 }

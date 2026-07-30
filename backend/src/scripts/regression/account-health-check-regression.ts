@@ -404,6 +404,20 @@ try {
   assert.equal(afterConfigurationFailure?.lastHealthCheckTraceId, undefined, '最新检查没有 traceId 时必须清理旧探针 trace，不能与新错误摘要错配')
   assert.ok(afterConfigurationFailure?.nextHealthCheckAt, '配置错误仍应安排后台复检')
 
+  const messageOnlyAccount = createActiveAccount(repositories, group.id, '健康检测结构化错误账号', 'sk-health-structured-error')
+  const structuredFailure = repositories.recordAccountHealthCheckFailure(messageOnlyAccount.id, {
+    ...healthSettings,
+    statusCode: 520,
+    errorCode: 'upstream_retryable_error',
+    errorMessage: '上游请求失败'
+  })
+  assert.equal(structuredFailure.changed, true, '结构化错误字段测试账号应写入健康检查失败')
+  const structuredFailureAccount = repositories.findAccountSummary(messageOnlyAccount.id, access)
+  assert.equal(structuredFailureAccount?.lastHealthCheckStatusCode, 520, '健康检查失败应独立保留 HTTP 状态码')
+  assert.equal(structuredFailureAccount?.lastHealthCheckErrorCode, 'upstream_retryable_error', '健康检查失败应独立保留错误码')
+  assert.equal(structuredFailureAccount?.lastHealthCheckErrorMessage, '上游请求失败', '健康检查错误摘要不应重复拼接状态码和错误码')
+  assert.doesNotMatch(structuredFailureAccount?.lastHealthCheckErrorMessage ?? '', /HTTP 520|upstream_retryable_error/, '健康检查错误摘要不得重复结构化字段')
+
   const firstFailure = repositories.recordAccountHealthCheckFailure(dueAccount.id, {
     ...healthSettings,
     statusCode: 401,

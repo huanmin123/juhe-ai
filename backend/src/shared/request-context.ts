@@ -518,7 +518,7 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
       durationMs: Date.now() - context.startedAt,
       clientIp: context.clientIp,
       userAgent: req.header('user-agent')
-    }, '下游连接在协议终态后关闭，触发方未识别')
+    }, '下游连接关闭')
     return
   }
   setImmediate(() => logRequestTimingSummary(context, responseState, 'aborted'))
@@ -531,7 +531,7 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
     durationMs: Date.now() - context.startedAt,
     clientIp: context.clientIp,
     userAgent: req.header('user-agent')
-  }, '下游连接在请求完成前关闭，触发方未识别')
+  }, '下游连接关闭')
 }
 
 export function markRequestProtocolTerminalOutcome(outcome: 'success' | 'failure'): void {

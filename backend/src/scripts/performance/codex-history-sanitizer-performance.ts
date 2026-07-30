@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { performance } from 'node:perf_hooks'
 
 import { sanitizeCodexResponseHistoryItems } from '../../modules/gateway/codex-responses/request-history-sanitizer.js'
-import type { CodexHistorySanitizerContext } from '../../modules/gateway/codex-responses/request-history-types.js'
 
 interface SanitizerBenchmarkResult {
   itemCount: number
@@ -45,13 +44,12 @@ console.log(JSON.stringify({
 
 function runCase(itemCount: number, dirtyRate: number): SanitizerBenchmarkResult {
   const input = createItems(itemCount, dirtyRate)
-  const context: CodexHistorySanitizerContext = {
+  const context = {
     store: true,
     sourceScopeKey: 'account:a',
     targetScopeKey: 'account:a',
-    targetPersistenceScope: 'account',
-    contractRevision: 'codex-responses-2026-07-11-r1'
-  }
+    targetPersistenceScope: 'account'
+  } as const
   const iterations = Math.max(20, Math.floor(200_000 / itemCount))
   const timings: number[] = []
   let copiedItemCount = 0

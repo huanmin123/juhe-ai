@@ -4,7 +4,12 @@ import {
   isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMappingSourceEndpointFamily, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
+import type {
+  AccountModelMapping,
+  AccountModelMappingSourceEndpointFamily,
+  AccountSummary,
+  AccountSupportedEndpointMode
+} from '../../domain/types.js'
 import {
   findProviderModelTestCatalogItemAsync,
   type ProviderModelTestCatalogItem,
@@ -20,7 +25,7 @@ import {
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 import type {
   AccountManualTestCapabilitiesContext,
-  AccountManualTestListContext
+  AccountManualTestOptionsContext
 } from '../../storage/account-manual-test-context.repository.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
@@ -29,6 +34,7 @@ import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1
 export interface AccountManualTestOption {
   id: string
   name: string
+  testEndpointModes: AccountSupportedEndpointMode[]
 }
 
 export interface AccountManualTestModelCapabilities {
@@ -37,6 +43,8 @@ export interface AccountManualTestModelCapabilities {
 }
 
 export type AccountManualTestOptionsQuery = Pick<ProviderModelOptionQuery, 'keyword' | 'limit' | 'selectedIds'>
+
+type UpstreamModelCache = Map<string, Promise<ProviderModelTestCatalogItem | undefined>>
 
 export function normalizeAccountManualTestOptionsQuery(query: Record<string, unknown>): AccountManualTestOptionsQuery {
   const normalized = normalizeProviderModelOptionQuery(query)
@@ -48,7 +56,7 @@ export function normalizeAccountManualTestOptionsQuery(query: Record<string, unk
 }
 
 export async function accountManualTestOptionsAsync(
-  account: AccountSummary | AccountManualTestListContext,
+  account: AccountSummary | AccountManualTestOptionsContext,
   query: AccountManualTestOptionsQuery = { limit: 50, selectedIds: [] }
 ): Promise<AccountManualTestOption[]> {
   const systemAccountId = account.ownerSystemAccountId
@@ -71,10 +79,18 @@ export async function accountManualTestOptionsAsync(
     limit: query.limit,
     selectedIds
   })
-  return options.map((option) => ({
+  const upstreamModels: UpstreamModelCache = new Map()
+  const resolvedOptions = await Promise.all(options.map(async (option) => ({
     id: option.id,
-    name: option.name
-  }))
+    name: option.name,
+    testEndpointModes: await accountManualTestEndpointModesForTargetModelAsync(
+      account,
+      { model: option.id, supportedApiProtocols: option.supportedApiProtocols as ProviderModelApiProtocol[] },
+      systemAccountId,
+      upstreamModels
+    )
+  })))
+  return resolvedOptions.filter((option) => option.testEndpointModes.length > 0)
 }
 
 export async function resolveAccountManualTestSelectionAsync(
@@ -147,7 +163,7 @@ async function accountManualTestEndpointModesForTargetModelAsync(
   account: AccountSummary | AccountManualTestCapabilitiesContext,
   model: Pick<ProviderModelTestCatalogItem, 'model' | 'supportedApiProtocols'>,
   systemAccountId: string,
-  upstreamModels = new Map<string, ProviderModelTestCatalogItem | undefined>()
+  upstreamModels: UpstreamModelCache = new Map()
 ): Promise<AccountSupportedEndpointMode[]> {
   const accountEndpointModes = accountManualTestEndpointModes({
     providerCode: account.providerCode,
@@ -175,20 +191,13 @@ async function accountManualTestEndpointModesForTargetModelAsync(
       if (modelSupportsProtocol(model, sourceFamily)) output.push(mode)
       continue
     }
-    let upstreamModel = upstreamModels.get(mapping.upstreamModel)
-    if (!upstreamModels.has(mapping.upstreamModel)) {
-      upstreamModel = await findProviderModelTestCatalogItemAsync({
-        providerCode: account.providerCode,
-        systemAccountId,
-        model: mapping.upstreamModel,
-        protocolsOnly: true
-      })
-      upstreamModels.set(mapping.upstreamModel, upstreamModel)
-    }
-    if (
-      modelSupportsProtocol(model, sourceFamily)
-      && (!upstreamModel || modelSupportsProtocol(upstreamModel, mapping.upstreamEndpointFamily))
-    ) {
+    const upstreamModel = await mappedUpstreamModelAsync(
+      upstreamModels,
+      account.providerCode,
+      systemAccountId,
+      mapping.upstreamModel
+    )
+    if (upstreamModel && modelSupportsProtocol(upstreamModel, mapping.upstreamEndpointFamily)) {
       output.push(mode)
     }
   }
@@ -210,11 +219,28 @@ export function accountManualTestEndpointModesForModel(
     const mapping = resolveOpenAIAccountModelMapping(account, model.model, sourceFamily)
     if (!mapping) return modelSupportsProtocol(model, sourceFamily)
     const upstreamModel = catalog.find((item) => item.model === mapping.upstreamModel)
-    return modelSupportsProtocol(model, sourceFamily)
-      && (!upstreamModel || modelSupportsProtocol(upstreamModel, mapping.upstreamEndpointFamily))
+    return Boolean(upstreamModel && modelSupportsProtocol(upstreamModel, mapping.upstreamEndpointFamily))
   })
   if (modelSupportsImagesProtocol(model, account)) output.push('images_json')
   return output
+}
+
+function mappedUpstreamModelAsync(
+  upstreamModels: UpstreamModelCache,
+  providerCode: string,
+  systemAccountId: string,
+  model: string
+): Promise<ProviderModelTestCatalogItem | undefined> {
+  const cached = upstreamModels.get(model)
+  if (cached) return cached
+  const pending = findProviderModelTestCatalogItemAsync({
+    providerCode,
+    systemAccountId,
+    model,
+    protocolsOnly: true
+  })
+  upstreamModels.set(model, pending)
+  return pending
 }
 
 function endpointModeProtocol(mode: AccountSupportedEndpointMode): AccountModelMappingSourceEndpointFamily {
@@ -234,10 +260,11 @@ function modelSupportsProtocol(
 }
 
 function isAccountManualTestModel(
-  item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
-  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>
+  item: Pick<ProviderModelCatalogItem, 'model' | 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type' | 'modelMappings'>
 ): boolean {
   if (item.mode === 'audio') return false
+  if (hasEnabledModelMapping(account.modelMappings, item.model)) return true
   const protocols = item.supportedApiProtocols ?? []
   if (!protocols.length) return item.mode !== 'image_generation' && item.mode !== 'image'
   if (isHybridProviderCode(account.providerCode)) {
@@ -264,6 +291,10 @@ function isAccountManualTestModel(
     return protocols.some((protocol) => protocol === 'generate_content' || protocol === 'stream_generate_content' || protocol === 'interactions')
   }
   return false
+}
+
+function hasEnabledModelMapping(mappings: AccountModelMapping[] | undefined, model: string): boolean {
+  return mappings?.some((mapping) => mapping.enabled !== false && mapping.sourceModel === model) === true
 }
 
 function modelSupportsImagesProtocol(

@@ -1663,7 +1663,7 @@ function isChatModelProtocol(protocol: string): boolean {
   return protocol === 'chat_completions' || protocol === 'responses'
 }
 
-function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
+function gatewayUrl(path: string): string { return `${runtimeConfig.internalGatewayOrigin}${path}` }
 async function hasChatImageGenerationRoute(groupIds: readonly string[], systemAccountId: string): Promise<boolean> {
   const accountLists = await Promise.all([...new Set(groupIds.filter(Boolean))].map((groupId) => (
     listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: chatImageGenerationGatewayModel })

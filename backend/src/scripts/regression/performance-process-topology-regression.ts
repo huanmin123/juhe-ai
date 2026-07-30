@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const childMode = process.env.JUHE_AI_PERFORMANCE_TOPOLOGY_CHILD
+const backendRoot = fileURLToPath(new URL('../../../', import.meta.url))
 
 if (childMode) {
   const { runtimeConfig } = await import('../../config/runtime.js')
@@ -66,6 +67,7 @@ const serverSource = readFileSync(new URL('../../server.ts', import.meta.url), '
 const supervisorSource = readFileSync(new URL('../../modules/background/background-worker-supervisor.ts', import.meta.url), 'utf8')
 const metricsRegistrySource = readFileSync(new URL('../../shared/performance-process-metrics-registry.ts', import.meta.url), 'utf8')
 const backgroundJobsSource = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
+const performanceInstallerSource = readFileSync(resolve(backendRoot, '../docs/deploy/macos/operations/install-performance-topology.sh'), 'utf8')
 assert.match(
   serverSource,
   /topologyGatesHealth[\s\S]*performanceNodeRole === 'control'[\s\S]*!workerTopologyReady \? 503 : 200/,
@@ -80,6 +82,8 @@ assert.match(
   'Stats Worker 必须按拓扑角色和副本核验完整性，不能只比较样本条数'
 )
 assert.doesNotMatch(backgroundJobsSource, /registryProcessSamples\.length\s*>?=/, '重复旧实例不得用数量掩盖当前角色缺失')
+assert.match(performanceInstallerSource, /JUHE_AI_INTERNAL_GATEWAY_ORIGIN=http:\/\/127\.0\.0\.1:%s[\s\S]{0,160}INGRESS_PORT/, 'macOS control 启动脚本必须把 Nginx ingress 端口写入内部 Gateway Origin')
+assert.match(performanceInstallerSource, /JUHE_AI_INTERNAL_GATEWAY_ORIGIN="http:\/\/127\.0\.0\.1:\$INGRESS_PORT"/, 'macOS performance 预检必须明确传入当前 Nginx ingress Origin')
 assert.match(
   supervisorSource,
   /attachBackgroundAuxiliaryWorkerProcess\(child/,

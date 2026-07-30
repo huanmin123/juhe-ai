@@ -9,7 +9,7 @@
 - 人工测试只作为用户主动发起的诊断工具，不再承担账户激活、状态恢复、健康事实维护或默认模型保存职责。
 - 后台系统检查统一使用账户保存的检查模型，并独占账户激活、健康确认和自动恢复职责。
 - 模型目录中的默认机制只负责初始化账户检查模型，不能在运行时动态改变已有账户。
-- 列表随账户摘要返回检查模型和检查请求形态；打开测试弹窗不加载候选目录，用户展开模型或请求形态下拉时再按对应范围加载。
+- 列表随账户摘要返回检查模型和检查请求形态；打开测试弹窗不加载候选目录，用户展开模型下拉时才加载模型及其可执行请求形态。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
 ## 健康检查请求形态
@@ -169,18 +169,11 @@ GET /__aisys__/api/accounts/:id/test-options
 GET /__aisys__/api/my-accounts/:id/test-options
 ```
 
-响应严格为 `Array<{ id, name }>`，支持 `keyword`、`limit` 和 `selectedIds`。批量接口只返回当前账户供应商作用域内可测试的模型名称，不携带 `supportedApiProtocols`、`testEndpointModes`、完整模型定义或凭据。默认模型和请求形态继续直接使用列表行的 `healthCheckModel` 与 `healthCheckEndpointMode`。
+响应严格为 `Array<{ id, name, testEndpointModes }>`，支持 `keyword`、`limit` 和 `selectedIds`。每个 `testEndpointModes` 都由 Node 使用当前账户已启用 endpoint modes、该模型的 `supportedApiProtocols`、以及当前账户模型映射和映射上游模型协议计算最终可执行交集。HTTP 响应不包含凭据、原始 `supportedApiProtocols` 或完整模型定义。
 
-以下管理端或个人端镜像能力接口用于请求形态下拉的定点加载。用户展开请求形态下拉时只查询当前模型，不加载完整模型目录；模型批量选项是否已经加载不改变这条边界：
+用户在模型下拉中切换模型后，Vue 直接采用该 options 项的 `testEndpointModes`，并自动选择首个可用形态；加载 options 时若自动选择首个模型也同步形态，不再向浏览器发起第二个 capabilities 请求。后端可保留 `GET /__aisys__/api/accounts/:id/test-options/models/:modelId` 及个人端镜像作为兼容能力接口，但页面不调用它。测试执行仍由后端按账户 ID 读取受控凭据，并在提交时通过 `resolveAccountManualTestSelectionAsync` 重新校验模型与请求形态。
 
-```text
-GET /__aisys__/api/accounts/:id/test-options/models/:modelId
-GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
-```
-
-能力响应严格为 `{ id, testEndpointModes }`。协议与账户能力交集由 Node 内部计算；在没有真实消费者和回归前，不返回名称或协议数组。从模型下拉切换模型时只清空旧模型能力，不自动加载新模型能力；用户随后展开请求形态下拉时才按新模型定点请求。列表、批量模型选项和能力接口均不得返回凭据；测试执行仍由后端按账户 ID 读取受控凭据，并在提交时重新校验模型与请求形态。
-
-`testEndpointModes` 必须由单模型能力接口基于完整账户的上游接口能力返回；普通生成模型的结果是有效模型映射、模型协议和账户上游能力的交集。前端不能从列表裁剪账户或 `{ id, name }` 模型选项重新推导。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
+合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
 
 后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`。人工测试只显示诊断，激活、周期健康、请求失败二次确认和质量确认则把它作为通用可用性失败。
 
@@ -304,7 +297,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 - 新增、编辑和列表人工测试成功或失败后，账户、授权实例、Key、健康事实和运行态均不变化。
 - 新增 / 编辑测试只能使用表单检查模型；列表测试关闭重开后仍默认使用账户检查模型。
 - A 账户测试运行时可以打开和启动 B 账户测试，旧结果不能覆盖新弹窗。
-- 列表接口只增加检查模型和检查请求形态两个轻量标量；打开测试弹窗零 options 请求，模型下拉读取严格 `{ id, name }` 的批量 `test-options`，请求形态下拉只读取当前模型能力。
+- 列表接口只增加检查模型和检查请求形态两个轻量标量；打开测试弹窗零 options 请求，模型下拉读取 `{ id, name, testEndpointModes }` 的批量 `test-options`，切换模型立即联动该项请求形态。
 - 页面和后端均不存在账户批量测试入口。
 - 新账户保存后保持 `pending_test`，后台激活检查成功后自动进入 `active`。
 - 人工草稿测试成功不能直接激活新账户。

@@ -15,6 +15,7 @@ import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules 
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import { accountCreationStatusInput } from '../accounts/account-creation-status.js'
 import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
 import {
   buildAnthropicOAuthCredentials,
@@ -131,7 +132,8 @@ anthropicOAuthRouter.post('/create-from-code', mutationGuard({
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     sessionId: textValue(bodyField(req, 'sessionId')),
-    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl'))
+    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl')),
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -182,8 +184,7 @@ anthropicOAuthRouter.post('/create-from-code', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'Anthropic OAuth Account',
         type: 'oauth',
         credentials: buildSafeAnthropicOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
-        status: 'pending_test',
-        skipInitialHealthCheck: false,
+        ...accountCreationStatusInput(parsed.data.status),
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -197,7 +198,6 @@ anthropicOAuthRouter.post('/create-from-code', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -229,7 +229,7 @@ anthropicOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken')),
-    status: 'pending_test'
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -277,8 +277,7 @@ anthropicOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'Anthropic OAuth Account',
         type: 'oauth',
         credentials: buildSafeAnthropicOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
-        status: 'pending_test',
-        skipInitialHealthCheck: false,
+        ...accountCreationStatusInput(parsed.data.status),
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -292,7 +291,6 @@ anthropicOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)

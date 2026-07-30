@@ -4,17 +4,12 @@ import { GatewayRequestValidationError } from '../../modules/gateway/request/val
 import {
   sanitizeCodexResponseHistoryItems
 } from '../../modules/gateway/codex-responses/request-history-sanitizer.js'
-import type {
-  CodexHistorySanitizerContext
-} from '../../modules/gateway/codex-responses/request-history-types.js'
-
-const persistentSameScope: CodexHistorySanitizerContext = {
+const persistentSameScope = {
   store: true,
   sourceScopeKey: 'account:a',
   targetScopeKey: 'account:a',
-  targetPersistenceScope: 'account',
-  contractRevision: 'codex-responses-2026-07-11-r1'
-}
+  targetPersistenceScope: 'account'
+} as const
 
 const cleanItems = [
   {

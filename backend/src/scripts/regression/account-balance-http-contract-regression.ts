@@ -140,15 +140,15 @@ try {
     status: 'active'
   })
   assert.equal(requestedActive.status, 201, '请求 active 的新账户必须创建成功')
-  assert.equal(requestedActive.body.data?.status, 'pending_test', '请求 active 的新账户仍必须等待后台激活检查')
+  assert.equal(requestedActive.body.data?.status, 'active', '请求 active 的新账户应立即进入可调度状态')
   assert.ok(requestedActive.body.data?.id, '创建响应必须返回账户 ID')
   const requestedActiveStored = businessDatabase.prepare(`
     SELECT status, schedulable, balance_query_enabled, balance_query_config_json
     FROM accounts
     WHERE id = ?
   `).get(requestedActive.body.data.id) as Record<string, unknown> | undefined
-  assert.equal(requestedActiveStored?.status, 'pending_test', '创建路由不得绕过首次健康检查直接激活账户')
-  assert.equal(requestedActiveStored?.schedulable, 0, '首次健康检查成功前新账户不得参与调度')
+  assert.equal(requestedActiveStored?.status, 'active', '创建路由收到 active 时应直接激活账户')
+  assert.equal(requestedActiveStored?.schedulable, 1, '请求 active 的新账户应立即参与调度')
   assert.equal(requestedActiveStored?.balance_query_enabled, 0, '未显式开启余额的新账户应等待首次激活后的自动探测')
   assert.equal(requestedActiveStored?.balance_query_config_json, '{}', '从未配置的余额账户必须保留自动探测资格')
 

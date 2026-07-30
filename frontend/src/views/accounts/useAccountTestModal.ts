@@ -83,13 +83,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testForm = reactive<AccountTestForm>({ model: '', testEndpointMode: 'account_default' })
   const {
     initializeSavedAccountTestOptions,
-    loadTestEndpointModeOptions,
     loadTestModelOptions,
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
-    testEndpointModesError,
-    testEndpointModesLoading,
     testModelOptions,
     testModelReadonly,
     testModelsError,
@@ -178,7 +175,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       !account
       || testRunning.value
       || testModelsLoading.value
-      || testEndpointModesLoading.value
       || !testForm.model.trim()
       || testForm.testEndpointMode === 'account_default'
     ) {
@@ -284,17 +280,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function loadAccountTestModelOptionsNow(account: AccountListItem, keyword: string): Promise<void> {
     try {
       await loadTestModelOptions(account, keyword)
-    } catch (error) {
-      if (isAbortError(error)) return
-      console.error(error)
-    }
-  }
-
-  async function loadAccountTestEndpointModeOptions(open: boolean): Promise<void> {
-    const account = testingAccount.value
-    if (!open || !account || testModelReadonly.value) return
-    try {
-      await loadTestEndpointModeOptions(account)
     } catch (error) {
       if (isAbortError(error)) return
       console.error(error)
@@ -701,7 +686,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     activeSingleTestTask,
     closeTestModal,
     draftTestingAccountPayload,
-    loadAccountTestEndpointModeOptions,
     loadAccountTestModelOptions,
     openDraftTestModal,
     openSavedDraftTestModal,
@@ -709,8 +693,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     runAccountTest,
     stopAccountTest,
     testEndpointModes,
-    testEndpointModesError,
-    testEndpointModesLoading,
     testForm,
     testModalOpen,
     testModelOptions,

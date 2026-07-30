@@ -20,10 +20,8 @@
           v-model:system-account-selection="systemAccountSelection"
           v-model:account-id="accountIdFilter"
           v-model:account-selection="accountSelection"
-          v-model:session-client-type="sessionClientTypeFilter"
-          v-model:trace-id="traceIdFilter"
+          v-model:session-id="sessionIdFilter"
           v-model:path="pathFilter"
-          v-model:status-code="statusCodeFilter"
           mode="advanced"
           :visible="viewMode === 'list'"
           :outcome-options="outcomeOptions"
@@ -57,10 +55,8 @@
           v-model:system-account-selection="systemAccountSelection"
           v-model:account-id="accountIdFilter"
           v-model:account-selection="accountSelection"
-          v-model:session-client-type="sessionClientTypeFilter"
-          v-model:trace-id="traceIdFilter"
+          v-model:session-id="sessionIdFilter"
           v-model:path="pathFilter"
-          v-model:status-code="statusCodeFilter"
           mode="mobile"
           :visible="viewMode === 'list'"
           :outcome-options="outcomeOptions"
@@ -185,9 +181,7 @@ type AuditLogsPageState = {
   outcomeFilter: AuditOutcome | 'all'
   pagination: { current: number; pageSize: number }
   pathFilter: string
-  sessionClientTypeFilter: string
   sessionIdFilter: string
-  statusCodeFilter: string
   systemAccountFilter: string
   systemAccountSelection?: PrincipalSelection
   traceIdFilter: string
@@ -201,16 +195,14 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   outcomeFilter: 'all',
   pagination: { current: 1, pageSize },
   pathFilter: '',
-  sessionClientTypeFilter: '',
   sessionIdFilter: '',
-  statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue,
   systemAccountSelection: undefined,
   traceIdFilter: '',
   trafficSourceFilter: 'all',
   viewMode: 'list'
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 10 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 11 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -224,9 +216,7 @@ const accountIdFilter = ref(effectiveInitialPageState.accountIdFilter)
 const accountSelection = ref<AccountSelection | undefined>(effectiveInitialPageState.accountSelection)
 const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcomeFilter)
 const pathFilter = ref(effectiveInitialPageState.pathFilter)
-const sessionClientTypeFilter = ref(effectiveInitialPageState.sessionClientTypeFilter)
 const sessionIdFilter = ref(effectiveInitialPageState.sessionIdFilter)
-const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
 const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
 const systemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.systemAccountSelection)
 const trafficSourceFilter = ref<AuditTrafficSource | 'all'>(effectiveInitialPageState.trafficSourceFilter)
@@ -318,9 +308,7 @@ const currentFilterValues = computed(() => ({
   accountIdFilter: accountIdFilter.value,
   outcomeFilter: outcomeFilter.value,
   pathFilter: pathFilter.value,
-  sessionClientTypeFilter: sessionClientTypeFilter.value,
   sessionIdFilter: sessionIdFilter.value,
-  statusCodeFilter: statusCodeFilter.value,
   systemAccountFilter: systemAccountFilter.value,
   traceIdFilter: traceIdFilter.value,
   trafficSourceFilter: trafficSourceFilter.value
@@ -363,9 +351,7 @@ function clearFiltersForDirectTraceLookup(): void {
   accountSelection.value = defaults.accountSelection
   outcomeFilter.value = defaults.outcomeFilter
   pathFilter.value = defaults.pathFilter
-  sessionClientTypeFilter.value = defaults.sessionClientTypeFilter
   sessionIdFilter.value = defaults.sessionIdFilter
-  statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountSelection.value = defaults.systemAccountSelection
   trafficSourceFilter.value = defaults.trafficSourceFilter
@@ -382,9 +368,7 @@ function applyPageState(state: AuditLogsPageState): void {
   accountSelection.value = state.accountSelection
   outcomeFilter.value = state.outcomeFilter
   pathFilter.value = state.pathFilter
-  sessionClientTypeFilter.value = state.sessionClientTypeFilter
   sessionIdFilter.value = state.sessionIdFilter
-  statusCodeFilter.value = state.statusCodeFilter
   trafficSourceFilter.value = state.trafficSourceFilter
   viewMode.value = state.viewMode === 'search' ? 'search' : 'list'
   pagination.current = state.pagination.current
@@ -423,9 +407,7 @@ function resetFilters(): void {
   resetAccountOptionsSearch()
   outcomeFilter.value = defaults.outcomeFilter
   pathFilter.value = defaults.pathFilter
-  sessionClientTypeFilter.value = defaults.sessionClientTypeFilter
   sessionIdFilter.value = defaults.sessionIdFilter
-  statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountSelection.value = defaults.systemAccountSelection
   trafficSourceFilter.value = defaults.trafficSourceFilter
@@ -457,9 +439,7 @@ function snapshotPageState(): AuditLogsPageState {
     outcomeFilter: outcomeFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     pathFilter: pathFilter.value,
-    sessionClientTypeFilter: sessionClientTypeFilter.value,
     sessionIdFilter: sessionIdFilter.value,
-    statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value,
     systemAccountSelection: systemAccountSelection.value,
     traceIdFilter: traceIdFilter.value,
@@ -517,8 +497,8 @@ const {
   resetFilters,
   resetHotSearch,
   searchHotAuditLogs,
-  sessionIdFilter,
   tablePagination,
+  traceIdFilter,
   viewMode
 })
 

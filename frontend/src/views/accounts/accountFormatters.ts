@@ -8,6 +8,7 @@ import {
 } from '@/shared/formatters'
 import type { AccountListItem, AccountStatus, AccountTestResult } from '@/types/domain'
 import {
+  accountDiagnosticMessageWithoutRepeatedFields,
   accountDiagnosticTooltipLines,
   conciseAccountLastErrorText,
   splitAccountDiagnosticMessage,
@@ -211,6 +212,7 @@ function conciseAccountStatusTooltipLines(account: AccountListItem): string[] {
   lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
     reasonLabel: '最后错误',
     statusCode: account.cooldownRetestLastStatusCode,
+    errorCode: account.lastErrorCode,
     concise: true
   }))
   if (account.lastErrorTraceId) {
@@ -242,15 +244,21 @@ function accountHealthCheckTooltipLines(account: AccountListItem): string[] {
     const code = account.lastHealthCheckErrorCode ? `，${accountErrorCodeText(account.lastHealthCheckErrorCode)}` : ''
     lines.push(`后台健康检测连续失败：${formatNumber(account.healthCheckFailureCount)} 次${status}${code}`)
   }
-  const message = formatAccountHealthCheckError(account.lastHealthCheckErrorMessage)
+  const message = formatAccountHealthCheckError(account.lastHealthCheckErrorMessage, {
+    statusCode: account.lastHealthCheckStatusCode,
+    errorCode: account.lastHealthCheckErrorCode
+  })
   if (message) {
     lines.push(`健康检测原因：${message}`)
   }
   return lines
 }
 
-function formatAccountHealthCheckError(message?: string): string {
-  const value = conciseAccountLastErrorText(message)
+function formatAccountHealthCheckError(
+  message: string | undefined,
+  fields: { statusCode?: number; errorCode?: string }
+): string {
+  const value = accountDiagnosticMessageWithoutRepeatedFields(conciseAccountLastErrorText(message), fields)
   const maxLength = 120
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
 }
@@ -290,6 +298,7 @@ function authorizedInstanceLocalStatusTooltipLines(account: AccountListItem): st
     reasonLabel: '本地最后错误',
     idLabelPrefix: '本地',
     statusCode: account.cooldownRetestLastStatusCode,
+    errorCode: account.lastErrorCode,
     concise: true
   }))
   return lines
@@ -505,4 +514,4 @@ export function formatAccountTestDuration(value?: number): string {
   return formatMillisecondsAsSeconds(value)
 }
 
-export { splitAccountDiagnosticMessage, type AccountDiagnosticMessageParts }
+export { accountDiagnosticMessageWithoutRepeatedFields, splitAccountDiagnosticMessage, type AccountDiagnosticMessageParts }

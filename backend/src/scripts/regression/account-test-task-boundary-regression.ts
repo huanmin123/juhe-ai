@@ -36,8 +36,8 @@ assert.match(
 )
 assert.match(
   dispatchRoutes,
-  /findAccountManualTestListContextAsync\(req\.params\.id, requestAccess\)/,
-  '列表测试选项必须一次读取不含能力和凭据的最小账户上下文'
+  /findAccountManualTestOptionsContextAsync\(req\.params\.id, requestAccess\)/,
+  '列表测试选项必须一次读取受控账户能力上下文'
 )
 const listRouteSource = dispatchRoutes.slice(
   dispatchRoutes.indexOf("router.get('/:id/test-options'"),
@@ -53,14 +53,18 @@ const listOptionsFunctionSource = testOptionsService.slice(
   testOptionsService.indexOf('export async function accountManualTestOptionsAsync'),
   testOptionsService.indexOf('export async function resolveAccountManualTestSelectionAsync')
 )
-assert.match(listOptionsFunctionSource, /listProviderModelOptionRowsAsync/, '模型列表必须读取带窗口和已选项补齐的轻量模型目录投影')
-assert.doesNotMatch(
-  listOptionsFunctionSource,
-  /listProviderModelCatalogAsync|accountManualTestEndpointModesForModel/,
-  '模型列表不得克隆完整目录或使用完整目录计算请求形态'
+const optionsContextFunctionSource = section(
+  manualTestContextRepository,
+  'export async function findAccountManualTestOptionsContextAsync',
+  'async function findVisibleAccountManualTestContextRowAsync'
 )
-assert.doesNotMatch(listOptionsFunctionSource, /testEndpointModes|supportedApiProtocols|accountManualTestEndpointModesForTargetModelAsync/, '批量模型选项只能返回 id/name，不得提前计算协议能力')
-assert.match(listOptionsFunctionSource, /return options\.map\(\(option\) => \(\{[\s\S]*id: option\.id,[\s\S]*name: option\.name[\s\S]*\}\)\)/, '批量模型选项必须严格投影为 id/name')
+assert.match(optionsContextFunctionSource, /loadModelMappingsByAccountIdsAsync\(\[row\.fact_account_id\]\)/, '模型 options 上下文必须读取当前账户完整映射')
+assert.match(optionsContextFunctionSource, /credentials\.supported_endpoint_modes/, '模型 options 上下文必须读取当前账户 endpoint mode 配置')
+assert.match(listOptionsFunctionSource, /listProviderModelOptionRowsAsync/, '模型列表必须读取带窗口和已选项补齐的轻量模型目录投影')
+assert.doesNotMatch(listOptionsFunctionSource, /listProviderModelCatalogAsync/, '模型列表不得克隆完整目录')
+assert.match(listOptionsFunctionSource, /testEndpointModes/, '模型选项必须携带服务端计算后的请求形态')
+assert.match(listOptionsFunctionSource, /accountManualTestEndpointModesForTargetModelAsync/, '模型选项必须按模型协议交集计算可执行形态')
+assert.match(listOptionsFunctionSource, /return resolvedOptions\.filter/, '模型选项必须过滤没有可执行形态的模型')
 assert.match(
   dispatchRoutes,
   /router\.get\('\/:id\/test-options\/models\/:modelId'/,
@@ -79,7 +83,7 @@ assert.match(
 const capabilitiesContextFunctionSource = section(
   manualTestContextRepository,
   'export async function findAccountManualTestCapabilitiesContextAsync',
-  'async function findVisibleAccountManualTestContextRowAsync'
+  'export async function findAccountManualTestOptionsContextAsync'
 )
 assert.match(
   capabilitiesContextFunctionSource,
@@ -220,12 +224,13 @@ assert.doesNotMatch(
   /loadTestModelOptions\(account\)/,
   '打开列表测试弹窗不得加载模型候选'
 )
-assert.match(accountTestModels, /loadTestEndpointModeOptions[\s\S]*testModelCapabilities\(/, '请求形态下拉必须只读取当前模型能力')
+assert.match(accountTestModels, /option\.testEndpointModes/, '模型切换必须直接使用模型选项中的请求形态')
 assert.match(
   accountTestModalComponent,
-  /@dropdown-visible-change="\$emit\('load-model-options', \$event\)"[\s\S]*@dropdown-visible-change="\$emit\('load-endpoint-mode-options', \$event\)"/,
-  '模型与请求形态必须分别由各自下拉的真实展开事件触发'
+  /@dropdown-visible-change="\$emit\('load-model-options', \$event\)"/,
+  '模型下拉必须在真实展开事件触发按需加载'
 )
+assert.doesNotMatch(accountTestModalComponent, /load-endpoint-mode-options|endpointModesLoading|endpointModesError/, '请求形态下拉不得再触发二次加载状态')
 assert.match(
   accountTestModels,
   /useFixedTestModel/,

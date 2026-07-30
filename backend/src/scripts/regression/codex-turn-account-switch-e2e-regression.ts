@@ -680,9 +680,9 @@ async function assertClientAbortClearsSessionAffinity(
     records.some((record) => (
       (record.accountId === seeded.freshAccountId || record.accountId === headerSeeded.freshAccountId)
       && record.errorCode === 'client_aborted'
-      && record.errorMessage === '下游连接提前关闭'
+      && record.errorMessage === '下游连接关闭'
     )),
-    'client_aborted 使用记录应使用“下游连接提前关闭”文案，避免误导为用户手动取消'
+    'client_aborted 使用记录应使用“下游连接关闭”文案，避免误导为用户手动取消'
   )
 }
 

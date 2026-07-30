@@ -270,6 +270,30 @@ assertTrue(errorAccountTooltip.some((line) => line.includes('HTTP 状态：401')
 assertTrue(errorAccountTooltip.some((line) => line.includes('错误码：invalid_credentials')), '通用异常 tooltip 应显示检查错误码')
 assertTrue(errorAccountTooltip.some((line) => line.includes('traceId：trace-generic-error-health-check')), '通用异常 tooltip 应显示检查 traceId')
 assertTrue(errorAccountTooltip.some((line) => line.includes('下次检查：暂无计划')), '有检查事实但没有计划的通用异常必须明确暂无计划')
+const duplicatedObservationReasonTooltip = accountStatusTooltipLines(accountFixture({
+  status: 'error',
+  availabilityPresentation: {
+    status: 'error',
+    label: '异常',
+    probe: {
+      kind: 'health_check',
+      lastObservation: {
+        observationId: 'duplicate-upstream-error-reason',
+        attemptedAt: '2026-07-30T12:46:58.000Z',
+        result: 'failed',
+        httpStatus: 520,
+        errorCode: 'upstream_retryable_error',
+        reason: 'HTTP 520；upstream_retryable_error；上游请求失败；请联系授权人或管理员查看完整诊断',
+        traceId: 'trace-duplicate-upstream-error-reason'
+      },
+      schedule: { state: 'scheduled', nextAttemptAt: '2026-07-30T13:46:58.000Z' }
+    }
+  }
+}))
+assertEqual(duplicatedObservationReasonTooltip.filter((line) => line === 'HTTP 状态：520').length, 1, 'HTTP 状态应只由独立字段展示一次')
+assertEqual(duplicatedObservationReasonTooltip.filter((line) => line === '错误码：upstream_retryable_error').length, 1, '错误码应只由独立字段展示一次')
+assertTrue(duplicatedObservationReasonTooltip.includes('原因：上游请求失败'), '原因应只保留真实上游失败摘要')
+assertTrue(!duplicatedObservationReasonTooltip.some((line) => line.includes('请联系授权人或管理员')), '状态 tooltip 不应引导用户联系管理员查看普通上游失败')
 const errorWithoutProbeTooltip = accountStatusTooltipLines(accountFixture({
   status: 'error',
   effectiveAvailability: {

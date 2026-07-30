@@ -55,13 +55,10 @@
               class="test-endpoint-select"
               :value="selectedEndpointModeSelectValue"
               :disabled="running || !model.trim()"
-              :loading="endpointModesLoading"
               :options="testEndpointModeOptions"
               placeholder="无可测试请求形态"
-              @dropdown-visible-change="$emit('load-endpoint-mode-options', $event)"
               @update:value="handleTestEndpointModeUpdate"
             />
-            <div v-if="endpointModesError" class="test-field-error">{{ endpointModesError }}</div>
           </a-form-item>
         </div>
       </a-form>
@@ -134,8 +131,6 @@ import {
 const props = defineProps<{
   account?: AccountListItem
   activeTask?: AccountTestTask
-  endpointModesError: string
-  endpointModesLoading: boolean
   model: string
   modelOptions: Array<{ label: string; value: string }>
   modelReadonly: boolean
@@ -153,7 +148,6 @@ const emit = defineEmits<{
   (event: 'close'): void
   (event: 'copy-result', value: string): void
   (event: 'load-model-options', open: boolean): void
-  (event: 'load-endpoint-mode-options', open: boolean): void
   (event: 'search-model-options', keyword: string): void
   (event: 'run'): void
   (event: 'stop'): void
@@ -183,7 +177,6 @@ const imageTest = computed(() => props.result?.testEndpointMode === 'images_json
 )
 const runDisabled = computed(() => (
   props.modelsLoading
-  || props.endpointModesLoading
   || !props.model.trim()
   || !selectedEndpointModeSelectValue.value
 ))

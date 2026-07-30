@@ -68,18 +68,18 @@ const updateSelectableTestModelSource = accountTestModelsSource.slice(
 )
 assert.match(
   updateSelectableTestModelSource,
-  /applyTestEndpointModes\(\[\], false\)/,
-  '切换模型必须先清空前一模型的请求形态'
-)
-assert.doesNotMatch(
-  updateSelectableTestModelSource,
-  /option\.testEndpointModes/,
-  '模型目录选项不得预载请求形态'
+  /applyTestEndpointModes\(option\.testEndpointModes, false\)/,
+  '切换模型必须直接同步服务端给出的请求形态'
 )
 assert.match(
+  updateSelectableTestModelSource,
+  /option\.testEndpointModes/,
+  '模型目录选项必须预载请求形态'
+)
+assert.doesNotMatch(
   accountTestModelsSource,
-  /async function loadTestEndpointModeOptions[\s\S]*testModelCapabilities\(/,
-  '只有用户展开请求形态下拉时才应定点读取当前模型能力'
+  /testModelCapabilities\(/,
+  '浏览器端不得二次读取当前模型能力'
 )
 assert.doesNotMatch(
   accountTestModelsSource,

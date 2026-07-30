@@ -228,7 +228,7 @@ assert.deepEqual(golden.persistence.createdAccount, {
   status: 'pending_test',
   schedulable: false
 })
-assert.match(routesSource, /const tokenInfo = await exchangeOpenAIAuthCode[\s\S]*?const account = await runLoggedOperationAsync[\s\S]*?createAccountAsync\(\{[\s\S]*?providerCode: GPT_VENDOR_CODE,[\s\S]*?type: 'oauth',[\s\S]*?status: 'pending_test',[\s\S]*?skipInitialHealthCheck: false,[\s\S]*?schedulable: false/)
+assert.match(routesSource, /const tokenInfo = await exchangeOpenAIAuthCode[\s\S]*?const account = await runLoggedOperationAsync[\s\S]*?createAccountAsync\(\{[\s\S]*?providerCode: GPT_VENDOR_CODE,[\s\S]*?type: 'oauth',[\s\S]*?\.\.\.accountCreationStatusInput\(parsed\.data\.status\)/)
 assert.match(routesSource, /dispatchPendingAccountHealthCheck\(account\)[\s\S]*?res\.status\(201\)\.json\(ok\(sanitizeAccountResponse\(account\)\)\)/)
 assert.equal(golden.persistence.response, 'sanitized_account_envelope')
 assert.deepEqual(golden.persistence.reauthorize, [

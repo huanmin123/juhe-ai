@@ -21,6 +21,7 @@ import {
   type OAuthCredentialRotationResult
 } from '../../storage/oauth-credential-rotation.repository.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import { accountCreationStatusInput } from '../accounts/account-creation-status.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import {
@@ -161,7 +162,8 @@ grokOAuthRouter.post('/create-from-code', mutationGuard({
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     sessionId: textValue(bodyField(req, 'sessionId')),
-    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl'))
+    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl')),
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -227,7 +229,7 @@ grokOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken')),
-    status: 'pending_test'
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -296,7 +298,8 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
       textValue(bodyField(req, 'ssoToken'))
     ).sort().join('\n')),
     providerProtocolProfileId: normalizedText(bodyField(req, 'providerProtocolProfileId')),
-    proxyProfileId: normalizedText(bodyField(req, 'proxyProfileId'))
+    proxyProfileId: normalizedText(bodyField(req, 'proxyProfileId')),
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -613,8 +616,7 @@ async function createGrokOAuthAccount(
     name: input.name ?? tokenInfo.email ?? 'Grok OAuth Account',
     type: 'oauth',
     credentials: buildSafeGrokOAuthCredentials(tokenInfo, input.credentialsPatch, fallback),
-    status: 'pending_test',
-    skipInitialHealthCheck: false,
+    ...accountCreationStatusInput(input.status),
     concurrencyLimit: input.concurrencyLimit ?? 1,
     priority: input.priority,
     superPriorityEnabled: input.superPriorityEnabled,
@@ -628,7 +630,6 @@ async function createGrokOAuthAccount(
     proxyProfileId: input.proxyProfileId,
     accountExpiresAt: input.accountExpiresAt,
     availabilitySchedule: input.availabilitySchedule,
-    schedulable: false,
     groupId: input.groupId,
     notes: input.notes
   }, access)

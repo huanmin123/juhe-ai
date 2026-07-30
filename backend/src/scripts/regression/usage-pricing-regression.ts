@@ -1056,8 +1056,8 @@ assert.doesNotMatch(gatewayResponseFinalizationSource, /applyAnthropicStreamUsag
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
 assert.match(
   gatewayResponseFinalizationSource,
-  /const downstreamBodyText = codexGuardedCompleteBodyText \?\? completeBodyText[\s\S]*responseSemanticText = downstreamBodyText/,
-  '非流式完整 JSON 响应语义文本必须来自完整检查窗口（允许 Codex guard 规范化），不能依赖成功审计正文捕获开关'
+  /const downstreamBodyText = completeBodyText[\s\S]*responseSemanticText = downstreamBodyText/,
+  '非流式完整 JSON 响应语义文本必须来自完整检查窗口，不能依赖成功审计正文捕获开关'
 )
 assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
 assert.match(

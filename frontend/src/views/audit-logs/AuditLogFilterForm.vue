@@ -38,20 +38,8 @@
     <a-form-item label="接口路径">
       <a-input v-model:value="pathValue" allow-clear placeholder="/v1/responses" @press-enter="handleAdvancedApply" />
     </a-form-item>
-    <a-form-item label="traceId">
-      <a-input v-model:value="traceIdValue" allow-clear placeholder="完整 traceId（精确匹配）" @press-enter="handleAdvancedApply" />
-    </a-form-item>
-    <a-form-item label="客户端类型">
-      <a-select
-        v-model:value="sessionClientTypeValue"
-        allow-clear
-        :options="sessionClientTypeOptions"
-        placeholder="全部客户端"
-        @change="handleAdvancedApply"
-      />
-    </a-form-item>
-    <a-form-item label="HTTP 状态码">
-      <a-input v-model:value="statusCodeValue" allow-clear placeholder="401 / 503" @press-enter="handleAdvancedApply" />
+    <a-form-item label="会话 ID">
+      <a-input v-model:value="sessionIdValue" allow-clear placeholder="完整会话 ID（精确匹配）" @press-enter="handleAdvancedApply" />
     </a-form-item>
   </a-form>
 </template>
@@ -90,10 +78,8 @@ const props = withDefaults(defineProps<{
   accountSelection?: AccountSelection
   accountOptions: AccountOptionSummary[]
   accountOptionsLoading?: boolean
-  sessionClientType: string
-  traceId: string
+  sessionId: string
   path: string
-  statusCode: string
 }>(), {
   visible: true,
   systemAccountSelection: undefined,
@@ -109,10 +95,8 @@ const emit = defineEmits<{
   (event: 'update:systemAccountSelection', value: PrincipalSelection | undefined): void
   (event: 'update:accountId', value: string): void
   (event: 'update:accountSelection', value: AccountSelection | undefined): void
-  (event: 'update:sessionClientType', value: string): void
-  (event: 'update:traceId', value: string): void
+  (event: 'update:sessionId', value: string): void
   (event: 'update:path', value: string): void
-  (event: 'update:statusCode', value: string): void
   (event: 'apply'): void
   (event: 'system-account-dropdown-visible-change', value: boolean): void
   (event: 'system-account-search', value: string): void
@@ -144,25 +128,13 @@ const accountSelectionValue = computed({
   get: () => props.accountSelection,
   set: (value) => emit('update:accountSelection', value)
 })
-const sessionClientTypeOptions = [
-  { label: 'Codex', value: 'codex' },
-  { label: 'Claude Code', value: 'claude_code' }
-]
-const sessionClientTypeValue = computed({
-  get: () => props.sessionClientType,
-  set: (value) => emit('update:sessionClientType', value ?? '')
-})
-const traceIdValue = computed({
-  get: () => props.traceId,
-  set: (value) => emit('update:traceId', value)
+const sessionIdValue = computed({
+  get: () => props.sessionId,
+  set: (value) => emit('update:sessionId', value)
 })
 const pathValue = computed({
   get: () => props.path,
   set: (value) => emit('update:path', value)
-})
-const statusCodeValue = computed({
-  get: () => props.statusCode,
-  set: (value) => emit('update:statusCode', value)
 })
 
 function handleAdvancedApply(): void {

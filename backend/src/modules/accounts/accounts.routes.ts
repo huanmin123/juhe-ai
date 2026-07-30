@@ -54,6 +54,7 @@ import {
 import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 import { registerAccountForceActivateRoutes } from './account-force-activate.routes.js'
 import { refreshAccountDraftModelCatalogAsync } from './account-model-catalog-refresh.service.js'
+import { accountCreationStatusInput } from './account-creation-status.js'
 
 export const accountsRouter = Router()
 
@@ -156,7 +157,7 @@ accountsRouter.post('/', mutationGuard({
     type: normalizedText(bodyField(req, 'type')),
     name: normalizedText(bodyField(req, 'name')),
     credential: accountCredentialFingerprint(bodyField(req, 'credentials')),
-    status: normalizedText(bodyField(req, 'status'))
+    status: accountCreationStatusInput(bodyField(req, 'status')).status
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -170,6 +171,7 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest('账户参数无效'))
     return
   }
+  const creationStatus = accountCreationStatusInput(parsed.data.status)
   const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(parsed.data.credentials))
   if (errorPolicyValidationMessage) {
     res.status(400).json(badRequest(errorPolicyValidationMessage))
@@ -211,7 +213,7 @@ accountsRouter.post('/', mutationGuard({
         balanceQueryConfig,
         providerCode,
         providerProtocolProfileId: parsed.data.providerProtocolProfileId,
-        status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test'
+        ...creationStatus
       }, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {

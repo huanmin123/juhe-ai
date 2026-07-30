@@ -413,7 +413,7 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
   const checkedAt = nowIso()
   const countTowardsThreshold = input.countTowardsThreshold !== false
   const errorCode = normalizedHealthCheckErrorCode(input)
-  const errorMessage = normalizedHealthCheckErrorMessage(input, errorCode)
+  const errorMessage = normalizedHealthCheckErrorMessage(input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
@@ -545,7 +545,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
   const checkedAt = nowIso()
   const countTowardsThreshold = input.countTowardsThreshold !== false
   const errorCode = normalizedHealthCheckErrorCode(input)
-  const errorMessage = normalizedHealthCheckErrorMessage(input, errorCode)
+  const errorMessage = normalizedHealthCheckErrorMessage(input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
@@ -1351,17 +1351,8 @@ function normalizedHealthCheckErrorCode(input: AccountHealthCheckFailureInput): 
   return 'account_health_check_failed'
 }
 
-function normalizedHealthCheckErrorMessage(input: AccountHealthCheckFailureInput, errorCode: string): string {
-  const message = optionalString(input.errorMessage) ?? '后台健康检测失败'
-  const parts: string[] = []
-  if (typeof input.statusCode === 'number' && Number.isFinite(input.statusCode)) {
-    parts.push(`HTTP ${Math.trunc(input.statusCode)}`)
-  }
-  if (errorCode && !errorCode.startsWith('http_') && !message.includes(errorCode)) {
-    parts.push(errorCode)
-  }
-  parts.push(message)
-  return parts.join('；').slice(0, 1000)
+function normalizedHealthCheckErrorMessage(input: AccountHealthCheckFailureInput): string {
+  return (optionalString(input.errorMessage) ?? '后台健康检测失败').slice(0, 1000)
 }
 
 function normalizedStatusCode(value: unknown): number | null {

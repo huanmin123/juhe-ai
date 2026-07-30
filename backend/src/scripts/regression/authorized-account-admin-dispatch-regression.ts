@@ -466,7 +466,7 @@ try {
   }))
   assert.equal(granteeLimitedErrorTest.success, false, '被授权用户测试上游错误时应返回测试失败')
   assert.equal(typeof granteeLimitedErrorTest.statusCode, 'number', '被授权用户测试上游错误时可保留 HTTP 状态码')
-  assert.equal(granteeLimitedErrorTest.message, `账户测试未通过，上游返回 HTTP ${granteeLimitedErrorTest.statusCode}；请联系授权人或管理员查看完整诊断`)
+  assert.equal(granteeLimitedErrorTest.message, '上游请求失败')
   assert.equal(granteeLimitedErrorTest.responseText, granteeLimitedErrorTest.message, '被授权用户测试错误时只返回脱敏失败说明')
   assert.equal(granteeLimitedErrorTest.requestUrl, undefined, '被授权用户测试错误不应暴露请求 URL')
   assert.equal(granteeLimitedErrorTest.requestBody, undefined, '被授权用户测试错误不应暴露请求体')

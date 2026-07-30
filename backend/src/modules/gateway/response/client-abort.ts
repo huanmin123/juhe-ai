@@ -1,1 +1,1 @@
-export const downstreamConnectionClosedMessage = '下游连接提前关闭，触发方未识别'
+export const downstreamConnectionClosedMessage = '下游连接关闭'

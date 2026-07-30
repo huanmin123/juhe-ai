@@ -9,5 +9,4 @@ export interface CodexResponsesContractRegistry {
   revision: CodexContractRevision
   items: readonly CodexItemContract[]
   item(type: string): CodexItemContract | undefined
-  itemByPrefix(prefix: string): CodexItemContract | undefined
 }

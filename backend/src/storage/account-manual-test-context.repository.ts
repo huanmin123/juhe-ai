@@ -9,6 +9,7 @@ import type {
 import { runtimeConfig } from '../config/runtime.js'
 import { scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import {
+  loadModelMappingsByAccountIdsAsync,
   loadModelMappingsForAccountModel,
   loadModelMappingsForAccountModelAsync
 } from './account-model-mappings.repository.js'
@@ -35,6 +36,12 @@ export interface AccountManualTestCapabilitiesContext extends AccountManualTestL
   supportedEndpointModes: AccountSupportedEndpointMode[]
   modelMappings: AccountModelMapping[]
 }
+
+/**
+ * 仅供测试模型 options 生成使用的受控账户上下文。凭据只用于在服务端
+ * 解析 endpoint mode，绝不能作为 HTTP 响应的一部分返回。
+ */
+export interface AccountManualTestOptionsContext extends AccountManualTestCapabilitiesContext {}
 
 interface AccountManualTestContextRow {
   view_account_id: string
@@ -70,6 +77,22 @@ export async function findAccountManualTestCapabilitiesContextAsync(
   const modelMappings = runtimeConfig.databaseDriver === 'postgres'
     ? await loadModelMappingsForAccountModelAsync(row.fact_account_id, modelId)
     : loadModelMappingsForAccountModel(row.fact_account_id, modelId)
+  return {
+    ...accountManualTestListContextFromRow(row),
+    healthCheckEndpointMode: row.health_check_endpoint_mode,
+    supportedEndpointModes: accountSupportedEndpointModes(credentials.supported_endpoint_modes),
+    modelMappings
+  }
+}
+
+export async function findAccountManualTestOptionsContextAsync(
+  accountId: string,
+  access?: AccessScope
+): Promise<AccountManualTestOptionsContext | undefined> {
+  const row = await findVisibleAccountManualTestContextRowAsync(accountId, access, true)
+  if (!row?.credentials_encrypted) return undefined
+  const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+  const modelMappings = (await loadModelMappingsByAccountIdsAsync([row.fact_account_id])).get(row.fact_account_id) ?? []
   return {
     ...accountManualTestListContextFromRow(row),
     healthCheckEndpointMode: row.health_check_endpoint_mode,

@@ -40,7 +40,6 @@ import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
 import { sanitizeCodexResponseHistoryItems } from '../codex-responses/request-history-sanitizer.js'
-import { codexResponsesContractRevision } from '../codex-responses/contract-registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 import {
@@ -335,8 +334,7 @@ function sanitizeCodexResponsesHistoryForAccount(
   const result = sanitizeCodexResponseHistoryItems(body.input, {
     store: false,
     targetScopeKey: `account:${account.id}`,
-    targetPersistenceScope: 'none',
-    contractRevision: codexResponsesContractRevision
+    targetPersistenceScope: 'none'
   })
   if (!result.changed) return
   replaceGatewayJsonBody(req, {
@@ -360,8 +358,7 @@ export function sanitizePreparedCodexResponsesHistoryForAccount(
   const result = sanitizeCodexResponseHistoryItems(parsed.input, {
     store: false,
     targetScopeKey: `account:${account.id}`,
-    targetPersistenceScope: 'none',
-    contractRevision: codexResponsesContractRevision
+    targetPersistenceScope: 'none'
   })
   if (!result.changed) return body
   const sanitized = {

@@ -1,6 +1,8 @@
 import type { AccountListItem, AccountTestResult, AccountTestTask } from '@/types/domain'
 import { isGptVendorCode } from '@/shared/providerProtocol'
 
+import { accountDiagnosticMessageWithoutRepeatedFields } from './accountDiagnosticMessages'
+
 import type { AccountTestEndpointMode } from './accountTestFlow'
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
 import { accountEndpointModeLabel, accountTestEndpointModesForAccount } from './accountEndpointModes'
@@ -81,9 +83,12 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     return lines
   }
 
+  const statusCode = options.result.statusCode
   lines.push({
-    text: options.result.statusCode && options.result.statusCode >= 200 && options.result.statusCode < 300
-      ? '已连接到 API'
+    text: typeof statusCode === 'number'
+      ? statusCode >= 200 && statusCode < 300
+        ? '已连接到 API'
+        : `API 返回 HTTP ${statusCode}`
       : 'API 返回错误',
     tone: options.result.success ? 'success' : 'error'
   })
@@ -286,7 +291,11 @@ function accountTestApiKeyPoolOutputLines(result: AccountTestResult): AccountTes
       ? `，耗时 ${formatAccountTestDuration(item.durationMs)}`
       : ''
     const errorCodeText = item.errorCode ? `，错误码 ${item.errorCode}` : ''
-    const messageText = item.message ? `，${item.message}` : ''
+    const message = accountDiagnosticMessageWithoutRepeatedFields(item.message, {
+      statusCode: item.statusCode,
+      errorCode: item.errorCode
+    })
+    const messageText = message ? `，${message}` : ''
     lines.push({
       text: `API Key ${accountTestApiKeyPreview(item)} 测试结果：${statusText}${statusCodeText}${durationText}${errorCodeText}${messageText}`,
       tone: item.success ? 'success' : 'error'

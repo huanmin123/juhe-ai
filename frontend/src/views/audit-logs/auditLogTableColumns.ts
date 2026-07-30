@@ -6,8 +6,8 @@ export const auditOutcomeOptions = [
   { label: '网关失败', value: 'gateway_failed' },
   { label: '上游失败', value: 'upstream_failed' },
   { label: '流式失败', value: 'stream_failed' },
-  { label: '下游连接关闭（触发方未识别）', value: 'downstream_closed' },
-  { label: '下游连接关闭（历史记录）', value: 'client_aborted' }
+  { label: '下游连接关闭', value: 'downstream_closed' },
+  { label: '下游连接关闭', value: 'client_aborted' }
 ]
 
 export const auditLogColumns = [

@@ -37,17 +37,10 @@ export function createCodexResponsesContractRegistry(
 ): CodexResponsesContractRegistry {
   const items = Object.freeze(definitions.map((definition) => Object.freeze({ ...definition })))
   const byType = new Map(items.map((definition) => [definition.type, definition]))
-  const byPrefix = new Map<string, CodexItemContract>()
-  for (const definition of items) {
-    if (definition.prefix && !byPrefix.has(definition.prefix)) {
-      byPrefix.set(definition.prefix, definition)
-    }
-  }
   return Object.freeze({
     revision,
     items,
-    item: (type: string) => byType.get(type),
-    itemByPrefix: (prefix: string) => byPrefix.get(prefix)
+    item: (type: string) => byType.get(type)
   })
 }
 

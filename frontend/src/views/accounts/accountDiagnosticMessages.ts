@@ -4,6 +4,25 @@ export interface AccountDiagnosticMessageParts {
   requestId?: string
 }
 
+export function accountDiagnosticMessageWithoutRepeatedFields(
+  message: string | undefined,
+  fields: { statusCode?: number; errorCode?: string } = {}
+): string {
+  let value = message?.trim() ?? ''
+  if (!value) return ''
+
+  if (typeof fields.statusCode === 'number' && Number.isFinite(fields.statusCode)) {
+    const status = Math.trunc(fields.statusCode)
+    value = value.replace(new RegExp(`(?:确认\\s*)?HTTP\\s+${status}(?=$|[；;\\s，,])`, 'gi'), '')
+  }
+  const errorCode = fields.errorCode?.trim()
+  if (errorCode) {
+    const escapedCode = errorCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    value = value.replace(new RegExp(`(^|[；;\\s，,])${escapedCode}(?=$|[；;\\s，,])`, 'g'), '$1')
+  }
+  return cleanupDiagnosticMessage(value)
+}
+
 export function splitAccountDiagnosticMessage(message?: string): AccountDiagnosticMessageParts {
   let remaining = message?.trim() ?? ''
   if (!remaining) return { message: '' }
@@ -37,15 +56,12 @@ export function splitAccountDiagnosticMessage(message?: string): AccountDiagnost
 
 export function accountDiagnosticTooltipLines(
   message: string | undefined,
-  options: { reasonLabel: string; idLabelPrefix?: string; statusCode?: number; concise?: boolean }
+  options: { reasonLabel: string; idLabelPrefix?: string; statusCode?: number; errorCode?: string; concise?: boolean }
 ): string[] {
   const text = options.concise ? conciseAccountLastErrorText(message) : message?.trim()
   if (!text) return []
   const parts = splitAccountDiagnosticMessage(text)
-  let reason = parts.message
-  if (options.statusCode) {
-    reason = reason.replace(new RegExp(`^HTTP ${options.statusCode}[；;\\s]*`), '').trim()
-  }
+  const reason = accountDiagnosticMessageWithoutRepeatedFields(parts.message, options)
   const idLabelPrefix = options.idLabelPrefix ? `${options.idLabelPrefix} ` : ''
   const lines: string[] = []
   if (parts.traceId) {

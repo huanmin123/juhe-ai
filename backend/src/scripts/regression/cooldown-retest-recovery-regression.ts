@@ -423,8 +423,10 @@ try {
   const freshAfterRetest = repositories.findAccountSummary(freshAccount.id, access)
   assert.equal(freshAfterRetest?.status, 'temporary_unavailable', '未超过观察窗口时账号应继续恢复')
   assert.equal(freshAfterRetest?.lastErrorCode, 'insufficient_quota', '后台复测应把上游真实错误码写入账户状态')
-  assert.match(freshAfterRetest?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '后台复测状态原因应保留真实上游错误摘要')
-  assert.match(freshAfterRetest?.lastErrorMessage ?? '', /traceId trace-cooldown-retest-quota/, '后台复测状态原因应写入本地 traceId 作为追踪主键')
+  assert.equal(freshAfterRetest?.cooldownRetestLastStatusCode, 403, '后台复测状态应独立保留 HTTP 状态码')
+  assert.equal(freshAfterRetest?.lastErrorTraceId, 'trace-cooldown-retest-quota', '后台复测状态应独立保留 traceId')
+  assert.match(freshAfterRetest?.lastErrorMessage ?? '', /余额和订阅额度均不足/, '后台复测状态原因应保留真实上游错误摘要')
+  assert.doesNotMatch(freshAfterRetest?.lastErrorMessage ?? '', /HTTP 403|insufficient_quota|traceId trace-cooldown-retest-quota/, '后台复测状态原因不得重复结构化字段')
   assert.match(freshAfterRetest?.lastErrorMessage ?? '', /request id: upstream-request-id-should-display/, '后台复测状态原因应保留上游 request id')
 
   const serializedAccount = createActiveCoolingAccount('冷却复测事务串行回归', 'sk-cooldown-retest-serialized', group.id)

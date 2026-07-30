@@ -798,6 +798,7 @@ rg -q -- '^bootstrap ' "$events" || exit 80
     $metricsGateHarness = @'
 set -euo pipefail
 CURRENT_DIR=/tmp/juhe-ai-performance-harness
+INGRESS_PORT=3599
 GATEWAY_COUNT=3
 USAGE_WORKERS=2
 LOG_WORKERS=2
@@ -835,6 +836,7 @@ done
     $metricsTimeHarness = @'
 set -euo pipefail
 CURRENT_DIR=/tmp/juhe-ai-performance-harness
+INGRESS_PORT=3599
 __METRICS_TIME_FUNCTION__
 node() {
   [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]

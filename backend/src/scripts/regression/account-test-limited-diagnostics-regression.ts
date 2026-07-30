@@ -60,7 +60,7 @@ const limitedResult = await testOpenAIAccount(account, { diagnostics: 'limited' 
 assert.equal(limitedResult.success, false)
 assert(limitedResult.traceId, 'limited 诊断也应返回本次账户测试 traceId，便于授权用户反馈给所有者排查')
 assert.equal(limitedResult.statusCode, undefined, '本用例覆盖无 HTTP 状态码的异常路径')
-assert.equal(limitedResult.message, '账户测试未通过；请联系授权人或管理员查看完整诊断')
+assert.equal(limitedResult.message, '上游请求失败')
 assert.equal(limitedResult.responseText, limitedResult.message)
 assert(!JSON.stringify(limitedResult).includes('账户未绑定可用分组'), '授权用户 limited 诊断不应回吐内部异常文本')
 assert.equal(limitedResult.requestUrl, undefined, '授权用户 limited 诊断不应暴露请求 URL')

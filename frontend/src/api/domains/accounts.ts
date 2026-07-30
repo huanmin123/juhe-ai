@@ -41,16 +41,13 @@ import { accountListParams, accountOptionsParams } from '../params'
 
 export interface AccountTestModelOption {
   label: string
+  testEndpointModes: AccountSupportedEndpointMode[]
   value: string
 }
 
 export interface AccountManualTestModelOption {
   id: string
   name: string
-}
-
-export interface AccountTestModelCapabilities {
-  id: string
   testEndpointModes: AccountSupportedEndpointMode[]
 }
 
@@ -98,7 +95,6 @@ export const accountsApi = {
   updateTags: (id: string, payload: { tags: string[]; expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountMutationResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
   updateAuthorizedDispatch: (id: string, payload: AuthorizedAccountDispatchPayload, params?: ListParams) => unwrap<AuthorizedAccountDispatchMutationResult>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
   testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/accounts/${id}/test-options`, { params, signal: options?.signal })),
-  testModelCapabilities: (id: string, modelId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestModelCapabilities>(http.get(`/accounts/${id}/test-options/models/${encodeURIComponent(modelId)}`, { params, signal: options?.signal })),
   bindGroup: (id: string, payload: { groupId: string; expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountMutationResult>(http.post(`/accounts/${id}/group`, payload, { params })),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
   test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, signal: options?.signal })),
@@ -137,7 +133,6 @@ export const myAccountsApi = {
   updateTags: (id: string, payload: { tags: string[]; expectedConfigRevision: number }) => unwrap<AccountMutationResult>(http.patch(`/my-accounts/${id}/tags`, payload)),
   updateAuthorizedDispatch: (id: string, payload: AuthorizedAccountDispatchPayload) => unwrap<AuthorizedAccountDispatchMutationResult>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
   testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/my-accounts/${id}/test-options`, { params, signal: options?.signal })),
-  testModelCapabilities: (id: string, modelId: string, options?: RequestControlOptions) => unwrap<AccountTestModelCapabilities>(http.get(`/my-accounts/${id}/test-options/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   bindGroup: (id: string, payload: { groupId: string; expectedConfigRevision: number }) => unwrap<AccountMutationResult>(http.post(`/my-accounts/${id}/group`, payload)),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
   test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { signal: options?.signal })),

@@ -1186,7 +1186,7 @@ export async function pipeUpstreamStream(
           parserSkipped: inspection.skipped,
           skipReason: inspection.skipReason,
           errorMessage: downstreamConnectionClosedMessage
-        }, '网关流式转发因下游连接提前关闭而结束')
+        }, '网关流式转发因下游连接关闭而结束')
       endResponse(res)
       throw error
     }

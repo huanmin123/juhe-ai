@@ -22,9 +22,7 @@ Thumbs.db
 
 /backend/data/
 /backend/logs/
-/.codex-artifacts/
-/.codex-tmp/
 .worktrees/
 /.local/
-/.codex-temp/
 /.tmp/
+.codex-*

@@ -422,7 +422,7 @@ try {
 
     const downstreamUnknown = repositories.listUsageRecords(access, { model: 'gpt-5.6-downstream-unknown', page: 1, pageSize: 10 }).items[0]
     assert.equal(downstreamUnknown?.failureAttribution, 'downstream_unconfirmed', '未证实下游关闭必须保留中性归因')
-    assert.equal(downstreamUnknown?.failureReason, '下游连接关闭，触发方未识别', '列表必须从结构化失败码生成安全摘要')
+    assert.equal(downstreamUnknown?.failureReason, '下游连接关闭', '列表必须从结构化失败码生成统一安全摘要')
     assert.equal('errorCode' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误码')
     assert.equal('errorMessage' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误文本')
     assert.equal('requestSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回请求快照')

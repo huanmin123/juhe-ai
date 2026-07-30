@@ -37,9 +37,6 @@ for (const [type, prefix] of expectedItemPrefixes) {
 
 assert.equal(codexResponsesContractRegistry.item('other'), undefined)
 assert.equal(codexResponsesContractRegistry.item('future_response_item'), undefined)
-assert.equal(codexResponsesContractRegistry.itemByPrefix('ctc')?.type, 'custom_tool_call')
-assert.equal(codexResponsesContractRegistry.itemByPrefix('cmp')?.type, 'compaction')
-assert.equal(codexResponsesContractRegistry.itemByPrefix('unknown'), undefined)
 const compactionTrigger = codexResponsesContractRegistry.item('compaction_trigger')
 assert.ok(compactionTrigger, 'Codex 源码中的 compaction_trigger 必须是已知无 ID 类型')
 assert.equal(compactionTrigger.prefix, undefined)

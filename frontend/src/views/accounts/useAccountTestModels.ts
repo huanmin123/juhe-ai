@@ -5,7 +5,6 @@ import type {
   AccountListItem
 } from '@/types/domain'
 import type {
-  AccountTestModelCapabilities,
   AccountTestModelOption,
   AccountTestOptions
 } from '@/api/domains/accounts'
@@ -28,18 +27,12 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelsError = ref('')
   const testModelReadonly = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
-  const testEndpointModesError = ref('')
-  const testEndpointModesLoading = ref(false)
   let selectedAccount: AccountListItem | undefined
   let loadedOptionsAccountKey = ''
   let activeOptionsRequestKey = ''
-  let activeModelCapabilitiesRequestKey = ''
   let defaultModel = ''
   let optionsAbortController: AbortController | undefined
-  let modelCapabilitiesAbortController: AbortController | undefined
   let optionsRequestToken = 0
-  let modelCapabilitiesRequestToken = 0
-  const modelCapabilitiesCache = new Map<string, AccountTestModelCapabilities>()
 
   function initializeSavedAccountTestOptions(
     account: AccountListItem,
@@ -52,6 +45,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelOptions.value = defaultModel
       ? [{
           label: defaultModel,
+          testEndpointModes: [healthCheckEndpointMode],
           value: defaultModel
         }]
       : []
@@ -95,16 +89,13 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       if (!isCurrentOptionsRequest(requestToken, account.id)) return undefined
       loadedOptionsAccountKey = accountKey
       testModelOptions.value = normalizeModelOptions(response)
-      if (input.testForm.model && !testModelOptions.value.some((option) => option.value === input.testForm.model)) {
-        testModelOptions.value.unshift({
-          label: input.testForm.model,
-          value: input.testForm.model
-        })
-      }
       if (!input.testForm.model) {
         input.testForm.model = defaultModel || testModelOptions.value[0]?.value || ''
-        applyTestEndpointModes([], false)
       }
+      const currentOption = testModelOptions.value.find((option) => option.value === input.testForm.model)
+      const selectedOption = currentOption ?? testModelOptions.value[0]
+      input.testForm.model = selectedOption?.value ?? ''
+      applyTestEndpointModes(selectedOption?.testEndpointModes ?? [], Boolean(currentOption))
       return response
     } catch (error) {
       if (isAbortError(error)) return undefined
@@ -125,72 +116,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
 
   const loadSavedAccountTestOptions = loadTestModelOptions
 
-  async function loadTestEndpointModeOptions(
-    account = selectedAccount
-  ): Promise<void> {
-    if (!account || testModelReadonly.value) return
-    if (!selectedAccount) selectedAccount = account
-    if (selectedAccount.id !== account.id) return
-    const model = input.testForm.model.trim()
-    if (!model) return
-    const requestKey = modelCapabilitiesKey(account, model)
-    const cached = modelCapabilitiesCache.get(requestKey)
-    if (cached) {
-      applyTestEndpointModes(normalizeEndpointModes(cached.testEndpointModes), true)
-      return
-    }
-    if (
-      testEndpointModesLoading.value
-      && activeModelCapabilitiesRequestKey === requestKey
-    ) {
-      return
-    }
-    modelCapabilitiesAbortController?.abort()
-    const requestToken = nextModelCapabilitiesRequestToken()
-    const controller = new AbortController()
-    modelCapabilitiesAbortController = controller
-    activeModelCapabilitiesRequestKey = requestKey
-    testEndpointModesLoading.value = true
-    testEndpointModesError.value = ''
-    try {
-      const response = input.isManagementView.value
-        ? await api.accounts.testModelCapabilities(
-          account.id,
-          model,
-          accountOperationScopeParams(account, input.accountScopeParams.value),
-          { signal: controller.signal }
-        )
-        : await api.myAccounts.testModelCapabilities(
-          account.id,
-          model,
-          { signal: controller.signal }
-        )
-      if (
-        !isCurrentModelCapabilitiesRequest(requestToken, account.id, model)
-        || response.id !== model
-      ) {
-        return
-      }
-      modelCapabilitiesCache.set(requestKey, response)
-      const endpointModes = normalizeEndpointModes(response.testEndpointModes)
-      applyTestEndpointModes(endpointModes, true)
-    } catch (error) {
-      if (isAbortError(error)) return
-      if (isCurrentModelCapabilitiesRequest(requestToken, account.id, model)) {
-        testEndpointModesError.value = extractApiErrorMessage(error, '测试请求形态加载失败，请重试')
-      }
-      throw error
-    } finally {
-      if (modelCapabilitiesAbortController === controller) {
-        modelCapabilitiesAbortController = undefined
-        activeModelCapabilitiesRequestKey = ''
-      }
-      if (requestToken === modelCapabilitiesRequestToken) {
-        testEndpointModesLoading.value = false
-      }
-    }
-  }
-
   function useFixedTestModel(model: string, endpointModes: AccountSupportedEndpointMode[]): void {
     resetTestModels()
     const normalizedModel = model.trim()
@@ -198,6 +123,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelOptions.value = normalizedModel
       ? [{
           label: normalizedModel,
+          testEndpointModes: normalizeEndpointModes(endpointModes),
           value: normalizedModel
         }]
       : []
@@ -217,6 +143,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       if (!testModelOptions.value.some((option) => option.value === normalizedModel)) {
         testModelOptions.value.push({
           label: normalizedModel,
+          testEndpointModes: normalizeEndpointModes(fallbackEndpointModes),
           value: normalizedModel
         })
       }
@@ -235,33 +162,21 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     const normalizedModel = model.trim()
     const option = testModelOptions.value.find((item) => item.value === normalizedModel)
     if (!selectedAccount || !option) return
-    modelCapabilitiesAbortController?.abort()
-    modelCapabilitiesAbortController = undefined
-    activeModelCapabilitiesRequestKey = ''
-    nextModelCapabilitiesRequestToken()
-    testEndpointModesLoading.value = false
     input.testForm.model = normalizedModel
     testModelsError.value = ''
-    testEndpointModesError.value = ''
-    applyTestEndpointModes([], false)
+    applyTestEndpointModes(option.testEndpointModes, false)
   }
 
   function resetTestModels(): void {
     optionsAbortController?.abort()
-    modelCapabilitiesAbortController?.abort()
     optionsAbortController = undefined
-    modelCapabilitiesAbortController = undefined
     selectedAccount = undefined
     loadedOptionsAccountKey = ''
     activeOptionsRequestKey = ''
-    activeModelCapabilitiesRequestKey = ''
     defaultModel = ''
     nextOptionsRequestToken()
-    nextModelCapabilitiesRequestToken()
     testModelOptionsLoading.value = false
-    testEndpointModesLoading.value = false
     testModelsError.value = ''
-    testEndpointModesError.value = ''
     testModelReadonly.value = false
     testModelOptions.value = []
     testEndpointModes.value = []
@@ -274,23 +189,8 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     return optionsRequestToken
   }
 
-  function nextModelCapabilitiesRequestToken(): number {
-    modelCapabilitiesRequestToken += 1
-    return modelCapabilitiesRequestToken
-  }
-
   function isCurrentOptionsRequest(requestToken: number, accountId: string): boolean {
     return requestToken === optionsRequestToken && selectedAccount?.id === accountId
-  }
-
-  function isCurrentModelCapabilitiesRequest(
-    requestToken: number,
-    accountId: string,
-    model: string
-  ): boolean {
-    return requestToken === modelCapabilitiesRequestToken
-      && selectedAccount?.id === accountId
-      && input.testForm.model === model
   }
 
   function applyTestEndpointModes(
@@ -309,13 +209,10 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   return {
     initializeSavedAccountTestOptions,
     loadSavedAccountTestOptions,
-    loadTestEndpointModeOptions,
     loadTestModelOptions,
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
-    testEndpointModesError,
-    testEndpointModesLoading,
     testModelOptions,
     testModelReadonly,
     testModelsError,
@@ -334,6 +231,7 @@ function normalizeModelOptions(options: AccountTestOptions): AccountTestModelOpt
     values.add(value)
     output.push({
       label: option.name.trim() || value,
+      testEndpointModes: normalizeEndpointModes(option.testEndpointModes),
       value
     })
   }
@@ -346,10 +244,6 @@ function normalizeEndpointModes(modes: AccountSupportedEndpointMode[]): AccountS
 
 function accountOptionsKey(account: AccountListItem, keyword: string, selectedIds: string[]): string {
   return `${account.id}:${account.configRevision ?? 'uncached'}:${keyword}:${selectedIds.join(',')}`
-}
-
-function modelCapabilitiesKey(account: AccountListItem, model: string): string {
-  return `${account.id}:${account.configRevision ?? 'uncached'}:${model}`
 }
 
 function selectedModelIds(account: AccountListItem, selectedModel: string): string[] {

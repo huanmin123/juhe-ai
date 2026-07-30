@@ -97,7 +97,7 @@ type GptAccountType = 'api_key' | 'oauth'
 保存要求：
 
 - token 加密存储
-- 新建 OAuth 账户固定写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；只有系统检查成功才转为正常账户。创建前草稿测试只用于人工诊断，不能作为激活凭证；OAuth token 刷新成功只更新凭据，不自动把待检查账户恢复正常。
+- 新建 OAuth 账户默认写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；只有系统检查成功才转为正常账户。添加账户表单明确选择 `可调度`（`status = active`）时，后端才派生跳过首次健康检查和 `schedulable = true`，账户立即参与调度；套餐过期和当前时间计划仍可限制实际状态。创建前草稿测试只用于人工诊断，不能作为激活凭证；OAuth token 刷新成功只更新凭据，不自动把待检查账户恢复正常。
 - OAuth 账户允许重复添加相同凭据；同一个 `refresh_token` 或兜底 `access_token` 可以创建多个账户。系统只保留凭据指纹用于排查相同 token，不承担唯一约束。
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
@@ -136,7 +136,7 @@ OAuth 运行时修复口径：
 - 新增 API Key 账户时默认展示一个 API Key 输入框；可继续添加输入框，也可粘贴多行文本，前端会提取 `sk-` 开头的密钥并生成多条输入。多个密钥只创建一个账户，复用同一 Base URL、分组、代理、支持模型、时间计划和错误处理策略。
 - 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发和授权边界。所有请求按 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 在未交付结果时唯一尝试当前可执行 Key，再切后续账户；跨账户物理凭据去重，整个请求最多 64 次真实上游 attempt。未知 HTTP 状态/正文只产生请求内排除，不写共享 Key 状态；图片、音频、文件/资源创建和其他请求同样轮换候选。
 - 多 Key API Key 账户的人工测试可以诊断账户内所有 Key，账户级结果只要求至少 1 个 Key 可用；测试只返回逐 Key 脱敏结果，不改写、初始化、恢复或摘除 Key 运行态。Key 初始化和恢复由后台激活检查、Key 检查与恢复探针负责。
-- 新建 API Key 账户固定写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；创建请求不接受人工测试任务 ID 作为直接激活凭证。
+- 新建 API Key 账户默认写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；添加账户表单明确选择 `可调度`（`status = active`）时，后端才派生跳过首次健康检查和 `schedulable = true`，账户立即参与调度；套餐过期和当前时间计划仍可限制实际状态。创建请求不接受人工测试任务 ID 作为直接激活凭证。
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址

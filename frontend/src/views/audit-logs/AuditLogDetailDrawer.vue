@@ -40,7 +40,7 @@
             {{ formatDateTime(detail.endedAt) }} · {{ formatDuration(detail.durationMs) }}
           </a-descriptions-item>
           <a-descriptions-item label="采样" :span="2">{{ detail.sampleReason }} / {{ detail.sampleBucket }}</a-descriptions-item>
-          <a-descriptions-item label="错误" :span="2">{{ detail.errorMessage ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="错误" :span="2">{{ normalizedAuditErrorMessage(detail.errorMessage) ?? '-' }}</a-descriptions-item>
         </a-descriptions>
 
         <section class="request-chain-section">
@@ -182,6 +182,7 @@ import {
   formatBytes,
   formatDateTime,
   formatDuration,
+  normalizedAuditErrorMessage,
   outcomeText,
   payloadPartText,
   prettyJson,
@@ -375,8 +376,8 @@ function createUpstreamResponseRow(
     durationMs: attempt.durationMs,
     sizeBytes: payload?.sizeBytes,
     captureStatus: payload?.captureStatus,
-    url: attempt.errorMessage || attempt.upstreamUrl,
-    errorMessage: attempt.errorMessage,
+    url: normalizedAuditErrorMessage(attempt.errorMessage) || attempt.upstreamUrl,
+    errorMessage: normalizedAuditErrorMessage(attempt.errorMessage),
     payload
   }
 }
@@ -402,8 +403,8 @@ function createGatewayResultRow(
     durationMs: detail.httpDurationMs ?? detail.durationMs,
     sizeBytes: payload?.sizeBytes,
     captureStatus: payload?.captureStatus,
-    url: detail.errorMessage || auditDetailPath(detail),
-    errorMessage: detail.errorMessage,
+    url: normalizedAuditErrorMessage(detail.errorMessage) || auditDetailPath(detail),
+    errorMessage: normalizedAuditErrorMessage(detail.errorMessage),
     payload
   }
 }
@@ -428,8 +429,8 @@ function createPayloadOnlyRow(
     durationMs: attempt?.durationMs,
     sizeBytes: payload.sizeBytes,
     captureStatus: payload.captureStatus,
-    url: attempt?.errorMessage || attempt?.upstreamUrl || detail.errorMessage || auditDetailPath(detail),
-    errorMessage: attempt?.errorMessage ?? detail.errorMessage,
+    url: normalizedAuditErrorMessage(attempt?.errorMessage) || attempt?.upstreamUrl || normalizedAuditErrorMessage(detail.errorMessage) || auditDetailPath(detail),
+    errorMessage: normalizedAuditErrorMessage(attempt?.errorMessage ?? detail.errorMessage),
     payload
   }
 }

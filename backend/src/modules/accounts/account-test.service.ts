@@ -817,10 +817,7 @@ function accountTestResultWithTotalDuration(result: AccountTestResult, startedAt
 
 function limitedAccountTestMessage(result: AccountTestResult): string {
   if (result.success) return result.message
-  if (typeof result.statusCode === 'number') {
-    return `账户测试未通过，上游返回 HTTP ${result.statusCode}；请联系授权人或管理员查看完整诊断`
-  }
-  return '账户测试未通过；请联系授权人或管理员查看完整诊断'
+  return '上游请求失败'
 }
 
 function accountTestAbortMessage(signal: AbortSignal): string {
