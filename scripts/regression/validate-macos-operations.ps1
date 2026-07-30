@@ -185,7 +185,7 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
 }
 
 $performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
-foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'nginx_test_reload', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'verify_gateway_ingress_once', 'verify_slots_stable', 'gateway health URLs must map to gateway-1 through gateway-3', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
   if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
 }
 if ($performanceHandover -match '\\beval\\b') { throw 'Performance handover must not evaluate plan values as shell code' }
@@ -251,10 +251,12 @@ main_instance_id=control-1
 temporary_instance_id=control-1
 main_topology_identity=main-identity
 temporary_topology_identity=temporary-identity
-main_control_health_url=http://127.0.0.1:3099/main-control/health
-temporary_control_health_url=http://127.0.0.1:3099/temporary-control/health
+main_control_health_url=http://127.0.0.1:3399/__aisys__/health
+temporary_control_health_url=http://127.0.0.1:3599/__aisys__/health
 main_gateway_health_urls=http://127.0.0.1:3301/main-gateway-1/health,http://127.0.0.1:3302/main-gateway-2/health,http://127.0.0.1:3303/main-gateway-3/health
 temporary_gateway_health_urls=http://127.0.0.1:3501/temporary-gateway-1/health,http://127.0.0.1:3502/temporary-gateway-2/health,http://127.0.0.1:3503/temporary-gateway-3/health
+main_gateway_ingress_url=http://127.0.0.1:3399/v1/models
+temporary_gateway_ingress_url=http://127.0.0.1:3599/v1/models
 EOF
 chmod 600 "$root/plan/handover.conf"
 
@@ -275,39 +277,52 @@ EOF
 cat > "$root/fakebin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-headers= output= url=
+headers= output= url= write_out= gateway_instance= gateway_pid=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -D) headers="$2"; shift 2 ;;
     -o) output="$2"; shift 2 ;;
+    -w|--write-out) write_out="$2"; shift 2 ;;
     --max-time) shift 2 ;;
     -f|-s|-S|-fsS) shift ;;
     *) url="$1"; shift ;;
   esac
 done
 case "$url" in
-  */main-control/health) label=main; topology=main-identity; control_pid=101 ;;
-  */temporary-control/health) label=temporary; topology=temporary-identity; control_pid=201 ;;
-  */__aisys__/health)
+  http://127.0.0.1:3399/__aisys__/health) label=main; topology=main-identity; control_pid=101 ;;
+  http://127.0.0.1:3599/__aisys__/health) label=temporary; topology=temporary-identity; control_pid=201 ;;
+  http://127.0.0.1:3099/__aisys__/health)
     label="$(tr -d '\n' < "$HANDOVER_ROUTE_FILE")"
     case "$label" in main) topology=main-identity ;; temporary) topology=temporary-identity ;; *) exit 23 ;; esac
     case "$label" in main) control_pid=101 ;; temporary) control_pid=201 ;; esac
     ;;
-  */main-gateway-1/health|*/temporary-gateway-1/health) gateway_instance=gateway-1; gateway_pid=301 ;;
-  */main-gateway-2/health|*/temporary-gateway-2/health) gateway_instance=gateway-2; gateway_pid=302 ;;
-  */main-gateway-3/health|*/temporary-gateway-3/health) gateway_instance=gateway-3; gateway_pid=303 ;;
+  */main-gateway-1/health) gateway_instance=gateway-1; gateway_pid=301 ;;
+  */main-gateway-2/health) gateway_instance=gateway-2; gateway_pid=302 ;;
+  */main-gateway-3/health) gateway_instance=gateway-3; gateway_pid=303 ;;
+  */temporary-gateway-1/health) gateway_instance=gateway-1; gateway_pid=501 ;;
+  */temporary-gateway-2/health) gateway_instance=gateway-2; gateway_pid=502 ;;
+  */temporary-gateway-3/health) gateway_instance=gateway-3; gateway_pid=503 ;;
+  http://127.0.0.1:3399/v1/models) label=main; topology=main-identity; gateway_status="${HANDOVER_GATEWAY_INGRESS_STATUS:-401}" ;;
+  http://127.0.0.1:3599/v1/models) label=temporary; topology=temporary-identity; gateway_status="${HANDOVER_GATEWAY_INGRESS_STATUS:-401}" ;;
   */__aisys__/api/health) ;;
   *) exit 22 ;;
 esac
+[ "${HANDOVER_BAD_TOPOLOGY:-0}" = 0 ] || topology=wrong-identity
+if [ "${HANDOVER_BAD_GATEWAY_ORDER:-0}" = 1 ] && [ "$url" = 'http://127.0.0.1:3301/main-gateway-1/health' ]; then gateway_instance=gateway-2; fi
+if [ "${HANDOVER_OVERLAP_PID:-0}" = 1 ] && [ "$url" = 'http://127.0.0.1:3501/temporary-gateway-1/health' ]; then gateway_pid=301; fi
 case "$url" in
-  */main-control/health|*/temporary-control/health|*/__aisys__/health)
-    [ "${HANDOVER_BAD_TOPOLOGY:-0}" = 0 ] || topology=wrong-identity
+  http://127.0.0.1:3399/__aisys__/health|http://127.0.0.1:3599/__aisys__/health|http://127.0.0.1:3099/__aisys__/health)
     printf '%s: %s\nX-Juhe-Topology-Install: %s\n' "$HANDOVER_HEADER" "$label" "$topology" > "$headers"
     printf '{"status":"ok","runtimeMode":"performance","nodeRole":"control","instanceId":"control-1","processPid":%s,"dbServicePid":%s,"workerProcesses":[{"role":"usage-worker","replicaIndex":0,"pid":%s,"ready":true}],"workerTopologyReady":true}' "$control_pid" "$((control_pid + 1))" "$((control_pid + 2))" > "$output"
     printf '%s\n' "$label" >> "$HANDOVER_ACCESS_LOG"
     ;;
-  */gateway-*/health)
+  */main-gateway-*/health|*/temporary-gateway-*/health)
     printf '{"status":"ok","runtimeMode":"performance","nodeRole":"gateway","instanceId":"%s","processPid":%s,"dbServicePid":%s,"workerProcesses":[],"workerTopologyReady":true}' "$gateway_instance" "$gateway_pid" "$((gateway_pid + 100))" > "$output"
+    ;;
+  http://127.0.0.1:3399/v1/models|http://127.0.0.1:3599/v1/models)
+    [ "${HANDOVER_BAD_GATEWAY_INGRESS:-0}" = 0 ] || topology=wrong-identity
+    printf 'X-Juhe-Topology-Install: %s\n' "$topology" > "$headers"
+    [ "$write_out" = '%{http_code}' ] && printf '%s' "$gateway_status"
     ;;
 esac
 EOF
@@ -340,6 +355,7 @@ chmod 600 "$root/plan/handover.conf"
 sed "s#^node_bin=.*#node_bin=$NODE_BIN#" "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
 mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
 chmod 600 "$root/plan/handover.conf"
+cp -p "$root/plan/handover.conf" "$root/plan/handover.conf.clean"
 
 if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
   echo 'handover accepted takeover without preflight' >&2
@@ -351,6 +367,96 @@ if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/de
   exit 71
 fi
 rmdir "$root/plan/handover.lock"
+
+temporary_gateway_urls="$(awk -F= '$1 == "temporary_gateway_health_urls" { print substr($0, index($0, "=") + 1); exit }' "$root/plan/handover.conf")"
+sed "s#^main_gateway_health_urls=.*#main_gateway_health_urls=$temporary_gateway_urls#" "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted gateway URLs reused from the temporary slot' >&2
+  exit 76
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed 's#^main_gateway_ingress_url=.*#main_gateway_ingress_url=http://127.0.0.1:3599/v1/models#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a gateway ingress URL reused from the temporary slot' >&2
+  exit 77
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed 's#^main_gateway_health_urls=.*#main_gateway_health_urls=http://127.0.0.1:3301/main-gateway-1/health,http://127.0.0.1:3301/main-gateway-2/health,http://127.0.0.1:3303/main-gateway-3/health#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted two direct gateway health URLs on one listener' >&2
+  exit 84
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed 's#^main_gateway_health_urls=.*#main_gateway_health_urls=http://127.0.0.1:3399/main-gateway-1/health,http://127.0.0.1:3302/main-gateway-2/health,http://127.0.0.1:3303/main-gateway-3/health#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a direct gateway health URL on the inner Nginx listener' >&2
+  exit 85
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed 's#^main_gateway_ingress_url=.*#main_gateway_ingress_url=http://localhost:3399/v1/models#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted localhost as a distinct loopback listener spelling' >&2
+  exit 82
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed 's#^main_gateway_ingress_url=.*#main_gateway_ingress_url=http://127.0.0.1:03399/v1/models#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a noncanonical loopback port spelling' >&2
+  exit 83
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+export HANDOVER_BAD_GATEWAY_ORDER=1
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a gateway health response from the wrong gateway instance' >&2
+  exit 78
+fi
+unset HANDOVER_BAD_GATEWAY_ORDER
+
+export HANDOVER_OVERLAP_PID=1
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a PID shared by main and temporary gateway pools' >&2
+  exit 79
+fi
+unset HANDOVER_OVERLAP_PID
+
+export HANDOVER_BAD_GATEWAY_INGRESS=1
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted an inner gateway ingress without the expected topology header' >&2
+  exit 80
+fi
+unset HANDOVER_BAD_GATEWAY_INGRESS
+
+export HANDOVER_GATEWAY_INGRESS_STATUS=404
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a non-gateway inner ingress HTTP status' >&2
+  exit 81
+fi
+unset HANDOVER_GATEWAY_INGRESS_STATUS
+
 export HANDOVER_BAD_TOPOLOGY=1
 if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
   echo 'handover accepted a wrong topology identity' >&2

@@ -26,9 +26,12 @@ main_topology_identity and temporary_topology_identity. It must be owned by
 the deployment controller and no other
 user may write its directory or referenced route files.
 
-Each slot also supplies its internal control health URL and three comma-separated
-gateway health URLs. These loopback URLs are verified before an outer route is
-changed, so the control plane cannot mask a failed gateway pool.
+Each slot also supplies the `/__aisys__/health` URL and `/v1/models` URL of one
+inner Nginx listener, plus three comma-separated direct gateway health URLs.
+All listeners must be disjoint between slots, and each direct gateway listener
+must be distinct. The controller verifies the exact gateway-1 through gateway-3
+identities, every topology PID, and the inner gateway ingress before an outer
+route is changed.
 EOF
 }
 
@@ -85,15 +88,65 @@ assert_private_ancestry() {
 }
 
 assert_gateway_health_urls() {
-  urls="$1" description="$2" count=0 old_ifs="$IFS"
+  urls="$1" description="$2" count=0 seen_urls='|' seen_authorities='|' old_ifs="$IFS"
   case "$urls" in *,,*|,*|*,) echo "$description must contain exactly three comma-separated loopback URLs" >&2; exit 2;; esac
   IFS=,
   set -- $urls
   IFS="$old_ifs"
   [ "$#" -eq 3 ] || { echo "$description must contain exactly three loopback URLs" >&2; exit 2; }
   for url in "$@"; do
-    case "$url" in http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*) ;; *) echo "$description must use loopback HTTP(S) URLs" >&2; exit 2;; esac
+    assert_loopback_http_url "$url" "$description"
+    case "$seen_urls" in *"|$url|"*) echo "$description contains a duplicate gateway URL" >&2; exit 2;; esac
+    authority="$(loopback_url_authority "$url")"
+    case "$seen_authorities" in *"|$authority|"*) echo "$description must use three distinct gateway listeners" >&2; exit 2;; esac
+    seen_urls="${seen_urls}${url}|"
+    seen_authorities="${seen_authorities}${authority}|"
     count=$((count + 1))
+  done
+}
+
+assert_loopback_http_url() {
+  url="$1" description="$2" required_path="${3:-}" remainder= authority= host= port= path=
+  case "$url" in
+    http://127.0.0.1:*|https://127.0.0.1:*) ;;
+    *) echo "$description must use a loopback HTTP(S) URL" >&2; exit 2 ;;
+  esac
+  case "$url" in *'?'*|*'#'*|*'@'*|*' '*|*'	'*) echo "$description must not contain credentials, query, fragment, or whitespace" >&2; exit 2;; esac
+  remainder="${url#*://}"
+  case "$remainder" in */*) authority="${remainder%%/*}"; path="/${remainder#*/}" ;; *) echo "$description must include an absolute path" >&2; exit 2;; esac
+  host="${authority%%:*}" port="${authority#*:}"
+  [ "$host" = 127.0.0.1 ] || { echo "$description must use the canonical loopback host 127.0.0.1" >&2; exit 2; }
+  case "$port" in ''|*[!0-9]*|0[0-9]*) echo "$description port must be canonical decimal" >&2; exit 2;; esac
+  [ "${#port}" -le 5 ] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "$description port is outside 1..65535" >&2; exit 2; }
+  [ -z "$required_path" ] || [ "$path" = "$required_path" ] || { echo "$description must use path $required_path" >&2; exit 2; }
+}
+
+loopback_url_authority() {
+  printf '%s' "${1#*://}" | awk -F/ '{print $1}'
+}
+
+assert_slot_endpoints_disjoint() {
+  main_control_authority="$(loopback_url_authority "$main_control_health_url")" main_gateway_ingress_authority="$(loopback_url_authority "$main_gateway_ingress_url")" temporary_control_authority="$(loopback_url_authority "$temporary_control_health_url")" temporary_gateway_ingress_authority="$(loopback_url_authority "$temporary_gateway_ingress_url")" main_endpoints="|$main_control_authority|" temporary_endpoints="|$temporary_control_authority|" endpoint= old_ifs="$IFS"
+  [ "$main_control_authority" = "$main_gateway_ingress_authority" ] || { echo 'main control health and gateway ingress must share the inner Nginx listener' >&2; exit 2; }
+  [ "$temporary_control_authority" = "$temporary_gateway_ingress_authority" ] || { echo 'temporary control health and gateway ingress must share the inner Nginx listener' >&2; exit 2; }
+  IFS=,
+  set -- $main_gateway_health_urls
+  IFS="$old_ifs"
+  for endpoint in "$@"; do
+    endpoint="$(loopback_url_authority "$endpoint")"
+    case "$main_endpoints" in *"|$endpoint|"*) echo 'main slot endpoints must not share a listener' >&2; exit 2;; esac
+    main_endpoints="${main_endpoints}${endpoint}|"
+  done
+  IFS=,
+  set -- $temporary_gateway_health_urls
+  IFS="$old_ifs"
+  for endpoint in "$@"; do
+    endpoint="$(loopback_url_authority "$endpoint")"
+    case "$temporary_endpoints" in *"|$endpoint|"*) echo 'temporary slot endpoints must not share a listener' >&2; exit 2;; esac
+    temporary_endpoints="${temporary_endpoints}${endpoint}|"
+  done
+  for endpoint in $(printf '%s' "$temporary_endpoints" | tr '|' ' '); do
+    case "$main_endpoints" in *"|$endpoint|"*) echo 'main and temporary slots must not share a loopback listener' >&2; exit 2;; esac
   done
 }
 
@@ -120,11 +173,11 @@ read_config() {
   if [ "$(uname -s)" = Darwin ]; then
     [ "$(stat -f '%Lp' "$CONF" 2>/dev/null || true)" = 600 ] || { echo 'plan config must be mode 0600' >&2; exit 1; }
   fi
-  route_file= main_fragment= temporary_fragment= nginx_bin= node_bin= nginx_main_config= ingress_health_url= access_log= main_label= temporary_label= main_instance_id= temporary_instance_id= main_topology_identity= temporary_topology_identity= main_control_health_url= temporary_control_health_url= main_gateway_health_urls= temporary_gateway_health_urls= seen_keys='|'
+  route_file= main_fragment= temporary_fragment= nginx_bin= node_bin= nginx_main_config= ingress_health_url= access_log= main_label= temporary_label= main_instance_id= temporary_instance_id= main_topology_identity= temporary_topology_identity= main_control_health_url= temporary_control_health_url= main_gateway_health_urls= temporary_gateway_health_urls= main_gateway_ingress_url= temporary_gateway_ingress_url= seen_keys='|'
   while IFS='=' read -r key value; do
     [ -n "$key" ] || continue
     case "$key" in
-      route_file|main_fragment|temporary_fragment|nginx_bin|node_bin|nginx_main_config|ingress_health_url|access_log|main_label|temporary_label|main_instance_id|temporary_instance_id|main_topology_identity|temporary_topology_identity|main_control_health_url|temporary_control_health_url|main_gateway_health_urls|temporary_gateway_health_urls)
+      route_file|main_fragment|temporary_fragment|nginx_bin|node_bin|nginx_main_config|ingress_health_url|access_log|main_label|temporary_label|main_instance_id|temporary_instance_id|main_topology_identity|temporary_topology_identity|main_control_health_url|temporary_control_health_url|main_gateway_health_urls|temporary_gateway_health_urls|main_gateway_ingress_url|temporary_gateway_ingress_url)
         case "$seen_keys" in *"|$key|"*) echo "duplicate plan key: $key" >&2; exit 2;; esac
         seen_keys="${seen_keys}${key}|"
         assert_safe_value "$key" "$value"
@@ -147,13 +200,15 @@ read_config() {
           temporary_control_health_url) temporary_control_health_url="$value" ;;
           main_gateway_health_urls) main_gateway_health_urls="$value" ;;
           temporary_gateway_health_urls) temporary_gateway_health_urls="$value" ;;
+          main_gateway_ingress_url) main_gateway_ingress_url="$value" ;;
+          temporary_gateway_ingress_url) temporary_gateway_ingress_url="$value" ;;
         esac
         ;;
       *password*|*secret*|*token*|*key*|*url*postgres*|*redis*) echo "secret-like plan key is forbidden: $key" >&2; exit 2 ;;
       *) echo "unknown plan key: $key" >&2; exit 2 ;;
     esac
   done < "$CONF"
-  for required in route_file main_fragment temporary_fragment nginx_bin node_bin nginx_main_config ingress_health_url access_log main_label temporary_label main_instance_id temporary_instance_id main_topology_identity temporary_topology_identity main_control_health_url temporary_control_health_url main_gateway_health_urls temporary_gateway_health_urls; do
+  for required in route_file main_fragment temporary_fragment nginx_bin node_bin nginx_main_config ingress_health_url access_log main_label temporary_label main_instance_id temporary_instance_id main_topology_identity temporary_topology_identity main_control_health_url temporary_control_health_url main_gateway_health_urls temporary_gateway_health_urls main_gateway_ingress_url temporary_gateway_ingress_url; do
     case "$required" in
       route_file) value="$route_file" ;;
       main_fragment) value="$main_fragment" ;;
@@ -173,6 +228,8 @@ read_config() {
       temporary_control_health_url) value="$temporary_control_health_url" ;;
       main_gateway_health_urls) value="$main_gateway_health_urls" ;;
       temporary_gateway_health_urls) value="$temporary_gateway_health_urls" ;;
+      main_gateway_ingress_url) value="$main_gateway_ingress_url" ;;
+      temporary_gateway_ingress_url) value="$temporary_gateway_ingress_url" ;;
     esac
     [ -n "$value" ] || { echo "missing plan key: $required" >&2; exit 1; }
   done
@@ -185,13 +242,17 @@ read_config() {
   [ "$MODE" = dry-run ] || [ -x "$nginx_bin" ] || { echo 'nginx binary is not executable' >&2; exit 1; }
   [ "$MODE" = dry-run ] || [ -x "$node_bin" ] || { echo 'node binary is not executable' >&2; exit 1; }
   case "$ingress_health_url" in http://*|https://*) ;; *) echo 'ingress health URL must use HTTP(S)' >&2; exit 2;; esac
-  case "$main_control_health_url" in http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*) ;; *) echo 'main control health URL must be loopback HTTP(S)' >&2; exit 2;; esac
-  case "$temporary_control_health_url" in http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*) ;; *) echo 'temporary control health URL must be loopback HTTP(S)' >&2; exit 2;; esac
+  assert_loopback_http_url "$main_control_health_url" 'main control health URL' '/__aisys__/health'
+  assert_loopback_http_url "$temporary_control_health_url" 'temporary control health URL' '/__aisys__/health'
   assert_gateway_health_urls "$main_gateway_health_urls" 'main gateway health URLs'
   assert_gateway_health_urls "$temporary_gateway_health_urls" 'temporary gateway health URLs'
+  assert_loopback_http_url "$main_gateway_ingress_url" 'main gateway ingress URL' '/v1/models'
+  assert_loopback_http_url "$temporary_gateway_ingress_url" 'temporary gateway ingress URL' '/v1/models'
+  assert_slot_endpoints_disjoint
   case "$main_label$temporary_label" in *[!A-Za-z0-9_-]*|'') echo 'route labels contain unsupported characters' >&2; exit 2;; esac
   [ "$main_label" != "$temporary_label" ] || { echo 'route labels must differ' >&2; exit 2; }
   case "$main_instance_id$temporary_instance_id$main_topology_identity$temporary_topology_identity" in *[!A-Za-z0-9._-]*|'') echo 'topology identities contain unsupported characters' >&2; exit 2;; esac
+  [ "$main_topology_identity" != "$temporary_topology_identity" ] || { echo 'slot topology identities must differ' >&2; exit 2; }
   if [ "$MODE" = apply ]; then
     assert_private_ancestry "$PLAN_DIR" 'plan directory'
     assert_private_ancestry "$CONF" 'plan config'
@@ -237,6 +298,7 @@ instance_for() { [ "$1" = main ] && printf '%s' "$main_instance_id" || printf '%
 topology_identity_for() { [ "$1" = main ] && printf '%s' "$main_topology_identity" || printf '%s' "$temporary_topology_identity"; }
 control_health_url_for() { [ "$1" = main ] && printf '%s' "$main_control_health_url" || printf '%s' "$temporary_control_health_url"; }
 gateway_health_urls_for() { [ "$1" = main ] && printf '%s' "$main_gateway_health_urls" || printf '%s' "$temporary_gateway_health_urls"; }
+gateway_ingress_url_for() { [ "$1" = main ] && printf '%s' "$main_gateway_ingress_url" || printf '%s' "$temporary_gateway_ingress_url"; }
 
 header_value_matches() {
   header="$1" expected="$2" headers="$3"
@@ -262,18 +324,61 @@ health_identity() {
     const expectedRole = process.argv[1]
     const expectedInstance = process.argv[2]
     const requireWorkers = process.argv[3] === "true"
-    if (health.status !== "ok" || health.runtimeMode !== "performance" || health.nodeRole !== expectedRole || (expectedInstance && health.instanceId !== expectedInstance) || typeof health.instanceId !== "string" || !health.instanceId || !validPid(health.processPid) || !validPid(health.dbServicePid) || !Array.isArray(health.workerProcesses) || !health.workerTopologyReady) fail()
+    const validIdentity = (value) => typeof value === "string" && /^[A-Za-z0-9._-]+$/.test(value)
+    if (health.status !== "ok" || health.runtimeMode !== "performance" || health.nodeRole !== expectedRole || (expectedInstance && health.instanceId !== expectedInstance) || !validIdentity(health.instanceId) || !validPid(health.processPid) || !validPid(health.dbServicePid) || !Array.isArray(health.workerProcesses) || !health.workerTopologyReady) fail()
     if (requireWorkers && health.workerProcesses.length === 0) fail()
     const workers = health.workerProcesses.map((worker) => {
-      if (!worker || typeof worker.role !== "string" || !worker.role || !Number.isSafeInteger(worker.replicaIndex) || worker.replicaIndex < 0 || !validPid(worker.pid) || worker.ready !== true) fail()
+      if (!worker || !validIdentity(worker.role) || !Number.isSafeInteger(worker.replicaIndex) || worker.replicaIndex < 0 || !validPid(worker.pid) || worker.ready !== true) fail()
       return `${worker.role}:${worker.replicaIndex}:${worker.pid}`
     }).sort()
     process.stdout.write([health.nodeRole, health.instanceId, health.processPid, health.dbServicePid, ...workers].join("|"))
   ' "$expected_role" "$expected_instance" "$require_workers" < "$health_body"
 }
 
+identity_pid_set() {
+  printf '%s\n' "$1" | awk -F'|' '
+    NF >= 4 {
+      print $3
+      print $4
+      for (field_index = 5; field_index <= NF; field_index += 1) {
+        count = split($field_index, worker, ":")
+        if (count != 3) exit 1
+        print worker[3]
+      }
+    }
+  '
+}
+
+assert_unique_pid_set() {
+  pid_set="$1" description="$2" duplicate_pids=
+  [ -n "$pid_set" ] || { echo "$description did not report topology PIDs" >&2; exit 1; }
+  duplicate_pids="$(printf '%s\n' "$pid_set" | sort -n | uniq -d)"
+  [ -z "$duplicate_pids" ] || { echo "$description contains overlapping process or database-service PIDs" >&2; exit 1; }
+}
+
+assert_pid_sets_disjoint() {
+  main_pid_set="$1" temporary_pid_set="$2" overlapping_pids=
+  overlapping_pids="$(printf '%s\n%s\n' "$main_pid_set" "$temporary_pid_set" | sort -n | uniq -d)"
+  [ -z "$overlapping_pids" ] || { echo 'main and temporary slots share process or database-service PIDs' >&2; exit 1; }
+}
+
+verify_gateway_ingress_once() {
+  target="$1" expected_topology_identity="$(topology_identity_for "$target")" gateway_ingress_url="$(gateway_ingress_url_for "$target")" headers= status=
+  headers="$(mktemp -t juhe-ai-handover-gateway-ingress.XXXXXX)"
+  if ! status="$(curl -sS --max-time 8 -D "$headers" -o /dev/null -w '%{http_code}' "$gateway_ingress_url")"; then
+    rm -f -- "$headers"
+    return 1
+  fi
+  [ "$status" = 401 ] || { echo "gateway ingress must return HTTP 401 without an access token; received: $status" >&2; rm -f -- "$headers"; return 1; }
+  if ! header_value_matches X-Juhe-Topology-Install "$expected_topology_identity" "$headers"; then
+    rm -f -- "$headers"
+    return 1
+  fi
+  rm -f -- "$headers"
+}
+
 verify_slot_once() {
-  target="$1" expected_instance="$(instance_for "$target")" expected_topology_identity="$(topology_identity_for "$target")" control_url="$(control_health_url_for "$target")" gateway_urls="$(gateway_health_urls_for "$target")" old_ifs="$IFS" control_identity= gateway_identity= gateway_observed= gateway_body= seen_gateway_instances='|'
+  target="$1" expected_instance="$(instance_for "$target")" expected_topology_identity="$(topology_identity_for "$target")" control_url="$(control_health_url_for "$target")" gateway_urls="$(gateway_health_urls_for "$target")" old_ifs="$IFS" control_identity= gateway_identity= gateway_observed= gateway_body= expected_gateway_index=1
   OBSERVED_SLOT_IDENTITY="$(
     control_headers="$(mktemp -t juhe-ai-handover-control.XXXXXX)" control_body="$(mktemp -t juhe-ai-handover-control-health.XXXXXX)"
     trap 'rm -f -- "$control_headers" "$control_body" "$gateway_body"' EXIT
@@ -289,24 +394,46 @@ verify_slot_once() {
       curl -fsS --max-time 8 -o "$gateway_body" "$gateway_url"
       gateway_identity="$(health_identity gateway '' false "$gateway_body")"
       gateway_instance="${gateway_identity#gateway|}"; gateway_instance="${gateway_instance%%|*}"
-      case "$seen_gateway_instances" in *"|$gateway_instance|"*) echo 'duplicate gateway instance in health proof' >&2; exit 1;; esac
-      seen_gateway_instances="${seen_gateway_instances}${gateway_instance}|"
-      gateway_observed="$gateway_observed|$gateway_identity"
+      [ "$gateway_instance" = "gateway-$expected_gateway_index" ] || { echo "gateway health URLs must map to gateway-1 through gateway-3 in order; expected gateway-$expected_gateway_index, observed $gateway_instance" >&2; exit 1; }
+      expected_gateway_index=$((expected_gateway_index + 1))
+      gateway_observed="${gateway_observed}
+$gateway_identity"
       rm -f -- "$gateway_body"; gateway_body=
     done
     printf '%s' "$gateway_observed"
   )"
+  OBSERVED_SLOT_PID_SET="$(identity_pid_set "$OBSERVED_SLOT_IDENTITY")"
+  assert_unique_pid_set "$OBSERVED_SLOT_PID_SET" "$target slot"
+  verify_gateway_ingress_once "$target"
 }
 
-verify_slot_stable() {
-  target="$1" slot_identity= attempts=$((STABILITY_SECONDS / 5))
+verify_slots_once() {
+  verify_slot_once main
+  main_slot_identity="$OBSERVED_SLOT_IDENTITY" main_slot_pid_set="$OBSERVED_SLOT_PID_SET"
+  verify_slot_once temporary
+  temporary_slot_identity="$OBSERVED_SLOT_IDENTITY" temporary_slot_pid_set="$OBSERVED_SLOT_PID_SET"
+  assert_pid_sets_disjoint "$main_slot_pid_set" "$temporary_slot_pid_set"
+  OBSERVED_SLOT_PAIR_IDENTITY="${main_slot_identity}
+---
+${temporary_slot_identity}"
+}
+
+verify_slots_stable() {
+  local pair_identity= attempts=$((STABILITY_SECONDS / 5))
   [ "$attempts" -ge 12 ] || attempts=12
   for _ in $(seq 1 "$attempts"); do
-    verify_slot_once "$target"
-    if [ -z "$slot_identity" ]; then slot_identity="$OBSERVED_SLOT_IDENTITY"; else [ "$slot_identity" = "$OBSERVED_SLOT_IDENTITY" ] || { echo 'slot topology identity changed during stability proof' >&2; return 1; }; fi
+    verify_slots_once
+    if [ -z "$pair_identity" ]; then
+      pair_identity="$OBSERVED_SLOT_PAIR_IDENTITY"
+    elif [ "$pair_identity" != "$OBSERVED_SLOT_PAIR_IDENTITY" ]; then
+      printf 'slot topology identity changed during stability proof; previous=%s observed=%s\n' "$pair_identity" "$OBSERVED_SLOT_PAIR_IDENTITY" >&2
+      return 1
+    fi
     sleep 5
   done
 }
+
+verify_slot_stable() { verify_slots_stable; }
 
 verify_ingress_once() {
   target="$1" expected_label="$(label_for "$target")" expected_instance="$(instance_for "$target")" expected_topology_identity="$(topology_identity_for "$target")"
@@ -326,11 +453,16 @@ verify_ingress_once() {
 }
 
 verify_ingress_stable() {
-  target="$1" prior_size="$(stat -f '%z' "$access_log" 2>/dev/null || printf 0)" attempts=$((STABILITY_SECONDS / 5)) topology_identity=
+  local target="$1" prior_size="$(stat -f '%z' "$access_log" 2>/dev/null || printf 0)" attempts=$((STABILITY_SECONDS / 5)) topology_identity= current_size=
   [ "$attempts" -ge 12 ] || attempts=12
   for _ in $(seq 1 "$attempts"); do
     verify_ingress_once "$target"
-    if [ -z "$topology_identity" ]; then topology_identity="$OBSERVED_TOPOLOGY_IDENTITY"; else [ "$topology_identity" = "$OBSERVED_TOPOLOGY_IDENTITY" ] || { echo 'ingress topology identity changed during stability proof' >&2; return 1; }; fi
+    if [ -z "$topology_identity" ]; then
+      topology_identity="$OBSERVED_TOPOLOGY_IDENTITY"
+    elif [ "$topology_identity" != "$OBSERVED_TOPOLOGY_IDENTITY" ]; then
+      printf 'ingress topology identity changed during stability proof for target=%s; previous=%s observed=%s\n' "$target" "$topology_identity" "$OBSERVED_TOPOLOGY_IDENTITY" >&2
+      return 1
+    fi
     sleep 5
   done
   current_size="$(stat -f '%z' "$access_log" 2>/dev/null || printf 0)"
@@ -344,12 +476,14 @@ restore_route() {
   stage="$route_file.handover-restore.$$"
   cp -p -- "$ROLLBACK_FRAGMENT" "$stage"
   mv -f -- "$stage" "$route_file"
-  nginx_test_reload && verify_ingress_stable "$SOURCE_LABEL" && verify_slot_stable "$SOURCE_LABEL"
+  nginx_test_reload && verify_ingress_stable "$SOURCE_LABEL" && verify_slots_stable
 }
 
 on_exit() {
   code="$?"
   set +e
+  # Do not re-enter this handler when it returns the original failure code.
+  trap - EXIT INT TERM
   if [ "$code" -ne 0 ] && [ "$SWITCH_ATTEMPTED" = 1 ]; then
     echo "handover failed; restoring $SOURCE_LABEL route" >&2
     if restore_route; then ROLLBACK_PROVEN=1; write_journal rollback-proven "$ACTION" "$SOURCE_LABEL" "$(journal_value target)"; else write_journal rollback-unproven "$ACTION" "$SOURCE_LABEL" "$(journal_value target)"; echo 'ROLLBACK_UNPROVEN: retain both slots and investigate' >&2; fi
@@ -391,8 +525,7 @@ case "$ACTION" in
       SOURCE_LABEL=main
       TARGET_LABEL=temporary
     fi
-    verify_slot_stable "$SOURCE_LABEL"
-    verify_slot_stable "$TARGET_LABEL"
+    verify_slots_stable
     verify_ingress_stable "$SOURCE_LABEL"
     write_journal preflight preflight "$SOURCE_LABEL" "$TARGET_LABEL"
     printf 'PREFLIGHT_OK source=%s target=%s\n' "$SOURCE_LABEL" "$TARGET_LABEL"
@@ -411,7 +544,7 @@ case "$ACTION" in
     SOURCE_LABEL="$(journal_value source)" TARGET_LABEL="$(journal_value target)" state="$(journal_value state)"; assert_journal_route "$SOURCE_LABEL" "$TARGET_LABEL"
     case "$state" in
       preflight)
-        verify_slot_stable "$SOURCE_LABEL"
+        verify_slots_stable
         verify_ingress_stable "$SOURCE_LABEL"
         write_journal preflight-cancelled recover "$SOURCE_LABEL" "$TARGET_LABEL"
         printf 'RECOVERY_OK route=%s; no route change had been staged\n' "$SOURCE_LABEL"
@@ -428,8 +561,7 @@ case "$ACTION" in
     ;;
 esac
 
-verify_slot_stable "$SOURCE_LABEL"
-verify_slot_stable "$TARGET_LABEL"
+verify_slots_stable
 verify_ingress_stable "$SOURCE_LABEL"
 cp -p -- "$route_file" "$ROLLBACK_FRAGMENT"
 chmod 600 "$ROLLBACK_FRAGMENT"
@@ -443,7 +575,7 @@ write_journal route-staged "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
 nginx_test_reload
 write_journal reload-requested "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
 verify_ingress_stable "$TARGET_LABEL"
-verify_slot_stable "$TARGET_LABEL"
+verify_slots_stable
 write_journal stable "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
 SWITCH_ATTEMPTED=0
 write_journal committed "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
