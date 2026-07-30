@@ -13,37 +13,57 @@ export class ChatGatewayUnavailableError extends Error {
 let nextGatewayOffset = 0
 let listGatewayEndpointsForTest: typeof listInternalGatewayEndpoints | undefined
 let endpointCache: { endpoints: Awaited<ReturnType<typeof listInternalGatewayEndpoints>>; expiresAtMs: number } | undefined
+let endpointRefreshPromise: Promise<Awaited<ReturnType<typeof listInternalGatewayEndpoints>>> | undefined
 const endpointCacheTtlMs = 1_000
 const activeRequestsByOrigin = new Map<string, number>()
+const failedGatewayCooldownMs = 5_000
+const failedGatewayOrigins = new Map<string, number>()
 
 export const dispatchChatGatewayRequest: ChatGatewayDispatch = async (path, init) => {
-  const origin = await resolveChatGatewayOrigin()
-  const release = reserveGatewayRequest(origin)
+  const { origin, release } = await reserveChatGatewayRequest()
   try {
     const response = await fetch(`${origin}${normalizePath(path)}`, init)
     return trackGatewayResponse(response, release)
   } catch (error) {
     release()
+    if (!isAbortError(error)) markGatewayTransportFailure(origin)
     throw error
   }
 }
 
 export async function resolveChatGatewayOrigin(): Promise<string> {
+  const endpoints = await resolveChatGatewayEndpoints()
+  return selectChatGatewayOrigin(endpoints)
+}
+
+async function reserveChatGatewayRequest(): Promise<{ origin: string; release: () => void }> {
+  const endpoints = await resolveChatGatewayEndpoints()
+  const origin = selectChatGatewayOrigin(endpoints)
+  return { origin, release: reserveGatewayRequest(origin) }
+}
+
+async function resolveChatGatewayEndpoints(): Promise<Awaited<ReturnType<typeof listInternalGatewayEndpoints>>> {
   if (!requiresDiscoveredGateway()) {
-    return `http://127.0.0.1:${runtimeConfig.port}`
+    return [{ instanceId: 'local', origin: `http://127.0.0.1:${runtimeConfig.port}` }]
   }
   let endpoints = cachedEndpoints()
   try {
     if (!endpoints) {
-      endpoints = await (listGatewayEndpointsForTest ?? listInternalGatewayEndpoints)()
-      endpointCache = { endpoints, expiresAtMs: Date.now() + endpointCacheTtlMs }
+      endpoints = await refreshCachedEndpoints()
     }
   } catch {
     throw new ChatGatewayUnavailableError()
   }
   if (!endpoints.length) throw new ChatGatewayUnavailableError()
-  const lowestInFlight = Math.min(...endpoints.map((endpoint) => activeRequestsByOrigin.get(endpoint.origin) ?? 0))
-  const candidates = endpoints.filter((endpoint) => (activeRequestsByOrigin.get(endpoint.origin) ?? 0) === lowestInFlight)
+  return endpoints
+}
+
+function selectChatGatewayOrigin(endpoints: Awaited<ReturnType<typeof listInternalGatewayEndpoints>>): string {
+  const nowMs = Date.now()
+  const availableEndpoints = endpoints.filter((endpoint) => (failedGatewayOrigins.get(endpoint.origin) ?? 0) <= nowMs)
+  const eligibleEndpoints = availableEndpoints.length ? availableEndpoints : endpoints
+  const lowestInFlight = Math.min(...eligibleEndpoints.map((endpoint) => activeRequestsByOrigin.get(endpoint.origin) ?? 0))
+  const candidates = eligibleEndpoints.filter((endpoint) => (activeRequestsByOrigin.get(endpoint.origin) ?? 0) === lowestInFlight)
   const endpoint = candidates[nextGatewayOffset % candidates.length]
   nextGatewayOffset = (nextGatewayOffset + 1) % Number.MAX_SAFE_INTEGER
   return endpoint.origin
@@ -55,12 +75,37 @@ export function setChatGatewayEndpointResolverForTest(
   listGatewayEndpointsForTest = resolver
   nextGatewayOffset = 0
   endpointCache = undefined
+  endpointRefreshPromise = undefined
   activeRequestsByOrigin.clear()
+  failedGatewayOrigins.clear()
+}
+
+function markGatewayTransportFailure(origin: string): void {
+  failedGatewayOrigins.set(origin, Date.now() + failedGatewayCooldownMs)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function cachedEndpoints(): Awaited<ReturnType<typeof listInternalGatewayEndpoints>> | undefined {
   if (!endpointCache || endpointCache.expiresAtMs <= Date.now()) return undefined
   return endpointCache.endpoints
+}
+
+async function refreshCachedEndpoints(): Promise<Awaited<ReturnType<typeof listInternalGatewayEndpoints>>> {
+  if (endpointRefreshPromise) return await endpointRefreshPromise
+  const refreshPromise = (async () => {
+    try {
+      const endpoints = await (listGatewayEndpointsForTest ?? listInternalGatewayEndpoints)()
+      endpointCache = { endpoints, expiresAtMs: Date.now() + endpointCacheTtlMs }
+      return endpoints
+    } finally {
+      endpointRefreshPromise = undefined
+    }
+  })()
+  endpointRefreshPromise = refreshPromise
+  return await refreshPromise
 }
 
 function requiresDiscoveredGateway(): boolean {

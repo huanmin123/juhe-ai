@@ -2,7 +2,11 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { logger } from '../../../shared/logger.js'
-import { getRedisClient, isRecoverableRedisClientError, type RedisCommandClient } from '../../../shared/redis-client.js'
+import {
+  isRecoverableRedisClientError,
+  runRedisOperationWithDeadline,
+  type RedisCommandClient
+} from '../../../shared/redis-client.js'
 import { redisNamespacedKey, sanitizeRedisNamespacePart } from '../../../shared/redis-namespace.js'
 
 const entryVersion = 1
@@ -26,6 +30,15 @@ end
 redis.call('EXPIRE', KEYS[2], tonumber(ARGV[4]))
 return now_ms
 `
+const unregisterScript = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local ok, entry = pcall(cjson.decode, raw)
+if not ok or type(entry) ~= 'table' or entry.bootId ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], KEYS[1])
+return 1
+`
 const readScript = `
 local redis_time = redis.call('TIME')
 local now_ms = redis_time[1] * 1000 + math.floor(redis_time[2] / 1000)
@@ -45,42 +58,74 @@ interface RegistryEntry extends InternalGatewayEndpoint {
   signature: string
 }
 
-let heartbeatTimer: NodeJS.Timeout | undefined
-let bootId: string | undefined
-let publishInFlight = false
-
-export function startInternalGatewayRegistry(): void {
-  if (!internalGatewayRegistryPublisherEnabled() || heartbeatTimer) return
-  bootId = randomUUID()
-  void publishCurrentGateway().finally(scheduleHeartbeat)
+interface RegistrySession {
+  bootId: string
+  stopping: boolean
+  heartbeatTimer?: NodeJS.Timeout
+  publishPromise?: Promise<void>
 }
 
-export function stopInternalGatewayRegistry(): void {
-  if (heartbeatTimer) {
-    clearTimeout(heartbeatTimer)
-    heartbeatTimer = undefined
+type RegistryRedisOperationRunner = typeof runRedisOperationWithDeadline
+
+let registrySession: RegistrySession | undefined
+let registryStopPromise: Promise<void> | undefined
+let publishRequested = false
+let registryRedisOperationRunner: RegistryRedisOperationRunner = runRedisOperationWithDeadline
+
+export function startInternalGatewayRegistry(): void {
+  publishRequested = true
+  ensureInternalGatewayRegistryStarted()
+}
+
+export async function stopInternalGatewayRegistry(): Promise<void> {
+  publishRequested = false
+  const existingStop = registryStopPromise
+  if (existingStop) {
+    await existingStop
+    return
   }
-  const currentBootId = bootId
-  bootId = undefined
-  if (!currentBootId || !internalGatewayRegistryPublisherEnabled()) return
-  void unregisterCurrentGateway(currentBootId).catch(() => undefined)
+
+  const session = registrySession
+  if (!session) return
+  registrySession = undefined
+  session.stopping = true
+  if (session.heartbeatTimer) {
+    clearTimeout(session.heartbeatTimer)
+    session.heartbeatTimer = undefined
+  }
+
+  const stopPromise = (async () => {
+    try {
+      await session.publishPromise
+      await unregisterCurrentGateway(session.bootId)
+    } finally {
+      registryStopPromise = undefined
+      ensureInternalGatewayRegistryStarted()
+    }
+  })()
+  registryStopPromise = stopPromise
+  await stopPromise
 }
 
 export async function listInternalGatewayEndpoints(): Promise<InternalGatewayEndpoint[]> {
   if (!internalGatewayRegistryReaderEnabled()) return []
   const redisUrl = runtimeConfig.redis.stateUrl
   if (!redisUrl) return []
-  const client = await withTimeout(getRedisClient(redisUrl), commandTimeoutMs, '内部 Gateway 注册表连接超时')
-  const keys = await withTimeout(client.eval(readScript, {
-    keys: [indexKey],
-    arguments: [String(entryTtlSeconds), String(entryLimit)]
-  }), commandTimeoutMs, '内部 Gateway 注册表读取超时')
-  const entryKeys = Array.isArray(keys)
-    ? [...new Set(keys.filter((key): key is string => typeof key === 'string' && key.startsWith(entryKeyPrefix)))].slice(0, entryLimit)
-    : []
-  if (!entryKeys.length) return []
-  const values = await withTimeout(client.sendCommand(['MGET', ...entryKeys]), commandTimeoutMs, '内部 Gateway 注册表条目读取超时')
-  if (!Array.isArray(values)) return []
+  const values = await registryRedisOperationRunner<unknown[]>(redisUrl, {
+    operationName: '内部 Gateway 注册表读取',
+    timeoutMs: commandTimeoutMs
+  }, async (client) => {
+    const keys = await client.eval(readScript, {
+      keys: [indexKey],
+      arguments: [String(entryTtlSeconds), String(entryLimit)]
+    })
+    const entryKeys = Array.isArray(keys)
+      ? [...new Set(keys.filter((key): key is string => typeof key === 'string' && key.startsWith(entryKeyPrefix)))].slice(0, entryLimit)
+      : []
+    if (!entryKeys.length) return []
+    const raw = await client.sendCommand(['MGET', ...entryKeys])
+    return Array.isArray(raw) ? raw : []
+  })
   const endpoints = new Map<string, InternalGatewayEndpoint>()
   for (const value of values) {
     const entry = parseRegistryEntry(value)
@@ -93,51 +138,91 @@ export function internalGatewayRegistryEntryKey(instanceId: string): string {
   return `${entryKeyPrefix}${sanitizeRedisNamespacePart(instanceId)}`
 }
 
-function scheduleHeartbeat(): void {
-  if (!bootId || heartbeatTimer) return
-  heartbeatTimer = setTimeout(() => {
-    heartbeatTimer = undefined
-    void publishCurrentGateway().finally(scheduleHeartbeat)
-  }, heartbeatIntervalMs)
-  heartbeatTimer.unref()
+export function setInternalGatewayRegistryOperationRunnerForTest(runner?: RegistryRedisOperationRunner): void {
+  registryRedisOperationRunner = runner ?? runRedisOperationWithDeadline
 }
 
-async function publishCurrentGateway(): Promise<void> {
-  const currentBootId = bootId
-  if (!currentBootId || publishInFlight || !internalGatewayRegistryPublisherEnabled()) return
+function ensureInternalGatewayRegistryStarted(): void {
+  if (!publishRequested || registrySession || registryStopPromise || !internalGatewayRegistryPublisherEnabled()) return
+  const session: RegistrySession = {
+    bootId: randomUUID(),
+    stopping: false
+  }
+  registrySession = session
+  publishAndScheduleHeartbeat(session)
+}
+
+function publishAndScheduleHeartbeat(session: RegistrySession): void {
+  if (!isCurrentPublishingSession(session) || session.publishPromise) return
+  const publishPromise = publishCurrentGateway(session)
+  session.publishPromise = publishPromise
+  void publishPromise.then(
+    () => finishPublishAndScheduleHeartbeat(session, publishPromise),
+    () => finishPublishAndScheduleHeartbeat(session, publishPromise)
+  )
+}
+
+function finishPublishAndScheduleHeartbeat(session: RegistrySession, publishPromise: Promise<void>): void {
+  if (session.publishPromise === publishPromise) session.publishPromise = undefined
+  if (!isCurrentPublishingSession(session) || session.heartbeatTimer) return
+  session.heartbeatTimer = setTimeout(() => {
+    session.heartbeatTimer = undefined
+    publishAndScheduleHeartbeat(session)
+  }, heartbeatIntervalMs)
+  session.heartbeatTimer.unref()
+}
+
+async function publishCurrentGateway(session: RegistrySession): Promise<void> {
+  if (!isCurrentPublishingSession(session)) return
   const redisUrl = runtimeConfig.redis.stateUrl
   if (!redisUrl) return
-  publishInFlight = true
+  const entry = signedRegistryEntry({
+    version: entryVersion,
+    instanceId: runtimeConfig.instanceId,
+    origin: `http://127.0.0.1:${runtimeConfig.port}`,
+    bootId: session.bootId
+  })
   try {
-    const entry = signedRegistryEntry({
-      version: entryVersion,
-      instanceId: runtimeConfig.instanceId,
-      origin: `http://127.0.0.1:${runtimeConfig.port}`,
-      bootId: currentBootId
+    await registryRedisOperationRunner(redisUrl, {
+      operationName: '内部 Gateway 注册表写入',
+      timeoutMs: commandTimeoutMs
+    }, async (client) => {
+      if (!isCurrentPublishingSession(session)) return undefined
+      return await client.eval(publishScript, {
+        keys: [internalGatewayRegistryEntryKey(entry.instanceId), indexKey],
+        arguments: [JSON.stringify(entry), String(entryTtlSeconds), String(entryLimit), String(entryTtlSeconds * 3)]
+      })
     })
-    const client = await withTimeout(getRedisClient(redisUrl), commandTimeoutMs, '内部 Gateway 注册表连接超时')
-    await withTimeout(client.eval(publishScript, {
-      keys: [internalGatewayRegistryEntryKey(entry.instanceId), indexKey],
-      arguments: [JSON.stringify(entry), String(entryTtlSeconds), String(entryLimit), String(entryTtlSeconds * 3)]
-    }), commandTimeoutMs, '内部 Gateway 注册表写入超时')
   } catch (error) {
     if (!isRecoverableRedisClientError(error)) {
       logger.warn({ event: 'internal_gateway_registry_publish_failed', err: error }, '内部 Gateway 注册失败')
     }
-  } finally {
-    publishInFlight = false
   }
 }
 
 async function unregisterCurrentGateway(currentBootId: string): Promise<void> {
   const redisUrl = runtimeConfig.redis.stateUrl
   if (!redisUrl) return
-  const client = await withTimeout(getRedisClient(redisUrl), commandTimeoutMs, '内部 Gateway 注册表连接超时')
-  const key = internalGatewayRegistryEntryKey(runtimeConfig.instanceId)
-  const raw = await withTimeout(client.get(key), commandTimeoutMs, '内部 Gateway 注册表读取超时')
-  const entry = parseRegistryEntry(raw)
-  if (entry?.bootId !== currentBootId) return
-  await withTimeout(client.sendCommand(['DEL', key]), commandTimeoutMs, '内部 Gateway 注册表注销超时')
+  try {
+    await registryRedisOperationRunner(redisUrl, {
+      operationName: '内部 Gateway 注册表注销',
+      timeoutMs: commandTimeoutMs
+    }, async (client) => await client.eval(unregisterScript, {
+      keys: [internalGatewayRegistryEntryKey(runtimeConfig.instanceId), indexKey],
+      arguments: [currentBootId]
+    }))
+  } catch (error) {
+    if (!isRecoverableRedisClientError(error)) {
+      logger.warn({ event: 'internal_gateway_registry_unregister_failed', err: error }, '内部 Gateway 注册注销失败')
+    }
+  }
+}
+
+function isCurrentPublishingSession(session: RegistrySession): boolean {
+  return publishRequested
+    && registrySession === session
+    && !session.stopping
+    && internalGatewayRegistryPublisherEnabled()
 }
 
 function parseRegistryEntry(value: unknown): RegistryEntry | undefined {
@@ -191,20 +276,4 @@ function internalGatewayRegistryReaderEnabled(): boolean {
     && runtimeConfig.processRole === 'db-service'
     && runtimeConfig.runtimeStateDriver === 'redis'
     && Boolean(runtimeConfig.redis.stateUrl)
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs)
-        timer.unref()
-      })
-    ])
-  } finally {
-    if (timer) clearTimeout(timer)
-    promise.catch(() => undefined)
-  }
 }

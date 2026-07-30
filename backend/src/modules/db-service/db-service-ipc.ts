@@ -108,6 +108,7 @@ let failedServerRuntimeRequestCount = 0
 let lastSnapshot: DbServiceRuntimeSnapshot | undefined
 let unavailableCircuitOpenUntilMs = 0
 let dbServiceReadyHandler: (() => void) | undefined
+let dbServiceUnavailableHandler: (() => void) | undefined
 
 type DbServiceServerRuntimeResponseSnapshot = DbServiceServerRuntimeSnapshot | DbServiceSystemMetricsRuntimeSnapshot
 
@@ -140,7 +141,7 @@ interface PendingDatasetWriteRequest {
 
 registerGatewayApiKeyValidationServerInvalidator(requestServerGatewayApiKeyCacheInvalidationAsync)
 
-export function attachDbServiceProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
+export function attachDbServiceProcess(child: ChildProcess, options: { onReady?: () => void; onUnavailable?: () => void } = {}): void {
   dbServiceProcess = child
   dbServicePid = child.pid ?? undefined
   dbServiceHttpHost = undefined
@@ -148,16 +149,19 @@ export function attachDbServiceProcess(child: ChildProcess, options: { onReady?:
   dbServiceReady = false
   processEventLoopTimeoutStreak = 0
   dbServiceReadyHandler = options.onReady
+  dbServiceUnavailableHandler = options.onUnavailable
 
   child.removeAllListeners('message')
   child.on('message', handleDbServiceMessage)
   child.once('exit', () => {
     if (dbServiceProcess === child) {
+      const wasReady = dbServiceReady
       dbServiceProcess = undefined
       dbServiceReady = false
       dbServicePid = undefined
       dbServiceHttpHost = undefined
       dbServiceHttpPort = undefined
+      if (wasReady) notifyDbServiceUnavailable()
       failPendingRequests(new Error('本地数据库服务已退出'))
     }
   })
@@ -840,8 +844,10 @@ function finishProcessEventLoopRequest(requestId: string, sample: ProcessEventLo
 
 function markDbServiceIpcBroken(error: unknown, child = dbServiceProcess): void {
   if (child && dbServiceProcess === child) {
+    const wasReady = dbServiceReady
     dbServiceReady = false
     dbServicePid = child.pid ?? dbServicePid
+    if (wasReady) notifyDbServiceUnavailable()
   }
   failPendingRequests(error instanceof Error ? error : new Error(String(error)))
   if (child && !child.killed) {
@@ -853,6 +859,16 @@ function markDbServiceIpcBroken(error: unknown, child = dbServiceProcess): void 
         pid: child.pid
       }), '终止 IPC 异常 DB service 失败')
     }
+  }
+}
+
+function notifyDbServiceUnavailable(): void {
+  try {
+    dbServiceUnavailableHandler?.()
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'db_service_ipc_unavailable_callback_failed'
+    }), 'DB service IPC unavailable 回调执行失败')
   }
 }
 

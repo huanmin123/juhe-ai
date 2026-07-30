@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc --noEmit",
+    "test:help-content": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/help-content-regression.ts",
     "lint": "vue-tsc --noEmit",
     "test:dynamic-data-cache-boundary": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/dynamic-data-cache-boundary-regression.ts",
     "test:user-reference-data": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/user-reference-data-cache-regression.ts",

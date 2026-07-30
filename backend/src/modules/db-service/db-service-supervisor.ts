@@ -31,6 +31,7 @@ let stopping = false
 let shutdownHooksInstalled = false
 let dbServiceReady = false
 const dbServiceReadyCallbacks = new Set<() => void>()
+const dbServiceUnavailableCallbacks = new Set<() => void>()
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -43,6 +44,7 @@ const dbServiceForceKillDelayMs = 10_000
 
 interface DbServiceSupervisorOptions {
   onReady?: () => void
+  onUnavailable?: () => void
 }
 
 export function startDbServiceSupervisor(options: DbServiceSupervisorOptions = {}): void {
@@ -52,6 +54,9 @@ export function startDbServiceSupervisor(options: DbServiceSupervisorOptions = {
 
   if (options.onReady) {
     registerDbServiceReadyCallback(options.onReady)
+  }
+  if (options.onUnavailable) {
+    registerDbServiceUnavailableCallback(options.onUnavailable)
   }
 
   if (dbServiceProcess) {
@@ -65,7 +70,7 @@ export function startDbServiceSupervisor(options: DbServiceSupervisorOptions = {
 
 function startDbServiceProcess(): void {
   const entry = resolveDbServiceEntry()
-  dbServiceReady = false
+  markDbServiceUnavailable()
   const child = fork(entry.modulePath, [], {
     cwd: backendRoot,
     env: {
@@ -83,9 +88,9 @@ function startDbServiceProcess(): void {
   attachDbServiceProcess(child, {
     onReady: () => {
       restartState = recordSupervisorChildReady(restartState, Date.now())
-      dbServiceReady = true
-      notifyDbServiceReadyCallbacks()
-    }
+      markDbServiceReady()
+    },
+    onUnavailable: markDbServiceUnavailable
   })
   pipeDbServiceOutput(child)
 
@@ -109,7 +114,7 @@ function startDbServiceProcess(): void {
     }
     clearDbServiceHealthMonitor()
     dbServiceProcess = undefined
-    dbServiceReady = false
+    markDbServiceUnavailable()
     if (!stopping) {
       restartState = recordSupervisorChildStopped(restartState, Date.now())
       scheduleDbServiceRestart()
@@ -125,7 +130,7 @@ function startDbServiceProcess(): void {
     }
     clearDbServiceHealthMonitor()
     dbServiceProcess = undefined
-    dbServiceReady = false
+    markDbServiceUnavailable()
     if (!stopping) {
       restartState = recordSupervisorChildStopped(restartState, Date.now())
       scheduleDbServiceRestart()
@@ -167,7 +172,10 @@ async function probeDbServiceHealth(child: ChildProcess): Promise<void> {
 
   const result = recordDbServiceHealthProbe(dbServiceHealthRecoveryState, { nowMs: Date.now(), healthy })
   dbServiceHealthRecoveryState = result.state
-  if (healthy) return
+  if (healthy) {
+    markDbServiceReady()
+    return
+  }
 
   const fields = {
     event: 'db_service_health_probe_failed',
@@ -178,11 +186,13 @@ async function probeDbServiceHealth(child: ChildProcess): Promise<void> {
     errorMessage: probeError instanceof Error ? probeError.message : probeError ? String(probeError) : undefined
   }
   if (result.action === 'recover') {
+    markDbServiceUnavailable()
     logger.error(fields, 'DB service health 连续失败，定向终止当前子进程')
     terminateUnhealthyDbServiceChild(child)
     return
   }
   if (result.action === 'suppressed_budget' || result.action === 'suppressed_cooldown') {
+    markDbServiceUnavailable()
     logger.error(fields, 'DB service health 恢复受冷却或预算保护阻断，仅记录告警')
     return
   }
@@ -235,9 +245,27 @@ function registerDbServiceReadyCallback(callback: () => void): void {
   }
 }
 
+function registerDbServiceUnavailableCallback(callback: () => void): void {
+  dbServiceUnavailableCallbacks.add(callback)
+}
+
 function notifyDbServiceReadyCallbacks(): void {
   for (const callback of dbServiceReadyCallbacks) {
     runDbServiceReadyCallback(callback)
+  }
+}
+
+function markDbServiceReady(): void {
+  if (dbServiceReady) return
+  dbServiceReady = true
+  notifyDbServiceReadyCallbacks()
+}
+
+function markDbServiceUnavailable(): void {
+  if (!dbServiceReady) return
+  dbServiceReady = false
+  for (const callback of dbServiceUnavailableCallbacks) {
+    runDbServiceUnavailableCallback(callback)
   }
 }
 
@@ -248,6 +276,16 @@ function runDbServiceReadyCallback(callback: () => void): void {
     logger.error(errorLogFields(error, {
       event: 'db_service_ready_callback_failed'
     }), 'DB service ready 回调执行失败')
+  }
+}
+
+function runDbServiceUnavailableCallback(callback: () => void): void {
+  try {
+    callback()
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'db_service_unavailable_callback_failed'
+    }), 'DB service unavailable 回调执行失败')
   }
 }
 
@@ -298,6 +336,7 @@ function installSupervisorShutdownHooks(): void {
 
 export function stopDbServiceSupervisor(): void {
   stopping = true
+  markDbServiceUnavailable()
   clearDbServiceHealthMonitor()
   if (restartTimer) {
     clearTimeout(restartTimer)

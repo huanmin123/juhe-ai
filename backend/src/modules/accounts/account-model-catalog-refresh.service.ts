@@ -5,14 +5,16 @@ import { findProviderProtocolProfileAsync } from '../../storage/repositories.js'
 import { listProviderModelCatalogAsync, listProviderModelTestCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { discoverAccountUpstreamModels } from './account-test.service.js'
+import {
+  accountApiKeyPoolEntriesForCandidate,
+  fixedAccountApiKeyPoolCandidate
+} from './account-api-key-pool-runtime.js'
 import { openAIDraftAccountSecret } from './account-test-task-queue.service.js'
 
 export interface AccountModelCatalogRefreshResult {
   addedModels: string[]
   recommendedHealthCheckModel?: string
 }
-
-const accountModelCatalogDiscoveryTimeoutMs = 10_000
 
 export async function refreshAccountDraftModelCatalogAsync(input: {
   account: AccountSummary
@@ -21,46 +23,77 @@ export async function refreshAccountDraftModelCatalogAsync(input: {
   const profile = await findProviderProtocolProfileAsync(input.account.providerProtocolProfileId ?? '')
   if (!profile) throw new Error('账户协议档案不存在，无法获取上游模型目录')
 
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), accountModelCatalogDiscoveryTimeoutMs)
-  try {
-    const candidate = await openAIDraftAccountSecret(input.draftAccount, controller.signal)
-    const upstream = await discoverAccountUpstreamModels(input.account, {
-      candidateAccount: candidate,
-      systemAccountId: candidate.systemAccountId,
-      groupId: candidate.boundGroupId,
-      diagnostics: 'full',
-      signal: controller.signal
+  const candidate = await openAIDraftAccountSecret(input.draftAccount, new AbortController().signal)
+  const upstreamModels = await discoverDraftAccountUpstreamModelIds(input.account, candidate)
+  const [localModels, testModels] = await Promise.all([
+    listProviderModelCatalogAsync({
+      providerCode: input.account.providerCode,
+      systemAccountId: input.account.ownerSystemAccountId ?? input.account.systemAccountId,
+      includeUnpriced: true
+    }),
+    listProviderModelTestCatalogAsync({
+      providerCode: input.account.providerCode,
+      systemAccountId: input.account.ownerSystemAccountId ?? input.account.systemAccountId
     })
-    const upstreamModels = new Set(upstream.modelIds)
-    const [localModels, testModels] = await Promise.all([
-      listProviderModelCatalogAsync({
-        providerCode: input.account.providerCode,
-        systemAccountId: input.account.ownerSystemAccountId ?? input.account.systemAccountId,
-        includeUnpriced: true
-      }),
-      listProviderModelTestCatalogAsync({
-        providerCode: input.account.providerCode,
-        systemAccountId: input.account.ownerSystemAccountId ?? input.account.systemAccountId
-      })
-    ])
-    return {
-      addedModels: accountModelCatalogAdditions({
-        supportedModels: input.account.supportedModels ?? [],
-        upstreamModelIds: upstreamModels,
-        localModels,
-        profile
-      }),
-      recommendedHealthCheckModel: recommendedAccountHealthCheckModel({
-        configuredHealthCheckModel: input.account.healthCheckModel,
-        upstreamModelIds: upstreamModels,
-        testModels,
-        profile
-      })
-    }
-  } finally {
-    clearTimeout(timeout)
+  ])
+  return {
+    addedModels: accountModelCatalogAdditions({
+      supportedModels: input.account.supportedModels ?? [],
+      upstreamModelIds: upstreamModels,
+      localModels,
+      profile
+    }),
+    recommendedHealthCheckModel: recommendedAccountHealthCheckModel({
+      configuredHealthCheckModel: input.account.healthCheckModel,
+      upstreamModelIds: upstreamModels,
+      testModels,
+      profile
+    })
   }
+}
+
+async function discoverDraftAccountUpstreamModelIds(
+  account: AccountSummary,
+  candidate: Awaited<ReturnType<typeof openAIDraftAccountSecret>>
+): Promise<Set<string>> {
+  const entries = candidate.type === 'api_key'
+    ? accountApiKeyPoolEntriesForCandidate(candidate)
+    : []
+  if (entries.length < 2) {
+    return await discoverDraftCandidateUpstreamModelIds(account, candidate)
+  }
+
+  const catalogs: Set<string>[] = []
+  for (const entry of entries) {
+    const fixedCandidate = fixedAccountApiKeyPoolCandidate(candidate, entry, { apiKeyRuntimeStateDisabled: true })
+    catalogs.push(await discoverDraftCandidateUpstreamModelIds(account, fixedCandidate))
+  }
+  return intersectAccountUpstreamModelCatalogs(catalogs)
+}
+
+async function discoverDraftCandidateUpstreamModelIds(
+  account: AccountSummary,
+  candidate: Awaited<ReturnType<typeof openAIDraftAccountSecret>>
+): Promise<Set<string>> {
+  const upstream = await discoverAccountUpstreamModels(account, {
+    candidateAccount: candidate,
+    systemAccountId: candidate.systemAccountId,
+    groupId: candidate.boundGroupId,
+    diagnostics: 'full'
+  })
+  return new Set(upstream.modelIds)
+}
+
+export function intersectAccountUpstreamModelCatalogs(catalogs: readonly ReadonlySet<string>[]): Set<string> {
+  const [firstCatalog, ...remainingCatalogs] = catalogs
+  if (!firstCatalog) return new Set()
+  const intersection = new Set(firstCatalog)
+  for (const catalog of remainingCatalogs) {
+    for (const modelId of intersection) {
+      if (!catalog.has(modelId)) intersection.delete(modelId)
+    }
+  }
+  return intersection
 }
 
 export function recommendedAccountHealthCheckModel(input: {

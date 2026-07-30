@@ -85,7 +85,9 @@ export function normalizedAccountApiKeys(form: AccountFormModel): string[] {
   return output
 }
 
-export function accountFormApiKeysChanged(form: AccountFormModel, account?: AccountSummary): boolean {
+type AccountCredentialBaseline = Pick<AccountSummary, 'type' | 'credentials'>
+
+export function accountFormApiKeysChanged(form: AccountFormModel, account?: AccountCredentialBaseline): boolean {
   if (form.type !== 'api_key') return false
   const nextKeys = normalizedAccountApiKeys(form)
   if (!nextKeys.length) return false
@@ -94,7 +96,7 @@ export function accountFormApiKeysChanged(form: AccountFormModel, account?: Acco
   return stableStringListKey(nextKeys) !== stableStringListKey(currentKeys)
 }
 
-export function accountFormApiKeyRuntimeChanged(form: AccountFormModel, account?: AccountSummary): boolean {
+export function accountFormApiKeyRuntimeChanged(form: AccountFormModel, account?: AccountCredentialBaseline): boolean {
   return accountFormApiKeysChanged(form, account) || accountFormBaseUrlChanged(form, account)
 }
 
@@ -121,7 +123,7 @@ function normalizedCredentialApiKeys(credentials: Record<string, unknown> | unde
   return output
 }
 
-function accountFormBaseUrlChanged(form: AccountFormModel, account?: AccountSummary): boolean {
+function accountFormBaseUrlChanged(form: AccountFormModel, account?: AccountCredentialBaseline): boolean {
   if (form.type !== 'api_key') return false
   return normalizeCredentialText(form.baseUrl) !== normalizeCredentialText(account?.credentials?.base_url)
 }

@@ -3,52 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>正在打开使用手册</title>
+  <title>使用手册</title>
   <link rel="stylesheet" href="./help.css">
 </head>
-<body>
-  <main class="page-shell">
-    <section class="manual-hero">
-      <div class="hero-inner">
-        <div class="topbar">
-          <div class="brand-mark">
-            <span class="brand-icon">?</span>
-            <span>juhe-ai 使用手册</span>
-          </div>
-          <div class="hero-actions">
-            <a class="hero-button" href="/__aisys__/">返回控制台</a>
-          </div>
-        </div>
-        <div class="hero-grid">
-          <div>
-            <span class="eyebrow">正在识别登录身份</span>
-            <h1>正在为你打开对应的使用手册</h1>
-            <p class="hero-lead">如果长时间没有跳转，请返回控制台重新登录。</p>
-          </div>
-          <div class="hero-panel">
-            <p class="hero-panel-title">手册入口</p>
-            <div class="mini-flow">
-              <span>普通用户：快速接入与日常配置</span>
-              <span>管理员：系统配置、授权和排障</span>
-              <span>未登录访问：返回登录页</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+<body class="help-gate">
+  <a class="skip-link" href="#status">跳到正文</a>
+  <main id="status" class="gate-content" aria-live="polite">
+    <img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="32" height="32">
+    <h1 data-brand-name>juhe-ai 使用手册</h1>
+    <p>正在根据当前登录身份打开对应手册。</p>
+    <p><a href="/__aisys__/">返回控制台</a></p>
   </main>
+  <script src="./help.js"></script>
   <script>
     fetch('/__aisys__/api/auth/me', { credentials: 'include' })
       .then(function (response) {
-        if (!response.ok) {
-          window.location.assign('/__aisys__/login?redirect=' + encodeURIComponent('/__aisys__/help/'));
-          return null;
-        }
+        if (!response.ok) throw new Error('未登录');
         return response.json();
       })
       .then(function (payload) {
-        if (!payload || !payload.data) return;
-        var role = payload.data.role;
+        var role = payload && payload.data && payload.data.role;
         window.location.assign(role === 'admin' || role === 'super_admin' ? '/__aisys__/help/admin/' : '/__aisys__/help/user/');
       })
       .catch(function () {

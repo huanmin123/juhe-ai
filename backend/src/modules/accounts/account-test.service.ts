@@ -70,7 +70,7 @@ import {
   accountDiagnosticAttemptProgress,
   accountDiagnosticRetryTimeouts,
   diagnosticAccountTestGatewaySettingsOverride,
-  diagnosticAttemptSignal,
+  diagnosticAttemptSignals,
   isDiagnosticTimeoutSignal
 } from './account-diagnostic-retry-policy.js'
 import {
@@ -241,7 +241,7 @@ async function runAccountDiagnosticAttempts(
   for (let attemptIndex = 0; attemptIndex < options.timeoutSchedule.length; attemptIndex += 1) {
     const timeoutMs = options.timeoutSchedule[attemptIndex] ?? options.timeoutSchedule[options.timeoutSchedule.length - 1]
     notifyDiagnosticAttemptProgress(input.onDiagnosticAttemptProgress, attemptIndex, timeoutMs, options.startedAt, options.timeoutSchedule)
-    const signal = diagnosticAttemptSignal(input.signal, timeoutMs)
+    const { signal, timeoutSignal } = diagnosticAttemptSignals(input.signal, timeoutMs)
     let upstreamAttempt: UpstreamAttempt | undefined
     const result = await testOpenAIAccount(account, {
       ...input,
@@ -255,7 +255,7 @@ async function runAccountDiagnosticAttempts(
       },
       gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
     })
-    const timedOutAfterRealUpstreamAttempt = isDiagnosticTimeoutSignal(signal)
+    const timedOutAfterRealUpstreamAttempt = timeoutSignal.aborted && input.signal?.aborted !== true
       && Boolean(upstreamAttempt && isRealUpstreamAttempt(upstreamAttempt))
     everyAttemptTimedOutAfterRealUpstreamAttempt &&= timedOutAfterRealUpstreamAttempt
     const diagnosticTimeoutExhausted = attemptIndex + 1 === options.timeoutSchedule.length
@@ -267,7 +267,7 @@ async function runAccountDiagnosticAttempts(
       attemptIndex,
       totalAttempts: options.timeoutSchedule.length,
       upstreamAttempt,
-      canceled: signal.aborted && !isDiagnosticTimeoutSignal(signal),
+      canceled: input.signal?.aborted === true,
       diagnosticTimeoutExhausted
     })
     lastResult = result

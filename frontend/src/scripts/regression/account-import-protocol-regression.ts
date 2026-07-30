@@ -39,6 +39,12 @@ interface ImportTemplateDocument {
   accounts?: ImportTemplateAccount[]
 }
 
+interface ProtocolSemanticRequirement {
+  name: string
+  exportedPattern: RegExp
+  formalPattern: RegExp
+}
+
 type DynamicImport = (specifier: string) => Promise<unknown>
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as DynamicImport
@@ -50,6 +56,38 @@ const nodePath = await dynamicImport('node:path') as {
 const nodeUrl = await dynamicImport('node:url') as { fileURLToPath: (url: string) => string }
 const repoRoot = nodePath.resolve(nodePath.dirname(nodeUrl.fileURLToPath(import.meta.url)), '../../../..')
 const formalProtocolMarkdown = nodeFs.readFileSync(nodePath.resolve(repoRoot, 'docs/functions/AI账户导入协议.md'), 'utf8')
+const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
+  {
+    name: '账户级健康检查模型与请求形态',
+    exportedPattern: /`healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时 GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_json`、Anthropic 默认 `messages_json`、Gemini Native 默认 `generate_content_json`/,
+    formalPattern: /\| `healthCheckEndpointMode` \| 否 \| 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`。省略时 GPT 官方默认 `responses_sse`，OpenAI-compatible 默认 `chat_json`，Anthropic 默认 `messages_json`，Gemini Native 默认 `generate_content_json`。 \|/
+  },
+  {
+    name: 'xAI / Grok OAuth 约束',
+    exportedPattern: /`providerCode = xai` 必须使用 `profile_xai_openai_v1`，可选 `api_key` 或 `oauth`。API Key 必须有 `credentials\.api_key`，通常使用 `https:\/\/api\.x\.ai\/v1`；Grok OAuth 必须有 `credentials\.access_token`，通常使用 `https:\/\/cli-chat-proxy\.grok\.com\/v1`，`supported_endpoint_modes` 只能是 `responses_json`、`responses_sse`。导入 JSON 不接受 SSO、`sso`、`sso-rw` 或 Cookie 字段/,
+    formalPattern: /`providerCode = xai` 允许 `type = api_key\|oauth`，并必须使用 `profile_xai_openai_v1`。API Key 必须有 `credentials\.api_key`，默认地址 `https:\/\/api\.x\.ai\/v1`；OAuth 必须有 `credentials\.access_token`，可选 Refresh \/ ID Token 和公开 claims，默认地址 `https:\/\/cli-chat-proxy\.grok\.com\/v1`，endpoint modes 只能是 `responses_json\/responses_sse`。SSO Cookie 不属于通用导入凭据，必须通过 Grok 专属 `\/sso-to-oauth` 接口转换，导入 JSON 不接受 `sso`、`sso-rw` 或 Cookie 字段/
+  },
+  {
+    name: 'Gemini Google OAuth 模式与 GenerateContent 约束',
+    exportedPattern: /Gemini `google_oauth` 必须使用 `profile_gemini_native_v1beta` 并显式填写 `oauth_type`。`ai_studio` 使用 `https:\/\/generativelanguage\.googleapis\.com`；`code_assist`、`google_one` 必须有 `project_id`，使用 `https:\/\/cloudcode-pa\.googleapis\.com`，并且只能启用 `generate_content_json`、`generate_content_sse`，不能借 endpoint modes 放开 Interactions、Count Tokens 或 Embedding/,
+    formalPattern: /`oauth_type = code_assist\|google_one` 时 `credentials\.base_url` 使用 `https:\/\/cloudcode-pa\.googleapis\.com`、必须有 `project_id`，endpoint modes 只能是 `generate_content_json\/generate_content_sse`；`code_assist` 默认 `tier_id=gcp_standard`，`google_one` 默认 `tier_id=google_one_free`。`oauth_type = ai_studio` 时使用 `https:\/\/generativelanguage\.googleapis\.com`、自定义 Google OAuth client 和 native 档案 endpoint modes，默认 `tier_id=aistudio_free`/
+  },
+  {
+    name: '服务等级与思考级别覆盖边界',
+    exportedPattern: /文本模型账户可选填写字符串 `service_tier_override`、`reasoning_effort_override`；空值表示不覆盖客户端请求。保存值必须是账户已选模型在当前供应商目录声明的能力。模型映射和协议桥接确定最终实际上游模型后，只有该模型精确支持配置值时才覆盖对应请求字段；不支持或能力未知时保留客户端原值/,
+    formalPattern: /`service_tier_override` 与 `reasoning_effort_override` 在模型映射和协议桥接确定实际上游模型后逐字段判断；最终模型精确支持配置值时覆盖对应请求体字段，不支持或能力未知时保留客户端原值，不降级、不报账户覆盖错误/
+  },
+  {
+    name: '模型映射与跨协议边界',
+    exportedPattern: /普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据/,
+    formalPattern: /普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据/
+  },
+  {
+    name: '混合供应商模型映射目标协议',
+    exportedPattern: /混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝/,
+    formalPattern: /混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝/
+  }
+]
 
 const template = JSON.parse(importTemplate) as ImportTemplateDocument
 
@@ -160,13 +198,13 @@ assertFalse(/接口能力限制/.test(accountImportProtocolMarkdown), '协议 Ma
 assertMatch(accountImportProtocolMarkdown, /不接受 `credentials\.anthropic_version` 或 `credentials\.anthropic_beta`/, '协议 Markdown 应明确 Anthropic header 不属于账号凭据')
 assertMatch(accountImportProtocolMarkdown, /`proxyRef` 和 `proxyProfileId` 不能同时填写/, '协议 Markdown 应继续说明代理字段互斥')
 assertMatch(formalProtocolMarkdown, /# AI 账户导入协议/, '正式协议文档应可读取')
-assertMatch(formalProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '正式协议文档应说明 modelMappings 只做账号模型别名')
-assertMatch(formalProtocolMarkdown, /混合供应商账户的 `modelMappings` 用于声明跨协议入口/, '正式协议文档应说明混合供应商账户使用 modelMappings 声明跨协议入口')
-assertMatch(formalProtocolMarkdown, /其他跨协议方向不要写入普通账户导入数据/, '正式协议文档应说明跨协议方向不写入普通账户导入数据')
-assertMatch(formalProtocolMarkdown, /OpenAI Responses 可映射到 Responses 或 Chat Completions/, '正式协议文档应说明普通 OpenAI v1 账户可声明 Responses 到 Chat 映射')
-assertMatch(formalProtocolMarkdown, /左侧 `sourceModel` 是下游 Responses 别名，可选择当前供应商目录内的 Chat-only 模型/, '正式协议文档应说明 OpenAI v1 Responses 到 Chat 映射可用 Chat-only 模型作为下游别名')
 
-console.log('账户导入协议回归通过：模板 JSON、AI 提示词和协议 Markdown 保持一致')
+for (const requirement of protocolSemanticRequirements) {
+  assertMatch(accountImportProtocolMarkdown, requirement.exportedPattern, `导出协议 Markdown 应完整覆盖${requirement.name}`)
+  assertMatch(formalProtocolMarkdown, requirement.formalPattern, `正式协议文档应完整覆盖${requirement.name}`)
+}
+
+console.log('账户导入协议回归通过：模板 JSON、AI 提示词与两份协议的关键语义矩阵保持一致')
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {

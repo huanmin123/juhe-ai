@@ -44,13 +44,13 @@ assert.match(
 
 assert.match(
   statsViewSource,
-  /const viewScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*loadUsageStatsWindow\(\{ viewScope \}\)/,
-  'stats overview loads must use the scoped cached stats window'
+  /const viewScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*loadUsageStatsWindow\(\{ force: options\.forceUsageWindow === true, viewScope \}\)/,
+  'stats overview dynamic ranges must force-refresh the scoped stats window when requested'
 )
 
 assert.match(
   statsViewSource,
-  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\{\s*viewScope:\s*isManagementView\.value \? 'admin' : 'self'\s*\}\)[\s\S]*quickRangeDateRange/,
+  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\{ force: true, viewScope: isManagementView\.value \? 'admin' : 'self' \}\)[\s\S]*rangeMode\.value = mode/,
   'stats overview quick ranges must resolve the shared window before calculating today'
 )
 
@@ -67,8 +67,8 @@ for (const [name, source] of [
 
 assert.match(
   systemMetricsViewSource,
-  /void\s+loadUsageStatsWindow\(\{\s*viewScope:\s*'admin'\s*\}\)[\s\S]*return\s+loadData\(\)/,
-  'system metrics must start the scoped cached-window request without blocking its trend request'
+  /async\s+function\s+loadPageData\(options: \{ forceUsageWindow\?: boolean \} = \{\}\)[\s\S]*loadUsageStatsWindow\(\{ force: options\.forceUsageWindow === true, viewScope: 'admin' \}\)[\s\S]*return\s+loadData\(\)/,
+  'system metrics must resolve the scoped stats window before recalculating a dynamic range'
 )
 
 assert.match(
@@ -147,3 +147,22 @@ assert.match(usageStatsWindowSource, /lastLoadFailed:\s*boolean/, 'usage-window 
 assert.match(usageStatsWindowSource, /scopeState\.value = undefined[\s\S]*scopeState\.lastLoadFailed = true/, 'failed usage-window requests must not be cached as successful fallback windows')
 assert.doesNotMatch(aiPerformanceViewSource, /didUsageStatsWindowLoadFail\(windowScope\)/, 'AI performance base must remain usable when optional usage-window metadata fails')
 assert.match(ipStatsViewSource, /didUsageStatsWindowLoadFail\('admin'\)/, 'IP stats must stop before using a failed server window')
+
+for (const [name, source, version] of [
+  ['stats overview', statsViewSource, 6],
+  ['system metrics', systemMetricsViewSource, 3]
+] as const) {
+  assert.match(source, /type\s+RangeMode\s*=\s*'auto'\s*\|\s*QuickRange\s*\|\s*'custom'/, `${name} must persist the range semantic`)
+  assert.match(source, /rangeMode\?:\s*RangeMode/, `${name} page-state cache must include range mode`)
+  assert.match(source, new RegExp(`usePageStateCache<[\\s\\S]*version: ${version}`), `${name} must bump its cache version`)
+  assert.match(source, /return state\.range \? 'custom' : 'auto'/, `${name} must treat old fixed ranges as custom`)
+  assert.match(source, /rangeMode: 'custom'/, `${name} must migrate versioned legacy fixed ranges as custom`)
+  assert.match(source, /rangeMode\.value = 'custom'[\s\S]*dateRangeExplicit\.value = true/, `${name} manual date selection must become custom`)
+  assert.match(source, /rangeMode\.value = 'auto'[\s\S]*dateRangeExplicit\.value = false/, `${name} reset must restore auto mode`)
+  assert.match(source, /async\s+function\s+handleQuickRangeChange\(value: string \| number\)[\s\S]*loadUsageStatsWindow\(\{ force: true, viewScope:/, `${name} quick selection must refresh the server window`)
+  assert.match(source, /document\.addEventListener\('visibilitychange', handleDynamicRangeVisibilityChange\)/, `${name} must refresh dynamic ranges when returning to a visible tab`)
+  assert.match(source, /window\.addEventListener\('focus', refreshDynamicRangeAfterRollover\)/, `${name} must refresh dynamic ranges on window focus`)
+  assert.match(source, /millisecondsUntilNextStatsDay[\s\S]*dynamicRangeRolloverTimer = window\.setTimeout/, `${name} must schedule the next server-timezone day boundary`)
+  assert.match(source, /forceUsageWindow: true/, `${name} dynamic lifecycle must force-refresh the server usage window`)
+  assert.match(source, /if \(!isQuickRangeMode\(rangeMode\.value\)\) return undefined[\s\S]*return startDate === formatDateKey\(range\[0\]\) && endDate === formatDateKey\(range\[1\]\) \? rangeMode\.value : undefined/, `${name} quick selection must require both mode and the current server window`)
+}

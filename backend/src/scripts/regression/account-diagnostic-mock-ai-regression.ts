@@ -152,6 +152,23 @@ try {
   assert.equal(hitCount('catalog-timeout:models'), 3, '模型目录预检必须完整执行 10/20/30 三档探测')
   assert.equal(hitCount('catalog-timeout'), 0, '模型目录预检失败后不得继续发起真实模型测试')
 
+  const parentTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'parent-timeout', access)
+  let parentTimeoutCanceled = false
+  let parentTimeoutExhausted = false
+  const parentTimeoutResult = await testOpenAIAccountWithDiagnosticRetries(parentTimeoutAccount, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse',
+    signal: originalAbortSignalTimeout(5),
+    onDiagnosticAttemptResult: (attempt) => {
+      parentTimeoutCanceled ||= attempt.canceled
+      parentTimeoutExhausted ||= attempt.diagnosticTimeoutExhausted
+    }
+  })
+  assert.equal(parentTimeoutResult.success, false, '父级超时必须中止诊断')
+  assert.equal(parentTimeoutCanceled, true, '父级超时必须标记为取消，而不是当前诊断档位超时')
+  assert.equal(parentTimeoutExhausted, false, '父级超时不得伪造完整诊断阶梯超时证据')
+  assert.ok(hitCount('parent-timeout:models') <= 1, '父级超时后不得继续后续诊断阶梯')
+
   requiredRuntimeAccount(group.id, catalogTimeoutAccount.id, admin.id)
   const activeCatalogTimeoutAccount = repositories.findAccountSummary(catalogTimeoutAccount.id, access)
   assert(activeCatalogTimeoutAccount, '模型目录超时账户激活后必须可读取')
@@ -367,7 +384,7 @@ function createMockAIUpstream(): http.Server {
     const key = upstreamKey(req.headers.authorization)
     if (req.method === 'GET' && url.pathname === '/v1/models') {
       incrementHit(`${key}:models`)
-      if (key === 'catalog-timeout') {
+      if (key === 'catalog-timeout' || key === 'parent-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
             res.writeHead(200, { 'content-type': 'application/json' })

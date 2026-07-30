@@ -138,6 +138,7 @@ import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './stats
 
 const MAX_RANGE_DAYS = 31
 type QuickRange = 'today' | 'recent7d' | 'recent1m'
+type RangeMode = 'auto' | QuickRange | 'custom'
 const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
   { label: '今天', value: 'today' },
   { label: '近7天', value: 'recent7d' },
@@ -148,28 +149,68 @@ const StatsBackgroundQueuesCard = defineAsyncComponent(() => import('./StatsBack
 const StatsProcessEventLoopTable = defineAsyncComponent(() => import('./StatsProcessEventLoopTable.vue'))
 
 type SystemMetricsPageState = {
+  rangeMode?: RangeMode
   range?: {
     startDate: string
     endDate: string
   }
 }
 
+function isRangeMode(value: unknown): value is RangeMode {
+  return value === 'auto' || value === 'today' || value === 'recent7d' || value === 'recent1m' || value === 'custom'
+}
+
+function initialRangeMode(state: SystemMetricsPageState): RangeMode {
+  if (isRangeMode(state.rangeMode)) return state.rangeMode
+  // 旧缓存只保存了一组固定日期，不能可靠推断其原本是否来自快捷项。
+  return state.range ? 'custom' : 'auto'
+}
+
+function isDynamicRangeMode(value: RangeMode): value is Exclude<RangeMode, 'custom'> {
+  return value !== 'custom'
+}
+
+function isQuickRangeMode(value: RangeMode): value is QuickRange {
+  return value === 'today' || value === 'recent7d' || value === 'recent1m'
+}
+
+function readLegacySystemMetricsPageState(): Pick<SystemMetricsPageState, 'range'> | undefined {
+  if (typeof window === 'undefined') return undefined
+  const user = authState.currentUser.value
+  const userKey = user?.id || user?.username || 'anonymous'
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(`juhe-ai:page-state:${userKey}:system-metrics-stats:v2`) || '{}') as {
+      version?: unknown
+      state?: Partial<SystemMetricsPageState>
+    }
+    const range = cached.state?.range
+    return cached.version === 2 && range?.startDate && range.endDate ? { range } : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const defaultDateRange = todayDateRange
 const defaultSystemMetricsPageState = (): SystemMetricsPageState => ({})
-const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics-stats', defaultSystemMetricsPageState, { version: 2 })
-const initialPageState = pageStateCache.read()
+const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics-stats', defaultSystemMetricsPageState, { version: 3 })
+const cachedInitialPageState = pageStateCache.read()
+const legacyInitialPageState = isRangeMode(cachedInitialPageState.rangeMode) ? undefined : readLegacySystemMetricsPageState()
+const initialPageState: SystemMetricsPageState = legacyInitialPageState
+  ? { ...cachedInitialPageState, ...legacyInitialPageState, rangeMode: 'custom' }
+  : cachedInitialPageState
 
 const loading = ref(false)
 const backgroundJobsLoading = ref(false)
 const backgroundQueuesLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
-const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
+const rangeMode = ref<RangeMode>(initialRangeMode(initialPageState))
+const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsTrendOverview>()
 const runtimeSummary = ref<SystemMetricsRuntimeSummary>()
 const backgroundJobsResult = ref<SystemMetricsRuntimeJobsResult>()
 const backgroundQueuesResult = ref<SystemMetricsRuntimeQueuesResult>()
-const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
+const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const systemMetricsChartRef = ref<HTMLDivElement>()
 const processEventLoopChartRef = ref<HTMLDivElement>()
@@ -198,6 +239,9 @@ let needsReloadOnActivate = false
 let backgroundJobsObserver: IntersectionObserver | undefined
 let backgroundQueuesObserver: IntersectionObserver | undefined
 let disposed = false
+let dynamicRangeLifecycleActive = false
+let dynamicRangeRolloverTimer: ReturnType<typeof window.setTimeout> | undefined
+let dynamicRangeRefreshPromise: Promise<void> | undefined
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderSystemCharts,
@@ -230,12 +274,16 @@ onMounted(async () => {
   disposed = false
   await nextTick()
   setupRuntimeObservers()
+  activateDynamicRangeLifecycle()
 })
 
 onActivated(async () => {
+  activateDynamicRangeLifecycle()
   if (needsReloadOnActivate) {
     needsReloadOnActivate = false
-    void loadPageData()
+    void loadPageData({ forceUsageWindow: isDynamicRangeMode(rangeMode.value) })
+  } else if (isDynamicRangeMode(rangeMode.value)) {
+    void refreshDynamicRangeAfterRollover()
   }
   await nextTick()
   setupRuntimeObservers()
@@ -252,13 +300,11 @@ const backgroundQueuesInitialLoading = computed(() => backgroundQueuesLoading.va
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const quickRangeValue = computed<QuickRange | undefined>(() => {
+  if (!isQuickRangeMode(rangeMode.value)) return undefined
   const [startDate, endDate] = selectedRange.value
-  const windowEnd = statsWindowEndDate()
-  if (!windowEnd || endDate !== formatDateKey(windowEnd)) return undefined
-  if (startDate === formatDateKey(windowEnd)) return 'today'
-  if (startDate === formatDateKey(windowEnd.subtract(6, 'day'))) return 'recent7d'
-  if (startDate === formatDateKey(windowEnd.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'))) return 'recent1m'
-  return undefined
+  const range = quickRangeDateRange(rangeMode.value)
+  if (!range) return undefined
+  return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? rangeMode.value : undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
@@ -348,10 +394,12 @@ async function loadData() {
   }
 }
 
-function loadPageData() {
-  void loadUsageStatsWindow({ viewScope: 'admin' }).then(() => {
-    if (!dateRangeExplicit.value) syncImplicitDateRangeToStatsWindow()
-  }).catch(() => undefined)
+async function loadPageData(options: { forceUsageWindow?: boolean } = {}) {
+  const windowLoad = loadUsageStatsWindow({ force: options.forceUsageWindow === true, viewScope: 'admin' })
+  if (isDynamicRangeMode(rangeMode.value)) {
+    await windowLoad
+    syncDynamicDateRangeToStatsWindow()
+  }
   if (backgroundJobsSectionLoaded.value) void loadBackgroundJobs()
   if (backgroundQueuesSectionLoaded.value) void loadBackgroundQueues()
   return loadData()
@@ -490,6 +538,7 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  rangeMode.value = 'custom'
   dateRangeExplicit.value = true
   void loadData()
 }
@@ -505,13 +554,15 @@ function handleDateRangeOpenChange(open: boolean) {
 }
 
 async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow({ viewScope: 'admin' })
-  const range = quickRangeDateRange(value as QuickRange)
+  await loadUsageStatsWindow({ force: true, viewScope: 'admin' })
+  const mode = value as QuickRange
+  const range = quickRangeDateRange(mode)
   if (!range) return
   dateRange.value = parseDateRange({
     startDate: formatDateKey(range[0]),
     endDate: formatDateKey(range[1])
   })
+  rangeMode.value = mode
   dateRangeExplicit.value = true
   void loadData()
 }
@@ -519,6 +570,7 @@ async function handleQuickRangeChange(value: string | number) {
 function resetFilters() {
   const defaults = defaultSystemMetricsPageState()
   dateRange.value = parseDateRange(defaults.range)
+  rangeMode.value = 'auto'
   dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   pageStateCache.clear()
@@ -606,6 +658,17 @@ function syncImplicitDateRangeToStatsWindow() {
   dateRange.value = [end, end]
 }
 
+function syncDynamicDateRangeToStatsWindow() {
+  if (rangeMode.value === 'auto') {
+    syncImplicitDateRangeToStatsWindow()
+    return
+  }
+  if (!isQuickRangeMode(rangeMode.value)) return
+  const range = quickRangeDateRange(rangeMode.value)
+  if (!range) return
+  dateRange.value = [range[0].startOf('day'), range[1].startOf('day')]
+}
+
 function disabledDate(current: Dayjs) {
   return isRecentWindowDateDisabled(current, calendarRange.value, usageStatsWindowMaxDays.value, usageStatsWindowEndDate.value)
 }
@@ -622,6 +685,86 @@ function quickRangeDateRange(value: QuickRange): [Dayjs, Dayjs] | undefined {
   return [end.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'), end]
 }
 
+function statsDateKey(value: Date): string | undefined {
+  const timezone = usageStatsWindow.value?.timezone
+  if (!timezone) return undefined
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(value)
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value
+    const year = part('year')
+    const month = part('month')
+    const day = part('day')
+    return year && month && day ? `${year}-${month}-${day}` : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function millisecondsUntilNextStatsDay(now: Date): number | undefined {
+  const currentKey = statsDateKey(now)
+  if (!currentKey) return undefined
+  let low = now.getTime()
+  let high = low + 30 * 60 * 60 * 1000
+  while (high - low > 1000) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (statsDateKey(new Date(middle)) === currentKey) low = middle
+    else high = middle
+  }
+  return Math.max(0, high - now.getTime())
+}
+
+function clearDynamicRangeRolloverTimer(): void {
+  if (dynamicRangeRolloverTimer === undefined) return
+  window.clearTimeout(dynamicRangeRolloverTimer)
+  dynamicRangeRolloverTimer = undefined
+}
+
+function scheduleDynamicRangeRollover(): void {
+  clearDynamicRangeRolloverTimer()
+  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
+  const delay = millisecondsUntilNextStatsDay(new Date())
+  if (delay === undefined) return
+  dynamicRangeRolloverTimer = window.setTimeout(() => {
+    void refreshDynamicRangeAfterRollover()
+  }, delay + 100)
+}
+
+async function refreshDynamicRangeAfterRollover(): Promise<void> {
+  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
+  if (dynamicRangeRefreshPromise) return dynamicRangeRefreshPromise
+  dynamicRangeRefreshPromise = loadPageData({ forceUsageWindow: true }).finally(() => {
+    dynamicRangeRefreshPromise = undefined
+    scheduleDynamicRangeRollover()
+  })
+  return dynamicRangeRefreshPromise
+}
+
+function handleDynamicRangeVisibilityChange(): void {
+  if (document.visibilityState === 'visible') void refreshDynamicRangeAfterRollover()
+}
+
+function activateDynamicRangeLifecycle(): void {
+  if (dynamicRangeLifecycleActive) return
+  dynamicRangeLifecycleActive = true
+  document.addEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
+  window.addEventListener('focus', refreshDynamicRangeAfterRollover)
+  void refreshDynamicRangeAfterRollover()
+}
+
+function deactivateDynamicRangeLifecycle(): void {
+  if (dynamicRangeLifecycleActive) {
+    dynamicRangeLifecycleActive = false
+    document.removeEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
+    window.removeEventListener('focus', refreshDynamicRangeAfterRollover)
+  }
+  clearDynamicRangeRolloverTimer()
+}
+
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
   return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
@@ -633,7 +776,8 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 function snapshotPageState(): SystemMetricsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
-    range: dateRangeExplicit.value ? { startDate, endDate } : undefined
+    rangeMode: rangeMode.value,
+    range: rangeMode.value !== 'auto' ? { startDate, endDate } : undefined
   }
 }
 
@@ -670,6 +814,10 @@ watch(() => authState.revision.value, () => {
     needsReloadOnActivate = true
   }
 })
+watch(rangeMode, scheduleDynamicRangeRollover)
+watch(pageActive, (active) => {
+  if (!active) deactivateDynamicRangeLifecycle()
+})
 watch(() => backgroundJobsResult.value?.total, (total) => {
   const maxPage = Math.max(1, Math.ceil((total ?? 0) / backgroundJobPageSize))
   if (backgroundJobPage.value > maxPage) {
@@ -687,6 +835,7 @@ watch(() => backgroundQueuesResult.value?.total, (total) => {
 
 onBeforeUnmount(() => {
   disposed = true
+  deactivateDynamicRangeLifecycle()
   trendAbortController?.abort()
   runtimeSummaryAbortController?.abort()
   backgroundJobsAbortController?.abort()

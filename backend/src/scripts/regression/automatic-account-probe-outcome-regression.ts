@@ -74,7 +74,8 @@ assert.equal(automaticAccountProbeOutcome({ success: false, accountFailureEligib
   upstreamAttempt: {
     upstreamUrl: 'https://api.openai.com/v1/responses'
   },
-  timeout: true
+  timeout: true,
+  diagnosticTimeoutExhausted: false
 }), 'probe_task_failure', '未耗尽完整诊断阶梯的本地 deadline 不得凭一次已开始请求升级为上游失败')
 
 assert.equal(automaticAccountProbeOutcome({ success: true, accountFailureEligible: false }, {

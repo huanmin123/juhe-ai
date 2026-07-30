@@ -205,10 +205,40 @@ assert.match(
   /requestKey !== currentModelCatalogDiscoveryRequestKey\(\)/,
   '上游模型目录响应返回时必须确认代理、分组和凭据等连接草稿没有变更'
 )
-assert.equal(
-  [...accountsViewSource.matchAll(/\brefreshAccountModelCatalog\b/g)].length,
-  2,
-  '上游模型同步只能由刷新按钮绑定和处理函数声明引用，不得被 watch 自动触发'
+assert.match(
+  accountsViewSource,
+  /function shouldAutoRefreshAccountModelCatalog\(\): boolean[\s\S]*?modalOpen\.value[\s\S]*?form\.type !== 'api_key'[\s\S]*?form\.supportedModels\.some[\s\S]*?if \(!editingId\.value\) return true[\s\S]*?if \(!editingAccountDetail\.value\) return false[\s\S]*?accountFormApiKeyRuntimeChanged/,
+  '首次自动同步必须只在弹窗打开、API Key 连接完整、支持模型为空时触发；编辑账户还必须在详情加载后变更 API Key 或 Base URL'
+)
+assert.match(
+  accountsViewSource,
+  /automaticModelCatalogAttemptedRequestKeys\.has\(requestKey\)[\s\S]*?setTimeout\(\(\) => \{[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)\) return[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?void refreshAccountModelCatalog\(\{ silent: true \}\)[\s\S]*?\}, 700\)/,
+  '每次打开弹窗应对同一完整草稿只在计时器确认仍有效、真正发起请求时记录一次，并使用 700ms 防抖'
+)
+assert.match(
+  accountsViewSource,
+  /async function refreshAccountModelCatalog\(options: \{ silent\?: boolean \} = \{\}\): Promise<void> \{[\s\S]*?if \(!options\.silent\) clearAccountModelCatalogAutoSyncTimer\(\)[\s\S]*?const payload/,
+  '手动同步开始前必须取消尚未触发的自动同步，防止静默请求抢占人工操作和提示'
+)
+assert.match(
+  accountsViewSource,
+  /void refreshAccountModelCatalog\(\{ silent: true \}\)/,
+  '自动同步必须使用静默模式，失败时不得显示提示'
+)
+assert.match(
+  accountsViewSource,
+  /if \(!options\.silent && requestId === modelCatalogSyncRequestId && !controller\.signal\.aborted\)[\s\S]*?message\.error/,
+  '自动同步失败必须静默，手动同步仍应展示错误提示'
+)
+assert.match(
+  accountsViewSource,
+  /if \(!options\.silent\) \{[\s\S]*?message\.success/,
+  '手动同步成功必须保留提示，自动同步不应打扰用户'
+)
+assert.match(
+  accountsViewSource,
+  /clearAccountModelCatalogAutoSyncTimer\(\)[\s\S]*?cancelAccountModelCatalogSync\(\)/,
+  '输入变更、关闭弹窗或卸载时必须清理自动同步延迟任务并取消旧请求'
 )
 assert.match(
   accountsViewSource,

@@ -127,6 +127,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
+import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
@@ -147,6 +148,7 @@ import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger,
 
 const MAX_RANGE_DAYS = 31
 type QuickRange = 'today' | 'recent7d' | 'recent1m'
+type RangeMode = 'auto' | QuickRange | 'custom'
 const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
   { label: '今天', value: 'today' },
   { label: '近7天', value: 'recent7d' },
@@ -154,6 +156,7 @@ const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
 ]
 
 type StatsPageState = {
+  rangeMode?: RangeMode
   range?: {
     startDate: string
     endDate: string
@@ -162,26 +165,72 @@ type StatsPageState = {
   selectedSystemAccount?: PrincipalSelection
 }
 
+function isRangeMode(value: unknown): value is RangeMode {
+  return value === 'auto' || value === 'today' || value === 'recent7d' || value === 'recent1m' || value === 'custom'
+}
+
+function initialRangeMode(state: StatsPageState): RangeMode {
+  if (isRangeMode(state.rangeMode)) return state.rangeMode
+  // 旧缓存只保存了一组固定日期，不能可靠推断其原本是否来自快捷项。
+  return state.range ? 'custom' : 'auto'
+}
+
+function isDynamicRangeMode(value: RangeMode): value is Exclude<RangeMode, 'custom'> {
+  return value !== 'custom'
+}
+
+function isQuickRangeMode(value: RangeMode): value is QuickRange {
+  return value === 'today' || value === 'recent7d' || value === 'recent1m'
+}
+
+function readLegacyStatsPageState(pageKey: string): Pick<StatsPageState, 'range' | 'selectedSystemAccountId' | 'selectedSystemAccount'> | undefined {
+  if (typeof window === 'undefined') return undefined
+  const user = authState.currentUser.value
+  const userKey = user?.id || user?.username || 'anonymous'
+  const normalizedPageKey = pageKey.replace(/[^a-zA-Z0-9/_-]/g, '_')
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(`juhe-ai:page-state:${userKey}:${normalizedPageKey}:v5`) || '{}') as {
+      version?: unknown
+      state?: Partial<StatsPageState>
+    }
+    const range = cached.state?.range
+    if (cached.version !== 5 || !range?.startDate || !range.endDate) return undefined
+    return {
+      range,
+      selectedSystemAccountId: cached.state?.selectedSystemAccountId || allSystemAccountsValue,
+      selectedSystemAccount: cached.state?.selectedSystemAccount
+    }
+  } catch {
+    return undefined
+  }
+}
+
 const defaultDateRange = () => recentDateRange(MAX_RANGE_DAYS)
 const defaultStatsPageState = (): StatsPageState => ({
   selectedSystemAccountId: allSystemAccountsValue,
   selectedSystemAccount: undefined
 })
-const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 5 })
-const initialPageState = pageStateCache.read()
+const route = useRoute()
+const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 6 })
+const cachedInitialPageState = pageStateCache.read()
+const legacyInitialPageState = isRangeMode(cachedInitialPageState.rangeMode) ? undefined : readLegacyStatsPageState(route.path)
+const initialPageState: StatsPageState = legacyInitialPageState
+  ? { ...cachedInitialPageState, ...legacyInitialPageState, rangeMode: 'custom' }
+  : cachedInitialPageState
 
 const loading = ref(false)
 const summaryLoading = ref(false)
 const summaryError = ref('')
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
-const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
+const rangeMode = ref<RangeMode>(initialRangeMode(initialPageState))
+const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
 const usageOverview = ref<UsageStatsOverview>()
 const dailyTrend = ref<UsageStatsOverviewDailyTrendResult>()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
+const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -226,6 +275,9 @@ let chartObserver: IntersectionObserver | undefined
 let reloadOnActivate = false
 let wasDeactivated = false
 let disposed = false
+let dynamicRangeLifecycleActive = false
+let dynamicRangeRolloverTimer: ReturnType<typeof window.setTimeout> | undefined
+let dynamicRangeRefreshPromise: Promise<void> | undefined
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
@@ -242,13 +294,11 @@ const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const quickRangeValue = computed<QuickRange | undefined>(() => {
+  if (!isQuickRangeMode(rangeMode.value)) return undefined
   const [startDate, endDate] = selectedRange.value
-  const windowEnd = statsWindowEndDate()
-  if (!windowEnd || endDate !== formatDateKey(windowEnd)) return undefined
-  if (startDate === formatDateKey(windowEnd)) return 'today'
-  if (startDate === formatDateKey(windowEnd.subtract(6, 'day'))) return 'recent7d'
-  if (startDate === formatDateKey(windowEnd.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'))) return 'recent1m'
-  return undefined
+  const range = quickRangeDateRange(rangeMode.value)
+  if (!range) return undefined
+  return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? rangeMode.value : undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const dailyTrendRangeLabel = computed(() => dailyTrend.value
@@ -283,7 +333,7 @@ function formatOptionalCost(value?: number) {
   return typeof value === 'number' && Number.isFinite(value) ? formatCost(value) : '-'
 }
 
-async function loadData(options: { force?: boolean } = {}) {
+async function loadData(options: { force?: boolean; forceUsageWindow?: boolean } = {}) {
   const requestSeq = ++statsRequestSeq
   resetDailyTrend()
   chartRequestSeq.hourlyTrend += 1
@@ -304,8 +354,15 @@ async function loadData(options: { force?: boolean } = {}) {
   chartSectionResolved.errors = false
   try {
     const viewScope = isManagementView.value ? 'admin' : 'self'
-    const windowLoad = loadUsageStatsWindow({ viewScope })
-    if (dateRangeExplicit.value) {
+    const windowLoad = loadUsageStatsWindow({ force: options.forceUsageWindow === true, viewScope })
+    if (isDynamicRangeMode(rangeMode.value)) {
+      await windowLoad
+      if (requestSeq !== statsRequestSeq) return
+      if (didUsageStatsWindowLoadFail(viewScope)) {
+        throw new Error('统计日期窗口加载失败')
+      }
+      syncDynamicDateRangeToStatsWindow()
+    } else if (dateRangeExplicit.value) {
       void windowLoad.catch(() => undefined)
     } else {
       await windowLoad
@@ -454,6 +511,7 @@ onMounted(async () => {
   disposed = false
   await nextTick()
   setupChartObservers()
+  activateDynamicRangeLifecycle()
 })
 
 function setupChartObservers(): void {
@@ -531,6 +589,7 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  rangeMode.value = 'custom'
   dateRangeExplicit.value = true
   void loadData()
 }
@@ -555,6 +614,7 @@ function handleSystemAccountChange() {
 function resetFilters() {
   const defaults = defaultStatsPageState()
   dateRange.value = parseDateRange(defaults.range)
+  rangeMode.value = 'auto'
   dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   selectedSystemAccountId.value = defaults.selectedSystemAccountId
@@ -636,7 +696,8 @@ function resetDailyTrend(): void {
 function snapshotPageState(): StatsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
-    range: dateRangeExplicit.value ? { startDate, endDate } : undefined,
+    rangeMode: rangeMode.value,
+    range: rangeMode.value !== 'auto' ? { startDate, endDate } : undefined,
     selectedSystemAccountId: selectedSystemAccountId.value,
     selectedSystemAccount: selectedSystemAccount.value
   }
@@ -654,13 +715,15 @@ function resolvedOverviewRangeParams(): { startDate?: string; endDate?: string }
 }
 
 async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow({ viewScope: isManagementView.value ? 'admin' : 'self' })
-  const range = quickRangeDateRange(value as QuickRange)
+  await loadUsageStatsWindow({ force: true, viewScope: isManagementView.value ? 'admin' : 'self' })
+  const mode = value as QuickRange
+  const range = quickRangeDateRange(mode)
   if (!range) return
   dateRange.value = parseDateRange({
     startDate: formatDateKey(range[0]),
     endDate: formatDateKey(range[1])
   })
+  rangeMode.value = mode
   dateRangeExplicit.value = true
   void loadData()
 }
@@ -681,6 +744,93 @@ function quickRangeDateRange(value: QuickRange): [Dayjs, Dayjs] | undefined {
   return [end.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'), end]
 }
 
+function syncDynamicDateRangeToStatsWindow(): void {
+  if (!isQuickRangeMode(rangeMode.value)) return
+  const range = quickRangeDateRange(rangeMode.value)
+  if (!range) return
+  dateRange.value = [range[0].startOf('day'), range[1].startOf('day')]
+}
+
+function statsDateKey(value: Date): string | undefined {
+  const timezone = usageStatsWindow.value?.timezone
+  if (!timezone) return undefined
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(value)
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value
+    const year = part('year')
+    const month = part('month')
+    const day = part('day')
+    return year && month && day ? `${year}-${month}-${day}` : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function millisecondsUntilNextStatsDay(now: Date): number | undefined {
+  const currentKey = statsDateKey(now)
+  if (!currentKey) return undefined
+  let low = now.getTime()
+  let high = low + 30 * 60 * 60 * 1000
+  while (high - low > 1000) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (statsDateKey(new Date(middle)) === currentKey) low = middle
+    else high = middle
+  }
+  return Math.max(0, high - now.getTime())
+}
+
+function clearDynamicRangeRolloverTimer(): void {
+  if (dynamicRangeRolloverTimer === undefined) return
+  window.clearTimeout(dynamicRangeRolloverTimer)
+  dynamicRangeRolloverTimer = undefined
+}
+
+function scheduleDynamicRangeRollover(): void {
+  clearDynamicRangeRolloverTimer()
+  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
+  const delay = millisecondsUntilNextStatsDay(new Date())
+  if (delay === undefined) return
+  dynamicRangeRolloverTimer = window.setTimeout(() => {
+    void refreshDynamicRangeAfterRollover()
+  }, delay + 100)
+}
+
+async function refreshDynamicRangeAfterRollover(): Promise<void> {
+  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
+  if (dynamicRangeRefreshPromise) return dynamicRangeRefreshPromise
+  dynamicRangeRefreshPromise = loadData({ forceUsageWindow: true }).finally(() => {
+    dynamicRangeRefreshPromise = undefined
+    scheduleDynamicRangeRollover()
+  })
+  return dynamicRangeRefreshPromise
+}
+
+function handleDynamicRangeVisibilityChange(): void {
+  if (document.visibilityState === 'visible') void refreshDynamicRangeAfterRollover()
+}
+
+function activateDynamicRangeLifecycle(): void {
+  if (dynamicRangeLifecycleActive) return
+  dynamicRangeLifecycleActive = true
+  document.addEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
+  window.addEventListener('focus', refreshDynamicRangeAfterRollover)
+  void refreshDynamicRangeAfterRollover()
+}
+
+function deactivateDynamicRangeLifecycle(): void {
+  if (dynamicRangeLifecycleActive) {
+    dynamicRangeLifecycleActive = false
+    document.removeEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
+    window.removeEventListener('focus', refreshDynamicRangeAfterRollover)
+  }
+  clearDynamicRangeRolloverTimer()
+}
+
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
   return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
@@ -698,16 +848,22 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(rangeMode, scheduleDynamicRangeRollover)
 watch(() => authState.revision.value, () => {
   if (pageActive.value) void loadData()
   else reloadOnActivate = true
 })
 watch(pageActive, async (active) => {
-  if (!active || !wasDeactivated) return
+  if (!active) {
+    deactivateDynamicRangeLifecycle()
+    return
+  }
+  activateDynamicRangeLifecycle()
+  if (!wasDeactivated) return
   wasDeactivated = false
   if (reloadOnActivate) {
     reloadOnActivate = false
-    await loadData()
+    await loadData({ forceUsageWindow: isDynamicRangeMode(rangeMode.value) })
   }
   await nextTick()
   setupChartObservers()
@@ -715,6 +871,7 @@ watch(pageActive, async (active) => {
 
 onBeforeUnmount(() => {
   disposed = true
+  deactivateDynamicRangeLifecycle()
   invalidateStatsRequests()
   chartObserver?.disconnect()
   chartObserver = undefined

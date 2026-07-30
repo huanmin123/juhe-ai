@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   accountModelCatalogAdditions,
+  intersectAccountUpstreamModelCatalogs,
   recommendedAccountHealthCheckModel
 } from '../../modules/accounts/account-model-catalog-refresh.service.js'
 
@@ -30,6 +31,24 @@ assert.deepEqual(accountModelCatalogAdditions({
   profile
 }), [], '上游目录缺少人工选择时不得返回删除项或覆盖当前选择')
 
+assert.deepEqual(
+  [...intersectAccountUpstreamModelCatalogs([
+    new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'shared-model']),
+    new Set(['gpt-5.6-terra', 'shared-model', 'key-two-only']),
+    new Set(['gpt-5.6-terra', 'shared-model', 'key-three-only'])
+  ])],
+  ['gpt-5.6-terra', 'shared-model'],
+  '多 API Key 的模型目录只能保留每把 Key 都可见的模型'
+)
+assert.deepEqual(
+  [...intersectAccountUpstreamModelCatalogs([
+    new Set(['gpt-5.6-sol']),
+    new Set<string>()
+  ])],
+  [],
+  '任一 API Key 返回空目录时，多 Key 模型交集必须为空'
+)
+
 const healthCheckCandidates = [
   { model: 'gpt-5.6-sol', supportedApiProtocols: ['chat_completions'] },
   { model: 'gpt-5.6-terra', supportedApiProtocols: ['chat_completions'] },
@@ -49,4 +68,4 @@ assert.equal(recommendedAccountHealthCheckModel({
   profile
 }), 'gpt-5.6-sol', '当前检查模型仍在上游目录时必须保留用户选择')
 
-console.log('账户上游模型目录增量同步回归通过：仅追加交集模型，保留用户手动选择并按目录顺序回退检查模型')
+console.log('账户上游模型目录增量同步回归通过：多 Key 仅取全量成功目录交集，保留用户手动选择并按目录顺序回退检查模型')

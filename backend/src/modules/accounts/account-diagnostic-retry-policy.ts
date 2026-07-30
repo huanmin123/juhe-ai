@@ -21,6 +21,11 @@ export interface AccountDiagnosticAttemptProgress {
 
 export type AccountDiagnosticAttemptProgressHandler = (progress: AccountDiagnosticAttemptProgress) => void
 
+export interface AccountDiagnosticAttemptSignal {
+  signal: AbortSignal
+  timeoutSignal: AbortSignal
+}
+
 export function diagnosticAccountTestGatewaySettingsOverride(
   override: Partial<GatewaySettings> | undefined,
   timeoutMs: number
@@ -38,14 +43,18 @@ export function diagnosticAccountTestGatewaySettingsOverride(
 }
 
 export function diagnosticAttemptSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  return diagnosticAttemptSignals(signal, timeoutMs).signal
+}
+
+export function diagnosticAttemptSignals(signal: AbortSignal | undefined, timeoutMs: number): AccountDiagnosticAttemptSignal {
   const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.trunc(timeoutMs)))
   if (!signal) {
-    return timeoutSignal
+    return { signal: timeoutSignal, timeoutSignal }
   }
   if (signal.aborted) {
-    return signal
+    return { signal, timeoutSignal }
   }
-  return AbortSignal.any([signal, timeoutSignal])
+  return { signal: AbortSignal.any([signal, timeoutSignal]), timeoutSignal }
 }
 
 export function isDiagnosticTimeoutSignal(signal: AbortSignal): boolean {

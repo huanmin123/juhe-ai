@@ -148,7 +148,10 @@ if (runtimeConfig.auth.captchaDisabled) {
 }
 startProcessEventLoopMonitor()
 startPerformanceProcessMetricsPublisher()
-startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
+startDbServiceSupervisor({
+  onReady: startBackgroundWorkerSupervisorAfterDbServiceReady,
+  onUnavailable: stopInternalGatewayRegistryAfterDbServiceUnavailable
+})
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
   if (runtimeConfig.runtimeMode === 'performance') {
     logger.warn({
@@ -184,6 +187,15 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     .catch((error) => logger.warn(errorLogFields(error, {
       event: 'gateway_api_key_cache_prewarm_failed'
     }), 'API Key 校验缓存预热失败'))
+}
+
+function stopInternalGatewayRegistryAfterDbServiceUnavailable(): void {
+  dbServiceReady = false
+  void stopInternalGatewayRegistry().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'internal_gateway_registry_stop_after_db_service_unavailable_failed'
+    }), 'DB service 不可用后停止内部 Gateway 注册失败')
+  })
 }
 
 if (runtimeConfig.httpSecurity.trustProxy !== false) {
@@ -533,6 +545,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
 
   try {
     const httpClosed = await closeHttpServer(httpServer, httpShutdownGraceMs)
+    await stopInternalGatewayRegistry()
     const [failureUsageIdle, captureIdle] = await Promise.all([
       waitForGatewayFailureUsageFinalizationsIdle(8_000),
       waitForActiveAuditCapturesIdle(8_000)
@@ -561,7 +574,6 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
   } finally {
-    stopInternalGatewayRegistry()
     stopPerformanceProcessMetricsPublisher()
     stopBackgroundWorkerSupervisor()
     stopDbServiceSupervisor()

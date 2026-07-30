@@ -64,7 +64,7 @@ export function transportProbeOutcomeFromAccountTestResult(
     realUpstreamAttempt,
     statusCode,
     evidence.timeout === true,
-    evidence.diagnosticTimeoutExhausted === true
+    evidence.diagnosticTimeoutExhausted !== false && realUpstreamAttempt !== undefined
   )
 
   if (localFailureKind) {
@@ -77,7 +77,7 @@ export function transportProbeOutcomeFromAccountTestResult(
   if (statusCode !== undefined) {
     return { kind: 'framing_complete', statusCode }
   }
-  if (evidence.timeout === true && evidence.diagnosticTimeoutExhausted !== true && !localFailureKind) {
+  if (evidence.timeout === true && evidence.diagnosticTimeoutExhausted === false && !localFailureKind) {
     return { kind: 'unknown', failureKind: 'task_failure' }
   }
   if (realUpstreamAttempt) {
