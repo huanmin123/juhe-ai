@@ -51,7 +51,7 @@ export function formatCost(value?: unknown): string {
   return `$${numericValue.toFixed(6)}`
 }
 
-export function usageRecordDisplayCostUsd(record: UsageRecordListItem): number | undefined {
+export function usageRecordDisplayCostUsd(record: Pick<UsageRecordSummary, 'costUsd' | 'costBreakdown'>): number | undefined {
   return record.costUsd ?? record.costBreakdown?.accountChargeUsd
 }
 
