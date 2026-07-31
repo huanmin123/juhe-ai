@@ -13,6 +13,8 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { seedDefaults } from '../../storage/schema/seed-defaults.js'
+import { DEFAULT_BUILT_IN_GROUPS } from '../../storage/schema-defaults.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-default-group-current-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'default-group.sqlite3')
@@ -35,6 +37,69 @@ const [
 try {
   const database = databaseModule.getBusinessDatabase()
   const now = new Date().toISOString()
+  const historicalUserId = 'sys_default_contract_historical'
+  insertSystemAccount(database, historicalUserId, 'default_contract_historical', now)
+  seedDefaults(database)
+  const historicalDefaultGroups = database.prepare(`
+    SELECT name, provider_code, enabled, is_default
+    FROM groups
+    WHERE system_account_id = ? AND enabled = 1 AND is_default = 1
+    ORDER BY provider_code ASC
+  `).all(historicalUserId) as Array<{ name: string; provider_code: string; enabled: number; is_default: number }>
+  assert.equal(historicalDefaultGroups.length, DEFAULT_BUILT_IN_GROUPS.length, '默认初始化必须为历史系统账户补齐全部内置默认分组')
+  for (const group of DEFAULT_BUILT_IN_GROUPS) {
+    assert.ok(
+      historicalDefaultGroups.some((row) => row.name === group.name && row.provider_code === group.providerCode),
+      `历史系统账户必须具有 ${group.providerCode} 的启用默认分组`
+    )
+  }
+  assert.ok(
+    historicalDefaultGroups.some((row) => row.provider_code === 'xai' && row.name === '默认 xAI 分组'),
+    '历史系统账户必须具有启用的 xAI 默认分组'
+  )
+
+  const sameNameCustomUserId = 'sys_default_contract_same_name_custom'
+  insertSystemAccount(database, sameNameCustomUserId, 'default_contract_same_name_custom', now)
+  database
+    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)')
+    .run('grp_same_name_xai_custom', sameNameCustomUserId, '默认 XAI 分组', 'xai', '', now, now)
+  seedDefaults(database)
+  const sameNameCustomGroup = database
+    .prepare('SELECT is_default FROM groups WHERE id = ?')
+    .get('grp_same_name_xai_custom') as { is_default?: number } | undefined
+  const collisionSafeDefaultGroup = database
+    .prepare('SELECT id, enabled, is_default FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
+    .get(sameNameCustomUserId, 'xai', `默认 xAI 分组（系统默认：${sameNameCustomUserId}）`) as { id?: string; enabled?: number; is_default?: number } | undefined
+  assert.equal(sameNameCustomGroup?.is_default, 0, '大小写变体的同名自定义分组不得被 seed 改写为默认分组')
+  assert.equal(collisionSafeDefaultGroup?.enabled, 1, '同名自定义分组不应阻断启用默认分组的补齐')
+  assert.equal(collisionSafeDefaultGroup?.is_default, 1, '同名自定义分组不应阻断默认分组的补齐')
+
+  const fallbackNameCollisionUserId = 'sys_default_contract_fallback_name_collision'
+  insertSystemAccount(database, fallbackNameCollisionUserId, 'default_contract_fallback_name_collision', now)
+  database.prepare(`
+    INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+    VALUES
+      (?, ?, ?, ?, '', 1, 0, ?, ?),
+      (?, ?, ?, ?, '', 1, 0, ?, ?)
+  `).run(
+    'grp_fallback_name_canonical_custom', fallbackNameCollisionUserId, '默认 XAI 分组', 'xai', now, now,
+    'grp_fallback_name_system_custom', fallbackNameCollisionUserId, `默认 xAI 分组（系统默认：${fallbackNameCollisionUserId}）`, 'xai', now, now
+  )
+  seedDefaults(database)
+  const collisionResolvedDefaultGroup = database.prepare(`
+    SELECT id, enabled, is_default
+    FROM groups
+    WHERE system_account_id = ?
+      AND provider_code = 'xai'
+      AND name = ?
+    LIMIT 1
+  `).get(
+    fallbackNameCollisionUserId,
+    `默认 xAI 分组（系统默认：${fallbackNameCollisionUserId} #1）`
+  ) as { id?: string; enabled?: number; is_default?: number } | undefined
+  assert.equal(collisionResolvedDefaultGroup?.enabled, 1, '回退名称已存在时仍应补齐启用默认分组')
+  assert.equal(collisionResolvedDefaultGroup?.is_default, 1, '回退名称已存在时仍应补齐默认分组')
+
   const userId = 'sys_default_contract_user'
   insertSystemAccount(database, userId, 'default_contract_user', now)
   database

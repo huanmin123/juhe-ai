@@ -127,13 +127,27 @@ accountsRouter.post('/model-catalog/refresh', async (req, res) => {
     res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型目录同步参数无效'))
     return
   }
+  const clientAbortController = new AbortController()
+  req.once('aborted', () => {
+    clientAbortController.abort()
+  })
+  res.once('close', () => {
+    if (!res.writableEnded) clientAbortController.abort()
+  })
   try {
     const preparedDraft = await prepareAccountModelCatalogDiscoverySnapshotAsync({
       accountInput: parsed.data.account,
       requestAccess
     })
-    res.json(ok(await refreshAccountDraftModelCatalogAsync(preparedDraft)))
+    if (clientAbortController.signal.aborted) return
+    const result = await refreshAccountDraftModelCatalogAsync({
+      ...preparedDraft,
+      signal: clientAbortController.signal
+    })
+    if (clientAbortController.signal.aborted || res.writableEnded) return
+    res.json(ok(result))
   } catch (error) {
+    if (clientAbortController.signal.aborted || res.writableEnded) return
     res.status(400).json(badRequest(error instanceof Error ? error.message : '获取上游模型目录失败'))
   }
 })

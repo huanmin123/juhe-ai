@@ -41,7 +41,7 @@
         </div>
         <div class="page-toolbar-actions">
           <a-button :disabled="loading" @click="resetFilters">重置</a-button>
-          <a-button :loading="loading" @click="loadData({ force: true })">
+          <a-button :loading="loading" @click="refreshData">
             <template #icon>
               <ReloadOutlined />
             </template>
@@ -275,9 +275,6 @@ let chartObserver: IntersectionObserver | undefined
 let reloadOnActivate = false
 let wasDeactivated = false
 let disposed = false
-let dynamicRangeLifecycleActive = false
-let dynamicRangeRolloverTimer: ReturnType<typeof window.setTimeout> | undefined
-let dynamicRangeRefreshPromise: Promise<void> | undefined
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
@@ -511,7 +508,6 @@ onMounted(async () => {
   disposed = false
   await nextTick()
   setupChartObservers()
-  activateDynamicRangeLifecycle()
 })
 
 function setupChartObservers(): void {
@@ -622,6 +618,13 @@ function resetFilters() {
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
   void loadData()
+}
+
+function refreshData(): void {
+  void loadData({
+    force: true,
+    forceUsageWindow: isDynamicRangeMode(rangeMode.value)
+  })
 }
 
 async function renderStatsCharts() {
@@ -751,86 +754,6 @@ function syncDynamicDateRangeToStatsWindow(): void {
   dateRange.value = [range[0].startOf('day'), range[1].startOf('day')]
 }
 
-function statsDateKey(value: Date): string | undefined {
-  const timezone = usageStatsWindow.value?.timezone
-  if (!timezone) return undefined
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).formatToParts(value)
-    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value
-    const year = part('year')
-    const month = part('month')
-    const day = part('day')
-    return year && month && day ? `${year}-${month}-${day}` : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function millisecondsUntilNextStatsDay(now: Date): number | undefined {
-  const currentKey = statsDateKey(now)
-  if (!currentKey) return undefined
-  let low = now.getTime()
-  let high = low + 30 * 60 * 60 * 1000
-  while (high - low > 1000) {
-    const middle = low + Math.floor((high - low) / 2)
-    if (statsDateKey(new Date(middle)) === currentKey) low = middle
-    else high = middle
-  }
-  return Math.max(0, high - now.getTime())
-}
-
-function clearDynamicRangeRolloverTimer(): void {
-  if (dynamicRangeRolloverTimer === undefined) return
-  window.clearTimeout(dynamicRangeRolloverTimer)
-  dynamicRangeRolloverTimer = undefined
-}
-
-function scheduleDynamicRangeRollover(): void {
-  clearDynamicRangeRolloverTimer()
-  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
-  const delay = millisecondsUntilNextStatsDay(new Date())
-  if (delay === undefined) return
-  dynamicRangeRolloverTimer = window.setTimeout(() => {
-    void refreshDynamicRangeAfterRollover()
-  }, delay + 100)
-}
-
-async function refreshDynamicRangeAfterRollover(): Promise<void> {
-  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
-  if (dynamicRangeRefreshPromise) return dynamicRangeRefreshPromise
-  dynamicRangeRefreshPromise = loadData({ forceUsageWindow: true }).finally(() => {
-    dynamicRangeRefreshPromise = undefined
-    scheduleDynamicRangeRollover()
-  })
-  return dynamicRangeRefreshPromise
-}
-
-function handleDynamicRangeVisibilityChange(): void {
-  if (document.visibilityState === 'visible') void refreshDynamicRangeAfterRollover()
-}
-
-function activateDynamicRangeLifecycle(): void {
-  if (dynamicRangeLifecycleActive) return
-  dynamicRangeLifecycleActive = true
-  document.addEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
-  window.addEventListener('focus', refreshDynamicRangeAfterRollover)
-  void refreshDynamicRangeAfterRollover()
-}
-
-function deactivateDynamicRangeLifecycle(): void {
-  if (dynamicRangeLifecycleActive) {
-    dynamicRangeLifecycleActive = false
-    document.removeEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
-    window.removeEventListener('focus', refreshDynamicRangeAfterRollover)
-  }
-  clearDynamicRangeRolloverTimer()
-}
-
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
   return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
@@ -848,17 +771,12 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
-watch(rangeMode, scheduleDynamicRangeRollover)
 watch(() => authState.revision.value, () => {
   if (pageActive.value) void loadData()
   else reloadOnActivate = true
 })
 watch(pageActive, async (active) => {
-  if (!active) {
-    deactivateDynamicRangeLifecycle()
-    return
-  }
-  activateDynamicRangeLifecycle()
+  if (!active) return
   if (!wasDeactivated) return
   wasDeactivated = false
   if (reloadOnActivate) {
@@ -871,7 +789,6 @@ watch(pageActive, async (active) => {
 
 onBeforeUnmount(() => {
   disposed = true
-  deactivateDynamicRangeLifecycle()
   invalidateStatsRequests()
   chartObserver?.disconnect()
   chartObserver = undefined

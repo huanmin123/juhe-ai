@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
 import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
@@ -53,6 +54,40 @@ await seedPostgresDefaults({
   }
 })
 
+const defaultGroupRepairStatements = executedStatements.filter(({ sql }) => (
+  /UPDATE\s+"juhe_business"\."groups"\s+AS\s+candidate/i.test(sql)
+))
+const defaultGroupInsertStatements = executedStatements.filter(({ sql }) => (
+  /INSERT INTO\s+"juhe_business"\."groups"/i.test(sql)
+))
+assert.equal(defaultGroupRepairStatements.length, DEFAULT_BUILT_IN_GROUPS.length, 'PostgreSQL 默认 seed 必须为每个内置供应商恢复缺失默认标记')
+assert.equal(defaultGroupInsertStatements.length, DEFAULT_BUILT_IN_GROUPS.length, 'PostgreSQL 默认 seed 必须为每个内置供应商批量补齐默认分组')
+for (const group of DEFAULT_BUILT_IN_GROUPS) {
+  const repairStatement = defaultGroupRepairStatements.find(({ values }) => (
+    values[0] === group.providerCode && values[1] === group.systemAccountId && values[2] === group.id
+  ))
+  assert.ok(repairStatement, `${group.providerCode} 必须先恢复静态默认分组的 is_default 标记`)
+  assert.match(repairStatement.sql, /candidate\.system_account_id\s*=\s*\$2[\s\S]*candidate\.id\s*=\s*\$3/i, '恢复默认标记必须只命中静态默认分组')
+  assert.match(repairStatement.sql, /NOT EXISTS[\s\S]*existing_default[\s\S]*is_default\s*=\s*1/i, '恢复默认标记不得覆盖已有默认分组')
+
+  const insertStatement = defaultGroupInsertStatements.find(({ values }) => (
+    values[0] === group.systemAccountId
+      && values[1] === group.id
+      && values[2] === `grp_default_${group.providerCode}_`
+      && values[3] === group.providerCode
+  ))
+  assert.ok(insertStatement, `${group.providerCode} 必须生成对应的批量默认分组 INSERT`)
+  assert.match(insertStatement.sql, /FROM\s+"juhe_business"\."system_accounts"\s+AS\s+system_accounts/i, '默认分组必须以 system_accounts 批量补齐，而非仅 seed sys_admin')
+  assert.match(insertStatement.sql, /CASE\s+WHEN\s+system_accounts\.id\s*=\s*\$1\s+THEN\s+\$2\s+ELSE\s+\$3\s*\|\|\s*system_accounts\.id/i, '非管理员默认分组 ID 必须无需 PostgreSQL 扩展且与管理员静态 ID 区分')
+  assert.match(insertStatement.sql, /same_name[\s\S]*lower\(same_name\.name\)\s*=\s*lower\(\$5\)[\s\S]*THEN\s+\$6\s*\|\|\s*'（系统默认：'\s*\|\|\s*system_accounts\.id/i, '大小写变体的同名自定义分组不得阻断系统默认分组补齐')
+  assert.match(insertStatement.sql, /LEFT JOIN LATERAL[\s\S]*generate_series[\s\S]*existing_fallback_name[\s\S]*ORDER BY candidate_suffix\.suffix/i, '回退名称已存在时必须选择未占用的编号变体，而非由冲突静默跳过')
+  assert.match(insertStatement.sql, /ON CONFLICT DO NOTHING/i, '默认分组批量补齐遇到冲突时不得覆盖已有分组')
+}
+
+const xaiDefaultGroupBackfillMigration = readFileSync('../backend-go/db/migrations/000095_w2_backfill_xai_default_groups_all_system_accounts_20260731.sql', 'utf8')
+assert.match(xaiDefaultGroupBackfillMigration, /lower\(same_name\.name\)\s*=\s*lower\('默认 xAI 分组'\)/i, 'xAI 回填迁移必须识别大小写变体的规范名冲突')
+assert.match(xaiDefaultGroupBackfillMigration, /LEFT JOIN LATERAL[\s\S]*generate_series[\s\S]*existing_fallback_name[\s\S]*ORDER BY candidate_suffix\.suffix/i, 'xAI 回填迁移的回退名称被占用时必须选择未占用编号，而非静默跳过')
+
 const modelInsertStatements = executedStatements.filter(({ sql }) => (
   /INSERT INTO\s+"juhe_business"\."provider_model_catalog"/i.test(sql)
 ))
@@ -65,7 +100,7 @@ const modelInsertStatement = modelInsertStatements[0]
 assert.ok(modelInsertStatement, 'PostgreSQL 默认 seed 必须写入 provider_model_catalog')
 assert.match(modelInsertStatement.sql, /ON CONFLICT DO NOTHING/i, '内建模型 seed 冲突时不得覆盖管理员已有配置')
 assert.doesNotMatch(modelInsertStatement.sql, /DO UPDATE/i, '二次 seed 不得更新管理员已有模型配置')
-const modelSeedParameterCount = 38
+const modelSeedParameterCount = 39
 assert.equal(modelInsertStatement.values.length % modelSeedParameterCount, 0, 'PostgreSQL 模型批次参数必须按完整行对齐')
 assert.equal(modelInsertStatement.values.length, expectedModelKeys.length * modelSeedParameterCount, 'PostgreSQL 模型批次参数数量必须覆盖全部行和字段')
 assert.ok(modelInsertStatement.values.length < 65_535, 'PostgreSQL 模型批次参数数量必须低于协议上限')
@@ -149,7 +184,7 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
 for (const values of modelSeedRows) {
   const key = `${String(values[1])}\u0000${String(values[2])}`
   assert.deepEqual(values.slice(0, 36), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
-  assert.equal(values.length, 38, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
+  assert.equal(values.length, 39, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
   assert.equal(typeof values[36], 'string', `${key} 必须写入 created_at`)
   assert.equal(values[37], values[36], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
 }

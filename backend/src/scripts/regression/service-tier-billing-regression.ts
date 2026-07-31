@@ -53,8 +53,8 @@ assert.equal(estimateCatalogCostUsd({
 }), 3.5, 'standard 实际计费档位必须使用标准扁平价格')
 assert.equal(cost('gpt-5.6-sol', 'priority', 100_000, 100_000), 7)
 assert.equal(cost('gpt-5.6-sol', 'flex', 100_000, 100_000), 1.75)
-assert.equal(cost('gpt-5.6-terra', 'priority', 100_000, 100_000), 3.5)
-assert.equal(cost('gpt-5.6-luna', 'flex', 100_000, 100_000), 0.35)
+assert.equal(cost('gpt-5.6-terra', 'priority', 100_000, 100_000), 2.8)
+assert.equal(cost('gpt-5.6-luna', 'flex', 100_000, 100_000), 0.07)
 assert.equal(cost('gpt-5.6', 'priority', 100_000, 100_000), 7, '稳定别名必须按 Sol 计费')
 assert.equal(cost('gpt-5.6-sol', 'default', 300_000, 100_000), 7.5, '超过 272K 后必须应用长上下文倍率')
 assert.equal(estimateProviderCostUsd({

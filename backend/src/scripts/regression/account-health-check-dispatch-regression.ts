@@ -215,6 +215,39 @@ try {
   assert.deepEqual(await Promise.all([firstSharedProbe, secondSharedProbe]), [false, true], '同账户并发消费者必须区分首个执行者与复用者')
   assert.equal(sharedProbeExecutions, 1, '同账户健康与质量消费者并发时只能执行一次上游探针')
 
+  let releaseCancelableProbe!: () => void
+  const cancelableProbeGate = new Promise<void>((resolve) => {
+    releaseCancelableProbe = resolve
+  })
+  let cancelableProbeExecutions = 0
+  const producer = runWithBackgroundAccountAvailabilityProbe('acc_singleflight_cancelable', async () => {
+    cancelableProbeExecutions += 1
+    await cancelableProbeGate
+    return sharedObservation
+  }, async () => 'producer')
+  const consumerAbortController = new AbortController()
+  const canceledConsumer = runWithBackgroundAccountAvailabilityProbe('acc_singleflight_cancelable', async () => {
+    cancelableProbeExecutions += 1
+    return sharedObservation
+  }, async (observation) => observation.diagnosticDeadlineExceeded === true ? 'deadline' : 'shared', {
+    signal: consumerAbortController.signal,
+    abortedObservation: () => ({
+      ...sharedObservation,
+      diagnosticCanceled: true,
+      diagnosticTimeoutExhausted: false,
+      diagnosticDeadlineExceeded: true
+    })
+  })
+  consumerAbortController.abort(new Error('health probe deadline'))
+  assert.equal(await canceledConsumer, 'deadline', '达到 deadline 的 joined consumer 必须立即返回未知结果')
+  const laterConsumer = runWithBackgroundAccountAvailabilityProbe('acc_singleflight_cancelable', async () => {
+    cancelableProbeExecutions += 1
+    return sharedObservation
+  }, async (_observation, context) => context.joined)
+  releaseCancelableProbe()
+  assert.deepEqual(await Promise.all([producer, laterConsumer]), ['producer', true], '取消 consumer 后未结束的共享探针必须继续供后来任务复用')
+  assert.equal(cancelableProbeExecutions, 1, '取消 consumer 不得删除未完成 singleflight entry 或启动重复探针')
+
   for (const [name, sourcePath] of [
     ['普通账户新增', '../../modules/accounts/accounts.routes.ts'],
     ['账户导入', '../../modules/accounts/account-import-account-creator.ts'],
@@ -259,7 +292,8 @@ try {
   assert(responseFinalizationSource.includes('context.availabilityProbeEligible'), '流式协议失败、缺失终态和读取失败必须按明确资格投递独立账户可用性确认')
   assert(responseFinalizationSource.includes('if (provenTransportFailure)'), '非流式响应正文读取中断必须投递独立账户可用性确认')
   assert(healthCheckServiceSource.includes("replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure'"), '请求失败只能升级低优先级周期检查，不得覆盖激活或配置复检')
-  assert(healthCheckServiceSource.includes("priorityAtMost: accountHealthCheckTriggerPriority('request_failure')"), '请求失败探针必须能够使用健康检查队列的保留并发槽')
+  assert(healthCheckServiceSource.includes("priorityAtMost: accountHealthCheckTriggerPriority('configuration')") && healthCheckServiceSource.includes('slots: 2'), '激活和配置检查必须保留健康队列入口，避免被例行任务阻塞')
+  assert(healthCheckServiceSource.includes("return reason === 'scheduled' || reason === 'request_failure'") && probeLimitsSource.includes('routineAccountHealthCheckDiagnosticConcurrency = 1'), '请求失败和周期检查必须共享单槽例行诊断 lane')
   assert(healthCheckServiceSource.includes("ignoreSchedule: reason !== 'scheduled'"), '主动触发检查入队时必须绕过周期到期门槛')
   assert(healthCheckServiceSource.includes("ignoreSchedule: item.reason !== 'scheduled'"), '主动触发检查执行前必须继续绕过周期到期门槛')
   assert(healthCheckServiceSource.includes('runWithBackgroundAccountAvailabilityProbe'), '周期和即时健康检查必须加入账户级 single-flight')

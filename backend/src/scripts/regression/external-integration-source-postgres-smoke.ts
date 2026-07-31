@@ -92,7 +92,9 @@ try {
   assert.equal(authDisabled.ok, false, 'PG 外部来源系统禁用后 token 应拒绝')
   assert.equal(authDisabled.ok ? undefined : authDisabled.code, 'external_source_disabled', 'PG 外部来源系统禁用后应返回固定错误码')
 
-  assert.deepEqual(await deleteExternalIntegrationSourceAsync(sourceId), {
+  const sourceBeforeDelete = await findExternalIntegrationSourceAsync(sourceId)
+  assert(sourceBeforeDelete?.updatedAt, 'PG 外部来源系统删除必须使用当前版本')
+  assert.deepEqual(await deleteExternalIntegrationSourceAsync(sourceId, sourceBeforeDelete.updatedAt), {
     id: sourceId,
     name: created.source.name
   }, 'PG 外部来源系统应以窄回执确认删除')
@@ -115,7 +117,10 @@ try {
 async function cleanupSmokeRows(): Promise<void> {
   const pool = await getPostgresPool()
   if (sourceId) {
-    await deleteExternalIntegrationSourceAsync(sourceId).catch(() => false)
+    const source = await findExternalIntegrationSourceAsync(sourceId)
+    if (source?.updatedAt) {
+      await deleteExternalIntegrationSourceAsync(sourceId, source.updatedAt).catch(() => false)
+    }
   }
   await pool.query('DELETE FROM juhe_business.external_integration_source_tokens WHERE source_ref_id IN (SELECT id FROM juhe_business.external_integration_sources WHERE name LIKE $1)', [`%${marker}%`])
   await pool.query('DELETE FROM juhe_business.external_integration_sources WHERE name LIKE $1', [`%${marker}%`])

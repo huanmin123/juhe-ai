@@ -42,6 +42,7 @@ export interface AccountFormModel {
   priority: number
   privilege: 'normal' | 'super_priority' | 'fallback'
   status: 'active' | 'pending_test' | 'disabled'
+  statusSelectionExplicit: boolean
   clientCompatibility: AccountClientCompatibility
   supportedEndpointModes: AccountSupportedEndpointMode[]
   supportedModels: string[]

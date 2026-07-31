@@ -15,6 +15,7 @@ import {
   notifyGatewayRuntimeCacheInvalidation
 } from '../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
@@ -782,7 +783,16 @@ export async function patchSystemAccountManagementAsync(
   const runtimeReason = systemAccountManagementRuntimeInvalidationReason(outcome.changes)
   if (runtimeReason) {
     notifyGatewayRuntimeCacheInvalidation(runtimeReason)
-    await notifyGatewayApiKeyValidationCacheInvalidationAsync(undefined, runtimeReason)
+    try {
+      await notifyGatewayApiKeyValidationCacheInvalidationAsync(undefined, runtimeReason)
+    } catch (error) {
+      logger.error(errorLogFields(error, {
+        event: 'system_account_management_patch_api_key_validation_cache_invalidation_failed',
+        systemAccountId: id,
+        reason: runtimeReason
+      }), '系统账户已提交，API Key validation cache 失效失败')
+      outcome.result.apiKeyValidationCacheInvalidationFailed = true
+    }
   }
   return outcome
 }

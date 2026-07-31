@@ -1,5 +1,7 @@
 # Bug 记录目录
 
+- [BUG-0143](问题-0143-xAI模型目录探针被能力过滤拒绝.md)：xAI API Key 的受控模型目录探针被 Chat / Responses 能力过滤拒绝；现仅对内部标记的 API Key 检查放行，未标记请求与 Grok OAuth 继续拒绝。
+
 - [BUG-0142](问题-0142-Codex压缩失败终态误判缺少完成事件.md)：Codex Remote Compaction V2 收到精确 `response.failed` 后仍等待 EOF，并错误生成本地 compact 契约 mismatch；现已改为结构失败终态直接进入通用失败路径。
 
 - [BUG-0141](问题-0141-使用记录PostgreSQL批量落库死锁.md)：高性能模式多个 usage worker 以不稳定顺序更新账户，且与 usage 唯一索引锁交错，造成 PostgreSQL `40P01`；统一账户行锁顺序并固定事务边界。
@@ -94,6 +96,7 @@ docs/bug/
 
 | 编号 | 标题 | 状态 | 严重程度 | 模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| BUG-0143 | xAI 模型目录探针被能力过滤拒绝 | 本地修复完成，待真实上游验证 | P1 | Node 后端 / xAI provider / 账户模型同步 / 人工测试 | [问题-0143-xAI模型目录探针被能力过滤拒绝.md](问题-0143-xAI模型目录探针被能力过滤拒绝.md) |
 | BUG-0142 | Codex 压缩失败终态误判缺少完成事件 | 本地修复完成，待统一上线/生产验证 | P1 | Node 后端 / 网关 / Codex Responses / SSE | [问题-0142-Codex压缩失败终态误判缺少完成事件.md](问题-0142-Codex压缩失败终态误判缺少完成事件.md) |
 | BUG-0141 | 使用记录 PostgreSQL 批量落库死锁 | 待发布验证 | P1 | Node 后端 / Usage worker / Redis Stream / PostgreSQL / accounts | [问题-0141-使用记录PostgreSQL批量落库死锁.md](问题-0141-使用记录PostgreSQL批量落库死锁.md) |
 | BUG-0140 | 余额自动探测误判不支持结果 | 已修复（本地验证完成） | P1 | 后端 / AI 账户 / ops-worker / 余额查询 / PostgreSQL / 测试 | [问题-0140-余额自动探测误判不支持结果.md](问题-0140-余额自动探测误判不支持结果.md) |

@@ -18,7 +18,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'gateway-models-dynamic-http-regression-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -69,32 +69,73 @@ try {
   await listen(server)
   const baseUrl = `http://127.0.0.1:${address(server).port}`
 
-  const rootResponse = await fetch(`${baseUrl}/models`)
-  assert.equal(rootResponse.status, 200)
-  const rootBody = await rootResponse.json() as { object?: string; data?: Array<{ id?: string }>; models?: unknown[] }
-  assert.equal(rootBody.object, 'list', '普通 /models 必须默认返回 OpenAI-compatible object=list')
-  assert(Array.isArray(rootBody.data), '普通 /models 必须默认返回 OpenAI-compatible data 数组')
-  assert.equal(Array.isArray(rootBody.models), false, '普通 /models 不得误判为 Gemini models 数组')
-  assertOpenAIProviders(rootBody.data ?? [])
+  const [missingRootResponse, missingV1Response] = await Promise.all([
+    fetch(`${baseUrl}/models`),
+    fetch(`${baseUrl}/v1/models`)
+  ])
+  assert.equal(missingRootResponse.status, 401, '未认证 /models 不得返回模型目录')
+  assert.equal(missingV1Response.status, 401, '未认证 /v1/models 不得返回模型目录')
 
-  const v1Response = await fetch(`${baseUrl}/v1/models`)
-  assert.equal(v1Response.status, 200)
-  const v1Body = await v1Response.json() as { object?: string; data?: Array<{ id?: string }> }
-  assert.equal(v1Body.object, 'list')
-  assertOpenAIProviders(v1Body.data ?? [])
+  const xApiKeyHeaders = { 'x-api-key': apiKey.key }
+  const bearerHeaders = { authorization: `Bearer ${apiKey.key}` }
+  const [xApiKeyRootResponse, xApiKeyV1Response, bearerRootResponse, bearerV1Response] = await Promise.all([
+    fetch(`${baseUrl}/models`, { headers: xApiKeyHeaders }),
+    fetch(`${baseUrl}/v1/models`, { headers: xApiKeyHeaders }),
+    fetch(`${baseUrl}/models`, { headers: bearerHeaders }),
+    fetch(`${baseUrl}/v1/models`, { headers: bearerHeaders })
+  ])
+  assert.equal(xApiKeyRootResponse.status, 200, 'x-api-key 必须可认证 /models')
+  assert.equal(xApiKeyV1Response.status, 200, 'x-api-key 必须可认证 /v1/models')
+  assert.equal(bearerRootResponse.status, 200, 'Bearer 必须可认证 /models')
+  assert.equal(bearerV1Response.status, xApiKeyV1Response.status, 'Bearer 与 x-api-key 必须为 /v1/models 返回同一认证状态')
+  assert.equal(bearerV1Response.status, bearerRootResponse.status, 'Bearer 必须为 /models 与 /v1/models 返回同一认证状态')
 
-  const authenticatedResponse = await fetch(`${baseUrl}/models`, {
-    headers: { authorization: `Bearer ${apiKey.key}` }
-  })
-  assert.equal(authenticatedResponse.status, 200)
-  const authenticatedBody = await authenticatedResponse.json() as { object?: string; data?: Array<{ id?: string }> }
-  assert.equal(authenticatedBody.object, 'list', '认证 /models 必须维持 OpenAI-compatible 响应形态')
-  const authenticatedIds = new Set(authenticatedBody.data?.map((model) => model.id))
+  const xApiKeyRootBody = await xApiKeyRootResponse.json() as OpenAIModelsBody
+  const xApiKeyV1Body = await xApiKeyV1Response.json() as OpenAIModelsBody
+  const bearerRootBody = await bearerRootResponse.json() as OpenAIModelsBody
+  const bearerV1Body = await bearerV1Response.json() as OpenAIModelsBody
+  assertOpenAIModelsBody(xApiKeyRootBody, 'x-api-key /models')
+  assertOpenAIModelsBody(xApiKeyV1Body, 'x-api-key /v1/models')
+  assertOpenAIModelsBody(bearerRootBody, 'Bearer /models')
+  assertOpenAIModelsBody(bearerV1Body, 'Bearer /v1/models')
+  assert.deepEqual(modelIds(xApiKeyRootBody), modelIds(xApiKeyV1Body), 'x-api-key 下 /models 与 /v1/models 必须返回同一目录')
+  assert.deepEqual(modelIds(xApiKeyRootBody), modelIds(bearerRootBody), 'x-api-key 与 Bearer 必须返回同一目录')
+  assert.deepEqual(modelIds(xApiKeyV1Body), modelIds(bearerV1Body), 'Bearer 与 x-api-key 必须为 /v1/models 返回同一目录')
+  assert.deepEqual(modelIds(bearerRootBody), modelIds(bearerV1Body), 'Bearer 必须为 /models 与 /v1/models 返回同一目录')
+  const authenticatedIds = new Set(modelIds(xApiKeyRootBody))
   assert(authenticatedIds.has('gpt-5.6-sol'), 'API Key 模型目录必须包含其 GPT 分组模型')
   assert(authenticatedIds.has('gemini-3.5-flash'), 'API Key 模型目录必须包含其 Gemini 分组模型')
   assert.equal(authenticatedIds.has('claude-fable-5'), false, 'API Key 模型目录不得泄漏未绑定的 Anthropic 模型')
 
-  const geminiResponse = await fetch(`${baseUrl}/v1beta/models`)
+  const regularRequest = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-5.6-sol',
+      messages: [{ role: 'user', content: '验证本地网关认证' }]
+    })
+  }
+  const [xApiKeyRegularResponse, bearerRegularResponse] = await Promise.all([
+    fetch(`${baseUrl}/v1/chat/completions`, {
+      ...regularRequest,
+      headers: { ...regularRequest.headers, ...xApiKeyHeaders }
+    }),
+    fetch(`${baseUrl}/v1/chat/completions`, {
+      ...regularRequest,
+      headers: { ...regularRequest.headers, ...bearerHeaders }
+    })
+  ])
+  assert.notEqual(xApiKeyRegularResponse.status, 401, 'x-api-key 普通网关请求不得被误判为未认证')
+  assert.equal(xApiKeyRegularResponse.status, bearerRegularResponse.status, 'x-api-key 与 Bearer 普通网关请求必须进入同一认证结果')
+  const [xApiKeyRegularBody, bearerRegularBody] = await Promise.all([
+    xApiKeyRegularResponse.text(),
+    bearerRegularResponse.text()
+  ])
+  assert.equal(xApiKeyRegularBody, bearerRegularBody, 'x-api-key 与 Bearer 普通网关请求必须保留同一后续错误语义')
+
+  const geminiResponse = await fetch(`${baseUrl}/v1beta/models`, {
+    headers: { 'x-goog-api-key': apiKey.key }
+  })
   assert.equal(geminiResponse.status, 200)
   const geminiBody = await geminiResponse.json() as { models?: Array<{ name?: string }> }
   assert(Array.isArray(geminiBody.models), '/v1beta/models 必须保留 Gemini 原生 models 数组')
@@ -108,18 +149,22 @@ try {
   rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
-function assertOpenAIProviders(items: Array<{ id?: string }>): void {
-  const ids = new Set(items.map((item) => item.id))
-  for (const [providerCode, model] of [
-    ['gpt', 'gpt-5.6-sol'],
-    ['deepseek', 'deepseek-v4-flash'],
-    ['glm', 'glm-5.2'],
-    ['anthropic', 'claude-fable-5'],
-    ['gemini', 'gemini-3.5-flash'],
-    ['xai', 'grok-4.5']
-  ]) {
-    assert(ids.has(model), `公开 OpenAI-compatible 目录必须覆盖 ${providerCode} 供应商模型 ${model}`)
-  }
+interface OpenAIModelsBody {
+  object?: string
+  data?: Array<{ id?: string }>
+  models?: unknown[]
+}
+
+function assertOpenAIModelsBody(body: OpenAIModelsBody, label: string): void {
+  assert.equal(body.object, 'list', `${label} 必须返回 OpenAI-compatible object=list`)
+  assert(Array.isArray(body.data), `${label} 必须返回 OpenAI-compatible data 数组`)
+  assert.equal(Array.isArray(body.models), false, `${label} 不得误判为 Gemini models 数组`)
+}
+
+function modelIds(body: OpenAIModelsBody): string[] {
+  return [...new Set((body.data ?? []).flatMap((model) => (
+    typeof model.id === 'string' && model.id ? [model.id] : []
+  )))].sort()
 }
 
 function listen(server: Server): Promise<void> {

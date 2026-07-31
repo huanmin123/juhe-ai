@@ -25,21 +25,23 @@ export function buildAccountBasicEditSnapshot(
   form: AccountFormModel,
   currentCredentials: Record<string, unknown> = {}
 ): AccountBasicEditSnapshot {
+  const values = compactRecord({
+    name: form.name.trim(),
+    concurrencyLimit: Math.trunc(Number(form.concurrencyLimit)),
+    priority: Math.trunc(Number(form.priority)),
+    ...(form.statusSelectionExplicit ? { status: form.status } : {}),
+    superPriorityEnabled: form.privilege === 'super_priority',
+    fallbackEnabled: form.privilege === 'fallback',
+    groupId: form.groupId,
+    tags: normalizeFormTagNames(form.tags).sort(),
+    supportedModels: normalizedTextList(form.supportedModels).sort(),
+    healthCheckModel: form.healthCheckModel.trim(),
+    healthCheckEndpointMode: form.healthCheckEndpointMode
+  })
+  values.notes = form.notes
   return {
     credentials: buildBasicEditCredentials(form, currentCredentials),
-    values: compactRecord({
-      name: form.name.trim(),
-      concurrencyLimit: Math.trunc(Number(form.concurrencyLimit)),
-      priority: Math.trunc(Number(form.priority)),
-      superPriorityEnabled: form.privilege === 'super_priority',
-      fallbackEnabled: form.privilege === 'fallback',
-      groupId: form.groupId,
-      tags: normalizeFormTagNames(form.tags).sort(),
-      notes: form.notes,
-      supportedModels: normalizedTextList(form.supportedModels).sort(),
-      healthCheckModel: form.healthCheckModel.trim(),
-      healthCheckEndpointMode: form.healthCheckEndpointMode
-    })
+    values
   }
 }
 
@@ -58,10 +60,11 @@ export function buildAccountBasicUpdatePatch(
 export function buildAccountAdvancedUpdatePatch(
   current: AccountSavePayload,
   baseline: AccountSavePayload,
-  expectedConfigRevision: number
+  expectedConfigRevision: number,
+  statusSelectionExplicit = false
 ): AccountUpdateDelta | undefined {
   return buildAccountUpdateDelta(
-    buildAccountUpdatePayload(current),
+    buildAccountUpdatePayload(current, statusSelectionExplicit),
     buildAccountUpdatePayload(baseline),
     expectedConfigRevision
   )

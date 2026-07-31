@@ -68,6 +68,7 @@ export function defaultAccountForm(
     priority: 0,
     privilege: 'normal',
     status: 'pending_test',
+    statusSelectionExplicit: false,
     clientCompatibility,
     supportedEndpointModes,
     supportedModels,

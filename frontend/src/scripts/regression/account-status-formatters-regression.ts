@@ -213,6 +213,20 @@ const coolingHealthTimeline = accountStatusTooltipLines(accountFixture({
 assertTrue(coolingHealthTimeline.some((line) => line.includes('下次检查：')), '冷却账户应显示下一次实际检查时间')
 assertTrue(!coolingHealthTimeline.some((line) => line.includes('健康')), '冷却账户不得混入健康检查内部文案')
 
+const queuedCoolingTimeline = accountStatusTooltipLines(accountFixture({
+  status: 'temporary_unavailable',
+  availabilityPresentation: {
+    status: 'temporarily_unavailable',
+    label: '临时不可调用',
+    probe: {
+      kind: 'cooldown_retest',
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-07-11T03:00:00.000Z' }
+    }
+  }
+}))
+assertTrue(queuedCoolingTimeline.includes('最近检查：尚未执行'), '尚未执行的冷却复测必须明确说明没有伪造检查时间')
+assertTrue(queuedCoolingTimeline.some((line) => line.includes('下次检查：')), '尚未执行的冷却复测仍必须显示下次检查时间')
+
 for (const status of ['disabled', 'error'] as const) {
   const terminalTimeline = accountStatusTooltipLines(accountFixture({
     status,

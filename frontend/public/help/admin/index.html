@@ -4,8 +4,8 @@
 <body>
   <a class="skip-link" href="#content">跳到正文</a>
   <header class="manual-header"><div class="header-inner">
-    <a class="brand-mark" href="/__aisys__/"><img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="28" height="28"><span data-brand-name>juhe-ai 使用手册</span></a>
-    <label class="search-control"><span class="visually-hidden">搜索手册</span><input data-help-search type="search" placeholder="搜索当前手册" autocomplete="off"><kbd>Esc</kbd></label>
+    <a class="brand-mark" href="/__aisys__/"><span class="brand-badge" aria-hidden="true">J</span><img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="30" height="30" hidden><span>管理员使用手册</span></a>
+    <label class="search-control"><span class="visually-hidden">搜索手册</span><input data-help-search type="search" placeholder="输入关键词定位章节" autocomplete="off"><kbd>Enter</kbd></label>
     <div class="header-actions"><a class="home-link" href="/__aisys__/">控制台</a><span class="updated-at">更新于 2026-07-31</span></div>
   </div></header>
   <section class="document-title"><div class="header-inner"><div><h1>管理员手册</h1><p>按管理链路、AI 管理、授权、日志、系统运维和排障组织全部管理页面。</p></div><details class="mobile-nav"><summary>章节目录</summary><nav aria-label="移动章节目录" data-nav-mobile></nav></details></div></section>
@@ -53,5 +53,5 @@
     <section id="troubleshooting" class="section"><h2>排障顺序</h2><ol class="flow-list"><li>请求异常：先在使用记录确认 API Key、策略、分组和账户的实际链路。</li><li>账户异常：查看 AI 健康，重试检查前确认凭据、模型与代理可达。</li><li>性能异常：对照 AI 性能、系统指标和运行日志，不以单一慢请求判断全局故障。</li><li>授权或数据范围异常：检查系统账户角色、授权、团队及操作日志。</li></ol><div class="callout">管理员手册只提供操作路径与风险，不公开上游密钥、OAuth token、代理密码和原始审计内容。</div></section>
   </main></div>
   <footer class="footer">管理角色也可在用户模式查看自己的用户侧页面；管理页展示的是系统范围数据。</footer>
-  <script>(function(){var source=document.querySelector('[data-nav]');var target=document.querySelector('[data-nav-mobile]');if(source&&target)target.innerHTML=source.innerHTML;})();</script><script src="../help.js"></script>
+  <script src="../help.js"></script>
 </body></html>

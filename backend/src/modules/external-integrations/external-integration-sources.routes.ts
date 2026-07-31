@@ -58,6 +58,10 @@ const sourceUpdateBodySchema = sourceBodySchema.partial().extend({
   message: '请提供要修改的来源配置字段'
 })
 
+const sourceDeleteBodySchema = z.object({
+  expectedUpdatedAt: expectedUpdatedAtSchema
+}).strict()
+
 const tokenBodySchema = z.object({
   name: z.string().trim().min(1, 'Token 名称不能为空').max(80, 'Token 名称不能超过 80 个字符'),
   status: z.enum(['active', 'disabled', 'revoked']).optional(),
@@ -248,22 +252,32 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
 externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
   operationKey: 'external_integration_sources.delete',
   fingerprint: (req) => ({
-    id: req.params.id
+    id: req.params.id,
+    expectedUpdatedAt: bodyField(req, 'expectedUpdatedAt')
   })
 }), async (req, res) => {
   const params = idParamSchema.safeParse(req.params)
+  const body = sourceDeleteBodySchema.safeParse(req.body ?? {})
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
     return
   }
+  if (!body.success) {
+    res.status(400).json(badRequest(firstIssueMessage(body.error, '来源系统删除参数无效')))
+    return
+  }
   let deleted: Awaited<ReturnType<typeof deleteExternalIntegrationSourceAsync>>
   try {
-    deleted = await deleteExternalIntegrationSourceAsync(params.data.id)
+    deleted = await deleteExternalIntegrationSourceAsync(params.data.id, body.data.expectedUpdatedAt)
     if (!deleted) {
       res.status(404).json({ message: '来源系统不存在' })
       return
     }
   } catch (error) {
+    if (error instanceof ExternalIntegrationSourcePatchConflictError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
     res.status(400).json(badRequest(error instanceof Error ? error.message : '删除来源授权失败'))
     return
   }

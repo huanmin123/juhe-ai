@@ -29,6 +29,7 @@ import {
   buildUpstreamRequestBody,
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
+import { isGatewayUpstreamModelsProbe } from '../../../gateway/request/upstream-models-probe.js'
 import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
 import { prepareXaiAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
 
@@ -67,6 +68,9 @@ export const xaiProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+    if (isXaiApiKeyUpstreamModelsProbe(req, account)) {
+      return buildUpstreamUrls(account.baseUrl, req.originalUrl)
+    }
     if (!isSupportedXaiAccountType(account.type) || !isSupportedXaiPath(req)) return []
     if (account.type === 'oauth' && !isXaiOAuthPath(req)) return []
     return buildUpstreamUrls(account.baseUrl, req.originalUrl)
@@ -111,6 +115,7 @@ export const xaiProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: xaiEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
+    if (isXaiApiKeyUpstreamModelsProbe(req, account)) return true
     if (!isSupportedXaiAccountType(account.type)) return false
     if (account.type === 'oauth' && !isXaiOAuthPath(req)) return false
     const mode = xaiEndpointModeForGatewayRequest(req, account, context)
@@ -137,6 +142,14 @@ function isGrokCliProxyBaseUrl(baseUrl: string): boolean {
 
 function isSupportedXaiAccountType(type: string | undefined): boolean {
   return type === 'api_key' || type === 'oauth'
+}
+
+function isXaiApiKeyUpstreamModelsProbe(req: Request, account: ProviderDriverAccount): boolean {
+  if (account.type !== 'api_key' || !isGatewayUpstreamModelsProbe(req) || req.method.toUpperCase() !== 'GET') {
+    return false
+  }
+  const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
+  return path === '/models' || path === '/v1/models'
 }
 
 function isXaiOAuthPath(req: Request): boolean {

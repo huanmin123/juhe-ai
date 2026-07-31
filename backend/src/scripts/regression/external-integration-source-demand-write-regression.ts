@@ -67,14 +67,29 @@ try {
   }), externalSources.ExternalIntegrationSourcePatchConflictError, '来源过期版本必须 CAS 冲突')
   assert.deepEqual(sourceRow(database, source.id), sourceBeforeNoop, '来源 CAS 冲突不得写入')
 
-  const tokenVersionAheadOfSource = new Date(Date.parse(sourceBeforeNoop.updated_at) + 1).toISOString()
+  const sourceBeforeStaleDelete = sourceRow(database, source.id)
+  const deleteUpdate = externalSources.updateExternalIntegrationSource(source.id, {
+    expectedUpdatedAt: sourceBeforeStaleDelete.updated_at,
+    notes: '删除前版本推进'
+  })
+  assert(deleteUpdate, '删除前 PATCH 应推进来源版本')
+  assert.throws(
+    () => externalSources.deleteExternalIntegrationSource(source.id, sourceBeforeStaleDelete.updated_at),
+    externalSources.ExternalIntegrationSourcePatchConflictError,
+    '来源 DELETE 必须拒绝陈旧版本，且不得先删除 Token'
+  )
+  assert(sourceRow(database, source.id), '来源 DELETE CAS 冲突不得删除来源')
+  assert(tokenRow(database, source.id, token.id), '来源 DELETE CAS 冲突不得删除关联 Token')
+
+  const sourceBeforeStatus = sourceRow(database, source.id)
+  const tokenVersionAheadOfSource = new Date(Date.parse(sourceBeforeStatus.updated_at) + 1).toISOString()
   database.prepare(`
     UPDATE external_integration_source_tokens
     SET updated_at = ?
     WHERE id = ? AND source_ref_id = ?
   `).run(tokenVersionAheadOfSource, token.id, source.id)
   const tokenBeforeSourceStatus = tokenRow(database, source.id, token.id)
-  assert(tokenBeforeSourceStatus.updated_at > sourceBeforeNoop.updated_at, '反例夹具必须让 Token 版本严格领先来源版本')
+  assert(tokenBeforeSourceStatus.updated_at > sourceBeforeStatus.updated_at, '反例夹具必须让 Token 版本严格领先来源版本')
   const sameTargetToken = externalSources.createExternalIntegrationSourceToken({
     sourceRefId: source.id,
     name: '已是目标状态 Token',
@@ -90,7 +105,7 @@ try {
   const sameTargetTokenBeforeSourceStatus = tokenRow(database, source.id, sameTargetToken.id)
 
   const statusOutcome = externalSources.updateExternalIntegrationSource(source.id, {
-    expectedUpdatedAt: sourceBeforeNoop.updated_at,
+    expectedUpdatedAt: sourceBeforeStatus.updated_at,
     status: 'disabled'
   })
   assert(statusOutcome, '来源状态 PATCH 应命中来源')
@@ -250,9 +265,13 @@ function assertStaticDemandWriteContract(): void {
   assert.doesNotMatch(sourcePatchSection, /syncExternalIntegrationSourceTokenState/, '来源 PATCH 不得恢复全量 Token 状态同步')
   assert.doesNotMatch(sourceCreateSection, /requiredSourceRecord/, '来源创建不得在 INSERT 后按 ID 宽回读自己刚写入的来源行')
   assert.match(sourceCreateSection, /buildExternalIntegrationSourceCreateRow/, '来源创建必须复用已规范化的写入行组装返回 DTO')
-  assert.match(sourceDeleteSection, /findSourceDeleteRow/, '删除来源必须使用窄 id/name 行作为事务内回执')
+  assert.match(sourceDeleteSection, /expectedUpdatedAt/, '删除来源必须接收调用方提交的版本')
+  assert.match(sourceDeleteSection, /WHERE id = \? AND updated_at = \?/, '删除来源必须在 DELETE SQL 中执行 updated_at CAS')
+  assert.match(sourceDeleteSection, /findSourceDeleteRow/, '删除来源必须使用窄 id/name/version 行作为事务内回执')
   assert.doesNotMatch(sourceDeleteSection, /findSourceRow(?:Async)?\(/, '删除来源不得读取完整来源记录')
   assert.doesNotMatch(routeDeleteSection, /findExternalIntegrationSourceRecordAsync/, '删除路由不得为了操作日志重复宽查来源详情')
+  assert.match(routeDeleteSection, /sourceDeleteBodySchema\.safeParse\(req\.body \?\? \{\}\)/, '删除路由必须校验 expectedUpdatedAt')
+  assert.match(routeDeleteSection, /deleteExternalIntegrationSourceAsync\(params\.data\.id, body\.data\.expectedUpdatedAt\)/, '删除路由必须传递 expectedUpdatedAt')
   for (const field of ['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'expectedUpdatedAt']) {
     assert.match(routes, new RegExp(`${field}: bodyField\\(req, '${field}'\\)`), `来源 mutation 指纹必须包含 ${field}`)
   }

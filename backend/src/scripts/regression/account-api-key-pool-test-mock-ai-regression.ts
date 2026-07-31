@@ -115,26 +115,25 @@ try {
     name: '已保存 Key 池批测账户',
     apiKeys: ['sk-pool-saved-bad-a', 'sk-pool-saved-good', 'sk-pool-saved-bad-b'],
     groupId: group.id,
-    mockBaseUrl
+    mockBaseUrl,
+    status: 'active'
   }))
-  assert.equal(savedAccount.status, 'pending_test', '新建 Key 池账户应先进入待检查')
+  assert.equal(savedAccount.status, 'active', '人工测试夹具必须跳过后台激活检查')
   const savedTask = await submitAccountTest(context, savedAccount.id)
   const savedFinished = await waitForTask(context, savedTask.id)
   assert.equal(savedFinished.status, 'success', `已保存 Key 池账户只要至少一个 Key 可用就应测试成功：${savedFinished.message ?? ''} ${JSON.stringify(savedFinished.result)}`)
   assert.equal(savedFinished.result?.apiKeyPool?.total, 3, '已保存账户测试应返回 Key 池总数')
+  assert.equal(savedFinished.result?.apiKeyPool?.tested, 2, '已保存账户应在首个成功 Key 后停止测试')
   assert.equal(savedFinished.result?.apiKeyPool?.successCount, 1, '已保存账户测试应统计 1 个可用 Key')
-  assert.equal(savedFinished.result?.apiKeyPool?.failedCount, 2, '已保存账户测试应统计 2 个不可用 Key')
+  assert.equal(savedFinished.result?.apiKeyPool?.failedCount, 1, '已保存账户只应统计成功前实际测试过的失败 Key')
   assertKeyPoolPreview(savedFinished.result, 1, 'sk-p', 'good', '已保存账户可用 Key 应返回安全预览')
-  const savedDetail = await waitForAccountRuntimeDetails(context, savedAccount.id, 3)
-  assertKeyRuntime(savedDetail, 'good', 'active', '已保存账户可用 Key 的运行态应保持不变')
-  assertKeyRuntime(savedDetail, 'ad-a', 'active', '已保存账户坏 Key A 的运行态不能被人工测试改写')
-  assertKeyRuntime(savedDetail, 'ad-b', 'active', '已保存账户坏 Key B 的运行态不能被人工测试改写')
 
   const responsesAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
     name: '已保存 Key 池 Responses 批测账户',
     apiKeys: ['sk-pool-responses-bad', 'sk-pool-responses-good'],
     groupId: group.id,
-    mockBaseUrl
+    mockBaseUrl,
+    status: 'active'
   }))
   const responsesTask = await submitAccountTest(context, responsesAccount.id, 'responses_sse')
   const responsesFinished = await waitForTask(context, responsesTask.id)
@@ -153,26 +152,22 @@ try {
   const draftTask = await submitDraftAccountTest(context, draftAccount)
   const draftFinished = await waitForTask(context, draftTask.id)
   assert.equal(draftFinished.status, 'success', '创建草稿 Key 池只要至少一个 Key 可用就应测试成功')
+  assert.equal(draftFinished.result?.apiKeyPool?.tested, 2, '创建草稿测试应在首个成功 Key 后停止')
   assert.equal(draftFinished.result?.apiKeyPool?.successCount, 1, '创建草稿测试应统计 1 个可用 Key')
-  assert.equal(draftFinished.result?.apiKeyPool?.failedCount, 2, '创建草稿测试应统计 2 个不可用 Key')
+  assert.equal(draftFinished.result?.apiKeyPool?.failedCount, 1, '创建草稿测试只应统计成功前实际测试过的失败 Key')
   assertKeyPoolPreview(draftFinished.result, 1, 'sk-p', 'good', '创建草稿可用 Key 应返回安全预览')
 
-  const createdAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, draftAccount)
-  assert.equal(createdAccount.status, 'pending_test', 'Key 池草稿人工测试成功后保存账户仍应等待后台检查')
-  assert.equal(createdAccount.healthCheckModel, 'gpt-5.5', '保存账户应使用表单检查模型，不得从人工测试结果回写')
-  const createdDetail = await waitForAccountRuntimeDetails(context, createdAccount.id, 3)
-  assertKeyRuntime(createdDetail, 'good', 'active', '创建账户可用 Key 应初始化为 active')
-  assertKeyRuntime(createdDetail, 'ad-a', 'active', '草稿人工测试不能把新账户坏 Key A 初始化为不可用')
-  assertKeyRuntime(createdDetail, 'ad-b', 'active', '草稿人工测试不能把新账户坏 Key B 初始化为不可用')
+  const createdAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, { ...draftAccount, status: 'active' })
+  assert.equal(createdAccount.status, 'active', '草稿人工测试成功不参与激活；显式 active 由创建请求自身决定')
 
   assertKeyHitBound(mockState.hitsByKey, 'pool-saved-bad-a', '已保存账户坏 Key A')
   assertKeyHitBound(mockState.hitsByKey, 'pool-saved-good', '已保存账户好 Key')
-  assertKeyHitBound(mockState.hitsByKey, 'pool-saved-bad-b', '已保存账户坏 Key B')
+  assertKeyNotHit(mockState.hitsByKey, 'pool-saved-bad-b', '已保存账户成功后的坏 Key B')
   assertKeyHitBound(mockState.hitsByKey, 'pool-responses-bad', 'Responses SSE 坏 Key')
   assertKeyHitBound(mockState.hitsByKey, 'pool-responses-good', 'Responses SSE 好 Key')
   assertKeyHitBound(mockState.hitsByKey, 'pool-create-bad-a', '草稿坏 Key A')
   assertKeyHitBound(mockState.hitsByKey, 'pool-create-good', '草稿好 Key')
-  assertKeyHitBound(mockState.hitsByKey, 'pool-create-bad-b', '草稿坏 Key B')
+  assertKeyNotHit(mockState.hitsByKey, 'pool-create-bad-b', '草稿成功后的坏 Key B')
 
   console.log(JSON.stringify({
     message: '账户内 API Key 池测试 mock AI 回归通过',
@@ -197,6 +192,7 @@ function accountPayload(input: {
   apiKeys: string[]
   groupId: string
   mockBaseUrl: string
+  status?: 'active'
 }) {
   return {
     providerCode: 'gpt',
@@ -214,7 +210,8 @@ function accountPayload(input: {
     priority: 0,
     supportedModels: ['gpt-5.5'],
     healthCheckModel: 'gpt-5.5',
-    healthCheckEndpointMode: 'responses_sse'
+    healthCheckEndpointMode: 'responses_sse',
+    ...(input.status ? { status: input.status } : {})
   }
 }
 
@@ -256,28 +253,6 @@ async function getTask(context: TestContext, taskId: string): Promise<AccountTes
   return task
 }
 
-async function waitForAccountRuntimeDetails(context: TestContext, accountId: string, expectedCount: number): Promise<AccountSummary> {
-  let latest = await getAccount(context, accountId)
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if ((latest.apiKeyRuntimeDetails?.length ?? 0) >= expectedCount) {
-      return latest
-    }
-    await sleep(100)
-    latest = await getAccount(context, accountId)
-  }
-  return latest
-}
-
-async function getAccount(context: TestContext, accountId: string): Promise<AccountSummary> {
-  return await getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${accountId}/advanced`, context.cookie)
-}
-
-function assertKeyRuntime(account: AccountSummary, suffix: string, status: string, message: string): void {
-  const detail = account.apiKeyRuntimeDetails?.find((item) => item.keySuffix === suffix)
-  assert(detail, `${message}：缺少尾号 ${suffix} 的 Key 运行态`)
-  assert.equal(detail.status, status, message)
-}
-
 function assertKeyPoolPreview(result: AccountTestResult | undefined, keyIndex: number, prefix: string, suffix: string, message: string): void {
   const detail = result?.apiKeyPool?.results.find((item) => item.keyIndex === keyIndex)
   assert(detail, `${message}：缺少序号 ${keyIndex} 的 Key 测试结果`)
@@ -289,6 +264,10 @@ function assertKeyHitBound(hitsByKey: Map<string, number>, key: string, label: s
   const hits = hitsByKey.get(key) ?? 0
   assert.ok(hits >= 1, `${label}至少应被探测一次`)
   assert.ok(hits <= 3, `${label}在完整诊断阶梯内最多应被探测三次，实际 ${hits}`)
+}
+
+function assertKeyNotHit(hitsByKey: Map<string, number>, key: string, label: string): void {
+  assert.equal(hitsByKey.get(key) ?? 0, 0, `${label}不应在首个成功后继续被探测`)
 }
 
 function startBackendServer(port: number): ChildProcess {

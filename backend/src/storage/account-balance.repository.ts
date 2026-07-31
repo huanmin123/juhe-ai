@@ -15,7 +15,6 @@ export interface AccountBalanceRefreshCandidate {
   credentials: Record<string, unknown>
   config: AccountBalanceQueryConfig
   nextRefreshAt: string | null
-  stateUpdatedAt: string
   proxyProfileId?: string
 }
 
@@ -50,7 +49,6 @@ interface BalanceCandidateRow {
   credentials_encrypted: string
   balance_query_config_json: string
   balance_query_next_refresh_at: string | null
-  updated_at: string
   proxy_profile_id?: string | null
 }
 
@@ -80,6 +78,23 @@ function balanceDetectionCandidateWhere(): string {
   `
 }
 
+/**
+ * Automatic refresh writebacks must recheck the current scheduling boundary.
+ * The refresh due value fences concurrent automatic attempts, while this guard
+ * prevents an in-flight result from reviving an account that was disabled or
+ * otherwise removed from automatic eligibility without a config revision.
+ */
+function balanceRefreshAutomaticCandidateWhere(): string {
+  return `
+    type = 'api_key'
+    AND status = 'active'
+    AND ${balanceBooleanPredicate('schedulable', true)}
+    AND ${balanceBooleanPredicate('balance_query_enabled', true)}
+    AND deleted_at IS NULL
+    AND authorization_instance_authorization_id IS NULL
+  `
+}
+
 interface BalanceDueCursor {
   nextRefreshAt: string
   id: string
@@ -101,7 +116,7 @@ export function listAccountsDueForBalanceRefresh(options: { now?: string; limit?
     const cursor = sqliteBalanceDueCursor
     const rows = getBusinessDatabase().prepare(`
       SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
-             balance_query_next_refresh_at, updated_at, proxy_profile_id
+             balance_query_next_refresh_at, proxy_profile_id
       FROM accounts
       WHERE type = 'api_key'
         AND status = 'active'
@@ -146,7 +161,7 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
     const cursor = postgresBalanceDueCursor
     const rows = await client.query<BalanceCandidateRow>(`
       SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
-             balance_query_next_refresh_at, updated_at, proxy_profile_id
+             balance_query_next_refresh_at, proxy_profile_id
       FROM juhe_business.accounts
       WHERE type = 'api_key'
         AND status = 'active'
@@ -189,7 +204,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
     const client = createPostgresDatabaseClient(await getPostgresPool())
     const queryRows = async (afterId: string) => await client.query<BalanceCandidateRow>(`
       SELECT a.id, a.system_account_id, a.config_revision, a.credentials_encrypted, a.balance_query_config_json,
-             a.balance_query_next_refresh_at, a.updated_at, a.proxy_profile_id
+             a.balance_query_next_refresh_at, a.proxy_profile_id
       FROM juhe_business.accounts a
       WHERE a.id > ?
         AND a.type = 'api_key'
@@ -230,7 +245,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
   for (let page = 0; page < maxScanPages && selected.length < limit; page += 1) {
     const rows = getBusinessDatabase().prepare(`
     SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
-           balance_query_next_refresh_at, updated_at, proxy_profile_id
+           balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id > ?
        AND type = 'api_key'
@@ -264,7 +279,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
 export async function findAccountBalanceRefreshCandidateAsync(accountId: string): Promise<AccountBalanceRefreshCandidate | undefined> {
   const sql = `
     SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
-           balance_query_next_refresh_at, updated_at, proxy_profile_id
+           balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id = ?
        AND type = 'api_key'
@@ -287,7 +302,7 @@ export async function findAccountBalanceRefreshCandidateAsync(accountId: string)
 export async function findAccountBalanceManualRefreshCandidateAsync(accountId: string): Promise<AccountBalanceRefreshCandidate | undefined> {
   const sql = `
     SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
-           balance_query_next_refresh_at, updated_at, proxy_profile_id
+           balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id = ?
       AND type = 'api_key'
@@ -496,7 +511,6 @@ export async function commitAccountBalanceRefreshAsync(input: {
   expectedConfigRevision: number
   expectedConfig: AccountBalanceQueryConfig
   expectedNextRefreshAt?: string | null
-  expectedUpdatedAt?: string
   nextConfig: AccountBalanceQueryConfig
   nextRefreshAt: string | null
 }): Promise<boolean> {
@@ -508,7 +522,7 @@ export async function commitAccountBalanceRefreshAsync(input: {
   }
   const expectedConfig = normalizeAccountBalanceConfig(input.expectedConfig)
   const nextConfig = normalizeAccountBalanceConfig(input.nextConfig)
-  const updatedAt = nextBalanceMutationUpdatedAt(input.expectedUpdatedAt)
+  const automaticRefresh = input.expectedNextRefreshAt !== undefined
   const sql = `
     UPDATE accounts
     SET balance_query_config_json = ?,
@@ -519,14 +533,12 @@ export async function commitAccountBalanceRefreshAsync(input: {
       AND balance_query_enabled = 1
       AND balance_query_config_json = ?
       ${input.expectedNextRefreshAt === undefined ? '' : input.expectedNextRefreshAt === null ? 'AND balance_query_next_refresh_at IS NULL' : 'AND balance_query_next_refresh_at = ?'}
-      ${input.expectedUpdatedAt === undefined ? '' : 'AND updated_at = ?'}
-      AND deleted_at IS NULL
+      ${automaticRefresh ? `AND ${balanceRefreshAutomaticCandidateWhere()}` : 'AND deleted_at IS NULL'}
   `
   const result = getBusinessDatabase().prepare(sql).run(
-    JSON.stringify(nextConfig), input.nextRefreshAt, updatedAt, input.accountId,
+    JSON.stringify(nextConfig), input.nextRefreshAt, nowIso(), input.accountId,
     input.expectedConfigRevision, JSON.stringify(expectedConfig),
-    ...(input.expectedNextRefreshAt !== undefined && input.expectedNextRefreshAt !== null ? [input.expectedNextRefreshAt] : []),
-    ...(input.expectedUpdatedAt !== undefined ? [input.expectedUpdatedAt] : [])
+    ...(input.expectedNextRefreshAt !== undefined && input.expectedNextRefreshAt !== null ? [input.expectedNextRefreshAt] : [])
   )
   const changed = Number(result.changes ?? 0) > 0
   if (changed) invalidateAccountLookupCache(input.accountId)
@@ -539,7 +551,6 @@ export async function persistAccountBalanceRefreshWithSnapshotAsync(input: {
   expectedConfigRevision: number
   expectedConfig: AccountBalanceQueryConfig
   expectedNextRefreshAt?: string | null
-  expectedUpdatedAt?: string
   nextConfig: AccountBalanceQueryConfig
   nextRefreshAt: string | null
   snapshot: AccountBalanceSnapshot
@@ -570,7 +581,6 @@ async function commitAccountBalanceRefreshInClientAsync(
     expectedConfigRevision: number
     expectedConfig: AccountBalanceQueryConfig
     expectedNextRefreshAt?: string | null
-    expectedUpdatedAt?: string
     nextConfig: AccountBalanceQueryConfig
     nextRefreshAt: string | null
   }
@@ -580,7 +590,9 @@ async function commitAccountBalanceRefreshInClientAsync(
     : input.expectedNextRefreshAt === null
       ? 'AND balance_query_next_refresh_at IS NULL'
       : 'AND balance_query_next_refresh_at = ?'
-  const expectedUpdatedAtClause = input.expectedUpdatedAt === undefined ? '' : 'AND updated_at = ?'
+  const automaticRefreshClause = input.expectedNextRefreshAt === undefined
+    ? 'AND deleted_at IS NULL'
+    : `AND ${balanceRefreshAutomaticCandidateWhere()}`
   const result = await client.execute(`
     UPDATE juhe_business.accounts
     SET balance_query_config_json = ?,
@@ -591,13 +603,11 @@ async function commitAccountBalanceRefreshInClientAsync(
       AND balance_query_enabled = 1
       AND balance_query_config_json::jsonb = ?::jsonb
       ${expectedNextRefreshClause}
-      ${expectedUpdatedAtClause}
-      AND deleted_at IS NULL
+      ${automaticRefreshClause}
   `, [
-    JSON.stringify(normalizeAccountBalanceConfig(input.nextConfig)), input.nextRefreshAt, nextBalanceMutationUpdatedAt(input.expectedUpdatedAt), input.accountId,
+    JSON.stringify(normalizeAccountBalanceConfig(input.nextConfig)), input.nextRefreshAt, nowIso(), input.accountId,
     input.expectedConfigRevision, JSON.stringify(normalizeAccountBalanceConfig(input.expectedConfig)),
-    ...(input.expectedNextRefreshAt !== undefined && input.expectedNextRefreshAt !== null ? [input.expectedNextRefreshAt] : []),
-    ...(input.expectedUpdatedAt !== undefined ? [input.expectedUpdatedAt] : [])
+    ...(input.expectedNextRefreshAt !== undefined && input.expectedNextRefreshAt !== null ? [input.expectedNextRefreshAt] : [])
   ])
   return Number(result.changes ?? 0) > 0
 }
@@ -864,7 +874,6 @@ function balanceCandidatesFromRows(rows: BalanceCandidateRow[], limit: number): 
       credentials,
       config,
       nextRefreshAt: row.balance_query_next_refresh_at,
-      stateUpdatedAt: row.updated_at,
       proxyProfileId: row.proxy_profile_id ?? undefined
     })
     if (output.length >= limit) break
@@ -902,12 +911,6 @@ function balanceDueCursorFromRow(row: BalanceCandidateRow | undefined): BalanceD
 function balanceDetectionDueCursorFromRow(row: BalanceDetectionCandidateRow | undefined): BalanceDueCursor | undefined {
   const nextRefreshAt = row?.balance_query_next_refresh_at
   return row && nextRefreshAt ? { nextRefreshAt, id: row.id } : undefined
-}
-
-function nextBalanceMutationUpdatedAt(expectedUpdatedAt: string | undefined): string {
-  if (!expectedUpdatedAt) return nowIso()
-  const expectedMs = Date.parse(expectedUpdatedAt)
-  return new Date(Math.max(Date.now(), Number.isFinite(expectedMs) ? expectedMs + 1 : 0)).toISOString()
 }
 
 function balanceDetectionCandidateFromRow(row: BalanceDetectionCandidateRow): AccountBalanceDetectionCandidate | undefined {

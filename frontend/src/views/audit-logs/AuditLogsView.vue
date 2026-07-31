@@ -132,6 +132,7 @@ import {
 } from './auditLogFormatters'
 import {
   auditLogFilterCounts,
+  filterLegacyClientAbortedAuditRows,
   auditLogListParams
 } from './auditLogFilters'
 import {
@@ -417,8 +418,14 @@ function resetFilters(): void {
   void loadData()
 }
 
-function fetchRecords(pageState: { current: number; pageSize: number }) {
-  return api.auditLogs.list(auditLogRequestParams(pageState))
+async function fetchRecords(pageState: { current: number; pageSize: number }) {
+  const result = await api.auditLogs.list(auditLogRequestParams(pageState))
+  const items = filterLegacyClientAbortedAuditRows(result.items, outcomeFilter.value)
+  return items === result.items ? result : {
+    ...result,
+    items,
+    currentPageCount: items.length
+  }
 }
 
 function auditLogRequestParams(pageState: { current: number; pageSize: number }) {

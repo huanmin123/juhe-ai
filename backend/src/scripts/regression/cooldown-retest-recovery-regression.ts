@@ -76,28 +76,23 @@ const neutralBackoffStartedAtMs = Date.parse('2026-07-25T00:00:00.000Z')
 const neutralBackoffIdentity = {
   accountId: 'account-neutral-backoff-regression',
   generation: 'cooldown:neutral-backoff-regression',
-  observationStartedAt: new Date(neutralBackoffStartedAtMs).toISOString()
+  observationStartedAt: new Date(neutralBackoffStartedAtMs).toISOString(),
+  cooldownUntil: new Date(neutralBackoffStartedAtMs).toISOString()
 }
 const initialNeutralDelay = cooldownRetestService.cooldownRetestNeutralDeferDelaySeconds({
-  ...neutralBackoffIdentity,
-  nowMs: neutralBackoffStartedAtMs
+  ...neutralBackoffIdentity
 })
 const repeatedInitialNeutralDelay = cooldownRetestService.cooldownRetestNeutralDeferDelaySeconds({
-  ...neutralBackoffIdentity,
-  nowMs: neutralBackoffStartedAtMs
+  ...neutralBackoffIdentity
 })
 const laterNeutralDelay = cooldownRetestService.cooldownRetestNeutralDeferDelaySeconds({
   ...neutralBackoffIdentity,
-  nowMs: neutralBackoffStartedAtMs + 210_000
-})
-const boundedNeutralDelay = cooldownRetestService.cooldownRetestNeutralDeferDelaySeconds({
-  ...neutralBackoffIdentity,
-  nowMs: neutralBackoffStartedAtMs + 24 * 60 * 60_000
+  cooldownUntil: new Date(neutralBackoffStartedAtMs + 210_000).toISOString()
 })
 assert.equal(initialNeutralDelay, repeatedInitialNeutralDelay, '冷却复测未知结果退避抖动必须按账户代次确定，避免同一任务随机漂移')
-assert(initialNeutralDelay >= 24 && initialNeutralDelay <= 36, '冷却复测未知结果首轮应在 30 秒附近抖动，不得固定每 10 秒探测')
-assert(laterNeutralDelay > initialNeutralDelay, '冷却复测未知结果持续存在时必须指数放大延迟')
-assert(boundedNeutralDelay >= 12 * 60 && boundedNeutralDelay <= 15 * 60, '冷却复测未知结果退避必须在 15 分钟内封顶并保留抖动')
+assert(initialNeutralDelay >= 60 && initialNeutralDelay <= 5 * 60, '冷却复测未知结果必须错峰到随机 1 至 5 分钟')
+assert(laterNeutralDelay >= 60 && laterNeutralDelay <= 5 * 60, '后续未知结果必须保持随机 1 至 5 分钟')
+assert.notEqual(laterNeutralDelay, initialNeutralDelay, '后续未知结果必须以新的冷却截止时间参与错峰计算')
 
 assertSqliteCooldownCandidatePlan()
 assertSqliteCooldownAccountIdLookupPlans()
@@ -464,27 +459,31 @@ try {
     maxPauseMinutes: 1,
     maxRecoveryHours: 1
   }
-  const exactBackoffFirst = repositories.recordCooldownAccountRetestFailure(exactBackoffAccount.id, exactBackoffInput)
-  const exactBackoffSecond = repositories.recordCooldownAccountRetestFailure(exactBackoffAccount.id, exactBackoffInput)
-  assert.equal(exactBackoffFirst.failureCount, 1, '首次复测失败计数必须为 1')
-  assert.equal(exactBackoffFirst.backoffSeconds, 3, '首次复测失败必须使用 initial 3 秒退避')
-  assert.equal(exactBackoffFirst.maxedFailureCount, 0, '首次失败不得计入达到 maxPause 的次数')
-  assert.equal(exactBackoffSecond.failureCount, 2, '第二次复测失败计数必须为 2')
-  assert.equal(exactBackoffSecond.backoffSeconds, 6, '第二次复测失败必须按倍率进入 6 秒退避')
-  assert.equal(exactBackoffSecond.maxedFailureCount, 0, '第二次失败不得计入达到 maxPause 的次数')
+  const exactBackoffResults = Array.from({ length: 6 }, () => repositories.recordCooldownAccountRetestFailure(exactBackoffAccount.id, exactBackoffInput))
+  assert.deepEqual(
+    exactBackoffResults.slice(0, 5).map((result) => result.backoffSeconds),
+    [3, 6, 12, 24, 48],
+    '真实上游失败前五次必须严格走 3、6、12、24、48 秒快速通道'
+  )
+  assert.deepEqual(
+    exactBackoffResults.slice(0, 5).map((result) => result.recoveryStage),
+    ['fast', 'fast', 'fast', 'fast', 'fast'],
+    '快速通道前五次必须保持 fast 阶段'
+  )
+  const sixthSlowBackoff = exactBackoffResults[5]
+  assert.equal(sixthSlowBackoff.failureCount, 6, '第六次真实失败必须进入慢速通道')
+  assert.equal(sixthSlowBackoff.recoveryStage, 'slow', '第六次真实失败必须标记 slow 阶段')
+  assert(sixthSlowBackoff.backoffSeconds! >= 60 && sixthSlowBackoff.backoffSeconds! <= 5 * 60, '慢速通道必须在随机 1 至 5 分钟内')
   databaseModule.getBusinessDatabase().prepare(`
     UPDATE accounts
-    SET cooldown_retest_failure_count = 4, cooldown_until = ?
+    SET cooldown_retest_failure_count = 5, cooldown_until = ?
     WHERE id = ?
   `).run(new Date(Date.now() - 1000).toISOString(), exactBackoffAccount.id)
-  const exactBackoffBeforeCap = repositories.recordCooldownAccountRetestFailure(exactBackoffAccount.id, exactBackoffInput)
-  const exactBackoffAtCap = repositories.recordCooldownAccountRetestFailure(exactBackoffAccount.id, exactBackoffInput)
-  assert.equal(exactBackoffBeforeCap.failureCount, 5, '达到 maxPause 前一档 failureCount 必须为 5')
-  assert.equal(exactBackoffBeforeCap.backoffSeconds, 48, '达到 maxPause 前一档必须保持 48 秒未封顶退避')
-  assert.equal(exactBackoffBeforeCap.maxedFailureCount, 0, '48 秒未封顶档不得计入 maxedFailureCount')
-  assert.equal(exactBackoffAtCap.failureCount, 6, '首次达到 maxPause 的 failureCount 必须为 6')
-  assert.equal(exactBackoffAtCap.backoffSeconds, 60, 'failureCount=6 时必须首次封顶到 maxPause 60 秒')
-  assert.equal(exactBackoffAtCap.maxedFailureCount, 1, '首次达到 maxPause 时 maxedFailureCount 必须从 1 开始')
+  const uncappedSlowBackoff = repositories.recordCooldownAccountRetestFailure(exactBackoffAccount.id, {
+    ...exactBackoffInput,
+    maxPauseMinutes: 1440
+  })
+  assert.equal(uncappedSlowBackoff.backoffSeconds, sixthSlowBackoff.backoffSeconds, '慢速通道不得受 maxPauseMinutes 封顶影响')
   repositories.updateAccount(exactBackoffAccount.id, { status: 'disabled' }, access)
 
   const restored = repositories.clearAccountFailureState(freshAccount.id, access)
@@ -668,6 +667,43 @@ try {
   assert.equal(legacyNullFoundAgain?.cooldownRetestGeneration, legacyNullGuard.expectedGeneration, '重复 find 必须保持已修复代际令牌稳定')
   repositories.updateAccount(legacyNullAccount.id, { status: 'disabled' }, access)
 
+  for (const legacyUnschedulableStatus of ['temporary_unavailable', 'rate_limited'] as const) {
+    const legacyUnschedulableAccount = createActiveCoolingAccount(
+      `冷却复测旧不可调度 ${legacyUnschedulableStatus} 自愈`,
+      `sk-cooldown-legacy-unschedulable-${legacyUnschedulableStatus}`,
+      group.id
+    )
+    if (legacyUnschedulableStatus === 'rate_limited') {
+      repositories.markAccountCooldown(
+        legacyUnschedulableAccount.id,
+        new Date(Date.now() - 1000).toISOString(),
+        '模拟历史限流冷却',
+        'rate_limited'
+      )
+    }
+    const beforeLegacyUnschedulableRepair = currentCooldownRetestGuard(legacyUnschedulableAccount.id)
+    databaseModule.getBusinessDatabase().prepare(`
+      UPDATE accounts
+      SET schedulable = 0, cooldown_until = ?
+      WHERE id = ?
+    `).run(new Date(Date.now() - 1000).toISOString(), legacyUnschedulableAccount.id)
+    const repairedLegacyUnschedulable = repositories.listAccountsDueForCooldownRetest(100)
+      .find((item) => item.id === legacyUnschedulableAccount.id)
+    assert.equal(repairedLegacyUnschedulable?.status, legacyUnschedulableStatus, `${legacyUnschedulableStatus} 旧不可调度账户必须保留冷却状态`)
+    assert.equal(repairedLegacyUnschedulable?.schedulable, true, `${legacyUnschedulableStatus} 旧不可调度账户必须恢复为可被复测 worker 扫描`)
+    assert.equal(repairedLegacyUnschedulable?.cooldownRetestObservationStartedAt, beforeLegacyUnschedulableRepair.expectedObservationStartedAt, `${legacyUnschedulableStatus} 自愈不得重置有效观察起点`)
+    assert.notEqual(repairedLegacyUnschedulable?.cooldownRetestGeneration, beforeLegacyUnschedulableRepair.expectedGeneration, `${legacyUnschedulableStatus} 自愈必须轮换 generation 使旧队列项失效`)
+    const repairedLegacyUnschedulableRow = databaseModule.getBusinessDatabase().prepare(`
+      SELECT schedulable, config_revision, dispatch_revision
+      FROM accounts
+      WHERE id = ?
+    `).get(legacyUnschedulableAccount.id) as { schedulable: number, config_revision: number, dispatch_revision: number } | undefined
+    assert.equal(repairedLegacyUnschedulableRow?.schedulable, 1, `${legacyUnschedulableStatus} 自愈必须持久化可调度标记`)
+    assert.equal(repairedLegacyUnschedulableRow?.config_revision, beforeLegacyUnschedulableRepair.expectedConfigRevision, `${legacyUnschedulableStatus} 自愈不得篡改配置版本`)
+    assert.equal(repairedLegacyUnschedulableRow?.dispatch_revision, beforeLegacyUnschedulableRepair.expectedDispatchRevision, `${legacyUnschedulableStatus} 自愈不得篡改调度版本`)
+    repositories.updateAccount(legacyUnschedulableAccount.id, { status: 'disabled' }, access)
+  }
+
   const legacyWhitespaceAccount = createActiveCoolingAccount('冷却复测旧空白代际自愈', 'sk-cooldown-legacy-whitespace', group.id)
   const offsetObservation = '2024-02-03T04:05:06.789+08:00'
   const canonicalOffsetObservation = new Date(offsetObservation).toISOString()
@@ -799,11 +835,15 @@ try {
 
   const failureThenDeferAccount = createActiveCoolingAccount('冷却复测失败后延迟不缩短', 'sk-cooldown-failure-then-defer', group.id)
   const failureThenDeferGuard = currentCooldownRetestGuard(failureThenDeferAccount.id)
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET cooldown_retest_failure_count = 5, cooldown_until = ?
+    WHERE id = ?
+  `).run(new Date(Date.now() - 1000).toISOString(), failureThenDeferAccount.id)
   const longerFailure = repositories.recordCooldownAccountRetestFailure(failureThenDeferAccount.id, {
     ...failureThenDeferGuard,
     statusCode: 503,
     errorMessage: '先写入较长失败退避',
-    initialBackoffSeconds: 60,
     maxPauseMinutes: 10,
     maxRecoveryHours: 1
   })
@@ -857,6 +897,7 @@ try {
     .run('not-in-supported-models', new Date(Date.now() - 1000).toISOString(), ineligibleFailureAccount.id)
   const dueIneligibleFailure = repositories.findAccountForCooldownRetest(ineligibleFailureAccount.id)
   assert(dueIneligibleFailure, '后台探针配置失败账号应可读取')
+  const ineligibleFailureQueuedAt = Date.now()
   assert(cooldownRetestService.enqueueCooldownAccountRetest(dueIneligibleFailure, {
     maxPauseMinutes: 10,
     maxRecoveryHours: 1
@@ -865,6 +906,8 @@ try {
   const recordedIneligibleFailure = repositories.findAccountSummary(ineligibleFailureAccount.id, access)
   assert.equal(recordedIneligibleFailure?.cooldownRetestFailureCount ?? 0, 0, '未形成可归因上游失败的探针不得累计账户失败次数')
   assert.equal(recordedIneligibleFailure?.status, 'temporary_unavailable', '探针任务失败必须保留原冷却状态')
+  const ineligibleFailureDelayMs = Date.parse(recordedIneligibleFailure?.cooldownUntil ?? '') - ineligibleFailureQueuedAt
+  assert(ineligibleFailureDelayMs >= 60_000 && ineligibleFailureDelayMs <= 5 * 60_000 + 5_000, '探针任务失败必须在 1 至 5 分钟内错峰顺延')
 
   const probeAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -1138,6 +1181,12 @@ try {
     })
     statement.run(integrityCase.originalValue, integrityCase.targetId)
     if (integrityCase.allowExpiredAccountMaintenance) {
+      const clearedExpiredError: { changes: number | bigint } = databaseModule.getBusinessDatabase().prepare(`
+        UPDATE accounts
+        SET last_error_code = NULL
+        WHERE id = ? AND last_error_code = 'account_expired'
+      `).run(authorizedInstance.id) as { changes: number | bigint }
+      assert.equal(Number(clearedExpiredError.changes), 1, '恢复账户过期夹具前必须只清理本用例写入的 account_expired 错误码')
       const reactivatedRevision = repositories.listAccounts(granteeAccess)
         .find((account) => account.id === authorizedInstance.id)?.configRevision
       assert(Number.isInteger(reactivatedRevision) && Number(reactivatedRevision) >= 1, '授权实例恢复必须携带配置版本')

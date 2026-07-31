@@ -489,6 +489,7 @@
     "test:gateway-api-key-route-query-guard": "tsx src/scripts/regression/gateway-api-key-route-query-guard-regression.ts",
     "test:gateway-storage-cache-invalidation": "tsx src/scripts/regression/gateway-storage-cache-invalidation-regression.ts",
     "test:gateway-models-pre-auth": "tsx src/scripts/regression/gateway-models-pre-auth-regression.ts",
+    "test:gateway-models-dynamic-http": "tsx src/scripts/regression/gateway-models-dynamic-http-regression.ts",
     "test:authenticated-models-protection": "tsx src/scripts/regression/authenticated-models-protection-regression.ts",
     "test:account-model-catalog-refresh": "tsx src/scripts/regression/account-model-catalog-refresh-regression.ts",
     "test:authenticated-models-rate-limit-redis": "tsx src/scripts/regression/authenticated-models-rate-limit-redis-regression.ts",

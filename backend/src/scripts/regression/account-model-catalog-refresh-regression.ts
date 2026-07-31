@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   accountModelCatalogAdditions,
@@ -67,5 +68,11 @@ assert.equal(recommendedAccountHealthCheckModel({
   testModels: healthCheckCandidates,
   profile
 }), 'gpt-5.6-sol', '当前检查模型仍在上游目录时必须保留用户选择')
+
+const refreshServiceSource = readFileSync(new URL('../../modules/accounts/account-model-catalog-refresh.service.ts', import.meta.url), 'utf8')
+const accountsRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
+assert.match(refreshServiceSource, /signal\?: AbortSignal[\s\S]*openAIDraftAccountSecret\(input\.draftAccount, input\.signal/, '模型目录同步必须把调用方取消信号传到草稿凭据处理')
+assert.match(refreshServiceSource, /for \(const entry of entries\) \{\s*throwIfAborted\(signal\)[\s\S]*discoverDraftCandidateUpstreamModelIds\(account, fixedCandidate, signal\)/, '多 Key 目录同步必须在每把 Key 前检查取消，并把信号传给上游请求')
+assert.match(accountsRoutesSource, /req\.once\('aborted'[\s\S]*?refreshAccountDraftModelCatalogAsync\(\{[\s\S]*signal: clientAbortController\.signal/, '客户端中止目录同步请求时，路由必须向服务传递取消信号')
 
 console.log('账户上游模型目录增量同步回归通过：多 Key 仅取全量成功目录交集，保留用户手动选择并按目录顺序回退检查模型')

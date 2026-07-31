@@ -19,12 +19,16 @@ export interface AccountModelCatalogRefreshResult {
 export async function refreshAccountDraftModelCatalogAsync(input: {
   account: AccountSummary
   draftAccount: AccountTestDraftSnapshot
+  signal?: AbortSignal
 }): Promise<AccountModelCatalogRefreshResult> {
+  throwIfAborted(input.signal)
   const profile = await findProviderProtocolProfileAsync(input.account.providerProtocolProfileId ?? '')
   if (!profile) throw new Error('账户协议档案不存在，无法获取上游模型目录')
 
-  const candidate = await openAIDraftAccountSecret(input.draftAccount, new AbortController().signal)
-  const upstreamModels = await discoverDraftAccountUpstreamModelIds(input.account, candidate)
+  const candidate = await openAIDraftAccountSecret(input.draftAccount, input.signal ?? new AbortController().signal)
+  throwIfAborted(input.signal)
+  const upstreamModels = await discoverDraftAccountUpstreamModelIds(input.account, candidate, input.signal)
+  throwIfAborted(input.signal)
   const [localModels, testModels] = await Promise.all([
     listProviderModelCatalogAsync({
       providerCode: input.account.providerCode,
@@ -36,6 +40,7 @@ export async function refreshAccountDraftModelCatalogAsync(input: {
       systemAccountId: input.account.ownerSystemAccountId ?? input.account.systemAccountId
     })
   ])
+  throwIfAborted(input.signal)
   return {
     addedModels: accountModelCatalogAdditions({
       supportedModels: input.account.supportedModels ?? [],
@@ -54,34 +59,44 @@ export async function refreshAccountDraftModelCatalogAsync(input: {
 
 async function discoverDraftAccountUpstreamModelIds(
   account: AccountSummary,
-  candidate: Awaited<ReturnType<typeof openAIDraftAccountSecret>>
+  candidate: Awaited<ReturnType<typeof openAIDraftAccountSecret>>,
+  signal?: AbortSignal
 ): Promise<Set<string>> {
   const entries = candidate.type === 'api_key'
     ? accountApiKeyPoolEntriesForCandidate(candidate)
     : []
   if (entries.length < 2) {
-    return await discoverDraftCandidateUpstreamModelIds(account, candidate)
+    return await discoverDraftCandidateUpstreamModelIds(account, candidate, signal)
   }
 
   const catalogs: Set<string>[] = []
   for (const entry of entries) {
+    throwIfAborted(signal)
     const fixedCandidate = fixedAccountApiKeyPoolCandidate(candidate, entry, { apiKeyRuntimeStateDisabled: true })
-    catalogs.push(await discoverDraftCandidateUpstreamModelIds(account, fixedCandidate))
+    catalogs.push(await discoverDraftCandidateUpstreamModelIds(account, fixedCandidate, signal))
   }
   return intersectAccountUpstreamModelCatalogs(catalogs)
 }
 
 async function discoverDraftCandidateUpstreamModelIds(
   account: AccountSummary,
-  candidate: Awaited<ReturnType<typeof openAIDraftAccountSecret>>
+  candidate: Awaited<ReturnType<typeof openAIDraftAccountSecret>>,
+  signal?: AbortSignal
 ): Promise<Set<string>> {
   const upstream = await discoverAccountUpstreamModels(account, {
     candidateAccount: candidate,
     systemAccountId: candidate.systemAccountId,
     groupId: candidate.boundGroupId,
-    diagnostics: 'full'
+    diagnostics: 'full',
+    signal
   })
   return new Set(upstream.modelIds)
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('模型目录同步已取消')
+  }
 }
 
 export function intersectAccountUpstreamModelCatalogs(catalogs: readonly ReadonlySet<string>[]): Set<string> {

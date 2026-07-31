@@ -73,7 +73,7 @@ const temporaryUnavailable = accountAvailabilityPresentation({
   },
   cooldownRetestLastAt: '2026-07-20T01:03:00.000Z',
   cooldownRetestLastStatusCode: 503,
-  cooldownNextProbeAt: '2026-07-20T01:08:00.000Z',
+  cooldownUntil: '2026-07-20T01:08:00.000Z',
   lastErrorCode: 'upstream_unavailable',
   lastErrorMessage: '上游连接失败',
   lastErrorTraceId: 'trace-current'
@@ -84,6 +84,24 @@ assert.equal(temporaryUnavailable.probe?.lastObservation?.result, 'failed')
 assert.equal(temporaryUnavailable.probe?.lastObservation?.traceId, 'trace-current')
 assert.equal(temporaryUnavailable.probe?.schedule.nextAttemptAt, '2026-07-20T01:08:00.000Z')
 assert.equal(temporaryUnavailable.statusBoundary, undefined)
+
+const rateLimited = accountAvailabilityPresentation({
+  id: 'account-rate-limited',
+  status: 'rate_limited',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_rate_limited',
+    label: '账户限流中',
+    color: 'orange',
+    reason: '等待限流恢复'
+  },
+  cooldownUntil: '2026-07-20T01:10:00.000Z'
+}, now)
+assert.equal(rateLimited.probe?.kind, 'cooldown_retest')
+assert.deepEqual(rateLimited.probe?.schedule, {
+  state: 'scheduled',
+  nextAttemptAt: '2026-07-20T01:10:00.000Z'
+}, '限流账户必须展示 worker 实际使用的冷却复测时间')
 
 const disabled = accountAvailabilityPresentation({
   id: 'account-disabled',
@@ -227,8 +245,11 @@ const sourceCooldown = accountAvailabilityPresentation({
   cooldownUntil: '2026-07-20T01:07:00.000Z',
   authorizationInstanceSourceAccountCooldownUntil: '2026-07-20T01:09:00.000Z'
 }, now)
-assert.equal(sourceCooldown.statusBoundary?.kind, 'cooldown_expiry')
-assert.equal(sourceCooldown.statusBoundary?.at, '2026-07-20T01:09:00.000Z', '来源冷却必须使用来源账户时间')
+assert.equal(sourceCooldown.probe, undefined, '来源冷却截止不是后台复测任务')
+assert.deepEqual(sourceCooldown.statusBoundary, {
+  at: '2026-07-20T01:09:00.000Z',
+  kind: 'cooldown_expiry'
+})
 assert.equal(sourceCooldown.action, 'contact_authorizer')
 
 const sourceRateLimitedWithObservation = accountAvailabilityPresentation({
@@ -249,7 +270,10 @@ const sourceRateLimitedWithObservation = accountAvailabilityPresentation({
   authorizationInstanceSourceAccountLastErrorTraceId: 'trace-source-rate-limit'
 }, now)
 assert.equal(sourceRateLimitedWithObservation.probe?.lastObservation?.traceId, 'trace-source-rate-limit')
-assert.equal(sourceRateLimitedWithObservation.probe?.schedule.state, 'none', '来源 cooldownUntil 不是已确认复测计划，不得标为下次检查')
+assert.deepEqual(sourceRateLimitedWithObservation.probe?.schedule, {
+  state: 'scheduled',
+  nextAttemptAt: '2026-07-20T01:12:00.000Z'
+}, '来源冷却账户必须展示来源 worker 实际使用的复测时间')
 
 const terminalError = accountAvailabilityPresentation({
   id: 'account-terminal-error',
@@ -288,9 +312,11 @@ const instanceCooldownWithoutProbe = accountAvailabilityPresentation({
   },
   cooldownUntil: '2026-07-20T01:11:00.000Z'
 }, now)
-assert.equal(instanceCooldownWithoutProbe.probe, undefined)
-assert.equal(instanceCooldownWithoutProbe.statusBoundary?.kind, 'cooldown_expiry')
-assert.equal(instanceCooldownWithoutProbe.statusBoundary?.at, '2026-07-20T01:11:00.000Z')
+assert.equal(instanceCooldownWithoutProbe.probe, undefined, '实例冷却截止不是后台复测任务')
+assert.deepEqual(instanceCooldownWithoutProbe.statusBoundary, {
+  at: '2026-07-20T01:11:00.000Z',
+  kind: 'cooldown_expiry'
+})
 
 const derivedSourcePending = accountAvailabilityPresentation({
   id: 'authorized-source-pending',

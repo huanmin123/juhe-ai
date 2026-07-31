@@ -367,6 +367,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
       })
       await applySystemAccountMutation(updated)
       message.success('系统账户已更新')
+      showSystemAccountCacheInvalidationWarning(updated)
     } else {
       const payload = { ...basePayload, username, password: form.password }
       const createScopeKey = systemAccountListScopeKey()
@@ -406,6 +407,7 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
     })
     await applySystemAccountMutation(updated)
     message.success('密码已重置')
+    showSystemAccountCacheInvalidationWarning(updated)
     passwordModalOpen.value = false
   } catch (error) {
     console.error(error)
@@ -479,6 +481,11 @@ async function applySystemAccountMutation(mutation: Parameters<typeof reconcileS
   if (reconciliation.requiresBackfill) {
     await loadData({ append: true, quiet: true })
   }
+}
+
+function showSystemAccountCacheInvalidationWarning(mutation: { apiKeyValidationCacheInvalidationFailed?: boolean }): void {
+  if (!mutation.apiKeyValidationCacheInvalidationFailed) return
+  message.warning('系统账户已保存，但 API Key validation cache 失效失败；缓存过期前旧鉴权结果可能仍被使用')
 }
 
 function cancelPendingSystemAccountLoads(): void {

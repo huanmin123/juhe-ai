@@ -45,6 +45,7 @@ interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   isManagementView: ComputedRef<boolean>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
+  onDraftTestSuccess?: (draftPayload: AccountDraftTestPayload['account']) => void
 }
 
 const accountTestSessionHeartbeatIntervalMs = 5000
@@ -231,6 +232,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       testResult.value = result
       syncDraftApiKeyTestSnapshot(run.draftPayload, result)
       if (result.success) {
+        if (run.draftPayload) options.onDraftTestSuccess?.(run.draftPayload)
         message.success(accountTestSuccessMessage(account, result))
       }
     } catch (error) {

@@ -9,25 +9,11 @@
 <body class="help-gate">
   <a class="skip-link" href="#status">跳到正文</a>
   <main id="status" class="gate-content" aria-live="polite">
-    <img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="32" height="32">
+    <span class="brand-badge" aria-hidden="true">J</span><img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="32" height="32" hidden>
     <h1 data-brand-name>juhe-ai 使用手册</h1>
     <p>正在根据当前登录身份打开对应手册。</p>
     <p><a href="/__aisys__/">返回控制台</a></p>
   </main>
   <script src="./help.js"></script>
-  <script>
-    fetch('/__aisys__/api/auth/me', { credentials: 'include' })
-      .then(function (response) {
-        if (!response.ok) throw new Error('未登录');
-        return response.json();
-      })
-      .then(function (payload) {
-        var role = payload && payload.data && payload.data.role;
-        window.location.assign(role === 'admin' || role === 'super_admin' ? '/__aisys__/help/admin/' : '/__aisys__/help/user/');
-      })
-      .catch(function () {
-        window.location.assign('/__aisys__/login?redirect=' + encodeURIComponent('/__aisys__/help/'));
-      });
-  </script>
 </body>
 </html>

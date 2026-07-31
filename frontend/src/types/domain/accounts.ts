@@ -304,8 +304,8 @@ export interface AccountSummary {
   name: string
   notes?: string
   type: AccountType
-  credentials: AccountCredentials
   status: AccountStatus
+  credentials: AccountCredentials
   concurrencyLimit: number
   currentConcurrency: number
   runtimeAvailability?: AccountRuntimeAvailability
@@ -558,6 +558,7 @@ export interface AccountCloneContext {
   name: string
   notes?: string
   type: AccountType
+  status: AccountStatus
   credentialOptions: AccountCloneCredentialOptions
   concurrencyLimit: number
   priority: number
@@ -575,11 +576,21 @@ export interface AccountCloneContext {
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   temporaryUnavailableContinuousProbeEnabled: boolean
+  balanceQueryEnabled: boolean
+  balanceQueryConfig?: AccountBalanceQueryConfig
 }
 
 export interface AccountCloneCredentialOptions {
+  api_key_count?: number
+  api_key_strategy?: 'round_robin' | 'weighted_round_robin'
+  api_key_weights?: number[]
   base_url?: string
   supported_endpoint_modes?: AccountSupportedEndpointMode[]
+  client_id?: string
+  quota_project_id?: string
+  oauth_type?: 'code_assist' | 'google_one' | 'ai_studio'
+  tier_id?: string
+  project_id?: string
   service_tier_override?: AccountGptServiceTierOverride
   reasoning_effort_override?: AccountGptReasoningEffortOverride
   error_handling_rules?: unknown[]

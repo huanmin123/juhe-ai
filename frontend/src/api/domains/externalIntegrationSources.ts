@@ -23,8 +23,10 @@ export const externalIntegrationSourcesApi = {
   detail: (id: string) => unwrap<ExternalIntegrationSourceSummary>(http.get(`/external-integration-sources/${encodeURIComponent(id)}`)),
   create: (payload: ExternalIntegrationSourcePayload) => unwrap<CreatedExternalIntegrationSourceAuthorization>(http.post('/external-integration-sources', payload)),
   update: (id: string, payload: ExternalIntegrationSourcePatchPayload) => unwrap<ExternalIntegrationSourceMutationResult>(http.patch(`/external-integration-sources/${encodeURIComponent(id)}`, payload)),
-  delete: async (id: string): Promise<void> => {
-    await http.delete(`/external-integration-sources/${encodeURIComponent(id)}`)
+  delete: async (id: string, expectedUpdatedAt: string): Promise<void> => {
+    await http.delete(`/external-integration-sources/${encodeURIComponent(id)}`, {
+      data: { expectedUpdatedAt }
+    })
   },
   resetBuiltInTestToken: () => unwrap<{ token: CreatedExternalIntegrationSourceToken }>(http.post('/external-integration-sources/built-in-test-token/reset')),
   createToken: (id: string, payload: ExternalIntegrationSourceTokenPayload) => unwrap<{ token: CreatedExternalIntegrationSourceToken }>(http.post(`/external-integration-sources/${id}/tokens`, payload)),

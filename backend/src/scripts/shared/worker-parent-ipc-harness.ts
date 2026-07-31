@@ -1,14 +1,21 @@
+let workerParentIpcTail: Promise<void> = Promise.resolve()
+
 export function installWorkerParentIpcHarness(): () => void {
   const originalSend = process.send
   process.send = ((message: unknown, callback?: (error: Error | null) => void) => {
     callback?.(null)
     setImmediate(() => {
-      void handleWorkerParentIpcMessage(message)
+      // The harness changes the process role while serving an operation; serialize
+      // requests so polling cannot race with a new task dispatch in this process.
+      workerParentIpcTail = workerParentIpcTail
+        .then(() => handleWorkerParentIpcMessage(message))
+        .catch(() => undefined)
     })
     return true
   }) as typeof process.send
 
   return () => {
+    workerParentIpcTail = Promise.resolve()
     if (originalSend) {
       process.send = originalSend
     } else {

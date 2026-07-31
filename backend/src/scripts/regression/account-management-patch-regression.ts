@@ -77,6 +77,7 @@ try {
     status: 'active',
     skipInitialHealthCheck: true
   }, access)
+  const database = databaseModule.getBusinessDatabase()
 
   const noOp = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(account.id, {
     expectedConfigRevision: 1,
@@ -92,6 +93,32 @@ try {
   assert.deepEqual(noOp.result.changedFields, [])
   assert.equal(noOp.result.authorizationInstancesAffected, false)
   assert.deepEqual(noOp.dml, [], '无变化 PATCH 不得执行任何 DML')
+
+  const testedCredentialAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '测试成功后显式启用账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-management-patch-pending',
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: targetGroup.id,
+    status: 'pending_test'
+  }, access)
+  const testedCredentialActivation = await patchRepository.patchAccountManagementAsync(testedCredentialAccount.id, {
+    expectedConfigRevision: 1,
+    status: 'active',
+    credentialsPatch: { api_key: 'sk-account-management-patch-tested' }
+  }, access)
+  assert(testedCredentialActivation)
+  assert.equal(testedCredentialActivation.status, 'active', '显式选择可调度并修改 Key 时必须保留可调度状态')
+  assert.equal(testedCredentialActivation.healthCheckRequired, true, '修改 Key 后仍需保留后台配置检查')
+  const activatedAccountRow = accountRow(testedCredentialAccount.id)
+  assert.equal(activatedAccountRow.status, 'active')
+  assert.equal(activatedAccountRow.schedulable, 1, '显式选择可调度必须恢复账户调度资格')
 
   const notesPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(account.id, {
     expectedConfigRevision: 1,
@@ -193,7 +220,6 @@ try {
   assert(groupPatch.dml.some((sql) => /^INSERT INTO "?group_accounts"?/i.test(sql)))
   assert.equal(activeGroupId(account.id), targetGroup.id, '分组迁移必须提交最终唯一启用绑定')
 
-  const database = databaseModule.getBusinessDatabase()
   database.exec(`
     CREATE TRIGGER account_management_patch_group_failure
     BEFORE INSERT ON group_accounts
@@ -883,12 +909,12 @@ function relationDml(dml: string[]): string[] {
   return dml.filter((sql) => /account_supported_models|account_model_mappings|account_tag_bindings|group_accounts/i.test(sql))
 }
 
-function accountRow(accountId: string): { config_revision: number; notes: string | null; priority: number } {
+function accountRow(accountId: string): { config_revision: number; notes: string | null; priority: number; status: string; schedulable: number } {
   return databaseModule.getBusinessDatabase().prepare(`
-    SELECT config_revision, notes, priority
+    SELECT config_revision, notes, priority, status, schedulable
     FROM accounts
     WHERE id = ?
-  `).get(accountId) as unknown as { config_revision: number; notes: string | null; priority: number }
+  `).get(accountId) as unknown as { config_revision: number; notes: string | null; priority: number; status: string; schedulable: number }
 }
 
 function activeGroupId(accountId: string): string | undefined {

@@ -7,7 +7,10 @@ process.env.JUHE_AI_WORKER_ROLE = 'ingest-worker'
 process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
 process.env.JUHE_AI_QUEUE_DRIVER = 'memory'
 
-const { attachAccountSlotRelease } = await import('../../modules/gateway/routes.js')
+const {
+  attachAccountSlotRelease,
+  attachGatewayResponseErrorBoundary
+} = await import('../../modules/gateway/routes.js')
 const {
   isGatewayForcedDownstreamClose,
   markGatewayForcedDownstreamClose
@@ -283,6 +286,220 @@ async function testForcedGatewayCloseWaitsForCriticalSettlement(): Promise<void>
   }
 }
 
+async function testResponseErrorBoundaryContainsInjectedErrors(): Promise<void> {
+  const states = new Map<string, ResponseErrorBoundaryTestState>()
+  const uncaughtErrors: unknown[] = []
+  const onUncaughtException = (error: unknown) => {
+    uncaughtErrors.push(error)
+  }
+  const server = http.createServer((req, res) => {
+    const state = states.get(req.url ?? '')
+    if (!state) {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ healthy: true }))
+        return
+      }
+      res.writeHead(404).end()
+      return
+    }
+
+    attachGatewayResponseErrorBoundary(asGatewayResponse(res), {
+      abortController: state.abortController,
+      traceId: state.traceId,
+      endpoint: req.url ?? '/',
+      auditCapture: {
+        markDownstreamClosed: () => {
+          state.downstreamClosedCount += 1
+        }
+      },
+      clearActiveDownstreamSessionAffinity: async () => {
+        state.sessionAffinityClearCount += 1
+        if (state.failSessionAffinityClear) {
+          throw new Error('session affinity cleanup failed')
+        }
+      },
+      reportError: (_error, fields) => {
+        state.diagnostics.push(fields)
+        if (fields.event === 'gateway_downstream_session_affinity_clear_failed') {
+          state.sessionAffinityClearFailureLogged.resolve()
+        }
+      }
+    })
+    if (state.forceGatewayClose) {
+      markGatewayForcedDownstreamClose(asGatewayResponse(res), 'test_forced_close')
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    const emitResponseError = () => {
+      res.emit('error', createResponseError(state.errorCode))
+      state.responseErrorEmitted.resolve()
+    }
+    if (state.errorTiming === 'before_finish') {
+      emitResponseError()
+    } else {
+      res.once('finish', emitResponseError)
+    }
+    res.end(JSON.stringify({ accepted: true }))
+  })
+
+  const unfinishedEpipe = createResponseErrorBoundaryTestState('trace-response-epipe-unfinished', 'EPIPE')
+  const finishedEpipe = createResponseErrorBoundaryTestState('trace-response-epipe-finished', 'EPIPE', {
+    errorTiming: 'after_finish'
+  })
+  const forcedCloseEpipe = createResponseErrorBoundaryTestState('trace-response-forced-close', 'ERR_STREAM_DESTROYED', {
+    forceGatewayClose: true
+  })
+  const unknown = createResponseErrorBoundaryTestState('trace-response-unknown', 'EIO', {
+    failSessionAffinityClear: true
+  })
+  states.set('/response-epipe-unfinished', unfinishedEpipe)
+  states.set('/response-epipe-finished', finishedEpipe)
+  states.set('/response-forced-close', forcedCloseEpipe)
+  states.set('/response-unknown', unknown)
+  process.on('uncaughtException', onUncaughtException)
+  try {
+    const origin = await listen(server)
+    assert.deepEqual(await waitFor(requestJson(`${origin}/response-epipe-unfinished`), '未完成 EPIPE 响应'), { accepted: true })
+    await waitFor(unfinishedEpipe.responseErrorEmitted.promise, '未完成 EPIPE 响应错误已注入')
+    assert.equal(unfinishedEpipe.abortController.signal.aborted, true, '未完成 EPIPE 必须中止当前上游请求')
+    assert.equal(unfinishedEpipe.downstreamClosedCount, 1, '未完成 EPIPE 必须标记下游连接关闭')
+    assert.equal(unfinishedEpipe.sessionAffinityClearCount, 1, '未完成 EPIPE 必须清理下游会话亲和性')
+    const unfinishedEpipeDiagnostic = unfinishedEpipe.diagnostics.find((fields) => fields.event === 'gateway_downstream_response_error')
+    assert.deepEqual(unfinishedEpipeDiagnostic, {
+      event: 'gateway_downstream_response_error',
+      traceId: unfinishedEpipe.traceId,
+      endpoint: '/response-epipe-unfinished',
+      downstreamDisconnected: true,
+      handledAsDownstreamFailure: true,
+      errorCode: 'EPIPE',
+      errorSyscall: 'write',
+      statusCode: 200,
+      headersSent: true,
+      writableEnded: false,
+      writableFinished: false,
+      gatewayForcedDownstreamClose: false,
+      destroyed: false
+    })
+
+    assert.deepEqual(await waitFor(requestJson(`${origin}/response-epipe-finished`), '完成后 EPIPE 响应'), { accepted: true })
+    await waitFor(finishedEpipe.responseErrorEmitted.promise, '完成后 EPIPE 响应错误已注入')
+    assert.equal(finishedEpipe.abortController.signal.aborted, false, '完成后的 EPIPE 不得中止上游请求')
+    assert.equal(finishedEpipe.downstreamClosedCount, 0, '完成后的 EPIPE 不得标记下游连接关闭')
+    assert.equal(finishedEpipe.sessionAffinityClearCount, 0, '完成后的 EPIPE 不得清理下游会话亲和性')
+    const finishedEpipeDiagnostic = finishedEpipe.diagnostics.find((fields) => fields.event === 'gateway_downstream_response_error')
+    assert.deepEqual(finishedEpipeDiagnostic, {
+      event: 'gateway_downstream_response_error',
+      traceId: finishedEpipe.traceId,
+      endpoint: '/response-epipe-finished',
+      downstreamDisconnected: true,
+      handledAsDownstreamFailure: false,
+      errorCode: 'EPIPE',
+      errorSyscall: 'write',
+      statusCode: 200,
+      headersSent: true,
+      writableEnded: true,
+      writableFinished: true,
+      gatewayForcedDownstreamClose: false,
+      destroyed: false
+    })
+
+    assert.deepEqual(await waitFor(requestJson(`${origin}/response-forced-close`), '主动关闭标记响应'), { accepted: true })
+    await waitFor(forcedCloseEpipe.responseErrorEmitted.promise, '主动关闭标记响应错误已注入')
+    assert.equal(forcedCloseEpipe.abortController.signal.aborted, false, '网关主动关闭后的响应错误不得中止上游请求')
+    assert.equal(forcedCloseEpipe.downstreamClosedCount, 0, '网关主动关闭后的响应错误不得标记下游连接关闭')
+    assert.equal(forcedCloseEpipe.sessionAffinityClearCount, 0, '网关主动关闭后的响应错误不得清理下游会话亲和性')
+    const forcedCloseEpipeDiagnostic = forcedCloseEpipe.diagnostics.find((fields) => fields.event === 'gateway_downstream_response_error')
+    assert.deepEqual(forcedCloseEpipeDiagnostic, {
+      event: 'gateway_downstream_response_error',
+      traceId: forcedCloseEpipe.traceId,
+      endpoint: '/response-forced-close',
+      downstreamDisconnected: true,
+      handledAsDownstreamFailure: false,
+      errorCode: 'ERR_STREAM_DESTROYED',
+      errorSyscall: 'write',
+      statusCode: 200,
+      headersSent: true,
+      writableEnded: false,
+      writableFinished: false,
+      gatewayForcedDownstreamClose: true,
+      destroyed: false
+    })
+
+    assert.deepEqual(await waitFor(requestJson(`${origin}/response-unknown`), '未知未完成响应错误请求'), { accepted: true })
+    await waitFor(unknown.responseErrorEmitted.promise, '未知响应错误已注入')
+    await waitFor(unknown.sessionAffinityClearFailureLogged.promise, '会话亲和性清理失败已记录')
+    assert.equal(unknown.abortController.signal.aborted, true, '未知未完成响应错误也必须中止当前上游请求')
+    assert.equal(unknown.downstreamClosedCount, 0, '未知未完成响应错误不得误标记为下游断连')
+    assert.equal(unknown.sessionAffinityClearCount, 1, '未知未完成响应错误也必须尝试清理会话亲和性')
+    assert.deepEqual(unknown.diagnostics[0], {
+      event: 'gateway_downstream_response_error',
+      traceId: unknown.traceId,
+      endpoint: '/response-unknown',
+      downstreamDisconnected: false,
+      handledAsDownstreamFailure: true,
+      errorCode: 'EIO',
+      errorSyscall: 'write',
+      statusCode: 200,
+      headersSent: true,
+      writableEnded: false,
+      writableFinished: false,
+      gatewayForcedDownstreamClose: false,
+      destroyed: false
+    })
+    assert.equal(unknown.diagnostics[1]?.event, 'gateway_downstream_session_affinity_clear_failed')
+    assert.deepEqual(uncaughtErrors, [], '响应 error 不得升级为 uncaughtException')
+    assert.deepEqual(await waitFor(requestJson(`${origin}/health`), '后续健康请求'), { healthy: true })
+  } finally {
+    process.off('uncaughtException', onUncaughtException)
+    await closeServer(server)
+  }
+}
+
+interface ResponseErrorBoundaryTestState {
+  traceId: string
+  errorCode: string
+  errorTiming: 'before_finish' | 'after_finish'
+  forceGatewayClose: boolean
+  failSessionAffinityClear: boolean
+  abortController: AbortController
+  downstreamClosedCount: number
+  sessionAffinityClearCount: number
+  diagnostics: Array<Record<string, unknown>>
+  responseErrorEmitted: ReturnType<typeof deferred<void>>
+  sessionAffinityClearFailureLogged: ReturnType<typeof deferred<void>>
+}
+
+function createResponseErrorBoundaryTestState(
+  traceId: string,
+  errorCode: string,
+  options: {
+    errorTiming?: 'before_finish' | 'after_finish'
+    forceGatewayClose?: boolean
+    failSessionAffinityClear?: boolean
+  } = {}
+): ResponseErrorBoundaryTestState {
+  return {
+    traceId,
+    errorCode,
+    errorTiming: options.errorTiming ?? 'before_finish',
+    forceGatewayClose: options.forceGatewayClose ?? false,
+    failSessionAffinityClear: options.failSessionAffinityClear ?? false,
+    abortController: new AbortController(),
+    downstreamClosedCount: 0,
+    sessionAffinityClearCount: 0,
+    diagnostics: [],
+    responseErrorEmitted: deferred<void>(),
+    sessionAffinityClearFailureLogged: deferred<void>()
+  }
+}
+
+function createResponseError(code: string): Error & { code: string; syscall: string } {
+  return Object.assign(new Error(`injected response error: ${code}`), {
+    code,
+    syscall: 'write'
+  })
+}
+
 class DeterministicAccountSlot {
   private occupied = false
   private readonly waiters: Array<() => void> = []
@@ -423,5 +640,6 @@ async function waitFor<T>(promise: Promise<T>, label: string): Promise<T> {
 await testCriticalSettlementPrecedesSlotRelease()
 await testRealClientAbortReleasesSlotImmediately()
 await testForcedGatewayCloseWaitsForCriticalSettlement()
+await testResponseErrorBoundaryContainsInjectedErrors()
 
-console.log('网关真实 HTTP 生命周期回归通过：关键路由结算先于槽释放，记账不占槽，客户端中断立即释放，网关主动断连不提前释放')
+console.log('网关真实 HTTP 生命周期回归通过：关键路由结算先于槽释放，记账不占槽，客户端中断立即释放，网关主动断连不提前释放，响应 error 被请求级隔离')

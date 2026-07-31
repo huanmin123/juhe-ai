@@ -1,5 +1,5 @@
 import type { AccountListItem, AccountSummary, GroupOptionSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
-import { groupLabelForId } from '@/shared/groupLabelCache'
+import { groupLabelForId, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
@@ -211,6 +211,23 @@ export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[]
 export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
   const candidates = manageableGroupsForProvider(groups, providerCode)
   return candidates.find((group) => group.isDefault)
+}
+
+export function resolveAccountDefaultGroupSelection(input: {
+  groups: GroupOptionSummary[]
+  providerCode: string
+  selectedGroupId?: string
+  cachedDefaultGroup?: GroupSelection
+}): GroupSelection | undefined {
+  const providerCode = input.providerCode.trim()
+  if (!providerCode) return undefined
+  const currentGroup = input.groups.find((group) => group.id === input.selectedGroupId)
+  if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
+    return { id: currentGroup.id, name: currentGroup.name }
+  }
+  const defaultGroup = defaultGroupForProvider(input.groups, providerCode)
+  if (defaultGroup) return { id: defaultGroup.id, name: defaultGroup.name }
+  return input.cachedDefaultGroup
 }
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountListItem): SelectOption[] {

@@ -879,14 +879,14 @@ assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.inputUsdPer1M, 5)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.outputUsdPer1M, 30)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.cachedInputUsdPer1M, 0.5)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.cacheWriteUsdPer1M, 6.25)
-assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.inputUsdPer1M, 2.5)
-assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.outputUsdPer1M, 15)
-assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.cachedInputUsdPer1M, 0.25)
-assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.cacheWriteUsdPer1M, 3.125)
-assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.inputUsdPer1M, 1)
-assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.outputUsdPer1M, 6)
-assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cachedInputUsdPer1M, 0.1)
-assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cacheWriteUsdPer1M, 1.25)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.inputUsdPer1M, 2)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.outputUsdPer1M, 12)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.cachedInputUsdPer1M, 0.2)
+assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.cacheWriteUsdPer1M, 2.5)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.inputUsdPer1M, 0.2)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.outputUsdPer1M, 1.2)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cachedInputUsdPer1M, 0.02)
+assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cacheWriteUsdPer1M, 0.25)
 
 assert.equal(estimateProviderCostUsd({
   providerCode: GPT_VENDOR_CODE,
@@ -915,7 +915,7 @@ assert.equal(estimateProviderCostUsd({
   outputTokens: 200,
   cacheReadTokens: 300,
   cacheWriteTokens: 40
-}), 0.00198)
+}), 0.000396)
 assert.equal(buildProviderCostBreakdown({
   providerCode: GPT_VENDOR_CODE,
   model: 'gpt-5.6-terra',
@@ -923,7 +923,7 @@ assert.equal(buildProviderCostBreakdown({
   outputTokens: 200,
   cacheReadTokens: 300,
   cacheWriteTokens: 40
-})?.cacheWriteUsdPer1M, 3.125)
+})?.cacheWriteUsdPer1M, 2.5)
 
 const gpt55ImageInputAsNormalTokensCost = estimateProviderCostUsd({
   providerCode: GPT_VENDOR_CODE,

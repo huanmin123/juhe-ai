@@ -14,6 +14,7 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
     if (observation.errorCode) lines.push(`错误码：${observation.errorCode}`)
   }
   const schedule = presentation?.probe?.schedule
+  if (!observation && schedule && schedule.state !== 'none') lines.push('最近检查：尚未执行')
   if (schedule?.state === 'scheduled' && schedule.nextAttemptAt) {
     lines.push(`下次检查：${formatDateTime(schedule.nextAttemptAt)}`)
   } else if (schedule?.state === 'due_waiting') {

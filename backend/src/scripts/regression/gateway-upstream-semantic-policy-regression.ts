@@ -30,7 +30,8 @@ import {
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import {
   finalizeHandledUpstreamResponse,
-  handleNonStreamUpstreamResponse
+  handleNonStreamUpstreamResponse,
+  isUnexpectedEmptyUpstreamProtocolResponse
 } from '../../modules/gateway/response/finalization.js'
 import { GatewayDownstreamCommitState } from '../../modules/gateway/response/downstream-commit-state.js'
 import {
@@ -75,6 +76,39 @@ const sideEffectRequest = {
   originalUrl: '/v1/audio/speech',
   path: '/v1/audio/speech'
 } as Request
+const emptyChatResponseRequest = {
+  method: 'POST',
+  originalUrl: '/v1/chat/completions',
+  path: '/v1/chat/completions',
+  body: { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hello' }] }
+} as Request
+const geminiInteractionDeleteRequest = {
+  method: 'DELETE',
+  originalUrl: '/v1beta/interactions/interaction-1',
+  path: '/v1beta/interactions/interaction-1'
+} as Request
+const emptyResponseAccount = {
+  id: 'acct_empty_response',
+  providerCode: GPT_VENDOR_CODE,
+  providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+  protocolCode: 'openai',
+  protocolVersion: 'v1'
+} as UpstreamAccount
+assert.equal(
+  isUnexpectedEmptyUpstreamProtocolResponse({ req: emptyChatResponseRequest, account: emptyResponseAccount, statusCode: 204 }),
+  true,
+  'JSON 推理请求收到 204 空 body 必须判为缺少协议终态'
+)
+assert.equal(
+  isUnexpectedEmptyUpstreamProtocolResponse({ req: emptyChatResponseRequest, account: emptyResponseAccount, statusCode: 205 }),
+  true,
+  'JSON 推理请求收到 205 空 body 必须判为缺少协议终态'
+)
+assert.equal(
+  isUnexpectedEmptyUpstreamProtocolResponse({ req: geminiInteractionDeleteRequest, account: emptyResponseAccount, statusCode: 204 }),
+  false,
+  'Gemini interaction DELETE 的合法 204 空 body 不得被误判为协议失败'
+)
 
 const universalFailoverCases: Array<{
   label: string
@@ -318,8 +352,13 @@ assert.doesNotMatch(
 )
 assert.match(
   finalizationSource,
-  /responsesFailedTerminal = upstreamResponse\.ok[\s\S]*result\.errorPayload\.code === 'upstream_protocol_failure'[\s\S]*hasResponsesFailedTerminal\(result\.responseBodyText\)[\s\S]*forwardedResponseSuccessful = upstreamResponse\.ok && !responsesFailedTerminal/,
+  /upstreamProtocolFailure = result\.errorPayload\.code === 'upstream_protocol_failure'[\s\S]*responsesFailedTerminal = upstreamResponse\.ok[\s\S]*upstreamProtocolFailure[\s\S]*hasResponsesFailedTerminal\(result\.responseBodyText\)[\s\S]*forwardedResponseSuccessful = upstreamResponse\.ok && !responsesFailedTerminal && !upstreamProtocolFailure/,
   'Responses 非流失败终态不得因 HTTP 200 被记为成功'
+)
+assert.match(
+  finalizationSource,
+  /isUnexpectedEmptyUpstreamProtocolResponse[\s\S]*statusCode !== 204 && input\.statusCode !== 205[\s\S]*isSuccessfulEmptyUpstreamResponseAllowed\(input\)[\s\S]*emptyUpstreamProtocolFailure[\s\S]*sendGatewayErrorResponse\(res, 502/,
+  '协议请求收到 204/205 空 body 时必须保留 DELETE 例外，并返回兼容 502 协议错误而非语义成功'
 )
 assert.match(
   finalizationSource,
@@ -497,6 +536,82 @@ async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promis
     const usageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
     assert.equal(usageRecord?.success, false, '超大失败终态使用记录不得记为成功')
     assert.equal(usageRecord?.errorCode, 'upstream_protocol_failure', '使用记录必须记录协议失败码')
+
+    auditQueue.clearAuditLogQueueForTest()
+    usageRecordQueue.clearUsageRecordQueueForTest()
+    const emptyResponse = new OversizedResponsesMockResponse()
+    const emptyRequest = emptyChatJsonRequest()
+    const emptyTraceId = 'trace-empty-204-protocol-failure'
+    const emptyAuditCapture = auditCaptureModule.createAuditCapture({
+      req: emptyRequest,
+      res: emptyResponse as unknown as Response,
+      traceId: emptyTraceId,
+      startedAtMs: Date.now() - 50,
+      captureMode: 'metadata_only'
+    })
+    const emptyAuditAttemptId = emptyAuditCapture.startAttempt({
+      account,
+      attemptIndex: 0,
+      upstreamUrl: 'https://upstream.invalid/v1/chat/completions',
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify(emptyRequest.body)
+    })
+    const emptyInput = {
+      req: emptyRequest,
+      res: emptyResponse as unknown as Response,
+      account,
+      upstreamResponse: empty204UpstreamResponse(),
+      upstreamUrl: 'https://upstream.invalid/v1/chat/completions',
+      auditAttemptId: emptyAuditAttemptId,
+      auditCapture: emptyAuditCapture,
+      settings: {} as GatewaySettings,
+      usageContext: {
+        traceId: emptyTraceId,
+        trafficSource: 'gateway' as const,
+        systemAccountId: 'sys_semantic_regression',
+        apiKeyId: 'key_semantic_regression',
+        groupId: 'group_semantic_regression',
+        endpoint: 'POST /v1/chat/completions',
+        requestSnapshot: {
+          method: 'POST',
+          path: '/v1/chat/completions',
+          originalUrl: '/v1/chat/completions',
+          traceId: emptyTraceId,
+          headers: {},
+          body: emptyRequest.body
+        }
+      },
+      startedAt: Date.now() - 50,
+      timeoutProfile: { timeoutsDisabled: true } as never,
+      signal: new AbortController().signal,
+      downstreamCommitState: new GatewayDownstreamCommitState(),
+      accountStateMutationEnabled: false,
+      automaticAccountStateMutationEnabled: false
+    }
+    const emptyResult = await handleNonStreamUpstreamResponse(emptyInput)
+    if (emptyResult.alreadyFinalized || emptyResult.retryUpstream === true) {
+      throw new Error('204 空响应必须进入统一最终化，不能重试或提前结束')
+    }
+    const completedEmptyResult = emptyResult
+    assert.equal(completedEmptyResult.errorPayload.code, 'upstream_protocol_failure', '204 空响应必须进入协议失败终态')
+    await finalizeHandledUpstreamResponse({
+      ...emptyInput,
+      upstreamResponse: empty204UpstreamResponse(),
+      result: completedEmptyResult,
+      routingEffectsApplied: true
+    })
+    assert.equal(emptyResponse.statusCode, 502, '204 空响应不得向客户端提交空成功')
+    auditQueue.flushAllAuditLogQueue()
+    const emptyAuditLog = repositories.listAuditLogs({ traceId: emptyTraceId }).items[0]
+    assert(emptyAuditLog, '204 空响应必须保留失败审计')
+    assert.equal(emptyAuditLog.success, false, '204 空响应审计总结果不得记为成功')
+    const emptyAuditDetail = repositories.getAuditLogDetail(emptyAuditLog.id)
+    assert.equal(emptyAuditDetail?.attempts[0]?.success, false, '204 空响应的 audit attempt 不得记为成功')
+    assert.equal(emptyAuditDetail?.attempts[0]?.errorCode, 'upstream_protocol_failure', '204 空响应 attempt 必须记录协议失败码')
+    const emptyUsageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
+    assert.equal(emptyUsageRecord?.success, false, '204 空响应使用记录不得记为成功')
+    assert.equal(emptyUsageRecord?.errorCode, 'upstream_protocol_failure', '204 空响应使用记录必须记录协议失败码')
   } finally {
     auditQueue.clearAuditLogQueueForTest()
     usageRecordQueue.clearUsageRecordQueueForTest()
@@ -549,6 +664,10 @@ class OversizedResponsesMockResponse extends EventEmitter {
     return this
   }
 
+  json(body: unknown): this {
+    return this.send(Buffer.from(JSON.stringify(body), 'utf8'))
+  }
+
   end(): this {
     this.writableEnded = true
     this.writableFinished = true
@@ -571,6 +690,20 @@ function oversizedResponsesRequest(): Request {
     path: '/v1/responses',
     headers,
     body: { model: 'gpt-5.6-sol', input: 'semantic failure regression' },
+    header(name: string): string | undefined {
+      return headers[name.toLowerCase()]
+    }
+  } as unknown as Request
+}
+
+function emptyChatJsonRequest(): Request {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  return {
+    method: 'POST',
+    originalUrl: '/v1/chat/completions',
+    path: '/v1/chat/completions',
+    headers,
+    body: { model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'empty response regression' }] },
     header(name: string): string | undefined {
       return headers[name.toLowerCase()]
     }
@@ -616,6 +749,15 @@ function oversizedFailedResponsesUpstreamResponse(): GatewayUpstreamResponse {
       yield prefix
       yield suffix
     })()
+  }
+}
+
+function empty204UpstreamResponse(): GatewayUpstreamResponse {
+  return {
+    status: 204,
+    ok: true,
+    headers: new Headers(),
+    body: null
   }
 }
 

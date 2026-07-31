@@ -16,7 +16,7 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountTestDraftSnapshot,
 } from '../../storage/account-test-tasks.repository.js'
-import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
+import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { preflightAccountModelCatalog, resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
@@ -46,7 +46,6 @@ const manualAccountTestRefillMinBatchSize = 100
 const manualAccountTestRefillMaxBatchSize = 1000
 const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
 const manualAccountTestQueuedSweepBatchSize = 500
-const accountApiKeyPoolTestConcurrency = 5
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined
@@ -318,7 +317,19 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
-    await completeAccountTestTaskViaDbService(task.id, result)
+    const expectedConfigRevision = result.tokenRefreshed === true ? undefined : account.configRevision
+    const matchingRecovery = expectedConfigRevision !== undefined && shouldRestoreAccountAfterMatchingManualTest(task, account, result)
+      ? {
+        accountId: account.id,
+        expectedConfigRevision,
+        healthCheckModel: task.model,
+        healthCheckEndpointMode: task.testEndpointMode
+      }
+      : undefined
+    const completion = await completeAccountTestTaskViaDbService(task.id, result, matchingRecovery)
+    if (completion?.task?.status === 'success' && completion.recoveryChanged && matchingRecovery) {
+      sendAccountRuntimeClearToServer({ accountId: matchingRecovery.accountId })
+    }
     return true
   } catch (error) {
     if (controller.signal.aborted) {
@@ -335,6 +346,25 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   } finally {
     runningAccountTestControllers.delete(task.id)
   }
+}
+
+function shouldRestoreAccountAfterMatchingManualTest(
+  task: { draftAccount?: AccountTestDraftSnapshot; model?: string; testEndpointMode?: AccountSupportedEndpointMode },
+  account: AccountSummary,
+  result: AccountTestResult
+): task is { model: string; testEndpointMode: AccountSupportedEndpointMode } {
+  return !task.draftAccount
+    && result.success
+    && result.tokenRefreshed !== true
+    && account.accessType !== 'authorized'
+    && account.status !== 'disabled'
+    && account.status !== 'quality_isolated'
+    && account.schedulable === false
+    && typeof account.configRevision === 'number'
+    && typeof task.model === 'string'
+    && task.model === account.healthCheckModel
+    && typeof task.testEndpointMode === 'string'
+    && task.testEndpointMode === account.healthCheckEndpointMode
 }
 
 function accountTestTaskProgressReporter(
@@ -395,11 +425,21 @@ async function markAccountTestTaskCanceledViaDbService(taskId: string, message: 
   })
 }
 
-async function completeAccountTestTaskViaDbService(taskId: string, result: AccountTestResult) {
+async function completeAccountTestTaskViaDbService(
+  taskId: string,
+  result: AccountTestResult,
+  matchingRecovery?: {
+    accountId: string
+    expectedConfigRevision: number
+    healthCheckModel: string
+    healthCheckEndpointMode: AccountSupportedEndpointMode
+  }
+) {
   return await requestBackgroundWorkerDbService({
     type: 'complete_account_test_task',
     taskId,
-    result
+    result,
+    matchingRecovery
   })
 }
 
@@ -693,31 +733,25 @@ async function runAccountApiKeyPoolEntryTests(
     onProgress?: (message: string) => void
   }
 ): Promise<AccountApiKeyPoolEntryTestResult[]> {
-  const results: Array<AccountApiKeyPoolEntryTestResult | undefined> = new Array(entries.length)
-  let nextIndex = 0
+  const results: AccountApiKeyPoolEntryTestResult[] = []
   let completed = 0
   let successCount = 0
   let failedCount = 0
-  const workerCount = Math.min(accountApiKeyPoolTestConcurrency, entries.length)
 
-  async function runWorker(): Promise<void> {
-    while (!input.signal.aborted && nextIndex < entries.length) {
-      const index = nextIndex
-      nextIndex += 1
-      const result = await runAccountApiKeyPoolEntryTest(account, baseCandidate, entries[index], input)
-      results[index] = result
-      completed += 1
-      if (result.success) {
-        successCount += 1
-      } else {
-        failedCount += 1
-      }
-      input.onProgress?.(accountApiKeyPoolProgressMessage(completed, entries.length, successCount, failedCount))
+  for (const entry of entries) {
+    if (input.signal.aborted) break
+    const result = await runAccountApiKeyPoolEntryTest(account, baseCandidate, entry, input)
+    results.push(result)
+    completed += 1
+    if (result.success) {
+      successCount += 1
+    } else {
+      failedCount += 1
     }
+    input.onProgress?.(accountApiKeyPoolProgressMessage(completed, entries.length, successCount, failedCount))
+    if (result.success) break
   }
-
-  await Promise.all(Array.from({ length: workerCount }, runWorker))
-  return results.filter((result): result is AccountApiKeyPoolEntryTestResult => Boolean(result))
+  return results
 }
 
 async function runAccountApiKeyPoolEntryTest(
@@ -847,10 +881,11 @@ function accountApiKeyPoolTestMessage(
   }
 ): string {
   if (pool.successCount >= 1) {
+    const skippedCount = Math.max(0, pool.total - pool.tested)
     if (pool.failedCount > 0) {
-      return `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用，${pool.failedCount} 个 Key 未通过`
+      return `API Key 池测试通过：已测 ${pool.tested}/${pool.total}，${pool.successCount} 个 Key 可用，${pool.failedCount} 个 Key 未通过${skippedCount > 0 ? `，${skippedCount} 个未测试` : ''}`
     }
-    return `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用`
+    return `API Key 池测试通过：已测 ${pool.tested}/${pool.total}，${pool.successCount} 个 Key 可用${skippedCount > 0 ? `，${skippedCount} 个未测试` : ''}`
   }
   if (pool.tested < pool.total) {
     return `API Key 池测试未完成：0/${pool.total} 个 Key 可用`

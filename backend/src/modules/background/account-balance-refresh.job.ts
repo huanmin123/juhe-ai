@@ -12,8 +12,8 @@ import {
 } from '../accounts/account-balance-query.service.js'
 import { loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
 
-const refreshBatchSize = 12
-const refreshConcurrency = 4
+const refreshBatchSize = 36
+const refreshConcurrency = 18
 const recoveryBatchSize = 4
 const refreshRunBudgetMs = 45_000
 const refreshCandidateTimeoutMs = 20_000

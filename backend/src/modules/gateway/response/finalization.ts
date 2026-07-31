@@ -35,9 +35,12 @@ import {
   forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
 import {
+  gatewayErrorPayload,
+  gatewayErrorPayloadForProtocol,
   gatewayStreamClientRetryErrorCode,
   gatewayStreamClientRetryMessage,
   isOpenAIJsonResponseContentType,
+  sendGatewayErrorResponse,
   writeGatewayStreamFailureEvent,
   type GatewayErrorProtocol
 } from './responses.js'
@@ -162,6 +165,24 @@ export function isSuccessfulEmptyUpstreamResponseAllowed(input: {
   const normalizedPath = requestPath.replace(/^\/v1beta(?=\/|$)/, '') || '/'
   if (!/^\/interactions\/[^/]+$/.test(normalizedPath)) return false
   return gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) === 'interactions'
+}
+
+export function isUnexpectedEmptyUpstreamProtocolResponse(input: {
+  req: Request
+  account: UpstreamAccount
+  statusCode: number
+}): boolean {
+  if (input.statusCode !== 204 && input.statusCode !== 205) return false
+  if (isSuccessfulEmptyUpstreamResponseAllowed(input)) return false
+  if (isEffectiveOpenAIStreamRequest(input.req, input.account)) return true
+  return gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) !== 'unknown'
+}
+
+function emptyUpstreamProtocolFailure(): Record<string, string> {
+  return {
+    code: 'upstream_protocol_failure',
+    message: '上游返回空响应，缺少请求协议要求的终态'
+  }
 }
 
 export function protocolValidatedNonStreamResponse(input: {
@@ -292,6 +313,24 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     ? gatewayClientAllowsUpstreamSemanticInterpretation(clientStrategy)
     : false
   if (!upstreamResponse.body) {
+    if (isUnexpectedEmptyUpstreamProtocolResponse({ req, account, statusCode: upstreamResponse.status })) {
+      const errorPayload = emptyUpstreamProtocolFailure()
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        responseBody: Buffer.alloc(0),
+        success: false,
+        errorPhase: 'upstream_response',
+        errorCode: errorPayload.code,
+        errorMessage: errorPayload.message
+      })
+      return {
+        alreadyFinalized: false,
+        usage: emptyUsage(),
+        firstTokenMs: Date.now() - startedAt,
+        errorPayload
+      }
+    }
     prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
     input.downstreamCommitState.markTransportCommitted()
     endResponse(res)
@@ -822,6 +861,25 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       await deleteGeminiInteractionBeforeDownstreamCommit({ req, auditCapture, account, usageContext })
     }
     if (!upstreamResponse.body) {
+      if (isUnexpectedEmptyUpstreamProtocolResponse({ req, account, statusCode: upstreamResponse.status })) {
+        const emptyProtocolFailure = emptyUpstreamProtocolFailure()
+        errorPayload = emptyProtocolFailure
+        auditCapture.completeAttempt(auditAttemptId, {
+          statusCode: upstreamResponse.status,
+          responseHeaders: upstreamResponse.headers,
+          responseBody: Buffer.alloc(0),
+          success: false,
+          errorPhase: 'upstream_response',
+          errorCode: emptyProtocolFailure.code,
+          errorMessage: emptyProtocolFailure.message
+        })
+        return {
+          alreadyFinalized: false,
+          usage: emptyUsage(),
+          firstTokenMs: Date.now() - startedAt,
+          errorPayload
+        }
+      }
       prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
       input.downstreamCommitState.markTransportCommitted()
       endResponse(res)
@@ -1921,20 +1979,21 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   if (input.routingEffectsApplied !== true) {
     await applyHandledUpstreamRoutingEffects(input)
   }
+  const upstreamProtocolFailure = result.errorPayload.code === 'upstream_protocol_failure'
   const responsesFailedTerminal = upstreamResponse.ok
     && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
     && (
-      result.errorPayload.code === 'upstream_protocol_failure'
+      upstreamProtocolFailure
       || hasResponsesFailedTerminal(result.responseBodyText)
     )
-  const forwardedResponseSuccessful = upstreamResponse.ok && !responsesFailedTerminal
+  const forwardedResponseSuccessful = upstreamResponse.ok && !responsesFailedTerminal && !upstreamProtocolFailure
   const protocolValidatedSuccess = forwardedResponseSuccessful && result.protocolValidatedSuccess === true
   const finalErrorCode = typeof result.errorPayload.code === 'string'
     ? result.errorPayload.code
-    : responsesFailedTerminal ? 'upstream_protocol_failure' : undefined
+    : responsesFailedTerminal || upstreamProtocolFailure ? 'upstream_protocol_failure' : undefined
   const finalErrorMessage = typeof result.errorPayload.message === 'string'
     ? result.errorPayload.message
-    : responsesFailedTerminal ? '上游 Responses 返回失败终态' : undefined
+    : responsesFailedTerminal ? '上游 Responses 返回失败终态' : upstreamProtocolFailure ? '上游响应违反请求协议终态' : undefined
 
   await recordCompletedUpstreamAttempt(req, {
     ...usageContext,
@@ -1976,12 +2035,30 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
       partTypes: ['upstream_response']
     })
   }
+  let finalStatusCode = upstreamResponse.status
+  let finalResponseBody = result.bodyOmission ? undefined : result.responseBodyText
+  if (upstreamProtocolFailure && !res.headersSent && !res.writableEnded && !res.destroyed) {
+    const responsePayload = gatewayErrorPayload(
+      finalErrorMessage ?? '上游响应违反请求协议终态',
+      'upstream_response_error',
+      finalErrorCode
+    )
+    const clientPayload = gatewayErrorPayloadForProtocol(
+      responsePayload,
+      gatewayProtocolClientErrorProtocolForRequest(req, account)
+    )
+    sendGatewayErrorResponse(res, 502, responsePayload, {
+      protocol: gatewayProtocolClientErrorProtocolForRequest(req, account)
+    })
+    finalStatusCode = 502
+    finalResponseBody = JSON.stringify(clientPayload)
+  }
   auditCapture.finalize({
     outcome: forwardedResponseSuccessful ? 'success' : 'upstream_failed',
     success: forwardedResponseSuccessful,
-    statusCode: upstreamResponse.status,
+    statusCode: finalStatusCode,
     responseHeaders: responseHeadersToObject(res),
-    responseBody: result.bodyOmission ? undefined : result.responseBodyText,
+    responseBody: finalResponseBody,
     responsePartType: forwardedResponseSuccessful ? 'gateway_response' : 'gateway_error',
     errorPhase: forwardedResponseSuccessful ? undefined : 'upstream_response',
     errorCode: finalErrorCode,

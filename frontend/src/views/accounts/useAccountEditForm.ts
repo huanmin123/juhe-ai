@@ -20,9 +20,8 @@ import type {
   SystemAccountPrincipalSummary
 } from '@/types/domain'
 import {
-  defaultGroupForProvider as selectDefaultGroupForProvider,
   groupOptionsForProviderWithSelected,
-  isManageableGroupForProvider,
+  resolveAccountDefaultGroupSelection,
   targetSystemAccountLabel as buildTargetSystemAccountLabel
 } from './accountDerivedState'
 import {
@@ -334,23 +333,18 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return accountEditProviderName(providerCode, availableProviders.value)
   }
 
-  function defaultGroupForProvider(providerCode: string) {
-    return selectDefaultGroupForProvider(options.groups.value, providerCode)
-  }
-
   function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     if (!providerCode) {
       form.groupId = undefined
       form.group = undefined
       return
     }
-    const currentGroup = options.groups.value.find((group) => group.id === form.groupId)
-    if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
-      form.group = { id: currentGroup.id, name: currentGroup.name }
-      return
-    }
-    const nextGroup = defaultGroupForProvider(providerCode)
-    setFormGroup(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined)
+    setFormGroup(resolveAccountDefaultGroupSelection({
+      groups: options.groups.value,
+      providerCode,
+      selectedGroupId: form.groupId,
+      cachedDefaultGroup: cachedDefaultGroupForProvider(providerCode)
+    }))
   }
 
   async function openCreate() {
@@ -491,6 +485,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function applyCachedDefaultGroup(providerCode = form.providerCode): void {
     if (!providerCode || form.groupId) return
+    const defaultGroup = cachedDefaultGroupForProvider(providerCode)
+    if (defaultGroup) {
+      setFormGroup(defaultGroup)
+      return
+    }
+    ensureDefaultGroupSelected(providerCode)
+  }
+
+  function cachedDefaultGroupForProvider(providerCode: string): GroupSelection | undefined {
     const referenceParams = {
       viewScope: options.isManagementView.value ? 'admin' : 'self',
       systemAccountId: createScopeParams.value?.systemAccountId
@@ -499,12 +502,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const defaultGroup = referenceData?.providerDefaults
       .find((item) => item.providerCode === providerCode)
       ?.defaultGroup
-    if (!defaultGroup) {
-      ensureDefaultGroupSelected(providerCode)
-      return
-    }
-    setFormGroup({ id: defaultGroup.id, name: defaultGroup.name })
+    if (!defaultGroup) return undefined
     rememberGroupLabel(defaultGroup.id, defaultGroup.name)
+    return { id: defaultGroup.id, name: defaultGroup.name }
   }
 
   async function openEdit(account: AccountListItem) {
@@ -689,6 +689,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           priority: form.priority,
           privilege: form.privilege,
           status: form.status,
+          statusSelectionExplicit: form.statusSelectionExplicit,
           tags: [...form.tags],
           notes: form.notes,
           baseUrl: form.baseUrl,
@@ -818,9 +819,13 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = sourceAccount.id
     creatingAccountScopeParams.value = cloneScopeParams
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
-    const selectedGroup = sourceAccount.boundGroupId
-      ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
-      : undefined
+    const sourceGroupId = sourceAccount.boundGroupId
+      ?? options.groupIdForAccount(account.id)
+      ?? account.boundGroupId
+    const selectedGroup = groupSelectionForId(
+      sourceGroupId,
+      sourceAccount.boundGroupName ?? account.boundGroupName
+    )
     let formLoad: ReturnType<typeof buildAccountCloneFormLoad>
     try {
       formLoad = buildAccountCloneFormLoad({

@@ -381,7 +381,7 @@ export function seedDefaults(database: DatabaseSync): void {
     }
   }
 
-  seedAdminDefaultBuiltInGroups(database, now)
+  seedDefaultBuiltInGroupsForAllSystemAccounts(database, now)
   seedAdminDefaultRouteStrategiesAndApiKeys(database, now)
   seedAdminChatApiKey(database, now)
   seedBuiltInExternalIntegrationTestToken(database, now)
@@ -558,32 +558,102 @@ function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
   return routeStrategyName.replace(/路由$/, 'API Key')
 }
 
-function seedAdminDefaultBuiltInGroups(database: DatabaseSync, timestamp: string): void {
-  const insertStatement = database.prepare(`
-    INSERT OR IGNORE INTO groups (
-      id, system_account_id, name, provider_code,
-      description, enabled, is_default, created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
-  `)
-  const updateStatement = database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
+function seedDefaultBuiltInGroupsForAllSystemAccounts(database: DatabaseSync, timestamp: string): void {
   for (const group of DEFAULT_BUILT_IN_GROUPS) {
-    const existingDefault = database
-      .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
-      .get(group.systemAccountId, group.providerCode) as { id?: string } | undefined
-    if (existingDefault?.id) {
-      continue
-    }
-    insertStatement.run(
-      group.id,
+    database.prepare(`
+      UPDATE groups AS candidate
+      SET is_default = 1
+      WHERE candidate.provider_code = ?
+        AND candidate.is_default = 0
+        AND candidate.system_account_id = ?
+        AND candidate.id = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM groups AS existing_default
+          WHERE existing_default.system_account_id = candidate.system_account_id
+            AND existing_default.provider_code = candidate.provider_code
+            AND existing_default.is_default = 1
+        )
+    `).run(group.providerCode, group.systemAccountId, group.id)
+
+    database.prepare(`
+      INSERT OR IGNORE INTO groups (
+        id, system_account_id, name, provider_code,
+        description, enabled, is_default, created_at, updated_at
+      )
+      SELECT
+        CASE WHEN system_accounts.id = ? THEN ? ELSE ? || system_accounts.id END,
+        system_accounts.id,
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM groups AS same_name
+            WHERE same_name.system_account_id = system_accounts.id
+              AND same_name.provider_code = ?
+              AND lower(same_name.name) = lower(?)
+          ) THEN ? || '（系统默认：' || system_accounts.id || (
+            WITH RECURSIVE candidate_suffix(suffix) AS (
+              SELECT 0
+              UNION ALL
+              SELECT suffix + 1
+              FROM candidate_suffix
+              WHERE suffix < (
+                SELECT COUNT(*)
+                FROM groups AS fallback_name
+                WHERE fallback_name.system_account_id = system_accounts.id
+                  AND fallback_name.provider_code = ?
+                  AND lower(fallback_name.name) LIKE lower(?) || '（系统默认：' || system_accounts.id || '%）'
+              )
+            )
+            SELECT CASE
+              WHEN candidate_suffix.suffix = 0 THEN ''
+              ELSE ' #' || candidate_suffix.suffix
+            END
+            FROM candidate_suffix
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM groups AS existing_fallback_name
+              WHERE existing_fallback_name.system_account_id = system_accounts.id
+                AND existing_fallback_name.provider_code = ?
+                AND lower(existing_fallback_name.name) = lower(
+                  ? || '（系统默认：' || system_accounts.id || CASE
+                    WHEN candidate_suffix.suffix = 0 THEN ''
+                    ELSE ' #' || candidate_suffix.suffix
+                  END || '）'
+                )
+            )
+            ORDER BY candidate_suffix.suffix
+            LIMIT 1
+          ) || '）'
+          ELSE ?
+        END,
+        ?, ?, 1, 1, ?, ?
+      FROM system_accounts
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM groups AS existing_default
+        WHERE existing_default.system_account_id = system_accounts.id
+          AND existing_default.provider_code = ?
+          AND existing_default.is_default = 1
+      )
+    `).run(
       group.systemAccountId,
+      group.id,
+      `grp_default_${group.providerCode}_`,
+      group.providerCode,
+      group.name,
+      group.name,
+      group.providerCode,
+      group.name,
+      group.providerCode,
+      group.name,
       group.name,
       group.providerCode,
       group.description,
       timestamp,
-      timestamp
+      timestamp,
+      group.providerCode
     )
-    updateStatement.run(group.id, group.systemAccountId)
   }
 }
 

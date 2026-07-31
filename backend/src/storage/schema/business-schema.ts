@@ -1116,6 +1116,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
         AND schedulable = 1
         AND type IN ('api_key', 'oauth', 'google_oauth')
         AND status IN ('temporary_unavailable', 'rate_limited');
+    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_legacy_repair_order
+      ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC)
+      WHERE deleted_at IS NULL
+        AND cooldown_until IS NOT NULL
+        AND type IN ('api_key', 'oauth', 'google_oauth')
+        AND status IN ('temporary_unavailable', 'rate_limited');
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;

@@ -723,8 +723,10 @@ async function assertManagementSourceLifecycle(baseUrl: string, adminCookie: str
     Cookie: adminCookie
   })
   assert.equal(managementSourceList.status, 200, '新增后应能从轻量来源列表读取来源标识')
-  const managementSourceId = managementSourceList.body.data.items.find((item: any) => item.name === '管理 API 删除回归来源')?.id as string | undefined
+  const managementSource = managementSourceList.body.data.items.find((item: any) => item.name === '管理 API 删除回归来源') as { id?: string; updatedAt?: string } | undefined
+  const managementSourceId = managementSource?.id
   assert(managementSourceId, '新增来源应出现在管理列表中')
+  assert(managementSource?.updatedAt, '来源列表必须返回删除 CAS 所需版本')
   const managementTokenSecret = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${managementSourceId}/tokens/${managementTokenId}/secret`, {
     Cookie: adminCookie
   })
@@ -734,9 +736,19 @@ async function assertManagementSourceLifecycle(baseUrl: string, adminCookie: str
     Authorization: `Bearer ${managementToken}`
   })
   assert.equal(publicCall.status, 200, '新增来源授权生成的 token 应可访问公开资源接口')
+  const staleManagementSourceDelete = await requestStatus(baseUrl, `/__aisys__/api/external-integration-sources/${managementSourceId}`, {
+    Cookie: adminCookie
+  }, 'DELETE', { expectedUpdatedAt: managementSource.updatedAt })
+  assert.equal(staleManagementSourceDelete, 409, '公开调用更新来源观测版本后，旧删除版本必须冲突')
+  const refreshedSourceList = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources?keyword=%E7%AE%A1%E7%90%86%20API%20%E5%88%A0%E9%99%A4%E5%9B%9E%E5%BD%92%E6%9D%A5%E6%BA%90&pageSize=10', {
+    Cookie: adminCookie
+  })
+  const refreshedSource = refreshedSourceList.body.data.items.find((item: any) => item.id === managementSourceId) as { updatedAt?: string } | undefined
+  assert.equal(refreshedSourceList.status, 200, '删除冲突后应能重新读取来源最新版本')
+  assert(refreshedSource?.updatedAt, '重新读取的来源必须提供删除 CAS 所需版本')
   const managementSourceDelete = await requestStatus(baseUrl, `/__aisys__/api/external-integration-sources/${managementSourceId}`, {
     Cookie: adminCookie
-  }, 'DELETE')
+  }, 'DELETE', { expectedUpdatedAt: refreshedSource.updatedAt })
   assert.equal(managementSourceDelete, 204, '管理员应能删除公开接口来源授权')
   const deletedSourceAuth = await requestJson(baseUrl, `/__aipublic__/group/list?targetUsername=${targetUsername}`, {
     Authorization: `Bearer ${managementToken}`

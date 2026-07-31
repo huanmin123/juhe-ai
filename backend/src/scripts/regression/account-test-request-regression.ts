@@ -44,6 +44,7 @@ assert.equal(accountTestModelsPathForProtocol('gemini'), '/v1beta/models', 'Gemi
 assert.equal(accountTestModelsPathForProtocol('anthropic'), '/v1/models', 'Anthropic 协议必须保留 /v1/models 目录路径')
 assert.deepEqual(accountDiagnosticRetryTimeouts('generation'), [10_000, 20_000, 30_000], '文本测试必须保留三档重试窗口')
 assert.deepEqual(accountDiagnosticRetryTimeouts('image_generation'), [120_000], '图片测试必须只生成一次，并保留 120 秒完成窗口')
+assert.deepEqual(accountDiagnosticRetryTimeouts('models_catalog'), [10_000], '模型目录获取必须只保留单次 10 秒窗口，不能进入生成诊断重试阶梯')
 assert.deepEqual(
   accountDiagnosticAttemptProgress(0, 120_000, Date.now() + 1_000, accountDiagnosticRetryTimeouts('image_generation')),
   {
@@ -132,7 +133,7 @@ for (const mode of ['interactions_json', 'interactions_sse'] as const) {
     type: 'api_key',
     healthCheckEndpointMode: mode
   }).success, true, `账户创建契约必须接受 ${mode}`)
-  assert.equal(accountUpdateSchema.safeParse({ healthCheckEndpointMode: mode }).success, true, `账户更新契约必须接受 ${mode}`)
+  assert.equal(accountUpdateSchema.safeParse({ expectedConfigRevision: 1, healthCheckEndpointMode: mode }).success, true, `账户更新契约必须接受 ${mode}`)
   assert.equal(accountTestSchema.safeParse({ testEndpointMode: mode }).success, true, `账户测试契约必须接受 ${mode}`)
 }
 assert.equal(accountBatchEditSchema.safeParse({
@@ -449,7 +450,7 @@ assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupported
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
 const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
 const endpointModesSource = readFileSync(resolve('src/modules/accounts/account-test-endpoint-modes.ts'), 'utf8')
-assert.match(serviceSource, /const responseContext = probeKind === 'image_generation'\s*\? undefined\s*: parseDiagnosticResponseContext\(responseText\)/, '非图片账户测试必须为最终诊断正文创建唯一解析上下文')
+assert.match(serviceSource, /const responseContext = probeKind === 'image_generation'\s*\? undefined\s*: diagnosticResponseContextFromGatewayResponse\(/, '非图片账户测试必须为最终诊断正文创建唯一解析上下文')
 assert.match(serviceSource, /inspectAccountTestImageResponseEnvelope\(responseText, responseTruncated\)/, '图片测试必须使用有界 Images envelope 扫描器')
 assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_generation'\s*\? \{ response: '已省略' \}/, '图片测试必须使用静态省略响应，不得解析或复制大图片正文')
 assert.doesNotMatch(serviceSource, /redactAccountTestImageResponse/, '图片测试不得为纯展示解析上游图片正文')
@@ -487,8 +488,18 @@ assert.match(serviceSource, /upstreamModel/, '账户测试结果必须返回实�
 assert.match(serviceSource, /sourceEndpointFamily/, '账户测试结果必须返回映射下游协议入口')
 assert.match(serviceSource, /upstreamEndpointFamily/, '账户测试结果必须返回映射上游协议入口')
 const taskQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
+const catalogRefreshServiceSource = readFileSync(resolve('src/modules/accounts/account-model-catalog-refresh.service.ts'), 'utf8')
+const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
 assert.doesNotMatch(taskQueueSource, /requestShape:/, '管理端手动账号测试不得透传真实请求形态')
 assert.doesNotMatch(taskQueueSource, /task\.clientCompatibility/, '管理端手动账号测试任务不得使用客户端画像作为测试请求形态')
 assert.match(taskQueueSource, /testEndpointMode:\s*task\.testEndpointMode/, '管理端手动账号测试任务必须透传本次 testEndpointMode')
+assert.match(catalogRefreshServiceSource, /signal\?: AbortSignal/, '模型目录同步服务必须接收客户端取消信号')
+assert.match(catalogRefreshServiceSource, /discoverAccountUpstreamModels\(account, \{[\s\S]*?signal/, '模型目录上游探测必须继续传递取消信号')
+const catalogRefreshRoute = accountsRoutesSource.slice(
+  accountsRoutesSource.indexOf("accountsRouter.post('/model-catalog/refresh'")
+)
+assert.match(catalogRefreshRoute, /req\.once\('aborted'/, '模型目录同步路由必须监听客户端请求中断')
+assert.match(catalogRefreshRoute, /res\.once\('close'/, '模型目录同步路由必须监听客户端响应关闭')
+assert.match(catalogRefreshRoute, /signal: clientAbortController\.signal/, '模型目录同步路由必须把客户端取消信号传到服务层')
 
 console.log('账号测试请求构造回归通过：endpoint mode、payload 字段、上游接口能力校验和真实网关编排边界均符合预期')

@@ -1,26 +1,37 @@
 (function () {
-  var fallbackBrand = 'juhe-ai';
-  var nameTargets = Array.prototype.slice.call(document.querySelectorAll('[data-brand-name]'));
+  var sourceNav = document.querySelector('[data-nav]');
+  var mobileNavTarget = document.querySelector('[data-nav-mobile]');
+  if (sourceNav && mobileNavTarget) mobileNavTarget.innerHTML = sourceNav.innerHTML;
+
   var searchInput = document.querySelector('[data-help-search]');
   var liveRegion = document.querySelector('[data-search-status]');
   var sections = Array.prototype.slice.call(document.querySelectorAll('.section[id]'));
   var links = Array.prototype.slice.call(document.querySelectorAll('[data-nav-link][href^="#"]'));
+  var brandImages = Array.prototype.slice.call(document.querySelectorAll('.brand-icon'));
+  var brandFallbacks = Array.prototype.slice.call(document.querySelectorAll('.brand-badge'));
 
-  function setBrand(name) {
-    var safeName = typeof name === 'string' && name.trim() ? name.trim() : fallbackBrand;
-    nameTargets.forEach(function (target) { target.textContent = safeName + ' 使用手册'; });
+  function showBrandImage(image) {
+    image.hidden = false;
+    brandFallbacks.forEach(function (fallback) { fallback.hidden = true; });
   }
 
-  function getBrandName(payload) {
-    var data = payload && (payload.data || payload);
-    return data && (data.brandName || data.appName || data.systemName || data.name);
+  function showBrandFallback(image) {
+    image.hidden = true;
+    brandFallbacks.forEach(function (fallback) { fallback.hidden = false; });
   }
 
-  setBrand(fallbackBrand);
-  fetch('/__aisys__/api/settings/public', { credentials: 'include' })
-    .then(function (response) { return response.ok ? response.json() : null; })
-    .then(function (payload) { setBrand(getBrandName(payload)); })
-    .catch(function () { setBrand(fallbackBrand); });
+  brandImages.forEach(function (image) {
+    image.addEventListener('load', function () {
+      showBrandImage(image);
+    });
+    image.addEventListener('error', function () {
+      showBrandFallback(image);
+    });
+    if (image.complete) {
+      if (image.naturalWidth > 0) showBrandImage(image);
+      else showBrandFallback(image);
+    }
+  });
 
   function setActive(id) {
     links.forEach(function (link) {
@@ -40,20 +51,62 @@
     sections.forEach(function (section) { observer.observe(section); });
   }
 
-  function applySearch() {
-    if (!searchInput) return;
-    var query = searchInput.value.trim().toLocaleLowerCase();
-    var count = 0;
-    sections.forEach(function (section) {
-      var matched = !query || section.textContent.toLocaleLowerCase().indexOf(query) !== -1;
-      section.classList.toggle('search-result', true);
-      section.hidden = !matched;
-      if (matched) count += 1;
+  var searchResults;
+
+  function getSearchMatches(query) {
+    var terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return [];
+    return sections.filter(function (section) {
+      var content = section.textContent.toLocaleLowerCase();
+      return terms.every(function (term) { return content.indexOf(term) !== -1; });
     });
-    if (liveRegion) liveRegion.textContent = query ? '找到 ' + count + ' 个章节。' : '';
+  }
+
+  function getSectionLabel(section) {
+    var heading = section.querySelector('h2');
+    return heading ? heading.textContent.trim() : section.id;
+  }
+
+  function locateSection(section) {
+    window.history.replaceState(null, '', '#' + section.id);
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setActive(section.id);
+    searchInput.value = '';
+    searchResults.hidden = true;
+    if (liveRegion) liveRegion.textContent = '已定位到“' + getSectionLabel(section) + '”。';
+    searchInput.blur();
+  }
+
+  function renderSearchResults(matches, query) {
+    searchResults.replaceChildren();
+    searchResults.hidden = !query || !matches.length;
+    matches.slice(0, 8).forEach(function (section) {
+      var result = document.createElement('button');
+      result.type = 'button';
+      result.textContent = getSectionLabel(section);
+      result.addEventListener('click', function () { locateSection(section); });
+      searchResults.appendChild(result);
+    });
+    if (liveRegion) {
+      liveRegion.textContent = query
+        ? matches.length ? '找到 ' + matches.length + ' 个章节，按 Enter 定位第一个结果。' : '未找到匹配章节。'
+        : '';
+    }
+  }
+
+  function applySearch() {
+    if (!searchInput) return [];
+    var query = searchInput.value.trim();
+    var matches = getSearchMatches(query);
+    renderSearchResults(matches, query);
+    return matches;
   }
 
   if (searchInput) {
+    searchResults = document.createElement('div');
+    searchResults.className = 'search-results';
+    searchResults.hidden = true;
+    searchInput.parentElement.appendChild(searchResults);
     searchInput.addEventListener('input', applySearch);
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && document.activeElement === searchInput) {
@@ -61,6 +114,37 @@
         applySearch();
         searchInput.blur();
       }
+      if (event.key === 'Enter' && document.activeElement === searchInput) {
+        var matches = applySearch();
+        if (matches.length) {
+          event.preventDefault();
+          locateSection(matches[0]);
+        }
+      }
     });
+  }
+
+  var mobileNav = document.querySelector('.mobile-nav');
+  if (mobileNav) {
+    links.forEach(function (link) {
+      link.addEventListener('click', function () {
+        if (window.matchMedia('(max-width: 900px)').matches) mobileNav.removeAttribute('open');
+      });
+    });
+  }
+
+  if (document.body.classList.contains('help-gate')) {
+    fetch('/__aisys__/api/auth/me', { credentials: 'include' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('未登录');
+        return response.json();
+      })
+      .then(function (payload) {
+        var role = payload && payload.data && payload.data.role;
+        window.location.assign(role === 'admin' || role === 'super_admin' ? '/__aisys__/help/admin/' : '/__aisys__/help/user/');
+      })
+      .catch(function () {
+        window.location.assign('/__aisys__/login?redirect=' + encodeURIComponent('/__aisys__/help/'));
+      });
   }
 })();

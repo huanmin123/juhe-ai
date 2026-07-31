@@ -134,7 +134,14 @@ try {
   assert.deepEqual(Object.keys(reset).sort(), ['token'], '重置 Token 响应不应附带完整来源详情')
   assert(reset.token.token, '重置响应必须保留新明文 Token')
 
-  const deleted = await fetch(`${baseUrl}/${sourceId}`, { method: 'DELETE' })
+  await requestError(baseUrl, `/${sourceId}`, 'DELETE', {
+    expectedUpdatedAt: sourceUpdatedAt
+  }, 409)
+  const deleted = await fetch(`${baseUrl}/${sourceId}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: sourceNoop.updatedAt })
+  })
   assert.equal(deleted.status, 204, '删除来源必须保持 204 空响应契约')
   assert.equal(await deleted.text(), '', '删除来源不得为了前端本地协调扩展 HTTP 响应体')
   await requestError(baseUrl, `/${sourceId}`, 'GET', undefined, 404)

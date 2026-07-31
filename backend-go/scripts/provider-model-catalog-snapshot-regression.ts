@@ -37,7 +37,7 @@ assert.notEqual(
 
 assert.equal(
   PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE,
-  '2026-07-23',
+  '2026-07-30',
   'W2 provider model catalog snapshot as-of date must remain explicit and fixed'
 )
 
@@ -45,6 +45,38 @@ const gpt54Mini = modelAtSnapshot('gpt', 'gpt-5.4-mini')
 assert.equal(gpt54Mini.contextWindowTokens, 400_000, 'GPT-5.4 mini must keep total context separate from max input')
 assert.equal(gpt54Mini.maxInputTokens, 272_000, 'GPT-5.4 mini max input must match the official model page')
 assert.equal(gpt54Mini.maxOutputTokens, 128_000, 'GPT-5.4 mini max output must match the official model page')
+
+const gpt56Sol = modelAtSnapshot('gpt', 'gpt-5.6-sol')
+const gpt56Terra = modelAtSnapshot('gpt', 'gpt-5.6-terra')
+const gpt56Luna = modelAtSnapshot('gpt', 'gpt-5.6-luna')
+assert.equal(gpt56Sol.inputUsdPer1M, 5, 'GPT-5.6 Sol standard input price must remain unchanged')
+assert.equal(gpt56Sol.cachedInputUsdPer1M, 0.5, 'GPT-5.6 Sol standard cached input price must remain unchanged')
+assert.equal(gpt56Sol.outputUsdPer1M, 30, 'GPT-5.6 Sol standard output price must remain unchanged')
+assert.equal(gpt56Sol.cacheWriteUsdPer1M, 6.25, 'GPT-5.6 Sol standard cache write price must remain unchanged')
+assert.equal(gpt56Terra.inputUsdPer1M, 2, 'GPT-5.6 Terra standard input price must match the 2026-07-30 official price')
+assert.equal(gpt56Terra.cachedInputUsdPer1M, 0.2, 'GPT-5.6 Terra standard cached input price must match the 2026-07-30 official price')
+assert.equal(gpt56Terra.outputUsdPer1M, 12, 'GPT-5.6 Terra standard output price must match the 2026-07-30 official price')
+assert.equal(gpt56Terra.cacheWriteUsdPer1M, 2.5, 'GPT-5.6 Terra standard cache write price must match the 2026-07-30 official price')
+assert.equal(gpt56Luna.inputUsdPer1M, 0.2, 'GPT-5.6 Luna standard input price must match the 2026-07-30 official price')
+assert.equal(gpt56Luna.cachedInputUsdPer1M, 0.02, 'GPT-5.6 Luna standard cached input price must match the 2026-07-30 official price')
+assert.equal(gpt56Luna.outputUsdPer1M, 1.2, 'GPT-5.6 Luna standard output price must match the 2026-07-30 official price')
+assert.equal(gpt56Luna.cacheWriteUsdPer1M, 0.25, 'GPT-5.6 Luna standard cache write price must match the 2026-07-30 official price')
+for (const [model, input, cachedInput, output, cacheWrite] of [
+  [gpt56Terra, 4, 0.4, 24, 5],
+  [gpt56Luna, 0.4, 0.04, 2.4, 0.5]
+] as const) {
+  assert.equal(model.serviceTierPrices.priority?.inputUsdPer1M, input, `${model.model} priority input must remain Fast-compatible 2x pricing`)
+  assert.equal(model.serviceTierPrices.priority?.cachedInputUsdPer1M, cachedInput, `${model.model} priority cached input must remain Fast-compatible 2x pricing`)
+  assert.equal(model.serviceTierPrices.priority?.outputUsdPer1M, output, `${model.model} priority output must remain Fast-compatible 2x pricing`)
+  assert.equal(model.serviceTierPrices.priority?.cacheWriteUsdPer1M, cacheWrite, `${model.model} priority cache write must remain Fast-compatible 2x pricing`)
+  assert.equal(model.serviceTierPrices.flex?.inputUsdPer1M, input / 4, `${model.model} flex input must remain half of standard pricing`)
+  assert.equal(model.serviceTierPrices.flex?.cachedInputUsdPer1M, cachedInput / 4, `${model.model} flex cached input must remain half of standard pricing`)
+  assert.equal(model.serviceTierPrices.flex?.outputUsdPer1M, output / 4, `${model.model} flex output must remain half of standard pricing`)
+  assert.equal(model.serviceTierPrices.flex?.cacheWriteUsdPer1M, cacheWrite / 4, `${model.model} flex cache write must remain half of standard pricing`)
+  assert.equal(model.longContextInputTokenThreshold, 272_000, `${model.model} long-context threshold must remain unchanged`)
+  assert.equal(model.longContextInputCostMultiplier, 2, `${model.model} long-context input multiplier must remain unchanged`)
+  assert.equal(model.longContextOutputCostMultiplier, 1.5, `${model.model} long-context output multiplier must remain unchanged`)
+}
 
 const deepSeekModels = new Set(listProviderModelPricingAsOf('deepseek', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE).map((item) => item.model))
 assert.equal(deepSeekModels.has('deepseek-ai-v4-flash'), false, 'non-official DeepSeek V4 alias must not be public')
@@ -105,14 +137,14 @@ assert.equal(
 for (const [model, context, output] of [
   ['glm-5.1', 200_000, 128_000],
   ['glm-5', 200_000, 128_000],
-  ['glm-5-turbo', 200_000, 128_000],
-  ['glm-4-flash-250414', 128_000, 16_000]
+  ['glm-5-turbo', 200_000, 128_000]
 ] as const) {
   const item = modelAtSnapshot('glm', model)
   assert.equal(item.contextWindowTokens, context, `${model} total context must match the official GLM overview`)
   assert.equal(item.maxOutputTokens, output, `${model} max output must match the official GLM overview`)
 }
 assert.equal(listProviderModelPricingAsOf('glm', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE).some((item) => item.model === 'glm-4-flashx-250414'), false, 'GLM model without an official USD price must stay out of the built-in snapshot')
+assert.equal(listProviderModelPricingAsOf('glm', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE).some((item) => item.model === 'glm-4-flash-250414'), false, 'GLM model removed from the current official catalog must stay out of the built-in snapshot')
 assert.equal(modelAtSnapshot('glm', 'glm-4.7-flash').cachedInputUsdPer1M, 0, 'GLM 4.7 Flash cached input must retain its official free price')
 assert.equal(modelAtSnapshot('glm', 'glm-4.7-flash').supportsPromptCaching, true, 'GLM 4.7 Flash must declare automatic prompt caching')
 
@@ -146,8 +178,8 @@ const deepSeekAtSnapshot = new Set(
   listProviderModelPricingAsOf('deepseek', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE)
     .map((item) => item.model)
 )
-assert(deepSeekAtSnapshot.has('deepseek-chat'), 'fixed snapshot must retain DeepSeek alias before its shutdown date')
-assert(deepSeekAtSnapshot.has('deepseek-reasoner'), 'fixed snapshot must retain DeepSeek reasoning alias before its shutdown date')
+assert.equal(deepSeekAtSnapshot.has('deepseek-chat'), false, 'current snapshot must exclude DeepSeek alias after its shutdown date')
+assert.equal(deepSeekAtSnapshot.has('deepseek-reasoner'), false, 'current snapshot must exclude DeepSeek reasoning alias after its shutdown date')
 
 const deepSeekAtShutdown = new Set(
   listProviderModelPricingAsOf('deepseek', '2026-07-24')
@@ -189,7 +221,7 @@ assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated ca
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
   normalizeSnapshotLineEndings(
-    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000076_w2_sync_provider_model_catalog_cache_display_20260724.sql'), 'utf8')
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000094_w2_sync_provider_model_catalog_openai_pricing_20260730.sql'), 'utf8')
   ),
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'

@@ -11,6 +11,12 @@ import {
 } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { accountTestFailureEligibleForAccount } from '../../modules/accounts/account-test-failure-eligibility.js'
+import { automaticAccountProbeOutcome } from '../../modules/accounts/automatic-account-probe-outcome.js'
+import {
+  accountHealthCheckProbeDeadlineMs,
+  accountHealthCheckQueueConcurrency,
+  routineAccountHealthCheckDiagnosticConcurrency
+} from '../../modules/background/account-probe-limits.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-health-check-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-health-check.sqlite3')
@@ -100,6 +106,13 @@ try {
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
   assert.match(serviceSource, /probeAccountHealthCheckApiKeyPool/, '多 Key 健康检查必须通过固定 Key 聚合探测')
+  assert.equal(accountHealthCheckProbeDeadlineMs, 30_000, '单账户健康检查必须有 30 秒总 deadline')
+  assert.equal(accountHealthCheckQueueConcurrency, 3, '健康队列必须为激活和配置检查保留入口位')
+  assert.equal(routineAccountHealthCheckDiagnosticConcurrency, 1, '例行与请求失败健康检查必须使用独立单槽 lane')
+  assert.match(serviceSource, /accountHealthCheckPoolCursorTtlMs = 2 \* 60 \* 60_000/, 'Key 池续扫游标必须覆盖待激活账户的一小时复检间隔')
+  assert.match(serviceSource, /accountHealthCheckDeadline\(\)/, '健康检查必须创建账户级 deadline 信号')
+  assert.match(serviceSource, /runAccountHealthCheckDiagnostic\(account, groupId, fixedCandidate, signal\)/, '每把 Key 的诊断必须继承账户级 deadline')
+  assert.match(serviceSource, /canceledPoolProbeResult\(attempt, options\.signal\)/, 'deadline 到达后不得继续扫描后续 API Key')
   assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
   assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
   assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
@@ -164,6 +177,96 @@ try {
     [healthyPoolKey, recoveredPoolKey],
     '健康检查必须按固定 Key 顺序探测，跳过已停用 Key，并在首个成功后停止'
   )
+  const deadlineController = new AbortController()
+  const deadlinePoolCandidate = {
+    ...poolCandidate,
+    apiKey: 'sk-health-deadline-0',
+    apiKeys: Array.from({ length: 50 }, (_value, index) => `sk-health-deadline-${index}`),
+    credentials: {
+      ...poolCandidate.credentials,
+      api_key: 'sk-health-deadline-0',
+      api_keys: Array.from({ length: 50 }, (_value, index) => `sk-health-deadline-${index}`)
+    },
+    apiKeyRuntimeStates: []
+  } as unknown as import('../../storage/openai-account-selector.types.js').OpenAIAccountSecret
+  const deadlineProbedKeys: string[] = []
+  const deadlinePoolResult = await healthCheckService.probeAccountHealthCheckApiKeyPool(deadlinePoolCandidate, async (fixedCandidate) => {
+    deadlineProbedKeys.push(fixedCandidate.apiKey)
+    deadlineController.abort(new Error('health probe deadline'))
+    return {
+      result: {
+        accountId: deadlinePoolCandidate.id,
+        accountName: '多 Key 健康检查 deadline',
+        providerCode: 'gpt',
+        type: 'api_key',
+        success: false,
+        errorCode: 'server_diagnostic_timeout',
+        message: '账户测试超时',
+        accountFailureEligible: true
+      }
+    }
+  }, { signal: deadlineController.signal })
+  assert.equal(deadlineProbedKeys.length, 1, '账户 deadline 到达后不得继续扫描剩余 49 把 Key')
+  assert.equal(deadlinePoolResult?.diagnosticDeadlineExceeded, true, '账户 deadline 必须以独立事实返回')
+  assert.equal(automaticAccountProbeOutcome(deadlinePoolResult!.result, {
+    canceled: deadlinePoolResult?.diagnosticCanceled,
+    timeout: deadlinePoolResult?.diagnosticTimeoutExhausted,
+    diagnosticTimeoutExhausted: deadlinePoolResult?.diagnosticTimeoutExhausted
+  }), 'probe_task_failure', '账户 deadline 不得升级为账户可用性失败')
+  const preAbortedController = new AbortController()
+  preAbortedController.abort(new Error('health probe deadline'))
+  let preAbortedProbeCalls = 0
+  const preAbortedPoolResult = await healthCheckService.probeAccountHealthCheckApiKeyPool(deadlinePoolCandidate, async () => {
+    preAbortedProbeCalls += 1
+    return deadlinePoolResult!
+  }, {
+    signal: preAbortedController.signal,
+    abortedResult: () => ({
+      result: {
+        accountId: deadlinePoolCandidate.id,
+        accountName: '多 Key 健康检查已取消',
+        providerCode: 'gpt',
+        type: 'api_key',
+        success: false,
+        errorCode: 'server_diagnostic_cancelled',
+        message: '账户健康检查已达到总时限',
+        accountFailureEligible: false
+      },
+      diagnosticCanceled: true,
+      diagnosticTimeoutExhausted: false,
+      diagnosticDeadlineExceeded: true
+    })
+  })
+  assert.equal(preAbortedProbeCalls, 0, '在获取诊断槽期间到达 deadline 后不得启动任何 API Key 探测')
+  assert.equal(preAbortedPoolResult?.diagnosticDeadlineExceeded, true, '预先取消的 Key 池必须返回账户级 deadline 结果')
+  const rotatingKeys = ['sk-health-rotate-0', 'sk-health-rotate-1', 'sk-health-rotate-2']
+  const rotatingCandidate = {
+    ...poolCandidate,
+    apiKey: rotatingKeys[0],
+    apiKeys: rotatingKeys,
+    credentials: {
+      ...poolCandidate.credentials,
+      api_key: rotatingKeys[0],
+      api_keys: rotatingKeys
+    },
+    apiKeyRuntimeStates: []
+  } as unknown as import('../../storage/openai-account-selector.types.js').OpenAIAccountSecret
+  const rotatingProbedKeys: string[] = []
+  await healthCheckService.probeAccountHealthCheckApiKeyPool(rotatingCandidate, async (fixedCandidate) => {
+    rotatingProbedKeys.push(fixedCandidate.apiKey)
+    return {
+      result: {
+        accountId: rotatingCandidate.id,
+        accountName: '多 Key 健康检查续扫',
+        providerCode: 'gpt',
+        type: 'api_key',
+        success: false,
+        message: '模拟失败',
+        accountFailureEligible: true
+      }
+    }
+  }, { startAfterFingerprint: apiKeyRotation.fingerprintAccountApiKey(rotatingKeys[1]) })
+  assert.deepEqual(rotatingProbedKeys, [rotatingKeys[2], rotatingKeys[0], rotatingKeys[1]], '下一轮健康检查必须从上轮最后 Key 的后一个开始续扫')
   const accountColumns = database.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
   for (const column of [
     'last_health_check_at',

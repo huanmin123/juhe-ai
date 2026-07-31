@@ -34,7 +34,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 - API Key 的 `credentials.supported_endpoint_modes` 省略时默认四种 JSON / SSE 能力；OAuth 固定为 `responses_json`、`responses_sse`，不能通过表单扩展到 Chat。
 - xAI API Key 账户默认写入 `pending_test`，由后台检查通过后才允许调度；人工测试只生成诊断、使用记录和审计，不改变账户健康事实。
 - Grok OAuth 创建也写入 `pending_test`，默认并发为 1；请求前按到期时间单飞刷新并持久化轮换后的 token，自定义 `base_url` 在刷新和重新授权后继续保留。
-- xAI 账户只能加入 `providerCode = xai` 的分组。API Key / 路由策略只负责入口和分组调度，不保存 xAI 专属客户端画像或跨协议转换规则。
+- 默认数据初始化和系统账户创建都会在每个系统账户缺少默认分组时，幂等创建启用的 `providerCode = xai` 默认分组；已有默认分组不改变其启停状态。xAI 账户只能加入该供应商的分组。API Key / 路由策略只负责入口和分组调度，不保存 xAI 专属客户端画像或跨协议转换规则。
 
 ## Grok OAuth 创建与维护
 
@@ -69,6 +69,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 
 ## 模型目录与价格快照
 
+- 账户模型同步和人工测试的模型目录检查会在服务端以内部标记发起受控 `GET /v1/models`。仅 `api_key` 账户可将该检查转发至其 `base_url`，用于读取账户可用模型；未标记的客户端 `GET /v1/models` 仍不是 xAI 网关路由，Grok OAuth 始终不承接此检查，也不因此扩展其 Responses-only 边界。
 本地内置目录按 `2026-07-18` xAI 官方模型页和价格页快照维护，当前包含：
 
 - 文本模型：`grok-4.5`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`；官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。`grok-4.3` 因无法交叉确认精确首发日期，已从内置目录移除。

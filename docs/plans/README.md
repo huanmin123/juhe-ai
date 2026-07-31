@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20260731T000000000Z](计划-20260731T000000000Z-内置默认分组全用户补齐.md)：为所有系统账户幂等补齐内置默认分组，包含历史 xAI 默认分组迁移和 seed 回归。
+
 - [PLAN-20260729T202347505Z](计划-20260729T202347505Z-遗留NodePostgreSQL整数标志与索引桥接.md)：修复历史 Node PostgreSQL `INTEGER(0/1)` 标志谓词/参数错配，并交付不写 Goose ledger 的受控索引桥接。
 
 - [PLAN-20260729T130300133Z](计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md)：修复 Codex Remote Compaction V2 将精确 `response.failed` 延后到 EOF 并错误改写为本地 compact 契约 mismatch 的状态机缺陷。

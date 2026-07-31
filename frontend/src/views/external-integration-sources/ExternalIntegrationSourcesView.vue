@@ -501,7 +501,7 @@ async function updateSourceStatus(record: ExternalIntegrationSourceListItem, sta
 async function deleteSource(record: ExternalIntegrationSourceListItem): Promise<void> {
   try {
     const mutationSignature = currentListSignature()
-    await api.externalIntegrationSources.delete(record.id)
+    await api.externalIntegrationSources.delete(record.id, record.updatedAt)
     markListMutation()
     const contextChanged = mutationSignature !== currentListSignature()
     const reconciliation = contextChanged

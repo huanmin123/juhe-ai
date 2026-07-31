@@ -78,6 +78,7 @@ export type SystemAccountPatchPayload = {
 export type SystemAccountMutationResult = {
   id: string
   updatedAt: string
+  apiKeyValidationCacheInvalidationFailed?: boolean
 } & Partial<Pick<SystemAccountSummary,
   'displayName'
   | 'role'

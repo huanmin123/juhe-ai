@@ -25,9 +25,12 @@ import {
 } from '../accounts/account-health-check-trigger.js'
 import { enqueueAccountBalanceAutoDetection } from './account-balance-auto-detect.service.js'
 import {
+  accountHealthCheckProbeDeadlineMs,
+  accountHealthCheckQueueConcurrency,
   backgroundProbeDbServiceTimeoutMs,
   runWithBackgroundAccountAvailabilityProbe,
-  runWithBackgroundFullDiagnosticSlot
+  runWithBackgroundFullDiagnosticSlot,
+  runWithRoutineAccountHealthCheckDiagnosticSlot
 } from './account-probe-limits.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
@@ -40,7 +43,11 @@ interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
 
 const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check', [], 0)
 const requestFailureHealthCheckCooldownMs = 5 * 60_000
+// pending_test probe-task failures retry after one hour, so this must retain
+// the continuation point across that full interval.
+const accountHealthCheckPoolCursorTtlMs = 2 * 60 * 60_000
 const recentRequestFailureHealthChecks = new Map<string, number>()
+const accountHealthCheckPoolCursorByAccountId = new Map<string, { lastFingerprint: string; expiresAt: number }>()
 let lastRequestFailureHealthCheckCleanupAt = 0
 
 export interface AccountHealthCheckProbeResult {
@@ -48,17 +55,18 @@ export interface AccountHealthCheckProbeResult {
   upstreamAttempt?: UpstreamAttempt
   diagnosticCanceled?: boolean
   diagnosticTimeoutExhausted?: boolean
+  diagnosticDeadlineExceeded?: boolean
 }
 
 const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
   name: 'account-health-check',
   policy: accountHealthCheckRetryPolicy,
-  concurrency: 10,
+  concurrency: accountHealthCheckQueueConcurrency,
   reservedPriorityConcurrency: {
-    priorityAtMost: accountHealthCheckTriggerPriority('request_failure'),
-    slots: 3
+    priorityAtMost: accountHealthCheckTriggerPriority('configuration'),
+    slots: 2
   },
-  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountHealthCheckQueueItem(item, context)),
+  run: runAccountHealthCheckQueueItem,
   onExhausted: (event) => {
     logger.warn(errorLogFields(event.error, {
       event: 'background_account_health_check_exhausted',
@@ -132,7 +140,10 @@ export function getAccountHealthCheckQueueSnapshot() {
 }
 
 export function setAccountHealthCheckQueueConcurrency(concurrency: number): void {
-  accountHealthCheckQueue.setConcurrency(concurrency)
+  // Batch settings control candidate discovery, not the health-check resource
+  // lane. A credential pool must not consume every global diagnostic slot.
+  void concurrency
+  accountHealthCheckQueue.setConcurrency(accountHealthCheckQueueConcurrency)
 }
 
 async function runAccountHealthCheckQueueItem(
@@ -166,9 +177,20 @@ async function runAccountHealthCheckQueueItem(
 
   const groupId = account.boundGroupId
   const observedAt = new Date().toISOString()
-  return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
-    return await runAccountHealthCheckProbe(account, groupId)
-  }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted }, { joined }) => {
+  const deadline = accountHealthCheckDeadline()
+  try {
+    return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
+      if (deadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
+      const candidate = await healthCheckCandidateForAccount(account, groupId)
+      if (deadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
+      const runProbe = async () => await runAccountHealthCheckProbe(account, groupId, candidate, deadline.signal)
+      if (isRoutineAccountHealthCheckReason(item.reason)) {
+        return await runWithRoutineAccountHealthCheckDiagnosticSlot(async () => (
+          await runWithBackgroundFullDiagnosticSlot(runProbe)
+        ))
+      }
+      return await runWithBackgroundFullDiagnosticSlot(runProbe)
+    }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted, diagnosticDeadlineExceeded }, { joined }) => {
     if (joined) {
       logger.debug({
         event: 'background_account_health_check_singleflight_joined',
@@ -269,6 +291,7 @@ async function runAccountHealthCheckQueueItem(
       transitionedToError: failure?.transitionedToError ?? false,
       accountFailureEligible: result.accountFailureEligible,
       diagnosticTimeoutExhausted,
+      diagnosticDeadlineExceeded,
       nextHealthCheckAt: failure?.nextHealthCheckAt,
       markedTemporaryUnavailable,
       attemptIndex: context.attemptIndex,
@@ -276,15 +299,23 @@ async function runAccountHealthCheckQueueItem(
       message: result.message,
       traceId: result.traceId
     }
-    if (failure?.transitionedToError) {
+    if (diagnosticDeadlineExceeded) {
+      logger.warn(logFields, '账号健康检测达到账户级 deadline，已中止剩余 API Key 探测且不累计失败')
+    } else if (failure?.transitionedToError) {
       logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
     } else if (account.status !== 'pending_test' && availabilityProbeFailed && (failure?.reachedThreshold || immediateTemporaryUnavailable)) {
       logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
     } else {
       logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')
     }
-    return true
-  })
+      return true
+    }, {
+      signal: deadline.signal,
+      abortedObservation: () => accountHealthCheckDeadlineResult(account)
+    })
+  } finally {
+    deadline.cancel()
+  }
 }
 
 function shouldScheduleAccountBalanceAutoDetection(account: AccountSummary): boolean {
@@ -297,9 +328,19 @@ function shouldScheduleAccountBalanceAutoDetection(account: AccountSummary): boo
 
 export async function probeAccountHealthCheckApiKeyPool(
   candidate: OpenAIAccountSecret,
-  probe: (fixedCandidate: OpenAIAccountSecret) => Promise<AccountHealthCheckProbeResult>
+  probe: (fixedCandidate: OpenAIAccountSecret) => Promise<AccountHealthCheckProbeResult>,
+  options: {
+    signal?: AbortSignal
+    startAfterFingerprint?: string
+    onKeyAttempt?: (fingerprint: string) => void
+    abortedResult?: () => AccountHealthCheckProbeResult
+  } = {}
 ): Promise<AccountHealthCheckProbeResult | undefined> {
-  const entries = accountApiKeyPoolEntriesForCandidate(candidate)
+  const entries = orderedAccountHealthCheckApiKeyPoolEntries(
+    accountApiKeyPoolEntriesForCandidate(candidate),
+    options.startAfterFingerprint
+  )
+  if (options.signal?.aborted) return options.abortedResult?.()
   if (!isCandidateAccountApiKeyPoolTestable(candidate, entries)) return undefined
   const runtimeStatusByFingerprint = new Map(
     (candidate.apiKeyRuntimeStates ?? []).map((state) => [state.keyFingerprint, state.status])
@@ -307,10 +348,15 @@ export async function probeAccountHealthCheckApiKeyPool(
   let fallback: AccountHealthCheckProbeResult | undefined
   let upstreamFailure: AccountHealthCheckProbeResult | undefined
   for (const entry of entries) {
+    const canceledResult = canceledPoolProbeResult(fallback ?? upstreamFailure, options.signal)
+    if (canceledResult) return canceledResult
     if (runtimeStatusByFingerprint.get(entry.fingerprint) === 'disabled') continue
+    options.onKeyAttempt?.(entry.fingerprint)
     const attempt = await probe(fixedAccountApiKeyPoolCandidate(candidate, entry, {
       apiKeyRuntimeStateDisabled: true
     }))
+    const canceledAttempt = canceledPoolProbeResult(attempt, options.signal)
+    if (canceledAttempt) return canceledAttempt
     if (attempt.result.success) {
       return attempt
     }
@@ -327,26 +373,135 @@ export async function probeAccountHealthCheckApiKeyPool(
   return upstreamFailure ?? fallback
 }
 
-async function runAccountHealthCheckProbe(
+function isRoutineAccountHealthCheckReason(reason: AccountHealthCheckTriggerReason): boolean {
+  return reason === 'scheduled' || reason === 'request_failure'
+}
+
+function accountHealthCheckDeadline(): { signal: AbortSignal; cancel: () => void } {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error('account health check deadline')), accountHealthCheckProbeDeadlineMs)
+  timer.unref()
+  return {
+    signal: controller.signal,
+    cancel: () => clearTimeout(timer)
+  }
+}
+
+function accountHealthCheckDeadlineResult(account: AccountSummary): AccountHealthCheckProbeResult {
+  return {
+    result: {
+      accountId: account.id,
+      accountName: account.name,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      type: account.type,
+      success: false,
+      errorCode: 'server_diagnostic_cancelled',
+      message: '账户健康检查已达到总时限',
+      accountFailureEligible: false
+    },
+    diagnosticCanceled: true,
+    diagnosticTimeoutExhausted: false,
+    diagnosticDeadlineExceeded: true
+  }
+}
+
+async function healthCheckCandidateForAccount(
   account: AccountSummary,
   groupId: string
-): Promise<AccountHealthCheckProbeResult> {
+): Promise<OpenAIAccountSecret | undefined> {
   const systemAccountId = account.systemAccountId?.trim()
-  const candidate = systemAccountId
+  return systemAccountId
     ? await loadOpenAIAccountForGroupViaDbService(groupId, account.id, systemAccountId, { ignoreAvailability: true })
     : undefined
+}
+
+async function runAccountHealthCheckProbe(
+  account: AccountSummary,
+  groupId: string,
+  candidate: OpenAIAccountSecret | undefined,
+  signal: AbortSignal
+): Promise<AccountHealthCheckProbeResult> {
+  if (signal.aborted) return accountHealthCheckDeadlineResult(account)
+  let lastAttemptedFingerprint: string | undefined
+  const poolEntries = candidate ? accountApiKeyPoolEntriesForCandidate(candidate) : []
   const poolResult = candidate
     ? await probeAccountHealthCheckApiKeyPool(candidate, async (fixedCandidate) => (
-        await runAccountHealthCheckDiagnostic(account, groupId, fixedCandidate)
-      ))
+        await runAccountHealthCheckDiagnostic(account, groupId, fixedCandidate, signal)
+      ), {
+        signal,
+        startAfterFingerprint: accountHealthCheckPoolCursor(account.id, poolEntries),
+        onKeyAttempt: (fingerprint) => {
+          lastAttemptedFingerprint = fingerprint
+        },
+        abortedResult: () => accountHealthCheckDeadlineResult(account)
+      })
     : undefined
-  return poolResult ?? await runAccountHealthCheckDiagnostic(account, groupId)
+  if (poolResult?.diagnosticDeadlineExceeded && lastAttemptedFingerprint) {
+    rememberAccountHealthCheckPoolCursor(account.id, lastAttemptedFingerprint)
+  } else if (poolResult && !poolResult.diagnosticDeadlineExceeded) {
+    accountHealthCheckPoolCursorByAccountId.delete(account.id)
+  }
+  return poolResult ?? await runAccountHealthCheckDiagnostic(account, groupId, undefined, signal)
+}
+
+function orderedAccountHealthCheckApiKeyPoolEntries<T extends { fingerprint: string }>(
+  entries: readonly T[],
+  startAfterFingerprint: string | undefined
+): T[] {
+  if (entries.length < 2 || !startAfterFingerprint) return [...entries]
+  const index = entries.findIndex((entry) => entry.fingerprint === startAfterFingerprint)
+  if (index < 0) return [...entries]
+  return [...entries.slice(index + 1), ...entries.slice(0, index + 1)]
+}
+
+function accountHealthCheckPoolCursor(
+  accountId: string,
+  entries: readonly { fingerprint: string }[]
+): string | undefined {
+  cleanupExpiredAccountHealthCheckPoolCursors()
+  const cursor = accountHealthCheckPoolCursorByAccountId.get(accountId)
+  if (cursor && cursor.expiresAt > Date.now()) return cursor.lastFingerprint
+  if (cursor) accountHealthCheckPoolCursorByAccountId.delete(accountId)
+  if (entries.length < 2) return undefined
+  const startIndex = stableAccountHealthCheckPoolIndex(accountId, entries.length)
+  return entries[(startIndex + entries.length - 1) % entries.length]?.fingerprint
+}
+
+function rememberAccountHealthCheckPoolCursor(accountId: string, lastFingerprint: string): void {
+  cleanupExpiredAccountHealthCheckPoolCursors()
+  if (accountHealthCheckPoolCursorByAccountId.size >= 512) {
+    const oldestAccountId = accountHealthCheckPoolCursorByAccountId.keys().next().value
+    if (typeof oldestAccountId === 'string') accountHealthCheckPoolCursorByAccountId.delete(oldestAccountId)
+  }
+  accountHealthCheckPoolCursorByAccountId.set(accountId, {
+    lastFingerprint,
+    expiresAt: Date.now() + accountHealthCheckPoolCursorTtlMs
+  })
+}
+
+function cleanupExpiredAccountHealthCheckPoolCursors(): void {
+  const now = Date.now()
+  for (const [accountId, cursor] of accountHealthCheckPoolCursorByAccountId) {
+    if (cursor.expiresAt <= now) accountHealthCheckPoolCursorByAccountId.delete(accountId)
+  }
+}
+
+function stableAccountHealthCheckPoolIndex(accountId: string, size: number): number {
+  let hash = 0
+  for (const character of accountId) {
+    hash = ((hash * 31) + character.charCodeAt(0)) >>> 0
+  }
+  return hash % size
 }
 
 async function runAccountHealthCheckDiagnostic(
   account: AccountSummary,
   groupId: string,
-  candidateAccount?: OpenAIAccountSecret
+  candidateAccount?: OpenAIAccountSecret,
+  signal?: AbortSignal
 ): Promise<AccountHealthCheckProbeResult> {
   let upstreamAttempt: UpstreamAttempt | undefined
   let diagnosticCanceled = false
@@ -358,13 +513,14 @@ async function runAccountHealthCheckDiagnostic(
     testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
     candidateAccount,
+    signal,
     retryAllFailures: true,
     onDiagnosticAttemptProgress: () => {
       upstreamAttempt = undefined
     },
     onDiagnosticAttemptResult: (attempt) => {
       upstreamAttempt = attempt.upstreamAttempt
-      diagnosticCanceled = attempt.canceled
+      diagnosticCanceled = attempt.canceled || signal?.aborted === true
       diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
     },
     onUpstreamAttempt: (attempt) => {
@@ -377,7 +533,26 @@ async function runAccountHealthCheckDiagnostic(
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
-  return { result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted }
+  return {
+    result,
+    upstreamAttempt,
+    diagnosticCanceled,
+    diagnosticTimeoutExhausted,
+    diagnosticDeadlineExceeded: signal?.aborted === true
+  }
+}
+
+function canceledPoolProbeResult(
+  result: AccountHealthCheckProbeResult | undefined,
+  signal: AbortSignal | undefined
+): AccountHealthCheckProbeResult | undefined {
+  if (!signal?.aborted || !result) return undefined
+  return {
+    ...result,
+    diagnosticCanceled: true,
+    diagnosticDeadlineExceeded: true,
+    diagnosticTimeoutExhausted: false
+  }
 }
 
 async function accountForHealthCheckQueueItem(item: AccountHealthCheckQueueItem): Promise<AccountSummary | undefined> {

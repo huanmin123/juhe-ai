@@ -116,6 +116,28 @@ try {
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
+    accountName: '手动测试模型不匹配不恢复',
+    apiKey: 'sk-manual-restore-model-mismatch',
+    testModel: 'gpt-5.4',
+    expectRestored: false,
+    makeUnavailable: makeActiveAccountUnschedulable
+  })
+
+  await assertManualTestRestoresAccount({
+    appBaseUrl,
+    mockBaseUrl,
+    groupId: group.id,
+    accountName: '手动测试请求形态不匹配不恢复',
+    apiKey: 'sk-manual-restore-mode-mismatch',
+    testEndpointMode: 'responses_json',
+    expectRestored: false,
+    makeUnavailable: makeActiveAccountUnschedulable
+  })
+
+  await assertManualTestRestoresAccount({
+    appBaseUrl,
+    mockBaseUrl,
+    groupId: group.id,
     accountName: '手动测试恢复限流',
     apiKey: 'sk-manual-restore-rate-limited',
     makeUnavailable: (accountId) => {
@@ -176,7 +198,7 @@ try {
     groupId: group.id
   })
 
-  console.log('手动账号测试状态隔离回归通过：无协议完成证据不会激活待检查账户，active 账户会累计失败并按阈值停调')
+  console.log('手动账号测试恢复回归通过：只有保存的检查模型和请求形态都匹配时，成功列表测试才恢复自有账户')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -199,6 +221,9 @@ async function assertManualTestRestoresAccount(input: {
   groupId: string
   accountName: string
   apiKey: string
+  testModel?: string
+  testEndpointMode?: 'responses_sse' | 'responses_json'
+  expectRestored?: boolean
   makeUnavailable: (accountId: string) => void
 }): Promise<void> {
   const account = repositories.createAccount({
@@ -207,6 +232,9 @@ async function assertManualTestRestoresAccount(input: {
     name: input.accountName,
     type: 'api_key',
     credentials: { api_key: input.apiKey, base_url: input.mockBaseUrl },
+    supportedModels: ['gpt-5.5', 'gpt-5.4'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     status: 'active',
     schedulable: true,
     groupId: input.groupId
@@ -220,6 +248,17 @@ async function assertManualTestRestoresAccount(input: {
   }), true, `${input.accountName} 应先由后台健康检查激活`)
 
   input.makeUnavailable(account.id)
+  if (input.expectRestored !== false) {
+    databaseModule.getBusinessDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET schedulable = 0,
+            updated_at = ?
+        WHERE id = ?
+          AND deleted_at IS NULL
+      `)
+      .run(new Date().toISOString(), account.id)
+  }
   const unavailable = repositories.findAccountSummary(account.id, adminAccess)
   assert(unavailable, `${input.accountName} 不存在`)
   assert(
@@ -235,20 +274,25 @@ async function assertManualTestRestoresAccount(input: {
     baseUrl: input.appBaseUrl,
     path: `/__aisys__/api/accounts/${account.id}/test`,
     cookie: sessionCookie(),
-    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
+    body: { model: input.testModel ?? 'gpt-5.5', testEndpointMode: input.testEndpointMode ?? 'responses_sse' }
   })
   assert.equal(result.success, true, `${input.accountName} 手动测试应通过：${result.message}`)
   assert.equal(result.statusCode, 200, `${input.accountName} 应返回上游 200`)
-  assert.equal(result.accountStatusChanged, false, `${input.accountName} 测试结果不应标记账户状态变化`)
-  assert.equal(result.accountStatus, unavailable.status, `${input.accountName} 测试结果应保留测试前账户状态`)
   assert(result.traceId, `${input.accountName} 测试结果应返回本地 traceId`)
 
-  const preserved = repositories.findAccountSummary(account.id, adminAccess)
-  assert.deepEqual(
-    accountAvailabilityState(preserved),
-    accountAvailabilityState(unavailable),
-    `${input.accountName} 测试成功后不能改写账户可用状态`
-  )
+  const after = repositories.findAccountSummary(account.id, adminAccess)
+  if (input.expectRestored !== false) {
+    assert.equal(result.accountStatusChanged, true, `${input.accountName} 恢复后任务结果应标记状态变化`)
+    assert.equal(result.accountStatus, 'active', `${input.accountName} 恢复后任务结果应返回 active`)
+    assert.equal(after?.status, 'active', `${input.accountName} 匹配检查配置的测试成功后应恢复 active`)
+    assert.equal(after?.schedulable, true, `${input.accountName} 匹配检查配置的测试成功后应恢复可调度`)
+  } else {
+    assert.deepEqual(
+      accountAvailabilityState(after),
+      accountAvailabilityState(unavailable),
+      `${input.accountName} 检查配置不匹配时不得改写账户可用状态`
+    )
+  }
 }
 
 async function assertInvalidProtocolEvidenceDoesNotActivatePendingAccount(input: {
@@ -262,6 +306,9 @@ async function assertInvalidProtocolEvidenceDoesNotActivatePendingAccount(input:
     name: 'HTTP 200 无协议完成证据',
     type: 'api_key',
     credentials: { api_key: 'sk-manual-invalid-protocol-evidence', base_url: input.mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     status: 'pending_test',
     schedulable: false,
     groupId: input.groupId
@@ -296,6 +343,9 @@ async function assertInvalidProtocolEvidenceDegradesActiveAccount(input: {
     name: 'HTTP 200 无协议证据的正常账户',
     type: 'api_key',
     credentials: { api_key: 'sk-manual-invalid-protocol-evidence', base_url: input.mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     status: 'active',
     schedulable: true,
     groupId: input.groupId
@@ -357,13 +407,39 @@ function accountAvailabilityState(account: AccountSummary | undefined) {
   }
 }
 
+function makeActiveAccountUnschedulable(accountId: string): void {
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET status = 'active',
+          schedulable = 0,
+          updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `)
+    .run(new Date().toISOString(), accountId)
+}
+
 function createMockOpenAIServer(): http.Server {
   return http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url?.split('?', 1)[0] !== '/v1/responses') {
+    const requestPath = req.url?.split('?', 1)[0]
+    if (req.method === 'GET' && requestPath === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [{ id: 'gpt-5.5', object: 'model' }, { id: 'gpt-5.4', object: 'model' }]
+      }))
+      return
+    }
+    if (req.method !== 'POST' || (requestPath !== '/v1/responses' && requestPath !== '/responses')) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'not found' } }))
       return
     }
+    const requestChunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      requestChunks.push(chunk)
+    })
     req.on('end', () => {
       if (req.headers.authorization?.includes('sk-manual-invalid-protocol-evidence')) {
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
@@ -388,6 +464,12 @@ function createMockOpenAIServer(): http.Server {
             total_tokens: 2
           }
         }
+      }
+      const requestBody = JSON.parse(Buffer.concat(requestChunks).toString('utf8')) as { stream?: boolean }
+      if (requestBody.stream === false) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(completedEvent.response))
+        return
       }
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
       res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)

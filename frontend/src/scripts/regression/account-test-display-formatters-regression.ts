@@ -84,6 +84,25 @@ assertLineIncludes(successLines, '实际请求形态：Chat Completions (Streami
 assertLineIncludes(successLines, 'API Key 池结果：可用 1/2，已测试 2 个', 'Key 池输出应展示汇总')
 assertLineIncludes(successLines, 'API Key sk-a...good 测试结果：通过，HTTP 200，耗时 0.90s', 'Key 池输出应展示成功 Key 的前后缀和结果')
 assertLineIncludes(successLines, 'API Key sk-b...fail 测试结果：失败，HTTP 401，耗时 0.12s，错误码 invalid_api_key，invalid api key', 'Key 池输出应展示失败 Key 的前后缀和结果')
+const shortCircuitPoolLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  testEndpointMode: 'account_default',
+  selectedEndpointModeText: 'Chat Completions (Streaming)',
+  model: 'gpt-5.1',
+  providerLabel: () => 'OpenAI',
+  result: {
+    ...successResult,
+    apiKeyPool: {
+      ...successResult.apiKeyPool!,
+      total: 3,
+      tested: 2,
+      successCount: 1,
+      failedCount: 1
+    }
+  },
+  running: false
+})
+assertLineIncludes(shortCircuitPoolLines, 'API Key 池结果：可用 1/3，已测试 2 个，未测试 1 个', '首个成功短路结果必须明确未测试 Key 数量')
 const duplicatedApiKeyPoolResult = {
   ...successResult,
   apiKeyPool: {

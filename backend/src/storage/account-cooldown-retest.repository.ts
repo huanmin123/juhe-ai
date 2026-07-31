@@ -46,8 +46,9 @@ import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalString } from './value-utils.js'
 
 const temporaryUnavailableInitialBackoffSeconds = 3
-const temporaryUnavailableFastThresholdSeconds = 60
-const temporaryUnavailableBackoffMultiplier = 2
+const temporaryUnavailableFastThresholdSeconds = 48
+const cooldownRetestSlowMinDelaySeconds = 60
+const cooldownRetestSlowMaxDelaySeconds = 5 * 60
 const cooldownRetestLongTermUnavailableCode = 'cooldown_retest_long_term_unavailable'
 const cooldownRetestObservationTimeoutCode = 'cooldown_retest_observation_timeout'
 const cooldownRetestLimitedProbeTimeoutCode = 'cooldown_retest_limited_probe_timeout'
@@ -376,6 +377,7 @@ interface LegacyCooldownRetestStateRow {
   config_revision: number | bigint | string
   dispatch_revision: number | bigint | string
   status: string
+  schedulable: number | bigint | string
   cooldown_retest_observation_started_at: string | null
   cooldown_retest_generation: string | null
 }
@@ -391,7 +393,7 @@ function repairLegacyCooldownRetestStateInSqlite(
   const cursorFilter = !accountId && cursor
     ? 'AND (cooldown_until, priority, created_at, id) > (?, ?, ?, ?)'
     : ''
-  const accountsSource = accountId ? 'accounts' : 'accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order'
+  const accountsSource = accountId ? 'accounts' : 'accounts INDEXED BY idx_accounts_cooldown_retest_legacy_repair_order'
   const scanParams: Array<string | number> = [now]
   if (accountId) scanParams.push(accountId)
   if (!accountId && cursor) {
@@ -402,12 +404,12 @@ function repairLegacyCooldownRetestStateInSqlite(
   const legacyPredicate = `
         deleted_at IS NULL
         AND status IN ('temporary_unavailable', 'rate_limited')
-        AND schedulable = 1
         AND type IN ('api_key', 'oauth', 'google_oauth')
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
         AND (
-          cooldown_retest_observation_started_at IS NULL
+          schedulable <> 1
+          OR cooldown_retest_observation_started_at IS NULL
           OR ${trimmedObservation} = ''
           OR cooldown_retest_generation IS NULL
           OR ${trimmedGeneration} = ''
@@ -429,7 +431,7 @@ function repairLegacyCooldownRetestStateInSqlite(
 
   runInDatabaseTransaction(() => {
     const rows = database.prepare(`
-      SELECT id, config_revision, dispatch_revision, status,
+      SELECT id, config_revision, dispatch_revision, status, schedulable,
         cooldown_retest_observation_started_at, cooldown_retest_generation
       FROM ${accountsSource}
       WHERE ${legacyPredicate}
@@ -439,16 +441,22 @@ function repairLegacyCooldownRetestStateInSqlite(
     for (const row of rows) {
       const observationStartedAt = validCooldownRetestObservation(row.cooldown_retest_observation_started_at) ?? now
       const generation = optionalString(row.cooldown_retest_generation)?.trim()
-      if (observationStartedAt === row.cooldown_retest_observation_started_at && generation === row.cooldown_retest_generation) continue
+      if (
+        Number(row.schedulable) === 1
+        && observationStartedAt === row.cooldown_retest_observation_started_at
+        && generation === row.cooldown_retest_generation
+      ) continue
       const nextGeneration = newCooldownRetestGeneration()
       database.prepare(`
         UPDATE accounts
-        SET cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
+        SET schedulable = 1,
+            cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
         WHERE id = ?
           AND deleted_at IS NULL
           AND status = ?
           AND config_revision = ?
           AND dispatch_revision = ?
+          AND schedulable IS ?
           AND cooldown_retest_observation_started_at IS ?
           AND cooldown_retest_generation IS ?
       `).run(
@@ -458,6 +466,7 @@ function repairLegacyCooldownRetestStateInSqlite(
         row.status,
         Number(row.config_revision),
         Number(row.dispatch_revision),
+        row.schedulable,
         row.cooldown_retest_observation_started_at,
         row.cooldown_retest_generation
       )
@@ -487,17 +496,17 @@ async function repairLegacyCooldownRetestStateInPostgres(
   const trimmedGeneration = postgresTrimCooldownRetestText('cooldown_retest_generation')
   await client.transaction(async (tx) => {
     const rows = await tx.query<LegacyCooldownRetestStateRow>(`
-      SELECT id, config_revision, dispatch_revision, status,
+      SELECT id, config_revision, dispatch_revision, status, schedulable,
         cooldown_retest_observation_started_at, cooldown_retest_generation
       FROM ${accountsTable}
       WHERE deleted_at IS NULL
         AND status IN ('temporary_unavailable', 'rate_limited')
-        AND schedulable = 1
         AND type IN ('api_key', 'oauth', 'google_oauth')
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
         AND (
-          cooldown_retest_observation_started_at IS NULL
+          schedulable <> 1
+          OR cooldown_retest_observation_started_at IS NULL
           OR ${trimmedObservation} = ''
           OR cooldown_retest_generation IS NULL
           OR ${trimmedGeneration} = ''
@@ -515,16 +524,22 @@ async function repairLegacyCooldownRetestStateInPostgres(
     for (const row of rows) {
       const observationStartedAt = validCooldownRetestObservation(row.cooldown_retest_observation_started_at) ?? now
       const generation = optionalString(row.cooldown_retest_generation)?.trim()
-      if (observationStartedAt === row.cooldown_retest_observation_started_at && generation === row.cooldown_retest_generation) continue
+      if (
+        Number(row.schedulable) === 1
+        && observationStartedAt === row.cooldown_retest_observation_started_at
+        && generation === row.cooldown_retest_generation
+      ) continue
       const nextGeneration = newCooldownRetestGeneration()
       await tx.execute(`
         UPDATE ${accountsTable}
-        SET cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
+        SET schedulable = 1,
+            cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
         WHERE id = ?
           AND deleted_at IS NULL
           AND status = ?
           AND config_revision = ?
           AND dispatch_revision = ?
+          AND schedulable IS NOT DISTINCT FROM ?
           AND cooldown_retest_observation_started_at IS NOT DISTINCT FROM ?
           AND cooldown_retest_generation IS NOT DISTINCT FROM ?
       `, [
@@ -534,6 +549,7 @@ async function repairLegacyCooldownRetestStateInPostgres(
         row.status,
         Number(row.config_revision),
         Number(row.dispatch_revision),
+        row.schedulable,
         row.cooldown_retest_observation_started_at,
         row.cooldown_retest_generation
       ])
@@ -665,7 +681,15 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
   const failureCount = Math.max(0, current.cooldownRetestFailureCount ?? 0) + 1
   const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
   const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
-  const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt, current.status === 'temporary_unavailable' && current.temporaryUnavailableContinuousProbeEnabled === false)
+  const recovery = cooldownRetestRecoveryPlan(
+    failureCount,
+    input,
+    nowDate,
+    observationStartedAt,
+    current.status === 'temporary_unavailable' && current.temporaryUnavailableContinuousProbeEnabled === false,
+    id,
+    input.expectedGeneration
+  )
 
   const transitionedToError = recovery.stage === 'terminal'
   const calculatedCooldownUntil = transitionedToError
@@ -811,7 +835,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
     const recovery = cooldownRetestRecoveryPlan(failureCount, {
       ...input,
       maxPauseMinutes
-    }, nowDate, observationStartedAt, current.status === 'temporary_unavailable' && current.temporary_unavailable_continuous_probe_enabled === 0)
+    }, nowDate, observationStartedAt, current.status === 'temporary_unavailable' && current.temporary_unavailable_continuous_probe_enabled === 0, id, input.expectedGeneration)
     const transitionedToError = recovery.stage === 'terminal'
     const calculatedCooldownUntil = transitionedToError
       ? undefined
@@ -1529,22 +1553,29 @@ interface CooldownRetestRecoveryPlan {
   observationTimeoutSeconds: number
 }
 
-function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccountRetestFailureInput, nowDate: Date, observationStartedAt: string, boundedTemporaryUnavailable: boolean): CooldownRetestRecoveryPlan {
-  const initialBackoffSeconds = boundedInteger(input.initialBackoffSeconds, temporaryUnavailableInitialBackoffSeconds, 1, 3600)
-  const fastThresholdSeconds = boundedInteger(input.fastThresholdSeconds, temporaryUnavailableFastThresholdSeconds, initialBackoffSeconds, 3600)
+function cooldownRetestRecoveryPlan(
+  failureCount: number,
+  input: CooldownAccountRetestFailureInput,
+  nowDate: Date,
+  observationStartedAt: string,
+  boundedTemporaryUnavailable: boolean,
+  accountId: string,
+  generation: string
+): CooldownRetestRecoveryPlan {
+  const initialBackoffSeconds = temporaryUnavailableInitialBackoffSeconds
+  const fastThresholdSeconds = temporaryUnavailableFastThresholdSeconds
   const maxPauseSeconds = boundedInteger(input.maxPauseMinutes, defaultTemporaryUnschedulableMinutes(), 1, 1440) * 60
   const maxRecoverySeconds = boundedInteger(input.maxRecoveryHours, 12, 1, 24 * 30) * 60 * 60
   const longTermIntervalSeconds = cooldownRetestLongTermIntervalSeconds
-  const multiplier = boundedInteger(input.backoffMultiplier, temporaryUnavailableBackoffMultiplier, 2, 10)
-  const exponent = Math.max(0, Math.min(failureCount - 1, 30))
-  const uncappedBackoffSeconds = Math.min(Number.MAX_SAFE_INTEGER, initialBackoffSeconds * Math.pow(multiplier, exponent))
-  const firstMaxedFailureCount = firstCappedBackoffFailureCount(initialBackoffSeconds, multiplier, maxPauseSeconds)
-  const maxedFailureCount = failureCount >= firstMaxedFailureCount ? failureCount - firstMaxedFailureCount + 1 : 0
+  const fastBackoffSeconds = initialBackoffSeconds * Math.pow(2, Math.max(0, failureCount - 1))
+  const slowBackoffSeconds = cooldownRetestSlowBackoffSeconds(accountId, generation, failureCount)
+  const maxedFailureCount = 0
   const observationElapsedSeconds = cooldownRetestObservationElapsedSeconds(observationStartedAt, nowDate)
   const inLongTermStage = !boundedTemporaryUnavailable && observationElapsedSeconds >= maxRecoverySeconds
   const observationTimeoutSeconds = boundedTemporaryUnavailable ? 10 * 60 : cooldownRetestObservationTimeoutSeconds
   const timedOut = observationElapsedSeconds >= observationTimeoutSeconds
-  const uncappedBackoff = inLongTermStage ? longTermIntervalSeconds : Math.min(uncappedBackoffSeconds, maxPauseSeconds)
+  const recoveryBackoffSeconds = failureCount <= 5 ? fastBackoffSeconds : slowBackoffSeconds
+  const uncappedBackoff = inLongTermStage ? longTermIntervalSeconds : recoveryBackoffSeconds
   const backoffSeconds = timedOut
     ? 0
     : boundedTemporaryUnavailable
@@ -1552,7 +1583,7 @@ function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccount
       : uncappedBackoff
   const stage = timedOut
     ? 'terminal'
-    : inLongTermStage ? 'long_term' : backoffSeconds <= fastThresholdSeconds ? 'fast' : 'slow'
+    : inLongTermStage ? 'long_term' : failureCount <= 5 ? 'fast' : 'slow'
   return {
     stage,
     backoffSeconds,
@@ -1565,6 +1596,20 @@ function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccount
     observationElapsedSeconds,
     observationTimeoutSeconds
   }
+}
+
+function cooldownRetestSlowBackoffSeconds(accountId: string, generation: string, failureCount: number): number {
+  const range = cooldownRetestSlowMaxDelaySeconds - cooldownRetestSlowMinDelaySeconds + 1
+  return cooldownRetestSlowMinDelaySeconds + stableCooldownRetestHash(`${accountId}:${generation}:${failureCount}`) % range
+}
+
+function stableCooldownRetestHash(value: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
 }
 
 function cooldownRetestAction(stage: CooldownRetestRecoveryPlan['stage']): CooldownAccountRetestFailureResult['action'] {
@@ -1589,14 +1634,6 @@ function cooldownRetestObservationElapsedSeconds(observationStartedAt: string, n
     return 0
   }
   return Math.max(0, Math.floor((nowDate.getTime() - startedAtMs) / 1000))
-}
-
-function firstCappedBackoffFailureCount(initialBackoffSeconds: number, multiplier: number, maxPauseSeconds: number): number {
-  if (initialBackoffSeconds >= maxPauseSeconds) {
-    return 1
-  }
-  const raw = Math.ceil(Math.log(maxPauseSeconds / initialBackoffSeconds) / Math.log(multiplier))
-  return Math.max(1, raw + 1)
 }
 
 function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: number, stage: 'fast' | 'slow', lastError: string): string {

@@ -176,17 +176,23 @@ func TestCooldownAccountRetestRecoveryPlanMatchesNodeBoundaries(t *testing.T) {
 	task.MaxPauseMinutes = 1
 	task.MaxRecoveryHours = 12
 	target := cooldownOutcomeAccountRow{status: "temporary_unavailable", observationStartedAt: &started, continuousProbeEnabled: 1}
-	wantBackoff := []int{3, 6, 12, 24, 48, 60, 60}
+	wantBackoff := []int{3, 6, 12, 24, 48}
 	for failureCount, want := range wantBackoff {
 		target.failureCount = failureCount
 		plan := cooldownAccountRetestRecoveryPlan(target, task, now)
-		if plan.backoffSeconds != want {
+		if plan.backoffSeconds != want || plan.stage != "fast" {
 			t.Fatalf("failure %d backoff = %d, want %d", failureCount+1, plan.backoffSeconds, want)
 		}
 	}
-	target.failureCount = -10
-	if got := boundedCooldownOutcomeBackoff(max(target.failureCount, 0)+1, task.MaxPauseMinutes*60); got != 3 {
-		t.Fatalf("legacy negative count first backoff = %d, want 3", got)
+	target.failureCount = 5
+	slowWithOneMinuteMaxPause := cooldownAccountRetestRecoveryPlan(target, task, now)
+	if slowWithOneMinuteMaxPause.stage != "slow" || slowWithOneMinuteMaxPause.backoffSeconds < 60 || slowWithOneMinuteMaxPause.backoffSeconds > 5*60 {
+		t.Fatalf("sixth failure slow plan = %+v", slowWithOneMinuteMaxPause)
+	}
+	task.MaxPauseMinutes = 1440
+	slowWithDayMaxPause := cooldownAccountRetestRecoveryPlan(target, task, now)
+	if slowWithDayMaxPause.backoffSeconds != slowWithOneMinuteMaxPause.backoffSeconds {
+		t.Fatalf("slow plan must not depend on maxPauseMinutes: oneMinute=%+v day=%+v", slowWithOneMinuteMaxPause, slowWithDayMaxPause)
 	}
 
 	longTermStarted := now.Add(-12 * time.Hour)

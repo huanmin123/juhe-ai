@@ -79,9 +79,12 @@ assert.match(balanceRepositorySource, /listAccountsDueForBalanceRefreshAsync[\s\
 assert.match(balanceRepositorySource, /saveAccountBalanceConfigurationAsync[\s\S]*?\[input\.enabled \? 1 : 0, JSON\.stringify\(config \?\? \{\}\)/, 'PostgreSQL 余额开关写入必须绑定 INTEGER 0/1 参数')
 assert.match(balanceRepositorySource, /balanceDetectionCandidateWhere[\s\S]*balanceBooleanPredicate\('schedulable', true\)[\s\S]*balanceBooleanPredicate\('balance_query_enabled', false\)/, '首次探测候选及写回必须按当前方言核对可调度和关闭状态')
 assert.match(accountHealthCheckRepositorySource, /recordAccountHealthCheckSuccessAsync[\s\S]*schedulable = CASE WHEN status = 'pending_test' THEN 1[\s\S]*AND \? = 1[\s\S]*balance_query_enabled = 0/, 'PostgreSQL 健康成功必须按 Node INTEGER 写入首次余额探测意图')
-assert.match(balanceRefreshJobSource, /const refreshBatchSize = 12/, '余额刷新单轮候选必须受最坏耗时约束')
+assert.match(balanceRefreshJobSource, /const refreshBatchSize = 36/, '余额刷新单轮候选必须受最坏耗时约束')
+assert.match(balanceRefreshJobSource, /const refreshConcurrency = 18/, '余额刷新必须限制在两轮候选超时预算内的并发数')
 assert.match(balanceRefreshJobSource, /const recoveryBatchSize = 4/, '每轮余额刷新必须为缺失调度自愈保留固定小配额')
 assert.match(balanceRefreshJobSource, /const refreshRunBudgetMs = 45_000/, '余额刷新领取新候选必须受单轮运行预算约束')
+assert.equal(36 / 18, 2, '余额刷新批次必须恰好容纳两轮受控并发')
+assert.ok((36 - 4) * 5 >= 151, '扣除自愈配额后的自动刷新吞吐必须满足五轮 151 个候选的容量目标')
 assert.doesNotMatch(balanceRefreshJobSource, /Promise\.race/, '余额刷新不得用 detached Promise.race 伪造取消')
 assert.match(balanceRefreshJobSource, /signal: candidateController\.signal/, '候选超时必须传递到真实余额查询')
 assert.match(balanceRefreshJobSource, /deadlineAtMs: candidateDeadlineAtMs/, '候选必须传递绝对截止时间')
@@ -93,6 +96,7 @@ assert.match(autoDetectServiceSource, /runWithAccountBalanceLease/, '自动探�
 assert.match(balanceServiceSource, /export async function runWithAccountBalanceLease/, '余额查询服务必须提供共享账户租约入口')
 assert.match(balanceServiceSource, /loadCurrentGenerationBalanceSnapshot\(candidate\)/, '租约冲突与瞬时失败只能复用当前刷新代次的余额快照')
 assert.doesNotMatch(balanceServiceSource, /loadAccountBalanceSnapshotsByAccountIdsAsync/, '余额刷新 fallback 不能绕过刷新代次直接读取快照金额')
+assert.doesNotMatch(balanceRepositorySource, /expectedUpdatedAt|stateUpdatedAt|AND updated_at = \?/, '余额刷新不得把普通账户活动时间作为 CAS 条件')
 
 let untrustedStatusServer: Server | undefined
 try {
@@ -153,6 +157,8 @@ try {
     base_url: mockBaseUrl
   })
   const manualRefresh = create('manual-refresh')
+  const gatewayActivity = create('gateway-activity')
+  const automaticEligibilityRevoked = create('automatic-eligibility-revoked')
   const lifecycle = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'lifecycle', type: 'api_key', credentials: { api_key: 'sk-lifecycle', base_url: 'https://relay.example/v1' },
@@ -400,7 +406,6 @@ try {
     credentials: { api_key: 'sk-untrusted-status-failure', base_url: mockBaseUrl },
     config: { adapter: 'builtin', intervalMinutes: 5 },
     nextRefreshAt: null,
-    stateUpdatedAt: new Date().toISOString()
   }, {
     signal: transportAbortController.signal,
     deadlineAtMs: Date.now() + 5_000
@@ -421,8 +426,7 @@ try {
         configRevision: dueA.configRevision ?? 1,
         credentials: { api_key: 'sk-due-a', base_url: 'https://relay.example/v1' },
         config: { adapter: 'builtin', intervalMinutes: 5 },
-        nextRefreshAt: new Date().toISOString(),
-        stateUpdatedAt: new Date().toISOString()
+        nextRefreshAt: new Date().toISOString()
       }],
       refreshCandidate: async (_candidate, context) => await new Promise<never>((_resolve, reject) => {
         const abort = () => reject(context.signal.reason)
@@ -444,8 +448,7 @@ try {
     configRevision: dueA.configRevision ?? 1,
     credentials: { api_key: 'sk-due-a' },
     config: { adapter: 'builtin', intervalMinutes: 5 } as const,
-    nextRefreshAt: callableDueAt,
-    stateUpdatedAt: callableDueAt
+    nextRefreshAt: callableDueAt
   }
   const executableRuntimeCases = [
     { name: 'runtime absent', available: true, values: {} },
@@ -599,15 +602,19 @@ try {
     expectedConfigRevision: nullGenerationCandidate.configRevision,
     expectedConfig: nullGenerationCandidate.config,
     expectedNextRefreshAt: null,
-    expectedUpdatedAt: nullGenerationCandidate.stateUpdatedAt,
     nextConfig: nullGenerationCandidate.config,
-    nextRefreshAt: null
+    nextRefreshAt: new Date(Date.now() + 60_000).toISOString()
   }
   assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync(nullGenerationCommit), true)
   assert.equal(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(recoverMissing.id)?.balance_query_next_refresh_at,
+    nullGenerationCommit.nextRefreshAt,
+    '自动自愈的空计划提交必须写入非空的下一次刷新计划'
+  )
+  assert.equal(
     await balanceRepository.commitAccountBalanceRefreshAsync(nullGenerationCommit),
     false,
-    'recovery 的 null 到 null 提交也必须推进 updated_at 代次，旧尝试不得二次提交'
+    '自动自愈的旧空计划尝试不得覆盖已经推进的非空刷新计划'
   )
   const pausedPrefix = Array.from({ length: 45 }, (_, index) => create(`recover-paused-prefix-${index}`))
   const recoverAfterPausedPrefix = create('recover-after-paused-prefix')
@@ -829,6 +836,8 @@ try {
   configure.run('active', builtinConfig, futureAt, deterministicFailure.id)
   configure.run('active', builtinConfig, futureAt, untrustedStatusFailure.id)
   configure.run('active', builtinConfig, futureAt, manualRefresh.id)
+  configure.run('active', builtinConfig, futureAt, gatewayActivity.id)
+  configure.run('active', builtinConfig, futureAt, automaticEligibilityRevoked.id)
   database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(autoDetect.id)
 
   const invalidDuePrefix = Array.from({ length: 48 }, (_, index) => create(`invalid-due-prefix-${index}`))
@@ -1205,7 +1214,23 @@ try {
     WHERE id = ?
   `).run(recoveryConfig, disabled.id)
   assert.equal(await balanceRepository.findAccountBalanceRefreshCandidateAsync(disabled.id), undefined, '停用账户不得进入自动余额查询')
-  assert.ok(await balanceRepository.findAccountBalanceManualRefreshCandidateAsync(disabled.id), '停用的自有账户仍必须允许人工余额查询')
+  const disabledManualCandidate = await balanceRepository.findAccountBalanceManualRefreshCandidateAsync(disabled.id)
+  assert.ok(disabledManualCandidate, '停用的自有账户仍必须允许人工余额查询')
+  const disabledManualResult = await balanceQueryService.refreshAccountBalanceCandidateWithOutcome(disabledManualCandidate, {
+    mode: 'manual',
+    query: async () => ({ status: 'fresh', remainingUsd: '4.440000', rawRemaining: '4.44', rawUnit: 'usd', basis: 'wallet' })
+  })
+  assert.equal(disabledManualResult.outcome, 'refreshed', '停用账户的人工余额查询必须成功落库')
+  assert.equal(disabledManualResult.persisted, true, '停用账户的人工余额查询不得附加自动资格条件')
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([disabled.id]).get(disabled.id)?.remainingUsd,
+    '4.440000',
+    '停用账户的人工余额查询必须保存最新快照'
+  )
+  assert.ok(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(disabled.id)?.balance_query_next_refresh_at,
+    '停用账户的人工余额查询必须推进下一次刷新计划'
+  )
   const manualSuccessCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(manualRefresh.id)
   assert.ok(manualSuccessCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(manualSuccessCandidate, {
@@ -1219,6 +1244,64 @@ try {
     database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
     futureAt,
     '人工刷新成功必须推进自动刷新时间'
+  )
+
+  configure.run('active', builtinConfig, dueAt, gatewayActivity.id)
+  const gatewayActivityCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(gatewayActivity.id)
+  assert.ok(gatewayActivityCandidate)
+  const gatewayActivityDueAt = gatewayActivityCandidate.nextRefreshAt
+  const gatewayActivityAt = new Date().toISOString()
+  const gatewayActivityResult = await balanceQueryService.refreshAccountBalanceCandidateWithOutcome(gatewayActivityCandidate, {
+    query: async () => {
+      database.prepare(`UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?`)
+        .run(gatewayActivityAt, gatewayActivityAt, gatewayActivity.id)
+      return { status: 'fresh', remainingUsd: '13.370000', rawRemaining: '13.37', rawUnit: 'usd', basis: 'wallet' }
+    }
+  })
+  assert.equal(gatewayActivityResult.outcome, 'refreshed', '仅网关活动时间变化不能让自动余额结果误判 stale')
+  assert.equal(gatewayActivityResult.persisted, true, '仅网关活动时间变化后的自动余额结果必须落库')
+  const gatewayActivityRow = database.prepare(`
+    SELECT last_used_at, balance_query_next_refresh_at
+    FROM accounts WHERE id = ?
+  `).get(gatewayActivity.id) as { last_used_at?: string | null; balance_query_next_refresh_at?: string | null }
+  assert.equal(gatewayActivityRow.last_used_at, gatewayActivityAt, '网关活动时间更新必须保留')
+  assert.ok(gatewayActivityRow.balance_query_next_refresh_at, '自动余额刷新必须写入非空下一次计划')
+  assert.notEqual(gatewayActivityRow.balance_query_next_refresh_at, gatewayActivityDueAt, '自动余额刷新必须推进旧计划')
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([gatewayActivity.id]).get(gatewayActivity.id)?.remainingUsd,
+    '13.370000',
+    '仅网关活动时间变化后的自动余额结果必须保存新快照'
+  )
+
+  configure.run('active', builtinConfig, dueAt, automaticEligibilityRevoked.id)
+  const automaticEligibilityCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(automaticEligibilityRevoked.id)
+  assert.ok(automaticEligibilityCandidate)
+  const automaticEligibilityDueAt = automaticEligibilityCandidate.nextRefreshAt
+  const automaticEligibilityRevision = automaticEligibilityCandidate.configRevision
+  const automaticEligibilityResult = await balanceQueryService.refreshAccountBalanceCandidateWithOutcome(automaticEligibilityCandidate, {
+    query: async () => {
+      database.prepare(`
+        UPDATE accounts
+        SET status = 'disabled', schedulable = 0
+        WHERE id = ?
+      `).run(automaticEligibilityRevoked.id)
+      return { status: 'fresh', remainingUsd: '15.150000', rawRemaining: '15.15', rawUnit: 'usd', basis: 'wallet' }
+    }
+  })
+  assert.equal(automaticEligibilityResult.outcome, 'stale', '自动刷新在途失去资格时必须拒绝旧结果')
+  assert.equal(automaticEligibilityResult.persisted, false, '自动刷新在途失去资格时不得持久化旧结果')
+  const automaticEligibilityRow = database.prepare(`
+    SELECT status, schedulable, config_revision, balance_query_next_refresh_at
+    FROM accounts WHERE id = ?
+  `).get(automaticEligibilityRevoked.id) as Record<string, unknown>
+  assert.equal(automaticEligibilityRow.status, 'disabled')
+  assert.equal(automaticEligibilityRow.schedulable, 0)
+  assert.equal(automaticEligibilityRow.config_revision, automaticEligibilityRevision, '资格撤销回归不得依赖配置版本变化')
+  assert.equal(automaticEligibilityRow.balance_query_next_refresh_at, automaticEligibilityDueAt, '资格撤销后必须保留原定刷新计划')
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([automaticEligibilityRevoked.id]).has(automaticEligibilityRevoked.id),
+    false,
+    '资格撤销后不得写入在途查询的旧快照'
   )
 
   const staleCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(dueB.id)

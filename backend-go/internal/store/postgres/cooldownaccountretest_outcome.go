@@ -27,8 +27,8 @@ const (
 
 	cooldownOutcomeProjectionKey                   = "account_circuit_runtime_v1"
 	cooldownOutcomeInitialBackoffSeconds           = 3
-	cooldownOutcomeFastThresholdSeconds            = 60
-	cooldownOutcomeBackoffMultiplier               = 2
+	cooldownOutcomeSlowMinDelaySeconds             = 60
+	cooldownOutcomeSlowMaxDelaySeconds             = 5 * 60
 	cooldownOutcomeLongTermIntervalSeconds         = 60 * 60
 	cooldownOutcomeObservationTimeoutSeconds       = 7 * 24 * 60 * 60
 	cooldownOutcomeLimitedProbeTimeoutSeconds      = 10 * 60
@@ -587,7 +587,8 @@ func cooldownAccountRetestRecoveryPlan(target cooldownOutcomeAccountRow, task po
 	maxRecoverySeconds := task.MaxRecoveryHours * 60 * 60
 	terminal := elapsed >= timeout
 	longTerm := !bounded && elapsed >= maxRecoverySeconds
-	backoff := boundedCooldownOutcomeBackoff(target.failureCount+1, task.MaxPauseMinutes*60)
+	failureCount := target.failureCount + 1
+	backoff := cooldownOutcomeRecoveryBackoff(task.AccountID, task.Generation, failureCount)
 	stage := "fast"
 	if terminal {
 		stage = "terminal"
@@ -595,7 +596,7 @@ func cooldownAccountRetestRecoveryPlan(target cooldownOutcomeAccountRow, task po
 	} else if longTerm {
 		stage = "long_term"
 		backoff = cooldownOutcomeLongTermIntervalSeconds
-	} else if backoff > cooldownOutcomeFastThresholdSeconds {
+	} else if failureCount > 5 {
 		stage = "slow"
 	}
 	if bounded && !terminal {
@@ -606,7 +607,7 @@ func cooldownAccountRetestRecoveryPlan(target cooldownOutcomeAccountRow, task po
 		if backoff > remaining {
 			backoff = remaining
 		}
-		if backoff <= cooldownOutcomeFastThresholdSeconds {
+		if failureCount <= 5 {
 			stage = "fast"
 		} else {
 			stage = "slow"
@@ -619,19 +620,21 @@ func cooldownAccountRetestRecoveryPlan(target cooldownOutcomeAccountRow, task po
 	}
 }
 
-func boundedCooldownOutcomeBackoff(failureCount, maxPauseSeconds int) int {
-	backoff := cooldownOutcomeInitialBackoffSeconds
-	for index := 1; index < failureCount && backoff < maxPauseSeconds; index++ {
-		if backoff > maxPauseSeconds/cooldownOutcomeBackoffMultiplier {
-			backoff = maxPauseSeconds
-			break
-		}
-		backoff *= cooldownOutcomeBackoffMultiplier
+func cooldownOutcomeRecoveryBackoff(accountID, generation string, failureCount int) int {
+	if failureCount <= 5 {
+		return cooldownOutcomeInitialBackoffSeconds * (1 << max(failureCount-1, 0))
 	}
-	if backoff > maxPauseSeconds {
-		return maxPauseSeconds
+	rangeSeconds := cooldownOutcomeSlowMaxDelaySeconds - cooldownOutcomeSlowMinDelaySeconds + 1
+	return cooldownOutcomeSlowMinDelaySeconds + int(stableCooldownOutcomeHash(accountID+":"+generation+":"+fmt.Sprint(failureCount))%uint32(rangeSeconds))
+}
+
+func stableCooldownOutcomeHash(value string) uint32 {
+	hash := uint32(2166136261)
+	for _, codeUnit := range utf16.Encode([]rune(value)) {
+		hash ^= uint32(codeUnit)
+		hash *= 16777619
 	}
-	return backoff
+	return hash
 }
 
 func normalizeCooldownAccountRetestFailure(probe port.CooldownAccountRetestProbeResult) (string, string, string) {

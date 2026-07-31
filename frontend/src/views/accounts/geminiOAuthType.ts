@@ -3,7 +3,12 @@ import type { AccountFormModel } from './accountFormTypes'
 const geminiCliOAuthClientId = '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com'
 
 export function inferGeminiOAuthType(
-  credentials: Record<string, unknown>
+  credentials: {
+    oauth_type?: unknown
+    base_url?: unknown
+    project_id?: unknown
+    client_id?: unknown
+  }
 ): AccountFormModel['oauthType'] {
   const explicit = text(credentials.oauth_type)
   if (explicit === 'code_assist' || explicit === 'google_one' || explicit === 'ai_studio') return explicit

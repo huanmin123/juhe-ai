@@ -419,7 +419,6 @@ async function persistBalanceRefreshIfCurrent(
       expectedConfigRevision: candidate.configRevision,
       expectedConfig: candidate.config,
       expectedNextRefreshAt: mode === 'manual' ? undefined : candidate.nextRefreshAt,
-      expectedUpdatedAt: mode === 'manual' ? undefined : candidate.stateUpdatedAt,
       nextConfig,
       nextRefreshAt: nextRefreshAfter,
       snapshot
@@ -430,7 +429,6 @@ async function persistBalanceRefreshIfCurrent(
     expectedConfigRevision: candidate.configRevision,
     expectedConfig: candidate.config,
     expectedNextRefreshAt: mode === 'manual' ? undefined : candidate.nextRefreshAt,
-    expectedUpdatedAt: mode === 'manual' ? undefined : candidate.stateUpdatedAt,
     nextConfig,
     nextRefreshAt: nextRefreshAfter
   })
@@ -469,7 +467,6 @@ export async function deferAccountBalanceRefreshCandidate(
     expectedConfigRevision: candidate.configRevision,
     expectedConfig: candidate.config,
     expectedNextRefreshAt: candidate.nextRefreshAt,
-    expectedUpdatedAt: candidate.stateUpdatedAt,
     nextConfig: candidate.config,
     nextRefreshAt: retryAt
   })

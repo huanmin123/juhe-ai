@@ -135,6 +135,9 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
@@ -224,6 +227,9 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   activateAccountAfterBackgroundCheck(failingOwnerAccount.id)
@@ -304,6 +310,9 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-authorized-local-error-success', base_url: mockBaseUrl },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   activateAccountAfterBackgroundCheck(errorOwnerAccount.id)
@@ -363,6 +372,11 @@ try {
 function createMockOpenAIServer(): http.Server {
   return http.createServer((req, res) => {
     const requestPath = req.url?.split('?', 1)[0]
+    if (req.method === 'GET' && requestPath === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.5', object: 'model' }] }))
+      return
+    }
     if (req.method !== 'POST' || (requestPath !== '/v1/responses' && requestPath !== '/v1/chat/completions')) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'not found' } }))

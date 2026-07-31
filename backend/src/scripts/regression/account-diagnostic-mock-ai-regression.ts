@@ -132,7 +132,7 @@ try {
   flushAllUsageRecordQueue()
   assert.equal(transientResult.success, true, `瞬态 mock AI 两次失败后应在第 3 次恢复：${transientResult.message}`)
   assert.equal(hitCount('manual-transient'), 3, '手动账号测试应在同一账号真实请求失败后按 10/20/30 三档重试到成功')
-  assert.deepEqual(transientProgress, [10_000, 10_000, 20_000, 30_000], '模型目录预检和文本测试都应按各自的 10/20/30 秒诊断阶梯上报')
+  assert.deepEqual(transientProgress, [10_000, 10_000, 20_000, 30_000], '模型目录预检只使用单次 10 秒窗口，文本测试仍按 10/20/30 秒诊断阶梯上报')
 
   const catalogTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'catalog-timeout', access)
   AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
@@ -149,7 +149,7 @@ try {
   flushAllUsageRecordQueue()
   assert.equal(catalogTimeoutResult.success, false, '模型目录持续超时不应继续执行真实模型测试')
   assert.equal(catalogTimeoutResult.errorCode, 'server_diagnostic_timeout', '模型目录诊断超时必须保留服务端 deadline 错误码')
-  assert.equal(hitCount('catalog-timeout:models'), 3, '模型目录预检必须完整执行 10/20/30 三档探测')
+  assert.equal(hitCount('catalog-timeout:models'), 1, '模型目录预检超时后必须在单次 10 秒窗口失败')
   assert.equal(hitCount('catalog-timeout'), 0, '模型目录预检失败后不得继续发起真实模型测试')
 
   const parentTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'parent-timeout', access)
@@ -187,8 +187,8 @@ try {
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
   const catalogTimeoutAfterHealthCheck = repositories.findAccountSummary(catalogTimeoutAccount.id, access)
-  assert.equal(hitCount('catalog-timeout:models'), 6, '自动健康检查的模型目录预检也必须完整执行三档探测')
-  assert.equal(catalogTimeoutAfterHealthCheck?.status, 'temporary_unavailable', '模型目录完整诊断阶梯超时也必须立即临时不可调度')
+  assert.equal(hitCount('catalog-timeout:models'), 2, '自动健康检查的模型目录预检同样只能尝试一次')
+  assert.equal(catalogTimeoutAfterHealthCheck?.status, 'temporary_unavailable', '模型目录单次诊断超时也必须立即临时不可调度')
 
   const persistentAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-persistent-401', access)
   const persistentResult = await testOpenAIAccountWithDiagnosticRetries(persistentAccount, { model: 'gpt-5.5', testEndpointMode: 'responses_sse' })

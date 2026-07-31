@@ -118,6 +118,7 @@ assert.match(createBranch, /reconcileCreatedExternalSource/)
 assert.match(createBranch, /if \(contextChanged \|\| !result\.item \|\| reconciliation\?\.requiresReload\) await loadData\(\)/, 'Node 窄 item 正常路径不得刷新；旧 owner 缺少 item 时必须安全回退')
 const deleteFunction = viewSource.slice(viewSource.indexOf('async function deleteSource'), viewSource.indexOf('function sourceNotes'))
 assert.match(deleteFunction, /reconcileDeletedExternalSource/)
+assert.match(deleteFunction, /api\.externalIntegrationSources\.delete\(record\.id, record\.updatedAt\)/, '来源删除必须提交列表行的 CAS 版本')
 assert.match(deleteFunction, /const mutationSignature = currentListSignature\(\)[\s\S]*contextChanged = mutationSignature !== currentListSignature\(\)/, '写入期间切换筛选或分页必须被识别')
 assert.match(deleteFunction, /if \(contextChanged \|\| reconciliation\?\.requiresReload\) await loadData\(\)/, '删除只能在上下文变化或分页边界无法证明时定点刷新')
 

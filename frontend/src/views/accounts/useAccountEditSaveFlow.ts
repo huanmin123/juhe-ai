@@ -148,7 +148,8 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         const updatePayload = buildAccountAdvancedUpdatePatch(
           payload,
           baseline,
-          configRevision
+          configRevision,
+          options.form.statusSelectionExplicit
         )
         if (!updatePayload) {
           finishUnchangedEdit()

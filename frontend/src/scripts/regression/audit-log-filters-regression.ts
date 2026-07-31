@@ -1,6 +1,10 @@
 import fs from 'node:fs'
 
-import { auditLogFilterCounts, auditLogListParams } from '@/views/audit-logs/auditLogFilters'
+import {
+  auditLogFilterCounts,
+  auditLogListParams,
+  filterLegacyClientAbortedAuditRows
+} from '@/views/audit-logs/auditLogFilters'
 
 const pageState = { current: 1, pageSize: 100 }
 const baseFilters = {
@@ -53,14 +57,33 @@ const filterCounts = auditLogFilterCounts({
 assert(filterCounts.active === 1, 'traceId 直接定位时只能显示实际生效的 traceId 筛选')
 assert(filterCounts.advanced === 0, 'traceId 直接定位时更多筛选不应计入筛选数量')
 
+const legacyOutcomeParams = auditLogListParams({
+  ...baseFilters,
+  outcomeFilter: 'client_aborted',
+  systemAccountFilter: 'all',
+  traceIdFilter: ''
+}, pageState)
+assert(legacyOutcomeParams.outcome === 'all', '历史 client_aborted 筛选不得提交当前 Node 会静默忽略的 outcome 参数')
+assert(
+  filterLegacyClientAbortedAuditRows([
+    { id: 'legacy', auditOutcome: 'client_aborted' },
+    { id: 'current', auditOutcome: 'downstream_closed' }
+  ] as never, 'client_aborted').map((item) => item.id).join(',') === 'legacy',
+  '历史 client_aborted 必须在前端按原始终态筛选，不得与 downstream_closed 混淆'
+)
+
 const viewSource = fs.readFileSync(new URL('../../views/audit-logs/AuditLogsView.vue', import.meta.url), 'utf8')
 const filterFormSource = fs.readFileSync(new URL('../../views/audit-logs/AuditLogFilterForm.vue', import.meta.url), 'utf8')
+const formattersSource = fs.readFileSync(new URL('../../views/audit-logs/auditLogFormatters.ts', import.meta.url), 'utf8')
+const outcomeOptionsSource = fs.readFileSync(new URL('../../views/audit-logs/auditLogTableColumns.ts', import.meta.url), 'utf8')
 const modeBridgeSource = fs.readFileSync(new URL('../../views/audit-logs/useAuditLogModeBridge.ts', import.meta.url), 'utf8')
 assert(!viewSource.includes('emptyAuditLogListResult'), '审计列表不应在未选择用户时返回前端空结果')
 assert(viewSource.includes('systemAccountFilter: allSystemAccountsValue'), '审计列表应默认选择全部系统账户')
 assert((viewSource.match(/v-model:session-id="sessionIdFilter"/g) ?? []).length === 2, '桌面与移动端更多筛选均应绑定会话 ID')
 assert(!viewSource.includes('v-model:trace-id="traceIdFilter"'), 'traceId 只能由顶部主搜索框查询，不应出现在更多筛选')
 assert(filterFormSource.includes('label="会话 ID"'), '更多筛选表单应显示会话 ID')
+assert(formattersSource.includes("client_aborted: '客户端中断（历史）'"), '旧 client_aborted 审计记录必须有明确标签')
+assert(outcomeOptionsSource.includes("value: 'client_aborted'"), '旧 client_aborted 审计记录必须保留前端筛选入口')
 assert(!filterFormSource.includes('label="traceId"'), '更多筛选表单不应重复显示 traceId')
 assert(!filterFormSource.includes('客户端类型'), '更多筛选表单不应提供客户端类型')
 assert(!filterFormSource.includes('HTTP 状态码'), '更多筛选表单不应提供 HTTP 状态码')

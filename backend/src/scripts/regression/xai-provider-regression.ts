@@ -28,6 +28,7 @@ import {
   providerDriverForAccount,
   usageSemanticForProfile
 } from '../../modules/providers/drivers/registry.js'
+import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
 import { mergeAccountCredentialsForUpdate } from '../../modules/accounts/account-credential-update.js'
 import {
   prepareXaiAccountBeforeDispatch,
@@ -159,6 +160,51 @@ assert.deepEqual(
 )
 assert.equal(accountSupportsGatewayRequest(responsesRequest, account), true)
 
+const unmarkedModelsRequest = modelsRequest()
+const markedModelsRequest = markGatewayUpstreamModelsProbe(modelsRequest('/v1/models?trace=xai-models'))
+assert.deepEqual(
+  buildGatewayUpstreamUrlsForAccount(account, markedModelsRequest),
+  ['https://api.x.ai/v1/models?trace=xai-models'],
+  '内部标记的 xAI API Key 模型目录探针应发往上游 models 端点并保留查询参数'
+)
+assert.equal(
+  accountSupportsGatewayRequest(markedModelsRequest, account),
+  true,
+  '内部标记的 xAI API Key 模型目录探针应绕过 Chat/Responses 能力筛选'
+)
+const markedModelsRequestWithWrongMethod = markGatewayUpstreamModelsProbe(modelsRequest('/v1/models', 'POST'))
+assert.deepEqual(
+  buildGatewayUpstreamUrlsForAccount(account, markedModelsRequestWithWrongMethod),
+  [],
+  '内部标记的 POST /v1/models 不得成为 xAI API Key 网关路由'
+)
+assert.equal(
+  accountSupportsGatewayRequest(markedModelsRequestWithWrongMethod, account),
+  false,
+  '内部标记的 POST /v1/models 不得被 xAI API Key 账户承接'
+)
+const markedResponsesProbeRequest = markGatewayUpstreamModelsProbe(modelsRequest('/v1/responses'))
+assert.deepEqual(
+  buildGatewayUpstreamUrlsForAccount(account, markedResponsesProbeRequest),
+  [],
+  '内部标记的 GET /v1/responses 不得成为 xAI API Key 网关路由'
+)
+assert.equal(
+  accountSupportsGatewayRequest(markedResponsesProbeRequest, account),
+  false,
+  '内部标记的 GET /v1/responses 不得被 xAI API Key 账户承接'
+)
+assert.deepEqual(
+  buildGatewayUpstreamUrlsForAccount(account, unmarkedModelsRequest),
+  [],
+  '未标记的 GET /v1/models 不得成为 xAI API Key 网关路由'
+)
+assert.equal(
+  accountSupportsGatewayRequest(unmarkedModelsRequest, account),
+  false,
+  '未标记的 GET /v1/models 不得被 xAI API Key 账户承接'
+)
+
 const requestParts = await buildGatewayUpstreamRequestParts(responsesRequest, account, {
   systemAccountId: 'sys_admin',
   groupId: 'grp_xai'
@@ -285,6 +331,16 @@ assert.deepEqual(xaiRebasePersistRevisions, [20, 21], 'Grok 无关配置冲突�
 assert.equal(rebasedOAuthAccount.refreshToken, 'xai-rebased-refresh-token')
 assert.equal(accountSupportsGatewayRequest(chatRequest, oauthAccount), false, 'Grok OAuth 不应承接 Chat Completions')
 assert.equal(accountSupportsGatewayRequest(responsesRequest, oauthAccount), true, 'Grok OAuth 应承接 Responses')
+assert.deepEqual(
+  buildGatewayUpstreamUrlsForAccount(oauthAccount, markedModelsRequest),
+  [],
+  'Grok OAuth 即使收到内部模型目录标记也不得访问 models 端点'
+)
+assert.equal(
+  accountSupportsGatewayRequest(markedModelsRequest, oauthAccount),
+  false,
+  'Grok OAuth 即使收到内部模型目录标记也不得承接模型目录探针'
+)
 assert.deepEqual(
   buildGatewayUpstreamUrlsForAccount(oauthAccount, responsesRequest),
   ['https://cli-chat-proxy.grok.com/v1/responses?trace=xai-responses']
@@ -515,5 +571,17 @@ function openAIRequest(originalUrl: string, body: Record<string, unknown>): Requ
     },
     body,
     rawBody
+  } as unknown as Request
+}
+
+function modelsRequest(originalUrl = '/v1/models', method = 'GET'): Request {
+  return {
+    method,
+    originalUrl,
+    path: originalUrl.split('?', 1)[0],
+    headers: {
+      accept: 'application/json',
+      authorization: 'Bearer downstream-key'
+    }
   } as unknown as Request
 }

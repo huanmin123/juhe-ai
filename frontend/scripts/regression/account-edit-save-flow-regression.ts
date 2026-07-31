@@ -85,7 +85,8 @@ for (const [flow, source] of [
   )
 }
 assert.match(editOpenSource, /'edit-basic'/, '普通编辑弹窗首开只允许请求 edit-basic')
-assert.match(basicInfoSource, /<a-form-item v-if="!editing" class="dispatch-status-field"/, '状态选择只允许在新增账户时展示')
+assert.match(basicInfoSource, /<a-form-item class="dispatch-status-field" label="状态">/, '新增和编辑必须展示同一组三态状态选择')
+assert.match(basicInfoSource, /@change="form\.statusSelectionExplicit = true"/, '手动切换状态必须标记为显式选择')
 assert.doesNotMatch(healthCheckModelFieldSource, /allow-clear/, '必填检查模型不得暴露清空入口并生成后端不接受的 null PATCH')
 assert.match(savePayloadSource, /if \(!healthCheckModel\) return '请选择检查模型'/, '保存前必须在前端拦截空检查模型')
 assert.match(editFormSource, /supportedModels\[0\] \?\? ''/, '已选检查模型离开支持模型集合时应回落到首个可用模型')
@@ -483,13 +484,20 @@ assert.throws(
 )
 assert.equal('service_tier_override' in basicBaseline.credentials, false, '未加载的高级凭据字段不得进入基础编辑基线')
 assert.equal('balanceQueryConfig' in basicBaseline.values, false, '未加载的高级账户字段不得进入基础编辑增量')
-assert.equal('status' in basicBaseline.values, false, '普通编辑基线不得包含状态，启停与恢复只能走专用行级动作')
+assert.equal('status' in basicBaseline.values, false, '普通编辑未显式选择状态时不得提交状态')
+const basicStatusChanged = structuredClone(basicBaseline)
+basicStatusChanged.values.status = 'active'
+assert.deepEqual(
+  buildAccountBasicUpdatePatch(basicStatusChanged, basicBaseline, 7),
+  { status: 'active', expectedConfigRevision: 7 },
+  '普通编辑显式选择状态时必须提交状态'
+)
 const advancedStatusChanged = structuredClone(advancedBaseline)
 advancedStatusChanged.status = 'active'
-assert.equal(
-  buildAccountAdvancedUpdatePatch(advancedStatusChanged, advancedBaseline, 11),
-  undefined,
-  '高级编辑不得因为表单状态变化提交 status'
+assert.deepEqual(
+  buildAccountAdvancedUpdatePatch(advancedStatusChanged, advancedBaseline, 11, true),
+  { status: 'active', expectedConfigRevision: 11 },
+  '高级编辑显式选择状态时必须提交 status'
 )
 form.status = 'active'
 assert.equal(buildAccountSavePayload({

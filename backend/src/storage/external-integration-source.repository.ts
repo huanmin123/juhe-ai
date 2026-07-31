@@ -688,23 +688,30 @@ async function executeExternalIntegrationSourceUpdateAsync(
   if (result.changes !== 1) throw new ExternalIntegrationSourcePatchConflictError()
 }
 
-export function deleteExternalIntegrationSource(id: string): ExternalIntegrationSourceDeleteReceipt | undefined {
+export function deleteExternalIntegrationSource(id: string, expectedUpdatedAt: string): ExternalIntegrationSourceDeleteReceipt | undefined {
   if (isBuiltInExternalIntegrationTestSourceId(id)) {
     throw new Error('内置测试 Token 不支持删除')
   }
   return runInDatabaseTransaction(() => {
     const source = findSourceDeleteRow(id)
     if (!source) return undefined
+    if (source.updated_at !== expectedUpdatedAt) throw new ExternalIntegrationSourcePatchConflictError()
     const database = getBusinessDatabase()
     database.prepare('DELETE FROM external_integration_source_tokens WHERE source_ref_id = ?').run(id)
-    const result = database.prepare('DELETE FROM external_integration_sources WHERE id = ?').run(id)
-    return Number(result.changes ?? 0) > 0 ? source : undefined
+    const result = database.prepare('DELETE FROM external_integration_sources WHERE id = ? AND updated_at = ?').run(id, expectedUpdatedAt)
+    if (Number(result.changes ?? 0) !== 1) throw new ExternalIntegrationSourcePatchConflictError()
+    return Number(result.changes ?? 0) > 0
+      ? { id: source.id, name: source.name }
+      : undefined
   })
 }
 
-export async function deleteExternalIntegrationSourceAsync(id: string): Promise<ExternalIntegrationSourceDeleteReceipt | undefined> {
+export async function deleteExternalIntegrationSourceAsync(
+  id: string,
+  expectedUpdatedAt: string
+): Promise<ExternalIntegrationSourceDeleteReceipt | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return deleteExternalIntegrationSource(id)
+    return deleteExternalIntegrationSource(id, expectedUpdatedAt)
   }
   if (isBuiltInExternalIntegrationTestSourceId(id)) {
     throw new Error('内置测试 Token 不支持删除')
@@ -713,15 +720,19 @@ export async function deleteExternalIntegrationSourceAsync(id: string): Promise<
   return client.transaction(async (tx) => {
     const source = await findSourceDeleteRowAsync(tx, id)
     if (!source) return undefined
+    if (source.updated_at !== expectedUpdatedAt) throw new ExternalIntegrationSourcePatchConflictError()
     await tx.execute(`
       DELETE FROM ${externalIntegrationSourceBusinessTable(tx, 'external_integration_source_tokens')}
       WHERE source_ref_id = ?
     `, [id])
     const result = await tx.execute(`
       DELETE FROM ${externalIntegrationSourceBusinessTable(tx, 'external_integration_sources')}
-      WHERE id = ?
-    `, [id])
-    return Number(result.changes ?? 0) > 0 ? source : undefined
+      WHERE id = ? AND updated_at = ?
+    `, [id, expectedUpdatedAt])
+    if (result.changes !== 1) throw new ExternalIntegrationSourcePatchConflictError()
+    return Number(result.changes ?? 0) > 0
+      ? { id: source.id, name: source.name }
+      : undefined
   })
 }
 
@@ -753,18 +764,20 @@ async function findSourceRowAsync(client: DatabaseClient, id: string): Promise<E
   `, [id])
 }
 
-function findSourceDeleteRow(id: string): ExternalIntegrationSourceDeleteReceipt | undefined {
+type ExternalIntegrationSourceDeleteRow = ExternalIntegrationSourceDeleteReceipt & { updated_at: string }
+
+function findSourceDeleteRow(id: string): ExternalIntegrationSourceDeleteRow | undefined {
   return getBusinessDatabase()
-    .prepare('SELECT id, name FROM external_integration_sources WHERE id = ?')
-    .get(id) as ExternalIntegrationSourceDeleteReceipt | undefined
+    .prepare('SELECT id, name, updated_at FROM external_integration_sources WHERE id = ?')
+    .get(id) as ExternalIntegrationSourceDeleteRow | undefined
 }
 
 async function findSourceDeleteRowAsync(
   client: DatabaseClient,
   id: string
-): Promise<ExternalIntegrationSourceDeleteReceipt | undefined> {
-  return await client.one<ExternalIntegrationSourceDeleteReceipt>(`
-    SELECT id, name
+): Promise<ExternalIntegrationSourceDeleteRow | undefined> {
+  return await client.one<ExternalIntegrationSourceDeleteRow>(`
+    SELECT id, name, updated_at
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')}
     WHERE id = ?
     FOR UPDATE

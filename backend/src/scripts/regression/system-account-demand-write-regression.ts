@@ -468,8 +468,8 @@ function assertSourceContracts(): void {
   assert.match(patchSource, /systemAccountPatchRevokesSessions\(changes\)[\s\S]*DELETE FROM \$\{systemAccountTable\(tx, 'system_sessions'\)\}/, '实际停用或密码变更必须在 PATCH 事务内撤销会话')
   assert.match(
     patchSource,
-    /const runtimeReason = systemAccountManagementRuntimeInvalidationReason\(outcome\.changes\)[\s\S]*notifyGatewayRuntimeCacheInvalidation\(runtimeReason\)[\s\S]*notifyGatewayApiKeyValidationCacheInvalidationAsync\(undefined, runtimeReason\)/,
-    'runtime 与 API Key validation cache 必须复用按实际变化派生的同一失效原因'
+    /const runtimeReason = systemAccountManagementRuntimeInvalidationReason\(outcome\.changes\)[\s\S]*notifyGatewayRuntimeCacheInvalidation\(runtimeReason\)[\s\S]*try \{[\s\S]*notifyGatewayApiKeyValidationCacheInvalidationAsync\(undefined, runtimeReason\)[\s\S]*apiKeyValidationCacheInvalidationFailed = true/,
+    'runtime 与 API Key validation cache 必须复用按实际变化派生的同一失效原因；提交后失效失败只能作为成功回执警告'
   )
 
   const routeSource = readFileSync(fileURLToPath(new URL('../../modules/system-accounts/system-accounts.routes.ts', import.meta.url)), 'utf8')
@@ -477,6 +477,7 @@ function assertSourceContracts(): void {
   assert.doesNotMatch(routePatch, /findSystemAccountByIdAsync|updateSystemAccountWithPasswordHashAsync/, '路由不得重复宽读或回退整行更新')
   assert.doesNotMatch(routePatch, /revokeAllSessionsForAccountAsync/, '路由不得在账户 PATCH 事务之后再单独撤销会话')
   assert.match(routePatch, /outcome\.changes\.length \?/, 'no-op 不得记录操作日志')
+  assert.doesNotMatch(routePatch, /GatewayApiKeyValidationCacheInvalidationError/, '已提交的系统账户 PATCH 不得因缓存失效返回假失败')
 
   const asyncFindSource = sourceBetween(repositorySource, 'async function findSystemAccountByIdWithClient(', 'export function findSystemAccountByUsername(')
   assert.doesNotMatch(asyncFindSource, /password_hash/, 'PostgreSQL 系统账户详情读不得读取未使用的密码哈希')

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +18,8 @@ const (
 	DefaultEnqueueWorkers = 8
 	DefaultTaskTimeout    = 60 * time.Second
 	DefaultOutcomeTimeout = 5 * time.Second
-	neutralInitialDelay   = 30 * time.Second
-	neutralMaxDelay       = 15 * time.Minute
-	neutralJitterRatio    = 0.2
+	neutralMinDelay       = time.Minute
+	neutralMaxDelay       = 5 * time.Minute
 )
 
 var (
@@ -251,7 +249,7 @@ func (p Processor) RunTask(ctx context.Context, task port.CooldownAccountRetestT
 		// A transport or timeout error has no attributable upstream result.  Move
 		// the candidate out of the due set before acknowledging this task; otherwise
 		// a queue retry and the scheduler can issue duplicate probes concurrently.
-		if deferErr := p.deferOutcome(ctx, task, p.currentTime()); deferErr != nil {
+		if deferErr := p.deferOutcome(ctx, task, candidate.CooldownUntil); deferErr != nil {
 			return fmt.Errorf("defer cooldown account retest after probe error (%v): %w", err, deferErr)
 		}
 		return nil
@@ -260,7 +258,7 @@ func (p Processor) RunTask(ctx context.Context, task port.CooldownAccountRetestT
 		if ctx.Err() != nil {
 			return fmt.Errorf("probe cooldown account retest interrupted: %w", ctx.Err())
 		}
-		return p.deferOutcome(ctx, task, p.currentTime())
+		return p.deferOutcome(ctx, task, candidate.CooldownUntil)
 	}
 	action, supported := accounthealth.CooldownRetestActionFor(accounthealth.ProbeOutcome(result.Outcome))
 	if !supported {
@@ -272,7 +270,7 @@ func (p Processor) RunTask(ctx context.Context, task port.CooldownAccountRetestT
 			return p.Outcomes.RecordCooldownAccountRetestSuccess(outcomeCtx, task)
 		})
 	case accounthealth.RetestActionDefer:
-		return p.deferOutcome(ctx, task, p.currentTime())
+		return p.deferOutcome(ctx, task, candidate.CooldownUntil)
 	case accounthealth.RetestActionRecordFailure:
 		return p.recordOutcome(ctx, func(outcomeCtx context.Context) error {
 			return p.Outcomes.RecordCooldownAccountRetestFailure(outcomeCtx, task, result)
@@ -288,9 +286,9 @@ func (p Processor) currentTime() time.Time {
 	return time.Now()
 }
 
-func (p Processor) deferOutcome(ctx context.Context, task port.CooldownAccountRetestTask, now time.Time) error {
+func (p Processor) deferOutcome(ctx context.Context, task port.CooldownAccountRetestTask, cooldownUntil time.Time) error {
 	return p.recordOutcome(ctx, func(outcomeCtx context.Context) error {
-		return p.Outcomes.DeferCooldownAccountRetest(outcomeCtx, task, neutralDeferDelay(task, now))
+		return p.Outcomes.DeferCooldownAccountRetest(outcomeCtx, task, neutralDeferDelay(task, cooldownUntil))
 	})
 }
 
@@ -322,34 +320,14 @@ func candidateVersion(candidate port.CooldownAccountRetestCandidate) accountheal
 	}
 }
 
-func neutralDeferDelay(task port.CooldownAccountRetestTask, now time.Time) time.Duration {
-	elapsedSeconds := int64(0)
-	if task.ObservationStartedAt != nil && !task.ObservationStartedAt.IsZero() && now.After(*task.ObservationStartedAt) {
-		elapsedSeconds = int64(now.Sub(*task.ObservationStartedAt) / time.Second)
+func neutralDeferDelay(task port.CooldownAccountRetestTask, cooldownUntil time.Time) time.Duration {
+	marker := cooldownUntil.UTC().Format("2006-01-02T15:04:05.000Z")
+	if cooldownUntil.IsZero() && task.ObservationStartedAt != nil {
+		marker = task.ObservationStartedAt.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
-	completedInitialIntervals := float64(elapsedSeconds) / neutralInitialDelay.Seconds()
-	growthStep := int(math.Floor(math.Log2(completedInitialIntervals + 1)))
-	if growthStep < 0 {
-		growthStep = 0
-	}
-	if growthStep > 5 {
-		growthStep = 5
-	}
-	baseSeconds := int(neutralInitialDelay.Seconds()) * (1 << growthStep)
-	if maxSeconds := int(neutralMaxDelay.Seconds()); baseSeconds > maxSeconds {
-		baseSeconds = maxSeconds
-	}
-	jitterRange := max(1, int(math.Floor(float64(baseSeconds)*neutralJitterRatio)))
-	jitterBuckets := jitterRange*2 + 1
-	hashInput := fmt.Sprintf("%s:%s:%d", task.AccountID, task.Generation, growthStep)
-	jitterSeconds := int(stableCooldownRetestHash(hashInput)%uint32(jitterBuckets)) - jitterRange
-	delaySeconds := baseSeconds + jitterSeconds
-	if delaySeconds < 3 {
-		delaySeconds = 3
-	}
-	if maxSeconds := int(neutralMaxDelay.Seconds()); delaySeconds > maxSeconds {
-		delaySeconds = maxSeconds
-	}
+	minSeconds := int(neutralMinDelay.Seconds())
+	maxSeconds := int(neutralMaxDelay.Seconds())
+	delaySeconds := minSeconds + int(stableCooldownRetestHash(fmt.Sprintf("%s:%s:%s", task.AccountID, task.Generation, marker))%uint32(maxSeconds-minSeconds+1))
 	return time.Duration(delaySeconds) * time.Second
 }
 

@@ -637,7 +637,7 @@ func TestProcessorDefersUnattributableProbeFailureWithStableBackoff(t *testing.T
 	if err := (Processor{Store: store, Outcomes: outcomes, Probe: probe, Quota: fakeQuotaChecker{}, Now: func() time.Time { return now }}).RunTask(context.Background(), task); err != nil {
 		t.Fatalf("RunTask() error = %v", err)
 	}
-	if outcomes.deferred != 1 || outcomes.deferDelay != neutralDeferDelay(task, now) || outcomes.failed != 0 {
+	if outcomes.deferred != 1 || outcomes.deferDelay != neutralDeferDelay(task, candidate.CooldownUntil) || outcomes.failed != 0 {
 		t.Fatalf("outcomes = %+v", outcomes)
 	}
 }
@@ -660,29 +660,27 @@ func TestProcessorDefersFramingCompleteNeutral(t *testing.T) {
 
 func TestNeutralDeferDelayIsDeterministicAndBounded(t *testing.T) {
 	task, _ := validTaskAndCandidate()
-	wantSeconds := map[time.Duration]int{
-		0: 36, 29 * time.Second: 36, 30 * time.Second: 51,
-		90 * time.Second: 122, time.Hour: 720, 30 * 24 * time.Hour: 720,
+	firstMarker := *task.ObservationStartedAt
+	secondMarker := firstMarker.Add(210 * time.Second)
+	first := neutralDeferDelay(task, firstMarker)
+	if repeated := neutralDeferDelay(task, firstMarker); repeated != first {
+		t.Fatalf("same cooldown marker delay changed from %s to %s", first, repeated)
 	}
-	for elapsed, expectedSeconds := range wantSeconds {
-		now := task.ObservationStartedAt.Add(elapsed)
-		first := neutralDeferDelay(task, now)
-		second := neutralDeferDelay(task, now)
-		if first != second {
-			t.Fatalf("elapsed=%s delay changed from %s to %s", elapsed, first, second)
-		}
-		if first < 3*time.Second || first > 15*time.Minute {
-			t.Fatalf("elapsed=%s delay=%s outside [3s, 15m]", elapsed, first)
-		}
-		if first != time.Duration(expectedSeconds)*time.Second {
-			t.Fatalf("elapsed=%s delay=%s, want Node parity %ds", elapsed, first, expectedSeconds)
-		}
+	if first < time.Minute || first > 5*time.Minute {
+		t.Fatalf("first delay=%s outside [1m, 5m]", first)
+	}
+	second := neutralDeferDelay(task, secondMarker)
+	if second < time.Minute || second > 5*time.Minute {
+		t.Fatalf("second delay=%s outside [1m, 5m]", second)
+	}
+	if second == first {
+		t.Fatalf("updated cooldown marker did not change deterministic defer: %s", first)
 	}
 	unicodeTask := task
 	unicodeTask.AccountID = "\u8d26\u53f7-A"
 	unicodeTask.Generation = "\u4ee3\u6b21-\U0001F600"
-	if got := neutralDeferDelay(unicodeTask, unicodeTask.ObservationStartedAt.Add(90*time.Second)); got != 128*time.Second {
-		t.Fatalf("UTF-16 stable hash delay = %s, want Node parity 128s", got)
+	if got := neutralDeferDelay(unicodeTask, firstMarker); got < time.Minute || got > 5*time.Minute {
+		t.Fatalf("UTF-16 stable hash delay = %s outside [1m, 5m]", got)
 	}
 }
 

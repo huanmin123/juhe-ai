@@ -16,6 +16,7 @@ interface CooldownAccountRetestQueueItem {
   dispatchRevision: number
   cooldownRetestObservationStartedAt: string
   cooldownRetestGeneration: string
+  cooldownUntil?: string
   sourceConfigRevision?: number
   maxPauseMinutes: number
   maxRecoveryHours: number
@@ -23,9 +24,8 @@ interface CooldownAccountRetestQueueItem {
 
 const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy('cooldown_account_retest_revival', [], 0)
 const queuedCooldownFenceByAccountId = new Map<string, string>()
-const cooldownRetestNeutralInitialDelaySeconds = 30
-const cooldownRetestNeutralMaxDelaySeconds = 15 * 60
-const cooldownRetestNeutralJitterRatio = 0.2
+const cooldownRetestNeutralMinDelaySeconds = 60
+const cooldownRetestNeutralMaxDelaySeconds = 5 * 60
 
 const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueItem>({
   name: 'cooldown-account-retest',
@@ -76,6 +76,7 @@ export function enqueueCooldownAccountRetest(
     dispatchRevision: dispatchRevision!,
     cooldownRetestObservationStartedAt: account.cooldownRetestObservationStartedAt,
     cooldownRetestGeneration: generation,
+    cooldownUntil: account.cooldownUntil,
     sourceConfigRevision,
     maxPauseMinutes: strategy.maxPauseMinutes,
     maxRecoveryHours: strategy.maxRecoveryHours
@@ -208,6 +209,7 @@ async function runCooldownAccountRetestQueueItem(
     const delaySeconds = cooldownRetestNeutralDeferDelaySeconds({
       accountId: item.accountId,
       generation: item.cooldownRetestGeneration,
+      cooldownUntil: item.cooldownUntil,
       observationStartedAt: item.cooldownRetestObservationStartedAt
     })
     const deferred = await requestBackgroundWorkerDbService({
@@ -295,30 +297,14 @@ export function cooldownRetestNeutralDeferDelaySeconds(input: {
   accountId: string
   generation: string
   observationStartedAt: string
-  nowMs?: number
+  cooldownUntil?: string
 }): number {
-  const nowMs = Number.isFinite(input.nowMs) ? Number(input.nowMs) : Date.now()
-  const observationStartedAtMs = Date.parse(input.observationStartedAt)
-  const elapsedSeconds = Number.isFinite(observationStartedAtMs)
-    ? Math.max(0, Math.floor((nowMs - observationStartedAtMs) / 1000))
-    : 0
-  const completedInitialIntervals = elapsedSeconds / cooldownRetestNeutralInitialDelaySeconds
-  const growthStep = Math.max(0, Math.min(
-    5,
-    Math.floor(Math.log2(completedInitialIntervals + 1))
-  ))
-  const baseDelaySeconds = Math.min(
-    cooldownRetestNeutralMaxDelaySeconds,
-    cooldownRetestNeutralInitialDelaySeconds * Math.pow(2, growthStep)
-  )
-  const jitterRangeSeconds = Math.max(1, Math.floor(baseDelaySeconds * cooldownRetestNeutralJitterRatio))
-  const jitterBucketCount = jitterRangeSeconds * 2 + 1
-  const jitterSeconds = stableCooldownRetestHash(`${input.accountId}:${input.generation}:${growthStep}`) % jitterBucketCount
-    - jitterRangeSeconds
-  return Math.max(
-    3,
-    Math.min(cooldownRetestNeutralMaxDelaySeconds, baseDelaySeconds + jitterSeconds)
-  )
+  const range = cooldownRetestNeutralMaxDelaySeconds - cooldownRetestNeutralMinDelaySeconds + 1
+  const rawMarker = input.cooldownUntil?.trim() || input.observationStartedAt
+  const markerMs = Date.parse(rawMarker)
+  const scheduleMarker = Number.isFinite(markerMs) ? new Date(markerMs).toISOString() : rawMarker
+  return cooldownRetestNeutralMinDelaySeconds
+    + stableCooldownRetestHash(`${input.accountId}:${input.generation}:${scheduleMarker}`) % range
 }
 
 function stableCooldownRetestHash(value: string): number {

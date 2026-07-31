@@ -85,15 +85,7 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     ...accountGptRequestOverridesForForm(account.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(advanced.modelMappings),
     availabilitySchedule,
-    balanceQueryEnabled: advanced.balanceQueryEnabled === true,
-    balanceQueryAdapter: advanced.balanceQueryConfig?.adapter ?? 'builtin',
-    balanceQueryPreferredBuiltinAdapter: advanced.balanceQueryConfig?.preferredBuiltinAdapter,
-    balanceQueryIntervalMinutes: advanced.balanceQueryConfig?.intervalMinutes ?? 5,
-    balanceQueryCustomPath: advanced.balanceQueryConfig?.custom?.path ?? '',
-    balanceQueryRemainingPointer: advanced.balanceQueryConfig?.custom?.remainingPointer ?? '',
-    balanceQueryTotalPointer: advanced.balanceQueryConfig?.custom?.totalPointer ?? '',
-    balanceQueryUsedPointer: advanced.balanceQueryConfig?.custom?.usedPointer ?? '',
-    balanceQueryDivisor: advanced.balanceQueryConfig?.custom?.divisor ?? ''
+    ...accountBalanceFormFields(advanced)
   }
 
   return {
@@ -119,7 +111,7 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     privilege: account.superPriorityEnabled ? 'super_priority' : account.fallbackEnabled ? 'fallback' : 'normal',
-    status: account.status === 'disabled' ? 'disabled' : account.status === 'pending_test' ? 'pending_test' : 'active',
+    status: account.status === 'active' ? 'active' : account.status === 'disabled' ? 'disabled' : 'pending_test',
     clientCompatibility: accountClientCompatibilityForForm(account),
     supportedEndpointModes: accountEndpointModesForForm(account, credentials),
     groupId: selectedGroup?.id ?? fallbackGroupId,
@@ -165,7 +157,8 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     privilege: account.superPriorityEnabled ? 'super_priority' : account.fallbackEnabled ? 'fallback' : 'normal',
-    status: 'pending_test',
+    status: accountCloneStatusForForm(account.status),
+    statusSelectionExplicit: true,
     clientCompatibility: accountClientCompatibilityForForm(account),
     supportedEndpointModes: accountEndpointModesForForm(account, credentials),
     proxyProfileId: account.proxyProfileId,
@@ -173,15 +166,20 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     groupId: selectedGroup?.id,
     group: selectedGroup,
     apiKey: '',
-    apiKeys: [''],
-    apiKeyStrategy: 'round_robin',
-    apiKeyWeights: [1],
+    apiKeys: cloneAccountApiKeySlots(credentials),
+    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin',
+    apiKeyWeights: cloneAccountApiKeyWeights(credentials),
     baseUrl,
     accessToken: '',
     refreshToken: '',
+    googleClientId: asString(credentials.client_id) ?? '',
     callbackUrl: '',
     oauthMode: 'manual',
     ssoTokens: '',
+    googleQuotaProjectId: asString(credentials.quota_project_id) ?? '',
+    oauthType: inferGeminiOAuthType(credentials),
+    tierId: asString(credentials.tier_id) ?? '',
+    projectId: asString(credentials.project_id) ?? '',
     supportedModels: [...(account.supportedModels ?? [])],
     healthCheckModel: account.healthCheckModel,
     temporaryUnavailableContinuousProbeEnabled: account.temporaryUnavailableContinuousProbeEnabled !== false,
@@ -190,6 +188,7 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     modelMappings: cloneAccountModelMappings(account.modelMappings),
     tags: accountTagNames(account.tags),
     availabilitySchedule,
+    ...accountBalanceFormFields(account),
     notes: account.notes ?? ''
   }
 
@@ -225,6 +224,52 @@ function credentialBaseUrlForForm(credentials: { base_url?: unknown }, label: st
     throw new AccountEditFormLoadError(`${label}缺少 Base URL，请先修正账户凭据`)
   }
   return baseUrl
+}
+
+function accountCloneStatusForForm(status: AccountCloneContext['status']): AccountFormModel['status'] {
+  return status === 'active' || status === 'disabled' || status === 'pending_test' ? status : 'pending_test'
+}
+
+function cloneAccountApiKeySlots(credentials: AccountCloneCredentialOptions): string[] {
+  const count = Number(credentials.api_key_count ?? 1)
+  const slotCount = Number.isInteger(count) ? Math.min(Math.max(count, 1), 50) : 1
+  return Array.from({ length: slotCount }, () => '')
+}
+
+function cloneAccountApiKeyWeights(credentials: AccountCloneCredentialOptions): number[] {
+  const slots = cloneAccountApiKeySlots(credentials)
+  const sourceWeights = Array.isArray(credentials.api_key_weights) ? credentials.api_key_weights : []
+  return slots.map((_, index) => {
+    const value = Number(sourceWeights[index] ?? 1)
+    return Number.isInteger(value) ? Math.min(Math.max(value, 1), 100) : 1
+  })
+}
+
+function accountBalanceFormFields(input: {
+  balanceQueryEnabled: boolean
+  balanceQueryConfig?: AccountAdvancedDetail['balanceQueryConfig']
+}): Pick<AccountFormModel,
+  | 'balanceQueryEnabled'
+  | 'balanceQueryAdapter'
+  | 'balanceQueryPreferredBuiltinAdapter'
+  | 'balanceQueryIntervalMinutes'
+  | 'balanceQueryCustomPath'
+  | 'balanceQueryRemainingPointer'
+  | 'balanceQueryTotalPointer'
+  | 'balanceQueryUsedPointer'
+  | 'balanceQueryDivisor'
+> {
+  return {
+    balanceQueryEnabled: input.balanceQueryEnabled === true,
+    balanceQueryAdapter: input.balanceQueryConfig?.adapter ?? 'builtin',
+    balanceQueryPreferredBuiltinAdapter: input.balanceQueryConfig?.preferredBuiltinAdapter,
+    balanceQueryIntervalMinutes: input.balanceQueryConfig?.intervalMinutes ?? 5,
+    balanceQueryCustomPath: input.balanceQueryConfig?.custom?.path ?? '',
+    balanceQueryRemainingPointer: input.balanceQueryConfig?.custom?.remainingPointer ?? '',
+    balanceQueryTotalPointer: input.balanceQueryConfig?.custom?.totalPointer ?? '',
+    balanceQueryUsedPointer: input.balanceQueryConfig?.custom?.usedPointer ?? '',
+    balanceQueryDivisor: input.balanceQueryConfig?.custom?.divisor ?? ''
+  }
 }
 
 function loadCredentialErrorPolicyRules(credentials: { error_handling_rules?: unknown }, label: string): AccountErrorPolicyRuleForm[] {

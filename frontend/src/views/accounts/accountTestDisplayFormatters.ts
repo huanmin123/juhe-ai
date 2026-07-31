@@ -278,9 +278,10 @@ function fallbackProtocolText(account: AccountListItem): string {
 function accountTestApiKeyPoolOutputLines(result: AccountTestResult): AccountTestOutputLine[] {
   const pool = result.apiKeyPool
   if (!pool?.results.length) return []
+  const untestedCount = Math.max(0, pool.total - pool.tested)
   const lines: AccountTestOutputLine[] = [
     {
-      text: `API Key 池结果：可用 ${pool.successCount}/${pool.total}，已测试 ${pool.tested} 个`,
+      text: `API Key 池结果：可用 ${pool.successCount}/${pool.total}，已测试 ${pool.tested} 个${untestedCount > 0 ? `，未测试 ${untestedCount} 个` : ''}`,
       tone: pool.failedCount > 0 ? 'warning' : 'success'
     }
   ]

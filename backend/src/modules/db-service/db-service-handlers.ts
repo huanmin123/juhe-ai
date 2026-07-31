@@ -22,8 +22,6 @@ import {
   cleanupExpiredAccountTestTasksAsync,
   completeIdleAccountTestSessions,
   completeIdleAccountTestSessionsAsync,
-  completeAccountTestTask,
-  completeAccountTestTaskAsync,
   failAccountTestTask,
   failAccountTestTaskAsync,
   failExpiredQueuedAccountTestTasks,
@@ -107,6 +105,8 @@ import {
   recordCooldownAccountRetestSuccessAsync,
   recordAuthorizedAccountBindingStreamFailure,
   recordAuthorizedAccountBindingStreamFailureAsync,
+  completeAccountTestTaskWithMatchingManualRecovery,
+  completeAccountTestTaskWithMatchingManualRecoveryAsync,
   resolveGroupUsageAccessMetadata,
   resolveGroupUsageAccessMetadataAsync,
   resolveProxyUrlsForProfiles,
@@ -635,7 +635,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     case 'complete_account_test_task':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await completeAccountTestTaskAsync(operation.taskId, operation.result)
+        const completed = await completeAccountTestTaskWithMatchingManualRecoveryAsync(
+          operation.taskId,
+          operation.result,
+          operation.matchingRecovery
+        )
+        if (completed.recoveryChanged) clearGatewayRuntimeCacheLocal()
+        return completed
       }
       return handleDbServiceOperationSync(operation)
     case 'fail_account_test_task':
@@ -1790,7 +1796,13 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'mark_account_test_task_canceled':
       return markAccountTestTaskCanceled(operation.taskId, operation.message)
     case 'complete_account_test_task':
-      return completeAccountTestTask(operation.taskId, operation.result)
+      const completed = completeAccountTestTaskWithMatchingManualRecovery(
+        operation.taskId,
+        operation.result,
+        operation.matchingRecovery
+      )
+      if (completed.recoveryChanged) clearGatewayRuntimeCacheLocal()
+      return completed
     case 'fail_account_test_task':
       return failAccountTestTask(operation.taskId, operation.message, operation.result)
     case 'update_account_test_task_message':

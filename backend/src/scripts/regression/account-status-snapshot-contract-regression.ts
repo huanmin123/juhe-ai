@@ -400,7 +400,10 @@ try {
   const sourceCooldownListPage = await hydrateAccountListPage(granteeAccess, sourceCooldownListBasePage)
   assert.equal(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.lastObservation?.traceId, 'trace-source-cooldown', 'fast list seed 必须保留来源冷却复测 traceId')
   assert.equal(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.lastObservation?.httpStatus, 429, 'fast list seed 必须保留来源冷却复测 HTTP 状态')
-  assert.equal(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.schedule.state, 'none', '冷却截止时间不是实际复测计划，fast list 不得把它伪造为下次检查')
+  assert.deepEqual(sourceCooldownListPage.items[0]?.availabilityPresentation?.probe?.schedule, {
+    state: 'scheduled',
+    nextAttemptAt: '2099-07-20T14:00:00.000Z'
+  }, '来源冷却账户必须展示来源 worker 实际使用的复测时间')
 
   for (let index = 0; index < 140; index += 1) {
     repositories.createAccount({

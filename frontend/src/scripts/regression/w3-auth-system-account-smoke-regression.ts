@@ -134,6 +134,8 @@ function assertSourceBoundaries(): void {
 
   assertIncludes(systemAccountsViewSource, 'canManageSystemAccounts = computed(() => isSuperAdminRole', '系统账户写入口必须只对 super_admin 展示')
   assertIncludes(systemAccountsViewSource, 'await api.systemAccounts.create(payload)', '系统账户页必须调用 create API')
+  assertIncludes(systemAccountsViewSource, 'showSystemAccountCacheInvalidationWarning(updated)', '系统账户提交成功后必须提示缓存失效降级状态')
+  assertIncludes(identitySource, 'apiKeyValidationCacheInvalidationFailed?: boolean', '系统账户 mutation 必须保留缓存失效警告字段')
   assertIncludes(systemAccountsViewSource, 'buildSystemAccountEditablePatch(editingBaseline.value, editableValues)', '系统账户页编辑必须构造字段级 delta')
   assertIncludes(systemAccountsViewSource, 'expectedUpdatedAt: editingVersion.value', '系统账户页编辑必须携带列表 CAS 版本')
   assertIncludes(systemAccountsViewSource, 'expectedUpdatedAt: resettingVersion.value', '系统账户页重置密码必须携带列表 CAS 版本')

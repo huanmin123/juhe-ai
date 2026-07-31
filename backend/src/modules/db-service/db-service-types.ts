@@ -1140,6 +1140,12 @@ export type DbServiceOperation =
     type: 'complete_account_test_task'
     taskId: string
     result: AccountTestResult
+    matchingRecovery?: {
+      accountId: string
+      expectedConfigRevision: number
+      healthCheckModel: string
+      healthCheckEndpointMode: string
+    }
   }
   | {
     type: 'fail_account_test_task'
@@ -1284,7 +1290,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'account_test_task_maintenance' } ? { taskIds: string[]; canceledTaskIds: string[]; expiredQueuedTaskIds: string[] } :
   T extends { type: 'mark_account_test_task_running' } ? AccountTestTaskRecord | undefined :
   T extends { type: 'mark_account_test_task_canceled' } ? AccountTestTaskRecord | undefined :
-  T extends { type: 'complete_account_test_task' } ? AccountTestTaskRecord | undefined :
+  T extends { type: 'complete_account_test_task' } ? { task?: AccountTestTaskRecord; recoveryChanged: boolean } :
   T extends { type: 'fail_account_test_task' } ? AccountTestTaskRecord | undefined :
   T extends { type: 'update_account_test_task_message' } ? AccountTestTaskRecord | undefined :
   T extends { type: 'is_account_test_task_cancel_requested' } ? { canceled: boolean } :

@@ -345,6 +345,7 @@ import { useAccountTestModal } from './useAccountTestModal'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 import { accountTestEndpointModesForModel } from './accountEndpointModes'
+import { statusAfterDraftTestSuccess } from './accountDraftTestStatus'
 import {
   accountFormApiKeyRuntimeChanged,
   buildAccountCredentials,
@@ -1062,7 +1063,15 @@ const {
 } = useAccountTestModal({
   accountScopeParams,
   isManagementView,
-  draftApiKeyTestSnapshot
+  draftApiKeyTestSnapshot,
+  onDraftTestSuccess: (testedDraftPayload) => {
+    const currentDraftPayload = currentDraftTestPayload()
+    if (!currentDraftPayload || !sameDraftTestPayload(currentDraftPayload, testedDraftPayload)) return
+    const nextStatus = statusAfterDraftTestSuccess(form.status)
+    if (nextStatus === 'disabled') return
+    form.status = nextStatus
+    form.statusSelectionExplicit = true
+  }
 })
 function openDraftTestModal(
   account: AccountSummary,
@@ -1099,6 +1108,10 @@ function openSavedDraftTestModal(
 function draftHealthCheckModel(draftPayload: AccountDraftTestAccountPayload): string {
   const value = (draftPayload as AccountDraftTestAccountPayload & { healthCheckModel?: unknown }).healthCheckModel
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function sameDraftTestPayload(left: AccountDraftTestAccountPayload, right: AccountDraftTestAccountPayload): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 const {
   accountEditTestPreparing,

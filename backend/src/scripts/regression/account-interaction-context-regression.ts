@@ -17,6 +17,7 @@ import {
   XAI_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { postgresDialect, type DatabaseClient } from '../../storage/database-client.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-interaction-context-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -36,6 +37,59 @@ const [databaseModule, repositories, contextRepository, detailRoutes, authReques
   import('../../modules/accounts/account-detail.routes.js'),
   import('../../modules/auth/request-context.js')
 ])
+
+assert.equal(contextRepository.accountInteractionContextTrueLiteral('sqlite'), '1')
+assert.equal(contextRepository.accountInteractionContextTrueLiteral('postgres'), 'TRUE')
+
+const postgresCloneProjectionSql: string[] = []
+const stopAfterPostgresCloneRevisionFence = new Error('PostgreSQL clone SQL capture complete')
+let postgresCloneProjectionQueryCount = 0
+const fakePostgresCloneProjectionClient: DatabaseClient = {
+  driver: 'postgres',
+  dialect: postgresDialect,
+  async query() {
+    return []
+  },
+  async one<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T | undefined> {
+    postgresCloneProjectionSql.push(postgresDialect.bind(sql, params).sql)
+    postgresCloneProjectionQueryCount += 1
+    if (postgresCloneProjectionQueryCount === 1) {
+      return {
+        id: 'postgres-clone-account',
+        config_revision: 1,
+        system_account_id: 'sys_admin',
+        authorization_instance_authorization_id: null,
+        authorization_instance_source_account_id: null,
+        bound_group_id: null,
+        bound_group_binding_updated_at: null,
+        bound_group_record_updated_at: null
+      } as T
+    }
+    throw stopAfterPostgresCloneRevisionFence
+  },
+  async execute() {
+    return { changes: 0 }
+  },
+  async transaction() {
+    throw new Error('PostgreSQL clone SQL capture must not open a transaction')
+  }
+}
+
+await assert.rejects(
+  () => contextRepository.findAccountCloneContextAsync('postgres-clone-account', { systemAccountId: 'sys_admin', role: 'admin' }, fakePostgresCloneProjectionClient),
+  (error: unknown) => error === stopAfterPostgresCloneRevisionFence,
+  'PostgreSQL clone SQL capture must stop after the revision fence'
+)
+assert.equal(postgresCloneProjectionSql.length, 2, 'PostgreSQL clone SQL capture must reach the main projection and revision fence')
+const [postgresCloneMainProjectionSql, postgresCloneRevisionFenceSql] = postgresCloneProjectionSql
+for (const [label, sql, expectedTrueLiteralCount] of [
+  ['主投影', postgresCloneMainProjectionSql, 4],
+  ['revision fence', postgresCloneRevisionFenceSql, 3]
+] as const) {
+  assert.equal((sql.match(/group_accounts\.enabled\s*=\s*TRUE/gi) ?? []).length, expectedTrueLiteralCount, `PostgreSQL 克隆${label}必须使用 ${expectedTrueLiteralCount} 个 TRUE 布尔条件`)
+  assert.doesNotMatch(sql, /group_accounts\.enabled\s*=\s*1/i, `PostgreSQL 克隆${label}不得使用 SQLite 数值布尔条件`)
+  assert.match(sql, /CASE\s+WHEN\s+group_accounts\.enabled\s*=\s*TRUE/i, `PostgreSQL 克隆${label}必须优先选择启用的来源分组绑定`)
+}
 
 let server: ReturnType<ReturnType<typeof express>['listen']> | undefined
 
@@ -85,12 +139,12 @@ try {
   const openAIAccount = await repositories.createAccountAsync({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: 'OpenAI 账户不读取上下文',
-    type: 'oauth',
+    name: 'OpenAI API Key 克隆上下文',
+    type: 'api_key',
     credentials: {
-      access_token: 'openai-access-secret',
-      refresh_token: 'openai-refresh-secret',
-      account_id: 'openai-account-context-fixture',
+      api_keys: ['openai-api-key-secret-a', 'openai-api-key-secret-b'],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [3, 7],
       base_url: 'https://api.openai.com/v1',
       supported_endpoint_modes: ['responses_sse']
     },
@@ -98,7 +152,17 @@ try {
     healthCheckModel: 'gpt-5.4-mini',
     healthCheckEndpointMode: 'responses_sse',
     status: 'active',
-    skipInitialHealthCheck: true
+    skipInitialHealthCheck: true,
+    balanceQueryEnabled: true,
+    balanceQueryConfig: {
+      adapter: 'custom',
+      intervalMinutes: 8,
+      custom: {
+        path: '/balance',
+        remainingPointer: '/data/remaining',
+        divisor: '100'
+      }
+    }
   }, access)
   const anthropicAccount = await repositories.createAccountAsync({
     providerCode: ANTHROPIC_PROVIDER_CODE,
@@ -226,6 +290,8 @@ try {
   const cloneCapture = await capture(() => contextRepository.findAccountCloneContextAsync(geminiAccount.id, access))
   assert(cloneCapture.result, '克隆上下文应返回账户')
   assert.equal(cloneCapture.sql.length, 3, `克隆上下文应固定为主投影、关系合并和 revision fence 三条查询，实际 ${cloneCapture.sql.length} 条`)
+  assert.match(cloneCapture.sql[0]!, /group_accounts\.enabled\s*=\s*1/i, 'SQLite 克隆主投影必须使用数值布尔字面量')
+  assert.match(cloneCapture.sql[2]!, /group_accounts\.enabled\s*=\s*1/i, 'SQLite 克隆 revision fence 必须使用数值布尔字面量')
   assert.match(cloneCapture.sql[1]!, /UNION ALL/i)
   assert.match(cloneCapture.sql[1]!, /WITH\s+scoped_account\s+AS[\s\S]*system_account_id\s*=\s*\?/i, '克隆关系投影必须先建立 owner 作用域')
   assert.match(cloneCapture.sql[1]!, /account_supported_models[\s\S]*INNER JOIN scoped_account/i, '支持模型关系必须复用 owner 作用域')
@@ -235,17 +301,64 @@ try {
   assert.deepEqual(cloneCapture.result.tags.map((item) => item.name), ['clone-tag'])
   assert.deepEqual(Object.keys(cloneCapture.result.credentialOptions).sort(), [
     'base_url',
+    'client_id',
     'error_handling_rules',
+    'oauth_type',
+    'project_id',
+    'quota_project_id',
     'reasoning_effort_override',
     'response_inspection_rules',
     'service_tier_override',
-    'supported_endpoint_modes'
+    'supported_endpoint_modes',
+    'tier_id'
   ].sort(), '克隆上下文只允许返回克隆表单实际复制的非建号选项')
+  assert.equal(cloneCapture.result.status, 'active')
+  assert.equal(cloneCapture.result.credentialOptions.quota_project_id, 'quota-project')
+  assert.equal(cloneCapture.result.credentialOptions.client_id, 'gemini-client-id')
+  assert.equal(cloneCapture.result.credentialOptions.oauth_type, 'ai_studio')
+  assert.equal(cloneCapture.result.credentialOptions.project_id, 'project-id')
+  assert.equal(cloneCapture.result.credentialOptions.tier_id, 'aistudio_paid')
   assert.doesNotMatch(
     JSON.stringify(cloneCapture.result),
-    /gemini-access-secret|gemini-refresh-secret|gemini-client-secret|gemini-client-id|quota-project|project-id|aistudio_paid/
+    /gemini-access-secret|gemini-refresh-secret|gemini-client-secret/
   )
-  assert.doesNotMatch(cloneCapture.sql.join('\n'), /usage|runtime|balance_snapshot|authorization_limits|diagnostic/i)
+  assert.doesNotMatch(cloneCapture.sql.join('\n'), /usage|runtime|authorization_limits|diagnostic/i)
+
+  const apiKeyCloneContext = await contextRepository.findAccountCloneContextAsync(openAIAccount.id, access)
+  assert(apiKeyCloneContext, 'API Key 克隆上下文应返回账户')
+  assert.equal(apiKeyCloneContext.status, 'active')
+  assert.deepEqual(apiKeyCloneContext.credentialOptions.api_key_count, 2)
+  assert.equal(apiKeyCloneContext.credentialOptions.api_key_strategy, 'weighted_round_robin')
+  assert.deepEqual(apiKeyCloneContext.credentialOptions.api_key_weights, [3, 7])
+  assert.deepEqual(apiKeyCloneContext.balanceQueryConfig, {
+    adapter: 'custom',
+    intervalMinutes: 8,
+    custom: { path: '/balance', remainingPointer: '/data/remaining', divisor: '100' }
+  })
+  assert.equal(apiKeyCloneContext.balanceQueryEnabled, false, '多个 API Key 时必须保留来源账户实际的自动关闭状态')
+  assert.doesNotMatch(JSON.stringify(apiKeyCloneContext), /openai-api-key-secret-a|openai-api-key-secret-b/)
+
+  const sourceGroup = repositories.createGroup({
+    name: '克隆来源自定义分组',
+    providerCode: GEMINI_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  const sourceGroupAt = new Date().toISOString()
+  originalPrepare(`
+    INSERT INTO group_accounts (
+      system_account_id, group_id, account_id, account_authorization_id,
+      local_priority, local_super_priority_enabled, local_fallback_enabled,
+      enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, NULL, 0, 0, 0, 1, ?, ?)
+  `).run(access.systemAccountId, sourceGroup.id, geminiAccount.id, sourceGroupAt, sourceGroupAt)
+  const customGroupClone = await contextRepository.findAccountCloneContextAsync(geminiAccount.id, access)
+  assert.equal(customGroupClone?.boundGroupId, sourceGroup.id, '克隆必须保留来源账户的非默认分组')
+  assert.equal(customGroupClone?.boundGroupName, sourceGroup.name, '克隆必须返回来源非默认分组名称')
+  originalPrepare('UPDATE group_accounts SET enabled = 0 WHERE system_account_id = ? AND account_id = ?')
+    .run(access.systemAccountId, geminiAccount.id)
+  const historicalGroupClone = await contextRepository.findAccountCloneContextAsync(geminiAccount.id, access)
+  assert.equal(historicalGroupClone?.boundGroupId, sourceGroup.id, '没有启用绑定时仍应保留最近的来源分组')
+  assert.equal(historicalGroupClone?.boundGroupName, sourceGroup.name, '没有启用绑定时仍应保留来源分组名称')
 
   const otherOwner = repositories.createSystemAccount({
     username: 'account_interaction_other_owner',
@@ -390,10 +503,10 @@ try {
   const clonePayload = await cloneResponse.json() as { data?: Record<string, unknown> }
   assert(clonePayload.data)
   assert.equal('credentials' in clonePayload.data, false, '克隆 HTTP 响应不得保留宽凭据容器')
-  assert.equal('balanceQueryConfig' in clonePayload.data, false, '克隆 HTTP 响应不得返回余额配置')
+  assert.equal(clonePayload.data.balanceQueryEnabled, false, '克隆 HTTP 响应必须返回来源余额查询开关')
   assert.doesNotMatch(
     JSON.stringify(clonePayload),
-    /gemini-access-secret|gemini-refresh-secret|gemini-client-secret|gemini-client-id|quota-project|project-id|aistudio_paid/
+    /gemini-access-secret|gemini-refresh-secret|gemini-client-secret/
   )
   const authorizedCloneResponse = await fetch(`http://127.0.0.1:${address.port}/accounts/${authorizedInstance.id}/clone-context`)
   assert.equal(authorizedCloneResponse.status, 403, '授权实例的克隆 HTTP 请求必须拒绝')

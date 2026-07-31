@@ -65,6 +65,29 @@ assert.equal(sol.codexMultiAgentVersion, 'v2')
 assert.equal(terra.codexMultiAgentVersion, 'v2')
 assert.equal(luna.codexMultiAgentVersion, undefined)
 
+for (const [model, standard, priority, flex] of [
+  [sol, [5, 0.5, 30, 6.25], [10, 1, 60, 12.5], [2.5, 0.25, 15, 3.125]],
+  [terra, [2, 0.2, 12, 2.5], [4, 0.4, 24, 5], [1, 0.1, 6, 1.25]],
+  [luna, [0.2, 0.02, 1.2, 0.25], [0.4, 0.04, 2.4, 0.5], [0.1, 0.01, 0.6, 0.125]]
+] as const) {
+  assert(model.serviceTierPrices, `${model.model} must declare service-tier prices`)
+  assert.deepEqual(
+    [model.inputUsdPer1M, model.cachedInputUsdPer1M, model.outputUsdPer1M, model.cacheWriteUsdPer1M],
+    standard,
+    `${model.model} standard runtime price must match the catalog`
+  )
+  assert.deepEqual(
+    [model.serviceTierPrices.priority?.inputUsdPer1M, model.serviceTierPrices.priority?.cachedInputUsdPer1M, model.serviceTierPrices.priority?.outputUsdPer1M, model.serviceTierPrices.priority?.cacheWriteUsdPer1M],
+    priority,
+    `${model.model} priority runtime price must match Fast-compatible 2x pricing`
+  )
+  assert.deepEqual(
+    [model.serviceTierPrices.flex?.inputUsdPer1M, model.serviceTierPrices.flex?.cachedInputUsdPer1M, model.serviceTierPrices.flex?.outputUsdPer1M, model.serviceTierPrices.flex?.cacheWriteUsdPer1M],
+    flex,
+    `${model.model} flex runtime price must remain half of standard pricing`
+  )
+}
+
 const alias = getProviderModelPricing('gpt', 'gpt-5.6')
 assert.equal(alias?.model, 'gpt-5.6-sol')
 assert.deepEqual(alias?.supportedReasoningEfforts, wireReasoning)

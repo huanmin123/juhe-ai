@@ -554,7 +554,9 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
     : scheduleChanged
       ? accountStatusForScheduleMutation({ requestedStatus, schedule: nextSchedule, now: new Date(nowMs) })
       : requestedStatus
-  const nextStatus = connectionChanged && scheduledStatus !== 'disabled' ? 'pending_test' : scheduledStatus
+  const nextStatus = connectionChanged && scheduledStatus !== 'disabled' && !hasStatusInput
+    ? 'pending_test'
+    : scheduledStatus
   const statusChanged = row.status !== nextStatus
 
   const nextSchedulable = expiredByPackage || (statusChanged && accountStatusForcesSchedulableOff(nextStatus))
@@ -1772,15 +1774,9 @@ function validateCredentialPolicies(credentials: Record<string, unknown>): void 
 
 function assertStatusMutationAllowed(current: AccountStatus, requested: AccountStatus, hasInput: boolean): void {
   if (!hasInput) return
-  if (current === 'error' && requested !== 'error' && requested !== 'disabled') {
-    throw new Error('异常账户只能停用或使用异常恢复')
-  }
-  if (current === 'pending_test' && requested !== 'pending_test' && requested !== 'disabled') {
-    throw new Error('待检查账户只能由后台激活检查恢复')
-  }
-  if (requested === 'active' && (current === 'pending_test' || isCoolingAccountStatus(current) || current === 'error')) {
-    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用异常恢复')
-  }
+  if (requested === 'active' || requested === 'pending_test' || requested === 'disabled') return
+  if (current === requested) return
+  throw new Error('编辑状态只支持可调度、待检查或停用')
 }
 
 function accountStatusForcesSchedulableOff(status: AccountStatus): boolean {

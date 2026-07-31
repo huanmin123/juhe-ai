@@ -29,7 +29,7 @@
         </div>
       </a-form-item>
     </div>
-    <div class="dispatch-config-grid" :class="{ 'editing-dispatch-config-grid': editing }">
+    <div class="dispatch-config-grid">
       <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
         <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
       </a-form-item>
@@ -43,13 +43,12 @@
           <a-select-option value="fallback">降级备用</a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item v-if="!editing" class="dispatch-status-field" label="状态">
-        <a-radio-group v-model:value="form.status" :disabled="authorizedEditing">
+      <a-form-item class="dispatch-status-field" label="状态">
+        <a-radio-group v-model:value="form.status" :disabled="authorizedEditing" @change="form.statusSelectionExplicit = true">
           <a-radio value="active">可调度</a-radio>
           <a-radio value="pending_test">待检查</a-radio>
           <a-radio value="disabled">停用</a-radio>
         </a-radio-group>
-        <div v-if="form.status === 'active'" class="form-help">保存后跳过首次健康检查，立即参与调度；账户过期或时间计划仍会限制可用状态。</div>
       </a-form-item>
     </div>
     <div v-if="showMetaFields" class="form-grid meta-fields-grid">
@@ -137,10 +136,6 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
   display: grid;
   grid-template-columns: repeat(3, minmax(112px, 150px)) minmax(210px, 1fr);
   gap: 0 18px;
-}
-
-.editing-dispatch-config-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .dispatch-config-grid > * {

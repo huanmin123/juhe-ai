@@ -386,41 +386,95 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
   }
 
   for (const group of DEFAULT_BUILT_IN_GROUPS) {
-    const existingDefault = await client.one<{ id?: string }>(
+    await query(
       `
-        SELECT id
-        FROM ${businessTable('groups')}
-        WHERE system_account_id = ? AND provider_code = ? AND is_default = 1
-        ORDER BY updated_at DESC, id ASC
-        LIMIT 1
+        UPDATE ${businessTable('groups')} AS candidate
+        SET is_default = 1
+        WHERE candidate.provider_code = $1
+          AND candidate.is_default = 0
+          AND candidate.system_account_id = $2
+          AND candidate.id = $3
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ${businessTable('groups')} AS existing_default
+            WHERE existing_default.system_account_id = candidate.system_account_id
+              AND existing_default.provider_code = candidate.provider_code
+              AND existing_default.is_default = 1
+          )
       `,
-      [group.systemAccountId, group.providerCode]
+      [group.providerCode, group.systemAccountId, group.id]
     )
-    if (existingDefault?.id) {
-      continue
-    }
     await query(
       `
         INSERT INTO ${businessTable('groups')} (
           id, system_account_id, name, provider_code,
           description, enabled, is_default, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, 1, 1, $6, $7)
+        SELECT
+          CASE WHEN system_accounts.id = $1 THEN $2 ELSE $3 || system_accounts.id END,
+          system_accounts.id,
+          CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM ${businessTable('groups')} AS same_name
+              WHERE same_name.system_account_id = system_accounts.id
+                AND same_name.provider_code = $4
+                AND lower(same_name.name) = lower($5)
+          ) THEN $6 || '（系统默认：' || system_accounts.id || CASE
+            WHEN candidate_suffix.suffix = 0 THEN ''
+            ELSE ' #' || candidate_suffix.suffix
+          END || '）'
+          ELSE $5
+        END,
+          $4, $7, 1, 1, $8, $9
+        FROM ${businessTable('system_accounts')} AS system_accounts
+        LEFT JOIN LATERAL (
+          SELECT candidate_suffix.suffix
+          FROM generate_series(
+            0,
+            (
+              SELECT COUNT(*)
+              FROM ${businessTable('groups')} AS fallback_name
+              WHERE fallback_name.system_account_id = system_accounts.id
+                AND fallback_name.provider_code = $4
+                AND lower(fallback_name.name) LIKE lower($6) || '（系统默认：%）'
+            )
+          ) AS candidate_suffix(suffix)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM ${businessTable('groups')} AS existing_fallback_name
+            WHERE existing_fallback_name.system_account_id = system_accounts.id
+              AND existing_fallback_name.provider_code = $4
+              AND lower(existing_fallback_name.name) = lower(
+                $6 || '（系统默认：' || system_accounts.id || CASE
+                  WHEN candidate_suffix.suffix = 0 THEN ''
+                  ELSE ' #' || candidate_suffix.suffix
+                END || '）'
+              )
+          )
+          ORDER BY candidate_suffix.suffix
+          LIMIT 1
+        ) AS candidate_suffix ON true
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM ${businessTable('groups')} AS existing_default
+          WHERE existing_default.system_account_id = system_accounts.id
+            AND existing_default.provider_code = $4
+            AND existing_default.is_default = 1
+        )
         ON CONFLICT DO NOTHING
       `,
       [
-        group.id,
         group.systemAccountId,
-        group.name,
+        group.id,
+        `grp_default_${group.providerCode}_`,
         group.providerCode,
+        group.name,
+        group.name,
         group.description,
         now,
         now
       ]
-    )
-    await query(
-      `UPDATE ${businessTable('groups')} SET is_default = 1 WHERE id = $1 AND system_account_id = $2`,
-      [group.id, group.systemAccountId]
     )
   }
 

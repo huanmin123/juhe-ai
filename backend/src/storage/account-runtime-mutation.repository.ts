@@ -10,6 +10,7 @@ import { accountEnabledGroupId } from './account-group-binding-write.repository.
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizeAccountStatus } from './account-status.js'
+import { completeAccountTestTask, completeAccountTestTaskAsync, getAccountTestTaskRecord, getAccountTestTaskRecordAsync, type AccountTestTaskRecord } from './account-test-tasks.repository.js'
 import { normalizedDispatchPriority } from './account-write-input.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -18,6 +19,7 @@ import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteA
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import type { AccountFailureRow, AccountRow } from './repository-row-types.js'
+import type { AccountTestResult } from '../domain/types.js'
 import { accountSystemAccountId, canManageResourceOwner } from './resource-authorization-helpers.js'
 import {
   cooldownRetestObservationStartedAtForStatus,
@@ -131,6 +133,327 @@ function normalizedLastErrorTraceId(value?: string): string | null {
 export interface AccountForceActivateResult {
   account?: AccountSummary
   changed: boolean
+}
+
+export interface MatchingManualAccountTestRecoveryInput {
+  taskId: string
+  expectedConfigRevision: number
+  healthCheckModel: string
+  healthCheckEndpointMode: string
+}
+
+export interface MatchingManualAccountTestRecoveryResult {
+  account?: AccountSummary
+  changed: boolean
+}
+
+export interface MatchingManualAccountTestTaskCompletionResult {
+  task?: AccountTestTaskRecord
+  recoveryChanged: boolean
+}
+
+/**
+ * A completed list test can restore only the exact saved health-check configuration.
+ * Draft and authorization tests never reach this write path.
+ */
+export function restoreAccountAfterMatchingManualTest(
+  accountId: string,
+  input: MatchingManualAccountTestRecoveryInput,
+  options: { deferSideEffects?: boolean } = {}
+): MatchingManualAccountTestRecoveryResult {
+  const expectedModel = input.healthCheckModel.trim()
+  const expectedEndpointMode = input.healthCheckEndpointMode.trim()
+  if (!expectedModel || !expectedEndpointMode || !Number.isInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
+    return { changed: false }
+  }
+  const current = accountRowForManage(accountId, internalAccountReadAccess)
+  if (!current
+    || current.authorization_instance_authorization_id
+    || current.status === 'disabled'
+    || current.status === 'quality_isolated'
+    || Number(current.schedulable) === 1
+    || Number(current.config_revision) !== input.expectedConfigRevision
+    || current.health_check_model !== expectedModel
+    || current.health_check_endpoint_mode !== expectedEndpointMode
+    || isAccountExpired(current.account_expires_at ?? undefined)
+    || !isAccountAvailabilityScheduleAllowed(current.availability_schedule_json, new Date())) {
+    return { account: findInternalAccountSummary(accountId), changed: false }
+  }
+
+  const updatedAt = nowIso()
+  const result = getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'active',
+        schedulable = 1,
+        cooldown_until = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_error_trace_id = NULL,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        next_health_check_at = NULL,
+        health_check_failure_count = 0,
+        health_check_failure_started_at = NULL,
+        last_health_check_error_code = NULL,
+        last_health_check_error_message = NULL,
+        last_health_check_trace_id = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND authorization_instance_authorization_id IS NULL
+      AND deleted_at IS NULL
+      AND status <> 'disabled'
+      AND status <> 'quality_isolated'
+      AND schedulable <> 1
+      AND config_revision = ?
+      AND health_check_model = ?
+      AND health_check_endpoint_mode = ?
+      AND (account_expires_at IS NULL OR account_expires_at > ?)
+      AND EXISTS (
+        SELECT 1
+        FROM account_test_tasks
+        WHERE id = ?
+          AND account_id = accounts.id
+          AND draft_account_encrypted IS NULL
+          AND model = ?
+          AND test_endpoint_mode = ?
+          AND status = 'success'
+          AND cancel_requested = 0
+      )
+  `).run(
+    updatedAt,
+    accountId,
+    input.expectedConfigRevision,
+    expectedModel,
+    expectedEndpointMode,
+    updatedAt,
+    input.taskId,
+    expectedModel,
+    expectedEndpointMode
+  )
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed && !options.deferSideEffects) {
+    finalizeMatchingManualAccountTestRecovery(accountId)
+  }
+  return { account: findInternalAccountSummary(accountId), changed }
+}
+
+export function completeAccountTestTaskWithMatchingManualRecovery(
+  taskId: string,
+  result: AccountTestResult,
+  matchingRecovery?: Omit<MatchingManualAccountTestRecoveryInput, 'taskId'> & { accountId: string }
+): MatchingManualAccountTestTaskCompletionResult {
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let task: AccountTestTaskRecord | undefined
+  let recoveryChanged = false
+  try {
+    task = completeAccountTestTask(taskId, result)
+    if (task?.status === 'success' && matchingRecovery) {
+      recoveryChanged = restoreAccountAfterMatchingManualTest(matchingRecovery.accountId, {
+        ...matchingRecovery,
+        taskId
+      }, { deferSideEffects: true }).changed
+      if (recoveryChanged) {
+        const completedResult: AccountTestResult = {
+          ...result,
+          accountStatusChanged: true,
+          accountStatus: 'active'
+        }
+        database.prepare(`
+          UPDATE account_test_tasks
+          SET result_json = ?
+          WHERE id = ?
+            AND status = 'success'
+            AND cancel_requested = 0
+        `).run(JSON.stringify(completedResult), taskId)
+        task = getAccountTestTaskRecord(taskId)
+      }
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  if (recoveryChanged && matchingRecovery) {
+    finalizeMatchingManualAccountTestRecovery(matchingRecovery.accountId)
+  }
+  return { task, recoveryChanged }
+}
+
+function finalizeMatchingManualAccountTestRecovery(accountId: string): void {
+  refreshGroupAccountStatsAfterWrite({ accountIds: [accountId], reason: 'matching_manual_account_test_restored' })
+  invalidateAccountLookupCache(accountId)
+  invalidateGatewayRuntimeAfterBusinessWrite('matching_manual_account_test_restored')
+}
+
+export async function restoreAccountAfterMatchingManualTestAsync(
+  accountId: string,
+  input: MatchingManualAccountTestRecoveryInput,
+  options: { client?: DatabaseClient; deferSideEffects?: boolean } = {}
+): Promise<MatchingManualAccountTestRecoveryResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return restoreAccountAfterMatchingManualTest(accountId, input, options)
+  }
+  const expectedModel = input.healthCheckModel.trim()
+  const expectedEndpointMode = input.healthCheckEndpointMode.trim()
+  if (!expectedModel || !expectedEndpointMode || !Number.isInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
+    return { changed: false }
+  }
+  const client = options.client ?? createPostgresDatabaseClient(await getPostgresPool())
+  const restore = async (tx: DatabaseClient): Promise<boolean> => {
+    const current = await accountRowForManageAsync(tx, accountId, internalAccountReadAccess)
+    if (!current
+      || current.authorization_instance_authorization_id
+      || current.status === 'disabled'
+      || current.status === 'quality_isolated'
+      || Number(current.schedulable) === 1
+      || Number(current.config_revision) !== input.expectedConfigRevision
+      || current.health_check_model !== expectedModel
+      || current.health_check_endpoint_mode !== expectedEndpointMode
+      || isAccountExpired(current.account_expires_at ?? undefined)
+      || !isAccountAvailabilityScheduleAllowed(current.availability_schedule_json, new Date())) {
+      return false
+    }
+    const updatedAt = nowIso()
+    const result = await tx.execute(`
+      UPDATE ${accountRuntimeMutationTable(tx, 'accounts')}
+      SET status = 'active',
+          schedulable = 1,
+          cooldown_until = NULL,
+          last_error_code = NULL,
+          last_error_message = NULL,
+          last_error_trace_id = NULL,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
+          next_health_check_at = NULL,
+          health_check_failure_count = 0,
+          health_check_failure_started_at = NULL,
+          last_health_check_error_code = NULL,
+          last_health_check_error_message = NULL,
+          last_health_check_trace_id = NULL,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND authorization_instance_authorization_id IS NULL
+        AND deleted_at IS NULL
+        AND status <> 'disabled'
+        AND status <> 'quality_isolated'
+        AND schedulable <> 1
+        AND config_revision = ?
+        AND health_check_model = ?
+        AND health_check_endpoint_mode = ?
+        AND (account_expires_at IS NULL OR account_expires_at > ?)
+        AND EXISTS (
+          SELECT 1
+          FROM ${accountRuntimeMutationTable(tx, 'account_test_tasks')}
+          WHERE id = ?
+            AND account_id = ${accountRuntimeMutationTable(tx, 'accounts')}.id
+            AND draft_account_encrypted IS NULL
+            AND model = ?
+            AND test_endpoint_mode = ?
+            AND status = 'success'
+            AND cancel_requested = false
+        )
+    `, [
+      updatedAt,
+      accountId,
+      input.expectedConfigRevision,
+      expectedModel,
+      expectedEndpointMode,
+      updatedAt,
+      input.taskId,
+      expectedModel,
+      expectedEndpointMode
+    ])
+    const updated = Number(result.changes ?? 0) > 0
+    if (updated) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [accountId], reason: 'matching_manual_account_test_restored' }, tx)
+    }
+    return updated
+  }
+  const changed = options.client ? await restore(client) : await client.transaction(restore)
+  if (changed && !options.deferSideEffects) {
+    finalizeMatchingManualAccountTestRecovery(accountId)
+  }
+  return { account: await findInternalAccountSummaryAsync(accountId), changed }
+}
+
+export async function completeAccountTestTaskWithMatchingManualRecoveryAsync(
+  taskId: string,
+  result: AccountTestResult,
+  matchingRecovery?: Omit<MatchingManualAccountTestRecoveryInput, 'taskId'> & { accountId: string }
+): Promise<MatchingManualAccountTestTaskCompletionResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return completeAccountTestTaskWithMatchingManualRecovery(taskId, result, matchingRecovery)
+  }
+  if (!result.success || !matchingRecovery) {
+    return {
+      task: await completeAccountTestTaskAsync(taskId, result),
+      recoveryChanged: false
+    }
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const settlement = await client.transaction(async (tx) => {
+    const now = nowIso()
+    const completed = await tx.execute(`
+      UPDATE ${accountRuntimeMutationTable(tx, 'account_test_tasks')}
+      SET status = 'success',
+          status_message = ?,
+          result_json = ?,
+          error_message = NULL,
+          finished_at = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND status = 'running'
+        AND cancel_requested = false
+    `, [result.message, JSON.stringify(result), now, now, taskId])
+    if (Number(completed.changes ?? 0) === 0) {
+      return { taskCompleted: false, recoveryChanged: false }
+    }
+    const recovered = await restoreAccountAfterMatchingManualTestAsync(matchingRecovery.accountId, {
+      ...matchingRecovery,
+      taskId
+    }, {
+      client: tx,
+      deferSideEffects: true
+    })
+    if (recovered.changed) {
+      const completedResult: AccountTestResult = {
+        ...result,
+        accountStatusChanged: true,
+        accountStatus: 'active'
+      }
+      await tx.execute(`
+        UPDATE ${accountRuntimeMutationTable(tx, 'account_test_tasks')}
+        SET result_json = ?
+        WHERE id = ?
+          AND status = 'success'
+          AND cancel_requested = false
+      `, [JSON.stringify(completedResult), taskId])
+    }
+    return { taskCompleted: true, recoveryChanged: recovered.changed }
+  })
+  if (!settlement.taskCompleted) {
+    return {
+      task: await completeAccountTestTaskAsync(taskId, result),
+      recoveryChanged: false
+    }
+  }
+  if (settlement.recoveryChanged) {
+    finalizeMatchingManualAccountTestRecovery(matchingRecovery.accountId)
+  }
+  return {
+    task: await getAccountTestTaskRecordAsync(taskId),
+    recoveryChanged: settlement.recoveryChanged
+  }
 }
 
 export function forceActivatePendingAccount(id: string, access?: AccessScope): AccountForceActivateResult {

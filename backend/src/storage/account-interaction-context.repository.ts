@@ -9,9 +9,12 @@ import type {
   AccountModelMappingSourceEndpointFamily,
   AccountModelMappingUpstreamEndpointFamily,
   AccountTagSummary,
+  AccountStatus,
   AccountType,
   ProviderCode
 } from '../domain/types.js'
+import { normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
+import type { AccountBalanceQueryConfig } from '../modules/accounts/account-balance.types.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { decryptJson } from './crypto.js'
@@ -44,6 +47,7 @@ interface AccountInteractionContextRow {
   name: string
   notes: string | null
   type: AccountType
+  status: AccountStatus
   credentials_encrypted: string
   concurrency_limit: number
   priority: number
@@ -56,6 +60,8 @@ interface AccountInteractionContextRow {
   availability_schedule_json: string | null
   account_expires_at: string | null
   temporary_unavailable_continuous_probe_enabled: number
+  balance_query_enabled: number
+  balance_query_config_json: string
   authorization_instance_authorization_id: string | null
   authorization_instance_source_account_id: string | null
   bound_group_id: string | null
@@ -111,6 +117,7 @@ export interface AccountCloneContext {
   name: string
   notes?: string
   type: AccountType
+  status: AccountStatus
   credentialOptions: AccountCloneCredentialOptions
   concurrencyLimit: number
   priority: number
@@ -128,11 +135,21 @@ export interface AccountCloneContext {
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   temporaryUnavailableContinuousProbeEnabled: boolean
+  balanceQueryEnabled: boolean
+  balanceQueryConfig?: AccountBalanceQueryConfig
 }
 
 export interface AccountCloneCredentialOptions {
+  api_key_count?: number
+  api_key_strategy?: 'round_robin' | 'weighted_round_robin'
+  api_key_weights?: number[]
   base_url?: string
   supported_endpoint_modes?: AccountCredentials['supported_endpoint_modes']
+  client_id?: string
+  quota_project_id?: string
+  oauth_type?: 'code_assist' | 'google_one' | 'ai_studio'
+  tier_id?: string
+  project_id?: string
   service_tier_override?: string
   reasoning_effort_override?: string
   error_handling_rules?: unknown[]
@@ -217,11 +234,13 @@ function credentialText(value: unknown): string {
 
 export async function findAccountCloneContextAsync(
   accountId: string,
-  access?: AccessScope
+  access?: AccessScope,
+  clientOverride?: DatabaseClient
 ): Promise<AccountCloneContext | undefined> {
   const id = accountId.trim()
   if (!id) return undefined
-  const client = await accountInteractionContextDatabaseClient()
+  const client = clientOverride ?? await accountInteractionContextDatabaseClient()
+  const trueLiteral = accountInteractionContextTrueLiteral(client.driver)
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const ownerScope = buildSystemAccountScopeClause(access, 'accounts.system_account_id')
     const row = await client.one<AccountInteractionContextRow>(`
@@ -236,6 +255,7 @@ export async function findAccountCloneContextAsync(
         accounts.name,
         accounts.notes,
         accounts.type,
+        accounts.status,
         accounts.credentials_encrypted,
         accounts.concurrency_limit,
         accounts.priority,
@@ -248,32 +268,12 @@ export async function findAccountCloneContextAsync(
         accounts.availability_schedule_json,
         accounts.account_expires_at,
         accounts.temporary_unavailable_continuous_probe_enabled,
+        accounts.balance_query_enabled,
+        accounts.balance_query_config_json,
         accounts.authorization_instance_authorization_id,
         accounts.authorization_instance_source_account_id,
-        (
-          SELECT group_accounts.group_id
-          FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
-          INNER JOIN ${accountInteractionContextTable(client, 'groups')} groups
-            ON groups.id = group_accounts.group_id
-            AND groups.system_account_id = accounts.system_account_id
-          WHERE group_accounts.account_id = accounts.id
-            AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
-          LIMIT 1
-        ) AS bound_group_id,
-        (
-          SELECT groups.name
-          FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
-          INNER JOIN ${accountInteractionContextTable(client, 'groups')} groups
-            ON groups.id = group_accounts.group_id
-            AND groups.system_account_id = accounts.system_account_id
-          WHERE group_accounts.account_id = accounts.id
-            AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
-          LIMIT 1
-        ) AS bound_group_name,
+        ${accountInteractionContextCloneGroupProjection(client, trueLiteral, 'group_accounts.group_id')} AS bound_group_id,
+        ${accountInteractionContextCloneGroupProjection(client, trueLiteral, 'groups.name')} AS bound_group_name,
         (
           SELECT group_accounts.updated_at
           FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
@@ -282,22 +282,11 @@ export async function findAccountCloneContextAsync(
             AND groups.system_account_id = accounts.system_account_id
           WHERE group_accounts.account_id = accounts.id
             AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
+          ORDER BY CASE WHEN group_accounts.enabled = ${trueLiteral} THEN 0 ELSE 1 END,
+            group_accounts.updated_at DESC, group_accounts.group_id ASC
           LIMIT 1
         ) AS bound_group_binding_updated_at,
-        (
-          SELECT groups.updated_at
-          FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
-          INNER JOIN ${accountInteractionContextTable(client, 'groups')} groups
-            ON groups.id = group_accounts.group_id
-            AND groups.system_account_id = accounts.system_account_id
-          WHERE group_accounts.account_id = accounts.id
-            AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
-          LIMIT 1
-        ) AS bound_group_record_updated_at
+        ${accountInteractionContextCloneGroupProjection(client, trueLiteral, 'groups.updated_at')} AS bound_group_record_updated_at
       FROM ${accountInteractionContextTable(client, 'accounts')} accounts
       WHERE accounts.id = ?
         AND accounts.deleted_at IS NULL
@@ -358,18 +347,7 @@ export async function findAccountCloneContextAsync(
     const revision = await client.one<AccountCloneRevisionRow>(`
       SELECT
         accounts.config_revision,
-        (
-          SELECT group_accounts.group_id
-          FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
-          INNER JOIN ${accountInteractionContextTable(client, 'groups')} groups
-            ON groups.id = group_accounts.group_id
-            AND groups.system_account_id = accounts.system_account_id
-          WHERE group_accounts.account_id = accounts.id
-            AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
-          LIMIT 1
-        ) AS bound_group_id,
+        ${accountInteractionContextCloneGroupProjection(client, trueLiteral, 'group_accounts.group_id')} AS bound_group_id,
         (
           SELECT group_accounts.updated_at
           FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
@@ -378,22 +356,11 @@ export async function findAccountCloneContextAsync(
             AND groups.system_account_id = accounts.system_account_id
           WHERE group_accounts.account_id = accounts.id
             AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
+          ORDER BY CASE WHEN group_accounts.enabled = ${trueLiteral} THEN 0 ELSE 1 END,
+            group_accounts.updated_at DESC, group_accounts.group_id ASC
           LIMIT 1
         ) AS bound_group_binding_updated_at,
-        (
-          SELECT groups.updated_at
-          FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
-          INNER JOIN ${accountInteractionContextTable(client, 'groups')} groups
-            ON groups.id = group_accounts.group_id
-            AND groups.system_account_id = accounts.system_account_id
-          WHERE group_accounts.account_id = accounts.id
-            AND group_accounts.system_account_id = accounts.system_account_id
-            AND group_accounts.enabled = 1
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC
-          LIMIT 1
-        ) AS bound_group_record_updated_at
+        ${accountInteractionContextCloneGroupProjection(client, trueLiteral, 'groups.updated_at')} AS bound_group_record_updated_at
       FROM ${accountInteractionContextTable(client, 'accounts')} accounts
       WHERE accounts.id = ?
         AND accounts.deleted_at IS NULL
@@ -422,6 +389,7 @@ export async function findAccountCloneContextAsync(
       name: row.name,
       notes: row.notes ?? undefined,
       type: row.type,
+      status: row.status,
       credentialOptions,
       concurrencyLimit: Number(row.concurrency_limit),
       priority: Number(row.priority),
@@ -444,7 +412,9 @@ export async function findAccountCloneContextAsync(
       proxyProfileId: row.proxy_profile_id ?? undefined,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
-      temporaryUnavailableContinuousProbeEnabled: Number(row.temporary_unavailable_continuous_probe_enabled) === 1
+      temporaryUnavailableContinuousProbeEnabled: Number(row.temporary_unavailable_continuous_probe_enabled) === 1,
+      balanceQueryEnabled: Number(row.balance_query_enabled) === 1,
+      balanceQueryConfig: parseAccountCloneBalanceConfig(row.balance_query_config_json)
     }
   }
   throw new AccountInteractionContextConflictError()
@@ -452,13 +422,48 @@ export async function findAccountCloneContextAsync(
 
 function projectCloneCredentialOptions(credentials: AccountCredentials): AccountCloneCredentialOptions {
   const output: AccountCloneCredentialOptions = {}
+  const apiKeyCount = cloneCredentialApiKeyCount(credentials)
+  if (apiKeyCount > 0) output.api_key_count = apiKeyCount
+  if (credentials.api_key_strategy === 'round_robin' || credentials.api_key_strategy === 'weighted_round_robin') {
+    output.api_key_strategy = credentials.api_key_strategy
+  }
+  if (Array.isArray(credentials.api_key_weights)) {
+    output.api_key_weights = credentials.api_key_weights
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 1 && value <= 100)
+  }
   if (typeof credentials.base_url === 'string') output.base_url = credentials.base_url
   if (Array.isArray(credentials.supported_endpoint_modes)) output.supported_endpoint_modes = credentials.supported_endpoint_modes
+  if (typeof credentials.client_id === 'string') output.client_id = credentials.client_id
+  if (typeof credentials.quota_project_id === 'string') output.quota_project_id = credentials.quota_project_id
+  if (credentials.oauth_type === 'code_assist' || credentials.oauth_type === 'google_one' || credentials.oauth_type === 'ai_studio') {
+    output.oauth_type = credentials.oauth_type
+  }
+  if (typeof credentials.tier_id === 'string') output.tier_id = credentials.tier_id
+  if (typeof credentials.project_id === 'string') output.project_id = credentials.project_id
   if (typeof credentials.service_tier_override === 'string') output.service_tier_override = credentials.service_tier_override
   if (typeof credentials.reasoning_effort_override === 'string') output.reasoning_effort_override = credentials.reasoning_effort_override
   if (Array.isArray(credentials.error_handling_rules)) output.error_handling_rules = credentials.error_handling_rules
   if (Array.isArray(credentials.response_inspection_rules)) output.response_inspection_rules = credentials.response_inspection_rules
   return output
+}
+
+function cloneCredentialApiKeyCount(credentials: AccountCredentials): number {
+  if (Array.isArray(credentials.api_keys)) {
+    const count = credentials.api_keys.filter((value) => typeof value === 'string' && value.trim()).length
+    return Math.min(count, 50)
+  }
+  return typeof credentials.api_key === 'string' && credentials.api_key.trim() ? 1 : 0
+}
+
+function parseAccountCloneBalanceConfig(value: string): AccountBalanceQueryConfig | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) return undefined
+    return normalizeAccountBalanceConfig(parsed)
+  } catch {
+    return undefined
+  }
 }
 
 function projectCredentialKeys(
@@ -487,4 +492,27 @@ function accountInteractionContextTable(client: DatabaseClient, tableName: strin
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+export function accountInteractionContextTrueLiteral(driver: DatabaseClient['driver']): 'TRUE' | '1' {
+  return driver === 'postgres' ? 'TRUE' : '1'
+}
+
+function accountInteractionContextCloneGroupProjection(
+  client: DatabaseClient,
+  trueLiteral: 'TRUE' | '1',
+  column: 'group_accounts.group_id' | 'groups.name' | 'groups.updated_at'
+): string {
+  return `(
+    SELECT ${column}
+    FROM ${accountInteractionContextTable(client, 'group_accounts')} group_accounts
+    INNER JOIN ${accountInteractionContextTable(client, 'groups')} groups
+      ON groups.id = group_accounts.group_id
+      AND groups.system_account_id = accounts.system_account_id
+    WHERE group_accounts.account_id = accounts.id
+      AND group_accounts.system_account_id = accounts.system_account_id
+    ORDER BY CASE WHEN group_accounts.enabled = ${trueLiteral} THEN 0 ELSE 1 END,
+      group_accounts.updated_at DESC, group_accounts.group_id ASC
+    LIMIT 1
+  )`
 }

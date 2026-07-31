@@ -147,6 +147,15 @@ export interface OpenAIGatewayHandleOptions {
   onUpstreamAttemptStartedDiagnostic?: (account: UpstreamAccount, upstreamUrl: string) => void
 }
 
+interface GatewayResponseErrorBoundaryOptions {
+  abortController: AbortController
+  traceId: string
+  endpoint: string
+  auditCapture: Pick<ReturnType<typeof createAuditCapture>, 'markDownstreamClosed'>
+  clearActiveDownstreamSessionAffinity: () => Promise<void>
+  reportError?: (error: unknown, fields: Record<string, unknown>, message: string) => void
+}
+
 interface NormalRouteSpeedFirstDecisionOperations {
   isAccountLatencyDegradedAsync: typeof isNormalRouteAccountLatencyDegradedAsync
   recordFirstByteSlowAsync: typeof recordNormalRouteFirstByteSlowAsync
@@ -274,6 +283,13 @@ export async function handleOpenAIGatewayRequest(
     activeDownstreamSessionAffinity = undefined
     await forgetOpenAIAccountForSessionAsync(binding.key, binding.accountId)
   }
+  attachGatewayResponseErrorBoundary(res, {
+    abortController,
+    traceId,
+    endpoint,
+    auditCapture,
+    clearActiveDownstreamSessionAffinity
+  })
   req.once('aborted', () => {
     if (isGatewayForcedDownstreamClose(res)) return
     const abortSource = gatewayRequestAbortSource(req)
@@ -2073,6 +2089,65 @@ function attachClientIpSlotRelease(res: Response, preflight: OpenAIGatewayDispat
   res.once('finish', releaseClientIpSlot)
   res.once('close', releaseClientIpSlot)
   return releaseClientIpSlot
+}
+
+export function attachGatewayResponseErrorBoundary(
+  res: Response,
+  options: GatewayResponseErrorBoundaryOptions
+): void {
+  const reportError = options.reportError ?? ((error: unknown, fields: Record<string, unknown>, message: string) => {
+    getRequestLogger().error(errorLogFields(error, fields), message)
+  })
+  res.on('error', (error: Error) => {
+    const errorCode = nodeErrorProperty(error, 'code')
+    const downstreamDisconnected = isKnownDownstreamResponseDisconnect(errorCode)
+    const writableFinished = res.writableFinished
+    const gatewayForcedDownstreamClose = isGatewayForcedDownstreamClose(res)
+    const shouldHandleAsDownstreamFailure = !writableFinished && !gatewayForcedDownstreamClose
+    if (shouldHandleAsDownstreamFailure && downstreamDisconnected) {
+      options.auditCapture.markDownstreamClosed()
+    }
+    if (shouldHandleAsDownstreamFailure && !options.abortController.signal.aborted) {
+      options.abortController.abort('downstream_response_error')
+    }
+    reportError(error, {
+      event: 'gateway_downstream_response_error',
+      traceId: options.traceId,
+      endpoint: options.endpoint,
+      downstreamDisconnected,
+      handledAsDownstreamFailure: shouldHandleAsDownstreamFailure,
+      errorCode,
+      errorSyscall: nodeErrorProperty(error, 'syscall'),
+      statusCode: res.statusCode,
+      headersSent: res.headersSent,
+      writableEnded: res.writableEnded,
+      writableFinished,
+      gatewayForcedDownstreamClose,
+      destroyed: res.destroyed
+    }, downstreamDisconnected ? '网关下游响应连接已关闭' : '网关下游响应发生未预期错误')
+    if (!shouldHandleAsDownstreamFailure) return
+    void options.clearActiveDownstreamSessionAffinity().catch((cleanupError: unknown) => {
+      reportError(cleanupError, {
+        event: 'gateway_downstream_session_affinity_clear_failed',
+        traceId: options.traceId,
+        endpoint: options.endpoint,
+        responseErrorCode: errorCode
+      }, '下游响应错误后清理会话亲和性失败')
+    })
+  })
+}
+
+function isKnownDownstreamResponseDisconnect(errorCode: string | undefined): boolean {
+  return errorCode === 'EPIPE'
+    || errorCode === 'ECONNRESET'
+    || errorCode === 'ECONNABORTED'
+    || errorCode === 'ERR_STREAM_DESTROYED'
+}
+
+function nodeErrorProperty(error: unknown, property: 'code' | 'syscall'): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const value = (error as Record<string, unknown>)[property]
+  return typeof value === 'string' ? value : undefined
 }
 
 export function attachAccountSlotRelease(
