@@ -47,3 +47,8 @@
 | 大文件拆分、职责调整或重复逻辑收敛 | `docs/architecture/大文件重构指南.md`，复盘记录到 `docs/refactors/README.md` |
 | Node 后端向 Go 迁移 | `docs/migration/README.md` |
 | 压测、性能分析、容量或验证报告 | `docs/reports/README.md` |
+
+## AI 工具
+
+- CodeGraph/RTK 的安装、初始化、维护和验证使用全局 `$agent-toolchain`；跨模块任务使用 CodeGraph MCP。
+- 对只读高输出命令，优先使用匹配的 `rtk` 子命令：`git`、`rg`、`log`、`diff`、`test`、`mvn`、`npm`、`pnpm`、`read`、`find`、`ls`、`tree`。未列出的只读命令先用 `rtk rewrite "<command>"` 或 `rtk --help` 判断；写操作和精确排障使用原生命令。

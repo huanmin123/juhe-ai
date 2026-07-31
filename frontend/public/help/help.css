@@ -131,6 +131,41 @@ code { padding: 2px 5px; color: #075985; font: 0.9em Consolas, "Courier New", mo
 .prompt-reference summary { padding: 12px 0; color: var(--brand-strong); cursor: pointer; font-weight: 700; }
 .ai-prompt { max-height: 380px; margin: 0 0 16px; padding: 15px 17px; overflow: auto; color: #154b62; font: 13px/1.7 Consolas, "Courier New", monospace; white-space: pre-wrap; border: 1px solid #c9e1eb; border-radius: 6px; background: #f5fbfd; }
 
+.guide-shot { margin: 20px 0 24px; }
+.guide-shot-frame { position: relative; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 8px; background: #eef3f6; box-shadow: var(--shadow); }
+.guide-shot-frame > img { display: block; width: 100%; height: auto; }
+.shot-marker { position: absolute; display: grid; width: 29px; height: 29px; place-items: center; color: #fff; border: 2px solid #fff; border-radius: 50%; background: var(--danger); box-shadow: 0 2px 8px rgb(23 40 61 / 28%); font: 800 13px/1 "Segoe UI", Arial, sans-serif; }
+.shot-marker::after { position: absolute; width: 37px; height: 37px; border: 1px solid rgb(177 61 56 / 50%); border-radius: 50%; content: ""; }
+.guide-shot-caption { display: grid; gap: 8px; padding: 12px 14px 0; color: var(--muted); font-size: 14px; }
+.guide-shot-caption strong { color: var(--brand-strong); font-size: 15px; }
+.guide-shot-caption ol { margin: 0; padding-left: 24px; }
+.guide-shot-caption li { margin: 3px 0; padding-left: 3px; }
+.guide-shot-caption li::marker { color: var(--danger); font-weight: 800; }
+.guide-shot--group .marker-1 { left: 49%; top: 20%; }
+.guide-shot--group .marker-2 { left: 49%; top: 28%; }
+.guide-shot--group .marker-3 { left: 49%; top: 36.5%; }
+.guide-shot--group .marker-4 { left: 49%; top: 47%; }
+.guide-shot--group .marker-5 { left: 49%; top: 57.5%; }
+.guide-shot--key .marker-1 { left: 49.3%; top: 19%; }
+.guide-shot--key .marker-2 { left: 49.3%; top: 27.5%; }
+.guide-shot--key .marker-3 { left: 60%; top: 35.5%; }
+.guide-shot--key .marker-4 { left: 49%; top: 55%; }
+.guide-shot--key .marker-5 { left: 71.2%; top: 63.6%; }
+.guide-shot--strategy .marker-1 { left: 49%; top: 19%; }
+.guide-shot--strategy .marker-2 { left: 49%; top: 37.8%; }
+.guide-shot--strategy .marker-3 { left: 37%; top: 50.8%; }
+.guide-shot--strategy .marker-4 { left: 49%; top: 63.7%; }
+.guide-shot--group-list .shot-marker, .guide-shot--key-list .shot-marker, .guide-shot--accounts .shot-marker { background: var(--brand-strong); }
+.guide-shot--group-list .marker-1 { left: 22%; top: 16%; }
+.guide-shot--group-list .marker-2 { left: 94%; top: 16%; }
+.guide-shot--group-list .marker-3 { left: 55%; top: 33%; }
+.guide-shot--key-list .marker-1 { left: 26.5%; top: 16%; }
+.guide-shot--key-list .marker-2 { left: 93.5%; top: 16%; }
+.guide-shot--key-list .marker-3 { left: 41%; top: 27%; }
+.guide-shot--accounts .marker-1 { left: 86%; top: 16%; }
+.guide-shot--accounts .marker-2 { left: 94%; top: 16%; }
+.guide-shot--accounts .marker-3 { left: 51%; top: 47%; }
+
 .route-catalog { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--line); }
 .route-catalog > a { display: grid; gap: 5px; min-height: 104px; padding: 15px 18px 15px 0; color: var(--text); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-decoration: none; transition: background .14s ease, padding .14s ease; }
 .route-catalog > a:nth-child(even) { padding-right: 0; padding-left: 18px; border-right: 0; }
@@ -149,12 +184,13 @@ code { padding: 2px 5px; color: #075985; font: 0.9em Consolas, "Courier New", mo
 .lifecycle-diagram svg { display: block; width: 100%; min-width: 760px; height: auto; color: #9db0bf; }
 .lifecycle-line, .lifecycle-return { stroke: currentColor; stroke-width: 2; fill: none; }
 .lifecycle-node rect { stroke-width: 2; }
-.lifecycle-node text:first-of-type { fill: var(--text); font: 760 14px "Segoe UI", "Microsoft YaHei", sans-serif; }
+.lifecycle-node text:first-of-type { fill: var(--text); font: 760 12px "Segoe UI", "Microsoft YaHei", sans-serif; }
 .lifecycle-node text:last-of-type { fill: var(--muted); font: 13px "Microsoft YaHei", "PingFang SC", sans-serif; }
 .state-pending rect { fill: #eff6ff; stroke: #699dd4; }
 .state-active rect { fill: #ecfbf4; stroke: #44a171; }
 .state-cooldown rect { fill: #fff7e9; stroke: #d79339; }
 .state-limited rect { fill: #fff1ed; stroke: #dc7047; }
+.state-isolated rect, .state-error rect { fill: #fff1ed; stroke: #b13d38; }
 .state-disabled rect { fill: #f5f6f8; stroke: #9da7b2; }
 .lifecycle-arrow-label { fill: var(--muted); font: 12px "Microsoft YaHei", "PingFang SC", sans-serif; }
 .callout { margin: 16px 0; padding: 12px 14px; border-left: 3px solid var(--warning); color: #784220; background: var(--surface-warm); }
@@ -194,6 +230,10 @@ tr:last-child td { border-bottom: 0; }
   .field-grid > div:last-child, .mode-reference > div:last-child, .route-catalog > a:last-child, .troubleshooting-grid > div:last-child, .trace-map > div:last-child { border-bottom: 0; }
   .mode-reference > div:last-child { grid-column: auto; }
   .mode-reference > div { grid-template-columns: 80px minmax(0, 1fr); }
+  .guide-shot { overflow-x: auto; padding-bottom: 8px; }
+  .guide-shot-frame { min-width: 900px; }
+  .guide-shot-caption { padding-right: 0; padding-left: 0; }
+  .shot-marker { width: 25px; height: 25px; font-size: 12px; }
 }
 
 @media (max-width: 460px) {

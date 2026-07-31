@@ -145,6 +145,7 @@
       flowButtons.forEach(function (button) {
         var selected = button.getAttribute('data-flow-step') === step;
         button.setAttribute('aria-selected', selected ? 'true' : 'false');
+        button.setAttribute('tabindex', selected ? '0' : '-1');
       });
       flowNodes.forEach(function (node) {
         node.classList.toggle('is-active', node.getAttribute('data-flow-node') === step);

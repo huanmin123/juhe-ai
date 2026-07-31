@@ -1,7 +1,11 @@
 type DynamicImport = (specifier: string) => Promise<unknown>
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as DynamicImport
-const nodeFs = await dynamicImport('node:fs') as { readFileSync: (path: string, encoding: 'utf8') => string }
+const nodeFs = await dynamicImport('node:fs') as {
+  readFileSync: (path: string, encoding: 'utf8') => string
+  existsSync: (path: string) => boolean
+  statSync: (path: string) => { size: number }
+}
 const nodePath = await dynamicImport('node:path') as {
   dirname: (path: string) => string
   resolve: (...segments: string[]) => string
@@ -74,6 +78,39 @@ for (const term of ['最大单账户排队阈值', '上游接口能力', '账号
 for (const term of ['pending_test', '账户电路独立确认失败次数', '策略路由与流量变更', '系统设置与日常运维', 'data-flow-explorer', 'data-flow-step', 'data-flow-detail', '<svg', '<title', '<desc']) {
   assertContains(adminHelp, term, `管理员手册必须保留字段级指南或 SVG 交互契约：${term}`)
 }
+for (const status of ['temporary_unavailable', 'rate_limited', 'quality_isolated', 'error']) {
+  assertContains(adminHelp, status, `管理员生命周期图必须覆盖独立运行状态：${status}`)
+}
+assertContains(adminHelp, '四种状态是分叉，不是依次迁移', '管理员生命周期图不得把运行状态画成线性顺序')
+assertContains(adminHelp, '<code>active</code> 是进入候选的必要条件，不保证当前可调度', '管理员手册不得把 active 写成充分条件')
+assertContains(userHelp, '<code>active</code> 是进入候选的必要条件，不保证当前一定可调度', '用户手册不得把 active 写成充分条件')
+for (const [helpSource, imageName, audience] of [
+  [adminHelp, 'group-create-form.png', '管理员'],
+  [adminHelp, 'route-strategy-create-form.png', '管理员'],
+  [adminHelp, 'api-key-create-form.png', '管理员'],
+  [userHelp, 'user-group-list.png', '用户'],
+  [userHelp, 'user-accounts-list.png', '用户'],
+  [userHelp, 'user-api-key-list.png', '用户']
+] as const) {
+  assertContains(helpSource, `../assets/${imageName}`, `${audience}手册必须引用真实界面截图：${imageName}`)
+  const imagePath = nodePath.resolve(repoRoot, 'frontend', 'public', 'help', 'assets', imageName)
+  if (!nodeFs.existsSync(imagePath) || nodeFs.statSync(imagePath).size < 1024) {
+    throw new Error(`${audience}手册的截图资产不存在或异常小：${imageName}`)
+  }
+}
+assertContains(helpCss, '.guide-shot-frame', '帮助页必须提供截图容器样式')
+assertContains(helpCss, '.shot-marker', '帮助页必须提供截图字段标注样式')
+assertContains(helpCss, '.guide-shot--group-list .marker-1', '分组截图必须使用独立的刷新标注坐标')
+assertContains(helpCss, '.guide-shot--key-list .marker-1', 'API Key 截图必须使用独立的筛选标注坐标')
+assertContains(helpCss, '.guide-shot-frame { min-width: 900px; }', '手机端截图必须保留可横向查看的清晰画布')
+assertContains(userHelp, '刷新</b>重新读取当前账户可管理的分组', '用户分组截图必须说明真实存在的刷新操作')
+assertNotMatch(userHelp, /筛选区.*供应商、状态或名称/, '用户分组截图不得虚构用户模式不存在的筛选区')
+assertContains(userHelp, '所有 <code>sk-...</code> 均为不可用的演示值', '用户 API Key 截图必须明确掩码值不可用')
+assertNotMatch(`${userHelp}\n${adminHelp}`, /loading="lazy"/, '帮助页截图不得因延迟加载而出现零高度空白')
+assertContains(userHelp, 'aria-controls="user-flow-panel-key"', '用户流程步骤必须关联说明面板')
+assertContains(userHelp, 'role="tabpanel" aria-labelledby="user-flow-tab-key"', '用户流程说明必须具有 tabpanel 语义')
+assertContains(adminHelp, 'aria-controls="admin-flow-panel-key"', '管理员流程步骤必须关联说明面板')
+assertContains(adminHelp, 'role="tabpanel" aria-labelledby="admin-flow-tab-key"', '管理员流程说明必须具有 tabpanel 语义')
 assertNotMatch(`${userHelp}\n${adminHelp}\n${helpIndex}`, /brand-icon">\?/i, '帮助页不得继续使用问号品牌图标')
 assertNotMatch(helpCss, /linear-gradient|repeating-linear-gradient|background-size:\s*\d+px\s+\d+px/i, '帮助页不得保留大渐变或网格背景')
 assertContains(helpCss, '--bg: #ffffff', '帮助页必须使用纯白主背景')
@@ -109,6 +146,7 @@ assertContains(helpJs, "aria-current", '脚本必须同步激活目录的 aria-c
 assertContains(helpJs, "mobileNav.removeAttribute('open')", '移动目录跳转后必须自动收起')
 assertContains(helpJs, 'setFlowStep', '脚本必须支持 SVG 流程节点与步骤控件同步')
 assertContains(helpJs, "event.key === 'ArrowRight'", '流程步骤必须支持键盘方向键')
+assertContains(helpJs, "button.setAttribute('tabindex', selected ? '0' : '-1')", '流程步骤必须使用 roving tabindex')
 assertContains(helpJs, "document.body.classList.contains('help-gate')", '入口页角色分流必须由外部脚本执行')
 assertContains(userHelp, 'aria-live="polite"', '用户搜索状态必须向辅助技术播报')
 assertContains(adminHelp, 'aria-live="polite"', '管理员搜索状态必须向辅助技术播报')
