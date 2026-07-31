@@ -370,7 +370,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         SELECT 1
         FROM ${businessTable('account_model_mappings')} AS model_mapping
         WHERE model_mapping.provider_code = ${businessTable('provider_model_catalog')}.provider_code
-          AND model_mapping.enabled = 1
+          AND model_mapping.enabled = TRUE
           AND (
             model_mapping.source_model = ${businessTable('provider_model_catalog')}.model
             OR model_mapping.upstream_model = ${businessTable('provider_model_catalog')}.model

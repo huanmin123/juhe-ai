@@ -116,7 +116,7 @@ assert.equal(staleBuiltInModelUpdates.length, 1, 'PostgreSQL seed 必须仅用�
 const staleBuiltInModelUpdate = staleBuiltInModelUpdates[0]
 assert.ok(staleBuiltInModelUpdate, 'PostgreSQL seed 必须传入当前内置模型键作为停用白名单')
 assert.match(staleBuiltInModelUpdate.sql, /account_supported_models[\s\S]*supported_model\.provider_code[\s\S]*supported_model\.model/i, '仍被账户支持的旧目录模型不得被 seed 停用')
-assert.match(staleBuiltInModelUpdate.sql, /account_model_mappings[\s\S]*model_mapping\.enabled\s*=\s*1[\s\S]*model_mapping\.source_model[\s\S]*model_mapping\.upstream_model/i, '仍被启用模型映射引用的旧目录模型不得被 seed 停用')
+assert.match(staleBuiltInModelUpdate.sql, /account_model_mappings[\s\S]*model_mapping\.enabled\s*=\s*TRUE[\s\S]*model_mapping\.source_model[\s\S]*model_mapping\.upstream_model/i, '仍被启用模型映射引用的旧目录模型不得被 seed 停用')
 assert.match(staleBuiltInModelUpdate.sql, /provider_default_health_check_models[\s\S]*default_health_model\.provider_code[\s\S]*default_health_model\.model/i, '仍被个人默认检查模型引用的旧目录模型不得被 seed 停用')
 assert.match(staleBuiltInModelUpdate.sql, /provider_system_default_health_check_models[\s\S]*system_default_health_model\.provider_code[\s\S]*system_default_health_model\.model/i, '仍被系统默认检查模型引用的旧目录模型不得被 seed 停用')
 assert.match(staleBuiltInModelUpdate.sql, /FROM\s+"juhe_business"\."accounts"\s+AS\s+account[\s\S]*account\.health_check_model/i, '仍被账户检查模型引用的旧目录模型不得被 seed 停用')
