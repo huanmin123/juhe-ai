@@ -115,6 +115,8 @@ const staleBuiltInModelUpdates = executedStatements.filter(({ sql }) => (
 assert.equal(staleBuiltInModelUpdates.length, 1, 'PostgreSQL seed 必须仅用一条受限 UPDATE 停用已移除的内置模型')
 const staleBuiltInModelUpdate = staleBuiltInModelUpdates[0]
 assert.ok(staleBuiltInModelUpdate, 'PostgreSQL seed 必须传入当前内置模型键作为停用白名单')
+assert.match(staleBuiltInModelUpdate.sql, /account_supported_models[\s\S]*supported_model\.provider_code[\s\S]*supported_model\.model/i, '仍被账户支持的旧目录模型不得被 seed 停用')
+assert.match(staleBuiltInModelUpdate.sql, /account_model_mappings[\s\S]*model_mapping\.enabled\s*=\s*1[\s\S]*model_mapping\.source_model[\s\S]*model_mapping\.upstream_model/i, '仍被启用模型映射引用的旧目录模型不得被 seed 停用')
 const staleBuiltInModelKeys = (JSON.parse(String(staleBuiltInModelUpdate.values[1])) as Array<{ provider_code?: unknown; model?: unknown }>)
   .map((item) => `${String(item.provider_code)}\u0000${String(item.model)}`)
   .sort()

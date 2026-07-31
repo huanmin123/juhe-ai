@@ -360,6 +360,22 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         WHERE built_in.provider_code = ${businessTable('provider_model_catalog')}.provider_code
           AND built_in.model = ${businessTable('provider_model_catalog')}.model
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${businessTable('account_supported_models')} AS supported_model
+        WHERE supported_model.provider_code = ${businessTable('provider_model_catalog')}.provider_code
+          AND supported_model.model = ${businessTable('provider_model_catalog')}.model
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${businessTable('account_model_mappings')} AS model_mapping
+        WHERE model_mapping.provider_code = ${businessTable('provider_model_catalog')}.provider_code
+          AND model_mapping.enabled = 1
+          AND (
+            model_mapping.source_model = ${businessTable('provider_model_catalog')}.model
+            OR model_mapping.upstream_model = ${businessTable('provider_model_catalog')}.model
+          )
+      )
   `, [now, JSON.stringify(currentBuiltInModels)])
   statementCount += staleBuiltInModels.changes
 
