@@ -376,6 +376,24 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
             OR model_mapping.upstream_model = ${businessTable('provider_model_catalog')}.model
           )
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${businessTable('provider_default_health_check_models')} AS default_health_model
+        WHERE default_health_model.provider_code = ${businessTable('provider_model_catalog')}.provider_code
+          AND default_health_model.model = ${businessTable('provider_model_catalog')}.model
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${businessTable('provider_system_default_health_check_models')} AS system_default_health_model
+        WHERE system_default_health_model.provider_code = ${businessTable('provider_model_catalog')}.provider_code
+          AND system_default_health_model.model = ${businessTable('provider_model_catalog')}.model
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${businessTable('accounts')} AS account
+        WHERE account.provider_code = ${businessTable('provider_model_catalog')}.provider_code
+          AND account.health_check_model = ${businessTable('provider_model_catalog')}.model
+      )
   `, [now, JSON.stringify(currentBuiltInModels)])
   statementCount += staleBuiltInModels.changes
 
