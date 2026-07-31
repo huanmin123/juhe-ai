@@ -109,6 +109,17 @@ const seededModelKeys = modelSeedRows
   .sort()
 assert.deepEqual(seededModelKeys, expectedModelKeys, 'PostgreSQL seed 模型键集合必须与 Node 权威价格目录一致')
 
+const staleBuiltInModelUpdates = executedStatements.filter(({ sql }) => (
+  /UPDATE\s+"juhe_business"\."provider_model_catalog"[\s\S]*jsonb_to_recordset\(\$2::jsonb\)/i.test(sql)
+))
+assert.equal(staleBuiltInModelUpdates.length, 1, 'PostgreSQL seed 必须仅用一条受限 UPDATE 停用已移除的内置模型')
+const staleBuiltInModelUpdate = staleBuiltInModelUpdates[0]
+assert.ok(staleBuiltInModelUpdate, 'PostgreSQL seed 必须传入当前内置模型键作为停用白名单')
+const staleBuiltInModelKeys = (JSON.parse(String(staleBuiltInModelUpdate.values[1])) as Array<{ provider_code?: unknown; model?: unknown }>)
+  .map((item) => `${String(item.provider_code)}\u0000${String(item.model)}`)
+  .sort()
+assert.deepEqual(staleBuiltInModelKeys, expectedModelKeys, '停用白名单必须使用 provider_code/model 并与 Node 权威目录完全一致')
+
 const seededModelIds = modelSeedRows.map((values) => String(values[0]))
 assert.equal(seededModelIds.length, expectedModelKeys.length, 'PostgreSQL seed 生成 ID 数量必须等于权威模型键数量')
 assert.equal(new Set(seededModelIds).size, expectedModelKeys.length, 'PostgreSQL seed 模型 ID 必须全局唯一')

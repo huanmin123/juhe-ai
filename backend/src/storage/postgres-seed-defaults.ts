@@ -225,11 +225,11 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
 
   const modelSeedRows: string[] = []
   const modelSeedValues: unknown[] = []
-  const currentBuiltInModels: Array<{ providerCode: string; model: string }> = []
+  const currentBuiltInModels: Array<{ provider_code: string; model: string }> = []
   for (const provider of DEFAULT_PROVIDER_SEEDS) {
     if (provider.code === HYBRID_PROVIDER_CODE || provider.code === 'openai') continue
     for (const model of listProviderModelPricing(provider.code)) {
-      currentBuiltInModels.push({ providerCode: provider.code, model: model.model })
+      currentBuiltInModels.push({ provider_code: provider.code, model: model.model })
       const firstParameterIndex = modelSeedValues.length + 1
       modelSeedValues.push(
           providerModelCatalogId(provider.code, model.model),
