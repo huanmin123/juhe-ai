@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 
 import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
@@ -98,8 +97,9 @@ const expectedModelKeys = DEFAULT_PROVIDER_SEEDS
 assert.equal(modelInsertStatements.length, 1, 'PostgreSQL 模型目录必须通过单条有界 INSERT 保证批次原子')
 const modelInsertStatement = modelInsertStatements[0]
 assert.ok(modelInsertStatement, 'PostgreSQL 默认 seed 必须写入 provider_model_catalog')
-assert.match(modelInsertStatement.sql, /ON CONFLICT DO NOTHING/i, '内建模型 seed 冲突时不得覆盖管理员已有配置')
-assert.doesNotMatch(modelInsertStatement.sql, /DO UPDATE/i, '二次 seed 不得更新管理员已有模型配置')
+assert.match(modelInsertStatement.sql, /ON CONFLICT\(provider_code, model\) DO UPDATE SET/i, '内建模型 seed 必须按 provider/model 幂等同步')
+assert.match(modelInsertStatement.sql, /source IN \('manual-override', 'manual-visibility-override'\)/i, '模型 seed 必须识别管理员手工覆盖')
+assert.match(modelInsertStatement.sql, /catalog_visible[\s\S]*AND excluded\.catalog_visible/i, '模型 seed 不得放宽管理员手工隐藏')
 const modelSeedParameterCount = 39
 assert.equal(modelInsertStatement.values.length % modelSeedParameterCount, 0, 'PostgreSQL 模型批次参数必须按完整行对齐')
 assert.equal(modelInsertStatement.values.length, expectedModelKeys.length * modelSeedParameterCount, 'PostgreSQL 模型批次参数数量必须覆盖全部行和字段')
@@ -119,9 +119,12 @@ assert.equal(new Set(seededModelIds).size, expectedModelKeys.length, 'PostgreSQL
 const slashCollisionPair = [
   'antigravity-claude-opus-4-6-thinking',
   'antigravity/claude-opus-4-6-thinking'
-].map((model) => modelSeedRows.find((values) => values[1] === 'anthropic' && values[2] === model))
-assert.ok(slashCollisionPair.every(Boolean), 'slash/hyphen 碰撞样本必须存在于权威模型目录')
-assert.notEqual(slashCollisionPair[0]?.[0], slashCollisionPair[1]?.[0], 'slash/hyphen 模型名必须生成不同 ID')
+]
+assert.notEqual(
+  expectedProviderModelId('anthropic', slashCollisionPair[0]),
+  expectedProviderModelId('anthropic', slashCollisionPair[1]),
+  'slash/hyphen 模型名必须生成不同 ID'
+)
 
 function expectedProviderModelId(providerCode: string, model: string): string {
   const slug = `${providerCode}_${model}`
