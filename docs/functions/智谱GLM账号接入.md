@@ -5,6 +5,8 @@
 
 ## 范围
 
+> 目录同步边界：GLM 的上游模型目录只在用户显式同步时调用，内部标记仅保护该受控转发。人工 / 草稿测试、激活、健康、恢复和调度直接验证 Chat 或 Messages endpoint；目录 `404` 或未开放不能阻断账户使用，客户端模型目录仍由本地返回。
+
 本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；GLM Coding Plan Key 只保存真实 Chat Completions 上游能力，OpenAI v1 Responses 到 Chat Completions 可由普通 GLM 账号模型别名显式声明，而 Anthropic v1 档案面向 Anthropic / Claude Code 请求。运行事实以本文和当前实现为准。
 
 官方资料显示，智谱当前面向本项目最相关的接入形态有三类：
@@ -316,6 +318,6 @@ GLM 账户测试必须复用真实网关链路：
 - 网关请求 GLM Coding Plan 时命中 `https://open.bigmodel.cn/api/coding/paas/v4/chat/completions`。
 - Codex 客户端请求 GLM Coding 普通账户 `/v1/responses` 且未命中 `responses -> chat_completions` 模型别名时必须被本地拒绝或跳过；命中显式映射时，才允许本地改写到该账号自己的 GLM Coding `/chat/completions`。
 - GLM Coding bridge 不向下游泄露 `chat.completion.chunk`，也不把 `reasoning_content` 作为普通 `output_text`。
-- `GET /v1/models` 返回本地可见 GLM 模型，不请求智谱上游。
+- 客户端 `GET /v1/models` 返回本地可见 GLM 模型，不请求智谱上游。服务端受控目录探针带内部标记时，通用 GLM / GLM Coding OpenAI API Key 才会转发到账户自身 Base URL 下的 `.../models`；必须保留 `/api/paas/v4` 或 `/api/coding/paas/v4` 路径，不能错误拼成通用 `/v1/models`。
 - GLM 响应 usage 能写入使用记录；无 usage 的流式可见输出按现有估算兜底。
 - Coding Plan Key 错填到通用档案或通用 Key 错填到 Coding 档案时，测试失败信息能让用户区分接入类型错误。

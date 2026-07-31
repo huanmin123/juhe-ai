@@ -11,6 +11,7 @@ import {
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 } from '../../../../domain/provider-protocol.js'
 import { requestStream } from '../../request/metadata.js'
+import { isGatewayUpstreamModelsProbe } from '../../request/upstream-models-probe.js'
 
 export type GeminiUpstreamAccount = DispatchAccountSecret
 
@@ -36,7 +37,9 @@ export function buildGeminiUpstreamUrlsForAccount(account: GeminiUpstreamAccount
     return []
   }
   if (isGeminiModelsRequest(req)) {
-    return []
+    return isGatewayUpstreamModelsProbe(req)
+      ? [buildGeminiUpstreamUrl(account.baseUrl, req.originalUrl)]
+      : []
   }
   const family = geminiEndpointFamilyFromPath(req.originalUrl || req.path)
   const stream = family === GEMINI_STREAM_GENERATE_CONTENT_FAMILY

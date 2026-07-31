@@ -347,7 +347,6 @@ import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 import { accountTestEndpointModesForModel } from './accountEndpointModes'
 import { statusAfterDraftTestSuccess } from './accountDraftTestStatus'
 import {
-  accountFormApiKeyRuntimeChanged,
   buildAccountCredentials,
   normalizedAccountApiKeys
 } from './accountCredentials'
@@ -828,20 +827,12 @@ function handleAccountModelOptionsOpen(open: boolean): void {
 
 let modelCatalogSyncController: AbortController | undefined
 let modelCatalogSyncRequestId = 0
-let accountModelCatalogAutoSyncTimer: ReturnType<typeof setTimeout> | undefined
-const automaticModelCatalogAttemptedRequestKeys = new Set<string>()
 
 function cancelAccountModelCatalogSync(): void {
   modelCatalogSyncRequestId += 1
   modelCatalogSyncController?.abort()
   modelCatalogSyncController = undefined
   modelCatalogSyncing.value = false
-}
-
-function clearAccountModelCatalogAutoSyncTimer(): void {
-  if (!accountModelCatalogAutoSyncTimer) return
-  clearTimeout(accountModelCatalogAutoSyncTimer)
-  accountModelCatalogAutoSyncTimer = undefined
 }
 
 function currentModelCatalogDiscoveryPayload(): { account: AccountModelCatalogDiscoveryAccountPayload } | undefined {
@@ -877,11 +868,10 @@ function currentModelCatalogDiscoveryRequestKey(): string {
   return modelCatalogDiscoveryRequestKey(currentModelCatalogDiscoveryPayload())
 }
 
-async function refreshAccountModelCatalog(options: { silent?: boolean } = {}): Promise<void> {
-  if (!options.silent) clearAccountModelCatalogAutoSyncTimer()
+async function refreshAccountModelCatalog(): Promise<void> {
   const payload = currentModelCatalogDiscoveryPayload()
   if (!payload) {
-    if (!options.silent) message.error('请先填写 Base URL 和 API Key 后再同步')
+    message.error('请先填写 Base URL 和 API Key 后再同步')
     return
   }
   const requestKey = modelCatalogDiscoveryRequestKey(payload)
@@ -900,41 +890,16 @@ async function refreshAccountModelCatalog(options: { silent?: boolean } = {}): P
       ...result.addedModels
     ])]
     if (!form.healthCheckModel.trim() && result.recommendedHealthCheckModel) form.healthCheckModel = result.recommendedHealthCheckModel
-    if (!options.silent) {
-      message.success(result.addedModels.length
-        ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
-        : '上游目录已同步，手动选择已保留')
-    }
+    message.success(result.addedModels.length
+      ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
+      : '上游目录已同步，手动选择已保留')
   } catch (error) {
-    if (!options.silent && requestId === modelCatalogSyncRequestId && !controller.signal.aborted) {
+    if (requestId === modelCatalogSyncRequestId && !controller.signal.aborted) {
       message.error(extractApiErrorMessage(error, '同步上游模型失败'))
     }
   } finally {
     if (requestId === modelCatalogSyncRequestId) modelCatalogSyncing.value = false
   }
-}
-
-function shouldAutoRefreshAccountModelCatalog(): boolean {
-  if (!modalOpen.value || form.type !== 'api_key') return false
-  if (form.supportedModels.some((model) => model.trim())) return false
-  if (!currentModelCatalogDiscoveryPayload()) return false
-  if (!editingId.value) return true
-  if (!editingAccountDetail.value) return false
-  return accountFormApiKeyRuntimeChanged(form, editingAccountDetail.value)
-}
-
-function scheduleAutomaticAccountModelCatalogSync(): void {
-  clearAccountModelCatalogAutoSyncTimer()
-  cancelAccountModelCatalogSync()
-  if (!shouldAutoRefreshAccountModelCatalog()) return
-  const requestKey = currentModelCatalogDiscoveryRequestKey()
-  if (!requestKey || automaticModelCatalogAttemptedRequestKeys.has(requestKey)) return
-  accountModelCatalogAutoSyncTimer = setTimeout(() => {
-    accountModelCatalogAutoSyncTimer = undefined
-    if (!shouldAutoRefreshAccountModelCatalog() || requestKey !== currentModelCatalogDiscoveryRequestKey()) return
-    automaticModelCatalogAttemptedRequestKeys.add(requestKey)
-    void refreshAccountModelCatalog({ silent: true })
-  }, 700)
 }
 
 let accountModelOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
@@ -970,30 +935,14 @@ function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gem
 }
 
 watch(modalOpen, (open) => {
-  if (open) {
-    automaticModelCatalogAttemptedRequestKeys.clear()
-    scheduleAutomaticAccountModelCatalogSync()
-    return
-  }
-  automaticModelCatalogAttemptedRequestKeys.clear()
+  if (open) return
   clearAccountModelOptionsSearchTimer()
-  clearAccountModelCatalogAutoSyncTimer()
   cancelAccountModelCatalogSync()
   resetEditGroupOptions()
 })
 
-watch(
-  [
-    currentModelCatalogDiscoveryRequestKey,
-    () => editingId.value,
-    () => editingAccountDetail.value?.credentials
-  ],
-  scheduleAutomaticAccountModelCatalogSync
-)
-
 onBeforeUnmount(() => {
   clearAccountModelOptionsSearchTimer()
-  clearAccountModelCatalogAutoSyncTimer()
   cancelAccountModelCatalogSync()
 })
 

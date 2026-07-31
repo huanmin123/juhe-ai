@@ -2,6 +2,8 @@
 
 ## 范围
 
+> 目录同步边界：DeepSeek 上游目录请求只由用户显式同步触发，并由内部标记保护。账户测试、激活、健康、恢复和调度只看配置模型的真实 Chat / Messages 请求协议结果；`/models` 不开放或返回 `404` 不会阻断账户使用，本地客户端模型目录不转发到 DeepSeek。
+
 本文记录 DeepSeek 供应商的接入方案、账户创建类型、协议档案、网关透传边界、模型目录、验证结果和后续实现注意事项。当前代码已落地 DeepSeek OpenAI-compatible 独立供应商，支持 Chat Completions JSON / SSE；OpenAI v1 Responses -> Chat SSE 可由 DeepSeek 普通 AI 账户通过显式 `responses -> chat_completions` 模型别名桥接到真实 Chat 上游；同时新增 DeepSeek Anthropic v1 Messages 档案用于 Claude Code / Anthropic 客户端画像直连。真实上游验证结果见本文“验证记录”。
 
 DeepSeek 对外 hosted API 提供 OpenAI-compatible surface 和 Anthropic-compatible surface。OpenAI-compatible 默认地址为 `https://api.deepseek.com`，部分 beta 能力走 `https://api.deepseek.com/beta`；Anthropic v1 Messages 默认地址为 `https://api.deepseek.com/anthropic`，由本地 Anthropic v1 URL helper 拼接为 `/anthropic/v1/messages` 或 `/anthropic/v1/models`。第三方 NewAPI 代理可能直接把 Anthropic surface 挂在站点根路径，例如 `https://vsllm.com/v1/messages`，因此代理场景的 `base_url` 应按实际代理根地址填写，不由代码硬猜。
@@ -83,10 +85,10 @@ DeepSeek OpenAI v1 档案优先复用现有 OpenAI v1 Chat Completions 协议适
 
 - 客户端可请求 `/chat/completions` 或 `/v1/chat/completions`
 - beta 能力按 `https://api.deepseek.com/beta` 单独拼接，只能由 DeepSeek beta endpoint mode 或账户能力显式启用，不能靠客户端路径自动猜测
-- `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不主动请求 DeepSeek 上游模型列表
+- 客户端 `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不进入网关热路径；仅用户显式同步上游模型时，带内部标记的 DeepSeek OpenAI API Key 请求才会转发到上游 `/v1/models`
 - 未配置 `responses -> chat_completions` 模型别名的普通 OpenAI SDK / Responses 请求不由 DeepSeek 承接；配置显式映射后，DeepSeek OpenAI-compatible 账号可接收 `/responses` 或 `/v1/responses` 并改写到上游 `/chat/completions`
 - Codex bridge 必须使用流式 Responses 入站和上游 Chat SSE；账号 endpoint modes 仍保存 `chat_json`、`chat_sse`，不能为此写入 `responses_json` 或 `responses_sse`
-- DeepSeek 官方 List Models 接口可用于模型目录人工校验或后续后台刷新，不进入网关热路径
+- DeepSeek 官方 List Models 接口可用于受控账户目录同步、人工校验或后续后台刷新；它不接受客户端请求透传，也不进入网关热路径
 - DeepSeek 官方 Balance 接口只作为后续人工诊断或账户页辅助信息候选，第一阶段不做余额轮询、不把余额快照接入额度判断，也不在请求链路调用
 
 请求头：

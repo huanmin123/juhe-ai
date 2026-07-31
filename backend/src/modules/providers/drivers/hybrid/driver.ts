@@ -6,6 +6,7 @@ import {
 } from '../../../../domain/anthropic-endpoint-modes.js'
 import {
   accountSupportsGeminiEndpointMode,
+  geminiEndpointFamilyFromPath,
   geminiEndpointModeForRequestShape
 } from '../../../../domain/gemini-endpoint-modes.js'
 import {
@@ -16,6 +17,7 @@ import {
   ANTHROPIC_MESSAGES_FAMILY,
   ANTHROPIC_PROTOCOL_CODE,
   GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_MODELS_FAMILY,
   GEMINI_PROTOCOL_CODE,
   HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
   HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
@@ -200,8 +202,12 @@ function hybridUpstreamTargetForRequest(req: Request, account: ProviderDriverAcc
   const mappedTarget = mapping ? hybridUpstreamTargetForEndpointFamily(mapping.upstreamEndpointFamily) : undefined
   if (mappedTarget) return mappedTarget
   if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE)) return 'anthropic'
-  if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) || isGeminiNativeRequest(req)) return 'gemini'
+  if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) || isGeminiNativeRequest(req) || isGeminiModelsPath(req)) return 'gemini'
   return 'openai'
+}
+
+function isGeminiModelsPath(req: Request): boolean {
+  return geminiEndpointFamilyFromPath(req.originalUrl || req.path) === GEMINI_MODELS_FAMILY
 }
 
 function hybridUpstreamTargetForEndpointFamily(endpointFamily: string | undefined): HybridUpstreamTarget | undefined {

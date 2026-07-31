@@ -27,7 +27,8 @@ import {
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
-import { buildUpstreamUrl, splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import { buildUpstreamUrl, isOpenAIModelsRequest, splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import { isGatewayUpstreamModelsProbe } from '../../../gateway/request/upstream-models-probe.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamRequestBody,
@@ -92,6 +93,9 @@ export const deepSeekProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+    if (isDeepSeekApiKeyUpstreamModelsProbe(req, account)) {
+      return [buildUpstreamUrl(account.baseUrl, req.originalUrl)]
+    }
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return []
@@ -179,6 +183,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account) {
+    if (isDeepSeekApiKeyUpstreamModelsProbe(req, account)) return true
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
@@ -225,6 +230,12 @@ export const deepSeekProviderDriver: ProviderDriver = {
       clientCompatibility: account.clientCompatibility
     })
   }
+}
+
+function isDeepSeekApiKeyUpstreamModelsProbe(req: Request, account: ProviderDriverAccount): boolean {
+  return account.type === 'api_key'
+    && isGatewayUpstreamModelsProbe(req)
+    && isOpenAIModelsRequest(req)
 }
 
 function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {

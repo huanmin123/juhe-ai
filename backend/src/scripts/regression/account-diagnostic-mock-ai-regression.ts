@@ -4,19 +4,26 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import type { Request } from 'express'
+import type { Request, Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
-import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
+import type { AccountSummary } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
+import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import { isDiagnosticTimeoutSignal } from '../../modules/accounts/account-diagnostic-retry-policy.js'
 import {
   gatewayDiagnosticAbortSourceFromSignal,
   markGatewayRequestAbortSource,
   gatewayRequestAbortSource
 } from '../../modules/gateway/request/abort-attribution.js'
-import { createMemoryGatewayRequest } from '../../modules/gateway/testing/memory-gateway-http.js'
+import { createMemoryGatewayRequest, MemoryGatewayResponse } from '../../modules/gateway/testing/memory-gateway-http.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-diagnostic-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -31,15 +38,18 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const upstreamState = {
-  hitsByKey: new Map<string, number>()
+  hitsByKey: new Map<string, number>(),
+  requests: [] as Array<{ method: string; path: string; authorization?: string; googleApiKey?: string }>,
+  modelCatalogHits: [] as Array<{ method: string; path: string; authorization?: string; googleApiKey?: string }>
 }
 
 const [
-  { testOpenAIAccountWithDiagnosticRetries },
+  { discoverAccountUpstreamModels, testOpenAIAccountWithDiagnosticRetries },
   { probeCodexSwitchCandidateAccount },
   healthCheckService,
   cooldownRetestService,
   { readGatewaySettings },
+  { handleOpenAIGatewayRequest },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   auditLogQueue,
@@ -51,6 +61,7 @@ const [
   import('../../modules/background/account-health-check.service.js'),
   import('../../modules/background/cooldown-account-retest.service.js'),
   import('../../modules/gateway/policy/account-error-policy.service.js'),
+  import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
@@ -120,6 +131,10 @@ try {
   }, access)
 
   const transientAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-transient', access)
+  requiredRuntimeAccount(group.id, transientAccount.id, admin.id)
+  await assertProviderModelCatalogProbeDispatch(upstreamBaseUrl, access)
+  await assertPublicModelCatalogRequestsStayLocal(access.systemAccountId, group.id)
+
   const transientProgress: number[] = []
   const transientResult = await testOpenAIAccountWithDiagnosticRetries(transientAccount, {
     model: 'gpt-5.5',
@@ -132,25 +147,18 @@ try {
   flushAllUsageRecordQueue()
   assert.equal(transientResult.success, true, `瞬态 mock AI 两次失败后应在第 3 次恢复：${transientResult.message}`)
   assert.equal(hitCount('manual-transient'), 3, '手动账号测试应在同一账号真实请求失败后按 10/20/30 三档重试到成功')
-  assert.deepEqual(transientProgress, [10_000, 10_000, 20_000, 30_000], '模型目录预检只使用单次 10 秒窗口，文本测试仍按 10/20/30 秒诊断阶梯上报')
+  assert.deepEqual(transientProgress, [10_000, 20_000, 30_000], '文本测试只能按 10/20/30 秒真实请求诊断阶梯上报')
 
-  const catalogTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'catalog-timeout', access)
-  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
-  let catalogTimeoutResult: AccountTestResult
-  try {
-    catalogTimeoutResult = await testOpenAIAccountWithDiagnosticRetries(catalogTimeoutAccount, {
-      model: 'gpt-5.5',
-      testEndpointMode: 'responses_sse'
-    })
-  } finally {
-    AbortSignal.timeout = originalAbortSignalTimeout
-  }
+  const catalogNotFoundAccount = createMockAccount(group.id, upstreamBaseUrl, 'catalog-not-found', access)
+  const catalogNotFoundResult = await testOpenAIAccountWithDiagnosticRetries(catalogNotFoundAccount, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
+  })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
-  assert.equal(catalogTimeoutResult.success, false, '模型目录持续超时不应继续执行真实模型测试')
-  assert.equal(catalogTimeoutResult.errorCode, 'server_diagnostic_timeout', '模型目录诊断超时必须保留服务端 deadline 错误码')
-  assert.equal(hitCount('catalog-timeout:models'), 1, '模型目录预检超时后必须在单次 10 秒窗口失败')
-  assert.equal(hitCount('catalog-timeout'), 0, '模型目录预检失败后不得继续发起真实模型测试')
+  assert.equal(catalogNotFoundResult.success, true, '上游 /v1/models 返回 404 时，已保存账户的真实模型测试仍必须成功')
+  assert.equal(hitCount('catalog-not-found'), 1, '目录不可用账户的手动测试必须直接命中真实模型端点')
+  assert.equal(hitCount('catalog-not-found:models'), 0, '手动测试不得把上游模型目录当作前置门禁')
 
   const parentTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'parent-timeout', access)
   let parentTimeoutCanceled = false
@@ -167,28 +175,24 @@ try {
   assert.equal(parentTimeoutResult.success, false, '父级超时必须中止诊断')
   assert.equal(parentTimeoutCanceled, true, '父级超时必须标记为取消，而不是当前诊断档位超时')
   assert.equal(parentTimeoutExhausted, false, '父级超时不得伪造完整诊断阶梯超时证据')
-  assert.ok(hitCount('parent-timeout:models') <= 1, '父级超时后不得继续后续诊断阶梯')
+  assert.ok(hitCount('parent-timeout') <= 1, '父级超时后不得继续后续诊断阶梯')
 
-  requiredRuntimeAccount(group.id, catalogTimeoutAccount.id, admin.id)
-  const activeCatalogTimeoutAccount = repositories.findAccountSummary(catalogTimeoutAccount.id, access)
-  assert(activeCatalogTimeoutAccount, '模型目录超时账户激活后必须可读取')
-  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
-  try {
-    assert.equal(healthCheckService.enqueueAccountHealthCheck(activeCatalogTimeoutAccount, {
-      intervalHours: 12,
-      jitterMinutes: 0,
-      failureThreshold: 3,
-      maxPauseMinutes: 60
-    }, 'request_failure'), true, '模型目录超时的独立健康检查必须成功投递')
-    await waitForAccountHealthCheckQueueIdle(healthCheckService)
-  } finally {
-    AbortSignal.timeout = originalAbortSignalTimeout
-  }
+  requiredRuntimeAccount(group.id, catalogNotFoundAccount.id, admin.id)
+  const activeCatalogNotFoundAccount = repositories.findAccountSummary(catalogNotFoundAccount.id, access)
+  assert(activeCatalogNotFoundAccount, '目录不可用账户激活后必须可读取')
+  assert.equal(healthCheckService.enqueueAccountHealthCheck(activeCatalogNotFoundAccount, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    maxPauseMinutes: 60
+  }, 'request_failure'), true, '目录不可用账户的独立健康检查必须成功投递')
+  await waitForAccountHealthCheckQueueIdle(healthCheckService)
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
-  const catalogTimeoutAfterHealthCheck = repositories.findAccountSummary(catalogTimeoutAccount.id, access)
-  assert.equal(hitCount('catalog-timeout:models'), 2, '自动健康检查的模型目录预检同样只能尝试一次')
-  assert.equal(catalogTimeoutAfterHealthCheck?.status, 'temporary_unavailable', '模型目录单次诊断超时也必须立即临时不可调度')
+  const catalogNotFoundAfterHealthCheck = repositories.findAccountSummary(catalogNotFoundAccount.id, access)
+  assert.equal(catalogNotFoundAfterHealthCheck?.status, 'active', '上游目录 404 不得阻止后台健康检查保持账户激活')
+  assert.equal(hitCount('catalog-not-found'), 2, '后台健康检查必须直接命中真实模型端点')
+  assert.equal(hitCount('catalog-not-found:models'), 0, '后台健康检查不得请求上游模型目录')
 
   const persistentAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-persistent-401', access)
   const persistentResult = await testOpenAIAccountWithDiagnosticRetries(persistentAccount, { model: 'gpt-5.5', testEndpointMode: 'responses_sse' })
@@ -381,10 +385,38 @@ function createMockAIUpstream(): http.Server {
       chunks.push(Buffer.from(chunk))
     })
     req.on('end', () => {
+    upstreamState.requests.push({
+      method: req.method ?? '',
+      path: url.pathname,
+      authorization: headerText(req.headers.authorization),
+      googleApiKey: headerText(req.headers['x-goog-api-key'])
+    })
+    const providerCatalog = providerModelCatalogResponse(req)
+    if (providerCatalog) {
+      upstreamState.modelCatalogHits.push({
+        method: req.method ?? '',
+        path: url.pathname,
+        authorization: headerText(req.headers.authorization),
+        googleApiKey: headerText(req.headers['x-goog-api-key'])
+      })
+      if (req.method !== 'GET' || url.pathname !== providerCatalog.expectedPath) {
+        sendJsonError(res, 404, `unexpected model catalog request ${req.method} ${url.pathname}`)
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(providerCatalog.protocol === 'gemini'
+        ? { models: [{ name: `models/${providerCatalog.modelId}` }] }
+        : { object: 'list', data: [{ id: providerCatalog.modelId, object: 'model' }] }))
+      return
+    }
     const key = upstreamKey(req.headers.authorization)
     if (req.method === 'GET' && url.pathname === '/v1/models') {
       incrementHit(`${key}:models`)
-      if (key === 'catalog-timeout' || key === 'parent-timeout') {
+      if (key === 'catalog-not-found') {
+        sendJsonError(res, 404, 'mock model catalog not found')
+        return
+      }
+      if (key === 'parent-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
             res.writeHead(200, { 'content-type': 'application/json' })
@@ -409,6 +441,14 @@ function createMockAIUpstream(): http.Server {
       }
       if (key === 'manual-persistent-401') {
         sendJsonError(res, 401, 'manual persistent unauthorized')
+        return
+      }
+      if (key === 'parent-timeout') {
+        setTimeout(() => {
+          if (!res.destroyed) {
+            sendMockCompleted(res, responseMode, 'OK')
+          }
+        }, 200)
         return
       }
       if (key === 'codex-explicit-failure') {
@@ -442,6 +482,172 @@ function createMockAIUpstream(): http.Server {
       sendMockCompleted(res, responseMode, 'OK')
     })
   })
+}
+
+async function assertProviderModelCatalogProbeDispatch(
+  upstreamBaseUrl: string,
+  access: { systemAccountId: string; role: 'admin' }
+): Promise<void> {
+  const fixtures: Array<{
+    providerCode: 'gemini' | 'deepseek' | 'glm'
+    providerProtocolProfileId: string
+    name: string
+    baseUrl: string
+    apiKey: string
+    supportedModels: string[]
+    healthCheckModel: string
+    healthCheckEndpointMode: 'generate_content_json' | 'chat_json'
+    supportedEndpointModes: Array<'generate_content_json' | 'chat_json'>
+    expectedPath: string
+    expectedModelId: string
+    expectedAuthorization?: string
+    expectedGoogleApiKey?: string
+  }> = [
+    {
+      providerCode: 'gemini',
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: 'Gemini 目录探针账户',
+      baseUrl: `${upstreamBaseUrl}/v1beta`,
+      apiKey: 'gemini-catalog-probe',
+      supportedModels: ['gemini-3.5-flash'],
+      healthCheckModel: 'gemini-3.5-flash',
+      healthCheckEndpointMode: 'generate_content_json',
+      supportedEndpointModes: ['generate_content_json'],
+      expectedPath: '/v1beta/models',
+      expectedModelId: 'gemini-3.5-flash',
+      expectedGoogleApiKey: 'gemini-catalog-probe'
+    },
+    {
+      providerCode: 'deepseek',
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+      name: 'DeepSeek 目录探针账户',
+      baseUrl: upstreamBaseUrl,
+      apiKey: 'deepseek-catalog-probe',
+      supportedModels: ['deepseek-v4-flash'],
+      healthCheckModel: 'deepseek-v4-flash',
+      healthCheckEndpointMode: 'chat_json',
+      supportedEndpointModes: ['chat_json'],
+      expectedPath: '/v1/models',
+      expectedModelId: 'deepseek-v4-flash',
+      expectedAuthorization: 'Bearer deepseek-catalog-probe'
+    },
+    {
+      providerCode: 'glm',
+      providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+      name: 'GLM 通用目录探针账户',
+      baseUrl: `${upstreamBaseUrl}/api/paas/v4`,
+      apiKey: 'glm-general-catalog-probe',
+      supportedModels: ['glm-4.7-flash'],
+      healthCheckModel: 'glm-4.7-flash',
+      healthCheckEndpointMode: 'chat_json',
+      supportedEndpointModes: ['chat_json'],
+      expectedPath: '/api/paas/v4/models',
+      expectedModelId: 'glm-4.7-flash',
+      expectedAuthorization: 'Bearer glm-general-catalog-probe'
+    },
+    {
+      providerCode: 'glm',
+      providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
+      name: 'GLM Coding 目录探针账户',
+      baseUrl: `${upstreamBaseUrl}/api/coding/paas/v4`,
+      apiKey: 'glm-coding-catalog-probe',
+      supportedModels: ['glm-5.2'],
+      healthCheckModel: 'glm-5.2',
+      healthCheckEndpointMode: 'chat_json',
+      supportedEndpointModes: ['chat_json'],
+      expectedPath: '/api/coding/paas/v4/models',
+      expectedModelId: 'glm-5.2',
+      expectedAuthorization: 'Bearer glm-coding-catalog-probe'
+    }
+  ]
+
+  for (const fixture of fixtures) {
+    const group = repositories.createGroup({
+      name: `${fixture.name}分组`,
+      providerCode: fixture.providerCode
+    }, access)
+    const account = repositories.createAccount({
+      providerCode: fixture.providerCode,
+      providerProtocolProfileId: fixture.providerProtocolProfileId,
+      name: fixture.name,
+      type: 'api_key',
+      groupId: group.id,
+      status: 'active',
+      supportedModels: fixture.supportedModels,
+      healthCheckModel: fixture.healthCheckModel,
+      healthCheckEndpointMode: fixture.healthCheckEndpointMode,
+      credentials: {
+        api_key: fixture.apiKey,
+        base_url: fixture.baseUrl,
+        supported_endpoint_modes: fixture.supportedEndpointModes
+      }
+    }, access)
+    const start = upstreamState.modelCatalogHits.length
+    const result = await discoverAccountUpstreamModels(account, {
+      groupId: group.id,
+      systemAccountId: access.systemAccountId
+    })
+    const hits = upstreamState.modelCatalogHits.slice(start)
+    assert.deepEqual(result.modelIds, [fixture.expectedModelId], `${fixture.name} 必须解析上游模型目录`)
+    assert.equal(result.requestUrl, fixture.providerCode === 'gemini' ? '/v1beta/models' : '/v1/models')
+    assert.equal(hits.length, 1, `${fixture.name} 目录探针必须只请求一次上游`)
+    assert.equal(hits[0]?.method, 'GET', `${fixture.name} 目录探针必须使用 GET`)
+    assert.equal(hits[0]?.path, fixture.expectedPath, `${fixture.name} 必须命中账户自身的模型目录路径`)
+    assert.equal(hits[0]?.authorization, fixture.expectedAuthorization, `${fixture.name} 上游 Authorization 不正确`)
+    assert.equal(hits[0]?.googleApiKey, fixture.expectedGoogleApiKey, `${fixture.name} 上游 Gemini API Key 不正确`)
+  }
+}
+
+async function assertPublicModelCatalogRequestsStayLocal(systemAccountId: string, groupId: string): Promise<void> {
+  const start = upstreamState.requests.length
+  for (const path of ['/v1/models', '/v1beta/models']) {
+    const request = createMemoryGatewayRequest({ method: 'GET', path })
+    const response = new MemoryGatewayResponse(Date.now())
+    const memoryResponse = response.asResponse() as unknown as Response
+    memoryResponse.getHeader = (name: string) => response.headersObject()[name.toLowerCase()]
+    const context: RequestContext = {
+      traceId: createTraceId(),
+      startedAt: Date.now(),
+      method: request.method,
+      path: request.path,
+      originalUrl: request.originalUrl,
+      clientIp: request.ip,
+      logger
+    }
+    await withRequestContext(context, async () => {
+      await handleOpenAIGatewayRequest(request, memoryResponse, {
+        identity: { systemAccountId, groupId }
+      })
+    })
+    assert.equal(response.statusCode, 200, `客户端 ${path} 必须由本地目录正常响应`)
+  }
+  assert.equal(upstreamState.requests.length, start, '客户端模型目录请求不得触发任何账户上游调用')
+}
+
+function providerModelCatalogResponse(req: http.IncomingMessage): {
+  protocol: 'gemini' | 'openai'
+  expectedPath: string
+  modelId: string
+} | undefined {
+  const googleApiKey = headerText(req.headers['x-goog-api-key'])
+  if (googleApiKey === 'gemini-catalog-probe') {
+    return { protocol: 'gemini', expectedPath: '/v1beta/models', modelId: 'gemini-3.5-flash' }
+  }
+  const apiKey = upstreamKey(req.headers.authorization)
+  if (apiKey === 'deepseek-catalog-probe') {
+    return { protocol: 'openai', expectedPath: '/v1/models', modelId: 'deepseek-v4-flash' }
+  }
+  if (apiKey === 'glm-general-catalog-probe') {
+    return { protocol: 'openai', expectedPath: '/api/paas/v4/models', modelId: 'glm-4.7-flash' }
+  }
+  if (apiKey === 'glm-coding-catalog-probe') {
+    return { protocol: 'openai', expectedPath: '/api/coding/paas/v4/models', modelId: 'glm-5.2' }
+  }
+  return undefined
+}
+
+function headerText(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
 }
 
 function mockResponseMode(pathname: string): 'responses' | 'chat' | 'image' | undefined {

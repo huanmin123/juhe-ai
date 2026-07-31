@@ -29,7 +29,6 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
 import { inspectAccountTestImageResponseEnvelope } from './account-test-image-response-inspection.js'
-import { accountCredentialFingerprint } from './account-credential-update.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
   extractAccountTestResponseOutputText,
@@ -125,21 +124,11 @@ export type AccountUpstreamModelCatalogResult = {
   durationMs?: number
 }
 
-const accountModelCatalogPreflightTtlMs = 2 * 60 * 1000
-const accountModelCatalogPreflightCache = new Map<string, number>()
-const accountModelCatalogPreflightCacheMaxEntries = 512
-
 export async function testOpenAIAccountWithDiagnosticRetries(
   account: AccountSummary,
   input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const startedAt = Date.now()
-  const preflightFailure = await preflightAccountModelCatalog(account, {
-    ...input
-  })
-  if (preflightFailure) {
-    return accountTestResultWithTotalDuration(preflightFailure, startedAt)
-  }
   const model = await resolveAccountTestModelAsync(account, {
     explicitModel: input.model,
     systemAccountId: input.systemAccountId,
@@ -188,38 +177,6 @@ export async function discoverAccountUpstreamModels(
     requestUrl: result.requestUrl ?? accountTestModelsPathForProtocol(account.protocolCode),
     durationMs: result.durationMs
   }
-}
-
-export async function preflightAccountModelCatalog(account: AccountSummary, input: AccountTestInput): Promise<AccountTestResult | undefined> {
-  const cacheKey = accountModelCatalogPreflightCacheKey(account)
-  const now = Date.now()
-  if (cacheKey && (accountModelCatalogPreflightCache.get(cacheKey) ?? 0) > now) return undefined
-
-  const result = await runAccountDiagnosticAttempts(account, input, {
-    probeKind: 'models_catalog',
-    timeoutSchedule: accountDiagnosticRetryTimeouts('models_catalog'),
-    startedAt: now,
-    retryEvent: 'account_model_catalog_preflight_retry_scheduled',
-    retryMessage: '账户模型目录预检未通过，将继续使用真实网关链路重试',
-    forceRetryAllFailures: true,
-    accountTestInput: {
-      forceProbeKind: 'models_catalog',
-      requireCatalogModelEvidence: false,
-      disableAccountStateMutation: true
-    }
-  })
-  if (result.success) {
-    if (cacheKey) setAccountModelCatalogPreflightCache(cacheKey, now + accountModelCatalogPreflightTtlMs)
-    return undefined
-  }
-  logger.debug({
-    event: 'account_model_catalog_preflight_failed',
-    accountId: account.id,
-    providerCode: account.providerCode,
-    statusCode: result.statusCode,
-    errorCode: result.errorCode
-  }, '账户模型目录预检未通过，终止真实模型测试')
-  return result
 }
 
 async function runAccountDiagnosticAttempts(
@@ -300,26 +257,6 @@ async function runAccountDiagnosticAttempts(
     model: options.model,
     forceProbeKind: options.probeKind
   })
-}
-
-function accountModelCatalogPreflightCacheKey(account: AccountSummary): string | undefined {
-  const credentials = account.credentials ?? {}
-  const apiKeys = Array.isArray(credentials.api_keys)
-    ? credentials.api_keys.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
-    : []
-  if (apiKeys.length > 1) return undefined
-  const credentialFingerprint = accountCredentialFingerprint(credentials)
-  if (!credentialFingerprint) return undefined
-  const baseUrl = stringValue(credentials.base_url)
-  return `${account.id}:${account.providerProtocolProfileId ?? ''}:${baseUrl}:${credentialFingerprint}`
-}
-
-function setAccountModelCatalogPreflightCache(key: string, expiresAt: number): void {
-  if (accountModelCatalogPreflightCache.size >= accountModelCatalogPreflightCacheMaxEntries) {
-    const firstKey = accountModelCatalogPreflightCache.keys().next().value
-    if (typeof firstKey === 'string') accountModelCatalogPreflightCache.delete(firstKey)
-  }
-  accountModelCatalogPreflightCache.set(key, expiresAt)
 }
 
 function notifyDiagnosticAttemptProgress(

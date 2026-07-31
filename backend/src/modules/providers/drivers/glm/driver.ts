@@ -27,7 +27,8 @@ import {
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
-import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import { isOpenAIModelsRequest, splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import { isGatewayUpstreamModelsProbe } from '../../../gateway/request/upstream-models-probe.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamRequestBody,
@@ -179,6 +180,7 @@ export const glmProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account) {
+    if (isGlmApiKeyUpstreamModelsProbe(req, account)) return true
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
@@ -227,7 +229,17 @@ export const glmProviderDriver: ProviderDriver = {
   }
 }
 
+function isGlmApiKeyUpstreamModelsProbe(req: Request, account: ProviderDriverAccount): boolean {
+  return account.type === 'api_key'
+    && isGatewayUpstreamModelsProbe(req)
+    && isOpenAIModelsRequest(req)
+}
+
 function buildGlmOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+  if (isGlmApiKeyUpstreamModelsProbe(req, account)) {
+    const { query } = splitPathAndQuery(req.originalUrl)
+    return [`${normalizeGlmOpenAIChatBaseUrl(account.baseUrl)}/models${query}`]
+  }
   if (req.method.toUpperCase() !== 'POST') {
     return []
   }

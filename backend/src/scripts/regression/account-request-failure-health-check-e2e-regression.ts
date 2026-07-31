@@ -202,7 +202,7 @@ try {
   const failedAccount = repositories.findAccountForTest(account.id, access)
   assert.equal(failedAccount?.status, 'temporary_unavailable', '独立探针确认失败后账户必须进入 temporary_unavailable')
   assert.equal(failedAccount?.schedulable, true, 'temporary_unavailable 应保留自动恢复资格，不能改成管理员停用')
-  assert.equal(upstreamCatalogHits, 1, '独立探针只应执行一次模型目录预检')
+  assert.equal(upstreamCatalogHits, 0, '独立探针不得请求上游模型目录')
   assert.equal(upstreamProbeHits, 3, '独立探针应按统一三档诊断执行三次固定健康端点请求')
   assert(upstreamGatewayHits > 0, '并发风暴必须真实命中 mock 上游业务端点')
 

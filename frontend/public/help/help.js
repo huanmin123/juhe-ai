@@ -133,6 +133,63 @@
     });
   }
 
+  var flowExplorers = Array.prototype.slice.call(document.querySelectorAll('[data-flow-explorer]'));
+
+  flowExplorers.forEach(function (explorer) {
+    var flowButtons = Array.prototype.slice.call(explorer.querySelectorAll('[data-flow-step]'));
+    var flowNodes = Array.prototype.slice.call(explorer.querySelectorAll('[data-flow-node]'));
+    var flowDetails = Array.prototype.slice.call(explorer.querySelectorAll('[data-flow-detail]'));
+    var defaultStep = explorer.getAttribute('data-default-flow-step') || (flowButtons[0] && flowButtons[0].getAttribute('data-flow-step'));
+
+    function setFlowStep(step, announce) {
+      flowButtons.forEach(function (button) {
+        var selected = button.getAttribute('data-flow-step') === step;
+        button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
+      flowNodes.forEach(function (node) {
+        node.classList.toggle('is-active', node.getAttribute('data-flow-node') === step);
+      });
+      flowDetails.forEach(function (detail) {
+        var selected = detail.getAttribute('data-flow-detail') === step;
+        detail.hidden = !selected;
+        detail.setAttribute('aria-hidden', selected ? 'false' : 'true');
+      });
+      if (announce && liveRegion) {
+        var activeDetail = explorer.querySelector('[data-flow-detail="' + step + '"] strong');
+        if (activeDetail) liveRegion.textContent = activeDetail.textContent;
+      }
+    }
+
+    flowButtons.forEach(function (button) {
+      button.addEventListener('click', function () {
+        setFlowStep(button.getAttribute('data-flow-step'), true);
+      });
+      button.addEventListener('keydown', function (event) {
+        var currentIndex = flowButtons.indexOf(button);
+        var targetIndex;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') targetIndex = (currentIndex + 1) % flowButtons.length;
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') targetIndex = (currentIndex - 1 + flowButtons.length) % flowButtons.length;
+        if (typeof targetIndex !== 'number') return;
+        event.preventDefault();
+        flowButtons[targetIndex].focus();
+        setFlowStep(flowButtons[targetIndex].getAttribute('data-flow-step'), true);
+      });
+    });
+
+    flowNodes.forEach(function (node) {
+      var nodeLink = node.closest('a');
+      if (!nodeLink) return;
+      nodeLink.addEventListener('focus', function () {
+        setFlowStep(node.getAttribute('data-flow-node'), false);
+      });
+      nodeLink.addEventListener('pointerenter', function () {
+        setFlowStep(node.getAttribute('data-flow-node'), false);
+      });
+    });
+
+    if (defaultStep) setFlowStep(defaultStep, false);
+  });
+
   if (document.body.classList.contains('help-gate')) {
     fetch('/__aisys__/api/auth/me', { credentials: 'include' })
       .then(function (response) {

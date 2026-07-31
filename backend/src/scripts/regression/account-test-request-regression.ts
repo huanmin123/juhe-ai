@@ -470,15 +470,13 @@ assert.match(serviceSource, /测试请求形态不在账户上游接口能力中
 assert.match(serviceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '账户测试空能力错误必须使用上游接口能力文案')
 assert.match(optionsServiceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '测试选项空能力错误必须使用上游接口能力文案')
 assert.match(serviceSource, /handleOpenAIGatewayRequest/, '真实网关测试编排仍应留在 account-test.service.ts')
-assert.match(serviceSource, /preflightAccountModelCatalog/, '人工测试和恢复探针必须先执行可缓存的模型目录预检')
-assert.match(serviceSource, /accountModelCatalogPreflightTtlMs/, '目录预检必须使用有界成功缓存，避免每次探针都额外请求')
 const retryTestSource = serviceSource.slice(
   serviceSource.indexOf('export async function testOpenAIAccountWithDiagnosticRetries'),
   serviceSource.indexOf('export async function discoverAccountUpstreamModels')
 )
-assert.match(retryTestSource, /const preflightFailure = await preflightAccountModelCatalog/, '真实模型测试必须先获得目录预检结果')
-assert.match(retryTestSource, /if \(preflightFailure\)\s*\{\s*return accountTestResultWithTotalDuration\(preflightFailure, startedAt\)/, '目录预检不成功时不得继续真实模型测试')
-assert.doesNotMatch(retryTestSource, /继续执行真实模型测试/, '目录预检失败不得存在生成测试降级路径')
+assert.doesNotMatch(serviceSource, /preflightAccountModelCatalog|accountModelCatalogPreflight/, '自动测试包装器不得保留模型目录预检或缓存')
+assert.doesNotMatch(retryTestSource, /models_catalog/, '真实模型测试不得把上游模型目录作为诊断步骤')
+assert.match(serviceSource, /export async function discoverAccountUpstreamModels/, '用户显式同步必须继续保留独立上游模型目录发现入口')
 assert.match(serviceSource, /candidateAccounts:\s*\[diagnosticCandidate\]/, '测试服务仍应固定当前诊断候选账号')
 assert.match(serviceSource, /disableSessionAffinity:\s*true/, '测试服务仍应禁用 session affinity')
 assert.match(serviceSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/, '测试服务仍应保留 manual_account_test 默认来源')
@@ -493,6 +491,7 @@ const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts
 assert.doesNotMatch(taskQueueSource, /requestShape:/, '管理端手动账号测试不得透传真实请求形态')
 assert.doesNotMatch(taskQueueSource, /task\.clientCompatibility/, '管理端手动账号测试任务不得使用客户端画像作为测试请求形态')
 assert.match(taskQueueSource, /testEndpointMode:\s*task\.testEndpointMode/, '管理端手动账号测试任务必须透传本次 testEndpointMode')
+assert.doesNotMatch(taskQueueSource, /preflightAccountModelCatalog|模型目录预检/, '草稿测试队列不得把模型目录作为真实测试前置条件')
 assert.match(catalogRefreshServiceSource, /signal\?: AbortSignal/, '模型目录同步服务必须接收客户端取消信号')
 assert.match(catalogRefreshServiceSource, /discoverAccountUpstreamModels\(account, \{[\s\S]*?signal/, '模型目录上游探测必须继续传递取消信号')
 const catalogRefreshRoute = accountsRoutesSource.slice(

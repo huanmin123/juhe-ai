@@ -1,70 +1,107 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>普通用户使用手册</title><link rel="stylesheet" href="../help.css"></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>普通用户使用手册</title>
+  <link rel="stylesheet" href="../help.css">
+</head>
 <body>
   <a class="skip-link" href="#content">跳到正文</a>
   <header class="manual-header"><div class="header-inner">
     <a class="brand-mark" href="/__aisys__/"><span class="brand-badge" aria-hidden="true">J</span><img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="30" height="30" hidden><span>用户使用手册</span></a>
-    <label class="search-control"><span class="visually-hidden">搜索手册</span><input data-help-search type="search" placeholder="输入关键词定位章节" autocomplete="off"><kbd>Enter</kbd></label>
+    <label class="search-control"><span class="visually-hidden">搜索手册</span><input data-help-search type="search" placeholder="搜字段、状态或页面名称" autocomplete="off"><kbd>Enter</kbd></label>
     <div class="header-actions"><a class="home-link" href="/__aisys__/">控制台</a><span class="updated-at">更新于 2026-07-31</span></div>
   </div></header>
-  <section class="document-title"><div class="header-inner"><div><h1>普通用户手册</h1><p>从账户配置到客户端调用，以及日常查询与排障。</p></div><details class="mobile-nav"><summary>章节目录</summary><nav aria-label="移动章节目录" data-nav-mobile></nav></details></div></section>
+  <section class="document-title"><div class="header-inner"><div><h1>普通用户手册</h1><p>把配置做对，再让客户端稳定调用。</p></div><details class="mobile-nav"><summary>章节目录</summary><nav aria-label="移动章节目录" data-nav-mobile></nav></details></div></section>
   <div class="layout">
     <nav class="side-nav" aria-label="章节目录" data-nav><strong>目录</strong>
-      <a data-nav-link href="#quick">最小链路</a><a data-nav-link href="#configuration">资源配置</a><a data-nav-link href="#import">导入与迁移</a><a data-nav-link href="#chat">AI 问答与模型</a><a data-nav-link href="#authorization">授权与团队</a><a data-nav-link href="#observe">观测与记录</a><a data-nav-link href="#troubleshooting">排障</a>
+      <a data-nav-link href="#quick">请求怎么走</a><a data-nav-link href="#configuration">配置字典</a><a data-nav-link href="#import">导入账户</a><a data-nav-link href="#chat">对话与模型</a><a data-nav-link href="#authorization">授权与团队</a><a data-nav-link href="#observe">数据与观测</a><a data-nav-link href="#troubleshooting">按证据排障</a>
     </nav>
     <main id="content" class="content"><p class="search-empty" data-search-status aria-live="polite"></p>
-      <section id="quick" class="section"><h2>最小可用链路</h2><p class="lead">请求固定经过 API Key、策略路由、分组、AI 账户，再访问上游。第一次配置按以下顺序完成，避免 API Key 指向空策略或未检查账户。</p>
-        <ol class="flow-list"><li><a href="/__aisys__/my-groups">创建分组</a>：分组是账户集合与供应商过滤边界；只接纳同一供应商的账户。</li><li><a href="/__aisys__/my-accounts">创建 AI 账户</a>：填供应商、接入类型、凭据、模型和分组。</li><li>在账户列表执行检查，账户通过后激活；新建或导入的待检查账户不会参与调度。</li><li><a href="/__aisys__/my-route-strategies">创建策略路由</a>：普通策略绑定一个分组；按需要选择权重、故障回退、轮询或混合智能。</li><li><a href="/__aisys__/my-api-keys">创建 API Key</a>：仅绑定策略路由，设置额度、有效期和时间计划。</li><li>把网关地址、API Key 与模型名填入客户端，再用实际客户端请求完成调用确认；<a href="/__aisys__/my-chat">AI 问答</a>使用系统为当前账户维护的专属对话 Key，不替代客户端 API Key。</li></ol>
-        <div class="callout info">账户有凭据不等于可用。检查成功并激活后，才会成为策略可调度的上游。</div></section>
-      <section id="configuration" class="section"><h2>资源配置要点</h2><p class="lead">每一层只负责自己的边界：API Key 不直接绑定账户，策略路由不保存凭据，分组不替代账户的模型与并发配置。</p>
-        <div class="route-list">
-          <div class="route-item"><strong>分组</strong><p>创建时选择供应商和分组类型。个人分组适合稳定低并发；高并发分组适合多人或程序共享调用。分组的供应商必须与加入账户一致。</p><a href="/__aisys__/my-groups">配置分组</a></div>
-          <div class="route-item"><strong>AI 账户</strong><p>填写真实上游凭据、Base URL、支持模型、并发、代理和分组。Base URL 填服务根地址，不填 <code>/responses</code>、<code>/chat/completions</code> 或 <code>/messages</code> 等具体接口路径。</p><a href="/__aisys__/my-accounts">配置 AI 账户</a></div>
-          <div class="route-item"><strong>模型与上游接口能力</strong><p>支持模型用于调度过滤；上游接口能力只声明真实上游能处理的协议。模型别名的右侧目标模型与目标协议都必须由该账户的真实能力支撑。</p><a href="/__aisys__/my-models">查看模型目录</a></div>
-          <div class="route-item"><strong>策略路由</strong><p>普通路由只绑定一个分组；权重、故障回退和轮询用于多个分组；混合智能先判定请求等级再映射模型和分组。改动共享策略会影响全部绑定 API Key。</p><a href="/__aisys__/my-route-strategies">配置策略路由</a></div>
-          <div class="route-item"><strong>API Key</strong><p>只绑定策略路由，并设置状态、额度、过期时间和时间计划。完整密钥只在创建或刷新时展示，应立刻写入客户端安全配置。</p><a href="/__aisys__/my-api-keys">配置 API Key</a></div>
+      <section id="quick" class="section section-opening">
+        <div class="section-heading-row"><div><p class="section-kicker">先理解影响范围</p><h2>一次请求经过五层</h2></div><p class="lead">每一层只决定一件事。不要为了“快点能用”把 API Key 直接理解成账户，也不要把模型或凭据写进策略。</p></div>
+        <div class="flow-explorer" data-flow-explorer data-default-flow-step="key">
+          <div class="flow-controls" role="tablist" aria-label="请求链路步骤">
+            <button type="button" data-flow-step="key" role="tab" aria-selected="true">1 API Key</button><button type="button" data-flow-step="strategy" role="tab" aria-selected="false">2 策略路由</button><button type="button" data-flow-step="group" role="tab" aria-selected="false">3 分组</button><button type="button" data-flow-step="account" role="tab" aria-selected="false">4 AI 账户</button><button type="button" data-flow-step="upstream" role="tab" aria-selected="false">5 上游</button>
+          </div>
+          <figure class="route-diagram" aria-labelledby="user-route-caption">
+            <svg viewBox="0 0 1040 238" role="img" aria-labelledby="user-route-svg-title user-route-svg-desc" xmlns="http://www.w3.org/2000/svg">
+              <title id="user-route-svg-title">客户端请求在 juhe-ai 中的路由链路</title><desc id="user-route-svg-desc">API Key 选择策略，策略选择分组，分组从账户池选择一个可用账户，账户调用上游。</desc>
+              <defs><marker id="user-route-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="currentColor"/></marker></defs>
+              <path class="diagram-line" d="M186 119H242M402 119H458M618 119H674M834 119H890" marker-end="url(#user-route-arrow)"/>
+              <a href="/__aisys__/my-api-keys" class="diagram-node-link"><g class="diagram-node is-active" data-flow-node="key"><rect x="24" y="56" width="162" height="126" rx="10"/><text x="105" y="101" text-anchor="middle" class="diagram-index">01</text><text x="105" y="132" text-anchor="middle" class="diagram-label">API Key</text><text x="105" y="156" text-anchor="middle" class="diagram-note">身份与配额</text></g></a>
+              <a href="/__aisys__/my-route-strategies" class="diagram-node-link"><g class="diagram-node" data-flow-node="strategy"><rect x="242" y="56" width="160" height="126" rx="10"/><text x="322" y="101" text-anchor="middle" class="diagram-index">02</text><text x="322" y="132" text-anchor="middle" class="diagram-label">策略路由</text><text x="322" y="156" text-anchor="middle" class="diagram-note">选择规则</text></g></a>
+              <a href="/__aisys__/my-groups" class="diagram-node-link"><g class="diagram-node" data-flow-node="group"><rect x="458" y="56" width="160" height="126" rx="10"/><text x="538" y="101" text-anchor="middle" class="diagram-index">03</text><text x="538" y="132" text-anchor="middle" class="diagram-label">AI 分组</text><text x="538" y="156" text-anchor="middle" class="diagram-note">账户池边界</text></g></a>
+              <a href="/__aisys__/my-accounts" class="diagram-node-link"><g class="diagram-node" data-flow-node="account"><rect x="674" y="56" width="160" height="126" rx="10"/><text x="754" y="101" text-anchor="middle" class="diagram-index">04</text><text x="754" y="132" text-anchor="middle" class="diagram-label">AI 账户</text><text x="754" y="156" text-anchor="middle" class="diagram-note">凭据与能力</text></g></a>
+              <g class="diagram-node diagram-node-terminal" data-flow-node="upstream"><rect x="890" y="56" width="126" height="126" rx="10"/><text x="953" y="101" text-anchor="middle" class="diagram-index">05</text><text x="953" y="132" text-anchor="middle" class="diagram-label">上游</text><text x="953" y="156" text-anchor="middle" class="diagram-note">真实服务</text></g>
+            </svg>
+            <figcaption id="user-route-caption">点上方步骤查看规则；图中的前四层也可直接打开相应配置页。</figcaption>
+          </figure>
+          <div class="flow-explainer" data-flow-detail="key"><strong>API Key 决定“谁在调用、还允许调用多少”。</strong><span>它只绑定一套策略路由；额度、过期时间和时间计划在这里生效。下一步：确认它绑定的是预期策略。</span></div>
+          <div class="flow-explainer" data-flow-detail="strategy" hidden><strong>策略路由决定“请求采用哪种选组方式”。</strong><span>普通策略只有一个分组；权重、回退、轮询和混合智能才会处理多个分组。下一步：检查模式与分组顺序。</span></div>
+          <div class="flow-explainer" data-flow-detail="group" hidden><strong>分组决定“账户池的供应商边界和排队规则”。</strong><span>一个分组只接纳同一供应商的账户。下一步：确认目标账户已加入此分组并且分组启用。</span></div>
+          <div class="flow-explainer" data-flow-detail="account" hidden><strong>AI 账户决定“实际拿什么凭据、协议和模型去调上游”。</strong><span>只有已检查且可调度的账户会进入候选。下一步：核对状态、模型、Base URL 和账户并发。</span></div>
+          <div class="flow-explainer" data-flow-detail="upstream" hidden><strong>上游才是最终处理请求的一方。</strong><span>模型名、协议能力和错误语义必须以这里的真实能力为准；配置页不能把上游不支持的能力变出来。</span></div>
+        </div>
+        <ol class="flow-list compact-flow"><li><a href="/__aisys__/my-groups">新建分组</a>，先固定供应商边界。</li><li><a href="/__aisys__/my-accounts">新增或导入 AI 账户</a>，完成检查并设为可调度。</li><li><a href="/__aisys__/my-route-strategies">建立策略路由</a>，选择一个明确的分组选择规则。</li><li><a href="/__aisys__/my-api-keys">建立 API Key</a>，绑定策略并设置额度/时间边界。</li><li>把网关地址、完整 API Key 和模型名写入实际客户端；<a href="/__aisys__/my-chat">AI 问答</a>使用系统维护的专属对话 Key，不替代客户端 API Key。</li></ol>
+      </section>
+
+      <section id="configuration" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">字段级参考</p><h2>配置字典：填什么，为什么</h2></div><p class="lead">每个条目都写清楚作用、实际影响和常见误用。展开后可查看设置前的判断规则。</p></div>
+        <div class="reference-stack">
+          <details class="reference-entry" open><summary><span><b>AI 分组</b><small>建立账户池与供应商边界</small></span><span class="reference-summary">先选供应商，再定个人/高并发</span></summary><div class="reference-body">
+            <dl class="field-grid"><div><dt>分组名称</dt><dd>给人识别用途，不参与调度。名称应写清使用方或场景，例如“研发共享 OpenAI”。</dd></div><div><dt>所属供应商</dt><dd>决定可加入的账户范围。分组保存 <code>providerCode</code>；换供应商不是改个标签，会改变账户候选边界。</dd></div><div><dt>个人分组</dt><dd>适合个人或稳定低并发调用。按账户并发直接调度，没有额外短队列策略。</dd></div><div><dt>高并发分组</dt><dd>适合共享程序流量；会启用短队列、单账户软阈值和可选的单 IP 并发限制。</dd></div><div><dt>最大单账户排队阈值</dt><dd>高并发模式才出现。到达阈值后优先选择其他账户，实际值不会高于该账户的硬并发上限。</dd></div><div><dt>最大等待时间</dt><dd>所有账户硬并发都满时允许在分组内等多久；超时返回 <code>429</code>。它不是上游响应超时。</dd></div><div><dt>限制单 IP 并发</dt><dd>关闭时不限制。开启后按“当前分组 + API Key + IP”限制同时占用数；超过时可立即拒绝或进入等待。</dd></div><div><dt>启用状态</dt><dd>停用分组后，绑定它的策略不会继续将请求调度到这个账户池。</dd></div></dl>
+            <p class="reference-note">先建分组再建账户的原因：账户的“加入分组”下拉只显示同一供应商的分组，避免把协议边界配乱。</p>
+          </div></details>
+          <details class="reference-entry"><summary><span><b>AI 账户</b><small>声明真实上游与可调度条件</small></span><span class="reference-summary">凭据、模型、并发和状态都在此层</span></summary><div class="reference-body">
+            <dl class="field-grid"><div><dt>账户名称 / 加入分组</dt><dd>名称用于定位；分组决定它能被哪一个账户池选择。账户的供应商必须和分组一致。</dd></div><div><dt>并发上限</dt><dd>这个账户同时承接请求的硬上限。达到后调度器会等待或尝试其他可用账户。</dd></div><div><dt>优先级</dt><dd>同一分组内小值优先，<code>0</code> 比 <code>1</code> 更靠前。它不替代策略层的分组顺序。</dd></div><div><dt>特权</dt><dd><code>super_priority</code> 表示超级优先，<code>fallback</code> 表示降级备用；只在确实需要固定调度角色时使用。</dd></div><div><dt>状态</dt><dd><code>active</code> 可调度，<code>pending_test</code> 等待检查，<code>disabled</code> 人工停用。凭据填完不等于可以调度。</dd></div><div><dt>API Key / 多 Key</dt><dd>多个 Key 可轮询或按 1-100 权重轮询；多 Key 账户不支持余额查询，保存后会自动关闭余额查询。</dd></div><div><dt>Base URL</dt><dd>填写服务根或版本根，例如 <code>https://api.openai.com/v1</code>；不要填 <code>/responses</code>、<code>/chat/completions</code>、<code>/messages</code> 这类具体接口。</dd></div><div><dt>支持模型</dt><dd>声明此 Base URL 真正可用的模型，既用于候选过滤，也是别名右侧可选模型的边界。至少选择一个。</dd></div><div><dt>检查模型</dt><dd>用来验证账户链路；先选择确实被支持模型覆盖的模型，再把检查结果当作激活依据。</dd></div><div><dt>上游接口能力</dt><dd>声明真实上游能接收的请求形态。没有勾选的协议请求不会把此账户加入候选；不能用它虚构上游能力。</dd></div><div><dt>账号模型别名</dt><dd>把“客户端协议/模型”映射到“上游协议/模型”。右侧目标必须同时满足账户支持模型和上游接口能力；普通账户的跨协议映射受实际档案限制。</dd></div><div><dt>代理</dt><dd>只影响该账户访问上游的网络路径；不会改变客户端访问本系统的地址。</dd></div><div><dt>服务等级 / 思考级别</dt><dd>只在已选模型声明支持时可用；不支持时应清空或改选模型，不能强制覆盖。</dd></div></dl>
+            <p class="reference-note">新建或导入后，先在 <a href="/__aisys__/my-model-checks">模型检测</a> / 账户检查确认“模型可用、凭据正确、协议匹配”，再将账户用于真实流量。</p>
+          </div></details>
+          <details class="reference-entry"><summary><span><b>策略路由</b><small>定义 API Key 选择分组的规则</small></span><span class="reference-summary">API Key 只认识策略，不直接认识账户</span></summary><div class="reference-body">
+            <div class="mode-reference"><div><strong>普通</strong><span>只能绑定一个启用分组。选“成本优先”时保留当前账户缓存和会话粘黏；“速度优先”只对可重放文本观察首字慢样本，图像和副作用请求不使用这套切换。</span></div><div><strong>权重</strong><span>至少两个启用分组，按分组权重比例分流；总权重不能超过 100。</span></div><div><strong>故障回退</strong><span>第一行是主用分组，后续是备用分组；主用恢复后仍会优先主用。</span></div><div><strong>轮询</strong><span>至少两个启用分组，按当前排列顺序依次调度；拖动顺序会改变下一个选择次序。</span></div><div><strong>混合智能</strong><span>先用评分模型估计能力等级，再按等级路由到目标模型和分组。评分、质量检查和缓存会增加复杂度与潜在额外调用，应先让基础路由稳定。</span></div></div>
+            <dl class="field-grid"><div><dt>名称 / 说明</dt><dd>只用于后台识别。名称建议带用途，避免在多个 API Key 之间误选共享策略。</dd></div><div><dt>状态</dt><dd>停用后，绑定该策略的 API Key 不再通过它进入分组调度。</dd></div><div><dt>首字截止与慢速参数</dt><dd>只在普通 + 速度优先出现。首字截止、慢速触发次数、窗口期、恢复次数、探针间隔和降级租约一起决定“何时确认慢、何时恢复”。</dd></div><div><dt>分组绑定</dt><dd>分组是策略的唯一调度目标。修改共享策略会影响所有绑定它的 API Key；需要复制配置时，应新建同配置策略再绑定新 API Key。</dd></div></dl>
+          </div></details>
+          <details class="reference-entry"><summary><span><b>API Key</b><small>把调用身份接到一套策略</small></span><span class="reference-summary">完整密钥只在创建/刷新时展示</span></summary><div class="reference-body">
+            <dl class="field-grid"><div><dt>名称</dt><dd>只用于人识别；默认 API Key 和 AI 对话 API Key 的名称不可修改。</dd></div><div><dt>策略路由</dt><dd>API Key 只绑定策略路由。分组、模型和供应商选择逻辑都在策略中维护。</dd></div><div><dt>运行状态</dt><dd>只有 <code>active</code> 会接受调用。设置时间计划后，保存与计划边界都会直接更新这个状态。</dd></div><div><dt>过期时间</dt><dd>到达时间后不再可用；它是绝对时间边界，不受时间计划替代。</dd></div><div><dt>美元额度</dt><dd>“n 小时美元额度”可按 n 小时、每日、每周、每月设置美元上限；未开启的项目不限制。它约束的是该 Key 的调用额度。</dd></div><div><dt>时间计划</dt><dd>开启后，只在选定星期与开始/结束时间内参与调度；未命中窗口会被暂时跳过。多个窗口用于工作日/时段组合。</dd></div><div><dt>说明</dt><dd>仅作后台标记，不参与路由、额度或权限判断。</dd></div></dl>
+            <p class="reference-note">创建完成立即复制完整密钥到客户端安全配置；之后列表和日志不会再次给出完整明文。</p>
+          </div></details>
         </div>
       </section>
-      <section id="import" class="section"><h2>账户导入与迁移</h2><p>在<a href="/__aisys__/my-accounts">我的 AI 账户</a>使用导入。普通用户只导入到自己名下；管理员可在管理账户页选择目标系统账户导入。</p>
-        <ol class="flow-list"><li>下载协议说明，或把来源数据交给 AI 转换。</li><li>仅粘贴 <code>juhe-ai-account-import v1</code> JSON；不要粘贴 Markdown 代码块或 CSV。</li><li>先执行“解析预览”，处理字段、分组或重复项提示。</li><li>确认导入。引用不存在的分组可按选项自动创建；同名账户可跳过。</li></ol>
-        <p>单次请求受约 <code>256KB</code> JSON 请求体限制，最多 50 个账户，最多 20 个代理。导入可包含代理引用，但普通用户不能创建新代理；需要新代理请联系管理员。即使源数据声明 <code>active</code>，导入账户也会创建为 <code>pending_test</code>，检查通过后再激活。协议只需下载阅读，不要复制完整协议正文到业务数据。</p>
-        <h3>给 AI 的转换提示词</h3><pre class="ai-prompt">请根据我附上的《juhe-ai AI 账户导入协议 v1》Markdown，把下面账号数据转换为 juhe-ai-account-import v1 JSON。
+
+      <section id="import" class="section"><div class="section-heading-row"><div><p class="section-kicker">批量录入前先预览</p><h2>账户导入与迁移</h2></div><p class="lead">导入只帮你把结构化资料变成待检查账户，不会替你确认凭据真实可用。</p></div>
+        <ol class="flow-list"><li>在<a href="/__aisys__/my-accounts">我的 AI 账户</a>打开导入。普通用户只导入到自己名下；管理员可在管理账户页选择目标系统账户导入。</li><li>只粘贴 <code>juhe-ai-account-import v1</code> JSON，不要粘贴 Markdown 代码块或 CSV。</li><li>先做“解析预览”，逐项处理协议档案、分组、代理引用和重复项提示。</li><li>确认导入后，不存在的分组可以按选项自动创建；同名账户可跳过。</li></ol>
+        <div class="callout info">单次请求上限约 <code>256KB</code>，最多 50 个账户，最多 20 个代理。普通用户不能创建新代理。即使来源写了 <code>active</code>，导入账户仍会以 <code>pending_test</code> 创建，检查通过后才可参与调度。</div>
+        <details class="prompt-reference"><summary>给 AI 整理来源数据时，如何避免编造字段</summary><pre class="ai-prompt">请根据我附上的《juhe-ai AI 账户导入协议 v1》Markdown，把下面账号数据转换为 juhe-ai-account-import v1 JSON。
 
 要求：
-1. 协议文件优先于你的默认认知；字段名、必填项、枚举值和示例都按协议文件执行。
-2. 只输出合法 JSON，不要输出解释、Markdown 代码块或注释。
-3. 顶层 type 固定为 juhe-ai-account-import，version 固定为数字 1。
-4. 每个账户必须显式填写 name、providerCode、providerProtocolProfileId、type、status、credentials，以及 groupName 或 groupId。
-5. API Key 账号使用 type: api_key；GPT OAuth 使用 type: oauth；Gemini Google OAuth 使用 type: google_oauth。
-6. providerProtocolProfileId 是协议档案唯一入口；不要根据 base_url、供应商默认值或旧字段猜测档案。
-7. 普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -&gt; Chat Completions；其他跨协议映射只能写入 providerCode 为 hybrid 的混合供应商账户。
-8. 不要编造来源数据里不存在的 token、API Key、邮箱、账号 ID、代理密码或模型列表。
-9. 如果有代理，请放到 proxies 数组，并用账号的 proxyRef 引用代理 ref。
-10. 不确定的信息放到 notes；无法判断是否可立即调度时 status 填 pending_test 或 disabled。</pre>
-        <div class="callout">迁移前确认每个账户的供应商、协议档案、凭据和分组一致；AI 转换只能整理已有数据，不应编造 token 或 API Key。</div></section>
-      <section id="chat" class="section"><h2>AI 问答与模型目录</h2><div class="route-list">
-        <div class="route-item"><strong>AI 问答</strong><p>使用系统为当前账户维护的专属对话 Key，独立于客户端调用使用的 API Key；用于站内对话，不作为客户端 API Key 的调用验证入口。</p><a href="/__aisys__/my-chat">打开 AI 问答</a></div>
-        <div class="route-item"><strong>我的模型</strong><p>查看账号当前可用模型与模型映射；模型不可用时先检查账户支持模型。</p><a href="/__aisys__/my-models">打开模型目录</a></div>
-        <div class="route-item"><strong>模型检测</strong><p>按账户运行模型检测，区分模型不支持、上游拒绝和账户状态问题。</p><a href="/__aisys__/my-model-checks">打开模型检测</a></div>
-        <div class="route-item"><strong>我的统计</strong><p>查看自己的请求、令牌和费用概览。</p><a href="/__aisys__/my-stats">打开我的统计</a></div>
-      </div></section>
-      <section id="authorization" class="section"><h2>授权、团队与消耗</h2><div class="route-list">
-        <div class="route-item"><strong>我的授权</strong><p>查看或管理自己可用、已发放的授权资源及其状态。</p><a href="/__aisys__/my-authorizations">打开我的授权</a></div>
-        <div class="route-item"><strong>我的团队</strong><p>管理自己可见的团队协作范围；成员与授权边界以页面权限为准。</p><a href="/__aisys__/my-teams">打开我的团队</a></div>
-        <div class="route-item"><strong>团队消耗</strong><p>按团队查看授权产生的用量。</p><a href="/__aisys__/my-authorization-team-usage">打开团队消耗</a></div>
-        <div class="route-item"><strong>用户消耗</strong><p>按用户查看授权用量，适合核对分配后的实际消耗。</p><a href="/__aisys__/my-authorization-user-usage">打开用户消耗</a></div>
-      </div></section>
-      <section id="observe" class="section"><h2>统计、用量、性能、健康与记录</h2><div class="route-list">
-        <div class="route-item"><strong>用量统计</strong><p>按时间、账户与模型汇总令牌和费用。</p><a href="/__aisys__/my-usage-stats">打开用量统计</a></div>
-        <div class="route-item"><strong>AI 性能</strong><p>查看请求耗时和成功情况，用于定位慢请求。</p><a href="/__aisys__/my-ai-performance">打开 AI 性能</a></div>
-        <div class="route-item"><strong>AI 健康</strong><p>查看账户检查与可用性，先处理待检查、失败或禁用状态。</p><a href="/__aisys__/my-ai-health">打开 AI 健康</a></div>
-        <div class="route-item"><strong>使用记录</strong><p>按请求、模型和状态追踪调用，不展示敏感凭据。</p><a href="/__aisys__/my-usage-records">打开使用记录</a></div>
-        <div class="route-item"><strong>操作日志</strong><p>回看自己执行的管理动作，核对变更时间和结果。</p><a href="/__aisys__/my-operation-logs">打开操作日志</a></div>
-      </div></section>
-      <section id="troubleshooting" class="section"><h2>排障顺序</h2><ol class="flow-list"><li>账户不可调度：检查账户是否为 <code>active</code>、检查是否成功、是否绑定正确分组。</li><li>模型不可用：在模型目录和账户支持模型中确认模型名与映射。</li><li>调用未按预期分流：确认 API Key 绑定的策略，以及策略绑定的分组。</li><li>请求失败或变慢：依次查看使用记录、AI 健康、AI 性能；必要时查看自己的操作日志。</li></ol></section>
+1. 只输出合法 JSON，不要输出解释、Markdown 代码块或注释。
+2. 顶层 type 固定为 juhe-ai-account-import，version 固定为数字 1。
+3. 每个账户显式填写 name、providerCode、providerProtocolProfileId、type、status、credentials，以及 groupName 或 groupId。
+4. API Key 账号使用 type: api_key；GPT OAuth 使用 type: oauth；Gemini Google OAuth 使用 type: google_oauth。
+5. providerProtocolProfileId 是协议档案唯一入口；不要从 base_url 或旧字段猜测档案。
+6. 不要编造来源里没有的 token、API Key、邮箱、账号 ID、代理密码或模型列表。
+7. 不确定信息放到 notes；不能判断立即可调度时 status 填 pending_test 或 disabled。</pre></details>
+      </section>
+
+      <section id="chat" class="section"><div class="section-heading-row"><div><p class="section-kicker">调用前核对模型</p><h2>AI 问答、模型与策略验证</h2></div><p class="lead">站内对话和客户端中转是两条不同入口，诊断也应从实际症状开始。</p></div>
+        <div class="route-catalog"><a href="/__aisys__/my-chat"><strong>AI 问答</strong><span>使用当前账户的专属对话 Key；用于站内对话，不作为客户端 API Key 验证入口。</span></a><a href="/__aisys__/my-models"><strong>我的模型</strong><span>查看当前可用模型与映射。看不到模型时，先回到账户支持模型和策略分组检查。</span></a><a href="/__aisys__/my-model-checks"><strong>模型检测</strong><span>区分模型不支持、上游拒绝、凭据/协议问题；它比一次聊天失败更适合作为账户检查证据。</span></a><a href="/__aisys__/my-route-strategies"><strong>我的策略路由</strong><span>核对 API Key 实际绑定的策略，以及策略中的分组顺序、权重或回退关系。</span></a></div>
+      </section>
+
+      <section id="authorization" class="section"><div class="section-heading-row"><div><p class="section-kicker">资源归属与协作</p><h2>授权、团队与消耗</h2></div><p class="lead">这里解释“谁能用什么”和“使用后算到哪里”，不改变 API Key 的路由规则。</p></div>
+        <div class="route-catalog"><a href="/__aisys__/my-authorizations"><strong>我的授权</strong><span>查看或管理自己可用、已发放的授权资源及其状态。</span></a><a href="/__aisys__/my-teams"><strong>我的团队</strong><span>查看团队成员和协作范围；资源可见性仍以页面实际权限为准。</span></a><a href="/__aisys__/my-authorization-team-usage"><strong>团队消耗</strong><span>按授权团队汇总用量，适合对账团队配额与实际使用。</span></a><a href="/__aisys__/my-authorization-user-usage"><strong>用户消耗</strong><span>按用户核对授权用量，适合查分配后的归属。</span></a></div>
+      </section>
+
+      <section id="observe" class="section"><div class="section-heading-row"><div><p class="section-kicker">用事实而非猜测判断</p><h2>统计、性能、健康和记录</h2></div><p class="lead">这五类页面回答的是不同问题：用了多少、慢不慢、能不能调度、某一笔是否成功、谁改过配置。</p></div>
+        <div class="route-catalog"><a href="/__aisys__/my-stats"><strong>我的统计</strong><span>自己的请求、令牌和费用概览；用于总体趋势，不定位单个失败。</span></a><a href="/__aisys__/my-usage-stats"><strong>用量统计</strong><span>按时间、账户与模型汇总令牌和费用，用于对账。</span></a><a href="/__aisys__/my-ai-performance"><strong>AI 性能</strong><span>查看耗时和成功情况。先按账户/模型缩小范围，再判断是否为普遍变慢。</span></a><a href="/__aisys__/my-ai-health"><strong>AI 健康</strong><span>查看账户检查和可调度状态；待检查、失败和停用各有不同处理路径。</span></a><a href="/__aisys__/my-usage-records"><strong>使用记录</strong><span>按请求、模型和状态追踪真实调用，是“这次为什么失败”的第一证据。</span></a><a href="/__aisys__/my-operation-logs"><strong>操作日志</strong><span>回看自己的资源变更、时间和结果；配置意外变化时先查这里。</span></a></div>
+      </section>
+
+      <section id="troubleshooting" class="section"><div class="section-heading-row"><div><p class="section-kicker">从上到下定位</p><h2>排障顺序</h2></div><p class="lead">不要先改参数。先确认请求走到哪一层，再只改能解释当前证据的配置。</p></div>
+        <div class="troubleshooting-grid"><div><strong>401 / 额度 / 时间边界</strong><span>先看 API Key 是否启用、未过期、未超过额度且命中时间计划。</span></div><div><strong>模型不存在或不支持</strong><span>核对客户端模型名、别名映射、账户支持模型和上游接口能力。</span></div><div><strong>没有可调度账户</strong><span>核对策略绑定分组、分组启用、账户分组、账户 <code>active</code> 与检查结果。</span></div><div><strong>分流结果不对</strong><span>先确认 Key 绑定哪套策略，再查策略模式、分组顺序/权重和账户优先级。</span></div><div><strong>慢或偶发失败</strong><span>先查使用记录，再结合 AI 健康与 AI 性能；不要用一条慢记录就调整全局超时。</span></div><div><strong>配置被改过</strong><span>在操作日志确认谁、何时、对哪类资源执行了写入，然后决定恢复还是继续排查。</span></div></div>
+      </section>
     </main>
   </div>
-  <footer class="footer">帮助页只说明可见配置与操作，不展示 API Key 明文、OAuth token、上游凭据或代理密码。</footer>
+  <footer class="footer">帮助页只解释可见配置与操作，不展示 API Key 明文、OAuth token、上游凭据或代理密码。</footer>
   <script src="../help.js"></script>
-</body></html>
+</body>
+</html>

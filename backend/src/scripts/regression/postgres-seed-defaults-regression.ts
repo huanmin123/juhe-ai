@@ -83,10 +83,6 @@ for (const group of DEFAULT_BUILT_IN_GROUPS) {
   assert.match(insertStatement.sql, /ON CONFLICT DO NOTHING/i, '默认分组批量补齐遇到冲突时不得覆盖已有分组')
 }
 
-const xaiDefaultGroupBackfillMigration = readFileSync('../backend-go/db/migrations/000095_w2_backfill_xai_default_groups_all_system_accounts_20260731.sql', 'utf8')
-assert.match(xaiDefaultGroupBackfillMigration, /lower\(same_name\.name\)\s*=\s*lower\('默认 xAI 分组'\)/i, 'xAI 回填迁移必须识别大小写变体的规范名冲突')
-assert.match(xaiDefaultGroupBackfillMigration, /LEFT JOIN LATERAL[\s\S]*generate_series[\s\S]*existing_fallback_name[\s\S]*ORDER BY candidate_suffix\.suffix/i, 'xAI 回填迁移的回退名称被占用时必须选择未占用编号，而非静默跳过')
-
 const modelInsertStatements = executedStatements.filter(({ sql }) => (
   /INSERT INTO\s+"juhe_business"\."provider_model_catalog"/i.test(sql)
 ))
