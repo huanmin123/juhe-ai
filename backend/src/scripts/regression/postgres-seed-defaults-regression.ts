@@ -164,6 +164,7 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
         model.cachedInputUsdPer1M ?? null,
         model.cacheWriteUsdPer1M ?? null,
         model.cacheWrite1hUsdPer1M ?? null,
+        model.cacheStorageUsdPer1MPerHour ?? null,
         JSON.stringify(model.serviceTierPrices ?? {}),
         model.longContextInputTokenThreshold ?? null,
         model.longContextInputTokenThresholdInclusive === true,
@@ -182,10 +183,10 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
 )
 for (const values of modelSeedRows) {
   const key = `${String(values[1])}\u0000${String(values[2])}`
-  assert.deepEqual(values.slice(0, 36), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
+  assert.deepEqual(values.slice(0, 37), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
   assert.equal(values.length, 39, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
-  assert.equal(typeof values[36], 'string', `${key} 必须写入 created_at`)
-  assert.equal(values[37], values[36], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
+  assert.equal(typeof values[37], 'string', `${key} 必须写入 created_at`)
+  assert.equal(values[38], values[37], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
 }
 
 const gpt5MiniValues = modelSeedRows.find((values) => values[1] === 'gpt' && values[2] === 'gpt-5-mini')
@@ -198,18 +199,18 @@ assert.equal(gpt5MiniValues[8], JSON.stringify(['priority', 'flex']), 'gpt-5-min
 assert.equal(gpt5MiniValues[18], 0.25, 'gpt-5-mini direct input price 必须写入')
 assert.equal(gpt5MiniValues[19], 2, 'gpt-5-mini direct output price 必须写入')
 assert.equal(gpt5MiniValues[20], 0.025, 'gpt-5-mini direct cached input price 必须写入')
-assert.deepEqual(JSON.parse(String(gpt5MiniValues[23])), {
+assert.deepEqual(JSON.parse(String(gpt5MiniValues[24])), {
   priority: {
     inputUsdPer1M: 0.45,
     outputUsdPer1M: 3.6,
     cachedInputUsdPer1M: 0.045
   }
 }, 'gpt-5-mini service tier prices 必须完整写入')
-assert.equal(gpt5MiniValues[34], true, 'gpt-5-mini catalog_visible 必须为 boolean true')
+assert.equal(gpt5MiniValues[35], true, 'gpt-5-mini catalog_visible 必须为 boolean true')
 const grok45Values = modelSeedRows.find((values) => values[1] === 'xai' && values[2] === 'grok-4.5')
 assert.ok(grok45Values, 'fresh PostgreSQL 必须包含 xai/grok-4.5')
-assert.equal(grok45Values[24], 200_000, 'grok-4.5 长上下文价格阈值必须写入')
-assert.equal(grok45Values[25], true, 'grok-4.5 长上下文价格阈值必须按 inclusive boolean 写入')
+assert.equal(grok45Values[25], 200_000, 'grok-4.5 长上下文价格阈值必须写入')
+assert.equal(grok45Values[26], true, 'grok-4.5 长上下文价格阈值必须按 inclusive boolean 写入')
 
 const repeatedSeedStatements: ExecutedStatement[] = []
 await seedPostgresDefaults({
@@ -225,8 +226,8 @@ const repeatedModelInserts = repeatedSeedStatements.filter(({ sql }) => (
   /INSERT INTO\s+"juhe_business"\."provider_model_catalog"/i.test(sql)
 ))
 assert.equal(repeatedModelInserts.length, 1, '二次 seed 仍必须使用单条模型目录 INSERT')
-assert.match(repeatedModelInserts[0]?.sql ?? '', /ON CONFLICT DO NOTHING/i, '二次 seed 必须保留已有管理员模型配置')
-assert.doesNotMatch(repeatedModelInserts[0]?.sql ?? '', /DO UPDATE/i, '二次 seed 不得覆盖已有管理员模型配置')
+assert.match(repeatedModelInserts[0]?.sql ?? '', /ON CONFLICT\(provider_code, model\) DO UPDATE SET/i, '二次 seed 必须按模型键同步目录')
+assert.match(repeatedModelInserts[0]?.sql ?? '', /manual-override/i, '二次 seed 必须保留管理员手工覆盖')
 const repeatedModelKeys = Array.from(
   { length: (repeatedModelInserts[0]?.values.length ?? 0) / modelSeedParameterCount },
   (_item, index) => {
@@ -235,6 +236,6 @@ const repeatedModelKeys = Array.from(
     return `${String(values[offset + 1])}\u0000${String(values[offset + 2])}`
   }
 ).sort()
-assert.deepEqual(repeatedModelKeys, expectedModelKeys, '二次 seed 必须尝试相同模型键并由冲突策略跳过已有配置')
+assert.deepEqual(repeatedModelKeys, expectedModelKeys, '二次 seed 必须同步相同模型键')
 
 console.log('postgres-seed-defaults-regression passed')

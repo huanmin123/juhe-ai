@@ -52,7 +52,7 @@ export function formatCost(value?: unknown): string {
 }
 
 export function usageRecordDisplayCostUsd(record: UsageRecordListItem): number | undefined {
-  return record.costUsd
+  return record.costUsd ?? record.costBreakdown?.accountChargeUsd
 }
 
 export function formatUnitPrice(value?: unknown): string {

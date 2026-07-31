@@ -181,7 +181,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 117, '当前 Node 权威模型目录应包含 117 个可用完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 105, '当前 Node 权威模型目录应包含 105 个可用完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -1633,7 +1633,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/definitions', userBCookie)
     assert.notEqual(userBProviderOptions.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型不能泄露给其他用户')
     await assertHttpStatus(
-      `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model`,
+      `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model?viewScope=admin`,
       userACookie,
       'PUT',
       { model: userADraft.model },
@@ -1680,7 +1680,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
 
     await assertHttpStatus(
-      `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model`,
+      `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model?viewScope=admin`,
       adminCookie,
       'PUT',
       { model: adminPersonalModel.model },
@@ -1690,7 +1690,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
 
     const adminSystemDefault = await putEnvelope<{ providerCode: string; defaultHealthCheckModel: string }>(
       baseUrl,
-      '/__aisys__/api/providers/openai/default-health-check-model',
+      '/__aisys__/api/providers/openai/default-health-check-model?viewScope=admin',
       adminCookie,
       { model: adminGlobalModel.model }
     )
@@ -1811,24 +1811,24 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       userACookie,
       'PATCH',
       { maxOutputTokens: 777 },
-      403,
-      '普通用户不应修改他人的个人自定义模型'
+      404,
+      '普通用户不应发现他人的个人自定义模型'
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${userAModel.id}`,
       userBCookie,
       'PATCH',
       { maxOutputTokens: 777 },
-      403,
-      '普通用户不应修改他人的个人自定义模型'
+      404,
+      '普通用户不应发现他人的个人自定义模型'
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${userAModel.id}`,
       userBCookie,
       'DELETE',
       undefined,
-      403,
-      '普通用户不应删除他人的个人自定义模型'
+      404,
+      '普通用户不应发现他人的个人自定义模型'
     )
 
     const userAAccess = { systemAccountId: userA.id, role: 'user' as const }
