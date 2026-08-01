@@ -3948,8 +3948,6 @@ export {
   forceActivatePendingAccountAsync,
   completeAccountTestTaskWithMatchingManualRecovery,
   completeAccountTestTaskWithMatchingManualRecoveryAsync,
-  restoreAccountAfterMatchingManualTest,
-  restoreAccountAfterMatchingManualTestAsync,
   recordAccountStreamFailure,
   recordAccountStreamFailureAsync,
   recordAccountRuntimeSuccessObservation,

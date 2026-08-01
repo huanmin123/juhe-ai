@@ -16,7 +16,7 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountTestDraftSnapshot,
 } from '../../storage/account-test-tasks.repository.js'
-import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
+import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
@@ -317,19 +317,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
-    const expectedConfigRevision = result.tokenRefreshed === true ? undefined : account.configRevision
-    const matchingRecovery = expectedConfigRevision !== undefined && shouldRestoreAccountAfterMatchingManualTest(task, account, result)
-      ? {
-        accountId: account.id,
-        expectedConfigRevision,
-        healthCheckModel: task.model,
-        healthCheckEndpointMode: task.testEndpointMode
-      }
-      : undefined
-    const completion = await completeAccountTestTaskViaDbService(task.id, result, matchingRecovery)
-    if (completion?.task?.status === 'success' && completion.recoveryChanged && matchingRecovery) {
-      sendAccountRuntimeClearToServer({ accountId: matchingRecovery.accountId })
-    }
+    await completeAccountTestTaskViaDbService(task.id, result)
     return true
   } catch (error) {
     if (controller.signal.aborted) {
@@ -346,25 +334,6 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   } finally {
     runningAccountTestControllers.delete(task.id)
   }
-}
-
-function shouldRestoreAccountAfterMatchingManualTest(
-  task: { draftAccount?: AccountTestDraftSnapshot; model?: string; testEndpointMode?: AccountSupportedEndpointMode },
-  account: AccountSummary,
-  result: AccountTestResult
-): task is { model: string; testEndpointMode: AccountSupportedEndpointMode } {
-  return !task.draftAccount
-    && result.success
-    && result.tokenRefreshed !== true
-    && account.accessType !== 'authorized'
-    && account.status !== 'disabled'
-    && account.status !== 'quality_isolated'
-    && account.schedulable === false
-    && typeof account.configRevision === 'number'
-    && typeof task.model === 'string'
-    && task.model === account.healthCheckModel
-    && typeof task.testEndpointMode === 'string'
-    && task.testEndpointMode === account.healthCheckEndpointMode
 }
 
 function accountTestTaskProgressReporter(
@@ -427,19 +396,12 @@ async function markAccountTestTaskCanceledViaDbService(taskId: string, message: 
 
 async function completeAccountTestTaskViaDbService(
   taskId: string,
-  result: AccountTestResult,
-  matchingRecovery?: {
-    accountId: string
-    expectedConfigRevision: number
-    healthCheckModel: string
-    healthCheckEndpointMode: AccountSupportedEndpointMode
-  }
+  result: AccountTestResult
 ) {
   return await requestBackgroundWorkerDbService({
     type: 'complete_account_test_task',
     taskId,
-    result,
-    matchingRecovery
+    result
   })
 }
 

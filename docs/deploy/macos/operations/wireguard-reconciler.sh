@@ -5,7 +5,8 @@ set -euo pipefail
 
 MODE=once
 MANIFEST=''
-STATE_DIR='/var/db/juhe-ai/wireguard-reconciler'
+INSTALL_DIR='/usr/local/libexec/juhe-ai'
+STATE_DIR=''
 MAINTENANCE_LOCK=''
 WG_BIN='/usr/local/bin/wg'
 PROBE_HELPER=''
@@ -34,7 +35,7 @@ The root-owned manifest is tab-separated with no header:
 Options:
   --once                         perform one bounded reconciliation pass (required)
   --manifest <absolute-path>     root-owned, non-symlink manifest
-  --state-dir <absolute-path>    root-owned state directory
+  --state-dir <absolute-path>    root-owned state directory; default <install-dir>/wireguard-reconciler-state
   --maintenance-lock <path>      when present, record and do not take recovery action
   --wg-bin <absolute-path>       wg executable; default /usr/local/bin/wg
   --probe-helper <absolute-path> root-owned adapter for the independent 203 TLS nonce probe
@@ -119,6 +120,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$MANIFEST" ] || die '--manifest is required'
+[ -n "$STATE_DIR" ] || STATE_DIR="$INSTALL_DIR/wireguard-reconciler-state"
 is_absolute_safe_path "$MANIFEST" || die 'manifest path must be an absolute safe path'
 is_absolute_safe_path "$STATE_DIR" || die 'state-dir must be an absolute safe path'
 [ -z "$MAINTENANCE_LOCK" ] || is_absolute_safe_path "$MAINTENANCE_LOCK" || die 'maintenance-lock must be an absolute safe path'

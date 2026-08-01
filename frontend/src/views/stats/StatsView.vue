@@ -291,11 +291,13 @@ const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const quickRangeValue = computed<QuickRange | undefined>(() => {
-  if (!isQuickRangeMode(rangeMode.value)) return undefined
+  const mode = quickRangeModeForSelection(rangeMode.value)
+  if (!mode) return undefined
+  if (didUsageStatsWindowLoadFail(isManagementView.value ? 'admin' : 'self')) return undefined
   const [startDate, endDate] = selectedRange.value
-  const range = quickRangeDateRange(rangeMode.value)
+  const range = quickRangeDateRange(mode)
   if (!range) return undefined
-  return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? rangeMode.value : undefined
+  return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? mode : undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const dailyTrendRangeLabel = computed(() => dailyTrend.value
@@ -745,6 +747,11 @@ function quickRangeDateRange(value: QuickRange): [Dayjs, Dayjs] | undefined {
   if (value === 'today') return [end, end]
   if (value === 'recent7d') return [end.subtract(6, 'day'), end]
   return [end.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'), end]
+}
+
+function quickRangeModeForSelection(value: RangeMode): QuickRange | undefined {
+  if (value === 'auto') return 'recent1m'
+  return isQuickRangeMode(value) ? value : undefined
 }
 
 function syncDynamicDateRangeToStatsWindow(): void {

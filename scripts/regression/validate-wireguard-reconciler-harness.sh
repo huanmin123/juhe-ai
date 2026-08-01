@@ -26,6 +26,7 @@ MIGRATOR="$ROOT/migrator.sh"
 OPERATIONS="$ROOT/operations"
 INSTALLER="$OPERATIONS/install-wireguard-reconciler.sh"
 INSTALLED_MANIFEST="$ROOT/root-libexec-installer/wireguard-reconciler.manifest"
+INSTALLED_STATE_DIR="$ROOT/root-libexec-installer/wireguard-reconciler-state"
 trap 'rm -rf "$ROOT" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 mkdir -p "$FAKE" "$RUN" "$STATE" "$OPERATIONS"
 : > "$ACTION_LOG"
@@ -34,7 +35,8 @@ cat > "$FAKE/stat" <<'EOF'
 #!/usr/bin/env bash
 case "$2" in
   %u) printf '0\n' ;;
-  %Lp) case "${3:-}" in *known_hosts|*probe_identity|*.map|*/manifest|*.conf) printf '600\n' ;; *) printf '700\n' ;; esac ;;
+  %Su:%Sg) printf 'root:wheel\n' ;;
+  %Lp) case "${3:-}" in */wireguard-bin/wg|*/wireguard-bin/wg-quick|*/fake/wg|*/fake/wg-quick) printf '755\n' ;; *known_hosts|*probe_identity|*.map|*/manifest|*.conf) printf '600\n' ;; *) printf '700\n' ;; esac ;;
   %m) date +%s ;;
   *) printf '0\n' ;;
 esac
@@ -193,7 +195,12 @@ replace_value() {
 case "$1" in
   '-lint') exit 0 ;;
   '-extract')
-    index="${2#ProgramArguments.}"
+    key="${2#ProgramArguments.}"
+    case "$2" in
+      ProgramArguments.*) index="$key" ;;
+      EnvironmentVariables.PATH) index=PATH ;;
+      *) exit 64 ;;
+    esac
     plist="${6:?missing plist path}"
     value="$(value_for "$index" "$plist")"
     if ! has_value "$index" "$plist"; then
@@ -216,8 +223,13 @@ case "$1" in
     if has_value "$index" "$plist"; then
       exit 0
     fi
-    case "$index" in
-      0|1|2|3) exit 0 ;;
+    case "$2" in
+      ProgramArguments.*)
+        case "$index" in
+          0|1|2|3) exit 0 ;;
+          *) exit 1 ;;
+        esac
+        ;;
       *) exit 1 ;;
     esac
     ;;
@@ -246,6 +258,13 @@ replace_value() {
 }
 
 case "$command" in
+  'Print :EnvironmentVariables') /usr/bin/awk -F '\t' '$1 == "PATH" { found=1; exit } END { exit !found }' "$plist" ;;
+  'Add :EnvironmentVariables dict') ;;
+  'Delete :EnvironmentVariables:PATH')
+    temp="$plist.plistbuddy.$$"
+    /usr/bin/awk -F '\t' '$1 != "PATH" { print }' "$plist" > "$temp"
+    /bin/mv "$temp" "$plist"
+    ;;
   'Delete :ProgramArguments')
     temp="$plist.plistbuddy.$$"
     /usr/bin/awk -F '\t' '$1 !~ /^[0-9]+$/ { print }' "$plist" > "$temp"
@@ -258,6 +277,10 @@ case "$command" in
     value="${suffix#* string }"
     [ "$value" != "$suffix" ] || exit 64
     replace_value "$slot" "$value"
+    ;;
+  'Add :EnvironmentVariables:PATH string '*)
+    value="${command#Add :EnvironmentVariables:PATH string }"
+    replace_value PATH "$value"
     ;;
   *) exit 64 ;;
 esac
@@ -434,6 +457,13 @@ make_migration_manifest() {
   done
 }
 
+prepare_default_wireguard_bins() {
+  mkdir -p "$ROOT/root-libexec/wireguard-bin"
+  cp "$FAKE/wg" "$ROOT/root-libexec/wireguard-bin/wg"
+  cp "$FAKE/wg-quick" "$ROOT/root-libexec/wireguard-bin/wg-quick"
+  chmod 755 "$ROOT/root-libexec/wireguard-bin/wg" "$ROOT/root-libexec/wireguard-bin/wg-quick"
+}
+
 restore_installed_plists() {
   local index
   for index in 1 2 3 4 5 6 7 8; do
@@ -473,15 +503,16 @@ apply_migrator() {
 }
 
 apply_installer() {
-  local helper_hash migrator_hash
+  local helper_hash migrator_hash runtime_path
   helper_hash="$(sha256_file "$OPERATIONS/wireguard-reconciler.sh")"
   migrator_hash="$(sha256_file "$OPERATIONS/migrate-wireguard-root-wrappers.sh")"
+  runtime_path="$FAKE:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   case "$helper_hash" in
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
     *) printf 'invalid harness helper SHA-256: length=%s value=%q\n' "${#helper_hash}" "$helper_hash" >&2; return 1 ;;
   esac
   FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_ACTION_LOG="$ACTION_LOG" FAKE_RUN="$RUN" FAKE_LAUNCHD_ALLOW_ALL=1 \
-    bash "$INSTALLER" --apply --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec-installer" --state-dir "$ROOT/installer-state" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --script-sha256 "$helper_hash" --migrator-sha256 "$migrator_hash"
+    bash "$INSTALLER" --apply --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec-installer" --wg-bin "$FAKE/wg" --wg-quick-bin "$FAKE/wg-quick" --runtime-path "$runtime_path" --probe-helper "$FAKE/probe" --script-sha256 "$helper_hash" --migrator-sha256 "$migrator_hash"
 }
 
 wait_for_log() {
@@ -733,6 +764,7 @@ make_migration_manifest
 printf '16\tunexpected-sparse-extra-argument\n' >> "$ROOT/launchd/com.example.wg.edge1.plist"
 expect_migrator_status strict-four-argument-contract-late
 make_migration_manifest
+prepare_default_wireguard_bins
 rm -f "$ROOT/source-wrapper-executed"
 FAKE_SOURCE_EXECUTED="$ROOT/source-wrapper-executed" apply_migrator
 [ ! -e "$ROOT/source-wrapper-executed" ] || { echo 'migrator executed the legacy source wrapper' >&2; exit 1; }
@@ -741,6 +773,9 @@ FAKE_SOURCE_EXECUTED="$ROOT/source-wrapper-executed" apply_migrator
 [ "$($FAKE/stat -f '%Lp' "$ROOT/root-libexec/wireguard-config")" = 700 ] || { echo 'migrator did not restrict canonical config directory to mode 700' >&2; exit 1; }
 [ "$($FAKE/stat -f '%Lp' "$ROOT/root-libexec/wireguard-config/wg-edge1.conf")" = 600 ] || { echo 'migrator did not restrict canonical config file to mode 600' >&2; exit 1; }
 [ ! -e "$ROOT/etc/wireguard" ] || { echo 'migrator wrote to the retired /usr/local/etc target' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract EnvironmentVariables.PATH raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" ] || { echo 'migrator plist runtime PATH did not persist' >&2; exit 1; }
+/usr/bin/grep -Fxq "wg_quick='$ROOT/root-libexec/wireguard-bin/wg-quick'" "$ROOT/root-libexec/wireguard/edge1/run-wireguard.sh" || { echo 'migrator wrapper did not render the default fixed wg-quick path' >&2; exit 1; }
+/usr/bin/grep -Fxq "wg_bin='$ROOT/root-libexec/wireguard-bin/wg'" "$ROOT/root-libexec/wireguard/edge1/run-wireguard.sh" || { echo 'migrator wrapper did not render the default fixed wg path' >&2; exit 1; }
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.0 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$FAKE/bash" ] || { echo 'migrator plist bash argument did not persist' >&2; exit 1; }
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.1 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard/edge1/run-wireguard.sh" ] || { echo 'migrator plist wrapper replacement did not persist' >&2; exit 1; }
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.2 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = wg-edge1 ] || { echo 'migrator plist logical argument did not persist' >&2; exit 1; }
@@ -766,6 +801,7 @@ set -e
 make_migration_manifest
 apply_installer
 [ -f "$INSTALLED_MANIFEST" ] || { echo 'installer did not write a runtime manifest' >&2; exit 1; }
+[ -d "$INSTALLED_STATE_DIR" ] || { echo 'installer did not create the derived root-only state directory' >&2; exit 1; }
 installed_wrapper="$ROOT/root-libexec-installer/wireguard/edge1/run-wireguard.sh"
 installed_config="$ROOT/root-libexec/wireguard-config/wg-edge1.conf"
 [ "$installed_config" = "$ROOT/root-libexec/wireguard-config/wg-edge1.conf" ] || { echo 'custom installer root changed the canonical config path' >&2; exit 1; }
@@ -775,6 +811,11 @@ installed_manifest_line="$(/usr/bin/awk -F '\t' '$1 == "edge1" { print $4 "|" $5
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.1 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$installed_wrapper" ] || { echo 'installer migration plist wrapper replacement did not persist' >&2; exit 1; }
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.2 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = wg-edge1 ] || { echo 'installer migration plist logical argument did not persist' >&2; exit 1; }
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.3 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$installed_config" ] || { echo 'installer migration plist config replacement did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract EnvironmentVariables.PATH raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$FAKE:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" ] || { echo 'installer did not pass runtime PATH to the migrator' >&2; exit 1; }
+/usr/bin/grep -Fxq "wg_quick='$FAKE/wg-quick'" "$installed_wrapper" || { echo 'installer did not pass the fixed wg-quick path to the migrator' >&2; exit 1; }
+/usr/bin/grep -Fxq "wg_bin='$FAKE/wg'" "$installed_wrapper" || { echo 'installer did not pass the fixed wg path to the migrator' >&2; exit 1; }
+/usr/bin/grep -Fq "<string>--state-dir</string><string>$INSTALLED_STATE_DIR</string>" "$ROOT/launchd/com.juhe-ai.wireguard-reconciler.plist" || { echo 'installer did not pass its derived state directory to the helper plist' >&2; exit 1; }
+/usr/bin/grep -Fq "<key>PATH</key><string>$FAKE:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>" "$ROOT/launchd/com.juhe-ai.wireguard-reconciler.plist" || { echo 'installer plist runtime PATH did not persist' >&2; exit 1; }
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
 for installer_attempt in 1 2 3; do
   set +e

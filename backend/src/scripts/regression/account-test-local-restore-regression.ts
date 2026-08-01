@@ -119,7 +119,6 @@ try {
     accountName: '手动测试模型不匹配不恢复',
     apiKey: 'sk-manual-restore-model-mismatch',
     testModel: 'gpt-5.4',
-    expectRestored: false,
     makeUnavailable: makeActiveAccountUnschedulable
   })
 
@@ -130,7 +129,6 @@ try {
     accountName: '手动测试请求形态不匹配不恢复',
     apiKey: 'sk-manual-restore-mode-mismatch',
     testEndpointMode: 'responses_json',
-    expectRestored: false,
     makeUnavailable: makeActiveAccountUnschedulable
   })
 
@@ -198,7 +196,7 @@ try {
     groupId: group.id
   })
 
-  console.log('手动账号测试恢复回归通过：只有保存的检查模型和请求形态都匹配时，成功列表测试才恢复自有账户')
+  console.log('手动账号测试状态隔离回归通过：成功仅作为诊断证据，不改变账户运行状态')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -223,7 +221,6 @@ async function assertManualTestRestoresAccount(input: {
   apiKey: string
   testModel?: string
   testEndpointMode?: 'responses_sse' | 'responses_json'
-  expectRestored?: boolean
   makeUnavailable: (accountId: string) => void
 }): Promise<void> {
   const account = repositories.createAccount({
@@ -248,17 +245,6 @@ async function assertManualTestRestoresAccount(input: {
   }), true, `${input.accountName} 应先由后台健康检查激活`)
 
   input.makeUnavailable(account.id)
-  if (input.expectRestored !== false) {
-    databaseModule.getBusinessDatabase()
-      .prepare(`
-        UPDATE accounts
-        SET schedulable = 0,
-            updated_at = ?
-        WHERE id = ?
-          AND deleted_at IS NULL
-      `)
-      .run(new Date().toISOString(), account.id)
-  }
   const unavailable = repositories.findAccountSummary(account.id, adminAccess)
   assert(unavailable, `${input.accountName} 不存在`)
   assert(
@@ -269,6 +255,7 @@ async function assertManualTestRestoresAccount(input: {
       || Boolean(unavailable.lastErrorMessage),
     `${input.accountName} 应先处于不可调用状态`
   )
+  const unavailableState = accountAvailabilityState(unavailable)
 
   const result = await submitAccountTestAndWait<AccountTestResult>({
     baseUrl: input.appBaseUrl,
@@ -279,19 +266,16 @@ async function assertManualTestRestoresAccount(input: {
   assert.equal(result.success, true, `${input.accountName} 手动测试应通过：${result.message}`)
   assert.equal(result.statusCode, 200, `${input.accountName} 应返回上游 200`)
   assert(result.traceId, `${input.accountName} 测试结果应返回本地 traceId`)
+  assert.notEqual(result.accountStatusChanged, true, `${input.accountName} 手动测试成功不得标记账户状态变化`)
 
   const after = repositories.findAccountSummary(account.id, adminAccess)
-  if (input.expectRestored !== false) {
-    assert.equal(result.accountStatusChanged, true, `${input.accountName} 恢复后任务结果应标记状态变化`)
-    assert.equal(result.accountStatus, 'active', `${input.accountName} 恢复后任务结果应返回 active`)
-    assert.equal(after?.status, 'active', `${input.accountName} 匹配检查配置的测试成功后应恢复 active`)
-    assert.equal(after?.schedulable, true, `${input.accountName} 匹配检查配置的测试成功后应恢复可调度`)
-  } else {
-    assert.deepEqual(
-      accountAvailabilityState(after),
-      accountAvailabilityState(unavailable),
-      `${input.accountName} 检查配置不匹配时不得改写账户可用状态`
-    )
+  assert.deepEqual(
+    accountAvailabilityState(after),
+    unavailableState,
+    `${input.accountName} 手动测试成功不得改写账户运行状态`
+  )
+  if (result.accountStatus !== undefined) {
+    assert.equal(result.accountStatus, unavailable.status, `${input.accountName} 测试结果账户状态应保持原值`)
   }
 }
 
@@ -403,7 +387,27 @@ function accountAvailabilityState(account: AccountSummary | undefined) {
     schedulable: account?.schedulable,
     cooldownUntil: account?.cooldownUntil,
     lastErrorCode: account?.lastErrorCode,
-    lastErrorMessage: account?.lastErrorMessage
+    lastErrorMessage: account?.lastErrorMessage,
+    lastErrorTraceId: account?.lastErrorTraceId,
+    cooldownRetestFailureCount: account?.cooldownRetestFailureCount,
+    cooldownRetestObservationStartedAt: account?.cooldownRetestObservationStartedAt,
+    cooldownRetestGeneration: account?.cooldownRetestGeneration,
+    cooldownRetestDispatchRevision: account?.cooldownRetestDispatchRevision,
+    cooldownRetestSourceConfigRevision: account?.cooldownRetestSourceConfigRevision,
+    cooldownRetestLastAt: account?.cooldownRetestLastAt,
+    cooldownRetestLastStatusCode: account?.cooldownRetestLastStatusCode,
+    temporaryUnavailableContinuousProbeEnabled: account?.temporaryUnavailableContinuousProbeEnabled,
+    lastHealthCheckAt: account?.lastHealthCheckAt,
+    nextHealthCheckAt: account?.nextHealthCheckAt,
+    lastHealthSuccessAt: account?.lastHealthSuccessAt,
+    healthCheckFailureCount: account?.healthCheckFailureCount,
+    healthCheckFailureStartedAt: account?.healthCheckFailureStartedAt,
+    lastHealthCheckStatusCode: account?.lastHealthCheckStatusCode,
+    lastHealthCheckErrorCode: account?.lastHealthCheckErrorCode,
+    lastHealthCheckErrorMessage: account?.lastHealthCheckErrorMessage,
+    lastHealthCheckTraceId: account?.lastHealthCheckTraceId,
+    streamFailureCount: account?.streamFailureCount,
+    streamFailureWindowStartedAt: account?.streamFailureWindowStartedAt
   }
 }
 

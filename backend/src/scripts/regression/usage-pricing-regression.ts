@@ -1213,6 +1213,7 @@ const accountTestTaskQueueSource = readSource('modules/accounts/account-test-tas
 assert.match(accountTestTaskQueueSource, /testOpenAIDraftAccountWithDiagnosticRetries/)
 assert.match(accountTestTaskQueueSource, /openAIDraftAccountSecret\(draft,\s*attemptSignal\)/, '草稿账号 OAuth 刷新必须纳入单次诊断 attempt 的超时 signal')
 assert.match(accountTestTaskQueueSource, /diagnosticAccountTestGatewaySettingsOverride\(undefined,\s*timeoutMs\)/)
+assert.doesNotMatch(accountTestTaskQueueSource, /shouldRestoreAccountAfterMatchingManualTest|restoreAccountAfterMatchingManualTest|sendAccountRuntimeClearToServer/, '手动测试成功不得触发账户恢复或运行态缓存清理')
 
 const accountErrorPolicySource = readSource('modules/gateway/policy/account-error-policy.service.ts')
 assert.match(accountErrorPolicySource, /parseGatewayProtocolErrorPayload/)
@@ -1253,9 +1254,14 @@ assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestMaxB
 assert.doesNotMatch(accountProbeJobsSource, /cooldownAccountRetestLongTermIntervalHours/)
 
 const cooldownAccountRetestSource = readSource('modules/background/cooldown-account-retest.service.ts')
-assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_account_retest_revival', \[\], 0\)/)
+assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\(\s*'cooldown_account_retest_revival',\s*\[3_000,\s*10_000,\s*30_000\],\s*3\s*\)/)
 assert.match(cooldownAccountRetestSource, /createRetryQueue/)
 assert.doesNotMatch(cooldownAccountRetestSource, /background_cooldown_account_retest_retry_scheduled/)
+assert.match(cooldownAccountRetestSource, /retryablePhase:\s*'initial_lookup'/)
+assert.match(cooldownAccountRetestSource, /phase:\s*'initial_lookup'/)
+assert.match(cooldownAccountRetestSource, /phase:\s*'diagnostic',[\s\S]+retry:\s*false[\s\S]+upstreamReplayPrevented:\s*true/)
+assert.match(cooldownAccountRetestSource, /phase:\s*'post_lookup',[\s\S]+retry:\s*false[\s\S]+upstreamReplayPrevented:\s*true/)
+assert.match(cooldownAccountRetestSource, /return \{ success: false, retry: false \}/)
 assert.match(cooldownAccountRetestSource, /diagnostics:\s*'full'/)
 assert.doesNotMatch(cooldownAccountRetestSource, /\bmodel\s*:/)
 assert.match(cooldownAccountRetestSource, /trafficSource:\s*'cooldown_retest'/)
@@ -1394,6 +1400,7 @@ assert.doesNotMatch(repositoriesSource, /Number\(input\.concurrencyLimit \?\? cu
 assert.doesNotMatch(repositoriesSource, /Number\(input\.priority \?\? current\.priority\)/)
 assert.doesNotMatch(`${repositoriesSource}\n${accountWriteInputSource}`, /value === 1 \|\| value === '1'/)
 assert.doesNotMatch(`${repositoriesSource}\n${accountWriteInputSource}`, /typeof value === 'string' \? Number\(value\)/)
+assert.doesNotMatch(repositoriesSource, /restoreAccountAfterMatchingManualTest|accountStatusChanged:\s*true/, '仓储不得保留手动测试成功自动恢复或伪造状态变化结果')
 
 const accountDeleteCleanupRepositorySource = readSource('storage/account-delete-cleanup.repository.ts')
 assert.match(accountDeleteCleanupRepositorySource, /function logicallyDeleteSourceAccountWithInstances/)

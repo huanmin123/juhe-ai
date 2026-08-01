@@ -11,11 +11,20 @@ MANIFEST=''
 INSTALL_DIR='/usr/local/libexec/juhe-ai'
 CANONICAL_CONFIG_DIR='/usr/local/libexec/juhe-ai/wireguard-config'
 ROLLBACK_JOURNAL=''
+WG_BIN=''
+WG_QUICK_BIN=''
+RUNTIME_PATH=''
 
 usage() {
   cat <<'EOF'
-Usage: migrate-wireguard-root-wrappers.sh [--dry-run|--apply] --manifest <absolute-path> [--install-dir <absolute-path>] [--rollback-journal <absolute-path>]
+Usage: migrate-wireguard-root-wrappers.sh [--dry-run|--apply] --manifest <absolute-path> [options]
        migrate-wireguard-root-wrappers.sh --rollback --rollback-journal <absolute-path> [--install-dir <absolute-path>]
+
+  --install-dir <absolute-path>     default /usr/local/libexec/juhe-ai
+  --wg-bin <absolute-path>          default <install-dir>/wireguard-bin/wg
+  --wg-quick-bin <absolute-path>    default <install-dir>/wireguard-bin/wg-quick
+  --runtime-path <PATH>             default <install-dir>/wireguard-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  --rollback-journal <absolute-path> retain root-only rollback state for the installer
 
 The private, root-owned source manifest is tab-separated and has no header:
   edge-id<TAB>logical-interface<TAB>launchd-label<TAB>source-config<TAB>source-wrapper<TAB>peer-ip<TAB>config-sha256<TAB>wrapper-sha256
@@ -35,8 +44,11 @@ source config must be root-owned, free of WireGuard shell hooks, and match its m
 The source wrapper is hash-checked only to bind the current plist and rollback metadata: it may
 be an older lifecycle wrapper under a service-user-writable parent and is never copied or
 executed. The generated target wrapper accepts exactly a wg-edge<N> interface and its matching
-/usr/local/libexec/juhe-ai/wireguard-config/wg-edge<N>.conf path, invokes only /usr/local/bin/wg-quick and
-/usr/local/bin/wg, and does not honor environment binary overrides.
+/usr/local/libexec/juhe-ai/wireguard-config/wg-edge<N>.conf path, invokes only the fixed
+--wg-quick-bin and --wg-bin paths rendered at migration time, and does not honor environment
+binary overrides. Each rewritten WireGuard job receives the exact --runtime-path value in
+EnvironmentVariables.PATH. The existing /usr/local/bin/bash entry remains separately
+operator-audited; this migration does not attest that interpreter or its parent chain.
 EOF
 }
 
@@ -52,6 +64,15 @@ label_ok() { printf '%s' "$1" | /usr/bin/grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{2,
 ipv4_ok() { printf '%s' "$1" | /usr/bin/awk -F. 'NF == 4 { for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1; exit 0 } { exit 1 }'; }
 sha_ok() { printf '%s' "$1" | /usr/bin/grep -Eq '^[0-9A-Fa-f]{64}$'; }
 sha256() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
+runtime_path_ok() {
+  local runtime_path="$1" segment old_ifs
+  case "$runtime_path" in ''|:*|*:|*[\*\?\[]*) return 1 ;; esac
+  old_ifs="$IFS"
+  IFS=:
+  for segment in $runtime_path; do safe_path "$segment" || { IFS="$old_ifs"; return 1; }; done
+  IFS="$old_ifs"
+  return 0
+}
 root_not_group_or_other_writable() {
   local path="$1" mode uid
   [ ! -L "$path" ] && [ -e "$path" ] || return 1
@@ -60,6 +81,13 @@ root_not_group_or_other_writable() {
   [ "$uid" = 0 ] || return 1
   case "$mode" in ?[2367][0-7]|??[2367]) return 1 ;; esac
   return 0
+}
+root_wheel_mode_755_regular() {
+  local path="$1"
+  [ ! -L "$path" ] && [ -f "$path" ] && [ -x "$path" ] || return 1
+  [ "$(/usr/bin/stat -f '%Su:%Sg' "$path")" = root:wheel ] || return 1
+  [ "$(/usr/bin/stat -f '%Lp' "$path")" = 755 ] || return 1
+  root_path_chain "$path"
 }
 root_path_chain() {
   local path="$1"
@@ -109,9 +137,23 @@ rewrite_program_arguments() {
   /usr/libexec/PlistBuddy -c "Add :ProgramArguments:2 string $logical" "$plist"
   /usr/libexec/PlistBuddy -c "Add :ProgramArguments:3 string $config" "$plist"
 }
+rewrite_runtime_path() {
+  local plist="$1" runtime_path="$2"
+  if /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables:PATH' "$plist" >/dev/null 2>&1 || true
+  else
+    /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$plist"
+  fi
+  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:PATH string $runtime_path" "$plist"
+}
+plist_has_runtime_path() {
+  local plist="$1" expected_runtime_path="$2"
+  [ "$(/usr/bin/plutil -extract EnvironmentVariables.PATH raw -o - "$plist" 2>/dev/null || true)" = "$expected_runtime_path" ]
+}
 write_fixed_wrapper() {
-  local destination="$1"
-  cat > "$destination" <<'EOF'
+  local destination="$1" wg_bin="$2" wg_quick_bin="$3"
+  {
+    cat <<'EOF'
 #!/usr/local/bin/bash
 set -euo pipefail
 
@@ -140,11 +182,13 @@ if [[ "$(/usr/bin/stat -f '%u' "$config_path")" != 0 || "$(/usr/bin/stat -f '%Lp
   exit 1
 fi
 
-wg_quick='/usr/local/bin/wg-quick'
-wg_bin='/usr/local/bin/wg'
+EOF
+    printf "wg_quick='%s'\n" "$wg_quick_bin"
+    printf "wg_bin='%s'\n" "$wg_bin"
+    cat <<'EOF'
 for binary_path in "$wg_quick" "$wg_bin"; do
-  if [[ -L "$binary_path" || ! -x "$binary_path" || "$(/usr/bin/stat -f '%u' "$binary_path")" != 0 ]]; then
-    echo "WireGuard binary is not a root-owned executable: $binary_path" >&2
+  if [[ -L "$binary_path" || ! -f "$binary_path" || ! -x "$binary_path" || "$(/usr/bin/stat -f '%Su:%Sg' "$binary_path")" != root:wheel || "$(/usr/bin/stat -f '%Lp' "$binary_path")" != 755 ]]; then
+    echo "WireGuard binary is not a root:wheel mode 0755 executable: $binary_path" >&2
     exit 1
   fi
 done
@@ -224,6 +268,7 @@ done
 echo "WireGuard interface exited unexpectedly: $interface_name ($real_interface)" >&2
 exit 1
 EOF
+  } > "$destination"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -233,6 +278,9 @@ while [ "$#" -gt 0 ]; do
     --rollback) ACTION=rollback; MODE=apply; shift ;;
     --manifest) MANIFEST="${2:?missing --manifest value}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:?missing --install-dir value}"; shift 2 ;;
+    --wg-bin) WG_BIN="${2:?missing --wg-bin value}"; shift 2 ;;
+    --wg-quick-bin) WG_QUICK_BIN="${2:?missing --wg-quick-bin value}"; shift 2 ;;
+    --runtime-path) RUNTIME_PATH="${2:?missing --runtime-path value}"; shift 2 ;;
     --rollback-journal) ROLLBACK_JOURNAL="${2:?missing --rollback-journal value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -240,6 +288,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 safe_path "$INSTALL_DIR" || die 'install-dir must be an absolute safe path'
+[ -n "$WG_BIN" ] || WG_BIN="$INSTALL_DIR/wireguard-bin/wg"
+[ -n "$WG_QUICK_BIN" ] || WG_QUICK_BIN="$INSTALL_DIR/wireguard-bin/wg-quick"
+[ -n "$RUNTIME_PATH" ] || RUNTIME_PATH="$INSTALL_DIR/wireguard-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+safe_path "$WG_BIN" || die 'wg-bin must be an absolute safe path'
+safe_path "$WG_QUICK_BIN" || die 'wg-quick-bin must be an absolute safe path'
+runtime_path_ok "$RUNTIME_PATH" || die 'runtime-path must be a colon-separated list of absolute safe paths'
 if [ "$ACTION" = rollback ]; then
   [ -n "$ROLLBACK_JOURNAL" ] || die '--rollback requires --rollback-journal'
   safe_path "$ROLLBACK_JOURNAL" || die 'rollback-journal must be an absolute safe path'
@@ -322,11 +376,13 @@ validate_manifest() {
 }
 
 validate_manifest
-printf 'mode=%s manifest=%s install-dir=%s\n' "$MODE" "$MANIFEST" "$INSTALL_DIR"
+printf 'mode=%s manifest=%s install-dir=%s wg-bin=%s wg-quick-bin=%s runtime-path=%s\n' "$MODE" "$MANIFEST" "$INSTALL_DIR" "$WG_BIN" "$WG_QUICK_BIN" "$RUNTIME_PATH"
 printf 'plan: verify eight exact plists and source hashes -> generate fixed root-only wrappers and copy configs -> replace exact ProgramArguments -> bootstrap each exact job\n'
 [ "$MODE" = apply ] || exit 0
 
 [ "$(/usr/bin/id -u)" -eq 0 ] || die '--apply requires root'
+root_wheel_mode_755_regular "$WG_BIN" || die "wg-bin must be a root:wheel mode 0755 non-symlink regular executable below a root-only path: $WG_BIN"
+root_wheel_mode_755_regular "$WG_QUICK_BIN" || die "wg-quick-bin must be a root:wheel mode 0755 non-symlink regular executable below a root-only path: $WG_QUICK_BIN"
 /bin/mkdir -p "$INSTALL_DIR"
 /usr/sbin/chown root:wheel "$INSTALL_DIR"
 /bin/chmod 755 "$INSTALL_DIR"
@@ -352,7 +408,7 @@ stage_all() {
     /bin/cp "$config" "$edge_stage/wg.conf"
     [ "$(sha256 "$wrapper")" = "$(printf '%s' "$wrapper_hash" | /usr/bin/tr '[:upper:]' '[:lower:]')" ] || die "wrapper changed while staging edge=$edge"
     [ "$(sha256 "$edge_stage/wg.conf")" = "$(printf '%s' "$config_hash" | /usr/bin/tr '[:upper:]' '[:lower:]')" ] || die "config changed while staging edge=$edge"
-    write_fixed_wrapper "$edge_stage/run-wireguard.sh"
+    write_fixed_wrapper "$edge_stage/run-wireguard.sh" "$WG_BIN" "$WG_QUICK_BIN"
     /usr/sbin/chown -R root:wheel "$edge_stage"
     /bin/chmod 700 "$edge_stage" "$edge_stage/run-wireguard.sh"
     /bin/chmod 600 "$edge_stage/wg.conf"
@@ -368,8 +424,10 @@ stage_all() {
     done
     [ -n "$wrapper_index" ] && [ -n "$config_index" ] || die "staged plist drifted edge=$edge"
     rewrite_program_arguments "$target_plist" "$target_wrapper" "$logical" "$target_config"
+    rewrite_runtime_path "$target_plist" "$RUNTIME_PATH"
     /usr/bin/plutil -lint "$target_plist" >/dev/null
     plist_has_exact_program_arguments "$target_plist" "$target_wrapper" "$logical" "$target_config" || die "staged plist does not contain the exact four-argument root wrapper contract edge=$edge"
+    plist_has_runtime_path "$target_plist" "$RUNTIME_PATH" || die "staged plist does not contain the exact runtime PATH edge=$edge"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$edge" "$logical" "$label" "$target_wrapper" "$target_config" "$INSTALL_DIR/wireguard/$edge/$label.plist" "$wrapper" >> "$MAP_FILE"
   done < "$MANIFEST"
 }
@@ -432,11 +490,13 @@ apply_all() {
     /usr/bin/plutil -lint "/Library/LaunchDaemons/$label.plist" >/dev/null || return 1
     plist_binds_exact_pair "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$target_config" || return 1
     plist_has_exact_program_arguments "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$logical" "$target_config" || return 1
+    plist_has_runtime_path "/Library/LaunchDaemons/$label.plist" "$RUNTIME_PATH" || return 1
     /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" || return 1
     /bin/launchctl kickstart -k "system/$label" || return 1
     /bin/launchctl print "system/$label" >/dev/null || return 1
     plist_binds_exact_pair "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$target_config" || return 1
     plist_has_exact_program_arguments "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$logical" "$target_config" || return 1
+    plist_has_runtime_path "/Library/LaunchDaemons/$label.plist" "$RUNTIME_PATH" || return 1
     root_path_chain "$INSTALL_DIR/wireguard/$edge/run-wireguard.sh" || return 1
     root_path_chain "$target_config" || return 1
   done < "$MAP_FILE"

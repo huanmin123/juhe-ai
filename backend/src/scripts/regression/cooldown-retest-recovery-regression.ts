@@ -53,6 +53,9 @@ assert.match(
   /errorLogFields\(event\.error,/,
   '冷却复测队列耗尽日志必须保留结构化错误上下文'
 )
+assert.match(cooldownRetestServiceSource, /\[3_000, 10_000, 30_000\]/, '冷却复测初始 lookup 必须使用固定有界重试间隔')
+assert.match(cooldownRetestServiceSource, /background_cooldown_account_retest_lookup_retry_scheduled/, '冷却复测 lookup 重试必须有结构化日志')
+assert.match(cooldownRetestServiceSource, /background_cooldown_account_retest_non_replay_phase_error/, 'lookup 成功后的异常必须记录 non-replay 日志')
 
 const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
@@ -227,6 +230,7 @@ function assertCooldownRetestWritesRejected(
 let mockOpenAIServer: http.Server | undefined
 let mockOpenAIResponseHitCount = 0
 let mockOpenAIResponseGate: Promise<void> | undefined
+let mockOpenAIResponseMode: 'success' | 'upstream_failure' | 'probe_task_failure' = 'success'
 
 try {
   mockOpenAIServer = createMockOpenAIServer()
@@ -897,7 +901,7 @@ try {
     .run('not-in-supported-models', new Date(Date.now() - 1000).toISOString(), ineligibleFailureAccount.id)
   const dueIneligibleFailure = repositories.findAccountForCooldownRetest(ineligibleFailureAccount.id)
   assert(dueIneligibleFailure, '后台探针配置失败账号应可读取')
-  const ineligibleFailureQueuedAt = Date.now()
+  const ineligibleFailureCooldownBefore = dueIneligibleFailure.cooldownUntil
   assert(cooldownRetestService.enqueueCooldownAccountRetest(dueIneligibleFailure, {
     maxPauseMinutes: 10,
     maxRecoveryHours: 1
@@ -906,8 +910,11 @@ try {
   const recordedIneligibleFailure = repositories.findAccountSummary(ineligibleFailureAccount.id, access)
   assert.equal(recordedIneligibleFailure?.cooldownRetestFailureCount ?? 0, 0, '未形成可归因上游失败的探针不得累计账户失败次数')
   assert.equal(recordedIneligibleFailure?.status, 'temporary_unavailable', '探针任务失败必须保留原冷却状态')
-  const ineligibleFailureDelayMs = Date.parse(recordedIneligibleFailure?.cooldownUntil ?? '') - ineligibleFailureQueuedAt
-  assert(ineligibleFailureDelayMs >= 60_000 && ineligibleFailureDelayMs <= 5 * 60_000 + 5_000, '探针任务失败必须在 1 至 5 分钟内错峰顺延')
+  assert.equal(
+    recordedIneligibleFailure?.cooldownUntil,
+    ineligibleFailureCooldownBefore,
+    '诊断阶段抛错时必须 retry:false 且不得继续 defer 改写冷却时间'
+  )
 
   const probeAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -1484,6 +1491,110 @@ try {
   assert.equal(rawCursorSecondPage.accounts[0]?.id, rawCursorHealthyOwner.id, '跨过 >scanLimit 过滤记录后健康 owner 必须最终可达')
   repositories.updateAccount(rawCursorHealthyOwner.id, { status: 'disabled' }, access)
 
+  // Initial lookup failures are the only replayable phase. The retry delay is
+  // shortened through the test-only hook so this regression remains local and
+  // deterministic while production retains the 3s/10s/30s sequence.
+  cooldownRetestService.setCooldownAccountRetestRetryDelaysForTest([1, 1, 1])
+  const createLookupRetryCandidate = (name: string, apiKey: string) => {
+    const candidate = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name,
+      type: 'api_key',
+      credentials: { api_key: apiKey, base_url: mockBaseUrl },
+      status: 'active',
+      groupId: group.id,
+      supportedModels: gptSupportedModels
+    }, access)
+    activateTestAccount(candidate.id)
+    assert(repositories.setAccountGroup(candidate.id, group.id, access), `${name} 应能绑定分组`)
+    const cooledCandidate = repositories.markAccountTemporaryUnavailable(candidate.id, `${name} 冷却`)
+    assert(cooledCandidate?.cooldownRetestObservationStartedAt, `${name} 必须产生复测观察围栏`)
+    databaseModule.getBusinessDatabase().prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?').run(new Date(Date.now() - 1_000).toISOString(), candidate.id)
+    return repositories.findAccountForCooldownRetest(candidate.id)
+  }
+
+  const lookupRecoveryCandidate = createLookupRetryCandidate('冷却复测 lookup 三次成功', 'sk-cooldown-lookup-recovery')
+  assert(lookupRecoveryCandidate, 'lookup 三次成功场景必须取得候选')
+  let lookupRecoveryAttempts = 0
+  const lookupRecoveryHitsBefore = mockOpenAIResponseHitCount
+  cooldownRetestService.setCooldownAccountRetestTestHooks({
+    lookup: async (item: { accountId: string }) => {
+      lookupRecoveryAttempts += 1
+      if (lookupRecoveryAttempts < 3) throw new Error(`lookup recovery injected failure ${lookupRecoveryAttempts}`)
+      return repositories.findAccountForCooldownRetest(item.accountId)
+    }
+  })
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(lookupRecoveryCandidate, { maxPauseMinutes: 10, maxRecoveryHours: 1 }), 'lookup 三次成功场景必须入队')
+  await waitForRetestQueueCompletion()
+  cooldownRetestService.setCooldownAccountRetestTestHooks()
+  assert.equal(lookupRecoveryAttempts, 3, 'lookup 两次失败后第三次必须成功')
+  assert.equal(mockOpenAIResponseHitCount, lookupRecoveryHitsBefore + 1, 'lookup 两次失败第三次成功时上游必须恰调用一次')
+
+  const lookupExhaustedCandidate = createLookupRetryCandidate('冷却复测 lookup 四次失败', 'sk-cooldown-lookup-exhausted')
+  assert(lookupExhaustedCandidate, 'lookup 四次失败场景必须取得候选')
+  let lookupExhaustedAttempts = 0
+  const lookupExhaustedHitsBefore = mockOpenAIResponseHitCount
+  cooldownRetestService.setCooldownAccountRetestTestHooks({
+    lookup: async () => {
+      lookupExhaustedAttempts += 1
+      throw new Error(`lookup exhausted injected failure ${lookupExhaustedAttempts}`)
+    }
+  })
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(lookupExhaustedCandidate, { maxPauseMinutes: 10, maxRecoveryHours: 1 }), 'lookup 四次失败场景必须入队')
+  await waitForRetestQueueCompletion()
+  cooldownRetestService.setCooldownAccountRetestTestHooks()
+  assert.equal(lookupExhaustedAttempts, 4, 'lookup 四次失败必须在第三次重试后耗尽')
+  assert.equal(mockOpenAIResponseHitCount, lookupExhaustedHitsBefore, 'lookup 四次失败不得访问上游')
+
+  const generationChangeCandidate = createLookupRetryCandidate('冷却复测 lookup 等待代际变化', 'sk-cooldown-lookup-generation-change')
+  assert(generationChangeCandidate, 'lookup 等待代际变化场景必须取得候选')
+  let generationChangeAttempts = 0
+  const generationChangeHitsBefore = mockOpenAIResponseHitCount
+  cooldownRetestService.setCooldownAccountRetestTestHooks({
+    lookup: async (item: { accountId: string }) => {
+      generationChangeAttempts += 1
+      if (generationChangeAttempts === 1) throw new Error('lookup generation change injected failure')
+      databaseModule.getBusinessDatabase().prepare(`UPDATE accounts SET cooldown_retest_generation = ? WHERE id = ?`).run(`cooldown:changed-${Date.now()}`, item.accountId)
+      return repositories.findAccountForCooldownRetest(item.accountId)
+    }
+  })
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(generationChangeCandidate, { maxPauseMinutes: 10, maxRecoveryHours: 1 }), 'lookup 等待代际变化场景必须入队')
+  await waitForRetestQueueCompletion()
+  cooldownRetestService.setCooldownAccountRetestTestHooks()
+  assert.equal(generationChangeAttempts, 2, '代际变化场景必须重新 lookup 后由 fence 丢弃')
+  assert.equal(mockOpenAIResponseHitCount, generationChangeHitsBefore, 'retry 等待期间 generation 变化不得访问上游')
+
+  const diagnosticErrorCandidate = createLookupRetryCandidate('冷却复测诊断抛错不可重放', 'sk-cooldown-diagnostic-error')
+  assert(diagnosticErrorCandidate, '诊断抛错场景必须取得候选')
+  const diagnosticErrorHitsBefore = mockOpenAIResponseHitCount
+  cooldownRetestService.setCooldownAccountRetestTestHooks({ throwDiagnosticError: true })
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(diagnosticErrorCandidate, { maxPauseMinutes: 10, maxRecoveryHours: 1 }), '诊断抛错场景必须入队')
+  await waitForRetestQueueCompletion()
+  cooldownRetestService.setCooldownAccountRetestTestHooks()
+  assert.equal(mockOpenAIResponseHitCount, diagnosticErrorHitsBefore, '诊断抛错后必须 retry:false 且不得重放上游')
+
+  const persistenceCases = [
+    { type: 'record_cooldown_account_retest_success' as const, mode: 'success' as const },
+    { type: 'record_cooldown_account_retest_failure' as const, mode: 'upstream_failure' as const },
+    { type: 'defer_cooldown_account_retest' as const, mode: 'probe_task_failure' as const }
+  ]
+  for (const persistenceCase of persistenceCases) {
+    const persistenceCandidate = createLookupRetryCandidate(`冷却复测持久化异常 ${persistenceCase.type}`, `sk-cooldown-persistence-${persistenceCase.type}`)
+    assert(persistenceCandidate, `${persistenceCase.type} 场景必须取得候选`)
+    const persistenceHitsBefore = mockOpenAIResponseHitCount
+    mockOpenAIResponseMode = persistenceCase.mode
+    cooldownRetestService.setCooldownAccountRetestTestHooks({
+      throwOnPersistenceType: persistenceCase.type,
+      disableDiagnosticRetries: true
+    })
+    assert(cooldownRetestService.enqueueCooldownAccountRetest(persistenceCandidate, { maxPauseMinutes: 10, maxRecoveryHours: 1 }), `${persistenceCase.type} 场景必须入队`)
+    await waitForRetestQueueCompletion()
+    cooldownRetestService.setCooldownAccountRetestTestHooks()
+    mockOpenAIResponseMode = 'success'
+    assert.equal(mockOpenAIResponseHitCount, persistenceHitsBefore + 1, `${persistenceCase.type} 异常后上游必须恰调用一次`)
+  }
+
   assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 6, runningCount: 3 }), 1, '冷却复测每轮查询数量必须扣除队列已有占用')
   assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 8, runningCount: 2 }), 0, '冷却复测队列达到 batch 上限后不得继续扫描入队')
   assert.equal(backgroundFullDiagnosticConcurrency, 3, '完整后台诊断并发必须保持小上限，不能随 batch 放大到 10')
@@ -1530,6 +1641,16 @@ function createMockOpenAIServer(): http.Server {
       const responseGate = mockOpenAIResponseGate
       mockOpenAIResponseHitCount += 1
       if (responseGate) await responseGate
+      if (mockOpenAIResponseMode === 'upstream_failure') {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'injected upstream failure' } }))
+        return
+      }
+      if (mockOpenAIResponseMode === 'probe_task_failure') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ malformed: true }))
+        return
+      }
       if (requestPath === '/v1/chat/completions') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({

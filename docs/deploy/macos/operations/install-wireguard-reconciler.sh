@@ -8,10 +8,12 @@ MODE=dry-run
 ACTION=install
 LABEL='com.juhe-ai.wireguard-reconciler'
 MANIFEST=''
-STATE_DIR='/var/db/juhe-ai/wireguard-reconciler'
+STATE_DIR=''
 INSTALL_DIR='/usr/local/libexec/juhe-ai'
 CANONICAL_CONFIG_DIR='/usr/local/libexec/juhe-ai/wireguard-config'
-WG_BIN='/usr/local/bin/wg'
+WG_BIN=''
+WG_QUICK_BIN=''
+RUNTIME_PATH=''
 INTERVAL_SECONDS=30
 SCRIPT_SHA256=''
 MIGRATOR_SHA256=''
@@ -25,9 +27,11 @@ Usage: install-wireguard-reconciler.sh [--dry-run|--apply] --manifest <absolute-
 
   --manifest <absolute-path>        root-owned private edge manifest
   --label <launchd-label>           default com.juhe-ai.wireguard-reconciler
-  --state-dir <absolute-path>       default /var/db/juhe-ai/wireguard-reconciler
+  --state-dir <absolute-path>       default <install-dir>/wireguard-reconciler-state
   --install-dir <absolute-path>     default /usr/local/libexec/juhe-ai
-  --wg-bin <absolute-path>          default /usr/local/bin/wg
+  --wg-bin <absolute-path>          default <install-dir>/wireguard-bin/wg
+  --wg-quick-bin <absolute-path>    default <install-dir>/wireguard-bin/wg-quick
+  --runtime-path <PATH>             default <install-dir>/wireguard-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
   --probe-helper <absolute-path>    root-owned adapter for the independent 203 TLS nonce probe
   --maintenance-lock <path>         suppress recovery while this root-owned marker exists
   --release-lock <path>             suppress recovery during a root-owned deployment marker
@@ -52,6 +56,15 @@ safe_path() {
 safe_label() { printf '%s' "$1" | /usr/bin/grep -Eq '^com\.juhe-ai\.wireguard-reconciler$'; }
 sha256() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
 sha_ok() { printf '%s' "$1" | /usr/bin/grep -Eq '^[0-9A-Fa-f]{64}$'; }
+runtime_path_ok() {
+  local runtime_path="$1" segment old_ifs
+  case "$runtime_path" in ''|:*|*:|*[\*\?\[]*) return 1 ;; esac
+  old_ifs="$IFS"
+  IFS=:
+  for segment in $runtime_path; do safe_path "$segment" || { IFS="$old_ifs"; return 1; }; done
+  IFS="$old_ifs"
+  return 0
+}
 root_path_chain() {
   local path="$1" owner mode
   while [ "$path" != / ]; do
@@ -63,6 +76,13 @@ root_path_chain() {
     path="$(/usr/bin/dirname "$path")"
   done
   return 0
+}
+root_wheel_mode_755_regular() {
+  local path="$1"
+  [ ! -L "$path" ] && [ -f "$path" ] && [ -x "$path" ] || return 1
+  [ "$(/usr/bin/stat -f '%Su:%Sg' "$path")" = root:wheel ] || return 1
+  [ "$(/usr/bin/stat -f '%Lp' "$path")" = 755 ] || return 1
+  root_path_chain "$path"
 }
 ensure_root_directory() {
   local path="$1" mode="$2"
@@ -82,6 +102,8 @@ while [ "$#" -gt 0 ]; do
     --state-dir) STATE_DIR="${2:?missing --state-dir value}"; shift 2 ;;
     --install-dir) INSTALL_DIR="${2:?missing --install-dir value}"; shift 2 ;;
     --wg-bin) WG_BIN="${2:?missing --wg-bin value}"; shift 2 ;;
+    --wg-quick-bin) WG_QUICK_BIN="${2:?missing --wg-quick-bin value}"; shift 2 ;;
+    --runtime-path) RUNTIME_PATH="${2:?missing --runtime-path value}"; shift 2 ;;
     --probe-helper) PROBE_HELPER="${2:?missing --probe-helper value}"; shift 2 ;;
     --maintenance-lock) MAINTENANCE_LOCK="${2:?missing --maintenance-lock value}"; shift 2 ;;
     --release-lock) RELEASE_LOCK="${2:?missing --release-lock value}"; shift 2 ;;
@@ -106,7 +128,12 @@ if [ "$ACTION" = remove ]; then
   exit 0
 fi
 [ -n "$MANIFEST" ] || die '--manifest is required'
-for path in "$MANIFEST" "$STATE_DIR" "$INSTALL_DIR" "$WG_BIN"; do safe_path "$path" || die 'paths must be absolute and template-safe'; done
+[ -n "$STATE_DIR" ] || STATE_DIR="$INSTALL_DIR/wireguard-reconciler-state"
+[ -n "$WG_BIN" ] || WG_BIN="$INSTALL_DIR/wireguard-bin/wg"
+[ -n "$WG_QUICK_BIN" ] || WG_QUICK_BIN="$INSTALL_DIR/wireguard-bin/wg-quick"
+[ -n "$RUNTIME_PATH" ] || RUNTIME_PATH="$INSTALL_DIR/wireguard-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+for path in "$MANIFEST" "$STATE_DIR" "$INSTALL_DIR" "$WG_BIN" "$WG_QUICK_BIN"; do safe_path "$path" || die 'paths must be absolute and template-safe'; done
+runtime_path_ok "$RUNTIME_PATH" || die 'runtime-path must be a colon-separated list of absolute safe paths'
 [ -z "$MAINTENANCE_LOCK" ] || safe_path "$MAINTENANCE_LOCK" || die 'maintenance-lock must be absolute and template-safe'
 [ -n "$PROBE_HELPER" ] && safe_path "$PROBE_HELPER" || die 'probe-helper is required and must be absolute and template-safe'
 [ -z "$RELEASE_LOCK" ] || safe_path "$RELEASE_LOCK" || die 'release-lock must be absolute and template-safe'
@@ -122,7 +149,7 @@ HELPER_MANIFEST="$INSTALL_DIR/wireguard-reconciler.manifest"
 PLIST_PATH="/Library/LaunchDaemons/$LABEL.plist"
 DOMAIN=system
 
-printf 'mode=%s label=%s manifest=%s state=%s helper=%s plist=%s\n' "$MODE" "$LABEL" "$MANIFEST" "$STATE_DIR" "$HELPER_PATH" "$PLIST_PATH"
+printf 'mode=%s label=%s manifest=%s state=%s helper=%s plist=%s wg-bin=%s wg-quick-bin=%s runtime-path=%s\n' "$MODE" "$LABEL" "$MANIFEST" "$STATE_DIR" "$HELPER_PATH" "$PLIST_PATH" "$WG_BIN" "$WG_QUICK_BIN" "$RUNTIME_PATH"
 printf 'plan: install root-only WireGuard reconciler -> bootstrap one bounded launchd pass every %ss -> no HTTP/application recovery actions\n' "$INTERVAL_SECONDS"
 [ "$MODE" = apply ] || exit 0
 
@@ -132,8 +159,8 @@ printf 'plan: install root-only WireGuard reconciler -> bootstrap one bounded la
 root_path_chain "$MANIFEST" || die 'manifest and every parent must be root-owned and non-writable'
 [ ! -L "$SOURCE_HELPER" ] && [ -f "$SOURCE_HELPER" ] || die 'source helper must be a regular file'
 [ ! -L "$SOURCE_MIGRATOR" ] && [ -f "$SOURCE_MIGRATOR" ] || die 'source migrator must be a regular file'
-[ ! -L "$WG_BIN" ] && [ -x "$WG_BIN" ] || die "wg binary must be a non-symlink executable: $WG_BIN"
-root_path_chain "$WG_BIN" || die 'wg binary and every parent must be root-owned and non-writable'
+root_wheel_mode_755_regular "$WG_BIN" || die "wg-bin must be a root:wheel mode 0755 non-symlink regular executable below a root-only path: $WG_BIN"
+root_wheel_mode_755_regular "$WG_QUICK_BIN" || die "wg-quick-bin must be a root:wheel mode 0755 non-symlink regular executable below a root-only path: $WG_QUICK_BIN"
 [ ! -L "$PROBE_HELPER" ] && [ -x "$PROBE_HELPER" ] || die 'probe-helper must be a non-symlink executable'
 [ "$(/usr/bin/stat -f '%u' "$PROBE_HELPER")" = 0 ] || die 'probe-helper must be root-owned'
 root_path_chain "$PROBE_HELPER" || die 'probe-helper and every parent must be root-owned and non-writable'
@@ -169,7 +196,7 @@ MIGRATION_ROLLED_BACK=0
 /bin/chmod 700 "$MIGRATOR_TMP"
 /bin/bash -n "$MIGRATOR_TMP" || { /bin/rm -f "$MIGRATOR_TMP"; die 'copied migrator has invalid shell syntax'; }
 [ "$(sha256 "$MIGRATOR_TMP")" = "$(printf '%s' "$MIGRATOR_SHA256" | /usr/bin/tr '[:upper:]' '[:lower:]')" ] || { /bin/rm -f "$MIGRATOR_TMP"; die 'migrator changed while copying into root-only directory'; }
-if ! /bin/bash "$MIGRATOR_TMP" --apply --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --rollback-journal "$MIGRATION_JOURNAL"; then
+if ! /bin/bash "$MIGRATOR_TMP" --apply --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --wg-bin "$WG_BIN" --wg-quick-bin "$WG_QUICK_BIN" --runtime-path "$RUNTIME_PATH" --rollback-journal "$MIGRATION_JOURNAL"; then
   /bin/rm -f "$MIGRATOR_TMP"
   die 'root WireGuard wrapper migration failed'
 fi
@@ -257,6 +284,9 @@ fi
 cat >> "$PLIST_TMP" <<EOF
   </array>
   <key>RunAtLoad</key><true/>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$RUNTIME_PATH</string>
+  </dict>
   <key>StartInterval</key><integer>$INTERVAL_SECONDS</integer>
   <key>ProcessType</key><string>Background</string>
   <key>ThrottleInterval</key><integer>10</integer>

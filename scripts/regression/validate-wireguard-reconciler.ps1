@@ -24,6 +24,8 @@ $probeInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'inst
 $all = "$reconciler`n$migrator`n$installer"
 
 foreach ($contract in @(
+  "INSTALL_DIR='/usr/local/libexec/juhe-ai'",
+  'STATE_DIR="$INSTALL_DIR/wireguard-reconciler-state"',
   'STALE_CONFIRMATIONS=2',
   'network-settling',
   'sleep-wake-grace',
@@ -78,6 +80,17 @@ foreach ($contract in @(
   'must contain exactly four ProgramArguments',
   'plist_binds_exact_pair',
   'wg-quick',
+  '--wg-bin',
+  '--wg-quick-bin',
+  '--runtime-path',
+  'wireguard-bin/wg',
+  'wireguard-bin/wg-quick',
+  'runtime_path_ok',
+  'root_wheel_mode_755_regular',
+  '%Su:%Sg',
+  '= 755',
+  'rewrite_runtime_path',
+  'EnvironmentVariables.PATH',
   'root WireGuard wrapper migration installed for eight exact jobs'
 )) {
   if (-not $migrator.Contains($contract, [StringComparison]::Ordinal)) {
@@ -112,6 +125,15 @@ foreach ($contract in @(
   '--apply',
   '--remove',
   '--probe-helper',
+  '--wg-quick-bin',
+  '--runtime-path',
+  'wireguard-bin/wg',
+  'wireguard-bin/wg-quick',
+  'root_wheel_mode_755_regular',
+  'EnvironmentVariables</key><dict>',
+  '<key>PATH</key><string>$RUNTIME_PATH</string>',
+  'STATE_DIR="$INSTALL_DIR/wireguard-reconciler-state"',
+  '<install-dir>/wireguard-reconciler-state',
   '--script-sha256',
   '--migrator-sha256',
   'MIGRATOR_TMP',
@@ -122,6 +144,11 @@ foreach ($contract in @(
 )) {
   if (-not $installer.Contains($contract, [StringComparison]::Ordinal)) {
     throw "WireGuard installer contract missing: $contract"
+  }
+}
+foreach ($artifact in @($reconciler, $installer)) {
+  if ($artifact.Contains('/var/db/juhe-ai/wireguard-reconciler', [StringComparison]::Ordinal)) {
+    throw 'WireGuard reconciler default state path must not traverse macOS /var'
   }
 }
 
@@ -148,10 +175,23 @@ if ($bash) {
   }
   & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run
   if ($LASTEXITCODE -ne 0) { throw 'WireGuard reconciler remove dry-run failed' }
+  $installerDefaultStateOutput = @(& $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --dry-run --manifest '/tmp/manifest' --probe-helper '/tmp/probe' --install-dir '/tmp/juhe-ai-root')
+  if ($LASTEXITCODE -ne 0) { throw 'WireGuard installer derived-state dry-run failed' }
+  if (-not (($installerDefaultStateOutput -join "`n").Contains('state=/tmp/juhe-ai-root/wireguard-reconciler-state', [StringComparison]::Ordinal))) {
+    throw 'WireGuard installer did not derive the state directory from install-dir'
+  }
   & $bash.Source ((Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh') -replace '\\', '/') --dry-run --manifest 'relative-manifest' 2>$null
   if ($LASTEXITCODE -eq 0) { throw 'WireGuard migrator accepted a relative manifest path' }
+  & $bash.Source ((Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh') -replace '\\', '/') --dry-run --manifest '/tmp/manifest' --runtime-path 'relative-runtime-path' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard migrator accepted a relative runtime PATH segment' }
+  & $bash.Source ((Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh') -replace '\\', '/') --dry-run --manifest '/tmp/manifest' --runtime-path '/tmp::/usr/bin' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard migrator accepted an empty runtime PATH segment' }
   & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --dry-run --manifest 'relative-manifest' --probe-helper '/tmp/probe' 2>$null
   if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted a relative manifest path' }
+  & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --dry-run --manifest '/tmp/manifest' --probe-helper '/tmp/probe' --runtime-path 'relative-runtime-path' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted a relative runtime PATH segment' }
+  & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --dry-run --manifest '/tmp/manifest' --probe-helper '/tmp/probe' --runtime-path '/tmp::/usr/bin' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted an empty runtime PATH segment' }
   & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run --install-dir '/tmp/unsafe path' 2>$null
   if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted an unsafe remove path' }
   & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run --install-dir '/' 2>$null

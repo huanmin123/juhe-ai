@@ -160,12 +160,28 @@ for (const [name, source, version] of [
   assert.match(source, /rangeMode\.value = 'custom'[\s\S]*dateRangeExplicit\.value = true/, `${name} manual date selection must become custom`)
   assert.match(source, /rangeMode\.value = 'auto'[\s\S]*dateRangeExplicit\.value = false/, `${name} reset must restore auto mode`)
   assert.match(source, /async\s+function\s+handleQuickRangeChange\(value: string \| number\)[\s\S]*loadUsageStatsWindow\(\{ force: true, viewScope:/, `${name} quick selection must refresh the server window`)
-  assert.match(source, /if \(!isQuickRangeMode\(rangeMode\.value\)\) return undefined[\s\S]*return startDate === formatDateKey\(range\[0\]\) && endDate === formatDateKey\(range\[1\]\) \? rangeMode\.value : undefined/, `${name} quick selection must require both mode and the current server window`)
 }
+
+assert.match(
+  statsViewSource,
+  /function\s+quickRangeModeForSelection\(value: RangeMode\): QuickRange \| undefined\s*\{[\s\S]*if \(value === 'auto'\) return 'recent1m'[\s\S]*return isQuickRangeMode\(value\) \? value : undefined/,
+  'stats overview auto mode must map only to the recent1m visual option'
+)
+assert.match(
+  statsViewSource,
+  /const mode = quickRangeModeForSelection\(rangeMode\.value\)[\s\S]*if \(!mode\) return undefined[\s\S]*if \(didUsageStatsWindowLoadFail\(isManagementView\.value \? 'admin' : 'self'\)\) return undefined[\s\S]*const range = quickRangeDateRange\(mode\)[\s\S]*if \(!range\) return undefined[\s\S]*return startDate === formatDateKey\(range\[0\]\) && endDate === formatDateKey\(range\[1\]\) \? mode : undefined/,
+  'stats overview quick selection must remain empty when the server window fails and otherwise require the mapped server window to match exactly'
+)
+assert.match(
+  systemMetricsViewSource,
+  /if \(!isQuickRangeMode\(rangeMode\.value\)\) return undefined[\s\S]*return startDate === formatDateKey\(range\[0\]\) && endDate === formatDateKey\(range\[1\]\) \? rangeMode\.value : undefined/,
+  'system metrics quick selection must require both mode and the current server window'
+)
 
 assert.doesNotMatch(statsViewSource, /document\.addEventListener\('visibilitychange'/, 'stats overview must not refresh when a browser tab becomes visible')
 assert.doesNotMatch(statsViewSource, /window\.addEventListener\('focus'/, 'stats overview must not refresh when the browser window regains focus')
 assert.doesNotMatch(statsViewSource, /millisecondsUntilNextStatsDay|dynamicRangeRolloverTimer/, 'stats overview must not schedule automatic cross-day refreshes')
+assert.match(statsViewSource, /function isDynamicRangeMode\(value: RangeMode\): value is Exclude<RangeMode, 'custom'>\s*\{\s*return value !== 'custom'/, 'stats overview manual refresh must keep auto and quick ranges dynamic while custom remains fixed')
 assert.match(statsViewSource, /function refreshData\(\): void \{[\s\S]*force: true,[\s\S]*forceUsageWindow: isDynamicRangeMode\(rangeMode\.value\)/, 'stats overview manual refresh must update dynamic date windows')
 assert.match(statsViewSource, /<a-button\b(?=[^>]*\s:loading="loading")(?=[^>]*\s@click="refreshData")[^>]*>/, 'stats overview refresh button must invoke manual refresh while loading state is wired')
 

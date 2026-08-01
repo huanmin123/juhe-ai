@@ -22,7 +22,33 @@ interface CooldownAccountRetestQueueItem {
   maxRecoveryHours: number
 }
 
-const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy('cooldown_account_retest_revival', [], 0)
+type CooldownRetestTestHooks = {
+  lookup?: (item: CooldownAccountRetestQueueItem) => Promise<AccountSummary | undefined>
+  throwDiagnosticError?: boolean
+  disableDiagnosticRetries?: boolean
+  throwOnPersistenceType?:
+    | 'record_cooldown_account_retest_success'
+    | 'record_cooldown_account_retest_failure'
+    | 'defer_cooldown_account_retest'
+}
+
+let cooldownRetestTestHooks: CooldownRetestTestHooks | undefined
+
+/** Test-only injection point used by the local recovery regression. */
+export function setCooldownAccountRetestTestHooks(hooks?: CooldownRetestTestHooks): void {
+  cooldownRetestTestHooks = hooks
+}
+
+/** Test-only delay override; production always uses the bounded 3s/10s/30s sequence. */
+export function setCooldownAccountRetestRetryDelaysForTest(delaysMs?: number[]): void {
+  cooldownAccountRetestRetryPolicy.delaysMs = delaysMs ?? [3_000, 10_000, 30_000]
+}
+
+const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy(
+  'cooldown_account_retest_revival',
+  [3_000, 10_000, 30_000],
+  3
+)
 const queuedCooldownFenceByAccountId = new Map<string, string>()
 const cooldownRetestNeutralMinDelaySeconds = 60
 const cooldownRetestNeutralMaxDelaySeconds = 5 * 60
@@ -41,8 +67,21 @@ const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueIt
       event: 'background_cooldown_account_retest_retry_exhausted',
       accountId: event.item.accountId,
       accountName: event.item.accountName,
-      attemptCount: event.attemptIndex + 1
-    }), '冷却账户复测重试已用尽，本轮保留冷却状态等待下个周期')
+      attemptCount: event.attemptIndex + 1,
+      retryablePhase: 'initial_lookup'
+    }), '冷却账户复测重试已用尽或任务不可重放，本轮保留冷却状态等待下个周期')
+  },
+  onRetryScheduled: (event) => {
+    const remaining = Math.max(0, cooldownAccountRetestRetryPolicy.maxRetries! - (event.attemptIndex + 1))
+    logger.warn(errorLogFields(event.error, {
+      event: 'background_cooldown_account_retest_lookup_retry_scheduled',
+      accountId: event.item.accountId,
+      accountName: event.item.accountName,
+      attempt: event.retryNumber,
+      delayMs: event.delayMs,
+      remaining,
+      phase: 'initial_lookup'
+    }), '冷却账户复测初始 DB lookup 失败，将在不访问上游的前提下重试')
   }
 })
 
@@ -103,34 +142,40 @@ async function runCooldownAccountRetestQueueItem(
   item: CooldownAccountRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
+  // The initial candidate lookup is the only retryable phase. The queue item
+  // retains all revision/provenance fences while waiting for the bounded retry.
   const account = await cooldownRetestAccountForQueueItem(item)
-  if (
-    !account
-    || !isAccountDueForCooldownRetest(account)
-    || (account.configRevision ?? 1) !== item.configRevision
-    || account.cooldownRetestDispatchRevision !== item.dispatchRevision
-    || account.cooldownRetestObservationStartedAt !== item.cooldownRetestObservationStartedAt
-    || account.cooldownRetestGeneration !== item.cooldownRetestGeneration
-    || account.cooldownRetestSourceConfigRevision !== item.sourceConfigRevision
-  ) {
-    logger.debug({
-      event: 'background_cooldown_account_retest_discarded',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      attemptIndex: context.attemptIndex,
-      accountStatus: account?.status,
-      boundGroupId: account?.boundGroupId,
-      cooldownUntil: account?.cooldownUntil
-    }, '冷却账户复测任务已失效，跳过队列项')
-    return true
-  }
 
-  const groupId = account.boundGroupId
-  const diagnosticStartedAt = Date.now()
-  let upstreamAttempt: UpstreamAttempt | undefined
-  let diagnosticCanceled = false
-  let diagnosticTimeoutExhausted = false
-  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
+  try {
+    if (
+      !account
+      || !isAccountDueForCooldownRetest(account)
+      || (account.configRevision ?? 1) !== item.configRevision
+      || account.cooldownRetestDispatchRevision !== item.dispatchRevision
+      || account.cooldownRetestObservationStartedAt !== item.cooldownRetestObservationStartedAt
+      || account.cooldownRetestGeneration !== item.cooldownRetestGeneration
+      || account.cooldownRetestSourceConfigRevision !== item.sourceConfigRevision
+    ) {
+      logger.debug({
+        event: 'background_cooldown_account_retest_discarded',
+        accountId: item.accountId,
+        accountName: item.accountName,
+        attemptIndex: context.attemptIndex,
+        accountStatus: account?.status,
+        boundGroupId: account?.boundGroupId,
+        cooldownUntil: account?.cooldownUntil
+      }, '冷却账户复测任务已失效，跳过队列项')
+      return true
+    }
+
+    const groupId = account.boundGroupId
+    const diagnosticStartedAt = Date.now()
+    let upstreamAttempt: UpstreamAttempt | undefined
+    let diagnosticCanceled = false
+    let diagnosticTimeoutExhausted = false
+    const result = await (cooldownRetestTestHooks?.throwDiagnosticError
+      ? Promise.reject(new Error('cooldown retest regression injected diagnostic failure'))
+      : testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
     trafficSource: 'cooldown_retest',
@@ -149,6 +194,7 @@ async function runCooldownAccountRetestQueueItem(
       upstreamAttempt = attempt
     },
     shouldRetryFailure: (attemptResult) => {
+      if (cooldownRetestTestHooks?.disableDiagnosticRetries) return false
       const probeOutcome = automaticAccountProbeOutcome(attemptResult, {
         upstreamAttempt,
         canceled: diagnosticCanceled,
@@ -165,23 +211,27 @@ async function runCooldownAccountRetestQueueItem(
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
-  }).catch((error: unknown) => ({
-    success: false as const,
-    message: error instanceof Error ? error.message : '后台冷却复测执行失败',
-    durationMs: Date.now() - diagnosticStartedAt,
-    accountStatus: account.status,
-    accountFailureEligible: false,
-    statusCode: undefined,
-    errorCode: undefined,
-    traceId: undefined
-  }))
-  const probeOutcome = automaticAccountProbeOutcome(result, {
+      })).catch((error: unknown) => {
+      logger.error(errorLogFields(error, {
+        event: 'background_cooldown_account_retest_non_replay_phase_error',
+        accountId: item.accountId,
+        accountName: item.accountName,
+        attemptIndex: context.attemptIndex,
+        retryNumber: context.retryNumber,
+        phase: 'diagnostic',
+        retry: false,
+        upstreamReplayPrevented: true
+      }), '冷却账户复测诊断阶段异常，已禁止重放上游请求')
+      throw error
+    })
+    const probeOutcome = automaticAccountProbeOutcome(result, {
     upstreamAttempt,
     canceled: diagnosticCanceled,
     timeout: diagnosticTimeoutExhausted,
     diagnosticTimeoutExhausted
   })
-  if (probeOutcome === 'complete_success') {
+    if (probeOutcome === 'complete_success') {
+    throwCooldownRetestPersistenceTestError('record_cooldown_account_retest_success')
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_cooldown_account_retest_success',
       accountId: account.id,
@@ -202,16 +252,17 @@ async function runCooldownAccountRetestQueueItem(
       accountStatus: restored?.accountStatus ?? result.accountStatus,
       restored: restored?.changed ?? false
     }, '冷却账户复测通过，账号已尝试恢复到可用状态')
-    return true
-  }
+      return true
+    }
 
-  if (probeOutcome !== 'upstream_failure') {
+    if (probeOutcome !== 'upstream_failure') {
     const delaySeconds = cooldownRetestNeutralDeferDelaySeconds({
       accountId: item.accountId,
       generation: item.cooldownRetestGeneration,
       cooldownUntil: item.cooldownUntil,
       observationStartedAt: item.cooldownRetestObservationStartedAt
     })
+    throwCooldownRetestPersistenceTestError('defer_cooldown_account_retest')
     const deferred = await requestBackgroundWorkerDbService({
       type: 'defer_cooldown_account_retest',
       accountId: account.id,
@@ -234,10 +285,11 @@ async function runCooldownAccountRetestQueueItem(
       nextCooldownUntil: deferred?.cooldownUntil,
       message: result.message
     }, '冷却账户复测未形成传输失败证据，已保留账户状态')
-    return true
-  }
+      return true
+    }
 
-  const failure = await requestBackgroundWorkerDbService({
+    throwCooldownRetestPersistenceTestError('record_cooldown_account_retest_failure')
+    const failure = await requestBackgroundWorkerDbService({
     type: 'record_cooldown_account_retest_failure',
     accountId: account.id,
     input: {
@@ -281,7 +333,7 @@ async function runCooldownAccountRetestQueueItem(
     transitionedToError: failure?.transitionedToError,
     message: result.message
   }
-  if (failure?.transitionedToError) {
+    if (failure?.transitionedToError) {
     logger.error(logFields, '冷却账户从观察开始已持续 7 天未恢复，账户已转为异常')
   } else if (failure?.recoveryStage === 'long_term') {
     logger.warn(logFields, '冷却账户复测超过自动恢复观察窗口，已进入长期不可用每 1 小时复测')
@@ -290,7 +342,20 @@ async function runCooldownAccountRetestQueueItem(
   } else {
     logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')
   }
-  return true
+    return true
+  } catch (error: unknown) {
+    logger.error(errorLogFields(error, {
+      event: 'background_cooldown_account_retest_non_replay_phase_error',
+      accountId: item.accountId,
+      accountName: item.accountName,
+      attemptIndex: context.attemptIndex,
+      retryNumber: context.retryNumber,
+      phase: 'post_lookup',
+      retry: false,
+      upstreamReplayPrevented: true
+    }), '冷却账户复测 lookup 成功后阶段异常，已禁止重放上游请求')
+    return { success: false, retry: false }
+  }
 }
 
 export function cooldownRetestNeutralDeferDelaySeconds(input: {
@@ -317,10 +382,19 @@ function stableCooldownRetestHash(value: string): number {
 }
 
 async function cooldownRetestAccountForQueueItem(item: CooldownAccountRetestQueueItem): Promise<AccountSummary | undefined> {
+  if (cooldownRetestTestHooks?.lookup) {
+    return await cooldownRetestTestHooks.lookup(item)
+  }
   return await requestBackgroundWorkerDbService({
     type: 'find_account_for_cooldown_retest',
     accountId: item.accountId
   }, backgroundProbeDbServiceTimeoutMs)
+}
+
+function throwCooldownRetestPersistenceTestError(type: CooldownRetestTestHooks['throwOnPersistenceType']): void {
+  if (cooldownRetestTestHooks?.throwOnPersistenceType === type) {
+    throw new Error(`cooldown retest regression injected ${type} failure`)
+  }
 }
 
 async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
