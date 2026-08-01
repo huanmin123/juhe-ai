@@ -442,6 +442,7 @@ export async function handleUpstreamRequestError(
     ...failureObservation
   }, '网关请求上游失败')
   const lastAttempt: UpstreamAttempt = {
+    ...(input.lastAttempt ?? {}),
     accountId: account.id,
     accountName: account.name,
     providerCode: account.providerCode,

@@ -1294,15 +1294,9 @@ export async function handleOpenAIGatewayRequest(
             })
             nonStreamResponseStartedFailedAccountIds.add(account.id)
             const circuitDecision = !requestExecutionSignal.aborted
-              && accountCircuitAttempt?.isConfirmation === true
-              ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error))
+              && accountCircuitAttempt
+              ? await accountCircuitAttempt.reportTransportFailure(bodyFailure)
               : undefined
-            if (!requestExecutionSignal.aborted && accountCircuitAttempt && accountCircuitAttempt.isConfirmation !== true) {
-              // Body framing can be damaged by one request/session. It is valid
-              // request-local failover evidence, but shared circuit evidence must
-              // come from the independent confirmation path.
-              await accountCircuitAttempt.reportUnknown()
-            }
             if (circuitDecision?.outcome === 'confirmation_acquired') {
               await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
             }
