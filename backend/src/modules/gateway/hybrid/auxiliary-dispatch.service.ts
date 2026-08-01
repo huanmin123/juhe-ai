@@ -36,6 +36,7 @@ import {
   parseGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
 } from '../response/non-stream-json-body.js'
+import { parseGatewayProtocolErrorPayloadFromJsonValue } from '../protocols/registry.js'
 
 type HybridAuxiliaryTrafficSource = Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
 
@@ -329,6 +330,41 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           shouldRecordUsage: true
         }
       }
+      if (opaqueUpstreamResponse) {
+        const upstreamFailure = hybridAuxiliaryUpstreamFailure({
+          account: dispatch.account,
+          bodyText: body.bodyText,
+          headers: dispatch.response.headers,
+          statusCode: dispatch.response.status,
+          fallbackErrorCode: input.dispatchErrorCode
+        })
+        const finish = createFinish({
+          auditCapture,
+          auditAttemptId: dispatch.auditAttemptId,
+          account: dispatch.account,
+          statusCode: dispatch.response.status,
+          headers: dispatch.response.headers,
+          body: body.body,
+          firstTokenMs: body.firstByteMs,
+          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures,
+          confirmHalfOpenSuccess: dispatch.confirmHalfOpenSuccess,
+          releaseHalfOpenLease: dispatch.releaseHalfOpenLease
+        })
+        await finish({
+          success: false,
+          errorCode: upstreamFailure.errorCode,
+          errorMessage: upstreamFailure.errorMessage
+        })
+        return {
+          outcome: 'failed',
+          errorCode: upstreamFailure.errorCode,
+          errorMessage: upstreamFailure.errorMessage,
+          account: dispatch.account,
+          groupId: selection.groupId,
+          statusCode: dispatch.response.status,
+          shouldRecordUsage: true
+        }
+      }
       const parsedResponse = parseHybridAuxiliaryResponse(body.bodyText, dispatch.response.headers)
       return {
         outcome: 'success',
@@ -419,6 +455,26 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
       statusCode
     }
   }
+}
+
+function hybridAuxiliaryUpstreamFailure(input: {
+  account: OpenAIAccountSecret
+  bodyText: string
+  headers: Headers
+  statusCode: number
+  fallbackErrorCode: string
+}): { errorCode: string; errorMessage: string } {
+  const parsedBody = parseGatewayNonStreamJsonBody(input.bodyText, input.headers)
+  const errorPayload = parsedBody.status === 'valid'
+    ? parseGatewayProtocolErrorPayloadFromJsonValue(input.account, parsedBody.value)
+    : {}
+  const errorCode = typeof errorPayload.code === 'string' && errorPayload.code.trim()
+    ? errorPayload.code
+    : input.fallbackErrorCode
+  const errorMessage = typeof errorPayload.message === 'string' && errorPayload.message.trim()
+    ? errorPayload.message
+    : input.bodyText.trim() || `上游返回 HTTP ${input.statusCode}`
+  return { errorCode, errorMessage }
 }
 
 function createFinish(input: {

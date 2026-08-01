@@ -52,9 +52,6 @@ import {
   gatewayErrorPayloadForProtocol,
   sendGatewayErrorResponse
 } from './responses.js'
-import {
-  shouldExcludeCurrentAccountForStreamServerRetry
-} from './stream-finalization-retry-decision.js'
 import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
 import {
@@ -81,17 +78,14 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   accountStateMutationEnabled: boolean
   automaticAccountStateMutationEnabled: boolean
   protocolValidationEnabled: boolean
+  protocolValidationLimitExceeded?: boolean
   downstreamCommitState: GatewayDownstreamCommitState
   sessionAffinityKey?: string
 }): Promise<UpstreamResponseHandlingResult | undefined> {
   const parsedJsonBody = input.parsedJsonBody
     ?? parseGatewayNonStreamJsonBody(input.responseBody.length > 0 ? input.responseBodyText : undefined, input.upstreamResponse.headers)
-  if (parsedJsonBody.status !== 'valid') {
-    return undefined
-  }
-  const parsedJson = parsedJsonBody.value
   const protocolFailure = input.protocolValidationEnabled
-    ? validateBufferedJsonProtocolResponse(parsedJson, input)
+    ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
     : undefined
   if (protocolFailure) {
     return finalizeBufferedJsonProtocolFailure({
@@ -100,6 +94,10 @@ export async function inspectBufferedGatewayJsonResponse(input: {
       accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
     }, protocolFailure)
   }
+  if (parsedJsonBody.status !== 'valid') {
+    return undefined
+  }
+  const parsedJson = parsedJsonBody.value
   if (isGatewayGeneratedResponsesFailure(parsedJson, input)) return undefined
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
@@ -193,30 +191,13 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorMessage: message
   })
 
-  const shouldRetryOnServer = decision.retryEnabled
-  if (shouldRetryOnServer && !input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
-    input.auditCapture.addGatewayMetadata({
-      label: 'response_inspection_server_retry',
-      metadata: responseInspectionAuditMetadata(decision)
-    })
-    return {
-      alreadyFinalized: false,
-      retryUpstream: true,
-      retryReason: 'response_inspection',
-      responseInspection: decision,
-      excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(decision),
-      message,
-      errorCode
-    }
-  }
-
   const responsePayload = gatewayErrorPayload(message, 'response_inspection_failed', errorCode)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
-  sendGatewayErrorResponse(input.res, 503, responsePayload, { protocol: clientErrorProtocol })
+  sendGatewayErrorResponse(input.res, 502, responsePayload, { protocol: clientErrorProtocol })
   input.auditCapture.finalize({
     outcome: 'upstream_failed',
     success: false,
-    statusCode: 503,
+    statusCode: 502,
     responseHeaders: responseHeadersToObject(input.res),
     responseBody: JSON.stringify(clientPayload),
     responsePartType: 'gateway_error',
@@ -230,40 +211,147 @@ export async function inspectBufferedGatewayJsonResponse(input: {
 }
 
 function validateBufferedJsonProtocolResponse(
-  parsedJson: unknown,
+  parsedJsonBody: GatewayNonStreamJsonBody,
   input: {
     req: Request
     account: UpstreamAccount
     upstreamResponse: GatewayUpstreamResponse
+    protocolValidationLimitExceeded?: boolean
   }
 ): { message: string; errorCode: string } | undefined {
   if (!input.upstreamResponse.ok) return undefined
+  if (input.protocolValidationLimitExceeded) {
+    return {
+      message: '上游成功响应超过网关协议验证上限，已拒绝透传未验证正文',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  if (parsedJsonBody.status !== 'valid') {
+    return {
+      message: '上游成功响应不是有效 JSON，无法满足请求协议',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  const parsedJson = parsedJsonBody.value
   const root = plainObject(parsedJson)
-  if (!root) return undefined
+  if (!root) {
+    return {
+      message: '上游 JSON 响应根节点无效，无法满足请求协议',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
   const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
-  if (endpointFamily === 'chat_completions' && (!Array.isArray(root.choices) || root.choices.length === 0)) {
-    return {
-      message: '上游 Chat JSON 响应结构无效：choices 必须是非空数组',
-      errorCode: 'upstream_protocol_error'
-    }
-  }
-  if (endpointFamily === 'messages' && root.type === 'message' && (!Array.isArray(root.content) || root.content.length === 0)) {
-    return {
-      message: '上游 Anthropic Messages JSON 响应结构无效：content 必须是非空数组',
-      errorCode: 'upstream_protocol_error'
-    }
-  }
-  if (endpointFamily === 'responses' && root.status === 'failed') {
-    const error = plainObject(root.error)
-    const upstreamMessage = typeof error?.message === 'string' ? error.message.trim() : ''
+  const requestPath = (input.req.originalUrl || input.req.path || '').split('?', 1)[0].toLowerCase()
+  const resourceResponse = isManagementResourceResponsePath(requestPath)
+  const responseError = plainObject(root.error)
+  if (!resourceResponse && endpointFamily !== 'responses' && (responseError || root.type === 'error' || root.status === 'failed')) {
+    const upstreamMessage = typeof responseError?.message === 'string' ? responseError.message.trim() : ''
     return {
       message: upstreamMessage
-        ? `上游 Responses 返回失败终态：${upstreamMessage}`
-        : '上游 Responses 返回失败终态',
-      errorCode: 'upstream_protocol_failure'
+        ? `上游成功 HTTP 响应包含失败终态：${upstreamMessage}`
+        : '上游成功 HTTP 响应包含失败终态，无法满足请求协议',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  if (
+    endpointFamily === 'chat_completions'
+    && (!Array.isArray(root.choices) || !root.choices.some(isValidChatCompletionChoice))
+  ) {
+    return {
+      message: '上游 Chat JSON 响应结构无效：choices 必须包含 message 或 text',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  if (endpointFamily === 'messages' && (root.type !== 'message' || !Array.isArray(root.content))) {
+    return {
+      message: '上游 Anthropic Messages JSON 响应结构无效：content 必须是数组',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  if (
+    endpointFamily === 'models'
+    && (!Array.isArray(root.data) && !Array.isArray(root.models) && root.object !== 'model' && typeof root.name !== 'string')
+  ) {
+    return {
+      message: '上游 Models JSON 响应结构无效：缺少 data、models、model 或 name',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  if (endpointFamily === 'message_token_counting' && typeof root.input_tokens !== 'number') {
+    return protocolStructureFailure('上游 Anthropic Token Counting JSON 响应结构无效：缺少 input_tokens')
+  }
+  if (
+    (endpointFamily === 'generate_content' || endpointFamily === 'stream_generate_content')
+    && !Array.isArray(root.candidates)
+    && !plainObject(root.promptFeedback)
+  ) {
+    return protocolStructureFailure('上游 Gemini Generate Content JSON 响应结构无效：缺少 candidates 或 promptFeedback')
+  }
+  if (endpointFamily === 'count_tokens' && typeof root.totalTokens !== 'number') {
+    return protocolStructureFailure('上游 Gemini Count Tokens JSON 响应结构无效：缺少 totalTokens')
+  }
+  if (endpointFamily === 'embed_content' && !plainObject(root.embedding) && !Array.isArray(root.embeddings)) {
+    return protocolStructureFailure('上游 Gemini Embed Content JSON 响应结构无效：缺少 embedding 或 embeddings')
+  }
+  if (endpointFamily === 'interactions' && typeof root.id !== 'string' && typeof root.name !== 'string') {
+    return protocolStructureFailure('上游 Gemini Interactions JSON 响应结构无效：缺少 id 或 name')
+  }
+  if (endpointFamily === 'unknown') {
+    if ((requestPath.includes('/embeddings') || requestPath.includes('/images')) && !Array.isArray(root.data)) {
+      return protocolStructureFailure('上游 JSON 响应结构无效：data 必须是数组')
+    }
+    if (requestPath.includes('/moderations') && !Array.isArray(root.results)) {
+      return protocolStructureFailure('上游 Moderations JSON 响应结构无效：results 必须是数组')
+    }
+    if (/\/audio\/(?:transcriptions|translations)$/.test(requestPath) && typeof root.text !== 'string') {
+      return protocolStructureFailure('上游 Audio JSON 响应结构无效：缺少 text')
+    }
+    if (
+      (/\/(?:batches|fine_tuning|vector_stores)(?:\/|$)/.test(requestPath) || /^(?:\/v1)?\/files(?:\/|$)/.test(requestPath))
+      && typeof root.id !== 'string'
+      && !Array.isArray(root.data)
+    ) {
+      return protocolStructureFailure('上游管理接口 JSON 响应结构无效：缺少 id 或 data')
+    }
+  }
+  if (endpointFamily === 'responses') {
+    if (root.status === 'failed') {
+      const error = plainObject(root.error)
+      const upstreamMessage = typeof error?.message === 'string' ? error.message.trim() : ''
+      return {
+        message: upstreamMessage
+          ? `上游 Responses 返回失败终态：${upstreamMessage}`
+          : '上游 Responses 返回失败终态',
+        errorCode: 'upstream_protocol_failure'
+      }
+    }
+    if ((root.object !== 'response' && root.type !== 'response') || typeof root.id !== 'string' || !Array.isArray(root.output)) {
+      return {
+        message: '上游 Responses JSON 响应结构无效，缺少 response、id 或 output',
+        errorCode: 'upstream_protocol_error'
+      }
     }
   }
   return undefined
+}
+
+function isManagementResourceResponsePath(requestPath: string): boolean {
+  return /\/(?:batches|fine_tuning|vector_stores)(?:\/|$)/.test(requestPath)
+    || /^(?:\/v1)?\/files(?:\/|$)/.test(requestPath)
+}
+
+function isValidChatCompletionChoice(value: unknown): boolean {
+  const choice = plainObject(value)
+  if (!choice || plainObject(choice.error)) return false
+  return (plainObject(choice.message) && !plainObject(plainObject(choice.message)?.error))
+    || typeof choice.text === 'string'
+}
+
+function protocolStructureFailure(message: string): { message: string; errorCode: string } {
+  return {
+    message,
+    errorCode: 'upstream_protocol_error'
+  }
 }
 
 function isGatewayGeneratedResponsesFailure(
@@ -338,26 +426,9 @@ async function finalizeBufferedJsonProtocolFailure(
     errorMessage: failure.message
   })
   dispatchRequestFailureAccountHealthCheck(input.req, input.usageContext.trafficSource, input.account.id)
-  // A complete 2xx response with an invalid protocol shape is request-local
-  // evidence. The request may fail over, while shared account state remains
-  // gated by the independent fixed-model health confirmation.
-  if (!input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
-    input.auditCapture.addGatewayMetadata({
-      label: 'upstream_protocol_server_retry',
-      metadata: {
-        accountId: input.account.id,
-        errorCode: failure.errorCode
-      }
-    })
-    return {
-      alreadyFinalized: false,
-      retryUpstream: true,
-      retryReason: 'upstream_protocol_failure',
-      excludeCurrentAccount: true,
-      message: failure.message,
-      errorCode: failure.errorCode
-    }
-  }
+  // A complete but invalid 2xx response is a concrete failure of this
+  // attempt.  Return its protocol diagnosis instead of hiding it behind a
+  // second account's response.
   const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
   sendGatewayErrorResponse(input.res, 502, responsePayload, { protocol: clientErrorProtocol })

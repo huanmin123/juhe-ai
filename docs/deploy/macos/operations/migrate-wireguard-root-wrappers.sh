@@ -82,6 +82,33 @@ plist_binds_exact_pair() {
   done
   [ "$wrapper_count" -eq 1 ] && [ "$config_count" -eq 1 ]
 }
+plist_has_exact_program_arguments() {
+  local plist="$1" expected_wrapper="$2" expected_logical="$3" expected_config="$4"
+  [ "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)" = /usr/local/bin/bash ] || return 1
+  [ "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$plist" 2>/dev/null || true)" = "$expected_wrapper" ] || return 1
+  [ "$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$plist" 2>/dev/null || true)" = "$expected_logical" ] || return 1
+  [ "$(/usr/bin/plutil -extract ProgramArguments.3 raw -o - "$plist" 2>/dev/null || true)" = "$expected_config" ] || return 1
+  # ProgramArguments is a contiguous array. Check extraction status rather than
+  # value: an explicitly empty string is still an extra argument and must reject.
+  # The first missing index proves there are no later elements.
+  local index=4
+  while /usr/bin/plutil -extract "ProgramArguments.$index" raw -o /dev/null "$plist" >/dev/null 2>&1; do
+    return 1
+  done
+  return 0
+}
+rewrite_program_arguments() {
+  local plist="$1" wrapper="$2" logical="$3" config="$4"
+
+  # macOS plutil inserts rather than replaces indexed array values. Rebuild the
+  # complete array so no source ProgramArguments survive the migration.
+  /usr/libexec/PlistBuddy -c 'Delete :ProgramArguments' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :ProgramArguments array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :ProgramArguments:0 string /usr/local/bin/bash' "$plist"
+  /usr/libexec/PlistBuddy -c "Add :ProgramArguments:1 string $wrapper" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :ProgramArguments:2 string $logical" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :ProgramArguments:3 string $config" "$plist"
+}
 write_fixed_wrapper() {
   local destination="$1"
   cat > "$destination" <<'EOF'
@@ -125,7 +152,23 @@ done
 stopping=false
 child_pid=''
 real_interface=''
-name_file="/var/run/wireguard/${interface_name}.name"
+peer_public_key="$(/usr/bin/awk 'BEGIN { in_peer=0 } /^[[:space:]]*\[Peer\][[:space:]]*$/ { in_peer=1; next } in_peer && /^[[:space:]]*PublicKey[[:space:]]*=/ { sub(/.*=/, ""); gsub(/[[:space:]]/, ""); print; exit }' "$config_path")"
+if [[ -z "$peer_public_key" ]]; then
+  echo "WireGuard config has no peer public key: $config_path" >&2
+  exit 1
+fi
+
+find_real_interface() {
+  local candidate matched_interface='' match_count=0
+  for candidate in $("$wg_bin" show interfaces 2>/dev/null); do
+    if "$wg_bin" show "$candidate" peers 2>/dev/null | /usr/bin/grep -Fxq "$peer_public_key"; then
+      matched_interface="$candidate"
+      match_count=$((match_count + 1))
+    fi
+  done
+  [ "$match_count" -eq 1 ] || return 1
+  printf '%s\n' "$matched_interface"
+}
 
 cleanup() {
   if [[ "$stopping" == true ]]; then
@@ -137,16 +180,13 @@ cleanup() {
     wait "$child_pid" 2>/dev/null || true
   fi
   "$wg_quick" down "$config_path" >/dev/null 2>&1 || true
-  if [[ -z "$real_interface" && -s "$name_file" ]]; then
-    real_interface="$(/bin/cat "$name_file")"
-  fi
+  [[ -n "$real_interface" ]] || real_interface="$(find_real_interface || true)"
   case "$real_interface" in
     ''|*[!A-Za-z0-9_.-]*) real_interface='' ;;
   esac
   if [[ -n "$real_interface" ]]; then
     rm -f "/var/run/wireguard/${real_interface}.sock"
   fi
-  rm -f "$name_file"
 }
 
 trap cleanup EXIT
@@ -159,14 +199,9 @@ child_pid=$!
 
 ready_attempt=1
 while [ "$ready_attempt" -le 30 ]; do
-  if [[ -s "$name_file" ]]; then
-    real_interface="$(/bin/cat "$name_file")"
-    case "$real_interface" in
-      ''|*[!A-Za-z0-9_.-]*) real_interface='' ;;
-    esac
-    if [[ -n "$real_interface" ]] && "$wg_bin" show "$real_interface" >/dev/null 2>&1; then
-      break
-    fi
+  real_interface="$(find_real_interface || true)"
+  if [[ -n "$real_interface" ]] && "$wg_bin" show "$real_interface" >/dev/null 2>&1; then
+    break
   fi
   if ! kill -0 "$child_pid" >/dev/null 2>&1; then
     wait "$child_pid" || exit $?
@@ -278,7 +313,8 @@ validate_manifest() {
       [ "$arg" = "$config" ] && { [ -z "$config_index" ] || die "manifest line $line_no config appears multiple times"; config_index="$index"; }
       index=$((index + 1))
     done
-    [ -n "$wrapper_index" ] && [ -n "$config_index" ] || die "manifest line $line_no plist does not bind exact wrapper and config"
+    [ "$wrapper_index" = 1 ] && [ "$config_index" = 3 ] || die "manifest line $line_no must use the four-argument bash/wrapper/interface/config contract"
+    plist_has_exact_program_arguments "$plist" "$wrapper" "$logical" "$config" || die "manifest line $line_no must contain exactly four ProgramArguments: /usr/local/bin/bash, source wrapper, logical interface, source config"
     count=$((count + 1))
   done < "$MANIFEST"
   [ "$count" -eq 8 ] || die 'the root WireGuard allowlist must contain exactly eight edges'
@@ -331,9 +367,9 @@ stage_all() {
       index=$((index + 1))
     done
     [ -n "$wrapper_index" ] && [ -n "$config_index" ] || die "staged plist drifted edge=$edge"
-    /usr/bin/plutil -replace "ProgramArguments.$wrapper_index" -string "$target_wrapper" "$target_plist"
-    /usr/bin/plutil -replace "ProgramArguments.$config_index" -string "$target_config" "$target_plist"
+    rewrite_program_arguments "$target_plist" "$target_wrapper" "$logical" "$target_config"
     /usr/bin/plutil -lint "$target_plist" >/dev/null
+    plist_has_exact_program_arguments "$target_plist" "$target_wrapper" "$logical" "$target_config" || die "staged plist does not contain the exact four-argument root wrapper contract edge=$edge"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$edge" "$logical" "$label" "$target_wrapper" "$target_config" "$INSTALL_DIR/wireguard/$edge/$label.plist" "$wrapper" >> "$MAP_FILE"
   done < "$MANIFEST"
 }
@@ -395,10 +431,12 @@ apply_all() {
     /bin/chmod 644 "/Library/LaunchDaemons/$label.plist" || return 1
     /usr/bin/plutil -lint "/Library/LaunchDaemons/$label.plist" >/dev/null || return 1
     plist_binds_exact_pair "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$target_config" || return 1
+    plist_has_exact_program_arguments "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$logical" "$target_config" || return 1
     /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" || return 1
     /bin/launchctl kickstart -k "system/$label" || return 1
     /bin/launchctl print "system/$label" >/dev/null || return 1
     plist_binds_exact_pair "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$target_config" || return 1
+    plist_has_exact_program_arguments "/Library/LaunchDaemons/$label.plist" "$target_wrapper" "$logical" "$target_config" || return 1
     root_path_chain "$INSTALL_DIR/wireguard/$edge/run-wireguard.sh" || return 1
     root_path_chain "$target_config" || return 1
   done < "$MAP_FILE"

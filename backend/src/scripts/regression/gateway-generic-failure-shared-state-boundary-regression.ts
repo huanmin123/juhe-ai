@@ -171,7 +171,7 @@ async function assertRequestTransportFailureDoesNotExcludeSiblingAccount(): Prom
   assert.equal(proxyHealth.recordGatewayUpstreamBucketSuccess(account), false, 'transport 失败不得创建 proxy/upstream 失败桶')
 }
 
-async function assertSharedProxyIndependentOriginCanStillSucceed(): Promise<void> {
+async function assertSharedProxyTransportFailureTerminatesWithoutFallback(): Promise<void> {
   const before = sharedStateSnapshot()
   const connectAuthorities: string[] = []
   let failingOriginHits = 0
@@ -221,7 +221,7 @@ async function assertSharedProxyIndependentOriginCanStillSucceed(): Promise<void
   const healthyAccount = buildDispatchAccount('shared-proxy-healthy-origin', healthyBaseUrl, proxyUrl)
   let results: Array<Awaited<ReturnType<typeof upstreamDispatch.fetchFirstAvailableUpstream>>> = []
   try {
-    results = await Promise.all(['first', 'second'].map((requestId) => upstreamDispatch.fetchFirstAvailableUpstream(
+    const dispatches = await Promise.allSettled(['first', 'second'].map((requestId) => upstreamDispatch.fetchFirstAvailableUpstream(
       buildProxyDispatchRequest(requestId),
       [failingAccount, healthyAccount],
       sharedProxySettings(),
@@ -241,57 +241,140 @@ async function assertSharedProxyIndependentOriginCanStillSucceed(): Promise<void
       false,
       false
     )))
-    assert.deepEqual(results.map((result) => result.account.id), [healthyAccount.id, healthyAccount.id], '并发请求中 A 源站断开后都必须实际派发共享代理上的 B 账户')
-    assert(results.every((result) => result.response.status === 200), '共享代理上的 B 账户应为每个并发请求返回成功响应')
-    await Promise.all(results.map(async (result) => {
-      for await (const _chunk of result.response.body ?? []) {
-      }
-    }))
-    assert.equal(failingOriginHits, 4, '两个并发请求都应穷尽失败账户的两个 Key，且每个 Key 只尝试一次')
-    assert.equal(healthyOriginHits, 2, '独立健康源站应为两个并发请求各接收一次物理请求')
-    assert.equal(connectAuthorities.length, 6, '失败账户双 Key 与健康账户均必须经同一代理建立 CONNECT')
-    const distinctOrigins = new Set(connectAuthorities)
-    assert.equal(distinctOrigins.size, 2, '所有 CONNECT 只能落到测试定义的两个独立源站身份')
+    assert(dispatches.every((dispatch) => dispatch.status === 'rejected'), '每个 transport 失败都必须在当前账户终止，不能切到健康后备')
+    for (const dispatch of dispatches) {
+      assert.equal(dispatch.status, 'rejected')
+      assert(dispatch.reason instanceof upstreamDispatch.UpstreamAttemptError, 'transport 失败必须收敛为 UpstreamAttemptError')
+      assert.equal(dispatch.reason.terminalUpstreamFailure, true, '未知 transport 失败必须是当前请求终止错误')
+      assert.equal(dispatch.reason.lastAttempt?.accountId, failingAccount.id, '终止诊断必须指向实际失败账户')
+    }
+    assert.equal(failingOriginHits, 2, '两个并发请求只能各调用一次实际失败账户，未知失败不得轮换兄弟 Key')
+    assert.equal(healthyOriginHits, 0, '未知 transport 失败不得调用健康后备账户')
+    assert.equal(connectAuthorities.length, 2, '每个请求只能为实际失败账户建立一次 CONNECT')
+    assert.equal(new Set(connectAuthorities).size, 1, '未知失败不能连接到其他候选源站')
   } finally {
     results.forEach((result) => result.releaseConcurrency())
     upstreamRequest.closeGatewayUpstreamAgentsForTest()
     await Promise.all([closeServer(proxy), closeServer(healthyOrigin), closeServer(failingOrigin)])
   }
-  assert.deepEqual(accountConcurrency.snapshotAccountConcurrency(), {}, '并发共享代理切号完成后不得泄漏账户并发槽')
-  assertSharedStateUnchanged(before, 'concurrent multi-key shared-proxy origin failure')
+  assert.deepEqual(accountConcurrency.snapshotAccountConcurrency(), {}, '并发终止后不得泄漏账户并发槽')
+  assertSharedStateUnchanged(before, 'concurrent shared-proxy transport failure')
   assert.equal(proxyHealth.recordGatewayUpstreamBucketSuccess(failingAccount), false, '失败源站 transport 不得创建共享 proxy/upstream health 桶')
-  assert.equal(proxyHealth.recordGatewayUpstreamBucketSuccess(healthyAccount), false, '仅获取候选响应不得隐式创建共享 proxy/upstream health 桶')
+  assert.equal(proxyHealth.recordGatewayUpstreamBucketSuccess(healthyAccount), false, '未调用的健康账户不得创建共享 proxy/upstream health 桶')
+}
+
+async function assertExplicitRetryNextMayRotateSiblingKey(): Promise<void> {
+  const baseUrl = 'https://explicit-retry-next.invalid/v1'
+  const dispatchAccount = {
+    ...account,
+    id: 'explicit-retry-next-account',
+    name: 'explicit-retry-next-account',
+    providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
+    baseUrl,
+    apiKey: 'sk-explicit-retry-first',
+    apiKeys: ['sk-explicit-retry-first', 'sk-explicit-retry-second'],
+    credentials: {
+      api_key: 'sk-explicit-retry-first',
+      api_keys: ['sk-explicit-retry-first', 'sk-explicit-retry-second'],
+      base_url: baseUrl,
+      error_handling_rules: [{
+        enabled: true,
+        name: 'explicit retry sibling key',
+        priority: 1,
+        status_codes: [418],
+        keywords: ['retry-next-marker'],
+        action: 'retry_next'
+      }]
+    }
+  } as unknown as UpstreamAccount
+  const selectedAccount = await accountPreparation.selectAccountApiKeyForDispatch(dispatchAccount)
+  assert(selectedAccount?.selectedApiKeyFingerprint, '可轮换 Key 池必须保留当前 Key 指纹')
+  const failureBody = Buffer.from(JSON.stringify({
+    error: { code: 'configured_retry', message: 'retry-next-marker' }
+  }), 'utf8')
+  const decision = await failureDispatch.handleFailedUpstreamResponse({
+    req,
+    requestLane: 'text',
+    usageContext,
+    auditCapture,
+    auditAttemptId: 'explicit-retry-next-attempt',
+    account: selectedAccount,
+    upstreamUrl: `${baseUrl}/chat/completions`,
+    response: {
+      status: 418,
+      ok: false,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: (async function * (): AsyncGenerator<Uint8Array> {
+        yield failureBody
+      })()
+    },
+    settings,
+    attemptStartedAt: Date.now() - 5,
+    attemptIndex: 0,
+    auditAttemptIndex: 0,
+    signal: new AbortController().signal,
+    accountStateMutationEnabled: true,
+    automaticAccountStateMutationEnabled: false
+  })
+  assert.equal(decision.action, 'skip_account', '命中 retry_next 必须产生显式继续派发决策')
+  assert.equal(decision.keyScopedFailure, true, '只有命中 retry_next 才能授权同账户下一个 Key')
+  const nextAccount = await accountPreparation.selectAccountApiKeyForDispatch(dispatchAccount, {
+    excludeFingerprints: [selectedAccount.selectedApiKeyFingerprint],
+    continueAfterFingerprint: selectedAccount.selectedApiKeyFingerprint
+  })
+  assert.equal(nextAccount?.apiKey, 'sk-explicit-retry-second', '显式 retry_next 必须选择尚未尝试的同账户兄弟 Key')
 }
 
 async function assertCompleteInvalidProtocolStaysRequestScoped(): Promise<void> {
   const before = sharedStateSnapshot()
-  const bodyText = JSON.stringify({ id: 'chatcmpl-invalid', choices: [] })
-  const result = await jsonInspection.inspectBufferedGatewayJsonResponse({
-    req,
-    res: new MockResponse() as unknown as Response,
-    account,
-    upstreamResponse: {
-      status: 200,
-      ok: true,
-      headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
-      body: null
+  const scenarios = [
+    {
+      id: 'invalid-shape',
+      contentType: 'application/json; charset=utf-8',
+      bodyText: JSON.stringify({ id: 'chatcmpl-invalid', choices: [] })
     },
-    upstreamUrl: 'https://untrusted-provider.example/v1/chat/completions',
-    auditAttemptId: 'generic-invalid-protocol-attempt',
-    auditCapture,
-    settings,
-    usageContext,
-    startedAt: Date.now() - 5,
-    responseBody: Buffer.from(bodyText),
-    responseBodyText: bodyText,
-    accountStateMutationEnabled: true,
-    automaticAccountStateMutationEnabled: true,
-    protocolValidationEnabled: true,
-    downstreamCommitState: {} as never
-  })
+    {
+      id: 'malformed-json',
+      contentType: 'application/json; charset=utf-8',
+      bodyText: '{bad'
+    },
+    {
+      id: 'misleading-content-type',
+      contentType: 'text/plain; charset=utf-8',
+      bodyText: 'upstream returned a non-json success body'
+    }
+  ]
+  for (const scenario of scenarios) {
+    const res = new MockResponse()
+    const result = await jsonInspection.inspectBufferedGatewayJsonResponse({
+      req,
+      res: res as unknown as Response,
+      account,
+      upstreamResponse: {
+        status: 200,
+        ok: true,
+        headers: new Headers({ 'content-type': scenario.contentType }),
+        body: null
+      },
+      upstreamUrl: 'https://untrusted-provider.example/v1/chat/completions',
+      auditAttemptId: `generic-invalid-protocol-${scenario.id}`,
+      auditCapture,
+      settings,
+      usageContext,
+      startedAt: Date.now() - 5,
+      responseBody: Buffer.from(scenario.bodyText),
+      responseBodyText: scenario.bodyText,
+      accountStateMutationEnabled: true,
+      automaticAccountStateMutationEnabled: true,
+      protocolValidationEnabled: true,
+      downstreamCommitState: {} as never
+    })
 
-  assert.equal(result?.alreadyFinalized, false, '下游未提交时协议结构失败应由调用方在当前请求内重试')
-  assert.equal(result && 'retryUpstream' in result ? result.retryUpstream : false, true, '协议结构失败应请求内切号')
+    assert.equal(result?.alreadyFinalized, true, `${scenario.id}: 2xx 协议失败必须终止当前请求`)
+    assert.equal(res.statusCode, 502, `${scenario.id}: 2xx 协议失败必须返回 502`)
+    assert.equal(res.jsonBody?.error?.code, 'upstream_protocol_error', `${scenario.id}: 必须公开协议错误码`)
+  }
   assertSharedStateUnchanged(before, 'complete 2xx invalid protocol response')
   assert.equal(proxyHealth.recordGatewayUpstreamBucketSuccess(account), false, '2xx 协议结构失败不得写 proxy/upstream health')
 }
@@ -373,7 +456,8 @@ function assertSourceBoundaries(): void {
     /suppressGatewayAccountLocally|recordGatewayAccountFailureForPrecheck|applyAccountErrorHandlingWithCacheInvalidation/,
     '2xx 协议结构失败不得写账户共享状态'
   )
-  assert.match(protocolFailureSource, /retryUpstream: true/, '下游未提交时应保留请求内切号')
+  assert.doesNotMatch(protocolFailureSource, /retryUpstream: true/, '下游未提交的 2xx 协议结构失败也必须终止当前请求')
+  assert.match(protocolFailureSource, /sendGatewayErrorResponse\(input\.res, 502/, '2xx 协议结构失败必须返回明确的 502 协议诊断')
   assert.doesNotMatch(
     finalizationSource,
     /confirmClientIpAccountAvoidanceAfterSuccessAsync/,
@@ -416,7 +500,20 @@ class MockResponse extends EventEmitter {
   writableEnded = false
   headersSent = false
   statusCode = 200
+  jsonBody: { error?: { code?: string } } | undefined
   private readonly headers = new Map<string, string | number | readonly string[]>()
+
+  status(statusCode: number): this {
+    this.statusCode = statusCode
+    return this
+  }
+
+  json(body: { error?: { code?: string } }): this {
+    this.jsonBody = body
+    this.headersSent = true
+    this.writableEnded = true
+    return this
+  }
 
   setHeader(name: string, value: string | number | readonly string[]): this {
     this.headers.set(name.toLowerCase(), value)
@@ -530,7 +627,9 @@ async function closeServer(server: http.Server): Promise<void> {
 clearSharedState()
 await assertRequestTransportFailureDoesNotExcludeSiblingAccount()
 clearSharedState()
-await assertSharedProxyIndependentOriginCanStillSucceed()
+await assertSharedProxyTransportFailureTerminatesWithoutFallback()
+clearSharedState()
+await assertExplicitRetryNextMayRotateSiblingKey()
 clearSharedState()
 await assertCompleteInvalidProtocolStaysRequestScoped()
 await assertUpstreamAbortNamedReaderErrorIsNotClientCancellation()

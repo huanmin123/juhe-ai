@@ -30,6 +30,7 @@ const fullPolicy: ModelQualityPolicy = {
   recoveryIntervalMinutes: 10
 }
 let upstreamResponseRequestCount = 0
+let tokenIntegrityRequestCount = 0
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -70,13 +71,18 @@ try {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   assert.equal(quickRun.status, 'completed')
   assert.equal(quickRun.profile, 'quick', '省略 profile 时必须使用快速检测')
-  assert.equal(upstreamResponseRequestCount, 2, '快速检测最多应执行基础请求和一个行为探针')
+  assert.equal(upstreamResponseRequestCount, 8, '快速检测应执行基础、流式、结构化、工具、三点 Token 与配对跨模型请求')
   assert(!quickRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '基础连通成功只用于内部早停，不应生成模型评分项')
-  assert(quickRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), '快速检测应包含轻量行为探针')
-  assert(!quickRun.checks.some((item) => ['responses_stream', 'structured_output', 'tool_calling', 'usage_shape', 'long_context', 'stability', 'cross_model'].includes(item.itemType)), '快速检测不应执行深度探针')
+  for (const itemKey of ['target.responses_stream', 'target.structured_output', 'target.tool_calling', 'target.usage_shape', 'target.token_integrity', 'target.cross_model']) {
+    assert(quickRun.checks.some((item) => item.itemKey === itemKey), `快速检测必须包含 ${itemKey}`)
+  }
+  assert.equal(quickRun.checks.filter((item) => item.itemType === 'token_integrity').length, 1, '快速检测 Token 诊断必须聚合为一个报告项')
+  assert(quickRun.checks.some((item) => item.itemKey === 'target.token_integrity' && item.evidenceSummary.diagnosticOnly === true), '快速检测 Token 必须标记为仅诊断')
+  assert(!quickRun.checks.some((item) => ['behavior_probe', 'long_context', 'stability', 'distribution_similarity'].includes(item.itemType)), '快速检测不得执行行为、长上下文、稳定性或分布探针')
   assert.equal(quickRun.resultSummary.trustedComparison, false)
   assert.notEqual(quickRun.level, 'high_confidence', '快速检测不允许输出高可信结论')
   upstreamResponseRequestCount = 0
+  tokenIntegrityRequestCount = 0
 
   const progressItemKeys: string[] = []
   const accountRun = await runModelCheck({
@@ -95,6 +101,7 @@ try {
     highConfidence: true
   })
   assert.equal(accountRun.accountId, account.id, '账户目标报告应记录被测账号 ID')
+  assert.equal(tokenIntegrityRequestCount, 9, '完整检测 Token 诚信探针必须保持三轮共 9 个物理请求')
   assert(!accountRun.checks.some((item) => item.itemType === 'model_catalog'), '模型检测报告不应再包含本地模型目录检测项')
   assert(!progressItemKeys.some((itemKey) => itemKey.endsWith('.model_catalog')), '模型检测进度不应再执行本地模型目录探针')
 
@@ -163,6 +170,7 @@ function createMockUpstream(): http.Server {
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         upstreamResponseRequestCount += 1
+        if (JSON.stringify(body).includes('Controlled token integrity probe')) tokenIntegrityRequestCount += 1
         const outputText = outputForProbe(body)
         if (body.stream === true) {
           sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText)

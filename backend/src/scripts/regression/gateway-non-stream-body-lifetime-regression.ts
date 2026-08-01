@@ -19,6 +19,7 @@ await assertImageBodyCanCrossTextPrecommitWindow()
 await assertBufferedFragmentsUseSharedPrecommitDeadline()
 await assertDirectBodyKeepsSharedPrecommitDeadlineAfterCommit()
 await assertRealHttpDirectBodyClosesSocketAtSharedPrecommitDeadline()
+await assertProtocolInspectionOverflowStopsBeforeCommit()
 await assertInspectionOverflowKeepsSharedPrecommitDeadlineAfterCommit()
 await assertStreamingBodyUsesAbsoluteLifetime(270_000, '文本 lane 270 秒上限')
 
@@ -224,6 +225,30 @@ async function assertInspectionOverflowKeepsSharedPrecommitDeadlineAfterCommit()
     assert.equal(iteratorClosed, true, '检查降级透传越墙钟后必须关闭上游 iterator')
   } finally {
     Date.now = realDateNow
+    response.destroy()
+  }
+}
+
+async function assertProtocolInspectionOverflowStopsBeforeCommit(): Promise<void> {
+  let iteratorClosed = false
+  const response = mockResponse()
+  try {
+    const result = await pipeNonStreamUpstreamResponseForInspection(twoChunkBody({
+      first: '{"large":"',
+      second: 'unverified"}',
+      beforeSecond: () => {},
+      onClose: () => { iteratorClosed = true }
+    }), response, {
+      startedAt: Date.now(),
+      inspectBytes: 8,
+      requireFullyBuffered: true,
+      maxLifetimeMs: 60_000
+    })
+    assert.equal(result.fullyBuffered, false, '协议验证窗口溢出时不得伪造为完整成功响应')
+    assert.equal(result.inspectionLimitExceeded, true, '协议验证窗口溢出必须明确标记')
+    assert.equal(response.readableLength, 0, '未验证的协议正文不得在窗口溢出后写入下游')
+    assert.equal(iteratorClosed, true, '拒绝未验证正文时必须关闭上游 iterator')
+  } finally {
     response.destroy()
   }
 }

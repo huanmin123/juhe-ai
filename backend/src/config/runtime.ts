@@ -129,6 +129,9 @@ export interface RuntimeConfig {
     accountCircuitRebuildPageTimeoutMs: number
     accountCircuitRebuildTotalTimeoutMs: number
     accountCircuitRebuildMaxPages: number
+    automaticProbeMaxConcurrency: number
+    usageFinalizationMaxItems: number
+    usageFinalizationMaxConcurrency: number
     accountCircuitRecoveryBatchSize: number
     accountCircuitRecoveryConcurrency: number
   }
@@ -460,6 +463,9 @@ export const runtimeConfig: RuntimeConfig = {
       300_000
     ),
     accountCircuitRebuildMaxPages: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_REBUILD_MAX_PAGES', 200, 1, 2_000),
+    automaticProbeMaxConcurrency: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_MAX_CONCURRENCY', 3, 1, 1_000),
+    usageFinalizationMaxItems: integerConfig('JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS', 2048, 1, 1_000_000),
+    usageFinalizationMaxConcurrency: integerConfig('JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_CONCURRENCY', 32, 1, 1_000),
     accountCircuitRecoveryBatchSize: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_BATCH_SIZE', 200, 1, 2_000),
     accountCircuitRecoveryConcurrency: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_CONCURRENCY', 16, 1, 128)
   },

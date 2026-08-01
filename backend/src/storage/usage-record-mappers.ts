@@ -194,22 +194,35 @@ function usageFailureAttribution(value: unknown): UsageRecordSummary['failureAtt
   return undefined
 }
 
-/** List rows expose a bounded category, never persisted error text or snapshots. */
+/** List rows expose a bounded, actionable error summary; raw payloads stay in audit detail. */
 function usageRecordListFailureReason(row: UsageRecordRow): string | undefined {
   if (row.success === 1) return undefined
   const errorCode = optionalString(row.error_code)
+  const errorMessage = boundedUsageFailureMessage(optionalString(row.error_message))
   const attribution = usageFailureAttribution(row.failure_attribution)
   if (errorCode === 'downstream_connection_closed' || attribution === 'downstream_closed') {
     return '下游连接关闭'
   }
+  const upstreamFacts = [
+    typeof row.status_code === 'number' && row.status_code >= 400 ? `上游 HTTP ${row.status_code}` : undefined,
+    errorCode,
+    errorMessage
+  ].filter((value): value is string => Boolean(value))
+  if (upstreamFacts.length > 0) return upstreamFacts.join(' | ')
   const errorCodeReason = usageRecordListFailureReasonForErrorCode(errorCode)
   if (errorCodeReason) return errorCodeReason
   if (attribution === 'account_dependency') return '账户依赖不可用'
-  if (attribution === 'opaque_upstream') return '上游返回未识别失败'
+  if (attribution === 'opaque_upstream') return '上游失败，未返回可解析的错误详情'
   if (attribution === 'account_upstream') return '上游请求失败'
   if (attribution === 'gateway_capacity') return '网关容量不足'
   if (attribution === 'gateway_policy') return '网关策略拒绝请求'
   return '请求未正常完成'
+}
+
+function boundedUsageFailureMessage(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const limit = 500
+  return value.length > limit ? `${value.slice(0, limit)} [已截断]` : value
 }
 
 function usageRecordListFailureReasonForErrorCode(errorCode: string | undefined): string | undefined {

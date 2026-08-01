@@ -43,6 +43,16 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_USAGE_SHARD_DEFAULT_CHILD === '1') {
   process.exit(0)
 }
 
+if (process.env.JUHE_AI_RUNTIME_CONFIG_GATEWAY_DEFAULT_CHILD === '1') {
+  const { runtimeConfig } = await import('../../config/runtime.js')
+
+  assert.equal(runtimeConfig.gateway.automaticProbeMaxConcurrency, 3, '禁用基础 env 后网关自动恢复探针默认并发必须为 3')
+  assert.equal(runtimeConfig.gateway.usageFinalizationMaxItems, 2048, '禁用基础 env 后网关失败用量收尾默认队列容量必须为 2048')
+  assert.equal(runtimeConfig.gateway.usageFinalizationMaxConcurrency, 32, '禁用基础 env 后网关失败用量收尾默认并发必须为 32')
+
+  process.exit(0)
+}
+
 if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   const { runtimeConfig } = await import('../../config/runtime.js')
 
@@ -63,6 +73,9 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 3000, 'PostgreSQL lock timeout 应正确读取')
   assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 55000, 'PostgreSQL idle transaction timeout 应正确读取')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
+  assert.equal(runtimeConfig.gateway.automaticProbeMaxConcurrency, 100, '网关自动恢复探针并发应正确读取')
+  assert.equal(runtimeConfig.gateway.usageFinalizationMaxItems, 10000, '网关失败用量收尾队列容量应正确读取')
+  assert.equal(runtimeConfig.gateway.usageFinalizationMaxConcurrency, 64, '网关失败用量收尾并发应正确读取')
   assert.equal('readOnly' in runtimeConfig.systemApi, false, '显式历史开关不得恢复临时发布拦截模式')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
   assert.deepEqual(runtimeConfig.chat, {
@@ -152,6 +165,13 @@ const result = spawnRegression({
 
 assertRegressionSuccess(result)
 
+const gatewayDefaultResult = spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_GATEWAY_DEFAULT_CHILD: '1',
+  JUHE_AI_DISABLE_BASE_ENV: 'true'
+})
+
+assertRegressionSuccess(gatewayDefaultResult)
+
 const defaultUsageRootResult = spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_USAGE_SHARD_DEFAULT_CHILD: '1',
   JUHE_AI_RUNTIME_MODE: 'standalone',
@@ -199,6 +219,9 @@ const performanceResult = spawnRegression({
   JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: '3000',
   JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS: '55000',
   JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
+  JUHE_AI_GATEWAY_AUTOMATIC_PROBE_MAX_CONCURRENCY: '100',
+  JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS: '10000',
+  JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_CONCURRENCY: '64',
   JUHE_AI_REDIS_STREAM_READ_COUNT: '500',
   JUHE_AI_CHAT_RETENTION_DAYS: '9',
   JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER: '60',

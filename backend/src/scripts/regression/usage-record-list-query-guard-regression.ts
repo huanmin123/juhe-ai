@@ -333,6 +333,26 @@ try {
       createdAt: '2026-01-02T00:00:06.000Z'
     },
     {
+      id: 'usage_list_query_guard_opaque_http',
+      traceId: 'trace-usage-list-query-guard-opaque-http',
+      trafficSource: 'gateway',
+      apiKeyId: otherApiKey.id,
+      groupId: otherGroup.id,
+      accountId: otherGroupAccount.id,
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: 'gpt-5.6-opaque-http',
+      clientIp: '127.0.2.8',
+      stream: false,
+      statusCode: 402,
+      success: false,
+      failureAttribution: 'opaque_upstream',
+      errorCode: 'insufficient_user_quota',
+      errorMessage: '当前账户暂无生效套餐，请前往控制面板或 API 管理后台订阅',
+      responseSnapshot: { raw: '只允许在审计详情中查看的上游响应体' },
+      createdAt: '2026-01-02T00:00:09.000Z'
+    },
+    {
       id: 'usage_list_query_guard_downstream_unknown',
       traceId: 'trace-usage-list-query-guard-downstream-unknown',
       trafficSource: 'gateway',
@@ -427,6 +447,15 @@ try {
     assert.equal('errorMessage' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误文本')
     assert.equal('requestSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回请求快照')
     assert.equal('responseSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回响应快照')
+
+    const opaqueHttp = repositories.listUsageRecords(access, { model: 'gpt-5.6-opaque-http', page: 1, pageSize: 10 }).items[0]
+    assert.equal(
+      opaqueHttp?.failureReason,
+      '上游 HTTP 402 | insufficient_user_quota | 当前账户暂无生效套餐，请前往控制面板或 API 管理后台订阅',
+      '完整上游 HTTP 失败必须在列表中保留状态、错误码和可行动消息，不能降级为未识别失败'
+    )
+    assert.equal('errorCode' in (opaqueHttp ?? {}), false, '列表仍只返回组合后的安全摘要')
+    assert.equal('responseSnapshot' in (opaqueHttp ?? {}), false, '原始上游响应体仍只能通过审计详情查看')
 
     const accountNamePrefix = repositories.listUsageRecords(access, { accountKeyword: '使用记录查询防护', page: 1, pageSize: 10 })
     assert.deepEqual(accountNamePrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '账号名称关键字应按前缀匹配，不应命中中间包含名称')

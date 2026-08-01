@@ -46,10 +46,6 @@ import {
 } from './responses.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
-  automaticUpstreamReplayAllowedAfterDispatch,
-  resolveOpenAIGatewayRequestLane
-} from '../protocols/openai-v1/request-lane.js'
-import {
   pipeUpstreamStream,
   type StreamFailureContext,
   type StreamBodyOmissionSummary
@@ -98,6 +94,10 @@ import {
   requestModel
 } from '../request/metadata.js'
 import {
+  getGatewayRequestBodyState,
+  type GatewayRawBodyRequest
+} from '../request/body.js'
+import {
   estimateTokenCountFromText
 } from '../protocols/openai-v1/stream-events.js'
 import {
@@ -116,11 +116,7 @@ import {
   type GatewayUsageContext
 } from '../usage/records.js'
 import {
-  preCommitStreamServerRetryErrorCode,
-  shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRememberCodexTurnStreamFailure,
-  shouldRetryPreCommitStreamFailureOnServer,
-  shouldRetryResponseInspectionOnServer,
   type StreamServerRetryReason
 } from './stream-finalization-retry-decision.js'
 import {
@@ -199,10 +195,16 @@ export function protocolValidatedNonStreamResponse(input: {
   const parsed = parsedJsonBody.value
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
   const root = parsed as Record<string, unknown>
-  if (isRecordValue(root.error) || root.type === 'error' || root.status === 'failed') return false
   const path = (input.req.originalUrl || input.req.path || '').split('?', 1)[0].toLowerCase()
+  if (
+    !isManagementResourceResponsePath(path)
+    && (isRecordValue(root.error) || root.type === 'error' || root.status === 'failed')
+  ) return false
   if (path === '/models' || path === '/v1/models' || path === '/v1beta/models') {
-    return Array.isArray(root.data) || root.object === 'model'
+    return Array.isArray(root.data)
+      || Array.isArray(root.models)
+      || root.object === 'model'
+      || typeof root.name === 'string'
   }
   const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
   switch (endpointFamily) {
@@ -221,7 +223,10 @@ export function protocolValidatedNonStreamResponse(input: {
     case 'messages':
       return root.type === 'message' && Array.isArray(root.content)
     case 'models':
-      return Array.isArray(root.data) || root.object === 'model'
+      return Array.isArray(root.data)
+        || Array.isArray(root.models)
+        || root.object === 'model'
+        || typeof root.name === 'string'
     case 'message_token_counting':
       return typeof root.input_tokens === 'number'
     case 'generate_content':
@@ -234,7 +239,17 @@ export function protocolValidatedNonStreamResponse(input: {
     case 'interactions':
       return typeof root.id === 'string' || typeof root.name === 'string'
     case 'unknown': {
-      return (path.includes('/embeddings') || path.includes('/images')) && Array.isArray(root.data)
+      if (path.includes('/embeddings') || path.includes('/images')) {
+        return Array.isArray(root.data)
+      }
+      if (path.includes('/moderations')) return Array.isArray(root.results)
+      if (/\/audio\/(?:transcriptions|translations)$/.test(path)) {
+        return audioTranscriptionRequestExpectsJson(input.req) && typeof root.text === 'string'
+      }
+      if (/\/(?:batches|fine_tuning|vector_stores)(?:\/|$)/.test(path) || /^(?:\/v1)?\/files(?:\/|$)/.test(path)) {
+        return typeof root.id === 'string' || Array.isArray(root.data)
+      }
+      return false
     }
   }
 }
@@ -557,12 +572,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   })
   if (!streamResult.completed) {
     const upstreamResponseCommitted = isStreamUpstreamResponseCommitted(streamResult)
-    const canRetryUpstream = !upstreamResponseCommitted
     const responsePrecommitDeadlineExceeded = isResponsePrecommitDeadlineStreamResult(streamResult)
-    const speedFirstFirstByteCutover = canRetryUpstream && (
-      responsePrecommitDeadlineExceeded
-      || (input.firstByteDeadlineMs !== undefined && isFirstByteTimeoutStreamResult(streamResult))
-    )
     const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     await recordCompletedUpstreamAttempt(req, {
@@ -598,71 +608,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           upstreamResponseCommitted
         }
       })
-    }
-    if (speedFirstFirstByteCutover) {
-      if (!responsePrecommitDeadlineExceeded) {
-        auditCapture.addGatewayMetadata({
-          label: 'normal_route_first_byte_deadline_cutover',
-          metadata: {
-            accountId: account.id,
-            accountName: account.name,
-            timeoutMs: input.firstByteDeadlineMs,
-            message: streamResult.message
-          }
-        })
-      }
-      return {
-        alreadyFinalized: false,
-        retryUpstream: true,
-        retryReason: 'normal_route_first_byte_timeout',
-        excludeCurrentAccount: true,
-        message: streamResult.message,
-        errorCode: streamResult.errorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody,
-        transportFailure: streamResult.transportFailure
-      }
-    }
-    if (canRetryUpstream && shouldRetryResponseInspectionOnServer(streamResult, res)) {
-      auditCapture.addGatewayMetadata({
-        label: 'response_inspection_server_retry',
-        metadata: responseInspectionAuditMetadata(streamResult.responseInspection)
-      })
-      return {
-        alreadyFinalized: false,
-        retryUpstream: true,
-        retryReason: 'response_inspection',
-        responseInspection: streamResult.responseInspection,
-        excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(streamResult.responseInspection),
-        message: streamResult.message,
-        errorCode: streamResult.responseInspection.upstreamErrorCode ?? streamResult.errorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody,
-        transportFailure: streamResult.transportFailure
-      }
-    }
-    if (canRetryUpstream && shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
-      const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
-      auditCapture.addGatewayMetadata({
-        label: 'pre_commit_stream_server_retry',
-        metadata: {
-          errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
-          clientFacingErrorCode,
-          message: streamResult.message,
-          downstreamBytesWritten: streamResult.downstreamBytesWritten,
-          outputReceived: streamResult.outputReceived,
-          accountId: account.id
-        }
-      })
-      return {
-        alreadyFinalized: false,
-        retryUpstream: true,
-        retryReason: 'pre_commit_stream_failure',
-        responseInspection: streamResult.responseInspection,
-        excludeCurrentAccount: true,
-        message: streamResult.message,
-        errorCode: clientFacingErrorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody,
-        transportFailure: streamResult.transportFailure
-      }
     }
     if (
       !isAccountDiagnosticTrafficSource(usageContext.trafficSource)
@@ -841,6 +786,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     markFirstOutput?.()
   }
   const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, account)
+  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(req, account)
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
@@ -888,15 +834,23 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       markFirstOutput?.()
     } else if (upstreamResponse.body) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
-      const protocolValidationEnabled = isOpenAIJsonResponseContentType(contentType)
-        && nonStreamJsonProtocolValidationAllowed(input)
-      const inspectJsonResponse = isOpenAIJsonResponseContentType(contentType)
-        && (protocolValidationEnabled || shouldBufferNonStreamJsonResponse(input))
+      // Protocol-shaped endpoints must validate a complete 2xx even when the
+      // provider lies about content-type. Otherwise malformed JSON can be
+      // forwarded as a successful response and hide the failed attempt.
+      const protocolValidationEnabled = nonStreamJsonProtocolValidationAllowed(input)
+      const inspectJsonResponse = !upstreamResponse.ok
+        || protocolValidationEnabled
+        || (
+          isOpenAIJsonResponseContentType(contentType)
+          && shouldBufferNonStreamJsonResponse(input)
+        )
       if (inspectJsonResponse) {
         const pipeResult = await pipeNonStreamUpstreamResponseForInspection(upstreamResponse.body, res, {
           startedAt,
           inspectBytes: nonStreamResponseInspectionMaxBytes,
-          captureBody: auditCapture.shouldCaptureSuccessPayloads()
+          requireFullyBuffered: protocolValidationEnabled,
+          captureBody: !upstreamResponse.ok
+            || auditCapture.shouldCaptureSuccessPayloads()
             || responseEndpointFamily === 'responses',
           signal,
           firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
@@ -938,11 +892,16 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           }
         })
         responseBody = pipeResult.capturedBody
-        responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+          ?? (!upstreamResponse.ok && pipeResult.capturedBodyText
+            ? Buffer.from(pipeResult.capturedBodyText, 'utf8')
+            : undefined)
+        responseBodyText = pipeResult.captureTruncated
+          ? (!upstreamResponse.ok ? pipeResult.diagnosticBodyText : undefined)
+          : pipeResult.capturedBodyText
         markTrackedResponsesFailure()
         responseUsageText = pipeResult.usageTailText
         firstTokenMs = pipeResult.firstByteMs
-        if (pipeResult.fullyBuffered) {
+        if (pipeResult.fullyBuffered || pipeResult.inspectionLimitExceeded) {
           const completeBody = pipeResult.completeBody ?? Buffer.alloc(0)
           const completeBodyText = pipeResult.completeBodyText ?? completeBody.toString('utf8')
           parsedJsonBody = parseGatewayNonStreamJsonBody(completeBodyText, upstreamResponse.headers)
@@ -971,6 +930,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             accountStateMutationEnabled: accountStateMutationEnabled !== false,
             automaticAccountStateMutationEnabled: input.automaticAccountStateMutationEnabled !== false,
             protocolValidationEnabled,
+            protocolValidationLimitExceeded: pipeResult.inspectionLimitExceeded,
             downstreamCommitState: input.downstreamCommitState,
             sessionAffinityKey
           })
@@ -1033,7 +993,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       } else {
         const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
           startedAt,
-          captureBody: auditCapture.shouldCaptureSuccessPayloads()
+          captureBody: !upstreamResponse.ok
+            || auditCapture.shouldCaptureSuccessPayloads()
             || responseEndpointFamily === 'responses',
           signal,
           firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
@@ -1065,7 +1026,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           }
         })
         responseBody = pipeResult.capturedBody
-        responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+          ?? (!upstreamResponse.ok && pipeResult.capturedBodyText
+            ? Buffer.from(pipeResult.capturedBodyText, 'utf8')
+            : undefined)
+        responseBodyText = pipeResult.captureTruncated
+          ? (!upstreamResponse.ok ? pipeResult.diagnosticBodyText : undefined)
+          : pipeResult.capturedBodyText
         markTrackedResponsesFailure()
         responseUsageText = pipeResult.usageTailText
         firstTokenMs = pipeResult.firstByteMs
@@ -1149,14 +1115,23 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           message: errorMessage
         }
       })
-      return {
-        alreadyFinalized: false,
-        retryUpstream: true,
-        retryReason: 'normal_route_first_byte_timeout',
-        excludeCurrentAccount: true,
-        message: errorMessage,
-        errorCode
-      }
+      const responsePayload = gatewayErrorPayload(errorMessage, 'upstream_timeout_error', errorCode)
+      const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
+      sendGatewayErrorResponse(res, 504, responsePayload, { protocol: clientErrorProtocol })
+      auditCapture.finalize({
+        outcome: 'upstream_failed',
+        success: false,
+        statusCode: 504,
+        responseHeaders: responseHeadersToObject(res),
+        responseBody: JSON.stringify(clientPayload),
+        responsePartType: 'gateway_error',
+        errorPhase: 'upstream_response',
+        errorCode,
+        errorMessage,
+        accountId: account.id,
+        firstTokenMs
+      })
+      return { alreadyFinalized: true, errorCode }
     }
     if (signal.aborted && gatewayRequestAbortSource(req)) {
       throw error
@@ -1302,7 +1277,11 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       ? parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText, skipFullDocumentParse)
       : parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText, skipFullDocumentParse)
   }
-  if (interpretUpstreamResponseSemantics && !upstreamResponse.ok) {
+  // A complete upstream error is client-visible even for generic profiles.
+  // Parsing its standard error envelope is observational only; it must never
+  // decide routing or account state, but it keeps usage/audit diagnostics
+  // specific instead of labeling the failure as unknown.
+  if (!upstreamResponse.ok) {
     errorPayload = parsedJsonBody?.status === 'valid'
       ? parseGatewayProtocolErrorPayloadFromJsonValue(account, parsedJsonBody.value)
       : parsedJsonBody
@@ -1398,13 +1377,59 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
 export function nonStreamJsonProtocolValidationAllowed(input: {
   req: Request
   account: UpstreamAccount
-  upstreamResponse: Pick<GatewayUpstreamResponse, 'ok'>
+  upstreamResponse: Pick<GatewayUpstreamResponse, 'ok'> & { headers?: Headers }
 }): boolean {
   if (!input.upstreamResponse.ok) return false
-  const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
-  if (endpointFamily !== 'chat_completions' && endpointFamily !== 'messages' && endpointFamily !== 'responses') return false
-  const requestLane = resolveOpenAIGatewayRequestLane(input.req)
-  return automaticUpstreamReplayAllowedAfterDispatch(input.req, requestLane)
+  const requestPath = gatewayRequestPath(input.req)
+  if (isKnownBinaryGatewayDownloadPath(requestPath)) return false
+  return isKnownNonStreamJsonProtocolRequest(input.req, input.account)
+}
+
+function isKnownNonStreamJsonProtocolRequest(req: Request, account: UpstreamAccount): boolean {
+  if (gatewayProtocolResponseEndpointFamilyForRequest(req, account) !== 'unknown') return true
+  const requestPath = gatewayRequestPath(req)
+  if (isKnownBinaryGatewayDownloadPath(requestPath)) return false
+  const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
+  return normalizedPath === '/models'
+    || normalizedPath === '/embeddings'
+    || normalizedPath === '/moderations'
+    || /^\/images\/(?:generations|edits|variations)$/.test(normalizedPath)
+    || (
+      /^\/audio\/(?:transcriptions|translations)$/.test(normalizedPath)
+      && audioTranscriptionRequestExpectsJson(req)
+    )
+    || /^\/(?:batches|fine_tuning|vector_stores)(?:\/|$)/.test(normalizedPath)
+    || normalizedPath === '/files'
+    || /^\/files\/[^/]+$/.test(normalizedPath)
+}
+
+function gatewayRequestPath(req: Request): string {
+  return (req.originalUrl || req.path || '').split('?', 1)[0].toLowerCase()
+}
+
+function isKnownBinaryGatewayDownloadPath(requestPath: string): boolean {
+  const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
+  return /^\/files\/[^/]+\/content(?:\/|$)/.test(normalizedPath)
+    || /^\/vector_stores\/[^/]+\/files\/[^/]+\/content(?:\/|$)/.test(normalizedPath)
+}
+
+function isManagementResourceResponsePath(requestPath: string): boolean {
+  return /\/(?:batches|fine_tuning|vector_stores)(?:\/|$)/.test(requestPath)
+    || /^(?:\/v1)?\/files(?:\/|$)/.test(requestPath)
+}
+
+function audioTranscriptionRequestExpectsJson(req: Request): boolean {
+  const request = req as GatewayRawBodyRequest
+  const body = request.body !== undefined
+    ? request.body
+    : request.gatewayParsedJsonBodyAvailable
+      ? request.gatewayParsedJsonBody
+      : undefined
+  const directResponseFormat = isRecordValue(body) && typeof body.response_format === 'string'
+    ? body.response_format.trim().toLowerCase()
+    : undefined
+  const responseFormat = directResponseFormat ?? getGatewayRequestBodyState(req)?.responseFormat
+  return responseFormat === undefined || responseFormat === 'json' || responseFormat === 'verbose_json'
 }
 
 function managementResponseInspectionPoliciesForInput(
@@ -1752,16 +1777,25 @@ async function inspectBufferedHybridQualityResponse(input: {
     }),
     errorMessage: message
   })
-  return {
-    alreadyFinalized: false,
-    retryUpstream: true,
-    retryReason: 'hybrid_quality',
-    excludeCurrentAccount: false,
-    message,
+  const statusCode = hybridQualityFailureStatusCode(quality)
+  const protocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
+  const responsePayload = gatewayErrorPayload(message, 'hybrid_quality_failed', errorCode)
+  const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+  sendGatewayErrorResponse(input.res, statusCode, responsePayload, { protocol })
+  input.auditCapture.finalize({
+    outcome: 'upstream_failed',
+    success: false,
+    statusCode,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody: JSON.stringify(clientPayload),
+    responsePartType: 'gateway_error',
+    errorPhase: 'response_inspection',
     errorCode,
-    statusCode: hybridQualityFailureStatusCode(quality),
-    hybridQuality: quality
-  }
+    errorMessage: message,
+    accountId: input.account.id,
+    firstTokenMs: input.firstTokenMs
+  })
+  return { alreadyFinalized: true, errorCode }
 }
 
 function hybridQualityFailureStatusCode(quality: HybridQualityInspectionOutcome): number {
@@ -2009,6 +2043,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     usage: result.usage,
     errorCode: finalErrorCode,
     errorMessage: finalErrorMessage,
+    failureAttribution: forwardedResponseSuccessful ? undefined : 'opaque_upstream',
     requestSnapshot: result.bodyOmission
       ? usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, result.bodyOmission)
       : forwardedResponseSuccessful ? undefined : usageContext.requestSnapshot,

@@ -5,7 +5,14 @@ set -euo pipefail
 
 REPO_ROOT="${1:?repository root is required}"
 SOURCE="$REPO_ROOT/docs/deploy/macos/operations/wireguard-reconciler.sh"
-ROOT="$(mktemp -d "${TMPDIR:-/tmp}/juhe-wg-reconciler.XXXXXX")"
+# The probe adapter deliberately rejects a symlinked parent chain. macOS login
+# sessions commonly expose TMPDIR below /var, which is a symlink to /private/var.
+# Keep Darwin fixtures under the physical private temp root instead.
+HARNESS_TMP_BASE="${JUHE_WG_HARNESS_TMPDIR:-${TMPDIR:-/tmp}}"
+if [ "$(uname -s)" = Darwin ] && [ -d /private/tmp ]; then
+  HARNESS_TMP_BASE=/private/tmp
+fi
+ROOT="$(mktemp -d "$HARNESS_TMP_BASE/juhe-wg-reconciler.XXXXXX")"
 FAKE="$ROOT/fake"
 RUN="$ROOT/run"
 STATE="$ROOT/state"
@@ -74,13 +81,37 @@ cat > "$FAKE/wg" <<'EOF'
 #!/usr/bin/env bash
 edge="$(printf '%s' "${2:-}" | sed -n 's/[^0-9]*\([0-9][0-9]*\)$/\1/p')"
 if [ "$1" = show ] && [ -n "${FAKE_WG_LOG:-}" ]; then printf 'wg show %s\n' "${2:-}" >> "$FAKE_WG_LOG"; fi
+ready_for_interface() {
+  local iface="$1" number
+  if [ "${FAKE_WG_AMBIGUOUS_PEER:-0}" -ne 0 ] && [ "$iface" = utun2 ] && [ -f "$FAKE_RUN/wg-edge1.ready" ]; then
+    return 0
+  fi
+  number="$(printf '%s' "$iface" | sed -n 's/^utun\([0-9][0-9]*\)$/\1/p')"
+  [ -n "$number" ] && [ -f "$FAKE_RUN/wg-edge$number.ready" ]
+}
+if [ "$1" = show ] && [ "${2:-}" = interfaces ]; then
+  for ready in "$FAKE_RUN"/wg-edge*.ready; do
+    [ -f "$ready" ] || continue
+    edge_name="$(basename "$ready" .ready)"
+    number="$(printf '%s' "$edge_name" | sed -n 's/^wg-edge\([0-9][0-9]*\)$/\1/p')"
+    [ -n "$number" ] && printf 'utun%s\n' "$number"
+  done
+  if [ "${FAKE_WG_AMBIGUOUS_PEER:-0}" -ne 0 ] && [ -f "$FAKE_RUN/wg-edge1.ready" ]; then printf 'utun2\n'; fi
+  exit 0
+fi
+if [ "$1" = show ] && [ "${3:-}" = peers ]; then
+  [ -f "$FAKE_RUN/interface-gone.$edge" ] && exit 1
+  ready_for_interface "${2:-}" || exit 1
+  printf 'fake-peer-key\n'
+  exit 0
+fi
 if [ "$1" = show ] && [ "$3" = latest-handshakes ]; then
   if { [ -n "${FAKE_FRESH_UTUN:-}" ] && [ "$2" = "$FAKE_FRESH_UTUN" ]; } || [ -f "$FAKE_RUN/killed.$edge" ]; then printf 'peer %s\n' "$(date +%s)"; else printf 'peer %s\n' "${FAKE_HANDSHAKE:-0}"; fi
   exit 0
 fi
 if [ "$1" = show ] && [ "$3" = transfer ]; then if [ -f "$FAKE_RUN/killed.$edge" ]; then printf 'peer 200 200\n'; else printf 'peer 100 100\n'; fi; exit 0; fi
 if [ "$1" = show ] && { [ -f "$FAKE_RUN/killed.$edge" ] || [ -f "$FAKE_RUN/interface-gone.$edge" ]; }; then exit 1; fi
-if [ "$1" = show ]; then exit 0; fi
+if [ "$1" = show ]; then ready_for_interface "${2:-}" || exit 1; exit 0; fi
 exit 1
 EOF
 cat > "$FAKE/wg-quick" <<'EOF'
@@ -94,6 +125,7 @@ printf 'wg-quick %s %s\n' "$command_name" "$config_path" >> "${FAKE_WG_LOG:?}"
 case "$command_name" in
   down)
     rm -f "$FAKE_RUN/$edge.name"
+    rm -f "$FAKE_RUN/$edge.ready"
     exit 0
     ;;
   up)
@@ -101,6 +133,7 @@ case "$command_name" in
     if [ "${FAKE_WG_READY_DELAY_SECONDS:-0}" -gt 0 ]; then sleep "$FAKE_WG_READY_DELAY_SECONDS"; fi
     if [ "${FAKE_WG_NEVER_READY:-0}" -eq 0 ]; then
       printf '%s\n' "$actual_interface" > "$FAKE_RUN/$edge.name"
+      : > "$FAKE_RUN/$edge.ready"
       : > "$FAKE_RUN/$actual_interface.sock"
       printf 'wg-quick ready %s\n' "$actual_interface" >> "${FAKE_WG_LOG:?}"
     fi
@@ -134,6 +167,18 @@ value_for() {
   [ -f "$plist" ] || return 0
   /usr/bin/awk -F '\t' -v slot="$slot" '$1 == slot { print $2; exit }' "$plist"
 }
+has_value() {
+  local slot="$1" plist="$2"
+  [ -f "$plist" ] || return 1
+  # ProgramArguments is a contiguous plist array. Treat any fake index beyond
+  # arg3 as presence of the fourth array entry so a sparse text fixture cannot
+  # hide an extra argument from the production existence check.
+  if [ "$slot" = 4 ]; then
+    /usr/bin/awk -F '\t' '$1 ~ /^[0-9]+$/ && $1 >= 4 { found=1; exit } END { exit !found }' "$plist"
+    return $?
+  fi
+  /usr/bin/awk -F '\t' -v slot="$slot" '$1 == slot { found=1; exit } END { exit !found }' "$plist"
+}
 replace_value() {
   local slot="$1" value="$2" plist="$3" temp
   temp="$plist.plutil.$$"
@@ -146,14 +191,17 @@ replace_value() {
   /bin/mv "$temp" "$plist"
 }
 case "$1" in
-  -lint) exit 0 ;;
-  -extract)
+  '-lint') exit 0 ;;
+  '-extract')
     index="${2#ProgramArguments.}"
-    value="$(value_for "$index" "${6:?missing plist path}")"
-    if [ -z "$value" ]; then
+    plist="${6:?missing plist path}"
+    value="$(value_for "$index" "$plist")"
+    if ! has_value "$index" "$plist"; then
       case "$index" in
-        0) value="${FAKE_SOURCE_WRAPPER:?}" ;;
-        1)
+        0) value='/usr/local/bin/bash' ;;
+        1) value="${FAKE_SOURCE_WRAPPER:?}" ;;
+        2) edge="$(printf '%s' "${6:?missing plist path}" | sed -n 's/.*edge\([0-9][0-9]*\)\.plist/\1/p')"; value="wg-edge${edge:-1}" ;;
+        3)
           case "${FAKE_SOURCE_CONFIG##*/}" in
             config1)
               edge="$(printf '%s' "${6:?missing plist path}" | sed -n 's/.*edge\([0-9][0-9]*\)\.plist/\1/p')"
@@ -165,13 +213,53 @@ case "$1" in
       esac
     fi
     [ -z "$value" ] || printf '%s\n' "$value"
-    exit 0 ;;
-  -replace)
+    if has_value "$index" "$plist"; then
+      exit 0
+    fi
+    case "$index" in
+      0|1|2|3) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  '-replace')
     index="${2#ProgramArguments.}"
     [ "${3:-}" = -string ] || exit 64
     replace_value "$index" "${4:?missing replacement value}" "${5:?missing plist path}"
     exit 0 ;;
   *) exit 0 ;;
+esac
+EOF
+cat > "$FAKE/PlistBuddy" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+
+[ "${1:-}" = -c ] || exit 64
+command="${2:?missing command}"
+plist="${3:?missing plist path}"
+
+replace_value() {
+  local slot="$1" value="$2" temp
+  temp="$plist.plistbuddy.$$"
+  /usr/bin/awk -F '\t' -v slot="$slot" '$1 != slot { print }' "$plist" > "$temp"
+  printf '%s\t%s\n' "$slot" "$value" >> "$temp"
+  /bin/mv "$temp" "$plist"
+}
+
+case "$command" in
+  'Delete :ProgramArguments')
+    temp="$plist.plistbuddy.$$"
+    /usr/bin/awk -F '\t' '$1 !~ /^[0-9]+$/ { print }' "$plist" > "$temp"
+    /bin/mv "$temp" "$plist"
+    ;;
+  'Add :ProgramArguments array') ;;
+  'Add :ProgramArguments:'*)
+    suffix="${command#Add :ProgramArguments:}"
+    slot="${suffix%% *}"
+    value="${suffix#* string }"
+    [ "$value" != "$suffix" ] || exit 64
+    replace_value "$slot" "$value"
+    ;;
+  *) exit 64 ;;
 esac
 EOF
 cat > "$FAKE/launchctl" <<'EOF'
@@ -189,8 +277,8 @@ case "$1" in
     label="${last##*/}"
     plist="${FAKE_LAUNCHD_DIR:?}/$label.plist"
     [ -f "$plist" ] || exit 113
-    job_wrapper="$(plist_value 0 "$plist")"
-    job_config="$(plist_value 1 "$plist")"
+    job_wrapper="$(plist_value 1 "$plist")"
+    job_config="$(plist_value 3 "$plist")"
     [ -n "$job_wrapper" ] || job_wrapper="${FAKE_SOURCE_WRAPPER:?}"
     if [ -z "$job_config" ]; then
       # Regular reconciler fixtures share one wrapper but bind every edge to its own
@@ -201,7 +289,7 @@ case "$1" in
         *) job_config="${FAKE_SOURCE_CONFIG:?}" ;;
       esac
     fi
-    job="ProgramArguments = ( $job_wrapper $job_config )"
+    job="ProgramArguments = ( /usr/local/bin/bash $job_wrapper wg-edge$edge $job_config )"
     printf 'jobdump %s\n' "$job" >> "$FAKE_ACTION_LOG"
     printf '%s\n' "$job"
     exit 0
@@ -222,6 +310,7 @@ sed \
   -e "s|/usr/bin/pmset|$FAKE/pmset|g" \
   -e "s|/usr/bin/shasum|$FAKE/shasum|g" \
   -e "s|/usr/bin/plutil|$FAKE/plutil|g" \
+  -e "s|/usr/libexec/PlistBuddy|$FAKE/PlistBuddy|g" \
   -e "s|/usr/bin/logger|$FAKE/logger|g" \
   -e "s|/Library/LaunchDaemons|$ROOT/launchd|g" \
   -e "s|/bin/launchctl|$FAKE/launchctl|g" \
@@ -244,6 +333,7 @@ sed \
   -e "s|/usr/bin/stat|$FAKE/stat|g" \
   -e "s|/usr/bin/id|$FAKE/id|g" \
   -e "s|/usr/bin/plutil|$FAKE/plutil|g" \
+  -e "s|/usr/libexec/PlistBuddy|$FAKE/PlistBuddy|g" \
   -e "s|/usr/bin/shasum|$FAKE/shasum|g" \
   -e "s|/usr/sbin/chown|$FAKE/chown|g" \
   -e "s|/usr/local/bin/bash|$FAKE/bash|g" \
@@ -261,6 +351,7 @@ sed \
   -e "s|/usr/bin/stat|$FAKE/stat|g" \
   -e "s|/usr/bin/id|$FAKE/id|g" \
   -e "s|/usr/bin/plutil|$FAKE/plutil|g" \
+  -e "s|/usr/libexec/PlistBuddy|$FAKE/PlistBuddy|g" \
   -e "s|/usr/bin/shasum|$FAKE/shasum|g" \
   -e "s|/usr/sbin/chown|$FAKE/chown|g" \
   -e "s|/usr/local/bin/wg|$FAKE/wg|g" \
@@ -338,8 +429,15 @@ make_migration_manifest() {
   wrapper_hash="$(sha256_file "$ROOT/migration-wrapper.sh")"
   : > "$MIGRATION_MANIFEST"
   for index in 1 2 3 4 5 6 7 8; do
-    : > "$ROOT/launchd/com.example.wg.edge$index.plist"
+    printf '0\t%s/bash\n1\t%s/migration-wrapper.sh\n2\twg-edge%s\n3\t%s/migration.conf\n' "$FAKE" "$ROOT" "$index" "$ROOT" > "$ROOT/launchd/com.example.wg.edge$index.plist"
     printf 'edge%s\twg-edge%s\tcom.example.wg.edge%s\t%s/migration.conf\t%s/migration-wrapper.sh\t10.0.%s.2\t%s\t%s\n' "$index" "$index" "$index" "$ROOT" "$ROOT" "$index" "$config_hash" "$wrapper_hash" >> "$MIGRATION_MANIFEST"
+  done
+}
+
+restore_installed_plists() {
+  local index
+  for index in 1 2 3 4 5 6 7 8; do
+    printf '0\t%s/bash\n1\t%s/wireguard/edge%s/run-wireguard.sh\n2\twg-edge%s\n3\t%s/wg-edge%s.conf\n' "$FAKE" "$ROOT/root-libexec-installer" "$index" "$index" "$ROOT/root-libexec/wireguard-config" "$index" > "$ROOT/launchd/com.example.wg.edge$index.plist"
   done
 }
 
@@ -354,13 +452,18 @@ sha256_file() {
 expect_migrator_status() {
   local expected="$1"
   set +e
-  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_ACTION_LOG="$ACTION_LOG" bash "$MIGRATOR" --dry-run --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec" >/dev/null 2>&1
+  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_ACTION_LOG="$ACTION_LOG" bash "$MIGRATOR" --dry-run --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec" >"$ROOT/migrator-status.out" 2>"$ROOT/migrator-status.err"
   local status=$?
   set -e
   if [ "$expected" = accept ]; then
-    [ "$status" -eq 0 ] || { echo 'migrator rejected fixed minimal wrapper unexpectedly' >&2; exit 1; }
+    [ "$status" -eq 0 ] || { cat "$ROOT/migrator-status.err" >&2; echo 'migrator rejected fixed minimal wrapper unexpectedly' >&2; exit 1; }
   else
-    [ "$status" -ne 0 ] || { echo "migrator accepted unsafe source: $expected" >&2; exit 1; }
+    if [ "$status" -eq 0 ]; then
+      echo "migrator accepted unsafe source: $expected" >&2
+      exit 1
+    fi
+    printf 'migrator rejected unsafe source=%s status=%s\n' "$expected" "$status" >&2
+    cat "$ROOT/migrator-status.err" >&2
   fi
 }
 
@@ -445,6 +548,8 @@ expect_fixed_wrapper_failure_paths() {
   local wrapper="$ROOT/root-libexec/wireguard/edge1/run-wireguard.sh"
   local config="$ROOT/root-libexec/wireguard-config/wg-edge1.conf"
   local timeout_wrapper="$ROOT/timeout-wrapper.sh"
+  local peer_failure_wrapper="$ROOT/peer-failure-wrapper.sh"
+  local ambiguous_peer_wrapper="$ROOT/ambiguous-peer-wrapper.sh"
   local status
   rm -f "$RUN/interface-gone.1"
   : > "$ROOT/fixed-wrapper-failure.log"
@@ -464,11 +569,105 @@ expect_fixed_wrapper_failure_paths() {
   set -e
   [ "$status" -ne 0 ] || { echo 'fixed wrapper accepted a ready timeout' >&2; exit 1; }
   [ "$(/usr/bin/grep -Fc "wg-quick up $config" "$ROOT/fixed-wrapper-timeout.log")" -eq 1 ] || { echo 'fixed wrapper continued after ready timeout' >&2; exit 1; }
+
+  # A peer query failure (including an interface that disappeared) is unknown, not
+  # evidence of readiness. The wrapper must fail closed without selecting a stale
+  # textual mapping.
+  cp "$wrapper" "$peer_failure_wrapper"
+  sed -i.bak 's/ready_attempt" -le 30/ready_attempt" -le 2/' "$peer_failure_wrapper"; rm -f "$peer_failure_wrapper.bak"
+  touch "$RUN/interface-gone.1"
+  set +e
+  FAKE_RUN="$RUN" FAKE_WG_NEVER_READY=1 FAKE_WG_UP_HOLD_SECONDS=5 "$peer_failure_wrapper" wg-edge1 "$config" >/dev/null 2>&1
+  status=$?
+  set -e
+  rm -f "$RUN/interface-gone.1"
+  [ "$status" -ne 0 ] || { echo 'fixed wrapper treated a failed peer query as a ready interface' >&2; exit 1; }
+
+  # Reusing a utun number is expected, but two live utun devices that expose
+  # the same peer key cannot be attributed safely. The wrapper must fail closed.
+  cp "$wrapper" "$ambiguous_peer_wrapper"
+  sed -i.bak 's/ready_attempt" -le 30/ready_attempt" -le 2/' "$ambiguous_peer_wrapper"; rm -f "$ambiguous_peer_wrapper.bak"
+  set +e
+  FAKE_RUN="$RUN" FAKE_WG_AMBIGUOUS_PEER=1 FAKE_WG_UP_HOLD_SECONDS=5 "$ambiguous_peer_wrapper" wg-edge1 "$config" >/dev/null 2>&1
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || { echo 'fixed wrapper accepted an ambiguous peer public key' >&2; exit 1; }
 }
 
-run_once() {
-  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/config1" FAKE_HANDSHAKE="$1" FAKE_PROBE="$2" FAKE_KICKSTART="$3" FAKE_FRESH_UTUN="${4:-}" FAKE_VERIFY="${5:-75}" FAKE_KICKSTART_FAIL_EDGE="${6:-}" \
-    bash "$ROOT/reconciler.sh" --once --manifest "$MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 2 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10
+run_once() (
+  local handshake="$1" probe="$2" kickstart="$3" fresh_utun="${4:-}" verify="${5:-75}" kickstart_fail_edge="${6:-}" lock_kind="${7:-}" lock_path="${8:-}"
+  # Recovery fixtures run against the installer-owned wrapper/config pair. The
+  # ordinary MANIFEST remains dedicated to the pre-install adapter checks above.
+  set -- --once --manifest "$INSTALLED_MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 2 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10
+  case "$lock_kind" in
+    '') ;;
+    maintenance) set -- "$@" --maintenance-lock "$lock_path" ;;
+    release) set -- "$@" --release-lock "$lock_path" ;;
+    *) echo "run_once: unsupported lock kind: $lock_kind" >&2; return 2 ;;
+  esac
+  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/config1" FAKE_HANDSHAKE="$handshake" FAKE_PROBE="$probe" FAKE_KICKSTART="$kickstart" FAKE_FRESH_UTUN="$fresh_utun" FAKE_VERIFY="$verify" FAKE_KICKSTART_FAIL_EDGE="$kickstart_fail_edge" \
+    bash "$ROOT/reconciler.sh" "$@" &
+  local pid=$! elapsed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$elapsed" -ge 45 ]; then
+      set +e
+      kill "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      set -e
+      echo 'reconciler --once exceeded 45-second harness bound' >&2
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  set +e
+  wait "$pid"
+  status=$?
+  set -e
+  exit "$status"
+)
+
+installer_once() (
+  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 FAKE_VERIFY=0 \
+    bash "$ROOT/root-libexec-installer/wireguard-reconciler.sh" --once --manifest "$INSTALLED_MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10 &
+  local pid=$! elapsed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$elapsed" -ge 45 ]; then
+      set +e
+      kill "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      set -e
+      echo 'installer reconciler --once exceeded 45-second harness bound' >&2
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  set +e
+  wait "$pid"
+  status=$?
+  set -e
+  exit "$status"
+)
+
+run_once_expect_status() {
+  local stage="$1" expected="$2" status
+  shift 2
+  set +e
+  run_once "$@"
+  status=$?
+  set -e
+  RUN_ONCE_STATUS="$status"
+  printf '%s-run-status=%s\n' "$stage" "$status" >&2
+  case ",$expected," in
+    *,"$status",*) return 0 ;;
+  esac
+  echo "stage=$stage unexpected-status=$status expected=$expected" >&2
+  echo 'action log:' >&2
+  cat "$ACTION_LOG" >&2 2>/dev/null
+  echo 'event log:' >&2
+  cat "$ROOT/events.log" >&2 2>/dev/null
+  return 1
 }
 
 make_manifest
@@ -514,7 +713,7 @@ expect_installer_reject "$ROOT/probe.http.map"
 
 # The migration accepts a real legacy wrapper from a service-user-writable parent as
 # hash-bound input, but it must never execute or copy that source into a root job.
-printf 'PersistentKeepalive = 25\n' > "$ROOT/migration.conf"
+printf '[Peer]\nPublicKey = fake-peer-key\nPersistentKeepalive = 25\n' > "$ROOT/migration.conf"
 cat > "$ROOT/migration-wrapper.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'legacy source wrapper executed\n' >> "${FAKE_SOURCE_EXECUTED:?}"
@@ -523,6 +722,17 @@ EOF
 chmod 700 "$ROOT/migration-wrapper.sh"
 make_migration_manifest
 expect_migrator_status accept
+# The source LaunchDaemon contract is exactly four arguments. An extra argument
+# beyond arg3 must reject the migration rather than being ignored.
+printf '4\tunexpected-extra-argument\n' >> "$ROOT/launchd/com.example.wg.edge1.plist"
+expect_migrator_status strict-four-argument-contract
+make_migration_manifest
+printf '4\t\n' >> "$ROOT/launchd/com.example.wg.edge1.plist"
+expect_migrator_status strict-four-argument-contract-empty
+make_migration_manifest
+printf '16\tunexpected-sparse-extra-argument\n' >> "$ROOT/launchd/com.example.wg.edge1.plist"
+expect_migrator_status strict-four-argument-contract-late
+make_migration_manifest
 rm -f "$ROOT/source-wrapper-executed"
 FAKE_SOURCE_EXECUTED="$ROOT/source-wrapper-executed" apply_migrator
 [ ! -e "$ROOT/source-wrapper-executed" ] || { echo 'migrator executed the legacy source wrapper' >&2; exit 1; }
@@ -531,8 +741,10 @@ FAKE_SOURCE_EXECUTED="$ROOT/source-wrapper-executed" apply_migrator
 [ "$($FAKE/stat -f '%Lp' "$ROOT/root-libexec/wireguard-config")" = 700 ] || { echo 'migrator did not restrict canonical config directory to mode 700' >&2; exit 1; }
 [ "$($FAKE/stat -f '%Lp' "$ROOT/root-libexec/wireguard-config/wg-edge1.conf")" = 600 ] || { echo 'migrator did not restrict canonical config file to mode 600' >&2; exit 1; }
 [ ! -e "$ROOT/etc/wireguard" ] || { echo 'migrator wrote to the retired /usr/local/etc target' >&2; exit 1; }
-[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.0 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard/edge1/run-wireguard.sh" ] || { echo 'migrator plist wrapper replacement did not persist' >&2; exit 1; }
-[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.1 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard-config/wg-edge1.conf" ] || { echo 'migrator plist config replacement did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.0 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$FAKE/bash" ] || { echo 'migrator plist bash argument did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.1 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard/edge1/run-wireguard.sh" ] || { echo 'migrator plist wrapper replacement did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.2 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = wg-edge1 ] || { echo 'migrator plist logical argument did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.3 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard-config/wg-edge1.conf" ] || { echo 'migrator plist config replacement did not persist' >&2; exit 1; }
 rm -f "$RUN"/killed.* "$RUN"/interface-gone.*
 expect_fixed_wrapper_lifecycle
 expect_fixed_wrapper_failure_paths
@@ -559,18 +771,21 @@ installed_config="$ROOT/root-libexec/wireguard-config/wg-edge1.conf"
 [ "$installed_config" = "$ROOT/root-libexec/wireguard-config/wg-edge1.conf" ] || { echo 'custom installer root changed the canonical config path' >&2; exit 1; }
 installed_manifest_line="$(/usr/bin/awk -F '\t' '$1 == "edge1" { print $4 "|" $5; exit }' "$INSTALLED_MANIFEST")"
 [ "$installed_manifest_line" = "$installed_config|$installed_wrapper" ] || { echo 'installer runtime manifest does not bind migrated wrapper/config paths' >&2; exit 1; }
-[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.0 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$installed_wrapper" ] || { echo 'installer migration plist wrapper replacement did not persist' >&2; exit 1; }
-[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.1 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$installed_config" ] || { echo 'installer migration plist config replacement did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.0 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$FAKE/bash" ] || { echo 'installer migration plist bash argument did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.1 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$installed_wrapper" ] || { echo 'installer migration plist wrapper replacement did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.2 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = wg-edge1 ] || { echo 'installer migration plist logical argument did not persist' >&2; exit 1; }
+[ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.3 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$installed_config" ] || { echo 'installer migration plist config replacement did not persist' >&2; exit 1; }
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 FAKE_VERIFY=0 \
-  bash "$ROOT/root-libexec-installer/wireguard-reconciler.sh" --once --manifest "$INSTALLED_MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10 || true
-sleep 1
-FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 FAKE_VERIFY=0 \
-  bash "$ROOT/root-libexec-installer/wireguard-reconciler.sh" --once --manifest "$INSTALLED_MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10 || true
-sleep 1
-FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 FAKE_VERIFY=0 \
-  bash "$ROOT/root-libexec-installer/wireguard-reconciler.sh" --once --manifest "$INSTALLED_MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10 || true
-/usr/bin/grep -Fq "ProgramArguments = ( $installed_wrapper $installed_config )" "$ACTION_LOG" || { echo 'reconciler launchctl print did not expose the installer wrapper/config pair' >&2; exit 1; }
+for installer_attempt in 1 2 3; do
+  set +e
+  installer_once
+  installer_status=$?
+  set -e
+  printf 'installer-reconciler-attempt=%s status=%s\n' "$installer_attempt" "$installer_status" >&2
+  [ "$installer_status" -eq 0 ] || { echo "installer reconciler attempt $installer_attempt failed" >&2; exit 1; }
+  [ "$installer_attempt" -eq 3 ] || sleep 1
+done
+/usr/bin/grep -Fq "ProgramArguments = ( /usr/local/bin/bash $installed_wrapper wg-edge1 $installed_config )" "$ACTION_LOG" || { echo 'reconciler launchctl print did not expose the installer four-argument contract' >&2; exit 1; }
 /usr/bin/grep -Fxq 'kickstart kickstart -k system/com.example.wg.edge1' "$ACTION_LOG" || { echo 'reconciler did not issue the exact canary kickstart argv after accepting the installer wrapper/config pair' >&2; exit 1; }
 
 # Hooks remain a source-config rejection even though the source wrapper is intentionally
@@ -581,60 +796,81 @@ expect_migrator_status wireguard-hook
 printf 'PersistentKeepalive = 25\n' > "$ROOT/migration.conf"
 printf '#!/bin/sh\nsource /tmp/untrusted.sh\nexec /tmp/untrusted-helper "$1"\n' > "$ROOT/migration-wrapper.sh"
 make_migration_manifest
+echo 'stage=legacy-wrapper-metadata-accept' >&2
 expect_migrator_status accept
+# The legacy-source metadata negatives above replace the fake source plists.
+# Restore the pair installed by apply_installer before exercising reconciliation.
+restore_installed_plists
 
 # One fresh edge means the real script must not invoke launchctl.
 : > "$ACTION_LOG"
 : > "$ROOT/events.log"
-run_once 0 1 0 utun8 || true
-run_once 0 1 0 utun8 || true
-[ ! -s "$ACTION_LOG" ] || { echo 'partial stale invoked launchctl' >&2; exit 1; }
-/usr/bin/grep -Fq 'gate=partial-or-unconfirmed-stale' "$ROOT/events.log" || { echo 'partial stale did not record the no-action gate' >&2; exit 1; }
+echo 'stage=partial-stale' >&2
+run_once_expect_status partial-stale-first 0 0 1 0 utun8
+partial_stale_first_status="$RUN_ONCE_STATUS"
+run_once_expect_status partial-stale-second 0 0 1 0 utun8
+partial_stale_second_status="$RUN_ONCE_STATUS"
+printf 'partial-stale-run-statuses=%s,%s\n' "$partial_stale_first_status" "$partial_stale_second_status" >&2
+if [ -s "$ACTION_LOG" ]; then
+  echo 'partial stale invoked launchctl' >&2
+  cat "$ACTION_LOG" >&2
+  cat "$ROOT/events.log" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -Fq 'gate=partial-or-unconfirmed-stale' "$ROOT/events.log"; then
+  echo 'partial stale did not record the no-action gate' >&2
+  cat "$ROOT/events.log" >&2
+  exit 1
+fi
 
 # Unknown external evidence must suppress all action.
-rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-run_once 0 75 0 || true
-run_once 0 75 0 || true
+echo 'stage=probe-unknown' >&2
+rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; : > "$ROOT/events.log"; make_manifest
+run_once_expect_status probe-unknown-first 0 0 75 0
+run_once_expect_status probe-unknown-second 0 0 75 0
 [ ! -s "$ACTION_LOG" ] || { echo 'probe unknown invoked launchctl' >&2; exit 1; }
+/usr/bin/grep -Fq 'probe=unknown action=none' "$ROOT/events.log" || { echo 'probe unknown did not record the no-action event' >&2; cat "$ROOT/events.log" >&2; exit 1; }
 
 # A just-observed network state is deliberately not settled yet, even with every
 # WireGuard edge stale and an externally failed probe.
-rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-run_once 0 1 0 || true
+echo 'stage=network-settling' >&2
+rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; : > "$ROOT/events.log"; make_manifest
+run_once_expect_status network-settling 0 0 1 0
 [ ! -s "$ACTION_LOG" ] || { echo 'network settling invoked launchctl' >&2; exit 1; }
+/usr/bin/grep -Fq 'gate=network-settling' "$ROOT/events.log" || { echo 'network settling did not record the no-action gate' >&2; cat "$ROOT/events.log" >&2; exit 1; }
 
 # A maintenance lock must suppress a fully stale batch.
-rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest; touch "$ROOT/maintenance.lock"
-FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/config1" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 \
-  bash "$ROOT/reconciler.sh" --once --manifest "$MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --maintenance-lock "$ROOT/maintenance.lock" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 || true
+rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; : > "$ROOT/events.log"; make_manifest; touch "$ROOT/maintenance.lock"
+run_once_expect_status maintenance-lock 0 0 1 0 '' 75 '' maintenance "$ROOT/maintenance.lock"
 [ ! -s "$ACTION_LOG" ] || { echo 'maintenance lock invoked launchctl' >&2; exit 1; }
+/usr/bin/grep -Fq 'gate=maintenance-or-release-lock action=none' "$ROOT/events.log" || { echo 'maintenance lock did not record the no-action gate' >&2; cat "$ROOT/events.log" >&2; exit 1; }
 rm -f "$ROOT/maintenance.lock"
 
 # The release lock is an independent gate and must have the same zero-action
 # behavior as the maintenance lock.
-rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest; touch "$ROOT/release.lock"
-FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/config1" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 \
-  bash "$ROOT/reconciler.sh" --once --manifest "$MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --release-lock "$ROOT/release.lock" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 || true
+rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; : > "$ROOT/events.log"; make_manifest; touch "$ROOT/release.lock"
+run_once_expect_status release-lock 0 0 1 0 '' 75 '' release "$ROOT/release.lock"
 [ ! -s "$ACTION_LOG" ] || { echo 'release lock invoked launchctl' >&2; exit 1; }
+/usr/bin/grep -Fq 'gate=maintenance-or-release-lock action=none' "$ROOT/events.log" || { echo 'release lock did not record the no-action gate' >&2; cat "$ROOT/events.log" >&2; exit 1; }
 rm -f "$ROOT/release.lock"
 
 # A stale observation from an old disabled/delayed run cannot become the first half of a
 # new confirmation. The max-gap guard must leave this batch at zero recovery actions.
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-run_once 0 1 0 || true
+run_once_expect_status expired-stale-first 0 0 1 0
 sleep 1
 old_observed_at=$(( $(date +%s) - 1000 ))
 for edge in 1 2 3 4 5 6 7 8; do printf '1\t1\t0\t%s\n' "$old_observed_at" > "$STATE/edge.edge$edge.state"; done
-run_once 0 1 0 || true
+run_once_expect_status expired-stale-second 0 0 1 0
 [ ! -s "$ACTION_LOG" ] || { echo 'expired stale sample chain invoked launchctl' >&2; exit 1; }
 
 # Two stale samples after network settling reach only the canary. Its forced kickstart
 # failure must prevent every remaining edge from being touched.
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-run_once 0 1 1 || true
+run_once_expect_status canary-failure-first 0,1 0 1 1
 sleep 1
-run_once 0 1 1 || true
-run_once 0 1 1 || true
+run_once_expect_status canary-failure-second 0,1 0 1 1
+run_once_expect_status canary-failure-third 0,1 0 1 1
 grep -Fq 'com.example.wg.edge1' "$ACTION_LOG" || { echo 'canary failure did not reach launchctl' >&2; cat "$ROOT/events.log" >&2; cat "$ACTION_LOG" >&2; exit 1; }
 if grep -Eq 'edge[2-8]' "$ACTION_LOG"; then echo 'canary failure touched a non-canary edge' >&2; exit 1; fi
 
@@ -642,10 +878,10 @@ if grep -Eq 'edge[2-8]' "$ACTION_LOG"; then echo 'canary failure touched a non-c
 # can the real reconciler issue any action for another exact manifest edge. The fake
 # launchctl itself rejects a non-canary kickstart until the fake verifier recorded edge1.
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-run_once 0 1 0 '' 0 || true
+run_once_expect_status canary-success-first 0 0 1 0 '' 0
 sleep 1
-run_once 0 1 0 '' 0 || true
-run_once 0 1 0 '' 0 || true
+run_once_expect_status canary-success-second 0 0 1 0 '' 0
+run_once_expect_status canary-success-third 0 0 1 0 '' 0
 first_edge="$(sed -n '1s/.*edge\([0-9][0-9]*\).*/\1/p' "$ACTION_LOG")"
 [ "$first_edge" = 1 ] || { echo 'first recovery action was not canary edge1' >&2; exit 1; }
 [ -f "$RUN/verified.edge1" ] || { echo 'canary did not complete independent verification' >&2; exit 1; }
@@ -660,10 +896,10 @@ done
 # A post-canary failure is terminal. Edge2 fails at kickstart and the batch must leave
 # edge3 through edge8 untouched instead of reporting an incorrect completed result.
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
-run_once 0 1 0 '' 0 2 || true
+run_once_expect_status non-canary-failure-first 0,1 0 1 0 '' 0 2
 sleep 1
-run_once 0 1 0 '' 0 2 || true
-run_once 0 1 0 '' 0 2 || true
+run_once_expect_status non-canary-failure-second 0,1 0 1 0 '' 0 2
+run_once_expect_status non-canary-failure-third 0,1 0 1 0 '' 0 2
 grep -Eq 'kickstart .*edge1' "$ACTION_LOG" || { echo 'non-canary failure test did not recover canary' >&2; exit 1; }
 grep -Eq 'kickstart .*edge2' "$ACTION_LOG" || { echo 'non-canary failure did not reach edge2' >&2; exit 1; }
 if grep -Eq 'kickstart .*edge[3-8]' "$ACTION_LOG"; then echo 'non-canary failure restarted a later edge' >&2; cat "$ACTION_LOG" >&2; exit 1; fi

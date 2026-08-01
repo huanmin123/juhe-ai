@@ -17,9 +17,7 @@ import {
   persistOpenAICodexHeadersIfNeeded
 } from '../runtime/account-effects.js'
 import {
-  readUpstreamBodyForPolicyInspection,
-  readUpstreamBodyLimited,
-  type ReplayableLimitedBodyReadResult
+  readUpstreamBodyForPolicyInspection
 } from '../upstream/body.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import { gatewayRequestAbortSource } from '../request/abort-attribution.js'
@@ -54,9 +52,13 @@ import {
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
 
-/** Every gateway endpoint uses the same availability-first candidate failover rule. */
+/**
+ * A response whose meaning was not explicitly configured belongs to the
+ * current request.  It must be returned to the caller rather than silently
+ * consuming another Key, account, or group.
+ */
 export function isOpaqueUpstreamFailoverAllowed(_req: Request): boolean {
-  return true
+  return false
 }
 
 export function accountErrorPolicyAllowsUpstreamReplayAfterDispatch(
@@ -64,10 +66,7 @@ export function accountErrorPolicyAllowsUpstreamReplayAfterDispatch(
   _lane: OpenAIGatewayRequestLane,
   _decision?: Pick<AccountErrorPolicyDecision, 'action'>
 ): boolean {
-  // Account-state actions and request-local candidate failover are independent:
-  // a policy may mutate shared state, while the current request still follows
-  // the universal availability-first rule.
-  return true
+  return _decision?.action === 'retry_next'
 }
 
 /** Normalized failed-response facts used by account-state and failover handling. */
@@ -129,7 +128,6 @@ interface HandleUpstreamRequestErrorInput {
   error: unknown
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
-  retrySameAccount?: boolean
 }
 
 type HandleFailedUpstreamResponseResult =
@@ -176,7 +174,8 @@ export async function handleFailedUpstreamResponse(
     && usageContext.trafficSource === 'gateway'
     && accountErrorPolicyCouldMatchStatus(account, response.status)
   if (!policyCouldMatch) {
-    return handleOpaqueFailedUpstreamResponse(input)
+    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+    return { action: 'return_response', response }
   }
 
   const responseBodyRead = await readUpstreamBodyForPolicyInspection(response.body, {
@@ -195,8 +194,40 @@ export async function handleFailedUpstreamResponse(
     settings,
     { bodyText: responseBodyText, errorPayload: failureBodyFacts.errorPayload }
   )
+  const replayResponse: GatewayUpstreamResponse = {
+    status: response.status,
+    ok: response.ok,
+    headers: response.headers,
+    body: responseBodyRead.replayBody
+  }
   if (!explicitPolicyDecision) {
-    return handleOpaqueFailedUpstreamResponse(input, responseBodyRead, failureBodyFacts)
+    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+    return { action: 'return_response', response: replayResponse }
+  }
+  if (!accountErrorPolicyAllowsUpstreamReplayAfterDispatch(req, input.requestLane, explicitPolicyDecision)) {
+    const failureInput: AccountFailureInput = {
+      success: false,
+      statusCode: response.status,
+      headers: response.headers,
+      bodyText: responseBodyText,
+      settings,
+      trafficSource: usageContext.trafficSource,
+      upstreamErrorSummary: failureBodyFacts.upstreamErrorSummary,
+      upstreamErrorSummaryResolved: failureBodyFacts.upstreamErrorSummaryResolved,
+      policyDecision: explicitPolicyDecision
+    }
+    auditCapture.addGatewayMetadata({
+      label: 'account_error_policy_matched',
+      metadata: {
+        accountId: account.id,
+        ruleName: explicitPolicyDecision.ruleName,
+        action: explicitPolicyDecision.action,
+        cooldownStatus: explicitPolicyDecision.cooldownStatus
+      }
+    })
+    await applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+    return { action: 'return_response', response: replayResponse }
   }
   await responseBodyRead.close()
   const failureObservation = classifyGatewayUpstreamFailure({
@@ -305,137 +336,8 @@ export async function handleFailedUpstreamResponse(
   return {
     action: 'skip_account',
     failureKind: 'explicit_policy',
-    lastAttempt
-  }
-}
-
-export async function handleOpaqueFailedUpstreamResponse(
-  input: HandleFailedUpstreamResponseInput,
-  inspectedBody?: ReplayableLimitedBodyReadResult,
-  inspectedFailureBodyFacts?: ParsedFailureBodyFacts
-): Promise<HandleFailedUpstreamResponseResult> {
-  const {
-    req,
-    usageContext,
-    auditCapture,
-    auditAttemptId,
-    account,
-    upstreamUrl,
-    response,
-    attemptStartedAt,
-    attemptIndex,
-    auditAttemptIndex,
-    sessionAffinityKey,
-    signal,
-    settings
-  } = input
-  const responseBodyRead = inspectedBody ?? await readUpstreamBodyLimited(response.body, {
-    startedAt: attemptStartedAt,
-    signal
-  })
-  if (inspectedBody) {
-    await inspectedBody.close()
-  }
-  const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
-  const lastAttempt: UpstreamAttempt = {
-    ...(input.lastAttempt ?? {
-      accountId: account.id,
-      accountName: account.name,
-      providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      upstreamUrl,
-      status: response.status
-    }),
-    providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId,
-    protocolCode: account.protocolCode,
-    protocolVersion: account.protocolVersion,
-    responseHeaders: headersToObject(response.headers),
-    responseBodyText: responseBodyRead.diagnosticBodyText
-  }
-
-  logGatewayFailureWarning(usageContext, {
-    event: 'gateway_opaque_upstream_response_failed',
-    accountId: account.id,
-    accountType: account.type,
-    upstreamUrl: safeUpstreamUrl,
-    attemptIndex,
-    auditAttemptIndex,
-    statusCode: response.status,
-    elapsedMs: Date.now() - attemptStartedAt,
-    responseBodyBytes: responseBodyRead.body.byteLength,
-    responseBodyTruncated: responseBodyRead.truncated
-  }, '通用客户端上游返回非成功响应，服务端继续尝试可用候选')
-
-  auditCapture.completeAttempt(auditAttemptId, {
-    statusCode: response.status,
-    responseHeaders: response.headers,
-    responseBody: responseBodyRead.body,
-    success: false,
-    errorPhase: 'upstream_response',
-    errorMessage: responseBodyRead.diagnosticBodyText
-  })
-  const policyCouldMatch = input.accountStateMutationEnabled !== false
-    && usageContext.trafficSource === 'gateway'
-    && accountErrorPolicyCouldMatchStatus(account, response.status)
-  const failureBodyFacts = inspectedFailureBodyFacts ?? (policyCouldMatch
-    ? parseFailureBodyFacts(responseBodyRead.bodyText, response.headers, account)
-    : undefined)
-  lastAttempt.parsedResponseBody = failureBodyFacts?.parsedJsonBody
-  const explicitPolicyDecision = policyCouldMatch && failureBodyFacts
-    ? decideAccountErrorPolicy(account, response.status, response.headers, responseBodyRead.body, settings, {
-        bodyText: responseBodyRead.bodyText,
-        errorPayload: failureBodyFacts.errorPayload
-      })
-    : undefined
-  await recordFailedUpstreamAttempt(req, usageContext, account, {
-    upstreamUrl,
-    startedAt: attemptStartedAt,
-    statusCode: response.status,
-    headers: response.headers,
-    bodyText: responseBodyRead.diagnosticBodyText,
-    failureAttribution: explicitPolicyDecision ? 'account_upstream' : 'opaque_upstream',
-    interpretUpstreamSemantics: failureBodyFacts !== undefined,
-    errorPayload: failureBodyFacts?.errorPayload
-  })
-  if (!explicitPolicyDecision || explicitPolicyDecision.action === 'retry_next') {
-    dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
-  }
-
-  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-  const keyScopedFailure = hasAlternativeAccountApiKeys(account)
-  if (explicitPolicyDecision) {
-    auditCapture.addGatewayMetadata({
-      label: 'account_error_policy_matched',
-      metadata: {
-        accountId: account.id,
-        ruleName: explicitPolicyDecision.ruleName,
-        action: explicitPolicyDecision.action,
-        cooldownStatus: explicitPolicyDecision.cooldownStatus
-      }
-    })
-    if (explicitPolicyDecision.action !== 'retry_next') {
-      await applyAccountErrorHandlingWithCacheInvalidation(account, {
-        success: false,
-        statusCode: response.status,
-        headers: response.headers,
-        bodyText: responseBodyRead.diagnosticBodyText,
-        settings,
-        trafficSource: usageContext.trafficSource,
-        upstreamErrorSummary: failureBodyFacts?.upstreamErrorSummary,
-        upstreamErrorSummaryResolved: failureBodyFacts?.upstreamErrorSummaryResolved,
-        policyDecision: explicitPolicyDecision
-      })
-    }
-  }
-  return {
-    action: 'skip_account',
-    failureKind: explicitPolicyDecision ? 'explicit_policy' : 'opaque_http',
     lastAttempt,
-    keyScopedFailure,
-    tryNextApiKeyForRequest: keyScopedFailure
+    keyScopedFailure: hasAlternativeAccountApiKeys(account)
   }
 }
 
@@ -458,7 +360,7 @@ function parseFailureBodyFacts(
 
 export async function handleUpstreamRequestError(
   input: HandleUpstreamRequestErrorInput
-): Promise<{ action: 'retry' | 'skip_account'; lastAttempt?: UpstreamAttempt; keyScopedFailure?: boolean }> {
+): Promise<{ action: 'skip_account'; lastAttempt?: UpstreamAttempt; keyScopedFailure?: boolean }> {
   const {
     req,
     usageContext,
@@ -547,7 +449,9 @@ export async function handleUpstreamRequestError(
     protocolCode: account.protocolCode,
     protocolVersion: account.protocolVersion,
     upstreamUrl,
-    message
+    message,
+    errorCode: transportErrorCode,
+    transportFailureKind: upstreamRequestFailureKind(error, input.lastAttempt)
   }
   completeOrRecordFailedAttempt({
     req,
@@ -564,22 +468,8 @@ export async function handleUpstreamRequestError(
   await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: safeUpstreamUrl,
     startedAt: attemptStartedAt,
-    errorMessage: message,
-    failureAttribution: input.retrySameAccount ? 'opaque_upstream' : undefined
+    errorMessage: message
   })
-  if (input.retrySameAccount) {
-    auditCapture.addGatewayMetadata({
-      label: 'same_account_retry_request_failed',
-      metadata: {
-        accountId: account.id,
-        upstreamUrl: safeUpstreamUrl,
-        attemptIndex,
-        auditAttemptIndex,
-        errorMessage: message
-      }
-    })
-    return { action: 'retry', lastAttempt }
-  }
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
   dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
@@ -611,6 +501,19 @@ export function formatUpstreamRequestErrorMessage(error: unknown): string {
   }
 
   return '请求失败'
+}
+
+function upstreamRequestFailureKind(
+  error: unknown,
+  previousAttempt: UpstreamAttempt | undefined
+): UpstreamAttempt['transportFailureKind'] {
+  const diagnostic = [
+    error instanceof Error ? error.name : '',
+    objectStringProperty(error, 'code') ?? '',
+    error instanceof Error ? error.message : ''
+  ].join(' ').toLowerCase()
+  if (/timeout|timedout|timed out|etimedout|超时/.test(diagnostic)) return 'timeout'
+  return previousAttempt?.status === undefined ? 'connection' : 'read_incomplete'
 }
 
 function logGatewayFailureWarning(

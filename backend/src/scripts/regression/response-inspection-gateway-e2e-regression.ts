@@ -153,6 +153,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     },
     groupId: group.id,
     schedulable: true,
+    supportedModels: ['gpt-5.5'],
     priority: 0
   }, access)
   const cleanAccount = repositories.createAccount({
@@ -167,6 +168,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     },
     groupId: group.id,
     schedulable: true,
+    supportedModels: ['gpt-5.5'],
     priority: 10
   }, access)
   activateAccount(pollutedAccount.id)
@@ -204,9 +206,9 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   })
   const responseText = await response.text()
   if (scenario === 'chat_malformed') {
-    assert.equal(response.status, 200, `通用客户端的内置协议校验不得改写未命中显式策略的响应：${responseText}`)
-    assert.equal(upstreamHits.length, 1, '通用客户端显式策略未命中时不得因内置协议结构校验切换账号')
-    assert.deepEqual(JSON.parse(responseText), { id: 'chatcmpl-chat_malformed', object: 'chat.completion', choices: [] })
+    assert.equal(response.status, 502, `畸形 2xx 协议响应必须暴露为网关协议错误：${responseText}`)
+    assert.equal(upstreamHits.length, 1, '畸形 2xx 协议响应不得因内置校验切换账号')
+    assert.equal(JSON.parse(responseText).error?.code, 'upstream_protocol_error', '畸形 2xx 必须返回可识别的协议错误码')
     const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
     assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, '通用客户端显式策略未命中时不得写账户运行态')
     return
@@ -273,6 +275,7 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
     },
     groupId: group.id,
     schedulable: true,
+    supportedModels: ['gpt-5.5'],
     priority: 0
   }, access)
   activateAccount(exhaustedAccount.id)

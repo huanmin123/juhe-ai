@@ -46,6 +46,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '统计概览',
       description: '查看自己的请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和成本概览。',
       viewScope: 'self',
+      keepAlive: true,
       heavy: true
     }
   },
@@ -212,6 +213,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '按监控窗口查看请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和系统性能。',
       viewScope: 'admin',
       roles: managementRoles,
+      keepAlive: true,
       heavy: true
     }
   },

@@ -350,6 +350,28 @@ try {
     SELECT model_check_run_id FROM account_quality_health_hourly WHERE account_id = ? AND model_check_run_id = ?
   `).get(account.id, retryRun.id) as { model_check_run_id: string } | undefined
   assert.equal(retriedHour?.model_check_run_id, retryRun.id)
+
+  const unverifiedRun = repositories.createModelCheckRun({
+    id: 'mcr_quality_unverified_non200',
+    systemAccountId: 'sys_admin', actorSystemAccountId: 'sys_admin', providerCode: 'gpt',
+    targetType: 'account', targetId: account.id, targetOwnerSystemAccountId: 'sys_admin',
+    accountId: account.id, model: 'gpt-5.5', profile: 'quick', trustedComparison: false,
+    trustedComparisonAvailable: false, probeSetVersion: 'quality-unverified-regression',
+    startedAt: '2026-07-26T03:00:00.000Z'
+  })
+  repositories.finishModelCheckRun(unverifiedRun.id, {
+    status: 'completed', level: 'unavailable', score: 0, message: '二次非 200 终止，未形成质量判定证据',
+    finishedAt: '2026-07-26T03:01:00.000Z',
+    resultSummary: { modelCheckUnverified: true, qualityDecisionSuppressedReason: '未形成质量判定证据' }
+  })
+  modelCheckRepository.updateModelCheckQualityDecision(unverifiedRun.id, {
+    triggerKind: 'manual', triggered: false, hardFailure: false, threshold: 70, score: 0,
+    configuredAction: 'fallback', result: 'not_triggered', reasonCodes: ['quality_evidence_not_formed'],
+    message: '未形成质量判定证据，本次不执行质量处罚', decidedAt: '2026-07-26T03:01:00.000Z'
+  })
+  const unverifiedDetail = modelCheckRepository.getModelCheckRunDetail(unverifiedRun.id)
+  assert.equal(unverifiedDetail?.qualityDecision?.result, 'not_triggered', '未形成质量证据时质量决策必须保持 not_triggered')
+  assert.deepEqual(unverifiedDetail?.qualityDecision?.reasonCodes, ['quality_evidence_not_formed'])
   runtimeConfig.processRole = 'db-service'
 
   const runIds: string[] = []

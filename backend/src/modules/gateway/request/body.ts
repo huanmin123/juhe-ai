@@ -52,6 +52,7 @@ export interface GatewayRequestBodyState {
   serviceTier?: UsageServiceTier
   reasoningEffort?: UsageReasoningEffort
   maxOutputTokens?: number
+  responseFormat?: string
   imageGeneration?: boolean
   imageGenerationForced?: boolean
   strictOutputRequirement?: boolean
@@ -106,6 +107,7 @@ export function createGatewayRequestBodyState(input: {
   serviceTier?: UsageServiceTier
   reasoningEffort?: UsageReasoningEffort
   maxOutputTokens?: number
+  responseFormat?: string
   imageGeneration?: boolean
   imageGenerationForced?: boolean
   strictOutputRequirement?: boolean
@@ -127,6 +129,7 @@ export function createGatewayRequestBodyState(input: {
     serviceTier: input.serviceTier ?? normalizeUsageServiceTier(parsedBody?.service_tier),
     reasoningEffort: input.reasoningEffort ?? parsedReasoningEffort(parsedBody),
     maxOutputTokens: input.maxOutputTokens ?? parsedMaxOutputTokens(parsedBody),
+    responseFormat: input.responseFormat ?? normalizedResponseFormat(parsedBody?.response_format),
     imageGeneration: input.imageGeneration ?? (
       imageInspection ? imageInspection.imageToolCount > 0 || imageInspection.forcedImageGeneration : false
     ),
@@ -136,6 +139,12 @@ export function createGatewayRequestBodyState(input: {
     ),
     codexCompactionTrigger: input.codexCompactionTrigger
   }
+}
+
+function normalizedResponseFormat(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : undefined
 }
 
 export function isGatewayScannedJsonBody(req: Request): boolean {

@@ -183,8 +183,9 @@ assert.doesNotMatch(
   '未知 HTTP、正文和普通 foreground transport 不得从 failure dispatch 写共享 proxy/IP、账户或 Key 避让状态'
 )
 assert.match(source('modules/gateway/response/finalization.ts'), /await recordGatewayUpstreamBucketSuccessAsync/, '上游成功最终化必须等待 Redis 上游桶恢复清理')
-const opaqueFailureDispatchBody = functionBody(failureDispatchSource, 'handleOpaqueFailedUpstreamResponse')
-assert.match(opaqueFailureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*if \(explicitPolicyDecision\) \{[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整未知 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用')
+const failureDispatchBody = functionBody(failureDispatchSource, 'handleFailedUpstreamResponse')
+assert.match(failureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*if \(!explicitPolicyDecision\)[\s\S]*return \{ action: 'return_response', response: replayResponse \}/, '完整未知 HTTP 必须直接返回当前响应')
+assert.match(failureDispatchBody, /if \(!accountErrorPolicyAllowsUpstreamReplayAfterDispatch[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用')
 
 const upstreamDispatchSource = source('modules/gateway/dispatch/upstream-dispatch.ts')
 const upstreamDispatchBody = functionBody(upstreamDispatchSource, 'fetchFirstAvailableUpstream')

@@ -79,8 +79,15 @@ $wireGuardInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot '
 foreach ($contract in @('STALE_CONFIRMATIONS=2', 'probe=unknown', 'sleep-wake-grace', 'global-window-budget', 'launchctl kickstart -k', 'independent-probe', 'root_path_chain')) {
   if (-not $wireGuardReconciler.Contains($contract, [StringComparison]::Ordinal)) { throw "WireGuard reconciler contract missing: $contract" }
 }
-foreach ($contract in @('exactly eight edges', 'ProgramArguments', 'root WireGuard wrapper migration failed', 'config hash mismatch', 'wrapper hash mismatch')) {
+foreach ($contract in @('exactly eight edges', 'ProgramArguments', 'root WireGuard wrapper migration failed', 'config hash mismatch', 'wrapper hash mismatch', 'peer_public_key', 'show "$candidate" peers', 'plist_has_exact_program_arguments', 'rewrite_program_arguments', '/usr/libexec/PlistBuddy', 'Delete :ProgramArguments', 'Add :ProgramArguments array')) {
   if (-not $wireGuardMigrator.Contains($contract, [StringComparison]::Ordinal)) { throw "WireGuard migration contract missing: $contract" }
+}
+if ($wireGuardMigrator.Contains('/var/run/wireguard/${interface_name}.name', [StringComparison]::Ordinal) -or
+    $wireGuardMigrator.Contains('/var/run/wireguard/$logical.name', [StringComparison]::Ordinal)) {
+  throw 'WireGuard migration wrapper must not identify interfaces through the retired .name mapping'
+}
+if ($wireGuardMigrator.Contains('plutil -replace ProgramArguments.', [StringComparison]::Ordinal)) {
+  throw 'WireGuard migration must rebuild ProgramArguments instead of indexed plutil replacement'
 }
 foreach ($contract in @('--probe-helper', '--script-sha256', '--migrator-sha256', '--remove', 'wireguard-reconciler.manifest')) {
   if (-not $wireGuardInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "WireGuard installer contract missing: $contract" }

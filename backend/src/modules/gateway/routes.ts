@@ -980,43 +980,22 @@ export async function handleOpenAIGatewayRequest(
           await getGatewayAccountCircuitService().completeConfirmation(dispatchAccountCircuitConfirmation, 'unknown')
         }
         if (error instanceof NormalRouteFirstByteCutoverError) {
-          streamServerRetryExcludedAccountIds.add(error.accountId)
-          speedFirstByteRetryCount += 1
-          const remainingAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
-          const maxRetries = normalRouteSpeedFirstConfig?.maxFirstByteRetriesPerRequest ?? 0
-          const headerCutoverReservation = error.cutoverReservation
-          const reservedTargetAccountId = headerCutoverReservation?.targetAccountId
-          const retryAllowed = headerCutoverReservation !== undefined
-            && speedFirstByteRetryCount <= maxRetries
-            && reservedTargetAccountId !== undefined
-            && remainingAccounts.some((account) => account.id === reservedTargetAccountId)
+          error.cutoverReservation?.release()
           auditCapture.addGatewayMetadata({
-            label: 'normal_route_speed_first_retry_dispatch',
+            label: 'normal_route_speed_first_terminal_failure',
             metadata: {
-              retryCount: speedFirstByteRetryCount,
-              maxRetries,
-              retryAllowed,
               accountId: error.accountId,
               responseHeadersReceived: false,
-              remainingCandidateCount: remainingAccounts.length,
-              remainingCandidateAccountIds: remainingAccounts.map((account) => account.id),
-              reservedTargetAccountId,
               limitingFactor: error.deadline.limitingFactor
             }
           })
-          if (retryAllowed && reservedTargetAccountId) {
-            speedFirstCutoverReservation = headerCutoverReservation
-            speedFirstRetryCandidateAccountIds = new Set([reservedTargetAccountId])
-            continue
-          }
-          headerCutoverReservation?.release()
-          if (remainingAccounts.length === 0) {
-            for (const accountId of streamServerRetryExcludedAccountIds) exhaustedAccountIds.add(accountId)
-            const fallbackSwitch = await switchToFallbackGroup('normal_route_speed_first_exhausted')
-            if (fallbackSwitch === 'completed') return
-            if (fallbackSwitch === 'switched') continue
-          }
-          throw new UpstreamAttemptError(error.message, undefined, [error.accountId])
+          throw new UpstreamAttemptError(error.message, {
+            accountId: error.accountId,
+            accountName: error.accountName,
+            upstreamUrl: 'gateway:first-byte-deadline',
+            message: error.message,
+            transportFailureKind: 'timeout'
+          }, [error.accountId], undefined, [], true)
         }
         if (error instanceof GatewayRequestWallBudgetExhaustedError) {
           gatewayWallMinimumMeaningfulAttemptMs = Math.max(
@@ -1045,6 +1024,7 @@ export async function handleOpenAIGatewayRequest(
           }
         }, error instanceof UpstreamAttemptError ? 'expected_failure' : 'unexpected_failure', upstreamDispatchStartedAt)
         if (error instanceof UpstreamAttemptError) {
+          if (error.terminalUpstreamFailure) throw error
           const recoverableAccountIds = new Set(error.recoverableAccountIds)
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
             exhaustedAccountIds.add(accountId)
@@ -1164,7 +1144,10 @@ export async function handleOpenAIGatewayRequest(
           ? { key: sessionAffinityKey, accountId: account.id }
           : undefined
         const contentType = upstreamResponse.headers.get('content-type') ?? ''
-        const shouldHandleAsStream = shouldHandleOpenAIUpstreamResponseAsStream({
+        // A complete non-2xx is already the terminal upstream response.  Do
+        // not interpret a missing/misleading content type as an SSE response
+        // and replace the provider's error body with a gateway event.
+        const shouldHandleAsStream = upstreamResponse.ok && shouldHandleOpenAIUpstreamResponseAsStream({
           contentType,
           streamRequest: isEffectiveOpenAIStreamRequest(req, account)
         })
@@ -1324,11 +1307,14 @@ export async function handleOpenAIGatewayRequest(
               await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
             }
             if (requestErrorResult.action === 'skip_account') {
-              streamServerRetryExcludedAccountIds.add(account.id)
-              if (speedFirstRetryCandidateAccountIds?.has(account.id)) {
-                speedFirstRetryCandidateAccountIds = undefined
-              }
-              continue
+              throw new UpstreamAttemptError(
+                requestErrorResult.lastAttempt?.message ?? (error instanceof Error ? error.message : '上游响应正文读取失败'),
+                requestErrorResult.lastAttempt,
+                [account.id],
+                undefined,
+                [],
+                true
+              )
             }
             throw error
           }
@@ -1946,7 +1932,11 @@ export async function handleOpenAIGatewayRequest(
       })
       return
     }
-    const diagnosticError = options.exposeUpstreamDiagnostics
+    const terminalUpstreamFailure = error instanceof UpstreamAttemptError
+      && error.terminalUpstreamFailure
+    const knownUpstreamHttpFailure = error instanceof UpstreamAttemptError
+      && lastAttempt?.status !== undefined
+    const diagnosticError = options.exposeUpstreamDiagnostics || terminalUpstreamFailure || knownUpstreamHttpFailure
       ? buildDiagnosticUpstreamError(lastAttempt, message)
       : undefined
     const statusCode = diagnosticError?.statusCode ?? 503
@@ -2226,6 +2216,8 @@ function shouldSendDispatchExhaustedProtocolRetry(
   res: Response
 ): error is UpstreamAttemptError {
   return error instanceof UpstreamAttemptError
+    && !error.terminalUpstreamFailure
+    && error.lastAttempt?.status === undefined
     && !error.agentGuidanceResponse
     && preflight.clientStrategy.retryCoordination.preCommitFailureSignal === 'protocol_error_event'
     && !preflight.downstreamCommitState.semanticCommitted

@@ -17,7 +17,7 @@ export const modelCheckFallbackOptions: ModelCheckOptions = {
     { value: 'gemini-3.1-pro-preview', label: 'gemini-3.1-pro-preview' }
   ],
   supportedProfiles: [
-    { value: 'quick', label: '快速检测', description: '最多执行 2 个轻量串行探针，快速给出初步判断' },
+    { value: 'quick', label: '快速检测', description: '检查基础链路、流式、结构化输出、工具调用、usage 与单轮 Token 诊断，快速给出初步判断' },
     { value: 'full', label: '强诊断完整检测', description: '准确优先，不以成本和耗时为约束' }
   ],
   trustedComparison: { enabledByDefault: false, available: true, message: '可信对比默认关闭；选择可信账户后会额外消耗该账户额度。' },

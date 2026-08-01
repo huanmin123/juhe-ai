@@ -24,12 +24,9 @@ export function shouldRetryResponseInspectionOnServer(
   streamResult: StreamPipeResult,
   response: StreamRetryResponseState
 ): streamResult is StreamPipeResult & { responseInspection: ResponseInspectionDecision } {
-  const decision = streamResult.responseInspection
-  return !streamResult.semanticCommitted
-    && shouldRetryResponseInspectionDecisionOnServer(decision, {
-      ...response,
-      headersSent: false
-    })
+  // Response-inspection is diagnostic/validation logic, not an account error
+  // rule.  A failure it observes must be reported by the current attempt.
+  return false
 }
 
 export function shouldRetryResponseInspectionDecisionOnServer(
@@ -59,12 +56,9 @@ export function shouldRetryPreCommitStreamFailureOnServer(
   streamResult: StreamPipeResult,
   response: StreamRetryResponseState
 ): boolean {
-  return !streamResult.completed
-    && !streamResult.semanticCommitted
-    && streamResult.gatewayLocalFailure !== true
-    && streamResult.errorCode !== undefined
-    && !response.writableEnded
-    && !response.destroyed
+  // An uncommitted stream can still carry a concrete timeout, EOF, or protocol
+  // failure.  Keeping it invisible by replaying another account is forbidden.
+  return false
 }
 
 export function preCommitStreamServerRetryErrorCode(

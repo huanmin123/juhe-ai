@@ -457,9 +457,9 @@ export function evaluateStabilityProbe(results: GatewayProbeResult[], model: str
   })
 }
 
-export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResult | undefined, pairedBasic: GatewayProbeResult, model: string, pairedModel: string): ModelCheckItemCreateInput {
+export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResult | undefined, pairedBasic: GatewayProbeResult, model: string, pairedModel: string, prefix: ModelCheckProbePrefix = 'target'): ModelCheckItemCreateInput {
   if (!pairedBasic.success) {
-    return requestFailureItem('target.cross_model', 'cross_model', pairedBasic, pairedBasic.errorMessage ?? `辅助模型对照请求失败，HTTP ${pairedBasic.statusCode}`, {
+    return requestFailureItem(`${prefix}.cross_model`, 'cross_model', pairedBasic, pairedBasic.errorMessage ?? `辅助模型对照请求失败，HTTP ${pairedBasic.statusCode}`, {
       expectedModel: model,
       pairedModel,
       targetTraceId: targetBasic?.traceId,
@@ -486,7 +486,7 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
     : comparable && targetEvidence.matchedModel && pairedEvidence.matchedModel ? 10 : comparable ? 5 : 2
   const status = crossModelMismatch ? 'failed' : score >= 9 ? 'passed' : 'warning'
   return {
-    itemKey: 'target.cross_model',
+    itemKey: `${prefix}.cross_model`,
     itemType: 'cross_model',
     status,
     score,
@@ -522,6 +522,80 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
     },
     errorCode: pairedBasic.success ? undefined : `http_${pairedBasic.statusCode}`,
     errorMessage: pairedBasic.success ? undefined : pairedBasic.errorMessage
+  }
+}
+
+export function buildQuickTrustedComparisonItem(target: ProbeSuiteResult, comparison: ProbeSuiteResult): ModelCheckItemCreateInput {
+  const targetBasic = target.items.find((item) => item.itemType === 'responses_basic' || item.itemType === 'protocol_basic')
+  const comparisonBasic = comparison.items.find((item) => item.itemType === 'responses_basic' || item.itemType === 'protocol_basic')
+  const targetQualityItems = target.items.filter((item) => item.maxScore > 0 && !(item.itemType === 'cross_model' && item.status === 'skipped'))
+  const comparisonQualityItems = comparison.items.filter((item) => item.maxScore > 0 && !(item.itemType === 'cross_model' && item.status === 'skipped'))
+  const targetBasicQuality = targetQualityItems.reduce((sum, item) => sum + item.score, 0)
+  const targetBasicMax = targetQualityItems.reduce((sum, item) => sum + item.maxScore, 0)
+  const comparisonBasicQuality = comparisonQualityItems.reduce((sum, item) => sum + item.score, 0)
+  const comparisonBasicMax = comparisonQualityItems.reduce((sum, item) => sum + item.maxScore, 0)
+  const targetBasicModelMismatch = recordValue(targetBasic?.evidenceSummary)?.modelMismatch === true
+  const comparisonBasicModelMismatch = recordValue(comparisonBasic?.evidenceSummary)?.modelMismatch === true
+  const targetOk = Boolean(target.basic?.success && !targetBasicModelMismatch && targetBasicMax > 0 && targetBasicQuality === targetBasicMax)
+  const comparisonOk = Boolean(comparison.basic?.success && !comparisonBasicModelMismatch && comparisonBasicMax > 0 && comparisonBasicQuality === comparisonBasicMax)
+  const comparable = targetOk && comparisonOk
+  const requestFailure = target.basic?.success !== true
+    || comparison.basic?.success !== true
+    || target.items.some((item) => item.maxScore > 0 && item.status === 'skipped' && item.itemType !== 'cross_model')
+    || comparison.items.some((item) => item.maxScore > 0 && item.status === 'skipped' && item.itemType !== 'cross_model')
+  if (requestFailure) {
+    return {
+      itemKey: 'trusted_comparison.comparison',
+      itemType: 'trusted_comparison',
+      status: 'skipped',
+      score: 0,
+      maxScore: 0,
+      durationMs: 0,
+      traceId: comparison.basic?.traceId,
+      evidenceSummary: {
+        message: '可信对比核心探针请求失败，未形成可比模型证据',
+        targetTraceId: target.basic?.traceId,
+        comparisonTraceId: comparison.basic?.traceId,
+        targetQualityScore: targetBasicQuality,
+        targetQualityMax: targetBasicMax,
+        comparisonQualityScore: comparisonBasicQuality,
+        comparisonQualityMax: comparisonBasicMax,
+        requestFailure: true,
+        excludedFromScoring: true,
+        targetBasicSuccess: target.basic?.success,
+        comparisonBasicSuccess: comparison.basic?.success,
+        targetOutputPreview: bounded(target.basic?.outputText),
+        comparisonOutputPreview: bounded(comparison.basic?.outputText)
+      }
+    }
+  }
+  const basicModelMismatch = targetBasicModelMismatch || comparisonBasicModelMismatch
+  const status = basicModelMismatch ? 'failed' : comparable ? 'passed' : comparisonOk ? 'warning' : 'failed'
+  return {
+    itemKey: 'trusted_comparison.comparison',
+    itemType: 'trusted_comparison',
+    status,
+    score: basicModelMismatch ? 0 : comparable ? 10 : comparisonOk ? 4 : 0,
+    maxScore: 10,
+    durationMs: 0,
+    traceId: comparison.basic?.traceId,
+    evidenceSummary: {
+      message: comparisonBasicModelMismatch
+        ? '可信对比账户基础探针返回模型不匹配，不能作为可信对比基准'
+        : targetBasicModelMismatch
+          ? '目标账户基础探针返回模型不匹配，可信对比未形成完整可比结果'
+          : comparable ? '目标链路和可信对比链路均完成核心探针' : '可信对比未形成完整可比结果',
+      targetTraceId: target.basic?.traceId,
+      comparisonTraceId: comparison.basic?.traceId,
+      targetQualityScore: targetBasicQuality,
+      targetQualityMax: targetBasicMax,
+      comparisonQualityScore: comparisonBasicQuality,
+      comparisonQualityMax: comparisonBasicMax,
+      targetBasicModelMismatch,
+      comparisonBasicModelMismatch,
+      targetOutputPreview: bounded(target.basic?.outputText),
+      comparisonOutputPreview: bounded(comparison.basic?.outputText)
+    }
   }
 }
 
@@ -799,7 +873,7 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
     return { level: 'uncertain', score, maxScore: 100, message: '可信对比探针请求失败，未形成完整可比模型证据' }
   }
   if (options.profile === 'quick') {
-    if (score >= 78 && failedCount <= 1 && behaviorPassed) {
+    if (score >= 78 && failedCount <= 1) {
       return { level: 'likely', score, maxScore: 100, message: '快速检测未发现明显异常，仅形成初步估计；需要更高准确度请开启深度检测' }
     }
     if (score >= 50) return { level: 'uncertain', score, maxScore: 100, message: '快速检测存在不确定项，建议开启深度检测复核' }

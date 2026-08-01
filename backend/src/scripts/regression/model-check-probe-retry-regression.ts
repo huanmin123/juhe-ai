@@ -17,8 +17,12 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
-runtimeConfig.modelCheck.probeRetryDelayMs = 20
 mkdirSync(tempRoot, { recursive: true })
+
+// Keep the 1–3s retry window deterministic without collapsing generated trace IDs.
+const originalRandom = Math.random
+let deterministicRandomIndex = 0
+Math.random = () => (deterministicRandomIndex++ % 1_000) / 1_000
 
 const retryState = {
   transientBasicAttempts: 0,
@@ -26,7 +30,9 @@ const retryState = {
   persistentBasicAttempts: 0,
   rateLimitedBasicAttempts: 0,
   opaque400BasicAttempts: 0,
-  opaque429BasicAttempts: 0
+  opaque429BasicAttempts: 0,
+  createdBasicAttempts: 0,
+  http200QualityAttempts: 0
 }
 const fullPolicy: ModelQualityPolicy = {
   systemAccountId: 'sys_admin',
@@ -80,13 +86,13 @@ try {
     'high_confidence',
     `瞬态上游异常恢复后不应误判失败：${JSON.stringify(checkStatusSummary(transientRun.checks))}`
   )
-  assert.equal(retryState.transientBasicAttempts, 3, '瞬态异常 basic 探针应在同一账号上尝试三次')
-  assert.equal(retryState.transientStreamAttempts, 3, '瞬态流式异常应在同一账号上尝试三次')
-  assert(Date.now() - transientStartedAt >= 35, '普通瞬态错误也应执行统一等待，不能贴着重打')
+  assert.equal(retryState.transientBasicAttempts, 2, '瞬态异常 basic 探针应在同一账号上最多尝试两次')
+  assert.equal(retryState.transientStreamAttempts, 2, '瞬态流式异常应在同一账号上最多尝试两次')
+  assert(Date.now() - transientStartedAt >= 2_000, '普通瞬态错误也应执行 1–3 秒统一等待，不能贴着重打')
   assert(!transientRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '恢复成功的基础预检不应生成模型评分项')
-  assert.equal(transientStream.status, 'passed', '第 3 次恢复后流式探针应通过')
-  assert.equal(transientStream.evidenceSummary.attemptCount, 3, '流式探针应记录总尝试次数')
-  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 503, 200], '流式探针应记录每次 HTTP 状态码')
+  assert.equal(transientStream.status, 'passed', '第 2 次恢复后流式探针应通过')
+  assert.equal(transientStream.evidenceSummary.attemptCount, 2, '流式探针应记录总尝试次数')
+  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 200], '流式探针应记录每次 HTTP 状态码')
 
   const rateLimitedFixture = createMockGatewayFixture({
     label: 'model-check-retry-rate-limit',
@@ -106,8 +112,8 @@ try {
     trustedComparison: false
   }, access, undefined, undefined, { policy: fullPolicy })
   assert.equal(rateLimitedRun.level, 'high_confidence', `429 瞬态限流恢复后不应误判失败：${JSON.stringify(checkStatusSummary(rateLimitedRun.checks))}`)
-  assert.equal(retryState.rateLimitedBasicAttempts, 3, '429 basic 探针应等待后在同一账号上尝试三次')
-  assert(Date.now() - rateLimitedStartedAt >= 35, '失败重试应执行统一等待，不能贴着重打')
+  assert.equal(retryState.rateLimitedBasicAttempts, 2, '429 basic 探针应等待后在同一账号上最多尝试两次')
+  assert(Date.now() - rateLimitedStartedAt >= 1_000, '失败重试应执行 1–3 秒统一等待，不能贴着重打')
   assert(!rateLimitedRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '限流恢复成功的基础预检不应生成模型评分项')
 
   const opaque400Fixture = createMockGatewayFixture({
@@ -145,16 +151,60 @@ try {
     trustedComparison: false
   }, access, undefined, undefined, { policy: fullPolicy })
   const opaque429Basic = requiredCheck(opaque429Run.checks, 'target.responses_basic')
-  assert.equal(retryState.opaque400BasicAttempts, 3, '400 + rate_limit 文本与 429 应执行同样的有界重试')
-  assert.equal(retryState.opaque429BasicAttempts, 3, '429 + 任意正文应执行同样的有界重试')
+  assert.equal(retryState.opaque400BasicAttempts, 2, '400 + rate_limit 文本与 429 应执行同样的有界重试')
+  assert.equal(retryState.opaque429BasicAttempts, 2, '429 + 任意正文应执行同样的有界重试')
   assert.equal(opaque400Basic.status, opaque429Basic.status, '400 与 429 的探针动作结果必须等价')
   assert.equal(opaque400Basic.maxScore, opaque429Basic.maxScore, '400 与 429 不得改变评分分母')
   assert.equal(opaque400Basic.evidenceSummary.requestFailure, opaque429Basic.evidenceSummary.requestFailure, '400 与 429 请求失败事实必须等价')
   assert.equal(opaque400Basic.evidenceSummary.excludedFromScoring, opaque429Basic.evidenceSummary.excludedFromScoring, '400 与 429 排除评分事实必须等价')
   assert.equal(opaque400Basic.evidenceSummary.rateLimited, undefined, '400 正文 rate_limit 不能被内部解释为限流')
   assert.equal(opaque429Basic.evidenceSummary.rateLimited, undefined, '429 状态码不能被内部解释为限流')
-  assert.deepEqual(opaque400Basic.evidenceSummary.attemptStatusCodes, [400, 400, 400], '400 应保留原始状态码诊断')
-  assert.deepEqual(opaque429Basic.evidenceSummary.attemptStatusCodes, [429, 429, 429], '429 应保留原始状态码诊断')
+  assert.deepEqual(opaque400Basic.evidenceSummary.attemptStatusCodes, [400, 400], '400 应保留原始状态码诊断')
+  assert.deepEqual(opaque429Basic.evidenceSummary.attemptStatusCodes, [429, 429], '429 应保留原始状态码诊断')
+
+  const createdFixture = createMockGatewayFixture({
+    label: 'model-check-retry-created',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const createdAccount = createdFixture.accounts[0]
+  assert(createdAccount, 'mock fixture should create a 201 target account')
+  const createdRun = await runModelCheck({
+    targetType: 'account',
+    targetId: createdAccount.id,
+    model: 'gpt-5.5',
+    profile: 'quick',
+    trustedComparison: false
+  }, access, undefined, undefined, { policy: fullPolicy })
+  const createdBasic = requiredCheck(createdRun.checks, 'target.responses_basic')
+  assert.equal(retryState.createdBasicAttempts, 2, '201 必须和其他非 200 一样重试一次')
+  assert.equal(createdRun.level, 'unavailable', '两次 201 后必须按未验证结束')
+  assert.equal(createdRun.qualityDecision?.result, 'not_triggered', '两次 201 后不得触发质量处罚')
+  assert.deepEqual(createdBasic.evidenceSummary.attemptStatusCodes, [201, 201], '201 诊断必须保留两次状态码')
+
+  const http200QualityFixture = createMockGatewayFixture({
+    label: 'model-check-retry-http200-quality',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const http200QualityAccount = http200QualityFixture.accounts[0]
+  assert(http200QualityAccount, 'mock fixture should create an HTTP 200 quality target account')
+  const http200QualityRun = await runModelCheck({
+    targetType: 'account',
+    targetId: http200QualityAccount.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access, undefined, undefined, { policy: fullPolicy })
+  assert.equal(retryState.http200QualityAttempts, 1, 'HTTP 200 但模型内容验证失败不得重试')
+  const http200Structured = requiredCheck(http200QualityRun.checks, 'target.structured_output')
+  assert.notEqual(http200Structured.status, 'skipped', 'HTTP 200 质量失败必须作为协议质量项进入既有质量判定')
+  assert(http200QualityRun.checks.some((item) => item.itemKey === 'target.tool_calling'), 'HTTP 200 质量失败后仍必须执行余下必需探针')
+  assert.notEqual(http200QualityRun.resultSummary.modelCheckUnverified, true, 'HTTP 200 质量失败不能伪装成未验证传输失败')
 
   const persistentFixture = createMockGatewayFixture({
     label: 'model-check-retry-persistent',
@@ -175,18 +225,21 @@ try {
   }, access, undefined, undefined, { policy: fullPolicy })
   const persistentBasic = requiredCheck(persistentRun.checks, 'target.responses_basic')
   assert.equal(persistentRun.level, 'unavailable', '连续重试仍失败时应落不可检测')
-  assert.equal(retryState.persistentBasicAttempts, 3, '持续异常 basic 探针应达到最大尝试次数')
+  assert.equal(persistentRun.qualityDecision?.result, 'not_triggered', '二次非 200 终止时不得触发质量处罚')
+  assert.match(persistentRun.qualityDecision?.message ?? '', /未形成质量判定证据/, '二次非 200 终止原因必须明确未形成质量判定证据')
+  assert.equal(retryState.persistentBasicAttempts, 2, '持续异常 basic 探针应达到最大尝试次数')
   assert.equal(persistentBasic.status, 'skipped', '持续异常时 basic 探针应记录为请求失败未计分')
   assert.equal(persistentBasic.maxScore, 0, '持续异常时 basic 探针不应进入评分分母')
   assert.equal(persistentBasic.evidenceSummary.requestFailure, true, '持续异常报告应标记请求失败')
   assert.equal(persistentBasic.evidenceSummary.excludedFromScoring, true, '持续异常报告应标记不参与评分')
-  assert.equal(persistentBasic.evidenceSummary.attemptCount, 3, '持续异常报告应记录总尝试次数')
-  assert.equal(persistentBasic.evidenceSummary.retryAttemptCount, 2, '持续异常报告应记录重试次数')
-  assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503, 503], '持续异常报告应记录全部失败状态码')
+  assert.equal(persistentBasic.evidenceSummary.attemptCount, 2, '持续异常报告应记录总尝试次数')
+  assert.equal(persistentBasic.evidenceSummary.retryAttemptCount, 1, '持续异常报告应记录重试次数')
+  assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503], '持续异常报告应记录全部失败状态码')
   assert(!persistentRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), 'basic 连续失败后不应继续执行重型行为探针')
 
   console.log('模型检测探针重试回归通过：统一延迟重试、瞬态恢复和持续失败未计分均符合预期')
 } finally {
+  Math.random = originalRandom
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
 }
@@ -238,16 +291,21 @@ function createRetryAwareUpstream(): http.Server {
             sendOpaqueError(res, 429, { error: { message: 'provider returned an opaque response' } })
             return
           }
+          if (authorization.includes('model-check-retry-created')) {
+            retryState.createdBasicAttempts += 1
+            sendOpaqueError(res, 201, responsePayload(body, 'OK-MODEL-CHECK'))
+            return
+          }
           if (authorization.includes('model-check-retry-rate-limit')) {
             retryState.rateLimitedBasicAttempts += 1
-            if (retryState.rateLimitedBasicAttempts <= 2) {
+            if (retryState.rateLimitedBasicAttempts <= 1) {
               sendRateLimit(res)
               return
             }
           }
           if (authorization.includes('model-check-retry-transient')) {
             retryState.transientBasicAttempts += 1
-            if (retryState.transientBasicAttempts <= 2) {
+            if (retryState.transientBasicAttempts <= 1) {
               sendError(res, '模拟瞬态上游异常')
               return
             }
@@ -258,9 +316,20 @@ function createRetryAwareUpstream(): http.Server {
             return
           }
         }
+        if (authorization.includes('model-check-retry-http200-quality') && bodyText.includes('MODEL_CHECK_STRUCTURED_OUTPUT')) {
+          retryState.http200QualityAttempts += 1
+          sendJson(res, {
+            id: 'resp_model_check_quality_failure',
+            object: 'response',
+            status: 'completed',
+            model: String(body.model ?? 'gpt-5.5'),
+            output: []
+          })
+          return
+        }
         if (body.stream === true && bodyText.includes('STREAM-OK') && authorization.includes('model-check-retry-transient')) {
           retryState.transientStreamAttempts += 1
-          if (retryState.transientStreamAttempts <= 2) {
+          if (retryState.transientStreamAttempts <= 1) {
             sendStreamFailure(res, String(body.model ?? 'gpt-5.5'), '模拟流式临时异常')
             return
           }

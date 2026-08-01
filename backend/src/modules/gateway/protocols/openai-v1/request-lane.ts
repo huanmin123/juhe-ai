@@ -17,15 +17,14 @@ type UpstreamReplayRequest = Pick<Request, 'method' | 'originalUrl' | 'path'>
   >>
 
 /**
- * All gateway requests use the same availability-first failover rule. If the
- * current attempt does not produce a deliverable result, the dispatcher may
- * continue with another candidate regardless of endpoint or request lane.
+ * Automatic replay after an unrecognized upstream failure is disabled.  The
+ * dispatcher may only replay after a concrete account error policy matches.
  */
 export function automaticUpstreamReplayAllowedAfterDispatch(
   _req: UpstreamReplayRequest,
   _lane: OpenAIGatewayRequestLane
 ): boolean {
-  return true
+  return false
 }
 
 function requestInspectionBody(req: UpstreamReplayRequest): Record<string, unknown> | undefined {

@@ -10,6 +10,7 @@ export interface UpstreamAttempt {
   upstreamUrl: string
   status?: number
   message?: string
+  errorCode?: string
   transportFailureKind?: 'timeout' | 'connection' | 'read_incomplete'
   responseHeaders?: Record<string, string>
   responseBodyText?: string

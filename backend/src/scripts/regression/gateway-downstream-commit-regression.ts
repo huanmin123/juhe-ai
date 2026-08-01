@@ -50,7 +50,7 @@ assert.equal(shouldRetryPreCommitStreamFailureOnServer(transportOnlyFailure, {
   headersSent: true,
   writableEnded: false,
   destroyed: false
-}), true, 'SSE 心跳已经写出但语义未提交时仍应服务端重试')
+}), false, 'SSE 心跳已经写出但语义未提交时也不得服务端重试')
 
 const firstWriteFailureState = new GatewayDownstreamCommitState()
 const firstWriteFailureResponse = fakeResponse({ throwOnWrite: true })
@@ -123,7 +123,7 @@ assert.equal(keepAliveOnlyResult.upstreamResponseBytesWritten, 0)
 assert.equal(keepAliveOnlyResponse.headersSent, false, '上游 keep-alive 不得提前写出下游响应头')
 assert.equal(keepAliveOnlyResponse.writableEnded, false, '建流前失败必须交回上层接管 HTTP 错误或切号')
 assert.equal(keepAliveOnlyResult.uncommittedResponseBody, undefined, '纯 SSE comment 不属于语义正文，不应占用预提交缓冲')
-assert.equal(shouldRetryPreCommitStreamFailureOnServer(keepAliveOnlyResult, keepAliveOnlyResponse), true)
+assert.equal(shouldRetryPreCommitStreamFailureOnServer(keepAliveOnlyResult, keepAliveOnlyResponse), false, '预提交失败必须由当前账户终止并暴露')
 
 await assertTransportOnlySseRemainsPreCommit(
   '单个超过预提交上限的 SSE comment',
@@ -343,7 +343,7 @@ async function assertTransportOnlySseRemainsPreCommit(
   assert.equal(response.headersSent, false, `${label} 不得提前写出响应头`)
   assert.equal(response.writableEnded, false, `${label} 必须交回上层接管`)
   assert.equal(result.uncommittedResponseBody?.toString('utf8'), expectedUncommittedBody)
-  assert.equal(shouldRetryPreCommitStreamFailureOnServer(result, response), true, `${label} 应允许服务端安全切号`)
+  assert.equal(shouldRetryPreCommitStreamFailureOnServer(result, response), false, `${label} 不得因预提交失败静默切号`)
 }
 
 async function assertOversizedUncommittedSseRejected(

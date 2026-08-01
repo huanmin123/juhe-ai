@@ -185,14 +185,9 @@ function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
   assert(routesSource.includes('transferClientIpAccountPendingFailures('), 'fallback 切组应使用有界转移函数传递待确认账号失败')
   assert(routesSource.includes('await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure('), '路由最终失败响应应等待确认 pending 的 IP 级账号回避')
   const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
-  const opaqueHandlerStart = failureDispatchSource.indexOf('export async function handleOpaqueFailedUpstreamResponse')
-  const opaqueHandlerEnd = failureDispatchSource.indexOf('export async function handleUpstreamRequestError')
-  assert(opaqueHandlerStart >= 0 && opaqueHandlerEnd > opaqueHandlerStart, 'opaque HTTP 失败处理函数应保持可审计边界')
-  const opaqueHandlerSource = failureDispatchSource.slice(
-    opaqueHandlerStart,
-    opaqueHandlerEnd
-  )
-  assert(!opaqueHandlerSource.includes('rememberClientIpAccountPendingFailure('), 'opaque HTTP 非 2xx 不得记录任何可被路由收口确认的跨请求 pending 回避')
+  assert(!failureDispatchSource.includes('handleOpaqueFailedUpstreamResponse'), '未知 HTTP 失败不得保留独立的切号接管处理器')
+  assert(/if \(!policyCouldMatch\)[\s\S]*return \{ action: 'return_response', response \}/.test(failureDispatchSource), '无显式策略的 HTTP 失败必须直接返回当前上游响应')
+  assert(!failureDispatchSource.includes('rememberClientIpAccountPendingFailure('), '未知 HTTP 非 2xx 不得记录任何可被路由收口确认的跨请求 pending 回避')
   const finalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
   assert(!finalizationSource.includes('rememberClientIpAccountPendingFailure('), '流式断尾可能由单会话触发，不得写 IP×账号 pending 回避')
   assert(!finalizationSource.includes('confirmClientIpAccountAvoidanceAfterFinalFailureAsync('), '流式失败返回客户端时不得确认跨请求 IP×账号回避')

@@ -1,4 +1,3 @@
-import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
@@ -28,7 +27,10 @@ import {
 } from './model-checks-response-parsing.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
 
-const probeMaxAttempts = accountDiagnosticRetryTimeoutMs.length
+// Model checks use a bounded two-attempt schedule.  The shared diagnostic
+// timeout table still owns the per-attempt values, but only its first two
+// entries are applicable here (10s initial, 20s retry).
+const probeMaxAttempts = 2
 
 export type ModelCheckGatewayProbeTarget = {
   identity: OpenAIGatewayRequestIdentity
@@ -95,7 +97,7 @@ export async function runGatewayProbe(
     if (attempt > 1) {
       await waitForModelCheckProbeAttemptDelay(attempts[attempts.length - 1], signal)
     }
-    const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt - 1] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[Math.min(attempt - 1, 1)] ?? 20_000
     const result = await runGatewayProbeAttempt(target, probe, signal, progress, attempt, maxAttempts, timeoutMs)
     attempts.push(result)
     if (result.success || !isRetryableProbeFailure(result) || attempt >= maxAttempts) {
@@ -304,7 +306,10 @@ function probeModelFields(probe: GatewayProbeInput): Pick<GatewayProbeResult, 'r
 }
 
 function isRetryableProbeFailure(result: GatewayProbeResult): boolean {
-  return !result.success
+  // Transport / HTTP failures are retried uniformly.  A HTTP 200 response
+  // that fails model-content or protocol validation is quality evidence, not
+  // a transport failure, and must never be retried.
+  return result.statusCode !== 200
 }
 
 function probeErrorStatusCode(error: unknown): number {
@@ -345,15 +350,15 @@ function normalizedProbeMaxAttempts(value: number | undefined): number {
 
 async function waitForModelCheckProbeAttemptDelay(previous: GatewayProbeResult | undefined, signal?: AbortSignal): Promise<void> {
   if (!previous) return
-  const delayMs = modelCheckProbeAttemptDelayMs(previous)
+  const delayMs = modelCheckProbeAttemptDelayMs()
   if (delayMs <= 0) return
   await waitForAbortableDelay(delayMs, signal)
 }
 
-function modelCheckProbeAttemptDelayMs(previous: GatewayProbeResult): number {
-  const retryAfterMs = previous.retryAfterMs ?? 0
-  const configuredDelayMs = runtimeConfig.modelCheck.probeRetryDelayMs
-  return Math.max(0, Math.max(Math.trunc(configuredDelayMs), Math.trunc(retryAfterMs)))
+function modelCheckProbeAttemptDelayMs(): number {
+  // Uniform bounded backoff for every non-200 response.  Tests may replace
+  // Math.random with a deterministic source; production always waits 1–3s.
+  return 1_000 + Math.floor(Math.random() * 2_001)
 }
 
 function upstreamAttemptStatusCode(attempt: UpstreamAttempt | undefined): number | undefined {

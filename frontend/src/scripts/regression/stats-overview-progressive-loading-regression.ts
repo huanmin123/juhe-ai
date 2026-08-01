@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const viewSource = readFileSync(new URL('../../views/stats/StatsView.vue', import.meta.url), 'utf8')
+const routerSource = readFileSync(new URL('../../router/index.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../../api/domains/stats.ts', import.meta.url), 'utf8')
 const chartSource = readFileSync(new URL('../../views/stats/statsChartOptions.ts', import.meta.url), 'utf8')
 const workerSource = readFileSync(new URL('../../../../backend/src/storage/sqlite-read-worker.ts', import.meta.url), 'utf8')
@@ -56,6 +57,17 @@ assert.match(viewSource, /\.\.\.currentAuthSignature\(\)/, '请求签名必须�
 assert.match(viewSource, /onDeactivate:\s*handlePageDeactivate/, 'KeepAlive 失活必须使在途统计请求失效')
 assert.match(viewSource, /:error="summaryError"/, 'summary 加载失败必须显示可区分于零数据的区块错误态')
 assert.match(viewSource, /:on-retry="\(\) => loadData\(\{ force: true \}\)"/, 'summary 错误态必须允许定点重试')
+
+function routeDefinition(path: string): string {
+  const start = routerSource.indexOf(`path: '${path}'`)
+  const end = routerSource.indexOf('\n  },', start)
+  assert(start >= 0 && end > start, `路由 ${path} 必须存在且边界可识别`)
+  return routerSource.slice(start, end)
+}
+
+for (const path of ['/my-stats', '/stats']) {
+  assert.match(routeDefinition(path), /keepAlive: true/, `${path} 切换菜单后必须保留统计页实例和筛选状态`)
+}
 
 for (const path of ['summary', 'hourly-trend', 'model-distribution', 'errors']) {
   assert(routesSource.includes(`'/usage-overview/${path}'`), `Node 必须注册 usage-overview/${path}`)

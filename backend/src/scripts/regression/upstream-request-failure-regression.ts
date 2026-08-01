@@ -96,6 +96,13 @@ const opaqueFailureBody = JSON.stringify({
     code: null
   }
 })
+const explicitRetryNextFailureBody = JSON.stringify({
+  error: {
+    message: 'configured-body-marker',
+    type: 'invalid_request_error',
+    code: 'configured_retry_next'
+  }
+})
 
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
@@ -110,11 +117,6 @@ async function main(): Promise<void> {
       const authorization = String(req.headers.authorization ?? '')
       upstreamAuthorizations.push(authorization)
       if (req.url?.includes('mock_truncated_error_body=1')) {
-        if (authorization.includes('sk-truncated-body-backup')) {
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          res.end('{"choices":[{"message":{"role":"assistant","content":"truncated body backup success"},"finish_reason":"stop"}]}')
-          return
-        }
         res.writeHead(400, {
           'content-type': 'application/json; charset=utf-8',
           'content-length': '4096',
@@ -137,6 +139,16 @@ async function main(): Promise<void> {
         req.socket.destroy()
         return
       }
+      if (req.url?.includes('mock_explicit_retry_next=1')) {
+        if (authorization.includes('sk-explicit-retry-next-fallback')) {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end('{"choices":[{"message":{"role":"assistant","content":"explicit retry next backup success"},"finish_reason":"stop"}]}')
+          return
+        }
+        res.writeHead(422, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(explicitRetryNextFailureBody)
+        return
+      }
       res.writeHead(422, {
         'content-type': 'application/json; charset=utf-8',
         'x-upstream-contract': 'opaque'
@@ -146,12 +158,19 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
 
-    const opaqueGroup = repositories.createGroup({ name: '不透明非幂等失败回归分组', providerCode: 'gpt', enabled: true }, access)
+    const opaqueGroup = repositories.createGroup({ name: '未配置策略的 HTTP 失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const opaqueAccounts = [
-      createAccount(opaqueGroup.id, '01-不透明失败账户', 'sk-opaque-failure-first', upstreamBaseUrl, true),
+      createAccount(opaqueGroup.id, '01-不透明失败账户', 'sk-opaque-failure-first', upstreamBaseUrl),
       createAccount(opaqueGroup.id, '02-不透明后备账户', 'sk-opaque-failure-fallback', upstreamBaseUrl)
     ]
     const opaqueApiKey = createRegressionApiKey(opaqueGroup.id, 'sk-opaque-request-failure-regression')
+
+    const explicitRetryNextGroup = repositories.createGroup({ name: '显式 retry_next 回归分组', providerCode: 'gpt', enabled: true }, access)
+    const explicitRetryNextAccounts = [
+      createAccount(explicitRetryNextGroup.id, '01-显式 retry_next 账户', 'sk-explicit-retry-next-first', upstreamBaseUrl, true),
+      createAccount(explicitRetryNextGroup.id, '02-显式 retry_next 后备账户', 'sk-explicit-retry-next-fallback', upstreamBaseUrl)
+    ]
+    const explicitRetryNextApiKey = createRegressionApiKey(explicitRetryNextGroup.id, 'sk-explicit-retry-next-regression')
 
     const sideEffectTransportGroup = repositories.createGroup({ name: '副作用传输失败不可重放分组', providerCode: 'gpt', enabled: true }, access)
     const sideEffectTransportAccounts = [
@@ -172,7 +191,7 @@ async function main(): Promise<void> {
     ]
     const transportApiKey = createRegressionApiKey(transportGroup.id, 'sk-opaque-transport-failure-regression')
 
-    const truncatedBodyGroup = repositories.createGroup({ name: '响应正文客观截断隐藏切号分组', providerCode: 'gpt', enabled: true }, access)
+    const truncatedBodyGroup = repositories.createGroup({ name: '响应正文客观截断终态分组', providerCode: 'gpt', enabled: true }, access)
     const truncatedBodyAccounts = [
       createAccount(truncatedBodyGroup.id, '01-正文截断账户', 'sk-truncated-body-primary', upstreamBaseUrl, false, 0),
       createAccount(truncatedBodyGroup.id, '02-正文截断健康后备账户', 'sk-truncated-body-backup', upstreamBaseUrl, false, 100)
@@ -229,32 +248,33 @@ async function main(): Promise<void> {
       })
     })
     const opaqueResponseText = await opaqueResponse.text()
-    assert.equal(opaqueResponse.status, 503, `副作用 POST 穷尽候选后应返回稳定网关错误：${opaqueResponseText}`)
-    assert.match(opaqueResponseText, /upstream_retryable_error/, '副作用 POST 与文本共用统一候选耗尽语义')
-    assert.doesNotMatch(opaqueResponseText, /upstream_outcome_unknown/, '统一候选规则不得返回旧自动重放阻断语义')
-    assert.doesNotMatch(opaqueResponseText, /Invalid value for model level|invalid_request_error|422/, '副作用 POST 不得泄漏供应商状态或错误正文')
-    assert.equal(opaqueResponse.headers.get('x-upstream-contract'), null, '副作用 POST 不得泄漏不透明上游响应头')
+    assert.equal(opaqueResponse.status, 422, `未配置策略的上游 HTTP 失败必须保留原状态：${opaqueResponseText}`)
+    assert.equal(opaqueResponseText, opaqueFailureBody, '未配置策略的上游 HTTP 失败必须保留原正文')
     assert.deepEqual(
       upstreamAuthorizations,
-      ['Bearer sk-opaque-failure-first', 'Bearer sk-opaque-failure-fallback'],
-      '完整 HTTP 非 2xx 后必须各尝试一次失败首选和后备账户'
+      ['Bearer sk-opaque-failure-first'],
+      '未配置策略的完整 HTTP 非 2xx 不得切换 Key、账户或分组'
     )
     assertAccountsRemainAvailable(opaqueAccounts, '不透明 HTTP 失败')
-    const opaqueAccount = opaqueAccounts[0]!
-    const opaqueQuality = await gatewayHotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
-      accountRuntimeKey: accountRuntimeKeys.gatewayAccountRuntimeKey(opaqueAccount),
-      protocolProfile: opaqueAccount.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
-      requestLane: 'text',
-      modelFamily: gatewayHotQuality.gatewayHotQualityModelFamily('gpt-4o-mini')
+
+    const explicitRetryNextOffset = upstreamAuthorizations.length
+    const explicitRetryNextResponse = await fetch(`${baseUrl}/v1/chat/completions?mock_explicit_retry_next=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${explicitRetryNextApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'only an explicitly matched retry_next rule may switch account' }]
+      })
     })
-    assert.ok(opaqueQuality, '透明返回的非 2xx 也必须完成热质量 attempt 诊断闭环')
-    assert.equal(opaqueQuality.window5m.completedResponses, 0, '透明返回的非 2xx 不得记为 completed_response')
-    assert.equal(opaqueQuality.window5m.upstreamResponseFailures, 1, '透明返回的非 2xx 只能增加 opaque 诊断计数')
-    assert.equal(opaqueQuality.window5m.qualityAttempts, 0, 'opaque HTTP 不得进入跨请求 reliability 评分')
-    assert.equal(opaqueQuality.window5m.firstByteSampleCount, 0, 'opaque HTTP 不得进入跨请求速度评分')
-    assert.equal(opaqueQuality.window5m.lastFailureAtMs, undefined, 'opaque HTTP 不得改变候选探索的新鲜度排序')
-    assert.equal(opaqueQuality.sampleState, 'cold', '只有 opaque HTTP 诊断的账户必须保持 cold 中性状态')
-    assert.equal(opaqueQuality.effectiveReliability, 0.5, 'opaque HTTP 诊断不得偏移候选排序的中性可靠性')
+    const explicitRetryNextText = await explicitRetryNextResponse.text()
+    assert.equal(explicitRetryNextResponse.status, 200, explicitRetryNextText)
+    assert.match(explicitRetryNextText, /explicit retry next backup success/)
+    assert.deepEqual(
+      upstreamAuthorizations.slice(explicitRetryNextOffset),
+      ['Bearer sk-explicit-retry-next-first', 'Bearer sk-explicit-retry-next-fallback'],
+      '只有精确命中 retry_next 的策略才可切到后备账户'
+    )
+    assertAccountsRemainAvailable(explicitRetryNextAccounts, '显式 retry_next')
 
     const sideEffectTransportOffset = upstreamAuthorizations.length
     const sideEffectTransportResponse = await fetch(`${baseUrl}/v1/audio/speech?mock_side_effect_transport_drop=1`, {
@@ -263,13 +283,13 @@ async function main(): Promise<void> {
       body: JSON.stringify({ model: 'gpt-4o-mini', input: 'dispatched side effect must use unified failover' })
     })
     const sideEffectTransportText = await sideEffectTransportResponse.text()
-    assert.equal(sideEffectTransportResponse.status, 503, sideEffectTransportText)
-    assert.match(sideEffectTransportText, /upstream_retryable_error/)
-    assert.doesNotMatch(sideEffectTransportText, /upstream_outcome_unknown/)
+    assert.equal(sideEffectTransportResponse.status, 502, sideEffectTransportText)
+    assert.match(sideEffectTransportText, /upstream_transport_error/, '未知 transport 失败必须以明确 transport 错误返回')
+    assert.doesNotMatch(sideEffectTransportText, /upstream_retryable_error/, '未知 transport 失败不得伪装成候选耗尽后可重试错误')
     assert.deepEqual(
       upstreamAuthorizations.slice(sideEffectTransportOffset),
-      ['Bearer sk-side-effect-transport-first', 'Bearer sk-side-effect-transport-fallback'],
-      'audio/files 等请求 transport 失败后必须各尝试一次失败首选和后备账户'
+      ['Bearer sk-side-effect-transport-first'],
+      '未知 transport 失败不得切换 Key、账户或分组'
     )
     assertAccountsRemainAvailable(sideEffectTransportAccounts, '副作用 transport 失败')
 
@@ -284,8 +304,8 @@ async function main(): Promise<void> {
       })
     })
     const transportResponseText = await transportResponse.text()
-    assert.equal(transportResponse.status, 503, `未收到上游响应头的传输失败应返回统一网关错误：${transportResponseText}`)
-    assert.match(transportResponseText, /upstream_retryable_error/)
+    assert.equal(transportResponse.status, 502, `未收到上游响应头的传输失败应返回明确 transport 错误：${transportResponseText}`)
+    assert.match(transportResponseText, /upstream_transport_error/)
     assert.ok(
       await accountCircuit.getGatewayAccountCircuitStore().size() > transportCircuitSizeBefore,
       '真实已经派发的连接失败仍必须进入账户传输电路'
@@ -304,13 +324,12 @@ async function main(): Promise<void> {
       })
     })
     const truncatedBodyText = await truncatedBodyResponse.text()
-    assert.equal(truncatedBodyResponse.status, 200, `正文客观截断应在下游提交前切到健康后备：${truncatedBodyText}`)
-    assert.match(truncatedBodyText, /truncated body backup success/)
-    assert.doesNotMatch(truncatedBodyText, /partial body must never reach client/)
+    assert.equal(truncatedBodyResponse.status, 400, `上游正文截断必须保留已收到的 HTTP 状态：${truncatedBodyText}`)
+    assert.match(truncatedBodyText, /upstream_transport_error/, '上游正文截断必须以明确 transport 错误返回')
     assert.deepEqual(
       upstreamAuthorizations.slice(truncatedBodyOffset),
-      ['Bearer sk-truncated-body-primary', 'Bearer sk-truncated-body-backup'],
-      '正文客观截断只能触发一次失败主账户 attempt 和一次健康后备 attempt'
+      ['Bearer sk-truncated-body-primary'],
+      '上游正文截断不得切到后备账户并隐藏当前失败'
     )
     assert.ok(
       await accountCircuit.getGatewayAccountCircuitStore().size() > truncatedBodyCircuitSizeBefore,
@@ -400,7 +419,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
-    console.log('上游请求失败回归通过：完整 HTTP 与副作用 transport 共用统一候选切换，本地故障保持请求级且不污染共享状态')
+    console.log('上游请求失败回归通过：未知 HTTP、transport 和正文截断均在当前请求终止，只有显式 retry_next 可切换候选')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()

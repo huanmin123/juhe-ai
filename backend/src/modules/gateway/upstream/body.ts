@@ -28,6 +28,7 @@ export interface NonStreamPipeResult {
 
 export interface InspectableNonStreamPipeResult extends NonStreamPipeResult {
   fullyBuffered: boolean
+  inspectionLimitExceeded?: boolean
   completeBody?: Buffer
   completeBodyText?: string
 }
@@ -236,6 +237,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
   input: {
     startedAt: number
     inspectBytes: number
+    requireFullyBuffered?: boolean
     captureBytes?: number
     usageTailBytes?: number
     captureBody?: boolean
@@ -343,6 +345,16 @@ export async function pipeNonStreamUpstreamResponseForInspection(
             ...inspectionChunks,
             buffer.subarray(0, Math.max(0, inspectBytes - inspectionBytes))
           ], inspectBytes)
+        if (input.requireFullyBuffered) {
+          await closeAsyncIterator(iterator)
+          return {
+            ...buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes),
+            fullyBuffered: false,
+            inspectionLimitExceeded: true,
+            completeBody: inspectionBody,
+            completeBodyText: inspectionBody.toString('utf8')
+          }
+        }
         await input.beforeDownstreamCommit?.(inspectionBody)
         downstreamWriting = true
         await writeBufferedInspectionChunks()

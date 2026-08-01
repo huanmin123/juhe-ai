@@ -61,7 +61,6 @@ import {
 import {
   behaviorProbeDefinitions,
   distributionProbeDefinitions,
-  quickBehaviorProbeDefinitions,
   longContextProbeDefinitionsForModel
 } from './model-checks.probes.js'
 import {
@@ -75,6 +74,7 @@ import {
 import {
   evaluateBasicProtocolProbe,
   buildTrustedComparisonItem,
+  buildQuickTrustedComparisonItem,
   evaluateBasicResponsesProbe,
   evaluateBehaviorProbeSet,
   evaluateCrossModelComparisonProbe,
@@ -130,6 +130,13 @@ export class ModelCheckRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
     super(message)
     this.name = 'ModelCheckRequestError'
+  }
+}
+
+class ModelCheckRunAlreadyFinishedError extends Error {
+  constructor() {
+    super('模型检测已按未验证边界结束')
+    this.name = 'ModelCheckRunAlreadyFinishedError'
   }
 }
 
@@ -358,7 +365,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       trustedComparison,
       trustedComparisonAvailable: Boolean(comparison),
       traceId: runTraceId,
-      probeSetVersion,
+      probeSetVersion: profile === 'quick' ? quickProbeSetVersion : probeSetVersion,
       startedAt,
       policySnapshot,
       requestSummary: {
@@ -390,12 +397,130 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   try {
     throwIfAborted(signal)
     const targetSuite = await executeProbeSuite(target, model, 'target', profile, signal, progress)
-    if (profile === 'quick') {
-      const comparisonSuite = comparison && targetSuite.basic?.success === true
+    if (hasTerminalNon200Probe(targetSuite.items)) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: targetSuite.items,
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        reason: '同一探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    } else if (profile === 'quick') {
+      let comparisonSuite: ProbeSuiteResult | undefined
+      const tokenTarget = targetSuite.basic?.success === true && target.modelCheckProfile.protocol === 'openai_responses' && target.accountId && target.candidateAccounts?.[0]?.baseUrl
+        ? await executeModelCheckTokenIntegrityProbes({
+            model,
+            providerCode: target.providerCode,
+            providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
+            baseUrl: target.candidateAccounts[0].baseUrl,
+            credentialMode: target.candidateAccounts[0].type,
+            probeSetVersion: quickProbeSetVersion,
+            profileMode: 'quick',
+            prefix: 'target',
+            observationEnabled: false,
+            signal,
+            runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
+          })
+        : undefined
+      if (tokenTarget) targetSuite.items.push(tokenTarget.item)
+      if (hasTerminalNon200Probe(targetSuite.items)) {
+        await finishModelCheckRunWithoutQualityEvidence({
+          runId: run.id,
+          items: targetSuite.items,
+          model,
+          profile,
+          trustedComparison,
+          comparisonTargetId: comparison?.targetId,
+          startedAtMs,
+          reason: 'Token 探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        })
+        throw new ModelCheckRunAlreadyFinishedError()
+      }
+      comparisonSuite = comparison && targetSuite.basic?.success === true
         ? await executeProbeSuite(comparison, model, 'trusted_comparison', profile, signal, progress)
         : undefined
+      if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
+        await finishModelCheckRunWithoutQualityEvidence({
+          runId: run.id,
+          items: [...targetSuite.items, ...comparisonSuite.items],
+          model,
+          profile,
+          trustedComparison,
+          comparisonTargetId: comparison?.targetId,
+          startedAtMs,
+          reason: '可信对比探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        })
+        throw new ModelCheckRunAlreadyFinishedError()
+      }
+      const tokenComparison = comparisonSuite && comparison?.modelCheckProfile.protocol === 'openai_responses' && comparison.accountId && comparison.candidateAccounts?.[0]?.baseUrl
+        ? await executeModelCheckTokenIntegrityProbes({
+            model,
+            providerCode: comparison.providerCode,
+            providerProtocolProfileId: comparison.providerProtocolProfileId ?? comparison.modelCheckProfile.id,
+            baseUrl: comparison.candidateAccounts[0].baseUrl,
+            credentialMode: comparison.candidateAccounts[0].type,
+            probeSetVersion: quickProbeSetVersion,
+            profileMode: 'quick',
+            prefix: 'trusted_comparison',
+            observationEnabled: false,
+            signal,
+            runProbe: async (request, itemKey) => await runModelCheckProbeRequest(comparison, request, itemKey, signal, progress)
+          })
+        : undefined
+      if (tokenComparison && comparisonSuite) comparisonSuite.items.push(tokenComparison.item)
+      if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
+        await finishModelCheckRunWithoutQualityEvidence({
+          runId: run.id,
+          items: [...targetSuite.items, ...comparisonSuite.items],
+          model,
+          profile,
+          trustedComparison,
+          comparisonTargetId: comparison?.targetId,
+          startedAtMs,
+          reason: '可信对比 Token 探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        })
+        throw new ModelCheckRunAlreadyFinishedError()
+      }
+      const targetCrossModel = targetSuite.basic?.success === true
+        ? await executeCrossModelComparison(target, targetSuite, model, signal, progress, 'target')
+        : undefined
+      if (targetCrossModel) targetSuite.items.push(targetCrossModel)
+      if (hasTerminalNon200Probe(targetSuite.items)) {
+        await finishModelCheckRunWithoutQualityEvidence({
+          runId: run.id,
+          items: targetSuite.items,
+          model,
+          profile,
+          trustedComparison,
+          comparisonTargetId: comparison?.targetId,
+          startedAtMs,
+          reason: '跨模型探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        })
+        throw new ModelCheckRunAlreadyFinishedError()
+      }
+      const comparisonCrossModel = comparison && comparisonSuite?.basic?.success === true
+        ? await executeCrossModelComparison(comparison, comparisonSuite, model, signal, progress, 'trusted_comparison')
+        : undefined
+      if (comparisonCrossModel && comparisonSuite) comparisonSuite.items.push(comparisonCrossModel)
+      if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
+        await finishModelCheckRunWithoutQualityEvidence({
+          runId: run.id,
+          items: [...targetSuite.items, ...comparisonSuite.items],
+          model,
+          profile,
+          trustedComparison,
+          comparisonTargetId: comparison?.targetId,
+          startedAtMs,
+          reason: '可信对比探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        })
+        throw new ModelCheckRunAlreadyFinishedError()
+      }
       const trustedComparisonItem = comparisonSuite
-        ? buildTrustedComparisonItem(targetSuite, comparisonSuite)
+        ? buildQuickTrustedComparisonItem(targetSuite, comparisonSuite)
         : undefined
       if (trustedComparisonItem) emitModelCheckItemProgress(progress, trustedComparisonItem)
       const checks = await requestDatasetWriter({
@@ -452,6 +577,19 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           signal,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
+    if (tokenIntegrity && hasTerminalNon200Probe([tokenIntegrity.item])) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: [...targetSuite.items, tokenIntegrity.item],
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        reason: 'Token 探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    }
     const identityObservation = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
       ? undefined
       : await executeModelIdentityObservationProbes({
@@ -463,14 +601,53 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           probeSetVersion,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
+    if (identityObservation && hasTerminalNon200Probe([identityObservation.item])) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: [...targetSuite.items, ...(tokenIntegrity ? [tokenIntegrity.item] : []), identityObservation.item],
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        reason: '身份探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    }
     const crossModelComparison = targetUnavailable
       ? undefined
       : await executeCrossModelComparison(target, targetSuite, model, signal, progress)
+    if (crossModelComparison && hasTerminalNon200Probe([crossModelComparison])) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: [...targetSuite.items, ...(tokenIntegrity ? [tokenIntegrity.item] : []), ...(identityObservation ? [identityObservation.item] : []), crossModelComparison],
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        reason: '跨模型探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    }
     const comparisonSuite = comparison
       ? targetUnavailable
         ? undefined
         : await executeProbeSuite(comparison, model, 'trusted_comparison', profile, signal, progress)
       : undefined
+    if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: [...targetSuite.items, ...(tokenIntegrity ? [tokenIntegrity.item] : []), ...(identityObservation ? [identityObservation.item] : []), ...(crossModelComparison ? [crossModelComparison] : []), ...comparisonSuite.items],
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        reason: '可信对比探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    }
     const trustedComparisonItem = comparisonSuite
       ? buildTrustedComparisonItem(targetSuite, comparisonSuite)
       : undefined
@@ -480,6 +657,27 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         ? undefined
         : await executeDistributionSimilarityComparison(target, comparison, model, signal, progress)
       : undefined
+    if (distributionSimilarityItem && hasTerminalNon200Probe([distributionSimilarityItem])) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: [
+          ...targetSuite.items,
+          ...(tokenIntegrity ? [tokenIntegrity.item] : []),
+          ...(identityObservation ? [identityObservation.item] : []),
+          ...(crossModelComparison ? [crossModelComparison] : []),
+          ...(comparisonSuite?.items ?? []),
+          ...(trustedComparisonItem ? [trustedComparisonItem] : []),
+          distributionSimilarityItem
+        ],
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        reason: '分布相似度探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    }
     const itemInputs = [
       ...targetSuite.items,
       ...(tokenIntegrity ? [tokenIntegrity.item] : []),
@@ -555,23 +753,32 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     })
     }
   } catch (error) {
-    const message = signal?.aborted ? '模型检测已取消' : error instanceof Error ? error.message : '模型检测失败'
-    const status: ModelCheckRunStatus = signal?.aborted ? 'canceled' : 'failed'
-    await requestDatasetWriter({
-      type: 'finish_model_check_run',
-      runId: run.id,
-      input: {
-        level: 'unavailable',
-        score: 0,
-        status,
-        message,
-        finishedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAtMs,
-        resultSummary: { errorMessage: message },
-        errorCode: status,
-        errorMessage: message
-      }
-    })
+    if (!(error instanceof ModelCheckRunAlreadyFinishedError)) {
+      const canceled = signal?.aborted === true
+      const message = canceled ? '模型检测已取消，未形成质量判定证据' : error instanceof Error ? error.message : '模型检测失败'
+      const status: ModelCheckRunStatus = signal?.aborted ? 'canceled' : 'failed'
+      await requestDatasetWriter({
+        type: 'finish_model_check_run',
+        runId: run.id,
+        input: {
+          level: 'unavailable',
+          score: 0,
+          status,
+          message,
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAtMs,
+          resultSummary: canceled
+            ? {
+                errorMessage: message,
+                modelCheckUnverified: true,
+                qualityDecisionSuppressedReason: '未形成质量判定证据'
+              }
+            : { errorMessage: message },
+          errorCode: status,
+          errorMessage: message
+        }
+      })
+    }
   }
 
   const detail = await getModelCheckRunDetailAsync(run.id, access)
@@ -594,6 +801,58 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   return completedDetail
 }
 
+async function finishModelCheckRunWithoutQualityEvidence(input: {
+  runId: string
+  items: ModelCheckItemCreateInput[]
+  model: string
+  profile: ModelCheckProfile
+  trustedComparison: boolean
+  comparisonTargetId?: string
+  startedAtMs: number
+  reason: string
+}): Promise<void> {
+  const checks = await requestDatasetWriter({
+    type: 'create_model_check_items',
+    runId: input.runId,
+    items: input.items
+  })
+  const summary = summarizeChecks(checks, { trustedComparison: input.trustedComparison, profile: input.profile })
+  const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
+  const trustReport = buildModelCheckTrustReport(checks, {
+    requestedModel: input.model,
+    probeSetVersion: input.profile === 'quick' ? quickProbeSetVersion : probeSetVersion,
+    evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
+  })
+  await requestDatasetWriter({
+    type: 'finish_model_check_run',
+    runId: input.runId,
+    input: {
+      ...summary,
+      level: 'unavailable',
+      score: 0,
+      message: input.reason,
+      status: 'completed',
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - input.startedAtMs,
+      resultSummary: {
+        itemCount: checks.length,
+        passedCount: checks.filter((item) => item.status === 'passed').length,
+        warningCount: checks.filter((item) => item.status === 'warning').length,
+        failedCount: checks.filter((item) => item.status === 'failed').length,
+        skippedCount: checks.filter((item) => item.status === 'skipped').length,
+        requestFailureCount: checks.filter((item) => recordValue(item.evidenceSummary)?.requestFailure === true).length,
+        evidenceCompleteness,
+        trustReport,
+        trustedComparison: input.trustedComparison,
+        trustedComparisonAccountId: input.comparisonTargetId,
+        profile: input.profile,
+        modelCheckUnverified: true,
+        qualityDecisionSuppressedReason: '未形成质量判定证据'
+      }
+    }
+  })
+}
+
 async function applyModelQualityOutcome(
   detail: ModelCheckRunDetail,
   target: ModelCheckTarget,
@@ -604,6 +863,33 @@ async function applyModelQualityOutcome(
 ): Promise<ModelCheckRunDetail> {
   const decidedAt = new Date().toISOString()
   const trustReport = recordValue(detail.resultSummary.trustReport)
+  const modelCheckUnverified = detail.resultSummary.modelCheckUnverified === true
+  if (modelCheckUnverified) {
+    const decision: ModelQualityDecision = {
+      triggerKind,
+      triggered: false,
+      hardFailure: false,
+      threshold: snapshot.threshold,
+      score: detail.score,
+      configuredAction: snapshot.action,
+      result: 'not_triggered',
+      reasonCodes: ['quality_evidence_not_formed'],
+      message: '未形成质量判定证据，本次不执行质量处罚、质量隔离/降级或健康统计失败写入',
+      decidedAt
+    }
+    emitModelCheckProgress(progress, {
+      type: 'quality_decision',
+      triggered: false,
+      score: detail.score,
+      threshold: snapshot.threshold,
+      hardFailure: false,
+      configuredAction: snapshot.action,
+      message: decision.message
+    })
+    await requestDatasetWriter({ type: 'update_model_check_quality_decision', runId: detail.id, decision })
+    const persisted = await getModelCheckRunDetailAsync(detail.id)
+    return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
+  }
   const hardFailure = detail.level === 'suspicious'
     || textValue(trustReport?.mappingStatus) === 'undeclared_mismatch'
     || textValue(trustReport?.protocolStatus) === 'failed'
@@ -849,6 +1135,7 @@ export async function getModelCheckRun(id: string, access?: AccessScope): Promis
 }
 
 async function withLatestModelTrustResult(detail: ModelCheckRunDetail, fallbackSystemAccountId?: string): Promise<ModelCheckRunDetail> {
+  if (detail.resultSummary.modelCheckUnverified === true) return detail
   if (detail.profile === 'quick') return detail
   const systemAccountId = detail.systemAccountId ?? fallbackSystemAccountId
   if (!systemAccountId || !detail.accountId) return detail
@@ -1010,36 +1297,21 @@ async function executeProbeSuite(
 ): Promise<ProbeSuiteResult> {
   const profile = target.modelCheckProfile
   const items: ModelCheckItemCreateInput[] = []
-  const quickProbeOptions: RunGatewayProbeOptions | undefined = profileMode === 'quick' ? { maxAttempts: 1 } : undefined
+  // quick and full profiles share the same transport retry boundary.
+  const quickProbeOptions: RunGatewayProbeOptions | undefined = undefined
 
   const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
   const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
   const basicItem = evaluateBasicForProfile(profile, basic, model, prefix)
-  if (!basic.success || basicItem.status === 'failed') {
-    pushProbeItem(items, basicItem, progress)
-  }
+  if (!basic.success || basicItem.status === 'failed') pushProbeItem(items, basicItem, progress)
   if (!basic.success) {
     if (profileMode === 'full') pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
     return { items, basic }
   }
-  if (profileMode === 'quick') {
-    const behaviorObservations: BehaviorProbeObservation[] = []
-    for (const definition of quickBehaviorProbeDefinitions) {
-      const request = createModelCheckProbeRequest(profile.protocol, model, definition.prompt, {
-        maxOutputTokens: definition.maxOutputTokens,
-        stream: false
-      })
-      const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress, quickProbeOptions)
-      behaviorObservations.push({ definition, result })
-    }
-    const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
-    pushProbeItem(items, behaviorItem, progress)
-    return { items, basic, behavior: behaviorObservations[0]?.result, behaviorObservations }
-  }
-
   const streamRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
   const stream = await runModelCheckProbeRequest(target, streamRequest, streamProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
   pushProbeItem(items, evaluateStreamForProfile(profile, stream, model, prefix), progress)
+  if (isTerminalNon200Probe(stream)) return { items, basic, behavior: undefined }
 
   const structured = await runModelCheckProbeRequest(
     target,
@@ -1050,6 +1322,7 @@ async function executeProbeSuite(
     quickProbeOptions
   )
   pushProbeItem(items, evaluateStructuredOutputProbe(structured, model, prefix), progress)
+  if (isTerminalNon200Probe(structured)) return { items, basic, behavior: undefined }
 
   const tool = await runModelCheckProbeRequest(
     target,
@@ -1060,8 +1333,11 @@ async function executeProbeSuite(
     quickProbeOptions
   )
   pushProbeItem(items, evaluateToolCallingProbe(tool, model, prefix), progress)
+  if (isTerminalNon200Probe(tool)) return { items, basic, behavior: undefined }
 
-  pushProbeItem(items, evaluateUsageShapeProbe([basic, structured, stream], prefix), progress)
+  pushProbeItem(items, evaluateUsageShapeProbe([basic, stream, structured, tool], prefix), progress)
+
+  if (profileMode === 'quick') return { items, basic, behavior: undefined }
 
   const behaviorObservations: BehaviorProbeObservation[] = []
   for (const definition of behaviorProbeDefinitions) {
@@ -1071,6 +1347,11 @@ async function executeProbeSuite(
     })
     const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress, quickProbeOptions)
     behaviorObservations.push({ definition, result })
+    if (isTerminalNon200Probe(result)) {
+      const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
+      pushProbeItem(items, behaviorItem, progress)
+      return { items, basic, behavior: result, behaviorObservations }
+    }
   }
   const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
   pushProbeItem(items, behaviorItem, progress)
@@ -1086,6 +1367,10 @@ async function executeProbeSuite(
       quickProbeOptions
     )
     longContextObservations.push({ definition, result: longContext })
+    if (isTerminalNon200Probe(longContext)) {
+      pushProbeItem(items, evaluateLongContextProbeSet(longContextObservations, model, prefix), progress)
+      return { items, basic, behavior: behaviorObservations[0]?.result, behaviorObservations, longContext }
+    }
   }
   pushProbeItem(items, evaluateLongContextProbeSet(longContextObservations, model, prefix), progress)
 
@@ -1095,18 +1380,23 @@ async function executeProbeSuite(
       maxOutputTokens: 16,
       stream: false
     })
-    stabilityResults.push(await runModelCheckProbeRequest(target, request, `${prefix}.stability_${index}`, signal, progress, quickProbeOptions))
+    const stabilityResult = await runModelCheckProbeRequest(target, request, `${prefix}.stability_${index}`, signal, progress, quickProbeOptions)
+    stabilityResults.push(stabilityResult)
+    if (isTerminalNon200Probe(stabilityResult)) {
+      pushProbeItem(items, evaluateStabilityProbe(stabilityResults, model, prefix), progress)
+      return { items, basic, behavior: behaviorObservations[0]?.result, behaviorObservations }
+    }
   }
   pushProbeItem(items, evaluateStabilityProbe(stabilityResults, model, prefix), progress)
 
   return { items, basic, behavior: behaviorObservations[0]?.result, behaviorObservations, longContext: longContextObservations[longContextObservations.length - 1]?.result }
 }
 
-async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
+async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter, prefix: ModelCheckProbePrefix = 'target'): Promise<ModelCheckItemCreateInput> {
   const pairedModel = pairedModelForProfile(target.modelCheckProfile, model)
   if (!pairedModel) {
     return {
-      itemKey: 'target.cross_model',
+      itemKey: `${prefix}.cross_model`,
       itemType: 'cross_model',
       status: 'skipped',
       score: 0,
@@ -1121,8 +1411,8 @@ async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite
     maxOutputTokens: 16,
     stream: false
   })
-  const pairedBasic = await runModelCheckProbeRequest(target, request, 'target.cross_model', signal, progress)
-  const item = evaluateCrossModelComparisonProbe(targetSuite.basic, pairedBasic, model, pairedModel)
+  const pairedBasic = await runModelCheckProbeRequest(target, request, `${prefix}.cross_model`, signal, progress)
+  const item = evaluateCrossModelComparisonProbe(targetSuite.basic, pairedBasic, model, pairedModel, prefix)
   emitModelCheckItemProgress(progress, item)
   return item
 }
@@ -1139,13 +1429,37 @@ async function executeDistributionSimilarityComparison(
     for (let sampleIndex = 1; sampleIndex <= distributionSampleCount; sampleIndex += 1) {
       const request = createModelCheckDistributionProbeRequest(target.modelCheckProfile.protocol, model, definition)
       const targetResult = await runModelCheckProbeRequest(target, request, `target.distribution.${definition.key}.${sampleIndex}`, signal, progress)
+      if (isTerminalNon200Probe(targetResult)) {
+        return terminalDistributionSimilarityItem([{ definition, sampleIndex, target: targetResult, comparison: targetResult }], model, targetResult)
+      }
       const comparisonResult = await runModelCheckProbeRequest(comparison, request, `trusted_comparison.distribution.${definition.key}.${sampleIndex}`, signal, progress)
       pairs.push({ definition, sampleIndex, target: targetResult, comparison: comparisonResult })
+      if (isTerminalNon200Probe(comparisonResult)) {
+        return terminalDistributionSimilarityItem(pairs, model, comparisonResult)
+      }
     }
   }
   const item = evaluateDistributionSimilarityProbe(pairs, model)
   emitModelCheckItemProgress(progress, item)
   return item
+}
+
+function terminalDistributionSimilarityItem(
+  pairs: DistributionProbePair[],
+  model: SupportedModel,
+  result: GatewayProbeResult
+): ModelCheckItemCreateInput {
+  const item = evaluateDistributionSimilarityProbe(pairs, model)
+  return {
+    ...item,
+    evidenceSummary: {
+      ...recordValue(item.evidenceSummary),
+      attemptCount: result.attemptCount ?? 1,
+      httpStatus: result.statusCode,
+      attemptStatusCodes: result.attemptStatusCodes ?? [result.statusCode],
+      attemptTraceIds: result.attemptTraceIds ?? [result.traceId]
+    }
+  }
 }
 
 function basicProbeItemKey(profile: ModelCheckProtocolProfile, prefix: ModelCheckProbePrefix): string {
@@ -1260,4 +1574,17 @@ function emitModelCheckProgress(progress: ModelCheckProgressReporter | undefined
 function modelCheckItemMessage(item: ModelCheckItemCreateInput): string {
   const evidenceMessage = textValue(recordValue(item.evidenceSummary)?.message)
   return evidenceMessage || item.errorMessage || '检测项完成'
+}
+
+function hasTerminalNon200Probe(items: ModelCheckItemCreateInput[]): boolean {
+  return items.some((item) => {
+    const evidence = recordValue(item.evidenceSummary)
+    const attemptCount = integerValue(evidence?.attemptCount)
+    const httpStatus = integerValue(evidence?.httpStatus)
+    return attemptCount !== undefined && attemptCount >= 2 && httpStatus !== undefined && httpStatus !== 200
+  })
+}
+
+function isTerminalNon200Probe(result: GatewayProbeResult): boolean {
+  return (result.attemptCount ?? 0) >= 2 && result.statusCode !== 200
 }

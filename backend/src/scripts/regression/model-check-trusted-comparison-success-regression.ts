@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -8,6 +8,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import type { ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-trusted-comparison-success-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const evaluationSource = readFileSync(new URL('../../modules/model-checks/model-checks-evaluation.ts', import.meta.url), 'utf8')
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
@@ -105,7 +106,24 @@ try {
   assert.equal(quickDetail.trustedComparisonAvailable, true)
   assert.equal(quickDetail.level, 'likely', '快速可信对比通过后仍只能给出初步可信结论')
   assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic'), '快速检测不应展示可信对比基础连通评分项')
-  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.behavior_probe' && item.status === 'passed'), '快速检测应执行可信对比轻量行为探针')
+  for (const itemKey of [
+    'target.responses_stream',
+    'target.structured_output',
+    'target.tool_calling',
+    'target.usage_shape',
+    'target.token_integrity',
+    'target.cross_model',
+    'trusted_comparison.responses_stream',
+    'trusted_comparison.structured_output',
+    'trusted_comparison.tool_calling',
+    'trusted_comparison.usage_shape',
+    'trusted_comparison.token_integrity',
+    'trusted_comparison.cross_model'
+  ]) {
+    assert(quickDetail.checks.some((item) => item.itemKey === itemKey), `快速可信对比必须使用独立的 ${itemKey} key`)
+  }
+  assert.match(evaluationSource, /item\.itemKey\.startsWith\('target\.'\)/, '可信账户原始轻量项必须由汇总函数排除在目标账户质量分数之外')
+  assert(!quickDetail.checks.some((item) => item.itemType === 'behavior_probe'), '快速可信对比不得执行行为题')
   assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '快速检测应记录可信对比汇总项')
   assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity'), '快速检测不应执行深度分布相似度探针')
   assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context'), '快速检测不应执行可信对比长上下文探针')

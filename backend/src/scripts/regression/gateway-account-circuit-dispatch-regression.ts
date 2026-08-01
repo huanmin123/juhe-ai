@@ -1102,7 +1102,7 @@ try {
 const upstreamDispatchSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url)), 'utf8')
 const routesSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/routes.ts', import.meta.url)), 'utf8')
 assert.match(upstreamDispatchSource, /getGatewayAccountCircuitService/, '上游候选派发必须接入账户短电路 service')
-assert.match(upstreamDispatchSource, /retrySameAccount:\s*false/, '普通 same-account retry 不得参与短电路路径')
+assert.doesNotMatch(upstreamDispatchSource, /retrySameAccount|sameAccountRetry/, '未知传输失败不得保留同账号自动重试路径')
 assert.doesNotMatch(upstreamDispatchSource, /function shouldRetrySameAccountAfterFailure/, '旧普通同号重试函数必须移除')
 assert.doesNotMatch(upstreamDispatchSource, /SameAccountRetryBudget|createSameAccountRetryBudget|sameAccountRetryBudget/, '非租约同号重试预算必须移除')
 assert.doesNotMatch(upstreamDispatchSource, /OpaqueFailoverBudget|maxOpaqueFailoverAccountsPerRequest|opaqueFailoverBudget/, '普通候选不得保留固定四账户预算')

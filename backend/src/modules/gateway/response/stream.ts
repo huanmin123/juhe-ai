@@ -26,8 +26,6 @@ import {
   type FirstByteDeadlineHandler
 } from '../upstream/first-byte-deadline.js'
 import {
-  gatewayStreamClientRetryErrorCode,
-  gatewayStreamClientRetryMessage,
   gatewayStreamFailureCode,
   type GatewayErrorProtocol,
   writeGatewayStreamFailureEvent
@@ -492,10 +490,12 @@ export async function pipeUpstreamStream(
       interruptResponse(res)
       return 'interrupted'
     }
-    const clientMessage = inspection.outputReceived
-      ? '上游流式响应在输出后中断'
-      : gatewayStreamClientRetryMessage
-    const clientErrorCode = gatewayStreamClientRetryErrorCode
+    // The stream has already crossed the downstream commit boundary. It
+    // cannot be replaced by another account, so expose the parsed upstream
+    // failure when available and otherwise identify the interruption itself.
+    const clientMessage = inspection.errorMessage
+      ?? (inspection.outputReceived ? '上游流式响应在输出后中断' : '上游流式响应中断')
+    const clientErrorCode = inspection.errorCode ?? 'upstream_stream_interrupted'
     if (options.beforeCommittedFailureSignal) {
       try {
         await options.beforeCommittedFailureSignal({
@@ -714,7 +714,7 @@ export async function pipeUpstreamStream(
           upstreamErrorCode: decision.upstreamErrorCode,
           rewriteErrorCode: decision.rewriteErrorCode,
           downstreamWritten: decision.downstreamWritten
-        }, '网关在下游提交前命中流式失败，交由上层决定是否服务端换号重试')
+        }, '网关在下游提交前命中流式失败，交由上层返回当前失败')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
       let chunkSseEventCount = 0
@@ -804,9 +804,9 @@ export async function pipeUpstreamStream(
             sseEventCount: latestInspection.eventCount,
             recentSseEventTypes: latestInspection.recentEventTypes
           }, beforeDownstreamCommit
-            ? '网关在下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
+            ? '网关在下游提交前解析到流式失败，交由上层返回当前失败'
             : committedFailureDisposition === 'signaled'
-              ? '网关在下游提交后解析到流式失败，已丢弃供应商失败原文并补发受控协议失败事件'
+              ? '网关在下游提交后解析到流式失败，已补发包含上游错误摘要的协议失败事件'
               : '网关在下游提交后解析到流式失败，已丢弃供应商失败原文并中断连接')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
@@ -892,7 +892,7 @@ export async function pipeUpstreamStream(
             upstreamErrorCode: decision.upstreamErrorCode,
             rewriteErrorCode: decision.rewriteErrorCode,
             downstreamWritten: decision.downstreamWritten
-          }, '网关在下游提交前命中流式失败，交由上层决定是否服务端换号重试')
+          }, '网关在下游提交前命中流式失败，交由上层返回当前失败')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, false))
@@ -975,7 +975,7 @@ export async function pipeUpstreamStream(
           rewriteErrorCode: decision.rewriteErrorCode,
           downstreamWritten: decision.downstreamWritten,
           eofPendingFlush: true
-        }, '网关在 EOF pending 事件下游提交前命中流式失败，交由上层决定是否服务端换号重试')
+        }, '网关在 EOF pending 事件下游提交前命中流式失败，交由上层返回当前失败')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
       let eofCanEndAfterTerminal = false
@@ -1040,9 +1040,9 @@ export async function pipeUpstreamStream(
             recentSseEventTypes: latestInspection.recentEventTypes,
             eofPendingFlush: true
           }, beforeDownstreamCommit
-            ? '网关在 EOF pending 下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
+            ? '网关在 EOF pending 下游提交前解析到流式失败，交由上层返回当前失败'
             : committedFailureDisposition === 'signaled'
-              ? '网关在 EOF pending 下游提交后解析到流式失败，已补发受控协议失败事件'
+              ? '网关在 EOF pending 下游提交后解析到流式失败，已补发包含上游错误摘要的协议失败事件'
               : '网关在 EOF pending 下游提交后解析到流式失败，已中断当前连接')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
@@ -1092,7 +1092,7 @@ export async function pipeUpstreamStream(
             rewriteErrorCode: decision.rewriteErrorCode,
             downstreamWritten: decision.downstreamWritten,
             eofPendingFlush: true
-          }, '网关在 EOF pending 事件下游提交前命中流式失败，交由上层决定是否服务端换号重试')
+          }, '网关在 EOF pending 事件下游提交前命中流式失败，交由上层返回当前失败')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, false))
@@ -1297,7 +1297,7 @@ export async function pipeUpstreamStream(
         errorCode,
         totalUpstreamBytes,
         totalResponseBytes
-      }, '网关在下游提交前捕获流式失败，交由上层决定是否服务端换号重试')
+      }, '网关在下游提交前捕获流式失败，交由上层返回当前失败')
       return withTransportFailureIfProven(
         withGatewayLocalFailureIfNeeded(
           finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
@@ -1408,7 +1408,7 @@ export async function pipeUpstreamStream(
         errorCode,
         totalUpstreamBytes,
         totalResponseBytes
-      }, '网关在下游提交前发现上游缺少终止事件，交由上层决定是否服务端换号重试')
+      }, '网关在下游提交前发现上游缺少终止事件，交由上层返回当前失败')
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     const committedFailureDisposition = await signalCommittedStreamFailure(inspection, { accountFailureEligible: true })
@@ -1452,7 +1452,7 @@ export async function pipeUpstreamStream(
         totalResponseBytes,
         sseEventCount: inspection.eventCount,
         recentSseEventTypes: inspection.recentEventTypes
-      }, '网关在 EOF pending 收尾后识别到失败，交由上层决定是否服务端换号重试')
+      }, '网关在 EOF pending 收尾后识别到失败，交由上层返回当前失败')
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     const committedFailureDisposition = await signalCommittedStreamFailure(inspection, { accountFailureEligible: true })

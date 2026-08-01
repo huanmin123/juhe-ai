@@ -67,6 +67,15 @@ foreach ($contract in @(
   'forbidden WireGuard shell hook',
   'write_fixed_wrapper',
   'source wrapper is hash-checked only',
+  'peer_public_key',
+  'show "$candidate" peers',
+  'grep -Fxq "$peer_public_key"',
+  'plist_has_exact_program_arguments',
+  'rewrite_program_arguments',
+  '/usr/libexec/PlistBuddy',
+  'Delete :ProgramArguments',
+  'Add :ProgramArguments array',
+  'must contain exactly four ProgramArguments',
   'plist_binds_exact_pair',
   'wg-quick',
   'root WireGuard wrapper migration installed for eight exact jobs'
@@ -74,6 +83,13 @@ foreach ($contract in @(
   if (-not $migrator.Contains($contract, [StringComparison]::Ordinal)) {
     throw "WireGuard root-wrapper migration contract missing: $contract"
   }
+}
+if ($migrator.Contains('/var/run/wireguard/${interface_name}.name', [StringComparison]::Ordinal) -or
+    $migrator.Contains('/var/run/wireguard/$logical.name', [StringComparison]::Ordinal)) {
+  throw 'WireGuard root wrapper must not identify interfaces through the retired .name mapping'
+}
+if ($migrator.Contains('plutil -replace ProgramArguments.', [StringComparison]::Ordinal)) {
+  throw 'WireGuard migration must rebuild ProgramArguments instead of indexed plutil replacement'
 }
 foreach ($contract in @(
   "CANONICAL_CONFIG_DIR='/usr/local/libexec/juhe-ai/wireguard-config'",

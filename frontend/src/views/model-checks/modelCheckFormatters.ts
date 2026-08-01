@@ -123,6 +123,7 @@ export function checkTitleByType(itemType: string, itemKey: string): string {
     structured_output: '结构化输出',
     tool_calling: '工具调用',
     usage_shape: 'Usage 字段',
+    token_integrity: 'Token 用量诊断',
     behavior_probe: '行为探针',
     long_context: '长上下文找针',
     stability: '稳定性探针',

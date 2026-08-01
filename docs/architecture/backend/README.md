@@ -169,7 +169,7 @@ flowchart LR
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
 - 使用记录、原始审计、操作日志和账号状态副作用都必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，索引启用时由 `ingest-worker` 按持久化 cursor 有界消费，不得另建 IPC、内存或 Redis 逐行队列。部署可临时关闭审计写入和运行日志数据库索引，但不得借此关闭或清理使用记录。
-- 真实上游派发开始后，所有请求在 `semanticCommitted = false` 且对应 lane 墙钟 / attempt 预算允许时，都可对 opaque 非 `2xx`、本地 transport failure、timeout、正文中断或精确协议声明的失败结构按 Key -> 账户 -> 后续分组接管。用户显式状态动作与候选切换分开裁决：请求类型和规则是否命中都不改变统一准入；只有已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
+- 真实上游派发开始后，opaque 非 `2xx`、本地 transport failure、timeout、正文中断或精确协议声明的失败结构都属于当前 attempt，默认直接向客户端返回实际失败；不得按 Key -> 账户 -> 后续分组隐式接管。只有用户显式账户错误策略命中 `retry_next` 时，才允许在 `semanticCommitted = false` 且端点可安全重放的前提下切换候选。已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
 
 ## 6. 数据库设计
 

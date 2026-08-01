@@ -28,6 +28,9 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
   baseUrl: string
   credentialMode: string
   probeSetVersion: string
+  profileMode?: 'quick' | 'full'
+  prefix?: 'target' | 'trusted_comparison'
+  observationEnabled?: boolean
   signal?: AbortSignal
   runProbe: (request: ModelCheckProbeRequest, itemKey: string) => Promise<GatewayProbeResult>
 }): Promise<{ item: ModelCheckItemCreateInput; observations: TokenIntegrityObservationSeed[] }> {
@@ -35,7 +38,13 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
   const samples: TokenIntegritySample[] = []
   const observations: TokenIntegrityObservationSeed[] = []
   let representative: GatewayProbeResult | undefined
-  for (let roundIndex = 0; roundIndex < 3; roundIndex += 1) {
+  let lastResult: GatewayProbeResult | undefined
+  const profileMode = input.profileMode ?? 'full'
+  const prefix = input.prefix ?? 'target'
+  const observationEnabled = input.observationEnabled ?? profileMode === 'full'
+  const roundCount = profileMode === 'quick' ? 1 : 3
+  let terminalFailure = false
+  for (let roundIndex = 0; roundIndex < roundCount && !terminalFailure; roundIndex += 1) {
     const nonce = createTraceId().replace(/[^a-zA-Z0-9]/g, '').slice(-16)
     const basePrompt = `Controlled token integrity probe ${modelCheckTokenProbeVersion}. Nonce ${nonce}. Reply with exactly OK.\n`
     for (const paddingTokens of paddingVariants(roundIndex)) {
@@ -46,7 +55,8 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         stream: false,
         temperature: 0
       })
-      const result = await input.runProbe(request, `target.token_integrity.r${roundIndex}.p${paddingTokens}`)
+      const result = await input.runProbe(request, `${prefix}.token_integrity.r${roundIndex}.p${paddingTokens}`)
+      lastResult = result
       representative ??= result
       const localInputTokens = preparedPrompt.localInputTokens
       const reportedInputTokens = usageValue(result.usage, ['input_tokens', 'prompt_tokens'])
@@ -62,7 +72,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         probeSetVersion: input.probeSetVersion,
         tokenizerVersion: modelCheckTokenizerVersion
       })
-      observations.push({
+      if (observationEnabled) observations.push({
         endpointFamily: result.upstreamEndpointFamily ?? result.sourceEndpointFamily ?? 'responses',
         requestedModel: result.requestModel ?? input.model,
         mappedUpstreamModel,
@@ -87,12 +97,16 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         observationStatus: tokenObservationStatus(result, reportedInputTokens),
         traceId: result.traceId
       })
+      if ((result.attemptCount ?? 0) >= 2 && result.statusCode !== 200) {
+        terminalFailure = true
+        break
+      }
     }
   }
   const analysis = analyzeTokenIntegritySamples(samples)
   return {
     item: {
-      itemKey: 'target.token_integrity',
+      itemKey: `${prefix}.token_integrity`,
       itemType: 'token_integrity',
       status: analysis.status === 'suspected_padding' ? 'failed' : analysis.status === 'consistent' ? 'passed' : analysis.status === 'unsupported' ? 'skipped' : 'warning',
       score: 0,
@@ -109,7 +123,11 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         slopeConfidenceHigh: analysis.slopeConfidenceHigh,
         sampleCount: analysis.sampleCount,
         roundCount: analysis.roundCount,
-        reasonCodes: analysis.reasonCodes
+        reasonCodes: analysis.reasonCodes,
+        httpStatus: lastResult?.statusCode,
+        attemptCount: lastResult?.attemptCount,
+        attemptStatusCodes: lastResult?.attemptStatusCodes,
+        attemptTraceIds: lastResult?.attemptTraceIds
       }
     },
     observations

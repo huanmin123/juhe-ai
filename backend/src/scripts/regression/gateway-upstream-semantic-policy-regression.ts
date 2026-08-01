@@ -31,7 +31,8 @@ import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/
 import {
   finalizeHandledUpstreamResponse,
   handleNonStreamUpstreamResponse,
-  isUnexpectedEmptyUpstreamProtocolResponse
+  isUnexpectedEmptyUpstreamProtocolResponse,
+  nonStreamJsonProtocolValidationAllowed
 } from '../../modules/gateway/response/finalization.js'
 import { GatewayDownstreamCommitState } from '../../modules/gateway/response/downstream-commit-state.js'
 import {
@@ -109,6 +110,30 @@ assert.equal(
   false,
   'Gemini interaction DELETE 的合法 204 空 body 不得被误判为协议失败'
 )
+const embeddingsProtocolRequest = {
+  method: 'POST',
+  originalUrl: '/v1/embeddings',
+  path: '/v1/embeddings',
+  body: { model: 'text-embedding-3-small', input: 'protocol validation regression' }
+} as Request
+assert.equal(
+  nonStreamJsonProtocolValidationAllowed({
+    req: embeddingsProtocolRequest,
+    account: emptyResponseAccount,
+    upstreamResponse: { ok: true, headers: new Headers({ 'content-type': 'text/plain' }) }
+  }),
+  true,
+  '已知 Embeddings JSON 端点即使上游伪装 content-type 也必须先验证正文'
+)
+assert.equal(
+  nonStreamJsonProtocolValidationAllowed({
+    req: { method: 'GET', originalUrl: '/v1/files/file-1/content', path: '/v1/files/file-1/content' } as Request,
+    account: emptyResponseAccount,
+    upstreamResponse: { ok: true, headers: new Headers({ 'content-type': 'application/octet-stream' }) }
+  }),
+  false,
+  '已知二进制下载不得被错误纳入 JSON 协议验证'
+)
 
 const universalFailoverCases: Array<{
   label: string
@@ -134,21 +159,21 @@ const universalFailoverCases: Array<{
 ]
 
 for (const { label, request, lane } of universalFailoverCases) {
-  assert.equal(isOpaqueUpstreamFailoverAllowed(request), true, `${label} 未交付结果时必须允许请求内切换候选`)
-  assert.equal(automaticUpstreamReplayAllowedAfterDispatch(request, lane), true, `${label} 必须与普通文本共用统一切号规则`)
+  assert.equal(isOpaqueUpstreamFailoverAllowed(request), false, `${label} 的未知失败不得自动切换候选`)
+  assert.equal(automaticUpstreamReplayAllowedAfterDispatch(request, lane), false, `${label} 不得获得无条件重放许可`)
 }
 
 for (const action of ['cooldown', 'disable', 'retry_next'] as const) {
   assert.equal(
     accountErrorPolicyAllowsUpstreamReplayAfterDispatch(sideEffectRequest, 'text', { action }),
-    true,
-    `${action} 的账户状态动作不得阻断当前请求继续切换候选`
+    action === 'retry_next',
+    `${action} 只有 retry_next 可以授权当前请求继续切换候选`
   )
 }
 assert.equal(
   accountErrorPolicyAllowsUpstreamReplayAfterDispatch(replayableInferenceRequest, 'text', { action: 'cooldown' }),
-  true,
-  '普通推理请求仍可在执行 cooldown 后选择下一账户'
+  false,
+  '普通推理执行 cooldown 后必须返回当前失败'
 )
 assert.equal(isOpenAIGatewayImageGenerationModel('gpt-image-1'), true)
 assert.equal(isOpenAIGatewayImageGenerationModel('imagen-3.0-generate-002'), true)
@@ -199,12 +224,12 @@ const hybridQualitySource = readFileSync(new URL('../../modules/gateway/hybrid/q
 assert.match(
   failureDispatchSource,
   /isOpaqueUpstreamFailoverAllowed/,
-  '所有端点的未知完整 HTTP 失败必须进入统一 opaque 接管边界'
+  '所有端点的未知完整 HTTP 失败必须经过统一终止边界'
 )
 assert.match(
   requestLaneSource,
-  /automaticUpstreamReplayAllowedAfterDispatch\([\s\S]*?\): boolean \{\s*return true\s*\}/,
-  '所有请求类型和 lane 必须共用无条件候选切换许可'
+  /automaticUpstreamReplayAllowedAfterDispatch\([\s\S]*?\): boolean \{\s*return false\s*\}/,
+  '所有请求类型和 lane 都不得获得无条件候选切换许可'
 )
 assert.doesNotMatch(
   requestLaneSource,
@@ -261,8 +286,12 @@ assert.match(
   /resolveNextHybridGatewayRoute\([\s\S]*requestLane: resolveOpenAIGatewayRequestLane\(req\)/,
   '混合质量升级改写模型后必须把新 lane 传入重入预检'
 )
-assert.doesNotMatch(routesSource, /userAuthorizedReplay|&& !userAuthorizedReplay/, '用户策略不得形成另一套候选切换旁路')
-assert.doesNotMatch(`${routesSource}\n${dispatchSource}`, /image_request_automatic_replay_blocked|图片上游|图片请求/, '候选切换不得存在图片专属阻断文案或标签')
+assert.match(failureDispatchSource, /_decision\?\.action === 'retry_next'/, '只有显式 retry_next 可以授权候选切换')
+assert.match(
+  failureDispatchSource,
+  /failureKind: 'explicit_policy',[\s\S]*keyScopedFailure: hasAlternativeAccountApiKeys\(account\)/,
+  '命中 retry_next 时才允许在同一账户内轮换尚未尝试的兄弟 Key'
+)
 assert.match(
   responseInspectionSource,
   /policy\.source !== 'system_default' && policy\.action === 'retry_next_account'[\s\S]*replayAuthority: 'explicit_user_policy'/,
@@ -280,6 +309,11 @@ assert.match(
 )
 assert.match(routesSource, /const diagnosticUpstreamResponse = !transportFailure[\s\S]*!protocolValidatedSuccess/, '未验证响应必须进入中性诊断终态')
 assert.match(routesSource, /diagnosticUpstreamResponse[\s\S]*\? 'upstream_response_failure'[\s\S]*: 'completed_response'/, '中性诊断终态不得增加 completedResponses')
+assert.match(
+  routesSource,
+  /knownUpstreamHttpFailure = error instanceof UpstreamAttemptError[\s\S]*lastAttempt\?\.status !== undefined[\s\S]*terminalUpstreamFailure \|\| knownUpstreamHttpFailure/,
+  '显式 retry_next 穷尽候选后必须保留最后一次真实 HTTP 诊断，不能回退为通用 retryable 错误'
+)
 for (const [label, source] of [
   ['混合辅助', auxiliarySource],
   ['Codex 压缩预检', compactPreflightSource]
@@ -292,23 +326,18 @@ for (const [label, source] of [
 }
 assert.match(
   failureDispatchSource,
-  /if \(!explicitPolicyDecision\) \{\s*return handleOpaqueFailedUpstreamResponse\(input, responseBodyRead, failureBodyFacts\)\s*\}/,
-  '显式策略正文未命中时必须复用已读取正文及其单次解析事实进入统一 opaque 切号'
+  /if \(!explicitPolicyDecision\) \{[\s\S]*forgetOpenAIAccountForSessionAsync[\s\S]*return \{ action: 'return_response', response: replayResponse \}/,
+  '显式策略正文未命中时必须清除失败粘连并复用已读取正文返回当前响应'
 )
 assert.match(
   failureDispatchSource,
-  /const policyCouldMatch = input\.accountStateMutationEnabled !== false[\s\S]*accountErrorPolicyCouldMatchStatus\(account, response\.status\)[\s\S]*if \(!policyCouldMatch\) \{\s*return handleOpaqueFailedUpstreamResponse\(input\)\s*\}/,
-  '无策略状态预筛选路径必须直接进入统一 opaque 切号，且不得解析 generic 错误正文'
+  /const policyCouldMatch = input\.accountStateMutationEnabled !== false[\s\S]*accountErrorPolicyCouldMatchStatus\(account, response\.status\)[\s\S]*if \(!policyCouldMatch\) \{[\s\S]*forgetOpenAIAccountForSessionAsync[\s\S]*return \{ action: 'return_response', response \}/,
+  '无策略状态预筛选路径必须清除粘连后直接返回上游响应'
 )
 assert.match(
   failureDispatchSource,
-  /const responseBodyRead = inspectedBody \?\?[\s\S]*if \(inspectedBody\) \{\s*await inspectedBody\.close\(\)/,
-  'opaque 接管必须复用 policy 已读取结果并关闭剩余正文，不得二次消费原始 body'
-)
-assert.match(
-  failureDispatchSource,
-  /applyAccountErrorHandlingWithCacheInvalidation\(account,[\s\S]*action: 'skip_account'[\s\S]*failureKind: 'explicit_policy'/,
-  'cooldown/disable 必须先执行显式状态动作，再无条件沿统一规则切换候选'
+  /if \(!accountErrorPolicyAllowsUpstreamReplayAfterDispatch[\s\S]*applyAccountErrorHandlingWithCacheInvalidation[\s\S]*return \{ action: 'return_response', response: replayResponse \}/,
+  'cooldown/disable 必须执行显式状态动作后返回当前失败'
 )
 assert.match(
   finalizationSource,
@@ -371,6 +400,21 @@ assert.match(
   'Responses JSON 失败终态必须形成 upstream_protocol_failure'
 )
 assert.match(
+  nonStreamInspectionSource,
+  /parsedJsonBody\.status !== 'valid'[\s\S]*上游成功响应不是有效 JSON[\s\S]*upstream_protocol_error/,
+  '完整 2xx 的畸形 JSON 必须返回协议错误，不能继续向下游透传'
+)
+assert.match(
+  finalizationSource,
+  /const protocolValidationEnabled = nonStreamJsonProtocolValidationAllowed\(input\)[\s\S]*const inspectJsonResponse = !upstreamResponse\.ok[\s\S]*\|\| protocolValidationEnabled[\s\S]*requireFullyBuffered: protocolValidationEnabled[\s\S]*pipeResult\.fullyBuffered \|\| pipeResult\.inspectionLimitExceeded[\s\S]*protocolValidationLimitExceeded: pipeResult\.inspectionLimitExceeded[\s\S]*res\.send\(downstreamBody\)/,
+  '协议端点即使上游伪装 content-type 或超过验证窗口，也必须在写入下游前完成或终止 2xx JSON 检查'
+)
+assert.match(
+  finalizationSource,
+  /captureBody: !upstreamResponse\.ok[\s\S]*responseBodyText = pipeResult\.captureTruncated[\s\S]*pipeResult\.diagnosticBodyText/,
+  '所有非 2xx 响应必须保留有界错误正文，供审计、用量和管理页展示实际错误'
+)
+assert.match(
   finalizationSource,
   /protocolValidatedNonStreamResponse[\s\S]*case 'chat_completions':[\s\S]*Array\.isArray\(root\.choices\)[\s\S]*root\.choices\.some/,
   '非流式 Chat 成功必须先通过 choices 协议结构验证，未知 2xx 正文不得伪装成功'
@@ -415,10 +459,16 @@ async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promis
   runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
   runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
   runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
+  // This isolated process creates both business and dataset fixtures. There
+  // is no second writer process to protect inside this regression.
+  process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT = '0'
   runtimeConfig.runtimeMode = 'standalone'
   runtimeConfig.cacheDriver = 'memory'
   runtimeConfig.runtimeStateDriver = 'memory'
-  runtimeConfig.processRole = 'worker'
+  runtimeConfig.auditLog.enabled = true
+  // This regression creates and seeds its isolated business database locally.
+  // It therefore owns the SQLite writer boundary for the test process.
+  runtimeConfig.processRole = 'db-service'
   runtimeConfig.workerRole = 'ingest-worker'
   runtimeConfig.log.consoleEnabled = false
   runtimeConfig.log.fileEnabled = false
@@ -431,6 +481,8 @@ async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promis
     import('../../modules/gateway/usage/record-queue.service.js'),
     import('../../modules/gateway/audit/capture.service.js')
   ])
+  auditQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   const response = new OversizedResponsesMockResponse()
   const request = oversizedResponsesRequest()
   const account = oversizedResponsesAccount()
@@ -484,61 +536,25 @@ async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promis
       automaticAccountStateMutationEnabled: false
     })
 
-    if (result.alreadyFinalized || result.retryUpstream === true) {
-      throw new Error('超大 Responses 失败终态已向下游转发后必须进入统一最终化，不能再次重试或提前结束')
-    }
-    const completedResult = result
-    assert.equal(completedResult.errorPayload.code, 'upstream_protocol_failure', '大字段后的根级 failed 必须形成协议失败码')
+    assert.equal(result.alreadyFinalized, true, '超大协议正文不得绕过验证窗口向下游透传')
+    assert.equal(response.statusCode, 502, '超大协议正文必须返回明确的 502 协议错误')
 
-    await finalizeHandledUpstreamResponse({
-      req: request,
-      res: response as unknown as Response,
-      account,
-      upstreamResponse: oversizedFailedResponsesUpstreamResponse(),
-      upstreamUrl: 'https://upstream.invalid/v1/responses',
-      auditAttemptId,
-      auditCapture,
-      settings: {} as GatewaySettings,
-      usageContext: {
-        traceId,
-        trafficSource: 'gateway',
-        systemAccountId: 'sys_semantic_regression',
-        apiKeyId: 'key_semantic_regression',
-        groupId: 'group_semantic_regression',
-        endpoint: 'POST /v1/responses',
-        requestSnapshot: {
-          method: 'POST',
-          path: '/v1/responses',
-          originalUrl: '/v1/responses',
-          traceId,
-          headers: {},
-          body: request.body
-        }
-      },
-      startedAt: Date.now() - 50,
-      timeoutProfile: { timeoutsDisabled: true } as never,
-      signal: new AbortController().signal,
-      downstreamCommitState: new GatewayDownstreamCommitState(),
-      accountStateMutationEnabled: false,
-      automaticAccountStateMutationEnabled: false,
-      result: completedResult,
-      routingEffectsApplied: true
-    })
-
-    auditQueue.flushAllAuditLogQueue()
+    await auditQueue.flushAllAuditLogQueueAsync()
     const auditLog = repositories.listAuditLogs({ traceId }).items[0]
     assert(auditLog, '超大失败终态必须保留失败审计')
     assert.equal(auditLog.success, false, '超大失败终态审计总结果不得记为成功')
     const auditDetail = repositories.getAuditLogDetail(auditLog.id)
     assert.equal(auditDetail?.attempts.length, 1, '超大失败终态必须保留唯一上游 attempt')
     assert.equal(auditDetail?.attempts[0]?.success, false, '超大失败终态的 audit attempt 不得记为成功')
-    assert.equal(auditDetail?.attempts[0]?.errorCode, 'upstream_protocol_failure', 'audit attempt 必须记录协议失败码')
+    assert.equal(auditDetail?.attempts[0]?.errorCode, 'upstream_protocol_error', 'audit attempt 必须记录协议验证窗口错误码')
     const usageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
     assert.equal(usageRecord?.success, false, '超大失败终态使用记录不得记为成功')
-    assert.equal(usageRecord?.errorCode, 'upstream_protocol_failure', '使用记录必须记录协议失败码')
+    assert.equal(usageRecord?.errorCode, 'upstream_protocol_error', '使用记录必须记录协议验证窗口错误码')
 
     auditQueue.clearAuditLogQueueForTest()
+    auditQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     usageRecordQueue.clearUsageRecordQueueForTest()
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
     const emptyResponse = new OversizedResponsesMockResponse()
     const emptyRequest = emptyChatJsonRequest()
     const emptyTraceId = 'trace-empty-204-protocol-failure'
@@ -602,7 +618,7 @@ async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promis
       routingEffectsApplied: true
     })
     assert.equal(emptyResponse.statusCode, 502, '204 空响应不得向客户端提交空成功')
-    auditQueue.flushAllAuditLogQueue()
+    await auditQueue.flushAllAuditLogQueueAsync()
     const emptyAuditLog = repositories.listAuditLogs({ traceId: emptyTraceId }).items[0]
     assert(emptyAuditLog, '204 空响应必须保留失败审计')
     assert.equal(emptyAuditLog.success, false, '204 空响应审计总结果不得记为成功')
@@ -612,9 +628,76 @@ async function assertOversizedResponsesFailureMarksAuditAndUsageFailed(): Promis
     const emptyUsageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
     assert.equal(emptyUsageRecord?.success, false, '204 空响应使用记录不得记为成功')
     assert.equal(emptyUsageRecord?.errorCode, 'upstream_protocol_failure', '204 空响应使用记录必须记录协议失败码')
+
+    auditQueue.clearAuditLogQueueForTest()
+    auditQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+    usageRecordQueue.clearUsageRecordQueueForTest()
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    const quotaResponse = new OversizedResponsesMockResponse()
+    const quotaRequest = emptyChatJsonRequest()
+    const quotaTraceId = 'trace-402-insufficient-user-quota'
+    const quotaAuditCapture = auditCaptureModule.createAuditCapture({
+      req: quotaRequest,
+      res: quotaResponse as unknown as Response,
+      traceId: quotaTraceId,
+      startedAtMs: Date.now() - 50,
+      captureMode: 'metadata_only'
+    })
+    const quotaAuditAttemptId = quotaAuditCapture.startAttempt({
+      account,
+      attemptIndex: 0,
+      upstreamUrl: 'https://upstream.invalid/v1/chat/completions',
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify(quotaRequest.body)
+    })
+    const quotaInput = {
+      ...emptyInput,
+      req: quotaRequest,
+      res: quotaResponse as unknown as Response,
+      upstreamResponse: insufficientUserQuotaUpstreamResponse(),
+      auditAttemptId: quotaAuditAttemptId,
+      auditCapture: quotaAuditCapture,
+      usageContext: {
+        ...emptyInput.usageContext,
+        traceId: quotaTraceId,
+        requestSnapshot: {
+          ...emptyInput.usageContext.requestSnapshot,
+          traceId: quotaTraceId,
+          body: quotaRequest.body
+        }
+      },
+      downstreamCommitState: new GatewayDownstreamCommitState()
+    }
+    const quotaResult = await handleNonStreamUpstreamResponse(quotaInput)
+    if (quotaResult.alreadyFinalized || quotaResult.retryUpstream === true) {
+      throw new Error('完整 402 必须原样进入统一最终化，不能切换账户或改写为泛化错误')
+    }
+    assert.equal(quotaResult.errorPayload.code, 'insufficient_user_quota', '402 必须解析并保留上游错误码')
+    assert.match(String(quotaResult.errorPayload.message), /当前账户暂无生效套餐/, '402 必须解析并保留上游错误消息')
+    await finalizeHandledUpstreamResponse({
+      ...quotaInput,
+      upstreamResponse: insufficientUserQuotaUpstreamResponse(),
+      result: quotaResult,
+      routingEffectsApplied: true
+    })
+    assert.equal(quotaResponse.statusCode, 402, '完整 402 必须以原始 HTTP 状态返回客户端')
+    await auditQueue.flushAllAuditLogQueueAsync()
+    const quotaAuditLog = repositories.listAuditLogs({ traceId: quotaTraceId }).items[0]
+    assert(quotaAuditLog, '402 必须保留审计记录')
+    assert.equal(quotaAuditLog.success, false, '402 审计总结果不得记为成功')
+    const quotaAuditDetail = repositories.getAuditLogDetail(quotaAuditLog.id)
+    assert.equal(quotaAuditDetail?.attempts[0]?.errorCode, 'insufficient_user_quota', '402 审计 attempt 必须记录上游错误码')
+    assert.match(String(quotaAuditDetail?.attempts[0]?.errorMessage), /当前账户暂无生效套餐/, '402 审计 attempt 必须记录上游错误消息')
+    const quotaUsageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
+    assert.equal(quotaUsageRecord?.success, false, '402 使用记录不得记为成功')
+    assert.equal(quotaUsageRecord?.errorCode, 'insufficient_user_quota', '402 使用记录必须记录上游错误码')
+    assert.match(String(quotaUsageRecord?.errorMessage), /当前账户暂无生效套餐/, '402 使用记录必须记录上游错误消息')
   } finally {
     auditQueue.clearAuditLogQueueForTest()
+    auditQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.clearUsageRecordQueueForTest()
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     database.closeStorageDatabases()
     rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -758,6 +841,23 @@ function empty204UpstreamResponse(): GatewayUpstreamResponse {
     ok: true,
     headers: new Headers(),
     body: null
+  }
+}
+
+function insufficientUserQuotaUpstreamResponse(): GatewayUpstreamResponse {
+  const body = Buffer.from(JSON.stringify({
+    error: {
+      message: '当前账户暂无生效套餐，请前往钱包页面或相关选项订阅',
+      code: 'insufficient_user_quota'
+    }
+  }), 'utf8')
+  return {
+    status: 402,
+    ok: false,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: (async function * (): AsyncGenerator<Uint8Array> {
+      yield body
+    })()
   }
 }
 

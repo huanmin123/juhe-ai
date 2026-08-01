@@ -1,18 +1,10 @@
 import type { UpstreamAttempt } from './attempt.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
-import { sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import { parseGatewayProtocolErrorPayloadFromJsonValue } from '../protocols/registry.js'
 import { parseGatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
 
-type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
-  upstream?: {
-    statusCode?: number
-    accountId: string
-    accountName: string
-    upstreamUrl: string
-  }
-}
+type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload>
 
 export function buildDiagnosticUpstreamError(
   lastAttempt: UpstreamAttempt | undefined,
@@ -20,7 +12,10 @@ export function buildDiagnosticUpstreamError(
 ): { statusCode: number; payload: GatewayDiagnosticErrorPayload; errorMessage: string } | undefined {
   if (!lastAttempt) return undefined
 
-  const statusCode = isHttpStatusCode(lastAttempt.status) ? lastAttempt.status : 503
+  const transportFailure = lastAttempt.transportFailureKind
+  const statusCode = isHttpStatusCode(lastAttempt.status)
+    ? lastAttempt.status
+    : transportFailure === 'timeout' ? 504 : transportFailure ? 502 : 503
   const bodyText = lastAttempt.responseBodyText?.trim()
   const responseHeaders = headersFromObject(lastAttempt.responseHeaders)
   const parsedJsonBody = lastAttempt.parsedResponseBody
@@ -32,17 +27,16 @@ export function buildDiagnosticUpstreamError(
     ? parseGatewayProtocolErrorPayloadFromJsonValue(lastAttempt, parsedPayload)
     : {}
   const errorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message) || lastAttempt.message || fallbackMessage)
-  const errorType = stringValue(parsedError.type) || stringValue(parsedError.code) || 'upstream_error'
+  const errorType = stringValue(parsedError.type)
+    || (transportFailure === 'timeout' ? 'upstream_timeout_error' : transportFailure ? 'upstream_transport_error' : '')
+    || stringValue(parsedError.code)
+    || 'upstream_error'
+  const errorCode = stringValue(parsedError.code)
+    || lastAttempt.errorCode
+    || (transportFailure === 'timeout' ? 'upstream_timeout' : transportFailure ? `upstream_${transportFailure}` : undefined)
   const payload = hasErrorObject(parsedPayload)
     ? sanitizeDiagnosticPayload(parsedPayload) as GatewayDiagnosticErrorPayload
-    : gatewayErrorPayload(errorMessage, errorType) as GatewayDiagnosticErrorPayload
-
-  payload.upstream = {
-    statusCode: lastAttempt.status,
-    accountId: lastAttempt.accountId,
-    accountName: lastAttempt.accountName,
-    upstreamUrl: sanitizeUrlCredentialsForLog(lastAttempt.upstreamUrl) ?? lastAttempt.upstreamUrl
-  }
+    : gatewayErrorPayload(errorMessage, errorType, errorCode) as GatewayDiagnosticErrorPayload
 
   return { statusCode, payload, errorMessage }
 }
