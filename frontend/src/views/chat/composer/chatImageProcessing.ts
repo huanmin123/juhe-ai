@@ -90,6 +90,6 @@ function normalizedQuality(value: number): number {
 }
 
 function formatBytes(value: number): string {
-  if (value === 1024 * 1024) return '1 MiB'
+  if (value % (1024 * 1024) === 0) return `${value / (1024 * 1024)} MiB`
   return `${Math.ceil(value / 1024)} KiB`
 }

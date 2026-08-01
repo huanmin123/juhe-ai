@@ -16,9 +16,12 @@
       <LoadingOutlined spin />
       <span>{{ uploadProgress > 0 ? `${uploadProgress}%` : '上传中' }}</span>
     </span>
-    <span v-else-if="uploadStatus === 'failed'" class="chat-image-node-status is-error" :title="uploadError || '图片上传失败'">
-      <WarningOutlined />
-      <span>上传失败</span>
+    <span v-else-if="uploadStatus === 'failed'" class="chat-image-node-status is-error" role="alert" aria-live="assertive">
+      <WarningOutlined aria-hidden="true" />
+      <span class="chat-image-node-failure">
+        <span class="chat-image-node-failure-title">上传失败</span>
+        <span class="chat-image-node-failure-message">{{ failureMessage }}</span>
+      </span>
       <button type="button" title="重试上传" aria-label="重试上传" @mousedown.prevent.stop @click.stop="retryUpload"><RedoOutlined /></button>
     </span>
     <button class="chat-image-node-remove" type="button" title="删除图片" aria-label="删除图片" @mousedown.prevent.stop @click.stop="removeImage"><CloseOutlined /></button>
@@ -42,6 +45,7 @@ const fileName = computed(() => String(attrs.value.fileName ?? '图片'))
 const uploadStatus = computed(() => String(attrs.value.uploadStatus ?? 'uploading'))
 const uploadProgress = computed(() => Number(attrs.value.uploadProgress ?? 0))
 const uploadError = computed(() => String(attrs.value.uploadError ?? ''))
+const failureMessage = computed(() => uploadError.value || '图片上传失败，请重新选择图片后重试')
 
 function retryUpload(): void {
   const options = props.extension.options as ChatImageAttachmentOptions
@@ -61,12 +65,17 @@ function removeImage(): void {
 .chat-image-node img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .chat-image-node.is-preparing img, .chat-image-node.is-uploading img, .chat-image-node.is-failed img { opacity: .55; }
 .chat-image-node-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px; color: #334155; font-size: 12px; background: rgba(248, 250, 252, .72); }
-.chat-image-node-status.is-error { color: #b42318; background: rgba(255, 247, 237, .84); }
+.chat-image-node-status.is-error { display: grid; grid-template-columns: 16px minmax(0, 1fr) 28px; align-items: center; gap: 5px; padding: 8px; color: #b42318; background: rgba(255, 247, 237, .84); }
+.chat-image-node-failure { min-width: 0; display: grid; gap: 1px; line-height: 16px; }
+.chat-image-node-failure-title { font-weight: 600; }
+.chat-image-node-failure-message { max-height: 48px; overflow: hidden; overflow-wrap: anywhere; word-break: break-word; }
 .chat-image-node-status button, .chat-image-node-remove { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: inherit; background: rgba(255, 255, 255, .92); border: 1px solid currentColor; border-radius: 50%; cursor: pointer; }
 .chat-image-node-remove { position: absolute; top: 5px; right: 5px; color: #475569; border-color: #cbd5e1; opacity: 0; transition: opacity .15s ease; }
 .chat-image-node:hover .chat-image-node-remove, .chat-image-node:focus-within .chat-image-node-remove, .chat-image-node.is-selected .chat-image-node-remove, .chat-image-node.is-failed .chat-image-node-remove { opacity: 1; }
 @media (pointer: coarse) {
   .chat-image-node-status button, .chat-image-node-remove { width: 44px; height: 44px; }
+  .chat-image-node-status.is-error { grid-template-columns: 16px minmax(0, 1fr) 44px; align-items: end; padding: 50px 6px 6px; }
+  .chat-image-node-failure-message { max-height: 32px; }
   .chat-image-node-remove { top: 2px; right: 2px; opacity: 1; }
 }
 </style>

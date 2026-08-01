@@ -6,7 +6,7 @@ import { openChatAssetObject, openChatGeneratedAssetObject } from '../../storage
 import { estimateChatImageTokens } from './chat-token-count.js'
 
 const maxChatImagesPerTurn = 5
-const maxChatModelImageBytesPerTurn = 8 * 1024 * 1024
+const maxChatModelImageBytesPerTurn = 15 * 1024 * 1024
 
 export interface ChatAssetReferenceBlock {
   type: 'input_text' | 'input_image'
@@ -67,7 +67,7 @@ export async function resolveChatAssetInput(input: {
     const buffer = await readVerifiedChatAsset(asset)
     processedBytes += buffer.byteLength
     if (processedBytes > maxChatModelImageBytesPerTurn) {
-      throw new ChatAssetInputError('本轮图片处理后总大小超过 8 MiB，请减少图片数量')
+      throw new ChatAssetInputError('本轮图片处理后总大小超过 15 MiB，请减少图片数量')
     }
     dataUrls.set(assetId, `data:${asset.processedMimeType};base64,${buffer.toString('base64')}`)
   }

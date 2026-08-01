@@ -277,7 +277,7 @@ async function writeTemporaryImage(input: {
   })
   await pipeline(input.stream, counter, createWriteStream(input.filePath, { flags: 'wx' }))
   if (limitHit || bytes > chatAssetOriginalMaxBytes) {
-    throw new ChatAssetUploadError(413, 'chat_asset_too_large', '单张上传图片不能超过 1 MiB')
+    throw new ChatAssetUploadError(413, 'chat_asset_too_large', '单张上传图片不能超过 3 MiB')
   }
   if (bytes <= 0) throw new ChatAssetUploadError(400, 'chat_asset_invalid_request', '上传图片不能为空')
   return {

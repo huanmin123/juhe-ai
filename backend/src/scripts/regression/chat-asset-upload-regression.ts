@@ -115,12 +115,12 @@ const oversizedUpload = uploadChatAsset({
   retentionDays: 7
 })
 oversizedRequest.write(`--${oversizedBoundary}\r\nContent-Disposition: form-data; name="file"; filename="oversized.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`)
-oversizedRequest.write(Buffer.alloc(1024 * 1024 + 1, 0x41))
+oversizedRequest.write(Buffer.alloc(3 * 1024 * 1024 + 1, 0x41))
 oversizedRequest.end(`\r\n--${oversizedBoundary}--\r\n`)
 await assert.rejects(
   oversizedUpload,
   (error) => error instanceof ChatAssetUploadError && error.code === 'chat_asset_too_large',
-  '绕过前端时后端必须在 multipart 读取阶段拒绝超过 1 MiB 的单图'
+  '绕过前端时后端必须在 multipart 读取阶段拒绝超过 3 MiB 的单图'
 )
 assert.equal(Number((database.prepare('SELECT COUNT(*) AS total FROM chat_assets').get() as { total?: unknown })?.total ?? -1), 0)
 

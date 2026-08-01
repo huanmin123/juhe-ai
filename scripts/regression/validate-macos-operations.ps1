@@ -39,6 +39,11 @@ $requiredFiles = @(
   'install-performance-topology.sh',
   'performance-handover-controller.sh',
   'manage-sing-box.sh',
+  'migrate-wireguard-root-wrappers.sh',
+  'wireguard-reconciler.sh',
+  'install-wireguard-reconciler.sh',
+  'wireguard-203-tls-nonce-probe-adapter.sh',
+  'install-wireguard-203-tls-nonce-probe-adapter.sh',
   'diagnose-proxy-dns.sh',
   'temporary-cutover.sh',
   'templates\com.juhe-ai.plist.tpl',
@@ -66,6 +71,24 @@ if ($mainPlist -match 'worker\.js|db-service\.js|watchdog') { throw 'Main launch
 $launchdInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-launchd-service.sh')
 foreach ($contract in @('PLIST_BACKUP', 'HAD_LOADED_SERVICE', 'rollback_install', 'on_install_exit', '--health-port', 'wait_for_main_health')) {
   if (-not $launchdInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Launchd installer rollback contract missing: $contract" }
+}
+
+$wireGuardReconciler = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'wireguard-reconciler.sh')
+$wireGuardMigrator = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh')
+$wireGuardInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-wireguard-reconciler.sh')
+foreach ($contract in @('STALE_CONFIRMATIONS=2', 'probe=unknown', 'sleep-wake-grace', 'global-window-budget', 'launchctl kickstart -k', 'independent-probe', 'root_path_chain')) {
+  if (-not $wireGuardReconciler.Contains($contract, [StringComparison]::Ordinal)) { throw "WireGuard reconciler contract missing: $contract" }
+}
+foreach ($contract in @('exactly eight edges', 'ProgramArguments', 'root WireGuard wrapper migration failed', 'config hash mismatch', 'wrapper hash mismatch')) {
+  if (-not $wireGuardMigrator.Contains($contract, [StringComparison]::Ordinal)) { throw "WireGuard migration contract missing: $contract" }
+}
+foreach ($contract in @('--probe-helper', '--script-sha256', '--migrator-sha256', '--remove', 'wireguard-reconciler.manifest')) {
+  if (-not $wireGuardInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "WireGuard installer contract missing: $contract" }
+}
+foreach ($forbidden in @('aijh.huanmin.top', '192.168.1.', '/Users/huanmin', 'systemctl restart', 'nginx -s reload', 'pm2 restart')) {
+  if (("$wireGuardReconciler`n$wireGuardMigrator`n$wireGuardInstaller").Contains($forbidden, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "WireGuard operation artifacts contain forbidden private or unrelated action: $forbidden"
+  }
 }
 $healthCheckIndex = $launchdInstaller.LastIndexOf('wait_for_main_health', [StringComparison]::Ordinal)
 $healthStableIndex = $launchdInstaller.LastIndexOf('INSTALL_MUTATED=0', [StringComparison]::Ordinal)

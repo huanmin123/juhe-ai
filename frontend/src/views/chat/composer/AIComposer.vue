@@ -81,7 +81,7 @@
     <div class="ai-composer-footer">
       <div class="ai-composer-model-controls">
         <a-dropdown :trigger="['click']" placement="topLeft">
-          <a-tooltip title="打开工具箱"><a-button class="ai-composer-toolbox-trigger" type="text" size="small" aria-label="打开工具箱"><PlusOutlined /></a-button></a-tooltip>
+          <a-button class="ai-composer-toolbox-trigger" type="text" size="small" aria-label="打开工具箱"><PlusOutlined /></a-button>
           <template #overlay>
             <a-menu @click="handleToolboxMenuClick">
               <a-menu-item key="image" :disabled="Boolean(imageToolDisabledReason)" :title="imageToolDisabledReason || '添加图片'">
@@ -99,7 +99,7 @@
       <a-tooltip :title="contextTooltip">
         <span class="ai-composer-context" role="img" :aria-label="`上下文用量 ${contextTooltip}`">
           <a-spin v-if="contextStatusLoading" size="small" />
-          <a-progress v-else type="circle" :percent="contextPercent" :size="18" :stroke-width="12" :show-info="false" :status="contextProgressStatus" />
+          <a-progress v-else type="circle" :percent="contextPercent" :size="21" :stroke-width="12" :show-info="false" :status="contextProgressStatus" />
         </span>
       </a-tooltip>
       <a-tooltip v-if="stoppable" title="停止生成"><a-button danger type="primary" aria-label="停止生成" @click="emit('stop')"><StopOutlined /></a-button></a-tooltip>
@@ -273,7 +273,7 @@ const editor = useEditor({
       if (imageToolDisabledReason.value) { message.warning(imageToolDisabledReason.value); return true }
       const imageFileSlots = selectChatImageFileSlots(imageFiles, currentComposerImageCount())
       const selectedFiles = imageFileSlots.filter((file): file is File => Boolean(file))
-      if (selectedFiles.length < imageFiles.length) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 1 MiB`)
+      if (selectedFiles.length < imageFiles.length) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 3 MiB`)
       const html = event.clipboardData?.getData('text/html') ?? ''
       if (html && selectedFiles.length) {
         const clipboardDocument = new DOMParser().parseFromString(html, 'text/html')
@@ -556,7 +556,7 @@ async function prepareImageRecord(record: ImageUploadRecord): Promise<void> {
   } catch (error) {
     if (!isCurrentUploadRecord(record)) return
     record.status = 'failed'
-    record.error = error instanceof Error ? error.message : '图片压缩失败'
+    record.error = imagePreparationFailureMessage(error)
     patchImageNode(record.localId, imageNodeAttrs(record))
     message.warning(record.error)
     return
@@ -588,7 +588,7 @@ function enqueueImages(files: readonly File[]): void {
   if (!props.conversationId) { message.warning('请先选择对话'); return }
   const selectedFiles = selectChatImageFiles(files, currentComposerImageCount())
   const imageFileCount = files.filter((file) => file.type.startsWith('image/')).length
-  if (selectedFiles.length < imageFileCount) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 1 MiB`)
+  if (selectedFiles.length < imageFileCount) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 3 MiB`)
   for (const file of selectedFiles) insertImage(file)
 }
 function handleFileChange(event: Event): void { const input = event.target as HTMLInputElement; void enqueueImages(Array.from(input.files ?? [])); input.value = '' }
@@ -632,8 +632,9 @@ async function uploadImage(record: ImageUploadRecord): Promise<void> {
   } catch (error) {
     if (controller.signal.aborted || !isCurrentUploadRecord(record)) return
     record.status = 'failed'
-    record.error = extractApiErrorMessage(error, '图片上传失败')
+    record.error = imageUploadFailureMessage(error)
     patchImageNode(record.localId, imageNodeAttrs(record))
+    message.warning(record.error)
   } finally {
     if (record.controller === controller) record.controller = undefined
   }
@@ -739,6 +740,20 @@ function imageNodeAttrs(record: ImageUploadRecord): Record<string, unknown> {
     uploadProgress: record.progress,
     uploadError: record.error
   }
+}
+
+function imagePreparationFailureMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : ''
+  return hasChineseText(detail) ? detail : '图片处理失败，请更换图片后重试'
+}
+
+function imageUploadFailureMessage(error: unknown): string {
+  const detail = extractApiErrorMessage(error, '图片上传失败，请检查网络后重试')
+  return hasChineseText(detail) ? detail : '图片上传失败，请检查网络后重试'
+}
+
+function hasChineseText(value: string): boolean {
+  return /[\u3400-\u9fff]/.test(value)
 }
 
 function isCurrentUploadRecord(record: ImageUploadRecord): boolean {

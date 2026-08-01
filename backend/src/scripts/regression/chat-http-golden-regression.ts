@@ -302,7 +302,9 @@ assert.match(repositorySource, /async function requireConversation[\s\S]{0,360}i
 assert.match(assetRepositorySource, /return \{[\s\S]{0,220}id: asset\.id,[\s\S]{0,220}byteSize: asset\.processedBytes/, '资产上传 DTO 字段漂移')
 assert.match(modelOptionsSource, /export const chatReasoningEfforts = \['minimal', 'low', 'medium', 'high', 'xhigh', 'max'\]/)
 assert.match(modelOptionsSource, /export const chatServiceTiers = \['default', 'priority', 'flex'\]/)
-assert.match(imagePolicySource, /mimeType: 'image\/webp'[\s\S]{0,120}maxEdge: 1024[\s\S]{0,120}quality: 82[\s\S]{0,120}maxBytes: 1024 \* 1024/)
+assert.match(imagePolicySource, /mimeType: 'image\/webp'[\s\S]{0,120}maxEdge: 1024[\s\S]{0,120}quality: 82[\s\S]{0,120}maxBytes: 3 \* 1024 \* 1024/)
+assert.match(routesSource, /const maxInternalChatRequestBytes = 21 \* 1024 \* 1024/, '五张各 3 MiB 图片的 Base64 模型请求必须保留传输余量')
+assert.match(readFileSync(new URL('../../modules/chat/chat-asset-input.ts', import.meta.url), 'utf8'), /const maxChatImagesPerTurn = 5[\s\S]{0,80}const maxChatModelImageBytesPerTurn = 15 \* 1024 \* 1024/, '单轮最多五张图片时，处理后图片总字节必须允许 15 MiB')
 
 console.log(`AI Chat HTTP golden contract regression passed (${golden.routes.length} routes, ${Object.keys(golden.dtos).length} DTOs)`)
 }

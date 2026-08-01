@@ -1,0 +1,156 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$operationsRoot = Join-Path $repoRoot 'docs\deploy\macos\operations'
+$files = @(
+  'wireguard-reconciler.sh',
+  'migrate-wireguard-root-wrappers.sh',
+  'install-wireguard-reconciler.sh',
+  'wireguard-203-tls-nonce-probe-adapter.sh',
+  'install-wireguard-203-tls-nonce-probe-adapter.sh'
+)
+
+foreach ($file in $files) {
+  $path = Join-Path $operationsRoot $file
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing WireGuard recovery artifact: $file" }
+}
+
+$reconciler = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'wireguard-reconciler.sh')
+$migrator = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh')
+$installer = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-wireguard-reconciler.sh')
+$probeAdapter = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'wireguard-203-tls-nonce-probe-adapter.sh')
+$probeInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-wireguard-203-tls-nonce-probe-adapter.sh')
+$all = "$reconciler`n$migrator`n$installer"
+
+foreach ($contract in @(
+  'STALE_CONFIRMATIONS=2',
+  'network-settling',
+  'sleep-wake-grace',
+  'maintenance-or-release-lock',
+  'global-window-budget',
+  'probe=unknown',
+  'probe=healthy-disagrees',
+  'new-mapping-handshake-or-transfer-timeout',
+  'independent-probe',
+  'run_bounded',
+  'canary_done=0',
+  'result=canary-failed edge=',
+  'result=non-canary-failed edge=',
+  'STALE_SAMPLE_MAX_GAP_SECONDS',
+  'LEASE_STALE_SECONDS',
+  'launchctl kickstart -k',
+  'PersistentKeepalive',
+  'events.log'
+)) {
+  if (-not $reconciler.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "WireGuard reconciler contract missing: $contract"
+  }
+}
+foreach ($contract in @('exit 75', 'juhe_tunnel_probe_', '--min-observed-at', '--runtime-manifest', 'root_path_chain', '--nonce', '--mode', 'SSH_BIN', 'StrictHostKeyChecking=yes', "HOST_KEY_ALIAS='juhe-wg-probe-203'", 'juhe-tunnel-probe-read-v1', 'node', 'public_ip', 'ProxyCommand=none')) {
+  if (-not $probeAdapter.Contains($contract, [StringComparison]::Ordinal)) { throw "203 probe adapter contract missing: $contract" }
+}
+foreach ($forbidden in @('case "$url" in http://*|https://*', 'CURL_BIN', 'curl --fail')) {
+  if ($probeAdapter.Contains($forbidden, [StringComparison]::Ordinal)) { throw "203 probe adapter still accepts unauthenticated HTTP: $forbidden" }
+}
+foreach ($contract in @('--mapping', '--runtime-manifest', '--script-sha256', 'root-only', 'unique node/public_ip series', 'wireguard-203-tls-nonce-probe-adapter.sh')) {
+  if (-not $probeInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "203 probe adapter installer contract missing: $contract" }
+}
+
+foreach ($contract in @(
+  'the root WireGuard allowlist must contain exactly eight edges',
+  'ProgramArguments',
+  'root WireGuard wrapper migration failed; restoring changed jobs',
+  'config hash mismatch',
+  'wrapper hash mismatch',
+  'PersistentKeepalive = 25',
+  'forbidden WireGuard shell hook',
+  'write_fixed_wrapper',
+  'source wrapper is hash-checked only',
+  'plist_binds_exact_pair',
+  'wg-quick',
+  'root WireGuard wrapper migration installed for eight exact jobs'
+)) {
+  if (-not $migrator.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "WireGuard root-wrapper migration contract missing: $contract"
+  }
+}
+foreach ($contract in @(
+  "CANONICAL_CONFIG_DIR='/usr/local/libexec/juhe-ai/wireguard-config'",
+  '/usr/local/libexec/juhe-ai/wireguard-config/${interface_name}.conf',
+  '$CANONICAL_CONFIG_DIR/$logical.conf',
+  'chmod 700 "$CANONICAL_CONFIG_DIR"'
+)) {
+  if (-not "$migrator`n$installer".Contains($contract, [StringComparison]::Ordinal)) {
+    throw "WireGuard canonical config contract missing: $contract"
+  }
+}
+foreach ($retiredTarget in @('/usr/local/etc/wireguard')) {
+  if ("$migrator`n$installer".Contains($retiredTarget, [StringComparison]::Ordinal)) {
+    throw "WireGuard scripts still use the retired runtime config target: $retiredTarget"
+  }
+}
+
+foreach ($contract in @(
+  '--dry-run',
+  '--apply',
+  '--remove',
+  '--probe-helper',
+  '--script-sha256',
+  '--migrator-sha256',
+  'MIGRATOR_TMP',
+  'migrator changed while copying into root-only directory',
+  'wireguard-reconciler.manifest',
+  'migrate-wireguard-root-wrappers.sh',
+  'WireGuard reconciler removed'
+)) {
+  if (-not $installer.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "WireGuard installer contract missing: $contract"
+  }
+}
+
+foreach ($forbidden in @(
+  'systemctl restart',
+  'nginx -s reload',
+  'pm2 restart',
+  'docker compose restart',
+  'eval ',
+  'aijh.huanmin.top',
+  '192.168.1.',
+  '/Users/huanmin'
+)) {
+  if ($all.Contains($forbidden, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "WireGuard recovery artifacts contain forbidden unrelated or private material: $forbidden"
+  }
+}
+
+$bash = Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($bash) {
+  foreach ($file in $files) {
+    & $bash.Source -n ((Join-Path $operationsRoot $file) -replace '\\', '/')
+    if ($LASTEXITCODE -ne 0) { throw "Shell syntax failed: $file" }
+  }
+  & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run
+  if ($LASTEXITCODE -ne 0) { throw 'WireGuard reconciler remove dry-run failed' }
+  & $bash.Source ((Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh') -replace '\\', '/') --dry-run --manifest 'relative-manifest' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard migrator accepted a relative manifest path' }
+  & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --dry-run --manifest 'relative-manifest' --probe-helper '/tmp/probe' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted a relative manifest path' }
+  & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run --install-dir '/tmp/unsafe path' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted an unsafe remove path' }
+  & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run --install-dir '/' 2>$null
+  if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted filesystem root as install-dir' }
+  & $bash.Source ((Join-Path $operationsRoot 'wireguard-203-tls-nonce-probe-adapter.sh') -replace '\\', '/') --edge-id edge1 --nonce invalid --mode observe 2>$null
+  if ($LASTEXITCODE -ne 75) { throw '203 probe adapter must classify invalid probe input as unknown (75)' }
+  $unixName = (& $bash.Source -c 'uname -s').Trim()
+  if ($unixName -in @('Darwin', 'Linux')) {
+    & $bash.Source ((Join-Path $repoRoot 'scripts/regression/validate-wireguard-reconciler-harness.sh') -replace '\\', '/') ($repoRoot -replace '\\', '/')
+    if ($LASTEXITCODE -ne 0) { throw 'WireGuard reconciler fake-command harness failed' }
+  } else {
+    Write-Warning "WireGuard fake-command harness requires Darwin/Linux bash; current shell reports $unixName."
+  }
+} else {
+  Write-Warning 'bash is unavailable; skipped WireGuard shell syntax validation'
+}
+
+Write-Host 'WireGuard reconciler static and dry-run validation passed'

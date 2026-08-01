@@ -98,7 +98,7 @@ const committed = await commitChatGeneratedAsset(client, {
   }
 })
 assert.equal(committed.sourceKind, 'assistant_generated')
-assert.equal(committed.processedBytes, 2 * 1024 * 1024, '生成资产必须允许超过用户上传 1 MiB 的独立上限')
+assert.equal(committed.processedBytes, 2 * 1024 * 1024, '生成资产必须保留独立于用户上传的 16 MiB 上限')
 assert.equal(committed.previewMimeType, 'image/webp')
 assert.equal(committed.previewBytes, 128 * 1024)
 assert.equal(committed.previewStorageKey, 'generated/large-preview.webp')

@@ -7,8 +7,8 @@ import { pipeline } from 'node:stream/promises'
 
 import { runtimeConfig } from '../config/runtime.js'
 
-export const chatAssetOriginalMaxBytes = 1024 * 1024
-export const chatAssetProcessedMaxBytes = 1024 * 1024
+export const chatAssetOriginalMaxBytes = 3 * 1024 * 1024
+export const chatAssetProcessedMaxBytes = 3 * 1024 * 1024
 export const chatAssetGeneratedMaxBytes = 16 * 1024 * 1024
 export const chatAssetPreviewMaxBytes = 512 * 1024
 export const chatAssetGeneratedQuotaMaxBytes = chatAssetGeneratedMaxBytes + chatAssetPreviewMaxBytes

@@ -1,13 +1,14 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 
 const pendingGatewayFailureUsageFinalizations = new Set<Promise<void>>()
 const queuedGatewayUsageFinalizations: Array<{
   taskFactory: () => Promise<void>
   bytes: number
 }> = []
-const gatewayUsageFinalizationMaxItems = 2048
+const gatewayUsageFinalizationMaxItems = runtimeConfig.gateway.usageFinalizationMaxItems
 const gatewayUsageFinalizationMaxBytes = 64 * 1024 * 1024
-const gatewayUsageFinalizationMaxConcurrency = 32
+const gatewayUsageFinalizationMaxConcurrency = runtimeConfig.gateway.usageFinalizationMaxConcurrency
 let queuedGatewayUsageFinalizationBytes = 0
 let activeGatewayUsageFinalizations = 0
 let admissionWaitCount = 0

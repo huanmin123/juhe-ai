@@ -10,8 +10,8 @@ import { chatAssetOriginalMaxBytes, chatAssetProcessedMaxBytes } from '../../sto
 
 assert.equal(chatImageMaxEdge, 1_024)
 assert.equal(chatImageWebpQuality, 82)
-assert.equal(chatAssetOriginalMaxBytes, 1024 * 1024, '后端必须在读取请求体时把单张上传硬限制为 1 MiB')
-assert.equal(chatAssetProcessedMaxBytes, 1024 * 1024, '后端处理后的图片也不得超过 1 MiB')
+assert.equal(chatAssetOriginalMaxBytes, 3 * 1024 * 1024, '后端必须在读取请求体时把单张上传硬限制为 3 MiB')
+assert.equal(chatAssetProcessedMaxBytes, 3 * 1024 * 1024, '后端处理后的图片也不得超过 3 MiB')
 
 const root = await mkdtemp(join(tmpdir(), 'juhe-ai-chat-image-policy-'))
 try {

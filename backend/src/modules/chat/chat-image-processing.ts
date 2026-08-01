@@ -59,7 +59,7 @@ export async function processChatImageFile(filePath: string): Promise<ChatProces
     const target = boundedImageDimensions(dimensions.width, dimensions.height)
     const output = await reuseCompliantWebp(filePath, metadata, dimensions, target)
       ?? await encodeModelImage({ filePath, width: target.width, height: target.height })
-    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 WebP 82 处理后仍超过 1 MiB，请裁剪图片后重试')
+    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 WebP 82 处理后仍超过 3 MiB，请裁剪图片后重试')
     return {
       buffer: output.buffer,
       originalMimeType: originalMimeType(metadata.format),

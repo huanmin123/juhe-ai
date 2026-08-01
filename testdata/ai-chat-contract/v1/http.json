@@ -263,7 +263,7 @@
     "chat_model_capability_unavailable": { "status": 422, "code": "chat_model_capability_unavailable", "envelope": "json-error", "fixture": { "message": "当前模型不支持上下文压缩，请切换对话模型", "code": "chat_model_capability_unavailable" } },
     "chat_asset_invalid_request": { "status": 400, "code": "chat_asset_invalid_request", "envelope": "json-error", "fixture": { "message": "图片上传必须使用 multipart/form-data", "code": "chat_asset_invalid_request" } },
     "chat_asset_count_exceeded": { "status": 400, "code": "chat_asset_count_exceeded", "envelope": "json-error", "fixture": { "message": "每条消息最多 5 张图片，请移除图片后重试", "code": "chat_asset_count_exceeded" } },
-    "chat_asset_too_large": { "status": 413, "code": "chat_asset_too_large", "envelope": "json-error", "fixture": { "message": "单张上传图片不能超过 1 MiB", "code": "chat_asset_too_large" } },
+    "chat_asset_too_large": { "status": 413, "code": "chat_asset_too_large", "envelope": "json-error", "fixture": { "message": "单张上传图片不能超过 3 MiB", "code": "chat_asset_too_large" } },
     "chat_asset_quota_exceeded": { "status": 413, "code": "chat_asset_quota_exceeded", "envelope": "json-error", "fixture": { "message": "聊天图片存储额度已满，请删除不用的会话或等待过期资产清理后重试", "code": "chat_asset_quota_exceeded" } },
     "chat_asset_unsupported_type": { "status": 415, "code": "chat_asset_unsupported_type", "envelope": "json-error", "fixture": { "message": "仅支持 JPEG、PNG、WebP 或 GIF 图片", "code": "chat_asset_unsupported_type" } },
     "chat_asset_not_deletable": { "status": 409, "code": "chat_asset_not_deletable", "envelope": "json-error", "fixture": { "message": "图片已发送、已删除或当前不能清理", "code": "chat_asset_not_deletable" } },
@@ -489,7 +489,7 @@
       "frontend": "chatApi.uploadAsset",
       "auth": "session",
       "owner": { "scope": "self-resource", "source": "requireOwnedConversation + uploadChatAsset.systemAccountId", "foreignResult": { "status": 404, "code": "chat_conversation_not_found", "error": "chat_conversation_not_found" } },
-      "request": { "path": { "conversationId": "opaque non-empty path segment" }, "query": {}, "body": { "kind": "multipart-strict", "fields": ["file"], "constraints": "exactly one file; no fields; JPEG/PNG/WebP/GIF; original <= 1 MiB" } },
+      "request": { "path": { "conversationId": "opaque non-empty path segment" }, "query": {}, "body": { "kind": "multipart-strict", "fields": ["file"], "constraints": "exactly one file; no fields; JPEG/PNG/WebP/GIF; original <= 3 MiB" } },
       "cursor": null,
       "success": [{ "status": 201, "envelope": "json-data", "dto": "ChatAsset", "fixture": { "data": { "id": "<asset-id>", "fileName": "cat.png", "mimeType": "image/webp", "width": 1024, "height": 768, "byteSize": 654321 } } }],
       "errors": ["chat_conversation_not_found", "chat_asset_invalid_request", "chat_asset_count_exceeded", "chat_asset_too_large", "chat_asset_quota_exceeded", "chat_asset_unsupported_type"]

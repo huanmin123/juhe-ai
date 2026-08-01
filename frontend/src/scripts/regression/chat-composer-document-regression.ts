@@ -137,6 +137,12 @@ assert.match(composerSource, /contentRevision\.value \+= 1/, 'emitUpdate=false �
 assert.match(composerSource, /const hasContent = computed\(\(\) => \{\s*contentRevision\.value/, 'hasContent 必须订阅编辑器内容修订号')
 assert.match(composerSource, /const imageItems = computed\(\(\) => \{\s*contentRevision\.value/, '图片附件投影也必须订阅修订号，恢复含图草稿后不能沿用旧缓存')
 assert.match(imageAttachmentViewSource, /<img :src="previewUrl"/, '图片附件必须把本地 object URL 渲染为预览')
+assert.doesNotMatch(composerSource, /<a-tooltip title="打开工具箱">/, '工具箱触发器不得再显示遮挡操作的悬浮提示')
+assert.match(composerSource, /<a-progress[^>]*type="circle"[^>]*:size="21"/, '上下文进度环必须避开组件库为 20px 及以下自动注入的空 Tooltip')
+assert.match(imageAttachmentViewSource, /uploadStatus === 'failed'[\s\S]{0,420}chat-image-node-failure-message[\s\S]{0,160}\{\{ failureMessage \}\}/, '上传失败卡片必须在正文持续显示失败原因')
+assert.doesNotMatch(imageAttachmentViewSource, /uploadStatus === 'failed'[\s\S]{0,180}:title=/, '上传失败原因不得只依赖 hover title')
+assert.match(imageAttachmentViewSource, /role="alert"[\s\S]{0,80}aria-live="assertive"/, '上传失败原因必须能被辅助技术立即读取')
+assert.match(imageAttachmentViewSource, /chat-image-node-failure-message[^\n]*max-height[^\n]*overflow: hidden/, '长失败原因必须约束在图片卡片内')
 assert.doesNotMatch(`${composerSource}\n${imageAttachmentSource}\n${chatViewSource}`, /dataUrl/, '图片不得继续进入 Data URL 或聊天 JSON 链路')
 const imageFile = (name: string, size = 1024, type = 'image/png') => ({ name, size, type }) as File
 assert.deepEqual(
@@ -146,10 +152,10 @@ assert.deepEqual(
 )
 assert.deepEqual(selectChatImageFiles([imageFile('4'), imageFile('5'), imageFile('6')], 4).map((file) => file.name), ['4'], '已有图片和多次粘贴必须共享 5 张总槽位')
 assert.deepEqual(selectChatImageFiles([imageFile('large', 32 * 1024 * 1024 + 1), imageFile('text', 1, 'text/plain')], 0), [], '非图片和超过 32 MiB 的文件必须在上传前过滤')
-const imagePolicy: ChatImageUploadPolicy = { mimeType: 'image/webp', maxEdge: 1024, quality: 82, maxBytes: 1024 * 1024 }
+const imagePolicy: ChatImageUploadPolicy = { mimeType: 'image/webp', maxEdge: 1024, quality: 82, maxBytes: 3 * 1024 * 1024 }
 assert.equal(imagePolicy.mimeType, 'image/webp')
 assert.equal(imagePolicy.quality, 82)
-assert.equal(imagePolicy.maxBytes, 1024 * 1024)
+assert.equal(imagePolicy.maxBytes, 3 * 1024 * 1024)
 assert.deepEqual(resolveChatImageUploadSize(4096, 2048, imagePolicy.maxEdge), { width: 1024, height: 512 })
 assert.deepEqual(resolveChatImageUploadSize(320, 240, imagePolicy.maxEdge), { width: 320, height: 240 })
 const preparedImage = await prepareChatImageForUpload(
@@ -178,8 +184,8 @@ await assert.rejects(
       encodeWebp: async () => new Blob([new Uint8Array(imagePolicy.maxBytes + 1)], { type: 'image/webp' })
     }
   ),
-  /压缩后仍超过 1 MiB/,
-  '压缩后超过 1 MiB 必须拒绝，不能进入编辑器或上传'
+  /压缩后仍超过 3 MiB/,
+  '压缩后超过 3 MiB 必须拒绝，不能进入编辑器或上传'
 )
 const preparationState = createChatImagePreparationState()
 assert.equal(typeof preparationState.snapshot, 'function', '图片准备状态必须提供生产可用 snapshot，统一驱动 generation、pending 与有界性观测')
@@ -271,6 +277,10 @@ assert.match(insertImageSource, /commands\.insertContent[\s\S]{0,500}imagePrepar
 assert.match(composerSource, /function insertPlainClipboardParts[\s\S]{0,260}for \(const file of files\) insertImage\(file\)/, '普通剪贴板多图必须同步按选择顺序插入预览')
 assert.match(composerSource, /void insertPlainClipboardParts\(event\.clipboardData\?\.getData\('text\/plain'\) \?\? '', selectedFiles\)/, '普通图片粘贴必须通过统一剪贴板入口保持文字和预览顺序')
 assert.match(imageProcessingSource, /压缩后仍超过/, '前端必须提示压缩后仍超限，不能静默失败')
+assert.match(composerSource, /function imagePreparationFailureMessage[\s\S]{0,260}hasChineseText\(detail\)[\s\S]{0,120}图片处理失败，请更换图片后重试/, '未知或英文预处理异常必须转为可行动中文提示，同时保留已有中文原因')
+assert.match(composerSource, /async function prepareImageRecord[\s\S]{0,1100}record\.error = imagePreparationFailureMessage\(error\)[\s\S]{0,180}message\.warning\(record\.error\)/, '预处理失败必须立即把中文原因写入图片节点')
+assert.match(composerSource, /async function uploadImage[\s\S]{0,2100}catch \(error\) \{[\s\S]{0,220}record\.error = imageUploadFailureMessage\(error\)[\s\S]{0,180}patchImageNode[\s\S]{0,100}message\.warning\(record\.error\)/, 'HTTP 上传失败必须立即写入并显示中文失败原因')
+assert.match(composerSource, /function imageUploadFailureMessage[\s\S]{0,280}extractApiErrorMessage\(error, '图片上传失败，请检查网络后重试'\)[\s\S]{0,180}图片上传失败，请检查网络后重试/, '未知或英文上传异常必须转为可行动中文提示，同时保留已有中文原因')
 assert.match(composerSource, /URL\.createObjectURL\(sourceFile\)/, '图片预览必须立即使用原始本地 object URL，不能把 base64 保存进文档')
 assert.match(composerSource, /revokePreviewUrl\(record\.previewUrl\)/, '会话切换或组件卸载必须释放 object URL')
 assert.match(composerSource, /record\.file = undefined[\s\S]{0,120}revokePreviewUrl\(previousPreviewUrl\)/, '上传完成后必须立即释放本地大文件引用并改用私有资产 URL')

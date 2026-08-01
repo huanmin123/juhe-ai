@@ -22,7 +22,7 @@ export const chatImageInputPolicy: ChatImageOptimizationPolicy = {
   mimeType: 'image/webp',
   maxEdge: 1024,
   quality: 82,
-  maxBytes: 1024 * 1024
+  maxBytes: 3 * 1024 * 1024
 }
 
 export const chatImagePreviewPolicy: ChatImageOptimizationPolicy = {
