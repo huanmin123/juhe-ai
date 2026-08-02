@@ -315,6 +315,8 @@ assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entr
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort\b/, 'PG 使用记录不应再给目录表创建全局 client IP 前缀索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_c_created_sort ON audit_logs\(system_account_id, \(trace_id COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 审计日志用户范围 trace 前缀查询必须有 owner + C collation 前缀索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_c_created_sort ON audit_logs\(system_account_id, \(client_ip COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 审计日志用户范围 client IP 前缀查询必须有 owner + C collation 前缀索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created ON audit_logs\(created_at DESC, id DESC\) WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志默认来源过滤必须有持久化来源部分索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created ON audit_logs\(system_account_id, created_at DESC, id DESC\) WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志用户范围来源过滤必须有持久化来源部分索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_c_created_sort\b/, 'PG 审计日志不应再创建全局 trace 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_c_created_sort\b/, 'PG 审计日志不应再创建全局 client IP 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_c_created_sort\b/, 'PG 公开接口日志不应再创建全局 trace 前缀索引')

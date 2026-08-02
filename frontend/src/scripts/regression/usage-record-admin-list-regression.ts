@@ -84,7 +84,16 @@ const resultCellSource = readFileSync(resolve('../frontend/src/views/usage-recor
 assert.match(resultCellSource, /record\.success \? '成功' : '失败'/, '结果单元格必须显示语义成功或失败')
 assert.match(resultCellSource, /InfoCircleOutlined/, '失败结果必须显示错误详情信息图标')
 assert.match(resultCellSource, /failureDetail/, '失败详情必须通过单条摘要悬浮内容展示')
+assert.match(
+  resultCellSource,
+  /const errorMessage = props\.record\.errorMessage\s*\n\s*if \(errorMessage !== undefined && errorMessage\.length > 0\) return errorMessage/,
+  '非空错误消息必须原样优先返回，包含仅空白字符的消息'
+)
+assert.doesNotMatch(resultCellSource, /errorMessage\?\.trim\(\)|errorMessage\.trim\(\)/, '错误消息存在性不得裁剪空白字符')
+assert.doesNotMatch(resultCellSource, /return.*errorMessage.*(?:statusCode|errorCode)/, '错误消息提示不得附加 HTTP 状态或错误码')
+assert.match(resultCellSource, /record\.errorCode/, '无错误消息时错误详情应回退到错误码')
 assert.match(resultCellSource, /record\.failureReason/, '错误详情悬浮内容必须优先展示最终失败摘要')
+assert.doesNotMatch(resultCellSource, /statusCode.*failureDetail|failureDetail.*statusCode/, '错误详情不得附加 HTTP 状态码')
 assert.match(resultCellSource, /a-tooltip/, '错误详情必须通过悬浮提示展示')
 assert.doesNotMatch(resultCellSource, /usage-failure-reason|usage-failure-attribution/, '失败详情不得直接撑开列表单元格')
 const formatterSource = readFileSync(resolve('../frontend/src/views/usage-records/usageRecordFormatters.ts'), 'utf8')

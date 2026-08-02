@@ -1,6 +1,7 @@
 import type { AuditErrorGroupListOptions, AuditLogListOptions } from './audit-log-types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { textPrefixUpperBound } from './query-utils.js'
+import { nonPersistedAuditTrafficSources } from './audit-log-traffic-source.js'
 
 export type AuditLogFilterValue = string | number
 
@@ -9,6 +10,14 @@ export const auditLogMaxPageSize = 100
 export const errorGroupDefaultPageSize = 100
 export const errorGroupMaxPageSize = 100
 export const auditLogMaxListWindowRows = 1001
+
+export function persistedAuditTrafficSourceClause(alias: string): string {
+  return `${alias}.traffic_source NOT IN (${nonPersistedAuditTrafficSources.map(() => '?').join(', ')})`
+}
+
+export function persistedAuditTrafficSourceParams(): string[] {
+  return [...nonPersistedAuditTrafficSources]
+}
 
 // Keep list/search projections bounded. Detail reads intentionally use their own
 // wider projection below; list callers never need payload/error body columns.
@@ -23,8 +32,8 @@ export function auditLogListSelectColumns(alias: string): string {
 }
 
 export function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; params: AuditLogFilterValue[] } {
-  const clauses: string[] = []
-  const params: AuditLogFilterValue[] = []
+  const clauses: string[] = [persistedAuditTrafficSourceClause('al')]
+  const params: AuditLogFilterValue[] = persistedAuditTrafficSourceParams()
 
   pushPrefixFilter(clauses, params, 'al.trace_id', options.traceId)
   pushExactFilter(clauses, params, 'al.session_id', options.sessionId)

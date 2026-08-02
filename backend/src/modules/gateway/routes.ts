@@ -980,22 +980,40 @@ export async function handleOpenAIGatewayRequest(
           await getGatewayAccountCircuitService().completeConfirmation(dispatchAccountCircuitConfirmation, 'unknown')
         }
         if (error instanceof NormalRouteFirstByteCutoverError) {
-          error.cutoverReservation?.release()
+          const cutoverReservation = error.cutoverReservation
+          const targetAccountId = cutoverReservation?.targetAccountId
+          speedFirstByteRetryCount += 1
+          streamServerRetryExcludedAccountIds.add(error.accountId)
           auditCapture.addGatewayMetadata({
-            label: 'normal_route_speed_first_terminal_failure',
+            label: 'normal_route_speed_first_retry_dispatch',
             metadata: {
               accountId: error.accountId,
               responseHeadersReceived: false,
-              limitingFactor: error.deadline.limitingFactor
+              limitingFactor: error.deadline.limitingFactor,
+              retryCount: speedFirstByteRetryCount,
+              maxRetries: normalRouteSpeedFirstConfig?.maxFirstByteRetriesPerRequest ?? 0,
+              retryAllowed: targetAccountId !== undefined,
+              retryBlockedReason: targetAccountId === undefined ? 'cutover_not_confirmed' : undefined,
+              targetAccountId
             }
           })
+          if (cutoverReservation && targetAccountId) {
+            speedFirstCutoverReservation = cutoverReservation
+            speedFirstRetryCandidateAccountIds = new Set([targetAccountId])
+            continue
+          }
+          cutoverReservation?.release()
+          exhaustedAccountIds.add(error.accountId)
+          const fallbackSwitch = await switchToFallbackGroup('normal_route_speed_first_exhausted')
+          if (fallbackSwitch === 'completed') return
+          if (fallbackSwitch === 'switched') continue
           throw new UpstreamAttemptError(error.message, {
             accountId: error.accountId,
             accountName: error.accountName,
             upstreamUrl: 'gateway:first-byte-deadline',
             message: error.message,
             transportFailureKind: 'timeout'
-          }, [error.accountId], undefined, [], true)
+          }, [error.accountId])
         }
         if (error instanceof GatewayRequestWallBudgetExhaustedError) {
           gatewayWallMinimumMeaningfulAttemptMs = Math.max(
@@ -1930,7 +1948,13 @@ export async function handleOpenAIGatewayRequest(
       && error.terminalUpstreamFailure
     const knownUpstreamHttpFailure = error instanceof UpstreamAttemptError
       && lastAttempt?.status !== undefined
-    const diagnosticError = options.exposeUpstreamDiagnostics || terminalUpstreamFailure || knownUpstreamHttpFailure
+    // Customer gateway traffic must never expose the last account's complete
+    // HTTP error after candidate exhaustion.  Keep raw upstream diagnostics
+    // for explicit diagnostics/non-gateway callers only.
+    const exposeKnownUpstreamHttpFailure = gatewayUsageContext.trafficSource !== 'gateway'
+    const diagnosticError = options.exposeUpstreamDiagnostics
+      || terminalUpstreamFailure
+      || (knownUpstreamHttpFailure && exposeKnownUpstreamHttpFailure)
       ? buildDiagnosticUpstreamError(lastAttempt, message)
       : undefined
     const statusCode = diagnosticError?.statusCode ?? 503

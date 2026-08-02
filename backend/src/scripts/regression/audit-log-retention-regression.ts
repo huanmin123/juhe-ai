@@ -356,6 +356,63 @@ try {
   assert((repositories.getAuditLogDetail(largeSuccessEvents.items[0]?.id ?? '')?.payloads.length ?? 0) > 0, '命中长期采样的成功请求不应被热窗口清理降级')
   assert((repositories.getAuditLogDetail(sensitiveHeaderAuditId)?.payloads.length ?? 0) > 0, '失败请求不应被成功热窗口清理降级')
 
+  const nonPersistedSources = [
+    'account_health_check',
+    'runtime_recovery_probe',
+    'cooldown_retest'
+  ] as const
+  const queueLengthBeforeNonPersisted = auditQueue.getAuditLogQueueRuntime().queueLength
+  for (const [index, trafficSource] of nonPersistedSources.entries()) {
+    auditQueue.enqueueAuditLog({
+      ...auditLog(`audit_non_persisted_${index}`, `trace-non-persisted-${trafficSource}`, JSON.stringify({ trafficSource })),
+      trafficSource
+    })
+  }
+  assert.equal(auditQueue.getAuditLogQueueRuntime().queueLength, queueLengthBeforeNonPersisted, '后台来源不应进入本地审计队列')
+  auditQueue.flushAllAuditLogQueue()
+  for (const trafficSource of nonPersistedSources) {
+    assert.equal(repositories.listAuditLogs({ traceId: `trace-non-persisted-${trafficSource}` }).total, 0, `后台来源不得写入 audit_logs：${trafficSource}`)
+  }
+  for (const trafficSource of ['hybrid_scoring', 'hybrid_quality_scoring'] as const) {
+    auditQueue.enqueueAuditLog({
+      ...auditLog(`audit_persisted_${trafficSource}`, `trace-persisted-${trafficSource}`, JSON.stringify({ trafficSource })),
+      trafficSource,
+      auditOutcome: 'success',
+      success: true,
+      finalStatusCode: 200,
+      errorPhase: undefined,
+      errorCode: undefined,
+      errorMessage: undefined,
+      sampleReason: 'success_hot_full_retention'
+    })
+  }
+  auditQueue.flushAllAuditLogQueue()
+  for (const trafficSource of ['hybrid_scoring', 'hybrid_quality_scoring'] as const) {
+    assert.equal(repositories.listAuditLogs({ traceId: `trace-persisted-${trafficSource}` }).total, 1, `用户混合请求来源应写入 audit_logs：${trafficSource}`)
+  }
+  repositories.createAuditLogsBatch([{
+    ...auditLog('audit_non_persisted_repository_gate', 'trace-non-persisted-repository-gate', JSON.stringify({ source: 'repository' })),
+    trafficSource: 'cooldown_retest'
+  }])
+  assert.equal(repositories.listAuditLogs({ traceId: 'trace-non-persisted-repository-gate' }).total, 0, '仓储层必须阻断绕过队列的后台来源')
+
+  const legacyAuditId = 'audit_legacy_non_persisted_read_filter'
+  repositories.createAuditLogsBatch([{
+    ...auditLog(legacyAuditId, 'trace-legacy-non-persisted-read-filter', JSON.stringify({ legacy: true })),
+    auditOutcome: 'success',
+    success: true,
+    finalStatusCode: 200,
+    errorPhase: undefined,
+    errorCode: undefined,
+    errorMessage: undefined,
+    sampleReason: 'success_hot_full_retention'
+  }])
+  databaseModule.getDatasetDatabase()
+    .prepare('UPDATE audit_logs SET traffic_source = ? WHERE id = ?')
+    .run('account_health_check', legacyAuditId)
+  assert.equal(repositories.listAuditLogs({ traceId: 'trace-legacy-non-persisted-read-filter' }).total, 0, '历史后台来源不应进入审计列表')
+  assert.equal(repositories.getAuditLogDetail(legacyAuditId), undefined, '历史后台来源详情应按不存在处理')
+
   const previousProcessRole = runtimeConfig.processRole
   const pendingWorkerMessagesBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
   runtimeConfig.processRole = 'server'
@@ -579,6 +636,8 @@ function assertAuditPayloadCleanupUsesAsyncFiles(): void {
   assert.match(payloadBlobSource, /listAuditPayloadBlobRowsBefore[\s\S]*NOT EXISTS[\s\S]*audit_payload_refs[\s\S]*headers_blob_id = b\.id OR r\.body_blob_id = b\.id/, '按时间清理审计 payload blob 时必须跳过仍被 audit_payload_refs 引用的 blob')
   assert(payloadBlobSource.includes('auditBlobCleanupDeleteConcurrency'), '审计 payload blob 异步清理应限制单轮文件删除并发')
   assert(datasetSchemaSource.includes('idx_audit_payload_refs_attempt'), 'audit_payload_refs.attempt_id 外键反查必须建索引，避免删除 audit_log_attempts 时全表扫描 payload refs')
+  assert.match(datasetSchemaSource, /CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created\s+ON audit_logs\(created_at, id\)\s+WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'SQLite 审计日志默认来源过滤必须有持久化来源部分索引')
+  assert.match(datasetSchemaSource, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created\s+ON audit_logs\(system_account_id, created_at, id\)\s+WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'SQLite 审计日志用户范围来源过滤必须有持久化来源部分索引')
   assert.match(datasetSchemaSource, /CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_attempt ON audit_payload_refs\(attempt_id\) WHERE attempt_id IS NOT NULL/, 'attempt_id 外键反查索引应使用部分索引，保持空值场景索引很小')
   assert.match(payloadBlobSource, /deleteUnreferencedAuditPayloadBlobRowsPostgresAsync[\s\S]*FOR UPDATE OF b SKIP LOCKED/, 'PG 审计 payload blob 清理必须锁定有界候选并跳过竞争行')
   assert.match(payloadBlobSource, /client\.transaction[\s\S]*DELETE FROM juhe_dataset\.audit_payload_blobs b[\s\S]*NOT EXISTS[\s\S]*RETURNING b\.id, b\.storage_key/, 'PG 审计 payload blob 清理必须在短事务内复查引用并返回已提交删除的 metadata')

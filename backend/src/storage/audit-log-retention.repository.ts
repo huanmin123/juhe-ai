@@ -14,6 +14,7 @@ import {
 } from './audit-log-payload-blobs.js'
 import type { AuditLogRow } from './audit-log-mappers.js'
 import type { AuditLogSuccessHotRetentionCleanupResult } from './audit-log-types.js'
+import { nonPersistedAuditTrafficSources } from './audit-log-traffic-source.js'
 
 type AuditLogFilterValue = string | number
 type AuditPayloadBlobRefRow = { headers_blob_id?: unknown; body_blob_id?: unknown }
@@ -77,9 +78,14 @@ export function cleanupAuditLogsByRetention(input: {
   assertSqliteAuditLogRetention('cleanupAuditLogsByRetention')
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
+  const deletedNonPersistedLogs = deleteAuditLogsByWhere(
+    nonPersistedAuditTrafficSourceWhereClause,
+    nonPersistedAuditTrafficSources.slice(),
+    limit
+  )
   const trimmedLogs = trimAuditLogDetailsByWhere(
-    successHotRetentionTrimBeforeLongCutoffWhereClause,
-    [input.successHotCutoffCreatedAt, input.successCutoffCreatedAt, successSampleBucketThreshold],
+    `${successHotRetentionTrimBeforeLongCutoffWhereClause} AND traffic_source NOT IN (${nonPersistedAuditTrafficSources.map(() => '?').join(', ')})`,
+    [input.successHotCutoffCreatedAt, input.successCutoffCreatedAt, successSampleBucketThreshold, ...nonPersistedAuditTrafficSources],
     limit
   )
   const deletedLogs = deleteAuditLogsByWhere(
@@ -88,8 +94,8 @@ export function cleanupAuditLogsByRetention(input: {
     limit
   )
   const deletedGroups = cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
-  const deletedBlobs = cleanupAuditPayloadBlobCandidates(mergeAuditLogMutationResults(trimmedLogs, deletedLogs), limit)
-  return trimmedLogs.affectedRows + deletedLogs.affectedRows + deletedGroups + deletedBlobs
+  const deletedBlobs = cleanupAuditPayloadBlobCandidates(mergeAuditLogMutationResults(trimmedLogs, deletedNonPersistedLogs, deletedLogs), limit)
+  return trimmedLogs.affectedRows + deletedNonPersistedLogs.affectedRows + deletedLogs.affectedRows + deletedGroups + deletedBlobs
 }
 
 export async function cleanupAuditLogsByRetentionAsync(input: {
@@ -102,15 +108,26 @@ export async function cleanupAuditLogsByRetentionAsync(input: {
 }): Promise<number> {
   const limit = input.limit ?? 1000
   const successSampleBucketThreshold = normalizeSuccessSampleBucketThreshold(input.successSampleBucketThreshold)
+  const deletedNonPersistedLogs = runtimeConfig.databaseDriver === 'postgres'
+    ? await deleteAuditLogsByWhereAsync(
+      nonPersistedAuditTrafficSourceWhereClause,
+      nonPersistedAuditTrafficSources.slice(),
+      limit
+    )
+    : deleteAuditLogsByWhere(
+      nonPersistedAuditTrafficSourceWhereClause,
+      nonPersistedAuditTrafficSources.slice(),
+      limit
+    )
   const trimmedLogs = runtimeConfig.databaseDriver === 'postgres'
     ? await trimAuditLogDetailsByWhereAsync(
-      successHotRetentionTrimBeforeLongCutoffWhereClause,
-      [input.successHotCutoffCreatedAt, input.successCutoffCreatedAt, successSampleBucketThreshold],
+      `${successHotRetentionTrimBeforeLongCutoffWhereClause} AND traffic_source NOT IN (${nonPersistedAuditTrafficSources.map(() => '?').join(', ')})`,
+      [input.successHotCutoffCreatedAt, input.successCutoffCreatedAt, successSampleBucketThreshold, ...nonPersistedAuditTrafficSources],
       limit
     )
     : trimAuditLogDetailsByWhere(
-      successHotRetentionTrimBeforeLongCutoffWhereClause,
-      [input.successHotCutoffCreatedAt, input.successCutoffCreatedAt, successSampleBucketThreshold],
+      `${successHotRetentionTrimBeforeLongCutoffWhereClause} AND traffic_source NOT IN (${nonPersistedAuditTrafficSources.map(() => '?').join(', ')})`,
+      [input.successHotCutoffCreatedAt, input.successCutoffCreatedAt, successSampleBucketThreshold, ...nonPersistedAuditTrafficSources],
       limit
     )
   const deletedLogs = runtimeConfig.databaseDriver === 'postgres'
@@ -127,12 +144,13 @@ export async function cleanupAuditLogsByRetentionAsync(input: {
   const deletedGroups = runtimeConfig.databaseDriver === 'postgres'
     ? await cleanupAuditErrorGroupsBeforeAsync(input.errorGroupCutoffUpdatedAt, limit)
     : cleanupAuditErrorGroupsBefore(input.errorGroupCutoffUpdatedAt, limit)
-  const deletedBlobs = await cleanupAuditPayloadBlobCandidatesAsync(mergeAuditLogMutationResults(trimmedLogs, deletedLogs), limit)
-  return trimmedLogs.affectedRows + deletedLogs.affectedRows + deletedGroups + deletedBlobs
+  const deletedBlobs = await cleanupAuditPayloadBlobCandidatesAsync(mergeAuditLogMutationResults(trimmedLogs, deletedNonPersistedLogs, deletedLogs), limit)
+  return trimmedLogs.affectedRows + deletedNonPersistedLogs.affectedRows + deletedLogs.affectedRows + deletedGroups + deletedBlobs
 }
 
 const successHotRetentionTrimWhereClause = "audit_outcome = 'success' AND created_at < ? AND sample_bucket >= ? AND capture_status <> 'metadata_only'"
 const successHotRetentionTrimBeforeLongCutoffWhereClause = "audit_outcome = 'success' AND created_at < ? AND created_at >= ? AND sample_bucket >= ? AND capture_status <> 'metadata_only'"
+const nonPersistedAuditTrafficSourceWhereClause = `traffic_source IN (${nonPersistedAuditTrafficSources.map(() => '?').join(', ')})`
 
 function normalizeSuccessSampleBucketThreshold(value: number | undefined): number {
   if (!Number.isFinite(value)) return 1000

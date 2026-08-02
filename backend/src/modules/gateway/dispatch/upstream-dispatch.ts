@@ -708,14 +708,8 @@ export async function fetchFirstAvailableUpstream(
             })
             lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
             if (requestErrorResult.action === 'skip_account') {
-              throw new UpstreamAttemptError(
-                lastAttempt?.message ?? (error instanceof Error ? error.message : '上游请求准备失败'),
-                lastAttempt,
-                [...failedAccountIds, account.id],
-                undefined,
-                [],
-                true
-              )
+              failedAccountIds.add(account.id)
+              continue
             }
             failedAccountIds.add(account.id)
             if (halfOpenLease?.generation === undefined && shouldRetryAnotherAccountApiKey(
@@ -1208,14 +1202,8 @@ export async function fetchFirstAvailableUpstream(
                     await accountCircuitAttempt.reportTransportFailure(requestTransportFailure)
                   }
                   failedAccountIds.add(account.id)
-                  throw new UpstreamAttemptError(
-                    lastAttempt?.message ?? (error instanceof Error ? error.message : '上游请求失败'),
-                    lastAttempt,
-                    [...failedAccountIds],
-                    undefined,
-                    [],
-                    true
-                  )
+                  skipAccount = true
+                  break
                 }
                 if (!retryAnotherAccountApiKey) {
                   failedAccountIds.add(account.id)

@@ -248,12 +248,12 @@ async function main(): Promise<void> {
       })
     })
     const opaqueResponseText = await opaqueResponse.text()
-    assert.equal(opaqueResponse.status, 422, `未配置策略的上游 HTTP 失败必须保留原状态：${opaqueResponseText}`)
-    assert.equal(opaqueResponseText, opaqueFailureBody, '未配置策略的上游 HTTP 失败必须保留原正文')
+    assert.equal(opaqueResponse.status, 503, `候选耗尽后的完整 HTTP 失败必须返回稳定网关错误：${opaqueResponseText}`)
+    assert.doesNotMatch(opaqueResponseText, /opaque upstream failure/, '候选耗尽不得把最后一个上游错误正文返回给客户端')
     assert.deepEqual(
       upstreamAuthorizations,
-      ['Bearer sk-opaque-failure-first'],
-      '未配置策略的完整 HTTP 非 2xx 不得切换 Key、账户或分组'
+      ['Bearer sk-opaque-failure-first', 'Bearer sk-opaque-failure-fallback'],
+      '未配置策略的完整 HTTP 非 2xx 必须排除当前候选并继续切号'
     )
     assertAccountsRemainAvailable(opaqueAccounts, '不透明 HTTP 失败')
 
@@ -272,7 +272,7 @@ async function main(): Promise<void> {
     assert.deepEqual(
       upstreamAuthorizations.slice(explicitRetryNextOffset),
       ['Bearer sk-explicit-retry-next-first', 'Bearer sk-explicit-retry-next-fallback'],
-      '只有精确命中 retry_next 的策略才可切到后备账户'
+      '命中 retry_next 时应先尝试同账户兄弟 Key，再在账户级失败后切到后备账户'
     )
     assertAccountsRemainAvailable(explicitRetryNextAccounts, '显式 retry_next')
 
@@ -283,13 +283,12 @@ async function main(): Promise<void> {
       body: JSON.stringify({ model: 'gpt-4o-mini', input: 'dispatched side effect must use unified failover' })
     })
     const sideEffectTransportText = await sideEffectTransportResponse.text()
-    assert.equal(sideEffectTransportResponse.status, 502, sideEffectTransportText)
-    assert.match(sideEffectTransportText, /upstream_transport_error/, '未知 transport 失败必须以明确 transport 错误返回')
-    assert.doesNotMatch(sideEffectTransportText, /upstream_retryable_error/, '未知 transport 失败不得伪装成候选耗尽后可重试错误')
+    assert.equal(sideEffectTransportResponse.status, 503, sideEffectTransportText)
+    assert.match(sideEffectTransportText, /upstream_retryable_error/, '全部候选 transport 失败必须返回统一可重试网关错误')
     assert.deepEqual(
       upstreamAuthorizations.slice(sideEffectTransportOffset),
-      ['Bearer sk-side-effect-transport-first'],
-      '未知 transport 失败不得切换 Key、账户或分组'
+      ['Bearer sk-side-effect-transport-first', 'Bearer sk-side-effect-transport-fallback'],
+      'transport 失败必须按统一账户候选路径切到后备账户'
     )
     assertAccountsRemainAvailable(sideEffectTransportAccounts, '副作用 transport 失败')
 
@@ -304,8 +303,8 @@ async function main(): Promise<void> {
       })
     })
     const transportResponseText = await transportResponse.text()
-    assert.equal(transportResponse.status, 502, `未收到上游响应头的传输失败应返回明确 transport 错误：${transportResponseText}`)
-    assert.match(transportResponseText, /upstream_transport_error/)
+    assert.equal(transportResponse.status, 503, `全部候选未收到上游响应头时应返回统一网关错误：${transportResponseText}`)
+    assert.match(transportResponseText, /upstream_retryable_error/)
     assert.ok(
       await accountCircuit.getGatewayAccountCircuitStore().size() > transportCircuitSizeBefore,
       '真实已经派发的连接失败仍必须进入账户传输电路'
@@ -324,12 +323,12 @@ async function main(): Promise<void> {
       })
     })
     const truncatedBodyText = await truncatedBodyResponse.text()
-    assert.equal(truncatedBodyResponse.status, 400, `上游正文截断必须保留已收到的 HTTP 状态：${truncatedBodyText}`)
-    assert.match(truncatedBodyText, /upstream_transport_error/, '上游正文截断必须以明确 transport 错误返回')
+    assert.equal(truncatedBodyResponse.status, 503, `全部候选正文截断时应返回统一网关错误：${truncatedBodyText}`)
+    assert.match(truncatedBodyText, /upstream_retryable_error/, '全部候选正文截断必须返回统一可重试网关错误')
     assert.deepEqual(
       upstreamAuthorizations.slice(truncatedBodyOffset),
-      ['Bearer sk-truncated-body-primary'],
-      '上游正文截断不得切到后备账户并隐藏当前失败'
+      ['Bearer sk-truncated-body-primary', 'Bearer sk-truncated-body-backup'],
+      '正文截断必须按统一账户候选路径切到后备账户'
     )
     assert.ok(
       await accountCircuit.getGatewayAccountCircuitStore().size() > truncatedBodyCircuitSizeBefore,
@@ -419,7 +418,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
-    console.log('上游请求失败回归通过：未知 HTTP、transport 和正文截断均在当前请求终止，只有显式 retry_next 可切换候选')
+    console.log('上游请求失败回归通过：未知完整 HTTP（含 429）按统一候选切号；transport 和正文截断保持各自边界')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()

@@ -11,7 +11,6 @@ import { logger } from '../../shared/logger.js'
 import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import {
   fetchFirstAvailableUpstream,
-  UpstreamAttemptError,
   type GatewayUpstreamRequestCoordinationContext
 } from '../../modules/gateway/dispatch/upstream-dispatch.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
@@ -103,6 +102,7 @@ const auditCapture = {
 const policyScenarios = [
   { action: 'retry_next', expectedStatus: 'active' },
   { action: 'rate_limited', expectedStatus: 'rate_limited' },
+  { action: 'temp_unschedulable', expectedStatus: 'temporary_unavailable' },
   { action: 'error_disabled', expectedStatus: 'error' }
 ] as const
 
@@ -145,7 +145,29 @@ try {
       priority: 0,
       supportedModels: [model]
     }, access)
+    const backupSummary = repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: `policy framing backup ${scenario.action}`,
+      type: 'api_key',
+      credentials: {
+        api_key: `sk-policy-framing-backup-${scenario.action}`,
+        base_url: upstreamBaseUrl
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true,
+      concurrencyLimit: 4,
+      priority: 100,
+      supportedModels: [model]
+    }, access)
     assert.equal(repositories.recordAccountHealthCheckSuccess(accountSummary.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), true)
+    assert.equal(repositories.recordAccountHealthCheckSuccess(backupSummary.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,
@@ -154,7 +176,11 @@ try {
     const account = repositories.listOpenAIAccountsForGroup(group.id, access.systemAccountId, {
       requestedModel: model
     }).find((candidate) => candidate.id === accountSummary.id)
+    const backup = repositories.listOpenAIAccountsForGroup(group.id, access.systemAccountId, {
+      requestedModel: model
+    }).find((candidate) => candidate.id === backupSummary.id)
     assert(account, 'Mock 账户必须可被派发查询')
+    assert(backup, 'Mock 后备账户必须可被派发查询')
 
     const circuitScope = accountCircuit.gatewayAccountProtocolModelScope(account, 'text', model)
     const seedEvidenceKey = index.toString(16).padStart(64, 'a')
@@ -170,10 +196,9 @@ try {
     assert.equal(seed.status, 'applied', '测试前必须建立已到期 SUSPECT')
     assert.equal((await accountCircuit.getGatewayAccountCircuitStore().get(circuitScope)).phase, 'SUSPECT')
 
-    await assert.rejects(
-      () => fetchFirstAvailableUpstream(
+    const dispatchResult = await fetchFirstAvailableUpstream(
         request,
-        [account],
+        [account, backup],
         settings,
         usageContext,
         auditCapture,
@@ -190,10 +215,13 @@ try {
         createRequestCoordination(scenario.action),
         false,
         false
-      ),
-      (error: unknown) => error instanceof UpstreamAttemptError,
-      `SUSPECT + 完整 429 ${scenario.action} 应在当前候选耗尽后返回网关派发错误`
-    )
+      )
+    assert.equal(dispatchResult.account.id, backup.id, `${scenario.action} 命中后必须切换到后备账户`)
+    assert.equal(dispatchResult.response.status, 200, `${scenario.action} 切号后必须返回后备账户成功响应`)
+    for await (const _chunk of dispatchResult.response.body ?? []) {
+      // Drain the successful response before releasing its concurrency slot.
+    }
+    dispatchResult.releaseConcurrency()
 
     const circuitState = await accountCircuit.getGatewayAccountCircuitStore().get(circuitScope)
     assert.equal(circuitState.phase, 'RECOVERING', `${scenario.action} 完整 HTTP framing 必须结算 SUSPECT confirmation`)
@@ -204,7 +232,7 @@ try {
       assert.ok(persisted?.cooldownUntil, '用户显式冷却策略必须保留 cooldownUntil')
     }
   }
-  console.log('gateway upstream policy framing mock ai regression passed (retry_next, rate_limited, error_disabled)')
+  console.log('gateway upstream policy framing mock ai regression passed (retry_next, rate_limited, temp_unschedulable, error_disabled)')
 } finally {
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
@@ -246,6 +274,16 @@ function buildRequest(): Request {
 async function startMockUpstream(onServer: (server: http.Server) => void): Promise<string> {
   const server = http.createServer((req, res) => {
     req.resume()
+    if (String(req.headers.authorization ?? '').includes('sk-policy-framing-backup-')) {
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8'
+      })
+      res.end(JSON.stringify({
+        id: 'policy-framing-backup-success',
+        choices: [{ message: { role: 'assistant', content: 'backup success' } }]
+      }))
+      return
+    }
     res.writeHead(429, {
       'content-type': 'application/json; charset=utf-8'
     })

@@ -1,11 +1,15 @@
 import { spawn } from 'node:child_process'
-import { appendFileSync, mkdirSync } from 'node:fs'
-import { access, appendFile, opendir, stat, unlink } from 'node:fs/promises'
+import { appendFileSync, createReadStream, createWriteStream, mkdirSync } from 'node:fs'
+import { once } from 'node:events'
+import { createInterface } from 'node:readline'
+import { pipeline } from 'node:stream/promises'
+import { access, appendFile, opendir, rename, stat, unlink } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import type { AuditLogInput } from './audit-logs.repository.js'
+import { nonPersistedAuditTrafficSources, normalizePersistedAuditTrafficSource } from './audit-log-traffic-source.js'
 
 export interface AuditHotSearchOptions {
   keywords: string[]
@@ -36,6 +40,7 @@ interface AuditHotSearchLine {
   auditLogId?: string
   createdAt?: string
   traceId?: string
+  trafficSource?: string
   sequence?: number
   text?: string
 }
@@ -80,10 +85,13 @@ const maxConcurrentHotSearches = 1
 const maxSearchFileScanEntries = 2_000
 const searchFileScanYieldEvery = 100
 const cleanupFileScanYieldEvery = 100
+const maxCleanupFileBytes = 32 * 1024 * 1024
 const defaultCleanupMaxFiles = 1_000
 const defaultCleanupMaxRunMs = 5_000
 const defaultHotSearchWindowMs = 60 * 60 * 1000
 let activeHotSearches = 0
+const hotSearchFileLocks = new Map<string, Promise<void>>()
+const activeHotSearchFileLocks = new Set<string>()
 
 export function appendAuditHotSearchEntries(inputs: AuditLogInput[]): void {
   if (inputs.length === 0) return
@@ -92,7 +100,7 @@ export function appendAuditHotSearchEntries(inputs: AuditLogInput[]): void {
     if (batches.size === 0) return
     mkdirSync(auditHotSearchRoot(), { recursive: true })
     for (const [filePath, lines] of batches) {
-      appendFileSync(filePath, lines.join(''), 'utf8')
+      appendHotSearchFileSync(filePath, lines.join(''))
     }
   } catch (error) {
     logger.warn(errorLogFields(error, {
@@ -108,7 +116,9 @@ export async function appendAuditHotSearchEntriesAsync(inputs: AuditLogInput[]):
     const batches = buildHotSearchFileBatches(inputs)
     if (batches.size === 0) return
     mkdirSync(auditHotSearchRoot(), { recursive: true })
-    await Promise.all([...batches.entries()].map(([filePath, lines]) => appendFile(filePath, lines.join(''), 'utf8')))
+    await Promise.all([...batches.entries()].map(([filePath, lines]) => withHotSearchFileLock(filePath, async () => {
+      await appendFile(filePath, lines.join(''), 'utf8')
+    })))
   } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'audit_hot_search_append_failed',
@@ -213,7 +223,7 @@ export async function cleanupAuditHotSearchFilesBefore(cutoffCreatedAt: string, 
   try {
     const directory = await opendir(auditHotSearchRoot())
     for await (const entry of directory) {
-      if (deleted >= maxFiles || Date.now() - startedAt >= maxRunMs) {
+      if (scanned >= maxFiles || Date.now() - startedAt >= maxRunMs) {
         break
       }
       if (!entry.isFile()) continue
@@ -223,25 +233,191 @@ export async function cleanupAuditHotSearchFilesBefore(cutoffCreatedAt: string, 
       }
       const bucketStartMs = hotSearchBucketStartMsFromFileName(entry.name)
       if (bucketStartMs === undefined) continue
+      const filePath = join(auditHotSearchRoot(), entry.name)
       if (bucketStartMs + hotSearchBucketMs > cutoffMs) continue
       try {
-        await unlink(join(auditHotSearchRoot(), entry.name))
+        await withHotSearchFileLock(filePath, async () => {
+          await unlink(filePath)
+          try {
+            await unlink(pendingHotSearchFilePath(filePath))
+          } catch (error) {
+            if (!(error && typeof error === 'object' && (error as { code?: unknown }).code === 'ENOENT')) throw error
+          }
+        })
         deleted += 1
-      } catch {
+      } catch (error) {
+        logger.warn(errorLogFields(error, { event: 'audit_hot_search_file_delete_failed', fileName: entry.name }), '审计热搜索文件删除失败')
       }
     }
-  } catch {
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'audit_hot_search_file_cleanup_failed' }), '审计热搜索文件清理目录读取失败')
     return deleted
   }
   return deleted
 }
 
+export async function cleanupNonPersistedAuditHotSearchEntries(options: AuditHotSearchFileCleanupOptions = {}): Promise<number> {
+  const maxFiles = positiveInteger(options.maxFiles, defaultCleanupMaxFiles)
+  const maxRunMs = positiveInteger(options.maxRunMs, defaultCleanupMaxRunMs)
+  const startedAt = Date.now()
+  const currentBucketStartMs = hotSearchBucketStartMs(Date.now())
+  let cleaned = 0
+  let scanned = 0
+  try {
+    const directory = await opendir(auditHotSearchRoot())
+    for await (const entry of directory) {
+      if (scanned >= maxFiles || Date.now() - startedAt >= maxRunMs) break
+      if (!entry.isFile()) continue
+      scanned += 1
+      if (scanned % cleanupFileScanYieldEvery === 0) await yieldToEventLoop()
+      const pendingMainPath = pendingHotSearchMainFilePath(entry.name)
+      if (pendingMainPath) {
+        try {
+          await withHotSearchFileLock(pendingMainPath, () => recoverPendingHotSearchFile(pendingMainPath, join(auditHotSearchRoot(), entry.name)))
+          cleaned += 1
+        } catch (error) {
+          logger.warn(errorLogFields(error, {
+            event: 'audit_hot_search_pending_recovery_failed',
+            fileName: entry.name
+          }), '审计热搜索旁路文件恢复失败')
+        }
+        continue
+      }
+      const bucketStartMs = hotSearchBucketStartMsFromFileName(entry.name)
+      if (bucketStartMs === undefined || bucketStartMs >= currentBucketStartMs) continue
+      try {
+        const filePath = join(auditHotSearchRoot(), entry.name)
+        const before = await stat(filePath)
+        if (before.size > maxCleanupFileBytes) {
+          logger.warn({ event: 'audit_hot_search_non_persisted_cleanup_file_too_large', fileName: entry.name, size: before.size }, '审计热搜索文件超过单文件清理上限，跳过本轮')
+          continue
+        }
+        const changed = await withHotSearchFileLock(filePath, () => removeNonPersistedHotSearchEntries(filePath))
+        if (changed) cleaned += 1
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'audit_hot_search_non_persisted_cleanup_failed',
+          fileName: entry.name
+        }), '审计热搜索后台来源清理失败')
+      }
+    }
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'audit_hot_search_non_persisted_cleanup_directory_failed' }), '审计热搜索后台来源清理目录读取失败')
+    return cleaned
+  }
+  return cleaned
+}
+
+async function removeNonPersistedHotSearchEntries(filePath: string): Promise<boolean> {
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`
+  const input = createReadStream(filePath, { encoding: 'utf8' })
+  const reader = createInterface({ input, crlfDelay: Infinity })
+  const output = createWriteStream(tempPath, { encoding: 'utf8' })
+  let changed = false
+  try {
+    for await (const line of reader) {
+      if (!line.trim()) continue
+      const parsed = parseHotSearchLine(line.trim())
+      const trafficSource = parsed.trafficSource ?? legacyHotSearchTrafficSource(parsed.text)
+      if (trafficSource !== undefined) {
+        const normalized = normalizePersistedAuditTrafficSource(trafficSource)
+        if (!normalized) {
+          changed = true
+          continue
+        }
+      }
+      if (!output.write(`${line}\n`, 'utf8')) await once(output, 'drain')
+    }
+    await new Promise<void>((resolveOutput, rejectOutput) => {
+      output.once('error', rejectOutput)
+      output.end(() => resolveOutput())
+    })
+    if (changed) await rename(tempPath, filePath)
+    else await unlink(tempPath)
+    await drainPendingHotSearchAppends(filePath)
+    return changed
+  } catch (error) {
+    try {
+      await unlink(tempPath)
+    } catch {
+    }
+    throw error
+  } finally {
+    reader.close()
+    input.destroy()
+    output.destroy()
+  }
+}
+
+function appendHotSearchFileSync(filePath: string, contents: string): void {
+  appendFileSync(activeHotSearchFileLocks.has(filePath) ? pendingHotSearchFilePath(filePath) : filePath, contents, 'utf8')
+}
+
+async function drainPendingHotSearchAppends(filePath: string): Promise<void> {
+  await recoverPendingHotSearchFile(filePath, pendingHotSearchFilePath(filePath))
+}
+
+async function recoverPendingHotSearchFile(filePath: string, pendingPath: string): Promise<void> {
+  try {
+    const replayPath = `${pendingPath}.replay-${process.pid}-${Date.now()}`
+    await rename(pendingPath, replayPath)
+    await pipeline(
+      createReadStream(replayPath),
+      createWriteStream(filePath, { flags: 'a' })
+    )
+    await unlink(replayPath)
+  } catch (error) {
+    if (isMissingHotSearchDirectoryError(error) || (error && typeof error === 'object' && (error as { code?: unknown }).code === 'ENOENT')) return
+    throw error
+  }
+}
+
+function pendingHotSearchFilePath(filePath: string): string {
+  return `${filePath}.pending-${process.pid}`
+}
+
+function pendingHotSearchMainFilePath(fileName: string): string | undefined {
+  const marker = `${hotSearchFileSuffix}.pending-`
+  const markerIndex = fileName.indexOf(marker)
+  if (markerIndex < 0) return undefined
+  const mainFileName = `${fileName.slice(0, markerIndex)}${hotSearchFileSuffix}`
+  if (hotSearchBucketStartMsFromFileName(mainFileName) === undefined) return undefined
+  return join(auditHotSearchRoot(), mainFileName)
+}
+
+async function withHotSearchFileLock<T>(filePath: string, action: () => Promise<T>): Promise<T> {
+  const previous = hotSearchFileLocks.get(filePath) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolveRelease) => { release = resolveRelease })
+  const tail = previous.then(() => current)
+  hotSearchFileLocks.set(filePath, tail)
+  await previous
+  activeHotSearchFileLocks.add(filePath)
+  try {
+    return await action()
+  } finally {
+    activeHotSearchFileLocks.delete(filePath)
+    release()
+    if (hotSearchFileLocks.get(filePath) === tail) hotSearchFileLocks.delete(filePath)
+  }
+}
+
+function legacyHotSearchTrafficSource(text: string | undefined): string | undefined {
+  const firstLine = text?.split('\n', 1)[0]?.trim()
+  const candidate = firstLine?.split(/\s+/, 3)[1]
+  return candidate && nonPersistedAuditTrafficSources.includes(candidate as typeof nonPersistedAuditTrafficSources[number])
+    ? candidate
+    : undefined
+}
+
 function buildHotSearchFileBatches(inputs: AuditLogInput[]): Map<string, string[]> {
   const batches = new Map<string, string[]>()
   for (const input of inputs) {
+    const trafficSource = normalizePersistedAuditTrafficSource(input.trafficSource, input)
+    if (!trafficSource) continue
     const createdAt = input.createdAt ?? input.endedAt
     const filePath = hotSearchFilePath(createdAt)
-    const lines = buildHotSearchLines(input, createdAt)
+    const lines = buildHotSearchLines(input, createdAt, trafficSource)
     if (!lines.length) continue
     const existing = batches.get(filePath)
     if (existing) {
@@ -253,7 +429,7 @@ function buildHotSearchFileBatches(inputs: AuditLogInput[]): Map<string, string[
   return batches
 }
 
-function buildHotSearchLines(input: AuditLogInput, createdAt: string): string[] {
+function buildHotSearchLines(input: AuditLogInput, createdAt: string, trafficSource: string): string[] {
   const id = input.id
   if (!id) return []
   const includePayloadBodyText = shouldIncludePayloadBodyTextInHotSearch(input)
@@ -317,6 +493,7 @@ function buildHotSearchLines(input: AuditLogInput, createdAt: string): string[] 
     auditLogId: id,
     createdAt,
     traceId: input.traceId,
+    trafficSource,
     sequence,
     text: chunk
   } satisfies AuditHotSearchLine)}\n`)

@@ -6,7 +6,6 @@ import {
 } from '../upstream/attempt.js'
 import {
   decideAccountErrorPolicy,
-  accountErrorPolicyCouldMatchStatus,
   accountErrorPayloadSummary,
   type AccountErrorPolicyDecision,
   type GatewaySettings
@@ -53,14 +52,14 @@ import {
 } from './non-stream-json-body.js'
 
 /**
- * A response whose meaning was not explicitly configured belongs to the
- * current request.  It must be returned to the caller rather than silently
- * consuming another Key, account, or group.
+ * Opaque HTTP failures may not retry a sibling API Key.  Account-level
+ * candidate failover is handled by handleFailedUpstreamResponse instead.
  */
 export function isOpaqueUpstreamFailoverAllowed(_req: Request): boolean {
   return false
 }
 
+/** `retry_next` only authorizes replay with another Key on the same account. */
 export function accountErrorPolicyAllowsUpstreamReplayAfterDispatch(
   _req: Request,
   _lane: OpenAIGatewayRequestLane,
@@ -170,10 +169,12 @@ export async function handleFailedUpstreamResponse(
     return { action: 'return_response', response }
   }
 
-  const policyCouldMatch = input.accountStateMutationEnabled !== false
-    && usageContext.trafficSource === 'gateway'
-    && accountErrorPolicyCouldMatchStatus(account, response.status)
-  if (!policyCouldMatch) {
+  // Account diagnostics and non-gateway probes must observe their actual
+  // response.  Customer gateway traffic follows the generic candidate
+  // failover path for every complete non-2xx response; user policy matching
+  // only decides whether to persist an account state/action.
+  const gatewayFailoverEnabled = usageContext.trafficSource === 'gateway'
+  if (!gatewayFailoverEnabled) {
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     return { action: 'return_response', response }
   }
@@ -194,41 +195,6 @@ export async function handleFailedUpstreamResponse(
     settings,
     { bodyText: responseBodyText, errorPayload: failureBodyFacts.errorPayload }
   )
-  const replayResponse: GatewayUpstreamResponse = {
-    status: response.status,
-    ok: response.ok,
-    headers: response.headers,
-    body: responseBodyRead.replayBody
-  }
-  if (!explicitPolicyDecision) {
-    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-    return { action: 'return_response', response: replayResponse }
-  }
-  if (!accountErrorPolicyAllowsUpstreamReplayAfterDispatch(req, input.requestLane, explicitPolicyDecision)) {
-    const failureInput: AccountFailureInput = {
-      success: false,
-      statusCode: response.status,
-      headers: response.headers,
-      bodyText: responseBodyText,
-      settings,
-      trafficSource: usageContext.trafficSource,
-      upstreamErrorSummary: failureBodyFacts.upstreamErrorSummary,
-      upstreamErrorSummaryResolved: failureBodyFacts.upstreamErrorSummaryResolved,
-      policyDecision: explicitPolicyDecision
-    }
-    auditCapture.addGatewayMetadata({
-      label: 'account_error_policy_matched',
-      metadata: {
-        accountId: account.id,
-        ruleName: explicitPolicyDecision.ruleName,
-        action: explicitPolicyDecision.action,
-        cooldownStatus: explicitPolicyDecision.cooldownStatus
-      }
-    })
-    await applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
-    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-    return { action: 'return_response', response: replayResponse }
-  }
   await responseBodyRead.close()
   const failureObservation = classifyGatewayUpstreamFailure({
     phase: 'upstream_response'
@@ -313,7 +279,7 @@ export async function handleFailedUpstreamResponse(
   }
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 
-  if (explicitPolicyDecision) {
+  if (explicitPolicyDecision && input.accountStateMutationEnabled !== false) {
     auditCapture.addGatewayMetadata({
       label: 'account_error_policy_matched',
       metadata: {
@@ -335,9 +301,14 @@ export async function handleFailedUpstreamResponse(
 
   return {
     action: 'skip_account',
-    failureKind: 'explicit_policy',
+    failureKind: explicitPolicyDecision ? 'explicit_policy' : 'opaque_http',
     lastAttempt,
-    keyScopedFailure: hasAlternativeAccountApiKeys(account)
+    // A state-changing policy makes the whole account unavailable, matching
+    // ordinary temporary-unavailable/non-schedulable candidate filtering.
+    // Only the explicit retry_next action may continue with a sibling Key.
+    keyScopedFailure: explicitPolicyDecision?.action === 'retry_next'
+      ? hasAlternativeAccountApiKeys(account)
+      : false
   }
 }
 

@@ -184,8 +184,8 @@ assert.doesNotMatch(
 )
 assert.match(source('modules/gateway/response/finalization.ts'), /await recordGatewayUpstreamBucketSuccessAsync/, '上游成功最终化必须等待 Redis 上游桶恢复清理')
 const failureDispatchBody = functionBody(failureDispatchSource, 'handleFailedUpstreamResponse')
-assert.match(failureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*if \(!explicitPolicyDecision\)[\s\S]*return \{ action: 'return_response', response: replayResponse \}/, '完整未知 HTTP 必须直接返回当前响应')
-assert.match(failureDispatchBody, /if \(!accountErrorPolicyAllowsUpstreamReplayAfterDispatch[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用')
+assert.match(failureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*return \{[\s\S]*action: 'skip_account'[\s\S]*failureKind: explicitPolicyDecision \? 'explicit_policy' : 'opaque_http'/, '完整未知 HTTP 必须进入统一账户级切号并保留 opaque 失败归因')
+assert.match(failureDispatchBody, /if \(explicitPolicyDecision\)[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用；状态动作不能阻断当前请求切号')
 
 const upstreamDispatchSource = source('modules/gateway/dispatch/upstream-dispatch.ts')
 const upstreamDispatchBody = functionBody(upstreamDispatchSource, 'fetchFirstAvailableUpstream')
@@ -345,9 +345,9 @@ function assertStrictRedisCacheBoundaries(): void {
 
   const invalidationSource = source('shared/gateway-cache-invalidation.ts')
   assert.match(
-    functionBody(invalidationSource, 'syncGatewayCacheInvalidationsFromRuntimeState'),
-    /gateway_cache_invalidation_runtime_state_sync_failed[\s\S]*throw error/,
-    'Redis runtime state 失效同步失败必须抛错，不能继续使用本地缓存'
+    invalidationSource,
+    /createGatewayCacheInvalidationSyncCoordinator[\s\S]*input\.onError\?\.\(error\)[\s\S]*throw error[\s\S]*event: 'gateway_cache_invalidation_runtime_state_sync_failed'/,
+    'Redis runtime state 失效同步失败必须由协调器记录并重新抛错，不能继续使用本地缓存'
   )
   assert.match(invalidationSource, /gateway_cache_invalidation_runtime_state_publish_failed/, 'performance 模式发布 Redis runtime state 失效版本失败必须记录受控错误')
   assert.doesNotMatch(invalidationSource, /scheduleProcessFatalError/, 'performance 模式发布 Redis runtime state 失效版本失败不得终止主进程')
@@ -484,7 +484,7 @@ function assertStrictRedisCacheBoundaries(): void {
   const sessionAffinitySource = source('modules/gateway/runtime/session-affinity.service.ts')
   const gatewayCapacitySource = source('modules/gateway/dispatch/capacity.ts')
   assert.match(functionBody(sessionAffinitySource, 'canUseProcessLocalSessionAffinity'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*clearSessionAffinityIndexes\(\)[\s\S]*return false/, 'Redis cache driver 下 session affinity 本机索引必须禁用并清空')
-  assert.match(functionBody(sessionAffinitySource, 'rememberOpenAIAccountForSessionAsync'), /getRedisSessionAffinityRecord[\s\S]*setRedisSessionAffinityBinding[\s\S]*if \(written\)/, 'Redis cache driver 下会话亲和成功绑定必须写入共享 Redis 绑定并处理 CAS 冲突')
+  assert.match(functionBody(sessionAffinitySource, 'claimOpenAIAccountForSessionAsync'), /getRedisSessionAffinityRecord[\s\S]*setRedisSessionAffinityBinding[\s\S]*if \(written\)/, 'Redis cache driver 下会话亲和成功绑定必须写入共享 Redis 绑定并处理 CAS 冲突')
   assert.match(sessionAffinitySource, /redisSetSessionAffinityBindingScript[\s\S]*redis\.call\('GET', KEYS\[1\]\)[\s\S]*redis\.call\('SET', KEYS\[1\], new_value, 'PX', binding_ttl_ms\)[\s\S]*redis\.call\('ZADD', KEYS\[i\], expires_at, session_key\)/, 'Redis cache driver 下会话亲和 binding 与反查索引必须通过 Lua 原子写入')
   assert.match(sessionAffinitySource, /redisDeleteSessionAffinityBindingScript[\s\S]*if current ~= ARGV\[1\][\s\S]*redis\.call\('DEL', KEYS\[1\]\)[\s\S]*redis\.call\('ZREM', KEYS\[i\], ARGV\[2\]\)/, 'Redis cache driver 下会话亲和删除必须通过 expected raw value 原子清理 binding 与索引')
   assert.doesNotMatch(functionBody(sessionAffinitySource, 'forgetOpenAIAccountForSession'), /void forgetOpenAIAccountForSessionAsync/, 'Redis cache driver 下生产路径不能通过同步会话亲和清理入口 fire-and-forget')

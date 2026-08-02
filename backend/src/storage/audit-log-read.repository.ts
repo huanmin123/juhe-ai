@@ -27,7 +27,9 @@ import {
   errorGroupMaxPageSize,
   normalizeAuditLogPage,
   normalizePage,
-  normalizePageSize
+  normalizePageSize,
+  persistedAuditTrafficSourceClause,
+  persistedAuditTrafficSourceParams
 } from './audit-log-list-query.js'
 import type {
   AuditErrorGroupListOptions,
@@ -101,8 +103,9 @@ export function listAuditLogsByIds(ids: string[]): AuditLogListItem[] {
         SELECT ${auditLogListSelectColumns('al')}
         FROM audit_logs al
         WHERE al.id IN (${sqlPlaceholders(chunk.length)})
+          AND ${persistedAuditTrafficSourceClause('al')}
       `)
-      .all(...chunk) as AuditLogRow[])
+      .all(...chunk, ...persistedAuditTrafficSourceParams()) as AuditLogRow[])
   }
   const order = new Map(uniqueIds.map((id, index) => [id, index]))
   rows.sort((left, right) => {
@@ -135,7 +138,8 @@ export async function listAuditLogsByIdsAsync(ids: string[]): Promise<AuditLogLi
       FROM juhe_dataset.audit_logs al
       ${auditLogNameJoins()}
       WHERE al.id IN (${sqlPlaceholders(chunk.length)})
-    `, chunk))
+        AND ${persistedAuditTrafficSourceClause('al')}
+    `, [...chunk, ...persistedAuditTrafficSourceParams()]))
   }
   const order = new Map(uniqueIds.map((id, index) => [id, index]))
   rows.sort((left, right) => {
@@ -210,8 +214,9 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
         al.*
       FROM audit_logs al
       WHERE al.id = ?
+        AND ${persistedAuditTrafficSourceClause('al')}
     `)
-    .get(id) as AuditLogRow | undefined
+    .get(id, ...persistedAuditTrafficSourceParams()) as AuditLogRow | undefined
   if (!row) return undefined
   const namedRow = hydrateAuditRows([row])[0] ?? row
 
@@ -248,7 +253,8 @@ export async function getAuditLogDetailAsync(id: string): Promise<AuditLogDetail
     FROM juhe_dataset.audit_logs al
     ${auditLogNameJoins()}
     WHERE al.id = ?
-  `, [id])
+      AND ${persistedAuditTrafficSourceClause('al')}
+  `, [id, ...persistedAuditTrafficSourceParams()])
   if (!row) return undefined
 
   const attemptRows = await client.query<AuditLogRow>(`
@@ -289,9 +295,16 @@ export async function getAuditLogPayload(
     const client = createPostgresDatabaseClient(await getPostgresPool())
     const row = await client.one<AuditLogRow>(`
       SELECT *
-      FROM juhe_dataset.audit_payload_refs
-      WHERE audit_log_id = ? AND id = ?
-    `, [auditLogId, payloadId])
+      FROM juhe_dataset.audit_payload_refs refs
+      WHERE refs.audit_log_id = ?
+        AND refs.id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM juhe_dataset.audit_logs al
+          WHERE al.id = refs.audit_log_id
+            AND ${persistedAuditTrafficSourceClause('al')}
+        )
+    `, [auditLogId, payloadId, ...persistedAuditTrafficSourceParams()])
     if (!row) return undefined
     const summary = auditLogPayloadSummaryFromRow(row)
     const headers = shouldIncludeAuditPayloadHeaders(options)
@@ -325,10 +338,17 @@ export async function getAuditLogPayloadReadOnly(
   const row = getDatasetDatabase()
     .prepare(`
       SELECT *
-      FROM audit_payload_refs
-      WHERE audit_log_id = ? AND id = ?
+      FROM audit_payload_refs refs
+      WHERE refs.audit_log_id = ?
+        AND refs.id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM audit_logs al
+          WHERE al.id = refs.audit_log_id
+            AND ${persistedAuditTrafficSourceClause('al')}
+        )
     `)
-    .get(auditLogId, payloadId) as AuditLogRow | undefined
+    .get(auditLogId, payloadId, ...persistedAuditTrafficSourceParams()) as AuditLogRow | undefined
   if (row) {
     const summary = auditLogPayloadSummaryFromRow(row)
     const headers = shouldIncludeAuditPayloadHeaders(options)

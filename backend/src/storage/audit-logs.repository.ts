@@ -16,7 +16,7 @@ import {
   preparePayloadInputAsync,
   type PreparedAuditPayload
 } from './audit-log-payload-input.js'
-import { normalizeAuditTrafficSource } from './audit-log-traffic-source.js'
+import { normalizeAuditTrafficSource, normalizePersistedAuditTrafficSource } from './audit-log-traffic-source.js'
 import type {
   AuditLogAttemptInput,
   AuditLogInput
@@ -40,6 +40,15 @@ interface PreparedAuditLogForWrite {
   rawPayloadBytes: number
   compressedPayloadBytes: number
   compressionSavedBytes: number
+}
+
+function filterPersistedAuditLogInputs(inputs: AuditLogInput[]): AuditLogInput[] {
+  const persisted: AuditLogInput[] = []
+  for (const input of inputs) {
+    const trafficSource = normalizePersistedAuditTrafficSource(input.trafficSource, input)
+    if (trafficSource) persisted.push({ ...input, trafficSource })
+  }
+  return persisted
 }
 
 export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
@@ -91,11 +100,13 @@ export type {
   AuditOutcome,
   AuditPayloadCaptureStatus,
   AuditPayloadPartType,
-  AuditTrafficSource
+  AuditTrafficSource,
+  PersistedAuditTrafficSource
 } from './audit-log-types.js'
 
 export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
-  if (inputs.length === 0) return
+  const persistedInputs = filterPersistedAuditLogInputs(inputs)
+  if (persistedInputs.length === 0) return
 
   const database = getDatasetDatabase()
   const insertLog = database.prepare(`
@@ -138,7 +149,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   const transactionStarted = beginDatabaseTransaction(database)
   let transactionCommitted = false
   try {
-    for (const input of inputs) {
+    for (const input of persistedInputs) {
       const id = input.id ?? newId('audit')
       if (existingLogIds.has(id) || seenLogIds.has(id)) {
         continue
@@ -292,18 +303,19 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
 }
 
 export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promise<void> {
-  if (inputs.length === 0) return
+  const persistedInputs = filterPersistedAuditLogInputs(inputs)
+  if (persistedInputs.length === 0) return
   if (runtimeConfig.databaseDriver === 'postgres') {
-    await createAuditLogsBatchPostgres(inputs)
+    await createAuditLogsBatchPostgres(persistedInputs)
     return
   }
 
   const database = getDatasetDatabase()
-  const existingLogIds = loadExistingAuditLogIds(database, inputs)
+  const existingLogIds = loadExistingAuditLogIds(database, persistedInputs)
   const seenLogIds = new Set<string>()
   const preparedLogs: PreparedAuditLogForWrite[] = []
 
-  for (const input of inputs) {
+  for (const input of persistedInputs) {
     const id = input.id ?? newId('audit')
     if (existingLogIds.has(id) || seenLogIds.has(id)) {
       continue

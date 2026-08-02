@@ -22,6 +22,10 @@ const props = defineProps<{
 
 const failureDetail = computed(() => {
   if (props.record.success) return undefined
+  const errorMessage = props.record.errorMessage
+  if (errorMessage !== undefined && errorMessage.length > 0) return errorMessage
+  const errorCode = props.record.errorCode?.trim()
+  if (errorCode) return props.record.errorCode
   const reason = props.record.failureReason?.trim()
   if (reason) return reason
   return '请求失败，暂未获取到具体错误说明'

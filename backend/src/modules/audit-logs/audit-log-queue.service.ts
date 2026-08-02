@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
+import { normalizePersistedAuditTrafficSource } from '../../storage/audit-log-traffic-source.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
@@ -175,7 +176,9 @@ function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: s
 
 export function enqueueAuditLog(input: AuditLogInput): void {
   if (!readAuditLogSettings().enabled) return
-  const queuedInput = normalizeAuditLogInput(input)
+  const trafficSource = normalizePersistedAuditTrafficSource(input.trafficSource, input)
+  if (!trafficSource) return
+  const queuedInput = normalizeAuditLogInput({ ...input, trafficSource })
   if (runtimeConfig.processRole === 'server' && estimateAuditLogBytes(queuedInput) > auditLogInlineTransportMaxBytes) {
     trackAuditLogServerDispatch(
       dispatchAuditLogFromServerWithCapacityFallback(queuedInput),
@@ -390,13 +393,15 @@ export async function stopAuditLogRedisStreamConsumer(): Promise<void> {
 }
 
 function enqueueAuditLogLocal(input: AuditLogInput): void {
+  const trafficSource = normalizePersistedAuditTrafficSource(input.trafficSource, input)
+  if (!trafficSource) return
   assertLocalAuditLogWriteAllowed('enqueueAuditLogLocal')
   const settings = readAuditLogSettings()
   if (!settings.enabled) {
     return
   }
   const queued: QueuedAuditLog = {
-    input,
+    input: { ...input, trafficSource },
     bytes: estimateAuditLogBytes(input),
     success: input.success
   }
@@ -761,7 +766,28 @@ async function flushAuditLogRedisStreamMessages(
   messages: Array<RedisStreamMessage<AuditLogInput>>
 ): Promise<boolean> {
   if (messages.length === 0) return true
-  const inputs = messages.map((message) => normalizeAuditLogInput(message.payload))
+  const inputs: AuditLogInput[] = []
+  const discardedMessageIds: string[] = []
+  for (const message of messages) {
+    const input = normalizeAuditLogInput(message.payload)
+    try {
+      const trafficSource = normalizePersistedAuditTrafficSource(input.trafficSource, input)
+      if (trafficSource) inputs.push({ ...input, trafficSource })
+      else discardedMessageIds.push(message.id)
+    } catch (error) {
+      logger.error(errorLogFields(error, {
+        event: 'audit_log_redis_stream_invalid_source',
+        auditLogId: input.id,
+        traceId: input.traceId,
+        messageId: message.id
+      }), 'Redis Stream 审计日志来源非法，已拒绝并确认消息')
+      discardedMessageIds.push(message.id)
+    }
+  }
+  if (discardedMessageIds.length > 0) {
+    await queue.ack(discardedMessageIds)
+  }
+  if (inputs.length === 0) return true
   try {
     await createAuditLogsBatchAsync(inputs)
     lastFlushSuccessAt = nowIso()

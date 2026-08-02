@@ -1,10 +1,6 @@
 import { strict as assert } from 'node:assert'
 
-import type { AuditTrafficSource, UsageRecordSummary } from '../../src/types/domain'
-import {
-  trafficSourceColor as auditTrafficSourceColor,
-  trafficSourceText as auditTrafficSourceText
-} from '../../src/views/audit-logs/auditLogFormatters'
+import type { UsageRecordSummary } from '../../src/types/domain'
 import { apiKeyGroupOptionsProviderProtocolProfileId } from '../../src/views/api-keys/useApiKeyGroupOptions'
 import { providerEmptyDescriptionForScope } from '../../src/views/providers/providerTableConfig'
 import {
@@ -60,22 +56,6 @@ const cooldownRetestUsageRecord: UsageRecordSummary = {
 assert.equal(usageTrafficSourceText(cooldownRetestUsageRecord), '冷却账户复测', '用量记录应识别冷却账户复测来源')
 assert.equal(usageTrafficSourceColor(cooldownRetestUsageRecord), 'gold', '用量记录冷却账户复测应有独立标签颜色')
 
-const hybridAuditSource: AuditTrafficSource = 'hybrid_scoring'
-assert.equal(auditTrafficSourceText(hybridAuditSource), '混合路由选型', '审计日志应识别混合路由选型来源')
-assert.equal(auditTrafficSourceColor(hybridAuditSource), 'blue', '审计日志混合路由选型应有独立标签颜色')
-
-const hybridQualityAuditSource: AuditTrafficSource = 'hybrid_quality_scoring'
-assert.equal(auditTrafficSourceText(hybridQualityAuditSource), '回答质量复核', '审计日志应识别回答质量复核来源')
-assert.equal(auditTrafficSourceColor(hybridQualityAuditSource), 'purple', '审计日志回答质量复核应有独立标签颜色')
-
-const runtimeRecoveryProbeAuditSource: AuditTrafficSource = 'runtime_recovery_probe'
-assert.equal(auditTrafficSourceText(runtimeRecoveryProbeAuditSource), '快速恢复检测', '审计日志应识别快速恢复检测来源')
-assert.equal(auditTrafficSourceColor(runtimeRecoveryProbeAuditSource), 'orange', '审计日志快速恢复检测应有独立标签颜色')
-
-const cooldownRetestAuditSource: AuditTrafficSource = 'cooldown_retest'
-assert.equal(auditTrafficSourceText(cooldownRetestAuditSource), '冷却账户复测', '审计日志应识别冷却账户复测来源')
-assert.equal(auditTrafficSourceColor(cooldownRetestAuditSource), 'gold', '审计日志冷却账户复测应有独立标签颜色')
-
 assert.equal(
   apiKeyGroupOptionsProviderProtocolProfileId({
     formContext: true,
@@ -96,4 +76,4 @@ assert.equal(
 )
 assert.match(providerEmptyDescriptionForScope(true), /智谱 GLM/, '供应商空态应包含已内置的 GLM')
 
-console.log('网关来源与供应商前端契约回归通过：恢复检测、冷却复测、混合路由选型、回答质量复核、API Key 协议档案 scope 和 GLM 空态均符合预期')
+console.log('网关来源与供应商前端契约回归通过：用量后台来源、API Key 协议档案 scope 和 GLM 空态均符合预期')

@@ -113,7 +113,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-/** Exact projection consumed by the paged table. Heavy pricing/error/snapshot fields stay off the list path. */
+/** Exact projection consumed by the paged table. Heavy pricing and snapshot fields stay off the list path; persisted error fields are included. */
 export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'id'
   | 'systemAccountId'
@@ -138,6 +138,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'success'
   | 'failureAttribution'
   | 'failureReason'
+  | 'errorCode'
+  | 'errorMessage'
   | 'firstTokenMs'
   | 'durationMs'
   | 'inputTokens'

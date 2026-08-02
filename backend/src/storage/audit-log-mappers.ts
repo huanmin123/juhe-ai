@@ -9,8 +9,10 @@ import type {
   AuditLogSummary,
   AuditOutcome,
   AuditPayloadCaptureStatus,
-  AuditPayloadPartType
+  AuditPayloadPartType,
+  PersistedAuditTrafficSource
 } from './audit-log-types.js'
+import { normalizePersistedAuditTrafficSource } from './audit-log-traffic-source.js'
 import { sanitizeUrlCredentialsForLog } from '../shared/request-context.js'
 import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
@@ -165,19 +167,12 @@ export function auditLogDetailPayloadSupplementFromRow(row: AuditLogRow): AuditL
   }
 }
 
-function auditTrafficSource(value: unknown): AuditLogSummary['trafficSource'] {
-  if (
-    value === 'gateway'
-    || value === 'manual_account_test'
-    || value === 'account_health_check'
-    || value === 'runtime_recovery_probe'
-    || value === 'cooldown_retest'
-    || value === 'hybrid_scoring'
-    || value === 'hybrid_quality_scoring'
-  ) {
-    return value
+function auditTrafficSource(value: unknown): PersistedAuditTrafficSource {
+  const normalized = normalizePersistedAuditTrafficSource(value)
+  if (!normalized) {
+    throw new Error(`审计日志包含不可持久化来源：${String(value)}`)
   }
-  throw new Error(`非法审计流量来源：${String(value)}`)
+  return normalized
 }
 
 export function auditErrorGroupFromRow(row: AuditLogRow, systemAccountNames: Map<string, string>): AuditErrorGroupSummary {

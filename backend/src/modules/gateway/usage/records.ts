@@ -165,11 +165,11 @@ export async function recordFailedUpstreamAttempt(
         ? errorPayload.type
         : undefined
   )
-  const errorMessage = sanitizeOptionalDiagnosticMessage(
+  const errorMessage = rawOptionalDiagnosticMessage(
     input.errorMessage
       ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
       ?? input.bodyText
-  ) ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
+  )
   const failureObservation = interpretUpstreamSemantics && input.failureAttribution !== 'downstream_closed'
       ? classifyGatewayUpstreamFailure({
           phase: typeof input.statusCode === 'number'
@@ -616,6 +616,11 @@ function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | 
   const text = value?.trim()
   if (!text) return undefined
   return sanitizeDiagnosticPayload(text.slice(0, 4000)).slice(0, 1000)
+}
+
+function rawOptionalDiagnosticMessage(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0) return undefined
+  return value
 }
 
 function accountUsageModelAccounting(

@@ -159,7 +159,7 @@ const universalFailoverCases: Array<{
 ]
 
 for (const { label, request, lane } of universalFailoverCases) {
-  assert.equal(isOpaqueUpstreamFailoverAllowed(request), false, `${label} 的未知失败不得自动切换候选`)
+  assert.equal(isOpaqueUpstreamFailoverAllowed(request), false, `${label} 的未知失败不得在同账户内自动轮换兄弟 Key`)
   assert.equal(automaticUpstreamReplayAllowedAfterDispatch(request, lane), false, `${label} 不得获得无条件重放许可`)
 }
 
@@ -167,13 +167,13 @@ for (const action of ['cooldown', 'disable', 'retry_next'] as const) {
   assert.equal(
     accountErrorPolicyAllowsUpstreamReplayAfterDispatch(sideEffectRequest, 'text', { action }),
     action === 'retry_next',
-    `${action} 只有 retry_next 可以授权当前请求继续切换候选`
+    `${action} 只有 retry_next 可以授权当前请求继续轮换同账户兄弟 Key`
   )
 }
 assert.equal(
   accountErrorPolicyAllowsUpstreamReplayAfterDispatch(replayableInferenceRequest, 'text', { action: 'cooldown' }),
   false,
-  '普通推理执行 cooldown 后必须返回当前失败'
+  '普通推理执行 cooldown 不授权同账户兄弟 Key，但当前账户仍必须进入统一账户级切号'
 )
 assert.equal(isOpenAIGatewayImageGenerationModel('gpt-image-1'), true)
 assert.equal(isOpenAIGatewayImageGenerationModel('imagen-3.0-generate-002'), true)
@@ -286,11 +286,11 @@ assert.match(
   /resolveNextHybridGatewayRoute\([\s\S]*requestLane: resolveOpenAIGatewayRequestLane\(req\)/,
   '混合质量升级改写模型后必须把新 lane 传入重入预检'
 )
-assert.match(failureDispatchSource, /_decision\?\.action === 'retry_next'/, '只有显式 retry_next 可以授权候选切换')
+assert.match(failureDispatchSource, /_decision\?\.action === 'retry_next'/, '只有显式 retry_next 可以授权同账户兄弟 Key 轮换')
 assert.match(
   failureDispatchSource,
-  /failureKind: 'explicit_policy',[\s\S]*keyScopedFailure: hasAlternativeAccountApiKeys\(account\)/,
-  '命中 retry_next 时才允许在同一账户内轮换尚未尝试的兄弟 Key'
+  /failureKind: explicitPolicyDecision \? 'explicit_policy' : 'opaque_http',[\s\S]*keyScopedFailure: explicitPolicyDecision\?\.action === 'retry_next'[\s\S]*hasAlternativeAccountApiKeys\(account\)/,
+  '只有 retry_next 才允许在同一账户内轮换尚未尝试的兄弟 Key；状态动作必须直接进入账户级切号'
 )
 assert.match(
   responseInspectionSource,
@@ -311,8 +311,8 @@ assert.match(routesSource, /const diagnosticUpstreamResponse = !transportFailure
 assert.match(routesSource, /diagnosticUpstreamResponse[\s\S]*\? 'upstream_response_failure'[\s\S]*: 'completed_response'/, '中性诊断终态不得增加 completedResponses')
 assert.match(
   routesSource,
-  /knownUpstreamHttpFailure = error instanceof UpstreamAttemptError[\s\S]*lastAttempt\?\.status !== undefined[\s\S]*terminalUpstreamFailure \|\| knownUpstreamHttpFailure/,
-  '显式 retry_next 穷尽候选后必须保留最后一次真实 HTTP 诊断，不能回退为通用 retryable 错误'
+  /exposeKnownUpstreamHttpFailure = gatewayUsageContext\.trafficSource !== 'gateway'[\s\S]*knownUpstreamHttpFailure && exposeKnownUpstreamHttpFailure/,
+  '客户网关候选耗尽不得把最后一次真实 HTTP 错误透传给客户端，诊断流仍可保留'
 )
 for (const [label, source] of [
   ['混合辅助', auxiliarySource],
@@ -326,18 +326,20 @@ for (const [label, source] of [
 }
 assert.match(
   failureDispatchSource,
-  /if \(!explicitPolicyDecision\) \{[\s\S]*forgetOpenAIAccountForSessionAsync[\s\S]*return \{ action: 'return_response', response: replayResponse \}/,
-  '显式策略正文未命中时必须清除失败粘连并复用已读取正文返回当前响应'
+  /const gatewayFailoverEnabled = usageContext\.trafficSource === 'gateway'[\s\S]*if \(!gatewayFailoverEnabled\)[\s\S]*return \{ action: 'return_response', response \}/,
+  '只有非客户网关流和显式关闭状态写入的内部流可以保留真实上游响应'
 )
 assert.match(
   failureDispatchSource,
-  /const policyCouldMatch = input\.accountStateMutationEnabled !== false[\s\S]*accountErrorPolicyCouldMatchStatus\(account, response\.status\)[\s\S]*if \(!policyCouldMatch\) \{[\s\S]*forgetOpenAIAccountForSessionAsync[\s\S]*return \{ action: 'return_response', response \}/,
-  '无策略状态预筛选路径必须清除粘连后直接返回上游响应'
+  /if \(explicitPolicyDecision && input\.accountStateMutationEnabled !== false\)/,
+  '网关客户流命中用户策略时必须保留显式状态动作'
 )
+assert.match(failureDispatchSource, /applyAccountErrorHandlingWithCacheInvalidation[\s\S]*policyDecision: explicitPolicyDecision/)
+assert.match(failureDispatchSource, /action: 'skip_account'/, 'cooldown/disable 必须执行显式状态动作后继续统一账户级切号')
 assert.match(
   failureDispatchSource,
-  /if \(!accountErrorPolicyAllowsUpstreamReplayAfterDispatch[\s\S]*applyAccountErrorHandlingWithCacheInvalidation[\s\S]*return \{ action: 'return_response', response: replayResponse \}/,
-  'cooldown/disable 必须执行显式状态动作后返回当前失败'
+  /keyScopedFailure: explicitPolicyDecision\?\.action === 'retry_next'[\s\S]*hasAlternativeAccountApiKeys\(account\)/,
+  '所有显式动作必须共用账户级切号，只有 retry_next 才能继续同账户兄弟 Key'
 )
 assert.match(
   finalizationSource,

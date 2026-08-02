@@ -7,6 +7,7 @@ export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeede
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditPayloadCaptureStatus = 'complete' | 'summary_only' | 'hash_only' | 'expired' | 'overflow' | 'dropped'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type PersistedAuditTrafficSource = 'gateway' | 'manual_account_test' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 
 export interface AuditLogPayloadInput {
   id?: string
@@ -101,7 +102,7 @@ export interface AuditLogSummary {
   traceId: string
   sessionId?: string
   sessionClientType?: string
-  trafficSource: AuditTrafficSource
+  trafficSource: PersistedAuditTrafficSource
   systemAccountId?: string
   systemAccountName?: string
   apiKeyId?: string
@@ -269,7 +270,7 @@ export interface AuditLogListOptions {
   accountId?: string
   clientIp?: string
   errorGroupId?: string
-  trafficSource?: AuditTrafficSource
+  trafficSource?: PersistedAuditTrafficSource
   startAt?: string
   endAt?: string
 }

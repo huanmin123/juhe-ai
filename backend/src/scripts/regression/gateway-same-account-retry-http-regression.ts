@@ -242,13 +242,13 @@ async function main(): Promise<void> {
     await listen(gatewayServer)
     const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
-    await verifyContract(contractFailures, '安全 chat 的 pre-header reset 应同账户同 Key 恰好重试一次', async () => {
+    await verifyContract(contractFailures, '安全 chat 的 pre-header reset 必须切换后备账户', async () => {
       configureRetry(1, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, sameRetry.apiKey, 'same account retry once')
-      assert.equal(response.status, 200, `原地重试应由同一物理 Key 第二次成功：${response.status} ${response.text}`)
-      assert.match(response.text, /mock success from sk-same-retry/)
-      assert.deepEqual(hitKeys(offset), ['sk-same-retry', 'sk-same-retry'], '原地重试必须是同账户、同一物理 Key 的第二次 hit')
+      assert.equal(response.status, 200, `账户切换应由后备账户成功：${response.status} ${response.text}`)
+      assert.match(response.text, /mock success from sk-same-retry-backup/)
+      assert.deepEqual(hitKeys(offset), ['sk-same-retry', 'sk-same-retry-backup'], 'pre-header transport 失败不得同账号重放，必须切换后备账户')
     })
 
     await verifyContract(contractFailures, 'attempts=0 应直接切后备账户', async () => {
@@ -267,27 +267,27 @@ async function main(): Promise<void> {
       assert.deepEqual(hitKeys(offset), ['sk-http-primary', 'sk-http-backup'], '完整 HTTP frame 只能执行显式切号，绝不能重复首 Key')
     })
 
-    await verifyContract(contractFailures, '同账户多 Key 应先轮换未尝试兄弟 Key', async () => {
+    await verifyContract(contractFailures, '无显式策略时同账户多 Key 不得隐式轮换', async () => {
       configureRetry(3, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, multiKey.apiKey, 'sibling key before same-key retry')
-      assert.equal(response.status, 200, `兄弟 Key 应接管并成功：${response.status} ${response.text}`)
-      assert.deepEqual(hitKeys(offset), ['sk-multi-bad', 'sk-multi-good'], '坏 Key 后必须先命中未尝试兄弟 Key，不得回头原地重试坏 Key')
+      assert.equal(response.status, 503, `单账户耗尽应返回统一网关失败：${response.status} ${response.text}`)
+      assert.deepEqual(hitKeys(offset), ['sk-multi-bad'], '未配置 retry_next 时不得隐式轮换同账户兄弟 Key')
     })
 
-    await verifyContract(contractFailures, '原地重试次数必须请求级共享且不按账户重置', async () => {
+    await verifyContract(contractFailures, 'pre-header transport 失败必须逐账户切换', async () => {
       configureRetry(1, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, sharedBudget.apiKey, 'retry budget shared by all accounts')
-      assert.equal(response.status, 200, `共享预算耗尽后仍应切到第三账户成功：${response.status} ${response.text}`)
+      assert.equal(response.status, 200, `两个失败账户后应切到第三账户成功：${response.status} ${response.text}`)
       assert.deepEqual(
         hitKeys(offset),
-        ['sk-shared-a', 'sk-shared-a', 'sk-shared-b', 'sk-shared-c'],
-        '仅首账户可消费唯一原地重试；第二账户不得重新获得预算，随后必须切第三账户'
+        ['sk-shared-a', 'sk-shared-b', 'sk-shared-c'],
+        '每个失败账户只尝试一次，随后按候选顺序切换下一个账户'
       )
     })
 
-    await verifyContract(contractFailures, 'hard pre-header request timeout 应按请求预算原地重试', async () => {
+    await verifyContract(contractFailures, 'hard pre-header request timeout 必须切换后备账户', async () => {
       configureRetry(1, 0, { textFirstResponseTimeoutSeconds: 10 })
       const offset = hits.length
       // Do not globally accelerate the hard timeout here. Under a busy event
@@ -299,16 +299,16 @@ async function main(): Promise<void> {
         'hard request timeout may retry in place',
         AbortSignal.timeout(15_000)
       )
-      assert.equal(response.status, 200, `hard timeout 原地重试应成功：${response.status} ${response.text}`)
+      assert.equal(response.status, 200, `hard timeout 切号后应成功：${response.status} ${response.text}`)
       assert.match(
         response.text,
-        /mock success from sk-hard-timeout"/,
-        `原地重试已产生可交付成功后必须立即停止，不能继续命中后备账户：${response.text}`
+        /mock success from sk-hard-timeout-backup"/,
+        `hard timeout 后必须由后备账户返回成功：${response.text}`
       )
       assert.deepEqual(
         hitKeys(offset),
-        ['sk-hard-timeout', 'sk-hard-timeout'],
-        'hard request timeout 只能消费一次请求级预算重试相同账户和物理 Key'
+        ['sk-hard-timeout', 'sk-hard-timeout-backup'],
+        'hard request timeout 不得自动重放同账号，应切换后备账户'
       )
     })
 
@@ -329,7 +329,7 @@ async function main(): Promise<void> {
       )
     })
 
-    await verifyContract(contractFailures, '墙钟不足 interval 加最终响应预留时不得启动任何第二 dispatch', async () => {
+    await verifyContract(contractFailures, '墙钟不足原地重试预算不应阻断后备账户切换', async () => {
       const wallFailures: string[] = []
       configureRetry(1, 1)
       const offset = hits.length
@@ -351,14 +351,14 @@ async function main(): Promise<void> {
       }
       assert(response, '墙钟不足场景必须返回稳定网关结果')
       await verifyContract(wallFailures, '稳定响应', async () => {
-        assert.equal(response.status, 503, `墙钟不足不得切号成功，应返回稳定 503：${response.status} ${response.text}`)
+        assert.equal(response.status, 200, `墙钟不足时仍应切换后备账户：${response.status} ${response.text}`)
       })
       await verifyContract(wallFailures, 'retry timer', async () => {
         assert.equal(trackedRetryTimers.size, 0, '墙钟判定返回时不得存在仍活动的 retry interval timer')
       })
       await delay(1_100)
       await verifyContract(wallFailures, 'dispatch 次数', async () => {
-        assert.deepEqual(hitKeys(offset), ['sk-wall-insufficient'], '墙钟不足时原地重试和 backup dispatch 都必须为 0')
+        assert.deepEqual(hitKeys(offset), ['sk-wall-insufficient', 'sk-wall-insufficient-backup'], '墙钟不足时不应原地重试，但必须允许后备账户 dispatch')
         assert.equal(trackedRetryTimers.size, 0, '墙钟不足不得留下 retry interval timer')
       })
       await verifyContract(wallFailures, '资源清理', async () => {
@@ -371,20 +371,20 @@ async function main(): Promise<void> {
       await assertIntermediateFailureNeutral(gatewayBaseUrl, intermediateNeutral)
     })
 
-    await verifyContract(contractFailures, '未尝试兄弟 Key 必须先穷尽且仅最后 Key 可原地重试', async () => {
+    await verifyContract(contractFailures, '无显式策略时多 Key 账户失败后必须直接切后备账户', async () => {
       configureRetry(1, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, uniqueKeySafetyCap.apiKey, 'unique key safety cap excludes same retry')
-      assert.equal(response.status, 200, `多 Key 和一次原地重试后应切 backup 成功：${response.status} ${response.text}`)
+      assert.equal(response.status, 200, `首账户失败后应切 backup 成功：${response.status} ${response.text}`)
       const actualKeys = hitKeys(offset)
       assert.deepEqual(
         actualKeys,
-        [...allFailingMultiKeys, allFailingMultiKeys.at(-1)!, 'sk-unique-backup'],
-        '必须按确定顺序先轮换全部未尝试 Key，仅重试最后一个 Key 一次，再切 backup'
+        [allFailingMultiKeys[0]!, 'sk-unique-backup'],
+        '未配置 retry_next 时不得穷尽同账户 Key，必须直接切换后备账户'
       )
       const primaryHits = actualKeys.filter((key) => key !== 'sk-unique-backup')
-      assert.equal(new Set(primaryHits).size, 3, 'same retry 不得把最后一个 Key 计为新的 unique Key')
-      assert.equal(primaryHits.length, 4, '三个唯一 Key 之外只允许一个最后 Key 原地重试 hit')
+      assert.equal(new Set(primaryHits).size, 1, '无显式策略时只允许尝试首个同账户 Key')
+      assert.equal(primaryHits.length, 1, '同账户失败后不得自动切换兄弟 Key 或原地重放')
     })
 
     await verifyContract(contractFailures, 'interval 等待期间 abort 必须取消重试并清空资源', async () => {
@@ -475,19 +475,19 @@ function assertReplaySafetyGate(): void {
     originalUrl: '/v1/chat/completions',
     path: '/v1/chat/completions',
     body: { model, messages: [{ role: 'user', content: 'safe foreground chat' }] }
-  }, 'text'), true, '普通前台文本 chat 才允许进入自动重放候选')
+  }, 'text'), false, '普通前台文本 chat 失败后必须由账户候选切换接管，不得自动同账号重放')
   assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
     method: 'POST',
     originalUrl: '/v1/responses',
     path: '/v1/responses',
     body: { model, input: 'background work', background: true }
-  }, 'text'), true, 'background Responses 未交付结果时必须与普通文本共用候选切换')
+  }, 'text'), false, 'background Responses 失败后必须由账户候选切换接管，不得自动同账号重放')
   assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
     method: 'POST',
     originalUrl: '/v1/responses',
     path: '/v1/responses',
     body: { model, input: 'hosted work', tools: [{ type: 'web_search' }] }
-  }, 'text'), true, '供应商托管工具未交付结果时必须与普通文本共用候选切换')
+  }, 'text'), false, '供应商托管工具失败后必须由账户候选切换接管，不得自动同账号重放')
 }
 
 function assertRetryModeIsolation(): void {

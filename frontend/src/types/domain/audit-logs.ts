@@ -1,7 +1,7 @@
 // Historical rows can still contain client_aborted even though Node no longer writes or filters that terminal value.
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeeded' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'downstream_closed' | 'client_aborted'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
-export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type AuditPayloadBlobStorageStatus = 'not_saved' | 'metadata_missing' | 'file_missing' | 'available'
 
 export interface AuditLogSummary {

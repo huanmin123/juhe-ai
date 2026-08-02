@@ -53,7 +53,7 @@ const request = {
   headers: {},
   body: {
     model: 'gpt-5.5',
-    messages: [{ role: 'user', content: 'opaque upstream failure must remain visible' }],
+    messages: [{ role: 'user', content: 'opaque upstream failure must fail over to the next account' }],
     stream: false
   },
   header: () => undefined
@@ -90,11 +90,12 @@ const upstream = http.createServer((incoming, outgoing) => {
   const authorization = String(incoming.headers.authorization ?? '')
   authorizations.push(authorization)
   if (authorization === 'Bearer sk-opaque-primary') {
-    outgoing.writeHead(402, { 'content-type': 'application/json; charset=utf-8' })
+    outgoing.writeHead(429, { 'content-type': 'application/json; charset=utf-8' })
     outgoing.end(JSON.stringify({
       error: {
-        code: 'new_vendor_quota_state',
-        message: '当前供应商返回未配置的额度失败'
+        type: 'rate_limit_error',
+        code: 'rate_limit_error',
+        message: 'upstream rate limited'
       }
     }))
     return
@@ -173,16 +174,15 @@ try {
     false,
     false
   )
-  assert.equal(result.account.id, primary.id, '未配置的完整 HTTP 失败必须保留实际失败账户')
-  assert.equal(result.response.status, 402, '未配置的完整 HTTP 失败必须保留真实状态码')
+  assert.equal(result.account.id, fallback.id, '未配置的完整 HTTP 失败必须切换到后备账户')
+  assert.equal(result.response.status, 200, '后备账户成功时必须返回后备账户响应')
   const chunks: Buffer[] = []
   for await (const chunk of result.response.body ?? []) {
     chunks.push(Buffer.from(chunk))
   }
   const responseText = Buffer.concat(chunks).toString('utf8')
-  assert.match(responseText, /new_vendor_quota_state/, '未配置错误必须保留上游错误码')
-  assert.match(responseText, /当前供应商返回未配置的额度失败/, '未配置错误必须保留上游错误消息')
-  assert.deepEqual(authorizations, ['Bearer sk-opaque-primary'], '未知完整 HTTP 失败不得请求同组后备账户')
+  assert.match(responseText, /hidden fallback/, '后备账户成功响应必须交给客户端')
+  assert.deepEqual(authorizations, ['Bearer sk-opaque-primary', 'Bearer sk-opaque-fallback'], '未知完整 HTTP 失败必须请求同组后备账户')
 } finally {
   result?.releaseConcurrency()
   upstreamRequest.closeGatewayUpstreamAgentsForTest()

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -42,6 +42,100 @@ const failedTraceId = `trace-hot-trim-failed-${nowMs}`
 
 try {
   assertAuditHotCleanupIsScheduledEveryMinute()
+
+  const legacyHotSearchBucket = new Date(Math.floor((nowMs - 2 * hourMs) / hourMs) * hourMs)
+  const legacyHotSearchPath = join(
+    tempRoot,
+    'audit',
+    'search-hot',
+    `audit-hot-${legacyHotSearchBucket.toISOString().slice(0, 13).replace(/[-:T]/g, '')}.ndjson`
+  )
+  mkdirSync(join(tempRoot, 'audit', 'search-hot'), { recursive: true })
+  writeFileSync(legacyHotSearchPath, `${JSON.stringify({
+    auditLogId: 'legacy-hot-search-non-persisted',
+    createdAt: legacyHotSearchBucket.toISOString(),
+    traceId: 'legacy-hot-search-trace',
+    text: 'legacy-hot-search-trace account_health_check POST /health'
+  })}\n`, 'utf8')
+  assert.equal(
+    await hotSearchFiles.cleanupNonPersistedAuditHotSearchEntries({ maxFiles: 10, maxRunMs: 1000 }),
+    1,
+    '旧格式热搜索行应被来源清理任务处理'
+  )
+  assert.equal(readFileSync(legacyHotSearchPath, 'utf8'), '', '旧格式后台来源热搜索行应被移除')
+
+  const pendingRecoveryBucket = new Date(Math.floor((nowMs - 4 * hourMs) / hourMs) * hourMs)
+  const pendingRecoveryPath = join(
+    tempRoot,
+    'audit',
+    'search-hot',
+    `audit-hot-${pendingRecoveryBucket.toISOString().slice(0, 13).replace(/[-:T]/g, '')}.ndjson`
+  )
+  const pendingRecoveryPendingPath = `${pendingRecoveryPath}.pending-crashed-process`
+  writeFileSync(pendingRecoveryPath, '', 'utf8')
+  writeFileSync(pendingRecoveryPendingPath, `${JSON.stringify({
+    auditLogId: 'recovered-after-process-crash',
+    createdAt: pendingRecoveryBucket.toISOString(),
+    trafficSource: 'gateway',
+    text: 'recovered pending audit entry'
+  })}\n`, 'utf8')
+  await hotSearchFiles.cleanupNonPersistedAuditHotSearchEntries({ maxFiles: 10, maxRunMs: 1000 })
+  assert.match(readFileSync(pendingRecoveryPath, 'utf8'), /recovered-after-process-crash/, '进程重启后 pending 热搜索行应恢复到主桶')
+  assert.throws(() => readFileSync(pendingRecoveryPendingPath, 'utf8'), /ENOENT/, '已恢复的 pending 文件不应继续残留')
+
+  const raceBucket = new Date(Math.floor((nowMs - 3 * hourMs) / hourMs) * hourMs)
+  const racePath = join(
+    tempRoot,
+    'audit',
+    'search-hot',
+    `audit-hot-${raceBucket.toISOString().slice(0, 13).replace(/[-:T]/g, '')}.ndjson`
+  )
+  const racePrefix = Array.from({ length: 20_000 }, (_, index) => JSON.stringify({
+    auditLogId: `race-existing-${index}`,
+    createdAt: raceBucket.toISOString(),
+    trafficSource: 'account_health_check',
+    text: 'late cleanup race fixture'
+  })).join('\n') + '\n'
+  writeFileSync(racePath, racePrefix, 'utf8')
+  const cleanupPromise = hotSearchFiles.cleanupNonPersistedAuditHotSearchEntries({ maxFiles: 10, maxRunMs: 1000 })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  hotSearchFiles.appendAuditHotSearchEntries([successAuditLog({
+    id: 'audit_hot_search_late_append',
+    traceId: `trace-hot-search-late-${nowMs}`,
+    createdAt: raceBucket.toISOString(),
+    sampleBucket: 999,
+    sampleReason: 'success_sample_0.1',
+    body: JSON.stringify({ keyword: 'late append must survive cleanup race' })
+  })])
+  await cleanupPromise
+  assert.match(readFileSync(racePath, 'utf8'), /audit_hot_search_late_append/, '清理重写期间迟到追加不得被 rename 丢失')
+
+  const scanBucketA = new Date(Math.floor((nowMs - 5 * hourMs) / hourMs) * hourMs)
+  const scanBucketB = new Date(Math.floor((nowMs - 6 * hourMs) / hourMs) * hourMs)
+  for (const bucket of [scanBucketA, scanBucketB]) {
+    const path = join(tempRoot, 'audit', 'search-hot', `audit-hot-${bucket.toISOString().slice(0, 13).replace(/[-:T]/g, '')}.ndjson`)
+    writeFileSync(path, `${JSON.stringify({ auditLogId: `scan-${bucket.getUTCHours()}`, createdAt: bucket.toISOString(), trafficSource: 'cooldown_retest', text: 'scan budget fixture' })}\n`, 'utf8')
+  }
+  const boundedCleanupCount = await hotSearchFiles.cleanupNonPersistedAuditHotSearchEntries({ maxFiles: 1, maxRunMs: 1000 })
+  assert.equal(boundedCleanupCount, 1, '来源清理 maxFiles 应限制扫描文件数并最多处理一个文件')
+  const remainingScanFiles = [scanBucketA, scanBucketB].filter((bucket) => {
+    const path = join(tempRoot, 'audit', 'search-hot', `audit-hot-${bucket.toISOString().slice(0, 13).replace(/[-:T]/g, '')}.ndjson`)
+    return readFileSync(path, 'utf8').trim().length > 0
+  })
+  assert.equal(remainingScanFiles.length, 1, '扫描预算耗尽后应留下未扫描文件供下一轮处理')
+
+  const sourceBucket = new Date(Math.floor((nowMs - 7 * hourMs) / hourMs) * hourMs)
+  const sourcePath = join(tempRoot, 'audit', 'search-hot', `audit-hot-${sourceBucket.toISOString().slice(0, 13).replace(/[-:T]/g, '')}.ndjson`)
+  const sourceRows = ['gateway', 'manual_account_test', 'hybrid_scoring', 'hybrid_quality_scoring', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest']
+    .map((trafficSource) => JSON.stringify({ auditLogId: `source-${trafficSource}`, createdAt: sourceBucket.toISOString(), trafficSource, text: trafficSource }))
+    .join('\n') + '\n'
+  writeFileSync(sourcePath, sourceRows, 'utf8')
+  await hotSearchFiles.cleanupNonPersistedAuditHotSearchEntries({ maxFiles: 100, maxRunMs: 1000 })
+  const retainedSources = readFileSync(sourcePath, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line).trafficSource)
+  assert.deepEqual(retainedSources.sort(), ['gateway', 'hybrid_quality_scoring', 'hybrid_scoring', 'manual_account_test'], '热搜索清理必须保留四类持久化来源')
 
   await repositories.createAuditLogsBatchAsync([
     successAuditLog({

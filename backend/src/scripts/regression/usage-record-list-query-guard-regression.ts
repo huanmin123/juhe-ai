@@ -39,6 +39,8 @@ interface UsageRecordListResult {
     id: string
     model?: string
     createdAt: string
+    errorCode?: string
+    errorMessage?: string
   }>
   total: number
   hasMore: boolean
@@ -194,6 +196,7 @@ try {
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerGroup.id, grantee.id) as unknown as { id?: string } | undefined
   assert(runtimeGroupAuthorization?.id, '使用记录分组授权回归需要运行时分组授权 ID')
+  const longErrorMessage = `上游完整错误描述：${'原样返回校验'.repeat(100)}`
   repositories.createUsageRecordsBatch([
     {
       id: 'usage_list_query_guard_exact',
@@ -371,6 +374,24 @@ try {
       requestSnapshot: { secret: 'request snapshot must stay hidden' },
       responseSnapshot: { secret: 'response snapshot must stay hidden' },
       createdAt: '2026-01-02T00:00:08.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_long_error',
+      traceId: 'trace-usage-list-query-guard-long-error',
+      trafficSource: 'gateway',
+      apiKeyId: otherApiKey.id,
+      groupId: otherGroup.id,
+      accountId: otherGroupAccount.id,
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: 'gpt-5.6-long-error',
+      stream: false,
+      statusCode: 500,
+      success: false,
+      failureAttribution: 'opaque_upstream',
+      errorCode: 'upstream_protocol_error',
+      errorMessage: longErrorMessage,
+      createdAt: '2026-01-02T00:00:10.000Z'
     }
   ])
   const inferredAuthorizedRecord = usageRecordShards.queryUsageRecordShardById<{
@@ -443,8 +464,8 @@ try {
     const downstreamUnknown = repositories.listUsageRecords(access, { model: 'gpt-5.6-downstream-unknown', page: 1, pageSize: 10 }).items[0]
     assert.equal(downstreamUnknown?.failureAttribution, 'downstream_closed', '下游关闭必须使用统一归因')
     assert.equal(downstreamUnknown?.failureReason, '下游连接关闭', '列表必须从结构化失败码生成统一安全摘要')
-    assert.equal('errorCode' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误码')
-    assert.equal('errorMessage' in (downstreamUnknown ?? {}), false, '列表不得返回原始错误文本')
+    assert.equal(downstreamUnknown?.errorCode, 'downstream_connection_closed', '列表应返回持久化错误码')
+    assert.equal(downstreamUnknown?.errorMessage, '不应从列表返回的原始连接错误', '列表应返回完整持久化错误文本')
     assert.equal('requestSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回请求快照')
     assert.equal('responseSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回响应快照')
 
@@ -455,10 +476,17 @@ try {
       'insufficient_user_quota | 当前账户暂无生效套餐，请前往控制面板或 API 管理后台订阅',
       '列表失败摘要应按错误码和可行动消息生成，避免重复上游 HTTP 状态'
     )
-    assert.equal('errorCode' in (opaqueHttp ?? {}), false, '列表仍只返回组合后的安全摘要')
-    assert.equal('errorMessage' in (opaqueHttp ?? {}), false, '列表不得返回原始错误文本')
+    assert.equal(opaqueHttp?.errorCode, 'insufficient_user_quota', '列表应返回持久化错误码')
+    assert.equal(opaqueHttp?.errorMessage, '当前账户暂无生效套餐，请前往控制面板或 API 管理后台订阅', '列表应原样返回持久化错误文本')
     assert.equal('requestSnapshot' in (opaqueHttp ?? {}), false, '列表不得返回请求快照')
     assert.equal('responseSnapshot' in (opaqueHttp ?? {}), false, '原始上游响应体仍只能通过审计详情查看')
+
+    const longError = repositories.listUsageRecords(access, { model: 'gpt-5.6-long-error', page: 1, pageSize: 10 }).items[0]
+    assert.equal(longError?.errorCode, 'upstream_protocol_error', '列表应返回长错误描述对应的持久化错误码')
+    assert.equal(longError?.errorMessage, longErrorMessage, '列表不得截断持久化错误描述')
+    assert.equal(longError?.errorMessage?.length, longErrorMessage.length, '列表错误描述长度必须保持原值')
+    assert.equal('requestSnapshot' in (longError ?? {}), false, '长错误列表仍不得返回请求快照')
+    assert.equal('responseSnapshot' in (longError ?? {}), false, '长错误列表仍不得返回响应快照')
 
     const accountNamePrefix = repositories.listUsageRecords(access, { accountKeyword: '使用记录查询防护', page: 1, pageSize: 10 })
     assert.deepEqual(accountNamePrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '账号名称关键字应按前缀匹配，不应命中中间包含名称')
@@ -496,6 +524,13 @@ try {
 
   assert(accountLookupCalls.length >= 2, '回归应捕获账号关键词预解析 SQL')
   const usageRecordsRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
+  const gatewayUsageRecordsSource = readFileSync(resolve('src/modules/gateway/usage/records.ts'), 'utf8')
+  assert.match(gatewayUsageRecordsSource, /const errorMessage = rawOptionalDiagnosticMessage\(/, '网关使用记录写入必须使用原始错误消息规范化')
+  const failedUpstreamAttemptSource = gatewayUsageRecordsSource.match(/export async function recordFailedUpstreamAttempt\([\s\S]*?\n}\n\nfunction isSuccessStatusCode/)?.[0] ?? ''
+  assert.doesNotMatch(failedUpstreamAttemptSource, /上游返回 HTTP|上游请求失败/, '未捕获上游错误消息时不得在使用记录中虚构错误文本')
+  const rawDiagnosticHelper = gatewayUsageRecordsSource.match(/function rawOptionalDiagnosticMessage\([\s\S]*?\n}/)?.[0] ?? ''
+  assert.match(rawDiagnosticHelper, /return value\n}/, '网关错误消息写入必须原样保留非空持久化值')
+  assert.doesNotMatch(rawDiagnosticHelper, /sanitizeDiagnosticPayload|slice\(/, '网关原始错误消息写入不得 sanitize 或截断')
   assert(
     usageRecordsRepositorySource.includes('const accountNameExpression = \'(accounts.name COLLATE "C")\''),
     'PG 使用记录账号关键词预解析必须使用 accounts.name COLLATE "C" 表达式'

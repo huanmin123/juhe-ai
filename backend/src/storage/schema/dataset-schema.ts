@@ -481,7 +481,15 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at, id);
 
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created
+      ON audit_logs(created_at, id)
+      WHERE traffic_source NOT IN ('account_health_check', 'runtime_recovery_probe', 'cooldown_retest');
+
     CREATE INDEX IF NOT EXISTS idx_audit_logs_system_account_created ON audit_logs(system_account_id, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created
+      ON audit_logs(system_account_id, created_at, id)
+      WHERE traffic_source NOT IN ('account_health_check', 'runtime_recovery_probe', 'cooldown_retest');
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_created ON audit_logs(system_account_id, trace_id, created_at, id);
 

@@ -1,7 +1,7 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getDatasetDatabase } from '../../storage/database.js'
-import { cleanupAuditHotSearchFilesBefore } from '../../storage/audit-log-hot-search-files.js'
+import { cleanupAuditHotSearchFilesBefore, cleanupNonPersistedAuditHotSearchEntries } from '../../storage/audit-log-hot-search-files.js'
 import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
@@ -280,6 +280,10 @@ async function cleanupDatasetAndUsageRetainedData(input: {
     },
     async () => {
       result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
+      result.auditHotSearchFiles += await cleanupNonPersistedAuditHotSearchEntries({
+        maxFiles: batchSize,
+        maxRunMs: 5000
+      })
     },
     async () => {
       const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({

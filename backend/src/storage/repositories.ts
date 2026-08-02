@@ -861,7 +861,8 @@ export {
   type AuditOutcome,
   type AuditPayloadBlobStorageStatus,
   type AuditPayloadPartType,
-  type AuditTrafficSource
+  type AuditTrafficSource,
+  type PersistedAuditTrafficSource
 } from './audit-logs.repository.js'
 export {
   cleanupOperationLogsBefore,

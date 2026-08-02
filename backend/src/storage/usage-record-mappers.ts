@@ -64,6 +64,8 @@ export function usageRecordListItemFromRow(
     success: row.success === 1,
     failureAttribution: usageFailureAttribution(row.failure_attribution),
     failureReason: usageRecordListFailureReason(row),
+    errorCode: optionalString(row.error_code),
+    errorMessage: optionalString(row.error_message),
     firstTokenMs: numberValue(row.first_token_ms),
     durationMs: numberValue(row.duration_ms),
     inputTokens: numberValue(row.input_tokens),
@@ -194,7 +196,7 @@ function usageFailureAttribution(value: unknown): UsageRecordSummary['failureAtt
   return undefined
 }
 
-/** List rows expose a bounded, actionable error summary; raw payloads stay in audit detail. */
+/** List rows retain a bounded compatibility summary; request/response snapshots and raw bodies stay in audit detail. */
 function usageRecordListFailureReason(row: UsageRecordRow): string | undefined {
   if (row.success === 1) return undefined
   const errorCode = optionalString(row.error_code)

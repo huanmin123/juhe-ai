@@ -615,7 +615,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 - `id`
 - `trace_id`
-- `traffic_source`：`gateway`、`manual_account_test`、`cooldown_retest`
+- `traffic_source`：审计持久化来源为 `gateway`、`manual_account_test`、`hybrid_scoring`、`hybrid_quality_scoring`；`account_health_check`、`runtime_recovery_probe`、`cooldown_retest` 仅属于后台运行事实，不写入原始审计。
 - `system_account_id`
 - `api_key_id`
 - `group_id`
@@ -882,7 +882,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 `usage_records` 需要额外冗余这些字段：
 
-- `traffic_source`：`gateway` 表示真实客户端网关请求，`manual_account_test` 表示手动账号测试，`cooldown_retest` 表示后台恢复探活。
+- `traffic_source`：`gateway` 表示真实客户端网关请求，`manual_account_test` 表示手动账号测试，`hybrid_scoring` 表示混合路由选型，`hybrid_quality_scoring` 表示回答质量复核；后台探活来源按使用记录自身契约保留。
 - `account_owner_system_account_id`：命中账户所有者，自有账户时等于 `system_account_id`。
 - `group_owner_system_account_id`：命中分组所有者，自有分组时等于 `system_account_id`。
 - `account_access_type`：`owner`、`authorized`。

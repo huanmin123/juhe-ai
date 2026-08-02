@@ -241,17 +241,19 @@ async function assertSharedProxyTransportFailureTerminatesWithoutFallback(): Pro
       false,
       false
     )))
-    assert(dispatches.every((dispatch) => dispatch.status === 'rejected'), '每个 transport 失败都必须在当前账户终止，不能切到健康后备')
+    assert(dispatches.every((dispatch) => dispatch.status === 'fulfilled'), 'transport 失败必须继续切到健康后备账户')
     for (const dispatch of dispatches) {
-      assert.equal(dispatch.status, 'rejected')
-      assert(dispatch.reason instanceof upstreamDispatch.UpstreamAttemptError, 'transport 失败必须收敛为 UpstreamAttemptError')
-      assert.equal(dispatch.reason.terminalUpstreamFailure, true, '未知 transport 失败必须是当前请求终止错误')
-      assert.equal(dispatch.reason.lastAttempt?.accountId, failingAccount.id, '终止诊断必须指向实际失败账户')
+      assert.equal(dispatch.status, 'fulfilled')
+      assert.equal(dispatch.value.account.id, healthyAccount.id, 'transport 失败后的成功结果必须来自健康后备账户')
+      for await (const _chunk of dispatch.value.response.body ?? []) {
+        // Drain the successful fallback response before releasing its slot.
+      }
+      results.push(dispatch.value)
     }
     assert.equal(failingOriginHits, 2, '两个并发请求只能各调用一次实际失败账户，未知失败不得轮换兄弟 Key')
-    assert.equal(healthyOriginHits, 0, '未知 transport 失败不得调用健康后备账户')
-    assert.equal(connectAuthorities.length, 2, '每个请求只能为实际失败账户建立一次 CONNECT')
-    assert.equal(new Set(connectAuthorities).size, 1, '未知失败不能连接到其他候选源站')
+    assert.equal(healthyOriginHits, 2, '两个并发请求都必须调用健康后备账户')
+    assert.equal(connectAuthorities.length, 4, '每个请求都应分别连接失败源站和健康后备源站')
+    assert.equal(new Set(connectAuthorities).size, 2, '后备切号必须连接到独立候选源站')
   } finally {
     results.forEach((result) => result.releaseConcurrency())
     upstreamRequest.closeGatewayUpstreamAgentsForTest()

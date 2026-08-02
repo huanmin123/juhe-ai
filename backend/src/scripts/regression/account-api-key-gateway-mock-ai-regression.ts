@@ -176,6 +176,7 @@ try {
     providerCode: GPT_VENDOR_CODE,
     type: 'oauth',
     credentials: {
+      account_id: 'acct-gateway-oauth-non-isolation-bad',
       access_token: 'sk-gateway-oauth-bad',
       base_url: upstreamBaseUrl
     }
@@ -739,6 +740,7 @@ function createGptOAuthNonIsolationScenario(upstreamBaseUrl: string): { groupId:
     name: 'A GPT OAuth 非 Key 隔离账户',
     type: 'oauth',
     credentials: {
+      account_id: 'acct-gateway-oauth-non-isolation-bad',
       access_token: 'sk-gateway-oauth-bad',
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       base_url: upstreamBaseUrl

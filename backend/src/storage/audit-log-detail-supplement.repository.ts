@@ -12,6 +12,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { loadAccountNameMap } from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalString } from './value-utils.js'
+import { persistedAuditTrafficSourceClause, persistedAuditTrafficSourceParams } from './audit-log-list-query.js'
 
 const auditLogDetailSupplementColumns = [
   'conversation_key',
@@ -67,7 +68,8 @@ export function getAuditLogDetailSupplement(id: string): AuditLogDetailSupplemen
     SELECT ${auditLogDetailSupplementSelectColumns('al')}
     FROM audit_logs al
     WHERE al.id = ?
-  `).get(id) as AuditLogRow | undefined
+      AND ${persistedAuditTrafficSourceClause('al')}
+  `).get(id, ...persistedAuditTrafficSourceParams()) as AuditLogRow | undefined
   if (!row) return undefined
 
   const attemptRows = database.prepare(`
@@ -104,7 +106,8 @@ export async function getAuditLogDetailSupplementAsync(id: string): Promise<Audi
     SELECT ${auditLogDetailSupplementSelectColumns('al')}
     FROM juhe_dataset.audit_logs al
     WHERE al.id = ?
-  `, [id])
+      AND ${persistedAuditTrafficSourceClause('al')}
+  `, [id, ...persistedAuditTrafficSourceParams()])
   if (!row) return undefined
 
   const attemptRows = await client.query<AuditLogRow>(`

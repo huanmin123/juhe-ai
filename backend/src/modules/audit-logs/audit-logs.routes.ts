@@ -12,7 +12,7 @@ import {
   listAuditLogsAsync,
   type AuditLogListOptions,
   type AuditOutcome,
-  type AuditTrafficSource
+  type PersistedAuditTrafficSource
 } from '../../storage/repositories.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
 import { grepAuditHotSearchFiles } from '../../storage/audit-log-hot-search-files.js'
@@ -33,6 +33,10 @@ auditLogsRouter.get('/', async (req, res, next) => {
   try {
     res.json(ok(await listAuditLogsAsync(parseAuditLogListOptions(req.query))))
   } catch (error) {
+    if (isInvalidAuditTrafficSourceQueryError(error)) {
+      res.status(400).json({ message: error.message })
+      return
+    }
     next(error)
   }
 })
@@ -128,6 +132,10 @@ auditLogsRouter.get('/error-groups/:id/events', async (req, res, next) => {
   try {
     res.json(ok(await listAuditErrorGroupEventsAsync(req.params.id, parseAuditLogListOptions(req.query))))
   } catch (error) {
+    if (isInvalidAuditTrafficSourceQueryError(error)) {
+      res.status(400).json({ message: error.message })
+      return
+    }
     next(error)
   }
 })
@@ -170,7 +178,12 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'stream_failed',
   'downstream_closed'
 ])
-const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+const auditTrafficSources = new Set<PersistedAuditTrafficSource>([
+  'gateway',
+  'manual_account_test',
+  'hybrid_scoring',
+  'hybrid_quality_scoring'
+])
 
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)
@@ -237,10 +250,20 @@ function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
 }
 
-function auditTrafficSourceQueryValue(value: unknown): AuditTrafficSource | undefined {
-  return typeof value === 'string' && auditTrafficSources.has(value as AuditTrafficSource)
-    ? value as AuditTrafficSource
-    : undefined
+function auditTrafficSourceQueryValue(value: unknown): PersistedAuditTrafficSource | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'string' && auditTrafficSources.has(value as PersistedAuditTrafficSource)) {
+    return value as PersistedAuditTrafficSource
+  }
+  const error = new Error('审计日志来源筛选无效，仅支持网关请求、AI 账户测试、混合路由选型或回答质量复核') as Error & { statusCode: number }
+  error.statusCode = 400
+  throw error
+}
+
+function isInvalidAuditTrafficSourceQueryError(error: unknown): error is Error & { statusCode: 400 } {
+  return error instanceof Error
+    && (error as Error & { statusCode?: unknown }).statusCode === 400
+    && error.message === '审计日志来源筛选无效，仅支持网关请求、AI 账户测试、混合路由选型或回答质量复核'
 }
 
 function auditLogRuntimeUnavailableReason(

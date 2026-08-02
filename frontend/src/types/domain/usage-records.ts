@@ -81,7 +81,7 @@ export interface UsageRecordSummary {
   statusCode?: number
   success: boolean
   failureAttribution?: UsageFailureAttribution
-  /** Bounded list-only diagnostic category; raw persisted error text stays off list DTOs. */
+  /** Bounded list-only diagnostic category retained as a compatibility fallback. */
   failureReason?: string
   firstTokenMs?: number
   durationMs?: number
@@ -107,7 +107,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-/** Paged table rows contain only values rendered by the list; heavy detail payloads are not list data. */
+/** Paged table rows include persisted error fields, but exclude request/response snapshots and other heavy detail payloads. */
 export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'id'
   | 'systemAccountId'
@@ -132,6 +132,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'success'
   | 'failureAttribution'
   | 'failureReason'
+  | 'errorCode'
+  | 'errorMessage'
   | 'firstTokenMs'
   | 'durationMs'
   | 'inputTokens'
