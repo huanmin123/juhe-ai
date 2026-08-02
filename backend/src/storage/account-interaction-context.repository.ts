@@ -494,8 +494,9 @@ function accountInteractionContextTable(client: DatabaseClient, tableName: strin
     : client.dialect.quoteIdentifier(tableName)
 }
 
-export function accountInteractionContextTrueLiteral(driver: DatabaseClient['driver']): 'TRUE' | '1' {
-  return driver === 'postgres' ? 'TRUE' : '1'
+export function accountInteractionContextTrueLiteral(_driver: DatabaseClient['driver']): '1' {
+  // group_accounts.enabled is represented as an integer in both supported business schemas.
+  return '1'
 }
 
 function accountInteractionContextCloneGroupProjection(

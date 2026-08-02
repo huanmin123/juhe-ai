@@ -39,7 +39,7 @@ const [databaseModule, repositories, contextRepository, detailRoutes, authReques
 ])
 
 assert.equal(contextRepository.accountInteractionContextTrueLiteral('sqlite'), '1')
-assert.equal(contextRepository.accountInteractionContextTrueLiteral('postgres'), 'TRUE')
+assert.equal(contextRepository.accountInteractionContextTrueLiteral('postgres'), '1')
 
 const postgresCloneProjectionSql: string[] = []
 const stopAfterPostgresCloneRevisionFence = new Error('PostgreSQL clone SQL capture complete')
@@ -82,13 +82,13 @@ await assert.rejects(
 )
 assert.equal(postgresCloneProjectionSql.length, 2, 'PostgreSQL clone SQL capture must reach the main projection and revision fence')
 const [postgresCloneMainProjectionSql, postgresCloneRevisionFenceSql] = postgresCloneProjectionSql
-for (const [label, sql, expectedTrueLiteralCount] of [
+for (const [label, sql, expectedIntegerLiteralCount] of [
   ['主投影', postgresCloneMainProjectionSql, 4],
   ['revision fence', postgresCloneRevisionFenceSql, 3]
 ] as const) {
-  assert.equal((sql.match(/group_accounts\.enabled\s*=\s*TRUE/gi) ?? []).length, expectedTrueLiteralCount, `PostgreSQL 克隆${label}必须使用 ${expectedTrueLiteralCount} 个 TRUE 布尔条件`)
-  assert.doesNotMatch(sql, /group_accounts\.enabled\s*=\s*1/i, `PostgreSQL 克隆${label}不得使用 SQLite 数值布尔条件`)
-  assert.match(sql, /CASE\s+WHEN\s+group_accounts\.enabled\s*=\s*TRUE/i, `PostgreSQL 克隆${label}必须优先选择启用的来源分组绑定`)
+  assert.equal((sql.match(/group_accounts\.enabled\s*=\s*1/gi) ?? []).length, expectedIntegerLiteralCount, `PostgreSQL 克隆${label}必须使用 ${expectedIntegerLiteralCount} 个整数启用条件`)
+  assert.doesNotMatch(sql, /group_accounts\.enabled\s*=\s*TRUE/i, `PostgreSQL 克隆${label}不得使用布尔字面量比较整数列`)
+  assert.match(sql, /CASE\s+WHEN\s+group_accounts\.enabled\s*=\s*1/i, `PostgreSQL 克隆${label}必须优先选择启用的来源分组绑定`)
 }
 
 let server: ReturnType<ReturnType<typeof express>['listen']> | undefined
