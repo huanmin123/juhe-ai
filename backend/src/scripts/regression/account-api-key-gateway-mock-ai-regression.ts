@@ -130,6 +130,14 @@ try {
   })
   const transportRecoveryAccountId = accountIdByName('三 Key transport 后同账户恢复 账户')
   forcedTransportFailureAuthorizations.add('Bearer sk-gateway-transport-bad')
+  const failoverTransportGatewayApiKey = createGatewayApiKeyScenario({
+    name: '主备 transport 同账户切换',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-failover-transport-primary', 'sk-gateway-failover-transport-secondary'],
+    strategy: 'failover',
+    concurrencyLimit: 64
+  })
+  forcedTransportFailureAuthorizations.add('Bearer sk-gateway-failover-transport-primary')
   const delayedFailureRaceGatewayApiKey = createGatewayApiKeyScenario({
     name: '迟到 Key transport 确认 fencing',
     upstreamBaseUrl,
@@ -358,6 +366,24 @@ try {
     { status: 'active', schedulable: 1 },
     '单 Key transport 故障不得改变来源账户持久可用性；有后备账户时由账户候选切换接管'
   )
+  const failoverTransportBatchId = `gateway-api-key-failover-transport-${++postBatchSequence}`
+  const failoverTransportResult = await postSingleChatCompletion(
+    backendBaseUrl,
+    failoverTransportGatewayApiKey,
+    failoverTransportBatchId,
+    { content: 'failover transport failure must switch to the secondary key' }
+  )
+  const failoverTransportAuthorizations = authorizationsForBatches([failoverTransportBatchId])
+  assert.equal(
+    failoverTransportResult.status,
+    200,
+    `主备 transport 失败后必须切换备用 Key：${failoverTransportResult.text}; attempts=${JSON.stringify(failoverTransportAuthorizations)}`
+  )
+  assert.deepEqual(
+    failoverTransportAuthorizations,
+    ['Bearer sk-gateway-failover-transport-primary', 'Bearer sk-gateway-failover-transport-secondary'],
+    '主备策略必须在同一请求的传输失败后按主备顺序切换 Key'
+  )
   const transportRecoveredBatchIds: string[] = []
 
   const delayedFailureBatchId = `gateway-api-key-delayed-failure-${++postBatchSequence}`
@@ -541,6 +567,7 @@ try {
     strictThreeKeyExhaustion: threeKeyAuthorizations,
     transportFailureThenHealthyKey: authorizationsForBatches([transportRecoveryBatchId]),
     confirmedTransportIsolation: transportIsolationAuthorizations,
+    failoverTransport: failoverTransportAuthorizations,
     recoveredFingerprintReincluded: authorizationsForBatches(transportRecoveredBatchIds),
     delayedFailureFencedByNewerSuccess: authorizationsForBatches(postRaceBatchIds),
     concurrentBadSessionRequests: concurrentBadSessionResults.length,
@@ -574,7 +601,7 @@ function createGatewayApiKeyScenario(input: {
   apiKeys: string[]
   name: string
   providerCode?: string
-  strategy: ApiKeyStrategy
+  strategy?: ApiKeyStrategy
   upstreamBaseUrl: string
   weights?: number[]
   concurrencyLimit?: number
@@ -595,7 +622,7 @@ function createGatewayApiKeyScenario(input: {
     credentials: {
       api_key: input.apiKeys[0],
       api_keys: input.apiKeys,
-      api_key_strategy: input.strategy,
+      ...(input.strategy ? { api_key_strategy: input.strategy } : {}),
       api_key_weights: input.weights,
       base_url: input.upstreamBaseUrl,
       ...(input.errorHandlingRules ? { error_handling_rules: input.errorHandlingRules } : {})

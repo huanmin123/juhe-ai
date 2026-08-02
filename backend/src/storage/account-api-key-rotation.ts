@@ -176,7 +176,7 @@ export function fingerprintAccountApiKey(key: string): string {
 function accountApiKeyStrategy(credentials: Record<string, unknown>): AccountApiKeyStrategy {
   if (credentials.api_key_strategy === 'failover') return 'failover'
   if (credentials.api_key_strategy === 'weighted_round_robin') return 'weighted_round_robin'
-  return credentials.api_key_strategy === 'round_robin' ? 'round_robin' : 'failover'
+  return 'round_robin'
 }
 
 function selectRoundRobinApiKey(accountId: string, entries: AccountApiKeyEntry[]): AccountApiKeyEntry {

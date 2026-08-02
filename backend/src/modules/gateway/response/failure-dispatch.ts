@@ -299,7 +299,7 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  const automaticApiKeyFailover = account.credentials.api_key_strategy === 'failover'
+  const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
     && !explicitPolicyDecision
 
   return {
@@ -449,6 +449,7 @@ export async function handleUpstreamRequestError(
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
   dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+  const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
   // A generic request transport failure is evidence for the independent
   // account circuit only. It may have been caused by this request/session, so
   // it must not mutate proxy health, local account suppression/precheck,
@@ -456,7 +457,7 @@ export async function handleUpstreamRequestError(
   return {
     action: 'skip_account',
     lastAttempt,
-    keyScopedFailure: false
+    keyScopedFailure: automaticApiKeyFailover && hasAlternativeAccountApiKeys(account)
   }
 }
 

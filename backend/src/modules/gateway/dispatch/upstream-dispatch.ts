@@ -707,18 +707,19 @@ export async function fetchFirstAvailableUpstream(
               accountStateMutationEnabled: automaticAccountStateMutationAllowed
             })
             lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
-            if (requestErrorResult.action === 'skip_account') {
-              failedAccountIds.add(account.id)
-              continue
-            }
-            failedAccountIds.add(account.id)
-            if (halfOpenLease?.generation === undefined && shouldRetryAnotherAccountApiKey(
+            const canRetryAccountApiKey = halfOpenLease?.generation === undefined && shouldRetryAnotherAccountApiKey(
               account,
               requestErrorResult.keyScopedFailure,
               accountApiKeyAttemptCount,
               requestApiKeyAttemptCount,
               auditCapture
-            )) {
+            )
+            if (requestErrorResult.action === 'skip_account' && !canRetryAccountApiKey) {
+              failedAccountIds.add(account.id)
+              continue
+            }
+            failedAccountIds.add(account.id)
+            if (canRetryAccountApiKey) {
               retryAccountApiKey = true
             }
             continue
@@ -1045,9 +1046,10 @@ export async function fetchFirstAvailableUpstream(
                       errorMessage: error instanceof Error ? error.message : undefined
                     }
                   : undefined
+                const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
                 const retryAnotherAccountApiKey = (
                   isOpaqueUpstreamFailoverAllowed(req)
-                  || account.credentials.api_key_strategy === 'failover'
+                  || automaticApiKeyFailover
                 ) && !localRequestFailure
                   && provenStartedTransportFailure
                   && !neutralFirstByteDeadline
@@ -1194,7 +1196,7 @@ export async function fetchFirstAvailableUpstream(
                   accountStateMutationEnabled: automaticAccountStateMutationAllowed
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
-                if (requestErrorResult.action === 'skip_account') {
+                if (requestErrorResult.action === 'skip_account' && !retryAnotherAccountApiKey) {
                   const requestTransportFailure = accountCircuitTransportFailure(error, lastAttempt?.message)
                   if (lastAttempt) {
                     lastAttempt.transportFailureKind = requestTransportFailure.kind === 'timeout'
