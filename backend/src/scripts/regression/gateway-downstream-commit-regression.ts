@@ -4,7 +4,10 @@ import { EventEmitter } from 'node:events'
 import type { Response } from 'express'
 
 import { GatewayDownstreamCommitState } from '../../modules/gateway/response/downstream-commit-state.js'
-import { createGatewaySseWaitHeartbeatObserver } from '../../modules/gateway/response/sse-wait-heartbeat.js'
+import {
+  createGatewaySseWaitHeartbeat,
+  createGatewaySseWaitHeartbeatObserver
+} from '../../modules/gateway/response/sse-wait-heartbeat.js'
 import { streamPreCommitBufferMaxBytes } from '../../modules/gateway/response/stream-pre-commit-buffer.js'
 import { shouldRetryPreCommitStreamFailureOnServer } from '../../modules/gateway/response/stream-finalization-retry-decision.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
@@ -97,6 +100,43 @@ const heartbeatObserver = createGatewaySseWaitHeartbeatObserver({
 assert(heartbeatObserver)
 assert.doesNotThrow(() => heartbeatObserver.onWaitStarted?.(), '客户端断连竞争导致心跳写失败时不应把异常抛回请求链')
 assert.equal(heartbeatState.transportCommitted, false, '失败的心跳写入不得标记传输层已提交')
+
+const failedCompactHeartbeatWrites = { count: 0 }
+const failedCompactHeartbeat = createGatewaySseWaitHeartbeat({
+  res: fakeResponse({ throwOnWrite: true, writeAttempts: failedCompactHeartbeatWrites }),
+  downstreamProtocol: 'responses_sse',
+  downstreamCommitState: new GatewayDownstreamCommitState(),
+  intervalMs: 1
+})
+assert(failedCompactHeartbeat)
+failedCompactHeartbeat.start()
+await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050))
+failedCompactHeartbeat.stop()
+assert.equal(failedCompactHeartbeatWrites.count, 1, '首次 compact 心跳写入失败后不得遗留 interval 重试')
+
+const compactHeartbeatState = new GatewayDownstreamCommitState()
+const compactHeartbeatChunks: Buffer[] = []
+const compactHeartbeat = createGatewaySseWaitHeartbeat({
+  res: fakeResponse({ writtenChunks: compactHeartbeatChunks }),
+  downstreamProtocol: 'responses_sse',
+  downstreamCommitState: compactHeartbeatState,
+  intervalMs: 1
+})
+assert(compactHeartbeat, 'Responses SSE 必须可以建立 transport-only 保活')
+compactHeartbeat.start()
+await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050))
+assert(compactHeartbeatChunks.length >= 2, '运行中的 compact 保活必须跨 interval 继续写入 comment')
+compactHeartbeat.stop()
+const stoppedHeartbeatChunkCount = compactHeartbeatChunks.length
+await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050))
+assert(compactHeartbeatChunks.length > 0, 'compact 上游等待必须至少写出一条 SSE comment')
+assert.equal(compactHeartbeatChunks.length, stoppedHeartbeatChunkCount, '停止 compact 保活后不得遗留定时器写入')
+const compactHeartbeatText = Buffer.concat(compactHeartbeatChunks).toString('utf8')
+assert.match(compactHeartbeatText, /^: /, 'compact 保活必须使用严格 SSE comment')
+assert.doesNotMatch(compactHeartbeatText, /(?:^|\n)(?:event|data):/, 'compact 保活不得写出任何 SSE 语义字段')
+assert.equal(compactHeartbeatState.transportCommitted, true, 'compact 保活只应提交 transport')
+assert.equal(compactHeartbeatState.semanticCommitted, false, 'compact 保活绝不能提交 Responses 语义')
+assert.equal(compactHeartbeatState.canRetryUpstream(), true, 'compact 保活后仍必须允许服务端切号')
 
 const keepAliveOnlyState = new GatewayDownstreamCommitState()
 const keepAliveOnlyResponse = fakeResponse()
@@ -403,7 +443,7 @@ async function assertCompletedNonSemanticFrameAtLimitIsCleared(): Promise<void> 
   assert.equal(result.semanticCommitted, true)
 }
 
-function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[] } = {}): Response {
+function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[]; writeAttempts?: { count: number } } = {}): Response {
   const response = new EventEmitter() as EventEmitter & Record<string, unknown>
   response.headersSent = false
   response.writableEnded = false
@@ -417,6 +457,7 @@ function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[] 
     return this
   }
   response.write = function write(chunk?: Buffer | string) {
+    if (input.writeAttempts) input.writeAttempts.count += 1
     if (input.throwOnWrite) throw new Error('downstream write failed')
     if (chunk !== undefined) input.writtenChunks?.push(Buffer.from(chunk))
     this.headersSent = true

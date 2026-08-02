@@ -52,6 +52,7 @@ import {
 import { observeGatewayRouting } from './observability/routing-observability.service.js'
 import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
+import { createGatewaySseWaitHeartbeat } from './response/sse-wait-heartbeat.js'
 import { handleUpstreamRequestError } from './response/failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './request/error-response.js'
 import {
@@ -503,6 +504,7 @@ export async function handleOpenAIGatewayRequest(
   let gatewayWallMinimumMeaningfulAttemptMs = 0
   let speedFirstRetryCandidateAccountIds: Set<string> | undefined
   let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
+  let activeCompactSseWaitHeartbeat: ReturnType<typeof createGatewaySseWaitHeartbeat> | undefined
   let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
   let pendingSemanticRetryId: string | undefined
   let codexTurnAvoidedFallbackEnabled = false
@@ -721,6 +723,8 @@ export async function handleOpenAIGatewayRequest(
 
   try {
     while (true) {
+      activeCompactSseWaitHeartbeat?.stop()
+      activeCompactSseWaitHeartbeat = undefined
       if (currentPreflight.gatewayRequestWallBudget.handoffRequired({
         finalResponseReserveMs: defaultGatewayFinalResponseReserveMs,
         minimumMeaningfulAttemptMs: gatewayWallMinimumMeaningfulAttemptMs
@@ -936,6 +940,16 @@ export async function handleOpenAIGatewayRequest(
       const upstreamDispatchStartedAt = performance.now()
       const semanticRetryId = pendingSemanticRetryId
       pendingSemanticRetryId = undefined
+      if (shouldKeepCodexCompactSseAliveDuringUpstreamWait(req, currentPreflight)) {
+        activeCompactSseWaitHeartbeat = createGatewaySseWaitHeartbeat({
+          res,
+          downstreamProtocol: currentPreflight.clientStrategy.downstreamProtocol,
+          downstreamCommitState: currentPreflight.downstreamCommitState,
+          signal: requestExecutionSignal,
+          intervalMs: 10_000
+        })
+        activeCompactSseWaitHeartbeat?.start()
+      }
       try {
         upstreamResult = await fetchFirstAvailableUpstream(
           req,
@@ -1917,7 +1931,8 @@ export async function handleOpenAIGatewayRequest(
       }), '网关请求处理出现未预期异常')
     }
     notifyUpstreamAttemptDiagnostic(options, lastAttempt)
-    if (shouldSendDispatchExhaustedProtocolRetry(currentPreflight, error, res)) {
+    if (shouldSendDispatchExhaustedProtocolRetry(currentPreflight, error, res)
+      || shouldSendTransportCommittedCodexCompactFailure(currentPreflight, res)) {
       await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'dispatch_exhausted_protocol_retry')
       releasePendingFailedAttemptAccountSlot()
       auditCapture.addGatewayMetadata({
@@ -1927,7 +1942,7 @@ export async function handleOpenAIGatewayRequest(
           downstreamProtocol: currentPreflight.clientStrategy.downstreamProtocol,
           lastAttemptAccountId: lastAttempt?.accountId,
           lastAttemptStatus: lastAttempt?.status,
-          failedAccountIds: error.failedAccountIds
+          failedAccountIds: error instanceof UpstreamAttemptError ? error.failedAccountIds : undefined
         }
       })
       await sendPreCommitStreamRetryExhaustedResponse({
@@ -1982,6 +1997,7 @@ export async function handleOpenAIGatewayRequest(
       usageErrorMessage: message
     })
   } finally {
+    activeCompactSseWaitHeartbeat?.stop()
     releasePendingFailedAttemptAccountSlot()
     await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
     speedFirstCutoverReservation?.release()
@@ -2241,6 +2257,32 @@ function shouldSendDispatchExhaustedProtocolRetry(
     && !preflight.downstreamCommitState.semanticCommitted
     && !res.writableEnded
     && !res.destroyed
+}
+
+function shouldKeepCodexCompactSseAliveDuringUpstreamWait(
+  req: Request,
+  preflight: OpenAIGatewayDispatchContext
+): boolean {
+  const strategy = preflight.clientStrategy
+  return requestStream(req)
+    && strategy.clientProfile === 'codex'
+    && strategy.codexCompactionExpected === true
+    && strategy.downstreamProtocol === 'responses_sse'
+}
+
+function shouldSendTransportCommittedCodexCompactFailure(
+  preflight: OpenAIGatewayDispatchContext,
+  res: Response
+): boolean {
+  const strategy = preflight.clientStrategy
+  return res.headersSent
+    && !res.writableEnded
+    && !res.destroyed
+    && preflight.downstreamCommitState.transportCommitted
+    && !preflight.downstreamCommitState.semanticCommitted
+    && strategy.clientProfile === 'codex'
+    && strategy.codexCompactionExpected === true
+    && strategy.downstreamProtocol === 'responses_sse'
 }
 
 function shouldExcludeCurrentAccountForStreamRetry(decision: ResponseInspectionDecision): boolean {

@@ -12,7 +12,7 @@ import {
   normalizeProviderToken
 } from '../domain/provider-protocol.js'
 
-export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
+export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin' | 'failover'
 export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountApiKeyEntry {
@@ -77,6 +77,7 @@ export function selectAccountRuntimeApiKeyEntry(input: {
   }
   const strategy = accountApiKeyStrategy(input.credentials)
   assertSyncAccountApiKeyRotationAllowed(strategy)
+  if (strategy === 'failover') return candidateEntries[0]
   return strategy === 'weighted_round_robin'
     ? selectWeightedApiKey(input.accountId, candidateEntries)
     : selectRoundRobinApiKey(input.accountId, candidateEntries)
@@ -106,6 +107,7 @@ export async function selectAccountRuntimeApiKeyEntryAsync(input: {
     return selectAccountRuntimeApiKeyEntry(input)
   }
   const strategy = accountApiKeyStrategy(input.credentials)
+  if (strategy === 'failover') return candidateEntries[0]
   return strategy === 'weighted_round_robin'
     ? selectWeightedApiKeyWithRedisCounter(input.accountId, candidateEntries)
     : selectRoundRobinApiKeyWithRedisCounter(input.accountId, candidateEntries)
@@ -172,7 +174,9 @@ export function fingerprintAccountApiKey(key: string): string {
 }
 
 function accountApiKeyStrategy(credentials: Record<string, unknown>): AccountApiKeyStrategy {
-  return credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin'
+  if (credentials.api_key_strategy === 'failover') return 'failover'
+  if (credentials.api_key_strategy === 'weighted_round_robin') return 'weighted_round_robin'
+  return credentials.api_key_strategy === 'round_robin' ? 'round_robin' : 'failover'
 }
 
 function selectRoundRobinApiKey(accountId: string, entries: AccountApiKeyEntry[]): AccountApiKeyEntry {

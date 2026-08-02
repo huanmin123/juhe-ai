@@ -160,6 +160,22 @@ try {
   assert.equal(hitCount('catalog-not-found'), 1, '目录不可用账户的手动测试必须直接命中真实模型端点')
   assert.equal(hitCount('catalog-not-found:models'), 0, '手动测试不得把上游模型目录当作前置门禁')
 
+  const fixedAdvertisementAccount = createMockAccount(group.id, upstreamBaseUrl, 'fixed-advertisement', access)
+  const fixedAdvertisementResult = await testOpenAIAccountWithDiagnosticRetries(fixedAdvertisementAccount, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
+  })
+  assert.equal(fixedAdvertisementResult.success, false, 'HTTP 2xx 固定广告不得通过严格账号测试')
+  assert.equal(fixedAdvertisementResult.errorCode, 'invalid_probe_output', '固定广告必须标记为严格输出不匹配')
+
+  const trailingWhitespaceAccount = createMockAccount(group.id, upstreamBaseUrl, 'trailing-whitespace', access)
+  const trailingWhitespaceResult = await testOpenAIAccountWithDiagnosticRetries(trailingWhitespaceAccount, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
+  })
+  assert.equal(trailingWhitespaceResult.success, false, '严格账号测试不得忽略多余空白')
+  assert.equal(trailingWhitespaceResult.errorCode, 'invalid_probe_output', '多余空白必须标记为严格输出不匹配')
+
   const parentTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'parent-timeout', access)
   let parentTimeoutCanceled = false
   let parentTimeoutExhausted = false
@@ -435,6 +451,7 @@ function createMockAIUpstream(): http.Server {
         return
       }
       const hit = incrementHit(key)
+      const expectedOutput = expectedAccountTestOutput(Buffer.concat(chunks).toString('utf8'))
       if (key === 'manual-transient' && hit <= 2) {
         sendJsonError(res, 503, `manual transient failure ${hit}`)
         return
@@ -443,10 +460,18 @@ function createMockAIUpstream(): http.Server {
         sendJsonError(res, 401, 'manual persistent unauthorized')
         return
       }
+      if (key === 'fixed-advertisement') {
+        sendMockCompleted(res, responseMode, 'Buy now for a limited time')
+        return
+      }
+      if (key === 'trailing-whitespace') {
+        sendMockCompleted(res, responseMode, `${expectedOutput} `)
+        return
+      }
       if (key === 'parent-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
-            sendMockCompleted(res, responseMode, 'OK')
+            sendMockCompleted(res, responseMode, expectedOutput)
           }
         }, 200)
         return
@@ -458,7 +483,7 @@ function createMockAIUpstream(): http.Server {
       if (key === 'codex-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
-            sendMockCompleted(res, responseMode, 'OK')
+            sendMockCompleted(res, responseMode, expectedOutput)
           }
         }, 200)
         return
@@ -466,7 +491,7 @@ function createMockAIUpstream(): http.Server {
       if (key === 'health-timeout') {
         setTimeout(() => {
           if (!res.destroyed) {
-            sendMockCompleted(res, responseMode, 'OK')
+            sendMockCompleted(res, responseMode, expectedOutput)
           }
         }, 200)
         return
@@ -479,7 +504,7 @@ function createMockAIUpstream(): http.Server {
         }, 200)
         return
       }
-      sendMockCompleted(res, responseMode, 'OK')
+      sendMockCompleted(res, responseMode, expectedOutput)
     })
   })
 }
@@ -660,6 +685,11 @@ function mockResponseMode(pathname: string): 'responses' | 'chat' | 'image' | un
 function upstreamKey(authorization: string | string[] | undefined): string {
   const value = Array.isArray(authorization) ? authorization[0] : authorization
   return String(value ?? '').replace(/^Bearer\s+/i, '').replace(/^sk-/, '')
+}
+
+function expectedAccountTestOutput(requestText: string): string {
+  const match = /OK:[A-F0-9]{32}/.exec(requestText)
+  return match?.[0] ?? 'OK'
 }
 
 function incrementHit(key: string): number {

@@ -31,6 +31,7 @@ import { accountTestFailureEligibleForAccount } from './account-test-failure-eli
 import { inspectAccountTestImageResponseEnvelope } from './account-test-image-response-inspection.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
+  extractAccountTestRawVisibleOutputText,
   extractAccountTestResponseOutputText,
   parseAccountTestUpstreamErrorCode,
   parseAccountTestStreamFailureMessage,
@@ -73,7 +74,7 @@ import {
   isDiagnosticTimeoutSignal
 } from './account-diagnostic-retry-policy.js'
 import {
-  accountTestDefaultPrompt,
+  createAccountTestOutputChallenge,
   createOpenAIImageGenerationTestRequest,
   accountTestModelsPathForProtocol,
   isAccountTestModelsPath,
@@ -291,7 +292,6 @@ export async function testOpenAIAccount(
   input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
-  const prompt = stringValue(input.prompt) || accountTestDefaultPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
   const anthropicProtocol = isAnthropicProtocolProfile(account)
@@ -303,6 +303,7 @@ export async function testOpenAIAccount(
   let modelMapping: ResolvedOpenAIModelMapping | undefined
   let testedModel: string | undefined
   let probeKind: AccountTestProbeKind = 'generation'
+  let outputChallenge: ReturnType<typeof createAccountTestOutputChallenge> | undefined
   // 非 OpenAI v1 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
   const accountClientCompatibility = anthropicProtocol || geminiProtocol
     ? 'openai_standard' as const
@@ -354,12 +355,13 @@ export async function testOpenAIAccount(
         fallbackModel: model ?? ''
       })
     } else if (probeKind === 'generation') {
+      outputChallenge = createAccountTestOutputChallenge()
       const generationEndpointMode = testEndpointMode!
       testRequest = messagesTestMode
         ? createAnthropicTestRequest({
           explicitModel,
           fallbackModel: model ?? '',
-          prompt,
+          prompt: outputChallenge.prompt,
           supportedEndpointModes,
           testEndpointMode: generationEndpointMode
         })
@@ -367,13 +369,13 @@ export async function testOpenAIAccount(
           ? createGeminiTestRequest({
             explicitModel,
             fallbackModel: model ?? '',
-            prompt,
+            prompt: outputChallenge.prompt,
             testEndpointMode: generationEndpointMode
           })
           : createOpenAITestRequest({
             explicitModel,
             fallbackModel: model ?? '',
-            prompt,
+            prompt: outputChallenge.prompt,
             isOAuth: account.type === 'oauth',
             clientCompatibility,
             testEndpointMode: generationEndpointMode
@@ -395,6 +397,9 @@ export async function testOpenAIAccount(
         testRequest?.headers,
         true
       )
+    if (probeKind === 'generation') {
+      (request as typeof request & { strictAccountTestOutput?: boolean }).strictAccountTestOutput = true
+    }
     const diagnosticCandidate = explicitModel
       ? {
           ...resolved.account,
@@ -502,6 +507,9 @@ export async function testOpenAIAccount(
     const outputText = responseContext
       ? extractAccountTestResponseOutputText(responseContext, diagnosticProtocol)
       : undefined
+    const rawVisibleOutputText = responseContext
+      ? extractAccountTestRawVisibleOutputText(responseContext, diagnosticProtocol)
+      : undefined
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
     // Image tests verify only the HTTP outcome; parsing base64 payloads adds no diagnostic value.
     const protocolSuccessEvidence = probeKind === 'image_generation'
@@ -511,7 +519,12 @@ export async function testOpenAIAccount(
           ? Boolean(responseContext && hasAccountModelCatalogResponseEvidence(responseContext))
           : Boolean(responseContext && hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseContext))
         : Boolean(responseContext && testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseContext))
-    const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
+    const outputChallengeMatched = probeKind !== 'generation'
+      || (responseTruncated === false && rawVisibleOutputText === outputChallenge?.expectedOutput)
+    const outputChallengeError = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence && !outputChallengeMatched
+      ? '上游返回 HTTP 2xx 且协议完成，但输出未通过严格校验'
+      : undefined
+    const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence && outputChallengeMatched
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
       ? probeKind === 'models_catalog'
         ? input.requireCatalogModelEvidence === false
@@ -561,12 +574,12 @@ export async function testOpenAIAccount(
         ? undefined
         : probeKind === 'image_generation' && upstreamErrorCode
           ? upstreamErrorCode
-          : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
+          : outputChallengeError ? 'invalid_probe_output' : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
         : probeKind === 'image_generation'
           ? proxyFailureMessage || protocolEvidenceError || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode)
-          : proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
+          : proxyFailureMessage || outputChallengeError || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testedModel,
       ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
@@ -584,8 +597,8 @@ export async function testOpenAIAccount(
         ? false
         : accountTestFailureEligibleForAccount({
             statusCode: diagnosticStatusCode,
-            errorCode: protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
-            message: proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage
+            errorCode: outputChallengeError ? 'invalid_probe_output' : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
+            message: proxyFailureMessage || outputChallengeError || protocolEvidenceError || upstreamMessage || streamFailureMessage
           })
     }), limitedDiagnostics)
   } catch (error) {

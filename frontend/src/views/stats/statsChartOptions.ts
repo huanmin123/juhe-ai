@@ -163,7 +163,7 @@ export function buildModelDistributionOption(distribution: UsageStatsOverview['m
         labelLine: { length: 12, length2: 8 },
         data: distribution.map((item) => ({
           name: item.model,
-          value: item.totalTokens > 0 ? item.totalTokens : item.requestCount,
+          value: item.requestCount,
           requestCount: item.requestCount,
           totalTokens: item.totalTokens,
           totalCost: item.totalCost,

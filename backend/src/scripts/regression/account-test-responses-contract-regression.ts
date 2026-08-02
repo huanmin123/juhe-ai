@@ -239,12 +239,12 @@ try {
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
 
-  assert.equal(tested.success, true, `API Key 账户 Responses 测试不应发送 max_output_tokens：${tested.message}`)
+  assert.equal(tested.success, true, `API Key 账户 Responses 测试必须为完整 nonce 保留输出预算：${tested.message}`)
   assert.equal(seenResponsesPayloads.length, 1, 'mock 上游应收到一次 Responses 测试请求')
   assert.equal(
-    Object.prototype.hasOwnProperty.call(seenResponsesPayloads[0], 'max_output_tokens'),
-    false,
-    'API Key 账户 Responses 测试不应发送 max_output_tokens'
+    seenResponsesPayloads[0]?.max_output_tokens,
+    32,
+    'API Key 账户 Responses 测试必须保留足够输出预算'
   )
   assert.equal(seenResponsesPayloads[0]?.model, 'gpt-5.5', '测试请求应保留显式模型')
   assert.equal(
@@ -451,13 +451,8 @@ function createMockOpenAIServer(): http.Server {
     })
     req.on('end', () => {
       const payload = parseJsonObject(requestBody)
+      const expectedOutput = expectedProbeOutput(payload)
       seenResponsesPayloads.push(payload)
-      if (Object.prototype.hasOwnProperty.call(payload, 'max_output_tokens')) {
-        res.writeHead(400, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: { message: 'Unsupported parameter: max_output_tokens' } }))
-        return
-      }
-
       const completedEvent = {
         type: 'response.completed',
         response: {
@@ -467,7 +462,7 @@ function createMockOpenAIServer(): http.Server {
           output: [
             {
               type: 'message',
-              content: [{ type: 'output_text', text: 'OK' }]
+              content: [{ type: 'output_text', text: expectedOutput }]
             }
           ],
           usage: {
@@ -492,6 +487,17 @@ function parseJsonObject(requestBody: string): Record<string, unknown> {
   } catch {
   }
   return {}
+}
+
+function expectedProbeOutput(payload: Record<string, unknown>): string {
+  const input = Array.isArray(payload.input) ? payload.input[0] : undefined
+  const content = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).content : undefined
+  const text = Array.isArray(content) && typeof content[0] === 'object' && content[0] !== null
+    ? String((content[0] as Record<string, unknown>).text ?? '')
+    : ''
+  const match = /OK:[A-F0-9]{32}/.exec(text)
+  assert(match, '严格账户测试请求必须携带随机期望输出')
+  return match[0]
 }
 
 async function onceListening(listeningServer: http.Server): Promise<void> {

@@ -382,6 +382,10 @@ function createMockOpenAIServer(): http.Server {
       res.end(JSON.stringify({ error: { message: 'not found' } }))
       return
     }
+    const requestChunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      requestChunks.push(chunk)
+    })
     req.on('end', () => {
       if (req.headers.authorization?.includes('sk-authorized-local-failure')) {
         res.writeHead(400, { 'content-type': 'application/json' })
@@ -396,6 +400,7 @@ function createMockOpenAIServer(): http.Server {
         }))
         return
       }
+      const expectedOutput = expectedProbeOutput(Buffer.concat(requestChunks).toString('utf8'))
       if (requestPath === '/v1/chat/completions') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({
@@ -403,7 +408,7 @@ function createMockOpenAIServer(): http.Server {
           object: 'chat.completion',
           choices: [{
             index: 0,
-            message: { role: 'assistant', content: 'OK' },
+            message: { role: 'assistant', content: expectedOutput },
             finish_reason: 'stop'
           }],
           usage: {
@@ -423,7 +428,7 @@ function createMockOpenAIServer(): http.Server {
           output: [
             {
               type: 'message',
-              content: [{ type: 'output_text', text: 'OK' }]
+              content: [{ type: 'output_text', text: expectedOutput }]
             }
           ],
           usage: {
@@ -436,8 +441,12 @@ function createMockOpenAIServer(): http.Server {
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
       res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
     })
-    req.resume()
   })
+}
+
+function expectedProbeOutput(requestText: string): string {
+  const match = /OK:[A-F0-9]{32}/.exec(requestText)
+  return match?.[0] ?? 'OK'
 }
 
 function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {

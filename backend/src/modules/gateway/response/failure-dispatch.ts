@@ -299,14 +299,18 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
+  const automaticApiKeyFailover = account.credentials.api_key_strategy === 'failover'
+    && !explicitPolicyDecision
+
   return {
     action: 'skip_account',
     failureKind: explicitPolicyDecision ? 'explicit_policy' : 'opaque_http',
     lastAttempt,
     // A state-changing policy makes the whole account unavailable, matching
     // ordinary temporary-unavailable/non-schedulable candidate filtering.
-    // Only the explicit retry_next action may continue with a sibling Key.
-    keyScopedFailure: explicitPolicyDecision?.action === 'retry_next'
+    // Failover accounts may continue with a sibling Key for an opaque HTTP
+    // failure even without an explicit retry_next rule.
+    keyScopedFailure: explicitPolicyDecision?.action === 'retry_next' || automaticApiKeyFailover
       ? hasAlternativeAccountApiKeys(account)
       : false
   }

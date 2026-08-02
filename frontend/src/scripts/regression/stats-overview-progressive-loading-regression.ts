@@ -99,6 +99,12 @@ const dailyTrendOptionSource = chartSource.slice(
   chartSource.indexOf('export function buildDailyConsumptionOption'),
   chartSource.indexOf('export function buildModelDistributionOption')
 )
+const modelDistributionOptionSource = chartSource.slice(
+  chartSource.indexOf('export function buildModelDistributionOption'),
+  chartSource.indexOf('export function buildErrorOption')
+)
+assert.match(modelDistributionOptionSource, /value: item\.requestCount/, '模型分布 pie 切片 value 必须固定按请求次数')
+assert.doesNotMatch(modelDistributionOptionSource, /value: item\.totalTokens|item\.totalTokens > 0|value\s*:\s*[^,\n]*totalTokens/, '模型分布 pie 切片 value 不得使用 Token 或 fallback')
 assert.match(dailyTrendOptionSource, /type: 'bar'/, '筛选范围日消耗必须使用柱状图')
 assert.match(dailyTrendOptionSource, /value: item\.totalTokens/, '日消耗柱高必须只由 Token 决定')
 assert.doesNotMatch(dailyTrendOptionSource, /value: item\.totalCost|yAxisIndex/, '成本不得成为柱高或独立纵轴')

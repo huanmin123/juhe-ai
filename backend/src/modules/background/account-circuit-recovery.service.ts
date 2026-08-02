@@ -252,7 +252,7 @@ export class AccountCircuitRecoveryService {
     if (!isAppliedOrIdempotent(completed)) {
       return isFencingResult(completed) ? 'fenced' : 'skipped'
     }
-    if (outcome.kind === 'framing_complete' && dueState.scope.kind === 'protocol_model') {
+    if (outcome.kind === 'framing_complete' && outcome.semanticSuccess !== false && dueState.scope.kind === 'protocol_model') {
       await this.store.clearAccountEscalationEvidence({
         accountRuntimeKey: dueState.scope.accountRuntimeKey,
         dispatchRevision: dueState.dispatchRevision,
@@ -260,7 +260,7 @@ export class AccountCircuitRecoveryService {
         nowMs: this.now()
       })
     }
-    if (outcome.kind === 'framing_complete') return 'framing_complete'
+    if (outcome.kind === 'framing_complete' && outcome.semanticSuccess !== false) return 'framing_complete'
     if (outcome.kind === 'transport_incomplete') return 'transport_incomplete'
     return 'unknown'
   }
@@ -559,7 +559,7 @@ function observeRecoveryCircuitMutation(
 }
 
 function circuitOutcome(outcome: TransportProbeOutcome): 'framing_complete' | 'transport_failure' | 'unknown' {
-  if (outcome.kind === 'framing_complete') return 'framing_complete'
+  if (outcome.kind === 'framing_complete' && outcome.semanticSuccess !== false) return 'framing_complete'
   if (outcome.kind === 'transport_incomplete') return 'transport_failure'
   return 'unknown'
 }

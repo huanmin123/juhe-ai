@@ -769,7 +769,7 @@ const bindingShowsDragHandle = computed(() => form.mode === 'hybrid_smart' || fo
 const bindingShowsDragColumn = computed(() => {
   if (!bindingShowsDragHandle.value) return false
   if (form.mode === 'hybrid_smart' || form.mode === 'round_robin') return form.groupBindings.length > 1
-  if (form.mode === 'failover') return form.groupBindings.length > 2
+  if (form.mode === 'failover') return form.groupBindings.length > 1
   return false
 })
 const bindingShowsRole = computed(() => form.mode === 'failover')
@@ -779,14 +779,14 @@ const bindingAddButtonText = computed(() => form.mode === 'failover' && form.gro
 const bindingSectionTooltip = computed(() => {
   if (form.mode === 'normal') return '普通路由只绑定一个分组，请求会直接进入这个分组的账号池。'
   if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。'
-  if (form.mode === 'failover') return '故障回退固定第一行为主用分组，后续为备用分组；主用恢复后继续优先使用主用。'
+  if (form.mode === 'failover') return '故障回退按当前顺序将第一行作为主用分组，后续为备用分组；所有行都可拖拽，备用拖到第一行即可晋升主用。主用恢复后继续优先使用主用。'
   if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。'
   return '混合智能路由按评分和目标模型选择分组；分组顺序用于同等条件下的候选顺序。'
 })
 const bindingColumns = computed<BindingColumn[]>(() => [
   ...(bindingShowsDragColumn.value ? [{ key: 'drag', label: '' }] : []),
   { key: 'group', label: '分组', tooltip: '选择这套路由策略可以使用的账号分组，实际请求会进入分组内的 AI 账户池。' },
-  ...(bindingShowsRole.value ? [{ key: 'role', label: '主备', tooltip: '第一行固定为主用分组，后续行为备用分组；备用分组可拖拽调整接管顺序。' }] : []),
+  ...(bindingShowsRole.value ? [{ key: 'role', label: '主备', tooltip: '第一行是主用分组，后续行为备用分组；所有行都可拖拽，备用分组拖到第一行即可晋升主用。' }] : []),
   ...(bindingShowsWeight.value ? [{ key: 'weight', label: '权重', tooltip: '权重越高命中比例越高；所有分组权重总和不能超过 100。' }] : []),
   { key: 'status', label: '状态', tooltip: '停用某一行后，这个分组不会参与当前策略调度。' },
   { key: 'actions', label: '' }
@@ -1324,13 +1324,12 @@ function moveBindingForMode(fromIndex: number, toIndex: number) {
 
 function bindingRowDragEnabled(index: number): boolean {
   if (form.mode === 'hybrid_smart' || form.mode === 'round_robin') return form.groupBindings.length > 1
-  if (form.mode === 'failover') return index > 0 && form.groupBindings.length > 2
+  if (form.mode === 'failover') return index >= 0 && index < form.groupBindings.length && form.groupBindings.length > 1
   return false
 }
 
 function bindingDropTargetIndex(index: number): number {
-  const minIndex = form.mode === 'failover' ? 1 : 0
-  return Math.min(form.groupBindings.length - 1, Math.max(minIndex, index))
+  return Math.min(form.groupBindings.length - 1, Math.max(0, index))
 }
 
 function handleBindingDragStart(index: number, event: DragEvent) {

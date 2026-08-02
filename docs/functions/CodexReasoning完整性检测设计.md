@@ -6,7 +6,7 @@
 
 Codex Responses 的 `reasoning` 可以没有可读 summary、没有 raw content，或仅有 `encrypted_content`。这些状态不能证明模型、账户或响应异常。`response.output_item.done` 和 `response.completed` 描述协议事件生命周期，但上游 SSE / JSON 的字段差异也不能作为自动切号或账户处罚依据。
 
-请求历史中的 reasoning item 仍由请求侧上下文修复处理：目标账户不能识别的历史 ID 在发送上游前清理；没有可重放语义内容的历史 item 以 `codex_history_item_unrecoverable` 本地失败。详细规则见 [Responses 历史会话与请求修复](Responses历史会话与请求修复.md)。
+请求历史中的 reasoning item 仍由请求侧上下文修复处理：目标账户不能识别的历史 ID 在发送上游前清理；已注册且没有可重放语义内容的历史 item 从顶层 `input` 数组整项清理并继续请求，结果通过 `droppedItemCount` 与 `unrecoverable_item_dropped` issue 保持可观测。详细规则见 [Responses 历史会话与请求修复](Responses历史会话与请求修复.md)。
 
 ## 当前运行时边界
 

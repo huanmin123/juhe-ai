@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 
 import type { AccountClientCompatibility } from '../../domain/types.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
@@ -8,7 +8,7 @@ import {
   isAnthropicEndpointMode
 } from '../../domain/anthropic-endpoint-modes.js'
 
-export const accountTestDefaultPrompt = '只输出 OK'
+const accountTestOutputTokenLimit = 32
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
@@ -23,6 +23,22 @@ const claudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9c
 export const accountTestModelsPath = '/v1/models'
 export const accountTestGeminiModelsPath = '/v1beta/models'
 export const accountImageTestDefaultPrompt = 'Solid black.'
+
+export type AccountTestOutputChallenge = {
+  expectedOutput: string
+  prompt: string
+}
+
+export function createAccountTestOutputChallenge(): AccountTestOutputChallenge {
+  const expectedOutput = `OK:${randomBytes(16).toString('hex').toUpperCase()}`
+  return {
+    expectedOutput,
+    prompt: [
+      `你的回复必须且只能是：${expectedOutput}`,
+      `除 ${expectedOutput} 外，不得输出任何字符；不得添加反引号、引号、空格、换行、解释或 Markdown。`
+    ].join('\n')
+  }
+}
 
 export function accountTestModelsPathForProtocol(protocolCode: string | undefined): string {
   return protocolCode === 'gemini' ? accountTestGeminiModelsPath : accountTestModelsPath
@@ -182,10 +198,10 @@ export function createOpenAIResponsesTestPayload(model: string, prompt: string, 
       }
     ],
     instructions: defaultOpenAITestInstructions,
-    stream
+    stream,
+    max_output_tokens: accountTestOutputTokenLimit
   }
   if (isOAuth) {
-    payload.max_output_tokens = 1
     payload.store = false
   }
   if (clientCompatibility === 'codex_responses' && stream) {
@@ -206,7 +222,7 @@ export function createOpenAIChatCompletionsTestPayload(model: string, prompt: st
         content: prompt
       }
     ],
-    max_tokens: 1,
+    max_tokens: accountTestOutputTokenLimit,
     stream
   }
 }
@@ -224,7 +240,7 @@ export function createGeminiGenerateContentTestPayload(prompt: string): Record<s
       }
     ],
     generationConfig: {
-      maxOutputTokens: 1
+      maxOutputTokens: accountTestOutputTokenLimit
     }
   }
 }

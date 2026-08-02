@@ -49,7 +49,7 @@ export function defaultAccountForm(
     group: undefined,
     apiKey: '',
     apiKeys: [''],
-    apiKeyStrategy: 'round_robin',
+    apiKeyStrategy: 'failover',
     apiKeyWeights: [1],
     baseUrl: isHybridProviderCode(resolvedProviderCode) ? '' : profile?.baseUrl ?? provider?.baseUrl ?? '',
     accessToken: '',

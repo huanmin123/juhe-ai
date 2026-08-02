@@ -184,6 +184,8 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件，图片响应必须满足图片协议成功证据。空正文、仅 `[DONE]`、HTML、畸形 JSON 或只有未完成数据片段都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`。人工测试只显示诊断，激活、周期健康、请求失败二次确认和质量确认则把它作为通用可用性失败。上游目录是否存在不参与该判断。
 
+普通文本生成检查还必须为每次实际请求生成独立的 CSPRNG `OK:<nonce>` 挑战，并要求模型只输出该值。只有未截断的实际可见文本逐字符完全相等时才是 `complete_success`；大小写、空白、换行或任何额外字符均为 `framing_complete_neutral`。reasoning、thinking 和工具内容不属于可见输出。图片与模型目录继续按各自的协议成功证据判断。严格中性结果保留 HTTP framing 诊断，但不得清理运行态、事前确认或账户电路升级证据。
+
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 
 ## 8. 后台系统检查

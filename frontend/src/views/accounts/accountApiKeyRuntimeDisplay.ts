@@ -26,8 +26,22 @@ export function visibleSavedAccountApiKeyRuntimeDetails(
   if (!snapshot) return undefined
   const currentIdentities = accountApiKeyIdentities(apiKeys)
   if (currentIdentities.length !== snapshot.keyIdentities.length) return undefined
-  if (currentIdentities.some((identity, index) => identity !== snapshot.keyIdentities[index])) return undefined
-  return snapshot.items
+  const snapshotIndexesByIdentity = new Map<string, number[]>()
+  snapshot.keyIdentities.forEach((identity, index) => {
+    const indexes = snapshotIndexesByIdentity.get(identity) ?? []
+    indexes.push(index)
+    snapshotIndexesByIdentity.set(identity, indexes)
+  })
+  const snapshotItemsByIndex = new Map(snapshot.items.map((item) => [item.keyIndex, item]))
+  const remappedItems: AccountApiKeyRuntimeDetail[] = []
+  for (const [currentIndex, identity] of currentIdentities.entries()) {
+    const indexes = snapshotIndexesByIdentity.get(identity)
+    const snapshotIndex = indexes?.shift()
+    if (snapshotIndex === undefined) return undefined
+    const item = snapshotItemsByIndex.get(snapshotIndex)
+    if (item) remappedItems.push({ ...item, keyIndex: currentIndex })
+  }
+  return remappedItems
 }
 
 function accountApiKeyIdentities(apiKeys: string[]): string[] {

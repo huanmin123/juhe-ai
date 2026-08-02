@@ -150,7 +150,40 @@ try {
   })
   assert.equal(availableAfterUnverifiedIsolation, 'sk-weight-b', '未验证 Key 在探测成功前不得进入账户内调度')
 
-  console.log('账户内 API Key 轮询回归通过：多个上游 Key 保存为单个 AI 账户，并按轮询或权重在账户内部选择')
+  const failoverCredentials = {
+    api_keys: ['sk-primary', 'sk-backup-a', 'sk-backup-b'],
+    api_key_strategy: 'failover'
+  }
+  assert.deepEqual(
+    Array.from({ length: 3 }, () => rotation.selectAccountRuntimeApiKey({ accountId: 'account-failover', credentials: failoverCredentials })),
+    ['sk-primary', 'sk-primary', 'sk-primary'],
+    '主备模式的独立请求必须始终优先选择主 Key'
+  )
+  assert.equal(
+    rotation.selectAccountRuntimeApiKey({
+      accountId: 'account-default-failover',
+      credentials: { api_keys: ['sk-primary', 'sk-backup-a'] }
+    }),
+    'sk-primary',
+    '未指定账户内 Key 策略时默认应使用主备并优先主 Key'
+  )
+  const primary = rotation.selectAccountRuntimeApiKeyEntry({ accountId: 'account-failover-request', credentials: failoverCredentials })
+  const backup = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: 'account-failover-request',
+    credentials: failoverCredentials,
+    excludeFingerprints: [primary!.fingerprint],
+    continueAfterFingerprint: primary!.fingerprint
+  })
+  assert.equal(backup?.key, 'sk-backup-a', '主 Key 失败后应按配置顺序切换到第一个备用 Key')
+  const secondBackup = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: 'account-failover-request',
+    credentials: failoverCredentials,
+    excludeFingerprints: [primary!.fingerprint, backup!.fingerprint],
+    continueAfterFingerprint: backup!.fingerprint
+  })
+  assert.equal(secondBackup?.key, 'sk-backup-b', '备用 Key 应继续按顺序尝试，不能回到主 Key')
+
+  console.log('账户内 API Key 轮询与主备回归通过：多个上游 Key 保存为单个 AI 账户，并按轮询、权重或主备顺序选择')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

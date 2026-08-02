@@ -165,17 +165,19 @@ async function main(): Promise<void> {
       headers: codexStreamHeaders(noFirstChunkCredential.apiKey.key, 'no-first-chunk'),
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        input: 'no-first-chunk',
+        input: [{ type: 'compaction_trigger' }],
         stream: true
       })
     })
-    assert.equal(response.status, 503)
-    assert(response.headers.get('content-type')?.includes('application/json'), '预提交失败应返回 JSON 错误响应')
+    assert.equal(response.status, 200)
+    assert(response.headers.get('content-type')?.includes('text/event-stream'), '压缩请求建立保活后必须保持 SSE 响应')
     const streamText = await response.text()
     const durationMs = Date.now() - startedAt
-    assert(!streamText.includes('response.failed'), `预提交失败不应伪造 SSE failure event：${streamText}`)
-    assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段等待超时应返回统一可重试文案：${streamText}`)
-    assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应改写为可重试错误码：${streamText}`)
+    assert.match(streamText, /^: /, `压缩请求在上游首包前必须收到 SSE comment：${streamText}`)
+    assert.equal((streamText.match(/event: response\.failed/g) ?? []).length, 1, `压缩请求最终失败必须只有一个 Responses failure event：${streamText}`)
+    assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应映射为可重试错误码：${streamText}`)
+    assert(!streamText.includes('response.created'), `压缩契约未完成前不得泄露上游语义事件：${streamText}`)
+    assert(!streamText.trimStart().startsWith('{'), `SSE transport 已建立后不得混入 JSON 错误响应：${streamText}`)
     assert.equal(
       upstreamScenarioHits.filter((hit) => hit.scenario === 'no-first-chunk').length,
       1,

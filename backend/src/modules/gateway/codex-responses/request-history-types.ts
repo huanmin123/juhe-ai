@@ -16,5 +16,6 @@ export interface CodexHistorySanitizerResult {
   items: unknown[]
   changed: boolean
   removedIdCount: number
+  droppedItemCount: number
   issueCodes: string[]
 }

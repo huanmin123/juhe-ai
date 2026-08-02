@@ -142,6 +142,21 @@ for (const errorCode of ['invalid_protocol_success_response', 'invalid_image_gen
 
 assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
   success: false,
+  errorCode: 'invalid_probe_output',
+  message: '上游返回固定广告'
+}, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    status: 200
+  }
+}), {
+  kind: 'framing_complete',
+  statusCode: 200,
+  semanticSuccess: false
+}, '严格文本不匹配必须保留 HTTP framing，同时明确不可用于恢复')
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
   errorCode: 'upstream_said_timeout',
   message: 'socket hang up after quota rejection'
 }, {
@@ -316,14 +331,14 @@ for (const [name, start, end] of [
 ] as const) {
   const source = sourceBetween(sideEffectsSource, start, end)
   assert.doesNotMatch(source, /if \(result\.success\)/, `${name} 不能读取 AccountTestResult.success 决定短运行态恢复`)
-  assert.match(source, /transportOutcome\.kind === 'framing_complete'/, `${name} 只能用 framing_complete 关闭短运行态`)
+  assert.match(source, /transportOutcome\.kind === 'framing_complete' && result\.transportOutcome\.semanticSuccess !== false/, `${name} 只能用严格语义成功关闭短运行态`)
   assert.match(source, /transportOutcome\.kind === 'unknown'/, `${name} 必须单独处理 unknown`)
 }
 
 const memoryRecoveryUnknown = sourceBetween(
   sourceBetween(sideEffectsSource, 'async function runGatewayAccountRecoveryProbe', 'async function runDistributedGatewayAccountRecoveryProbe'),
   "if (result.transportOutcome.kind === 'unknown')",
-  "if (result.transportOutcome.kind === 'framing_complete')"
+  "if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false)"
 )
 assert.match(memoryRecoveryUnknown, /latest\.running = false/)
 assert.match(memoryRecoveryUnknown, /scheduleRecoveryProbeTimer\(runtimeKey, recoveryProbeRetryDelayMs\)/)
@@ -332,7 +347,7 @@ assert.doesNotMatch(memoryRecoveryUnknown, /clearGatewayAccountRuntimeAvailabili
 const redisRecoveryUnknown = sourceBetween(
   sourceBetween(sideEffectsSource, 'async function runDistributedGatewayAccountRecoveryProbe', 'async function promoteDistributedRecoveryProbeToPrecheck'),
   "if (result.transportOutcome.kind === 'unknown')",
-  "if (result.transportOutcome.kind === 'framing_complete')"
+  "if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false)"
 )
 assert.match(redisRecoveryUnknown, /commitDistributedRecoveryProbeRun\(/)
 assert.doesNotMatch(redisRecoveryUnknown, /clearDistributedRecoveryProbeRun|attemptCount:/)
@@ -340,7 +355,7 @@ assert.doesNotMatch(redisRecoveryUnknown, /clearDistributedRecoveryProbeRun|atte
 const redisPrecheckUnknown = sourceBetween(
   sourceBetween(sideEffectsSource, 'async function runDistributedGatewayAccountPrecheck', 'function promoteRecoveryProbeToPrecheck'),
   "if (result.transportOutcome.kind === 'unknown')",
-  "if (result.transportOutcome.kind === 'framing_complete')"
+  "if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false)"
 )
 assert.match(redisPrecheckUnknown, /attemptCount: attempt/)
 assert.match(redisPrecheckUnknown, /commitDistributedRecoveryProbeRun\(/)
@@ -349,7 +364,7 @@ assert.doesNotMatch(redisPrecheckUnknown, /clearDistributedRecoveryProbeRun/)
 const memoryPrecheckUnknown = sourceBetween(
   sourceBetween(sideEffectsSource, 'async function runGatewayAccountPrecheck', 'function canUseProcessLocalGatewayAccountRuntimeState'),
   "if (result.transportOutcome.kind === 'unknown')",
-  "if (result.transportOutcome.kind === 'framing_complete')"
+  "if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false)"
 )
 assert.match(memoryPrecheckUnknown, /scheduleGatewayAccountPrecheckRun\(runtimeKey, recoveryProbeRetryDelayMs\)/)
 assert.doesNotMatch(memoryPrecheckUnknown, /clearGatewayAccountRuntimeAvailabilityLocal|attemptCount = attempt \+ 1/)

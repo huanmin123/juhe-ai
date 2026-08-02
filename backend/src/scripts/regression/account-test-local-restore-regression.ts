@@ -450,6 +450,7 @@ function createMockOpenAIServer(): http.Server {
         res.end('data: [DONE]\n\n')
         return
       }
+      const requestBody = JSON.parse(Buffer.concat(requestChunks).toString('utf8')) as { stream?: boolean }
       const completedEvent = {
         type: 'response.completed',
         response: {
@@ -459,7 +460,7 @@ function createMockOpenAIServer(): http.Server {
           output: [
             {
               type: 'message',
-              content: [{ type: 'output_text', text: 'OK' }]
+              content: [{ type: 'output_text', text: expectedProbeOutput(JSON.stringify(requestBody)) }]
             }
           ],
           usage: {
@@ -469,7 +470,6 @@ function createMockOpenAIServer(): http.Server {
           }
         }
       }
-      const requestBody = JSON.parse(Buffer.concat(requestChunks).toString('utf8')) as { stream?: boolean }
       if (requestBody.stream === false) {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify(completedEvent.response))
@@ -480,6 +480,11 @@ function createMockOpenAIServer(): http.Server {
     })
     req.resume()
   })
+}
+
+function expectedProbeOutput(requestText: string): string {
+  const match = /OK:[A-F0-9]{32}/.exec(requestText)
+  return match?.[0] ?? 'OK'
 }
 
 function sessionCookie(): string {

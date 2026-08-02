@@ -23,7 +23,7 @@ export interface AccountFormModel {
   group?: GroupSelection
   apiKey: string
   apiKeys: string[]
-  apiKeyStrategy: 'round_robin' | 'weighted_round_robin'
+  apiKeyStrategy: 'round_robin' | 'weighted_round_robin' | 'failover'
   apiKeyWeights: number[]
   baseUrl: string
   accessToken: string

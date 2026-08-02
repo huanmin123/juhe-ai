@@ -20,6 +20,8 @@ export type TransportProbeOutcome =
   | {
       kind: 'framing_complete'
       statusCode: number
+      // HTTP framing completed, but a strict generation probe can still fail semantically.
+      semanticSuccess?: false
     }
   | {
       kind: 'transport_incomplete'
@@ -75,7 +77,11 @@ export function transportProbeOutcomeFromAccountTestResult(
     }
   }
   if (statusCode !== undefined) {
-    return { kind: 'framing_complete', statusCode }
+    return {
+      kind: 'framing_complete',
+      statusCode,
+      ...(result.errorCode === 'invalid_probe_output' ? { semanticSuccess: false } : {})
+    }
   }
   if (evidence.timeout === true && evidence.diagnosticTimeoutExhausted === false && !localFailureKind) {
     return { kind: 'unknown', failureKind: 'task_failure' }

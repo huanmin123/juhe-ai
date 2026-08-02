@@ -141,7 +141,7 @@ export interface AccountCloneContext {
 
 export interface AccountCloneCredentialOptions {
   api_key_count?: number
-  api_key_strategy?: 'round_robin' | 'weighted_round_robin'
+  api_key_strategy?: 'round_robin' | 'weighted_round_robin' | 'failover'
   api_key_weights?: number[]
   base_url?: string
   supported_endpoint_modes?: AccountCredentials['supported_endpoint_modes']
@@ -424,7 +424,7 @@ function projectCloneCredentialOptions(credentials: AccountCredentials): Account
   const output: AccountCloneCredentialOptions = {}
   const apiKeyCount = cloneCredentialApiKeyCount(credentials)
   if (apiKeyCount > 0) output.api_key_count = apiKeyCount
-  if (credentials.api_key_strategy === 'round_robin' || credentials.api_key_strategy === 'weighted_round_robin') {
+  if (credentials.api_key_strategy === 'round_robin' || credentials.api_key_strategy === 'weighted_round_robin' || credentials.api_key_strategy === 'failover') {
     output.api_key_strategy = credentials.api_key_strategy
   }
   if (Array.isArray(credentials.api_key_weights)) {

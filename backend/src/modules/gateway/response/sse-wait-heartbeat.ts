@@ -7,6 +7,11 @@ import { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 const gatewaySseWaitHeartbeatIntervalMs = 15_000
 const gatewaySseWaitHeartbeatChunk = Buffer.from(': juhe-ai waiting for upstream capacity\n\n')
 
+export interface GatewaySseWaitHeartbeat {
+  start: () => void
+  stop: () => void
+}
+
 export function createGatewaySseWaitHeartbeatObserver(input: {
   res: Response
   downstreamProtocol: OpenAIGatewayDownstreamProtocol
@@ -14,6 +19,21 @@ export function createGatewaySseWaitHeartbeatObserver(input: {
   signal?: AbortSignal
   intervalMs?: number
 }): ServerRetryBudgetWaitObserver | undefined {
+  const heartbeat = createGatewaySseWaitHeartbeat(input)
+  if (!heartbeat) return undefined
+  return {
+    onWaitStarted: heartbeat.start,
+    onWaitPaused: heartbeat.stop
+  }
+}
+
+export function createGatewaySseWaitHeartbeat(input: {
+  res: Response
+  downstreamProtocol: OpenAIGatewayDownstreamProtocol
+  downstreamCommitState: GatewayDownstreamCommitState
+  signal?: AbortSignal
+  intervalMs?: number
+}): GatewaySseWaitHeartbeat | undefined {
   if (!gatewayDownstreamProtocolUsesSse(input.downstreamProtocol)) return undefined
   let timer: NodeJS.Timeout | undefined
   let abortListener: (() => void) | undefined
@@ -52,10 +72,10 @@ export function createGatewaySseWaitHeartbeatObserver(input: {
     input.res.once('close', handleResponseClosed)
     input.res.once('error', handleResponseError)
   }
-  const writeHeartbeat = () => {
+  const writeHeartbeat = (): boolean => {
     if (input.signal?.aborted || input.res.writableEnded || input.res.destroyed || input.downstreamCommitState.semanticCommitted) {
       stopAndDetach()
-      return
+      return false
     }
     try {
       if (!input.res.headersSent) {
@@ -66,16 +86,17 @@ export function createGatewaySseWaitHeartbeatObserver(input: {
       }
       input.res.write(gatewaySseWaitHeartbeatChunk)
       input.downstreamCommitState.markTransportCommitted(gatewaySseWaitHeartbeatChunk.length)
+      return true
     } catch {
       stopAndDetach()
+      return false
     }
   }
   return {
-    onWaitStarted: () => {
+    start: () => {
       if (timer || input.signal?.aborted || input.res.writableEnded || input.res.destroyed || input.downstreamCommitState.semanticCommitted) return
       attachResponseListeners()
-      writeHeartbeat()
-      if (input.res.writableEnded || input.res.destroyed || input.downstreamCommitState.semanticCommitted) return
+      if (!writeHeartbeat()) return
       timer = setInterval(writeHeartbeat, Math.max(1000, input.intervalMs ?? gatewaySseWaitHeartbeatIntervalMs))
       timer.unref?.()
       if (input.signal) {
@@ -83,7 +104,7 @@ export function createGatewaySseWaitHeartbeatObserver(input: {
         input.signal.addEventListener('abort', abortListener, { once: true })
       }
     },
-    onWaitPaused: stopAndDetach
+    stop: stopAndDetach
   }
 }
 

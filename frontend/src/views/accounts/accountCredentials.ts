@@ -62,9 +62,7 @@ function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown>
   })
   if (apiKeys.length > 1) {
     credentials.api_keys = apiKeys
-    credentials.api_key_strategy = form.apiKeyStrategy === 'weighted_round_robin'
-      ? 'weighted_round_robin'
-      : 'round_robin'
+    credentials.api_key_strategy = form.apiKeyStrategy
     if (credentials.api_key_strategy === 'weighted_round_robin') {
       credentials.api_key_weights = normalizedAccountApiKeyWeights(form, apiKeys.length)
     }

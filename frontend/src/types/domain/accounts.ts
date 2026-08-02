@@ -39,7 +39,7 @@ export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_un
 export interface AccountCredentials {
   api_key?: string
   api_keys?: string[]
-  api_key_strategy?: 'round_robin' | 'weighted_round_robin'
+  api_key_strategy?: 'round_robin' | 'weighted_round_robin' | 'failover'
   api_key_weights?: number[]
   base_url?: string
   supported_endpoint_modes?: AccountSupportedEndpointMode[]
@@ -582,7 +582,7 @@ export interface AccountCloneContext {
 
 export interface AccountCloneCredentialOptions {
   api_key_count?: number
-  api_key_strategy?: 'round_robin' | 'weighted_round_robin'
+  api_key_strategy?: 'round_robin' | 'weighted_round_robin' | 'failover'
   api_key_weights?: number[]
   base_url?: string
   supported_endpoint_modes?: AccountSupportedEndpointMode[]

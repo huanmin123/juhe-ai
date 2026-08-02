@@ -23,7 +23,7 @@ interface MockUpstreamHit {
   userAgent: string
 }
 
-type ApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
+type ApiKeyStrategy = 'round_robin' | 'weighted_round_robin' | 'failover'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const backendRoot = resolve(currentDir, '../../..')
@@ -97,6 +97,13 @@ try {
     apiKeys: ['sk-gateway-openai-compatible-a', 'sk-gateway-openai-compatible-b'],
     strategy: 'round_robin'
   })
+  const primaryBackupGatewayApiKey = createGatewayApiKeyScenario({
+    name: '单账户多 Key 网关主备',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-primary-backup-primary', 'sk-gateway-primary-backup-secondary', 'sk-gateway-primary-backup-reserve'],
+    strategy: 'failover'
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-primary-backup-primary', 401)
   const failoverGatewayApiKey = createGatewayApiKeyFailoverScenario(upstreamBaseUrl)
   const threeKeyExhaustionGatewayApiKey = createGatewayApiKeyScenario({
     name: '三 Key 请求内严格穷尽',
@@ -192,8 +199,8 @@ try {
   }), false, 'GPT OAuth 不应启用账户内 API Key 池隔离')
   assert.equal(
     repositories.listAccounts(access, { page: 1, pageSize: 20 }).filter((account) => account.name.includes('单账户多 Key 网关')).length,
-    2,
-    '两个策略场景各自只应创建一个账户，不应按 API Key 展开账户'
+    3,
+    '三个策略场景各自只应创建一个账户，不应按 API Key 展开账户'
   )
   const admin = repositories.createSystemAccount({
     username: `api_key_gateway_mock_admin_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, '_'),
@@ -252,6 +259,20 @@ try {
     'OpenAI 兼容供应商的 API Key 账户也应在单个账户内按 Key 轮询'
   )
 
+  const firstPrimaryBackupBatch = await postChatCompletions(backendBaseUrl, primaryBackupGatewayApiKey, 1)
+  const firstPrimaryBackupAuthorizations = authorizationsForBatches([firstPrimaryBackupBatch])
+  assert.deepEqual(
+    firstPrimaryBackupAuthorizations,
+    ['Bearer sk-gateway-primary-backup-primary', 'Bearer sk-gateway-primary-backup-secondary'],
+    '真实主备账户中，主 Key 失败后当前请求必须按顺序切换到备用 Key'
+  )
+  const secondPrimaryBackupBatch = await postChatCompletions(backendBaseUrl, primaryBackupGatewayApiKey, 1)
+  const secondPrimaryBackupAuthorizations = authorizationsForBatches([secondPrimaryBackupBatch])
+  assert.deepEqual(
+    secondPrimaryBackupAuthorizations,
+    ['Bearer sk-gateway-primary-backup-primary', 'Bearer sk-gateway-primary-backup-secondary'],
+    '真实主备账户的新请求必须重新从主 Key 开始，而不是沿用上次请求的轮询游标'
+  )
   const firstFailoverBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 1)
   const firstFailoverAuthorizations = authorizationsForBatches([firstFailoverBatch])
   assert.deepEqual(
@@ -508,6 +529,10 @@ try {
     roundRobin: roundRobinAuthorizations,
     weighted: weightedAuthorizations,
     openAICompatible: openAICompatibleAuthorizations,
+    primaryBackup: {
+      first: firstPrimaryBackupAuthorizations,
+      second: secondPrimaryBackupAuthorizations
+    },
     failover: {
       first: firstFailoverAuthorizations,
       afterKeyIsolation: recoveredAccountAuthorizations,

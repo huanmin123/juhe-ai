@@ -37,7 +37,7 @@ export async function buildOpenAIClientCompatibilityBody(
   if (options.modelOverride) {
     body.model = options.modelOverride
   }
-  applyCodexResponsesCompatibility(body)
+  applyCodexResponsesCompatibility(body, isStrictAccountTestRequest(req))
   normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
   return serializeGatewayJsonObject(body)
 }
@@ -114,7 +114,7 @@ async function parseOpenAIClientCompatibilityJsonBody(req: Request, signal?: Abo
   return { ...parsed }
 }
 
-function applyCodexResponsesCompatibility(body: Record<string, unknown>): void {
+function applyCodexResponsesCompatibility(body: Record<string, unknown>, preserveOutputBudget = false): void {
   if (typeof body.input === 'string') {
     body.input = [
       {
@@ -147,13 +147,17 @@ function applyCodexResponsesCompatibility(body: Record<string, unknown>): void {
   body.stream = true
   body.store = false
   body.include = ensureReasoningEncryptedContent(body.include)
-  delete body.max_output_tokens
+  if (!preserveOutputBudget) delete body.max_output_tokens
   delete body.max_completion_tokens
   delete body.temperature
   delete body.top_p
   delete body.context_management
   delete body.truncation
   delete body.user
+}
+
+function isStrictAccountTestRequest(req: Request): boolean {
+  return (req as Request & { strictAccountTestOutput?: boolean }).strictAccountTestOutput === true
 }
 
 function ensureReasoningEncryptedContent(value: unknown): string[] {

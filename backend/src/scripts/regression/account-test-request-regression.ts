@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import {
-  accountTestDefaultPrompt,
   accountImageTestDefaultPrompt,
   accountTestGeminiModelsPath,
   accountTestModelsPath,
   accountTestModelsPathForProtocol,
+  createAccountTestOutputChallenge,
   createAnthropicTestRequest,
   createGeminiTestRequest,
   createOpenAIChatCompletionsTestPayload,
@@ -22,6 +22,7 @@ import {
   accountDiagnosticRetryTimeouts
 } from '../../modules/accounts/account-diagnostic-retry-policy.js'
 import {
+  extractAccountTestRawVisibleOutputText,
   extractAccountTestResponseOutputText,
   parseAccountTestUpstreamErrorCode,
   parseAccountTestStreamFailureMessage,
@@ -37,7 +38,11 @@ import {
 import { parseDiagnosticResponseContext } from '../../modules/gateway/diagnostics/diagnostic-response-context.js'
 import { accountBatchEditSchema, accountCreateSchema, accountModelCatalogRefreshSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
 
-assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
+const outputChallenge = createAccountTestOutputChallenge()
+const secondOutputChallenge = createAccountTestOutputChallenge()
+assert.match(outputChallenge.expectedOutput, /^OK:[A-F0-9]{32}$/, '文本账号测试必须生成 CSPRNG 随机 nonce')
+assert.notEqual(outputChallenge.expectedOutput, secondOutputChallenge.expectedOutput, '每次文本账号测试必须生成独立 nonce')
+assert.match(outputChallenge.prompt, new RegExp(outputChallenge.expectedOutput), '账号测试 prompt 必须承载本次期望输出')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
 assert.equal(accountTestGeminiModelsPath, '/v1beta/models', 'Gemini 模型目录探测必须使用原生 /v1beta/models 路径')
 assert.equal(accountTestModelsPathForProtocol('gemini'), '/v1beta/models', 'Gemini 协议必须选择原生模型目录路径')
@@ -196,6 +201,7 @@ const multilineChatContext = parseDiagnosticResponseContext(
   { onJsonParseAttempt: () => { accountMultilineParseCount += 1 } }
 )
 assert.equal(extractAccountTestResponseOutputText(multilineChatContext, 'openai'), 'OK', 'SSE framing 必须合并 multi-line data')
+assert.equal(extractAccountTestRawVisibleOutputText(multilineChatContext, 'openai'), 'OK', '严格校验必须保留 OpenAI SSE 可见文本原文')
 assert.equal(hasAccountTestProtocolSuccessEvidence('chat_sse', multilineChatContext), true, 'CRLF 且末尾无空行的 SSE 必须 flush 最后事件')
 assert.equal(accountMultilineParseCount, 1, '[DONE] 不得触发 JSON.parse，multi-line payload 只解析一次')
 assert.deepEqual(resolveAccountTestResponseDiagnostics({
@@ -272,7 +278,7 @@ assert.deepEqual(chatRequest.body, {
       content: 'ping'
     }
   ],
-  max_tokens: 1,
+  max_tokens: 32,
   stream: false
 }, 'Chat JSON 测试 payload 应保持非流式字段')
 
@@ -314,7 +320,7 @@ assert.equal(oauthRequest.model, 'gpt-5.5-oauth', '无显式模型时应使用 f
 assert.equal(oauthRequest.body.model, 'gpt-5.5-oauth', 'Responses payload 应写入模型')
 assert.equal(oauthRequest.body.stream, true, 'Responses SSE 测试应保持流式形态')
 assert.equal(oauthRequest.body.store, false, 'OAuth Responses 测试不应存储')
-assert.equal(oauthRequest.body.max_output_tokens, 1, 'OAuth Responses 测试应限制输出 token')
+assert.equal(oauthRequest.body.max_output_tokens, 32, 'OAuth Responses 测试应保留足够输出预算以返回完整 nonce')
 assert.deepEqual(oauthRequest.body.include, ['reasoning.encrypted_content'], 'Codex Responses SSE 测试应保留 encrypted reasoning include')
 
 const responsesJsonPayload = createOpenAIResponsesTestPayload('gpt-5.5-json', 'ok', false, 'codex_responses', false)
@@ -354,7 +360,7 @@ assert.deepEqual(
         content: 'ok'
       }
     ],
-    max_tokens: 1,
+    max_tokens: 32,
     stream: true
   },
   'chat completions payload helper 应保持原字段'
@@ -412,9 +418,36 @@ assert.deepEqual(geminiRequest.body, {
     }
   ],
   generationConfig: {
-    maxOutputTokens: 1
+    maxOutputTokens: 32
   }
 }, 'Gemini 测试 payload 应使用 generateContent 原生结构')
+
+const rawVisibleOutputFixtures = [
+  ['openai', JSON.stringify({ output: [{ content: [{ type: 'reasoning', text: '思考' }, { text: '隐藏' }, { type: 'output_text', text: 'OK:RAW' }] }] }), 'OK:RAW'],
+  ['openai', JSON.stringify({ output_text: '', output: [{ content: [{ type: 'output_text', text: 'OK:RAW' }] }] }), 'OK:RAW'],
+  ['openai', JSON.stringify({ choices: [{ message: { content: 'OK:RAW' } }] }), 'OK:RAW'],
+  ['openai', JSON.stringify({ choices: [{ message: { content: [{ type: 'reasoning', text: '思考' }, { type: 'text', text: 'OK:RAW' }, { type: 'tool_call', text: '工具' }, { type: 'refusal', text: '' }] } }] }), 'OK:RAW'],
+  ['anthropic', JSON.stringify({ content: [{ type: 'thinking', text: '思考' }, { type: 'text', text: 'OK:RAW' }] }), 'OK:RAW'],
+  ['gemini', JSON.stringify({ steps: [{ type: 'thought', content: [{ text: '思考' }] }, { type: 'model_output', content: [{ text: 'OK:RAW' }] }] }), 'OK:RAW']
+] as const
+for (const [protocol, body, expected] of rawVisibleOutputFixtures) {
+  assert.equal(extractAccountTestRawVisibleOutputText(body, protocol), expected, `${protocol} 严格校验不得把 reasoning/thinking 当成可见输出`)
+}
+assert.equal(
+  extractAccountTestRawVisibleOutputText(JSON.stringify({ choices: [{ message: { content: 'OK:RAW ' } }] }), 'openai'),
+  'OK:RAW ',
+  '严格校验不得 trim 额外空白'
+)
+const emptyOpenAIConvenienceTextContext = parseDiagnosticResponseContext([
+  `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'OK:RAW' })}\n\n`,
+  `event: response.output_text.done\ndata: ${JSON.stringify({ type: 'response.output_text.done', text: '' })}\n\n`,
+  `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { output_text: '' } })}\n\n`
+].join(''))
+assert.equal(
+  extractAccountTestRawVisibleOutputText(emptyOpenAIConvenienceTextContext, 'openai'),
+  'OK:RAW',
+  '空 OpenAI SSE completed/done convenience 文本不得覆盖已收集的可见 delta'
+)
 
 const geminiInteractionsJsonRequest = createGeminiTestRequest({
   fallbackModel: 'gemini-3.5-flash',

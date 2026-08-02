@@ -260,6 +260,26 @@ assert.equal(framingSweep.framingCompleteCount, 1)
 assert.equal((await framingStore.get(framingScope, now)).phase, 'CLOSED', '完整 framing 即使状态码不可信，也应证明 transport circuit 可立即清除 SUSPECT')
 assert.deepEqual(framingMutations.map((state) => state.phase), ['SUSPECT', 'CLOSED'], '后台 confirmation 的 lease 与终态都必须交给 control-plane mutation observer')
 
+const strictNeutralStore = new MemoryAccountCircuitStore({ capacity: 10, now: () => now })
+const strictNeutralScope = scope('suspect-strict-neutral')
+await strictNeutralStore.suspect({
+  scope: strictNeutralScope,
+  dispatchRevision: 'r1',
+  transitionId: createId(),
+  reason: 'timeout',
+  confirmationFailuresRequired: 2,
+  nowMs: now
+})
+now += 3_000
+const strictNeutralSweep = await service(strictNeutralStore, async () => ({
+  dispatchRevision: 'r1',
+  probe: async () => ({ kind: 'framing_complete', statusCode: 200, semanticSuccess: false })
+})).sweep()
+assert.equal(strictNeutralSweep.unknownCount, 1, '严格文本不匹配必须作为中性结果保留电路恢复状态')
+const strictNeutralState = await strictNeutralStore.get(strictNeutralScope, now)
+assert.equal(strictNeutralState.phase, 'SUSPECT', '严格文本不匹配不得关闭 transport circuit')
+assert.equal(strictNeutralState.confirmationFailureCount, 0, '严格文本不匹配不得伪造 transport 失败证据')
+
 const taskFailureStore = new MemoryAccountCircuitStore({ capacity: 10, now: () => now })
 const taskFailureScope = scope('suspect-task-failure')
 await taskFailureStore.suspect({

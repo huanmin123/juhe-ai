@@ -118,7 +118,11 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     group: selectedGroup,
     apiKey: asString(credentials.api_key) ?? '',
     apiKeys: accountApiKeysForForm(credentials),
-    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin',
+    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin'
+      ? 'weighted_round_robin'
+      : credentials.api_key_strategy === 'failover'
+        ? 'failover'
+        : 'failover',
     apiKeyWeights: accountApiKeyWeightsForForm(credentials),
     baseUrl: credentialBaseUrlForForm(credentials, '账户详情凭据', input.allowMissingBaseUrl),
     accessToken: asString(credentials.access_token) ?? '',
@@ -167,7 +171,11 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     group: selectedGroup,
     apiKey: '',
     apiKeys: cloneAccountApiKeySlots(credentials),
-    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin',
+    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin'
+      ? 'weighted_round_robin'
+      : credentials.api_key_strategy === 'failover'
+        ? 'failover'
+        : 'failover',
     apiKeyWeights: cloneAccountApiKeyWeights(credentials),
     baseUrl,
     accessToken: '',

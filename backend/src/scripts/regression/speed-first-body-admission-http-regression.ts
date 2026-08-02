@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import type { GatewayRuntimeRequest } from '../../modules/gateway/request/pre-auth.js'
+import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { admitSpeedFirstRequestBody } from '../../modules/gateway/request/speed-first-body-admission.middleware.js'
 import {
   clearSpeedFirstBodyAdmissionsForTest,
@@ -11,6 +12,7 @@ import {
 } from '../../modules/gateway/runtime/speed-first-body-admission.service.js'
 
 let handlerHitCount = 0
+let rawParserCompletedCount = 0
 let releaseFirstHandler: (() => void) | undefined
 
 const app = express()
@@ -57,7 +59,14 @@ app.use((req: GatewayRuntimeRequest, _res: Response, next: NextFunction) => {
   next()
 })
 app.use(admitSpeedFirstRequestBody)
-app.use(express.raw({ type: () => true, limit: '8mb' }))
+app.use(express.raw({
+  type: () => true,
+  limit: '8mb',
+  verify: () => {
+    rawParserCompletedCount += 1
+  }
+}))
+app.use(captureGatewayRawBody)
 app.use(async (req: Request, res: Response) => {
   handlerHitCount += 1
   const currentHit = handlerHitCount
@@ -66,7 +75,8 @@ app.use(async (req: Request, res: Response) => {
       releaseFirstHandler = resolve
     })
   }
-  res.json({ hit: currentHit, bytes: Buffer.isBuffer(req.body) ? req.body.length : 0 })
+  const rawBody = (req as GatewayRuntimeRequest & { rawBody?: Buffer }).rawBody
+  res.json({ hit: currentHit, bytes: Buffer.isBuffer(rawBody) ? rawBody.length : 0 })
 })
 
 const server = createServer(app)
@@ -77,27 +87,38 @@ try {
   const firstPromise = postJson(url, body)
   await waitUntil(() => handlerHitCount === 1)
 
-  const imageResponse = await postJson(
+  const imageResponsePromise = postJson(
     `http://127.0.0.1:${serverPort(server)}/v1/images/generations`,
-    JSON.stringify({ model: 'gpt-image-1', prompt: 'speed first must not gate images' })
+    JSON.stringify({ model: 'gpt-image-1', prompt: 'a test image' })
   )
+  await waitUntil(() => handlerHitCount === 2)
+  const imageResponse = await imageResponsePromise
   assert.equal(imageResponse.status, 200)
-  assert.equal(imageResponse.payload.hit, 2, '直接图片请求不得等待 speed-first 正文 admission lease')
+  assert.equal(imageResponse.payload.hit, 2, 'image lane 必须保留正文 admission bypass')
 
+  const compactionResponsePromise = postJson(
+    url,
+    JSON.stringify({
+      model: 'gpt-5.4',
+      input: [{ type: 'compaction_trigger' }]
+    })
+  )
   const secondPromise = postJson(url, body)
   await waitUntil(() => speedFirstBodyAdmissionSnapshot().some((state) => (
-    state.active === 1 && state.queued === 1
+    state.active === 1 && state.queued === 2
   )))
-  assert.equal(handlerHitCount, 2, '第一个文本响应结束前，第二个大文本 Body 不得通过 express.raw 进入业务处理')
+  assert.equal(handlerHitCount, 2, '第一个文本响应结束前，等待中的文本 Body 不得进入业务处理')
+  assert.equal(rawParserCompletedCount, 2, 'admission 等待期间普通文本和伪造 compaction_trigger 不得完成 express.raw 解析')
   releaseFirstHandler?.()
-  const [first, second] = await Promise.all([firstPromise, secondPromise])
+  const [first, second, compaction] = await Promise.all([firstPromise, secondPromise, compactionResponsePromise])
   assert.equal(first.status, 200)
   assert.equal(second.status, 200)
+  assert.equal(compaction.status, 200)
   assert.equal(first.payload.bytes, Buffer.byteLength(body))
   assert.equal(second.payload.bytes, Buffer.byteLength(body))
-  assert.equal(second.payload.hit, 3, 'lease 释放后第二个大文本 Body 应继续处理')
-  assert.equal(handlerHitCount, 3, '图片绕过 admission 不得破坏文本 admission 的按序释放')
-  console.log('速度优先正文 admission HTTP 回归通过：图片绕过；4MB 文本请求在 lease 前未进入 express.raw，释放后按序处理')
+  assert.equal(handlerHitCount, 4, 'lease 释放后排队文本请求应继续按序处理')
+  assert.equal(rawParserCompletedCount, 4, '所有进入业务处理的请求都应先完成 express.raw')
+  console.log('速度优先正文 admission HTTP 回归通过：image bypass 保留；普通文本与伪造 compaction_trigger 均受正文前 admission 保护')
 } finally {
   releaseFirstHandler?.()
   await close(server)

@@ -261,10 +261,10 @@ function runtimeProbeObservation(
     attemptCount,
     attemptedAt: result.attemptedAt,
     probeOutcome: result.probeOutcome,
-    success: result.transportOutcome.kind === 'framing_complete',
+    success: result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false,
     statusCode: result.statusCode,
-    errorCode: result.transportOutcome.kind === 'framing_complete' ? undefined : result.errorCode,
-    reason: result.transportOutcome.kind === 'framing_complete' ? undefined : accountPrecheckFailureReason(result),
+    errorCode: result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false ? undefined : result.errorCode,
+    reason: result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false ? undefined : accountPrecheckFailureReason(result),
     traceId: result.traceId
   })
 }
@@ -858,7 +858,7 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
       }, '账号运行态后台恢复探针结论未知，已保留状态并有界重排')
       return
     }
-    if (result.transportOutcome.kind === 'framing_complete') {
+    if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false) {
       clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
       logger.info({
         event: 'gateway_account_recovery_probe_success',
@@ -1026,7 +1026,7 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
         }, 'Redis 运行态账号恢复探针结论未知，已保留状态并有界重排')
         return
       }
-      if (result.transportOutcome.kind === 'framing_complete') {
+      if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false) {
         const cleared = await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
         if (!cleared) {
           logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_success_ignored')
@@ -1182,7 +1182,7 @@ async function runDistributedGatewayAccountPrecheck(
         }, runId)
         return
       }
-      if (result.transportOutcome.kind === 'framing_complete') {
+      if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false) {
         await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
         return
       }
@@ -2712,7 +2712,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         }, '账号事前确认结论未知，已保留状态并有界重排')
         return
       }
-      if (result.transportOutcome.kind === 'framing_complete') {
+      if (result.transportOutcome.kind === 'framing_complete' && result.transportOutcome.semanticSuccess !== false) {
         clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
         logger.info({
           event: 'gateway_account_precheck_recovered',
@@ -2869,7 +2869,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     upstreamAttempt,
     timeout: signal.aborted
   })
-  const probeOutcome: GatewayAutomaticProbeResult['probeOutcome'] = transportOutcome.kind === 'framing_complete'
+  const probeOutcome: GatewayAutomaticProbeResult['probeOutcome'] = transportOutcome.kind === 'framing_complete' && transportOutcome.semanticSuccess !== false
     ? 'complete_success'
     : transportOutcome.kind === 'transport_incomplete'
       ? 'upstream_failure'

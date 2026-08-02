@@ -194,8 +194,9 @@ function normalizeApiKeyCredentialList(input: Record<string, unknown>): string[]
   return output
 }
 
-function normalizeApiKeyStrategy(value: unknown): 'round_robin' | 'weighted_round_robin' {
-  return value === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin'
+function normalizeApiKeyStrategy(value: unknown): 'round_robin' | 'weighted_round_robin' | 'failover' {
+  if (value === 'failover') return 'failover'
+  return value === 'weighted_round_robin' ? 'weighted_round_robin' : value === 'round_robin' ? 'round_robin' : 'failover'
 }
 
 function normalizeApiKeyWeights(value: unknown, count: number): number[] {

@@ -1,4 +1,3 @@
-import { GatewayRequestValidationError } from '../request/validation-error.js'
 import type {
   CodexHistorySanitizerContext,
   CodexHistorySanitizerResult
@@ -13,31 +12,39 @@ export function sanitizeCodexResponseHistoryItems(
 ): CodexHistorySanitizerResult {
   let output: unknown[] | undefined
   let removedIdCount = 0
+  let droppedItemCount = 0
   const issueCodes: string[] = []
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     const decision = itemIdRemovalDecision(item, context)
     if (!decision) continue
-    if (!isReplayableCodexHistoryItem(item)) {
-      throw new GatewayRequestValidationError(
-        `Codex Responses 历史项 ${decision.type} 只有持久化 ID，没有可重放内容`,
-        'codex_history_item_unrecoverable'
-      )
-    }
+    const outputIndex = index - droppedItemCount
     if (!output) output = items.slice()
+    if (!isReplayableCodexHistoryItem(item)) {
+      output.splice(outputIndex, 1)
+      droppedItemCount += 1
+      pushIssueCode(issueCodes, decision.issueCode)
+      pushIssueCode(issueCodes, 'unrecoverable_item_dropped')
+      continue
+    }
     const { id: _removedId, ...copy } = decision.item
-    output[index] = copy
+    output[outputIndex] = copy
     removedIdCount += 1
-    if (!issueCodes.includes(decision.issueCode)) issueCodes.push(decision.issueCode)
+    pushIssueCode(issueCodes, decision.issueCode)
   }
 
   return {
     items: output ?? items,
     changed: output !== undefined,
     removedIdCount,
+    droppedItemCount,
     issueCodes
   }
+}
+
+function pushIssueCode(issueCodes: string[], issueCode: string): void {
+  if (!issueCodes.includes(issueCode)) issueCodes.push(issueCode)
 }
 
 function itemIdRemovalDecision(

@@ -1045,7 +1045,10 @@ export async function fetchFirstAvailableUpstream(
                       errorMessage: error instanceof Error ? error.message : undefined
                     }
                   : undefined
-                const retryAnotherAccountApiKey = isOpaqueUpstreamFailoverAllowed(req) && !localRequestFailure
+                const retryAnotherAccountApiKey = (
+                  isOpaqueUpstreamFailoverAllowed(req)
+                  || account.credentials.api_key_strategy === 'failover'
+                ) && !localRequestFailure
                   && provenStartedTransportFailure
                   && !neutralFirstByteDeadline
                   && !signal?.aborted

@@ -18,7 +18,7 @@ Codex Responses 的历史 `input` 可能包含只属于原上游账户、旧会�
 ## 清理规则
 
 - item 类型和 ID 前缀不匹配、ID 无效、目标账户不持久化上游状态、或历史跨账户 / 跨作用域时，删除 item `id`，保留 item 顺序、内容、工具名、参数和 `call_id`。
-- 只含不可重放 ID、缺少必要语义字段的历史 item 以 `codex_history_item_unrecoverable` 在本地失败，避免静默丢失上下文。
+- 已注册类型中只含不可重放 ID、缺少必要语义字段的历史 item 直接从顶层 `input` 数组移除并继续请求，不再返回 `codex_history_item_unrecoverable`；结果记录 `droppedItemCount` 与 `unrecoverable_item_dropped` issue。可重放 item 仍只删除 `id` 并保留语义字段。
 - 当前 item contract registry 仅供请求历史识别合法 item 类型和 ID 前缀，不承担响应协议校验。
 - `previous_response_id` 的恢复、桥接状态保存和 compaction contract 属于上下文状态机制，保持独立。
 
