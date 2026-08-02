@@ -20,6 +20,7 @@ MIGRATOR_SHA256=''
 PROBE_HELPER=''
 MAINTENANCE_LOCK=''
 RELEASE_LOCK=''
+REUSE_EXISTING_ROOT_WRAPPERS=0
 
 usage() {
   cat <<'EOF'
@@ -35,6 +36,7 @@ Usage: install-wireguard-reconciler.sh [--dry-run|--apply] --manifest <absolute-
   --probe-helper <absolute-path>    root-owned adapter for the independent 203 TLS nonce probe
   --maintenance-lock <path>         suppress recovery while this root-owned marker exists
   --release-lock <path>             suppress recovery during a root-owned deployment marker
+  --reuse-existing-root-wrappers    install only when every Edge already binds a root-only hashed wrapper/config pair
   --interval-seconds <seconds>      launchd interval; default 30
   --script-sha256 <hex>             required by --apply; hash of source helper
   --migrator-sha256 <hex>           required by --apply; hash of root-wrapper migrator
@@ -42,7 +44,9 @@ Usage: install-wireguard-reconciler.sh [--dry-run|--apply] --manifest <absolute-
 
 All changes require --apply and root. --apply verifies the source hash both before and
 after copying, writes a root-only helper, transactionally replaces only this plist, and
-restores its prior helper/plist/loaded state if bootstrap fails.
+restores its prior helper/plist/loaded state if bootstrap fails. Reuse mode first validates
+the complete pre-hashed manifest, then refuses unless every existing Edge already uses its
+root-only hashed wrapper/config pair; it never restarts an Edge job.
 EOF
 }
 
@@ -91,6 +95,29 @@ ensure_root_directory() {
   root_path_chain "$path" || return 1
   /bin/chmod "$mode" "$path"
 }
+plist_has_exact_program_arguments() {
+  local plist="$1" expected_wrapper="$2" expected_logical="$3" expected_config="$4" index=4
+  [ "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$plist" 2>/dev/null || true)" = /usr/local/bin/bash ] || return 1
+  [ "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$plist" 2>/dev/null || true)" = "$expected_wrapper" ] || return 1
+  [ "$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$plist" 2>/dev/null || true)" = "$expected_logical" ] || return 1
+  [ "$(/usr/bin/plutil -extract ProgramArguments.3 raw -o - "$plist" 2>/dev/null || true)" = "$expected_config" ] || return 1
+  while /usr/bin/plutil -extract "ProgramArguments.$index" raw -o /dev/null "$plist" >/dev/null 2>&1; do
+    return 1
+  done
+  return 0
+}
+validate_reused_root_wrappers() {
+  local edge logical edge_label source_config source_wrapper peer config_hash wrapper_hash extra count=0
+  while IFS=$'\t' read -r edge logical edge_label source_config source_wrapper peer config_hash wrapper_hash extra; do
+    case "$edge" in ''|\#*) continue ;; esac
+    [ -z "${extra:-}" ] || { printf 'reuse manifest has an unexpected field edge=%s\n' "$edge" >&2; return 1; }
+    root_path_chain "$source_config" || { printf 'reuse config path is not root-only edge=%s\n' "$edge" >&2; return 1; }
+    root_path_chain "$source_wrapper" || { printf 'reuse wrapper path is not root-only edge=%s\n' "$edge" >&2; return 1; }
+    plist_has_exact_program_arguments "/Library/LaunchDaemons/$edge_label.plist" "$source_wrapper" "$logical" "$source_config" || { printf 'reuse plist does not bind the fixed root pair edge=%s\n' "$edge" >&2; return 1; }
+    count=$((count + 1))
+  done < "$MANIFEST"
+  [ "$count" -eq 8 ] || { printf 'reuse manifest must contain exactly eight edges\n' >&2; return 1; }
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -107,6 +134,7 @@ while [ "$#" -gt 0 ]; do
     --probe-helper) PROBE_HELPER="${2:?missing --probe-helper value}"; shift 2 ;;
     --maintenance-lock) MAINTENANCE_LOCK="${2:?missing --maintenance-lock value}"; shift 2 ;;
     --release-lock) RELEASE_LOCK="${2:?missing --release-lock value}"; shift 2 ;;
+    --reuse-existing-root-wrappers) REUSE_EXISTING_ROOT_WRAPPERS=1; shift ;;
     --interval-seconds) INTERVAL_SECONDS="${2:?missing --interval-seconds value}"; shift 2 ;;
     --script-sha256) SCRIPT_SHA256="${2:?missing --script-sha256 value}"; shift 2 ;;
     --migrator-sha256) MIGRATOR_SHA256="${2:?missing --migrator-sha256 value}"; shift 2 ;;
@@ -150,7 +178,7 @@ PLIST_PATH="/Library/LaunchDaemons/$LABEL.plist"
 DOMAIN=system
 
 printf 'mode=%s label=%s manifest=%s state=%s helper=%s plist=%s wg-bin=%s wg-quick-bin=%s runtime-path=%s\n' "$MODE" "$LABEL" "$MANIFEST" "$STATE_DIR" "$HELPER_PATH" "$PLIST_PATH" "$WG_BIN" "$WG_QUICK_BIN" "$RUNTIME_PATH"
-printf 'plan: install root-only WireGuard reconciler -> bootstrap one bounded launchd pass every %ss -> no HTTP/application recovery actions\n' "$INTERVAL_SECONDS"
+printf 'plan: install root-only WireGuard reconciler -> bootstrap one bounded launchd pass every %ss -> no HTTP/application recovery actions; reuse-existing-root-wrappers=%s\n' "$INTERVAL_SECONDS" "$REUSE_EXISTING_ROOT_WRAPPERS"
 [ "$MODE" = apply ] || exit 0
 
 [ "$(/usr/bin/id -u)" -eq 0 ] || die '--apply requires root'
@@ -189,18 +217,8 @@ ensure_root_directory "$STATE_DIR" 700 || die 'state-dir must already be root-on
 # Hashing a user-writable release file and then executing it in place would leave a race.
 MIGRATOR_TMP="$INSTALL_DIR/.migrate-wireguard-root-wrappers.sh.tmp.$$"
 MIGRATION_JOURNAL="$INSTALL_DIR/.wireguard-installer-rollback.$$"
-MIGRATION_COMPLETE=0
+MIGRATION_STARTED=0
 MIGRATION_ROLLED_BACK=0
-/bin/cp "$SOURCE_MIGRATOR" "$MIGRATOR_TMP"
-/usr/sbin/chown root:wheel "$MIGRATOR_TMP"
-/bin/chmod 700 "$MIGRATOR_TMP"
-/bin/bash -n "$MIGRATOR_TMP" || { /bin/rm -f "$MIGRATOR_TMP"; die 'copied migrator has invalid shell syntax'; }
-[ "$(sha256 "$MIGRATOR_TMP")" = "$(printf '%s' "$MIGRATOR_SHA256" | /usr/bin/tr '[:upper:]' '[:lower:]')" ] || { /bin/rm -f "$MIGRATOR_TMP"; die 'migrator changed while copying into root-only directory'; }
-if ! /bin/bash "$MIGRATOR_TMP" --apply --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --wg-bin "$WG_BIN" --wg-quick-bin "$WG_QUICK_BIN" --runtime-path "$RUNTIME_PATH" --rollback-journal "$MIGRATION_JOURNAL"; then
-  /bin/rm -f "$MIGRATOR_TMP"
-  die 'root WireGuard wrapper migration failed'
-fi
-MIGRATION_COMPLETE=1
 
 HELPER_TMP="$HELPER_PATH.tmp.$$"
 MANIFEST_TMP="$HELPER_MANIFEST.tmp.$$"
@@ -216,7 +234,7 @@ INSTALL_MUTATED=0
 
 rollback_install() {
   /bin/launchctl bootout "$DOMAIN" "$PLIST_PATH" >/dev/null 2>&1 || true
-  if [ "$MIGRATION_COMPLETE" = 1 ]; then
+  if [ "$MIGRATION_STARTED" = 1 ] && [ -d "$MIGRATION_JOURNAL" ]; then
     /bin/bash "$MIGRATOR_TMP" --rollback --rollback-journal "$MIGRATION_JOURNAL" --install-dir "$INSTALL_DIR" || return 1
     MIGRATION_ROLLED_BACK=1
   fi
@@ -224,7 +242,11 @@ rollback_install() {
   if [ "$HAD_HELPER_MANIFEST" = 1 ]; then /bin/mv -f "$MANIFEST_BACKUP" "$HELPER_MANIFEST"; else /bin/rm -f "$HELPER_MANIFEST"; fi
   if [ "$HAD_PLIST" = 1 ]; then
     /bin/mv -f "$PLIST_BACKUP" "$PLIST_PATH"
-    if [ "$HAD_LOADED" = 1 ]; then /bin/launchctl bootstrap "$DOMAIN" "$PLIST_PATH" && /bin/launchctl kickstart -k "$DOMAIN/$LABEL"; fi
+    if [ "$HAD_LOADED" = 1 ]; then
+      /bin/launchctl bootstrap "$DOMAIN" "$PLIST_PATH" || return 1
+      /bin/launchctl kickstart -k "$DOMAIN/$LABEL" || return 1
+      /bin/launchctl print "$DOMAIN/$LABEL" >/dev/null || return 1
+    fi
   else
     /bin/rm -f "$PLIST_PATH"
   fi
@@ -233,12 +255,37 @@ on_exit() {
   local status="$1"
   set +e
   /bin/rm -f "$HELPER_TMP" "$MANIFEST_TMP" "$PLIST_TMP"
-  if [ "$status" -ne 0 ] && [ "$INSTALL_MUTATED" = 1 ]; then rollback_install || echo 'wireguard reconciler rollback failed' >&2; fi
+  if [ "$status" -ne 0 ] && { [ "$MIGRATION_STARTED" = 1 ] || [ "$INSTALL_MUTATED" = 1 ]; }; then
+    if ! rollback_install; then
+      echo "wireguard reconciler rollback=incomplete journal=$MIGRATION_JOURNAL migrator=$MIGRATOR_TMP" >&2
+      return "$status"
+    fi
+  fi
   /bin/rm -f "$HELPER_BACKUP" "$MANIFEST_BACKUP" "$PLIST_BACKUP" "$MIGRATOR_TMP"
   if [ "$status" -eq 0 ] || [ "$MIGRATION_ROLLED_BACK" = 1 ]; then /bin/rm -rf "$MIGRATION_JOURNAL"; fi
   return "$status"
 }
 trap 'on_exit "$?"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Copy the verified migrator to the protected install directory before root executes it.
+# The trap is already armed so an interrupted child cannot strand a retained journal.
+/bin/cp "$SOURCE_MIGRATOR" "$MIGRATOR_TMP"
+/usr/sbin/chown root:wheel "$MIGRATOR_TMP"
+/bin/chmod 700 "$MIGRATOR_TMP"
+/bin/bash -n "$MIGRATOR_TMP" || die 'copied migrator has invalid shell syntax'
+[ "$(sha256 "$MIGRATOR_TMP")" = "$(printf '%s' "$MIGRATOR_SHA256" | /usr/bin/tr '[:upper:]' '[:lower:]')" ] || die 'migrator changed while copying into root-only directory'
+if [ "$REUSE_EXISTING_ROOT_WRAPPERS" = 1 ]; then
+  /bin/bash "$MIGRATOR_TMP" --dry-run --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --wg-bin "$WG_BIN" --wg-quick-bin "$WG_QUICK_BIN" --runtime-path "$RUNTIME_PATH" || die 'root WireGuard wrapper reuse preflight failed'
+  validate_reused_root_wrappers || die 'root WireGuard wrapper reuse requires every Edge to already bind the fixed root wrapper/config paths'
+else
+  MIGRATION_STARTED=1
+  if ! /bin/bash "$MIGRATOR_TMP" --apply --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --wg-bin "$WG_BIN" --wg-quick-bin "$WG_QUICK_BIN" --runtime-path "$RUNTIME_PATH" --rollback-journal "$MIGRATION_JOURNAL"; then
+    die 'root WireGuard wrapper migration failed'
+  fi
+fi
 
 if /bin/launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
   HAD_LOADED=1
@@ -254,7 +301,11 @@ fi
 
 while IFS=$'\t' read -r edge logical edge_label source_config source_wrapper peer config_hash wrapper_hash extra; do
   case "$edge" in ''|\#*) continue ;; esac
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$edge" "$logical" "$edge_label" "$CANONICAL_CONFIG_DIR/$logical.conf" "$INSTALL_DIR/wireguard/$edge/run-wireguard.sh" "$peer" >> "$MANIFEST_TMP"
+  if [ "$REUSE_EXISTING_ROOT_WRAPPERS" = 1 ]; then
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$edge" "$logical" "$edge_label" "$source_config" "$source_wrapper" "$peer" >> "$MANIFEST_TMP"
+  else
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$edge" "$logical" "$edge_label" "$CANONICAL_CONFIG_DIR/$logical.conf" "$INSTALL_DIR/wireguard/$edge/run-wireguard.sh" "$peer" >> "$MANIFEST_TMP"
+  fi
 done < "$MANIFEST"
 /usr/sbin/chown root:wheel "$MANIFEST_TMP"
 /bin/chmod 600 "$MANIFEST_TMP"

@@ -303,19 +303,35 @@ if [ "$ACTION" = rollback ]; then
   ROLLBACK_MAP="$ROLLBACK_JOURNAL/applied.map"
   [ ! -L "$ROLLBACK_MAP" ] && [ -f "$ROLLBACK_MAP" ] || die 'rollback journal has no regular applied map'
   root_not_group_or_other_writable "$ROLLBACK_MAP" || die 'rollback map must be root-owned and non-writable'
+  rollback_reverse="$ROLLBACK_JOURNAL/.rollback-reverse.$$"
+  /usr/bin/awk '{ row[NR]=$0 } END { for (line_number = NR; line_number >= 1; line_number--) print row[line_number] }' "$ROLLBACK_MAP" > "$rollback_reverse" || exit 1
+  rollback_failed=0
   while IFS=$'\t' read -r edge logical label target_wrapper target_config target_plist source_wrapper old_plist old_dir old_config had_loaded; do
-    /bin/launchctl bootout system "/Library/LaunchDaemons/$label.plist" >/dev/null 2>&1 || true
-    [ -n "$old_plist" ] && [ -e "$old_plist" ] && /bin/mv -f "$old_plist" "/Library/LaunchDaemons/$label.plist" || exit 1
-    /bin/rm -f "$target_config"
-    if [ -n "$old_config" ] && [ -e "$old_config" ]; then /bin/mv -f "$old_config" "$target_config" || exit 1; fi
-    if [ -n "$old_dir" ] && [ -e "$old_dir" ]; then
-      /bin/rm -rf "$INSTALL_DIR/wireguard/$edge"
-      /bin/mv -f "$old_dir" "$INSTALL_DIR/wireguard/$edge" || exit 1
-    else
-      /bin/rm -rf "$INSTALL_DIR/wireguard/$edge"
+    [ "$old_dir" = - ] && old_dir=''
+    [ "$old_config" = - ] && old_config=''
+    if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+      /bin/launchctl bootout system "/Library/LaunchDaemons/$label.plist" >/dev/null 2>&1 || { rollback_failed=1; continue; }
+      /bin/launchctl print "system/$label" >/dev/null 2>&1 && { rollback_failed=1; continue; }
     fi
-    if [ "$had_loaded" = 1 ]; then /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" && /bin/launchctl kickstart -k "system/$label" || exit 1; fi
-  done < "$ROLLBACK_MAP"
+    [ -f "$old_plist" ] && /bin/cp -p "$old_plist" "/Library/LaunchDaemons/$label.plist" && /usr/bin/cmp -s "$old_plist" "/Library/LaunchDaemons/$label.plist" || { rollback_failed=1; continue; }
+    /bin/rm -f "$target_config" || { rollback_failed=1; continue; }
+    if [ -n "$old_config" ]; then
+      [ -f "$old_config" ] && /bin/cp -p "$old_config" "$target_config" && /usr/bin/cmp -s "$old_config" "$target_config" || { rollback_failed=1; continue; }
+    fi
+    /bin/rm -rf "$INSTALL_DIR/wireguard/$edge" || { rollback_failed=1; continue; }
+    if [ -n "$old_dir" ]; then
+      [ -d "$old_dir" ] && /bin/cp -pR "$old_dir" "$INSTALL_DIR/wireguard/$edge" || { rollback_failed=1; continue; }
+    fi
+    if [ "$had_loaded" = 1 ]; then
+      /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" || { rollback_failed=1; continue; }
+      /bin/launchctl kickstart -k "system/$label" || { rollback_failed=1; continue; }
+      /bin/launchctl print "system/$label" >/dev/null || { rollback_failed=1; continue; }
+    elif /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+      rollback_failed=1
+    fi
+  done < "$rollback_reverse"
+  /bin/rm -f "$rollback_reverse"
+  [ "$rollback_failed" -eq 0 ] || { echo "root WireGuard wrapper rollback=incomplete journal=$ROLLBACK_JOURNAL" >&2; exit 1; }
   /bin/rm -rf "$ROLLBACK_JOURNAL"
   printf 'root WireGuard wrapper migration rollback completed\n'
   exit 0
@@ -392,7 +408,7 @@ root_wheel_mode_755_regular "$WG_QUICK_BIN" || die "wg-quick-bin must be a root:
 /bin/mkdir "$STAGE_DIR"
 /usr/sbin/chown root:wheel "$STAGE_DIR"
 /bin/chmod 700 "$STAGE_DIR"
-trap '/bin/rm -rf "$STAGE_DIR"' EXIT HUP INT TERM
+APPLY_STARTED=0
 : > "$MAP_FILE"
 : > "$ROLLBACK_MAP"
 
@@ -433,20 +449,36 @@ stage_all() {
 }
 
 rollback_applied() {
-  local edge logical label target_wrapper target_config target_plist source_wrapper old_plist old_dir old_config had_loaded
+  local edge logical label target_wrapper target_config target_plist source_wrapper old_plist old_dir old_config had_loaded reverse_map rollback_failed=0
+  reverse_map="$STAGE_DIR/.rollback-reverse.$$"
+  /usr/bin/awk '{ row[NR]=$0 } END { for (line_number = NR; line_number >= 1; line_number--) print row[line_number] }' "$ROLLBACK_MAP" > "$reverse_map" || return 1
   while IFS=$'\t' read -r edge logical label target_wrapper target_config target_plist source_wrapper old_plist old_dir old_config had_loaded; do
-    /bin/launchctl bootout system "/Library/LaunchDaemons/$label.plist" >/dev/null 2>&1 || true
-    [ -n "$old_plist" ] && /bin/mv -f "$old_plist" "/Library/LaunchDaemons/$label.plist" || true
-    /bin/rm -f "$target_config"
-    if [ -n "$old_config" ] && [ -e "$old_config" ]; then /bin/mv -f "$old_config" "$target_config" || true; fi
-    if [ -n "$old_dir" ] && [ -e "$old_dir" ]; then
-      /bin/rm -rf "$INSTALL_DIR/wireguard/$edge"
-      /bin/mv -f "$old_dir" "$INSTALL_DIR/wireguard/$edge"
-    else
-      /bin/rm -rf "$INSTALL_DIR/wireguard/$edge"
+    [ "$old_dir" = - ] && old_dir=''
+    [ "$old_config" = - ] && old_config=''
+    if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+      /bin/launchctl bootout system "/Library/LaunchDaemons/$label.plist" >/dev/null 2>&1 || { rollback_failed=1; continue; }
+      /bin/launchctl print "system/$label" >/dev/null 2>&1 && { rollback_failed=1; continue; }
     fi
-    if [ "$had_loaded" = 1 ]; then /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" && /bin/launchctl kickstart -k "system/$label" || true; fi
-  done < "$ROLLBACK_MAP"
+    [ -n "$old_plist" ] && [ -f "$old_plist" ] && /bin/cp -p "$old_plist" "/Library/LaunchDaemons/$label.plist" || { rollback_failed=1; continue; }
+    /usr/bin/cmp -s "$old_plist" "/Library/LaunchDaemons/$label.plist" || { rollback_failed=1; continue; }
+    /bin/rm -f "$target_config" || { rollback_failed=1; continue; }
+    if [ -n "$old_config" ]; then
+      [ -f "$old_config" ] && /bin/cp -p "$old_config" "$target_config" && /usr/bin/cmp -s "$old_config" "$target_config" || { rollback_failed=1; continue; }
+    fi
+    /bin/rm -rf "$INSTALL_DIR/wireguard/$edge" || { rollback_failed=1; continue; }
+    if [ -n "$old_dir" ]; then
+      [ -d "$old_dir" ] && /bin/cp -pR "$old_dir" "$INSTALL_DIR/wireguard/$edge" || { rollback_failed=1; continue; }
+    fi
+    if [ "$had_loaded" = 1 ]; then
+      /bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" || { rollback_failed=1; continue; }
+      /bin/launchctl kickstart -k "system/$label" || { rollback_failed=1; continue; }
+      /bin/launchctl print "system/$label" >/dev/null 2>&1 || { rollback_failed=1; continue; }
+    elif /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+      rollback_failed=1
+    fi
+  done < "$reverse_map"
+  /bin/rm -f "$reverse_map"
+  [ "$rollback_failed" -eq 0 ]
 }
 
 apply_all() {
@@ -472,11 +504,13 @@ apply_all() {
       old_config="$STAGE_DIR/old-root-config-$edge.conf"
       /bin/mv "$target_config" "$old_config" || return 1
     fi
+    [ -n "$old_dir" ] || old_dir=-
+    [ -n "$old_config" ] || old_config=-
     if ! printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$edge" "$logical" "$label" "$target_wrapper" "$target_config" "$target_plist" "$source_wrapper" "$old_plist" "$old_dir" "$old_config" "$had_loaded" >> "$ROLLBACK_MAP"; then
       # No plist/job was changed yet. Put a moved previous artifact back before
       # returning so the outer rollback remains complete even if the journal write fails.
-      if [ -n "$old_dir" ] && [ -e "$old_dir" ]; then /bin/mv "$old_dir" "$INSTALL_DIR/wireguard/$edge" || true; fi
-      if [ -n "$old_config" ] && [ -e "$old_config" ]; then /bin/mv "$old_config" "$target_config" || true; fi
+      if [ "$old_dir" != - ] && [ -e "$old_dir" ]; then /bin/mv "$old_dir" "$INSTALL_DIR/wireguard/$edge" || true; fi
+      if [ "$old_config" != - ] && [ -e "$old_config" ]; then /bin/mv "$old_config" "$target_config" || true; fi
       return 1
     fi
     if [ "$had_loaded" = 1 ]; then /bin/launchctl bootout system "/Library/LaunchDaemons/$label.plist" >/dev/null 2>&1 || return 1; fi
@@ -502,10 +536,28 @@ apply_all() {
   done < "$MAP_FILE"
 }
 
+on_migration_exit() {
+  local status="$1"
+  trap - EXIT HUP INT TERM
+  if [ "$status" -ne 0 ] && [ "$APPLY_STARTED" = 1 ]; then
+    if ! rollback_applied; then
+      echo "root WireGuard wrapper rollback=incomplete journal=$STAGE_DIR" >&2
+      return "$status"
+    fi
+  fi
+  /bin/rm -rf "$STAGE_DIR"
+  return "$status"
+}
+trap 'on_migration_exit "$?"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 stage_all
+APPLY_STARTED=1
 if ! apply_all; then
   echo 'root WireGuard wrapper migration failed; restoring changed jobs' >&2
-  rollback_applied
+  rollback_applied || { echo "root WireGuard wrapper rollback=incomplete journal=$STAGE_DIR" >&2; exit 1; }
   exit 1
 fi
 printf 'root WireGuard wrapper migration installed for eight exact jobs\n'

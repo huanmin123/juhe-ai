@@ -22,13 +22,22 @@ PROBE_MAPPING="$ROOT/probe.map"
 PROBE_ADAPTER="$ROOT/probe-adapter.sh"
 PROBE_INSTALLER="$ROOT/probe-installer.sh"
 MIGRATION_MANIFEST="$ROOT/migration.manifest"
+REUSE_MANIFEST="$ROOT/reuse.manifest"
 MIGRATOR="$ROOT/migrator.sh"
 OPERATIONS="$ROOT/operations"
 INSTALLER="$OPERATIONS/install-wireguard-reconciler.sh"
 INSTALLED_MANIFEST="$ROOT/root-libexec-installer/wireguard-reconciler.manifest"
 INSTALLED_STATE_DIR="$ROOT/root-libexec-installer/wireguard-reconciler-state"
-trap 'rm -rf "$ROOT" >/dev/null 2>&1 || true' EXIT HUP INT TERM
+cleanup_harness() {
+  if [ "${JUHE_WG_HARNESS_KEEP_ROOT:-0}" = 1 ]; then
+    printf 'WireGuard harness root retained for diagnostics: %s\n' "$ROOT" >&2
+  else
+    rm -rf "$ROOT" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_harness EXIT HUP INT TERM
 mkdir -p "$FAKE" "$RUN" "$STATE" "$OPERATIONS"
+mkdir -p "$ROOT/launchd-loaded"
 : > "$ACTION_LOG"
 
 cat > "$FAKE/stat" <<'EOF'
@@ -299,7 +308,7 @@ case "$1" in
     edge="$(printf '%s' "$last" | sed -n 's/.*edge\([0-9][0-9]*\).*/\1/p')"; [ -n "$edge" ] || edge=1
     label="${last##*/}"
     plist="${FAKE_LAUNCHD_DIR:?}/$label.plist"
-    [ -f "$plist" ] || exit 113
+    [ -f "$plist" ] && [ -f "${FAKE_LAUNCHD_LOADED_DIR:?}/$label" ] || exit 113
     job_wrapper="$(plist_value 1 "$plist")"
     job_config="$(plist_value 3 "$plist")"
     [ -n "$job_wrapper" ] || job_wrapper="${FAKE_SOURCE_WRAPPER:?}"
@@ -318,8 +327,9 @@ case "$1" in
     exit 0
     ;;
   kill) edge="$(printf '%s' "$last" | sed -n 's/.*edge\([0-9][0-9]*\).*/\1/p')"; [ -n "$edge" ] || edge=1; rm -f "$FAKE_RUN/wg$edge.name" "$FAKE_RUN/wg-edge$edge.name"; touch "$FAKE_RUN/killed.$edge"; exit 0 ;;
+  bootout) bootout_label="${last##*/}"; bootout_label="${bootout_label%.plist}"; rm -f "${FAKE_LAUNCHD_LOADED_DIR:?}/$bootout_label"; exit 0 ;;
   kickstart) edge="$(printf '%s' "$last" | sed -n 's/.*edge\([0-9][0-9]*\).*/\1/p')"; [ -n "$edge" ] || edge=1; if [ "${FAKE_LAUNCHD_ALLOW_ALL:-0}" -ne 1 ] && [ "$edge" -gt 1 ] && [ ! -f "$FAKE_RUN/verified.edge1" ]; then printf 'kickstart-before-canary-verify edge%s\n' "$edge" >> "$FAKE_ACTION_LOG"; exit 91; fi; if [ "${FAKE_KICKSTART_FAIL_EDGE:-}" = "$edge" ]; then exit 91; fi; [ "${FAKE_KICKSTART:-0}" -eq 0 ] && { printf 'utun%s\n' "$edge" > "$FAKE_RUN/wg$edge.name"; printf 'utun%s\n' "$edge" > "$FAKE_RUN/wg-edge$edge.name"; }; exit "${FAKE_KICKSTART:-0}" ;;
-  bootstrap) bootstrap_label="${last##*/}"; bootstrap_label="${bootstrap_label%.plist}"; [ "${FAKE_BOOTSTRAP_FAIL_LABEL:-}" != "$bootstrap_label" ] || exit 91; exit 0 ;;
+  bootstrap) bootstrap_label="${last##*/}"; bootstrap_label="${bootstrap_label%.plist}"; failure_marker="$FAKE_RUN/bootstrap-failed.$bootstrap_label"; if [ "${FAKE_BOOTSTRAP_FAIL_LABEL:-}" = "$bootstrap_label" ] && [ ! -e "$failure_marker" ]; then : > "$failure_marker"; exit 91; fi; : > "${FAKE_LAUNCHD_LOADED_DIR:?}/$bootstrap_label"; exit 0 ;;
   *) exit 0 ;;
 esac
 EOF
@@ -377,6 +387,7 @@ sed \
   -e "s|/usr/libexec/PlistBuddy|$FAKE/PlistBuddy|g" \
   -e "s|/usr/bin/shasum|$FAKE/shasum|g" \
   -e "s|/usr/sbin/chown|$FAKE/chown|g" \
+  -e "s|/usr/local/bin/bash|$FAKE/bash|g" \
   -e "s|/usr/local/bin/wg|$FAKE/wg|g" \
   -e "s|/usr/local/libexec/juhe-ai/wireguard-config|$ROOT/root-libexec/wireguard-config|g" \
   -e "s|/Library/LaunchDaemons|$ROOT/launchd|g" \
@@ -394,6 +405,7 @@ make_manifest() {
     chmod 700 "$ROOT/wrapper.sh"
     printf 'utun%s\n' "$index" > "$RUN/wg$index.name"
     printf 'utun%s\n' "$index" > "$RUN/wg-edge$index.name"
+    : > "$ROOT/launchd-loaded/com.example.wg.edge$index"
   done
 }
 
@@ -453,7 +465,20 @@ make_migration_manifest() {
   : > "$MIGRATION_MANIFEST"
   for index in 1 2 3 4 5 6 7 8; do
     printf '0\t%s/bash\n1\t%s/migration-wrapper.sh\n2\twg-edge%s\n3\t%s/migration.conf\n' "$FAKE" "$ROOT" "$index" "$ROOT" > "$ROOT/launchd/com.example.wg.edge$index.plist"
+    : > "$ROOT/launchd-loaded/com.example.wg.edge$index"
     printf 'edge%s\twg-edge%s\tcom.example.wg.edge%s\t%s/migration.conf\t%s/migration-wrapper.sh\t10.0.%s.2\t%s\t%s\n' "$index" "$index" "$index" "$ROOT" "$ROOT" "$index" "$config_hash" "$wrapper_hash" >> "$MIGRATION_MANIFEST"
+  done
+}
+
+make_reuse_manifest() {
+  local config wrapper config_hash wrapper_hash index
+  : > "$REUSE_MANIFEST"
+  for index in 1 2 3 4 5 6 7 8; do
+    config="$ROOT/root-libexec/wireguard-config/wg-edge$index.conf"
+    wrapper="$ROOT/root-libexec-installer/wireguard/edge$index/run-wireguard.sh"
+    config_hash="$(sha256_file "$config")"
+    wrapper_hash="$(sha256_file "$wrapper")"
+    printf 'edge%s\twg-edge%s\tcom.example.wg.edge%s\t%s\t%s\t10.0.%s.2\t%s\t%s\n' "$index" "$index" "$index" "$config" "$wrapper" "$index" "$config_hash" "$wrapper_hash" >> "$REUSE_MANIFEST"
   done
 }
 
@@ -482,7 +507,7 @@ sha256_file() {
 expect_migrator_status() {
   local expected="$1"
   set +e
-  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_ACTION_LOG="$ACTION_LOG" bash "$MIGRATOR" --dry-run --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec" >"$ROOT/migrator-status.out" 2>"$ROOT/migrator-status.err"
+  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_LAUNCHD_LOADED_DIR="$ROOT/launchd-loaded" FAKE_ACTION_LOG="$ACTION_LOG" bash "$MIGRATOR" --dry-run --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec" >"$ROOT/migrator-status.out" 2>"$ROOT/migrator-status.err"
   local status=$?
   set -e
   if [ "$expected" = accept ]; then
@@ -498,12 +523,12 @@ expect_migrator_status() {
 }
 
 apply_migrator() {
-  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_ACTION_LOG="$ACTION_LOG" FAKE_RUN="$RUN" FAKE_LAUNCHD_ALLOW_ALL=1 FAKE_BOOTSTRAP_FAIL_LABEL="${FAKE_BOOTSTRAP_FAIL_LABEL:-}" \
+  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_LAUNCHD_LOADED_DIR="$ROOT/launchd-loaded" FAKE_ACTION_LOG="$ACTION_LOG" FAKE_RUN="$RUN" FAKE_LAUNCHD_ALLOW_ALL=1 FAKE_BOOTSTRAP_FAIL_LABEL="${FAKE_BOOTSTRAP_FAIL_LABEL:-}" \
     bash "$MIGRATOR" --apply --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec"
 }
 
 apply_installer() {
-  local helper_hash migrator_hash runtime_path
+  local manifest="${1:-$MIGRATION_MANIFEST}" reuse_existing="${2:-0}" helper_hash migrator_hash runtime_path
   helper_hash="$(sha256_file "$OPERATIONS/wireguard-reconciler.sh")"
   migrator_hash="$(sha256_file "$OPERATIONS/migrate-wireguard-root-wrappers.sh")"
   runtime_path="$FAKE:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -511,8 +536,10 @@ apply_installer() {
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
     *) printf 'invalid harness helper SHA-256: length=%s value=%q\n' "${#helper_hash}" "$helper_hash" >&2; return 1 ;;
   esac
-  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_ACTION_LOG="$ACTION_LOG" FAKE_RUN="$RUN" FAKE_LAUNCHD_ALLOW_ALL=1 \
-    bash "$INSTALLER" --apply --manifest "$MIGRATION_MANIFEST" --install-dir "$ROOT/root-libexec-installer" --wg-bin "$FAKE/wg" --wg-quick-bin "$FAKE/wg-quick" --runtime-path "$runtime_path" --probe-helper "$FAKE/probe" --script-sha256 "$helper_hash" --migrator-sha256 "$migrator_hash"
+  set -- --apply --manifest "$manifest" --install-dir "$ROOT/root-libexec-installer" --wg-bin "$FAKE/wg" --wg-quick-bin "$FAKE/wg-quick" --runtime-path "$runtime_path" --probe-helper "$FAKE/probe" --script-sha256 "$helper_hash" --migrator-sha256 "$migrator_hash"
+  if [ "$reuse_existing" = 1 ]; then set -- "$@" --reuse-existing-root-wrappers; fi
+  FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_LAUNCHD_LOADED_DIR="$ROOT/launchd-loaded" FAKE_ACTION_LOG="$ACTION_LOG" FAKE_RUN="$RUN" FAKE_LAUNCHD_ALLOW_ALL=1 \
+    bash "$INSTALLER" "$@"
 }
 
 wait_for_log() {
@@ -636,7 +663,7 @@ run_once() (
     release) set -- "$@" --release-lock "$lock_path" ;;
     *) echo "run_once: unsupported lock kind: $lock_kind" >&2; return 2 ;;
   esac
-  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/config1" FAKE_HANDSHAKE="$handshake" FAKE_PROBE="$probe" FAKE_KICKSTART="$kickstart" FAKE_FRESH_UTUN="$fresh_utun" FAKE_VERIFY="$verify" FAKE_KICKSTART_FAIL_EDGE="$kickstart_fail_edge" \
+  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_LAUNCHD_LOADED_DIR="$ROOT/launchd-loaded" FAKE_SOURCE_WRAPPER="$ROOT/wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/config1" FAKE_HANDSHAKE="$handshake" FAKE_PROBE="$probe" FAKE_KICKSTART="$kickstart" FAKE_FRESH_UTUN="$fresh_utun" FAKE_VERIFY="$verify" FAKE_KICKSTART_FAIL_EDGE="$kickstart_fail_edge" \
     bash "$ROOT/reconciler.sh" "$@" &
   local pid=$! elapsed=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -659,7 +686,7 @@ run_once() (
 )
 
 installer_once() (
-  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 FAKE_VERIFY=0 \
+  FAKE_ACTION_LOG="$ACTION_LOG" FAKE_EVENT_LOG="$ROOT/events.log" FAKE_RUN="$RUN" FAKE_ROOT="$ROOT" FAKE_LAUNCHD_DIR="$ROOT/launchd" FAKE_LAUNCHD_LOADED_DIR="$ROOT/launchd-loaded" FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" FAKE_HANDSHAKE=0 FAKE_PROBE=1 FAKE_KICKSTART=0 FAKE_VERIFY=0 \
     bash "$ROOT/root-libexec-installer/wireguard-reconciler.sh" --once --manifest "$INSTALLED_MANIFEST" --state-dir "$STATE" --wg-bin "$FAKE/wg" --probe-helper "$FAKE/probe" --network-stable-seconds 1 --stale-seconds 10 --action-timeout-seconds 1 --global-cooldown-seconds 1 --per-edge-cooldown-seconds 1 --action-window-seconds 10 &
   local pid=$! elapsed=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -701,6 +728,7 @@ run_once_expect_status() {
   return 1
 }
 
+if [ "${JUHE_WG_HARNESS_TRANSACTION_ONLY:-0}" != 1 ]; then
 make_manifest
 make_probe_mapping
 
@@ -741,6 +769,7 @@ expect_installer_reject "$ROOT/probe.extraneous.map"
 awk 'BEGIN { FS=OFS="\t" } $1 == "edge1" { $2="http://untrusted.invalid" } { print }' "$PROBE_MAPPING" > "$ROOT/probe.http.map"
 expect_adapter_status "$ROOT/probe.http.map" 75
 expect_installer_reject "$ROOT/probe.http.map"
+fi
 
 # The migration accepts a real legacy wrapper from a service-user-writable parent as
 # hash-bound input, but it must never execute or copy that source into a root job.
@@ -781,8 +810,10 @@ FAKE_SOURCE_EXECUTED="$ROOT/source-wrapper-executed" apply_migrator
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.2 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = wg-edge1 ] || { echo 'migrator plist logical argument did not persist' >&2; exit 1; }
 [ "$(FAKE_SOURCE_WRAPPER="$ROOT/migration-wrapper.sh" FAKE_SOURCE_CONFIG="$ROOT/migration.conf" "$FAKE/plutil" -extract ProgramArguments.3 raw -o - "$ROOT/launchd/com.example.wg.edge1.plist")" = "$ROOT/root-libexec/wireguard-config/wg-edge1.conf" ] || { echo 'migrator plist config replacement did not persist' >&2; exit 1; }
 rm -f "$RUN"/killed.* "$RUN"/interface-gone.*
-expect_fixed_wrapper_lifecycle
-expect_fixed_wrapper_failure_paths
+if [ "${JUHE_WG_HARNESS_TRANSACTION_ONLY:-0}" != 1 ]; then
+  expect_fixed_wrapper_lifecycle
+  expect_fixed_wrapper_failure_paths
+fi
 
 # The installer must record the same root wrapper/config pair that the migrated launchd
 # job exposes. The real reconciler then accepts the pair from launchctl print before it
@@ -790,13 +821,23 @@ expect_fixed_wrapper_failure_paths
 rm -rf "$ROOT/root-libexec-installer" "$ROOT/installer-state" "$ROOT/root-libexec/wireguard-config"
 : > "$ACTION_LOG"
 make_migration_manifest
+mkdir -p "$ROOT/installer-failure-baseline"
+for installer_edge in 1 2 3 4 5 6 7 8; do
+  cp "$ROOT/launchd/com.example.wg.edge$installer_edge.plist" "$ROOT/installer-failure-baseline/edge$installer_edge.plist"
+  [ -f "$ROOT/launchd-loaded/com.example.wg.edge$installer_edge" ] || { echo "installer failure baseline edge$installer_edge was not loaded" >&2; exit 1; }
+done
 set +e
+rm -f "$RUN/bootstrap-failed.com.juhe-ai.wireguard-reconciler"
 FAKE_BOOTSTRAP_FAIL_LABEL='com.juhe-ai.wireguard-reconciler' apply_installer
 installer_failure_status=$?
 set -e
 [ "$installer_failure_status" -ne 0 ] || { echo 'installer accepted a reconciler bootstrap failure' >&2; exit 1; }
 [ ! -e "$ROOT/root-libexec-installer/wireguard/edge1/run-wireguard.sh" ] || { echo 'installer bootstrap failure retained migrated wrapper artifacts' >&2; exit 1; }
 [ ! -e "$ROOT/root-libexec/wireguard-config/wg-edge1.conf" ] || { echo 'installer bootstrap failure retained migrated config' >&2; exit 1; }
+for installer_edge in 1 2 3 4 5 6 7 8; do
+  cmp -s "$ROOT/installer-failure-baseline/edge$installer_edge.plist" "$ROOT/launchd/com.example.wg.edge$installer_edge.plist" || { echo "installer bootstrap failure did not restore edge$installer_edge plist bytes" >&2; exit 1; }
+  [ -f "$ROOT/launchd-loaded/com.example.wg.edge$installer_edge" ] || { echo "installer bootstrap failure did not restore edge$installer_edge loaded state" >&2; exit 1; }
+done
 : > "$ACTION_LOG"
 make_migration_manifest
 apply_installer
@@ -816,6 +857,32 @@ installed_manifest_line="$(/usr/bin/awk -F '\t' '$1 == "edge1" { print $4 "|" $5
 /usr/bin/grep -Fxq "wg_bin='$FAKE/wg'" "$installed_wrapper" || { echo 'installer did not pass the fixed wg path to the migrator' >&2; exit 1; }
 /usr/bin/grep -Fq "<string>--state-dir</string><string>$INSTALLED_STATE_DIR</string>" "$ROOT/launchd/com.juhe-ai.wireguard-reconciler.plist" || { echo 'installer did not pass its derived state directory to the helper plist' >&2; exit 1; }
 /usr/bin/grep -Fq "<key>PATH</key><string>$FAKE:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>" "$ROOT/launchd/com.juhe-ai.wireguard-reconciler.plist" || { echo 'installer plist runtime PATH did not persist' >&2; exit 1; }
+make_reuse_manifest
+mkdir -p "$ROOT/reuse-failure-baseline"
+for installer_edge in 1 2 3 4 5 6 7 8; do
+  cp "$ROOT/launchd/com.example.wg.edge$installer_edge.plist" "$ROOT/reuse-failure-baseline/edge$installer_edge.plist"
+  [ -f "$ROOT/launchd-loaded/com.example.wg.edge$installer_edge" ] || { echo "reuse baseline edge$installer_edge was not loaded" >&2; exit 1; }
+done
+: > "$ACTION_LOG"
+set +e
+rm -f "$RUN/bootstrap-failed.com.juhe-ai.wireguard-reconciler"
+FAKE_BOOTSTRAP_FAIL_LABEL='com.juhe-ai.wireguard-reconciler' apply_installer "$REUSE_MANIFEST" 1
+reuse_failure_status=$?
+set -e
+[ "$reuse_failure_status" -ne 0 ] || { echo 'reuse installer accepted a reconciler bootstrap failure' >&2; exit 1; }
+for installer_edge in 1 2 3 4 5 6 7 8; do
+  cmp -s "$ROOT/reuse-failure-baseline/edge$installer_edge.plist" "$ROOT/launchd/com.example.wg.edge$installer_edge.plist" || { echo "reuse installer changed edge$installer_edge plist" >&2; exit 1; }
+  [ -f "$ROOT/launchd-loaded/com.example.wg.edge$installer_edge" ] || { echo "reuse installer changed edge$installer_edge loaded state" >&2; exit 1; }
+done
+if /usr/bin/grep -Fq 'com.example.wg.edge' "$ACTION_LOG"; then
+  echo 'reuse installer touched an Edge job' >&2
+  cat "$ACTION_LOG" >&2
+  exit 1
+fi
+if [ "${JUHE_WG_HARNESS_TRANSACTION_ONLY:-0}" = 1 ]; then
+  printf 'WireGuard installer transaction harness passed\n'
+  exit 0
+fi
 rm -rf "$STATE"; mkdir "$STATE"; : > "$ACTION_LOG"; make_manifest
 for installer_attempt in 1 2 3; do
   set +e

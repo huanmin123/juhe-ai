@@ -263,6 +263,7 @@ export const usageRecordListSelectColumns = [
   'ur.success',
   'ur.failure_attribution',
   'ur.error_code',
+  'ur.error_message',
   'ur.first_token_ms',
   'ur.duration_ms',
   'ur.input_tokens',

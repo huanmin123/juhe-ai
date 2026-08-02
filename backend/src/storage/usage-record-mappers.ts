@@ -204,7 +204,6 @@ function usageRecordListFailureReason(row: UsageRecordRow): string | undefined {
     return '下游连接关闭'
   }
   const upstreamFacts = [
-    typeof row.status_code === 'number' && row.status_code >= 400 ? `上游 HTTP ${row.status_code}` : undefined,
     errorCode,
     errorMessage
   ].filter((value): value is string => Boolean(value))

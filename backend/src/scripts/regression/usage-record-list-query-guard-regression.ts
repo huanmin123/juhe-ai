@@ -449,12 +449,15 @@ try {
     assert.equal('responseSnapshot' in (downstreamUnknown ?? {}), false, '列表不得返回响应快照')
 
     const opaqueHttp = repositories.listUsageRecords(access, { model: 'gpt-5.6-opaque-http', page: 1, pageSize: 10 }).items[0]
+    assert.equal(opaqueHttp?.statusCode, 402, '列表应原样保留上游状态码供状态标签使用')
     assert.equal(
       opaqueHttp?.failureReason,
-      '上游 HTTP 402 | insufficient_user_quota | 当前账户暂无生效套餐，请前往控制面板或 API 管理后台订阅',
-      '完整上游 HTTP 失败必须在列表中保留状态、错误码和可行动消息，不能降级为未识别失败'
+      'insufficient_user_quota | 当前账户暂无生效套餐，请前往控制面板或 API 管理后台订阅',
+      '列表失败摘要应按错误码和可行动消息生成，避免重复上游 HTTP 状态'
     )
     assert.equal('errorCode' in (opaqueHttp ?? {}), false, '列表仍只返回组合后的安全摘要')
+    assert.equal('errorMessage' in (opaqueHttp ?? {}), false, '列表不得返回原始错误文本')
+    assert.equal('requestSnapshot' in (opaqueHttp ?? {}), false, '列表不得返回请求快照')
     assert.equal('responseSnapshot' in (opaqueHttp ?? {}), false, '原始上游响应体仍只能通过审计详情查看')
 
     const accountNamePrefix = repositories.listUsageRecords(access, { accountKeyword: '使用记录查询防护', page: 1, pageSize: 10 })
