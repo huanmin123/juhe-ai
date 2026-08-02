@@ -312,7 +312,7 @@ export async function findAccountCloneContextAsync(
         NULL AS value_b,
         NULL AS value_c,
         NULL AS value_d,
-        NULL AS enabled
+        CAST(NULL AS INTEGER) AS enabled
       FROM ${accountInteractionContextTable(client, 'account_supported_models')} account_supported_models
       INNER JOIN scoped_account
         ON scoped_account.id = account_supported_models.account_id
@@ -323,7 +323,7 @@ export async function findAccountCloneContextAsync(
         account_tags.name AS value_b,
         NULL AS value_c,
         NULL AS value_d,
-        NULL AS enabled
+        CAST(NULL AS INTEGER) AS enabled
       FROM ${accountInteractionContextTable(client, 'account_tag_bindings')} account_tag_bindings
       INNER JOIN scoped_account
         ON scoped_account.id = account_tag_bindings.account_id

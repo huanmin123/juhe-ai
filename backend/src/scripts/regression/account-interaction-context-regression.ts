@@ -42,12 +42,14 @@ assert.equal(contextRepository.accountInteractionContextTrueLiteral('sqlite'), '
 assert.equal(contextRepository.accountInteractionContextTrueLiteral('postgres'), '1')
 
 const postgresCloneProjectionSql: string[] = []
+const postgresCloneRelationSql: string[] = []
 const stopAfterPostgresCloneRevisionFence = new Error('PostgreSQL clone SQL capture complete')
 let postgresCloneProjectionQueryCount = 0
 const fakePostgresCloneProjectionClient: DatabaseClient = {
   driver: 'postgres',
   dialect: postgresDialect,
-  async query() {
+  async query<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
+    postgresCloneRelationSql.push(postgresDialect.bind(sql, params).sql)
     return []
   },
   async one<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T | undefined> {
@@ -90,6 +92,8 @@ for (const [label, sql, expectedIntegerLiteralCount] of [
   assert.doesNotMatch(sql, /group_accounts\.enabled\s*=\s*TRUE/i, `PostgreSQL 克隆${label}不得使用布尔字面量比较整数列`)
   assert.match(sql, /CASE\s+WHEN\s+group_accounts\.enabled\s*=\s*1/i, `PostgreSQL 克隆${label}必须优先选择启用的来源分组绑定`)
 }
+assert.equal(postgresCloneRelationSql.length, 1, 'PostgreSQL 克隆 SQL 捕获必须记录关联 UNION 查询')
+assert.equal((postgresCloneRelationSql[0].match(/CAST\(NULL AS INTEGER\) AS enabled/gi) ?? []).length, 2, 'PostgreSQL 克隆关联 UNION 的空启用值必须显式为整数，避免与模型映射整数列冲突')
 
 let server: ReturnType<ReturnType<typeof express>['listen']> | undefined
 
