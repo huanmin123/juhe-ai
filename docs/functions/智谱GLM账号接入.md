@@ -5,7 +5,7 @@
 
 ## 范围
 
-> 目录同步边界：GLM 的上游模型目录只在用户显式同步时调用，内部标记仅保护该受控转发。人工 / 草稿测试、激活、健康、恢复和调度直接验证 Chat 或 Messages endpoint；目录 `404` 或未开放不能阻断账户使用，客户端模型目录仍由本地返回。
+> 目录同步边界：GLM 的上游模型目录在新增 API Key 草稿完整后自动同步一次，或由用户手动刷新调用，内部标记仅保护该受控转发。人工 / 草稿测试、激活、健康、恢复和调度直接验证 Chat 或 Messages endpoint；目录 `404` 或未开放不能阻断账户使用，客户端模型目录仍由本地返回。
 
 本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；GLM Coding Plan Key 只保存真实 Chat Completions 上游能力，OpenAI v1 Responses 到 Chat Completions 可由普通 GLM 账号模型别名显式声明，而 Anthropic v1 档案面向 Anthropic / Claude Code 请求。运行事实以本文和当前实现为准。
 

@@ -119,9 +119,27 @@ assertMatch(
   '关闭账户弹窗必须同时失效搜索定时器和模型目录同步'
 )
 assertIncludes(accountsViewSource, '@refresh-models="refreshAccountModelCatalog"', '账户表单必须保留用户点击的上游模型同步入口')
-assertNotIncludes(accountsViewSource, 'shouldAutoRefreshAccountModelCatalog', '打开弹窗、输入凭据或修改 Base URL 时不得自动同步上游模型')
-assertNotIncludes(accountsViewSource, 'scheduleAutomaticAccountModelCatalogSync', '账户页面不得保留静默目录同步定时器')
-assertNotIncludes(accountsViewSource, 'silent?: boolean', '显式目录同步不得保留静默调用选项')
+assertMatch(
+  accountsViewSource,
+  /function shouldAutoRefreshAccountModelCatalog\(\): boolean[\s\S]*?modalOpen\.value[\s\S]*?editingId\.value[\s\S]*?form\.type !== 'api_key'[\s\S]*?form\.supportedModels\.some[\s\S]*?currentModelCatalogDiscoveryPayload\(\)/,
+  '自动同步必须只在新增 API Key 弹窗、支持模型为空且连接草稿完整时触发'
+)
+assertMatch(
+  accountsViewSource,
+  /automaticModelCatalogAttemptedRequestKeys\.has\(requestKey\)[\s\S]*?setTimeout\(\(\) => \{[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?void refreshAccountModelCatalog\(\)[\s\S]*?\}, 700\)/,
+  '自动同步必须对同一草稿只尝试一次，并使用 700ms 防抖确认请求 key 仍有效'
+)
+assertMatch(
+  accountsViewSource,
+  /function clearAccountModelCatalogAutoSyncTimer\(\): void[\s\S]*?clearTimeout\(accountModelCatalogAutoSyncTimer\)/,
+  '关闭弹窗、卸载和手动同步前必须清理自动同步定时器'
+)
+assertMatch(
+  accountsViewSource,
+  /async function refreshAccountModelCatalog\(\): Promise<void> \{[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)/,
+  '目录同步请求必须记录 payload key，并在响应返回时确认草稿没有变更'
+)
+assertIncludes(accountsViewSource, "message.error(extractApiErrorMessage(error, '同步上游模型失败'))", '自动同步失败必须保留可观察错误提示')
 assertIncludes(
   accountEditModalSource,
   "credentialItem('supported_endpoint_modes', '上游接口能力'",
@@ -133,9 +151,9 @@ assertIncludes(accountStrategySectionSource, 'placeholder="上游模型"', '账�
 assertIncludes(accountStrategySectionSource, '真实上游支持的接口形态', '账户表单提示必须解释真实上游能力语义')
 assertNotIncludes(accountStrategySectionSource, '接口能力限制', '账户表单不得继续展示旧接口能力限制文案')
 assertNotIncludes(accountStrategySectionSource, '可承接的接口形态', '账户表单不得把上游能力描述成客户端可承接请求')
-assertIncludes(userHelpSource, '模型与上游接口能力', '用户帮助必须使用上游接口能力标题')
-assertIncludes(userHelpSource, '上游接口能力只声明真实上游能处理的协议', '用户帮助必须解释真实上游能力边界')
-assertIncludes(userHelpSource, '模型别名的右侧目标模型与目标协议都必须由该账户的真实能力支撑', '用户帮助必须解释模型映射按右侧上游能力检查')
+assertIncludes(userHelpSource, '<dt>上游接口能力</dt>', '用户帮助必须展示上游接口能力字段')
+assertIncludes(userHelpSource, '声明真实上游能接收的请求形态', '用户帮助必须解释上游接口能力边界')
+assertIncludes(userHelpSource, '右侧目标必须同时满足账户支持模型和上游接口能力', '用户帮助必须解释模型映射按右侧上游能力检查')
 assertNotIncludes(publicHelpSource, '接口能力限制', '公开帮助不得继续展示接口能力限制旧文案')
 assertNotIncludes(publicHelpSource, '账号可承接的请求形态', '公开帮助不得展示派生的可承接请求形态')
 

@@ -92,7 +92,7 @@ assert.match(savePayloadSource, /if \(!healthCheckModel\) return '请选择检�
 assert.match(editFormSource, /supportedModels\[0\] \?\? ''/, '已选检查模型离开支持模型集合时应回落到首个可用模型')
 assert.match(cachedDefaultGroupSource, /getCachedUserReferenceData\(referenceParams\)/, '新增表单应直接读取登录后预热的默认分组缓存')
 assert.doesNotMatch(cachedDefaultGroupSource, /loadUserReferenceData|api\./, '默认分组缓存缺失时弹窗不得补发网络请求')
-assert.match(cachedDefaultGroupSource, /if \(!defaultGroup\)[\s\S]*ensureDefaultGroupSelected\(providerCode\)[\s\S]*return/, '缓存未到时只能复用已加载本地选项并允许创建端省略 groupId')
+assert.match(cachedDefaultGroupSource, /if \(defaultGroup\) \{[\s\S]*setFormGroup\(defaultGroup\)[\s\S]*return[\s\S]*ensureDefaultGroupSelected\(providerCode\)/, '缓存命中时必须直接复用默认分组，缺失时只能从已加载本地选项选择')
 assert.match(editFormSource, /accounts: ReadonlyValue<AccountListItem\[\]>/, '编辑表单只能把账户列表当作展示 DTO 使用')
 assert.match(
   editFormSource,
@@ -208,33 +208,33 @@ assert.match(
 )
 assert.match(
   accountsViewSource,
-  /function shouldAutoRefreshAccountModelCatalog\(\): boolean[\s\S]*?modalOpen\.value[\s\S]*?form\.type !== 'api_key'[\s\S]*?form\.supportedModels\.some[\s\S]*?if \(!editingId\.value\) return true[\s\S]*?if \(!editingAccountDetail\.value\) return false[\s\S]*?accountFormApiKeyRuntimeChanged/,
-  '首次自动同步必须只在弹窗打开、API Key 连接完整、支持模型为空时触发；编辑账户还必须在详情加载后变更 API Key 或 Base URL'
+  /function shouldAutoRefreshAccountModelCatalog\(\): boolean[\s\S]*?modalOpen\.value[\s\S]*?editingId\.value[\s\S]*?form\.type !== 'api_key'[\s\S]*?form\.supportedModels\.some[\s\S]*?currentModelCatalogDiscoveryPayload\(\)/,
+  '自动同步必须只在新增 API Key 弹窗、支持模型为空且连接草稿完整时触发'
 )
 assert.match(
   accountsViewSource,
-  /automaticModelCatalogAttemptedRequestKeys\.has\(requestKey\)[\s\S]*?setTimeout\(\(\) => \{[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)\) return[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?void refreshAccountModelCatalog\(\{ silent: true \}\)[\s\S]*?\}, 700\)/,
-  '每次打开弹窗应对同一完整草稿只在计时器确认仍有效、真正发起请求时记录一次，并使用 700ms 防抖'
+  /automaticModelCatalogAttemptedRequestKeys\.has\(requestKey\)[\s\S]*?setTimeout\(\(\) => \{[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)\)[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?void refreshAccountModelCatalog\(\)[\s\S]*?\}, 700\)/,
+  '自动同步必须对同一草稿只尝试一次，并使用 700ms 防抖确认请求 key 仍有效'
 )
 assert.match(
   accountsViewSource,
-  /async function refreshAccountModelCatalog\(options: \{ silent\?: boolean \} = \{\}\): Promise<void> \{[\s\S]*?if \(!options\.silent\) clearAccountModelCatalogAutoSyncTimer\(\)[\s\S]*?const payload/,
-  '手动同步开始前必须取消尚未触发的自动同步，防止静默请求抢占人工操作和提示'
+  /async function refreshAccountModelCatalog\(\): Promise<void> \{[\s\S]*?clearAccountModelCatalogAutoSyncTimer\(\)[\s\S]*?const payload/,
+  '手动同步开始前必须取消尚未触发的自动同步'
 )
 assert.match(
   accountsViewSource,
-  /void refreshAccountModelCatalog\(\{ silent: true \}\)/,
-  '自动同步必须使用静默模式，失败时不得显示提示'
+  /automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)/,
+  '目录同步必须记录已尝试的 payload key，避免相同草稿重复请求'
 )
 assert.match(
   accountsViewSource,
-  /if \(!options\.silent && requestId === modelCatalogSyncRequestId && !controller\.signal\.aborted\)[\s\S]*?message\.error/,
-  '自动同步失败必须静默，手动同步仍应展示错误提示'
+  /requestId === modelCatalogSyncRequestId && !controller\.signal\.aborted\)[\s\S]*?message\.error/,
+  '自动同步失败必须保留可观察错误提示'
 )
 assert.match(
   accountsViewSource,
-  /if \(!options\.silent\) \{[\s\S]*?message\.success/,
-  '手动同步成功必须保留提示，自动同步不应打扰用户'
+  /if \(requestId !== modelCatalogSyncRequestId \|\| requestKey !== currentModelCatalogDiscoveryRequestKey\(\)\) return/,
+  '目录同步响应返回时必须确认请求仍对应当前草稿'
 )
 assert.match(
   accountsViewSource,
@@ -262,10 +262,16 @@ assert.match(
   /async function openClone[\s\S]*cloneContext\(account\.id[\s\S]*buildAccountCloneFormLoad/,
   '克隆只能通过单次 clone-context 请求加载同版本的窄表单上下文'
 )
+const cloneOpenImplementation = editFormSource.match(/async function openClone[\s\S]*?async function loadAccountDetailForForm/)?.[0] ?? ''
 assert.doesNotMatch(
-  editFormSource.match(/async function openClone[\s\S]*?async function loadAccountDetailForForm/)?.[0] ?? '',
-  /editBasicDetail|advancedDetail|Promise\.all|groupIdForAccount/,
-  '克隆不得再拼接详情响应或回退到列表缓存中的旧分组'
+  cloneOpenImplementation,
+  /editBasicDetail|advancedDetail|Promise\.all/,
+  '克隆不得再拼接编辑详情响应或并发加载额外详情'
+)
+assert.match(
+  cloneOpenImplementation,
+  /const sourceGroupId = sourceAccount\.boundGroupId[\s\S]*?\?\? options\.groupIdForAccount\(account\.id\)[\s\S]*?\?\? account\.boundGroupId/,
+  '克隆必须优先使用 clone-context 的分组，仅在该窄响应缺失时回退已加载列表分组'
 )
 assert.match(cloneOpenSource, /buildAccountCloneFormLoad\(\{[\s\S]*account: sourceAccount/, '克隆表单只能消费专用上下文')
 assert.doesNotMatch(cloneOpenSource, /sourceAccount\.credentials|credentials:/, '克隆表单不得读取或清空建号秘密凭据容器')
@@ -522,7 +528,7 @@ assert.equal(
 
 assert.equal(
   packageJson.scripts?.['test:account-edit-save-flow'],
-  'pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts',
+  'pnpm --filter juhe-ai-backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts',
   '前端 package script 应暴露账户编辑保存流程回归'
 )
 assert.deepEqual(

@@ -827,6 +827,14 @@ function handleAccountModelOptionsOpen(open: boolean): void {
 
 let modelCatalogSyncController: AbortController | undefined
 let modelCatalogSyncRequestId = 0
+let accountModelCatalogAutoSyncTimer: ReturnType<typeof setTimeout> | undefined
+const automaticModelCatalogAttemptedRequestKeys = new Set<string>()
+
+function clearAccountModelCatalogAutoSyncTimer(): void {
+  if (!accountModelCatalogAutoSyncTimer) return
+  clearTimeout(accountModelCatalogAutoSyncTimer)
+  accountModelCatalogAutoSyncTimer = undefined
+}
 
 function cancelAccountModelCatalogSync(): void {
   modelCatalogSyncRequestId += 1
@@ -868,13 +876,36 @@ function currentModelCatalogDiscoveryRequestKey(): string {
   return modelCatalogDiscoveryRequestKey(currentModelCatalogDiscoveryPayload())
 }
 
+function shouldAutoRefreshAccountModelCatalog(): boolean {
+  if (!modalOpen.value || editingId.value || form.type !== 'api_key') return false
+  if (form.supportedModels.some((model) => model.trim())) return false
+  return Boolean(currentModelCatalogDiscoveryPayload())
+}
+
+function scheduleAutomaticAccountModelCatalogSync(): void {
+  clearAccountModelCatalogAutoSyncTimer()
+  if (!shouldAutoRefreshAccountModelCatalog()) return
+  const requestKey = currentModelCatalogDiscoveryRequestKey()
+  if (!requestKey || automaticModelCatalogAttemptedRequestKeys.has(requestKey)) return
+  accountModelCatalogAutoSyncTimer = setTimeout(() => {
+    accountModelCatalogAutoSyncTimer = undefined
+    if (!shouldAutoRefreshAccountModelCatalog()) return
+    if (requestKey !== currentModelCatalogDiscoveryRequestKey()) return
+    if (automaticModelCatalogAttemptedRequestKeys.has(requestKey)) return
+    automaticModelCatalogAttemptedRequestKeys.add(requestKey)
+    void refreshAccountModelCatalog()
+  }, 700)
+}
+
 async function refreshAccountModelCatalog(): Promise<void> {
+  clearAccountModelCatalogAutoSyncTimer()
   const payload = currentModelCatalogDiscoveryPayload()
   if (!payload) {
     message.error('请先填写 Base URL 和 API Key 后再同步')
     return
   }
   const requestKey = modelCatalogDiscoveryRequestKey(payload)
+  automaticModelCatalogAttemptedRequestKeys.add(requestKey)
   const requestId = ++modelCatalogSyncRequestId
   modelCatalogSyncController?.abort()
   const controller = new AbortController()
@@ -935,13 +966,32 @@ function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gem
 }
 
 watch(modalOpen, (open) => {
-  if (open) return
+  if (open) {
+    automaticModelCatalogAttemptedRequestKeys.clear()
+    scheduleAutomaticAccountModelCatalogSync()
+    return
+  }
+  clearAccountModelCatalogAutoSyncTimer()
   clearAccountModelOptionsSearchTimer()
   cancelAccountModelCatalogSync()
   resetEditGroupOptions()
 })
 
+watch(
+  [
+    () => modalOpen.value,
+    () => editingId.value,
+    currentModelCatalogDiscoveryRequestKey
+  ],
+  () => {
+    if (!modalOpen.value) return
+    cancelAccountModelCatalogSync()
+    scheduleAutomaticAccountModelCatalogSync()
+  }
+)
+
 onBeforeUnmount(() => {
+  clearAccountModelCatalogAutoSyncTimer()
   clearAccountModelOptionsSearchTimer()
   cancelAccountModelCatalogSync()
 })

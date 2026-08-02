@@ -2,7 +2,7 @@
 
 ## 范围
 
-> 目录同步边界：DeepSeek 上游目录请求只由用户显式同步触发，并由内部标记保护。账户测试、激活、健康、恢复和调度只看配置模型的真实 Chat / Messages 请求协议结果；`/models` 不开放或返回 `404` 不会阻断账户使用，本地客户端模型目录不转发到 DeepSeek。
+> 目录同步边界：DeepSeek 新增 API Key 草稿完整后的自动同步或用户手动刷新会发起上游目录请求，并由内部标记保护。账户测试、激活、健康、恢复和调度只看配置模型的真实 Chat / Messages 请求协议结果；`/models` 不开放或返回 `404` 不会阻断账户使用，本地客户端模型目录不转发到 DeepSeek。
 
 本文记录 DeepSeek 供应商的接入方案、账户创建类型、协议档案、网关透传边界、模型目录、验证结果和后续实现注意事项。当前代码已落地 DeepSeek OpenAI-compatible 独立供应商，支持 Chat Completions JSON / SSE；OpenAI v1 Responses -> Chat SSE 可由 DeepSeek 普通 AI 账户通过显式 `responses -> chat_completions` 模型别名桥接到真实 Chat 上游；同时新增 DeepSeek Anthropic v1 Messages 档案用于 Claude Code / Anthropic 客户端画像直连。真实上游验证结果见本文“验证记录”。
 
@@ -85,7 +85,7 @@ DeepSeek OpenAI v1 档案优先复用现有 OpenAI v1 Chat Completions 协议适
 
 - 客户端可请求 `/chat/completions` 或 `/v1/chat/completions`
 - beta 能力按 `https://api.deepseek.com/beta` 单独拼接，只能由 DeepSeek beta endpoint mode 或账户能力显式启用，不能靠客户端路径自动猜测
-- 客户端 `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不进入网关热路径；仅用户显式同步上游模型时，带内部标记的 DeepSeek OpenAI API Key 请求才会转发到上游 `/v1/models`
+- 客户端 `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不进入网关热路径；新增 API Key 草稿完整后的自动同步或用户手动刷新时，带内部标记的 DeepSeek OpenAI API Key 请求才会转发到上游 `/v1/models`
 - 未配置 `responses -> chat_completions` 模型别名的普通 OpenAI SDK / Responses 请求不由 DeepSeek 承接；配置显式映射后，DeepSeek OpenAI-compatible 账号可接收 `/responses` 或 `/v1/responses` 并改写到上游 `/chat/completions`
 - Codex bridge 必须使用流式 Responses 入站和上游 Chat SSE；账号 endpoint modes 仍保存 `chat_json`、`chat_sse`，不能为此写入 `responses_json` 或 `responses_sse`
 - DeepSeek 官方 List Models 接口可用于受控账户目录同步、人工校验或后续后台刷新；它不接受客户端请求透传，也不进入网关热路径

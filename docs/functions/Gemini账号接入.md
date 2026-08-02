@@ -5,7 +5,7 @@
 
 ## 范围
 
-> 目录同步边界：Gemini native / OpenAI Chat 的上游目录只在用户显式同步时，通过内部标记的受控请求读取。生成、Interactions、测试、激活、健康、恢复和调度都不依赖目录；目录 `404` 或未开放不影响实际 endpoint 已验证成功的账户，客户端模型目录继续本地响应。
+> 目录同步边界：Gemini native / OpenAI Chat 新增 API Key 草稿完整后的自动同步或用户手动刷新，通过内部标记的受控请求读取上游目录。生成、Interactions、测试、激活、健康、恢复和调度都不依赖目录；目录 `404` 或未开放不影响实际 endpoint 已验证成功的账户，客户端模型目录继续本地响应。
 
 本文记录 Google Gemini 供应商的接入设计、协议档案、账户创建类型、三种托管 OAuth 模式、AI Studio / Code Assist runtime 边界、`gemini-cli` 兼容方式、Interactions API、模型目录、usage 统计和后续验证要求。后端和前端 mock 阶段实现已落地；后续真实联调以本文和 [Gemini 协议兼容设计](Gemini协议兼容设计.md) 为长期功能事实。
 
@@ -282,7 +282,7 @@ Gemini 模型目录必须单独维护在 `providerCode = gemini` 下。
 - `contextWindowTokens`、`maxOutputTokens`、`releaseDate`、`shutdownDate` 以官方模型文档或 Models API 为准；不确定时留空，不编造。
 - 官方价格按 Google Pricing 页 Standard / Priority / Flex 分档记录；Gemini Pro 的 `<=200k` / `>200k` 输入分档通过长上下文阈值和倍率计费。Interactions 的 token usage 复用 Gemini 语义，但远端步骤 / 工具执行费用若有单独价格，当前 schema 不能单独落账。
 - Gemini native 模型不进入官方 Anthropic 目录；Gemini OpenAI Chat 档案作为 `protocolCode = openai` 的直连档案，会进入 OpenAI-compatible 协议模型池，供普通 Chat 直连和后续混合供应商账户选择真实上游模型。
-- `GET /v1beta/models` 默认由本地目录返回，不在网关热路径请求上游。仅用户显式同步上游模型的服务端受控请求会携带内部标记，并对 Gemini API Key 或 AI Studio OAuth 账户转发到其自身上游 `/v1beta/models`；Code Assist、Google One 等 Cloud Code runtime 账户仍只承接生成请求。
+- `GET /v1beta/models` 默认由本地目录返回，不在网关热路径请求上游。新增 API Key 草稿完整后的自动同步或用户手动刷新时，服务端受控请求会携带内部标记，并对 Gemini API Key 或 AI Studio OAuth 账户转发到其自身上游 `/v1beta/models`；Code Assist、Google One 等 Cloud Code runtime 账户仍只承接生成请求。
 
 ## usage 与计费
 
