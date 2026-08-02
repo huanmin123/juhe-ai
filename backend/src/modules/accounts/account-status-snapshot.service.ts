@@ -22,37 +22,17 @@ import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-ci
 const maxSnapshotAccountIds = 100
 const maxSnapshotQueryLength = 8192
 
-export type AccountListTimingMetric =
-  | 'account-usage'
-  | 'account-runtime'
-  | 'account-concurrency'
-  | 'account-circuit'
-  | 'account-balance'
-
-export type AccountListTimingObserver = (metric: AccountListTimingMetric, durationMs: number) => void
-
 export async function hydrateAccountListPage(
   access: AccessScope | undefined,
-  page: AccountManagementListPage,
-  timingObserver?: AccountListTimingObserver
+  page: AccountManagementListPage
 ): Promise<AccountManagementListResult> {
   const { statusSeeds, ...listPage } = page
   if (page.items.length === 0) {
     return { ...listPage, items: [], generatedAt: new Date().toISOString() }
   }
-  let snapshot: AccountStatusSnapshotResult
-  if (statusSeeds.length === page.items.length) {
-    const usageStartedAt = timingObserver ? performance.now() : 0
-    const hydratedStatusSeeds = await observeAccountListPromise(
-      hydrateAccountManagementStatusSeedsAsync(statusSeeds),
-      timingObserver,
-      'account-usage',
-      usageStartedAt
-    )
-    snapshot = await getAccountStatusSnapshotFromProjections(hydratedStatusSeeds, timingObserver)
-  } else {
-    snapshot = await getAccountStatusSnapshot(access, page.items.map((item) => item.id), timingObserver)
-  }
+  const snapshot = statusSeeds.length === page.items.length
+    ? await getAccountStatusSnapshotFromProjections(await hydrateAccountManagementStatusSeedsAsync(statusSeeds))
+    : await getAccountStatusSnapshot(access, page.items.map((item) => item.id))
   const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
   return {
     ...listPage,
@@ -76,61 +56,25 @@ export function parseAccountStatusSnapshotAccountIds(value: unknown): string[] {
 
 export async function getAccountStatusSnapshot(
   access: AccessScope | undefined,
-  accountIds: string[],
-  timingObserver?: AccountListTimingObserver
+  accountIds: string[]
 ): Promise<AccountStatusSnapshotResult> {
-  const usageStartedAt = timingObserver ? performance.now() : 0
-  const projections = await observeAccountListPromise(
-    listAccountStatusProjectionsAsync(access, accountIds),
-    timingObserver,
-    'account-usage',
-    usageStartedAt
-  )
-  return getAccountStatusSnapshotFromProjections(projections, timingObserver)
+  const projections = await listAccountStatusProjectionsAsync(access, accountIds)
+  return getAccountStatusSnapshotFromProjections(projections)
 }
 
 async function getAccountStatusSnapshotFromProjections(
-  projections: Awaited<ReturnType<typeof listAccountStatusProjectionsAsync>>,
-  timingObserver?: AccountListTimingObserver
+  projections: Awaited<ReturnType<typeof listAccountStatusProjectionsAsync>>
 ): Promise<AccountStatusSnapshotResult> {
   const ownerIds = projections
     .filter((item) => item.accessType !== 'authorized' && item.balanceQueryEnabled === true)
     .map((item) => item.id)
-  const runtimeStartedAt = timingObserver ? performance.now() : 0
-  const runtimePromise = observeAccountListPromise(
+  const [runtime, concurrency, circuits, balanceSnapshots] = await Promise.all([
     loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
-    timingObserver,
-    'account-runtime',
-    runtimeStartedAt
-  )
-  const concurrencyStartedAt = timingObserver ? performance.now() : 0
-  const concurrencyPromise = observeAccountListPromise(
     loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId)),
-    timingObserver,
-    'account-concurrency',
-    concurrencyStartedAt
-  )
-  const circuitStartedAt = timingObserver ? performance.now() : 0
-  const circuitPromise = observeAccountListPromise(
     loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
       .then((values) => ({ available: true, values }))
       .catch(() => ({ available: false, values: {} as Record<string, PublicAccountCircuitSummary> })),
-    timingObserver,
-    'account-circuit',
-    circuitStartedAt
-  )
-  const balanceStartedAt = timingObserver ? performance.now() : 0
-  const balancePromise = observeAccountListPromise(
-    loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds),
-    timingObserver,
-    'account-balance',
-    balanceStartedAt
-  )
-  const [runtime, concurrency, circuits, balanceSnapshots] = await Promise.all([
-    runtimePromise,
-    concurrencyPromise,
-    circuitPromise,
-    balancePromise
+    loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds)
   ])
   return {
     generatedAt: new Date().toISOString(),
@@ -208,25 +152,4 @@ async function getAccountStatusSnapshotFromProjections(
       }
     })
   }
-}
-
-function observeAccountListTiming(
-  observer: AccountListTimingObserver | undefined,
-  metric: AccountListTimingMetric,
-  startedAt: number
-): void {
-  if (!observer) return
-  const durationMs = performance.now() - startedAt
-  observer(metric, Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : 0)
-}
-
-function observeAccountListPromise<T>(
-  promise: Promise<T>,
-  observer: AccountListTimingObserver | undefined,
-  metric: AccountListTimingMetric,
-  startedAt: number
-): Promise<T> {
-  return observer
-    ? promise.finally(() => observeAccountListTiming(observer, metric, startedAt))
-    : promise
 }

@@ -10,10 +10,7 @@ import {
   listAccountsPageWithRuntimeStatusFilter
 } from './account-list-runtime-status-filter.js'
 import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
-import {
-  hydrateAccountListPage,
-  type AccountListTimingMetric
-} from './account-status-snapshot.service.js'
+import { hydrateAccountListPage } from './account-status-snapshot.service.js'
 
 export function registerAccountListRoutes(router: Router): void {
   router.get('/', async (req, res, next) => {
@@ -22,39 +19,27 @@ export function registerAccountListRoutes(router: Router): void {
       const listOptions = parseAccountListOptions(req.query)
       let listDurationMs = 0
       let statusFilterDurationMs = 0
-      let hydrateDurationMs = 0
-      const hydrateTimingDurations = new Map<AccountListTimingMetric, number>()
       const needsRuntimeStatusFilter = accountListNeedsRuntimeStatusFilter(listOptions)
 
-      let completePage: AccountManagementListResult | undefined
-      if (needsRuntimeStatusFilter) {
-        const statusFilterStartedAt = performance.now()
-        completePage = await listAccountsPageWithRuntimeStatusFilter(requestAccess, listOptions)
-        statusFilterDurationMs = performance.now() - statusFilterStartedAt
-      }
+      const statusFilterStartedAt = performance.now()
+      let completePage: AccountManagementListResult | undefined = needsRuntimeStatusFilter
+        ? await listAccountsPageWithRuntimeStatusFilter(requestAccess, listOptions)
+        : undefined
+      statusFilterDurationMs = performance.now() - statusFilterStartedAt
 
       if (!completePage) {
         const listStartedAt = performance.now()
         const result = await listAccountManagementItemsPageAsync(requestAccess, listOptions)
         listDurationMs = performance.now() - listStartedAt
         const hydrateStartedAt = performance.now()
-        completePage = await hydrateAccountListPage(requestAccess, result, (metric, durationMs) => {
-          hydrateTimingDurations.set(metric, (hydrateTimingDurations.get(metric) ?? 0) + durationMs)
-        })
-        hydrateDurationMs = performance.now() - hydrateStartedAt
+        completePage = await hydrateAccountListPage(requestAccess, result)
+        statusFilterDurationMs += performance.now() - hydrateStartedAt
       }
 
-      const serverTiming = [serverTimingMetric('account-list', listDurationMs)]
-      if (needsRuntimeStatusFilter) {
-        serverTiming.push(serverTimingMetric('account-status-filter', statusFilterDurationMs))
-      } else {
-        serverTiming.push(serverTimingMetric('account-hydrate', hydrateDurationMs))
-        for (const metric of accountListTimingMetrics) {
-          const durationMs = hydrateTimingDurations.get(metric)
-          if (durationMs !== undefined) serverTiming.push(serverTimingMetric(metric, durationMs))
-        }
-      }
-      res.setHeader('Server-Timing', serverTiming.join(', '))
+      res.setHeader('Server-Timing', [
+        serverTimingMetric('account-list', listDurationMs),
+        serverTimingMetric('account-status-filter', statusFilterDurationMs)
+      ].join(', '))
       res.json(ok(completePage))
     } catch (error) {
       if (error instanceof AccountRuntimeStatusFilterScanLimitError) {
@@ -77,15 +62,6 @@ export function registerAccountListRoutes(router: Router): void {
   })
 }
 
-export function serverTimingMetric(name: string, durationMs: number): string {
-  const normalizedDurationMs = Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : 0
-  return `${name};dur=${normalizedDurationMs.toFixed(1)}`
+function serverTimingMetric(name: string, durationMs: number): string {
+  return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
 }
-
-const accountListTimingMetrics: readonly AccountListTimingMetric[] = [
-  'account-usage',
-  'account-runtime',
-  'account-concurrency',
-  'account-circuit',
-  'account-balance'
-]

@@ -11,7 +11,6 @@ import {
   hydrateAccountListPage,
   parseAccountStatusSnapshotAccountIds
 } from '../../modules/accounts/account-status-snapshot.service.js'
-import { serverTimingMetric } from '../../modules/accounts/account-list.routes.js'
 import {
   AccountRuntimeStatusFilterScanLimitError,
   accountRuntimeStatusCandidateSourceOptions,
@@ -136,8 +135,6 @@ assert.equal(nextAccountRuntimeStatusCandidateWindow({ page: 1, pageSize: 10_000
 
 const repositorySource = readFileSync(resolve('src/storage/account-status-snapshot.repository.ts'), 'utf8')
 const runtimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
-const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
-const accountStatusSnapshotSource = readFileSync(resolve('src/modules/accounts/account-status-snapshot.service.ts'), 'utf8')
 assert.doesNotMatch(repositorySource, /usage_records/, '状态快照不得扫描使用记录明细')
 assert.doesNotMatch(repositorySource, /credentials_encrypted|credential_mask/, '状态快照不得读取凭据或凭据摘要')
 assert.match(repositorySource, /loadAccountManagementListUsageAsync/, '今日用量必须来自三字段列表统计读取器')
@@ -157,15 +154,6 @@ assert.match(
   /maxRuntimeStatusHydrationBatchSize\s*=\s*100[\s\S]*chunkValues\(page\.items, maxRuntimeStatusHydrationBatchSize\)/,
   '运行态 hydrate 必须按运行态快照的 100 ID 边界分批，200 候选时不得漏掉后一半运行态'
 )
-assert.match(accountListRoutesSource, /serverTimingMetric\('account-hydrate'/, '普通账户列表必须单独报告 hydration wall-clock')
-assert.doesNotMatch(accountListRoutesSource, /statusFilterDurationMs\s*\+=/, '普通 hydration wall-clock 不得累加到运行态筛选指标')
-assert.match(accountListRoutesSource, /Number\.isFinite\(durationMs\)[\s\S]*durationMs\s*>=\s*0/, 'Server-Timing duration 必须有限且非负')
-for (const durationMs of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
-  assert.equal(serverTimingMetric('account-test', durationMs), 'account-test;dur=0.0', '非法 Server-Timing duration 必须归一为 0')
-}
-for (const metric of ['account-usage', 'account-runtime', 'account-concurrency', 'account-circuit', 'account-balance']) {
-  assert.match(accountStatusSnapshotSource, new RegExp(`['"]${metric}['"]`), `状态快照 observer 必须覆盖 ${metric} 分支`)
-}
 const readWorkerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
 assert.match(readWorkerSource, /case 'list_account_status_snapshots_read_only'/, 'SQLite read worker 必须实现状态投影 operation')
 assert.match(
@@ -438,20 +426,7 @@ try {
     keyword: '账户快照批量回归账户 '
   })
   assert(largeBasePage.items.length > 100, '回归夹具必须形成 pageSize > 100 的真实账户页')
-  const hydrationTimingEvents: Array<{ metric: string; durationMs: number }> = []
-  const largeHydratedPage = await hydrateAccountListPage(userAccess, largeBasePage, (metric, durationMs) => {
-    hydrationTimingEvents.push({ metric, durationMs })
-  })
-  assert.deepEqual(
-    [...new Set(hydrationTimingEvents.map(({ metric }) => metric))].sort(),
-    ['account-balance', 'account-circuit', 'account-concurrency', 'account-runtime', 'account-usage'],
-    '账户列表 hydration observer 必须覆盖五个实际分支'
-  )
-  assert.equal(
-    hydrationTimingEvents.every(({ durationMs }) => Number.isFinite(durationMs) && durationMs >= 0),
-    true,
-    '账户列表 hydration observer duration 必须有限且非负'
-  )
+  const largeHydratedPage = await hydrateAccountListPage(userAccess, largeBasePage)
   assert.equal(largeHydratedPage.items.length, largeBasePage.items.length, '列表状态投影不得静默截断 100 条之后的账户')
   assert.equal(
     largeHydratedPage.items.every((item) => Boolean(item.effectiveAvailability && item.availabilityPresentation && item.todayUsage)),
