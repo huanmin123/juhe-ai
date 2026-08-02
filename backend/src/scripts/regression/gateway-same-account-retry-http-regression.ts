@@ -387,24 +387,16 @@ async function main(): Promise<void> {
       assert.equal(primaryHits.length, 1, '同账户失败后不得自动切换兄弟 Key 或原地重放')
     })
 
-    await verifyContract(contractFailures, 'interval 等待期间 abort 必须取消重试并清空资源', async () => {
+    await verifyContract(contractFailures, 'transport 失败不等待 interval，必须立即切换后备账户并清空资源', async () => {
       const abortFailures: string[] = []
       configureRetry(1, 1)
       const offset = hits.length
-      const controller = new AbortController()
-      const request = postChat(gatewayBaseUrl, abortWait.apiKey, 'abort during retry interval', controller.signal)
-        .then((response) => ({ response }), (error: unknown) => ({ error }))
-      await waitUntil(() => hitKeys(offset).length === 1, 1_000, 'abort 场景首个上游 hit 未发生')
-      await delay(100)
-      controller.abort()
-      const result = await request
+      const response = await postChat(gatewayBaseUrl, abortWait.apiKey, 'transport failure must fail over immediately')
       await verifyContract(abortFailures, '客户端结果', async () => {
-        assert('error' in result, `客户端 abort 后 fetch 不得得到完整网关响应：${JSON.stringify(result)}`)
-        assert(result.error instanceof Error && result.error.name === 'AbortError', `客户端 abort 应得到 AbortError：${String(result.error)}`)
+        assert.equal(response.status, 200, `后备账户应返回成功：${response.status} ${response.text}`)
       })
-      await delay(1_100)
       await verifyContract(abortFailures, '上游 hit', async () => {
-        assert.deepEqual(hitKeys(offset), ['sk-abort-wait'], 'abort 后超过完整 interval 仍不得发生第二个上游 hit')
+        assert.deepEqual(hitKeys(offset), ['sk-abort-wait', 'sk-abort-wait-backup'], 'transport 失败必须立即切换后备账户，不得等待原地重试 interval')
       })
 
       await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -436,8 +428,8 @@ async function main(): Promise<void> {
         const circuitStore = accountCircuit.getGatewayAccountCircuitStore()
         const childCircuit = await circuitStore.get(accountCircuit.gatewayAccountProtocolModelScope(account, 'text', model))
         const parentCircuit = await circuitStore.get({ kind: 'account', accountRuntimeKey: gatewayAccountRuntimeKey(account) })
-        assert.equal(childCircuit.lease, undefined, 'abort 后 protocol/model confirmation lease 必须释放')
-        assert.equal(parentCircuit.lease, undefined, 'abort 后账户级 circuit lease 必须释放')
+        assert.equal(childCircuit.lease, undefined, '切号完成后 protocol/model confirmation lease 必须释放')
+        assert.equal(parentCircuit.lease, undefined, '切号完成后账户级 circuit lease 必须释放')
       })
       if (abortFailures.length > 0) {
         assert.fail(abortFailures.join('；'))
@@ -447,7 +439,7 @@ async function main(): Promise<void> {
     if (contractFailures.length > 0) {
       assert.fail(`请求级原地重试 HTTP 契约仍为红灯（${contractFailures.length} 项）：\n${contractFailures.map((failure, index) => `${index + 1}. ${failure}`).join('\n')}`)
     }
-    console.log('请求级原地重试真实 HTTP 回归通过：原地重试、关闭重试、HTTP frame、多 Key、共享预算和 abort 清理均符合契约')
+    console.log('统一账户候选切换真实 HTTP 回归通过：完整 HTTP、pre-header transport、超时、多 Key、显式 retry_next 和资源清理均符合契约')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest().catch(() => undefined)
@@ -717,7 +709,6 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
   const childScope = accountCircuit.gatewayAccountProtocolModelScope(account, 'text', model)
   const parentScope = { kind: 'account' as const, accountRuntimeKey: gatewayAccountRuntimeKey(account) }
   const childBefore = await circuitStore.get(childScope)
-  const parentBefore = await circuitStore.get(parentScope)
   assert.equal(await hotQuality.getGatewayHotQualityRuntime().hotQualityStore.get(qualityScope), undefined, '中间失败测试必须从冷质量 scope 开始')
 
   configureRetry(1, 0)
@@ -731,11 +722,11 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
     traceId
   )
   await verifyContract(failures, 'HTTP 与真实 dispatch 顺序', async () => {
-    assert.equal(response.status, 200, `中间失败后同账户重试应成功：${response.status} ${response.text}`)
+    assert.equal(response.status, 200, `中间失败后后备账户应成功：${response.status} ${response.text}`)
     assert.deepEqual(
       hitKeys(offset),
-      ['sk-intermediate-neutral', 'sk-intermediate-neutral'],
-      '中间失败与成功必须是同账户、同 Key 的两个真实 dispatch'
+      ['sk-intermediate-neutral', 'sk-intermediate-neutral-backup'],
+      '中间 transport 失败必须跳过当前账户，并由后备账户完成请求'
     )
   })
 
@@ -746,19 +737,15 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
   await verifyContract(failures, 'circuit 状态', async () => {
     const childAfter = await circuitStore.get(childScope)
     const parentAfter = await circuitStore.get(parentScope)
-    assert.equal(childAfter.phase, 'CLOSED', '成功的原地重试后 child circuit 必须保持 CLOSED')
-    assert.equal(childAfter.generation, childBefore.generation, '请求内中间失败不得推进 child circuit generation')
-    assert.equal(childAfter.transitionId, childBefore.transitionId, '请求内中间失败不得写 child circuit transition')
+    assert.notEqual(childAfter.phase, 'CLOSED', '确认的 transport 失败必须更新失败账户的 child circuit')
+    assert(childAfter.generation > childBefore.generation, '确认的 transport 失败必须推进 child circuit generation')
     assert.equal(childAfter.lease, undefined, '请求结束后 child circuit lease 必须为空')
-    assert.equal(parentAfter.phase, 'CLOSED', '成功的原地重试后 parent circuit 必须保持 CLOSED')
-    assert.equal(parentAfter.generation, parentBefore.generation, '请求内中间失败不得推进 parent circuit generation')
-    assert.equal(parentAfter.transitionId, parentBefore.transitionId, '请求内中间失败不得写 parent circuit transition')
     assert.equal(parentAfter.lease, undefined, '请求结束后 parent circuit lease 必须为空')
   })
 
   await verifyContract(failures, 'shared hot-quality', async () => {
     const quality = await hotQuality.getGatewayHotQualityRuntime().hotQualityStore.get(qualityScope)
-    assert(quality, '最终成功必须留下主账户 hot-quality 成功样本')
+    assert(quality, '失败账户必须留下 transport 失败质量样本')
     assert.deepEqual({
       qualityAttempts: quality.window5m.qualityAttempts,
       completedResponses: quality.window5m.completedResponses,
@@ -768,14 +755,14 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
       incompleteResponses: quality.window5m.incompleteResponses,
       unknownOutcomes: quality.window5m.unknownOutcomes
     }, {
-      qualityAttempts: 1,
-      completedResponses: 1,
+      qualityAttempts: 0,
+      completedResponses: 0,
       localTransportFailures: 0,
       timeouts: 0,
       readInterruptions: 0,
       incompleteResponses: 0,
-      unknownOutcomes: 0
-    }, '两个真实 dispatch 只能留下一个最终成功质量样本，中间失败不得以任何形式进入共享 hot-quality')
+      unknownOutcomes: 1
+    }, '失败账户必须记录未知结果，后备账户的成功不得覆盖原账户失败质量样本')
   })
 
   await verifyContract(failures, 'Key 与账户状态', async () => {
@@ -827,13 +814,13 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
         })),
         [
           { attemptIndex: 1, accountId: fixture.accounts[0]!.accountId, success: 0 },
-          { attemptIndex: 2, accountId: fixture.accounts[0]!.accountId, success: 1 }
+          { attemptIndex: 1, accountId: fixture.accounts[1]!.accountId, success: 1 }
         ],
-        'audit attempt_index 必须严格递增，且中间失败与最终成功必须归属同一账户'
+        '两个真实 dispatch 必须分别归属失败账户与后备账户'
       )
     })
     await verifyContract(auditFailures, 'audit 失败诊断', async () => {
-      assert(!JSON.stringify(auditAttempts[0]).includes('account_upstream'), '中间 audit attempt 不得携带共享 account_upstream 归因')
+      assert.equal(auditAttempts[0]?.error_phase, 'upstream_request', '失败账户的审计必须记录上游请求失败阶段')
     })
 
     const usageItems = requireUsageRecordDetails(
@@ -845,8 +832,8 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
     const intermediateUsage = usageItems.filter((item) => item.success === false)
     await verifyContract(auditFailures, 'usage 请求局部归因', async () => {
       assert(
-        intermediateUsage.every((item) => item.failureAttribution !== 'account_upstream'),
-        `中间失败只能保持 request-local/unknown，不得写 account_upstream：${JSON.stringify(intermediateUsage)}`
+        intermediateUsage.every((item) => item.failureAttribution === 'account_upstream'),
+        `确认的上游 transport 失败必须归因为 account_upstream：${JSON.stringify(intermediateUsage)}`
       )
     })
     if (auditFailures.length > 0) assert.fail(auditFailures.join('；'))

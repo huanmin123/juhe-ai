@@ -103,7 +103,14 @@ try {
     upstreamBaseUrl,
     apiKeys: ['sk-gateway-three-a', 'sk-gateway-three-b', 'sk-gateway-three-good'],
     strategy: 'round_robin',
-    concurrencyLimit: 64
+    concurrencyLimit: 64,
+    errorHandlingRules: [{
+      enabled: true,
+      name: '三 Key 显式 retry_next',
+      priority: 1,
+      status_codes: [401, 503],
+      action: 'retry_next'
+    }]
   })
   forcedFailureStatusByAuthorization.set('Bearer sk-gateway-three-a', 401)
   forcedFailureStatusByAuthorization.set('Bearer sk-gateway-three-b', 503)
@@ -138,7 +145,8 @@ try {
     name: '六 Key 状态码乱序',
     upstreamBaseUrl,
     apiKeys: statusChaosKeys,
-    strategy: 'round_robin'
+    strategy: 'round_robin',
+    errorHandlingRules: [explicitRetryNextRule([400, 401, 429, 500, 503])]
   })
   for (const [index, status] of [400, 401, 429, 500, 503].entries()) {
     forcedFailureStatusByAuthorization.set(`Bearer ${statusChaosKeys[index]}`, status)
@@ -151,7 +159,8 @@ try {
     name: '五 Key 全坏稳定失败',
     upstreamBaseUrl,
     apiKeys: allDeadKeys,
-    strategy: 'round_robin'
+    strategy: 'round_robin',
+    errorHandlingRules: [explicitRetryNextRule([400, 401, 429, 500, 503])]
   })
   for (const [index, key] of allDeadKeys.entries()) {
     forcedFailureStatusByAuthorization.set(`Bearer ${key}`, [500, 401, 429, 400, 503][index]!)
@@ -247,8 +256,8 @@ try {
   const firstFailoverAuthorizations = authorizationsForBatches([firstFailoverBatch])
   assert.deepEqual(
     firstFailoverAuthorizations,
-    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
-    '多 Key 账户当前 Key 失败后，本次请求应优先尝试同账户下一个 Key'
+    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
+    '未配置 retry_next 时，多 Key 账户失败后必须切换后备账户'
   )
   const failoverBadKeyPersistedState = apiKeyRuntimeStateStatus('sk-gateway-failover-bad')
   assert.equal(failoverBadKeyPersistedState, undefined, '未知 HTTP 失败不得写入 Key 持久或共享运行态')
@@ -256,8 +265,8 @@ try {
   const recoveredAccountAuthorizations = authorizationsForBatches([recoveredAccountBatch])
   assert.deepEqual(
     recoveredAccountAuthorizations,
-    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
-    '独立请求应继续按 Key 轮询事实选择，不能继承未知 HTTP 响应的 Key 死亡判断'
+    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
+    '独立请求仍按 Key 轮询选择首 Key，但失败后必须切换后备账户'
   )
   assert.equal(
     mockHits.filter((hit) => hit.authorization === 'Bearer sk-gateway-failover-bad').length,
@@ -315,110 +324,36 @@ try {
       sessionId: 'same-session-after-transport-key-rotation'
     }
   )
-  assert.equal(transportRecovery.status, 200, `第二个物理 Key 必须接管首 Key transport 失败：${transportRecovery.text}`)
+  assert.equal(transportRecovery.status, 503, `未配置规则的 transport 失败应返回统一候选耗尽错误：${transportRecovery.text}`)
   assert.deepEqual(
     authorizationsForBatches([transportRecoveryBatchId]),
-    ['Bearer sk-gateway-transport-bad', 'Bearer sk-gateway-transport-good'],
-    '同请求必须先观测 transport 失败，再由同账户第二 Key 完成 framing，第三 Key 不应多余派发'
+    ['Bearer sk-gateway-transport-bad'],
+    'transport 失败不得隐式轮换同账户兄弟 Key'
   )
-  const transportIsolationBatchIds: string[] = []
-  for (let index = 0; index < 3; index += 1) {
-    const batchId = `gateway-api-key-transport-isolation-${++postBatchSequence}`
-    transportIsolationBatchIds.push(batchId)
-    const result = await postSingleChatCompletion(
-      backendBaseUrl,
-      transportRecoveryGatewayApiKey,
-      batchId,
-      {
-        content: `confirmed bad fingerprint must stay locally isolated ${index + 1}`,
-        sessionId: 'same-session-after-transport-key-rotation'
-      }
-    )
-    assert.equal(result.status, 200, `短避让窗口内后续请求必须由兄弟 Key 成功接管：${result.text}`)
-  }
-  const transportIsolationAuthorizations = authorizationsForBatches(transportIsolationBatchIds)
-  assert.equal(transportIsolationAuthorizations.length, 3, '短避让窗口内每个后续请求应只派发一个健康兄弟 Key')
-  assert(
-    transportIsolationAuthorizations.every((authorization) => authorization !== 'Bearer sk-gateway-transport-bad'),
-    `兄弟 Key 协议成功确认后，坏 fingerprint 必须进入短避让：${JSON.stringify(transportIsolationAuthorizations)}`
-  )
-  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-transport-bad'), undefined, '网关 transport 相对证据只能短避让，不能写 Key 持久状态')
+  const transportIsolationAuthorizations = authorizationsForBatches([transportRecoveryBatchId])
+  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-transport-bad'), undefined, '无显式规则的 transport 失败不得写 Key 持久状态')
   assert.deepEqual(
     accountDatabaseAvailabilityByName('三 Key transport 后同账户恢复 账户'),
     { status: 'active', schedulable: 1 },
-    '单 Key transport 故障不得改变来源账户持久可用性'
+    '单 Key transport 故障不得改变来源账户持久可用性；有后备账户时由账户候选切换接管'
   )
-  assertNoOpenAccountCircuit(transportRecoveryAccountId, '单 Key transport 故障与兄弟 Key 成功不得误熔断整个账户')
-
-  await sleep(3_100)
-  forcedTransportFailureAuthorizations.delete('Bearer sk-gateway-transport-bad')
   const transportRecoveredBatchIds: string[] = []
-  for (let index = 0; index < 3; index += 1) {
-    const batchId = `gateway-api-key-transport-reincluded-${++postBatchSequence}`
-    transportRecoveredBatchIds.push(batchId)
-    const result = await postSingleChatCompletion(backendBaseUrl, transportRecoveryGatewayApiKey, batchId, {
-      content: `expired local isolation must allow a protocol-success trial ${index + 1}`
-    })
-    assert.equal(result.status, 200, `短避让到期后的 Key 轮换请求必须成功：${result.text}`)
-    if (authorizationsForBatches([batchId]).includes('Bearer sk-gateway-transport-bad')) break
-  }
-  assert(
-    authorizationsForBatches(transportRecoveredBatchIds).includes('Bearer sk-gateway-transport-bad'),
-    '短避让到期后，原坏 fingerprint 必须重新纳入轮换并能由协议成功恢复'
-  )
 
   const delayedFailureBatchId = `gateway-api-key-delayed-failure-${++postBatchSequence}`
-  holdMockSuccessResponses(delayedFailureBatchId)
-  const delayedFailureRequest = postSingleChatCompletion(
+  const delayedFailureResult = await postSingleChatCompletion(
     backendBaseUrl,
     delayedFailureRaceGatewayApiKey,
     delayedFailureBatchId,
-    { content: 'hold sibling success while the old key failure remains pending' }
+    { content: 'transport failure must not trigger an implicit sibling key retry' }
   )
-  await waitFor(
-    () => authorizationsForBatches([delayedFailureBatchId]).includes('Bearer sk-gateway-race-good'),
-    2_000
-  )
-  forcedTransportFailureAuthorizations.delete('Bearer sk-gateway-race-bad')
-  const newerSuccessBatchIds: string[] = []
-  for (let index = 0; index < 2; index += 1) {
-    const batchId = `gateway-api-key-newer-success-${++postBatchSequence}`
-    newerSuccessBatchIds.push(batchId)
-    const result = await postSingleChatCompletion(backendBaseUrl, delayedFailureRaceGatewayApiKey, batchId, {
-      content: `newer protocol success on formerly failing fingerprint ${index + 1}`,
-      model: 'gpt-4.1'
-    })
-    assert.equal(result.status, 200, `并发较新请求必须成功：${result.text}`)
-    if (authorizationsForBatches([batchId]).includes('Bearer sk-gateway-race-bad')) break
-  }
-  assert(
-    authorizationsForBatches(newerSuccessBatchIds).includes('Bearer sk-gateway-race-bad'),
-    '释放旧确认前必须先取得同 fingerprint 的较新协议成功 observation'
-  )
-  releaseHeldMockSuccessResponses(delayedFailureBatchId)
-  const delayedFailureResult = await delayedFailureRequest
-  assert.equal(delayedFailureResult.status, 200, `旧请求最终应由兄弟 Key 成功完成：${delayedFailureResult.text}`)
+  assert.equal(delayedFailureResult.status, 503, `transport 失败不应隐式重放同账户兄弟 Key：${delayedFailureResult.text}`)
   assert.deepEqual(
     authorizationsForBatches([delayedFailureBatchId]),
-    ['Bearer sk-gateway-race-bad', 'Bearer sk-gateway-race-good'],
-    '迟到确认场景必须先发生旧 transport failure，再由兄弟 Key 完成协议响应'
+    ['Bearer sk-gateway-race-bad'],
+    'transport 失败必须在当前账户结束后交由账户候选切换，而非同账户兄弟 Key'
   )
   const postRaceBatchIds: string[] = []
-  for (let index = 0; index < 2; index += 1) {
-    const batchId = `gateway-api-key-post-race-${++postBatchSequence}`
-    postRaceBatchIds.push(batchId)
-    const result = await postSingleChatCompletion(backendBaseUrl, delayedFailureRaceGatewayApiKey, batchId, {
-      content: `stale failure must not suppress newer success ${index + 1}`
-    })
-    assert.equal(result.status, 200, `迟到失败 fencing 后请求必须成功：${result.text}`)
-    if (authorizationsForBatches([batchId]).includes('Bearer sk-gateway-race-bad')) break
-  }
-  assert(
-    authorizationsForBatches(postRaceBatchIds).includes('Bearer sk-gateway-race-bad'),
-    '迟到旧 failure 不得覆盖较新协议成功或重新短避让该 fingerprint'
-  )
-  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-race-bad'), undefined, '迟到旧 failure 不得写 Key 持久状态')
-  assertNoOpenAccountCircuit(delayedFailureRaceAccountId, '迟到 Key 局部 failure 不得误熔断整个账户')
+  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-race-bad'), undefined, 'transport 失败不得写 Key 持久状态')
 
   const statusChaosBatch = await postChatCompletions(backendBaseUrl, statusChaosGatewayApiKey, 1)
   const statusChaosAuthorizations = authorizationsForBatches([statusChaosBatch])
@@ -619,6 +554,7 @@ function createGatewayApiKeyScenario(input: {
   weights?: number[]
   concurrencyLimit?: number
   supportedModels?: string[]
+  errorHandlingRules?: Array<Record<string, unknown>>
 }): string {
   const providerCode = input.providerCode ?? GPT_VENDOR_CODE
   const group = repositories.createGroup({
@@ -636,7 +572,8 @@ function createGatewayApiKeyScenario(input: {
       api_keys: input.apiKeys,
       api_key_strategy: input.strategy,
       api_key_weights: input.weights,
-      base_url: input.upstreamBaseUrl
+      base_url: input.upstreamBaseUrl,
+      ...(input.errorHandlingRules ? { error_handling_rules: input.errorHandlingRules } : {})
     },
     groupId: group.id,
     status: 'active',
@@ -652,6 +589,16 @@ function createGatewayApiKeyScenario(input: {
   }, access)
   assert(apiKey.key, `${input.name} 未返回网关 API Key 明文`)
   return apiKey.key
+}
+
+function explicitRetryNextRule(statusCodes: number[]): Record<string, unknown> {
+  return {
+    enabled: true,
+    name: `显式 retry_next (${statusCodes.join(',')})`,
+    priority: 1,
+    status_codes: statusCodes,
+    action: 'retry_next'
+  }
 }
 
 function createGatewayOversizedPoolScenario(upstreamBaseUrl: string): { gatewayApiKey: string; apiKeys: string[] } {
@@ -675,7 +622,8 @@ function createGatewayOversizedPoolScenario(upstreamBaseUrl: string): { gatewayA
         api_key: apiKeys[0],
         api_keys: apiKeys,
         api_key_strategy: 'round_robin',
-        base_url: upstreamBaseUrl
+        base_url: upstreamBaseUrl,
+        error_handling_rules: [explicitRetryNextRule([400, 401, 429, 500, 503])]
       },
       groupId: group.id,
       status: 'active',
@@ -711,7 +659,8 @@ function createGatewayPhysicalKeyDedupeScenario(upstreamBaseUrl: string): string
         api_key: apiKeys[0],
         api_keys: [...apiKeys],
         api_key_strategy: 'round_robin',
-        base_url: upstreamBaseUrl
+        base_url: upstreamBaseUrl,
+        error_handling_rules: [explicitRetryNextRule([401, 503])]
       },
       groupId: group.id,
       status: 'active',
@@ -810,7 +759,8 @@ function createAuthorizedApiKeyScenario(upstreamBaseUrl: string): {
       api_key: 'sk-gateway-authorized-bad',
       api_keys: ['sk-gateway-authorized-bad', 'sk-gateway-authorized-good'],
       api_key_strategy: 'round_robin',
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      error_handling_rules: [explicitRetryNextRule([429])]
     },
     groupId: ownerGroup.id,
     status: 'active',
@@ -918,7 +868,8 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
       api_key: 'sk-gateway-allbad-a',
       api_keys: ['sk-gateway-allbad-a', 'sk-gateway-allbad-b', 'sk-gateway-allbad-c'],
       api_key_strategy: 'round_robin',
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      error_handling_rules: [explicitRetryNextRule([400, 401, 429])]
     },
     groupId: group.id,
     status: 'active',

@@ -185,7 +185,7 @@ assert.doesNotMatch(
 assert.match(source('modules/gateway/response/finalization.ts'), /await recordGatewayUpstreamBucketSuccessAsync/, '上游成功最终化必须等待 Redis 上游桶恢复清理')
 const failureDispatchBody = functionBody(failureDispatchSource, 'handleFailedUpstreamResponse')
 assert.match(failureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*return \{[\s\S]*action: 'skip_account'[\s\S]*failureKind: explicitPolicyDecision \? 'explicit_policy' : 'opaque_http'/, '完整未知 HTTP 必须进入统一账户级切号并保留 opaque 失败归因')
-assert.match(failureDispatchBody, /if \(explicitPolicyDecision\)[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用；状态动作不能阻断当前请求切号')
+assert.match(failureDispatchBody, /if \(explicitPolicyDecision && input\.accountStateMutationEnabled !== false\)[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用；状态动作不能阻断当前请求切号')
 
 const upstreamDispatchSource = source('modules/gateway/dispatch/upstream-dispatch.ts')
 const upstreamDispatchBody = functionBody(upstreamDispatchSource, 'fetchFirstAvailableUpstream')
@@ -260,6 +260,7 @@ function assertRuntimeStateStoreCallsites(): void {
   assert.deepEqual(
     hits.map((hit) => `${hit.file}:${hit.name}`).sort(),
     [
+      'modules/anthropic-oauth/anthropic-oauth.service.ts:anthropic-oauth:sessions',
       'modules/auth/captcha.service.ts:auth_captcha',
       'modules/auth/login-guard.service.ts:auth_login_guard',
       'modules/gateway/client-profiles/codex-turn-retry.service.ts:gateway-codex-turn-retry',
@@ -271,8 +272,11 @@ function assertRuntimeStateStoreCallsites(): void {
       'modules/gateway/runtime/client-ip-error-circuit.service.ts:gateway-client-ip-error-circuit',
       'modules/gateway/runtime/normal-route-latency-degradation.service.ts:gateway-normal-route-latency-degradation',
       'modules/gateway/runtime/proxy-health.service.ts:gateway-upstream-bucket-health',
+      'modules/gemini-oauth/gemini-oauth.service.ts:gemini-oauth:sessions',
+      'modules/grok-oauth/grok-oauth.service.ts:grok-oauth:sessions',
       'modules/openai-oauth/openai-oauth.service.ts:openai-oauth:sessions',
       'modules/openai-oauth/openai-oauth-access-token-refresh.service.ts:openai-oauth:refresh-locks',
+      'modules/providers/drivers/_shared/oauth-refresh-lock.ts:provider-oauth:refresh-locks',
       'shared/gateway-cache-invalidation.ts:gateway_cache_invalidation'
     ].sort(),
     `新增 RuntimeStateStore 调用点必须确认 performance 模式走 Redis，不得新增进程内跨进程事实源：${JSON.stringify(hits, null, 2)}`
@@ -692,7 +696,8 @@ function assertRedisRuntimeQueuesAndLimits(): void {
 function assertOAuthAndRateLimitRedisBoundaries(): void {
   const oauthSource = source('modules/openai-oauth/openai-oauth.service.ts')
   assert.match(functionBody(oauthSource, 'generateOpenAIAuthURL'), /oauthSessionStore\(\)\.setJson[\s\S]*sessionTtlMs/, 'OAuth 授权会话必须写 RuntimeStateStore，Redis 模式共享且带 TTL')
-  assert.match(functionBody(oauthSource, 'consumeOpenAIOAuthSession'), /oauthSessionStore\(\)[\s\S]*\.getJson<[\s\S]*\.compareDeleteJson\(/, 'OAuth 授权会话必须校验 state/owner 后再用 compare-delete 原子消费，不能提前 GETDEL')
+  assert.match(functionBody(oauthSource, 'readOpenAIOAuthSession'), /sessionStore\.getJson<[\s\S]*input\.state !== session\.state[\s\S]*actualOwner !== expectedOwner/, 'OAuth 授权会话必须先读取并校验 state/owner')
+  assert.match(functionBody(oauthSource, 'consumeOpenAIOAuthSession'), /readOpenAIOAuthSession[\s\S]*\.compareDeleteJson\(/, 'OAuth 授权会话必须在校验后用 compare-delete 原子消费，不能提前 GETDEL')
   assert.doesNotMatch(oauthSource, /const sessions = new Map/, 'OAuth 授权会话不能使用进程内 Map')
 
   const oauthRefreshSource = source('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
