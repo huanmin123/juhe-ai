@@ -211,6 +211,7 @@
     "test:account-api-key-transient-redis-smoke": "tsx src/scripts/regression/account-api-key-transient-redis-smoke.ts",
     "test:gateway-failure-classification-observation": "tsx src/scripts/regression/gateway-failure-classification-observation-regression.ts",
     "test:account-api-key-runtime-state-postgres-smoke": "tsx src/scripts/regression/account-api-key-runtime-state-postgres-smoke.ts",
+    "test:account-expiry-runtime-postgres-smoke": "tsx src/scripts/regression/account-expiry-runtime-postgres-smoke.ts",
     "test:group-options-lightweight": "tsx src/scripts/regression/group-options-lightweight-regression.ts",
     "test:user-reference-data": "tsx src/scripts/regression/user-reference-data-regression.ts",
     "test:group-management-driver": "tsx src/scripts/regression/group-management-driver-regression.ts",

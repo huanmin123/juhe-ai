@@ -66,51 +66,58 @@ export function disableExpiredAccounts(access?: AccessScope, limit = maxAccountE
   return changed
 }
 
-export async function disableExpiredAccountsAsync(access?: AccessScope, limit = maxAccountExpirySweepBatchSize, client?: DatabaseClient): Promise<number> {
+export async function disableExpiredAccountsAsync(access?: AccessScope, limit = maxAccountExpirySweepBatchSize): Promise<number> {
   const scope = buildSystemAccountScopeClause(access)
   const now = nowIso()
   const requestedBatchSize = Math.trunc(limit)
   const batchSize = Number.isFinite(requestedBatchSize)
     ? Math.max(1, Math.min(requestedBatchSize, maxAccountExpirySweepBatchSize))
     : maxAccountExpirySweepBatchSize
-  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await databaseClient.query<{ id: string }>(`
-    SELECT id
-    FROM ${accountRuntimeStatusTable(databaseClient, 'accounts')}
-    WHERE account_expires_at IS NOT NULL
-      AND account_expires_at <= ?
-      AND deleted_at IS NULL
-      AND (
-        status <> 'disabled'
-        OR schedulable <> 0
-        OR cooldown_until IS NOT NULL
-        OR last_error_code IS NOT NULL
-        OR last_error_message IS NULL
-      )${scope.clause}
-    ORDER BY account_expires_at ASC, updated_at ASC, id ASC
-    LIMIT ?
-  `, [now, ...scope.params, batchSize])
-  const expiredIds = rows.map((row) => row.id).filter(Boolean)
-  if (!expiredIds.length) return 0
-  const result = await databaseClient.execute(`
-    UPDATE ${accountRuntimeStatusTable(databaseClient, 'accounts')}
-    SET status = 'disabled',
-        schedulable = 0,
-        cooldown_until = NULL,
-        last_error_code = 'account_expired',
-        last_error_message = ?,
-        cooldown_retest_failure_count = 0,
-        cooldown_retest_observation_started_at = NULL,
-        cooldown_retest_generation = NULL,
-        cooldown_retest_last_at = NULL,
-        cooldown_retest_last_status_code = NULL,
-        updated_at = ?
-    WHERE id IN (${expiredIds.map(() => '?').join(', ')})
-      AND deleted_at IS NULL
-  `, ['账户套餐已过期，已自动停用', now, ...expiredIds])
-  const changed = Number(result.changes ?? 0)
+  const databaseClient = createPostgresDatabaseClient(await getPostgresPool())
+  const changed = await databaseClient.transaction(async (tx) => {
+    const rows = await tx.query<{ id: string }>(`
+      SELECT id
+      FROM ${accountRuntimeStatusTable(tx, 'accounts')}
+      WHERE account_expires_at IS NOT NULL
+        AND account_expires_at <= ?
+        AND deleted_at IS NULL
+        AND last_error_code IS DISTINCT FROM 'account_expired'
+        AND (
+          status <> 'disabled'
+          OR schedulable <> 0
+          OR cooldown_until IS NOT NULL
+          OR last_error_code IS NOT NULL
+          OR last_error_message IS NULL
+        )${scope.clause}
+      ORDER BY account_expires_at ASC, updated_at ASC, id ASC
+      LIMIT ?
+      FOR UPDATE SKIP LOCKED
+    `, [now, ...scope.params, batchSize])
+    const expiredIds = rows.map((row) => row.id).filter(Boolean)
+    if (!expiredIds.length) return 0
+    const result = await tx.execute(`
+      UPDATE ${accountRuntimeStatusTable(tx, 'accounts')}
+      SET status = 'disabled',
+          schedulable = 0,
+          cooldown_until = NULL,
+          last_error_code = 'account_expired',
+          last_error_message = ?,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_generation = NULL,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
+          updated_at = ?
+      WHERE id IN (${expiredIds.map(() => '?').join(', ')})
+        AND deleted_at IS NULL
+    `, ['账户套餐已过期，已自动停用', now, ...expiredIds])
+    const changed = Number(result.changes ?? 0)
+    if (changed > 0) {
+      await markAllGroupAccountStatsDirtyAsync('account_expired', tx)
+    }
+    return changed
+  })
   if (changed > 0) {
-    await markAllGroupAccountStatsDirtyAsync('account_expired', databaseClient)
     notifyGatewayRuntimeCacheInvalidation('account_expired')
   }
   return changed
