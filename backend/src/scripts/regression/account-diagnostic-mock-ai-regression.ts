@@ -698,8 +698,8 @@ function upstreamKey(authorization: string | string[] | undefined): string {
 }
 
 function expectedAccountTestOutput(requestText: string): string {
-  const match = /OK:[A-F0-9]{32}/.exec(requestText)
-  return match?.[0] ?? 'OK'
+  const match = /juhe\d{3}/.exec(requestText)
+  return match?.[0] ?? 'juhe000'
 }
 
 function incrementHit(key: string): number {

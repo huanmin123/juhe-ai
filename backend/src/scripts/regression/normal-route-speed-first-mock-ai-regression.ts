@@ -1381,7 +1381,7 @@ function strictAccountTestExpectedOutput(bodyText: string): string | undefined {
   try {
     const body = JSON.parse(bodyText) as Record<string, unknown>
     const requestJson = JSON.stringify(body)
-    const expectedOutput = requestJson.match(/你的回复必须且只能是：(OK:[A-F0-9]{32})/)?.[1]
+    const expectedOutput = requestJson.match(/你的回复必须且只能是：(juhe\d{3})/)?.[1]
     return expectedOutput && requestJson.includes(`除 ${expectedOutput} 外，不得输出任何字符`)
       ? expectedOutput
       : undefined

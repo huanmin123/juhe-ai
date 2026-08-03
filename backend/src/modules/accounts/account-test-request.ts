@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomInt, randomUUID } from 'node:crypto'
 
 import type { AccountClientCompatibility } from '../../domain/types.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
@@ -30,7 +30,7 @@ export type AccountTestOutputChallenge = {
 }
 
 export function createAccountTestOutputChallenge(): AccountTestOutputChallenge {
-  const expectedOutput = `OK:${randomBytes(16).toString('hex').toUpperCase()}`
+  const expectedOutput = `juhe${randomInt(0, 1_000).toString().padStart(3, '0')}`
   return {
     expectedOutput,
     prompt: [
