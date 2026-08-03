@@ -556,10 +556,21 @@ function sendChatSse(res: http.ServerResponse, scenario: ScenarioName, polluted:
 
 function sendResponsesJson(res: http.ServerResponse, scenario: ScenarioName, polluted: boolean): void {
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  const outputText = polluted ? pollutedText() : `clean ${scenario}`
   res.end(JSON.stringify({
     id: `resp-${scenario}`,
+    object: 'response',
     status: 'completed',
-    output_text: polluted ? pollutedText() : `clean ${scenario}`,
+    output_text: outputText,
+    output: [
+      {
+        id: `msg-${scenario}`,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: outputText }]
+      }
+    ],
     usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 }
   }))
 }

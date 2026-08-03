@@ -36,7 +36,8 @@ import {
 } from '../usage/records.js'
 import {
   inspectResponseSemanticFrames,
-  resolveRuntimeResponseInspectionPolicies
+  resolveRuntimeResponseInspectionPolicies,
+  type ResponseInspectionDecision
 } from './inspection.js'
 import {
   codexCompactionContractMismatchFrame,
@@ -191,6 +192,27 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     errorMessage: message
   })
 
+  if (
+    decision.replayAuthority === 'explicit_user_policy'
+    && decision.accountSwitch === 'request_next_account'
+    && decision.retryEnabled === true
+    && !input.downstreamCommitState.semanticCommitted
+    && input.downstreamCommitState.downstreamBytesWritten === 0
+    && !input.res.headersSent
+    && !input.res.writableEnded
+    && !input.res.destroyed
+  ) {
+    return {
+      alreadyFinalized: false,
+      retryUpstream: true,
+      retryReason: 'response_inspection',
+      responseInspection: decision,
+      excludeCurrentAccount: shouldExcludeCurrentAccountForJsonRetry(decision),
+      message,
+      errorCode
+    }
+  }
+
   const responsePayload = gatewayErrorPayload(message, 'response_inspection_failed', errorCode)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
   sendGatewayErrorResponse(input.res, 502, responsePayload, { protocol: clientErrorProtocol })
@@ -208,6 +230,13 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     firstTokenMs: input.firstTokenMs
   })
   return { alreadyFinalized: true }
+}
+
+function shouldExcludeCurrentAccountForJsonRetry(decision: ResponseInspectionDecision): boolean {
+  return decision.accountSwitch === 'request_next_account'
+    || decision.accountSwitch === 'avoid_account_ttl'
+    || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
+    || decision.accountState === 'runtime_avoidance'
 }
 
 function validateBufferedJsonProtocolResponse(
