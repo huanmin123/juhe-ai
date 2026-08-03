@@ -38,6 +38,10 @@ import {
   normalizeAccountModelMappingsForProviderAsync,
   normalizeAccountSupportedModelsForProviderAsync
 } from '../../storage/account-model-normalization.js'
+import {
+  accountHealthCheckModelSupportsImages,
+  loadAccountModelValidationContextAsync
+} from '../../storage/account-model-validation.repository.js'
 import { normalizeAccountTagNamesInput } from '../../storage/account-tags.repository.js'
 import { loadAccountBatchEditContextRecordsAsync } from '../../storage/account-batch-edit-context.repository.js'
 import { isAccountExpired } from '../../storage/account-runtime-mutation-helpers.js'
@@ -110,10 +114,11 @@ async function prepareBatchUpdatesAsync(
   const proxyProfileId = hasOwn(updates, 'proxyProfileId')
     ? await enabledProxyProfileIdAsync(client, updates.proxyProfileId, accounts[0]?.systemAccountId)
     : undefined
-  return Promise.all(accounts.map((account) => prepareAccountUpdateAsync(account, updates, proxyProfileId)))
+  return Promise.all(accounts.map((account) => prepareAccountUpdateAsync(client, account, updates, proxyProfileId)))
 }
 
 async function prepareAccountUpdateAsync(
+  client: DatabaseClient,
   account: AccountBatchUpdateLockedAccount,
   updates: Record<string, unknown>,
   resolvedProxyProfileId: string | undefined
@@ -217,13 +222,27 @@ async function prepareAccountUpdateAsync(
 
   let nextHealthCheckEndpointMode = account.healthCheckEndpointMode
   if (hasOwn(updates, 'healthCheckEndpointMode') || hasOwn(updates, 'supportedEndpointModes')) {
+    const requestedHealthCheckEndpointMode = hasOwn(updates, 'healthCheckEndpointMode')
+      ? updates.healthCheckEndpointMode
+      : account.healthCheckEndpointMode
+    const imageCheckConfigurationChanged = hasOwn(updates, 'healthCheckEndpointMode')
+      || hasOwn(updates, 'healthCheckModel')
+      || hasOwn(updates, 'supportedModels')
+    const modelValidationContext = requestedHealthCheckEndpointMode === 'images_json' && imageCheckConfigurationChanged
+      ? await loadAccountModelValidationContextAsync(client, {
+          providerCode: account.providerCode,
+          systemAccountId: account.systemAccountId,
+          models: [nextHealthCheckModel]
+        })
+      : undefined
     nextHealthCheckEndpointMode = resolveHealthCheckEndpointMode({
-      value: hasOwn(updates, 'healthCheckEndpointMode')
-        ? updates.healthCheckEndpointMode
-        : account.healthCheckEndpointMode,
+      value: requestedHealthCheckEndpointMode,
       providerCode: account.providerCode,
       providerProtocolProfileId: account.providerProtocolProfileId,
-      enabledEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+      enabledEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+      modelSupportsImages: modelValidationContext
+        ? accountHealthCheckModelSupportsImages(modelValidationContext, nextHealthCheckModel)
+        : account.healthCheckEndpointMode === 'images_json'
     })
   }
   const healthCheckEndpointModeChanged = addChange(

@@ -135,7 +135,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     systemAccountId: input.systemAccountId,
     testEndpointMode: input.testEndpointMode
   })
-  const probeKind = await accountTestProbeKindAsync(account, model, {
+  const probeKind = input.forceProbeKind ?? await accountTestProbeKindAsync(account, model, {
     systemAccountId: input.systemAccountId,
     testEndpointMode: input.testEndpointMode
   })
@@ -322,7 +322,10 @@ export async function testOpenAIAccount(
     probeKind = input.forceProbeKind ?? 'generation'
     let model: string | undefined
     let supportedEndpointModes: AccountSupportedEndpointMode[] = []
-    if (probeKind !== 'models_catalog') {
+    if (probeKind === 'models_catalog') {
+      model = explicitModel
+      testedModel = model
+    } else {
       model = await resolveAccountTestModelAsync(account, {
         explicitModel,
         systemAccountId: input.systemAccountId

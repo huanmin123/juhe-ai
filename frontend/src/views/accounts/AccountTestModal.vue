@@ -136,6 +136,7 @@ const props = defineProps<{
   modelReadonly: boolean
   modelsError: string
   modelsLoading: boolean
+  modelsReady: boolean
   open: boolean
   providerName?: (providerCode?: string) => string
   result?: AccountTestResult
@@ -177,6 +178,8 @@ const imageTest = computed(() => props.result?.testEndpointMode === 'images_json
 )
 const runDisabled = computed(() => (
   props.modelsLoading
+  || !props.modelsReady
+  || Boolean(props.modelsError)
   || !props.model.trim()
   || !selectedEndpointModeSelectValue.value
 ))

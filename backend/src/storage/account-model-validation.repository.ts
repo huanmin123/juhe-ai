@@ -50,6 +50,13 @@ export interface AccountModelValidationContext {
   endpointModel(endpointFamily: AccountModelMappingEndpointFamily, model: string): AccountModelValidationFact | undefined
 }
 
+export function accountHealthCheckModelSupportsImages(
+  context: AccountModelValidationContext,
+  model: string
+): boolean {
+  return context.accountModel(model)?.supportedApiProtocols.includes('images') === true
+}
+
 export interface AccountModelValidationContextInput {
   providerCode: string
   systemAccountId: string

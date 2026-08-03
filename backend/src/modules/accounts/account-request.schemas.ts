@@ -32,6 +32,7 @@ const accountSupportedEndpointModeSchema = z.enum([
 ])
 
 const accountHealthCheckEndpointModeSchema = z.enum([
+  'images_json',
   'chat_json',
   'chat_sse',
   'responses_json',

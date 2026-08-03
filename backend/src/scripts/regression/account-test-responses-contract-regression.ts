@@ -495,8 +495,8 @@ function expectedProbeOutput(payload: Record<string, unknown>): string {
   const text = Array.isArray(content) && typeof content[0] === 'object' && content[0] !== null
     ? String((content[0] as Record<string, unknown>).text ?? '')
     : ''
-  const match = /juhe\d{3}/.exec(text)
-  assert(match, '账户测试请求必须携带 juhe 前缀的三位随机数字标记')
+  const match = /juhe/.exec(text)
+  assert(match, '账户测试请求必须携带固定短标记')
   return match[0]
 }
 

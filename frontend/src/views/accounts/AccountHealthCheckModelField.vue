@@ -87,7 +87,11 @@ const endpointModeTooltip = computed(() => imageOnlyModel.value
   : '系统检查直接使用所选模型支持的请求形态；GPT 建议使用 Responses API（Streaming）。')
 
 watch(endpointModeOptions, (next) => {
-  if (imageOnlyModel.value || !next.length) return
+  if (imageOnlyModel.value) {
+    props.form.healthCheckEndpointMode = 'images_json'
+    return
+  }
+  if (!next.length) return
   if (!next.some((option) => option.value === props.form.healthCheckEndpointMode)) {
     props.form.healthCheckEndpointMode = next[0].value
   }

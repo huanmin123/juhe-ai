@@ -70,6 +70,7 @@ import {
   normalizeAccountSupportedModelsForProviderAsync
 } from './account-model-normalization.js'
 import {
+  accountHealthCheckModelSupportsImages,
   loadAccountModelValidationContextAsync,
   type AccountModelValidationContext
 } from './account-model-validation.repository.js'
@@ -371,13 +372,24 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
     const requestOverridesNeedValidation = (
       hasCredentialInput || hasOwnInput(input, 'supportedModels')
     ) && accountGptRequestOverridesNeedModelCatalog(nextCredentials)
+    const healthCheckEndpointModeNeedsImageValidation = (
+      hasOwnInput(input, 'healthCheckEndpointMode')
+        ? input.healthCheckEndpointMode
+        : row.health_check_endpoint_mode
+    ) === 'images_json'
     const modelValidationContext = supportedModelsNeedValidation
       || modelMappingsNeedValidation
       || requestOverridesNeedValidation
+      || healthCheckEndpointModeNeedsImageValidation
       ? await loadAccountModelValidationContextAsync(client, {
           providerCode: row.provider_code,
           systemAccountId: row.system_account_id,
-          models: validationSupportedModels,
+          models: [
+            ...validationSupportedModels,
+            ...(typeof input.healthCheckModel === 'string'
+              ? [input.healthCheckModel]
+              : [row.health_check_model])
+          ],
           mappings: modelMappingsNeedValidation ? validationModelMappings : []
         })
       : undefined
@@ -405,7 +417,10 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
       value: hasOwnInput(input, 'healthCheckEndpointMode') ? input.healthCheckEndpointMode : row.health_check_endpoint_mode,
       providerCode: row.provider_code,
       providerProtocolProfileId: row.provider_protocol_profile_id,
-      enabledEndpointModes: supportedEndpointModes(nextCredentials)
+      enabledEndpointModes: supportedEndpointModes(nextCredentials),
+      modelSupportsImages: modelValidationContext
+        ? accountHealthCheckModelSupportsImages(modelValidationContext, nextHealthCheckModel)
+        : false
     })
     assertAccountEndpointModesCompatible(protocolProfileFromRow(row), {
       modes: supportedEndpointModes(nextCredentials),

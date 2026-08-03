@@ -157,6 +157,7 @@
       :model-readonly="testModelReadonly"
       :models-error="testModelsError"
       :models-loading="testModelsLoading"
+      :models-ready="testModelsReady"
       :provider-name="providerName"
       :result="testResult"
       :running="testRunning"
@@ -968,6 +969,7 @@ function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gem
 watch(modalOpen, (open) => {
   if (open) {
     automaticModelCatalogAttemptedRequestKeys.clear()
+    void loadCurrentProviderModelOptions()
     scheduleAutomaticAccountModelCatalogSync()
     return
   }
@@ -1055,6 +1057,7 @@ const {
   testModelReadonly,
   testModelsError,
   testModelsLoading,
+  testModelsReady,
   testResult,
   testRunning,
   testingAccount,

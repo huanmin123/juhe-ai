@@ -1,6 +1,7 @@
 import type { AccountHealthCheckEndpointMode, AccountSupportedEndpointMode } from '@/types/domain'
 
 const options: Array<{ label: string; value: AccountHealthCheckEndpointMode }> = [
+  { label: 'Images API', value: 'images_json' },
   { label: 'Chat Completions（JSON）', value: 'chat_json' },
   { label: 'Chat Completions（Streaming）', value: 'chat_sse' },
   { label: 'Responses API（JSON）', value: 'responses_json' },

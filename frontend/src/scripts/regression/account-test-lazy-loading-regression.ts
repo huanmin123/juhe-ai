@@ -41,14 +41,14 @@ async function verifyManagementLazyLoading(): Promise<void> {
     isManagementView: computed(() => true)
   })
   await modal.openTestModal(account)
-  assert.equal(optionsCalls, 0, '管理端首开测试弹窗不得请求候选模型列表')
+  await waitFor(() => optionsCalls === 1, '管理端首开测试弹窗必须加载当前模型的服务端请求形态')
   assert.equal(modal.testForm.model, account.healthCheckModel, '首开默认模型必须使用当前账户检查模型')
-  assert.equal(modal.testForm.testEndpointMode, account.healthCheckEndpointMode, '首开默认请求形态必须直接使用账户列表字段')
+  assert.equal(modal.testForm.testEndpointMode, 'images_json', '历史 Responses 配置的图片模型首开后必须规范化为 Images API')
 
   await modal.loadAccountTestModelOptions(true)
   assert.equal(optionsCalls, 1, '展开模型下拉应只加载一次模型选项')
-  assert.deepEqual(modal.testEndpointModes.value, ['responses_json', 'responses_sse'])
-  assert.equal(modal.testForm.testEndpointMode, 'responses_sse', '模型 options 加载后必须保留有效的默认请求形态')
+  assert.deepEqual(modal.testEndpointModes.value, ['images_json'])
+  assert.equal(modal.testForm.testEndpointMode, 'images_json', '模型 options 加载后必须提交 Images API')
 
   modal.updateAccountTestModel('vendor/model-two')
   assert.deepEqual(modal.testEndpointModes.value, ['chat_json'])
@@ -71,7 +71,7 @@ async function verifySelfLazyLoading(): Promise<void> {
     isManagementView: computed(() => false)
   })
   await modal.openTestModal(account)
-  assert.equal(optionsCalls, 0, '个人端首开测试弹窗不得请求候选模型列表')
+  await waitFor(() => optionsCalls === 1, '个人端首开测试弹窗必须加载当前模型的服务端请求形态')
   await modal.loadAccountTestModelOptions(true)
   await modal.loadAccountTestModelOptions(true)
   assert.equal(optionsCalls, 1, '个人端重复展开模型选择器不得重复请求')
@@ -95,7 +95,7 @@ async function verifyServerFilteredSelectedModel(): Promise<void> {
     isManagementView: computed(() => true)
   })
   await modal.openTestModal(account)
-  await modal.loadAccountTestModelOptions(true)
+  await waitFor(() => optionsCalls === 1, '服务端筛选测试模型必须在首开时完成')
 
   assert.equal(optionsCalls, 1, '服务端筛掉当前模型后仍只读取一次模型 options')
   assert.deepEqual(
@@ -126,10 +126,8 @@ async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
     isManagementView: computed(() => true)
   })
   await modal.openTestModal(firstAccount)
-  const firstRequest = modal.loadAccountTestModelOptions(true)
   await waitFor(() => Boolean(firstSignal), '候选模型请求未接收 AbortSignal')
   await modal.openTestModal(secondAccount)
-  await firstRequest
   assert.equal(firstSignal?.aborted, true, '切换账户必须取消旧账户候选模型请求')
   assert.equal(modal.testForm.model, secondAccount.healthCheckModel, '旧账户请求不得覆盖新账户默认模型')
 }
@@ -137,9 +135,9 @@ async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
 function testOptions(): AccountTestOptions {
   return [
     {
-      id: 'vendor/model-one',
-      name: '模型一',
-      testEndpointModes: ['responses_json', 'responses_sse']
+      id: 'gpt-image-2',
+      name: '图片模型',
+      testEndpointModes: ['images_json']
     },
     {
       id: 'vendor/model-two',
@@ -166,7 +164,7 @@ function accountFixture(id: string): AccountSummary {
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'codex_responses',
-    healthCheckModel: 'vendor/model-one',
+    healthCheckModel: 'gpt-image-2',
     healthCheckEndpointMode: 'responses_sse',
     schedulable: true,
     todayUsage: emptyUsage(),

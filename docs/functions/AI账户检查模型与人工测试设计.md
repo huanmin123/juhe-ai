@@ -9,13 +9,13 @@
 - 人工测试只作为用户主动发起的诊断工具；唯一例外是已保存自有账户使用其精确检查配置完成列表测试后，可受限恢复持久调度资格，但不作为激活或健康事实凭证。
 - 后台系统检查统一使用账户保存的检查模型，并独占账户激活、健康确认和自动恢复职责。
 - 模型目录中的默认机制只负责初始化账户检查模型，不能在运行时动态改变已有账户。
-- 列表随账户摘要返回检查模型和检查请求形态；打开测试弹窗不加载候选目录，用户展开模型下拉时才加载模型及其可执行请求形态。
+- 列表随账户摘要返回检查模型和检查请求形态；打开测试弹窗立即加载候选目录及其可执行请求形态，加载完成前或失败后不得提交测试。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
 ## 健康检查请求形态
 
-- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`。
-- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。
+- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`；后者必须有模型目录 `images` 能力证据。
+- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE；其中 `images_json` 使用 `GET /v1/models` 并确认目录含检查模型，避免后台付费生图。
 - 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 使用 `chat_json`；Anthropic profile 使用 `messages_json`；Gemini Native 使用 `generate_content_json`。
 - 首选 mode 未启用时，优先取 `supported_endpoint_modes` 中第一个已启用 JSON mode，再取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
 - 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`；其他账户优先保留旧检查族对应的、已启用且可检查的 JSON / SSE mode，同族不可用时才回退到首个已启用可检查 mode。加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
@@ -56,7 +56,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 - 删除 `provider_default_test_models`。
 - 删除 `healthCheckEnabled / health_check_enabled`。系统检查是基础机制，不提供账户级关闭开关。账户高级配置中的“持续恢复探活”不是系统检查开关：它只决定 `temporary_unavailable` 在前 10 分钟有界最终确认后是否继续长期低频恢复，周期健康检查、首次激活、人工测试、`rate_limited` 和账户内 Key 复测始终不受影响。
 
-项目不在运行路径保留旧字段兼容、双读双写或自动迁移。既有数据需要处理时由上线流程执行一次性离线字段同步。
+项目不在运行路径保留旧字段兼容、双读双写或自动迁移。唯一例外是 SQLite 初始化发现 `accounts.health_check_endpoint_mode` 的 CHECK 约束缺少 `images_json` 时：可在事务内重建该表、保留数据和关联对象并执行外键检查；任何失败必须回滚并中止启动。
 
 ## 3. 检查模型
 
@@ -64,13 +64,13 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 
 - 表单输入中的 `healthCheckModel` 可为空；未提交时由 Node 按当前 owner 和供应商默认顺序解析并持久化，不能依赖前端先请求模型目录。
 - 必须属于账户最终的 `supportedModels`。
-- 必须是当前账户协议可以验证的启用模型。普通文本生成模型按账户保存的精确 endpoint mode 发起最小生成请求；`mode=image_generation` 模型使用真实图片 endpoint，并以图片协议成功结果判断，不能用上游目录代替。
+- 必须是当前账户协议可以验证的启用模型。普通文本生成模型按账户保存的精确 endpoint mode 发起最小生成请求；人工 `mode=image_generation` 测试使用真实图片 endpoint，并以图片协议成功结果判断。后台 `images_json` 检查使用模型目录精确包含检查模型的证据，不能产生付费图片。
 - 删除支持模型时如果命中当前检查模型，必须先重新选择，不能静默切换到其他模型。
 - 目录发现后如果当前检查模型不在上游，按本地目录 `releaseDate` 倒序、同日 `catalogOrder` 升序选择下一候选；没有候选时记录“检查模型配置异常”并停止本轮探针。
 
-账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。普通生成模型保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。纯图像模型使用实际图片请求形态，不得误调用 Chat Completions 或 Responses，也不得用模型目录代替真实检查。
+账户向用户暴露必填的“健康检查请求形态”。普通生成模型只能选择账户已经启用的 JSON / Streaming mode，纯图像模型显示并保存 `images_json`。普通生成模型保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。纯图像模型人工测试使用实际图片请求形态，不得误调用 Chat Completions 或 Responses；后台检查使用目录探针。
 
-图像检查使用对应的真实图片 endpoint 和协议成功证据；调用次数、超时和成本必须受账户检查策略约束。后续新增非 OpenAI 协议图像模型时必须为对应供应商驱动定义明确实际请求，不能猜测、复用文本端点或回退到模型目录。
+人工图像检查使用对应的真实图片 endpoint 和协议成功证据，调用次数、超时和成本必须受人工测试策略约束。后续新增非 OpenAI 协议图像模型时必须为对应供应商驱动定义明确人工测试请求，并为后台检查定义无计费的模型存在性证据。
 
 Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent 或 Interactions 的 JSON / Streaming 生成形态；混合供应商账户可以选择 Chat Completions、Responses、Messages 或 GenerateContent。人工测试和后台检查必须按本次选中的精确 mode 构造下游诊断请求，再由混合账户模型映射决定实际上游协议和模型；`message_token_counting`、`count_tokens`、`embed_content` 等工具接口不进入检查协议选项。
 
@@ -91,7 +91,7 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 - 自动或用户手动目录发现时，推荐模型必须同时存在于成功上游目录、当前账户支持模型和当前协议可测试目录；它只更新当前未保存表单推荐。多 API Key 账户分别固定每把 Key 探测，所有探测成功后取模型交集；任一 Key 失败时不返回部分目录，避免把某把可调度 Key 不支持的模型写入账户能力边界。
 - 自动或用户手动上游模型同步对单把 Key 都只有一次 `10s` 截止；不得复用文本生成诊断的 `10s/20s/30s` 阶梯。浏览器断开同步请求时，Node 必须把取消信号传入草稿凭据处理和上游目录请求，停止尚未开始的后续 Key 探测，不再继续占用上游连接。
 - 服务端发起的上游模型目录探针必须携带不可由客户端伪造的内部标记；只有账户所属驱动能在“已标记 + 精确 `GET` 模型目录路径 + 允许的账户类型”同时满足时放行上游 URL。客户端的 `GET /models`、`GET /v1/models` 和 `GET /v1beta/models` 仍由本地目录处理，不能因账户探针而变成网关热路径的上游请求。
-- 后台多 API Key 健康检查按 Key 串行，首个真实协议请求成功立即结束。单个账户检查共享固定 `30s` 总 deadline，生成或图片请求继承该信号；上游目录不会参与激活、周期健康、恢复或调度判断。超时立即取消在途请求并停止尚未开始的 Key；该结果是 `probe_task_failure`，只安排后续复检，不累计健康失败或把账户标为临时不可调用。未完成全池时，进程内短期游标让下一轮从最后尝试 Key 的后一个继续；worker 重启后按账户 ID 的稳定起点开始，避免长期固定扫描池首。例行和请求失败健康检查在获取全局诊断槽前先经过单槽 lane；首次激活与配置检查可使用剩余两个槽，不被慢速大 Key 池饿死。
+- 后台多 API Key 健康检查按 Key 串行，首个真实协议请求成功立即结束。单个账户检查共享固定 `30s` 总 deadline，生成请求和图片模型目录探针均继承该信号；`images_json` 的上游目录探针参与激活、周期健康、恢复和调度判断，并必须确认目录精确包含检查模型。超时立即取消在途请求并停止尚未开始的 Key；该结果是 `probe_task_failure`，只安排后续复检，不累计健康失败或把账户标为临时不可调用。未完成全池时，进程内短期游标让下一轮从最后尝试 Key 的后一个继续；worker 重启后按账户 ID 的稳定起点开始，避免长期固定扫描池首。
 - 后端创建接口在未显式提交 `supportedModels` 或 `healthCheckModel` 时，必须按同一 owner 作用域解析默认值并持久化，解析结果仍通过支持模型和协议能力校验。
 - 账户保存后，后台所有检查只读取账户自己的 `healthCheckModel`。
 - 定时健康检查使用独立流量来源 `account_health_check`；`cooldown_retest` 只表示临时不可调用或限流账户的恢复复测。
@@ -169,7 +169,7 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 
 本节按需接口的当前落地范围仅为 Node 后端与 Vue 前端；本次没有修改 Go，也不以 Go 契约作为验收依据。
 
-用户打开测试弹窗时直接使用列表项中的检查模型和检查请求形态，不发起 options 请求。只有用户展开模型下拉时才调用专用模型选项接口；后续搜索继续复用同一接口：
+用户打开测试弹窗时立即调用专用模型选项接口；测试按钮在初始 options 加载完成前保持禁用，后续搜索继续复用同一接口：
 
 ```text
 GET /__aisys__/api/accounts/:id/test-options
@@ -307,7 +307,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 - 新增、编辑、草稿、授权实例及不匹配配置的列表人工测试成功或失败后，账户、授权实例、Key、健康事实和运行态均不变化；新增或编辑草稿测试协议成功仅将非 `disabled` 的未保存表单预选为 `active`，保存前不写库；覆盖匹配模型 + 精确请求形态的已保存自有不可调度账户在协议成功后恢复可调度，以及模型或请求形态不匹配时不恢复。
 - 新增 / 编辑测试只能使用表单检查模型；列表测试关闭重开后仍默认使用账户检查模型。
 - A 账户测试运行时可以打开和启动 B 账户测试，旧结果不能覆盖新弹窗。
-- 列表接口只增加检查模型和检查请求形态两个轻量标量；打开测试弹窗零 options 请求，模型下拉读取 `{ id, name, testEndpointModes }` 的批量 `test-options`，切换模型立即联动该项请求形态。
+- 列表接口只增加检查模型和检查请求形态两个轻量标量；打开测试弹窗立即读取 `{ id, name, testEndpointModes }` 的批量 `test-options`，加载中或失败时禁止提交，切换模型立即联动该项请求形态。
 - 页面和后端均不存在账户批量测试入口。
 - 新账户保存后保持 `pending_test`，后台激活检查成功后自动进入 `active`。
 - 人工草稿测试成功不能直接激活新账户；它只会预选表单“可调度”，用户保存后才按该显式选择创建账户。

@@ -17,6 +17,7 @@
 - `install-wireguard-reconciler.sh`：默认 dry-run 的上述迁移与恢复器安装入口。apply 需要私有 root manifest、两个受控脚本 SHA-256 和独立 203 TLS nonce probe adapter；未传 `--state-dir` 时使用 `<install-dir>/wireguard-reconciler-state`，避免 macOS `/var` 符号链接与 root-only 路径链契约冲突；`--remove --apply` 仅移除恢复器，不回退已经收口到 root-only 的 WireGuard job。
 - `wireguard-203-tls-nonce-probe-adapter.sh` 与 `install-wireguard-203-tls-nonce-probe-adapter.sh`：通过 root-only 专用 SSH identity、固定 `known_hosts` 指纹和受限 `juhe-tunnel-probe-read-v1` forced-command 读取 203 的回环 collector。私有 mapping 必须和运行 manifest 的 8 个 Edge 精确一致，并以唯一 `node + public_ip` 指标序列绑定每条 Edge；adapter 每次调用前再次比对已安装 runtime manifest。它只返回 `0=已知健康`、`1=已知 Edge 失败`、`75=未知`，不输出 endpoint、私钥或响应正文。canary verify 传入本次重建开始时间，只有同序列成功样本时间不早于该时刻且仍新鲜才通过。
 - `legacy-node-postgres-index-bridge.mjs`：历史 Node PostgreSQL 的固定索引桥接。默认只读 inspect；apply 和 cleanup-invalid 使用独立 PG 会话与 advisory lock，只允许固定目录内三条索引，不写 Goose ledger、表或业务行。详细操作见 [遗留 Node PostgreSQL 索引桥接说明](遗留NodePostgreSQL索引桥接说明.md)。
+- `cleanup-production-artifacts.sh`：生产残留清理入口。默认 dry-run，只在显式 `--apply` 下清理已证明未引用的历史发布、已过配置热保留窗口的审计热搜索文件和足够陈旧的 `current.next.*` 临时链接；不会删除当前发布、数据库、审计问题归档或业务备份。
 - `templates/`：无用户、域名、IP、密钥或生产路径的 plist 模板。
 
 ## 安全边界
@@ -102,6 +103,21 @@ bash ./diagnose-proxy-dns.sh \
 ```
 
 生产使用 system LaunchDaemon 时必须额外传 `--service-user`。Node、DB service 和 worker 都以该非 root 用户运行；脚本只把日志与用量 spool 目录交给该用户，不改变 release 或共享配置的所有权，并在变更 launchd 前以目标用户验证 release/Node 的访问权限和运行目录写权限。system base 必须可遍历但不能由该服务用户写入；运行目录必须是物理 base 目录内的真实目录，脚本会拒绝符号链接或解析后越界的目录，并在 `chown` 时禁止跟随符号链接。
+
+## 生产残留清理
+
+先执行 dry-run，确认候选项后才执行 apply。发布清理默认保留当前发布及至少一个按更新时间选择的回滚发布；每个候选还会检查当前/回滚符号链接、运行进程、LaunchDaemon plist 和 base 内运行脚本引用。任一引用无法核实时该发布只会显示为 `SKIPPED_RELEASE`，不会被删除。存在新于保留期的 `current.next.*` 链接时，apply 会直接失败，避免与正在进行的发布并发。
+
+```bash
+bash ./cleanup-production-artifacts.sh --dry-run \
+  --base-dir "$HOME/juhe-ai-lite" \
+  --prune-stale-links --prune-releases --keep-release-count 2 \
+  --prune-audit-hot \
+  --audit-success-hot-retention-hours '<运行中的 JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS>' \
+  --audit-success-sample-rate '<运行中的 JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE>'
+```
+
+只有检查输出符合预期时，才将 `--dry-run` 改为 `--apply`。`--audit-success-hot-retention-hours` 和 `--audit-success-sample-rate` 必须抄自当前正在运行的配置，脚本按这个热保留窗口清理 `audit-hot-YYYYMMDDHH.ndjson`，不删除 `audit/blobs`、问题审计或数据库记录。
 
 临时接管前，主服务和临时服务都必须已经独立健康，且 switch adapter 接受 `main` / `temporary` 参数：
 

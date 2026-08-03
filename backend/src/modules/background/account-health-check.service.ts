@@ -507,10 +507,13 @@ async function runAccountHealthCheckDiagnostic(
   let diagnosticCanceled = false
   let diagnosticTimeoutExhausted = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
+    model: account.healthCheckModel,
     diagnostics: 'limited',
     groupId,
     trafficSource: 'account_health_check',
     testEndpointMode: account.healthCheckEndpointMode,
+    forceProbeKind: account.healthCheckEndpointMode === 'images_json' ? 'models_catalog' : undefined,
+    requireCatalogModelEvidence: account.healthCheckEndpointMode === 'images_json',
     disableAccountStateMutation: true,
     candidateAccount,
     signal,

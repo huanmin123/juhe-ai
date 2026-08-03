@@ -177,7 +177,10 @@ import {
   requireEnabledProviderProtocolProfile,
   requireEnabledProviderProtocolProfileInClientAsync
 } from './provider.repository.js'
-import { loadAccountModelValidationContextAsync } from './account-model-validation.repository.js'
+import {
+  accountHealthCheckModelSupportsImages,
+  loadAccountModelValidationContextAsync
+} from './account-model-validation.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId, resolveProxyUrlsForProfilesAsync } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -2286,7 +2289,10 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const modelValidationContext = await loadAccountModelValidationContextAsync(client, {
     providerCode,
     systemAccountId,
-    models: isHybridProviderCode(providerCode) ? [] : requestedSupportedModels,
+    models: isHybridProviderCode(providerCode) ? [] : [
+      ...requestedSupportedModels,
+      ...(typeof input.healthCheckModel === 'string' ? [input.healthCheckModel] : [])
+    ],
     mappings: requestedModelMappings
   })
   const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
@@ -2316,7 +2322,8 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     value: input.healthCheckEndpointMode,
     providerCode,
     providerProtocolProfileId: providerProfile.id,
-    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelSupportsImages: accountHealthCheckModelSupportsImages(modelValidationContext, healthCheckModel)
   })
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')

@@ -24,6 +24,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelOptions = ref<AccountTestModelOption[]>([])
   const testModelOptionsLoading = ref(false)
   const testModelsLoading = computed(() => testModelOptionsLoading.value)
+  const testModelsReady = ref(false)
   const testModelsError = ref('')
   const testModelReadonly = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
@@ -96,6 +97,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       const selectedOption = currentOption ?? testModelOptions.value[0]
       input.testForm.model = selectedOption?.value ?? ''
       applyTestEndpointModes(selectedOption?.testEndpointModes ?? [], Boolean(currentOption))
+      testModelsReady.value = true
       return response
     } catch (error) {
       if (isAbortError(error)) return undefined
@@ -130,6 +132,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testEndpointModes.value = normalizeEndpointModes(endpointModes)
     input.testForm.model = normalizedModel
     input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
+    testModelsReady.value = true
   }
 
   function restoreTestSelection(
@@ -176,6 +179,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     defaultModel = ''
     nextOptionsRequestToken()
     testModelOptionsLoading.value = false
+    testModelsReady.value = false
     testModelsError.value = ''
     testModelReadonly.value = false
     testModelOptions.value = []
@@ -217,6 +221,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelReadonly,
     testModelsError,
     testModelsLoading,
+    testModelsReady,
     updateSelectableTestModel,
     useFixedTestModel
   }

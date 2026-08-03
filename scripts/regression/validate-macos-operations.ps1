@@ -37,6 +37,7 @@ $requiredFiles = @(
   '遗留NodePostgreSQL索引桥接说明.md',
   'install-launchd-service.sh',
   'install-performance-topology.sh',
+  'cleanup-production-artifacts.sh',
   'performance-handover-controller.sh',
   'manage-sing-box.sh',
   'migrate-wireguard-root-wrappers.sh',
@@ -106,6 +107,13 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
 foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+$productionCleanup = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'cleanup-production-artifacts.sh')
+foreach ($contract in @('--dry-run', '--apply', '--prune-releases', '--keep-release-count', '--prune-stale-links', '--stale-link-min-age-hours', '--prune-audit-hot', '--audit-success-hot-retention-hours', '--audit-success-sample-rate', 'current.next.*', 'protected-link', 'active-process', 'LaunchDaemons', 'RUNTIME_CONTAMINATION', 'CLEANUP_COMPLETE')) {
+  if (-not $productionCleanup.Contains($contract, [StringComparison]::Ordinal)) { throw "Production cleanup contract missing: $contract" }
+}
+foreach ($forbidden in @('rm -rf "$BASE_DIR"', 'postgresql://', 'redis://')) {
+  if ($productionCleanup.Contains($forbidden, [StringComparison]::OrdinalIgnoreCase)) { throw "Production cleanup script contains forbidden broad or private target: $forbidden" }
 }
 if ($performanceInstaller -match 'proxy_next_upstream_tries') {
   throw 'Performance topology must not retry streamed or non-idempotent gateway requests'
@@ -289,6 +297,13 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
+    $cleanupUnixName = (& $bash.Source -c 'uname -s').Trim()
+    if ($cleanupUnixName -in @('Darwin', 'Linux')) {
+      & $bash.Source ((Join-Path $repoRoot 'scripts\regression\production-cleanup-artifacts-harness.sh') -replace '\\', '/') ((Join-Path $operationsRoot 'cleanup-production-artifacts.sh') -replace '\\', '/')
+      if ($LASTEXITCODE -ne 0) { throw 'production cleanup artifact harness failed' }
+    } else {
+      Write-Verbose "Production cleanup artifact harness requires Darwin/Linux bash; current shell reports $cleanupUnixName."
+    }
 $performanceHandoverHarness = @'
 set -euo pipefail
 root="${HOME}/.juhe-ai-handover-$$"

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import {
   ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES,
@@ -14,8 +17,10 @@ import {
   normalizeGptHealthCheckCredentials,
   resolveLegacyHealthCheckEndpointMode
 } from '../maintenance/account-health-check-endpoint-mode-migration.js'
+import { applyBusinessSchema } from '../../storage/schema/business-schema.js'
 
 assert.deepEqual(ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES, [
+  'images_json',
   'chat_json',
   'chat_sse',
   'responses_json',
@@ -108,6 +113,22 @@ assert.equal(resolveHealthCheckEndpointMode({
   providerProtocolProfileId: 'profile_gemini_native_v1beta',
   enabledEndpointModes: ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content']
 }), 'generate_content_sse')
+
+assert.equal(resolveHealthCheckEndpointMode({
+  value: 'images_json',
+  providerCode: 'gpt',
+  providerProtocolProfileId: 'profile_gpt_openai_v1',
+  enabledEndpointModes: ['responses_json', 'responses_sse'],
+  modelSupportsImages: true
+}), 'images_json', '模型目录证实图片能力时，健康检查必须接受 Images API 形态')
+
+assert.throws(() => resolveHealthCheckEndpointMode({
+  value: 'images_json',
+  providerCode: 'gpt',
+  providerProtocolProfileId: 'profile_gpt_openai_v1',
+  enabledEndpointModes: ['responses_json', 'responses_sse'],
+  modelSupportsImages: false
+}), /模型目录证实支持 Images API/, '文本模型或缺失目录证据不得选择 Images API')
 
 assert.throws(() => resolveHealthCheckEndpointMode({
   value: 'responses_json',
@@ -379,9 +400,18 @@ assert.match(migrationCliSource, /args\.includes\('--verify'\)/, '维护命令�
 const draftServiceSource = readFileSync(new URL('../../modules/accounts/account-draft-test.service.ts', import.meta.url), 'utf8')
 assert.equal(
   draftServiceSource.match(/resolveHealthCheckEndpointMode\(\{/g)?.length,
-  2,
-  '同步和异步草稿账户构造都必须按最终 endpoint modes 解析健康检查请求形态'
+  3,
+  '同步草稿、异步草稿和 Images 目录验证都必须按最终 endpoint mode 解析健康检查请求形态'
 )
+assert.match(draftServiceSource, /findProviderModelTestCatalogItemAsync/, '草稿 Images API 必须读取模型目录能力')
+assert.match(draftServiceSource, /supportedApiProtocols\.includes\('images'\)/, '草稿 Images API 必须拒绝未证实图片能力的模型')
+
+const accountWriteSource = readFileSync(new URL('../../storage/repositories.ts', import.meta.url), 'utf8')
+const accountPatchSource = readFileSync(new URL('../../storage/account-management-patch.repository.ts', import.meta.url), 'utf8')
+const accountBatchEditSource = readFileSync(new URL('../../modules/accounts/account-batch-edit.service.ts', import.meta.url), 'utf8')
+assert.match(accountWriteSource, /accountHealthCheckModelSupportsImages\(modelValidationContext, healthCheckModel\)/, '账户创建必须以模型目录证实 Images API')
+assert.match(accountPatchSource, /accountHealthCheckModelSupportsImages\(modelValidationContext, nextHealthCheckModel\)/, '账户更新必须以模型目录证实 Images API')
+assert.match(accountBatchEditSource, /accountHealthCheckModelSupportsImages\(modelValidationContext, nextHealthCheckModel\)/, '批量编辑必须以模型目录证实既有 Images API 检查模型')
 
 for (const relativePath of [
   '../../modules/background/account-api-key-cooldown-retest.service.ts',
@@ -397,6 +427,15 @@ for (const relativePath of [
 }
 
 for (const relativePath of [
+  '../../modules/background/account-health-check.service.ts',
+  '../../modules/background/cooldown-account-retest.service.ts'
+]) {
+  const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+  assert.match(source, /forceProbeKind:\s*account\.healthCheckEndpointMode === 'images_json' \? 'models_catalog' : undefined/, `${relativePath} 的图片检查必须使用模型目录探针`)
+  assert.match(source, /requireCatalogModelEvidence:\s*account\.healthCheckEndpointMode === 'images_json'/, `${relativePath} 的图片检查必须验证模型目录包含检查模型`)
+}
+
+for (const relativePath of [
   '../../modules/accounts/account-test.service.ts',
   '../../modules/accounts/account-test-options.service.ts'
 ]) {
@@ -405,4 +444,114 @@ for (const relativePath of [
   assert.doesNotMatch(source, /function accountTestEndpointModeOrder/, `${relativePath} 不得保留独立请求形态排序规则`)
 }
 
+assertSqliteImagesHealthCheckEndpointModeSchema()
+
 console.log('AI 账户健康检查请求形态领域回归通过')
+
+function assertSqliteImagesHealthCheckEndpointModeSchema(): void {
+  const freshDatabase = new DatabaseSync(':memory:')
+  try {
+    applyBusinessSchema(freshDatabase)
+    assertAccountHealthCheckModeConstraint(freshDatabase, '全新 SQLite 库')
+  } finally {
+    freshDatabase.close()
+  }
+
+  const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-account-health-check-endpoint-mode-'))
+  const databasePath = join(tempRoot, 'business.sqlite3')
+  let legacyDatabase: DatabaseSync | undefined
+  try {
+    legacyDatabase = new DatabaseSync(databasePath)
+    applyBusinessSchema(legacyDatabase)
+    seedAccountHealthCheckSchemaReferences(legacyDatabase)
+    legacyDatabase.exec('CREATE INDEX accounts_health_check_endpoint_mode_regression_idx ON accounts(name)')
+    legacyDatabase.prepare(`
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'legacy-account', 'system-account', 'openai', 'profile-openai', 'openai', 'v1',
+      'Legacy account', 'api_key', 'encrypted', 'gpt-4.1-mini', 'chat_json',
+      '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z'
+    )
+    replaceImagesModeWithLegacyConstraint(legacyDatabase)
+    legacyDatabase.close()
+    legacyDatabase = new DatabaseSync(databasePath)
+
+    const legacySql = accountTableSql(legacyDatabase)
+    assert.doesNotMatch(legacySql, /'images_json'/, '构造的既有 SQLite 库必须仍使用旧的健康检查 mode 约束')
+    applyBusinessSchema(legacyDatabase)
+    assertAccountHealthCheckModeConstraint(legacyDatabase, '既有 SQLite 库升级后')
+    assert.equal(
+      legacyDatabase.prepare("SELECT health_check_endpoint_mode FROM accounts WHERE id = 'legacy-account'").get()?.health_check_endpoint_mode,
+      'chat_json',
+      'SQLite 既有 accounts 记录必须在约束升级后保持不变'
+    )
+    assert.ok(
+      legacyDatabase.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'accounts_health_check_endpoint_mode_regression_idx'").get(),
+      'SQLite 约束升级必须保留 accounts 的显式索引'
+    )
+    legacyDatabase.prepare(`
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'images-account', 'system-account', 'openai', 'profile-openai', 'openai', 'v1',
+      'Images account', 'api_key', 'encrypted', 'gpt-image-2', 'images_json',
+      '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z'
+    )
+  } finally {
+    legacyDatabase?.close()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+function assertAccountHealthCheckModeConstraint(database: DatabaseSync, label: string): void {
+  assert.match(accountTableSql(database), /health_check_endpoint_mode[\s\S]*?'images_json'/, `${label} 必须允许 images_json`)
+}
+
+function accountTableSql(database: DatabaseSync): string {
+  const row = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'").get() as { sql?: unknown } | undefined
+  if (typeof row?.sql !== 'string') throw new Error('SQLite accounts 表定义必须存在')
+  return row.sql
+}
+
+function seedAccountHealthCheckSchemaReferences(database: DatabaseSync): void {
+  const timestamp = '2026-08-03T00:00:00.000Z'
+  database.prepare(`
+    INSERT INTO system_accounts (id, username, display_name, password_hash, created_at, updated_at)
+    VALUES ('system-account', 'system-account', 'System account', 'hash', ?, ?)
+  `).run(timestamp, timestamp)
+  database.prepare(`
+    INSERT INTO providers (id, code, name, created_at, updated_at)
+    VALUES ('provider-openai', 'openai', 'OpenAI', ?, ?)
+  `).run(timestamp, timestamp)
+  database.prepare(`
+    INSERT INTO protocols (id, code, version, name, created_at, updated_at)
+    VALUES ('protocol-openai-v1', 'openai', 'v1', 'OpenAI v1', ?, ?)
+  `).run(timestamp, timestamp)
+  database.prepare(`
+    INSERT INTO provider_protocol_profiles (
+      id, provider_code, name, protocol_code, protocol_version, base_url, default_health_check_model,
+      account_types_json, capabilities_json, created_at, updated_at
+    ) VALUES ('profile-openai', 'openai', 'OpenAI profile', 'openai', 'v1', 'https://example.test', 'gpt-4.1-mini', '[]', '[]', ?, ?)
+  `).run(timestamp, timestamp)
+}
+
+function replaceImagesModeWithLegacyConstraint(database: DatabaseSync): void {
+  const currentSql = accountTableSql(database)
+  const legacySql = currentSql.replace("'images_json', ", '')
+  assert.notEqual(legacySql, currentSql, '测试库当前 accounts schema 必须包含 images_json')
+  const schemaVersion = database.prepare('PRAGMA schema_version').get() as { schema_version?: unknown } | undefined
+  const nextSchemaVersion = Number(schemaVersion?.schema_version) + 1
+  assert.ok(Number.isInteger(nextSchemaVersion) && nextSchemaVersion > 0, 'SQLite schema_version 必须可递增')
+  database.exec('PRAGMA writable_schema = ON')
+  try {
+    database.prepare("UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = 'accounts'").run(legacySql)
+    database.exec(`PRAGMA schema_version = ${nextSchemaVersion}`)
+  } finally {
+    database.exec('PRAGMA writable_schema = OFF')
+  }
+}

@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 
 import type { AccountClientCompatibility } from '../../domain/types.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
@@ -30,13 +30,10 @@ export type AccountTestOutputChallenge = {
 }
 
 export function createAccountTestOutputChallenge(): AccountTestOutputChallenge {
-  const expectedOutput = `juhe${randomInt(0, 1_000).toString().padStart(3, '0')}`
+  const expectedOutput = 'juhe'
   return {
     expectedOutput,
-    prompt: [
-      `你的回复必须且只能是：${expectedOutput}`,
-      `除 ${expectedOutput} 外，不得输出任何字符；不得添加反引号、引号、空格、换行、解释或 Markdown。`
-    ].join('\n')
+    prompt: `只能回复：${expectedOutput}`
   }
 }
 

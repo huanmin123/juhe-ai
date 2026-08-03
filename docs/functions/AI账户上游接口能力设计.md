@@ -10,7 +10,7 @@
 
 `credentials.supported_endpoint_modes` 是账户真实上游接口能力的最终配置来源：
 
-- OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。
+- OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。图片模型健康检查和人工测试专用的 `images_json` 不写入此字段；只有模型目录证明模型支持 `images` 时，才可将它作为 `healthCheckEndpointMode` 使用。
 - Anthropic v1：`messages_json`、`messages_sse`、`message_token_counting`。
 - Gemini native：`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`count_tokens`、`embed_content`。
 - xAI OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。
@@ -44,13 +44,13 @@
 
 ## 5. 人工测试契约
 
-账户列表保持轻量，不返回凭据或完整能力。用户打开单账户测试时直接使用列表中的检查模型和请求形态，不发 options 请求。展开模型下拉时，`test-options` 只返回当前账户供应商作用域内严格为 `{ id, name }` 的模型选项；该批量接口不读取或返回每个模型的协议能力。
+账户列表保持轻量，不返回凭据或完整模型目录。用户打开单账户测试时，前端立即读取当前账户作用域内的 `test-options`，运行按钮在该请求完成前保持禁用；加载失败时必须展示原始错误并阻止提交，不能使用账户中可能过期的请求形态静默测试。
 
-用户展开请求形态下拉时，前端才通过单模型 capabilities 接口读取当前模型的 `supportedApiProtocols` 与 `testEndpointModes`；切换模型只清空旧能力，等下一次展开请求形态下拉再定点加载。纯图片模型的单模型能力只返回 `images_json`。新增 / 编辑表单仍可使用供应商模型选项携带的协议与当前草稿账户能力计算交集，但不得把该较宽供应商目录契约套到账户列表人工测试的 `test-options`。提交测试时后端仍重新校验。
+`test-options` 对每个候选模型返回人工测试所需的最小数据 `{ id, name, testEndpointModes }`。其中 `testEndpointModes` 由账户已启用的上游能力和该模型目录 `supportedApiProtocols` 的交集计算，不返回原始凭据或无关模型的完整协议详情。目录确认只支持图片生成的模型，其唯一测试形态为 `images_json`；前端必须同步草稿 `healthCheckEndpointMode` 并显示 `Images API`。切换模型时必须重新取得该模型的可测试形态。新增 / 编辑表单可使用供应商模型选项携带的协议与当前草稿账户能力计算交集，但提交测试时后端仍重新以模型目录验证，不能相信客户端传值。
 
 ## 6. 非目标
 
-- 不新增数据库字段或兼容分支。
+- 不新增独立的图片账户能力字段；`images_json` 仅是 `healthCheckEndpointMode` 的精确检查形态，不替代 `credentials.supported_endpoint_modes`。
 - 不新增客户端请求限制配置。
 - 不展示派生的“可承接请求”列表。
 - 不让客户端画像创造账户没有声明的上游协议能力。
@@ -61,6 +61,6 @@
 
 - 普通 OpenAI-compatible API Key 显式启用 `responses_sse` 后，可以进入 Codex `/responses` 候选并执行 Codex 请求整理。
 - 未启用目标上游 endpoint mode 的账户仍被候选过滤。
-- 人工测试批量 `test-options` 每项严格只有 `{ id, name }`；展开请求形态下拉只请求当前模型 capabilities，切换模型不得预取其他模型能力。
+- 人工测试首次打开时完成 `test-options` 加载；每项返回 `{ id, name, testEndpointModes }`，加载中或加载失败时不得提交测试。纯图片模型只提供 `images_json`，并在界面显示为 `Images API`。
 - 关闭映射右侧上游协议能力时，启用映射阻止保存，停用映射允许保留。
 - 页面、批量编辑和导入说明统一使用“上游接口能力”。

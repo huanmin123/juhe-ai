@@ -118,6 +118,7 @@ const healthCheckFieldSource = readFileSync(
 )
 assert.match(healthCheckFieldSource, /accountTestEndpointModesForModel/, '账户编辑检查协议必须联合模型目录能力计算')
 assert.match(healthCheckFieldSource, /v-if="imageOnlyModel"[\s\S]*value="images_json"/, '纯图片模型必须显示只读 Images API')
+assert.match(healthCheckFieldSource, /props\.form\.healthCheckEndpointMode\s*=\s*'images_json'/, '纯图片模型必须把表单检查请求形态规范化为 Images API')
 
 const providerModelOptionsSource = readFileSync(
   new URL('../../views/accounts/useAccountProviderModelOptions.ts', import.meta.url),
@@ -134,5 +135,11 @@ for (const relativePath of [
   assert.doesNotMatch(source, /检查协议必须选择.*非流式 JSON/, `${relativePath} 不得把健康检查限制为非流式 JSON`)
   assert.match(source, /检查请求形态必须选择.*JSON 或流式/, `${relativePath} 必须说明 JSON 和流式能力都可选择`)
 }
+
+const savePayloadSource = readFileSync(
+  new URL('../../views/accounts/accountSavePayload.ts', import.meta.url),
+  'utf8'
+)
+assert.match(savePayloadSource, /form\.healthCheckEndpointMode\s*!==\s*'images_json'/, '保存校验必须允许由模型目录证实的 Images API 形态')
 
 console.log('前端 AI 账户健康检查请求形态回归通过')

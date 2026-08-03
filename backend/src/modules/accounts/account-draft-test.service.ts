@@ -28,6 +28,7 @@ import {
   assertAccountGptRequestOverridesSupported,
   assertAccountGptRequestOverridesSupportedAsync
 } from './account-gpt-request-overrides.validation.js'
+import { findProviderModelTestCatalogItemAsync } from '../model-pricing/model-catalog.service.js'
 
 export interface AccountDraftTestAccountRequest {
   providerCode: string
@@ -633,6 +634,31 @@ function draftTestAccountSummary(input: {
   }
 }
 
+async function resolveDraftHealthCheckEndpointModeAsync(input: {
+  value: unknown
+  providerCode: string
+  providerProtocolProfileId: string
+  enabledEndpointModes: readonly AccountSupportedEndpointMode[]
+  healthCheckModel: string
+  systemAccountId: string
+}): Promise<AccountHealthCheckEndpointMode> {
+  const modelSupportsImages = input.value === 'images_json'
+    ? (await findProviderModelTestCatalogItemAsync({
+        providerCode: input.providerCode,
+        systemAccountId: input.systemAccountId,
+        model: input.healthCheckModel,
+        protocolsOnly: true
+      }))?.supportedApiProtocols.includes('images') === true
+    : false
+  return resolveHealthCheckEndpointMode({
+    value: input.value,
+    providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    enabledEndpointModes: input.enabledEndpointModes,
+    modelSupportsImages
+  })
+}
+
 async function draftTestAccountSummaryAsync(input: {
   id?: string
   account: AccountDraftTestAccountRequest
@@ -650,11 +676,13 @@ async function draftTestAccountSummaryAsync(input: {
   const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
   const healthCheckModel = requiredDraftHealthCheckModel(input.account.healthCheckModel, supportedModels)
   const enabledEndpointModes = input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-  const healthCheckEndpointMode = resolveHealthCheckEndpointMode({
+  const healthCheckEndpointMode = await resolveDraftHealthCheckEndpointModeAsync({
     value: input.account.healthCheckEndpointMode,
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
-    enabledEndpointModes
+    enabledEndpointModes,
+    healthCheckModel,
+    systemAccountId: input.ownerSystemAccountId
   })
   const modelMappings = await normalizeDraftAccountModelMappingsAsync(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId, {
     providerCode: input.account.providerCode,

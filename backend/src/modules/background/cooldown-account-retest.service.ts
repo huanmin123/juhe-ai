@@ -176,10 +176,13 @@ async function runCooldownAccountRetestQueueItem(
     const result = await (cooldownRetestTestHooks?.throwDiagnosticError
       ? Promise.reject(new Error('cooldown retest regression injected diagnostic failure'))
       : testOpenAIAccountWithDiagnosticRetries(account, {
+    model: account.healthCheckModel,
     diagnostics: 'full',
     groupId,
     trafficSource: 'cooldown_retest',
     testEndpointMode: account.healthCheckEndpointMode,
+    forceProbeKind: account.healthCheckEndpointMode === 'images_json' ? 'models_catalog' : undefined,
+    requireCatalogModelEvidence: account.healthCheckEndpointMode === 'images_json',
     disableAccountStateMutation: true,
     retryAllFailures: true,
     onDiagnosticAttemptProgress: () => {

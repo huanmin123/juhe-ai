@@ -443,7 +443,7 @@ function createMockAIUpstream(): http.Server {
         sendJsonError(res, 401, `mock invalid key ${key}`)
         return
       }
-      const expectedToken = requestBody.match(/juhe\d{3}/)?.[0] ?? `juhe000-${key}`
+      const expectedToken = requestBody.match(/juhe/)?.[0] ?? 'juhe'
       if (key === 'pool-stage-retry' && hitCount === 1) {
         setTimeout(() => sendResponsesCompleted(res, expectedToken), 10_500)
         return

@@ -23,6 +23,7 @@ export type AccountSupportedEndpointMode =
   | 'interactions_sse'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
+  | 'images_json'
   | 'chat_json'
   | 'chat_sse'
   | 'responses_json'

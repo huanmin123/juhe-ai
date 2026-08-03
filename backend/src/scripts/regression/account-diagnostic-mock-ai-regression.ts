@@ -248,6 +248,17 @@ try {
   assert.equal(imageResult.testEndpointMode, 'images_json', '图像模型测试结果必须记录 Images API 请求形态')
   assert.equal(hitCount('image-catalog'), 1, '图像生成探针成功后应只请求一次上游')
 
+  const imageCatalogProbeResult = await testOpenAIAccountWithDiagnosticRetries(imageAccount, {
+    model: 'gpt-image-2',
+    testEndpointMode: 'images_json',
+    forceProbeKind: 'models_catalog',
+    requireCatalogModelEvidence: true
+  })
+  assert.equal(imageCatalogProbeResult.success, true, `图片后台目录探针应成功：${imageCatalogProbeResult.message}`)
+  assert.equal(imageCatalogProbeResult.requestUrl, '/v1/models', '图片后台目录探针必须请求模型目录')
+  assert.equal(hitCount('image-catalog:models'), 1, '图片后台目录探针必须使用 GET /v1/models')
+  assert.equal(hitCount('image-catalog'), 1, '图片后台目录探针不得额外发起 Images API 请求')
+
   const codexFailedAccount = createMockAccount(group.id, upstreamBaseUrl, 'codex-explicit-failure', access)
   const codexFailedCandidate = requiredRuntimeAccount(group.id, codexFailedAccount.id, admin.id)
   const codexFailedResult = await probeCodexSwitchCandidateAccount(codexFailedCandidate, {
@@ -698,8 +709,8 @@ function upstreamKey(authorization: string | string[] | undefined): string {
 }
 
 function expectedAccountTestOutput(requestText: string): string {
-  const match = /juhe\d{3}/.exec(requestText)
-  return match?.[0] ?? 'juhe000'
+  const match = /juhe/.exec(requestText)
+  return match?.[0] ?? 'juhe'
 }
 
 function incrementHit(key: string): number {

@@ -40,9 +40,9 @@ import { accountBatchEditSchema, accountCreateSchema, accountModelCatalogRefresh
 
 const outputChallenge = createAccountTestOutputChallenge()
 const secondOutputChallenge = createAccountTestOutputChallenge()
-assert.match(outputChallenge.expectedOutput, /^juhe\d{3}$/, '文本账号测试必须生成 juhe 前缀的三位随机数字标记')
-assert.match(secondOutputChallenge.expectedOutput, /^juhe\d{3}$/, '每次文本账号测试必须生成格式正确的短标记')
-assert.match(outputChallenge.prompt, new RegExp(outputChallenge.expectedOutput), '账号测试 prompt 必须承载本次期望输出')
+assert.equal(outputChallenge.expectedOutput, 'juhe', '文本账号测试必须使用固定短标记')
+assert.equal(secondOutputChallenge.expectedOutput, 'juhe', '每次文本账号测试必须使用同一固定短标记')
+assert.equal(outputChallenge.prompt, '只能回复：juhe', '账号测试 prompt 必须保持为唯一的最小指令')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
 assert.equal(accountTestGeminiModelsPath, '/v1beta/models', 'Gemini 模型目录探测必须使用原生 /v1beta/models 路径')
 assert.equal(accountTestModelsPathForProtocol('gemini'), '/v1beta/models', 'Gemini 协议必须选择原生模型目录路径')

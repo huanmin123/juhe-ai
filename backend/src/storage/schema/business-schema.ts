@@ -345,7 +345,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_last_status_code INTEGER,
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model TEXT NOT NULL,
-      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')),
+      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
@@ -1299,12 +1299,91 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureApiKeyPurposeSchema(database)
   ensureProviderModelCacheStorageSchema(database)
   ensureCustomProviderModelCacheStorageSchema(database)
+  ensureAccountHealthCheckEndpointModeSchema(database)
   ensureAccountCooldownRetestGenerationSchema(database)
   ensureAccountCircuitConfirmationSchema(database)
   ensureAccountApiKeyProbeClaimSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureAccountHealthCheckEndpointModeSchema(database: DatabaseSync): void {
+  const accountsTable = database.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'accounts'
+  `).get() as { sql?: unknown } | undefined
+  if (!accountsTable || typeof accountsTable.sql !== 'string') return
+
+  const existingConstraint = accountsTable.sql.match(/CHECK\s*\(\s*health_check_endpoint_mode\s+IN\s*\(([^)]*)\)\s*\)/i)
+  if (!existingConstraint) {
+    throw new Error('SQLite accounts 表缺少 health_check_endpoint_mode CHECK 约束，无法安全升级 images_json')
+  }
+  if (/'images_json'/i.test(existingConstraint[1])) return
+
+  const rebuiltTableName = 'accounts_health_check_endpoint_mode_rebuild'
+  const tableSql = replaceAccountsTableName(accountsTable.sql, rebuiltTableName)
+  const rebuiltTableSql = tableSql.replace(
+    /CHECK\s*\(\s*health_check_endpoint_mode\s+IN\s*\([^)]+\)\s*\)/i,
+    "CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse'))"
+  )
+  const columns = database.prepare('PRAGMA table_info(accounts)').all() as Array<{ name?: unknown }>
+  const columnNames = columns.map((column) => column.name).filter((name): name is string => typeof name === 'string')
+  if (columnNames.length === 0) {
+    throw new Error('SQLite accounts 表没有可复制的列，无法安全升级 images_json')
+  }
+  const dependentObjects = database.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE tbl_name = 'accounts'
+      AND type IN ('index', 'trigger')
+      AND sql IS NOT NULL
+    ORDER BY type ASC, name ASC
+  `).all() as Array<{ sql?: unknown }>
+  const objectSql = dependentObjects.map((object) => object.sql).filter((sql): sql is string => typeof sql === 'string')
+  const quotedColumns = columnNames.map(quoteSqlIdentifier).join(', ')
+  const foreignKeysEnabled = Number((database.prepare('PRAGMA foreign_keys').get() as { foreign_keys?: unknown } | undefined)?.foreign_keys) === 1
+
+  try {
+    if (foreignKeysEnabled) database.exec('PRAGMA foreign_keys = OFF')
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(rebuiltTableSql)
+    database.exec(`INSERT INTO ${quoteSqlIdentifier(rebuiltTableName)} (${quotedColumns}) SELECT ${quotedColumns} FROM accounts`)
+    database.exec('DROP TABLE accounts')
+    database.exec(`ALTER TABLE ${quoteSqlIdentifier(rebuiltTableName)} RENAME TO accounts`)
+    for (const sql of objectSql) database.exec(sql)
+    const foreignKeyViolations = database.prepare('PRAGMA foreign_key_check').all()
+    if (foreignKeyViolations.length > 0) {
+      throw new Error(`SQLite accounts 表升级后发现 ${foreignKeyViolations.length} 个外键完整性错误`)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+      // The transaction may not have started yet.
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`SQLite accounts health_check_endpoint_mode 约束升级失败: ${message}`, { cause: error })
+  } finally {
+    if (foreignKeysEnabled) database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function replaceAccountsTableName(sql: string, nextTableName: string): string {
+  const replaced = sql.replace(
+    /^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:accounts|"accounts"|\[accounts\]|`accounts`)/i,
+    `CREATE TABLE ${quoteSqlIdentifier(nextTableName)}`
+  )
+  if (replaced === sql) {
+    throw new Error('SQLite accounts 表定义格式未知，无法安全升级 images_json')
+  }
+  return replaced
+}
+
+function quoteSqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`
 }
 
 function ensureSystemAccountRequestLimitsSchema(database: DatabaseSync): void {

@@ -3,6 +3,7 @@ import type { AccountHealthCheckEndpointMode, AccountSupportedEndpointMode } fro
 export type { AccountHealthCheckEndpointMode } from './types.js'
 
 export const ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES = [
+  'images_json',
   'chat_json',
   'chat_sse',
   'responses_json',
@@ -36,12 +37,19 @@ export function resolveHealthCheckEndpointMode(input: {
   providerCode: string
   providerProtocolProfileId: string
   enabledEndpointModes: readonly AccountSupportedEndpointMode[]
+  modelSupportsImages?: boolean
 }): AccountHealthCheckEndpointMode {
   if (input.value === undefined) return resolveDefaultHealthCheckEndpointMode(input)
   if (!ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES.includes(input.value as AccountHealthCheckEndpointMode)) {
     throw new Error('账户健康检查请求形态无效')
   }
   const mode = input.value as AccountHealthCheckEndpointMode
+  if (mode === 'images_json') {
+    if (input.modelSupportsImages !== true) {
+      throw new Error('检查模型未被模型目录证实支持 Images API')
+    }
+    return mode
+  }
   if (!input.enabledEndpointModes.includes(mode)) {
     throw new Error(`账户健康检查请求形态 ${mode} 未启用`)
   }

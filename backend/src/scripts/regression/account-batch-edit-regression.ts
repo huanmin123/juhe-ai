@@ -31,7 +31,10 @@ const [
   { accountBatchEditContextSchema, accountBatchEditSchema },
   { invalidateAccountLookupCache },
   { encryptJson },
-  { buildPostgresSchemaSql }
+  { buildPostgresSchemaSql },
+  customProviderModelsRepository,
+  databaseClient,
+  accountModelValidationRepository
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
@@ -41,7 +44,10 @@ const [
   import('../../modules/accounts/account-request.schemas.js'),
   import('../../storage/repository-lookups.js'),
   import('../../storage/crypto.js'),
-  import('../../storage/postgres-schema.js')
+  import('../../storage/postgres-schema.js'),
+  import('../../storage/custom-provider-models.repository.js'),
+  import('../../storage/database-client.js'),
+  import('../../storage/account-model-validation.repository.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -459,6 +465,7 @@ try {
   assert.deepEqual(accountRelationSnapshot([multiA.id, multiB.id]), beforeNoopRelations, '同值标签必须零关系表 DML')
 
   await assertBatchModelMappingTargetCapabilities(group.id)
+  await assertBatchEditPreservesImagesHealthCheckMode(group.id)
 
   console.log('account-batch-edit-regression passed')
 } finally {
@@ -673,5 +680,67 @@ async function assertBatchModelMappingTargetCapabilities(groupId: string): Promi
   for (const item of accepted.items) {
     const account = requiredAccount(item.id)
     assert.deepEqual(account.modelMappings, [disabledMapping], '批量后端应原样保留停用映射')
+  }
+}
+
+async function assertBatchEditPreservesImagesHealthCheckMode(groupId: string): Promise<void> {
+  customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-image-batch-regression',
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
+    status: 'active',
+    mode: 'image',
+    supportedApiProtocols: ['images'],
+    outputUsdPerImage: 0.01,
+    actorSystemAccountId: access.systemAccountId
+  })
+  const catalogRow = databaseModule.getBusinessDatabase()
+    .prepare("SELECT supported_api_protocols_json FROM custom_provider_models WHERE provider_code = 'gpt' AND model = 'gpt-image-batch-regression' AND system_account_id = ?")
+    .get(access.systemAccountId) as { supported_api_protocols_json?: string } | undefined
+  assert.equal(catalogRow?.supported_api_protocols_json, '["images"]', '图片模型目录 fixture 必须写入 Images API 能力')
+  const validationContext = await accountModelValidationRepository.loadAccountModelValidationContextAsync(
+    databaseClient.createSqliteDatabaseClient(databaseModule.getBusinessDatabase()),
+    {
+      providerCode: 'gpt',
+      systemAccountId: access.systemAccountId,
+      models: ['gpt-image-batch-regression']
+    }
+  )
+  assert.equal(
+    accountModelValidationRepository.accountHealthCheckModelSupportsImages(validationContext, 'gpt-image-batch-regression'),
+    true,
+    '图片模型目录 fixture 必须可被账户校验读取'
+  )
+  const accounts = ['A', 'B'].map((suffix) => repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: `批量图片检查形态账户 ${suffix}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-account-batch-image-health-mode-${suffix}`,
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_sse']
+    },
+    supportedModels: ['gpt-image-batch-regression'],
+    healthCheckModel: 'gpt-image-batch-regression',
+    groupId
+  }, access))
+  for (const account of accounts) {
+    databaseModule.getBusinessDatabase()
+      .prepare("UPDATE accounts SET health_check_endpoint_mode = 'images_json' WHERE id = ?")
+      .run(account.id)
+    invalidateAccountLookupCache(account.id)
+  }
+
+  const result = await batchEditAccountsAsync({
+    targets: targets(...accounts.map((account) => requiredAccount(account.id))),
+    updates: {
+      supportedEndpointModes: { enabled: true, value: ['chat_json', 'responses_sse'] }
+    }
+  }, access)
+  assert.equal(result.items.length, 2, '批量修改文本上游能力不得拒绝已保存的 Images API 检查形态')
+  for (const account of accounts) {
+    assert.equal(requiredAccount(account.id).healthCheckEndpointMode, 'images_json', '批量修改后必须保留 Images API 检查形态')
   }
 }

@@ -483,8 +483,8 @@ function createMockOpenAIServer(): http.Server {
 }
 
 function expectedProbeOutput(requestText: string): string {
-  const match = /juhe\d{3}/.exec(requestText)
-  return match?.[0] ?? 'juhe000'
+  const match = /juhe/.exec(requestText)
+  return match?.[0] ?? 'juhe'
 }
 
 function sessionCookie(): string {

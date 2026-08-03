@@ -165,7 +165,10 @@ export function validateAccountSaveForm(input: {
   const healthCheckModel = form.healthCheckModel.trim()
   if (!healthCheckModel) return '请选择检查模型'
   if (!supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
-  if (!accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)) {
+  if (
+    form.healthCheckEndpointMode !== 'images_json'
+    && !accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)
+  ) {
     return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
   }
   const requestOverrideValidation = validateAccountGptRequestOverrides(

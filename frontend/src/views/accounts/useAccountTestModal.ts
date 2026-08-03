@@ -92,6 +92,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testModelReadonly,
     testModelsError,
     testModelsLoading,
+    testModelsReady,
     updateSelectableTestModel,
     useFixedTestModel
   } = useAccountTestModels({
@@ -126,6 +127,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       account.healthCheckEndpointMode
     )
     testModalOpen.value = true
+    void loadAccountTestModelOptionsNow(account, '')
     void restoreSavedAccountTestRun(account, viewToken)
   }
 
@@ -176,6 +178,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       !account
       || testRunning.value
       || testModelsLoading.value
+      || !testModelsReady.value
+      || Boolean(testModelsError.value)
       || !testForm.model.trim()
       || testForm.testEndpointMode === 'account_default'
     ) {
@@ -701,6 +705,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testModelReadonly,
     testModelsError,
     testModelsLoading,
+    testModelsReady,
     testResult,
     testRunning,
     testingAccount,
