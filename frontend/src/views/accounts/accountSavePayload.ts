@@ -44,7 +44,7 @@ import { buildAccountBalancePayload, validateAccountBalanceForm } from './accoun
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import { normalizeGrokSsoTokens } from './grokSsoTokens'
 
-export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
+export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 10
 
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']

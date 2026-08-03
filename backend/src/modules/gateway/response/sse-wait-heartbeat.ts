@@ -6,6 +6,7 @@ import { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 
 const gatewaySseWaitHeartbeatIntervalMs = 15_000
 const gatewaySseWaitHeartbeatChunk = Buffer.from(': juhe-ai waiting for upstream capacity\n\n')
+const codexCompactionSseWaitHeartbeatChunk = Buffer.from('data: {"type":"juhe_ai.keepalive"}\n\n', 'utf8')
 
 export interface GatewaySseWaitHeartbeat {
   start: () => void
@@ -33,8 +34,13 @@ export function createGatewaySseWaitHeartbeat(input: {
   downstreamCommitState: GatewayDownstreamCommitState
   signal?: AbortSignal
   intervalMs?: number
+  emitCodexCompactionKeepalive?: boolean
 }): GatewaySseWaitHeartbeat | undefined {
   if (!gatewayDownstreamProtocolUsesSse(input.downstreamProtocol)) return undefined
+  const heartbeatChunk = input.emitCodexCompactionKeepalive === true
+    && input.downstreamProtocol === 'responses_sse'
+    ? codexCompactionSseWaitHeartbeatChunk
+    : gatewaySseWaitHeartbeatChunk
   let timer: NodeJS.Timeout | undefined
   let abortListener: (() => void) | undefined
   let responseListenersAttached = false
@@ -84,8 +90,8 @@ export function createGatewaySseWaitHeartbeat(input: {
         input.res.setHeader('cache-control', 'no-cache, no-transform')
         input.res.setHeader('x-accel-buffering', 'no')
       }
-      input.res.write(gatewaySseWaitHeartbeatChunk)
-      input.downstreamCommitState.markTransportCommitted(gatewaySseWaitHeartbeatChunk.length)
+      input.res.write(heartbeatChunk)
+      input.downstreamCommitState.markTransportCommitted(heartbeatChunk.length)
       return true
     } catch {
       stopAndDetach()

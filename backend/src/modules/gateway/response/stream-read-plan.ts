@@ -17,21 +17,10 @@ export function buildGatewayStreamReadPlan(
   status: Parameters<typeof buildStreamReadPlan>[2],
   now = Date.now()
 ): StreamReadPlan | undefined {
-  if (profile.timeoutsDisabled !== true) {
-    return buildStreamReadPlan(profile, startedAt, status, now)
-  }
-  if (status.waitingForFirstChunk && !status.upstreamChunkReceived) {
+  if (profile.timeoutsDisabled === true) {
     return undefined
   }
-  const rawTimeoutMs = profile.idleTimeoutMs - (now - status.lastUpstreamActivityAt)
-  return {
-    phase: 'active_stream',
-    timeoutMs: rawTimeoutMs,
-    rawTimeoutMs,
-    timeoutKind: 'upstream_activity',
-    timeoutMessage: streamIdleTimeoutMessage(timeoutSeconds(profile.idleTimeoutMs)),
-    deadlineExceeded: rawTimeoutMs <= 0
-  }
+  return buildStreamReadPlan(profile, startedAt, status, now)
 }
 
 export function buildStreamReadPlan(

@@ -1,0 +1,151 @@
+{
+  "catalogVersion": 1,
+  "owner": "node-postgres-legacy",
+  "indexes": [
+    {
+      "name": "idx_model_check_runs_quality_health_sync_due",
+      "schema": "juhe_dataset",
+      "table": "model_check_runs",
+      "accessMethod": "btree",
+      "notApplicableWhenAllColumnsMissing": [
+        "quality_health_sync_next_attempt_at",
+        "quality_health_sync_claim_until",
+        "quality_health_sync_claim_epoch",
+        "quality_health_sync_attempt_count"
+      ],
+      "requiredColumns": {
+        "account_id": "text",
+        "status": "text",
+        "quality_health_sync_status": "text",
+        "quality_health_sync_next_attempt_at": "text",
+        "quality_health_sync_claim_until": "text",
+        "quality_health_sync_claim_epoch": "bigint",
+        "quality_health_sync_attempt_count": "bigint",
+        "updated_at": "text",
+        "id": "text"
+      },
+      "requiredKeyExpressions": [
+        "COALESCE(quality_health_sync_next_attempt_at, updated_at)",
+        "updated_at",
+        "id"
+      ],
+      "requiredIndexProperties": {
+        "indisunique": false,
+        "indisexclusion": false,
+        "indnkeyatts": 3,
+        "indnatts": 3
+      },
+      "createSql": "CREATE INDEX CONCURRENTLY idx_model_check_runs_quality_health_sync_due ON juhe_dataset.model_check_runs (COALESCE(quality_health_sync_next_attempt_at, updated_at), updated_at, id) WHERE account_id IS NOT NULL AND status = 'completed' AND quality_health_sync_status = 'failed' AND updated_at ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$' AND (quality_health_sync_next_attempt_at IS NULL OR quality_health_sync_next_attempt_at ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$') AND (quality_health_sync_claim_until IS NULL OR quality_health_sync_claim_until ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$') AND quality_health_sync_claim_epoch < 9223372036854775807 AND quality_health_sync_attempt_count < 9223372036854775807",
+      "requiredDefinitionTokens": [
+        "coalesce(quality_health_sync_next_attempt_at, updated_at)",
+        "account_id is not null",
+        "status = 'completed'",
+        "quality_health_sync_status = 'failed'",
+        "updated_at ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])t([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}z$'",
+        "quality_health_sync_next_attempt_at is null",
+        "quality_health_sync_next_attempt_at ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])t([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}z$'",
+        "quality_health_sync_claim_until is null",
+        "quality_health_sync_claim_until ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])t([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}z$'",
+        "quality_health_sync_claim_epoch < 9223372036854775807",
+        "quality_health_sync_attempt_count < 9223372036854775807"
+      ]
+    },
+    {
+      "name": "idx_model_check_runs_quality_health_sync_invalid_time",
+      "schema": "juhe_dataset",
+      "table": "model_check_runs",
+      "accessMethod": "btree",
+      "notApplicableWhenAllColumnsMissing": [
+        "quality_health_sync_next_attempt_at",
+        "quality_health_sync_claim_until",
+        "quality_health_sync_claim_epoch",
+        "quality_health_sync_attempt_count",
+        "quality_health_sync_last_error_class"
+      ],
+      "requiredColumns": {
+        "account_id": "text",
+        "status": "text",
+        "quality_health_sync_status": "text",
+        "quality_health_sync_next_attempt_at": "text",
+        "quality_health_sync_claim_until": "text",
+        "quality_health_sync_claim_epoch": "bigint",
+        "quality_health_sync_attempt_count": "bigint",
+        "quality_health_sync_last_error_class": "text",
+        "updated_at": "text",
+        "id": "text"
+      },
+      "requiredKeyExpressions": [
+        "id"
+      ],
+      "requiredIndexProperties": {
+        "indisunique": false,
+        "indisexclusion": false,
+        "indnkeyatts": 1,
+        "indnatts": 1
+      },
+      "createSql": "CREATE INDEX CONCURRENTLY idx_model_check_runs_quality_health_sync_invalid_time ON juhe_dataset.model_check_runs (id) WHERE account_id IS NOT NULL AND status = 'completed' AND quality_health_sync_status = 'failed' AND (updated_at IS NULL OR updated_at !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$' OR (quality_health_sync_next_attempt_at IS NOT NULL AND quality_health_sync_next_attempt_at !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$') OR (quality_health_sync_claim_until IS NOT NULL AND quality_health_sync_claim_until !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$')) AND quality_health_sync_last_error_class IS DISTINCT FROM 'invalid_durable_timestamp' AND quality_health_sync_claim_epoch < 9223372036854775807 AND quality_health_sync_attempt_count < 9223372036854775807",
+      "requiredDefinitionTokens": [
+        "(id)",
+        "account_id is not null",
+        "status = 'completed'",
+        "quality_health_sync_status = 'failed'",
+        "updated_at is null",
+        "updated_at !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])t([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}z$'",
+        "quality_health_sync_next_attempt_at is not null",
+        "quality_health_sync_next_attempt_at !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])t([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}z$'",
+        "quality_health_sync_claim_until is not null",
+        "quality_health_sync_claim_until !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])t([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}z$'",
+        "quality_health_sync_last_error_class is distinct from 'invalid_durable_timestamp'",
+        "quality_health_sync_claim_epoch < 9223372036854775807"
+        ,"quality_health_sync_attempt_count < 9223372036854775807"
+      ]
+    },
+    {
+      "name": "idx_accounts_balance_auto_detect_due",
+      "schema": "juhe_business",
+      "table": "accounts",
+      "accessMethod": "btree",
+      "requiredColumns": {
+        "status": "text",
+        "schedulable": "integer",
+        "type": "text",
+        "balance_query_enabled": "integer",
+        "balance_query_config_json": "text",
+        "balance_query_next_refresh_at": "text",
+        "deleted_at": "text",
+        "authorization_instance_authorization_id": "text",
+        "id": "text"
+      },
+      "requiredIntegerValues": {
+        "schedulable": [0, 1],
+        "balance_query_enabled": [0, 1]
+      },
+      "requiredKeyExpressions": [
+        "balance_query_next_refresh_at",
+        "id"
+      ],
+      "requiredIndexProperties": {
+        "indisunique": false,
+        "indisexclusion": false,
+        "indnkeyatts": 2,
+        "indnatts": 2
+      },
+      "requiredColumnDefaults": {
+        "schedulable": "1",
+        "balance_query_enabled": "0"
+      },
+      "createSql": "CREATE INDEX CONCURRENTLY idx_accounts_balance_auto_detect_due ON juhe_business.accounts (balance_query_next_refresh_at ASC, id ASC) WHERE status = 'active' AND schedulable = 1 AND type = 'api_key' AND balance_query_enabled = 0 AND balance_query_config_json = '{}' AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL AND balance_query_next_refresh_at IS NOT NULL",
+      "requiredDefinitionTokens": [
+        "balance_query_next_refresh_at, id",
+        "status = 'active'",
+        "schedulable = 1",
+        "type = 'api_key'",
+        "balance_query_enabled = 0",
+        "balance_query_config_json = '{}'",
+        "deleted_at is null",
+        "authorization_instance_authorization_id is null",
+        "balance_query_next_refresh_at is not null"
+      ]
+    }
+  ]
+}

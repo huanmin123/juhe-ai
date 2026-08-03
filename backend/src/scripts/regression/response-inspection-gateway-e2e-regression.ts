@@ -27,6 +27,7 @@ type ScenarioName =
   | 'responses_sse'
   | 'stream_requested_json'
   | 'codex_compaction_sse'
+  | 'codex_compaction_interrupted_sse'
   | 'codex_incomplete_sse'
   | 'codex_broken_gzip_sse'
 
@@ -74,6 +75,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: UpstreamHit[] = []
+const requestedScenario = process.env.JUHE_AI_RESPONSE_INSPECTION_SCENARIO
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -108,16 +110,23 @@ try {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    await runScenario(baseUrl, upstreamBaseUrl, 'chat_json')
-    await runScenario(baseUrl, upstreamBaseUrl, 'chat_malformed')
-    await runScenario(baseUrl, upstreamBaseUrl, 'chat_sse')
-    await runScenario(baseUrl, upstreamBaseUrl, 'responses_json')
-    await runScenario(baseUrl, upstreamBaseUrl, 'responses_sse')
-    await runScenario(baseUrl, upstreamBaseUrl, 'stream_requested_json')
-    await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
-    await runScenario(baseUrl, upstreamBaseUrl, 'codex_incomplete_sse')
-    await runScenario(baseUrl, upstreamBaseUrl, 'codex_broken_gzip_sse')
-    await runCodexBrokenGzipExhaustedScenario(baseUrl, upstreamBaseUrl)
+    if (requestedScenario === 'codex_compaction_sse') {
+      await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
+    } else if (requestedScenario === 'codex_compaction_interrupted_sse') {
+      await runCodexCompactionInterruptedScenario(baseUrl, upstreamBaseUrl)
+    } else {
+      await runScenario(baseUrl, upstreamBaseUrl, 'chat_json')
+      await runScenario(baseUrl, upstreamBaseUrl, 'chat_malformed')
+      await runScenario(baseUrl, upstreamBaseUrl, 'chat_sse')
+      await runScenario(baseUrl, upstreamBaseUrl, 'responses_json')
+      await runScenario(baseUrl, upstreamBaseUrl, 'responses_sse')
+      await runScenario(baseUrl, upstreamBaseUrl, 'stream_requested_json')
+      await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
+      await runCodexCompactionInterruptedScenario(baseUrl, upstreamBaseUrl)
+      await runScenario(baseUrl, upstreamBaseUrl, 'codex_incomplete_sse')
+      await runScenario(baseUrl, upstreamBaseUrl, 'codex_broken_gzip_sse')
+      await runCodexBrokenGzipExhaustedScenario(baseUrl, upstreamBaseUrl)
+    }
 
     console.log('response inspection gateway e2e regression passed')
   } finally {
@@ -313,6 +322,66 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
   assert(!responseText.includes('not a valid gzip'), `codex_broken_gzip_exhausted 不应泄露 mock 上游原始破损内容：${responseText}`)
 }
 
+async function runCodexCompactionInterruptedScenario(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const scenario: ScenarioName = 'codex_compaction_interrupted_sse'
+  upstreamHits.length = 0
+  repositories.updateSettings({ textStreamIdleTimeoutSeconds: 1 })
+  const accountProvider = providerForScenario(scenario)
+  const group = repositories.createGroup({
+    name: '响应检查 E2E codex compact interruption',
+    providerCode: accountProvider.providerCode,
+    enabled: true
+  }, access)
+  const account = repositories.createAccount({
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
+    name: '响应检查 compact interruption 单账号',
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-upstream-clean-${scenario}`,
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
+    },
+    groupId: group.id,
+    schedulable: true,
+    supportedModels: ['gpt-5.5'],
+    priority: 0
+  }, access)
+  activateAccount(account.id)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '响应检查 E2E Key codex compact interruption',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '回归 API Key 未返回明文密钥')
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        turn_id: `turn_${scenario}`,
+        session_id: `session_${scenario}`,
+        thread_id: `thread_${scenario}`
+      })
+    },
+    body: JSON.stringify(requestBodyForScenario(scenario, true))
+  })
+  const responseText = await response.text()
+  const elapsedMs = Date.now() - startedAt
+  assert.equal(response.status, 200, `${scenario} 应返回 Codex SSE 终态，实际 HTTP ${response.status}: ${responseText}`)
+  assert.equal(upstreamHits.length, 1, `${scenario} 单账号不得切换或重复请求：${JSON.stringify(upstreamHits)}`)
+  assert(elapsedMs >= 1_000, `${scenario} 应等待超过普通 1s idle 后再收到上游中断，实际 ${elapsedMs}ms`)
+  assert.match(responseText, /data: \{"type":"juhe_ai\.keepalive"\}\n\n/, `${scenario} 客户端应收到 Codex data keepalive：${responseText}`)
+  assert.equal((responseText.match(/event: response\.failed\n/g) ?? []).length, 1, `${scenario} 必须只发送一个 response.failed：${responseText}`)
+  assert.doesNotMatch(responseText, /response\.completed/, `${scenario} 中断不得发送 response.completed：${responseText}`)
+  assert.doesNotMatch(responseText, /raw-upstream-compaction-chunk|upstream-compaction-secret/, `${scenario} 不得泄露上游原始内容：${responseText}`)
+  repositories.updateSettings({ textStreamIdleTimeoutSeconds: 30 })
+}
+
 function activateAccount(accountId: string): void {
   assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
     intervalHours: 12,
@@ -323,7 +392,7 @@ function activateAccount(accountId: string): void {
 }
 
 function requestBodyForScenario(scenario: ScenarioName, stream: boolean): Record<string, unknown> {
-  if (scenario === 'codex_compaction_sse') {
+  if (scenario === 'codex_compaction_sse' || scenario === 'codex_compaction_interrupted_sse') {
     return {
       model: 'gpt-5.5',
       input: [
@@ -393,6 +462,10 @@ function createMockOpenAIUpstream(): http.Server {
           sendCodexCompactionSse(res, polluted)
           return
         }
+        if (scenario === 'codex_compaction_interrupted_sse') {
+          sendCodexCompactionInterruptedSse(res)
+          return
+        }
         if (scenario === 'codex_incomplete_sse' && polluted) {
           sendCodexIncompleteSse(res)
           return
@@ -430,6 +503,7 @@ function scenarioFromAuthorization(authorization: string): ScenarioName {
 
 function isCodexScenario(scenario: ScenarioName): boolean {
   return scenario === 'codex_compaction_sse'
+    || scenario === 'codex_compaction_interrupted_sse'
     || scenario === 'codex_incomplete_sse'
     || scenario === 'codex_broken_gzip_sse'
 }
@@ -550,6 +624,13 @@ function sendCodexCompactionSse(res: http.ServerResponse, polluted: boolean): vo
     }
   })}\n\n`)
   res.end()
+}
+
+function sendCodexCompactionInterruptedSse(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.write(': raw-upstream-compaction-chunk\n\n')
+  const interruptionTimer = setTimeout(() => res.destroy(new Error('upstream-compaction-secret')), 1_200)
+  interruptionTimer.unref()
 }
 
 function sendCodexIncompleteSse(res: http.ServerResponse): void {

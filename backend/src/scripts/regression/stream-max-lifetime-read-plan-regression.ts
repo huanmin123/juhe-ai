@@ -4,7 +4,7 @@ import type { GatewayTimeoutProfile } from '../../modules/gateway/policy/timeout
 import { AnthropicStreamInspector } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import { GeminiStreamInspector } from '../../modules/gateway/protocols/gemini-v1beta/stream-inspection.js'
 import { OpenAIStreamInspector } from '../../modules/gateway/protocols/openai-v1/stream-inspection.js'
-import { buildStreamReadPlan } from '../../modules/gateway/response/stream-read-plan.js'
+import { buildGatewayStreamReadPlan, buildStreamReadPlan } from '../../modules/gateway/response/stream-read-plan.js'
 
 const textProfile: GatewayTimeoutProfile = {
   firstResponseTimeoutMs: 120_000,
@@ -19,6 +19,10 @@ const imageProfile: GatewayTimeoutProfile = {
   idleTimeoutMs: 120_000,
   uncommittedAttemptMaxLifetimeMs: 3_600_000,
   noAvailableAccountWaitMs: 270_000
+}
+const disabledProfile: GatewayTimeoutProfile = {
+  ...textProfile,
+  timeoutsDisabled: true
 }
 
 const now = Date.now()
@@ -36,6 +40,37 @@ const activeLifetimePlan = buildStreamReadPlan(textProfile, now - 61_000, {
 }, now)
 assert.equal(activeLifetimePlan.timeoutKind, 'upstream_activity', '已有语义输出的活跃流不应再受未提交尝试寿命限制')
 assert.equal(activeLifetimePlan.streamLifetimeTimeoutMs, undefined, '已有语义输出后不得保留未提交尝试寿命')
+
+const disabledFirstChunkPlan = buildGatewayStreamReadPlan(disabledProfile, now - 61_000, {
+  waitingForFirstChunk: true,
+  lastUpstreamActivityAt: now - 61_000,
+  upstreamChunkReceived: false,
+  semanticResultReceived: false,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(disabledFirstChunkPlan, undefined, '禁用超时时首段未返回时不得构造 deadline')
+
+const disabledRawChunkPlan = buildGatewayStreamReadPlan(disabledProfile, now - 61_000, {
+  waitingForFirstChunk: false,
+  lastUpstreamActivityAt: now - 31_000,
+  upstreamChunkReceived: true,
+  semanticResultReceived: false,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(disabledRawChunkPlan, undefined, '禁用超时时收到 raw chunk 且超过 idle 后仍不得构造 deadline')
+
+const disabledSemanticPlan = buildGatewayStreamReadPlan(disabledProfile, now - 121_000, {
+  waitingForFirstChunk: false,
+  lastUpstreamActivityAt: now - 31_000,
+  lastSseEventActivityAt: now - 1_000,
+  upstreamChunkReceived: true,
+  semanticResultReceived: true,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(disabledSemanticPlan, undefined, '禁用超时时已有 SSE/语义结果后仍不得构造 deadline')
 
 const idlePlan = buildStreamReadPlan(textProfile, now - 10_000, {
   waitingForFirstChunk: false,

@@ -165,16 +165,22 @@ try {
     model: 'gpt-5.5',
     testEndpointMode: 'responses_sse'
   })
-  assert.equal(fixedAdvertisementResult.success, false, 'HTTP 2xx 固定广告不得通过严格账号测试')
-  assert.equal(fixedAdvertisementResult.errorCode, 'invalid_probe_output', '固定广告必须标记为严格输出不匹配')
+  assert.equal(fixedAdvertisementResult.success, false, 'HTTP 2xx 固定广告不得通过账号测试')
+  assert.equal(fixedAdvertisementResult.errorCode, 'invalid_probe_output', '固定广告必须标记为缺少预期输出令牌')
+
+  const explainedOutputAccount = createMockAccount(group.id, upstreamBaseUrl, 'explained-output', access)
+  const explainedOutputResult = await testOpenAIAccountWithDiagnosticRetries(explainedOutputAccount, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse'
+  })
+  assert.equal(explainedOutputResult.success, true, '包含预期令牌的前后解释文本不得阻止账号测试成功')
 
   const trailingWhitespaceAccount = createMockAccount(group.id, upstreamBaseUrl, 'trailing-whitespace', access)
   const trailingWhitespaceResult = await testOpenAIAccountWithDiagnosticRetries(trailingWhitespaceAccount, {
     model: 'gpt-5.5',
     testEndpointMode: 'responses_sse'
   })
-  assert.equal(trailingWhitespaceResult.success, false, '严格账号测试不得忽略多余空白')
-  assert.equal(trailingWhitespaceResult.errorCode, 'invalid_probe_output', '多余空白必须标记为严格输出不匹配')
+  assert.equal(trailingWhitespaceResult.success, true, '包含预期令牌的尾随空白不得阻止账号测试成功')
 
   const parentTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'parent-timeout', access)
   let parentTimeoutCanceled = false
@@ -462,6 +468,10 @@ function createMockAIUpstream(): http.Server {
       }
       if (key === 'fixed-advertisement') {
         sendMockCompleted(res, responseMode, 'Buy now for a limited time')
+        return
+      }
+      if (key === 'explained-output') {
+        sendMockCompleted(res, responseMode, `说明：${expectedOutput}，已完成`)
         return
       }
       if (key === 'trailing-whitespace') {

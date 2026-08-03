@@ -526,6 +526,7 @@ try {
     await assertGeminiGenerateContentXGoogApiKey(baseUrl, apiKey.key)
     await assertGeminiGenerateContentKeyQuery(baseUrl, apiKey.key)
     await assertGeminiStreamGenerateContent(baseUrl, apiKey.key)
+    await assertGeminiCliEmptySseUsesTerminalErrorEvent(baseUrl, apiKey.key)
     await assertGeminiCountTokens(baseUrl, apiKey.key)
     await assertGeminiInteractionsAccountAffinity(baseUrl, interactionsApiKey.key, interactionsForeignApiKey.key)
     await assertGeminiInteractionsAffinityPersistenceFailures(baseUrl, interactionsApiKey.key)
@@ -765,6 +766,31 @@ async function assertGeminiStreamGenerateContent(baseUrl: string, localApiKey: s
   assert.equal(upstreamHits.length, 1)
   assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:streamGenerateContent')
   assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
+}
+
+async function assertGeminiCliEmptySseUsesTerminalErrorEvent(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&case=cli-empty-sse', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'user-agent': 'GeminiCLI/0.12.0/gemini-3.5-flash (win32; x64)'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'empty upstream SSE must terminate' }] }
+      ]
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.equal((responseText.match(/^event: error$/gm) ?? []).length, 1, `Gemini CLI 空 SSE 必须输出单个 error event：${responseText}`)
+  assert.match(responseText, /"status":"UNAVAILABLE"/, `Gemini CLI 空 SSE 必须输出可重试终态：${responseText}`)
+  assert.doesNotMatch(responseText, /gemini sse upstream secret/, 'Gemini CLI 空 SSE 不得泄露上游原始错误')
+  assert.equal(upstreamHits.length, 2, 'Gemini CLI 空 SSE 在没有语义输出时应尝试下一个候选账号')
 }
 
 async function assertGeminiCountTokens(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1954,6 +1980,10 @@ function createGeminiMockUpstream(): http.Server {
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive'
       })
+      if (url.searchParams.get('case') === 'cli-empty-sse') {
+        res.end()
+        return
+      }
       res.write('data: {"candidates":[{"content":{"parts":[{"text":"gemini "}]}}]}\n\n')
       res.write('data: {"candidates":[{"content":{"parts":[{"text":"sse ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":6,"candidatesTokenCount":5}}\n\n')
       res.end()

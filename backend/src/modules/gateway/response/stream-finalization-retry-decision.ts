@@ -56,9 +56,16 @@ export function shouldRetryPreCommitStreamFailureOnServer(
   streamResult: StreamPipeResult,
   response: StreamRetryResponseState
 ): boolean {
-  // An uncommitted stream can still carry a concrete timeout, EOF, or protocol
-  // failure.  Keeping it invisible by replaying another account is forbidden.
-  return false
+  // A stream with no semantic event is replayable whether it has written a
+  // transport-only heartbeat or has not committed any downstream bytes yet.
+  // The downstream byte/state pair is only evidence that a transport heartbeat
+  // was actually written; HTTP headers alone never enter this decision.
+  return !streamResult.completed
+    && streamResult.semanticCommitted !== true
+    && streamResult.gatewayLocalFailure !== true
+    && streamResult.errorCode !== undefined
+    && !response.writableEnded
+    && !response.destroyed
 }
 
 export function preCommitStreamServerRetryErrorCode(

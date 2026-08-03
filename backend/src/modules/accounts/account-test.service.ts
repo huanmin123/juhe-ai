@@ -520,9 +520,14 @@ export async function testOpenAIAccount(
           : Boolean(responseContext && hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseContext))
         : Boolean(responseContext && testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseContext))
     const outputChallengeMatched = probeKind !== 'generation'
-      || (responseTruncated === false && rawVisibleOutputText === outputChallenge?.expectedOutput)
+      || (
+        responseTruncated === false
+        && typeof rawVisibleOutputText === 'string'
+        && typeof outputChallenge?.expectedOutput === 'string'
+        && rawVisibleOutputText.includes(outputChallenge.expectedOutput)
+      )
     const outputChallengeError = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence && !outputChallengeMatched
-      ? '上游返回 HTTP 2xx 且协议完成，但输出未通过严格校验'
+      ? '上游返回 HTTP 2xx 且协议完成，但输出未包含预期令牌'
       : undefined
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence && outputChallengeMatched
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence

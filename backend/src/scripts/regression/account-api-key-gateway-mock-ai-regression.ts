@@ -52,11 +52,13 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
-  apiKeyRotation
+  apiKeyRotation,
+  cryptoModule
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-api-key-rotation.js')
+  import('../../storage/account-api-key-rotation.js'),
+  import('../../storage/crypto.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -665,14 +667,14 @@ function createGatewayOversizedPoolScenario(upstreamBaseUrl: string): { gatewayA
     ['A 超大 Key 池第一账户', firstAccountKeys],
     ['B 超大 Key 池第二账户', secondAccountKeys]
   ] as const) {
-    createActiveAccount({
+    const account = createActiveAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name,
       type: 'api_key',
       credentials: {
         api_key: apiKeys[0],
-        api_keys: apiKeys,
+        api_keys: apiKeys.slice(0, 10),
         api_key_strategy: 'round_robin',
         base_url: upstreamBaseUrl,
         error_handling_rules: [explicitRetryNextRule([400, 401, 429, 500, 503])]
@@ -682,6 +684,13 @@ function createGatewayOversizedPoolScenario(upstreamBaseUrl: string): { gatewayA
       schedulable: true,
       concurrencyLimit: 64
     }, access)
+    overwriteAccountCredentialsForLegacyKeyPool(account.id, {
+      api_key: apiKeys[0],
+      api_keys: apiKeys,
+      api_key_strategy: 'round_robin',
+      base_url: upstreamBaseUrl,
+      error_handling_rules: [explicitRetryNextRule([400, 401, 429, 500, 503])]
+    })
   }
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '跨账户超大 Key 池请求安全上限网关 Key',
@@ -690,6 +699,16 @@ function createGatewayOversizedPoolScenario(upstreamBaseUrl: string): { gatewayA
   }, access)
   assert(apiKey.key, '跨账户超大 Key 池场景未返回网关 API Key 明文')
   return { gatewayApiKey: apiKey.key, apiKeys: [...firstAccountKeys, ...secondAccountKeys] }
+}
+
+function overwriteAccountCredentialsForLegacyKeyPool(accountId: string, credentials: Record<string, unknown>): void {
+  const database = databaseModule.getBusinessDatabase()
+  database.prepare(`
+    UPDATE accounts
+    SET credentials_encrypted = ?, config_revision = config_revision + 1, dispatch_revision = dispatch_revision + 1,
+        updated_at = ?
+    WHERE id = ?
+  `).run(cryptoModule.encryptJson(credentials), new Date().toISOString(), accountId)
 }
 
 function createGatewayPhysicalKeyDedupeScenario(upstreamBaseUrl: string): string {

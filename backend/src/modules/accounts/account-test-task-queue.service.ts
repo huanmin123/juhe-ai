@@ -27,6 +27,7 @@ import {
   accountDiagnosticRetryTimeouts,
   diagnosticAccountTestGatewaySettingsOverride,
   diagnosticAttemptSignal,
+  diagnosticAttemptSignals,
   isDiagnosticTimeoutSignal
 } from './account-diagnostic-retry-policy.js'
 import {
@@ -34,6 +35,7 @@ import {
   fixedAccountApiKeyPoolCandidate,
   isCandidateAccountApiKeyPoolTestable
 } from './account-api-key-pool-runtime.js'
+import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 
 interface AccountTestQueueItem {
   taskId: string
@@ -669,25 +671,51 @@ async function runAccountApiKeyPoolEntryTests(
     onProgress?: (message: string) => void
   }
 ): Promise<AccountApiKeyPoolEntryTestResult[]> {
-  const results: AccountApiKeyPoolEntryTestResult[] = []
-  let completed = 0
-  let successCount = 0
-  let failedCount = 0
+  const results = new Map<number, AccountApiKeyPoolEntryTestResult>()
+  const pending = new Map(entries.map((entry) => [entry.index, { entry, nextStage: 0 }]))
+  const stopController = new AbortController()
+  let winnerIndex: number | undefined
 
-  for (const entry of entries) {
-    if (input.signal.aborted) break
-    const result = await runAccountApiKeyPoolEntryTest(account, baseCandidate, entry, input)
-    results.push(result)
-    completed += 1
-    if (result.success) {
-      successCount += 1
-    } else {
-      failedCount += 1
-    }
-    input.onProgress?.(accountApiKeyPoolProgressMessage(completed, entries.length, successCount, failedCount))
-    if (result.success) break
+  const record = (result: AccountApiKeyPoolEntryTestResult): void => {
+    if (results.has(result.keyIndex)) return
+    results.set(result.keyIndex, result)
+    const successCount = [...results.values()].filter((item) => item.success).length
+    input.onProgress?.(accountApiKeyPoolProgressMessage(results.size, entries.length, successCount, results.size - successCount))
   }
-  return results
+
+  for (let stage = 0; stage < accountDiagnosticRetryTimeoutMs.length; stage += 1) {
+    if (input.signal.aborted || stopController.signal.aborted) break
+    const stageEntries = [...pending.values()].filter((item) => item.nextStage === stage)
+    if (stageEntries.length === 0) continue
+    let nextIndex = 0
+    const worker = async (): Promise<void> => {
+      while (nextIndex < stageEntries.length && !input.signal.aborted && !stopController.signal.aborted) {
+        const current = stageEntries[nextIndex++]
+        if (!current) return
+        const attempt = await runAccountApiKeyPoolEntryTest(account, baseCandidate, current.entry, {
+          ...input,
+          signal: AbortSignal.any([input.signal, stopController.signal]),
+          stageTimeoutMs: accountDiagnosticRetryTimeoutMs[stage]
+        })
+        if (!attempt) continue
+        if (winnerIndex !== undefined && winnerIndex !== current.entry.index) continue
+        if (attempt.result.success) {
+          winnerIndex = current.entry.index
+          record(attempt.result)
+          stopController.abort('account_api_key_pool_success')
+          return
+        }
+        if (attempt.timedOutAfterRealUpstreamAttempt && stage + 1 < accountDiagnosticRetryTimeoutMs.length) {
+          current.nextStage = stage + 1
+          pending.set(current.entry.index, current)
+          continue
+        }
+        record(attempt.result)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, stageEntries.length) }, () => worker()))
+  }
+  return [...results.values()].sort((left, right) => left.keyIndex - right.keyIndex)
 }
 
 async function runAccountApiKeyPoolEntryTest(
@@ -701,38 +729,57 @@ async function runAccountApiKeyPoolEntryTest(
     signal: AbortSignal
     groupId: string
     systemAccountId: string
+    stageTimeoutMs: number
   }
-): Promise<AccountApiKeyPoolEntryTestResult> {
+): Promise<{ result: AccountApiKeyPoolEntryTestResult; timedOutAfterRealUpstreamAttempt: boolean } | undefined> {
   const startedAt = Date.now()
   const fixedCandidate = fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })
+  const { signal, timeoutSignal } = diagnosticAttemptSignals(input.signal, input.stageTimeoutMs)
+  let upstreamAttempt: UpstreamAttempt | undefined
   try {
-    const result = await testOpenAIAccountWithDiagnosticRetries(account, {
+    const result = await testOpenAIAccount(account, {
       model: input.model,
       groupId: input.groupId,
       systemAccountId: input.systemAccountId,
       testEndpointMode: input.testEndpointMode,
       diagnostics: input.diagnostics,
-      signal: input.signal,
+      signal,
       candidateAccount: fixedCandidate,
       disableAccountStateMutation: true,
-      retryAllFailures: true,
+      onUpstreamAttempt: (attempt) => {
+        upstreamAttempt = attempt
+      },
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, input.stageTimeoutMs),
       findAccountForTest: loadAccountForTestViaDbService,
       findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
     })
-    return accountApiKeyPoolEntryTestResult(entry, result)
-  } catch (error) {
+    if (input.signal.aborted) return undefined
+    const timedOutAfterRealUpstreamAttempt = timeoutSignal.aborted
+      && !input.signal.aborted
+      && Boolean(upstreamAttempt && isRealUpstreamAttempt(upstreamAttempt))
     return {
-      entry,
-      result: failedAccountTestResult(account, error instanceof Error ? error.message : 'API Key 测试失败', input.model, {
-        accountFailureEligible: false,
+      result: accountApiKeyPoolEntryTestResult(entry, result),
+      timedOutAfterRealUpstreamAttempt
+    }
+  } catch (error) {
+    if (input.signal.aborted) return undefined
+    return {
+      result: {
+        entry,
+        result: failedAccountTestResult(account, error instanceof Error ? error.message : 'API Key 测试失败', input.model, {
+          accountFailureEligible: false,
+          durationMs: Date.now() - startedAt
+        }),
+        keyIndex: entry.index,
+        keyPrefix: keyPrefixForDisplay(entry.key),
+        keySuffix: keySuffixForDisplay(entry.key),
+        success: false,
+        message: error instanceof Error ? error.message : 'API Key 测试失败',
         durationMs: Date.now() - startedAt
-      }),
-      keyIndex: entry.index,
-      keyPrefix: keyPrefixForDisplay(entry.key),
-      keySuffix: keySuffixForDisplay(entry.key),
-      success: false,
-      message: error instanceof Error ? error.message : 'API Key 测试失败',
-      durationMs: Date.now() - startedAt
+      },
+      timedOutAfterRealUpstreamAttempt: timeoutSignal.aborted
+        && !input.signal.aborted
+        && Boolean(upstreamAttempt && isRealUpstreamAttempt(upstreamAttempt))
     }
   }
 }

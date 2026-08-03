@@ -53,7 +53,7 @@ assert.equal(shouldRetryPreCommitStreamFailureOnServer(transportOnlyFailure, {
   headersSent: true,
   writableEnded: false,
   destroyed: false
-}), false, 'SSE 心跳已经写出但语义未提交时也不得服务端重试')
+}), true, 'SSE 心跳已经写出但语义未提交时仍应允许服务端切换候选账号')
 
 const firstWriteFailureState = new GatewayDownstreamCommitState()
 const firstWriteFailureResponse = fakeResponse({ throwOnWrite: true })
@@ -101,11 +101,38 @@ assert(heartbeatObserver)
 assert.doesNotThrow(() => heartbeatObserver.onWaitStarted?.(), '客户端断连竞争导致心跳写失败时不应把异常抛回请求链')
 assert.equal(heartbeatState.transportCommitted, false, '失败的心跳写入不得标记传输层已提交')
 
+const nonCodexHeartbeatState = new GatewayDownstreamCommitState()
+const nonCodexHeartbeatChunks: Buffer[] = []
+const nonCodexHeartbeat = createGatewaySseWaitHeartbeat({
+  res: fakeResponse({ writtenChunks: nonCodexHeartbeatChunks }),
+  downstreamProtocol: 'chat_completions_sse',
+  downstreamCommitState: nonCodexHeartbeatState,
+  intervalMs: 1
+})
+assert(nonCodexHeartbeat)
+nonCodexHeartbeat.start()
+nonCodexHeartbeat.stop()
+assert.equal(Buffer.concat(nonCodexHeartbeatChunks).toString('utf8'), ': juhe-ai waiting for upstream capacity\n\n', '非 Codex heartbeat 必须保持 SSE comment')
+assert.equal(nonCodexHeartbeatState.transportCommitted, true)
+
+const defaultResponsesHeartbeatChunks: Buffer[] = []
+const defaultResponsesHeartbeat = createGatewaySseWaitHeartbeat({
+  res: fakeResponse({ writtenChunks: defaultResponsesHeartbeatChunks }),
+  downstreamProtocol: 'responses_sse',
+  downstreamCommitState: new GatewayDownstreamCommitState(),
+  intervalMs: 1
+})
+assert(defaultResponsesHeartbeat)
+defaultResponsesHeartbeat.start()
+defaultResponsesHeartbeat.stop()
+assert.equal(Buffer.concat(defaultResponsesHeartbeatChunks).toString('utf8'), ': juhe-ai waiting for upstream capacity\n\n', '未显式启用 Codex compact 时 responses SSE 仍必须保持 comment')
+
 const failedCompactHeartbeatWrites = { count: 0 }
 const failedCompactHeartbeat = createGatewaySseWaitHeartbeat({
   res: fakeResponse({ throwOnWrite: true, writeAttempts: failedCompactHeartbeatWrites }),
   downstreamProtocol: 'responses_sse',
   downstreamCommitState: new GatewayDownstreamCommitState(),
+  emitCodexCompactionKeepalive: true,
   intervalMs: 1
 })
 assert(failedCompactHeartbeat)
@@ -120,23 +147,65 @@ const compactHeartbeat = createGatewaySseWaitHeartbeat({
   res: fakeResponse({ writtenChunks: compactHeartbeatChunks }),
   downstreamProtocol: 'responses_sse',
   downstreamCommitState: compactHeartbeatState,
+  emitCodexCompactionKeepalive: true,
   intervalMs: 1
 })
 assert(compactHeartbeat, 'Responses SSE 必须可以建立 transport-only 保活')
 compactHeartbeat.start()
 await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050))
-assert(compactHeartbeatChunks.length >= 2, '运行中的 compact 保活必须跨 interval 继续写入 comment')
+assert(compactHeartbeatChunks.length >= 2, '运行中的 compact 保活必须跨 interval 继续写入 data keepalive')
 compactHeartbeat.stop()
 const stoppedHeartbeatChunkCount = compactHeartbeatChunks.length
 await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050))
 assert(compactHeartbeatChunks.length > 0, 'compact 上游等待必须至少写出一条 SSE comment')
 assert.equal(compactHeartbeatChunks.length, stoppedHeartbeatChunkCount, '停止 compact 保活后不得遗留定时器写入')
 const compactHeartbeatText = Buffer.concat(compactHeartbeatChunks).toString('utf8')
-assert.match(compactHeartbeatText, /^: /, 'compact 保活必须使用严格 SSE comment')
-assert.doesNotMatch(compactHeartbeatText, /(?:^|\n)(?:event|data):/, 'compact 保活不得写出任何 SSE 语义字段')
+assert.match(compactHeartbeatText, /^(?:data: \{"type":"juhe_ai\.keepalive"\}\n\n)+$/, 'Codex compact 保活必须使用精确 data keepalive')
 assert.equal(compactHeartbeatState.transportCommitted, true, 'compact 保活只应提交 transport')
 assert.equal(compactHeartbeatState.semanticCommitted, false, 'compact 保活绝不能提交 Responses 语义')
 assert.equal(compactHeartbeatState.canRetryUpstream(), true, 'compact 保活后仍必须允许服务端切号')
+
+const interruptedCompactHeartbeatState = new GatewayDownstreamCommitState()
+const interruptedCompactHeartbeatChunks: Buffer[] = []
+const interruptedCompactHeartbeatEndCalls = { count: 0 }
+const interruptedCompactHeartbeatResponse = fakeResponse({
+  writtenChunks: interruptedCompactHeartbeatChunks,
+  endCalls: interruptedCompactHeartbeatEndCalls
+})
+const interruptedCompactHeartbeat = createGatewaySseWaitHeartbeat({
+  res: interruptedCompactHeartbeatResponse,
+  downstreamProtocol: 'responses_sse',
+  downstreamCommitState: interruptedCompactHeartbeatState,
+  emitCodexCompactionKeepalive: true,
+  intervalMs: 1
+})
+assert(interruptedCompactHeartbeat)
+interruptedCompactHeartbeat.start()
+interruptedCompactHeartbeat.stop()
+assert.equal(interruptedCompactHeartbeatState.transportCommitted, true, '测试前置必须写出 transport-only heartbeat')
+const interruptedCompactResult = await pipeUpstreamStream(
+  singleChunkBody('event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n'),
+  interruptedCompactHeartbeatResponse,
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'responses',
+    downstreamProtocol: 'responses_sse',
+    interpretProtocolFailures: true,
+    committedFailureSignal: 'protocol_error_event',
+    retryBeforeDownstreamWriteUntilOutput: true,
+    downstreamCommitState: interruptedCompactHeartbeatState
+  }
+)
+const interruptedCompactResponseText = Buffer.concat(interruptedCompactHeartbeatChunks).toString('utf8')
+assert.equal(interruptedCompactResult.completed, false, 'transport heartbeat 后上游中断不得伪装成完成')
+assert.equal(interruptedCompactHeartbeatEndCalls.count, 0, '仍有候选账号时 transport heartbeat 后的失败不得提前结束响应')
+assert.doesNotMatch(interruptedCompactResponseText, /response\.failed|response\.completed/, 'transport heartbeat 后不得抢先写协议终态')
+assert.equal(interruptedCompactHeartbeatState.semanticCommitted, false, 'transport heartbeat 后仍未提交 Responses 语义')
+assert.equal(shouldRetryPreCommitStreamFailureOnServer(interruptedCompactResult, interruptedCompactHeartbeatResponse), true, 'transport heartbeat 后上游中断应允许服务端切换候选账号')
 
 const keepAliveOnlyState = new GatewayDownstreamCommitState()
 const keepAliveOnlyResponse = fakeResponse()
@@ -163,7 +232,7 @@ assert.equal(keepAliveOnlyResult.upstreamResponseBytesWritten, 0)
 assert.equal(keepAliveOnlyResponse.headersSent, false, '上游 keep-alive 不得提前写出下游响应头')
 assert.equal(keepAliveOnlyResponse.writableEnded, false, '建流前失败必须交回上层接管 HTTP 错误或切号')
 assert.equal(keepAliveOnlyResult.uncommittedResponseBody, undefined, '纯 SSE comment 不属于语义正文，不应占用预提交缓冲')
-assert.equal(shouldRetryPreCommitStreamFailureOnServer(keepAliveOnlyResult, keepAliveOnlyResponse), false, '预提交失败必须由当前账户终止并暴露')
+assert.equal(shouldRetryPreCommitStreamFailureOnServer(keepAliveOnlyResult, keepAliveOnlyResponse), true, '未写 transport-only heartbeat 的无语义预提交失败仍应交由上层按 pre-commit 信号处理')
 
 await assertTransportOnlySseRemainsPreCommit(
   '单个超过预提交上限的 SSE comment',
@@ -383,7 +452,7 @@ async function assertTransportOnlySseRemainsPreCommit(
   assert.equal(response.headersSent, false, `${label} 不得提前写出响应头`)
   assert.equal(response.writableEnded, false, `${label} 必须交回上层接管`)
   assert.equal(result.uncommittedResponseBody?.toString('utf8'), expectedUncommittedBody)
-  assert.equal(shouldRetryPreCommitStreamFailureOnServer(result, response), false, `${label} 不得因预提交失败静默切号`)
+  assert.equal(shouldRetryPreCommitStreamFailureOnServer(result, response), true, `${label} 未提交 transport-only heartbeat 时仍应保持 pre-commit 重试边界`)
 }
 
 async function assertOversizedUncommittedSseRejected(
@@ -443,7 +512,7 @@ async function assertCompletedNonSemanticFrameAtLimitIsCleared(): Promise<void> 
   assert.equal(result.semanticCommitted, true)
 }
 
-function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[]; writeAttempts?: { count: number } } = {}): Response {
+function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[]; writeAttempts?: { count: number }; endCalls?: { count: number } } = {}): Response {
   const response = new EventEmitter() as EventEmitter & Record<string, unknown>
   response.headersSent = false
   response.writableEnded = false
@@ -464,6 +533,7 @@ function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[];
     return true
   }
   response.end = function end() {
+    if (input.endCalls) input.endCalls.count += 1
     this.headersSent = true
     this.writableEnded = true
     return this

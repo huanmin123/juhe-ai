@@ -116,7 +116,9 @@ import {
   type GatewayUsageContext
 } from '../usage/records.js'
 import {
+  preCommitStreamServerRetryErrorCode,
   shouldRememberCodexTurnStreamFailure,
+  shouldRetryPreCommitStreamFailureOnServer,
   type StreamServerRetryReason
 } from './stream-finalization-retry-decision.js'
 import {
@@ -572,6 +574,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   })
   if (!streamResult.completed) {
     const upstreamResponseCommitted = isStreamUpstreamResponseCommitted(streamResult)
+    const canRetryUpstream = !streamResult.semanticCommitted
     const responsePrecommitDeadlineExceeded = isResponsePrecommitDeadlineStreamResult(streamResult)
     const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
@@ -608,6 +611,31 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           upstreamResponseCommitted
         }
       })
+    }
+    if (canRetryUpstream && shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
+      const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
+      auditCapture.addGatewayMetadata({
+        label: 'pre_commit_stream_server_retry',
+        metadata: {
+          errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
+          clientFacingErrorCode,
+          message: streamResult.message,
+          downstreamBytesWritten: streamResult.downstreamBytesWritten,
+          outputReceived: streamResult.outputReceived,
+          accountId: account.id
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'pre_commit_stream_failure',
+        responseInspection: streamResult.responseInspection,
+        excludeCurrentAccount: true,
+        message: streamResult.message,
+        errorCode: clientFacingErrorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody,
+        transportFailure: streamResult.transportFailure
+      }
     }
     if (
       !isAccountDiagnosticTrafficSource(usageContext.trafficSource)
@@ -681,7 +709,7 @@ function writePreCommitStreamFailureToClient(
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): Buffer | undefined {
   if (
-    streamResult.downstreamBytesWritten !== 0
+    streamResult.semanticCommitted
     || res.writableEnded
     || res.destroyed
     || streamResult.errorCode === undefined

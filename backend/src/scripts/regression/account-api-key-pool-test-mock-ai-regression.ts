@@ -53,7 +53,9 @@ interface TestContext {
 type AccountTestEndpointMode = 'chat_sse' | 'responses_sse'
 
 const mockState = {
-  hitsByKey: new Map<string, number>()
+  hitsByKey: new Map<string, number>(),
+  activeRequests: 0,
+  maxConcurrentRequests: 0
 }
 
 const [
@@ -111,6 +113,28 @@ try {
     mockBaseUrl
   }
 
+  const tenKeyAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
+    name: '10 Key 上限边界账户',
+    apiKeys: Array.from({ length: 10 }, (_value, index) => `sk-pool-limit-${index}`),
+    groupId: group.id,
+    mockBaseUrl,
+    status: 'active'
+  }))
+  assert(tenKeyAccount.id, '10 个 API Key 应允许保存')
+  let elevenKeyRejected = false
+  try {
+    await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
+      name: '11 Key 上限边界账户',
+      apiKeys: Array.from({ length: 11 }, (_value, index) => `sk-pool-limit-over-${index}`),
+      groupId: group.id,
+      mockBaseUrl,
+      status: 'active'
+    }))
+  } catch (error) {
+    elevenKeyRejected = /最多配置 10 个 API Key/.test(error instanceof Error ? error.message : String(error))
+  }
+  assert.equal(elevenKeyRejected, true, '11 个 API Key 必须被后端拒绝')
+
   const savedAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
     name: '已保存 Key 池批测账户',
     apiKeys: ['sk-pool-saved-bad-a', 'sk-pool-saved-good', 'sk-pool-saved-bad-b'],
@@ -123,9 +147,9 @@ try {
   const savedFinished = await waitForTask(context, savedTask.id)
   assert.equal(savedFinished.status, 'success', `已保存 Key 池账户只要至少一个 Key 可用就应测试成功：${savedFinished.message ?? ''} ${JSON.stringify(savedFinished.result)}`)
   assert.equal(savedFinished.result?.apiKeyPool?.total, 3, '已保存账户测试应返回 Key 池总数')
-  assert.equal(savedFinished.result?.apiKeyPool?.tested, 2, '已保存账户应在首个成功 Key 后停止测试')
+  assert(savedFinished.result?.apiKeyPool?.tested && savedFinished.result.apiKeyPool.tested >= 2 && savedFinished.result.apiKeyPool.tested <= 3, '已保存账户应在首个成功 Key 后停止继续派发，已启动兄弟 Key 可收敛')
   assert.equal(savedFinished.result?.apiKeyPool?.successCount, 1, '已保存账户测试应统计 1 个可用 Key')
-  assert.equal(savedFinished.result?.apiKeyPool?.failedCount, 1, '已保存账户只应统计成功前实际测试过的失败 Key')
+  assert.equal(savedFinished.result?.apiKeyPool?.failedCount, (savedFinished.result?.apiKeyPool?.tested ?? 0) - 1, '已保存账户失败数应只包含已收敛的失败 Key')
   assertKeyPoolPreview(savedFinished.result, 1, 'sk-p', 'good', '已保存账户可用 Key 应返回安全预览')
 
   const responsesAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
@@ -143,6 +167,20 @@ try {
   assert.equal(responsesFinished.result?.apiKeyPool?.failedCount, 1, 'Responses SSE 测试应统计 1 个不可用 Key')
   assertKeyPoolPreview(responsesFinished.result, 1, 'sk-p', 'good', 'Responses SSE 可用 Key 应返回安全预览')
 
+  const stagedRetryAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
+    name: '分阶段超时升级批测账户',
+    apiKeys: ['sk-pool-stage-retry', 'sk-pool-stage-bad'],
+    groupId: group.id,
+    mockBaseUrl,
+    status: 'active'
+  }))
+  const stagedRetryTask = await submitAccountTest(context, stagedRetryAccount.id, 'responses_sse')
+  const stagedRetryFinished = await waitForTask(context, stagedRetryTask.id)
+  assert.equal(stagedRetryFinished.status, 'success', `阶段一超时后阶段二成功应判定账户成功：${stagedRetryFinished.message ?? ''}`)
+  assert.equal(stagedRetryFinished.result?.apiKeyPool?.successCount, 1, '阶段二成功应返回一个可用 Key')
+  assert.equal(mockState.hitsByKey.get('pool-stage-retry') ?? 0, 2, '阶段升级 Key 应严格命中阶段一、阶段二各一次，不得进入阶段三')
+  assert.ok(mockState.maxConcurrentRequests <= 3, `单账户 Key 测试并发不得超过 3，实际峰值 ${mockState.maxConcurrentRequests}`)
+
   const draftAccount = accountPayload({
     name: '创建 Key 池批测账户',
     apiKeys: ['sk-pool-create-bad-a', 'sk-pool-create-good', 'sk-pool-create-bad-b'],
@@ -152,9 +190,9 @@ try {
   const draftTask = await submitDraftAccountTest(context, draftAccount)
   const draftFinished = await waitForTask(context, draftTask.id)
   assert.equal(draftFinished.status, 'success', '创建草稿 Key 池只要至少一个 Key 可用就应测试成功')
-  assert.equal(draftFinished.result?.apiKeyPool?.tested, 2, '创建草稿测试应在首个成功 Key 后停止')
+  assert(draftFinished.result?.apiKeyPool?.tested && draftFinished.result.apiKeyPool.tested >= 2 && draftFinished.result.apiKeyPool.tested <= 3, '创建草稿测试应停止继续派发并收敛已启动兄弟 Key')
   assert.equal(draftFinished.result?.apiKeyPool?.successCount, 1, '创建草稿测试应统计 1 个可用 Key')
-  assert.equal(draftFinished.result?.apiKeyPool?.failedCount, 1, '创建草稿测试只应统计成功前实际测试过的失败 Key')
+  assert.equal(draftFinished.result?.apiKeyPool?.failedCount, (draftFinished.result?.apiKeyPool?.tested ?? 0) - 1, '创建草稿测试失败数应只包含已收敛的失败 Key')
   assertKeyPoolPreview(draftFinished.result, 1, 'sk-p', 'good', '创建草稿可用 Key 应返回安全预览')
 
   const createdAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, { ...draftAccount, status: 'active' })
@@ -162,12 +200,12 @@ try {
 
   assertKeyHitBound(mockState.hitsByKey, 'pool-saved-bad-a', '已保存账户坏 Key A')
   assertKeyHitBound(mockState.hitsByKey, 'pool-saved-good', '已保存账户好 Key')
-  assertKeyNotHit(mockState.hitsByKey, 'pool-saved-bad-b', '已保存账户成功后的坏 Key B')
+  assertKeyHitAtMost(mockState.hitsByKey, 'pool-saved-bad-b', 1, '已保存账户首批并发兄弟坏 Key B')
   assertKeyHitBound(mockState.hitsByKey, 'pool-responses-bad', 'Responses SSE 坏 Key')
   assertKeyHitBound(mockState.hitsByKey, 'pool-responses-good', 'Responses SSE 好 Key')
   assertKeyHitBound(mockState.hitsByKey, 'pool-create-bad-a', '草稿坏 Key A')
   assertKeyHitBound(mockState.hitsByKey, 'pool-create-good', '草稿好 Key')
-  assertKeyNotHit(mockState.hitsByKey, 'pool-create-bad-b', '草稿成功后的坏 Key B')
+  assertKeyHitAtMost(mockState.hitsByKey, 'pool-create-bad-b', 1, '草稿首批并发兄弟坏 Key B')
 
   console.log(JSON.stringify({
     message: '账户内 API Key 池测试 mock AI 回归通过',
@@ -266,8 +304,9 @@ function assertKeyHitBound(hitsByKey: Map<string, number>, key: string, label: s
   assert.ok(hits <= 3, `${label}在完整诊断阶梯内最多应被探测三次，实际 ${hits}`)
 }
 
-function assertKeyNotHit(hitsByKey: Map<string, number>, key: string, label: string): void {
-  assert.equal(hitsByKey.get(key) ?? 0, 0, `${label}不应在首个成功后继续被探测`)
+function assertKeyHitAtMost(hitsByKey: Map<string, number>, key: string, maxHits: number, label: string): void {
+  const hits = hitsByKey.get(key) ?? 0
+  assert.ok(hits <= maxHits, `${label}最多允许 ${maxHits} 次探测，实际 ${hits}`)
 }
 
 function startBackendServer(port: number): ChildProcess {
@@ -371,7 +410,22 @@ async function parseEnvelope<T>(apiPath: string, response: Response): Promise<T>
 function createMockAIUpstream(): http.Server {
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    req.on('data', () => {})
+    let requestCounted = false
+    const releaseActiveRequest = (): void => {
+      if (!requestCounted) return
+      requestCounted = false
+      mockState.activeRequests = Math.max(0, mockState.activeRequests - 1)
+    }
+    if (req.method === 'POST') {
+      requestCounted = true
+      mockState.activeRequests += 1
+      mockState.maxConcurrentRequests = Math.max(mockState.maxConcurrentRequests, mockState.activeRequests)
+      res.once('close', releaseActiveRequest)
+    }
+    let requestBody = ''
+    req.on('data', (chunk) => {
+      requestBody += String(chunk)
+    })
     req.on('end', () => {
       if (req.method === 'GET' && url.pathname === '/v1/models') {
         res.writeHead(200, { 'content-type': 'application/json' })
@@ -383,16 +437,22 @@ function createMockAIUpstream(): http.Server {
         return
       }
       const key = upstreamKey(req.headers.authorization)
-      mockState.hitsByKey.set(key, (mockState.hitsByKey.get(key) ?? 0) + 1)
+      const hitCount = (mockState.hitsByKey.get(key) ?? 0) + 1
+      mockState.hitsByKey.set(key, hitCount)
       if (key.includes('bad')) {
         sendJsonError(res, 401, `mock invalid key ${key}`)
         return
       }
-      if (url.pathname === '/v1/chat/completions') {
-        sendChatCompletionsCompleted(res, `OK ${key}`)
+      const expectedToken = requestBody.match(/OK:[A-Z0-9]+/)?.[0] ?? `OK ${key}`
+      if (key === 'pool-stage-retry' && hitCount === 1) {
+        setTimeout(() => sendResponsesCompleted(res, expectedToken), 10_500)
         return
       }
-      sendResponsesCompleted(res, `OK ${key}`)
+      if (url.pathname === '/v1/chat/completions') {
+        sendChatCompletionsCompleted(res, expectedToken)
+        return
+      }
+      sendResponsesCompleted(res, expectedToken)
     })
   })
 }

@@ -74,7 +74,7 @@ const accountCredentialBaseUrlMaxBytes = 2048
 const accountCredentialSecretMaxBytes = 16 * 1024
 const accountCredentialMetadataMaxBytes = 4096
 const accountCredentialsJsonMaxBytes = 32 * 1024
-const accountApiKeyListMaxItems = 50
+const accountApiKeyListMaxItems = 10
 const deprecatedAccountCredentialKeys = new Set([
   'codex_responses_safe_repair_enabled',
   'codex_responses_strict_intercept_enabled'

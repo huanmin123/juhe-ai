@@ -53,6 +53,7 @@ import { observeGatewayRouting } from './observability/routing-observability.ser
 import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
 import { createGatewaySseWaitHeartbeat } from './response/sse-wait-heartbeat.js'
+import type { GatewayDownstreamCommitState } from './response/downstream-commit-state.js'
 import { handleUpstreamRequestError } from './response/failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './request/error-response.js'
 import {
@@ -754,7 +755,8 @@ export async function handleOpenAIGatewayRequest(
           retryReason: 'pre_commit_stream_failure',
           message: '网关请求处理时间已到，请客户端重试并重新选择可用账户',
           errorCode: gatewayStreamClientRetryErrorCode,
-          clientStrategy: currentPreflight.clientStrategy
+          clientStrategy: currentPreflight.clientStrategy,
+          downstreamCommitState: currentPreflight.downstreamCommitState
         })
         return
       }
@@ -946,7 +948,8 @@ export async function handleOpenAIGatewayRequest(
           downstreamProtocol: currentPreflight.clientStrategy.downstreamProtocol,
           downstreamCommitState: currentPreflight.downstreamCommitState,
           signal: requestExecutionSignal,
-          intervalMs: 10_000
+          intervalMs: 10_000,
+          emitCodexCompactionKeepalive: true
         })
         activeCompactSseWaitHeartbeat?.start()
       }
@@ -1554,7 +1557,8 @@ export async function handleOpenAIGatewayRequest(
               errorCode: handledResponse.errorCode,
               uncommittedResponseBody: handledResponse.uncommittedResponseBody,
               accountId: account.id,
-              clientStrategy
+              clientStrategy,
+              downstreamCommitState: currentPreflight.downstreamCommitState
             })
             return
           }
@@ -1731,7 +1735,8 @@ export async function handleOpenAIGatewayRequest(
               errorCode: handledResponse.errorCode,
               uncommittedResponseBody: handledResponse.uncommittedResponseBody,
               accountId: account.id,
-              clientStrategy
+              clientStrategy,
+              downstreamCommitState: currentPreflight.downstreamCommitState
             })
             return
           }
@@ -1760,7 +1765,8 @@ export async function handleOpenAIGatewayRequest(
               errorCode: handledResponse.errorCode,
               uncommittedResponseBody: handledResponse.uncommittedResponseBody,
               accountId: account.id,
-              clientStrategy
+              clientStrategy,
+              downstreamCommitState: currentPreflight.downstreamCommitState
             })
             return
           }
@@ -2251,7 +2257,13 @@ function shouldSendDispatchExhaustedProtocolRetry(
 ): error is UpstreamAttemptError {
   return error instanceof UpstreamAttemptError
     && !error.terminalUpstreamFailure
-    && error.lastAttempt?.status === undefined
+    && (
+      error.lastAttempt?.status === undefined
+      || (
+        error.lastAttempt.status >= 200
+        && error.lastAttempt.status < 300
+      )
+    )
     && !error.agentGuidanceResponse
     && preflight.clientStrategy.retryCoordination.preCommitFailureSignal === 'protocol_error_event'
     && !preflight.downstreamCommitState.semanticCommitted
@@ -2279,6 +2291,7 @@ function shouldSendTransportCommittedCodexCompactFailure(
     && !res.writableEnded
     && !res.destroyed
     && preflight.downstreamCommitState.transportCommitted
+    && preflight.downstreamCommitState.downstreamBytesWritten > 0
     && !preflight.downstreamCommitState.semanticCommitted
     && strategy.clientProfile === 'codex'
     && strategy.codexCompactionExpected === true
@@ -2305,9 +2318,12 @@ async function sendStreamServerRetryExhaustedResponse(input: {
   uncommittedResponseBody?: Buffer
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
+  downstreamCommitState?: GatewayDownstreamCommitState
 }): Promise<void> {
   const message = input.message || '服务端流式重试未找到可用账号'
-  const failureSignal = input.res.headersSent
+  const downstreamCommitted = input.downstreamCommitState?.transportCommitted === true
+    && input.downstreamCommitState.downstreamBytesWritten > 0
+  const failureSignal = downstreamCommitted
     ? input.clientStrategy?.retryCoordination.committedFailureSignal
     : input.clientStrategy?.retryCoordination.preCommitFailureSignal
   if (
@@ -2326,11 +2342,12 @@ async function sendStreamServerRetryExhaustedResponse(input: {
       errorCode: gatewayStreamClientRetryErrorCode,
       uncommittedResponseBody: input.uncommittedResponseBody,
       accountId: input.accountId,
-      clientStrategy: input.clientStrategy
+      clientStrategy: input.clientStrategy,
+      downstreamCommitState: input.downstreamCommitState
     })
     return
   }
-  if (input.res.headersSent) {
+  if (downstreamCommitted) {
     input.auditCapture.addGatewayMetadata({
       label: 'stream_server_retry_exhausted',
       metadata: {
@@ -2408,6 +2425,7 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
   uncommittedResponseBody?: Buffer
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
+  downstreamCommitState?: GatewayDownstreamCommitState
 }): Promise<void> {
   const clientVisibleMessage = gatewayStreamClientRetryMessage
   input.auditCapture.addGatewayMetadata({
@@ -2417,11 +2435,14 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
       errorCode: input.errorCode,
       clientProfile: input.clientStrategy?.clientProfile,
       downstreamProtocol: input.clientStrategy?.downstreamProtocol,
-      responseMode: input.res.headersSent ? 'committed_retryable_sse' : 'pre_commit_http_error'
+      responseMode: input.downstreamCommitState?.transportCommitted === true
+        && input.downstreamCommitState.downstreamBytesWritten > 0
+        ? 'committed_retryable_sse'
+        : 'pre_commit_http_error'
     }
   })
   await rememberCodexTurnFailureWhenClientRetryIsVisible(input)
-  if (!input.res.headersSent) {
+  if (input.clientStrategy?.retryCoordination.preCommitFailureSignal !== 'protocol_error_event') {
     const responsePayload = gatewayErrorPayload(
       clientVisibleMessage,
       'service_unavailable',
@@ -2445,6 +2466,12 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
       usageErrorMessage: clientVisibleMessage
     })
     return
+  }
+  if (!input.res.headersSent) {
+    input.res.status(200)
+    input.res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+    input.res.setHeader('cache-control', 'no-cache, no-transform')
+    input.res.setHeader('x-accel-buffering', 'no')
   }
   const failureEvent = writeGatewayStreamFailureEvent(
     input.res,

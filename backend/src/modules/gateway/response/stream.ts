@@ -473,7 +473,7 @@ export async function pipeUpstreamStream(
       responseInspectionObservationOmittedCount,
       downstreamCommit.downstreamBytesWritten,
       totalResponseBytes,
-      downstreamCommit.transportCommitted || res.headersSent,
+      downstreamCommit.transportCommitted && downstreamCommit.downstreamBytesWritten > 0,
       downstreamCommit.semanticCommitted,
       uncommittedStreamResponseBody(preCommitBuffer),
       responseResourceId,
