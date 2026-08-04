@@ -1031,7 +1031,7 @@ async function clearClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient
 
 async function clearClientIpRangeWindowDirtyRowsAsync(client: DatabaseClient, tableName: string, rows: ClientIpRangeWindowDirtyRow[]): Promise<void> {
   for (const chunk of chunkValues(rows, clientIpRangeWindowChunkSize)) {
-    const claimedValues = chunk.map(() => '(?, ?)').join(', ')
+    const claimedValues = chunk.map(() => '(?, ?::bigint)').join(', ')
     await client.execute(`
       DELETE FROM ${statsTable(client, tableName)} AS dirty
       USING (VALUES ${claimedValues}) AS claimed(ip_hash, generation)
