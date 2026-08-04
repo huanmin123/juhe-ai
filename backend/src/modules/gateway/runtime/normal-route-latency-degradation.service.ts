@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { runtimeConfig } from '../../../config/runtime.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../../shared/concurrency-governor.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 import { gatewayAccountRuntimeKey, runtimeAccountIdFromKey, type SuppressibleGatewayAccount } from './account-runtime-keys.js'
@@ -90,7 +92,7 @@ const latencyStateProbeIndexLockKey = `${latencyStateVersion}:probe-index-lock`
 const latencyStateIndexMaxKeys = 10_000
 const latencyStateIndexTtlMs = 24 * 60 * 60 * 1000
 const latencyStateGenerationTtlMs = 48 * 60 * 60 * 1000
-const latencyStateExactClearConcurrency = 8
+const latencyStateExactClearConcurrency = runtimeConfig.concurrency.globalMax
 const latencyStateLockAcquireMaxAttempts = 50
 const latencyStateLockAcquireMaxDelayMs = 100
 const latencyStateMutationLockTtlMs =
@@ -804,11 +806,11 @@ async function clearCurrentGenerationLatencyStateKeysAsync(
         const key = keys[nextIndex]
         nextIndex += 1
         if (!key) continue
-        workerCleared += await clearCurrentGenerationLatencyStateKeyAsync(
+        workerCleared += await runWithGlobalBackgroundConcurrencySlot(async () => await clearCurrentGenerationLatencyStateKeyAsync(
           key,
           generation,
           predicate
-        )
+        ))
       }
       return workerCleared
     }

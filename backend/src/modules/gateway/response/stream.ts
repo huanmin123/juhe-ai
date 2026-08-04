@@ -231,9 +231,12 @@ export async function pipeUpstreamStream(
     })
     : undefined
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
-  // A protocol-declared failure terminal is a framing fact, not a claim about
-  // the provider-specific code or message carried inside it.
-  const interpretedProtocolFailure = (inspection: GatewayStreamInspection) => inspection.failedReceived
+  let passthroughUpstreamFailure = false
+  // A protocol-declared failure terminal is a framing fact, except for the
+  // Codex cyber_policy terminal that must remain an opaque upstream response.
+  const interpretedProtocolFailure = (inspection: GatewayStreamInspection) => (
+    inspection.failedReceived && !passthroughUpstreamFailure
+  )
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
   const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : streamDiagnosticCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
@@ -477,7 +480,8 @@ export async function pipeUpstreamStream(
       downstreamCommit.semanticCommitted,
       uncommittedStreamResponseBody(preCommitBuffer),
       responseResourceId,
-      completed && protocolTerminalReceived && !streamParserSkipped
+      completed && protocolTerminalReceived && !streamParserSkipped,
+      passthroughUpstreamFailure
     )
   }
   const signalCommittedStreamFailure = async (
@@ -660,6 +664,7 @@ export async function pipeUpstreamStream(
       const interceptResult = interceptor
         ? pushResponseInspectionChunks(interceptor, transformedChunks)
         : passThroughResponseInspectionChunks(transformedChunks)
+      passthroughUpstreamFailure = passthroughUpstreamFailure || interceptResult.passthroughUpstreamFailure === true
       pendingProtocolEvent = interceptResult.pendingEvent === true
       if (interceptResult.pendingEvent === true) {
         lastSseEventActivityAt = lastUpstreamActivityAt
@@ -675,7 +680,11 @@ export async function pipeUpstreamStream(
       if (interceptResult.chunks.length === 0 && !interceptResult.intercepted) {
         settleStreamFirstByteDeadlineReadDecision(false)
       }
-      if (shouldReturnResponseInspectionBeforeDownstreamWrite(interceptResult.intercepted, res, totalResponseBytes)) {
+      if (
+        interceptResult.intercepted
+        && interceptResult.intercepted.downstreamWritten !== true
+        && shouldReturnResponseInspectionBeforeDownstreamWrite(interceptResult.intercepted, res, totalResponseBytes)
+      ) {
         settleStreamFirstByteDeadlineReadDecision(true)
         await closeAsyncIterator(iterator)
         const decision = interceptResult.intercepted!
@@ -696,7 +705,11 @@ export async function pipeUpstreamStream(
         }, '网关在写入下游前命中可服务端重试的响应检查策略')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
-      if (interceptResult.intercepted && shouldFailBeforeDownstreamCommit()) {
+      if (
+        interceptResult.intercepted
+        && interceptResult.intercepted.downstreamWritten !== true
+        && shouldFailBeforeDownstreamCommit()
+      ) {
         settleStreamFirstByteDeadlineReadDecision(true)
         await closeAsyncIterator(iterator)
         const decision = interceptResult.intercepted
@@ -818,6 +831,7 @@ export async function pipeUpstreamStream(
         )
         if (latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection)) {
           terminalEventWritten = true
+          downstreamCommit.markSuccessfulProtocolTerminalReceived()
         }
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
@@ -912,9 +926,24 @@ export async function pipeUpstreamStream(
         }, '网关已命中响应检查策略并结束当前流')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
+      if (interceptResult.passthroughUpstreamFailure) {
+        await closeAsyncIterator(iterator)
+        endResponse(res)
+        streamLogger.info({
+          event: 'gateway_stream_passthrough_upstream_failure_terminal',
+          elapsedMs: Date.now() - startedAt,
+          chunkCount: chunkIndex,
+          totalUpstreamBytes,
+          totalResponseBytes,
+          upstreamEventType: latestInspection.lastEventType,
+          upstreamErrorCode: latestInspection.errorCode
+        }, '网关已原样转发 Codex 上游失败终态并结束当前流')
+        return finishStreamResult(true, '已原样转发上游失败终态', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
+      }
       if (!interceptor && (chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && chunkCanEndAfterTerminal && !pendingProtocolEvent) {
         await flushPreCommitChunks()
         terminalEventWritten = true
+        downstreamCommit.markSuccessfulProtocolTerminalReceived()
         return await finishTerminalSuccess(publishGatewayStreamInspection(res, inspector.finish()), {
           drainForKeepAlive: protocolDriver.drainForKeepAliveAfterTerminal,
           eofPendingFlush: true
@@ -929,6 +958,7 @@ export async function pipeUpstreamStream(
         interceptor.flushPendingOnEof()
       )
       : passThroughResponseInspectionChunks(eofTransformedChunks)
+    passthroughUpstreamFailure = passthroughUpstreamFailure || eofInterceptResult.passthroughUpstreamFailure === true
     if (eofInterceptResult.parserSkipped && !responseInspectionParserSkipLogged) {
       responseInspectionParserSkipLogged = true
       streamLogger.info({
@@ -938,7 +968,11 @@ export async function pipeUpstreamStream(
     recordResponseInspectionObservations(eofInterceptResult.observations)
     if (eofInterceptResult.chunks.length > 0 || eofInterceptResult.intercepted) {
       let latestInspection = inspector.snapshot()
-      if (shouldReturnResponseInspectionBeforeDownstreamWrite(eofInterceptResult.intercepted, res, totalResponseBytes)) {
+      if (
+        eofInterceptResult.intercepted
+        && eofInterceptResult.intercepted.downstreamWritten !== true
+        && shouldReturnResponseInspectionBeforeDownstreamWrite(eofInterceptResult.intercepted, res, totalResponseBytes)
+      ) {
         const decision = eofInterceptResult.intercepted!
         const failurePayload = responseInspectionFailurePayloadForDecision(decision, options.clientRetryEnabled === true)
         const message = failurePayload.message
@@ -958,7 +992,11 @@ export async function pipeUpstreamStream(
         }, '网关在 EOF pending 事件写入下游前命中可服务端重试的响应检查策略')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
-      if (eofInterceptResult.intercepted && shouldFailBeforeDownstreamCommit()) {
+      if (
+        eofInterceptResult.intercepted
+        && eofInterceptResult.intercepted.downstreamWritten !== true
+        && shouldFailBeforeDownstreamCommit()
+      ) {
         const decision = eofInterceptResult.intercepted
         const failurePayload = responseInspectionFailurePayloadForDecision(decision, options.clientRetryEnabled === true)
         const message = failurePayload.message
@@ -1053,6 +1091,7 @@ export async function pipeUpstreamStream(
         )
         if (latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection)) {
           terminalEventWritten = true
+          downstreamCommit.markSuccessfulProtocolTerminalReceived()
         }
         eofWroteDownstream = true
         const writeNow = Date.now()
@@ -1072,6 +1111,20 @@ export async function pipeUpstreamStream(
             downstreamDrainWaitMs: writeResult.drainWaitMs
           }, '网关流式响应写入下游出现背压')
         }
+      }
+      if (eofInterceptResult.passthroughUpstreamFailure) {
+        endResponse(res)
+        streamLogger.info({
+          event: 'gateway_stream_passthrough_upstream_failure_terminal',
+          elapsedMs: Date.now() - startedAt,
+          chunkCount: chunkIndex,
+          totalUpstreamBytes,
+          totalResponseBytes,
+          upstreamEventType: latestInspection.lastEventType,
+          upstreamErrorCode: latestInspection.errorCode,
+          eofPendingFlush: true
+        }, '网关已在上游 EOF 时原样转发 Codex 失败终态')
+        return finishStreamResult(true, '已原样转发上游失败终态', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
       if (eofInterceptResult.intercepted) {
         const decision = eofInterceptResult.intercepted
@@ -1116,6 +1169,7 @@ export async function pipeUpstreamStream(
       if ((eofWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && eofCanEndAfterTerminal && !pendingProtocolEvent) {
         await flushPreCommitChunks()
         terminalEventWritten = true
+        downstreamCommit.markSuccessfulProtocolTerminalReceived()
         return await finishTerminalSuccess(latestInspection, { eofPendingFlush: true })
       }
     }
@@ -1128,7 +1182,7 @@ export async function pipeUpstreamStream(
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = publishGatewayStreamInspection(res, inspector.finish())
       omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-      if (terminalEventWritten && !interpretedProtocolFailure(inspection)) {
+      if ((terminalEventWritten || (inspection.terminalReceived && downstreamCommit.semanticCommitted)) && !interpretedProtocolFailure(inspection)) {
         await closeIteratorPromise
         endResponse(res)
         streamLogger.info({
@@ -1246,7 +1300,7 @@ export async function pipeUpstreamStream(
       parserSkipped: inspection.skipped,
       skipReason: inspection.skipReason
     }, '网关流式转发捕获异常')
-    if (terminalEventWritten && !interpretedProtocolFailure(inspection)) {
+    if ((terminalEventWritten || (inspection.terminalReceived && downstreamCommit.semanticCommitted)) && !interpretedProtocolFailure(inspection)) {
       endResponse(res)
       streamLogger.info({
         event: 'gateway_stream_error_ignored_after_terminal',
@@ -1896,6 +1950,7 @@ function mergeResponseInspectionSseResults(
     ].length
       ? [...(left.observations ?? []), ...(right.observations ?? [])]
       : undefined,
+    passthroughUpstreamFailure: left.passthroughUpstreamFailure || right.passthroughUpstreamFailure,
     pendingEvent: right.pendingEvent ?? left.pendingEvent,
     parserSkipped: left.parserSkipped || right.parserSkipped
   }

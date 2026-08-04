@@ -279,8 +279,16 @@ try {
   const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
   const serverSource = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8')
   const runtimeConfigSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
-  assert(failureDispatchSource.match(/dispatchRequestFailureAccountHealthCheck\(req, usageContext\.trafficSource, account\.id\)/g)?.length === 3,
-    '普通完整 HTTP 失败、retry_next 显式策略和最终 transport failure 都必须投递去重的独立账户可用性确认')
+  assert.equal(
+    failureDispatchSource.match(/dispatchRequestFailureAccountHealthCheck\(req, usageContext\.trafficSource, account\.id\)/g)?.length,
+    2,
+    '完整 HTTP 失败和最终 transport failure 各应有一个请求级去重的独立账户可用性确认入口'
+  )
+  assert.match(
+    failureDispatchSource,
+    /const automaticApiKeyFailover[\s\S]{0,500}dispatchRequestFailureAccountHealthCheck\(req, usageContext\.trafficSource, account\.id\)/,
+    '完整 HTTP 失败的公共确认入口必须位于 retry_next 策略处理之后，使普通失败和 retry_next 都能进入同一请求级去重确认'
+  )
   assert(
     requestFailureDispatchSource.includes("trafficSource !== 'gateway'"),
     '人工测试和后台探针失败不得递归投递请求失败确认'
@@ -293,7 +301,7 @@ try {
   assert(responseFinalizationSource.includes('if (provenTransportFailure)'), '非流式响应正文读取中断必须投递独立账户可用性确认')
   assert(healthCheckServiceSource.includes("replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure'"), '请求失败只能升级低优先级周期检查，不得覆盖激活或配置复检')
   assert(healthCheckServiceSource.includes("priorityAtMost: accountHealthCheckTriggerPriority('configuration')") && healthCheckServiceSource.includes('slots: 2'), '激活和配置检查必须保留健康队列入口，避免被例行任务阻塞')
-  assert(healthCheckServiceSource.includes("return reason === 'scheduled' || reason === 'request_failure'") && probeLimitsSource.includes('routineAccountHealthCheckDiagnosticConcurrency = 1'), '请求失败和周期检查必须共享单槽例行诊断 lane')
+  assert(healthCheckServiceSource.includes('runWithAccountHealthCheckDiagnosticSlot') && probeLimitsSource.includes('runWithGlobalBackgroundConcurrencySlot'), '请求失败和周期检查必须使用进程级共享健康检测门禁')
   assert(healthCheckServiceSource.includes("ignoreSchedule: reason !== 'scheduled'"), '主动触发检查入队时必须绕过周期到期门槛')
   assert(healthCheckServiceSource.includes("ignoreSchedule: item.reason !== 'scheduled'"), '主动触发检查执行前必须继续绕过周期到期门槛')
   assert(healthCheckServiceSource.includes('runWithBackgroundAccountAvailabilityProbe'), '周期和即时健康检查必须加入账户级 single-flight')

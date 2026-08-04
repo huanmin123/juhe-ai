@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { listFailedModelQualityHealthSyncRunsAsync } from '../../storage/model-checks.repository.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -5,9 +6,9 @@ import { requestDatasetWriter } from './background-dataset-writer.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { runModelCheck, type ModelCheckProgressEvent } from '../model-checks/model-checks.service.js'
 
-const scheduledModelQualityBatchSize = 3
+const scheduledModelQualityBatchSize = runtimeConfig.background.modelQualityScheduledCheckBatchSize
 const scheduledModelQualityRunTimeoutMs = 5 * 60_000
-const modelQualityHealthSyncRetryBatchSize = 20
+const modelQualityHealthSyncRetryBatchSize = runtimeConfig.background.modelQualityHealthSyncRetryBatchSize
 
 export interface ModelQualityScheduledCheckBatchResult {
   claimed: number

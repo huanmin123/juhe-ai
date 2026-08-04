@@ -19,6 +19,21 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(normalizePath(usageRecordShardRoot()).endsWith('env-override-usage-shards'), true, '显式 usage shard 根目录不应被数据集目录库默认规则覆盖')
   assert.equal(runtimeConfig.usageShardCount, 32, '进程环境变量 JUHE_AI_USAGE_SHARD_COUNT 应覆盖 backend/.env')
   assert.equal(runtimeConfig.log.consoleEnabled, false, '进程环境变量 JUHE_AI_LOG_CONSOLE_ENABLED 应覆盖 backend/.env')
+  assert.equal(runtimeConfig.background.accountHealthCheckBatchSize, 100, '健康检测批次应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.cooldownAccountRetestBatchSize, 100, '冷却复测批次应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.concurrency.globalMax, 4321, '全局共享并发上限应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.concurrency.globalLeaseDurationMs, 240000, '全局共享并发租约时长应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.concurrency.globalAcquirePollMs, 25, '全局共享并发槽轮询间隔应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.upstreamAgentMaxSockets, 3456, 'HTTP Agent 单源连接容量应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.upstreamAgentMaxTotalSockets, 4567, 'HTTP Agent 总连接容量应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.automaticProbeSweepBatchSize, 80, '自动恢复探针扫描批次应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.automaticProbeSweepIntervalMs, 750, '自动恢复探针扫描周期应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.accountCircuitRecoveryLeaseDurationMs, 240000, '熔断恢复租约应支持进程环境变量覆盖')
+  assert.deepEqual(runtimeConfig.gateway.accountCircuitBackoffMs, [1000, 2000, 3000], '熔断退避阶梯应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.proxyLatencyRefreshRunBudgetMs, 55000, '代理刷新时间预算应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.auditHotRetentionCleanupBatchSize, 120, '审计热保留清理批次应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.auditHotRetentionCleanupMaxBatches, 4, '审计热保留清理轮次应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.auditHotRetentionCleanupMaxRunMs, 9000, '审计热保留清理时间预算应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.runtimeMode, 'standalone', '默认运行模式应为 standalone')
   assert.equal(runtimeConfig.databaseDriver, 'sqlite', 'standalone 默认数据库 driver 应为 sqlite')
   assert.equal(runtimeConfig.cacheDriver, 'memory', 'standalone 默认缓存 driver 应为 memory')
@@ -46,9 +61,13 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_USAGE_SHARD_DEFAULT_CHILD === '1') {
 if (process.env.JUHE_AI_RUNTIME_CONFIG_GATEWAY_DEFAULT_CHILD === '1') {
   const { runtimeConfig } = await import('../../config/runtime.js')
 
-  assert.equal(runtimeConfig.gateway.automaticProbeMaxConcurrency, 3, '禁用基础 env 后网关自动恢复探针默认并发必须为 3')
+  assert.equal(runtimeConfig.concurrency.globalMax, 5_000, '禁用基础 env 后全局共享并发默认必须为 5000')
+  assert.equal(runtimeConfig.concurrency.globalLeaseDurationMs, 300_000, '禁用基础 env 后全局共享并发租约默认必须为 5 分钟')
+  assert.equal(runtimeConfig.concurrency.globalAcquirePollMs, 50, '禁用基础 env 后全局共享并发槽轮询默认必须为 50ms')
+  assert.equal(runtimeConfig.gateway.upstreamAgentMaxSockets, 5_000, '禁用基础 env 后 HTTP Agent 单源连接容量必须跟随全局共享并发')
+  assert.equal(runtimeConfig.gateway.upstreamAgentMaxTotalSockets, 5_000, '禁用基础 env 后 HTTP Agent 总连接容量必须跟随全局共享并发')
   assert.equal(runtimeConfig.gateway.usageFinalizationMaxItems, 2048, '禁用基础 env 后网关失败用量收尾默认队列容量必须为 2048')
-  assert.equal(runtimeConfig.gateway.usageFinalizationMaxConcurrency, 32, '禁用基础 env 后网关失败用量收尾默认并发必须为 32')
+  assert.equal(runtimeConfig.concurrency.globalMax, 5_000, '禁用基础 env 后网关失败用量收尾必须使用全局共享并发')
 
   process.exit(0)
 }
@@ -73,9 +92,8 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 3000, 'PostgreSQL lock timeout 应正确读取')
   assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 55000, 'PostgreSQL idle transaction timeout 应正确读取')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
-  assert.equal(runtimeConfig.gateway.automaticProbeMaxConcurrency, 100, '网关自动恢复探针并发应正确读取')
   assert.equal(runtimeConfig.gateway.usageFinalizationMaxItems, 10000, '网关失败用量收尾队列容量应正确读取')
-  assert.equal(runtimeConfig.gateway.usageFinalizationMaxConcurrency, 64, '网关失败用量收尾并发应正确读取')
+  assert.equal(runtimeConfig.concurrency.globalMax, 4321, '网关失败用量收尾必须使用全局共享并发')
   assert.equal('readOnly' in runtimeConfig.systemApi, false, '显式历史开关不得恢复临时发布拦截模式')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
   assert.deepEqual(runtimeConfig.chat, {
@@ -160,7 +178,23 @@ const result = spawnRegression({
   JUHE_AI_USAGE_SHARD_ROOT: 'env-override-usage-shards',
   JUHE_AI_USAGE_SHARD_COUNT: '32',
   JUHE_AI_SYSTEM_API_READ_ONLY: 'invalid',
-  JUHE_AI_LOG_CONSOLE_ENABLED: 'false'
+  JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
+  JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_BATCH_SIZE: '100',
+  JUHE_AI_BACKGROUND_COOLDOWN_ACCOUNT_RETEST_BATCH_SIZE: '100',
+  JUHE_AI_BACKGROUND_ACCOUNT_API_KEY_COOLDOWN_RETEST_BATCH_SIZE: '10',
+  JUHE_AI_CONCURRENCY_GLOBAL_MAX: '4321',
+  JUHE_AI_CONCURRENCY_GLOBAL_LEASE_DURATION_MS: '240000',
+  JUHE_AI_CONCURRENCY_GLOBAL_ACQUIRE_POLL_MS: '25',
+  JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS: '3456',
+  JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS: '4567',
+  JUHE_AI_GATEWAY_AUTOMATIC_PROBE_SWEEP_BATCH_SIZE: '80',
+  JUHE_AI_GATEWAY_AUTOMATIC_PROBE_SWEEP_INTERVAL_MS: '750',
+  JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_LEASE_DURATION_MS: '240000',
+  JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_BACKOFF_MS: '1000,2000,3000',
+  JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_RUN_BUDGET_MS: '55000',
+  JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_BATCH_SIZE: '120',
+  JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_BATCHES: '4',
+  JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_RUN_MS: '9000'
 })
 
 assertRegressionSuccess(result)
@@ -219,9 +253,8 @@ const performanceResult = spawnRegression({
   JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: '3000',
   JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS: '55000',
   JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
-  JUHE_AI_GATEWAY_AUTOMATIC_PROBE_MAX_CONCURRENCY: '100',
   JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS: '10000',
-  JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_CONCURRENCY: '64',
+  JUHE_AI_CONCURRENCY_GLOBAL_MAX: '4321',
   JUHE_AI_REDIS_STREAM_READ_COUNT: '500',
   JUHE_AI_CHAT_RETENTION_DAYS: '9',
   JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER: '60',

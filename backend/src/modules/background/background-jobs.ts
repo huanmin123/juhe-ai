@@ -33,7 +33,7 @@ import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.j
 import { requestStatsWriter } from './background-stats-writer.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
 import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
-import { enqueueAccountHealthCheckById, setAccountHealthCheckQueueConcurrency } from './account-health-check.service.js'
+import { enqueueAccountHealthCheckById } from './account-health-check.service.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import {
   runAccountApiKeyCooldownRetest,
@@ -44,7 +44,6 @@ import {
 } from './account-probe-jobs.js'
 import {
   accountApiKeyCooldownRetestStartupDelayMs,
-  backgroundFullDiagnosticConcurrency,
   cooldownAccountRetestStartupDelayMs,
   normalRouteSpeedFirstProbeStartupDelayMs
 } from './account-probe-limits.js'
@@ -457,8 +456,6 @@ export async function triggerAccountHealthCheckNow(
   accountId: string,
   reason: AccountHealthCheckTriggerReason
 ): Promise<boolean> {
-  const batchSize = settingsNumber('accountHealthCheckBatchSize', 1, 100)
-  setAccountHealthCheckQueueConcurrency(Math.max(1, Math.min(batchSize, backgroundFullDiagnosticConcurrency)))
   return await enqueueAccountHealthCheckById(accountId, {
     intervalHours: settingsNumber('accountHealthCheckIntervalHours', 1, 168),
     jitterMinutes: settingsNumber('accountHealthCheckJitterMinutes', 0, 1440),
@@ -530,7 +527,7 @@ async function runModelTrustAggregation(signal: AbortSignal, scheduledLease?: Sc
   modelTrustAggregationRunning = true
   const startedAtMs = Date.now()
   const maxRunMs = 2 * minuteMs
-  const batchSize = 100
+  const batchSize = runtimeConfig.background.modelTrustObservationAggregationBatchSize
   try {
     for (let index = 0; index < 10; index += 1) {
       throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')

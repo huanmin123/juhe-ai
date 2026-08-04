@@ -892,11 +892,13 @@ export function destroyResponseForUpstreamBodyError(res: Response): void {
 }
 
 export function isGatewayForcedDownstreamClose(res: Response): boolean {
-  return typeof (res.locals as Record<string, unknown>)[gatewayForcedDownstreamCloseReasonKey] === 'string'
+  const locals = (res as Response & { locals?: Record<string, unknown> }).locals
+  return typeof locals?.[gatewayForcedDownstreamCloseReasonKey] === 'string'
 }
 
 export function markGatewayForcedDownstreamClose(res: Response, reason: string): void {
-  const locals = res.locals as Record<string, unknown>
+  const response = res as Response & { locals?: Record<string, unknown> }
+  const locals = response.locals ?? (response.locals = {})
   locals[gatewayForcedDownstreamCloseReasonKey] = reason
 }
 

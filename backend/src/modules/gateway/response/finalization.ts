@@ -13,6 +13,7 @@ import {
 import { rememberCodexTurnStreamFailureAsync } from '../client-profiles/codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import { gatewayRequestAbortSource } from '../request/abort-attribution.js'
+import { classifyCodexEncryptedContentRecoverySignal } from '../request/codex-encrypted-content-recovery.js'
 import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
   type OpenAIGatewayClientStrategyContext
@@ -48,7 +49,8 @@ import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   pipeUpstreamStream,
   type StreamFailureContext,
-  type StreamBodyOmissionSummary
+  type StreamBodyOmissionSummary,
+  type StreamPipeResult
 } from './stream.js'
 import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
 import {
@@ -118,6 +120,8 @@ import {
 import {
   preCommitStreamServerRetryErrorCode,
   shouldRememberCodexTurnStreamFailure,
+  shouldRetryResponseInspectionDecisionOnServer,
+  shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRetryPreCommitStreamFailureOnServer,
   type StreamServerRetryReason
 } from './stream-finalization-retry-decision.js'
@@ -126,7 +130,11 @@ import {
   applyResponseInspectionPolicyRuntimeSideEffects
 } from './inspection-runtime-effects.js'
 import type { UpstreamResponseHandlingResult } from './response-handling-result.js'
-import { inspectBufferedGatewayJsonResponse } from './non-stream-json-inspection.js'
+import {
+  inspectBufferedGatewayJsonResponse,
+  isCodexResponsesCyberPolicyFailedJson
+} from './non-stream-json-inspection.js'
+import { isSuccessfulEmptyUpstreamResponseAllowed } from './empty-upstream-response.js'
 import { prepareUpstreamResponseForDownstream } from './downstream-headers.js'
 import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 import {
@@ -152,18 +160,7 @@ import {
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
 
-export function isSuccessfulEmptyUpstreamResponseAllowed(input: {
-  req: Request
-  account: UpstreamAccount
-  statusCode: number
-}): boolean {
-  if (input.statusCode < 200 || input.statusCode >= 300) return false
-  if (input.req.method.toUpperCase() !== 'DELETE') return false
-  const requestPath = (input.req.originalUrl || input.req.path || '').split('?', 1)[0].toLowerCase()
-  const normalizedPath = requestPath.replace(/^\/v1beta(?=\/|$)/, '') || '/'
-  if (!/^\/interactions\/[^/]+$/.test(normalizedPath)) return false
-  return gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) === 'interactions'
-}
+export { isSuccessfulEmptyUpstreamResponseAllowed } from './empty-upstream-response.js'
 
 export function isUnexpectedEmptyUpstreamProtocolResponse(input: {
   req: Request
@@ -390,7 +387,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       },
       signal,
       {
-        clientRetryEnabled: false,
+        clientRetryEnabled: clientStrategy?.retryCoordination.preCommitFailureSignal === 'protocol_error_event',
         committedFailureSignal: clientStrategy?.retryCoordination.committedFailureSignal,
         // Enable the policy interceptor for precise clients. Unmatched vendor
         // events remain opaque in pipeUpstreamStream.
@@ -567,10 +564,10 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     statusCode: upstreamResponse.status,
     responseHeaders: upstreamResponse.headers,
     responseBody: streamResult.auditUpstreamBody,
-    success: streamResult.completed && upstreamResponse.ok,
-    errorPhase: streamResult.completed ? undefined : 'stream',
-    errorCode: streamResult.completed ? undefined : streamResult.errorCode,
-    errorMessage: streamResult.completed ? undefined : streamResult.message
+    success: streamResult.completed && upstreamResponse.ok && !streamResult.passthroughUpstreamFailure,
+    errorPhase: streamResult.completed && !streamResult.passthroughUpstreamFailure ? undefined : 'stream',
+    errorCode: streamResult.completed && !streamResult.passthroughUpstreamFailure ? undefined : streamResult.errorCode ?? 'cyber_policy',
+    errorMessage: streamResult.completed && !streamResult.passthroughUpstreamFailure ? undefined : streamResult.message
   })
   if (!streamResult.completed) {
     const upstreamResponseCommitted = isStreamUpstreamResponseCommitted(streamResult)
@@ -612,12 +609,74 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         }
       })
     }
-    if (canRetryUpstream && shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
+    if (
+      canRetryUpstream
+      && streamResult.responseInspection
+      && shouldRetryResponseInspectionDecisionOnServer(streamResult.responseInspection, res)
+    ) {
+      const decision = streamResult.responseInspection
+      const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
+      auditCapture.addGatewayMetadata({
+        label: 'response_inspection_server_retry',
+        metadata: {
+          policyId: decision.policyId,
+          accountSwitch: decision.accountSwitch,
+          errorCode: decision.upstreamErrorCode ?? streamResult.errorCode,
+          clientFacingErrorCode,
+          accountId: account.id
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'response_inspection',
+        responseInspection: decision,
+        excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(decision),
+        message: streamResult.message,
+        errorCode: clientFacingErrorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody,
+        transportFailure: streamResult.transportFailure
+      }
+    }
+    const codexEncryptedContentRecoverySignal = codexEncryptedContentRecoverySignalFor({
+      streamResult,
+      clientStrategy,
+      responseEndpointFamily,
+      response: res
+    })
+    if (codexEncryptedContentRecoverySignal) {
+      const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
+      auditCapture.addGatewayMetadata({
+        label: 'codex_encrypted_content_recovery_candidate',
+        metadata: {
+          accountId: account.id,
+          errorCode: streamResult.errorCode,
+          signal: codexEncryptedContentRecoverySignal
+        }
+      })
+      return {
+        alreadyFinalized: false,
+        retryUpstream: true,
+        retryReason: 'codex_encrypted_content_recovery',
+        responseInspection: streamResult.responseInspection,
+        excludeCurrentAccount: false,
+        message: streamResult.message,
+        errorCode: clientFacingErrorCode,
+        uncommittedResponseBody: streamResult.uncommittedResponseBody,
+        compatibilityRecoverySignal: codexEncryptedContentRecoverySignal,
+        transportFailure: streamResult.transportFailure
+      }
+    }
+    if (
+      canRetryUpstream
+      && streamResult.responseInspection === undefined
+      && shouldRetryPreCommitStreamFailureOnServer(streamResult, res)
+    ) {
       const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
       auditCapture.addGatewayMetadata({
         label: 'pre_commit_stream_server_retry',
         metadata: {
-          errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
+          errorCode: streamResult.errorCode,
           clientFacingErrorCode,
           message: streamResult.message,
           downstreamBytesWritten: streamResult.downstreamBytesWritten,
@@ -696,7 +755,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     responseBodyText: streamResult.responseBodyText,
     responseResourceId: streamResult.responseResourceId,
     bodyOmission: streamResult.bodyOmission,
-    protocolValidatedSuccess: upstreamResponse.ok && streamResult.protocolValidated,
+    protocolValidatedSuccess: upstreamResponse.ok && streamResult.protocolValidated && !streamResult.passthroughUpstreamFailure,
+    passthroughUpstreamFailure: streamResult.passthroughUpstreamFailure,
     errorPayload: {}
   }
 }
@@ -865,7 +925,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       // Protocol-shaped endpoints must validate a complete 2xx even when the
       // provider lies about content-type. Otherwise malformed JSON can be
       // forwarded as a successful response and hide the failed attempt.
+      // Interaction creation records its resource id from the bounded JSON
+      // prefix before forwarding. Requiring the full document here rejects
+      // otherwise valid large interaction payloads solely because diagnostic
+      // fields exceed the response-inspection budget.
       const protocolValidationEnabled = nonStreamJsonProtocolValidationAllowed(input)
+        && !isGeminiInteractionCreateRequest(req)
       const inspectJsonResponse = !upstreamResponse.ok
         || protocolValidationEnabled
         || (
@@ -1316,7 +1381,16 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         ? {}
         : parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
   }
-  const responsesFailedTerminal = transportResponseSuccessful
+  const codexCyberPolicyFailurePassthrough = parsedJsonBody?.status === 'valid'
+    && isCodexResponsesCyberPolicyFailedJson({
+      req,
+      account,
+      clientStrategy: input.clientStrategy,
+      upstreamStatus: upstreamResponse.status,
+      parsedJson: parsedJsonBody.value
+    })
+  const responsesFailedTerminal = !codexCyberPolicyFailurePassthrough
+    && transportResponseSuccessful
     && responseEndpointFamily === 'responses'
     && (
       responsesFailureStatusTracker?.hasFailedStatus() === true
@@ -1370,13 +1444,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     responseResourceId,
     bodyOmission,
-    protocolValidatedSuccess: forwardedResponseSuccessful && protocolValidatedNonStreamResponse({
+    protocolValidatedSuccess: forwardedResponseSuccessful && !codexCyberPolicyFailurePassthrough && protocolValidatedNonStreamResponse({
       req,
       account,
       responseBodyText: responseBodyText ?? responseSemanticText ?? responseUsageText,
       parsedJsonBody,
       statusCode: upstreamResponse.status
     }),
+    passthroughUpstreamFailure: codexCyberPolicyFailurePassthrough,
     errorPayload
   }
 }
@@ -1467,10 +1542,16 @@ function managementResponseInspectionPoliciesForInput(
 }
 
 function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {
-  return resolveRuntimeResponseInspectionPolicies({
+  const policies = resolveRuntimeResponseInspectionPolicies({
     account: input.account,
     managementPolicies: managementResponseInspectionPoliciesForInput(input)
   })
+  const interpretsUpstreamSemantics = input.clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
+    : false
+  return interpretsUpstreamSemantics
+    ? policies
+    : policies.filter((policy) => policy.source !== 'system_default')
 }
 
 async function finalizeNonStreamResponseAfterSseHeartbeat(
@@ -1658,6 +1739,29 @@ function isResponsePrecommitDeadlineStreamResult(
   streamResult: { errorCode?: string }
 ): boolean {
   return streamResult.errorCode === 'gateway_request_wall_budget_exhausted'
+}
+
+function codexEncryptedContentRecoverySignalFor(input: {
+  streamResult: StreamPipeResult
+  clientStrategy?: OpenAIGatewayClientStrategyContext
+  responseEndpointFamily?: string
+  response: Pick<Response, 'writableEnded' | 'destroyed'>
+}): ReturnType<typeof classifyCodexEncryptedContentRecoverySignal> {
+  if (
+    input.streamResult.completed
+    || input.streamResult.semanticCommitted
+    || input.response.writableEnded
+    || input.response.destroyed
+    || input.clientStrategy?.requestClientCompatibility !== 'codex_responses'
+    || input.responseEndpointFamily !== 'responses'
+  ) {
+    return undefined
+  }
+  const upstreamErrorText = input.streamResult.auditUpstreamBody?.toString('utf8')
+    ?? input.streamResult.uncommittedResponseBody?.toString('utf8')
+    ?? input.streamResult.responseBodyText
+    ?? input.streamResult.message
+  return classifyCodexEncryptedContentRecoverySignal(upstreamErrorText)
 }
 
 function isStreamUpstreamResponseCommitted(streamResult: {
@@ -2041,21 +2145,23 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   if (input.routingEffectsApplied !== true) {
     await applyHandledUpstreamRoutingEffects(input)
   }
-  const upstreamProtocolFailure = result.errorPayload.code === 'upstream_protocol_failure'
-  const responsesFailedTerminal = upstreamResponse.ok
+  const passthroughUpstreamFailure = result.passthroughUpstreamFailure === true
+  const upstreamProtocolFailure = !passthroughUpstreamFailure && result.errorPayload.code === 'upstream_protocol_failure'
+  const responsesFailedTerminal = !passthroughUpstreamFailure
+    && upstreamResponse.ok
     && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'responses'
     && (
       upstreamProtocolFailure
       || hasResponsesFailedTerminal(result.responseBodyText)
     )
-  const forwardedResponseSuccessful = upstreamResponse.ok && !responsesFailedTerminal && !upstreamProtocolFailure
+  const forwardedResponseSuccessful = upstreamResponse.ok && !passthroughUpstreamFailure && !responsesFailedTerminal && !upstreamProtocolFailure
   const protocolValidatedSuccess = forwardedResponseSuccessful && result.protocolValidatedSuccess === true
   const finalErrorCode = typeof result.errorPayload.code === 'string'
     ? result.errorPayload.code
-    : responsesFailedTerminal || upstreamProtocolFailure ? 'upstream_protocol_failure' : undefined
+    : passthroughUpstreamFailure ? 'cyber_policy' : responsesFailedTerminal || upstreamProtocolFailure ? 'upstream_protocol_failure' : undefined
   const finalErrorMessage = typeof result.errorPayload.message === 'string'
     ? result.errorPayload.message
-    : responsesFailedTerminal ? '上游 Responses 返回失败终态' : upstreamProtocolFailure ? '上游响应违反请求协议终态' : undefined
+    : passthroughUpstreamFailure ? '上游返回 Codex cyber_policy 失败终态' : responsesFailedTerminal ? '上游 Responses 返回失败终态' : upstreamProtocolFailure ? '上游响应违反请求协议终态' : undefined
 
   await recordCompletedUpstreamAttempt(req, {
     ...usageContext,

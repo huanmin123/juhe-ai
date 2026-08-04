@@ -82,7 +82,8 @@ assert.match(querySource, /resolveProxyUrlForProfileAsync\(candidate\.proxyProfi
 
 const backfillSource = readFileSync(resolve('src/scripts/maintenance/backfill-account-balance-auto-detect.ts'), 'utf8')
 assert.match(backfillSource, /afterId/, '全量余额探测必须使用 ID 游标分页')
-assert.match(backfillSource, /concurrency = 2/, '全量余额探测必须限制外部请求并发')
+assert.match(backfillSource, /concurrency = runtimeConfig\.concurrency\.globalMax/, '全量余额探测必须使用全局共享并发池')
+assert.match(backfillSource, /runWithGlobalBackgroundConcurrencySlot/, '全量余额探测必须获取全局共享槽')
 assert.match(backfillSource, /await closeRedisClients\(\)/, '全量余额探测完成后必须关闭 Redis 客户端，避免维护进程挂起')
 assert.ok(
   backfillSource.indexOf('await migrateLegacyAccountBalanceConfigurations()') < backfillSource.lastIndexOf('listAccountBalanceDetectionCandidatePageAsync'),

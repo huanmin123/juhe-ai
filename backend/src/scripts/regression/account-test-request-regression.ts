@@ -278,7 +278,7 @@ assert.deepEqual(chatRequest.body, {
       content: 'ping'
     }
   ],
-  max_tokens: 32,
+  max_tokens: 256,
   stream: false
 }, 'Chat JSON 测试 payload 应保持非流式字段')
 
@@ -320,7 +320,7 @@ assert.equal(oauthRequest.model, 'gpt-5.5-oauth', '无显式模型时应使用 f
 assert.equal(oauthRequest.body.model, 'gpt-5.5-oauth', 'Responses payload 应写入模型')
 assert.equal(oauthRequest.body.stream, true, 'Responses SSE 测试应保持流式形态')
 assert.equal(oauthRequest.body.store, false, 'OAuth Responses 测试不应存储')
-assert.equal(oauthRequest.body.max_output_tokens, 32, 'OAuth Responses 测试应保留足够输出预算以返回完整 nonce')
+assert.equal(oauthRequest.body.max_output_tokens, 256, 'OAuth Responses 测试应保留足够输出预算以返回最终可见标记')
 assert.deepEqual(oauthRequest.body.include, ['reasoning.encrypted_content'], 'Codex Responses SSE 测试应保留 encrypted reasoning include')
 
 const responsesJsonPayload = createOpenAIResponsesTestPayload('gpt-5.5-json', 'ok', false, 'codex_responses', false)
@@ -360,7 +360,7 @@ assert.deepEqual(
         content: 'ok'
       }
     ],
-    max_tokens: 32,
+    max_tokens: 256,
     stream: true
   },
   'chat completions payload helper 应保持原字段'
@@ -418,7 +418,7 @@ assert.deepEqual(geminiRequest.body, {
     }
   ],
   generationConfig: {
-    maxOutputTokens: 32
+    maxOutputTokens: 256
   }
 }, 'Gemini 测试 payload 应使用 generateContent 原生结构')
 

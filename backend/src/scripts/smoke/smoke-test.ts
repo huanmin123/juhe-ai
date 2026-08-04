@@ -137,9 +137,7 @@ interface SystemSettings {
   tableMonitorMaxTablesPerRun?: number
   accountQualityRefreshIntervalSeconds?: number
   accountQualityWindowMinutes?: number
-  accountTestTaskConcurrency?: number
   cooldownAccountRetestIntervalSeconds?: number
-  cooldownAccountRetestBatchSize?: number
   cooldownAccountRetestMaxBackoffHours?: number
   oauthAccessTokenRefreshIntervalSeconds?: number
   oauthAccessTokenRefreshLeadSeconds?: number
@@ -214,9 +212,7 @@ async function main(): Promise<void> {
     assert(typeof settings.tableMonitorMaxTablesPerRun === 'number', '系统设置缺少 tableMonitorMaxTablesPerRun')
     assert(typeof settings.accountQualityRefreshIntervalSeconds === 'number', '系统设置缺少 accountQualityRefreshIntervalSeconds')
     assert(typeof settings.accountQualityWindowMinutes === 'number', '系统设置缺少 accountQualityWindowMinutes')
-    assert(typeof settings.accountTestTaskConcurrency === 'number', '系统设置缺少 accountTestTaskConcurrency')
     assert(typeof settings.cooldownAccountRetestIntervalSeconds === 'number', '系统设置缺少 cooldownAccountRetestIntervalSeconds')
-    assert(typeof settings.cooldownAccountRetestBatchSize === 'number', '系统设置缺少 cooldownAccountRetestBatchSize')
     assert(typeof settings.cooldownAccountRetestMaxBackoffHours === 'number', '系统设置缺少 cooldownAccountRetestMaxBackoffHours')
     assert(typeof settings.oauthAccessTokenRefreshIntervalSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshIntervalSeconds')
     assert(typeof settings.oauthAccessTokenRefreshLeadSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshLeadSeconds')

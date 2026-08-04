@@ -8,7 +8,9 @@ import {
   isAnthropicEndpointMode
 } from '../../domain/anthropic-endpoint-modes.js'
 
-const accountTestOutputTokenLimit = 32
+// Reasoning-capable models may consume part of this budget before emitting the
+// final visible marker. Keep the probe bounded while allowing that marker out.
+const accountTestOutputTokenLimit = 256
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'

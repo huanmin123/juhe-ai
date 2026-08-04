@@ -76,6 +76,7 @@ const upstreamHits: MockUpstreamHit[] = []
 let upstreamPhase: MockUpstreamHit['phase'] = 'failing'
 
 const app = express()
+app.set('trust proxy', true)
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 
@@ -125,7 +126,7 @@ async function assertGatewayAutomaticProbeConcurrencyLimit(): Promise<void> {
     await delay(20)
     runningCount -= 1
   })))
-  assert.equal(maxRunningCount, 3, 'server 恢复探针和 precheck 必须共享最多 3 路自动诊断门禁')
+  assert(maxRunningCount > 0 && maxRunningCount <= runtimeConfig.concurrency.globalMax, 'server 恢复探针和 precheck 只能受进程级共享并发池治理')
 }
 
 async function assertConfirmedTransportFailureOpensCircuit(
@@ -133,7 +134,7 @@ async function assertConfirmedTransportFailureOpensCircuit(
   scenario: GatewayScenario
 ): Promise<{ scope: ReturnType<typeof accountCircuit.gatewayAccountProtocolModelScope>; dispatchRevision: string }> {
   upstreamPhase = 'failing'
-  const firstResponse = await postChat(baseUrl, scenario.apiKey, 'first request should establish suspect')
+  const firstResponse = await postChat(baseUrl, scenario.apiKey, 'first request should establish suspect', '198.51.100.10')
   assert(firstResponse.status >= 500, `Mock AI 连接中断阶段应返回网关失败，实际 HTTP ${firstResponse.status}: ${firstResponse.text}`)
   assert(upstreamHits.some((hit) => hit.phase === 'failing'), '失败阶段应真实命中 Mock AI 上游')
 
@@ -151,9 +152,9 @@ async function assertConfirmedTransportFailureOpensCircuit(
   assert.equal(suspected.lease, undefined, '首次请求结束后必须释放 confirmation lease，留给后续请求确认')
 
   const beforeObserverHits = upstreamHits.length
-  const observerResponse = await postChat(baseUrl, scenario.apiKey, 'independent observer before confirmation due')
+  const observerResponse = await postChat(baseUrl, scenario.apiKey, 'independent observer before confirmation due', '198.51.100.11')
   assert(observerResponse.status >= 500, `未到期 observer 的 Mock AI 连接中断应返回网关失败，实际 HTTP ${observerResponse.status}: ${observerResponse.text}`)
-  assert.equal(upstreamHits.length - beforeObserverHits, 1, '未到期的独立 observer 必须仍可真实命中 Mock AI，避免坏会话饿死其他会话')
+  assert.equal(upstreamHits.length - beforeObserverHits, 1, `未到期的独立 observer 必须仍可真实命中 Mock AI，避免坏会话饿死其他会话：${observerResponse.text}`)
   const observerNeutral = await store.get(scope)
   assert.equal(observerNeutral.phase, 'SUSPECT', '未到期 observer 失败不得提前打开账户电路')
   assert.equal(observerNeutral.confirmationFailureCount, 0, '未到期 observer 失败不得绕过 confirmation 时间门禁累计阈值')
@@ -162,7 +163,7 @@ async function assertConfirmedTransportFailureOpensCircuit(
   await forceSuspectRetryAt(scope, 'first-confirmation')
 
   const beforeSecondHits = upstreamHits.length
-  const secondResponse = await postChat(baseUrl, scenario.apiKey, 'second request should confirm transport failure')
+  const secondResponse = await postChat(baseUrl, scenario.apiKey, 'second request should confirm transport failure', '198.51.100.12')
   assert(secondResponse.status >= 500, `第二次 Mock AI 连接中断应返回网关失败，实际 HTTP ${secondResponse.status}: ${secondResponse.text}`)
   assert.equal(upstreamHits.length - beforeSecondHits, 1, '到期后的第一次独立 confirmation 必须真实命中一次 Mock AI 上游')
   const onceConfirmed = await store.get(scope)
@@ -173,7 +174,7 @@ async function assertConfirmedTransportFailureOpensCircuit(
   await forceSuspectRetryAt(scope, 'second-confirmation')
 
   const beforeThirdHits = upstreamHits.length
-  const thirdResponse = await postChat(baseUrl, scenario.apiKey, 'third request should reach confirmation threshold')
+  const thirdResponse = await postChat(baseUrl, scenario.apiKey, 'third request should reach confirmation threshold', '198.51.100.13')
   assert(thirdResponse.status >= 500, `第三次 Mock AI 连接中断应返回网关失败，实际 HTTP ${thirdResponse.status}: ${thirdResponse.text}`)
   assert.equal(upstreamHits.length - beforeThirdHits, 1, '到期后的第二次独立 confirmation 必须真实命中一次 Mock AI 上游')
   const opened = await store.get(scope)
@@ -391,12 +392,18 @@ function createSingleAccountScenario(upstreamBaseUrl: string): GatewayScenario {
   }
 }
 
-async function postChat(baseUrl: string, apiKey: string, content: string): Promise<{ status: number; text: string }> {
+async function postChat(
+  baseUrl: string,
+  apiKey: string,
+  content: string,
+  clientIp = '198.51.100.10'
+): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json'
+      'content-type': 'application/json',
+      'x-forwarded-for': clientIp
     },
     body: JSON.stringify({
       model: 'gpt-5.5',
@@ -433,7 +440,7 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (path === '/v1/responses') {
-        sendResponsesCompleted(res, 'OK')
+        sendResponsesCompleted(res, 'juhe')
         return
       }
       sendChatCompletion(res)

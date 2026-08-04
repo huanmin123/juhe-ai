@@ -55,6 +55,7 @@ export const dbServiceOperationAccessModeByType = {
   record_account_health_check_failure: 'write',
   list_accounts_due_for_cooldown_retest: 'maintenance',
   list_account_api_key_runtime_states_due_for_probe: 'maintenance',
+  account_api_key_pool_probe_cursor: 'maintenance',
   find_account_for_cooldown_retest: 'maintenance',
   record_cooldown_account_retest_success: 'write',
   record_cooldown_account_retest_failure: 'write',

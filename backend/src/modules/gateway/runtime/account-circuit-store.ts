@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 
+import { runtimeConfig } from '../../../config/runtime.js'
+
 export type AccountCircuitPhase = 'CLOSED' | 'SUSPECT' | 'OPEN' | 'HALF_OPEN' | 'RECOVERING'
 
 export type AccountCircuitScope =
@@ -170,20 +172,10 @@ export interface AccountCircuitEscalationResult {
   relatedStates?: AccountCircuitState[]
 }
 
-export const accountCircuitBackoffMs = [
-  3_000,
-  5_000,
-  10_000,
-  30_000,
-  60_000,
-  120_000,
-  300_000,
-  600_000,
-  900_000
-] as const
-export const accountCircuitRecoverySuccessThreshold = 3
-export const accountCircuitRecoveryCanaryIntervalMs = 3_000
-export const accountCircuitSuspectConfirmationIntervalMs = 3_000
+export const accountCircuitBackoffMs = runtimeConfig.gateway.accountCircuitBackoffMs
+export const accountCircuitRecoverySuccessThreshold = runtimeConfig.gateway.accountCircuitRecoverySuccessThreshold
+export const accountCircuitRecoveryCanaryIntervalMs = runtimeConfig.gateway.accountCircuitRecoveryCanaryIntervalMs
+export const accountCircuitSuspectConfirmationIntervalMs = runtimeConfig.gateway.accountCircuitSuspectConfirmationIntervalMs
 export const accountCircuitDefaultConfirmationFailuresRequired = 2
 export const accountCircuitLegacyConfirmationFailuresRequired = 1
 export const accountCircuitConfirmationFailuresRequiredMin = 1

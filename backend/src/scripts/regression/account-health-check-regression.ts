@@ -14,8 +14,7 @@ import { accountTestFailureEligibleForAccount } from '../../modules/accounts/acc
 import { automaticAccountProbeOutcome } from '../../modules/accounts/automatic-account-probe-outcome.js'
 import {
   accountHealthCheckProbeDeadlineMs,
-  accountHealthCheckQueueConcurrency,
-  routineAccountHealthCheckDiagnosticConcurrency
+  globalSharedQueueConcurrency
 } from '../../modules/background/account-probe-limits.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-health-check-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -29,12 +28,13 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, healthCheckRepository, healthCheckService, apiKeyRotation] = await Promise.all([
+const [databaseModule, repositories, healthCheckRepository, healthCheckService, apiKeyRotation, poolCursorRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-health-check.repository.js'),
   import('../../modules/background/account-health-check.service.js'),
-  import('../../storage/account-api-key-rotation.js')
+  import('../../storage/account-api-key-rotation.js'),
+  import('../../storage/account-api-key-pool-probe-cursor.repository.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -106,13 +106,18 @@ try {
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
   assert.match(serviceSource, /probeAccountHealthCheckApiKeyPool/, '多 Key 健康检查必须通过固定 Key 聚合探测')
-  assert.equal(accountHealthCheckProbeDeadlineMs, 30_000, '单账户健康检查必须有 30 秒总 deadline')
-  assert.equal(accountHealthCheckQueueConcurrency, 3, '健康队列必须为激活和配置检查保留入口位')
-  assert.equal(routineAccountHealthCheckDiagnosticConcurrency, 1, '例行与请求失败健康检查必须使用独立单槽 lane')
-  assert.match(serviceSource, /accountHealthCheckPoolCursorTtlMs = 2 \* 60 \* 60_000/, 'Key 池续扫游标必须覆盖待激活账户的一小时复检间隔')
+  assert.equal(accountHealthCheckProbeDeadlineMs, 65_000, '单账户健康检查必须在 10/20/30 秒统一诊断阶梯外预留调度余量')
+  assert.equal(globalSharedQueueConcurrency, runtimeConfig.concurrency.globalMax, '健康队列必须使用进程级共享并发上限')
+  const accountProbeJobsSource = readFileSync(resolve('src/modules/background/account-probe-jobs.ts'), 'utf8')
+  assert.match(accountProbeJobsSource, /accountHealthCheckScanLimit\(batchSize, queueConcurrency, queueBeforeScan\)/, '健康检查候选扫描必须扣除已有队列占用')
+  assert.match(serviceSource, /account_api_key_pool_probe_cursor/, 'Key 池续扫必须使用持久化游标而不是进程内 TTL 状态')
+  assert.match(serviceSource, /keySetFingerprint[\s\S]+configRevision/, 'Key 池游标必须绑定 Key 集合和账户配置版本')
   assert.match(serviceSource, /accountHealthCheckDeadline\(\)/, '健康检查必须创建账户级 deadline 信号')
-  assert.match(serviceSource, /runAccountHealthCheckDiagnostic\(account, groupId, fixedCandidate, signal\)/, '每把 Key 的诊断必须继承账户级 deadline')
-  assert.match(serviceSource, /canceledPoolProbeResult\(attempt, options\.signal\)/, 'deadline 到达后不得继续扫描后续 API Key')
+  assert.match(serviceSource, /runAccountApiKeyPoolDiagnostic\(candidate, entries/, '多 Key 健康检查必须复用统一 API Key 池诊断器')
+  assert.match(serviceSource, /attempt\.signal, attempt\.timeoutMs/, '每把 Key 的诊断必须继承账户级 deadline 和统一超时档位')
+  assert.match(serviceSource, /lastCompletedFingerprint/, '健康检查游标只能记录实际完成的连续 Key')
+  assert.match(serviceSource, /poolDiagnosticErrors\.length > 0[\s\S]+throw new AggregateError/, '池内任意调用异常必须阻止健康状态写入')
+  assert.match(serviceSource, /if \(poolCompleted && !signal\.aborted\)/, '空 Key 池完成轮次也必须删除旧游标')
   assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
   assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
   assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
@@ -205,7 +210,24 @@ try {
         accountFailureEligible: true
       }
     }
-  }, { signal: deadlineController.signal })
+  }, {
+    signal: deadlineController.signal,
+    abortedResult: () => ({
+      result: {
+        accountId: deadlinePoolCandidate.id,
+        accountName: '多 Key 健康检查 deadline',
+        providerCode: 'gpt',
+        type: 'api_key',
+        success: false,
+        errorCode: 'server_diagnostic_cancelled',
+        message: '账户健康检查已达到总时限',
+        accountFailureEligible: false
+      },
+      diagnosticCanceled: true,
+      diagnosticTimeoutExhausted: false,
+      diagnosticDeadlineExceeded: true
+    })
+  })
   assert.equal(deadlineProbedKeys.length, 1, '账户 deadline 到达后不得继续扫描剩余 49 把 Key')
   assert.equal(deadlinePoolResult?.diagnosticDeadlineExceeded, true, '账户 deadline 必须以独立事实返回')
   assert.equal(automaticAccountProbeOutcome(deadlinePoolResult!.result, {
@@ -309,6 +331,31 @@ try {
     enabled: true
   }, access)
   const dueAccount = createActiveAccount(repositories, group.id, '健康检测到期账号', 'sk-health-due')
+  poolCursorRepository.saveAccountApiKeyPoolProbeCursor({
+    accountId: dueAccount.id,
+    purpose: 'health_check',
+    lastCompletedKeyFingerprint: 'key-a',
+    keySetFingerprint: 'set-a',
+    configRevision: dueAccount.configRevision ?? 1
+  })
+  poolCursorRepository.saveAccountApiKeyPoolProbeCursor({
+    accountId: dueAccount.id,
+    purpose: 'health_check',
+    lastCompletedKeyFingerprint: 'key-b',
+    keySetFingerprint: 'set-a',
+    configRevision: dueAccount.configRevision ?? 1
+  })
+  assert.equal(
+    poolCursorRepository.findAccountApiKeyPoolProbeCursor(dueAccount.id, 'health_check')?.lastCompletedKeyFingerprint,
+    'key-b',
+    'Key 池游标必须按账户和用途覆盖保存最后连续完成的 Key'
+  )
+  poolCursorRepository.deleteAccountApiKeyPoolProbeCursor(dueAccount.id, 'health_check')
+  assert.equal(
+    poolCursorRepository.findAccountApiKeyPoolProbeCursor(dueAccount.id, 'health_check'),
+    undefined,
+    '完整轮次删除游标后下一轮必须从 Key 池首部开始'
+  )
   const recentAccount = createActiveAccount(repositories, group.id, '健康检测近期成功账号', 'sk-health-recent')
   const disabledAccount = createActiveAccount(repositories, group.id, '健康检测停用账号', 'sk-health-disabled')
   const runtimeFailureTraceId = 'trace-runtime-failure-regression'

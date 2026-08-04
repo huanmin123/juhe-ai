@@ -107,6 +107,16 @@ const preCommitFuzzServerRetryScenarios = [
   }
 ] as const
 
+const explicitServerRetryResponseInspectionRules = [{
+  enabled: true,
+  name: '流式超时回归显式切号',
+  priority: 1,
+  match: {
+    errorCodes: ['server_is_overloaded', 'internal_server_error']
+  },
+  action: 'retry_next_account' as const
+}]
+
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
@@ -139,7 +149,7 @@ async function main(): Promise<void> {
     const overloadedBeforeOutputCredential = createScenarioCredential(upstreamBaseUrl, '容量错误未输出前重试')
     const slowDownCredential = createScenarioCredential(upstreamBaseUrl, 'slow_down 未输出前重试')
     const genericErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '未知 error 事件默认重试')
-    const cyberPolicyCredential = createScenarioCredential(upstreamBaseUrl, 'cyber_policy 未输出前重试')
+    const cyberPolicyCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, 'cyber_policy 原样失败终态')
     const contextWindowCredential = createScenarioCredential(upstreamBaseUrl, '上下文超限未输出前重试')
     const nonCodexErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '普通客户端未输出前默认规则')
     const overloadedNoBoundaryCredential = createScenarioCredential(upstreamBaseUrl, '容量错误缺少收尾边界')
@@ -151,9 +161,15 @@ async function main(): Promise<void> {
     const noFirstChunkServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '首段等待服务端切号')
     const missingTerminalServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '缺终止服务端切号')
     const heartbeatOnlyServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '心跳无有效输出服务端切号')
-    const failedEventServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '失败事件服务端切号')
-    const preCommitFuzzServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '预提交失败 fuzz 服务端切号')
-    const fourAccountServerRetryCredential = createMultiAccountScenarioCredential(upstreamBaseUrl, '超过三账号隐藏重试', 4)
+    const failedEventServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '失败事件服务端切号', {
+      primaryResponseInspectionRules: explicitServerRetryResponseInspectionRules
+    })
+    const preCommitFuzzServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '预提交失败 fuzz 服务端切号', {
+      primaryResponseInspectionRules: explicitServerRetryResponseInspectionRules
+    })
+    const fourAccountServerRetryCredential = createMultiAccountScenarioCredential(upstreamBaseUrl, '超过三账号隐藏重试', 4, {
+      responseInspectionRules: explicitServerRetryResponseInspectionRules
+    })
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -165,18 +181,17 @@ async function main(): Promise<void> {
       headers: codexStreamHeaders(noFirstChunkCredential.apiKey.key, 'no-first-chunk'),
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        input: [{ type: 'compaction_trigger' }],
+        input: 'no-first-chunk',
         stream: true
       })
     })
     assert.equal(response.status, 200)
-    assert(response.headers.get('content-type')?.includes('text/event-stream'), '压缩请求建立保活后必须保持 SSE 响应')
+    assert(response.headers.get('content-type')?.includes('text/event-stream'), 'Codex 流建立保活后必须保持 SSE 响应')
     const streamText = await response.text()
     const durationMs = Date.now() - startedAt
-    assert.match(streamText, /^: /, `压缩请求在上游首包前必须收到 SSE comment：${streamText}`)
-    assert.equal((streamText.match(/event: response\.failed/g) ?? []).length, 1, `压缩请求最终失败必须只有一个 Responses failure event：${streamText}`)
+    assert.equal((streamText.match(/event: response\.failed/g) ?? []).length, 1, `Codex 流最终失败必须只有一个 Responses failure event：${streamText}`)
     assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应映射为可重试错误码：${streamText}`)
-    assert(!streamText.includes('response.created'), `压缩契约未完成前不得泄露上游语义事件：${streamText}`)
+    assert(!streamText.includes('response.created'), `协议契约未完成前不得泄露上游语义事件：${streamText}`)
     assert(!streamText.trimStart().startsWith('{'), `SSE transport 已建立后不得混入 JSON 错误响应：${streamText}`)
     assert.equal(
       upstreamScenarioHits.filter((hit) => hit.scenario === 'no-first-chunk').length,
@@ -210,8 +225,8 @@ async function main(): Promise<void> {
     assertFailedUsageRecordExists(noFirstChunkServerRetryCredential.primaryAccount.id)
     assertSuccessfulUsageRecord(noFirstChunkServerRetryCredential.backupAccount.id, { inputTokens: 2, outputTokens: 1 })
     const firstChunkThenIdleResult = await requestFirstChunkThenIdleTimeout(baseUrl, firstChunkIdleCredential.apiKey.key)
-    assert(!firstChunkThenIdleResult.streamText.includes('response.created'), `预提交失败不应透传首段上游事件：${firstChunkThenIdleResult.streamText}`)
-    assert(!firstChunkThenIdleResult.streamText.includes('response.failed'), `预提交失败不应伪造 SSE failure event：${firstChunkThenIdleResult.streamText}`)
+    assert(firstChunkThenIdleResult.streamText.includes('response.created'), `Codex 生命周期首段应保留在 SSE 中：${firstChunkThenIdleResult.streamText}`)
+    assert.equal((firstChunkThenIdleResult.streamText.match(/event: response\.failed/g) ?? []).length, 1, `Codex 首段后空闲必须只发送一个失败终态：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段后空闲应返回统一可重试文案：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('"code":"upstream_retryable_error"'), `首段后空闲应改写为可重试错误码：${firstChunkThenIdleResult.streamText}`)
     assert(
@@ -289,8 +304,8 @@ async function main(): Promise<void> {
     await assertImageStreamAuditBodyOmitted(largeImageApiEofTraceId, 'image_generation.completed')
 
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
-    assert(!missingTerminalResult.streamText.includes('response.created'), `预提交失败不应透传首段上游事件：${missingTerminalResult.streamText}`)
-    assert(!missingTerminalResult.streamText.includes('response.failed'), `预提交失败不应伪造 SSE failure event：${missingTerminalResult.streamText}`)
+    assert(missingTerminalResult.streamText.includes('response.created'), `Codex 生命周期首段应保留在 SSE 中：${missingTerminalResult.streamText}`)
+    assert.equal((missingTerminalResult.streamText.match(/event: response\.failed/g) ?? []).length, 1, `缺少终止事件必须只发送一个失败终态：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('上游流式响应在输出前失败，请重试'), `缺少终止事件场景应返回统一可重试文案：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('"code":"upstream_retryable_error"'), `缺少终止事件应改写为可重试错误码：${missingTerminalResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -347,7 +362,7 @@ async function main(): Promise<void> {
     assert.equal(overloadedBeforeOutputAccount?.status, 'active', '未输出前容量错误不应把账号置为临时不可调用')
     assert.equal(overloadedBeforeOutputAccount?.streamFailureCount, 0, '未输出前容量错误不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertNoResponseInspectionPolicyMatch(overloadedBeforeOutputCredential.account.id)
+    await assertResponseInspectionPolicyMatch(overloadedBeforeOutputCredential.account.id, 'default_openai_error_object')
 
     const failedEventServerRetryResult = await requestStreamScenario(baseUrl, failedEventServerRetryCredential.apiKey.key, 'server-retry-response-failed-then-success')
     assert(failedEventServerRetryResult.streamText.includes('resp_failed_retry_backup'), `流内失败后应切备用账号完成：${failedEventServerRetryResult.streamText}`)
@@ -355,7 +370,7 @@ async function main(): Promise<void> {
     assert(!failedEventServerRetryResult.streamText.includes('server_is_overloaded'), `服务端切号成功时不应把原始流内失败下发客户端：${failedEventServerRetryResult.streamText}`)
     assert(!failedEventServerRetryResult.streamText.includes('response.failed'), `流内失败服务端切号成功时客户端不应看到失败事件：${failedEventServerRetryResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
-    assertFailedUsageRecordErrorCode(failedEventServerRetryCredential.primaryAccount.id, 'upstream_protocol_failure')
+    assertFailedUsageRecordErrorCode(failedEventServerRetryCredential.primaryAccount.id, 'server_is_overloaded')
     assertSuccessfulUsageRecord(failedEventServerRetryCredential.backupAccount.id, { inputTokens: 3, outputTokens: 1 })
     const fourAccountServerRetryResult = await requestStreamScenario(baseUrl, fourAccountServerRetryCredential.apiKey.key, 'server-retry-fourth-account-then-success')
     assert(fourAccountServerRetryResult.streamText.includes('resp_fourth_retry_success'), `隐藏重试不应限制为前三个账号，应继续切到第 4 个账号完成：${fourAccountServerRetryResult.streamText}`)
@@ -387,29 +402,31 @@ async function main(): Promise<void> {
     assert.equal(genericErrorEventAccount?.status, 'active', '未知 error 事件未输出前不应把账号置为临时不可调用')
     assert.equal(genericErrorEventAccount?.streamFailureCount, 0, '未知 error 事件未输出前不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertNoResponseInspectionPolicyMatch(genericErrorEventCredential.account.id)
+    await assertResponseInspectionPolicyMatch(genericErrorEventCredential.account.id, 'default_openai_error_object')
 
-    const cyberPolicyResult = await requestStreamFailureBeforeOutput(baseUrl, cyberPolicyCredential.apiKey.key, 'cyber-policy-before-output')
-    assert(!cyberPolicyResult.streamText.includes('cyber_policy'), `未输出前 cyber_policy 不应把原始错误码发给客户端：${cyberPolicyResult.streamText}`)
-    assert(cyberPolicyResult.streamText.includes('upstream_retryable_error'), `未输出前 cyber_policy 应改写为可重试错误：${cyberPolicyResult.streamText}`)
+    const cyberPolicyResult = await requestStreamScenario(baseUrl, cyberPolicyCredential.apiKey.key, 'cyber-policy-before-output')
+    assert(cyberPolicyResult.streamText.includes('"code":"cyber_policy"'), `Codex cyber_policy 必须原样发给客户端：${cyberPolicyResult.streamText}`)
+    assert(!cyberPolicyResult.streamText.includes('upstream_retryable_error'), `Codex cyber_policy 不得改写为可重试错误：${cyberPolicyResult.streamText}`)
+    assert.equal(upstreamScenarioHits.filter((hit) => hit.scenario === 'cyber-policy-before-output').length, 1, 'Codex cyber_policy 终态不得切换到备用账号')
     usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordErrorCode(cyberPolicyCredential.primaryAccount.id, 'cyber_policy')
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    const cyberPolicyAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyCredential.account.id)
+    const cyberPolicyAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyCredential.primaryAccount.id)
     assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertNoResponseInspectionPolicyMatch(cyberPolicyCredential.account.id)
+    await assertNoResponseInspectionPolicyMatch(cyberPolicyCredential.primaryAccount.id)
 
     const cyberPolicyAfterOutputResult = await requestStreamScenario(baseUrl, cyberPolicyAfterOutputCredential.apiKey.key, 'cyber-policy-after-output')
     assert(cyberPolicyAfterOutputResult.streamText.includes('hello'), `已经提交的语义输出必须保留：${cyberPolicyAfterOutputResult.streamText}`)
-    assert(!cyberPolicyAfterOutputResult.streamText.includes('cyber_policy'), `输出后不应把不可信上游错误码发给客户端：${cyberPolicyAfterOutputResult.streamText}`)
-    assert(cyberPolicyAfterOutputResult.streamText.includes('upstream_retryable_error'), `输出后精确客户端应收到可重试失败终态：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(cyberPolicyAfterOutputResult.streamText.includes('"code":"cyber_policy"'), `输出后 Codex cyber_policy 必须原样发给客户端：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(!cyberPolicyAfterOutputResult.streamText.includes('upstream_retryable_error'), `输出后 Codex cyber_policy 不得改写为可重试失败终态：${cyberPolicyAfterOutputResult.streamText}`)
     assert.equal((cyberPolicyAfterOutputResult.streamText.match(/event: response\.failed/g) ?? []).length, 1, '输出后只能追加一个失败终态')
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const cyberPolicyAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
     assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
-    assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
+    assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 原样透传不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
     await assertNoResponseInspectionPolicyMatch(cyberPolicyAfterOutputCredential.account.id)
 
@@ -456,9 +473,9 @@ async function main(): Promise<void> {
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
     const jsonResponseForStreamResult = await requestJsonResponseForStreamRequest(baseUrl, jsonResponseForStreamCredential.apiKey.key)
-    assert.equal(jsonResponseForStreamResult.status, 503, `stream:true 的预提交 JSON 上游响应应返回网关错误：${jsonResponseForStreamResult.text}`)
+    assert.equal(jsonResponseForStreamResult.status, 502, `stream:true 的预提交 JSON 上游响应应返回网关协议错误：${jsonResponseForStreamResult.text}`)
     assert(jsonResponseForStreamResult.contentType.includes('application/json'), `stream:true 的预提交失败应保持 JSON 错误契约：${jsonResponseForStreamResult.contentType}`)
-    assert(jsonResponseForStreamResult.text.includes('upstream_retryable_error'), `stream:true 的预提交 JSON 上游响应应给出可重试错误码：${jsonResponseForStreamResult.text}`)
+    assert(jsonResponseForStreamResult.text.includes('upstream_protocol_error'), `stream:true 的预提交 JSON 上游响应应给出协议错误码：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('response.failed'), `预提交 JSON 上游响应不应伪造 SSE failure event：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('json response ok'), `预提交失败不得混入原始 JSON 正文：${jsonResponseForStreamResult.text}`)
 
@@ -513,7 +530,11 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
   return { account, apiKey }
 }
 
-function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: string): {
+function createTwoAccountScenarioCredential(
+  upstreamBaseUrl: string,
+  label: string,
+  input: { primaryResponseInspectionRules?: typeof explicitServerRetryResponseInspectionRules } = {}
+): {
   primaryAccount: ReturnType<typeof repositories.createAccount>
   backupAccount: ReturnType<typeof repositories.createAccount>
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
@@ -530,7 +551,10 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     type: 'api_key',
     credentials: {
       api_key: primaryKey,
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      ...(input.primaryResponseInspectionRules
+        ? { response_inspection_rules: input.primaryResponseInspectionRules }
+        : {})
     },
     groupId: group.id,
     supportedModels: regressionSupportedModels,
@@ -566,7 +590,12 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   return { primaryAccount, backupAccount, apiKey }
 }
 
-function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: string, count: number): {
+function createMultiAccountScenarioCredential(
+  upstreamBaseUrl: string,
+  label: string,
+  count: number,
+  input: { responseInspectionRules?: typeof explicitServerRetryResponseInspectionRules } = {}
+): {
   accounts: ReturnType<typeof repositories.createAccount>[]
   apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
 } {
@@ -580,7 +609,10 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
     type: 'api_key',
     credentials: {
       api_key: `sk-stream-timeout-regression-${scenarioCredentialIndex}-multi-${index + 1}`,
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      ...(input.responseInspectionRules
+        ? { response_inspection_rules: input.responseInspectionRules }
+        : {})
     },
     groupId: group.id,
     supportedModels: regressionSupportedModels,
@@ -1107,8 +1139,8 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
     })
   })
   const streamText = await response.text()
-  assert.equal(response.status, 503, `首段后无语义输出应返回 HTTP 错误：${streamText}`)
-  assert(response.headers.get('content-type')?.includes('application/json'), '首段后无语义输出应返回 JSON 错误响应')
+  assert.equal(response.status, 200, `Codex 首段后无语义输出应保持 SSE：${streamText}`)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), 'Codex 首段后无语义输出应返回 SSE failure event')
   return {
     streamText,
     durationMs: Date.now() - startedAt
@@ -1192,8 +1224,8 @@ async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promi
   })
   const startedAt = Date.now()
   const streamText = await response.text()
-  assert.equal(response.status, 503, `仅 response.created 后 EOF 应返回 HTTP 错误：${streamText}`)
-  assert(response.headers.get('content-type')?.includes('application/json'), '仅 response.created 后 EOF 应返回 JSON 错误响应')
+  assert.equal(response.status, 200, `Codex 生命周期事件后 EOF 应保持 SSE：${streamText}`)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), 'Codex 生命周期事件后 EOF 应返回 SSE failure event')
   return {
     streamText,
     durationMs: Date.now() - startedAt
@@ -1337,9 +1369,8 @@ async function requestStreamFailureBeforeOutput(
     })
   })
   const streamText = await response.text()
-  assert.equal(response.status, 503, `预提交流失败应返回 HTTP 错误：${streamText}`)
-  assert(response.headers.get('content-type')?.includes('application/json'), '预提交流失败应返回 JSON 错误响应')
-  assert(!streamText.includes('response.failed'), `预提交流失败不应伪造 SSE failure event：${streamText}`)
+  assert.equal(response.status, 200, `Codex 预提交流失败应保持 SSE：${streamText}`)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), 'Codex 预提交流失败应返回 SSE failure event')
   return {
     streamText,
     durationMs: Date.now() - startedAt
@@ -1623,6 +1654,22 @@ async function assertNoResponseInspectionPolicyMatch(accountId: string): Promise
       )
     }
   }
+}
+
+async function assertResponseInspectionPolicyMatch(accountId: string, policyId: string): Promise<void> {
+  const logs = repositories.listAuditLogs({ accountId, page: 1, pageSize: 20 })
+  for (const item of logs.items) {
+    const detail = repositories.getAuditLogDetail(item.id)
+    if (!detail) continue
+    for (const payload of detail.payloads) {
+      if (payload.partType !== 'gateway_metadata') continue
+      const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id)
+      if (!payloadDetail?.bodyText) continue
+      const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
+      if (body.metadata?.responsePolicyMatched === true && body.metadata.policyId === policyId) return
+    }
+  }
+  assert.fail(`账号 ${accountId} 未记录响应检查策略 ${policyId} 的命中审计`)
 }
 
 function listen(server: http.Server): Promise<void> {

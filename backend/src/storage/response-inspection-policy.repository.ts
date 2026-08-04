@@ -1,5 +1,5 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
+import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -240,6 +240,67 @@ const positiveMatchKeys = [
 
 const systemDefaultRules: ResponseInspectionPolicySummary[] = [
   {
+    id: 'default_openai_error_object',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI error 对象',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'OpenAI v1 JSON / SSE data.error 默认检查规则；是否允许客户端专用重试由运行时客户端能力门控。'
+  },
+  {
+    id: 'default_openai_response_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI response.error',
+    enabled: true,
+    priority: 2,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['response.error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'OpenAI v1 Responses response.error 默认检查规则。'
+  },
+  {
+    id: 'default_openai_failed_status',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI failed 状态',
+    enabled: true,
+    priority: 3,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      finishReasons: ['failed']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'OpenAI v1 Responses failed 状态默认检查规则。'
+  },
+  {
+    id: 'default_codex_response_incomplete',
+    defaultRule: true,
+    editable: false,
+    name: 'Codex response.incomplete',
+    enabled: true,
+    priority: 4,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['codex'],
+      finishReasons: ['incomplete']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'Codex 客户端会把 Responses response.incomplete 当成可重试流式错误；网关在写下游前拦截为统一可重试失败，避免服务端误判成功。'
+  },
+  {
     id: 'default_codex_compaction_contract',
     defaultRule: true,
     editable: false,
@@ -254,6 +315,68 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     },
     action: 'retry_next_account',
     notes: 'Codex Remote Compaction V2 的本地结构契约；只接受网关生成的契约失败帧，上游同名错误码不能触发。'
+  },
+  {
+    id: 'default_gpt_cyber_policy',
+    defaultRule: true,
+    editable: false,
+    name: 'GPT cyber_policy',
+    enabled: true,
+    priority: 6,
+    scopeType: 'provider',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
+    match: {
+      errorCodes: ['cyber_policy']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'GPT 供应商 cyber_policy 规则，适用于该供应商的所有下游客户端；不能扩散为所有 OpenAI-compatible 供应商语义。'
+  },
+  {
+    id: 'default_anthropic_error_object',
+    defaultRule: true,
+    editable: false,
+    name: 'Anthropic error 对象',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'Anthropic Messages JSON / SSE event:error 默认检查规则；错误类型只作为响应语义输入，不直接写账号状态。'
+  },
+  {
+    id: 'default_gemini_cli_retryable_error',
+    defaultRule: true,
+    editable: false,
+    name: 'Gemini CLI 可重试错误',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['gemini_cli'],
+      errorTypes: ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'DEADLINE_EXCEEDED', 'INTERNAL', 'CANCELLED']
+    },
+    action: 'retry_next_account',
+    notes: 'gemini-cli 已知会把 429、499、5xx 和超时类 Google canonical error 当作可重试错误；该规则只在 gemini_cli 客户端画像下请求下一个账号，不扩散到普通 Gemini 客户端。'
+  },
+  {
+    id: 'default_gemini_error_object',
+    defaultRule: true,
+    editable: false,
+    name: 'Gemini error 对象',
+    enabled: true,
+    priority: 20,
+    scopeType: 'protocol',
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'Gemini JSON / SSE error 默认检查规则；错误状态只作为响应语义输入，不直接写账号状态。'
   }
 ]
 

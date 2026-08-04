@@ -11,7 +11,6 @@ import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/
 import { extractGatewayMultipartAudioResponseFormat } from '../../modules/gateway/request/multipart-image-metadata.js'
 
 Object.assign(runtimeConfig.gateway, {
-  automaticProbeMaxConcurrency: 1,
   usageFinalizationMaxItems: 128,
   usageFinalizationMaxConcurrency: 1
 })

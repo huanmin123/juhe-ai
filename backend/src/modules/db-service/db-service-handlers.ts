@@ -2,6 +2,8 @@ import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
+import { createPostgresDatabaseClient } from '../../storage/database-client.js'
+import { getPostgresPool } from '../../storage/postgres-client.js'
 import { cleanupChatRetention } from '../../storage/chat.repository.js'
 import { cleanupExpiredChatAssets } from '../chat/chat-asset-cleanup.js'
 import { isActiveChatGeneration } from '../chat/chat-generation-runtime.js'
@@ -39,6 +41,14 @@ import {
   updateAccountTestTaskMessage,
   updateAccountTestTaskMessageAsync
 } from '../../storage/account-test-tasks.repository.js'
+import {
+  deleteAccountApiKeyPoolProbeCursor,
+  deleteAccountApiKeyPoolProbeCursorAsync,
+  findAccountApiKeyPoolProbeCursor,
+  findAccountApiKeyPoolProbeCursorAsync,
+  saveAccountApiKeyPoolProbeCursor,
+  saveAccountApiKeyPoolProbeCursorAsync
+} from '../../storage/account-api-key-pool-probe-cursor.repository.js'
 import {
   clearGatewayApiKeyValidationCache,
   deferCooldownAccountRetest,
@@ -977,6 +987,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await listAccountApiKeyRuntimeStatesDueForProbeAsync(operation.limit)
       }
       return handleDbServiceOperationSync(operation)
+    case 'account_api_key_pool_probe_cursor':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const client = createPostgresDatabaseClient(await getPostgresPool())
+        if (operation.action === 'read') return await findAccountApiKeyPoolProbeCursorAsync(client, operation.accountId, operation.purpose)
+        if (operation.action === 'save') return await saveAccountApiKeyPoolProbeCursorAsync(client, operation.input)
+        await deleteAccountApiKeyPoolProbeCursorAsync(client, operation.accountId, operation.purpose)
+        return { deleted: true }
+      }
+      return handleDbServiceOperationSync(operation)
     case 'find_account_for_cooldown_retest':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findAccountForCooldownRetestAsync(operation.accountId)
@@ -1627,6 +1646,11 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'list_account_api_key_runtime_states_due_for_probe':
       return listAccountApiKeyRuntimeStatesDueForProbe(operation.limit)
+    case 'account_api_key_pool_probe_cursor':
+      if (operation.action === 'read') return findAccountApiKeyPoolProbeCursor(operation.accountId, operation.purpose)
+      if (operation.action === 'save') return saveAccountApiKeyPoolProbeCursor(operation.input)
+      deleteAccountApiKeyPoolProbeCursor(operation.accountId, operation.purpose)
+      return { deleted: true }
     case 'find_account_for_cooldown_retest': {
       return findAccountForCooldownRetest(operation.accountId)
     }

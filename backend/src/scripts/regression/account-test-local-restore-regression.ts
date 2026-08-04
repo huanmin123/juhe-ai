@@ -100,7 +100,7 @@ try {
     providerCode: 'gpt'
   }, adminAccess)
 
-  await assertManualTestRestoresAccount({
+  await assertManualTestPreservesAccountState({
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
@@ -112,7 +112,7 @@ try {
     }
   })
 
-  await assertManualTestRestoresAccount({
+  await assertManualTestPreservesAccountState({
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
@@ -122,7 +122,7 @@ try {
     makeUnavailable: makeActiveAccountUnschedulable
   })
 
-  await assertManualTestRestoresAccount({
+  await assertManualTestPreservesAccountState({
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
@@ -132,7 +132,7 @@ try {
     makeUnavailable: makeActiveAccountUnschedulable
   })
 
-  await assertManualTestRestoresAccount({
+  await assertManualTestPreservesAccountState({
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
@@ -149,7 +149,7 @@ try {
     }
   })
 
-  await assertManualTestRestoresAccount({
+  await assertManualTestPreservesAccountState({
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
@@ -161,7 +161,7 @@ try {
     }
   })
 
-  await assertManualTestRestoresAccount({
+  await assertManualTestPreservesAccountState({
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
@@ -213,7 +213,7 @@ try {
 
 process.exit(0)
 
-async function assertManualTestRestoresAccount(input: {
+async function assertManualTestPreservesAccountState(input: {
   appBaseUrl: string
   mockBaseUrl: string
   groupId: string
@@ -256,6 +256,7 @@ async function assertManualTestRestoresAccount(input: {
     `${input.accountName} 应先处于不可调用状态`
   )
   const unavailableState = accountAvailabilityState(unavailable)
+  const unavailableKeyRuntimeStates = accountApiKeyRuntimeStates(account.id)
 
   const result = await submitAccountTestAndWait<AccountTestResult>({
     baseUrl: input.appBaseUrl,
@@ -273,6 +274,11 @@ async function assertManualTestRestoresAccount(input: {
     accountAvailabilityState(after),
     unavailableState,
     `${input.accountName} 手动测试成功不得改写账户运行状态`
+  )
+  assert.deepEqual(
+    accountApiKeyRuntimeStates(account.id),
+    unavailableKeyRuntimeStates,
+    `${input.accountName} 手动测试成功不得创建、恢复或改写 API Key 运行状态`
   )
   if (result.accountStatus !== undefined) {
     assert.equal(result.accountStatus, unavailable.status, `${input.accountName} 测试结果账户状态应保持原值`)
@@ -409,6 +415,20 @@ function accountAvailabilityState(account: AccountSummary | undefined) {
     streamFailureCount: account?.streamFailureCount,
     streamFailureWindowStartedAt: account?.streamFailureWindowStartedAt
   }
+}
+
+function accountApiKeyRuntimeStates(accountId: string) {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT key_fingerprint, key_index, status, failure_count, consecutive_failures,
+        success_count, cooldown_until, next_probe_at, last_attempt_at, last_success_at,
+        last_failure_at, last_error_code, last_error_message, probe_claim_token,
+        probe_claimed_until, updated_at
+      FROM account_api_key_runtime_states
+      WHERE account_id = ?
+      ORDER BY key_index ASC, key_fingerprint ASC
+    `)
+    .all(accountId)
 }
 
 function makeActiveAccountUnschedulable(accountId: string): void {

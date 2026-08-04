@@ -531,7 +531,7 @@ try {
     await assertGeminiInteractionsAccountAffinity(baseUrl, interactionsApiKey.key, interactionsForeignApiKey.key)
     await assertGeminiInteractionsAffinityPersistenceFailures(baseUrl, interactionsApiKey.key)
     await assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl, apiKey.key)
-    await assertGeminiCliUpstreamErrorTypeDoesNotSwitchAccount(baseUrl, apiKey.key)
+    await assertGeminiCliUpstreamErrorTypeSwitchesAccount(baseUrl, apiKey.key)
     await assertGeminiUpstreamError(baseUrl, apiKey.key)
     await assertGeminiLocalAuthError(baseUrl)
     await assertGeminiOpenAIChatPathRejected(baseUrl, apiKey.key)
@@ -1130,18 +1130,13 @@ async function assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl: st
       ]
     })
   })
-  assert.equal(response.status, 200)
-  const body = await response.json() as { error?: { status?: string; message?: string; code?: number } }
-  assert.deepEqual(body.error, {
-    code: 503,
-    message: 'primary account temporarily unavailable',
-    status: 'UNAVAILABLE'
-  })
-  assert.equal(upstreamHits.length, 1, '通用 Gemini 客户端不应触发 Gemini CLI 专属服务端换账号')
+  assert.equal(response.status, 502)
+  await response.json()
+  assert.equal(upstreamHits.length, 1, '通用 Gemini 客户端应返回可重试失败，但不得触发 Gemini CLI 专属服务端换账号')
   assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
 }
 
-async function assertGeminiCliUpstreamErrorTypeDoesNotSwitchAccount(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertGeminiCliUpstreamErrorTypeSwitchesAccount(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?case=cli-retryable-json', baseUrl), {
     method: 'POST',
@@ -1153,19 +1148,15 @@ async function assertGeminiCliUpstreamErrorTypeDoesNotSwitchAccount(baseUrl: str
     },
     body: JSON.stringify({
       contents: [
-        { role: 'user', parts: [{ text: 'gemini cli upstream error type must remain opaque' }] }
+        { role: 'user', parts: [{ text: 'gemini cli upstream retryable error must switch account' }] }
       ]
     })
   })
   const responseText = await response.text()
   assert.equal(response.status, 200, responseText)
-  const body = JSON.parse(responseText) as { error?: { code?: number; message?: string; status?: string } }
-  assert.deepEqual(body.error, {
-    code: 503,
-    message: 'primary account temporarily unavailable',
-    status: 'UNAVAILABLE'
-  })
-  assert.deepEqual(upstreamHits.map((hit) => hit.xGoogApiKey), ['sk-gemini-upstream'], 'Gemini CLI 画像不得把 UNAVAILABLE 解释为内部换号授权')
+  const body = JSON.parse(responseText) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'gemini cli retry ok')
+  assert.deepEqual(upstreamHits.map((hit) => hit.xGoogApiKey), ['sk-gemini-upstream', 'sk-gemini-upstream-fallback'], 'Gemini CLI 的 UNAVAILABLE 必须由 retry_next_account 切换至备用账号')
 }
 
 async function assertGeminiLocalAuthError(baseUrl: string): Promise<void> {
@@ -1802,8 +1793,19 @@ async function assertOpenAIResponsesToGeminiNativeGuidance(baseUrl: string, loca
 
 function assertGeminiPolicyBoundary(): void {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
-  assert.equal(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE), false, 'Gemini 不得内置任何上游错误语义处置规则')
-  assert.equal(defaultRules.some((rule) => rule.id === 'default_gemini_cli_retryable_error'), false, 'Gemini CLI 画像不得按供应商错误类型自动获得切号规则')
+  assert(defaultRules.some((rule) => (
+    rule.id === 'default_gemini_cli_retryable_error'
+    && rule.protocolCode === GEMINI_PROTOCOL_CODE
+    && rule.match.clientProfiles?.includes('gemini_cli')
+    && rule.match.errorTypes?.includes('UNAVAILABLE')
+    && rule.action === 'retry_next_account'
+  )), 'Gemini CLI 必须使用专属可重试系统默认规则请求下一个账号')
+  assert(defaultRules.some((rule) => (
+    rule.id === 'default_gemini_error_object'
+    && rule.protocolCode === GEMINI_PROTOCOL_CODE
+    && rule.match.jsonPathsExists?.includes('error')
+    && rule.action === 'retry_no_avoidance'
+  )), 'Gemini 协议必须使用通用 error 对象系统默认规则')
 }
 
 function createGeminiMockUpstream(): http.Server {

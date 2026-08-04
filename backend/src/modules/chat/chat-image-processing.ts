@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 
-import pLimit from 'p-limit'
 import sharp, { type Metadata } from 'sharp'
 import { chatImageInputPolicy } from './chat-image-policy.js'
 
@@ -14,7 +13,6 @@ export const chatImageMaxEdge = chatImageInputPolicy.maxEdge
 export const chatImageWebpQuality = chatImageInputPolicy.quality
 const maxModelImagePatches = 2_500
 const patchEdge = 32
-const imageProcessingLimit = pLimit(2)
 
 export type ChatProcessedImageMimeType = 'image/webp'
 
@@ -40,7 +38,7 @@ export class ChatImageProcessingError extends Error {
 }
 
 export async function processChatImageFile(filePath: string): Promise<ChatProcessedImage> {
-  return imageProcessingLimit(async () => {
+  return await (async () => {
     let metadata: Metadata
     try {
       metadata = await sharp(filePath, {
@@ -71,7 +69,7 @@ export async function processChatImageFile(filePath: string): Promise<ChatProces
       byteSize: output.buffer.byteLength,
       sha256: createHash('sha256').update(output.buffer).digest('hex')
     }
-  })
+  })()
 }
 
 async function encodeModelImage(input: {

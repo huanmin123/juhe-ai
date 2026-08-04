@@ -929,6 +929,23 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'account_api_key_pool_probe_cursor'
+    action: 'read'
+    accountId: string
+    purpose: import('../../storage/account-api-key-pool-probe-cursor.repository.js').AccountApiKeyPoolProbeCursorPurpose
+  }
+  | {
+    type: 'account_api_key_pool_probe_cursor'
+    action: 'save'
+    input: import('../../storage/account-api-key-pool-probe-cursor.repository.js').AccountApiKeyPoolProbeCursorInput
+  }
+  | {
+    type: 'account_api_key_pool_probe_cursor'
+    action: 'delete'
+    accountId: string
+    purpose: import('../../storage/account-api-key-pool-probe-cursor.repository.js').AccountApiKeyPoolProbeCursorPurpose
+  }
+  | {
     type: 'find_account_for_cooldown_retest'
     accountId: string
   }

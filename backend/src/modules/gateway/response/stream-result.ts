@@ -26,6 +26,8 @@ export interface StreamPipeResult {
   semanticCommitted: boolean
   uncommittedResponseBody?: Buffer
   responseInspection?: ResponseInspectionDecision
+  /** An upstream failure terminal deliberately forwarded without semantic handling. */
+  passthroughUpstreamFailure?: boolean
   responseInspectionObservations?: ResponseInspectionDecision[]
   responseInspectionObservationOmittedCount?: number
   bodyOmission?: StreamBodyOmissionSummary
@@ -85,7 +87,8 @@ export function streamResult(
   semanticCommitted = outputReceived || imageOutputReceived,
   uncommittedResponseBody?: Buffer,
   responseResourceId?: string,
-  protocolValidated = false
+  protocolValidated = false,
+  passthroughUpstreamFailure = false
 ): StreamPipeResult {
   const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
     ? undefined
@@ -115,6 +118,7 @@ export function streamResult(
     semanticCommitted,
     uncommittedResponseBody,
     responseInspection,
+    passthroughUpstreamFailure: passthroughUpstreamFailure || undefined,
     responseInspectionObservations: responseInspectionObservations.length ? [...responseInspectionObservations] : undefined,
     responseInspectionObservationOmittedCount: responseInspectionObservationOmittedCount > 0 ? responseInspectionObservationOmittedCount : undefined,
     bodyOmission

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   createAccountBalanceSnapshotCleanupCoordinator
 } from '../../modules/accounts/account-balance-snapshot-cleanup.service.js'
@@ -234,7 +235,10 @@ const registrations = Array.from({ length: 100 }, (_, index) => boundedCoordinat
 assert(registrations.every((result) => result === undefined), '批量保存只能同步登记清理项')
 assert.equal(boundedCoordinator.snapshot().pendingCount, 100, '100 个批量清理项应先进入有界队列')
 await waitFor(() => boundedCoordinator.snapshot().completedCount === 100, 5_000)
-assert.equal(maxActiveDeletes, 2, '首次删除和后续重试必须共同遵守并发上限 2')
+assert.ok(
+  maxActiveDeletes <= runtimeConfig.concurrency.globalMax,
+  '账户余额旧快照清理不得超过全局共享池容量'
+)
 
 const cleanupSource = readFileSync(new URL('../../modules/accounts/account-balance-snapshot-cleanup.service.ts', import.meta.url), 'utf8')
 const accountStatusSnapshotSource = readFileSync(new URL('../../modules/accounts/account-status-snapshot.service.ts', import.meta.url), 'utf8')

@@ -18,7 +18,7 @@ import {
   type NormalRouteLatencyProbeCandidate
 } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, globalSharedQueueConcurrency, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface NormalRouteSpeedFirstRecoveryProbeQueueItem extends NormalRouteLatencyProbeCandidate {}
 
@@ -27,8 +27,10 @@ const normalRouteSpeedFirstRecoveryProbeRetryPolicy = sequenceRetryPolicy('norma
 const normalRouteSpeedFirstRecoveryProbeQueue = createRetryQueue<NormalRouteSpeedFirstRecoveryProbeQueueItem>({
   name: 'normal-route-speed-first-recovery-probe',
   policy: normalRouteSpeedFirstRecoveryProbeRetryPolicy,
-  concurrency: 1,
-  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runNormalRouteSpeedFirstRecoveryProbeQueueItem(item, context)),
+  concurrency: globalSharedQueueConcurrency,
+  run: async (item, context) => await runWithBackgroundFullDiagnosticSlot(
+    () => runNormalRouteSpeedFirstRecoveryProbeQueueItem(item, context)
+  ),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_normal_route_speed_first_recovery_probe_exhausted',
@@ -47,10 +49,6 @@ export function enqueueNormalRouteSpeedFirstRecoveryProbe(candidate: NormalRoute
 
 export function getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot() {
   return normalRouteSpeedFirstRecoveryProbeQueue.snapshot()
-}
-
-export function setNormalRouteSpeedFirstRecoveryProbeQueueConcurrency(concurrency: number): void {
-  normalRouteSpeedFirstRecoveryProbeQueue.setConcurrency(concurrency)
 }
 
 async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(

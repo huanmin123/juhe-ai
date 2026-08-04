@@ -1,6 +1,7 @@
 export class GatewayDownstreamCommitState {
   transportCommitted = false
   semanticCommitted = false
+  successfulProtocolTerminalReceived = false
   downstreamBytesWritten = 0
 
   markTransportCommitted(bytesWritten = 0): void {
@@ -12,6 +13,10 @@ export class GatewayDownstreamCommitState {
     this.transportCommitted = true
     this.semanticCommitted = true
     this.downstreamBytesWritten += normalizedBytes(bytesWritten)
+  }
+
+  markSuccessfulProtocolTerminalReceived(): void {
+    this.successfulProtocolTerminalReceived = true
   }
 
   canRetryUpstream(): boolean {

@@ -94,7 +94,7 @@
 - ops-worker 冷却复测：自动处理系统 transport 来源的 `temporary_unavailable`，按冷却时间和退避策略持续复测，直到恢复、进入长期低频复测或用户手动处理。用户显式 `temporary_unavailable / rate_limited` 只由匹配来源任务、配置 TTL 或人工恢复处理，不被通用 transport 复测越权清理。
 - 后台系统探针统一采用三类本地事实：`framing_complete_neutral`、`transport_failed`、`unknown`。完整 HTTP framing 或 SSE 在无读取中断时正常结束均为 `framing_complete_neutral`，无论状态码、正文、错误对象或协议完成字段如何；它最多关闭匹配来源的轻量 transport 怀疑，并不是 Key / 账户业务成功证据，不能恢复 `runtime_degraded`、`precheck_pending`、持久冷却或父 account。建连失败、lane hard timeout、真实读取中断和未完成 framing 为 `transport_failed`，可推进传输状态机。只有协议校验成功且 framing 完整才形成 `complete_success`。客户端中止、执行器内部错误、检查模型配置异常、未实际派发或无法归因结果为 `unknown`，不改变状态和确认计数，只按现有退避与 jitter 推迟 due。禁止用是否收到响应头、状态码范围、错误码或错误文案把完整响应分类成失败。
 - ops-worker 冷却复测必须按 `(cooldown_until, priority, created_at, id)` 复合游标公平扫描，并在扫描到末尾后回绕。已在队列或执行中的账户不能永久占用固定查询窗口，避免前排账户让后续到期账户长期得不到复测。
-- 每个进程内的自动完整诊断共享最多 3 路门禁，不能随批量设置或同进程多个队列叠加放大；server 运行态恢复探针、恢复探针升级后的 precheck 和 Redis 运行态探针也必须共享同一 3 路门禁。不同 worker 不引入 Redis 全局诊断锁，依靠任务归属、启动错峰和 DB service 优先级隔离。冷却复测、Key 级冷却复测和速度优先恢复探针在 ops-worker 启动后分别延迟 60、65、75 秒执行首轮，避免与 stats-worker 启动期窗口刷新同时争用 DB service。探针 DB service 请求窗口为 30 秒，超时日志必须携带具体 operation 类型。
+- 后台自动完整诊断默认各自最多 5 路，可通过对应业务环境变量设置局部上限；完整诊断池同时受 `JUHE_AI_CONCURRENCY_GLOBAL_MAX`（默认 5000）共享池约束。server 运行态恢复探针保留账户状态机的独立单飞和最小间隔，不能用一般后台池替代；它的局部上限单独配置。不同 worker 不引入 Redis 全局诊断锁，依靠任务归属、启动错峰和 DB service 优先级隔离。冷却复测、Key 级冷却复测和速度优先恢复探针在 ops-worker 启动后分别延迟 60、65、75 秒执行首轮，避免与 stats-worker 启动期窗口刷新同时争用 DB service。探针 DB service 请求窗口为 30 秒，超时日志必须携带具体 operation 类型。
 - `error` 只在明确硬异常时写入；可自动恢复的后台任务成功后可以清理，不能把普通上游抖动写成长期硬错误。
 
 ## 状态事件触发探针调度器

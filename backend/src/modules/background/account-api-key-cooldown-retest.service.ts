@@ -1,16 +1,18 @@
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
-import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { testOpenAIAccountDiagnosticAttempt } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { runAccountApiKeyPoolDiagnostic } from '../accounts/account-api-key-pool-diagnostic.js'
+import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, globalSharedQueueConcurrency, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
   maxRecoveryHours: number
@@ -21,8 +23,8 @@ const accountApiKeyCooldownRetestRetryPolicy = sequenceRetryPolicy('account_api_
 const accountApiKeyCooldownRetestQueue = createRetryQueue<AccountApiKeyCooldownRetestQueueItem>({
   name: 'account-api-key-cooldown-retest',
   policy: accountApiKeyCooldownRetestRetryPolicy,
-  concurrency: 1,
-  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountApiKeyCooldownRetestQueueItem(item, context)),
+  concurrency: globalSharedQueueConcurrency,
+  run: async (item, context) => await runAccountApiKeyCooldownRetestQueueItem(item, context),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_account_api_key_cooldown_retest_retry_exhausted',
@@ -46,10 +48,6 @@ export function enqueueAccountApiKeyCooldownRetest(
 
 export function getAccountApiKeyCooldownRetestQueueSnapshot() {
   return accountApiKeyCooldownRetestQueue.snapshot()
-}
-
-export function setAccountApiKeyCooldownRetestQueueConcurrency(concurrency: number): void {
-  accountApiKeyCooldownRetestQueue.setConcurrency(concurrency)
 }
 
 async function runAccountApiKeyCooldownRetestQueueItem(
@@ -94,36 +92,59 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     ...candidateAccount,
     apiKey: item.apiKey,
     selectedApiKeyFingerprint: item.keyFingerprint,
-    selectedApiKeyIndex: item.keyIndex
+    selectedApiKeyIndex: item.keyIndex,
+    apiKeyRuntimeStateDisabled: true
   }
   const probeStartedAt = new Date().toISOString()
   let upstreamAttempt: UpstreamAttempt | undefined
   let diagnosticCanceled = false
   let diagnosticTimeoutExhausted = false
-  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    diagnostics: 'limited',
-    testEndpointMode: account.healthCheckEndpointMode,
-    groupId: account.boundGroupId,
-    systemAccountId,
-    trafficSource: 'cooldown_retest',
-    candidateAccount: fixedKeyCandidate,
-    disableAccountStateMutation: true,
-    retryAllFailures: true,
-    onDiagnosticAttemptResult: (attempt) => {
-      upstreamAttempt = attempt.upstreamAttempt
-      diagnosticCanceled = attempt.canceled
-      diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
-    },
-    onUpstreamAttempt: (attempt) => {
-      upstreamAttempt = attempt
-    },
-    findAccountForTest: loadAccountForTestViaDbService,
-    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-    gatewaySettingsOverride: {
-      temporaryUnschedulableRetryAttempts: 0,
-      temporaryUnschedulableRetryIntervalSeconds: 0
+  const diagnostic = await runAccountApiKeyPoolDiagnostic(fixedKeyCandidate, [currentKey], async ({ candidate: attemptCandidate, timeoutMs, signal }) => {
+    const attempt = await runWithBackgroundFullDiagnosticSlot(async () => await testOpenAIAccountDiagnosticAttempt(account, {
+      diagnostics: 'limited',
+      testEndpointMode: account.healthCheckEndpointMode,
+      groupId: account.boundGroupId,
+      systemAccountId,
+      trafficSource: 'cooldown_retest',
+      candidateAccount: attemptCandidate,
+      disableAccountStateMutation: true,
+      signal,
+      onUpstreamAttempt: (item) => {
+        upstreamAttempt = item
+      },
+      findAccountForTest: loadAccountForTestViaDbService,
+      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
+    }, timeoutMs))
+    upstreamAttempt = attempt.upstreamAttempt ?? upstreamAttempt
+    diagnosticCanceled = attempt.canceled
+    diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
+    return {
+      value: attempt.result,
+      success: attempt.result.success,
+      timedOutAfterRealUpstreamAttempt: attempt.diagnosticTimeoutExhausted
+        && Boolean(attempt.upstreamAttempt && isRealUpstreamAttempt(attempt.upstreamAttempt))
     }
-  })
+  }, { allowSingleEntry: true })
+  const result = diagnostic?.winner?.value ?? diagnostic?.attempts[0]?.value
+  if (diagnostic?.errors.length) {
+    logger.warn(errorLogFields(diagnostic.errors[0]?.error, {
+      event: 'background_account_api_key_cooldown_retest_attempt_failed',
+      accountId: account.id,
+      accountName: account.name,
+      keyFingerprint: item.keyFingerprint,
+      failedKeyCount: diagnostic.errors.length
+    }), '账户内 API Key 复测调用异常，已保留 Key 状态')
+    throw new AggregateError(diagnostic.errors.map((item) => item.error), `账户 ${account.id} 的 API Key 复测存在调用异常`)
+  }
+  if (!result) {
+    logger.warn({
+      event: 'background_account_api_key_cooldown_retest_missing_diagnostic_result',
+      accountId: account.id,
+      accountName: account.name,
+      keyFingerprint: item.keyFingerprint
+    }, '账户内 API Key 复测没有返回诊断结果，已保留 Key 状态')
+    return true
+  }
 
   const probeOutcome = automaticAccountProbeOutcome(result, {
     upstreamAttempt,

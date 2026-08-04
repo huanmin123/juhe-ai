@@ -29,20 +29,20 @@ import {
 } from './audit-log-transport.service.js'
 
 const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
-const auditLogFlushBatchMaxBytes = 8 * 1024 * 1024
-const auditLogScheduledFlushMaxBatches = 20
+const auditLogFlushBatchMaxBytes = runtimeConfig.background.auditLogFlushBatchMaxMb * 1024 * 1024
+const auditLogScheduledFlushMaxBatches = runtimeConfig.background.auditLogScheduledFlushMaxBatches
 const auditLogFlushBatchYieldMs = 5
-const auditLogShutdownFlushMaxBatches = 100
+const auditLogShutdownFlushMaxBatches = runtimeConfig.background.auditLogShutdownFlushMaxBatches
 const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
 const auditLogEstimateMaxStringChars = 16 * 1024
 const auditLogInlineTransportMaxBytes = 256 * 1024
-const auditLogPostgresFlushBatchSize = 25
-const auditLogPostgresRedisConsumerConcurrency = 1
+const auditLogPostgresFlushBatchSize = runtimeConfig.background.auditLogPostgresFlushBatchSize
+const auditLogPostgresRedisConsumerConcurrency = runtimeConfig.background.auditLogPostgresRedisConsumerConcurrency
 const auditLogRedisStreamKey = redisStreamQueueContracts.auditLogs.streamKey
 const auditLogRedisStreamGroup = redisStreamQueueContracts.auditLogs.groupName
 const auditLogRedisConsumerErrorRetryMs = 1000
-const auditLogRedisStreamMaxItems = 50_000
-const auditLogRedisStreamMaxMemoryBytes = 256 * 1024 * 1024
+const auditLogRedisStreamMaxItems = runtimeConfig.background.auditLogRedisStreamMaxItems
+const auditLogRedisStreamMaxMemoryBytes = runtimeConfig.background.auditLogRedisStreamMaxMb * 1024 * 1024
 
 let pendingAuditLogs: QueuedAuditLog[] = []
 let flushTimer: NodeJS.Timeout | undefined

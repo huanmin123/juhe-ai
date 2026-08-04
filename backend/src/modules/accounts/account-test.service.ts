@@ -151,6 +151,52 @@ export async function testOpenAIAccountWithDiagnosticRetries(
   return accountTestResultWithTotalDuration(result, startedAt)
 }
 
+export interface AccountDiagnosticSingleAttemptResult {
+  result: AccountTestResult
+  upstreamAttempt?: UpstreamAttempt
+  canceled: boolean
+  diagnosticTimeoutExhausted: boolean
+}
+
+export async function testOpenAIAccountDiagnosticAttempt(
+  account: AccountSummary,
+  input: AccountTestInput,
+  timeoutMs: number
+): Promise<AccountDiagnosticSingleAttemptResult> {
+  let upstreamAttempt: UpstreamAttempt | undefined
+  let canceled = false
+  let diagnosticTimeoutExhausted = false
+  const model = await resolveAccountTestModelAsync(account, {
+    explicitModel: input.model,
+    systemAccountId: input.systemAccountId,
+    testEndpointMode: input.testEndpointMode
+  })
+  const result = await runAccountDiagnosticAttempts(account, {
+    ...input,
+    onUpstreamAttempt: (attempt) => {
+      upstreamAttempt = attempt
+      input.onUpstreamAttempt?.(attempt)
+    },
+    onDiagnosticAttemptResult: (attempt) => {
+      upstreamAttempt = attempt.upstreamAttempt ?? upstreamAttempt
+      canceled = attempt.canceled
+      diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
+      input.onDiagnosticAttemptResult?.(attempt)
+    }
+  }, {
+    model,
+    probeKind: input.forceProbeKind ?? await accountTestProbeKindAsync(account, model, {
+      systemAccountId: input.systemAccountId,
+      testEndpointMode: input.testEndpointMode
+    }),
+    timeoutSchedule: [timeoutMs],
+    startedAt: Date.now(),
+    retryEvent: 'account_diagnostic_single_attempt_retry_suppressed',
+    retryMessage: '单次 API Key 诊断不重复发送上游请求'
+  })
+  return { result, upstreamAttempt, canceled, diagnosticTimeoutExhausted }
+}
+
 export async function discoverAccountUpstreamModels(
   account: AccountSummary,
   input: AccountTestInput = {}

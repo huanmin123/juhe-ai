@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto'
 
-import pLimit from 'p-limit'
-
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../../shared/concurrency-governor.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
 import type { AccountProbeObservation, AccountRuntimeProbePresentation } from '../../../domain/types.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
@@ -336,28 +335,25 @@ const failureStormDistinctIpThreshold = 2
 const failureStormMinObservationMs = 60_000
 const failureStormRecentSuccessGraceMs = 5_000
 const failureStormFailureRatioThreshold = 0.9
-const precheckMinIntervalMs = 60_000
+const precheckMinIntervalMs = runtimeConfig.gateway.automaticProbePrecheckMinIntervalMs
 const precheckMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 const precheckSuppressionGuardMs = accountDiagnosticRetryMaxTotalTimeoutMs + 15_000
-const precheckConcurrencyDrainPollMs = 1_000
-const recoveryProbeRetryDelayMs = 10_000
-const recoveryProbePrecheckFailureThreshold = 2
-const recoveryProbeMaxConcurrentRuns = runtimeConfig.gateway.automaticProbeMaxConcurrency
-const recoveryProbeAccountMinIntervalMs = 3_000
-const recoveryProbeScopeMinIntervalMs = 1_000
-const recoveryProbeBudgetDelayMs = 1_000
-const recoveryProbeJitterMs = 750
+const precheckConcurrencyDrainPollMs = runtimeConfig.gateway.automaticProbeConcurrencyDrainPollMs
+const recoveryProbeRetryDelayMs = runtimeConfig.gateway.automaticProbeRecoveryRetryDelayMs
+const recoveryProbePrecheckFailureThreshold = runtimeConfig.gateway.automaticProbeRecoveryPrecheckFailureThreshold
+const recoveryProbeAccountMinIntervalMs = runtimeConfig.gateway.automaticProbeRecoveryAccountMinIntervalMs
+const recoveryProbeScopeMinIntervalMs = runtimeConfig.gateway.automaticProbeRecoveryScopeMinIntervalMs
+const recoveryProbeJitterMs = runtimeConfig.gateway.automaticProbeRecoveryJitterMs
 const distributedRecoveryProbeStateTtlMs = Math.max(localSuppressionMaxMs, precheckSuppressionGuardMs) + 5 * 60_000
-const distributedRecoveryProbeSweepIntervalMs = 1_000
-const distributedRecoveryProbeSweepBatchSize = 25
-const distributedRecoveryProbeDueRetryDelayMs = 250
+const distributedRecoveryProbeSweepIntervalMs = runtimeConfig.gateway.automaticProbeSweepIntervalMs
+const distributedRecoveryProbeSweepBatchSize = runtimeConfig.gateway.automaticProbeSweepBatchSize
+const distributedRecoveryProbeDueRetryDelayMs = runtimeConfig.gateway.automaticProbeDueRetryDelayMs
+const distributedRecoveryProbeStateReadBatchSize = runtimeConfig.gateway.automaticProbeStateReadBatchSize
 const configuredPolicyAvoidanceCacheTtlMs = 1000
 const configuredPolicyAvoidanceNegativeCacheTtlMs = 500
 const configuredPolicyAvoidanceCacheMaxEntries = 5000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
-const gatewayAutomaticProbeLimit = pLimit(recoveryProbeMaxConcurrentRuns)
-
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
 const configuredPolicyAvoidanceStore = createRuntimeStateStore('gateway-configured-account-policy-avoidance')
 const sideEffectQueue = new AccountSideEffectQueue()
@@ -1343,7 +1339,7 @@ function currentPrecheckState(runtimeKey: string, generation: number): PrecheckS
 }
 
 function recoveryProbeBudgetWaitMs(state: RecoveryProbeState, now: number): number {
-  let waitMs = runningRecoveryProbeCount >= recoveryProbeMaxConcurrentRuns ? recoveryProbeBudgetDelayMs : 0
+  let waitMs = 0
   for (const scope of recoveryProbeBudgetScopes(state.account)) {
     const lastStartedAtMs = recoveryProbeLastStartedAtByScope.get(scope.key)
     if (lastStartedAtMs === undefined) continue
@@ -1747,8 +1743,8 @@ async function filterDistributedPrecheckSuppressions<T extends SuppressibleGatew
   const now = Date.now()
   const runtimeKeys = accounts.map((account) => gatewayAccountRuntimeKey(account))
   const states = new Map<string, DistributedRecoveryProbeState>()
-  for (let index = 0; index < runtimeKeys.length; index += 100) {
-    const batch = await distributedRecoveryProbeStore.getMany(runtimeKeys.slice(index, index + 100))
+  for (let index = 0; index < runtimeKeys.length; index += distributedRecoveryProbeStateReadBatchSize) {
+    const batch = await distributedRecoveryProbeStore.getMany(runtimeKeys.slice(index, index + distributedRecoveryProbeStateReadBatchSize))
     for (const [runtimeKey, state] of batch) states.set(runtimeKey, state)
   }
   const blocked = accounts.flatMap((account, index) => {
@@ -2822,7 +2818,7 @@ function canUseProcessLocalGatewayAccountRuntimeState(): boolean {
 }
 
 async function runWithGatewayAutomaticProbeSlot<T>(task: () => Promise<T>): Promise<T> {
-  return await gatewayAutomaticProbeLimit(task)
+  return await runWithGlobalBackgroundConcurrencySlot(task)
 }
 
 export async function runWithGatewayAutomaticProbeSlotForTest<T>(task: () => Promise<T>): Promise<T> {

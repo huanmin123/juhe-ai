@@ -53,7 +53,7 @@ import { observeGatewayRouting } from './observability/routing-observability.ser
 import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
 import { createGatewaySseWaitHeartbeat } from './response/sse-wait-heartbeat.js'
-import type { GatewayDownstreamCommitState } from './response/downstream-commit-state.js'
+import { GatewayDownstreamCommitState } from './response/downstream-commit-state.js'
 import { handleUpstreamRequestError } from './response/failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './request/error-response.js'
 import {
@@ -66,6 +66,7 @@ import {
 } from './request/preflight.js'
 import { resolveNextHybridGatewayRoute } from './hybrid/routing.service.js'
 import { appendHybridQualityRepairInstruction } from './hybrid/quality-repair.service.js'
+import { recoverCodexEncryptedContentRequest } from './request/codex-encrypted-content-recovery.js'
 import {
   fetchFirstAvailableUpstream,
   GatewayRequestWallBudgetExhaustedError,
@@ -155,6 +156,7 @@ interface GatewayResponseErrorBoundaryOptions {
   endpoint: string
   auditCapture: Pick<ReturnType<typeof createAuditCapture>, 'markDownstreamClosed'>
   clearActiveDownstreamSessionAffinity: () => Promise<void>
+  successfulProtocolTerminalReceived?: () => boolean
   reportError?: (error: unknown, fields: Record<string, unknown>, message: string) => void
 }
 
@@ -229,6 +231,7 @@ export async function handleOpenAIGatewayRequest(
   const requestAttemptTracker = new GatewayRequestAttemptTracker()
   const httpCompletion = observeGatewayHttpCompletion(res)
   const abortController = new AbortController()
+  const downstreamCommitState = new GatewayDownstreamCommitState()
   const traceId = getTraceId() ?? createTraceId()
   const routeCoordinationBudget = new RouteCoordinationBudget({ requestId: traceId })
   let downstreamLifecycleStartedAt = performance.now()
@@ -245,7 +248,9 @@ export async function handleOpenAIGatewayRequest(
   }
   res.once('finish', () => logDownstreamLifecycle('success'))
   res.once('close', () => {
-    if (!res.writableFinished) logDownstreamLifecycle('aborted')
+    if (!res.writableFinished && !downstreamCommitState.successfulProtocolTerminalReceived) {
+      logDownstreamLifecycle('aborted')
+    }
   })
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
@@ -290,10 +295,12 @@ export async function handleOpenAIGatewayRequest(
     traceId,
     endpoint,
     auditCapture,
-    clearActiveDownstreamSessionAffinity
+    clearActiveDownstreamSessionAffinity,
+    successfulProtocolTerminalReceived: () => downstreamCommitState.successfulProtocolTerminalReceived
   })
   req.once('aborted', () => {
     if (isGatewayForcedDownstreamClose(res)) return
+    if (downstreamCommitState.successfulProtocolTerminalReceived) return
     const abortSource = gatewayRequestAbortSource(req)
     if (abortSource === 'server_diagnostic_timeout') {
       auditCapture.markServerDiagnosticTimeout()
@@ -313,6 +320,7 @@ export async function handleOpenAIGatewayRequest(
   })
   res.once('close', () => {
     if (!isGatewayForcedDownstreamClose(res)) {
+      if (downstreamCommitState.successfulProtocolTerminalReceived) return
       if (!res.writableFinished) {
         const abortSource = gatewayRequestAbortSource(req)
         if (abortSource === 'server_diagnostic_timeout') {
@@ -459,7 +467,8 @@ export async function handleOpenAIGatewayRequest(
         trafficSource,
         requestLane,
         routeCoordinationBudget,
-        requestAttemptTracker
+        requestAttemptTracker,
+        downstreamCommitState
       },
       startedAt,
       traceId,
@@ -506,9 +515,14 @@ export async function handleOpenAIGatewayRequest(
   let speedFirstRetryCandidateAccountIds: Set<string> | undefined
   let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
   let activeCompactSseWaitHeartbeat: ReturnType<typeof createGatewaySseWaitHeartbeat> | undefined
-  let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
-  let pendingSemanticRetryId: string | undefined
-  let codexTurnAvoidedFallbackEnabled = false
+let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
+let pendingSemanticRetryId: string | undefined
+let pendingCodexEncryptedContentRecovery: {
+  accountId: string
+  body: Buffer
+  semanticRetryId: string
+} | undefined
+let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
   const enteredRouteGroupIds = new Set<string>([currentPreflight.usageContext.groupId])
   let forceRecoverableFailureWait = false
@@ -598,6 +612,7 @@ export async function handleOpenAIGatewayRequest(
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
+    pendingCodexEncryptedContentRecovery = undefined
     speedFirstByteRetryCount = 0
     speedFirstRetryCandidateAccountIds = undefined
     speedFirstCutoverReservation?.release()
@@ -791,6 +806,9 @@ export async function handleOpenAIGatewayRequest(
       if (!pendingAccountCircuitConfirmation && speedFirstRetryCandidateAccountIds) {
         dispatchAccounts = dispatchAccounts.filter((account) => speedFirstRetryCandidateAccountIds?.has(account.id))
       }
+      if (pendingCodexEncryptedContentRecovery) {
+        dispatchAccounts = dispatchAccounts.filter((account) => account.id === pendingCodexEncryptedContentRecovery?.accountId)
+      }
       if (dispatchAccounts.length === 0) {
         if (
           !codexTurnAvoidedFallbackEnabled
@@ -942,6 +960,8 @@ export async function handleOpenAIGatewayRequest(
       const upstreamDispatchStartedAt = performance.now()
       const semanticRetryId = pendingSemanticRetryId
       pendingSemanticRetryId = undefined
+      const requestBodyOverride = pendingCodexEncryptedContentRecovery
+      pendingCodexEncryptedContentRecovery = undefined
       if (shouldKeepCodexCompactSseAliveDuringUpstreamWait(req, currentPreflight)) {
         activeCompactSseWaitHeartbeat = createGatewaySseWaitHeartbeat({
           res,
@@ -980,6 +1000,7 @@ export async function handleOpenAIGatewayRequest(
             routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
             requestAttemptTracker: currentPreflight.requestAttemptTracker,
             semanticRetryId,
+            requestBodyOverride,
             normalRouteFirstByteConfig,
             onNormalRouteFirstByteDeadline,
             onUpstreamAttemptStarted: (account, upstreamUrl) => {
@@ -1480,6 +1501,74 @@ export async function handleOpenAIGatewayRequest(
           return
         }
         if (handledResponse.retryUpstream) {
+          const compatibilityRecovery = await recoverCodexEncryptedContentRequest({
+            req,
+            account,
+            requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
+            body: upstreamResult.requestBody,
+            upstreamErrorText: handledResponse.compatibilityRecoverySignal
+              ?? handledResponse.uncommittedResponseBody?.toString('utf8')
+              ?? handledResponse.message,
+            signal: requestExecutionSignal
+          })
+          if (compatibilityRecovery.action === 'retry_with_body_variant') {
+            pendingCodexEncryptedContentRecovery = {
+              accountId: account.id,
+              body: compatibilityRecovery.body,
+              semanticRetryId: compatibilityRecovery.semanticRetryId
+            }
+            pendingSemanticRetryId = compatibilityRecovery.semanticRetryId
+            auditCapture.addGatewayMetadata({
+              label: 'codex_encrypted_content_recovery_retry',
+              metadata: {
+                accountId: account.id,
+                upstreamUrl,
+                transport: 'sse_or_json',
+                ...compatibilityRecovery.metadata
+              }
+            })
+            continue
+          }
+          if (compatibilityRecovery.action === 'not_recoverable' && compatibilityRecovery.signal) {
+            auditCapture.addGatewayMetadata({
+              label: 'codex_encrypted_content_recovery_skipped',
+              metadata: {
+                accountId: account.id,
+                upstreamUrl,
+                transport: 'sse_or_json',
+                signal: compatibilityRecovery.signal,
+                reason: compatibilityRecovery.reason
+              }
+            })
+          }
+          if (handledResponse.retryReason === 'codex_encrypted_content_recovery') {
+            auditCapture.addGatewayMetadata({
+              label: 'codex_encrypted_content_recovery_stopped',
+              metadata: {
+                accountId: account.id,
+                upstreamUrl,
+                reason: compatibilityRecovery.action === 'not_recoverable'
+                  ? compatibilityRecovery.reason
+                  : 'recovery_not_applicable'
+              }
+            })
+            await sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              retryReason: handledResponse.retryReason,
+              decision: handledResponse.responseInspection,
+              message: handledResponse.message,
+              errorCode: handledResponse.errorCode,
+              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
+              accountId: account.id,
+              clientStrategy,
+              downstreamCommitState: currentPreflight.downstreamCommitState
+            })
+            return
+          }
           if (circuitDecision?.outcome === 'confirmation_acquired') {
             // Confirmation is intentionally deferred to a later request. The
             // request that observed the failure may rotate to another account,
@@ -2133,7 +2222,9 @@ export function attachGatewayResponseErrorBoundary(
     const downstreamDisconnected = isKnownDownstreamResponseDisconnect(errorCode)
     const writableFinished = res.writableFinished
     const gatewayForcedDownstreamClose = isGatewayForcedDownstreamClose(res)
-    const shouldHandleAsDownstreamFailure = !writableFinished && !gatewayForcedDownstreamClose
+    const shouldHandleAsDownstreamFailure = !writableFinished
+      && !gatewayForcedDownstreamClose
+      && options.successfulProtocolTerminalReceived?.() !== true
     if (shouldHandleAsDownstreamFailure && downstreamDisconnected) {
       options.auditCapture.markDownstreamClosed()
     }

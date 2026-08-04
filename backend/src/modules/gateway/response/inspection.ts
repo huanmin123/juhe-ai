@@ -75,7 +75,7 @@ export interface ResponseInspectionDecision {
   policyId?: string
   policyName?: string
   policySource?: ResponseInspectionPolicySource
-  replayAuthority?: 'explicit_user_policy'
+  replayAuthority?: 'explicit_user_policy' | 'system_default_retry_next_account'
   policyScopeType?: ResponseInspectionPolicyScopeType
   policyProtocolCode?: string
   policyProviderCode?: string
@@ -155,7 +155,6 @@ export function responseInspectionFailurePayloadForDecision(
 ): ResponseInspectionFailurePayload {
   const clientRetryCode = clientRetryEnabled
     && decision.retryEnabled === true
-    && decision.triggerPhase === 'before_downstream_write'
     ? gatewayStreamClientRetryErrorCode
     : undefined
   const errorCode = clientRetryCode ?? decision.rewriteErrorCode ?? 'response_inspection_matched'
@@ -174,10 +173,8 @@ export function matchRuntimeResponseInspectionPolicy(
     if (!policy.enabled) continue
     if (
       policy.source === 'system_default'
-      && (
-        policy.id !== codexCompactionContractPolicyId
-        || frame.provenance !== 'gateway_protocol_contract'
-      )
+      && policy.id === codexCompactionContractPolicyId
+      && frame.provenance !== 'gateway_protocol_contract'
     ) continue
     if (!policyMatchesRuntimeContext(policy, context)) continue
     const match = firstPositiveMatch(frame, policy.match)
@@ -276,8 +273,14 @@ function buildPolicyDecision(
     policyId: policy.id,
     policyName: policy.name,
     policySource: policy.source,
-    ...(policy.source !== 'system_default' && policy.action === 'retry_next_account'
-      ? { replayAuthority: 'explicit_user_policy' as const }
+    ...(policy.action === 'retry_next_account'
+      || policy.action === 'avoid_account_ttl'
+      || policy.action === 'avoid_upstream_bucket_ttl'
+      ? {
+          replayAuthority: policy.source === 'system_default'
+            ? 'system_default_retry_next_account' as const
+            : 'explicit_user_policy' as const
+        }
       : {}),
     policyScopeType: policy.scopeType,
     policyProtocolCode: policy.protocolCode,

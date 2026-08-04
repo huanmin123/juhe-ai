@@ -1,5 +1,6 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../../shared/concurrency-governor.js'
 
 const pendingGatewayFailureUsageFinalizations = new Set<Promise<void>>()
 const queuedGatewayUsageFinalizations: Array<{
@@ -8,7 +9,7 @@ const queuedGatewayUsageFinalizations: Array<{
 }> = []
 const gatewayUsageFinalizationMaxItems = runtimeConfig.gateway.usageFinalizationMaxItems
 const gatewayUsageFinalizationMaxBytes = 64 * 1024 * 1024
-const gatewayUsageFinalizationMaxConcurrency = runtimeConfig.gateway.usageFinalizationMaxConcurrency
+const gatewayUsageFinalizationMaxConcurrency = runtimeConfig.concurrency.globalMax
 let queuedGatewayUsageFinalizationBytes = 0
 let activeGatewayUsageFinalizations = 0
 let admissionWaitCount = 0
@@ -119,7 +120,7 @@ function pumpGatewayUsageFinalizations(): void {
     notifyGatewayUsageFinalizationCapacity()
     activeGatewayUsageFinalizations += 1
     const task = Promise.resolve()
-      .then(queued.taskFactory)
+      .then(async () => await runWithGlobalBackgroundConcurrencySlot(queued.taskFactory))
       .finally(() => {
         activeGatewayUsageFinalizations = Math.max(0, activeGatewayUsageFinalizations - 1)
         pumpGatewayUsageFinalizations()

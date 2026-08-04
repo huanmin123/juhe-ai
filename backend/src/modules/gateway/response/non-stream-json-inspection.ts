@@ -59,6 +59,7 @@ import {
   parseGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
+import { isSuccessfulEmptyUpstreamResponseAllowed } from './empty-upstream-response.js'
 export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
   res: Response
@@ -85,17 +86,33 @@ export async function inspectBufferedGatewayJsonResponse(input: {
 }): Promise<UpstreamResponseHandlingResult | undefined> {
   const parsedJsonBody = input.parsedJsonBody
     ?? parseGatewayNonStreamJsonBody(input.responseBody.length > 0 ? input.responseBodyText : undefined, input.upstreamResponse.headers)
-  const protocolFailure = input.protocolValidationEnabled
-    ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
-    : undefined
-  if (protocolFailure) {
-    return finalizeBufferedJsonProtocolFailure({
-      ...input,
-      parsedJsonBody,
-      accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
-    }, protocolFailure)
-  }
+  if (
+    parsedJsonBody.status === 'valid'
+    && isCodexResponsesCyberPolicyFailedJson({
+      req: input.req,
+      account: input.account,
+      clientStrategy: input.clientStrategy,
+      upstreamStatus: input.upstreamResponse.status,
+      parsedJson: parsedJsonBody.value
+    })
+  ) return undefined
   if (parsedJsonBody.status !== 'valid') {
+    const emptySuccessAllowed = parsedJsonBody.status === 'empty'
+      && isSuccessfulEmptyUpstreamResponseAllowed({
+        req: input.req,
+        account: input.account,
+        statusCode: input.upstreamResponse.status
+      })
+    const protocolFailure = !emptySuccessAllowed && input.protocolValidationEnabled
+      ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
+      : undefined
+    if (protocolFailure) {
+      return finalizeBufferedJsonProtocolFailure({
+        ...input,
+        parsedJsonBody,
+        accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
+      }, protocolFailure)
+    }
     return undefined
   }
   const parsedJson = parsedJsonBody.value
@@ -103,7 +120,19 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  if (!interpretUpstreamResponseSemantics && (input.responseInspectionPolicies?.length ?? 0) === 0) return undefined
+  if (!interpretUpstreamResponseSemantics && (input.responseInspectionPolicies?.length ?? 0) === 0) {
+    const protocolFailure = input.protocolValidationEnabled
+      ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
+      : undefined
+    if (protocolFailure) {
+      return finalizeBufferedJsonProtocolFailure({
+        ...input,
+        parsedJsonBody,
+        accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
+      }, protocolFailure)
+    }
+    return undefined
+  }
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)
   const context = {
     clientProfile: input.clientStrategy?.clientProfile ?? defaultClientProfile,
@@ -111,6 +140,16 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     codexCompactionExpected: input.clientStrategy?.codexCompactionExpected
   }
   if (context.clientProfile === 'generic_anthropic' && (input.responseInspectionPolicies?.length ?? 0) === 0) {
+    const protocolFailure = input.protocolValidationEnabled
+      ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
+      : undefined
+    if (protocolFailure) {
+      return finalizeBufferedJsonProtocolFailure({
+        ...input,
+        parsedJsonBody,
+        accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
+      }, protocolFailure)
+    }
     return undefined
   }
   const frames = extractGatewayProtocolJsonSemanticFramesForRequest(parsedJson, input.req, input.account)
@@ -127,7 +166,19 @@ export async function inspectBufferedGatewayJsonResponse(input: {
       frames.push(mismatchFrame)
     }
   }
-  if (frames.length === 0) return undefined
+  if (frames.length === 0) {
+    const protocolFailure = input.protocolValidationEnabled
+      ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
+      : undefined
+    if (protocolFailure) {
+      return finalizeBufferedJsonProtocolFailure({
+        ...input,
+        parsedJsonBody,
+        accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
+      }, protocolFailure)
+    }
+    return undefined
+  }
   const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
 
   const policies = resolveRuntimeResponseInspectionPolicies({
@@ -150,7 +201,19 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     input.accountStateMutationEnabled,
     input.usageContext
   )
-  if (!inspection.decision) return undefined
+  if (!inspection.decision) {
+    const protocolFailure = input.protocolValidationEnabled
+      ? validateBufferedJsonProtocolResponse(parsedJsonBody, input)
+      : undefined
+    if (protocolFailure) {
+      return finalizeBufferedJsonProtocolFailure({
+        ...input,
+        parsedJsonBody,
+        accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
+      }, protocolFailure)
+    }
+    return undefined
+  }
 
   const decision = inspection.decision
   await applyResponseInspectionPolicyRuntimeSideEffects(decision, input.account, input.settings, input.accountStateMutationEnabled, input.usageContext)
@@ -193,8 +256,12 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   })
 
   if (
-    decision.replayAuthority === 'explicit_user_policy'
-    && decision.accountSwitch === 'request_next_account'
+    (decision.replayAuthority === 'explicit_user_policy' || decision.replayAuthority === 'system_default_retry_next_account')
+    && (
+      decision.accountSwitch === 'request_next_account'
+      || decision.accountSwitch === 'avoid_account_ttl'
+      || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
+    )
     && decision.retryEnabled === true
     && !input.downstreamCommitState.semanticCommitted
     && input.downstreamCommitState.downstreamBytesWritten === 0
@@ -397,6 +464,35 @@ function isGatewayGeneratedResponsesFailure(
   if (endpointFamily !== 'responses') return false
   const metadata = plainObject(root.metadata)
   return metadata?.gateway_generated_failure === true
+}
+
+export function isCodexResponsesCyberPolicyFailedJson(input: {
+  req: Request
+  account: UpstreamAccount
+  clientStrategy?: OpenAIGatewayClientStrategyContext
+  upstreamStatus: number
+  parsedJson: unknown
+}): boolean {
+  return isCodexResponsesNonRetryableFailedJson(input, new Set(['cyber_policy']))
+}
+
+function isCodexResponsesNonRetryableFailedJson(input: {
+  req: Request
+  account: UpstreamAccount
+  clientStrategy?: OpenAIGatewayClientStrategyContext
+  upstreamStatus: number
+  parsedJson: unknown
+}, errorCodes = new Set(['cyber_policy'])): boolean {
+  if (input.upstreamStatus >= 200 && input.upstreamStatus < 300) return false
+  if (gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) !== 'responses') return false
+  const clientProfile = input.clientStrategy?.clientProfile
+    ?? gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)
+  if (clientProfile !== 'codex') return false
+  const root = plainObject(input.parsedJson)
+  const error = plainObject(root?.error)
+  return (root?.status === 'failed' || root?.status === undefined)
+    && typeof error?.code === 'string'
+    && errorCodes.has(error.code)
 }
 
 async function finalizeBufferedJsonProtocolFailure(

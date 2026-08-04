@@ -160,11 +160,6 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="单轮账号数" tooltip="默认 20；运维 worker 每轮只拉取到期账号，避免一次性全量扫描和集中打上游。">
-                <a-input-number v-model:value="systemForm.accountHealthCheckBatchSize" :min="1" :max="100" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
               <a-form-item label="连续失败阈值" tooltip="默认 3 次；达到阈值后才允许进入临时不可调用处理，降低网络抖动误杀。">
                 <a-input-number v-model:value="systemForm.accountHealthCheckFailureThreshold" :min="1" :max="10" style="width: 100%" />
               </a-form-item>
@@ -214,28 +209,6 @@
             <div class="setting-item">
               <a-form-item label="登录用户写请求每分钟" tooltip="默认 120；对保存、删除、批量操作等写请求再加一层限制。">
                 <a-input-number v-model:value="systemForm.systemApiRateLimitUserWritePerMinute" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'account-test')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>账号测试</span>
-                <a-tooltip title="控制独立单账户人工测试任务的系统级并发防护；账户健康检查由后台任务统一执行。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['account-test']" active :paragraph="{ rows: 1 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="后台并发上限" tooltip="默认 100；用于限制全系统同时执行的单账户人工测试任务数量。">
-                <a-input-number v-model:value="systemForm.accountTestTaskConcurrency" :min="1" :max="1000" style="width: 100%" />
               </a-form-item>
             </div>
           </div>
@@ -426,21 +399,20 @@ const globalForm = reactive<GlobalForm>({ ...defaultGlobalSettings })
 const systemForm = reactive<SystemForm>({ ...defaultSystemSettings })
 const sectionReady = reactive<Record<ManagementSettingsSectionKey, boolean>>({
   brand: false, 'gateway-core': false, 'user-request-limit': false, 'account-health': false, 'api-rate-limit': false,
-  'account-test': false, 'cooldown-retest': false, 'data-retention': false
+  'cooldown-retest': false, 'data-retention': false
 })
 const sectionLoading = reactive<Record<ManagementSettingsSectionKey, boolean>>({ ...sectionReady })
 const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | undefined>>({
   brand: undefined, 'gateway-core': undefined, 'user-request-limit': undefined, 'account-health': undefined, 'api-rate-limit': undefined,
-  'account-test': undefined, 'cooldown-retest': undefined, 'data-retention': undefined
+  'cooldown-retest': undefined, 'data-retention': undefined
 })
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
   'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
   'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth'],
-  'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'],
+  'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
-  'account-test': ['accountTestTaskConcurrency'],
   'cooldown-retest': ['cooldownAccountRetestMaxBackoffHours'],
   'data-retention': ['usageRecordRetentionDays', 'runtimeLogIndexRetentionDays', 'publicApiLogRetentionDays']
 }

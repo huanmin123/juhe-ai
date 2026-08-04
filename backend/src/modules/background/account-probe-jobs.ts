@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { CooldownAccountRetestCursor } from '../../storage/account-cooldown-retest.repository.js'
@@ -6,37 +7,32 @@ import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.servi
 import { requestStatsWriter } from './background-stats-writer.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import {
-  backgroundFullDiagnosticQueueConcurrency,
-  backgroundProbeDbServiceTimeoutMs
+  backgroundProbeDbServiceTimeoutMs,
+  globalSharedQueueConcurrency
 } from './account-probe-limits.js'
 import {
   enqueueAccountApiKeyCooldownRetest,
-  getAccountApiKeyCooldownRetestQueueSnapshot,
-  setAccountApiKeyCooldownRetestQueueConcurrency
+  getAccountApiKeyCooldownRetestQueueSnapshot
 } from './account-api-key-cooldown-retest.service.js'
 import {
   enqueueAccountHealthCheck,
-  getAccountHealthCheckQueueSnapshot,
-  setAccountHealthCheckQueueConcurrency
+  getAccountHealthCheckQueueSnapshot
 } from './account-health-check.service.js'
 import {
   enqueueAccountQualityFailurePrecheck,
-  getAccountQualityFailurePrecheckQueueSnapshot,
-  setAccountQualityFailurePrecheckQueueConcurrency
+  getAccountQualityFailurePrecheckQueueSnapshot
 } from './account-quality-failure-precheck.service.js'
 import {
   enqueueCooldownAccountRetest,
-  getCooldownAccountRetestQueueSnapshot,
-  setCooldownAccountRetestQueueConcurrency
+  getCooldownAccountRetestQueueSnapshot
 } from './cooldown-account-retest.service.js'
 import {
   enqueueNormalRouteSpeedFirstRecoveryProbe,
-  getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot,
-  setNormalRouteSpeedFirstRecoveryProbeQueueConcurrency
+  getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot
 } from './normal-route-speed-first-recovery-probe.service.js'
 
-const accountQualityFailurePrecheckBatchSize = 10
-const normalRouteSpeedFirstRecoveryProbeBatchSize = 10
+const accountQualityFailurePrecheckBatchSize = runtimeConfig.background.accountQualityFailurePrecheckBatchSize
+const normalRouteSpeedFirstRecoveryProbeBatchSize = runtimeConfig.background.normalRouteSpeedFirstRecoveryProbeBatchSize
 let accountQualityFailurePrecheckOffset = 0
 let cooldownAccountRetestCursor: CooldownAccountRetestCursor | undefined
 
@@ -73,8 +69,7 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
     accountQualityFailurePrecheckOffset = failureCandidates.length < accountQualityFailurePrecheckBatchSize
       ? 0
       : accountQualityFailurePrecheckOffset + failureCandidates.length
-    const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(accountQualityFailurePrecheckBatchSize)
-    setAccountQualityFailurePrecheckQueueConcurrency(queueConcurrency)
+    const queueConcurrency = globalSharedQueueConcurrency
     let failurePrecheckEnqueuedCount = 0
     let failurePrecheckSkippedQueuedCount = 0
     for (const candidate of failureCandidates) {
@@ -108,17 +103,16 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
 }
 
 export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise<void> {
-  const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
-  setCooldownAccountRetestQueueConcurrency(queueConcurrency)
+  const batchSize = runtimeConfig.background.cooldownAccountRetestBatchSize
+  const queueConcurrency = globalSharedQueueConcurrency
   const queueBeforeScan = getCooldownAccountRetestQueueSnapshot()
-  const availableQueueSlots = cooldownAccountRetestQueueAvailableSlots(batchSize, queueBeforeScan)
-  if (availableQueueSlots <= 0) return
+  const candidateLimit = cooldownAccountRetestScanLimit(batchSize, queueConcurrency, queueBeforeScan)
+  if (candidateLimit <= 0) return
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const page = await requestBackgroundWorkerDbService({
     type: 'list_accounts_due_for_cooldown_retest',
-    limit: availableQueueSlots,
+    limit: candidateLimit,
     cursor: cooldownAccountRetestCursor
   }, backgroundProbeDbServiceTimeoutMs)
   const candidates = page?.accounts ?? []
@@ -161,10 +155,29 @@ export function cooldownAccountRetestQueueAvailableSlots(
   return Math.max(0, limit - occupied)
 }
 
+export function cooldownAccountRetestScanLimit(
+  batchSize: number,
+  queueConcurrency: number,
+  queue: { pendingCount: number; runningCount: number }
+): number {
+  const normalizedBatchSize = Math.max(1, Math.trunc(batchSize))
+  return Math.min(normalizedBatchSize, cooldownAccountRetestQueueAvailableSlots(queueConcurrency, queue))
+}
+
+export function accountHealthCheckScanLimit(
+  batchSize: number,
+  queueConcurrency: number,
+  queue: { pendingCount: number; runningCount: number }
+): number {
+  return cooldownAccountRetestScanLimit(batchSize, queueConcurrency, queue)
+}
+
 export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
-  const batchSize = deps.settingsNumber('accountHealthCheckBatchSize', 1, 100)
-  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
-  setAccountHealthCheckQueueConcurrency(queueConcurrency)
+  const batchSize = runtimeConfig.background.accountHealthCheckBatchSize
+  const queueConcurrency = globalSharedQueueConcurrency
+  const queueBeforeScan = getAccountHealthCheckQueueSnapshot()
+  const candidateLimit = accountHealthCheckScanLimit(batchSize, queueConcurrency, queueBeforeScan)
+  if (candidateLimit <= 0) return
   const intervalHours = deps.settingsNumber('accountHealthCheckIntervalHours', 1, 168)
   const jitterMinutes = deps.settingsNumber('accountHealthCheckJitterMinutes', 0, 1440)
   const failureThreshold = deps.settingsNumber('accountHealthCheckFailureThreshold', 1, 10)
@@ -172,7 +185,7 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
   const candidates = await requestBackgroundWorkerDbService({
     type: 'list_accounts_due_for_health_check',
     input: {
-      limit: batchSize,
+      limit: candidateLimit,
       intervalHours,
       jitterMinutes,
       failureThreshold
@@ -205,9 +218,8 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
 }
 
 export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): Promise<void> {
-  const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
-  setAccountApiKeyCooldownRetestQueueConcurrency(queueConcurrency)
+  const batchSize = runtimeConfig.background.accountApiKeyCooldownRetestBatchSize
+  const queueConcurrency = globalSharedQueueConcurrency
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const queueBeforeScan = getAccountApiKeyCooldownRetestQueueSnapshot()
   const availableQueueSlots = Math.max(
@@ -247,8 +259,7 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
 
 export async function runNormalRouteSpeedFirstRecoveryProbe(): Promise<void> {
   const batchSize = normalRouteSpeedFirstRecoveryProbeBatchSize
-  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
-  setNormalRouteSpeedFirstRecoveryProbeQueueConcurrency(queueConcurrency)
+  const queueConcurrency = globalSharedQueueConcurrency
   const candidates = await listNormalRouteLatencyProbeCandidatesAsync(batchSize)
   const startedAtMs = Date.now()
   let enqueuedCount = 0

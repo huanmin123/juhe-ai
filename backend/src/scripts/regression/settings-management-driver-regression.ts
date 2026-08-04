@@ -17,8 +17,11 @@ assertFunctionIncludes(settingsRepositorySource, 'clearSystemSettingsCache', 'cl
 assertFunctionIncludes(settingsRepositorySource, 'clearGlobalSettingsCache', 'clearGlobalSettingsSharedCache()', '全局设置失效应清理 Redis 共享缓存命名空间')
 
 if (process.env.JUHE_SETTINGS_MANAGEMENT_DRIVER_CHILD === 'postgres') {
-  const repositories = await import('../../storage/repositories.js')
-  await assertSettingsManagementAsync(repositories)
+  const [repositories, settingsRepository] = await Promise.all([
+    import('../../storage/repositories.js'),
+    import('../../storage/settings.repository.js')
+  ])
+  await assertSettingsManagementAsync(repositories, settingsRepository)
   process.exit(0)
 }
 
@@ -35,8 +38,11 @@ try {
   process.env.JUHE_AI_USAGE_SHARD_ROOT = join(tempRoot, 'usage-shards')
   process.env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = join(tempRoot, 'codex-context')
 
-  const repositories = await import('../../storage/repositories.js')
-  await assertSettingsManagementAsync(repositories)
+  const [repositories, settingsRepository] = await Promise.all([
+    import('../../storage/repositories.js'),
+    import('../../storage/settings.repository.js')
+  ])
+  await assertSettingsManagementAsync(repositories, settingsRepository)
 
   if (process.env.JUHE_SETTINGS_MANAGEMENT_POSTGRES_URL) {
     const result = spawnSync(process.execPath, [
@@ -73,7 +79,10 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-async function assertSettingsManagementAsync(repositories: typeof import('../../storage/repositories.js')): Promise<void> {
+async function assertSettingsManagementAsync(
+  repositories: typeof import('../../storage/repositories.js'),
+  settingsRepository: typeof import('../../storage/settings.repository.js')
+): Promise<void> {
   const originalGlobal = await repositories.listGlobalSettingsAsync()
   const originalSystem = await repositories.getSettingsAsync()
   const label = process.env.JUHE_AI_DATABASE_DRIVER === 'postgres' ? 'postgres' : 'sqlite'

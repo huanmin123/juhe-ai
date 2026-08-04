@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { HeadIndexedQueue } from '../background/ipc-head-queue.js'
@@ -58,10 +59,10 @@ const currentModulePath = fileURLToPath(import.meta.url)
 const currentModuleDir = dirname(currentModulePath)
 const workerSourcePath = resolve(currentModuleDir, './audit-log-transport-worker.ts')
 const workerDistPath = resolve(currentModuleDir, './audit-log-transport-worker.js')
-const auditLogTransportMaxQueuedJobs = 256
-const auditLogTransportMaxTotalBytes = 128 * 1024 * 1024
-const auditLogTransportMaxActiveBytes = 72 * 1024 * 1024
-const auditLogTransportMaxJobBytes = 64 * 1024 * 1024
+const auditLogTransportMaxQueuedJobs = runtimeConfig.background.auditLogTransportMaxQueuedJobs
+const auditLogTransportMaxTotalBytes = runtimeConfig.background.auditLogTransportMaxTotalMb * 1024 * 1024
+const auditLogTransportMaxActiveBytes = runtimeConfig.background.auditLogTransportMaxActiveMb * 1024 * 1024
+const auditLogTransportMaxJobBytes = runtimeConfig.background.auditLogTransportMaxJobMb * 1024 * 1024
 const auditLogTransportJobTimeoutMs = 60_000
 
 let nextJobId = 1

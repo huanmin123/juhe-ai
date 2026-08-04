@@ -84,17 +84,17 @@ let statsWorkerPid: number | undefined
 let opsWorkerProcess: ChildProcess | undefined
 let opsWorkerReady = false
 let opsWorkerPid: number | undefined
-const usageRecordMessageQueueMaxMessages = 10_000
-const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
-const regularWorkerMessageQueueMaxMessages = 5_000
-const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
+const usageRecordMessageQueueMaxMessages = runtimeConfig.background.ipcUsageRecordQueueMaxMessages
+const usageRecordMessageQueueMaxBytes = runtimeConfig.background.ipcUsageRecordQueueMaxMb * 1024 * 1024
+const regularWorkerMessageQueueMaxMessages = runtimeConfig.background.ipcRegularWorkerQueueMaxMessages
+const regularWorkerMessageQueueMaxBytes = runtimeConfig.background.ipcRegularWorkerQueueMaxMb * 1024 * 1024
 export const accountHealthCheckWorkerIpcQueueLimits = {
   maxQueueMessages: regularWorkerMessageQueueMaxMessages,
   maxQueueBytes: regularWorkerMessageQueueMaxBytes
 } as const
-const pendingDatasetWriteRequestMaxCount = 1000
-const pendingStatsWriteRequestMaxCount = 1000
-const pendingBackgroundDbServiceRequestMaxCount = 1000
+const pendingDatasetWriteRequestMaxCount = runtimeConfig.background.ipcPendingDbServiceRequestMaxCount
+const pendingStatsWriteRequestMaxCount = runtimeConfig.background.ipcPendingDbServiceRequestMaxCount
+const pendingBackgroundDbServiceRequestMaxCount = runtimeConfig.background.ipcPendingDbServiceRequestMaxCount
 const ingestUsageBurstBeforeRegular = 8
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const ingestUsageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()

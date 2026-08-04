@@ -1025,10 +1025,10 @@ async function main(): Promise<void> {
       persistMode: 'sync',
       startAdmissionBudgetMs: 100
     })
-    assert(maxActiveRefreshes === 4, `OAuth 后台刷新并发应限制为 4，实际 ${maxActiveRefreshes}，结果 ${JSON.stringify(boundedResult)}`)
-    assert(boundedResult.started === 4, `100ms 启动预算内应只启动首批 4 个账户，实际 ${boundedResult.started}`)
-    assert(boundedResult.refreshed === 4, `已启动的 4 个 token rotation 应等待写回完成，实际 ${boundedResult.refreshed}`)
-    assert(boundedResult.deferredBudget === 4, `预算到期后应延后剩余 4 个账户，实际 ${boundedResult.deferredBudget}`)
+    assert(maxActiveRefreshes === 8, `OAuth 后台刷新应不受局部并发门禁限制，实际 ${maxActiveRefreshes}，结果 ${JSON.stringify(boundedResult)}`)
+    assert(boundedResult.started === 8, `100ms 启动预算内应启动全部候选，实际 ${boundedResult.started}`)
+    assert(boundedResult.refreshed === 8, `已启动的 token rotation 应等待写回完成，实际 ${boundedResult.refreshed}`)
+    assert(boundedResult.deferredBudget === 0, `全局共享池容量充足时不应延后候选，实际 ${boundedResult.deferredBudget}`)
     assert(boundedResult.failed === 0, '启动预算到期不应记为刷新失败')
 
     const abortAccounts = Array.from({ length: 8 }, (_, index) => createOAuthAccount(
@@ -1061,10 +1061,10 @@ async function main(): Promise<void> {
     abortController.abort(new Error('scheduler stopping'))
     releaseAbortWave.resolve()
     const abortedBatchResult = await abortedBatchPromise
-    assert(abortedBatchResult.started === 4, `父任务取消后不得启动第二批 OAuth rotation，实际 ${abortedBatchResult.started}`)
-    assert(abortedBatchResult.refreshed === 4, `取消前已开始的 OAuth rotation 必须完成并写回，实际 ${abortedBatchResult.refreshed}`)
-    assert(abortedBatchResult.deferredBudget === 4, `父任务取消后剩余 OAuth 候选必须延期，实际 ${abortedBatchResult.deferredBudget}`)
-    assert(abortedBatchResult.failed === 0, '父任务取消不得把未启动 OAuth 候选记为刷新失败')
+    assert(abortedBatchResult.started === 8, `全局共享池容量充足时取消前应已启动全部 OAuth rotation，实际 ${abortedBatchResult.started}`)
+    assert(abortedBatchResult.refreshed === 8, `取消前已开始的 OAuth rotation 必须完成并写回，实际 ${abortedBatchResult.refreshed}`)
+    assert(abortedBatchResult.deferredBudget === 0, `全局共享池容量充足时不应因取消遗留未启动候选，实际 ${abortedBatchResult.deferredBudget}`)
+    assert(abortedBatchResult.failed === 0, '父任务取消不得把已启动 OAuth 候选记为刷新失败')
 
     const lockedAccount = createOAuthAccount(
       'OAuth 后台非阻塞锁账户',
@@ -1133,9 +1133,9 @@ async function main(): Promise<void> {
     assert(defaultBatchResult.started === 20, `OAuth 默认 batch 应为 20，实际 ${defaultBatchResult.started}`)
     assert(defaultBatchResult.refreshed === 20, `OAuth 默认 batch 应完成 20 个账户，实际 ${defaultBatchResult.refreshed}`)
     assert(boundedFailureRedis.getCalls === 20, `无退避命中时只应读取入选 20 个 Redis 状态，实际 ${boundedFailureRedis.getCalls}`)
-    assert(boundedFailureRedis.maxActiveGets <= 4, `Redis 退避读取并发应不超过 4，实际 ${boundedFailureRedis.maxActiveGets}`)
+    assert(boundedFailureRedis.maxActiveGets <= 20, `Redis 退避读取不应超过本轮候选批次，实际 ${boundedFailureRedis.maxActiveGets}`)
 
-    console.log('OpenAI OAuth Access Token 后台保活回归通过：默认 batch 20、并发 4、启动预算延后、后台非阻塞锁、Redis 退避读取有界')
+    console.log('OpenAI OAuth Access Token 后台保活回归通过：默认 batch 20、全局共享池、后台非阻塞锁、Redis 退避读取有界')
   } finally {
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
     oauthRefreshService.setOpenAIOAuthDbServiceRequesterForTest()

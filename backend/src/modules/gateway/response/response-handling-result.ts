@@ -3,6 +3,7 @@ import type { ResponseInspectionDecision } from './inspection.js'
 import type { StreamBodyOmissionSummary, StreamTransportFailure } from './stream-result.js'
 import type { ParsedUsage } from '../usage/types.js'
 import type { HybridQualityInspectionOutcome } from '../hybrid/quality-inspection.service.js'
+import type { CodexEncryptedContentRecoverySignal } from '../request/codex-encrypted-content-recovery.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true; errorCode?: string; transportFailure?: StreamTransportFailure; gatewayLocalFailure?: boolean }
@@ -16,6 +17,7 @@ export type UpstreamResponseHandlingResult =
     errorCode?: string
     statusCode?: number
     uncommittedResponseBody?: Buffer
+    compatibilityRecoverySignal?: CodexEncryptedContentRecoverySignal
     hybridQuality?: HybridQualityInspectionOutcome
     transportFailure?: StreamTransportFailure
     gatewayLocalFailure?: boolean
@@ -29,6 +31,7 @@ export type UpstreamResponseHandlingResult =
     responseResourceId?: string
     bodyOmission?: StreamBodyOmissionSummary
     protocolValidatedSuccess?: boolean
+    passthroughUpstreamFailure?: boolean
     errorPayload: Record<string, unknown>
     transportFailure?: StreamTransportFailure
     gatewayLocalFailure?: boolean

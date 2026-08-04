@@ -22,6 +22,7 @@ import {
   type ScheduledJobLeaseIdentity
 } from '../../storage/scheduled-job-lease.repository.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 
@@ -181,16 +182,16 @@ class BoundedProxyTestHttpsAgent extends HttpsProxyAgent<string> {
 
 type OutboundProbeParser = 'ip-api' | 'ipwhois' | 'ipsb' | 'ipinfo' | 'ipify' | 'httpbin'
 
-const probeTimeoutMs = 15000
-export const manualProxyTestDeadlineMs = 25_000
+const probeTimeoutMs = runtimeConfig.background.proxyProbeTimeoutMs
+export const manualProxyTestDeadlineMs = runtimeConfig.background.proxyManualTestDeadlineMs
 const maxProxyProbeResponseBytes = 512 * 1024
-export const proxyLatencyRefreshIntervalSeconds = 60
-export const proxyLatencyRefreshBatchSize = 20
-export const proxyLatencyRefreshConcurrency = 2
-export const proxyLatencyRefreshRunBudgetMs = 45_000
-export const proxyLatencyRefreshCandidateDeadlineMs = 25_000
-const proxyLatencyRefreshCandidatePoolFactor = 4
-const proxyLatencyRefreshLeaseGraceMs = 5_000
+export const proxyLatencyRefreshIntervalSeconds = runtimeConfig.background.proxyLatencyRefreshIntervalSeconds
+export const proxyLatencyRefreshBatchSize = runtimeConfig.background.proxyLatencyRefreshBatchSize
+export const proxyLatencyRefreshConcurrency = runtimeConfig.background.proxyLatencyRefreshConcurrency
+export const proxyLatencyRefreshRunBudgetMs = runtimeConfig.background.proxyLatencyRefreshRunBudgetMs
+export const proxyLatencyRefreshCandidateDeadlineMs = runtimeConfig.background.proxyLatencyRefreshCandidateDeadlineMs
+const proxyLatencyRefreshCandidatePoolFactor = runtimeConfig.background.proxyLatencyRefreshCandidatePoolFactor
+const proxyLatencyRefreshLeaseGraceMs = runtimeConfig.background.proxyLatencyRefreshLeaseGraceMs
 const outboundProbeTargets = [
   { url: 'http://ip-api.com/json/?lang=zh-CN', parser: 'ip-api' },
   { url: 'https://ipwho.is/', parser: 'ipwhois' },
@@ -240,7 +241,9 @@ interface ProxyLatencyRefreshDependencies {
 
 const defaultProxyLatencyRefreshDependencies: ProxyLatencyRefreshDependencies = {
   listCandidates: listEnabledProxyTestConfigsAsync,
-  runCandidate: runProxyLatencyRefreshCandidate,
+  runCandidate: async (proxy, deadlineAtMs, signal) => await runWithGlobalBackgroundConcurrencySlot(
+    async () => await runProxyLatencyRefreshCandidate(proxy, deadlineAtMs, signal)
+  ),
   acquireLease: acquireProxyLatencyRefreshLease,
   releaseLease: releaseProxyLatencyRefreshLease,
   now: Date.now
@@ -439,7 +442,7 @@ function normalizeProxyLatencyRefreshOptions(
   const options = typeof input === 'number' ? { limit: input } : input
   return {
     limit: boundedPositiveInteger(options.limit, proxyLatencyRefreshBatchSize, 1, 200),
-    concurrency: boundedPositiveInteger(options.concurrency, proxyLatencyRefreshConcurrency, 1, 16),
+    concurrency: boundedPositiveInteger(options.concurrency, proxyLatencyRefreshConcurrency, 1, runtimeConfig.concurrency.globalMax),
     runBudgetMs: boundedPositiveInteger(options.runBudgetMs, proxyLatencyRefreshRunBudgetMs, 1, 10 * 60_000),
     candidateDeadlineMs: boundedPositiveInteger(options.candidateDeadlineMs, proxyLatencyRefreshCandidateDeadlineMs, 1, 60_000),
     signal: options.signal

@@ -10,13 +10,15 @@ import type { StreamRetryResponseState } from './stream-retry-decision.js'
 import type { StreamPipeResult } from './stream.js'
 
 const serverRetryableSystemDefaultResponseInspectionPolicyIds = new Set([
-  'default_codex_compaction_contract'
+  'default_codex_compaction_contract',
+  'default_gemini_cli_retryable_error'
 ])
 
 export type StreamServerRetryReason =
   | 'response_inspection'
   | 'upstream_protocol_failure'
   | 'pre_commit_stream_failure'
+  | 'codex_encrypted_content_recovery'
   | 'normal_route_first_byte_timeout'
   | 'hybrid_quality'
 
@@ -35,6 +37,15 @@ export function shouldRetryResponseInspectionDecisionOnServer(
 ): decision is ResponseInspectionDecision {
   const serverRetryableSystemDefault = isServerRetryableSystemDefaultResponseInspectionDecision(decision)
   return decision !== undefined
+    && (
+      decision.replayAuthority === 'explicit_user_policy'
+      || decision.replayAuthority === 'system_default_retry_next_account'
+    )
+    && (
+      decision.accountSwitch === 'request_next_account'
+      || decision.accountSwitch === 'avoid_account_ttl'
+      || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
+    )
     && (decision.reason === 'configured_response_policy' || serverRetryableSystemDefault)
     && (
       decision.policySource !== 'system_default'

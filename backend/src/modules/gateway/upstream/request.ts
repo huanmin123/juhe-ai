@@ -31,6 +31,7 @@ import {
 } from '../adapters/gpt-codex/client-headers.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { acquireGlobalConcurrencySlot } from '../../../shared/concurrency-governor.js'
 import type { FirstByteDeadlineHandler } from './first-byte-deadline.js'
 import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
 
@@ -148,7 +149,11 @@ const proxyAgents = createProcessLocalResourceCache<string, http.Agent>({
 class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
   private decodedBody: AsyncIterable<Uint8Array> | null | undefined
 
-  constructor(private readonly message: IncomingMessage) {}
+  constructor(private readonly message: IncomingMessage, release: () => void) {
+    message.once('end', release)
+    message.once('error', release)
+    message.once('close', release)
+  }
 
   get status(): number {
     return this.message.statusCode ?? 0
@@ -176,10 +181,22 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
 }
 
 export async function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
-  const safeRequest = await prepareSafeUpstreamRequestUrl(upstreamUrl)
+  const slot = await acquireGlobalConcurrencySlot({ signal: options.signal })
+  let safeRequest: Awaited<ReturnType<typeof prepareSafeUpstreamRequestUrl>>
+  try {
+    safeRequest = await prepareSafeUpstreamRequestUrl(upstreamUrl)
+  } catch (error) {
+    slot.release()
+    throw error
+  }
   // Global fetch cannot consume the existing HTTP/SOCKS Agent cache.
   if (options.transport === 'fetch' && !options.proxyUrl) {
-    return requestUpstreamWithFetch(safeRequest.url, options)
+    try {
+      return await requestUpstreamWithFetch(safeRequest.url, options, slot.release)
+    } catch (error) {
+      slot.release()
+      throw error
+    }
   }
   return new Promise((resolve, reject) => {
     let settled = false
@@ -203,6 +220,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
     try {
       agent = gatewayUpstreamAgent(url, options.proxyUrl)
     } catch (error) {
+      slot.release()
       settleReject(error)
       return
     }
@@ -229,7 +247,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
     const request = transport.request(url, requestOptions, (message) => {
       clearRequestTimeout()
       bindAbortSignalToIncomingMessage(message, options.signal)
-      settleResolve(new NodeGatewayUpstreamResponse(message))
+      settleResolve(new NodeGatewayUpstreamResponse(message, slot.release))
     })
     const abort = () => request.destroy(new Error('上游请求超时'))
     const abortBySignal = () => request.destroy(new UpstreamRequestAbortedError('请求已取消', upstreamRequestStarted))
@@ -270,6 +288,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
     request.on('error', (error) => {
       clearRequestTimeout()
       cleanupAbortSignal()
+      slot.release()
       if (upstreamRequestStarted) markStartedUpstreamTransportError(error)
       settleReject(error)
     })
@@ -323,7 +342,11 @@ function cachedProxyAgent(proxyUrl: string): http.Agent {
   return agent
 }
 
-async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
+async function requestUpstreamWithFetch(
+  url: URL,
+  options: UpstreamRequestOptions,
+  releaseGlobalConcurrencySlot: () => void
+): Promise<GatewayUpstreamResponse> {
   const headers = upstreamRequestHeaders(options.headers, options.body)
   const controller = new AbortController()
   let requestTimeout: NodeJS.Timeout | undefined
@@ -389,7 +412,8 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
     }
     return new FetchGatewayUpstreamResponse(response, {
       timeoutMs: options.timeoutMs,
-      signal: options.signal
+      signal: options.signal,
+      releaseGlobalConcurrencySlot
     })
   } catch (error) {
     const reason = controller.signal.reason
@@ -412,10 +436,11 @@ function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
 
 class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
   private decodedBody: AsyncIterable<Uint8Array> | null | undefined
+  private globalConcurrencySlotReleased = false
 
   constructor(
     private readonly response: Response,
-    private readonly options: { timeoutMs?: number; signal?: AbortSignal }
+    private readonly options: { timeoutMs?: number; signal?: AbortSignal; releaseGlobalConcurrencySlot: () => void }
   ) {}
 
   get status(): number {
@@ -435,15 +460,27 @@ class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
       return this.decodedBody
     }
     this.decodedBody = this.response.body
-      ? fetchReadableStreamBody(this.response.body, this.options)
-      : null
+      ? fetchReadableStreamBody(this.response.body, this.options, () => this.releaseGlobalConcurrencySlot())
+      : this.releaseGlobalConcurrencySlotAndReturnNull()
     return this.decodedBody
+  }
+
+  private releaseGlobalConcurrencySlotAndReturnNull(): null {
+    this.releaseGlobalConcurrencySlot()
+    return null
+  }
+
+  private releaseGlobalConcurrencySlot(): void {
+    if (this.globalConcurrencySlotReleased) return
+    this.globalConcurrencySlotReleased = true
+    this.options.releaseGlobalConcurrencySlot()
   }
 }
 
 function fetchReadableStreamBody(
   body: ReadableStream<Uint8Array>,
-  options: { timeoutMs?: number; signal?: AbortSignal }
+  options: { timeoutMs?: number; signal?: AbortSignal },
+  onComplete: () => void
 ): AsyncIterable<Uint8Array> {
   const reader = body.getReader()
   let released = false
@@ -454,6 +491,8 @@ function fetchReadableStreamBody(
     try {
       reader.releaseLock()
     } catch {
+    } finally {
+      onComplete()
     }
   }
   const cancel = async (reason?: unknown) => {

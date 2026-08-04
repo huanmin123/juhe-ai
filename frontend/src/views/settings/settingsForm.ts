@@ -33,10 +33,8 @@ export interface SystemForm {
   noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
-  accountTestTaskConcurrency: number
   accountHealthCheckIntervalHours: number
   accountHealthCheckJitterMinutes: number
-  accountHealthCheckBatchSize: number
   accountHealthCheckFailureThreshold: number
   runtimeLogIndexRetentionDays: number
   publicApiLogRetentionDays: number
@@ -76,10 +74,8 @@ export const defaultSystemSettings: SystemForm = {
   noAvailableAccountWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5,
-  accountTestTaskConcurrency: 100,
   accountHealthCheckIntervalHours: 1,
   accountHealthCheckJitterMinutes: 10,
-  accountHealthCheckBatchSize: 20,
   accountHealthCheckFailureThreshold: 3,
   runtimeLogIndexRetentionDays: 14,
   publicApiLogRetentionDays: 30,
@@ -122,10 +118,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     noAvailableAccountWaitTimeoutSeconds: integerValue(settings.noAvailableAccountWaitTimeoutSeconds, '无可用账号等待上限', 10, 3600),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '流失败诊断计数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '流失败诊断窗口', 1, 1440),
-    accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),
     accountHealthCheckIntervalHours: integerValue(settings.accountHealthCheckIntervalHours, '正常账号健康检测间隔', 1, 168),
     accountHealthCheckJitterMinutes: integerValue(settings.accountHealthCheckJitterMinutes, '健康检测错峰窗口', 0, 1440),
-    accountHealthCheckBatchSize: integerValue(settings.accountHealthCheckBatchSize, '健康检测单轮账号数', 1, 100),
     accountHealthCheckFailureThreshold: integerValue(settings.accountHealthCheckFailureThreshold, '健康检测连续失败阈值', 1, 10),
     runtimeLogIndexRetentionDays: integerValue(settings.runtimeLogIndexRetentionDays, '运行日志索引保留天数', 1, 90),
     publicApiLogRetentionDays: integerValue(settings.publicApiLogRetentionDays, '公开接口日志保留天数', 1, 365),

@@ -26,11 +26,11 @@ import {
 
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
-const usageRecordBatchSize = 1000
-const usageRecordFlushBatchMaxBytes = 8 * 1024 * 1024
-const usageRecordShutdownFlushMaxBatches = 100
-const usageRecordQueueMaxItems = 10_000
-const usageRecordQueueMaxBytes = 64 * 1024 * 1024
+const usageRecordBatchSize = runtimeConfig.background.usageRecordBatchSize
+const usageRecordFlushBatchMaxBytes = runtimeConfig.background.usageRecordFlushBatchMaxMb * 1024 * 1024
+const usageRecordShutdownFlushMaxBatches = runtimeConfig.background.usageRecordShutdownFlushMaxBatches
+const usageRecordQueueMaxItems = runtimeConfig.background.usageRecordQueueMaxItems
+const usageRecordQueueMaxBytes = runtimeConfig.background.usageRecordQueueMaxMb * 1024 * 1024
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
 const slowUsageRecordFlushMs = 500
 const usageRecordRedisStreamKey = redisStreamQueueContracts.usageRecords.streamKey

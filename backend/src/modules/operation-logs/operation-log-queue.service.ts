@@ -11,10 +11,10 @@ import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 
 const operationLogFlushIntervalMs = 100
 const operationLogRetryPolicy = fixedRetryPolicy('operation_log_queue_flush', 1000)
-const operationLogBatchSize = 200
-const operationLogShutdownFlushMaxBatches = 100
-const operationLogQueueMaxItems = 5_000
-const operationLogQueueMaxBytes = 32 * 1024 * 1024
+const operationLogBatchSize = runtimeConfig.background.operationLogBatchSize
+const operationLogShutdownFlushMaxBatches = runtimeConfig.background.operationLogShutdownFlushMaxBatches
+const operationLogQueueMaxItems = runtimeConfig.background.operationLogQueueMaxItems
+const operationLogQueueMaxBytes = runtimeConfig.background.operationLogQueueMaxMb * 1024 * 1024
 const operationLogRedisStreamKey = redisStreamQueueContracts.operationLogs.streamKey
 const operationLogRedisStreamGroup = redisStreamQueueContracts.operationLogs.groupName
 const operationLogRedisConsumerErrorRetryMs = 1000

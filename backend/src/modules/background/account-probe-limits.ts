@@ -1,22 +1,17 @@
-import pLimit from 'p-limit'
-
+import { runtimeConfig } from '../../config/runtime.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccountTestResult } from '../../domain/types.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 
-export const backgroundFullDiagnosticConcurrency = 3
-// The budget is shared by every API key in one health check, not reset per key.
-export const accountHealthCheckProbeDeadlineMs = 30_000
-// The queue admits lifecycle work in parallel. Routine checks receive a
-// separate limiter before they acquire a shared full-diagnostic slot.
-export const accountHealthCheckQueueConcurrency = backgroundFullDiagnosticConcurrency
-export const routineAccountHealthCheckDiagnosticConcurrency = 1
-export const backgroundProbeDbServiceTimeoutMs = 30_000
-export const cooldownAccountRetestStartupDelayMs = 60_000
-export const accountApiKeyCooldownRetestStartupDelayMs = 65_000
-export const normalRouteSpeedFirstProbeStartupDelayMs = 75_000
+export const globalSharedQueueConcurrency = runtimeConfig.concurrency.globalMax
+// 60 seconds are needed by the 10s -> 20s -> 30s ladder itself. Keep a small
+// scheduling margin so the outer deadline cannot cancel the third tier first.
+export const accountHealthCheckProbeDeadlineMs = runtimeConfig.background.accountHealthCheckProbeDeadlineMs
+export const backgroundProbeDbServiceTimeoutMs = runtimeConfig.background.accountProbeDbServiceTimeoutMs
+export const cooldownAccountRetestStartupDelayMs = runtimeConfig.background.cooldownAccountRetestStartupDelayMs
+export const accountApiKeyCooldownRetestStartupDelayMs = runtimeConfig.background.accountApiKeyCooldownRetestStartupDelayMs
+export const normalRouteSpeedFirstProbeStartupDelayMs = runtimeConfig.background.normalRouteSpeedFirstProbeStartupDelayMs
 
-const backgroundFullDiagnosticLimit = pLimit(backgroundFullDiagnosticConcurrency)
-const routineAccountHealthCheckDiagnosticLimit = pLimit(routineAccountHealthCheckDiagnosticConcurrency)
 const backgroundAccountAvailabilityProbesInFlight = new Map<string, {
   promise: Promise<BackgroundAccountAvailabilityProbeObservation>
   consumers: number
@@ -31,17 +26,16 @@ export interface BackgroundAccountAvailabilityProbeObservation {
   diagnosticDeadlineExceeded?: boolean
 }
 
-export function backgroundFullDiagnosticQueueConcurrency(batchSize: number): number {
-  const normalizedBatchSize = Number.isFinite(batchSize) ? Math.trunc(batchSize) : 1
-  return Math.max(1, Math.min(normalizedBatchSize, backgroundFullDiagnosticConcurrency))
-}
-
 export async function runWithBackgroundFullDiagnosticSlot<T>(task: () => Promise<T>): Promise<T> {
-  return await backgroundFullDiagnosticLimit(task)
+  return await runWithGlobalBackgroundConcurrencySlot(task)
 }
 
-export async function runWithRoutineAccountHealthCheckDiagnosticSlot<T>(task: () => Promise<T>): Promise<T> {
-  return await routineAccountHealthCheckDiagnosticLimit(task)
+export async function runWithAccountHealthCheckDiagnosticSlot<T>(task: () => Promise<T>): Promise<T> {
+  return await runWithGlobalBackgroundConcurrencySlot(task)
+}
+
+export async function runWithCooldownAccountRetestDiagnosticSlot<T>(task: () => Promise<T>): Promise<T> {
+  return await runWithGlobalBackgroundConcurrencySlot(task)
 }
 
 export async function runWithBackgroundAccountAvailabilityProbe<T>(

@@ -69,14 +69,7 @@ try {
   const address = server.address()
   assert(address && typeof address === 'object')
   const baseUrl = `http://127.0.0.1:${address.port}/__aisys__/api`
-  const handledBeforeHttp = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
-  const httpGet = await fetch(`${baseUrl}/settings/sections/account-test`, { headers: { cookie } })
-  assert.equal(httpGet.status, 200)
-  const httpGetBody = await httpGet.json() as { data: { sectionKey: string; values: Record<string, unknown> } }
-  assert.equal(httpGetBody.data.sectionKey, 'account-test')
-  assert.deepEqual(Object.keys(httpGetBody.data.values), ['accountTestTaskConcurrency'])
-  assert(readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs > handledBeforeHttp, 'HTTP section GET 必须实际投递 read-worker')
-  const unauthorized = await fetch(`${baseUrl}/settings/sections/account-test`)
+  const unauthorized = await fetch(`${baseUrl}/settings/sections/account-health`)
   assert.equal(unauthorized.status, 401, 'section GET 必须保持认证边界')
   const unknown = await fetch(`${baseUrl}/settings/sections/not-a-section`, { headers: { cookie } })
   assert.equal(unknown.status, 400, '未知 section 必须返回 400')

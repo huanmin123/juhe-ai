@@ -1,13 +1,25 @@
-import type { AccountSummary } from '../../domain/types.js'
+import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import type { AccountApiKeyPoolProbeCursor } from '../../storage/account-api-key-pool-probe-cursor.repository.js'
+import { resolveAccountTestModelAsync, testOpenAIAccountDiagnosticAttempt } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { accountApiKeyPoolEntriesForCandidate } from '../accounts/account-api-key-pool-runtime.js'
+import {
+  accountApiKeyPoolKeySetFingerprint,
+  orderAccountApiKeyPoolEntries,
+  runAccountApiKeyPoolDiagnostic
+} from '../accounts/account-api-key-pool-diagnostic.js'
+import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import {
+  backgroundProbeDbServiceTimeoutMs,
+  globalSharedQueueConcurrency,
+  runWithCooldownAccountRetestDiagnosticSlot
+} from './account-probe-limits.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
@@ -30,6 +42,125 @@ type CooldownRetestTestHooks = {
     | 'record_cooldown_account_retest_success'
     | 'record_cooldown_account_retest_failure'
     | 'defer_cooldown_account_retest'
+}
+
+interface CooldownPoolAttemptValue {
+  result: AccountTestResult
+  upstreamAttempt?: UpstreamAttempt
+  canceled: boolean
+  diagnosticTimeoutExhausted: boolean
+}
+
+async function runCooldownAccountDiagnostic(
+  account: AccountSummary,
+  groupId: string,
+  cursorFence: Pick<CooldownAccountRetestQueueItem, 'configRevision' | 'dispatchRevision' | 'cooldownRetestGeneration' | 'sourceConfigRevision'>,
+  hooks: {
+    onUpstreamAttempt: (attempt: UpstreamAttempt) => void
+    onDiagnosticResult: (attempt: CooldownPoolAttemptValue) => void
+  }
+): Promise<AccountTestResult> {
+  const systemAccountId = account.systemAccountId?.trim()
+  const candidate = systemAccountId
+    ? await loadOpenAIAccountForGroupViaDbService(groupId, account.id, systemAccountId, { ignoreAvailability: true })
+    : undefined
+  const entries = candidate ? accountApiKeyPoolEntriesForCandidate(candidate) : []
+  if (!candidate || entries.length === 0) throw new Error('API Key 池诊断缺少可用 Key')
+  await resolveAccountTestModelAsync(account, { testEndpointMode: account.healthCheckEndpointMode })
+  const keySetFingerprint = accountApiKeyPoolKeySetFingerprint(entries)
+  const storedCursor = await requestBackgroundWorkerDbService({
+    type: 'account_api_key_pool_probe_cursor',
+    action: 'read',
+    accountId: account.id,
+    purpose: 'cooldown_retest'
+  }, backgroundProbeDbServiceTimeoutMs) as AccountApiKeyPoolProbeCursor | undefined
+  const cursorMatches = storedCursor
+    && storedCursor.keySetFingerprint === keySetFingerprint
+    && storedCursor.configRevision === cursorFence.configRevision
+    && storedCursor.dispatchRevision === cursorFence.dispatchRevision
+    && storedCursor.cooldownGeneration === cursorFence.cooldownRetestGeneration
+    && storedCursor.sourceConfigRevision === cursorFence.sourceConfigRevision
+  const orderedEntries = orderAccountApiKeyPoolEntries(entries, cursorMatches ? storedCursor.lastCompletedKeyFingerprint : undefined)
+  const diagnostic = await runAccountApiKeyPoolDiagnostic(candidate, orderedEntries, async ({ entry, candidate: fixedCandidate, timeoutMs, signal }) => {
+    const attempt = await runWithCooldownAccountRetestDiagnosticSlot(async () => await testOpenAIAccountDiagnosticAttempt(account, {
+      model: account.healthCheckModel,
+      diagnostics: 'full',
+      groupId,
+      trafficSource: 'cooldown_retest',
+      testEndpointMode: account.healthCheckEndpointMode,
+      forceProbeKind: account.healthCheckEndpointMode === 'images_json' ? 'models_catalog' : undefined,
+      requireCatalogModelEvidence: account.healthCheckEndpointMode === 'images_json',
+      disableAccountStateMutation: true,
+      candidateAccount: fixedCandidate,
+      signal,
+      onUpstreamAttempt: hooks.onUpstreamAttempt,
+      findAccountForTest: loadAccountForTestViaDbService,
+      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
+    }, timeoutMs))
+    const value: CooldownPoolAttemptValue = {
+      result: attempt.result,
+      upstreamAttempt: attempt.upstreamAttempt,
+      canceled: attempt.canceled,
+      diagnosticTimeoutExhausted: attempt.diagnosticTimeoutExhausted
+    }
+    return {
+      value,
+      success: attempt.result.success,
+      timedOutAfterRealUpstreamAttempt: attempt.diagnosticTimeoutExhausted
+        && Boolean(attempt.upstreamAttempt && isRealUpstreamAttempt(attempt.upstreamAttempt))
+    }
+  }, {
+    allowSingleEntry: true,
+    maxStages: cooldownRetestTestHooks?.disableDiagnosticRetries ? 1 : undefined,
+    onEntryComplete: (item) => hooks.onDiagnosticResult(item.value)
+  })
+  const poolCompleted = diagnostic?.completed === true
+  const lastCompletedFingerprint = diagnostic?.lastCompletedFingerprint
+  if (poolCompleted) {
+    await requestBackgroundWorkerDbService({
+      type: 'account_api_key_pool_probe_cursor',
+      action: 'delete',
+      accountId: account.id,
+      purpose: 'cooldown_retest'
+    }, backgroundProbeDbServiceTimeoutMs)
+  } else if (lastCompletedFingerprint) {
+    await requestBackgroundWorkerDbService({
+      type: 'account_api_key_pool_probe_cursor',
+      action: 'save',
+      input: {
+        accountId: account.id,
+        purpose: 'cooldown_retest',
+        lastCompletedKeyFingerprint: lastCompletedFingerprint,
+        keySetFingerprint,
+        configRevision: cursorFence.configRevision,
+        dispatchRevision: cursorFence.dispatchRevision,
+        cooldownGeneration: cursorFence.cooldownRetestGeneration,
+        sourceConfigRevision: cursorFence.sourceConfigRevision
+      }
+    }, backgroundProbeDbServiceTimeoutMs)
+  }
+  const selected = diagnostic?.winner?.value
+    ?? diagnostic?.attempts.find((item) => automaticAccountProbeOutcome(item.value.result, {
+      upstreamAttempt: item.value.upstreamAttempt,
+      canceled: item.value.canceled,
+      timeout: item.value.diagnosticTimeoutExhausted,
+      diagnosticTimeoutExhausted: item.value.diagnosticTimeoutExhausted
+    }) === 'upstream_failure')?.value
+    ?? diagnostic?.attempts[0]?.value
+  if (diagnostic?.errors.length) {
+    logger.warn(errorLogFields(diagnostic.errors[0]?.error, {
+      event: 'background_cooldown_account_retest_api_key_pool_attempt_failed',
+      accountId: account.id,
+      accountName: account.name,
+      failedKeyCount: diagnostic.errors.length
+    }), '冷却账户 Key 池探针存在调用异常，已保留连续完成游标')
+  }
+  if (diagnostic?.errors.length) {
+    throw new AggregateError(diagnostic.errors.map((item) => item.error), `账户 ${account.id} 的 API Key 池探针存在调用异常`)
+  }
+  if (!selected) throw new Error('API Key 池诊断未返回结果')
+  hooks.onDiagnosticResult(selected)
+  return selected.result
 }
 
 let cooldownRetestTestHooks: CooldownRetestTestHooks | undefined
@@ -56,8 +187,8 @@ const cooldownRetestNeutralMaxDelaySeconds = 5 * 60
 const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueItem>({
   name: 'cooldown-account-retest',
   policy: cooldownAccountRetestRetryPolicy,
-  concurrency: 1,
-  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runCooldownAccountRetestQueueItem(item, context)),
+  concurrency: globalSharedQueueConcurrency,
+  run: async (item, context) => await runCooldownAccountRetestQueueItem(item, context),
   onSuccess: (event) => {
     releaseQueuedCooldownFence(event.item)
   },
@@ -134,10 +265,6 @@ export function getCooldownAccountRetestQueueSnapshot() {
   return cooldownAccountRetestQueue.snapshot()
 }
 
-export function setCooldownAccountRetestQueueConcurrency(concurrency: number): void {
-  cooldownAccountRetestQueue.setConcurrency(concurrency)
-}
-
 async function runCooldownAccountRetestQueueItem(
   item: CooldownAccountRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }
@@ -168,53 +295,23 @@ async function runCooldownAccountRetestQueueItem(
       return true
     }
 
-    const groupId = account.boundGroupId
+    const groupId = account.boundGroupId!
     const diagnosticStartedAt = Date.now()
     let upstreamAttempt: UpstreamAttempt | undefined
     let diagnosticCanceled = false
     let diagnosticTimeoutExhausted = false
     const result = await (cooldownRetestTestHooks?.throwDiagnosticError
       ? Promise.reject(new Error('cooldown retest regression injected diagnostic failure'))
-      : testOpenAIAccountWithDiagnosticRetries(account, {
-    model: account.healthCheckModel,
-    diagnostics: 'full',
-    groupId,
-    trafficSource: 'cooldown_retest',
-    testEndpointMode: account.healthCheckEndpointMode,
-    forceProbeKind: account.healthCheckEndpointMode === 'images_json' ? 'models_catalog' : undefined,
-    requireCatalogModelEvidence: account.healthCheckEndpointMode === 'images_json',
-    disableAccountStateMutation: true,
-    retryAllFailures: true,
-    onDiagnosticAttemptProgress: () => {
-      upstreamAttempt = undefined
-    },
-    onDiagnosticAttemptResult: (attempt) => {
-      upstreamAttempt = attempt.upstreamAttempt
-      diagnosticCanceled = attempt.canceled
-      diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
-    },
-    onUpstreamAttempt: (attempt) => {
-      upstreamAttempt = attempt
-    },
-    shouldRetryFailure: (attemptResult) => {
-      if (cooldownRetestTestHooks?.disableDiagnosticRetries) return false
-      const probeOutcome = automaticAccountProbeOutcome(attemptResult, {
-        upstreamAttempt,
-        canceled: diagnosticCanceled,
-        timeout: diagnosticTimeoutExhausted,
-        diagnosticTimeoutExhausted
-      })
-      // Keep retrying incomplete diagnostics so the completed phase can
-      // distinguish a real upstream timeout ladder from a local task failure.
-      return probeOutcome === 'upstream_failure' || probeOutcome === 'probe_task_failure'
-    },
-    findAccountForTest: loadAccountForTestViaDbService,
-    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-    gatewaySettingsOverride: {
-      temporaryUnschedulableRetryAttempts: 0,
-      temporaryUnschedulableRetryIntervalSeconds: 0
-    }
-      })).catch((error: unknown) => {
+      : runCooldownAccountDiagnostic(account, groupId, item, {
+          onUpstreamAttempt: (attempt) => {
+            upstreamAttempt = attempt
+          },
+          onDiagnosticResult: (attempt) => {
+            upstreamAttempt = attempt.upstreamAttempt
+            diagnosticCanceled = attempt.canceled
+            diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
+          }
+        })).catch((error: unknown) => {
       logger.error(errorLogFields(error, {
         event: 'background_cooldown_account_retest_non_replay_phase_error',
         accountId: item.accountId,
@@ -227,6 +324,8 @@ async function runCooldownAccountRetestQueueItem(
       }), '冷却账户复测诊断阶段异常，已禁止重放上游请求')
       throw error
     })
+    // The pool runner returns one aggregate result while the callback records
+    // the winning/fallback attempt metadata for the existing outcome classifier.
     const probeOutcome = automaticAccountProbeOutcome(result, {
     upstreamAttempt,
     canceled: diagnosticCanceled,
@@ -257,7 +356,6 @@ async function runCooldownAccountRetestQueueItem(
     }, '冷却账户复测通过，账号已尝试恢复到可用状态')
       return true
     }
-
     if (probeOutcome !== 'upstream_failure') {
     const delaySeconds = cooldownRetestNeutralDeferDelaySeconds({
       accountId: item.accountId,

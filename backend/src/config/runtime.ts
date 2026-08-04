@@ -117,6 +117,11 @@ export interface RuntimeConfig {
   usageShardCount: number
   secret: string
   oauthProxyUrl?: string
+  concurrency: {
+    globalMax: number
+    globalLeaseDurationMs: number
+    globalAcquirePollMs: number
+  }
   gateway: {
     bodyInFlightMaxBytes: number
     upstreamAgentMaxSockets: number
@@ -129,11 +134,93 @@ export interface RuntimeConfig {
     accountCircuitRebuildPageTimeoutMs: number
     accountCircuitRebuildTotalTimeoutMs: number
     accountCircuitRebuildMaxPages: number
-    automaticProbeMaxConcurrency: number
     usageFinalizationMaxItems: number
-    usageFinalizationMaxConcurrency: number
     accountCircuitRecoveryBatchSize: number
-    accountCircuitRecoveryConcurrency: number
+    accountCircuitRecoveryLeaseDurationMs: number
+    accountCircuitBackoffMs: number[]
+    accountCircuitRecoverySuccessThreshold: number
+    accountCircuitRecoveryCanaryIntervalMs: number
+    accountCircuitSuspectConfirmationIntervalMs: number
+    accountConcurrencyRetryBudgetMs: number
+    automaticProbeSweepBatchSize: number
+    automaticProbeSweepIntervalMs: number
+    automaticProbeDueRetryDelayMs: number
+    automaticProbeStateReadBatchSize: number
+    automaticProbePrecheckMinIntervalMs: number
+    automaticProbeConcurrencyDrainPollMs: number
+    automaticProbeRecoveryRetryDelayMs: number
+    automaticProbeRecoveryPrecheckFailureThreshold: number
+    automaticProbeRecoveryAccountMinIntervalMs: number
+    automaticProbeRecoveryScopeMinIntervalMs: number
+    automaticProbeRecoveryJitterMs: number
+    recoverableUnavailableMaxWaitMs: number
+    recoverableUnavailableCheckIntervalMs: number
+    recoverableUnavailableDueRetryDelayMs: number
+    recoverableUnavailableMaxWaitersPerScope: number
+    recoverableUnavailableMaxWaitersGlobal: number
+  }
+  background: {
+    accountHealthCheckBatchSize: number
+    cooldownAccountRetestBatchSize: number
+    accountApiKeyCooldownRetestBatchSize: number
+    accountQualityFailurePrecheckBatchSize: number
+    normalRouteSpeedFirstRecoveryProbeBatchSize: number
+    accountBalanceAutoDetectionRecoveryBatchSize: number
+    accountBalanceAutoDetectionBackfillPageSize: number
+    accountBalanceRefreshBatchSize: number
+    accountBalanceRefreshRecoveryBatchSize: number
+    auditLogPostgresFlushBatchSize: number
+    auditLogPostgresRedisConsumerConcurrency: number
+    proxyLatencyRefreshConcurrency: number
+    proxyLatencyRefreshBatchSize: number
+    proxyProbeTimeoutMs: number
+    proxyManualTestDeadlineMs: number
+    proxyLatencyRefreshIntervalSeconds: number
+    proxyLatencyRefreshRunBudgetMs: number
+    proxyLatencyRefreshCandidateDeadlineMs: number
+    proxyLatencyRefreshCandidatePoolFactor: number
+    proxyLatencyRefreshLeaseGraceMs: number
+    accountProbeDbServiceTimeoutMs: number
+    accountHealthCheckProbeDeadlineMs: number
+    cooldownAccountRetestStartupDelayMs: number
+    accountApiKeyCooldownRetestStartupDelayMs: number
+    normalRouteSpeedFirstProbeStartupDelayMs: number
+    modelQualityScheduledCheckBatchSize: number
+    modelQualityHealthSyncRetryBatchSize: number
+    taskRunReconcileBatchSize: number
+    modelTrustObservationAggregationBatchSize: number
+    auditHotRetentionCleanupBatchSize: number
+    auditHotRetentionCleanupMaxBatches: number
+    auditHotRetentionCleanupMaxRunMs: number
+    operationLogBatchSize: number
+    operationLogShutdownFlushMaxBatches: number
+    operationLogQueueMaxItems: number
+    operationLogQueueMaxMb: number
+    auditLogTransportMaxQueuedJobs: number
+    auditLogTransportMaxTotalMb: number
+    auditLogTransportMaxActiveMb: number
+    auditLogTransportMaxJobMb: number
+    auditLogFlushBatchMaxMb: number
+    auditLogScheduledFlushMaxBatches: number
+    auditLogShutdownFlushMaxBatches: number
+    auditLogRedisStreamMaxItems: number
+    auditLogRedisStreamMaxMb: number
+    ipcUsageRecordQueueMaxMessages: number
+    ipcUsageRecordQueueMaxMb: number
+    ipcRegularWorkerQueueMaxMessages: number
+    ipcRegularWorkerQueueMaxMb: number
+    ipcPendingDbServiceRequestMaxCount: number
+    recordMaintenanceBatchSize: number
+    recordMaintenanceShutdownFlushMaxBatches: number
+    recordMaintenanceQueueMaxItems: number
+    recordMaintenanceQueueMaxMb: number
+    recordMaintenanceAuditCleanupBatchSize: number
+    recordMaintenanceAuditCleanupMaxBatches: number
+    usageRecordBatchSize: number
+    usageRecordFlushBatchMaxMb: number
+    usageRecordShutdownFlushMaxBatches: number
+    usageRecordQueueMaxItems: number
+    usageRecordQueueMaxMb: number
   }
   modelCheck: {
     probeRetryDelayMs: number
@@ -240,6 +327,40 @@ const minimumProductionSecretLength = 32
 const localEnv = loadRuntimeBaseEnv(localEnvPath, process.env)
 const localEnvOverlayPath = envFilePathConfig(process.env.JUHE_AI_ENV_FILE ?? localEnv.JUHE_AI_ENV_FILE)
 const localEnvOverlay = localEnvOverlayPath ? loadRuntimeEnvFile(localEnvOverlayPath) : {}
+export const localCapacityEnvPath = resolve(backendRoot, '.env.capacity')
+const localCapacityEnv = Object.fromEntries(
+  Object.entries(loadRuntimeEnvFile(localCapacityEnvPath)).filter(([name]) => isCapacityEnvironmentVariable(name))
+)
+const defaultBackgroundConcurrency = integerConfig('JUHE_AI_CONCURRENCY_BACKGROUND_DEFAULT_MAX', 20, 1, 1_000)
+const globalConcurrencyMax = integerConfig('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000)
+const globalConcurrencyLeaseDurationMs = integerConfig(
+  'JUHE_AI_CONCURRENCY_GLOBAL_LEASE_DURATION_MS',
+  300_000,
+  10_000,
+  3_600_000
+)
+const globalConcurrencyAcquirePollMs = integerConfig(
+  'JUHE_AI_CONCURRENCY_GLOBAL_ACQUIRE_POLL_MS',
+  50,
+  10,
+  1_000
+)
+const upstreamAgentMaxSockets = numberConfig(
+  'JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS',
+  globalConcurrencyMax,
+  64,
+  50_000
+)
+const upstreamAgentMaxFreeSockets = numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 50_000)
+const upstreamAgentMaxTotalSockets = numberConfig(
+  'JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS',
+  globalConcurrencyMax,
+  64,
+  50_000
+)
+if (upstreamAgentMaxTotalSockets < upstreamAgentMaxSockets) {
+  throw new Error('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS 不能小于 JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS')
+}
 const hasPerformanceDriverHints = hasAnyRawConfig([
   'JUHE_AI_POSTGRES_URL',
   'JUHE_AI_REDIS_CACHE_URL',
@@ -423,15 +544,20 @@ export const runtimeConfig: RuntimeConfig = {
   usageRecordWriterQueueMaxItems: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
   usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
   secret: configuredSecret,
+  concurrency: {
+    globalMax: globalConcurrencyMax,
+    globalLeaseDurationMs: globalConcurrencyLeaseDurationMs,
+    globalAcquirePollMs: globalConcurrencyAcquirePollMs
+  },
   httpSecurity: httpSecurityConfig(),
   auth: authRuntimeConfig(),
   upstreamUrlSecurity: upstreamUrlSecurityConfig(),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   gateway: {
     bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024,
-    upstreamAgentMaxSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS', 2048, 64, 20000),
-    upstreamAgentMaxFreeSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 5000),
-    upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000),
+    upstreamAgentMaxSockets,
+    upstreamAgentMaxFreeSockets,
+    upstreamAgentMaxTotalSockets,
     accountCircuitConfirmationFailuresRequired: optionalIntegerConfig(
       'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CONFIRMATION_FAILURES_REQUIRED',
       1,
@@ -463,11 +589,98 @@ export const runtimeConfig: RuntimeConfig = {
       300_000
     ),
     accountCircuitRebuildMaxPages: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_REBUILD_MAX_PAGES', 200, 1, 2_000),
-    automaticProbeMaxConcurrency: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_MAX_CONCURRENCY', 3, 1, 1_000),
     usageFinalizationMaxItems: integerConfig('JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS', 2048, 1, 1_000_000),
-    usageFinalizationMaxConcurrency: integerConfig('JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_CONCURRENCY', 32, 1, 1_000),
     accountCircuitRecoveryBatchSize: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_BATCH_SIZE', 200, 1, 2_000),
-    accountCircuitRecoveryConcurrency: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_CONCURRENCY', 16, 1, 128)
+    accountCircuitRecoveryLeaseDurationMs: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_LEASE_DURATION_MS', 180_000, 10_000, 30 * 60_000),
+    accountCircuitBackoffMs: integerListConfig(
+      'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_BACKOFF_MS',
+      [3_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000],
+      100,
+      24 * 60 * 60_000
+    ),
+    accountCircuitRecoverySuccessThreshold: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_SUCCESS_THRESHOLD', 3, 1, 100),
+    accountCircuitRecoveryCanaryIntervalMs: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_CANARY_INTERVAL_MS', 3_000, 100, 10 * 60_000),
+    accountCircuitSuspectConfirmationIntervalMs: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_SUSPECT_CONFIRMATION_INTERVAL_MS', 3_000, 100, 10 * 60_000),
+    accountConcurrencyRetryBudgetMs: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CONCURRENCY_RETRY_BUDGET_MS', 1_200, 0, 60_000),
+    automaticProbeSweepBatchSize: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_SWEEP_BATCH_SIZE', 25, 1, 1_000),
+    automaticProbeSweepIntervalMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_SWEEP_INTERVAL_MS', 1_000, 100, 60_000),
+    automaticProbeDueRetryDelayMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_DUE_RETRY_DELAY_MS', 250, 10, 60_000),
+    automaticProbeStateReadBatchSize: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_STATE_READ_BATCH_SIZE', 100, 1, 10_000),
+    automaticProbePrecheckMinIntervalMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_PRECHECK_MIN_INTERVAL_MS', 60_000, 0, 60 * 60_000),
+    automaticProbeConcurrencyDrainPollMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_CONCURRENCY_DRAIN_POLL_MS', 1_000, 10, 60_000),
+    automaticProbeRecoveryRetryDelayMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_RECOVERY_RETRY_DELAY_MS', 10_000, 0, 10 * 60_000),
+    automaticProbeRecoveryPrecheckFailureThreshold: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_RECOVERY_PRECHECK_FAILURE_THRESHOLD', 2, 1, 100),
+    automaticProbeRecoveryAccountMinIntervalMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_RECOVERY_ACCOUNT_MIN_INTERVAL_MS', 3_000, 0, 10 * 60_000),
+    automaticProbeRecoveryScopeMinIntervalMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_RECOVERY_SCOPE_MIN_INTERVAL_MS', 1_000, 0, 10 * 60_000),
+    automaticProbeRecoveryJitterMs: integerConfig('JUHE_AI_GATEWAY_AUTOMATIC_PROBE_RECOVERY_JITTER_MS', 750, 0, 60_000),
+    recoverableUnavailableMaxWaitMs: integerConfig('JUHE_AI_GATEWAY_RECOVERABLE_UNAVAILABLE_MAX_WAIT_MS', 30_000, 0, 10 * 60_000),
+    recoverableUnavailableCheckIntervalMs: integerConfig('JUHE_AI_GATEWAY_RECOVERABLE_UNAVAILABLE_CHECK_INTERVAL_MS', 5_000, 10, 60_000),
+    recoverableUnavailableDueRetryDelayMs: integerConfig('JUHE_AI_GATEWAY_RECOVERABLE_UNAVAILABLE_DUE_RETRY_DELAY_MS', 250, 10, 60_000),
+    recoverableUnavailableMaxWaitersPerScope: integerConfig('JUHE_AI_GATEWAY_RECOVERABLE_UNAVAILABLE_MAX_WAITERS_PER_SCOPE', globalConcurrencyMax, 1, 50_000),
+    recoverableUnavailableMaxWaitersGlobal: integerConfig('JUHE_AI_GATEWAY_RECOVERABLE_UNAVAILABLE_MAX_WAITERS_GLOBAL', globalConcurrencyMax, 1, 50_000)
+  },
+  background: {
+    accountHealthCheckBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_BATCH_SIZE', 20, 1, 1_000),
+    cooldownAccountRetestBatchSize: integerConfig('JUHE_AI_BACKGROUND_COOLDOWN_ACCOUNT_RETEST_BATCH_SIZE', 10, 1, 1_000),
+    accountApiKeyCooldownRetestBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_API_KEY_COOLDOWN_RETEST_BATCH_SIZE', 10, 1, 1_000),
+    accountQualityFailurePrecheckBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_QUALITY_FAILURE_PRECHECK_BATCH_SIZE', 10, 1, 1_000),
+    normalRouteSpeedFirstRecoveryProbeBatchSize: integerConfig('JUHE_AI_BACKGROUND_NORMAL_ROUTE_SPEED_FIRST_RECOVERY_PROBE_BATCH_SIZE', 10, 1, 1_000),
+    accountBalanceAutoDetectionRecoveryBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_AUTO_DETECTION_RECOVERY_BATCH_SIZE', 2, 1, 1_000),
+    accountBalanceAutoDetectionBackfillPageSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_AUTO_DETECTION_BACKFILL_PAGE_SIZE', 50, 1, 10_000),
+    accountBalanceRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_BATCH_SIZE', 36, 1, 1_000),
+    accountBalanceRefreshRecoveryBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_RECOVERY_BATCH_SIZE', 4, 1, 1_000),
+    auditLogPostgresFlushBatchSize: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_POSTGRES_FLUSH_BATCH_SIZE', 25, 1, 1_000),
+    auditLogPostgresRedisConsumerConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_POSTGRES_REDIS_CONSUMER_CONCURRENCY', 20, 1, 1_000),
+    proxyLatencyRefreshConcurrency: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CONCURRENCY', defaultBackgroundConcurrency, 1, 1_000),
+    proxyLatencyRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_BATCH_SIZE', 20, 1, 1_000),
+    proxyProbeTimeoutMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_PROBE_TIMEOUT_MS', 15_000, 1_000, 5 * 60_000),
+    proxyManualTestDeadlineMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_MANUAL_TEST_DEADLINE_MS', 25_000, 1_000, 10 * 60_000),
+    proxyLatencyRefreshIntervalSeconds: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_INTERVAL_SECONDS', 60, 5, 24 * 60 * 60),
+    proxyLatencyRefreshRunBudgetMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_RUN_BUDGET_MS', 45_000, 1_000, 10 * 60_000),
+    proxyLatencyRefreshCandidateDeadlineMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CANDIDATE_DEADLINE_MS', 25_000, 1_000, 60_000),
+    proxyLatencyRefreshCandidatePoolFactor: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CANDIDATE_POOL_FACTOR', 4, 1, 100),
+    proxyLatencyRefreshLeaseGraceMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_LEASE_GRACE_MS', 5_000, 0, 5 * 60_000),
+    accountProbeDbServiceTimeoutMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_PROBE_DB_SERVICE_TIMEOUT_MS', 30_000, 1_000, 5 * 60_000),
+    accountHealthCheckProbeDeadlineMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS', 65_000, 1_000, 10 * 60_000),
+    cooldownAccountRetestStartupDelayMs: integerConfig('JUHE_AI_BACKGROUND_COOLDOWN_ACCOUNT_RETEST_STARTUP_DELAY_MS', 60_000, 0, 10 * 60_000),
+    accountApiKeyCooldownRetestStartupDelayMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_API_KEY_COOLDOWN_RETEST_STARTUP_DELAY_MS', 65_000, 0, 10 * 60_000),
+    normalRouteSpeedFirstProbeStartupDelayMs: integerConfig('JUHE_AI_BACKGROUND_NORMAL_ROUTE_SPEED_FIRST_PROBE_STARTUP_DELAY_MS', 75_000, 0, 10 * 60_000),
+    modelQualityScheduledCheckBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_QUALITY_SCHEDULED_CHECK_BATCH_SIZE', 3, 1, 1_000),
+    modelQualityHealthSyncRetryBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_QUALITY_HEALTH_SYNC_RETRY_BATCH_SIZE', 20, 1, 1_000),
+    taskRunReconcileBatchSize: integerConfig('JUHE_AI_BACKGROUND_TASK_RUN_RECONCILE_BATCH_SIZE', 500, 1, 10_000),
+    modelTrustObservationAggregationBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_TRUST_OBSERVATION_AGGREGATION_BATCH_SIZE', 100, 1, 10_000),
+    auditHotRetentionCleanupBatchSize: integerConfig('JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_BATCH_SIZE', 100, 1, 10_000),
+    auditHotRetentionCleanupMaxBatches: integerConfig('JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_BATCHES', 1, 1, 1_000),
+    auditHotRetentionCleanupMaxRunMs: integerConfig('JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_RUN_MS', 3_000, 100, 300_000),
+    operationLogBatchSize: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_BATCH_SIZE', 200, 1, 10_000),
+    operationLogShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),
+    operationLogQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_QUEUE_MAX_ITEMS', 5_000, 1, 1_000_000),
+    operationLogQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_QUEUE_MAX_MB', 32, 1, 4_096),
+    auditLogTransportMaxQueuedJobs: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_QUEUED_JOBS', 256, 1, 100_000),
+    auditLogTransportMaxTotalMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_TOTAL_MB', 128, 1, 4_096),
+    auditLogTransportMaxActiveMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_ACTIVE_MB', 72, 1, 4_096),
+    auditLogTransportMaxJobMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_JOB_MB', 64, 1, 4_096),
+    auditLogFlushBatchMaxMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_FLUSH_BATCH_MAX_MB', 8, 1, 4_096),
+    auditLogScheduledFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_SCHEDULED_FLUSH_MAX_BATCHES', 20, 1, 10_000),
+    auditLogShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),
+    auditLogRedisStreamMaxItems: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_REDIS_STREAM_MAX_ITEMS', 50_000, 1, 5_000_000),
+    auditLogRedisStreamMaxMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_REDIS_STREAM_MAX_MB', 256, 1, 16_384),
+    ipcUsageRecordQueueMaxMessages: integerConfig('JUHE_AI_BACKGROUND_IPC_USAGE_RECORD_QUEUE_MAX_MESSAGES', 10_000, 1, 1_000_000),
+    ipcUsageRecordQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_IPC_USAGE_RECORD_QUEUE_MAX_MB', 64, 1, 4_096),
+    ipcRegularWorkerQueueMaxMessages: integerConfig('JUHE_AI_BACKGROUND_IPC_REGULAR_WORKER_QUEUE_MAX_MESSAGES', 5_000, 1, 1_000_000),
+    ipcRegularWorkerQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_IPC_REGULAR_WORKER_QUEUE_MAX_MB', 64, 1, 4_096),
+    ipcPendingDbServiceRequestMaxCount: integerConfig('JUHE_AI_BACKGROUND_IPC_PENDING_DB_SERVICE_REQUEST_MAX_COUNT', 1_000, 1, 1_000_000),
+    recordMaintenanceBatchSize: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE', 10, 1, 10_000),
+    recordMaintenanceShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES', 1, 1, 10_000),
+    recordMaintenanceQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_ITEMS', 5_000, 1, 1_000_000),
+    recordMaintenanceQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_MB', 32, 1, 4_096),
+    recordMaintenanceAuditCleanupBatchSize: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_AUDIT_CLEANUP_BATCH_SIZE', 100, 1, 10_000),
+    recordMaintenanceAuditCleanupMaxBatches: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_AUDIT_CLEANUP_MAX_BATCHES', 3, 1, 10_000),
+    usageRecordBatchSize: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_BATCH_SIZE', 1_000, 1, 100_000),
+    usageRecordFlushBatchMaxMb: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_FLUSH_BATCH_MAX_MB', 8, 1, 4_096),
+    usageRecordShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),
+    usageRecordQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_QUEUE_MAX_ITEMS', 10_000, 1, 1_000_000),
+    usageRecordQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_QUEUE_MAX_MB', 64, 1, 4_096)
   },
   modelCheck: {
     probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)
@@ -543,7 +756,18 @@ function stringConfig(name: string, fallback: string): string {
 }
 
 function rawStringConfig(name: string): string | undefined {
-  return process.env[name]?.trim() ?? localEnvOverlay[name]?.trim() ?? localEnv[name]?.trim()
+  return process.env[name]?.trim() ?? localEnvOverlay[name]?.trim() ?? localCapacityEnv[name]?.trim() ?? localEnv[name]?.trim()
+}
+
+function isCapacityEnvironmentVariable(name: string): boolean {
+  return name.startsWith('JUHE_AI_CONCURRENCY_')
+    || name.startsWith('JUHE_AI_BACKGROUND_')
+    || name.startsWith('JUHE_AI_GATEWAY_')
+    || name.startsWith('JUHE_AI_DB_')
+    || name.startsWith('JUHE_AI_REDIS_STREAM_')
+    || name.startsWith('JUHE_AI_USAGE_SPOOL_')
+    || name === 'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT'
+    || /^JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$/.test(name)
 }
 
 function hasAnyRawConfig(names: string[]): boolean {
@@ -863,6 +1087,20 @@ function integerConfig(name: string, fallback: number, min: number, max: number)
   if (!Number.isInteger(value)) throw new Error(`${name} 必须配置为整数`)
   if (value < min || value > max) throw new Error(`${name} 必须在 ${min}-${max} 范围内`)
   return value
+}
+
+function integerListConfig(name: string, fallback: number[], min: number, max: number): number[] {
+  const rawValue = rawStringConfig(name)
+  if (!rawValue) return [...fallback]
+  const parts = rawValue.split(',').map((part) => part.trim()).filter(Boolean)
+  if (parts.length === 0) throw new Error(`${name} 必须配置为逗号分隔的整数列表`)
+  return parts.map((part) => {
+    const value = Number(part)
+    if (!Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`${name} 的每一项必须在 ${min}-${max} 范围内`)
+    }
+    return value
+  })
 }
 
 function optionalIntegerConfig(name: string, min: number, max: number): number | undefined {

@@ -9,6 +9,7 @@ import {
 } from '../../storage/account-balance.repository.js'
 import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 
 export type AccountBalanceSnapshotCleanupReason = 'balance_configuration_changed' | 'multiple_api_keys' | 'batch_multiple_api_keys' | 'batch_balance_identity_changed'
 
@@ -74,9 +75,9 @@ export function createAccountBalanceSnapshotCleanupCoordinator(
   const retryQueue = createRetryQueue<AccountBalanceSnapshotCleanupQueueItem>({
     name: 'account-balance-snapshot-cleanup',
     policy: options.retryPolicy ?? cleanupRetryPolicy,
-    concurrency: 2,
+    concurrency: runtimeConfig.concurrency.globalMax,
     run: async (item) => {
-      await options.deleteSnapshot(item)
+      await runWithGlobalBackgroundConcurrencySlot(async () => await options.deleteSnapshot(item))
       return true
     },
     onSuccess: (event) => {

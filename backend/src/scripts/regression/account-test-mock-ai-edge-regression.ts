@@ -67,7 +67,6 @@ let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
 
 try {
-  repositories.updateSettings({ accountTestTaskConcurrency: 1 })
   mockUpstream = createMockAIUpstream()
   mockUpstream.listen(0, '127.0.0.1')
   await onceListening(mockUpstream)

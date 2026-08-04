@@ -50,6 +50,11 @@ import {
   parseGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
+import {
+  recoverCodexEncryptedContentRequest,
+  type CodexEncryptedContentRecoveryResult
+} from '../request/codex-encrypted-content-recovery.js'
+import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 
 /**
  * Opaque HTTP failures may not retry a sibling API Key.  Account-level
@@ -97,6 +102,8 @@ interface HandleFailedUpstreamResponseInput {
   account: UpstreamAccount
   upstreamUrl: string
   response: GatewayUpstreamResponse
+  requestBody?: Buffer | string
+  requestClientCompatibility?: ClientCompatibilityCapability
   settings: GatewaySettings
   attemptStartedAt: number
   attemptIndex: number
@@ -131,6 +138,7 @@ interface HandleUpstreamRequestErrorInput {
 
 type HandleFailedUpstreamResponseResult =
   | { action: 'retry' | 'skip_account'; failureKind: 'explicit_policy' | 'opaque_http'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure; tryNextApiKeyForRequest?: boolean }
+  | { action: 'retry_with_compatibility_recovery'; failureKind: 'compatibility_recovery'; lastAttempt: UpstreamAttempt; recovery: Extract<CodexEncryptedContentRecoveryResult, { action: 'retry_with_body_variant' }> }
   | { action: 'return_response'; response: GatewayUpstreamResponse }
 
 export interface PendingAccountApiKeyFailure {
@@ -259,6 +267,43 @@ export async function handleFailedUpstreamResponse(
     bodyText: diagnosticResponseBodyText,
     errorPayload: failureBodyFacts.errorPayload
   })
+  const compatibilityRecovery = await recoverCodexEncryptedContentRequest({
+    req,
+    account,
+    requestClientCompatibility: input.requestClientCompatibility,
+    body: input.requestBody,
+    upstreamErrorText: responseBodyText,
+    signal
+  })
+  if (compatibilityRecovery.action === 'retry_with_body_variant') {
+    auditCapture.addGatewayMetadata({
+      label: 'codex_encrypted_content_recovery_retry',
+      metadata: {
+        accountId: account.id,
+        upstreamUrl: safeUpstreamUrl,
+        transport: 'http',
+        ...compatibilityRecovery.metadata
+      }
+    })
+    return {
+      action: 'retry_with_compatibility_recovery',
+      failureKind: 'compatibility_recovery',
+      lastAttempt,
+      recovery: compatibilityRecovery
+    }
+  }
+  if (compatibilityRecovery.action === 'not_recoverable' && compatibilityRecovery.signal) {
+    auditCapture.addGatewayMetadata({
+      label: 'codex_encrypted_content_recovery_skipped',
+      metadata: {
+        accountId: account.id,
+        upstreamUrl: safeUpstreamUrl,
+        transport: 'http',
+        signal: compatibilityRecovery.signal,
+        reason: compatibilityRecovery.reason
+      }
+    })
+  }
   if (input.accountStateMutationEnabled !== false) {
     persistOpenAICodexHeadersIfNeeded(
       account,
@@ -289,9 +334,7 @@ export async function handleFailedUpstreamResponse(
         cooldownStatus: explicitPolicyDecision.cooldownStatus
       }
     })
-    if (explicitPolicyDecision.action === 'retry_next') {
-      dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
-    } else {
+    if (explicitPolicyDecision.action !== 'retry_next') {
       await applyAccountErrorHandlingWithCacheInvalidation(account, {
         ...failureInput,
         policyDecision: explicitPolicyDecision
@@ -301,6 +344,10 @@ export async function handleFailedUpstreamResponse(
 
   const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
     && !explicitPolicyDecision
+  // A complete gateway HTTP failure is independent evidence that this account
+  // needs the fixed-model availability confirmation. The request-level guard
+  // also covers retry_next, whose candidate replay continues below.
+  dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
 
   return {
     action: 'skip_account',

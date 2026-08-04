@@ -1,4 +1,5 @@
 import { getRequestLogger } from '../../../shared/request-context.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
   defaultGatewayFinalResponseReserveMs,
@@ -7,9 +8,9 @@ import {
   type RouteCoordinationBudgetTransitionResult
 } from '../routing/route-coordination.js'
 
-export const recoverableUnavailableMaxWaitMs = 30_000
-export const recoverableUnavailableCheckIntervalMs = 5_000
-const recoverableUnavailableDueRetryDelayMs = 250
+export const recoverableUnavailableMaxWaitMs = runtimeConfig.gateway.recoverableUnavailableMaxWaitMs
+export const recoverableUnavailableCheckIntervalMs = runtimeConfig.gateway.recoverableUnavailableCheckIntervalMs
+const recoverableUnavailableDueRetryDelayMs = runtimeConfig.gateway.recoverableUnavailableDueRetryDelayMs
 
 type RecoverableUnavailableWaitSkippedReason =
   | 'no_retry_time'
@@ -91,8 +92,8 @@ interface RecoverableUnavailableCoordinatorScope {
   timer?: unknown
 }
 
-const defaultMaxWaitersPerScope = 256
-const defaultMaxWaitersGlobal = 4096
+const defaultMaxWaitersPerScope = runtimeConfig.gateway.recoverableUnavailableMaxWaitersPerScope
+const defaultMaxWaitersGlobal = runtimeConfig.gateway.recoverableUnavailableMaxWaitersGlobal
 
 export class RecoverableUnavailableWaitCoordinator {
   private readonly scopes = new Map<string, RecoverableUnavailableCoordinatorScope>()

@@ -1,7 +1,7 @@
 import type { GlobalSettings, SystemSettings, SystemSettingsPatch } from '@/types/domain'
 import { http, unwrap } from '../http'
 
-export type ManagementSettingsSectionKey = 'brand' | 'gateway-core' | 'user-request-limit' | 'account-health' | 'api-rate-limit' | 'account-test' | 'cooldown-retest' | 'data-retention'
+export type ManagementSettingsSectionKey = 'brand' | 'gateway-core' | 'user-request-limit' | 'account-health' | 'api-rate-limit' | 'cooldown-retest' | 'data-retention'
 export type ManagementSettingsSectionValues = Record<string, string | number>
 
 export const settingsApi = {

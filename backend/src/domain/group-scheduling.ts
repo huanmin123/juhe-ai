@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../config/runtime.js'
 import type { GroupSchedulingPolicy, GroupType } from './types.js'
 
 type NumericPolicyKey =
@@ -47,7 +48,7 @@ const storedGroupSchedulingPolicyKeys = [
 
 export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSchedulingPolicy> = {
   mode: 'balanced_fast',
-  defaultSoftConcurrency: 5,
+  defaultSoftConcurrency: runtimeConfig.concurrency.globalMax,
   fastFirstEnabled: true,
   fallbackOnQueueEnabled: true,
   breakAffinityOnSoftLimit: true,

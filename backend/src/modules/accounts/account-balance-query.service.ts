@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccountBalanceBuiltinAdapter, AccountBalanceQueryConfig, AccountBalanceSnapshot } from './account-balance.types.js'
 import type { AccountBalanceRefreshCandidate } from '../../storage/account-balance.repository.js'
 import {
@@ -220,7 +221,7 @@ export async function queryAccountBalance(
   candidate: AccountBalanceQueryCandidate,
   executionContext: AccountBalanceRefreshExecutionContext = {}
 ): Promise<AccountBalanceSnapshot> {
-  return (await queryAccountBalanceResolution(candidate, undefined, executionContext)).snapshot
+  return (await runWithGlobalBackgroundConcurrencySlot(async () => await queryAccountBalanceResolution(candidate, undefined, executionContext))).snapshot
 }
 
 export async function testAccountBalanceCandidate(

@@ -123,7 +123,7 @@ flowchart LR
 - `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
 - 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商管理、代理管理 CRUD / 检测、统计和需要管理员权限的接口再叠加 `requireAdmin`，代理 options 作为登录用户可用的全局选择项不叠加管理员权限。
-- 账号测试、模型检测和代理检测都会发起外部网络探测，但账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，worker 按系统设置 `accountTestTaskConcurrency` 控制全站并发，默认 100，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
+- 账号测试、模型检测和代理检测都会发起外部网络探测。账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，执行进入 `JUHE_AI_CONCURRENCY_GLOBAL_MAX` 进程级共享池，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
   - 活动账号测试取消以 worker IPC + 本地 `AbortController` 为即时信号；管理 API 仍先把 `cancel_requested` 写入数据库，再转发 cancel IPC。
   - claim / complete / fail 使用 `status` 与 `cancel_requested` 条件状态转换；取消与完成/失败竞态由 SQLite 与 PostgreSQL repository 在稀有失败分支收口，数据库保持跨进程重启后的最终权威。
   - 正常任务执行路径不得为每个阶段轮询 `is_account_test_task_cancel_requested` 或 `read_account_test_task_cancel_message`，也不得通过提高 DB service timeout、PostgreSQL 连接数或账号测试并发来掩盖积压。

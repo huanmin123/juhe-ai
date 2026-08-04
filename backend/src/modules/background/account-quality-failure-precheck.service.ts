@@ -1,25 +1,36 @@
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { testOpenAIAccountDiagnosticAttempt } from '../accounts/account-test.service.js'
 import {
   automaticAccountAvailabilityProbeFailed,
   automaticAccountProbeOutcome
 } from '../accounts/automatic-account-probe-outcome.js'
-import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { accountApiKeyPoolEntriesForCandidate } from '../accounts/account-api-key-pool-runtime.js'
+import { runAccountApiKeyPoolDiagnostic } from '../accounts/account-api-key-pool-diagnostic.js'
+import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { gatewayAccountRuntimeKey } from '../gateway/runtime/account-runtime-keys.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import {
   backgroundProbeDbServiceTimeoutMs,
+  globalSharedQueueConcurrency,
   runWithBackgroundAccountAvailabilityProbe,
   runWithBackgroundFullDiagnosticSlot
 } from './account-probe-limits.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
   enqueuedAt: string
+}
+
+interface AccountQualityPoolAttemptValue {
+  result: AccountTestResult
+  upstreamAttempt?: UpstreamAttempt
+  diagnosticCanceled: boolean
+  diagnosticTimeoutExhausted: boolean
 }
 
 const accountQualityFailurePrecheckRetryPolicy = sequenceRetryPolicy('account_quality_failure_precheck', [], 0)
@@ -29,8 +40,8 @@ const recentQualityFailurePrechecks = new Map<string, number>()
 const accountQualityFailurePrecheckQueue = createRetryQueue<AccountQualityFailurePrecheckQueueItem>({
   name: 'account-quality-failure-precheck',
   policy: accountQualityFailurePrecheckRetryPolicy,
-  concurrency: 1,
-  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountQualityFailurePrecheckQueueItem(item, context)),
+  concurrency: globalSharedQueueConcurrency,
+  run: async (item, context) => await runAccountQualityFailurePrecheckQueueItem(item, context),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_account_quality_failure_precheck_exhausted',
@@ -55,10 +66,6 @@ export function enqueueAccountQualityFailurePrecheck(candidate: AccountQualityFa
 
 export function getAccountQualityFailurePrecheckQueueSnapshot() {
   return accountQualityFailurePrecheckQueue.snapshot()
-}
-
-export function setAccountQualityFailurePrecheckQueueConcurrency(concurrency: number): void {
-  accountQualityFailurePrecheckQueue.setConcurrency(concurrency)
 }
 
 async function runAccountQualityFailurePrecheckQueueItem(
@@ -104,37 +111,54 @@ async function runAccountQualityFailurePrecheckQueueItem(
 
   const precheckStartedAt = new Date().toISOString()
   return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
-    let upstreamAttempt: UpstreamAttempt | undefined
-    let diagnosticCanceled = false
-    let diagnosticTimeoutExhausted = false
-    const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-      diagnostics: 'full',
-      groupId,
-      systemAccountId: item.systemAccountId,
-      trafficSource: 'runtime_recovery_probe',
-      testEndpointMode: account.healthCheckEndpointMode,
-      disableAccountStateMutation: true,
-      retryAllFailures: true,
-      onDiagnosticAttemptProgress: () => {
-        upstreamAttempt = undefined
-      },
-      onDiagnosticAttemptResult: (attempt) => {
-        upstreamAttempt = attempt.upstreamAttempt
-        diagnosticCanceled = attempt.canceled
-        diagnosticTimeoutExhausted = attempt.diagnosticTimeoutExhausted
-      },
-      onUpstreamAttempt: (attempt) => {
-        upstreamAttempt = attempt
-      },
-      candidateAccount,
-      findAccountForTest: loadAccountForTestViaDbService,
-      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-      gatewaySettingsOverride: {
-        temporaryUnschedulableRetryAttempts: 0,
-        temporaryUnschedulableRetryIntervalSeconds: 0
+    const entries = accountApiKeyPoolEntriesForCandidate(candidateAccount)
+    const diagnostic = await runAccountApiKeyPoolDiagnostic(candidateAccount, entries, async ({ candidate: fixedCandidate, timeoutMs, signal }) => {
+      const attempt = await runWithBackgroundFullDiagnosticSlot(async () => await testOpenAIAccountDiagnosticAttempt(account, {
+        diagnostics: 'full',
+        groupId,
+        systemAccountId: item.systemAccountId,
+        trafficSource: 'runtime_recovery_probe',
+        testEndpointMode: account.healthCheckEndpointMode,
+        disableAccountStateMutation: true,
+        candidateAccount: fixedCandidate,
+        signal,
+        findAccountForTest: loadAccountForTestViaDbService,
+        findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
+      }, timeoutMs))
+      const value: AccountQualityPoolAttemptValue = {
+        result: attempt.result,
+        upstreamAttempt: attempt.upstreamAttempt,
+        diagnosticCanceled: attempt.canceled,
+        diagnosticTimeoutExhausted: attempt.diagnosticTimeoutExhausted
       }
-    })
-    return { result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted }
+      return {
+        value,
+        success: attempt.result.success,
+        timedOutAfterRealUpstreamAttempt: attempt.diagnosticTimeoutExhausted
+          && Boolean(attempt.upstreamAttempt && isRealUpstreamAttempt(attempt.upstreamAttempt))
+      }
+    }, { allowSingleEntry: true })
+    const selected = diagnostic?.winner?.value
+      ?? diagnostic?.attempts.find((attempt) => automaticAccountProbeOutcome(attempt.value.result, {
+        upstreamAttempt: attempt.value.upstreamAttempt,
+        canceled: attempt.value.diagnosticCanceled,
+        timeout: attempt.value.diagnosticTimeoutExhausted,
+        diagnosticTimeoutExhausted: attempt.value.diagnosticTimeoutExhausted
+      }) === 'upstream_failure')?.value
+      ?? diagnostic?.attempts[0]?.value
+    if (diagnostic?.errors.length) {
+      logger.warn(errorLogFields(diagnostic.errors[0]?.error, {
+        event: 'background_account_quality_failure_precheck_api_key_pool_attempt_failed',
+        accountId: account.id,
+        accountName: account.name,
+        failedKeyCount: diagnostic.errors.length
+      }), '账户质量失败确认的 Key 池探针存在调用异常')
+    }
+    if (diagnostic?.errors.length) {
+      throw new AggregateError(diagnostic.errors.map((item) => item.error), `账户 ${account.id} 的质量确认 API Key 池存在调用异常`)
+    }
+    if (!selected) throw new Error('质量失败确认未返回 API Key 诊断结果')
+    return selected
   }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted }, { joined }) => {
     if (joined) {
       logger.debug({

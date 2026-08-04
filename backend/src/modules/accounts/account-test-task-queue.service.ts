@@ -1,6 +1,7 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AccountSummary, AccountSupportedEndpointMode, AccountTestApiKeyPoolItemResult, AccountTestResult } from '../../domain/types.js'
 import { logger, errorLogFields } from '../../shared/logger.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
@@ -10,8 +11,6 @@ import {
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { accountApiKeyEntries, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
-import { getSettings } from '../../storage/settings.repository.js'
-import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountTestDraftSnapshot,
@@ -19,11 +18,10 @@ import {
 import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountDiagnosticAttempt, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,
-  accountDiagnosticRetryTimeoutMs,
   accountDiagnosticRetryTimeouts,
   diagnosticAccountTestGatewaySettingsOverride,
   diagnosticAttemptSignal,
@@ -35,6 +33,7 @@ import {
   fixedAccountApiKeyPoolCandidate,
   isCandidateAccountApiKeyPoolTestable
 } from './account-api-key-pool-runtime.js'
+import { runAccountApiKeyPoolDiagnostic } from './account-api-key-pool-diagnostic.js'
 import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 
 interface AccountTestQueueItem {
@@ -42,22 +41,18 @@ interface AccountTestQueueItem {
 }
 
 const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户'
-const defaultManualAccountTestConcurrency = 100
-const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
-const manualAccountTestRefillMinBatchSize = 100
 const manualAccountTestRefillMaxBatchSize = 1000
 const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
 const manualAccountTestQueuedSweepBatchSize = 500
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined
-let sqliteSettingsTableMissingWarningLogged = false
 
 const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   name: 'manual-account-test',
   policy: manualAccountTestRetryPolicy,
-  concurrency: defaultManualAccountTestConcurrency,
-  run: runAccountTestQueueItem,
+  concurrency: runtimeConfig.concurrency.globalMax,
+  run: async (item) => await runAccountTestQueueItem(item),
   onSuccess: () => {
     refillManualAccountTestQueue()
   },
@@ -137,7 +132,6 @@ function refillManualAccountTestQueue(): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
-  manualAccountTestQueue.setConcurrency(accountTestTaskConcurrency())
   void runAccountTestTaskMaintenance('sweep').then((taskIds) => {
     for (const taskId of taskIds) {
       enqueueAccountTestTaskLocal(taskId)
@@ -149,40 +143,8 @@ function refillManualAccountTestQueue(): void {
   })
 }
 
-function accountTestTaskConcurrency(): number {
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    return defaultManualAccountTestConcurrency
-  }
-  const value = accountTestTaskConcurrencySettingValue()
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return defaultManualAccountTestConcurrency
-  }
-  return Math.min(1000, Math.max(1, Math.trunc(value)))
-}
-
-function accountTestTaskConcurrencySettingValue(): unknown {
-  try {
-    return getSettings().accountTestTaskConcurrency
-  } catch (error) {
-    if (!isMissingSystemSettingsTableError(error)) {
-      throw error
-    }
-    if (!sqliteSettingsTableMissingWarningLogged) {
-      sqliteSettingsTableMissingWarningLogged = true
-      logger.warn(errorLogFields(error, {
-        event: 'manual_account_test_settings_table_missing_default'
-      }), '账号测试队列启动时系统设置表尚未初始化，将临时使用默认并发')
-    }
-    return defaultSystemSettingsByKey.get('accountTestTaskConcurrency')
-  }
-}
-
 function manualAccountTestRefillBatchSize(): number {
-  return Math.min(manualAccountTestRefillMaxBatchSize, Math.max(manualAccountTestRefillMinBatchSize, accountTestTaskConcurrency() * 2))
-}
-
-function isMissingSystemSettingsTableError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('no such table: system_settings')
+  return manualAccountTestRefillMaxBatchSize
 }
 
 function startAccountTestSessionStaleSweep(): void {
@@ -671,51 +633,30 @@ async function runAccountApiKeyPoolEntryTests(
     onProgress?: (message: string) => void
   }
 ): Promise<AccountApiKeyPoolEntryTestResult[]> {
-  const results = new Map<number, AccountApiKeyPoolEntryTestResult>()
-  const pending = new Map(entries.map((entry) => [entry.index, { entry, nextStage: 0 }]))
-  const stopController = new AbortController()
-  let winnerIndex: number | undefined
-
-  const record = (result: AccountApiKeyPoolEntryTestResult): void => {
-    if (results.has(result.keyIndex)) return
-    results.set(result.keyIndex, result)
-    const successCount = [...results.values()].filter((item) => item.success).length
-    input.onProgress?.(accountApiKeyPoolProgressMessage(results.size, entries.length, successCount, results.size - successCount))
-  }
-
-  for (let stage = 0; stage < accountDiagnosticRetryTimeoutMs.length; stage += 1) {
-    if (input.signal.aborted || stopController.signal.aborted) break
-    const stageEntries = [...pending.values()].filter((item) => item.nextStage === stage)
-    if (stageEntries.length === 0) continue
-    let nextIndex = 0
-    const worker = async (): Promise<void> => {
-      while (nextIndex < stageEntries.length && !input.signal.aborted && !stopController.signal.aborted) {
-        const current = stageEntries[nextIndex++]
-        if (!current) return
-        const attempt = await runAccountApiKeyPoolEntryTest(account, baseCandidate, current.entry, {
-          ...input,
-          signal: AbortSignal.any([input.signal, stopController.signal]),
-          stageTimeoutMs: accountDiagnosticRetryTimeoutMs[stage]
-        })
-        if (!attempt) continue
-        if (winnerIndex !== undefined && winnerIndex !== current.entry.index) continue
-        if (attempt.result.success) {
-          winnerIndex = current.entry.index
-          record(attempt.result)
-          stopController.abort('account_api_key_pool_success')
-          return
-        }
-        if (attempt.timedOutAfterRealUpstreamAttempt && stage + 1 < accountDiagnosticRetryTimeoutMs.length) {
-          current.nextStage = stage + 1
-          pending.set(current.entry.index, current)
-          continue
-        }
-        record(attempt.result)
-      }
+  let completedCount = 0
+  let successCount = 0
+  const diagnostic = await runAccountApiKeyPoolDiagnostic(baseCandidate, entries, async ({ entry, candidate, timeoutMs, signal }) => {
+    const attempt = await runAccountApiKeyPoolEntryTest(account, baseCandidate, entry, {
+      ...input,
+      signal,
+      stageTimeoutMs: timeoutMs,
+      fixedCandidate: candidate
+    })
+    if (!attempt) return undefined
+    return {
+      value: attempt.result,
+      success: attempt.result.success,
+      timedOutAfterRealUpstreamAttempt: attempt.timedOutAfterRealUpstreamAttempt
     }
-    await Promise.all(Array.from({ length: Math.min(3, stageEntries.length) }, () => worker()))
-  }
-  return [...results.values()].sort((left, right) => left.keyIndex - right.keyIndex)
+  }, {
+    onEntryComplete: (item) => {
+      completedCount += 1
+      if (item.value.success) successCount += 1
+      input.onProgress?.(accountApiKeyPoolProgressMessage(completedCount, entries.length, successCount, completedCount - successCount))
+    }
+  })
+  if (!diagnostic) return []
+  return diagnostic.attempts.map((item) => item.value)
 }
 
 async function runAccountApiKeyPoolEntryTest(
@@ -730,36 +671,38 @@ async function runAccountApiKeyPoolEntryTest(
     groupId: string
     systemAccountId: string
     stageTimeoutMs: number
+    fixedCandidate?: OpenAIAccountSecret
   }
 ): Promise<{ result: AccountApiKeyPoolEntryTestResult; timedOutAfterRealUpstreamAttempt: boolean } | undefined> {
   const startedAt = Date.now()
-  const fixedCandidate = fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })
-  const { signal, timeoutSignal } = diagnosticAttemptSignals(input.signal, input.stageTimeoutMs)
+  const fixedCandidate = input.fixedCandidate ?? fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })
   let upstreamAttempt: UpstreamAttempt | undefined
+  let timedOutAfterRealUpstreamAttempt = false
   try {
-    const result = await testOpenAIAccount(account, {
+    const attempt = await testOpenAIAccountDiagnosticAttempt(account, {
       model: input.model,
       groupId: input.groupId,
       systemAccountId: input.systemAccountId,
       testEndpointMode: input.testEndpointMode,
       diagnostics: input.diagnostics,
-      signal,
+      signal: input.signal,
       candidateAccount: fixedCandidate,
       disableAccountStateMutation: true,
       onUpstreamAttempt: (attempt) => {
         upstreamAttempt = attempt
       },
-      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, input.stageTimeoutMs),
       findAccountForTest: loadAccountForTestViaDbService,
       findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
-    })
+    }, input.stageTimeoutMs)
+    const result = attempt.result
+    upstreamAttempt = attempt.upstreamAttempt ?? upstreamAttempt
     if (input.signal.aborted) return undefined
-    const timedOutAfterRealUpstreamAttempt = timeoutSignal.aborted
+    timedOutAfterRealUpstreamAttempt = attempt.diagnosticTimeoutExhausted
       && !input.signal.aborted
       && Boolean(upstreamAttempt && isRealUpstreamAttempt(upstreamAttempt))
     return {
       result: accountApiKeyPoolEntryTestResult(entry, result),
-      timedOutAfterRealUpstreamAttempt
+      timedOutAfterRealUpstreamAttempt: timedOutAfterRealUpstreamAttempt
     }
   } catch (error) {
     if (input.signal.aborted) return undefined
@@ -777,7 +720,7 @@ async function runAccountApiKeyPoolEntryTest(
         message: error instanceof Error ? error.message : 'API Key 测试失败',
         durationMs: Date.now() - startedAt
       },
-      timedOutAfterRealUpstreamAttempt: timeoutSignal.aborted
+      timedOutAfterRealUpstreamAttempt: timedOutAfterRealUpstreamAttempt
         && !input.signal.aborted
         && Boolean(upstreamAttempt && isRealUpstreamAttempt(upstreamAttempt))
     }

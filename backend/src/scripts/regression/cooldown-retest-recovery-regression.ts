@@ -66,13 +66,13 @@ const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService,
   import('../../modules/background/cooldown-account-retest.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
-const { cooldownAccountRetestQueueAvailableSlots } = await import('../../modules/background/account-probe-jobs.js')
+const { cooldownAccountRetestQueueAvailableSlots, cooldownAccountRetestScanLimit } = await import('../../modules/background/account-probe-jobs.js')
 const {
-  backgroundFullDiagnosticConcurrency,
-  backgroundFullDiagnosticQueueConcurrency,
   backgroundProbeDbServiceTimeoutMs,
   cooldownAccountRetestStartupDelayMs,
-  runWithBackgroundFullDiagnosticSlot
+  globalSharedQueueConcurrency,
+  runWithBackgroundFullDiagnosticSlot,
+  runWithCooldownAccountRetestDiagnosticSlot
 } = await import('../../modules/background/account-probe-limits.js')
 
 const neutralBackoffStartedAtMs = Date.parse('2026-07-25T00:00:00.000Z')
@@ -1597,18 +1597,28 @@ try {
 
   assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 6, runningCount: 3 }), 1, '冷却复测每轮查询数量必须扣除队列已有占用')
   assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 8, runningCount: 2 }), 0, '冷却复测队列达到 batch 上限后不得继续扫描入队')
-  assert.equal(backgroundFullDiagnosticConcurrency, 3, '完整后台诊断并发必须保持小上限，不能随 batch 放大到 10')
-  assert.equal(backgroundFullDiagnosticQueueConcurrency(10), 3, '批量为 10 时完整后台诊断实际队列并发仍必须限制为 3')
-  assert.equal(backgroundFullDiagnosticQueueConcurrency(1), 1, '批量为 1 时完整后台诊断不应人为放大并发')
+  assert.equal(cooldownAccountRetestScanLimit(100, globalSharedQueueConcurrency, { pendingCount: 0, runningCount: 0 }), 100, '冷却复测批量必须仅作为候选读取窗口')
+  assert.equal(cooldownAccountRetestScanLimit(10, globalSharedQueueConcurrency, { pendingCount: 10, runningCount: 10 }), 10, '冷却复测可跨轮以单轮批量填满候选队列')
+  assert.equal(globalSharedQueueConcurrency, runtimeConfig.concurrency.globalMax, '冷却账户复测队列必须使用进程级共享并发上限')
   let sharedDiagnosticRunningCount = 0
   let sharedDiagnosticMaxRunningCount = 0
-  await Promise.all(Array.from({ length: 8 }, () => runWithBackgroundFullDiagnosticSlot(async () => {
+  await Promise.all(Array.from({ length: 40 }, () => runWithBackgroundFullDiagnosticSlot(async () => {
     sharedDiagnosticRunningCount += 1
     sharedDiagnosticMaxRunningCount = Math.max(sharedDiagnosticMaxRunningCount, sharedDiagnosticRunningCount)
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
     sharedDiagnosticRunningCount -= 1
   })))
-  assert.equal(sharedDiagnosticMaxRunningCount, 3, '同一 worker 内不同完整诊断队列必须共享最多 3 路门禁')
+  assert(sharedDiagnosticMaxRunningCount > 0 && sharedDiagnosticMaxRunningCount <= runtimeConfig.concurrency.globalMax, '完整后台诊断只能受进程级共享并发池限制')
+  let cooldownDiagnosticRunningCount = 0
+  let cooldownDiagnosticMaxRunningCount = 0
+  await Promise.all(Array.from({ length: 40 }, () => runWithCooldownAccountRetestDiagnosticSlot(async () => {
+    cooldownDiagnosticRunningCount += 1
+    cooldownDiagnosticMaxRunningCount = Math.max(cooldownDiagnosticMaxRunningCount, cooldownDiagnosticRunningCount)
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+    cooldownDiagnosticRunningCount -= 1
+  })))
+  assert(cooldownDiagnosticMaxRunningCount > 0 && cooldownDiagnosticMaxRunningCount <= runtimeConfig.concurrency.globalMax, '冷却账户复测只能受进程级共享并发池限制')
+  assert.match(cooldownRetestServiceSource, /runWithCooldownAccountRetestDiagnosticSlot/, '冷却账户每把 Key 的真实请求必须进入进程级共享并发池')
   assert.equal(backgroundProbeDbServiceTimeoutMs, 30_000, '后台探针 DB service 超时应覆盖启动期统计刷新窗口')
   assert.equal(cooldownAccountRetestStartupDelayMs, 60_000, '冷却复测不得在 worker 启动 2 秒时与统计初始化争抢 DB service')
 

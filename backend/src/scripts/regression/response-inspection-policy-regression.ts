@@ -17,7 +17,8 @@ import {
   validateAccountResponseInspectionRules
 } from '../../modules/accounts/account-response-inspection-policy-validation.js'
 import {
-  extractOpenAIJsonSemanticFrames
+  extractOpenAIJsonSemanticFrames,
+  extractOpenAISseSemanticFrames
 } from '../../modules/gateway/protocols/openai-v1/response-semantics.js'
 import {
   codexCompactionContractMismatchFrame,
@@ -36,6 +37,7 @@ import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import {
   shouldRetryResponseInspectionDecisionOnServer
 } from '../../modules/gateway/response/stream-finalization-retry-decision.js'
+import { isCodexResponsesCyberPolicyFailedJson } from '../../modules/gateway/response/non-stream-json-inspection.js'
 import { ANTHROPIC_PROVIDER_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, GEMINI_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
 import {
@@ -121,6 +123,10 @@ async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
     end() {
       this.writableEnded = true
       return this
+    },
+    destroy() {
+      this.destroyed = true
+      return this
     }
   }
   async function* upstreamChunks(): AsyncIterable<Uint8Array> {
@@ -167,6 +173,10 @@ async function assertStructuralFailureIsCodeAgnosticBeforeOutput(errorCode: stri
     },
     end() {
       this.writableEnded = true
+      return this
+    },
+    destroy() {
+      this.destroyed = true
       return this
     }
   }
@@ -276,6 +286,86 @@ async function assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode: 
   assert(!downstreamText.includes(`message_${errorCode}`), `${errorCode} 供应商错误文案不得泄露给客户端`)
 }
 
+async function assertCodexCyberPolicyFailedTerminalPassesThrough(): Promise<void> {
+  const writes: Buffer[] = []
+  let failureCalled = false
+  let upstreamClosed = false
+  const response = {
+    locals: {},
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write(chunk: Buffer | Uint8Array | string) {
+      writes.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      return true
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    },
+    destroy() {
+      this.destroyed = true
+      return this
+    }
+  }
+  const event = sseEvent('response.failed', {
+    response: {
+      id: 'resp_codex_cyber_policy_passthrough',
+      status: 'failed',
+      error: { code: 'cyber_policy', message: 'exact raw failure terminal' }
+    }
+  })
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    try {
+      yield event
+      await new Promise<void>(() => undefined)
+    } finally {
+      upstreamClosed = true
+    }
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    timeoutProfile,
+    Date.now(),
+    async () => { failureCalled = true },
+    undefined,
+    {
+      clientRetryEnabled: true,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      endpointFamily: 'responses',
+      responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
+        account: {
+          id: 'acct_codex_cyber_policy_stream',
+          protocolCode: OPENAI_PROTOCOL_CODE,
+          providerCode: GPT_VENDOR_CODE,
+          clientCompatibility: 'codex_responses',
+          credentials: {}
+        } as never,
+        managementPolicies: listResponseInspectionPolicyDefaultRules()
+      }),
+      responseInspectionContext: {
+        clientProfile: 'codex',
+        accountClientCompatibility: 'codex_responses'
+      }
+    }
+  )
+  assert.equal(result.completed, true, 'Codex cyber_policy 失败终态必须作为原始终态完成当前流')
+  assert.equal(result.errorCode, undefined, 'Codex cyber_policy 失败终态不得生成网关失败码')
+  assert.equal(result.passthroughUpstreamFailure, true, 'Codex cyber_policy 失败终态不得被记作协议验证成功')
+  assert.equal(failureCalled, false, 'Codex cyber_policy 失败终态不得触发重试或候选切换回调')
+  assert.equal(upstreamClosed, true, 'Codex cyber_policy 原样终态写出后必须关闭上游，不能等待 EOF')
+  assert.equal(response.writableEnded, true, 'Codex cyber_policy 原样终态写出后必须结束下游响应')
+  assert.equal(Buffer.concat(writes).toString('utf8'), event.toString('utf8'), 'Codex cyber_policy 失败终态必须原样写给下游')
+}
+
 async function assertCodexCompactionFailedTerminalIsOpaque(
   failureEvent: Buffer,
   forbiddenPayloadText: string
@@ -369,6 +459,8 @@ for (const errorCode of ['401', '429', '500', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE
   await assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode)
 }
 
+await assertCodexCyberPolicyFailedTerminalPassesThrough()
+
 await assertCodexCompactionFailedTerminalIsOpaque(
   sseEvent('arbitrary_payload_type', { opaque_payload_marker: 'opaque_payload_without_error_field' }, 'response.failed'),
   'opaque_payload_without_error_field'
@@ -426,6 +518,9 @@ await assertCodexCompactionFailedTerminalIsOpaque(
       policies: [responsePolicy({
         id: `policy_${action}`,
         action,
+        match: {
+          outputTextIncludes: ['dc.hhhl.cc']
+        },
         accountSwitch: action === 'avoid_account_ttl'
           ? 'avoid_account_ttl'
           : action === 'avoid_upstream_bucket_ttl'
@@ -437,8 +532,17 @@ await assertCodexCompactionFailedTerminalIsOpaque(
     })
     assert.equal(
       nonRetryNextResult.decision?.replayAuthority,
-      undefined,
-      `${action} 不得伪装成显式 retry_next_account 归因；该归因只用于审计，不控制统一候选切换`
+      action === 'retry_no_avoidance' ? undefined : 'explicit_user_policy',
+      `${action} 的重放授权必须与动作语义一致`
+    )
+    assert.equal(
+      shouldRetryResponseInspectionDecisionOnServer(nonRetryNextResult.decision, {
+        headersSent: false,
+        writableEnded: false,
+        destroyed: false
+      }),
+      action !== 'retry_no_avoidance',
+      `${action} 必须按文档决定是否允许下游提交前切换候选`
     )
   }
 }
@@ -756,42 +860,6 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
-  const defaultRules = listResponseInspectionPolicyDefaultRules()
-  const gptPolicies = resolveRuntimeResponseInspectionPolicies({
-    account: {
-      id: 'acct_gpt_generic_client',
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      providerCode: GPT_VENDOR_CODE,
-      credentials: {}
-    } as never,
-    managementPolicies: defaultRules
-  })
-  for (const payload of [
-    { error: { code: 'cyber_policy', type: 'vendor_policy', message: 'invented policy' } },
-    { error: { code: 'RESOURCE_EXHAUSTED', type: 'UNAVAILABLE', message: 'invented canonical status' } },
-    { error: { code: '401', type: 'AUTHENTICATION_ERROR', message: 'misused authentication code' } },
-    { error: { code: '429', type: 'RATE_LIMITED', message: 'misused rate code' } },
-    { error: { code: '500', type: 'SERVER_ERROR', message: 'misused server code' } },
-    { status: 'failed', response: { status: 'incomplete', error: { code: 'anything', message: 'invented status' } } }
-  ]) {
-    const frames = extractOpenAIJsonSemanticFrames(payload, 'responses')
-    for (const clientProfile of ['generic_openai', 'codex'] as const) {
-      const result = inspectResponseSemanticFrames({
-        frames,
-        policies: gptPolicies,
-        downstreamWritten: false,
-        transport: 'json',
-        context: {
-          clientProfile,
-          accountClientCompatibility: clientProfile === 'codex' ? 'codex_responses' : 'openai_standard'
-        }
-      })
-      assert.equal(result.decision, undefined, `${clientProfile} 无用户规则时不得按任意上游 code/type/status 触发默认处置：${JSON.stringify(payload)}`)
-    }
-  }
-}
-
-{
   const frames = extractAnthropicJsonSemanticFrames({
     type: 'error',
     error: {
@@ -900,8 +968,28 @@ assert.equal(validateAccountResponseInspectionRules([
 
 {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
-  assert.deepEqual(defaultRules.map((rule) => rule.id), ['default_codex_compaction_contract'], '不可编辑默认规则只允许保留本地 Codex compact 结构契约')
-  assert.equal(defaultRules[0]?.providerCode, undefined, '本地协议契约不得伪装成供应商错误语义')
+  assert.deepEqual(defaultRules.map((rule) => ({
+    id: rule.id,
+    defaultRule: rule.defaultRule,
+    editable: rule.editable,
+    enabled: rule.enabled,
+    priority: rule.priority,
+    scopeType: rule.scopeType,
+    protocolCode: rule.protocolCode,
+    providerCode: rule.providerCode,
+    match: rule.match,
+    action: rule.action
+  })), [
+    { id: 'default_openai_error_object', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' },
+    { id: 'default_openai_response_error', defaultRule: true, editable: false, enabled: true, priority: 2, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['response.error'] }, action: 'retry_no_avoidance' },
+    { id: 'default_openai_failed_status', defaultRule: true, editable: false, enabled: true, priority: 3, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { finishReasons: ['failed'] }, action: 'retry_no_avoidance' },
+    { id: 'default_codex_response_incomplete', defaultRule: true, editable: false, enabled: true, priority: 4, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['codex'], finishReasons: ['incomplete'] }, action: 'retry_no_avoidance' },
+    { id: 'default_codex_compaction_contract', defaultRule: true, editable: false, enabled: true, priority: 5, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['codex'], errorCodes: ['codex_compaction_contract_mismatch'] }, action: 'retry_next_account' },
+    { id: 'default_gpt_cyber_policy', defaultRule: true, editable: false, enabled: true, priority: 6, scopeType: 'provider', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: GPT_VENDOR_CODE, match: { errorCodes: ['cyber_policy'] }, action: 'retry_no_avoidance' },
+    { id: 'default_anthropic_error_object', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: ANTHROPIC_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' },
+    { id: 'default_gemini_cli_retryable_error', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: GEMINI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['gemini_cli'], errorTypes: ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'DEADLINE_EXCEEDED', 'INTERNAL', 'CANCELLED'] }, action: 'retry_next_account' },
+    { id: 'default_gemini_error_object', defaultRule: true, editable: false, enabled: true, priority: 20, scopeType: 'protocol', protocolCode: GEMINI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' }
+  ], '系统默认规则必须完整保留九项不可编辑规则及其匹配、动作和作用域')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
       id: 'acct_gpt',
@@ -938,10 +1026,65 @@ assert.equal(validateAccountResponseInspectionRules([
     } as never,
     managementPolicies: defaultRules
   })
-  assert.deepEqual(gptPolicies.map((policy) => policy.id), ['default_codex_compaction_contract'], 'GPT 只应加载本地 OpenAI 协议契约')
-  assert.deepEqual(genericPolicies.map((policy) => policy.id), ['default_codex_compaction_contract'], 'OpenAI-compatible 只应加载本地 OpenAI 协议契约')
-  assert.deepEqual(anthropicPolicies, [], 'Anthropic 不得加载不可编辑的上游错误语义规则')
-  assert.deepEqual(geminiPolicies, [], 'Gemini 不得加载不可编辑的上游错误语义规则')
+  assert(gptPolicies.some((policy) => policy.id === 'default_gpt_cyber_policy'), 'GPT 账号必须加载 provider 范围的 cyber_policy 默认规则')
+  assert.equal(genericPolicies.some((policy) => policy.id === 'default_gpt_cyber_policy'), false, '通用 OpenAI-compatible 账号不得继承 GPT provider 规则')
+  assert(anthropicPolicies.some((policy) => policy.id === 'default_anthropic_error_object'), 'Anthropic 账号必须加载其协议范围 error 规则')
+  assert(geminiPolicies.some((policy) => policy.id === 'default_gemini_error_object'), 'Gemini 账号必须加载其协议范围 error 规则')
+
+  const genericOpenAiErrorInspection = inspectResponseSemanticFrames({
+    frames: extractOpenAIJsonSemanticFrames({
+      error: { code: 'invalid_request_error', message: 'generic OpenAI error' }
+    }, 'responses'),
+    policies: genericPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: { clientProfile: 'generic_openai' }
+  })
+  assert.equal(genericOpenAiErrorInspection.decision?.policyId, 'default_openai_error_object', 'OpenAI error 对象默认规则必须参与运行时匹配')
+  assert.equal(genericOpenAiErrorInspection.decision?.accountSwitch, 'none', 'OpenAI error 对象默认规则不得避让账号')
+  assert.equal(genericOpenAiErrorInspection.decision?.replayAuthority, undefined, 'retry_no_avoidance 系统规则不得签发服务端重放授权')
+  assert.equal(shouldRetryResponseInspectionDecisionOnServer(genericOpenAiErrorInspection.decision, {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false
+  }), false, 'retry_no_avoidance 系统规则必须由客户端重试，不能由网关隐式换号')
+
+  const gptCyberPolicyInspection = inspectResponseSemanticFrames({
+    frames: extractOpenAIJsonSemanticFrames({
+      error: { code: 'cyber_policy', message: 'GPT provider policy' }
+    }, 'responses'),
+    policies: gptPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: { clientProfile: 'generic_openai' }
+  })
+  assert.equal(gptCyberPolicyInspection.decision?.policyId, 'default_gpt_cyber_policy', 'GPT provider 规则必须优先于 OpenAI 协议 error 对象规则')
+
+  const codexIncompleteInspection = inspectResponseSemanticFrames({
+    frames: extractOpenAISseSemanticFrames(parseOpenAISseEventText([
+      'event: response.incomplete',
+      'data: {"type":"response.incomplete","response":{"status":"incomplete"}}',
+      ''
+    ].join('\n')), 'responses'),
+    policies: gptPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: { clientProfile: 'codex', accountClientCompatibility: 'codex_responses' }
+  })
+  assert.equal(codexIncompleteInspection.decision?.policyId, 'default_codex_response_incomplete', 'Codex incomplete 默认规则必须只在 Codex 画像下参与运行时匹配')
+
+  const anthropicErrorInspection = inspectResponseSemanticFrames({
+    frames: extractAnthropicJsonSemanticFrames({
+      type: 'error',
+      error: { type: 'api_error', message: 'Anthropic error' }
+    }, 'messages'),
+    policies: anthropicPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: { clientProfile: 'generic_anthropic' }
+  })
+  assert.equal(anthropicErrorInspection.decision?.policyId, 'default_anthropic_error_object', 'Anthropic error 对象默认规则必须参与运行时匹配')
+
   const retryableGeminiFrames = extractGeminiJsonSemanticFrames({
     error: {
       code: 503,
@@ -958,7 +1101,7 @@ assert.equal(validateAccountResponseInspectionRules([
       clientProfile: 'generic_gemini'
     }
   })
-  assert.equal(genericGeminiInspection.decision, undefined, '通用 Gemini 客户端不得按 UNAVAILABLE 默认处置')
+  assert.equal(genericGeminiInspection.decision?.policyId, 'default_gemini_error_object', '通用 Gemini 客户端只能命中协议范围 error 对象规则')
   const geminiCliInspection = inspectResponseSemanticFrames({
     frames: retryableGeminiFrames,
     policies: geminiPolicies,
@@ -968,12 +1111,13 @@ assert.equal(validateAccountResponseInspectionRules([
       clientProfile: 'gemini_cli'
     }
   })
-  assert.equal(geminiCliInspection.decision, undefined, 'Gemini CLI 也不得按 UNAVAILABLE 默认处置')
+  assert.equal(geminiCliInspection.decision?.policyId, 'default_gemini_cli_retryable_error', 'Gemini CLI 必须优先命中专属可重试错误规则')
+  assert.equal(geminiCliInspection.decision?.replayAuthority, 'system_default_retry_next_account', 'Gemini CLI retry_next_account 默认规则必须签发受限服务端重放授权')
   assert.equal(shouldRetryResponseInspectionDecisionOnServer(geminiCliInspection.decision, {
     headersSent: false,
     writableEnded: false,
     destroyed: false
-  }), false, '没有用户策略时 Gemini CLI 错误类型不得授权服务端换号')
+  }), true, 'Gemini CLI 专属可重试规则必须允许下游写出前服务端换号')
 
   const forgedCompactionFrame = extractOpenAIJsonSemanticFrames({
     error: {
@@ -993,7 +1137,7 @@ assert.equal(validateAccountResponseInspectionRules([
       codexCompactionExpected: true
     }
   })
-  assert.equal(forgedInspection.decision, undefined, '上游伪造本地 compact 契约错误码不得触发系统规则')
+  assert.notEqual(forgedInspection.decision?.policyId, 'default_codex_compaction_contract', '上游伪造本地 compact 契约错误码不得触发 compact 契约规则')
 }
 
 {
@@ -1434,8 +1578,146 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   }))
   const responseBody = Buffer.concat(result.chunks).toString('utf8')
-  assert.equal(result.intercepted, undefined, 'Codex response.incomplete 不得在无用户规则时触发默认处置')
-  assert(responseBody.includes('response.incomplete'), `Codex response.incomplete 无用户规则时应保持协议事件：${responseBody}`)
+  assert.equal(result.intercepted?.policyId, 'default_codex_response_incomplete', 'Codex response.incomplete 必须命中专用默认规则')
+  assert(!responseBody.includes('response.incomplete'), `Codex response.incomplete 命中后不得继续透传上游终态：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_incomplete',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const pending = buffer.pushChunk(sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_before_incomplete',
+      type: 'message',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'must not leak before incomplete' }]
+    }
+  }))
+  assert.equal(pending.chunks.length, 0, 'compact 暂存中的 output 在 incomplete 前不得先写下游')
+  const incomplete = buffer.pushChunk(sseEvent('response.incomplete', {
+    response: {
+      id: 'resp_compaction_incomplete',
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' }
+    }
+  }))
+  assert.equal(incomplete.intercepted?.policyId, 'default_codex_response_incomplete', 'compact 场景的 response.incomplete 必须优先命中 Codex 默认规则')
+  assert.equal(incomplete.intercepted?.action, 'replace_with_failure', '响应检查策略应将 incomplete 归一为客户端可重试失败响应')
+  assert.equal(incomplete.intercepted?.accountSwitch, 'none', 'compact 场景的 response.incomplete 不得误用 compact contract 的换号动作')
+  assert(!Buffer.concat(incomplete.chunks).toString('utf8').includes('must not leak before incomplete'), 'incomplete 失败前不得释放暂存 output')
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_error_terminal',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const result = buffer.pushChunk(sseEvent('error', {
+    error: {
+      code: 'internal_server_error',
+      message: 'compact request failed before response.completed'
+    }
+  }))
+  assert.equal(result.intercepted?.policyId, 'default_openai_error_object', 'Codex compact 的标准 event:error 终态必须命中 OpenAI 默认错误规则')
+  assert.equal(result.intercepted?.accountSwitch, 'none', 'event:error 不得被误判为 compact 契约错误并切换账号')
+}
+
+{
+  const account = {
+    id: 'acct_codex_cyber_policy_passthrough',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    providerCode: GPT_VENDOR_CODE,
+    clientCompatibility: 'codex_responses',
+    credentials: {}
+  } as never
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const event = sseEvent('response.failed', {
+    response: {
+      id: 'resp_codex_cyber_policy_passthrough',
+      status: 'failed',
+      error: {
+        code: 'cyber_policy',
+        message: 'This content was flagged for possible cybersecurity risk.'
+      }
+    }
+  })
+  const codexBuffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses'
+    }
+  })
+  const codexResult = codexBuffer.pushChunk(event)
+  assert.equal(codexResult.passthroughUpstreamFailure, true, 'Codex Responses cyber_policy 失败终态必须标记为原样透传')
+  assert.equal(codexResult.intercepted, undefined, 'Codex Responses cyber_policy 失败终态不得命中系统默认或用户响应检查策略')
+  assert.equal(Buffer.concat(codexResult.chunks).toString('utf8'), event.toString('utf8'), 'Codex Responses cyber_policy 失败终态必须保留原始 SSE')
+
+  const genericBuffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: { clientProfile: 'generic_openai' }
+  })
+  const genericResult = genericBuffer.pushChunk(event)
+  assert.equal(genericResult.intercepted?.policyId, 'default_gpt_cyber_policy', '非 Codex 的 cyber_policy 失败终态仍必须命中 GPT 默认规则')
+
+  const request = {
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    headers: {}
+  } as never
+  const body = {
+    id: 'resp_codex_cyber_policy_passthrough',
+    status: 'failed',
+    error: { code: 'cyber_policy' }
+  }
+  assert.equal(isCodexResponsesCyberPolicyFailedJson({ req: request, account, clientStrategy: { clientProfile: 'codex' } as never, upstreamStatus: 400, parsedJson: body }), true, '非流式 Codex Responses cyber_policy HTTP 失败终态必须进入原样透传边界')
+  assert.equal(isCodexResponsesCyberPolicyFailedJson({ req: request, account, clientStrategy: { clientProfile: 'codex' } as never, upstreamStatus: 400, parsedJson: { error: body.error } }), true, 'Codex Responses 标准 HTTP cyber_policy error envelope 必须进入原样透传边界')
+  assert.equal(isCodexResponsesCyberPolicyFailedJson({ req: request, account, clientStrategy: { clientProfile: 'codex' } as never, upstreamStatus: 200, parsedJson: body }), false, '2xx cyber_policy JSON 不得绕过协议检查')
+  assert.equal(isCodexResponsesCyberPolicyFailedJson({ req: request, account, clientStrategy: { clientProfile: 'generic_openai' } as never, upstreamStatus: 400, parsedJson: body }), false, '非 Codex JSON 失败终态不得绕过默认规则')
+  assert.equal(isCodexResponsesCyberPolicyFailedJson({ req: request, account, clientStrategy: { clientProfile: 'codex' } as never, upstreamStatus: 400, parsedJson: { ...body, status: 'incomplete' } }), false, '只有 status=failed 的 Codex JSON 终态可以原样透传')
 }
 
 {
@@ -1496,7 +1778,12 @@ assert.equal(validateAccountResponseInspectionRules([
     endpointFamily: 'responses',
     policies
   })
-  for (const code of ['internal_server_error', 'cyber_policy', 'UNAVAILABLE', 'vendor_invented_stream_error']) {
+  for (const [code, expectedPolicyId] of [
+    ['internal_server_error', 'default_openai_response_error'],
+    ['cyber_policy', 'default_gpt_cyber_policy'],
+    ['UNAVAILABLE', 'default_openai_response_error'],
+    ['vendor_invented_stream_error', 'default_openai_response_error']
+  ]) {
     const result = buffer.pushChunk(sseEvent('response.failed', {
       response: {
         status: 'failed',
@@ -1506,7 +1793,7 @@ assert.equal(validateAccountResponseInspectionRules([
         }
       }
     }))
-    assert.equal(result.intercepted, undefined, `${code} 不得命中不可编辑默认错误语义规则`)
+    assert.equal(result.intercepted?.policyId, expectedPolicyId, `${code} 必须按系统默认规则参与运行时匹配`)
   }
 }
 
@@ -1625,6 +1912,10 @@ assert.equal(validateAccountResponseInspectionRules([
     },
     end() {
       this.writableEnded = true
+      return this
+    },
+    destroy() {
+      this.destroyed = true
       return this
     }
   }

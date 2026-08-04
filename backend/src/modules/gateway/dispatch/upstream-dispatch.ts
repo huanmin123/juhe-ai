@@ -165,6 +165,7 @@ export class NormalRouteFirstByteAttemptCoordinator {
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
   response: GatewayUpstreamResponse
+  requestBody: Buffer | string | undefined
   upstreamUrl: string
   auditAttemptId: string
   attemptStartedAt: number
@@ -192,6 +193,10 @@ export interface GatewayUpstreamRequestCoordinationContext {
   routeCoordinationBudget: RouteCoordinationBudget
   requestAttemptTracker: GatewayRequestAttemptTracker
   semanticRetryId?: string
+  requestBodyOverride?: {
+    accountId: string
+    body: Buffer
+  }
   normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
   onNormalRouteFirstByteDeadline?: (input: FirstByteDeadlineDecisionInput & {
     account: UpstreamAccount
@@ -255,7 +260,7 @@ interface AccountCapacityLimitFailure {
   message: string
 }
 
-const accountConcurrencyRetryBudgetMs = 1200
+const accountConcurrencyRetryBudgetMs = runtimeConfig.gateway.accountConcurrencyRetryBudgetMs
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
 // A route may traverse multiple 50-key account pools. Bound total request fan-out
 // while auditing that untried keys remain, rather than claiming pool exhaustion.
@@ -290,8 +295,10 @@ export async function fetchFirstAvailableUpstream(
     gatewayRequestWallBudget,
     routeCoordinationBudget,
     requestAttemptTracker,
-    semanticRetryId
+    semanticRetryId,
+    requestBodyOverride
   } = requestCoordination
+  let activeSemanticRetryId = semanticRetryId
   const compactionTimeoutsDisabled = requestCoordination.timeoutPolicy === 'codex_compaction_unbounded'
     || codexCompactionExpectedForRequest(req)
   const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane, {
@@ -610,6 +617,9 @@ export async function fetchFirstAvailableUpstream(
             })
             headers = requestParts.headers
             body = requestParts.body
+            if (requestBodyOverride?.accountId === account.id) {
+              body = requestBodyOverride.body
+            }
             effectiveServiceTier = requestParts.effectiveServiceTier
             usageContext.effectiveServiceTier = effectiveServiceTier
             usageContext.effectiveReasoningEffort = requestParts.effectiveReasoningEffort
@@ -749,7 +759,7 @@ export async function fetchFirstAvailableUpstream(
                   ...dispatchAttemptIdentity,
                   matchingConfirmation: accountCircuitAttempt?.isConfirmation === true,
                   allowKeyRotation: accountApiKeyAttemptCount > 1,
-                  semanticRetryId
+                  semanticRetryId: activeSemanticRetryId
                 }
               )
               if (!attemptRegistration.allowed) {
@@ -886,9 +896,10 @@ export async function fetchFirstAvailableUpstream(
                     groupId: usageContext.groupId
                   })
                   const dispatchResult: OpenAIUpstreamDispatchResult = {
-                    account,
-                    response,
-                    upstreamUrl,
+                  account,
+                  response,
+                  requestBody: body,
+                  upstreamUrl,
                     auditAttemptId,
                     attemptStartedAt,
                     effectiveServiceTier,
@@ -924,6 +935,7 @@ export async function fetchFirstAvailableUpstream(
                   account,
                   upstreamUrl,
                   response,
+                  requestBody: body,
                   settings,
                   attemptStartedAt,
                   attemptIndex,
@@ -931,6 +943,7 @@ export async function fetchFirstAvailableUpstream(
                   sessionAffinityKey,
                   signal,
                   lastAttempt,
+                  requestClientCompatibility,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
                   automaticAccountStateMutationEnabled: automaticAccountStateMutationAllowed
@@ -949,6 +962,7 @@ export async function fetchFirstAvailableUpstream(
                   const dispatchResult: OpenAIUpstreamDispatchResult = {
                     account,
                     response: failedResponseResult.response,
+                    requestBody: body,
                     upstreamUrl,
                     auditAttemptId,
                     attemptStartedAt,
@@ -970,6 +984,11 @@ export async function fetchFirstAvailableUpstream(
                   keepConcurrencySlot = true
                   accountCircuitAttemptTransferred = true
                   return dispatchResult
+                }
+                if (failedResponseResult.action === 'retry_with_compatibility_recovery') {
+                  body = failedResponseResult.recovery.body
+                  activeSemanticRetryId = failedResponseResult.recovery.semanticRetryId
+                  continue
                 }
                 // A complete HTTP frame is transport evidence even when an
                 // explicit user policy independently applies a business action.

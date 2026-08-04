@@ -1008,11 +1008,11 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `operationLogMaxChangesPerRecord = 100`：单条操作日志最多保存 100 个字段差异，超过后折叠摘要。
 - `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
-- `accountTestTaskConcurrency = 100`：独立单账户人工测试 worker 系统级并发上限，合法范围 `1..1000`；不存在多账户批量测试提交上限或用户级全局锁。
+- 人工账户测试不保留系统设置级并发上限；真实执行与账户状态任务共同使用 `JUHE_AI_CONCURRENCY_GLOBAL_MAX` 进程级共享池。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
 - `cooldownAccountRetestMaxBackoffHours = 12`：冷却账号进入长期不可用阶段的快速恢复窗口，默认 12 小时；进入长期不可用后固定每 1 小时复测，只有从首次独立 `transport_incomplete` 起满 7 天后的再次独立 transport 失败才转异常。完整 framing 中性和任务 unknown 不推进。长期阶段间隔是状态机常量，不提供系统设置。
 - `cooldownAccountRetestIntervalSeconds = 3`：冷却账号后台复测默认扫描间隔，用于承接 3 秒起步的快速恢复通道。
-- `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
+- 冷却复测批次不存入 SQLite，由 `JUHE_AI_BACKGROUND_COOLDOWN_ACCOUNT_RETEST_BATCH_SIZE`（默认 `10`）在 worker 启动时读取。单轮候选数只限制扫描读取；真实上游调用与人工测试、健康检查共同进入 `JUHE_AI_CONCURRENCY_GLOBAL_MAX` 进程级共享池。
 
 原始审计日志与保全策略：
 

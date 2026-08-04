@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
@@ -88,9 +89,9 @@ type AccountCircuitRecoveryItemOutcome =
   | 'fenced'
   | 'skipped'
 
-const defaultRecoveryBatchSize = 200
-const defaultRecoveryConcurrency = 1
-const defaultRecoveryLeaseDurationMs = 180_000
+const defaultRecoveryBatchSize = runtimeConfig.gateway.accountCircuitRecoveryBatchSize
+const defaultRecoveryConcurrency = runtimeConfig.concurrency.globalMax
+const defaultRecoveryLeaseDurationMs = runtimeConfig.gateway.accountCircuitRecoveryLeaseDurationMs
 
 export class AccountCircuitRecoveryService {
   private readonly batchSize: number
@@ -127,7 +128,7 @@ export class AccountCircuitRecoveryService {
     const errors: unknown[] = []
     await forEachConcurrent(due, this.concurrency, async (state) => {
       try {
-        const outcome = await this.recover(state, result)
+        const outcome = await runWithGlobalBackgroundConcurrencySlot(async () => await this.recover(state, result))
         incrementSweepOutcome(result, outcome)
       } catch (error) {
         errors.push(error)
@@ -481,7 +482,7 @@ export async function runScheduledAccountCircuitRecovery(): Promise<WorkerSchedu
     scheduledRecoveryResolver,
     {
       batchSize: runtimeConfig.gateway.accountCircuitRecoveryBatchSize,
-      concurrency: runtimeConfig.gateway.accountCircuitRecoveryConcurrency,
+      concurrency: runtimeConfig.concurrency.globalMax,
       onMutation: projectGatewayAccountCircuitRuntimeMutation
     }
   ).sweep()

@@ -588,6 +588,20 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS account_api_key_pool_probe_cursors (
+      account_id TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK (purpose IN ('health_check', 'cooldown_retest')),
+      last_completed_key_fingerprint TEXT,
+      key_set_fingerprint TEXT NOT NULL,
+      config_revision INTEGER NOT NULL,
+      dispatch_revision INTEGER,
+      cooldown_generation TEXT,
+      source_config_revision INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, purpose),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,

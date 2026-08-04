@@ -26,6 +26,7 @@ export interface ResponseInspectionSseResult {
   chunks: Buffer[]
   intercepted?: ResponseInspectionDecision
   observations?: ResponseInspectionDecision[]
+  passthroughUpstreamFailure?: boolean
   pendingEvent: boolean
   parserSkipped: boolean
 }
@@ -109,11 +110,13 @@ export class OpenAIResponseInspectionBuffer {
 
     const chunks: Buffer[] = []
     const observations: ResponseInspectionDecision[] = []
+    let semanticOutputBuffered = false
 
     while (true) {
       const rawBuffer = this.pendingBuffer.shiftEvent()
       if (!rawBuffer) break
       if (this.canPassThroughCommonResponsesTextDeltaBuffer(rawBuffer)) {
+        semanticOutputBuffered = true
         chunks.push(...this.drainDeferredLeadingNoopChunks())
         chunks.push(rawBuffer)
         continue
@@ -125,7 +128,7 @@ export class OpenAIResponseInspectionBuffer {
       if (transformed.intercepted) {
         this.clearDeferredLeadingNoopChunks()
         this.clearDeferredCodexCompactionChunks()
-        if (!this.downstreamWritten) chunks.length = 0
+        if (!this.downstreamWritten && !semanticOutputBuffered) chunks.length = 0
         return {
           chunks,
           intercepted: transformed.intercepted,
@@ -139,11 +142,23 @@ export class OpenAIResponseInspectionBuffer {
         continue
       }
       if (this.canPassThroughUninspectableVisibleOutputTextEvent(event)) {
+        semanticOutputBuffered = true
         chunks.push(...this.drainDeferredLeadingNoopChunks())
         chunks.push(outboundBuffer)
         continue
       }
       const codexCompaction = this.prepareCodexCompactionEvent(event, outboundBuffer)
+      if (isCodexResponsesCyberPolicyFailedTerminal(event, this.endpointFamily, this.context)) {
+        this.clearDeferredLeadingNoopChunks()
+        chunks.push(outboundBuffer)
+        return {
+          chunks,
+          passthroughUpstreamFailure: true,
+          observations: observations.length > 0 ? observations : undefined,
+          pendingEvent: this.hasPendingProtocolEvent(),
+          parserSkipped: this.parserSkipped
+        }
+      }
       if (codexCompaction.structuralFailure) {
         this.clearDeferredLeadingNoopChunks()
         chunks.push(outboundBuffer)
@@ -153,10 +168,13 @@ export class OpenAIResponseInspectionBuffer {
       if (codexCompaction.contractFrame) {
         frames.push(codexCompaction.contractFrame)
       }
+      const visibleOutputBeforeCurrentEvent = semanticOutputBuffered
       const inspection = inspectResponseSemanticFrames({
         frames,
-        policies: this.policies,
-        downstreamWritten: this.downstreamWritten,
+        policies: codexCompaction.defer && !isExactOpenAIErrorTerminal(event)
+          ? this.policies.filter((policy) => policy.source !== 'system_default')
+          : this.policies,
+        downstreamWritten: this.downstreamWritten || visibleOutputBeforeCurrentEvent,
         transport: 'sse',
         context: this.context
       })
@@ -169,7 +187,7 @@ export class OpenAIResponseInspectionBuffer {
         }
         this.clearDeferredLeadingNoopChunks()
         this.clearDeferredCodexCompactionChunks()
-        if (!this.downstreamWritten) {
+        if (!this.downstreamWritten && !semanticOutputBuffered) {
           chunks.length = 0
         }
         const failureEvent = this.buildFailureEvent(decision, this.clientRetryEnabled)
@@ -184,6 +202,7 @@ export class OpenAIResponseInspectionBuffer {
           parserSkipped: this.parserSkipped
         }
       }
+      semanticOutputBuffered = semanticOutputBuffered || frames.some((frame) => frame.visibleOutput === true)
       if (codexCompaction.defer) {
         continue
       }
@@ -257,6 +276,15 @@ export class OpenAIResponseInspectionBuffer {
       }
     }
     const codexCompaction = this.prepareCodexCompactionEvent(event, outboundBuffer)
+    if (isCodexResponsesCyberPolicyFailedTerminal(event, this.endpointFamily, this.context)) {
+      this.clearDeferredLeadingNoopChunks()
+      return {
+        chunks: [outboundBuffer],
+        passthroughUpstreamFailure: true,
+        pendingEvent: this.hasPendingProtocolEvent(),
+        parserSkipped: this.parserSkipped
+      }
+    }
     if (codexCompaction.structuralFailure) {
       this.clearDeferredLeadingNoopChunks()
       return {
@@ -271,7 +299,9 @@ export class OpenAIResponseInspectionBuffer {
     }
     const inspection = inspectResponseSemanticFrames({
       frames,
-      policies: this.policies,
+      policies: codexCompaction.defer && !isExactOpenAIErrorTerminal(event)
+        ? this.policies.filter((policy) => policy.source !== 'system_default')
+        : this.policies,
       downstreamWritten: this.downstreamWritten,
       transport: 'sse',
       context: this.context
@@ -399,6 +429,14 @@ export class OpenAIResponseInspectionBuffer {
       this.clearDeferredCodexCompactionChunks()
       return { structuralFailure: true }
     }
+    if (eventType === 'response.incomplete') {
+      // Incomplete is a semantic terminal handled by the normal Codex default
+      // rule. It must not remain deferred until EOF and become a compact
+      // contract mismatch with different account-switch semantics.
+      this.codexCompactionTerminalReceived = true
+      this.clearDeferredCodexCompactionChunks()
+      return {}
+    }
     const eventCounts = countCodexCompactionOutputItemsFromStreamEvent(event)
     if (eventCounts) {
       this.rememberCodexCompactionCounts(eventCounts)
@@ -509,6 +547,26 @@ export class OpenAIResponseInspectionBuffer {
 
 function isExactCodexCompactionFailedTerminal(event: ParsedOpenAIStreamEvent): boolean {
   return event.eventType === 'response.failed' || event.eventName === 'response.failed'
+}
+
+function isExactOpenAIErrorTerminal(event: ParsedOpenAIStreamEvent): boolean {
+  return event.eventType === 'error' || event.eventName === 'error'
+}
+
+function isCodexResponsesCyberPolicyFailedTerminal(
+  event: ParsedOpenAIStreamEvent,
+  endpointFamily: ResponseEndpointFamily,
+  context: ResponseInspectionRuntimeContext | undefined
+): boolean {
+  if (
+    endpointFamily !== 'responses'
+    || context?.clientProfile !== 'codex'
+    || !isExactCodexCompactionFailedTerminal(event)
+  ) return false
+  const response = objectValue(event.data?.response)
+  const error = objectValue(response?.error)
+  return response?.status === 'failed'
+    && error?.code === 'cyber_policy'
 }
 
 function normalizeEventTransform(

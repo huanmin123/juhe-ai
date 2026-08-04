@@ -33,6 +33,9 @@ assert(view.includes('systemForm.chatImageGenerationTotalTimeoutSeconds'), '系�
 assert(view.includes("'chatImageGenerationTotalTimeoutSeconds'"), 'gateway-core section 必须提交 AI 对话生图总超时')
 assert(settingsForm.includes('chatImageGenerationTotalTimeoutSeconds: 900'), '前端默认 AI 对话生图总超时必须为 15 分钟')
 assert(settingsForm.includes("'AI 对话生图总超时', 60, 86400"), '前端必须校验 AI 对话生图总超时范围')
+assert(!view.includes('systemForm.cooldownAccountRetestConcurrency'), '冷却复测并发必须只由环境变量控制，不能保留失效管理页字段')
+assert(view.includes("'cooldown-retest': ['cooldownAccountRetestMaxBackoffHours']"), '冷却复测 section 只能提交仍支持热更新的退避阈值')
+assert(!settingsForm.includes('cooldownAccountRetestConcurrency'), '前端表单不得保留失效的冷却复测并发')
 assert(api.includes("http.get(`/settings/sections/${sectionKey}`)"), '前端 API 必须使用 section GET')
 assert(api.includes("http.patch(`/settings/sections/${sectionKey}`, payload)"), '前端 API 必须使用 section PATCH')
 

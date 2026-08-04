@@ -95,10 +95,10 @@ export type RecordMaintenanceJob =
 
 const recordMaintenanceFlushIntervalMs = 100
 const recordMaintenanceRetryPolicy = fixedRetryPolicy('record_maintenance_queue_flush', 1000)
-const recordMaintenanceBatchSize = 10
-const recordMaintenanceShutdownFlushMaxBatches = 1
-const recordMaintenanceQueueMaxItems = 5_000
-const recordMaintenanceQueueMaxBytes = 32 * 1024 * 1024
+const recordMaintenanceBatchSize = runtimeConfig.background.recordMaintenanceBatchSize
+const recordMaintenanceShutdownFlushMaxBatches = runtimeConfig.background.recordMaintenanceShutdownFlushMaxBatches
+const recordMaintenanceQueueMaxItems = runtimeConfig.background.recordMaintenanceQueueMaxItems
+const recordMaintenanceQueueMaxBytes = runtimeConfig.background.recordMaintenanceQueueMaxMb * 1024 * 1024
 const recordMaintenanceRedisStreamKey = redisStreamQueueContracts.recordMaintenance.streamKey
 const recordMaintenanceRedisStreamGroup = redisStreamQueueContracts.recordMaintenance.groupName
 const recordMaintenanceRedisConsumerErrorRetryMs = 1000
@@ -108,8 +108,8 @@ const recordMaintenanceRedisStopWaitMs = 2000
 // while that worker is still alive.
 const recordMaintenanceRedisStreamClaimIdleMs = 60 * 60 * 1000
 const auditRetainedDataCleanupBatchPauseMs = 10
-const auditRetainedDataCleanupBatchSizeLimit = 100
-const auditRetainedDataCleanupMaxBatchesLimit = 3
+const auditRetainedDataCleanupBatchSizeLimit = runtimeConfig.background.recordMaintenanceAuditCleanupBatchSize
+const auditRetainedDataCleanupMaxBatchesLimit = runtimeConfig.background.recordMaintenanceAuditCleanupMaxBatches
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
 
 export interface RecordMaintenanceEnqueueResult {

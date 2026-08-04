@@ -9,7 +9,7 @@ export const backgroundTaskRunReconcileInitialDelayMs = 2_000
 export const backgroundTaskRunReconcileIntervalMs = 5 * 60_000
 
 const backgroundTaskRunStaleAfterMs = 10 * 60_000
-const backgroundTaskRunReconcileBatchSize = 500
+const backgroundTaskRunReconcileBatchSize = runtimeConfig.background.taskRunReconcileBatchSize
 
 export async function runBackgroundTaskRunReconcile(): Promise<void> {
   const nowMs = Date.now()

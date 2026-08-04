@@ -10,6 +10,7 @@ import { runRedisOperationWithDeadline, type RedisCommandClient } from '../../sh
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import {
   clearAccountFailureState,
   clearAccountFailureStateResult,
@@ -102,9 +103,8 @@ export class OpenAIOAuthRefreshLocalConfigurationError extends Error {
 const refreshFailureStateByAccountId = new Map<string, OpenAIOAuthRefreshFailureState>()
 const recentRefreshTtlMs = 30_000
 const openAIOAuthRefreshFailureStateTtlMs = 7 * 24 * 60 * 60 * 1000
-const openAIOAuthRefreshBatchConcurrency = 4
+const openAIOAuthRefreshBatchConcurrency = runtimeConfig.concurrency.globalMax
 const openAIOAuthRefreshStartAdmissionBudgetMs = 55_000
-const openAIOAuthRefreshBackoffReadConcurrency = 4
 const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccount>({
   name: 'openai-oauth:recent-refresh',
   max: 5000,
@@ -193,7 +193,7 @@ export async function refreshOpenAIOAuthAccountAccessToken(
   if (!isOpenAIOAuthRefreshAccount(account)) {
     throw new Error('仅支持刷新 OpenAI OAuth 账户')
   }
-  return runWithAccountRefreshLock(
+  return await runWithGlobalBackgroundConcurrencySlot(async () => await runWithAccountRefreshLock(
     account.id,
     (lockSignal, assertLockOwned) => refreshOpenAIOAuthAccountAccessTokenLocked(
       account,
@@ -201,7 +201,7 @@ export async function refreshOpenAIOAuthAccountAccessToken(
       assertLockOwned
     ),
     options.lockMode === 'skip' ? options : { ...options, signal: undefined }
-  )
+  ))
 }
 
 async function refreshOpenAIOAuthAccountAccessTokenLocked(
@@ -560,12 +560,13 @@ async function selectOpenAIOAuthRefreshBatchCandidates(input: {
   admissionDeadlineAtMs: number
 }): Promise<OpenAIOAuthRefreshBatchCandidate[]> {
   const candidates: OpenAIOAuthRefreshBatchCandidate[] = []
-  for (let offset = 0; offset < input.dueAccounts.length && candidates.length < input.batchSize; offset += openAIOAuthRefreshBackoffReadConcurrency) {
+  for (let offset = 0; offset < input.dueAccounts.length && candidates.length < input.batchSize;) {
     if (input.signal?.aborted || Date.now() >= input.admissionDeadlineAtMs) {
       input.result.deferredBudget += Math.max(0, input.dueAccounts.length - offset)
       break
     }
-    const candidateWindow = input.dueAccounts.slice(offset, offset + openAIOAuthRefreshBackoffReadConcurrency)
+    const candidateWindow = input.dueAccounts.slice(offset, offset + input.batchSize - candidates.length)
+    offset += candidateWindow.length
     const failureStates = await Promise.all(candidateWindow.map((candidate) => readRefreshFailureState(
       openAIOAuthRefreshCandidateAccountId(candidate),
       input.now,

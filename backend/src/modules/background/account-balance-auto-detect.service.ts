@@ -8,6 +8,7 @@ import {
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import {
   commitAccountBalanceDetectionDueAsync,
   enableDetectedAccountBalanceQueryAsync,
@@ -22,7 +23,7 @@ import { requestStatsWriter } from './background-stats-writer.js'
 
 const detectionIntervalMinutes = 5
 const detectionRetryMinutes = 5
-const detectionRecoveryBatchSize = 2
+const detectionRecoveryBatchSize = runtimeConfig.background.accountBalanceAutoDetectionRecoveryBatchSize
 
 interface AccountBalanceAutoDetectionQueueItem {
   accountId: string
@@ -44,7 +45,7 @@ type AccountBalanceDetectionAttempt =
 const accountBalanceAutoDetectionQueue = createRetryQueue<AccountBalanceAutoDetectionQueueItem>({
   name: 'account-balance-auto-detect',
   policy: sequenceRetryPolicy('account_balance_auto_detect', [], 0),
-  concurrency: 2,
+  concurrency: runtimeConfig.concurrency.globalMax,
   run: async (item) => {
     const candidate = await findAccountBalanceDetectionCandidateAsync(item.accountId, item.configRevision)
     if (!candidate?.nextRefreshAt) return true

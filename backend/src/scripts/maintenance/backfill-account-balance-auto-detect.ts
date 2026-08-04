@@ -6,9 +6,10 @@ import { listAccountBalanceDetectionCandidatePageAsync } from '../../storage/acc
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { closeGatewayUpstreamAgents } from '../../modules/gateway/upstream/request.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 
-const pageSize = 50
-const concurrency = 2
+const pageSize = runtimeConfig.background.accountBalanceAutoDetectionBackfillPageSize
+const concurrency = runtimeConfig.concurrency.globalMax
 
 let afterId: string | undefined
 let scanned = 0
@@ -28,7 +29,7 @@ try {
       while (cursor < page.candidates.length) {
         const candidate = page.candidates[cursor]
         cursor += 1
-        const result = await autoDetectAccountBalanceCandidate(candidate)
+        const result = await runWithGlobalBackgroundConcurrencySlot(async () => await autoDetectAccountBalanceCandidate(candidate))
         scanned += 1
         if (result === 'enabled') enabled += 1
         else if (result === 'unsupported') unsupported += 1

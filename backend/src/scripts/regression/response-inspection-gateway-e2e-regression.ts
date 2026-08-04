@@ -30,6 +30,8 @@ type ScenarioName =
   | 'codex_compaction_interrupted_sse'
   | 'codex_incomplete_sse'
   | 'codex_broken_gzip_sse'
+  | 'codex_encrypted_content_recovery_sse'
+  | 'codex_encrypted_content_recovery_exhausted_sse'
 
 interface UpstreamHit {
   path: string
@@ -75,7 +77,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: UpstreamHit[] = []
-const requestedScenario = process.env.JUHE_AI_RESPONSE_INSPECTION_SCENARIO
+const requestedScenario = process.env.JUHE_AI_RESPONSE_INSPECTION_SCENARIO ?? process.argv[2]
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -110,7 +112,11 @@ try {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    if (requestedScenario === 'codex_compaction_sse') {
+    if (requestedScenario === 'codex_encrypted_content_recovery_sse') {
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl)
+    } else if (requestedScenario === 'codex_encrypted_content_recovery_exhausted_sse') {
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true)
+    } else if (requestedScenario === 'codex_compaction_sse') {
       await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
     } else if (requestedScenario === 'codex_compaction_interrupted_sse') {
       await runCodexCompactionInterruptedScenario(baseUrl, upstreamBaseUrl)
@@ -126,6 +132,8 @@ try {
       await runScenario(baseUrl, upstreamBaseUrl, 'codex_incomplete_sse')
       await runScenario(baseUrl, upstreamBaseUrl, 'codex_broken_gzip_sse')
       await runCodexBrokenGzipExhaustedScenario(baseUrl, upstreamBaseUrl)
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl)
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true)
     }
 
     console.log('response inspection gateway e2e regression passed')
@@ -382,6 +390,104 @@ async function runCodexCompactionInterruptedScenario(baseUrl: string, upstreamBa
   repositories.updateSettings({ textStreamIdleTimeoutSeconds: 30 })
 }
 
+async function runCodexEncryptedContentRecoveryScenario(
+  baseUrl: string,
+  upstreamBaseUrl: string,
+  expectRecoveryExhausted = false
+): Promise<void> {
+  const scenario: ScenarioName = expectRecoveryExhausted
+    ? 'codex_encrypted_content_recovery_exhausted_sse'
+    : 'codex_encrypted_content_recovery_sse'
+  upstreamHits.length = 0
+  const accountProvider = providerForScenario(scenario)
+  const group = repositories.createGroup({
+    name: 'Codex 密文恢复 E2E',
+    providerCode: accountProvider.providerCode,
+    enabled: true
+  }, access)
+  const account = repositories.createAccount({
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
+    name: 'Codex 密文恢复单账号',
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-upstream-clean-${scenario}`,
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
+    },
+    groupId: group.id,
+    schedulable: true,
+    supportedModels: ['gpt-5.5'],
+    priority: 0
+  }, access)
+  activateAccount(account.id)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: 'Codex 密文恢复 E2E Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '回归 API Key 未返回明文密钥')
+
+  const requestBody = {
+    model: 'gpt-5.5',
+    stream: true,
+    input: [
+      {
+        type: 'reasoning',
+        summary: [],
+        encrypted_content: 'fixture-rejected-reasoning-content'
+      },
+      {
+        type: 'agent_message',
+        author: '/root/subtask',
+        content: [
+          { type: 'input_text', text: 'subtask plaintext remains available' },
+          { type: 'encrypted_content', encrypted_content: 'fixture-rejected-agent-message-content' }
+        ]
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: `run ${scenario}` }]
+      }
+    ]
+  }
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        turn_id: `turn_${scenario}`,
+        session_id: `session_${scenario}`,
+        thread_id: `thread_${scenario}`
+      })
+    },
+    body: JSON.stringify(requestBody)
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, `密文恢复应保留 Codex SSE 协议响应：${responseText}`)
+  assert.equal(upstreamHits.length, 2, `精确密文错误只能额外重试一次：${JSON.stringify(upstreamHits)}`)
+  assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-clean-${scenario}`)
+  assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`)
+  const firstInput = JSON.parse(upstreamHits[0]?.bodyText ?? '{}').input as Array<Record<string, unknown>>
+  const secondInput = JSON.parse(upstreamHits[1]?.bodyText ?? '{}').input as Array<Record<string, unknown>>
+  assert.equal(firstInput.some((item) => item.type === 'reasoning' && typeof item.encrypted_content === 'string'), true, '首次请求必须保留原始密文')
+  assert.equal(secondInput.some((item) => item.type === 'reasoning' && typeof item.encrypted_content === 'string'), false, '恢复请求不得保留 reasoning 密文')
+  const recoveredAgentMessage = secondInput.find((item) => item.type === 'agent_message')
+  assert.deepEqual(recoveredAgentMessage?.content, [{ type: 'input_text', text: 'subtask plaintext remains available' }], '恢复请求必须仅移除 agent_message 密文')
+  assert.doesNotMatch(responseText, /resp-rejected-encrypted-content/, '上游首个 response.created 不得泄露给下游')
+  if (expectRecoveryExhausted) {
+    assert.doesNotMatch(responseText, /resp-rejected-cleaned-content/, '第二次上游失败的 response.created 不得泄露给下游')
+    assert.match(responseText, /response\.failed/, '第二次失败必须由网关转换为本地失败事件')
+    assert.doesNotMatch(responseText, /response\.completed/, '清洗后的第二次失败不得伪造完成事件')
+    return
+  }
+  assert.match(responseText, /clean codex_encrypted_content_recovery_sse/, `恢复请求必须完成：${responseText}`)
+  assert.match(responseText, /response\.completed/, `恢复请求必须返回完成终态：${responseText}`)
+}
+
 function activateAccount(accountId: string): void {
   assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
     intervalHours: 12,
@@ -458,6 +564,13 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (path === '/v1/responses') {
+        if (
+          scenario === 'codex_encrypted_content_recovery_sse'
+          || scenario === 'codex_encrypted_content_recovery_exhausted_sse'
+        ) {
+          sendCodexEncryptedContentRecoverySse(res, bodyText, scenario)
+          return
+        }
         if (scenario === 'codex_compaction_sse') {
           sendCodexCompactionSse(res, polluted)
           return
@@ -506,6 +619,8 @@ function isCodexScenario(scenario: ScenarioName): boolean {
     || scenario === 'codex_compaction_interrupted_sse'
     || scenario === 'codex_incomplete_sse'
     || scenario === 'codex_broken_gzip_sse'
+    || scenario === 'codex_encrypted_content_recovery_sse'
+    || scenario === 'codex_encrypted_content_recovery_exhausted_sse'
 }
 
 function providerForScenario(scenario: ScenarioName): { providerCode: string; providerProtocolProfileId: string } {
@@ -590,6 +705,49 @@ function sendResponsesSse(res: http.ServerResponse, scenario: ScenarioName, poll
     }
   })}\n\n`)
   res.end()
+}
+
+function sendCodexEncryptedContentRecoverySse(
+  res: http.ServerResponse,
+  bodyText: string,
+  scenario: ScenarioName
+): void {
+  const requestBody = JSON.parse(bodyText) as { input?: Array<{ type?: string; encrypted_content?: unknown; content?: unknown }> }
+  const rejectedReasoning = requestBody.input?.some((item) => (
+    item.type === 'reasoning' && typeof item.encrypted_content === 'string'
+  )) === true
+  const rejectedAgentMessage = requestBody.input?.some((item) => (
+    item.type === 'agent_message'
+      && Array.isArray(item.content)
+      && item.content.some((content) => (
+        typeof content === 'object'
+        && content !== null
+        && (content as { type?: unknown; encrypted_content?: unknown }).type === 'encrypted_content'
+        && typeof (content as { encrypted_content?: unknown }).encrypted_content === 'string'
+      ))
+  )) === true
+  if (rejectedReasoning || rejectedAgentMessage) {
+    sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-encrypted-content')
+    return
+  }
+  if (scenario === 'codex_encrypted_content_recovery_exhausted_sse') {
+    sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-cleaned-content')
+    return
+  }
+  sendResponsesSse(res, 'codex_encrypted_content_recovery_sse', false)
+}
+
+function sendCodexEncryptedContentRecoveryFailure(res: http.ServerResponse, responseId: string): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.write(`event: response.created\ndata: ${JSON.stringify({
+    type: 'response.created',
+    response: { id: responseId, status: 'in_progress' }
+  })}\n\n`)
+  res.end(`event: error\ndata: ${JSON.stringify({
+    type: 'error',
+    code: 'thinking_signature_invalid',
+    message: 'Encrypted function output content could not be decrypted or decoded.'
+  })}\n\n`)
 }
 
 function sendCodexCompactionSse(res: http.ServerResponse, polluted: boolean): void {

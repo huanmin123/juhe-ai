@@ -385,12 +385,23 @@ for (const [name, source] of [
   ['账户 Key 冷却复测', apiKeyRetestSource]
 ] as const) {
   if (name === '主动健康检查' || name === '质量失败复核' || name === '账户冷却复测' || name === '账户 Key 冷却复测') {
-    assert.match(source, /onDiagnosticAttemptResult: \(attempt\) => \{[\s\S]{0,240}upstreamAttempt = attempt\.upstreamAttempt[\s\S]{0,240}diagnosticTimeoutExhausted = attempt\.diagnosticTimeoutExhausted/, `${name}必须保留完整诊断阶梯超时与当前真实上游 attempt 的结构化事实`)
-    assert.match(source, /automaticAccountProbeOutcome\(result, \{[\s\S]{0,160}upstreamAttempt,[\s\S]{0,160}diagnosticTimeoutExhausted[\s\S]{0,160}\}\)/, `${name}必须同时传递最后一次真实上游 attempt 和完整诊断阶梯超时事实`)
+    assert.match(source, /testOpenAIAccount(?:WithDiagnosticRetries|DiagnosticAttempt)/, `${name}必须通过统一账户诊断执行单次或完整阶梯探测`)
+    if (name === '质量失败复核') {
+      assert.match(source, /interface AccountQualityPoolAttemptValue/, '质量失败复核必须将每把 Key 的传输事实保存在独立结果对象')
+      assert.match(source, /upstreamAttempt: attempt\.upstreamAttempt/, '质量失败复核必须把当前 Key 的真实上游 attempt 写入该 Key 结果')
+      assert.match(source, /attempt\.value\.upstreamAttempt[\s\S]{0,160}attempt\.value\.diagnosticTimeoutExhausted/, '质量失败复核分类时必须使用同一 Key 的传输与超时事实')
+      assert.doesNotMatch(source, /upstreamAttempt = attempt\.upstreamAttempt/, '质量失败复核不得由并发 Key 覆盖共享上游 attempt 变量')
+    } else {
+      assert.match(source, /upstreamAttempt = (?:attempt|singleAttempt)\.upstreamAttempt/, `${name}必须保留当前真实上游 attempt 的结构化事实`)
+      assert.match(source, /diagnosticTimeoutExhausted = (?:attempt|singleAttempt)\.diagnosticTimeoutExhausted/, `${name}必须保留完整诊断阶梯超时事实`)
+      assert.match(source, /automaticAccountProbeOutcome\(result, \{[\s\S]{0,160}upstreamAttempt,[\s\S]{0,160}diagnosticTimeoutExhausted[\s\S]{0,160}\}\)/, `${name}必须同时传递最后一次真实上游 attempt 和完整诊断阶梯超时事实`)
+    }
   }
-  assert.match(source, /let upstreamAttempt: UpstreamAttempt \| undefined/, `${name}必须保存结构化传输证据，不能只保存是否见过响应头`)
+  if (name !== '质量失败复核') {
+    assert.match(source, /let upstreamAttempt: UpstreamAttempt \| undefined/, `${name}必须保存结构化传输证据，不能只保存是否见过响应头`)
+  }
   assert.doesNotMatch(source, /upstreamResponseObserved|isCompletedRealUpstreamAttempt/, `${name}不得把任意完整 HTTP 响应头直接解释成失败`)
-  assert.match(source, /retryAllFailures: true/, `${name}必须完成通用后台诊断轮次，不能被错误类型提前截断`)
+  assert.match(source, /retryAllFailures: true|runAccountApiKeyPoolDiagnostic/, `${name}必须完成通用后台诊断轮次，不能被错误类型提前截断`)
   assert.doesNotMatch(
     source,
     /probeOutcome === 'probe_task_failure'\s*\|\|\s*result\.accountFailureEligible === false/,

@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   listAccountsDueForBalanceRefreshAsync,
   listAccountsNeedingBalanceRefreshRecoveryAsync,
@@ -11,10 +12,11 @@ import {
   type AccountBalanceRefreshResult
 } from '../accounts/account-balance-query.service.js'
 import { loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
+import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 
-const refreshBatchSize = 36
-const refreshConcurrency = 18
-const recoveryBatchSize = 4
+const refreshBatchSize = runtimeConfig.background.accountBalanceRefreshBatchSize
+const refreshConcurrency = runtimeConfig.concurrency.globalMax
+const recoveryBatchSize = runtimeConfig.background.accountBalanceRefreshRecoveryBatchSize
 const refreshRunBudgetMs = 45_000
 const refreshCandidateTimeoutMs = 20_000
 
