@@ -261,10 +261,14 @@ interface AccountCapacityLimitFailure {
 }
 
 const accountConcurrencyRetryBudgetMs = runtimeConfig.gateway.accountConcurrencyRetryBudgetMs
-const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
+const accountConcurrencyRetryPolicy = exponentialRetryPolicy(
+  'gateway_account_concurrency_short_wait',
+  runtimeConfig.gateway.accountConcurrencyRetryInitialDelayMs,
+  runtimeConfig.gateway.accountConcurrencyRetryMaxDelayMs
+)
 // A route may traverse multiple 50-key account pools. Bound total request fan-out
 // while auditing that untried keys remain, rather than claiming pool exhaustion.
-export const gatewayAccountApiKeyRequestAttemptSafetyLimit = 64
+export const gatewayAccountApiKeyRequestAttemptSafetyLimit = runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit
 
 export async function fetchFirstAvailableUpstream(
   req: Request,

@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { KeyedChildProcessPool, type KeyedChildProcessPoolRuntime } from '../../shared/keyed-child-process-pool.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   modelCheckTokenPaddingMaxTokens,
   normalizeModelCheckTokenPaddingTarget,
@@ -30,8 +31,8 @@ let pendingTokenWorkerRequests = 0
 const tokenWorkerPool = new KeyedChildProcessPool<ModelCheckTokenWorkerOperation>({
   name: '模型检测 Token',
   createWorker: createTokenWorkerChild,
-  targetSize: () => 1,
-  queueMaxItems: () => 16,
+  targetSize: () => runtimeConfig.background.modelCheckTokenWorkerTargetSize,
+  queueMaxItems: () => runtimeConfig.background.modelCheckTokenWorkerQueueMaxItems,
   shardIndexForOperation: () => 0,
   operationType: (operation) => operation.type,
   runTimeoutMs: () => 15_000,

@@ -3,6 +3,7 @@ import {
   accountMatchesStatusFilters
 } from '../../domain/account-status-classification.js'
 import type { AccountListItem } from '../../domain/types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
 import { loadAccountTagsByAccountIdsAsync } from '../../storage/account-tags.repository.js'
@@ -33,7 +34,7 @@ export interface AccountRuntimeStatusCandidateProgress {
 export class AccountRuntimeStatusFilterScanLimitError extends Error {}
 
 const initialSparseCandidatePrefixSize = 200
-const maxRuntimeStatusHydrationBatchSize = 100
+const maxRuntimeStatusHydrationBatchSize = runtimeConfig.background.accountRuntimeStatusHydrationBatchSize
 
 export function accountListNeedsRuntimeStatusFilter(options: AccountListOptions): boolean {
   const normalized = normalizeAccountListOptions(options)

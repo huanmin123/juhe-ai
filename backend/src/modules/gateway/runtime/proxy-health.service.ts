@@ -67,13 +67,13 @@ export type GatewayProxyHealthRuntimeStateStore = Pick<
 >
 let upstreamBucketFailureStateStoreForTest: GatewayProxyHealthRuntimeStateStore | undefined
 
-const upstreamBucketFailureMaxEntries = 2_000
-const upstreamBucketFailureWindowMs = 60_000
-const upstreamBucketFailureAvoidTtlMs = 60_000
-const upstreamBucketHalfOpenLeaseMs = 60_000
-const upstreamBucketFailureDistinctAccountThreshold = 2
-const upstreamBucketFailureCasMaxAttempts = 1_024
-const upstreamBucketFailureMaxAccountSamples = 256
+const upstreamBucketFailureMaxEntries = runtimeConfig.gateway.proxyHealthFailureMaxEntries
+const upstreamBucketFailureWindowMs = runtimeConfig.gateway.proxyHealthFailureWindowMs
+const upstreamBucketFailureAvoidTtlMs = runtimeConfig.gateway.proxyHealthAvoidTtlMs
+const upstreamBucketHalfOpenLeaseMs = runtimeConfig.gateway.proxyHealthHalfOpenLeaseMs
+const upstreamBucketFailureDistinctAccountThreshold = runtimeConfig.gateway.proxyHealthDistinctAccountThreshold
+const upstreamBucketFailureCasMaxAttempts = runtimeConfig.gateway.proxyHealthCasMaxAttempts
+const upstreamBucketFailureMaxAccountSamples = runtimeConfig.gateway.proxyHealthMaxAccountSamples
 const upstreamBucketMutationInstanceId = randomBytes(12).toString('hex')
 let upstreamBucketMutationSequence = 0
 let gatewayUpstreamBucketHealthNowForTest: number | undefined

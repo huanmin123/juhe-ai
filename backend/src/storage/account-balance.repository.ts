@@ -199,7 +199,7 @@ let postgresBalanceRecoveryAfterId = ''
 export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { limit?: number } = {}): Promise<AccountBalanceRefreshCandidate[]> {
   const limit = normalizedLimit(options.limit)
   const scanPageSize = Math.max(40, limit * 4)
-  const maxScanPages = 4
+  const maxScanPages = runtimeConfig.background.accountBalanceRecoveryMaxScanPages
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
     const queryRows = async (afterId: string) => await client.query<BalanceCandidateRow>(`

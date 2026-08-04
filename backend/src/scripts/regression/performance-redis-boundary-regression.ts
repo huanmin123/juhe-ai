@@ -162,7 +162,7 @@ assert.match(accountConcurrencySource, /acquireRedisAccountConcurrency\(accountI
 assert.match(accountConcurrencySource, /redisStateClient\(\)/, '账号并发读取在 Redis runtime state driver 下必须读取 Redis state')
 assert.match(accountConcurrencySource, /account-concurrency-v2/, 'Redis 账号并发必须使用带槽位租约的 v2 key，避免旧数字计数脏占用')
 assert.match(accountConcurrencySource, /redisNamespacedKey\(`juhe-ai:account-concurrency-v2:\$\{accountId\}:total`\)/, 'Redis 账号并发 key 必须使用命名空间，避免多环境共享 Redis DB 时互相污染')
-assert.match(accountConcurrencySource, /redisAccountConcurrencySlotLeaseTtlMs\s*=\s*90_000/, 'Redis 账号并发槽必须使用短租约，释放失败或进程退出后应及时过期')
+assert.match(accountConcurrencySource, /redisAccountConcurrencySlotLeaseTtlMs\s*=\s*runtimeConfig\.concurrency\.accountSlotLeaseDurationMs/, 'Redis 账号并发槽租约必须通过运行时配置控制，释放失败或进程退出后应及时过期')
 assert.match(accountConcurrencySource, /function ensureRedisAccountConcurrencySlotRefresh\(\)/, 'Redis 账号并发活跃槽必须由当前进程定期续租')
 assert.match(accountConcurrencySource, /ZREMRANGEBYSCORE/, 'Redis 账号并发读取和占用前必须清理已过租约的槽位')
 assert.match(accountConcurrencySource, /function hdel_expired[\s\S]*unpack\(expired, index, last\)/, 'Redis 账号并发清理过期槽位时 HDEL 必须分批，避免大量过期 token 触发 Lua 参数上限')
@@ -498,7 +498,7 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(accountSideEffectsSource, 'filterGatewayAccountRuntimeSuppressionsAsync'), /filterConfiguredPolicyAvoidances[\s\S]*runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*filterDistributedPrecheckSuppressions[\s\S]*filterLocallySuppressedGatewayAccounts/, 'Redis runtime state 下必须在保留用户显式策略语义的同时过滤后台已确认的 precheck_pending')
   assert.match(functionBody(accountSideEffectsSource, 'filterDistributedPrecheckSuppressions'), /distributedRecoveryProbeStore\.getMany[\s\S]*phase === 'precheck_pending'/, 'Redis 自动探针过滤只能把 precheck_pending 作为软阻断，recovery_wait 必须继续可调度')
   assert.match(functionBody(accountSideEffectsSource, 'loadConfiguredPolicyAvoidanceStates'), /cachedConfiguredPolicyAvoidanceState[\s\S]*configuredPolicyAvoidanceStore\.getJsonMany[\s\S]*rememberConfiguredPolicyAvoidanceState/, 'Redis runtime state 下显式策略避让过滤必须使用批量 miss 加载与近端短 TTL 缓存')
-  assert.match(accountSideEffectsSource, /configuredPolicyAvoidanceCacheTtlMs\s*=\s*1000[\s\S]*configuredPolicyAvoidanceNegativeCacheTtlMs\s*=\s*500/, 'Redis 显式策略避让近端缓存必须保持短 TTL，只允许短暂不一致')
+  assert.match(accountSideEffectsSource, /configuredPolicyAvoidanceCacheTtlMs\s*=\s*runtimeConfig\.gateway\.accountSideEffectAvoidanceCacheTtlMs[\s\S]*configuredPolicyAvoidanceNegativeCacheTtlMs\s*=\s*runtimeConfig\.gateway\.accountSideEffectAvoidanceNegativeCacheTtlMs/, 'Redis 显式策略避让近端缓存必须通过运行时配置保持短 TTL，只允许短暂不一致')
 
   const sessionAffinitySource = source('modules/gateway/runtime/session-affinity.service.ts')
   const gatewayCapacitySource = source('modules/gateway/dispatch/capacity.ts')

@@ -41,9 +41,9 @@ interface AccountTestQueueItem {
 }
 
 const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户'
-const manualAccountTestRefillMaxBatchSize = 1000
-const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
-const manualAccountTestQueuedSweepBatchSize = 500
+const manualAccountTestRefillMaxBatchSize = runtimeConfig.background.accountTestRefillMaxBatchSize
+const manualAccountTestQueuedMaxWaitMs = runtimeConfig.background.accountTestQueuedMaxWaitMs
+const manualAccountTestQueuedSweepBatchSize = runtimeConfig.background.accountTestQueuedSweepBatchSize
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined

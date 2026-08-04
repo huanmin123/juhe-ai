@@ -150,7 +150,7 @@ interface AccountApiKeyRuntimeSummarySourceRow {
 const initialProbeBackoffSeconds = 3
 const maxProbeBackoffSeconds = 60 * 60
 const probeClaimLeaseSeconds = 10 * 60
-const probeCandidateScanLimit = 10_000
+const probeCandidateScanLimit = runtimeConfig.background.accountApiKeyProbeCandidateScanLimit
 const businessSchemaName = 'juhe_business'
 
 type AccountApiKeyExpectedProbeStateInput = Pick<

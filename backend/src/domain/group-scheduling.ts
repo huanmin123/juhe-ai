@@ -58,8 +58,8 @@ export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSch
   recentTimeoutWindowSeconds: 120,
   recentTimeoutPenaltyThreshold: 2,
   maxQueueWaitMs: 60_000,
-  maxQueueSize: 1_000,
-  perApiKeyQueueLimit: 1_000,
+  maxQueueSize: runtimeConfig.concurrency.globalMax,
+  perApiKeyQueueLimit: runtimeConfig.concurrency.globalMax,
   clientIpConcurrencyLimit: 0,
   clientIpConcurrencyOverflowMode: 'reject',
   imageLaneMaxConcurrency: 0
@@ -137,7 +137,7 @@ export function effectiveImageLaneConcurrencyLimit(input: {
   if (configured > 0) {
     return Math.min(hardLimit, Math.max(1, Math.trunc(configured)))
   }
-  return hardLimit > 1 ? hardLimit - 1 : hardLimit
+  return hardLimit
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

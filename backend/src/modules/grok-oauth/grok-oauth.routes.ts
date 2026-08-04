@@ -617,7 +617,7 @@ async function createGrokOAuthAccount(
     type: 'oauth',
     credentials: buildSafeGrokOAuthCredentials(tokenInfo, input.credentialsPatch, fallback),
     ...accountCreationStatusInput(input.status),
-    concurrencyLimit: input.concurrencyLimit ?? 1,
+    concurrencyLimit: input.concurrencyLimit,
     priority: input.priority,
     superPriorityEnabled: input.superPriorityEnabled,
     fallbackEnabled: input.fallbackEnabled,

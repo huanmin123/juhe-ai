@@ -220,7 +220,7 @@ assert.doesNotMatch(chatContextCompactionSource, /7\s*\*\s*86_400_000|earliestEx
 assert.match(chatContextCompactionSource, /if \(!earliestExpiresAt\) throw new Error\('chat_context_source_expiry_missing'\)/, 'checkpoint 来源到期时间缺失时必须 fail-fast')
 assert.doesNotMatch(maintenanceCleanupSource, /AI 问答 7 天保留清理/, 'AI 问答维护日志不得写死 7 天')
 assert.doesNotMatch(routesSource, /baseUrl|base_url|proxyProfile/, 'AI 问答路由不能直接拼上游 Base URL 或代理配置')
-assert.match(serverSource, /chatHttpProxy = createDbServiceHttpProxy\(\{ maxInFlight: 128, timeoutMs: 15 \* 60_000 \}\)/, 'AI 问答长连接必须使用独立代理池和 15 分钟超时')
+assert.match(serverSource, /chatHttpProxy = createDbServiceHttpProxy\(\{[\s\S]*chatMaxInFlight[\s\S]*chatTimeoutMs[\s\S]*\}\)/, 'AI 问答长连接必须使用独立代理池和独立超时配置')
 assert(serverSource.indexOf('app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)') < serverSource.indexOf('app.use(systemApiPrefix, dbServiceHttpProxy)'), 'AI 问答独立代理必须挂在通用 System API 代理之前')
 
 console.log('AI 问答路由契约回归通过')

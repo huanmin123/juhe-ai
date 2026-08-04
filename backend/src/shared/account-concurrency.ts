@@ -10,8 +10,8 @@ const currentConcurrencyByAccountLaneKey = new Map<string, number>()
 const inFlightSlotsByAccountId = new Map<string, Map<number, AccountInFlightSlot>>()
 const releaseListeners = new Set<(event: AccountConcurrencyReleaseEvent) => void>()
 let nextSlotId = 1
-const redisAccountConcurrencySlotLeaseTtlMs = 90_000
-const redisAccountConcurrencySlotRefreshIntervalMs = 15_000
+const redisAccountConcurrencySlotLeaseTtlMs = runtimeConfig.concurrency.accountSlotLeaseDurationMs
+const redisAccountConcurrencySlotRefreshIntervalMs = runtimeConfig.concurrency.accountSlotRefreshIntervalMs
 const redisAccountConcurrencyOwnerId = randomUUID()
 let redisAccountConcurrencySlotRefreshTimer: NodeJS.Timeout | undefined
 

@@ -83,7 +83,10 @@ const helpPrefix = `${systemPrefix}/help`
 const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
-const chatHttpProxy = createDbServiceHttpProxy({ maxInFlight: 128, timeoutMs: 15 * 60_000 })
+const chatHttpProxy = createDbServiceHttpProxy({
+  maxInFlight: runtimeConfig.dbServiceHttpProxy.chatMaxInFlight,
+  timeoutMs: runtimeConfig.dbServiceHttpProxy.chatTimeoutMs
+})
 const backgroundWorkerStartupFallbackMs = 15_000
 let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false

@@ -3,12 +3,13 @@ import type { IncomingHttpHeaders } from 'node:http'
 
 import type { NextFunction, Request, Response } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getTraceId, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { getDbServiceState } from './db-service-ipc.js'
 
-export const dbServiceHttpProxyMaxInFlight = 256
-export const dbServiceHttpProxyTimeoutMs = 30_000
+export const dbServiceHttpProxyMaxInFlight = runtimeConfig.dbServiceHttpProxy.maxInFlight
+export const dbServiceHttpProxyTimeoutMs = runtimeConfig.dbServiceHttpProxy.timeoutMs
 
 export interface DbServiceHttpProxyOptions {
   maxInFlight?: number

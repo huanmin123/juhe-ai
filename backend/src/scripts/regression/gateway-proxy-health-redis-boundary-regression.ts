@@ -27,7 +27,7 @@ assert.match(successMutationSource, /compareDeleteJson[\s\S]*getRedisBucketFailu
 assert.match(source, /function sameGatewayUpstreamBucketFailureEvidence[\s\S]*failureCount[\s\S]*lastFailedAtMs[\s\S]*lastFailureGeneration[\s\S]*accountSamples/, 'success retry fencing must compare failure generation and failure evidence, excluding only half-open lease metadata')
 assert.match(failureMutationSource, /lastFailureGeneration: latestFailure\.generation/, 'failure mutations must persist an ordered in-process generation for same-millisecond fencing')
 assert.doesNotMatch(source, /upstreamBucketFailureStateStore\.delete|setRedisBucketFailureEntry/, 'bucket state must not use unconditional Redis overwrite or delete')
-assert.match(source, /upstreamBucketFailureMaxAccountSamples = 256/, 'failure evidence payload must have an explicit sample bound')
+assert.match(source, /upstreamBucketFailureMaxAccountSamples = runtimeConfig\.gateway\.proxyHealthMaxAccountSamples/, 'failure evidence payload must have a runtime-configured sample bound')
 assert.match(source, /function pruneAccountSamples[\s\S]*latestByAccountId[\s\S]*slice\(-upstreamBucketFailureMaxAccountSamples\)/, 'failure samples must deduplicate accounts and retain only the bounded newest set')
 assert.match(source, /function gatewayFailureEvidenceAccountId[\s\S]*credentialSourceAccountId\?\.trim\(\) \|\| account\.id/, 'failure evidence must deduplicate authorized instances by physical credential source')
 assert.match(source, /avoidUntilMs: Math\.max\(current\?\.avoidUntilMs \?\? 0, avoidUntilMs\)/, 'short explicit suppression must not shorten a longer avoid deadline')

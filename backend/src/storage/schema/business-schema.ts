@@ -323,7 +323,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       oauth_access_token_expires_at TEXT,
       oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
       proxy_profile_id TEXT,
-      concurrency_limit INTEGER NOT NULL DEFAULT 20,
+      concurrency_limit INTEGER NOT NULL DEFAULT 5000,
       priority INTEGER NOT NULL DEFAULT 0,
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       fallback_enabled INTEGER NOT NULL DEFAULT 0,

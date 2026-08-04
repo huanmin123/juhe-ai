@@ -4,6 +4,7 @@ import { AccountConfigRevisionConflictError } from './account-config-revision.js
 export { AccountConfigRevisionConflictError } from './account-config-revision.js'
 
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsListResult, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { resolveHealthCheckEndpointMode } from '../domain/account-health-check-endpoint-mode.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
@@ -122,7 +123,6 @@ import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthori
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
@@ -311,7 +311,7 @@ import {
   optionalString
 } from './value-utils.js'
 
-const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
+const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = runtimeConfig.concurrency.defaultAccountLimit
 const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const deletedAccountPhysicalCleanupRetentionMonths = 1
 const deletedAccountPhysicalCleanupBatchSize = 20

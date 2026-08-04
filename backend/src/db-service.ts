@@ -43,11 +43,11 @@ const queuedDbServiceRequests: Record<DbServiceOperationPriority, QueuedDbServic
   normal: [],
   low: []
 }
-const dbServiceRequestQueueMaxRequests = 4000
-const dbServiceRequestQueueMaxBytes = 128 * 1024 * 1024
-const dbServiceHighDispatchesBeforeNormal = 8
-const dbServiceHighDispatchesBeforeLow = 16
-const dbServiceConcurrentRequestMaxActive = 8
+const dbServiceRequestQueueMaxRequests = runtimeConfig.dbService.queueMaxRequests
+const dbServiceRequestQueueMaxBytes = runtimeConfig.dbService.queueMaxBytes
+const dbServiceHighDispatchesBeforeNormal = runtimeConfig.dbService.highDispatchesBeforeNormal
+const dbServiceHighDispatchesBeforeLow = runtimeConfig.dbService.highDispatchesBeforeLow
+const dbServiceConcurrentRequestMaxActive = runtimeConfig.dbService.maxActiveRequests
 let queuedDbServiceRequestBytes = 0
 let dbServiceRequestQueueDraining = false
 let dbServiceRequestQueueDrainScheduled = false

@@ -349,11 +349,15 @@ const distributedRecoveryProbeSweepIntervalMs = runtimeConfig.gateway.automaticP
 const distributedRecoveryProbeSweepBatchSize = runtimeConfig.gateway.automaticProbeSweepBatchSize
 const distributedRecoveryProbeDueRetryDelayMs = runtimeConfig.gateway.automaticProbeDueRetryDelayMs
 const distributedRecoveryProbeStateReadBatchSize = runtimeConfig.gateway.automaticProbeStateReadBatchSize
-const configuredPolicyAvoidanceCacheTtlMs = 1000
-const configuredPolicyAvoidanceNegativeCacheTtlMs = 500
-const configuredPolicyAvoidanceCacheMaxEntries = 5000
-const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
-const maxSideEffectQueueLength = 5000
+const configuredPolicyAvoidanceCacheTtlMs = runtimeConfig.gateway.accountSideEffectAvoidanceCacheTtlMs
+const configuredPolicyAvoidanceNegativeCacheTtlMs = runtimeConfig.gateway.accountSideEffectAvoidanceNegativeCacheTtlMs
+const configuredPolicyAvoidanceCacheMaxEntries = runtimeConfig.gateway.accountSideEffectAvoidanceCacheMaxEntries
+const sideEffectRetryPolicy = exponentialRetryPolicy(
+  'gateway_account_side_effect_write',
+  runtimeConfig.gateway.accountSideEffectRetryInitialDelayMs,
+  runtimeConfig.gateway.accountSideEffectRetryMaxDelayMs
+)
+const maxSideEffectQueueLength = runtimeConfig.gateway.accountSideEffectQueueMaxLength
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
 const configuredPolicyAvoidanceStore = createRuntimeStateStore('gateway-configured-account-policy-avoidance')
 const sideEffectQueue = new AccountSideEffectQueue()

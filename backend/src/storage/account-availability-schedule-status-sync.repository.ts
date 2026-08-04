@@ -40,7 +40,7 @@ export interface AccountAvailabilityScheduleStatusSyncResult {
   invalidIds: string[]
 }
 
-const availabilityScheduleStatusSyncBatchLimit = 500
+const availabilityScheduleStatusSyncBatchLimit = runtimeConfig.background.accountAvailabilityScheduleSyncBatchLimit
 const businessSchemaName = 'juhe_business'
 
 export function syncAccountAvailabilityScheduleStatuses(now = new Date()): AccountAvailabilityScheduleStatusSyncResult {

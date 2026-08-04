@@ -28,7 +28,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { resolveCatalogPricingModelAsync } from '../modules/model-pricing/model-catalog.service.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 
-const auditPayloadBlobWriteConcurrency = 4
+const auditPayloadBlobWriteConcurrency = runtimeConfig.background.auditPayloadBlobWriteConcurrency
 
 interface PreparedAuditLogForWrite {
   input: AuditLogInput

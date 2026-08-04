@@ -231,7 +231,8 @@ try {
         body: { model: 'gpt-image-1', prompt: 'draw a small gateway diagram' }
       }),
       [imageLaneAccount],
-      'image'
+      'image',
+      { imageLaneMaxConcurrency: 1 }
     ),
     (error: unknown) => error instanceof UpstreamAttemptError
       && error.lastAttempt?.upstreamUrl === 'concurrency:limit'
@@ -316,7 +317,8 @@ try {
       body: { model: 'gpt-image-1', prompt: 'route to available image lane' }
     }),
     [imageLaneBusyAccount, imageLaneAvailableAccount],
-    'image'
+    'image',
+    { imageLaneMaxConcurrency: 1 }
   )
   assert.equal(orderedImageResult.account.id, imageLaneAvailableAccount.id, '图像请求应优先选择图像通道仍可用的账号')
   assert.deepEqual(hitAccountIds, [imageLaneAvailableAccount.id], '图像通道已满账号不应先短等并尝试上游')

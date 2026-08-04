@@ -196,6 +196,15 @@ const activeHealthTimeline = accountStatusTooltipLines(accountFixture({
 }))
 assertTrue(activeHealthTimeline.some((line) => line.includes('最近检查：')), '正常账户应显示最近检查时间')
 assertTrue(activeHealthTimeline.some((line) => line.includes('下次检查：')), '正常账户应显示下次检查时间')
+const accountFormattersSource = readFileSync(resolve('../frontend/src/views/accounts/accountFormatters.ts'), 'utf8')
+assertTrue(
+  /function accountRetestNextText[\s\S]*serverDateTimeTimestamp\(account\.cooldownUntil\)[\s\S]*formatDateTime\(account\.cooldownUntil\)/.test(accountFormattersSource),
+  '冷却复测时间必须直接使用后端 cooldownUntil，不得由前端重算退避时间'
+)
+assertTrue(
+  /account\.nextHealthCheckAt[\s\S]*serverDateTimeTimestamp\(account\.nextHealthCheckAt\)[\s\S]*formatDateTime\(account\.nextHealthCheckAt\)/.test(accountFormattersSource),
+  '健康检查时间必须直接使用后端 nextHealthCheckAt，不得由前端重算退避时间'
+)
 
 const coolingHealthTimeline = accountStatusTooltipLines(accountFixture({
   status: 'temporary_unavailable',

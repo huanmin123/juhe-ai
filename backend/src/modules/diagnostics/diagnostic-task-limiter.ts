@@ -1,4 +1,6 @@
-export const diagnosticTaskMaxInFlight = 8
+import { runtimeConfig } from '../../config/runtime.js'
+
+export const diagnosticTaskMaxInFlight = runtimeConfig.background.diagnosticTaskMaxInFlight
 export const diagnosticTaskRetryAfterSeconds = 1
 export const diagnosticTaskBusyMessage = '诊断任务繁忙，请稍后重试'
 

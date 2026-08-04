@@ -10,6 +10,7 @@ import type {
   ProviderCode,
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import type { ProxyProfileUrlResolution } from './proxy.repository.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import type { AccountApiKeyRuntimeSelectionState } from './account-api-key-rotation.js'
@@ -200,5 +201,5 @@ export type OpenAIAccountSecretOptions = {
   accountAccess?: OpenAIAccountAccess
 }
 
-export const gatewayDispatchAccountCandidateLimit = 256
+export const gatewayDispatchAccountCandidateLimit = runtimeConfig.gateway.dispatchAccountCandidateLimit
 export const gatewayDispatchAccountCandidateScanLimit = gatewayDispatchAccountCandidateLimit * 2

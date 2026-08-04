@@ -41,7 +41,7 @@ export interface ApiKeyScheduleStatusSyncResult {
   invalidIds: string[]
 }
 
-const availabilityScheduleStatusSyncBatchLimit = 500
+const availabilityScheduleStatusSyncBatchLimit = runtimeConfig.background.apiKeyScheduleSyncBatchLimit
 const businessSchemaName = 'juhe_business'
 
 export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKeyScheduleStatusSyncResult {

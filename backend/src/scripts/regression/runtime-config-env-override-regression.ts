@@ -24,6 +24,15 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.concurrency.globalMax, 4321, '全局共享并发上限应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.concurrency.globalLeaseDurationMs, 240000, '全局共享并发租约时长应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.concurrency.globalAcquirePollMs, 25, '全局共享并发槽轮询间隔应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.concurrency.defaultAccountLimit, 3456, '账户未配置并发时的默认容量应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.concurrency.accountSlotLeaseDurationMs, 120000, '账户并发槽租约应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.dbService.maxActiveRequests, 2345, 'DB service 在途请求容量应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.dbServiceHttpProxy.maxInFlight, 2100, 'DB service HTTP proxy 容量应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.dbServiceHttpProxy.chatMaxInFlight, 2200, '聊天 DB service HTTP proxy 容量应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit, 3456, '账户 API Key 尝试上限应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.gateway.dispatchAccountCandidateLimit, 3456, '调度候选账户窗口应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.auditPayloadBlobWriteConcurrency, 5, '审计 payload 异步写入并发应支持进程环境变量覆盖')
+  assert.equal(runtimeConfig.background.modelCheckTokenWorkerTargetSize, 5, '模型检测 Token worker 并发应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.upstreamAgentMaxSockets, 3456, 'HTTP Agent 单源连接容量应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.upstreamAgentMaxTotalSockets, 4567, 'HTTP Agent 总连接容量应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.automaticProbeSweepBatchSize, 80, '自动恢复探针扫描批次应支持进程环境变量覆盖')
@@ -39,7 +48,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.cacheDriver, 'memory', 'standalone 默认缓存 driver 应为 memory')
   assert.equal(runtimeConfig.runtimeStateDriver, 'memory', 'standalone 默认运行态 driver 应为 memory')
   assert.equal(runtimeConfig.queueDriver, 'memory', 'standalone 默认队列 driver 应为 memory')
-  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 64, 'standalone 默认 System API DB service 在途上限应为 64')
+  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 4321, 'standalone 默认 System API DB service 在途上限应跟随全局容量')
   assert.equal('readOnly' in runtimeConfig.systemApi, false, '运行时配置不得保留临时发布只读开关')
   assert.equal(runtimeConfig.chat.retentionDays, 3, '聊天数据默认应保留 3 天')
   assert.equal(runtimeConfig.chat.maxConversationsPerUser, 50, '每用户默认最多应创建 50 个会话')
@@ -117,7 +126,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
   const { runtimeConfig } = await import('../../config/runtime.js')
 
   assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能模式应读取为 performance')
-  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 256, 'performance 默认 System API DB service 在途上限应为 256')
+  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 5000, 'performance 默认 System API DB service 在途上限应跟随全局容量')
   assert.equal('readOnly' in runtimeConfig.systemApi, false, '正式环境不得保留临时发布拦截模式')
   assert.equal(runtimeConfig.postgres.statementTimeoutMs, 30000, 'performance 默认 PostgreSQL statement timeout 应为 30 秒')
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 2000, 'performance 默认 PostgreSQL lock timeout 应为 2 秒')
@@ -185,6 +194,15 @@ const result = spawnRegression({
   JUHE_AI_CONCURRENCY_GLOBAL_MAX: '4321',
   JUHE_AI_CONCURRENCY_GLOBAL_LEASE_DURATION_MS: '240000',
   JUHE_AI_CONCURRENCY_GLOBAL_ACQUIRE_POLL_MS: '25',
+  JUHE_AI_ACCOUNT_DEFAULT_CONCURRENCY_LIMIT: '3456',
+  JUHE_AI_ACCOUNT_SLOT_LEASE_DURATION_MS: '120000',
+  JUHE_AI_DB_SERVICE_MAX_ACTIVE_REQUESTS: '2345',
+  JUHE_AI_DB_SERVICE_HTTP_PROXY_MAX_IN_FLIGHT: '2100',
+  JUHE_AI_CHAT_DB_SERVICE_HTTP_PROXY_MAX_IN_FLIGHT: '2200',
+  JUHE_AI_GATEWAY_ACCOUNT_API_KEY_REQUEST_ATTEMPT_SAFETY_LIMIT: '3456',
+  JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT: '3456',
+  JUHE_AI_BACKGROUND_AUDIT_PAYLOAD_BLOB_WRITE_CONCURRENCY: '5',
+  JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_TARGET_SIZE: '5',
   JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS: '3456',
   JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS: '4567',
   JUHE_AI_GATEWAY_AUTOMATIC_PROBE_SWEEP_BATCH_SIZE: '80',
