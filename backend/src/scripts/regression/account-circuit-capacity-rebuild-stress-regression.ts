@@ -26,7 +26,19 @@ const recoverySource = source('../../modules/background/account-circuit-recovery
 
 const productionCapacity = 50_000
 assert.match(runtimeSource, /ACCOUNT_CIRCUIT_CAPACITY', 50_000, 1_000, 1_000_000/)
+assert.match(runtimeSource, /const globalConcurrencyMax = integerConfig\('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000\)/)
+assert.match(runtimeSource, /accountCircuitRecoveryBatchSize: integerConfig\('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_BATCH_SIZE', 200, 1, 2_000\)/)
 assert.match(gatewayCircuitSource, /gatewayAccountCircuitCapacity = runtimeConfig\.gateway\.accountCircuitCapacity/)
+assert.match(
+  recoverySource,
+  /const defaultRecoveryConcurrency = runtimeConfig\.concurrency\.globalMax/,
+  '账户电路恢复必须使用统一全局并发配置'
+)
+assert.match(
+  recoverySource,
+  /concurrency: runtimeConfig\.concurrency\.globalMax/,
+  '计划任务创建恢复服务时不得绕过统一全局并发配置'
+)
 assert.equal(
   (gatewayCircuitSource.match(/capacity: gatewayAccountCircuitCapacity/g) ?? []).length,
   2,
@@ -64,7 +76,7 @@ console.log(JSON.stringify({
     redisMaxEntriesPerLuaDueScan: 512,
     longOpenMaximumBaseBackoffMs: 900_000,
     recoveryBatchSize: 200,
-    recoveryConcurrency: 16,
+    recoveryConcurrencySource: 'JUHE_AI_CONCURRENCY_GLOBAL_MAX',
     minimumSecondsToTouchTenThousandDueScopesAtZeroProbeLatency: 250
   }
 }))
@@ -328,8 +340,7 @@ async function verifyLongOpenBackoffJitterAndRecoveryConcurrency(): Promise<void
   assert.equal((await service.sweep()).dueCount, 0)
   nowMs += 1
   assert.ok((await service.sweep()).dueCount < scopes.length, '最早到期时不得再次形成整池同步波次')
-  assert.match(recoverySource, /const defaultRecoveryBatchSize = 200/)
-  assert.match(runtimeSource, /ACCOUNT_CIRCUIT_RECOVERY_CONCURRENCY', 16, 1, 128/)
+  assert.match(recoverySource, /const defaultRecoveryBatchSize = runtimeConfig\.gateway\.accountCircuitRecoveryBatchSize/)
   assert.equal(Math.ceil(10_000 / 200) * 5_000, 250_000, '10k 到期 scope 零探针延迟触达上限应降到 250 秒')
 }
 
