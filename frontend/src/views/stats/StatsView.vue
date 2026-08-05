@@ -123,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
@@ -234,6 +234,7 @@ const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, load
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
+  invalidate: invalidateSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -272,8 +273,7 @@ const chartRequestSeq = { hourlyTrend: 0, modelDistribution: 0, errors: 0 }
 const chartSectionResolved = { hourlyTrend: false, modelDistribution: false, errors: false }
 let dailyTrendResolved = false
 let chartObserver: IntersectionObserver | undefined
-let reloadOnActivate = false
-let wasDeactivated = false
+let initialLoadInterrupted = false
 let disposed = false
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
@@ -512,7 +512,7 @@ onMounted(async () => {
   setupChartObservers()
 })
 
-function setupChartObservers(): void {
+function setupChartObservers(loadWhenObserverUnavailable = true): void {
   chartObserver?.disconnect()
   if (disposed || !pageActive.value) return
   const targets: Array<[HTMLDivElement | undefined, StatsObservedSection]> = [
@@ -521,8 +521,14 @@ function setupChartObservers(): void {
     [modelDistributionSectionRef.value, 'modelDistribution'],
     [errorSectionRef.value, 'errors']
   ]
+  const pendingTargets = targets.filter(([, section]) => !isSectionLoaded(section))
+  if (!pendingTargets.length) {
+    renderCharts()
+    return
+  }
   if (typeof IntersectionObserver === 'undefined') {
-    for (const [, section] of targets) {
+    if (!loadWhenObserverUnavailable) return
+    for (const [, section] of pendingTargets) {
       markSectionLoaded(section)
       if (section === 'dailyTrend') void loadDailyTrend()
       else void loadChartSection(section)
@@ -533,7 +539,7 @@ function setupChartObservers(): void {
     if (disposed || !pageActive.value) return
     for (const entry of entries) {
       if (!entry.isIntersecting) continue
-      const section = targets.find(([element]) => element === entry.target)?.[1]
+      const section = pendingTargets.find(([element]) => element === entry.target)?.[1]
       if (!section) continue
       markSectionLoaded(section)
       chartObserver?.unobserve(entry.target)
@@ -541,7 +547,7 @@ function setupChartObservers(): void {
       else void loadChartSection(section)
     }
   }, { rootMargin: '240px 0px' })
-  for (const [element] of targets) {
+  for (const [element] of pendingTargets) {
     if (element) chartObserver.observe(element)
   }
 }
@@ -566,12 +572,24 @@ function invalidateStatsRequests(): void {
 }
 
 function handlePageDeactivate(): void {
-  reloadOnActivate = loading.value || summaryLoading.value || dailyTrendLoading.value || usageTrendLoading.value || modelDistributionLoading.value || errorsLoading.value
-  wasDeactivated = true
+  if (!usageOverview.value && (loading.value || summaryLoading.value || dailyTrendLoading.value || usageTrendLoading.value || modelDistributionLoading.value || errorsLoading.value)) {
+    initialLoadInterrupted = true
+  }
   invalidateStatsRequests()
   chartObserver?.disconnect()
   chartObserver = undefined
 }
+
+onActivated(() => {
+  if (initialLoadInterrupted && !usageOverview.value) {
+    initialLoadInterrupted = false
+    void loadData({ forceUsageWindow: isDynamicRangeMode(rangeMode.value) }).finally(() => {
+      if (!disposed && pageActive.value) setupChartObservers(false)
+    })
+    return
+  }
+  setupChartObservers(false)
+})
 
 type StatsObservedSection = 'dailyTrend' | StatsChartSection
 
@@ -580,6 +598,13 @@ function markSectionLoaded(section: StatsObservedSection): void {
   else if (section === 'hourlyTrend') usageTrendLoaded.value = true
   else if (section === 'modelDistribution') modelDistributionLoaded.value = true
   else errorsLoaded.value = true
+}
+
+function isSectionLoaded(section: StatsObservedSection): boolean {
+  if (section === 'dailyTrend') return dailyTrendLoaded.value
+  if (section === 'hourlyTrend') return usageTrendLoaded.value
+  if (section === 'modelDistribution') return modelDistributionLoaded.value
+  return errorsLoaded.value
 }
 
 function handleDateRangeChange() {
@@ -779,19 +804,26 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(() => authState.revision.value, () => {
-  if (pageActive.value) void loadData()
-  else reloadOnActivate = true
-})
-watch(pageActive, async (active) => {
-  if (!active) return
-  if (!wasDeactivated) return
-  wasDeactivated = false
-  if (reloadOnActivate) {
-    reloadOnActivate = false
-    await loadData({ forceUsageWindow: isDynamicRangeMode(rangeMode.value) })
-  }
-  await nextTick()
-  setupChartObservers()
+  invalidateStatsRequests()
+  invalidateSystemAccountOptions()
+  chartObserver?.disconnect()
+  chartObserver = undefined
+  initialLoadInterrupted = false
+  usageOverview.value = undefined
+  dailyTrend.value = undefined
+  dailyTrendResolved = false
+  chartSectionResolved.hourlyTrend = false
+  chartSectionResolved.modelDistribution = false
+  chartSectionResolved.errors = false
+  summaryError.value = ''
+  dailyTrendError.value = ''
+  usageTrendError.value = ''
+  modelDistributionError.value = ''
+  errorsError.value = ''
+  systemAccounts.value = []
+  selectedSystemAccountId.value = allSystemAccountsValue
+  selectedSystemAccount.value = undefined
+  resetSystemAccountOptionsSearch()
 })
 
 onBeforeUnmount(() => {

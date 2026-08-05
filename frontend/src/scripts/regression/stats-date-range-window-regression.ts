@@ -185,7 +185,7 @@ assert.match(statsViewSource, /function isDynamicRangeMode\(value: RangeMode\): 
 assert.match(statsViewSource, /function refreshData\(\): void \{[\s\S]*force: true,[\s\S]*forceUsageWindow: isDynamicRangeMode\(rangeMode\.value\)/, 'stats overview manual refresh must update dynamic date windows')
 assert.match(statsViewSource, /<a-button\b(?=[^>]*\s:loading="loading")(?=[^>]*\s@click="refreshData")[^>]*>/, 'stats overview refresh button must invoke manual refresh while loading state is wired')
 
-assert.match(systemMetricsViewSource, /document\.addEventListener\('visibilitychange', handleDynamicRangeVisibilityChange\)/, 'system metrics must refresh dynamic ranges when returning to a visible tab')
-assert.match(systemMetricsViewSource, /window\.addEventListener\('focus', refreshDynamicRangeAfterRollover\)/, 'system metrics must refresh dynamic ranges on window focus')
-assert.match(systemMetricsViewSource, /millisecondsUntilNextStatsDay[\s\S]*dynamicRangeRolloverTimer = window\.setTimeout/, 'system metrics must schedule the next server-timezone day boundary')
-assert.match(systemMetricsViewSource, /forceUsageWindow: true/, 'system metrics dynamic lifecycle must force-refresh the server usage window')
+assert.doesNotMatch(systemMetricsViewSource, /visibilitychange|window\.addEventListener\('focus'|millisecondsUntilNextStatsDay|dynamicRangeRolloverTimer/, 'system metrics must not refresh loaded data from visibility, focus, or date-boundary lifecycle events')
+const systemMetricsActivatedSource = systemMetricsViewSource.match(/onActivated\(async \(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+assert.match(systemMetricsActivatedSource, /setupRuntimeObservers\(\)/, 'system metrics KeepAlive activation must restore runtime observation')
+assert.doesNotMatch(systemMetricsActivatedSource, /loadPageData|loadUsageStatsWindow|forceUsageWindow/, 'system metrics KeepAlive activation must not request business data')

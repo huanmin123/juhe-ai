@@ -149,6 +149,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           compression_saved_bytes INTEGER NOT NULL DEFAULT 0,
           error_group_id TEXT,
           capture_status TEXT NOT NULL DEFAULT 'complete',
+          lifecycle_status TEXT NOT NULL DEFAULT 'finalized',
           started_at TEXT NOT NULL,
           ended_at TEXT NOT NULL,
           duration_ms INTEGER,
@@ -217,6 +218,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           raw_size_bytes INTEGER NOT NULL DEFAULT 0,
           compressed_size_bytes INTEGER NOT NULL DEFAULT 0,
           capture_status TEXT NOT NULL DEFAULT 'complete',
+          drop_reason TEXT,
           created_at TEXT NOT NULL,
           FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE,
           FOREIGN KEY (attempt_id) REFERENCES audit_log_attempts(id) ON DELETE SET NULL,
@@ -590,7 +592,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_record_cleanup_targets_attempt ON account_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, account_id);
 
   `)
-  if (ensureAuditLogSessionIdentityColumns(database)) {
+  if (ensureAuditLogColumns(database)) {
     database.exec(`
       CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created
         ON audit_logs(session_id, created_at, id, session_client_type)
@@ -607,7 +609,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
   `)
 }
 
-function ensureAuditLogSessionIdentityColumns(database: DatabaseSync): boolean {
+function ensureAuditLogColumns(database: DatabaseSync): boolean {
   const columnRows = database.prepare('PRAGMA table_info(audit_logs)').all() as Array<{ name?: string }>
   if (columnRows.length === 0) return false
   const existingColumns = new Set(
@@ -618,12 +620,19 @@ function ensureAuditLogSessionIdentityColumns(database: DatabaseSync): boolean {
   const requiredColumns = [
     ['conversation_key', 'TEXT'],
     ['session_id', 'TEXT'],
-    ['session_client_type', 'TEXT']
+    ['session_client_type', 'TEXT'],
+    ["lifecycle_status", "TEXT NOT NULL DEFAULT 'finalized'"],
+    ['drop_reason', 'TEXT', 'audit_payload_refs']
   ] as const
 
-  for (const [name, type] of requiredColumns) {
-    if (existingColumns.has(name)) continue
-    database.exec(`ALTER TABLE audit_logs ADD COLUMN ${name} ${type}`)
+  for (const [name, type, tableName = 'audit_logs'] of requiredColumns) {
+    const columns = tableName === 'audit_logs'
+      ? existingColumns
+      : new Set((database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>)
+        .map((column) => column.name)
+        .filter((column): column is string => Boolean(column)))
+    if (columns.has(name)) continue
+    database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${name} ${type}`)
   }
   return true
 }

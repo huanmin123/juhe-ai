@@ -103,6 +103,8 @@ try {
   })
   gatewayCache.clearGatewayRuntimeCache()
 
+  assertAuditInProgressLifecycleUpsertsToTerminal()
+
   const upstreamServer = createMockOpenAIUpstream()
   await listen(upstreamServer)
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
@@ -168,6 +170,50 @@ async function assertHotRetainedNonStreamSuccess(gatewayBaseUrl: string, upstrea
   await assertPayloadBodyEquals(detail, 'gateway_response', nonStreamSuccessBody)
   await assertPayloadBodyContains(detail, 'client_request', 'audit non stream success')
   await assertPayloadBodyContains(detail, 'upstream_request', 'audit non stream success')
+}
+
+function assertAuditInProgressLifecycleUpsertsToTerminal(): void {
+  const timestamp = new Date().toISOString()
+  const id = 'audit-lifecycle-upsert-regression'
+  const traceId = 'trace-audit-lifecycle-upsert-regression'
+  const base = {
+    id,
+    traceId,
+    trafficSource: 'gateway' as const,
+    method: 'POST',
+    path: '/v1/responses',
+    sampleBucket: 0,
+    startedAt: timestamp,
+    endedAt: timestamp,
+    attempts: [],
+    payloads: []
+  }
+  repositories.createAuditLogsBatch([
+    {
+      ...base,
+      lifecycleStatus: 'in_progress',
+      auditOutcome: 'gateway_succeeded',
+      success: true,
+      sampleReason: 'in_progress',
+      captureStatus: 'metadata_only'
+    },
+    {
+      ...base,
+      lifecycleStatus: 'finalized',
+      auditOutcome: 'stream_failed',
+      success: false,
+      finalStatusCode: 200,
+      errorCode: 'thinking_signature_invalid',
+      errorMessage: 'Encrypted function output content could not be decrypted or decoded.',
+      sampleReason: 'full_capture',
+      captureStatus: 'complete'
+    }
+  ])
+  const list = repositories.listAuditLogs({ traceId, pageSize: 10 })
+  assert.equal(list.total, 1, '进行中占位和终态必须收敛为同一条审计记录')
+  assert.equal(list.items[0]?.lifecycleStatus, 'finalized', '终态必须覆盖进行中占位')
+  const detail = repositories.getAuditLogDetail(id)
+  assert.equal(detail?.errorCode, 'thinking_signature_invalid', '终态覆盖后必须保留具体上游错误码')
 }
 
 async function assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -261,9 +307,18 @@ async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseU
   assert.match(text, /upstream_retryable_error/, '普通客户端预输出流失败应返回稳定可重试错误码')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'upstream_failed', '客户端尚未收到流数据的失败应写入 upstream_failed 审计')
-  await assertPayloadBodyContains(detail, 'upstream_response', 'response.failed')
+  assert.equal(detail.auditOutcome, 'stream_failed', '上游 SSE 失败应写入 stream_failed 审计')
+  assert.equal(detail.errorCode, 'thinking_signature_invalid', '审计必须保留上游 SSE error code')
+  assert.equal(detail.errorMessage, 'Encrypted function output content could not be decrypted or decoded.', '审计必须保留上游 SSE error message')
+  await assertPayloadBodyContains(detail, 'upstream_response', 'thinking_signature_invalid')
   await assertPayloadBodyEquals(detail, 'gateway_error', text)
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  const usage = repositories.listUsageRecords(access, { traceId, pageSize: 10 })
+  assert.equal(usage.total, 1, `trace ${traceId} 应有一条使用记录，实际 ${usage.total}`)
+  assert.equal(usage.items[0]?.success, false, '使用记录必须标记 SSE 失败')
+  assert.equal(usage.items[0]?.errorCode, 'thinking_signature_invalid', '使用记录必须保留上游 SSE error code')
+  assert.equal(usage.items[0]?.errorMessage, 'Encrypted function output content could not be decrypted or decoded.', '使用记录必须保留上游 SSE error message')
 }
 
 async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -283,12 +338,21 @@ async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayB
   assert.equal(response.status, 200, `图像增量已经提交后应保持 SSE 200 并正常结束，实际 ${response.status}: ${text}`)
   assert.match(text, /partial_image_b64/, '客户端应收到已经提交的图片增量')
   assert.match(text, /response\.failed/, '图片增量后失败应补发标准 Responses 失败终态')
-  assert.match(text, /upstream_retryable_error/, '图片增量后失败应返回稳定可重试错误码')
+  assert.match(text, /thinking_signature_invalid/, '图片增量后的失败终态必须保留上游 SSE error code')
 
   const detail = auditDetailByTrace(traceId)
   assert.equal(detail.auditOutcome, 'stream_failed', '客户端已收到图像增量后的失败应写入 stream_failed 审计')
+  assert.equal(detail.errorCode, 'thinking_signature_invalid', '已提交流的审计必须保留上游 SSE error code')
+  assert.equal(detail.errorMessage, 'Encrypted function output content could not be decrypted or decoded.', '已提交流的审计必须保留上游 SSE error message')
   await assertPayloadBodyContains(detail, 'client_request', 'audit image stream failure should keep request payload')
   await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream failure should keep request payload')
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  const usage = repositories.listUsageRecords(access, { traceId, pageSize: 10 })
+  assert.equal(usage.total, 1, `trace ${traceId} 应有一条使用记录，实际 ${usage.total}`)
+  assert.equal(usage.items[0]?.success, false, '已提交流的使用记录必须标记失败')
+  assert.equal(usage.items[0]?.errorCode, 'thinking_signature_invalid', '已提交流的使用记录必须保留上游 SSE error code')
+  assert.equal(usage.items[0]?.errorMessage, 'Encrypted function output content could not be decrypted or decoded.', '已提交流的使用记录必须保留上游 SSE error message')
 }
 
 async function assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -514,12 +578,11 @@ function sendStreamFailure(res: http.ServerResponse): void {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache'
   })
-  res.write(`event: response.failed\ndata: ${JSON.stringify({
-    type: 'response.failed',
-    response: {
-      status: 'failed',
-      error: { message: 'mock stream failed for audit storage', code: 'audit_stream_failed' }
-    }
+  res.write(`event: error\ndata: ${JSON.stringify({
+    type: 'error',
+    code: 'thinking_signature_invalid',
+    message: 'Encrypted function output content could not be decrypted or decoded.',
+    sequence_number: 0
   })}\n\n`)
   res.end()
 }
@@ -561,14 +624,17 @@ function sendImageStreamFailure(res: http.ServerResponse): void {
     type: 'response.image_generation_call.partial_image',
     partial_image_b64: 'aW1hZ2UtYXVkaXQtZmFpbHVyZQ=='
   })}\n\n`)
-  res.write(`event: response.failed\ndata: ${JSON.stringify({
-    type: 'response.failed',
-    response: {
-      status: 'failed',
-      error: { message: 'mock image stream failed for audit storage', code: 'audit_image_stream_failed' }
-    }
-  })}\n\n`)
-  res.end()
+  // Separate the failure from the image delta so the gateway crosses its
+  // downstream-commit boundary before the terminal failure is received.
+  setTimeout(() => {
+    res.write(`event: error\ndata: ${JSON.stringify({
+      type: 'error',
+      code: 'thinking_signature_invalid',
+      message: 'Encrypted function output content could not be decrypted or decoded.',
+      sequence_number: 0
+    })}\n\n`)
+    res.end()
+  }, 25)
 }
 
 function auditDetailByTrace(traceId: string): NonNullable<ReturnType<typeof repositories.getAuditLogDetail>> {

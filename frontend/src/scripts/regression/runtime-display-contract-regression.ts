@@ -87,7 +87,7 @@ assert.equal(backgroundJobStatusText(backgroundJobState({ leaseState: 'lost' }))
 assert.equal(backgroundJobStatusColor(backgroundJobState({ leaseState: 'lost' })), 'error')
 assert.equal(backgroundJobStatusText(backgroundJobState({ lastOutcome: 'timeout' })), '上次超时')
 
-await testAccountBalancePartialAndRecoveryAcrossRuntimeDto()
+await testAccountBalanceTimeoutIsSuccessfulAcrossRuntimeDto()
 
 assert.equal(auditLogEmptyDescription(undefined), '暂无审计日志。')
 assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 6, successSampleRate: 0.025 })), /最近 6 小时.*2\.5%/)
@@ -148,7 +148,7 @@ assert(!queuesCardSource.includes("{ title: '已完成', key: 'completedCount'")
 
 console.log('运行状态展示契约回归通过：RFC3339Nano、任务失败、队列历史失败和审计动态空态符合预期')
 
-async function testAccountBalancePartialAndRecoveryAcrossRuntimeDto(): Promise<void> {
+async function testAccountBalanceTimeoutIsSuccessfulAcrossRuntimeDto(): Promise<void> {
   const scheduler = new WorkerScheduler()
   let refreshAttempt = 0
   const neverSettles = new Promise<never>(() => undefined)
@@ -182,23 +182,14 @@ async function testAccountBalancePartialAndRecoveryAcrossRuntimeDto(): Promise<v
     })
   })
   try {
-    await waitFor(() => scheduler.snapshots()[0]?.partialCount === 1)
-    const partialDto = systemMetricsJobDto(scheduler.snapshots()[0]!)
-    const partialRow = partialDto.backgroundJobs![0]!
-    assert.equal(partialRow.name, 'account-balance-refresh')
-    assert.equal(partialRow.failureCount, 0, '候选超时经 system-metrics DTO 后不能变成整项失败')
-    assert.equal(partialRow.partialCount, 1)
-    assert.equal(backgroundJobStatusText(partialRow), '部分失败')
-    assert.equal(backgroundJobStatusColor(partialRow), 'warning')
-
     await waitFor(() => scheduler.snapshots()[0]?.successCount === 1)
-    const recoveredDto = systemMetricsJobDto(scheduler.snapshots()[0]!)
-    const recoveredRow = recoveredDto.backgroundJobs![0]!
-    assert.equal(recoveredRow.lastWarning, undefined, '完整成功后 DTO 不应保留当前部分失败原因')
-    assert.ok(recoveredRow.lastWarningAt, 'DTO 必须保留历史部分失败时间用于识别恢复')
-    assert.ok(recoveredRow.lastSuccessAt)
-    assert.equal(backgroundJobStatusText(recoveredRow), '已恢复')
-    assert.equal(backgroundJobStatusColor(recoveredRow), 'success')
+    const successDto = systemMetricsJobDto(scheduler.snapshots()[0]!)
+    const successRow = successDto.backgroundJobs![0]!
+    assert.equal(successRow.name, 'account-balance-refresh')
+    assert.equal(successRow.failureCount, 0, '候选超时经 system-metrics DTO 后不能变成整项失败')
+    assert.equal(successRow.partialCount, 0, '候选超时经 system-metrics DTO 后不能变成部分失败')
+    assert.equal(successRow.lastWarning, undefined, '账户级余额诊断不得写入任务警告')
+    assert.ok(successRow.lastSuccessAt)
   } finally {
     scheduler.stop()
   }

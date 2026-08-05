@@ -202,7 +202,6 @@ let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
 let pageActive = true
-let pageWasDeactivated = false
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -224,6 +223,7 @@ const routeStrategyFilter = computed({
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
+  invalidate: invalidateSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -249,6 +249,7 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
+  invalidatePendingLoads,
   loadData,
   loadMoreMobile: loadMoreMobileApiKeys,
   removeItems: removeApiKeyItems,
@@ -623,24 +624,27 @@ onBeforeUnmount(() => {
 
 onDeactivated(() => {
   pageActive = false
-  pageWasDeactivated = true
+  invalidatePendingLoads()
 })
 
 onActivated(() => {
   pageActive = true
-  if (!pageWasDeactivated) return
-  pageWasDeactivated = false
-  resetPagination()
-  void loadData({ quiet: true })
 })
 
 watch(() => authState.revision.value, () => {
-  if (pageActive) {
-    resetPagination()
-    void loadData({ quiet: true })
-  } else {
-    pageWasDeactivated = true
-  }
+  const defaults = defaultApiKeysPageState(pageSize)
+  invalidateSystemAccountOptions()
+  invalidatePendingLoads()
+  apiKeys.value = []
+  keywordFilter.value = defaults.keywordFilter
+  statusFilter.value = defaults.statusFilter
+  routeStrategyFilterSelection.value = defaults.routeStrategyFilter
+  systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
+  systemAccounts.value = []
+  resetSystemAccountOptionsSearch()
+  resetRouteStrategyOptionsSearch(true)
+  resetPagination()
 })
 
 onMounted(loadData)

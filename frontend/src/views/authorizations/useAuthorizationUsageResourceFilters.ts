@@ -77,29 +77,42 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       try {
         const resourceType: 'account' | 'group' = filters.resourceType === 'account' ? 'account' : 'group'
         const result = resourceType === 'account'
-          ? await ensureSelectedAccountOption(
-              isManagementView.value
-                ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
-                : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit }),
-              filters.resourceId,
-              ownerSystemAccountId,
-              isManagementView.value
-            )
-          : await ensureSelectedGroupOption(
-              isManagementView.value
-                ? await api.groups.authorizationOptions({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
-                : await api.myGroups.authorizationOptions({ keyword: normalizedKeyword, limit: resourceOptionLimit }),
-              filters.resourceId,
-              ownerSystemAccountId,
-              isManagementView.value
-            )
+          ? await loadAccountOptions()
+          : await loadGroupOptions()
+        if (currentRequestId !== requestId) return
         applyResourceOptions(resourceType, result, currentRequestId)
+
+        async function loadAccountOptions(): Promise<AccountOptionSummary[]> {
+          const baseOptions = await (isManagementView.value
+              ? api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+              : api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit }))
+          if (currentRequestId !== requestId) return []
+          return await ensureSelectedAccountOption(
+            baseOptions,
+            filters.resourceId,
+            ownerSystemAccountId,
+            isManagementView.value
+          )
+        }
+
+        async function loadGroupOptions(): Promise<GroupOptionSummary[]> {
+          const baseOptions = await (isManagementView.value
+              ? api.groups.authorizationOptions({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+              : api.myGroups.authorizationOptions({ keyword: normalizedKeyword, limit: resourceOptionLimit }))
+          if (currentRequestId !== requestId) return []
+          return await ensureSelectedGroupOption(
+            baseOptions,
+            filters.resourceId,
+            ownerSystemAccountId,
+            isManagementView.value
+          )
+        }
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
         message.error(filters.resourceType === 'account' ? '加载 AI 账户失败' : '加载分组失败')
       } finally {
-        if (loadingKey === requestKey) {
+        if (currentRequestId === requestId && loadingKey === requestKey) {
           loadingKey = undefined
           loadingPromise = undefined
         }
@@ -157,6 +170,16 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     clearSearchTimer()
   }
 
+  function invalidate(): void {
+    clearSearchTimer()
+    requestId += 1
+    loadingKey = undefined
+    loadingPromise = undefined
+    resourceOptionsLoading.value = false
+    accounts.value = []
+    groups.value = []
+  }
+
   function syncResourceGroup(nextGroups = groups.value): void {
     if (filters.resourceType !== 'group') {
       filters.resourceGroup = undefined
@@ -182,7 +205,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     return (resource.ownerSystemAccountId ?? resource.systemAccountId) === ownerSystemAccountId
   }
 
-  onBeforeUnmount(clearSearchTimer)
+  onBeforeUnmount(invalidate)
 
   return {
     isManagementView,
@@ -195,6 +218,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     resourceOptionsLoading,
     handleResourceOptionsDropdown,
     handleResourceOptionsSearch,
+    invalidate,
     loadAuthorizableResourceOptions,
     resetResourceId,
     resetResourceOptionsSearch

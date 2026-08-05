@@ -421,7 +421,6 @@ let sectionObserver: IntersectionObserver | undefined
 const sectionRequestGate = createSettingsSectionRequestGate()
 const sectionSaveRequestGate = createSettingsSectionRequestGate()
 let pageActive = true
-let hasActivated = false
 let viewerKey = currentViewerKey()
 
 function sectionValues(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
@@ -569,17 +568,6 @@ function setLazySectionElement(element: unknown, sectionKey: ManagementSettingsS
 
 function retrySection(sectionKey: ManagementSettingsSectionKey): void { void loadSection(sectionKey, true) }
 
-function reloadVisibleSections(): void {
-  const sections = new Set<ManagementSettingsSectionKey>(['brand', 'gateway-core'])
-  for (const key of Object.keys(sectionReady) as ManagementSettingsSectionKey[]) {
-    if (sectionReady[key]) sections.add(key)
-  }
-  for (const key of sections) {
-    sectionLoading[key] = false
-    void loadSection(key, true)
-  }
-}
-
 function resetSectionsForViewerChange(): void {
   Object.assign(globalForm, defaultGlobalSettings)
   Object.assign(systemForm, defaultSystemSettings)
@@ -639,12 +627,8 @@ watch(() => authState.revision.value, () => {
   savingGlobal.value = false
   savingSystem.value = false
   for (const key of Object.keys(sectionLoading) as ManagementSettingsSectionKey[]) sectionLoading[key] = false
-  const nextViewerKey = currentViewerKey()
-  if (nextViewerKey !== viewerKey) {
-    viewerKey = nextViewerKey
-    resetSectionsForViewerChange()
-  }
-  if (pageActive) reloadVisibleSections()
+  viewerKey = currentViewerKey()
+  resetSectionsForViewerChange()
 })
 
 onDeactivated(() => {
@@ -657,14 +641,9 @@ onDeactivated(() => {
 })
 
 onActivated(() => {
-  if (!hasActivated) {
-    hasActivated = true
-    return
-  }
   pageActive = true
   sectionRequestGate.activate()
   sectionSaveRequestGate.activate()
-  reloadVisibleSections()
 })
 
 onBeforeUnmount(() => {

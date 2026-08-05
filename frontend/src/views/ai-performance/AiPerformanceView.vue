@@ -120,7 +120,6 @@ const seriesError = ref('')
 const resolvedSeriesAccountIds = new Set<string>()
 const performanceRequestGate = createAiPerformanceRequestGate()
 let contextRequestSeq = 0
-let reloadAfterActivate = false
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -162,13 +161,13 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
     invalidateAccountOptions()
     invalidateSystemAccountOptions()
     disconnectChartObserver()
-    deactivatePerformanceRequests(true)
+    deactivatePerformanceRequests()
   },
   onBeforeUnmount: () => {
     clearAccountSearchTimer()
     invalidateSystemAccountOptions()
     disconnectChartObserver()
-    deactivatePerformanceRequests(false)
+    deactivatePerformanceRequests()
   }
 })
 
@@ -645,10 +644,8 @@ function invalidatePerformanceRequests() {
   renderCharts()
 }
 
-function deactivatePerformanceRequests(shouldReloadOnActivate: boolean) {
-  const hadInflightRequest = contextLoading.value || baseLoading.value || seriesLoading.value
+function deactivatePerformanceRequests() {
   contextRequestSeq += 1
-  reloadAfterActivate = shouldReloadOnActivate && hadInflightRequest
   performanceRequestGate.deactivate()
   contextLoading.value = false
   baseLoading.value = false
@@ -664,20 +661,20 @@ function dedupeById<T>(items: T[], idFor: (item: T) => string): T[] {
 onActivated(() => {
   performanceRequestGate.activate()
   void nextTick(setupChartObserver)
-  if (!reloadAfterActivate) return
-  reloadAfterActivate = false
-  void loadPerformanceContext()
 })
 
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(() => authState.revision.value, () => {
   invalidateAccountOptions()
-  if (!pageActive.value) {
-    reloadAfterActivate = true
-    return
-  }
-  void loadPerformanceContext()
+  invalidateSystemAccountOptions()
+  contextRequestSeq += 1
+  contextLoading.value = false
+  invalidatePerformanceRequests()
+  systemAccounts.value = []
+  selectedSystemAccountId.value = allSystemAccountsValue
+  selectedSystemAccount.value = undefined
+  resetSystemAccountOptionsSearch()
 })
 </script>
 

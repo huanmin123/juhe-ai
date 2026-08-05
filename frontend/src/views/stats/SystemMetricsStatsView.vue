@@ -227,6 +227,7 @@ const backgroundJobPage = ref(1)
 const backgroundQueuePageSize = 10
 const backgroundQueuePage = ref(1)
 let requestSeq = 0
+let pageLoadGeneration = 0
 let runtimeSummaryRequestSeq = 0
 let backgroundJobsRequestSeq = 0
 let backgroundQueuesRequestSeq = 0
@@ -235,13 +236,9 @@ let runtimeSummaryAbortController: AbortController | undefined
 let backgroundJobsAbortController: AbortController | undefined
 let backgroundQueuesAbortController: AbortController | undefined
 let runtimeSummaryPromise: Promise<void> | undefined
-let needsReloadOnActivate = false
 let backgroundJobsObserver: IntersectionObserver | undefined
 let backgroundQueuesObserver: IntersectionObserver | undefined
 let disposed = false
-let dynamicRangeLifecycleActive = false
-let dynamicRangeRolloverTimer: ReturnType<typeof window.setTimeout> | undefined
-let dynamicRangeRefreshPromise: Promise<void> | undefined
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderSystemCharts,
@@ -258,6 +255,7 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
     backgroundJobsAbortController = undefined
     backgroundQueuesAbortController = undefined
     runtimeSummaryPromise = undefined
+    pageLoadGeneration += 1
     requestSeq += 1
     runtimeSummaryRequestSeq += 1
     backgroundJobsRequestSeq += 1
@@ -265,7 +263,6 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
     loading.value = false
     backgroundJobsLoading.value = false
     backgroundQueuesLoading.value = false
-    needsReloadOnActivate = true
     disconnectRuntimeObservers()
   }
 })
@@ -274,17 +271,9 @@ onMounted(async () => {
   disposed = false
   await nextTick()
   setupRuntimeObservers()
-  activateDynamicRangeLifecycle()
 })
 
 onActivated(async () => {
-  activateDynamicRangeLifecycle()
-  if (needsReloadOnActivate) {
-    needsReloadOnActivate = false
-    void loadPageData({ forceUsageWindow: isDynamicRangeMode(rangeMode.value) })
-  } else if (isDynamicRangeMode(rangeMode.value)) {
-    void refreshDynamicRangeAfterRollover()
-  }
   await nextTick()
   setupRuntimeObservers()
 })
@@ -395,11 +384,14 @@ async function loadData() {
 }
 
 async function loadPageData(options: { forceUsageWindow?: boolean } = {}) {
+  const currentPageLoadGeneration = ++pageLoadGeneration
   const windowLoad = loadUsageStatsWindow({ force: options.forceUsageWindow === true, viewScope: 'admin' })
   if (isDynamicRangeMode(rangeMode.value)) {
     await windowLoad
+    if (currentPageLoadGeneration !== pageLoadGeneration) return
     syncDynamicDateRangeToStatsWindow()
   }
+  if (currentPageLoadGeneration !== pageLoadGeneration) return
   if (backgroundJobsSectionLoaded.value) void loadBackgroundJobs()
   if (backgroundQueuesSectionLoaded.value) void loadBackgroundQueues()
   return loadData()
@@ -685,86 +677,6 @@ function quickRangeDateRange(value: QuickRange): [Dayjs, Dayjs] | undefined {
   return [end.subtract((usageStatsWindowMaxDays.value || MAX_RANGE_DAYS) - 1, 'day'), end]
 }
 
-function statsDateKey(value: Date): string | undefined {
-  const timezone = usageStatsWindow.value?.timezone
-  if (!timezone) return undefined
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).formatToParts(value)
-    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value
-    const year = part('year')
-    const month = part('month')
-    const day = part('day')
-    return year && month && day ? `${year}-${month}-${day}` : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function millisecondsUntilNextStatsDay(now: Date): number | undefined {
-  const currentKey = statsDateKey(now)
-  if (!currentKey) return undefined
-  let low = now.getTime()
-  let high = low + 30 * 60 * 60 * 1000
-  while (high - low > 1000) {
-    const middle = low + Math.floor((high - low) / 2)
-    if (statsDateKey(new Date(middle)) === currentKey) low = middle
-    else high = middle
-  }
-  return Math.max(0, high - now.getTime())
-}
-
-function clearDynamicRangeRolloverTimer(): void {
-  if (dynamicRangeRolloverTimer === undefined) return
-  window.clearTimeout(dynamicRangeRolloverTimer)
-  dynamicRangeRolloverTimer = undefined
-}
-
-function scheduleDynamicRangeRollover(): void {
-  clearDynamicRangeRolloverTimer()
-  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
-  const delay = millisecondsUntilNextStatsDay(new Date())
-  if (delay === undefined) return
-  dynamicRangeRolloverTimer = window.setTimeout(() => {
-    void refreshDynamicRangeAfterRollover()
-  }, delay + 100)
-}
-
-async function refreshDynamicRangeAfterRollover(): Promise<void> {
-  if (!dynamicRangeLifecycleActive || !isDynamicRangeMode(rangeMode.value)) return
-  if (dynamicRangeRefreshPromise) return dynamicRangeRefreshPromise
-  dynamicRangeRefreshPromise = loadPageData({ forceUsageWindow: true }).finally(() => {
-    dynamicRangeRefreshPromise = undefined
-    scheduleDynamicRangeRollover()
-  })
-  return dynamicRangeRefreshPromise
-}
-
-function handleDynamicRangeVisibilityChange(): void {
-  if (document.visibilityState === 'visible') void refreshDynamicRangeAfterRollover()
-}
-
-function activateDynamicRangeLifecycle(): void {
-  if (dynamicRangeLifecycleActive) return
-  dynamicRangeLifecycleActive = true
-  document.addEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
-  window.addEventListener('focus', refreshDynamicRangeAfterRollover)
-  void refreshDynamicRangeAfterRollover()
-}
-
-function deactivateDynamicRangeLifecycle(): void {
-  if (dynamicRangeLifecycleActive) {
-    dynamicRangeLifecycleActive = false
-    document.removeEventListener('visibilitychange', handleDynamicRangeVisibilityChange)
-    window.removeEventListener('focus', refreshDynamicRangeAfterRollover)
-  }
-  clearDynamicRangeRolloverTimer()
-}
-
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
   return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
@@ -792,6 +704,7 @@ watch(() => authState.revision.value, () => {
   backgroundJobsAbortController = undefined
   backgroundQueuesAbortController = undefined
   runtimeSummaryPromise = undefined
+  pageLoadGeneration += 1
   requestSeq += 1
   runtimeSummaryRequestSeq += 1
   backgroundJobsRequestSeq += 1
@@ -807,26 +720,18 @@ watch(() => authState.revision.value, () => {
   runtimeSummaryError.value = ''
   backgroundJobsError.value = ''
   backgroundQueuesError.value = ''
-  if (pageActive.value) {
-    void loadPageData()
-    void nextTick().then(setupRuntimeObservers)
-  } else {
-    needsReloadOnActivate = true
-  }
-})
-watch(rangeMode, scheduleDynamicRangeRollover)
-watch(pageActive, (active) => {
-  if (!active) deactivateDynamicRangeLifecycle()
 })
 watch(() => backgroundJobsResult.value?.total, (total) => {
-  const maxPage = Math.max(1, Math.ceil((total ?? 0) / backgroundJobPageSize))
+  if (typeof total !== 'number' || !Number.isFinite(total) || total < 0) return
+  const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
   if (backgroundJobPage.value > maxPage) {
     backgroundJobPage.value = maxPage
     void loadBackgroundJobs()
   }
 })
 watch(() => backgroundQueuesResult.value?.total, (total) => {
-  const maxPage = Math.max(1, Math.ceil((total ?? 0) / backgroundQueuePageSize))
+  if (typeof total !== 'number' || !Number.isFinite(total) || total < 0) return
+  const maxPage = Math.max(1, Math.ceil(total / backgroundQueuePageSize))
   if (backgroundQueuePage.value > maxPage) {
     backgroundQueuePage.value = maxPage
     void loadBackgroundQueues()
@@ -835,7 +740,6 @@ watch(() => backgroundQueuesResult.value?.total, (total) => {
 
 onBeforeUnmount(() => {
   disposed = true
-  deactivateDynamicRangeLifecycle()
   trendAbortController?.abort()
   runtimeSummaryAbortController?.abort()
   backgroundJobsAbortController?.abort()
@@ -845,6 +749,7 @@ onBeforeUnmount(() => {
   backgroundJobsAbortController = undefined
   backgroundQueuesAbortController = undefined
   runtimeSummaryPromise = undefined
+  pageLoadGeneration += 1
   requestSeq += 1
   runtimeSummaryRequestSeq += 1
   backgroundJobsRequestSeq += 1

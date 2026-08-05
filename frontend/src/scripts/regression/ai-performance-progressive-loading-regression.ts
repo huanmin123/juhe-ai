@@ -26,6 +26,12 @@ assert.ok(removeAccountBody, '必须保留删除追加账户入口')
 assert.doesNotMatch(removeAccountBody, /load|api\./, '删除追加账户必须纯本地完成且零请求')
 assert.match(viewSource, /onDeactivate:[\s\S]*deactivatePerformanceRequests/, 'KeepAlive 失活必须推进请求 epoch')
 assert.match(viewSource, /onDeactivate:[\s\S]*invalidateSystemAccountOptions\(\)/, 'KeepAlive 失活必须取消系统账户搜索 debounce 并推进请求 generation')
+const activatedSource = viewSource.match(/onActivated\(\(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+assert.match(activatedSource, /performanceRequestGate\.activate\(\)[\s\S]*setupChartObserver/, 'KeepAlive 重新激活必须恢复请求门禁和图表观察')
+assert.doesNotMatch(activatedSource, /\bloadPerformanceContext\s*\(/, 'KeepAlive 重新激活不得加载 AI 性能数据')
+const authRevisionWatcher = viewSource.match(/watch\(\(\) => authState\.revision\.value, \(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+assert.doesNotMatch(authRevisionWatcher, /\b(?:loadPerformanceContext|loadUsageStatsWindow|load)\s*\(/, '身份变化不得加载 AI 性能数据或系统账户选项')
+assert.match(authRevisionWatcher, /invalidateAccountOptions\(\)[\s\S]*invalidateSystemAccountOptions\(\)[\s\S]*invalidatePerformanceRequests\(\)[\s\S]*systemAccounts\.value = \[\][\s\S]*selectedSystemAccountId\.value = allSystemAccountsValue[\s\S]*selectedSystemAccount\.value = undefined[\s\S]*resetSystemAccountOptionsSearch\(\)/, '身份变化必须使系统账户选项失效并清空旧筛选')
 assert.match(systemAccountOptionsSource, /function invalidate\(\)[\s\S]*clearSearchTimer\(\)[\s\S]*requestId \+= 1/, '系统账户远程选项失效必须同时取消 debounce 并推进 generation')
 assert.match(systemAccountOptionsSource, /finally \{[\s\S]*if \(currentRequestId === requestId\) \{[\s\S]*loadingKey === requestKey/, '旧代次请求的 finally 不得清理相同 key 的新请求状态')
 assert.match(viewSource, /new IntersectionObserver[\s\S]*visibleChartMetrics\.add/, 'AI 性能图表必须在进入视口后才初始化')

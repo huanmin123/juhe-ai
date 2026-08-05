@@ -20,6 +20,7 @@ const auditLogDetailSupplementColumns = [
   'error_message',
   'sample_bucket',
   'sample_reason',
+  'lifecycle_status',
   'started_at',
   'ended_at',
   'http_completed_at'
@@ -45,6 +46,7 @@ const auditLogPayloadSupplementColumns = [
   'sequence_index',
   'raw_size_bytes',
   'capture_status',
+  'drop_reason',
   'created_at',
   'headers_blob_id',
   'body_blob_id'

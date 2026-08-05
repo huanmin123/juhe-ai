@@ -26,7 +26,7 @@ export function auditLogListSelectColumns(alias: string): string {
     'id', 'trace_id', 'session_id', 'session_client_type',
     'traffic_source', 'system_account_id', 'api_key_id',
     'group_id', 'account_id', 'method', 'path', 'model', 'upstream_model',
-    'model_mapping_applied', 'stream', 'audit_outcome', 'success',
+    'model_mapping_applied', 'stream', 'audit_outcome', 'success', 'lifecycle_status',
     'final_status_code', 'duration_ms', 'http_duration_ms', 'created_at'
   ].map((column) => `${alias}.${column}`).join(', ')
 }

@@ -644,13 +644,21 @@ export async function flushAuditLogQueueForShutdown(): Promise<void> {
 
 function enforceAuditQueueLimits(settings = readAuditLogSettings()): void {
   while (pendingAuditLogs.length > settings.queueMaxItems || pendingBytes > settings.queueMaxBytes) {
-    const successIndex = pendingAuditLogs.findIndex((item) => item.success)
-    const dropIndex = successIndex >= 0 ? successIndex : 0
+    const dropIndex = auditLogQueueOverflowDropIndex(pendingAuditLogs)
     const [dropped] = pendingAuditLogs.splice(dropIndex, 1)
     if (!dropped) break
     pendingBytes -= dropped.bytes
     recordDrop(dropped, 'overflow')
   }
+}
+
+export function auditLogQueueOverflowDropIndex(items: ReadonlyArray<Pick<QueuedAuditLog, 'input' | 'success'>>): number {
+  // An active stream must remain searchable until its terminal record arrives.
+  // Expire completed successful records before removing an in-progress marker.
+  const finalizedSuccessIndex = items.findIndex((item) => item.success && item.input.lifecycleStatus !== 'in_progress')
+  if (finalizedSuccessIndex >= 0) return finalizedSuccessIndex
+  const inProgressIndex = items.findIndex((item) => item.input.lifecycleStatus === 'in_progress')
+  return inProgressIndex >= 0 ? inProgressIndex : 0
 }
 
 function peekAuditLogFlushBatch(maxItems: number, maxBytes: number): { batch: QueuedAuditLog[]; bytes: number } {

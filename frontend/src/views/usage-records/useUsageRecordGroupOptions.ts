@@ -99,6 +99,14 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     clearSearchTimer()
   }
 
+  function invalidate(): void {
+    clearSearchTimer()
+    requestId += 1
+    loadingKey = undefined
+    loadingPromise = undefined
+    loading.value = false
+  }
+
   function clearSearchTimer(): void {
     if (searchTimer && typeof window !== 'undefined') {
       window.clearTimeout(searchTimer)
@@ -159,6 +167,7 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     groups,
     handleDropdown,
     handleSearch,
+    invalidate,
     load,
     loading,
     resetSearch,

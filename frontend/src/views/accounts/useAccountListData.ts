@@ -81,6 +81,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const {
     handleDropdown: handleSystemAccountOptionsDropdown,
     handleSearch: handleSystemAccountOptionsSearch,
+    invalidate: invalidateSystemAccountOptions,
     loading: systemAccountOptionsLoading,
     resetSearch: resetSystemAccountOptionsSearch,
     systemAccounts
@@ -113,6 +114,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleTableChange: handleAccountTableChange,
     loadData,
     loadMoreMobile: loadMoreMobileAccounts,
+    invalidatePendingLoads,
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
     resetPagination: resetAccountListPagination,
@@ -123,11 +125,15 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 个账户，还有更多`
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
+      const requestAuthRevision = authState.revision.value
       const requestMutationRevision = listMutationRevision
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
-        get superseded() { return requestMutationRevision !== listMutationRevision },
+        get superseded() {
+          return requestAuthRevision !== authState.revision.value
+            || requestMutationRevision !== listMutationRevision
+        },
         items: accountList.items,
         page: accountList.page,
         pageSize: accountList.pageSize,
@@ -138,6 +144,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     requestSignature: (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       return [
+        authState.revision.value,
         options.isManagementView.value ? 'management' : 'self',
         _loadOptions.requestIdentity,
         accountListParams(systemAccountId, pageState)
@@ -475,6 +482,31 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+  watch(() => authState.revision.value, () => {
+    invalidatePendingLoads()
+    invalidateSystemAccountOptions()
+    listMutationRevision += 1
+    listRevisionOverlays.clear()
+    accounts.value = []
+    resetAccountListPagination()
+    accountPagination.total = 0
+    const defaults = defaultAccountsPageState()
+    Object.assign(filters, defaults.filters)
+    accountSorts.value = defaults.sorts
+    pageStateCache.clear()
+    systemAccounts.value = []
+    providers.value = []
+    accountOptionsRequestId += 1
+    accountOptionsInFlight.clear()
+    accountOptionsLoaded.value = false
+    accountOptionsScopeKey.value = ''
+    providerDefinitions.value = []
+    providerDefinitionsRequestId += 1
+    providerDefinitionsInFlight.clear()
+    providerDefinitionsLoading.value = false
+    providerDefinitionsLoaded.value = false
+    providerDefinitionsScopeKey.value = ''
+  })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 

@@ -556,10 +556,15 @@ export class OpenAIStreamInspector {
       : rawFragments
     const eventTypes = extractLightweightImageStreamEventTypes(fragments, this.eventName)
     const usage = parseLightweightImageStreamUsage(fragments)
+    const upstreamError = extractLightweightImageStreamError(fragments)
     const boundaryObserved = lightweightImageStreamBoundaryObserved(fragments)
     this.lightweightFragmentTail = appendRollingTextTail('', rawFragments[rawFragments.length - 1] ?? '', streamInspectorLightweightRollingTailBytes)
     if (hasAnyUsageValue(usage)) {
       this.inspection.usage = mergeUsage(this.inspection.usage, usage)
+    }
+    if (upstreamError) {
+      this.inspection.errorCode = upstreamError.code ?? this.inspection.errorCode
+      this.inspection.errorMessage = upstreamError.message ?? this.inspection.errorMessage
     }
     this.pendingLine = ''
     this.pendingLineBytes = 0
@@ -719,6 +724,31 @@ function parseLightweightImageStreamUsage(fragments: string[]): ParsedUsage {
     const parsed = parseOpenAIUsageFromJsonTextFragment(fragment)
     return hasAnyUsageValue(parsed) ? mergeUsage(usage, parsed) : usage
   }, emptyUsage())
+}
+
+function extractLightweightImageStreamError(fragments: string[]): { code?: string; message?: string } | undefined {
+  for (const fragment of fragments) {
+    for (const rawEvent of fragment.split(/\r?\n\r?\n/)) {
+      const lines = rawEvent.split(/\r?\n/)
+      const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? ''
+      const dataText = lines
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n')
+        .trim()
+      if (!dataText) continue
+      const event = parseOpenAIStreamEventData(dataText, eventName)
+      const classification = classifyOpenAIStreamEvent(event)
+      if (!classification.failed) continue
+      if (classification.errorCode || classification.errorMessage) {
+        return {
+          code: classification.errorCode,
+          message: classification.errorMessage
+        }
+      }
+    }
+  }
+  return undefined
 }
 
 function isLightweightImageStreamEventType(eventType: string): boolean {

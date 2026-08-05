@@ -7,6 +7,7 @@ import {
 import type {
   AuditLogPayloadInput,
   AuditPayloadCaptureStatus,
+  AuditPayloadDropReason,
   AuditPayloadPartType
 } from './audit-log-types.js'
 import { stableJsonStringify } from './audit-log-stable-json.js'
@@ -25,6 +26,7 @@ export interface PreparedAuditPayload {
   rawSizeBytes: number
   compressedSizeBytes: number
   captureStatus: AuditPayloadCaptureStatus
+  dropReason?: AuditPayloadDropReason
   createdAt: string
 }
 
@@ -58,6 +60,7 @@ export function preparePayloadInput(
     rawSizeBytes,
     compressedSizeBytes,
     captureStatus: payload.captureStatus ?? 'complete',
+    dropReason: payload.dropReason,
     createdAt: payload.createdAt ?? fallbackCreatedAt
   }
 }
@@ -90,6 +93,7 @@ export async function preparePayloadInputAsync(
     rawSizeBytes,
     compressedSizeBytes,
     captureStatus: payload.captureStatus ?? 'complete',
+    dropReason: payload.dropReason,
     createdAt: payload.createdAt ?? fallbackCreatedAt
   }
 }

@@ -62,6 +62,42 @@ try {
   assert(aggregatePayloads.every((item) => item.captureStatus === 'summary_only'), '两个 3MiB 正文必须都按有限摘要契约收敛')
   assert(aggregatePayloads.every((item) => item.captureStatus !== 'hash_only'), '聚合输出收敛不得退化为 hash_only')
 
+  const manyPayloadInput = auditInput('trace-audit-transport-tombstones', [], false)
+  manyPayloadInput.payloads = Array.from({ length: 73 }, (_, sequenceIndex) => ({
+    id: `payload-trace-audit-transport-tombstones-${sequenceIndex}`,
+    partType: sequenceIndex === 0 ? 'client_request' : 'upstream_response',
+    sequenceIndex,
+    contentType: 'application/json',
+    headers: { 'x-audit-large-header': 'h'.repeat(96 * 1024) },
+    captureStatus: 'complete'
+  }))
+  const tombstoneEncoded = await encodeAuditLogForRedisStreamInWorker(manyPayloadInput)
+  assert(Buffer.byteLength(tombstoneEncoded, 'utf8') <= transportMaxBytes, '多段审计 tombstone 输出必须严格不超过 4MiB')
+  const tombstonePayloads = decodeAuditLogStreamPayload(tombstoneEncoded).payloads
+  assert.equal(tombstonePayloads.length, 73, '传输裁剪不得删除中间 payload 引用')
+  assert.deepEqual(
+    tombstonePayloads.map((payload) => payload.id),
+    manyPayloadInput.payloads.map((payload) => payload.id),
+    '传输裁剪后必须保留每个 payload 的稳定 ID 和顺序'
+  )
+  assert(tombstonePayloads.some((payload) => payload.captureStatus === 'dropped' && payload.dropReason === 'transport_budget'), '容量裁剪必须留下 drop_reason=transport_budget 的 tombstone')
+
+  const rangeTombstoneInput = auditInput('trace-audit-transport-range-tombstone', [], false)
+  rangeTombstoneInput.payloads = Array.from({ length: 25_000 }, (_, sequenceIndex) => ({
+    id: `payload-range-${sequenceIndex}-${'x'.repeat(160)}`,
+    partType: 'upstream_response',
+    sequenceIndex,
+    contentType: 'application/json',
+    captureStatus: 'complete'
+  }))
+  const rangeTombstoneEncoded = await encodeAuditLogForRedisStreamInWorker(rangeTombstoneInput)
+  assert(Buffer.byteLength(rangeTombstoneEncoded, 'utf8') <= transportMaxBytes, '范围 tombstone 兜底仍必须满足 4MiB 硬上限')
+  const rangeTombstonePayloads = decodeAuditLogStreamPayload(rangeTombstoneEncoded).payloads
+  assert.equal(rangeTombstonePayloads.length, 1, '逐条 tombstone 元数据本身超预算时必须收敛为单个范围 tombstone')
+  assert.equal(rangeTombstonePayloads[0]?.partType, 'gateway_metadata', '范围 tombstone 必须以网关元数据保存')
+  assert.equal(rangeTombstonePayloads[0]?.captureStatus, 'dropped', '范围 tombstone 必须明确标记为已裁剪')
+  assert.equal(rangeTombstonePayloads[0]?.dropReason, 'transport_budget', '范围 tombstone 必须保留传输预算裁剪原因')
+
   const successEncoded = await encodeAuditLogForRedisStreamInWorker(
     auditInput('trace-audit-transport-success-budget', [Buffer.alloc(600 * 1024, 0x64)], true)
   )
@@ -78,7 +114,7 @@ try {
   const runtime = getAuditLogTransportRuntime()
   assert.equal(runtime.queuedJobs, 0, '审计编码完成后队列应清空')
   assert.equal(runtime.activeJobs, 0, '审计编码完成后不应残留活跃任务')
-  assert.equal(runtime.completedCount, 4, '四条审计编码任务应全部完成')
+  assert.equal(runtime.completedCount, 6, '六条审计编码任务应全部完成')
   assert.equal(runtime.failedCount, 0, '审计编码任务不应失败')
 
   console.log('审计传输 worker 回归通过：最终 codec 输出严格受 4MiB 约束，大正文只保留 256KB 头尾窗口和传输元数据')

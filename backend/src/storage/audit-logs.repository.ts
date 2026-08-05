@@ -29,6 +29,57 @@ import { resolveCatalogPricingModelAsync } from '../modules/model-pricing/model-
 import { errorLogFields, logger } from '../shared/logger.js'
 
 const auditPayloadBlobWriteConcurrency = runtimeConfig.background.auditPayloadBlobWriteConcurrency
+const auditLogFinalizationConflictClause = `
+    ON CONFLICT(id) DO UPDATE SET
+      trace_id = excluded.trace_id,
+      traffic_source = excluded.traffic_source,
+      system_account_id = excluded.system_account_id,
+      api_key_id = excluded.api_key_id,
+      conversation_key = excluded.conversation_key,
+      session_id = excluded.session_id,
+      session_client_type = excluded.session_client_type,
+      group_id = excluded.group_id,
+      account_id = excluded.account_id,
+      provider_code = excluded.provider_code,
+      method = excluded.method,
+      path = excluded.path,
+      query_string = excluded.query_string,
+      model = excluded.model,
+      upstream_model = excluded.upstream_model,
+      pricing_model = excluded.pricing_model,
+      model_mapping_applied = excluded.model_mapping_applied,
+      model_mapping_source = excluded.model_mapping_source,
+      source_endpoint_family = excluded.source_endpoint_family,
+      upstream_endpoint_family = excluded.upstream_endpoint_family,
+      stream = excluded.stream,
+      client_ip = excluded.client_ip,
+      user_agent = excluded.user_agent,
+      audit_outcome = excluded.audit_outcome,
+      success = excluded.success,
+      final_status_code = excluded.final_status_code,
+      error_phase = excluded.error_phase,
+      error_code = excluded.error_code,
+      error_message = excluded.error_message,
+      sample_bucket = excluded.sample_bucket,
+      sample_reason = excluded.sample_reason,
+      attempt_count = excluded.attempt_count,
+      payload_count = excluded.payload_count,
+      raw_payload_bytes = excluded.raw_payload_bytes,
+      compressed_payload_bytes = excluded.compressed_payload_bytes,
+      compression_saved_bytes = excluded.compression_saved_bytes,
+      error_group_id = excluded.error_group_id,
+      capture_status = excluded.capture_status,
+      lifecycle_status = excluded.lifecycle_status,
+      started_at = excluded.started_at,
+      ended_at = excluded.ended_at,
+      duration_ms = excluded.duration_ms,
+      http_completed_at = excluded.http_completed_at,
+      http_duration_ms = excluded.http_duration_ms,
+      first_token_ms = excluded.first_token_ms,
+      created_at = excluded.created_at
+    WHERE lifecycle_status = 'in_progress'
+      AND excluded.lifecycle_status = 'finalized'
+`
 
 interface PreparedAuditLogForWrite {
   input: AuditLogInput
@@ -115,10 +166,10 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       group_id, account_id, provider_code, method, path, query_string,
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
-      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
+      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, lifecycle_status, started_at, ended_at,
       duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO NOTHING
+    ) VALUES (${sqlPlaceholders(47)})
+    ${auditLogFinalizationConflictClause}
   `)
   const insertAttempt = database.prepare(`
     INSERT INTO audit_log_attempts (
@@ -133,8 +184,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   const insertPayloadRef = database.prepare(`
     INSERT INTO audit_payload_refs (
       id, audit_log_id, attempt_id, part_type, sequence_index, content_type, content_encoding, headers_blob_id,
-      body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, drop_reason, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const updateLogErrorGroup = database.prepare('UPDATE audit_logs SET error_group_id = ? WHERE id = ?')
@@ -151,7 +202,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   try {
     for (const input of persistedInputs) {
       const id = input.id ?? newId('audit')
-      if (existingLogIds.has(id) || seenLogIds.has(id)) {
+      if (input.lifecycleStatus === 'in_progress' && (existingLogIds.has(id) || seenLogIds.has(id))) {
         continue
       }
       seenLogIds.add(id)
@@ -210,6 +261,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         compressionSavedBytes,
         null,
         input.captureStatus ?? 'complete',
+        input.lifecycleStatus ?? 'finalized',
         input.startedAt,
         input.endedAt,
         input.durationMs ?? null,
@@ -276,6 +328,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
           payload.rawSizeBytes,
           payload.compressedSizeBytes,
           payload.captureStatus,
+          payload.dropReason ?? null,
           payload.createdAt
         )
         if (Number(result.changes ?? 0) > 0) {
@@ -317,7 +370,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
 
   for (const input of persistedInputs) {
     const id = input.id ?? newId('audit')
-    if (existingLogIds.has(id) || seenLogIds.has(id)) {
+    if (input.lifecycleStatus === 'in_progress' && (existingLogIds.has(id) || seenLogIds.has(id))) {
       continue
     }
     seenLogIds.add(id)
@@ -354,10 +407,10 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
       group_id, account_id, provider_code, method, path, query_string,
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
-      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
+      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, lifecycle_status, started_at, ended_at,
       duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO NOTHING
+    ) VALUES (${sqlPlaceholders(47)})
+    ${auditLogFinalizationConflictClause}
   `)
   const insertAttempt = database.prepare(`
     INSERT INTO audit_log_attempts (
@@ -372,8 +425,8 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
   const insertPayloadRef = database.prepare(`
     INSERT INTO audit_payload_refs (
       id, audit_log_id, attempt_id, part_type, sequence_index, content_type, content_encoding, headers_blob_id,
-      body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, drop_reason, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const updateLogErrorGroup = database.prepare('UPDATE audit_logs SET error_group_id = ? WHERE id = ?')
@@ -429,6 +482,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
         compressionSavedBytes,
         null,
         input.captureStatus ?? 'complete',
+        input.lifecycleStatus ?? 'finalized',
         input.startedAt,
         input.endedAt,
         input.durationMs ?? null,
@@ -495,6 +549,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
           payload.rawSizeBytes,
           payload.compressedSizeBytes,
           payload.captureStatus,
+          payload.dropReason ?? null,
           payload.createdAt
         )
         if (Number(result.changes ?? 0) > 0) {
@@ -531,7 +586,7 @@ async function createAuditLogsBatchPostgres(inputs: AuditLogInput[]): Promise<vo
 
   for (const input of enrichedInputs) {
     const id = input.id ?? newId('audit')
-    if (seenLogIds.has(id)) continue
+    if (input.lifecycleStatus === 'in_progress' && seenLogIds.has(id)) continue
     seenLogIds.add(id)
     const createdAt = input.createdAt ?? nowIso()
     const attemptIds = new Map<string, string>()
@@ -813,10 +868,10 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
       group_id, account_id, provider_code, method, path, query_string,
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
-      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
+      compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, lifecycle_status, started_at, ended_at,
       duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO NOTHING
+    ) VALUES (${sqlPlaceholders(47)})
+    ${auditLogFinalizationConflictClause}
   `, [
     id,
     input.traceId,
@@ -857,6 +912,7 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
     compressionSavedBytes,
     null,
     input.captureStatus ?? 'complete',
+    input.lifecycleStatus ?? 'finalized',
     input.startedAt,
     input.endedAt,
     input.durationMs ?? null,
@@ -940,8 +996,8 @@ async function insertPostgresAuditPayloadRefsBatch(
     const inserted = await client.one<{ id?: string }>(`
       INSERT INTO juhe_dataset.audit_payload_refs (
         id, audit_log_id, attempt_id, part_type, sequence_index, content_type, content_encoding, headers_blob_id,
-        body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, drop_reason, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
       RETURNING id
     `, [
@@ -959,6 +1015,7 @@ async function insertPostgresAuditPayloadRefsBatch(
       payload.rawSizeBytes,
       payload.compressedSizeBytes,
       payload.captureStatus,
+      payload.dropReason ?? null,
       payload.createdAt
     ])
     if (!inserted?.id) continue

@@ -80,6 +80,7 @@ import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { authState } from '@/composables/useAuth'
 import { useScopedGroupsApi, useScopedUsageRecordsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
@@ -158,6 +159,7 @@ const modelOptionsScopeParams = computed(() => {
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
   return systemAccountId ? { systemAccountId } : undefined
 })
+const { loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleModelOptionsDropdown,
   handleSearch: handleModelOptionsSearch,
@@ -168,10 +170,10 @@ const {
   scopeParams: modelOptionsScopeParams,
   selectedModel: computed(() => modelFilter.value)
 })
-const { loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
+  invalidate: invalidateSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -194,6 +196,7 @@ const {
   groups,
   handleDropdown: handleGroupOptionsDropdown,
   handleSearch: handleGroupOptionsSearch,
+  invalidate: invalidateGroupOptions,
   load: loadGroupOptions,
   loading: groupOptionsLoading,
   resetSearch: resetGroupOptionsSearch,
@@ -211,6 +214,7 @@ const {
   systemAccountId: () => scopedSystemAccountId(systemAccountFilter.value)
 })
 const {
+  hasMore,
   items: records,
   loading,
   mobileHasMore,
@@ -220,6 +224,7 @@ const {
   loadData,
   loadMoreMobile: loadMoreMobileRecords,
   refreshMobile: refreshMobileRecordsList,
+  invalidatePendingLoads,
   resetPagination
 } = useResponsivePagedList<UsageRecordListItem, { forceOptions?: boolean }>({
   pageSize: usageRecordsPageSize,
@@ -228,14 +233,20 @@ const {
     ? `已加载到第 ${range?.[1] ?? total - 1} 条使用记录，还有更多`
     : `共 ${total} 条使用记录`,
   fetchPage: async (options, pageState) => {
+    const requestAuthRevision = authState.revision.value
     if (options.forceOptions === true) {
       resetSystemAccountOptionsSearch()
       resetGroupOptionsSearch()
       resetModelOptions()
     }
-    return await fetchRecords(pageState)
+    const result = await fetchRecords(pageState)
+    return {
+      ...result,
+      get superseded() { return requestAuthRevision !== authState.revision.value }
+    }
   },
   requestSignature: (_options, pageState) => [
+    authState.revision.value,
     isManagementView.value ? 'management' : 'self',
     usageRecordRequestParams(pageState)
   ],
@@ -497,7 +508,6 @@ function refreshAutoDateAfterRollover(): void {
   if (current?.[0] === next?.[0] && current?.[1] === next?.[1]) return
   dateRangeFilter.value = nextRange
   resetPagination()
-  void loadData()
 }
 
 function scheduleAutoDateRollover(): void {
@@ -532,11 +542,8 @@ function millisecondsUntilNextDeploymentDay(now: Date): number {
   let high = low + 30 * 60 * 60 * 1000
   while (high - low > 1000) {
     const middle = low + Math.floor((high - low) / 2)
-    if (deploymentDateKey(new Date(middle)) === currentKey) {
-      low = middle
-    } else {
-      high = middle
-    }
+    if (deploymentDateKey(new Date(middle)) === currentKey) low = middle
+    else high = middle
   }
   return Math.max(1, high - now.getTime())
 }
@@ -548,7 +555,7 @@ async function loadDeploymentTimezone(): Promise<void> {
     refreshAutoDateAfterRollover()
     scheduleAutoDateRollover()
   } catch {
-    // The list API still applies the deployment timezone when auto mode omits dates.
+    // 列表 API 在 auto 模式省略日期时仍使用部署时区。
   }
 }
 
@@ -558,32 +565,15 @@ function clearAutoDateRolloverTimer(): void {
   autoDateRolloverTimer.value = undefined
 }
 
-function handleVisibilityChange(): void {
-  if (document.visibilityState !== 'visible') return
-  refreshAutoDateAfterRollover()
-  scheduleAutoDateRollover()
-}
-
-function handleWindowFocus(): void {
-  refreshAutoDateAfterRollover()
-  scheduleAutoDateRollover()
-}
-
 function activateAutoDateLifecycle(): void {
   if (autoDateLifecycleActive.value) return
   autoDateLifecycleActive.value = true
-  document.addEventListener('visibilitychange', handleVisibilityChange)
-  window.addEventListener('focus', handleWindowFocus)
   refreshAutoDateAfterRollover()
   scheduleAutoDateRollover()
 }
 
 function deactivateAutoDateLifecycle(): void {
-  if (autoDateLifecycleActive.value) {
-    autoDateLifecycleActive.value = false
-    document.removeEventListener('visibilitychange', handleVisibilityChange)
-    window.removeEventListener('focus', handleWindowFocus)
-  }
+  autoDateLifecycleActive.value = false
   clearAutoDateRolloverTimer()
 }
 
@@ -609,7 +599,33 @@ watch(records, (items) => {
 }, { immediate: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(dateMode, scheduleAutoDateRollover)
-
+watch(() => authState.revision.value, () => {
+  invalidatePendingLoads()
+  invalidateSystemAccountOptions()
+  invalidateGroupOptions()
+  resetModelOptions()
+  records.value = []
+  hasMore.value = false
+  pagination.current = 1
+  pagination.total = 0
+  groups.value = []
+  systemAccounts.value = []
+  const defaults = defaultPageState()
+  accountNameFilter.value = defaults.accountNameFilter
+  clientIpFilter.value = defaults.clientIpFilter ?? ''
+  dateRangeFilter.value = parseUsageRecordDateRange(defaults.dateRangeFilter)
+  dateMode.value = defaults.dateMode
+  groupFilterSelection.value = undefined
+  modelFilter.value = defaults.modelFilter ?? ''
+  resultFilter.value = defaults.resultFilter
+  statusCodeFilter.value = defaults.statusCodeFilter
+  systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountFilterSelection.value = undefined
+  traceIdFilter.value = defaults.traceIdFilter ?? ''
+  trafficSourceFilter.value = defaults.trafficSourceFilter
+  sortState.value = defaults.sortState
+  pageStateCache.clear()
+})
 onBeforeUnmount(() => {
   clearGroupOptionsSearchTimer()
   deactivateAutoDateLifecycle()

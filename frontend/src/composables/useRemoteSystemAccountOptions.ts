@@ -50,7 +50,8 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
           keyword: requestKeyword,
           limit
         })
-        options = await ensureSelectedSystemAccountOptions(options, selectedIds)
+        if (currentRequestId !== requestId) return
+        options = await ensureSelectedSystemAccountOptions(options, selectedIds, () => currentRequestId === requestId)
         if (currentRequestId !== requestId) return
         systemAccounts.value = options
       } catch (error) {
@@ -105,16 +106,22 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     }
   }
 
-  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[]): Promise<SystemAccountPrincipalSummary[]> {
+  async function ensureSelectedSystemAccountOptions(
+    options: SystemAccountPrincipalSummary[],
+    selectedIds: string[],
+    isCurrent: () => boolean
+  ): Promise<SystemAccountPrincipalSummary[]> {
     const missingSelectedIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
-    if (!missingSelectedIds.length) return options
+    if (!missingSelectedIds.length || !isCurrent()) return options
     try {
       const selectedOptions = await api.systemAccounts.options({
         ids: missingSelectedIds,
         limit: Math.min(50, Math.max(limit, missingSelectedIds.length))
       })
+      if (!isCurrent()) return options
       const foundIds = new Set(selectedOptions.map((option) => option.id))
       const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
+      if (!isCurrent()) return options
       handleMissingSelectedIds(invalidSelectedIds)
       return mergeOptionsById(selectedOptions, options)
     } catch {

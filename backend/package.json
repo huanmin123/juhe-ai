@@ -278,6 +278,7 @@
     "test:audit-log-hot-search": "tsx src/scripts/regression/audit-log-hot-search-regression.ts",
     "test:audit-log-settings-contract": "tsx src/scripts/regression/audit-log-settings-contract-regression.ts",
     "test:audit-log-async-flush": "tsx src/scripts/regression/audit-log-async-flush-regression.ts",
+    "test:audit-log-in-progress-queue-priority": "tsx src/scripts/regression/audit-log-in-progress-queue-priority-regression.ts",
     "test:audit-log-dispatch-estimate-boundary": "tsx src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts",
     "test:audit-log-transport-worker": "tsx src/scripts/regression/audit-log-transport-worker-regression.ts",
     "test:audit-log-postgres-smoke": "tsx src/scripts/regression/audit-log-postgres-smoke.ts",

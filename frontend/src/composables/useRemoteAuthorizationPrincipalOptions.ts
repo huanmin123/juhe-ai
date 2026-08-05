@@ -56,7 +56,8 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
           keyword: requestKeyword,
           limit
         })
-        nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView)
+        if (currentRequestId !== requestId) return
+        nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView, () => currentRequestId === requestId)
         if (currentRequestId !== requestId) return
         options.value = nextOptions
       } catch (error) {
@@ -64,7 +65,7 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
         console.error(error)
         message.error(config.errorMessage ?? '加载授权候选项失败')
       } finally {
-        if (loadingKey === requestKey) {
+        if (currentRequestId === requestId && loadingKey === requestKey) {
           loadingKey = undefined
           loadingPromise = undefined
         }
@@ -96,6 +97,15 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     clearSearchTimer()
   }
 
+  function invalidate(): void {
+    clearSearchTimer()
+    requestId += 1
+    loadingKey = undefined
+    loadingPromise = undefined
+    loading.value = false
+    options.value = []
+  }
+
   function clearSearchTimer(): void {
     if (searchTimer && typeof window !== 'undefined') {
       window.clearTimeout(searchTimer)
@@ -103,16 +113,23 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     }
   }
 
-  async function ensureSelectedOptions(nextOptions: T[], selectedIds: string[], isManagementView: boolean): Promise<T[]> {
+  async function ensureSelectedOptions(
+    nextOptions: T[],
+    selectedIds: string[],
+    isManagementView: boolean,
+    isCurrent: () => boolean
+  ): Promise<T[]> {
     const missingSelectedIds = selectedIds.filter((id) => !nextOptions.some((option) => option.id === id))
-    if (!missingSelectedIds.length) return nextOptions
+    if (!missingSelectedIds.length || !isCurrent()) return nextOptions
     try {
       const selectedOptions = await fetchOptions<T>(config.kind, isManagementView, {
         ids: missingSelectedIds,
         limit: Math.min(50, Math.max(limit, missingSelectedIds.length))
       })
+      if (!isCurrent()) return nextOptions
       const foundIds = new Set(selectedOptions.map((option) => option.id))
       const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
+      if (!isCurrent()) return nextOptions
       handleMissingSelectedIds(invalidSelectedIds)
       return mergeOptionsById(selectedOptions, nextOptions)
     } catch {
@@ -140,12 +157,13 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
       .sort())]
   }
 
-  onBeforeUnmount(clearSearchTimer)
+  onBeforeUnmount(invalidate)
 
   return {
     clearSearchTimer,
     handleDropdown,
     handleSearch,
+    invalidate,
     keyword,
     load,
     loading,

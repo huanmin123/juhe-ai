@@ -31,9 +31,13 @@ if (view.includes('Promise.all([\n      api.stats.systemMetrics(')) throw new Er
 if (!view.includes(':error="trendError"') || !view.includes(':on-retry="loadData"')) throw new Error('trend cards must expose retry state')
 if (!view.includes(':error="backgroundJobsError"') || !view.includes(':on-retry="loadBackgroundJobs"')) throw new Error('background jobs must expose a targeted retry state')
 if (!view.includes(':error="backgroundQueuesError"') || !view.includes(':on-retry="loadBackgroundQueues"')) throw new Error('background queues must expose a targeted retry state')
-if (!/onActivated\((?:async )?\(\) =>/.test(view) || !view.includes('needsReloadOnActivate')) throw new Error('KeepAlive activation must reload stale system metrics')
-if (!loadPageDataSource.includes('void loadUsageStatsWindow(') || loadPageDataSource.includes('await loadUsageStatsWindow(')) throw new Error('initial page load must start usage-window independently')
-if (loadPageDataSource.indexOf('void loadUsageStatsWindow(') >= loadPageDataSource.indexOf('return loadData()')) throw new Error('usage-window loading must not delay the trend request')
+const activated = view.match(/onActivated\((?:async )?\(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+if (!/onActivated\((?:async )?\(\) =>/.test(view) || !activated.includes('setupRuntimeObservers()')) throw new Error('KeepAlive activation must restore runtime observation')
+if (/loadPageData|loadUsageStatsWindow|forceUsageWindow/.test(activated)) throw new Error('KeepAlive activation must not reload system metrics')
+if (!loadPageDataSource.includes('const windowLoad = loadUsageStatsWindow(')) throw new Error('initial page load must start usage-window independently')
+if (!loadPageDataSource.includes('const currentPageLoadGeneration = ++pageLoadGeneration')) throw new Error('page loads must advance an independent generation')
+if (!/await windowLoad\s+if \(currentPageLoadGeneration !== pageLoadGeneration\) return/.test(loadPageDataSource)) throw new Error('usage-window completion must verify the current page-load generation before starting APIs')
+if (loadPageDataSource.indexOf('const windowLoad = loadUsageStatsWindow(') >= loadPageDataSource.indexOf('return loadData()')) throw new Error('usage-window loading must start before the trend request')
 if (loadPageDataSource.includes('force, viewScope') || loadPageDataSource.includes('force: true')) throw new Error('business refresh must reuse cached usage-window metadata')
 if (!view.includes('ref="backgroundJobsSectionRef"') || !view.includes('ref="backgroundQueuesSectionRef"') || !view.includes('new IntersectionObserver(')) throw new Error('runtime sections must load only when their individual section approaches the viewport')
 if (!loadPageDataSource.includes('if (backgroundJobsSectionLoaded.value) void loadBackgroundJobs()')) throw new Error('page mount must not eagerly request background jobs before its section is visible')
@@ -43,7 +47,8 @@ for (const token of ['trendAbortController?.abort()', 'runtimeSummaryAbortContro
   if (!view.includes(token)) throw new Error(`superseded or deactivated system metrics requests must abort ${token}`)
 }
 if (!view.includes('{ signal: controller.signal }')) throw new Error('system metrics requests must pass AbortSignal through the domain API')
-if (!view.includes('watch(() => authState.revision.value')) throw new Error('identity changes must invalidate and reload system metrics')
+if (!view.includes('watch(() => authState.revision.value')) throw new Error('identity changes must invalidate system metrics')
+if (!view.includes('pageLoadGeneration += 1')) throw new Error('identity changes and deactivation must invalidate page loads waiting on usage-window metadata')
 for (const token of ['systemMetrics.value = undefined', 'runtimeSummary.value = undefined', 'backgroundJobsResult.value = undefined', 'backgroundQueuesResult.value = undefined']) {
   if (!view.includes(token)) throw new Error(`identity changes must clear privileged state: ${token}`)
 }

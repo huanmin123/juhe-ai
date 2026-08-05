@@ -219,7 +219,7 @@ try {
   assert.equal(highConcurrencyGroup.schedulingPolicy?.perApiKeyQueueLimit, runtimeConfig.concurrency.globalMax, '单 Key 队列上限未配置时应跟随全局共享容量')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.clientIpConcurrencyLimit, 4, '单 IP 并发上限应允许按分组配置')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应允许切换为排队等待')
-  assert.equal(highConcurrencyGroup.schedulingPolicy?.imageLaneMaxConcurrency, 0, '图像通道上限 0 应保留为自动预留文本槽策略')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.imageLaneMaxConcurrency, 0, '图像通道上限 0 应表示与文本共用账户总并发')
 
   const stored = database
     .prepare('SELECT group_type, scheduling_policy_json FROM groups WHERE id = ?')
@@ -233,7 +233,7 @@ try {
   assert.equal(storedPolicy.fastFirstEnabled, true, '默认开启策略不应按请求关闭')
   assert.equal(storedPolicy.clientIpConcurrencyLimit, 4, '单 IP 并发上限应写入 JSON 配置')
   assert.equal(storedPolicy.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应写入 JSON 配置')
-  assert.equal(storedPolicy.imageLaneMaxConcurrency, 0, '图像通道上限 0 应按自动策略写入 JSON 配置')
+  assert.equal(storedPolicy.imageLaneMaxConcurrency, 0, '图像通道上限 0 应按共用账户并发策略写入 JSON 配置')
   assert(stored.scheduling_policy_json, '高并发分组应写入完整调度策略 JSON')
 
   const missingVersionResponse = await fetch(`${baseUrl}/__aisys__/api/groups/${highConcurrencyGroup.id}`, {

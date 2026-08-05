@@ -165,7 +165,19 @@ export function resolveAuditFinalization(
   const hasAttemptRootFailure = downstreamClosed
     && !input.success
     && Boolean(failedAttemptRoot)
-  const rootFailure = hasInputRootFailure
+  // `upstream_retryable_error` is a client-facing retry contract after the
+  // candidate pool is exhausted. Keep the concrete final attempt cause in
+  // audit instead of replacing it with that generic gateway code.
+  const genericRetryFacade = input.errorCode === 'upstream_retryable_error'
+    && Boolean(failedAttemptRoot?.errorCode || failedAttemptRoot?.errorMessage)
+  const rootFailure = genericRetryFacade
+    ? {
+        outcome: failedAttemptRoot?.errorPhase === 'stream' ? 'stream_failed' as const : 'upstream_failed' as const,
+        errorPhase: failedAttemptRoot?.errorPhase,
+        errorCode: failedAttemptRoot?.errorCode,
+        errorMessage: failedAttemptRoot?.errorMessage
+      }
+    : hasInputRootFailure
     ? {
         outcome: input.outcome,
         errorPhase: input.errorPhase,
@@ -204,6 +216,7 @@ export class AuditCaptureContext {
   private readonly req: Request
   private readonly httpCompletion?: GatewayHttpCompletionObserver
   private readonly traceId: string
+  private readonly auditLogId: string
   private readonly clientIp?: string
   private readonly startedAtMs: number
   private readonly startedAtIso: string
@@ -223,6 +236,7 @@ export class AuditCaptureContext {
   private gatewayContext: AuditGatewayContext = { providerCode: OPENAI_PROTOCOL_CODE }
   private activeAttemptByTempId = new Map<string, AuditAttemptState>()
   private finalized = false
+  private inProgressAuditEnqueued = false
   private hadFailedAttempt = false
   private downstreamClosed = false
   private serverDiagnosticTimeout = false
@@ -242,6 +256,7 @@ export class AuditCaptureContext {
     this.enabled = settings.enabled
     this.req = input.req
     this.traceId = input.traceId
+    this.auditLogId = `audit_${Date.now()}_${randomUUID()}`
     this.clientIp = input.clientIp
     this.startedAtMs = input.startedAtMs
     this.startedAtIso = new Date(input.startedAtMs).toISOString()
@@ -395,6 +410,8 @@ export class AuditCaptureContext {
     const accounting = auditModelAccounting(input.account, requestedModel, this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest))
     this.bindContext({ providerCode: input.account.providerCode })
     this.bindContext(accounting)
+    this.bindContext({ accountId: input.account.id })
+    this.enqueueInProgressAudit()
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {
@@ -618,7 +635,8 @@ export class AuditCaptureContext {
     const retainedPayloads = unsampledSuccessEnvelope ? [] : this.payloads
     const sanitizedOriginalUrl = sanitizeUrlForLog(this.req.originalUrl)
     const auditLog: AuditLogInput = {
-      id: `audit_${Date.now()}_${randomUUID()}`,
+      id: this.auditLogId,
+      lifecycleStatus: 'finalized',
       traceId: this.traceId,
       ...this.gatewayContext,
       accountId: input.accountId ?? this.gatewayContext.accountId,
@@ -685,6 +703,36 @@ export class AuditCaptureContext {
         }
       } : {})
     }, success ? 'success' : 'expected_failure', finalizeStartedAt)
+  }
+
+  private enqueueInProgressAudit(): void {
+    if (this.inProgressAuditEnqueued || !requestStream(this.req)) return
+    this.inProgressAuditEnqueued = true
+    const sanitizedOriginalUrl = sanitizeUrlForLog(this.req.originalUrl)
+    enqueueAuditLog({
+      id: this.auditLogId,
+      lifecycleStatus: 'in_progress',
+      traceId: this.traceId,
+      ...this.gatewayContext,
+      providerCode: this.gatewayContext.providerCode,
+      trafficSource: this.gatewayContext.trafficSource ?? this.trafficSource,
+      method: this.req.method.toUpperCase(),
+      path: sanitizedOriginalUrl.split('?')[0] || this.req.path,
+      queryString: sanitizedOriginalUrl.includes('?') ? sanitizedOriginalUrl.split('?').slice(1).join('?') : undefined,
+      model: requestModel(this.req),
+      stream: requestStream(this.req),
+      clientIp: this.clientIp,
+      userAgent: this.req.header('user-agent'),
+      auditOutcome: 'gateway_succeeded',
+      success: true,
+      sampleBucket: this.sampleBucket,
+      sampleReason: 'in_progress',
+      captureStatus: 'metadata_only',
+      startedAt: this.startedAtIso,
+      endedAt: this.startedAtIso,
+      attempts: [],
+      payloads: []
+    })
   }
 
   private releaseActiveCapture(): void {

@@ -85,6 +85,16 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   })),
   {
     schemaName: 'juhe_dataset',
+    source: 'audit-log-lifecycle-pg-columns',
+    sql: "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized'"
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'audit-log-transport-pg-columns',
+    sql: 'ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text'
+  },
+  {
+    schemaName: 'juhe_dataset',
     source: 'audit-log-session-identity-pg-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created ON audit_logs(session_id, created_at, id, session_client_type) WHERE session_id IS NOT NULL'
   },

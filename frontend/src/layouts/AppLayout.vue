@@ -163,9 +163,8 @@ const announcementContentLoadingIds = ref(new Set<string>())
 const announcementContentRequestIds = new Map<string, number>()
 let announcementContentSessionId = 0
 let announcementContentRequestId = 0
-let announcementsRefreshTimer: number | undefined
-let announcementsRefreshRunning = false
 let announcementsRequestId = 0
+let announcementsInitialLoadAttempted = false
 const pendingRoutePath = ref<string>()
 const routePrefetches = new Map<string, Promise<unknown>>()
 let routeNavigationSeq = 0
@@ -628,41 +627,18 @@ function syncImmersiveBodyLock(active: boolean): void {
   document.body.classList.toggle('immersive-layout-active', active)
 }
 
-async function refreshAnnouncementsSafely() {
-  if (mustChangePassword.value) return
-  if (announcementsRefreshRunning) return
-  announcementsRefreshRunning = true
-  try {
-    if (announcementModalOpen.value) {
-      await refreshAnnouncementsInModal()
-    } else {
-      await loadAnnouncements()
-    }
-  } catch (error) {
-    console.error(error)
-  } finally {
-    announcementsRefreshRunning = false
-  }
-}
-
 onMounted(() => {
   updateViewport()
   syncVisualViewportHeight()
   loadAppBrandSettings().catch((error) => {
     console.error(error)
   })
-  announcementsRefreshTimer = window.setInterval(() => {
-    void refreshAnnouncementsSafely()
-  }, 60000)
   window.addEventListener('resize', handleResize, { passive: true })
   window.visualViewport?.addEventListener('resize', syncVisualViewportHeight, { passive: true })
   window.visualViewport?.addEventListener('scroll', syncVisualViewportHeight, { passive: true })
 })
 
 onBeforeUnmount(() => {
-  if (announcementsRefreshTimer) {
-    window.clearInterval(announcementsRefreshTimer)
-  }
   window.removeEventListener('resize', handleResize)
   window.visualViewport?.removeEventListener('resize', syncVisualViewportHeight)
   window.visualViewport?.removeEventListener('scroll', syncVisualViewportHeight)
@@ -687,18 +663,13 @@ watch(
 watch(
   currentUser,
   (user) => {
-    if (user?.mustChangePassword) {
-      announcementsRequestId += 1
-      announcements.value = []
-      resetAnnouncementContentSession()
-      announcementsLoading.value = false
-    } else if (user) {
+    announcementsRequestId += 1
+    announcements.value = []
+    resetAnnouncementContentSession()
+    announcementsLoading.value = false
+    if (user && !user.mustChangePassword && !announcementsInitialLoadAttempted) {
+      announcementsInitialLoadAttempted = true
       void loadAnnouncements()
-    } else {
-      announcementsRequestId += 1
-      announcements.value = []
-      resetAnnouncementContentSession()
-      announcementsLoading.value = false
     }
     if (route.meta.viewScope === 'admin' || route.meta.viewScope === 'self') {
       setMenuModeFromRoute(user, route.meta.viewScope)

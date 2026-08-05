@@ -346,7 +346,6 @@ const summaryResolvedSignature = ref('')
 const rowsResolvedSignature = ref('')
 const requestGate = createAuthorizationUsageRequestGate()
 let pageActive = true
-let reloadOnActivate = false
 const requestEpoch = ref(0)
 let routeHadUsageFilters = false
 
@@ -359,12 +358,14 @@ const {
   resourceOptionsLoading,
   handleResourceOptionsDropdown,
   handleResourceOptionsSearch,
+  invalidate: invalidateResourceOptions,
   resetResourceId,
   resetResourceOptionsSearch
 } = useAuthorizationUsageResourceFilters(filters)
 const {
   handleDropdown: handleTeamOptionsDropdown,
   handleSearch: handleTeamOptionsSearch,
+  invalidate: invalidateTeamOptions,
   load: loadTeamOptions,
   loading: teamOptionsLoading,
   options: teams,
@@ -378,6 +379,7 @@ const {
 const {
   handleDropdown: handleGranteeUserOptionsDropdown,
   handleSearch: handleGranteeUserOptionsSearch,
+  invalidate: invalidateGranteeUserOptions,
   load: loadGranteeUserOptions,
   loading: granteeUserOptionsLoading,
   options: granteeUsers,
@@ -391,6 +393,7 @@ const {
 const {
   handleDropdown: handleResourceOwnerUserOptionsDropdown,
   handleSearch: handleResourceOwnerUserOptionsSearch,
+  invalidate: invalidateResourceOwnerUserOptions,
   load: loadResourceOwnerUserOptions,
   loading: resourceOwnerUserOptionsLoading,
   options: resourceOwnerUsers,
@@ -433,6 +436,7 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
+  invalidatePendingLoads,
   loadData,
   loadMoreMobile: loadMoreMobileUserRows,
   resetPagination
@@ -553,10 +557,7 @@ function currentUsageSignature(): string {
 
 function reloadFromFirstPage(options: { forceOptions?: boolean } = {}) {
   resetPagination()
-  if (!pageActive) {
-    reloadOnActivate = true
-    return
-  }
+  if (!pageActive) return
   requestGate.beginBatch(currentUsageSignature())
   void loadUsageSummary()
   void loadData(options)
@@ -710,11 +711,33 @@ watch(snapshotPageState, () => {
   }
 }, { deep: true })
 watch(() => authState.revision.value, () => {
-  if (pageActive) reloadFromFirstPage()
-  else reloadOnActivate = true
+  requestEpoch.value += 1
+  requestGate.deactivate()
+  invalidatePendingLoads()
+  invalidateTeamOptions()
+  invalidateGranteeUserOptions()
+  invalidateResourceOwnerUserOptions()
+  invalidateResourceOptions()
+  Object.assign(filters, defaultAuthorizationUserUsageFilters())
+  teams.value = []
+  granteeUsers.value = []
+  resourceOwnerUsers.value = []
+  resetTeamOptionsSearch()
+  resetGranteeUserOptionsSearch()
+  resetResourceOwnerUserOptionsSearch()
+  resetResourceOptionsSearch()
+  if (pageActive) requestGate.activate()
+  overview.value = undefined
+  usageSummary.value = undefined
+  summaryLoading.value = false
+  summaryError.value = ''
+  rowsError.value = ''
+  summaryResolvedSignature.value = ''
+  rowsResolvedSignature.value = ''
+  userRows.value = []
+  resetPagination()
 })
 onDeactivated(() => {
-  reloadOnActivate = loading.value || summaryLoading.value
   pageActive = false
   requestGate.deactivate()
   summaryLoading.value = false
@@ -722,11 +745,6 @@ onDeactivated(() => {
 onActivated(() => {
   pageActive = true
   requestGate.activate()
-  if (reloadOnActivate) {
-    reloadOnActivate = false
-    requestEpoch.value += 1
-    reloadFromFirstPage()
-  }
 })
 onBeforeUnmount(() => requestGate.deactivate())
 </script>

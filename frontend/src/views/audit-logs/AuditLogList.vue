@@ -37,10 +37,10 @@
         <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'outcome'">
-        <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
+        <a-tag :color="record.lifecycleStatus === 'in_progress' ? 'processing' : outcomeColor(record.auditOutcome)">{{ record.lifecycleStatus === 'in_progress' ? '进行中' : outcomeText(record.auditOutcome) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'status'">
-        <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ statusText(record.finalStatusCode, record.success) }}</a-tag>
+        <a-tag :color="record.lifecycleStatus === 'in_progress' ? 'processing' : statusColor(record.finalStatusCode, record.success)">{{ record.lifecycleStatus === 'in_progress' ? '进行中' : statusText(record.finalStatusCode, record.success) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'trafficSource'">
         <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
@@ -89,8 +89,8 @@
         <div class="mobile-list-card-head">
           <div class="mobile-list-card-title">{{ record.method }} {{ record.path }}</div>
           <div class="mobile-list-card-tags">
-            <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
-            <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ statusText(record.finalStatusCode, record.success) }}</a-tag>
+            <a-tag :color="record.lifecycleStatus === 'in_progress' ? 'processing' : outcomeColor(record.auditOutcome)">{{ record.lifecycleStatus === 'in_progress' ? '进行中' : outcomeText(record.auditOutcome) }}</a-tag>
+            <a-tag :color="record.lifecycleStatus === 'in_progress' ? 'processing' : statusColor(record.finalStatusCode, record.success)">{{ record.lifecycleStatus === 'in_progress' ? '进行中' : statusText(record.finalStatusCode, record.success) }}</a-tag>
             <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
             <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
             <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>

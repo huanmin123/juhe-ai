@@ -176,6 +176,8 @@ async function resolveAccountBalanceRefreshAttempt(
       nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
     }
   } catch (error) {
+    const failureKind = accountBalanceFailureKind(error)
+    if (!failureKind) throw error
     const completedAt = new Date().toISOString()
     const errorMessage = accountBalanceErrorMessage(error)
     const failedSnapshot: AccountBalanceSnapshot = {
@@ -184,7 +186,7 @@ async function resolveAccountBalanceRefreshAttempt(
       lastAttemptAt: completedAt
     }
     if (dependencies.mode === 'manual') {
-      if (accountBalanceFailureKind(error) !== 'transient') {
+      if (failureKind !== 'transient') {
         return {
           snapshot: { ...failedSnapshot, status: 'unsupported' },
           nextConfig: resolvedBalanceConfig(candidate.config, undefined),
@@ -197,7 +199,7 @@ async function resolveAccountBalanceRefreshAttempt(
         nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
       }
     }
-    if (accountBalanceFailureKind(error) !== 'transient') {
+    if (failureKind !== 'transient') {
       return {
         snapshot: { status: 'unsupported', errorMessage, lastAttemptAt: completedAt },
         nextConfig: resolvedBalanceConfig(candidate.config, undefined),
@@ -302,7 +304,9 @@ export async function queryBuiltinAccountBalance(
       if (context && Date.now() >= context.deadlineAtMs) {
         throw new UpstreamRequestTimeoutError('上游余额查询超时')
       }
-      if (accountBalanceFailureKind(error) === 'transient') transientError = error
+      const failureKind = accountBalanceFailureKind(error)
+      if (!failureKind) throw error
+      if (failureKind === 'transient') transientError = error
       else deterministicError = error
       // A saved preference can become stale when the relay, key, or proxy changes.
     }
@@ -555,19 +559,37 @@ async function requestJson(url: URL, context: AccountBalanceRequestContext): Pro
   const remainingMs = context.deadlineAtMs - Date.now()
   if (remainingMs <= 0) throw new UpstreamRequestTimeoutError('上游余额查询超时')
   const deadlineSignal = AbortSignal.timeout(remainingMs)
-  const response = await requestUpstream(url.toString(), {
-    method: 'GET',
-    headers: new Headers({ authorization: `Bearer ${context.apiKey}`, accept: 'application/json' }),
-    proxyUrl: context.proxyUrl,
-    timeoutMs: remainingMs,
-    requestTimeoutMs: remainingMs,
-    signal: context.signal ? AbortSignal.any([context.signal, deadlineSignal]) : deadlineSignal
-  })
+  let response: Awaited<ReturnType<typeof requestUpstream>>
+  try {
+    response = await requestUpstream(url.toString(), {
+      method: 'GET',
+      headers: new Headers({ authorization: `Bearer ${context.apiKey}`, accept: 'application/json' }),
+      proxyUrl: context.proxyUrl,
+      timeoutMs: remainingMs,
+      requestTimeoutMs: remainingMs,
+      signal: context.signal ? AbortSignal.any([context.signal, deadlineSignal]) : deadlineSignal
+    })
+  } catch (error) {
+    if (accountBalanceFailureKind(error)) throw error
+    if (isGenericUpstreamNetworkError(error)) throw transientBalanceError('上游余额接口网络请求失败')
+    throw error
+  }
   if (!response.ok) throw neutralBalanceError(`上游余额接口返回非成功响应（HTTP ${response.status}）`)
   if (!response.body) throw deterministicBalanceError('上游余额接口响应为空')
   const chunks: Buffer[] = []
   let totalBytes = 0
-  for await (const chunk of response.body) {
+  const bodyIterator = response.body[Symbol.asyncIterator]()
+  while (true) {
+    let nextChunk: IteratorResult<Uint8Array>
+    try {
+      nextChunk = await bodyIterator.next()
+    } catch (error) {
+      if (accountBalanceFailureKind(error)) throw error
+      if (isGenericUpstreamNetworkError(error)) throw transientBalanceError('上游余额接口网络请求失败')
+      throw error
+    }
+    if (nextChunk.done) break
+    const chunk = nextChunk.value
     totalBytes += chunk.byteLength
     if (totalBytes > responseMaxBytes) throw deterministicBalanceError('上游余额接口响应超过 256 KiB')
     chunks.push(Buffer.from(chunk))
@@ -668,12 +690,27 @@ function transientBalanceError(message: string): AccountBalanceQueryFailure {
   return new AccountBalanceQueryFailure('transient', message)
 }
 
-function accountBalanceFailureKind(error: unknown): AccountBalanceFailureKind {
+function accountBalanceFailureKind(error: unknown): AccountBalanceFailureKind | undefined {
   if (error instanceof AccountBalanceQueryFailure) return error.kind
-  if (error instanceof UpstreamRequestTimeoutError || error instanceof UpstreamRequestAbortedError || (error instanceof DOMException && error.name === 'TimeoutError')) {
+  if (
+    error instanceof UpstreamRequestTimeoutError
+    || error instanceof UpstreamRequestAbortedError
+    || (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError'))
+  ) {
     return 'transient'
   }
-  return 'transient'
+  return undefined
+}
+
+function isGenericUpstreamNetworkError(error: unknown): boolean {
+  const visited = new Set<unknown>()
+  let current = error
+  while (current instanceof Error && !visited.has(current)) {
+    if (current instanceof TypeError || typeof (current as NodeJS.ErrnoException).code === 'string') return true
+    visited.add(current)
+    current = current.cause
+  }
+  return false
 }
 
 function balanceRefreshExecutionContext(

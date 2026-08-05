@@ -17,7 +17,7 @@
           <a-descriptions-item v-if="detail.conversationKey" label="内部会话 Key" :span="2">
             <span class="identity-key">{{ detail.conversationKey }}</span>
           </a-descriptions-item>
-          <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
+          <a-descriptions-item label="结果">{{ detail.lifecycleStatus === 'in_progress' ? '进行中' : outcomeText(detail.auditOutcome) }}</a-descriptions-item>
           <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
           <a-descriptions-item label="接口">{{ detail.method }} {{ detail.path }}</a-descriptions-item>
           <a-descriptions-item label="模型">
@@ -27,7 +27,7 @@
             </span>
             <span v-else>-</span>
           </a-descriptions-item>
-          <a-descriptions-item label="结果状态">{{ statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
+          <a-descriptions-item label="结果状态">{{ detail.lifecycleStatus === 'in_progress' ? '进行中' : statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="HTTP 状态">{{ transportStatusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="AI账户">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
@@ -89,7 +89,7 @@
                 <a-tooltip v-if="record.payload" :title="payloadCaptureStatusDescription(record.payload)">
                   <span class="chain-secondary-text">{{ captureStatusText(record.captureStatus) }}</span>
                 </a-tooltip>
-                <span v-else class="chain-secondary-text">未捕获</span>
+                <span v-else class="chain-secondary-text">未保留原文</span>
               </template>
               <template v-else-if="column.key === 'target'">
                 <span :class="record.errorMessage ? 'error-cell' : 'url-cell'">{{ record.url || '-' }}</span>
@@ -113,7 +113,7 @@
                   <span>耗时</span>
                   <strong>{{ formatDuration(record.durationMs) }}</strong>
                   <span>数据</span>
-                  <strong>{{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }} · {{ record.payload ? captureStatusText(record.captureStatus) : '未捕获' }}</strong>
+                  <strong>{{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }} · {{ record.payload ? captureStatusText(record.captureStatus) : '未保留原文' }}</strong>
                   <span>目标 / 错误</span>
                   <strong :class="record.errorMessage ? 'error-cell' : 'url-cell'">{{ record.url || '-' }}</strong>
                 </div>
@@ -530,7 +530,7 @@ function requestChainActions(record: RequestChainRow): RowActionItem[] {
   return [
     {
       key: 'payload',
-      label: record.payload ? payloadActionLabel(record.payload) : '未捕获',
+      label: record.payload ? payloadActionLabel(record.payload) : '未保留原文',
       icon: 'detail',
       tone: 'info',
       disabled: !readablePayload(record.payload) || props.payloadLoadingId === record.payload?.id

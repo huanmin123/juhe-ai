@@ -121,7 +121,7 @@ export function captureStatusText(value?: string): string {
     hash_only: '仅 Hash',
     expired: '已过期',
     overflow: '超限丢弃',
-    dropped: '已丢弃'
+    dropped: '已裁剪'
   }[value || ''] ?? (value || '-')
 }
 

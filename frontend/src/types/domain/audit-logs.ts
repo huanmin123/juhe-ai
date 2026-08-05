@@ -3,6 +3,8 @@ export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeede
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type AuditPayloadBlobStorageStatus = 'not_saved' | 'metadata_missing' | 'file_missing' | 'available'
+export type AuditLogLifecycleStatus = 'in_progress' | 'finalized'
+export type AuditPayloadDropReason = 'transport_budget' | 'capacity_limit'
 
 export interface AuditLogSummary {
   id: string
@@ -47,6 +49,7 @@ export interface AuditLogSummary {
   compressionSavedBytes: number
   errorGroupId?: string
   captureStatus: string
+  lifecycleStatus: AuditLogLifecycleStatus
   startedAt: string
   endedAt: string
   durationMs?: number
@@ -63,7 +66,7 @@ export type AuditLogListItem = Pick<AuditLogSummary,
   | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName'
   | 'accountId' | 'accountName'
   | 'method' | 'path' | 'model' | 'upstreamModel' | 'modelMappingApplied'
-  | 'stream' | 'auditOutcome' | 'success' | 'finalStatusCode'
+  | 'stream' | 'auditOutcome' | 'success' | 'finalStatusCode' | 'lifecycleStatus'
   | 'durationMs' | 'httpDurationMs' | 'createdAt'
 >
 
@@ -108,6 +111,7 @@ export interface AuditLogPayloadSummary {
   sizeBytes: number
   compressedSizeBytes: number
   captureStatus: string
+  dropReason?: AuditPayloadDropReason
   createdAt: string
   hasHeaders: boolean
   hasBody: boolean
@@ -128,13 +132,13 @@ export type AuditLogDetailAttemptSupplement = Pick<AuditLogAttemptSummary,
 
 export type AuditLogDetailPayloadSupplement = Pick<AuditLogPayloadSummary,
   | 'id' | 'attemptId' | 'partType' | 'sequenceIndex'
-  | 'sizeBytes' | 'captureStatus' | 'createdAt' | 'hasHeaders' | 'hasBody'
+  | 'sizeBytes' | 'captureStatus' | 'dropReason' | 'createdAt' | 'hasHeaders' | 'hasBody'
 >
 
 export interface AuditLogDetailSupplement extends Pick<AuditLogSummary,
   | 'queryString' | 'errorMessage'
   | 'sampleBucket' | 'sampleReason'
-  | 'startedAt' | 'endedAt' | 'httpCompletedAt'
+  | 'lifecycleStatus' | 'startedAt' | 'endedAt' | 'httpCompletedAt'
 > {
   conversationKey?: string
   attempts: AuditLogDetailAttemptSupplement[]

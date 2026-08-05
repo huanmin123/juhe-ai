@@ -66,7 +66,10 @@ import {
 } from './request/preflight.js'
 import { resolveNextHybridGatewayRoute } from './hybrid/routing.service.js'
 import { appendHybridQualityRepairInstruction } from './hybrid/quality-repair.service.js'
-import { recoverCodexEncryptedContentRequest } from './request/codex-encrypted-content-recovery.js'
+import {
+  codexEncryptedContentRecoveryExhaustedMessage,
+  recoverCodexEncryptedContentRequest
+} from './request/codex-encrypted-content-recovery.js'
 import {
   fetchFirstAvailableUpstream,
   GatewayRequestWallBudgetExhaustedError,
@@ -522,6 +525,13 @@ let pendingCodexEncryptedContentRecovery: {
   body: Buffer
   semanticRetryId: string
 } | undefined
+let codexEncryptedContentRecoveryRetryMarker: {
+  accountId: string
+  upstreamUrl: string
+  body: Buffer
+  semanticRetryId: string
+  cleanupRequestDelivered: boolean
+} | undefined
 let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
   const enteredRouteGroupIds = new Set<string>([currentPreflight.usageContext.groupId])
@@ -613,6 +623,7 @@ let codexTurnAvoidedFallbackEnabled = false
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
     pendingCodexEncryptedContentRecovery = undefined
+    codexEncryptedContentRecoveryRetryMarker = undefined
     speedFirstByteRetryCount = 0
     speedFirstRetryCandidateAccountIds = undefined
     speedFirstCutoverReservation?.release()
@@ -1501,14 +1512,27 @@ let codexTurnAvoidedFallbackEnabled = false
           return
         }
         if (handledResponse.retryUpstream) {
+          const recoveryRetryMarker = codexEncryptedContentRecoveryRetryMarker
+          if (
+            recoveryRetryMarker
+            && semanticRetryId === recoveryRetryMarker.semanticRetryId
+            && recoveryRetryMarker.accountId === account.id
+            && recoveryRetryMarker.upstreamUrl === upstreamResult.upstreamUrl
+            && upstreamResponse.ok
+            && Buffer.isBuffer(upstreamResult.requestBody)
+            && upstreamResult.requestBody.equals(recoveryRetryMarker.body)
+          ) {
+            recoveryRetryMarker.cleanupRequestDelivered = true
+          }
+          const compatibilityRecoveryErrorText = handledResponse.compatibilityRecoverySignal
+            ?? handledResponse.uncommittedResponseBody?.toString('utf8')
+            ?? handledResponse.message
           const compatibilityRecovery = await recoverCodexEncryptedContentRequest({
             req,
             account,
             requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
             body: upstreamResult.requestBody,
-            upstreamErrorText: handledResponse.compatibilityRecoverySignal
-              ?? handledResponse.uncommittedResponseBody?.toString('utf8')
-              ?? handledResponse.message,
+            upstreamErrorText: compatibilityRecoveryErrorText,
             signal: requestExecutionSignal
           })
           if (compatibilityRecovery.action === 'retry_with_body_variant') {
@@ -1516,6 +1540,13 @@ let codexTurnAvoidedFallbackEnabled = false
               accountId: account.id,
               body: compatibilityRecovery.body,
               semanticRetryId: compatibilityRecovery.semanticRetryId
+            }
+            codexEncryptedContentRecoveryRetryMarker = {
+              accountId: account.id,
+              upstreamUrl,
+              body: compatibilityRecovery.body,
+              semanticRetryId: compatibilityRecovery.semanticRetryId,
+              cleanupRequestDelivered: false
             }
             pendingSemanticRetryId = compatibilityRecovery.semanticRetryId
             auditCapture.addGatewayMetadata({
@@ -1552,6 +1583,15 @@ let codexTurnAvoidedFallbackEnabled = false
                   : 'recovery_not_applicable'
               }
             })
+            const retryMarker = codexEncryptedContentRecoveryRetryMarker
+            const exhaustedRecoverySignal = retryMarker !== undefined
+              && retryMarker.accountId === account.id
+              && retryMarker.upstreamUrl === upstreamResult.upstreamUrl
+              && retryMarker.cleanupRequestDelivered
+              && compatibilityRecovery.action === 'not_recoverable'
+              && compatibilityRecovery.signal !== undefined
+              ? compatibilityRecovery.signal
+              : undefined
             await sendStreamServerRetryExhaustedResponse({
               req,
               res,
@@ -1560,8 +1600,12 @@ let codexTurnAvoidedFallbackEnabled = false
               startedAt,
               retryReason: handledResponse.retryReason,
               decision: handledResponse.responseInspection,
-              message: handledResponse.message,
-              errorCode: handledResponse.errorCode,
+              message: gatewayStreamClientRetryMessage,
+              errorCode: gatewayStreamClientRetryErrorCode,
+              clientVisibleErrorCode: exhaustedRecoverySignal,
+              clientVisibleMessage: exhaustedRecoverySignal
+                ? codexEncryptedContentRecoveryExhaustedMessage
+                : undefined,
               uncommittedResponseBody: handledResponse.uncommittedResponseBody,
               accountId: account.id,
               clientStrategy,
@@ -2406,6 +2450,8 @@ async function sendStreamServerRetryExhaustedResponse(input: {
   decision?: ResponseInspectionDecision
   message: string
   errorCode?: string
+  clientVisibleErrorCode?: string
+  clientVisibleMessage?: string
   uncommittedResponseBody?: Buffer
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
@@ -2430,7 +2476,9 @@ async function sendStreamServerRetryExhaustedResponse(input: {
       startedAt: input.startedAt,
       retryReason: input.retryReason,
       message,
-      errorCode: gatewayStreamClientRetryErrorCode,
+      errorCode: input.errorCode ?? gatewayStreamClientRetryErrorCode,
+      clientVisibleErrorCode: input.clientVisibleErrorCode,
+      clientVisibleMessage: input.clientVisibleMessage,
       uncommittedResponseBody: input.uncommittedResponseBody,
       accountId: input.accountId,
       clientStrategy: input.clientStrategy,
@@ -2513,12 +2561,14 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
   retryReason: StreamServerRetryReason
   message: string
   errorCode?: string
+  clientVisibleErrorCode?: string
+  clientVisibleMessage?: string
   uncommittedResponseBody?: Buffer
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
   downstreamCommitState?: GatewayDownstreamCommitState
 }): Promise<void> {
-  const clientVisibleMessage = gatewayStreamClientRetryMessage
+  const clientVisibleMessage = input.clientVisibleMessage ?? gatewayStreamClientRetryMessage
   input.auditCapture.addGatewayMetadata({
     label: 'stream_server_retry_exhausted',
     metadata: {
@@ -2567,7 +2617,7 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
   const failureEvent = writeGatewayStreamFailureEvent(
     input.res,
     clientVisibleMessage,
-    input.errorCode,
+    input.clientVisibleErrorCode ?? input.errorCode,
     gatewayProtocolClientErrorProtocolForRequest(input.req),
     input.clientStrategy?.downstreamProtocol
   )

@@ -15,6 +15,7 @@ const source = readFileSync(
 )
 const listSource = readFileSync(resolve(frontendRoot, 'src/views/audit-logs/AuditLogList.vue'), 'utf8')
 const columnsSource = readFileSync(resolve(frontendRoot, 'src/views/audit-logs/auditLogTableColumns.ts'), 'utf8')
+const payloadDetailsSource = readFileSync(resolve(frontendRoot, 'src/views/audit-logs/auditPayloadDetails.ts'), 'utf8')
 const backgroundJobsSource = readFileSync(resolve(frontendRoot, 'src/views/stats/StatsBackgroundJobsCard.vue'), 'utf8')
 
 assert.match(listSource, /column\.key === 'model'[\s\S]*record\.model[\s\S]*modelMappingApplied[\s\S]*上游/, '审计日志模型列必须与使用记录一致显示请求模型和映射后的上游模型标签')
@@ -61,16 +62,21 @@ assert.ok(!source.includes("{ title: '捕获', key: 'captureStatus'"), '捕获�
 assert.ok(!source.includes("{ title: '耗时', key: 'duration'"), '耗时应与时间合并展示')
 assert.ok(!source.includes("{ title: '大小', key: 'size'"), '大小应合并到数据列')
 assert.ok(
-  source.includes("record.payload ? captureStatusText(record.captureStatus) : '未捕获'"),
-  '存在无正文 payload 时移动端仍应显示 overflow 捕获状态，不能显示未捕获'
+  source.includes("record.payload ? captureStatusText(record.captureStatus) : '未保留原文'"),
+  '不存在 payload 的历史记录必须显示未保留原文，不能误报未捕获'
 )
 assert.ok(
   source.includes("record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes)"),
   '无正文 payload 仍应显示已记录的原始字节数'
 )
 assert.ok(
-  source.includes("label: record.payload ? payloadActionLabel(record.payload) : '未捕获'"),
-  '存在无正文 payload 时详情操作不应标记为未捕获'
+  source.includes("label: record.payload ? payloadActionLabel(record.payload) : '未保留原文'"),
+  '不存在 payload 的详情操作不应标记为未捕获'
+)
+assert.ok(
+  payloadDetailsSource.includes("record.dropReason === 'transport_budget'")
+    && payloadDetailsSource.includes('链路 tombstone'),
+  '传输预算裁剪的 payload 必须展示 tombstone 与裁剪原因'
 )
 
 console.log('audit log detail layout regression passed')

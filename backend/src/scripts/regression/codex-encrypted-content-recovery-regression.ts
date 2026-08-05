@@ -152,6 +152,33 @@ const genericClient = await recoverCodexEncryptedContentRequest({
 })
 assert.deepEqual(genericClient, { action: 'not_applicable' }, '普通 OpenAI 客户端不得继承 Codex 加密恢复语义')
 
+const exactSignals = [
+  'thinking_signature_invalid',
+  'invalid_encrypted_content',
+  'encrypted_content_decryption_failed'
+] as const
+for (const signal of exactSignals) {
+  assert.equal(
+    classifyCodexEncryptedContentRecoverySignal(signal),
+    signal,
+    `精确 allowlist 信号 ${signal} 必须被分类器保留`
+  )
+  const exactSignalRecovery = await recoverCodexEncryptedContentRequest({
+    req: request(originalBody),
+    account,
+    requestClientCompatibility: 'codex_responses',
+    body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
+    upstreamErrorText: signal
+  })
+  assert.equal(exactSignalRecovery.action, 'retry_with_body_variant', `${signal} 必须产生清洗重试`)
+  if (exactSignalRecovery.action !== 'retry_with_body_variant') throw new Error(`expected ${signal} recovery body variant`)
+  assert.equal(
+    exactSignalRecovery.semanticRetryId,
+    `codex_encrypted_content_cleanup:${signal}`,
+    `${signal} 必须使用匹配的 semantic retry ID`
+  )
+}
+
 assert.equal(
   classifyCodexEncryptedContentRecoverySignal('上游调试内容提到了 thinking_signature_invalid，但这不是错误码'),
   undefined,

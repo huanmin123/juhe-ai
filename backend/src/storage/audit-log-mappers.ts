@@ -79,6 +79,7 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
     compressionSavedBytes: Number(row.compression_saved_bytes ?? Math.max(0, rawPayloadBytes - compressedPayloadBytes)),
     errorGroupId: optionalString(row.error_group_id),
     captureStatus: String(row.capture_status),
+    lifecycleStatus: String(row.lifecycle_status ?? 'finalized') as import('./audit-log-types.js').AuditLogLifecycleStatus,
     startedAt: String(row.started_at),
     endedAt: String(row.ended_at),
     durationMs: numberValue(row.duration_ms),
@@ -114,6 +115,7 @@ export function auditLogListItemFromRow(row: AuditLogRow, systemAccountNames: Ma
     auditOutcome: String(row.audit_outcome) as AuditOutcome,
     success: row.success === 1,
     finalStatusCode: numberValue(row.final_status_code),
+    lifecycleStatus: String(row.lifecycle_status ?? 'finalized') as import('./audit-log-types.js').AuditLogLifecycleStatus,
     durationMs: numberValue(row.duration_ms),
     httpDurationMs: numberValue(row.http_duration_ms),
     createdAt: String(row.created_at)
@@ -126,6 +128,7 @@ export function auditLogDetailSupplementFromRow(row: AuditLogRow): Omit<AuditLog
     errorMessage: optionalString(row.error_message),
     sampleBucket: Number(row.sample_bucket ?? 0),
     sampleReason: String(row.sample_reason),
+    lifecycleStatus: String(row.lifecycle_status ?? 'finalized') as import('./audit-log-types.js').AuditLogLifecycleStatus,
     startedAt: String(row.started_at),
     endedAt: String(row.ended_at),
     httpCompletedAt: optionalString(row.http_completed_at),
@@ -161,6 +164,7 @@ export function auditLogDetailPayloadSupplementFromRow(row: AuditLogRow): AuditL
     sequenceIndex: Number(row.sequence_index ?? 0),
     sizeBytes: Number(row.raw_size_bytes ?? 0),
     captureStatus: String(row.capture_status ?? 'complete') as AuditPayloadCaptureStatus,
+    dropReason: optionalString(row.drop_reason) as import('./audit-log-types.js').AuditPayloadDropReason | undefined,
     createdAt: String(row.created_at),
     hasHeaders: Boolean(optionalString(row.headers_blob_id)),
     hasBody: Boolean(optionalString(row.body_blob_id))
@@ -260,6 +264,7 @@ export function auditLogPayloadSummaryFromRow(row: AuditLogRow): AuditLogPayload
     sizeBytes,
     compressedSizeBytes: Number(row.compressed_size_bytes ?? sizeBytes),
     captureStatus: String(row.capture_status ?? 'complete') as AuditPayloadCaptureStatus,
+    dropReason: optionalString(row.drop_reason) as import('./audit-log-types.js').AuditPayloadDropReason | undefined,
     createdAt: String(row.created_at),
     hasHeaders: Boolean(optionalString(row.headers_blob_id)),
     hasBody: Boolean(optionalString(row.body_blob_id))

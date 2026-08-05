@@ -11,6 +11,7 @@ import {
   type AccountBalanceRefreshOutcome,
   type AccountBalanceRefreshResult
 } from '../accounts/account-balance-query.service.js'
+import { UpstreamRequestAbortedError } from '../gateway/upstream/request.js'
 import { loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 
@@ -21,11 +22,12 @@ const refreshRunBudgetMs = 45_000
 const refreshCandidateTimeoutMs = 20_000
 
 export interface AccountBalanceRefreshRunSummary {
-  outcome: 'success' | 'partial'
+  outcome: 'success'
   selectedCount: number
   processedCount: number
   deferredCount: number
-  candidateFailureCount: number
+  diagnosticCount: number
+  unfinishedCount: number
   refreshedCount: number
   leaseBusyCount: number
   staleCount: number
@@ -76,7 +78,7 @@ export async function runAccountBalanceRefresh(
     dependencies.loadRuntimeAvailability ?? loadAccountRuntimeAvailabilityByKeys
   )
   await Promise.all(deferredCandidates.map(async (candidate) => {
-    await deferCandidate(candidate).catch(() => false)
+    await deferCandidate(candidate)
   }))
   const runtimeDeferredCount = deferredCandidates.length
   let cursor = 0
@@ -114,45 +116,39 @@ export async function runAccountBalanceRefresh(
         outcomeCounts[outcome] += 1
         processedCount += 1
       } catch (error) {
-        const outcome: AccountBalanceRefreshOutcome = candidateController.signal.aborted ? 'stale' : 'failed'
-        outcomeCounts[outcome] += 1
+        if (!isCandidateTimeoutAbort(error, candidateController.signal.reason)) throw error
+        outcomeCounts.stale += 1
         processedCount += 1
-        logger.warn(errorLogFields(error, {
-          event: 'account_balance_refresh_failed',
+        logger.info(errorLogFields(error, {
+          event: 'account_balance_refresh_candidate_diagnostic',
           accountId: candidate.id,
           systemAccountId: candidate.systemAccountId,
-          outcome
-        }), 'AI 账户上游余额刷新失败')
+          outcome: 'stale'
+        }), 'AI 账户上游余额查询在候选截止前未完成')
       } finally {
         clearTimeout(candidateTimeout)
         runSignal?.removeEventListener('abort', abortCandidate)
       }
     }
   }))
-  const candidateFailureCount = outcomeCounts.stale + outcomeCounts.failed
+  const diagnosticCount = outcomeCounts.stale + outcomeCounts.failed + outcomeCounts.unsupported
   const deferredCount = runtimeDeferredCount + Math.max(0, candidates.length - cursor)
-  const partial = candidateFailureCount > 0 || outcomeCounts.lease_busy > 0 || deferredCount > 0
+  const unfinishedCount = outcomeCounts.lease_busy + deferredCount
   const summary: AccountBalanceRefreshRunSummary = {
-    outcome: partial ? 'partial' : 'success',
+    outcome: 'success',
     selectedCount: selectedCandidates.length,
     processedCount,
     deferredCount,
-    candidateFailureCount,
+    diagnosticCount,
+    unfinishedCount,
     refreshedCount: outcomeCounts.refreshed,
     leaseBusyCount: outcomeCounts.lease_busy,
     staleCount: outcomeCounts.stale,
     failedCount: outcomeCounts.failed,
     unsupportedCount: outcomeCounts.unsupported,
-    durationMs: Math.max(0, now() - startedAtMs),
-    ...(partial
-      ? { warning: `AI 账户余额刷新部分完成：失败 ${candidateFailureCount}，租约占用 ${outcomeCounts.lease_busy}，延期 ${deferredCount}` }
-      : {})
+    durationMs: Math.max(0, now() - startedAtMs)
   }
-  if (summary.outcome === 'partial') {
-    logger.warn({ event: 'account_balance_refresh_partial', ...summary }, summary.warning)
-    return summary
-  }
-  logger.info({ event: 'account_balance_refresh_completed', ...summary }, 'AI 账户上游余额刷新完成')
+  logger.info({ event: 'account_balance_refresh_completed', ...summary }, 'AI 账户上游余额刷新轮次完成')
   return summary
 }
 
@@ -175,7 +171,9 @@ async function partitionCallableBalanceRefreshCandidates(
 }
 
 function accountBalanceRefreshCandidateOutcome(result: unknown): AccountBalanceRefreshOutcome {
-  if (!result || typeof result !== 'object') return 'refreshed'
+  if (!result || typeof result !== 'object') {
+    throw new Error('AI 账户余额刷新候选返回结果无效：必须返回包含已知 outcome 的对象')
+  }
   const outcome = (result as { outcome?: unknown }).outcome
   return outcome === 'refreshed'
     || outcome === 'lease_busy'
@@ -183,5 +181,20 @@ function accountBalanceRefreshCandidateOutcome(result: unknown): AccountBalanceR
     || outcome === 'failed'
     || outcome === 'unsupported'
     ? outcome
-    : 'refreshed'
+    : invalidAccountBalanceRefreshCandidateOutcome()
+}
+
+function isCandidateTimeout(reason: unknown): reason is AccountBalanceRefreshCandidateTimeoutError {
+  return reason instanceof AccountBalanceRefreshCandidateTimeoutError
+}
+
+function isCandidateTimeoutAbort(error: unknown, reason: unknown): boolean {
+  if (!isCandidateTimeout(reason)) return false
+  return error === reason
+    || error instanceof UpstreamRequestAbortedError
+    || (error instanceof DOMException && error.name === 'AbortError')
+}
+
+function invalidAccountBalanceRefreshCandidateOutcome(): never {
+  throw new Error('AI 账户余额刷新候选返回结果无效：outcome 未知或缺失')
 }

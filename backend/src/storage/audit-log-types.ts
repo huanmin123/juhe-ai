@@ -6,6 +6,8 @@ export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeeded' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'downstream_closed'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditPayloadCaptureStatus = 'complete' | 'summary_only' | 'hash_only' | 'expired' | 'overflow' | 'dropped'
+export type AuditLogLifecycleStatus = 'in_progress' | 'finalized'
+export type AuditPayloadDropReason = 'transport_budget' | 'capacity_limit'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type PersistedAuditTrafficSource = 'gateway' | 'manual_account_test' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 
@@ -21,6 +23,8 @@ export interface AuditLogPayloadInput {
   bodySha256?: string
   rawBodySizeBytes?: number
   captureStatus?: AuditPayloadCaptureStatus
+  /** A tombstone has no original headers/body; this records why it was omitted. */
+  dropReason?: AuditPayloadDropReason
   createdAt?: string
 }
 
@@ -54,6 +58,7 @@ export interface AuditLogAttemptInput {
 
 export interface AuditLogInput {
   id?: string
+  lifecycleStatus?: AuditLogLifecycleStatus
   traceId: string
   conversationKey?: string
   sessionId?: string
@@ -140,6 +145,7 @@ export interface AuditLogSummary {
   compressionSavedBytes: number
   errorGroupId?: string
   captureStatus: string
+  lifecycleStatus: AuditLogLifecycleStatus
   startedAt: string
   endedAt: string
   durationMs?: number
@@ -156,7 +162,7 @@ export type AuditLogListItem = Pick<AuditLogSummary,
   | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName'
   | 'accountId' | 'accountName'
   | 'method' | 'path' | 'model' | 'upstreamModel' | 'modelMappingApplied'
-  | 'stream' | 'auditOutcome' | 'success' | 'finalStatusCode'
+  | 'stream' | 'auditOutcome' | 'success' | 'finalStatusCode' | 'lifecycleStatus'
   | 'durationMs' | 'httpDurationMs' | 'createdAt'
 >
 
@@ -201,6 +207,7 @@ export interface AuditLogPayloadSummary {
   sizeBytes: number
   compressedSizeBytes: number
   captureStatus: AuditPayloadCaptureStatus
+  dropReason?: AuditPayloadDropReason
   createdAt: string
   hasHeaders: boolean
   hasBody: boolean
@@ -221,13 +228,13 @@ export type AuditLogDetailAttemptSupplement = Pick<AuditLogAttemptSummary,
 
 export type AuditLogDetailPayloadSupplement = Pick<AuditLogPayloadSummary,
   | 'id' | 'attemptId' | 'partType' | 'sequenceIndex'
-  | 'sizeBytes' | 'captureStatus' | 'createdAt' | 'hasHeaders' | 'hasBody'
+  | 'sizeBytes' | 'captureStatus' | 'dropReason' | 'createdAt' | 'hasHeaders' | 'hasBody'
 >
 
 export interface AuditLogDetailSupplement extends Pick<AuditLogSummary,
   | 'queryString' | 'errorMessage'
   | 'sampleBucket' | 'sampleReason'
-  | 'startedAt' | 'endedAt' | 'httpCompletedAt'
+  | 'lifecycleStatus' | 'startedAt' | 'endedAt' | 'httpCompletedAt'
 > {
   conversationKey?: string
   attempts: AuditLogDetailAttemptSupplement[]

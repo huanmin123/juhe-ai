@@ -89,20 +89,15 @@ function prepareAuditLogForTransport(input: AuditLogInput, transportBudgetBytes:
   const bodyMaxBytes = input.auditOutcome === 'success'
     ? transportSettings.successFullBodyLimitBytes
     : transportSettings.problemFullBodyLimitBytes
-  let structureDropped = input.attempts.length > 16 || input.payloads.length > 32
-  const sourcePayloads = input.payloads.length <= 32
-    ? input.payloads
-    : [...input.payloads.slice(0, 31), input.payloads[input.payloads.length - 1]].filter(Boolean)
-  const payloads = sourcePayloads.map((payload) => {
+  let structureDropped = false
+  const payloads = input.payloads.map((payload) => {
     const preparedPayload = truncatePayloadStrings({ ...payload })
     summarizeAuditPayloadForLimit(preparedPayload, bodyMaxBytes)
     return preparedPayload
   })
   let prepared: AuditLogInput = {
     ...truncateAuditLogStrings(input),
-    attempts: input.attempts.length <= 16
-      ? input.attempts.map(truncateAttemptStrings)
-      : [...input.attempts.slice(0, 15), input.attempts[input.attempts.length - 1]].filter(Boolean).map(truncateAttemptStrings),
+    attempts: input.attempts.map(truncateAttemptStrings),
     payloads,
     captureStatus: structureDropped && input.captureStatus !== 'overflow' ? 'dropped' : input.captureStatus
   }
@@ -136,7 +131,7 @@ function prepareAuditLogForTransport(input: AuditLogInput, transportBudgetBytes:
   for (const item of headerIndexes) {
     const payload = prepared.payloads[item.index]
     if (!payload?.headers) continue
-    prepared.payloads[item.index] = { ...payload, headers: undefined }
+    prepared.payloads[item.index] = transportBudgetTombstone(payload)
     structureDropped = true
     byteTracker.updatePayload(item.index, prepared.payloads[item.index])
     if (prepared.captureStatus !== 'dropped' && prepared.captureStatus !== 'overflow') {
@@ -146,10 +141,13 @@ function prepareAuditLogForTransport(input: AuditLogInput, transportBudgetBytes:
     if (byteTracker.encodedBytes <= transportBudgetBytes) return preparedAuditLogTransport(prepared, byteTracker)
   }
 
-  while (prepared.payloads.length > 2 && byteTracker.encodedBytes > transportBudgetBytes) {
-    const middleIndex = Math.floor(prepared.payloads.length / 2)
-    prepared.payloads.splice(middleIndex, 1)
-    byteTracker.removePayload(middleIndex)
+  const tombstoneIndexes = payloadIndexesFromMiddle(prepared.payloads.length)
+  for (const index of tombstoneIndexes) {
+    if (byteTracker.encodedBytes <= transportBudgetBytes) break
+    const payload = prepared.payloads[index]
+    if (!payload) continue
+    prepared.payloads[index] = transportBudgetTombstone(payload)
+    byteTracker.updatePayload(index, prepared.payloads[index])
     structureDropped = true
   }
   if (structureDropped && prepared.captureStatus !== 'dropped' && prepared.captureStatus !== 'overflow') {
@@ -178,11 +176,49 @@ function prepareAuditLogForTransport(input: AuditLogInput, transportBudgetBytes:
     prepared = markAuditLogStructureDropped({
       ...prepared,
       attempts: [],
-      payloads: []
+      payloads: [transportBudgetRangeTombstone(prepared.payloads)]
     })
     byteTracker.reset(prepared)
   }
   return preparedAuditLogTransport(prepared, byteTracker)
+}
+
+function transportBudgetTombstone(payload: AuditLogInput['payloads'][number]): AuditLogInput['payloads'][number] {
+  return {
+    ...truncatePayloadStrings(payload),
+    headers: undefined,
+    body: undefined,
+    captureStatus: 'dropped',
+    dropReason: 'transport_budget'
+  }
+}
+
+function transportBudgetRangeTombstone(payloads: AuditLogInput['payloads']): AuditLogInput['payloads'][number] {
+  const first = payloads[0]
+  const last = payloads[payloads.length - 1]
+  const totalSize = payloads.reduce((sum, payload) => sum + Math.max(0, payload.rawBodySizeBytes ?? auditPayloadBodyBytes(payload.body)), 0)
+  return {
+    id: `transport-budget-${first?.sequenceIndex ?? 0}-${last?.sequenceIndex ?? 0}`,
+    partType: 'gateway_metadata',
+    sequenceIndex: first?.sequenceIndex ?? 0,
+    contentType: 'application/json; audit=transport-budget-tombstone',
+    rawBodySizeBytes: totalSize,
+    captureStatus: 'dropped',
+    dropReason: 'transport_budget',
+    createdAt: first?.createdAt
+  }
+}
+
+function payloadIndexesFromMiddle(length: number): number[] {
+  const indexes: number[] = []
+  for (let offset = 0; offset < length; offset += 1) {
+    const middle = Math.floor((length - 1) / 2)
+    const left = middle - offset
+    const right = middle + offset + 1
+    if (left >= 0) indexes.push(left)
+    if (right < length) indexes.push(right)
+  }
+  return indexes
 }
 
 function shrinkAuditPayloadSummariesToMinimumWindow(input: AuditLogInput, byteTracker: AuditLogTransportByteTracker): void {

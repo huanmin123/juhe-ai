@@ -17,6 +17,12 @@ import {
   OPENAI_PROTOCOL_CODE
 } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import {
+  getCodexTurnRetryStateForTest,
+  orderOpenAIAccountsByCodexTurnAvoidance
+} from '../../modules/gateway/client-profiles/codex-turn-retry.service.js'
+import { resolveOpenAIGatewayClientStrategy } from '../../modules/gateway/client-profiles/strategy.js'
+import { codexEncryptedContentRecoveryExhaustedMessage } from '../../modules/gateway/request/codex-encrypted-content-recovery.js'
 import { logger } from '../../shared/logger.js'
 
 type ScenarioName =
@@ -452,25 +458,45 @@ async function runCodexEncryptedContentRecoveryScenario(
       }
     ]
   }
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+  const requestHeaders = {
+    authorization: `Bearer ${apiKey.key}`,
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    'x-codex-turn-metadata': JSON.stringify({
+      turn_id: `turn_${scenario}`,
+      session_id: `session_${scenario}`,
+      thread_id: `thread_${scenario}`
+    })
+  }
+  const sendRequest = () => fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey.key}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream',
-      'x-codex-turn-metadata': JSON.stringify({
-        turn_id: `turn_${scenario}`,
-        session_id: `session_${scenario}`,
-        thread_id: `thread_${scenario}`
-      })
-    },
+    headers: requestHeaders,
     body: JSON.stringify(requestBody)
   })
+  const turnStrategy = resolveOpenAIGatewayClientStrategy({
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    headers: requestHeaders,
+    body: requestBody,
+    rawBody: Buffer.from(JSON.stringify(requestBody), 'utf8'),
+    header(name: string): string | undefined {
+      return requestHeaders[name.toLowerCase() as keyof typeof requestHeaders]
+    }
+  } as never, {
+    systemAccountId: access.systemAccountId,
+    apiKeyId: apiKey.id,
+    groupId: group.id,
+    endpoint: 'POST /v1/responses'
+  })
+  assert(turnStrategy.codexTurn?.stateKey, 'E2E 请求必须解析出 Codex turn state key')
+  const response = await sendRequest()
   const responseText = await response.text()
   assert.equal(response.status, 200, `密文恢复应保留 Codex SSE 协议响应：${responseText}`)
   assert.equal(upstreamHits.length, 2, `精确密文错误只能额外重试一次：${JSON.stringify(upstreamHits)}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-clean-${scenario}`)
   assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`)
+  assert.equal(upstreamHits[0]?.path, upstreamHits[1]?.path, 'cleanup retry 必须发送到相同上游 URL 路径')
   const firstInput = JSON.parse(upstreamHits[0]?.bodyText ?? '{}').input as Array<Record<string, unknown>>
   const secondInput = JSON.parse(upstreamHits[1]?.bodyText ?? '{}').input as Array<Record<string, unknown>>
   assert.equal(firstInput.some((item) => item.type === 'reasoning' && typeof item.encrypted_content === 'string'), true, '首次请求必须保留原始密文')
@@ -480,8 +506,34 @@ async function runCodexEncryptedContentRecoveryScenario(
   assert.doesNotMatch(responseText, /resp-rejected-encrypted-content/, '上游首个 response.created 不得泄露给下游')
   if (expectRecoveryExhausted) {
     assert.doesNotMatch(responseText, /resp-rejected-cleaned-content/, '第二次上游失败的 response.created 不得泄露给下游')
-    assert.match(responseText, /response\.failed/, '第二次失败必须由网关转换为本地失败事件')
+    assert.doesNotMatch(responseText, /resp-rejected-encrypted-content/, '首次上游拒绝 response ID 不得泄露给下游')
+    assert.equal((responseText.match(/^event: response\.failed$/gm) ?? []).length, 1, '第二次失败必须只发送一个本地 response.failed')
+    assert.equal((responseText.match(/^event: /gm) ?? []).length, 1, '第二次失败不得保留任意上游 SSE 事件')
+    assert.match(responseText, /"type":"response\.failed"/, '第二次失败必须由网关转换为本地失败事件')
+    assert.match(responseText, /"code":"invalid_encrypted_content"/, '第二次命中不同 allowlist 信号时必须保留第二次专属错误码')
+    assert(responseText.includes(codexEncryptedContentRecoveryExhaustedMessage), '清洗后再次失败必须返回固定中文恢复说明')
+    assert.doesNotMatch(responseText, /fixture-rejected-reasoning-content|fixture-rejected-agent-message-content/, '客户端响应不得泄露 fixture 密文')
+    assert.doesNotMatch(responseText, /Encrypted function output content could not be decrypted or decoded\./, '客户端响应不得泄露上游拒绝正文')
     assert.doesNotMatch(responseText, /response\.completed/, '清洗后的第二次失败不得伪造完成事件')
+    assert.deepEqual(
+      getCodexTurnRetryStateForTest(turnStrategy.codexTurn.stateKey),
+      { failureCount: 1, failedAccountIds: [account.id] },
+      '专属客户端 code 不得替换 Codex turn 内部 upstream_retryable_error 失败记录'
+    )
+    const secondResponse = await sendRequest()
+    await secondResponse.text()
+    assert.equal(upstreamHits.length, 4, '同一请求最多只额外发送一次 cleanup retry')
+    assert.equal(upstreamHits[2]?.authorization, `Bearer sk-upstream-clean-${scenario}`, '第二个同 turn 请求在避让阈值前仍应使用原账号')
+    assert.equal(upstreamHits[3]?.authorization, `Bearer sk-upstream-clean-${scenario}`, '第二个同 turn 请求的 cleanup retry 必须保持原账号')
+    const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([
+      { id: account.id, name: 'failed-primary' },
+      { id: 'fallback-account', name: 'fallback-account' }
+    ] as never, turnStrategy)
+    assert.deepEqual(
+      avoidance.accounts.map((candidate) => candidate.id),
+      ['fallback-account', account.id],
+      '内部 upstream_retryable_error 必须在同 turn 两次失败后保持既有候选避让顺序'
+    )
     return
   }
   assert.match(responseText, /clean codex_encrypted_content_recovery_sse/, `恢复请求必须完成：${responseText}`)
@@ -731,13 +783,17 @@ function sendCodexEncryptedContentRecoverySse(
     return
   }
   if (scenario === 'codex_encrypted_content_recovery_exhausted_sse') {
-    sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-cleaned-content')
+    sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-cleaned-content', 'invalid_encrypted_content')
     return
   }
   sendResponsesSse(res, 'codex_encrypted_content_recovery_sse', false)
 }
 
-function sendCodexEncryptedContentRecoveryFailure(res: http.ServerResponse, responseId: string): void {
+function sendCodexEncryptedContentRecoveryFailure(
+  res: http.ServerResponse,
+  responseId: string,
+  code: 'thinking_signature_invalid' | 'invalid_encrypted_content' = 'thinking_signature_invalid'
+): void {
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.write(`event: response.created\ndata: ${JSON.stringify({
     type: 'response.created',
@@ -745,7 +801,7 @@ function sendCodexEncryptedContentRecoveryFailure(res: http.ServerResponse, resp
   })}\n\n`)
   res.end(`event: error\ndata: ${JSON.stringify({
     type: 'error',
-    code: 'thinking_signature_invalid',
+    code,
     message: 'Encrypted function output content could not be decrypted or decoded.'
   })}\n\n`)
 }

@@ -55,6 +55,13 @@ assert.match(viewSource, /if \(disposed \|\| !pageActive\.value\) return/, '失�
 assert.match(viewSource, /await windowLoad\s+if \(requestSeq !== statsRequestSeq\) return/, '等待统计窗口期间失效的请求不得继续发起摘要请求')
 assert.match(viewSource, /\.\.\.currentAuthSignature\(\)/, '请求签名必须包含 auth revision 与当前用户身份')
 assert.match(viewSource, /onDeactivate:\s*handlePageDeactivate/, 'KeepAlive 失活必须使在途统计请求失效')
+const activatedSource = viewSource.match(/onActivated\(\(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+assert.match(activatedSource, /setupChartObservers\(false\)/, 'KeepAlive 重新激活必须只恢复图表观察')
+assert.match(activatedSource, /initialLoadInterrupted[\s\S]*!usageOverview\.value[\s\S]*loadData\(\{ forceUsageWindow:/, 'KeepAlive 仅能在初始请求失活中断且无首个结果时恢复必要加载')
+assert.match(viewSource, /const pendingTargets = targets\.filter\(\(\[, section\]\) => !isSectionLoaded\(section\)\)/, '重新激活只能恢复尚未完成首次渐进加载的图表观察')
+const authRevisionWatcher = viewSource.match(/watch\(\(\) => authState\.revision\.value, \(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
+assert.doesNotMatch(authRevisionWatcher, /\b(?:loadData|loadUsageStatsWindow|load)\s*\(/, '身份变化不得加载统计数据或系统账户选项')
+assert.match(authRevisionWatcher, /invalidateStatsRequests\(\)[\s\S]*invalidateSystemAccountOptions\(\)[\s\S]*systemAccounts\.value = \[\][\s\S]*selectedSystemAccountId\.value = allSystemAccountsValue[\s\S]*selectedSystemAccount\.value = undefined[\s\S]*resetSystemAccountOptionsSearch\(\)/, '身份变化必须使系统账户选项失效并清空旧筛选')
 assert.match(viewSource, /:error="summaryError"/, 'summary 加载失败必须显示可区分于零数据的区块错误态')
 assert.match(viewSource, /:on-retry="\(\) => loadData\(\{ force: true \}\)"/, 'summary 错误态必须允许定点重试')
 

@@ -27,6 +27,9 @@ export function payloadCaptureStatusDescription(record: AuditPayloadRow): string
     return `请求超过审计活跃捕获上限，原始请求未完整保存。${suffix}`
   }
   if (record.captureStatus === 'dropped') {
+    if (record.dropReason === 'transport_budget') {
+      return `原始请求已按传输容量裁剪，保留该链路 tombstone 和大小信息。${suffix}`
+    }
     return `原始请求被审计保护裁剪，只保留大小、状态和仍可用的部分。${suffix}`
   }
   if (record.captureStatus === 'expired') {
@@ -67,6 +70,9 @@ export function payloadBodyUnavailableText(payload: AuditPayloadRow): string {
     return '正文未保存：请求超过审计活跃捕获上限。'
   }
   if (payload.captureStatus === 'dropped') {
+    if (payload.dropReason === 'transport_budget') {
+      return '正文已按传输容量裁剪：该链路 tombstone 保留了裁剪原因和大小。'
+    }
     return '正文未保存：该 payload 被审计保护裁剪，只保留大小、状态和可用的 Headers。'
   }
   return '正文未保存或该部分没有正文。'

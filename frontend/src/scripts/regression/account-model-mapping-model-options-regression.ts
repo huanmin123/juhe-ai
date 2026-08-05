@@ -119,27 +119,15 @@ assertMatch(
   '关闭账户弹窗必须同时失效搜索定时器和模型目录同步'
 )
 assertIncludes(accountsViewSource, '@refresh-models="refreshAccountModelCatalog"', '账户表单必须保留用户点击的上游模型同步入口')
+assertNotIncludes(accountsViewSource, 'shouldAutoRefreshAccountModelCatalog', '新增 API Key 草稿不得自动同步上游模型目录')
+assertNotIncludes(accountsViewSource, 'scheduleAutomaticAccountModelCatalogSync', '新增 API Key 草稿不得建立模型目录自动同步定时器')
+assertNotIncludes(accountsViewSource, 'automaticModelCatalogAttemptedRequestKeys', '手动同步不得维护自动同步尝试状态')
 assertMatch(
   accountsViewSource,
-  /function shouldAutoRefreshAccountModelCatalog\(\): boolean[\s\S]*?modalOpen\.value[\s\S]*?editingId\.value[\s\S]*?form\.type !== 'api_key'[\s\S]*?form\.supportedModels\.some[\s\S]*?currentModelCatalogDiscoveryPayload\(\)/,
-  '自动同步必须只在新增 API Key 弹窗、支持模型为空且连接草稿完整时触发'
+  /async function refreshAccountModelCatalog\(\): Promise<void> \{[\s\S]*?const requestKey = modelCatalogDiscoveryRequestKey\(payload\)[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)/,
+  '手动目录同步必须在响应返回时确认草稿没有变更'
 )
-assertMatch(
-  accountsViewSource,
-  /automaticModelCatalogAttemptedRequestKeys\.has\(requestKey\)[\s\S]*?setTimeout\(\(\) => \{[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?void refreshAccountModelCatalog\(\)[\s\S]*?\}, 700\)/,
-  '自动同步必须对同一草稿只尝试一次，并使用 700ms 防抖确认请求 key 仍有效'
-)
-assertMatch(
-  accountsViewSource,
-  /function clearAccountModelCatalogAutoSyncTimer\(\): void[\s\S]*?clearTimeout\(accountModelCatalogAutoSyncTimer\)/,
-  '关闭弹窗、卸载和手动同步前必须清理自动同步定时器'
-)
-assertMatch(
-  accountsViewSource,
-  /async function refreshAccountModelCatalog\(\): Promise<void> \{[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)/,
-  '目录同步请求必须记录 payload key，并在响应返回时确认草稿没有变更'
-)
-assertIncludes(accountsViewSource, "message.error(extractApiErrorMessage(error, '同步上游模型失败'))", '自动同步失败必须保留可观察错误提示')
+assertIncludes(accountsViewSource, "message.error(extractApiErrorMessage(error, '同步上游模型失败'))", '手动同步失败必须保留可观察错误提示')
 assertIncludes(
   accountEditModalSource,
   "credentialItem('supported_endpoint_modes', '上游接口能力'",

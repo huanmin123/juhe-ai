@@ -113,9 +113,10 @@ const detailOpen = ref(false)
 const detailLoading = ref(false)
 const detailError = ref('')
 const requestCoordinator = createAiHealthRequestCoordinator()
-let hasLoadedVisiblePage = false
+let initialVisibleLoadStarted = false
+let initialVisibleLoadCompleted = false
+let initialVisibleLoadGeneration = 0
 let pageActive = true
-let reloadOnActivate = false
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const rangeOptions = [
   { label: '最近一天', value: 24 },
@@ -129,7 +130,6 @@ const { hasMore, items: accounts, loading, pagination, handleTableChange, invali
   pageSize,
   showTotal: (_total, _range, context) => context ? `当前页 ${context.currentPageCount} 个账户` : '',
   fetchPage: async (_options, page) => {
-    hasLoadedVisiblePage = false
     const token = requestCoordinator.beginList()
     const request = isManagementView.value ? api.stats.aiHealth : api.myStats.aiHealth
     try {
@@ -141,7 +141,6 @@ const { hasMore, items: accounts, loading, pagination, handleTableChange, invali
         systemAccountId: scopedSystemAccountId()
       }, { signal: token.signal })
       if (!token.isCurrent()) return supersededPage(page.current, page.pageSize)
-      hasLoadedVisiblePage = true
       return {
         ...result,
         total: knownPageLowerBound(result.page, result.pageSize, result.items.length, result.hasMore)
@@ -309,23 +308,46 @@ function knownPageLowerBound(page: number, currentPageSize: number, itemCount: n
 
 function handleVisibilityChange(): void {
   if (document.visibilityState === 'hidden') {
+    invalidateInitialVisibleLoad()
     requestCoordinator.cancelList()
     requestCoordinator.cancelDetail()
     invalidatePendingLoads()
     return
   }
-  if (pageActive && !hasLoadedVisiblePage) void loadData()
+  loadInitialVisiblePage()
+}
+
+function loadInitialVisiblePage(): void {
+  if (
+    initialVisibleLoadStarted
+    || initialVisibleLoadCompleted
+    || accounts.value.length > 0
+    || !pageActive
+    || document.visibilityState !== 'visible'
+  ) return
+  initialVisibleLoadStarted = true
+  const generation = initialVisibleLoadGeneration
+  void loadData().finally(() => {
+    if (generation !== initialVisibleLoadGeneration) return
+    initialVisibleLoadStarted = false
+    if (pageActive && document.visibilityState === 'visible') initialVisibleLoadCompleted = true
+  })
+}
+
+function invalidateInitialVisibleLoad(): void {
+  initialVisibleLoadGeneration += 1
+  initialVisibleLoadStarted = false
 }
 
 onMounted(() => {
   pageActive = true
   document.addEventListener('visibilitychange', handleVisibilityChange)
-  if (document.visibilityState === 'visible') void loadData()
+  loadInitialVisiblePage()
 })
 
 onDeactivated(() => {
   pageActive = false
-  reloadOnActivate = true
+  invalidateInitialVisibleLoad()
   requestCoordinator.cancelList()
   requestCoordinator.cancelDetail()
   invalidatePendingLoads()
@@ -333,22 +355,18 @@ onDeactivated(() => {
 
 onActivated(() => {
   pageActive = true
-  if (!reloadOnActivate || document.visibilityState !== 'visible') return
-  reloadOnActivate = false
-  void loadData()
+  loadInitialVisiblePage()
 })
 
 watch(() => authState.revision.value, () => {
+  invalidateInitialVisibleLoad()
   requestCoordinator.cancelList()
   invalidatePendingLoads()
   closeDetail()
-  hasLoadedVisiblePage = false
   accounts.value = []
   pagination.current = 1
   pagination.total = 0
   hasMore.value = false
-  if (pageActive && document.visibilityState === 'visible') void loadData()
-  else reloadOnActivate = true
 })
 
 onBeforeUnmount(() => {

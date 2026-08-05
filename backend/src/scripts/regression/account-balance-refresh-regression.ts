@@ -21,14 +21,15 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, accountHealthCheckRepository] = await Promise.all([
+const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, accountHealthCheckRepository, workerSchedulerModule] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-balance.repository.js'),
   import('../../modules/accounts/account-balance-query.service.js'),
   import('../../modules/background/account-balance-refresh.job.js'),
   import('../../modules/background/account-balance-auto-detect.service.js'),
-  import('../../storage/account-health-check.repository.js')
+  import('../../storage/account-health-check.repository.js'),
+  import('../../modules/background/worker-scheduler.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -87,7 +88,9 @@ assert.match(balanceRefreshJobSource, /const refreshRunBudgetMs = 45_000/, '余�
 assert.doesNotMatch(balanceRefreshJobSource, /Promise\.race/, '余额刷新不得用 detached Promise.race 伪造取消')
 assert.match(balanceRefreshJobSource, /signal: candidateController\.signal/, '候选超时必须传递到真实余额查询')
 assert.match(balanceRefreshJobSource, /deadlineAtMs: candidateDeadlineAtMs/, '候选必须传递绝对截止时间')
-assert.match(balanceRefreshJobSource, /candidateFailureCount/, '候选级余额失败必须汇总到部分失败摘要')
+assert.match(balanceRefreshJobSource, /diagnosticCount/, '候选级上游诊断必须汇总到完成摘要')
+assert.match(balanceRefreshJobSource, /unfinishedCount/, '未完成候选必须汇总到完成摘要')
+assert.doesNotMatch(balanceRefreshJobSource, /\.catch\(\(\) => false\)/, '运行态延期的本地持久化异常不得被吞掉')
 assert.match(backgroundJobsSource, /task: \([^)]*\) => runAccountBalanceRefresh\([^)]*\)/, '余额定时任务必须把结构化执行结果返回给 WorkerScheduler')
 assert.match(backgroundJobsSource, /account-balance-auto-detect-recovery/, 'ops-worker 必须注册余额自动探测补偿任务')
 assert.match(autoDetectServiceSource, /runAccountBalanceAutoDetectionRecovery/, '自动探测服务必须提供重启后的持久补偿入口')
@@ -99,7 +102,16 @@ assert.doesNotMatch(balanceRepositorySource, /expectedUpdatedAt|stateUpdatedAt|A
 
 let untrustedStatusServer: Server | undefined
 try {
-  const mockState = { status: 401, requestCount: 0, invalidJson: false, recoverWithNewApi: false, hang: false }
+  const mockState = {
+    status: 401,
+    requestCount: 0,
+    invalidJson: false,
+    recoverWithNewApi: false,
+    hang: false,
+    resetConnection: false,
+    resetResponseBody: false,
+    interruptedResponseBodyCount: 0
+  }
   let markHungRequestStarted: (() => void) | undefined
   const hungRequestStarted = new Promise<void>((resolve) => { markHungRequestStarted = resolve })
   let markHungResponseClosed: (() => void) | undefined
@@ -109,6 +121,17 @@ try {
     if (mockState.hang) {
       markHungRequestStarted?.()
       response.once('close', () => markHungResponseClosed?.())
+      return
+    }
+    if (mockState.resetConnection) {
+      request.socket.destroy()
+      return
+    }
+    if (mockState.resetResponseBody) {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.write('{"data":')
+      mockState.interruptedResponseBodyCount += 1
+      setTimeout(() => request.socket.destroy(), 5)
       return
     }
     const requestPath = request.url?.split('?', 1)[0]
@@ -417,7 +440,7 @@ try {
   assert.equal(transportAbortResult.persisted, false, '失效候选不得冒充已持久化')
   mockState.hang = false
 
-  const partialRefresh = await balanceRefreshJob.runAccountBalanceRefresh({
+  const timeoutRefresh = await balanceRefreshJob.runAccountBalanceRefresh({
       listRecoveryCandidates: async () => [],
       listDueCandidates: async () => [{
         id: dueA.id,
@@ -435,10 +458,10 @@ try {
       runBudgetMs: 20,
       candidateTimeoutMs: 10
     })
-  assert.equal(partialRefresh.outcome, 'partial', '单候选超时应标记为部分失败而不是整项任务失败')
-  assert.equal(partialRefresh.candidateFailureCount, 1)
-  assert.equal(partialRefresh.staleCount, 1)
-  assert.equal(partialRefresh.processedCount, 1)
+  assert.equal(timeoutRefresh.outcome, 'success', '单候选超时是账户级诊断，不得标记后台任务部分失败')
+  assert.equal(timeoutRefresh.diagnosticCount, 1)
+  assert.equal(timeoutRefresh.staleCount, 1)
+  assert.equal(timeoutRefresh.processedCount, 1)
 
   const callableDueAt = new Date().toISOString()
   const runtimeCandidate = {
@@ -464,7 +487,10 @@ try {
         assert.deepEqual(runtimeKeys, [dueA.id], `${runtimeCase.name} 必须按候选账户 ID 加载运行态`)
         return { available: runtimeCase.available, values: runtimeCase.values }
       },
-      refreshCandidate: async (candidate) => { refreshedIds.push(candidate.id) }
+      refreshCandidate: async (candidate) => {
+        refreshedIds.push(candidate.id)
+        return { outcome: 'refreshed', snapshot: { status: 'fresh' }, persisted: true }
+      }
     })
     assert.deepEqual(refreshedIds, [dueA.id], `${runtimeCase.name} 账户必须执行自动余额查询`)
     assert.equal(summary.selectedCount, 1)
@@ -489,21 +515,46 @@ try {
     assert.equal(summary.selectedCount, 1)
     assert.equal(summary.processedCount, 0)
     assert.equal(summary.deferredCount, 1)
-    assert.equal(summary.outcome, 'partial', `${status} 账户延后应显示部分完成，不能冒充全部成功`)
+    assert.equal(summary.outcome, 'success', `${status} 账户延后是可恢复调度，不得标记后台任务部分失败`)
   }
 
-  const isolatedFailureSummary = await balanceRefreshJob.runAccountBalanceRefresh({
-    listRecoveryCandidates: async () => [],
-    listDueCandidates: async () => [runtimeCandidate, { ...runtimeCandidate, id: dueB.id }],
-    refreshCandidate: async (candidate) => {
-      if (candidate.id === dueA.id) throw new Error('DB service 写入失败')
-      return { outcome: 'refreshed', snapshot: { status: 'fresh' }, persisted: true }
-    }
-  })
-  assert.equal(isolatedFailureSummary.outcome, 'partial', '单候选基础设施异常应形成部分失败')
-  assert.equal(isolatedFailureSummary.failedCount, 1, '单候选异常必须记入 failed')
-  assert.equal(isolatedFailureSummary.refreshedCount, 1, '其他候选必须继续执行')
-  assert.equal(isolatedFailureSummary.processedCount, 2)
+  await assert.rejects(
+    balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [runtimeCandidate],
+      refreshCandidate: async () => { throw new Error('DB service 写入失败') }
+    }),
+    /DB service 写入失败/,
+    '候选刷新中的本地 DB 异常必须冒泡为后台任务失败'
+  )
+  let candidateTimeoutObserved = false
+  await assert.rejects(
+    balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [runtimeCandidate],
+      refreshCandidate: async (_candidate, context) => await new Promise<never>((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => {
+          candidateTimeoutObserved = true
+          reject(new Error('候选截止后的 DB/IPC 异常'))
+        }, { once: true })
+      }),
+      runBudgetMs: 20,
+      candidateTimeoutMs: 5
+    }),
+    /候选截止后的 DB\/IPC 异常/,
+    '候选截止后发生的 DB/IPC 异常不得伪装为 stale 诊断'
+  )
+  assert.equal(candidateTimeoutObserved, true, '候选超时信号必须已实际触发')
+  await assert.rejects(
+    balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [runtimeCandidate],
+      loadRuntimeAvailability: async () => ({ available: true, values: { [dueA.id]: { status: 'local_suppressed' as const } } }),
+      deferCandidate: async () => { throw new Error('IPC 延后持久化失败') }
+    }),
+    /IPC 延后持久化失败/,
+    '运行态延期的本地 IPC 或持久化异常必须冒泡为后台任务失败'
+  )
 
   const classifiedCandidates = ['refreshed', 'lease_busy', 'stale', 'failed', 'unsupported'] as const
   const classifiedSummary = await balanceRefreshJob.runAccountBalanceRefresh({
@@ -518,13 +569,14 @@ try {
       persisted: true
     })
   })
-  assert.equal(classifiedSummary.outcome, 'partial', 'stale/failed 存在时必须返回结构化 partial')
+  assert.equal(classifiedSummary.outcome, 'success', '所有已返回的账户级结果都必须完成后台任务')
   assert.equal(classifiedSummary.refreshedCount, 1)
   assert.equal(classifiedSummary.leaseBusyCount, 1)
   assert.equal(classifiedSummary.staleCount, 1)
   assert.equal(classifiedSummary.failedCount, 1)
   assert.equal(classifiedSummary.unsupportedCount, 1)
-  assert.equal(classifiedSummary.candidateFailureCount, 2)
+  assert.equal(classifiedSummary.diagnosticCount, 3)
+  assert.equal(classifiedSummary.unfinishedCount, 1)
   assert.equal(classifiedSummary.processedCount, 5)
 
   const leaseBusyOnlySummary = await balanceRefreshJob.runAccountBalanceRefresh({
@@ -536,9 +588,50 @@ try {
       persisted: false
     })
   })
-  assert.equal(leaseBusyOnlySummary.outcome, 'partial', '租约占用表示本轮未完成，不应冒充全部成功')
+  assert.equal(leaseBusyOnlySummary.outcome, 'success', '租约占用是可恢复调度，不得标记后台任务部分失败')
   assert.equal(leaseBusyOnlySummary.leaseBusyCount, 1)
-  assert.equal(leaseBusyOnlySummary.candidateFailureCount, 0, '租约占用不是候选执行失败')
+  assert.equal(leaseBusyOnlySummary.diagnosticCount, 0, '租约占用不是账户级查询诊断')
+  assert.equal(leaseBusyOnlySummary.unfinishedCount, 1)
+
+  await assertBalanceRefreshSchedulerSuccess('candidate-timeout', () => balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [runtimeCandidate],
+    refreshCandidate: async (_candidate, context) => await new Promise<never>((_resolve, reject) => {
+      context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+    }),
+    runBudgetMs: 20,
+    candidateTimeoutMs: 5
+  }))
+  await assert.rejects(
+    balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [runtimeCandidate],
+      refreshCandidate: async () => undefined
+    }),
+    /候选返回结果无效/,
+    '畸形候选结果不得默认记为 refreshed'
+  )
+  await assertBalanceRefreshSchedulerFailure('malformed-candidate-outcome', () => balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [runtimeCandidate],
+    refreshCandidate: async () => ({ outcome: 'unknown' })
+  }))
+  await assertBalanceRefreshSchedulerSuccess('unsupported', () => balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [runtimeCandidate],
+    refreshCandidate: async () => ({ outcome: 'unsupported', snapshot: { status: 'unsupported' }, persisted: true })
+  }))
+  await assertBalanceRefreshSchedulerSuccess('lease-busy', () => balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [runtimeCandidate],
+    refreshCandidate: async () => ({ outcome: 'lease_busy', snapshot: { status: 'pending' }, persisted: false })
+  }))
+  await assertBalanceRefreshSchedulerSuccess('runtime-deferred', () => balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [runtimeCandidate],
+    loadRuntimeAvailability: async () => ({ available: true, values: { [dueA.id]: { status: 'local_suppressed' as const } } }),
+    deferCandidate: async () => true
+  }))
 
   const cancelledController = new AbortController()
   cancelledController.abort(new Error('上层调度停止'))
@@ -982,17 +1075,18 @@ try {
     queryAdapter: async () => ({ status: 'unsupported', basis: 'api_key_quota' })
   })
   assert.equal(unsupportedResult.snapshot.status, 'unsupported', '全部内置适配器不支持时应返回可暂停的能力状态')
-  let opaqueStatusAttempts = 0
+  let unknownAdapterAttempts = 0
   await assert.rejects(
     balanceQueryService.queryBuiltinAccountBalance(candidate, {
       queryAdapter: async () => {
-        opaqueStatusAttempts += 1
-        throw new Error('上游鉴权失败（HTTP 401）')
+        unknownAdapterAttempts += 1
+        throw new Error('余额适配器依赖异常')
       }
     }),
-    /上游鉴权失败/
+    /余额适配器依赖异常/,
+    '未知适配器依赖异常不得伪装为外部余额诊断'
   )
-  assert.equal(opaqueStatusAttempts, 5, '上游自称的鉴权状态不可信，必须继续尝试全部余额适配器')
+  assert.equal(unknownAdapterAttempts, 1, '未知适配器依赖异常必须立即冒泡，不能继续伪造上游回退')
 
   const untrustedStatuses = [
     300, 301, 302, 307, 308,
@@ -1056,6 +1150,49 @@ try {
   assert.equal(recoveredAdapterResult.snapshot.status, 'fresh')
   assert.equal(recoveredAdapterResult.snapshot.remainingUsd, '7.310000')
   assert.equal(mockState.requestCount - recoveredAdapterRequestCountBefore, 3, '应尝试 sub2api 后完成 newapi 的两步查询')
+  mockState.resetConnection = true
+  mockState.recoverWithNewApi = false
+  const genericNetworkRequestCountBefore = mockState.requestCount
+  const genericNetworkResult = await balanceQueryService.refreshAccountBalanceCandidate(invalidJsonCandidate)
+  assert.equal(mockState.requestCount - genericNetworkRequestCountBefore, 5, '通用网络请求异常必须作为每个内置适配器的可恢复失败')
+  assert.equal(genericNetworkResult.status, 'pending', '通用网络请求异常必须归为临时余额诊断')
+  assert.equal(genericNetworkResult.consecutiveTransientFailures, 1)
+  assert.equal(genericNetworkResult.lastTransientErrorMessage, '上游余额接口网络请求失败')
+  mockState.resetConnection = false
+
+  const interruptedBodyCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(untrustedStatusFailure.id)
+  assert.ok(interruptedBodyCandidate)
+  const interruptedBodyPreviousSuccessAt = new Date(Date.now() - 60_000).toISOString()
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: interruptedBodyCandidate.id,
+    systemAccountId: interruptedBodyCandidate.systemAccountId,
+    snapshot: {
+      status: 'fresh',
+      remainingUsd: '6.250000',
+      lastAttemptAt: interruptedBodyPreviousSuccessAt,
+      lastSuccessAt: interruptedBodyPreviousSuccessAt
+    },
+    nextRefreshAfter: interruptedBodyCandidate.nextRefreshAt ?? undefined
+  })
+  mockState.resetResponseBody = true
+  const interruptedBodyRequestCountBefore = mockState.requestCount
+  const interruptedResponseBodyCountBefore = mockState.interruptedResponseBodyCount
+  const interruptedBodyRun = await balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [interruptedBodyCandidate]
+  })
+  assert.equal(interruptedBodyRun.outcome, 'success', '响应体传输中断必须完成自动余额刷新任务')
+  assert.equal(interruptedBodyRun.staleCount, 1, '响应体传输中断必须形成账户级 stale 诊断')
+  assert.equal(interruptedBodyRun.failedCount, 0)
+  assert.equal(interruptedBodyRun.diagnosticCount, 1)
+  assert.equal(mockState.requestCount - interruptedBodyRequestCountBefore, 5, '每个内置适配器都必须实际读取响应体后识别传输中断')
+  assert.equal(mockState.interruptedResponseBodyCount - interruptedResponseBodyCountBefore, 5, 'mock 必须先发送 200 响应头和部分正文再断开')
+  await assertBalanceRefreshSchedulerSuccess('response-body-interrupted', async () => await balanceRefreshJob.runAccountBalanceRefresh({
+    listRecoveryCandidates: async () => [],
+    listDueCandidates: async () => [interruptedBodyCandidate]
+  }))
+  mockState.resetResponseBody = false
+
   const tested = await balanceQueryService.testAccountBalanceCandidate(candidate, {
     query: async () => ({ status: 'fresh', remainingUsd: '8.880000', rawRemaining: '8.88', rawUnit: 'usd', basis: 'wallet' })
   })
@@ -1141,21 +1278,21 @@ try {
   })
   const deterministicCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(deterministicFailure.id)
   assert.ok(deterministicCandidate)
-  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, '不可信 HTTP 失败前')
+  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, '显式超时失败前')
   await balanceQueryService.refreshAccountBalanceCandidate(deterministicCandidate, {
-    query: async () => { throw new Error('上游鉴权失败（HTTP 401）') }
+    query: async () => { throw new DOMException('上游余额查询超时', 'TimeoutError') }
   })
-  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, '不可信 HTTP 失败后')
+  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, '显式超时失败后')
   const deterministicSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([deterministicFailure.id]).get(deterministicFailure.id)
   assert.ok(deterministicSnapshot)
-  assert.equal(deterministicSnapshot.status, 'pending', '上游自称的 401 只能作为可重试诊断，不得落为 unsupported')
+  assert.equal(deterministicSnapshot.status, 'pending', '显式上游超时必须作为可重试诊断，不得落为 unsupported')
   assert.equal(deterministicSnapshot.remainingUsd, undefined, '不属于当前配置代次的旧余额不得复用')
   assert.equal(deterministicSnapshot.consecutiveTransientFailures, 1)
   const deterministicRow = database.prepare(`SELECT balance_query_enabled, balance_query_next_refresh_at, balance_query_config_json FROM accounts WHERE id = ?`).get(deterministicFailure.id) as Record<string, unknown>
   assert.equal(deterministicRow.balance_query_enabled, 1, '能力暂停不能替用户关闭余额开关')
   assert.deepEqual(JSON.parse(String(deterministicRow.balance_query_config_json)), {
     adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api'
-  }, '不可信 HTTP 状态不得清除首选余额适配器')
+  }, '临时上游超时不得清除首选余额适配器')
   assertBalanceRetryDelay(database, deterministicFailure.id, deterministicSnapshot.lastAttemptAt, 5)
   const invalidBaseUrlResult = await balanceQueryService.refreshAccountBalanceCandidate({
     ...deterministicCandidate,
@@ -1365,4 +1502,56 @@ function assertAccountDispatchState(
   } | undefined
   assert.equal(row?.status, expectedStatus, `${phase}不得改变账户 status`)
   assert.equal(row?.schedulable, expectedSchedulable, `${phase}不得改变账户 schedulable`)
+}
+
+async function assertBalanceRefreshSchedulerSuccess(
+  label: string,
+  task: () => Promise<{ outcome: 'success' }>
+): Promise<void> {
+  const scheduler = new workerSchedulerModule.WorkerScheduler()
+  scheduler.schedule({
+    name: `account-balance-refresh-${label}`,
+    intervalMs: 60_000,
+    task
+  })
+  try {
+    const deadline = Date.now() + 1_000
+    let snapshot = scheduler.snapshots()[0]
+    while (!snapshot || snapshot.successCount < 1) {
+      if (Date.now() >= deadline) throw new Error(`${label} 未在预期时间内完成后台余额刷新`)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      snapshot = scheduler.snapshots()[0]
+    }
+    assert.equal(snapshot.failureCount, 0, `${label} 不得增加 scheduler failureCount`)
+    assert.equal(snapshot.partialCount, 0, `${label} 不得增加 scheduler partialCount`)
+    assert.equal(snapshot.lastOutcome, 'success', `${label} 必须在 scheduler 中完成为 success`)
+  } finally {
+    scheduler.stop()
+  }
+}
+
+async function assertBalanceRefreshSchedulerFailure(
+  label: string,
+  task: () => Promise<{ outcome: 'success' }>
+): Promise<void> {
+  const scheduler = new workerSchedulerModule.WorkerScheduler()
+  scheduler.schedule({
+    name: `account-balance-refresh-${label}`,
+    intervalMs: 60_000,
+    task
+  })
+  try {
+    const deadline = Date.now() + 1_000
+    let snapshot = scheduler.snapshots()[0]
+    while (!snapshot || snapshot.failureCount < 1) {
+      if (Date.now() >= deadline) throw new Error(`${label} 未在预期时间内进入后台任务失败`)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      snapshot = scheduler.snapshots()[0]
+    }
+    assert.equal(snapshot.failureCount, 1, `${label} 必须增加 scheduler failureCount`)
+    assert.equal(snapshot.partialCount, 0, `${label} 不得增加 scheduler partialCount`)
+    assert.equal(snapshot.lastOutcome, 'failure', `${label} 必须在 scheduler 中完成为 failure`)
+  } finally {
+    scheduler.stop()
+  }
 }

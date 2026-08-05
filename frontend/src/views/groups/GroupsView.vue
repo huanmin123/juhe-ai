@@ -146,7 +146,6 @@ let groupOptionsLoadingPromise: Promise<void> | undefined
 let groupEditRequestId = 0
 const groupPageEpoch = ref(0)
 const groupPageActive = ref(true)
-let hasActivated = false
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -175,6 +174,7 @@ const groupsApi = useScopedGroupsApi(isManagementView)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
+  invalidate: invalidateSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -260,19 +260,22 @@ onDeactivated(() => {
 })
 
 onActivated(() => {
-  if (!hasActivated) {
-    hasActivated = true
-    return
-  }
   groupPageActive.value = true
   groupPageEpoch.value += 1
-  void loadData({ quiet: true })
 })
 
 watch(authState.revision, () => {
+  groupPageEpoch.value += 1
   groupEditRequestId += 1
+  invalidateSystemAccountOptions()
   invalidateGroupOptions()
-  if (groupPageActive.value) void loadData({ quiet: true })
+  invalidatePendingLoads()
+  groups.value = []
+  systemAccountFilter.value = defaultGroupsPageState().systemAccountFilter
+  systemAccountFilterSelection.value = undefined
+  systemAccounts.value = []
+  resetSystemAccountOptionsSearch()
+  resetPagination()
 })
 onBeforeUnmount(() => {
   groupEditRequestId += 1

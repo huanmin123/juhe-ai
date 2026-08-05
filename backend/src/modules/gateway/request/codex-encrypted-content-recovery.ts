@@ -15,6 +15,9 @@ export type CodexEncryptedContentRecoverySignal =
   | 'invalid_encrypted_content'
   | 'encrypted_content_decryption_failed'
 
+export const codexEncryptedContentRecoveryExhaustedMessage =
+  '上游拒绝了加密上下文，网关已尝试一次兼容性清理但仍然失败。请新建会话，或不要携带上一会话的加密 reasoning / 工具输出后重新发送请求。'
+
 export interface CodexEncryptedContentRecoveryMetadata {
   strategy: 'codex_encrypted_content_cleanup'
   signal: CodexEncryptedContentRecoverySignal

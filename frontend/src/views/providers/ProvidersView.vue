@@ -311,7 +311,6 @@ const editingExpectedUpdatedAt = ref<string>()
 let modelRequestSequence = 0
 let providerListRequestSequence = 0
 let pageActive = true
-let pageWasDeactivated = false
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canManageModelPrices = computed(() => canManageModelPricesForView(isManagementView.value, authState.isAdmin.value))
@@ -328,7 +327,9 @@ const customModelForm = reactive<CustomModelForm>({ ...emptyCustomModelForm })
 const {
   handleDropdown: handleModelSystemAccountOptionsDropdown,
   handleSearch: handleModelSystemAccountOptionsSearch,
+  invalidate: invalidateModelSystemAccountOptions,
   loading: modelSystemAccountOptionsLoading,
+  resetSearch: resetModelSystemAccountOptionsSearch,
   systemAccounts: modelSystemAccounts
 } = useRemoteSystemAccountOptions({
   enabled: () => isManagementView.value,
@@ -903,9 +904,19 @@ function extractModelErrorMessage(error: unknown, fallback: string) {
 }
 
 function invalidateProviderPageRequests(): void {
-  pageActive = false
   providerListRequestSequence += 1
   modelRequestSequence += 1
+  loading.value = false
+  modelLoading.value = false
+}
+
+function deactivateProviderPage(): void {
+  pageActive = false
+  invalidateProviderPageRequests()
+}
+
+function resetProviderPageState(): void {
+  invalidateProviderPageRequests()
   providers.value = []
   resetModelModal()
   customModelModalOpen.value = false
@@ -913,26 +924,23 @@ function invalidateProviderPageRequests(): void {
 
 onMounted(loadProviders)
 onDeactivated(() => {
-  pageWasDeactivated = true
-  invalidateProviderPageRequests()
+  deactivateProviderPage()
 })
-onBeforeUnmount(invalidateProviderPageRequests)
+onBeforeUnmount(() => {
+  deactivateProviderPage()
+  resetProviderPageState()
+})
 onActivated(() => {
   pageActive = true
-  if (!pageWasDeactivated) return
-  pageWasDeactivated = false
-  void loadProviders(true)
 })
 watch(() => authState.revision.value, () => {
-  providerListRequestSequence += 1
-  modelRequestSequence += 1
-  resetModelModal()
-  providers.value = []
+  resetProviderPageState()
+  invalidateModelSystemAccountOptions()
   modelSystemAccountFilter.value = ''
   modelSystemAccountFilterSelection.value = undefined
+  modelSystemAccounts.value = []
+  resetModelSystemAccountOptionsSearch()
   customModelModalOpen.value = false
-  if (pageActive) void loadProviders(true)
-  else pageWasDeactivated = true
 })
 </script>
 
