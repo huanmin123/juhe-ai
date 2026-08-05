@@ -1791,11 +1791,13 @@ function assertStatusMutationAllowed(current: AccountStatus, requested: AccountS
   if (!hasInput) return
   if (requested === 'active' || requested === 'pending_test' || requested === 'disabled') return
   if (current === requested) return
-  throw new Error('编辑状态只支持可调度、待检查或停用')
+  if (current === 'active' && requested === 'temporary_unavailable') return
+  throw new Error('编辑状态只支持可调度、待检查或停用；正常账户可通过人工隔离进入临时不可调用')
 }
 
 function accountStatusForcesSchedulableOff(status: AccountStatus): boolean {
-  return isHardUnavailableAccountStatus(status) && status !== 'disabled'
+  return status === 'temporary_unavailable'
+    || (isHardUnavailableAccountStatus(status) && status !== 'disabled')
 }
 
 function normalizedAccountName(value: unknown): string {

@@ -94,6 +94,69 @@ try {
   assert.equal(noOp.result.authorizationInstancesAffected, false)
   assert.deepEqual(noOp.dml, [], '无变化 PATCH 不得执行任何 DML')
 
+  const manuallyIsolatedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '人工隔离 PATCH 账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-management-patch-manual-isolation',
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: sourceGroup.id,
+    status: 'active',
+    skipInitialHealthCheck: true
+  }, access)
+  const manualIsolation = await patchRepository.patchAccountManagementAsync(manuallyIsolatedAccount.id, {
+    expectedConfigRevision: 1,
+    status: 'temporary_unavailable'
+  }, access)
+  assert(manualIsolation)
+  assert.equal(manualIsolation.configRevision, 2)
+  assert.deepEqual(manualIsolation.changedFields, ['schedulable', 'status'])
+  assert.equal(manualIsolation.status, 'temporary_unavailable')
+  const manuallyIsolatedRow = accountRow(manuallyIsolatedAccount.id)
+  assert.equal(manuallyIsolatedRow.status, 'temporary_unavailable')
+  assert.equal(manuallyIsolatedRow.schedulable, 0, '人工隔离必须立即移除调度资格')
+
+  const manualIsolationRestore = await patchRepository.patchAccountManagementAsync(manuallyIsolatedAccount.id, {
+    expectedConfigRevision: 2,
+    status: 'active'
+  }, access)
+  assert(manualIsolationRestore)
+  assert.equal(manualIsolationRestore.configRevision, 3)
+  assert.deepEqual(manualIsolationRestore.changedFields, ['schedulable', 'status'])
+  assert.equal(manualIsolationRestore.status, 'active')
+  const manuallyRestoredRow = accountRow(manuallyIsolatedAccount.id)
+  assert.equal(manuallyRestoredRow.status, 'active')
+  assert.equal(manuallyRestoredRow.schedulable, 1, '人工隔离账户恢复可调度时必须恢复调度资格')
+
+  const pendingIsolationAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '待检查账户禁止人工隔离 PATCH',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-management-patch-pending-isolation',
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: sourceGroup.id,
+    status: 'pending_test',
+    skipInitialHealthCheck: true
+  }, access)
+  await assert.rejects(
+    () => patchRepository.patchAccountManagementAsync(pendingIsolationAccount.id, {
+      expectedConfigRevision: 1,
+      status: 'temporary_unavailable'
+    }, access),
+    /编辑状态只支持可调度、待检查或停用/,
+    '待检查账户不能借普通 PATCH 直接进入临时不可调用'
+  )
+
   const testedCredentialAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
