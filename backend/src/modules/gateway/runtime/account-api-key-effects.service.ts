@@ -81,6 +81,20 @@ export async function recordGatewayAccountApiKeyFailure(
   if (!guardDecision.persist) {
     return
   }
+  if (runtimeConfig.runtimeStateDriver === 'redis' && input.source === 'same_account_api_key_rotation_confirmed') {
+    try {
+      await recordGatewayAccountApiKeyTransientFailure(account, {
+        status: input.status
+      })
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_account_api_key_confirmed_rotation_transient_write_failed',
+        accountId: account.id,
+        selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
+        source: input.source
+      }), '账户内 API Key 已确认切换后的短暂避让写入失败')
+    }
+  }
   const mutationContext = input.mutationContext
   const trafficSource = input.trafficSource
   if (!mutationContext || !trafficSource) {

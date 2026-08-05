@@ -11,7 +11,7 @@
 后台激活、周期健康、请求失败确认、质量失败确认、运行态恢复和冷却复测统一消费四类结果，但按任务职责区分账户可用性与 transport 状态：
 
 - `complete_success`：协议成功且 framing 完整；按当前任务职责激活、记录正向健康或恢复匹配来源的自动状态。
-- `framing_complete_neutral`：framing 完整但协议 / 业务未成功；对 transport 电路和冷却恢复保持中性，但对固定模型、固定协议的后台激活、周期健康、请求失败确认和质量失败确认属于一次账户可用性失败，可累计对应健康阈值。
+- `framing_complete_neutral`：framing 完整但协议 / 业务未成功；对 transport 电路和冷却恢复保持中性，但对固定模型、固定协议的后台激活、周期健康、请求失败确认和质量失败确认属于一次账户可用性失败。正常 `scheduled` 周期探针在完整诊断后对该结果与 `upstream_failure` 统一立即隔离；其他任务仍按自身阈值和状态机处理。
 - `upstream_failure`：仅限连接失败、硬超时、读取中断或 framing 未完成的 `transport_incomplete`；既是 transport 状态机负向证据，也是账户可用性失败。
 - `probe_task_failure`、`stale` 或其他 `unknown`：任务、本地配置、解密、版本过期或无法归因；不计数、不改变状态。
 

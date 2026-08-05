@@ -558,6 +558,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountAdvancedDetailLoaded.value = true
       accountEditDetailLoading.value = false
       modalOpen.value = true
+      void loadAccountApiKeyRuntimeDetails()
       return
     }
 
@@ -589,6 +590,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     accountAdvancedDetailLoaded.value = false
     accountEditDetailLoading.value = false
+    void loadAccountApiKeyRuntimeDetails()
   }
 
   async function ensureAccountEditDetailLoaded(): Promise<boolean> {
@@ -883,37 +885,41 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountId: string,
     scopeParams: AccountScopeParams | undefined
   ): Promise<AccountApiKeyRuntimeResponse | undefined> {
-    try {
-      return options.isManagementView.value
-        ? await api.accounts.apiKeyRuntime(accountId, scopeParams)
-        : await api.myAccounts.apiKeyRuntime(accountId)
-    } catch (error) {
-      console.error(error)
-      return undefined
-    }
+    return options.isManagementView.value
+      ? await api.accounts.apiKeyRuntime(accountId, scopeParams)
+      : await api.myAccounts.apiKeyRuntime(accountId)
   }
 
-  async function loadAccountApiKeyRuntimeDetails(): Promise<void> {
+  async function loadAccountApiKeyRuntimeDetails(force = false): Promise<void> {
     const account = editingAccountDetail.value
     const apiKeys = normalizedAccountApiKeys(form)
     if (!account || form.type !== 'api_key' || apiKeys.length < 2 || accountApiKeyRuntimeLoading.value) return
-    if (visibleSavedAccountApiKeyRuntimeDetails(savedApiKeyRuntimeSnapshot.value, apiKeys)) return
+    if (!force && visibleSavedAccountApiKeyRuntimeDetails(savedApiKeyRuntimeSnapshot.value, apiKeys)) return
     const configRevision = account.configRevision
     if (typeof configRevision !== 'number' || !Number.isInteger(configRevision) || configRevision < 1) {
       message.error('账户配置版本缺失或无效，请关闭弹窗并刷新列表后重试')
       return
     }
     const requestToken = formOpenRequestToken
+    const failureMessage = force ? '刷新多 Key 运行状态失败，请稍后重试' : '加载多 Key 运行状态失败，请稍后重试'
+    if (force) savedApiKeyRuntimeSnapshot.value = undefined
     accountApiKeyRuntimeLoading.value = true
     try {
       const response = await fetchAccountApiKeyRuntimeForEdit(account.id, editingAccountScopeParams())
-      if (!response || !isCurrentFormOpenRequest(requestToken) || editingAccountDetail.value?.id !== account.id) return
+      if (!response) {
+        if (isCurrentFormOpenRequest(requestToken)) message.error(failureMessage)
+        return
+      }
+      if (!isCurrentFormOpenRequest(requestToken) || editingAccountDetail.value?.id !== account.id) return
       savedApiKeyRuntimeSnapshot.value = createSavedAccountApiKeyRuntimeSnapshot({
         accountId: account.id,
         configRevision,
         apiKeys,
         response
       })
+    } catch (error) {
+      console.error(error)
+      if (isCurrentFormOpenRequest(requestToken)) message.error(failureMessage)
     } finally {
       if (isCurrentFormOpenRequest(requestToken)) accountApiKeyRuntimeLoading.value = false
     }

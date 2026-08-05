@@ -66,7 +66,7 @@
           :tag-options-loading="tagOptionsLoading"
           :title="credentialTitle"
           @delete-tag="$emit('delete-tag', $event)"
-          @load-api-key-runtime="$emit('load-api-key-runtime')"
+          @load-api-key-runtime="(force) => $emit('load-api-key-runtime', force)"
           @model-options-open="$emit('model-options-open', $event)"
           @model-options-search="$emit('model-options-search', $event)"
           @refresh-models="$emit('refresh-models')"
@@ -446,7 +446,7 @@ const emit = defineEmits<{
   (event: 'cancel'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'delete-tag', tagId: string): void
-  (event: 'load-api-key-runtime'): void
+  (event: 'load-api-key-runtime', force?: boolean): void
   (event: 'generate-auth-url'): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void

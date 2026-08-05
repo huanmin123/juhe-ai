@@ -35,9 +35,23 @@ assert.deepEqual(
   '实际 trafficSource 必须与 mutation context 一致'
 )
 
+const confirmedRotationContext: AccountApiKeyPersistentMutationContext = {
+  authority: 'confirmed_same_account_key_rotation',
+  trafficSource: 'gateway'
+}
+assert.equal(authorizeAccountApiKeyPersistentMutation('failure', confirmedRotationContext).allowed, true)
+assert.equal(authorizeAccountApiKeyPersistentMutation('success', confirmedRotationContext).allowed, false)
+assert.equal(authorizeAccountApiKeyPersistentMutation('defer', confirmedRotationContext).allowed, false)
+assert.deepEqual(
+  authorizeAccountApiKeyPersistentMutationForTrafficSource('failure', 'manual_account_test', confirmedRotationContext),
+  { allowed: false, reason: 'unauthorized_traffic_source' },
+  '同账户后继成功确认只能由 gateway 流量写入失败状态'
+)
+
 for (const trafficSource of ['manual_account_test', 'hybrid_scoring', 'hybrid_quality_scoring'] as const) {
   const forgedContexts = [
     { authority: 'explicit_user_policy', trafficSource },
+    { authority: 'confirmed_same_account_key_rotation', trafficSource },
     { authority: 'automatic_probe', trafficSource, probeOutcome: 'complete_success' }
   ] as unknown as AccountApiKeyPersistentMutationContext[]
   for (const context of forgedContexts) {

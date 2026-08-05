@@ -56,7 +56,7 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 当前请求的 Key 排除必须使用请求内集合或等价的 request generation。未知 HTTP 响应不得写入跨请求共享的 `temporary_unavailable`、`rate_limited`、`error` 或其他带语义的 Key 避让状态。
 
-未知 HTTP 响应或明确协议失败不得创建跨请求的客户端 IP × API Key × 账户避让，也不得直接降低共享账户质量。真实 gateway 请求出现这类失败时，每个请求最多选择一个账户投递独立健康检查；业务请求本身不能写账户状态。该二次确认成功时保留账户，确认失败时按专用阈值 1 写通用 `temporary_unavailable`；正常周期健康仍按配置阈值抗抖。
+未知 HTTP 响应或明确协议失败不得创建跨请求的客户端 IP × API Key × 账户避让，也不得直接降低共享账户质量。真实 gateway 请求出现这类失败时，每个请求最多选择一个账户投递独立健康检查；业务请求本身不能写账户状态。该二次确认成功时保留账户，确认失败时按专用阈值 1 写通用 `temporary_unavailable`；正常周期健康对完整真实诊断未通过的结果统一立即写入 `temporary_unavailable`，未形成可靠结论的任务失败、取消和 unknown 不改账户状态。
 
 完整 HTTP 非 `2xx` 不能被伪装成 `completed_response` 成功，也不能被改写为 `upstream_retryable_error` 或“未识别失败”。使用记录中的 `opaque_upstream` 只表达“没有匹配账户策略”，列表必须同时显示已知的 HTTP 状态、错误码和有界错误摘要；完整原始正文留在审计详情。完整响应表示传输 framing 已完成，不应据此确认传输电路失败。
 

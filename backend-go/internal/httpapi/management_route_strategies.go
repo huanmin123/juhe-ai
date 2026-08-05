@@ -79,6 +79,22 @@ type managementRouteStrategyDetailService interface {
 	Detail(r *http.Request, input managementroutestrategies.DetailInput) (managementroutestrategies.DetailResult, error)
 }
 
+// managementRouteStrategyEditBasicResponse matches the Node edit form projection.
+// Keep runtime counters and creation metadata out of this response.
+type managementRouteStrategyEditBasicResponse struct {
+	ID                  string                                          `json:"id"`
+	SystemAccountID     string                                          `json:"systemAccountId,omitempty"`
+	Name                string                                          `json:"name"`
+	Description         *string                                         `json:"description,omitempty"`
+	Mode                string                                          `json:"mode"`
+	Status              string                                          `json:"status"`
+	IsDefault           bool                                            `json:"isDefault"`
+	NormalRoutingConfig *managementroutestrategies.NormalRoutingConfig  `json:"normalRoutingConfig,omitempty"`
+	HybridRoutingConfig map[string]any                                  `json:"hybridRoutingConfig,omitempty"`
+	GroupBindings       []managementroutestrategies.GroupBindingSummary `json:"groupBindings"`
+	UpdatedAt           string                                          `json:"updatedAt"`
+}
+
 type managementRouteStrategyDetailServiceAdapter struct {
 	service *managementroutestrategies.Service
 }
@@ -240,6 +256,22 @@ func newManagementRouteStrategyDetailHandler(
 		case err != nil:
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 		default:
+			if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/edit-basic") {
+				writeData(w, http.StatusOK, managementRouteStrategyEditBasicResponse{
+					ID:                  result.ID,
+					SystemAccountID:     result.SystemAccountID,
+					Name:                result.Name,
+					Description:         result.Description,
+					Mode:                result.Mode,
+					Status:              result.Status,
+					IsDefault:           result.IsDefault,
+					NormalRoutingConfig: result.NormalRoutingConfig,
+					HybridRoutingConfig: result.HybridRoutingConfig,
+					GroupBindings:       result.GroupBindings,
+					UpdatedAt:           result.UpdatedAt,
+				})
+				return
+			}
 			writeData(w, http.StatusOK, result)
 		}
 	})

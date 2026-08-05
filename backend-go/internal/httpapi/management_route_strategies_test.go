@@ -372,6 +372,55 @@ func TestManagementRouteStrategyDetailHandlerValidatesAdminSystemAccountID(t *te
 	}
 }
 
+func TestManagementRouteStrategyEditBasicHandlerReturnsNodeProjection(t *testing.T) {
+	description := "for edit form"
+	service := &managementRouteStrategyDetailServiceStub{
+		result: managementroutestrategies.DetailResult{
+			ID:              "route_1",
+			SystemAccountID: "sys_admin",
+			Name:            "Default",
+			Description:     &description,
+			Mode:            "normal",
+			Status:          "active",
+			IsDefault:       true,
+			NormalRoutingConfig: &managementroutestrategies.NormalRoutingConfig{
+				SchedulingPreference: "cost_first",
+			},
+			GroupBindings: []managementroutestrategies.GroupBindingSummary{{ID: "binding_1", GroupID: "group_1"}},
+			APIKeyCount:   9,
+			CreatedAt:     "2026-08-01T00:00:00Z",
+			UpdatedAt:     "2026-08-02T00:00:00Z",
+		},
+	}
+	handler := newManagementRouteStrategyDetailHandler(service, managementRouteStrategyScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/route-strategies/route_1/edit-basic", nil)
+	req = requestWithManagementRouteStrategyID(req, "route_1")
+	req = requestWithManagementAuthContext(req, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, field := range []string{"id", "systemAccountId", "name", "description", "mode", "status", "isDefault", "normalRoutingConfig", "groupBindings", "updatedAt"} {
+		if _, ok := body.Data[field]; !ok {
+			t.Fatalf("missing edit-basic field %q in %#v", field, body.Data)
+		}
+	}
+	for _, field := range []string{"apiKeyCount", "createdAt"} {
+		if _, ok := body.Data[field]; ok {
+			t.Fatalf("detail-only field %q leaked into edit-basic response: %#v", field, body.Data)
+		}
+	}
+}
+
 func TestManagementMyRouteStrategyDetailHandlerIgnoresOwnerQuery(t *testing.T) {
 	service := &managementRouteStrategyDetailServiceStub{
 		result: managementroutestrategies.DetailResult{
@@ -517,6 +566,7 @@ func TestRouterRegistersManagementRouteStrategyReadsWithoutRegressingOptions(t *
 		"/__aisys__/api/route-strategies",
 		"/__aisys__/api/my-route-strategies",
 		"/__aisys__/api/route-strategies/route_1",
+		"/__aisys__/api/route-strategies/route_1/edit-basic",
 		"/__aisys__/api/my-route-strategies/route_1",
 		"/__aisys__/api/route-strategies/options",
 		"/__aisys__/api/my-route-strategies/options",
@@ -532,7 +582,7 @@ func TestRouterRegistersManagementRouteStrategyReadsWithoutRegressingOptions(t *
 			t.Fatalf("%s status=%d cache=%q body=%s", path, rec.Code, rec.Header().Get("Cache-Control"), rec.Body.String())
 		}
 	}
-	if listCalls != 2 || detailCalls != 2 || optionsCalls != 2 {
+	if listCalls != 2 || detailCalls != 3 || optionsCalls != 2 {
 		t.Fatalf("list calls=%d detail calls=%d options calls=%d", listCalls, detailCalls, optionsCalls)
 	}
 	if ipLimiter.calls != len(paths) || userLimiter.calls != len(paths) {
@@ -560,6 +610,7 @@ func TestRouterDoesNotRegisterManagementRouteStrategyReadsWhenDisabled(t *testin
 		"/__aisys__/api/route-strategies",
 		"/__aisys__/api/my-route-strategies",
 		"/__aisys__/api/route-strategies/route_1",
+		"/__aisys__/api/route-strategies/route_1/edit-basic",
 		"/__aisys__/api/my-route-strategies/route_1",
 	} {
 		rec := httptest.NewRecorder()

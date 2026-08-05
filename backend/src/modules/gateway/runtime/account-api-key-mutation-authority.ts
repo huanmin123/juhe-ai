@@ -19,6 +19,10 @@ export type AccountApiKeyPersistentMutationContext =
       trafficSource: 'gateway'
     }
   | {
+      authority: 'confirmed_same_account_key_rotation'
+      trafficSource: 'gateway'
+    }
+  | {
       authority: 'automatic_probe'
       trafficSource: AccountApiKeyAutomaticProbeTrafficSource
       probeOutcome: AccountApiKeyAutomaticProbeOutcome
@@ -44,6 +48,14 @@ export function authorizeAccountApiKeyPersistentMutation(
     return { allowed: false, reason: 'missing_authority' }
   }
   if (context.authority === 'explicit_user_policy') {
+    if (context.trafficSource !== 'gateway') {
+      return { allowed: false, reason: 'unauthorized_traffic_source' }
+    }
+    return mutation === 'failure'
+      ? { allowed: true }
+      : { allowed: false, reason: 'invalid_policy_mutation' }
+  }
+  if (context.authority === 'confirmed_same_account_key_rotation') {
     if (context.trafficSource !== 'gateway') {
       return { allowed: false, reason: 'unauthorized_traffic_source' }
     }

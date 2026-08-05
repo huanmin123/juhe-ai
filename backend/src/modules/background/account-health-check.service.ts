@@ -64,6 +64,7 @@ export interface AccountHealthCheckProbeResult {
   diagnosticCanceled?: boolean
   diagnosticTimeoutExhausted?: boolean
   diagnosticDeadlineExceeded?: boolean
+  diagnosticCompleted?: boolean
 }
 
 const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
@@ -181,7 +182,7 @@ async function runAccountHealthCheckQueueItem(
       const candidate = await healthCheckCandidateForAccount(account, groupId)
       if (deadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
       return await runAccountHealthCheckProbe(account, groupId, candidate, deadline.signal)
-    }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted, diagnosticDeadlineExceeded }, { joined }) => {
+    }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted, diagnosticDeadlineExceeded, diagnosticCompleted }, { joined }) => {
     if (joined) {
       logger.debug({
         event: 'background_account_health_check_singleflight_joined',
@@ -197,7 +198,13 @@ async function runAccountHealthCheckQueueItem(
       diagnosticTimeoutExhausted
     })
     const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
-    const immediateTemporaryUnavailable = diagnosticTimeoutExhausted === true && probeOutcome === 'upstream_failure'
+    const diagnosticTimeoutTemporaryUnavailable = diagnosticTimeoutExhausted === true && probeOutcome === 'upstream_failure'
+    const scheduledProbeFailureImmediate = item.reason === 'scheduled'
+      && diagnosticCompleted === true
+      && diagnosticDeadlineExceeded !== true
+      && probeOutcome !== 'complete_success'
+      && probeOutcome !== 'probe_task_failure'
+    const immediateTemporaryUnavailable = diagnosticTimeoutTemporaryUnavailable || scheduledProbeFailureImmediate
 
     if (probeOutcome === 'complete_success') {
       const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
@@ -255,7 +262,8 @@ async function runAccountHealthCheckQueueItem(
         type: 'mark_account_test_temporary_unavailable',
         accountId: account.id,
         reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result, {
-          diagnosticTimeoutExhausted: immediateTemporaryUnavailable
+          diagnosticTimeoutExhausted: diagnosticTimeoutTemporaryUnavailable,
+          diagnosticConfirmedFailure: immediateTemporaryUnavailable
         }),
         traceId: result.traceId,
         access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
@@ -283,6 +291,7 @@ async function runAccountHealthCheckQueueItem(
       accountFailureEligible: result.accountFailureEligible,
       diagnosticTimeoutExhausted,
       diagnosticDeadlineExceeded,
+      diagnosticCompleted,
       nextHealthCheckAt: failure?.nextHealthCheckAt,
       markedTemporaryUnavailable,
       attemptIndex: context.attemptIndex,
@@ -402,7 +411,8 @@ function accountHealthCheckDeadlineResult(account: AccountSummary): AccountHealt
     },
     diagnosticCanceled: true,
     diagnosticTimeoutExhausted: false,
-    diagnosticDeadlineExceeded: true
+    diagnosticDeadlineExceeded: true,
+    diagnosticCompleted: false
   }
 }
 
@@ -491,7 +501,13 @@ async function runAccountHealthCheckProbe(
   if (candidate && poolEntries.length > 0 && !poolResult) {
     throw new Error(`账户 ${account.id} 的固定 API Key 池探针没有返回结果`)
   }
-  return poolResult ?? await runWithAccountHealthCheckDiagnosticSlot(async () => (
+  if (poolResult) {
+    return {
+      ...poolResult,
+      diagnosticCompleted: poolCompleted && !signal.aborted
+    }
+  }
+  return await runWithAccountHealthCheckDiagnosticSlot(async () => (
     await runAccountHealthCheckDiagnostic(account, groupId, undefined, signal)
   ))
 }
@@ -561,7 +577,8 @@ async function runAccountHealthCheckDiagnostic(
     upstreamAttempt,
     diagnosticCanceled,
     diagnosticTimeoutExhausted,
-    diagnosticDeadlineExceeded: signal?.aborted === true
+    diagnosticDeadlineExceeded: signal?.aborted === true,
+    diagnosticCompleted: timeoutMs === undefined && signal?.aborted !== true
   }
 }
 
@@ -574,7 +591,8 @@ function canceledPoolProbeResult(
     ...result,
     diagnosticCanceled: true,
     diagnosticDeadlineExceeded: true,
-    diagnosticTimeoutExhausted: false
+    diagnosticTimeoutExhausted: false,
+    diagnosticCompleted: false
   }
 }
 
@@ -632,11 +650,14 @@ function isAccountHealthCheckEligible(
 function accountHealthCheckTemporaryUnavailableReason(
   failureCount: number,
   result: AccountTestResult,
-  options: { diagnosticTimeoutExhausted?: boolean } = {}
+  options: { diagnosticTimeoutExhausted?: boolean; diagnosticConfirmedFailure?: boolean } = {}
 ): string {
-  const parts = [options.diagnosticTimeoutExhausted
+  const reason = options.diagnosticTimeoutExhausted
     ? '后台健康检查完整诊断阶梯均在真实上游尝试后超时，已标记为临时不可调用'
-    : `后台健康检测连续失败 ${failureCount} 次，已标记为临时不可调用`]
+    : options.diagnosticConfirmedFailure
+      ? '后台周期健康检查完成诊断但未通过，已标记为临时不可调用'
+      : `后台健康检测连续失败 ${failureCount} 次，已标记为临时不可调用`
+  const parts = [reason]
   if (typeof result.statusCode === 'number') {
     parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
   }

@@ -857,6 +857,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-route-strategies/options", opts.ManagementMyRouteStrategyOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementRouteStrategyDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/route-strategies/{id}/edit-basic", opts.ManagementRouteStrategyDetailHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/route-strategies/{id}", opts.ManagementRouteStrategyDetailHandler.ServeHTTP)
 			}
 			if opts.ManagementMyRouteStrategyDetailHandler != nil {

@@ -1997,7 +1997,6 @@ let codexTurnAvoidedFallbackEnabled = false
         })
         if (handledResponse.protocolValidatedSuccess === true) {
           await confirmHalfOpenSuccess()
-          await confirmSameAccountApiKeyFailures()
         }
         await releaseHalfOpenLease()
         return

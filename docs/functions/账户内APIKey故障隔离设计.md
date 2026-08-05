@@ -2,9 +2,9 @@
 
 ## 文档状态
 
-本文用于说明 GPT API Key 和 OpenAI 兼容 API Key 账户，在同一个账户内配置多个上游 API Key 后的故障隔离、请求内唯一切换和后台恢复逻辑。当前口径是：多个上游 API Key 归属同一个账户，默认主备，也支持轮询 / 权重选择、Key 级运行态、账户内可用 Key 过滤、安全文本请求内按池顺序唯一耗尽、全请求 64 次真实上游 attempt 安全上限、后台单 Key 探测恢复和账户摘要字段；人工测试只返回 Key 诊断明细，不初始化、摘除或恢复 Key 运行态。
+本文用于说明 GPT API Key 和 OpenAI 兼容 API Key 账户，在同一个账户内配置多个上游 API Key 后的故障隔离、请求内唯一切换和后台恢复逻辑。当前口径是：多个上游 API Key 归属同一个账户，默认主备，也支持轮询 / 权重选择、Key 级运行态、账户内可用 Key 过滤、安全文本请求内按池顺序唯一耗尽、全请求 64 次真实上游 attempt 安全上限、后台单 Key 探测恢复和账户摘要字段；多 Key 账户打开编辑弹窗时自动加载逐 Key 运行态，刷新按钮强制重新读取；人工测试只返回 Key 诊断明细，不初始化、摘除或恢复 Key 运行态。
 
-后续仍可增强的部分包括：编辑弹窗逐 Key 状态展示、批量恢复 Key 状态、使用记录 / 审计中的 Key 指纹排障字段，以及更完整的运维页面。
+后续仍可增强的部分包括：批量恢复 Key 状态、使用记录 / 审计中的 Key 指纹排障字段，以及更完整的运维页面。
 
 ## 背景问题
 
@@ -19,19 +19,19 @@
 Key-1 发生 opaque 非 2xx 或本地 Key 准备失败
 只在当前请求排除 Key-1，按池顺序尝试尚未命中的 Key-2
 账户内当前可执行 Key 唯一耗尽后，再切后续账户或分组
-真实网关流量不因上游状态码、错误码、错误类型、正文或跨来源失败写共享 Key 运行态
+真实网关流量只有在任意多 Key 策略中，同一账户另一把 Key 在该失败后返回成功 `2xx` 时，才为失败 Key 同步写短暂共享避让状态
 账户 A 内所有已确认不可用 Key 都不可用时，账户 A 才整体不可承接
 后台探测已写入运行态的异常 Key，成功后恢复该 Key
 ```
 
 ## 设计原则
 
-账户内 API Key 策略使用 `credentials.api_key_strategy` 表达：`round_robin` 为轮询、`weighted_round_robin` 为权重、`failover` 为主备。主备模式按 `api_keys` 当前顺序解释角色：第一个 Key 是主 Key，后续 Key 是按顺序排列的备用 Key。每次独立请求优先尝试主 Key；主 Key 在下游语义提交前失败或当前不可调度时，本次请求立即从失败 Key 后方继续尝试备用 Key，不循环回主 Key。下一次请求重新优先评估主 Key，主 Key 恢复后自动回主。管理页面只有主备模式允许通过左侧拖拽调整 `api_keys` 顺序，从而把任意备用 Key 提升为主 Key；运行态状态显示在对应密码输入框的前缀区域，不再占用输入行左侧状态列。
+账户内 API Key 策略使用 `credentials.api_key_strategy` 表达：`round_robin` 为轮询、`weighted_round_robin` 为权重、`failover` 为主备。三种策略都先过滤处于避让状态的 Key，再按各自顺序选择；完整 HTTP 失败后会在同一请求继续尝试候选 Key。仅当另一把同账户 Key 返回成功 `2xx` 时，失败 Key 才进入 `temporary_unavailable`，在恢复前后续请求直接跳过它。策略的差异只在选择顺序：主备按 `api_keys` 顺序，第一把为主、后续为备用；轮询推进可用 Key 游标；权重在可用集合内平滑加权。管理页面只有主备模式允许通过左侧拖拽调整 `api_keys` 顺序，从而把任意备用 Key 提升为主 Key；运行态状态显示在对应密码输入框的前缀区域，不再占用输入行左侧状态列。
 
 - 适用范围按供应商能力和账户凭据类型双重判断：GPT、通用 OpenAI 兼容供应商以及声明支持账户内 Key 池的 OpenAI-compatible 第三方 `api_key` 账户，并且账户内实际存在 2 个及以上 Key 时，才启用 Key 级故障隔离。GPT OAuth、OpenAI OAuth、Codex OAuth、授权刷新失败、客户端兼容分支和未声明 Key 池能力的供应商都不进入此状态机。
 - DeepSeek 第一阶段如果只开放单个 `credentials.api_key` 字段，则不启用账户内 Key 级隔离；如果后续沿用 API Key 池能力，必须由 DeepSeek provider driver 显式声明，并按当前文档只做请求内失败 Key 排除，不把单个 DeepSeek Key 的认证失败、余额不足、限流状态码或文案直接扩散为整个 DeepSeek 账户异常。
 - 不新增上游错误码、错误类型、错误文案白名单或黑名单。上游不可控，代码不能假设某个状态码一定代表某种业务原因。
-- Key 级共享状态只接受本地可验证的 Key 缺失 / 解密 / 装配 / 运行态读取错误、独立 Key 探针的 `transport_incomplete` 结果或用户显式策略指定的 Key 动作；普通完整 HTTP 响应、协议结构失败和无法绑定到该 Key 的 transport failure 都不能按状态码或正文归咎 Key。
+- Key 级共享状态只接受本地可验证的 Key 缺失 / 解密 / 装配 / 运行态读取错误、独立 Key 探针的 `transport_incomplete` 结果、用户显式策略指定的 Key 动作，或任意多 Key 策略中“失败 Key 后继同账户 Key 返回成功 `2xx`”的同账户确认；单个完整 HTTP 响应、协议结构失败和无法绑定到该 Key 的 transport failure 都不能按状态码或正文归咎 Key。
 - 真实网关流量不能把未知上游失败写成共享 Key 不可用、客户端 IP 避让或质量失败；高并发、单一坏会话、单一客户端 IP、跨 IP、单类请求或短时上游波动只维护本请求唯一排除集合，避免把其他正常调用方可用的 Key 池打穿。
 - 所有请求在当前候选未交付可用结果且下游尚未语义提交时，都在同一账户内按当前池顺序唯一尝试可执行 Key；每个真实发送前同时检查跨账户物理凭据去重、整个请求 64 次 attempt 上限、总墙钟和最终响应预留。图片、音频、文件/资源创建、后台任务、hosted tool 和其他请求不设切号例外，但仍使用各自 lane 的单次 attempt 时限。
 - 账户仍是调度、授权、分组、并发、优先级和使用记录的主资源。账户内 Key 不是独立账户，不进入分组绑定，不参与账户候选排序，也不产生独立授权边界。
@@ -61,7 +61,7 @@ Key 选择只发生在账户已经被选中之后。不可用 Key 会从账户�
 
 - 轮询：只在可用 Key 数组里推进。
 - 权重：只在可用 Key 集合里做平滑加权轮询，剩余 Key 的权重自然重新归一。
-- 主备：按 `api_keys` 当前顺序选择，第一个 Key 为主 Key，后续 Key 为备用；每次独立请求重新优先主 Key。
+- 主备：按 `api_keys` 当前顺序选择第一个可用 Key；第一个 Key 为主 Key，后续 Key 为备用。主 Key 已被同账户备用成功确认并处于 `temporary_unavailable` 时，后续请求直接从可用备用 Key 开始。
 - 所有 Key 都不可用：当前账户派生为不可承接，调度继续尝试后续账户。
 
 ### Key 失败
@@ -97,7 +97,7 @@ Key 级状态不引入新的错误分类。建议规则：
 | 现有账户流水线结果 | Key 级处理 |
 | --- | --- |
 | `complete_success`：协议校验成功且 framing 完整 | 只在与状态来源匹配且完整 generation/claim/config revision/fingerprint CAS 成功时恢复 Key；普通或无 provenance 成功不能越权清理人工 / 显式策略状态 |
-| `framing_complete_neutral`：完整非 `2xx`、`2xx-invalid-body` 或 opaque 业务失败 | 只加入本请求 Key 排除集合并记录有界诊断；共享 Key 运行态保持中性，不增加失败或启动恢复窗口 |
+| `framing_complete_neutral`：完整非 `2xx`、`2xx-invalid-body` 或 opaque 业务失败 | 先只加入本请求 Key 排除集合并记录有界诊断；任意多 Key 策略中同账户后继 Key 成功时，才将失败 Key 写为 `temporary_unavailable` 并启动恢复窗口 |
 | `upstream_failure`：连接 / 硬超时 / 读取中断 / framing 未完成 | 只有独立 Key 探针能把可归因的 `transport_incomplete` 写入该 Key 自动 transport 状态；普通流量默认归入 `protocol_model` / 上游桶传输作用域，安全文本可在本请求切下一个 Key |
 | `probe_task_failure` / `stale` / `unknown` | 不计数、不改变 Key 状态，只记录任务诊断并有界重排 |
 | 账户错误处理策略精确命中 Key 动作 | 只执行用户明确配置的 Key 副作用；状态动作不控制候选切换准入。任意请求只要未语义提交且仍满足派发阶段、对应 lane 墙钟、候选去重和 attempt 预算，就继续兄弟 Key / 账户 / 分组 |
@@ -279,7 +279,7 @@ Key 状态过滤发生在策略选择之前：
 source_account_id + key_fingerprint
 ```
 
-被授权用户的请求命中来源账户某个 Key 后，opaque HTTP/transport 失败只影响当前请求，不能更新来源账户共享 Key 状态。只有本地 Key 准备电路、独立 Key 探针或用户显式 Key 动作形成的合法共享状态才归属来源物理 Key；授权实例自己的状态、授权额度和分组绑定不因此被覆盖。
+被授权用户的请求命中来源账户某个 Key 后，opaque HTTP/transport 失败先只影响当前请求；任意多 Key 策略中同一来源账户另一把 Key 成功时，失败 Key 才可按来源物理 Key 写入 `temporary_unavailable`。其他本地 Key 准备电路、独立 Key 探针或用户显式 Key 动作形成的合法共享状态同样归属来源物理 Key；授权实例自己的状态、授权额度和分组绑定不因此被覆盖。
 
 分层处理规则：
 
@@ -371,7 +371,7 @@ API Key：13 个，正常 10，冷却 2，异常 1
 
 ### Redis 生产运行态
 
-生产 `runtimeStateDriver=redis` 时，普通完整 HTTP 失败不写 `accountId + Key 指纹` 的 Redis 短暂避让；Key 排除只存在于当前请求。Redis 只承接本地 Key 准备电路、明确允许的共享运行态和有 generation/owner fencing 的状态投影；Key 选择使用一次批量读取合并数据库持久探测状态与 Redis 状态，禁止逐 Key 查询 Redis，也禁止 Redis 故障时回退写数据库全局状态。
+生产 `runtimeStateDriver=redis` 时，普通完整 HTTP 失败不写 `accountId + Key 指纹` 的 Redis 短暂避让；只有任意多 Key 策略中后继同账户 Key 成功确认时，才同时写入持久 `temporary_unavailable` 和带 generation fencing 的 Redis 短暂避让。Key 选择使用一次批量读取合并数据库持久状态与 Redis 状态，禁止逐 Key 查询 Redis，也禁止 Redis 故障时把未确认失败回退写数据库状态。
 
 后台冷却复测按上述来源与 CAS 契约处理；人工测试、草稿测试和模型检测始终无状态。探针任务自身异常、stale、配置 / 解密错误或没有形成可归因的完整上游尝试时，不得写 Key 失败。
 
@@ -411,7 +411,7 @@ API Key：13 个，正常 10，冷却 2，异常 1
 - 新增 Key 指纹工具和运行态表。
 - 网关运行时读取 Key 状态。
 - 账户内选择器过滤不可用 Key 后再按主备 / 轮询 / 权重选择。
-- 本地 Key 准备失败、独立探针或用户显式 Key 动作才能写共享 Key 状态；opaque 完整 HTTP 失败只写请求内排除集合。
+- 本地 Key 准备失败、独立探针、用户显式 Key 动作，或任意多 Key 策略中后继同账户 Key 成功确认，才能写共享 Key 状态；未确认的 opaque 完整 HTTP 失败只写请求内排除集合。
 - 安全文本请求按池顺序唯一尝试当前可执行 Key，再切后续账户，并与所有账户共享 64 次真实 attempt 和墙钟上限。
 - 所有 Key 不可用时派生账户不可承接。
 - 补真实 mock AI 回归：66/100 Key 中只发送前 64 个唯一物理凭据，预算截断不把剩余 Key 或账户写死。
@@ -440,7 +440,7 @@ API Key：13 个，正常 10，冷却 2，异常 1
 - 跨账户重复物理凭据只发送一次；真实池穷尽、64 次安全截断和墙钟截断使用可区分终态。
 - 所有 Key 不可用时账户派生不可承接。
 - 后台探测成功后 Key 恢复并重新进入主备 / 轮询 / 权重集合。
-- 授权实例普通请求的 opaque HTTP、协议或 transport 结果不更新来源账户共享 Key 状态，也不覆盖授权实例账户状态；只有本地 Key 准备电路、独立 Key 探针或用户显式 Key 动作才能按来源、generation 与 CAS 更新来源物理 Key。
+- 授权实例普通请求的 opaque HTTP、协议或 transport 结果不更新来源账户共享 Key 状态，也不覆盖授权实例账户状态；只有本地 Key 准备电路、独立 Key 探针、用户显式 Key 动作，或任意多 Key 策略中同来源另一把 Key 成功确认，才能按来源、generation 与 CAS 更新来源物理 Key。
 - Key 删除、重排、替换后状态关联正确。
 - 使用记录和审计不出现上游 Key 明文。
 
@@ -453,4 +453,4 @@ API Key：13 个，正常 10，冷却 2，异常 1
 - 不把每个上游 Key 展开成 AI 账户。
 - 不按 Key 维度做业务用量聚合或额度扣减。
 - 不支持同一次请求无界遍历账户内 Key；安全文本只允许在 64 次真实 attempt、物理凭据去重和墙钟边界内唯一尝试。
-- 不为 Key 级状态引入 Redis 全局锁；多实例持久探针通过业务库原子 claim token、租约和完整 generation/fingerprint CAS 互斥，Redis 不承接 opaque HTTP transient avoidance。
+- 不为 Key 级状态引入 Redis 全局锁；多实例持久探针通过业务库原子 claim token、租约和完整 generation/fingerprint CAS 互斥。Redis 只承接已由同账户另一把 Key 成功确认的短暂避让，不承接未确认的 opaque HTTP 失败。

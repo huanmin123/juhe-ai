@@ -55,6 +55,8 @@ import {
   type CodexEncryptedContentRecoveryResult
 } from '../request/codex-encrypted-content-recovery.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
+import { captureGatewayAccountApiKeyFailureObservation } from '../runtime/account-api-key-effects.service.js'
+import type { AccountApiKeyPersistentMutationContext } from '../runtime/account-api-key-mutation-authority.js'
 
 /**
  * Opaque HTTP failures may not retry a sibling API Key.  Account-level
@@ -144,6 +146,7 @@ type HandleFailedUpstreamResponseResult =
 export interface PendingAccountApiKeyFailure {
   account: UpstreamAccount
   status: 'temporary_unavailable' | 'rate_limited' | 'error'
+  mutationContext?: AccountApiKeyPersistentMutationContext
   observationEpoch?: number
   statusCode?: number
   errorCode?: string
@@ -342,8 +345,8 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
-    && !explicitPolicyDecision
+  const automaticSameAccountKeyRotation = !explicitPolicyDecision
+    && hasAlternativeAccountApiKeys(account)
   // A complete gateway HTTP failure is independent evidence that this account
   // needs the fixed-model availability confirmation. The request-level guard
   // also covers retry_next, whose candidate replay continues below.
@@ -355,11 +358,30 @@ export async function handleFailedUpstreamResponse(
     lastAttempt,
     // A state-changing policy makes the whole account unavailable, matching
     // ordinary temporary-unavailable/non-schedulable candidate filtering.
-    // Failover accounts may continue with a sibling Key for an opaque HTTP
-    // failure even without an explicit retry_next rule.
-    keyScopedFailure: explicitPolicyDecision?.action === 'retry_next' || automaticApiKeyFailover
+    // All account-internal Key strategies may continue with a sibling Key for
+    // an opaque HTTP failure even without an explicit retry_next rule. The
+    // strategy only determines the sibling selection order.
+    keyScopedFailure: explicitPolicyDecision?.action === 'retry_next' || automaticSameAccountKeyRotation
       ? hasAlternativeAccountApiKeys(account)
-      : false
+      : false,
+    // A completed failure alone remains neutral. It becomes Key-scoped shared
+    // evidence only after a sibling Key of this same account succeeds.
+    pendingApiKeyFailure: automaticSameAccountKeyRotation
+      && input.accountStateMutationEnabled !== false
+      && account.selectedApiKeyFingerprint
+      && !account.apiKeyRuntimeStateDisabled
+      ? {
+          account,
+          status: 'temporary_unavailable',
+          mutationContext: {
+            authority: 'confirmed_same_account_key_rotation',
+            trafficSource: 'gateway'
+          },
+          observationEpoch: captureGatewayAccountApiKeyFailureObservation(account),
+          statusCode: response.status,
+          errorMessage: failureBodyFacts.upstreamErrorSummary
+        }
+      : undefined
   }
 }
 

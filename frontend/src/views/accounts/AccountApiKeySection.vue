@@ -26,7 +26,7 @@
               size="small"
               :loading="apiKeyRuntimeLoading"
               aria-label="加载多 Key 运行状态"
-              @click="$emit('load-api-key-runtime')"
+              @click="$emit('load-api-key-runtime', true)"
             >
               <template #icon><ReloadOutlined /></template>
             </a-button>
@@ -225,7 +225,7 @@ const props = defineProps<{
 
 defineEmits<{
   (event: 'delete-tag', tagId: string): void
-  (event: 'load-api-key-runtime'): void
+  (event: 'load-api-key-runtime', force?: boolean): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void

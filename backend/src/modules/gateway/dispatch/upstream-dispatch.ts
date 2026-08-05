@@ -894,6 +894,11 @@ export async function fetchFirstAvailableUpstream(
                   status: response.status
                 }
                 if (response.ok) {
+                  // A sibling Key has produced a successful upstream response.
+                  // Persist the already-confirmed failed-Key avoidance before
+                  // this response starts downstream delivery, so an immediate
+                  // following request cannot select the failed Key again.
+                  await recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext)
                   await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                     systemAccountId: usageContext.systemAccountId,
                     apiKeyId: usageContext.apiKeyId,
@@ -1924,13 +1929,14 @@ async function recordConfirmedSameAccountApiKeyFailures(
       statusCode: failure.statusCode,
       errorCode: failure.errorCode,
       errorMessage: failure.errorMessage,
+      mutationContext: failure.mutationContext,
       observationEpoch: failure.observationEpoch,
       traceId: usageContext.traceId,
       cooldownUntil: failure.cooldownUntil,
       trafficSource: usageContext.trafficSource,
       clientIp: usageContext.clientIp,
       apiKeyId: usageContext.apiKeyId,
-      source: 'same_account_api_key_failover_confirmed'
+      source: 'same_account_api_key_rotation_confirmed'
     })
   }
   failures.length = 0

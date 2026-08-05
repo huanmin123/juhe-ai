@@ -24,6 +24,7 @@ export interface BackgroundAccountAvailabilityProbeObservation {
   diagnosticCanceled?: boolean
   diagnosticTimeoutExhausted?: boolean
   diagnosticDeadlineExceeded?: boolean
+  diagnosticCompleted?: boolean
 }
 
 export async function runWithBackgroundFullDiagnosticSlot<T>(task: () => Promise<T>): Promise<T> {

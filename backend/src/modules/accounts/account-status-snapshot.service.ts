@@ -15,6 +15,7 @@ import {
   hydrateAccountManagementStatusSeedsAsync,
   listAccountStatusProjectionsAsync
 } from '../../storage/account-status-snapshot.repository.js'
+import { loadAccountApiKeyRuntimeSummariesByAccountIdsAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
 import { loadAccountConcurrencyByIds, loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
 import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-circuit-control-plane-bridge.js'
@@ -68,13 +69,16 @@ async function getAccountStatusSnapshotFromProjections(
   const ownerIds = projections
     .filter((item) => item.accessType !== 'authorized' && item.balanceQueryEnabled === true)
     .map((item) => item.id)
-  const [runtime, concurrency, circuits, balanceSnapshots] = await Promise.all([
+  const [runtime, concurrency, circuits, balanceSnapshots, apiKeyRuntimeByAccountId] = await Promise.all([
     loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
     loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId)),
     loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
       .then((values) => ({ available: true, values }))
       .catch(() => ({ available: false, values: {} as Record<string, PublicAccountCircuitSummary> })),
-    loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds)
+    loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds),
+    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(
+      projections.map((item) => item.authorizationInstanceSourceAccountId ?? item.id)
+    )
   ])
   return {
     generatedAt: new Date().toISOString(),
@@ -126,6 +130,7 @@ async function getAccountStatusSnapshotFromProjections(
       const publicRuntimeAvailability = publicAccountRuntimeAvailability(runtime.values[runtimeKey])
       const balanceConfiguration = { nextRefreshAt: balanceQueryNextRefreshAt }
       const balanceSnapshotRecord = balanceSnapshots.get(visibleProjection.id)
+      const apiKeyRuntimeAccountId = projection.authorizationInstanceSourceAccountId ?? projection.id
       const withAvailability = accountSummaryWithEffectiveAvailability({
         ...projection,
         permissions,
@@ -133,6 +138,7 @@ async function getAccountStatusSnapshotFromProjections(
         boundGroupId,
         groupBindStatus,
         sourceAccountProbe: projection.sourceAccountProbe,
+        apiKeyRuntime: apiKeyRuntimeByAccountId.get(apiKeyRuntimeAccountId),
         runtimeAvailability: runtime.values[runtimeKey]
       })
       return {

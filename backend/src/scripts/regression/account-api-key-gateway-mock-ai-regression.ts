@@ -45,6 +45,7 @@ runtimeConfig.secret = 'account-api-key-gateway-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit = 64
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -70,7 +71,6 @@ const heldSuccessResponseReleases = new Map<string, Array<() => void>>()
 
 let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
-let failoverBadKeyRecovered = false
 let postBatchSequence = 0
 
 try {
@@ -105,8 +105,22 @@ try {
     apiKeys: ['sk-gateway-primary-backup-primary', 'sk-gateway-primary-backup-secondary', 'sk-gateway-primary-backup-reserve'],
     strategy: 'failover'
   })
-  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-primary-backup-primary', 401)
-  const failoverGatewayApiKey = createGatewayApiKeyFailoverScenario(upstreamBaseUrl)
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-primary-backup-primary', 503)
+  const weightedFailureIsolationGatewayApiKey = createGatewayApiKeyScenario({
+    name: '权重 Key 失败确认避让',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-weight-failure-bad', 'sk-gateway-weight-failure-good'],
+    strategy: 'weighted_round_robin',
+    weights: [100, 1]
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-weight-failure-bad', 503)
+  const failoverGatewayApiKey = createGatewayApiKeyScenario({
+    name: '轮询 Key 失败确认避让',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-failover-bad', 'sk-gateway-failover-good'],
+    strategy: 'round_robin'
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-failover-bad', 503)
   const threeKeyExhaustionGatewayApiKey = createGatewayApiKeyScenario({
     name: '三 Key 请求内严格穷尽',
     upstreamBaseUrl,
@@ -276,35 +290,57 @@ try {
     ['Bearer sk-gateway-primary-backup-primary', 'Bearer sk-gateway-primary-backup-secondary'],
     '真实主备账户中，主 Key 失败后当前请求必须按顺序切换到备用 Key'
   )
+  assert.equal(
+    apiKeyRuntimeStateStatus('sk-gateway-primary-backup-primary'),
+    'temporary_unavailable',
+    '主 Key 失败且备用 Key 成功后，主 Key 必须进入临时避让'
+  )
   const secondPrimaryBackupBatch = await postChatCompletions(backendBaseUrl, primaryBackupGatewayApiKey, 1)
   const secondPrimaryBackupAuthorizations = authorizationsForBatches([secondPrimaryBackupBatch])
   assert.deepEqual(
     secondPrimaryBackupAuthorizations,
-    ['Bearer sk-gateway-primary-backup-primary', 'Bearer sk-gateway-primary-backup-secondary'],
-    '真实主备账户的新请求必须重新从主 Key 开始，而不是沿用上次请求的轮询游标'
+    ['Bearer sk-gateway-primary-backup-secondary'],
+    '主 Key 临时避让期间，新请求必须直接跳过主 Key 并使用备用 Key'
   )
   const firstFailoverBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 1)
   const firstFailoverAuthorizations = authorizationsForBatches([firstFailoverBatch])
   assert.deepEqual(
     firstFailoverAuthorizations,
-    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
-    '未配置 retry_next 时，多 Key 账户失败后必须切换后备账户'
+    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
+    '轮询账户的坏 Key 失败后，当前请求必须切换同账户健康 Key'
   )
   const failoverBadKeyPersistedState = apiKeyRuntimeStateStatus('sk-gateway-failover-bad')
-  assert.equal(failoverBadKeyPersistedState, undefined, '未知 HTTP 失败不得写入 Key 持久或共享运行态')
+  assert.equal(failoverBadKeyPersistedState, 'temporary_unavailable', '轮询账户坏 Key 被同账户健康 Key 确认后必须进入临时避让')
   const recoveredAccountBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 2)
   const recoveredAccountAuthorizations = authorizationsForBatches([recoveredAccountBatch])
   assert.deepEqual(
     recoveredAccountAuthorizations,
-    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
-    '独立请求仍按 Key 轮询选择首 Key，但失败后必须切换后备账户'
+    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-good'],
+    '轮询账户的坏 Key 临时避让期间，后续请求必须持续跳过该 Key'
   )
   assert.equal(
     mockHits.filter((hit) => hit.authorization === 'Bearer sk-gateway-failover-bad').length,
-    2,
-    '新的独立请求再次轮到该 Key 时应重新验证，不能继承未知 HTTP 失败状态'
+    1,
+    '坏 Key 进入临时避让后，独立请求不得反复冲击该 Key'
   )
-  failoverBadKeyRecovered = true
+
+  const firstWeightedFailureBatch = await postChatCompletions(backendBaseUrl, weightedFailureIsolationGatewayApiKey, 1)
+  assert.deepEqual(
+    authorizationsForBatches([firstWeightedFailureBatch]),
+    ['Bearer sk-gateway-weight-failure-bad', 'Bearer sk-gateway-weight-failure-good'],
+    '权重账户的坏 Key 失败后，当前请求必须切换同账户健康 Key'
+  )
+  assert.equal(
+    apiKeyRuntimeStateStatus('sk-gateway-weight-failure-bad'),
+    'temporary_unavailable',
+    '权重账户坏 Key 被同账户健康 Key 确认后必须进入临时避让'
+  )
+  const secondWeightedFailureBatch = await postChatCompletions(backendBaseUrl, weightedFailureIsolationGatewayApiKey, 2)
+  assert.deepEqual(
+    authorizationsForBatches([secondWeightedFailureBatch]),
+    ['Bearer sk-gateway-weight-failure-good', 'Bearer sk-gateway-weight-failure-good'],
+    '权重账户的坏 Key 临时避让期间，后续请求必须持续跳过该 Key'
+  )
 
   const threeKeyBatch = await postChatCompletions(backendBaseUrl, threeKeyExhaustionGatewayApiKey, 1)
   const threeKeyAuthorizations = authorizationsForBatches([threeKeyBatch])
@@ -879,51 +915,6 @@ function createAuthorizedApiKeyScenario(upstreamBaseUrl: string): {
   }
 }
 
-function createGatewayApiKeyFailoverScenario(upstreamBaseUrl: string): string {
-  const group = repositories.createGroup({
-    name: '多 Key 摘除切号分组',
-    providerCode: GPT_VENDOR_CODE,
-    enabled: true
-  }, access)
-  createActiveAccount({
-    providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: 'A 多 Key 摘除来源账户',
-    type: 'api_key',
-    credentials: {
-      api_key: 'sk-gateway-failover-bad',
-      api_keys: ['sk-gateway-failover-bad', 'sk-gateway-failover-good'],
-      api_key_strategy: 'round_robin',
-      base_url: upstreamBaseUrl
-    },
-    groupId: group.id,
-    status: 'active',
-    schedulable: true,
-    priority: 0
-  }, access)
-  createActiveAccount({
-    providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: 'B 多 Key 摘除救援账户',
-    type: 'api_key',
-    credentials: {
-      api_key: 'sk-gateway-failover-rescue',
-      base_url: upstreamBaseUrl
-    },
-    groupId: group.id,
-    status: 'active',
-    schedulable: true,
-    priority: 10
-  }, access)
-  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: '多 Key 摘除切号网关 Key',
-    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-    status: 'active'
-  }, access)
-  assert(apiKey.key, '多 Key 摘除切号场景未返回网关 API Key 明文')
-  return apiKey.key
-}
-
 function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: string; sourceAccountId: string } {
   const group = repositories.createGroup({
     name: '全部 Key 摘除切号分组',
@@ -1315,9 +1306,6 @@ function releaseAllHeldMockSuccessResponses(): void {
 }
 
 function failureStatusForAuthorization(authorization: string): number | undefined {
-  if (authorization === 'Bearer sk-gateway-failover-bad') {
-    return failoverBadKeyRecovered ? undefined : 401
-  }
   return forcedFailureStatusByAuthorization.get(authorization)
 }
 
@@ -1421,6 +1409,7 @@ function startBackendServer(port: number): ChildProcess {
       JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath,
       JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot,
       JUHE_AI_SECRET: runtimeConfig.secret,
+      JUHE_AI_GATEWAY_ACCOUNT_API_KEY_REQUEST_ATTEMPT_SAFETY_LIMIT: String(runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit),
       JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true',
       JUHE_AI_LOG_LEVEL: 'warn',
       JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
