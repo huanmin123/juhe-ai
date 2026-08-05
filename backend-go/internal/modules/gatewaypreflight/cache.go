@@ -303,14 +303,24 @@ func (r *RuntimeStateQuotaSnapshotReader) LoadGatewayPreflightQuotaSnapshotCurre
 	for _, entry := range payload.CostEntries {
 		entries = append(entries, port.GatewayPreflightQuotaCostEntry{SystemAccountID: entry.SystemAccountID, ScopeType: entry.ScopeType, ScopeID: entry.ScopeID, HourlyWindowHours: entry.HourlyWindowHours, Costs: entry.Costs})
 	}
-	return port.GatewayPreflightQuotaSnapshot{GeneratedAt: payload.GeneratedAt, CostEntries: entries, CostEntriesComplete: complete, AuthorizationEntriesComplete: authorizationComplete}, true, nil
+	authorizationEntries := make([]port.GatewayAuthorizationQuotaSnapshotEntry, 0, len(payload.AuthorizationEntries))
+	for _, entry := range payload.AuthorizationEntries {
+		authorizationEntries = append(authorizationEntries, port.GatewayAuthorizationQuotaSnapshotEntry{
+			ScopeType: entry.ScopeType, AuthorizationID: entry.AuthorizationID, Allowed: entry.Decision.Allowed,
+		})
+	}
+	return port.GatewayPreflightQuotaSnapshot{
+		GeneratedAt: payload.GeneratedAt, CostEntries: entries, AuthorizationEntries: authorizationEntries,
+		CostEntriesComplete: complete, AuthorizationEntriesComplete: authorizationComplete,
+	}, true, nil
 }
 
 type runtimeStateQuotaSnapshot struct {
-	GeneratedAt                  string                       `json:"generatedAt"`
-	CostEntries                  []runtimeStateQuotaCostEntry `json:"costEntries"`
-	CostEntriesComplete          *bool                        `json:"costEntriesComplete"`
-	AuthorizationEntriesComplete *bool                        `json:"authorizationEntriesComplete"`
+	GeneratedAt                  string                                `json:"generatedAt"`
+	CostEntries                  []runtimeStateQuotaCostEntry          `json:"costEntries"`
+	AuthorizationEntries         []runtimeStateQuotaAuthorizationEntry `json:"authorizationEntries"`
+	CostEntriesComplete          *bool                                 `json:"costEntriesComplete"`
+	AuthorizationEntriesComplete *bool                                 `json:"authorizationEntriesComplete"`
 }
 
 type runtimeStateQuotaCostEntry struct {
@@ -319,6 +329,14 @@ type runtimeStateQuotaCostEntry struct {
 	ScopeID           string                 `json:"scopeId"`
 	HourlyWindowHours int                    `json:"hourlyWindowHours"`
 	Costs             port.GatewayQuotaCosts `json:"costs"`
+}
+
+type runtimeStateQuotaAuthorizationEntry struct {
+	ScopeType       string `json:"scopeType"`
+	AuthorizationID string `json:"authorizationId"`
+	Decision        struct {
+		Allowed bool `json:"allowed"`
+	} `json:"decision"`
 }
 
 func readOptionalRaw(ctx context.Context, getter RawGetter, key string) ([]byte, error) {

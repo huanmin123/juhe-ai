@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"juhe-ai/backend-go/internal/modules/gatewayaccountcandidates"
 	"juhe-ai/backend-go/internal/store/port"
@@ -75,6 +76,8 @@ type Candidate struct {
 	Projection              port.GatewayAccountCandidate
 	Credentials             CredentialSet `json:"-"`
 	DefaultBaseURL          string
+	SupportedEndpointModes  []string
+	EndpointModesComplete   bool
 	SupportedModels         []string
 	ModelMappings           []ModelMapping
 	APIKeyRuntime           []APIKeyRuntime
@@ -114,6 +117,99 @@ type Diagnostics struct {
 type Window struct {
 	Access      port.GatewayGroupAccess
 	Candidates  []Candidate
+	Diagnostics Diagnostics
+}
+
+// PolicyWindow returns a detached, credential-free candidate view for
+// request-local selection policies. A policy may inspect and reorder its own
+// copy but cannot mutate the hydrated window that later reaches the claim
+// boundary, nor observe account or proxy credentials.
+func PolicyWindow(input Window) Window {
+	result := input
+	result.Access.GroupAuthorizationExpiresAt = clonePolicyTime(input.Access.GroupAuthorizationExpiresAt)
+	result.Candidates = make([]Candidate, 0, len(input.Candidates))
+	for _, candidate := range input.Candidates {
+		copy := candidate
+		copy.Projection = policyProjection(candidate.Projection)
+		copy.Credentials = CredentialSet{}
+		copy.SupportedEndpointModes = append([]string(nil), candidate.SupportedEndpointModes...)
+		copy.SupportedModels = append([]string(nil), candidate.SupportedModels...)
+		copy.ModelMappings = append([]ModelMapping(nil), candidate.ModelMappings...)
+		copy.APIKeyRuntime = append([]APIKeyRuntime(nil), candidate.APIKeyRuntime...)
+		if candidate.Proxy != nil {
+			proxy := *candidate.Proxy
+			proxy.Credentials = CredentialSet{}
+			copy.Proxy = &proxy
+		}
+		copy.QualityScore = clonePolicyInt64(candidate.QualityScore)
+		copy.QualityEWMAFirstTokenMS = clonePolicyFloat64(candidate.QualityEWMAFirstTokenMS)
+		result.Candidates = append(result.Candidates, copy)
+	}
+	return result
+}
+
+func policyProjection(input port.GatewayAccountCandidate) port.GatewayAccountCandidate {
+	result := input
+	// A request policy selects account IDs only; encrypted material is neither
+	// capability nor scheduling input and must never cross this boundary.
+	result.CredentialsEncrypted = ""
+	result.ResourceCredentialsEncrypted = ""
+	result.CooldownUntil = clonePolicyTime(input.CooldownUntil)
+	result.AccountExpiresAt = clonePolicyTime(input.AccountExpiresAt)
+	result.AuthorizationExpiresAt = clonePolicyTime(input.AuthorizationExpiresAt)
+	result.ResourceCooldownUntil = clonePolicyTime(input.ResourceCooldownUntil)
+	result.ResourceAccountExpiresAt = clonePolicyTime(input.ResourceAccountExpiresAt)
+	return result
+}
+
+func clonePolicyTime(input *time.Time) *time.Time {
+	if input == nil {
+		return nil
+	}
+	value := *input
+	return &value
+}
+
+func clonePolicyInt64(input *int64) *int64 {
+	if input == nil {
+		return nil
+	}
+	value := *input
+	return &value
+}
+
+func clonePolicyFloat64(input *float64) *float64 {
+	if input == nil {
+		return nil
+	}
+	value := *input
+	return &value
+}
+
+// PreBodyCapacityInput identifies the already-authenticated route group for
+// the Node-compatible speed-first admission snapshot. It intentionally has no
+// model or endpoint fields: this snapshot is collected before body parsing.
+type PreBodyCapacityInput struct {
+	GroupID         string
+	SystemAccountID string
+}
+
+// PreBodyCapacityCandidate exposes only the identity and limit used for a
+// later body-admission capacity calculation. It never contains credentials,
+// proxy credentials, model facts, or a dispatch claim.
+type PreBodyCapacityCandidate struct {
+	AccountID                 string
+	CredentialSourceAccountID string
+	ConcurrencyLimit          int
+}
+
+// PreBodyCapacitySnapshot is the bounded, body-independent counterpart of
+// Node's runtime.accounts for speed-first body admission. Its candidates have
+// passed the same credential/account hydration boundary as a regular window,
+// but no request model is evaluated and no candidate is dispatched.
+type PreBodyCapacitySnapshot struct {
+	Access      port.GatewayGroupAccess
+	Candidates  []PreBodyCapacityCandidate
 	Diagnostics Diagnostics
 }
 
@@ -214,6 +310,78 @@ func (s *Service) Load(ctx context.Context, input LoadInput) (Window, bool, erro
 	})
 	diagnostics.FinalAccountCount = len(final)
 	return Window{Access: projection.Access, Candidates: final, Diagnostics: diagnostics}, true, nil
+}
+
+// LoadPreBodyCapacity collects a bounded, credential-validated account view
+// before a request body is read. It mirrors Node's runtime account loading:
+// active, schedulable candidates are scanned in existing dispatch order; up
+// to FinalLimit hydrated accounts are retained; a broken candidate may be
+// skipped and a later row used to refill the bounded result. Unlike Load, it
+// never evaluates model rank because model facts belong to the body stage.
+func (s *Service) LoadPreBodyCapacity(ctx context.Context, input PreBodyCapacityInput) (PreBodyCapacitySnapshot, bool, error) {
+	if s == nil || s.projector == nil {
+		return PreBodyCapacitySnapshot{}, false, fmt.Errorf("candidate projector is required")
+	}
+	if s.hydrator == nil {
+		return PreBodyCapacitySnapshot{}, false, fmt.Errorf("candidate hydrator is required")
+	}
+	projection, found, err := s.projector.Project(ctx, gatewayaccountcandidates.ProjectInput{
+		GroupID: strings.TrimSpace(input.GroupID), SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+	})
+	if err != nil || !found {
+		return PreBodyCapacitySnapshot{}, found, err
+	}
+	diagnostics := Diagnostics{
+		ScanLimit:         port.GatewayAccountCandidateScanLimit,
+		FinalLimit:        FinalLimit,
+		CandidateRowCount: len(projection.Candidates),
+		ScannedRowCount:   len(projection.Candidates),
+		EligibleRowCount:  len(projection.Candidates),
+		ScanLimitReached:  projection.LimitReached,
+	}
+	result := PreBodyCapacitySnapshot{
+		Access: projection.Access, Candidates: make([]PreBodyCapacityCandidate, 0, min(FinalLimit, len(projection.Candidates))), Diagnostics: diagnostics,
+	}
+	for start := 0; start < len(projection.Candidates) && len(result.Candidates) < FinalLimit; start += FinalLimit {
+		end := min(start+FinalLimit, len(projection.Candidates))
+		batch := projection.Candidates[start:end]
+		hydrated, hydrateErr := s.hydrator.Hydrate(ctx, HydrateInput{Candidates: batch})
+		if hydrateErr != nil {
+			return PreBodyCapacitySnapshot{}, false, fmt.Errorf("hydrate pre-body capacity candidates: %w", hydrateErr)
+		}
+		result.Diagnostics.HydrationBatchCount++
+		byID, indexErr := indexHydrationResults(batch, hydrated)
+		if indexErr != nil {
+			return PreBodyCapacitySnapshot{}, false, indexErr
+		}
+		for _, row := range batch {
+			hydration, ok := byID[row.AccountID]
+			if !ok || strings.TrimSpace(hydration.DropReason) != "" {
+				result.Diagnostics.HydrationDroppedCount++
+				continue
+			}
+			result.Candidates = append(result.Candidates, preBodyCapacityCandidate(row))
+			result.Diagnostics.HydratedAccountCount++
+			if len(result.Candidates) == FinalLimit {
+				break
+			}
+		}
+	}
+	result.Diagnostics.FinalAccountCount = len(result.Candidates)
+	return result, true, nil
+}
+
+func preBodyCapacityCandidate(row port.GatewayAccountCandidate) PreBodyCapacityCandidate {
+	accountID := strings.TrimSpace(row.AccountID)
+	sourceID := strings.TrimSpace(row.ResourceAccountID)
+	limit := row.ConcurrencyLimit
+	if sourceID != "" {
+		limit = row.ResourceConcurrencyLimit
+		if sourceID == accountID {
+			sourceID = ""
+		}
+	}
+	return PreBodyCapacityCandidate{AccountID: accountID, CredentialSourceAccountID: sourceID, ConcurrencyLimit: limit}
 }
 
 func compareProjections(left, right port.GatewayAccountCandidate, ranks map[string]CandidateRankFacts) int {

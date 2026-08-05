@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/modules/gatewayaccountcandidates"
 	"juhe-ai/backend-go/internal/store/port"
@@ -31,6 +32,34 @@ func TestLoadHydratesInBoundedBatchesAndRefillsBrokenRows(t *testing.T) {
 	}
 	if window.Diagnostics.CandidateRowCount != 264 || window.Diagnostics.ScannedRowCount != 264 {
 		t.Fatalf("scan diagnostics = %+v", window.Diagnostics)
+	}
+}
+
+func TestPolicyWindowIsDetachedAndCredentialFree(t *testing.T) {
+	deadline := time.Date(2026, time.August, 4, 10, 0, 0, 0, time.UTC)
+	quality := int64(42)
+	latency := 12.5
+	original := Window{Candidates: []Candidate{{
+		Projection:             port.GatewayAccountCandidate{AccountID: "account", CredentialsEncrypted: "encrypted-account", ResourceCredentialsEncrypted: "encrypted-resource", CooldownUntil: &deadline},
+		Credentials:            NewCredentialSet(map[string]any{"api_key": "secret"}),
+		SupportedEndpointModes: []string{"chat_sse"}, SupportedModels: []string{"gpt"}, QualityScore: &quality, QualityEWMAFirstTokenMS: &latency,
+	}}}
+	policy := PolicyWindow(original)
+	if _, found := policy.Candidates[0].Credentials.Value("api_key"); found {
+		t.Fatal("policy view exposed account credentials")
+	}
+	if policy.Candidates[0].Projection.CredentialsEncrypted != "" || policy.Candidates[0].Projection.ResourceCredentialsEncrypted != "" {
+		t.Fatalf("policy view exposed encrypted credentials: %#v", policy.Candidates[0].Projection)
+	}
+	policy.Candidates[0].Projection.Name = "mutated"
+	policy.Candidates[0].SupportedEndpointModes[0] = "responses_sse"
+	policy.Candidates[0].SupportedModels[0] = "mutated"
+	*policy.Candidates[0].Projection.CooldownUntil = deadline.Add(time.Hour)
+	*policy.Candidates[0].QualityScore = 7
+	*policy.Candidates[0].QualityEWMAFirstTokenMS = 99
+	if original.Candidates[0].Projection.Name != "" || original.Candidates[0].SupportedEndpointModes[0] != "chat_sse" || original.Candidates[0].SupportedModels[0] != "gpt" ||
+		!original.Candidates[0].Projection.CooldownUntil.Equal(deadline) || *original.Candidates[0].QualityScore != 42 || *original.Candidates[0].QualityEWMAFirstTokenMS != 12.5 {
+		t.Fatalf("policy view mutated hydrated candidate: %#v", original.Candidates[0])
 	}
 }
 

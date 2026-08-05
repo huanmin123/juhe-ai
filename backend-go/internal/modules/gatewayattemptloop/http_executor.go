@@ -12,7 +12,9 @@ import (
 	"juhe-ai/backend-go/internal/modules/gatewaydeadline"
 	"juhe-ai/backend-go/internal/modules/gatewaydispatch"
 	"juhe-ai/backend-go/internal/modules/gatewayresponse"
+	"juhe-ai/backend-go/internal/modules/gatewayresponseinspection"
 	"juhe-ai/backend-go/internal/modules/gatewayretry"
+	"juhe-ai/backend-go/internal/modules/gatewaystreamrelay"
 	"juhe-ai/backend-go/internal/modules/gatewayupstream"
 	"juhe-ai/backend-go/internal/modules/gatewayusage"
 )
@@ -51,7 +53,7 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		if causedByFirstByteDeadline(attemptCtx, dispatchErr) {
 			return firstByteDeadlineResult(attempt, AttemptResult{}), gatewaydeadline.ErrFirstByteDeadline
 		}
-		return AttemptResult{RetryAllowed: attempt.AvailabilityFailoverAllowed, Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
+		return AttemptResult{RetryAllowed: attempt.AvailabilityFailoverAllowed, KeyScopedFailure: automaticAPIKeyFailover(attempt), Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
 	}
 	responseInput.Context = attemptCtx
 	responseInput.Dispatch = dispatchResult
@@ -78,7 +80,13 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 			preparedOnTransportCommit()
 		}
 	}
+	automaticKeyFailover := automaticAPIKeyFailover(attempt)
+	// Preserve caller-provided alternative-key facts for explicit account policy;
+	// automatic key failover remains separately gated below.
 	responseInput.ResponsePolicy.HasAlternativeAPIKeys = responseInput.ResponsePolicy.HasAlternativeAPIKeys || attempt.HasAlternativeKeys
+	// This authorization comes only from the selected candidate. A prepared
+	// response template must not broaden it.
+	responseInput.ResponsePolicy.AutomaticAPIKeyFailover = automaticKeyFailover
 	preparedResolver := responseInput.DispositionResolver
 	var policyDecision *PolicyDecision
 	responseInput.DispositionResolver = func(statusCode int, body []byte) (gatewayretry.ResponseDisposition, error) {
@@ -103,6 +111,9 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 			policyDecision = &copy
 			return gatewayretry.ResponseDispositionExplicitPolicy, nil
 		}
+		if automaticKeyFailover {
+			return gatewayretry.ResponseDispositionExplicitPolicy, nil
+		}
 		if preparedResolver != nil {
 			return preparedResolver(statusCode, body)
 		}
@@ -119,29 +130,76 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		return firstByteDeadlineResult(attempt, AttemptResult{Usage: handled.Handoff.Usage, Audit: handled.Handoff.Audit}), gatewaydeadline.ErrFirstByteDeadline
 	}
 	if handled.State == gatewayresponse.StateSucceeded {
-		return AttemptResult{Success: true, Committed: true, Usage: handled.Handoff.Usage, Audit: handled.Handoff.Audit}, handleErr
+		return AttemptResult{Success: true, Committed: true, Sink: attemptSinkState(responseInput.Sink, handled), Response: &handled, Usage: handled.Handoff.Usage, Audit: handled.Handoff.Audit, ResponseInspection: gatewayresponseinspection.CloneHandoff(handled.ResponseInspection)}, handleErr
 	}
 	failure := handled.Handoff.Retry.Failure
 	bodyText := string(handled.BufferedBody)
-	errorCode, errorType, message := extractErrorFacts(bodyText)
-	if errorCode == "" {
-		errorCode = failure.ErrorCode
+	responseInspectionMatched := handled.ResponseInspection != nil && handled.ResponseInspection.Decision != nil
+	errorCode, errorType, message := failure.ErrorCode, failure.ErrorType, ""
+	if responseInspectionMatched {
+		// The inspection decision owns these facts. Re-parsing its successful
+		// upstream JSON as a normal error can replace its frozen error code.
+		if failure.Err != nil {
+			message = failure.Err.Error()
+		}
+	} else {
+		errorCode, errorType, message = extractErrorFacts(bodyText)
+		if errorCode == "" {
+			errorCode = failure.ErrorCode
+		}
+		if errorType == "" {
+			errorType = failure.ErrorType
+		}
+		if message == "" && failure.Err != nil {
+			message = failure.Err.Error()
+		}
 	}
-	if errorType == "" {
-		errorType = failure.ErrorType
+	keyScopedFailure := handled.Handoff.Retry.Classification.WouldAvoidAPIKey
+	if automaticKeyFailover && failure.ResponseSignal == gatewayretry.ResponseSignalNone {
+		keyScopedFailure = true
 	}
-	if message == "" && failure.Err != nil {
-		message = failure.Err.Error()
-	}
+	committed := handled.TransportCommitted || handled.SemanticCommitted || handled.BytesWritten > 0
 	return AttemptResult{
-		Committed:        handled.TransportCommitted || handled.SemanticCommitted || handled.BytesWritten > 0,
-		RetryAllowed:     handled.RetryAllowed && attempt.AvailabilityFailoverAllowed,
-		KeyScopedFailure: handled.Handoff.Retry.Classification.WouldAvoidAPIKey,
-		Failure:          FailureFacts{StatusCode: failure.StatusCode, ErrorCode: boundedText(errorCode, 256), ErrorType: boundedText(errorType, 256), BodyText: boundedText(bodyText, 64<<10), Message: boundedText(message, 1000)},
-		Usage:            handled.Handoff.Usage,
-		Audit:            handled.Handoff.Audit,
-		PolicyDecision:   policyDecision,
+		Committed:           committed,
+		Sink:                attemptSinkState(responseInput.Sink, handled),
+		Response:            &handled,
+		RetryAllowed:        handled.RetryAllowed && attempt.AvailabilityFailoverAllowed,
+		KeyScopedFailure:    keyScopedFailure,
+		FallbackDisposition: FallbackAccountUnknown,
+		Failure:             FailureFacts{StatusCode: failure.StatusCode, ErrorCode: boundedText(errorCode, 256), ErrorType: boundedText(errorType, 256), BodyText: boundedText(bodyText, 64<<10), Message: boundedText(message, 1000)},
+		Usage:               handled.Handoff.Usage,
+		Audit:               handled.Handoff.Audit,
+		PolicyDecision:      policyDecision,
+		ResponseInspection:  gatewayresponseinspection.CloneHandoff(handled.ResponseInspection),
 	}, handleErr
+}
+
+func attemptSinkState(sink gatewaystreamrelay.Sink, handled gatewayresponse.Result) *gatewaystreamrelay.SinkState {
+	state := gatewaystreamrelay.SinkState{
+		TransportCommitted: handled.TransportCommitted,
+		SemanticCommitted:  handled.SemanticCommitted,
+		DownstreamBytes:    handled.Handoff.Commit.DownstreamBytes,
+	}
+	if handled.BytesWritten > state.DownstreamBytes {
+		state.DownstreamBytes = handled.BytesWritten
+	}
+	if stateful, ok := sink.(gatewaystreamrelay.StatefulSink); ok {
+		snapshot := stateful.Snapshot()
+		state.TransportCommitted = state.TransportCommitted || snapshot.TransportCommitted
+		state.SemanticCommitted = state.SemanticCommitted || snapshot.SemanticCommitted
+		if snapshot.DownstreamBytes > state.DownstreamBytes {
+			state.DownstreamBytes = snapshot.DownstreamBytes
+		}
+	}
+	if state.SemanticCommitted || state.DownstreamBytes > 0 {
+		state.TransportCommitted = true
+	}
+	return &state
+}
+
+func automaticAPIKeyFailover(attempt Attempt) bool {
+	strategy, ok := attempt.Candidate.Credentials.StringValue("api_key_strategy")
+	return ok && strings.EqualFold(strings.TrimSpace(strategy), "failover") && attempt.HasAlternativeKeys
 }
 
 func (e HTTPExecutor) now() time.Time {
@@ -154,6 +212,7 @@ func (e HTTPExecutor) now() time.Time {
 func firstByteDeadlineResult(attempt Attempt, base AttemptResult) AttemptResult {
 	message := gatewaydeadline.ErrFirstByteDeadline.Error()
 	base.RetryAllowed = attempt.AvailabilityFailoverAllowed
+	base.FallbackDisposition = FallbackAccountUnknown
 	base.Failure.ErrorCode = "first_byte_timeout"
 	base.Failure.Message = message
 	base.Usage = gatewayusage.TerminalFacts{

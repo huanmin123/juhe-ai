@@ -57,6 +57,47 @@ func (c CredentialSet) StringValues(key string) []string {
 	return normalizedCredentialStrings(c.values[key])
 }
 
+// ExactStringArray reports whether a credential field is a complete,
+// non-empty, duplicate-free string array without whitespace normalization.
+// Routing policies use it for capability facts where silently dropping a bad
+// element could turn corrupted credentials into an apparent permission.
+func (c CredentialSet) ExactStringArray(key string) ([]string, bool) {
+	raw, exists := c.values[key]
+	if !exists {
+		return nil, false
+	}
+	var values []string
+	switch typed := raw.(type) {
+	case []string:
+		values = append([]string(nil), typed...)
+	case []any:
+		values = make([]string, 0, len(typed))
+		for _, value := range typed {
+			text, ok := value.(string)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, text)
+		}
+	default:
+		return nil, false
+	}
+	if len(values) == 0 {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return nil, false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return nil, false
+		}
+		seen[value] = struct{}{}
+	}
+	return values, true
+}
+
 type CredentialCodec interface {
 	DecryptJSON(string) (map[string]any, error)
 }
@@ -218,10 +259,13 @@ func (h *BatchHydrator) Hydrate(ctx context.Context, input HydrateInput) ([]Hydr
 			continue
 		}
 		qualityFacts := input.PreRanks[candidate.row.AccountID]
+		endpointModes, endpointModesComplete := candidate.credentials.ExactStringArray("supported_endpoint_modes")
 		hydrated := Candidate{
 			Projection:              candidate.row,
 			Credentials:             candidate.credentials,
 			DefaultBaseURL:          accountFacts.DefaultBaseURL,
+			SupportedEndpointModes:  endpointModes,
+			EndpointModesComplete:   endpointModesComplete,
 			SupportedModels:         append([]string(nil), accountFacts.SupportedModels...),
 			ModelMappings:           mapModelMappings(accountFacts.ModelMappings),
 			APIKeyRuntime:           mapAPIKeyRuntime(candidate.apiKeys, runtimeStates[candidate.accountID]),

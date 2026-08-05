@@ -179,16 +179,24 @@ func FilterModelCandidates(candidates []Candidate, requestedModel string, source
 			continue
 		}
 		result.LimitedAccountCount++
+		if mapping, ok := ResolveModelMapping(candidate, model, sourceEndpointFamily); ok {
+			if containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
+				result.MappingMatchedCount++
+				ranks[candidate.ID] = ModelPriorityMapping
+				mapped = append(mapped, candidate)
+				continue
+			}
+			// Node never falls back to the source model after an applicable
+			// mapping has been selected. Doing so would execute a request the
+			// account's mapping explicitly redirected to an unsupported target.
+			result.SkippedCount++
+			ranks[candidate.ID] = ModelPriorityUnsupported
+			continue
+		}
 		if model != "" && containsExact(candidate.SupportedModels, model) {
 			result.DirectMatchedCount++
 			ranks[candidate.ID] = ModelPriorityDirect
 			direct = append(direct, candidate)
-			continue
-		}
-		if mapping, ok := ResolveModelMapping(candidate, model, sourceEndpointFamily); ok && containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
-			result.MappingMatchedCount++
-			ranks[candidate.ID] = ModelPriorityMapping
-			mapped = append(mapped, candidate)
 			continue
 		}
 		result.SkippedCount++
@@ -251,27 +259,29 @@ func ResolveEffectiveModel(candidate Candidate, requestedModel string, source En
 	if model == "" || len(candidate.SupportedModels) == 0 {
 		return ModelResolution{}, false
 	}
-	if containsExact(candidate.SupportedModels, model) {
-		return ModelResolution{
-			RequestedModel: model, UpstreamModel: model,
-			SourceEndpointFamily: source, UpstreamEndpointFamily: source,
-		}, true
+	if isMappingSourceFamily(source) {
+		mapping, ok := ResolveModelMapping(candidate, model, source)
+		if ok {
+			if containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
+				sourceName := strings.TrimSpace(mapping.RuntimeSource)
+				if sourceName == "" {
+					sourceName = "account"
+				}
+				return ModelResolution{
+					RequestedModel: model, UpstreamModel: mapping.UpstreamModel,
+					SourceEndpointFamily: source, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
+					MappingApplied: true, MappingSource: sourceName,
+				}, true
+			}
+			return ModelResolution{}, false
+		}
 	}
-	if !isMappingSourceFamily(source) {
+	if !containsExact(candidate.SupportedModels, model) {
 		return ModelResolution{}, false
-	}
-	mapping, ok := ResolveModelMapping(candidate, model, source)
-	if !ok || !containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
-		return ModelResolution{}, false
-	}
-	sourceName := strings.TrimSpace(mapping.RuntimeSource)
-	if sourceName == "" {
-		sourceName = "account"
 	}
 	return ModelResolution{
-		RequestedModel: model, UpstreamModel: mapping.UpstreamModel,
-		SourceEndpointFamily: source, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
-		MappingApplied: true, MappingSource: sourceName,
+		RequestedModel: model, UpstreamModel: model,
+		SourceEndpointFamily: source, UpstreamEndpointFamily: source,
 	}, true
 }
 

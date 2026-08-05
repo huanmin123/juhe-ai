@@ -27,7 +27,7 @@ func TestBatchHydratorLoadsResourceFactsProxyRuntimeAndFreshQuality(t *testing.T
 		},
 	}}
 	codec := &hydrationCodecStub{values: map[string]map[string]any{
-		"account-secret": {"api_keys": []any{"sk-first", "sk-second"}, "base_url": "https://api.example.com"},
+		"account-secret": {"api_keys": []any{"sk-first", "sk-second"}, "base_url": "https://api.example.com", "supported_endpoint_modes": []any{"chat_json", "chat_sse"}},
 		"proxy-secret":   {"password": "proxy-password"},
 	}}
 	runtime := &apiKeyRuntimeStub{}
@@ -60,6 +60,12 @@ func TestBatchHydratorLoadsResourceFactsProxyRuntimeAndFreshQuality(t *testing.T
 	}
 	if value, ok := candidate.Credentials.StringValue("base_url"); !ok || value != "https://api.example.com" {
 		t.Fatalf("base_url = %q/%v", value, ok)
+	}
+	if !reflect.DeepEqual(candidate.SupportedEndpointModes, []string{"chat_json", "chat_sse"}) {
+		t.Fatalf("supported endpoint modes = %#v", candidate.SupportedEndpointModes)
+	}
+	if !candidate.EndpointModesComplete {
+		t.Fatal("supported endpoint modes were not marked complete")
 	}
 	if candidate.Proxy == nil || candidate.Proxy.Host != "proxy.local" {
 		t.Fatalf("proxy = %+v", candidate.Proxy)
@@ -168,6 +174,30 @@ func TestAPIKeyPoolPreservesOriginalIndexAndDoesNotFallback(t *testing.T) {
 	runtime = mapAPIKeyRuntime(keys, []port.ManagementAccountAPIKeyRuntimeState{{KeyFingerprint: keys[0].fingerprint, KeyIndex: 99, Status: "active"}})
 	if runtime[0].KeyIndex != 1 {
 		t.Fatalf("stale runtime index replaced credential index: %+v", runtime)
+	}
+}
+
+func TestCredentialSetExactStringArrayRejectsIncompleteCapabilityFacts(t *testing.T) {
+	for _, value := range []any{
+		nil,
+		"chat_json",
+		[]any{},
+		[]any{"chat_json", ""},
+		[]any{"chat_json", "chat_json"},
+		[]any{" chat_json"},
+		[]any{"chat_json", 1},
+	} {
+		credentials := map[string]any{}
+		if value != nil {
+			credentials["supported_endpoint_modes"] = value
+		}
+		if _, complete := NewCredentialSet(credentials).ExactStringArray("supported_endpoint_modes"); complete {
+			t.Fatalf("incomplete endpoint modes %#v accepted", value)
+		}
+	}
+	values, complete := NewCredentialSet(map[string]any{"supported_endpoint_modes": []string{"chat_json", "responses_sse"}}).ExactStringArray("supported_endpoint_modes")
+	if !complete || !reflect.DeepEqual(values, []string{"chat_json", "responses_sse"}) {
+		t.Fatalf("complete endpoint modes = %#v/%t", values, complete)
 	}
 }
 

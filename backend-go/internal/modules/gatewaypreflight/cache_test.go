@@ -18,13 +18,13 @@ func TestRuntimeStateQuotaSnapshotReaderReadsCurrentAndDefaultsLegacyCompletenes
 	if err != nil {
 		t.Fatalf("NewRuntimeStateQuotaSnapshotReader() error = %v", err)
 	}
-	raw.values[reader.key] = []byte(`{"generatedAt":"2026-07-22T09:00:00.000Z","costEntries":[{"systemAccountId":"sys_1","scopeType":"api_key","scopeId":"key_1","hourlyWindowHours":3,"costs":{"hourly":1,"daily":2,"weekly":3,"monthly":4,"total":5}}],"authorizationEntries":[]}`)
+	raw.values[reader.key] = []byte(`{"generatedAt":"2026-07-22T09:00:00.000Z","costEntries":[{"systemAccountId":"sys_1","scopeType":"api_key","scopeId":"key_1","hourlyWindowHours":3,"costs":{"hourly":1,"daily":2,"weekly":3,"monthly":4,"total":5}}],"authorizationEntries":[{"scopeType":"account_authorization","authorizationId":"auth_1","decision":{"allowed":false}}]}`)
 
 	snapshot, found, err := reader.LoadGatewayPreflightQuotaSnapshotCurrent(context.Background())
 	if err != nil {
 		t.Fatalf("LoadGatewayPreflightQuotaSnapshotCurrent() error = %v", err)
 	}
-	if !found || !snapshot.CostEntriesComplete || len(snapshot.CostEntries) != 1 || snapshot.CostEntries[0].Costs.Total != 5 {
+	if !found || !snapshot.CostEntriesComplete || len(snapshot.CostEntries) != 1 || snapshot.CostEntries[0].Costs.Total != 5 || len(snapshot.AuthorizationEntries) != 1 || snapshot.AuthorizationEntries[0].Allowed {
 		t.Fatalf("snapshot = %+v, found=%v", snapshot, found)
 	}
 }

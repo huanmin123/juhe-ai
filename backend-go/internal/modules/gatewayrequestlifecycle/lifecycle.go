@@ -23,6 +23,8 @@ var (
 	ErrSinkStateRegression = errors.New("gateway request lifecycle sink state regressed")
 	ErrSuccessBeforeCommit = errors.New("gateway request lifecycle cannot succeed before downstream commit")
 	ErrInvalidFailure      = errors.New("gateway request lifecycle failure kind is invalid")
+	ErrExecutionMismatch   = errors.New("gateway request lifecycle execution lineage does not match")
+	ErrContinuationState   = errors.New("gateway request lifecycle is not ready for continuation")
 )
 
 // State is the request-local lifecycle. Only Ready and Attempting permit an
@@ -79,6 +81,7 @@ type Lifecycle struct {
 	attempts uint64
 	active   uint64
 	failure  FailureKind
+	lineage  gatewayrequestexecution.RequestLineage
 }
 
 // New accepts only an authenticated execution with at least one candidate
@@ -98,7 +101,26 @@ func New(execution gatewayrequestexecution.Execution) (*Lifecycle, error) {
 			return nil, ErrExecutionEmpty
 		}
 	}
-	return &Lifecycle{state: StateReady}, nil
+	return &Lifecycle{state: StateReady, lineage: execution.RequestLineage()}, nil
+}
+
+// ValidateContinuation proves that a later target belongs to this lifecycle's
+// original finalized request and that no active, committed, or terminal state
+// can be reused. It is the only cross-group handoff check; adapters remain
+// opaque and are still created separately for each target attempt loop.
+func (l *Lifecycle) ValidateContinuation(execution gatewayrequestexecution.Execution) error {
+	if l == nil {
+		return ErrExecutionEmpty
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.lineage.Matches(execution) {
+		return ErrExecutionMismatch
+	}
+	if l.state != StateReady || l.active != 0 || l.sink.TransportCommitted || l.sink.SemanticCommitted || l.sink.DownstreamBytes != 0 {
+		return ErrContinuationState
+	}
+	return nil
 }
 
 // Start creates an opaque generation for one attempt-loop execution. It does

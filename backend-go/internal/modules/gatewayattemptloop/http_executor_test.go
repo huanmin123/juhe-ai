@@ -176,6 +176,16 @@ func TestHTTPExecutorDoesNotRetrySlowStreamSinkAsUpstreamTimeout(t *testing.T) {
 	}
 }
 
+func TestHTTPExecutorLeavesUnprovenPreCommitFailureClassificationUnknown(t *testing.T) {
+	executor := HTTPExecutor{Prepare: func(context.Context, Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
+		return gatewayupstream.Input{}, gatewayresponse.Input{}, errors.New("prepare unavailable")
+	}}
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true})
+	if err == nil || result.FallbackDisposition != FallbackAccountUnknown {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestHTTPExecutorTransparentForUnmatchedUpstreamFailure(t *testing.T) {
 	client := doerStub{response: &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"maintenance"}`))}}
 	dispatcher := gatewaydispatch.Dispatcher{Client: client}

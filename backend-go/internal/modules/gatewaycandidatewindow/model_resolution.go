@@ -13,6 +13,18 @@ type EffectiveModelResolution = gatewaymodelcapability.ModelResolution
 // identity and the gateway's canonical exact model-mapping rules. A caller
 // must still run a protocol bridge when the returned endpoint family changes.
 func ResolveEffectiveModel(candidate Candidate, requestedModel, sourceEndpointFamily string) (EffectiveModelResolution, bool) {
+	return gatewaymodelcapability.ResolveEffectiveModel(modelCapabilityCandidate(candidate), requestedModel, gatewayprotocol.EndpointFamily(strings.TrimSpace(sourceEndpointFamily)))
+}
+
+// ResolveConfiguredModelMapping reports a configured runtime mapping without
+// treating an unsupported mapped upstream model as permission to use the
+// source model directly. Callers that lack the actual request rewrite must
+// reject this path rather than silently falling back to direct dispatch.
+func ResolveConfiguredModelMapping(candidate Candidate, requestedModel, sourceEndpointFamily string) (gatewaymodelcapability.ModelMapping, bool) {
+	return gatewaymodelcapability.ResolveModelMapping(modelCapabilityCandidate(candidate), requestedModel, gatewayprotocol.EndpointFamily(strings.TrimSpace(sourceEndpointFamily)))
+}
+
+func modelCapabilityCandidate(candidate Candidate) gatewaymodelcapability.Candidate {
 	providerCode, profileID, protocolCode, protocolVersion := effectiveProtocolIdentity(candidate)
 	mappings := make([]gatewaymodelcapability.ModelMapping, 0, len(candidate.ModelMappings))
 	for _, mapping := range candidate.ModelMappings {
@@ -28,11 +40,11 @@ func ResolveEffectiveModel(candidate Candidate, requestedModel, sourceEndpointFa
 			Enabled:                mapping.Enabled,
 		})
 	}
-	return gatewaymodelcapability.ResolveEffectiveModel(gatewaymodelcapability.Candidate{
+	return gatewaymodelcapability.Candidate{
 		ProviderCode: providerCode, ProviderProtocolProfileID: profileID,
 		ProtocolCode: protocolCode, ProtocolVersion: protocolVersion,
 		SupportedModels: append([]string(nil), candidate.SupportedModels...), ModelMappings: mappings,
-	}, requestedModel, gatewayprotocol.EndpointFamily(strings.TrimSpace(sourceEndpointFamily)))
+	}
 }
 
 func effectiveProtocolIdentity(candidate Candidate) (providerCode, profileID, protocolCode, protocolVersion string) {

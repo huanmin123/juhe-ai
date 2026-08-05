@@ -58,9 +58,20 @@ type GatewayPreflightQuotaCostEntry struct {
 	Costs             GatewayQuotaCosts
 }
 
+// GatewayAuthorizationQuotaSnapshotEntry is the per-authorization decision
+// published by the quota snapshot worker. It is shared by API-key preflight
+// and cross-group fallback selection; neither path may infer a missing
+// decision from an incomplete snapshot.
+type GatewayAuthorizationQuotaSnapshotEntry struct {
+	ScopeType       string
+	AuthorizationID string
+	Allowed         bool
+}
+
 type GatewayPreflightQuotaSnapshot struct {
 	GeneratedAt                  string
 	CostEntries                  []GatewayPreflightQuotaCostEntry
+	AuthorizationEntries         []GatewayAuthorizationQuotaSnapshotEntry
 	CostEntriesComplete          bool
 	AuthorizationEntriesComplete bool
 }

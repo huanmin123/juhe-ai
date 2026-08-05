@@ -107,10 +107,28 @@ func TestFilterModelCandidatesDoesNotTreatUnsupportedMappingAsEligible(t *testin
 		SourceModel: "gpt-5", SourceEndpointFamily: EndpointFamilyResponses,
 		UpstreamModel: "gpt-4o", UpstreamEndpointFamily: EndpointFamilyChatCompletions, Enabled: true,
 	}}
+	candidates[2].SupportedModels = []string{"gpt-5", "gpt-4o-mini"}
+	candidates[2].ProviderCode = "hybrid"
 
 	result := FilterModelCandidates(candidates, "gpt-5", EndpointFamilyResponses)
 	if len(result.Candidates) != 0 || result.Reason != ModelMismatchUnsupported {
 		t.Fatalf("result = %#v, want unsupported model", result)
+	}
+}
+
+func TestResolveEffectiveModelDoesNotFallBackToDirectAfterUnsupportedMapping(t *testing.T) {
+	item := candidate("mapped-but-upstream-unsupported", readyCapability(), []string{"gpt-client"})
+	item.ProviderCode = "hybrid"
+	item.ModelMappings = []ModelMapping{{
+		SourceModel: "gpt-client", SourceEndpointFamily: EndpointFamilyResponses,
+		UpstreamModel: "gpt-upstream", UpstreamEndpointFamily: EndpointFamilyChatCompletions, Enabled: true,
+	}}
+	if _, ok := ResolveEffectiveModel(item, "gpt-client", EndpointFamilyResponses); ok {
+		t.Fatal("ResolveEffectiveModel() fell back to source model after unsupported mapping")
+	}
+	result := FilterModelCandidates([]Candidate{item}, "gpt-client", EndpointFamilyResponses)
+	if len(result.Candidates) != 0 || result.Priority.RankByCandidateID[item.ID] != ModelPriorityUnsupported {
+		t.Fatalf("model result = %#v", result)
 	}
 }
 
@@ -149,6 +167,22 @@ func TestResolveEffectiveModelReturnsMappedFamilyAndSource(t *testing.T) {
 	resolution, ok := ResolveEffectiveModel(item, "gpt-client", EndpointFamilyResponses)
 	if !ok || !resolution.MappingApplied || resolution.UpstreamModel != "gpt-upstream" || resolution.UpstreamEndpointFamily != EndpointFamilyMessages || resolution.MappingSource != "runtime" {
 		t.Fatalf("resolution = %+v, ok=%v", resolution, ok)
+	}
+}
+
+func TestResolveEffectiveModelPrefersMappingOverSameNameDirectModel(t *testing.T) {
+	item := candidate("mapped-first", readyCapability(), []string{"gpt-client", "gpt-upstream"})
+	item.ModelMappings = []ModelMapping{{
+		SourceModel: "gpt-client", SourceEndpointFamily: EndpointFamilyResponses,
+		UpstreamModel: "gpt-upstream", UpstreamEndpointFamily: EndpointFamilyResponses, Enabled: true,
+	}}
+	resolution, ok := ResolveEffectiveModel(item, "gpt-client", EndpointFamilyResponses)
+	if !ok || !resolution.MappingApplied || resolution.UpstreamModel != "gpt-upstream" {
+		t.Fatalf("resolution = %+v, ok=%v", resolution, ok)
+	}
+	result := FilterModelCandidates([]Candidate{item}, "gpt-client", EndpointFamilyResponses)
+	if result.MappingMatchedCount != 1 || result.DirectMatchedCount != 0 || result.Priority.RankByCandidateID["mapped-first"] != ModelPriorityMapping {
+		t.Fatalf("model result = %#v", result)
 	}
 }
 
