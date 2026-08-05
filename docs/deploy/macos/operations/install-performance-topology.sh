@@ -298,7 +298,18 @@ runtime_managed_paths() {
 
 migrate_runtime_ownership() {
   for runtime_root in "$LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do
-    find "$runtime_root" -xdev -exec chown -h "$SERVICE_USER" {} +
+    while IFS= read -r -d '' runtime_entry; do
+      if chown -h "$SERVICE_USER" "$runtime_entry"; then
+        continue
+      fi
+      # A live writer can atomically rename or remove a temporary payload file
+      # between find and chown. Ignore only that proven disappearance.
+      if [ ! -e "$runtime_entry" ] && [ ! -L "$runtime_entry" ]; then
+        continue
+      fi
+      echo "unable to migrate runtime ownership: $runtime_entry" >&2
+      return 1
+    done < <(find "$runtime_root" -xdev -print0)
   done
 }
 
