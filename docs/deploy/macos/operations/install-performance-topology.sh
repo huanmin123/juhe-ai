@@ -297,19 +297,17 @@ runtime_managed_paths() {
 }
 
 migrate_runtime_ownership() {
+  audit_blob_dir="$DATA_DIR/audit/blobs"
   for runtime_root in "$LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do
-    while IFS= read -r -d '' runtime_entry; do
-      if chown -h "$SERVICE_USER" "$runtime_entry"; then
-        continue
-      fi
-      # A live writer can atomically rename or remove a temporary payload file
-      # between find and chown. Ignore only that proven disappearance.
-      if [ ! -e "$runtime_entry" ] && [ ! -L "$runtime_entry" ]; then
-        continue
-      fi
-      echo "unable to migrate runtime ownership: $runtime_entry" >&2
-      return 1
-    done < <(find "$runtime_root" -xdev -print0)
+    if [ "$runtime_root" = "$DATA_DIR" ]; then
+      # Blob payloads are append-only data owned by the running service. Do not
+      # scan them during an online release: it races atomic writes and turns
+      # large audit retention into deployment downtime.
+      find "$runtime_root" -xdev -path "$audit_blob_dir" -prune -o -exec chown -h "$SERVICE_USER" {} +
+      chown -h "$SERVICE_USER" "$audit_blob_dir"
+    else
+      find "$runtime_root" -xdev -exec chown -h "$SERVICE_USER" {} +
+    fi
   done
 }
 

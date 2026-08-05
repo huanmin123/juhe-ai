@@ -718,8 +718,6 @@ mkdir -p "$LOG_DIR/runtime" "$SPOOL_DIR/gateway-1" "$DATA_DIR/audit/blobs" "$out
 printf 'log\n' > "$LOG_DIR/runtime/root-owned.log"
 printf 'spool\n' > "$SPOOL_DIR/gateway-1/root-owned.json"
 printf 'blob\n' > "$DATA_DIR/audit/blobs/root-owned.blob"
-race_path="$DATA_DIR/audit/blobs/volatile-write.tmp"
-printf 'temporary\n' > "$race_path"
 printf 'outside\n' > "$outside/untouched"
 chmod 600 "$LOG_DIR/runtime/root-owned.log" "$SPOOL_DIR/gateway-1/root-owned.json" "$DATA_DIR/audit/blobs/root-owned.blob" "$outside/untouched"
 ln -s "$outside" "$SPOOL_DIR/external-link"
@@ -729,25 +727,21 @@ cat > "$root/bin/chown" <<'EOF'
 [ "$1" = -h ] || exit 91
 [ "$2" = juhe-runtime ] || exit 92
 shift 2
-for path do
-  if [ "$path" = "$RACE_PATH" ]; then
-    rm -f "$path"
-    exit 1
-  fi
-  printf '%s\n' "$path" >> "$CHOWN_LOG"
-done
+for path do printf '%s\n' "$path" >> "$CHOWN_LOG"; done
 EOF
 chmod +x "$root/bin/chown"
 PATH="$root/bin:$PATH"
 export PATH
-export RACE_PATH="$race_path"
 __RUNTIME_OWNERSHIP_FUNCTION__
 migrate_runtime_ownership
 grep -Fxq "$LOG_DIR/runtime/root-owned.log" "$CHOWN_LOG"
 grep -Fxq "$SPOOL_DIR/gateway-1/root-owned.json" "$CHOWN_LOG"
-grep -Fxq "$DATA_DIR/audit/blobs/root-owned.blob" "$CHOWN_LOG"
+grep -Fxq "$DATA_DIR/audit/blobs" "$CHOWN_LOG"
 grep -Fxq "$SPOOL_DIR/external-link" "$CHOWN_LOG"
-[ ! -e "$race_path" ] || { echo 'runtime ownership migration did not tolerate a disappeared write temp file' >&2; exit 94; }
+if grep -Fxq "$DATA_DIR/audit/blobs/root-owned.blob" "$CHOWN_LOG"; then
+  echo 'runtime ownership migration scanned append-only audit payloads' >&2
+  exit 94
+fi
 if grep -Fxq "$outside/untouched" "$CHOWN_LOG"; then
   echo 'runtime ownership migration followed a symbolic link outside the managed trees' >&2
   exit 93
