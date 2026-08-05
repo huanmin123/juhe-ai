@@ -108,6 +108,9 @@ $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot
 foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
+foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s')) {
+  if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology instance identity contract missing: $contract" }
+}
 $productionCleanup = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'cleanup-production-artifacts.sh')
 foreach ($contract in @('--dry-run', '--apply', '--prune-releases', '--keep-release-count', '--prune-stale-links', '--stale-link-min-age-hours', '--prune-audit-hot', '--audit-success-hot-retention-hours', '--audit-success-sample-rate', 'current.next.*', 'protected-link', 'active-process', 'LaunchDaemons', 'RUNTIME_CONTAMINATION', 'CLEANUP_COMPLETE')) {
   if (-not $productionCleanup.Contains($contract, [StringComparison]::Ordinal)) { throw "Production cleanup contract missing: $contract" }
@@ -211,6 +214,7 @@ $runtimeOwnershipFunctionStart = $performanceInstaller.IndexOf('migrate_runtime_
 $runtimeOwnershipFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeOwnershipFunctionStart, [StringComparison]::Ordinal) + 3
 $runtimeOwnershipFunction = $performanceInstaller.Substring($runtimeOwnershipFunctionStart, $runtimeOwnershipFunctionEnd - $runtimeOwnershipFunctionStart)
 $auditBlobWritePreflightFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_audit_payload_blob_write_preflight'
+$instanceIdForFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'instance_id_for'
 $renderRunScriptFunctionStart = $performanceInstaller.IndexOf('render_run_script() {', [StringComparison]::Ordinal)
 $renderRunScriptFunctionEnd = $performanceInstaller.IndexOf("`n}", $renderRunScriptFunctionStart, [StringComparison]::Ordinal) + 3
 $renderRunScriptFunction = $performanceInstaller.Substring($renderRunScriptFunctionStart, $renderRunScriptFunctionEnd - $renderRunScriptFunctionStart)
@@ -255,7 +259,7 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
 }
 
 $performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
-foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'verify_gateway_ingress_once', 'verify_slots_stable', 'gateway health URLs must map to gateway-1 through gateway-3', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'verify_gateway_ingress_once', 'verify_slots_stable', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
   if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
 }
 if ($performanceHandover -match '\\beval\\b') { throw 'Performance handover must not evaluate plan values as shell code' }
@@ -290,10 +294,10 @@ if ($bash) {
     if (-not ($defaultDryRun -join "`n").Contains('data=/tmp/juhe-ai-performance-test/shared/data', [StringComparison]::Ordinal)) {
       throw 'default performance topology dry-run did not use the shared release-external data directory'
     }
-    $isolatedDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.temporary' --runtime-dir '/tmp/juhe-ai-performance-test/runtime-temporary' --nginx-upstream-suffix 'temporary_20260730' --nginx-config '/tmp/juhe-ai-performance-test/temporary.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
+    $isolatedDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.temporary' --runtime-dir '/tmp/juhe-ai-performance-test/runtime-temporary' --nginx-upstream-suffix 'temporary_20260730' --instance-id-prefix 'temporary' --nginx-config '/tmp/juhe-ai-performance-test/temporary.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
     if ($LASTEXITCODE -ne 0) { throw 'isolated performance topology installer dry-run failed' }
-    if (-not ($isolatedDryRun -join "`n").Contains('runtime=/tmp/juhe-ai-performance-test/runtime-temporary data=/tmp/juhe-ai-performance-test/runtime-temporary/data upstream_suffix=temporary_20260730', [StringComparison]::Ordinal)) {
-      throw 'isolated performance topology dry-run did not report its explicit runtime, data and upstream identity'
+    if (-not ($isolatedDryRun -join "`n").Contains('runtime=/tmp/juhe-ai-performance-test/runtime-temporary data=/tmp/juhe-ai-performance-test/runtime-temporary/data upstream_suffix=temporary_20260730 instance_id_prefix=temporary', [StringComparison]::Ordinal)) {
+      throw 'isolated performance topology dry-run did not report its explicit runtime, data, upstream and instance identity'
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
@@ -328,7 +332,9 @@ access_log=$root/access.log
 main_label=main
 temporary_label=temporary
 main_instance_id=control-1
-temporary_instance_id=control-1
+temporary_instance_id=temporary-control-1
+main_gateway_instance_prefix=gateway
+temporary_gateway_instance_prefix=temporary-gateway
 main_topology_identity=main-identity
 temporary_topology_identity=temporary-identity
 main_control_health_url=http://127.0.0.1:3399/__aisys__/health
@@ -379,21 +385,25 @@ case "$url" in
   */main-gateway-1/health) gateway_instance=gateway-1; gateway_pid=301 ;;
   */main-gateway-2/health) gateway_instance=gateway-2; gateway_pid=302 ;;
   */main-gateway-3/health) gateway_instance=gateway-3; gateway_pid=303 ;;
-  */temporary-gateway-1/health) gateway_instance=gateway-1; gateway_pid=501 ;;
-  */temporary-gateway-2/health) gateway_instance=gateway-2; gateway_pid=502 ;;
-  */temporary-gateway-3/health) gateway_instance=gateway-3; gateway_pid=503 ;;
+  */temporary-gateway-1/health) gateway_instance=temporary-gateway-1; gateway_pid=501 ;;
+  */temporary-gateway-2/health) gateway_instance=temporary-gateway-2; gateway_pid=502 ;;
+  */temporary-gateway-3/health) gateway_instance=temporary-gateway-3; gateway_pid=503 ;;
   http://127.0.0.1:3399/v1/models) label=main; topology=main-identity; gateway_status="${HANDOVER_GATEWAY_INGRESS_STATUS:-401}" ;;
   http://127.0.0.1:3599/v1/models) label=temporary; topology=temporary-identity; gateway_status="${HANDOVER_GATEWAY_INGRESS_STATUS:-401}" ;;
   */__aisys__/api/health) ;;
   *) exit 22 ;;
 esac
 [ "${HANDOVER_BAD_TOPOLOGY:-0}" = 0 ] || topology=wrong-identity
+case "${label:-}" in
+  main) control_instance=control-1 ;;
+  temporary) control_instance=temporary-control-1 ;;
+esac
 if [ "${HANDOVER_BAD_GATEWAY_ORDER:-0}" = 1 ] && [ "$url" = 'http://127.0.0.1:3301/main-gateway-1/health' ]; then gateway_instance=gateway-2; fi
 if [ "${HANDOVER_OVERLAP_PID:-0}" = 1 ] && [ "$url" = 'http://127.0.0.1:3501/temporary-gateway-1/health' ]; then gateway_pid=301; fi
 case "$url" in
   http://127.0.0.1:3399/__aisys__/health|http://127.0.0.1:3599/__aisys__/health|http://127.0.0.1:3099/__aisys__/health)
     printf '%s: %s\nX-Juhe-Topology-Install: %s\n' "$HANDOVER_HEADER" "$label" "$topology" > "$headers"
-    printf '{"status":"ok","runtimeMode":"performance","nodeRole":"control","instanceId":"control-1","processPid":%s,"dbServicePid":%s,"workerProcesses":[{"role":"usage-worker","replicaIndex":0,"pid":%s,"ready":true}],"workerTopologyReady":true}' "$control_pid" "$((control_pid + 1))" "$((control_pid + 2))" > "$output"
+    printf '{"status":"ok","runtimeMode":"performance","nodeRole":"control","instanceId":"%s","processPid":%s,"dbServicePid":%s,"workerProcesses":[{"role":"usage-worker","replicaIndex":0,"pid":%s,"ready":true}],"workerTopologyReady":true}' "$control_instance" "$control_pid" "$((control_pid + 1))" "$((control_pid + 2))" > "$output"
     printf '%s\n' "$label" >> "$HANDOVER_ACCESS_LOG"
     ;;
   */main-gateway-*/health|*/temporary-gateway-*/health)
@@ -516,6 +526,16 @@ if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/de
 fi
 unset HANDOVER_BAD_GATEWAY_ORDER
 
+sed 's#^temporary_gateway_instance_prefix=.*#temporary_gateway_instance_prefix=gateway#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a temporary gateway identity that collides with the main gateway prefix' >&2
+  exit 86
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
 export HANDOVER_OVERLAP_PID=1
 if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
   echo 'handover accepted a PID shared by main and temporary gateway pools' >&2
@@ -598,6 +618,8 @@ grep -qx 'state=preflight' "$root/plan/handover.journal"
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a runtime directory without an upstream suffix' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --nginx-upstream-suffix 'temporary_20260730' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted an upstream suffix without a runtime directory' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --instance-id-prefix 'temporary slot' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted an unsafe instance ID prefix' }
     $resolvedReleaseHarness = @'
 set -euo pipefail
 installer="$1"
@@ -745,12 +767,15 @@ INGRESS_PORT=3599
 GATEWAY_UPSTREAM=juhe_ai_gateway_pool_temporary_20260730
 CONTROL_UPSTREAM=juhe_ai_control_temporary_20260730
 INSTALL_TOKEN=temporary-install-token
+INSTANCE_ID_PREFIX=temporary
 service_role() { printf gateway; }
 service_port() { printf 3501; }
+__INSTANCE_ID_FOR_FUNCTION__
 __RENDER_RUN_SCRIPT_FUNCTION__
 __RENDER_NGINX_FUNCTION__
 render_run_script gateway-1 "$root/gateway-1.sh"
 render_nginx "$root/nginx.conf"
+rg -Fqx 'export JUHE_AI_INSTANCE_ID=temporary-gateway-1' "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_LOG_DIR=\"$RUNTIME_LOG_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_USAGE_SPOOL_DIR=\"$SPOOL_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_DATASET_DATABASE_PATH=\"$DATA_DIR/juhe-ai-dataset.sqlite3\"" "$root/gateway-1.sh"
@@ -774,7 +799,7 @@ if rg -Fq 'proxy_pass http://juhe_ai_control;' "$root/nginx.conf" || rg -Fq 'pro
   echo 'isolated topology retained an unsuffixed nginx upstream reference' >&2
   exit 68
 fi
-'@.Replace('__RENDER_RUN_SCRIPT_FUNCTION__', $renderRunScriptFunction).Replace('__RENDER_NGINX_FUNCTION__', $renderNginxFunction)
+'@.Replace('__INSTANCE_ID_FOR_FUNCTION__', $instanceIdForFunction).Replace('__RENDER_RUN_SCRIPT_FUNCTION__', $renderRunScriptFunction).Replace('__RENDER_NGINX_FUNCTION__', $renderNginxFunction)
     & $bash.Source -c $isolatedRenderHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology isolated runtime and nginx rendering harness failed' }
 
@@ -847,11 +872,13 @@ INGRESS_PORT=3599
 GATEWAY_COUNT=3
 USAGE_WORKERS=2
 LOG_WORKERS=2
+INSTANCE_ID_PREFIX=
 VERIFIED_HEALTH_JSON=
 VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
 HARNESS_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$HARNESS_ROOT"' EXIT
 __METRICS_GATE_FUNCTION__
+__INSTANCE_ID_FOR_FUNCTION__
 metrics_registry_role_pids() {
   case "$1" in
     gateway-1) printf '%s\n' 'gateway:gateway-1=101' 'db-service:gateway-1=201' ;;
@@ -874,7 +901,7 @@ done
 for mapping in 'gateway:gateway-1=101' 'db-service:gateway-1=201' 'gateway:gateway-2=102' 'db-service:gateway-2=202' 'gateway:gateway-3=103' 'db-service:gateway-3=203'; do
   rg -qx -- "$mapping" "$HARNESS_ROOT/control-1.args"
 done
-'@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction)
+'@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction).Replace('__INSTANCE_ID_FOR_FUNCTION__', $instanceIdForFunction)
     & $bash.Source -c $metricsGateHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology PID accumulation executable harness failed' }
 

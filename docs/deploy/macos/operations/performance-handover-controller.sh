@@ -22,6 +22,7 @@ The plan directory must contain a mode-0600 handover.conf with these non-secret
 absolute paths and labels: route_file, main_fragment, temporary_fragment,
 nginx_bin, node_bin, nginx_main_config, ingress_health_url, access_log,
 main_label, temporary_label, main_instance_id, temporary_instance_id,
+main_gateway_instance_prefix, temporary_gateway_instance_prefix,
 main_topology_identity and temporary_topology_identity. It must be owned by
 the deployment controller and no other
 user may write its directory or referenced route files.
@@ -173,11 +174,11 @@ read_config() {
   if [ "$(uname -s)" = Darwin ]; then
     [ "$(stat -f '%Lp' "$CONF" 2>/dev/null || true)" = 600 ] || { echo 'plan config must be mode 0600' >&2; exit 1; }
   fi
-  route_file= main_fragment= temporary_fragment= nginx_bin= node_bin= nginx_main_config= ingress_health_url= access_log= main_label= temporary_label= main_instance_id= temporary_instance_id= main_topology_identity= temporary_topology_identity= main_control_health_url= temporary_control_health_url= main_gateway_health_urls= temporary_gateway_health_urls= main_gateway_ingress_url= temporary_gateway_ingress_url= seen_keys='|'
+  route_file= main_fragment= temporary_fragment= nginx_bin= node_bin= nginx_main_config= ingress_health_url= access_log= main_label= temporary_label= main_instance_id= temporary_instance_id= main_gateway_instance_prefix= temporary_gateway_instance_prefix= main_topology_identity= temporary_topology_identity= main_control_health_url= temporary_control_health_url= main_gateway_health_urls= temporary_gateway_health_urls= main_gateway_ingress_url= temporary_gateway_ingress_url= seen_keys='|'
   while IFS='=' read -r key value; do
     [ -n "$key" ] || continue
     case "$key" in
-      route_file|main_fragment|temporary_fragment|nginx_bin|node_bin|nginx_main_config|ingress_health_url|access_log|main_label|temporary_label|main_instance_id|temporary_instance_id|main_topology_identity|temporary_topology_identity|main_control_health_url|temporary_control_health_url|main_gateway_health_urls|temporary_gateway_health_urls|main_gateway_ingress_url|temporary_gateway_ingress_url)
+      route_file|main_fragment|temporary_fragment|nginx_bin|node_bin|nginx_main_config|ingress_health_url|access_log|main_label|temporary_label|main_instance_id|temporary_instance_id|main_gateway_instance_prefix|temporary_gateway_instance_prefix|main_topology_identity|temporary_topology_identity|main_control_health_url|temporary_control_health_url|main_gateway_health_urls|temporary_gateway_health_urls|main_gateway_ingress_url|temporary_gateway_ingress_url)
         case "$seen_keys" in *"|$key|"*) echo "duplicate plan key: $key" >&2; exit 2;; esac
         seen_keys="${seen_keys}${key}|"
         assert_safe_value "$key" "$value"
@@ -194,6 +195,8 @@ read_config() {
           temporary_label) temporary_label="$value" ;;
           main_instance_id) main_instance_id="$value" ;;
           temporary_instance_id) temporary_instance_id="$value" ;;
+          main_gateway_instance_prefix) main_gateway_instance_prefix="$value" ;;
+          temporary_gateway_instance_prefix) temporary_gateway_instance_prefix="$value" ;;
           main_topology_identity) main_topology_identity="$value" ;;
           temporary_topology_identity) temporary_topology_identity="$value" ;;
           main_control_health_url) main_control_health_url="$value" ;;
@@ -208,7 +211,7 @@ read_config() {
       *) echo "unknown plan key: $key" >&2; exit 2 ;;
     esac
   done < "$CONF"
-  for required in route_file main_fragment temporary_fragment nginx_bin node_bin nginx_main_config ingress_health_url access_log main_label temporary_label main_instance_id temporary_instance_id main_topology_identity temporary_topology_identity main_control_health_url temporary_control_health_url main_gateway_health_urls temporary_gateway_health_urls main_gateway_ingress_url temporary_gateway_ingress_url; do
+  for required in route_file main_fragment temporary_fragment nginx_bin node_bin nginx_main_config ingress_health_url access_log main_label temporary_label main_instance_id temporary_instance_id main_gateway_instance_prefix temporary_gateway_instance_prefix main_topology_identity temporary_topology_identity main_control_health_url temporary_control_health_url main_gateway_health_urls temporary_gateway_health_urls main_gateway_ingress_url temporary_gateway_ingress_url; do
     case "$required" in
       route_file) value="$route_file" ;;
       main_fragment) value="$main_fragment" ;;
@@ -222,6 +225,8 @@ read_config() {
       temporary_label) value="$temporary_label" ;;
       main_instance_id) value="$main_instance_id" ;;
       temporary_instance_id) value="$temporary_instance_id" ;;
+      main_gateway_instance_prefix) value="$main_gateway_instance_prefix" ;;
+      temporary_gateway_instance_prefix) value="$temporary_gateway_instance_prefix" ;;
       main_topology_identity) value="$main_topology_identity" ;;
       temporary_topology_identity) value="$temporary_topology_identity" ;;
       main_control_health_url) value="$main_control_health_url" ;;
@@ -251,7 +256,7 @@ read_config() {
   assert_slot_endpoints_disjoint
   case "$main_label$temporary_label" in *[!A-Za-z0-9_-]*|'') echo 'route labels contain unsupported characters' >&2; exit 2;; esac
   [ "$main_label" != "$temporary_label" ] || { echo 'route labels must differ' >&2; exit 2; }
-  case "$main_instance_id$temporary_instance_id$main_topology_identity$temporary_topology_identity" in *[!A-Za-z0-9._-]*|'') echo 'topology identities contain unsupported characters' >&2; exit 2;; esac
+  case "$main_instance_id$temporary_instance_id$main_gateway_instance_prefix$temporary_gateway_instance_prefix$main_topology_identity$temporary_topology_identity" in *[!A-Za-z0-9._-]*|'') echo 'topology identities contain unsupported characters' >&2; exit 2;; esac
   [ "$main_topology_identity" != "$temporary_topology_identity" ] || { echo 'slot topology identities must differ' >&2; exit 2; }
   if [ "$MODE" = apply ]; then
     assert_private_ancestry "$PLAN_DIR" 'plan directory'
@@ -295,6 +300,7 @@ require_preflight() {
 label_for() { [ "$1" = main ] && printf '%s' "$main_label" || printf '%s' "$temporary_label"; }
 fragment_for() { [ "$1" = main ] && printf '%s' "$main_fragment" || printf '%s' "$temporary_fragment"; }
 instance_for() { [ "$1" = main ] && printf '%s' "$main_instance_id" || printf '%s' "$temporary_instance_id"; }
+gateway_instance_prefix_for() { [ "$1" = main ] && printf '%s' "$main_gateway_instance_prefix" || printf '%s' "$temporary_gateway_instance_prefix"; }
 topology_identity_for() { [ "$1" = main ] && printf '%s' "$main_topology_identity" || printf '%s' "$temporary_topology_identity"; }
 control_health_url_for() { [ "$1" = main ] && printf '%s' "$main_control_health_url" || printf '%s' "$temporary_control_health_url"; }
 gateway_health_urls_for() { [ "$1" = main ] && printf '%s' "$main_gateway_health_urls" || printf '%s' "$temporary_gateway_health_urls"; }
@@ -378,7 +384,7 @@ verify_gateway_ingress_once() {
 }
 
 verify_slot_once() {
-  target="$1" expected_instance="$(instance_for "$target")" expected_topology_identity="$(topology_identity_for "$target")" control_url="$(control_health_url_for "$target")" gateway_urls="$(gateway_health_urls_for "$target")" old_ifs="$IFS" control_identity= gateway_identity= gateway_observed= gateway_body= expected_gateway_index=1
+  target="$1" expected_instance="$(instance_for "$target")" expected_gateway_instance_prefix="$(gateway_instance_prefix_for "$target")" expected_topology_identity="$(topology_identity_for "$target")" control_url="$(control_health_url_for "$target")" gateway_urls="$(gateway_health_urls_for "$target")" old_ifs="$IFS" control_identity= gateway_identity= gateway_observed= gateway_body= expected_gateway_index=1
   OBSERVED_SLOT_IDENTITY="$(
     control_headers="$(mktemp -t juhe-ai-handover-control.XXXXXX)" control_body="$(mktemp -t juhe-ai-handover-control-health.XXXXXX)"
     trap 'rm -f -- "$control_headers" "$control_body" "$gateway_body"' EXIT
@@ -394,7 +400,8 @@ verify_slot_once() {
       curl -fsS --max-time 8 -o "$gateway_body" "$gateway_url"
       gateway_identity="$(health_identity gateway '' false "$gateway_body")"
       gateway_instance="${gateway_identity#gateway|}"; gateway_instance="${gateway_instance%%|*}"
-      [ "$gateway_instance" = "gateway-$expected_gateway_index" ] || { echo "gateway health URLs must map to gateway-1 through gateway-3 in order; expected gateway-$expected_gateway_index, observed $gateway_instance" >&2; exit 1; }
+      expected_gateway_instance="$expected_gateway_instance_prefix-$expected_gateway_index"
+      [ "$gateway_instance" = "$expected_gateway_instance" ] || { echo "gateway health URLs must map to $expected_gateway_instance_prefix-1 through $expected_gateway_instance_prefix-3 in order; expected $expected_gateway_instance, observed $gateway_instance" >&2; exit 1; }
       expected_gateway_index=$((expected_gateway_index + 1))
       gateway_observed="${gateway_observed}
 $gateway_identity"

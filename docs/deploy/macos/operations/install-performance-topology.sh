@@ -18,6 +18,7 @@ NGINX_BIN=nginx
 NGINX_MAIN_CONFIG=
 RUNTIME_DIR=
 NGINX_UPSTREAM_SUFFIX=
+INSTANCE_ID_PREFIX=
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 VERIFIED_HEALTH_JSON=
 VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
@@ -43,6 +44,7 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --nginx-main-config ABSOLUTE_PATH
   --runtime-dir ABSOLUTE_ISOLATED_RUNTIME_ROOT
   --nginx-upstream-suffix [A-Za-z0-9_]{1,48}
+  --instance-id-prefix [A-Za-z0-9][A-Za-z0-9._-]{0,63}
   --node-path PATH_VALUE
 EOF
 }
@@ -67,6 +69,7 @@ while [ "$#" -gt 0 ]; do
     --nginx-main-config) NGINX_MAIN_CONFIG="${2:-}"; shift 2 ;;
     --runtime-dir) RUNTIME_DIR="${2:-}"; shift 2 ;;
     --nginx-upstream-suffix) NGINX_UPSTREAM_SUFFIX="${2:-}"; shift 2 ;;
+    --instance-id-prefix) INSTANCE_ID_PREFIX="${2:-}"; shift 2 ;;
     --node-path) NODE_PATH="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -92,6 +95,10 @@ fi
 if [ -n "$NGINX_UPSTREAM_SUFFIX" ]; then
   printf '%s' "$NGINX_UPSTREAM_SUFFIX" | grep -Eq '^[A-Za-z0-9_]{1,48}$' \
     || { echo 'invalid nginx upstream suffix' >&2; exit 2; }
+fi
+if [ -n "$INSTANCE_ID_PREFIX" ]; then
+  printf '%s' "$INSTANCE_ID_PREFIX" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' \
+    || { echo 'invalid instance ID prefix' >&2; exit 2; }
 fi
 if { [ -n "$RUNTIME_DIR" ] && [ -z "$NGINX_UPSTREAM_SUFFIX" ]; } \
   || { [ -z "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ]; }; then
@@ -167,8 +174,8 @@ if [ -n "$NGINX_MAIN_CONFIG" ]; then
   case "$NGINX_MAIN_CONFIG" in /*) ;; *) echo '--nginx-main-config must be absolute' >&2; exit 2 ;; esac
 fi
 
-printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
-  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
+printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s instance_id_prefix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
+  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
 printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
@@ -454,12 +461,21 @@ service_role() {
   case "$1" in control-1) printf control ;; *) printf gateway ;; esac
 }
 
+instance_id_for() {
+  if [ -n "$INSTANCE_ID_PREFIX" ]; then
+    printf '%s-%s' "$INSTANCE_ID_PREFIX" "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 service_label() { printf '%s.%s' "$LABEL_PREFIX" "$1"; }
 service_run_path() { printf '%s/%s.sh' "$BIN_DIR" "$1"; }
 service_plist_path() { printf '%s/%s.plist' "$PLIST_DIR" "$(service_label "$1")"; }
 
 render_run_script() {
   name="$1"
+  instance_id="$(instance_id_for "$name")"
   role="$(service_role "$name")"
   port="$(service_port "$name")"
   output="$2"
@@ -469,7 +485,7 @@ render_run_script() {
     printf '%s\n' 'export NODE_ENV=production'
     printf 'export JUHE_AI_RUNTIME_MODE=performance\n'
     printf 'export JUHE_AI_PERFORMANCE_NODE_ROLE=%s\n' "$role"
-    printf 'export JUHE_AI_INSTANCE_ID=%s\n' "$name"
+    printf 'export JUHE_AI_INSTANCE_ID=%s\n' "$instance_id"
     printf 'export JUHE_AI_HOST=127.0.0.1\n'
     printf 'export JUHE_AI_PORT=%s\n' "$port"
     if [ "$role" = gateway ]; then
@@ -592,6 +608,7 @@ render_nginx() {
 
 wait_for_health() {
   name="$1"
+  instance_id="$(instance_id_for "$name")"
   port="$(service_port "$name")"
   role="$(service_role "$name")"
   consecutive=0
@@ -600,7 +617,7 @@ wait_for_health() {
     health_json=
     if launchctl print "$DOMAIN/$(service_label "$name")" >/dev/null 2>&1 \
       && health_json="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/__aisys__/health")" \
-      && health_identity_matches "$health_json" "$name" "$role" \
+      && health_identity_matches "$health_json" "$instance_id" "$role" \
       && curl -fsS --max-time 2 "http://127.0.0.1:$port/__aisys__/api/health" >/dev/null; then
       consecutive=$((consecutive + 1))
       if [ "$consecutive" -ge 3 ]; then
@@ -618,12 +635,13 @@ wait_for_health() {
 }
 
 wait_for_ingress() {
+  control_instance_id="$(instance_id_for control-1)"
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
     health_json=
     if health_json="$(curl -fsS --max-time 2 "http://127.0.0.1:$INGRESS_PORT/__aisys__/health")" \
-      && health_identity_matches "$health_json" control-1 control \
+      && health_identity_matches "$health_json" "$control_instance_id" control \
       && curl -fsS --max-time 2 -D - -o /dev/null "http://127.0.0.1:$INGRESS_PORT/__aisys__/health" \
         | tr -d '\r' | grep -Fqx "X-Juhe-Topology-Install: $INSTALL_TOKEN" \
       && curl -fsS --max-time 2 "http://127.0.0.1:$INGRESS_PORT/__aisys__/api/health" >/dev/null; then
@@ -635,19 +653,21 @@ wait_for_ingress() {
     sleep 1
     attempt=$((attempt + 1))
   done
-  echo "nginx ingress did not remain on control-1 after reload on port $INGRESS_PORT" >&2
+  echo "nginx ingress did not remain on $control_instance_id after reload on port $INGRESS_PORT" >&2
   return 1
 }
 
 wait_for_metrics_registry() {
   name="$1"
+  instance_id="$(instance_id_for "$name")"
   observed_after_ms="$2"
   set -- node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --timeout-ms 30000 --observed-after-ms "$observed_after_ms"
   if [ "$name" = control-1 ]; then
-    set -- "$@" --role "control:$name" --role "db-service:$name"
+    set -- "$@" --role "control:$instance_id" --role "db-service:$instance_id"
     index=1
     while [ "$index" -le "$GATEWAY_COUNT" ]; do
-      set -- "$@" --role "gateway:gateway-$index" --role "db-service:gateway-$index"
+      gateway_instance_id="$(instance_id_for "gateway-$index")"
+      set -- "$@" --role "gateway:$gateway_instance_id" --role "db-service:$gateway_instance_id"
       index=$((index + 1))
     done
     index=1
@@ -656,7 +676,7 @@ wait_for_metrics_registry() {
     while [ "$index" -le "$LOG_WORKERS" ]; do set -- "$@" --role "log-worker:$index"; index=$((index + 1)); done
     set -- "$@" --role stats-worker:1 --role ops-worker:1
   else
-    set -- "$@" --role "gateway:$name" --role "db-service:$name"
+    set -- "$@" --role "gateway:$instance_id" --role "db-service:$instance_id"
   fi
   current_role_pid_lines="$(metrics_registry_role_pids "$VERIFIED_HEALTH_JSON")"
   role_pid_lines="$current_role_pid_lines"
