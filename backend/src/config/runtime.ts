@@ -366,8 +366,6 @@ export const defaultOpenAICompatibleFilesRoot = resolve(backendRoot, 'data', 'op
 export const defaultCodeInterpreterTempRoot = resolve(backendRoot, 'data', 'code-interpreter-tmp')
 export const defaultCodexContextStateShardRoot = resolve(defaultCodexContextRoot, 'state-shards')
 export const defaultRuntimeSecret = 'juhe-ai-dev-secret-change-me'
-export const defaultStandaloneSystemApiDbServiceMaxInFlight = 64
-export const defaultPerformanceSystemApiDbServiceMaxInFlight = 256
 const minimumProductionSecretLength = 32
 
 const localEnv = loadRuntimeBaseEnv(localEnvPath, process.env)
@@ -418,10 +416,6 @@ const configuredPerformanceNodeRole = configuredRuntimeMode === 'performance'
   ? performanceNodeRoleConfig('JUHE_AI_PERFORMANCE_NODE_ROLE', 'combined')
   : 'combined'
 const configuredProcessRole = processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server')
-const defaultSystemApiDbServiceMaxInFlight =
-  configuredRuntimeMode === 'performance'
-    ? defaultPerformanceSystemApiDbServiceMaxInFlight
-    : defaultStandaloneSystemApiDbServiceMaxInFlight
 const defaultModelCheckProbeRetryDelayMs = isScriptEntryRuntime() ? 0 : 65000
 const configuredDatabaseDriver = databaseDriverConfig(
   'JUHE_AI_DATABASE_DRIVER',
@@ -710,7 +704,7 @@ export const runtimeConfig: RuntimeConfig = {
     accountBalanceRefreshRecoveryBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_RECOVERY_BATCH_SIZE', 4, 1, 1_000),
     auditLogPostgresFlushBatchSize: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_POSTGRES_FLUSH_BATCH_SIZE', 25, 1, 1_000),
     auditLogPostgresRedisConsumerConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_POSTGRES_REDIS_CONSUMER_CONCURRENCY', 20, 1, 1_000),
-    auditPayloadBlobWriteConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_PAYLOAD_BLOB_WRITE_CONCURRENCY', 5, 1, 1_000),
+    auditPayloadBlobWriteConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_PAYLOAD_BLOB_WRITE_CONCURRENCY', 10, 1, 1_000),
     auditBlobCleanupDeleteConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_BLOB_CLEANUP_DELETE_CONCURRENCY', 5, 1, 1_000),
     modelCheckTokenWorkerTargetSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_TARGET_SIZE', 5, 1, 64),
     modelCheckTokenWorkerQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_QUEUE_MAX_ITEMS', 16, 1, 100_000),
@@ -853,9 +847,11 @@ function rawStringConfig(name: string): string | undefined {
 
 function isCapacityEnvironmentVariable(name: string): boolean {
   return name.startsWith('JUHE_AI_CONCURRENCY_')
+    || name.startsWith('JUHE_AI_ACCOUNT_')
     || name.startsWith('JUHE_AI_BACKGROUND_')
     || name.startsWith('JUHE_AI_GATEWAY_')
     || name.startsWith('JUHE_AI_DB_')
+    || name.startsWith('JUHE_AI_CHAT_DB_SERVICE_')
     || name.startsWith('JUHE_AI_REDIS_STREAM_')
     || name.startsWith('JUHE_AI_USAGE_SPOOL_')
     || name === 'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT'

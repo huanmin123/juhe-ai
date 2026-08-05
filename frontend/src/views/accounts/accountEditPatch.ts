@@ -86,6 +86,7 @@ function buildAccountUpdateDelta(
     const currentValue = currentHasKey ? current[key] : undefined
     const baselineValue = baselineHasKey ? baseline[key] : undefined
     if (sameValue(currentValue, baselineValue)) continue
+    if (key === 'balanceQueryConfig' && !currentHasKey) continue
     delta[key] = currentHasKey ? currentValue : null
   }
 

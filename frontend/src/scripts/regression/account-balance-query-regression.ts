@@ -8,6 +8,8 @@ import {
   formatAccountBalance,
   validateAccountBalanceForm
 } from '@/views/accounts/accountBalanceQuery'
+import { buildAccountAdvancedUpdatePatch } from '@/views/accounts/accountEditPatch'
+import type { AccountSavePayload } from '@/views/accounts/accountSavePayload'
 import { replaceAccountBalanceSnapshot } from '@/views/accounts/accountListMutations'
 import type { AccountSummary } from '@/types/domain'
 
@@ -118,6 +120,53 @@ assert.match(validateAccountBalanceForm({
   balanceQueryCustomPath: 'https://evil.example/balance',
   balanceQueryRemainingPointer: '/balance'
 }) ?? '', /相对路径/)
+
+const advancedPayloadFields = {
+  providerCode: 'openai', providerProtocolProfileId: 'openai-chat', name: '账户 A', type: 'api_key',
+  concurrencyLimit: 1, priority: 0, status: 'active', superPriorityEnabled: false,
+  fallbackEnabled: false, supportedModels: ['gpt-4o'], healthCheckModel: 'gpt-4o',
+  healthCheckEndpointMode: 'chat_completions', temporaryUnavailableContinuousProbeEnabled: false,
+  modelMappings: [], tags: [], proxyProfileId: null, accountExpiresAt: null,
+  availabilitySchedule: null, groupId: 'group-a', notes: ''
+} as const
+const multiKeyAdvancedPayload = {
+  ...advancedPayloadFields,
+  credentials: {
+    base_url: 'https://api.openai.com/v1', api_key: 'sk-one',
+    api_keys: ['sk-one', 'sk-two'], api_key_strategy: 'round_robin', api_key_weights: [1, 1]
+  },
+  balanceQueryEnabled: false,
+  balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+} as unknown as AccountSavePayload
+const singleKeyAdvancedPayload = {
+  ...advancedPayloadFields,
+  credentials: { base_url: 'https://api.openai.com/v1', api_key: 'sk-one' },
+  balanceQueryEnabled: false
+} as unknown as AccountSavePayload
+const deletedMultiKeyPatch = buildAccountAdvancedUpdatePatch(
+  singleKeyAdvancedPayload,
+  multiKeyAdvancedPayload,
+  11
+)
+assert.ok(deletedMultiKeyPatch, '删除备用 Key 后应提交凭据差量')
+assert.equal(
+  Object.prototype.hasOwnProperty.call(deletedMultiKeyPatch, 'balanceQueryConfig'),
+  false,
+  '多 Key 余额配置在当前 payload 缺失时不得提交 null'
+)
+assert.deepEqual(deletedMultiKeyPatch?.credentialsPatch, {
+  api_keys: null,
+  api_key_strategy: null,
+  api_key_weights: null
+}, '删除多 Key 元数据必须保留 credentialsPatch null 删除标记')
+const explicitBalanceConfigPatch = buildAccountAdvancedUpdatePatch(
+  { ...singleKeyAdvancedPayload, balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 10 } },
+  multiKeyAdvancedPayload,
+  11
+)
+assert.deepEqual(explicitBalanceConfigPatch?.balanceQueryConfig, {
+  adapter: 'builtin', intervalMinutes: 10
+}, '当前 payload 显式提供余额配置时仍应按差量提交')
 
 const usageCellSource = readFileSync('../frontend/src/views/accounts/AccountUsageCell.vue', 'utf8')
 const editSectionSource = readFileSync('../frontend/src/views/accounts/AccountBalanceQuerySection.vue', 'utf8')

@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+
+const runtimeConfigSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
+assert.match(runtimeConfigSource, /name\.startsWith\('JUHE_AI_ACCOUNT_'\)/, '.env.capacity 白名单必须允许账户容量配置')
+assert.match(runtimeConfigSource, /name\.startsWith\('JUHE_AI_CHAT_DB_SERVICE_'\)/, '.env.capacity 白名单必须允许聊天 DB service proxy 容量配置')
 
 if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   const { runtimeConfig } = await import('../../config/runtime.js')
