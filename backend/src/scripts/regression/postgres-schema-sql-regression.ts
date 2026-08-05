@@ -357,6 +357,8 @@ for (const [columnName, columnType] of [
 ] as const) {
   assert.match(sql, new RegExp(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ${columnName} ${columnType}`), `既有 PostgreSQL audit_logs 必须补 ${columnName}`)
 }
+assert.match(sql, /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized'/, '既有 PostgreSQL audit_logs 必须补生命周期状态列')
+assert.match(sql, /ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text/, '既有 PostgreSQL audit payload 引用必须补丢弃原因列')
 const auditIdentityAlterPosition = sql.indexOf('ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS session_client_type text')
 const auditIdentityIndexPosition = sql.indexOf('CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created')
 assert(auditIdentityAlterPosition >= 0 && auditIdentityAlterPosition < auditIdentityIndexPosition, 'PostgreSQL 会话身份补列必须先于依赖新列的索引')
@@ -380,6 +382,8 @@ const schemaWithoutApprovedRuntimeUpgrades = sql
   .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text;/g, '')
   .replace(/ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text;/g, '')
   .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS (?:conversation_key|session_id|session_client_type) text;/g, '')
+  .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized';/g, '')
+  .replace(/ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text;/g, '')
   .replace(/ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1;/g, '')
   .replace(/ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text;/g, '')
   .replace(/UPDATE client_ip_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL;/g, '')
