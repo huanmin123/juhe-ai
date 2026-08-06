@@ -77,7 +77,7 @@ const auditLogFinalizationConflictClause = `
       http_duration_ms = excluded.http_duration_ms,
       first_token_ms = excluded.first_token_ms,
       created_at = excluded.created_at
-    WHERE lifecycle_status = 'in_progress'
+    WHERE audit_logs.lifecycle_status = 'in_progress'
       AND excluded.lifecycle_status = 'finalized'
 `
 
