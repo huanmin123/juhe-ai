@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
-import type { ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
+import { DEFAULT_OPENAI_SUPPORTED_MODELS } from '../../storage/schema-defaults.js'
+import { proxyProfileEnabled, type ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-persistence-fencing-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -53,6 +55,34 @@ function sourceBetween(source: string, start: string, end: string): string {
 }
 
 try {
+  assert(proxyProfileEnabled(true), 'PostgreSQL 的 true 必须表示启用代理')
+  assert(proxyProfileEnabled(1), 'SQLite 的 1 必须表示启用代理')
+  assert(!proxyProfileEnabled(false), 'false 必须表示停用代理')
+  assert(!proxyProfileEnabled(0), '0 必须表示停用代理')
+  const boundProxy = repositories.createProxy({
+    name: '新建账户代理绑定回归',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_079,
+    enabled: true
+  }, access)
+  const group = repositories.createGroup({
+    name: '新建账户代理绑定回归分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const createdAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '新建账户代理绑定回归账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-create-proxy-binding', base_url: 'https://api.openai.com/v1' },
+    supportedModels: [DEFAULT_OPENAI_SUPPORTED_MODELS[0]],
+    healthCheckModel: DEFAULT_OPENAI_SUPPORTED_MODELS[0],
+    groupId: group.id,
+    proxyProfileId: boundProxy.id
+  }, access)
+  assert.equal(createdAccount.proxyProfileId, boundProxy.id, '新建账户必须能直接绑定已启用代理')
   const created = repositories.createProxy({
     name: '代理持久化 fencing 回归',
     type: 'http',

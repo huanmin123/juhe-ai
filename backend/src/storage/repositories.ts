@@ -182,7 +182,7 @@ import {
   loadAccountModelValidationContextAsync
 } from './account-model-validation.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId, resolveProxyUrlsForProfilesAsync } from './proxy.repository.js'
+import { ProxyProfileUnavailableError, proxyProfileEnabled, resolveEnabledProxyProfileId, resolveProxyUrlsForProfilesAsync } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import {
@@ -1177,12 +1177,12 @@ async function defaultGroupForAccountWriteAsync(
 
 async function resolveEnabledProxyProfileIdForAccountWriteAsync(client: DatabaseClient, proxyProfileId?: string): Promise<string | undefined> {
   if (!proxyProfileId) return undefined
-  const row = await client.one<{ id?: string; enabled?: number }>(`
+  const row = await client.one<{ id?: string; enabled?: number | boolean }>(`
     SELECT id, enabled
     FROM ${accountWriteTable(client, 'proxy_profiles')}
     WHERE id = ?
   `, [proxyProfileId])
-  if (!row?.id || row.enabled !== 1) {
+  if (!row?.id || !proxyProfileEnabled(row.enabled ?? 0)) {
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
   return row.id

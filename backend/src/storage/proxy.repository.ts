@@ -306,7 +306,7 @@ function normalizeSelectedProxyOptionIds(selectedIds?: string[]): string[] {
 function mergeProxyOptionRows(windowRows: ProxyOptionRow[], selectedRows: ProxyOptionRow[]): ProxyProfileOptionSummary[] {
   const byId = new Map<string, ProxyOptionRow>()
   for (const row of [...windowRows, ...selectedRows]) {
-    if (!proxyOptionEnabled(row.enabled)) continue
+    if (!proxyProfileEnabled(row.enabled)) continue
     byId.set(row.id, row)
   }
   return [...byId.values()]
@@ -325,7 +325,7 @@ function mergeProxyOptionRows(windowRows: ProxyOptionRow[], selectedRows: ProxyO
     }))
 }
 
-function proxyOptionEnabled(value: number | boolean): boolean {
+export function proxyProfileEnabled(value: number | boolean): boolean {
   return value === true || value === 1
 }
 
@@ -424,7 +424,7 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
     host: row.host,
     port: row.port,
     username: row.username ?? undefined,
-    enabled: proxyOptionEnabled(row.enabled),
+    enabled: proxyProfileEnabled(row.enabled),
     testStatus: normalizeProxyTestStatus(row.test_status),
     latencyMs: row.latency_ms ?? undefined,
     outboundIp: row.outbound_ip ?? undefined,
@@ -968,7 +968,7 @@ function buildProxyManagementPatchPlan(
     }
   }
   if (has('enabled')) {
-    const current = proxyOptionEnabled(row.enabled as number | boolean)
+    const current = proxyProfileEnabled(row.enabled as number | boolean)
     const next = normalizeOptionalBoolean(input.enabled, current, '代理启用状态')
     add('enabled', 'enabled', current, next, driver === 'sqlite' ? (next ? 1 : 0) : next)
     if (current !== next) runtimeChanged = true
@@ -1328,7 +1328,7 @@ export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<stri
   const rowsById = new Map(rows.map((row) => [row.id, row]))
   for (const id of ids) {
     const row = rowsById.get(id)
-    if (!row || !proxyOptionEnabled(row.enabled)) {
+    if (!row || !proxyProfileEnabled(row.enabled)) {
       output.set(id, { unavailable: true, errorMessage: new ProxyProfileUnavailableError(id).message })
       continue
     }
@@ -1361,7 +1361,7 @@ export async function resolveProxyUrlsForProfilesAsync(proxyProfileIds: string[]
   const rowsById = new Map(rows.map((row) => [row.id, row]))
   for (const id of ids) {
     const row = rowsById.get(id)
-    if (!row || !proxyOptionEnabled(row.enabled)) {
+    if (!row || !proxyProfileEnabled(row.enabled)) {
       output.set(id, { unavailable: true, errorMessage: new ProxyProfileUnavailableError(id).message })
       continue
     }
@@ -1379,7 +1379,7 @@ export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): st
   const row = getBusinessDatabase()
     .prepare('SELECT id, enabled FROM proxy_profiles WHERE id = ?')
     .get(proxyProfileId) as unknown as Pick<ProxyRow, 'id' | 'enabled'> | undefined
-  if (!row || !proxyOptionEnabled(row.enabled)) {
+  if (!row || !proxyProfileEnabled(row.enabled)) {
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
   return row.id
@@ -1392,7 +1392,7 @@ export async function resolveEnabledProxyProfileIdAsync(proxyProfileId?: string 
   if (!proxyProfileId) return undefined
   const client = await getProxyDatabaseClient()
   const row = await client.one<Pick<ProxyRow, 'id' | 'enabled'>>(`SELECT id, enabled FROM ${proxyProfilesTable(client)} WHERE id = ?`, [proxyProfileId])
-  if (!row || !proxyOptionEnabled(row.enabled)) {
+  if (!row || !proxyProfileEnabled(row.enabled)) {
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
   return row.id
@@ -1403,7 +1403,7 @@ function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined 
   const row = getBusinessDatabase()
     .prepare('SELECT type, host, port, username, password_encrypted, enabled FROM proxy_profiles WHERE id = ?')
     .get(proxyProfileId) as unknown as ProxyRow | undefined
-  if (!row || !proxyOptionEnabled(row.enabled)) {
+  if (!row || !proxyProfileEnabled(row.enabled)) {
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
   return proxyUrlFromRow(row)
@@ -1417,7 +1417,7 @@ async function proxyUrlForProfileAsync(proxyProfileId?: string | null): Promise<
     FROM ${proxyProfilesTable(client)}
     WHERE id = ?
   `, [proxyProfileId])
-  if (!row || !proxyOptionEnabled(row.enabled)) {
+  if (!row || !proxyProfileEnabled(row.enabled)) {
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
   return proxyUrlFromRow(row)
