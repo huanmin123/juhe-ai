@@ -1,1 +1,0 @@
--- management account create is intentionally kept as one transaction in managementaccountcreate.go

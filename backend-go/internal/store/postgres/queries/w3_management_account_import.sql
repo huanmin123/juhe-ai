@@ -1,2 +1,0 @@
--- First-pass account import is implemented as one explicit transaction in
--- managementaccountimport.go; this file records the module query ownership.
