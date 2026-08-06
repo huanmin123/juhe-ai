@@ -25,6 +25,7 @@ await testCoordinatorRegistrationDriftDoesNotShortenTurn()
 await testLateTimerCannotRefreshAfterAbsoluteDeadline()
 await testLateRuntimeNotificationCannotRefreshAfterAbsoluteDeadline()
 await testCoordinationBudgetUsesEarliestRetryAndIgnoresDuplicateWake()
+await testCoordinationBudgetIncludesCandidateRefresh()
 await testCoordinationBudgetPausesOnAbort()
 await testCoordinationBudgetConflictIsTemporarilyBlocked()
 
@@ -382,6 +383,56 @@ async function testCoordinationBudgetUsesEarliestRetryAndIgnoresDuplicateWake():
   assert.equal(routeCoordinationBudget.remainingMs(), 2_900)
   assert.equal(routeCoordinationBudget.snapshot().activeSinceMs, undefined)
   assert.equal(routeCoordinationBudget.snapshot().version, 2)
+}
+
+async function testCoordinationBudgetIncludesCandidateRefresh(): Promise<void> {
+  let nowMs = 1_000
+  const timers: Array<{ callback: () => void; delayMs: number }> = []
+  const coordinator = new RecoverableUnavailableWaitCoordinator({
+    now: () => nowMs,
+    setTimer(callback, delayMs) {
+      timers.push({ callback, delayMs })
+      return callback
+    },
+    clearTimer() {}
+  })
+  const routeCoordinationBudget = new RouteCoordinationBudget({
+    requestId: 'request-coordination-refresh-budget',
+    budgetMs: 3_000,
+    now: () => nowMs
+  })
+  let refreshCount = 0
+  const waiting = waitForRecoverableUnavailableState({
+    scopeKey: 'scope-coordination-refresh-budget',
+    reason: 'account_cooldown_recoverable',
+    initialState: { ready: false },
+    refresh: () => {
+      refreshCount += 1
+      nowMs += 3_000
+      return { ready: false }
+    },
+    isReady: state => state.ready,
+    nextRetryAfterMs: () => 250,
+    auditCapture,
+    maxWaitMs: 10_000,
+    requestStartedAtMs: nowMs,
+    deadlineAtMs: nowMs + 10_000,
+    routeCoordinationBudget,
+    coordinator,
+    now: () => nowMs
+  })
+  await Promise.resolve()
+  const firstTimer = timers.shift()
+  assert(firstTimer, '首轮恢复等待必须注册 timer')
+  nowMs += firstTimer.delayMs
+  firstTimer.callback()
+  const result = await waiting
+
+  assert.equal(refreshCount, 1, '候选刷新耗尽协调预算后不得重新进入下一轮等待')
+  assert.equal(result.skippedReason, 'temporarily_blocked_coordination_budget_exhausted')
+  assert.equal(routeCoordinationBudget.remainingMs(), 0, '候选刷新耗时必须计入共享协调预算')
+  assert.equal(timers.length, 0, '协调预算耗尽后不得遗留下一轮 timer')
+  assert.deepEqual(coordinator.snapshot(), { scopeCount: 0, waiterCount: 0, timerCount: 0 })
 }
 
 async function testCoordinationBudgetPausesOnAbort(): Promise<void> {

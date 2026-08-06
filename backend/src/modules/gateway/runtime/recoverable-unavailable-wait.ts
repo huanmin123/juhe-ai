@@ -393,6 +393,12 @@ export async function waitForRecoverableUnavailableState<T>(
         signal: input.signal,
         runtimeKeys: input.runtimeKeys
       })
+      if (turn === 'ready') {
+        checkCount += 1
+        // Candidate refresh is part of this coordination turn. Pausing before it
+        // lets a slow DB-service read reopen the same short wait budget forever.
+        state = await input.refresh()
+      }
     } finally {
       if (input.routeCoordinationBudget && coordinationWait && waitToken) {
         pauseResult = input.routeCoordinationBudget.pauseWait({
@@ -424,8 +430,6 @@ export async function waitForRecoverableUnavailableState<T>(
         turn
       )
     }
-    checkCount += 1
-    state = await input.refresh()
     if (input.isReady(state)) {
       return finalizeRecoverableUnavailableWait(input, state, startedAtMs, checkCount, true, false)
     }
