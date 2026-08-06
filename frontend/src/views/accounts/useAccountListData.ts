@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
@@ -18,6 +18,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
+import { isAbortError } from './accountTestTaskHelpers'
 import {
   accountListHasAccumulatedPageWindow,
   accountListPageWindowChanged,
@@ -78,6 +79,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   let accountOptionsRequestId = 0
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
+  let listRequestController: AbortController | undefined
   const {
     handleDropdown: handleSystemAccountOptionsDropdown,
     handleSearch: handleSystemAccountOptionsSearch,
@@ -158,6 +160,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       options.onLoaded?.(selectableAccountIds)
     },
     onError: (error) => {
+      if (isAbortError(error)) return
       console.error(error)
       message.error('加载账户失败')
     }
@@ -169,11 +172,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     systemAccountId: string | undefined,
     pageState: { current: number; pageSize: number },
   ): Promise<AccountListResult> {
+    listRequestController?.abort()
+    const controller = new AbortController()
+    listRequestController = controller
     const params = accountListParams(systemAccountId, pageState)
     const loadNetwork = () => options.isManagementView.value
-      ? api.accounts.list(params)
-      : api.myAccounts.list(accountListParams(undefined, pageState))
-    return loadNetwork()
+      ? api.accounts.list(params, { signal: controller.signal })
+      : api.myAccounts.list(accountListParams(undefined, pageState), { signal: controller.signal })
+    return loadNetwork().finally(() => {
+      if (listRequestController === controller) listRequestController = undefined
+    })
   }
 
   function refreshData() {
@@ -483,6 +491,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
   watch(() => authState.revision.value, () => {
+    listRequestController?.abort()
+    listRequestController = undefined
     invalidatePendingLoads()
     invalidateSystemAccountOptions()
     listMutationRevision += 1
@@ -506,6 +516,10 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     providerDefinitionsLoading.value = false
     providerDefinitionsLoaded.value = false
     providerDefinitionsScopeKey.value = ''
+  })
+  onBeforeUnmount(() => {
+    listRequestController?.abort()
+    listRequestController = undefined
   })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })

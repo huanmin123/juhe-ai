@@ -122,6 +122,9 @@ export interface AccountManagementStatusSeed {
   authorization_id: string | null
   authorization_status: AuthorizationStatus | null
   authorization_expires_at: string | null
+  authorization_limits_json: string | null
+  authorization_resource_owner_system_account_id: string | null
+  authorization_effective_source_team_id: string | null
   authorization_effective_source_type: 'manual' | 'team' | null
   source_status: AccountStatus | null
   source_schedulable: number | null
@@ -143,6 +146,7 @@ export interface AccountManagementStatusSeed {
   bound_group_account_authorization_id: string | null
 }
 
+/** 运行态筛选只保留有效可用性分类所需字段，候选扫描不读取列表展示用量。 */
 export interface AccountStatusProjection extends AccountEffectiveAvailabilityInput {
   id: string
   runtimeKey: string
@@ -160,6 +164,11 @@ export interface AccountStatusProjection extends AccountEffectiveAvailabilityInp
   balanceQueryNextRefreshAt?: string
   lastUsedAt?: string
 }
+
+export type AccountStatusFilterProjection = Omit<
+  AccountStatusProjection,
+  'todayUsage' | 'balanceQueryEnabled' | 'balanceQueryNextRefreshAt' | 'lastUsedAt' | 'sourceAccountProbe'
+>
 
 export async function listAccountStatusProjectionsAsync(
   access: AccessScope | undefined,
@@ -193,11 +202,39 @@ export async function hydrateAccountManagementStatusSeedsAsync(
   return hydrateAccountManagementStatusSeedsDirect(seeds, seeds.map((seed) => seed.id))
 }
 
+export async function hydrateAccountManagementStatusFilterSeedsAsync(
+  seeds: AccountManagementStatusSeed[]
+): Promise<AccountStatusFilterProjection[]> {
+  if (seeds.length === 0) return []
+  if (runtimeConfig.databaseDriver === 'sqlite' && sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'hydrate_account_management_status_filter_seeds_read_only',
+      seeds
+    })
+  }
+  return hydrateAccountManagementStatusFilterSeedsDirect(
+    await accountStatusDatabaseClient(),
+    seeds,
+    seeds.map((seed) => seed.id)
+  )
+}
+
 export async function hydrateAccountManagementStatusSeedsReadOnly(
   seeds: AccountManagementStatusSeed[]
 ): Promise<AccountStatusProjection[]> {
   if (seeds.length === 0) return []
   return hydrateAccountManagementStatusSeedsDirect(seeds, seeds.map((seed) => seed.id))
+}
+
+export async function hydrateAccountManagementStatusFilterSeedsReadOnly(
+  seeds: AccountManagementStatusSeed[]
+): Promise<AccountStatusFilterProjection[]> {
+  if (seeds.length === 0) return []
+  return hydrateAccountManagementStatusFilterSeedsDirect(
+    createSqliteDatabaseClient(getBusinessDatabase()),
+    seeds,
+    seeds.map((seed) => seed.id)
+  )
 }
 
 async function hydrateAccountManagementStatusSeedsDirect(
@@ -214,22 +251,49 @@ async function hydrateAccountManagementStatusSeedsDirect(
     todayScopes.push(scope)
     if (row.authorization_id) authorizationTotalScopes.push(scope)
   }
-  const [todayUsage, authorizationTotal] = await Promise.all([
+  const client = await accountStatusDatabaseClient()
+  const [todayUsage, authorizationTotal, quotaExceeded] = await Promise.all([
     loadAccountManagementListUsageAsync(todayScopes, todayDateKey(timezone)),
-    loadAccountManagementListUsageAsync(authorizationTotalScopes)
+    loadAccountManagementListUsageAsync(authorizationTotalScopes),
+    loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
   ])
+  const filtersById = new Map((await hydrateAccountManagementStatusFilterSeedsDirect(client, rows, orderedIds, quotaExceeded))
+    .map((projection) => [projection.id, projection]))
+  const rowsById = new Map(rows.map((row) => [row.id, row]))
+  return orderedIds.flatMap((id) => {
+    const row = rowsById.get(id)
+    const filterProjection = filtersById.get(id)
+    if (!row || !filterProjection) return []
+    const projection: AccountStatusProjection = {
+      ...filterProjection,
+      balanceQueryEnabled: filterProjection.accessType === 'authorized' ? undefined : row.balance_query_enabled === 1,
+      balanceQueryNextRefreshAt: filterProjection.accessType === 'authorized' ? undefined : row.balance_query_next_refresh_at ?? undefined,
+      todayUsage: accountStatusTodayUsage(todayUsage.get(row.id)),
+      lastUsedAt: filterProjection.accessType === 'authorized' ? authorizationTotal.get(row.id)?.lastUsedAt : row.last_used_at ?? undefined
+    }
+    projection.sourceAccountProbe = accountStatusSourceAccountProbe(projection, row)
+    return [projection]
+  })
+}
+
+async function hydrateAccountManagementStatusFilterSeedsDirect(
+  client: DatabaseClient,
+  rows: AccountManagementStatusSeed[],
+  orderedIds: string[],
+  providedQuotaExceeded?: Map<string, boolean>
+): Promise<AccountStatusFilterProjection[]> {
+  const quotaExceeded = providedQuotaExceeded ?? await loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
   const byId = new Map(rows.map((row) => [row.id, row]))
   return orderedIds.flatMap((id) => {
     const row = byId.get(id)
     if (!row) return []
     const isAuthorized = Boolean(row.authorization_id)
     const groupBinding = accountStatusGroupBinding(row)
-    const runtimeKey = isAuthorized && groupBinding && row.authorization_id
-      ? `${row.id}:authorized:${row.system_account_id}:${groupBinding.groupId}:${row.authorization_id}`
-      : row.id
-    const projection: AccountStatusProjection = {
+    const projection: AccountStatusFilterProjection = {
       id: row.id,
-      runtimeKey,
+      runtimeKey: isAuthorized && groupBinding && row.authorization_id
+        ? `${row.id}:authorized:${row.system_account_id}:${groupBinding.groupId}:${row.authorization_id}`
+        : row.id,
       concurrencyAccountId: row.authorization_instance_source_account_id || row.id,
       permissions: accountStatusPermissions(isAuthorized, row.authorization_effective_source_type),
       accessType: isAuthorized ? 'authorized' as const : 'owner' as const,
@@ -237,6 +301,8 @@ async function hydrateAccountManagementStatusSeedsDirect(
       groupBindStatus: groupBinding?.groupBindStatus,
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationLimits: row.authorization_id ? parseRequestQuotaLimitsJson(row.authorization_limits_json) : undefined,
+      authorizationQuotaExceeded: row.authorization_id ? quotaExceeded.get(row.authorization_id) : undefined,
       authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
       authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,
       authorizationInstanceSourceAccountSchedulable: row.source_schedulable === null ? undefined : row.source_schedulable === 1,
@@ -244,6 +310,15 @@ async function hydrateAccountManagementStatusSeedsDirect(
       authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
       authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
       authorizationInstanceSourceAccountLastErrorMessage: accountListDiagnosticText(row.source_last_error_message),
+      authorizationInstanceSourceAccountLastErrorTraceId: row.source_last_error_trace_id ?? undefined,
+      authorizationInstanceSourceAccountCooldownRetestLastAt: row.source_cooldown_retest_last_at ?? undefined,
+      authorizationInstanceSourceAccountCooldownRetestLastStatusCode: row.source_cooldown_retest_last_status_code ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckAt: row.source_last_health_check_at ?? undefined,
+      authorizationInstanceSourceAccountNextHealthCheckAt: row.source_next_health_check_at ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckStatusCode: row.source_last_health_check_status_code ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckErrorCode: row.source_last_health_check_error_code ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckErrorMessage: accountListDiagnosticText(row.source_last_health_check_error_message),
+      authorizationInstanceSourceAccountLastHealthCheckTraceId: row.source_last_health_check_trace_id ?? undefined,
       accountExpiresAt: row.account_expires_at ?? undefined,
       status: isAuthorized
         ? authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
@@ -267,13 +342,8 @@ async function hydrateAccountManagementStatusSeedsDirect(
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: row.cooldown_retest_last_status_code ?? undefined,
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)) || undefined,
-      streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-      balanceQueryEnabled: isAuthorized ? undefined : row.balance_query_enabled === 1,
-      balanceQueryNextRefreshAt: isAuthorized ? undefined : row.balance_query_next_refresh_at ?? undefined,
-      todayUsage: accountStatusTodayUsage(todayUsage.get(row.id)),
-      lastUsedAt: isAuthorized ? authorizationTotal.get(row.id)?.lastUsedAt : row.last_used_at ?? undefined
+      streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined
     }
-    projection.sourceAccountProbe = accountStatusSourceAccountProbe(projection, row)
     return [projection]
   })
 }

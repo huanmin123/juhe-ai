@@ -135,12 +135,14 @@ assert.equal(nextAccountRuntimeStatusCandidateWindow({ page: 1, pageSize: 10_000
 
 const repositorySource = readFileSync(resolve('src/storage/account-status-snapshot.repository.ts'), 'utf8')
 const runtimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
+const statusSnapshotServiceSource = readFileSync(resolve('src/modules/accounts/account-status-snapshot.service.ts'), 'utf8')
 assert.doesNotMatch(repositorySource, /usage_records/, '状态快照不得扫描使用记录明细')
 assert.doesNotMatch(repositorySource, /credentials_encrypted|credential_mask/, '状态快照不得读取凭据或凭据摘要')
 assert.match(repositorySource, /loadAccountManagementListUsageAsync/, '今日用量必须来自三字段列表统计读取器')
 assert.doesNotMatch(repositorySource, /loadAccountApiKeyRuntime|usage-summary-loaders|AccountUsageSummary/, '状态快照不得回流 API Key 运行态或完整用量读取器')
 assert.match(repositorySource, /authorization_effective_source_team_id/, '状态快照必须保留团队授权额度来源字段')
 assert.match(repositorySource, /list_account_status_snapshots_read_only/, 'SQLite 状态投影必须投递到 read worker')
+assert.match(repositorySource, /hydrateAccountManagementStatusFilterSeedsAsync/, '运行态筛选必须拥有不读取用量的状态种子水合入口')
 assert.doesNotMatch(runtimeStatusFilterSource, /pageSize\s*\*\s*4/, '运行态筛选不得恢复固定四倍候选批量')
 assert.match(runtimeStatusFilterSource, /seenCandidateIds/, '前缀扩窗必须去重，重复查询的候选不得重复 hydrate')
 assert.doesNotMatch(
@@ -149,11 +151,21 @@ assert.doesNotMatch(
   '运行态筛选不得保留 1000 行窗口或页码回压'
 )
 assert.match(runtimeStatusFilterSource, /listAccountManagementCandidatePrefixAsync/, '运行态筛选必须使用专用递增前缀读取入口')
-assert.match(
-  runtimeStatusFilterSource,
-  /maxRuntimeStatusHydrationBatchSize\s*=\s*100[\s\S]*chunkValues\(page\.items, maxRuntimeStatusHydrationBatchSize\)/,
-  '运行态 hydrate 必须按运行态快照的 100 ID 边界分批，200 候选时不得漏掉后一半运行态'
+assert.match(runtimeStatusFilterSource, /hydrateAccountRuntimeStatusFilterCandidates/, '候选阶段必须使用轻量状态水合')
+assert.match(runtimeStatusFilterSource, /const hydratedPage = await hydrateAccountListPage\(access, \{/, '最终当前页必须回到既有完整水合')
+const candidateHydrationSource = runtimeStatusFilterSource.slice(
+  runtimeStatusFilterSource.indexOf('async function hydrateAccountRuntimeStatusCandidatePage'),
+  runtimeStatusFilterSource.indexOf('function accountMatchesSchedulableFilter')
 )
+assert.doesNotMatch(candidateHydrationSource, /hydrateAccountListPage/, '候选阶段不得调用完整展示水合')
+const lightweightFilterHydrationSource = statusSnapshotServiceSource.slice(
+  statusSnapshotServiceSource.indexOf('export async function hydrateAccountRuntimeStatusFilterCandidates'),
+  statusSnapshotServiceSource.indexOf('export function parseAccountStatusSnapshotAccountIds')
+)
+assert.match(lightweightFilterHydrationSource, /loadAccountRuntimeAvailabilityByKeys/, '轻量候选必须读取运行态可用性')
+assert.match(lightweightFilterHydrationSource, /loadPublicAccountCircuitSummaries/, '轻量候选必须读取公开熔断摘要')
+assert.match(lightweightFilterHydrationSource, /loadAccountApiKeyRuntimeSummariesByAccountIdsAsync/, '轻量候选必须读取 API Key 运行态')
+assert.doesNotMatch(lightweightFilterHydrationSource, /loadAccountBalanceSnapshotRecordsByAccountIdsAsync|loadAccountConcurrencyByIds/, '轻量候选不得读取余额或并发展示数据')
 const readWorkerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
 assert.match(readWorkerSource, /case 'list_account_status_snapshots_read_only'/, 'SQLite read worker 必须实现状态投影 operation')
 assert.match(
@@ -161,10 +173,16 @@ assert.match(
   /case 'hydrate_account_management_status_seeds_read_only':[\s\S]*hydrateAccountManagementStatusSeedsReadOnly\(operation\.seeds\)/,
   'SQLite read worker 必须直接水合管理列表最小 seed，不得回退按 ID 重查账户'
 )
+assert.match(
+  readWorkerSource,
+  /case 'hydrate_account_management_status_filter_seeds_read_only':[\s\S]*hydrateAccountManagementStatusFilterSeedsReadOnly\(operation\.seeds\)/,
+  'SQLite read worker 必须直接分派轻量运行态筛选 seed'
+)
 assert.match(readWorkerSource, /listAccountManagementItemsPageReadOnly\(operation\.access, operation\.options, operation\.candidateLimit\)/, 'SQLite read worker 必须透传内部候选前缀上限')
 const readWorkerTypesSource = readFileSync(resolve('src/storage/sqlite-read-worker-pool.types.ts'), 'utf8')
 assert.match(readWorkerTypesSource, /type: 'list_account_management_items_page_read_only'[\s\S]*candidateLimit\?: number/, 'SQLite read worker operation 必须声明候选前缀上限')
 assert.match(readWorkerTypesSource, /type: 'hydrate_account_management_status_seeds_read_only'[\s\S]*seeds: AccountManagementStatusSeed\[\]/, 'SQLite read worker 必须声明最小状态 seed operation')
+assert.match(readWorkerTypesSource, /type: 'hydrate_account_management_status_filter_seeds_read_only'[\s\S]*seeds: AccountManagementStatusSeed\[\]/, 'SQLite read worker 必须声明轻量状态 seed operation')
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-status-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databaseDriver = 'sqlite'
@@ -459,7 +477,7 @@ try {
     snapshotBatchDatabase.prepare = originalSnapshotPrepare
   }
   assert(largeRuntimeFilteredPage, '运行态状态筛选必须返回分页结果')
-  assert.deepEqual(statusProjectionBatchSizes, [100, 29], '128 行分页加一条 lookahead 必须按 100 seed 运行态快照边界执行两次 hydrate')
+  assert.deepEqual(statusProjectionBatchSizes, [128], '128 行当前页只允许执行一次完整展示水合，候选筛选不得读取今日用量')
   assert.equal(largeRuntimeFilteredPage.items.length, 128, 'pageSize=128 的运行态状态筛选不得漏掉第 101 条之后的匹配账户')
   assert.equal(largeRuntimeFilteredPage.hasMore, true, '第 129 个匹配必须形成准确的 hasMore')
   assert.equal(
@@ -646,7 +664,7 @@ try {
   }
   assert(denseActivePage, '正常状态运行态筛选必须返回分页结果')
   assert.equal(denseCandidateQueries.length, 1, 'active 高命中首屏必须只执行一次候选查询')
-  assert.deepEqual(denseHydrationBatchSizes, [21], 'active 高命中首屏必须只 hydrate pageSize + 1 个候选')
+  assert.deepEqual(denseHydrationBatchSizes, [20], 'active 高命中首屏只允许完整水合当前 20 行，不得水合 lookahead 候选')
   assert.deepEqual(
     { limit: denseCandidateQueries[0]!.limit, offset: denseCandidateQueries[0]!.offset },
     { limit: 22, offset: 0 },
@@ -674,12 +692,11 @@ try {
     ],
     '稀疏筛选必须按 21/200/400/800/1600 递增前缀读取，且永不使用 OFFSET 分段'
   )
-  assert.equal(deepHydrationBatchSizes.every((size) => size > 0 && size <= 100), true, '每个运行态 hydrate 批次必须保持 100 ID 边界')
-  assert.equal(deepHydrationBatchSizes.reduce((sum, size) => sum + size, 0), deepAccountCount, '递增前缀只应 hydrate 新候选，每个账户恰好一次')
+  assert.deepEqual(deepHydrationBatchSizes, [20], '深页稀疏筛选只允许完整水合最终当前页，不得为 1060 个候选读取用量')
   assert.deepEqual(
     deepHydrationAccountIds,
-    Array.from({ length: deepAccountCount }, (_, index) => `acc_runtime_deep_${String(index).padStart(4, '0')}`),
-    '多轮重叠前缀必须去重并按候选顺序恰好 hydrate 每个账户一次'
+    Array.from({ length: 20 }, (_, index) => `acc_runtime_deep_${String(deepActiveStart + index).padStart(4, '0')}`),
+    '深页候选仍必须按顺序筛选，但只有最终 20 个命中读取展示用量'
   )
   assert.deepEqual(
     deepActivePage.items.map((item) => item.name),

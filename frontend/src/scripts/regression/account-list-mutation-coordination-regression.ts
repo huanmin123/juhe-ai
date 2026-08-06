@@ -122,10 +122,11 @@ assert.equal(filterAccounts({
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const listDataSource = fs.readFileSync(path.resolve(scriptDir, '../../views/accounts/useAccountListData.ts'), 'utf8')
 const accountsViewSource = fs.readFileSync(path.resolve(scriptDir, '../../views/accounts/AccountsView.vue'), 'utf8')
+const accountsApiSource = fs.readFileSync(path.resolve(scriptDir, '../../api/domains/accounts.ts'), 'utf8')
 assert.match(
   listDataSource,
-  /get superseded\(\) \{ return requestMutationRevision !== listMutationRevision \}/,
-  '列表 GET 应在真正提交响应时检查本地写入代次'
+  /get superseded\(\) \{\s*return requestAuthRevision !== authState\.revision\.value\s*\|\| requestMutationRevision !== listMutationRevision/,
+  '列表 GET 应在真正提交响应时检查登录与本地写入代次'
 )
 assert.match(
   listDataSource,
@@ -133,6 +134,26 @@ assert.match(
   '移动端累计窗口 mutation 后必须先回到第 1 页再做权威刷新'
 )
 assert.match(listDataSource, /transformItems:[\s\S]{0,180}mergeAccountListPageWithRevisionOverlays/)
+assert.match(
+  listDataSource,
+  /listRequestController\?\.abort\(\)[\s\S]{0,160}new AbortController\(\)[\s\S]{0,260}signal: controller\.signal/,
+  '账户列表发起新查询时必须取消旧 HTTP 请求，并把新 AbortSignal 传到 API'
+)
+assert.match(
+  listDataSource,
+  /onError: \(error\) => \{\s*if \(isAbortError\(error\)\) return/,
+  '用户切换筛选取消旧列表请求时不得显示加载失败'
+)
+assert.match(
+  accountsApiSource,
+  /list: \(params\?: AccountListParams, options\?: RequestControlOptions\)[\s\S]{0,180}signal: options\?\.signal/,
+  '管理端账户列表 API 必须支持 AbortSignal'
+)
+assert.match(
+  accountsApiSource,
+  /myAccountsApi = \{[\s\S]{0,220}list: \(params\?: AccountListParams, options\?: RequestControlOptions\)[\s\S]{0,180}signal: options\?\.signal/,
+  '个人账户列表 API 必须支持 AbortSignal'
+)
 assert.doesNotMatch(
   listDataSource,
   /accounts\.value = sortAccountListRows\(nextAccounts/,

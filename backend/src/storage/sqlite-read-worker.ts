@@ -14,6 +14,7 @@ import { listAccountManagementItemsPageReadOnly } from './account-management-lis
 import { findOAuthCredentialRotationAccountAsync } from './oauth-credential-rotation.repository.js'
 import { getAiHealthHourDetail, getAiHealthList } from './account-health-monitor.repository.js'
 import {
+  hydrateAccountManagementStatusFilterSeedsReadOnly,
   hydrateAccountManagementStatusSeedsReadOnly,
   listAccountStatusProjectionsReadOnly
 } from './account-status-snapshot.repository.js'
@@ -220,6 +221,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAccountStatusProjectionsReadOnly(operation.access, operation.accountIds)
     case 'hydrate_account_management_status_seeds_read_only':
       return hydrateAccountManagementStatusSeedsReadOnly(operation.seeds)
+    case 'hydrate_account_management_status_filter_seeds_read_only':
+      return hydrateAccountManagementStatusFilterSeedsReadOnly(operation.seeds)
     case 'find_account_summary_read_only':
       return findAccountSummary(operation.accountId, operation.access)
     case 'list_account_options_read_only':

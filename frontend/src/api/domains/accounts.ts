@@ -72,7 +72,7 @@ export interface AuthorizedAccountDispatchPayload {
 }
 
 export const accountsApi = {
-  list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
+  list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params), signal: options?.signal })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
   tags: (params?: ListParams) => unwrap<AccountTagSummary[]>(http.get('/accounts/tags', { params })),
   deleteTag: (id: string, params?: ListParams) => http.delete(`/accounts/tags/${id}`, { params }),
@@ -110,7 +110,7 @@ export const accountsApi = {
 }
 
 export const myAccountsApi = {
-  list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false) })),
+  list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false), signal: options?.signal })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
   tags: () => unwrap<AccountTagSummary[]>(http.get('/my-accounts/tags')),
   deleteTag: (id: string) => http.delete(`/my-accounts/tags/${id}`),

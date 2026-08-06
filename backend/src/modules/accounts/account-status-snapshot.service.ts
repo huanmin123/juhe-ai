@@ -1,6 +1,6 @@
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
-import type { AccountStatusSnapshotResult } from '../../domain/types.js'
+import type { AccountStatus, AccountStatusSnapshotResult } from '../../domain/types.js'
 import type { PublicAccountCircuitSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import type {
@@ -12,6 +12,7 @@ import {
   loadAccountBalanceSnapshotRecordsByAccountIdsAsync
 } from '../../storage/account-balance.repository.js'
 import {
+  hydrateAccountManagementStatusFilterSeedsAsync,
   hydrateAccountManagementStatusSeedsAsync,
   listAccountStatusProjectionsAsync
 } from '../../storage/account-status-snapshot.repository.js'
@@ -22,6 +23,15 @@ import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-ci
 
 const maxSnapshotAccountIds = 100
 const maxSnapshotQueryLength = 8192
+
+export interface AccountRuntimeStatusFilterCandidate {
+  id: string
+  status: AccountStatus
+  schedulable: boolean
+  authorizationQuotaExceeded?: boolean
+  effectiveAvailability: AccountStatusSnapshotResult['items'][number]['effectiveAvailability']
+  circuitSummary?: PublicAccountCircuitSummary
+}
 
 export async function hydrateAccountListPage(
   access: AccessScope | undefined,
@@ -43,6 +53,42 @@ export async function hydrateAccountListPage(
       ...snapshotById.get(item.id),
       currentConcurrency: snapshotById.get(item.id)?.currentConcurrency ?? 0
     } as AccountManagementListResult['items'][number]))
+  }
+}
+
+export async function hydrateAccountRuntimeStatusFilterCandidates(
+  page: Pick<AccountManagementListPage, 'statusSeeds'>
+): Promise<{
+  generatedAt: string
+  items: AccountRuntimeStatusFilterCandidate[]
+}> {
+  const projections = await hydrateAccountManagementStatusFilterSeedsAsync(page.statusSeeds)
+  const [runtime, circuits, apiKeyRuntimeByAccountId] = await Promise.all([
+    loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
+    loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
+      .then((values) => ({ available: true, values }))
+      .catch(() => ({ available: false, values: {} as Record<string, PublicAccountCircuitSummary> })),
+    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(
+      projections.map((item) => item.authorizationInstanceSourceAccountId ?? item.id)
+    )
+  ])
+  return {
+    generatedAt: new Date().toISOString(),
+    items: projections.map((projection) => {
+      const withAvailability = accountSummaryWithEffectiveAvailability({
+        ...projection,
+        apiKeyRuntime: apiKeyRuntimeByAccountId.get(projection.authorizationInstanceSourceAccountId ?? projection.id),
+        runtimeAvailability: runtime.values[projection.runtimeKey]
+      })
+      return {
+        id: projection.id,
+        status: projection.status,
+        schedulable: projection.schedulable,
+        authorizationQuotaExceeded: projection.authorizationQuotaExceeded,
+        effectiveAvailability: withAvailability.effectiveAvailability,
+        circuitSummary: circuits.values[projection.runtimeKey]
+      }
+    })
   }
 }
 

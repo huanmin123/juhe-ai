@@ -2,7 +2,6 @@ import {
   accountFilterStatuses,
   accountMatchesStatusFilters
 } from '../../domain/account-status-classification.js'
-import type { AccountListItem } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
@@ -17,7 +16,10 @@ import {
   chunkValues,
   pagedTotalUpperBound
 } from '../../storage/query-utils.js'
-import { hydrateAccountListPage } from './account-status-snapshot.service.js'
+import {
+  hydrateAccountListPage,
+  hydrateAccountRuntimeStatusFilterCandidates
+} from './account-status-snapshot.service.js'
 
 export interface AccountRuntimeStatusCandidateWindow {
   page: number
@@ -54,7 +56,8 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   const skipTarget = (requestedPage - 1) * pageSize
   const requiredMatchCount = skipTarget + pageSize + 1
   const candidateSourceOptions = accountRuntimeStatusCandidateSourceOptions(listOptions)
-  const output: AccountListItem[] = []
+  const output: AccountManagementListPage['items'] = []
+  const outputStatusSeeds = [] as AccountManagementListPage['statusSeeds']
   const seenCandidateIds = new Set<string>()
   let matchedCount = 0
   let exhausted = false
@@ -68,8 +71,10 @@ export async function listAccountsPageWithRuntimeStatusFilter(
       page: 1
     }, candidateWindow.pageSize)
     const freshBasePage = accountRuntimeStatusFreshCandidatePage(basePage, seenCandidateIds)
-    const hydratedPage = await hydrateAccountRuntimeStatusCandidatePage(access, freshBasePage)
+    const hydratedPage = await hydrateAccountRuntimeStatusCandidatePage(freshBasePage)
     generatedAt = hydratedPage.generatedAt
+    const baseItemsById = new Map(freshBasePage.items.map((item) => [item.id, item]))
+    const statusSeedsById = new Map(freshBasePage.statusSeeds.map((seed) => [seed.id, seed]))
     let latestMatchedCount = 0
     for (const account of hydratedPage.items) {
       if (!accountMatchesStatusFilters(account, statusFilters)) continue
@@ -79,7 +84,13 @@ export async function listAccountsPageWithRuntimeStatusFilter(
         matchedCount += 1
         continue
       }
-      output.push(account)
+      const item = baseItemsById.get(account.id)
+      const statusSeed = statusSeedsById.get(account.id)
+      if (!item || !statusSeed) {
+        throw new Error(`账户 ${account.id} 缺少运行态状态筛选种子`)
+      }
+      output.push(item)
+      outputStatusSeeds.push(statusSeed)
       matchedCount += 1
       if (output.length > pageSize) break
     }
@@ -101,17 +112,33 @@ export async function listAccountsPageWithRuntimeStatusFilter(
 
   const hasMore = output.length > pageSize
   const items = output.slice(0, pageSize)
-  const tagsByAccount = await loadAccountTagsByAccountIdsAsync(items.map((item) => item.id))
-  return {
-    items: items.map((item) => ({
-      ...item,
-      tags: tagsByAccount.get(item.id) ?? []
-    })),
+  const statusSeeds = outputStatusSeeds.slice(0, pageSize)
+  if (items.length === 0) {
+    return {
+      items: [],
+      total: pagedTotalUpperBound(requestedPage, pageSize, 0, hasMore),
+      hasMore,
+      page: requestedPage,
+      pageSize,
+      generatedAt
+    }
+  }
+  const hydratedPage = await hydrateAccountListPage(access, {
+    items,
+    statusSeeds,
     total: pagedTotalUpperBound(requestedPage, pageSize, items.length, hasMore),
     hasMore,
     page: requestedPage,
-    pageSize,
-    generatedAt
+    pageSize
+  })
+  const tagsByAccount = await loadAccountTagsByAccountIdsAsync(items.map((item) => item.id))
+  return {
+    ...hydratedPage,
+    items: hydratedPage.items.map((item) => ({
+      ...item,
+      tags: tagsByAccount.get(item.id) ?? []
+    })),
+    generatedAt: hydratedPage.generatedAt
   }
 }
 
@@ -197,26 +224,26 @@ function accountRuntimeStatusFreshCandidatePage(
 }
 
 async function hydrateAccountRuntimeStatusCandidatePage(
-  access: AccessScope | undefined,
   page: AccountManagementListPage
-): Promise<AccountManagementListResult> {
-  const items: AccountListItem[] = []
+): Promise<{
+  generatedAt: string
+  items: Awaited<ReturnType<typeof hydrateAccountRuntimeStatusFilterCandidates>>['items']
+}> {
+  const items: Awaited<ReturnType<typeof hydrateAccountRuntimeStatusFilterCandidates>>['items'] = []
   let generatedAt = new Date().toISOString()
   for (const candidateItems of chunkValues(page.items, maxRuntimeStatusHydrationBatchSize)) {
     const candidateIds = new Set(candidateItems.map((item) => item.id))
-    const hydrated = await hydrateAccountListPage(access, {
-      ...page,
-      items: candidateItems,
+    const hydrated = await hydrateAccountRuntimeStatusFilterCandidates({
       statusSeeds: page.statusSeeds.filter((seed) => candidateIds.has(seed.id))
     })
     items.push(...hydrated.items)
     generatedAt = hydrated.generatedAt
   }
-  return { ...page, items, generatedAt }
+  return { items, generatedAt }
 }
 
 function accountMatchesSchedulableFilter(
-  account: AccountListItem,
+  account: Pick<Awaited<ReturnType<typeof hydrateAccountRuntimeStatusFilterCandidates>>['items'][number], 'status' | 'authorizationQuotaExceeded' | 'effectiveAvailability'>,
   filter: ReturnType<typeof normalizeAccountListOptions>['schedulable']
 ): boolean {
   if (filter === 'all') return true
