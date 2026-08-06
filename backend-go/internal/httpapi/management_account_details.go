@@ -22,6 +22,7 @@ const (
 type managementAccountDetailService interface {
 	Get(*http.Request, managementaccountdetails.Input, managementaccountdetails.Level) (map[string]any, bool, error)
 	APIKeyRuntime(*http.Request, managementaccountdetails.Input) (managementaccountdetails.APIKeyRuntimeResponse, bool, error)
+	OAuthReauthorizationContext(*http.Request, managementaccountdetails.Input) (managementaccountdetails.OAuthReauthorizationContext, bool, error)
 }
 
 type managementAccountDetailServiceAdapter struct {
@@ -41,6 +42,13 @@ func (s managementAccountDetailServiceAdapter) APIKeyRuntime(
 	input managementaccountdetails.Input,
 ) (managementaccountdetails.APIKeyRuntimeResponse, bool, error) {
 	return s.service.APIKeyRuntime(r.Context(), input)
+}
+
+func (s managementAccountDetailServiceAdapter) OAuthReauthorizationContext(
+	r *http.Request,
+	input managementaccountdetails.Input,
+) (managementaccountdetails.OAuthReauthorizationContext, bool, error) {
+	return s.service.OAuthReauthorizationContext(r.Context(), input)
 }
 
 func NewManagementAccountEditBasicDetailHandler(service *managementaccountdetails.Service) http.Handler {
@@ -65,6 +73,14 @@ func NewManagementAccountAPIKeyRuntimeHandler(service *managementaccountdetails.
 
 func NewManagementMyAccountAPIKeyRuntimeHandler(service *managementaccountdetails.Service) http.Handler {
 	return newManagementAccountAPIKeyRuntimeHandler(detailServiceFrom(service), managementAccountDetailScopeSelf)
+}
+
+func NewManagementAccountOAuthReauthorizationContextHandler(service *managementaccountdetails.Service) http.Handler {
+	return newManagementAccountOAuthReauthorizationContextHandler(detailServiceFrom(service), managementAccountDetailScopeAdmin)
+}
+
+func NewManagementMyAccountOAuthReauthorizationContextHandler(service *managementaccountdetails.Service) http.Handler {
+	return newManagementAccountOAuthReauthorizationContextHandler(detailServiceFrom(service), managementAccountDetailScopeSelf)
 }
 
 func detailServiceFrom(service *managementaccountdetails.Service) managementAccountDetailService {
@@ -135,6 +151,35 @@ func newManagementAccountAPIKeyRuntimeHandler(
 			return
 		}
 		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementAccountOAuthReauthorizationContextHandler(
+	service managementAccountDetailService,
+	scope managementAccountDetailScope,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		input, allowed := managementAccountDetailInput(r, scope)
+		if !allowed {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		result, found, err := service.OAuthReauthorizationContext(r, input)
+		switch {
+		case errors.Is(err, managementaccountdetails.ErrOAuthReauthorizationForbidden):
+			writeMessageError(w, http.StatusForbidden, "授权实例不能重新授权")
+		case err != nil:
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+		case !found:
+			writeMessageError(w, http.StatusNotFound, "账户不存在")
+		default:
+			writeData(w, http.StatusOK, result)
+		}
 	})
 }
 

@@ -22,8 +22,9 @@ const (
 )
 
 var (
-	ErrCredentialsForbidden = errors.New("management account credentials forbidden")
-	ErrRuntimeForbidden     = errors.New("management account api key runtime forbidden")
+	ErrCredentialsForbidden          = errors.New("management account credentials forbidden")
+	ErrRuntimeForbidden              = errors.New("management account api key runtime forbidden")
+	ErrOAuthReauthorizationForbidden = errors.New("management account OAuth reauthorization forbidden")
 )
 
 type CredentialCodec interface {
@@ -64,6 +65,18 @@ type APIKeyRuntimeResponse struct {
 	AccountID      string                `json:"accountId"`
 	ConfigRevision int                   `json:"configRevision"`
 	Items          []APIKeyRuntimeDetail `json:"items"`
+}
+
+type OAuthReauthorizationContext struct {
+	ID             string `json:"id"`
+	ConfigRevision int    `json:"configRevision"`
+	OAuthType      string `json:"oauthType"`
+	ClientID       string `json:"clientId,omitempty"`
+	ClientSecret   string `json:"clientSecret,omitempty"`
+	QuotaProjectID string `json:"quotaProjectId,omitempty"`
+	ProjectID      string `json:"projectId,omitempty"`
+	TierID         string `json:"tierId,omitempty"`
+	BaseURL        string `json:"baseUrl,omitempty"`
 }
 
 type APIKeyRuntimeDetail struct {
@@ -217,6 +230,41 @@ func (s *Service) APIKeyRuntime(ctx context.Context, input Input) (APIKeyRuntime
 	}, true, nil
 }
 
+func (s *Service) OAuthReauthorizationContext(ctx context.Context, input Input) (OAuthReauthorizationContext, bool, error) {
+	if s.reader == nil {
+		return OAuthReauthorizationContext{}, false, fmt.Errorf("management account detail reader is required")
+	}
+	source, found, err := s.reader.GetManagementAccountDetailSource(ctx, port.ManagementAccountDetailInput{
+		AccountID:       strings.TrimSpace(input.AccountID),
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+	})
+	if err != nil || !found {
+		return OAuthReauthorizationContext{}, found, err
+	}
+	if source.AccessType == "authorized" || (source.SourceAccountID != "" && source.SourceAccountID != source.ID) {
+		return OAuthReauthorizationContext{}, false, ErrOAuthReauthorizationForbidden
+	}
+	if strings.TrimSpace(source.ProviderCode) != "gemini" || strings.TrimSpace(source.Type) != "google_oauth" {
+		return OAuthReauthorizationContext{}, false, nil
+	}
+	credentials, err := s.ownerCredentials(source)
+	if err != nil {
+		return OAuthReauthorizationContext{}, false, err
+	}
+	oauthType := geminiOAuthContextType(credentials)
+	result := OAuthReauthorizationContext{
+		ID: source.ID, ConfigRevision: max(1, source.ConfigRevision), OAuthType: oauthType,
+		QuotaProjectID: credentialText(credentials, "quota_project_id"),
+		ProjectID:      credentialText(credentials, "project_id"),
+		TierID:         credentialText(credentials, "tier_id"), BaseURL: credentialText(credentials, "base_url"),
+	}
+	if oauthType == "ai_studio" {
+		result.ClientID = credentialText(credentials, "client_id")
+		result.ClientSecret = credentialText(credentials, "client_secret")
+	}
+	return result, true, nil
+}
+
 func (s *Service) ownerCredentials(source port.ManagementAccountDetailSource) (map[string]any, error) {
 	if s.credentialCodec == nil {
 		return nil, fmt.Errorf("management account detail credential codec is required")
@@ -230,6 +278,35 @@ func (s *Service) ownerCredentials(source port.ManagementAccountDetailSource) (m
 	}
 	return credentials, nil
 }
+
+func credentialText(credentials map[string]any, key string) string {
+	value, ok := credentials[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func geminiOAuthContextType(credentials map[string]any) string {
+	explicit := credentialText(credentials, "oauth_type")
+	switch explicit {
+	case "code_assist", "google_one", "ai_studio":
+		return explicit
+	}
+	baseURL := credentialText(credentials, "base_url")
+	if strings.Contains(baseURL, "generativelanguage.googleapis.com") {
+		return "ai_studio"
+	}
+	if credentialText(credentials, "project_id") != "" || strings.Contains(baseURL, "cloudcode-pa.googleapis.com") {
+		return "code_assist"
+	}
+	if clientID := credentialText(credentials, "client_id"); clientID != "" && clientID != geminiCLIClientID {
+		return "ai_studio"
+	}
+	return "code_assist"
+}
+
+const geminiCLIClientID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 
 func permissions(authorized bool, canReturn bool) ResourcePermissions {
 	if authorized {

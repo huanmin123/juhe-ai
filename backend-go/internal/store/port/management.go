@@ -59,6 +59,7 @@ type ManagementCurrentUserProfileUpdateResult struct {
 var ErrManagementProfileDisplayNameExists = errors.New("management profile display name exists")
 var ErrManagementSystemAccountDisplayNameExists = errors.New("management system account display name exists")
 var ErrManagementSystemAccountUsernameExists = errors.New("management system account username exists")
+var ErrManagementSystemAccountVersionConflict = errors.New("management system account version conflict")
 
 type ManagementCurrentUserProfileWriter interface {
 	UpdateManagementCurrentUserProfile(ctx context.Context, input ManagementCurrentUserProfileUpdateInput) (ManagementCurrentUserProfileUpdateResult, bool, error)
@@ -350,6 +351,7 @@ type ManagementSystemAccountProfileUpdater interface {
 
 type ManagementSystemAccountUpdateInput struct {
 	SystemAccountID           string
+	ExpectedUpdatedAt         time.Time
 	HasDisplayName            bool
 	DisplayName               string
 	HasDescription            bool

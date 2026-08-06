@@ -34,6 +34,7 @@ var (
 	ErrProfileUpdateDisplayNameDup  = errors.New("management system account profile display name exists")
 	ErrActiveSuperAdminRequired     = errors.New("management active super admin required")
 	ErrSystemAccountNotFound        = errors.New("management system account not found")
+	ErrSystemAccountVersionConflict = errors.New("系统账户编辑版本已过期，请刷新后重试")
 )
 
 type Service struct {
@@ -149,6 +150,7 @@ type ProfileUpdateResult struct {
 
 type UpdateInput struct {
 	SystemAccountID        string
+	ExpectedUpdatedAt      time.Time
 	DisplayName            *string
 	HasDescription         bool
 	Description            *string
@@ -439,6 +441,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	}
 	storeInput := port.ManagementSystemAccountUpdateInput{
 		SystemAccountID:           systemAccountID,
+		ExpectedUpdatedAt:         input.ExpectedUpdatedAt.UTC(),
 		HasMustChangePassword:     input.MustChangePassword != nil,
 		HasImageGenerationEnabled: input.ImageGenerationEnabled != nil,
 		UpdatedAt:                 s.now().UTC(),
@@ -494,6 +497,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		storeInput.ImageGenerationEnabled = *input.ImageGenerationEnabled
 	}
 	result, found, err := updater.UpdateManagementSystemAccount(ctx, storeInput)
+	if errors.Is(err, port.ErrManagementSystemAccountVersionConflict) {
+		return UpdateResult{}, ErrSystemAccountVersionConflict
+	}
 	if errors.Is(err, port.ErrManagementSystemAccountDisplayNameExists) {
 		return UpdateResult{}, ErrProfileUpdateDisplayNameDup
 	}
