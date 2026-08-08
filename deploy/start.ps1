@@ -154,6 +154,7 @@ const names = [
   'JUHE_AI_DATABASE_DRIVER',
   'JUHE_AI_RUNTIME_MODE',
   'JUHE_AI_RUNTIME_LOG_STORE',
+  'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
   'JUHE_AI_RUNTIME_LOG_OWNER_LEASE',
   'JUHE_AI_RUNTIME_LOG_ONCE',
   'JUHE_AI_RUNTIME_LOG_POLL_INTERVAL',
@@ -204,6 +205,7 @@ const runtimeLogStore = (childEnv.JUHE_AI_RUNTIME_LOG_STORE ?? '').trim() || (ch
 if (runtimeLogStore.toLowerCase() === 'sqlite') {
   childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
+  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
 }
 
 const logFd = openSync(logPath, 'a')
@@ -378,7 +380,7 @@ function Wait-ManagedNodeReady {
     [Parameter(Mandatory = $true)][string]$BindAddress,
     [Parameter(Mandatory = $true)][string]$Port
   )
-  $healthUrl = "http://$BindAddress`:$Port/__aisys__/health"
+  $healthUrl = "http://$BindAddress`:$Port/__aisys__/api/health"
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
   while (-not $Process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
     try {
