@@ -11,6 +11,7 @@ const (
 
 type Config struct {
 	InstanceID       string
+	OwnerLease       time.Duration
 	Mode             Mode
 	OutputPath       string
 	BusinessPath     string
@@ -22,6 +23,13 @@ type Config struct {
 	Interval         time.Duration
 	RetentionDays    int
 	MaxTables        int
+}
+
+// OwnerLease identifies the Go process currently allowed to mutate table
+// monitor snapshots. FenceToken changes on every ownership handoff.
+type OwnerLease struct {
+	OwnerID    string
+	FenceToken int64
 }
 
 type DatabaseSnapshot struct {

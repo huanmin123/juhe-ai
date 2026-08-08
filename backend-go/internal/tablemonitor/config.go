@@ -10,6 +10,7 @@ import (
 
 const (
 	defaultInterval      = time.Minute
+	defaultOwnerLease    = 5 * time.Minute
 	defaultRetentionDays = 30
 	defaultMaxTables     = 256
 )
@@ -27,6 +28,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	ownerLease, err := durationOrDefault(getenv("JUHE_AI_TABLE_MONITOR_OWNER_LEASE"), defaultOwnerLease)
+	if err != nil || ownerLease < 5*time.Second {
+		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_OWNER_LEASE 必须是不少于 5s 的正 duration")
+	}
 	retentionDays, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_RETENTION_DAYS"), defaultRetentionDays, 1, 3650)
 	if err != nil {
 		return Config{}, err
@@ -37,6 +42,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg := Config{
 		InstanceID:       instanceID,
+		OwnerLease:       ownerLease,
 		Mode:             mode,
 		OutputPath:       strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH")),
 		BusinessPath:     strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
@@ -63,6 +69,18 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 		if cfg.CodexShardRoot == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
+		}
+		entries, err := filepath.Glob(filepath.Join(cfg.CodexShardRoot, "*.sqlite3"))
+		if err != nil {
+			return Config{}, fmt.Errorf("枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
+		}
+		for _, entry := range entries {
+			if samePath(cfg.OutputPath, entry) {
+				return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得与 Codex context SQLite shard 共用")
+			}
+		}
+		if pathWithin(cfg.CodexShardRoot, cfg.OutputPath) {
+			return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
 		}
 	} else if cfg.PostgresURL == "" {
 		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_POSTGRES_URL")
@@ -114,4 +132,17 @@ func samePath(left, right string) bool {
 	leftAbs, leftErr := filepath.Abs(left)
 	rightAbs, rightErr := filepath.Abs(right)
 	return leftErr == nil && rightErr == nil && strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs))
+}
+
+func pathWithin(root, candidate string) bool {
+	rootAbs, rootErr := filepath.Abs(root)
+	candidateAbs, candidateErr := filepath.Abs(candidate)
+	if rootErr != nil || candidateErr != nil {
+		return false
+	}
+	relative, err := filepath.Rel(rootAbs, candidateAbs)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }

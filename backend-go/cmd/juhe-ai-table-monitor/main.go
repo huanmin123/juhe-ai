@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -34,35 +35,36 @@ func main() {
 		fail(fmt.Errorf("表监控 schema 初始化失败: %w", err))
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	run := func() error {
-		result, err := tablemonitor.RunOnce(ctx, cfg, store, time.Now().UTC())
+	run := func(runCtx context.Context) error {
+		result, err := tablemonitor.RunOnce(runCtx, cfg, store, time.Now().UTC())
 		if err != nil {
 			return err
 		}
 		logger.Info("表存储监控采样完成", "sampledAt", result.SampledAt.Format(time.RFC3339Nano), "databaseSnapshots", result.DatabaseSnapshots, "tableSnapshots", result.TableSnapshots, "deletedSnapshots", result.DeletedSnapshots)
 		return nil
 	}
-	if *runOnce {
-		if err := run(); err != nil {
-			fail(err)
+	if err := tablemonitor.RunWithOwnerLease(ctx, cfg, store, func(runCtx context.Context) error {
+		if *runOnce {
+			return run(runCtx)
 		}
-		return
-	}
-	logger.Info("Go 表存储监控 worker 启动", "interval", cfg.Interval.String(), "retentionDays", cfg.RetentionDays, "maxTables", cfg.MaxTables)
-	if err := run(); err != nil {
-		logger.Error("表存储监控采样失败", "error", err)
-	}
-	ticker := time.NewTicker(cfg.Interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := run(); err != nil {
-				logger.Error("表存储监控采样失败", "error", err)
+		logger.Info("Go 表存储监控 worker 启动", "interval", cfg.Interval.String(), "ownerLease", cfg.OwnerLease.String(), "retentionDays", cfg.RetentionDays, "maxTables", cfg.MaxTables)
+		if err := run(runCtx); err != nil {
+			return err
+		}
+		ticker := time.NewTicker(cfg.Interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return runCtx.Err()
+			case <-ticker.C:
+				if err := run(runCtx); err != nil {
+					return err
+				}
 			}
 		}
+	}); err != nil && !errors.Is(err, context.Canceled) {
+		fail(err)
 	}
 }
 

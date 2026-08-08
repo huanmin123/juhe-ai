@@ -23,11 +23,14 @@ type sqliteTarget struct {
 }
 
 func RunOnce(ctx context.Context, cfg Config, store *Store, now time.Time) (SampleResult, error) {
+	lease, err := ownerLeaseFromContext(ctx)
+	if err != nil {
+		return SampleResult{}, err
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	var collected collectedSample
-	var err error
 	if cfg.Mode == ModeSQLite {
 		collected, err = collectSQLite(ctx, cfg, now)
 	} else {
@@ -36,11 +39,11 @@ func RunOnce(ctx context.Context, cfg Config, store *Store, now time.Time) (Samp
 	if err != nil {
 		return SampleResult{}, err
 	}
-	if err := store.WriteSample(ctx, collected); err != nil {
+	if err := store.WriteSample(ctx, lease, collected); err != nil {
 		return SampleResult{}, fmt.Errorf("写入表监控快照失败: %w", err)
 	}
 	cutoff := now.UTC().Add(-time.Duration(cfg.RetentionDays) * 24 * time.Hour)
-	deleted, err := store.Cleanup(ctx, cutoff, cfg.MaxTables)
+	deleted, err := store.Cleanup(ctx, lease, cutoff, cfg.MaxTables)
 	if err != nil {
 		return SampleResult{}, fmt.Errorf("清理表监控快照失败: %w", err)
 	}
