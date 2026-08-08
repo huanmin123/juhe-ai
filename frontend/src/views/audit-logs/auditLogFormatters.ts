@@ -12,15 +12,14 @@ export function outcomeText(value: AuditOutcome): string {
     gateway_failed: '网关失败',
     upstream_failed: '上游失败',
     stream_failed: '流式失败',
-    downstream_closed: '下游连接关闭',
-    client_aborted: '客户端中断（历史）'
+    downstream_closed: '下游连接关闭'
   }[value]
 }
 
 export function outcomeColor(value: AuditOutcome): string {
   if (value === 'success' || value === 'gateway_succeeded') return 'green'
   if (value === 'success_after_retry') return 'blue'
-  if (value === 'downstream_closed' || value === 'client_aborted') return 'orange'
+  if (value === 'downstream_closed') return 'orange'
   return 'red'
 }
 

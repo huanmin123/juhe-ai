@@ -16,7 +16,7 @@ assert.doesNotMatch(coordinatorSource, /HVALS/, 'Redis 后台同步不得按实�
 assert.match(coordinatorSource, /redisCommandTimeoutMs[\s\S]*withTimeout\(client\.eval/, 'Redis 后台同步必须有命令超时')
 assert.match(coordinatorSource, /consecutiveFailures[\s\S]*nextSyncAttemptAtMs/, 'Redis 后台同步失败必须退避')
 assert.match(coordinatorSource, /stopUserRequestLimitCoordinator[\s\S]*dirtyEntries/, '服务退出前必须尝试排空脏计数')
-assert.match(businessSchemaSource, /PRAGMA table_info\(system_accounts\)[\s\S]*ALTER TABLE system_accounts ADD COLUMN request_limits_json TEXT/, 'SQLite 旧库必须幂等补齐用户请求限制列')
+assert.match(businessSchemaSource, /CREATE TABLE IF NOT EXISTS system_accounts[\s\S]*request_limits_json TEXT/, '当前 SQLite schema 必须声明用户请求限制列')
 assert.match(preAuthSource, /userRequestLimitCounter\.consume\s*\(/, 'pre-auth 必须同步调用用户限流器')
 assert.doesNotMatch(preAuthSource, /await\s+userRequestLimitCounter\.consume/, 'pre-auth 不得等待用户限流器')
 assert.match(preAuthSource, /user_request_limit_exceeded/, '超限错误码必须稳定')

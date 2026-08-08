@@ -149,21 +149,11 @@ const StatsBackgroundQueuesCard = defineAsyncComponent(() => import('./StatsBack
 const StatsProcessEventLoopTable = defineAsyncComponent(() => import('./StatsProcessEventLoopTable.vue'))
 
 type SystemMetricsPageState = {
-  rangeMode?: RangeMode
+  rangeMode: RangeMode
   range?: {
     startDate: string
     endDate: string
   }
-}
-
-function isRangeMode(value: unknown): value is RangeMode {
-  return value === 'auto' || value === 'today' || value === 'recent7d' || value === 'recent1m' || value === 'custom'
-}
-
-function initialRangeMode(state: SystemMetricsPageState): RangeMode {
-  if (isRangeMode(state.rangeMode)) return state.rangeMode
-  // 旧缓存只保存了一组固定日期，不能可靠推断其原本是否来自快捷项。
-  return state.range ? 'custom' : 'auto'
 }
 
 function isDynamicRangeMode(value: RangeMode): value is Exclude<RangeMode, 'custom'> {
@@ -174,36 +164,16 @@ function isQuickRangeMode(value: RangeMode): value is QuickRange {
   return value === 'today' || value === 'recent7d' || value === 'recent1m'
 }
 
-function readLegacySystemMetricsPageState(): Pick<SystemMetricsPageState, 'range'> | undefined {
-  if (typeof window === 'undefined') return undefined
-  const user = authState.currentUser.value
-  const userKey = user?.id || user?.username || 'anonymous'
-  try {
-    const cached = JSON.parse(window.localStorage.getItem(`juhe-ai:page-state:${userKey}:system-metrics-stats:v2`) || '{}') as {
-      version?: unknown
-      state?: Partial<SystemMetricsPageState>
-    }
-    const range = cached.state?.range
-    return cached.version === 2 && range?.startDate && range.endDate ? { range } : undefined
-  } catch {
-    return undefined
-  }
-}
-
 const defaultDateRange = todayDateRange
-const defaultSystemMetricsPageState = (): SystemMetricsPageState => ({})
+const defaultSystemMetricsPageState = (): SystemMetricsPageState => ({ rangeMode: 'auto' })
 const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics-stats', defaultSystemMetricsPageState, { version: 3 })
-const cachedInitialPageState = pageStateCache.read()
-const legacyInitialPageState = isRangeMode(cachedInitialPageState.rangeMode) ? undefined : readLegacySystemMetricsPageState()
-const initialPageState: SystemMetricsPageState = legacyInitialPageState
-  ? { ...cachedInitialPageState, ...legacyInitialPageState, rangeMode: 'custom' }
-  : cachedInitialPageState
+const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const backgroundJobsLoading = ref(false)
 const backgroundQueuesLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
-const rangeMode = ref<RangeMode>(initialRangeMode(initialPageState))
+const rangeMode = ref<RangeMode>(initialPageState.rangeMode)
 const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsTrendOverview>()

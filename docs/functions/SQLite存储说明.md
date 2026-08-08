@@ -129,6 +129,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 - 使用 Node 内置 `node:sqlite`，要求官方 Node.js LTS；当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 `node:sqlite` 必须可用。
 - 启动时自动建表
+- `usage_records` 新增字段需要兼容历史 shard 时，必须先停服并运行对应离线升级脚本；本次 `upstream_response_model` 使用 `pnpm --filter juhe-ai-backend maintenance:migrate-usage-response-model -- --confirm-offline`。运行时查询不为旧结构伪造缺失字段或回退结果。
 - 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`hybrid` 混合供应商、各供应商协议档案、全部内置默认分组、默认全局设置和默认系统设置；策略路由和 API Key 不默认创建，必须由用户显式新增
 - 使用 `PRAGMA journal_mode = WAL`
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。

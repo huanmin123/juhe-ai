@@ -108,6 +108,7 @@ export const GATEWAY_REQUEST_STAGES = [
   'account.proxy_health',
   'account.client_ip_avoidance',
   'account.codex_turn_avoidance',
+  'account.client_source_avoidance',
   'quota.batch_decision',
   'capacity.account_snapshot',
   'capacity.client_ip_concurrency',

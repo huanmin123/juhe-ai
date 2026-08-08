@@ -64,26 +64,6 @@ export function applyUsageCatalogSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_record_account_shards_account_created ON usage_record_account_shards(account_id, first_created_at, shard_key);
     CREATE INDEX IF NOT EXISTS idx_usage_record_api_key_shards_key_created ON usage_record_api_key_shards(api_key_id, system_account_id, first_created_at, shard_key);
 
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_trace_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_api_key_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_group_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_model_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_model_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_client_ip_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_client_ip_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_account_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_traffic_source_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_success_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_success_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_status_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_status_created_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_first_token_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_duration_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_cost_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_first_token_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_duration_sort;
-    DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_cost_sort;
-
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_shard ON usage_record_shard_entries(shard_key, created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_created_sort ON usage_record_shard_entries(created_at, usage_id);
     CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_created_sort ON usage_record_shard_entries(system_account_id, created_at, usage_id);

@@ -95,13 +95,13 @@ export function shouldExcludeCurrentAccountForStreamServerRetry(decision: Respon
     || decision.accountState === 'runtime_avoidance'
 }
 
-export function shouldRememberCodexTurnStreamFailure(
+export function shouldRememberGatewayClientSourceFailure(
   streamResult: StreamPipeResult,
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): clientStrategy is OpenAIGatewayClientStrategyContext {
   return !streamResult.completed
     && streamResult.gatewayLocalFailure !== true
-    && clientStrategy?.allowCodexTurnAccountAvoidance === true
+    && clientStrategy?.allowClientSourceAccountAvoidance === true
     && (
       streamResult.errorCode === gatewayStreamClientRetryErrorCode
       || streamResult.responseInspection?.rewriteErrorCode === gatewayStreamClientRetryErrorCode

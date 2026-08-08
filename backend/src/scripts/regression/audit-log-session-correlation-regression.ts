@@ -2,7 +2,6 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 
 import { decodeAuditLogStreamPayload, encodeAuditLogStreamPayload } from '../../modules/audit-logs/audit-log-stream-codec.js'
 import { buildAuditLogTransportCapacityFallback } from '../../modules/audit-logs/audit-log-capacity-fallback.js'
@@ -13,7 +12,6 @@ import { logger } from '../../shared/logger.js'
 import { buildAuditLogFilters, normalizeAuditLogPage } from '../../storage/audit-log-list-query.js'
 import { collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
 import type { AuditLogInput } from '../../storage/repositories.js'
-import { applyDatasetSchema } from '../../storage/schema/dataset-schema.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-audit-session-correlation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -25,8 +23,6 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
-
-assertLegacySqliteAuditLogUpgrade()
 
 const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
@@ -161,18 +157,6 @@ try {
   assert(postgresSessionIndex, 'PostgreSQL schema 应包含全局 session 复合索引')
   assert.doesNotMatch(postgresSessionIndex.sql, /CREATE\s+UNIQUE\s+INDEX/i, 'PostgreSQL 全局 session 索引不得唯一')
   assert.match(postgresSessionIndex.sql, /\(session_id, created_at, id, session_client_type\)/i)
-  assert(postgresStatements.some((statement) => /DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created/i.test(statement.sql)), 'PostgreSQL 迁移必须删除旧的 API Key 前导 session 索引')
-  const postgresIdentityAlterIndexes = postgresStatements
-    .map((statement, index) => ({ statement, index }))
-    .filter(({ statement }) => statement.source === 'audit-log-session-identity-pg-columns')
-  assert.equal(postgresIdentityAlterIndexes.length, 3, 'PostgreSQL 既有 audit_logs 只补 conversationKey 与两个 session 字段')
-  const postgresIdentityCreateIndexIndexes = postgresStatements
-    .map((statement, index) => ({ statement, index }))
-    .filter(({ statement }) => /CREATE INDEX IF NOT EXISTS idx_audit_logs_(?:system_)?session_created/i.test(statement.sql))
-  assert(
-    Math.max(...postgresIdentityAlterIndexes.map(({ index }) => index)) < Math.min(...postgresIdentityCreateIndexIndexes.map(({ index }) => index)),
-    'PostgreSQL 会话字段 ALTER 必须先于依赖新列的索引'
-  )
 
   const decoded = decodeAuditLogStreamPayload(encodeAuditLogStreamPayload(first))
   assertSessionIdentity(decoded, first, 'Redis Stream codec')
@@ -229,54 +213,5 @@ function auditLog(
 function assertSessionIdentity(actual: AuditLogInput, expected: AuditLogInput, label: string): void {
   for (const key of ['conversationKey', 'sessionId', 'sessionClientType'] as const) {
     assert.equal(actual[key], expected[key], `${label} 应保留 ${key}`)
-  }
-}
-
-function assertLegacySqliteAuditLogUpgrade(): void {
-  const database = new DatabaseSync(':memory:')
-  try {
-    database.exec(`
-      CREATE TABLE audit_logs (
-        id TEXT PRIMARY KEY,
-        trace_id TEXT NOT NULL,
-        traffic_source TEXT NOT NULL,
-        system_account_id TEXT,
-        api_key_id TEXT,
-        group_id TEXT,
-        account_id TEXT,
-        client_ip TEXT,
-        error_group_id TEXT,
-        created_at TEXT NOT NULL
-      );
-    `)
-    applyDatasetSchema(database)
-    database.exec(`
-      DROP INDEX IF EXISTS idx_audit_logs_session_created;
-      CREATE INDEX idx_audit_logs_system_api_key_session_created
-        ON audit_logs(system_account_id, api_key_id, session_id, session_client_type, created_at, id)
-        WHERE session_id IS NOT NULL;
-      CREATE INDEX idx_audit_logs_system_api_key_conversation_created
-        ON audit_logs(system_account_id, api_key_id, conversation_key, created_at, id)
-        WHERE conversation_key IS NOT NULL;
-    `)
-    applyDatasetSchema(database)
-
-    const columns = new Set(
-      (database.prepare('PRAGMA table_info(audit_logs)').all() as Array<{ name?: string }>)
-        .map((column) => column.name)
-        .filter((name): name is string => Boolean(name))
-    )
-    for (const column of ['conversation_key', 'session_id', 'session_client_type']) {
-      assert(columns.has(column), `SQLite 旧表升级后应包含 ${column}`)
-    }
-    const indexes = database.prepare("PRAGMA index_list('audit_logs')")
-      .all() as Array<{ name?: string; unique?: number }>
-    assert(!indexes.some((index) => index.name === 'idx_audit_logs_system_api_key_conversation_created'), 'SQLite 旧表升级后不应保留内部 conversation 查询索引')
-    assert(!indexes.some((index) => index.name === 'idx_audit_logs_system_api_key_session_created'), 'SQLite 旧表升级后不应保留 API Key 前导的旧 session 索引')
-    const sessionIndex = indexes.find((index) => index.name === 'idx_audit_logs_session_created')
-    assert(sessionIndex, 'SQLite 旧表升级后应创建全局 session 索引')
-    assert.equal(sessionIndex.unique, 0, 'SQLite 旧表升级后的全局 session 索引不得唯一')
-  } finally {
-    database.close()
   }
 }

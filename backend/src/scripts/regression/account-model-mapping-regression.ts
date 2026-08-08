@@ -32,7 +32,8 @@ import {
 import { recordCompletedUpstreamAttempt } from '../../modules/gateway/usage/records.js'
 import { requestModel } from '../../modules/gateway/request/metadata.js'
 import { OpenAIOAuthCodexAdapterError } from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
-import { flushAllUsageRecordQueue } from '../../modules/gateway/usage/record-queue.service.js'
+import { flushAllUsageRecordQueueAsync } from '../../modules/gateway/usage/record-queue.service.js'
+import { waitForGatewayFailureUsageFinalizationsIdle } from '../../modules/gateway/usage/failure-finalization.service.js'
 import { createAuditCapture } from '../../modules/gateway/audit/capture.service.js'
 import { flushAllAuditLogQueue } from '../../modules/audit-logs/audit-log-queue.service.js'
 import { previewAccountImport } from '../../modules/accounts/account-import.service.js'
@@ -52,9 +53,14 @@ import {
 } from '../../storage/account-model-mapping-protocol-matrix.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-model-mapping-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databaseDriver = 'sqlite'
+runtimeConfig.cacheDriver = 'memory'
+runtimeConfig.queueDriver = 'memory'
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.secret = 'account-model-mapping-regression-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -547,7 +553,7 @@ try {
   console.log('account model mapping regression passed')
 } finally {
   try {
-    flushAllUsageRecordQueue()
+    await flushUsageRecordsForRegression()
     flushAllAuditLogQueue()
     databaseModule.closeStorageDatabases()
   } catch {
@@ -677,6 +683,15 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       groupId: openAICompatibleGroup.id
     }, ownerAccess)
   }, 'OpenAI v1 Responses -> Chat bridge 的下游别名允许选择当前供应商 Chat-only 模型')
+}
+
+async function flushUsageRecordsForRegression(): Promise<void> {
+  assert.equal(
+    await waitForGatewayFailureUsageFinalizationsIdle(2_000),
+    true,
+    '使用记录异步收尾队列必须在查询前排空'
+  )
+  await flushAllUsageRecordQueueAsync()
 }
 
 async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string): Promise<void> {
@@ -1599,7 +1614,7 @@ async function assertUsageRecordFields(
       outputTokens: 1_000_000
     }
   })
-  flushAllUsageRecordQueue()
+  await flushUsageRecordsForRegression()
   const record = repositories.listUsageRecords(undefined, { traceId, page: 1, pageSize: 20 })
     .items
     .find((item) => item.traceId === traceId)
@@ -1637,7 +1652,7 @@ async function assertUsageRecordFields(
       outputTokens: 1_000_000
     }
   })
-  flushAllUsageRecordQueue()
+  await flushUsageRecordsForRegression()
   const compactRecord = repositories.listUsageRecords(undefined, { page: 1, pageSize: 20 })
     .items
     .find((item) => item.traceId === compactTraceId)
@@ -1668,7 +1683,7 @@ async function assertUsageRecordFields(
       outputTokens: 1_000_000
     }
   })
-  flushAllUsageRecordQueue()
+  await flushUsageRecordsForRegression()
   const unpricedRecord = repositories.listUsageRecords(undefined, { page: 1, pageSize: 20 })
     .items
     .find((item) => item.traceId === unpricedTraceId)

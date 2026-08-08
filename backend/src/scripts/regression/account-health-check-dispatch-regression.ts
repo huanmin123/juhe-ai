@@ -284,9 +284,14 @@ try {
     2,
     '完整 HTTP 失败和最终 transport failure 各应有一个请求级去重的独立账户可用性确认入口'
   )
-  assert.match(
-    failureDispatchSource,
-    /const automaticApiKeyFailover[\s\S]{0,500}dispatchRequestFailureAccountHealthCheck\(req, usageContext\.trafficSource, account\.id\)/,
+  const explicitPolicyHandlingIndex = failureDispatchSource.indexOf('if (explicitPolicyDecision && input.accountStateMutationEnabled !== false)')
+  const completeHttpFailureProbeIndex = failureDispatchSource.indexOf(
+    'dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)',
+    explicitPolicyHandlingIndex
+  )
+  assert(explicitPolicyHandlingIndex >= 0, '完整 HTTP 失败路径必须先处理账户显式策略')
+  assert(
+    completeHttpFailureProbeIndex > explicitPolicyHandlingIndex,
     '完整 HTTP 失败的公共确认入口必须位于 retry_next 策略处理之后，使普通失败和 retry_next 都能进入同一请求级去重确认'
   )
   assert(
@@ -300,7 +305,11 @@ try {
   assert(responseFinalizationSource.includes('context.availabilityProbeEligible'), '流式协议失败、缺失终态和读取失败必须按明确资格投递独立账户可用性确认')
   assert(responseFinalizationSource.includes('if (provenTransportFailure)'), '非流式响应正文读取中断必须投递独立账户可用性确认')
   assert(healthCheckServiceSource.includes("replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure'"), '请求失败只能升级低优先级周期检查，不得覆盖激活或配置复检')
-  assert(healthCheckServiceSource.includes("priorityAtMost: accountHealthCheckTriggerPriority('configuration')") && healthCheckServiceSource.includes('slots: 2'), '激活和配置检查必须保留健康队列入口，避免被例行任务阻塞')
+  assert(
+    healthCheckServiceSource.includes('priority: accountHealthCheckTriggerPriority(effectiveReason)')
+      && healthCheckServiceSource.includes("replaceExisting: effectiveReason !== 'scheduled'"),
+    '激活和配置检查必须以更高队列优先级替换例行任务，避免被例行任务阻塞'
+  )
   assert(healthCheckServiceSource.includes('runWithAccountHealthCheckDiagnosticSlot') && probeLimitsSource.includes('runWithGlobalBackgroundConcurrencySlot'), '请求失败和周期检查必须使用进程级共享健康检测门禁')
   assert(healthCheckServiceSource.includes("ignoreSchedule: reason !== 'scheduled'"), '主动触发检查入队时必须绕过周期到期门槛')
   assert(healthCheckServiceSource.includes("ignoreSchedule: item.reason !== 'scheduled'"), '主动触发检查执行前必须继续绕过周期到期门槛')
@@ -311,13 +320,19 @@ try {
   assert(internalDispatchSource.includes('rememberAccountHealthCheckDispatchOutcome'), 'standalone 与 performance 必须在投递端共享请求失败冷却语义')
   assert(internalDispatchSource.includes('getTraceId'), 'gateway 到 control 的内部派发必须读取已验证请求 traceId')
   assert(internalDispatchSource.includes("'x-trace-id': traceId"), 'gateway 到 control 的内部派发必须透传已验证 traceId')
-  assert(internalDispatchSource.includes('sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId)'), 'control 到 ops-worker 的健康检查投递必须继续携带 traceId')
+  assert(internalDispatchSource.includes('sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId, sourceFence)'), 'control 到 ops-worker 的健康检查投递必须继续携带 traceId 和来源 fence')
   assert(backgroundIpcSource.includes('sendAccountHealthCheckTriggerToWorkerWithOutcome'), '健康检查 IPC 必须返回精确队列决定')
   assert(backgroundIpcSource.includes('!opsWorkerProcess || !opsWorkerProcess.connected || !opsWorkerReady'), 'ops-worker 未连接或未 ready 时不得把健康检查错误标记为已受理')
   assert(backgroundIpcTypesSource.includes("reason: AccountHealthCheckTriggerReason; traceId?: string"), '健康检查 IPC 消息必须声明可选 traceId')
   assert(dbServiceTypesSource.includes("type: 'background_worker_account_health_check_trigger'") && dbServiceTypesSource.includes('traceId?: string'), 'DB service 健康检查转发消息必须声明可选 traceId')
-  assert(dbServiceIpcSource.includes('forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason, record.traceId)') && dbServiceIpcSource.includes('sendAccountHealthCheckTriggerToWorker(normalizedId, reason, typeof traceId === \'string\' ? traceId : undefined)'), 'DB service 转发健康检查消息时必须继续携带 traceId')
+  assert(
+    dbServiceIpcSource.includes('forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason, record.traceId, record.sourceFence)')
+      && dbServiceIpcSource.includes('sendAccountHealthCheckTriggerToWorker(\n      normalizedId,\n      reason,\n      typeof traceId === \'string\' ? traceId : undefined,\n      normalizeCodexSourceProbeFence(sourceFence)\n    )'),
+    'DB service 转发健康检查消息时必须继续携带 traceId 和来源 fence'
+  )
   assert(workerSource.includes('background_account_health_check_trigger_received') && workerSource.includes('withRequestContext({') && workerSource.includes('parentTraceId'), 'ops-worker 接收和失败日志必须创建子 trace 并记录派发 trace 父关联')
+  assert(workerSource.includes('if (!accepted && sourceFence)') && workerSource.includes("sendClientSourceFenceSettledToServer(sourceFence, 'unknown')"), 'ops-worker 拒绝 source fence 入队时必须回传 unknown，不能遗留 dispatchPending')
+  assert(internalDispatchSource.includes('settleClientSourceFenceAfterControlDispatchFailure'), 'control 异步拒绝或网络失败必须结算来源 fence，不能只写日志')
   assert(backgroundIpcSource.includes("'ops_ipc_message_limit'") && backgroundIpcSource.includes("'ops_ipc_byte_limit'"), '健康检查 IPC 必须区分消息数和字节数容量拒绝')
   assert(serverSource.includes('dispatch: dispatchAccountHealthCheckWithOutcome'), 'control bridge 必须使用结构化健康检查派发结果')
   assert(runtimeConfigSource.includes("throw new Error(`${name} 在 performance gateway server 模式下必须配置为 control 的 loopback Origin`)"), 'performance gateway 缺少 control 投递地址时必须拒绝启动')

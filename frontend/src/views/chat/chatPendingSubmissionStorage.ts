@@ -1,7 +1,6 @@
 import type { JSONContent } from '@tiptap/core'
 import type { ChatMessageStatus } from '@/types/domain/chat'
 
-const legacyStorageKey = 'juhe-ai:chat:pending-submission:v1'
 const storageKeyPrefix = 'juhe-ai:chat:pending-submission:v2:'
 const storageVersion = 2
 
@@ -31,7 +30,6 @@ export function chatPendingSubmissionStorageKey(systemAccountId: string): string
 }
 
 export function writeChatPendingSubmission(storage: Storage, value: ChatPendingSubmission): boolean {
-  removeLegacyEntry(storage)
   const systemAccountId = strictIdentifier(value?.request?.systemAccountId)
   if (!systemAccountId) return false
   const stored = sanitizeStoredSubmission({ ...value, version: storageVersion }, systemAccountId)
@@ -45,7 +43,6 @@ export function writeChatPendingSubmission(storage: Storage, value: ChatPendingS
 }
 
 export function readChatPendingSubmission(storage: Storage, systemAccountId: string): ChatPendingSubmission | undefined {
-  removeLegacyEntry(storage)
   const normalized = strictIdentifier(systemAccountId)
   if (!normalized) return undefined
   const key = chatPendingSubmissionStorageKey(normalized)
@@ -65,7 +62,6 @@ export function readChatPendingSubmission(storage: Storage, systemAccountId: str
 }
 
 export function clearChatPendingSubmission(storage: Storage, systemAccountId: string): void {
-  removeLegacyEntry(storage)
   const normalized = strictIdentifier(systemAccountId)
   if (!normalized) return
   try { storage.removeItem(chatPendingSubmissionStorageKey(normalized)) } catch {}
@@ -175,6 +171,3 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function removeLegacyEntry(storage: Storage): void {
-  try { storage.removeItem(legacyStorageKey) } catch {}
-}

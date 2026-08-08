@@ -342,57 +342,32 @@ assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXIST
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS client_profile text NOT NULL DEFAULT 'auto'/, 'PostgreSQL schema 不应再补 client_profile')
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS explicit_hybrid_route_rules_json text/, 'PostgreSQL schema 不应再补 explicit_hybrid_route_rules_json')
 assert.doesNotMatch(sql, /ALTER TABLE openai_compatible_files ADD COLUMN container_id\b/, 'PostgreSQL schema 不应重复为 openai_compatible_files.container_id 补列')
-assert.match(sql, /ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/, '既有 PostgreSQL 内置模型目录必须补缓存存储价格列')
-assert.match(sql, /ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/, '既有 PostgreSQL 自定义模型目录必须补缓存存储价格列')
-assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS trigger_kind text NOT NULL DEFAULT 'manual'/, '既有 PostgreSQL 模型检查必须补触发来源列')
-assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS schedule_id text/, '既有 PostgreSQL 模型检查必须补计划 ID 列')
-assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS policy_snapshot_json text NOT NULL DEFAULT '\{\}'/, '既有 PostgreSQL 模型检查必须补策略快照列')
-assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text/, '既有 PostgreSQL 模型检查必须补质量决策列')
-assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text/, '既有 PostgreSQL 模型检查必须补健康同步状态列')
-assert.match(sql, /ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text/, '既有 PostgreSQL observation 必须补聚合完成标记')
-for (const [columnName, columnType] of [
-  ['conversation_key', 'text'],
-  ['session_id', 'text'],
-  ['session_client_type', 'text']
-] as const) {
-  assert.match(sql, new RegExp(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ${columnName} ${columnType}`), `既有 PostgreSQL audit_logs 必须补 ${columnName}`)
-}
 assert.match(sql, /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized'/, '既有 PostgreSQL audit_logs 必须补生命周期状态列')
 assert.match(sql, /ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text/, '既有 PostgreSQL audit payload 引用必须补丢弃原因列')
-const auditIdentityAlterPosition = sql.indexOf('ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS session_client_type text')
-const auditIdentityIndexPosition = sql.indexOf('CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created')
-assert(auditIdentityAlterPosition >= 0 && auditIdentityAlterPosition < auditIdentityIndexPosition, 'PostgreSQL 会话身份补列必须先于依赖新列的索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created ON audit_logs\(session_id, created_at, id, session_client_type\)/, 'PostgreSQL 必须创建全局 session 非唯一复合索引')
 assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_(?:system_)?session_created/, 'PostgreSQL session 复合索引不得唯一')
-assert.match(sql, /DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created/, 'PostgreSQL 必须删除 API Key 前导的旧 session 索引')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 账号范围窗口 dirty 表必须包含 generation 和首次标脏时间')
-assert.match(sql, /ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1/, '既有 PostgreSQL 客户端 IP dirty 表必须补 generation')
-assert.match(sql, /ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1/, '既有 PostgreSQL 客户端 IP 账号 dirty 表必须补 generation')
-assert.match(sql, /UPDATE client_ip_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL/, '既有 PostgreSQL 客户端 IP dirty 表必须回填并约束 first_dirty_at')
-assert.match(sql, /UPDATE client_ip_account_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_account_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL/, '既有 PostgreSQL 客户端 IP 账号 dirty 表必须回填并约束 first_dirty_at')
-assert.match(sql, /ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0/, '既有 PostgreSQL 后台任务租约必须补 fencing token')
-const schemaWithoutApprovedRuntimeUpgrades = sql
-  .replace(/ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision;/g, '')
-  .replace(/ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision;/g, '')
-  .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS trigger_kind text NOT NULL DEFAULT 'manual';/g, '')
-  .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS schedule_id text;/g, '')
-  .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS policy_snapshot_json text NOT NULL DEFAULT '\{\}';/g, '')
-  .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text;/g, '')
-  .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text;/g, '')
-  .replace(/ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text;/g, '')
-  .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS (?:conversation_key|session_id|session_client_type) text;/g, '')
+assert.match(sql, /ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text/, 'PostgreSQL 使用记录当前迁移必须保留上游响应模型列')
+const retiredPostgresSchemaPatterns = [
+  /ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/,
+  /ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/,
+  /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS (?:trigger_kind|schedule_id|policy_snapshot_json|quality_decision_json|quality_health_sync_status)/,
+  /ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text/,
+  /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS (?:conversation_key|session_id|session_client_type) text/,
+  /ALTER TABLE client_ip_(?:account_)?range_window_dirty_ips ADD COLUMN IF NOT EXISTS (?:generation|first_dirty_at)/,
+  /ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0/,
+  /account_circuit_confirmation_(?:failures_required|failure_count|evidence_json)_check/,
+  /\bDROP\s+(?:INDEX|TABLE)\b/i
+]
+for (const pattern of retiredPostgresSchemaPatterns) {
+  assert.doesNotMatch(sql, pattern, `PostgreSQL schema 不应残留已结束兼容窗口的运行时 DDL：${pattern}`)
+}
+const schemaWithoutCurrentRuntimeUpgrades = sql
+  .replace(/ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text;/g, '')
   .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized';/g, '')
   .replace(/ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text;/g, '')
-  .replace(/ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1;/g, '')
-  .replace(/ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text;/g, '')
-  .replace(/UPDATE client_ip_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL;/g, '')
-  .replace(/ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1;/g, '')
-  .replace(/ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text;/g, '')
-  .replace(/UPDATE client_ip_account_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_account_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL;/g, '')
-  .replace(/ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0;/g, '')
-assert.doesNotMatch(schemaWithoutApprovedRuntimeUpgrades, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含未批准的运行时补列语句')
-assert.match(sql, /DROP INDEX IF EXISTS idx_usage_record_shard_entries_trace_c_created_sort/, 'PostgreSQL schema 应清理旧 usage catalog trace 索引')
+assert.doesNotMatch(schemaWithoutCurrentRuntimeUpgrades, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含截止线前的运行时补列语句')
 
 assert.doesNotMatch(sql, /\bPRAGMA\b/i, 'PostgreSQL SQL 不应残留 SQLite PRAGMA')
 assert.doesNotMatch(sql, /COLLATE\s+NOCASE/i, 'PostgreSQL SQL 不应残留 SQLite NOCASE collation')

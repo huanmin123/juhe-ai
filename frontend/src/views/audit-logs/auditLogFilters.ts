@@ -1,5 +1,5 @@
 import type { AuditLogListParams } from '@/api/client'
-import type { AuditLogListItem, AuditOutcome, AuditTrafficSource } from '@/types/domain'
+import type { AuditOutcome, AuditTrafficSource } from '@/types/domain'
 import { selectedSystemAccountId } from '@/utils/systemAccountFilter'
 
 export interface AuditLogFilterValues {
@@ -51,23 +51,11 @@ export function auditLogListParams(filters: AuditLogFilterValues, pageState: Aud
     pageSize: pageState.pageSize,
     sessionId: filters.sessionIdFilter.trim() || undefined,
     accountId: filters.accountIdFilter || undefined,
-    // The current Node API intentionally does not restore client_aborted to its
-    // outcome whitelist. Request all rows and apply that legacy-only filter in
-    // the UI instead of submitting an ignored server-side filter.
-    outcome: filters.outcomeFilter === 'client_aborted' ? 'all' : filters.outcomeFilter,
+    outcome: filters.outcomeFilter,
     path: filters.pathFilter || undefined,
     systemAccountId: selectedSystemAccountId(filters.systemAccountFilter, true),
     trafficSource: filters.trafficSourceFilter === 'all' ? undefined : filters.trafficSourceFilter
   }
-}
-
-export function filterLegacyClientAbortedAuditRows(
-  items: AuditLogListItem[],
-  outcome: AuditOutcome | 'all'
-): AuditLogListItem[] {
-  return outcome === 'client_aborted'
-    ? items.filter((item) => item.auditOutcome === 'client_aborted')
-    : items
 }
 
 function auditLogAdvancedFilterCount(filters: AuditLogFilterValues): number {

@@ -404,12 +404,4 @@ export function applyChatSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_chat_image_generations_expiry
       ON chat_image_generations(expires_at, asset_id);
   `)
-  ensureChatMessageErrorMessageColumn(database)
-}
-
-function ensureChatMessageErrorMessageColumn(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(chat_messages)').all() as Array<{ name?: string }>
-  if (!columns.some((column) => column.name === 'error_message')) {
-    database.exec('ALTER TABLE chat_messages ADD COLUMN error_message TEXT')
-  }
 }

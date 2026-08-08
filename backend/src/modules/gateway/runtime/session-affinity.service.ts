@@ -25,6 +25,7 @@ import {
   deriveGatewaySessionAffinityKey,
   type GatewaySessionIdentity
 } from '../session-identity/index.js'
+import type { GatewayClientSourceIdentity } from '../client-profiles/source-identity.js'
 
 interface SessionBinding {
   accountId: string
@@ -165,6 +166,27 @@ export function resolveOpenAIGatewaySessionAffinityKey(identity: Pick<GatewaySes
 }): string | undefined {
   return identity
     ? deriveGatewaySessionAffinityKey(identity, input)
+    : undefined
+}
+
+/**
+ * Uses the unified client-source resolver without allowing the IP/API-Key
+ * fallback to create affinity. Official sessions preserve the existing
+ * conversation key; protocol resources gain the same shared affinity storage.
+ */
+export function resolveOpenAIGatewaySessionAffinityKeyFromClientSource(
+  source: Pick<GatewayClientSourceIdentity, 'affinityKey'> | undefined,
+  input: {
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    routeStrategyId?: string
+    providerProtocolProfileId?: string
+  }
+): string | undefined {
+  const affinityKey = source?.affinityKey?.trim()
+  return affinityKey
+    ? deriveGatewaySessionAffinityKey({ conversationKey: affinityKey }, input)
     : undefined
 }
 

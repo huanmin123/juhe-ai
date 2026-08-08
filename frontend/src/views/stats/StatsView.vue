@@ -127,7 +127,6 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, shall
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
-import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
@@ -156,23 +155,13 @@ const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
 ]
 
 type StatsPageState = {
-  rangeMode?: RangeMode
+  rangeMode: RangeMode
   range?: {
     startDate: string
     endDate: string
   }
   selectedSystemAccountId: string
   selectedSystemAccount?: PrincipalSelection
-}
-
-function isRangeMode(value: unknown): value is RangeMode {
-  return value === 'auto' || value === 'today' || value === 'recent7d' || value === 'recent1m' || value === 'custom'
-}
-
-function initialRangeMode(state: StatsPageState): RangeMode {
-  if (isRangeMode(state.rangeMode)) return state.rangeMode
-  // 旧缓存只保存了一组固定日期，不能可靠推断其原本是否来自快捷项。
-  return state.range ? 'custom' : 'auto'
 }
 
 function isDynamicRangeMode(value: RangeMode): value is Exclude<RangeMode, 'custom'> {
@@ -183,46 +172,20 @@ function isQuickRangeMode(value: RangeMode): value is QuickRange {
   return value === 'today' || value === 'recent7d' || value === 'recent1m'
 }
 
-function readLegacyStatsPageState(pageKey: string): Pick<StatsPageState, 'range' | 'selectedSystemAccountId' | 'selectedSystemAccount'> | undefined {
-  if (typeof window === 'undefined') return undefined
-  const user = authState.currentUser.value
-  const userKey = user?.id || user?.username || 'anonymous'
-  const normalizedPageKey = pageKey.replace(/[^a-zA-Z0-9/_-]/g, '_')
-  try {
-    const cached = JSON.parse(window.localStorage.getItem(`juhe-ai:page-state:${userKey}:${normalizedPageKey}:v5`) || '{}') as {
-      version?: unknown
-      state?: Partial<StatsPageState>
-    }
-    const range = cached.state?.range
-    if (cached.version !== 5 || !range?.startDate || !range.endDate) return undefined
-    return {
-      range,
-      selectedSystemAccountId: cached.state?.selectedSystemAccountId || allSystemAccountsValue,
-      selectedSystemAccount: cached.state?.selectedSystemAccount
-    }
-  } catch {
-    return undefined
-  }
-}
-
 const defaultDateRange = () => recentDateRange(MAX_RANGE_DAYS)
 const defaultStatsPageState = (): StatsPageState => ({
+  rangeMode: 'auto',
   selectedSystemAccountId: allSystemAccountsValue,
   selectedSystemAccount: undefined
 })
-const route = useRoute()
 const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 6 })
-const cachedInitialPageState = pageStateCache.read()
-const legacyInitialPageState = isRangeMode(cachedInitialPageState.rangeMode) ? undefined : readLegacyStatsPageState(route.path)
-const initialPageState: StatsPageState = legacyInitialPageState
-  ? { ...cachedInitialPageState, ...legacyInitialPageState, rangeMode: 'custom' }
-  : cachedInitialPageState
+const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const summaryLoading = ref(false)
 const summaryError = ref('')
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
-const rangeMode = ref<RangeMode>(initialRangeMode(initialPageState))
+const rangeMode = ref<RangeMode>(initialPageState.rangeMode)
 const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)

@@ -132,7 +132,6 @@ import {
 } from './auditLogFormatters'
 import {
   auditLogFilterCounts,
-  filterLegacyClientAbortedAuditRows,
   auditLogListParams
 } from './auditLogFilters'
 import {
@@ -203,7 +202,7 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   trafficSourceFilter: 'all',
   viewMode: 'list'
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 11 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 12 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -416,13 +415,7 @@ function resetFilters(): void {
 }
 
 async function fetchRecords(pageState: { current: number; pageSize: number }) {
-  const result = await api.auditLogs.list(auditLogRequestParams(pageState))
-  const items = filterLegacyClientAbortedAuditRows(result.items, outcomeFilter.value)
-  return items === result.items ? result : {
-    ...result,
-    items,
-    currentPageCount: items.length
-  }
+  return api.auditLogs.list(auditLogRequestParams(pageState))
 }
 
 function auditLogRequestParams(pageState: { current: number; pageSize: number }) {

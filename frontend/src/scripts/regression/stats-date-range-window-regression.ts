@@ -153,10 +153,9 @@ for (const [name, source, version] of [
   ['system metrics', systemMetricsViewSource, 3]
 ] as const) {
   assert.match(source, /type\s+RangeMode\s*=\s*'auto'\s*\|\s*QuickRange\s*\|\s*'custom'/, `${name} must persist the range semantic`)
-  assert.match(source, /rangeMode\?:\s*RangeMode/, `${name} page-state cache must include range mode`)
+  assert.match(source, /rangeMode:\s*RangeMode/, `${name} page-state cache must require range mode`)
   assert.match(source, new RegExp(`usePageStateCache<[\\s\\S]*version: ${version}`), `${name} must bump its cache version`)
-  assert.match(source, /return state\.range \? 'custom' : 'auto'/, `${name} must treat old fixed ranges as custom`)
-  assert.match(source, /rangeMode: 'custom'/, `${name} must migrate versioned legacy fixed ranges as custom`)
+  assert.doesNotMatch(source, /readLegacy(?:Stats|SystemMetrics)PageState/, `${name} must not read retired page-state cache versions`)
   assert.match(source, /rangeMode\.value = 'custom'[\s\S]*dateRangeExplicit\.value = true/, `${name} manual date selection must become custom`)
   assert.match(source, /rangeMode\.value = 'auto'[\s\S]*dateRangeExplicit\.value = false/, `${name} reset must restore auto mode`)
   assert.match(source, /async\s+function\s+handleQuickRangeChange\(value: string \| number\)[\s\S]*loadUsageStatsWindow\(\{ force: true, viewScope:/, `${name} quick selection must refresh the server window`)

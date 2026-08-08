@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict'
-import { DatabaseSync } from 'node:sqlite'
 
 import { createPostgresDatabaseClient, postgresDialect, sqliteDialect, type DatabaseClient, type ExecuteResult } from '../../storage/database-client.js'
 import { collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
-import { applyStatsSchema } from '../../storage/schema/stats-schema.js'
 import {
   assertScheduledJobLease,
   releaseScheduledJobLease,
@@ -117,33 +115,6 @@ const freshLeaseTable = schemaStatements.find((statement) => (
   && /^CREATE TABLE IF NOT EXISTS background_job_leases\b/i.test(statement.sql)
 ))?.sql ?? ''
 assert.match(freshLeaseTable, /fencing_token bigint NOT NULL DEFAULT 0/)
-assert.equal(schemaStatements.some((statement) => (
-  statement.source === 'scheduled-job-lease-pg-columns'
-  && /ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0/.test(statement.sql)
-)), true, '既有 PG 库必须有幂等 fencing token 追平语句')
-
-const legacyStatsDatabase = new DatabaseSync(':memory:')
-try {
-  legacyStatsDatabase.exec(`
-    CREATE TABLE background_job_leases (
-      lease_key TEXT PRIMARY KEY,
-      job_name TEXT NOT NULL,
-      shard_key TEXT NOT NULL DEFAULT '',
-      owner_id TEXT NOT NULL,
-      run_id TEXT,
-      lease_until TEXT NOT NULL,
-      heartbeat_at TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `)
-  applyStatsSchema(legacyStatsDatabase)
-  const legacyColumns = legacyStatsDatabase.prepare('PRAGMA table_info(background_job_leases)').all() as Array<{ name?: string }>
-  assert.equal(legacyColumns.some((column) => column.name === 'fencing_token'), true, '既有 SQLite 统计库必须幂等补列')
-} finally {
-  legacyStatsDatabase.close()
-}
-
 console.log('scheduled-job-lease-regression passed')
 }
 

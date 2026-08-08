@@ -1160,6 +1160,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe
       ON account_api_key_runtime_states(account_id, status, next_probe_at ASC, updated_at ASC, key_index ASC)
       WHERE next_probe_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe_claim
+      ON account_api_key_runtime_states(status, next_probe_at ASC, probe_claimed_until ASC)
+      WHERE next_probe_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_owner
       ON account_api_key_runtime_states(system_account_id, account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique
@@ -1239,6 +1242,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE availability_schedule_json IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique ON api_keys(system_account_id, name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique
+      ON api_keys(system_account_id)
+      WHERE purpose = 'chat';
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name, id);
     CREATE INDEX IF NOT EXISTS idx_request_quota_hourly_scope_bindings_window
@@ -1305,18 +1311,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
-  database.exec(`
-    DROP TABLE IF EXISTS model_catalog_snapshot_rebuild_requests;
-    DROP TABLE IF EXISTS gateway_model_catalog_snapshots;
-  `)
-  ensureSystemAccountRequestLimitsSchema(database)
-  ensureApiKeyPurposeSchema(database)
-  ensureProviderModelCacheStorageSchema(database)
-  ensureCustomProviderModelCacheStorageSchema(database)
   ensureAccountHealthCheckEndpointModeSchema(database)
-  ensureAccountCooldownRetestGenerationSchema(database)
-  ensureAccountCircuitConfirmationSchema(database)
-  ensureAccountApiKeyProbeClaimSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
@@ -1398,76 +1393,6 @@ function replaceAccountsTableName(sql: string, nextTableName: string): string {
 
 function quoteSqlIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`
-}
-
-function ensureSystemAccountRequestLimitsSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(system_accounts)').all() as Array<{ name?: string }>
-  if (columns.length === 0) return
-  if (!columns.some((column) => column.name === 'request_limits_json')) {
-    database.exec('ALTER TABLE system_accounts ADD COLUMN request_limits_json TEXT')
-  }
-}
-
-function ensureProviderModelCacheStorageSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(provider_model_catalog)').all() as Array<{ name?: string }>
-  if (!columns.some((column) => column.name === 'cache_storage_usd_per_1m_per_hour')) {
-    database.exec('ALTER TABLE provider_model_catalog ADD COLUMN cache_storage_usd_per_1m_per_hour REAL')
-  }
-}
-
-function ensureCustomProviderModelCacheStorageSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(custom_provider_models)').all() as Array<{ name?: string }>
-  if (!columns.some((column) => column.name === 'cache_storage_usd_per_1m_per_hour')) {
-    database.exec('ALTER TABLE custom_provider_models ADD COLUMN cache_storage_usd_per_1m_per_hour REAL')
-  }
-}
-
-function ensureAccountCooldownRetestGenerationSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(accounts)').all() as Array<{ name?: string }>
-  if (columns.length === 0) return
-  if (!columns.some((column) => column.name === 'cooldown_retest_generation')) {
-    database.exec('ALTER TABLE accounts ADD COLUMN cooldown_retest_generation TEXT')
-  }
-}
-
-function ensureAccountApiKeyProbeClaimSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(account_api_key_runtime_states)').all() as Array<{ name?: string }>
-  if (columns.length === 0) return
-  if (!columns.some((column) => column.name === 'probe_claim_token')) {
-    database.exec('ALTER TABLE account_api_key_runtime_states ADD COLUMN probe_claim_token TEXT')
-  }
-  if (!columns.some((column) => column.name === 'probe_claimed_until')) {
-    database.exec('ALTER TABLE account_api_key_runtime_states ADD COLUMN probe_claimed_until TEXT')
-  }
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe_claim
-      ON account_api_key_runtime_states(status, next_probe_at ASC, probe_claimed_until ASC)
-      WHERE next_probe_at IS NOT NULL;
-  `)
-}
-
-function ensureAccountCircuitConfirmationSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(account_circuit_incidents)').all() as Array<{ name?: string }>
-  if (columns.length === 0) return
-  if (!columns.some((column) => column.name === 'confirmation_failures_required')) {
-    database.exec('ALTER TABLE account_circuit_incidents ADD COLUMN confirmation_failures_required INTEGER NOT NULL DEFAULT 1 CHECK (confirmation_failures_required BETWEEN 1 AND 5)')
-  }
-  if (!columns.some((column) => column.name === 'confirmation_failure_evidence_keys_json')) {
-    database.exec("ALTER TABLE account_circuit_incidents ADD COLUMN confirmation_failure_evidence_keys_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(confirmation_failure_evidence_keys_json) AND json_type(confirmation_failure_evidence_keys_json) = 'array')")
-  }
-}
-
-function ensureApiKeyPurposeSchema(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name?: string }>
-  if (columns.length === 0) return
-  if (!columns.some((column) => column.name === 'purpose')) {
-    database.exec("ALTER TABLE api_keys ADD COLUMN purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat'))")
-  }
-  database.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique
-      ON api_keys(system_account_id)
-      WHERE purpose = 'chat';
-  `)
 }
 
 function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {

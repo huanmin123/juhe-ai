@@ -15,7 +15,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
   `)
-  ensureClientIpRangeWindowDirtyColumns(database)
   database.exec(`
     PRAGMA foreign_keys = ON;
 
@@ -1735,15 +1734,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_range_lookup ON usage_scope_range_windows(system_account_id, scope_type, window_key, scope_id);
 
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_request_count;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_success_count;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_error_count;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_error_rate;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_total_tokens;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_total_cost;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_active_days;
-    DROP INDEX IF EXISTS idx_usage_scope_range_windows_last_used;
-
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_account_usage_order ON usage_scope_range_windows(system_account_id, scope_type, window_key, request_count DESC, total_cost_usd DESC, (input_tokens + output_tokens) DESC, last_used_at DESC, scope_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end ON usage_scope_range_windows(end_date);
@@ -1764,20 +1754,9 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_stats_daily_date ON client_ip_stats_daily(stat_date, ip_hash);
 
-    DROP INDEX IF EXISTS idx_client_ip_range_cost;
-    DROP INDEX IF EXISTS idx_client_ip_range_tokens;
-    DROP INDEX IF EXISTS idx_client_ip_range_total_tokens;
-    DROP INDEX IF EXISTS idx_client_ip_range_success;
-    DROP INDEX IF EXISTS idx_client_ip_range_errors;
-    DROP INDEX IF EXISTS idx_client_ip_range_error_rate;
-    DROP INDEX IF EXISTS idx_client_ip_range_active_days;
-    DROP INDEX IF EXISTS idx_client_ip_range_last_used;
-
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_requests ON client_ip_usage_range_windows(start_date, end_date, request_count DESC, ip_hash);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_end ON client_ip_usage_range_windows(end_date);
-
-    DROP INDEX IF EXISTS idx_client_ip_range_dirty_updated;
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_dirty_updated ON client_ip_range_window_dirty_ips(first_dirty_at ASC, ip_hash);
 
@@ -1785,17 +1764,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_ip_date ON client_ip_account_stats_daily(ip_hash, stat_date, account_id);
 
-    DROP INDEX IF EXISTS idx_client_ip_account_range_success;
-    DROP INDEX IF EXISTS idx_client_ip_account_range_errors;
-    DROP INDEX IF EXISTS idx_client_ip_account_range_error_rate;
-    DROP INDEX IF EXISTS idx_client_ip_account_range_tokens;
-    DROP INDEX IF EXISTS idx_client_ip_account_range_cost;
-    DROP INDEX IF EXISTS idx_client_ip_account_range_active_days;
-    DROP INDEX IF EXISTS idx_client_ip_account_range_last_used;
-
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_requests ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, request_count DESC, account_id);
-
-    DROP INDEX IF EXISTS idx_client_ip_account_range_dirty_updated;
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_dirty_updated ON client_ip_account_range_window_dirty_ips(first_dirty_at ASC, ip_hash);
 
@@ -1851,25 +1820,4 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
       ON usage_record_cleanup_deductions(account_id, shard_deleted_at);
   `)
-  ensureBackgroundJobLeaseFencingTokenColumn(database)
-}
-
-function ensureBackgroundJobLeaseFencingTokenColumn(database: DatabaseSync): void {
-  const columns = database.prepare('PRAGMA table_info(background_job_leases)').all() as Array<{ name?: string }>
-  if (columns.length === 0 || columns.some((column) => column.name === 'fencing_token')) return
-  database.exec('ALTER TABLE background_job_leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0')
-}
-
-function ensureClientIpRangeWindowDirtyColumns(database: DatabaseSync): void {
-  for (const tableName of ['client_ip_range_window_dirty_ips', 'client_ip_account_range_window_dirty_ips']) {
-    const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
-    if (columns.length === 0) continue
-    if (!columns.some((column) => column.name === 'generation')) {
-      database.exec(`ALTER TABLE ${tableName} ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`)
-    }
-    if (!columns.some((column) => column.name === 'first_dirty_at')) {
-      database.exec(`ALTER TABLE ${tableName} ADD COLUMN first_dirty_at TEXT NOT NULL DEFAULT ''`)
-      database.exec(`UPDATE ${tableName} SET first_dirty_at = updated_at WHERE first_dirty_at = ''`)
-    }
-  }
 }

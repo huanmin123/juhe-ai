@@ -45,6 +45,13 @@ import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
+import { resolveOpenAIGatewayClientStrategy } from '../client-profiles/strategy.js'
+import {
+  rememberGatewayClientSourceFailureAsync
+} from '../client-profiles/client-source-avoidance.service.js'
+import {
+  runGatewayClientSourceAvoidanceAvailabilityProbe
+} from '../client-profiles/client-source-availability-probe.service.js'
 import { parseGatewayProtocolErrorPayloadFromJsonValue } from '../protocols/registry.js'
 import {
   parseGatewayNonStreamJsonBody,
@@ -351,6 +358,14 @@ export async function handleFailedUpstreamResponse(
   // needs the fixed-model availability confirmation. The request-level guard
   // also covers retry_next, whose candidate replay continues below.
   dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+  scheduleGatewayClientSourceAvoidanceFailure({
+    req,
+    usageContext,
+    account,
+    errorCode: failureBodyFacts.errorPayload.code as string | undefined,
+    message: failureBodyFacts.upstreamErrorSummary,
+    observationId: `${auditAttemptId}:complete_http_failure`
+  })
 
   return {
     action: 'skip_account',
@@ -518,11 +533,21 @@ export async function handleUpstreamRequestError(
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
   dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+  scheduleGatewayClientSourceAvoidanceFailure({
+    req,
+    usageContext,
+    account,
+    errorCode: error instanceof Error ? error.name : undefined,
+    message,
+    observationId: `${auditAttemptId}:transport_failure`
+  })
   const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
-  // A generic request transport failure is evidence for the independent
-  // account circuit only. It may have been caused by this request/session, so
-  // it must not mutate proxy health, local account suppression/precheck,
-  // client-IP avoidance, API-Key state, or the persistent account state here.
+  // The source-level failure was recorded above only when a validated source
+  // key exists. The request callback still must not directly mutate proxy
+  // health, local account suppression/precheck, client-IP avoidance, API-Key
+  // state, or persistent account state; the shared health probe owns those
+  // account-wide decisions, while the transport circuit consumes its own
+  // independent transport evidence.
   return {
     action: 'skip_account',
     lastAttempt,
@@ -581,6 +606,47 @@ function logGatewayFailureWarning(
 
 function hasAlternativeAccountApiKeys(account: UpstreamAccount): boolean {
   return Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
+}
+
+function scheduleGatewayClientSourceAvoidanceFailure(input: {
+  req: Request
+  usageContext: GatewayUsageContext
+  account: UpstreamAccount
+  errorCode?: string
+  message?: string
+  observationId: string
+}): void {
+  if (input.usageContext.trafficSource !== 'gateway') return
+  const strategy = resolveOpenAIGatewayClientStrategy(input.req, {
+    systemAccountId: input.usageContext.systemAccountId,
+    apiKeyId: input.usageContext.apiKeyId,
+    groupId: input.usageContext.groupId,
+    endpoint: input.usageContext.endpoint,
+    clientIp: input.usageContext.clientIp,
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.account.providerProtocolProfileId,
+    protocolCode: input.account.protocolCode,
+    protocolVersion: input.account.protocolVersion
+  })
+  if (!strategy.allowClientSourceAccountAvoidance) return
+  void rememberGatewayClientSourceFailureAsync(strategy, input.account.id, {
+    errorCode: input.errorCode,
+    message: input.message,
+    observationId: input.observationId
+  }).then(async (failure) => {
+    if (!failure?.activation) return
+    await runGatewayClientSourceAvoidanceAvailabilityProbe({
+      account: input.account,
+      strategy,
+      activation: failure.activation
+    })
+  }).catch((error) => {
+    getRequestLogger().warn({
+      event: 'gateway_client_source_avoidance_failure_schedule_failed',
+      accountId: input.account.id,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    }, '来源级失败避让未能投递探活，保留短期避让')
+  })
 }
 
 function objectStringProperty(value: unknown, key: string): string | undefined {

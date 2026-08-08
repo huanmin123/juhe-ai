@@ -385,7 +385,8 @@ assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_trust_observation_receip
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_token_intercept_baseline_active'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac)'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated'))
-assert(pgSql.includes('ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text'))
+assert.match(pgSql, /CREATE TABLE IF NOT EXISTS model_check_observations[\s\S]*aggregation_completed_at text/)
+assert.doesNotMatch(pgSql, /ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text/)
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations(created_at, id) WHERE aggregation_completed_at IS NULL'))
 
 console.log('模型可信 observation 聚合回归通过：脱敏事实、游标增量、窗口结果和 PostgreSQL schema 同步符合预期')

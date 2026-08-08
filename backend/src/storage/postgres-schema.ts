@@ -30,59 +30,10 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
-    schemaName: 'juhe_business',
-    source: 'provider-model-cache-storage-pg-columns',
-    sql: 'ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision'
+    schemaName: 'juhe_usage',
+    source: 'upstream-response-model-pg-columns',
+    sql: 'ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text'
   },
-  {
-    schemaName: 'juhe_business',
-    source: 'provider-model-cache-storage-pg-columns',
-    sql: 'ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-quality-pg-columns',
-    sql: "ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS trigger_kind text NOT NULL DEFAULT 'manual'"
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-quality-pg-columns',
-    sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS schedule_id text'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-quality-pg-columns',
-    sql: "ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS policy_snapshot_json text NOT NULL DEFAULT '{}'"
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-quality-pg-columns',
-    sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-quality-pg-columns',
-    sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-trust-observation-aggregation-pg-columns',
-    sql: 'ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'model-trust-observation-aggregation-pg-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations(created_at, id) WHERE aggregation_completed_at IS NULL'
-  },
-  ...[
-    ['conversation_key', 'text'],
-    ['session_id', 'text'],
-    ['session_client_type', 'text']
-  ].map(([columnName, columnType]) => ({
-    schemaName: 'juhe_dataset' as const,
-    source: 'audit-log-session-identity-pg-columns',
-    sql: `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ${columnName} ${columnType}`
-  })),
   {
     schemaName: 'juhe_dataset',
     source: 'audit-log-lifecycle-pg-columns',
@@ -94,103 +45,6 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text'
   },
   {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-session-identity-pg-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created ON audit_logs(session_id, created_at, id, session_client_type) WHERE session_id IS NOT NULL'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-session-identity-pg-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_session_created'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-session-identity-pg-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-session-identity-pg-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_api_key_conversation_created'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-session-identity-pg-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_api_key_thread_created'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'client-ip-range-window-dirty-pg-columns',
-    sql: 'ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'client-ip-range-window-dirty-pg-columns',
-    sql: 'ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'client-ip-range-window-dirty-pg-columns',
-    sql: 'UPDATE client_ip_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'client-ip-range-window-dirty-pg-columns',
-    sql: 'ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'client-ip-range-window-dirty-pg-columns',
-    sql: 'ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'client-ip-range-window-dirty-pg-columns',
-    sql: 'UPDATE client_ip_account_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_account_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL'
-  },
-  {
-    schemaName: 'juhe_stats',
-    source: 'scheduled-job-lease-pg-columns',
-    sql: 'ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'account-circuit-confirmation-pg-constraints',
-    sql: `DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
-      AND conname = 'account_circuit_confirmation_failures_required_check'
-  ) THEN
-    ALTER TABLE account_circuit_incidents
-      ADD CONSTRAINT account_circuit_confirmation_failures_required_check
-      CHECK (confirmation_failures_required BETWEEN 1 AND 5);
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
-      AND conname = 'account_circuit_confirmation_failure_count_check'
-  ) THEN
-    ALTER TABLE account_circuit_incidents
-      ADD CONSTRAINT account_circuit_confirmation_failure_count_check
-      CHECK (consecutive_failures <= confirmation_failures_required);
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
-      AND conname = 'account_circuit_confirmation_evidence_json_check'
-  ) THEN
-    ALTER TABLE account_circuit_incidents
-      ADD CONSTRAINT account_circuit_confirmation_evidence_json_check
-      CHECK (
-        jsonb_typeof(confirmation_failure_evidence_keys_json::jsonb) = 'array'
-        AND jsonb_array_length(confirmation_failure_evidence_keys_json::jsonb) <= confirmation_failures_required + 1
-      );
-  END IF;
-END $$`
-  },
-  {
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
@@ -199,11 +53,6 @@ END $$`
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys(system_account_id, (name COLLATE "C"), id)'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'api-keys-pg-drop-obsolete-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_api_keys_name_lookup; DROP INDEX IF EXISTS idx_api_keys_system_account_name_lookup'
   },
   {
     schemaName: 'juhe_business',
@@ -241,11 +90,6 @@ END $$`
     sql: 'CREATE INDEX IF NOT EXISTS idx_usage_records_system_trace_c_created_sort ON usage_records(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
   {
-    schemaName: 'juhe_usage',
-    source: 'usage-catalog-pg-drop-obsolete-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_usage_record_shard_entries_trace_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_trace_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_usage_record_shard_entries_system_traffic_created_sort'
-  },
-  {
     schemaName: 'juhe_dataset',
     source: 'dataset-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_c_created_sort ON audit_logs(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)'
@@ -257,16 +101,6 @@ END $$`
   },
   {
     schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-persisted-source-indexes',
-    sql: "CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created ON audit_logs(created_at DESC, id DESC) WHERE traffic_source NOT IN ('account_health_check', 'runtime_recovery_probe', 'cooldown_retest')"
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-persisted-source-indexes',
-    sql: "CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created ON audit_logs(system_account_id, created_at DESC, id DESC) WHERE traffic_source NOT IN ('account_health_check', 'runtime_recovery_probe', 'cooldown_retest')"
-  },
-  {
-    schemaName: 'juhe_dataset',
     source: 'dataset-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_runtime_logs_trace_c_time ON runtime_logs((trace_id COLLATE "C"), time DESC, id DESC)'
   },
@@ -275,11 +109,6 @@ END $$`
     source: 'dataset-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-drop-obsolete-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_audit_logs_trace_c_created_sort; DROP INDEX IF EXISTS idx_audit_logs_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_public_api_logs_trace_c_created_sort; DROP INDEX IF EXISTS idx_public_api_logs_client_ip_c_created_sort; DROP INDEX IF EXISTS idx_audit_logs_trace_id; DROP INDEX IF EXISTS idx_audit_logs_outcome_created; DROP INDEX IF EXISTS idx_audit_logs_status_created; DROP INDEX IF EXISTS idx_audit_logs_path_created; DROP INDEX IF EXISTS idx_audit_logs_model_created; DROP INDEX IF EXISTS idx_audit_logs_upstream_model_created; DROP INDEX IF EXISTS idx_audit_logs_client_ip_created; DROP INDEX IF EXISTS idx_audit_logs_api_key_created; DROP INDEX IF EXISTS idx_audit_logs_group_created; DROP INDEX IF EXISTS idx_audit_logs_account_created; DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created; DROP INDEX IF EXISTS idx_public_api_logs_trace_id; DROP INDEX IF EXISTS idx_public_api_logs_path_created; DROP INDEX IF EXISTS idx_public_api_logs_status_created; DROP INDEX IF EXISTS idx_public_api_logs_success_created; DROP INDEX IF EXISTS idx_public_api_logs_client_ip_created'
-  }
 ]
 
 const postgresBigintColumnNames = new Set([

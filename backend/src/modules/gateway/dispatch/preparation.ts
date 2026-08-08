@@ -21,8 +21,8 @@ import {
   type ClientIpConcurrencyDecision
 } from '../runtime/client-ip-concurrency.service.js'
 import {
-  orderOpenAIAccountsByCodexTurnAvoidanceAsync
-} from '../client-profiles/codex-turn-retry.service.js'
+  orderOpenAIAccountsByClientSourceAvoidanceAsync
+} from '../client-profiles/client-source-avoidance.service.js'
 import {
   areGatewayAccountsCapacityBusyForLaneAsync,
   orderGatewayAccountsByLaneCapacityAvailabilityAsync,
@@ -363,40 +363,40 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  const codexTurnAvoidanceStartedAt = performance.now()
-  const codexTurnAvoidance = await orderOpenAIAccountsByCodexTurnAvoidanceAsync(
+  const clientSourceAvoidanceStartedAt = performance.now()
+  const clientSourceAvoidance = await orderOpenAIAccountsByClientSourceAvoidanceAsync(
     clientIpAccountAvoidance.accounts,
     input.clientStrategy,
     input.modelPriority
   )
-  logRequestStage('account.codex_turn_avoidance', {
+  logRequestStage('account.client_source_avoidance', {
     traceId: input.usageContext.traceId,
     groupId: input.groupId,
-    candidateAccountCount: codexTurnAvoidance.accounts.length,
-    applied: codexTurnAvoidance.applied,
-    failureCount: codexTurnAvoidance.failureCount,
-    avoidedAccountCount: codexTurnAvoidance.avoidedAccountIds.length,
-    bypassedAllAvoided: codexTurnAvoidance.bypassedAllAvoided
-  }, 'success', codexTurnAvoidanceStartedAt)
-  if (codexTurnAvoidance.applied || codexTurnAvoidance.bypassedAllAvoided) {
+    candidateAccountCount: clientSourceAvoidance.accounts.length,
+    applied: clientSourceAvoidance.applied,
+    failureCount: clientSourceAvoidance.failureCount,
+    avoidedAccountCount: clientSourceAvoidance.avoidedAccountIds.length,
+    bypassedAllAvoided: clientSourceAvoidance.bypassedAllAvoided
+  }, 'success', clientSourceAvoidanceStartedAt)
+  if (clientSourceAvoidance.applied || clientSourceAvoidance.bypassedAllAvoided) {
     logger.warn({
-      event: 'gateway_codex_turn_account_avoidance',
-      applied: codexTurnAvoidance.applied,
-      failureCount: codexTurnAvoidance.failureCount,
-      avoidedAccountIds: codexTurnAvoidance.avoidedAccountIds,
-      bypassedAllAvoided: codexTurnAvoidance.bypassedAllAvoided,
+      event: 'gateway_client_source_account_avoidance',
+      applied: clientSourceAvoidance.applied,
+      failureCount: clientSourceAvoidance.failureCount,
+      avoidedAccountIds: clientSourceAvoidance.avoidedAccountIds,
+      bypassedAllAvoided: clientSourceAvoidance.bypassedAllAvoided,
       groupId: input.groupId,
       systemAccountId: input.systemAccountId
-    }, codexTurnAvoidance.applied
-      ? 'Codex turn 级失败账号避让已应用到候选列表'
-      : 'Codex turn 级失败账号避让无可用备选，保持原候选列表')
+    }, clientSourceAvoidance.applied
+      ? '客户端来源级失败账号避让已应用到候选列表'
+      : '客户端来源级失败账号避让无可用备选，保持原候选列表')
     input.auditCapture.addGatewayMetadata({
-      label: 'codex_turn_account_avoidance',
+      label: 'client_source_account_avoidance',
       metadata: {
-        applied: codexTurnAvoidance.applied,
-        failureCount: codexTurnAvoidance.failureCount,
-        avoidedAccountIds: codexTurnAvoidance.avoidedAccountIds,
-        bypassedAllAvoided: codexTurnAvoidance.bypassedAllAvoided
+        applied: clientSourceAvoidance.applied,
+        failureCount: clientSourceAvoidance.failureCount,
+        avoidedAccountIds: clientSourceAvoidance.avoidedAccountIds,
+        bypassedAllAvoided: clientSourceAvoidance.bypassedAllAvoided
       }
     })
   }
@@ -404,7 +404,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   const candidatePreparationStartedAt = performance.now()
   const readyPreparation = await prepareQuotaAndCapacityReadyAccounts({
     ...input,
-    accounts: codexTurnAvoidance.accounts,
+    accounts: clientSourceAvoidance.accounts,
     dispatchOrderingOptions,
     latencyDegradedAccountIds: new Set(latencyDegradationOrder.degradedAccountIds),
     hotQualityMode: input.normalRouteSpeedFirstConfig ? 'speed_first' : 'cost_first',
@@ -417,7 +417,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     candidateAccountCount: readyPreparation.outcome === 'ready' ? readyPreparation.accounts.length : 0,
     ...(readyPreparation.outcome === 'ready' ? {} : {
       failureReason: `account_dispatch_${readyPreparation.outcome}`,
-      decisionInputs: { groupId: input.groupId, candidateAccountCount: codexTurnAvoidance.accounts.length }
+      decisionInputs: { groupId: input.groupId, candidateAccountCount: clientSourceAvoidance.accounts.length }
     })
   }, readyPreparation.outcome === 'ready' ? 'success' : 'expected_failure', candidatePreparationStartedAt)
   if (readyPreparation.outcome !== 'ready') {
@@ -461,8 +461,8 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     accounts: readyAccounts,
     precheckHalfOpenEligible,
     normalRouteLatencyDegradationApplied: latencyDegradationOrder.applied,
-    codexTurnAccountAvoidanceApplied: codexTurnAvoidance.thresholdReached,
-    codexTurnAvoidedAccountIds: codexTurnAvoidance.avoidedAccountIds,
+    codexTurnAccountAvoidanceApplied: clientSourceAvoidance.thresholdReached,
+    codexTurnAvoidedAccountIds: clientSourceAvoidance.avoidedAccountIds,
     hotQualityExplorationReservation: readyPreparation.hotQualityExplorationReservation,
     settleHotQualityExplorationAfterDispatch: readyPreparation.settleHotQualityExplorationAfterDispatch
   }

@@ -469,18 +469,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_model_check_observations_population ON model_check_observations(population_key_hmac, requested_model, probe_family, created_at, id);
 
-    DROP INDEX IF EXISTS idx_audit_logs_trace_id;
-    DROP INDEX IF EXISTS idx_audit_logs_outcome_created;
-    DROP INDEX IF EXISTS idx_audit_logs_status_created;
-    DROP INDEX IF EXISTS idx_audit_logs_path_created;
-    DROP INDEX IF EXISTS idx_audit_logs_model_created;
-    DROP INDEX IF EXISTS idx_audit_logs_upstream_model_created;
-    DROP INDEX IF EXISTS idx_audit_logs_client_ip_created;
-    DROP INDEX IF EXISTS idx_audit_logs_api_key_created;
-    DROP INDEX IF EXISTS idx_audit_logs_group_created;
-    DROP INDEX IF EXISTS idx_audit_logs_account_created;
-    DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created;
-
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created
@@ -535,12 +523,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_api_key_account ON audit_error_groups(api_key_id, system_account_id);
 
-    DROP INDEX IF EXISTS idx_public_api_logs_trace_id;
-    DROP INDEX IF EXISTS idx_public_api_logs_path_created;
-    DROP INDEX IF EXISTS idx_public_api_logs_status_created;
-    DROP INDEX IF EXISTS idx_public_api_logs_success_created;
-    DROP INDEX IF EXISTS idx_public_api_logs_client_ip_created;
-
     CREATE INDEX IF NOT EXISTS idx_public_api_logs_created ON public_api_logs(created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_public_api_logs_source_created ON public_api_logs(source_ref_id, created_at, id);
@@ -592,35 +574,23 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_record_cleanup_targets_attempt ON account_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, account_id);
 
   `)
-  if (ensureAuditLogColumns(database)) {
-    database.exec(`
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created
-        ON audit_logs(session_id, created_at, id, session_client_type)
-        WHERE session_id IS NOT NULL;
-
-      DROP INDEX IF EXISTS idx_audit_logs_system_session_created;
-      DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created;
-      DROP INDEX IF EXISTS idx_audit_logs_system_api_key_conversation_created;
-      DROP INDEX IF EXISTS idx_audit_logs_system_api_key_thread_created;
-    `)
-  }
+  ensureAuditLogColumns(database)
   database.exec(`
-    DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created;
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created
+      ON audit_logs(session_id, created_at, id, session_client_type)
+      WHERE session_id IS NOT NULL;
   `)
 }
 
-function ensureAuditLogColumns(database: DatabaseSync): boolean {
+function ensureAuditLogColumns(database: DatabaseSync): void {
   const columnRows = database.prepare('PRAGMA table_info(audit_logs)').all() as Array<{ name?: string }>
-  if (columnRows.length === 0) return false
+  if (columnRows.length === 0) return
   const existingColumns = new Set(
     columnRows
       .map((column) => column.name)
       .filter((name): name is string => Boolean(name))
   )
   const requiredColumns = [
-    ['conversation_key', 'TEXT'],
-    ['session_id', 'TEXT'],
-    ['session_client_type', 'TEXT'],
     ["lifecycle_status", "TEXT NOT NULL DEFAULT 'finalized'"],
     ['drop_reason', 'TEXT', 'audit_payload_refs']
   ] as const
@@ -634,5 +604,4 @@ function ensureAuditLogColumns(database: DatabaseSync): boolean {
     if (columns.has(name)) continue
     database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${name} ${type}`)
   }
-  return true
 }
