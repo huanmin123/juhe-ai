@@ -56,7 +56,7 @@
 | `background_worker_audit_logs` | standalone: `ingest-worker`; performance: `log-worker` | 原始审计 append-only，失败样本优先保留 |
 | `background_worker_operation_logs` | standalone: `ingest-worker`; performance: `log-worker` | 操作日志批量写入和摘要索引 |
 | `background_worker_public_api_logs` | standalone: `ingest-worker`; performance: `log-worker` | 公开接口调用明细 |
-| `runtime-log-file-import` | standalone: `ingest-worker`; performance: `log-worker#1` | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor |
+| Go F1 `juhe-ai-runtime-log-indexer` | 独立 Go 进程 | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor；Node worker 不再拥有该功能 |
 | `background_worker_record_maintenance` | standalone: `ingest-worker` / `stats-worker`; performance: `usage-worker#1` / `stats-worker` | usage / dataset 进 usage owner；stats-only command 进 stats writer |
 | `api-key-record-cleanup-retry` / `account-record-cleanup-retry` | standalone: `ingest-worker`; performance: `usage-worker#1` | 关联明细清理，等待统计安全游标 |
 | `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | standalone: `ingest-worker`; performance: `log-worker#1` / `usage-worker#1` | 小批多轮，不能压住热写入 |

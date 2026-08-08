@@ -99,7 +99,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 当前实现已经落地数据集目录库、使用记录目录库、usage shard 和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，数据集与统计职责按当前模型拆为：
 
-- 统计数据集目录库：保存原始审计、操作日志、运行日志索引、模型检测明细和记录清理目标等非 usage 高增长事实元数据。
+- 统计数据集目录库：保存原始审计、操作日志、公开接口日志、模型检测明细和记录清理目标等非 usage 高增长事实元数据；不保存 Go F1 运行日志索引。
 - 使用记录目录库：保存 `usage_record_shards`、`usage_record_shard_entries` 以及按账号 / API Key 去重的 shard scope catalog，只用于定位 usage shard、列表筛选和清理，不保存完整使用记录正文。
 - usage shard 文件：保存新写入的 `usage_records` 明细，按日期和稳定 hash 分散到多个 SQLite 文件。
 - 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、系统监控采样、监控趋势、`stats_job_state` 和使用记录清理扣减账本等紧凑结果。
@@ -110,7 +110,8 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 四个主库拆分解决了业务库、数据集目录库、使用记录目录库和统计结果库之间互相拖慢的问题，但不能消除单个 SQLite 文件内部的单 writer 上限。当前高频写入优化以 [数据集库分片写入设计](数据集库分片写入设计.md) 为准，先只拆最热的 `usage_records`：
 
-- `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、操作日志、运行日志索引和模型检测等非 usage 明细。
+- `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、操作日志、公开接口日志和模型检测等非 usage 明细。
+- `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 是 Go F1 运行日志索引、cursor、facet 和保留清理的专用 SQLite 文件。Node 只能只读，且此路径必须与业务、聊天、dataset、usage catalog 和 stats 文件不同。
 - `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 作为使用记录目录库，保存 usage shard 注册表、列表筛选目录和按账号 / API Key 去重的 shard scope catalog。它是高频写入瓶颈之一，必须独立于数据集目录库，避免审计、日志和 usage 目录抢同一个 SQLite 写锁。
 - `JUHE_AI_USAGE_SHARD_ROOT` 未配置或留空时默认跟随使用记录目录库所在目录生成 `usage-shards`；生产也可以显式配置为 `./data/usage-shards` 或其他独立目录。
 - 新增 `JUHE_AI_USAGE_SHARD_COUNT`，默认 `16`。
@@ -145,7 +146,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照先按深度、字段数量和字节预算克隆，再按 32KB 上限保存或截断，不能为了估算大小先把完整大对象 `JSON.stringify` 到内存。公开接口日志保留期由 `publicApiLogRetentionDays` 控制，默认 30 天、合法范围 `1..365`，由后台数据保留任务分批清理。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志；防重复提交缓存属于进程内易失状态，过期维护固定小批量轮转，容量淘汰不全量展开排序。
 - 原始审计日志使用独立表保存所有进入审计的事件元数据；最近 1 小时完全成功请求全量保留 payload，超过热窗口后仅 10% 稳定成功样本继续保留 payload，未命中样本的成功主记录降为 `metadata_only`；失败、异常、客户端中断、流式中断和重试后成功链路完整保留。请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 ingest-worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
-- 普通运行日志仍以完整 JSON Lines 写入角色日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，ingest-worker 通过 `runtime_log_file_cursors` 记录文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志不使用内存或 Redis 逐行队列，不允许按级别采样、丢弃完整行或截断 `raw_json`；积压只形成受 cursor 和轮转保护约束的文件 backlog。
+- 普通运行日志仍以完整 JSON Lines 写入角色日志文件并滚动清理；索引查询只使用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 中的 Go F1 表 `runtime_logs`，Go indexer 通过 `runtime_log_file_cursors` 记录文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 经 DB service 只读访问专用 SQLite 文件，不在主进程同步读取。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志不使用内存或 Redis 逐行队列，不允许按级别采样、丢弃完整行或截断 `raw_json`；积压只形成受 cursor 和轮转保护约束的文件 backlog。
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `protocols` 保存协议族和版本，当前包含 `openai/v1` 和 `anthropic/v1`；`protocol_endpoint_families` 保存协议下的端点族，OpenAI v1 当前包含 `chat_completions` 和 `responses`，Anthropic v1 当前包含 `messages`、`models` 和 `message_token_counting`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商、`gpt.parent_code = openai` 子供应商、独立 `anthropic` 供应商、目标 `deepseek` 供应商，以及 `glm.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、内置默认检查模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 和 `profile_glm_coding_anthropic_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。Anthropic 官方档案当前允许 `api_key` 与 Bearer Token 型 `oauth` 账户，并启用 Messages / Models / Count Tokens；其中 `oauth` 账户只保存用户直接导入的 `access_token`、可选 `refresh_token` 与通用非敏感元数据，不在项目内维护浏览器换码、Setup Token、Cookie / sessionKey、Claude Code 订阅登录或其他私有 token 生命周期。DeepSeek Anthropic 和 GLM Coding Anthropic 当前只允许 `api_key`，只启用 Messages / Models，不默认启用 Count Tokens；GLM OpenAI 档案当前只启用 `chat_completions`，Anthropic 档案只启用 `messages`。账户凭据 JSON 中的 `supported_endpoint_modes` 保存单个上游实际支持的协议端点与 JSON / SSE 组合，OpenAI v1 使用 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，Anthropic v1 使用 `messages_json`、`messages_sse`、`message_token_counting`；网关候选筛选、后台系统检查和人工诊断都按该字段执行。
 - `provider_protocol_profiles` 的长期唯一性不能只使用 `provider_code + protocol_code + protocol_version`。同一供应商可能在同一协议版本下暴露多个业务档案，例如智谱 GLM 的通用 API 和 Coding Plan 都是 `glm + openai/v1`，但默认 Base URL、账户创建类型和额度解释不同。schema 以 `id` 作为稳定唯一键；运行路径不得通过 `provider_code + protocol_code + protocol_version` 反查唯一档案。

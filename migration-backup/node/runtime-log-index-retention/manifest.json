@@ -76,7 +76,7 @@
     {"originalPath":"backend/src/storage/schema/runtime-log-index-schema.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/schema/runtime-log-index-schema.ts","sourceSnapshotSha256":"4aae6fdfefcda3198aed425ec047570ff7194622f6decf21fbab67fe96cc51a1"}
   ],
   "dualModeVerification": {
-    "sqlite": "backend-go: rtk go test -race ./... (30 tests, passed)",
+    "sqlite": "backend-go: rtk go test -race ./... (34 tests, passed)",
     "postgresRedis": "设置 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL 和 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED=true 后执行 rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1。URL必须指向专用、可销毁且F1表为空的PostgreSQL数据库；当前未提供URL，真实smoke未执行。无URL时显式skipped，不是通过。"
   },
   "activeNodePathZeroEvidence": "活跃 backend/src、backend/package.json、backend/.env.example、docker 和 scripts/regression 不得再命中 F1 importer、scheduler、writer、cursor、retention、Node owner 开关或 F1 queue symbol。"
