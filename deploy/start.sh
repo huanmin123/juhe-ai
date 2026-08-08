@@ -33,9 +33,12 @@ ripgrep_dependency_ready() {
 }
 
 runtime_log_indexer_pid=""
+table_monitor_pid=""
 server_pid=""
 runtime_log_indexer_pid_file="backend/runtime/juhe-ai-runtime-log-indexer.pid"
 runtime_log_indexer_log_file="backend/logs/juhe-ai-runtime-log-indexer.log"
+table_monitor_pid_file="backend/runtime/juhe-ai-table-monitor.pid"
+table_monitor_log_file="backend/logs/juhe-ai-table-monitor.log"
 
 runtime_log_indexer_process() {
   pid_path="$1"
@@ -84,6 +87,53 @@ stop_runtime_log_indexer() {
   rm -f -- "$runtime_log_indexer_pid_file"
 }
 
+table_monitor_process() {
+  pid_path="$1"
+  if [ ! -f "$pid_path" ]; then
+    return 1
+  fi
+  IFS= read -r pid < "$pid_path" || true
+  case "$pid" in
+    ''|*[!0-9]*)
+      rm -f -- "$pid_path"
+      return 1
+      ;;
+  esac
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f -- "$pid_path"
+    return 1
+  fi
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command_line" in
+    *juhe-ai-table-monitor*)
+      printf '%s' "$pid"
+      return 0
+      ;;
+    *)
+      rm -f -- "$pid_path"
+      return 1
+      ;;
+  esac
+}
+
+stop_table_monitor() {
+  pid="$(table_monitor_process "$table_monitor_pid_file" || true)"
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+  kill -TERM "$pid"
+  attempts=0
+  while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "juhe-ai-table-monitor did not stop within 10 seconds (PID $pid)." >&2
+    return 1
+  fi
+  rm -f -- "$table_monitor_pid_file"
+}
+
 stop_server_process() {
   if [ -z "$server_pid" ] || ! kill -0 "$server_pid" 2>/dev/null; then
     return 0
@@ -128,6 +178,9 @@ on_exit() {
     exit_code=1
   fi
   if ! stop_runtime_log_indexer && [ "$exit_code" -eq 0 ]; then
+    exit_code=1
+  fi
+  if ! stop_table_monitor && [ "$exit_code" -eq 0 ]; then
     exit_code=1
   fi
   exit "$exit_code"
@@ -280,6 +333,153 @@ try {
   fi
 }
 
+start_table_monitor() {
+  table_monitor_binary="$APP_DIR/backend-go/juhe-ai-table-monitor"
+  if [ ! -f "$table_monitor_binary" ] || [ ! -x "$table_monitor_binary" ]; then
+    echo "Go table monitor binary not found or not executable: $table_monitor_binary. Rebuild the release package for this Unix platform." >&2
+    return 1
+  fi
+  mkdir -p backend/runtime backend/logs
+  existing_pid="$(table_monitor_process "$table_monitor_pid_file" || true)"
+  if [ -n "$existing_pid" ]; then
+    echo "juhe-ai-table-monitor is already running (PID $existing_pid); stop the existing release before starting another one." >&2
+    return 1
+  fi
+
+  table_monitor_pid="$(
+    node --input-type=module - "$table_monitor_binary" "$APP_DIR/backend" "$table_monitor_log_file" <<'NODE'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { isAbsolute, resolve } from "node:path"
+import { createRequire } from "node:module"
+import { spawn } from "node:child_process"
+
+const [binaryPath, backendRoot, logPath] = process.argv.slice(2)
+const require = createRequire(resolve(backendRoot, "package.json"))
+const { parse } = require("dotenv")
+const baseEnvPath = resolve(backendRoot, ".env")
+const capacityEnvPath = resolve(backendRoot, ".env.capacity")
+
+function readEnv(path) {
+  return existsSync(path) ? parse(readFileSync(path)) : {}
+}
+
+function isCapacityEnvironmentVariable(name) {
+  return name.startsWith("JUHE_AI_CONCURRENCY_")
+    || name.startsWith("JUHE_AI_ACCOUNT_")
+    || name.startsWith("JUHE_AI_BACKGROUND_")
+    || name.startsWith("JUHE_AI_GATEWAY_")
+    || name.startsWith("JUHE_AI_DB_")
+    || name.startsWith("JUHE_AI_CHAT_DB_SERVICE_")
+    || name.startsWith("JUHE_AI_REDIS_STREAM_")
+    || name.startsWith("JUHE_AI_USAGE_SPOOL_")
+    || name === "JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT"
+    || /^JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$/.test(name)
+}
+
+const disableBaseEnv = String(process.env.JUHE_AI_DISABLE_BASE_ENV ?? "").trim().toLowerCase() === "true"
+const baseEnv = disableBaseEnv ? {} : readEnv(baseEnvPath)
+const overlayName = (process.env.JUHE_AI_ENV_FILE ?? baseEnv.JUHE_AI_ENV_FILE ?? "").trim()
+const overlayEnv = overlayName ? readEnv(isAbsolute(overlayName) ? overlayName : resolve(backendRoot, overlayName)) : {}
+const capacityEnv = Object.fromEntries(Object.entries(readEnv(capacityEnvPath)).filter(([name]) => isCapacityEnvironmentVariable(name)))
+
+function configured(name) {
+  if (Object.hasOwn(process.env, name)) return { defined: true, value: process.env[name] ?? "" }
+  if (Object.hasOwn(overlayEnv, name)) return { defined: true, value: overlayEnv[name] ?? "" }
+  if (Object.hasOwn(capacityEnv, name)) return { defined: true, value: capacityEnv[name] ?? "" }
+  if (Object.hasOwn(baseEnv, name)) return { defined: true, value: baseEnv[name] ?? "" }
+  return { defined: false, value: "" }
+}
+
+const childEnv = { ...process.env }
+const names = [
+  "JUHE_AI_DATABASE_DRIVER",
+  "JUHE_AI_RUNTIME_MODE",
+  "JUHE_AI_TABLE_MONITOR_STORE",
+  "JUHE_AI_TABLE_MONITOR_INTERVAL",
+  "JUHE_AI_TABLE_MONITOR_RETENTION_DAYS",
+  "JUHE_AI_TABLE_MONITOR_MAX_TABLES",
+  "JUHE_AI_TABLE_MONITOR_DATABASE_PATH",
+  "JUHE_AI_DATABASE_PATH",
+  "JUHE_AI_DATASET_DATABASE_PATH",
+  "JUHE_AI_USAGE_CATALOG_DATABASE_PATH",
+  "JUHE_AI_STATS_DATABASE_PATH",
+  "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT",
+  "JUHE_AI_POSTGRES_URL"
+]
+for (const name of names) {
+  const value = configured(name)
+  if (value.defined) childEnv[name] = value.value
+}
+
+const configuredInstance = configured("JUHE_AI_TABLE_MONITOR_INSTANCE_ID")
+if (configuredInstance.defined) {
+  if (!configuredInstance.value.trim()) throw new Error("JUHE_AI_TABLE_MONITOR_INSTANCE_ID is configured but empty.")
+  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = configuredInstance.value
+} else {
+  if (disableBaseEnv) {
+    throw new Error("JUHE_AI_TABLE_MONITOR_INSTANCE_ID must be set outside backend/.env when JUHE_AI_DISABLE_BASE_ENV=true.")
+  }
+  const instanceId = `table-monitor-${randomUUID()}`
+  appendFileSync(baseEnvPath, `\nJUHE_AI_TABLE_MONITOR_INSTANCE_ID=${instanceId}\n`, "utf8")
+  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = instanceId
+}
+
+const runtimeMode = (childEnv.JUHE_AI_RUNTIME_MODE ?? "").trim().toLowerCase()
+const hasPerformanceHints = ["JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL", "JUHE_AI_REDIS_QUEUE_URL"]
+  .some((name) => Boolean(configured(name).value.trim()))
+if (!(childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? "").trim() && !(childEnv.JUHE_AI_DATABASE_DRIVER ?? "").trim()) {
+  childEnv.JUHE_AI_DATABASE_DRIVER = runtimeMode === "performance" || (!runtimeMode && hasPerformanceHints) ? "postgres" : "sqlite"
+}
+
+function absoluteBackendPath(value, fallback) {
+  const selected = (value ?? fallback).trim()
+  return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
+}
+
+const tableMonitorStore = (childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? "").trim() || (childEnv.JUHE_AI_DATABASE_DRIVER ?? "").trim() || "sqlite"
+if (tableMonitorStore.toLowerCase() === "sqlite") {
+  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, "./data/juhe-ai-table-monitor.sqlite3")
+  childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, "./data/juhe-ai.sqlite3")
+  childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, "./data/juhe-ai-dataset.sqlite3")
+  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, "./data/juhe-ai-usage-catalog.sqlite3")
+  childEnv.JUHE_AI_STATS_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, "./data/juhe-ai-stats.sqlite3")
+  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, "./data/codex-context/state-shards")
+}
+
+const logFd = openSync(logPath, "a")
+try {
+  const child = spawn(binaryPath, [], {
+    cwd: process.cwd(),
+    detached: true,
+    env: childEnv,
+    stdio: ["ignore", logFd, logFd]
+  })
+  if (!child.pid) throw new Error("Unable to start juhe-ai-table-monitor.")
+  child.unref()
+  process.stdout.write(String(child.pid))
+} finally {
+  closeSync(logFd)
+}
+NODE
+  )"
+  case "$table_monitor_pid" in
+    ''|*[!0-9]*)
+      echo "juhe-ai-table-monitor returned an invalid PID: $table_monitor_pid" >&2
+      return 1
+      ;;
+  esac
+  printf '%s' "$table_monitor_pid" > "$table_monitor_pid_file"
+  sleep 1
+  if ! table_monitor_process "$table_monitor_pid_file" >/dev/null; then
+    if [ -f "$table_monitor_log_file" ]; then
+      tail -n 20 "$table_monitor_log_file" >&2
+    fi
+    echo "juhe-ai-table-monitor exited during startup." >&2
+    return 1
+  fi
+}
+
 read_dotenv_value() {
   name="$1"
   fallback="${2:-}"
@@ -421,7 +621,9 @@ if ! wait_for_server_ready; then
 fi
 start_runtime_log_indexer
 echo "Started juhe-ai-runtime-log-indexer (PID $runtime_log_indexer_pid)."
-while kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null; do
+start_table_monitor
+echo "Started juhe-ai-table-monitor (PID $table_monitor_pid)."
+while kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$table_monitor_pid" 2>/dev/null; do
   sleep 1
 done
 if ! kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
@@ -431,8 +633,22 @@ if ! kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$server_pid" 2>/
   echo "juhe-ai-runtime-log-indexer exited unexpectedly (PID $runtime_log_indexer_pid)." >&2
   exit 1
 fi
+if ! kill -0 "$table_monitor_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null; then
+  if [ -f "$table_monitor_log_file" ]; then
+    tail -n 20 "$table_monitor_log_file" >&2
+  fi
+  echo "juhe-ai-table-monitor exited unexpectedly (PID $table_monitor_pid)." >&2
+  exit 1
+fi
+if ! kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$table_monitor_pid" 2>/dev/null; then
+  echo "juhe-ai Web/API process exited unexpectedly (PID $server_pid)." >&2
+  exit 1
+fi
 set +e
 wait "$server_pid"
 server_exit_code=$?
 set -e
+if [ "$server_exit_code" -eq 0 ]; then
+  server_exit_code=1
+fi
 exit "$server_exit_code"
