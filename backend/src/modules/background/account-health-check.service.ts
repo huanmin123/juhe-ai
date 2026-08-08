@@ -29,12 +29,23 @@ import { diagnosticAccountTestGatewaySettingsOverride, diagnosticAttemptSignals 
 import { effectiveAccountApiKeyCount } from '../accounts/account-balance-config.js'
 import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { gatewayAccountRuntimeKey } from '../gateway/runtime/account-runtime-keys.js'
+import {
+  acquireAvailabilityProbe,
+  availabilityProbeSourceFences,
+  settleAvailabilityProbe,
+  type AvailabilityProbeOutcome
+} from '../gateway/runtime/availability-probe-coordinator.js'
 import type { OpenAIAccountSecret } from '../../storage/openai-account-selector.types.js'
 import type { AccountApiKeyPoolProbeCursor } from '../../storage/account-api-key-pool-probe-cursor.repository.js'
-import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer } from './background-ipc.js'
+import {
+  requestBackgroundWorkerDbService,
+  sendAccountRuntimeClearToServer,
+  sendCodexSourceFenceSettledToServer
+} from './background-ipc.js'
 import {
   accountHealthCheckTriggerPriority,
-  type AccountHealthCheckTriggerReason
+  type AccountHealthCheckTriggerReason,
+  type CodexSourceProbeFence
 } from '../accounts/account-health-check-trigger.js'
 import { enqueueAccountBalanceAutoDetection } from './account-balance-auto-detect.service.js'
 import {
@@ -53,10 +64,17 @@ interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   reason: AccountHealthCheckTriggerReason
 }
 
+interface AccountHealthCheckExecution {
+  ordinaryAccountHealthSemantics: boolean
+  sourceFences: Map<string, CodexSourceProbeFence>
+}
+
 const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check', [], 0)
 const requestFailureHealthCheckCooldownMs = 5 * 60_000
+const maxSourceFencesPerHealthExecution = 64
 const recentRequestFailureHealthChecks = new Map<string, number>()
 let lastRequestFailureHealthCheckCleanupAt = 0
+const accountHealthCheckExecutions = new Map<string, AccountHealthCheckExecution>()
 
 export interface AccountHealthCheckProbeResult {
   result: AccountTestResult
@@ -85,11 +103,29 @@ const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
 export function enqueueAccountHealthCheck(
   account: AccountSummary,
   settings: AccountHealthCheckSettings & { maxPauseMinutes: number },
-  reason: AccountHealthCheckTriggerReason
+  reason: AccountHealthCheckTriggerReason,
+  sourceFence?: CodexSourceProbeFence
 ): boolean {
   const effectiveReason = account.status === 'pending_test' ? 'activation' : reason
   const now = Date.now()
-  if (effectiveReason === 'request_failure') {
+  const executionKey = accountHealthCheckExecutionKey(account.id)
+  const existingExecution = accountHealthCheckExecutions.get(executionKey)
+  if (sourceFence) {
+    if (sourceFence.configRevision !== (account.configRevision ?? 1)) {
+      sendCodexSourceFenceSettledToServer(sourceFence, 'stale')
+      return true
+    }
+    // A source handoff is metadata for an existing physical probe when one is
+    // queued/running. It must not create retry-queue follow-up work.
+    if (!registerSourceFence(executionKey, sourceFence)) {
+      sendCodexSourceFenceSettledToServer(sourceFence, 'unknown')
+      return true
+    }
+    if (existingExecution) return true
+  } else if (existingExecution) {
+    existingExecution.ordinaryAccountHealthSemantics = true
+  }
+  if (!sourceFence && effectiveReason === 'request_failure') {
     cleanupRecentRequestFailureHealthChecks(now)
     const lastTriggeredAt = recentRequestFailureHealthChecks.get(account.id)
     if (lastTriggeredAt !== undefined && now - lastTriggeredAt < requestFailureHealthCheckCooldownMs) {
@@ -110,7 +146,14 @@ export function enqueueAccountHealthCheck(
     replaceExisting: effectiveReason !== 'scheduled',
     replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure'
   })
-  if (effectiveReason === 'request_failure') {
+  if (enqueued && !existingExecution) {
+    accountHealthCheckExecutions.set(executionKey, {
+      ordinaryAccountHealthSemantics: sourceFence === undefined,
+      sourceFences: sourceFence ? new Map([[sourceFenceKey(sourceFence), sourceFence]]) : new Map()
+    })
+  }
+  if (!enqueued && sourceFence) accountHealthCheckExecutions.delete(executionKey)
+  if (!sourceFence && effectiveReason === 'request_failure') {
     recentRequestFailureHealthChecks.set(account.id, now)
   }
   return enqueued
@@ -128,7 +171,8 @@ function cleanupRecentRequestFailureHealthChecks(now: number): void {
 export async function enqueueAccountHealthCheckById(
   accountId: string,
   settings: AccountHealthCheckSettings & { maxPauseMinutes: number },
-  reason: AccountHealthCheckTriggerReason
+  reason: AccountHealthCheckTriggerReason,
+  sourceFence?: CodexSourceProbeFence
 ): Promise<boolean> {
   const normalizedId = accountId.trim()
   if (!normalizedId) return false
@@ -137,7 +181,11 @@ export async function enqueueAccountHealthCheckById(
     accountId: normalizedId,
     ignoreSchedule: reason !== 'scheduled'
   }, backgroundProbeDbServiceTimeoutMs)
-  return account ? enqueueAccountHealthCheck(account, settings, reason) : false
+  if (!account) {
+    if (sourceFence) sendCodexSourceFenceSettledToServer(sourceFence, 'stale')
+    return false
+  }
+  return enqueueAccountHealthCheck(account, settings, reason, sourceFence)
 }
 
 export function getAccountHealthCheckQueueSnapshot() {
@@ -148,8 +196,10 @@ async function runAccountHealthCheckQueueItem(
   item: AccountHealthCheckQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
+  const executionKey = accountHealthCheckExecutionKey(item.accountId)
   const account = await accountForHealthCheckQueueItem(item)
   if (!isAccountHealthCheckEligible(account, item.reason)) {
+    settleSourceFences(executionKey, 'stale')
     logger.debug({
       event: 'background_account_health_check_discarded',
       accountId: item.accountId,
@@ -163,6 +213,7 @@ async function runAccountHealthCheckQueueItem(
     return true
   }
   if ((account.configRevision ?? 1) !== item.configRevision) {
+    settleSourceFences(executionKey, 'stale')
     logger.debug({
       event: 'background_account_health_check_stale_config_discarded',
       accountId: item.accountId,
@@ -176,6 +227,28 @@ async function runAccountHealthCheckQueueItem(
   const groupId = account.boundGroupId
   const observedAt = new Date().toISOString()
   const deadline = accountHealthCheckDeadline()
+  const coordination = await acquireAvailabilityProbe({
+    accountRuntimeScope: gatewayAccountRuntimeKey(account),
+    probeKind: 'account_health_check',
+    configRevision: item.configRevision,
+    executionRole: 'health_probe'
+  })
+  if (coordination.disposition === 'joined') {
+    logger.debug({
+      event: 'background_account_health_check_runtime_coordinator_joined',
+      accountId: item.accountId,
+      accountName: item.accountName,
+      reason: item.reason,
+      generation: coordination.generation,
+      retryAtMs: coordination.retryAtMs
+    }, '共享可用性探活已有 owner，本轮健康检查不追加实际诊断')
+    // A local source-only queue item that lost the distributed lease has no
+    // authority to consume the remote owner's outcome. Return an explicit
+    // non-success fence result instead of retaining its worker-local record.
+    settleSourceFences(executionKey, 'unknown')
+    deadline.cancel()
+    return true
+  }
   try {
     return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
       if (deadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
@@ -197,6 +270,40 @@ async function runAccountHealthCheckQueueItem(
       timeout: diagnosticTimeoutExhausted,
       diagnosticTimeoutExhausted
     })
+    const coordinatorOutcome = availabilityProbeCoordinatorOutcome(probeOutcome, diagnosticCanceled)
+    const probeSettled = await settleAvailabilityProbe({
+      runtimeKey: coordination.runtimeKey,
+      generation: coordination.generation,
+      ownerToken: coordination.ownerToken,
+      outcome: coordinatorOutcome
+    })
+    // This is the worker completion/fence boundary. Removing the execution
+    // record before any asynchronous account mutation means a late IPC fence
+    // starts a fresh generation instead of consuming this finished result.
+    const completedExecution = takeAccountHealthCheckExecution(executionKey)
+    const coordinatorSourceFences = probeSettled
+      ? await availabilityProbeSourceFences(coordination.runtimeKey, coordination.generation)
+      : []
+    const sourceFences = mergeSourceFences(
+      [...(completedExecution?.sourceFences.values() ?? [])],
+      coordinatorSourceFences.map((fence) => ({
+        ...fence,
+        runtimeKey: coordination.runtimeKey,
+        probeGeneration: coordination.generation,
+        configRevision: item.configRevision
+      }))
+    )
+    // A missing local execution record must preserve ordinary health behavior.
+    // Source-only queue work always registers its record before enqueueing.
+    const sourceOnlyProbe = completedExecution?.ordinaryAccountHealthSemantics === false
+    const sourceFenceOutcome = probeSettled ? coordinatorOutcome : 'stale'
+    if (!probeSettled) {
+      // A lease-taken-over owner has no authority to write either account
+      // health or a source success. The current owner will produce the next
+      // generation's result.
+      settleCompletedSourceFences(sourceFences, 'stale')
+      return true
+    }
     const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
     const diagnosticTimeoutTemporaryUnavailable = diagnosticTimeoutExhausted === true && probeOutcome === 'upstream_failure'
     const scheduledProbeFailureImmediate = item.reason === 'scheduled'
@@ -207,6 +314,12 @@ async function runAccountHealthCheckQueueItem(
     const immediateTemporaryUnavailable = diagnosticTimeoutTemporaryUnavailable || scheduledProbeFailureImmediate
 
     if (probeOutcome === 'complete_success') {
+      settleCompletedSourceFences(sourceFences, probeSettled ? 'success' : 'stale')
+      if (sourceOnlyProbe) {
+        // A source-bound success proves only the registered source/turn fence.
+        // It must not clear account runtime/circuit state or write health.
+        return true
+      }
       const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
       const healthCheckResult = await requestBackgroundWorkerDbService({
         type: 'record_account_health_check_success',
@@ -238,6 +351,15 @@ async function runAccountHealthCheckQueueItem(
       }
       return true
     }
+
+    if (sourceOnlyProbe && !sourceBoundProbePermitsAccountHealthMutation(coordinatorOutcome)) {
+      // Unknown, canceled, task failure and neutral framing have no account
+      // mutation authority when this worker was dispatched by a Codex source.
+      settleCompletedSourceFences(sourceFences, sourceFenceOutcome)
+      return true
+    }
+
+    settleCompletedSourceFences(sourceFences, sourceFenceOutcome)
 
     const failure = await requestBackgroundWorkerDbService({
       type: 'record_account_health_check_failure',
@@ -313,9 +435,88 @@ async function runAccountHealthCheckQueueItem(
       signal: deadline.signal,
       abortedObservation: () => accountHealthCheckDeadlineResult(account)
     })
+  } catch (error) {
+    await settleAvailabilityProbe({
+      runtimeKey: coordination.runtimeKey,
+      generation: coordination.generation,
+      ownerToken: coordination.ownerToken,
+      outcome: 'probe_task_failure'
+    })
+    settleSourceFences(executionKey, 'probe_task_failure')
+    throw error
   } finally {
     deadline.cancel()
+    accountHealthCheckExecutions.delete(executionKey)
   }
+}
+
+function accountHealthCheckExecutionKey(accountId: string): string {
+  return accountId.trim()
+}
+
+function sourceFenceKey(fence: CodexSourceProbeFence): string {
+  return `${fence.stateKey}:${fence.accountId}:${fence.sourceGeneration}`
+}
+
+function registerSourceFence(executionKey: string, sourceFence: CodexSourceProbeFence): boolean {
+  const execution = accountHealthCheckExecutions.get(executionKey)
+  if (execution) {
+    const key = sourceFenceKey(sourceFence)
+    if (execution.sourceFences.has(key)) return true
+    if (execution.sourceFences.size >= maxSourceFencesPerHealthExecution) return false
+    execution.sourceFences.set(key, sourceFence)
+    return true
+  }
+  accountHealthCheckExecutions.set(executionKey, {
+    ordinaryAccountHealthSemantics: false,
+    sourceFences: new Map([[sourceFenceKey(sourceFence), sourceFence]])
+  })
+  return true
+}
+
+function takeAccountHealthCheckExecution(executionKey: string): AccountHealthCheckExecution | undefined {
+  const execution = accountHealthCheckExecutions.get(executionKey)
+  accountHealthCheckExecutions.delete(executionKey)
+  return execution
+}
+
+function settleSourceFences(
+  executionKey: string,
+  outcome: AvailabilityProbeOutcome,
+  sourceFences = [...(takeAccountHealthCheckExecution(executionKey)?.sourceFences.values() ?? [])]
+): void {
+  settleCompletedSourceFences(sourceFences, outcome)
+}
+
+function settleCompletedSourceFences(sourceFences: readonly CodexSourceProbeFence[], outcome: AvailabilityProbeOutcome): void {
+  for (const sourceFence of sourceFences) {
+    sendCodexSourceFenceSettledToServer(sourceFence, outcome)
+  }
+}
+
+function mergeSourceFences(...groups: readonly CodexSourceProbeFence[][]): CodexSourceProbeFence[] {
+  const merged = new Map<string, CodexSourceProbeFence>()
+  for (const group of groups) {
+    for (const sourceFence of group) merged.set(sourceFenceKey(sourceFence), sourceFence)
+  }
+  return [...merged.values()]
+}
+
+function availabilityProbeCoordinatorOutcome(
+  outcome: ReturnType<typeof automaticAccountProbeOutcome>,
+  diagnosticCanceled: boolean | undefined
+): AvailabilityProbeOutcome {
+  if (outcome === 'complete_success') return 'success'
+  if (outcome === 'upstream_failure') return 'health_failure'
+  // A complete HTTP frame with neutral semantic classification remains owned
+  // by the existing automatic-account classifier. It is not a confirmed
+  // transport health failure for source-avoidance settlement.
+  if (outcome === 'framing_complete_neutral') return 'unknown'
+  return diagnosticCanceled ? 'canceled' : 'probe_task_failure'
+}
+
+export function sourceBoundProbePermitsAccountHealthMutation(outcome: AvailabilityProbeOutcome): boolean {
+  return outcome === 'health_failure'
 }
 
 function shouldScheduleAccountBalanceAutoDetection(account: AccountSummary): boolean {

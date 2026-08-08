@@ -34,12 +34,14 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { acquireGlobalConcurrencySlot } from '../../../shared/concurrency-governor.js'
 import type { FirstByteDeadlineHandler } from './first-byte-deadline.js'
 import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
+import type { UpstreamResponseModelObservation } from '../observability/upstream-response-model.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
   readonly ok: boolean
   readonly headers: Headers
   readonly body: AsyncIterable<Uint8Array> | null
+  readonly upstreamResponseModelObservation?: UpstreamResponseModelObservation
 }
 
 interface UpstreamRequestOptions {

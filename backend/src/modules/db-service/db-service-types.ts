@@ -22,7 +22,7 @@ import type { AccountApiKeyPersistentMutationContext } from '../gateway/runtime/
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
+import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
@@ -1501,6 +1501,7 @@ export type DbServiceChildMessage =
     accountId: string
     reason: AccountHealthCheckTriggerReason
     traceId?: string
+    sourceFence?: CodexSourceProbeFence
   }
   | {
     type: 'background_worker_dataset_write_request'

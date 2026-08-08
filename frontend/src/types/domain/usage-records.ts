@@ -66,6 +66,8 @@ export interface UsageRecordSummary {
   usageSemantic?: string
   model?: string
   upstreamModel?: string
+  upstreamResponseModel?: string
+  upstreamModelMismatch?: boolean
   pricingModel?: string
   requestedServiceTier?: string
   effectiveServiceTier?: string
@@ -124,6 +126,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'endpoint'
   | 'model'
   | 'upstreamModel'
+  | 'upstreamResponseModel'
+  | 'upstreamModelMismatch'
   | 'billedServiceTier'
   | 'effectiveReasoningEffort'
   | 'modelMappingApplied'

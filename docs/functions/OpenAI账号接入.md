@@ -33,6 +33,8 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 Codex Responses SSE 在建流前遇到上游 HTTP 非 `2xx`，或精确协议确认失败且 `semanticCommitted = false`、预算允许时，按统一规则切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 同样执行。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；所有端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 继续按协议透明或验证边界处理。
 
+Codex 的跨请求 turn 避让只接受合法 `x-codex-turn-metadata.turn_id` 与官方 `session-id` 的 resolver 结果；metadata 中的 `session_id` / `thread_id`、请求 body、body hash、User-Agent 和显式客户端画像都不提供会话或共享避让亲和。没有官方会话时，仅在已有 API Key 和客户端 IP 时才使用短 TTL 的 HMAC IP 桶；官方会话非法或冲突时不降级，且无 IP 时不创建跨请求状态。该规则只影响同一 dispatch priority tier 的候选重排，不修改账户健康、account circuit 或 `temporary_unavailable` 恢复路径。首次来源避让只会投递已有后台健康检查；来源逻辑本身不直接探测上游，后台单飞 owner 才能以现有健康分类结算账户状态并按匹配来源 generation 清理避让。
+
 ## 协议与供应商定义
 
 ```ts
@@ -274,16 +276,17 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 
 ## 会话亲和调度
 
-OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、账户错误处理策略和上游可用性判断。
+OpenAI 网关使用短期会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、账户错误处理策略和上游可用性判断。
 
-- 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
-- 亲和键按 `system_account_id + api_key_id + session` 隔离，避免不同本地 API Key 或系统账户共享同一个上游会话绑定；`group_id` 不参与亲和键。
+- 当前 OpenAI/Codex 只在请求已被合法 `x-codex-turn-metadata.turn_id` 识别为 Codex 时，使用官方 `session-id` Header 建立会话身份；仅发送 `session-id` 的通用 OpenAI 请求保持 `generic_openai`。
+- 请求 body 的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`、`metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`，以及 `thread-id`、`turn-id`、`agent-id`、`x-client-request-id` 都不参与会话识别或亲和。
+- 会话身份先按 `system_account_id + api_key_id + semanticNamespace + rawSessionId` HMAC 为 `conversationKey`；亲和键再加入路由策略、分组和协议档案池，避免不同本地 API Key、路由或协议池共享绑定。原始会话 Header 不写入亲和 Redis key。
 - 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；默认的“不影响原账户”只把已有且当前命中源账号的客户端会话迁到目标账户，不写源账号状态，也不记录整组新请求目标偏向。选择“临时不可调用”或“停用账户”时，才同时按本地系统账户和分组记录短期运行态目标偏向，在源账号仍未回到候选池前，后续请求会优先尝试迁移目标账户。迁移目标偏向是当前作用域内的短期最高排序覆盖，优先于会话亲和、超级优先、主池 / 备用池分层、账号优先级和质量分；但不绕过 API Key / 系统账户 / 分组 / 授权作用域 / 模型 / 状态 / 额度 / 硬并发等候选硬条件。同一 API Key 所选路由策略下不同分组仍共享同一亲和绑定。
-- OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID、账号类型或分组 ID 写进隔离 key；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。
+- OAuth Codex adapter 对上游协议字段的透传与本地会话身份分离；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，只在官方 Header 已确认的会话内尽量保留连续性。
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / endpoint / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。后续同一 turn 到达时先避让已发生客户端可见失败的账号，直接对新候选发起正式请求；新候选全部失败后，先前避让账号仍作为最后兜底重新进入候选。正式请求热路径不执行额外同步探针，手动诊断和后台复测仍保留 `10s -> 20s -> 30s` 探针档位。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时先在同一 dispatch priority tier 内避让已发生客户端可见失败的账号；新候选全部失败后，先前避让账号仍作为最后兜底重新进入候选。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `10s -> 20s -> 30s` 档位。
 
 ### OpenAI OAuth 额度进度
 

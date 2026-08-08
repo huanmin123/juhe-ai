@@ -72,6 +72,8 @@ export interface UsageRecordSummary {
   usageSemantic?: string
   model?: string
   upstreamModel?: string
+  upstreamResponseModel?: string
+  upstreamModelMismatch?: boolean
   pricingModel?: string
   requestedServiceTier?: string
   effectiveServiceTier?: string
@@ -130,6 +132,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'endpoint'
   | 'model'
   | 'upstreamModel'
+  | 'upstreamResponseModel'
+  | 'upstreamModelMismatch'
   | 'billedServiceTier'
   | 'effectiveReasoningEffort'
   | 'modelMappingApplied'
@@ -204,6 +208,7 @@ export interface UsageRecordInput {
   usageSemantic?: string
   model?: string
   upstreamModel?: string
+  upstreamResponseModel?: string
   pricingModel?: string
   requestedServiceTier?: string
   effectiveServiceTier?: string
@@ -257,6 +262,7 @@ export const usageRecordListSelectColumns = [
   'ur.endpoint',
   'ur.model',
   'ur.upstream_model',
+  'ur.upstream_response_model',
   'ur.billed_service_tier',
   'ur.effective_reasoning_effort',
   'ur.model_mapping_applied',
@@ -763,6 +769,7 @@ function buildUsageRecordBatchWritePlan(
         input.usageSemantic ?? null,
         input.model ?? null,
         input.upstreamModel ?? null,
+        input.upstreamResponseModel ?? null,
         input.pricingModel ?? null,
         input.requestedServiceTier ?? 'default',
         input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
@@ -892,6 +899,7 @@ const postgresUsageRecordColumns = [
   'usage_semantic',
   'model',
   'upstream_model',
+  'upstream_response_model',
   'pricing_model',
   'requested_service_tier',
   'effective_service_tier',

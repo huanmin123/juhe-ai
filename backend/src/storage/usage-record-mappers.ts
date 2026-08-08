@@ -4,6 +4,7 @@ import type { DatabaseClient } from './database-client.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 import { normalizeUsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { normalizeOptionalUsageServiceTier } from '../modules/gateway/usage/service-tier.js'
+import { hasUpstreamResponseModelMismatch } from '../modules/gateway/usage/types.js'
 
 export type UsageRecordRow = Record<string, unknown>
 
@@ -40,6 +41,8 @@ export function usageRecordListItemFromRow(
   shouldIncludeSystemAccountFields: boolean,
   accountNames: Map<string, string>
 ): UsageRecordListItem {
+  const upstreamModel = optionalString(row.upstream_model)
+  const upstreamResponseModel = optionalString(row.upstream_response_model)
   return {
     id: String(row.id),
     systemAccountId: shouldIncludeSystemAccountFields ? optionalString(row.system_account_id) : undefined,
@@ -55,7 +58,9 @@ export function usageRecordListItemFromRow(
     accountName: optionalString(row.account_name),
     endpoint: optionalString(row.endpoint),
     model: optionalString(row.model),
-    upstreamModel: optionalString(row.upstream_model),
+    upstreamModel,
+    upstreamResponseModel,
+    upstreamModelMismatch: hasUpstreamResponseModelMismatch(upstreamModel, upstreamResponseModel),
     billedServiceTier: usageServiceTier(row.billed_service_tier),
     effectiveReasoningEffort: usageReasoningEffort(row.effective_reasoning_effort),
     modelMappingApplied: row.model_mapping_applied === 1,
@@ -97,6 +102,8 @@ export function usageRecordSummaryFromRow(
   const outputAudioTokens = numberValue(row.output_audio_tokens)
   const outputImageCount = numberValue(row.output_image_count)
   const model = optionalString(row.model)
+  const upstreamModel = optionalString(row.upstream_model)
+  const upstreamResponseModel = optionalString(row.upstream_response_model)
   const stream = row.stream === 1
   const statusCode = numberValue(row.status_code)
   const success = row.success === 1
@@ -118,7 +125,9 @@ export function usageRecordSummaryFromRow(
     providerProtocolProfileId: optionalString(row.provider_protocol_profile_id),
     usageSemantic: optionalString(row.usage_semantic),
     model,
-    upstreamModel: optionalString(row.upstream_model),
+    upstreamModel,
+    upstreamResponseModel,
+    upstreamModelMismatch: hasUpstreamResponseModelMismatch(upstreamModel, upstreamResponseModel),
     pricingModel: optionalString(row.pricing_model),
     requestedServiceTier: usageServiceTier(row.requested_service_tier),
     effectiveServiceTier: usageServiceTier(row.effective_service_tier),

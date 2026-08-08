@@ -20,6 +20,12 @@ import {
 import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { prepareAnthropicMessagesBodyForAttempt } from '../upstream/body-preparation.js'
 import { applyGrokAccessDeniedFallback } from '../../providers/drivers/xai/grok-access-denied-fallback.js'
+import {
+  createUpstreamResponseModelObservation,
+  observeUpstreamResponseModelBody,
+  upstreamResponseModelProtocolForRequest,
+  type UpstreamResponseModelObservation
+} from '../observability/upstream-response-model.js'
 
 const primaryStartedGatewayTransportErrors = new WeakSet<object>()
 
@@ -171,6 +177,18 @@ export async function performUpstreamRequestAttempt(
     stream: isEffectiveOpenAIStreamRequest(req, account)
   }, '网关收到上游响应头')
 
+  const upstreamResponseModelObservation = createUpstreamResponseModelObservation({
+    protocol: upstreamResponseModelProtocolForRequest({
+      headers,
+      upstreamUrl,
+      providerCode: account.providerCode,
+      protocolCode: account.protocolCode
+    }),
+    sse: isEffectiveOpenAIStreamRequest(req, account)
+      || (response.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream')
+  })
+  response = observeUpstreamResponseModelResponse(response, upstreamResponseModelObservation)
+
   const continueUpstreamJsonRequest = async (nextBody: Record<string, unknown>, eventName = 'gateway_continue_upstream_json_request_started') => {
     const nextUpstreamBody = prepareAnthropicMessagesBodyForAttempt(req, headers, upstreamUrl, nextBody)
     getRequestLogger().debug({
@@ -184,7 +202,7 @@ export async function performUpstreamRequestAttempt(
       socketTimeoutMs,
       requestTimeoutMs
     }, '网关继续请求上游')
-    return requestUpstream(upstreamUrl, {
+    const continuedResponse = await requestUpstream(upstreamUrl, {
       method: req.method,
       headers: new Headers(headers),
       body: nextUpstreamBody,
@@ -195,6 +213,7 @@ export async function performUpstreamRequestAttempt(
       signal,
       transport: upstreamTransportForAttempt(headers, upstreamUrl)
     })
+    return observeUpstreamResponseModelResponse(continuedResponse, upstreamResponseModelObservation)
   }
 
   const codexBridgeState = getCodexResponsesContextState(req)
@@ -209,7 +228,34 @@ export async function performUpstreamRequestAttempt(
       return continueUpstreamJsonRequest(nextBody, 'gateway_codex_bridge_continue_chat_request_started')
     }
   })
-  return transformedResponse
+  return withUpstreamResponseModelObservation(transformedResponse, upstreamResponseModelObservation)
+}
+
+function observeUpstreamResponseModelResponse(
+  response: GatewayUpstreamResponse,
+  observation: UpstreamResponseModelObservation
+): GatewayUpstreamResponse {
+  const body = response.body
+  return {
+    status: response.status,
+    ok: response.ok,
+    headers: response.headers,
+    body: body ? observeUpstreamResponseModelBody(body, observation) : null,
+    upstreamResponseModelObservation: observation
+  }
+}
+
+function withUpstreamResponseModelObservation(
+  response: GatewayUpstreamResponse,
+  observation: UpstreamResponseModelObservation
+): GatewayUpstreamResponse {
+  return {
+    status: response.status,
+    ok: response.ok,
+    headers: response.headers,
+    body: response.body,
+    upstreamResponseModelObservation: observation
+  }
 }
 
 function isWeakSetValue(value: unknown): value is object {

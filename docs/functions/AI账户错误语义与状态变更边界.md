@@ -56,7 +56,19 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 当前请求的 Key 排除必须使用请求内集合或等价的 request generation。未知 HTTP 响应不得写入跨请求共享的 `temporary_unavailable`、`rate_limited`、`error` 或其他带语义的 Key 避让状态。
 
-未知 HTTP 响应或明确协议失败不得创建跨请求的客户端 IP × API Key × 账户避让，也不得直接降低共享账户质量。真实 gateway 请求出现这类失败时，每个请求最多选择一个账户投递独立健康检查；业务请求本身不能写账户状态。该二次确认成功时保留账户，确认失败时按专用阈值 1 写通用 `temporary_unavailable`；正常周期健康对完整真实诊断未通过的结果统一立即写入 `temporary_unavailable`，未形成可靠结论的任务失败、取消和 unknown 不改账户状态。
+未知 HTTP 响应或明确协议失败不得直接创建跨请求的客户端 IP × API Key × 账户健康状态，也不得直接降低共享账户质量。若请求已经解析出合法的 `clientSourceKey`，网关可以记录该来源的短 TTL 候选避让，并异步投递共享的独立账户健康探活；这不是账户健康状态或 transport circuit。来源键缺失、invalid 或 conflict 时不写来源避让。真实 gateway 请求每个请求最多选择一个账户投递独立健康检查；业务请求本身不能写账户状态。该二次确认成功时只清理匹配来源，确认 health failure 时才按专用阈值 1 写通用 `temporary_unavailable`；正常周期健康对完整真实诊断未通过的结果统一立即写入 `temporary_unavailable`，未形成可靠结论的任务失败、取消和 unknown 不改账户状态。
+
+来源级短窗口候选避让统一以不可逆 `clientSourceKey` 为根键，而不是每个供应商各自拼接 Header：可信客户端 adapter 只提交自己的稳定证据，公共层再按系统账户、可信 `API Key ID`、来源类型与 semantic namespace HMAC。官方 Codex / Claude Code 会话是 `official_session`，Gemini 已存在 interaction resource 是 `protocol_resource`，完全没有细粒度证据且已知规范化 IP 时才可用 `clientIp + API Key ID` 的 `ip_api_key_fallback` 短 TTL 软桶。官方会话为 `invalid` 或 `conflict` 时必须停止，绝不可降级到 IP/API Key 桶；没有 IP 也不创建跨请求避让。来源状态还必须按客户端画像、endpoint 与下游协议隔离，持久 retry/CAS 分片再加入账户身份；会话亲和才按路由策略、分组和供应商协议档案隔离，因此来源避让会保留同一 API Key 在路由切换时的短期失败经验。原始 Header、interaction ID、请求 body/hash、User-Agent、显式 `x-juhe-client-profile`、客户端自报 `user` 和 request/trace ID 都不能进入持久键。
+
+当前来源级避让由公共网关失败路径统一消费：Codex Responses SSE 或 `/responses/compact` 在公共来源作用域下再加入精确 `turnId` 子键，使同一 turn 下多个账户互不覆盖；Claude Code、Gemini 和通用协议请求直接使用公共来源作用域。后续供应商必须接入公共来源层，不能重新拼接外部字段或把协议资源冒充会话。每次 activation 只异步投递同一账户 runtime/config generation 的共享健康检查；control 拒绝、网络失败或 worker 入队失败按 fence 结算 `unknown`，保留短避让且不写账户或 circuit 状态。
+
+该避让只重排同一 dispatch priority tier 内的候选，不能越过健康的高优先级或 fallback 层，也不能泄漏到其他来源、API Key、endpoint 或协议。它不改变账户、Key、账户 circuit 或共享账户可用性；同一 API Key 来源发生路由切换时允许连续。Codex `committed_retry_signal`、其他客户端专属 retryable 语义和普通 availability probe 都不是 transport 证据；账户级 `temporary_unavailable` 仍只能由用户显式策略或独立探活按既有阈值、配置版本和观察栅栏写入。
+
+可用性探活按 `account runtime scope + probe kind + config revision` 共享单飞。Redis runtime state 为多实例权威，memory 仅单机进程内回退；同一 generation 只有 owner 可实际执行，其他触发标为 joined 且不得追加真实上游 probe 或 retry-queue follow-up。Codex 来源 activation 把 HMAC `stateKey`、账户、`sourceGeneration`、runtime/config、`probeGeneration` 组成有界 source fence（单 generation 至多 64 条），随健康检查 dispatch/IPC 交给真实 worker；worker 完成后回传同一 fence，由持有 gateway 状态的进程只执行 `stateKey + accountId + sourceGeneration` 的精确清理。worker 不得依赖另一个进程的 memory Map，也不得按账户清 Codex 状态。
+
+来源 owner 在健康任务明确入队后释放带截止时间的 handoff lease；未回传时 lease 到期可由新 source owner 接管，避免无限 joined waiter。owner token、lease 过期接管、completion/fence 原子边界和 generation fencing 保护结算：已 settled 的旧 generation 必须原子替换，新 activation 只能加入新 generation，不能消费旧 success。投递拒绝、投递冷却合并或释放栅栏失败均结算为 `probe_task_failure` / `unknown`，不会把尚未执行的任务假称成功。
+
+source-only owner 的 `complete_success` 只清该 generation 中完全匹配的来源避让，绝不写账户健康、账户运行态或 circuit；`unknown`、任务失败、取消、stale 和 `framing_complete_neutral` 保留短避让且不写账户不可调度。确认的 health failure 才按既有自动探活分类、阈值和观察栅栏处理。若原本的 scheduled/quality/request-failure 健康任务正在执行，同一 generation 新附着 source fence 不会把该普通任务降格：普通账户健康副作用仍完整结算，同时 source fence 只得到自己的窄清理/保留结果。`temporary_unavailable` 仍只能通过既有 cooldown retest 恢复。
 
 完整 HTTP 非 `2xx` 不能被伪装成 `completed_response` 成功，也不能被改写为 `upstream_retryable_error` 或“未识别失败”。使用记录中的 `opaque_upstream` 只表达“没有匹配账户策略”，列表必须同时显示已知的 HTTP 状态、错误码和有界错误摘要；完整原始正文留在审计详情。完整响应表示传输 framing 已完成，不应据此确认传输电路失败。
 

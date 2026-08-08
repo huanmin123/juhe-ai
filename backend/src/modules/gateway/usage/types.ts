@@ -1,6 +1,7 @@
 import type { UsageServiceTier } from './service-tier.js'
 
 export interface ParsedUsage {
+  upstreamResponseModel?: string
   serviceTier?: UsageServiceTier
   inputTokens?: number
   outputTokens?: number
@@ -21,6 +22,7 @@ export function emptyUsage(): ParsedUsage {
 
 export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage {
   return {
+    upstreamResponseModel: next.upstreamResponseModel ?? current.upstreamResponseModel,
     serviceTier: next.serviceTier ?? current.serviceTier,
     inputTokens: next.inputTokens ?? current.inputTokens,
     outputTokens: next.outputTokens ?? current.outputTokens,
@@ -34,6 +36,15 @@ export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage
     outputAudioTokens: next.outputAudioTokens ?? current.outputAudioTokens,
     outputImageCount: next.outputImageCount ?? current.outputImageCount
   }
+}
+
+export function hasUpstreamResponseModelMismatch(
+  upstreamModel?: string,
+  upstreamResponseModel?: string
+): boolean {
+  const sentModel = upstreamModel?.trim()
+  const responseModel = upstreamResponseModel?.trim()
+  return Boolean(sentModel && responseModel && sentModel !== responseModel)
 }
 
 export function hasAnyUsageValue(value: ParsedUsage): boolean {

@@ -11,7 +11,7 @@ export function usageRecordTableColumns(input: {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
   }
   baseColumns.push(
-    { title: '模型', dataIndex: 'model', key: 'model', width: 240 },
+    { title: '模型', dataIndex: 'model', key: 'model', width: 280 },
     { title: '类型', key: 'stream', width: 90 },
     { title: '状态', key: 'status', width: 220 },
     { title: 'Token 用量', key: 'tokens', width: 150 },

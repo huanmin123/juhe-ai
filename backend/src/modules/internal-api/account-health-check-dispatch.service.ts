@@ -3,9 +3,10 @@ import { getTraceId } from '../../shared/request-context.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   accountHealthCheckWorkerIpcQueueLimits,
-  sendAccountHealthCheckTriggerToWorkerWithOutcome
+  sendAccountHealthCheckTriggerToWorkerWithOutcome,
+  settleClientSourceFenceFromWorker
 } from '../background/background-ipc.js'
-import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
+import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 import {
   accountHealthCheckDispatchInternalPrefix,
   createAccountHealthCheckDispatchSignature,
@@ -27,11 +28,12 @@ export function dispatchAccountHealthCheck(accountId: string, reason: AccountHea
 export function dispatchAccountHealthCheckWithOutcome(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  traceId = getTraceId()
+  traceId = getTraceId(),
+  sourceFence?: CodexSourceProbeFence
 ): AccountHealthCheckDispatchOutcome {
   const normalizedId = accountId.trim()
   if (!normalizedId) return rejectedDispatchOutcome('ops_ipc_unavailable')
-  const cooldownRemainingMs = requestFailureDispatchCooldownRemainingMs(normalizedId, reason)
+  const cooldownRemainingMs = sourceFence ? undefined : requestFailureDispatchCooldownRemainingMs(normalizedId, reason)
   if (cooldownRemainingMs !== undefined) return {
     outcome: 'coalesced',
     decisionCode: 'request_failure_cooldown',
@@ -43,13 +45,13 @@ export function dispatchAccountHealthCheckWithOutcome(
     && runtimeConfig.performanceNodeRole === 'gateway'
     && runtimeConfig.processRole === 'server'
   ) {
-    return dispatchAccountHealthCheckToControl(normalizedId, reason, traceId)
+    return dispatchAccountHealthCheckToControl(normalizedId, reason, traceId, sourceFence)
   }
   if (runtimeConfig.processRole !== 'db-service') {
     return rememberAccountHealthCheckDispatchOutcome(
       normalizedId,
       reason,
-      workerDispatchOutcome(sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId))
+      workerDispatchOutcome(sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId, sourceFence))
     )
   }
   if (!process.send || process.connected === false) return rejectedDispatchOutcome('ops_ipc_unavailable')
@@ -58,7 +60,8 @@ export function dispatchAccountHealthCheckWithOutcome(
       type: 'background_worker_account_health_check_trigger',
       accountId: normalizedId,
       reason,
-      ...(traceId ? { traceId } : {})
+      ...(traceId ? { traceId } : {}),
+      ...(sourceFence ? { sourceFence } : {})
     }, (error) => {
       if (error) {
         logger.warn(errorLogFields(error, {
@@ -80,7 +83,8 @@ export function dispatchAccountHealthCheckWithOutcome(
 function dispatchAccountHealthCheckToControl(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  traceId?: string
+  traceId?: string,
+  sourceFence?: CodexSourceProbeFence
 ): AccountHealthCheckDispatchOutcome {
   const dispatchUrl = accountHealthCheckDispatchTargetUrl()
   if (!dispatchUrl) {
@@ -96,8 +100,9 @@ function dispatchAccountHealthCheckToControl(
     requestFailureDispatchInFlight.add(accountId)
     requestFailureDispatchInFlightAt.set(accountId, Date.now())
   }
-  void postAccountHealthCheckDispatch(dispatchUrl, accountId, reason, traceId)
+  void postAccountHealthCheckDispatch(dispatchUrl, accountId, reason, traceId, sourceFence)
     .then((accepted) => {
+      if (!accepted) settleClientSourceFenceAfterControlDispatchFailure(sourceFence, accountId, 'rejected')
       rememberAccountHealthCheckDispatchOutcome(
         accountId,
         reason,
@@ -105,6 +110,7 @@ function dispatchAccountHealthCheckToControl(
       )
     })
     .catch((error) => {
+      settleClientSourceFenceAfterControlDispatchFailure(sourceFence, accountId, 'failed')
       logger.warn(errorLogFields(error, {
         event: 'account_health_check_control_dispatch_failed',
         accountId
@@ -120,13 +126,31 @@ function dispatchAccountHealthCheckToControl(
   return queuedDispatchOutcome()
 }
 
+function settleClientSourceFenceAfterControlDispatchFailure(
+  sourceFence: CodexSourceProbeFence | undefined,
+  accountId: string,
+  reason: 'rejected' | 'failed'
+): void {
+  if (!sourceFence) return
+  void settleClientSourceFenceFromWorker(sourceFence, 'unknown').catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'account_health_check_control_source_fence_settlement_failed',
+      accountId,
+      sourceGeneration: sourceFence.sourceGeneration,
+      probeGeneration: sourceFence.probeGeneration,
+      reason
+    }), 'control 健康检查投递失败后未能结算来源 fence，保留短期避让等待后续接管')
+  })
+}
+
 async function postAccountHealthCheckDispatch(
   url: URL,
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  traceId?: string
+  traceId?: string,
+  sourceFence?: CodexSourceProbeFence
 ): Promise<boolean> {
-  const body = Buffer.from(JSON.stringify({ accountId, reason }), 'utf8')
+  const body = Buffer.from(JSON.stringify({ accountId, reason, ...(sourceFence ? { sourceFence } : {}) }), 'utf8')
   const response = await fetch(url, {
     method: 'POST',
     headers: {

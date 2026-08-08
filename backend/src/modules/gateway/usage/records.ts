@@ -300,6 +300,7 @@ export async function recordCompletedUpstreamAttempt(
     usageSemantic: usageSemanticForProfile(input.account),
     model,
     upstreamModel: modelAccounting.upstreamModel,
+    upstreamResponseModel: input.usage.upstreamResponseModel,
     pricingModel: modelAccounting.pricingModel,
     modelMappingApplied: modelAccounting.modelMappingApplied,
     modelMappingSource: modelAccounting.modelMappingSource,

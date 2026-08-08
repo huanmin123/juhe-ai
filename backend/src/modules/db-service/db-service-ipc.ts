@@ -757,7 +757,7 @@ function handleDbServiceMessage(message: unknown): void {
       break
     case 'background_worker_account_health_check_trigger':
       if (runtimeConfig.processRole === 'server' && typeof record.accountId === 'string') {
-        void forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason, record.traceId)
+        void forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason, record.traceId, record.sourceFence)
       }
       break
     default:
@@ -1745,14 +1745,19 @@ async function forwardAccountTestCancelToWorker(taskId: string): Promise<void> {
   }
 }
 
-async function forwardAccountHealthCheckTriggerToWorker(accountId: string, reason: unknown, traceId: unknown): Promise<void> {
+async function forwardAccountHealthCheckTriggerToWorker(accountId: string, reason: unknown, traceId: unknown, sourceFence: unknown): Promise<void> {
   const backgroundIpc = await import('../background/background-ipc.js')
-  const { isAccountHealthCheckTriggerReason } = await import('../accounts/account-health-check-trigger.js')
+  const { isAccountHealthCheckTriggerReason, normalizeCodexSourceProbeFence } = await import('../accounts/account-health-check-trigger.js')
   const normalizedId = normalizedString(accountId)
   if (
     normalizedId
     && isAccountHealthCheckTriggerReason(reason)
-    && !backgroundIpc.sendAccountHealthCheckTriggerToWorker(normalizedId, reason, typeof traceId === 'string' ? traceId : undefined)
+    && !backgroundIpc.sendAccountHealthCheckTriggerToWorker(
+      normalizedId,
+      reason,
+      typeof traceId === 'string' ? traceId : undefined,
+      normalizeCodexSourceProbeFence(sourceFence)
+    )
   ) {
     logger.warn({
       event: 'db_service_account_health_check_trigger_forward_failed',

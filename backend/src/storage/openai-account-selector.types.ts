@@ -17,6 +17,7 @@ import type { AccountApiKeyRuntimeSelectionState } from './account-api-key-rotat
 
 export interface OpenAIAccountSecret {
   id: string
+  configRevision?: number
   dispatchRevision?: number
   providerCode: ProviderCode
   providerProtocolProfileId: string
@@ -127,6 +128,7 @@ export interface GroupAccountRow {
 
 export interface OpenAIAccountRow {
   id: string
+  config_revision?: number
   dispatch_revision?: number
   system_account_id: string
   provider_code: ProviderCode

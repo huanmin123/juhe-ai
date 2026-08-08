@@ -13,7 +13,11 @@ import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import { dbServiceOperationAccessMode } from '../db-service/db-service-operation-access-mode.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
-import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
+import {
+  normalizeCodexSourceProbeFence,
+  type AccountHealthCheckTriggerReason,
+  type CodexSourceProbeFence
+} from '../accounts/account-health-check-trigger.js'
 import { auditWorkerMessageMaxBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
 import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
 import {
@@ -339,9 +343,10 @@ export function sendAccountTestCancelToWorker(taskId: string): boolean {
 export function sendAccountHealthCheckTriggerToWorker(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  traceId?: string
+  traceId?: string,
+  sourceFence?: CodexSourceProbeFence
 ): boolean {
-  return sendAccountHealthCheckTriggerToWorkerWithOutcome(accountId, reason, traceId).accepted
+  return sendAccountHealthCheckTriggerToWorkerWithOutcome(accountId, reason, traceId, sourceFence).accepted
 }
 
 export type AccountHealthCheckWorkerDispatchOutcome =
@@ -369,7 +374,8 @@ export type AccountHealthCheckWorkerDispatchOutcome =
 export function sendAccountHealthCheckTriggerToWorkerWithOutcome(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  traceId?: string
+  traceId?: string,
+  sourceFence?: CodexSourceProbeFence
 ): AccountHealthCheckWorkerDispatchOutcome {
   if (runtimeConfig.processRole === 'worker') return unavailableAccountHealthCheckWorkerDispatchOutcome()
   const normalizedId = normalizedString(accountId)
@@ -378,11 +384,14 @@ export function sendAccountHealthCheckTriggerToWorkerWithOutcome(
     return unavailableAccountHealthCheckWorkerDispatchOutcome()
   }
   const normalizedTraceId = normalizeHeaderId(traceId)
+  const normalizedSourceFence = sourceFence ? normalizeCodexSourceProbeFence(sourceFence) : undefined
+  if (sourceFence && !normalizedSourceFence) return unavailableAccountHealthCheckWorkerDispatchOutcome()
   const outcome = queueWorkerMessageWithOutcome({
     type: 'background_worker_account_health_check_trigger',
     accountId: normalizedId,
     reason,
-    ...(normalizedTraceId ? { traceId: normalizedTraceId } : {})
+    ...(normalizedTraceId ? { traceId: normalizedTraceId } : {}),
+    ...(normalizedSourceFence ? { sourceFence: normalizedSourceFence } : {})
   })
   if (outcome.targetRole !== 'ops-worker') return unavailableAccountHealthCheckWorkerDispatchOutcome()
   if (outcome.accepted) {
@@ -468,6 +477,31 @@ export function sendAccountRuntimeClearToServer(target: AccountRuntimeAvailabili
     markParentIpcBroken(error)
   }
 }
+
+/** Worker-to-server half of the client-source fence handoff. */
+export function sendClientSourceFenceSettledToServer(
+  sourceFence: CodexSourceProbeFence,
+  outcome: 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale'
+): void {
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') return
+  const normalizedFence = normalizeCodexSourceProbeFence(sourceFence)
+  if (!normalizedFence) return
+  try {
+    process.send({
+      type: 'background_worker_codex_source_fence_settled',
+      sourceFence: normalizedFence,
+      outcome
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) markParentIpcBroken(error)
+    })
+  } catch (error) {
+    markParentIpcBroken(error)
+  }
+}
+
+// Kept for in-flight IPC and legacy call sites while source avoidance is
+// generalized beyond Codex.
+export const sendCodexSourceFenceSettledToServer = sendClientSourceFenceSettledToServer
 
 export function sendBackgroundWorkerMessage(message: BackgroundWorkerMessage): boolean {
   if (runtimeConfig.processRole === 'worker') {
@@ -802,6 +836,14 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
         void clearServerAccountRuntimeAvailability(record.target)
       }
       break
+    case 'background_worker_codex_source_fence_settled':
+      if (runtimeConfig.processRole === 'server') {
+        const sourceFence = normalizeCodexSourceProbeFence(record.sourceFence)
+        if (sourceFence && isAvailabilityProbeOutcome(record.outcome)) {
+          void settleCodexSourceFenceFromWorker(sourceFence, record.outcome)
+        }
+      }
+      break
     case 'gateway_quota_snapshot_update':
       if (runtimeConfig.processRole === 'server' && isGatewayQuotaSnapshot(record.snapshot)) {
         void replaceServerGatewayQuotaSnapshot(record.snapshot)
@@ -821,6 +863,34 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       break
   }
 }
+
+function isAvailabilityProbeOutcome(value: unknown): value is 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale' {
+  return value === 'success' || value === 'health_failure' || value === 'unknown'
+    || value === 'probe_task_failure' || value === 'canceled' || value === 'stale'
+}
+
+export async function settleClientSourceFenceFromWorker(
+  sourceFence: CodexSourceProbeFence,
+  outcome: 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale'
+): Promise<void> {
+  const [coordinator, retry] = await Promise.all([
+    import('../gateway/runtime/availability-probe-coordinator.js'),
+    import('../gateway/client-profiles/codex-turn-retry.service.js')
+  ])
+  await coordinator.settleDispatchedAvailabilityProbeBySourceFence({
+    runtimeKey: sourceFence.runtimeKey,
+    generation: sourceFence.probeGeneration,
+    sourceFence,
+    outcome
+  })
+  if (outcome === 'success') {
+    await retry.clearCodexTurnAccountAvoidanceByFenceAsync(sourceFence)
+  }
+}
+
+// Kept for in-flight IPC and legacy call sites while source avoidance is
+// generalized beyond Codex.
+export const settleCodexSourceFenceFromWorker = settleClientSourceFenceFromWorker
 
 function handleParentMessage(message: unknown): void {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {

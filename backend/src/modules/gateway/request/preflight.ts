@@ -64,7 +64,8 @@ import {
 } from '../protocols/gemini-v1beta/interaction-affinity.service.js'
 import type { ResponseProtocolCode } from '../protocols/openai-v1/response-semantics.js'
 import {
-  resolveOpenAIGatewaySessionAffinityKey
+  resolveOpenAIGatewaySessionAffinityKey,
+  resolveOpenAIGatewaySessionAffinityKeyFromClientSource
 } from '../runtime/session-affinity.service.js'
 import { type UsageRequestSnapshot } from '../usage/snapshots.js'
 import {
@@ -595,13 +596,15 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    endpoint
+    endpoint,
+    clientIp: gatewayClientIp
   })
-  let sessionIdentity = resolveGatewaySessionIdentity(req, {
-    clientProfile: initialClientStrategy.clientProfile,
-    systemAccountId,
-    apiKeyId
-  })
+  let sessionIdentity = initialClientStrategy.clientSource?.sessionIdentity
+    ?? resolveGatewaySessionIdentity(req, {
+      clientProfile: initialClientStrategy.clientProfile,
+      systemAccountId,
+      apiKeyId
+    })
   bindAuditSessionIdentity(auditCapture, sessionIdentity, initialClientStrategy.clientProfile)
   if (!interactionResourceAffinity && !initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
     const previousGroupId = groupId
@@ -823,14 +826,16 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     endpoint,
-    providerCode: groupAccess?.providerCode
+    providerCode: groupAccess?.providerCode,
+    clientIp: gatewayClientIp
   })
   if (clientStrategy.clientProfile !== initialClientStrategy.clientProfile) {
-    sessionIdentity = resolveGatewaySessionIdentity(req, {
-      clientProfile: clientStrategy.clientProfile,
-      systemAccountId,
-      apiKeyId
-    })
+    sessionIdentity = clientStrategy.clientSource?.sessionIdentity
+      ?? resolveGatewaySessionIdentity(req, {
+        clientProfile: clientStrategy.clientProfile,
+        systemAccountId,
+        apiKeyId
+      })
   }
   bindAuditSessionIdentity(auditCapture, sessionIdentity, clientStrategy.clientProfile)
   logRequestStage('client.profile', {
@@ -970,13 +975,17 @@ export async function prepareOpenAIGatewayDispatchContext(
 
   const accountLoadStartedAt = performance.now()
   const rawCandidateAccounts = options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
-  const rawSessionAffinityKey = resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
+  const sessionAffinityScope = {
     systemAccountId,
     apiKeyId,
     groupId,
     routeStrategyId: apiKeyRecord?.route_strategy_id,
     providerProtocolProfileId: gatewayAffinityProviderProfilePool(rawCandidateAccounts)
-  })
+  }
+  const rawSessionAffinityKey = resolveOpenAIGatewaySessionAffinityKeyFromClientSource(
+    clientStrategy.clientSource,
+    sessionAffinityScope
+  ) ?? resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, sessionAffinityScope)
   const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
   logRequestStage('account.load_candidates', {
     traceId,

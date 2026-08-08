@@ -1,10 +1,16 @@
-import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import { gatewayProtocolResponseProtocolForRequest } from '../protocols/registry.js'
 import { requestStream } from '../request/metadata.js'
 import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
+import {
+  deriveGatewayClientSourceChildStateKey,
+  deriveGatewayClientSourceStateKey,
+  resolveGatewayClientSourceIdentity,
+  type GatewayClientSourceIdentity,
+  type GatewayClientSourceKind
+} from './source-identity.js'
 
 export const gatewayClientProfileHeader = 'x-juhe-client-profile'
 
@@ -28,13 +34,17 @@ export interface OpenAIGatewayClientStrategyIdentity {
   providerProtocolProfileId?: string
   protocolCode?: string
   protocolVersion?: string
+  clientIp?: string
 }
 
 export interface OpenAIGatewayCodexTurnContext {
   turnId: string
   sessionId?: string
   threadId?: string
-  stateKey: string
+  // This is always an HMAC of the complete source scope. It is absent when
+  // no safe source identity exists, which disables persistent avoidance.
+  stateKey?: string
+  sourceKind?: GatewayClientSourceKind
 }
 
 export interface OpenAIGatewayClientStrategyContext {
@@ -44,8 +54,14 @@ export interface OpenAIGatewayClientStrategyContext {
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
   codexCompactionExpected: boolean
   codexTurn?: OpenAIGatewayCodexTurnContext
+  clientSource?: GatewayClientSourceIdentity
+  // A source key is intentionally narrower than account health. Codex keeps
+  // its turn as a child scope; every other supported client uses the common
+  // source scope directly.
+  clientSourceAvoidanceStateKey?: string
   clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature' | 'gemini_cli_request_signature'
   retryCoordination: GatewayClientRetryCoordination
+  allowClientSourceAccountAvoidance: boolean
   allowCodexTurnAccountAvoidance: boolean
 }
 
@@ -69,22 +85,38 @@ export function resolveOpenAIGatewayClientStrategy(
 ): OpenAIGatewayClientStrategyContext {
   const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, identity)
   if (responseProtocol === 'anthropic_v1') {
-    return resolveAnthropicGatewayClientStrategy(req)
+    return resolveAnthropicGatewayClientStrategy(req, identity)
   }
   if (responseProtocol === 'gemini_v1beta') {
-    return resolveGeminiGatewayClientStrategy(req)
+    return resolveGeminiGatewayClientStrategy(req, identity)
   }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)
   const codexCompactionExpected = codexCompactionExpectedForRequest(req)
   const codexMetadata = parseCodexTurnMetadata(req.header('x-codex-turn-metadata'))
   const canUseCodexProfile = Boolean(codexMetadata?.turnId)
     && (downstreamProtocol === 'responses_sse' || isOpenAICodexCompactPostRequest(req))
-  const codexTurn = canUseCodexProfile && codexMetadata?.turnId
-    ? buildCodexTurnContext(identity, codexMetadata)
-    : undefined
-
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
-  const clientProfile = codexTurn || explicitProfile === 'codex' ? 'codex' : 'generic_openai'
+  const clientProfile = canUseCodexProfile || explicitProfile === 'codex' ? 'codex' : 'generic_openai'
+  const clientProfileSource = canUseCodexProfile
+    ? 'codex_turn_metadata'
+    : explicitProfile === 'codex'
+      ? 'explicit_header'
+      : 'default'
+  const clientSource = resolveGatewayClientSourceIdentity(req, {
+    ...identity,
+    clientProfile,
+    clientProfileSource,
+    downstreamProtocol
+  })
+  const codexTurn = canUseCodexProfile && codexMetadata?.turnId
+    ? buildCodexTurnContext(identity, codexMetadata, downstreamProtocol, clientSource)
+    : undefined
+  const clientSourceStateKey = deriveGatewayClientSourceStateKey(clientSource, {
+    clientProfile,
+    endpoint: identity.endpoint,
+    downstreamProtocol
+  })
+  const clientSourceAvoidanceStateKey = codexTurn?.stateKey ?? clientSourceStateKey
   return {
     clientProfile,
     requestClientCompatibility: codexTurn ? 'codex_responses' : 'openai_standard',
@@ -92,13 +124,19 @@ export function resolveOpenAIGatewayClientStrategy(
     upstreamAdapter: 'openai_mixed',
     codexCompactionExpected: Boolean(codexTurn) && codexCompactionExpected,
     codexTurn,
-    clientProfileSource: codexTurn ? 'codex_turn_metadata' : explicitProfile === 'codex' ? 'explicit_header' : 'default',
+    clientSource,
+    ...(clientSourceAvoidanceStateKey ? { clientSourceAvoidanceStateKey } : {}),
+    clientProfileSource,
     retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
-    allowCodexTurnAccountAvoidance: Boolean(codexTurn)
+    allowClientSourceAccountAvoidance: Boolean(clientSourceAvoidanceStateKey),
+    allowCodexTurnAccountAvoidance: Boolean(codexTurn?.stateKey)
   }
 }
 
-export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
+export function resolveAnthropicGatewayClientStrategy(
+  req: Request,
+  identity?: OpenAIGatewayClientStrategyIdentity
+): OpenAIGatewayClientStrategyContext {
   const downstreamProtocol = resolveAnthropicGatewayDownstreamProtocol(req)
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
   const supportedAnthropicShape = downstreamProtocol !== 'unknown_stream'
@@ -106,19 +144,39 @@ export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatew
   const signatureClaudeCode = !explicitClaudeCode && supportedAnthropicShape && isClaudeCodeAnthropicRequestSignature(req)
   const claudeCode = explicitClaudeCode || signatureClaudeCode
   const clientProfile = claudeCode ? 'claude_code' : 'generic_anthropic'
+  const clientProfileSource = explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default'
+  const clientSource = identity ? resolveGatewayClientSourceIdentity(req, {
+    ...identity,
+    clientProfile,
+    clientProfileSource,
+    downstreamProtocol
+  }) : undefined
+  const clientSourceAvoidanceStateKey = identity && clientSource
+    ? deriveGatewayClientSourceStateKey(clientSource, {
+      clientProfile,
+      endpoint: identity.endpoint,
+      downstreamProtocol
+    })
+    : undefined
   return {
     clientProfile,
     requestClientCompatibility: claudeCode ? 'claude_code' : 'anthropic_native',
     downstreamProtocol,
     upstreamAdapter: 'anthropic_api_key',
     codexCompactionExpected: false,
-    clientProfileSource: explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
+    clientSource,
+    ...(clientSourceAvoidanceStateKey ? { clientSourceAvoidanceStateKey } : {}),
+    clientProfileSource,
     retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
+    allowClientSourceAccountAvoidance: Boolean(clientSourceAvoidanceStateKey),
     allowCodexTurnAccountAvoidance: false
   }
 }
 
-export function resolveGeminiGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
+export function resolveGeminiGatewayClientStrategy(
+  req: Request,
+  identity?: OpenAIGatewayClientStrategyIdentity
+): OpenAIGatewayClientStrategyContext {
   const downstreamProtocol = resolveGeminiGatewayDownstreamProtocol(req)
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
   const supportedGeminiShape = downstreamProtocol !== 'unknown_stream'
@@ -126,14 +184,31 @@ export function resolveGeminiGatewayClientStrategy(req: Request): OpenAIGatewayC
   const signatureGeminiCli = !explicitGeminiCli && supportedGeminiShape && isGeminiCliRequestSignature(req)
   const geminiCli = explicitGeminiCli || signatureGeminiCli
   const clientProfile = geminiCli ? 'gemini_cli' : 'generic_gemini'
+  const clientProfileSource = explicitGeminiCli ? 'explicit_header' : signatureGeminiCli ? 'gemini_cli_request_signature' : 'default'
+  const clientSource = identity ? resolveGatewayClientSourceIdentity(req, {
+    ...identity,
+    clientProfile,
+    clientProfileSource,
+    downstreamProtocol
+  }) : undefined
+  const clientSourceAvoidanceStateKey = identity && clientSource
+    ? deriveGatewayClientSourceStateKey(clientSource, {
+      clientProfile,
+      endpoint: identity.endpoint,
+      downstreamProtocol
+    })
+    : undefined
   return {
     clientProfile,
     requestClientCompatibility: 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'gemini_api_key',
     codexCompactionExpected: false,
-    clientProfileSource: explicitGeminiCli ? 'explicit_header' : signatureGeminiCli ? 'gemini_cli_request_signature' : 'default',
+    clientSource,
+    ...(clientSourceAvoidanceStateKey ? { clientSourceAvoidanceStateKey } : {}),
+    clientProfileSource,
     retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
+    allowClientSourceAccountAvoidance: Boolean(clientSourceAvoidanceStateKey),
     allowCodexTurnAccountAvoidance: false
   }
 }
@@ -224,8 +299,14 @@ export function openAIGatewayClientStrategyAuditMetadata(
     codexSessionIdPresent: Boolean(strategy.codexTurn?.sessionId),
     codexThreadIdPresent: Boolean(strategy.codexTurn?.threadId),
     codexTurnStateKey: strategy.codexTurn?.stateKey,
+    clientSourceStatus: strategy.clientSource?.status,
+    clientSourceKind: strategy.clientSource?.kind,
+    clientSourceNamespace: strategy.clientSource?.semanticNamespace,
+    clientSourceKeyPresent: Boolean(strategy.clientSource?.sourceKey),
+    clientSourceAvoidanceStateKeyPresent: Boolean(strategy.clientSourceAvoidanceStateKey),
     preCommitFailureSignal: strategy.retryCoordination.preCommitFailureSignal,
     committedFailureSignal: strategy.retryCoordination.committedFailureSignal,
+    allowClientSourceAccountAvoidance: strategy.allowClientSourceAccountAvoidance,
     allowCodexTurnAccountAvoidance: strategy.allowCodexTurnAccountAvoidance
   }
 }
@@ -327,19 +408,23 @@ function geminiQueryParam(req: Request, name: string): string | undefined {
 
 function buildCodexTurnContext(
   identity: OpenAIGatewayClientStrategyIdentity,
-  metadata: Required<Pick<CodexTurnMetadata, 'turnId'>> & CodexTurnMetadata
+  metadata: Required<Pick<CodexTurnMetadata, 'turnId'>> & CodexTurnMetadata,
+  downstreamProtocol: OpenAIGatewayDownstreamProtocol,
+  clientSource: GatewayClientSourceIdentity
 ): OpenAIGatewayCodexTurnContext {
-  const keyPayload = {
-    systemAccountId: identity.systemAccountId,
-    apiKeyId: identity.apiKeyId ?? 'internal',
+  const sourceStateKey = deriveGatewayClientSourceStateKey(clientSource, {
+    clientProfile: 'codex',
     endpoint: identity.endpoint,
-    codexTurnId: metadata.turnId
-  }
+    downstreamProtocol
+  })
   return {
     turnId: metadata.turnId,
     sessionId: metadata.sessionId,
     threadId: metadata.threadId,
-    stateKey: createHash('sha256').update(JSON.stringify(keyPayload)).digest('hex')
+    ...(sourceStateKey ? {
+      stateKey: deriveGatewayClientSourceChildStateKey(sourceStateKey, 'codex_turn', metadata.turnId),
+      sourceKind: clientSource.kind
+    } : {})
   }
 }
 

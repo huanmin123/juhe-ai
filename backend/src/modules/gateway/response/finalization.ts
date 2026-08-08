@@ -10,7 +10,8 @@ import {
   clearAccountStreamFailureStateWithCacheInvalidation,
   handleStreamFailure,
 } from '../runtime/account-effects.js'
-import { rememberCodexTurnStreamFailureAsync } from '../client-profiles/codex-turn-retry.service.js'
+import { rememberGatewayClientSourceFailureAsync } from '../client-profiles/client-source-avoidance.service.js'
+import { runGatewayClientSourceAvoidanceAvailabilityProbe } from '../client-profiles/client-source-availability-probe.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import { gatewayRequestAbortSource } from '../request/abort-attribution.js'
 import { classifyCodexEncryptedContentRecoverySignal } from '../request/codex-encrypted-content-recovery.js'
@@ -119,7 +120,7 @@ import {
 } from '../usage/records.js'
 import {
   preCommitStreamServerRetryErrorCode,
-  shouldRememberCodexTurnStreamFailure,
+  shouldRememberGatewayClientSourceFailure,
   shouldRetryResponseInspectionDecisionOnServer,
   shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRetryPreCommitStreamFailureOnServer,
@@ -414,14 +415,14 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         beforeCommittedFailureSignal: async (context) => {
           if (
             isAccountDiagnosticTrafficSource(usageContext.trafficSource)
-            || clientStrategy?.allowCodexTurnAccountAvoidance !== true
+            || clientStrategy?.allowClientSourceAccountAvoidance !== true
             || !context.accountFailureEligible
             || !context.semanticCommitted
             || !context.outputReceived
           ) {
             return
           }
-          const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
+          const codexTurnFailure = await rememberGatewayClientSourceFailureAsync(clientStrategy, account.id, {
             errorCode: context.errorCode,
             message: context.message,
             evidence: 'committed_retry_signal',
@@ -431,8 +432,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
             return
           }
           codexTurnFailureRemembered = true
+          scheduleCodexTurnAvoidanceProbe({ req, account, usageContext, clientStrategy, codexTurnFailure })
           auditCapture.addGatewayMetadata({
-            label: 'codex_turn_committed_retry_signal',
+            label: 'client_source_committed_retry_signal',
             metadata: {
               stateKey: codexTurnFailure.stateKey,
               failureCount: codexTurnFailure.failureCount,
@@ -447,11 +449,11 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         onIncompleteClientAbort: async (context) => {
           if (
             isAccountDiagnosticTrafficSource(usageContext.trafficSource)
-            || clientStrategy?.allowCodexTurnAccountAvoidance !== true
+            || clientStrategy?.allowClientSourceAccountAvoidance !== true
           ) {
             return
           }
-          const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
+          const codexTurnFailure = await rememberGatewayClientSourceFailureAsync(clientStrategy, account.id, {
             errorCode: 'incomplete_downstream_abort',
             message: downstreamConnectionClosedMessage,
             evidence: 'incomplete_downstream_abort',
@@ -460,8 +462,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           if (!codexTurnFailure) {
             return
           }
+          scheduleCodexTurnAvoidanceProbe({ req, account, usageContext, clientStrategy, codexTurnFailure })
           auditCapture.addGatewayMetadata({
-            label: 'codex_turn_incomplete_downstream_abort',
+            label: 'client_source_incomplete_downstream_abort',
             metadata: {
               stateKey: codexTurnFailure.stateKey,
               failureCount: codexTurnFailure.failureCount,
@@ -699,16 +702,17 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     if (
       !isAccountDiagnosticTrafficSource(usageContext.trafficSource)
       && !codexTurnFailureRemembered
-      && shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)
+      && shouldRememberGatewayClientSourceFailure(streamResult, clientStrategy)
     ) {
-      const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
+      const codexTurnFailure = await rememberGatewayClientSourceFailureAsync(clientStrategy, account.id, {
         errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
         message: streamResult.message,
         observationId: `${auditAttemptId}:client_visible_failure`
       })
       if (codexTurnFailure) {
+        scheduleCodexTurnAvoidanceProbe({ req, account, usageContext, clientStrategy, codexTurnFailure })
         auditCapture.addGatewayMetadata({
-          label: 'codex_turn_stream_failure',
+          label: 'client_source_stream_failure',
           metadata: {
             stateKey: codexTurnFailure.stateKey,
             failureCount: codexTurnFailure.failureCount,
@@ -2162,6 +2166,16 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   const finalErrorMessage = typeof result.errorPayload.message === 'string'
     ? result.errorPayload.message
     : passthroughUpstreamFailure ? '上游返回 Codex cyber_policy 失败终态' : responsesFailedTerminal ? '上游 Responses 返回失败终态' : upstreamProtocolFailure ? '上游响应违反请求协议终态' : undefined
+  const upstreamResponseModelObservation = upstreamResponse.upstreamResponseModelObservation
+  const observedUpstreamResponseModel = upstreamResponseModelObservation?.model
+  if (upstreamResponseModelObservation?.conflict) {
+    getRequestLogger().warn({
+      event: 'gateway_upstream_response_model_conflict',
+      accountId: account.id,
+      protocol: upstreamResponseModelObservation.protocol,
+      selectedModel: observedUpstreamResponseModel
+    }, '同一上游响应声明了多个模型，已优先保留终态模型')
+  }
 
   await recordCompletedUpstreamAttempt(req, {
     ...usageContext,
@@ -2174,7 +2188,9 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     firstTokenMs: result.firstTokenMs,
     startedAt,
     completedAtMs: input.completedAtMs,
-    usage: result.usage,
+    usage: observedUpstreamResponseModel
+      ? { ...result.usage, upstreamResponseModel: observedUpstreamResponseModel }
+      : result.usage,
     errorCode: finalErrorCode,
     errorMessage: finalErrorMessage,
     failureAttribution: forwardedResponseSuccessful ? undefined : 'opaque_upstream',
@@ -2234,5 +2250,27 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     errorMessage: finalErrorMessage,
     accountId: account.id,
     firstTokenMs: result.firstTokenMs
+  })
+}
+
+function scheduleCodexTurnAvoidanceProbe(input: {
+  req: Request
+  account: UpstreamAccount
+  usageContext: GatewayUsageContext
+  clientStrategy?: OpenAIGatewayClientStrategyContext
+  codexTurnFailure: Awaited<ReturnType<typeof rememberGatewayClientSourceFailureAsync>>
+}): void {
+  const activation = input.codexTurnFailure?.activation
+  if (!activation || !input.clientStrategy) return
+  void runGatewayClientSourceAvoidanceAvailabilityProbe({
+    account: input.account,
+    strategy: input.clientStrategy,
+    activation
+  }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_client_source_avoidance_probe_schedule_failed',
+      accountId: input.account.id,
+      sourceGeneration: activation.sourceGeneration
+    }), '客户端来源避让探活未能启动，保留短期避让')
   })
 }

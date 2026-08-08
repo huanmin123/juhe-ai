@@ -6,6 +6,7 @@ import {
 } from '../../modules/gateway/client-profiles/strategy.js'
 import {
   clearCodexTurnRetryStateForTest,
+  clearCodexTurnAccountAvoidance,
   getCodexTurnRetryStateForTest,
   orderOpenAIAccountsByCodexTurnAvoidance,
   rememberCodexTurnStreamFailure
@@ -17,7 +18,8 @@ const identity = {
   systemAccountId: 'sys_a',
   apiKeyId: 'key_a',
   groupId: 'group_a',
-  endpoint: 'POST /v1/responses'
+  endpoint: 'POST /v1/responses',
+  clientIp: '198.51.100.10'
 }
 
 function main(): void {
@@ -26,10 +28,13 @@ function main(): void {
   testSessionOnlyDoesNotBecomeCodex()
   testInvalidTurnMetadataDoesNotBecomeCodex()
   testNonCodexMetadataShapesDoNotFallback()
+  testCodexTurnSourceScopeUsesOfficialSessionOrIpFallback()
   testRequestBodyDoesNotSplitTurnStateKey()
   testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary()
   testSecondCodexRetryAvoidsFailedAccounts()
-  testCommittedRetrySignalAvoidsImmediatelyAcrossPriority()
+  testProbeSuccessOnlyClearsMatchingCodexAvoidance()
+  testCommittedRetrySignalAvoidsWithinPriorityTier()
+  testAvoidanceDoesNotLeakAcrossApiKeys()
   testIncompleteAbortRequiresTwoSameAccountObservations()
   testDuplicateObservationDoesNotAdvanceAvoidance()
   testDifferentAccountsDoNotShareWeakThreshold()
@@ -40,14 +45,74 @@ function main(): void {
   testMissingTurnStateDoesNotAvoidAccounts()
   testNonResponsesStreamDoesNotUseCodexProfile()
   testCodexCompactRequestUsesCodexProfile()
-  console.log('Codex 客户端策略回归通过：精确 turn_id、强证据立即跨优先级避让、弱断流按账号两次激活、observation 幂等、body 变化共享 turn 和隔离边界符合预期')
+  console.log('Codex 客户端策略回归通过：精确 turn_id、来源隔离的同层避让、弱断流按账号两次激活、observation 幂等、body 变化共享 turn 和隔离边界符合预期')
 }
 
-function testCommittedRetrySignalAvoidsImmediatelyAcrossPriority(): void {
+function testProbeSuccessOnlyClearsMatchingCodexAvoidance(): void {
+  clearCodexTurnRetryStateForTest()
+  const source = codexStrategy('turn_precise_probe_clear')
+  const otherSource = codexStrategy('turn_precise_probe_clear', 'key_other')
+  rememberCodexTurnStreamFailure(source, 'acct_a', { evidence: 'committed_retry_signal', observationId: 'a' })
+  rememberCodexTurnStreamFailure(source, 'acct_b', { evidence: 'committed_retry_signal', observationId: 'b' })
+  rememberCodexTurnStreamFailure(otherSource, 'acct_a', { evidence: 'committed_retry_signal', observationId: 'other' })
+
+  assert.equal(clearCodexTurnAccountAvoidance(source, 'acct_a'), true)
+  assert.equal(orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b'), account('acct_c')], source).applied, true)
+  assert.deepEqual(
+    orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b'), account('acct_c')], source).avoidedAccountIds,
+    ['acct_b'],
+    '成功只能清除精确 account 的同来源避让'
+  )
+  assert.deepEqual(
+    orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b')], otherSource).avoidedAccountIds,
+    ['acct_a'],
+    '成功不得清除其他 API Key/source 的避让'
+  )
+}
+
+function testCodexTurnSourceScopeUsesOfficialSessionOrIpFallback(): void {
+  const body = { model: 'gpt-5.3-codex', input: 'source scope', stream: true }
+  const turnMetadata = { 'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_source_scope' }) }
+  const sessionA = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, {
+    ...turnMetadata,
+    'session-id': 'official-session-a'
+  }), identity)
+  const sessionB = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, {
+    ...turnMetadata,
+    'session-id': 'official-session-b'
+  }), identity)
+  const fallbackA = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, turnMetadata), identity)
+  const fallbackB = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, turnMetadata), {
+    ...identity,
+    clientIp: '198.51.100.11'
+  })
+  const invalid = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, {
+    ...turnMetadata,
+    'session-id': '\u0001invalid'
+  }), identity)
+  const conflictRequest = createRequest('/v1/responses', body, turnMetadata)
+  conflictRequest.headersDistinct = { 'session-id': ['official-session-a', 'official-session-b'] }
+  const conflict = resolveOpenAIGatewayClientStrategy(conflictRequest, identity)
+
+  assert.equal(sessionA.codexTurn?.sourceKind, 'official_session')
+  assert.equal(fallbackA.codexTurn?.sourceKind, 'ip_api_key_fallback')
+  assert.notEqual(sessionA.codexTurn?.stateKey, sessionB.codexTurn?.stateKey, '不同官方会话必须隔离来源状态')
+  assert.notEqual(fallbackA.codexTurn?.stateKey, fallbackB.codexTurn?.stateKey, '不同 IP 的缺失会话软桶必须隔离')
+  assert.equal(invalid.allowCodexTurnAccountAvoidance, false, '非法官方会话不得降级为 IP/API Key 来源')
+  assert.equal(conflict.allowCodexTurnAccountAvoidance, false, '冲突官方会话不得降级为 IP/API Key 来源')
+  assert.equal(resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', body, turnMetadata), {
+    ...identity,
+    clientIp: undefined
+  }).allowCodexTurnAccountAvoidance, false, '没有官方会话且没有 IP 时不得创建跨请求避让')
+}
+
+function testCommittedRetrySignalAvoidsWithinPriorityTier(): void {
   clearCodexTurnRetryStateForTest()
   const strategy = codexStrategy('turn_committed_retry_signal')
   const failed = account('acct_high')
   failed.priority = 0
+  const peer = account('acct_high_peer')
+  peer.priority = 0
   const fallback = account('acct_fallback')
   fallback.priority = 100
   fallback.fallbackEnabled = true
@@ -57,9 +122,37 @@ function testCommittedRetrySignalAvoidsImmediatelyAcrossPriority(): void {
     observationId: 'attempt-1'
   })
   assert.deepEqual(recorded?.avoidanceActivatedAccountIds, [failed.id])
-  const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([failed, fallback], strategy)
+  const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([failed, peer, fallback], strategy)
   assert.equal(avoidance.applied, true)
-  assert.deepEqual(avoidance.accounts.map((item) => item.id), [fallback.id, failed.id])
+  assert.deepEqual(avoidance.accounts.map((item) => item.id), [peer.id, failed.id, fallback.id])
+
+  const noSameTierPeer = orderOpenAIAccountsByCodexTurnAvoidance([failed, fallback], strategy)
+  assert.equal(noSameTierPeer.applied, false, '强避让不得跨显式优先级或 fallback tier')
+  assert.deepEqual(noSameTierPeer.avoidedAccountIds, [failed.id])
+  assert.deepEqual(noSameTierPeer.accounts.map((item) => item.id), [failed.id, fallback.id])
+}
+
+function testAvoidanceDoesNotLeakAcrossApiKeys(): void {
+  clearCodexTurnRetryStateForTest()
+  const turnId = 'turn_api_key_isolation'
+  const sourceStrategy = codexStrategy(turnId, 'key_source')
+  const otherSourceStrategy = codexStrategy(turnId, 'key_other')
+  const accounts = [account('acct_a'), account('acct_b')]
+
+  assert.notEqual(sourceStrategy.codexTurn?.stateKey, otherSourceStrategy.codexTurn?.stateKey, '不同 API Key 的同一 turn_id 必须有独立状态键')
+  rememberCodexTurnStreamFailure(sourceStrategy, 'acct_a', {
+    evidence: 'committed_retry_signal',
+    observationId: 'source-attempt-1'
+  })
+
+  assert.deepEqual(
+    orderOpenAIAccountsByCodexTurnAvoidance(accounts, sourceStrategy).accounts.map((item) => item.id),
+    ['acct_b', 'acct_a'],
+    '失败来源应在自身同层候选中避让账号'
+  )
+  const otherSourceAvoidance = orderOpenAIAccountsByCodexTurnAvoidance(accounts, otherSourceStrategy)
+  assert.equal(otherSourceAvoidance.applied, false, '一个 API Key 的异常不得改变另一个 API Key 的候选顺序')
+  assert.deepEqual(otherSourceAvoidance.accounts.map((item) => item.id), ['acct_a', 'acct_b'])
 }
 
 function testIncompleteAbortRequiresTwoSameAccountObservations(): void {
@@ -158,14 +251,14 @@ function testWeakAbortAvoidanceExpires(): void {
   }
 }
 
-function codexStrategy(turnId: string) {
+function codexStrategy(turnId: string, apiKeyId = identity.apiKeyId) {
   return resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
     model: 'gpt-5.3-codex',
     input: turnId,
     stream: true
   }, {
     'x-codex-turn-metadata': JSON.stringify({ turn_id: turnId })
-  }), identity)
+  }), { ...identity, apiKeyId })
 }
 
 function testCodexTurnProfileRequiresPreciseTurnId(): void {

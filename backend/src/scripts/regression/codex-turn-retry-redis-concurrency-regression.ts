@@ -4,6 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import type { RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import {
   orderOpenAIAccountsByCodexTurnAvoidanceAsync,
+  clearCodexTurnAccountAvoidanceByFenceAsync,
   rememberCodexTurnStreamFailureAsync,
   setCodexTurnRetryStateStoreForTest
 } from '../../modules/gateway/client-profiles/codex-turn-retry.service.js'
@@ -25,9 +26,8 @@ async function main(): Promise<void> {
       })
     )))
     assert(results.every(Boolean), '并发强证据在有界 CAS 内应全部合并')
-    const state = store.value<Record<string, unknown>>('state:concurrent-strong')
-    assert.equal(state?.failureCount, 64)
-    assert.equal(Object.keys(state?.failedAccounts as Record<string, unknown>).length, 64)
+    const orderedStrong = await orderOpenAIAccountsByCodexTurnAvoidanceAsync(accountIds.map(account), strategy)
+    assert.equal(orderedStrong.avoidedAccountIds.length, 64, '每个账户必须保存在独立 persistent scope 后仍能合并排序')
     assert(store.compareSetCalls > 64, '夹具必须制造 CAS 冲突并验证重试')
 
     const duplicate = await rememberCodexTurnStreamFailureAsync(strategy, 'acct_0', {
@@ -35,37 +35,7 @@ async function main(): Promise<void> {
       observationId: 'attempt_0'
     })
     assert.equal(duplicate?.duplicateObservation, true)
-    assert.equal(store.value<{ failureCount: number }>('state:concurrent-strong')?.failureCount, 64)
-
-    const interleavedStateKey = 'cross-instance-merge'
-    const interleavedStore = new ContendedRuntimeStateStore(1, {
-      stateKey: interleavedStateKey,
-      failureCount: 1,
-      failedAccounts: {
-        acct_external: {
-          accountId: 'acct_external',
-          failureCount: 1,
-          committedRetrySignalCount: 1,
-          lastFailedAtMs: 1,
-          recentObservationIds: ['external_attempt']
-        }
-      },
-      createdAtMs: 1,
-      updatedAtMs: 1
-    })
-    setCodexTurnRetryStateStoreForTest(interleavedStore)
-    const interleavedResult = await rememberCodexTurnStreamFailureAsync(
-      codexStrategy(interleavedStateKey),
-      'acct_local',
-      { evidence: 'committed_retry_signal', observationId: 'local_attempt' }
-    )
-    assert(interleavedResult, '跨实例冲突后本地写入应在重读状态后成功')
-    const interleavedState = interleavedStore.value<{
-      failureCount: number
-      failedAccounts: Record<string, unknown>
-    }>(`state:${interleavedStateKey}`)
-    assert.equal(interleavedState?.failureCount, 2)
-    assert.deepEqual(Object.keys(interleavedState?.failedAccounts ?? {}).sort(), ['acct_external', 'acct_local'])
+    assert.equal((await orderOpenAIAccountsByCodexTurnAvoidanceAsync(accountIds.map(account), strategy)).avoidedAccountIds.length, 64)
 
     setCodexTurnRetryStateStoreForTest(store)
     const weakStrategy = codexStrategy('concurrent-weak')
@@ -85,6 +55,23 @@ async function main(): Promise<void> {
     )
     assert.deepEqual(ordered.accounts.map((item) => item.id), ['acct_b', 'acct_a'])
 
+    const fenceStrategy = codexStrategy('fence-monotonic')
+    const first = await rememberCodexTurnStreamFailureAsync(fenceStrategy, 'acct_fence', {
+      evidence: 'committed_retry_signal', observationId: 'fence_first'
+    })
+    assert(first?.activation)
+    assert.equal(await clearCodexTurnAccountAvoidanceByFenceAsync({
+      stateKey: first.stateKey, accountId: 'acct_fence', sourceGeneration: first.activation.sourceGeneration, sourceFenceId: first.activation.sourceFenceId
+    }), true, '匹配 fence 必须能清除对应激活')
+    const second = await rememberCodexTurnStreamFailureAsync(fenceStrategy, 'acct_fence', {
+      evidence: 'committed_retry_signal', observationId: 'fence_second'
+    })
+    assert(second?.activation)
+    assert(second.activation.sourceGeneration > first.activation.sourceGeneration, '清除后再次激活必须使用单调递增 generation')
+    assert.equal(await clearCodexTurnAccountAvoidanceByFenceAsync({
+      stateKey: first.stateKey, accountId: 'acct_fence', sourceGeneration: first.activation.sourceGeneration, sourceFenceId: first.activation.sourceFenceId
+    }), false, '迟到 fence 绝不可清除新激活')
+
     const exhaustedStore = new ContendedRuntimeStateStore(Number.POSITIVE_INFINITY)
     setCodexTurnRetryStateStoreForTest(exhaustedStore)
     const exhausted = await rememberCodexTurnStreamFailureAsync(codexStrategy('cas-exhausted'), 'acct_a', {
@@ -93,7 +80,7 @@ async function main(): Promise<void> {
     })
     assert.equal(exhausted, undefined, 'CAS 耗尽必须 fail-open')
 
-    console.log('Codex turn Redis 并发回归通过：64 路状态合并、跨实例交错合并、observation 幂等、弱阈值和 CAS 耗尽 fail-open 符合预期')
+    console.log('Codex turn Redis 并发回归通过：账户分片合并、observation 幂等、单调 fence、迟到清理隔离、弱阈值和 CAS 耗尽 fail-open 符合预期')
   } finally {
     setCodexTurnRetryStateStoreForTest(undefined)
     runtimeConfig.runtimeStateDriver = originalDriver
@@ -103,6 +90,7 @@ async function main(): Promise<void> {
 class ContendedRuntimeStateStore implements RuntimeStateStore {
   private readonly values = new Map<string, unknown>()
   private forcedConflicts: number
+  private readonly counters = new Map<string, number>()
   compareSetCalls = 0
 
   constructor(
@@ -150,7 +138,11 @@ class ContendedRuntimeStateStore implements RuntimeStateStore {
   async getDeleteJson<T>(): Promise<T | undefined> { return undefined }
   async compareDeleteJson<T>(): Promise<boolean> { return false }
   async delete(): Promise<void> {}
-  async incr(): Promise<number> { return 0 }
+  async incr(key: string): Promise<number> {
+    const next = (this.counters.get(key) ?? 0) + 1
+    this.counters.set(key, next)
+    return next
+  }
   async acquireLock(): Promise<boolean> { return false }
   async renewLock(): Promise<boolean> { return false }
   async releaseLock(): Promise<void> {}
@@ -167,10 +159,12 @@ function codexStrategy(stateKey: string): OpenAIGatewayClientStrategyContext {
       turnId: stateKey,
       stateKey
     },
+    clientSourceAvoidanceStateKey: stateKey,
     retryCoordination: {
       preCommitFailureSignal: 'protocol_error_event',
       committedFailureSignal: 'protocol_error_event'
     },
+    allowClientSourceAccountAvoidance: true,
     allowCodexTurnAccountAvoidance: true
   }
 }

@@ -20,12 +20,13 @@ import { createHttpCompressionMiddleware } from '../../shared/http-compression.j
 import { createCorsOriginDelegate } from '../../shared/http-security.js'
 import { logger } from '../../shared/logger.js'
 import { requestContextMiddleware } from '../../shared/request-context.js'
+import type { CodexSourceProbeFence } from '../../modules/accounts/account-health-check-trigger.js'
 
 const secret = 'account-health-check-dispatch-http-secret'
 const internalApiPrefix = accountHealthCheckDispatchInternalPrefix
 const allowedCorsOrigin = 'https://bridge.example'
 const originalLoggerLevel = logger.level
-const dispatchCalls: Array<{ accountId: string; reason: string; traceId?: string }> = []
+const dispatchCalls: Array<{ accountId: string; reason: string; traceId?: string; sourceFence?: CodexSourceProbeFence }> = []
 const handledErrors: unknown[] = []
 const app = express()
 const corsMiddleware = cors({
@@ -50,8 +51,8 @@ mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,
   compressionMiddleware: createHttpCompressionMiddleware(),
   secret,
-  dispatch: (accountId, reason, traceId) => {
-    dispatchCalls.push({ accountId, reason, traceId })
+  dispatch: (accountId, reason, traceId, sourceFence) => {
+    dispatchCalls.push({ accountId, reason, traceId, ...(sourceFence ? { sourceFence } : {}) })
     if (accountId === 'dispatch-coalesced') {
       return {
         outcome: 'coalesced' as const,
@@ -258,6 +259,31 @@ try {
   })
   assert.equal(typeof dispatchCalls.at(-1)?.traceId, 'string', 'request_failure dispatch 必须保留请求 trace')
 
+  const sourceFence: CodexSourceProbeFence = {
+    stateKey: 'hmac-source-state',
+    accountId: 'account-source-fence',
+    sourceGeneration: 7,
+    sourceFenceId: '00000000-0000-4000-8000-000000000007',
+    runtimeKey: 'availability:account-source-fence:account_health_check:r3',
+    probeGeneration: 11,
+    configRevision: 3
+  }
+  const sourceFenceBody = Buffer.from(JSON.stringify({
+    accountId: sourceFence.accountId,
+    reason: 'request_failure',
+    sourceFence
+  }))
+  const sourceFenceDispatch = await request(baseUrl, { body: sourceFenceBody })
+  assert.equal(sourceFenceDispatch.statusCode, 202, '签名 source fence handoff 必须被 control bridge 接收')
+  assert.deepEqual(dispatchCalls.at(-1)?.sourceFence, sourceFence, 'bridge 必须完整转交 opaque source/config/probe fence')
+  await assertStatus(baseUrl, {
+    body: Buffer.from(JSON.stringify({
+      accountId: sourceFence.accountId,
+      reason: 'request_failure',
+      sourceFence: { ...sourceFence, accountId: 'other-account' }
+    }))
+  }, 400, 'source fence accountId 必须与 dispatch accountId 一致')
+
   await assertStatus(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'account-scheduled', reason: 'scheduled' }))
   }, 400, 'scheduled 原因必须被拒绝')
@@ -349,15 +375,15 @@ try {
   }, 415, '签解压字节的 gzip body 也必须返回 415')
   assert.equal(dispatchCalls.length, dispatchCountBeforeGzip, 'gzip body 不得触发 dispatch')
 
-  const exactLimitBody = createExactJsonBody(1024, 'exact-limit')
+  const exactLimitBody = createExactJsonBody(4096, 'exact-limit')
   const exactLimit = await request(baseUrl, { body: exactLimitBody })
-  assert.equal(exactLimit.statusCode, 202, '恰好 1024 bytes 的合法 JSON 必须成功')
+  assert.equal(exactLimit.statusCode, 202, '恰好 4096 bytes 的合法 JSON 必须成功')
   assert.equal(dispatchCalls.at(-1)?.accountId.length, accountIdLength(exactLimitBody))
 
-  const overLimitBody = createExactJsonBody(1025, 'over-limit')
+  const overLimitBody = createExactJsonBody(4097, 'over-limit')
   await assertStatus(baseUrl, {
     body: overLimitBody
-  }, 413, '1025 bytes 的 raw body 必须返回 413')
+  }, 413, '4097 bytes 的 raw body 必须返回 413')
 
   const strictPathBody = Buffer.from(JSON.stringify({
     accountId: 'strict-path',

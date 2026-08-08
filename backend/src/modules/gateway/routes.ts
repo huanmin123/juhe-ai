@@ -50,7 +50,9 @@ import {
   type StreamServerRetryReason
 } from './response/finalization.js'
 import { observeGatewayRouting } from './observability/routing-observability.service.js'
-import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
+import { rememberGatewayClientSourceFailureAsync, type ClientSourceFailureRecordResult } from './client-profiles/client-source-avoidance.service.js'
+import { runGatewayClientSourceAvoidanceAvailabilityProbe } from './client-profiles/client-source-availability-probe.service.js'
+import { findOpenAIAccountForGroupAsync } from '../../storage/openai-account-selector.repository.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
 import { createGatewaySseWaitHeartbeat } from './response/sse-wait-heartbeat.js'
 import { GatewayDownstreamCommitState } from './response/downstream-commit-state.js'
@@ -829,7 +831,7 @@ let codexTurnAvoidedFallbackEnabled = false
           codexTurnAvoidedFallbackEnabled = true
           speedFirstRetryCandidateAccountIds = undefined
           auditCapture.addGatewayMetadata({
-            label: 'codex_turn_avoided_accounts_last_resort',
+            label: 'client_source_avoided_accounts_last_resort',
             metadata: {
               avoidedAccountIds: [...codexTurnAvoidedAccountIdSet],
               exhaustedAccountIds: [...exhaustedAccountIds]
@@ -1130,7 +1132,7 @@ let codexTurnAvoidedFallbackEnabled = false
             codexTurnAvoidedFallbackEnabled = true
             speedFirstRetryCandidateAccountIds = undefined
             auditCapture.addGatewayMetadata({
-              label: 'codex_turn_avoided_accounts_last_resort',
+              label: 'client_source_avoided_accounts_last_resort',
               metadata: {
                 avoidedAccountIds: [...codexTurnAvoidedAccountIdSet],
                 exhaustedAccountIds: [...exhaustedAccountIds]
@@ -2658,19 +2660,28 @@ async function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
     isAccountDiagnosticTrafficSource(input.usageContext.trafficSource)
     || input.errorCode !== gatewayStreamClientRetryErrorCode
     || !input.accountId
-    || input.clientStrategy?.allowCodexTurnAccountAvoidance !== true
+    || input.clientStrategy?.allowClientSourceAccountAvoidance !== true
   ) {
     return
   }
-  const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(input.clientStrategy, input.accountId, {
+  const codexTurnFailure = await rememberGatewayClientSourceFailureAsync(input.clientStrategy, input.accountId, {
     errorCode: input.errorCode,
     message: input.message
   })
   if (!codexTurnFailure) {
     return
   }
+  const activation = codexTurnFailure.activation
+  if (activation) {
+    void scheduleCodexTurnAvoidanceProbeFromRetryableRoute({
+      accountId: input.accountId,
+      usageContext: input.usageContext,
+      clientStrategy: input.clientStrategy,
+      activation
+    })
+  }
   input.auditCapture.addGatewayMetadata({
-    label: 'codex_turn_stream_failure',
+    label: 'client_source_stream_failure',
     metadata: {
       stateKey: codexTurnFailure.stateKey,
       failureCount: codexTurnFailure.failureCount,
@@ -2678,6 +2689,30 @@ async function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
       accountId: input.accountId
     }
   })
+}
+
+async function scheduleCodexTurnAvoidanceProbeFromRetryableRoute(input: {
+  accountId: string
+  usageContext: GatewayFailureUsageContext
+  clientStrategy: OpenAIGatewayDispatchContext['clientStrategy']
+  activation: NonNullable<ClientSourceFailureRecordResult['activation']>
+}): Promise<void> {
+  try {
+    const account = await findOpenAIAccountForGroupAsync(
+      input.usageContext.groupId,
+      input.accountId,
+      input.usageContext.systemAccountId,
+      { includeUnavailable: true, ignoreAvailability: true }
+    )
+    if (!account) return
+    await runGatewayClientSourceAvoidanceAvailabilityProbe({ account, strategy: input.clientStrategy, activation: input.activation })
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_client_source_avoidance_retryable_route_probe_schedule_failed',
+      accountId: input.accountId,
+      sourceGeneration: input.activation.sourceGeneration
+    }), '客户端可见重试终态未能投递来源探活，保留短期避让')
+  }
 }
 
 async function recordKnownClientIpRequestError(

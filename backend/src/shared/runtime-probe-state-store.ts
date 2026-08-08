@@ -7,6 +7,7 @@ export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; gen
   getMany(runtimeKeys: string[]): Promise<Map<string, TState>>
   set(state: TState, ttlMs: number): Promise<boolean>
   setIfAbsent(state: TState, ttlMs: number): Promise<boolean>
+  replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<boolean>
   merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined>
   delete(runtimeKey: string): Promise<void>
   deleteGeneration(runtimeKey: string, generation: number): Promise<boolean>
@@ -97,6 +98,23 @@ implements RuntimeProbeStateStore<TState> {
 
   async setIfAbsent(state: TState, ttlMs: number): Promise<boolean> {
     if (this.freshEntry(state.runtimeKey)) return false
+    this.entries.set(state.runtimeKey, {
+      value: state,
+      expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
+    })
+    return true
+  }
+
+  async replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<boolean> {
+    const current = this.freshEntry(state.runtimeKey)?.value as (TState & ProbeCoordinationFields & { outcome?: unknown }) | undefined
+    if (
+      !current
+      || current.generation !== previousGeneration
+      || current.outcome === undefined
+      || current.probeRunId !== undefined
+    ) {
+      return false
+    }
     this.entries.set(state.runtimeKey, {
       value: state,
       expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
@@ -217,6 +235,11 @@ implements RuntimeProbeStateStore<TState> {
     const current = this.freshEntry(state.runtimeKey)?.value as (TState & ProbeCoordinationFields) | undefined
     if (!current || current.generation !== state.generation || current.probeRunId !== runId) return false
     const committed = { ...state } as TState & ProbeCoordinationFields
+    const currentSourceFences = (current as Record<string, unknown>).sourceFences
+    const incomingSourceFences = (state as Record<string, unknown>).sourceFences
+    if (Array.isArray(currentSourceFences) || Array.isArray(incomingSourceFences)) {
+      ;(committed as Record<string, unknown>).sourceFences = unionStringArrays(currentSourceFences, incomingSourceFences, 64)
+    }
     delete committed.probeRunId
     delete committed.probeRunUntilMs
     delete committed.probeRunPreviousNextProbeAtMs
@@ -395,6 +418,20 @@ implements RuntimeProbeStateStore<TState> {
     return numericRedisResult(result) === 1
   }
 
+  async replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<boolean> {
+    const result = await (await this.client()).eval(redisReplaceSettledProbeGenerationScript, {
+      keys: [this.stateKey(state.runtimeKey), this.dueKey],
+      arguments: [
+        JSON.stringify(state),
+        String(normalizedTtlMs(ttlMs)),
+        String(Math.max(0, Math.trunc(state.nextProbeAtMs))),
+        state.runtimeKey,
+        String(Math.max(0, Math.trunc(previousGeneration)))
+      ]
+    })
+    return numericRedisResult(result) === 1
+  }
+
   async merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined> {
     const result = await (await this.client()).eval(redisMergeProbeStateScript, {
       keys: [this.stateKey(state.runtimeKey), this.dueKey],
@@ -545,6 +582,20 @@ const redisSetProbeStateIfAbsentScript = `
 if redis.call('EXISTS', KEYS[1]) == 1 then
   return 0
 end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
+redis.call('PEXPIRE', KEYS[2], ARGV[2])
+return 1
+`
+
+const redisReplaceSettledProbeGenerationScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then return 0 end
+if tonumber(decoded['generation']) ~= tonumber(ARGV[5]) then return 0 end
+if decoded['outcome'] == nil or decoded['outcome'] == cjson.null then return 0 end
+if decoded['probeRunId'] ~= nil and decoded['probeRunId'] ~= cjson.null then return 0 end
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 redis.call('PEXPIRE', KEYS[2], ARGV[2])
@@ -805,6 +856,22 @@ if decoded['probeRunId'] ~= ARGV[6] then return 0 end
 local incoming_ok, incoming = pcall(cjson.decode, ARGV[1])
 if not incoming_ok or type(incoming) ~= 'table' then return 0 end
 if tonumber(incoming['generation']) ~= tonumber(ARGV[5]) then return 0 end
+local source_fences = {}
+local source_fence_seen = {}
+local function append_source_fences(fence_set)
+  if type(fence_set) == 'table' then
+    for _, fence in ipairs(fence_set) do
+      if type(fence) == 'string' and fence ~= '' and not source_fence_seen[fence] then
+        source_fence_seen[fence] = true
+        table.insert(source_fences, fence)
+        if #source_fences >= 64 then return end
+      end
+    end
+  end
+end
+append_source_fences(decoded['sourceFences'])
+append_source_fences(incoming['sourceFences'])
+if #source_fences > 0 then incoming['sourceFences'] = source_fences end
 incoming['probeRunId'] = nil
 incoming['probeRunUntilMs'] = nil
 incoming['probeRunPreviousNextProbeAtMs'] = nil

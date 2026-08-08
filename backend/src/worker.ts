@@ -1,5 +1,6 @@
 import { runtimeConfig } from './config/runtime.js'
 import {
+  sendClientSourceFenceSettledToServer,
   type BackgroundWorkerRuntimeSnapshot,
   type BackgroundWorkerQueueRuntime,
   type BackgroundWorkerRuntimeLogQueueRuntime
@@ -68,7 +69,7 @@ import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLo
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 import { createTraceId, getRequestLogger, normalizeHeaderId, withRequestContext } from './shared/request-context.js'
-import { isAccountHealthCheckTriggerReason } from './modules/accounts/account-health-check-trigger.js'
+import { isAccountHealthCheckTriggerReason, normalizeCodexSourceProbeFence } from './modules/accounts/account-health-check-trigger.js'
 
 type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
@@ -78,7 +79,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown; traceId?: unknown }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown; traceId?: unknown; sourceFence?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
   | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_stats_write_request'; requestId: unknown; operation: unknown }
@@ -232,6 +233,7 @@ async function triggerAccountHealthCheckFromIpcMessage(
 
   const accountId = message.accountId
   const reason = message.reason
+  const sourceFence = normalizeCodexSourceProbeFence(message.sourceFence)
   const parentTraceId = typeof message.traceId === 'string' ? normalizeHeaderId(message.traceId) : undefined
   const traceId = createTraceId()
   const contextLogger = logger.child({
@@ -254,8 +256,14 @@ async function triggerAccountHealthCheckFromIpcMessage(
       parentTraceId: parentTraceId ?? null
     }, '已接收账户健康检查触发')
     try {
-      await triggerAccountHealthCheckNow(accountId, reason)
+      const accepted = await triggerAccountHealthCheckNow(accountId, reason, sourceFence)
+      if (!accepted && sourceFence) {
+        sendClientSourceFenceSettledToServer(sourceFence, 'unknown')
+      }
     } catch (error) {
+      if (sourceFence) {
+        sendClientSourceFenceSettledToServer(sourceFence, 'probe_task_failure')
+      }
       getRequestLogger().warn(errorLogFields(error, {
         event: 'background_account_health_check_trigger_failed',
         accountId,

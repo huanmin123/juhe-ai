@@ -5,6 +5,8 @@
       <div class="mobile-list-card-tags">
         <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
         <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
+        <a-tag v-if="record.upstreamModelMismatch && record.upstreamResponseModel" color="red">上游响应 {{ record.upstreamResponseModel }}</a-tag>
+        <a-tag v-if="record.upstreamModelMismatch && record.upstreamResponseModel" color="red">模型不一致</a-tag>
         <a-tag v-if="usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
         <a-tag v-if="usageRecordReasoningEffortText(record)" color="cyan">思考 {{ usageRecordReasoningEffortText(record) }}</a-tag>
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
@@ -123,6 +125,12 @@ const emit = defineEmits<{
 .mobile-trace-id > span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.mobile-list-card-tags :deep(.ant-tag) {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 </style>

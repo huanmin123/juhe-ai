@@ -11,11 +11,12 @@ import express, {
 } from 'express'
 
 import { getRequestLogger, getTraceId } from '../../shared/request-context.js'
+import { normalizeCodexSourceProbeFence, type CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 
 export const accountHealthCheckDispatchSignatureDomain = 'juhe-ai:account-health-check-dispatch:v1\n'
 export const accountHealthCheckDispatchInternalPrefix = '/__aiinternal__'
 
-const accountHealthCheckDispatchRawBodyLimitBytes = 1024
+const accountHealthCheckDispatchRawBodyLimitBytes = 4096
 const accountHealthCheckDispatchPath = '/v1/account-health-check/dispatch'
 const signaturePattern = /^v1=([0-9a-f]{64})$/
 const loopbackAddresses = new BlockList()
@@ -54,7 +55,7 @@ export type AccountHealthCheckDispatchOutcome = AccountHealthCheckDispatchQueueD
 
 export interface AccountHealthCheckDispatchRouterOptions {
   secret: string
-  dispatch: (accountId: string, reason: AccountHealthCheckDispatchReason, traceId?: string) => boolean | AccountHealthCheckDispatchOutcome
+  dispatch: (accountId: string, reason: AccountHealthCheckDispatchReason, traceId?: string, sourceFence?: CodexSourceProbeFence) => boolean | AccountHealthCheckDispatchOutcome
 }
 
 export interface AccountHealthCheckDispatchBridgeOptions extends AccountHealthCheckDispatchRouterOptions {
@@ -226,7 +227,7 @@ function handleDispatchRequest(
   }
 
   try {
-    const outcome = normalizeDispatchOutcome(options.dispatch(payload.accountId, payload.reason, getTraceId()))
+    const outcome = normalizeDispatchOutcome(options.dispatch(payload.accountId, payload.reason, getTraceId(), payload.sourceFence))
     const statusCode = outcome.outcome === 'rejected' ? 503 : 202
     logDispatchOutcome(payload.reason, outcome, statusCode)
     if (statusCode === 503) {
@@ -292,6 +293,7 @@ function hasValidSignature(req: Request, secret: string, rawBody: Buffer): boole
 function parseDispatchPayload(rawBody: Buffer): {
   accountId: string
   reason: AccountHealthCheckDispatchReason
+  sourceFence?: CodexSourceProbeFence
 } | undefined {
   if (rawBody.length === 0) return undefined
 
@@ -309,9 +311,10 @@ function parseDispatchPayload(rawBody: Buffer): {
   const record = parsed as Record<string, unknown>
   const keys = Object.keys(record)
   if (
-    keys.length !== 2
+    (keys.length !== 2 && keys.length !== 3)
     || !Object.prototype.hasOwnProperty.call(record, 'accountId')
     || !Object.prototype.hasOwnProperty.call(record, 'reason')
+    || (keys.length === 3 && !Object.prototype.hasOwnProperty.call(record, 'sourceFence'))
   ) {
     return undefined
   }
@@ -328,8 +331,13 @@ function parseDispatchPayload(rawBody: Buffer): {
     return undefined
   }
 
+  const sourceFence = record.sourceFence === undefined ? undefined : normalizeCodexSourceProbeFence(record.sourceFence)
+  if (record.sourceFence !== undefined && !sourceFence) return undefined
+  if (sourceFence && sourceFence.accountId !== accountId) return undefined
+
   return {
     accountId,
-    reason: record.reason
+    reason: record.reason,
+    ...(sourceFence ? { sourceFence } : {})
   }
 }
