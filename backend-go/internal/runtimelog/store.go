@@ -243,7 +243,8 @@ func (store *sqliteStore) RenewOwnerLease(ctx context.Context, lease OwnerLease,
 func (store *sqliteStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()
-	result, err := store.db.ExecContext(ctx, "DELETE FROM runtime_log_index_owner_leases WHERE lease_key = ? AND owner_id = ? AND fence_token = ?", runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
+	nowText := nodeISO(time.Now().UTC())
+	result, err := store.db.ExecContext(ctx, "UPDATE runtime_log_index_owner_leases SET owner_id = '', lease_until = ?, updated_at = ? WHERE lease_key = ? AND owner_id = ? AND fence_token = ?", nowText, nowText, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return err
 	}
@@ -405,7 +406,8 @@ func (store *postgresStore) RenewOwnerLease(ctx context.Context, lease OwnerLeas
 }
 
 func (store *postgresStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
-	result, err := store.pool.Exec(ctx, "DELETE FROM juhe_dataset.runtime_log_index_owner_leases WHERE lease_key = $1 AND owner_id = $2 AND fence_token = $3", runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
+	nowText := nodeISO(time.Now().UTC())
+	result, err := store.pool.Exec(ctx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", nowText, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return err
 	}

@@ -250,8 +250,8 @@ func cleanupPostgresSmokeData(t *testing.T, store *postgresStore, lease OwnerLea
 		t.Errorf("统计 PostgreSQL smoke owner lease 表失败: %s", redactPostgresSmokeError(err, url))
 		return
 	}
-	if count != 0 {
-		t.Errorf("PostgreSQL smoke release 后 owner lease 表 = %d，期望 0", count)
+	if count != 1 {
+		t.Errorf("PostgreSQL smoke release 后 owner lease 表 = %d，期望保留 1 行 fence 状态", count)
 	}
 }
 

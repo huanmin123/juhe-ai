@@ -484,6 +484,27 @@ func TestLoadConfigRejectsInvalidBoundedValues(t *testing.T) {
 	}
 }
 
+func TestSQLiteOwnerLeaseReleasePreservesMonotonicFenceToken(t *testing.T) {
+	store, _ := openTestSQLiteStore(t)
+	first, acquired, err := store.AcquireOwnerLease(context.Background(), "first", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("首次获取必须成功: lease=%#v acquired=%t err=%v", first, acquired, err)
+	}
+	if err := store.ReleaseOwnerLease(context.Background(), first); err != nil {
+		t.Fatalf("首次释放必须成功: %v", err)
+	}
+	second, acquired, err := store.AcquireOwnerLease(context.Background(), "second", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("释放后重新获取必须成功: lease=%#v acquired=%t err=%v", second, acquired, err)
+	}
+	if second.FenceToken <= first.FenceToken {
+		t.Fatalf("正常 release/reacquire 必须递增 fence token: first=%d second=%d", first.FenceToken, second.FenceToken)
+	}
+	if err := store.ReleaseOwnerLease(context.Background(), second); err != nil {
+		t.Fatalf("清理第二个 lease 失败: %v", err)
+	}
+}
+
 func TestLoadConfigRequiresOwnerLeaseInstanceID(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_RUNTIME_LOG_STORE":     "sqlite",
