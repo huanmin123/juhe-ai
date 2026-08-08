@@ -100,6 +100,27 @@ stop_server_process() {
   fi
 }
 
+wait_for_server_ready() {
+  attempts=0
+  health_url="http://${HOST}:${PORT}/__aisys__/health"
+  while kill -0 "$server_pid" 2>/dev/null && [ "$attempts" -lt 60 ]; do
+    if node --input-type=module -e '
+const response = await fetch(process.argv[1])
+if (!response.ok) process.exit(1)
+' "$health_url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "juhe-ai Web/API process exited before becoming ready." >&2
+  else
+    echo "juhe-ai Web/API process did not become ready within 60 seconds." >&2
+  fi
+  return 1
+}
+
 on_exit() {
   exit_code=$?
   trap - EXIT INT TERM
@@ -387,14 +408,17 @@ fi
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-start_runtime_log_indexer
-echo "Started juhe-ai-runtime-log-indexer (PID $runtime_log_indexer_pid)."
 if [ "$SERVER_WITH_OWNER_LOCK" = "true" ]; then
   node scripts/run-with-owner-lock.mjs --lock-path "$OWNER_LOCK_PATH" --release-root "$APP_DIR" --deployment-epoch "$OWNER_LOCK_EPOCH" --role server --version "$NODE_VERSION" -- node backend/dist/server.js &
 else
   node backend/dist/server.js &
 fi
 server_pid=$!
+if ! wait_for_server_ready; then
+  exit 1
+fi
+start_runtime_log_indexer
+echo "Started juhe-ai-runtime-log-indexer (PID $runtime_log_indexer_pid)."
 while kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null; do
   sleep 1
 done

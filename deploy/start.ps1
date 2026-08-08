@@ -372,6 +372,31 @@ function Stop-ManagedNodeProcess {
   }
 }
 
+function Wait-ManagedNodeReady {
+  param(
+    [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+    [Parameter(Mandatory = $true)][string]$BindAddress,
+    [Parameter(Mandatory = $true)][string]$Port
+  )
+  $healthUrl = "http://$BindAddress`:$Port/__aisys__/health"
+  $deadline = [DateTime]::UtcNow.AddSeconds(60)
+  while (-not $Process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+    try {
+      $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
+        return
+      }
+    } catch {
+    }
+    Start-Sleep -Seconds 1
+    $Process.Refresh()
+  }
+  if ($Process.HasExited) {
+    throw 'juhe-ai Web/API process exited before becoming ready.'
+  }
+  throw 'juhe-ai Web/API process did not become ready within 60 seconds.'
+}
+
 if (-not (Test-CommandExists 'node')) {
   throw 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.'
 }
@@ -454,9 +479,10 @@ $runtimeLogIndexer = $null
 $serverProcess = $null
 $serverExitCode = 1
 try {
+  $serverProcess = Start-ManagedNodeProcess -WorkingDirectory $appDir -Arguments $serverArguments
+  Wait-ManagedNodeReady -Process $serverProcess -BindAddress $hostValue -Port $portValue
   $runtimeLogIndexer = Start-RuntimeLogIndexer -AppDirectory $appDir
   Write-Host "Started juhe-ai-runtime-log-indexer (PID $($runtimeLogIndexer.Process.Id))."
-  $serverProcess = Start-ManagedNodeProcess -WorkingDirectory $appDir -Arguments $serverArguments
   while (-not $serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited) {
     Start-Sleep -Seconds 1
     $serverProcess.Refresh()
