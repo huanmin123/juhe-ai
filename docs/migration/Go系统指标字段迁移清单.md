@@ -1,8 +1,10 @@
 # Go 系统指标字段迁移清单
 
+> **现行口径（2026-08-08）。** 本文的 W6-W10 条目是旧 PG/Redis-only 迁移记录，不是当前删除授权。现行 B0、F1-F4 保留 SQLite 与 PostgreSQL/Redis 两种模式：SQLite 下 Node DB service、SQLite 文件和 usage shard 仍可作为 `runtimeKind=node` 观测；只有 Go 自己的 `runtimeKind=go` DTO 不得伪装为 Node event loop 或 DB service。
+
 ## 1. 文档目标
 
-本文是 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 的执行清单，用于 W6 / W7 / W8 迁移系统指标统计、管理后台系统监控页面和相关 worker 采样时逐项验收。
+本文是 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 的字段清单。W6 / W7 / W8 保留为历史索引；当前按 B0、F1-F4 为每个完整功能的 Go runtime、Store 与直接异步执行分别验收。
 
 本文不描述当前 Node 运行态的正确性。当前 Node 后端在未接管前仍可以继续使用事件循环、DB service 和 SQLite 文件指标；Go owner 接管后，下面列为删除的字段不能再作为正式 API、前端类型、Prometheus 指标、窗口表或告警口径存在。
 
@@ -10,7 +12,7 @@
 
 - `runtimeKind` 必须显式表达运行时，Go 接管后返回 `go` 或等价版本字段；不能让前端通过字段是否存在猜测运行时。
 - Node 事件循环指标只属于 Node 过渡事实。Go 不能把 scheduler latency、goroutine 堆积、GC pause 或 mutex wait 命名为 `eventLoopLagMs`。
-- Go 不保留 `db-service` 角色。数据库健康由 PostgreSQL pool、query latency、transaction、lock / timeout 和 worker lag 表达。
+- Go runtime 不保留 `db-service` 角色。PostgreSQL/Redis profile 由 pool、query latency、transaction、lock / timeout 和 worker lag 表达；SQLite profile 的 Node DB service 仍以 `runtimeKind=node` 表达，不能从 Node 观测中删除。
 - 内部系统监控 API 读取 PostgreSQL 预聚合窗口；Prometheus `/__aisys__/metrics` 用于外部采集；pprof 只用于受控排障。三者不能互相替代。
 - 不可观测必须返回 `sampleAvailable=false` 和 `null`，不能用 `0`、空数组或默认时间伪装正常。
 - 指标 label 必须低基数。系统账户 ID、API Key ID、AI 账户 ID、分组 ID、trace ID、明文 IP、SQL 文本、Redis key、模型 prompt、token 和错误消息原文不能进入 Prometheus label。
@@ -32,13 +34,13 @@ Go owner 接管 `/__aisys__/api/stats/system-metrics` 时，以下字段不得�
 | `process_event_loop_trend_windows` | Node 进程趋势窗口 | 替换为 `go_runtime_metrics_trend_windows` 或等价表 | Go 系统监控查询不读取该表 |
 | `processHeapUsedBytes` / `processHeapTotalBytes` | V8 heap 指标 | 删除；Go 使用 `heapAllocBytes`、`heapLiveBytes`、`heapObjects`、`memoryClassesTotalBytes` | 前端类型不再包含 V8 字段 |
 | `processExternalBytes` / `processArrayBuffersBytes` | V8 external / buffer 指标 | 删除；Go 不模拟 | 前端表格列删除 |
-| `db-service` process role | SQLite DB service 运行态 | 删除；Go 角色只保留 `server`、`ingest-worker`、`stats-worker`、`ops-worker` | `rg "db-service" backend-go frontend/src/views/stats frontend/src/types/domain/usage-stats.ts` 不再命中系统指标路径 |
-| SQLite 文件体积 / usage shard 文件路径 | Node standalone 存储观测 | 删除；Go 使用 PostgreSQL table / index / partition size、Redis queue backlog | W8 删除验证通过 |
-| DB service snapshot / IPC pending 指标 | Node DB service 和 IPC 胶水观测 | 删除；Go 使用 PG pool、Asynq queue、worker heartbeat | 系统监控页面不展示 DB service 卡片 |
+| `db-service` process role | SQLite DB service 运行态 | Go 角色不包含它；SQLite profile 可按 `runtimeKind=node` 继续显示 | Go DTO / Go role 枚举不含该角色，Node DTO 显式标识运行时 |
+| SQLite 文件体积 / usage shard 文件路径 | Node standalone 存储观测 | SQLite profile 保留；PostgreSQL/Redis profile 改用 table / index / partition 与直接异步执行状态 | profile 与 `runtimeKind` 明确，禁止互相冒充 |
+| DB service snapshot / IPC pending 指标 | Node DB service 和 IPC 胶水观测 | SQLite profile 保留；Go runtime 改用对应 Store、直接异步执行和功能 heartbeat | 页面按 profile / runtimeKind 分视图，不将 Node snapshot 写进 Go DTO |
 
 允许保留的例外：历史文档、未迁移 Node 代码、迁移记录和明确标注为 Node 过渡事实的测试基线。Go runtime、Go API DTO、Go 前端目标类型和 Go 发布文档中不得保留这些字段作为正式口径。
 
-2026-07-22 过渡例外：Go opt-in `GET /__aisys__/api/stats/system-metrics` reader 可以临时返回当前 Node `SystemMetricsOverview`，但必须同时满足“只读 Node 继续单 owner 写入的历史 PostgreSQL 窗口 / sample、不注册 `/runtime`、不声称 `runtimeKind=go`、不新增 writer / migration”。该 reader 只用于共存期精确路由切流，不得用作 W6 Go 原生系统指标完成证据；Go runtime owner 正式接管前仍须按本清单替换该过渡 DTO 和 `process_event_loop_*` 读取。
+历史 2026-07-22 opt-in `GET /__aisys__/api/stats/system-metrics` reader 记录只能作为旧 PostgreSQL 灰度对照；当前工作区没有该 Go 路由，现行 B0/F1-F4 也不以只读路由作为完整功能接管证据。
 
 ## 4. Go 字段目标清单
 
@@ -46,30 +48,30 @@ Go 系统监控接口建议保留当前路径 `GET /__aisys__/api/stats/system-m
 
 | 分组 | 推荐字段 | owner | 页面用途 |
 | --- | --- | --- | --- |
-| `runtimeKind` | `go`、`goVersion`、`schemaVersion` | server / stats-worker | 前端切换 Go 系统监控视图和类型 |
-| `hostMetrics` | CPU、OS memory、RSS、network in/out、FD / Windows handle、uptime | stats-worker | 主机资源趋势和容量判断 |
-| `runtimeMetrics.latestByRole` | `processRole`、`sampleAvailable`、`processPid`、`sampledAt`、`goroutines`、`goroutinesRunnable`、`schedulerLatencyP95Ms`、`schedulerLatencyP99Ms`、`gcPauseP95Ms`、`gcPauseP99Ms`、`heapAllocBytes`、`heapLiveBytes`、`rssBytes`、`threadsTotal` | stats-worker 采样，各 Go role 暴露本进程 runtime | Go runtime 最新状态表 |
-| `runtimeMetrics.peakByRole` | 最近 24 小时 goroutine、scheduler、GC、heap、RSS 峰值 | stats-worker 窗口聚合 | 容量和泄漏排查 |
-| `runtimeMetrics.trend` | 按窗口 bucket 的 goroutine、scheduler、GC、heap、RSS、sampleCount | stats-worker 窗口聚合 | Go runtime 趋势图 |
-| `storageHealth.postgres` | pool acquired / idle / total / max、acquire P95、query P95 / P99、error、timeout、lock timeout、deadlock、table / index / partition size | Go store / stats-worker | 识别 PG 连接池、慢查询和表增长 |
-| `storageHealth.redis` | cache / state / queue role、operation latency、pool、timeout、cache hit / miss、limiter allowed / denied | Redis adapter / stats-worker | 识别 Redis 连接和限流异常 |
-| `queueHealth` | queue pending / active / retry / dead / archived、oldestTaskAgeSeconds、task processed / failed / duration P95 | Asynq inspector / worker | worker lag 和死信积压 |
-| `taskHealth` | worker role ready、heartbeat、shutdown drain、last error、lease / cursor 状态 | Go worker runtime | 后台任务可用性 |
+| `runtimeKind` | `go`、`goVersion`、`schemaVersion` | 已接管完整功能的观测 owner | 前端切换 Go 系统监控视图和类型 |
+| `hostMetrics` | CPU、OS memory、RSS、network in/out、FD / Windows handle、uptime | 功能观测 owner | 主机资源趋势和容量判断 |
+| `runtimeMetrics.latestByRole` | `processRole`、`sampleAvailable`、`processPid`、`sampledAt`、`goroutines`、`goroutinesRunnable`、`schedulerLatencyP95Ms`、`schedulerLatencyP99Ms`、`gcPauseP95Ms`、`gcPauseP99Ms`、`heapAllocBytes`、`heapLiveBytes`、`rssBytes`、`threadsTotal` | 各 Go 功能 role 暴露，功能观测 owner 聚合 | Go runtime 最新状态表 |
+| `runtimeMetrics.peakByRole` | 最近 24 小时 goroutine、scheduler、GC、heap、RSS 峰值 | 功能观测 owner 聚合 | 容量和泄漏排查 |
+| `runtimeMetrics.trend` | 按窗口 bucket 的 goroutine、scheduler、GC、heap、RSS、sampleCount | 功能观测 owner 聚合 | Go runtime 趋势图 |
+| `storageHealth.postgres` | pool acquired / idle / total / max、acquire P95、query P95 / P99、error、timeout、lock timeout、deadlock、table / index / partition size | Go store / 功能观测 owner | 识别 PG 连接池、慢查询和表增长 |
+| `storageHealth.redis` | cache / state role、operation latency、pool、timeout、cache hit / miss | Redis adapter / 功能观测 owner | 识别 Redis 连接异常 |
+| `asyncHealth` | feature、running / completed / failed / cancelled、restartRecovered、duration P95 | Go runtime | 直接异步功能执行与恢复状态 |
+| `taskHealth` | 功能 role ready、heartbeat、shutdown drain、last error、cursor 状态 | Go 功能 runtime | 后台功能可用性 |
 | `statsFreshness` | usage aggregation lag、range window lag、system metrics lag、last cursor、last successful refresh | stats-worker | 判断业务统计新鲜度 |
-| `gatewaySli` | request total、success rate、P95 / P99、SSE started / completed / aborted、upstream first byte / first token、backpressure wait、side effect enqueue | W10 网关 owner | 真实网关迁移后容量和稳定性 |
+| `gatewaySli` | request total、success rate、P95 / P99、SSE started / completed / aborted、upstream first byte / first token、backpressure wait、side effect direct commit | 未来网关完整功能 owner | 真实网关迁移后容量和稳定性 |
 
-Go 首批可以只实现 W6 / W7 需要的最小字段，但不能为了赶前端而返回旧 Node 字段。字段暂缺时返回 `sampleAvailable=false` 或该分组 `available=false`，并在文档和测试中标明未覆盖原因。
+首个完整功能只实现自身需要的最小字段，不能为了赶前端而返回旧 Node 字段。字段暂缺时返回 `sampleAvailable=false` 或该分组 `available=false`，并在文档和测试中标明未覆盖原因。
 
 ## 5. 采样与存储 owner
 
 | 数据 | 写入 owner | 推荐表 / 存储 | 规则 |
 | --- | --- | --- | --- |
-| 主机系统采样 | `stats-worker` | `system_metrics_samples` / `system_metrics_hourly` / `system_metrics_trend_windows` | 可复用系统趋势概念，但字段改为 Go / PG / Redis / Asynq 口径 |
-| Go runtime 采样 | 各 Go role 暴露，`stats-worker` 聚合 | `go_runtime_metrics_samples` / `go_runtime_metrics_hourly` / `go_runtime_metrics_trend_windows` | 按 `processRole` 保存；角色不包含 `db-service` |
+| 主机系统采样 | 已接管完整功能的观测 owner | `system_metrics_samples` / `system_metrics_hourly` / `system_metrics_trend_windows` | 可复用系统趋势概念，但字段改为 Go / PG / Redis / 直接异步执行口径 |
+| Go runtime 采样 | 各 Go 功能 role 暴露，按功能观测 owner 聚合 | `go_runtime_metrics_samples` / `go_runtime_metrics_hourly` / `go_runtime_metrics_trend_windows` | 按 `processRole` 保存；角色不包含 `db-service` |
 | PostgreSQL pool / query | store adapter + stats-worker | PG 窗口表或 `system_metrics_*` 扩展字段 | `operation` 必须是低基数业务枚举，不保存 SQL 文本 |
-| Redis cache / state / queue | Redis adapter + stats-worker | PG 窗口表或 Prometheus | cache / state / queue 必须能区分；同 DB 配置视为配置错误 |
-| Asynq queue | worker / inspector | queue runtime snapshots 或窗口表 | 记录 pending、retry、dead、oldest task age 和 taskType 低基数枚举 |
-| stats freshness | stats-worker | job state / freshness 窗口 | 页面读预聚合结果，不从 usage 明细现场计算 |
+| Redis cache / state | Redis adapter + 功能观测 owner | PG 窗口表或 Prometheus | cache / state 必须能区分；未迁移 Node queue 另按 Node 观测，不成为 Go 功能依赖 |
+| 直接异步执行 | Go 功能 runtime | async runtime snapshots 或窗口表 | 记录 running、completed、failed、cancelled、restartRecovered、cursor 和低基数 feature |
+| stats freshness | Node stats owner 或已接管的完整功能 owner | 功能状态 / freshness 窗口 | 页面读预聚合结果，不从 usage 明细现场计算 |
 | pprof profile | 人工排障 | `reports/` 原始产物 | 不自动写入业务库或统计库 |
 
 ## 6. 前端迁移清单
@@ -79,7 +81,7 @@ Go 首批可以只实现 W6 / W7 需要的最小字段，但不能为了赶前�
 | 位置 | 当前问题 | Go 目标 |
 | --- | --- | --- |
 | `frontend/src/types/domain/usage-stats.ts` | `SystemMetricsOverview` 仍包含 Node `processEventLoop*` / `eventLoopLagMs` 字段 | 增加 Go runtime DTO；Go owner 后删除或隔离 Node DTO |
-| `frontend/src/views/stats/SystemMetricsStatsView.vue` | 页面文案和计算属性仍围绕事件循环趋势 | 根据 `runtimeKind=go` 展示 Go runtime、PG、Redis、Asynq 和 stats freshness |
+| `frontend/src/views/stats/SystemMetricsStatsView.vue` | 页面文案和计算属性仍围绕事件循环趋势 | 根据 `runtimeKind=go` 展示 Go runtime、PG、Redis、直接异步执行和 stats freshness |
 | `frontend/src/views/stats/statsChartOptions.ts` | `buildProcessEventLoopOption`、`processEventLoopRoles` 固定包含 `db-service` | 替换为 Go runtime 图表，角色只包含 Go roles |
 | `frontend/src/views/stats/StatsProcessEventLoopTable.vue` | 表格列展示事件循环和 V8 memory | 替换为 Go runtime 状态表 |
 | `frontend/src/views/stats/statsProcessEventLoop.ts` | 角色顺序和字段是 Node 专属 | 删除或改为 `statsGoRuntime.ts` |
@@ -87,7 +89,16 @@ Go 首批可以只实现 W6 / W7 需要的最小字段，但不能为了赶前�
 
 前端迁移验收必须运行类型检查和页面 smoke。页面可以短期支持 Node / Go 双视图用于灰度对照，但必须通过 `runtimeKind` 明确分支，不能把 Go 数据塞进 Node `processEventLoop*` 字段。
 
-## 7. 波次门禁
+## 7. 当前 B0、F1-F4 字段门禁
+
+| 阶段 | 必须完成 | 不允许 |
+| --- | --- | --- |
+| B0 | 两个 profile 的 `runtimeKind`、Store / 直接异步执行和启动错配字段可辨 | 将 SQLite Node DB service 或 event loop 字段伪装为 Go runtime |
+| F1 | 完整功能的 Node / Go 运行指标边界和归档计划明确 | 用局部 Go 指标证明完整功能已接管 |
+| F2/F3 | 已接管功能的 running、write latency、cancel、failure、restart recovery 和 owner 指标按 profile 验收 | 用未接管功能的 Go 指标证明 Node 路径已删除 |
+| F4 | 活跃 Node 功能指标清零，归档目录不生成 runtime 指标 | 删除 SQLite 模式的 DB service、文件或 Node 观测 |
+
+### 历史 W6-W10 字段门禁（非当前执行依据）
 
 | 波次 | 必须完成 | 不允许 |
 | --- | --- | --- |
@@ -121,7 +132,7 @@ pnpm --filter juhe-ai-frontend build
 
 ```powershell
 rg "eventLoopLagMs|processEventLoop|process_event_loop|db-service" backend-go frontend/src/views/stats frontend/src/types/domain/usage-stats.ts
-rg "system_metrics|go_runtime_metrics|queueHealth|storageHealth|statsFreshness" backend-go frontend/src docs/migration
+rg "system_metrics|go_runtime_metrics|asyncHealth|storageHealth|statsFreshness" backend-go frontend/src docs/migration
 ```
 
 第一条命令在 Go 系统监控正式接管后只能剩下明确的 Node 历史分支、迁移文档或无结果；如果 Go DTO、Go handler、Go store 或 Go 前端目标页面仍命中 Node 专属字段，W6 / W8 不得标记完成。

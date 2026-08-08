@@ -1,0 +1,21 @@
+{
+  "featureId": "<feature-id>",
+  "archivedAt": "<ISO-8601 timestamp>",
+  "maintainer": "<name-or-team>",
+  "cutoverCommit": "<git-commit>",
+  "rollbackCommit": "<git-commit>",
+  "goImplementationPaths": [],
+  "disabledNodeEntrypoints": [],
+  "originalFiles": [
+    {
+      "originalPath": "backend/src/<feature-file>.ts",
+      "archivePath": "migration-backup/node/<feature-id>/backend/src/<feature-file>.ts",
+      "sha256": "<lowercase-hex-sha256>"
+    }
+  ],
+  "dualModeVerification": {
+    "sqlite": "<test-or-report-reference>",
+    "postgresRedis": "<test-or-report-reference>"
+  },
+  "activeNodePathZeroEvidence": "<test-or-report-reference>"
+}

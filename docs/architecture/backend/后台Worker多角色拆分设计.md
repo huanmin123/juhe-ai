@@ -1,5 +1,7 @@
 # 后台 Worker 多角色拆分设计
 
+> **迁移说明（2026-08-08）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 仅支持 PostgreSQL/Redis，也不定义 Go 按旧 job / queue 拆分的迁移路线。现行迁移先建设双模式直接异步基线，再以完整功能为最小单元；首个 F1 候选为“运行日志索引与保留”的完整功能，接管后 Node 的专属文件整体归档。既有 W6/W7 接管叙述均为历史记录，须服从[完整功能接管与 Node 归档迁移规则](../../migration/完整功能接管与Node归档迁移规则.md)。
+
 > 面向后端实现、部署和 AI 维护者。
 > 本文的三角色拓扑现在只描述 `standalone`。`performance` 使用 `usage-worker`、`log-worker`、`stats-worker`、`ops-worker`，默认副本数为 `2/2/1/1`，并由 3 个独立 gateway 事件循环承接 AI 流量；权威设计见 [高性能模式同机多进程拓扑设计](../../functions/高性能模式同机多进程拓扑设计.md)。原三角色收敛历史见 [PLAN-20260623T122020000Z](../../plans/计划-20260623T122020000Z-后台Worker三角色收敛.md)。
 
@@ -83,7 +85,7 @@
 - standalone 的 process event loop 采样角色固定为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`；performance 额外按实例记录 `gateway`、`usage-worker`、`log-worker`。
 - 系统监控接口使用 `ingestWorkerSnapshotAvailable`、`statsWorkerSnapshotAvailable`、`opsWorkerSnapshotAvailable` 表达三类 worker 可观测性；不可观测时对应 runtime 返回 `null`，不能用空数组或 0 伪装正常。
 
-以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。Go W6 / W7 接管系统指标和 worker 后，必须按 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 替换为 Go runtime、Asynq queue、worker heartbeat、worker lag 和 stats freshness 指标，不再暴露 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 作为长期契约。
+以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。未来某个完整功能在 F3 / F4 完成接管后，必须按 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 单独定义 Go runtime、直接异步执行、cursor / freshness 等指标；不得把旧 Asynq / queue 设为新 Go 功能前置，也不再把 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 冒充为 Go 长期契约。
 
 ## 并发策略
 

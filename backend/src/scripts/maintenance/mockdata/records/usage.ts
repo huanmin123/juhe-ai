@@ -463,6 +463,55 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
       account: created.accounts.standardClient
     },
     {
+      ordinal: nextOrdinal(records.length + 1050, (value) => value % 3 === 0 && value % 11 !== 0 && value % 41 !== 0),
+      idSuffix: 'coverage_upstream_response_model_match',
+      modelOverride: 'mockdata-global-long-context',
+      successOverride: true,
+      upstreamResponseModel: 'gpt-5.4-mini',
+      scenario: {
+        key: created.apiKeys.adminRoundRobin,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.standardClient],
+        label: 'admin-upstream-response-model-match-coverage',
+        clientIpBase: '10.10.20.'
+      },
+      account: created.accounts.standardClient
+    },
+    {
+      ordinal: nextOrdinal(records.length + 1075, (value) => value % 3 === 0 && value % 11 !== 0 && value % 41 !== 0),
+      idSuffix: 'coverage_upstream_response_model_mismatch',
+      modelOverride: 'mockdata-global-long-context',
+      successOverride: true,
+      upstreamResponseModel: 'gpt-5.4-mini-2026-03-17',
+      scenario: {
+        key: created.apiKeys.adminRoundRobin,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.standardClient],
+        label: 'admin-upstream-response-model-mismatch-coverage',
+        clientIpBase: '10.10.21.'
+      },
+      account: created.accounts.standardClient
+    },
+    {
+      ordinal: nextOrdinal(records.length + 1085, (value) => value % 3 === 0 && value % 11 !== 0 && value % 41 !== 0),
+      idSuffix: 'coverage_upstream_response_model_unmapped_mismatch',
+      modelOverride: 'gpt-5.4-mini',
+      upstreamModelOverride: 'gpt-5.4-mini',
+      successOverride: true,
+      upstreamResponseModel: 'gpt-5.4-mini-2026-03-17',
+      scenario: {
+        key: created.apiKeys.adminRoundRobin,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.standardClient],
+        label: 'admin-upstream-response-model-unmapped-mismatch-coverage',
+        clientIpBase: '10.10.22.'
+      },
+      account: created.accounts.standardClient
+    },
+    {
       ordinal: nextOrdinal(records.length + 1100, (value) => value % 11 === 0),
       idSuffix: 'coverage_models_endpoint',
       scenario: {
@@ -626,6 +675,8 @@ interface BuildUsageRecordInput {
   ordinal: number
   idSuffix?: string
   modelOverride?: string
+  upstreamModelOverride?: string
+  upstreamResponseModel?: string
   requestedServiceTier?: UsageRecordSeed['requestedServiceTier']
   effectiveServiceTier?: UsageRecordSeed['effectiveServiceTier']
   reportedServiceTier?: UsageRecordSeed['reportedServiceTier']
@@ -664,7 +715,9 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
   const reportedServiceTier = input.reportedServiceTier
   const billedServiceTier = input.billedServiceTier ?? reportedServiceTier ?? effectiveServiceTier
   const modelMapping = modelMappingForRecord(input.account, model)
-  const pricingModel = modelMapping?.upstreamModel ?? model
+  const upstreamModel = input.upstreamModelOverride ?? modelMapping?.upstreamModel
+  const upstreamResponseModel = input.upstreamResponseModel
+  const pricingModel = upstreamModel ?? model
   const fallbackCost = usageCost(model, inputTokens, outputTokens, cacheReadTokens, success, billedServiceTier)
   const tierCostBreakdown = success && billedServiceTier !== 'default'
     ? buildCatalogCostBreakdown({
@@ -701,7 +754,8 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
     endpoint: `${endpointInfo.method} ${endpointInfo.path}`,
     providerCode,
     model,
-    upstreamModel: modelMapping?.upstreamModel,
+    upstreamModel,
+    upstreamResponseModel,
     pricingModel,
     requestedServiceTier,
     effectiveServiceTier,
@@ -746,10 +800,10 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
           }
     },
     responseSnapshot: success
-      ? {
+        ? {
           status: 200,
-          model,
-          upstream_model: modelMapping?.upstreamModel,
+          model: upstreamResponseModel ?? model,
+          upstream_model: upstreamModel,
           service_tier: reportedServiceTier,
           usage: {
             input_tokens: inputTokens,

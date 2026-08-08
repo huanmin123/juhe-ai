@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 
 import { backendRoot } from '../../../../config/runtime.js'
+import { getDatasetDatabase } from '../../../../storage/database.js'
 import type { AuditLogInput } from '../../../../storage/audit-logs.repository.js'
 import {
   builtInExternalIntegrationTestSourceId,
@@ -29,9 +30,9 @@ import {
   type UsageRecordSeed
 } from '../shared.js'
 
-export function createAuditMockdata(records: UsageRecordSeed[]): void {
+export function createAuditMockdata(records: UsageRecordSeed[]): number {
   const auditLogs: AuditLogInput[] = records
-    .filter((_, index) => index % 4 === 0)
+    .filter((record, index) => index % 4 === 0 || record.upstreamResponseModel !== undefined)
     .map((record, index) => {
       const startedAt = record.createdAt
       const endedAt = new Date(Date.parse(startedAt) + (record.durationMs ?? 200)).toISOString()
@@ -135,6 +136,8 @@ export function createAuditMockdata(records: UsageRecordSeed[]): void {
   for (const chunk of chunks(auditLogs, 200)) {
     repositories.createAuditLogsBatch(chunk)
   }
+  const row = getDatasetDatabase().prepare("SELECT COUNT(*) AS value FROM audit_logs WHERE id LIKE 'mockdata_audit_%'").get() as { value?: number } | undefined
+  return Number(row?.value ?? 0)
 }
 
 export function createPublicApiLogMockdata(created: CreatedMockdata, options: MockdataOptions): number {

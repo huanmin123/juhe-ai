@@ -1,18 +1,20 @@
 # Go 迁移指标与观测规划
 
+> **现行观测口径（2026-08-08）。** 本文早期 W0-W11、PostgreSQL/Redis-only 和“W8 删除 DB service / SQLite”的条目仅保留为历史规划。当前以 B0、F1-F4 双模式完整功能策略为准：SQLite 与 PostgreSQL/Redis 都是 Go 的正式部署模式；SQLite 下 Node DB service、文件单 writer 和其 Node 运行态观测仍是正确性边界，不能因 Go runtime 指标替代而删除。Go runtime 仅以 `runtimeKind=go` 记录自身字段，不伪装为 Node `eventLoop` 或 `db-service`。
+
 ## 1. 文档目标
 
 本文用于固定 Node 转 Go 后的系统指标统计和观测口径，避免 Go 后端迁移完成后仍沿用 Node 事件循环、DB service 和 IPC 时代的指标字段。
 
-本文只规划 Go 目标口径和迁移门禁，不代表当前 Node 运行态已经改变。迁移期间当前 Node 系统监控页面、`system_metrics_*`、`process_event_loop_*` 和相关回归仍按现有实现维护；当 W6 / W7 / W10 对应模块由 Go 接管时，必须按本文删除或替换 Node 专属指标。
+本文只规划 Go 目标口径和迁移门禁，不代表当前 Node 运行态已经改变。迁移期间当前 Node 系统监控页面、`system_metrics_*`、`process_event_loop_*`、DB service 和相关回归仍按现有实现维护；当某个完整功能完成 F3 / F4 接管时，仅替换该 Go runtime 的专属字段，不能据此删除 SQLite 模式的 Node 观测。
 
 字段级执行清单见 [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)。本文回答目标观测分层和指标口径，字段清单回答哪些 Node 字段必须删除、哪些 Go 字段接管、前端和测试如何验收。
 
 ## 2. 核心结论
 
 - Go 目标不再采集或展示 `eventLoopLagMs`。事件循环延迟是 Node 运行时指标，不能在 Go 中用 scheduler latency、goroutine 等待数或 GC pause 伪装。
-- Go 目标不再保留 `db-service` 进程角色。DB service 是 Node + SQLite 单写者治理的过渡产物，W8 删除后不能继续出现在系统指标接口、前端表格或告警中。
-- Go 目标保留 `server`、`ingest-worker`、`stats-worker`、`ops-worker` 四类运行角色；如果后续轻量部署由 server 看护 worker，也不能改变指标角色、队列 owner 和告警口径。
+- Go runtime 角色不使用 `db-service`。SQLite 模式的 Node DB service 仍是单写者边界，可继续作为 `runtimeKind=node` 的健康与容量观测；不得把它伪装成 Go role，也不得以 Go runtime 接管为由删除。
+- Go 运行角色按已接管的完整功能登记；首批只要求 `server` 与功能专属直接异步执行状态，不能预先宣称旧 `ingest-worker`、`stats-worker`、`ops-worker` 已被整体迁走。若后续由 server 看护功能进程，也不能改变指标角色、直接执行 owner 和告警口径。
 - 内部系统监控页面读取 PostgreSQL 预聚合窗口表；外部监控采集读取 Prometheus `/__aisys__/metrics`；pprof 只用于受控排障。三者用途不同，不能把 Prometheus 高基数 label 或 pprof 原始 profile 写入业务统计表。
 - 业务统计继续以 `usage_records` 和 worker 预聚合表为事实源。Go runtime 指标只说明运行健康，不能参与用量、额度、账务或账号质量计算。
 - 指标命名必须使用低基数标签。禁止把系统账户 ID、API Key ID、AI 账户 ID、分组 ID、trace ID、明文 IP、用户名、上游 token、请求 prompt、模型原始长串放入 Prometheus label。
@@ -23,11 +25,11 @@
 
 | 当前口径 | 当前用途 | Go 目标处理 |
 | --- | --- | --- |
-| `system_metrics_samples` / `system_metrics_hourly` / `system_metrics_trend_windows` | CPU、内存、进程 RSS / Heap、事件循环、网络、数据库体积、统计滞后趋势 | 保留系统级趋势概念，但字段改为 Go 运行和 PG/Redis/Asynq 目标口径；不再包含 Node event loop 字段 |
+| `system_metrics_samples` / `system_metrics_hourly` / `system_metrics_trend_windows` | CPU、内存、进程 RSS / Heap、事件循环、网络、数据库体积、统计滞后趋势 | 保留系统级趋势概念，但 Go 字段改为 Go runtime、PG/Redis 与直接异步执行口径；不再包含 Node event loop 字段 |
 | `process_event_loop_samples` / `process_event_loop_hourly` / `process_event_loop_trend_windows` | 按 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service` 展示事件循环延迟和进程内存 | Go 接管时删除或替换为 `go_runtime_metrics_*`；不得继续返回 `eventLoopLagMs` |
-| `backgroundJobs` / 本地队列快照 | 展示 Node worker 定时任务、IPC 队列、retry queue、本地 dropped 指标 | Go W7 后改为 Asynq queue、task type、worker role、任务租约和游标 lag |
-| DB service snapshot | 判断 Node DB service 是否 ready、PID 和内部状态 | Go W8 后删除；PG 连接池、查询延迟和错误率替代 DB service 状态 |
-| SQLite / usage shard / stats DB 大小 | 判断 Node 多 SQLite 文件和 shard 体积 | Go W8 后改为 PostgreSQL database / table / index / partition size、Redis queue backlog 和保留期 |
+| `backgroundJobs` / 本地队列快照 | 展示 Node worker 定时任务、IPC 队列、retry queue、本地 dropped 指标 | SQLite profile 保留 Node / owner-bridge 队列观测；新 Go 完整功能另报直接异步执行、cursor、失败与重启恢复状态 |
+| DB service snapshot | 判断 SQLite 模式 Node DB service 是否 ready、PID 和内部状态 | 继续作为 `runtimeKind=node` 观测；Go runtime 另报自身 store 与直接执行健康，不将 DB service 归入 Go role |
+| SQLite / usage shard / stats DB 大小 | 判断 Node 多 SQLite 文件和 shard 体积 | SQLite profile 继续观测；PostgreSQL/Redis profile 可观测 database / table / index / partition、直接异步积压和保留期 |
 
 Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求成功率、接口 P95 / P99、统计新鲜度、worker lag、CPU、RSS、错误率和网关 SSE 完成率；不能要求 Go 存在与 Node event loop 一一对应的指标。
 
@@ -40,7 +42,7 @@ Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求�
 | pprof | `/__debug/pprof/*` | CPU、heap、goroutine、block、mutex 排障 | 不自动采样入库；按报告保存到 `reports/` |
 | 结构化日志 | stdout / 文件日志 | 排错、审计外的运行事件、告警上下文 | 按日志保留策略和运行日志索引处理 |
 | 内部系统监控 API | `GET /__aisys__/api/stats/system-metrics` | 管理后台系统指标页面 | 读取 PostgreSQL 采样表、小时表和窗口表 |
-| Worker 状态 | Asynq inspector / Go worker runtime | 队列积压、任务失败、统计滞后、游标推进 | 关键状态写入 PG 窗口 / job state，实时细节走 Prometheus |
+| 直接异步功能状态 | Go runtime | 正在执行数、失败、统计滞后、cursor 推进、取消与重启恢复 | 关键状态写入 PG 窗口 / 功能状态，实时细节走 Prometheus |
 
 `/__aisys__/metrics` 和 pprof 必须保持 loopback 或明确受控入口。公网部署不能通过 Caddy / Nginx 把它们无鉴权暴露出去。
 
@@ -71,7 +73,7 @@ Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求�
 | 请求体大小 | body bytes histogram，按 `routeGroup` | 只记录大小，不记录内容 |
 | 限流和拒绝 | `rate_limited_total`、`rejected_total`、`reason` | `reason` 使用固定枚举，不包含 IP / token |
 
-W2 管理辅助接口迁移后，每个 options / catalog / 低风险删除切片都必须有低基数 `routeGroup` 或 `operation`，用于压测和回归确认没有全表扫描或锁等待异常。当前已迁移路径建议固定操作名为 `proxy_options_list`、`system_account_options_list`、`authorization_grantee_account_options_list`、`my_authorization_grantee_account_options_list`、`authorization_grantee_team_options_list`、`my_authorization_grantee_team_options_list`、`authorization_grantee_group_options_list`、`my_authorization_grantee_group_options_list`、`provider_options_list`、`provider_model_options_list`、`provider_models_list`、`route_strategy_options_list`、`my_route_strategy_options_list`、`group_options_list`、`my_group_options_list`、`group_account_options_list`、`my_group_account_options_list`、`account_options_list`、`my_account_options_list`、`account_tags_list`、`my_account_tags_list`、`account_tag_delete` 和 `my_account_tag_delete`；不要把 `systemAccountId`、供应商 code、模型名、路由策略 ID、分组 ID、账号 ID、标签 ID、keyword 原文或用户名称放入 Prometheus label。
+历史 W2 管理辅助接口的 `routeGroup` / `operation` 枚举仅供旧灰度记录对照，不代表当前存在 Go 路由或实现。现行完整功能仍必须使用低基数 `feature` / `operation`，且不得把资源 ID、keyword 原文或用户名称放入 Prometheus label。
 
 ### 5.3 PostgreSQL
 
@@ -85,23 +87,22 @@ W2 管理辅助接口迁移后，每个 options / catalog / 低风险删除切�
 
 Go 后端必须按 server、gateway hot path、management API、ingest、stats、ops 划分连接池预算或 application_name，至少要能从 PostgreSQL 侧定位来源。
 
-### 5.4 Redis 与 Asynq
+### 5.4 Redis 与直接异步执行
 
 | 指标组 | 最小字段 | 用途 |
 | --- | --- | --- |
-| Redis operation | `redisRole=cache|state|queue`、`operation`、duration、errorTotal | 判断 cache / state / queue 是否互相污染 |
+| Redis operation | `redisRole=cache|state`、`operation`、duration、errorTotal | 判断 cache / state 是否互相污染 |
 | Redis pool | hits / misses / timeouts / stale connections | 识别连接池或网络异常 |
-| limiter | allowed / denied / penalty active | W1a / W1b 限流验证 |
-| Asynq queue | `queue`、pending、active、retry、dead、archived、oldestTaskAgeSeconds | 判断 worker lag 和死信积压 |
-| Asynq task | `taskType`、processed、failed、retried、durationP95Ms | `taskType` 必须是固定枚举，payload ID 不能入 label |
-| Worker lifecycle | role ready、shutdown drain duration、last heartbeat | 部署和 watchdog 观测 |
-| 并发与背压 | task type、dependency、in-flight、waiting、admission rejected / delayed、limit reason、recovery state | 证明并发预算来自真实依赖容量，并观察自适应降载与恢复；不得只报 goroutine 总数 |
+| 既有 Node 限流 | allowed / denied / penalty active | Node 尚未迁移功能的既有产品契约；新 Go 功能不新增迁移层限流 |
+| 直接异步执行 | `feature`、running、completed、failed、cancelled、restartRecovered、durationP95Ms | 判断功能执行、失败和恢复；`feature` 必须是固定低基数枚举 |
+| 生命周期 | role ready、shutdown drain duration、last heartbeat | 部署和 watchdog 观测 |
+| 并发与资源 | feature、dependency、inFlight、waitingForOwner、resourceSaturated、recoveryState | 证明并发只受 SQLite owner、PG pool、FD、网络和 payload 等真实容量约束；不得用任意迁移层限速掩盖问题 |
 
-Redis cache、state 和 queue 必须使用三个不同 Redis 进程的物理 `host:port`；不同 DB、namespace、密码或淘汰策略不能替代进程隔离。指标中如果发现三者指向同一个物理端点，应视为配置错误，而不是运行优化问题。
+Redis cache 与 state 必须使用不同 Redis 进程的物理 `host:port`；不同 DB、namespace、密码或淘汰策略不能替代进程隔离。现有 Node queue 若仍被未迁功能使用，继续遵从其独立物理端点契约；新 Go 完整功能不得将它作为任务队列。
 
 ### 5.5 网关与上游
 
-真实网关迁移前只做读模型和灰度观察；W10 接管时必须补齐：
+下表 W10 网关指标仅为历史迁移记录；当前网关未被选为完整功能，不能据此推导 Go listener 或队列副作用已存在：
 
 | 指标组 | 最小字段 | 用途 |
 | --- | --- | --- |
@@ -109,7 +110,7 @@ Redis cache、state 和 queue 必须使用三个不同 Redis 进程的物理 `ho
 | 上游耗时 | upstream connect / first byte / first token / total duration histogram | 对比 Node 与 Go 性能收益 |
 | SSE | stream started / completed / aborted、flush error、client canceled、backpressure wait | 验证流式稳定性 |
 | 调度 | candidate count、selected provider / protocol profile、fallback count、retry count | label 只能用 provider / profile / endpoint mode，不能用 account id |
-| 副作用 | usage enqueue、audit enqueue、public log enqueue、drop / reject count | 证明副作用不阻塞已可返回响应 |
+| 副作用 | usage / audit / public log 直接提交状态，或未迁 Node 的既有契约摘要 | 证明副作用不阻塞已可返回响应 |
 | 运行态保护 | local suppression、cooldown、client IP circuit、rate limit | 只用原因枚举，不放 IP / API Key |
 
 ## 6. 内部系统监控契约目标
@@ -119,11 +120,11 @@ Redis cache、state 和 queue 必须使用三个不同 Redis 进程的物理 `ho
 目标响应语义：
 
 - 返回 `runtimeKind: "go"` 或等价版本字段，前端据此展示 Go runtime 面板。
-- 顶层结构优先拆成 `hostMetrics`、`runtimeMetrics`、`taskHealth`、`queueHealth`、`storageHealth` 和 `statsFreshness`，避免继续围绕 Node `processEventLoop*` 字段扩展。
+- 顶层结构优先拆成 `hostMetrics`、`runtimeMetrics`、`asyncHealth`、`taskHealth`、`storageHealth` 和 `statsFreshness`，避免继续围绕 Node `processEventLoop*` 字段扩展。
 - 用 `goRuntimeLatestStatus` / `goRuntimePeakStatus` / `goRuntimeTrend` 或等价字段替代 `processEventLoopLatestStatus` / `processEventLoopPeakStatus` / `processEventLoopTrend`。
 - 每个角色的不可观测状态继续使用 `sampleAvailable=false` 和 `null` 值，不能用 0 伪装正常。
 - Node 过渡期间如需要同时展示 Node 和 Go canary，只能在测试 / 灰度页显式区分 `runtimeKind=node|go`，不能把 Go 数据塞进 Node event loop 字段。
-- W8 后 `db-service` 不应再出现在角色列表；如果前端仍展示该角色，视为迁移未完成。
+- F4 只清零已接管完整功能的 Node 指标；SQLite profile 的 `db-service` 仍可作为 `runtimeKind=node` 显示，不能因 Go 功能接管而删除。
 
 推荐 Go runtime 行字段：
 
@@ -154,17 +155,26 @@ Go 系统指标迁移时建议拆分：
 
 | 表 | 粒度 | 目标 |
 | --- | --- | --- |
-| `system_metrics_samples` | 原始系统采样 | 保留 CPU、OS 内存、RSS、网络吞吐、PG/Redis/Asynq 高层状态和统计滞后；移除 Node event loop 字段 |
+| `system_metrics_samples` | 原始系统采样 | 保留 CPU、OS 内存、RSS、网络吞吐、PG/Redis/直接异步执行高层状态和统计滞后；移除 Node event loop 字段 |
 | `system_metrics_hourly` | 小时聚合 | 系统采样平均值、最大值和样本数 |
 | `system_metrics_trend_windows` | 页面窗口 | 系统趋势图直读 |
 | `go_runtime_metrics_samples` | 按 role 原始 Go runtime 采样 | goroutine、scheduler、GC、heap、thread、RSS |
 | `go_runtime_metrics_hourly` | 按 role 小时聚合 | runtime 趋势和峰值 |
 | `go_runtime_metrics_trend_windows` | 按 role 页面窗口 | 管理页面 Go runtime 趋势直读 |
-| `queue_runtime_snapshots` 或 Asynq 窗口表 | 队列快照 | pending / active / retry / dead / oldest age |
+| `async_runtime_snapshots` | 直接异步快照 | SQLite profile 记录 file-owner wait / running；PostgreSQL/Redis profile 记录 running、write latency、context cancel、失败和重启重新发现 |
 
 上述表属于 Go 目标 schema 规划。迁移执行时可以按当时的 PostgreSQL schema 命名微调，但必须遵守两个原则：不继续维护 `process_event_loop_*` 作为 Go 长期表，不把 Prometheus 原始高基数时序完整复制进 PostgreSQL。
 
-## 8. 迁移波次门禁
+## 8. 当前 B0、F1-F4 观测门禁
+
+| 阶段 | 指标要求 | 验收证据 |
+| --- | --- | --- |
+| B0 | SQLite 与 PostgreSQL/Redis Store、直接异步执行的启动错配 fail-fast；Node 与 Go `runtimeKind` 分离 | 双模式 adapter smoke、配置错误失败记录 |
+| F1 | 完整功能的 Node 文件、入口、调用方和副作用边界可观测 | 功能清单与归档计划 |
+| F2/F3 | Go 唯一 owner 的直接异步运行数、写入延迟、取消、失败、重启恢复和资源维度饱和可观测 | 双模式 smoke、Node drain、Go readiness、回滚演练 |
+| F4 | 活跃 Node 功能指标为零，归档不进入 runtime 指标 | manifest、静态搜索、构建和部署验证 |
+
+### 历史 W0-W11 观测门禁（非当前执行依据）
 
 | 波次 | 指标要求 | 验收证据 |
 | --- | --- | --- |
@@ -194,13 +204,13 @@ Prometheus label 只允许使用低基数、安全枚举：
 
 涉及系统指标、worker 或网关的 Go 迁移报告必须记录：
 
-- Go 版本、GOMAXPROCS、GOMEMLIMIT、OS、CPU、内存、PostgreSQL、Redis、Asynq 配置。
+- Go 版本、GOMAXPROCS、GOMEMLIMIT、OS、CPU、内存、PostgreSQL、Redis 与直接异步功能配置。
 - 请求量、并发、成功率、P50 / P95 / P99、错误分布。
 - goroutine 数量、scheduler latency、GC pause、heap、RSS、FD 或 Windows handle。
 - PG pool、query latency、statement timeout、lock timeout。
 - Redis latency、pool、timeouts、cache hit / miss、state limiter 拒绝数。
-- Asynq pending / active / retry / dead、oldest task age、worker shutdown drain。
-- 网关场景还要记录 SSE 完成率、客户端取消、上游首字 / 首 token、backpressure、usage / audit / log 副作用入队。
+- 直接异步功能的 running / completed / failed / cancelled / restartRecovered、cursor、写入延迟和 shutdown drain。
+- 网关场景还要记录 SSE 完成率、客户端取消、上游首字 / 首 token、backpressure、usage / audit / log 副作用直接提交或其既有 Node 契约。
 
 原始产物写入仓库根目录 `reports/`，人工整理报告写入 `docs/reports/`。报告不能只给“通过”结论，必须说明未覆盖项和环境限制。
 

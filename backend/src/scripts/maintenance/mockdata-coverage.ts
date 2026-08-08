@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
+import { gunzipSync } from 'node:zlib'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   codexContextStateShardIndexes,
   getBusinessDatabase,
@@ -12,19 +16,26 @@ import {
   listUsageRecordShardLocations,
   getUsageRecordShardDatabase
 } from '../../storage/usage-record-shards.js'
-import { chunks, idPrefix, type CreatedMockdata, type MockdataOptions } from './mockdata/shared.js'
+import * as repositories from '../../storage/repositories.js'
+import { chunks, idPrefix, tracePrefix, type CreatedMockdata, type MockdataOptions } from './mockdata/shared.js'
 
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
 const allowedEmptyTables = new Set([
   'stats.model_trust_latest_dirty_accounts',
-  'stats.usage_range_window_requests'
+  'stats.usage_range_window_requests',
+  // 下列游标、dirty、receipt 和 cleanup queue 都按真实请求或后台消费按需写入；Mockdata 不伪造待处理工作。
+  'business.account_api_key_pool_probe_cursors',
+  'stats.ai_performance_summary_dirty_system_accounts',
+  'stats.model_trust_observation_receipts',
+  'stats.usage_overview_dirty_scopes',
+  'stats.usage_quota_hourly_window_dirty_scopes'
 ])
 
 export function assertMockdataCoverage(created: CreatedMockdata, options: MockdataOptions): void {
   const database = getBusinessDatabase()
   assertBusinessCoverage(database, created)
-  assertUsageCoverage()
+  assertUsageCoverage(created)
   assertAccountHealthMonitorCoverage(created, options)
   assertCreatedShape(created)
   assertModelTrustCoverage()
@@ -147,7 +158,7 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
   assertMinimum('系统账号图像权限样本缺失', scalar(database, "SELECT COUNT(*) AS value FROM system_accounts WHERE username LIKE 'mockdata_%' AND image_generation_enabled = 1"), 1)
 }
 
-function assertUsageCoverage(): void {
+function assertUsageCoverage(created: CreatedMockdata): void {
   const trafficSources = new Set<string>()
   const endpoints = new Set<string>()
   const billedServiceTiers = new Set<string>()
@@ -185,6 +196,118 @@ function assertUsageCoverage(): void {
   assertMinimum('图片 token 使用记录样本缺失', imageTokenRows, 1)
   assertMinimum('模型映射使用记录样本缺失', modelMappingRows, 1)
   assertMinimum('使用记录写入时计价快照样本缺失', pricingSnapshotRows, 1)
+  assertUpstreamResponseModelCoverage(created)
+}
+
+function assertUpstreamResponseModelCoverage(created: CreatedMockdata): void {
+  const samples = [
+    {
+      id: `${idPrefix}usage_coverage_upstream_response_model_match`,
+      traceId: `${tracePrefix}usage-coverage_upstream_response_model_match`,
+      model: 'mockdata-global-long-context',
+      upstreamModel: 'gpt-5.4-mini',
+      upstreamResponseModel: 'gpt-5.4-mini',
+      upstreamModelMismatch: false,
+      modelMappingApplied: true
+    },
+    {
+      id: `${idPrefix}usage_coverage_upstream_response_model_mismatch`,
+      traceId: `${tracePrefix}usage-coverage_upstream_response_model_mismatch`,
+      model: 'mockdata-global-long-context',
+      upstreamModel: 'gpt-5.4-mini',
+      upstreamResponseModel: 'gpt-5.4-mini-2026-03-17',
+      upstreamModelMismatch: true,
+      modelMappingApplied: true
+    },
+    {
+      id: `${idPrefix}usage_coverage_upstream_response_model_unmapped_mismatch`,
+      traceId: `${tracePrefix}usage-coverage_upstream_response_model_unmapped_mismatch`,
+      model: 'gpt-5.4-mini',
+      upstreamModel: 'gpt-5.4-mini',
+      upstreamResponseModel: 'gpt-5.4-mini-2026-03-17',
+      upstreamModelMismatch: true,
+      modelMappingApplied: false
+    }
+  ] as const
+  const access = { systemAccountId: created.users.admin.id, role: 'admin' as const }
+  for (const sample of samples) {
+    const listItem = repositories.listUsageRecords(access, { traceId: sample.traceId, pageSize: 10 }).items
+      .find((item) => item.id === sample.id)
+    if (
+      listItem?.model !== sample.model
+      || listItem.upstreamModel !== sample.upstreamModel
+      || listItem.upstreamResponseModel !== sample.upstreamResponseModel
+      || listItem.upstreamModelMismatch !== sample.upstreamModelMismatch
+      || listItem.modelMappingApplied !== sample.modelMappingApplied
+    ) {
+      throw new Error(`上游响应模型使用记录列表映射不完整：${sample.id}`)
+    }
+    const detail = repositories.getUsageRecordDetail(sample.id, access)
+    if (
+      detail?.model !== sample.model
+      || detail.upstreamModel !== sample.upstreamModel
+      || detail.upstreamResponseModel !== sample.upstreamResponseModel
+      || detail.upstreamModelMismatch !== sample.upstreamModelMismatch
+      || detail.modelMappingApplied !== sample.modelMappingApplied
+      || detail.pricingModel !== sample.upstreamModel
+    ) {
+      throw new Error(`上游响应模型使用记录详情映射不完整：${sample.id}`)
+    }
+  }
+
+  for (const sample of samples) {
+    const audit = repositories.listAuditLogs({ traceId: sample.traceId, pageSize: 10 }).items
+      .find((item) => item.traceId === sample.traceId)
+    if (!audit) {
+      throw new Error(`上游响应模型样本缺少同 trace 审计记录：${sample.traceId}`)
+    }
+    const auditDetail = repositories.getAuditLogDetail(audit.id)
+    const payload = auditDetail?.payloads.find((item) => item.partType === 'upstream_response' && item.hasBody)
+    if (auditDetail?.traceId !== sample.traceId || !payload) {
+      throw new Error(`上游响应模型样本审计 payload 关联不完整：${sample.traceId}`)
+    }
+    const payloadBody = readAuditPayloadBody(audit.id, payload.id)
+    if (
+      payloadBody.model !== sample.upstreamResponseModel
+      || payloadBody.upstream_model !== sample.upstreamModel
+    ) {
+      throw new Error(`上游响应模型样本审计 payload 模型字段不完整：${sample.traceId}`)
+    }
+  }
+}
+
+function readAuditPayloadBody(auditLogId: string, payloadId: string): Record<string, unknown> {
+  const row = getDatasetDatabase().prepare(`
+    SELECT blobs.storage_key, blobs.compression
+    FROM audit_payload_refs refs
+    INNER JOIN audit_payload_blobs blobs ON blobs.id = refs.body_blob_id
+    WHERE refs.audit_log_id = ?
+      AND refs.id = ?
+  `).get(auditLogId, payloadId) as { storage_key?: unknown; compression?: unknown } | undefined
+  const storageKey = typeof row?.storage_key === 'string' ? row.storage_key : undefined
+  if (!storageKey || (row?.compression !== 'none' && row?.compression !== 'gzip')) {
+    throw new Error(`审计 payload body 不可读：${auditLogId}/${payloadId}`)
+  }
+  const root = resolve(dirname(runtimeConfig.datasetDatabasePath), 'audit', 'blobs')
+  const filePath = resolve(root, storageKey)
+  const relativePath = relative(root, filePath)
+  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    throw new Error(`审计 payload 存储路径非法：${auditLogId}/${payloadId}`)
+  }
+  let text: string
+  try {
+    const bytes = readFileSync(filePath)
+    text = (row.compression === 'gzip' ? gunzipSync(bytes) : bytes).toString('utf8')
+  } catch (error) {
+    throw new Error(`审计 payload body 读取失败：${auditLogId}/${payloadId}`, { cause: error })
+  }
+  try {
+    const value: unknown = JSON.parse(text)
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value as Record<string, unknown>
+  } catch (error) {
+    throw new Error(`审计 payload body 不是 JSON：${auditLogId}/${payloadId}`, { cause: error })
+  }
+  throw new Error(`审计 payload body 不是对象：${auditLogId}/${payloadId}`)
 }
 
 function assertCreatedShape(created: CreatedMockdata): void {
@@ -277,7 +400,9 @@ function collectEmptyTables(emptyTables: string[], databaseRole: string, databas
     const tableName = table.name
     if (!tableName) continue
     const row = database.prepare(`SELECT COUNT(*) AS value FROM ${quoteIdentifier(tableName)}`).get() as { value?: number } | undefined
-    if (Number(row?.value ?? 0) === 0 && !allowedEmptyTables.has(`${databaseRole}.${tableName}`)) {
+    const allowedEmpty = allowedEmptyTables.has(`${databaseRole}.${tableName}`)
+      || (databaseRole.startsWith('codex-context-state:') && tableName === 'codex_context_storage_cleanup_queue')
+    if (Number(row?.value ?? 0) === 0 && !allowedEmpty) {
       emptyTables.push(`${databaseRole}.${tableName}`)
     }
   }

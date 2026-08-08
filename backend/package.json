@@ -77,6 +77,8 @@
     "test:availability-probe-coordinator": "tsx src/scripts/regression/availability-probe-coordinator-regression.ts",
     "test:codex-turn-availability-probe": "tsx src/scripts/regression/codex-turn-availability-probe-regression.ts",
     "test:account-health-check-control-fence": "tsx src/scripts/regression/account-health-check-control-fence-regression.ts",
+    "test:account-health-check-execution-lifecycle": "tsx src/scripts/regression/account-health-check-execution-lifecycle-regression.ts",
+    "test:health-check-source-fence-and-stream-model": "tsx src/scripts/regression/health-check-source-fence-and-stream-model-regression.ts",
     "test:codex-turn-retry-redis-concurrency": "tsx src/scripts/regression/codex-turn-retry-redis-concurrency-regression.ts",
     "test:codex-latest-compatibility": "tsx src/scripts/regression/codex-latest-compatibility-regression.ts",
     "test:codex-responses-tool-item-identity": "tsx src/scripts/regression/codex-responses-tool-item-identity-regression.ts",

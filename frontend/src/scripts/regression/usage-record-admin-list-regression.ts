@@ -80,6 +80,8 @@ assert.equal(columnKeys.includes('status'), true, '结果状态和 HTTP 状态�
 const tableSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordsTable.vue'), 'utf8')
 assert.match(tableSource, /column\.key === 'status'[\s\S]*UsageRecordResultCell[\s\S]*statusCodeText\(record\)/, '状态列必须显示结果和 HTTP 状态码两个标签')
 assert.match(tableSource, /<a-tag v-if="typeof record\.statusCode === 'number'" :color="statusCodeColor\(record\)">/, '状态码缺失时不得渲染空标签')
+assert.match(tableSource, /<a-tag v-if="record\.upstreamModelMismatch && record\.upstreamResponseModel" color="red">上游响应 \{\{ record\.upstreamResponseModel \}\}<\/a-tag>/, '桌面端模型不一致提示必须显示上游实际响应模型')
+assert.doesNotMatch(tableSource, /模型不一致/, '桌面端不得保留独立模型不一致标签')
 
 const resultCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordResultCell.vue'), 'utf8')
 assert.match(resultCellSource, /record\.success \? '成功' : '失败'/, '结果单元格必须显示语义成功或失败')
@@ -115,6 +117,8 @@ const mobileSource = readFileSync(resolve('../frontend/src/views/usage-records/U
 assert.match(mobileSource, /UsageRecordResultCell/, '移动端必须复用单一失败标识和错误详情入口')
 assert.doesNotMatch(mobileSource, /失败说明|failureAttribution|failureReason/, '移动端不得直接重复展示失败摘要或内部归因')
 assert.doesNotMatch(mobileSource, /open-detail|openDetail|openAuditLogs|openRuntimeLogs|查看详情|运行日志|审计日志/, '移动端使用记录卡片不得保留详情或日志跳转')
+assert.match(mobileSource, /<a-tag v-if="record\.upstreamModelMismatch && record\.upstreamResponseModel" color="red">上游响应 \{\{ record\.upstreamResponseModel \}\}<\/a-tag>/, '移动端模型不一致提示必须显示上游实际响应模型')
+assert.doesNotMatch(mobileSource, /模型不一致/, '移动端不得保留独立模型不一致标签')
 const apiSource = readFileSync(resolve('../frontend/src/api/domains/usageRecords.ts'), 'utf8')
 assert.doesNotMatch(apiSource, /detail\s*:|usage-records\/\$\{id\}/, '前端使用记录 API 不得保留按 ID 详情请求')
 

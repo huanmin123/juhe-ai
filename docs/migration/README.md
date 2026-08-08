@@ -5,20 +5,22 @@
 
 ## 1. 目录目标
 
+> **现行决策（2026-08-08）。** [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 取代本目录及历史 M/W 记录中“按 route/job 小切片、长期影子、Go 仅 PostgreSQL + Redis、删除 SQLite、先迁公开 / 管理 HTTP 接口”的优先级。SQLite 与 PostgreSQL/Redis 都是 Go 的正式目标模式；每次只接管一个完整功能，完成后 Node 的整个功能文件集退出活跃路径并归档到 `migration-backup/`。当前工作区未提供受版本控制的 Go 源码或 `go.mod`，不得把历史 Go 记录写成当前已实现或已接管。
+
 - 把迁移目标、迁移顺序、删除规则、Go 技术基线和验证要求固定下来，避免后续只靠对话记忆推进。
 - 支持“渐进式 + 减法迁移”：每迁移一个模块，就让该模块只有一个运行时 owner，并删除对应 Node 旧实现。
-- 先迁移公开接口和后台管理接口，最后迁移真实中转协议网关。
-- 把 Go 能天然简化的 Node 事件循环、阻塞规避、worker thread、SQLite 单写者治理和 IPC 复杂度提前列为删除对象。
-- 明确 Go 不是无界并发：PostgreSQL 连接池、Redis 队列、上游账号并发、队列容量、请求体大小和 goroutine 生命周期仍必须有边界。
+- B0 先建设双模式基础设施；随后每次完整接管一个功能，不以 path、job、writer 或单个文件片段作为迁移单元。
+- Go 接管完成即移除该功能的 Node 活跃路径，并归档完整 Node 文件集；SQLite 单写者治理与 DB service 对尚未接管的 SQLite 功能仍是保留边界。
+- Go 默认直接异步和按资源维度并发，不为迁移新增通用队列或业务限速；goroutine 仍受 SQLite 单 writer、连接池、取消、超时和内存 / 文件描述符边界约束。
 
 ## 2. 多轮批量迁移执行法
 
-迁移不要求第一轮一次达到最终完美状态，统一按多轮推进，主线优先扩大 Go 覆盖面：
+完整功能接管不允许长期保留半迁移 owner，统一按功能批次推进：
 
-1. 第一轮快速迁移：按模块批量完成 Node -> Go 的接口、路由、数据模型、后台任务和 owner 接线。每个小切片只做必要的编译、静态检查和最小回归；真实依赖验收、全面 Node 对照和细边界修复交给旁支 Agent，不阻塞主线迁移。
-2. 第二轮从头复核：按模块重新对照最新 Node，集中处理遗漏接口、字段语义、错误边界、调用链和跨模块副作用；旁支 Agent 可以并行修复，主 Agent 负责合并和冲突裁决。
-3. 第三轮统一验收：从头执行跨模块契约、真实 PostgreSQL / Redis / worker、前端真实 Go 后端 smoke、owner manifest、切流和回滚门禁，形成进入减法阶段的证据。
-4. 减法阶段：只有用户明确通知开始后才删除 Node。每次删除一个模块前，必须核对 Go 路由、前端调用、数据读写、worker、定时任务、配置、部署入口、owner 和回滚点；删除后再做该模块快速回归与整体验收。
+1. B0：完成 Go 双模式 Store、直接异步执行、启动校验和测试基础；不接管任何半功能。
+2. F1/F2：冻结一个完整功能边界，在 Go 中完整实现，并以直接 goroutine 异步处理独立工作；不能留下 Node / Go 正式双 owner。
+3. F3/F4：完整验证后切换 Go owner，停止 Node 功能，归档完整 Node 文件集并清零 Node 活跃入口；归档 manifest 固定回滚和对照证据。
+4. 下一功能：只在上一功能的 Node 活跃路径、调用方和部署入口已清零后开始；不以扩大 Go 覆盖率替代完整接管。
 
 Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提交和推送；旁支 Agent 负责 Node 对照、测试、真实环境验证、问题修复和文档核对。旁支失败不得阻塞第一轮代码迁移，但必须登记到对应轮次清单，不能被描述为已验收。共享文件不并行写入，独立模块优先使用独立 worktree。
 
@@ -39,7 +41,7 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 11. **共享主目录发生意外分支或历史变更时立即停写审计。** 先只读记录 `status`、`HEAD`、本地 / 远端 `master`、reflog 和所有 worktree，再确认维护者文件归属；不得用 reset、stash、checkout 或删除文件“恢复现场”。如果污染提交已经进入本地 `master`，仍以该 `master` 为待同步事实合入 clean 迁移分支，同时用 merge-base、逐提交和三点 diff 证明迁移提交边界；未推送的污染历史不等于可以忽略，也不授权迁移任务改写共享历史。
 12. **迁移测试不得借 Node 初始化掩盖 Go schema 缺口。** `juhe-ai-maintenance schema-up` 必须能在隔离 fresh PostgreSQL 上独立完成当前 Goose catalog；遇到仍由 Node 拥有、尚未进入 Go catalog 的表时，只允许让加法 migration 在对象不存在时显式 no-op，或把完整对象迁入 Goose 并通过 owner 评审。禁止在 Go 验收脚本中先调用 Node schema 初始化、伪造 Goose ledger 或复用已有业务库来制造通过结果。
 13. **多 Agent 只按可独立验证的边界并行。** 主 Agent 先划定模块、文件 owner、输入、输出和验收门禁；只读审计和测试 Agent 可以共用权威迁移 worktree，写 Agent 默认使用各自独立分支 / worktree 交付可审计提交，只有主 Agent 明确授予互不重叠的文件 owner 时才可在权威 worktree 并行写入。主 Agent 独占权威分支的中心集成、提交、主线 merge、owner manifest 裁决和合回。子 Agent 不得进入共享主目录写文件，不得自行切换公共分支、合并、推送或改 owner manifest；两个写 Agent 不得同时修改同一文件或同一状态机。共享契约、schema、owner 清单和迁移文档由主 Agent 集中裁决。子 Agent 交付必须列出 Node 依据、改动文件、测试结果、未完成项和风险，主 Agent 仍须复查实际 diff，不能把子 Agent 的“完成”直接换算成迁移完成。
-14. **同步主线也要同步语义，不只同步 Git。** 每次 `master` 前进后，除完成 merge 和冲突裁决外，还要按受影响模块重新检查 Node 路由、service、repository、worker、配置、测试和部署入口；若 Node 新增或修正业务语义，必须更新对应 Go 实现、契约测试和迁移状态。只有 Node 专属的事件循环、worker thread、SQLite 单写者或 IPC 规避机制可以在证明 Go 不需要后删除，不能因“Go 写法不同”跳过业务效果。
+14. **同步主线也要同步语义，不只同步 Git。** 每次 `master` 前进后，除完成 merge 和冲突裁决外，还要按受影响模块重新检查 Node 路由、service、repository、worker、配置、测试和部署入口；若 Node 新增或修正业务语义，必须更新对应 Go 实现、契约测试和迁移状态。事件循环、worker thread 或 IPC 的实现可以在证明替代契约等价后调整；SQLite 单写者是文件级正确性不变量，必须由 Go SQLite adapter、owner bridge 或完成 handoff 的独占 writer 保持，不能以“Go 写法不同”删除。
 
 推荐顺序固定为：只读检查共享 `master` -> 在独立 worktree 审计范围 -> 将最新 `master` merge 到迁移分支 -> 实现与验证 -> 再次检查 `master` 漂移 -> 必要时再次 merge 与复验 -> 在共享主目录干净且基线稳定时合回 `master` -> 从 `master` 复验并记录证据。任何一步发现异常都回到只读基线审计，不凭记忆继续执行。
 
@@ -51,25 +53,29 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 
 1. **确认入口与 owner。** 从 HTTP 路由、队列 job、scheduler、启动命令和部署配置反向追踪到 service、repository、缓存与外部依赖，确认谁读、谁写、谁重试、谁最终发布运行态；不能只阅读一个 service 文件就推断完整流程。
 2. **固定外部契约。** 记录鉴权、权限、参数缺省与拒绝规则、状态码、错误码、响应字段、流式终态、超时和取消语义，并用当前 Node 测试、调用方和真实 fixture 交叉证明。文档与代码冲突时先登记事实和裁决，不能凭印象选一侧。
-3. **固定数据与并发语义。** 逐项核对表结构、事务边界、锁、CAS、revision / incarnation fence、幂等键、队列唯一性、缓存失效、跨实例可见性和撤权时序；“最终写入被 CAS 拒绝”不等于“旧凭据没有向上游发请求”。
+3. **固定数据与并发语义。** 逐项核对表结构、事务边界、锁、CAS、revision / incarnation fence、幂等键、直接异步的取消 / 重启恢复、缓存失效、跨实例可见性和撤权时序；“最终写入被 CAS 拒绝”不等于“旧凭据没有向上游发请求”。
 4. **固定上游与凭据语义。** 跟踪模型映射、provider driver、base URL、代理、OAuth 刷新、API Key 选择、header/body 模板、协议完成证据和失败归因。endpoint mode 只表示入口协议，不能替代 provider / OAuth 的最终请求语义。
 5. **区分业务规则与 Node 运行时补丁。** 必须保留用户可观察行为、数据一致性、安全边界和运维契约；Node 为事件循环、worker thread、SQLite 单写、IPC 或进程模型增加的规避层，只有在 Go 的等价边界和实验证据成立后才删除，不机械移植，也不提前删除。
 6. **先列失败与恢复路径。** 至少覆盖配置错误、凭据漂移、撤权、超时、连接失败、响应不完整、协议 neutral、重试、归档、重启、长停机恢复、并发 owner 和回滚。成功路径单测不能替代失败归因与生命周期验收。
-7. **建立证据矩阵。** 每项能力都要能指向 Node 权威源码、Go 实现、契约 / 单元 / race 测试、真实依赖验收、生产 owner 和 Node 删除门禁；缺任一列时只能标记为“实现中”或“待验收”，不能标记为已接管。
+7. **建立证据矩阵。** 每个完整功能都要能指向 Node 权威源码、Go 实现、契约 / 单元 / race 测试、真实依赖验收、生产 owner、Node 归档 manifest 和活跃路径清零门禁；缺任一列时只能标记为“实现中”或“待验收”，不能标记为已接管。
 8. **持续重放对照。** 编码完成、长测完成和准备合回前，都要基于最新 `master` 重跑受影响模块的 Node -> Go 对照。若主线新增字段、错误语义、状态机或调用方，先同步 Go 与测试再继续集成；仅 Git 无冲突不代表语义无漂移。
 
 ## 3. 首次阅读顺序
 
-1. [迁移规划总览](迁移规划总览.md)：迁移原则、阶段、减法规则和整体边界。
-2. [Go 后端架构基线](Go后端架构基线.md)：目标目录、进程模型、并发模型和线程安全规则。
-3. [Go 技术选型与依赖基线](Go技术选型与依赖基线.md)：Go 框架、日志、配置、DB、SQL、job、测试、观测和安全扫描的默认依赖。
-4. [存储目标与 SQLite 移除](存储目标与SQLite移除.md)：PostgreSQL + Redis 单模式目标、SQLite 删除范围和数据边界。
-5. [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)：系统指标从 Node 事件循环口径切换到 Go runtime、PG/Redis/Asynq 和网关观测口径的规划。
-6. [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)：W6 / W7 / W8 执行系统监控迁移时逐项删除 Node 字段、替换 Go 字段和验证前端契约的清单。
-7. [模块迁移顺序与减法清单](模块迁移顺序与减法清单.md)：模块迁移波次、删除条件和验收门禁。
-8. [W1b 外部维护公开接口迁移记录](W1b-外部维护公开接口迁移记录.md)：`/__aipublic__` 外部维护接口的当前契约、Node 对照命令、Go 目标边界和删除门禁。
-9. [W2 管理端只读辅助接口迁移记录](W2-管理端只读辅助接口迁移记录.md)：后台 options / catalog 接口和账号标签切片的当前契约、已迁移路径、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、账号标签 owner-only 只读 / 未绑定删除 / 独立 PATCH opt-in、主账户标签写路径和 operation log 缺口、接管门禁。
-10. [W3 登录与系统账户迁移记录](W3-登录与系统账户迁移记录.md)：登录、当前用户、会话、登出、改密、验证码和系统账户写接口的分块迁移记录；当前覆盖 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前令牌退出切片、`POST /system-accounts` 创建切片，以及 `PATCH /system-accounts/{id}` 完整 mixed partial update；登录会话列表 / 按 ID 撤销已撤销，不属于当前迁移范围。全部仍为 Go opt-in 灰度路径，不代表 W3、Node `/auth` 或 Node `/system-accounts` 已接管。
+1. [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md)：完整功能最小单元、Node 归档、直接异步并发、回滚和验收规则。
+2. [迁移规划总览](迁移规划总览.md)：迁移原则、B0/F1-F4 阶段、归档规则和整体边界。
+3. [Go 后端架构基线](Go后端架构基线.md)：目标目录、进程模型、直接异步并发和线程安全规则。
+4. [Go 技术选型与依赖基线](Go技术选型与依赖基线.md)：Go 框架、日志、配置、DB、直接异步、测试、观测和安全扫描的默认依赖。
+5. [双模式存储与被动任务优先迁移方案](双模式存储与被动任务优先迁移方案.md)：当前 SQLite 与 PostgreSQL/Redis 双模式边界。
+6. [双模式存储目标（保留历史文件名）](存储目标与SQLite移除.md)：SQLite 与 PostgreSQL/Redis 的存储边界和数据域。
+7. [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)：系统指标从 Node 事件循环口径切换到 Go runtime、PG/Redis 和网关观测口径的规划。
+8. [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)：Go runtime 与 Node runtime 分视图的字段和验收清单。
+9. [模块迁移顺序与减法清单](模块迁移顺序与减法清单.md)：历史记录与完整功能接管的归档门禁。
+> 以下 W1b-W10 链接是旧迁移方案的历史记录索引。其中“当前”“已实现”“Go opt-in”“队列”等措辞只描述各记录写作时的历史状态；当前工作区没有 Go 源码或 Go 模块，它们不构成 Go 启动、owner 切换、Node 删除或引入任务队列的授权。后续实施只以本节前九项和“完整功能接管与 Node 归档迁移规则”为准。
+
+10. [历史 W1b 外部维护公开接口迁移记录](W1b-外部维护公开接口迁移记录.md)：`/__aipublic__` 外部维护接口的历史契约和对照证据。
+11. [历史 W2 管理端只读辅助接口迁移记录](W2-管理端只读辅助接口迁移记录.md)：后台 options / catalog 接口与账号标签切片的历史记录。
+12. [历史 W3 登录与系统账户迁移记录](W3-登录与系统账户迁移记录.md)：登录、当前用户、会话、登出、改密、验证码和系统账户写接口的历史分块记录；不代表当前 Go 接管或 Node `/auth`、`/system-accounts` 已下线。
 11. [W4 团队与统一授权迁移记录](W4-团队与统一授权迁移记录.md)：系统团队、成员、授权 grant、授权来源展开和最终用户授权的分块迁移记录；当前覆盖团队、授权 CRUD / 归还 / 回收、授权详情用量，以及 admin/self 授权用量 rows-only details + 独立 `team-summary` / `user-summary` 的 Go opt-in 灰度能力，并包含授权来源 / grant / 额度窗口 / 统计脏标记 / usage window PostgreSQL schema 基线和授权缓存失效；不代表 W4、Node `/system-teams` 或 Node `/authorizations` 已接管。
 12. [W5 管理端全局品牌设置读取记录](W5-管理端全局品牌设置读取记录.md)：`GET/PATCH /__aisys__/api/settings/global` 的 Go opt-in 契约、`publicsettings` / store 复用、管理员权限、读写 session、两层限流、精确品牌 DTO、验证记录和删除门禁。
 13. [W5 管理端系统运行设置迁移记录](W5-管理端系统运行设置迁移记录.md)：已进入 Go opt-in 的 `GET/PATCH /__aisys__/api/settings`，固定 53 key，GPT Priority / Flex 使用模型目录精确档位价格且不提供通用倍率，并覆盖 `256 KiB` / `413`、parser 与鉴权 / 限流顺序、PostgreSQL 有界事务、`000024` 初始设置 seed、`000043` 删除历史倍率设置、双缓存失效、操作日志和删除门禁；真实依赖因 Docker 不可用输出 `SKIP` 时不计通过。
@@ -101,14 +107,17 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 
 ## 4. 目录职责
 
+> 本表中名称以 `W` 或 `M` 开头、或指向旧 W1b-W10 记录的条目，均为历史索引；其说明中“当前”“已实现”“Go opt-in”“队列”等措辞只反映原记录的日期，不能作为当前工作区存在 Go 实现、启用任务队列或允许切换 owner 的依据。
+
 | 文档 | 职责 |
 | --- | --- |
 | `README.md` | 迁移目录入口、阅读顺序和维护规则 |
+| `完整功能接管与Node归档迁移规则.md` | 现行最小迁移单元、Node 下线、`migration-backup/` 归档、直接异步与每功能验收规则 |
 | `迁移规划总览.md` | 长期迁移策略、阶段、边界和不做事项 |
 | `Go后端架构基线.md` | Go 目标架构、依赖选择、并发、线程安全和内存治理 |
 | `Go技术选型与依赖基线.md` | Go 框架、日志、配置、DB、SQL、job、测试、观测和安全扫描的默认依赖与禁用依赖 |
-| `存储目标与SQLite移除.md` | PostgreSQL + Redis 单模式、SQLite 删除清单、离线数据处理和验证要求 |
-| `Go迁移指标与观测规划.md` | Go 目标系统指标、Prometheus、pprof、PG/Redis/Asynq、worker 和网关观测口径 |
+| `存储目标与SQLite移除.md` | 双模式存储目标（保留历史文件名）：SQLite 与 PostgreSQL/Redis 的 adapter、单 owner、数据域和验证要求 |
+| `Go迁移指标与观测规划.md` | Go 目标系统指标、Prometheus、pprof、SQLite/PG/Redis、直接异步、功能 owner 和网关观测口径 |
 | `Go系统指标字段迁移清单.md` | Node 系统指标字段删除、Go 字段替换、前端页面迁移和 W6 / W7 / W8 验收清单 |
 | `模块迁移顺序与减法清单.md` | 模块优先级、迁移状态、Node 删除证据和测试门禁 |
 | `Goose与Node初始化边界复审记录.md` | Goose schema-up 的单一账本边界、fresh / upgrade 数据库规则、Node DDL 缺口和 seed boolean 修复证据 |
@@ -145,10 +154,11 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 
 - 任何 Go 迁移任务开始前，先确认本目录和 `../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md`。
 - 每迁移一个模块，必须更新 [模块迁移顺序与减法清单](模块迁移顺序与减法清单.md) 的状态、Node 删除证据和测试结果。
+- 每接管一个完整功能，必须更新 `migration-backup/node/<feature-id>/manifest.json`，并确认归档目录不参与构建、测试、部署或运行时 import。
 - 影响 Go 目录结构、并发模型、进程模型或存储 owner 时，更新 [Go 后端架构基线](Go后端架构基线.md)。
 - 影响 Go 框架、日志、配置、SQL、job、测试、观测、安全扫描或外部依赖时，先更新 [Go 技术选型与依赖基线](Go技术选型与依赖基线.md)，再改代码。
-- 影响系统指标、Prometheus、pprof、worker lag、队列状态、PG/Redis/Asynq 观测或前端系统监控契约时，先更新 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 和 [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)，不能把 Node `eventLoopLagMs` / `db-service` 字段模拟成 Go 指标。
-- 影响 PostgreSQL、Redis、SQLite 移除、数据导入导出或存储部署时，更新 [存储目标与 SQLite 移除](存储目标与SQLite移除.md)。
+- 影响系统指标、Prometheus、pprof、直接异步执行、Node legacy queue、PG/Redis 观测或前端系统监控契约时，先更新 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 和 [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)，不能把 Node `eventLoopLagMs` / `db-service` 字段模拟成 Go 指标。
+- 影响 SQLite、PostgreSQL、Redis、数据导入导出或存储部署时，更新 [双模式存储目标（保留历史文件名）](存储目标与SQLite移除.md) 与 [双模式存储与被动任务优先迁移方案](双模式存储与被动任务优先迁移方案.md)。
 - 影响本地启动、安装、构建、发布包、Docker、服务化或回滚方式时，更新 [开发构建部署调整](开发构建部署调整.md)，并同步 `../develop/` 或 `../deploy/` 对应当前手册。
 - 影响公开 API、管理 API、权限、安全、统计、存储或网关语义时，同步更新 `../functions/` 下对应功能文档。
 - 影响当前真实架构事实时，同步更新 `../architecture/架构总览.md` 和 `../architecture/backend/README.md`。
@@ -158,5 +168,5 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 - 迁移期间，前端仍按 Vue 3 + TypeScript + Ant Design Vue 维护。
 - Go 迁移优先覆盖后端运行时；前端 API 调用契约要通过测试证明未缺失，但不因迁移重做前端信息架构。
 - “不向下兼容”指不为旧 Node 内部结构、旧 schema、旧 repository 或旧 IPC 保留运行时兼容分支；对当前产品公开契约和用户可见行为，迁移必须做到等价或在文档中明确记录新契约。
-- 迁移目标不再保留 SQLite standalone / PostgreSQL performance 两套模式。Go 后端目标只有 PostgreSQL + Redis；SQLite 只作为当前 Node 旧实现和离线导出来源存在。
-- 迁移中允许测试环境短期存在 Node 与 Go 两个服务按路径分流，但同一接口、同一模块或同一后台任务不能长期双 owner。
+- 迁移目标保留 SQLite 与 PostgreSQL/Redis 两种模式。Go 必须支持两种模式，SQLite 不是 Node 旧实现或离线导出来源的同义词；SQLite 共存期遵守文件单 writer / owner bridge，PostgreSQL/Redis 共存期遵守 job / table / consumer 单 owner。
+- 迁移中可在隔离环境对完整功能做验证，但生产只允许一个完整功能 owner；Go 接管后不得保留 Node fallback、bridge、双写或双 consumer。

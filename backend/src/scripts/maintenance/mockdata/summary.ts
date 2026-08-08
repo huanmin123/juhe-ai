@@ -7,6 +7,7 @@ import { nowIso } from '../../../storage/database.js'
 import type { ModelCheckMockdataCounts } from './records/model-checks.js'
 import {
   apiKeyAuthorizedGroupBindingRule,
+  idPrefix,
   mockPassword,
   type ApiKeyWithSecret,
   type CreatedMockdata,
@@ -125,6 +126,7 @@ function groupAuthorizationSamples(authorizations: ResourceAuthorizationSummary[
 export function writeSummary(
   created: CreatedMockdata,
   records: UsageRecordSeed[],
+  auditLogs: number,
   modelCheckCounts: ModelCheckMockdataCounts,
   extraCounts: ExtraMockdataCounts,
   options: MockdataOptions,
@@ -145,6 +147,19 @@ export function writeSummary(
     mockUsers: mockUserSummaries(created.users),
     apiKeyBindingRule: apiKeyAuthorizedGroupBindingRule,
     authorizedUsageRecordNote: 'usage_records 中的 group_authorized 样本用于授权分组直接作为 API Key 号池时的调度、审计和授权用量统计。',
+    upstreamResponseModelSamples: records
+      .filter((record) => record.id === `${idPrefix}usage_coverage_upstream_response_model_match`
+        || record.id === `${idPrefix}usage_coverage_upstream_response_model_mismatch`
+        || record.id === `${idPrefix}usage_coverage_upstream_response_model_unmapped_mismatch`)
+      .map((record) => ({
+        id: record.id,
+        traceId: record.traceId,
+        endpoint: record.endpoint,
+        model: record.model,
+        upstreamModel: record.upstreamModel,
+        upstreamResponseModel: record.upstreamResponseModel,
+        modelMappingApplied: record.modelMappingApplied
+      })),
     apiKeys: apiKeySummariesForMockdata(created.apiKeys, groupById, groupOwnerById, created.users),
     authorizationSamples: groupAuthorizationSamples(created.authorizations),
     counts: {
@@ -159,7 +174,7 @@ export function writeSummary(
       customProviderModels: created.customProviderModels,
       usageRecords: records.length,
       publicApiLogs: extraCounts.publicApiLogs,
-      auditLogs: Math.ceil(records.length / 4),
+      auditLogs,
       operationLogs: 90,
       runtimeLogs: Math.min(240, records.length),
       modelCheckRuns: modelCheckCounts.runs,

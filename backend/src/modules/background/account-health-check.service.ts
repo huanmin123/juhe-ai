@@ -69,12 +69,20 @@ interface AccountHealthCheckExecution {
   sourceFences: Map<string, CodexSourceProbeFence>
 }
 
+type AccountHealthCheckProbeRunner = (
+  account: AccountSummary,
+  groupId: string,
+  candidate: OpenAIAccountSecret | undefined,
+  signal: AbortSignal
+) => Promise<AccountHealthCheckProbeResult>
+
 const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check', [], 0)
 const requestFailureHealthCheckCooldownMs = 5 * 60_000
 const maxSourceFencesPerHealthExecution = 64
 const recentRequestFailureHealthChecks = new Map<string, number>()
 let lastRequestFailureHealthCheckCleanupAt = 0
 const accountHealthCheckExecutions = new Map<string, AccountHealthCheckExecution>()
+let accountHealthCheckProbeRunnerForTest: AccountHealthCheckProbeRunner | undefined
 
 export interface AccountHealthCheckProbeResult {
   result: AccountTestResult
@@ -192,261 +200,295 @@ export function getAccountHealthCheckQueueSnapshot() {
   return accountHealthCheckQueue.snapshot()
 }
 
+export function setAccountHealthCheckProbeRunnerForTest(runner: AccountHealthCheckProbeRunner | undefined): void {
+  accountHealthCheckProbeRunnerForTest = runner
+}
+
 async function runAccountHealthCheckQueueItem(
   item: AccountHealthCheckQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
   const executionKey = accountHealthCheckExecutionKey(item.accountId)
-  const account = await accountForHealthCheckQueueItem(item)
-  if (!isAccountHealthCheckEligible(account, item.reason)) {
-    settleSourceFences(executionKey, 'stale')
-    logger.debug({
-      event: 'background_account_health_check_discarded',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      accountStatus: account?.status,
-      schedulable: account?.schedulable,
-      boundGroupId: account?.boundGroupId,
-      nextHealthCheckAt: account?.nextHealthCheckAt,
-      effectiveAvailabilityStatus: account?.effectiveAvailability?.status
-    }, '账号健康检测任务已失效，跳过')
-    return true
-  }
-  if ((account.configRevision ?? 1) !== item.configRevision) {
-    settleSourceFences(executionKey, 'stale')
-    logger.debug({
-      event: 'background_account_health_check_stale_config_discarded',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      queuedConfigRevision: item.configRevision,
-      currentConfigRevision: account.configRevision ?? 1
-    }, '账号配置已变化，丢弃旧健康检测任务')
-    return true
-  }
-
-  const groupId = account.boundGroupId
-  const observedAt = new Date().toISOString()
-  const deadline = accountHealthCheckDeadline()
-  const coordination = await acquireAvailabilityProbe({
-    accountRuntimeScope: gatewayAccountRuntimeKey(account),
-    probeKind: 'account_health_check',
-    configRevision: item.configRevision,
-    executionRole: 'health_probe'
-  })
-  if (coordination.disposition === 'joined') {
-    logger.debug({
-      event: 'background_account_health_check_runtime_coordinator_joined',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      reason: item.reason,
-      generation: coordination.generation,
-      retryAtMs: coordination.retryAtMs
-    }, '共享可用性探活已有 owner，本轮健康检查不追加实际诊断')
-    // A local source-only queue item that lost the distributed lease has no
-    // authority to consume the remote owner's outcome. Return an explicit
-    // non-success fence result instead of retaining its worker-local record.
-    settleSourceFences(executionKey, 'unknown')
-    deadline.cancel()
-    return true
-  }
+  const execution = accountHealthCheckExecutions.get(executionKey)
+  let deadline: ReturnType<typeof accountHealthCheckDeadline> | undefined
+  let coordination: Awaited<ReturnType<typeof acquireAvailabilityProbe>> | undefined
+  let completedExecution: AccountHealthCheckExecution | undefined
+  let completedExecutionSourceFencesSettled = false
   try {
-    return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
-      if (deadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
-      const candidate = await healthCheckCandidateForAccount(account, groupId)
-      if (deadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
-      return await runAccountHealthCheckProbe(account, groupId, candidate, deadline.signal)
-    }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted, diagnosticDeadlineExceeded, diagnosticCompleted }, { joined }) => {
-    if (joined) {
+    const account = await accountForHealthCheckQueueItem(item)
+    if (!isAccountHealthCheckEligible(account, item.reason)) {
+      settleSourceFences(executionKey, 'stale')
       logger.debug({
-        event: 'background_account_health_check_singleflight_joined',
+        event: 'background_account_health_check_discarded',
         accountId: item.accountId,
         accountName: item.accountName,
-        reason: item.reason
-      }, '同一账户已有可用性探针执行，本轮健康检查复用其结果')
-    }
-    const probeOutcome = automaticAccountProbeOutcome(result, {
-      upstreamAttempt,
-      canceled: diagnosticCanceled,
-      timeout: diagnosticTimeoutExhausted,
-      diagnosticTimeoutExhausted
-    })
-    const coordinatorOutcome = availabilityProbeCoordinatorOutcome(probeOutcome, diagnosticCanceled)
-    const probeSettled = await settleAvailabilityProbe({
-      runtimeKey: coordination.runtimeKey,
-      generation: coordination.generation,
-      ownerToken: coordination.ownerToken,
-      outcome: coordinatorOutcome
-    })
-    // This is the worker completion/fence boundary. Removing the execution
-    // record before any asynchronous account mutation means a late IPC fence
-    // starts a fresh generation instead of consuming this finished result.
-    const completedExecution = takeAccountHealthCheckExecution(executionKey)
-    const coordinatorSourceFences = probeSettled
-      ? await availabilityProbeSourceFences(coordination.runtimeKey, coordination.generation)
-      : []
-    const sourceFences = mergeSourceFences(
-      [...(completedExecution?.sourceFences.values() ?? [])],
-      coordinatorSourceFences.map((fence) => ({
-        ...fence,
-        runtimeKey: coordination.runtimeKey,
-        probeGeneration: coordination.generation,
-        configRevision: item.configRevision
-      }))
-    )
-    // A missing local execution record must preserve ordinary health behavior.
-    // Source-only queue work always registers its record before enqueueing.
-    const sourceOnlyProbe = completedExecution?.ordinaryAccountHealthSemantics === false
-    const sourceFenceOutcome = probeSettled ? coordinatorOutcome : 'stale'
-    if (!probeSettled) {
-      // A lease-taken-over owner has no authority to write either account
-      // health or a source success. The current owner will produce the next
-      // generation's result.
-      settleCompletedSourceFences(sourceFences, 'stale')
+        accountStatus: account?.status,
+        schedulable: account?.schedulable,
+        boundGroupId: account?.boundGroupId,
+        nextHealthCheckAt: account?.nextHealthCheckAt,
+        effectiveAvailabilityStatus: account?.effectiveAvailability?.status
+      }, '账号健康检测任务已失效，跳过')
       return true
     }
-    const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
-    const diagnosticTimeoutTemporaryUnavailable = diagnosticTimeoutExhausted === true && probeOutcome === 'upstream_failure'
-    const scheduledProbeFailureImmediate = item.reason === 'scheduled'
-      && diagnosticCompleted === true
-      && diagnosticDeadlineExceeded !== true
-      && probeOutcome !== 'complete_success'
-      && probeOutcome !== 'probe_task_failure'
-    const immediateTemporaryUnavailable = diagnosticTimeoutTemporaryUnavailable || scheduledProbeFailureImmediate
+    if ((account.configRevision ?? 1) !== item.configRevision) {
+      settleSourceFences(executionKey, 'stale')
+      logger.debug({
+        event: 'background_account_health_check_stale_config_discarded',
+        accountId: item.accountId,
+        accountName: item.accountName,
+        queuedConfigRevision: item.configRevision,
+        currentConfigRevision: account.configRevision ?? 1
+      }, '账号配置已变化，丢弃旧健康检测任务')
+      return true
+    }
 
-    if (probeOutcome === 'complete_success') {
-      settleCompletedSourceFences(sourceFences, probeSettled ? 'success' : 'stale')
-      if (sourceOnlyProbe) {
-        // A source-bound success proves only the registered source/turn fence.
-        // It must not clear account runtime/circuit state or write health.
+    const groupId = account.boundGroupId
+    const observedAt = new Date().toISOString()
+    const executionDeadline = accountHealthCheckDeadline()
+    deadline = executionDeadline
+    const acquiredCoordination = await acquireAvailabilityProbe({
+      accountRuntimeScope: gatewayAccountRuntimeKey(account),
+      probeKind: 'account_health_check',
+      configRevision: item.configRevision,
+      executionRole: 'health_probe'
+    })
+    coordination = acquiredCoordination
+    if (acquiredCoordination.disposition === 'joined') {
+      logger.debug({
+        event: 'background_account_health_check_runtime_coordinator_joined',
+        accountId: item.accountId,
+        accountName: item.accountName,
+        reason: item.reason,
+        generation: acquiredCoordination.generation,
+        retryAtMs: acquiredCoordination.retryAtMs
+      }, '共享可用性探活已有 owner，本轮健康检查不追加实际诊断')
+      // A local source-only queue item that lost the distributed lease has no
+      // authority to consume the remote owner's outcome. Return an explicit
+      // non-success fence result instead of retaining its worker-local record.
+      settleSourceFences(executionKey, 'unknown')
+      executionDeadline.cancel()
+      return true
+    }
+    return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
+      if (executionDeadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
+      if (accountHealthCheckProbeRunnerForTest) {
+        return await accountHealthCheckProbeRunnerForTest(account, groupId, undefined, executionDeadline.signal)
+      }
+      const candidate = await healthCheckCandidateForAccount(account, groupId)
+      if (executionDeadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
+      return await runAccountHealthCheckProbe(account, groupId, candidate, executionDeadline.signal)
+    }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted, diagnosticDeadlineExceeded, diagnosticCompleted }, { joined }) => {
+      if (joined) {
+        logger.debug({
+          event: 'background_account_health_check_singleflight_joined',
+          accountId: item.accountId,
+          accountName: item.accountName,
+          reason: item.reason
+        }, '同一账户已有可用性探针执行，本轮健康检查复用其结果')
+      }
+      const probeOutcome = automaticAccountProbeOutcome(result, {
+        upstreamAttempt,
+        canceled: diagnosticCanceled,
+        timeout: diagnosticTimeoutExhausted,
+        diagnosticTimeoutExhausted
+      })
+      const coordinatorOutcome = availabilityProbeCoordinatorOutcome(probeOutcome, diagnosticCanceled)
+      const probeSettled = await settleAvailabilityProbe({
+        runtimeKey: acquiredCoordination.runtimeKey,
+        generation: acquiredCoordination.generation,
+        ownerToken: acquiredCoordination.ownerToken,
+        outcome: coordinatorOutcome
+      })
+      // This is the worker completion/fence boundary. Removing the execution
+      // record before any asynchronous account mutation means a late IPC fence
+      // starts a fresh generation instead of consuming this finished result.
+      completedExecution = takeAccountHealthCheckExecution(executionKey)
+      const coordinatorSourceFences = probeSettled
+        ? await availabilityProbeSourceFences(acquiredCoordination.runtimeKey, acquiredCoordination.generation)
+        : []
+      const sourceFences = mergeSourceFences(
+        [...(completedExecution?.sourceFences.values() ?? [])],
+        coordinatorSourceFences.map((fence) => ({
+          ...fence,
+          runtimeKey: acquiredCoordination.runtimeKey,
+          probeGeneration: acquiredCoordination.generation,
+          configRevision: item.configRevision
+        }))
+      )
+      const settleCompletedExecutionSourceFences = (outcome: AvailabilityProbeOutcome) => {
+        settleCompletedSourceFences(sourceFences, outcome)
+        completedExecutionSourceFencesSettled = true
+      }
+      // A missing local execution record must preserve ordinary health behavior.
+      // Source-only queue work always registers its record before enqueueing.
+      const sourceOnlyProbe = completedExecution?.ordinaryAccountHealthSemantics === false
+      const sourceFenceOutcome = probeSettled ? coordinatorOutcome : 'stale'
+      if (!probeSettled) {
+        // A lease-taken-over owner has no authority to write either account
+        // health or a source success. The current owner will produce the next
+        // generation's result.
+        settleCompletedExecutionSourceFences('stale')
         return true
       }
-      const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
-      const healthCheckResult = await requestBackgroundWorkerDbService({
-        type: 'record_account_health_check_success',
+      const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
+      const diagnosticTimeoutTemporaryUnavailable = diagnosticTimeoutExhausted === true && probeOutcome === 'upstream_failure'
+      const scheduledProbeFailureImmediate = item.reason === 'scheduled'
+        && diagnosticCompleted === true
+        && diagnosticDeadlineExceeded !== true
+        && probeOutcome !== 'complete_success'
+        && probeOutcome !== 'probe_task_failure'
+      const immediateTemporaryUnavailable = diagnosticTimeoutTemporaryUnavailable || scheduledProbeFailureImmediate
+
+      if (probeOutcome === 'complete_success') {
+        settleCompletedExecutionSourceFences(probeSettled ? 'success' : 'stale')
+        if (sourceOnlyProbe) {
+          // A source-bound success proves only the registered source/turn fence.
+          // It must not clear account runtime/circuit state or write health.
+          return true
+        }
+        const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
+        const healthCheckResult = await requestBackgroundWorkerDbService({
+          type: 'record_account_health_check_success',
+          accountId: account.id,
+          input: {
+            intervalHours: item.intervalHours,
+            jitterMinutes: item.jitterMinutes,
+            failureThreshold: item.failureThreshold,
+            statusCode: result.statusCode,
+            expectedConfigRevision: item.configRevision,
+            scheduleBalanceAutoDetection,
+            traceId: result.traceId
+          }
+        }, backgroundProbeDbServiceTimeoutMs)
+        const changed = healthCheckResult?.changed ?? false
+        sendAccountRuntimeClearToServer({ accountId: account.id })
+        logger.info({
+          event: 'background_account_health_check_passed',
+          accountId: account.id,
+          accountName: account.name,
+          statusCode: result.statusCode,
+          durationMs: result.durationMs,
+          changed,
+          attemptIndex: context.attemptIndex,
+          retryNumber: context.retryNumber
+        }, '账号健康检测通过，已顺延下次检测')
+        if (changed && scheduleBalanceAutoDetection) {
+          enqueueAccountBalanceAutoDetection(account.id, item.configRevision)
+        }
+        return true
+      }
+
+      if (sourceOnlyProbe && !sourceBoundProbePermitsAccountHealthMutation(coordinatorOutcome)) {
+        // Unknown, canceled, task failure and neutral framing have no account
+        // mutation authority when this worker was dispatched by a Codex source.
+        settleCompletedExecutionSourceFences(sourceFenceOutcome)
+        return true
+      }
+
+      settleCompletedExecutionSourceFences(sourceFenceOutcome)
+
+      const failure = await requestBackgroundWorkerDbService({
+        type: 'record_account_health_check_failure',
         accountId: account.id,
         input: {
           intervalHours: item.intervalHours,
           jitterMinutes: item.jitterMinutes,
           failureThreshold: item.failureThreshold,
           statusCode: result.statusCode,
+          errorCode: result.errorCode,
+          errorMessage: result.message,
+          countTowardsThreshold: availabilityProbeFailed,
           expectedConfigRevision: item.configRevision,
-          scheduleBalanceAutoDetection,
+          observedAt,
           traceId: result.traceId
         }
       }, backgroundProbeDbServiceTimeoutMs)
-      const changed = healthCheckResult?.changed ?? false
-      sendAccountRuntimeClearToServer({ accountId: account.id })
-      logger.info({
-        event: 'background_account_health_check_passed',
+
+      let markedTemporaryUnavailable = false
+      if (failure && account.status !== 'pending_test' && availabilityProbeFailed && (failure.reachedThreshold || immediateTemporaryUnavailable)) {
+        const updated = await requestBackgroundWorkerDbService({
+          type: 'mark_account_test_temporary_unavailable',
+          accountId: account.id,
+          reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result, {
+            diagnosticTimeoutExhausted: diagnosticTimeoutTemporaryUnavailable,
+            diagnosticConfirmedFailure: immediateTemporaryUnavailable
+          }),
+          traceId: result.traceId,
+          access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
+          healthCheckGuard: {
+            configRevision: item.configRevision,
+            checkedAt: failure.checkedAt,
+            failureCount: failure.failureCount,
+            observedAt
+          }
+        }, backgroundProbeDbServiceTimeoutMs)
+        markedTemporaryUnavailable = updated?.updated ?? false
+      }
+
+      const logFields = {
+        event: 'background_account_health_check_failed',
         accountId: account.id,
         accountName: account.name,
         statusCode: result.statusCode,
-        durationMs: result.durationMs,
-        changed,
-        attemptIndex: context.attemptIndex,
-        retryNumber: context.retryNumber
-      }, '账号健康检测通过，已顺延下次检测')
-      if (changed && scheduleBalanceAutoDetection) {
-        enqueueAccountBalanceAutoDetection(account.id, item.configRevision)
-      }
-      return true
-    }
-
-    if (sourceOnlyProbe && !sourceBoundProbePermitsAccountHealthMutation(coordinatorOutcome)) {
-      // Unknown, canceled, task failure and neutral framing have no account
-      // mutation authority when this worker was dispatched by a Codex source.
-      settleCompletedSourceFences(sourceFences, sourceFenceOutcome)
-      return true
-    }
-
-    settleCompletedSourceFences(sourceFences, sourceFenceOutcome)
-
-    const failure = await requestBackgroundWorkerDbService({
-      type: 'record_account_health_check_failure',
-      accountId: account.id,
-      input: {
-        intervalHours: item.intervalHours,
-        jitterMinutes: item.jitterMinutes,
-        failureThreshold: item.failureThreshold,
-        statusCode: result.statusCode,
         errorCode: result.errorCode,
-        errorMessage: result.message,
-        countTowardsThreshold: availabilityProbeFailed,
-        expectedConfigRevision: item.configRevision,
-        observedAt,
+        durationMs: result.durationMs,
+        failureCount: failure?.failureCount ?? 0,
+        reachedThreshold: failure?.reachedThreshold ?? false,
+        failureStartedAt: failure?.failureStartedAt,
+        transitionedToError: failure?.transitionedToError ?? false,
+        accountFailureEligible: result.accountFailureEligible,
+        diagnosticTimeoutExhausted,
+        diagnosticDeadlineExceeded,
+        diagnosticCompleted,
+        nextHealthCheckAt: failure?.nextHealthCheckAt,
+        markedTemporaryUnavailable,
+        attemptIndex: context.attemptIndex,
+        retryNumber: context.retryNumber,
+        message: result.message,
         traceId: result.traceId
       }
-    }, backgroundProbeDbServiceTimeoutMs)
-
-    let markedTemporaryUnavailable = false
-    if (failure && account.status !== 'pending_test' && availabilityProbeFailed && (failure.reachedThreshold || immediateTemporaryUnavailable)) {
-      const updated = await requestBackgroundWorkerDbService({
-        type: 'mark_account_test_temporary_unavailable',
-        accountId: account.id,
-        reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result, {
-          diagnosticTimeoutExhausted: diagnosticTimeoutTemporaryUnavailable,
-          diagnosticConfirmedFailure: immediateTemporaryUnavailable
-        }),
-        traceId: result.traceId,
-        access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
-        healthCheckGuard: {
-          configRevision: item.configRevision,
-          checkedAt: failure.checkedAt,
-          failureCount: failure.failureCount,
-          observedAt
-        }
-      }, backgroundProbeDbServiceTimeoutMs)
-      markedTemporaryUnavailable = updated?.updated ?? false
-    }
-
-    const logFields = {
-      event: 'background_account_health_check_failed',
-      accountId: account.id,
-      accountName: account.name,
-      statusCode: result.statusCode,
-      errorCode: result.errorCode,
-      durationMs: result.durationMs,
-      failureCount: failure?.failureCount ?? 0,
-      reachedThreshold: failure?.reachedThreshold ?? false,
-      failureStartedAt: failure?.failureStartedAt,
-      transitionedToError: failure?.transitionedToError ?? false,
-      accountFailureEligible: result.accountFailureEligible,
-      diagnosticTimeoutExhausted,
-      diagnosticDeadlineExceeded,
-      diagnosticCompleted,
-      nextHealthCheckAt: failure?.nextHealthCheckAt,
-      markedTemporaryUnavailable,
-      attemptIndex: context.attemptIndex,
-      retryNumber: context.retryNumber,
-      message: result.message,
-      traceId: result.traceId
-    }
-    if (diagnosticDeadlineExceeded) {
-      logger.warn(logFields, '账号健康检测达到账户级 deadline，已中止剩余 API Key 探测且不累计失败')
-    } else if (failure?.transitionedToError) {
-      logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
-    } else if (account.status !== 'pending_test' && availabilityProbeFailed && (failure?.reachedThreshold || immediateTemporaryUnavailable)) {
-      logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
-    } else {
-      logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')
-    }
+      if (diagnosticDeadlineExceeded) {
+        logger.warn(logFields, '账号健康检测达到账户级 deadline，已中止剩余 API Key 探测且不累计失败')
+      } else if (failure?.transitionedToError) {
+        logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
+      } else if (account.status !== 'pending_test' && availabilityProbeFailed && (failure?.reachedThreshold || immediateTemporaryUnavailable)) {
+        logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
+      } else {
+        logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')
+      }
       return true
     }, {
       signal: deadline.signal,
       abortedObservation: () => accountHealthCheckDeadlineResult(account)
     })
   } catch (error) {
-    await settleAvailabilityProbe({
-      runtimeKey: coordination.runtimeKey,
-      generation: coordination.generation,
-      ownerToken: coordination.ownerToken,
-      outcome: 'probe_task_failure'
-    })
-    settleSourceFences(executionKey, 'probe_task_failure')
+    if (coordination?.disposition === 'owner') {
+      try {
+        await settleAvailabilityProbe({
+          runtimeKey: coordination.runtimeKey,
+          generation: coordination.generation,
+          ownerToken: coordination.ownerToken,
+          outcome: 'probe_task_failure'
+        })
+      } catch (settlementError) {
+        logger.warn(errorLogFields(settlementError, {
+          event: 'background_account_health_check_coordinator_settlement_failed',
+          accountId: item.accountId,
+          accountName: item.accountName
+        }), '账号健康检查未能结算共享探针，继续结算本地来源 fence')
+      }
+    }
+    if (completedExecution && !completedExecutionSourceFencesSettled) {
+      settleCompletedSourceFences([...completedExecution.sourceFences.values()], 'probe_task_failure')
+    } else {
+      settleSourceFencesForExecution(executionKey, execution, 'probe_task_failure')
+    }
     throw error
   } finally {
-    deadline.cancel()
-    accountHealthCheckExecutions.delete(executionKey)
+    deadline?.cancel()
+    if (accountHealthCheckExecutions.get(executionKey) === execution) {
+      accountHealthCheckExecutions.delete(executionKey)
+    }
   }
 }
 
@@ -486,6 +528,16 @@ function settleSourceFences(
   sourceFences = [...(takeAccountHealthCheckExecution(executionKey)?.sourceFences.values() ?? [])]
 ): void {
   settleCompletedSourceFences(sourceFences, outcome)
+}
+
+function settleSourceFencesForExecution(
+  executionKey: string,
+  execution: AccountHealthCheckExecution | undefined,
+  outcome: AvailabilityProbeOutcome
+): void {
+  if (!execution || accountHealthCheckExecutions.get(executionKey) !== execution) return
+  accountHealthCheckExecutions.delete(executionKey)
+  settleCompletedSourceFences([...execution.sourceFences.values()], outcome)
 }
 
 function settleCompletedSourceFences(sourceFences: readonly CodexSourceProbeFence[], outcome: AvailabilityProbeOutcome): void {

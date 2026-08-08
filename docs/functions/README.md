@@ -1,5 +1,7 @@
 # 功能文档目录
 
+> 存储与 Go 被动任务迁移的现行规则见 [双模式存储与被动任务优先迁移方案](../migration/双模式存储与被动任务优先迁移方案.md)：SQLite 和 PostgreSQL/Redis 均为正式目标模式；当前 Node 继续拥有网关、账户管理和主要 HTTP 接口。下列专题中早于 2026-08-08 的“Go 仅 PG/Redis / 删除 SQLite”表述均是已取代的历史规划。
+
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)：记录 reasoning 可见性诊断边界，以及不在响应热路径实施质量拦截的当前决定。
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)：记录当前账户级健康机制的代码事实，以及多模型按实际 Route / Key 精确探测和隔离的目标设计。
 - [网关 Body 解析性能治理设计](网关Body解析性能治理设计.md)：盘点并清理请求、响应、SSE、审计和日志链路中的重复或非必要 Body 解析。
@@ -170,9 +172,9 @@
 - 新增或调整公开接口进程、公开接口端口、公开接口部署拓扑、公开接口限流预算或主进程公开入口隔离时，优先更新 [公开接口独立进程设计](公开接口独立进程设计.md)，再同步 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)、[部署指南](../deploy/部署指南.md) 和 [后端架构设计](../architecture/backend/README.md)。
 - 新增或调整 `/__aipublic__` 面向外部来源系统的 API Key、路由策略、分组或 AI 账户公开维护接口时，优先更新 [公开资源维护接口设计](公开资源维护接口设计.md)，再同步 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[安全与日志策略](安全与日志策略.md) 和 [SQLite 存储说明](SQLite存储说明.md)。统计聚合、公益展示、IP 归属和排行榜不再作为公开接口能力。
 - 新增或调整多节点部署、控制面选主、用户 home node、API Key 跨节点路由、节点内部通信、集群 worker 归属或分布式故障语义时，优先更新 [分布式部署与用户分片设计](分布式部署与用户分片设计.md)，再同步 [架构总览](../architecture/架构总览.md)、[SQLite 存储说明](SQLite存储说明.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[安全与日志策略](安全与日志策略.md) 和部署 / 验证文档。
-- 新增或调整当前 Node 阶段的 PostgreSQL / Redis 高性能模式、数据库 driver、SQL dialect、缓存 driver、运行态 state store、PG 写队列并发、数据切换边界或 Docker 数据库部署时，优先更新 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)，再同步 [架构总览](../architecture/架构总览.md)、[SQLite 存储说明](SQLite存储说明.md)、[SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)、部署文档和验证文档。涉及 Go 迁移后的长期存储目标时，优先更新 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md)。
+- 新增或调整当前 Node 阶段的 PostgreSQL / Redis 高性能模式、数据库 driver、SQL dialect、缓存 driver、运行态 state store、PG 写队列并发、数据切换边界或 Docker 数据库部署时，优先更新 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)，再同步 [架构总览](../architecture/架构总览.md)、[SQLite 存储说明](SQLite存储说明.md)、[SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)、部署文档和验证文档。涉及 Go 迁移后的长期存储目标时，优先更新 [双模式存储目标（保留历史文件名）](../migration/存储目标与SQLite移除.md) 与 [双模式存储与被动任务优先迁移方案](../migration/双模式存储与被动任务优先迁移方案.md)。
 - 新增或调整当前 Node performance 模式的同机多 Gateway、Usage / Log consumer 副本、Nginx 分流、进程实例 ID、旁路降级或 launchd 编排时，优先更新 [高性能模式同机多进程拓扑设计](高性能模式同机多进程拓扑设计.md)，再同步 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)、[后台 Worker 多角色拆分设计](../architecture/backend/后台Worker多角色拆分设计.md)、高性能部署与验证文档。跨物理主机才进入 [分布式部署与用户分片设计](分布式部署与用户分片设计.md)。
-- 新增或调整当前 Node 阶段的后端数据库 / 缓存 / 运行态 / 队列调用边界、Store Port、adapter 装配、SQLite / PostgreSQL 实现收敛、Redis key 封装或禁止业务层直接访问存储基础设施时，优先更新 [存储适配接口设计](存储适配接口设计.md)，再按影响同步 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)、[SQLite 存储说明](SQLite存储说明.md)、后端架构和验证文档。涉及 Go 迁移后的存储实现时，不再新增 SQLite adapter 或双模式分支，改按 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 执行。
+- 新增或调整当前 Node 阶段的后端数据库 / 缓存 / 运行态 / 队列调用边界、Store Port、adapter 装配、SQLite / PostgreSQL 实现收敛、Redis key 封装或禁止业务层直接访问存储基础设施时，优先更新 [存储适配接口设计](存储适配接口设计.md)，再按影响同步 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)、[SQLite 存储说明](SQLite存储说明.md)、后端架构和验证文档。涉及 Go 迁移后的存储实现时，必须声明 SQLite 与 PostgreSQL/Redis adapter、单 owner 和测试矩阵，按 [双模式存储目标（保留历史文件名）](../migration/存储目标与SQLite移除.md) 与 [双模式存储与被动任务优先迁移方案](../migration/双模式存储与被动任务优先迁移方案.md) 执行。
 - 新增或调整高增长表索引、用户维度查询前提、日期分区 / shard、热数据在线保留、归档、按需统计窗口或大表默认查询契约时，优先更新 [用户维度热数据分区与归档治理设计](用户维度热数据分区与归档治理设计.md)，再按影响同步 [数据集库分片写入设计](数据集库分片写入设计.md)、[PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)、[统计指标与分层聚合设计](统计指标与分层聚合设计.md)、[表数据监控设计](表数据监控设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
 - 新增或调整 API Key 选择路由策略、策略路由菜单、普通路由、混合智能路由、权重调度路由、故障回退路由、轮询路由、路由策略分组绑定或相关缓存失效时，优先更新 [策略路由设计](策略路由设计.md)；如果跨供应商绑定依赖请求 `model` 路由，还必须同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
 - 新增或调整混合智能路由的低价评分模型、`1-10` 等级到目标模型映射、混合路由缓存亲和、评分成本或混合路由节省统计时，优先更新 [多模型混合智能分级路由设计](多模型混合智能分级路由设计.md) 和 [策略路由设计](策略路由设计.md)，再按影响同步 [模型价格与用量统计口径](模型价格与用量统计口径.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。

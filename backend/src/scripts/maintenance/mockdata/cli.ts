@@ -83,7 +83,7 @@ async function main(): Promise<void> {
   const created = await createBusinessMockdata(admin, adminAccess)
   syncAvailabilityScheduleStatuses()
   const usageRecords = createUsageMockdata(created, options)
-  createAuditMockdata(usageRecords)
+  const auditLogs = createAuditMockdata(usageRecords)
   const publicApiLogs = createPublicApiLogMockdata(created, options)
   createOperationMockdata(created, usageRecords)
   createRuntimeLogMockdata(usageRecords)
@@ -101,6 +101,7 @@ async function main(): Promise<void> {
   writeSummary(
     created,
     usageRecords,
+    auditLogs,
     modelCheckCounts,
     {
       publicApiLogs,
@@ -114,7 +115,7 @@ async function main(): Promise<void> {
     Date.now() - startedAt
   )
 
-  console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，公开接口日志 ${publicApiLogs} 条，审计 ${Math.ceil(usageRecords.length / 4)} 条，模型检测 ${modelCheckCounts.runs} 次，耗时 ${Date.now() - startedAt}ms`)
+  console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，公开接口日志 ${publicApiLogs} 条，审计 ${auditLogs} 条，模型检测 ${modelCheckCounts.runs} 次，耗时 ${Date.now() - startedAt}ms`)
   console.log(`业务库：${runtimeConfig.databasePath}`)
   console.log(`数据集目录库：${datasetDatabasePath()}`)
   console.log(`使用记录目录库：${usageCatalogDatabasePath()}`)

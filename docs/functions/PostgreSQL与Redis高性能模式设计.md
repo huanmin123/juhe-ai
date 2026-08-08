@@ -5,7 +5,7 @@
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
 > 管理后台页面 revision、字段投影、统一确认、IndexedDB 和最近登录用户预热见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
 
-> 迁移方向更新：自 [PLAN-20260706T071505000Z Node 转 Go 渐进减法迁移](../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md) 起，Go 后端目标不再保留 SQLite standalone / PostgreSQL performance 两套模式。本文中 `standalone`、SQLite 和 performance 模式的内容只描述当前 Node 过渡事实；迁移完成后的长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准，PostgreSQL + Redis 将成为唯一正式存储模式。
+> 迁移方向更新（2026-08-08）：本文仍描述当前 Node 的 `standalone` / `performance` 实现；Go 的正式目标同时包括 SQLite 和 PostgreSQL/Redis，模式只选择 adapter。PostgreSQL/Redis 下继续使用连接池、事务、lease 与幂等；未迁 Node 功能仍可使用 Redis Streams，但新 Go 完整功能直接异步执行，不引入任务 Queue Port 或通用队列。详见 [完整功能接管与 Node 归档迁移规则](../migration/完整功能接管与Node归档迁移规则.md)。
 
 ## 背景
 

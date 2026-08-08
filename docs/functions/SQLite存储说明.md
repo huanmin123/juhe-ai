@@ -1,6 +1,6 @@
 # SQLite 存储说明
 
-> 迁移方向更新：本文只描述当前 Node standalone / 旧实现中的 SQLite 存储事实。自 [PLAN-20260706T071505000Z Node 转 Go 渐进减法迁移](../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md) 起，Go 后端不引入 SQLite driver，不保留 standalone / performance 双模式；长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准。
+> 迁移方向更新（2026-08-08）：SQLite 是保留的正式部署模式，Go 必须兼容 SQLite 与 PostgreSQL/Redis；不能以 `standalone` / `performance` 决定 Go 是否可用。当前 Node SQLite 单写者、DB service 和 typed command 边界继续生效。B0 兼容验证或未迁 Node 功能可以经既有 owner bridge；完成 F3 的 Go 完整功能必须独占其 SQLite file owner，不能把 Node bridge 留作依赖。具体 driver 在 B0 定案。详见 [完整功能接管与 Node 归档迁移规则](../migration/完整功能接管与Node归档迁移规则.md)。
 
 ## 当前 Node 阶段为什么用 SQLite
 

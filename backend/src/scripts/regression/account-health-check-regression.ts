@@ -123,7 +123,7 @@ try {
   assert.match(serviceSource, /poolDiagnosticErrors\.length > 0[\s\S]+throw new AggregateError/, '池内任意调用异常必须阻止健康状态写入')
   assert.match(serviceSource, /const sourceOnlyProbe = completedExecution\?\.ordinaryAccountHealthSemantics === false/, '只有 source-only 任务可跳过普通账户健康结算；fence 数量本身不得降格普通任务')
   assert.match(serviceSource, /if \(sourceOnlyProbe\) \{[\s\S]{0,300}return true[\s\S]{0,600}record_account_health_check_success/, 'source-only success 必须在普通 success 状态写入前窄结算')
-  assert.match(serviceSource, /settleCompletedSourceFences\(sourceFences, probeSettled \? 'success' : 'stale'\)[\s\S]{0,2400}sendAccountRuntimeClearToServer/, '普通 health success 附着 source fence 时仍须保留既有账户运行态结算')
+  assert.match(serviceSource, /settleCompletedExecutionSourceFences\(probeSettled \? 'success' : 'stale'\)[\s\S]{0,2400}sendAccountRuntimeClearToServer/, '普通 health success 附着 source fence 时仍须保留既有账户运行态结算')
   assert.match(serviceSource, /takeAccountHealthCheckExecution\(executionKey\)[\s\S]{0,1200}await availabilityProbeSourceFences/, 'worker completion 与 source fence join 必须先封存本地执行记录，避免晚到 fence 消费旧结果')
   assert.match(serviceSource, /sendCodexSourceFenceSettledToServer/, 'source fence outcome 必须显式回传 gateway 进程执行精确清理')
   assert.match(serviceSource, /if \(poolCompleted && !signal\.aborted\)/, '空 Key 池完成轮次也必须删除旧游标')

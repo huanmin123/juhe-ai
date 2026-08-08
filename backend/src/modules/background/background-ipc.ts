@@ -85,6 +85,10 @@ let ingestWorkerPid: number | undefined
 let statsWorkerProcess: ChildProcess | undefined
 let statsWorkerReady = false
 let statsWorkerPid: number | undefined
+let clientSourceFenceSettlementObserverForTest: ((
+  sourceFence: CodexSourceProbeFence,
+  outcome: 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale'
+) => void) | undefined
 let opsWorkerProcess: ChildProcess | undefined
 let opsWorkerReady = false
 let opsWorkerPid: number | undefined
@@ -483,9 +487,10 @@ export function sendClientSourceFenceSettledToServer(
   sourceFence: CodexSourceProbeFence,
   outcome: 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale'
 ): void {
-  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') return
   const normalizedFence = normalizeCodexSourceProbeFence(sourceFence)
   if (!normalizedFence) return
+  clientSourceFenceSettlementObserverForTest?.(normalizedFence, outcome)
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') return
   try {
     process.send({
       type: 'background_worker_codex_source_fence_settled',
@@ -502,6 +507,15 @@ export function sendClientSourceFenceSettledToServer(
 // Kept for in-flight IPC and legacy call sites while source avoidance is
 // generalized beyond Codex.
 export const sendCodexSourceFenceSettledToServer = sendClientSourceFenceSettledToServer
+
+export function setClientSourceFenceSettlementObserverForTest(
+  observer: ((
+    sourceFence: CodexSourceProbeFence,
+    outcome: 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale'
+  ) => void) | undefined
+): void {
+  clientSourceFenceSettlementObserverForTest = observer
+}
 
 export function sendBackgroundWorkerMessage(message: BackgroundWorkerMessage): boolean {
   if (runtimeConfig.processRole === 'worker') {
