@@ -12,11 +12,25 @@
     "2495b2683",
     "4bb6ee154",
     "40a90fadd",
-    "126492ff0"
+    "126492ff0",
+    "82f3af918",
+    "b0453abd4"
   ],
   "rollback": {
-    "strategy": "以 ba0fc6aa5 为完整 Node owner 基线，在专用回滚提交中恢复本清单所列全部 Node 文件、启动和部署入口；先停止 Go indexer，再恢复 Node owner。不得挑选单个文件或与 Go owner 混跑。",
-    "rollbackCommit": "ba0fc6aa5"
+    "mode": "exact-git-baseline",
+    "rollbackCommit": "ba0fc6aa5",
+    "strategy": "在专用回滚提交中整体恢复 ba0fc6aa5 这个完整 Node owner 基线；先停止 Go indexer，再恢复 Node 的 F1 源码、启动和部署入口。不得挑选单个文件或与 Go owner 混跑。",
+    "archiveOverlayAllowed": false,
+    "archivePurpose": "本目录是直接切换时的源码对照快照，不是可覆盖到 rollbackCommit 的补丁；其中可包含该基线没有的抽取文件或 owner gate，恢复时不得叠加。"
+  },
+  "rollbackVerification": {
+    "status": "passed",
+    "baselineCommit": "ba0fc6aa5",
+    "checks": [
+      "隔离 worktree 中执行 pnpm.cmd --filter juhe-ai-backend exec tsc --noEmit",
+      "确认 worker.ts 仍注册 startRuntimeLogFileImport",
+      "确认 background-jobs.ts 仍注册 runtime-log-index-maintenance"
+    ]
   },
   "goImplementationPaths": [
     "backend-go/cmd/juhe-ai-runtime-log-indexer/main.go",
@@ -62,7 +76,7 @@
     {"originalPath":"backend/src/storage/schema/runtime-log-index-schema.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/schema/runtime-log-index-schema.ts","sourceSnapshotSha256":"4aae6fdfefcda3198aed425ec047570ff7194622f6decf21fbab67fe96cc51a1"}
   ],
   "dualModeVerification": {
-    "sqlite": "backend-go: rtk go test -race ./... (28 tests, passed)",
+    "sqlite": "backend-go: rtk go test -race ./... (30 tests, passed)",
     "postgresRedis": "设置 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL 和 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED=true 后执行 rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1。URL必须指向专用、可销毁且F1表为空的PostgreSQL数据库；当前未提供URL，真实smoke未执行。无URL时显式skipped，不是通过。"
   },
   "activeNodePathZeroEvidence": "活跃 backend/src、backend/package.json、backend/.env.example、docker 和 scripts/regression 不得再命中 F1 importer、scheduler、writer、cursor、retention、Node owner 开关或 F1 queue symbol。"
