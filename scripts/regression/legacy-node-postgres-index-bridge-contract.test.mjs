@@ -8,14 +8,16 @@ const operationsRoot = resolve(root, 'docs/deploy/macos/operations')
 const catalogPath = resolve(operationsRoot, 'legacy-node-postgres-index-bridge.catalog.json')
 const scriptPath = resolve(operationsRoot, 'legacy-node-postgres-index-bridge.mjs')
 const guidePath = resolve(operationsRoot, '遗留NodePostgreSQL索引桥接说明.md')
-const migration87Path = resolve(root, 'backend-go/db/migrations/000087_w7_model_quality_health_sync_candidate_indexes.sql')
+const businessSchemaPath = resolve(root, 'backend/src/storage/schema/business-schema.ts')
+const datasetSchemaPath = resolve(root, 'backend/src/storage/schema/dataset-schema.ts')
 
-const [catalogRaw, script, guide, operationsReadme, migration87, packageJson, releasePowerShell, releaseShell] = await Promise.all([
+const [catalogRaw, script, guide, operationsReadme, businessSchema, datasetSchema, packageJson, releasePowerShell, releaseShell] = await Promise.all([
   readFile(catalogPath, 'utf8'),
   readFile(scriptPath, 'utf8'),
   readFile(guidePath, 'utf8'),
   readFile(resolve(operationsRoot, 'README.md'), 'utf8'),
-  readFile(migration87Path, 'utf8'),
+  readFile(businessSchemaPath, 'utf8'),
+  readFile(datasetSchemaPath, 'utf8'),
   readFile(resolve(root, 'package.json'), 'utf8'),
   readFile(resolve(root, 'scripts/package-release.ps1'), 'utf8'),
   readFile(resolve(root, 'scripts/package-release.sh'), 'utf8')
@@ -59,17 +61,19 @@ for (const index of catalog.indexes) {
   }, `${index.name} 必须锁定非唯一、非 exclusion、无 INCLUDE 列的物理属性`)
 }
 
-const migration87Creates = migration87.match(/CREATE INDEX idx_model_check_runs_quality_health_sync_[\s\S]*?;/g) ?? []
-assert.equal(migration87Creates.length, 2, '87 的最终形态必须恰有两条索引')
-for (const statement of migration87Creates) {
-  const expected = normalizeSql(statement.replace(/^CREATE INDEX /, 'CREATE INDEX CONCURRENTLY ').replace(/;$/, ''))
-  const name = /CREATE INDEX idx_([a-z0-9_]+)/i.exec(statement)?.[1]
-  const catalogIndex = catalog.indexes.find((index) => index.name === `idx_${name}`)
-  assert.ok(catalogIndex, `目录缺少 87 索引 ${name}`)
-  assert.equal(normalizeSql(catalogIndex.createSql), expected, `目录必须保留 87 ${catalogIndex.name} 的最终 canonical 定义`)
-}
-
 const balanceIndex = catalog.indexes.at(-1)
+const nodeBalanceIndex = businessSchema.match(/CREATE INDEX IF NOT EXISTS idx_accounts_balance_auto_detect_due[\s\S]*?;/)?.[0]
+assert.ok(nodeBalanceIndex, '当前 Node business schema 必须定义余额探测恢复索引')
+const expectedBalanceIndex = normalizeSql(
+  nodeBalanceIndex.replace(/^CREATE INDEX IF NOT EXISTS /, 'CREATE INDEX CONCURRENTLY ').replace(/;$/, '')
+)
+assert.match(balanceIndex.createSql, /ON juhe_business\.accounts/, '桥接目录必须限定遗留 PostgreSQL 业务 schema')
+assert.match(balanceIndex.createSql, /AND balance_query_next_refresh_at IS NOT NULL/, '桥接目录必须排除没有到期时间的余额探测记录')
+assert.equal(
+  normalizeSql(balanceIndex.createSql.replace('juhe_business.', '').replace(' AND balance_query_next_refresh_at IS NOT NULL', '')),
+  expectedBalanceIndex,
+  '桥接目录的余额探测索引必须与当前 Node schema 的共同键和谓词保持一致'
+)
 assert.match(balanceIndex.createSql, /schedulable = 1/)
 assert.match(balanceIndex.createSql, /balance_query_enabled = 0/)
 assert.equal(balanceIndex.requiredColumns.schedulable, 'integer')
@@ -78,6 +82,11 @@ assert.deepEqual(balanceIndex.requiredColumnDefaults, { schedulable: '1', balanc
 assert.deepEqual(balanceIndex.requiredKeyExpressions, ['balance_query_next_refresh_at', 'id'])
 assert.ok(catalog.indexes.every((index) => Array.isArray(index.requiredKeyExpressions) && index.requiredKeyExpressions.length > 0), '目录必须固定索引键顺序')
 assert.ok(catalog.indexes[1].requiredDefinitionTokens.includes('quality_health_sync_attempt_count < 9223372036854775807'), 'invalid-time 索引必须保留 attempt count predicate')
+for (const index of catalog.indexes.slice(0, 2)) {
+  for (const column of index.notApplicableWhenAllColumnsMissing) {
+    assert.doesNotMatch(datasetSchema, new RegExp(`\\b${column}\\b`), `纯 Node dataset schema 不得伪装桥接索引专用列：${column}`)
+  }
+}
 
 for (const contract of [
   "action: 'inspect'",
