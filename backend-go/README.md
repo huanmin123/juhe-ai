@@ -1,6 +1,6 @@
 # Go 后端完整功能实现
 
-本目录当前承载 F1“运行日志索引与保留”。它已直接接管该完整被动功能；这不表示 Node 的网关、账户管理或管理 API 已迁移。
+本目录当前承载 F1“运行日志索引与保留”和 F2“表存储监控采样与保留”。两项均已由 Go 直接完整接管各自功能；这不表示 Node 的网关、账户管理或其他管理 API 已迁移。
 
 ## F1：运行日志索引与保留
 
@@ -54,3 +54,19 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 未设置 URL 时，该 smoke 会显式 `skipped`，绝不等同 PostgreSQL 验证通过。设为强制模式后，缺 URL 或 URL 无法连接都会失败。本机当前未提供 PostgreSQL，因此本轮未实际执行该真实 smoke。
 
 完整边界、归档和未完成的 PostgreSQL smoke 见 [F1 运行日志索引与保留](../docs/migration/F1-运行日志索引与保留功能冻结.md)。
+
+## F2：表存储监控采样与保留
+
+`cmd/juhe-ai-table-monitor` 是 F2 的唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
+
+运行前必须满足：
+
+- 稳定且唯一的 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`；它用于 owner lease fencing，不是 Node/Go 选择开关。
+- `JUHE_AI_TABLE_MONITOR_STORE=sqlite` 或 `postgres`；未设置时只可从 `JUHE_AI_DATABASE_DRIVER` 取得同值。
+- SQLite 提供 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 作为 F2 专用输出文件，以及 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 作为只读采样源；输出文件不得与任何源库或 shard 共用。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，快照写入 `juhe_stats`。
+- `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` 默认 `5m`；同一事实库同一时间只允许一个 Go owner，第二实例拒绝启动，失去 lease 后采样和保留清理拒写。
+- `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`。
+
+Node 只保留表监控 HTTP 读取，SQLite 读取只打开 F2 专用输出文件；Node scheduler、stats writer 和 Node retention 已退出。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
+
+SQLite 定向测试覆盖采样、快照写入和保留清理。当前本机没有真实 PostgreSQL smoke 环境，故 PostgreSQL smoke、双模式真实依赖和生产启动接线尚未验证，不能称为通过。完整边界见 [F2 表存储监控采样与保留功能冻结](../docs/migration/F2-表存储监控采样与保留功能冻结.md)。

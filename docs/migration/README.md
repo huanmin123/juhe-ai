@@ -5,7 +5,7 @@
 
 ## 1. 目录目标
 
-> **现行决策（2026-08-08）。** [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 取代本目录及历史 M/W 记录中“按 route/job 小切片、长期影子、Go 仅 PostgreSQL + Redis、删除 SQLite、先迁公开 / 管理 HTTP 接口”的优先级。SQLite 与 PostgreSQL/Redis 都是 Go 的正式目标模式；每次只接管一个完整功能，完成后 Node 的整个功能文件集退出活跃路径并归档到 `migration-backup/`。当前工作区未提供受版本控制的 Go 源码或 `go.mod`，不得把历史 Go 记录写成当前已实现或已接管。
+> **现行决策（2026-08-09）。** [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 取代本目录及历史 M/W 记录中“按 route/job 小切片、长期影子、Go 仅 PostgreSQL + Redis、删除 SQLite、先迁公开 / 管理 HTTP 接口”的优先级。SQLite 与 PostgreSQL/Redis 都是 Go 的正式目标模式；每次只接管一个完整功能，完成后 Node 的整个功能文件集退出活跃路径并归档到 `migration-backup/`。F1“运行日志索引与保留”和 F2“表存储监控采样与保留”已有 Go 完整 owner；其他历史记录不得据此推断已接管。
 
 - 把迁移目标、迁移顺序、删除规则、Go 技术基线和验证要求固定下来，避免后续只靠对话记忆推进。
 - 支持“渐进式 + 减法迁移”：每迁移一个模块，就让该模块只有一个运行时 owner，并删除对应 Node 旧实现。
@@ -72,7 +72,8 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 8. [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)：Go runtime 与 Node runtime 分视图的字段和验收清单。
 9. [模块迁移顺序与减法清单](模块迁移顺序与减法清单.md)：历史记录与完整功能接管的归档门禁。
 10. [F1 运行日志索引与保留功能冻结](F1-运行日志索引与保留功能冻结.md)：首个完整被动功能的实际 Node 边界、Store 契约、拆分顺序和 handoff 停止条件。
-> 以下 W1b-W10 链接是旧迁移方案的历史记录索引。其中“当前”“已实现”“Go opt-in”“队列”等措辞只描述各记录写作时的历史状态；当前工作区没有 Go 源码或 Go 模块，它们不构成 Go 启动、owner 切换、Node 删除或引入任务队列的授权。后续实施只以本节前九项和“完整功能接管与 Node 归档迁移规则”为准。
+11. [F2 表存储监控采样与保留功能冻结](F2-表存储监控采样与保留功能冻结.md)：F2 Go 唯一 owner、SQLite 专用输出库、PostgreSQL `juhe_stats`、直接异步采样、保留清理、Node 只读边界和真实 PostgreSQL 未验证状态。
+> 以下 W1b-W10 链接是旧迁移方案的历史记录索引。其中“当前”“已实现”“Go opt-in”“队列”等措辞只描述各记录写作时的历史状态；它们不构成新的 Go 启动、owner 切换、Node 删除或引入任务队列的授权。后续实施只以本节前十一项和“完整功能接管与 Node 归档迁移规则”为准。
 
 10. [历史 W1b 外部维护公开接口迁移记录](W1b-外部维护公开接口迁移记录.md)：`/__aipublic__` 外部维护接口的历史契约和对照证据。
 11. [历史 W2 管理端只读辅助接口迁移记录](W2-管理端只读辅助接口迁移记录.md)：后台 options / catalog 接口与账号标签切片的历史记录。
@@ -94,7 +95,7 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、账户用量 list/summary/trend、AI 性能 base/series/accounts、usage overview combined 与五段 progressive、系统指标 trend、使用记录列表、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in；`000088` / `000089` 补齐本轮统计 reader 与 Node writer 共存所需 fresh Goose catalog，但 Node stats worker 仍是唯一 writer。
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
 27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
-28. [W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：表监控三条 GET 的 Go reader、Node 单 writer、schema capability gate、已发布 `000073` 后的连续版本规则和删除门禁。
+28. [历史 W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：F2 接管前的三条 GET reader、Node 单 writer 和 schema capability gate；当前 owner 以 [F2 表存储监控采样与保留功能冻结](F2-表存储监控采样与保留功能冻结.md) 为准。
 29. [W7 模型检测写入与任务契约迁移记录](W7-模型检测写入与任务契约迁移记录.md)：模型检测 durable job payload、幂等写阶段、终态 CAS、停止 / SSE 语义和 Node 专用复杂度删除边界。
 30. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
 31. [W7 公开接口日志写入与保留契约](W7-公开接口日志写入与保留契约.md)：冻结 Node 单 writer、队列容量、payload 捕获、保留清理和 Go reader 反向约束，供后续 Go-native writer / retention 接管使用；当前不改变生产 owner。
@@ -143,7 +144,7 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
 | `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
 | `W7-账户健康探针状态机契约.md` | W7 自动探针归因、周期健康检查与冷却复测边界、五元陈旧任务 fence、授权 quota、payload v3、schema 91 generation/index、neutral defer、`cooldown_retest` 统计排除、原生十模式 Probe、PostgreSQL Outcomes 和 Go worker 接线门禁；已实现 Probe / Outcomes 不代表完整 W7、真实切流或生产 owner 已接管 |
-| `W6-管理端表监控只读Schema共存记录.md` | W6 表监控三条 GET 的 PostgreSQL 只读迁移；固定 Node 单 writer、schema capability gate、缺表不伪造空数据、并行 migration 版本协调和删除门禁 |
+| `W6-管理端表监控只读Schema共存记录.md` | 历史 W6 表监控三条 GET 的 PostgreSQL 只读迁移记录；F2 完整接管后的 owner、SQLite 专用库、直接异步和 retention 以 `F2-表存储监控采样与保留功能冻结.md` 为准 |
 | `W7-模型检测写入与任务契约迁移记录.md` | W7 模型检测 writer/job 契约、Go 主动修复、后续 schema/worker/executor/HTTP 顺序和 Node 删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
 | `W7-公开接口日志写入与保留契约.md` | Node 公开接口日志单 writer、队列容量、payload 捕获、保留清理、Go reader 反向约束和 Go-native 接管顺序；当前不改生产 owner |

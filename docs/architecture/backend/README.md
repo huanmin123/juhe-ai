@@ -45,7 +45,7 @@
 - Web 框架：`Express`。
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
 - 页面数据：通用 `PageDataChangeStore`、confirm/revision、Redis publisher 和 dirty-domain recovery 已由 PLAN-20260722T123439000Z 删除。页面直接调用业务接口；repository/shared cache 与独立业务快照按各自功能维护。
-- 写入边界：standalone 模式下同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。performance 模式下不受 SQLite 文件级写锁限制，但仍必须受 PostgreSQL 连接池、事务范围、热点 key 顺序和 Redis Stream 背压约束。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)、[PostgreSQL 与 Redis 高性能模式设计](../../functions/PostgreSQL与Redis高性能模式设计.md) 和 [存储适配接口设计](../../functions/存储适配接口设计.md)。
+- 写入边界：standalone 模式下同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，非 F2 统计结果写入归 stats writer，F2 表监控专用输出库 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 只由 Go `juhe-ai-table-monitor` 写入，usage shard 按 shard 文件串行写。performance 模式下 F2 直接写 `juhe_stats`，不使用 Node stats writer、队列或 fallback；其他 PostgreSQL typed command 仍受连接池、事务范围、热点 key 顺序和 Redis Stream 背压约束。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)、[PostgreSQL 与 Redis 高性能模式设计](../../functions/PostgreSQL与Redis高性能模式设计.md)、[F2 表存储监控采样与保留功能冻结](../../migration/F2-表存储监控采样与保留功能冻结.md) 和 [存储适配接口设计](../../functions/存储适配接口设计.md)。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。当前供应商协议档案不要在本文硬编码，新增或调整时同步 [核心功能设计](../../functions/核心功能设计.md) 和对应供应商接入文档。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
@@ -80,7 +80,7 @@
 ### 4.2 存储适配边界
 
 - 后端存储边界是 Store Port / Adapter，而不是 routes、service 或 DB service handler 内散落数据库 driver 分支。
-- Go 迁移后的长期存储边界已经调整为 PostgreSQL + Redis 单模式；以下 SQLite / memory / standalone adapter 规则只描述当前 Node 过渡事实，不能作为新增 Go 模块的目标。
+- Go 迁移后的长期存储边界按完整功能冻结；F1/F2 已证明 SQLite 与 PostgreSQL 均为正式 Go 模式，F2 的专用 SQLite 输出和 `juhe_stats` writer 以 [F2 表存储监控采样与保留功能冻结](../../migration/F2-表存储监控采样与保留功能冻结.md) 为准。其他未接管模块的 SQLite / memory / standalone adapter 规则仍只描述当前 Node 过渡事实，不能据此扩展新的 Node writer。
 - routes 和 service 只能调用业务语义接口，例如系统账户、AI 账户、API Key、网关运行态、使用记录、审计日志、统计窗口、维护清理、共享缓存、运行态状态和队列 Port。
 - SQLite、PostgreSQL、Redis、Redis Streams、SQL 方言、连接池、事务对象、Redis key 和 Stream consumer group 只允许出现在 adapter 或基础设施层。
 - 新增长期 DB / cache / queue / job / system metrics / observability 能力时，先更新 [Go 技术选型与依赖基线](../../migration/Go技术选型与依赖基线.md)、[Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md)、[存储目标与 SQLite 移除](../../migration/存储目标与SQLite移除.md) 和必要功能文档，默认落到 Go + PostgreSQL + Redis。只有明确属于当前 Node 过渡期、且模块尚未迁移时，才允许补临时 Node adapter；这类例外必须写清删除条件，不能继续扩展 standalone / performance 双模式或 Node event-loop / DB service 指标作为长期目标。
@@ -101,7 +101,7 @@
 | 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户所有者 / 管理员显式配置的 `credentials.error_handling_rules` 校验；规则只在其声明的客户端、协议和请求范围内匹配，可以覆盖 `generic_*` 的安全推理请求。命中后按 provenance / generation / CAS 直接执行用户配置的状态动作；`retry_next` 仍受请求重放安全门禁，不能让已派发副作用请求再次执行 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
-| 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
+| 统计与监控 | `modules/stats/`、`modules/background/`、`backend-go/cmd/juhe-ai-table-monitor` | Node 统计缓存读取、尚未迁移的增量聚合和系统指标采样；F2 表存储监控采样、快照写入与保留由 Go 完整接管，Node 只保留 HTTP 读接口 |
 | 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
 | 网关 | `modules/gateway/routes.ts` | `/*` / `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
 
@@ -176,7 +176,7 @@ flowchart LR
 ### 6.1 存储原则
 
 - standalone 模式下 SQLite 是当前持久化存储；performance 模式显式引入 PostgreSQL 与 Redis。当前不引入 ClickHouse 或独立任务队列。
-- 运行时必须明确区分业务库、统计数据集域、运行日志索引库和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；运行日志索引库由 Go F1 唯一写入，Node 只读；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
+- 运行时必须明确区分业务库、统计数据集域、运行日志索引库、F2 表监控输出和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；运行日志索引库由 Go F1 唯一写入，Node 只读；F2 standalone 快照写入 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 专用 SQLite，F2 PostgreSQL 快照写入 `juhe_stats`；统计结果库保存非 F2 统计缓存、额度窗口、账号质量缓存、系统监控和 `stats_job_state`。
 - 多进程写入必须按 SQLite 文件级单写者治理。WAL 和 `busy_timeout` 只能吸收短冲突，不能允许多个 worker 长期并发写同一个数据库文件。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。

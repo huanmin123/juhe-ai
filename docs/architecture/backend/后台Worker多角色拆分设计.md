@@ -1,6 +1,6 @@
 # 后台 Worker 多角色拆分设计
 
-> **迁移说明（2026-08-09）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 仅支持 PostgreSQL/Redis，也不定义 Go 按旧 job / queue 拆分的迁移路线。F1“运行日志索引与保留”已被 Go 直接完整接管，任何 Node runtime-log importer / scheduler 记载均为历史，不得重新接入 Node worker。既有 W6/W7 接管叙述均为历史记录，须服从[完整功能接管与 Node 归档迁移规则](../../migration/完整功能接管与Node归档迁移规则.md)。
+> **迁移说明（2026-08-09）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 仅支持 PostgreSQL/Redis，也不定义 Go 按旧 job / queue 拆分的迁移路线。F1“运行日志索引与保留”和 F2“表存储监控采样与保留”已被 Go 直接完整接管，任何 Node runtime-log 或 table-monitor scheduler / writer / retention 记载均为历史，不得重新接入 Node worker。既有 W6/W7 接管叙述均为历史记录，须服从[完整功能接管与 Node 归档迁移规则](../../migration/完整功能接管与Node归档迁移规则.md)。
 
 > 面向后端实现、部署和 AI 维护者。
 > 本文的三角色拓扑现在只描述 `standalone`。`performance` 使用 `usage-worker`、`log-worker`、`stats-worker`、`ops-worker`，默认副本数为 `2/2/1/1`，并由 3 个独立 gateway 事件循环承接 AI 流量；权威设计见 [高性能模式同机多进程拓扑设计](../../functions/高性能模式同机多进程拓扑设计.md)。原三角色收敛历史见 [PLAN-20260623T122020000Z](../../plans/计划-20260623T122020000Z-后台Worker三角色收敛.md)。
@@ -12,9 +12,9 @@
 新的判断：
 
 - 需要高实时性的事实写入和计费相关记录必须优先，不能被统计窗口或外部网络 I/O 拖住。
-- 统计、窗口、表监控和账号质量属于重任务，必须独立隔离。
+- 统计、窗口和账号质量属于 Node 重任务，必须独立隔离；F2 表监控已移至独立 Go 进程。
 - 探测、OAuth 保活、时间计划同步、授权到期扫描和删除清理协调是轻运维任务，可以合并到一个 worker，并在内部使用受控异步并发。
-- 不能合并成一个 worker，因为统计窗口和表监控仍可能明显占用事件循环和 stats SQLite 写锁。
+- 不能合并成一个 worker，因为 Node 统计窗口仍可能明显占用事件循环和 stats SQLite 写锁；F2 不再占用 Node worker。
 
 ## 设计目标
 
@@ -22,7 +22,7 @@
 - `performance` 把 ingest 拆为可扩容的 `usage-worker` 与 `log-worker`，Stats/Ops 各保持一个主副本。
 - 保持轻量部署：外部进程管理器只守护 `server`，由 server supervisor 拉起 DB service 和三类 worker。
 - 热写入优先：使用记录、审计、日志和 record maintenance 不被重统计或外部探测拖住。
-- 重统计隔离：所有统计聚合、窗口刷新、系统指标和表监控集中在 `stats-worker`，便于定位慢任务。
+- 重统计隔离：尚未迁移的统计聚合、窗口刷新和系统指标集中在 `stats-worker`；F2 表监控由独立 Go `juhe-ai-table-monitor` 负责。
 - 轻运维合并：账号测试、复测、OAuth、代理检测、可用时段同步、授权到期和过期删除协调统一在 `ops-worker`。
 - 运行态和前端展示只暴露当前角色，避免旧角色造成误判。
 - `standalone` 不引入外部队列或多实例假设；`performance` 使用 Redis Stream consumer group 在同机多进程间分工。
@@ -42,7 +42,8 @@
 | `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、运行日志索引、运行日志文件导入、record maintenance、dataset / usage shard 清理 | server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
 | `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
 | `log-worker` | performance persistent | 审计、操作、公开接口日志消费；副本 0 负责运行日志文件导入与保留期任务 | 各日志 Stream lag 或运行日志文件 backlog 持续超标 |
-| `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量、表监控、统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |
+| `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量和非 F2 统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |
+| Go F2 `juhe-ai-table-monitor` | 独立 Go 进程 | SQLite / PostgreSQL 表存储采样、快照写入和表监控历史保留；直接异步并发，owner lease fencing | 配置、源库、schema 或 owner lease 失败；不使用 Node queue / Redis / fallback |
 | `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、代理延迟刷新、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活 |
 | `temporary-maintenance-worker` | temporary | 历史按需任务入口，运行后退出 | 不作为常驻扩容对象 |
 
@@ -67,7 +68,7 @@
 | `account-quality-refresh` | `stats-worker` | 真实请求质量聚合，失败预检候选交给 ops 队列 |
 | `usage-rank-snapshots-refresh` | `stats-worker` | TopN 和重窗口刷新 |
 | `usage-overview-windows-refresh` / `usage-scope-range-windows-refresh` / `authorization-usage-range-windows-refresh` | `stats-worker` | 概览、范围和授权窗口 |
-| `system-metrics-trend-windows-refresh` / `table-storage-monitor` | `stats-worker` | 系统趋势和表空间监控 |
+| `system-metrics-trend-windows-refresh` | `stats-worker` | 系统趋势；F2 表存储监控已由 Go 独立进程接管 |
 | `manual-account-test-queue` | `ops-worker` | 手动测试队列，支持取消和等待上限 |
 | `account-health-check` | `ops-worker` | 正常账户低频健康检测 |
 | `cooldown-account-retest` / `account-api-key-cooldown-retest` | `ops-worker` | 外部复测 I/O，可受控并发，写记录仍投递 ingest |
@@ -81,17 +82,17 @@
 
 - server 到 ingest 维护三组 pending：`usageRecords`、高优先级 regular、低优先级 `recordMaintenance`。出队时高优先级 regular 可在 usage burst 后插队，避免清理任务压住日志 / 数据集写入。
 - server 到 ops 维护独立 pending 队列，只承载账号测试和取消消息。
-- stats write request 只发往 `stats-worker`；dataset write request 在 standalone 发往 `ingest-worker`，在 performance 由 primary `usage-worker` 兼容该 IPC owner。
+- 非 F2 stats write request 只发往 `stats-worker`；F2 不经过 Node IPC，Go 直接写专用 SQLite 输出或 `juhe_stats`；dataset write request 在 standalone 发往 `ingest-worker`，在 performance 由 primary `usage-worker` 兼容该 IPC owner。
 - standalone 的 process event loop 采样角色固定为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`；performance 额外按实例记录 `gateway`、`usage-worker`、`log-worker`。
 - 系统监控接口使用 `ingestWorkerSnapshotAvailable`、`statsWorkerSnapshotAvailable`、`opsWorkerSnapshotAvailable` 表达三类 worker 可观测性；不可观测时对应 runtime 返回 `null`，不能用空数组或 0 伪装正常。
 
-以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。未来某个完整功能在 F3 / F4 完成接管后，必须按 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 单独定义 Go runtime、直接异步执行、cursor / freshness 等指标；不得把旧 Asynq / queue 设为新 Go 功能前置，也不再把 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 冒充为 Go 长期契约。
+以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。F2 已按 [F2 表存储监控采样与保留功能冻结](../../migration/F2-表存储监控采样与保留功能冻结.md) 定义 Go runtime、直接异步执行和 owner lease；其他完整功能在 F3 / F4 接管后也必须单独定义 Go runtime、cursor / freshness 等指标；不得把旧 Asynq / queue 设为新 Go 功能前置，也不再把 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 冒充为 Go 长期契约。
 
 ## 并发策略
 
 - `ops-worker` 内外部请求可以并发，但必须使用固定并发上限、超时、取消边界和批间让出。
 - 账号健康检测、账号级冷却复测和 Key 级冷却复测通过 `createRetryQueue` + `p-limit` 执行门禁按 batch size 派生并发，上限 10；账号质量 full diagnostic 预检上限 3。
-- `stats-worker` 内重窗口刷新可以分阶段执行，但同一个窗口任务不可重入；阶段之间必须短事务提交并让出事件循环。
+- `stats-worker` 内重窗口刷新可以分阶段执行，但同一个窗口任务不可重入；阶段之间必须短事务提交并让出事件循环。F2 Go 采样与 retention 不进入该事件循环。
 - `ingest-worker` 内 append-only 队列可批量 flush，但 usage、日志和维护队列要分优先级；清理任务不能连续占用 writer。
 - 所有 worker 的 SQLite 写入仍遵守单 owner。增加 worker 数量不是解决 SQLite 写锁的默认手段。
 
@@ -102,7 +103,7 @@
 | 触发条件 | 可能动作 | 前置要求 |
 | --- | --- | --- |
 | usage / 审计 / 运行日志长期积压，且 ingest 事件循环或 dataset writer 成为瓶颈 | 从 `ingest-worker` 拆出专门日志或 usage ingest worker | 有队列积压、写耗时和 dropped 指标支撑；先确认 SQLite owner 和 shard 策略 |
-| 统计窗口刷新长期压住系统采样或账号质量 | 从 `stats-worker` 拆出窗口 worker 或按 shard 租约分片 | 先补任务租约、幂等和 stats writer typed command 边界 |
+| 统计窗口刷新长期压住系统采样或账号质量 | 从 `stats-worker` 拆出窗口 worker 或按 shard 租约分片 | 先补任务租约、幂等和 stats writer typed command 边界；不得把已接管的 F2 重新接回 Node |
 | ops 外部 I/O 长期影响 OAuth 保活或账号恢复 | 从 `ops-worker` 拆出 account-test / probe worker | 有运行态队列和外部请求耗时证据；保留业务库写回走 DB service |
 
 拆分不是兼容开关；一旦拆分，必须同步调整代码、文档、接口契约、前端展示和回归脚本。
