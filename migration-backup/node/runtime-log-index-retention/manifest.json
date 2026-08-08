@@ -1,9 +1,19 @@
 {
+  "manifestVersion": 2,
   "featureId": "runtime-log-index-retention",
   "archivedAt": "2026-08-09T00:00:00+08:00",
   "maintainer": "migration team",
-  "cutoverCommit": "uncommitted workspace direct cutover",
-  "rollbackCommit": "not created; restore this complete archive in a dedicated rollback commit",
+  "archiveCommit": "fea9fca5e",
+  "handoffCommits": [
+    "ba0fc6aa5",
+    "fea9fca5e",
+    "969db1ddf",
+    "5b4b454d0"
+  ],
+  "rollback": {
+    "strategy": "在专用回滚提交中恢复本清单所列全部 Node 文件及其完整 owner；不得挑选单个文件或与 Go owner 混跑。",
+    "rollbackCommit": null
+  },
   "goImplementationPaths": [
     "backend-go/cmd/juhe-ai-runtime-log-indexer/main.go",
     "backend-go/internal/runtimelog"
@@ -14,39 +24,42 @@
     "backend/src/modules/background/maintenance-cleanup-jobs.ts (F1 PostgreSQL retention removed)",
     "backend/src/modules/background/data-retention-cleanup.service.ts (F1 SQLite retention removed)"
   ],
-  "originalFiles": [
-    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-file-import.service.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-file-import.service.ts","sha256":"27e2485545965376913fbbabf99cc6a2250a5c9a0da8e7e25ca6bafd28420a5d"},
-    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-lifecycle.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-lifecycle.ts","sha256":"14767df17c961cc2b51a63bda9df7d53e980b3dd1c12f8d2337ad3c481ae94c7"},
-    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-retention.service.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-retention.service.ts","sha256":"8738e15bdc48afb278b9e1ebf28156012302c0d88f829fab0fb01316bf4789ee"},
-    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-scheduler.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-scheduler.ts","sha256":"3be138b5dc81044d94a98e5d047bb732430718655fbc0e73ea810b735c878718"},
-    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-line-parser.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-line-parser.ts","sha256":"2b87a4f146236898c909ec1638a546fa2f0bb4d8ca4d8d4e19134778bf783cc4"},
-    {"originalPath":"backend/src/storage/runtime-log-index.repository.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/runtime-log-index.repository.ts","sha256":"885264aa80cb848816965733a269c63540f05568cb42da9adc75f0724e433731"},
-    {"originalPath":"backend/src/storage/schema/runtime-log-index-schema.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/schema/runtime-log-index-schema.ts","sha256":"4aae6fdfefcda3198aed425ec047570ff7194622f6decf21fbab67fe96cc51a1"}
-  ],
-  "archivedNodeRegressionFiles": [
-    "runtime-log-file-consumer-contract-regression.ts",
-    "runtime-log-file-consumer-pressure-regression.ts",
-    "runtime-log-file-consumer-regression.ts",
-    "runtime-log-file-import-failure-diagnostic-regression.ts",
-    "runtime-log-file-import-source-regression.ts",
-    "runtime-log-file-rotation-regression.ts",
-    "runtime-log-hot-path-boundary-regression.ts",
-    "runtime-log-import-stop-regression.ts",
-    "runtime-log-index-disabled-regression.ts",
-    "runtime-log-index-large-line-regression.ts",
-    "runtime-log-keyword-only-sql-regression.ts",
-    "runtime-log-owner-gate-regression.ts",
-    "runtime-log-postgres-consumer-smoke.ts",
-    "runtime-log-redis-removal-regression.ts",
-    "runtime-log-search-guard-regression.ts",
-    "runtime-log-timestamp-normalization-regression.ts",
-    "log-list-page-window-regression.ts",
-    "observability-write-switch-runtime-regression.ts",
-    "runtime-snapshot-unavailable-contract-regression.ts"
+  "hashContract": {
+    "algorithm": "SHA-256",
+    "sourceSnapshot": "每个 sourceSnapshotSha256 是 F3/F4 删除活跃路径前、复制到本归档目录的直接切换工作区字节快照；它不是更早 Git 父提交的 blob hash。",
+    "verification": "逐项计算 archivePath 的 SHA-256 并与 sourceSnapshotSha256 比较；不匹配即停止恢复。"
+  },
+  "files": [
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-file-import.service.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-file-import.service.ts","sourceSnapshotSha256":"27e2485545965376913fbbabf99cc6a2250a5c9a0da8e7e25ca6bafd28420a5d"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-lifecycle.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-lifecycle.ts","sourceSnapshotSha256":"14767df17c961cc2b51a63bda9df7d53e980b3dd1c12f8d2337ad3c481ae94c7"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-retention.service.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-retention.service.ts","sourceSnapshotSha256":"8738e15bdc48afb278b9e1ebf28156012302c0d88f829fab0fb01316bf4789ee"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-scheduler.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-scheduler.ts","sourceSnapshotSha256":"3be138b5dc81044d94a98e5d047bb732430718655fbc0e73ea810b735c878718"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-line-parser.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-line-parser.ts","sourceSnapshotSha256":"2b87a4f146236898c909ec1638a546fa2f0bb4d8ca4d8d4e19134778bf783cc4"},
+    {"originalPath":"backend/src/scripts/regression/log-list-page-window-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/log-list-page-window-regression.ts","sourceSnapshotSha256":"187c54cb164da80d339351b9ec4de298558333f509ceb6d00e7646e4095bc661"},
+    {"originalPath":"backend/src/scripts/regression/observability-write-switch-runtime-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/observability-write-switch-runtime-regression.ts","sourceSnapshotSha256":"51006dc2e17e12da2f3b45ad8228b765b2a8e2cba17f0fcdb397efefc8fabe58"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-file-consumer-contract-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-file-consumer-contract-regression.ts","sourceSnapshotSha256":"3f614c879a189693a2114b8f24902a9f63a92b2c02918d5ecc5de020c64844a0"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-file-consumer-pressure-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-file-consumer-pressure-regression.ts","sourceSnapshotSha256":"baed8f801cdeb587045542cc995cd3a9d1358c745fa46af14b80c52abc4eae87"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-file-consumer-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-file-consumer-regression.ts","sourceSnapshotSha256":"a70a4cef998d6e6a83feb246f2700c6f55fa67f76b1e08fda6a8a255f5614523"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-file-import-failure-diagnostic-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-file-import-failure-diagnostic-regression.ts","sourceSnapshotSha256":"32880841efb2cf4320f310ee618dbe66ff10f882faf3b2d84ad9c0c1850361e0"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-file-import-source-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-file-import-source-regression.ts","sourceSnapshotSha256":"02630d3b647ca80dd0596f0c965d30f84b051d2a9ad0729355910ce5f427f53a"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-file-rotation-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-file-rotation-regression.ts","sourceSnapshotSha256":"c68361b80b34bdbd8bede9bb34f43ec93c36063fcfde7501c4b9501a5404c017"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-hot-path-boundary-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-hot-path-boundary-regression.ts","sourceSnapshotSha256":"05a361102d813a5f52ab4d1444f57efb4fccfed3f31f7c95ea57ac71d40a8d40"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-import-stop-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-import-stop-regression.ts","sourceSnapshotSha256":"f849c83c8b8c5568c31b3575f8cbfbae1e3a642fb296a0c3d6efc9f464c99432"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-index-disabled-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-index-disabled-regression.ts","sourceSnapshotSha256":"28778a6137f08570a66a509d74dfbc43faa21468ca91b32ad9a78b79d4b99582"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-index-large-line-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-index-large-line-regression.ts","sourceSnapshotSha256":"0a9c392f8d1fa5f8ff4706f231259dad304ff78cce1e4de93b24e1323916e0e4"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-keyword-only-sql-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-keyword-only-sql-regression.ts","sourceSnapshotSha256":"39125f5e5e2b0820a3444ec5171f4e42c3b2bb5bb061308a32294809d6cad988"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-owner-gate-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-owner-gate-regression.ts","sourceSnapshotSha256":"50e8f08812d18b3bda4398e1b066dc6dacd88ccfb3c4e17f685180bfda8be8fa"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-postgres-consumer-smoke.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-postgres-consumer-smoke.ts","sourceSnapshotSha256":"e6889f0df67581dc2b8592d1fe5fb7be5e9da98d0941ec7447dd94363cbfd4b0"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-redis-removal-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-redis-removal-regression.ts","sourceSnapshotSha256":"08bba82bef3c88cbe1d5267afefe8e7e59087608ad77140b9957fe90fb7b6e5f"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-search-guard-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-search-guard-regression.ts","sourceSnapshotSha256":"e4ada34457fae449c7970df47443069bd2d537515d3bf7966f6ea26f8ca31842"},
+    {"originalPath":"backend/src/scripts/regression/runtime-log-timestamp-normalization-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-log-timestamp-normalization-regression.ts","sourceSnapshotSha256":"1e769453c927a119780b24875af9bc58ee98ba937310630493aaa37314ade8d8"},
+    {"originalPath":"backend/src/scripts/regression/runtime-snapshot-unavailable-contract-regression.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/scripts/regression/runtime-snapshot-unavailable-contract-regression.ts","sourceSnapshotSha256":"7156af889a68adfe135fe4d5e8bd12203712161f7aa297f54af5e36dd4ab559a"},
+    {"originalPath":"backend/src/storage/runtime-log-index.repository.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/runtime-log-index.repository.ts","sourceSnapshotSha256":"885264aa80cb848816965733a269c63540f05568cb42da9adc75f0724e433731"},
+    {"originalPath":"backend/src/storage/schema/runtime-log-index-schema.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/schema/runtime-log-index-schema.ts","sourceSnapshotSha256":"4aae6fdfefcda3198aed425ec047570ff7194622f6decf21fbab67fe96cc51a1"}
   ],
   "dualModeVerification": {
-    "sqlite": "backend-go: rtk go test -race ./... (27 tests, passed)",
-    "postgresRedis": "在 backend-go 工作目录设置 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL 和 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED=true 后执行：rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1。URL 必须为专用、可销毁且 F1 表为空的 PostgreSQL 数据库；当前工作区未提供 URL，真实 smoke 未执行（无 URL 时显式 skipped，不是通过）。"
+    "sqlite": "backend-go: rtk go test -race ./... (28 tests, passed)",
+    "postgresRedis": "设置 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL 和 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED=true 后执行 rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1。URL必须指向专用、可销毁且F1表为空的PostgreSQL数据库；当前未提供URL，真实smoke未执行。无URL时显式skipped，不是通过。"
   },
-  "activeNodePathZeroEvidence": "rg must not find the archived F1 imports, Node owner environment variables, scheduler, writer, cursor or retention symbols under backend/src or backend/package.json"
+  "activeNodePathZeroEvidence": "活跃 backend/src、backend/package.json、backend/.env.example、docker 和 scripts/regression 不得再命中 F1 importer、scheduler、writer、cursor、retention、Node owner 开关或 F1 queue symbol。"
 }
