@@ -208,11 +208,6 @@ assert.match(recordMaintenanceQueueSource, /Redis Stream 数据维护任务执�
 assert.match(recordMaintenanceQueueSource, /readCount: recordMaintenanceBatchSize/, 'record maintenance Redis Stream consumer should keep batches bounded')
 assert.doesNotMatch(recordMaintenanceQueueSource, /AfterRedisStreamFailure/, 'record maintenance Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
-const runtimeLogsRepositorySource = readFileSync(new URL('../../storage/runtime-logs.repository.ts', import.meta.url), 'utf8')
-assert.match(runtimeLogsRepositorySource, /createRuntimeLogsBatchAsync/, 'runtime logs repository should expose async PG batch writes')
-assert.match(runtimeLogsRepositorySource, /juhe_dataset\.runtime_logs/, 'runtime logs async writer should target PG dataset schema')
-assert.match(runtimeLogsRepositorySource, /ON CONFLICT\(id\) DO NOTHING/, 'runtime logs async writer should keep stable source IDs idempotent')
-
 const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
 assert.match(workerSource, /startAuditLogRedisStreamConsumer\(\)/, 'ingest worker should start audit log Redis Stream consumer')
 assert.match(workerSource, /await stopAuditLogRedisStreamConsumer\(\)/, 'worker shutdown should stop audit log Redis Stream consumer')

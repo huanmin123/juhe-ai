@@ -127,7 +127,6 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         operationLogs: queue(),
         publicApiLogs: queue(),
         recordMaintenance: queue(),
-        runtimeLogLines: queue(),
         statusRequests: queue(),
         processEventLoopRequests: queue(),
         processEventLoopResponses: queue(),
@@ -160,11 +159,7 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         auditLogQueue: queue(),
         operationLogQueue: queue(),
         publicApiLogQueue: queue(),
-        recordMaintenanceQueue: queue({ queueLength: 3, queueBytes: 3072 }),
-        runtimeLogIndexQueue: {
-          ...queue(),
-          retentionDays: 30
-        }
+        recordMaintenanceQueue: queue({ queueLength: 3, queueBytes: 3072 })
       }
     },
     statsWorker: {

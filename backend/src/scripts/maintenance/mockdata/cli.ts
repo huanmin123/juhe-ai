@@ -46,14 +46,12 @@ import { cleanupMockdata } from './maintenance/cleanup.js'
 import { rebuildDerivedCaches } from './maintenance/derived-cache.js'
 import {
   createBusinessTableCoverageMockdata,
-  createDatasetTableCoverageMockdata,
   createStatsTableCoverageMockdata
 } from './maintenance/table-coverage.js'
 import {
   createAuditMockdata,
   createOperationMockdata,
-  createPublicApiLogMockdata,
-  createRuntimeLogMockdata
+  createPublicApiLogMockdata
 } from './observability/logs.js'
 import { createModelCheckMockdata } from './records/model-checks.js'
 import { createMonitoringMockdata } from './observability/monitoring.js'
@@ -86,8 +84,6 @@ async function main(): Promise<void> {
   const auditLogs = createAuditMockdata(usageRecords)
   const publicApiLogs = createPublicApiLogMockdata(created, options)
   createOperationMockdata(created, usageRecords)
-  createRuntimeLogMockdata(usageRecords)
-  createDatasetTableCoverageMockdata()
   const modelCheckCounts = await createModelCheckMockdata(created, options)
   const cleanupCounts = createRecordCleanupMockdata()
   createMonitoringMockdata(options)

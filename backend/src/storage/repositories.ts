@@ -926,23 +926,16 @@ export {
   type PublicApiLogSummary
 } from './public-api-logs.repository.js'
 export {
-  cleanupRuntimeLogFileCursorsBefore,
-  cleanupRuntimeLogIndex,
-  createRuntimeLogsBatch,
-  createRuntimeLogsBatchAsync,
-  getRuntimeLogFacets,
-  getRuntimeLogFacetsAsync,
   getRuntimeLogDetailAsync,
   getRuntimeLogDetailDeltaAsync,
+  getRuntimeLogFacets,
+  getRuntimeLogFacetsAsync,
   listRuntimeLogs,
   listRuntimeLogsAsync,
-  runtimeLogIndexRetentionDays,
   type RuntimeLogDetail,
   type RuntimeLogDetailDelta,
   type RuntimeLogFacets,
-  type RuntimeLogIndexInput,
   type RuntimeLogListItem,
-  type RuntimeLogLevel,
   type RuntimeLogListResult,
   type RuntimeLogListOptions,
   type RuntimeLogSummary

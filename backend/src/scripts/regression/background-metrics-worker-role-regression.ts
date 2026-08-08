@@ -66,14 +66,13 @@ assert(supervisorSource.includes('JUHE_AI_WORKER_ROLE: spec.role'), 'supervisor 
 assert(supervisorSource.includes('JUHE_AI_WORKER_REPLICA_INDEX: String(spec.replicaIndex)'), 'supervisor fork 子进程时必须传入 worker replica index')
 assert(supervisorSource.includes('attachBackgroundWorkerProcess(child, {') && supervisorSource.includes('role,'), 'supervisor attach worker IPC 时必须传入 role')
 assert(supervisorSource.includes('startWorkerProcessesInSequence()'), 'supervisor 首次启动必须按序启动 worker，避免多个 worker 同时初始化 SQLite')
-assert(serverSource.includes('startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })'), 'server 必须在 DB service ready 后启动后台 worker')
+assert(serverSource.includes('startDbServiceSupervisor({') && serverSource.includes('onReady: startBackgroundWorkerSupervisorAfterDbServiceReady'), 'server 必须在 DB service ready 后启动后台 worker')
 
 assertRoleBlockContainsOnly('ingest-worker', [
   'api-key-record-cleanup-retry',
   'account-record-cleanup-retry',
   'audit-hot-retention-cleanup',
-  'data-retention-cleanup',
-  'runtime-log-index-maintenance'
+  'data-retention-cleanup'
 ])
 assertRoleBlockContainsOnly('stats-worker', [
   'background-task-run-reconcile',
@@ -124,9 +123,7 @@ assert(backgroundJobsSource.includes('const localProcessEventLoopSample = buildP
 
 assert(workerSource.includes('if (isIngestWorker()) {'), 'worker.ts 必须把 append-only 写入队列隔离到 ingest-worker')
 assert(workerSource.includes('await stopBackgroundJobs()') && workerSource.indexOf('await stopBackgroundJobs()') < workerSource.indexOf('await stopUsageRecordRedisStreamConsumer()'), 'worker 停机必须先停止后台 producer，再排空消费队列')
-assert(workerSource.includes('await stopRuntimeLogFileImport({ drainTimeoutMs: 5_000 })'), 'worker 停机必须停止运行日志 importer，防止 poll 重新排程')
 assert(workerSource.includes('} else if (isOpsWorker()) {'), 'ops-worker 必须启动账号测试和轻量运维本地队列')
-assert(workerSource.includes('startRuntimeLogFileImport()'), 'ingest-worker 应启动运行日志文件导入')
 assert(workerSource.includes('startAccountTestTaskQueue()'), 'ops-worker 应启动手动账号测试队列')
 assert(workerSource.includes('getAccountApiKeyCooldownRetestQueueSnapshot') && workerSource.includes('accountApiKeyCooldownRetestQueue'), 'ops-worker runtime snapshot 必须暴露 Key 级冷却复测队列')
 assert(!workerSource.includes('isProbeWorkerMessage'), 'worker.ts 不应保留 probe-worker 消息过滤')
@@ -148,7 +145,6 @@ assert(dbServiceHandlersSource.includes('getCodexContextStateWriterPoolRuntime()
 assert(statsRoutesSource.includes('buildBackgroundQueueHealthSnapshot(runtime)') && statsRoutesSource.includes('queueHealth.workerQueues') && statsRoutesSource.includes('queueHealth.serverIpcQueues'), '系统指标接口必须复用后台队列健康快照接入 worker 本地队列和 IPC 队列')
 assert(!statsRoutesSource.includes('loadMockBackgroundRuntimeSnapshot'), '系统指标接口不能在 runtime snapshot 不可用时回退 mock 运行态，避免误导运维排障')
 assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoutesSource.includes('Redis Stream 使用记录') && statsRoutesSource.includes('getAuditLogRedisStreamRuntime'), '系统指标接口必须接入仍存在的高性能模式 Redis Stream 队列')
-assert(!statsRoutesSource.includes('getRuntimeLogRedisStreamRuntime'), '系统指标接口不得读取已删除的运行日志 Redis Stream 运行态')
 assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
 assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
 assert(statsRoutesSource.includes('highConcurrencyRuntimeQueueRows(runtime)') && statsRoutesSource.includes('高并发短队列'), '系统指标接口必须接入高并发短队列')

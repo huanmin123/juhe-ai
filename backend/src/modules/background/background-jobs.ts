@@ -27,7 +27,6 @@ import {
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
-import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { requestBackgroundWorkerDbService, requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples } from './background-ipc.js'
 import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.js'
 import { requestStatsWriter } from './background-stats-writer.js'
@@ -417,9 +416,6 @@ function scheduleAccountQualityRefreshJob(): void {
 
 function scheduleLogIngestJobs(): void {
   scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
-  if (runtimeConfig.log.indexEnabled) {
-    scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 9 * minuteMs, stablePhaseWindowMs: minuteMs, scheduleMode: 'fixedDelay', resourceLane: 'storage-maintenance', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: runRuntimeLogIndexMaintenance })
-  }
 }
 
 async function runAccountCircuitControlPlaneMaintenance(): Promise<void> {
@@ -936,20 +932,6 @@ async function runProxyLatencyRefresh(signal?: AbortSignal): Promise<WorkerSched
     return result
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), '代理延迟刷新失败')
-    throw error
-  }
-}
-
-async function runRuntimeLogIndexMaintenance(): Promise<void> {
-  try {
-    if (!runtimeConfig.log.indexEnabled) {
-      return
-    }
-    if (runtimeConfig.databaseDriver !== 'postgres') {
-      ensureRuntimeLogFacetSnapshots()
-    }
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), '运行日志索引维护失败')
     throw error
   }
 }

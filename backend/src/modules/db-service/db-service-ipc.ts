@@ -1290,8 +1290,7 @@ async function buildServerSystemMetricsRuntimeSnapshot(): Promise<DbServiceSyste
           operationLogQueue: { ...ingestWorkerSnapshot.operationLogQueue },
           publicApiLogQueue: { ...ingestWorkerSnapshot.publicApiLogQueue },
           auditLogQueue: { ...ingestWorkerSnapshot.auditLogQueue },
-          recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue },
-          runtimeLogIndexQueue: { ...ingestWorkerSnapshot.runtimeLogIndexQueue }
+          recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue }
         }
         : undefined
     },

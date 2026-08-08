@@ -23,11 +23,6 @@ const nonBusinessDatasetCleanupTables: HardCleanupTableRule[] = [
   { databaseRole: 'dataset', tableName: 'operation_log_summary_search_terms', timeColumnName: 'created_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'operation_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'public_api_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_logs', timeColumnName: 'time', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_file_cursors', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_facet_summary', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_level_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_event_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'api_key_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' }
 ]
@@ -109,7 +104,7 @@ export function cleanupDiscoveredHardCleanupTablesBefore(
   addRows: (key: string, count: number) => void
 ): void {
   const database = databaseForHardCleanupRole(databaseRole)
-  for (const rule of nonBusinessCleanupTablesByRole[databaseRole]) {
+	for (const rule of nonBusinessCleanupTablesByRole[databaseRole]) {
     const deleted = deleteRowsBeforeByRowid(
       database,
       rule.tableName,

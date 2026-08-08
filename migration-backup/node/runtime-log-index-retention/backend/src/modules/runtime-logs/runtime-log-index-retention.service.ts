@@ -4,7 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import {
   cleanupRuntimeLogFileCursorsBeforeAsync,
   cleanupRuntimeLogIndexAsync
-} from '../../storage/runtime-logs.repository.js'
+} from '../../storage/runtime-log-index.repository.js'
 import { DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS } from '../background/data-retention-cleanup.constants.js'
 
 export interface RuntimeLogIndexRetentionResult {
@@ -22,7 +22,7 @@ export async function cleanupRuntimeLogIndexRetention(
   input: { cutoffIso: string; batchSize: number; maxBatches: number; signal?: AbortSignal },
   dependencies: RuntimeLogIndexRetentionDependencies = {}
 ): Promise<RuntimeLogIndexRetentionResult> {
-  if (!runtimeConfig.log.indexEnabled) {
+  if (!runtimeConfig.log.indexEnabled || runtimeConfig.log.indexOwner !== 'node') {
     return { runtimeLogs: 0, runtimeLogFileCursors: 0 }
   }
 

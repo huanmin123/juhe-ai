@@ -133,9 +133,9 @@ import {
 import {
   getRuntimeLogDetailReadOnly,
   getRuntimeLogDetailDeltaReadOnly,
-  getRuntimeLogFacetsReadOnly,
   listRuntimeLogsReadOnly
 } from './runtime-logs.repository.js'
+import { getRuntimeLogFacetsReadOnly } from './runtime-log-query.repository.js'
 import { getManagementSettingsSectionReadOnly, getSettingsReadOnly, listGlobalSettingsReadOnly } from './settings.repository.js'
 import type {
   SqliteReadWorkerMessage,

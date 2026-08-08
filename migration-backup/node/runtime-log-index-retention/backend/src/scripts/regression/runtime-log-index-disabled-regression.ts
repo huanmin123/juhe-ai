@@ -26,16 +26,18 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.retentionDays = 1
 runtimeConfig.log.maxFiles = 8
 assert.equal(runtimeConfig.log.indexEnabled, false)
-const backgroundJobsSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
-assert.match(backgroundJobsSource, /if \(runtimeConfig\.log\.indexEnabled\)/, '索引关闭时不得调度或执行索引维护')
+const runtimeLogSchedulerSource = readFileSync(resolve('src/modules/runtime-logs/runtime-log-index-scheduler.ts'), 'utf8')
+assert.match(runtimeLogSchedulerSource, /if \(!runtimeConfig\.log\.indexEnabled\) return/, '索引关闭时不得调度或执行索引维护')
 
-const [database, importer, repository, loggerModule, retention] = await Promise.all([
+const [database, importer, runtimeLogIndexRepository, loggerModule, retention, runtimeLogQueryRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/runtime-logs/runtime-log-file-import.service.js'),
-  import('../../storage/runtime-logs.repository.js'),
+  import('../../storage/runtime-log-index.repository.js'),
   import('../../shared/logger.js'),
-  import('../../modules/runtime-logs/runtime-log-index-retention.service.js')
+  import('../../modules/runtime-logs/runtime-log-index-retention.service.js'),
+  import('../../storage/runtime-log-query.repository.js')
 ])
+const repository = { ...runtimeLogIndexRepository, ...runtimeLogQueryRepository }
 
 try {
   database.getDatasetDatabase()

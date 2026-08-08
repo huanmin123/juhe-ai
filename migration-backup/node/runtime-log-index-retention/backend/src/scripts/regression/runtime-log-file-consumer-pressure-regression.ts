@@ -20,7 +20,7 @@ runtimeConfig.log.consoleEnabled = false
 const [databaseModule, importer, repository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/runtime-logs/runtime-log-file-import.service.js'),
-  import('../../storage/runtime-logs.repository.js')
+  import('../../storage/runtime-log-index.repository.js')
 ])
 
 const marker = `pressure_${Date.now()}_${Math.random().toString(16).slice(2)}`

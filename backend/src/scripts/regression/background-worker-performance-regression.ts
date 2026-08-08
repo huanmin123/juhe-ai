@@ -170,11 +170,6 @@ function assertSourceGuards(): void {
     'usage scope 范围窗口发布必须按 start_date/end_date 分片插入'
   )
 
-  const runtimeFileImporterSource = readFileSync(resolve('src/modules/runtime-logs/runtime-log-file-import.service.ts'), 'utf8')
-  assert.match(runtimeFileImporterSource, /runtimeLogTailMaxBytesPerFile/, '运行日志文件消费每轮必须有字节预算')
-  assert.match(runtimeFileImporterSource, /runtimeLogTailMaxLinesPerFile/, '运行日志文件消费每轮必须有行数预算')
-  assert.match(runtimeFileImporterSource, /nextOffset >= input\.endOffset/, '运行日志文件消费必须在完整行边界按预算让出')
-
   const cooldownRetestSource = readFileSync(resolve('src/modules/background/cooldown-account-retest.service.ts'), 'utf8')
   assert.match(
     cooldownRetestSource,

@@ -2,7 +2,8 @@ import type { AccountRuntimeProbePresentation, AccountStatus, AccountSummary, Ac
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
-import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { RuntimeLogFacets } from '../../storage/runtime-log-query.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import type { ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
@@ -244,7 +245,6 @@ export interface DbServiceServerRuntimeSnapshot {
       publicApiLogQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
-      runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
     }
   }
   statsWorker?: {

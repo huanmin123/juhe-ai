@@ -35,16 +35,6 @@ export interface BackgroundQueueHealthItem {
   writerPoolMaxRunMs: number | null
   pendingWriteRequestCount: number | null
   oldestPendingWriteMs: number | null
-  discoveredFileCount: number | null
-  pendingFileCount: number | null
-  pendingBytes: number | null
-  oldestPendingMtime?: string
-  currentFile?: string
-  currentOffset: number | null
-  lastReadAt?: string
-  lastCommitAt?: string
-  lastError?: string
-  protectedRotatedFileCount: number | null
 }
 
 export interface BackgroundQueueHealthSnapshot {
@@ -74,7 +64,7 @@ interface WorkerQueueSpec {
   key: string
   label: string
   workerRole: 'ingest-worker' | 'stats-worker'
-  snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue' | 'runtimeLogIndexQueue'
+  snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue'
 }
 
 type IngestWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['ingestWorker']>['snapshot']>
@@ -109,8 +99,7 @@ const workerQueueSpecs: WorkerQueueSpec[] = [
   { key: 'operationLogs', label: '操作日志', workerRole: 'ingest-worker', snapshotKey: 'operationLogQueue' },
   { key: 'publicApiLogs', label: '公开接口日志', workerRole: 'ingest-worker', snapshotKey: 'publicApiLogQueue' },
   { key: 'recordMaintenanceIngest', label: '数据维护 ingest', workerRole: 'ingest-worker', snapshotKey: 'recordMaintenanceQueue' },
-  { key: 'recordMaintenanceStats', label: '数据维护 stats', workerRole: 'stats-worker', snapshotKey: 'recordMaintenanceQueue' },
-  { key: 'runtimeLogIndex', label: '运行日志索引', workerRole: 'ingest-worker', snapshotKey: 'runtimeLogIndexQueue' }
+  { key: 'recordMaintenanceStats', label: '数据维护 stats', workerRole: 'stats-worker', snapshotKey: 'recordMaintenanceQueue' }
 ]
 
 const ipcQueueSpecs: IpcQueueSpec[] = [
@@ -281,11 +270,6 @@ function buildQueueHealthItem(input: {
       writerPoolMaxRunMs: null,
       pendingWriteRequestCount: null,
       oldestPendingWriteMs: null,
-      discoveredFileCount: null,
-      pendingFileCount: null,
-      pendingBytes: null,
-      currentOffset: null,
-      protectedRotatedFileCount: null
     }
   }
 
@@ -312,12 +296,6 @@ function buildQueueHealthItem(input: {
   const writerPoolOldestQueuedMs = nullableNumber(snapshot.writerPoolOldestQueuedMs)
   const pendingWriteRequestCount = nullableNumber(input.roleState?.pendingWriteRequestCount)
   const oldestPendingWriteMs = nullableNumber(input.roleState?.oldestPendingWriteMs)
-  const discoveredFileCount = nullableNumber(snapshot.discoveredFileCount)
-  const pendingFileCount = nullableNumber(snapshot.pendingFileCount)
-  const pendingBytes = nullableNumber(snapshot.pendingBytes)
-  const currentOffset = nullableNumber(snapshot.currentOffset)
-  const protectedRotatedFileCount = nullableNumber(snapshot.protectedRotatedFileCount)
-  const runtimeLogFileError = typeof snapshot.lastError === 'string' && snapshot.lastError.trim().length > 0
   const reasons: string[] = []
   if ((droppedCount ?? 0) > 0) reasons.push('queue_dropped')
   if ((rejectedCount ?? 0) > 0) reasons.push('ipc_rejected')
@@ -327,9 +305,6 @@ function buildQueueHealthItem(input: {
   if (isQueueBacklogged(writerPoolQueueLength, 0) || (writerPoolOldestQueuedMs ?? 0) >= 5000) reasons.push('writer_pool_backlogged')
   if ((pendingWriteRequestCount ?? 0) > 0 && (oldestPendingWriteMs ?? 0) >= 5000) reasons.push('pending_write_backlogged')
   if (isQueueBacklogged(queueLength, queueBytes)) reasons.push('queue_backlogged')
-  if (input.key === 'runtimeLogIndex' && (runtimeLogFileError || (pendingFileCount ?? 0) > 0 || (pendingBytes ?? 0) > 0)) {
-    reasons.push(runtimeLogFileError ? 'runtime_log_file_error' : 'runtime_log_file_backlogged')
-  }
 
   return {
     key: input.key,
@@ -364,16 +339,6 @@ function buildQueueHealthItem(input: {
     writerPoolMaxRunMs: nullableNumber(snapshot.writerPoolMaxRunMs),
     pendingWriteRequestCount,
     oldestPendingWriteMs,
-    discoveredFileCount,
-    pendingFileCount,
-    pendingBytes,
-    oldestPendingMtime: typeof snapshot.oldestPendingMtime === 'string' ? snapshot.oldestPendingMtime : undefined,
-    currentFile: typeof snapshot.currentFile === 'string' ? snapshot.currentFile : undefined,
-    currentOffset,
-    lastReadAt: typeof snapshot.lastReadAt === 'string' ? snapshot.lastReadAt : undefined,
-    lastCommitAt: typeof snapshot.lastCommitAt === 'string' ? snapshot.lastCommitAt : undefined,
-    lastError: typeof snapshot.lastError === 'string' ? snapshot.lastError : undefined,
-    protectedRotatedFileCount
   }
 }
 
@@ -384,7 +349,6 @@ function itemQueueHealthStatus(reasons: string[]): BackgroundQueueHealthStatus {
     || reasons.includes('queue_flush_failed')
     || reasons.includes('queue_slow_flush')
     || reasons.includes('writer_pool_degraded')
-    || reasons.includes('runtime_log_file_error')
   ) {
     return 'degraded'
   }
@@ -392,7 +356,6 @@ function itemQueueHealthStatus(reasons: string[]): BackgroundQueueHealthStatus {
     reasons.includes('queue_backlogged')
     || reasons.includes('writer_pool_backlogged')
     || reasons.includes('pending_write_backlogged')
-    || reasons.includes('runtime_log_file_backlogged')
   ) {
     return 'backlogged'
   }

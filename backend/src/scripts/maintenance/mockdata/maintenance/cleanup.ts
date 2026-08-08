@@ -151,10 +151,6 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
     const operationIds = selectIds(database, 'SELECT id FROM operation_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'operation_logs', 'id', operationIds)
 
-    const runtimeIds = selectIds(database, 'SELECT id FROM runtime_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
-    deleteWhereIn(database, 'runtime_logs', 'id', runtimeIds)
-    database.prepare('DELETE FROM runtime_log_file_cursors WHERE log_file LIKE ? OR file_identity LIKE ?').run(`${idPrefix}%`, `${tracePrefix}%`)
-
     const modelCheckRunIds = selectIds(database, 'SELECT id FROM model_check_runs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'model_check_items', 'run_id', modelCheckRunIds)
     deleteWhereIn(database, 'model_check_runs', 'id', modelCheckRunIds)

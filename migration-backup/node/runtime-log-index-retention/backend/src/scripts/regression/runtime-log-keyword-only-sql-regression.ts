@@ -12,10 +12,12 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
 
-const [databaseModule, runtimeLogsRepository] = await Promise.all([
+const [databaseModule, runtimeLogIndexRepository, runtimeLogQueryRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/runtime-logs.repository.js')
+  import('../../storage/runtime-log-index.repository.js'),
+  import('../../storage/runtime-log-query.repository.js')
 ])
+const runtimeLogsRepository = { ...runtimeLogIndexRepository, ...runtimeLogQueryRepository }
 
 try {
   const now = new Date().toISOString()

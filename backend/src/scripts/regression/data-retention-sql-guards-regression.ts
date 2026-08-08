@@ -17,10 +17,9 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, dataRetention, runtimeLogsRepository] = await Promise.all([
+const [databaseModule, dataRetention] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/data-retention.repository.js'),
-  import('../../storage/runtime-logs.repository.js')
+  import('../../storage/data-retention.repository.js')
 ])
 
 const statsTableNames = new Set([
@@ -111,14 +110,6 @@ try {
   assert.equal(tableCount('model_check_runs'), 2, 'health-sync failed/pending_retry 运行必须保留，不能被 retention 删除')
   assert.equal(tableCount('model_check_items'), 2, 'health-sync failed/pending_retry 的检测项必须随运行保留')
 
-  seedRuntimeLogFileCursor()
-  assert.equal(
-    runtimeLogsRepository.cleanupRuntimeLogFileCursorsBefore('2001-01-01T00:00:00.000Z', 100),
-    1,
-    '运行日志文件游标应清理长期未更新的旧文件状态'
-  )
-  assert.equal(tableCount('runtime_log_file_cursors'), 0, '过期运行日志文件游标清理后不应残留旧记录')
-
   const indexChecks: Array<{ tableName: string; columnName: string; indexName: string }> = [
     { tableName: 'audit_error_groups', columnName: 'updated_at', indexName: 'idx_audit_error_groups_updated' },
     { tableName: 'authorization_team_usage_range_windows', columnName: 'end_date', indexName: 'idx_authorization_team_usage_range_end' },
@@ -133,15 +124,14 @@ try {
     { tableName: 'client_ip_usage_range_windows', columnName: 'end_date', indexName: 'idx_client_ip_range_end' },
     { tableName: 'account_usage_snapshots', columnName: 'updated_at', indexName: 'idx_account_usage_snapshots_updated' },
     { tableName: 'system_metrics_trend_windows', columnName: 'end_date', indexName: 'idx_system_metrics_trend_windows_end' },
-    { tableName: 'process_event_loop_trend_windows', columnName: 'end_date', indexName: 'idx_process_event_loop_trend_windows_end' },
-    { tableName: 'runtime_log_file_cursors', columnName: 'updated_at', indexName: 'idx_runtime_log_file_cursors_updated' }
+    { tableName: 'process_event_loop_trend_windows', columnName: 'end_date', indexName: 'idx_process_event_loop_trend_windows_end' }
   ]
   for (const check of indexChecks) {
     assertQueryUsesIndex(check.tableName, check.columnName, check.indexName)
   }
   assertModelCheckRunCleanupUsesIndex()
 
-  console.log('数据保留 SQL 防护回归通过：预聚合清理按表推进，模型检测与运行日志游标可清理，清理列具备索引')
+  console.log('数据保留 SQL 防护回归通过：预聚合清理按表推进，模型检测清理列具备索引')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -193,15 +183,6 @@ function seedClientIpUsageRangeWindow(): void {
     .prepare(`
       INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at)
       VALUES ('ip_retention_old', '2000-01-01', '2000-01-01', '2000-01-01T00:00:00.000Z')
-    `)
-    .run()
-}
-
-function seedRuntimeLogFileCursor(): void {
-  databaseModule.getDatasetDatabase()
-    .prepare(`
-      INSERT INTO runtime_log_file_cursors (log_file, created_at, updated_at)
-      VALUES ('logs/old-runtime.log', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
     `)
     .run()
 }

@@ -19,11 +19,13 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, runtimeLogsRepository] = await Promise.all([
+const [databaseModule, repositories, runtimeLogIndexRepository, runtimeLogQueryRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/runtime-logs.repository.js')
+  import('../../storage/runtime-log-index.repository.js'),
+  import('../../storage/runtime-log-query.repository.js')
 ])
+const runtimeLogsRepository = { ...runtimeLogIndexRepository, ...runtimeLogQueryRepository }
 
 try {
   repositories.createAuditLogsBatch([

@@ -1,6 +1,3 @@
-import { join } from 'node:path'
-
-import { backendRoot } from '../../../../config/runtime.js'
 import { getDatasetDatabase } from '../../../../storage/database.js'
 import type { AuditLogInput } from '../../../../storage/audit-logs.repository.js'
 import {
@@ -11,7 +8,6 @@ import {
 import type { OperationLogInput } from '../../../../storage/operation-logs.repository.js'
 import { createPublicApiLog } from '../../../../storage/public-api-logs.repository.js'
 import * as repositories from '../../../../storage/repositories.js'
-import { createRuntimeLogsBatch, type RuntimeLogIndexInput } from '../../../../storage/runtime-logs.repository.js'
 import {
   chunks,
   dayMs,
@@ -288,52 +284,6 @@ export function createOperationMockdata(created: CreatedMockdata, usageRecords: 
     })
   }
   repositories.createOperationLogsBatch(logs)
-}
-
-export function createRuntimeLogMockdata(usageRecords: UsageRecordSeed[]): void {
-  const recentRecords = usageRecords.slice(-240)
-  const events = [
-    'gateway_upstream_request_started',
-    'gateway_upstream_response_received',
-    'gateway_stream_finished_success',
-    'gateway_upstream_attempt_failed',
-    'background_usage_stats_aggregation_failed',
-    'background_account_quality_refresh_completed',
-    'db_service_started',
-    'http_request_completed'
-  ]
-  const logs: RuntimeLogIndexInput[] = recentRecords.map((record, index) => {
-    const level = record.success ? (index % 9 === 0 ? 'debug' : 'info') : (index % 5 === 0 ? 'error' : 'warn')
-    const event = record.success ? events[index % 3] : events[3 + (index % 2)]
-    const message = record.success
-      ? `Mockdata 网关请求完成：${record.model}`
-      : `Mockdata 网关请求失败：${record.errorCode}`
-    return {
-      id: `${idPrefix}runtime_${String(index + 1).padStart(4, '0')}`,
-      logFile: join(backendRoot, 'logs', 'mockdata.log'),
-      logOffset: index * 512,
-      lineNumber: index + 1,
-      time: new Date(Date.now() - Math.floor(((recentRecords.length - index) / recentRecords.length) * 3 * dayMs)).toISOString(),
-      level,
-      traceId: record.traceId,
-      event,
-      message,
-      errorMessage: record.success ? undefined : record.errorMessage,
-      rawJson: JSON.stringify({
-        time: record.createdAt,
-        level,
-        event,
-        traceId: record.traceId,
-        message,
-        mockdata: true,
-        accountId: record.accountId,
-        groupId: record.groupId,
-        apiKeyId: record.apiKeyId
-      }),
-      createdAt: new Date(Date.now() - Math.floor(((recentRecords.length - index) / recentRecords.length) * 3 * dayMs)).toISOString()
-    }
-  })
-  createRuntimeLogsBatch(logs)
 }
 
 function publicApiLogRequestData(

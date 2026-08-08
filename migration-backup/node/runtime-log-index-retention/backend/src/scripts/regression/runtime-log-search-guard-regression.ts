@@ -18,11 +18,13 @@ runtimeConfig.log.directory = logDir
 runtimeConfig.log.fileEnabled = true
 runtimeConfig.log.consoleEnabled = false
 
-const [databaseModule, runtimeLogsRepository, runtimeLogGrep] = await Promise.all([
+const [databaseModule, runtimeLogIndexRepository, runtimeLogQueryRepository, runtimeLogGrep] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/runtime-logs.repository.js'),
+  import('../../storage/runtime-log-index.repository.js'),
+  import('../../storage/runtime-log-query.repository.js'),
   import('../../modules/runtime-logs/runtime-log-grep.service.js')
 ])
+const runtimeLogsRepository = { ...runtimeLogIndexRepository, ...runtimeLogQueryRepository }
 
 try {
   const now = new Date().toISOString()
@@ -113,9 +115,9 @@ try {
     ['trace-runtime-guard-long', 'trace-runtime-guard-raw-json', 'trace-runtime-guard-short'],
     '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
   )
-  const runtimeLogsSource = readFileSync(new URL('../../storage/runtime-logs.repository.ts', import.meta.url), 'utf8')
-  assert.match(runtimeLogsSource, /runtimeConfig\.databaseDriver === 'postgres' \? `\$\{column\} COLLATE "C"` : column/, 'PG 运行日志 traceId 前缀筛选必须使用 C collation')
-  assert.match(runtimeLogsSource, /textPrefixUpperBound\(text\)/, '运行日志 traceId 前缀筛选必须使用统一二进制上界')
+  const runtimeLogQuerySource = readFileSync(new URL('../../storage/runtime-log-query.repository.ts', import.meta.url), 'utf8')
+  assert.match(runtimeLogQuerySource, /runtimeConfig\.databaseDriver === 'postgres' \? `\$\{column\} COLLATE "C"` : column/, 'PG 运行日志 traceId 前缀筛选必须使用 C collation')
+  assert.match(runtimeLogQuerySource, /textPrefixUpperBound\(text\)/, '运行日志 traceId 前缀筛选必须使用统一二进制上界')
 
   const datasetDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare

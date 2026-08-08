@@ -1,0 +1,52 @@
+{
+  "featureId": "runtime-log-index-retention",
+  "archivedAt": "2026-08-09T00:00:00+08:00",
+  "maintainer": "migration team",
+  "cutoverCommit": "uncommitted workspace direct cutover",
+  "rollbackCommit": "not created; restore this complete archive in a dedicated rollback commit",
+  "goImplementationPaths": [
+    "backend-go/cmd/juhe-ai-runtime-log-indexer/main.go",
+    "backend-go/internal/runtimelog"
+  ],
+  "disabledNodeEntrypoints": [
+    "backend/src/worker.ts (F1 importer start/stop removed)",
+    "backend/src/modules/background/background-jobs.ts (F1 scheduler removed)",
+    "backend/src/modules/background/maintenance-cleanup-jobs.ts (F1 PostgreSQL retention removed)",
+    "backend/src/modules/background/data-retention-cleanup.service.ts (F1 SQLite retention removed)"
+  ],
+  "originalFiles": [
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-file-import.service.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-file-import.service.ts","sha256":"27e2485545965376913fbbabf99cc6a2250a5c9a0da8e7e25ca6bafd28420a5d"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-lifecycle.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-lifecycle.ts","sha256":"14767df17c961cc2b51a63bda9df7d53e980b3dd1c12f8d2337ad3c481ae94c7"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-retention.service.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-retention.service.ts","sha256":"8738e15bdc48afb278b9e1ebf28156012302c0d88f829fab0fb01316bf4789ee"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-index-scheduler.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-index-scheduler.ts","sha256":"3be138b5dc81044d94a98e5d047bb732430718655fbc0e73ea810b735c878718"},
+    {"originalPath":"backend/src/modules/runtime-logs/runtime-log-line-parser.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/modules/runtime-logs/runtime-log-line-parser.ts","sha256":"2b87a4f146236898c909ec1638a546fa2f0bb4d8ca4d8d4e19134778bf783cc4"},
+    {"originalPath":"backend/src/storage/runtime-log-index.repository.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/runtime-log-index.repository.ts","sha256":"885264aa80cb848816965733a269c63540f05568cb42da9adc75f0724e433731"},
+    {"originalPath":"backend/src/storage/schema/runtime-log-index-schema.ts","archivePath":"migration-backup/node/runtime-log-index-retention/backend/src/storage/schema/runtime-log-index-schema.ts","sha256":"4aae6fdfefcda3198aed425ec047570ff7194622f6decf21fbab67fe96cc51a1"}
+  ],
+  "archivedNodeRegressionFiles": [
+    "runtime-log-file-consumer-contract-regression.ts",
+    "runtime-log-file-consumer-pressure-regression.ts",
+    "runtime-log-file-consumer-regression.ts",
+    "runtime-log-file-import-failure-diagnostic-regression.ts",
+    "runtime-log-file-import-source-regression.ts",
+    "runtime-log-file-rotation-regression.ts",
+    "runtime-log-hot-path-boundary-regression.ts",
+    "runtime-log-import-stop-regression.ts",
+    "runtime-log-index-disabled-regression.ts",
+    "runtime-log-index-large-line-regression.ts",
+    "runtime-log-keyword-only-sql-regression.ts",
+    "runtime-log-owner-gate-regression.ts",
+    "runtime-log-postgres-consumer-smoke.ts",
+    "runtime-log-redis-removal-regression.ts",
+    "runtime-log-search-guard-regression.ts",
+    "runtime-log-timestamp-normalization-regression.ts",
+    "log-list-page-window-regression.ts",
+    "observability-write-switch-runtime-regression.ts",
+    "runtime-snapshot-unavailable-contract-regression.ts"
+  ],
+  "dualModeVerification": {
+    "sqlite": "backend-go: rtk go test -race ./... (27 tests, passed)",
+    "postgresRedis": "在 backend-go 工作目录设置 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL 和 JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED=true 后执行：rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1。URL 必须为专用、可销毁且 F1 表为空的 PostgreSQL 数据库；当前工作区未提供 URL，真实 smoke 未执行（无 URL 时显式 skipped，不是通过）。"
+  },
+  "activeNodePathZeroEvidence": "rg must not find the archived F1 imports, Node owner environment variables, scheduler, writer, cursor or retention symbols under backend/src or backend/package.json"
+}

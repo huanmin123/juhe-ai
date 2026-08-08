@@ -457,19 +457,6 @@ export const backgroundScheduledJobs = [
     writes: ['runtime:account_circuit']
   }),
   scheduled({
-    jobName: 'runtime-log-index-maintenance',
-    category: 'scheduled',
-    kind: 'log',
-    lifecycle: 'persistent',
-    defaultRole: 'ingest-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:runtime_logs']
-  }),
-  scheduled({
     jobName: 'audit-hot-retention-cleanup',
     category: 'scheduled',
     kind: 'maintenance',
@@ -837,19 +824,6 @@ export const backgroundWorkerRegistry = [
     leaseRequired: false,
     blocksUserVisibleFreshness: true,
     writes: ['server:gateway_quota_snapshot_cache']
-  }),
-  entry({
-    jobName: 'runtime-log-file-import',
-    category: 'entrypoint',
-    kind: 'log',
-    lifecycle: 'persistent',
-    defaultRole: 'ingest-worker',
-    hotspot: true,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:runtime_logs', 'dataset:runtime_log_file_cursors']
   }),
   entry({
     jobName: 'manual-account-test-queue',

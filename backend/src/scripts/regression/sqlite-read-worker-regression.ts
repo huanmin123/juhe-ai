@@ -185,16 +185,6 @@ try {
   })
   repositories.updateAccountTags(account.id, ['SQLite read worker 标签'], access)
   const session = repositories.createSession('sys_admin')
-  const runtimeLogId = 'rtlog_sqlite_read_worker'
-  repositories.createRuntimeLogsBatch([{
-    id: runtimeLogId,
-    time: new Date().toISOString(),
-    level: 'info',
-    traceId: 'trace-sqlite-read-worker',
-    event: 'sqlite_read_worker_regression',
-    message: 'runtime keyword needle',
-    rawJson: JSON.stringify({ event: 'sqlite_read_worker_regression', message: 'runtime keyword needle' })
-  }])
   const expiredAt = new Date(Date.now() - 60_000).toISOString()
   databaseModule.getBusinessDatabase()
     .prepare(`
@@ -325,9 +315,6 @@ try {
   assert((await modelCatalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_admin', includeUnpriced: true })).length > 0, '供应商模型目录 async 读应由 read worker 返回真实数据')
   assert.equal(typeof (await repositories.listGlobalSettingsAsync()).appName, 'string', '全局设置 async 读应由 read worker 返回真实数据')
   assert.equal(typeof (await repositories.getSettingsAsync()).defaultTemporaryUnschedulableMinutes, 'number', '系统设置 async 读应由 read worker 返回真实数据')
-  assert((await repositories.listRuntimeLogsAsync({ keyword: 'needle', pageSize: 10 })).items.some((item) => item.id === runtimeLogId), '运行日志列表 async 读应由 read worker 返回真实关键词结果')
-  assert.equal((await repositories.getRuntimeLogDetailAsync(runtimeLogId))?.id, runtimeLogId, '运行日志详情 async 读应由 read worker 返回真实数据')
-  assert((await repositories.getRuntimeLogFacetsAsync()).totalIndexed >= 1, '运行日志 facets async 读应由 read worker 返回真实数据')
 
   const dbServiceReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   assert.equal(typeof (await dbServiceHandlers.handleDbServiceOperation({

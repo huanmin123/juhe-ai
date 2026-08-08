@@ -7,7 +7,7 @@ function source(path: string): string {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
 }
 
-const repositorySource = source('../../storage/runtime-logs.repository.ts')
+const repositorySource = source('../../storage/runtime-log-index.repository.ts')
 const ipcTypesSource = source('../../modules/background/background-ipc.types.ts')
 const queueHealthSource = source('../../modules/background/background-queue-health.service.ts')
 const statsRoutesSource = source('../../modules/stats/stats.routes.ts')
@@ -60,7 +60,7 @@ runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 
 const databaseModule = await import('../../storage/database.js')
-const repository = await import('../../storage/runtime-logs.repository.js')
+const repository = await import('../../storage/runtime-log-index.repository.js')
 const { buildBackgroundQueueHealthSnapshot } = await import('../../modules/background/background-queue-health.service.js')
 
 try {

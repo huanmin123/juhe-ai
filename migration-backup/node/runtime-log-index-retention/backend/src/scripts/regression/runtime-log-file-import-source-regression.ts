@@ -29,7 +29,7 @@ type RuntimeLogSourceRow = {
 const [databaseModule, runtimeLogFileImport, runtimeLogsRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/runtime-logs/runtime-log-file-import.service.js'),
-  import('../../storage/runtime-logs.repository.js')
+  import('../../storage/runtime-log-index.repository.js')
 ])
 
 try {

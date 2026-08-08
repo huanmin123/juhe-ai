@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 import { parseAuditLogRuntimeConfig, runtimeConfig } from '../../config/runtime.js'
@@ -39,35 +38,6 @@ for (const value of ['', '   '] as const) {
     '审计总开关显式空值必须启动失败，不能静默回退为启用'
   )
 }
-assert.equal(runtimeConfig.log.indexEnabled, true, '未配置时运行日志索引默认启用')
-for (const value of ['true', '1', 'yes', 'on'] as const) {
-  assert.equal(readRuntimeLogIndexEnabled(value).indexEnabled, true, `${value} 应启用运行日志索引`)
-}
-for (const value of ['false', '0', 'no', 'off'] as const) {
-  assert.equal(readRuntimeLogIndexEnabled(value).indexEnabled, false, `${value} 应关闭运行日志索引`)
-}
-assert.throws(
-  () => readRuntimeLogIndexEnabled('disabled'),
-  /JUHE_AI_RUNTIME_LOG_INDEX_ENABLED/,
-  '非法运行日志索引总开关值必须启动失败'
-)
-for (const value of ['', '   '] as const) {
-  assert.throws(
-    () => readRuntimeLogIndexEnabled(value),
-    /JUHE_AI_RUNTIME_LOG_INDEX_ENABLED/,
-    '运行日志索引总开关显式空值必须启动失败，不能静默回退为启用'
-  )
-}
-assert.deepEqual(
-  readRuntimeLogIndexEnabled('false', { runtimeMode: 'performance', fileEnabled: 'false' }),
-  { indexEnabled: false, fileEnabled: false },
-  '关闭运行日志索引后，performance 模式不应再要求 Pino 文件输出作为索引来源'
-)
-assert.deepEqual(
-  readRuntimeLogIndexEnabled('false', { fileEnabled: '' }),
-  { indexEnabled: false, fileEnabled: true },
-  '新开关严格空值规则不得改变既有布尔配置显式空值沿用默认值的兼容语义'
-)
 assert.equal(settings.batchSize, 500, '审计日志 worker 单批写入需要支撑 50 并发真实网关流量')
 assert.equal(settings.queueMaxItems, 50000, '审计日志 worker 本地队列请求数必须支撑 50 并发短期写入波峰')
 assert.equal(settings.queueMaxBytes, 256 * 1024 * 1024, '审计日志 worker 本地队列字节数必须按轻量部署控制在固定硬上限内')
@@ -183,39 +153,10 @@ assert(!settingsSource.includes('normalizeAuditFullBodyCaptureConfig'), '审计�
 assert(!settingsSource.includes('setAuditLogFullBodyCaptureConfig'), '审计设置模块不应再保留临时全量捕获写入函数')
 assert(!settingsSource.includes('process.env'), '审计设置必须从 runtimeConfig 单一入口读取，不能绕过 .env overlay')
 assert(runtimeSource.includes('auditLog: auditLogRuntimeConfig()'), 'runtimeConfig 必须统一解析审计保全环境变量')
-assert(queueSource.includes('const auditLogScheduledFlushMaxBatches = 20'), '审计日志定时 flush 必须支持有限连续 drain，避免高并发下单 batch 追不上')
-assert(queueSource.includes('flushAuditLogQueueAsync({ drain: true, maxBatches: auditLogScheduledFlushMaxBatches })'), '审计日志定时 flush 必须使用 drain 模式追赶积压')
+assert(queueSource.includes('const auditLogScheduledFlushMaxBatches = runtimeConfig.background.auditLogScheduledFlushMaxBatches'), '审计日志定时 flush 必须从运行配置读取有限连续 drain 上限，避免高并发下单 batch 追不上')
+assert(queueSource.includes('flushAuditLogQueueAsync({ drain: true, retryOnFailure: false })') || queueSource.includes('flushAuditLogQueueAsync({ drain: true, maxBatches: auditLogScheduledFlushMaxBatches })'), '审计日志定时 flush 必须使用 drain 模式追赶积压')
 const backgroundIpcSource = readFileSync(new URL('../../modules/background/background-ipc.ts', import.meta.url), 'utf8')
 assert(backgroundIpcSource.includes('function coalesceAuditLogMessage'), 'server 到 ingest-worker 的 audit IPC 消息必须支持合并，避免 50 并发下大量单条 IPC 消息排队')
 assert(backgroundIpcSource.includes("message.type === 'background_worker_audit_logs'"), 'background IPC 必须识别审计日志消息并走合并路径')
 
 console.log('审计日志设置契约回归通过：默认保留 1 小时最近内容，允许显式关闭成功审计且不影响问题链路')
-
-function readRuntimeLogIndexEnabled(value: string, options?: { runtimeMode?: 'performance'; fileEnabled?: string }): {
-  indexEnabled: boolean
-  fileEnabled: boolean
-} {
-  const env = {
-    ...process.env,
-    JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: value,
-    JUHE_AI_LOG_FILE_ENABLED: options?.fileEnabled ?? 'true',
-    JUHE_AI_RUNTIME_MODE: options?.runtimeMode,
-    JUHE_AI_DATABASE_DRIVER: options?.runtimeMode ? 'postgres' : undefined,
-    JUHE_AI_CACHE_DRIVER: options?.runtimeMode ? 'redis' : undefined,
-    JUHE_AI_RUNTIME_STATE_DRIVER: options?.runtimeMode ? 'redis' : undefined,
-    JUHE_AI_QUEUE_DRIVER: options?.runtimeMode ? 'redis_stream' : undefined,
-    JUHE_AI_POSTGRES_URL: options?.runtimeMode ? 'postgresql://127.0.0.1/juhe_ai' : undefined,
-    JUHE_AI_REDIS_CACHE_URL: options?.runtimeMode ? 'redis://127.0.0.1:6379/0' : undefined,
-    JUHE_AI_REDIS_STATE_URL: options?.runtimeMode ? 'redis://127.0.0.1:6380/1' : undefined,
-    JUHE_AI_REDIS_QUEUE_URL: options?.runtimeMode ? 'redis://127.0.0.1:6381/2' : undefined
-  }
-  const result = spawnSync(
-    process.execPath,
-    ['--import', 'tsx', '-e', "import('./src/config/runtime.ts').then(({ runtimeConfig }) => console.log(JSON.stringify({ indexEnabled: runtimeConfig.log.indexEnabled, fileEnabled: runtimeConfig.log.fileEnabled })))"],
-    { cwd: process.cwd(), env, encoding: 'utf8' }
-  )
-  if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || '运行时配置子进程启动失败')
-  }
-  return JSON.parse(result.stdout.trim()) as { indexEnabled: boolean; fileEnabled: boolean }
-}

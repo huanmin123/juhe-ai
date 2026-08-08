@@ -2,8 +2,7 @@ import { runtimeConfig } from './config/runtime.js'
 import {
   sendClientSourceFenceSettledToServer,
   type BackgroundWorkerRuntimeSnapshot,
-  type BackgroundWorkerQueueRuntime,
-  type BackgroundWorkerRuntimeLogQueueRuntime
+  type BackgroundWorkerQueueRuntime
 } from './modules/background/background-ipc.js'
 import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, stopBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
 import {
@@ -39,7 +38,6 @@ import {
   startRecordMaintenanceRedisStreamConsumer,
   stopRecordMaintenanceRedisStreamConsumer
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
-import { getRuntimeLogFileImportRuntime, startRuntimeLogFileImport, stopRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueUsageRecordsLocal,
   flushUsageRecordQueueForShutdown,
@@ -105,7 +103,6 @@ if (isIngestWorker()) {
   startPublicApiLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
-  startRuntimeLogFileImport()
 } else if (isUsageWorker()) {
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
@@ -123,9 +120,6 @@ if (isIngestWorker()) {
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
-  if (isPrimaryWorkerReplica()) {
-    startRuntimeLogFileImport()
-  }
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
@@ -287,7 +281,6 @@ logger.info({
 
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
   const auditRuntime = getAuditLogQueueRuntime()
-  const runtimeLogRuntime = getRuntimeLogFileImportRuntime()
   return {
     pid: process.pid,
     ready: true,
@@ -317,7 +310,6 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       successFullBodyLimitBytes: auditRuntime.successFullBodyLimitBytes,
       problemFullBodyLimitBytes: auditRuntime.problemFullBodyLimitBytes
     }),
-    runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime),
     accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
     cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
@@ -413,23 +405,6 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
   }
 }
 
-function runtimeLogQueueRuntime(input: BackgroundWorkerRuntimeLogQueueRuntime): BackgroundWorkerRuntimeLogQueueRuntime {
-  return {
-    ...queueRuntime(input),
-    retentionDays: input.retentionDays,
-    discoveredFileCount: typeof input.discoveredFileCount === 'number' ? input.discoveredFileCount : 0,
-    pendingFileCount: typeof input.pendingFileCount === 'number' ? input.pendingFileCount : 0,
-    pendingBytes: typeof input.pendingBytes === 'number' ? input.pendingBytes : 0,
-    oldestPendingMtime: typeof input.oldestPendingMtime === 'string' ? input.oldestPendingMtime : undefined,
-    currentFile: typeof input.currentFile === 'string' ? input.currentFile : undefined,
-    currentOffset: typeof input.currentOffset === 'number' ? input.currentOffset : 0,
-    lastReadAt: typeof input.lastReadAt === 'string' ? input.lastReadAt : undefined,
-    lastCommitAt: typeof input.lastCommitAt === 'string' ? input.lastCommitAt : undefined,
-    lastError: typeof input.lastError === 'string' ? input.lastError : undefined,
-    protectedRotatedFileCount: typeof input.protectedRotatedFileCount === 'number' ? input.protectedRotatedFileCount : 0
-  }
-}
-
 function sendWorkerMessage(message: Record<string, unknown>): void {
   if (!process.send) {
     return
@@ -482,7 +457,6 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
       activeCount: backgroundJobsDrain.activeCount
     }, '后台任务停止等待超时，将继续关闭 worker 队列')
   }
-  await stopRuntimeLogFileImport({ drainTimeoutMs: 5_000 })
   if (isIngestWorker()) {
     await stopUsageRecordRedisStreamConsumer()
     await stopOperationLogRedisStreamConsumer()

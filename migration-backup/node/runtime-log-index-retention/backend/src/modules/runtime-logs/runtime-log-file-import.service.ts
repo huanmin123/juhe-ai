@@ -14,7 +14,7 @@ import {
   type RuntimeLogFileCursor,
   type RuntimeLogFileCursorInput,
   type RuntimeLogIndexInput
-} from '../../storage/runtime-logs.repository.js'
+} from '../../storage/runtime-log-index.repository.js'
 import { setRotatedLogCleanupProtectionPredicate } from '../../shared/logger.js'
 import { writeBoundedProcessDiagnosticLineAsync } from '../../shared/process-fatal-diagnostic.js'
 import { parseRuntimeLogFileName } from '../../shared/runtime-log-file-name.js'
@@ -110,6 +110,9 @@ export function createRuntimeLogFileImportTestDependencies(
 }
 
 export function startRuntimeLogFileImport(): void {
+	if (runtimeConfig.log.indexOwner !== 'node') {
+		return
+	}
   if (!runtimeConfig.log.indexEnabled) {
     // 没有索引 cursor 时，轮转文件按普通保留策略清理，避免全部被永久保护。
     setRotatedLogCleanupProtectionPredicate(async () => true)
@@ -135,6 +138,9 @@ export function startRuntimeLogFileImport(): void {
 }
 
 export async function stopRuntimeLogFileImport(options: { drainTimeoutMs?: number } = {}): Promise<void> {
+	if (runtimeConfig.log.indexOwner !== 'node') {
+		return
+	}
   importStarted = false
   if (pollTimer) {
     clearTimeout(pollTimer)

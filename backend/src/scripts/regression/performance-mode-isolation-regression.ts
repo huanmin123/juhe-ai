@@ -30,11 +30,9 @@ assert.doesNotMatch(dataRetentionCleanupSource, /cleanupProcessedUsageRecordsBef
 assert.doesNotMatch(dataRetentionCleanupSource, /data_retention_cleanup_skipped_postgres_mode/, '高性能模式数据保留 worker 不能静默跳过')
 assert.match(dataRetentionCleanupSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw new Error/, '高性能模式数据保留 worker 不能返回空清理结果，必须 fail-fast')
 const maintenanceCleanupJobsSource = source('../../modules/background/maintenance-cleanup-jobs.ts')
-const runtimeLogIndexRetentionSource = source('../../modules/runtime-logs/runtime-log-index-retention.service.ts')
 assert.match(maintenanceCleanupJobsSource, /runDataRetentionCleanup\([^)]*\)[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*enqueuePostgresDataRetentionMaintenanceJobs/, 'PG 高性能 data-retention 定时入口必须投递 record-maintenance 任务，不能直接跑单机清理链路')
 assert.match(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*getSettingsAsync[\s\S]*readAuditLogSettings\(\)[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'usage_records_cleanup'[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'audit_retained_data_cleanup'[\s\S]*successHotRetentionHours[\s\S]*successSampleBucketThreshold/, 'PG 高性能 data-retention 必须分别按系统设置和审计设置投递 usage 与审计保留维护任务')
-assert.match(maintenanceCleanupJobsSource, /cleanupPostgresDatasetRetainedData[\s\S]*cleanupOperationLogsBeforeAsync[\s\S]*cleanupPublicApiLogsBeforeAsync[\s\S]*cleanupRuntimeLogIndexRetention[\s\S]*cleanupModelCheckRunsBeforeAsync/, 'PG 高性能 data-retention 必须按单机同样的保留设置清理非审计 dataset 日志和模型检测历史')
-assert.match(runtimeLogIndexRetentionSource, /cleanupRuntimeLogIndexAsync[\s\S]*cleanupRuntimeLogFileCursorsBeforeAsync[\s\S]*cleanupInBatches/, '运行日志统一保留服务必须同时批量清理日志索引和文件游标')
+assert.match(maintenanceCleanupJobsSource, /cleanupPostgresDatasetRetainedData[\s\S]*cleanupOperationLogsBeforeAsync[\s\S]*cleanupPublicApiLogsBeforeAsync[\s\S]*cleanupModelCheckRunsBeforeAsync/, 'PG 高性能 data-retention 必须按保留设置清理非审计 dataset 日志和模型检测历史')
 assert.doesNotMatch(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*type: 'non_business_data_cleanup'/, 'PG 高性能定时保留清理不能用 usage cutoff 投递通用非业务硬清理，避免误删审计数据')
 assert.doesNotMatch(source('../../modules/background/background-jobs.ts'), /if \(!isPostgresHighPerformanceMode\(\)\) \{[\s\S]*backgroundScheduledJobName\('data-retention-cleanup'\)/, 'PG 高性能 ingest-worker 不能跳过 data-retention-cleanup 调度')
 

@@ -10,9 +10,6 @@ import {
   cleanupProcessedUsageRecordsBeforeWithResultAsync
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
-import {
-  runtimeLogIndexRetentionDaysFromSettings
-} from '../../storage/runtime-logs.repository.js'
 import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../storage/sqlite-maintenance.js'
 import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
@@ -21,7 +18,6 @@ import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
-import { cleanupRuntimeLogIndexRetention } from '../runtime-logs/runtime-log-index-retention.service.js'
 import { processCodexContextStorageCleanupBatch } from './codex-context-storage-cleanup.service.js'
 import {
   DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
@@ -53,7 +49,6 @@ interface DataRetentionPolicy {
   auditErrorGroupDays: number
   operationLogDays: number
   publicApiLogDays: number
-  runtimeLogDays: number
   modelCheckDays: number
   usageRecordDays: number
   statsMinuteHours: number
@@ -74,8 +69,6 @@ export interface DataRetentionCleanupResult {
   publicApiLogs: number
   auditLogs: number
   auditHotSearchFiles: number
-  runtimeLogs: number
-  runtimeLogFileCursors: number
   modelCheckRuns: number
   modelCheckItems: number
   usageRecords: number
@@ -162,7 +155,6 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
       auditErrorGroupDays: auditSettings.problemRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
-      runtimeLogDays: runtimeLogIndexRetentionDaysFromSettings(settings),
       modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
       statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 1, statsMinuteRetentionMaxHours),
@@ -284,16 +276,6 @@ async function cleanupDatasetAndUsageRetainedData(input: {
         maxFiles: batchSize,
         maxRunMs: 5000
       })
-    },
-    async () => {
-      const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
-        cutoffIso: cutoffIso(now, retention.runtimeLogDays),
-        batchSize,
-        maxBatches,
-        signal: input.signal
-      })
-      result.runtimeLogs = runtimeLogCleanup.runtimeLogs
-      result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
     },
     async () => {
       await cleanupRetentionInBatches(
@@ -574,8 +556,6 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     publicApiLogs: 0,
     auditLogs: 0,
     auditHotSearchFiles: 0,
-    runtimeLogs: 0,
-    runtimeLogFileCursors: 0,
     modelCheckRuns: 0,
     modelCheckItems: 0,
     usageRecords: 0,

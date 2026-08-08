@@ -72,7 +72,6 @@ export type {
   BackgroundWorkerQueueRuntime,
   BackgroundWorkerRetryQueueRuntime,
   BackgroundWorkerRoleState,
-  BackgroundWorkerRuntimeLogQueueRuntime,
   BackgroundWorkerRuntimeSnapshot
 } from './background-ipc.types.js'
 

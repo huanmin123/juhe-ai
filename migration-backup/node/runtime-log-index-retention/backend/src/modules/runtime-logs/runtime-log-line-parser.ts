@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { nowIso } from '../../storage/database.js'
-import type { RuntimeLogIndexInput, RuntimeLogLevel } from '../../storage/runtime-logs.repository.js'
+import type { RuntimeLogIndexInput, RuntimeLogLevel } from '../../storage/runtime-log-index.repository.js'
 
 export interface RuntimeLogLineIndexOptions {
   sourceKey?: string

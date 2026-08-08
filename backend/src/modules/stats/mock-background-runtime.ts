@@ -59,13 +59,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
           completedCount: statsQueueCounts.cleanupDeductions,
           oldestQueuedMs: 56_000,
           flushLastSuccessAt: minutesAgo(now, 5)
-        }),
-        runtimeLogLines: queue({
-          queueLength: datasetCounts.runtimeLogCursors,
-          queueBytes: datasetCounts.runtimeLogCursors * 1600,
-          completedCount: 240,
-          oldestQueuedMs: 9000,
-          flushLastSuccessAt: minutesAgo(now, 1)
         })
       },
       pendingWriteRequestCount: 2,
@@ -75,15 +68,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
         ready: true,
         workerRole: 'ingest-worker',
         jobs: [
-          job('runtime-log-index-refresh', 'ingest-worker', 60_000, {
-            running: runningRuns > 0,
-            successCount: completedRuns + datasetCounts.runtimeLogCursors,
-            failureCount: failedRuns,
-            skippedCount: 1,
-            lastDurationMs: 820,
-            maxDurationMs: 1840,
-            lastSuccessAt: minutesAgo(now, 1)
-          }),
           job('api-key-record-cleanup-retry', 'ingest-worker', 10 * 60_000, {
             successCount: datasetCounts.apiKeyCleanupTargets,
             failureCount: 0,
@@ -129,14 +113,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
           completedCount: statsQueueCounts.cleanupDeductions,
           oldestQueuedMs: 56_000,
           flushLastSuccessAt: minutesAgo(now, 5)
-        }),
-        runtimeLogIndexQueue: queue({
-          queueLength: datasetCounts.runtimeLogCursors,
-          queueBytes: datasetCounts.runtimeLogCursors * 1600,
-          completedCount: 240,
-          oldestQueuedMs: 9000,
-          flushLastSuccessAt: minutesAgo(now, 1),
-          retentionDays: 31
         })
       }
     },
@@ -270,7 +246,7 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
       pid: 9100,
       ready: true,
       pendingRequestCount: 4,
-      pendingDatasetWriteRequestCount: datasetCounts.runtimeLogCursors,
+      pendingDatasetWriteRequestCount: datasetCounts.accountCleanupTargets + datasetCounts.apiKeyCleanupTargets,
       oldestDatasetWriteRequestMs: 27_000,
       timedOutDatasetWriteRequestCount: 0,
       rejectedDatasetWriteRequestCount: 0,
@@ -358,12 +334,11 @@ function mockAccountStatusCounts(): { active: number; error: number; rateLimited
   }
 }
 
-function datasetMaintenanceCounts(): { accountCleanupTargets: number; apiKeyCleanupTargets: number; runtimeLogCursors: number } {
+function datasetMaintenanceCounts(): { accountCleanupTargets: number; apiKeyCleanupTargets: number } {
   const database = getDatasetDatabase()
   return {
     accountCleanupTargets: scalar(database, 'SELECT COUNT(*) FROM account_record_cleanup_targets'),
-    apiKeyCleanupTargets: scalar(database, 'SELECT COUNT(*) FROM api_key_record_cleanup_targets'),
-    runtimeLogCursors: scalar(database, 'SELECT COUNT(*) FROM runtime_log_file_cursors WHERE log_file LIKE ?', mockdataIdPrefix)
+    apiKeyCleanupTargets: scalar(database, 'SELECT COUNT(*) FROM api_key_record_cleanup_targets')
   }
 }
 

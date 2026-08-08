@@ -60,20 +60,6 @@ export interface BackgroundWorkerQueueRuntime {
   problemFullBodyLimitBytes?: number
 }
 
-export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorkerQueueRuntime {
-  retentionDays: number
-  discoveredFileCount?: number
-  pendingFileCount?: number
-  pendingBytes?: number
-  oldestPendingMtime?: string
-  currentFile?: string
-  currentOffset?: number
-  lastReadAt?: string
-  lastCommitAt?: string
-  lastError?: string
-  protectedRotatedFileCount?: number
-}
-
 export interface BackgroundWorkerRetryQueueRuntime {
   name: string
   pendingCount: number
@@ -109,7 +95,6 @@ export interface BackgroundWorkerRuntimeSnapshot {
   publicApiLogQueue: BackgroundWorkerQueueRuntime
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
   auditLogQueue: BackgroundWorkerQueueRuntime
-  runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
   accountHealthCheckQueue?: BackgroundWorkerRetryQueueRuntime
   cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
   accountApiKeyCooldownRetestQueue?: BackgroundWorkerRetryQueueRuntime

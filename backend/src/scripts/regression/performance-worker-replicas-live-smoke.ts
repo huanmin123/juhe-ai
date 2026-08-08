@@ -208,8 +208,7 @@ async function startWorker(role: 'usage-worker' | 'log-worker', replicaIndex: nu
       JUHE_AI_INSTANCE_ID: `live-${role}-${replicaIndex}`,
       JUHE_AI_LOG_LEVEL: 'error',
       JUHE_AI_LOG_FILE_ENABLED: 'false',
-      JUHE_AI_LOG_CONSOLE_ENABLED: 'true',
-      JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: 'false'
+      JUHE_AI_LOG_CONSOLE_ENABLED: 'true'
     },
     serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']

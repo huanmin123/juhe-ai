@@ -18,10 +18,12 @@ runtimeConfig.log.directory = logDirectory
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.log.consoleEnabled = false
 
-const [databaseModule, runtimeLogsRepository] = await Promise.all([
+const [databaseModule, runtimeLogIndexRepository, runtimeLogQueryRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/runtime-logs.repository.js')
+  import('../../storage/runtime-log-index.repository.js'),
+  import('../../storage/runtime-log-query.repository.js')
 ])
+const runtimeLogsRepository = { ...runtimeLogIndexRepository, ...runtimeLogQueryRepository }
 
 const offsetTime = '2026-07-14T18:45:12.345+08:00'
 const offsetCreatedAt = '2026-07-14T04:15:12.345-06:30'

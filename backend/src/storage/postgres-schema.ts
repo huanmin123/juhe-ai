@@ -102,11 +102,6 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_dataset',
     source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_runtime_logs_trace_c_time ON runtime_logs((trace_id COLLATE "C"), time DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
 ]
@@ -129,10 +124,6 @@ const postgresBigintColumnNames = new Set([
   'compression_saved_bytes',
   'request_size_bytes',
   'response_size_bytes',
-  'log_offset',
-  'cursor_offset',
-  'file_size',
-  'file_mtime_ms',
   'request_count',
   'success_count',
   'error_count',

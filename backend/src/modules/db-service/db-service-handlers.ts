@@ -136,11 +136,11 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync } from '../../storage/oauth-credential-rotation.repository.js'
 import {
-  getRuntimeLogFacetsAsync,
   getRuntimeLogDetailAsync,
   getRuntimeLogDetailDeltaAsync,
   listRuntimeLogsAsync
 } from '../../storage/runtime-logs.repository.js'
+import { getRuntimeLogFacetsAsync } from '../../storage/runtime-log-query.repository.js'
 import {
   applyModelQualityEnforcementAsync,
   claimDueModelQualitySchedulesAsync,

@@ -176,7 +176,6 @@ export function writeSummary(
       publicApiLogs: extraCounts.publicApiLogs,
       auditLogs,
       operationLogs: 90,
-      runtimeLogs: Math.min(240, records.length),
       modelCheckRuns: modelCheckCounts.runs,
       modelCheckItems: modelCheckCounts.items,
       accountCleanupTargets: extraCounts.accountCleanupTargets,

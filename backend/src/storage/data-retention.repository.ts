@@ -38,11 +38,6 @@ const postgresHardCleanupTables: Record<HardCleanupDatabaseRole, Array<{ tableNa
     { tableName: 'operation_log_summary_search_terms', timeColumnName: 'created_at', cutoffKey: 'iso' },
     { tableName: 'operation_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
     { tableName: 'public_api_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-    { tableName: 'runtime_logs', timeColumnName: 'time', cutoffKey: 'iso' },
-    { tableName: 'runtime_log_file_cursors', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-    { tableName: 'runtime_log_facet_summary', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-    { tableName: 'runtime_log_level_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-    { tableName: 'runtime_log_event_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'api_key_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' }
   ],

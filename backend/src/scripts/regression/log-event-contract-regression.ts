@@ -394,7 +394,6 @@ const performanceRequestContextProbe = spawnSync(process.execPath, [
     JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE: '0',
     JUHE_AI_LOG_CONSOLE_ENABLED: 'true',
     JUHE_AI_LOG_FILE_ENABLED: 'false',
-    JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: 'false',
     JUHE_AI_LOG_LEVEL: 'info',
     JUHE_AI_PROCESS_ROLE: 'server'
   }

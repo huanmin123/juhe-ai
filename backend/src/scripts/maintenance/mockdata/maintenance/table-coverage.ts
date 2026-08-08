@@ -54,45 +54,6 @@ export async function createBusinessTableCoverageMockdata(created: CreatedMockda
   await createAccountCircuitIncidentCoverage(created)
 }
 
-export function createDatasetTableCoverageMockdata(): void {
-  const database = getDatasetDatabase()
-  const now = nowIso()
-  const latestRuntimeLog = database.prepare(`
-    SELECT log_file, log_offset, line_number, time
-    FROM runtime_logs
-    WHERE id LIKE ?
-    ORDER BY time DESC, id DESC
-    LIMIT 1
-  `).get(`${idPrefix}%`) as { log_file?: string | null; log_offset?: number | null; line_number?: number | null; time?: string | null } | undefined
-  const lineNumber = Number(latestRuntimeLog?.line_number ?? 240)
-  const offset = Number(latestRuntimeLog?.log_offset ?? 48_000)
-  database.prepare(`
-    INSERT INTO runtime_log_file_cursors (
-      log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
-      last_read_at, last_error_message, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-    ON CONFLICT(log_file) DO UPDATE SET
-      file_identity = excluded.file_identity,
-      cursor_offset = excluded.cursor_offset,
-      line_number = excluded.line_number,
-      file_size = excluded.file_size,
-      file_mtime_ms = excluded.file_mtime_ms,
-      last_read_at = excluded.last_read_at,
-      last_error_message = excluded.last_error_message,
-      updated_at = excluded.updated_at
-  `).run(
-    `${idPrefix}runtime.log`,
-    `${tracePrefix}runtime-log-file`,
-    Math.max(1, offset + 512),
-    Math.max(1, lineNumber),
-    Math.max(1, offset + 512),
-    Date.parse(latestRuntimeLog?.time ?? now),
-    now,
-    now,
-    now
-  )
-}
-
 export function createStatsTableCoverageMockdata(created: CreatedMockdata, usageRecords: UsageRecordSeed[]): void {
   const database = getStatsDatabase()
   const now = nowIso()

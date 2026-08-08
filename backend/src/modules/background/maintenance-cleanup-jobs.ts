@@ -5,9 +5,6 @@ import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api
 import { cleanupModelCheckRunsBeforeAsync } from '../../storage/data-retention.repository.js'
 import { cleanupOperationLogsBeforeAsync } from '../../storage/operation-log-cleanup.repository.js'
 import { cleanupPublicApiLogsBeforeAsync } from '../../storage/public-api-logs.repository.js'
-import {
-  runtimeLogIndexRetentionDaysFromSettings
-} from '../../storage/runtime-logs.repository.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
@@ -24,7 +21,6 @@ import {
   DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
 } from './data-retention-cleanup.constants.js'
 import { enqueueRecordMaintenanceJobAsync, enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
-import { cleanupRuntimeLogIndexRetention } from '../runtime-logs/runtime-log-index-retention.service.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 180
@@ -47,7 +43,6 @@ let postgresDataRetentionDispatchRunning = false
 interface PostgresRetentionPolicy {
   operationLogDays: number
   publicApiLogDays: number
-  runtimeLogDays: number
   modelCheckDays: number
   usageRecordDays: number
   statsMinuteHours: number
@@ -219,14 +214,6 @@ async function cleanupPostgresDatasetRetainedData(input: {
     input.batchSize,
     input.signal
   )
-  const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
-    cutoffIso: cutoffIso(input.nowMs, input.retention.runtimeLogDays),
-    batchSize: input.batchSize,
-    maxBatches: input.maxBatches,
-    signal: input.signal
-  })
-  result.runtimeLogs = runtimeLogCleanup.runtimeLogs
-  result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await cleanupModelCheckRunsBeforeAsync(cutoffIso(input.nowMs, input.retention.modelCheckDays), input.batchSize)
     addNumberResult(result, deleted)
@@ -363,7 +350,6 @@ function postgresRetentionPolicy(settings: Record<string, unknown>): PostgresRet
   return {
     operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
     publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
-    runtimeLogDays: runtimeLogIndexRetentionDaysFromSettings(settings),
     modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
     usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
     statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 1, statsMinuteRetentionMaxHours),
