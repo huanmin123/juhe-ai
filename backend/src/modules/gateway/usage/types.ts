@@ -20,6 +20,15 @@ export function emptyUsage(): ParsedUsage {
   return {}
 }
 
+export function usageWithObservedUpstreamResponseModel(
+  usage: ParsedUsage,
+  observedUpstreamResponseModel?: string
+): ParsedUsage {
+  return observedUpstreamResponseModel
+    ? { ...usage, upstreamResponseModel: observedUpstreamResponseModel }
+    : usage
+}
+
 export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage {
   return {
     upstreamResponseModel: next.upstreamResponseModel ?? current.upstreamResponseModel,

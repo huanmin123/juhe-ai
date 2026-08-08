@@ -90,6 +90,7 @@ app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 
 try {
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
@@ -126,6 +127,17 @@ try {
       await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
     } else if (requestedScenario === 'codex_compaction_interrupted_sse') {
       await runCodexCompactionInterruptedScenario(baseUrl, upstreamBaseUrl)
+    } else if (
+      requestedScenario === 'chat_json'
+      || requestedScenario === 'chat_malformed'
+      || requestedScenario === 'chat_sse'
+      || requestedScenario === 'responses_json'
+      || requestedScenario === 'responses_sse'
+      || requestedScenario === 'stream_requested_json'
+      || requestedScenario === 'codex_incomplete_sse'
+      || requestedScenario === 'codex_broken_gzip_sse'
+    ) {
+      await runScenario(baseUrl, upstreamBaseUrl, requestedScenario)
     } else {
       await runScenario(baseUrl, upstreamBaseUrl, 'chat_json')
       await runScenario(baseUrl, upstreamBaseUrl, 'chat_malformed')
@@ -149,6 +161,7 @@ try {
   }
 } finally {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
@@ -234,6 +247,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     assert.equal(JSON.parse(responseText).error?.code, 'upstream_protocol_error', '畸形 2xx 必须返回可识别的协议错误码')
     const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
     assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, '通用客户端显式策略未命中时不得写账户运行态')
+    await assertPersistedFailedAttemptUpstreamResponseModel(pollutedAccount.id, pollutedAccount.name, scenario)
     return
   }
   if (scenario === 'codex_incomplete_sse') {
@@ -270,11 +284,35 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   } else {
     assert(responseText.includes(`clean ${scenario}`), `${scenario} 最终响应应来自干净账号：${responseText}`)
   }
+  if (scenario === 'chat_json') {
+    await assertPersistedFailedAttemptUpstreamResponseModel(pollutedAccount.id, pollutedAccount.name, scenario)
+  }
   if (stream) {
     assert.match(response.headers.get('content-type') ?? '', /text\/event-stream|application\/json/, `${scenario} 流式或上游 JSON 回退应有明确 content-type`)
   } else {
     assert.match(response.headers.get('content-type') ?? '', /application\/json/, `${scenario} 非流式客户端应收到 JSON`)
   }
+}
+
+async function assertPersistedFailedAttemptUpstreamResponseModel(
+  accountId: string,
+  accountName: string,
+  scenario: ScenarioName
+): Promise<void> {
+  await usageRecordQueue.flushAllUsageRecordQueueAsync()
+  const records = repositories.listUsageRecords(access, {
+    accountKeyword: accountName,
+    page: 1,
+    pageSize: 20,
+    result: 'failed'
+  }).items
+  const failedAttempt = records.find((record) => record.accountId === accountId)
+  assert(failedAttempt, `${scenario} 失败 attempt 应持久化到指定污染账号`)
+  assert.equal(
+    failedAttempt.upstreamResponseModel,
+    `upstream-${scenario}`,
+    `${scenario} 失败 attempt 必须持久化上游响应 model`
+  )
 }
 
 async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -688,12 +726,18 @@ function pollutedText(): string {
 function sendChatJson(res: http.ServerResponse, scenario: ScenarioName, polluted: boolean): void {
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
   if (scenario === 'chat_malformed' && polluted) {
-    res.end(JSON.stringify({ id: 'chatcmpl-chat_malformed', object: 'chat.completion', choices: [] }))
+    res.end(JSON.stringify({
+      id: 'chatcmpl-chat_malformed',
+      object: 'chat.completion',
+      model: `upstream-${scenario}`,
+      choices: []
+    }))
     return
   }
   res.end(JSON.stringify({
     id: `chatcmpl-${scenario}`,
     object: 'chat.completion',
+    model: `upstream-${scenario}`,
     choices: [
       {
         index: 0,

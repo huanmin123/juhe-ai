@@ -30,6 +30,7 @@ import {
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
 import { buildUsageResponseSnapshot } from '../usage/snapshots.js'
+import { usageWithObservedUpstreamResponseModel } from '../usage/types.js'
 import {
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
@@ -242,7 +243,10 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     stream: isEffectiveOpenAIStreamRequest(input.req, input.account),
     firstTokenMs: input.firstTokenMs,
     startedAt: input.startedAt,
-    usage,
+    usage: usageWithObservedUpstreamResponseModel(
+      usage,
+      input.upstreamResponse.upstreamResponseModelObservation?.model
+    ),
     errorCode,
     requestSnapshot: input.usageContext.requestSnapshot,
     responseSnapshot: buildUsageResponseSnapshot({
@@ -538,7 +542,10 @@ async function finalizeBufferedJsonProtocolFailure(
     stream: isEffectiveOpenAIStreamRequest(input.req, input.account),
     firstTokenMs: input.firstTokenMs,
     startedAt: input.startedAt,
-    usage,
+    usage: usageWithObservedUpstreamResponseModel(
+      usage,
+      input.upstreamResponse.upstreamResponseModelObservation?.model
+    ),
     errorCode: failure.errorCode,
     requestSnapshot: input.usageContext.requestSnapshot,
     responseSnapshot: buildUsageResponseSnapshot({

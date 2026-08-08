@@ -75,12 +75,12 @@ try {
   await assertIncompleteStreamUsageRetainsObservedModel()
   assert.match(
     finalizationSource,
-    /if \(!streamResult\.completed\) \{[\s\S]{0,1800}usage: usageWithObservedUpstreamResponseModel\(streamUsageFallback\.usage, upstreamResponse\)/,
+    /if \(!streamResult\.completed\) \{[\s\S]{0,1800}usage: usageWithObservedUpstreamResponseModel\(streamUsageFallback\.usage, upstreamResponse\.upstreamResponseModelObservation\?\.model\)/,
     '不完整 SSE 的使用记录必须合并已观察到的上游响应模型'
   )
   assert.match(
     finalizationSource,
-    /const usage = input\.parsedJsonBody[\s\S]{0,2400}usage: usageWithObservedUpstreamResponseModel\(usage, input\.upstreamResponse\)/,
+    /const usage = input\.parsedJsonBody[\s\S]{0,2400}usage: usageWithObservedUpstreamResponseModel\(usage, input\.upstreamResponse\.upstreamResponseModelObservation\?\.model\)/,
     'non-stream hybrid quality failure 的使用记录必须合并已观察到的上游响应模型'
   )
 } finally {

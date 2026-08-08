@@ -161,26 +161,34 @@
           <a-tooltip title="声明这个 Base URL 实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
             <QuestionCircleOutlined class="supported-models-help" />
           </a-tooltip>
-          <span class="supported-models-label-spacer"></span>
-          <a-tooltip title="从上游同步可新增模型">
-            <a-button class="supported-models-refresh-button" size="small" type="text" :loading="modelSyncing" @click="$emit('refresh-models')">
-              <template #icon><SyncOutlined /></template>
-            </a-button>
-          </a-tooltip>
         </div>
       </template>
-      <a-select
-        v-model:value="form.supportedModels"
-        allow-clear
-        mode="multiple"
-        :loading="modelsLoading"
-        option-filter-prop="label"
-        placeholder="选择这个 Base URL 支持的模型"
-        :options="modelOptions"
-        show-search
-        @dropdown-visible-change="$emit('model-options-open', $event)"
-        @search="$emit('model-options-search', $event)"
-      />
+      <div class="supported-models-control">
+        <a-select
+          v-model:value="form.supportedModels"
+          allow-clear
+          mode="multiple"
+          :loading="modelsLoading"
+          option-filter-prop="label"
+          placeholder="选择这个 Base URL 支持的模型"
+          :options="modelOptions"
+          show-search
+          @dropdown-visible-change="$emit('model-options-open', $event)"
+          @search="$emit('model-options-search', $event)"
+        />
+        <a-tooltip title="从上游同步可新增模型">
+          <a-button
+            class="supported-models-refresh-button"
+            size="small"
+            type="text"
+            aria-label="从上游同步可新增模型"
+            :loading="modelSyncing"
+            @click.stop="$emit('refresh-models')"
+          >
+            <template #icon><SyncOutlined /></template>
+          </a-button>
+        </a-tooltip>
+      </div>
     </a-form-item>
     <AccountHealthCheckModelField
       :form="form"
@@ -579,12 +587,17 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   min-width: 0;
 }
 
-.supported-models-label-spacer {
-  flex: 1;
+.supported-models-control {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
-.supported-models-label :deep(.ant-btn) {
-  flex: none;
+.supported-models-control :deep(.ant-select) {
+  flex: 1;
+  min-width: 0;
 }
 
 .supported-models-refresh-button {

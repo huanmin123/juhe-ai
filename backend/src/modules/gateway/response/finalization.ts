@@ -76,6 +76,7 @@ import {
 } from '../usage/snapshots.js'
 import {
   emptyUsage,
+  usageWithObservedUpstreamResponseModel,
   type ParsedUsage
 } from '../usage/types.js'
 import { isAccountDiagnosticTrafficSource } from '../usage/traffic-source.js'
@@ -341,7 +342,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       })
       return {
         alreadyFinalized: false,
-        usage: usageWithObservedUpstreamResponseModel(emptyUsage(), upstreamResponse),
+        usage: usageWithObservedUpstreamResponseModel(emptyUsage(), upstreamResponse.upstreamResponseModelObservation?.model),
         firstTokenMs: Date.now() - startedAt,
         errorPayload
       }
@@ -586,7 +587,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       stream: isEffectiveOpenAIStreamRequest(req, account),
       firstTokenMs: streamResult.firstTokenMs,
       startedAt,
-      usage: usageWithObservedUpstreamResponseModel(streamUsageFallback.usage, upstreamResponse),
+      usage: usageWithObservedUpstreamResponseModel(streamUsageFallback.usage, upstreamResponse.upstreamResponseModelObservation?.model),
       errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
       requestSnapshot,
       responseSnapshot: buildUsageResponseSnapshot({
@@ -1187,7 +1188,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         success: false,
         stream: isEffectiveOpenAIStreamRequest(req, account),
         startedAt,
-        usage: usageWithObservedUpstreamResponseModel(emptyUsage(), upstreamResponse),
+        usage: usageWithObservedUpstreamResponseModel(emptyUsage(), upstreamResponse.upstreamResponseModelObservation?.model),
         errorCode,
         errorMessage,
         requestSnapshot: usageContext.requestSnapshot,
@@ -1287,7 +1288,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         stream: isEffectiveOpenAIStreamRequest(req, account),
         firstTokenMs,
         startedAt,
-        usage: usageWithObservedUpstreamResponseModel(emptyUsage(), upstreamResponse),
+        usage: usageWithObservedUpstreamResponseModel(emptyUsage(), upstreamResponse.upstreamResponseModelObservation?.model),
         errorCode,
         errorMessage,
         requestSnapshot: usageContext.requestSnapshot,
@@ -1602,7 +1603,7 @@ async function finalizeNonStreamResponseAfterSseHeartbeat(
     success: false,
     stream: true,
     startedAt: input.startedAt,
-    usage: usageWithObservedUpstreamResponseModel(emptyUsage(), input.upstreamResponse),
+    usage: usageWithObservedUpstreamResponseModel(emptyUsage(), input.upstreamResponse.upstreamResponseModelObservation?.model),
     errorCode: 'downstream_transport_conflict',
     errorMessage: message,
     requestSnapshot: input.usageContext.requestSnapshot,
@@ -1901,7 +1902,7 @@ async function inspectBufferedHybridQualityResponse(input: {
     stream: isEffectiveOpenAIStreamRequest(input.req, input.account),
     firstTokenMs: input.firstTokenMs,
     startedAt: input.startedAt,
-    usage: usageWithObservedUpstreamResponseModel(usage, input.upstreamResponse),
+    usage: usageWithObservedUpstreamResponseModel(usage, input.upstreamResponse.upstreamResponseModelObservation?.model),
     errorCode,
     requestSnapshot: input.usageContext.requestSnapshot,
     responseSnapshot: buildUsageResponseSnapshot({
@@ -2188,7 +2189,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     firstTokenMs: result.firstTokenMs,
     startedAt,
     completedAtMs: input.completedAtMs,
-    usage: usageWithObservedUpstreamResponseModel(result.usage, upstreamResponse),
+    usage: usageWithObservedUpstreamResponseModel(result.usage, observedUpstreamResponseModel),
     errorCode: finalErrorCode,
     errorMessage: finalErrorMessage,
     failureAttribution: forwardedResponseSuccessful ? undefined : 'opaque_upstream',
@@ -2249,16 +2250,6 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     accountId: account.id,
     firstTokenMs: result.firstTokenMs
   })
-}
-
-function usageWithObservedUpstreamResponseModel(
-  usage: ParsedUsage,
-  upstreamResponse: GatewayUpstreamResponse
-): ParsedUsage {
-  const observedUpstreamResponseModel = upstreamResponse.upstreamResponseModelObservation?.model
-  return observedUpstreamResponseModel
-    ? { ...usage, upstreamResponseModel: observedUpstreamResponseModel }
-    : usage
 }
 
 function scheduleCodexTurnAvoidanceProbe(input: {
