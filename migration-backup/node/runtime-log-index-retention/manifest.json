@@ -8,11 +8,15 @@
     "ba0fc6aa5",
     "fea9fca5e",
     "969db1ddf",
-    "5b4b454d0"
+    "5b4b454d0",
+    "2495b2683",
+    "4bb6ee154",
+    "40a90fadd",
+    "126492ff0"
   ],
   "rollback": {
-    "strategy": "在专用回滚提交中恢复本清单所列全部 Node 文件及其完整 owner；不得挑选单个文件或与 Go owner 混跑。",
-    "rollbackCommit": null
+    "strategy": "以 ba0fc6aa5 为完整 Node owner 基线，在专用回滚提交中恢复本清单所列全部 Node 文件、启动和部署入口；先停止 Go indexer，再恢复 Node owner。不得挑选单个文件或与 Go owner 混跑。",
+    "rollbackCommit": "ba0fc6aa5"
   },
   "goImplementationPaths": [
     "backend-go/cmd/juhe-ai-runtime-log-indexer/main.go",
