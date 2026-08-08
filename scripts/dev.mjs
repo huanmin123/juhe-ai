@@ -10,6 +10,7 @@ import {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = resolve(root, 'frontend')
 const backendRoot = resolve(root, 'backend')
+const backendGoRoot = resolve(root, 'backend-go')
 const backendReadyTimeoutMs = positiveInteger(process.env.JUHE_AI_DEV_BACKEND_READY_TIMEOUT_MS, 60_000)
 const backendTarget = resolveBackendTarget()
 const backendHealthUrl = resolveBackendHealthUrl(backendTarget)
@@ -17,6 +18,7 @@ const pnpmRunner = resolvePnpmRunner()
 
 let backend
 let frontend
+let runtimeLogIndexer
 let shuttingDown = false
 
 process.on('SIGINT', () => shutdown(130))
@@ -29,6 +31,7 @@ try {
   backend = startPnpm(['--filter', 'juhe-ai-backend', 'dev'], 'backend', backendReadiness.acceptChunk)
   await backendReadiness.ready
   console.log(`[dev] backend system API is ready: ${backendHealthUrl}`)
+  runtimeLogIndexer = startRuntimeLogIndexer()
   console.log('[dev] starting frontend...')
   frontend = startPnpm(['--filter', 'juhe-ai-frontend', 'dev'], 'frontend')
 } catch (error) {
@@ -61,6 +64,30 @@ function startPnpm(args, label, onOutput) {
   pipeChildOutput(child.stdout, process.stdout, onOutput)
   pipeChildOutput(child.stderr, process.stderr, onOutput)
 
+  monitorChild(child, label)
+
+  return child
+}
+
+function startRuntimeLogIndexer() {
+  const childEnv = resolveRuntimeLogIndexerEnv()
+  console.log(`[dev] starting Go runtime log indexer (${childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID})...`)
+  const child = spawn('go', ['run', './cmd/juhe-ai-runtime-log-indexer'], {
+    cwd: backendGoRoot,
+    env: childEnv,
+    detached: process.platform !== 'win32',
+    shell: false,
+    stdio: ['inherit', 'pipe', 'pipe']
+  })
+
+  pipeChildOutput(child.stdout, process.stdout)
+  pipeChildOutput(child.stderr, process.stderr)
+  monitorChild(child, 'Go runtime log indexer')
+
+  return child
+}
+
+function monitorChild(child, label) {
   child.on('error', (error) => {
     if (shuttingDown) return
     console.error(`[dev] failed to start ${label}: ${error.message}`)
@@ -74,8 +101,6 @@ function startPnpm(args, label, onOutput) {
     console.error(`[dev] ${label} stopped with ${reason}`)
     shutdown(exitCode)
   })
-
-  return child
 }
 
 function pipeChildOutput(source, target, onOutput) {
@@ -194,6 +219,48 @@ function resolveBackendTarget() {
   return resolveDevelopmentBackendTarget(process.env, frontendEnv, loadBackendEnv())
 }
 
+function resolveRuntimeLogIndexerEnv() {
+  const childEnv = { ...loadBackendEnv(), ...process.env }
+  const configuredStore = firstConfiguredValue(
+    childEnv.JUHE_AI_RUNTIME_LOG_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER
+  )
+  const inferredStore = childEnv.JUHE_AI_RUNTIME_MODE?.trim().toLowerCase() === 'performance' || childEnv.JUHE_AI_POSTGRES_URL?.trim()
+    ? 'postgres'
+    : 'sqlite'
+
+  childEnv.JUHE_AI_RUNTIME_LOG_STORE = configuredStore ?? inferredStore
+  childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
+  )
+  childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_DATASET_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
+  )
+  childEnv.JUHE_AI_LOG_DIR = resolveBackendPath(childEnv.JUHE_AI_LOG_DIR, resolve(backendRoot, 'logs'))
+  childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = firstConfiguredValue(
+    childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID,
+    'dev-runtime-log-indexer'
+  )
+  delete childEnv.JUHE_AI_RUNTIME_LOG_ONCE
+
+  return childEnv
+}
+
+function resolveBackendPath(value, fallback) {
+  const configuredValue = value?.trim()
+  return configuredValue ? (isAbsolute(configuredValue) ? configuredValue : resolve(backendRoot, configuredValue)) : fallback
+}
+
+function firstConfiguredValue(...values) {
+  for (const value of values) {
+    const trimmed = value?.trim()
+    if (trimmed) return trimmed
+  }
+  return undefined
+}
+
 function resolveBackendHealthUrl(target) {
   try {
     const base = target.endsWith('/') ? target : `${target}/`
@@ -272,16 +339,28 @@ function shutdown(exitCode) {
   if (shuttingDown) return
   shuttingDown = true
   stopChild(frontend)
+  stopChild(runtimeLogIndexer, { processGroup: process.platform !== 'win32' })
   stopChild(backend)
   process.exit(exitCode)
 }
 
-function stopChild(child) {
+function stopChild(child, options = {}) {
   if (!child || child.exitCode !== null || child.killed || !child.pid) return
 
   if (process.platform === 'win32') {
     spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' })
     return
+  }
+
+  if (options.processGroup) {
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') {
+        console.error(`[dev] failed to stop ${child.pid} process group: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   }
 
   child.kill('SIGTERM')

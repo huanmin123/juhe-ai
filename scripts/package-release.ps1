@@ -255,11 +255,37 @@ Assert-SafeRemovalTarget -TargetPath $packageRoot -ExpectedParent $releaseRoot -
 Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $packageRoot | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'backend') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $packageRoot 'backend-go') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'frontend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'docs') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'scripts') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'deploy') | Out-Null
 Write-Utf8NoBom -Path (Join-Path $packageRoot 'RELEASE_SOURCE_COMMIT') -Content "$releaseSourceCommit`n"
+
+$goCommand = Get-Command go -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $goCommand) {
+  throw 'Go 1.26.x is required to build the juhe-ai-runtime-log-indexer release binary.'
+}
+$goPath = $goCommand.Source
+$goModuleRoot = Join-Path $repoRoot 'backend-go'
+$runtimeLogIndexerBinary = Join-Path $packageRoot 'backend-go/juhe-ai-runtime-log-indexer.exe'
+if (-not (Test-Path -LiteralPath $goModuleRoot -PathType Container)) {
+  throw "Go runtime-log indexer module not found: $goModuleRoot"
+}
+
+Write-Host '==> Building Go runtime-log indexer'
+$goBuildArguments = @(
+  'build',
+  '-C', $goModuleRoot,
+  '-trimpath',
+  '-buildvcs=false',
+  '-o', $runtimeLogIndexerBinary,
+  './cmd/juhe-ai-runtime-log-indexer'
+)
+& $goPath @goBuildArguments
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $runtimeLogIndexerBinary -PathType Leaf)) {
+  throw 'Go runtime-log indexer build failed.'
+}
 
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-lock.yaml') (Join-Path $packageRoot 'pnpm-lock.yaml')

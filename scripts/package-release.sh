@@ -7,6 +7,8 @@ ARCHIVE_FORMAT="both"
 FRONTEND_API_BASE_URL="/__aisys__/api"
 FRONTEND_GATEWAY_BASE_URL=""
 EXPECTED_COMMIT=""
+TARGET_GOOS=""
+TARGET_GOARCH=""
 
 usage() {
   cat <<'USAGE'
@@ -19,6 +21,8 @@ Options:
   --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /__aisys__/api
   --frontend-gateway-base-url <url>  Frontend gateway base URL injected at build time. Default: infer from browser origin
   --expected-commit <sha>            Require the release source to match this full commit SHA
+  --goos <linux|darwin>              Go indexer target OS. Default: current Unix host OS
+  --goarch <amd64|arm64>             Go indexer target architecture. Default: current Unix host architecture
   -h, --help                         Show this help
 USAGE
 }
@@ -49,6 +53,14 @@ while [ "$#" -gt 0 ]; do
       EXPECTED_COMMIT="$2"
       shift 2
       ;;
+    --goos)
+      TARGET_GOOS="$2"
+      shift 2
+      ;;
+    --goarch)
+      TARGET_GOARCH="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -65,6 +77,52 @@ case "$ARCHIVE_FORMAT" in
   tar.gz|zip|both) ;;
   *)
     echo "Invalid --archive-format: $ARCHIVE_FORMAT" >&2
+    exit 1
+    ;;
+esac
+
+detect_host_goos() {
+  case "$(uname -s)" in
+    Linux) printf '%s' 'linux' ;;
+    Darwin) printf '%s' 'darwin' ;;
+    *)
+      echo "Unable to infer Go target OS from uname -s. Pass --goos linux or --goos darwin explicitly." >&2
+      exit 1
+      ;;
+  esac
+}
+
+detect_host_goarch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf '%s' 'amd64' ;;
+    aarch64|arm64) printf '%s' 'arm64' ;;
+    *)
+      echo "Unable to infer Go target architecture from uname -m. Pass --goarch amd64 or --goarch arm64 explicitly." >&2
+      exit 1
+      ;;
+  esac
+}
+
+if [ -z "$TARGET_GOOS" ]; then
+  TARGET_GOOS="$(detect_host_goos)"
+fi
+
+if [ -z "$TARGET_GOARCH" ]; then
+  TARGET_GOARCH="$(detect_host_goarch)"
+fi
+
+case "$TARGET_GOOS" in
+  linux|darwin) ;;
+  *)
+    echo "Invalid --goos: $TARGET_GOOS. Expected linux or darwin." >&2
+    exit 1
+    ;;
+esac
+
+case "$TARGET_GOARCH" in
+  amd64|arm64) ;;
+  *)
+    echo "Invalid --goarch: $TARGET_GOARCH. Expected amd64 or arm64." >&2
     exit 1
     ;;
 esac
@@ -259,6 +317,11 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v go >/dev/null 2>&1; then
+  echo "Go is required to build backend-go/juhe-ai-runtime-log-indexer for $TARGET_GOOS/$TARGET_GOARCH." >&2
+  exit 1
+fi
+
 if ! command -v pnpm >/dev/null 2>&1; then
   if command -v corepack >/dev/null 2>&1; then
     corepack enable
@@ -303,7 +366,7 @@ TAR_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar.gz"
 ZIP_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.zip"
 assert_safe_removal_target "$PACKAGE_ROOT" "$RELEASE_ROOT" 1
 rm -rf "$PACKAGE_ROOT"
-mkdir -p "$PACKAGE_ROOT/backend" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs" "$PACKAGE_ROOT/scripts" "$PACKAGE_ROOT/deploy"
+mkdir -p "$PACKAGE_ROOT/backend" "$PACKAGE_ROOT/backend-go" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs" "$PACKAGE_ROOT/scripts" "$PACKAGE_ROOT/deploy"
 printf '%s\n' "$RELEASE_SOURCE_COMMIT" > "$PACKAGE_ROOT/RELEASE_SOURCE_COMMIT"
 
 copy_required_item "$REPO_ROOT/package.json" "$PACKAGE_ROOT/package.json"
@@ -323,6 +386,25 @@ copy_required_item "$REPO_ROOT/deploy/owner-manifest.json" "$PACKAGE_ROOT/deploy
 copy_required_item "$REPO_ROOT/deploy/owner-manifest.schema.json" "$PACKAGE_ROOT/deploy/owner-manifest.schema.json"
 copy_required_item "$REPO_ROOT/deploy/README.md" "$PACKAGE_ROOT/README.md"
 copy_required_item "$REPO_ROOT/docs/deploy" "$PACKAGE_ROOT/docs/deploy"
+
+INDEXER_SOURCE_DIR="$REPO_ROOT/backend-go"
+INDEXER_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-runtime-log-indexer"
+if [ ! -f "$INDEXER_SOURCE_DIR/go.mod" ]; then
+  echo "Go indexer module file not found: $INDEXER_SOURCE_DIR/go.mod" >&2
+  exit 1
+fi
+
+echo "==> Building Go runtime log indexer for $TARGET_GOOS/$TARGET_GOARCH"
+(
+  cd "$INDEXER_SOURCE_DIR"
+  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$INDEXER_BINARY_PATH" ./cmd/juhe-ai-runtime-log-indexer
+)
+
+if [ ! -f "$INDEXER_BINARY_PATH" ] || [ -L "$INDEXER_BINARY_PATH" ]; then
+  echo "Go runtime log indexer build did not produce a regular file: $INDEXER_BINARY_PATH" >&2
+  exit 1
+fi
+chmod +x "$INDEXER_BINARY_PATH"
 
 TMP_START_SCRIPT="$(mktemp)"
 tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"

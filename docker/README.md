@@ -1,12 +1,13 @@
 # Docker 部署
 
-这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue 和应用服务；Redis Streams 可靠队列默认写入 `redis-queue`，不复用可被缓存/运行态压力影响的 Redis 实例。
+这是轻量 Docker 入口。默认模式运行 Node 的 Web、管理 API、`/v1` 网关、background worker 和 DB service，并同时运行独立的 Go `runtime-log-indexer` sidecar；它不经 Node owner switch、bridge 或队列。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue、应用服务和同一 Go sidecar；Redis Streams 可靠队列默认写入 `redis-queue`，但 F1 sidecar 不使用 Redis。
 
 ## 文件说明
 
 - `compose.yml`：单容器 Compose 配置，包含端口、环境变量、数据卷和镜像构建参数。
 - `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue 和应用服务。
 - `Dockerfile`：运行镜像构建文件，只组装已构建好的 `backend/dist`、`frontend/dist` 和后端生产依赖。
+- `Dockerfile.runtime-log-indexer`：F1 Go 运行日志索引 sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-runtime-log-indexer`。
 - `entrypoint.sh`：容器启动入口，设置默认环境变量、创建数据目录、生成或复用 `JUHE_AI_SECRET`，并执行 SQLite 运行时预检。
 - `.env.example`：可选配置模板。不复制也能使用默认值启动；需要改端口、公网地址、密钥或镜像名时复制为 `.env`。
 - `.env.performance.example`：高性能模式配置模板，复制为 `.env.performance` 后必须修改数据库、Redis 和应用密钥。
@@ -21,6 +22,8 @@ pnpm build
 ```
 
 Docker 镜像使用当前 `backend/dist` 和 `frontend/dist`，不会在服务器镜像构建阶段重新跑前端构建。如果缺少必要产物，`docker compose up -d --build` 会直接提示缺失文件，并要求先执行上面的构建命令。
+
+F1 sidecar 在镜像构建时独立编译 Go 程序，不需要预先生成 Go 二进制。
 
 ## 启动
 
@@ -57,6 +60,12 @@ pnpm --filter juhe-ai-backend postgres:init-schema
 空库或可重建测试库只执行 `postgres:init-schema`；`postgres:init-schema-only` 只用于当前版本 DDL 复查，不作为常规初始化或旧库补结构步骤。
 
 如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`、`redis-queue:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`、redis-queue `6381`，不要把 Redis 容器内 `6379` 误当宿主机端口。
+
+## F1 运行日志 sidecar
+
+两个 Compose 文件都会启动 `runtime-log-indexer`。它由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，Compose 示例使用稳定名称；同一 SQLite 数据卷或 PostgreSQL 数据库的多实例部署必须改为各自稳定且唯一的值。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是默认常驻扫描模式，不能改为默认一次性任务。
+
+standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 sidecar，并显式传入 `JUHE_AI_DATASET_DATABASE_PATH` 与 `JUHE_AI_DATABASE_PATH`。performance 模式只共享 `juhe-ai-logs`，并直接使用 `JUHE_AI_POSTGRES_URL`；它只等待 PgBouncer 健康，不依赖 Node 或任何 Redis 服务。
 
 ## 按需配置
 
@@ -116,6 +125,7 @@ curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
+docker compose logs --tail=100 runtime-log-indexer
 ```
 
 期望前两个接口返回 `200`，前端路径返回页面，并且日志里能看到主服务、DB service 和 background worker 启动记录。

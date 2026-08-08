@@ -185,7 +185,6 @@ services:
       JUHE_AI_CACHE_DRIVER: ${JUHE_AI_CACHE_DRIVER:-redis}
       JUHE_AI_RUNTIME_STATE_DRIVER: ${JUHE_AI_RUNTIME_STATE_DRIVER:-redis}
       JUHE_AI_QUEUE_DRIVER: ${JUHE_AI_QUEUE_DRIVER:-redis_stream}
-      JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: ${JUHE_AI_RUNTIME_LOG_INDEX_ENABLED:-true}
       JUHE_AI_AUDIT_LOG_ENABLED: ${JUHE_AI_AUDIT_LOG_ENABLED:-true}
       JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: ${JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS:-1}
       JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: ${JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE:-0.1}
@@ -223,6 +222,35 @@ services:
     volumes:
       - juhe-ai-data:/app/backend/data
       - juhe-ai-logs:/app/backend/logs
+
+  runtime-log-indexer:
+    image: ${JUHE_AI_RUNTIME_LOG_INDEXER_IMAGE:-juhe-ai-runtime-log-indexer:local}
+    container_name: ${JUHE_AI_RUNTIME_LOG_INDEXER_CONTAINER_NAME:-juhe-ai-runtime-log-indexer-performance}
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime-log-indexer
+      args:
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
+        RUNTIME_IMAGE: ${JUHE_AI_RUNTIME_LOG_INDEXER_RUNTIME_IMAGE:-debian:bookworm-slim}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    environment:
+      JUHE_AI_RUNTIME_LOG_INSTANCE_ID: ${JUHE_AI_RUNTIME_LOG_INSTANCE_ID:-juhe-ai-runtime-log-indexer-performance}
+      JUHE_AI_RUNTIME_LOG_STORE: ${JUHE_AI_RUNTIME_LOG_STORE:-postgres}
+      JUHE_AI_RUNTIME_LOG_ONCE: ${JUHE_AI_RUNTIME_LOG_ONCE:-false}
+      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
+      JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
+      JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
+    volumes:
+      - juhe-ai-logs:/app/backend/logs
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1 && test -d \"$${JUHE_AI_LOG_DIR}\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
 volumes:
   juhe-ai-data:

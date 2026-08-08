@@ -11,7 +11,7 @@
 | Linux | `bash ./start.sh` |
 
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包同时包含目标平台的 `backend-go/juhe-ai-runtime-log-indexer`（Windows 为 `.exe`）；Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
 
 ## 部署前检查
 
@@ -50,6 +50,8 @@ JUHE_AI_OAUTH_PROXY_URL=
 ```
 
 新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和清理目标在数据集目录库；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。四个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
+
+启动脚本会独立启动 Go `juhe-ai-runtime-log-indexer`，并把稳定随机的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 首次写入 `backend/.env`。它不是 Node/Go owner switch：Node 只继续写 JSONL 和只读查询，Go 是运行日志索引、cursor、facet 与保留清理的唯一 writer，不使用队列或 Node worker。Go 使用与 Node 相同的环境来源（进程环境、`backend/.env`、可选 `JUHE_AI_ENV_FILE` / `.env.capacity`）；SQLite 读取 `JUHE_AI_DATABASE_PATH` 与 `JUHE_AI_DATASET_DATABASE_PATH`，PostgreSQL 读取 `JUHE_AI_POSTGRES_URL`。相对的 SQLite / 日志目录路径会按 `backend/` 解析成同一绝对位置。启动期间会在 `backend/runtime/juhe-ai-runtime-log-indexer.pid` 跟踪进程，并把 indexer 输出写入 `backend/logs/juhe-ai-runtime-log-indexer.log`；Web/API 进程或 indexer 任一退出时，启动脚本会停止另一方，避免留下无主 writer。
 
 ## 启动与验证
 

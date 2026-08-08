@@ -185,11 +185,6 @@ $metricsGateFunctionStart = $performanceInstaller.IndexOf('wait_for_metrics_regi
 $metricsRolePidFunctionStart = $performanceInstaller.IndexOf('metrics_registry_role_pids() {', $metricsGateFunctionStart, [StringComparison]::Ordinal)
 $metricsGateFunction = $performanceInstaller.Substring($metricsGateFunctionStart, $metricsRolePidFunctionStart - $metricsGateFunctionStart)
 $metricsTimeFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'performance_metrics_registry_time_ms'
-foreach ($metricsFunction in @($metricsGateFunction, $metricsTimeFunction)) {
-  if ($metricsFunction -notmatch '(?m)^\s*JUHE_AI_LOG_FILE_ENABLED=false \\\r?\n\s*JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=false \\$') {
-    throw 'Performance topology metrics preflight must disable runtime log indexing together with file logging'
-  }
-}
 if ($metricsGateFunction -notmatch '(?m)^  current_role_pid_lines="\$\(metrics_registry_role_pids "\$VERIFIED_HEALTH_JSON"\)"$') {
   throw 'Performance topology must propagate PID mapping helper failures without a fallback suffix'
 }
@@ -894,7 +889,6 @@ metrics_registry_role_pids() {
 }
 node() {
   [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]
-  [ "$JUHE_AI_RUNTIME_LOG_INDEX_ENABLED" = false ]
   printf '%s\n' "$@" > "$HARNESS_ROOT/$VERIFIED_HEALTH_JSON.args"
 }
 for instance in gateway-1 gateway-2 gateway-3 control-1; do
@@ -916,7 +910,6 @@ INGRESS_PORT=3599
 __METRICS_TIME_FUNCTION__
 node() {
   [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]
-  [ "$JUHE_AI_RUNTIME_LOG_INDEX_ENABLED" = false ]
   [ "$1" = "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" ]
   [ "$2" = --print-redis-time-ms ]
   printf '%s\n' 123456789
