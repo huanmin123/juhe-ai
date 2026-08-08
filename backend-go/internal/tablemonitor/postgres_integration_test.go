@@ -44,7 +44,7 @@ func TestPostgresTableMonitorAdapterSmoke(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("初始化 PostgreSQL table-monitor schema 失败: %s", redactPostgresTableMonitorSmokeError(err, url))
 	}
-	assertPostgresTableMonitorTablesEmpty(t, ctx, store, url)
+	assertPostgresTableMonitorTablesEmpty(t, ctx, store, url, true)
 
 	prefix := postgresTableMonitorSmokePrefix(t)
 	ownerA := prefix + "-owner-a"
@@ -111,7 +111,7 @@ WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = $2 AND fence
 	if err := store.ReleaseOwnerLease(ctx, leaseB); err != nil {
 		t.Fatalf("释放 owner B lease 失败: %s", redactPostgresTableMonitorSmokeError(err, url))
 	}
-	assertPostgresTableMonitorTablesEmpty(t, ctx, store, url)
+	assertPostgresTableMonitorTablesEmpty(t, ctx, store, url, false)
 	var ownerID string
 	if err := store.db.QueryRowContext(ctx, `SELECT owner_id
 FROM juhe_stats.table_monitor_owner_leases
@@ -150,9 +150,13 @@ func postgresTableMonitorSmokeSample(prefix string, staleAt, retainedAt time.Tim
 	}
 }
 
-func assertPostgresTableMonitorTablesEmpty(t *testing.T, ctx context.Context, store *Store, url string) {
+func assertPostgresTableMonitorTablesEmpty(t *testing.T, ctx context.Context, store *Store, url string, includeOwnerLease bool) {
 	t.Helper()
-	for _, table := range []string{"database_storage_snapshots", "table_storage_snapshots"} {
+	tables := []string{"database_storage_snapshots", "table_storage_snapshots"}
+	if includeOwnerLease {
+		tables = append(tables, "table_monitor_owner_leases")
+	}
+	for _, table := range tables {
 		var count int
 		if err := store.db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM juhe_stats.%s", table)).Scan(&count); err != nil {
 			t.Fatalf("统计 PostgreSQL smoke 表 juhe_stats.%s 失败: %s", table, redactPostgresTableMonitorSmokeError(err, url))
