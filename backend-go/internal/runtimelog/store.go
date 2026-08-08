@@ -196,6 +196,23 @@ func (store *sqliteStore) VerifyOwnerLease(ctx context.Context, lease OwnerLease
 	return tx.Commit()
 }
 
+func (store *sqliteStore) WithOwnerLeaseFence(ctx context.Context, lease OwnerLease, callback func() error) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := verifySQLiteOwnerLease(ctx, tx, lease); err != nil {
+		return err
+	}
+	if err := callback(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (store *sqliteStore) RuntimeRetentionDays(ctx context.Context, fallback int) (int, error) {
 	if store.businessDB == nil {
 		return fallback, nil
@@ -347,6 +364,21 @@ func (store *postgresStore) VerifyOwnerLease(ctx context.Context, lease OwnerLea
 	}
 	defer tx.Rollback(ctx)
 	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (store *postgresStore) WithOwnerLeaseFence(ctx context.Context, lease OwnerLease, callback func() error) error {
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
+		return err
+	}
+	if err := callback(); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

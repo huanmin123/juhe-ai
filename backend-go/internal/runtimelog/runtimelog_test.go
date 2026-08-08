@@ -297,6 +297,94 @@ func TestRotatedFileCleanupRejectsStaleOwnerLease(t *testing.T) {
 	}
 }
 
+func TestOwnerLeaseFenceBlocksReplacementUntilCallbackReturns(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	secondOpened, err := OpenStore(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, ok := secondOpened.(*sqliteStore)
+	if !ok {
+		t.Fatalf("测试预期第二个 SQLite Store，实际为 %T", secondOpened)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "fence-owner", 50*time.Millisecond)
+	if err != nil || !acquired {
+		t.Fatalf("fence owner 必须获得 lease: lease=%#v acquired=%t err=%v", lease, acquired, err)
+	}
+	t.Cleanup(func() {
+		if err := store.ReleaseOwnerLease(context.Background(), lease); err != nil && !errors.Is(err, ErrOwnerLeaseFenced) {
+			t.Errorf("清理 fence owner lease 失败: %v", err)
+		}
+	})
+
+	target := filepath.Join(config.LogDirectory, "fence-target.log")
+	writeTestFile(t, target, "fenced\n")
+	entered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	fenceErr := make(chan error, 1)
+	go func() {
+		fenceErr <- store.WithOwnerLeaseFence(context.Background(), lease, func() error {
+			close(entered)
+			<-releaseCallback
+			err := os.Remove(target)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		})
+	}()
+	defer func() {
+		select {
+		case <-releaseCallback:
+		default:
+			close(releaseCallback)
+		}
+	}()
+	<-entered
+	// Let the original lease expire while its fencing transaction remains open.
+	time.Sleep(100 * time.Millisecond)
+
+	type acquireResult struct {
+		lease    OwnerLease
+		acquired bool
+		err      error
+	}
+	replacementResult := make(chan acquireResult, 1)
+	go func() {
+		replacement, replacementAcquired, replacementErr := second.AcquireOwnerLease(context.Background(), "replacement-owner", time.Minute)
+		replacementResult <- acquireResult{lease: replacement, acquired: replacementAcquired, err: replacementErr}
+	}()
+	select {
+	case result := <-replacementResult:
+		t.Fatalf("replacement owner 在删除 callback 返回前不应接管: result=%#v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("删除 callback 尚未返回时文件必须存在: %v", err)
+	}
+
+	close(releaseCallback)
+	if err := <-fenceErr; err != nil {
+		t.Fatalf("owner lease fence callback 失败: %v", err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("删除 callback 返回后文件必须被删除: %v", err)
+	}
+	select {
+	case result := <-replacementResult:
+		if result.err != nil || !result.acquired {
+			t.Fatalf("删除 callback 返回后 replacement owner 应可接管: result=%#v", result)
+		}
+		if err := second.ReleaseOwnerLease(context.Background(), result.lease); err != nil {
+			t.Fatalf("释放 replacement owner lease 失败: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement owner 在 callback 返回后仍未完成接管")
+	}
+}
+
 func TestRuntimeRetentionDaysReadsBusinessSetting(t *testing.T) {
 	store, _ := openTestSQLiteStore(t)
 	days, err := store.RuntimeRetentionDays(context.Background(), 7)

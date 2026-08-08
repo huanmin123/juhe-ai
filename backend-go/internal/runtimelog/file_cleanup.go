@@ -113,12 +113,14 @@ func (indexer *Indexer) cleanupRotatedFiles(ctx context.Context) (int64, error) 
 }
 
 func removeRotatedLogFile(ctx context.Context, store Store, lease OwnerLease, path string) error {
-	if err := store.VerifyOwnerLease(ctx, lease); err != nil {
+	return store.WithOwnerLeaseFence(ctx, lease, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return err
-	}
-	err := os.Remove(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+	})
 }

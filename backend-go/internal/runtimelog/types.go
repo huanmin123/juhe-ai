@@ -94,6 +94,10 @@ type Store interface {
 	Commit(ctx context.Context, lease OwnerLease, records []Record, cursor Cursor, retentionCutoff time.Time) error
 	Cleanup(ctx context.Context, lease OwnerLease, cutoff time.Time, batchSize int, maxBatches int) (CleanupResult, error)
 	VerifyOwnerLease(ctx context.Context, lease OwnerLease) error
+	// WithOwnerLeaseFence validates the lease and executes callback while the
+	// Store's exclusive owner-row fencing scope remains held. Implementations
+	// must not release the transaction/row lock until callback returns.
+	WithOwnerLeaseFence(ctx context.Context, lease OwnerLease, callback func() error) error
 	RuntimeRetentionDays(ctx context.Context, fallback int) (int, error)
 	AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error)
 	RenewOwnerLease(ctx context.Context, lease OwnerLease, duration time.Duration) (bool, error)
