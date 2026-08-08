@@ -1,0 +1,11 @@
+{
+  "purpose": "Archive Node table-monitor sampler, writer, cursor, and retention implementation removed from the active read-only repository.",
+  "entries": [
+    {
+      "originalPath": "backend/src/storage/table-monitor.repository.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/table-monitor.repository.ts.original",
+      "sha256": "C5E2325CAD308CB2EB37D240DB37BA9FDC98BE18490810106E79F0C28275A073",
+      "restore": "To restore the archived Node implementation, copy the archive file back to the original path only as part of an explicitly authorized migration rollback; review current Go ownership and any intervening changes first."
+    }
+  ]
+}

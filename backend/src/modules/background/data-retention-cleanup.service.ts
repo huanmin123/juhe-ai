@@ -10,7 +10,6 @@ import {
   cleanupProcessedUsageRecordsBeforeWithResultAsync
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
-import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../storage/sqlite-maintenance.js'
 import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
@@ -61,7 +60,6 @@ interface DataRetentionPolicy {
   systemMetricsHourlyDays: number
   accountUsageSnapshotDays: number
   fixedWindowDays: number
-  tableStorageSnapshotDays: number
 }
 
 export interface DataRetentionCleanupResult {
@@ -119,7 +117,6 @@ export interface DataRetentionCleanupResult {
   processEventLoopSamples: number
   processEventLoopHourly: number
   processEventLoopTrendWindows: number
-  tableStorageSnapshots: number
   systemSessions: number
   codexContextSessions: number
   codexContextResponses: number
@@ -167,7 +164,6 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
       systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 1, statsRetentionMaxDays),
       accountUsageSnapshotDays: snapshotRetentionMaxDays,
       fixedWindowDays: statsRetentionMaxDays,
-      tableStorageSnapshotDays: tableMonitorSampleRetentionDays
     }
 
     const result = emptyCleanupResult()
@@ -194,15 +190,6 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
         type: 'cleanup_system_metrics_retention',
         input: systemMetricsRetentionInput(now, retention, timezone, batchSize)
       }), maxBatches, signal)
-      const tableCleanup = await cleanupInBatches(async () => {
-        const cleanupResult = await requestStatsWriter({
-          type: 'cleanup_table_storage_snapshots_retention',
-          cutoffIso: cutoffIso(now, retention.tableStorageSnapshotDays),
-          limit: batchSize
-        })
-        return cleanupResult.deleted
-      }, batchSize, maxBatches, signal)
-      result.tableStorageSnapshots = tableCleanup
       result.systemSessions = await cleanupInBatches(async () => {
         const cleanupResult = await requestBackgroundWorkerDbService({
           type: 'cleanup_expired_system_sessions',
@@ -606,7 +593,6 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     processEventLoopSamples: 0,
     processEventLoopHourly: 0,
     processEventLoopTrendWindows: 0,
-    tableStorageSnapshots: 0,
     systemSessions: 0,
     codexContextSessions: 0,
     codexContextResponses: 0,

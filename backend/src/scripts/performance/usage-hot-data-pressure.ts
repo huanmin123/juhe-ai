@@ -15,7 +15,6 @@ import {
   postgresUsageRecordPartitionBounds,
   postgresUsageRecordPartitionName
 } from '../../storage/postgres-usage-record-partitions.js'
-import { collectTableStorageSnapshotAsync } from '../../storage/table-monitor.repository.js'
 
 interface PressureConfig {
   usageRows: number
@@ -26,7 +25,6 @@ interface PressureConfig {
   batchSize: number
   queryIterations: number
   queryConcurrency: number
-  collectTableMonitor: boolean
   cleanup: boolean
   maxAllowedDeadlocks: number
   maxAllowedUsageQueryP95Ms: number
@@ -117,11 +115,6 @@ interface PressureReport {
     droppedPartitions: number
     hasMore: boolean
     partitionRemoved: boolean
-  }
-  tableMonitor?: {
-    durationMs: number
-    databaseSnapshots: number
-    tableSnapshots: number
   }
   relationSizes: RelationSize[]
   explain: ExplainReport[]
@@ -268,9 +261,6 @@ async function runPressure(): Promise<PressureReport> {
 
   const explainBeforeQueries = await explainHotQueries(hotDates)
   const queryMetrics = await runQueryPressure(hotDates)
-  const tableMonitor = config.collectTableMonitor
-    ? await timed(async () => collectTableStorageSnapshotAsync(sampledAt, { tableScanMode: 'full', maxTablesPerDatabase: 5000 }))
-    : undefined
   const relationSizes = await readRelationSizes([
     ...hotPartitions.map((partition) => ['juhe_usage', partition] as const),
     ['juhe_usage', cleanupPartitionName!] as const,
@@ -326,13 +316,6 @@ async function runPressure(): Promise<PressureReport> {
       hasMore: retentionDrop.value.hasMore,
       partitionRemoved
     },
-    ...(tableMonitor ? {
-      tableMonitor: {
-        durationMs: round(tableMonitor.durationMs),
-        databaseSnapshots: tableMonitor.value.databaseSnapshots,
-        tableSnapshots: tableMonitor.value.tableSnapshots
-      }
-    } : {}),
     relationSizes,
     explain: explainBeforeQueries,
     postgres: {
@@ -798,8 +781,6 @@ async function cleanupPressureArtifacts(): Promise<void> {
   }
   await pool.query('DELETE FROM juhe_stats.usage_scope_range_windows WHERE system_account_id LIKE $1', [`${systemAccountPrefix}_%`])
   await pool.query('DELETE FROM juhe_stats.usage_range_window_requests WHERE system_account_id LIKE $1', [`${systemAccountPrefix}_%`])
-  await pool.query('DELETE FROM juhe_stats.table_storage_snapshots WHERE sampled_at = $1', [sampledAt])
-  await pool.query('DELETE FROM juhe_stats.database_storage_snapshots WHERE sampled_at = $1', [sampledAt])
 }
 
 async function countCatalogMarkerEntries(): Promise<number> {
@@ -949,7 +930,6 @@ function loadConfig(): PressureConfig {
     batchSize: intEnv('JUHE_USAGE_PRESSURE_BATCH_SIZE', 1000, 1, 3000),
     queryIterations: intEnv('JUHE_USAGE_PRESSURE_QUERY_ITERATIONS', 3000, 1, 200_000),
     queryConcurrency: intEnv('JUHE_USAGE_PRESSURE_QUERY_CONCURRENCY', 32, 1, 500),
-    collectTableMonitor: boolEnv('JUHE_USAGE_PRESSURE_TABLE_MONITOR', true),
     cleanup: boolEnv('JUHE_USAGE_PRESSURE_CLEANUP', true),
     maxAllowedDeadlocks: intEnv('JUHE_USAGE_PRESSURE_MAX_DEADLOCKS', 0, 0, 1000),
     maxAllowedUsageQueryP95Ms: numberEnv('JUHE_USAGE_PRESSURE_MAX_USAGE_QUERY_P95_MS', 1200, 1, 120_000),

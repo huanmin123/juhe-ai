@@ -11,11 +11,6 @@ import {
   recordClientIpPolicyHitsAsync,
   refreshClientIpUsageRangeWindowsAsync
 } from '../../storage/client-ip-stats.repository.js'
-import type {
-  CollectTableStorageSnapshotOptions,
-  CollectTableStorageSnapshotResult
-} from '../../storage/table-monitor.repository.js'
-import { cleanupTableStorageSnapshotsBefore, cleanupTableStorageSnapshotsBeforeAsync, collectTableStorageSnapshot, collectTableStorageSnapshotAsync } from '../../storage/table-monitor.repository.js'
 import {
   aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
@@ -139,11 +134,6 @@ export type BackgroundStatsWriteOperation = (
     limit: number
   }
   | {
-    type: 'collect_table_storage_snapshot'
-    sampledAt: string
-    options: CollectTableStorageSnapshotOptions
-  }
-  | {
     type: 'record_client_ip_policy_hits'
     hits: ClientIpPolicyHitInput[]
   }
@@ -204,11 +194,6 @@ export type BackgroundStatsWriteOperation = (
     input: Parameters<typeof cleanupSystemMetricsBefore>[0]
   }
   | {
-    type: 'cleanup_table_storage_snapshots_retention'
-    cutoffIso: string
-    limit: number
-  }
-  | {
     type: 'cleanup_non_business_stats_data'
     cutoffAt: string
     limit: number
@@ -233,7 +218,6 @@ export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOp
   T extends { type: 'refresh_usage_rank_snapshots' } ? UsageRankSnapshotRefreshResult :
   T extends { type: 'refresh_hot_usage_windows' } ? UsageRankSnapshotRefreshResult :
   T extends { type: 'check_usage_stats_consistency' } ? ReturnType<typeof checkUsageStatsConsistency> :
-  T extends { type: 'collect_table_storage_snapshot' } ? CollectTableStorageSnapshotResult :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'create_client_ip_policy' } ? import('../../storage/client-ip-stats.repository.js').ClientIpPolicySummary :
   T extends { type: 'disable_client_ip_policies' } ? { disabledCount: number } :
@@ -246,7 +230,6 @@ export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOp
   T extends { type: 'release_account_balance_lease' } ? { released: boolean } :
   T extends { type: 'cleanup_usage_stats_retention' } ? ReturnType<typeof cleanupUsageStatsBucketsBefore> :
   T extends { type: 'cleanup_system_metrics_retention' } ? ReturnType<typeof cleanupSystemMetricsBefore> :
-  T extends { type: 'cleanup_table_storage_snapshots_retention' } ? { deleted: number } :
   T extends { type: 'cleanup_non_business_stats_data' } ? NonBusinessDataHardCleanupResult :
   T extends { type: 'cleanup_deleted_api_key_record_stats' } ? { cleaned: true } :
   T extends { type: 'cleanup_deleted_account_record_stats' } ? { cleaned: true } :
@@ -317,11 +300,6 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         return await checkUsageStatsConsistencyAsync(operation.limit)
       }
       return checkUsageStatsConsistency(operation.limit)
-    case 'collect_table_storage_snapshot':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return await collectTableStorageSnapshotAsync(operation.sampledAt, operation.options, requiredPostgresScheduledLease(operation))
-      }
-      return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
       return await recordClientIpPolicyHitsAsync(operation.hits)
     case 'create_client_ip_policy':
@@ -361,11 +339,6 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         return await cleanupSystemMetricsBeforeAsync(operation.input)
       }
       return cleanupStatsDatabaseAfterDelete(cleanupSystemMetricsBefore(operation.input))
-    case 'cleanup_table_storage_snapshots_retention':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return { deleted: await cleanupTableStorageSnapshotsBeforeAsync(operation.cutoffIso, operation.limit) }
-      }
-      return cleanupStatsDatabaseAfterDelete({ deleted: cleanupTableStorageSnapshotsBefore(operation.cutoffIso, operation.limit) })
     case 'cleanup_non_business_stats_data':
       return await cleanupNonBusinessDataBeforeWithResult({
         cutoffAt: operation.cutoffAt,

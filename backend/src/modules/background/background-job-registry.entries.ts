@@ -258,19 +258,6 @@ export const backgroundScheduledJobs = [
     writes: ['business:resource_authorizations']
   }),
   scheduled({
-    jobName: 'table-storage-monitor',
-    category: 'scheduled',
-    kind: 'maintenance',
-    lifecycle: 'persistent',
-    defaultRole: 'stats-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['stats:database_storage_snapshots', 'stats:table_storage_snapshots']
-  }),
-  scheduled({
     jobName: 'proxy-latency-refresh',
     category: 'scheduled',
     kind: 'probe',

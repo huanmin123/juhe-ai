@@ -100,8 +100,6 @@ const postgresHardCleanupTables: Record<HardCleanupDatabaseRole, Array<{ tableNa
     { tableName: 'process_event_loop_samples', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
     { tableName: 'process_event_loop_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
     { tableName: 'process_event_loop_trend_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-    { tableName: 'database_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-    { tableName: 'table_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' }
   ]
 }
 

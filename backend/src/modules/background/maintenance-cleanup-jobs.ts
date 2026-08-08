@@ -7,7 +7,6 @@ import { cleanupOperationLogsBeforeAsync } from '../../storage/operation-log-cle
 import { cleanupPublicApiLogsBeforeAsync } from '../../storage/public-api-logs.repository.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
-import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezoneAsync, weekKey } from '../../storage/usage-stats-helpers.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
@@ -55,7 +54,6 @@ interface PostgresRetentionPolicy {
   systemMetricsHourlyDays: number
   accountUsageSnapshotDays: number
   fixedWindowDays: number
-  tableStorageSnapshotDays: number
 }
 
 export async function runApiKeyRecordCleanupRetry(): Promise<void> {
@@ -249,15 +247,6 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     return sumNumbers(deleted)
   }, 1, input.signal)
   await runRetentionBatches(input.maxBatches, async () => {
-    const deleted = await requestStatsWriter({
-      type: 'cleanup_table_storage_snapshots_retention',
-      cutoffIso: cutoffIso(input.nowMs, input.retention.tableStorageSnapshotDays),
-      limit: input.batchSize
-    })
-    result.tableStorageSnapshots = (result.tableStorageSnapshots ?? 0) + deleted.deleted
-    return deleted.deleted
-  }, input.batchSize, input.signal)
-  await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await requestBackgroundWorkerDbService({
       type: 'cleanup_expired_system_sessions',
       expiredBefore: input.nowAt,
@@ -362,7 +351,6 @@ function postgresRetentionPolicy(settings: Record<string, unknown>): PostgresRet
     systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 1, statsRetentionMaxDays),
     accountUsageSnapshotDays: snapshotRetentionMaxDays,
     fixedWindowDays: statsRetentionMaxDays,
-    tableStorageSnapshotDays: tableMonitorSampleRetentionDays
   }
 }
 

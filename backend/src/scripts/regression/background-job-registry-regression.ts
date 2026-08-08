@@ -25,7 +25,6 @@ const conditionalRuntimeModeDuplicateScheduledJobs = new Set([
   'group-account-stats-refresh',
   'account-quality-refresh',
   'usage-stats-consistency-check',
-  'table-storage-monitor'
 ])
 
 const registryByName = new Map<string, BackgroundJobRegistryEntry>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))

@@ -135,13 +135,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
             maxDurationMs: 4260,
             lastSuccessAt: minutesAgo(now, 2)
           }),
-          job('table-storage-monitor', 'stats-worker', 10 * 60_000, {
-            successCount: 5,
-            failureCount: 0,
-            lastDurationMs: 960,
-            maxDurationMs: 1510,
-            lastSuccessAt: minutesAgo(now, 4)
-          })
         ],
         recordMaintenanceQueue: queue({
           queueLength: statsQueueCounts.accountQualityDirty + statsQueueCounts.clientIpDirty + statsQueueCounts.clientIpAccountDirty + statsQueueCounts.cleanupDeductions,

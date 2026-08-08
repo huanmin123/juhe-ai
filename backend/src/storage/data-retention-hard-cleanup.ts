@@ -87,8 +87,6 @@ const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
   { databaseRole: 'stats', tableName: 'process_event_loop_samples', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
   { databaseRole: 'stats', tableName: 'process_event_loop_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
   { databaseRole: 'stats', tableName: 'process_event_loop_trend_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'database_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'table_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' }
 ]
 
 const nonBusinessCleanupTablesByRole: Record<HardCleanupDatabaseRole, HardCleanupTableRule[]> = {
