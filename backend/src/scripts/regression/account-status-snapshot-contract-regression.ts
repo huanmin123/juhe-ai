@@ -289,7 +289,8 @@ try {
     granteeType: 'system_account',
     granteeId: grantee.id,
     targetGroupId: granteeGroup.id,
-    remark: '状态快照来源探针窄投影回归'
+    remark: '状态快照来源探针窄投影回归',
+    limits: { total: { enabled: true, limit: 100 } }
   }, userAccess)
   const authorizedInstance = repositories.listAccounts(granteeAccess)
     .find((item) => item.authorizationInstanceSourceAccountId === account.id)
@@ -727,6 +728,17 @@ try {
   )
   runtimeConfig.processRole = 'db-service'
   try {
+    const workerAuthorizedBasePage = await repositories.listAccountManagementItemsPageAsync(granteeAccess, {
+      ids: [authorizedInstance.id],
+      page: 1,
+      pageSize: 20
+    })
+    const workerAuthorizedPage = await hydrateAccountListPage(granteeAccess, workerAuthorizedBasePage)
+    assert.equal(
+      workerAuthorizedPage.items[0]?.authorizationQuotaExceeded,
+      false,
+      'SQLite read-worker 水合带额度的授权账户时必须读取 SQLite 统计库，而非调用 PostgreSQL 专用入口'
+    )
     const workerDeepPage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
       page: 53,
       pageSize: 20,

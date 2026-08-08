@@ -14,12 +14,14 @@ import type {
 import { runtimeConfig } from '../config/runtime.js'
 import {
   isRequestQuotaExceeded,
+  loadRequestQuotaCostsBatch,
   loadRequestQuotaCostsBatchAsync,
+  requestQuotaCostKey,
   requestQuotaCostKeyAsync,
   type RequestQuotaCostInput
 } from '../modules/gateway/quota/request-quota-checker.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { getBusinessDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { authorizationRuntimeBlockingStatus } from './account-runtime-status.js'
@@ -636,9 +638,19 @@ async function loadAccountStatusAuthorizationQuotaExceededAsync(
     })
   }
   if (!checks.length) return output
-  const costs = await loadRequestQuotaCostsBatchAsync(client, checks.map((check) => check.input))
+  if (client.driver === 'postgres') {
+    const costs = await loadRequestQuotaCostsBatchAsync(client, checks.map((check) => check.input))
+    for (const check of checks) {
+      const value = costs.get(await requestQuotaCostKeyAsync(check.input))
+      if (value && isRequestQuotaExceeded(check.limits, value)) {
+        output.set(check.authorizationId, true)
+      }
+    }
+    return output
+  }
+  const costs = loadRequestQuotaCostsBatch(getStatsDatabase(), checks.map((check) => check.input))
   for (const check of checks) {
-    const value = costs.get(await requestQuotaCostKeyAsync(check.input))
+    const value = costs.get(requestQuotaCostKey(check.input))
     if (value && isRequestQuotaExceeded(check.limits, value)) {
       output.set(check.authorizationId, true)
     }
