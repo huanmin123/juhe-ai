@@ -14,14 +14,15 @@ let chatDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
 let usageCatalogDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
+let runtimeLogDatabase: DatabaseSync | undefined
 const codexContextStateShardDatabases = new Map<number, DatabaseSync>()
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
 const require = createRequire(import.meta.url)
 let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefined
 
-export type SqliteMainDatabaseKind = 'business' | 'chat' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
-export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer'
+export type SqliteMainDatabaseKind = 'business' | 'chat' | 'dataset' | 'runtime-log' | 'usage-catalog' | 'stats' | 'codex-context-state'
+export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer' | 'go-runtime-log'
 
 export interface SqliteDatabaseRuntimeInfo {
   kind: SqliteMainDatabaseKind
@@ -91,6 +92,14 @@ export function getStatsDatabase(): DatabaseSync {
   return statsDatabase
 }
 
+export function getRuntimeLogDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
+  assertDistinctStoragePaths()
+  if (runtimeLogDatabase) return runtimeLogDatabase
+  runtimeLogDatabase = createSqliteDatabase(runtimeConfig.runtimeLogDatabasePath, 'runtime-log')
+  return runtimeLogDatabase
+}
+
 export function getCodexContextStateShardDatabase(shardIndex: number): DatabaseSync {
   assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
@@ -111,6 +120,7 @@ export function closeStorageDatabases(): void {
   closeDatabaseHandle(datasetDatabase)
   closeDatabaseHandle(usageCatalogDatabase)
   closeDatabaseHandle(statsDatabase)
+  closeDatabaseHandle(runtimeLogDatabase)
   for (const database of codexContextStateShardDatabases.values()) {
     closeDatabaseHandle(database)
   }
@@ -119,6 +129,7 @@ export function closeStorageDatabases(): void {
   datasetDatabase = undefined
   usageCatalogDatabase = undefined
   statsDatabase = undefined
+  runtimeLogDatabase = undefined
   codexContextStateShardDatabases.clear()
 }
 
@@ -213,7 +224,11 @@ function createSqliteDatabase(databasePath: string, kind: SqliteMainDatabaseKind
 }
 
 function shouldOpenSqliteDatabaseReadOnly(kind: SqliteMainDatabaseKind): boolean {
-  return sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind)
+	// The F1 SQLite file is owned by the Go indexer even when the legacy
+	// writer-boundary compatibility switch is disabled. Node only serves the
+	// query-side consumers of this database.
+	if (kind === 'runtime-log') return true
+	return sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind)
 }
 
 function getDatabaseSyncConstructor(): typeof import('node:sqlite').DatabaseSync {
@@ -306,6 +321,7 @@ function assertDistinctStoragePaths(): void {
     { role: '业务库', path: runtimeConfig.databasePath },
     { role: '聊天库', path: runtimeConfig.chatDatabasePath },
     { role: '数据集目录库', path: datasetDatabasePath() },
+    { role: '运行日志索引库', path: runtimeConfig.runtimeLogDatabasePath },
     { role: '使用记录目录库', path: usageCatalogDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() },
     ...codexContextStateShardIndexes().map((shardIndex) => ({
@@ -318,7 +334,7 @@ function assertDistinctStoragePaths(): void {
     const key = normalize(target.path).toLowerCase()
     const existingRole = seen.get(key)
     if (existingRole) {
-      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
+      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
     }
     seen.set(key, target.role)
   }
@@ -335,10 +351,12 @@ export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): 
   if (kind === 'dataset' || kind === 'usage-catalog') {
     return 'ingest-worker'
   }
+  if (kind === 'runtime-log') return 'go-runtime-log'
   return 'stats-writer'
 }
 
 export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKind): boolean {
+  if (kind === 'runtime-log') return false
   if (sqliteOfflineMaintenanceOwnsAllMainDatabases()) {
     return true
   }
@@ -378,6 +396,8 @@ export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDat
       ? runtimeConfig.chatDatabasePath
     : kind === 'dataset'
       ? datasetDatabasePath()
+      : kind === 'runtime-log'
+        ? runtimeConfig.runtimeLogDatabasePath
       : kind === 'usage-catalog'
         ? usageCatalogDatabasePath()
         : kind === 'stats'
@@ -388,7 +408,7 @@ export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDat
     path,
     writerOwner: sqliteWriterOwnerForMainDatabase(kind),
     currentProcessOwner: currentProcessOwnsSqliteMainDatabase(kind),
-    queryOnly: sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind)
+    queryOnly: kind === 'runtime-log' || (sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind))
   }
 }
 

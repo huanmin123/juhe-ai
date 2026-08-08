@@ -13,21 +13,22 @@ const (
 )
 
 type Config struct {
-	OwnerID           string
-	OwnerLease        time.Duration
-	Mode              Mode
-	DatasetPath       string
-	BusinessPath      string
-	PostgresURL       string
-	LogDirectory      string
-	FileEnabled       bool
-	Once              bool
-	PollInterval      time.Duration
-	RetentionInterval time.Duration
-	RetentionDays     int
-	LogRetentionDays  int
-	LogMaxFiles       int
-	BatchSize         int
+	OwnerID                string
+	OwnerLease             time.Duration
+	Mode                   Mode
+	DatasetPath            string
+	RuntimeLogDatabasePath string
+	BusinessPath           string
+	PostgresURL            string
+	LogDirectory           string
+	FileEnabled            bool
+	Once                   bool
+	PollInterval           time.Duration
+	RetentionInterval      time.Duration
+	RetentionDays          int
+	LogRetentionDays       int
+	LogMaxFiles            int
+	BatchSize              int
 }
 
 // OwnerLease is the current writer authority for one runtime-log data domain.

@@ -104,6 +104,7 @@ export interface RuntimeConfig {
   databasePath: string
   chatDatabasePath: string
   datasetDatabasePath: string
+  runtimeLogDatabasePath: string
   usageCatalogDatabasePath: string
   statsDatabasePath: string
   usageShardRoot: string
@@ -355,6 +356,7 @@ export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
 export const defaultChatDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-chat.sqlite3')
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
+export const defaultRuntimeLogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-runtime-log.sqlite3')
 export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
 export const defaultUsageSpoolDirectory = resolve(backendRoot, 'data', 'usage-spool')
@@ -565,6 +567,7 @@ export const runtimeConfig: RuntimeConfig = {
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   chatDatabasePath: pathConfig('JUHE_AI_CHAT_DATABASE_PATH', defaultChatDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
+  runtimeLogDatabasePath: pathConfig('JUHE_AI_RUNTIME_LOG_DATABASE_PATH', defaultRuntimeLogDatabasePath),
   usageCatalogDatabasePath: pathConfig('JUHE_AI_USAGE_CATALOG_DATABASE_PATH', defaultUsageCatalogDatabasePath),
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),

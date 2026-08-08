@@ -143,6 +143,7 @@
     "test:sqlite-query-regression": "pnpm run test:sqlite-read-worker && pnpm run test:system-api-db-access && pnpm run test:system-api-read-burst && pnpm run test:db-service-read-write-dispatch-simulation && pnpm run test:external-source-auth && pnpm run test:external-integration-source-async-boundary && pnpm run test:external-public-account-push-async-boundary",
     "test:management-list-contract": "tsx src/scripts/regression/management-list-contract-regression.ts",
     "test:management-progressive-list-contract": "tsx src/scripts/regression/management-progressive-list-contract-regression.ts",
+    "test:runtime-log-query-read-only": "tsx src/scripts/regression/runtime-log-query-read-only-regression.ts",
     "test:account-list-postgres-smoke": "tsx src/scripts/regression/account-list-postgres-smoke.ts",
     "test:account-name-search-accuracy": "tsx src/scripts/regression/account-name-search-accuracy-regression.ts",
     "test:account-priority-field-contract": "tsx src/scripts/regression/account-priority-field-contract-regression.ts",

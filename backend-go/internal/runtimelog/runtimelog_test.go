@@ -518,14 +518,54 @@ func TestLoadConfigRequiresOwnerLeaseInstanceID(t *testing.T) {
 
 func TestLoadConfigAcceptsInstanceWithoutNodeGoOwnerSwitch(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID": "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":       "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH":   "dataset.sqlite",
-		"JUHE_AI_DATABASE_PATH":           "business.sqlite",
-		"JUHE_AI_LOG_DIR":                 "logs",
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":         "sqlite",
+		"JUHE_AI_DATASET_DATABASE_PATH":     "dataset.sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": "runtime-log.sqlite",
+		"JUHE_AI_DATABASE_PATH":             "business.sqlite",
+		"JUHE_AI_LOG_DIR":                   "logs",
 	}
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err != nil {
 		t.Fatalf("运行日志索引不应依赖 Node/Go owner 开关，实际为 %v", err)
+	}
+}
+
+func TestLoadConfigRequiresDedicatedRuntimeLogSQLitePath(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID": "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":       "sqlite",
+		"JUHE_AI_DATABASE_PATH":           "business.sqlite",
+		"JUHE_AI_LOG_DIR":                 "logs",
+	}
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") {
+		t.Fatalf("缺少专用运行日志 SQLite 路径必须拒绝启动，实际为 %v", err)
+	}
+}
+
+func TestLoadConfigRejectsSharedDatasetAndRuntimeLogSQLitePath(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":         "sqlite",
+		"JUHE_AI_DATASET_DATABASE_PATH":     "shared.sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": "shared.sqlite",
+		"JUHE_AI_DATABASE_PATH":             "business.sqlite",
+		"JUHE_AI_LOG_DIR":                   "logs",
+	}
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "不得与 JUHE_AI_DATASET_DATABASE_PATH") {
+		t.Fatalf("运行日志 SQLite 不能与 Node dataset 文件共用，实际为 %v", err)
+	}
+}
+
+func TestLoadConfigRejectsSharedBusinessAndRuntimeLogSQLitePath(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":         "sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": "shared.sqlite",
+		"JUHE_AI_DATABASE_PATH":             "shared.sqlite",
+		"JUHE_AI_LOG_DIR":                   "logs",
+	}
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "不得与 JUHE_AI_DATABASE_PATH") {
+		t.Fatalf("运行日志 SQLite 不能与 Node 业务库共用，实际为 %v", err)
 	}
 }
 
@@ -635,6 +675,51 @@ func TestSQLiteFenceTokenMigrationAndStaleWriterRejection(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacySQLiteMovesFactsWithoutSharingNodeDatasetWriter(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	legacy, err := sql.Open("sqlite", config.DatasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if _, err := legacy.Exec(`
+INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at)
+VALUES ('legacy-log', 'juhe-ai.log', 18, 2, '2026-08-09T00:00:00.000Z', 'info', 'legacy-trace', 'legacy-event', 'legacy message', NULL, '{}', '2026-08-09T00:00:00.000Z');
+INSERT INTO runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at)
+VALUES ('juhe-ai.log', 'legacy:1:1', 18, 2, 18, 0, 0, '2026-08-09T00:00:00.000Z', NULL, '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z');
+INSERT INTO runtime_log_facet_summary (bucket_key, total_count, earliest_time, latest_time, updated_at)
+VALUES ('current', 1, '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z');
+INSERT INTO runtime_log_level_facets (bucket_key, level, count, updated_at)
+VALUES ('current', 'info', 1, '2026-08-09T00:00:00.000Z');
+INSERT INTO runtime_log_event_facets (bucket_key, event, count, latest_time, updated_at)
+VALUES ('current', 'legacy-event', 1, '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := testOwnerContext(t, store)
+	if err := MigrateLegacySQLite(ctx, config, store); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacySQLite(ctx, config, store); err != nil {
+		t.Fatalf("幂等重跑旧 SQLite 迁移失败: %v", err)
+	}
+	assertRuntimeLogCount(t, store, 1)
+	var cursorOffset int64
+	if err := store.db.QueryRow("SELECT cursor_offset FROM runtime_log_file_cursors WHERE log_file = ?", "juhe-ai.log").Scan(&cursorOffset); err != nil {
+		t.Fatal(err)
+	}
+	if cursorOffset != 18 {
+		t.Fatalf("旧 cursor 未完整迁移: got %d, want 18", cursorOffset)
+	}
+	var eventCount int
+	if err := store.db.QueryRow("SELECT count FROM runtime_log_event_facets WHERE bucket_key = ? AND event = ?", facetBucketKey, "legacy-event").Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("旧 event facet 未完整迁移: got %d, want 1", eventCount)
+	}
+}
+
 func TestLoadConfigRequiresExplicitInstanceID(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_RUNTIME_LOG_STORE":     "sqlite",
@@ -699,17 +784,29 @@ func openTestSQLiteStore(t *testing.T) (*sqliteStore, Config) {
 		t.Fatal(err)
 	}
 	config := Config{
-		Mode:              ModeSQLite,
-		DatasetPath:       filepath.Join(t.TempDir(), "dataset.sqlite"),
-		BusinessPath:      businessPath,
-		LogDirectory:      t.TempDir(),
-		FileEnabled:       true,
-		PollInterval:      time.Second,
-		RetentionInterval: time.Hour,
-		RetentionDays:     1,
-		LogRetentionDays:  30,
-		LogMaxFiles:       500,
-		BatchSize:         2,
+		Mode:                   ModeSQLite,
+		DatasetPath:            filepath.Join(t.TempDir(), "dataset.sqlite"),
+		RuntimeLogDatabasePath: filepath.Join(t.TempDir(), "runtime-log.sqlite"),
+		BusinessPath:           businessPath,
+		LogDirectory:           t.TempDir(),
+		FileEnabled:            true,
+		PollInterval:           time.Second,
+		RetentionInterval:      time.Hour,
+		RetentionDays:          1,
+		LogRetentionDays:       30,
+		LogMaxFiles:            500,
+		BatchSize:              2,
+	}
+	legacy, err := sql.Open("sqlite", config.DatasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(sqliteSchema); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
 	}
 	opened, err := OpenStore(context.Background(), config)
 	if err != nil {

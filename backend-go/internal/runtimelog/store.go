@@ -43,7 +43,11 @@ type postgresStore struct {
 func OpenStore(ctx context.Context, config Config) (Store, error) {
 	switch config.Mode {
 	case ModeSQLite:
-		db, err := sql.Open("sqlite", config.DatasetPath)
+		runtimeLogPath := config.RuntimeLogDatabasePath
+		if strings.TrimSpace(runtimeLogPath) == "" {
+			return nil, errors.New("sqlite 模式缺少运行日志专用数据库路径")
+		}
+		db, err := sql.Open("sqlite", runtimeLogPath)
 		if err != nil {
 			return nil, err
 		}
@@ -442,7 +446,7 @@ func (store *postgresStore) Close() error {
 
 func openSQLiteReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("读取运行日志保留设置前无法访问 SQLite 业务库: %w", err)
+		return nil, fmt.Errorf("无法访问运行日志所需的 SQLite 只读数据源: %w", err)
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

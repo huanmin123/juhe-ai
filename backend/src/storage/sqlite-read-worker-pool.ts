@@ -122,6 +122,7 @@ function readWorkerEnv(): NodeJS.ProcessEnv {
     JUHE_AI_QUEUE_DRIVER: runtimeConfig.queueDriver,
     JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath,
     JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath,
+    JUHE_AI_RUNTIME_LOG_DATABASE_PATH: runtimeConfig.runtimeLogDatabasePath,
     JUHE_AI_USAGE_CATALOG_DATABASE_PATH: usageCatalogDatabasePath(),
     JUHE_AI_STATS_DATABASE_PATH: statsDatabasePath(),
     JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot,
