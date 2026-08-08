@@ -389,6 +389,7 @@ copy_required_item "$REPO_ROOT/docs/deploy" "$PACKAGE_ROOT/docs/deploy"
 
 INDEXER_SOURCE_DIR="$REPO_ROOT/backend-go"
 INDEXER_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-runtime-log-indexer"
+TABLE_MONITOR_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-table-monitor"
 if [ ! -f "$INDEXER_SOURCE_DIR/go.mod" ]; then
   echo "Go indexer module file not found: $INDEXER_SOURCE_DIR/go.mod" >&2
   exit 1
@@ -398,6 +399,7 @@ echo "==> Building Go runtime log indexer for $TARGET_GOOS/$TARGET_GOARCH"
 (
   cd "$INDEXER_SOURCE_DIR"
   CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$INDEXER_BINARY_PATH" ./cmd/juhe-ai-runtime-log-indexer
+  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$TABLE_MONITOR_BINARY_PATH" ./cmd/juhe-ai-table-monitor
 )
 
 if [ ! -f "$INDEXER_BINARY_PATH" ] || [ -L "$INDEXER_BINARY_PATH" ]; then
@@ -405,6 +407,11 @@ if [ ! -f "$INDEXER_BINARY_PATH" ] || [ -L "$INDEXER_BINARY_PATH" ]; then
   exit 1
 fi
 chmod +x "$INDEXER_BINARY_PATH"
+if [ ! -f "$TABLE_MONITOR_BINARY_PATH" ] || [ -L "$TABLE_MONITOR_BINARY_PATH" ]; then
+  echo "Go table monitor build did not produce a regular file: $TABLE_MONITOR_BINARY_PATH" >&2
+  exit 1
+fi
+chmod +x "$TABLE_MONITOR_BINARY_PATH"
 
 TMP_START_SCRIPT="$(mktemp)"
 tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"

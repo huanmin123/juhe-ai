@@ -210,6 +210,7 @@ services:
       JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
       JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
       JUHE_AI_RUNTIME_LOG_DATABASE_PATH: ${JUHE_AI_RUNTIME_LOG_DATABASE_PATH:-/app/backend/data/juhe-ai-runtime-log.sqlite3}
+      JUHE_AI_TABLE_MONITOR_DATABASE_PATH: ${JUHE_AI_TABLE_MONITOR_DATABASE_PATH:-/app/backend/data/juhe-ai-table-monitor.sqlite3}
       JUHE_AI_USAGE_CATALOG_DATABASE_PATH: ${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-/app/backend/data/juhe-ai-usage-catalog.sqlite3}
       JUHE_AI_STATS_DATABASE_PATH: ${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}
       JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
@@ -250,6 +251,35 @@ services:
       - juhe-ai-logs:/app/backend/logs
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1 && test -d \"$${JUHE_AI_LOG_DIR}\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  table-monitor:
+    image: ${JUHE_AI_TABLE_MONITOR_IMAGE:-juhe-ai-table-monitor:local}
+    container_name: ${JUHE_AI_TABLE_MONITOR_CONTAINER_NAME:-juhe-ai-table-monitor-performance}
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.table-monitor
+      args:
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
+        RUNTIME_IMAGE: ${JUHE_AI_TABLE_MONITOR_RUNTIME_IMAGE:-debian:bookworm-slim}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      juhe-ai:
+        condition: service_healthy
+    environment:
+      JUHE_AI_TABLE_MONITOR_INSTANCE_ID: ${JUHE_AI_TABLE_MONITOR_INSTANCE_ID:-juhe-ai-table-monitor-performance}
+      JUHE_AI_TABLE_MONITOR_STORE: ${JUHE_AI_TABLE_MONITOR_STORE:-postgres}
+      JUHE_AI_TABLE_MONITOR_INTERVAL: ${JUHE_AI_TABLE_MONITOR_INTERVAL:-1m}
+      JUHE_AI_TABLE_MONITOR_RETENTION_DAYS: ${JUHE_AI_TABLE_MONITOR_RETENTION_DAYS:-30}
+      JUHE_AI_TABLE_MONITOR_MAX_TABLES: ${JUHE_AI_TABLE_MONITOR_MAX_TABLES:-256}
+      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
       timeout: 5s
       start_period: 20s
