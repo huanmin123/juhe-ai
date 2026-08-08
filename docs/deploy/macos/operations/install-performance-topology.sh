@@ -178,7 +178,7 @@ printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%
   "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
-printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
+printf 'plan: restart and verify runtime-log-indexer, then %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
 [ "$MODE" = apply ] || exit 0
 
 [ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }
@@ -190,6 +190,9 @@ case "$CURRENT_DIR" in
     ;;
 esac
 [ -f "$CURRENT_DIR/backend/dist/server.js" ] || { echo "missing built server: $CURRENT_DIR/backend/dist/server.js" >&2; exit 1; }
+[ -f "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" ] || { echo "missing Go runtime log indexer: $CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" >&2; exit 1; }
+[ ! -L "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" ] || { echo 'Go runtime log indexer must be a regular file' >&2; exit 1; }
+[ -x "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" ] || { echo 'Go runtime log indexer is not executable' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" ] || { echo 'missing runtime preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" ] || { echo 'missing performance metrics registry preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/.env" ] || { echo 'missing release backend/.env' >&2; exit 1; }
@@ -403,7 +406,8 @@ if [ "$SCOPE" = system ]; then
   for readable in \
     "$CURRENT_DIR/backend/dist/server.js" \
     "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" \
-    "$CURRENT_DIR/backend/.env"; do
+    "$CURRENT_DIR/backend/.env" \
+    "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer"; do
     "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -r "$readable" \
       || { echo "service user cannot read required release file: $readable" >&2; exit 1; }
     if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$readable"; then
@@ -413,6 +417,8 @@ if [ "$SCOPE" = system ]; then
   done
   "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$NODE_BIN" \
     || { echo "service user cannot execute node: $NODE_BIN" >&2; exit 1; }
+  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" \
+    || { echo 'service user cannot execute Go runtime log indexer' >&2; exit 1; }
   migrate_runtime_ownership
   for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
   for writable in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do
@@ -426,6 +432,7 @@ MUTATED=0
 NGINX_BACKUP="$NGINX_CONFIG.performance-backup.$$"
 
 service_names() {
+  printf '%s\n' runtime-log-indexer
   printf '%s\n' control-1
   index=1
   while [ "$index" -le "$GATEWAY_COUNT" ]; do
@@ -451,6 +458,7 @@ nginx_reload() {
 }
 
 activation_service_names() {
+  printf '%s\n' runtime-log-indexer
   index=1
   while [ "$index" -le "$GATEWAY_COUNT" ]; do
     printf 'gateway-%s\n' "$index"
@@ -463,11 +471,16 @@ service_port() {
   case "$1" in
     control-1) printf '%s' "$CONTROL_PORT" ;;
     gateway-*) index="${1#gateway-}"; printf '%s' "$((GATEWAY_BASE_PORT + index - 1))" ;;
+    runtime-log-indexer) printf '%s' 0 ;;
   esac
 }
 
 service_role() {
-  case "$1" in control-1) printf control ;; *) printf gateway ;; esac
+  case "$1" in
+    control-1) printf control ;;
+    runtime-log-indexer) printf runtime-log-indexer ;;
+    *) printf gateway ;;
+  esac
 }
 
 instance_id_for() {
@@ -491,6 +504,27 @@ render_run_script() {
   {
     printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
     printf 'export PATH="%s"\n' "$NODE_PATH"
+    if [ "$name" = runtime-log-indexer ]; then
+      printf '%s\n' \
+        'read_dotenv_value() {' \
+        '  key="$1"' \
+        '  file="$2"' \
+        '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") || (substr(line, 1, 1) == "\x27" && substr(line, length(line), 1) == "\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
+        '}' \
+        'postgres_url="${JUHE_AI_RUNTIME_LOG_POSTGRES_URL:-${JUHE_AI_POSTGRES_URL:-}}"' \
+        'if [ -z "$postgres_url" ] && [ -f "backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_RUNTIME_LOG_POSTGRES_URL backend/.env)"; fi' \
+        'if [ -z "$postgres_url" ] && [ -f "backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_POSTGRES_URL backend/.env)"; fi' \
+        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_RUNTIME_LOG_POSTGRES_URL or JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
+        'export JUHE_AI_RUNTIME_MODE=performance' \
+        'export JUHE_AI_RUNTIME_LOG_STORE=postgres' \
+        'export JUHE_AI_RUNTIME_LOG_POSTGRES_URL="$postgres_url"' \
+        'export JUHE_AI_POSTGRES_URL="$postgres_url"' \
+        'export JUHE_AI_RUNTIME_LOG_INSTANCE_ID="'"$instance_id"'"' \
+        'export JUHE_AI_LOG_DIR="'"$RUNTIME_LOG_DIR"'"' \
+        'export JUHE_AI_LOG_FILE_ENABLED=true' \
+        'cd "'"$CURRENT_DIR"'"' \
+        'exec "'"$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer"'"'
+    else
     printf '%s\n' 'export NODE_ENV=production'
     printf 'export JUHE_AI_RUNTIME_MODE=performance\n'
     printf 'export JUHE_AI_PERFORMANCE_NODE_ROLE=%s\n' "$role"
@@ -512,6 +546,7 @@ render_run_script() {
     printf 'cd "%s"\n' "$CURRENT_DIR"
     printf '%s\n' 'node backend/dist/scripts/preflight/check-node-sqlite.js'
     printf '%s\n' 'exec node backend/dist/server.js'
+    fi
   } > "$output"
   chmod 755 "$output"
 }
@@ -640,6 +675,25 @@ wait_for_health() {
     attempt=$((attempt + 1))
   done
   echo "$name did not remain healthy on port $port" >&2
+  return 1
+}
+
+wait_for_indexer() {
+  name=runtime-log-indexer
+  label="$(service_label "$name")"
+  consecutive=0
+  attempt=1
+  while [ "$attempt" -le 20 ]; do
+    if launchctl print "$DOMAIN/$label" 2>/dev/null | grep -Eq 'state = running|pid = [1-9][0-9]*'; then
+      consecutive=$((consecutive + 1))
+      [ "$consecutive" -ge 3 ] && return 0
+    else
+      consecutive=0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  echo 'runtime-log-indexer launchd service did not remain running' >&2
   return 1
 }
 
@@ -826,13 +880,21 @@ for name in $(activation_service_names); do
   mv -f -- "$STAGE_DIR/$name.sh" "$run_script"
   mv -f -- "$STAGE_DIR/$name.plist" "$plist"
   launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || true
-  metrics_fence_ms="$(performance_metrics_registry_time_ms)"
+  if [ "$name" != runtime-log-indexer ]; then
+    metrics_fence_ms="$(performance_metrics_registry_time_ms)"
+  fi
   launchctl bootstrap "$DOMAIN" "$plist"
   launchctl kickstart -k "$DOMAIN/$(service_label "$name")"
-  wait_for_health "$name"
-  wait_for_metrics_registry "$name" "$metrics_fence_ms"
+  if [ "$name" = runtime-log-indexer ]; then
+    wait_for_indexer
+  else
+    wait_for_health "$name"
+    wait_for_metrics_registry "$name" "$metrics_fence_ms"
+  fi
 done
-for name in $(service_names); do wait_for_health "$name"; done
+for name in $(service_names); do
+  if [ "$name" = runtime-log-indexer ]; then wait_for_indexer; else wait_for_health "$name"; fi
+done
 
 mv -f -- "$STAGE_DIR/nginx.conf" "$NGINX_CONFIG"
 nginx_test

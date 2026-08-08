@@ -5,7 +5,7 @@
 ## 文件
 
 - `install-launchd-service.sh`：生成固定 `bin/run.sh`，安装 user LaunchAgent 或 system LaunchDaemon，只守护 juhe-ai 主进程并启用 `KeepAlive`；更新已有服务失败时恢复原 `run.sh`、plist 和原 loaded 状态。
-- `install-performance-topology.sh`：仅用于高性能模式，在同一台 macOS 上安装一个 control、默认 3 个 gateway，以及由 control 看护的 Usage 2 / Log 2 / Stats 1 / Ops 1 worker；逐节点健康后还必须看到 Redis freshness fence 之后、且 PID 属于本次健康拓扑的新指标样本，才原子切换已被 Nginx 主配置 include 的配置文件，失败恢复 launchd 和 Nginx。
+- `install-performance-topology.sh`：仅用于高性能模式，在同一台 macOS 上安装独立的 `runtime-log-indexer` Go LaunchDaemon/LaunchAgent、一个 control、默认 3 个 gateway，以及由 control 看护的 Usage 2 / Log 2 / Stats 1 / Ops 1 worker；F1 indexer 使用 PostgreSQL 和同一日志目录，不使用 Redis，也不依赖 Node worker。逐节点健康后还必须看到 Redis freshness fence 之后、且 PID 属于本次健康拓扑的新指标样本，才原子切换已被 Nginx 主配置 include 的配置文件，失败恢复 launchd 和 Nginx。
 - `manage-sing-box.sh`：只接管已证明为 loopback、唯一且由 `sing-box` 持有的监听，并通过实际 SOCKS5 代理探测；也可显式选择 Homebrew service 或 user launchd。
 - `diagnose-proxy-dns.sh`：只读检查 DNS、监听端口、launchd 状态和直连/代理连通性。
 - `temporary-cutover.sh`：在已经准备好的主服务与临时服务之间调用环境私有 switch adapter，切换失败自动回滚入口。
@@ -29,7 +29,7 @@
 - 发布流程在替换任何 WireGuard plist、wrapper 或配置前必须创建 root-owned release lock；恢复器看到该标记只记录。发布完成、回滚完成或人工确认停止恢复后才可删除标记。
 - 真实路径、label、用户、入口域名、端口、代理订阅和凭据由部署人员通过参数或服务器私有配置提供，不写入仓库。
 - 高性能拓扑脚本不会安装 Nginx，也不会修改 Nginx 主配置；`--nginx-config` 必须是主配置已 include 的绝对路径，并应通过 `--nginx-bin` 与 `--nginx-main-config` 明确绑定实际运行实例。生产 apply 还应通过 `--release-dir` 绑定不可变发布目录，脚本会解析物理路径后再生成运行脚本，避免 `current` 并发切换造成进程版本混用。默认仅 dry-run，`--apply` 要求构建产物、共享 `backend/.env`、Node、launchd、Nginx 和所有目标端口均可用。
-- 默认单槽路径保持 `bin/performance`、`logs` 与 `shared/usage-spool`。主槽与临时槽并存时，临时槽必须额外提供唯一的 `--runtime-dir` 和 `--nginx-upstream-suffix`：运行根目录必须是 base 物理目录内的真实子目录，运行脚本、launchd 日志和 usage spool 都从该根目录派生；suffix 只能是 `A-Za-z0-9_` 且长度为 1 到 48，生成的 gateway/control Nginx upstream 名称会带上该 suffix。调用方仍须同时使用独立的 release、label prefix、端口、Nginx include 文件、数据库与 Redis 身份；脚本不会替这些外部隔离资源做推断。
+- 默认单槽路径保持 `bin/performance`、`logs` 与 `shared/usage-spool`。主槽与临时槽并存时，临时槽必须额外提供唯一的 `--runtime-dir` 和 `--nginx-upstream-suffix`：运行根目录必须是 base 物理目录内的真实子目录，运行脚本、launchd 日志和 usage spool 都从该根目录派生；suffix 只能是 `A-Za-z0-9_` 且长度为 1 到 48，生成的 gateway/control Nginx upstream 名称会带上该 suffix。调用方仍须同时使用独立的 release、label prefix、端口、Nginx include 文件、数据库与 Redis 身份；脚本不会替这些外部隔离资源做推断。F1 `runtime-log-indexer` 的实例 ID 由 `--instance-id-prefix` 与固定服务名组成，必须稳定且唯一；apply 会 fail-fast 检查 `backend-go/juhe-ai-runtime-log-indexer` 是发布包内可执行的常规文件，并在 system scope 下验证服务用户可读/执行。Go 运行脚本优先读取 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`，再回退 `JUHE_AI_POSTGRES_URL`（含 `backend/.env`），缺失即失败，不会切回 SQLite 或 Redis。
 - 高性能槽位 Nginx 是外层可信反向代理与 Node 之间的本机路由层，必须原样传递外层写入的 `X-Real-IP`、`X-Forwarded-For` 和 `X-Forwarded-Proto`。不得用 `$remote_addr` 或 `$proxy_add_x_forwarded_for` 重建来源链，否则 Express 在 `trust proxy=1` 下会把本机回环地址识别为客户端 IP。
 - `install-launchd-service.sh --apply` 必须显式传 `--health-port` 或 loopback `--health-base-url`；加载后在有界窗口内连续确认 `/__aisys__/health` 与 `/__aisys__/api/health`，失败会恢复旧定义和 loaded 状态。
 - `manage-sing-box.sh` 的 `launchd` 更新在 bootstrap、kickstart、监听身份或代理探测失败时恢复旧 plist 与原 loaded 状态；`existing` 不会因为任意进程占用端口就接管。
