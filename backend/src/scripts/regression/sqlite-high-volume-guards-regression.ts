@@ -18,7 +18,7 @@ const routeStrategyAvailabilityGuardSource = source('src/storage/route-strategy-
 const groupWriteRepositorySource = source('src/storage/group-write.repository.ts')
 const routeStrategyRepositorySource = source('src/storage/route-strategy.repository.ts')
 const publicApiLogCaptureSource = source('src/modules/public-api-logs/public-api-log-capture.middleware.ts')
-const runtimeLogsSource = source('src/storage/runtime-logs.repository.ts')
+const runtimeLogsSource = source('src/storage/runtime-log-query.repository.ts')
 const rebuildUsageStatsSource = source('src/scripts/maintenance/rebuild-usage-stats.ts')
 const usageStatsRuntimeHelpersSource = source('src/storage/usage-stats-runtime-helpers.ts')
 

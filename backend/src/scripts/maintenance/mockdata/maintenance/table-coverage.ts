@@ -563,7 +563,6 @@ function createCodexContextStateCoverage(created: CreatedMockdata): void {
 }
 
 function createBackgroundJobCoverage(database: StatsDatabase, now: string): void {
-  const runningStartedAt = new Date(Date.now() - 8 * minuteMs).toISOString()
   const completedStartedAt = new Date(Date.now() - 3 * 60 * minuteMs).toISOString()
   const completedFinishedAt = new Date(Date.now() - 2 * 60 * minuteMs).toISOString()
   database.prepare(`
@@ -591,54 +590,6 @@ function createBackgroundJobCoverage(database: StatsDatabase, now: string): void
     0,
     completedStartedAt,
     completedFinishedAt
-  )
-  database.prepare(`
-    INSERT INTO background_task_runs (
-      run_id, job_name, job_type, worker_role, status, lease_key, owner_id,
-      params_json, result_json, error_message, submitted_at, started_at, heartbeat_at,
-      finished_at, duration_ms, exit_code, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
-  `).run(
-    `${idPrefix}background_task_runtime_log_cursor`,
-    'runtime_log_ingest',
-    'scheduled',
-    'ops-worker',
-    'running',
-    `${idPrefix}lease_runtime_log_cursor`,
-    `${idPrefix}worker_ops_01`,
-    JSON.stringify({ logFile: `${idPrefix}runtime.log` }),
-    JSON.stringify({}),
-    null,
-    runningStartedAt,
-    runningStartedAt,
-    now,
-    runningStartedAt,
-    now
-  )
-  database.prepare(`
-    INSERT INTO background_job_leases (
-      lease_key, job_name, shard_key, owner_id, run_id,
-      lease_until, heartbeat_at, started_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(lease_key) DO UPDATE SET
-      job_name = excluded.job_name,
-      shard_key = excluded.shard_key,
-      owner_id = excluded.owner_id,
-      run_id = excluded.run_id,
-      lease_until = excluded.lease_until,
-      heartbeat_at = excluded.heartbeat_at,
-      started_at = excluded.started_at,
-      updated_at = excluded.updated_at
-  `).run(
-    `${idPrefix}lease_runtime_log_cursor`,
-    'runtime_log_ingest',
-    `${idPrefix}runtime.log`,
-    `${idPrefix}worker_ops_01`,
-    `${idPrefix}background_task_runtime_log_cursor`,
-    new Date(Date.now() + 5 * minuteMs).toISOString(),
-    now,
-    runningStartedAt,
-    now
   )
 }
 

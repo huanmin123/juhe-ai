@@ -43,7 +43,7 @@ const operationLogRepository = readSource('storage/operation-log-read.repository
 assertFunctionExcludes(operationLogRepository, 'listOperationLogsWithFilters', 'changes_json', '操作日志列表查询不得读取 changes payload')
 assertFunctionExcludes(operationLogRepository, 'listOperationLogsWithFilters', 'metadata_json', '操作日志列表查询不得读取 metadata payload')
 
-const runtimeLogRepository = readSource('storage/runtime-logs.repository.ts')
+const runtimeLogRepository = readSource('storage/runtime-log-query.repository.ts')
 assertIncludes(runtimeLogRepository, 'includeRawJson: false', '运行日志列表不得返回 rawJson')
 assertIncludes(runtimeLogRepository, 'runtimeLogDetailFromRow', '运行日志详情必须保留 rawJson 单独读取')
 
