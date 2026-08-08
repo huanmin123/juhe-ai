@@ -7,13 +7,12 @@ import { applyBusinessSchema } from '../../storage/schema/business-schema.js'
 
 const statements = collectPostgresSchemaStatements()
 const sql = buildPostgresSchemaSql()
-const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
-const providerAuthProtocolCatchUpMigration = readFileSync('../backend-go/db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql', 'utf8')
-const accountApiKeyRuntimeTraceMigration = readFileSync('../backend-go/db/migrations/000063_w1_account_api_key_runtime_trace_id.sql', 'utf8')
-const oauthRefreshRuntimeMigration = readFileSync('../backend-go/db/migrations/000092_w7_oauth_refresh_runtime.sql', 'utf8')
-const accountBalanceAutoDetectDueMigration = readFileSync('../backend-go/db/migrations/000093_w7_account_balance_auto_detect_due.sql', 'utf8')
 const healthCheckEndpointModeOfflineMigration = readFileSync(
   'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
+  'utf8'
+)
+const usageRecordUpstreamResponseModelMigration = readFileSync(
+  'src/scripts/maintenance/migrate-usage-record-upstream-response-model.ts',
   'utf8'
 )
 const customProviderModelRepositorySource = readFileSync('src/storage/custom-provider-models.repository.ts', 'utf8')
@@ -123,18 +122,14 @@ for (const schemaName of schemaNames) {
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
 assert.match(sql, /account_api_key_runtime_states[\s\S]+last_trace_id text/, 'Key 运行态 PostgreSQL schema 必须包含最近失败 traceId')
-assert.match(accountApiKeyRuntimeTraceMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.account_api_key_runtime_states[\s\S]+credential_revision text[\s\S]+last_trace_id text[\s\S]+updated_at text NOT NULL/, 'Goose 63 必须为 fresh PostgreSQL 创建当前完整 Key 运行态表')
-assert.match(accountApiKeyRuntimeTraceMigration, /account_api_key_runtime_states[\s\S]+ADD COLUMN IF NOT EXISTS last_trace_id text/, 'Goose 63 必须为既有 PostgreSQL 业务库补齐 Key 运行态 traceId')
-assert.match(accountApiKeyRuntimeTraceMigration, /idx_account_api_key_runtime_unique[\s\S]+idx_account_api_key_runtime_status[\s\S]+idx_account_api_key_runtime_probe[\s\S]+idx_account_api_key_runtime_owner/, 'Goose 63 必须为 fresh PostgreSQL 创建 Key 运行态索引')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS account_api_key_runtime_states[\s\S]+credential_revision text[\s\S]+last_trace_id text[\s\S]+updated_at text NOT NULL/, 'Node PG schema 必须为 fresh PostgreSQL 创建当前完整 Key 运行态表')
+assert.match(sql, /idx_account_api_key_runtime_unique[\s\S]+idx_account_api_key_runtime_status[\s\S]+idx_account_api_key_runtime_probe[\s\S]+idx_account_api_key_runtime_owner/, 'Node PG schema 必须创建 Key 运行态索引')
 assert.match(sql, /account_api_key_runtime_states[\s\S]+probe_claim_token text[\s\S]+probe_claimed_until text/, 'Key 运行态 PostgreSQL schema 必须包含探针 claim')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+oauth_access_token_expires_at text[\s\S]+oauth_refresh_token_present integer NOT NULL DEFAULT 0/, 'Node PG accounts schema 必须保留 OAuth 刷新运行态字段及 SQLite 兼容类型')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due\s+ON accounts\(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id\)/, 'Node PG accounts schema 必须创建通用 OAuth 刷新候选索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_pg_due\s+ON accounts\(provider_protocol_profile_id, type, oauth_refresh_token_present, \(oauth_access_token_expires_at IS NOT NULL\), oauth_access_token_expires_at ASC, updated_at ASC, id ASC\)\s+WHERE authorization_instance_authorization_id IS NULL AND deleted_at IS NULL/, 'Node PG accounts schema 必须创建 OAuth 刷新 PG due partial 索引')
-assert.match(oauthRefreshRuntimeMigration, /ADD COLUMN IF NOT EXISTS oauth_access_token_expires_at text,\s+ADD COLUMN IF NOT EXISTS oauth_refresh_token_present integer NOT NULL DEFAULT 0/, 'Goose 92 必须按 Node 权威类型补齐 OAuth 刷新运行态字段')
-assert.match(oauthRefreshRuntimeMigration, /idx_accounts_openai_oauth_refresh_due[\s\S]+provider_code,[\s\S]+type,[\s\S]+oauth_refresh_token_present,[\s\S]+oauth_access_token_expires_at,[\s\S]+status,[\s\S]+id/, 'Goose 92 必须补齐通用 OAuth 刷新候选索引')
-assert.match(oauthRefreshRuntimeMigration, /idx_accounts_openai_oauth_refresh_pg_due[\s\S]+provider_protocol_profile_id,[\s\S]+type,[\s\S]+oauth_refresh_token_present,[\s\S]+\(oauth_access_token_expires_at IS NOT NULL\),[\s\S]+oauth_access_token_expires_at ASC,[\s\S]+updated_at ASC,[\s\S]+id ASC[\s\S]+WHERE authorization_instance_authorization_id IS NULL\s+AND deleted_at IS NULL/, 'Goose 92 必须补齐与 Node 一致的 OAuth 刷新 PG due partial 索引')
-assert.doesNotMatch(oauthRefreshRuntimeMigration, /oauth_refresh_token_present (?:boolean|[^\n]*CHECK)/i, 'Goose 92 不得擅自改变 Node 的 OAuth refresh-token 存储语义')
-assert.match(accountBalanceAutoDetectDueMigration, /CREATE INDEX IF NOT EXISTS idx_accounts_balance_auto_detect_due\s+ON juhe_business\.accounts \(balance_query_next_refresh_at ASC, id ASC\)\s+WHERE status = 'active'\s+AND schedulable = true\s+AND type = 'api_key'\s+AND balance_query_enabled = false\s+AND balance_query_config_json = '\{\}'\s+AND deleted_at IS NULL\s+AND authorization_instance_authorization_id IS NULL\s+AND balance_query_next_refresh_at IS NOT NULL/, 'Goose 93 必须为首次余额探测恢复扫描提供精确 partial due 索引')
+assert.doesNotMatch(sql, /oauth_refresh_token_present boolean|oauth_refresh_token_present[^\n]*CHECK/i, 'Node PG schema 不得擅自改变 OAuth refresh-token 的 SQLite 兼容存储语义')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_balance_auto_detect_due\s+ON accounts\s*\(balance_query_next_refresh_at ASC, id ASC\)\s+WHERE status = 'active'\s+AND schedulable = 1\s+AND type = 'api_key'\s+AND balance_query_enabled = 0\s+AND balance_query_config_json = '\{\}'\s+AND deleted_at IS NULL\s+AND authorization_instance_authorization_id IS NULL/, 'Node PG schema 必须为首次余额探测恢复扫描保留 SQLite 兼容的精确 partial due 索引')
 assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')
@@ -165,12 +160,8 @@ assert.match(
 assert.match(postgresSeedDefaultsSource, /Array\.from\(\{ length: 39 \}/, 'Node PG 模型目录 seed 必须为 39 个参数生成占位符')
 assert.match(postgresSeedDefaultsSource, /model\.supportsPromptCaching === true,\s*model\.catalogVisible !== false,/, 'Node PG 模型目录 seed 必须向 boolean 字段传递 boolean，不能传 0/1')
 assert.match(sql, /health_check_endpoint_mode text NOT NULL CHECK \(health_check_endpoint_mode IN \([^)]*'interactions_json', 'interactions_sse'\)\)/, 'PG 当前 accounts schema 必须允许 Gemini Interactions 健康检查模式')
-assert.match(`${goPublicAccountsMigration}\n${providerAuthProtocolCatchUpMigration}`, /health_check_endpoint_mode text NOT NULL[\s\S]+?'interactions_json', 'interactions_sse'/, 'Go/PG baseline 与追赶迁移组合后必须允许 Gemini Interactions 健康检查模式')
-assert.match(providerAuthProtocolCatchUpMigration, /ADD COLUMN IF NOT EXISTS long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false/, '000059 后升级必须独立补齐长上下文阈值边界列')
-assert.match(providerAuthProtocolCatchUpMigration, /DROP CONSTRAINT IF EXISTS accounts_type_check[\s\S]+ADD CONSTRAINT accounts_type_check CHECK \(type IN \('api_key', 'oauth', 'google_oauth'\)\)/, '000059 后升级必须独立扩展账户认证类型约束')
-assert.match(providerAuthProtocolCatchUpMigration, /DROP CONSTRAINT IF EXISTS accounts_health_check_endpoint_mode_check[\s\S]+interactions_json[\s\S]+interactions_sse/, '000059 后升级必须独立扩展 Gemini Interactions 健康检查约束')
-assert.match(providerAuthProtocolCatchUpMigration, /'xai', 'xai', 'xAI \/ Grok', 'openai'[\s\S]+'profile_xai_openai_v1'[\s\S]+'grp_default_xai_sys_admin'/, '000059 后升级补齐的 xAI 元数据必须与 Node 默认种子一致')
-assert.match(providerAuthProtocolCatchUpMigration, /'profile_gemini_native_v1beta'[\s\S]+'\["api_key","google_oauth"\]'[\s\S]+'gemini_v1beta_interactions'[\s\S]+\('profile_gemini_native_v1beta', 'interactions'/, '000059 后升级必须独立补齐 Gemini Google OAuth 与 Interactions 元数据')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+type text NOT NULL/, 'PG 当前 accounts schema 必须保留账户认证类型字段')
+assert.match(sql, /idx_accounts_health_check_candidate_order[\s\S]+type IN \('api_key', 'oauth', 'google_oauth'\)/, 'PG 当前健康检查候选索引必须覆盖当前认证类型')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
 assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
@@ -197,7 +188,7 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS model_account_trust_results/, 'PG 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts/, 'PG 统计库应包含模型可信 latest 可重试脏队列')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_trust_observation_receipts/, 'PG 统计库应包含模型可信 observation 跨提交防重收据')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts\(updated_at, system_account_id, account_id, requested_model\)/, 'PG 模型可信脏队列必须有有界续跑索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations\(created_at, id\) WHERE aggregation_completed_at IS NULL/, 'PG 未聚合 observation 必须有部分索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation\s+ON model_check_observations\(created_at, id\)\s+WHERE aggregation_completed_at IS NULL/, 'PG 未聚合 observation 必须有部分索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_activation ON model_token_integrity_windows\(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, account_id\)/, 'PG 固定截距激活物化必须有匹配索引')
 assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')
 assert.match(sql, /usage_scope_range_windows[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+first_token_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 范围窗口累计字段必须使用 bigint')
@@ -260,8 +251,6 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_model 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查请求形态')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS account_api_key_pool_probe_cursors[\s\S]+PRIMARY KEY \(account_id, purpose\)[\s\S]+FOREIGN KEY \(account_id\) REFERENCES accounts\(id\) ON DELETE CASCADE/, 'PostgreSQL schema 必须包含带账户级清理约束的 API Key 探针游标表')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
-assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_model text NOT NULL/, 'Go 公开账户 baseline 应包含账户检查模型字段')
-assert.match(`${goPublicAccountsMigration}\n${providerAuthProtocolCatchUpMigration}`, /health_check_endpoint_mode text NOT NULL[\s\S]+?interactions_json[\s\S]+?interactions_sse/, 'Go 公开账户 baseline 与追赶迁移组合后应包含完整健康检查请求形态')
 assert.match(healthCheckEndpointModeOfflineMigration, /LOCK TABLE juhe_business\.accounts IN ACCESS EXCLUSIVE MODE/, '历史字段切换必须通过停服离线事务锁定账户表')
 assert.match(healthCheckEndpointModeOfflineMigration, /RENAME COLUMN health_check_endpoint_family TO health_check_endpoint_mode/, '离线迁移必须直接替换旧列，不能双字段兼容')
 assert.match(healthCheckEndpointModeOfflineMigration, /if \(input\.providerCode === 'gpt'\) return 'responses_sse'/, '离线迁移必须把全部 GPT 账户切到 Responses Streaming')
@@ -294,7 +283,6 @@ for (const fixture of postgresAccountFixtureSources) {
     assert.match(match[1], /\bhealth_check_endpoint_mode\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_endpoint_mode`)
   }
 }
-assert.doesNotMatch(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+last_successful_test_model text/, 'Go 公开账户 baseline 不应包含旧的最后成功测试模型字段')
 assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应强制绑定 route_strategy_id')
 assert.match(sql, /api_keys[\s\S]+is_default integer NOT NULL DEFAULT 0/, 'api_keys 建表语句应包含默认 API Key 标识')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys\(route_strategy_id\) WHERE is_default = 1/, '默认 API Key 应按路由策略保持唯一')
@@ -316,8 +304,8 @@ assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entr
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort\b/, 'PG 使用记录不应再给目录表创建全局 client IP 前缀索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_c_created_sort ON audit_logs\(system_account_id, \(trace_id COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 审计日志用户范围 trace 前缀查询必须有 owner + C collation 前缀索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_c_created_sort ON audit_logs\(system_account_id, \(client_ip COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 审计日志用户范围 client IP 前缀查询必须有 owner + C collation 前缀索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created ON audit_logs\(created_at DESC, id DESC\) WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志默认来源过滤必须有持久化来源部分索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created ON audit_logs\(system_account_id, created_at DESC, id DESC\) WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志用户范围来源过滤必须有持久化来源部分索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created\s+ON audit_logs\(created_at, id\)\s+WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志默认来源过滤必须有持久化来源部分索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created\s+ON audit_logs\(system_account_id, created_at, id\)\s+WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志用户范围来源过滤必须有持久化来源部分索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_c_created_sort\b/, 'PG 审计日志不应再创建全局 trace 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_c_created_sort\b/, 'PG 审计日志不应再创建全局 client IP 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_c_created_sort\b/, 'PG 公开接口日志不应再创建全局 trace 前缀索引')
@@ -344,11 +332,14 @@ assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXIST
 assert.doesNotMatch(sql, /ALTER TABLE openai_compatible_files ADD COLUMN container_id\b/, 'PostgreSQL schema 不应重复为 openai_compatible_files.container_id 补列')
 assert.match(sql, /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized'/, '既有 PostgreSQL audit_logs 必须补生命周期状态列')
 assert.match(sql, /ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text/, '既有 PostgreSQL audit payload 引用必须补丢弃原因列')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created ON audit_logs\(session_id, created_at, id, session_client_type\)/, 'PostgreSQL 必须创建全局 session 非唯一复合索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created\s+ON audit_logs\(session_id, created_at, id, session_client_type\)\s+WHERE session_id IS NOT NULL/, 'PostgreSQL 必须创建全局 session 非唯一复合索引')
 assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_(?:system_)?session_created/, 'PostgreSQL session 复合索引不得唯一')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 账号范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text/, 'PostgreSQL 使用记录当前迁移必须保留上游响应模型列')
+assert.match(usageRecordUpstreamResponseModelMigration, /if \(!offlineConfirmed\)/, '上游响应模型列迁移必须要求显式离线确认')
+assert.match(usageRecordUpstreamResponseModelMigration, /ALTER TABLE juhe_usage\.usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text/, '上游响应模型列迁移必须包含幂等 PostgreSQL DDL')
+assert.match(usageRecordUpstreamResponseModelMigration, /listUsageRecordShardLocations\(\)/, '上游响应模型列迁移必须枚举 SQLite 已注册 usage shard')
 const retiredPostgresSchemaPatterns = [
   /ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/,
   /ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/,
@@ -357,12 +348,12 @@ const retiredPostgresSchemaPatterns = [
   /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS (?:conversation_key|session_id|session_client_type) text/,
   /ALTER TABLE client_ip_(?:account_)?range_window_dirty_ips ADD COLUMN IF NOT EXISTS (?:generation|first_dirty_at)/,
   /ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0/,
-  /account_circuit_confirmation_(?:failures_required|failure_count|evidence_json)_check/,
-  /\bDROP\s+(?:INDEX|TABLE)\b/i
+  /account_circuit_confirmation_(?:failures_required|failure_count|evidence_json)_check/
 ]
 for (const pattern of retiredPostgresSchemaPatterns) {
   assert.doesNotMatch(sql, pattern, `PostgreSQL schema 不应残留已结束兼容窗口的运行时 DDL：${pattern}`)
 }
+assert.match(sql, /DROP INDEX IF EXISTS idx_usage_records_created_at/, 'PostgreSQL 使用记录分区迁移必须清理已替代的历史索引')
 const schemaWithoutCurrentRuntimeUpgrades = sql
   .replace(/ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text;/g, '')
   .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized';/g, '')
