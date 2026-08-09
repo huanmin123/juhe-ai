@@ -116,14 +116,16 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 	if err != nil {
 		return RetentionResult{}, err
 	}
+	deletedBlobFiles := make([]string, 0, len(blobRows))
 	for _, row := range blobRows {
-		if err := removeBlobFile(s.blobDir, row.storageKey); err != nil {
-			return RetentionResult{}, err
-		}
-		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("audit_payload_blobs")+` WHERE id=? AND NOT EXISTS (SELECT 1 FROM `+s.table("audit_payload_refs")+` WHERE headers_blob_id=? OR body_blob_id=?)`), row.id, row.id, row.id); err != nil {
+		deleted, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("audit_payload_blobs")+` WHERE id=? AND NOT EXISTS (SELECT 1 FROM `+s.table("audit_payload_refs")+` WHERE headers_blob_id=? OR body_blob_id=?)`), row.id, row.id, row.id)
+		if err != nil {
 			return RetentionResult{}, fmt.Errorf("删除 F3 unreferenced blob metadata 失败: %w", err)
 		}
-		result.DeletedPayloadBlobs++
+		if count, countErr := deleted.RowsAffected(); countErr == nil && count == 1 {
+			result.DeletedPayloadBlobs++
+			deletedBlobFiles = append(deletedBlobFiles, row.storageKey)
+		}
 	}
 
 	s.hotMu.Lock()
@@ -138,6 +140,11 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 	}
 	if err := tx.Commit(); err != nil {
 		return RetentionResult{}, fmt.Errorf("提交 F3 retention 事务失败: %w", err)
+	}
+	for _, storageKey := range deletedBlobFiles {
+		if err := removeBlobFile(s.blobDir, storageKey); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
@@ -259,6 +266,9 @@ func (s *sqlStore) unreferencedBlobRows(ctx context.Context, tx *sql.Tx, ids []s
 		args = append(args, stringArgs(ids)...)
 	}
 	query += ` ORDER BY created_at ASC,id ASC LIMIT ?`
+	if s.mode == ModePostgres {
+		query += ` FOR UPDATE`
+	}
 	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
