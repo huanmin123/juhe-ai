@@ -12,14 +12,15 @@
     "8e6477037",
     "4cc480f17",
     "a7bca6d0a",
-    "18ae1f263"
+    "18ae1f263",
+    "2a14c2bac"
   ],
-  "restoreProcedure": "Stop the Go table-monitor process and Node application, restore the exact rollbackCommit or an explicitly reviewed newer full baseline, then restore every listed archive entry as one complete feature. Do not copy an archive overlay into a newer active tree, reintroduce a Node/Go switch, or run both writers.",
+  "restoreProcedure": "Stop the Go table-monitor process and Node application, restore the complete Git rollbackCommit baseline as one unit, and use the archive only for comparison. Never overwrite a newer active tree with an archived file, reintroduce a Node/Go switch, or run both writers.",
   "entries": [
     {
       "originalPath": "backend/src/storage/table-monitor.repository.ts",
       "archivePath": "migration-backup/node/table-monitor-sampling-retention/table-monitor.repository.ts.original",
-      "sha256": "C5E2325CAD308CB2EB37D240DB37BA9FDC98BE18490810106E79F0C28275A073",
+      "sha256": "908C85772DB910D313BEA247C83F22979A676DA79D53BE0017B827A1F7C75251",
       "kind": "complete Node repository snapshot",
       "restore": "Restore only with the exact rollback baseline and the full F2 shared-file changes; this file is not a standalone overlay for a newer tree."
     },

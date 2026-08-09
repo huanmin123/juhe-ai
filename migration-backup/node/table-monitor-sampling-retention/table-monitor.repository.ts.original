@@ -13,7 +13,6 @@ import {
   getBusinessDatabase,
   getCodexContextStateShardDatabase,
   getDatasetDatabase,
-  getTableMonitorDatabase,
   getStatsDatabase,
   getUsageCatalogDatabase,
   newId,
@@ -357,7 +356,7 @@ export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), opt
 }
 
 export function getTableStorageOverview(input: TableStorageOverviewInput = {}): TableStorageOverview {
-  const database = getTableMonitorDatabase()
+  const database = getStatsDatabase()
   const databases = (database.prepare(`
     SELECT ${databaseStorageOverviewSelectColumns('snapshots')}
     FROM database_storage_snapshots AS snapshots
@@ -492,7 +491,7 @@ export function listTableStorageHistory(input: {
   limit?: number
 }): TableStorageHistoryPoint[] {
   const range = normalizeDateRange(input.startAt, input.endAt)
-  const rows = getTableMonitorDatabase()
+  const rows = getStatsDatabase()
     .prepare(`
       SELECT ${tableStorageHistorySelectColumns()}
       FROM table_storage_snapshots
@@ -556,7 +555,7 @@ export function listDatabaseStorageHistory(input: {
   limit?: number
 } = {}): DatabaseStorageHistoryPoint[] {
   const range = normalizeDateRange(input.startAt, input.endAt)
-  const database = getTableMonitorDatabase()
+  const database = getStatsDatabase()
   const limit = normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
   const statement = database
     .prepare(`
