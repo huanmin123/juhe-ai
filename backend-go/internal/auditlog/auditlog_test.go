@@ -990,6 +990,7 @@ func TestPostgresLeaseSmokeWhenExplicitlyConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = oldTx.Rollback() }()
 	if err := impl.verifyLeaseTx(ctx, oldTx, newLease); err != nil {
 		t.Fatalf("真实 PostgreSQL old transaction initial fence 失败: %v", err)
 	}
@@ -1033,7 +1034,23 @@ func TestPostgresLeaseSmokeWhenExplicitlyConfigured(t *testing.T) {
 
 const postgresSmokeDestructiveToken = "I_UNDERSTAND_THIS_EMPTY_DB_IS_DISPOSABLE"
 
-var postgresSmokeDatabaseName = regexp.MustCompile(`^juhe_ai_f3_smoke_[a-z0-9_]+$`)
+var postgresSmokeDatabaseName = regexp.MustCompile(`^juhe_ai_sub2api_dev_f3_smoke_[a-z0-9_]+$`)
+
+func TestPostgresSmokeDatabaseWhitelist(t *testing.T) {
+	for databaseName, allowed := range map[string]bool{
+		"juhe_ai_sub2api_dev_f3_smoke_contract_01": true,
+		"juhe_ai_sub2api_dev_f3_smoke_a":           true,
+		"juhe_ai_sub2api_dev_f3_smoke_":            false,
+		"juhe_ai_f3_smoke_contract_01":             false,
+		"juhe_ai_sub2api_dev_f3_smoke_Upper":       false,
+		"juhe_ai_sub2api_dev_f3_smoke_dot.name":    false,
+		"juhe_ai_sub2api_dev_f3_smoke_name-extra":  false,
+	} {
+		if got := postgresSmokeDatabaseName.MatchString(databaseName); got != allowed {
+			t.Fatalf("PostgreSQL smoke database whitelist mismatch: name=%q got=%v want=%v", databaseName, got, allowed)
+		}
+	}
+}
 
 func assertDestructivePostgresSmokeTarget(t *testing.T, postgresURL string) {
 	t.Helper()
@@ -1046,7 +1063,7 @@ func assertDestructivePostgresSmokeTarget(t *testing.T, postgresURL string) {
 	}
 	databaseName := strings.TrimPrefix(strings.TrimSpace(parsed.Path), "/")
 	if !postgresSmokeDatabaseName.MatchString(databaseName) {
-		t.Fatalf("真实 PostgreSQL smoke 仅允许可销毁库名 juhe_ai_f3_smoke_*，当前为 %q", databaseName)
+		t.Fatalf("真实 PostgreSQL smoke 仅允许可销毁库名 juhe_ai_sub2api_dev_f3_smoke_<name>（<name> 仅小写字母、数字或下划线且非空），当前为 %q", databaseName)
 	}
 }
 
