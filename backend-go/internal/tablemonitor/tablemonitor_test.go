@@ -264,6 +264,53 @@ FROM table_storage_snapshots WHERE database_role = 'business' AND table_name = '
 	}
 }
 
+func TestCleanupUntilCompleteAcceptsExactFinalBatch(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteTestEnv(root)
+	cfg, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	staleAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	err = RunWithOwnerLease(context.Background(), cfg, store, func(ownerCtx context.Context) error {
+		lease, err := ownerLeaseFromContext(ownerCtx)
+		if err != nil {
+			return err
+		}
+		if err := store.WriteSample(ownerCtx, lease, collectedSample{databases: []DatabaseSnapshot{{Role: "business", Path: "fixture", SampledAt: staleAt}}}); err != nil {
+			return err
+		}
+		deleted, err := store.CleanupUntilComplete(ownerCtx, lease, staleAt.Add(time.Second), 1, 1)
+		if err != nil {
+			return err
+		}
+		if deleted != 1 {
+			t.Fatalf("exact final retention batch must delete one row, got %d", deleted)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadConfigRequiresExplicitStoreMode(t *testing.T) {
+	_, err := LoadConfig(func(key string) string {
+		if key == "JUHE_AI_TABLE_MONITOR_INSTANCE_ID" {
+			return "test-instance"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_STORE") {
+		t.Fatalf("missing store mode must fail explicitly, got %v", err)
+	}
+}
+
 func TestCollectBoundedLimitsHighShardCounts(t *testing.T) {
 	targets := make([]sqliteTarget, 96)
 	for index := range targets {
@@ -287,6 +334,21 @@ func TestCollectBoundedLimitsHighShardCounts(t *testing.T) {
 	}
 	if len(results) != len(targets) || maximum.Load() > 3 {
 		t.Fatalf("high shard count must preserve all results within the configured bound: results=%d maximum=%d", len(results), maximum.Load())
+	}
+}
+
+func TestSelectShardWindowBoundsAndRotates(t *testing.T) {
+	entries := make([]string, 96)
+	for index := range entries {
+		entries[index] = fmt.Sprintf("%03d.sqlite3", index)
+	}
+	first := selectShardWindow(entries, 3, time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC), time.Minute)
+	second := selectShardWindow(entries, 3, time.Date(2026, 8, 9, 0, 1, 0, 0, time.UTC), time.Minute)
+	if len(first) != 3 || len(second) != 3 {
+		t.Fatalf("Codex shard round must enforce the total source budget: first=%d second=%d", len(first), len(second))
+	}
+	if first[0] == second[0] {
+		t.Fatalf("Codex shard window must rotate between sampling slots: first=%v second=%v", first, second)
 	}
 }
 

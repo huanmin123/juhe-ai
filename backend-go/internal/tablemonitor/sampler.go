@@ -19,9 +19,10 @@ type collectedSample struct {
 }
 
 type sqliteTarget struct {
-	role     string
-	path     string
-	shardKey string
+	role      string
+	path      string
+	shardKey  string
+	maxTables int
 }
 
 type postgresTarget struct {
@@ -63,27 +64,33 @@ func RunOnce(ctx context.Context, cfg Config, store *Store, now time.Time) (Samp
 
 func collectSQLite(ctx context.Context, cfg Config, sampledAt time.Time) (collectedSample, error) {
 	targets := []sqliteTarget{
-		{role: "business", path: cfg.BusinessPath},
-		{role: "dataset", path: cfg.DatasetPath},
-		{role: "usage-catalog", path: cfg.UsageCatalogPath},
-		{role: "stats", path: cfg.StatsPath},
+		{role: "business", path: cfg.BusinessPath, maxTables: cfg.MaxTables},
+		{role: "dataset", path: cfg.DatasetPath, maxTables: cfg.MaxTables},
+		{role: "usage-catalog", path: cfg.UsageCatalogPath, maxTables: cfg.MaxTables},
+		{role: "stats", path: cfg.StatsPath, maxTables: cfg.MaxTables},
 	}
 	entries, err := filepath.Glob(filepath.Join(cfg.CodexShardRoot, "*.sqlite3"))
 	if err != nil {
 		return collectedSample{}, fmt.Errorf("枚举 Codex context shard 失败: %w", err)
 	}
 	sort.Strings(entries)
-	for _, path := range entries {
-		targets = append(targets, sqliteTarget{role: "codex-context-state", path: path, shardKey: filepath.Base(path)})
+	maxShardSources := min(cfg.MaxTables, cfg.MaxConcurrentSources)
+	selectedEntries := selectShardWindow(entries, maxShardSources, sampledAt, cfg.Interval)
+	shardTableBudget := 0
+	if len(selectedEntries) > 0 {
+		shardTableBudget = max(1, cfg.MaxTables/len(selectedEntries))
+	}
+	for _, path := range selectedEntries {
+		targets = append(targets, sqliteTarget{role: "codex-context-state", path: path, shardKey: filepath.Base(path), maxTables: shardTableBudget})
 	}
 	parts, err := collectBounded(ctx, cfg.MaxConcurrentSources, targets, func(target sqliteTarget) (collectedSample, error) {
-		return collectSQLiteTarget(ctx, target, sampledAt, cfg.MaxTables)
+		return collectSQLiteTarget(ctx, target, sampledAt, target.maxTables)
 	})
 	if err != nil {
 		return collectedSample{}, err
 	}
 	var collected collectedSample
-	shards := make([]collectedSample, 0, len(entries))
+	shards := make([]collectedSample, 0, len(selectedEntries))
 	for index, part := range parts {
 		if targets[index].role == "codex-context-state" {
 			shards = append(shards, part)
@@ -92,13 +99,17 @@ func collectSQLite(ctx context.Context, cfg Config, sampledAt time.Time) (collec
 		collected.databases = append(collected.databases, part.databases...)
 		collected.tables = append(collected.tables, part.tables...)
 	}
-	if len(shards) > 0 {
+	if len(shards) > 0 && len(selectedEntries) == len(entries) {
 		database, tables, err := aggregateCodexShards(cfg.CodexShardRoot, sampledAt, shards)
 		if err != nil {
 			return collectedSample{}, err
 		}
 		collected.databases = append(collected.databases, database)
 		collected.tables = append(collected.tables, tables...)
+	} else {
+		for _, shard := range shards {
+			collected.tables = append(collected.tables, shard.tables...)
+		}
 	}
 	sort.Slice(collected.databases, func(i, j int) bool { return collected.databases[i].Role < collected.databases[j].Role })
 	sort.Slice(collected.tables, func(i, j int) bool {
@@ -108,6 +119,31 @@ func collectSQLite(ctx context.Context, cfg Config, sampledAt time.Time) (collec
 		return collected.tables[i].TableName < collected.tables[j].TableName
 	})
 	return collected, nil
+}
+
+// selectShardWindow bounds one sampling round without introducing a queue. The
+// start index is derived from the sampling slot, so every shard is reached as
+// slots advance even after a process restart.
+func selectShardWindow(entries []string, limit int, sampledAt time.Time, interval time.Duration) []string {
+	if len(entries) == 0 || limit <= 0 {
+		return nil
+	}
+	if limit >= len(entries) {
+		return append([]string(nil), entries...)
+	}
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	slot := sampledAt.UTC().UnixNano() / int64(interval)
+	start := int(slot % int64(len(entries)))
+	if start < 0 {
+		start += len(entries)
+	}
+	selected := make([]string, 0, limit)
+	for offset := 0; offset < limit; offset++ {
+		selected = append(selected, entries[(start+offset)%len(entries)])
+	}
+	return selected
 }
 
 func collectSQLiteTarget(ctx context.Context, target sqliteTarget, sampledAt time.Time, maxTables int) (collectedSample, error) {
@@ -449,6 +485,12 @@ func collectPostgresTarget(ctx context.Context, db *sql.DB, target postgresTarge
 	if err := db.QueryRowContext(ctx, "SELECT current_setting('block_size')::bigint").Scan(&blockSize); err != nil {
 		return collectedSample{}, fmt.Errorf("读取 PostgreSQL block_size 失败: %w", err)
 	}
+	var tableCount, schemaIndexCount int
+	if err := db.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'm')),
+  (SELECT COUNT(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1)`, target.schema).Scan(&tableCount, &schemaIndexCount); err != nil {
+		return collectedSample{}, fmt.Errorf("读取 PostgreSQL %s 表目录计数失败: %w", target.schema, err)
+	}
 	rows, err := db.QueryContext(ctx, `WITH index_summary AS (
   SELECT i.indrelid, COALESCE(SUM(index_class.relpages), 0)::bigint AS index_pages, COUNT(*)::integer AS index_count
   FROM pg_index i
@@ -473,7 +515,8 @@ LEFT JOIN pg_class parent ON parent.oid = inheritance.inhparent
 LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
 LEFT JOIN index_summary i ON i.indrelid = c.oid
 WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'm')
-ORDER BY c.relname ASC`, target.schema)
+ORDER BY c.relname ASC
+LIMIT $2`, target.schema, maxTables)
 	if err != nil {
 		return collectedSample{}, fmt.Errorf("读取 PostgreSQL %s 表目录失败: %w", target.schema, err)
 	}
@@ -496,17 +539,22 @@ ORDER BY c.relname ASC`, target.schema)
 	if err := rows.Err(); err != nil {
 		return collectedSample{}, err
 	}
-	var pageCount int64
-	var indexCount int
+	var fileBytes int64
 	for _, row := range catalog {
-		pageCount += row.tablePages + row.indexPages
-		indexCount += row.indexCount
+		fileBytes += row.totalBytes
 	}
-	fileBytes := pageCount * blockSize
-	database := DatabaseSnapshot{Role: target.role, Path: target.path, SampledAt: sampledAt, FileBytes: &fileBytes, PageSize: &blockSize, PageCount: &pageCount, UsedBytes: &fileBytes, TableCount: len(catalog), IndexCount: indexCount}
-	limit := min(maxTables, len(catalog))
-	tables := make([]TableSnapshot, 0, limit)
-	for _, row := range catalog[:limit] {
+	database := DatabaseSnapshot{Role: target.role, Path: target.path, SampledAt: sampledAt, PageSize: &blockSize, TableCount: tableCount, IndexCount: schemaIndexCount}
+	if len(catalog) == tableCount {
+		pageCount := int64(0)
+		if blockSize > 0 {
+			pageCount = (fileBytes + blockSize - 1) / blockSize
+		}
+		database.FileBytes = &fileBytes
+		database.PageCount = &pageCount
+		database.UsedBytes = &fileBytes
+	}
+	tables := make([]TableSnapshot, 0, len(catalog))
+	for _, row := range catalog {
 		rowCount, tableBytes, indexBytes, totalBytes := row.rowCount, row.tableBytes, row.indexBytes, row.totalBytes
 		pageTotal := int64(0)
 		if blockSize > 0 {

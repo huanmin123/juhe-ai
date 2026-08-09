@@ -235,6 +235,16 @@ WHERE database.database_role = 'business'
 	if fileBytes <= 0 || tableBytes <= 0 || totalBytes < tableBytes || tableKind != "table" {
 		t.Fatalf("PostgreSQL RunOnce 采样字段不正确: file=%d table=%d total=%d kind=%q", fileBytes, tableBytes, totalBytes, tableKind)
 	}
+	var expectedSchemaBytes int64
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint
+FROM pg_class AS c
+JOIN pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname = 'juhe_business' AND c.relkind IN ('r', 'p', 'm')`).Scan(&expectedSchemaBytes); err != nil {
+		t.Fatalf("计算 PostgreSQL schema 精确 relation-size 期望值失败: %s", redactPostgresTableMonitorSmokeError(err, url))
+	}
+	if fileBytes != expectedSchemaBytes {
+		t.Fatalf("PostgreSQL database file_bytes 必须汇总 pg_total_relation_size: got=%d want=%d", fileBytes, expectedSchemaBytes)
+	}
 }
 
 func cleanupPostgresTableMonitorSmoke(t *testing.T, store *Store, lease OwnerLease, cleanupOwner, url string) {

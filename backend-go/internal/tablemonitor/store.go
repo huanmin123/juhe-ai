@@ -390,7 +390,48 @@ func (s *Store) CleanupUntilComplete(ctx context.Context, lease OwnerLease, cuto
 			return total, nil
 		}
 	}
+	pending, err := s.hasExpiredSnapshots(ctx, lease, cutoff)
+	if err != nil {
+		return total, err
+	}
+	if !pending {
+		return total, nil
+	}
 	return total, fmt.Errorf("表监控 retention 在 %d 批后仍未清空；已删除 %d 行，拒绝静默遗漏", maxBatches, total)
+}
+
+func (s *Store) hasExpiredSnapshots(ctx context.Context, lease OwnerLease, cutoff time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := s.verifyOwnerLease(ctx, tx, lease); err != nil {
+		return false, err
+	}
+	var pending bool
+	if s.mode == ModePostgres {
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+  SELECT 1 FROM juhe_stats.table_storage_snapshots WHERE sampled_at < $1
+  UNION ALL
+  SELECT 1 FROM juhe_stats.database_storage_snapshots WHERE sampled_at < $1
+)`, cutoff.UTC()).Scan(&pending)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+  SELECT 1 FROM table_storage_snapshots WHERE sampled_at < ?
+  UNION ALL
+  SELECT 1 FROM database_storage_snapshots WHERE sampled_at < ?
+)`, cutoff.UTC().Format(time.RFC3339Nano), cutoff.UTC().Format(time.RFC3339Nano)).Scan(&pending)
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return pending, nil
 }
 
 func (s *Store) populateGrowth(ctx context.Context, sample *collectedSample) error {

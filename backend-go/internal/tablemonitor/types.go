@@ -21,6 +21,7 @@ type Config struct {
 	CodexShardRoot       string
 	PostgresURL          string
 	Interval             time.Duration
+	RunTimeout           time.Duration
 	RetentionDays        int
 	MaxTables            int
 	MaxConcurrentSources int

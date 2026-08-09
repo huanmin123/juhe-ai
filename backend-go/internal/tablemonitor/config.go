@@ -12,6 +12,7 @@ import (
 
 const (
 	defaultInterval             = time.Minute
+	defaultRunTimeout           = 45 * time.Second
 	defaultOwnerLease           = 5 * time.Minute
 	defaultRetentionDays        = 30
 	defaultMaxTables            = 256
@@ -25,11 +26,19 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if instanceID == "" {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_INSTANCE_ID 是必填配置")
 	}
-	mode := Mode(strings.ToLower(strings.TrimSpace(firstNonEmpty(getenv("JUHE_AI_TABLE_MONITOR_STORE"), getenv("JUHE_AI_DATABASE_DRIVER"), string(ModeSQLite)))))
+	configuredMode := strings.TrimSpace(firstNonEmpty(getenv("JUHE_AI_TABLE_MONITOR_STORE"), getenv("JUHE_AI_DATABASE_DRIVER")))
+	if configuredMode == "" {
+		return Config{}, fmt.Errorf("必须设置 JUHE_AI_TABLE_MONITOR_STORE 或 JUHE_AI_DATABASE_DRIVER")
+	}
+	mode := Mode(strings.ToLower(configuredMode))
 	if mode != ModeSQLite && mode != ModePostgres {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_STORE 必须为 sqlite 或 postgres")
 	}
 	interval, err := durationOrDefault("JUHE_AI_TABLE_MONITOR_INTERVAL", getenv("JUHE_AI_TABLE_MONITOR_INTERVAL"), defaultInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	runTimeout, err := durationOrDefault("JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT", getenv("JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT"), defaultRunTimeout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -69,6 +78,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		CodexShardRoot:       strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
 		PostgresURL:          strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
 		Interval:             interval,
+		RunTimeout:           runTimeout,
 		RetentionDays:        retentionDays,
 		MaxTables:            maxTables,
 		MaxConcurrentSources: maxConcurrentSources,

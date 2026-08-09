@@ -30,7 +30,9 @@ func main() {
 	defer stop()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	run := func(runCtx context.Context) error {
-		result, err := tablemonitor.RunOnce(runCtx, cfg, store, time.Now().UTC())
+		attemptCtx, cancel := context.WithTimeout(runCtx, cfg.RunTimeout)
+		defer cancel()
+		result, err := tablemonitor.RunOnce(attemptCtx, cfg, store, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -41,7 +43,7 @@ func main() {
 		if *runOnce {
 			return run(runCtx)
 		}
-		logger.Info("Go 表存储监控 worker 启动", "interval", cfg.Interval.String(), "ownerLease", cfg.OwnerLease.String(), "retentionDays", cfg.RetentionDays, "maxTables", cfg.MaxTables, "maxConcurrentSources", cfg.MaxConcurrentSources, "retentionBatchSize", cfg.RetentionBatchSize, "retentionMaxBatches", cfg.RetentionMaxBatches)
+		logger.Info("Go 表存储监控 worker 启动", "interval", cfg.Interval.String(), "runTimeout", cfg.RunTimeout.String(), "ownerLease", cfg.OwnerLease.String(), "retentionDays", cfg.RetentionDays, "maxTables", cfg.MaxTables, "maxConcurrentSources", cfg.MaxConcurrentSources, "retentionBatchSize", cfg.RetentionBatchSize, "retentionMaxBatches", cfg.RetentionMaxBatches)
 		if err := run(runCtx); err != nil {
 			return err
 		}
