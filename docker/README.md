@@ -1,6 +1,8 @@
 # Docker 部署
 
-这是轻量 Docker 入口。默认模式运行 Node 的 Web、管理 API、`/v1` 网关、background worker 和 DB service，并同时运行独立的 Go `runtime-log-indexer` sidecar；它不经 Node owner switch、bridge 或队列。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue、应用服务和同一 Go sidecar；Redis Streams 可靠队列默认写入 `redis-queue`，但 F1 sidecar 不使用 Redis。
+这是轻量 Docker 入口。默认模式的静态 Compose 拓扑为 Node（Web、管理 API、`/v1` 网关、background worker、DB service）加 F1 `runtime-log-indexer` 和 F2 `table-monitor` 两个独立 Go sidecar；它们不经 Node owner switch、bridge 或队列。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue、Node 应用和同样两个 Go sidecar；Redis Streams 可靠队列默认写入 `redis-queue`，但 F1/F2 不使用 Redis。
+
+> 当前仅验证 Compose 静态装配和本地静态测试，未执行 Docker runtime。本文不构成 Docker、macOS 或生产部署已完成的声明；生产候选必须从干净、固定 commit 的 release 构建，当前有未提交改动的工作区不可发布。
 
 ## 文件说明
 
@@ -8,6 +10,7 @@
 - `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue 和应用服务。
 - `Dockerfile`：运行镜像构建文件，只组装已构建好的 `backend/dist`、`frontend/dist` 和后端生产依赖。
 - `Dockerfile.runtime-log-indexer`：F1 Go 运行日志索引 sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-runtime-log-indexer`。
+- `Dockerfile.table-monitor`：F2 Go 表监控 sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-table-monitor`。
 - `entrypoint.sh`：容器启动入口，设置默认环境变量、创建数据目录、生成或复用 `JUHE_AI_SECRET`，并执行 SQLite 运行时预检。
 - `.env.example`：可选配置模板。不复制也能使用默认值启动；需要改端口、公网地址、密钥或镜像名时复制为 `.env`。
 - `.env.performance.example`：高性能模式配置模板，复制为 `.env.performance` 后必须修改数据库、Redis 和应用密钥。
@@ -23,7 +26,7 @@ pnpm build
 
 Docker 镜像使用当前 `backend/dist` 和 `frontend/dist`，不会在服务器镜像构建阶段重新跑前端构建。如果缺少必要产物，`docker compose up -d --build` 会直接提示缺失文件，并要求先执行上面的构建命令。
 
-F1 sidecar 在镜像构建时独立编译 Go 程序，不需要预先生成 Go 二进制。
+F1 与 F2 sidecar 都在镜像构建时独立编译 Go 程序，不需要预先生成 Go 二进制。
 
 ## 启动
 
@@ -61,11 +64,13 @@ pnpm --filter juhe-ai-backend postgres:init-schema
 
 如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`、`redis-queue:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`、redis-queue `6381`，不要把 Redis 容器内 `6379` 误当宿主机端口。
 
-## F1 运行日志 sidecar
+## F1 / F2 Go sidecar
 
-两个 Compose 文件都会启动 `runtime-log-indexer`。它由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，Compose 示例使用稳定名称；同一 SQLite 运行日志专用卷或 PostgreSQL 数据库的多实例部署必须改为各自稳定且唯一的值。standalone Compose 将 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 放在独立卷：Node 只读挂载，Go sidecar 写入；sidecar 只有在应用 `/__aisys__/api/health` 确认 DB service 就绪后才启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是默认常驻扫描模式，不能改为默认一次性任务。
+两个 Compose 文件都会启动 `runtime-log-indexer` 与 `table-monitor`。F1 由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，F2 由 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 标识；多实例部署必须为各自事实库使用稳定且唯一的值。两者只有在应用 `/__aisys__/api/health` 确认 DB service 就绪后才启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是 F1 默认常驻扫描模式，不能改为默认一次性任务；F2 按 interval、lease 和 retention 参数常驻采样。
 
-standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 F1 sidecar，并显式传入所有 Node SQLite owner 路径和 F2 专用库路径，以便拒绝物理文件复用；F2 sidecar 同样只读挂载 F1 专用卷，接收 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 完成对称校验。两者各自只写自己的独立 volume。performance 模式只共享 `juhe-ai-logs`，并直接使用 `JUHE_AI_POSTGRES_URL`；它等待 PgBouncer 健康和 Node `/__aisys__/api/health` 的 DB-service 就绪，不依赖 Redis 数据面。
+standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 F1，并为 F1/F2 提供独立输出 volume；两者显式接收对方输出路径和所有 Node SQLite owner 路径，以便拒绝物理文件复用。各自只写自己的 volume，Node 只读其产物。F1/F2 对 SQLite 输出强制 `WAL` 与 `busy_timeout=5000`。performance 模式使用 `JUHE_AI_POSTGRES_URL`：F1 写其日志 schema，F2 写 `juhe_stats`；两者等待 PgBouncer 健康和 Node `/__aisys__/api/health` 的 DB-service 就绪，不依赖 Redis 数据面。
+
+F1 需要 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、store、对应 SQLite 路径或 PG URL、`JUHE_AI_LOG_DIR`；F2 需要 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、store、对应 SQLite 输出路径或 PG URL。SQLite 部署人工预检还必须确认 usage shard root 不与任一 F1/F2 输出或源库重叠：Go 当前未实现该 root 的启动校验，此项应作为未来 usage 迁移门禁，不能写成已完成的部署验证。
 
 ## 按需配置
 
@@ -126,9 +131,10 @@ curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
 docker compose logs --tail=100 runtime-log-indexer
+docker compose logs --tail=100 table-monitor
 ```
 
-期望前两个接口返回 `200`，前端路径返回页面，并且日志里能看到主服务、DB service 和 background worker 启动记录。
+期望前两个接口返回 `200`，前端路径返回页面，并且日志里能看到主服务、DB service、background worker、F1 与 F2 启动记录。还必须通过 Node 只读 `/runtime-logs` 和 `/table-monitor` 接口确认两个 sidecar 的数据新鲜度；Node health 不能替代任一 sidecar 验证。
 
 ## 清理
 

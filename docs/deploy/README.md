@@ -23,7 +23,7 @@
 - [跨平台部署基线](部署指南.md)：发布包兼容矩阵、解压配置、启动验证、常驻运行、项目/业务备份、迁移和常见排障。
 - [部署流程示例](部署流程示例.md)：一次从选择场景、构建、选择平台文档、配置 HTTPS / 代理到验证的完整示例。
 - [Docker 部署指南](Docker部署指南.md)：单容器镜像构建、默认配置、启动、验证和清理。
-- [高性能模式部署指南](高性能模式部署指南.md)：当前 Node 阶段的 PostgreSQL、PgBouncer、Redis cache/state/queue、同机多网关与独立 worker、初始化、设置、验证和备份；Go 迁移完成后 PostgreSQL + Redis 将成为唯一正式模式。
+- [高性能模式部署指南](高性能模式部署指南.md)：当前 Node 主流程的 PostgreSQL、PgBouncer、Redis cache/state/queue、同机多网关与独立 worker、初始化、设置、验证和备份；F1/F2 已能使用 PostgreSQL，但这不代表整体 Node 后端或生产拓扑已迁移。
 - [反向代理与高并发隧道部署指南](反向代理与高并发隧道部署指南.md)：公网 Edge L4、WireGuard、PROXY v2、Caddy/Nginx、Linux/macOS 参数、受控切换、回滚和容量门禁。
 - [Go 渐进减法迁移开发构建部署调整](../migration/开发构建部署调整.md)：后端迁移到 Go 期间的构建、发布包、Docker、服务化和回滚目标。
 - [Linux 部署目录](linux/README.md)：Linux 发布包、Docker、systemd、防火墙和代理访问差异。
@@ -38,7 +38,7 @@
 - 构建指南回答“如何从源码生成可部署发布包，以及构建后如何检查产物”。
 - 跨平台部署基线回答“发布包在目标机器上如何启动、配置、验证、常驻和迁移”，不负责选择服务器或家庭宽带入口方案。
 - Docker 部署指南回答“如何直接用 Docker 镜像和 Compose 运行项目”。
-- 高性能模式部署指南当前回答“如何用 Docker 或非 Docker 方式部署 PostgreSQL + Redis 中间件、初始化 PostgreSQL schema / 默认数据、记录生产凭据，以及如何配置 performance 模式”；Go 迁移完成后不再保留 standalone / performance 两套模式，部署文档需要收敛为 PostgreSQL + Redis 默认运行方式。
+- 高性能模式部署指南当前回答“如何用 Docker 或非 Docker 方式部署 PostgreSQL + Redis 中间件、初始化 PostgreSQL schema / 默认数据、记录生产凭据，以及如何配置 performance 模式”。当前仍同时支持 SQLite 与 PostgreSQL；仅 F1/F2 由 Go 接管，不能由此推导整体退出 Node、SQLite 或 standalone / performance 任一模式。
 - 部署场景目录回答“这次部署到底是服务器入口还是家庭宽带反代入口，以及该读哪些后续文档”。
 - 反向代理与高并发隧道指南回答“公网 Edge 如何通过 WireGuard 安全、高并发地回源，以及系统参数、切换和容量如何验收”。
 - 三端子目录回答“Windows、macOS、Linux 在启动脚本、服务化、Docker 访问宿主机代理、防火墙和反向代理上有什么差异”。
@@ -48,3 +48,4 @@
 - 压测、性能分析和容量结论统一放入 `docs/reports/`，不要混入部署操作手册。
 - 影响本地开发启动或测试验证的内容应优先更新 `docs/develop/`，不要混入部署文档。
 - 影响环境变量、数据目录、加密密钥或发布包结构时，需要同时确认构建指南和部署指南。
+- 当前 F1（运行日志索引与保留）和 F2（表监控采样、快照与保留）分别由 Go sidecar 唯一写入；其余 Node 网关、账户、主 API、usage/audit/publiclogs/model-check/stats/ops 仍由 Node owner。两项均为直接异步任务，不使用队列。本文档只记录本地开发和静态装配事实，不构成 macOS、Docker 或生产环境已运行/已发布的声明。
