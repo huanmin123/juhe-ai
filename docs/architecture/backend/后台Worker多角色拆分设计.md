@@ -41,7 +41,7 @@
 | --- | --- | --- | --- |
 | `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、record maintenance、dataset / usage shard 清理 | 运行日志索引由独立 Go F1 indexer 负责；server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
 | `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
-| `log-worker` | performance persistent | 审计、操作、公开接口日志消费；副本 0 负责运行日志文件导入与保留期任务 | 各日志 Stream lag 或运行日志文件 backlog 持续超标 |
+| `log-worker` | performance persistent | 审计、操作、公开接口日志消费；运行日志文件索引与保留由独立 Go F1 `runtime-log-indexer` 负责 | 各日志 Stream lag 持续超标 |
 | `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量、表监控、统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |
 | `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、代理延迟刷新、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活 |
 | `temporary-maintenance-worker` | temporary | 历史按需任务入口，运行后退出 | 不作为常驻扩容对象 |
@@ -101,7 +101,7 @@
 
 | 触发条件 | 可能动作 | 前置要求 |
 | --- | --- | --- |
-| usage / 审计 / 运行日志长期积压，且 ingest 事件循环或 dataset writer 成为瓶颈 | 从 `ingest-worker` 拆出专门日志或 usage ingest worker | 有队列积压、写耗时和 dropped 指标支撑；先确认 SQLite owner 和 shard 策略 |
+| usage / 审计 / 操作 / 公开接口日志长期积压，且 ingest 事件循环或 dataset writer 成为瓶颈 | 从 `ingest-worker` 拆出专门日志或 usage ingest worker | 有队列积压、写耗时和 dropped 指标支撑；先确认 SQLite owner 和 shard 策略；运行日志 F1 不属于该拆分范围 |
 | 统计窗口刷新长期压住系统采样或账号质量 | 从 `stats-worker` 拆出窗口 worker 或按 shard 租约分片 | 先补任务租约、幂等和 stats writer typed command 边界 |
 | ops 外部 I/O 长期影响 OAuth 保活或账号恢复 | 从 `ops-worker` 拆出 account-test / probe worker | 有运行态队列和外部请求耗时证据；保留业务库写回走 DB service |
 

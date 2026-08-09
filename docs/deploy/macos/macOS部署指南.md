@@ -165,7 +165,7 @@ macOS 裸机高性能模式固定使用三个物理进程：
 
 使用 [macOS 运维脚本](operations/README.md) 中的 `install-redis-role-services.sh` 和 `verify-redis-role-isolation.sh`。安装器默认 dry-run；apply 只能在临时服务接管、已留存 plist/config 哈希与恢复副本后执行。temporary 的三个 PID、PostgreSQL 数据库和 namespace 必须都与 main 不同，不能复制 main env 后只换 namespace。
 
-queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空 usage、audit、operation log、public API log 和 record maintenance 五条 Stream。普通运行日志不进入 Redis，必须单独确认角色 JSONL 文件 backlog 已由 ingest-worker 追平。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
+queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空 usage、audit、operation log、public API log 和 record maintenance 五条 Stream。普通运行日志不进入 Redis，必须单独确认角色 JSONL 文件 backlog 已由 Go F1 `runtime-log-indexer` 追平并且 cursor/freshness 正常。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
 
 ## 5. HTTPS 和端口边界
 
