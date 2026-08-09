@@ -30,6 +30,8 @@ for (const launcher of launcherSources) {
   assertRuntimeLauncherGeneratesInstanceID(launcher.platform, launcher.runtime)
   assertTableMonitorLauncherRejectsMissingInstanceID(launcher.platform, launcher.tableMonitor)
   assertTableMonitorLauncherStartsWithConfiguredInstanceID(launcher.platform, launcher.tableMonitor)
+  assertRuntimeLauncherForwardsTableMonitorPath(launcher.platform, launcher.runtime)
+  assertTableMonitorLauncherForwardsRuntimeLogPath(launcher.platform, launcher.tableMonitor)
 }
 
 console.log('release Go sidecar launcher regression passed')
@@ -86,12 +88,57 @@ function assertTableMonitorLauncherStartsWithConfiguredInstanceID(platform, sour
   }
 }
 
-function runLauncher(source, overrides) {
+function assertRuntimeLauncherForwardsTableMonitorPath(platform, source) {
+  const result = runLauncher(captureChildEnvironment(source), {}, {
+    captureChildEnvironment: true,
+    baseEnv: [
+      'JUHE_AI_DATABASE_DRIVER=sqlite',
+      'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+      'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
+    ].join('\n')
+  })
+  try {
+    assert.equal(result.status, 0, `${platform} F1 launcher failed: ${result.output}`)
+    assert.equal(result.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(result.backendRoot, 'data', 'table-monitor.sqlite3'))
+  } finally {
+    result.cleanup()
+  }
+}
+
+function assertTableMonitorLauncherForwardsRuntimeLogPath(platform, source) {
+  const result = runLauncher(captureChildEnvironment(source), { JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'release-sidecar-regression' }, {
+    captureChildEnvironment: true,
+    baseEnv: [
+      'JUHE_AI_DATABASE_DRIVER=sqlite',
+      'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+      'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
+    ].join('\n')
+  })
+  try {
+    assert.equal(result.status, 0, `${platform} F2 launcher failed: ${result.output}`)
+    assert.equal(result.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(result.backendRoot, 'data', 'runtime-log.sqlite3'))
+  } finally {
+    result.cleanup()
+  }
+}
+
+function captureChildEnvironment(source) {
+  assert.match(source, /spawn\(binaryPath, \[\], \{/u, 'launcher must spawn its Go sidecar without positional arguments')
+  const synchronousImport = source.replace(
+    /import \{ spawn \} from ['"]node:child_process['"]/u,
+    "import { spawnSync } from 'node:child_process'\nconst spawn = (binaryPath, args, options) => {\n  const outcome = spawnSync(binaryPath, args, { ...options, detached: false })\n  if (outcome.error) throw outcome.error\n  return { pid: outcome.status === 0 ? 1 : undefined, unref() {} }\n}"
+  )
+  assert.notEqual(synchronousImport, source, 'launcher must import spawn from node:child_process')
+  return synchronousImport.replace('spawn(binaryPath, [], {', 'spawn(binaryPath, [process.argv[4]], {')
+}
+
+function runLauncher(source, overrides, options = {}) {
   // Keep the temporary package beneath backend so createRequire() finds the real
   // production dotenv dependency without reading or modifying backend/.env.
   const isolatedBackend = mkdtempSync(join(backendRoot, '.release-launcher-regression-'))
   const logPath = join(isolatedBackend, 'sidecar.log')
   writeFileSync(join(isolatedBackend, 'package.json'), '{"private":true}\n')
+  if (options.baseEnv) writeFileSync(join(isolatedBackend, '.env'), `${options.baseEnv}\n`)
   const env = { ...process.env, ...overrides }
   for (const key of [
     'JUHE_AI_ENV_FILE',
@@ -101,11 +148,21 @@ function runLauncher(source, overrides) {
     'JUHE_AI_DATABASE_DRIVER',
     'JUHE_AI_RUNTIME_MODE',
     'JUHE_AI_RUNTIME_LOG_STORE',
-    'JUHE_AI_TABLE_MONITOR_STORE'
+    'JUHE_AI_TABLE_MONITOR_STORE',
+    'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+    'JUHE_AI_TABLE_MONITOR_DATABASE_PATH'
   ]) {
     if (!Object.hasOwn(overrides, key)) delete env[key]
   }
-  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source, process.execPath, isolatedBackend, logPath], {
+  const capturePath = join(isolatedBackend, 'child-environment.json')
+  const captureScript = join(isolatedBackend, 'capture-child-environment.mjs')
+  if (options.captureChildEnvironment) {
+    writeFileSync(captureScript, "import { writeFileSync } from 'node:fs'\nwriteFileSync(process.env.JUHE_AI_RELEASE_LAUNCHER_CAPTURE_PATH, JSON.stringify(process.env))\n")
+    env.JUHE_AI_RELEASE_LAUNCHER_CAPTURE_PATH = capturePath
+  }
+  const args = ['--input-type=module', '--eval', source, process.execPath, isolatedBackend, logPath]
+  if (options.captureChildEnvironment) args.push(captureScript)
+  const result = spawnSync(process.execPath, args, {
     cwd: repoRoot,
     encoding: 'utf8',
     env,
@@ -115,6 +172,7 @@ function runLauncher(source, overrides) {
     status: result.status,
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
     backendRoot: isolatedBackend,
+    childEnvironment: options.captureChildEnvironment ? JSON.parse(readFileSync(capturePath, 'utf8')) : undefined,
     envWritten: readFileIfPresent(join(isolatedBackend, '.env')) !== null,
     cleanup() {
       rmSync(isolatedBackend, { recursive: true, force: true })

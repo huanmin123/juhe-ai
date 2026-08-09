@@ -155,6 +155,7 @@ const names = [
   'JUHE_AI_RUNTIME_MODE',
   'JUHE_AI_RUNTIME_LOG_STORE',
   'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+  'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
   'JUHE_AI_RUNTIME_LOG_OWNER_LEASE',
   'JUHE_AI_RUNTIME_LOG_ONCE',
   'JUHE_AI_RUNTIME_LOG_POLL_INTERVAL',
@@ -206,6 +207,7 @@ if (runtimeLogStore.toLowerCase() === 'sqlite') {
   childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
   childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
+  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
 }
 
 const logFd = openSync(logPath, 'a')
@@ -284,6 +286,7 @@ const names = [
   'JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE',
   'JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES',
   'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
+  'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
   'JUHE_AI_DATABASE_PATH',
   'JUHE_AI_DATASET_DATABASE_PATH',
   'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
@@ -319,6 +322,7 @@ function absoluteBackendPath(value, fallback) {
 const tableMonitorStore = (childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? '').trim() || (childEnv.JUHE_AI_DATABASE_DRIVER ?? '').trim() || 'sqlite'
 if (tableMonitorStore.toLowerCase() === 'sqlite') {
   childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
+  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
   childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
   childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, './data/juhe-ai-usage-catalog.sqlite3')
