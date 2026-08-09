@@ -17,6 +17,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.host, '127.0.0.2', '进程环境变量 JUHE_AI_HOST 应覆盖 backend/.env')
   assert.equal(runtimeConfig.databasePath.endsWith('env-override-business.sqlite3'), true, '进程环境变量 JUHE_AI_DATABASE_PATH 应覆盖 backend/.env')
   assert.equal(runtimeConfig.datasetDatabasePath.endsWith('env-override-dataset.sqlite3'), true, '进程环境变量 JUHE_AI_DATASET_DATABASE_PATH 应覆盖 backend/.env')
+  assert.equal(runtimeConfig.runtimeLogDatabasePath.endsWith('env-override-runtime-log.sqlite3'), true, '进程环境变量 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 应覆盖 backend/.env')
   assert.equal(runtimeConfig.usageCatalogDatabasePath.endsWith('env-override-usage-catalog.sqlite3'), true, '进程环境变量 JUHE_AI_USAGE_CATALOG_DATABASE_PATH 应覆盖 backend/.env')
   assert.equal(runtimeConfig.statsDatabasePath.endsWith('env-override-stats.sqlite3'), true, '进程环境变量 JUHE_AI_STATS_DATABASE_PATH 应覆盖 backend/.env')
   assert.equal(runtimeConfig.usageShardRoot.endsWith('env-override-usage-shards'), true, '进程环境变量 JUHE_AI_USAGE_SHARD_ROOT 应覆盖 backend/.env')
@@ -186,6 +187,7 @@ const result = spawnRegression({
   JUHE_AI_HOST: '127.0.0.2',
   JUHE_AI_DATABASE_PATH: 'env-override-business.sqlite3',
   JUHE_AI_DATASET_DATABASE_PATH: 'env-override-dataset.sqlite3',
+  JUHE_AI_RUNTIME_LOG_DATABASE_PATH: 'env-override-runtime-log.sqlite3',
   JUHE_AI_USAGE_CATALOG_DATABASE_PATH: 'env-override-usage-catalog.sqlite3',
   JUHE_AI_STATS_DATABASE_PATH: 'env-override-stats.sqlite3',
   JUHE_AI_USAGE_SHARD_ROOT: 'env-override-usage-shards',

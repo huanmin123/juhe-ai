@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { getDatasetDatabase } from './database.js'
+import { getRuntimeLogDatabase } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows, textPrefixUpperBound } from './query-utils.js'
@@ -76,7 +76,7 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
 }
 
 export function getRuntimeLogFacetsReadOnly(): RuntimeLogFacets {
-  const database = getDatasetDatabase()
+  const database = getRuntimeLogDatabase()
   const range = database.prepare('SELECT earliest_time, latest_time, total_count FROM runtime_log_facet_summary WHERE bucket_key = ?').get(runtimeLogFacetBucketKey) as RuntimeLogRow | undefined
   const levels = database.prepare('SELECT level AS value, count FROM runtime_log_level_facets WHERE bucket_key = ? AND count > 0 ORDER BY count DESC, level ASC').all(runtimeLogFacetBucketKey) as RuntimeLogRow[]
   const events = database.prepare('SELECT event FROM runtime_log_event_facets WHERE bucket_key = ? AND count > 0 ORDER BY latest_time DESC, event ASC LIMIT ?').all(runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents) as RuntimeLogRow[]
@@ -107,7 +107,7 @@ export function listRuntimeLogsReadOnly(options: RuntimeLogListOptions = {}): Ru
   const pageSize = normalizeRuntimeLogPageSize(options.pageSize)
   const page = normalizeRuntimeLogPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
-  const rows = getDatasetDatabase()
+  const rows = getRuntimeLogDatabase()
     .prepare(`
       SELECT ${runtimeLogListSelectColumns('rl')}
       FROM runtime_logs rl
@@ -162,7 +162,7 @@ export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
 }
 
 export function getRuntimeLogDetailReadOnly(id: string): RuntimeLogDetail | undefined {
-  const row = getDatasetDatabase().prepare(`
+  const row = getRuntimeLogDatabase().prepare(`
     SELECT ${runtimeLogDetailSelectColumns('rl')}
     FROM runtime_logs rl
     WHERE rl.id = ?
@@ -189,7 +189,7 @@ export async function getRuntimeLogDetailAsync(id: string): Promise<RuntimeLogDe
 }
 
 export function getRuntimeLogDetailDeltaReadOnly(id: string): RuntimeLogDetailDelta | undefined {
-  const row = getDatasetDatabase().prepare(`
+  const row = getRuntimeLogDatabase().prepare(`
     SELECT id, raw_json
     FROM runtime_logs
     WHERE id = ?

@@ -64,21 +64,22 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	config := Config{
-		OwnerID:           fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),
-		OwnerLease:        ownerLease,
-		Mode:              mode,
-		DatasetPath:       strings.TrimSpace(getenv("JUHE_AI_DATASET_DATABASE_PATH")),
-		BusinessPath:      strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
-		PostgresURL:       strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
-		LogDirectory:      strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
-		FileEnabled:       fileEnabled,
-		Once:              once,
-		PollInterval:      pollInterval,
-		RetentionInterval: retentionInterval,
-		RetentionDays:     retentionDays,
-		LogRetentionDays:  logRetentionDays,
-		LogMaxFiles:       logMaxFiles,
-		BatchSize:         batchSize,
+		OwnerID:                fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),
+		OwnerLease:             ownerLease,
+		Mode:                   mode,
+		DatasetPath:            strings.TrimSpace(getenv("JUHE_AI_DATASET_DATABASE_PATH")),
+		RuntimeLogDatabasePath: strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH")),
+		BusinessPath:           strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
+		PostgresURL:            strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
+		LogDirectory:           strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
+		FileEnabled:            fileEnabled,
+		Once:                   once,
+		PollInterval:           pollInterval,
+		RetentionInterval:      retentionInterval,
+		RetentionDays:          retentionDays,
+		LogRetentionDays:       logRetentionDays,
+		LogMaxFiles:            logMaxFiles,
+		BatchSize:              batchSize,
 	}
 	if config.LogDirectory == "" {
 		return Config{}, fmt.Errorf("JUHE_AI_LOG_DIR 是运行日志索引 Go owner 的必填配置")
@@ -88,11 +89,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	switch config.Mode {
 	case ModeSQLite:
-		if config.DatasetPath == "" {
-			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH")
+		if config.RuntimeLogDatabasePath == "" {
+			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
+		}
+		if config.DatasetPath != "" && sameSQLitePath(config.DatasetPath, config.RuntimeLogDatabasePath) {
+			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_DATASET_DATABASE_PATH 指向同一个 SQLite 文件")
 		}
 		if config.BusinessPath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_DATABASE_PATH，无法读取运行日志保留设置")
+		}
+		if sameSQLitePath(config.BusinessPath, config.RuntimeLogDatabasePath) {
+			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_DATABASE_PATH 指向同一个 SQLite 文件")
 		}
 	case ModePostgres:
 		if config.PostgresURL == "" {

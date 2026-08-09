@@ -14,6 +14,7 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-sqlite-writer-boundary-${Date.now()}
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.runtimeLogDatabasePath = join(tempRoot, 'runtime-log.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
@@ -35,9 +36,24 @@ try {
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('chat'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('codex-context-state'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('dataset'), 'ingest-worker')
+  assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('runtime-log'), 'go-runtime-log')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('usage-catalog'), 'ingest-worker')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('stats'), 'stats-writer')
   assert.equal(databaseModule.sqliteWriterBoundaryStrictModeEnabled(), true)
+  assert.equal(databaseModule.mainDatabaseRuntimeInfo('runtime-log').queryOnly, true)
+
+  for (const [processRole, workerRole] of [
+    ['server', 'worker'],
+    ['db-service', 'worker'],
+    ['worker', 'ingest-worker'],
+    ['worker', 'stats-worker'],
+    ['worker', 'ops-worker'],
+    ['worker', 'temporary-maintenance-worker']
+  ] as const) {
+    runtimeConfig.processRole = processRole
+    runtimeConfig.workerRole = workerRole
+    assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('runtime-log'), false, `${processRole}/${workerRole} 不能成为 Go F1 SQLite writer`)
+  }
 
   runtimeConfig.processRole = 'db-service'
   runtimeConfig.workerRole = 'worker'
@@ -107,6 +123,7 @@ try {
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('runtime-log'), false, 'Node offline maintenance 也不能接管 Go F1 SQLite writer')
   databaseModule.getBusinessDatabase()
   databaseModule.getStatsDatabase()
   databaseModule.closeStorageDatabases()
@@ -189,9 +206,9 @@ function assertRuntimeWriteQueueSourceGuards(): void {
   const modelCheckServiceSource = readFileSync(resolve('src/modules/model-checks/model-checks.service.ts'), 'utf8')
   assert(modelCheckServiceSource.includes('requestDatasetWriter'), '模型检测运行时写入必须通过 dataset writer')
   for (const forbidden of ['createModelCheckRun', 'createModelCheckItems', 'finishModelCheckRun']) {
-    assert.equal(
-      modelCheckServiceSource.includes(forbidden),
-      false,
+    assert.doesNotMatch(
+      modelCheckServiceSource,
+      new RegExp(`\\b${forbidden}\\s*\\(`),
       `模型检测 service 不能直接调用数据集库写 repository：${forbidden}`
     )
   }

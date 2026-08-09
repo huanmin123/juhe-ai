@@ -28,6 +28,18 @@ func main() {
 	if err := store.CheckSchema(context.Background()); err != nil {
 		fatal(fmt.Errorf("运行日志索引 schema 验证失败: %w", err))
 	}
+	if len(os.Args) == 2 && os.Args[1] == "--migrate-legacy-sqlite" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		fatalIf(runtimelog.RunWithOwnerLease(ctx, config, store, func(ownerCtx context.Context) error {
+			return runtimelog.MigrateLegacySQLite(ownerCtx, config, store)
+		}))
+		fmt.Fprintln(os.Stdout, "旧运行日志 SQLite 数据迁移和完整性校验完成")
+		return
+	}
+	if len(os.Args) > 1 {
+		fatal(fmt.Errorf("不支持的运行日志索引参数 %q", os.Args[1]))
+	}
 
 	indexer := runtimelog.NewIndexer(config, store)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
