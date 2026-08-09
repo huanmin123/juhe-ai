@@ -28,12 +28,6 @@ func main() {
 	defer store.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := store.Ping(ctx); err != nil {
-		fail(fmt.Errorf("表监控 Store 不可用: %w", err))
-	}
-	if err := store.EnsureSchema(ctx); err != nil {
-		fail(fmt.Errorf("表监控 schema 初始化失败: %w", err))
-	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	run := func(runCtx context.Context) error {
 		result, err := tablemonitor.RunOnce(runCtx, cfg, store, time.Now().UTC())
@@ -47,7 +41,7 @@ func main() {
 		if *runOnce {
 			return run(runCtx)
 		}
-		logger.Info("Go 表存储监控 worker 启动", "interval", cfg.Interval.String(), "ownerLease", cfg.OwnerLease.String(), "retentionDays", cfg.RetentionDays, "maxTables", cfg.MaxTables)
+		logger.Info("Go 表存储监控 worker 启动", "interval", cfg.Interval.String(), "ownerLease", cfg.OwnerLease.String(), "retentionDays", cfg.RetentionDays, "maxTables", cfg.MaxTables, "maxConcurrentSources", cfg.MaxConcurrentSources, "retentionBatchSize", cfg.RetentionBatchSize, "retentionMaxBatches", cfg.RetentionMaxBatches)
 		if err := run(runCtx); err != nil {
 			return err
 		}

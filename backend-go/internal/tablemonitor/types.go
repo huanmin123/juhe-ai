@@ -10,19 +10,22 @@ const (
 )
 
 type Config struct {
-	InstanceID       string
-	OwnerLease       time.Duration
-	Mode             Mode
-	OutputPath       string
-	BusinessPath     string
-	DatasetPath      string
-	UsageCatalogPath string
-	StatsPath        string
-	CodexShardRoot   string
-	PostgresURL      string
-	Interval         time.Duration
-	RetentionDays    int
-	MaxTables        int
+	InstanceID           string
+	OwnerLease           time.Duration
+	Mode                 Mode
+	OutputPath           string
+	BusinessPath         string
+	DatasetPath          string
+	UsageCatalogPath     string
+	StatsPath            string
+	CodexShardRoot       string
+	PostgresURL          string
+	Interval             time.Duration
+	RetentionDays        int
+	MaxTables            int
+	MaxConcurrentSources int
+	RetentionBatchSize   int
+	RetentionMaxBatches  int
 }
 
 // OwnerLease identifies the Go process currently allowed to mutate table
@@ -37,6 +40,8 @@ type DatabaseSnapshot struct {
 	Path          string
 	SampledAt     time.Time
 	FileBytes     *int64
+	WALBytes      *int64
+	SHMBytes      *int64
 	PageSize      *int64
 	PageCount     *int64
 	FreelistCount *int64
@@ -60,6 +65,10 @@ type TableSnapshot struct {
 	TotalBytes      *int64
 	PageCount       *int64
 	IndexCount      int
+	GrowthBytes1h   *int64
+	GrowthRows1h    *int64
+	GrowthBytes24h  *int64
+	GrowthRows24h   *int64
 }
 
 type SampleResult struct {

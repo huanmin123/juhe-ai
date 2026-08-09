@@ -41,11 +41,6 @@ func TestPostgresTableMonitorAdapterSmoke(t *testing.T) {
 	if err := store.Ping(ctx); err != nil {
 		t.Fatalf("连接 PostgreSQL smoke 数据库失败: %s", redactPostgresTableMonitorSmokeError(err, url))
 	}
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatalf("初始化 PostgreSQL table-monitor schema 失败: %s", redactPostgresTableMonitorSmokeError(err, url))
-	}
-	assertPostgresTableMonitorTablesEmpty(t, ctx, store, url, true)
-
 	prefix := postgresTableMonitorSmokePrefix(t)
 	ownerA := prefix + "-owner-a"
 	ownerB := prefix + "-owner-b"
@@ -54,6 +49,7 @@ func TestPostgresTableMonitorAdapterSmoke(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("owner A 必须获得 PostgreSQL lease: lease=%#v acquired=%t err=%s", leaseA, acquired, redactPostgresTableMonitorSmokeError(err, url))
 	}
+	assertPostgresTableMonitorTablesEmpty(t, ctx, store, url, false)
 	cleanupLease := leaseA
 	t.Cleanup(func() {
 		cleanupPostgresTableMonitorSmoke(t, store, cleanupLease, cleanupOwner, url)
@@ -121,6 +117,7 @@ WHERE lease_key = 'table-monitor-sampling-retention'`).Scan(&ownerID); err != ni
 	if ownerID != "" {
 		t.Fatalf("释放后的 owner lease owner_id 必须为空，实际为 %q", ownerID)
 	}
+	assertPostgresTableMonitorSamplerSmoke(t, ctx, store, url, prefix)
 }
 
 func postgresTableMonitorSmokeRequired(value string) bool {
@@ -178,6 +175,65 @@ func assertPostgresTableMonitorCounts(t *testing.T, ctx context.Context, store *
 	}
 	if databases != wantDatabases || tables != wantTables {
 		t.Fatalf("PostgreSQL snapshots 数量不正确: databases=%d tables=%d，期望 databases=%d tables=%d", databases, tables, wantDatabases, wantTables)
+	}
+}
+
+func assertPostgresTableMonitorSamplerSmoke(t *testing.T, ctx context.Context, store *Store, url, prefix string) {
+	t.Helper()
+	for _, schema := range []string{"juhe_business", "juhe_dataset", "juhe_usage", "juhe_stats", "juhe_codex_context"} {
+		if _, err := store.db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)); err != nil {
+			t.Fatalf("创建 PostgreSQL 采样源 schema %s 失败: %s", schema, redactPostgresTableMonitorSmokeError(err, url))
+		}
+		if _, err := store.db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.table_monitor_sampler_smoke (
+  id BIGINT PRIMARY KEY,
+  payload TEXT NOT NULL
+)`, schema)); err != nil {
+			t.Fatalf("创建 PostgreSQL 采样源表 %s 失败: %s", schema, redactPostgresTableMonitorSmokeError(err, url))
+		}
+		if _, err := store.db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s.table_monitor_sampler_smoke (id, payload) VALUES (1, 'smoke') ON CONFLICT (id) DO NOTHING", schema)); err != nil {
+			t.Fatalf("写入 PostgreSQL 采样源表 %s 失败: %s", schema, redactPostgresTableMonitorSmokeError(err, url))
+		}
+	}
+
+	cfg := Config{
+		InstanceID:           prefix + "-sampler-owner",
+		OwnerLease:           time.Minute,
+		Mode:                 ModePostgres,
+		PostgresURL:          url,
+		Interval:             time.Minute,
+		RetentionDays:        30,
+		MaxTables:            64,
+		MaxConcurrentSources: 5,
+		RetentionBatchSize:   1000,
+		RetentionMaxBatches:  1000,
+	}
+	sampledAt := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	var result SampleResult
+	if err := RunWithOwnerLease(ctx, cfg, store, func(ownerCtx context.Context) error {
+		var runErr error
+		result, runErr = RunOnce(ownerCtx, cfg, store, sampledAt)
+		return runErr
+	}); err != nil {
+		t.Fatalf("PostgreSQL RunOnce 采样 smoke 失败: %s", redactPostgresTableMonitorSmokeError(err, url))
+	}
+	if result.DatabaseSnapshots != 5 || result.TableSnapshots < 5 {
+		t.Fatalf("PostgreSQL RunOnce 快照数量不符合预期: %+v", result)
+	}
+
+	var fileBytes, tableBytes, totalBytes int64
+	var tableKind string
+	if err := store.db.QueryRowContext(ctx, `SELECT database.file_bytes, table_snapshot.table_bytes, table_snapshot.total_bytes, table_snapshot.table_kind
+FROM juhe_stats.database_storage_snapshots AS database
+JOIN juhe_stats.table_storage_snapshots AS table_snapshot
+  ON table_snapshot.database_role = database.database_role
+ AND table_snapshot.sampled_at = database.sampled_at
+WHERE database.database_role = 'business'
+  AND table_snapshot.table_name = 'table_monitor_sampler_smoke'
+  AND database.sampled_at = $1`, sampledAt).Scan(&fileBytes, &tableBytes, &totalBytes, &tableKind); err != nil {
+		t.Fatalf("读取 PostgreSQL RunOnce 采样结果失败: %s", redactPostgresTableMonitorSmokeError(err, url))
+	}
+	if fileBytes <= 0 || tableBytes <= 0 || totalBytes < tableBytes || tableKind != "table" {
+		t.Fatalf("PostgreSQL RunOnce 采样字段不正确: file=%d table=%d total=%d kind=%q", fileBytes, tableBytes, totalBytes, tableKind)
 	}
 }
 

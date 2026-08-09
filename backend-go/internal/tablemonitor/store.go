@@ -6,8 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,17 +17,20 @@ import (
 )
 
 type Store struct {
-	db      *sql.DB
-	mode    Mode
-	writeMu sync.Mutex
+	db          *sql.DB
+	mode        Mode
+	writeMu     sync.Mutex
+	schemaMu    sync.Mutex
+	schemaReady bool
 }
 
 func OpenStore(cfg Config) (*Store, error) {
 	if cfg.Mode == ModeSQLite {
-		if err := os.MkdirAll(filepath.Dir(cfg.OutputPath), 0o755); err != nil {
-			return nil, fmt.Errorf("创建表监控 SQLite 目录失败: %w", err)
+		dsn, err := sqliteOutputDSN(cfg.OutputPath)
+		if err != nil {
+			return nil, fmt.Errorf("解析表监控 SQLite 输出路径失败: %w", err)
 		}
-		db, err := sql.Open("sqlite", cfg.OutputPath)
+		db, err := sql.Open("sqlite", dsn)
 		if err != nil {
 			return nil, fmt.Errorf("打开表监控 SQLite 失败: %w", err)
 		}
@@ -43,20 +47,158 @@ func OpenStore(cfg Config) (*Store, error) {
 	return &Store{db: db, mode: cfg.Mode}, nil
 }
 
+func sqliteOutputDSN(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	uriPath := filepath.ToSlash(abs)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_pragma=busy_timeout(5000)"}).String(), nil
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
-func (s *Store) EnsureSchema(ctx context.Context) error {
+// ensureSchema only creates tables while holding a cross-process bootstrap
+// lock. A contender rechecks after obtaining that lock, so it never runs
+// competing DDL after another process has completed the bootstrap.
+func (s *Store) ensureSchema(ctx context.Context) error {
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+	if s.schemaReady {
+		return nil
+	}
+	var err error
 	if s.mode == ModePostgres {
-		_, err := s.db.ExecContext(ctx, postgresSchema)
+		err = s.ensurePostgresSchema(ctx)
+	} else {
+		err = s.ensureSQLiteSchema(ctx)
+	}
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, sqliteSchema)
-	return err
+	s.schemaReady = true
+	return nil
+}
+
+type schemaQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func sqliteSchemaExists(ctx context.Context, queryer schemaQueryer) (bool, error) {
+	var count int
+	err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema
+WHERE (type = 'table' AND name IN ('database_storage_snapshots', 'table_storage_snapshots', 'table_monitor_owner_leases'))
+   OR (type = 'index' AND name IN ('idx_database_storage_snapshots_role_time_id', 'idx_table_storage_snapshots_latest_id', 'idx_table_storage_snapshots_time'))`).Scan(&count)
+	return count == 6, err
+}
+
+func postgresSchemaExists(ctx context.Context, queryer schemaQueryer) (bool, error) {
+	var count int
+	err := queryer.QueryRowContext(ctx, `SELECT COUNT(to_regclass(name))
+FROM (VALUES ('juhe_stats.database_storage_snapshots'), ('juhe_stats.table_storage_snapshots'), ('juhe_stats.table_monitor_owner_leases')) AS required(name)`).Scan(&count)
+	return count == 3, err
+}
+
+func (s *Store) ensureSQLiteSchema(ctx context.Context) error {
+	exists, err := sqliteSchemaExists(ctx, s.db)
+	if err == nil && exists {
+		return nil
+	}
+	if err != nil && !isMissingSQLiteSchemaError(err) {
+		return fmt.Errorf("检查表监控 SQLite schema 失败: %w", err)
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("打开表监控 SQLite bootstrap 连接失败: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("获取表监控 SQLite bootstrap 锁失败: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	exists, err = sqliteSchemaExists(ctx, conn)
+	if err != nil && !isMissingSQLiteSchemaError(err) {
+		return fmt.Errorf("重检表监控 SQLite schema 失败: %w", err)
+	}
+	if !exists {
+		if _, err := conn.ExecContext(ctx, sqliteSchema); err != nil {
+			return fmt.Errorf("初始化表监控 SQLite schema 失败: %w", err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("提交表监控 SQLite schema bootstrap 失败: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func isMissingSQLiteSchemaError(err error) bool {
+	return err != nil && (errors.Is(err, sql.ErrNoRows) || containsSQLiteMissingTable(err))
+}
+
+func containsSQLiteMissingTable(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table")
+}
+
+func (s *Store) ensurePostgresSchema(ctx context.Context) error {
+	exists, err := postgresSchemaExists(ctx, s.db)
+	if err == nil && exists {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("检查表监控 PostgreSQL schema 失败: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(763847291)"); err != nil {
+		return fmt.Errorf("获取表监控 PostgreSQL bootstrap 锁失败: %w", err)
+	}
+	exists, err = postgresSchemaExists(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("重检表监控 PostgreSQL schema 失败: %w", err)
+	}
+	if !exists {
+		if err := executePostgresSchema(ctx, tx); err != nil {
+			return fmt.Errorf("初始化表监控 PostgreSQL schema 失败: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func executePostgresSchema(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range strings.Split(postgresSchema, ";") {
+		statement = strings.TrimSpace(statement)
+		if statement == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) EnsureSchema(ctx context.Context) error {
+	return s.ensureSchema(ctx)
 }
 
 func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
+	if err := s.ensureSchema(ctx); err != nil {
+		return OwnerLease{}, false, err
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
@@ -233,6 +375,88 @@ func (s *Store) Cleanup(ctx context.Context, lease OwnerLease, cutoff time.Time,
 	return s.cleanupSQLite(ctx, lease, cutoff, limit)
 }
 
+func (s *Store) CleanupUntilComplete(ctx context.Context, lease OwnerLease, cutoff time.Time, batchSize, maxBatches int) (int64, error) {
+	if batchSize <= 0 || maxBatches <= 0 {
+		return 0, fmt.Errorf("表监控 retention batch 参数必须大于零")
+	}
+	var total int64
+	for batch := 0; batch < maxBatches; batch++ {
+		deleted, err := s.Cleanup(ctx, lease, cutoff, batchSize)
+		if err != nil {
+			return total, err
+		}
+		total += deleted
+		if deleted == 0 {
+			return total, nil
+		}
+	}
+	return total, fmt.Errorf("表监控 retention 在 %d 批后仍未清空；已删除 %d 行，拒绝静默遗漏", maxBatches, total)
+}
+
+func (s *Store) populateGrowth(ctx context.Context, sample *collectedSample) error {
+	for index := range sample.tables {
+		snapshot := &sample.tables[index]
+		oneHour, err := s.previousTableSnapshot(ctx, snapshot.Role, snapshot.TableName, snapshot.SampledAt.Add(-time.Hour))
+		if err != nil {
+			return err
+		}
+		oneDay, err := s.previousTableSnapshot(ctx, snapshot.Role, snapshot.TableName, snapshot.SampledAt.Add(-24*time.Hour))
+		if err != nil {
+			return err
+		}
+		snapshot.GrowthBytes1h = growthDelta(snapshot.TotalBytes, oneHour.totalBytes)
+		snapshot.GrowthRows1h = growthDelta(snapshot.RowCount, oneHour.rowCount)
+		snapshot.GrowthBytes24h = growthDelta(snapshot.TotalBytes, oneDay.totalBytes)
+		snapshot.GrowthRows24h = growthDelta(snapshot.RowCount, oneDay.rowCount)
+	}
+	return nil
+}
+
+type tableSnapshotBaseline struct {
+	totalBytes *int64
+	rowCount   *int64
+}
+
+func (s *Store) previousTableSnapshot(ctx context.Context, role, tableName string, before time.Time) (tableSnapshotBaseline, error) {
+	var totalBytes, rowCount sql.NullInt64
+	var err error
+	if s.mode == ModePostgres {
+		err = s.db.QueryRowContext(ctx, `SELECT total_bytes, row_count
+FROM juhe_stats.table_storage_snapshots
+WHERE database_role = $1 AND table_name = $2 AND sampled_at <= $3
+ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, before.UTC()).Scan(&totalBytes, &rowCount)
+	} else {
+		err = s.db.QueryRowContext(ctx, `SELECT total_bytes, row_count
+FROM table_storage_snapshots
+WHERE database_role = ? AND table_name = ? AND sampled_at <= ?
+ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, before.UTC().Format(time.RFC3339Nano)).Scan(&totalBytes, &rowCount)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return tableSnapshotBaseline{}, nil
+	}
+	if err != nil {
+		return tableSnapshotBaseline{}, err
+	}
+	baseline := tableSnapshotBaseline{}
+	if totalBytes.Valid {
+		value := totalBytes.Int64
+		baseline.totalBytes = &value
+	}
+	if rowCount.Valid {
+		value := rowCount.Int64
+		baseline.rowCount = &value
+	}
+	return baseline, nil
+}
+
+func growthDelta(current, previous *int64) *int64 {
+	if current == nil || previous == nil {
+		return nil
+	}
+	delta := *current - *previous
+	return &delta
+}
+
 func (s *Store) cleanupSQLite(ctx context.Context, lease OwnerLease, cutoff time.Time, limit int) (int64, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -286,22 +510,50 @@ func (s *Store) cleanupPostgres(ctx context.Context, lease OwnerLease, cutoff ti
 }
 
 func insertSQLiteDatabase(ctx context.Context, tx *sql.Tx, snapshot DatabaseSnapshot) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID("dbsnap"), snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC().Format(time.RFC3339Nano), snapshot.FileBytes, nil, nil, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount, snapshot.SampledAt.UTC().Format(time.RFC3339Nano))
+	id, err := newID("dbsnap")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC().Format(time.RFC3339Nano), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount, snapshot.SampledAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
 func insertSQLiteTable(ctx context.Context, tx *sql.Tx, snapshot TableSnapshot) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID("tblsnap"), snapshot.Role, snapshot.TableName, snapshot.SampledAt.UTC().Format(time.RFC3339Nano), snapshot.TableKind, snapshot.ParentTableName, boolInt(snapshot.IsPartition), boolInt(snapshot.IsArchive), snapshot.RowCount, snapshot.TableBytes, snapshot.IndexBytes, snapshot.TotalBytes, snapshot.PageCount, snapshot.IndexCount, nil, nil, nil, nil, snapshot.SampledAt.UTC().Format(time.RFC3339Nano))
+	id, err := newID("tblsnap")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
+  table_kind = excluded.table_kind, parent_table_name = excluded.parent_table_name, is_partition = excluded.is_partition,
+  is_archive = excluded.is_archive, row_count = excluded.row_count, table_bytes = excluded.table_bytes,
+  index_bytes = excluded.index_bytes, total_bytes = excluded.total_bytes, page_count = excluded.page_count,
+  index_count = excluded.index_count, growth_bytes_1h = excluded.growth_bytes_1h, growth_rows_1h = excluded.growth_rows_1h,
+  growth_bytes_24h = excluded.growth_bytes_24h, growth_rows_24h = excluded.growth_rows_24h, created_at = excluded.created_at`, id, snapshot.Role, snapshot.TableName, snapshot.SampledAt.UTC().Format(time.RFC3339Nano), snapshot.TableKind, snapshot.ParentTableName, boolInt(snapshot.IsPartition), boolInt(snapshot.IsArchive), snapshot.RowCount, snapshot.TableBytes, snapshot.IndexBytes, snapshot.TotalBytes, snapshot.PageCount, snapshot.IndexCount, snapshot.GrowthBytes1h, snapshot.GrowthRows1h, snapshot.GrowthBytes24h, snapshot.GrowthRows24h, snapshot.SampledAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
 func insertPostgresDatabase(ctx context.Context, tx *sql.Tx, snapshot DatabaseSnapshot) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO juhe_stats.database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, $7, $8, $9, $10, $11, $12, $4)`, newID("dbsnap"), snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC(), snapshot.FileBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount)
+	id, err := newID("dbsnap")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_stats.database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $4)`, id, snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC(), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount)
 	return err
 }
 
 func insertPostgresTable(ctx context.Context, tx *sql.Tx, snapshot TableSnapshot) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO juhe_stats.table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,  NULL, NULL, NULL, NULL, $4) ON CONFLICT (database_role, table_name, sampled_at) DO NOTHING`, newID("tblsnap"), snapshot.Role, snapshot.TableName, snapshot.SampledAt.UTC(), snapshot.TableKind, snapshot.ParentTableName, snapshot.IsPartition, snapshot.IsArchive, snapshot.RowCount, snapshot.TableBytes, snapshot.IndexBytes, snapshot.TotalBytes, snapshot.PageCount, snapshot.IndexCount)
+	id, err := newID("tblsnap")
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_stats.table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $4)
+ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
+  table_kind = EXCLUDED.table_kind, parent_table_name = EXCLUDED.parent_table_name, is_partition = EXCLUDED.is_partition,
+  is_archive = EXCLUDED.is_archive, row_count = EXCLUDED.row_count, table_bytes = EXCLUDED.table_bytes,
+  index_bytes = EXCLUDED.index_bytes, total_bytes = EXCLUDED.total_bytes, page_count = EXCLUDED.page_count,
+  index_count = EXCLUDED.index_count, growth_bytes_1h = EXCLUDED.growth_bytes_1h, growth_rows_1h = EXCLUDED.growth_rows_1h,
+  growth_bytes_24h = EXCLUDED.growth_bytes_24h, growth_rows_24h = EXCLUDED.growth_rows_24h, created_at = EXCLUDED.created_at`, id, snapshot.Role, snapshot.TableName, snapshot.SampledAt.UTC(), snapshot.TableKind, snapshot.ParentTableName, snapshot.IsPartition, snapshot.IsArchive, snapshot.RowCount, snapshot.TableBytes, snapshot.IndexBytes, snapshot.TotalBytes, snapshot.PageCount, snapshot.IndexCount, snapshot.GrowthBytes1h, snapshot.GrowthRows1h, snapshot.GrowthBytes24h, snapshot.GrowthRows24h)
 	return err
 }
 
@@ -312,12 +564,12 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func newID(prefix string) string {
+func newID(prefix string) (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+		return "", fmt.Errorf("生成表监控快照 ID 失败: %w", err)
 	}
-	return fmt.Sprintf("%s-%x", prefix, raw[:])
+	return fmt.Sprintf("%s-%x", prefix, raw[:]), nil
 }
 
 const sqliteSchema = `
