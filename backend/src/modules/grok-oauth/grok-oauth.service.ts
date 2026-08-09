@@ -1,8 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { OAuthUpstreamResponseError, isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
-import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 import { convertGrokSSOToOAuth } from './grok-sso-device-flow.js'
 
@@ -191,7 +191,7 @@ export function buildGrokOAuthCredentials(
 }
 
 export function sanitizeGrokOAuthErrorMessage(message: string): string {
-  return sanitizeDiagnosticPayload(message)
+  return message
 }
 
 async function readGrokOAuthSession(input: {
@@ -225,15 +225,20 @@ function parseGrokAuthorizationInput(raw: string): { code: string; state?: strin
 
   try {
     const parsed = new URL(trimmed)
+    const error = normalizeString(parsed.searchParams.get('error'))
+    if (error) throw new OAuthUpstreamResponseError(normalizeString(parsed.searchParams.get('error_description')) || error)
     const code = normalizeString(parsed.searchParams.get('code'))
     if (code) return { code, state: normalizeString(parsed.searchParams.get('state')) || undefined, requiresState: true }
-  } catch {
+  } catch (error) {
+    if (isOAuthUpstreamResponseError(error)) throw error
     // A bare code or query string is also accepted by the xAI CLI flow.
   }
 
   const queryCandidate = trimmed.startsWith('?') ? trimmed.slice(1) : trimmed
   if (queryCandidate.includes('=')) {
     const params = new URLSearchParams(queryCandidate)
+    const error = normalizeString(params.get('error'))
+    if (error) throw new OAuthUpstreamResponseError(normalizeString(params.get('error_description')) || error)
     const code = normalizeString(params.get('code'))
     if (code) return { code, state: normalizeString(params.get('state')) || undefined, requiresState: true }
   }
@@ -270,7 +275,7 @@ async function requestGrokToken(
       normalizeString(payload.error_description) || normalizeString(payload.error) || response.body
     )
     const statusCode = response.statusCode === 403 && hasExplicitEntitlementDenial(payload, response.body) ? 403 : 502
-    throw new GrokOAuthError(
+    throw new OAuthUpstreamResponseError(
       `Grok OAuth 令牌请求失败：HTTP ${response.statusCode}${detail ? `，${detail}` : ''}`,
       statusCode
     )

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
+import { OAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
-import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 
 export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
@@ -157,7 +157,7 @@ export function buildAnthropicOAuthCredentials(tokenInfo: AnthropicOAuthTokenInf
 }
 
 export function sanitizeAnthropicOAuthErrorMessage(message: string): string {
-  return sanitizeDiagnosticPayload(message)
+  return message
 }
 
 async function readAnthropicOAuthSession(input: {
@@ -200,7 +200,7 @@ async function requestAnthropicToken(form: Record<string, string>, proxyUrl?: st
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const detail = sanitizeAnthropicOAuthErrorMessage(normalizeString(payload.error_description) || normalizeString(payload.error) || response.body)
-    throw new Error(`Anthropic OAuth 令牌请求失败：HTTP ${response.statusCode}${detail ? `，${detail}` : ''}`)
+    throw new OAuthUpstreamResponseError(`Anthropic OAuth 令牌请求失败：HTTP ${response.statusCode}${detail ? `，${detail}` : ''}`, response.statusCode)
   }
 
   const accessToken = normalizeString(payload.access_token)
@@ -257,7 +257,7 @@ function extractCodeAndState(callbackUrl: string): { code: string; state?: strin
     const url = new URL(value)
     requiresState = true
     const error = normalizeString(url.searchParams.get('error'))
-    if (error) throw new Error(normalizeString(url.searchParams.get('error_description')) || error)
+    if (error) throw new OAuthUpstreamResponseError(normalizeString(url.searchParams.get('error_description')) || error)
     code = normalizeString(url.searchParams.get('code'))
     state = normalizeString(url.searchParams.get('state'))
   } catch (error) {

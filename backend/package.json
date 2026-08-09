@@ -467,6 +467,7 @@
     "test:provider-oauth-mock-upstream-e2e": "tsx src/scripts/regression/provider-oauth-mock-upstream-e2e.ts",
     "test:provider-oauth-refresh-lock": "tsx src/scripts/regression/provider-oauth-refresh-lock-regression.ts",
     "test:openai-oauth-token-response-boundary": "tsx src/scripts/regression/openai-oauth-token-response-boundary-regression.ts",
+    "test:system-error-message": "tsx src/scripts/regression/system-error-message-regression.ts",
     "test:openai-api-key-passthrough": "tsx src/scripts/regression/openai-api-key-passthrough-regression.ts",
     "test:openai-compatible-gateway-e2e": "tsx src/scripts/regression/openai-compatible-gateway-e2e-regression.ts",
     "test:runtime-log-grep-path": "tsx src/scripts/regression/runtime-log-grep-path-regression.ts",

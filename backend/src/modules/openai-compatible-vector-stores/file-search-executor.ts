@@ -27,21 +27,21 @@ export function openAICompatibleFileSearchExecutorForGatewayRequest(
         })
         if (!store) {
           throw new GatewayRequestValidationError(
-            `Vector store ${vectorStoreId} not found`,
+            `向量存储 ${vectorStoreId} 不存在`,
             'openai_anthropic_bridge_file_search_vector_store_not_found',
             { statusCode: 404, type: 'invalid_request_error' }
           )
         }
         if (store.fileCounts.inProgress > 0) {
           throw new GatewayRequestValidationError(
-            `Vector store ${vectorStoreId} files are still being indexed`,
+            `向量存储 ${vectorStoreId} 的文件仍在建立索引`,
             'openai_anthropic_bridge_file_search_vector_store_not_ready',
             { statusCode: 409, type: 'invalid_request_error' }
           )
         }
         if (store.fileCounts.completed <= 0 && store.fileCounts.failed > 0) {
           throw new GatewayRequestValidationError(
-            `Vector store ${vectorStoreId} has no completed files because indexing failed`,
+            `向量存储 ${vectorStoreId} 没有可检索的已完成文件`,
             'openai_anthropic_bridge_file_search_vector_store_failed',
             { statusCode: 400, type: 'invalid_request_error' }
           )

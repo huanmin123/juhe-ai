@@ -38,6 +38,7 @@ import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '.
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
 import { systemApiAuthenticatedRateLimit, systemApiIpRateLimit } from './system-api-rate-limit.middleware.js'
 import { createHttpCompressionMiddleware } from '../../shared/http-compression.js'
+import { systemErrorMessageLocalizationMiddleware } from '../../shared/system-error-message.js'
 import {
   systemApiDbAccessModeMiddleware,
   systemApiDbServiceAdmissionControl,
@@ -71,6 +72,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   }
 
   app.use(requestContextMiddleware)
+  app.use(systemErrorMessageLocalizationMiddleware)
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
   app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))

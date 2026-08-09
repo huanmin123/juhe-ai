@@ -2,8 +2,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { AgentOptions } from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { OAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
-import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
@@ -304,7 +304,7 @@ function parseOAuthAuthorizationInput(value: string): { code: string; state: str
   try {
     const url = new URL(value)
     const error = normalizeString(url.searchParams.get('error'))
-    if (error) throw new Error(normalizeString(url.searchParams.get('error_description')) || error)
+    if (error) throw new OAuthUpstreamResponseError(normalizeString(url.searchParams.get('error_description')) || error)
     const queryCode = normalizeString(url.searchParams.get('code'))
     const queryState = normalizeString(url.searchParams.get('state'))
     if (queryCode || queryState) return { code: queryCode, state: queryState }
@@ -347,7 +347,7 @@ export function parseOpenAIOAuthExpiresIn(value: unknown): number {
 }
 
 export function sanitizeOpenAIOAuthErrorMessage(message: string): string {
-  return sanitizeDiagnosticPayload(message)
+  return message
 }
 
 async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: string, signal?: AbortSignal): Promise<OpenAITokenInfo> {
@@ -366,7 +366,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorDescription = sanitizeOpenAIOAuthErrorMessage(normalizeString(payload.error_description) || normalizeString(payload.error) || text)
-    throw new Error(`OpenAI OAuth 令牌请求失败：HTTP ${response.statusCode}${errorDescription ? `，${errorDescription}` : ''}`)
+    throw new OAuthUpstreamResponseError(`OpenAI OAuth 令牌请求失败：HTTP ${response.statusCode}${errorDescription ? `，${errorDescription}` : ''}`, response.statusCode)
   }
 
   const accessToken = normalizeString(payload.access_token)

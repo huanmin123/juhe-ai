@@ -6,10 +6,12 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { runRedisOperationWithDeadline, type RedisCommandClient } from '../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
+import { localizeSystemErrorMessage } from '../../shared/system-error-message.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import {
   clearAccountFailureState,
@@ -1086,7 +1088,10 @@ function stringCredential(credentials: Record<string, unknown>, key: string): st
 }
 
 function errorMessage(error: unknown): string {
-  const message = sanitizeOpenAIOAuthErrorMessage(error instanceof Error ? error.message : 'OpenAI OAuth 访问令牌刷新失败')
+  const rawMessage = error instanceof Error ? error.message : 'OpenAI OAuth 访问令牌刷新失败'
+  const message = isOAuthUpstreamResponseError(error)
+    ? sanitizeOpenAIOAuthErrorMessage(rawMessage)
+    : localizeSystemErrorMessage(rawMessage, 502)
   return message.length > 240 ? `${message.slice(0, 237)}...` : message
 }
 

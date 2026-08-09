@@ -2,8 +2,9 @@ import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { openAIOAuthTokenRequestTimeoutMs, openAIOAuthTokenResponseMaxBytes, parseOpenAIOAuthExpiresIn, refreshOpenAIOAuthToken, sanitizeOpenAIOAuthErrorMessage } from '../../modules/openai-oauth/openai-oauth.service.js'
+import { extractCodeAndState, openAIOAuthTokenRequestTimeoutMs, openAIOAuthTokenResponseMaxBytes, parseOpenAIOAuthExpiresIn, refreshOpenAIOAuthToken, sanitizeOpenAIOAuthErrorMessage } from '../../modules/openai-oauth/openai-oauth.service.js'
 import { runWithProviderOAuthTokenTransportForTest } from '../../modules/providers/drivers/_shared/provider-oauth-token-transport.js'
+import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 
 assert.equal(openAIOAuthTokenResponseMaxBytes, 256 * 1024, 'OAuth token 响应体上限应固定为 256KB')
 assert.equal(openAIOAuthTokenRequestTimeoutMs, 25_000, 'OAuth token 请求超时必须短于 DB service HTTP proxy 30s 超时')
@@ -11,11 +12,24 @@ assert.equal(parseOpenAIOAuthExpiresIn(3600), 3600, 'OAuth expires_in 正数应�
 assert.throws(() => parseOpenAIOAuthExpiresIn(0), /expires_in/, 'OAuth expires_in 为 0 时必须拒绝')
 assert.throws(() => parseOpenAIOAuthExpiresIn(-1), /expires_in/, 'OAuth expires_in 为负数时必须拒绝')
 assert.throws(() => parseOpenAIOAuthExpiresIn('not-a-number'), /expires_in/, 'OAuth expires_in 非数字时必须拒绝')
+assert.throws(
+  () => extractCodeAndState({ callbackUrl: 'http://localhost:1455/auth/callback?error=access_denied&error_description=upstream%20access%20denied' }),
+  isOAuthUpstreamResponseError,
+  'OAuth 回调中的供应商错误必须保留上游来源标记'
+)
 
 const source = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.service.ts'), 'utf8')
+const anthropicSource = readFileSync(resolve('src/modules/anthropic-oauth/anthropic-oauth.service.ts'), 'utf8')
+const geminiSource = readFileSync(resolve('src/modules/gemini-oauth/gemini-oauth.service.ts'), 'utf8')
+const grokSource = readFileSync(resolve('src/modules/grok-oauth/grok-oauth.service.ts'), 'utf8')
 assert.match(source, /maxResponseBytes:\s*openAIOAuthTokenResponseMaxBytes/, 'OAuth token 响应必须把 256KB 上限传给共享 transport')
 assert.match(source, /if \(response\.truncated\) throw new Error\('OpenAI OAuth 令牌响应体过大'\)/, 'OAuth token 响应超限时必须拒绝')
-assert.match(source, /sanitizeOpenAIOAuthErrorMessage\(normalizeString\(payload\.error_description\)[\s\S]*\|\|\s*text\)/, 'OAuth token endpoint 非 2xx 错误描述必须先脱敏再进入 Error.message')
+assert.match(source, /sanitizeOpenAIOAuthErrorMessage\(normalizeString\(payload\.error_description\)[\s\S]*\|\|\s*text\)/, 'OAuth token endpoint 非 2xx 错误描述必须保留上游原文后再进入 Error.message')
+assert.match(source, /if \(error\) throw new OAuthUpstreamResponseError\(normalizeString\(url\.searchParams\.get\('error_description'\)\) \|\| error\)/, 'OpenAI OAuth 回调供应商错误必须有来源标记')
+assert.match(anthropicSource, /if \(error\) throw new OAuthUpstreamResponseError\(normalizeString\(url\.searchParams\.get\('error_description'\)\) \|\| error\)/, 'Anthropic OAuth 回调供应商错误必须有来源标记')
+assert.match(geminiSource, /if \(error\) throw new OAuthUpstreamResponseError\(normalizeString\(url\.searchParams\.get\('error_description'\)\) \|\| error\)/, 'Gemini OAuth 回调供应商错误必须有来源标记')
+assert.match(grokSource, /const error = normalizeString\(parsed\.searchParams\.get\('error'\)\)\s*if \(error\) throw new OAuthUpstreamResponseError\(normalizeString\(parsed\.searchParams\.get\('error_description'\)\) \|\| error\)/, 'Grok OAuth URL 回调供应商错误必须有来源标记')
+assert.match(grokSource, /const error = normalizeString\(params\.get\('error'\)\)\s*if \(error\) throw new OAuthUpstreamResponseError\(normalizeString\(params\.get\('error_description'\)\) \|\| error\)/, 'Grok OAuth 查询回调供应商错误必须有来源标记')
 assert.match(source, /timeoutMs:\s*openAIOAuthTokenRequestTimeoutMs/, 'OAuth token endpoint 请求必须使用命名短超时，避免系统 API 504')
 assert.doesNotMatch(source, /timeout:\s*120000/, 'OAuth token endpoint 不能继续使用 120s 长超时')
 assert.doesNotMatch(source, /const chunks: Buffer\[\]/, 'OAuth token 响应不能无界保存 chunk 数组')
@@ -36,20 +50,13 @@ await assert.rejects(
   '共享 transport 的中断错误必须原样拒绝，不能永久 pending'
 )
 
-const sanitizedMessage = sanitizeOpenAIOAuthErrorMessage(
+const upstreamMessage = sanitizeOpenAIOAuthErrorMessage(
   'token endpoint failed Authorization: Bearer oauth-boundary-bearer-token sk-oauth-boundary-secret-token refresh_token=oauth-boundary-refresh-token client_secret=oauth-boundary-client-secret proxy=https://oauth-proxy-user:oauth-proxy-password@example.com'
 )
-assertNoLeak(sanitizedMessage, [
-  'oauth-boundary-bearer-token',
-  'sk-oauth-boundary-secret-token',
-  'oauth-boundary-refresh-token',
-  'oauth-boundary-client-secret',
-  'oauth-proxy-user',
-  'oauth-proxy-password'
-], 'OAuth token 错误消息清洗不应保留敏感原文')
+assert.equal(upstreamMessage, 'token endpoint failed Authorization: Bearer oauth-boundary-bearer-token sk-oauth-boundary-secret-token refresh_token=oauth-boundary-refresh-token client_secret=oauth-boundary-client-secret proxy=https://oauth-proxy-user:oauth-proxy-password@example.com', 'OAuth token 错误消息必须保留上游原文')
 
 const refreshSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth-access-token-refresh.service.ts'), 'utf8')
-assert.match(refreshSource, /sanitizeOpenAIOAuthErrorMessage\(error instanceof Error \? error\.message : 'OpenAI OAuth 访问令牌刷新失败'\)/, 'OAuth 后台刷新诊断与本地配置异常消息必须统一清洗')
+assert.match(refreshSource, /isOAuthUpstreamResponseError\(error\)[\s\S]*sanitizeOpenAIOAuthErrorMessage\(rawMessage\)[\s\S]*localizeSystemErrorMessage\(rawMessage, 502\)/, 'OAuth 后台刷新必须按来源区分上游原文与本地中文错误')
 assert.match(refreshSource, /failureKind = isOpenAIOAuthRefreshLocalConfigurationError\(error\)[\s\S]*'local_configuration'[\s\S]*'untrusted_upstream_or_runtime'/, 'OAuth 后台刷新必须按本地产生的专用错误类型区分状态变更资格')
 assert.match(refreshSource, /failureState\.localConfigurationCount >= oauthTokenRefreshFailureThreshold/, 'OAuth 后台刷新只允许连续本地配置错误触发账户异常')
 assert.doesNotMatch(refreshSource, /failureState\.count >= oauthTokenRefreshFailureThreshold/, 'OAuth 上游或网络失败总计数不得触发账户异常')
@@ -65,7 +72,7 @@ const dbServiceTypesSource = readFileSync(resolve('src/modules/db-service/db-ser
 const dbServiceHandlersSource = readFileSync(resolve('src/modules/db-service/db-service-handlers.ts'), 'utf8')
 assert.match(routesSource, /post\('\/auth-url', async \(req, res, next\) => \{[\s\S]*try \{[\s\S]*generateOpenAIAuthURL\([^)]*\)[\s\S]*catch \(error\) \{[\s\S]*next\(error\)/, 'OAuth auth-url session 写入失败必须进入 Express next 错误链路')
 assert.match(routesSource, /generateOpenAIAuthURL\(getRequestAccessScope\(\)\?\.systemAccountId\)/, 'OAuth auth-url session 必须绑定当前登录系统账户')
-assert.match(routesSource, /function oauthErrorMessage[\s\S]*sanitizeOpenAIOAuthErrorMessage/, 'OAuth 路由返回 502 错误前必须统一清洗错误消息')
+assert.match(routesSource, /function oauthErrorMessage[\s\S]*isOAuthUpstreamResponseError\(error\)[\s\S]*markResponseErrorMessageAsUpstream[\s\S]*return error\.message/, 'OAuth 路由只能标记并保留已确认的上游错误原文')
 assert.match(routesSource, /post\('\/accounts\/:id\/refresh-token'[\s\S]*error instanceof ProxyProfileUnavailableError \|\| isOpenAIOAuthRefreshLocalConfigurationError\(error\)[\s\S]*res\.status\(400\)/, 'OAuth 手动刷新遇到本地配置错误必须返回可修正的 400，不得退化为上游 502')
 assert.match(routesSource, /recoverableLastErrorCodes:\s*openAIOAuthRefreshManagedErrorCodes/, 'OAuth 重新授权只能传入本刷新路径管理的错误码')
 assert.match(rotationSource, /current\.status === 'error'[\s\S]*recoverableLastErrorCodes\.includes\(current\.lastErrorCode\)/, 'OAuth rotation 必须在锁行快照上精确判断可恢复错误码')
@@ -93,10 +100,4 @@ assert.doesNotMatch(routesSource, /import \{[^}]*\bcreateAccount\b[^}]*\} from '
 assert.doesNotMatch(routesSource, /import \{[^}]*\bfindAccountForTest\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, 'OAuth 路由不能重新导入同步 findAccountForTest')
 assert.doesNotMatch(routesSource, /import \{[^}]*\brecordOperationLog\b[^}]*\} from '..\/operation-logs\/operation-log\.service\.js'/, 'OAuth 路由不能重新导入同步操作日志写入')
 
-console.log('OpenAI OAuth token 响应边界回归通过：token endpoint 响应体有界收集，OAuth 错误消息会清理敏感 token 和密钥')
-
-function assertNoLeak(text: string, markers: string[], message: string): void {
-  for (const marker of markers) {
-    assert(!text.includes(marker), `${message}：${marker}`)
-  }
-}
+console.log('OpenAI OAuth token 响应边界回归通过：token endpoint 响应体有界收集，OAuth 错误消息保留上游原文')

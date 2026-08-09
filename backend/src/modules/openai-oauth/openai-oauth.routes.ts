@@ -3,6 +3,8 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
+import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
+import { markResponseErrorMessageAsUpstream } from '../../shared/system-error-message.js'
 import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync } from '../../storage/repositories.js'
 import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync, type OAuthCredentialRotationAccount, type OAuthCredentialRotationResult } from '../../storage/oauth-credential-rotation.repository.js'
 import { GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
@@ -22,7 +24,6 @@ import {
   exchangeOpenAIAuthCode,
   extractCodeAndState,
   generateOpenAIAuthURL,
-  sanitizeOpenAIOAuthErrorMessage,
   type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
@@ -220,10 +221,10 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       return
     }
     if (isOAuthBusinessConflictError(error)) {
-      res.status(409).json(badRequest(oauthErrorMessage(error, 'OpenAI 授权码交换失败')))
+      res.status(409).json(badRequest(oauthErrorMessage(res, error, 'OpenAI 授权码交换失败')))
       return
     }
-    res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 授权码交换失败') })
+    res.status(502).json({ message: oauthErrorMessage(res, error, 'OpenAI 授权码交换失败') })
   }
 })
 
@@ -315,10 +316,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
       return
     }
     if (isOAuthBusinessConflictError(error)) {
-      res.status(409).json(badRequest(oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败')))
+      res.status(409).json(badRequest(oauthErrorMessage(res, error, 'OpenAI 刷新令牌授权失败')))
       return
     }
-    res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 刷新令牌授权失败') })
+    res.status(502).json({ message: oauthErrorMessage(res, error, 'OpenAI 刷新令牌授权失败') })
   }
 })
 
@@ -374,7 +375,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(502).json({ message: oauthErrorMessage(error, 'OpenAI 访问令牌刷新失败') })
+    res.status(502).json({ message: oauthErrorMessage(res, error, 'OpenAI 访问令牌刷新失败') })
   }
 })
 
@@ -595,14 +596,18 @@ function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMe
     return
   }
   if (isOAuthBusinessConflictError(error)) {
-    res.status(409).json(badRequest(oauthErrorMessage(error, fallbackMessage)))
+    res.status(409).json(badRequest(oauthErrorMessage(res, error, fallbackMessage)))
     return
   }
-  res.status(502).json({ message: oauthErrorMessage(error, fallbackMessage) })
+  res.status(502).json({ message: oauthErrorMessage(res, error, fallbackMessage) })
 }
 
-function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
-  return sanitizeOpenAIOAuthErrorMessage(error instanceof Error ? error.message : fallbackMessage)
+function oauthErrorMessage(res: Response, error: unknown, fallbackMessage: string): string {
+  if (isOAuthUpstreamResponseError(error)) {
+    markResponseErrorMessageAsUpstream(res)
+    return error.message
+  }
+  return fallbackMessage
 }
 
 function isOAuthBusinessConflictError(error: unknown): boolean {

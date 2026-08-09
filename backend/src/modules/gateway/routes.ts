@@ -2150,7 +2150,8 @@ let codexTurnAvoidedFallbackEnabled = false
         errorMessage: diagnosticError?.errorMessage ?? message
       },
       recordUsage: !lastAttempt,
-      usageErrorMessage: message
+      usageErrorMessage: message,
+      preserveUpstreamErrorMessage: diagnosticError?.preserveUpstreamMessage ?? false
     })
   } finally {
     activeCompactSseWaitHeartbeat?.stop()

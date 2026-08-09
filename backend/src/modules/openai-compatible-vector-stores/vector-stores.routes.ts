@@ -91,7 +91,7 @@ async function listOpenAICompatibleVectorStores(req: Request, res: Response): Pr
 async function getOpenAICompatibleVectorStore(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleVectorStoreForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store not found', 404, 'invalid_request_error', 'vector_store_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储不存在', 404, 'invalid_request_error', 'vector_store_not_found')
   }
   res.json(openAICompatibleVectorStoreObject(record))
 }
@@ -106,7 +106,7 @@ async function deleteOpenAICompatibleVectorStoreRoute(req: Request, res: Respons
     apiKeyId: runtime.apiKey.id
   })
   if (!record) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store not found', 404, 'invalid_request_error', 'vector_store_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储不存在', 404, 'invalid_request_error', 'vector_store_not_found')
   }
   res.json({
     id: record.id,
@@ -121,11 +121,11 @@ async function createOpenAICompatibleVectorStoreFileRoute(req: Request, res: Res
   const body = await readJsonObjectBody(req)
   const fileId = stringValue(body.file_id)
   if (!fileId) {
-    throw new OpenAICompatibleVectorStoresRequestError('Missing required field: file_id', 400, 'invalid_request_error', 'missing_file_id')
+    throw new OpenAICompatibleVectorStoresRequestError('缺少必填字段：file_id', 400, 'invalid_request_error', 'missing_file_id')
   }
   const store = await findOpenAICompatibleVectorStoreForRequest(req)
   if (!store) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store not found', 404, 'invalid_request_error', 'vector_store_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储不存在', 404, 'invalid_request_error', 'vector_store_not_found')
   }
   const file = await requestDbService({
     type: 'get_openai_compatible_file',
@@ -134,7 +134,7 @@ async function createOpenAICompatibleVectorStoreFileRoute(req: Request, res: Res
     apiKeyId: runtime.apiKey.id
   })
   if (!file) {
-    throw new OpenAICompatibleVectorStoresRequestError('File not found', 404, 'invalid_request_error', 'file_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('文件不存在', 404, 'invalid_request_error', 'file_not_found')
   }
   const created = await requestDbService({
     type: 'create_openai_compatible_vector_store_file',
@@ -149,7 +149,7 @@ async function createOpenAICompatibleVectorStoreFileRoute(req: Request, res: Res
     }
   }, { timeoutMs: 10_000 })
   if (!created) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store or file not found', 404, 'invalid_request_error', 'vector_store_file_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储或文件不存在', 404, 'invalid_request_error', 'vector_store_file_not_found')
   }
   queueOpenAICompatibleVectorStoreFileIndexing({
     vectorStoreId,
@@ -189,7 +189,7 @@ async function listOpenAICompatibleVectorStoreFiles(req: Request, res: Response)
 async function getOpenAICompatibleVectorStoreFile(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleVectorStoreFileForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store file not found', 404, 'invalid_request_error', 'vector_store_file_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储文件不存在', 404, 'invalid_request_error', 'vector_store_file_not_found')
   }
   res.json(openAICompatibleVectorStoreFileObject(record))
 }
@@ -206,7 +206,7 @@ async function deleteOpenAICompatibleVectorStoreFileRoute(req: Request, res: Res
     apiKeyId: runtime.apiKey.id
   })
   if (!record) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store file not found', 404, 'invalid_request_error', 'vector_store_file_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储文件不存在', 404, 'invalid_request_error', 'vector_store_file_not_found')
   }
   res.json({
     id: fileId,
@@ -218,7 +218,7 @@ async function deleteOpenAICompatibleVectorStoreFileRoute(req: Request, res: Res
 async function listOpenAICompatibleVectorStoreFileContent(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleVectorStoreFileForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store file not found', 404, 'invalid_request_error', 'vector_store_file_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储文件不存在', 404, 'invalid_request_error', 'vector_store_file_not_found')
   }
   const runtime = requireGatewayRuntime(req)
   const chunks = await requestDbService({
@@ -246,7 +246,7 @@ async function searchOpenAICompatibleVectorStoreRoute(req: Request, res: Respons
   const body = await readJsonObjectBody(req)
   const query = stringValue(body.query)
   if (!query) {
-    throw new OpenAICompatibleVectorStoresRequestError('Missing required field: query', 400, 'invalid_request_error', 'missing_query')
+    throw new OpenAICompatibleVectorStoresRequestError('缺少必填字段：query', 400, 'invalid_request_error', 'missing_query')
   }
   const rankingOptions = objectValue(body.ranking_options)
   const results = await requestDbService({
@@ -335,14 +335,14 @@ function openAICompatibleVectorStoreFileLastError(error: unknown): JsonRecord {
   return {
     code: 'openai_compatible_vector_store_index_failed',
     type: 'invalid_request_error',
-    message: error instanceof Error ? error.message : 'Vector store file indexing failed'
+    message: '向量存储文件建立索引失败'
   }
 }
 
 function requireOpenAICompatibleVectorStoreReadyForSearch(store: OpenAICompatibleVectorStoreRecord): void {
   if (store.fileCounts.inProgress > 0) {
     throw new OpenAICompatibleVectorStoresRequestError(
-      'Vector store files are still being indexed',
+      '向量存储文件仍在建立索引',
       409,
       'invalid_request_error',
       'openai_compatible_vector_store_not_ready'
@@ -350,7 +350,7 @@ function requireOpenAICompatibleVectorStoreReadyForSearch(store: OpenAICompatibl
   }
   if (store.fileCounts.completed <= 0 && store.fileCounts.failed > 0) {
     throw new OpenAICompatibleVectorStoresRequestError(
-      'Vector store has no completed files because indexing failed',
+      '向量存储没有可检索的已完成文件',
       400,
       'invalid_request_error',
       'openai_compatible_vector_store_file_failed'
@@ -371,7 +371,7 @@ async function findOpenAICompatibleVectorStoreForRequest(req: Request): Promise<
 async function requireOpenAICompatibleVectorStoreForRequest(req: Request): Promise<OpenAICompatibleVectorStoreRecord> {
   const record = await findOpenAICompatibleVectorStoreForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleVectorStoresRequestError('Vector store not found', 404, 'invalid_request_error', 'vector_store_not_found')
+    throw new OpenAICompatibleVectorStoresRequestError('向量存储不存在', 404, 'invalid_request_error', 'vector_store_not_found')
   }
   return record
 }
@@ -495,7 +495,7 @@ function handleOpenAICompatibleVectorStoresRoute(
 function requireGatewayRuntime(req: Request): Required<Pick<NonNullable<GatewayRuntimeRequest['gatewayRuntime']>, 'apiKey'>> {
   const runtime = (req as GatewayRuntimeRequest).gatewayRuntime
   if (!runtime?.apiKey) {
-    throw new OpenAICompatibleVectorStoresRequestError('Missing or invalid API key', 401, 'invalid_request_error', 'invalid_api_key')
+    throw new OpenAICompatibleVectorStoresRequestError('缺少或无效的 API Key', 401, 'invalid_request_error', 'invalid_api_key')
   }
   return { apiKey: runtime.apiKey }
 }
@@ -508,7 +508,7 @@ async function readJsonObjectBody(req: Request): Promise<JsonRecord> {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     total += buffer.length
     if (total > 1024 * 1024) {
-      throw new OpenAICompatibleVectorStoresRequestError('JSON request body is too large', 413, 'request_too_large', 'request_body_too_large')
+      throw new OpenAICompatibleVectorStoresRequestError('JSON 请求体过大', 413, 'request_too_large', 'request_body_too_large')
     }
     chunks.push(buffer)
   }
@@ -517,19 +517,19 @@ async function readJsonObjectBody(req: Request): Promise<JsonRecord> {
   try {
     const parsed = JSON.parse(text) as unknown
     if (!isPlainObject(parsed)) {
-      throw new OpenAICompatibleVectorStoresRequestError('JSON request body must be an object', 400, 'invalid_request_error', 'invalid_json_body')
+      throw new OpenAICompatibleVectorStoresRequestError('JSON 请求体必须是对象', 400, 'invalid_request_error', 'invalid_json_body')
     }
     return parsed
   } catch (error) {
     if (error instanceof OpenAICompatibleVectorStoresRequestError) throw error
-    throw new OpenAICompatibleVectorStoresRequestError('JSON request body is invalid', 400, 'invalid_request_error', 'invalid_json_body')
+    throw new OpenAICompatibleVectorStoresRequestError('JSON 请求体无效', 400, 'invalid_request_error', 'invalid_json_body')
   }
 }
 
 function pathVectorStoreId(req: Request): string {
   const value = typeof req.params.vectorStoreId === 'string' ? req.params.vectorStoreId.trim() : ''
   if (!value) {
-    throw new OpenAICompatibleVectorStoresRequestError('Missing vector store id', 400, 'invalid_request_error', 'missing_vector_store_id')
+    throw new OpenAICompatibleVectorStoresRequestError('缺少向量存储 ID', 400, 'invalid_request_error', 'missing_vector_store_id')
   }
   return value
 }
@@ -537,7 +537,7 @@ function pathVectorStoreId(req: Request): string {
 function pathFileId(req: Request): string {
   const value = typeof req.params.fileId === 'string' ? req.params.fileId.trim() : ''
   if (!value) {
-    throw new OpenAICompatibleVectorStoresRequestError('Missing file id', 400, 'invalid_request_error', 'missing_file_id')
+    throw new OpenAICompatibleVectorStoresRequestError('缺少文件 ID', 400, 'invalid_request_error', 'missing_file_id')
   }
   return value
 }

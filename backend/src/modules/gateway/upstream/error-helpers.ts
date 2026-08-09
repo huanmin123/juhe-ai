@@ -1,6 +1,5 @@
 import type { UpstreamAttempt } from './attempt.js'
 import { gatewayErrorPayload } from '../response/responses.js'
-import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 import { parseGatewayProtocolErrorPayloadFromJsonValue } from '../protocols/registry.js'
 import { parseGatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
 
@@ -9,7 +8,7 @@ type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload>
 export function buildDiagnosticUpstreamError(
   lastAttempt: UpstreamAttempt | undefined,
   fallbackMessage: string
-): { statusCode: number; payload: GatewayDiagnosticErrorPayload; errorMessage: string } | undefined {
+): { statusCode: number; payload: GatewayDiagnosticErrorPayload; errorMessage: string; preserveUpstreamMessage: boolean } | undefined {
   if (!lastAttempt) return undefined
 
   const transportFailure = lastAttempt.transportFailureKind
@@ -26,7 +25,8 @@ export function buildDiagnosticUpstreamError(
   const parsedError = parsedPayload
     ? parseGatewayProtocolErrorPayloadFromJsonValue(lastAttempt, parsedPayload)
     : {}
-  const errorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message) || lastAttempt.message || fallbackMessage)
+  const upstreamErrorMessage = stringValue(parsedError.message)
+  const errorMessage = upstreamErrorMessage || lastAttempt.message || fallbackMessage
   const errorType = stringValue(parsedError.type)
     || (transportFailure === 'timeout' ? 'upstream_timeout_error' : transportFailure ? 'upstream_transport_error' : '')
     || stringValue(parsedError.code)
@@ -35,10 +35,15 @@ export function buildDiagnosticUpstreamError(
     || lastAttempt.errorCode
     || (transportFailure === 'timeout' ? 'upstream_timeout' : transportFailure ? `upstream_${transportFailure}` : undefined)
   const payload = hasErrorObject(parsedPayload)
-    ? sanitizeDiagnosticPayload(parsedPayload) as GatewayDiagnosticErrorPayload
+    ? parsedPayload as GatewayDiagnosticErrorPayload
     : gatewayErrorPayload(errorMessage, errorType, errorCode) as GatewayDiagnosticErrorPayload
 
-  return { statusCode, payload, errorMessage }
+  return {
+    statusCode,
+    payload,
+    errorMessage,
+    preserveUpstreamMessage: hasErrorObject(parsedPayload) || Boolean(upstreamErrorMessage)
+  }
 }
 
 function headersFromObject(headers?: Record<string, string>): Headers {

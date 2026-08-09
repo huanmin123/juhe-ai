@@ -50,6 +50,7 @@ import { startInternalGatewayRegistry, stopInternalGatewayRegistry } from './mod
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
+import { systemErrorMessageLocalizationMiddleware } from './shared/system-error-message.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
@@ -207,6 +208,7 @@ if (runtimeConfig.httpSecurity.trustProxy !== false) {
 
 app.disable('x-powered-by')
 app.use(requestContextMiddleware)
+app.use(systemErrorMessageLocalizationMiddleware)
 app.use(systemPrefix, managementSecurityHeadersMiddleware)
 const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
 app.use(accountTestDispatchInternalPrefix, createAccountTestDispatchRouter({

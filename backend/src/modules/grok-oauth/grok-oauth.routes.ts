@@ -4,7 +4,9 @@ import { z } from 'zod'
 
 import { XAI_OPENAI_V1_PROFILE_ID, XAI_PROVIDER_CODE, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
+import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { getRequestLogger } from '../../shared/request-context.js'
+import { markResponseErrorMessageAsUpstream } from '../../shared/system-error-message.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   AccountConfigRevisionConflictError,
@@ -55,7 +57,6 @@ import {
   generateGrokAuthURL,
   GrokOAuthError,
   refreshGrokAuthToken,
-  sanitizeGrokOAuthErrorMessage,
   type GrokOAuthTokenInfo
 } from './grok-oauth.service.js'
 import { normalizeGrokSSOImportTokens } from './grok-sso-device-flow.js'
@@ -372,7 +373,7 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
         }
       } catch (error) {
         if (abortController.signal.aborted) throw error
-        const message = oauthErrorMessage(error, 'Grok SSO Cookie 转换失败')
+        const message = oauthErrorMessage(undefined, error, 'Grok SSO Cookie 转换失败')
         getRequestLogger().warn({
           event: 'grok_sso_import_item_failed',
           index,
@@ -750,23 +751,32 @@ function handleOAuthCreateError(error: unknown, res: Response, fallbackMessage: 
     return
   }
   if (error instanceof GrokOAuthError) {
-    if (error.statusCode === 400) res.status(400).json(badRequest(oauthErrorMessage(error, fallbackMessage)))
-    else res.status(error.statusCode).json({ message: oauthErrorMessage(error, fallbackMessage) })
+    if (error.statusCode === 400) res.status(400).json(badRequest(oauthErrorMessage(res, error, fallbackMessage)))
+    else res.status(error.statusCode).json({ message: oauthErrorMessage(res, error, fallbackMessage) })
+    return
+  }
+  if (isOAuthUpstreamResponseError(error)) {
+    const statusCode = error.statusCode === 403 ? 403 : 502
+    res.status(statusCode).json({ message: oauthErrorMessage(res, error, fallbackMessage) })
     return
   }
   if (isOAuthBusinessConflictError(error)) {
-    res.status(409).json(badRequest(oauthErrorMessage(error, fallbackMessage)))
+    res.status(409).json(badRequest(oauthErrorMessage(res, error, fallbackMessage)))
     return
   }
-  res.status(502).json({ message: oauthErrorMessage(error, fallbackMessage) })
+  res.status(502).json({ message: oauthErrorMessage(res, error, fallbackMessage) })
 }
 
 function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMessage: string): void {
   handleOAuthCreateError(error, res, fallbackMessage)
 }
 
-function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
-  return sanitizeGrokOAuthErrorMessage(error instanceof Error ? error.message : fallbackMessage)
+function oauthErrorMessage(res: Response | undefined, error: unknown, fallbackMessage: string): string {
+  if (isOAuthUpstreamResponseError(error)) {
+    if (res) markResponseErrorMessageAsUpstream(res)
+    return error.message
+  }
+  return fallbackMessage
 }
 
 function isOAuthBusinessConflictError(error: unknown): boolean {

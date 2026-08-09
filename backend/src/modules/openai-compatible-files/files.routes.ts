@@ -55,7 +55,7 @@ async function uploadOpenAICompatibleFile(req: Request, res: Response): Promise<
   const runtime = requireGatewayRuntime(req)
   const contentType = req.header('content-type') ?? ''
   if (!/^multipart\/form-data\b/i.test(contentType)) {
-    throw new OpenAICompatibleFilesRequestError('Files upload requires multipart/form-data', 400, 'invalid_request_error', 'invalid_content_type')
+    throw new OpenAICompatibleFilesRequestError('文件上传请求必须使用 multipart/form-data', 400, 'invalid_request_error', 'invalid_content_type')
   }
   const upload = await readOpenAICompatibleMultipartUpload(req)
   let created: OpenAICompatibleFileRecord | undefined
@@ -132,7 +132,7 @@ async function listOpenAICompatibleContainerFiles(req: Request, res: Response): 
 async function getOpenAICompatibleFile(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleFileForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleFilesRequestError('File not found', 404, 'invalid_request_error', 'file_not_found')
+    throw new OpenAICompatibleFilesRequestError('文件不存在', 404, 'invalid_request_error', 'file_not_found')
   }
   res.json(openAICompatibleFileObject(record))
 }
@@ -140,7 +140,7 @@ async function getOpenAICompatibleFile(req: Request, res: Response): Promise<voi
 async function getOpenAICompatibleContainerFile(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleContainerFileForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleFilesRequestError('Container file not found', 404, 'invalid_request_error', 'container_file_not_found')
+    throw new OpenAICompatibleFilesRequestError('容器文件不存在', 404, 'invalid_request_error', 'container_file_not_found')
   }
   res.json(openAICompatibleContainerFileObject(record))
 }
@@ -148,7 +148,7 @@ async function getOpenAICompatibleContainerFile(req: Request, res: Response): Pr
 async function downloadOpenAICompatibleFileContent(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleFileForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleFilesRequestError('File not found', 404, 'invalid_request_error', 'file_not_found')
+    throw new OpenAICompatibleFilesRequestError('文件不存在', 404, 'invalid_request_error', 'file_not_found')
   }
   const filePath = openAICompatibleFileObjectPath(record.storageKey)
   res.status(200)
@@ -160,7 +160,7 @@ async function downloadOpenAICompatibleFileContent(req: Request, res: Response):
 async function downloadOpenAICompatibleContainerFileContent(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleContainerFileForRequest(req)
   if (!record) {
-    throw new OpenAICompatibleFilesRequestError('Container file not found', 404, 'invalid_request_error', 'container_file_not_found')
+    throw new OpenAICompatibleFilesRequestError('容器文件不存在', 404, 'invalid_request_error', 'container_file_not_found')
   }
   const filePath = openAICompatibleFileObjectPath(record.storageKey)
   res.status(200)
@@ -179,7 +179,7 @@ async function deleteOpenAICompatibleFileRoute(req: Request, res: Response): Pro
     apiKeyId: runtime.apiKey.id
   })
   if (!record) {
-    throw new OpenAICompatibleFilesRequestError('File not found', 404, 'invalid_request_error', 'file_not_found')
+    throw new OpenAICompatibleFilesRequestError('文件不存在', 404, 'invalid_request_error', 'file_not_found')
   }
   await removeOpenAICompatibleFileObject(record.storageKey).catch(() => undefined)
   res.json({
@@ -238,14 +238,14 @@ async function readOpenAICompatibleMultipartUpload(req: Request): Promise<{
       return
     }
     if (fileUploads.length > 0) {
-      parseError = new OpenAICompatibleFilesRequestError('Only one file can be uploaded per request', 400, 'invalid_request_error', 'too_many_files')
+      parseError = new OpenAICompatibleFilesRequestError('每次请求只能上传一个文件', 400, 'invalid_request_error', 'too_many_files')
       stream.resume()
       return
     }
     fileUploads.push(writeUploadedOpenAICompatibleFile(stream, info))
   })
   busboy.on('filesLimit', () => {
-    parseError = new OpenAICompatibleFilesRequestError('Only one file can be uploaded per request', 400, 'invalid_request_error', 'too_many_files')
+    parseError = new OpenAICompatibleFilesRequestError('每次请求只能上传一个文件', 400, 'invalid_request_error', 'too_many_files')
   })
   await new Promise<void>((resolve, reject) => {
     busboy.once('finish', resolve)
@@ -257,10 +257,10 @@ async function readOpenAICompatibleMultipartUpload(req: Request): Promise<{
   const file = files[0]
   if (!purpose) {
     if (file) await removeOpenAICompatibleFileObject(file.storageKey).catch(() => undefined)
-    throw new OpenAICompatibleFilesRequestError('Missing required multipart field: purpose', 400, 'invalid_request_error', 'missing_purpose')
+    throw new OpenAICompatibleFilesRequestError('缺少必填 multipart 字段：purpose', 400, 'invalid_request_error', 'missing_purpose')
   }
   if (!file) {
-    throw new OpenAICompatibleFilesRequestError('Missing required multipart file field: file', 400, 'invalid_request_error', 'missing_file')
+    throw new OpenAICompatibleFilesRequestError('缺少必填 multipart 文件字段：file', 400, 'invalid_request_error', 'missing_file')
   }
   return { purpose, file }
 }
@@ -290,10 +290,10 @@ async function writeUploadedOpenAICompatibleFile(
   try {
     await pipeline(stream, counter, createWriteStream(filePath))
     if (fileSizeLimitHit) {
-      throw new OpenAICompatibleFilesRequestError('Uploaded file is too large', 413, 'request_too_large', 'file_too_large')
+      throw new OpenAICompatibleFilesRequestError('上传文件过大', 413, 'request_too_large', 'file_too_large')
     }
     if (bytes <= 0) {
-      throw new OpenAICompatibleFilesRequestError('Uploaded file is empty', 400, 'invalid_request_error', 'empty_file')
+      throw new OpenAICompatibleFilesRequestError('上传文件为空', 400, 'invalid_request_error', 'empty_file')
     }
     return {
       fileId,
@@ -330,7 +330,7 @@ function handleOpenAICompatibleFilesRoute(
 function requireGatewayRuntime(req: Request): Required<Pick<NonNullable<GatewayRuntimeRequest['gatewayRuntime']>, 'apiKey'>> {
   const runtime = (req as GatewayRuntimeRequest).gatewayRuntime
   if (!runtime?.apiKey) {
-    throw new OpenAICompatibleFilesRequestError('Missing or invalid API key', 401, 'invalid_request_error', 'invalid_api_key')
+    throw new OpenAICompatibleFilesRequestError('缺少或无效的 API Key', 401, 'invalid_request_error', 'invalid_api_key')
   }
   return { apiKey: runtime.apiKey }
 }
@@ -364,7 +364,7 @@ function openAICompatibleContainerFileObject(record: OpenAICompatibleFileRecord)
 function pathContainerId(req: Request): string {
   const value = typeof req.params.containerId === 'string' ? req.params.containerId.trim() : ''
   if (!value) {
-    throw new OpenAICompatibleFilesRequestError('Missing container id', 400, 'invalid_request_error', 'missing_container_id')
+    throw new OpenAICompatibleFilesRequestError('缺少容器 ID', 400, 'invalid_request_error', 'missing_container_id')
   }
   return value
 }
@@ -372,7 +372,7 @@ function pathContainerId(req: Request): string {
 function pathFileId(req: Request): string {
   const value = typeof req.params.fileId === 'string' ? req.params.fileId.trim() : ''
   if (!value) {
-    throw new OpenAICompatibleFilesRequestError('Missing file id', 400, 'invalid_request_error', 'missing_file_id')
+    throw new OpenAICompatibleFilesRequestError('缺少文件 ID', 400, 'invalid_request_error', 'missing_file_id')
   }
   return value
 }

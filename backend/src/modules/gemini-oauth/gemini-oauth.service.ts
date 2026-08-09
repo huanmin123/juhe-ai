@@ -2,10 +2,10 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { OAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { readUpstreamBodyLimited } from '../gateway/upstream/body.js'
 import { requestUpstream } from '../gateway/upstream/request.js'
-import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 
 export const GEMINI_OAUTH_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
@@ -349,7 +349,7 @@ export function inferGeminiGoogleOneTier(storageBytes: number): string {
 }
 
 export function sanitizeGeminiOAuthErrorMessage(message: string): string {
-  return sanitizeDiagnosticPayload(message)
+  return message
 }
 
 function capability(
@@ -489,7 +489,7 @@ async function requestGeminiToken(
         ? `${errorCode}${errorDescription && errorDescription !== errorCode ? `: ${errorDescription}` : ''}`
         : errorDescription || response.bodyText
     )
-    throw new Error(`Gemini OAuth 令牌请求失败：HTTP ${response.statusCode}${detail ? `，${detail}` : ''}`)
+    throw new OAuthUpstreamResponseError(`Gemini OAuth 令牌请求失败：HTTP ${response.statusCode}${detail ? `，${detail}` : ''}`, response.statusCode)
   }
   const accessToken = normalizeString(payload.access_token)
   if (!accessToken) throw new Error('Gemini OAuth 令牌响应缺少 access_token')
@@ -761,7 +761,7 @@ async function requestGeminiJson(input: {
   const body = await readUpstreamBodyLimited(response.body, { maxBytes: geminiOAuthResponseMaxBytes })
   if (body.truncated) throw new Error('Gemini OAuth 探测响应体过大')
   if (!response.ok) {
-    throw new Error(`Gemini OAuth 上游探测失败：HTTP ${response.status}${body.bodyText ? `，${sanitizeGeminiOAuthErrorMessage(body.bodyText)}` : ''}`)
+    throw new OAuthUpstreamResponseError(`Gemini OAuth 上游探测失败：HTTP ${response.status}${body.bodyText ? `，${sanitizeGeminiOAuthErrorMessage(body.bodyText)}` : ''}`, response.status)
   }
   return parseJsonRecord(body.bodyText)
 }
@@ -792,7 +792,7 @@ function extractCodeAndState(callbackUrl: string): { code: string; state: string
   try {
     const url = new URL(value)
     const error = normalizeString(url.searchParams.get('error'))
-    if (error) throw new Error(normalizeString(url.searchParams.get('error_description')) || error)
+    if (error) throw new OAuthUpstreamResponseError(normalizeString(url.searchParams.get('error_description')) || error)
     code = normalizeString(url.searchParams.get('code'))
     state = normalizeString(url.searchParams.get('state'))
   } catch (error) {

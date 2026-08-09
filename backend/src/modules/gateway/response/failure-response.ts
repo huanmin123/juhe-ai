@@ -8,6 +8,7 @@ import {
 import {
   gatewayErrorPayload,
   gatewayErrorPayloadForProtocol,
+  localizedGatewayErrorPayload,
   sendGatewayErrorResponse,
   type GatewayErrorPayload
 } from './responses.js'
@@ -38,6 +39,7 @@ interface SendGatewayFailureResponseInput {
   recordUsage?: boolean
   usageErrorMessage?: string
   failureAttribution?: UsageFailureAttribution
+  preserveUpstreamErrorMessage?: boolean
 }
 
 export async function sendGatewayFailureResponse(input: SendGatewayFailureResponseInput): Promise<void> {
@@ -51,14 +53,18 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
     responsePayload,
     audit,
     recordUsage = true,
-    usageErrorMessage
+    usageErrorMessage,
+    preserveUpstreamErrorMessage = false
   } = input
   const protocol = gatewayErrorProtocolForRequest(req)
-  const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+  const deliveredPayload = preserveUpstreamErrorMessage
+    ? responsePayload
+    : localizedGatewayErrorPayload(responsePayload, statusCode)
+  const clientPayload = gatewayErrorPayloadForProtocol(deliveredPayload, protocol)
   const httpCompletion = observeGatewayHttpCompletion(res)
   const requestLogger = getRequestLogger()
 
-  sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })
+  sendGatewayErrorResponse(res, statusCode, deliveredPayload, { protocol, preserveUpstreamErrorMessage })
   auditCapture.finalize({
     outcome: audit.outcome,
     success: false,
@@ -68,7 +74,7 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
     responsePartType: 'gateway_error',
     errorPhase: audit.errorPhase,
     errorCode: audit.errorCode,
-    errorMessage: audit.errorMessage ?? responsePayload.error.message
+    errorMessage: audit.errorMessage ?? deliveredPayload.error.message
   })
   if (recordUsage) {
     const usageFinalization = httpCompletion.wait().then(async (completedAtMs) => {
@@ -76,7 +82,7 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
         statusCode,
         startedAt,
         completedAtMs,
-        responsePayload,
+        responsePayload: deliveredPayload,
         errorMessage: usageErrorMessage,
         failureAttribution: input.failureAttribution,
         responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, clientPayload)

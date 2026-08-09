@@ -29,7 +29,7 @@ export async function buildOpenAICompatibleVectorStoreChunks(
 ): Promise<OpenAICompatibleVectorStoreChunkInput[]> {
   if (!isSupportedVectorStoreTextMediaType(file.mediaType)) {
     throw new OpenAICompatibleVectorStoreIndexingError(
-      `File ${file.id} media type is not supported by the local vector store text indexer`,
+      `文件 ${file.id} 的媒体类型不受本地向量存储文本索引支持`,
       400,
       'invalid_request_error',
       'openai_compatible_file_mime_unsupported'
@@ -39,7 +39,7 @@ export async function buildOpenAICompatibleVectorStoreChunks(
   const normalized = text.replace(/\u0000/g, '').trim()
   if (!normalized) {
     throw new OpenAICompatibleVectorStoreIndexingError(
-      `File ${file.id} did not contain indexable text`,
+      `文件 ${file.id} 不包含可索引文本`,
       400,
       'invalid_request_error',
       'openai_compatible_vector_store_empty_file'
@@ -48,7 +48,7 @@ export async function buildOpenAICompatibleVectorStoreChunks(
   const chunks = chunkTextForVectorStore(normalized)
   if (chunks.length > vectorStoreMaxChunksPerFile) {
     throw new OpenAICompatibleVectorStoreIndexingError(
-      `File ${file.id} produced too many chunks for the local vector store text indexer`,
+      `文件 ${file.id} 生成的本地向量存储文本分块过多`,
       413,
       'request_too_large',
       'openai_compatible_vector_store_file_too_large'
@@ -68,7 +68,7 @@ export function isSupportedVectorStoreTextMediaType(mediaType: string | undefine
 async function readOpenAICompatibleFileTextForIndexing(file: OpenAICompatibleFileRecord): Promise<string> {
   if (file.bytes > openAICompatibleVectorStoreTextIndexMaxBytes) {
     throw new OpenAICompatibleVectorStoreIndexingError(
-      `File ${file.id} exceeds the local vector store text indexing size limit`,
+      `文件 ${file.id} 超过本地向量存储文本索引大小限制`,
       413,
       'request_too_large',
       'openai_compatible_vector_store_file_too_large'
@@ -82,7 +82,7 @@ async function readOpenAICompatibleFileTextForIndexing(file: OpenAICompatibleFil
     bytes += buffer.length
     if (bytes > openAICompatibleVectorStoreTextIndexMaxBytes) {
       throw new OpenAICompatibleVectorStoreIndexingError(
-        `File ${file.id} exceeds the local vector store text indexing size limit`,
+        `文件 ${file.id} 超过本地向量存储文本索引大小限制`,
         413,
         'request_too_large',
         'openai_compatible_vector_store_file_too_large'

@@ -1,5 +1,9 @@
 import type { Response } from 'express'
 import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
+import {
+  localizeSystemErrorMessage,
+  markResponseErrorMessageAsUpstream
+} from '../../../shared/system-error-message.js'
 
 export interface GatewayErrorPayload {
   [key: string]: unknown
@@ -39,6 +43,20 @@ export function gatewayErrorPayload(message: string, type: string, code?: string
   return { error: { message, type, ...(code ? { code } : {}) } }
 }
 
+export function localizedGatewayErrorPayload(payload: GatewayErrorPayload, statusCode: number): GatewayErrorPayload {
+  const message = localizeSystemErrorMessage(payload.error.message, statusCode)
+  if (message === payload.error.message) {
+    return payload
+  }
+  return {
+    ...payload,
+    error: {
+      ...payload.error,
+      message
+    }
+  }
+}
+
 export function gatewayErrorPayloadForProtocol(
   payload: GatewayErrorPayload,
   protocol: GatewayErrorProtocol = 'openai'
@@ -69,9 +87,15 @@ export function sendGatewayJsonError(
   res: Response,
   statusCode: number,
   payload: GatewayErrorPayload,
-  options: { protocol?: GatewayErrorProtocol } = {}
+  options: { protocol?: GatewayErrorProtocol; preserveUpstreamErrorMessage?: boolean } = {}
 ): void {
-  res.status(statusCode).json(gatewayErrorPayloadForProtocol(payload, options.protocol))
+  const responsePayload = options.preserveUpstreamErrorMessage
+    ? payload
+    : localizedGatewayErrorPayload(payload, statusCode)
+  if (options.preserveUpstreamErrorMessage) {
+    markResponseErrorMessageAsUpstream(res)
+  }
+  res.status(statusCode).json(gatewayErrorPayloadForProtocol(responsePayload, options.protocol))
 }
 
 export function sendGatewayErrorResponse(
@@ -81,21 +105,25 @@ export function sendGatewayErrorResponse(
   options: {
     protocol?: GatewayErrorProtocol
     downstreamProtocol?: OpenAIGatewayDownstreamProtocol
+    preserveUpstreamErrorMessage?: boolean
   } = {}
 ): void {
   if (res.writableEnded || res.destroyed) {
     return
   }
+  const responsePayload = options.preserveUpstreamErrorMessage
+    ? payload
+    : localizedGatewayErrorPayload(payload, statusCode)
   if (!res.headersSent) {
-    sendGatewayJsonError(res, statusCode, payload, options)
+    sendGatewayJsonError(res, statusCode, responsePayload, options)
     return
   }
   const contentType = String(res.getHeader('content-type') ?? '')
   if (isOpenAIStreamContentType(contentType)) {
     const failureEvent = writeGatewayStreamFailureEvent(
       res,
-      payload.error.message,
-      payload.error.code,
+      responsePayload.error.message,
+      responsePayload.error.code,
       options.protocol,
       options.downstreamProtocol
     )
