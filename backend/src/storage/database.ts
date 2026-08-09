@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, normalize, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
@@ -328,7 +328,7 @@ function closeDatabaseHandle(database: DatabaseSync | undefined): void {
   }
 }
 
-function assertDistinctStoragePaths(): void {
+export function assertDistinctStoragePaths(): void {
   const targets = [
     { role: '业务库', path: runtimeConfig.databasePath },
     { role: '聊天库', path: runtimeConfig.chatDatabasePath },
@@ -342,15 +342,120 @@ function assertDistinctStoragePaths(): void {
       path: codexContextStateShardPath(shardIndex)
     }))
   ]
-  const seen = new Map<string, string>()
-  for (const target of targets) {
-    const key = normalize(target.path).toLowerCase()
-    const existingRole = seen.get(key)
-    if (existingRole) {
-      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_TABLE_MONITOR_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
+  const identities = targets.map((target) => sqliteStoragePathIdentity(target.role, target.path))
+  for (let leftIndex = 0; leftIndex < identities.length; leftIndex += 1) {
+    const left = identities[leftIndex]
+    for (let rightIndex = leftIndex + 1; rightIndex < identities.length; rightIndex += 1) {
+      const right = identities[rightIndex]
+      if (storagePathKey(left.canonicalPath) === storagePathKey(right.canonicalPath)) {
+        throwDuplicateSqliteStoragePathError(left.role, right.role)
+      }
+      if (left.fileIdentity && right.fileIdentity && left.fileIdentity === right.fileIdentity) {
+        throwDuplicateSqliteStoragePathError(left.role, right.role)
+      }
     }
-    seen.set(key, target.role)
   }
+}
+
+interface SqliteStoragePathIdentity {
+  role: string
+  canonicalPath: string
+  fileIdentity?: string
+}
+
+function sqliteStoragePathIdentity(role: string, configuredPath: string): SqliteStoragePathIdentity {
+  const canonicalPath = canonicalizeSqliteStoragePath(role, configuredPath)
+  return {
+    role,
+    canonicalPath,
+    fileIdentity: existingSqliteFileIdentity(role, configuredPath)
+  }
+}
+
+function canonicalizeSqliteStoragePath(role: string, configuredPath: string): string {
+  if (!configuredPath.trim()) {
+    throw new Error(`${role} 未配置 SQLite 路径，无法证明存储文件隔离`)
+  }
+
+  const absolutePath = resolve(configuredPath)
+  const unresolvedSegments: string[] = []
+  let probePath = absolutePath
+  while (true) {
+    try {
+      const resolvedParent = realpathSync.native(probePath)
+      return unresolvedSegments.reduce((currentPath, segment) => resolve(currentPath, segment), resolvedParent)
+    } catch (error) {
+      const errorCode = nodeErrorCode(error)
+      if (errorCode !== 'ENOENT') {
+        throw new Error(`${role} 的 SQLite 路径无法解析为物理文件：${absolutePath}`, { cause: error })
+      }
+    }
+
+    let entry
+    try {
+      entry = lstatSync(probePath)
+    } catch (error) {
+      if (nodeErrorCode(error) !== 'ENOENT') {
+        throw new Error(`${role} 的 SQLite 路径无法检查：${absolutePath}`, { cause: error })
+      }
+      const parentPath = dirname(probePath)
+      if (parentPath === probePath) {
+        throw new Error(`${role} 的 SQLite 路径没有可解析的父目录：${absolutePath}`)
+      }
+      unresolvedSegments.unshift(probePath.slice(parentPath.length).replace(/^[\\/]+/, ''))
+      probePath = parentPath
+      continue
+    }
+
+    if (entry.isSymbolicLink()) {
+      throw new Error(`${role} 的 SQLite 路径包含无法解析的符号链接：${absolutePath}`)
+    }
+    throw new Error(`${role} 的 SQLite 路径无法证明物理身份：${absolutePath}`)
+  }
+}
+
+function existingSqliteFileIdentity(role: string, configuredPath: string): string | undefined {
+  try {
+    const entry = statSync(configuredPath)
+    if (!entry.isFile()) {
+      throw new Error(`${role} 的 SQLite 路径不是常规文件：${resolve(configuredPath)}`)
+    }
+    if (!Number.isSafeInteger(entry.nlink) || entry.nlink !== 1) {
+      throw new Error(`${role} 的 SQLite 路径包含硬链接，无法证明单文件单 owner：${resolve(configuredPath)}`)
+    }
+    if (process.platform === 'win32') {
+      // Node 在部分 Windows 文件系统上不提供可靠 inode；符号链接已由
+      // realpath 归一化，硬链接则被上面的 nlink=1 门禁拒绝。
+      return undefined
+    }
+    if (!Number.isSafeInteger(entry.ino) || entry.ino <= 0) {
+      throw new Error(`${role} 的 SQLite 路径无法提供稳定的物理文件 identity：${resolve(configuredPath)}`)
+    }
+    return `${entry.dev}:${entry.ino}`
+  } catch (error) {
+    if (nodeErrorCode(error) === 'ENOENT') {
+      return undefined
+    }
+    if (error instanceof Error && error.message.includes('SQLite 路径')) {
+      throw error
+    }
+    throw new Error(`${role} 的 SQLite 路径无法读取物理文件 identity：${resolve(configuredPath)}`, { cause: error })
+  }
+}
+
+function storagePathKey(path: string): string {
+  const normalizedPath = normalize(path)
+  return process.platform === 'win32' ? normalizedPath.toLowerCase() : normalizedPath
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : undefined
+}
+
+function throwDuplicateSqliteStoragePathError(role: string, existingRole: string): never {
+  throw new Error(`${role} 与 ${existingRole} 指向同一个 SQLite 物理文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_TABLE_MONITOR_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
 }
 
 export function nowIso(): string {

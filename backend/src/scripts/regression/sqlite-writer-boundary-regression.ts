@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -15,6 +15,7 @@ runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.runtimeLogDatabasePath = join(tempRoot, 'runtime-log.sqlite3')
+runtimeConfig.tableMonitorDatabasePath = join(tempRoot, 'table-monitor.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
@@ -32,6 +33,7 @@ const usageRecordShards = await import('../../storage/usage-record-shards.js')
 const repositories = await import('../../storage/repositories.js')
 
 try {
+  assertDistinctPhysicalSqliteStoragePaths(databaseModule)
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('business'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('chat'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('codex-context-state'), 'db-service')
@@ -157,6 +159,68 @@ try {
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertDistinctPhysicalSqliteStoragePaths(databaseModule: typeof import('../../storage/database.js')): void {
+  databaseModule.assertDistinctStoragePaths()
+
+  const originalDatasetPath = runtimeConfig.datasetDatabasePath
+  writeFileSync(runtimeConfig.databasePath, '')
+  const hardLinkPath = join(tempRoot, 'dataset-hard-link.sqlite3')
+  linkSync(runtimeConfig.databasePath, hardLinkPath)
+  runtimeConfig.datasetDatabasePath = hardLinkPath
+  assert.throws(
+    () => databaseModule.assertDistinctStoragePaths(),
+    /同一个 SQLite 物理文件|包含硬链接/,
+    '硬链接必须被识别并拒绝，不能绕过 SQLite 单文件单 owner 边界'
+  )
+  runtimeConfig.datasetDatabasePath = originalDatasetPath
+  rmSync(hardLinkPath, { force: true })
+
+  const databaseLinkPath = join(tempRoot, 'dataset-database-link.sqlite3')
+  let databaseLinkCreated = false
+  try {
+    symlinkSync(runtimeConfig.databasePath, databaseLinkPath, 'file')
+    databaseLinkCreated = true
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : undefined
+    console.log(`SQLite 路径符号链接碰撞回归跳过：当前环境不允许创建符号链接（${code || (error instanceof Error ? error.message : String(error))}）`)
+  }
+  if (databaseLinkCreated) {
+    runtimeConfig.datasetDatabasePath = databaseLinkPath
+    assert.throws(
+      () => databaseModule.assertDistinctStoragePaths(),
+      /同一个 SQLite 物理文件/,
+      '指向已有业务库的符号链接必须被识别为同一 SQLite 物理文件'
+    )
+    runtimeConfig.datasetDatabasePath = originalDatasetPath
+    rmSync(databaseLinkPath, { force: true })
+  }
+  rmSync(runtimeConfig.databasePath, { force: true })
+
+  const danglingLinkPath = join(tempRoot, 'runtime-log-dangling.sqlite3')
+  try {
+    symlinkSync(join(tempRoot, 'missing-runtime-log.sqlite3'), danglingLinkPath, 'file')
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : undefined
+    console.log(`SQLite 路径符号链接回归跳过：当前环境不允许创建符号链接（${code || (error instanceof Error ? error.message : String(error))}）`)
+    return
+  }
+  const originalRuntimeLogPath = runtimeConfig.runtimeLogDatabasePath
+  try {
+    runtimeConfig.runtimeLogDatabasePath = danglingLinkPath
+    assert.throws(
+      () => databaseModule.assertDistinctStoragePaths(),
+      /无法解析的符号链接/,
+      '悬空符号链接不能被当作独立 SQLite 文件'
+    )
+  } finally {
+    runtimeConfig.runtimeLogDatabasePath = originalRuntimeLogPath
+  }
 }
 
 function assertIngestWorkerUsageRecordWriteDoesNotTouchReadonlyBusinessDatabase(): void {

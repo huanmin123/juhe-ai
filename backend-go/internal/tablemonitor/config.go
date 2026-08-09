@@ -1,6 +1,7 @@
 package tablemonitor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,14 +94,22 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if runtimeLogPath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH，无法验证 F1/F2 专用库隔离")
 		}
-		if sameSQLiteFile(cfg.OutputPath, runtimeLogPath) {
+		same, err := sameSQLiteFile(cfg.OutputPath, runtimeLogPath)
+		if err != nil {
+			return Config{}, fmt.Errorf("校验 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 与 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 的 SQLite 隔离失败: %w", err)
+		}
+		if same {
 			return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得与 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 共用 SQLite 文件")
 		}
 		for role, path := range cfg.sourcePaths() {
 			if path == "" {
 				return Config{}, fmt.Errorf("sqlite 模式缺少 %s 数据库路径", role)
 			}
-			if sameSQLiteFile(cfg.OutputPath, path) {
+			same, err := sameSQLiteFile(cfg.OutputPath, path)
+			if err != nil {
+				return Config{}, fmt.Errorf("校验 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 与 %s 的 SQLite 隔离失败: %w", role, err)
+			}
+			if same {
 				return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得与 %s 共用 SQLite 文件", role)
 			}
 		}
@@ -113,16 +122,30 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 		shardKeys := make(map[string]string, len(entries))
 		for _, entry := range entries {
-			if sameSQLiteFile(cfg.OutputPath, entry) {
+			same, err := sameSQLiteFile(cfg.OutputPath, entry)
+			if err != nil {
+				return Config{}, fmt.Errorf("校验 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 与 Codex context SQLite shard %q 的隔离失败: %w", entry, err)
+			}
+			if same {
 				return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得与 Codex context SQLite shard 共用")
 			}
 			key := filepath.Base(entry)
-			if prior, exists := shardKeys[key]; exists && !sameSQLiteFile(prior, entry) {
-				return Config{}, fmt.Errorf("Codex context SQLite shard 文件名重复，无法形成稳定 table identity: %s", key)
+			if prior, exists := shardKeys[key]; exists {
+				same, err := sameSQLiteFile(prior, entry)
+				if err != nil {
+					return Config{}, fmt.Errorf("校验 Codex context SQLite shard %q 与 %q 的物理 identity 失败: %w", prior, entry, err)
+				}
+				if !same {
+					return Config{}, fmt.Errorf("Codex context SQLite shard 文件名重复，无法形成稳定 table identity: %s", key)
+				}
 			}
 			shardKeys[key] = entry
 		}
-		if pathWithin(cfg.CodexShardRoot, cfg.OutputPath) {
+		within, err := pathWithin(cfg.CodexShardRoot, cfg.OutputPath)
+		if err != nil {
+			return Config{}, fmt.Errorf("校验 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 与 Codex context shard 根目录的隔离失败: %w", err)
+		}
+		if within {
 			return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
 		}
 	} else if cfg.PostgresURL == "" {
@@ -171,53 +194,111 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func sameSQLiteFile(left, right string) bool {
-	leftPath, leftErr := canonicalPath(left)
-	rightPath, rightErr := canonicalPath(right)
-	if leftErr != nil || rightErr != nil {
-		return false
-	}
-	if equalFilesystemPath(leftPath, rightPath) {
-		return true
+func sameSQLiteFile(left, right string) (bool, error) {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false, fmt.Errorf("SQLite 路径不能为空: left=%q right=%q", left, right)
 	}
 	leftInfo, leftErr := os.Stat(left)
 	rightInfo, rightErr := os.Stat(right)
-	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+	if leftErr != nil && !errors.Is(leftErr, os.ErrNotExist) {
+		return false, fmt.Errorf("stat 左侧 SQLite 路径 %q 失败: %w", left, leftErr)
+	}
+	if rightErr != nil && !errors.Is(rightErr, os.ErrNotExist) {
+		return false, fmt.Errorf("stat 右侧 SQLite 路径 %q 失败: %w", right, rightErr)
+	}
+	if leftErr == nil && rightErr == nil {
+		return os.SameFile(leftInfo, rightInfo), nil
+	}
+	leftPath, err := canonicalPath(left)
+	if err != nil {
+		return false, fmt.Errorf("解析左侧 SQLite 路径 %q 失败: %w", left, err)
+	}
+	rightPath, err := canonicalPath(right)
+	if err != nil {
+		return false, fmt.Errorf("解析右侧 SQLite 路径 %q 失败: %w", right, err)
+	}
+	if equalFilesystemPath(leftPath, rightPath) {
+		return true, nil
+	}
+	return false, nil
 }
 
-func pathWithin(root, candidate string) bool {
-	rootAbs, rootErr := canonicalPath(root)
-	candidateAbs, candidateErr := canonicalPath(candidate)
-	if rootErr != nil || candidateErr != nil {
-		return false
+func pathWithin(root, candidate string) (bool, error) {
+	rootAbs, err := canonicalPath(root)
+	if err != nil {
+		return false, fmt.Errorf("解析根路径 %q 失败: %w", root, err)
+	}
+	candidateAbs, err := canonicalPath(candidate)
+	if err != nil {
+		return false, fmt.Errorf("解析候选路径 %q 失败: %w", candidate, err)
 	}
 	relative, err := filepath.Rel(rootAbs, candidateAbs)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("比较候选路径 %q 与根路径 %q 失败: %w", candidate, root, err)
 	}
-	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
 func canonicalPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("SQLite 路径不能为空")
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("获取绝对路径失败: %w", err)
 	}
 	abs = filepath.Clean(abs)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+	info, err := os.Lstat(abs)
+	if err == nil {
+		resolved, evalErr := filepath.EvalSymlinks(abs)
+		if evalErr != nil {
+			return "", fmt.Errorf("解析符号链接失败: %w", evalErr)
+		}
+		if _, statErr := os.Stat(abs); statErr != nil {
+			return "", fmt.Errorf("stat 路径目标失败: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if _, statErr := os.Stat(resolved); statErr != nil {
+				return "", fmt.Errorf("stat 符号链接目标失败: %w", statErr)
+			}
+		}
 		return filepath.Clean(resolved), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("检查路径失败: %w", err)
 	}
 	parent := filepath.Dir(abs)
 	suffix := []string{filepath.Base(abs)}
-	for parent != filepath.Dir(parent) {
-		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
-			parts := append([]string{resolved}, suffix...)
-			return filepath.Join(parts...), nil
+	for {
+		_, parentErr := os.Lstat(parent)
+		if parentErr == nil {
+			resolvedParent, evalErr := filepath.EvalSymlinks(parent)
+			if evalErr != nil {
+				return "", fmt.Errorf("解析真实父目录 %q 失败: %w", parent, evalErr)
+			}
+			parentStat, statErr := os.Stat(parent)
+			if statErr != nil {
+				return "", fmt.Errorf("stat 真实父目录 %q 失败: %w", parent, statErr)
+			}
+			if !parentStat.IsDir() {
+				return "", fmt.Errorf("真实父路径 %q 不是目录", parent)
+			}
+			parts := append([]string{resolvedParent}, suffix...)
+			return filepath.Clean(filepath.Join(parts...)), nil
+		}
+		if !errors.Is(parentErr, os.ErrNotExist) {
+			return "", fmt.Errorf("检查父路径 %q 失败: %w", parent, parentErr)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return "", fmt.Errorf("路径没有可解析的真实父目录")
 		}
 		suffix = append([]string{filepath.Base(parent)}, suffix...)
-		parent = filepath.Dir(parent)
+		parent = next
 	}
-	return abs, nil
 }
 
 func equalFilesystemPath(left, right string) bool {

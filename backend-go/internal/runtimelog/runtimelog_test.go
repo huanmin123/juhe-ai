@@ -590,6 +590,18 @@ func TestLoadConfigRejectsHardLinkedTableMonitorAndRuntimeLogSQLitePath(t *testi
 	}
 }
 
+func TestLoadConfigRejectsDanglingSQLiteAliasFailClosed(t *testing.T) {
+	root, values := runtimeLogSQLiteConfigValues(t)
+	dangling := filepath.Join(root, "dangling-table-monitor.sqlite")
+	if err := os.Symlink(filepath.Join(root, "missing-target.sqlite"), dangling); err != nil {
+		t.Skipf("当前环境不能创建悬空 SQLite symlink fixture: %v", err)
+	}
+	values["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = dangling
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "隔离失败") {
+		t.Fatalf("悬空 SQLite symlink 必须 fail-closed 拒绝启动，实际为 %v", err)
+	}
+}
+
 func TestLoadConfigRejectsRuntimeLogSQLiteAliasesForAllNodeOwners(t *testing.T) {
 	t.Run("usage catalog direct path", func(t *testing.T) {
 		_, values := runtimeLogSQLiteConfigValues(t)

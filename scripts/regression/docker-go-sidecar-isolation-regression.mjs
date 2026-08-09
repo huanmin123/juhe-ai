@@ -8,8 +8,18 @@ const source = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').repl
 const runtimeLogIndexer = serviceBlock('runtime-log-indexer')
 const tableMonitor = serviceBlock('table-monitor')
 
-assert.match(runtimeLogIndexer, /JUHE_AI_TABLE_MONITOR_DATABASE_PATH:/u, 'F1 Docker sidecar must receive the F2 database path')
-assert.match(runtimeLogIndexer, /juhe-ai-table-monitor-data:\/app\/backend\/table-monitor-data:ro/u, 'F1 Docker sidecar must inspect the F2 volume read-only')
+assertDatabasePathMount(runtimeLogIndexer, {
+  environment: 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+  mountTarget: '/app/backend/runtime-log-data',
+  readOnly: false,
+  label: 'F1 自身 SQLite 输出库'
+})
+assertDatabasePathMount(runtimeLogIndexer, {
+  environment: 'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
+  mountTarget: '/app/backend/table-monitor-data',
+  readOnly: true,
+  label: 'F1 读取 F2 SQLite 输出库'
+})
 for (const name of [
   'JUHE_AI_DATABASE_PATH',
   'JUHE_AI_DATASET_DATABASE_PATH',
@@ -20,8 +30,18 @@ for (const name of [
   assert.match(runtimeLogIndexer, new RegExp(`${name}:`, 'u'), `F1 Docker sidecar must receive ${name}`)
 }
 
-assert.match(tableMonitor, /JUHE_AI_RUNTIME_LOG_DATABASE_PATH:/u, 'F2 Docker sidecar must receive the F1 database path')
-assert.match(tableMonitor, /juhe-ai-runtime-log-data:\/app\/backend\/runtime-log-data:ro/u, 'F2 Docker sidecar must inspect the F1 volume read-only')
+assertDatabasePathMount(tableMonitor, {
+  environment: 'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
+  mountTarget: '/app/backend/table-monitor-data',
+  readOnly: false,
+  label: 'F2 自身 SQLite 输出库'
+})
+assertDatabasePathMount(tableMonitor, {
+  environment: 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+  mountTarget: '/app/backend/runtime-log-data',
+  readOnly: true,
+  label: 'F2 读取 F1 SQLite 输出库'
+})
 
 console.log('Docker Go sidecar SQLite isolation regression passed')
 
@@ -33,4 +53,29 @@ function serviceBlock(name) {
   const body = remaining.slice(header.length)
   const next = body.search(/^  [a-zA-Z0-9_-]+:\n/mu)
   return next === -1 ? remaining : remaining.slice(0, header.length + next)
+}
+
+function assertDatabasePathMount(block, { environment, mountTarget, readOnly, label }) {
+  const configuredPath = defaultEnvironmentPath(block, environment)
+  assert.equal(
+    configuredPath === mountTarget || configuredPath.startsWith(`${mountTarget}/`),
+    true,
+    `${label} 的 ${environment} 默认路径必须位于 ${mountTarget}`
+  )
+  const expectedSuffix = readOnly ? ':ro' : ''
+  assert.match(
+    block,
+    new RegExp(`^\\s+- [^\\s:]+:${escapeRegExp(mountTarget)}${escapeRegExp(expectedSuffix)}\\s*$`, 'mu'),
+    `${label} 的 ${environment} 必须由同一 service 中${readOnly ? '只读' : '可写'}挂载的 ${mountTarget} 提供`
+  )
+}
+
+function defaultEnvironmentPath(block, name) {
+  const match = block.match(new RegExp(`^\\s+${escapeRegExp(name)}:\\s*\\$\\{[^}:]+:-([^}]+)\\}\\s*$`, 'mu'))
+  assert(match, `${name} 必须以显式容器内默认 SQLite 路径配置`)
+  return match[1]
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }

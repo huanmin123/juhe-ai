@@ -3,9 +3,11 @@ package runtimelog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -19,7 +21,11 @@ func MigrateLegacySQLite(ctx context.Context, config Config, store Store) error 
 	if strings.TrimSpace(config.DatasetPath) == "" {
 		return fmt.Errorf("旧运行日志 SQLite 迁移缺少 JUHE_AI_DATASET_DATABASE_PATH")
 	}
-	if sameSQLitePath(config.DatasetPath, config.RuntimeLogDatabasePath) {
+	same, err := sameSQLitePath(config.DatasetPath, config.RuntimeLogDatabasePath)
+	if err != nil {
+		return fmt.Errorf("校验旧运行日志 SQLite 数据源与专用库隔离失败: %w", err)
+	}
+	if same {
 		return fmt.Errorf("旧运行日志 SQLite 数据源不得与 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 共用文件")
 	}
 	if _, err := os.Stat(config.DatasetPath); err != nil {
@@ -162,53 +168,115 @@ func verifySQLiteIntegrity(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func sameSQLitePath(left, right string) bool {
-	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
-		return false
-	}
-	leftAbs, leftErr := canonicalSQLitePath(left)
-	rightAbs, rightErr := canonicalSQLitePath(right)
-	if leftErr != nil || rightErr != nil {
-		return false
-	}
-	if strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs)) {
-		return true
+func sameSQLitePath(left, right string) (bool, error) {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false, fmt.Errorf("SQLite 路径不能为空: left=%q right=%q", left, right)
 	}
 	leftInfo, leftErr := os.Stat(left)
 	rightInfo, rightErr := os.Stat(right)
-	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+	if leftErr != nil && !errors.Is(leftErr, os.ErrNotExist) {
+		return false, fmt.Errorf("stat 左侧 SQLite 路径 %q 失败: %w", left, leftErr)
+	}
+	if rightErr != nil && !errors.Is(rightErr, os.ErrNotExist) {
+		return false, fmt.Errorf("stat 右侧 SQLite 路径 %q 失败: %w", right, rightErr)
+	}
+	if leftErr == nil && rightErr == nil {
+		return os.SameFile(leftInfo, rightInfo), nil
+	}
+	leftAbs, err := canonicalSQLitePath(left)
+	if err != nil {
+		return false, fmt.Errorf("解析左侧 SQLite 路径 %q 失败: %w", left, err)
+	}
+	rightAbs, err := canonicalSQLitePath(right)
+	if err != nil {
+		return false, fmt.Errorf("解析右侧 SQLite 路径 %q 失败: %w", right, err)
+	}
+	if equalSQLitePath(leftAbs, rightAbs) {
+		return true, nil
+	}
+	return false, nil
 }
 
-func sqlitePathWithin(root, candidate string) bool {
-	rootPath, rootErr := canonicalSQLitePath(root)
-	candidatePath, candidateErr := canonicalSQLitePath(candidate)
-	if rootErr != nil || candidateErr != nil {
-		return false
+func sqlitePathWithin(root, candidate string) (bool, error) {
+	rootPath, err := canonicalSQLitePath(root)
+	if err != nil {
+		return false, fmt.Errorf("解析 SQLite 根路径 %q 失败: %w", root, err)
+	}
+	candidatePath, err := canonicalSQLitePath(candidate)
+	if err != nil {
+		return false, fmt.Errorf("解析 SQLite 候选路径 %q 失败: %w", candidate, err)
 	}
 	relative, err := filepath.Rel(rootPath, candidatePath)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("比较 SQLite 路径 %q 与根路径 %q 失败: %w", candidate, root, err)
 	}
-	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
 func canonicalSQLitePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("SQLite 路径不能为空")
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("获取绝对路径失败: %w", err)
 	}
 	abs = filepath.Clean(abs)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+	info, err := os.Lstat(abs)
+	if err == nil {
+		resolved, evalErr := filepath.EvalSymlinks(abs)
+		if evalErr != nil {
+			return "", fmt.Errorf("解析符号链接失败: %w", evalErr)
+		}
+		if _, statErr := os.Stat(abs); statErr != nil {
+			return "", fmt.Errorf("stat 路径目标失败: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if _, statErr := os.Stat(resolved); statErr != nil {
+				return "", fmt.Errorf("stat 符号链接目标失败: %w", statErr)
+			}
+		}
 		return filepath.Clean(resolved), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("检查路径失败: %w", err)
 	}
 	parent := filepath.Dir(abs)
 	suffix := []string{filepath.Base(abs)}
-	for parent != filepath.Dir(parent) {
-		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
-			return filepath.Join(append([]string{resolved}, suffix...)...), nil
+	for {
+		_, parentErr := os.Lstat(parent)
+		if parentErr == nil {
+			resolvedParent, evalErr := filepath.EvalSymlinks(parent)
+			if evalErr != nil {
+				return "", fmt.Errorf("解析真实父目录 %q 失败: %w", parent, evalErr)
+			}
+			parentStat, statErr := os.Stat(parent)
+			if statErr != nil {
+				return "", fmt.Errorf("stat 真实父目录 %q 失败: %w", parent, statErr)
+			}
+			if !parentStat.IsDir() {
+				return "", fmt.Errorf("真实父路径 %q 不是目录", parent)
+			}
+			return filepath.Clean(filepath.Join(append([]string{resolvedParent}, suffix...)...)), nil
+		}
+		if !errors.Is(parentErr, os.ErrNotExist) {
+			return "", fmt.Errorf("检查父路径 %q 失败: %w", parent, parentErr)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return "", fmt.Errorf("路径没有可解析的真实父目录")
 		}
 		suffix = append([]string{filepath.Base(parent)}, suffix...)
-		parent = filepath.Dir(parent)
+		parent = next
 	}
-	return abs, nil
+}
+
+func equalSQLitePath(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
 }

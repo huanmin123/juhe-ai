@@ -122,14 +122,22 @@ func validateSQLiteIsolation(config Config, tableMonitorPath string) error {
 		if candidate.path == "" {
 			return fmt.Errorf("sqlite 模式缺少 %s，无法验证运行日志专库隔离", candidate.name)
 		}
-		if sameSQLitePath(candidate.path, config.RuntimeLogDatabasePath) {
+		same, err := sameSQLitePath(candidate.path, config.RuntimeLogDatabasePath)
+		if err != nil {
+			return fmt.Errorf("校验 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 与 %s 的 SQLite 隔离失败: %w", candidate.name, err)
+		}
+		if same {
 			return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 %s 指向同一个 SQLite 文件", candidate.name)
 		}
 	}
 	if config.CodexShardRoot == "" {
 		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT，无法验证运行日志专库隔离")
 	}
-	if sqlitePathWithin(config.CodexShardRoot, config.RuntimeLogDatabasePath) {
+	within, err := sqlitePathWithin(config.CodexShardRoot, config.RuntimeLogDatabasePath)
+	if err != nil {
+		return fmt.Errorf("校验 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 与运行日志 SQLite 隔离失败: %w", err)
+	}
+	if within {
 		return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
 	}
 	entries, err := filepath.Glob(filepath.Join(config.CodexShardRoot, "*.sqlite3"))
@@ -137,7 +145,11 @@ func validateSQLiteIsolation(config Config, tableMonitorPath string) error {
 		return fmt.Errorf("枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
 	}
 	for _, entry := range entries {
-		if sameSQLitePath(entry, config.RuntimeLogDatabasePath) {
+		same, err := sameSQLitePath(entry, config.RuntimeLogDatabasePath)
+		if err != nil {
+			return fmt.Errorf("校验 Codex context SQLite shard %q 与运行日志 SQLite 隔离失败: %w", entry, err)
+		}
+		if same {
 			return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 中的 SQLite shard 指向同一个文件")
 		}
 	}

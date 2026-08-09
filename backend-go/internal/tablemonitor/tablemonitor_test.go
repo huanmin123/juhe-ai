@@ -64,6 +64,19 @@ func TestLoadConfigRequiresDedicatedSQLiteOutput(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsDanglingSQLiteAliasFailClosed(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteTestEnv(root)
+	dangling := filepath.Join(root, "dangling-runtime-log.sqlite3")
+	if err := os.Symlink(filepath.Join(root, "missing-target.sqlite3"), dangling); err != nil {
+		t.Skipf("当前环境不能创建悬空 SQLite symlink fixture: %v", err)
+	}
+	env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = dangling
+	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil || !strings.Contains(err.Error(), "隔离失败") {
+		t.Fatalf("悬空 SQLite symlink 必须 fail-closed 拒绝启动，实际为 %v", err)
+	}
+}
+
 func TestSQLiteStoreForcesWALAndBusyTimeout(t *testing.T) {
 	root := t.TempDir()
 	env := sqliteTestEnv(root)
