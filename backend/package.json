@@ -632,6 +632,7 @@
     "test:postgres-query-transaction-boundary": "tsx src/scripts/regression/postgres-query-transaction-boundary-regression.ts",
     "test:provider-repository-driver": "tsx src/scripts/regression/provider-repository-driver-regression.ts",
     "test:system-account-session-driver": "tsx src/scripts/regression/system-account-session-driver-regression.ts",
+    "test:temporary-access-token": "tsx src/scripts/regression/temporary-access-token-regression.ts",
     "test:system-account-management-driver": "tsx src/scripts/regression/system-account-management-driver-regression.ts",
     "test:settings-public-driver": "tsx src/scripts/regression/settings-public-driver-regression.ts",
     "test:settings-management-driver": "tsx src/scripts/regression/settings-management-driver-regression.ts",

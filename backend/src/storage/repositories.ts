@@ -668,6 +668,7 @@ export {
   createSession,
   createSessionAsync,
   createAuthenticatedSessionAsync,
+  createTemporaryAccessTokenAsync,
   createSystemAccount,
   createSystemAccountAsync,
   createSystemAccountWithPasswordHash,

@@ -22,6 +22,7 @@ import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { systemAccountListItemFromRow, systemAccountOptionSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow, type SystemAccountSummaryRow } from './system-account-mappers.js'
 import { optionalString } from './value-utils.js'
+import { temporaryAccessTokenPrefix } from '../modules/auth/temporary-access-token.js'
 
 interface SystemSessionRow {
   id: string
@@ -1079,6 +1080,41 @@ export async function createSessionAsync(systemAccountId: string, ttlDays = 14):
     VALUES (?, ?, ?, ?, ?, ?)
   `, [sessionId, systemAccountId, hashSecret(token), expiresAt, now.toISOString(), now.toISOString()])
   return { token, sessionId, expiresAt }
+}
+
+export async function createTemporaryAccessTokenAsync(
+  systemAccountId: string,
+  credentialRevision: string,
+  ttlSeconds: number
+): Promise<{ token: string; sessionId: string; expiresAt: string } | undefined> {
+  const token = `${temporaryAccessTokenPrefix}${randomBytes(32).toString('base64url')}`
+  const sessionId = newId('tmp_sess')
+  const now = new Date()
+  const nowText = now.toISOString()
+  const expiresAt = new Date(now.getTime() + Math.max(1, Math.trunc(ttlSeconds)) * 1000).toISOString()
+  const client = await getSystemAccountDatabaseClient()
+  return client.transaction(async (tx) => {
+    const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const account = await tx.one<Pick<SystemAccountRow, 'status' | 'password_hash'>>(`
+      SELECT status, password_hash
+      FROM ${systemAccountTable(tx, 'system_accounts')}
+      WHERE id = ?
+      LIMIT 1${lockClause}
+    `, [systemAccountId])
+    if (!account || account.status !== 'active' || hashSecret(account.password_hash) !== credentialRevision) {
+      return undefined
+    }
+    await tx.execute(`
+      INSERT INTO ${systemAccountTable(tx, 'system_sessions')} (id, system_account_id, token_hash, expires_at, created_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [sessionId, systemAccountId, hashSecret(token), expiresAt, nowText, nowText])
+    await tx.execute(`
+      UPDATE ${systemAccountTable(tx, 'system_accounts')}
+      SET last_login_at = ?
+      WHERE id = ?
+    `, [nowText, systemAccountId])
+    return { token, sessionId, expiresAt }
+  })
 }
 
 export async function createAuthenticatedSessionAsync(

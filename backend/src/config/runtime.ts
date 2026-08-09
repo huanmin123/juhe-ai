@@ -44,6 +44,7 @@ export interface RuntimeConfig {
   }
   auth: {
     captchaDisabled: boolean
+    temporaryAccessIpAllowlist: string[]
   }
   upstreamUrlSecurity: {
     allowPrivateBaseUrls: boolean
@@ -869,8 +870,19 @@ function assertProductionSecret(name: string, value: string): void {
 
 function authRuntimeConfig(): RuntimeConfig['auth'] {
   return {
-    captchaDisabled: booleanConfig('JUHE_AI_AUTH_CAPTCHA_DISABLED', false)
+    captchaDisabled: booleanConfig('JUHE_AI_AUTH_CAPTCHA_DISABLED', false),
+    temporaryAccessIpAllowlist: temporaryAccessIpAllowlistConfig('JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST')
   }
+}
+
+function temporaryAccessIpAllowlistConfig(name: string): string[] {
+  return Array.from(new Set(listConfig(name).map((value) => {
+    const normalized = value.replace(/^::ffff:/i, '')
+    if (!isIP(normalized)) {
+      throw new Error(`${name} 只能填写逗号分隔的单个 IPv4 或 IPv6 地址，不支持域名、CIDR 或通配符`)
+    }
+    return normalized
+  })))
 }
 
 export function isProductionRuntime(): boolean {

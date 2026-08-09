@@ -108,6 +108,13 @@ $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot
 foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_indexer', 'runtime-log-indexer', 'juhe-ai-runtime-log-indexer', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go runtime log indexer must be a regular file', 'service user cannot execute Go runtime log indexer', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
+$releaseInputGateIndex = $performanceInstaller.IndexOf('[ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }', [StringComparison]::Ordinal)
+$dryRunExitIndex = $performanceInstaller.IndexOf('[ "$MODE" = apply ] || exit 0', [StringComparison]::Ordinal)
+$nodeLookupIndex = $performanceInstaller.IndexOf('NODE_BIN="$(command -v node)"', [StringComparison]::Ordinal)
+$runtimeCreateIndex = $performanceInstaller.IndexOf('mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR"', [StringComparison]::Ordinal)
+if ($releaseInputGateIndex -lt 0 -or $dryRunExitIndex -lt $releaseInputGateIndex -or $nodeLookupIndex -lt $dryRunExitIndex -or $runtimeCreateIndex -lt $dryRunExitIndex) {
+  throw 'Performance topology dry-run must gate immutable release inputs before exiting, while platform and mutable runtime work remains apply-only'
+}
 foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology instance identity contract missing: $contract" }
 }
@@ -284,18 +291,39 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-ops-test' --label 'com.example.juhe-ai'
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
-    $defaultDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
-    if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
-    if (-not ($defaultDryRun -join "`n").Contains('data=/tmp/juhe-ai-performance-test/shared/data', [StringComparison]::Ordinal)) {
-      throw 'default performance topology dry-run did not use the shared release-external data directory'
-    }
-    $isolatedDryRun = @(& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.temporary' --runtime-dir '/tmp/juhe-ai-performance-test/runtime-temporary' --nginx-upstream-suffix 'temporary_20260730' --instance-id-prefix 'temporary' --nginx-config '/tmp/juhe-ai-performance-test/temporary.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf')
-    if ($LASTEXITCODE -ne 0) { throw 'isolated performance topology installer dry-run failed' }
-    if (-not ($isolatedDryRun -join "`n").Contains('runtime=/tmp/juhe-ai-performance-test/runtime-temporary data=/tmp/juhe-ai-performance-test/runtime-temporary/data upstream_suffix=temporary_20260730 instance_id_prefix=temporary', [StringComparison]::Ordinal)) {
-      throw 'isolated performance topology dry-run did not report its explicit runtime, data, upstream and instance identity'
-    }
-    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
-    if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
+    $performanceDryRunHarness = @'
+set -euo pipefail
+installer="$1"
+fixture_executable="$2"
+root="/tmp/juhe-ai-performance-dry-run.$$"
+mkdir -p "$root"
+trap 'rm -rf -- "$root"' EXIT
+base="$root/base"
+release="$root/release"
+mkdir -p "$base" "$release/backend/dist/scripts/preflight" "$release/backend-go"
+: > "$release/backend/dist/server.js"
+: > "$release/backend/dist/scripts/preflight/check-node-sqlite.js"
+: > "$release/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js"
+: > "$release/backend/.env"
+cp "$fixture_executable" "$release/backend-go/juhe-ai-runtime-log-indexer"
+
+default_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.performance --nginx-config "$base/nginx.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
+printf '%s\n' "$default_output" | rg -Fq "data=$base/shared/data"
+[ ! -e "$base/bin" ] && [ ! -e "$base/logs" ] && [ ! -e "$base/shared" ]
+
+isolated_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
+printf '%s\n' "$isolated_output" | rg -Fq "runtime=$base/runtime-temporary data=$base/runtime-temporary/data upstream_suffix=temporary_20260730 instance_id_prefix=temporary"
+[ ! -e "$base/runtime-temporary" ]
+
+rm -f -- "$release/backend-go/juhe-ai-runtime-log-indexer"
+if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" >"$root/missing-indexer.out" 2>&1; then
+  echo 'performance topology dry-run accepted a release without the Go runtime log indexer' >&2
+  exit 1
+fi
+grep -Fq 'missing Go runtime log indexer' "$root/missing-indexer.out"
+'@
+    & $bash.Source -c $performanceDryRunHarness bash ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') ($bash.Source -replace '\\', '/')
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology immutable release dry-run harness failed' }
     $cleanupUnixName = (& $bash.Source -c 'uname -s').Trim()
     if ($cleanupUnixName -in @('Darwin', 'Linux')) {
       & $bash.Source ((Join-Path $repoRoot 'scripts\regression\production-cleanup-artifacts-harness.sh') -replace '\\', '/') ((Join-Path $operationsRoot 'cleanup-production-artifacts.sh') -replace '\\', '/')
@@ -624,7 +652,7 @@ trap 'rm -rf -- "$root"' EXIT
 unsafe_release="$root/release\$unsafe"
 mkdir -p "$unsafe_release"
 ln -s "$unsafe_release" "$root/current"
-if bash "$installer" --apply --scope user --base-dir "$root/base" --release-dir "$root/current" > "$root/output" 2>&1; then
+if bash "$installer" --dry-run --scope user --base-dir "$root/base" --release-dir "$root/current" > "$root/output" 2>&1; then
   echo 'performance topology accepted an unsafe resolved release path' >&2
   exit 1
 fi

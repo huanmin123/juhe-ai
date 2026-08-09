@@ -179,7 +179,6 @@ printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
 printf 'plan: restart and verify runtime-log-indexer, then %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
-[ "$MODE" = apply ] || exit 0
 
 [ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }
 CURRENT_DIR="$(cd "$CURRENT_DIR" && pwd -P)"
@@ -199,6 +198,10 @@ esac
 [ -d "$BASE_DIR" ] || { echo "missing base directory: $BASE_DIR" >&2; exit 1; }
 RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)" || exit 1
 [ "$RESOLVED_BASE_DIR" != / ] || { echo 'runtime base directory must not resolve to /' >&2; exit 1; }
+
+# Dry-run only gates immutable release inputs. Platform and mutable runtime checks stay apply-only.
+[ "$MODE" = apply ] || exit 0
+
 NODE_BIN="$(command -v node)"
 command -v launchctl >/dev/null
 command -v plutil >/dev/null

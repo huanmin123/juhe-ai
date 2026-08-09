@@ -7,10 +7,15 @@ import { parseCookie, sessionCookieName } from './auth.routes.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 import { shouldTouchSessionForSystemApiRequest } from '../system-api/system-api-db-access.js'
 import { developmentAutoLoginContextAsync } from './development-auto-login.js'
+import { resolveSystemAccessToken } from './temporary-access-token.js'
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
-  if (!token) {
+  const resolution = resolveSystemAccessToken(req.headers.authorization, parseCookie(req.headers.cookie ?? '')[sessionCookieName])
+  if (resolution.kind === 'invalid') {
+    res.status(401).json({ message: '访问令牌无效或已过期' })
+    return
+  }
+  if (resolution.kind === 'none') {
     const developmentContext = await developmentAutoLoginContextAsync()
     if (developmentContext) {
       bindRequestContextFields({
@@ -25,7 +30,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   try {
-    const session = await findSessionByTokenAsync(token)
+    const session = await findSessionByTokenAsync(resolution.access.token)
     if (!session) {
       res.status(401).json({ message: '登录会话已过期' })
       return

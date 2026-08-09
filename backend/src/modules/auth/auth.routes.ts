@@ -5,7 +5,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { resolveEffectiveUserRequestLimits, type GlobalUserRequestLimitSettings } from '../../domain/user-request-limits.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
-import { createAuthenticatedSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, verifySystemAccountCredentialsAsync, verifySystemAccountCredentialsForSessionAsync } from '../../storage/repositories.js'
+import { createAuthenticatedSessionAsync, createTemporaryAccessTokenAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, verifySystemAccountCredentialsAsync, verifySystemAccountCredentialsForSessionAsync } from '../../storage/repositories.js'
+import { isAdminRole } from '../../domain/types.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { consumeCaptchaIssueAllowanceAsync, createCaptchaChallengeAsync, verifyCaptchaChallengeAsync } from './captcha.service.js'
@@ -13,6 +14,7 @@ import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recor
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 import { shouldTouchSessionForSystemApiRequest } from '../system-api/system-api-db-access.js'
 import { developmentAutoLoginContextAsync } from './development-auto-login.js'
+import { isTemporaryAccessToken, resolveSystemAccessToken } from './temporary-access-token.js'
 
 export const authRouter = Router()
 
@@ -30,6 +32,12 @@ const loginSchema = z.object({
 const passwordSchema = z.object({
   oldPassword: z.string().min(1).optional(),
   newPassword: z.string().min(4)
+}).strict()
+
+const temporaryAccessTokenSchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+  ttlSeconds: z.number().int().min(60).max(3600).default(900)
 }).strict()
 
 const profileSchema = z.object({
@@ -52,6 +60,93 @@ authRouter.get('/captcha', async (req, res, next) => {
       return
     }
     res.json(ok({ required: true, ...await createCaptchaChallengeAsync() }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+authRouter.post('/temporary-access-tokens', async (req, res, next) => {
+  try {
+    const parsed = temporaryAccessTokenSchema.safeParse(req.body)
+    if (!parsed.success || hasWhitespace(parsed.success ? parsed.data.username : '') || hasWhitespace(parsed.success ? parsed.data.password : '')) {
+      res.status(400).json(badRequest('临时访问令牌参数无效'))
+      return
+    }
+    const clientIp = getLoginClientIp(req)
+    if (!isTemporaryAccessSourceAllowed(clientIp)) {
+      res.status(403).json({ message: '当前来源不在临时访问令牌白名单中' })
+      return
+    }
+    const loginAllowed = await checkLoginAllowedAsync(clientIp, parsed.data.username)
+    if (loginAllowed.blocked) {
+      if (loginAllowed.retryAfterSeconds) res.setHeader('Retry-After', String(loginAllowed.retryAfterSeconds))
+      res.status(429).json({ message: loginAllowed.message ?? '尝试过于频繁，请稍后再试' })
+      return
+    }
+    const verified = await verifySystemAccountCredentialsForSessionAsync(parsed.data.username, parsed.data.password)
+    if (!verified || !isAdminRole(verified.account.role)) {
+      await recordFailedLoginAsync(clientIp, parsed.data.username)
+      res.status(401).json({ message: '账号或密码错误' })
+      return
+    }
+    if (verified.account.mustChangePassword) {
+      res.status(403).json({ message: '请先修改初始密码', code: 'must_change_password' })
+      return
+    }
+    const issued = await createTemporaryAccessTokenAsync(verified.account.id, verified.credentialRevision, parsed.data.ttlSeconds)
+    if (!issued) {
+      res.status(401).json({ message: '账号或密码已变更，请重新申请' })
+      return
+    }
+    await recordSuccessfulLoginAsync(clientIp, verified.account.username)
+    await recordOperationLogAsync({
+      actorSystemAccountId: verified.account.id,
+      actorUsername: verified.account.username,
+      actorDisplayName: verified.account.displayName,
+      actorRole: verified.account.role,
+      operationScopeSystemAccountId: verified.account.id,
+      mode: 'self',
+      module: 'auth',
+      action: 'create',
+      operationKey: 'auth.temporary_access_token.create',
+      resourceType: 'system_session',
+      resourceId: issued.sessionId,
+      resourceName: 'temporary-access-token',
+      summary: `申请临时访问令牌，${parsed.data.ttlSeconds} 秒后过期`
+    }, req)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(ok({ token: issued.token, tokenType: 'Bearer', expiresAt: issued.expiresAt }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+authRouter.post('/temporary-access-tokens/revoke', requireSessionContext, async (req, res, next) => {
+  try {
+    const resolution = resolveSystemAccessToken(req.headers.authorization, parseCookie(req.headers.cookie ?? '')[sessionCookieName])
+    if (resolution.kind !== 'token' || !isTemporaryAccessToken(resolution.access.token)) {
+      res.status(400).json(badRequest('只能撤销当前临时访问令牌'))
+      return
+    }
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    await recordOperationLogAsync({
+      operationScopeSystemAccountId: context.systemAccountId,
+      mode: 'self',
+      module: 'auth',
+      action: 'delete',
+      operationKey: 'auth.temporary_access_token.revoke',
+      resourceType: 'system_session',
+      resourceId: context.sessionId,
+      resourceName: 'temporary-access-token',
+      summary: '撤销当前临时访问令牌'
+    }, req)
+    await revokeSessionAsync(resolution.access.token)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(ok({ revoked: true }))
   } catch (error) {
     next(error)
   }
@@ -299,8 +394,12 @@ export function clearSessionCookie(res: { cookie: (name: string, value: string, 
 }
 
 async function requireSessionContext(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
-  if (!token) {
+  const resolution = resolveSystemAccessToken(req.headers.authorization, parseCookie(req.headers.cookie ?? '')[sessionCookieName])
+  if (resolution.kind === 'invalid') {
+    res.status(401).json({ message: '访问令牌无效或已过期' })
+    return
+  }
+  if (resolution.kind === 'none') {
     const developmentContext = await developmentAutoLoginContextAsync()
     if (developmentContext) {
       withRequestAuthContext(developmentContext, next)
@@ -311,7 +410,7 @@ async function requireSessionContext(req: Request, res: Response, next: NextFunc
   }
 
   try {
-    const session = await findSessionByTokenAsync(token)
+    const session = await findSessionByTokenAsync(resolution.access.token)
     if (!session) {
       res.status(401).json({ message: '登录会话已过期' })
       return
@@ -351,6 +450,11 @@ function currentUserSummary(account: {
 
 function hasWhitespace(value: string): boolean {
   return whitespacePattern.test(value)
+}
+
+function isTemporaryAccessSourceAllowed(clientIp: string): boolean {
+  const normalized = clientIp.replace(/^::ffff:/i, '')
+  return runtimeConfig.auth.temporaryAccessIpAllowlist.includes(normalized)
 }
 
 export { sessionCookieName }
