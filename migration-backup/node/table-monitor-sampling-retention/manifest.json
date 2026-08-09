@@ -18,7 +18,9 @@
     "c8617d56e",
     "6649580e8",
     "c647b9b48",
-    "b4545878d"
+    "b4545878d",
+    "4d3ed0bf1",
+    "a2e3a443a"
   ],
   "restoreProcedure": "Stop the Go table-monitor process and Node application, restore the complete Git rollbackCommit baseline as one unit, and use the archive only for comparison. Never overwrite a newer active tree with an archived file, reintroduce a Node/Go switch, or run both writers.",
   "entries": [
