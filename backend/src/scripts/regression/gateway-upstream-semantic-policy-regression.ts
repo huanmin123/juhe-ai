@@ -286,15 +286,15 @@ assert.match(
   /resolveNextHybridGatewayRoute\([\s\S]*requestLane: resolveOpenAIGatewayRequestLane\(req\)/,
   '混合质量升级改写模型后必须把新 lane 传入重入预检'
 )
-assert.match(failureDispatchSource, /_decision\?\.action === 'retry_next'/, '只有显式 retry_next 可以授权同账户兄弟 Key 轮换')
+assert.match(failureDispatchSource, /_decision\?\.action === 'retry_next'/, '显式 retry_next 仍保留对当前请求同账户兄弟 Key 轮换的授权')
 assert.match(
   failureDispatchSource,
-  /failureKind: explicitPolicyDecision \? 'explicit_policy' : 'opaque_http',[\s\S]*keyScopedFailure: explicitPolicyDecision\?\.action === 'retry_next'[\s\S]*hasAlternativeAccountApiKeys\(account\)/,
-  '只有 retry_next 才允许在同一账户内轮换尚未尝试的兄弟 Key；状态动作必须直接进入账户级切号'
+  /const automaticSameAccountKeyRotation = !explicitPolicyDecision[\s\S]*hasAlternativeAccountApiKeys\(account\)[\s\S]*const sameAccountKeyRotation = hasAlternativeAccountApiKeys\(account\)[\s\S]*explicitPolicyDecision\?\.action === 'retry_next' \|\| automaticSameAccountKeyRotation[\s\S]*failureKind: explicitPolicyDecision \? 'explicit_policy' : 'opaque_http',[\s\S]*keyScopedFailure: sameAccountKeyRotation[\s\S]*pendingApiKeyFailure: sameAccountKeyRotation/,
+  '完整 HTTP 非 2xx 可在当前请求轮换同账户兄弟 Key；无论显式或自动轮换，都只能在后继完整协议成功后确认共享避让'
 )
 assert.match(
   responseInspectionSource,
-  /policy\.source !== 'system_default' && policy\.action === 'retry_next_account'[\s\S]*replayAuthority: 'explicit_user_policy'/,
+  /policy\.action === 'retry_next_account'[\s\S]*policy\.source === 'system_default'[\s\S]*'system_default_retry_next_account'[\s\S]*'explicit_user_policy'/,
   '显式响应策略的归因标签必须可审计，但不得形成另一套切号规则'
 )
 const codexSyntheticDecisionSource = streamSource.slice(
@@ -338,8 +338,27 @@ assert.match(failureDispatchSource, /applyAccountErrorHandlingWithCacheInvalidat
 assert.match(failureDispatchSource, /action: 'skip_account'/, 'cooldown/disable 必须执行显式状态动作后继续统一账户级切号')
 assert.match(
   failureDispatchSource,
-  /keyScopedFailure: explicitPolicyDecision\?\.action === 'retry_next'[\s\S]*hasAlternativeAccountApiKeys\(account\)/,
-  '所有显式动作必须共用账户级切号，只有 retry_next 才能继续同账户兄弟 Key'
+  /keyScopedFailure: sameAccountKeyRotation[\s\S]*pendingApiKeyFailure: sameAccountKeyRotation[\s\S]*account\.selectedApiKeyFingerprint/,
+  '同账户轮换的失败 Key 只能作为待确认事实保留，不能由完整 HTTP 非 2xx 直接写入共享避让'
+)
+const responseOkBranch = dispatchSource.slice(
+  dispatchSource.indexOf('if (response.ok) {'),
+  dispatchSource.indexOf('if (failedResponseResult.action === \'retry_with_compatibility_recovery\')')
+)
+assert.doesNotMatch(
+  responseOkBranch,
+  /await recordConfirmedSameAccountApiKeyFailures/,
+  '仅收到 2xx 响应头不得确认前一把失败 Key'
+)
+assert.match(
+  routesSource,
+  /const protocolValidatedSuccess = !responseRetryUpstream[\s\S]*if \(protocolValidatedSuccess\) \{[\s\S]*await confirmHalfOpenSuccess\(\)[\s\S]*await confirmSameAccountApiKeyFailures\(\)[\s\S]*releaseAccountSlot\(\)/,
+  '同账户失败 Key 只能在完整响应的 protocolValidatedSuccess oracle 后确认'
+)
+assert.match(
+  auxiliarySource,
+  /if \(finish\.success\) \{[\s\S]*await input\.confirmHalfOpenSuccess\(\)[\s\S]*await input\.confirmSameAccountApiKeyFailures\(\)/,
+  '混合辅助 dispatch 也只能在其 finish.success 终态确认同账户失败 Key'
 )
 assert.match(
   finalizationSource,

@@ -114,7 +114,7 @@ try {
     false,
     '合法模型映射不应被模型检测误判为返回模型不一致'
   )
-  assert(!mappedDetail.checks.some((item) => item.itemKey === 'target.responses_basic'), '基础连通成功不应生成模型评分项')
+  assert(mappedDetail.checks.some((item) => item.itemKey === 'target.responses_basic' && item.status === 'passed'), '基础固定输出成功必须生成评分项')
   const mappedStream = mappedDetail.checks.find((item) => item.itemKey === 'target.responses_stream')
   assert(mappedStream, `映射模型检测应生成流式 Responses 检测项：${JSON.stringify(mappedDetail.checks.map((item) => ({ itemKey: item.itemKey, status: item.status })))}`)
   assert.equal(mappedStream.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')

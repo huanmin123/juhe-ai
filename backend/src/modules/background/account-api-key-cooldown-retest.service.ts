@@ -95,6 +95,13 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     selectedApiKeyIndex: item.keyIndex,
     apiKeyRuntimeStateDisabled: true
   }
+  // The diagnostic candidate bypasses dispatch-time runtime filtering so it
+  // can probe this exact Key. State writes retain the same Key identity but
+  // must not carry that diagnostic-only bypass flag.
+  const fixedKeyRuntimeStateMutationCandidate = {
+    ...fixedKeyCandidate,
+    apiKeyRuntimeStateDisabled: false
+  }
   const probeStartedAt = new Date().toISOString()
   let upstreamAttempt: UpstreamAttempt | undefined
   let diagnosticCanceled = false
@@ -155,7 +162,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',
-      account: fixedKeyCandidate,
+      account: fixedKeyRuntimeStateMutationCandidate,
       trafficSource: 'cooldown_retest',
       mutationContext: {
         authority: 'automatic_probe',
@@ -186,7 +193,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   if (probeOutcome !== 'upstream_failure') {
     const deferred = await requestBackgroundWorkerDbService({
       type: 'defer_account_api_key_probe',
-      account: fixedKeyCandidate,
+      account: fixedKeyRuntimeStateMutationCandidate,
       trafficSource: 'cooldown_retest',
       mutationContext: {
         authority: 'automatic_probe',
@@ -220,7 +227,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
 
   const failure = await requestBackgroundWorkerDbService({
     type: 'record_account_api_key_failure',
-    account: fixedKeyCandidate,
+    account: fixedKeyRuntimeStateMutationCandidate,
     trafficSource: 'cooldown_retest',
     mutationContext: {
       authority: 'automatic_probe',

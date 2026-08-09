@@ -7,6 +7,9 @@ import {
   evaluateBasicResponsesProbe,
   evaluateLongContextProbeSet,
   evaluateStabilityProbe,
+  evaluateStreamProbe,
+  evaluateStructuredOutputProbe,
+  evaluateToolCallingProbe,
   evaluateUsageShapeProbe,
   summarizeChecks,
   summarizeEvidenceCompleteness,
@@ -24,14 +27,62 @@ assert.equal(record(basicTimeout.evidenceSummary).requestFailure, true, '基础�
 assert.equal(record(basicTimeout.evidenceSummary).excludedFromScoring, true, '基础探针超时应标记为不参与评分')
 
 const basicSuccess = evaluateBasicResponsesProbe(successProbe('trace_basic_success', 'OK-MODEL-CHECK'), model, 'target')
-assert.equal(basicSuccess.score, 0, '基础连通成功不应贡献模型可信度得分')
-assert.equal(basicSuccess.maxScore, 0, '基础连通成功不应进入模型可信度评分分母')
-assert.equal(record(basicSuccess.evidenceSummary).qualificationOnly, true, '基础连通成功只能作为检测资格门槛')
-assert.equal(record(basicSuccess.evidenceSummary).excludedFromScoring, true, '基础连通成功必须明确排除评分')
+assert.equal(basicSuccess.score, 10, '基础固定输出成功应贡献模型可信度得分')
+assert.equal(basicSuccess.maxScore, 10, '基础固定输出成功应进入模型可信度评分分母')
+assert.equal(record(basicSuccess.evidenceSummary).outputMatches, true, '基础固定输出必须保留契约通过证据')
+
+const basicHttp200WrongOutput = evaluateBasicResponsesProbe(successProbe('trace_basic_http200_wrong_output', 'gateway error'), model, 'target')
+assert.equal(basicHttp200WrongOutput.status, 'warning', 'HTTP 200 但基础固定输出不符必须保留质量异常')
+assert.equal(basicHttp200WrongOutput.score, 3, 'HTTP 200 但基础固定输出不符必须扣除内容分')
+assert.equal(basicHttp200WrongOutput.maxScore, 10)
+assert.equal(record(basicHttp200WrongOutput.evidenceSummary).outputMatches, false)
+
+const streamHttp200WrongOutput = evaluateStreamProbe(successProbe('trace_stream_http200_wrong_output', 'gateway error'), model, 'target')
+assert.equal(streamHttp200WrongOutput.status, 'warning', 'HTTP 200 但流式固定输出不符必须保留质量异常')
+assert.equal(streamHttp200WrongOutput.score, 11, 'HTTP 200 但流式固定输出不符必须扣除内容分')
+assert.equal(record(streamHttp200WrongOutput.evidenceSummary).outputMatches, false)
+
+const structuredWrongValue = evaluateStructuredOutputProbe(successProbe('trace_structured_wrong_value', '{"status":"ok","value":8}'), model, 'target')
+assert.equal(structuredWrongValue.status, 'warning', '结构化值不等于固定契约必须扣分')
+assert.equal(structuredWrongValue.score, 11)
+
+const toolWrongArguments = evaluateToolCallingProbe({
+  ...successProbe('trace_tool_wrong_arguments', ''),
+  json: {
+    output: [{
+      type: 'function_call',
+      name: 'record_model_check',
+      arguments: JSON.stringify({ code: 'wrong', count: 1 })
+    }]
+  }
+}, model, 'target')
+assert.equal(toolWrongArguments.status, 'warning', '工具调用参数不等于固定契约必须扣分')
+assert.equal(toolWrongArguments.score, 11)
 
 const usageFromTimeout = evaluateUsageShapeProbe([timeoutProbe('trace_usage_timeout')], 'target')
 assert.equal(usageFromTimeout.status, 'skipped', '无成功响应时 usage 项应落未计分')
 assert.equal(usageFromTimeout.maxScore, 0, '无成功响应时 usage 项不应进入评分分母')
+
+const usageMissingFromHttp200 = evaluateUsageShapeProbe([{
+  ...successProbe('trace_usage_http200_missing', 'OK-MODEL-CHECK'),
+  usage: undefined
+}], 'target')
+assert.equal(usageMissingFromHttp200.status, 'skipped', 'HTTP 200 缺少 usage 只能代表证据不足')
+assert.equal(usageMissingFromHttp200.score, 0, 'HTTP 200 缺少 usage 不得伪造成内容扣分')
+assert.equal(usageMissingFromHttp200.maxScore, 0, 'HTTP 200 缺少 usage 不得进入评分分母')
+assert.equal(record(usageMissingFromHttp200.evidenceSummary).evidenceInsufficient, true)
+assert.equal(record(usageMissingFromHttp200.evidenceSummary).excludedFromScoring, true)
+
+const allHttp200ContentFailures = summarizeChecks([summary({
+  itemKey: 'target.responses_basic',
+  itemType: 'responses_basic',
+  status: 'warning',
+  score: 0,
+  maxScore: 10,
+  evidenceSummary: { success: true, modelMismatch: false, responseModel: model }
+})], { trustedComparison: false, profile: 'quick' })
+assert.equal(allHttp200ContentFailures.level, 'suspicious', 'HTTP 200 内容全部失配不能伪装成 unavailable')
+assert.equal(allHttp200ContentFailures.score, 0)
 
 const longContextPartial = evaluateLongContextProbeSet([
   {
@@ -68,6 +119,14 @@ const stabilityPartial = evaluateStabilityProbe([
 assert.equal(stabilityPartial.status, 'warning', '稳定性部分请求失败只应提示证据不足')
 assert.equal(stabilityPartial.score, stabilityPartial.maxScore, '请求失败轮次不应拉低稳定性可用证据评分')
 
+const stabilityHttp200WrongOutput = evaluateStabilityProbe([
+  successProbe('trace_stability_wrong_output_1', 'VECTOR with extra text'),
+  successProbe('trace_stability_wrong_output_2', 'VECTOR'),
+  successProbe('trace_stability_wrong_output_3', 'VECTOR')
+], model, 'target')
+assert.equal(stabilityHttp200WrongOutput.status, 'warning', 'HTTP 200 但稳定性固定输出夹带内容必须扣分')
+assert(stabilityHttp200WrongOutput.score < stabilityHttp200WrongOutput.maxScore)
+
 const behaviorPartial = evaluateBehaviorProbeSet([
   {
     definition: behaviorProbeDefinitions[0],
@@ -102,10 +161,10 @@ const partialEvidenceCompleteness = summarizeEvidenceCompleteness([
   summary(longContextPartial),
   summary(stabilityPartial)
 ])
-assert.equal(partialEvidenceCompleteness.evidenceProbeCount, 6, '资格预检不应进入模型证据完整度统计')
-assert.equal(partialEvidenceCompleteness.scoredEvidenceProbeCount, 4, '证据完整度应只统计成功请求形成的模型证据')
+assert.equal(partialEvidenceCompleteness.evidenceProbeCount, 7, '基础固定输出应进入模型证据完整度统计')
+assert.equal(partialEvidenceCompleteness.scoredEvidenceProbeCount, 5, '证据完整度应统计成功请求形成的模型证据')
 assert.equal(partialEvidenceCompleteness.requestFailureProbeCount, 2, '证据完整度应统计请求失败探针数量')
-assert.equal(partialEvidenceCompleteness.evidenceCompletenessScore, 67, '证据完整度应给出独立百分比')
+assert.equal(partialEvidenceCompleteness.evidenceCompletenessScore, 71, '证据完整度应给出独立百分比')
 
 const trustedIsolationSummary = summarizeChecks([
   summary(passedItem('target.behavior_probe', 'behavior_probe', 35)),

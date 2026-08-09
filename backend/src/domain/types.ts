@@ -1013,6 +1013,8 @@ export interface AccountListItem {
   notes?: string
   type: AccountType
   status: AccountStatus
+  /** 公共 Key 池聚合运行态；诊断和 Key 明细只允许专用 owner 端点返回。 */
+  apiKeyRuntime?: AccountApiKeyRuntimePublicSummary
   concurrencyLimit: number
   currentConcurrency: number
   runtimeAvailability?: PublicAccountRuntimeAvailability
@@ -1118,6 +1120,7 @@ export interface AccountStatusSnapshotItem extends Pick<AccountListItem,
   | 'balanceSnapshot'
   | 'runtimeAvailability'
   | 'circuitSummary'
+  | 'apiKeyRuntime'
   | 'effectiveAvailability'
   | 'availabilityPresentation'
   | 'lastUsedAt'
@@ -1181,6 +1184,19 @@ export interface AccountApiKeyRuntimeSummary {
   lastErrorCode?: string
   lastErrorMessage?: string
   lastTraceId?: string
+}
+
+/** 列表和状态快照可返回的 Key 池聚合运行态，不含失败诊断或单 Key 信息。 */
+export interface AccountApiKeyRuntimePublicSummary {
+  total: number
+  active: number
+  temporaryUnavailable: number
+  rateLimited: number
+  error: number
+  disabled: number
+  unavailable: number
+  allUnavailable: boolean
+  nextProbeAt?: string
 }
 
 export interface AccountApiKeyRuntimeDetail {

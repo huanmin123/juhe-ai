@@ -14,6 +14,16 @@ assert.match(repositorySource, /states\.updated_at,[\s\S]{0,300}accounts\.config
 assert.match(repositorySource, /probe_account\.config_revision = \?[\s\S]{0,100}FOR UPDATE/, 'PG 探针回写必须锁住并核对账户配置代次')
 
 assert.match(cooldownServiceSource, /entry\.fingerprint === item\.keyFingerprint && entry\.key === item\.apiKey/, '执行探针前必须同时复核 fingerprint 和原始 secret')
+assert.match(
+  cooldownServiceSource,
+  /const fixedKeyRuntimeStateMutationCandidate = \{[\s\S]{0,160}apiKeyRuntimeStateDisabled: false/,
+  '固定 Key 探测候选只可绕过调度过滤；成功、失败和延后写回必须保留可写运行态目标'
+)
+assert.equal(
+  (cooldownServiceSource.match(/account: fixedKeyRuntimeStateMutationCandidate/g) ?? []).length,
+  3,
+  '固定 Key 探测的 success/failure/defer 三条状态写回必须使用可写运行态目标'
+)
 for (const generationField of [
   'expectedStatus',
   'expectedNextProbeAt',
@@ -28,8 +38,8 @@ for (const generationField of [
 
 assert.match(dbServiceHandlersSource, /recordAccountApiKeyRuntimeSuccessAsync\(operation\.account, \{[\s\S]{0,400}expectedAccountConfigRevision/, 'PG success handler 必须透传完整探针代次')
 assert.match(dbServiceHandlersSource, /recordAccountApiKeyRuntimeSuccess\(operation\.account, \{[\s\S]{0,400}expectedAccountConfigRevision/, 'SQLite success handler 必须透传完整探针代次')
-assert.match(repositorySource, /probeCandidateScanLimit = 10_000/, '候选扫描不得被少量旧 fingerprint 占满 batch')
-assert.match(repositorySource, /function accountApiKeyRuntimeProbeCandidatesFromRows[\s\S]{0,300}Math\.min\(probeCandidateScanLimit, Math\.trunc\(limit\)\)/, '候选转换必须保留完整 10,000 行扫描窗口，不得重新截断为 100')
+assert.match(repositorySource, /const probeCandidateScanLimit = runtimeConfig\.background\.accountApiKeyProbeCandidateScanLimit/, '候选扫描窗口必须由运行时配置统一控制')
+assert.match(repositorySource, /function accountApiKeyRuntimeProbeCandidatesFromRows[\s\S]{0,300}Math\.min\(probeCandidateScanLimit, Math\.trunc\(limit\)\)/, '候选转换必须保留完整配置扫描窗口，不得重新截断为 100')
 assert.match(repositorySource, /probe_claimed_until IS NULL OR[\s\S]{0,100}probe_claimed_until <= \?/, '候选查询必须排除仍在租约内的 claim')
 assert.match(repositorySource, /probe_claim_token = \?/, '探针回写必须核对当前 claim token')
 assert.match(

@@ -28,13 +28,14 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, healthCheckRepository, healthCheckService, apiKeyRotation, poolCursorRepository] = await Promise.all([
+const [databaseModule, repositories, healthCheckRepository, healthCheckService, apiKeyRotation, poolCursorRepository, { handleDbServiceOperation }] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-health-check.repository.js'),
   import('../../modules/background/account-health-check.service.js'),
   import('../../storage/account-api-key-rotation.js'),
-  import('../../storage/account-api-key-pool-probe-cursor.repository.js')
+  import('../../storage/account-api-key-pool-probe-cursor.repository.js'),
+  import('../../modules/db-service/db-service-handlers.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -77,6 +78,7 @@ try {
   )
 
   const repositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
+  const apiKeyRuntimeStateRepositorySource = readFileSync(resolve('src/storage/account-api-key-runtime-state.repository.ts'), 'utf8')
   const usageRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
   const serviceSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
   const postgresSuccessSource = sourceBetween(
@@ -106,6 +108,8 @@ try {
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
   assert.match(serviceSource, /probeAccountHealthCheckApiKeyPool/, '多 Key 健康检查必须通过固定 Key 聚合探测')
+  assert.match(serviceSource, /record_account_health_check_success[\s\S]{0,900}const changed[\s\S]{0,400}record_account_api_key_success[\s\S]{0,700}trafficSource: 'account_health_check'[\s\S]{0,400}observedAt[\s\S]{0,300}expectedAccountConfigRevision: item\.configRevision/, '账户健康成功 CAS 后必须以 winner 身份经 DB service 回写同代次 Key 成功')
+  assert.match(apiKeyRuntimeStateRepositorySource, /status <> 'disabled'/, 'Key 成功写入必须拒绝 disabled Key，但允许其他当前运行态恢复')
   assert.equal(accountHealthCheckProbeDeadlineMs, 65_000, '单账户健康检查必须在 10/20/30 秒统一诊断阶梯外预留调度余量')
   assert.equal(globalSharedQueueConcurrency, runtimeConfig.concurrency.globalMax, '健康队列必须使用进程级共享并发上限')
   const accountProbeJobsSource = readFileSync(resolve('src/modules/background/account-probe-jobs.ts'), 'utf8')
@@ -188,6 +192,14 @@ try {
   })
   assert(poolProbeResult, '多 Key 账户应生成至少一个固定 Key 探测结果')
   assert.equal(poolProbeResult.result.success, true, '任一固定 Key 探测成功即应判定账户健康检查成功')
+  assert.deepEqual(
+    poolProbeResult.apiKeyPoolWinner,
+    {
+      fingerprint: apiKeyRotation.fingerprintAccountApiKey(recoveredPoolKey),
+      index: 2
+    },
+    '多 Key 健康检查成功必须保留 winner Key 身份，供同代次状态写回激活待验证 Key'
+  )
   assert.deepEqual(
     testedPoolKeys,
     [healthyPoolKey, recoveredPoolKey],
@@ -757,6 +769,56 @@ try {
   `).get(legacyMultiKeyAccount.id) as { status?: string; next_probe_at?: string | null } | undefined
   assert.equal(legacyUnverifiedKey?.status, 'unverified', '旧更新入口新增 Key 必须隔离为未验证')
   assert(legacyUnverifiedKey?.next_probe_at, '旧更新入口新增 Key 必须进入 Key 级探测队列')
+  const legacyMultiKeyWinner = repositories.findOpenAIAccountForGroup(
+    group.id,
+    legacyMultiKeyAccount.id,
+    access.systemAccountId,
+    { ignoreAvailability: true }
+  )
+  assert(legacyMultiKeyWinner, '健康检查 Key 成功写回必须取得当前账户候选')
+  const winnerKey = 'sk-health-legacy-multi-c'
+  const winnerFingerprint = apiKeyRotation.fingerprintAccountApiKey(winnerKey)
+  const selectedWinner = {
+    ...legacyMultiKeyWinner,
+    apiKey: winnerKey,
+    selectedApiKeyFingerprint: winnerFingerprint,
+    selectedApiKeyIndex: 2,
+    apiKeyRuntimeStateDisabled: false,
+    credentials: {
+      ...legacyMultiKeyWinner.credentials,
+      api_key: winnerKey,
+      api_keys: ['sk-health-legacy-multi-a', 'sk-health-legacy-multi-b', winnerKey]
+    }
+  }
+  const writeHealthWinnerSuccess = async () => await handleDbServiceOperation({
+    type: 'record_account_api_key_success',
+    account: selectedWinner,
+    trafficSource: 'account_health_check',
+    mutationContext: {
+      authority: 'automatic_probe',
+      trafficSource: 'account_health_check',
+      probeOutcome: 'complete_success'
+    },
+    observedAt: new Date().toISOString(),
+    expectedAccountConfigRevision: legacyMultiKeyWinner.configRevision
+  })
+  assert.equal((await writeHealthWinnerSuccess()).changed, true, '账户健康成功后的 DB service 必须把 winner unverified Key 激活')
+  assert.equal(
+    database.prepare('SELECT status FROM account_api_key_runtime_states WHERE account_id = ? AND key_fingerprint = ?').get(legacyMultiKeyAccount.id, winnerFingerprint)?.status,
+    'active',
+    '健康检查 winner 的 unverified 状态必须实际写为 active'
+  )
+  database.prepare(`
+    UPDATE account_api_key_runtime_states
+    SET status = 'rate_limited', last_attempt_at = ?
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).run(new Date(Date.now() - 1_000).toISOString(), legacyMultiKeyAccount.id, winnerFingerprint)
+  assert.equal((await writeHealthWinnerSuccess()).changed, true, '账户健康成功必须同样恢复 rate_limited winner Key')
+  assert.equal(
+    database.prepare('SELECT status FROM account_api_key_runtime_states WHERE account_id = ? AND key_fingerprint = ?').get(legacyMultiKeyAccount.id, winnerFingerprint)?.status,
+    'active',
+    '健康检查 winner 不得因之前是限流态而无法恢复 active'
+  )
   repositories.recordAccountHealthCheckFailure(credentialChangedAccount.id, {
     ...healthSettings,
     errorCode: 'probe_task_failure',

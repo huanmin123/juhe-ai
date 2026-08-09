@@ -147,6 +147,32 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       await options.openTestModal(account)
       return
     }
+    if (key === 'revalidate-api-key-runtime') {
+      if (isAuthorizedAccount(account) || !canEditAccount(account) || account.type !== 'api_key' || account.status !== 'active' || !account.schedulable
+        || ((account.apiKeyRuntime?.unavailable ?? 0) - (account.apiKeyRuntime?.disabled ?? 0)) <= 0) {
+        message.warning('只有可编辑的自有 API Key 账户可以重新验证 Key 池')
+        return
+      }
+      const expectedConfigRevision = Number(account.configRevision)
+      if (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return
+      }
+      try {
+        const payload = { expectedConfigRevision }
+        if (options.isManagementView.value) {
+          await api.accounts.revalidateApiKeyRuntime(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
+        } else {
+          await api.myAccounts.revalidateApiKeyRuntime(account.id, payload)
+        }
+        await options.loadData()
+        message.success('已提交 Key 池重新验证，后台将逐 Key 探测')
+      } catch (error) {
+        console.error(error)
+        message.error(options.extractApiErrorMessage(error, '重新验证 Key 池失败'))
+      }
+      return
+    }
     if (key === 'restore-normal') {
       if (account.status === 'pending_test') {
         if (isAuthorizedAccount(account) || !canEditAccount(account)) {

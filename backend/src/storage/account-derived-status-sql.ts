@@ -105,6 +105,7 @@ function accountApiKeyRuntimeStatusRows(value: unknown): Map<string, AccountApiK
 
 function isAccountApiKeyRuntimeStatus(value: unknown): value is AccountApiKeyRuntimeStatus {
   return value === 'active'
+    || value === 'unverified'
     || value === 'temporary_unavailable'
     || value === 'rate_limited'
     || value === 'error'

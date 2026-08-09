@@ -19,12 +19,14 @@ import {
 } from '../accounts/automatic-account-probe-outcome.js'
 import {
   accountApiKeyPoolEntriesForCandidate,
+  fixedAccountApiKeyPoolCandidate,
 } from '../accounts/account-api-key-pool-runtime.js'
 import {
   accountApiKeyPoolKeySetFingerprint,
   orderAccountApiKeyPoolEntries,
   runAccountApiKeyPoolDiagnostic
 } from '../accounts/account-api-key-pool-diagnostic.js'
+import type { AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { diagnosticAccountTestGatewaySettingsOverride, diagnosticAttemptSignals } from '../accounts/account-diagnostic-retry-policy.js'
 import { effectiveAccountApiKeyCount } from '../accounts/account-balance-config.js'
 import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
@@ -91,6 +93,7 @@ let accountHealthCheckProbeRunnerForTest: AccountHealthCheckProbeRunner | undefi
 export interface AccountHealthCheckProbeResult {
   result: AccountTestResult
   upstreamAttempt?: UpstreamAttempt
+  apiKeyPoolWinner?: Pick<AccountApiKeyEntry, 'fingerprint' | 'index'>
   diagnosticCanceled?: boolean
   diagnosticTimeoutExhausted?: boolean
   diagnosticDeadlineExceeded?: boolean
@@ -220,6 +223,7 @@ async function runAccountHealthCheckQueueItem(
   let completedExecutionSourceFences: CodexSourceProbeFence[] = []
   let completedExecutionSourceFencesSettled = false
   let coordinatorOperationFailed = false
+  let successfulApiKeyPoolCandidate: OpenAIAccountSecret | undefined
   const runCoordinatorOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
       return await operation()
@@ -296,7 +300,15 @@ async function runAccountHealthCheckQueueItem(
       }
       const candidate = await healthCheckCandidateForAccount(account, groupId)
       if (executionDeadline.signal.aborted) return accountHealthCheckDeadlineResult(account)
-      return await runAccountHealthCheckProbe(account, groupId, candidate, executionDeadline.signal)
+      const probeResult = await runAccountHealthCheckProbe(account, groupId, candidate, executionDeadline.signal)
+      if (candidate && probeResult.apiKeyPoolWinner) {
+        const entry = accountApiKeyPoolEntriesForCandidate(candidate).find((item) => (
+          item.fingerprint === probeResult.apiKeyPoolWinner?.fingerprint
+          && item.index === probeResult.apiKeyPoolWinner?.index
+        ))
+        if (entry) successfulApiKeyPoolCandidate = fixedAccountApiKeyPoolCandidate(candidate, entry)
+      }
+      return probeResult
     }, async ({ result, upstreamAttempt, diagnosticCanceled, diagnosticTimeoutExhausted, diagnosticDeadlineExceeded, diagnosticCompleted }, { joined }) => {
       if (joined) {
         logger.debug({
@@ -396,6 +408,20 @@ async function runAccountHealthCheckQueueItem(
           }
         }, backgroundProbeDbServiceTimeoutMs)
         const changed = healthCheckResult?.changed ?? false
+        if (changed && successfulApiKeyPoolCandidate) {
+          await requestBackgroundWorkerDbService({
+            type: 'record_account_api_key_success',
+            account: successfulApiKeyPoolCandidate,
+            trafficSource: 'account_health_check',
+            mutationContext: {
+              authority: 'automatic_probe',
+              trafficSource: 'account_health_check',
+              probeOutcome: 'complete_success'
+            },
+            observedAt,
+            expectedAccountConfigRevision: item.configRevision
+          }, backgroundProbeDbServiceTimeoutMs)
+        }
         sendAccountRuntimeClearToServer({ accountId: account.id })
         logger.info({
           event: 'background_account_health_check_passed',
@@ -760,7 +786,15 @@ export async function probeAccountHealthCheckApiKeyPool(
     errors: diagnostic.errors.map((item) => item.error)
   })
   if (options.signal?.aborted) return options.abortedResult?.() ?? canceledPoolProbeResult(diagnostic.attempts[0]?.value, options.signal)
-  if (diagnostic.winner) return diagnostic.winner.value
+  if (diagnostic.winner) {
+    return {
+      ...diagnostic.winner.value,
+      apiKeyPoolWinner: {
+        fingerprint: diagnostic.winner.entry.fingerprint,
+        index: diagnostic.winner.entry.index
+      }
+    }
+  }
   let fallback: AccountHealthCheckProbeResult | undefined
   let upstreamFailure: AccountHealthCheckProbeResult | undefined
   for (const item of diagnostic.attempts) {

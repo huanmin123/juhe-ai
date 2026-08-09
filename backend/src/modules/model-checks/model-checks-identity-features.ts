@@ -132,7 +132,10 @@ export async function executeModelIdentityObservationProbes(input: {
   const observations: IdentityObservationSeed[] = []
   let successCount = 0
   let passedCount = 0
-  for (let index = 0; index < jobs.length; index += 1) {
+  let targetSuccessCount = 0
+  let targetPassedCount = 0
+  let terminalFailure: GatewayProbeResult | undefined
+  for (let index = 0; index < jobs.length && !terminalFailure; index += 1) {
     const job = jobs[index] as { definition: GeneratedCanary; model: string }
     const request = createModelCheckProbeRequest('openai_responses', job.model, job.definition.prompt, {
       maxOutputTokens: job.definition.maxOutputTokens,
@@ -144,6 +147,10 @@ export async function executeModelIdentityObservationProbes(input: {
     const constraintPassed = result.success && job.definition.passed(output)
     if (result.success) successCount += 1
     if (constraintPassed) passedCount += 1
+    if (job.model === input.model) {
+      if (result.success) targetSuccessCount += 1
+      if (constraintPassed) targetPassedCount += 1
+    }
     const mappedUpstreamModel = result.upstreamModel ?? result.expectedModel ?? job.model
     const endpointFamily = result.upstreamEndpointFamily ?? result.sourceEndpointFamily ?? 'responses'
     const cohortKey = modelCheckCohortKey({
@@ -190,24 +197,61 @@ export async function executeModelIdentityObservationProbes(input: {
       featureVector: extractStructuredIdentityFeatureVector(job.definition.category, output, result.usage, constraintPassed),
       traceId: result.traceId
     })
+    if ((result.attemptCount ?? 0) >= 2 && result.statusCode !== 200) terminalFailure = result
   }
+  const targetProbeCount = definitions.length
+  const targetConstraintRate = targetSuccessCount > 0 ? targetPassedCount / targetSuccessCount : 0
+  const constraintRate = successCount > 0 ? passedCount / successCount : 0
+  const requestFailureCount = jobs.length - successCount
+  const allPassed = successCount === jobs.length && passedCount === jobs.length
+  const identityScore = allPassed
+    ? 10
+    : Math.min(9, Math.floor(constraintRate * 10))
+  const status: ModelCheckItemCreateInput['status'] = terminalFailure
+    ? 'skipped'
+    : successCount === 0
+      ? 'skipped'
+      : allPassed
+        ? requestFailureCount > 0 ? 'warning' : 'passed'
+        : identityScore >= 6 ? 'warning' : 'failed'
   return {
     item: {
       itemKey: 'target.identity_observation',
       itemType: 'identity_observation',
-      status: successCount === jobs.length ? 'passed' : successCount > 0 ? 'warning' : 'skipped',
-      score: 0,
-      maxScore: 0,
+      status,
+      score: terminalFailure || successCount === 0 ? 0 : identityScore,
+      maxScore: terminalFailure || successCount === 0 ? 0 : 10,
+      traceId: terminalFailure?.traceId,
       evidenceSummary: {
-        message: successCount === jobs.length ? '受控生成式身份 observation 已采集' : '受控生成式身份 observation 仅部分采集',
-        diagnosticOnly: true,
+        message: terminalFailure
+          ? '受控生成式身份探针请求失败，未形成完整质量证据'
+          : allPassed
+            ? '受控生成式身份探针通过'
+            : '受控生成式身份探针存在确定性约束失败，已纳入评分',
+        diagnosticOnly: false,
         featureVersion: modelIdentityFeatureVersion,
         probeVersion: modelIdentityProbeVersion,
         modelCount: models.length,
         probeCount: definitions.length,
         observationCount: jobs.length,
         successCount,
-        constraintPassedCount: passedCount
+        constraintPassedCount: passedCount,
+        constraintRate: Math.round(constraintRate * 1_000_000) / 1_000_000,
+        requestFailureCount,
+        targetModel: input.model,
+        targetProbeCount,
+        targetSuccessCount,
+        targetConstraintPassedCount: targetPassedCount,
+        targetConstraintRate: Math.round(targetConstraintRate * 1_000_000) / 1_000_000,
+        targetRequestFailureCount: targetProbeCount - targetSuccessCount,
+        ...(terminalFailure ? {
+          requestFailure: true,
+          excludedFromScoring: true,
+          httpStatus: terminalFailure.statusCode,
+          attemptCount: terminalFailure.attemptCount ?? 1,
+          attemptStatusCodes: terminalFailure.attemptStatusCodes ?? [terminalFailure.statusCode],
+          attemptTraceIds: terminalFailure.attemptTraceIds ?? [terminalFailure.traceId]
+        } : {})
       }
     },
     observations

@@ -354,18 +354,12 @@ export async function handleFailedUpstreamResponse(
 
   const automaticSameAccountKeyRotation = !explicitPolicyDecision
     && hasAlternativeAccountApiKeys(account)
+  const sameAccountKeyRotation = hasAlternativeAccountApiKeys(account)
+    && (explicitPolicyDecision?.action === 'retry_next' || automaticSameAccountKeyRotation)
   // A complete gateway HTTP failure is independent evidence that this account
   // needs the fixed-model availability confirmation. The request-level guard
   // also covers retry_next, whose candidate replay continues below.
   dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
-  scheduleGatewayClientSourceAvoidanceFailure({
-    req,
-    usageContext,
-    account,
-    errorCode: failureBodyFacts.errorPayload.code as string | undefined,
-    message: failureBodyFacts.upstreamErrorSummary,
-    observationId: `${auditAttemptId}:complete_http_failure`
-  })
 
   return {
     action: 'skip_account',
@@ -376,12 +370,10 @@ export async function handleFailedUpstreamResponse(
     // All account-internal Key strategies may continue with a sibling Key for
     // an opaque HTTP failure even without an explicit retry_next rule. The
     // strategy only determines the sibling selection order.
-    keyScopedFailure: explicitPolicyDecision?.action === 'retry_next' || automaticSameAccountKeyRotation
-      ? hasAlternativeAccountApiKeys(account)
-      : false,
+    keyScopedFailure: sameAccountKeyRotation,
     // A completed failure alone remains neutral. It becomes Key-scoped shared
     // evidence only after a sibling Key of this same account succeeds.
-    pendingApiKeyFailure: automaticSameAccountKeyRotation
+    pendingApiKeyFailure: sameAccountKeyRotation
       && input.accountStateMutationEnabled !== false
       && account.selectedApiKeyFingerprint
       && !account.apiKeyRuntimeStateDisabled

@@ -2007,6 +2007,13 @@ let codexTurnAvoidedFallbackEnabled = false
           downstreamCommitState: currentPreflight.downstreamCommitState
         }
         await applyHandledUpstreamRoutingEffects(handledResponseFinalizationInput)
+        // handleUpstreamResponse has fully consumed/framed the upstream body
+        // before it returns protocolValidatedSuccess. Confirm pending sibling
+        // Key failures at this final protocol oracle, never at response headers.
+        if (protocolValidatedSuccess) {
+          await confirmHalfOpenSuccess()
+          await confirmSameAccountApiKeyFailures()
+        }
         releaseAccountSlot()
         const httpCompletedAtMs = await httpCompletion.wait()
         await finalizeHandledUpstreamResponse({
@@ -2014,9 +2021,6 @@ let codexTurnAvoidedFallbackEnabled = false
           completedAtMs: httpCompletedAtMs,
           routingEffectsApplied: true
         })
-        if (handledResponse.protocolValidatedSuccess === true) {
-          await confirmHalfOpenSuccess()
-        }
         await releaseHalfOpenLease()
         return
       } catch (error) {

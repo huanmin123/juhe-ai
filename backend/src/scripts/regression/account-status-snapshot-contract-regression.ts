@@ -16,7 +16,8 @@ import {
   accountRuntimeStatusCandidateSourceOptions,
   initialAccountRuntimeStatusCandidateWindow,
   listAccountsPageWithRuntimeStatusFilter,
-  nextAccountRuntimeStatusCandidateWindow
+  nextAccountRuntimeStatusCandidateWindow,
+  takeAccountRuntimeStatusFilterTiming
 } from '../../modules/accounts/account-list-runtime-status-filter.js'
 import { logger } from '../../shared/logger.js'
 import { todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
@@ -153,6 +154,13 @@ assert.doesNotMatch(
 assert.match(runtimeStatusFilterSource, /listAccountManagementCandidatePrefixAsync/, '运行态筛选必须使用专用递增前缀读取入口')
 assert.match(runtimeStatusFilterSource, /hydrateAccountRuntimeStatusFilterCandidates/, '候选阶段必须使用轻量状态水合')
 assert.match(runtimeStatusFilterSource, /const hydratedPage = await hydrateAccountListPage\(access, \{/, '最终当前页必须回到既有完整水合')
+assert.match(runtimeStatusFilterSource, /candidateListDurationMs/, '运行态筛选必须记录候选 SQL 耗时')
+assert.match(runtimeStatusFilterSource, /candidateHydrationDurationMs/, '运行态筛选必须记录候选水合耗时')
+assert.match(runtimeStatusFilterSource, /candidatePredicateDurationMs/, '运行态筛选必须记录候选判定耗时')
+assert.match(runtimeStatusFilterSource, /finalHydrationDurationMs/, '运行态筛选必须记录最终展示水合耗时')
+assert.match(runtimeStatusFilterSource, /finalTagDurationMs/, '运行态筛选必须将标签读取与最终展示水合分开计时')
+assert.match(runtimeStatusFilterSource, /WeakMap<AccountManagementListResult, AccountRuntimeStatusFilterTiming>/, '诊断时间只能与本次内存响应对象关联，不得写入业务结果或全局缓存')
+assert.equal(takeAccountRuntimeStatusFilterTiming({ items: [], total: 0, hasMore: false, page: 1, pageSize: 20, generatedAt: '2026-08-09T00:00:00.000Z' }), undefined, '无运行态筛选结果不得伪造诊断时间')
 const candidateHydrationSource = runtimeStatusFilterSource.slice(
   runtimeStatusFilterSource.indexOf('async function hydrateAccountRuntimeStatusCandidatePage'),
   runtimeStatusFilterSource.indexOf('function accountMatchesSchedulableFilter')
@@ -166,6 +174,12 @@ assert.match(lightweightFilterHydrationSource, /loadAccountRuntimeAvailabilityBy
 assert.match(lightweightFilterHydrationSource, /loadPublicAccountCircuitSummaries/, '轻量候选必须读取公开熔断摘要')
 assert.match(lightweightFilterHydrationSource, /loadAccountApiKeyRuntimeSummariesByAccountIdsAsync/, '轻量候选必须读取 API Key 运行态')
 assert.doesNotMatch(lightweightFilterHydrationSource, /loadAccountBalanceSnapshotRecordsByAccountIdsAsync|loadAccountConcurrencyByIds/, '轻量候选不得读取余额或并发展示数据')
+const accountListRouteSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
+assert.match(accountListRouteSource, /account-list-hydrate/, '默认列表响应必须拆出当前页状态水合 Server-Timing')
+assert.match(accountListRouteSource, /account-status-candidate-list/, '列表响应必须暴露候选 SQL Server-Timing')
+assert.match(accountListRouteSource, /account-status-candidate-hydrate/, '列表响应必须暴露候选水合 Server-Timing')
+assert.match(accountListRouteSource, /account-status-final-hydrate/, '列表响应必须暴露最终水合 Server-Timing')
+assert.match(accountListRouteSource, /account-status-final-tags/, '列表响应必须暴露最终标签读取 Server-Timing')
 const readWorkerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
 assert.match(readWorkerSource, /case 'list_account_status_snapshots_read_only'/, 'SQLite read worker 必须实现状态投影 operation')
 assert.match(

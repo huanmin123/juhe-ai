@@ -193,6 +193,46 @@ async function listAccountManagementItemsPageDirect(
     throw new Error('缺少系统账户上下文')
   }
   const filters = accountManagementListFilters(client, listOptions, scopedAccountId)
+  // PostgreSQL 用现有 (system_account_id, account_id, enabled, updated_at DESC)
+  // 索引按账户选出一个可见绑定；SQLite 保留兼容的窗口查询路径。
+  const rankedGroupBindingsCte = client.driver === 'postgres'
+    ? ''
+    : `, ranked_group_bindings AS (
+      SELECT
+        group_accounts.account_id,
+        group_accounts.system_account_id,
+        group_accounts.group_id,
+        group_accounts.account_authorization_id,
+        group_accounts.local_priority,
+        group_accounts.local_super_priority_enabled,
+        group_accounts.local_fallback_enabled,
+        ROW_NUMBER() OVER (
+          PARTITION BY group_accounts.account_id, group_accounts.system_account_id
+          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+        ) AS binding_rank
+      FROM ${businessTable(client, 'group_accounts')} group_accounts
+      WHERE group_accounts.enabled = 1
+    )`
+  const groupBindingsJoin = client.driver === 'postgres'
+    ? `LEFT JOIN LATERAL (
+      SELECT
+        group_accounts.system_account_id,
+        group_accounts.group_id,
+        group_accounts.account_authorization_id,
+        group_accounts.local_priority,
+        group_accounts.local_super_priority_enabled,
+        group_accounts.local_fallback_enabled
+      FROM ${businessTable(client, 'group_accounts')} group_accounts
+      WHERE group_accounts.account_id = account_rows.id
+        AND group_accounts.system_account_id = account_rows.system_account_id
+        AND group_accounts.enabled = 1
+      ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+      LIMIT 1
+    ) group_bindings ON true`
+    : `LEFT JOIN ranked_group_bindings group_bindings
+      ON group_bindings.account_id = account_rows.id
+      AND group_bindings.system_account_id = account_rows.system_account_id
+      AND group_bindings.binding_rank = 1`
   const rows = await client.query<AccountManagementListRow>(`
     WITH account_rows AS (
       SELECT
@@ -285,22 +325,7 @@ async function listAccountManagementItemsPageDirect(
           accounts.authorization_instance_authorization_id IS NULL
           OR authorizations.status IN ('active', 'paused', 'expired')
         )
-    ), ranked_group_bindings AS (
-      SELECT
-        group_accounts.account_id,
-        group_accounts.system_account_id,
-        group_accounts.group_id,
-        group_accounts.account_authorization_id,
-        group_accounts.local_priority,
-        group_accounts.local_super_priority_enabled,
-        group_accounts.local_fallback_enabled,
-        ROW_NUMBER() OVER (
-          PARTITION BY group_accounts.account_id, group_accounts.system_account_id
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
-        ) AS binding_rank
-      FROM ${businessTable(client, 'group_accounts')} group_accounts
-      WHERE group_accounts.enabled = 1
-    )
+    )${rankedGroupBindingsCte}
     SELECT
       account_rows.id,
       account_rows.config_revision,
@@ -404,10 +429,7 @@ async function listAccountManagementItemsPageDirect(
       proxy_profiles.type AS proxy_profile_type,
       proxy_profiles.enabled AS proxy_profile_enabled
     FROM account_rows
-    LEFT JOIN ranked_group_bindings group_bindings
-      ON group_bindings.account_id = account_rows.id
-      AND group_bindings.system_account_id = account_rows.system_account_id
-      AND group_bindings.binding_rank = 1
+    ${groupBindingsJoin}
     LEFT JOIN ${businessTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
     LEFT JOIN ${businessTable(client, 'system_accounts')} system_accounts

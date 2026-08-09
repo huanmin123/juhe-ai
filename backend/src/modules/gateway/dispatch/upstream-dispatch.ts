@@ -894,11 +894,9 @@ export async function fetchFirstAvailableUpstream(
                   status: response.status
                 }
                 if (response.ok) {
-                  // A sibling Key has produced a successful upstream response.
-                  // Persist the already-confirmed failed-Key avoidance before
-                  // this response starts downstream delivery, so an immediate
-                  // following request cannot select the failed Key again.
-                  await recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext)
+                  // Response headers only prove HTTP acceptance. The caller
+                  // confirms failed sibling Keys after it has consumed the
+                  // body and established protocolValidatedSuccess.
                   await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                     systemAccountId: usageContext.systemAccountId,
                     apiKeyId: usageContext.apiKeyId,

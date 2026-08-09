@@ -83,6 +83,12 @@ export interface AccountApiKeyRuntimeSummary {
   lastTraceId?: string
 }
 
+export interface AccountApiKeyRuntimeRevalidateResult {
+  changed: number
+  eligible: boolean
+  reason?: 'account_not_found' | 'account_not_active' | 'account_unschedulable' | 'config_revision_conflict' | 'not_supported' | 'no_revalidatable_key'
+}
+
 interface AccountApiKeyRuntimeRow {
   account_id: string
   key_fingerprint: string
@@ -152,6 +158,14 @@ const maxProbeBackoffSeconds = 60 * 60
 const probeClaimLeaseSeconds = 10 * 60
 const probeCandidateScanLimit = runtimeConfig.background.accountApiKeyProbeCandidateScanLimit
 const businessSchemaName = 'juhe_business'
+const accountApiKeyRuntimeProbeCandidateStatuses = ['unverified', 'temporary_unavailable', 'rate_limited', 'error'] as const
+const accountApiKeyRuntimeProbeCandidateStatusSql = accountApiKeyRuntimeProbeCandidateStatuses.map((status) => `'${status}'`).join(', ')
+
+function isAccountApiKeyRuntimeProbeCandidateStatus(
+  status: AccountApiKeyRuntimeStatus
+): status is typeof accountApiKeyRuntimeProbeCandidateStatuses[number] {
+  return (accountApiKeyRuntimeProbeCandidateStatuses as readonly AccountApiKeyRuntimeStatus[]).includes(status)
+}
 
 type AccountApiKeyExpectedProbeStateInput = Pick<
   AccountApiKeyRuntimeSuccessInput,
@@ -262,6 +276,154 @@ export async function loadAccountApiKeyRuntimeStatesForAccountInClient(
     cooldownUntil: row.cooldown_until ?? undefined,
     nextProbeAt: row.next_probe_at ?? undefined
   }))
+}
+
+/** Mark all probe-eligible non-active keys due immediately, without touching disabled keys or valid leases. */
+export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
+  accountId: string
+  expectedConfigRevision: number
+}): Promise<AccountApiKeyRuntimeRevalidateResult> {
+  const accountId = input.accountId.trim()
+  if (!accountId || !Number.isSafeInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
+    throw new Error('重新验证 API Key 池参数无效')
+  }
+  const now = nowIso()
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const database = getBusinessDatabase()
+    const accountRow = database.prepare(`SELECT provider_code, protocol_code, protocol_version, type, status, schedulable, config_revision, credentials_encrypted FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as { provider_code: string; protocol_code: string | null; protocol_version: string | null; type: string; status: string; schedulable: number; config_revision: number; credentials_encrypted: string } | undefined
+    if (!accountRow) return { changed: 0, eligible: false, reason: 'account_not_found' }
+    if (Number(accountRow.config_revision) !== input.expectedConfigRevision) return { changed: 0, eligible: false, reason: 'config_revision_conflict' }
+    if (accountRow.status !== 'active') return { changed: 0, eligible: false, reason: 'account_not_active' }
+    if (Number(accountRow.schedulable) !== 1) return { changed: 0, eligible: false, reason: 'account_unschedulable' }
+    let credentials: Record<string, unknown>
+    try { credentials = decryptJson<Record<string, unknown>>(accountRow.credentials_encrypted) } catch { credentials = {} }
+    const eligible = isAccountApiKeyPoolIsolationEnabled({ providerCode: accountRow.provider_code, protocolCode: accountRow.protocol_code, protocolVersion: accountRow.protocol_version, type: accountRow.type, credentials })
+    const keyFingerprints = accountApiKeyEntries(credentials).map((entry) => entry.fingerprint)
+    if (!eligible || keyFingerprints.length < 2) return { changed: 0, eligible: false, reason: 'not_supported' }
+    const result = database.prepare(`
+      UPDATE account_api_key_runtime_states
+      SET next_probe_at = ?, updated_at = ?
+      WHERE account_id = ?
+        AND key_fingerprint IN (${sqlPlaceholders(keyFingerprints.length)})
+        AND status NOT IN ('active', 'disabled')
+        AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
+        AND EXISTS (
+          SELECT 1 FROM accounts
+          WHERE accounts.id = account_api_key_runtime_states.account_id
+            AND accounts.config_revision = ?
+            AND accounts.status = 'active'
+            AND accounts.schedulable = 1
+            AND accounts.deleted_at IS NULL
+        )
+    `).run(now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision)
+    const changed = Number(result.changes ?? 0)
+    if (changed === 0) {
+      const current = database.prepare(`SELECT status, schedulable, config_revision FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as { status: string; schedulable: number; config_revision: number } | undefined
+      if (!current) return { changed: 0, eligible: false, reason: 'account_not_found' }
+      if (Number(current.config_revision) !== input.expectedConfigRevision) return { changed: 0, eligible: false, reason: 'config_revision_conflict' }
+      if (current.status !== 'active') return { changed: 0, eligible: false, reason: 'account_not_active' }
+      if (Number(current.schedulable) !== 1) return { changed: 0, eligible: false, reason: 'account_unschedulable' }
+      const candidate = database.prepare(`
+        SELECT 1 FROM account_api_key_runtime_states
+        WHERE account_id = ?
+          AND key_fingerprint IN (${sqlPlaceholders(keyFingerprints.length)})
+          AND status NOT IN ('active', 'disabled')
+          AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
+        LIMIT 1
+      `).get(accountId, ...keyFingerprints, now)
+      if (!candidate) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
+      const retry = database.prepare(`
+        UPDATE account_api_key_runtime_states
+        SET next_probe_at = ?, updated_at = ?
+        WHERE account_id = ?
+          AND key_fingerprint IN (${sqlPlaceholders(keyFingerprints.length)})
+          AND status NOT IN ('active', 'disabled')
+          AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
+          AND EXISTS (
+            SELECT 1 FROM accounts
+            WHERE accounts.id = account_api_key_runtime_states.account_id
+              AND accounts.config_revision = ?
+              AND accounts.status = 'active'
+              AND accounts.schedulable = 1
+              AND accounts.deleted_at IS NULL
+          )
+      `).run(now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision)
+      const retried = Number(retry.changes ?? 0)
+      if (retried <= 0) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
+      markRuntimeStateChanged(accountId)
+      return { changed: retried, eligible: true }
+    }
+    if (changed > 0) markRuntimeStateChanged(accountId)
+    return { changed, eligible: true }
+  }
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const accountRow = await client.one<{ provider_code: string; protocol_code: string | null; protocol_version: string | null; type: string; status: string; schedulable: number; config_revision: number; credentials_encrypted: string }>(`SELECT provider_code, protocol_code, protocol_version, type, status, schedulable, config_revision, credentials_encrypted FROM ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} WHERE id = ? AND deleted_at IS NULL`, [accountId])
+  if (!accountRow) return { changed: 0, eligible: false, reason: 'account_not_found' }
+  if (Number(accountRow.config_revision) !== input.expectedConfigRevision) return { changed: 0, eligible: false, reason: 'config_revision_conflict' }
+  if (accountRow.status !== 'active') return { changed: 0, eligible: false, reason: 'account_not_active' }
+  if (Number(accountRow.schedulable) !== 1) return { changed: 0, eligible: false, reason: 'account_unschedulable' }
+  let credentials: Record<string, unknown>
+  try { credentials = decryptJson<Record<string, unknown>>(accountRow.credentials_encrypted) } catch { credentials = {} }
+  const eligible = isAccountApiKeyPoolIsolationEnabled({ providerCode: accountRow.provider_code, protocolCode: accountRow.protocol_code, protocolVersion: accountRow.protocol_version, type: accountRow.type, credentials })
+  const keyFingerprints = accountApiKeyEntries(credentials).map((entry) => entry.fingerprint)
+  if (!eligible || keyFingerprints.length < 2) return { changed: 0, eligible: false, reason: 'not_supported' }
+  const statesTable = accountApiKeyRuntimeStatesTable(client)
+  const accountsTable = accountApiKeyRuntimeBusinessTable(client, 'accounts')
+  const result = await client.execute(`
+    UPDATE ${statesTable} AS states
+    SET next_probe_at = ?, updated_at = ?
+    WHERE states.account_id = ?
+      AND states.key_fingerprint IN (${keyFingerprints.map(() => '?').join(', ')})
+      AND states.status NOT IN ('active', 'disabled')
+      AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
+      AND EXISTS (
+        SELECT 1 FROM ${accountsTable} accounts
+        WHERE accounts.id = states.account_id
+          AND accounts.config_revision = ?
+          AND accounts.status = 'active'
+          AND accounts.schedulable = 1
+          AND accounts.deleted_at IS NULL
+      )
+  `, [now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision])
+  const changed = Number(result.changes ?? 0)
+  if (changed === 0) {
+    const current = await client.one<{ status: string; schedulable: number; config_revision: number }>(`SELECT status, schedulable, config_revision FROM ${accountsTable} WHERE id = ? AND deleted_at IS NULL`, [accountId])
+    if (!current) return { changed: 0, eligible: false, reason: 'account_not_found' }
+    if (Number(current.config_revision) !== input.expectedConfigRevision) return { changed: 0, eligible: false, reason: 'config_revision_conflict' }
+    if (current.status !== 'active') return { changed: 0, eligible: false, reason: 'account_not_active' }
+    if (Number(current.schedulable) !== 1) return { changed: 0, eligible: false, reason: 'account_unschedulable' }
+    const candidate = await client.one(`
+      SELECT 1 FROM ${statesTable}
+      WHERE account_id = ?
+        AND key_fingerprint IN (${keyFingerprints.map(() => '?').join(', ')})
+        AND status NOT IN ('active', 'disabled')
+        AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
+      LIMIT 1
+    `, [accountId, ...keyFingerprints, now])
+    if (!candidate) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
+    const retry = await client.execute(`
+      UPDATE ${statesTable} AS states
+      SET next_probe_at = ?, updated_at = ?
+      WHERE states.account_id = ?
+        AND states.key_fingerprint IN (${keyFingerprints.map(() => '?').join(', ')})
+        AND states.status NOT IN ('active', 'disabled')
+        AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
+        AND EXISTS (
+          SELECT 1 FROM ${accountsTable} accounts
+          WHERE accounts.id = states.account_id
+            AND accounts.config_revision = ?
+            AND accounts.status = 'active'
+            AND accounts.schedulable = 1
+            AND accounts.deleted_at IS NULL
+        )
+    `, [now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision])
+    const retried = Number(retry.changes ?? 0)
+    if (retried <= 0) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
+    await markRuntimeStateChangedAsync(client, accountId)
+    return { changed: retried, eligible: true }
+  }
+  if (changed > 0) await markRuntimeStateChangedAsync(client, accountId)
+  return { changed, eligible: true }
 }
 
 export async function initializeAddedAccountApiKeyRuntimeStatesInClient(
@@ -444,7 +606,7 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
         states.probe_claim_token, states.probe_claimed_until
       FROM account_api_key_runtime_states states
       JOIN accounts ON accounts.id = states.account_id
-      WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited', 'error')
+        WHERE states.status IN (${accountApiKeyRuntimeProbeCandidateStatusSql})
         AND states.next_probe_at IS NOT NULL
         AND states.next_probe_at <= ?
         AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
@@ -475,7 +637,7 @@ export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20)
       states.probe_claim_token, states.probe_claimed_until
     FROM ${accountApiKeyRuntimeStatesTable(client)} states
     JOIN ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} accounts ON accounts.id = states.account_id
-    WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited', 'error')
+    WHERE states.status IN (${accountApiKeyRuntimeProbeCandidateStatusSql})
       AND states.next_probe_at IS NOT NULL
       AND states.next_probe_at <= ?
       AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
@@ -676,7 +838,7 @@ function accountApiKeyRuntimeSummariesFromRows(
       if (state.status === 'disabled') summary.disabled += 1
       if (
         state.next_probe_at
-        && (state.status === 'temporary_unavailable' || state.status === 'rate_limited' || state.status === 'error')
+        && isAccountApiKeyRuntimeProbeCandidateStatus(state.status)
         && (!summary.nextProbeAt || state.next_probe_at < summary.nextProbeAt)
       ) {
         summary.nextProbeAt = state.next_probe_at

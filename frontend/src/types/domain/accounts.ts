@@ -364,7 +364,7 @@ export interface AccountSummary {
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
   lastHealthCheckTraceId?: string
-  apiKeyRuntime?: AccountApiKeyRuntimeSummary
+  apiKeyRuntime?: AccountApiKeyRuntimePublicSummary
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
@@ -421,6 +421,7 @@ export interface AccountListItem {
   notes?: string
   type: AccountType
   status: AccountStatus
+  apiKeyRuntime?: AccountApiKeyRuntimePublicSummary
   concurrencyLimit: number
   currentConcurrency: number
   runtimeAvailability?: AccountRuntimeAvailability
@@ -697,7 +698,8 @@ export interface AccountBatchEditResult {
   }>
 }
 
-export interface AccountApiKeyRuntimeSummary {
+/** 列表和状态快照只返回无诊断、无单 Key 信息的公开聚合。 */
+export interface AccountApiKeyRuntimePublicSummary {
   total: number
   active: number
   temporaryUnavailable: number
@@ -725,6 +727,7 @@ export interface AccountApiKeyRuntimeDetail {
   lastFailureAt?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastTraceId?: string
 }
 
 export interface AccountApiKeyRuntimeResponse {

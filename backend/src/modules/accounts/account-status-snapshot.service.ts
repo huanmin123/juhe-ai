@@ -1,6 +1,6 @@
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
-import type { AccountStatus, AccountStatusSnapshotResult } from '../../domain/types.js'
+import type { AccountApiKeyRuntimePublicSummary, AccountStatus, AccountStatusSnapshotResult } from '../../domain/types.js'
 import type { PublicAccountCircuitSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import type {
@@ -75,9 +75,12 @@ export async function hydrateAccountRuntimeStatusFilterCandidates(
   return {
     generatedAt: new Date().toISOString(),
     items: projections.map((projection) => {
+      const apiKeyRuntime = publicAccountApiKeyRuntimeSummary(
+        apiKeyRuntimeByAccountId.get(projection.authorizationInstanceSourceAccountId ?? projection.id)
+      )
       const withAvailability = accountSummaryWithEffectiveAvailability({
         ...projection,
-        apiKeyRuntime: apiKeyRuntimeByAccountId.get(projection.authorizationInstanceSourceAccountId ?? projection.id),
+        apiKeyRuntime,
         runtimeAvailability: runtime.values[projection.runtimeKey]
       })
       return {
@@ -177,6 +180,7 @@ async function getAccountStatusSnapshotFromProjections(
       const balanceConfiguration = { nextRefreshAt: balanceQueryNextRefreshAt }
       const balanceSnapshotRecord = balanceSnapshots.get(visibleProjection.id)
       const apiKeyRuntimeAccountId = projection.authorizationInstanceSourceAccountId ?? projection.id
+      const apiKeyRuntime = publicAccountApiKeyRuntimeSummary(apiKeyRuntimeByAccountId.get(apiKeyRuntimeAccountId))
       const withAvailability = accountSummaryWithEffectiveAvailability({
         ...projection,
         permissions,
@@ -184,7 +188,7 @@ async function getAccountStatusSnapshotFromProjections(
         boundGroupId,
         groupBindStatus,
         sourceAccountProbe: projection.sourceAccountProbe,
-        apiKeyRuntime: apiKeyRuntimeByAccountId.get(apiKeyRuntimeAccountId),
+        apiKeyRuntime,
         runtimeAvailability: runtime.values[runtimeKey]
       })
       return {
@@ -199,9 +203,35 @@ async function getAccountStatusSnapshotFromProjections(
         currentConcurrency: concurrency.values[concurrencyAccountId] ?? 0,
         runtimeAvailability: publicRuntimeAvailability,
         circuitSummary: circuits.values[runtimeKey],
+        apiKeyRuntime,
         availabilityPresentation: withAvailability.availabilityPresentation,
         effectiveAvailability: withAvailability.effectiveAvailability
       }
     })
+  }
+}
+
+function publicAccountApiKeyRuntimeSummary(input: {
+  total: number
+  active: number
+  temporaryUnavailable: number
+  rateLimited: number
+  error: number
+  disabled: number
+  unavailable: number
+  allUnavailable: boolean
+  nextProbeAt?: string
+} | undefined): AccountApiKeyRuntimePublicSummary | undefined {
+  if (!input) return undefined
+  return {
+    total: input.total,
+    active: input.active,
+    temporaryUnavailable: input.temporaryUnavailable,
+    rateLimited: input.rateLimited,
+    error: input.error,
+    disabled: input.disabled,
+    unavailable: input.unavailable,
+    allUnavailable: input.allUnavailable,
+    ...(input.nextProbeAt ? { nextProbeAt: input.nextProbeAt } : {})
   }
 }

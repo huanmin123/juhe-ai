@@ -104,17 +104,18 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
     }
   }
   const analysis = analyzeTokenIntegritySamples(samples)
+  const suspectedPadding = analysis.status === 'suspected_padding'
   return {
     item: {
       itemKey: `${prefix}.token_integrity`,
       itemType: 'token_integrity',
       status: analysis.status === 'suspected_padding' ? 'failed' : analysis.status === 'consistent' ? 'passed' : analysis.status === 'unsupported' ? 'skipped' : 'warning',
-      score: 0,
-      maxScore: 0,
+      score: suspectedPadding ? 0 : analysis.status === 'consistent' ? 10 : 0,
+      maxScore: suspectedPadding || analysis.status === 'consistent' ? 10 : 0,
       traceId: representative?.traceId,
       evidenceSummary: {
         message: tokenIntegrityMessage(analysis.status),
-        diagnosticOnly: true,
+        diagnosticOnly: !(suspectedPadding || analysis.status === 'consistent'),
         tokenizerVersion: modelCheckTokenizerVersion,
         probeVersion: modelCheckTokenProbeVersion,
         slope: analysis.slope,

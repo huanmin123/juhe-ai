@@ -7,7 +7,8 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import {
   AccountRuntimeStatusFilterScanLimitError,
   accountListNeedsRuntimeStatusFilter,
-  listAccountsPageWithRuntimeStatusFilter
+  listAccountsPageWithRuntimeStatusFilter,
+  takeAccountRuntimeStatusFilterTiming
 } from './account-list-runtime-status-filter.js'
 import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
 import { hydrateAccountListPage } from './account-status-snapshot.service.js'
@@ -19,6 +20,8 @@ export function registerAccountListRoutes(router: Router): void {
       const listOptions = parseAccountListOptions(req.query)
       let listDurationMs = 0
       let statusFilterDurationMs = 0
+      let listHydrationDurationMs = 0
+      let runtimeStatusTiming: ReturnType<typeof takeAccountRuntimeStatusFilterTiming>
       const needsRuntimeStatusFilter = accountListNeedsRuntimeStatusFilter(listOptions)
 
       const statusFilterStartedAt = performance.now()
@@ -26,6 +29,7 @@ export function registerAccountListRoutes(router: Router): void {
         ? await listAccountsPageWithRuntimeStatusFilter(requestAccess, listOptions)
         : undefined
       statusFilterDurationMs = performance.now() - statusFilterStartedAt
+      if (completePage) runtimeStatusTiming = takeAccountRuntimeStatusFilterTiming(completePage)
 
       if (!completePage) {
         const listStartedAt = performance.now()
@@ -33,13 +37,24 @@ export function registerAccountListRoutes(router: Router): void {
         listDurationMs = performance.now() - listStartedAt
         const hydrateStartedAt = performance.now()
         completePage = await hydrateAccountListPage(requestAccess, result)
-        statusFilterDurationMs += performance.now() - hydrateStartedAt
+        listHydrationDurationMs = performance.now() - hydrateStartedAt
       }
 
-      res.setHeader('Server-Timing', [
+      const serverTiming = [
         serverTimingMetric('account-list', listDurationMs),
+        serverTimingMetric('account-list-hydrate', listHydrationDurationMs),
         serverTimingMetric('account-status-filter', statusFilterDurationMs)
-      ].join(', '))
+      ]
+      if (runtimeStatusTiming) {
+        serverTiming.push(
+          serverTimingMetric('account-status-candidate-list', runtimeStatusTiming.candidateListDurationMs),
+          serverTimingMetric('account-status-candidate-hydrate', runtimeStatusTiming.candidateHydrationDurationMs),
+          serverTimingMetric('account-status-candidate-predicate', runtimeStatusTiming.candidatePredicateDurationMs),
+          serverTimingMetric('account-status-final-hydrate', runtimeStatusTiming.finalHydrationDurationMs),
+          serverTimingMetric('account-status-final-tags', runtimeStatusTiming.finalTagDurationMs)
+        )
+      }
+      res.setHeader('Server-Timing', serverTiming.join(', '))
       res.json(ok(completePage))
     } catch (error) {
       if (error instanceof AccountRuntimeStatusFilterScanLimitError) {

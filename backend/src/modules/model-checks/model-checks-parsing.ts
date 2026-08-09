@@ -41,39 +41,64 @@ export function parseFirstJsonObject(text?: string): Record<string, unknown> | u
 }
 
 export function hasFunctionCall(payload: Record<string, unknown> | undefined, name: string): boolean {
+  return functionCallArguments(payload, name).length > 0
+}
+
+export function hasExpectedFunctionCallArguments(
+  payload: Record<string, unknown> | undefined,
+  name: string,
+  expected: Record<string, unknown>
+): boolean {
+  return functionCallArguments(payload, name).some((argumentsValue) => (
+    Object.entries(expected).every(([key, value]) => argumentsValue[key] === value)
+  ))
+}
+
+function functionCallArguments(payload: Record<string, unknown> | undefined, name: string): Record<string, unknown>[] {
+  const matches: Record<string, unknown>[] = []
   const output = Array.isArray(payload?.output) ? payload.output : []
-  if (output.some((item) => {
+  for (const item of output) {
     const record = recordValue(item)
-    return record?.type === 'function_call' && record.name === name
-  })) {
-    return true
+    if (record?.type === 'function_call' && record.name === name) {
+      const argumentsValue = recordValue(record.arguments) ?? parseFirstJsonObject(textValue(record.arguments))
+      if (argumentsValue) matches.push(argumentsValue)
+      else matches.push({})
+    }
   }
   const choices = Array.isArray(payload?.choices) ? payload.choices : []
-  if (choices.some((choice) => {
+  for (const choice of choices) {
     const message = recordValue(recordValue(choice)?.message)
     const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
-    return toolCalls.some((toolCall) => {
+    for (const toolCall of toolCalls) {
       const record = recordValue(toolCall)
       const fn = recordValue(record?.function)
-      return textValue(fn?.name) === name
-    })
-  })) {
-    return true
+      if (textValue(fn?.name) === name) {
+        const argumentsValue = recordValue(fn?.arguments) ?? parseFirstJsonObject(textValue(fn?.arguments))
+        if (argumentsValue) matches.push(argumentsValue)
+        else matches.push({})
+      }
+    }
   }
   const content = Array.isArray(payload?.content) ? payload.content : []
-  if (content.some((item) => {
+  for (const item of content) {
     const record = recordValue(item)
-    return record?.type === 'tool_use' && textValue(record.name) === name
-  })) {
-    return true
+    if (record?.type === 'tool_use' && textValue(record.name) === name) {
+      matches.push(recordValue(record.input) ?? {})
+    }
   }
   const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
-  return candidates.some((candidate) => {
+  for (const candidate of candidates) {
     const parts = Array.isArray(recordValue(recordValue(candidate)?.content)?.parts)
       ? recordValue(recordValue(candidate)?.content)?.parts as unknown[]
       : []
-    return parts.some((part) => textValue(recordValue(recordValue(part)?.functionCall)?.name) === name)
-  })
+    for (const part of parts) {
+      const functionCall = recordValue(recordValue(part)?.functionCall)
+      if (textValue(functionCall?.name) === name) {
+        matches.push(recordValue(functionCall?.args) ?? {})
+      }
+    }
+  }
+  return matches
 }
 
 export function buildModelMatchEvidence(actual: unknown, expected: string, context: {

@@ -33,10 +33,31 @@ export interface AccountRuntimeStatusCandidateProgress {
   latestMatchedCount: number
 }
 
+/**
+ * 仅用于当前 HTTP 响应的 Server-Timing；不进入 JSON payload，也不作为缓存或
+ * 业务判断依据。将慢请求拆开后，才能区分前缀 SQL、运行态批量水合和最终展示水合。
+ */
+export interface AccountRuntimeStatusFilterTiming {
+  candidateListDurationMs: number
+  candidateHydrationDurationMs: number
+  candidatePredicateDurationMs: number
+  finalHydrationDurationMs: number
+  finalTagDurationMs: number
+}
+
 export class AccountRuntimeStatusFilterScanLimitError extends Error {}
 
 const initialSparseCandidatePrefixSize = 200
 const maxRuntimeStatusHydrationBatchSize = runtimeConfig.background.accountRuntimeStatusHydrationBatchSize
+const timingByResult = new WeakMap<AccountManagementListResult, AccountRuntimeStatusFilterTiming>()
+
+export function takeAccountRuntimeStatusFilterTiming(
+  result: AccountManagementListResult
+): AccountRuntimeStatusFilterTiming | undefined {
+  const timing = timingByResult.get(result)
+  timingByResult.delete(result)
+  return timing
+}
 
 export function accountListNeedsRuntimeStatusFilter(options: AccountListOptions): boolean {
   const normalized = normalizeAccountListOptions(options)
@@ -63,19 +84,29 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   let exhausted = false
   let generatedAt = new Date().toISOString()
   let candidateWindow = initialAccountRuntimeStatusCandidateWindow(listOptions)
+  let candidateListDurationMs = 0
+  let candidateHydrationDurationMs = 0
+  let candidatePredicateDurationMs = 0
+  let finalHydrationDurationMs = 0
+  let finalTagDurationMs = 0
 
   while (output.length <= pageSize && !exhausted && candidateWindow) {
+    const candidateListStartedAt = performance.now()
     const basePage = await listAccountManagementCandidatePrefixAsync(access, {
       ...listOptions,
       ...candidateSourceOptions,
       page: 1
     }, candidateWindow.pageSize)
+    candidateListDurationMs += performance.now() - candidateListStartedAt
     const freshBasePage = accountRuntimeStatusFreshCandidatePage(basePage, seenCandidateIds)
+    const candidateHydrationStartedAt = performance.now()
     const hydratedPage = await hydrateAccountRuntimeStatusCandidatePage(freshBasePage)
+    candidateHydrationDurationMs += performance.now() - candidateHydrationStartedAt
     generatedAt = hydratedPage.generatedAt
     const baseItemsById = new Map(freshBasePage.items.map((item) => [item.id, item]))
     const statusSeedsById = new Map(freshBasePage.statusSeeds.map((seed) => [seed.id, seed]))
     let latestMatchedCount = 0
+    const candidatePredicateStartedAt = performance.now()
     for (const account of hydratedPage.items) {
       if (!accountMatchesStatusFilters(account, statusFilters)) continue
       if (!accountMatchesSchedulableFilter(account, listOptions.schedulable)) continue
@@ -94,6 +125,7 @@ export async function listAccountsPageWithRuntimeStatusFilter(
       matchedCount += 1
       if (output.length > pageSize) break
     }
+    candidatePredicateDurationMs += performance.now() - candidatePredicateStartedAt
     exhausted = !basePage.hasMore
     if (output.length > pageSize || exhausted) break
     const nextWindow = nextAccountRuntimeStatusCandidateWindow(candidateWindow, {
@@ -114,7 +146,7 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   const items = output.slice(0, pageSize)
   const statusSeeds = outputStatusSeeds.slice(0, pageSize)
   if (items.length === 0) {
-    return {
+    const result: AccountManagementListResult = {
       items: [],
       total: pagedTotalUpperBound(requestedPage, pageSize, 0, hasMore),
       hasMore,
@@ -122,7 +154,16 @@ export async function listAccountsPageWithRuntimeStatusFilter(
       pageSize,
       generatedAt
     }
+    timingByResult.set(result, accountRuntimeStatusFilterTiming({
+      candidateListDurationMs,
+      candidateHydrationDurationMs,
+      candidatePredicateDurationMs,
+      finalHydrationDurationMs,
+      finalTagDurationMs
+    }))
+    return result
   }
+  const finalHydrationStartedAt = performance.now()
   const hydratedPage = await hydrateAccountListPage(access, {
     items,
     statusSeeds,
@@ -131,8 +172,11 @@ export async function listAccountsPageWithRuntimeStatusFilter(
     page: requestedPage,
     pageSize
   })
+  finalHydrationDurationMs += performance.now() - finalHydrationStartedAt
+  const finalTagsStartedAt = performance.now()
   const tagsByAccount = await loadAccountTagsByAccountIdsAsync(items.map((item) => item.id))
-  return {
+  finalTagDurationMs += performance.now() - finalTagsStartedAt
+  const result: AccountManagementListResult = {
     ...hydratedPage,
     items: hydratedPage.items.map((item) => ({
       ...item,
@@ -140,6 +184,14 @@ export async function listAccountsPageWithRuntimeStatusFilter(
     })),
     generatedAt: hydratedPage.generatedAt
   }
+  timingByResult.set(result, accountRuntimeStatusFilterTiming({
+    candidateListDurationMs,
+    candidateHydrationDurationMs,
+    candidatePredicateDurationMs,
+    finalHydrationDurationMs,
+    finalTagDurationMs
+  }))
+  return result
 }
 
 export function accountRuntimeStatusCandidateSourceOptions(
@@ -252,4 +304,16 @@ function accountMatchesSchedulableFilter(
   if (filter === 'cooling') return cooling
   if (filter === 'enabled') return account.effectiveAvailability.available
   return !account.effectiveAvailability.available && !cooling
+}
+
+function accountRuntimeStatusFilterTiming(
+  timing: AccountRuntimeStatusFilterTiming
+): AccountRuntimeStatusFilterTiming {
+  return {
+    candidateListDurationMs: Math.max(0, timing.candidateListDurationMs),
+    candidateHydrationDurationMs: Math.max(0, timing.candidateHydrationDurationMs),
+    candidatePredicateDurationMs: Math.max(0, timing.candidatePredicateDurationMs),
+    finalHydrationDurationMs: Math.max(0, timing.finalHydrationDurationMs),
+    finalTagDurationMs: Math.max(0, timing.finalTagDurationMs)
+  }
 }

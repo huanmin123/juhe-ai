@@ -7,6 +7,7 @@ import {
   modelCheckTokenPaddingMaxTokens,
   type TokenIntegritySample
 } from '../../modules/model-checks/model-checks-token-integrity.js'
+import { executeModelCheckTokenIntegrityProbes } from '../../modules/model-checks/model-checks-token-probes.js'
 import {
   getModelCheckTokenWorkerRuntime,
   prepareModelCheckTokenProbePromptInWorker,
@@ -66,7 +67,44 @@ const constant = analyzeTokenIntegritySamples(samples(() => 8))
 assert.equal(constant.status, 'unsupported')
 assert(constant.reasonCodes.includes('reported_usage_incompatible'))
 
-console.log('模型检测 Token 诚信回归通过：精确填充、斜率、截距、分桶和不支持边界符合预期')
+try {
+  const consistentProbe = await executeModelCheckTokenIntegrityProbes({
+    model: 'gpt-5.6-sol',
+    providerCode: 'openai',
+    providerProtocolProfileId: 'openai_responses',
+    baseUrl: 'https://example.invalid/v1',
+    credentialMode: 'api_key',
+    probeSetVersion: 'token-integrity-consistent-score-regression',
+    profileMode: 'full',
+    observationEnabled: false,
+    runProbe: async (request, itemKey) => tokenProbeResult(request, itemKey, (localInputTokens) => localInputTokens + 9)
+  })
+  assert.equal(consistentProbe.item.status, 'passed', 'Token 一致性必须形成通过项')
+  assert.equal(consistentProbe.item.score, 10, 'Token 一致性必须贡献正向分数')
+  assert.equal(consistentProbe.item.maxScore, 10)
+  assert.equal((consistentProbe.item.evidenceSummary as { diagnosticOnly?: unknown }).diagnosticOnly, false)
+
+  const paddedProbe = await executeModelCheckTokenIntegrityProbes({
+    model: 'gpt-5.6-sol',
+    providerCode: 'openai',
+    providerProtocolProfileId: 'openai_responses',
+    baseUrl: 'https://example.invalid/v1',
+    credentialMode: 'api_key',
+    probeSetVersion: 'token-integrity-score-regression',
+    profileMode: 'full',
+    observationEnabled: false,
+    runProbe: async (request, itemKey) => tokenProbeResult(request, itemKey, (localInputTokens) => Math.round(localInputTokens * 1.1) + 9)
+  })
+  assert.equal(paddedProbe.item.status, 'failed', '已判定比例灌水必须标记失败')
+  assert.equal(paddedProbe.item.score, 0, '已判定比例灌水必须失去 Token 诚信分')
+  assert.equal(paddedProbe.item.maxScore, 10, '已判定比例灌水必须进入评分分母')
+  const paddedProbeEvidence = paddedProbe.item.evidenceSummary as { diagnosticOnly?: unknown }
+  assert.equal(paddedProbeEvidence.diagnosticOnly, false, '已判定比例灌水不能保持仅诊断')
+} finally {
+  await stopModelCheckTokenWorker()
+}
+
+console.log('模型检测 Token 诚信回归通过：精确填充、斜率、截距、分桶、不支持边界和已判定灌水扣分符合预期')
 
 function samples(reported: (local: number) => number | undefined): TokenIntegritySample[] {
   const result: TokenIntegritySample[] = []
@@ -82,4 +120,31 @@ function samples(reported: (local: number) => number | undefined): TokenIntegrit
     }
   }
   return result
+}
+
+function tokenProbeResult(
+  request: { body: Record<string, unknown> },
+  itemKey: string,
+  reportedInputTokens: (localInputTokens: number) => number
+) {
+  const input = Array.isArray(request.body.input) ? request.body.input[0] : undefined
+  const content = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as { content?: unknown }).content
+    : undefined
+  const inputText = Array.isArray(content) && content[0] && typeof content[0] === 'object' && !Array.isArray(content[0])
+    ? String((content[0] as { text?: unknown }).text ?? '')
+    : ''
+  const localInputTokens = countModelCheckInputTokens(inputText)
+  return {
+    traceId: `trace_${itemKey}`,
+    statusCode: 200,
+    success: true,
+    durationMs: 1,
+    bodyText: '',
+    bodyTruncated: false,
+    headers: {},
+    outputText: 'OK',
+    model: 'gpt-5.6-sol',
+    usage: { input_tokens: reportedInputTokens(localInputTokens), output_tokens: 1 }
+  }
 }

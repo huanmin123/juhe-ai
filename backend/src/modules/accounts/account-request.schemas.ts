@@ -200,6 +200,10 @@ export const accountTagsUpdateSchema = z.object({
   expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
+export const accountApiKeyRuntimeRevalidateSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1)
+}).strict()
+
 export const accountTrafficMigrationSchema = z.object({
   targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
   sourceStatus: z.enum(['temporary_unavailable', 'disabled', 'unchanged']).optional()

@@ -19,6 +19,7 @@ export interface AccountApiKeyRuntimeAccountProjection {
   id: string
   configRevision: number
   accessType: 'owner' | 'authorized'
+  ownerSystemAccountId: string
 }
 
 export async function findAccountApiKeyRuntimeAccountAsync(
@@ -52,7 +53,8 @@ export async function findAccountApiKeyRuntimeAccountAsync(
   return {
     id: row.id,
     configRevision: Number(row.config_revision ?? 1),
-    accessType: Number(row.authorized_instance) === 1 ? 'authorized' : 'owner'
+    accessType: Number(row.authorized_instance) === 1 ? 'authorized' : 'owner',
+    ownerSystemAccountId: row.system_account_id
   }
 }
 

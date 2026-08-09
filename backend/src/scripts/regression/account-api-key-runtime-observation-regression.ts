@@ -459,7 +459,9 @@ try {
   assert(schemaColumns.some((column) => column.name === 'probe_claim_token'), '当前 SQLite schema 必须包含 probe claim token')
   assert(schemaColumns.some((column) => column.name === 'probe_claimed_until'), '当前 SQLite schema 必须包含 probe claim lease')
 
-  const validClaimPoolSizes = [50, 49, 2]
+  // 101 个合法候选必须跨多个符合账户配置上限的 Key 池构造；这里仍保留
+  // 第 101 个候选，用于验证前 100 个 claim 冲突时的窗口补位。
+  const validClaimPoolSizes = [...Array.from({ length: 9 }, () => 10), 9, 2]
   const validClaimRows: Array<{ accountId: string; keyFingerprint: string; keyIndex: number }> = []
   let validClaimGlobalIndex = 0
   for (const [accountIndex, poolSize] of validClaimPoolSizes.entries()) {

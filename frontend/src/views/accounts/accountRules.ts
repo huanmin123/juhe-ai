@@ -308,6 +308,14 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
   }
+  if (canEditAccount(account)
+    && !isAuthorizedAccount(account)
+    && account.type === 'api_key'
+    && account.status === 'active'
+    && account.schedulable
+    && ((account.apiKeyRuntime?.unavailable ?? 0) - (account.apiKeyRuntime?.disabled ?? 0)) > 0) {
+    items.push({ key: 'revalidate-api-key-runtime', label: '重新验证 Key 池' })
+  }
   if (account.status === 'error') {
     if (canRestoreException(account)) {
       items.push({ key: 'restore-normal', label: '异常恢复' })
@@ -399,6 +407,7 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'reauthorize-oauth') return { ...item, icon: 'reset', tone: 'warning' }
   if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
   if (item.key === 'recheck-health') return { ...item, icon: 'refresh', tone: 'info' }
+  if (item.key === 'revalidate-api-key-runtime') return { ...item, icon: 'refresh', tone: 'info' }
   if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }

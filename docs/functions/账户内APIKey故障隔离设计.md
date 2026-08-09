@@ -4,7 +4,7 @@
 
 本文用于说明 GPT API Key 和 OpenAI 兼容 API Key 账户，在同一个账户内配置多个上游 API Key 后的故障隔离、请求内唯一切换和后台恢复逻辑。当前口径是：多个上游 API Key 归属同一个账户，默认主备，也支持轮询 / 权重选择、Key 级运行态、账户内可用 Key 过滤、安全文本请求内按池顺序唯一耗尽、全请求 64 次真实上游 attempt 安全上限、后台单 Key 探测恢复和账户摘要字段；多 Key 账户打开编辑弹窗时自动加载逐 Key 运行态，刷新按钮强制重新读取；人工测试只返回 Key 诊断明细，不初始化、摘除或恢复 Key 运行态。
 
-后续仍可增强的部分包括：批量恢复 Key 状态、使用记录 / 审计中的 Key 指纹排障字段，以及更完整的运维页面。
+当前账户列表只接收公共 Key 池汇总，并在可编辑的 owner 多 Key API Key 账户存在非 `disabled` 不可用 Key 时提供“重新验证 Key 池”菜单。该操作只是把符合条件的 Key 安排为到期探测，绝不直接恢复为 `active`；真正恢复仍由后台逐 Key 探测的成功 CAS 写入。授权实例没有此菜单，且请求此动作必须返回 `403`。批量把 Key 状态直接恢复为 `active` 目前未实现，仍是后续独立能力；后续可增强的部分还包括使用记录 / 审计中的 Key 指纹排障字段，以及更完整的运维页面。
 
 ## 背景问题
 
@@ -124,7 +124,7 @@ account_api_key_runtime_states
 | `key_fingerprint` | 上游 Key 的 HMAC 指纹，不保存明文 |
 | `key_index` | 当前凭据列表中的位置，仅用于展示和排序，不能作为唯一身份 |
 | `credential_revision` | 凭据版本或凭据列表摘要，用于识别旧状态 |
-| `status` | `active` / `temporary_unavailable` / `rate_limited` / `error` / `disabled` |
+| `status` | `active` / `unverified` / `temporary_unavailable` / `rate_limited` / `error` / `disabled`；新增或替换后尚未完成后台验证的 Key 为 `unverified`，不可调度，只有后台逐 Key 探针成功后才恢复为 `active` |
 | `failure_count` | 独立 Key 探针确认的 `transport_incomplete` 累计次数；完整 framing 中性和任务 unknown 不增加 |
 | `consecutive_failures` | 连续独立 `transport_incomplete` 次数 |
 | `success_count` | 累计成功次数 |
@@ -172,7 +172,7 @@ account_api_key_runtime_states
 | --- | --- |
 | 至少 1 个 Key 可用 | 账户可承接请求 |
 | 全部 Key 冷却中 | 账户本轮不可承接，按最早 `cooldown_until` 参与 `Retry-After` 计算 |
-| 全部 Key 为 `error` / `disabled` | 账户派生为 Key 池不可用，页面显示“全部 Key 不可用” |
+| 全部 Key 均非 `active`（包括 `unverified`、`error`、`disabled` 等） | 账户派生为 Key 池不可用，页面显示“全部 Key 不可用” |
 | 部分 Key 不可用 | 账户仍可承接，请求只在可用 Key 内轮询 / 加权 |
 
 不要在 Key 状态变化时覆盖 `accounts.status`。账户物理状态继续表达账户本身的停用、异常、到期、待检查等事实；Key 池不可用只作为 `effectiveAvailability` 的派生阻断原因返回给网关和前端。即使所有 Key 长期处于不可执行状态，也保持 Key 来源和账户业务状态分离；只有用户显式账户级动作或独立账户状态来源才允许写账户硬异常。
@@ -188,6 +188,7 @@ account-api-key-cooldown-retest
 职责：
 
 - 扫描 `temporary_unavailable`、`rate_limited` 和可自动恢复的 `error` Key。
+- `unverified` 与上述非 `active`、非 `disabled` 状态同样属于可探测 Key；公共汇总的 `nextProbeAt` 取所有这类 Key 的最早 `next_probe_at`，用于准确显示全 `unverified` Key 池的最早复测时间。
 - 到达 `next_probe_at` 后，固定命中该账户的该 Key 发起真实探测。
 - 探测走账户自己的 Base URL、代理、账号协议能力、支持模型和当前网关请求链路。
 - 探测使用统一结果：协议校验成功且 framing 完整为 `complete_success`；连接 / hard timeout / 读取中断 / framing 未完成为 `upstream_failure(transport_incomplete)`；完整 HTTP/SSE 但协议未成功为 `framing_complete_neutral`；任务、本地配置、解密、stale 或无法归因为 `probe_task_failure/unknown`。
@@ -211,6 +212,7 @@ account-api-key-cooldown-retest
 - 单个账户最多保存 10 个 API Key；超过上限的保存请求必须报错，不得静默截断或迁移已有数据。
 - 批测会固定每个上游 Key 发起诊断网关测试请求（只对诊断 deadline 超时证据按阶段重试），仍使用账户自己的 Base URL、代理、协议能力、模型限制、分组上下文和请求形态。
 - 账户级测试通过条件为“至少 1 个 Key 可用”，不要求全部 Key 通过。
+- 多 Key 后台健康检查命中 `complete_success` 时，必须保留实际成功的 winner Key 指纹和位置；账户健康成功 CAS 完成后，仅可在同一 `config_revision` 与观测时间围栏下把该 winner 的任意非 `disabled` 运行态写为 `active`，包括 `unverified`、冷却、限流和错误态。探测候选为了固定命中目标 Key 可以绕过调度过滤，但状态写回不得携带该旁路标记；日志、审计和 UI 仍只保留 Key 指纹，绝不保留明文。
 - 多 Key 人工测试按阶段执行：阶段一每 Key 10 秒，阶段二仅接收阶段一已形成真实上游尝试且诊断 deadline 超时的 Key（20 秒），阶段三同理（30 秒）；每阶段最多 3 个并发、任务完成即补位。完整 HTTP、协议、连接 / 读取、本地配置 / 任务失败和用户取消均不升级阶段。
 - 任一 Key 成功即账户测试成功，立即停止派发并取消尚在运行的兄弟请求；主动取消和未启动 Key 不计为失败或超时，也不进入后续阶段。
 - 已保存账户、授权实例和来源账户的人工测试都不写成功或失败 Key 运行态，不推进 Key 轮换，不修改账户派生可用性。
@@ -321,7 +323,7 @@ API Key：13 个，正常 10，冷却 2，异常 1
 - 最近探测时间。
 - 单个 Key 恢复 / 禁用 / 删除。
 - 批量删除全部 Key。
-- 批量恢复 Key 状态。
+- 后续规划的批量恢复 Key 状态（当前列表“重新验证 Key 池”不等同于此动作）。
 - 可选“后台检测全部 Key”按钮。
 
 第一阶段不必做完整 Key 维度统计页面，只要让用户能看到“哪些 Key 被摘掉”和“为什么账户整体不可用了”。
@@ -345,7 +347,7 @@ API Key：13 个，正常 10，冷却 2，异常 1
 
 ### 坏请求导致上游失败
 
-坏请求如果穿过本地校验并让多个上游返回错误，只能扩大本请求的 Key/账户排除集合；不得写 Redis 短避让、跨请求 IP 避让、Key 冷却或共享质量失败。相同坏会话并发也只是一份请求语义证据，不能把整个 Key 池逐个写死。用户显式配置的 Key 状态动作是唯一例外，并必须保留动作来源用于匹配恢复。
+坏请求如果穿过本地校验并让多个上游返回错误，只能扩大本请求的 Key/账户排除集合；单个失败、池穷尽或无后继成功时不得写 Redis 短避让、跨请求 IP 避让、Key 冷却或共享质量失败。相同坏会话并发也只是一份请求语义证据，不能把整个 Key 池逐个写死。用户显式配置的 Key 状态动作是唯一例外；无论是隐式轮换还是显式 `retry_next`，都只能在同账户另一把 Key 后继成功后才将此前失败 Key 写为 `temporary_unavailable`，并保留该确认来源用于匹配恢复。任意完整 HTTP 非 2xx（无论是否命中 `retry_next`）保留请求内 Key 轮换并投递独立账户健康检查，但不得触发来源级跨请求避让；来源级避让仅接受连接、读取、超时等 transport 失败的独立证据。
 
 ### Key 删除、替换和排序
 
@@ -379,9 +381,13 @@ API Key：13 个，正常 10，冷却 2，异常 1
 
 逐 Key 运行明细通过 owner-only、`Cache-Control: no-store` 的轻量接口读取，不进入账户列表批量快照，也不向授权实例暴露。前端仅在账户 ID、配置版本和保存时 Key 顺序均一致时展示状态；编辑、增删或重排 Key 后立即隐藏旧状态，避免按位置错贴。
 
+账户列表及其状态快照只返回 `total`、`active`、`temporaryUnavailable`、`rateLimited`、`error`、`disabled`、`unavailable`、`allUnavailable` 和可选 `nextProbeAt`。它们不得返回 Key 指纹、Key 明细、`lastFailureAt`、错误码、错误消息、trace 或任何逐 Key 诊断；诊断只属于 owner 显式展开的运行明细接口。
+
 ### 手动恢复
 
-账户“恢复正常”需要明确是否同时恢复 Key 状态。建议：
+账户“恢复正常”需要明确是否同时恢复 Key 状态。当前列表的“重新验证 Key 池”不是状态恢复：它只让无有效 probe lease 的 `unverified`、`temporary_unavailable`、`rate_limited` 或 `error` Key 尽快进入后台探测，`active` 与 `disabled` Key 不变；账户不处于 `active`、不可调度、版本冲突或没有候选时不写入。
+
+后续若单独实现人工 Key 状态恢复，建议：
 
 - 默认只恢复账户级状态。
 - 在多 Key 账户弹窗中提供“批量恢复 Key 状态”。
@@ -423,11 +429,11 @@ API Key：13 个，正常 10，冷却 2，异常 1
 - 探测成功恢复 Key，失败延长退避。
 - 增加缓存失效和使用记录 / 审计 metadata。
 
-### 第三阶段：前端可视化
+### 第三阶段：前端可视化（后续规划）
 
 - 账户列表展示 Key 池摘要。
 - 编辑弹窗每个 Key 展示状态、最近失败、最近探测。
-- 提供单 Key 恢复、批量恢复、批量检测。
+- 评估提供单 Key 恢复、批量恢复、批量检测；当前已实现的列表“重新验证 Key 池”不等同于批量恢复。
 - 保持批量删除只删除 Key 输入，不误删账户。
 
 ## 验证要求

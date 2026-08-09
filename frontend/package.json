@@ -83,6 +83,8 @@
     "test:provider-auth-account-capability": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/provider-auth-account-capability-regression.ts",
     "test:account-balance-query": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-balance-query-regression.ts",
     "test:account-api-key-runtime-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-api-key-runtime-display-regression.ts",
+    "test:account-api-key-runtime-list-menu": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-api-key-runtime-list-menu-regression.ts",
+    "test:account-api-key-runtime-revalidate": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-api-key-runtime-revalidate-regression.ts",
     "test:account-default-group-selection": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-default-group-selection-regression.ts",
     "test:temporary-unavailable-probe-toggle": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/temporary-unavailable-probe-toggle-regression.ts",
     "test:table-monitor-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/table-monitor-display-regression.ts",

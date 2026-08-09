@@ -24,6 +24,7 @@ interface MockUpstreamHit {
 }
 
 type ApiKeyStrategy = 'round_robin' | 'weighted_round_robin' | 'failover'
+type MockSuccessfulResponseMode = 'complete_json' | 'invalid_json' | 'interrupted_json' | 'sse_without_terminal'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const backendRoot = resolve(currentDir, '../../..')
@@ -66,12 +67,15 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const mockHits: MockUpstreamHit[] = []
 const forcedFailureStatusByAuthorization = new Map<string, number>()
 const forcedTransportFailureAuthorizations = new Set<string>()
+const forcedSuccessfulResponseModeByAuthorization = new Map<string, MockSuccessfulResponseMode>()
 const heldSuccessResponseUserAgents = new Set<string>()
 const heldSuccessResponseReleases = new Map<string, Array<() => void>>()
+const clientIpByBatchId = new Map<string, string>()
 
 let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
 let postBatchSequence = 0
+let clientIpSequence = 0
 
 try {
   mockUpstream = createMockOpenAIUpstream()
@@ -106,6 +110,33 @@ try {
     strategy: 'failover'
   })
   forcedFailureStatusByAuthorization.set('Bearer sk-gateway-primary-backup-primary', 503)
+  const invalidBodyConfirmationGatewayApiKey = createGatewayApiKeyScenario({
+    name: '失败 Key 仅完整协议成功确认-无效正文',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-confirm-invalid-a', 'sk-gateway-confirm-invalid-b'],
+    strategy: 'failover',
+    errorHandlingRules: [explicitRetryNextRule([503])]
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-confirm-invalid-a', 503)
+  forcedSuccessfulResponseModeByAuthorization.set('Bearer sk-gateway-confirm-invalid-b', 'invalid_json')
+  const interruptedBodyConfirmationGatewayApiKey = createGatewayApiKeyScenario({
+    name: '失败 Key 仅完整协议成功确认-正文中断',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-confirm-interrupted-a', 'sk-gateway-confirm-interrupted-b'],
+    strategy: 'failover',
+    errorHandlingRules: [explicitRetryNextRule([503])]
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-confirm-interrupted-a', 503)
+  forcedSuccessfulResponseModeByAuthorization.set('Bearer sk-gateway-confirm-interrupted-b', 'interrupted_json')
+  const incompleteSseConfirmationGatewayApiKey = createGatewayApiKeyScenario({
+    name: '失败 Key 仅完整协议成功确认-SSE未完成',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-confirm-sse-a', 'sk-gateway-confirm-sse-b'],
+    strategy: 'failover',
+    errorHandlingRules: [explicitRetryNextRule([503])]
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-confirm-sse-a', 503)
+  forcedSuccessfulResponseModeByAuthorization.set('Bearer sk-gateway-confirm-sse-b', 'sse_without_terminal')
   const weightedFailureIsolationGatewayApiKey = createGatewayApiKeyScenario({
     name: '权重 Key 失败确认避让',
     upstreamBaseUrl,
@@ -290,10 +321,10 @@ try {
     ['Bearer sk-gateway-primary-backup-primary', 'Bearer sk-gateway-primary-backup-secondary'],
     '真实主备账户中，主 Key 失败后当前请求必须按顺序切换到备用 Key'
   )
-  assert.equal(
-    apiKeyRuntimeStateStatus('sk-gateway-primary-backup-primary'),
+  await waitForApiKeyRuntimeState(
+    'sk-gateway-primary-backup-primary',
     'temporary_unavailable',
-    '主 Key 失败且备用 Key 成功后，主 Key 必须进入临时避让'
+    '主 Key 失败且备用 Key 完整协议成功后，主 Key 必须进入临时避让'
   )
   const secondPrimaryBackupBatch = await postChatCompletions(backendBaseUrl, primaryBackupGatewayApiKey, 1)
   const secondPrimaryBackupAuthorizations = authorizationsForBatches([secondPrimaryBackupBatch])
@@ -302,6 +333,59 @@ try {
     ['Bearer sk-gateway-primary-backup-secondary'],
     '主 Key 临时避让期间，新请求必须直接跳过主 Key 并使用备用 Key'
   )
+  for (const scenario of [
+    {
+      name: '2xx 无效正文',
+      gatewayApiKey: invalidBodyConfirmationGatewayApiKey,
+      failedKey: 'sk-gateway-confirm-invalid-a',
+      siblingKey: 'sk-gateway-confirm-invalid-b'
+    },
+    {
+      name: '2xx 正文中断',
+      gatewayApiKey: interruptedBodyConfirmationGatewayApiKey,
+      failedKey: 'sk-gateway-confirm-interrupted-a',
+      siblingKey: 'sk-gateway-confirm-interrupted-b'
+    },
+    {
+      name: 'SSE 无成功终态',
+      gatewayApiKey: incompleteSseConfirmationGatewayApiKey,
+      failedKey: 'sk-gateway-confirm-sse-a',
+      siblingKey: 'sk-gateway-confirm-sse-b',
+      stream: true
+    }
+  ]) {
+    const initialBatchId = `gateway-api-key-incomplete-confirmation-${++postBatchSequence}`
+    await postSingleChatCompletion(backendBaseUrl, scenario.gatewayApiKey, initialBatchId, {
+      content: `${scenario.name} 不得确认前一把失败 Key`,
+      stream: scenario.stream
+    })
+    const initialHits = authorizationsForBatches([initialBatchId])
+    assert.deepEqual(
+      initialHits.slice(0, 2),
+      [`Bearer ${scenario.failedKey}`, `Bearer ${scenario.siblingKey}`],
+      `${scenario.name} 必须先在当前请求尝试失败 Key，再取得同账户 2xx sibling 响应`
+    )
+    assert.equal(
+      apiKeyRuntimeStateStatus(scenario.failedKey),
+      undefined,
+      `${scenario.name} 不具备完整协议成功证据，前一把失败 Key 不得写入共享临时避让`
+    )
+    const nextBatchId = `gateway-api-key-incomplete-confirmation-cross-request-${++postBatchSequence}`
+    await postSingleChatCompletion(backendBaseUrl, scenario.gatewayApiKey, nextBatchId, {
+      content: `${scenario.name} 独立请求不得继承未确认避让`,
+      stream: scenario.stream
+    })
+    assert.equal(
+      authorizationsForBatches([nextBatchId])[0],
+      `Bearer ${scenario.failedKey}`,
+      `${scenario.name} 的后续独立请求必须仍从失败 Key 开始，不能被持久或运行态避让过滤`
+    )
+    assert.equal(
+      apiKeyRuntimeStateStatus(scenario.failedKey),
+      undefined,
+      `${scenario.name} 的重复未完成响应仍不得写入共享临时避让`
+    )
+  }
   const firstFailoverBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 1)
   const firstFailoverAuthorizations = authorizationsForBatches([firstFailoverBatch])
   assert.deepEqual(
@@ -309,8 +393,12 @@ try {
     ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
     '轮询账户的坏 Key 失败后，当前请求必须切换同账户健康 Key'
   )
+  await waitForApiKeyRuntimeState(
+    'sk-gateway-failover-bad',
+    'temporary_unavailable',
+    '轮询账户坏 Key 被同账户健康 Key 确认后必须进入临时避让'
+  )
   const failoverBadKeyPersistedState = apiKeyRuntimeStateStatus('sk-gateway-failover-bad')
-  assert.equal(failoverBadKeyPersistedState, 'temporary_unavailable', '轮询账户坏 Key 被同账户健康 Key 确认后必须进入临时避让')
   const recoveredAccountBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 2)
   const recoveredAccountAuthorizations = authorizationsForBatches([recoveredAccountBatch])
   assert.deepEqual(
@@ -330,10 +418,10 @@ try {
     ['Bearer sk-gateway-weight-failure-bad', 'Bearer sk-gateway-weight-failure-good'],
     '权重账户的坏 Key 失败后，当前请求必须切换同账户健康 Key'
   )
-  assert.equal(
-    apiKeyRuntimeStateStatus('sk-gateway-weight-failure-bad'),
+  await waitForApiKeyRuntimeState(
+    'sk-gateway-weight-failure-bad',
     'temporary_unavailable',
-    '权重账户坏 Key 被同账户健康 Key 确认后必须进入临时避让'
+    '权重账户坏 Key 被同账户健康 Key 完整协议成功确认后必须进入临时避让'
   )
   const secondWeightedFailureBatch = await postChatCompletions(backendBaseUrl, weightedFailureIsolationGatewayApiKey, 2)
   assert.deepEqual(
@@ -349,11 +437,13 @@ try {
     ['Bearer sk-gateway-three-a', 'Bearer sk-gateway-three-b', 'Bearer sk-gateway-three-good'],
     '无后备账户时，三 Key 账户前两个失败后必须在同一请求命中第三个健康 Key'
   )
+  await waitForApiKeyRuntimeState('sk-gateway-three-a', 'temporary_unavailable', '显式 retry_next 失败 Key 经同账户成功确认后必须持续避让')
+  await waitForApiKeyRuntimeState('sk-gateway-three-b', 'temporary_unavailable', '第二个显式 retry_next 失败 Key 经同账户成功确认后必须持续避让')
   const nextThreeKeyBatch = await postChatCompletions(backendBaseUrl, threeKeyExhaustionGatewayApiKey, 1)
   assert.deepEqual(
     authorizationsForBatches([nextThreeKeyBatch]),
-    ['Bearer sk-gateway-three-b', 'Bearer sk-gateway-three-good'],
-    '前一请求的请求内切号不得多次推进全局游标；新请求应从下一个轮换 Key 重新评估'
+    ['Bearer sk-gateway-three-good'],
+    '显式 retry_next 的失败 Key 被同账户健康 Key 确认后，独立请求必须跳过两个已确认失败 Key'
   )
 
   const concurrentBadSessionBatchIds = Array.from(
@@ -373,8 +463,6 @@ try {
     assert.equal(hits.at(-1), 'Bearer sk-gateway-three-good', `并发坏会话最终必须命中健康 Key：${batchId} ${JSON.stringify(hits)}`)
     assert(hits.length >= 1 && hits.length <= 3, `三 Key 请求命中次数必须位于 1..3：${batchId} ${JSON.stringify(hits)}`)
   }
-  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-three-a'), undefined, '并发未知上游失败不得把坏会话事实写成共享 Key 死亡')
-  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-three-b'), undefined, '并发未知上游失败不得把第二个 Key 写成共享死亡')
   assert.deepEqual(
     accountDatabaseAvailabilityByName('三 Key 请求内严格穷尽 账户'),
     { status: 'active', schedulable: 1 },
@@ -447,8 +535,18 @@ try {
     statusChaosKeys.map((key) => `Bearer ${key}`),
     '400/401/429/500/503 不得触发内部语义分流；六 Key 应按请求内顺序唯一尝试直到健康 Key'
   )
-  assert(statusChaosKeys.slice(0, -1).every((key) => apiKeyRuntimeStateStatus(key) === undefined), '混乱状态码不得写入共享 Key 状态')
+  await Promise.all(statusChaosKeys.slice(0, -1).map((key) => waitForApiKeyRuntimeState(
+    key,
+    'temporary_unavailable',
+    '显式 retry_next 的失败 Key 只有在同账户后继 Key 完整协议成功后才应写入 temporary_unavailable'
+  )))
   assert.deepEqual(accountDatabaseAvailabilityByName('六 Key 状态码乱序 账户'), { status: 'active', schedulable: 1 }, '混乱状态码不得改变账户状态')
+  const statusChaosRecoveredBatch = await postChatCompletions(backendBaseUrl, statusChaosGatewayApiKey, 1)
+  assert.deepEqual(
+    authorizationsForBatches([statusChaosRecoveredBatch]),
+    ['Bearer sk-gateway-chaos-good'],
+    '同账户后继成功确认后，下一独立请求必须跳过已确认失败的显式 retry_next Key'
+  )
 
   const physicalKeyDedupeBatch = await postChatCompletions(backendBaseUrl, physicalKeyDedupeScenario, 1)
   assert.deepEqual(
@@ -498,10 +596,11 @@ try {
     ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-good'],
     '被授权实例命中来源账户坏 Key 后，本次请求应优先尝试来源账户下一个 Key'
   )
+  await waitForApiKeyRuntimeState('sk-gateway-authorized-bad', 'temporary_unavailable', '授权实例中来源账户另一把 Key 完整协议成功后必须确认来源 Key')
   const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountIdOrMissing('sk-gateway-authorized-bad')
-  assert.equal(authorizedRuntimeTarget, undefined, '授权实例命中来源账户坏 Key 后，网关流量也只做本地短避让，不应持久写入来源账户 Key 运行态')
+  assert.equal(authorizedRuntimeTarget, authorizedScenario.sourceAccountId, '授权实例中来源账户另一把 Key 成功确认后，只能写入来源物理 Key 运行态')
   const authorizedInstanceSummary = repositories.findAccountForTest(authorizedScenario.authorizedInstanceAccountId, authorizedScenario.granteeAccess)
-  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, '网关流量本地短避让不应污染被授权实例持久 Key 池摘要')
+  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable ?? 0, 1, '被授权实例可投影来源 Key 的聚合可用性，但不得生成自己的 Key 运行态')
   assert.equal(authorizedInstanceSummary?.apiKeyRuntimeDetails, undefined, '被授权实例不应暴露来源账户 Key 明细')
 
   const allBadBatches = [
@@ -527,6 +626,16 @@ try {
       'Bearer sk-gateway-allbad-rescue'
     ],
     '独立坏请求不得继承前次 Key 失败；400/401/429 等未知状态码均应在请求内唯一穷尽全部当前 Key 后才切后备'
+  )
+  assert.deepEqual(
+    allBadAuthorizations.slice(4, 8),
+    [
+      'Bearer sk-gateway-allbad-b',
+      'Bearer sk-gateway-allbad-c',
+      'Bearer sk-gateway-allbad-a',
+      'Bearer sk-gateway-allbad-rescue'
+    ],
+    '完整 HTTP 非 2xx 不得产生跨请求来源避让；第二个独立请求仍必须穷尽来源账户的三个 Key 后才切后备'
   )
   assert.equal(
     allBadAuthorizations.indexOf('Bearer sk-gateway-allbad-rescue'),
@@ -1198,19 +1307,20 @@ async function postSingleChatCompletion(
   backendBaseUrl: string,
   apiKey: string,
   batchId: string,
-  input: { content: string; model?: string; sessionId?: string }
+  input: { content: string; model?: string; sessionId?: string; stream?: boolean }
 ): Promise<{ status: number; text: string }> {
   const response = await fetch(`${backendBaseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
-      'user-agent': batchUserAgent(batchId)
+      'user-agent': batchUserAgent(batchId),
+      'x-forwarded-for': batchClientIp(batchId)
     },
     body: JSON.stringify({
       model: input.model ?? 'gpt-5.5',
       messages: [{ role: 'user', content: input.content }],
-      stream: false,
+      stream: input.stream === true,
       ...(input.sessionId ? { session_id: input.sessionId } : {})
     })
   })
@@ -1242,6 +1352,17 @@ function batchUserAgent(batchId: string): string {
   return `juhe-ai-account-api-key-gateway-mock-ai/${batchId}`
 }
 
+function batchClientIp(batchId: string): string {
+  const existing = clientIpByBatchId.get(batchId)
+  if (existing) return existing
+  clientIpSequence += 1
+  const host = ((clientIpSequence - 1) % 250) + 1
+  const subnet = Math.floor((clientIpSequence - 1) / 250) + 1
+  const clientIp = `10.250.${subnet}.${host}`
+  clientIpByBatchId.set(batchId, clientIp)
+  return clientIp
+}
+
 function createMockOpenAIUpstream(): http.Server {
   return http.createServer((req, res) => {
     const requestPath = req.url ?? ''
@@ -1270,17 +1391,34 @@ function createMockOpenAIUpstream(): http.Server {
       const userAgent = String(req.headers['user-agent'] ?? '')
       if (heldSuccessResponseUserAgents.has(userAgent)) {
         const releases = heldSuccessResponseReleases.get(userAgent) ?? []
-        releases.push(() => sendMockSuccess(res, requestPath))
+        releases.push(() => sendMockSuccess(res, requestPath, forcedSuccessfulResponseModeByAuthorization.get(authorization)))
         heldSuccessResponseReleases.set(userAgent, releases)
         return
       }
-      sendMockSuccess(res, requestPath)
+      sendMockSuccess(res, requestPath, forcedSuccessfulResponseModeByAuthorization.get(authorization))
     })
   })
 }
 
-function sendMockSuccess(res: http.ServerResponse, requestPath: string): void {
+function sendMockSuccess(res: http.ServerResponse, requestPath: string, mode: MockSuccessfulResponseMode = 'complete_json'): void {
   if (res.destroyed || res.writableEnded) return
+  if (mode === 'invalid_json') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ id: 'mock-invalid-success-shape', object: 'chat.completion', choices: [] }))
+    return
+  }
+  if (mode === 'interrupted_json') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.flushHeaders()
+    res.write('{"id":"mock-interrupted-success-body"')
+    setTimeout(() => res.destroy(), 10).unref()
+    return
+  }
+  if (mode === 'sse_without_terminal') {
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+    res.end('data: {"id":"mock-sse-without-terminal","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"}}]}\\n\\n')
+    return
+  }
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(successPayloadForPath(requestPath)))
 }
@@ -1353,6 +1491,15 @@ function apiKeyRuntimeStateStatus(key: string): string | undefined {
   return row?.status
 }
 
+async function waitForApiKeyRuntimeState(key: string, expectedStatus: string, message: string): Promise<void> {
+  const deadlineAt = Date.now() + 2_000
+  while (Date.now() < deadlineAt) {
+    if (apiKeyRuntimeStateStatus(key) === expectedStatus) return
+    await sleep(25)
+  }
+  assert.equal(apiKeyRuntimeStateStatus(key), expectedStatus, message)
+}
+
 function accountDatabaseAvailabilityByName(name: string): { status: string; schedulable: number } | undefined {
   const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT status, schedulable FROM accounts WHERE name = ? AND deleted_at IS NULL LIMIT 1')
@@ -1411,6 +1558,7 @@ function startBackendServer(port: number): ChildProcess {
       JUHE_AI_SECRET: runtimeConfig.secret,
       JUHE_AI_GATEWAY_ACCOUNT_API_KEY_REQUEST_ATTEMPT_SAFETY_LIMIT: String(runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit),
       JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true',
+      JUHE_AI_TRUST_PROXY: '1',
       JUHE_AI_LOG_LEVEL: 'warn',
       JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
       JUHE_AI_LOG_FILE_ENABLED: 'false'
