@@ -1,6 +1,7 @@
 package auditlog
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -74,6 +75,10 @@ func validateLoopbackAddress(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port == "" {
 		return fmt.Errorf("地址必须为 IP:port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("端口必须在 1..65535")
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
@@ -217,13 +222,17 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 		return
 	}
 	var envelope auditInputEnvelope
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&envelope); err != nil || envelope.SchemaVersion != 1 {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if err := validateInput(envelope.AuditLog); err != nil {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -268,10 +277,10 @@ func validAuditInputSignature(secret string, body []byte, supplied string) bool 
 	if !strings.HasPrefix(supplied, "v1=") {
 		return false
 	}
-	expected, err := hex.DecodeString(strings.TrimPrefix(SignAuditInput(secret, body), "v1="))
-	if err != nil {
-		return false
-	}
+	expected := hmac.New(sha256.New, []byte(secret))
+	_, _ = expected.Write([]byte(auditInputSignatureDomain))
+	_, _ = expected.Write([]byte{'\n'})
+	_, _ = expected.Write(body)
 	actual, err := hex.DecodeString(strings.TrimPrefix(supplied, "v1="))
-	return err == nil && hmac.Equal(expected, actual)
+	return err == nil && hmac.Equal(expected.Sum(nil), actual)
 }

@@ -91,6 +91,7 @@ func TestLoadInputServerConfigRequiresLoopbackAndSecret(t *testing.T) {
 	for name, override := range map[string]string{
 		"missing-secret":  "",
 		"public-listener": "0.0.0.0:3303",
+		"zero-port":       "127.0.0.1:0",
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := map[string]string{}
