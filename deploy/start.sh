@@ -102,7 +102,7 @@ stop_server_process() {
 
 wait_for_server_ready() {
   attempts=0
-  health_url="http://${HOST}:${PORT}/__aisys__/health"
+  health_url="http://${HOST}:${PORT}/__aisys__/api/health"
   while kill -0 "$server_pid" 2>/dev/null && [ "$attempts" -lt 60 ]; do
     if node --input-type=module -e '
 const response = await fetch(process.argv[1])
@@ -194,6 +194,7 @@ const names = [
   "JUHE_AI_DATABASE_DRIVER",
   "JUHE_AI_RUNTIME_MODE",
   "JUHE_AI_RUNTIME_LOG_STORE",
+  "JUHE_AI_RUNTIME_LOG_DATABASE_PATH",
   "JUHE_AI_RUNTIME_LOG_OWNER_LEASE",
   "JUHE_AI_RUNTIME_LOG_ONCE",
   "JUHE_AI_RUNTIME_LOG_POLL_INTERVAL",
@@ -244,6 +245,7 @@ const runtimeLogStore = (childEnv.JUHE_AI_RUNTIME_LOG_STORE ?? "").trim() || (ch
 if (runtimeLogStore.toLowerCase() === "sqlite") {
   childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, "./data/juhe-ai.sqlite3")
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, "./data/juhe-ai-dataset.sqlite3")
+  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, "./data/juhe-ai-runtime-log.sqlite3")
 }
 
 const logFd = openSync(logPath, "a")
