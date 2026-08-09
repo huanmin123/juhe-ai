@@ -318,6 +318,7 @@
     "test:f3-audit-log-contract": "tsx src/scripts/regression/f3-audit-log-contract-regression.ts",
     "test:f3-audit-log-go-input-contract": "tsx src/scripts/regression/audit-log-go-input-contract-regression.ts",
     "test:f3-audit-log-query-adapter": "tsx src/scripts/regression/audit-log-f3-query-adapter-regression.ts",
+    "test:f3-audit-log-go-input-budget": "tsx src/scripts/regression/audit-log-go-input-budget-regression.ts",
     "test:logging-body-performance-boundary": "tsx src/scripts/regression/logging-body-performance-boundary-regression.ts",
     "test:audit-log-prepared-ipc-ownership": "tsx src/scripts/regression/audit-log-prepared-ipc-ownership-regression.ts",
     "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",

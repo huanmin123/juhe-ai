@@ -3,9 +3,11 @@ import { createHmac } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { prepareAuditLogForGoInput } from './audit-log-go-input-budget.js'
+
+export { auditLogGoInputMaxBytes } from './audit-log-go-input-budget.js'
 
 export const auditLogGoInputPath = '/__aiinternal__/v1/audit-captures'
-export const auditLogGoInputMaxBytes = 4 * 1024 * 1024
 const auditLogGoInputSignatureDomain = 'juhe-ai/audit-log-input/v1'
 const auditLogGoInputTimeoutMs = 500
 
@@ -22,17 +24,25 @@ export function dispatchAuditLogToGo(input: AuditLogInput): void {
     }, 'F3 Go 审计输入地址未配置，本条审计未投递')
     return
   }
-  const body = Buffer.from(JSON.stringify({ schemaVersion: 1, auditLog: input }), 'utf8')
-  if (body.byteLength > auditLogGoInputMaxBytes) {
+  let prepared: ReturnType<typeof prepareAuditLogForGoInput>
+  try {
+    prepared = prepareAuditLogForGoInput(input, {
+      successFullBodyLimitBytes: runtimeConfig.auditLog.successFullBodyLimitBytes,
+      problemFullBodyLimitBytes: runtimeConfig.auditLog.problemFullBodyLimitBytes
+    })
+  } catch (error) {
     logger.warn({
-      event: 'audit_log_go_input_oversize',
-      auditLogId: input.id,
-      traceId: input.traceId,
-      bodyBytes: body.byteLength,
-      maxBytes: auditLogGoInputMaxBytes
-    }, 'F3 Go 审计输入超过 4MiB，本条审计未投递')
+      ...errorLogFields(error, {
+        event: 'audit_log_go_input_budget_failed',
+        auditLogId: input.id,
+        traceId: input.traceId
+      })
+    }, 'F3 Go 审计输入无法在 4MiB 内收敛，本条审计未投递')
     return
   }
+  const { body } = prepared
+  // Copy into an exact ArrayBuffer. Buffer may be a view into a larger pool.
+  const requestBody = new Uint8Array(body).buffer
   const signature = createHmac('sha256', runtimeConfig.secret)
     .update(auditLogGoInputSignatureDomain)
     .update('\n')
@@ -47,7 +57,7 @@ export function dispatchAuditLogToGo(input: AuditLogInput): void {
       'x-juhe-ai-signature': `v1=${signature}`,
       ...(input.traceId ? { 'x-trace-id': input.traceId } : {})
     },
-    body,
+    body: requestBody,
     signal: AbortSignal.timeout(auditLogGoInputTimeoutMs)
   }).then(async (response) => {
     try {
