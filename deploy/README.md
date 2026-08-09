@@ -11,7 +11,7 @@
 | Linux | `bash ./start.sh` |
 
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包同时包含目标平台的 `backend-go/juhe-ai-runtime-log-indexer`（Windows 为 `.exe`）；Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包同时包含目标平台的 `backend-go/juhe-ai-runtime-log-indexer` 与 `backend-go/juhe-ai-table-monitor`（Windows 为 `.exe`）；Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
 
 ## 部署前检查
 
@@ -40,8 +40,11 @@ JUHE_AI_DB_SERVICE_HTTP_HOST=127.0.0.1
 JUHE_AI_DB_SERVICE_HTTP_PORT=0
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
+JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/juhe-ai-runtime-log.sqlite3
 JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
+JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/juhe-ai-table-monitor.sqlite3
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
@@ -49,9 +52,11 @@ JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
 ```
 
-新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。五个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`。六个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
 启动脚本会独立启动 Go `juhe-ai-runtime-log-indexer`，并把稳定随机的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 首次写入 `backend/.env`。它不是 Node/Go owner switch：Node 只继续写 JSONL 和只读查询，Go 是运行日志索引、cursor、facet 与保留清理的唯一 writer，不使用队列或 Node worker。Go 使用与 Node 相同的环境来源（进程环境、`backend/.env`、可选 `JUHE_AI_ENV_FILE` / `.env.capacity`）；SQLite 读取 `JUHE_AI_DATABASE_PATH` 与独立的 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，PostgreSQL 读取 `JUHE_AI_POSTGRES_URL`。相对的 SQLite / 日志目录路径会按 `backend/` 解析成同一绝对位置。启动期间先等待 `/__aisys__/api/health` 确认 DB service 已就绪，才启动 indexer；它在 `backend/runtime/juhe-ai-runtime-log-indexer.pid` 跟踪进程，并把输出写入 `backend/logs/juhe-ai-runtime-log-indexer.log`；Web/API 进程或 indexer 任一退出时，启动脚本会停止另一方，避免留下无主 writer。
+
+启动脚本随后独立启动 Go `juhe-ai-table-monitor`。F2 是表存储监控采样、快照写入和快照保留清理的唯一 owner；Node 只读 F2 产物，不注册 Node scheduler、stats writer 或 retention。`JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 必须在 `backend/.env` 或更高优先级环境中保持非空且稳定；SQLite 使用专用 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`，PostgreSQL 使用 `JUHE_AI_POSTGRES_URL` 写入 `juhe_stats`。它同样在 API health 就绪后启动，在 `backend/runtime/juhe-ai-table-monitor.pid` 和 `backend/logs/juhe-ai-table-monitor.log` 留下受控进程状态；Web/API、F1 或 F2 任一退出时，启动脚本会收尾其他进程，避免留下无主 writer。
 
 ## 启动与验证
 

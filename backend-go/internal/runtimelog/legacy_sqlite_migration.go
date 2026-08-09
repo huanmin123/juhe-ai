@@ -168,5 +168,13 @@ func sameSQLitePath(left, right string) bool {
 	}
 	leftAbs, leftErr := filepath.Abs(left)
 	rightAbs, rightErr := filepath.Abs(right)
-	return leftErr == nil && rightErr == nil && strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs)) {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }

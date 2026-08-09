@@ -13,6 +13,7 @@
     "package:release:linux": "bash ./scripts/package-release.sh",
     "test:legacy-node-index-bridge": "node scripts/regression/legacy-node-postgres-index-bridge-contract.test.mjs",
     "test:macos-operations": "pnpm test:legacy-node-index-bridge && pwsh -File ./scripts/regression/validate-macos-operations.ps1",
+    "test:release-go-sidecar-launchers": "node scripts/regression/release-go-sidecar-launcher-regression.mjs",
     "test:release-package": "node scripts/validate-release-package.test.mjs && pnpm test:legacy-node-index-bridge",
     "test:redis-role-operations": "pwsh -File ./scripts/regression/validate-redis-role-operations.ps1",
     "test:release-source-preflight": "pwsh -NoProfile -File ./scripts/regression/validate-release-source-preflight.ps1",
