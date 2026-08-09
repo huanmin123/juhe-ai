@@ -264,6 +264,42 @@ type PersistResult struct {
 	Ignored bool
 }
 
+// RetentionConfig describes one bounded retention pass. Cutoffs are UTC
+// instants; zero values are rejected rather than silently widening a cleanup.
+type RetentionConfig struct {
+	SuccessHotCutoff             time.Time
+	SuccessCutoff                time.Time
+	FailureCutoff                time.Time
+	ErrorGroupCutoff             time.Time
+	SuccessSampleBucketThreshold int
+	BatchSize                    int
+}
+
+// RetentionResult reports rows and files changed by a retention pass.
+type RetentionResult struct {
+	SuccessHotTrimmed       int64
+	DeletedNonPersistedLogs int64
+	DeletedLogs             int64
+	DeletedErrorGroups      int64
+	DeletedPayloadBlobs     int64
+	DeletedHotSearchFiles   int64
+}
+
+type HotSearchOptions struct {
+	Keywords []string
+	StartAt  time.Time
+	EndAt    time.Time
+	Limit    int
+	MaxFiles int
+	MaxLines int
+}
+
+type HotSearchResult struct {
+	AuditLogIDs  []string
+	ScannedFiles int
+	Truncated    bool
+}
+
 type Store interface {
 	EnsureSchema(context.Context) error
 	AcquireOwnerLease(context.Context, string, time.Duration) (OwnerLease, bool, error)
@@ -278,6 +314,10 @@ type Store interface {
 	// acquired current fence. Published blobs are never candidates.
 	CleanupOrphanedBlobTemps(context.Context, OwnerLease, time.Time) error
 	Persist(context.Context, OwnerLease, AuditLogInput) (PersistResult, error)
+	CleanupRetention(context.Context, OwnerLease, RetentionConfig) (RetentionResult, error)
+	AppendHotSearch(context.Context, OwnerLease, []AuditLogInput) (int, error)
+	CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error)
+	SearchHotSearch(context.Context, HotSearchOptions) (HotSearchResult, error)
 	Close() error
 }
 

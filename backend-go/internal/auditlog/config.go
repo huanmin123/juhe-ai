@@ -19,6 +19,7 @@ type Config struct {
 	OwnerLease               time.Duration
 	AuditDatabasePath        string
 	PayloadBlobDirectory     string
+	HotSearchDirectory       string
 	PostgresURL              string
 	BusinessSettingsPath     string
 	BusinessSettingsURL      string
@@ -42,6 +43,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		Mode:                     mode,
 		AuditDatabasePath:        strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_DATABASE_PATH")),
 		PayloadBlobDirectory:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")),
+		HotSearchDirectory:       strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY")),
 		PostgresURL:              strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
 		BusinessSettingsPath:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH")),
 		BusinessSettingsURL:      strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL")),

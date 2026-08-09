@@ -37,7 +37,9 @@ type sqlStore struct {
 	db          *sql.DB
 	mode        Mode
 	blobDir     string
+	hotDir      string
 	writeMu     sync.Mutex
+	hotMu       sync.Mutex
 	schemaMu    sync.Mutex
 	schemaReady bool
 }
@@ -86,7 +88,11 @@ func OpenStore(cfg Config) (Store, error) {
 			_ = db.Close()
 			return nil, err
 		}
-		return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory}, nil
+		hotDir := cfg.HotSearchDirectory
+		if hotDir == "" {
+			hotDir = filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")
+		}
+		return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
 	}
 	db, err := sql.Open("pgx", cfg.PostgresURL)
 	if err != nil {
@@ -96,7 +102,11 @@ func OpenStore(cfg Config) (Store, error) {
 	// transaction capacity rather than a synthetic task queue.
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory}, nil
+	hotDir := cfg.HotSearchDirectory
+	if hotDir == "" {
+		hotDir = filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")
+	}
+	return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
 }
 
 func sqliteDSN(path string) (string, error) {
