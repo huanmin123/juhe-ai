@@ -42,7 +42,7 @@
 | `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、record maintenance、dataset / usage shard 清理 | 运行日志索引由独立 Go F1 indexer 负责；server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
 | `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
 | `log-worker` | performance persistent | 审计、操作、公开接口日志消费；运行日志文件索引与保留由独立 Go F1 `runtime-log-indexer` 负责 | 各日志 Stream lag 持续超标 |
-| `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量、表监控、统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |
+| `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量和统计保留期清理；表存储监控已由独立 Go F2 进程完整接管 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |
 | `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、代理延迟刷新、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活 |
 | `temporary-maintenance-worker` | temporary | 历史按需任务入口，运行后退出 | 不作为常驻扩容对象 |
 
@@ -67,7 +67,8 @@
 | `account-quality-refresh` | `stats-worker` | 真实请求质量聚合，失败预检候选交给 ops 队列 |
 | `usage-rank-snapshots-refresh` | `stats-worker` | TopN 和重窗口刷新 |
 | `usage-overview-windows-refresh` / `usage-scope-range-windows-refresh` / `authorization-usage-range-windows-refresh` | `stats-worker` | 概览、范围和授权窗口 |
-| `system-metrics-trend-windows-refresh` / `table-storage-monitor` | `stats-worker` | 系统趋势和表空间监控 |
+| `system-metrics-trend-windows-refresh` | `stats-worker` | 系统趋势窗口 |
+| Go F2 `juhe-ai-table-monitor` | 独立 Go 进程 | SQLite 专用输出库或 PostgreSQL `juhe_stats` 的采样、快照写入、owner lease 和 retention；Node 仅保留读接口 |
 | `manual-account-test-queue` | `ops-worker` | 手动测试队列，支持取消和等待上限 |
 | `account-health-check` | `ops-worker` | 正常账户低频健康检测 |
 | `cooldown-account-retest` / `account-api-key-cooldown-retest` | `ops-worker` | 外部复测 I/O，可受控并发，写记录仍投递 ingest |

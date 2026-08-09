@@ -215,8 +215,6 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
     database.prepare('DELETE FROM background_task_runs WHERE run_id LIKE ? OR lease_key LIKE ? OR owner_id LIKE ? OR params_json LIKE ? OR result_json LIKE ?').run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, `%${idPrefix}%`, `%${idPrefix}%`)
     database.prepare('DELETE FROM system_metrics_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM process_event_loop_samples WHERE id LIKE ?').run(`${idPrefix}%`)
-    database.prepare('DELETE FROM database_storage_snapshots WHERE id LIKE ?').run(`${idPrefix}%`)
-    database.prepare('DELETE FROM table_storage_snapshots WHERE id LIKE ?').run(`${idPrefix}%`)
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')

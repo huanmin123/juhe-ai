@@ -15,14 +15,15 @@ let datasetDatabase: DatabaseSync | undefined
 let usageCatalogDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
 let runtimeLogDatabase: DatabaseSync | undefined
+let tableMonitorDatabase: DatabaseSync | undefined
 const codexContextStateShardDatabases = new Map<number, DatabaseSync>()
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
 const require = createRequire(import.meta.url)
 let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefined
 
-export type SqliteMainDatabaseKind = 'business' | 'chat' | 'dataset' | 'runtime-log' | 'usage-catalog' | 'stats' | 'codex-context-state'
-export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer' | 'go-runtime-log'
+export type SqliteMainDatabaseKind = 'business' | 'chat' | 'dataset' | 'runtime-log' | 'usage-catalog' | 'stats' | 'table-monitor' | 'codex-context-state'
+export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer' | 'go-runtime-log' | 'go-table-monitor'
 
 export interface SqliteDatabaseRuntimeInfo {
   kind: SqliteMainDatabaseKind
@@ -100,6 +101,15 @@ export function getRuntimeLogDatabase(): DatabaseSync {
   return runtimeLogDatabase
 }
 
+export function getTableMonitorDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
+  assertDistinctStoragePaths()
+  if (tableMonitorDatabase) return tableMonitorDatabase
+  tableMonitorDatabase = createSqliteDatabase(runtimeConfig.tableMonitorDatabasePath, 'table-monitor')
+  configureDatabase(tableMonitorDatabase, 'table-monitor')
+  return tableMonitorDatabase
+}
+
 export function getCodexContextStateShardDatabase(shardIndex: number): DatabaseSync {
   assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
@@ -121,6 +131,7 @@ export function closeStorageDatabases(): void {
   closeDatabaseHandle(usageCatalogDatabase)
   closeDatabaseHandle(statsDatabase)
   closeDatabaseHandle(runtimeLogDatabase)
+  closeDatabaseHandle(tableMonitorDatabase)
   for (const database of codexContextStateShardDatabases.values()) {
     closeDatabaseHandle(database)
   }
@@ -130,6 +141,7 @@ export function closeStorageDatabases(): void {
   usageCatalogDatabase = undefined
   statsDatabase = undefined
   runtimeLogDatabase = undefined
+  tableMonitorDatabase = undefined
   codexContextStateShardDatabases.clear()
 }
 
@@ -227,7 +239,7 @@ function shouldOpenSqliteDatabaseReadOnly(kind: SqliteMainDatabaseKind): boolean
 	// The F1 SQLite file is owned by the Go indexer even when the legacy
 	// writer-boundary compatibility switch is disabled. Node only serves the
 	// query-side consumers of this database.
-	if (kind === 'runtime-log') return true
+	if (kind === 'runtime-log' || kind === 'table-monitor') return true
 	return sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind)
 }
 
@@ -322,6 +334,7 @@ function assertDistinctStoragePaths(): void {
     { role: '聊天库', path: runtimeConfig.chatDatabasePath },
     { role: '数据集目录库', path: datasetDatabasePath() },
     { role: '运行日志索引库', path: runtimeConfig.runtimeLogDatabasePath },
+    { role: '表存储监控输出库', path: runtimeConfig.tableMonitorDatabasePath },
     { role: '使用记录目录库', path: usageCatalogDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() },
     ...codexContextStateShardIndexes().map((shardIndex) => ({
@@ -334,7 +347,7 @@ function assertDistinctStoragePaths(): void {
     const key = normalize(target.path).toLowerCase()
     const existingRole = seen.get(key)
     if (existingRole) {
-      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
+      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_TABLE_MONITOR_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
     }
     seen.set(key, target.role)
   }
@@ -352,11 +365,12 @@ export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): 
     return 'ingest-worker'
   }
   if (kind === 'runtime-log') return 'go-runtime-log'
+  if (kind === 'table-monitor') return 'go-table-monitor'
   return 'stats-writer'
 }
 
 export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKind): boolean {
-  if (kind === 'runtime-log') return false
+  if (kind === 'runtime-log' || kind === 'table-monitor') return false
   if (sqliteOfflineMaintenanceOwnsAllMainDatabases()) {
     return true
   }
@@ -398,6 +412,8 @@ export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDat
       ? datasetDatabasePath()
       : kind === 'runtime-log'
         ? runtimeConfig.runtimeLogDatabasePath
+      : kind === 'table-monitor'
+        ? runtimeConfig.tableMonitorDatabasePath
       : kind === 'usage-catalog'
         ? usageCatalogDatabasePath()
         : kind === 'stats'
@@ -408,7 +424,7 @@ export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDat
     path,
     writerOwner: sqliteWriterOwnerForMainDatabase(kind),
     currentProcessOwner: currentProcessOwnsSqliteMainDatabase(kind),
-    queryOnly: kind === 'runtime-log' || (sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind))
+    queryOnly: kind === 'runtime-log' || kind === 'table-monitor' || (sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind))
   }
 }
 

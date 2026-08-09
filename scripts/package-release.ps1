@@ -269,6 +269,7 @@ if (-not $goCommand) {
 $goPath = $goCommand.Source
 $goModuleRoot = Join-Path $repoRoot 'backend-go'
 $runtimeLogIndexerBinary = Join-Path $packageRoot 'backend-go/juhe-ai-runtime-log-indexer.exe'
+$tableMonitorBinary = Join-Path $packageRoot 'backend-go/juhe-ai-table-monitor.exe'
 if (-not (Test-Path -LiteralPath $goModuleRoot -PathType Container)) {
   throw "Go runtime-log indexer module not found: $goModuleRoot"
 }
@@ -285,6 +286,20 @@ $goBuildArguments = @(
 & $goPath @goBuildArguments
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $runtimeLogIndexerBinary -PathType Leaf)) {
   throw 'Go runtime-log indexer build failed.'
+}
+
+Write-Host '==> Building Go table monitor'
+$tableMonitorBuildArguments = @(
+  'build',
+  '-C', $goModuleRoot,
+  '-trimpath',
+  '-buildvcs=false',
+  '-o', $tableMonitorBinary,
+  './cmd/juhe-ai-table-monitor'
+)
+& $goPath @tableMonitorBuildArguments
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tableMonitorBinary -PathType Leaf)) {
+  throw 'Go table monitor build failed.'
 }
 
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')

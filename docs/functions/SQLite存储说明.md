@@ -1066,4 +1066,8 @@ API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_jso
 
 外部来源授权 token 在创建响应中返回完整明文，也可通过单条 token 复制接口按管理员权限读取；业务库 `external_integration_source_tokens` 保存带用途前缀的 SHA-256 摘要 `token_hash`、完整 token 密文 `token_secret_encrypted`、安全展示用 `token_prefix` / `token_suffix`、状态、scope 和过期时间。每一个公开接口都是独立资源 scope，来源授权和 token 都必须包含目标接口 scope，才允许调用。默认种子会写入固定来源 `extsrc_builtin_test` 和固定 token `exttok_builtin_test` 作为内置测试 Token，完整明文只加密保存在业务库，可在公开接口授权列表按管理员权限复制；接入文档和 curl 示例只展示 `<source_token>` 占位符，不返回内置测试 Token 明文。内置测试来源固定授权当前所有公开接口 scope，固定限频 `60s/10次`，只返回公开接口 mock 数据；允许停用和重置，不允许编辑名称、scope、限频、到期时间、备注、新增 token 或删除。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
 
+## F2 表监控专用库
+
+`JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 是 F2 表存储监控的专用 SQLite 输出库。Go `juhe-ai-table-monitor` 是该文件唯一 writer，启动时使用 WAL 和 `busy_timeout`，并以 owner lease 防止第二个 Go 实例并发写入；Node 的表监控路由只读打开该文件。该路径不得与业务、dataset、usage catalog、stats、F1 runtime log 或 Codex Context shard 共用，也不得因缺失或失败回退到旧统计库。F2 使用直接异步采样，不通过 Node IPC、Redis 或任务队列。
+
 更完整的凭据展示、请求快照、操作日志、原始审计日志、日志原文保留、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md)、[操作日志设计](操作日志设计.md) 与 [原始审计日志设计](原始审计日志设计.md)。

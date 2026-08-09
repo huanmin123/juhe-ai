@@ -107,8 +107,7 @@ function Test-RipgrepDependency {
 
 function Get-RuntimeLogIndexerNodeLauncher {
   return @'
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
@@ -226,6 +225,125 @@ try {
 '@
 }
 
+function Get-TableMonitorNodeLauncher {
+  return @'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { isAbsolute, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { spawn } from 'node:child_process'
+
+const [binaryPath, backendRoot, logPath] = process.argv.slice(1)
+const require = createRequire(resolve(backendRoot, 'package.json'))
+const { parse } = require('dotenv')
+const baseEnvPath = resolve(backendRoot, '.env')
+const capacityEnvPath = resolve(backendRoot, '.env.capacity')
+
+function readEnv(path) {
+  return existsSync(path) ? parse(readFileSync(path)) : {}
+}
+
+const disableBaseEnv = String(process.env.JUHE_AI_DISABLE_BASE_ENV ?? '').trim().toLowerCase() === 'true'
+const baseEnv = disableBaseEnv ? {} : readEnv(baseEnvPath)
+const overlayName = (process.env.JUHE_AI_ENV_FILE ?? baseEnv.JUHE_AI_ENV_FILE ?? '').trim()
+const overlayEnv = overlayName ? readEnv(isAbsolute(overlayName) ? overlayName : resolve(backendRoot, overlayName)) : {}
+const capacityEnv = Object.fromEntries(Object.entries(readEnv(capacityEnvPath)).filter(([name]) => isCapacityEnvironmentVariable(name)))
+
+function configured(name) {
+  if (Object.hasOwn(process.env, name)) return { defined: true, value: process.env[name] ?? '' }
+  if (Object.hasOwn(overlayEnv, name)) return { defined: true, value: overlayEnv[name] ?? '' }
+  if (Object.hasOwn(capacityEnv, name)) return { defined: true, value: capacityEnv[name] ?? '' }
+  if (Object.hasOwn(baseEnv, name)) return { defined: true, value: baseEnv[name] ?? '' }
+  return { defined: false, value: '' }
+}
+
+function isCapacityEnvironmentVariable(name) {
+  return name.startsWith('JUHE_AI_CONCURRENCY_')
+    || name.startsWith('JUHE_AI_ACCOUNT_')
+    || name.startsWith('JUHE_AI_BACKGROUND_')
+    || name.startsWith('JUHE_AI_GATEWAY_')
+    || name.startsWith('JUHE_AI_DB_')
+    || name.startsWith('JUHE_AI_CHAT_DB_SERVICE_')
+    || name.startsWith('JUHE_AI_REDIS_STREAM_')
+    || name.startsWith('JUHE_AI_USAGE_SPOOL_')
+    || name === 'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT'
+    || /^JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$/.test(name)
+}
+
+const childEnv = { ...process.env }
+const names = [
+  'JUHE_AI_DATABASE_DRIVER',
+  'JUHE_AI_RUNTIME_MODE',
+  'JUHE_AI_TABLE_MONITOR_STORE',
+  'JUHE_AI_TABLE_MONITOR_INTERVAL',
+  'JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT',
+  'JUHE_AI_TABLE_MONITOR_OWNER_LEASE',
+  'JUHE_AI_TABLE_MONITOR_RETENTION_DAYS',
+  'JUHE_AI_TABLE_MONITOR_MAX_TABLES',
+  'JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES',
+  'JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE',
+  'JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES',
+  'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
+  'JUHE_AI_DATABASE_PATH',
+  'JUHE_AI_DATASET_DATABASE_PATH',
+  'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
+  'JUHE_AI_STATS_DATABASE_PATH',
+  'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT',
+  'JUHE_AI_POSTGRES_URL'
+]
+for (const name of names) {
+  const value = configured(name)
+  if (value.defined) childEnv[name] = value.value
+}
+
+const configuredInstance = configured('JUHE_AI_TABLE_MONITOR_INSTANCE_ID')
+if (configuredInstance.defined) {
+  if (!configuredInstance.value.trim()) throw new Error('JUHE_AI_TABLE_MONITOR_INSTANCE_ID is configured but empty.')
+  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = configuredInstance.value
+} else {
+  throw new Error('JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required; release startup does not generate owner identities.')
+}
+
+const runtimeMode = (childEnv.JUHE_AI_RUNTIME_MODE ?? '').trim().toLowerCase()
+const hasPerformanceHints = ['JUHE_AI_POSTGRES_URL', 'JUHE_AI_REDIS_CACHE_URL', 'JUHE_AI_REDIS_STATE_URL', 'JUHE_AI_REDIS_QUEUE_URL']
+  .some((name) => Boolean(configured(name).value.trim()))
+if (!(childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? '').trim() && !(childEnv.JUHE_AI_DATABASE_DRIVER ?? '').trim()) {
+  childEnv.JUHE_AI_DATABASE_DRIVER = runtimeMode === 'performance' || (!runtimeMode && hasPerformanceHints) ? 'postgres' : 'sqlite'
+}
+
+function absoluteBackendPath(value, fallback) {
+  const selected = (value ?? fallback).trim()
+  return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
+}
+
+const tableMonitorStore = (childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? '').trim() || (childEnv.JUHE_AI_DATABASE_DRIVER ?? '').trim() || 'sqlite'
+if (tableMonitorStore.toLowerCase() === 'sqlite') {
+  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
+  childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
+  childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
+  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, './data/juhe-ai-usage-catalog.sqlite3')
+  childEnv.JUHE_AI_STATS_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, './data/juhe-ai-stats.sqlite3')
+  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, './data/codex-context/state-shards')
+}
+
+const logFd = openSync(logPath, 'a')
+try {
+  const child = spawn(binaryPath, [], {
+    cwd: process.cwd(),
+    detached: true,
+    env: childEnv,
+    stdio: ['ignore', logFd, logFd],
+    windowsHide: true
+  })
+  if (!child.pid) throw new Error('Unable to start juhe-ai-table-monitor.')
+  child.unref()
+  process.stdout.write(String(child.pid))
+} finally {
+  closeSync(logFd)
+}
+'@
+}
+
 function Get-RuntimeLogIndexerProcess {
   param(
     [Parameter(Mandatory = $true)][string]$PidPath,
@@ -325,6 +443,109 @@ function Start-RuntimeLogIndexer {
     $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @('No indexer log was created.') }
     $logTail | Write-Error
     throw 'juhe-ai-runtime-log-indexer exited during startup.'
+  }
+  return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath }
+}
+
+function Get-TableMonitorProcess {
+  param(
+    [Parameter(Mandatory = $true)][string]$PidPath,
+    [switch]$RemoveStalePid
+  )
+
+  if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) {
+    return $null
+  }
+
+  $pidText = (Get-Content -LiteralPath $PidPath -Raw).Trim()
+  if ($pidText -notmatch '^[1-9][0-9]*$') {
+    if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }
+    return $null
+  }
+
+  $monitorPid = [int]$pidText
+  $process = Get-Process -Id $monitorPid -ErrorAction SilentlyContinue
+  if ($null -eq $process) {
+    if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }
+    return $null
+  }
+
+  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $monitorPid" -ErrorAction SilentlyContinue
+  if ($null -eq $processInfo -or $processInfo.CommandLine -notmatch 'juhe-ai-table-monitor(?:\.exe)?') {
+    if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }
+    return $null
+  }
+
+  return $process
+}
+
+function Stop-TableMonitor {
+  param(
+    [Parameter(Mandatory = $true)][string]$PidPath
+  )
+
+  $process = Get-TableMonitorProcess -PidPath $PidPath -RemoveStalePid
+  if ($null -eq $process) {
+    return
+  }
+
+  Stop-Process -Id $process.Id -ErrorAction Stop
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 200
+    $process.Refresh()
+  }
+  if (-not $process.HasExited) {
+    throw "juhe-ai-table-monitor did not stop within 10 seconds (PID $($process.Id))."
+  }
+  Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
+}
+
+function Start-TableMonitor {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppDirectory
+  )
+
+  $binaryPath = Join-Path $AppDirectory 'backend-go/juhe-ai-table-monitor.exe'
+  $runtimeDir = Join-Path $AppDirectory 'backend/runtime'
+  $pidPath = Join-Path $runtimeDir 'juhe-ai-table-monitor.pid'
+  $logPath = Join-Path $AppDirectory 'backend/logs/juhe-ai-table-monitor.log'
+  if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+    throw "Go table monitor binary not found: $binaryPath. Rebuild the release package for Windows."
+  }
+
+  New-Item -ItemType Directory -Force $runtimeDir | Out-Null
+  New-Item -ItemType Directory -Force (Split-Path -Parent $logPath) | Out-Null
+  $existingProcess = Get-TableMonitorProcess -PidPath $pidPath -RemoveStalePid
+  if ($null -ne $existingProcess) {
+    throw "juhe-ai-table-monitor is already running (PID $($existingProcess.Id)); stop the existing release before starting another one."
+  }
+
+  $launcher = Get-TableMonitorNodeLauncher
+  $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+  $PSNativeCommandUseErrorActionPreference = $false
+  try {
+    $launcherOutput = @(& node --input-type=module -e $launcher $binaryPath (Join-Path $AppDirectory 'backend') $logPath 2>&1)
+    $launcherExitCode = $LASTEXITCODE
+  } finally {
+    $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+  }
+  if ($launcherExitCode -ne 0) {
+    $launcherOutput | Write-Error
+    throw 'Unable to start juhe-ai-table-monitor.'
+  }
+
+  $monitorPidText = (($launcherOutput | ForEach-Object { $_.ToString() }) -join '').Trim()
+  if ($monitorPidText -notmatch '^[1-9][0-9]*$') {
+    throw "juhe-ai-table-monitor returned an invalid PID: $monitorPidText"
+  }
+  Set-Content -LiteralPath $pidPath -Value $monitorPidText -NoNewline -Encoding utf8
+  Start-Sleep -Milliseconds 500
+  $process = Get-TableMonitorProcess -PidPath $pidPath -RemoveStalePid
+  if ($null -eq $process) {
+    $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @('No table monitor log was created.') }
+    $logTail | Write-Error
+    throw 'juhe-ai-table-monitor exited during startup.'
   }
   return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath }
 }
@@ -478,6 +699,7 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
 }
 
 $runtimeLogIndexer = $null
+$tableMonitor = $null
 $serverProcess = $null
 $serverExitCode = 1
 try {
@@ -485,24 +707,39 @@ try {
   Wait-ManagedNodeReady -Process $serverProcess -BindAddress $hostValue -Port $portValue
   $runtimeLogIndexer = Start-RuntimeLogIndexer -AppDirectory $appDir
   Write-Host "Started juhe-ai-runtime-log-indexer (PID $($runtimeLogIndexer.Process.Id))."
-  while (-not $serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited) {
+  $tableMonitor = Start-TableMonitor -AppDirectory $appDir
+  Write-Host "Started juhe-ai-table-monitor (PID $($tableMonitor.Process.Id))."
+  while (-not $serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited -and -not $tableMonitor.Process.HasExited) {
     Start-Sleep -Seconds 1
     $serverProcess.Refresh()
     $runtimeLogIndexer.Process.Refresh()
+    $tableMonitor.Process.Refresh()
   }
   if ($runtimeLogIndexer.Process.HasExited -and -not $serverProcess.HasExited) {
     $logTail = if (Test-Path -LiteralPath $runtimeLogIndexer.LogPath) { Get-Content -LiteralPath $runtimeLogIndexer.LogPath -Tail 20 } else { @('No indexer log was created.') }
     $logTail | Write-Error
     throw "juhe-ai-runtime-log-indexer exited unexpectedly (PID $($runtimeLogIndexer.Process.Id))."
   }
+  if ($tableMonitor.Process.HasExited -and -not $serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited) {
+    $logTail = if (Test-Path -LiteralPath $tableMonitor.LogPath) { Get-Content -LiteralPath $tableMonitor.LogPath -Tail 20 } else { @('No table monitor log was created.') }
+    $logTail | Write-Error
+    throw "juhe-ai-table-monitor exited unexpectedly (PID $($tableMonitor.Process.Id))."
+  }
+  if ($serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited -and -not $tableMonitor.Process.HasExited) {
+    throw "juhe-ai Web/API process exited unexpectedly (PID $($serverProcess.Id))."
+  }
   $serverProcess.WaitForExit()
   $serverExitCode = $serverProcess.ExitCode
+  if ($serverExitCode -eq 0) { $serverExitCode = 1 }
 } finally {
   if ($null -ne $serverProcess) {
     Stop-ManagedNodeProcess -Process $serverProcess
   }
   if ($null -ne $runtimeLogIndexer) {
     Stop-RuntimeLogIndexer -PidPath $runtimeLogIndexer.PidPath
+  }
+  if ($null -ne $tableMonitor) {
+    Stop-TableMonitor -PidPath $tableMonitor.PidPath
   }
 }
 exit $serverExitCode

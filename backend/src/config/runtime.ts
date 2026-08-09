@@ -108,6 +108,7 @@ export interface RuntimeConfig {
   runtimeLogDatabasePath: string
   usageCatalogDatabasePath: string
   statsDatabasePath: string
+  tableMonitorDatabasePath: string
   usageShardRoot: string
   codexContextRoot: string
   chatAssetsRoot: string
@@ -360,6 +361,7 @@ export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-
 export const defaultRuntimeLogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-runtime-log.sqlite3')
 export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
+export const defaultTableMonitorDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-table-monitor.sqlite3')
 export const defaultUsageSpoolDirectory = resolve(backendRoot, 'data', 'usage-spool')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
@@ -571,6 +573,7 @@ export const runtimeConfig: RuntimeConfig = {
   runtimeLogDatabasePath: pathConfig('JUHE_AI_RUNTIME_LOG_DATABASE_PATH', defaultRuntimeLogDatabasePath),
   usageCatalogDatabasePath: pathConfig('JUHE_AI_USAGE_CATALOG_DATABASE_PATH', defaultUsageCatalogDatabasePath),
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
+  tableMonitorDatabasePath: pathConfig('JUHE_AI_TABLE_MONITOR_DATABASE_PATH', defaultTableMonitorDatabasePath),
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
   codexContextRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_ROOT', defaultCodexContextRoot),
   chatAssetsRoot: pathConfig('JUHE_AI_CHAT_ASSETS_ROOT', defaultChatAssetsRoot),

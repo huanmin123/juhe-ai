@@ -298,7 +298,6 @@ function scheduleBackgroundJobs(): void {
           hotStages: usageScopeRangeWindowStageNames
         }, 'PG 高性能模式跳过在线冷历史范围窗口重刷，热窗口刷新保持今日范围数据新鲜')
         scheduleAccountQualityRefreshJob()
-        scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 90 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('table-storage-monitor', 5 * minuteMs, signal, runTableStorageMonitor) })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
         return
       }
@@ -313,7 +312,6 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: usageScopeRangeWindowInitialDelayMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-scope-range-windows-refresh', usageScopeRangeWindowStageNames, signal) })
       scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: authorizationUsageRangeWindowInitialDelayMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('authorization-usage-range-windows-refresh', authorizationUsageRangeWindowStageNames, signal) })
       scheduleAccountQualityRefreshJob()
-      scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 90 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('table-storage-monitor', 5 * minuteMs, signal, runTableStorageMonitor) })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
     case 'ops-worker':
@@ -1011,23 +1009,6 @@ async function fileSize(path: string): Promise<number> {
     return (await statFile(path)).size
   } catch (error) {
     return isMissingFileError(error) ? 0 : 0
-  }
-}
-
-async function runTableStorageMonitor(_signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
-  try {
-    await requestStatsWriter({
-      type: 'collect_table_storage_snapshot',
-      sampledAt: nowIso(),
-      options: {
-      tableScanMode: 'cursor',
-      maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 0, 100)
-      },
-      scheduledLease
-    }, 20_000)
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')
-    throw error
   }
 }
 

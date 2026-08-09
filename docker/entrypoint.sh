@@ -21,6 +21,7 @@ export JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS="${JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS:-500
 export JUHE_AI_DATABASE_PATH="${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}"
 export JUHE_AI_DATASET_DATABASE_PATH="${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}"
 export JUHE_AI_RUNTIME_LOG_DATABASE_PATH="${JUHE_AI_RUNTIME_LOG_DATABASE_PATH:-/app/backend/runtime-log-data/juhe-ai-runtime-log.sqlite3}"
+export JUHE_AI_TABLE_MONITOR_DATABASE_PATH="${JUHE_AI_TABLE_MONITOR_DATABASE_PATH:-/app/backend/table-monitor-data/juhe-ai-table-monitor.sqlite3}"
 export JUHE_AI_USAGE_CATALOG_DATABASE_PATH="${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-/app/backend/data/juhe-ai-usage-catalog.sqlite3}"
 export JUHE_AI_STATS_DATABASE_PATH="${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}"
 export JUHE_AI_USAGE_SHARD_ROOT="${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}"

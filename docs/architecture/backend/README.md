@@ -46,6 +46,7 @@
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
 - 页面数据：通用 `PageDataChangeStore`、confirm/revision、Redis publisher 和 dirty-domain recovery 已由 PLAN-20260722T123439000Z 删除。页面直接调用业务接口；repository/shared cache 与独立业务快照按各自功能维护。
 - 写入边界：standalone 模式下同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。performance 模式下不受 SQLite 文件级写锁限制，但仍必须受 PostgreSQL 连接池、事务范围、热点 key 顺序和 Redis Stream 背压约束。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)、[PostgreSQL 与 Redis 高性能模式设计](../../functions/PostgreSQL与Redis高性能模式设计.md) 和 [存储适配接口设计](../../functions/存储适配接口设计.md)。
+- F2 表存储监控是完整的 Go 被动功能单元：Go `juhe-ai-table-monitor` 直接异步采样并写入专用 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `juhe_stats`（PostgreSQL）；Node 只读 HTTP 查询，不再注册采样、快照写入或 retention。SQLite 监控库必须与业务、dataset、usage、stats 和 Codex shard 路径不同，Node 连接固定 query-only；该边界不是 Node/Go 开关，也不引入 Redis/Asynq/任务队列。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。当前供应商协议档案不要在本文硬编码，新增或调整时同步 [核心功能设计](../../functions/核心功能设计.md) 和对应供应商接入文档。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。

@@ -18,6 +18,8 @@ const cleanupReceiptSource = routesSource.slice(
 )
 
 assert.match(repositorySource, /getTableStorageOverview\(input: TableStorageOverviewInput = \{\}\)/, '表监控应保留概览读取入口')
+assert.match(repositorySource, /const database = getTableMonitorDatabase\(\)/, 'SQLite 表监控页面必须只读取 Go 专用输出库')
+assert.doesNotMatch(repositorySource, /(collectTableStorageSnapshot|cleanupTableStorageSnapshotsBefore)/, 'Node 不得保留表监控采样或保留清理 writer API')
 assert.match(repositorySource, /WITH table_keys AS[\s\S]*ORDER BY latest\.sampled_at DESC, latest\.id DESC/, '表监控概览应先枚举唯一表键，再定点读取每张表最新快照')
 assert.match(overviewRouteSource, /await getTableStorageOverviewAsync\(\{\s*page: parsed\.data\.page,\s*pageSize: parsed\.data\.pageSize,\s*keyword: parsed\.data\.keyword\s*\}\)/, '概览路由只应把服务端分页和关键词传入首屏概览查询')
 assert.doesNotMatch(overviewRouteSource, /startAt|endAt/, '概览路由不应按整段历史窗口查询')

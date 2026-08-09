@@ -1502,47 +1502,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (window_key, bucket_key, process_role)
         );
 
-    CREATE TABLE IF NOT EXISTS database_storage_snapshots (
-          id TEXT PRIMARY KEY,
-          database_role TEXT NOT NULL,
-          database_path TEXT NOT NULL,
-          sampled_at TEXT NOT NULL,
-          file_bytes BIGINT,
-          wal_bytes BIGINT,
-          shm_bytes BIGINT,
-          page_size INTEGER,
-          page_count INTEGER,
-          freelist_count INTEGER,
-          used_bytes BIGINT,
-          free_bytes BIGINT,
-          table_count INTEGER,
-          index_count INTEGER,
-          created_at TEXT NOT NULL
-        );
-
-    CREATE TABLE IF NOT EXISTS table_storage_snapshots (
-          id TEXT PRIMARY KEY,
-          database_role TEXT NOT NULL,
-          table_name TEXT NOT NULL,
-          sampled_at TEXT NOT NULL,
-          table_kind TEXT NOT NULL DEFAULT 'table',
-          parent_table_name TEXT,
-          is_partition INTEGER NOT NULL DEFAULT 0,
-          is_archive INTEGER NOT NULL DEFAULT 0,
-          row_count INTEGER,
-          table_bytes BIGINT,
-          index_bytes BIGINT,
-          total_bytes BIGINT,
-          page_count INTEGER,
-          index_count INTEGER NOT NULL DEFAULT 0,
-          growth_bytes_1h INTEGER,
-          growth_rows_1h INTEGER,
-          growth_bytes_24h INTEGER,
-          growth_rows_24h INTEGER,
-          created_at TEXT NOT NULL,
-          UNIQUE(database_role, table_name, sampled_at)
-        );
-
     CREATE INDEX IF NOT EXISTS idx_account_quality_minute_stats_minute ON account_quality_minute_stats(stat_minute, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_account_health_hourly_scope
@@ -1804,17 +1763,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_process_event_loop_trend_windows_end ON process_event_loop_trend_windows(end_date);
 
-    CREATE INDEX IF NOT EXISTS idx_database_storage_snapshots_role_time ON database_storage_snapshots(database_role, sampled_at DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_database_storage_snapshots_role_time_id ON database_storage_snapshots(database_role, sampled_at DESC, id DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest_id ON table_storage_snapshots(database_role, table_name, sampled_at DESC, id DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_partition ON table_storage_snapshots(database_role, parent_table_name, sampled_at DESC, table_name) WHERE is_partition = 1;
-
-    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account

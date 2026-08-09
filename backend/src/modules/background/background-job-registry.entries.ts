@@ -258,19 +258,6 @@ export const backgroundScheduledJobs = [
     writes: ['business:resource_authorizations']
   }),
   scheduled({
-    jobName: 'table-storage-monitor',
-    category: 'scheduled',
-    kind: 'maintenance',
-    lifecycle: 'persistent',
-    defaultRole: 'stats-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['stats:database_storage_snapshots', 'stats:table_storage_snapshots']
-  }),
-  scheduled({
     jobName: 'proxy-latency-refresh',
     category: 'scheduled',
     kind: 'probe',
@@ -616,6 +603,19 @@ export const backgroundWorkerRegistry = [
     leaseRequired: false,
     blocksUserVisibleFreshness: true,
     writes: ['business:accounts']
+  }),
+  entry({
+    jobName: 'background_worker_codex_source_fence_settled',
+    category: 'control-ipc',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'runtime:codex-source-fence']
   }),
   entry({
     jobName: 'background_worker_status_request',

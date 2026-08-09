@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "purpose": "Archive the complete Node table-monitor sampling, writer, cursor, retention, and writer-only regression file set removed by F2.",
+  "createdAt": "2026-08-09",
+  "rollbackCommit": "9e4c1e4d9",
+  "archiveOverlayAllowed": false,
+  "handoffCommits": [
+    "93599e4dc",
+    "9a6e396a4",
+    "4483fb7cd",
+    "92773e1d5",
+    "8e6477037",
+    "4cc480f17",
+    "a7bca6d0a",
+    "18ae1f263",
+    "2a14c2bac",
+    "509625fb5",
+    "c8617d56e",
+    "6649580e8",
+    "c647b9b48",
+    "b4545878d",
+    "4d3ed0bf1",
+    "a2e3a443a",
+    "c61bf065e",
+    "ae3681a3d",
+    "c52d2ccf2"
+  ],
+  "restoreProcedure": "Stop the Go table-monitor process and Node application, restore the complete Git rollbackCommit baseline as one unit, and use the archive only for comparison. Never overwrite a newer active tree with an archived file, reintroduce a Node/Go switch, or run both writers.",
+  "entries": [
+    {
+      "originalPath": "backend/src/storage/table-monitor.repository.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/table-monitor.repository.ts.original",
+      "sha256": "908C85772DB910D313BEA247C83F22979A676DA79D53BE0017B827A1F7C75251",
+      "kind": "complete Node repository snapshot",
+      "restore": "Restore only with the exact rollback baseline and the full F2 shared-file changes; this file is not a standalone overlay for a newer tree."
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/table-monitor-codex-context-clean-start-regression.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/scripts/regression/table-monitor-codex-context-clean-start-regression.ts",
+      "sha256": "419A75E63BFED148AEF3B762D054E595FD22D283396E5F736C724CBB32B3EF4B",
+      "kind": "Node writer-only regression",
+      "restore": "Restore with the complete Node sampler/writer feature set only."
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/table-monitor-dbstat-unavailable-regression.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/scripts/regression/table-monitor-dbstat-unavailable-regression.ts",
+      "sha256": "F907466360F6D55D29A9AFB81D3C16948E2A81D1AD0A1A485D69D8DCD4CD972D",
+      "kind": "Node writer-only regression",
+      "restore": "Restore with the complete Node sampler/writer feature set only."
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/table-monitor-default-scan-regression.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/scripts/regression/table-monitor-default-scan-regression.ts",
+      "sha256": "705490331D6A7A674CA52BAE87E4990E0C6B4220498C145F9C8ACA94AB6A1600",
+      "kind": "Node writer-only regression",
+      "restore": "Restore with the complete Node sampler/writer feature set only."
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/table-monitor-postgres-query-boundary-regression.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/scripts/regression/table-monitor-postgres-query-boundary-regression.ts",
+      "sha256": "04117533D92015209E6EF3F4246A9FA26950AC5817443184D31BAC050BAD24CC",
+      "kind": "Node writer-only regression",
+      "restore": "Restore with the complete Node sampler/writer feature set only."
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/table-monitor-postgres-smoke.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/scripts/regression/table-monitor-postgres-smoke.ts",
+      "sha256": "BB604FBD8FC75641437C174EFE94A26A1A6ABE9E3D573D3C2AEC81B810D1ACF5",
+      "kind": "Node writer-only regression",
+      "restore": "Restore with the complete Node sampler/writer feature set only."
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/table-monitor-work-budget-regression.ts",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/scripts/regression/table-monitor-work-budget-regression.ts",
+      "sha256": "4AFD012110EFAC789888E301F3807056670027A5CA4E360699AA5CC2B5AD8E00",
+      "kind": "Node writer-only regression",
+      "restore": "Restore with the complete Node sampler/writer feature set only."
+    }
+  ]
+}

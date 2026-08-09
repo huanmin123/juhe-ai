@@ -19,6 +19,7 @@ const pnpmRunner = resolvePnpmRunner()
 let backend
 let frontend
 let runtimeLogIndexer
+let tableMonitor
 let shuttingDown = false
 
 process.on('SIGINT', () => shutdown(130))
@@ -32,6 +33,7 @@ try {
   await backendReadiness.ready
   console.log(`[dev] backend system API is ready: ${backendHealthUrl}`)
   runtimeLogIndexer = startRuntimeLogIndexer()
+  tableMonitor = startTableMonitor()
   console.log('[dev] starting frontend...')
   frontend = startPnpm(['--filter', 'juhe-ai-frontend', 'dev'], 'frontend')
 } catch (error) {
@@ -83,6 +85,24 @@ function startRuntimeLogIndexer() {
   pipeChildOutput(child.stdout, process.stdout)
   pipeChildOutput(child.stderr, process.stderr)
   monitorChild(child, 'Go runtime log indexer')
+
+  return child
+}
+
+function startTableMonitor() {
+  const childEnv = resolveTableMonitorEnv()
+  console.log(`[dev] starting Go table monitor (${childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID})...`)
+  const child = spawn('go', ['run', './cmd/juhe-ai-table-monitor'], {
+    cwd: backendGoRoot,
+    env: childEnv,
+    detached: process.platform !== 'win32',
+    shell: false,
+    stdio: ['inherit', 'pipe', 'pipe']
+  })
+
+  pipeChildOutput(child.stdout, process.stdout)
+  pipeChildOutput(child.stderr, process.stderr)
+  monitorChild(child, 'Go table monitor')
 
   return child
 }
@@ -252,6 +272,49 @@ function resolveRuntimeLogIndexerEnv() {
   return childEnv
 }
 
+function resolveTableMonitorEnv() {
+  const childEnv = { ...loadBackendEnv(), ...process.env }
+  const configuredStore = firstConfiguredValue(
+    childEnv.JUHE_AI_TABLE_MONITOR_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER
+  )
+  const inferredStore = childEnv.JUHE_AI_RUNTIME_MODE?.trim().toLowerCase() === 'performance' || childEnv.JUHE_AI_POSTGRES_URL?.trim()
+    ? 'postgres'
+    : 'sqlite'
+
+  childEnv.JUHE_AI_TABLE_MONITOR_STORE = configuredStore ?? inferredStore
+  childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
+  )
+  childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_DATASET_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
+  )
+  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
+  )
+  childEnv.JUHE_AI_STATS_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_STATS_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
+  )
+  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-table-monitor.sqlite3')
+  )
+  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = resolveBackendPath(
+    childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT,
+    resolve(backendRoot, 'data', 'codex-context', 'state-shards')
+  )
+  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = firstConfiguredValue(
+    childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID,
+    'dev-table-monitor'
+  )
+
+  return childEnv
+}
+
 function resolveBackendPath(value, fallback) {
   const configuredValue = value?.trim()
   return configuredValue ? (isAbsolute(configuredValue) ? configuredValue : resolve(backendRoot, configuredValue)) : fallback
@@ -343,6 +406,7 @@ function shutdown(exitCode) {
   if (shuttingDown) return
   shuttingDown = true
   stopChild(frontend)
+  stopChild(tableMonitor, { processGroup: process.platform !== 'win32' })
   stopChild(runtimeLogIndexer, { processGroup: process.platform !== 'win32' })
   stopChild(backend)
   process.exit(exitCode)

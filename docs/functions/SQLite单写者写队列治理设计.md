@@ -114,7 +114,7 @@ SQLite locked 不是统一硬失败：
 
 1. 静态盘点所有 `getBusinessDatabase()`、`getDatasetDatabase()`、`getStatsDatabase()` 和 usage shard 写入路径，按目标库、角色、任务归属分类。
 2. 先收口业务库写入：除 DB service 和测试 / 脚本外，worker 不直接写业务库，改为 DB service typed operation。
-3. 收口统计库写入：由 `stats-worker` 作为 stats writer owner 串行提交系统采样、增量聚合、窗口刷新、表监控、任务状态和统计清理；`ingest-worker` 和 `ops-worker` 不直接写统计库。
+3. 收口统计库写入：由 `stats-worker` 作为 stats writer owner 串行提交系统采样、增量聚合、窗口刷新、任务状态和统计清理；表存储监控已由 Go F2 写入独立输出库，`ingest-worker` 和 `ops-worker` 不直接写统计库。
 4. 收口数据集目录库写入：确认 ingest writer 是唯一 owner；维护清理需要通过低优先级 command 短批次提交。
 5. 强化 usage shard per-shard writer：同一 shard 只允许 ingest writer 写入；统计聚合只读取 shard，不能把估算字段回写到原始 shard；不同 shard 文件可在 owner 内分批处理。
 6. 增加直接写边界回归：禁止非 owner 运行时代码直接写目标库。
@@ -124,7 +124,7 @@ SQLite locked 不是统一硬失败：
 
 - **worker 绕过 owner 直接写业务库**：探测、冷却复测、时间计划同步、授权到期扫描等路径容易直接改 `accounts`、`api_keys` 或授权表。
 - **过渡期 worker -> server -> DB service 转发桥失控**：如果 worker 新增写回只转发 message、不校验 operation、或者 server 继续允许任意 DB service write op，会把写 owner 变成伪单写者。
-- **统计库多角色同时写**：系统采样、统计聚合、窗口刷新、表监控 / 清理统一收口到 `stats-worker` typed operation，新增 stats 写入不得落回 `ingest-worker` 或 `ops-worker`。
+- **统计库多角色同时写**：系统采样、统计聚合、窗口刷新和统计清理统一收口到 `stats-worker` typed operation；F2 的 `database_storage_snapshots` / `table_storage_snapshots` 只允许 Go `juhe-ai-table-monitor` 写入专用 SQLite 输出文件，Node 不得恢复 writer、scheduler 或 retention。
 - **数据集目录库 append-only 与清理抢锁**：ingest 高频写日志时，维护清理如果直接删除数据集表，会放大 locked。
 - **长事务窗口刷新**：范围窗口、TopN、概览或授权窗口如果单事务过大，会压住系统采样和增量统计。
 - **跨库事务链路**：dataset / stats / usage shard 混在一个流程里等待，会把一个库的 locked 扩散到其他库。

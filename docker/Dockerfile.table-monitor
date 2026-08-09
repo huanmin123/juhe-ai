@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+
+ARG GO_IMAGE=golang:1.26-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /source/backend-go
+
+COPY backend-go/go.mod backend-go/go.sum ./
+RUN go mod download
+
+COPY backend-go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai-table-monitor ./cmd/juhe-ai-table-monitor
+
+FROM ${RUNTIME_IMAGE} AS runtime
+WORKDIR /app
+
+COPY --from=build /out/juhe-ai-table-monitor /usr/local/bin/juhe-ai-table-monitor
+
+RUN test -x /usr/local/bin/juhe-ai-table-monitor \
+  && mkdir -p /app/backend/data /app/backend/table-monitor-data
+
+ENTRYPOINT ["/usr/local/bin/juhe-ai-table-monitor"]
