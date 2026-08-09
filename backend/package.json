@@ -313,6 +313,7 @@
     "test:operation-log-list-lightweight": "tsx src/scripts/regression/operation-log-list-lightweight-regression.ts",
     "test:operation-log-detail-supplement": "tsx src/scripts/regression/operation-log-detail-supplement-regression.ts",
     "test:operation-log-default-window": "tsx src/scripts/regression/operation-log-default-window-regression.ts",
+    "test:f3-audit-log-contract": "tsx src/scripts/regression/f3-audit-log-contract-regression.ts",
     "test:logging-body-performance-boundary": "tsx src/scripts/regression/logging-body-performance-boundary-regression.ts",
     "test:audit-log-prepared-ipc-ownership": "tsx src/scripts/regression/audit-log-prepared-ipc-ownership-regression.ts",
     "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",
