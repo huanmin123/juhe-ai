@@ -76,12 +76,11 @@ try {
   assert(!quickRun.checks.some((item) => item.itemKey === 'target.gpt56_juice'), 'GPT-5.6 快速检测不得执行 Juice 专项探针')
   assert.equal(gpt56JuiceRequestCount, 0, 'GPT-5.6 快速检测不得向上游发送 Juice 专项请求')
   assert.equal(upstreamResponseRequestCount, 8, '快速检测应执行基础、流式、结构化、工具、三点 Token 与配对跨模型请求')
-  assert(!quickRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '基础连通成功只用于内部早停，不应生成模型评分项')
-  for (const itemKey of ['target.responses_stream', 'target.structured_output', 'target.tool_calling', 'target.usage_shape', 'target.token_integrity', 'target.cross_model']) {
+  for (const itemKey of ['target.responses_basic', 'target.responses_stream', 'target.structured_output', 'target.tool_calling', 'target.usage_shape', 'target.token_integrity', 'target.cross_model']) {
     assert(quickRun.checks.some((item) => item.itemKey === itemKey), `快速检测必须包含 ${itemKey}`)
   }
   assert.equal(quickRun.checks.filter((item) => item.itemType === 'token_integrity').length, 1, '快速检测 Token 诊断必须聚合为一个报告项')
-  assert(quickRun.checks.some((item) => item.itemKey === 'target.token_integrity' && item.evidenceSummary.diagnosticOnly === true), '快速检测 Token 必须标记为仅诊断')
+  assert(quickRun.checks.some((item) => item.itemKey === 'target.token_integrity' && item.evidenceSummary.diagnosticOnly === false), 'Token 诚信通过时必须形成可评分的正向证据')
   assert(!quickRun.checks.some((item) => ['behavior_probe', 'long_context', 'stability', 'distribution_similarity'].includes(item.itemType)), '快速检测不得执行行为、长上下文、稳定性或分布探针')
   assert.equal(quickRun.resultSummary.trustedComparison, false)
   assert.notEqual(quickRun.level, 'high_confidence', '快速检测不允许输出高可信结论')
@@ -104,7 +103,8 @@ try {
     targetType: 'account',
     targetId: account.id,
     expectedAccountId: account.id,
-    highConfidence: false
+    highConfidence: false,
+    minimumScore: 60
   })
   assert.equal(accountRun.accountId, account.id, '账户目标报告应记录被测账号 ID')
   assert.equal(tokenIntegrityRequestCount, 9, '完整检测 Token 诚信探针必须保持三轮共 9 个物理请求')
@@ -128,15 +128,18 @@ try {
   assert.equal(juiceItem.status, 'failed', 'Juice 混用必须保留失败专项项')
   assert.equal(juiceItem.maxScore, 0, 'Juice 专项不得改写通用评分标尺')
   assert.equal(juiceItem.evidenceSummary.hardAnomaly, true, 'Juice 混用必须保留硬异常证据')
+  assert.equal(juiceItem.evidenceSummary.strongAnomaly, true, '三个高档 Juice 变体一致混用必须保留强异常证据')
+  assert.equal(juiceItem.evidenceSummary.scorePenalty, 25, '强 Juice 异常必须固定扣减 25 分')
+  assert.equal(accountRun.score, 66, '该稳定 mock 场景的通用分数应被 Juice 强异常固定扣减 25 分')
   assert.equal(gpt56JuiceRequestCount, 6, 'GPT-5.6 深度检测必须发送六个 Juice 专项请求')
   const juiceContract = accountRun.requestSummary.gpt56Juice as Record<string, unknown> | undefined
-  assert.equal(juiceContract?.version, 'gpt56-juice-v1', '报告必须记录 Juice 专项契约版本')
+  assert.equal(juiceContract?.version, 'gpt56-juice-v2', '报告必须记录 Juice 专项契约版本')
   assert.match(String(juiceContract?.hash ?? ''), /^[a-f0-9]{64}$/, '报告必须记录 Juice 专项契约哈希')
-  assert(accountRun.probeSetVersion.includes('gpt56-juice-v1'), 'GPT-5.6 深度检测必须把 Juice 版本并入探针集版本')
-  assert.equal(accountRun.qualityDecision?.triggered, false, '单独 Juice 异常当前不得自动处罚')
-  assert(accountRun.qualityDecision?.reasonCodes.includes('gpt56_juice_diagnostic_only'), '单独 Juice 异常必须标记为仅诊断质量决策')
+  assert(accountRun.probeSetVersion.includes('gpt56-juice-v2'), 'GPT-5.6 深度检测必须把 Juice 版本并入探针集版本')
+  assert.equal(accountRun.qualityDecision?.triggered, true, '强 Juice 异常扣分后低于处罚阈值时必须触发现有质量策略')
+  assert(accountRun.qualityDecision?.reasonCodes.includes('gpt56_juice_strong_anomaly'), '强 Juice 异常必须写入质量决策原因')
 
-  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环、GPT-5.6 Juice 隔离与专项契约通过')
+  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环、HTTP 200 内容评分与 GPT-5.6 Juice 专项契约通过')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -147,12 +150,13 @@ async function assertRunShape(run: ModelCheckRunDetail, options: {
   targetId: string
   expectedAccountId?: string
   highConfidence: boolean
+  minimumScore?: number
 }): Promise<void> {
   assert.equal(run.status, 'completed')
   assert.equal(run.targetType, options.targetType)
   assert.equal(run.targetId, options.targetId)
   assert.equal(run.level, options.highConfidence ? 'high_confidence' : run.level)
-  assert(run.score >= 90, `完整检测分数应足够高，actual=${run.score}`)
+  assert(run.score >= (options.minimumScore ?? 90), `完整检测分数应达到该场景下限，actual=${run.score}`)
   assert(run.checks.some((item) => item.itemKey === 'target.long_context' && item.status === 'passed'), '完整检测应包含并通过长上下文探针')
   assert(run.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '完整检测应包含并通过辅助模型对照')
   assert(run.checks.some((item) => item.itemKey === 'target.stability' && item.status === 'passed'), '完整检测应包含并通过稳定性探针')

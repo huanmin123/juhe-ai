@@ -16,6 +16,8 @@ const accountApiSource = readSource('src/api/domains/accounts.ts')
 const accountTypesSource = readSource('src/types/domain/accounts.ts')
 const loaderSource = readSource('src/views/accounts/accountEditFormLoaders.ts')
 const openCloneSource = sourceBetween(editFormSource, 'async function openClone(', 'async function loadAccountDetailForForm(')
+const basicLoaderSource = sourceBetween(loaderSource, 'function buildAccountBasicFormPatch', 'export function buildAccountCloneFormLoad')
+const cloneLoaderSource = sourceBetween(loaderSource, 'export function buildAccountCloneFormLoad', 'function accountClientCompatibilityForForm')
 const cloneContextTypeSource = sourceBetween(
   accountTypesSource,
   'export interface AccountCloneContext',
@@ -55,6 +57,9 @@ assert.doesNotMatch(
   '克隆凭据选项类型不得容纳建号秘密'
 )
 assert.match(loaderSource, /const credentials = account\.credentialOptions/)
+assert.match(basicLoaderSource, /apiKeyStrategy:\s*parseAccountApiKeyStrategy\(credentials\)/, '编辑 loader 必须使用统一 API Key 策略解析')
+assert.match(cloneLoaderSource, /apiKeyStrategy:\s*parseAccountApiKeyStrategy\(credentials\)/, '克隆 loader 必须使用统一 API Key 策略解析')
+assert.equal((loaderSource.match(/function parseAccountApiKeyStrategy\(/g) ?? []).length, 1, 'API Key 策略解析函数只能定义一处')
 
 const defaults = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
 const context: AccountCloneContext = {
@@ -147,6 +152,29 @@ assert.equal(savePayload.status, 'active', '克隆保存请求必须携带来源
 assert.equal(savePayload.credentials.api_key_strategy, 'weighted_round_robin', '克隆保存请求必须携带 API Key 池策略')
 assert.deepEqual(savePayload.credentials.api_key_weights, [3, 7], '克隆保存请求必须携带 API Key 池权重')
 assert.equal(savePayload.balanceQueryEnabled, false, '多个 API Key 的余额查询必须遵守现有自动停用规则')
+
+const roundRobinContext: AccountCloneContext = {
+  ...context,
+  id: 'account-clone-round-robin-source',
+  credentialOptions: {
+    ...context.credentialOptions,
+    api_key_strategy: 'round_robin'
+  }
+}
+const roundRobinLoaded = buildAccountCloneFormLoad({
+  account: roundRobinContext,
+  defaults,
+  selectedGroup: { id: context.boundGroupId!, name: context.boundGroupName! }
+})
+assert.equal(roundRobinLoaded.patch.apiKeyStrategy, 'round_robin', '克隆表单必须回显轮询策略')
+roundRobinLoaded.patch.apiKeys = ['round-robin-key-a', 'round-robin-key-b']
+const roundRobinSavePayload = buildAccountSavePayload({
+  accounts: [],
+  form: roundRobinLoaded.patch,
+  errorPolicyRules: roundRobinLoaded.errorPolicyRules,
+  responseInspectionRules: roundRobinLoaded.responseInspectionRules
+})
+assert.equal(roundRobinSavePayload.credentials.api_key_strategy, 'round_robin', '克隆保存请求必须保留轮询策略')
 
 console.log('账户克隆按需加载回归通过：单 clone-context 请求、窄 credentialOptions、建号秘密不回填')
 

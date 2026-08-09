@@ -118,11 +118,7 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     group: selectedGroup,
     apiKey: asString(credentials.api_key) ?? '',
     apiKeys: accountApiKeysForForm(credentials),
-    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin'
-      ? 'weighted_round_robin'
-      : credentials.api_key_strategy === 'failover'
-        ? 'failover'
-        : 'failover',
+    apiKeyStrategy: parseAccountApiKeyStrategy(credentials),
     apiKeyWeights: accountApiKeyWeightsForForm(credentials),
     baseUrl: credentialBaseUrlForForm(credentials, '账户详情凭据', input.allowMissingBaseUrl),
     accessToken: asString(credentials.access_token) ?? '',
@@ -171,11 +167,7 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     group: selectedGroup,
     apiKey: '',
     apiKeys: cloneAccountApiKeySlots(credentials),
-    apiKeyStrategy: credentials.api_key_strategy === 'weighted_round_robin'
-      ? 'weighted_round_robin'
-      : credentials.api_key_strategy === 'failover'
-        ? 'failover'
-        : 'failover',
+    apiKeyStrategy: parseAccountApiKeyStrategy(credentials),
     apiKeyWeights: cloneAccountApiKeyWeights(credentials),
     baseUrl,
     accessToken: '',
@@ -210,6 +202,13 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
 
 function accountClientCompatibilityForForm(account: Pick<AccountEditBasicDetail, 'clientCompatibility'>): AccountFormModel['clientCompatibility'] {
   return account.clientCompatibility
+}
+
+function parseAccountApiKeyStrategy(credentials: { api_key_strategy?: unknown }): AccountFormModel['apiKeyStrategy'] {
+  const strategy = credentials.api_key_strategy
+  if (strategy === undefined || strategy === null || strategy === '') return 'failover'
+  if (strategy === 'round_robin' || strategy === 'weighted_round_robin' || strategy === 'failover') return strategy
+  throw new AccountEditFormLoadError('账户凭据 API Key 策略异常，请先修正已保存的账户凭据')
 }
 
 function accountEndpointModesForForm(

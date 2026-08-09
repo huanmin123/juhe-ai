@@ -2,13 +2,14 @@ import type { ModelCheckItemSummary, ModelCheckProfile } from '../../domain/type
 import { createTraceId } from '../../shared/request-context.js'
 import type { ModelCheckItemCreateInput } from '../../storage/repositories.js'
 import { distributionSampleCount } from './model-checks.constants.js'
+import { gpt56JuiceRiskFromChecks } from './model-checks-gpt56-juice.js'
 import {
   average,
   bounded,
   boundedRatio,
   buildModelMatchEvidence,
   describeModelMismatch,
-  hasFunctionCall,
+  hasExpectedFunctionCallArguments,
   hasModelMismatchEvidence,
   numberValue,
   parseFirstJsonObject,
@@ -135,14 +136,18 @@ export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: st
     })
   }
   const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
-  const hasOutput = Boolean(result.outputText)
-  const status = modelEvidence.modelMismatch ? 'failed' : 'passed'
-  return item(options.itemKey, options.itemType, status, 0, 0, result, {
-    message: describeModelMismatch(modelEvidence) ?? options.successMessage,
+  const outputMatches = exactOutput(result.outputText, 'OK-MODEL-CHECK')
+  const score = modelEvidence.modelMismatch
+    ? (outputMatches ? 1 : 0)
+    : (modelEvidence.matchedModel ? 3 : 0) + (outputMatches ? 7 : 0)
+  const status = modelEvidence.modelMismatch
+    ? 'failed'
+    : outputMatches && modelEvidence.matchedModel ? 'passed' : score >= 3 ? 'warning' : 'failed'
+  return item(options.itemKey, options.itemType, status, score, 10, result, {
+    message: describeModelMismatch(modelEvidence) ?? (outputMatches ? options.successMessage : '基础协议响应未按固定契约返回 OK-MODEL-CHECK'),
     ...modelEvidence,
-    hasOutput,
-    qualificationOnly: true,
-    excludedFromScoring: true
+    expectedOutput: 'OK-MODEL-CHECK',
+    outputMatches
   })
 }
 
@@ -168,17 +173,18 @@ export function evaluateProtocolStreamProbe(result: GatewayProbeResult, model: s
     })
   }
   const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
-  const hasOutput = Boolean(result.outputText)
+  const outputMatches = exactOutput(result.outputText, 'STREAM-OK')
   const score = modelEvidence.modelMismatch
-    ? (result.success ? 4 : 0) + (hasOutput ? 1 : 0)
-    : (result.success ? 8 : 0) + (modelEvidence.matchedModel ? 3 : 0) + (hasOutput ? 4 : 0)
+    ? (result.success ? 4 : 0) + (outputMatches ? 1 : 0)
+    : (result.success ? 8 : 0) + (modelEvidence.matchedModel ? 3 : 0) + (outputMatches ? 4 : 0)
   const status = modelEvidence.modelMismatch
     ? 'failed'
     : score >= 13 ? 'passed' : score >= 8 ? 'warning' : 'failed'
   return item(options.itemKey, options.itemType, status, score, 15, result, {
     message: describeModelMismatch(modelEvidence) ?? (result.success ? options.successMessage : result.errorMessage ?? `${options.failurePrefix}，HTTP ${result.statusCode}`),
     ...modelEvidence,
-    hasOutput,
+    expectedOutput: 'STREAM-OK',
+    outputMatches,
     firstTokenMs: result.firstTokenMs
   })
 }
@@ -190,7 +196,7 @@ export function evaluateStructuredOutputProbe(result: GatewayProbeResult, model:
     })
   }
   const outputJson = parseFirstJsonObject(result.outputText)
-  const valid = outputJson?.status === 'ok' && typeof outputJson.value === 'number'
+  const valid = outputJson?.status === 'ok' && outputJson.value === 7
   const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (valid ? 1 : 0)
@@ -211,7 +217,7 @@ export function evaluateToolCallingProbe(result: GatewayProbeResult, model: stri
       expectedModel: model
     })
   }
-  const called = hasFunctionCall(result.json, 'record_model_check')
+  const called = hasExpectedFunctionCallArguments(result.json, 'record_model_check', { code: 'ok', count: 1 })
   const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (called ? 1 : 0)
@@ -246,9 +252,13 @@ export function evaluateUsageShapeProbe(results: GatewayProbeResult[], prefix: M
     || numberValue(usage.candidatesTokenCount) !== undefined
     || numberValue(usage.totalTokenCount) !== undefined
   ))
-  return item(`${prefix}.usage_shape`, 'usage_shape', valid ? 'passed' : 'warning', valid ? 10 : 4, 10, base, {
-    message: valid ? 'usage 字段结构可用' : '未观察到完整 usage 字段；可能由上游实现省略',
-    usage
+  return item(`${prefix}.usage_shape`, 'usage_shape', valid ? 'passed' : 'skipped', valid ? 10 : 0, valid ? 10 : 0, base, {
+    message: valid ? 'usage 字段结构可用' : '未观察到可验证 usage 字段，作为证据不足处理',
+    usage,
+    ...(valid ? {} : {
+      evidenceInsufficient: true,
+      excludedFromScoring: true
+    })
   })
 }
 
@@ -404,7 +414,7 @@ export function evaluateStabilityProbe(results: GatewayProbeResult[], model: str
     const modelEvidence = buildProbeModelMatchEvidence(result, result.success ? result.model : undefined, model)
     return {
       traceId: result.traceId,
-      ok: result.success && (result.outputText ?? '').toUpperCase().includes('VECTOR'),
+      ok: result.success && exactOutput(result.outputText, 'VECTOR'),
       success: result.success,
       requestFailure: !result.success,
       attemptCount: result.attemptCount ?? 1,
@@ -480,10 +490,17 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
   const suspiciousSameBackend = comparable && sameResponseModel && model !== pairedModel
   const pairedModelMismatch = pairedEvidence.modelMismatch
   const targetModelMismatch = targetEvidence.modelMismatch
+  const targetOutputMatches = exactOutput(targetBasic?.outputText, 'OK-MODEL-CHECK')
+  const pairedOutputMatches = exactOutput(pairedBasic.outputText, 'CROSS-MODEL-OK')
+  const pairedContentMismatch = !pairedOutputMatches
   const crossModelMismatch = pairedModelMismatch || suspiciousSameBackend
   const score = crossModelMismatch
     ? 0
-    : comparable && targetEvidence.matchedModel && pairedEvidence.matchedModel ? 10 : comparable ? 5 : 2
+    : comparable
+      ? (targetEvidence.matchedModel ? 4 : 0)
+        + (pairedEvidence.matchedModel ? 4 : 0)
+        + (pairedOutputMatches ? 2 : 0)
+      : 0
   const status = crossModelMismatch ? 'failed' : score >= 9 ? 'passed' : 'warning'
   return {
     itemKey: `${prefix}.cross_model`,
@@ -496,6 +513,8 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
     evidenceSummary: {
       message: crossModelMismatch
         ? '辅助模型对照返回模型与辅助请求不一致，本项扣分；目标模型结论以目标探针为准'
+        : pairedContentMismatch
+          ? '辅助模型对照未按固定输出契约返回，本项扣分'
         : comparable && targetEvidence.matchedModel && pairedEvidence.matchedModel
           ? '辅助模型对照通过，目标请求和辅助请求均返回对应模型字段'
           : '辅助模型对照证据不足，建议结合可信对比或多次检测',
@@ -509,6 +528,11 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
       pairedMatchedModel: pairedEvidence.matchedModel,
       targetModelMismatch,
       pairedModelMismatch,
+      targetExpectedOutput: 'OK-MODEL-CHECK',
+      pairedExpectedOutput: 'CROSS-MODEL-OK',
+      targetOutputMatches,
+      pairedOutputMatches,
+      pairedContentMismatch,
       sameResponseModel,
       suspiciousSameBackend,
       comparable,
@@ -818,6 +842,10 @@ export function emptyProbeResult(): GatewayProbeResult {
   }
 }
 
+function exactOutput(output: string | undefined, expected: string): boolean {
+  return output?.trim() === expected
+}
+
 export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trustedComparison: boolean; profile?: ModelCheckProfile }): ModelCheckSummaryResult {
   const scoredChecks = checks.filter((item) => item.maxScore > 0 && (
     item.itemKey.startsWith('target.')
@@ -826,7 +854,9 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   ))
   const maxScore = scoredChecks.reduce((sum, item) => sum + item.maxScore, 0)
   const rawScore = scoredChecks.reduce((sum, item) => sum + item.score, 0)
-  const score = maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0
+  const baseScore = maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0
+  const juiceRisk = gpt56JuiceRiskFromChecks(checks)
+  const score = Math.max(0, baseScore - juiceRisk.scorePenalty)
   const failedCount = scoredChecks.filter((item) => item.status === 'failed').length
   const modelMismatchCount = checks.filter((item) => item.itemKey.startsWith('target.') && hasModelMismatchEvidence(item)).length
   const targetBasic = checks.find((item) => item.itemKey === 'target.responses_basic' || item.itemKey === 'target.protocol_basic')
@@ -882,7 +912,7 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
     }
     if (score >= 50) return { level: 'uncertain', score, maxScore: 100, message: '快速检测存在不确定项，建议开启深度检测复核' }
     if (score >= 25) return { level: 'suspicious', score, maxScore: 100, message: '快速检测发现明显异常，建议检查上游配置并使用深度检测复核' }
-    return { level: 'unavailable', score, maxScore: 100, message: '快速检测未形成可用模型证据' }
+    return { level: 'suspicious', score, maxScore: 100, message: '快速检测多个 HTTP 200 质量校验未通过，目标链路疑似不符' }
   }
   if (score >= 92 && failedCount === 0 && behaviorPassed && longContextPassed && stabilityPassed && trustedComparisonPassed && (options.trustedComparison || crossModelPassed)) {
     return {
@@ -903,7 +933,7 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   if (score >= 25) {
     return { level: 'suspicious', score, maxScore: 100, message: '目标模型链路疑似不符，多个关键探针未通过' }
   }
-  return { level: 'unavailable', score, maxScore: 100, message: '目标模型链路不可检测或上游不可用' }
+  return { level: 'suspicious', score, maxScore: 100, message: '多个 HTTP 200 质量校验未通过，目标模型链路疑似不符' }
 }
 
 export function summarizeEvidenceCompleteness(checks: ModelCheckItemSummary[]): ModelCheckEvidenceCompletenessSummary {

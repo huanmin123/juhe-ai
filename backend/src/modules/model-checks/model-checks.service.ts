@@ -124,7 +124,11 @@ import {
   executeGpt56JuiceProbes,
   gpt56JuiceProbeContract,
   gpt56JuiceProbeVersion,
-  isGpt56JuiceModel
+  gpt56JuiceRiskFromChecks,
+  gpt56JuiceStrongRepeatState,
+  isGpt56JuiceComparableFullRun,
+  isGpt56JuiceEarlierRun,
+  shouldExecuteGpt56JuiceProbes
 } from './model-checks-gpt56-juice.js'
 import { getModelQualityPolicyAsync } from '../../storage/model-quality.repository.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
@@ -336,9 +340,11 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   const comparison = trustedComparisonAccountId
     ? await resolveTrustedComparisonTargetAsync(trustedComparisonAccountId, target, model, access)
     : undefined
-  const gpt56JuiceEnabled = profile === 'full'
-    && target.modelCheckProfile.protocol === 'openai_responses'
-    && isGpt56JuiceModel(model)
+  const gpt56JuiceEnabled = shouldExecuteGpt56JuiceProbes({
+    model,
+    profile,
+    protocol: target.modelCheckProfile.protocol
+  })
   const effectiveProbeSetVersion = profile === 'quick'
     ? quickProbeSetVersion
     : gpt56JuiceEnabled
@@ -831,20 +837,20 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   if (!detail) {
     throw new ModelCheckRequestError(500, '模型检测报告生成失败')
   }
-  const enrichedDetail = await withLatestModelTrustResult(detail, target.identity.systemAccountId)
-  const completedDetail = await applyModelQualityOutcome(enrichedDetail, target, policySnapshot, triggerKind, progress, execution)
+  const completedDetail = await applyModelQualityOutcome(detail, access, target, policySnapshot, triggerKind, progress, execution)
+  const enrichedDetail = await withLatestModelTrustResult(completedDetail, target.identity.systemAccountId)
   emitModelCheckProgress(progress, {
     type: 'run_completed',
-    message: completedDetail.message || completedDetail.errorMessage || '模型检测已结束',
-    runId: completedDetail.id,
-    status: completedDetail.status,
-    profile: completedDetail.profile,
-    level: completedDetail.level,
-    score: completedDetail.score,
-    maxScore: completedDetail.maxScore,
-    durationMs: completedDetail.durationMs
+    message: enrichedDetail.message || enrichedDetail.errorMessage || '模型检测已结束',
+    runId: enrichedDetail.id,
+    status: enrichedDetail.status,
+    profile: enrichedDetail.profile,
+    level: enrichedDetail.level,
+    score: enrichedDetail.score,
+    maxScore: enrichedDetail.maxScore,
+    durationMs: enrichedDetail.durationMs
   })
-  return completedDetail
+  return enrichedDetail
 }
 
 async function finishModelCheckRunWithoutQualityEvidence(input: {
@@ -902,6 +908,7 @@ async function finishModelCheckRunWithoutQualityEvidence(input: {
 
 async function applyModelQualityOutcome(
   detail: ModelCheckRunDetail,
+  access: AccessScope | undefined,
   target: ModelCheckTarget,
   snapshot: ModelQualityPolicySnapshot,
   triggerKind: ModelCheckTriggerKind,
@@ -937,45 +944,42 @@ async function applyModelQualityOutcome(
     const persisted = await getModelCheckRunDetailAsync(detail.id)
     return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
   }
-  if (isGpt56JuiceDiagnosticOnlyAnomaly(detail, snapshot)) {
-    const decision: ModelQualityDecision = {
-      triggerKind,
-      triggered: false,
-      hardFailure: false,
-      threshold: snapshot.threshold,
-      score: detail.score,
-      configuredAction: snapshot.action,
-      result: 'not_triggered',
-      reasonCodes: ['gpt56_juice_diagnostic_only'],
-      message: 'GPT-5.6 Juice 专项探针发现异常，但未叠加其他质量失败证据；本阶段仅保留报告，不执行质量处罚、质量隔离/降级或健康统计失败写入',
-      decidedAt
-    }
-    emitModelCheckProgress(progress, {
-      type: 'quality_decision',
-      triggered: false,
-      score: detail.score,
-      threshold: snapshot.threshold,
-      hardFailure: false,
-      configuredAction: snapshot.action,
-      message: decision.message
-    })
-    await requestDatasetWriter({ type: 'update_model_check_quality_decision', runId: detail.id, decision })
-    const persisted = await getModelCheckRunDetailAsync(detail.id)
-    return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
-  }
-  const hardFailure = detail.level === 'suspicious'
-    || textValue(trustReport?.mappingStatus) === 'undeclared_mismatch'
-    || textValue(trustReport?.protocolStatus) === 'failed'
+  const gpt56JuiceRisk = gpt56JuiceRiskFromChecks(detail.checks)
+  const gpt56JuiceRepeat = gpt56JuiceRisk.strongAnomaly
+    ? await findGpt56JuiceStrongRepeatEvidence(detail, access)
+    : { state: 'not_repeated' as const }
+  const gpt56JuiceStrongRepeated = gpt56JuiceRepeat.state === 'repeated'
   const completed = detail.status === 'completed'
   const unavailable = completed && detail.level === 'unavailable'
-  const qualityFailed = completed && !unavailable && (hardFailure || detail.score < snapshot.threshold)
+  const { hardFailure, qualityFailed } = resolveModelQualityDecisionGate({
+    completed,
+    unavailable,
+    score: detail.score,
+    threshold: snapshot.threshold,
+    mappingStatus: textValue(trustReport?.mappingStatus),
+    gpt56JuiceStrongRepeated
+  })
   const decisionReasonCodes = [
     ...reasonCodes(trustReport?.reasonCodes),
+    ...(gpt56JuiceRisk.strongAnomaly ? ['gpt56_juice_strong_anomaly', ...gpt56JuiceRisk.strongReasonCodes] : []),
+    ...(!gpt56JuiceRisk.strongAnomaly ? gpt56JuiceRisk.weakReasonCodes : []),
+    ...(gpt56JuiceStrongRepeated ? ['gpt56_juice_strong_anomaly_repeated'] : []),
+    ...(gpt56JuiceRepeat.state === 'evidence_unavailable' ? ['gpt56_juice_repeat_evidence_unavailable'] : []),
     ...(hardFailure ? ['hard_quality_conflict'] : []),
     ...(!hardFailure && qualityFailed ? ['score_below_threshold'] : []),
     ...(unavailable ? ['quality_evidence_unavailable'] : [])
   ]
-  const decisionMessage = unavailable
+  const decisionMessage = gpt56JuiceStrongRepeated
+    ? 'GPT-5.6 Juice 强异常已在连续两次可比深度检测中复现，命中硬失败并按现有质量策略执行'
+    : gpt56JuiceRisk.strongAnomaly
+    ? qualityFailed
+      ? `GPT-5.6 Juice 专项发现强异常，已扣 ${gpt56JuiceRisk.scorePenalty} 分；当前 ${detail.score} 分低于处罚阈值 ${snapshot.threshold} 分`
+      : `GPT-5.6 Juice 专项发现强异常，已扣 ${gpt56JuiceRisk.scorePenalty} 分；尚未连续复现为硬失败，当前 ${detail.score} 分不触发处罚`
+    : gpt56JuiceRisk.scorePenalty > 0
+    ? qualityFailed
+      ? `GPT-5.6 Juice 专项发现 HTTP 200 内容异常，已扣 ${gpt56JuiceRisk.scorePenalty} 分；当前 ${detail.score} 分低于处罚阈值 ${snapshot.threshold} 分`
+      : `GPT-5.6 Juice 专项发现 HTTP 200 内容异常，已扣 ${gpt56JuiceRisk.scorePenalty} 分；当前 ${detail.score} 分不触发处罚`
+    : unavailable
     ? '未形成有效质量证据，本次不执行质量处罚'
     : qualityFailed
       ? `质量判定不达标：${detail.score} 分，处罚阈值 ${snapshot.threshold} 分${hardFailure ? '，并命中硬失败证据' : ''}`
@@ -1163,19 +1167,85 @@ async function applyModelQualityOutcome(
   return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
 }
 
-function isGpt56JuiceDiagnosticOnlyAnomaly(detail: ModelCheckRunDetail, snapshot: ModelQualityPolicySnapshot): boolean {
-  const juiceAnomaly = detail.checks.some((item) => (
-    item.itemKey === 'target.gpt56_juice'
-    && item.itemType === 'gpt56_juice'
-    && recordValue(item.evidenceSummary)?.hardAnomaly === true
-  ))
-  if (!juiceAnomaly || detail.score < snapshot.threshold) return false
-  return !detail.checks.some((item) => (
-    item.itemKey !== 'target.gpt56_juice'
-    && item.itemKey.startsWith('target.')
-    && item.maxScore > 0
-    && item.status === 'failed'
-  ))
+/**
+ * HTTP 200 内容质量问题先进入统一分数。只有未声明的响应模型冲突，或
+ * 可比 full run 中连续复现的 GPT-5.6 Juice 强异常，才可以绕过处罚阈值。
+ */
+export function resolveModelQualityDecisionGate(input: {
+  completed: boolean
+  unavailable: boolean
+  score: number
+  threshold: number
+  mappingStatus?: string
+  gpt56JuiceStrongRepeated: boolean
+}): { hardFailure: boolean; qualityFailed: boolean } {
+  const hardFailure = input.mappingStatus === 'undeclared_mismatch' || input.gpt56JuiceStrongRepeated
+  return {
+    hardFailure,
+    qualityFailed: input.completed && !input.unavailable && (hardFailure || input.score < input.threshold)
+  }
+}
+
+type Gpt56JuiceStrongRepeatEvidence = {
+  state: 'not_repeated' | 'repeated' | 'evidence_unavailable'
+}
+
+async function findGpt56JuiceStrongRepeatEvidence(
+  current: ModelCheckRunDetail,
+  access: AccessScope | undefined
+): Promise<Gpt56JuiceStrongRepeatEvidence> {
+  const maxHistoryPages = 10
+  try {
+    for (let page = 1; page <= maxHistoryPages; page += 1) {
+      const history = await listModelCheckRunsAsync(access, {
+        page,
+        pageSize: 100,
+        targetType: current.targetType,
+        targetId: current.targetId,
+        model: current.model,
+        status: 'completed'
+      })
+      for (const candidate of history.items) {
+        if (!isGpt56JuiceEarlierRun(candidate, current) || candidate.profile !== 'full') continue
+        const previous = await getModelCheckRunDetailAsync(candidate.id, access)
+        if (!previous) {
+          logger.warn({
+            event: 'gpt56_juice_repeat_evidence_missing',
+            runId: current.id,
+            previousRunId: candidate.id,
+            targetId: current.targetId,
+            model: current.model
+          }, 'GPT-5.6 Juice 连续异常历史明细缺失，未升级为硬失败')
+          return { state: 'evidence_unavailable' }
+        }
+        if (!isGpt56JuiceComparableFullRun(previous)) continue
+        const state = gpt56JuiceStrongRepeatState({
+          currentStrongAnomaly: true,
+          previousComparable: true,
+          previousStrongAnomaly: gpt56JuiceRiskFromChecks(previous.checks).strongAnomaly
+        })
+        return { state: state === 'repeated' ? 'repeated' : 'not_repeated' }
+      }
+      if (!history.hasMore) return { state: 'not_repeated' }
+    }
+    logger.warn({
+      event: 'gpt56_juice_repeat_evidence_window_exhausted',
+      runId: current.id,
+      targetId: current.targetId,
+      model: current.model,
+      maxHistoryPages
+    }, 'GPT-5.6 Juice 连续异常历史窗口已耗尽，未升级为硬失败')
+    return { state: 'evidence_unavailable' }
+  } catch (error) {
+    logger.warn({
+      event: 'gpt56_juice_repeat_evidence_lookup_failed',
+      runId: current.id,
+      targetId: current.targetId,
+      model: current.model,
+      err: error
+    }, 'GPT-5.6 Juice 连续异常历史读取失败，未升级为硬失败')
+    return { state: 'evidence_unavailable' }
+  }
 }
 
 async function requestModelQualityEnforcement(input: import('../../storage/model-quality.repository.js').ModelQualityEnforcementInput) {
@@ -1391,7 +1461,7 @@ async function executeProbeSuite(
   const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
   const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
   const basicItem = evaluateBasicForProfile(profile, basic, model, prefix)
-  if (!basic.success || basicItem.status === 'failed') pushProbeItem(items, basicItem, progress)
+  pushProbeItem(items, basicItem, progress)
   if (!basic.success) {
     if (profileMode === 'full') pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
     return { items, basic }
