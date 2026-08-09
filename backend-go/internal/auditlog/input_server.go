@@ -1,0 +1,277 @@
+package auditlog
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"mime"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	AuditInputPath                  = "/__aiinternal__/v1/audit-captures"
+	AuditInputHealthPath            = "/__aiinternal__/health"
+	AuditInputSignatureHeader       = "X-Juhe-AI-Signature"
+	auditInputSignatureDomain       = "juhe-ai/audit-log-input/v1"
+	defaultInputMaxBytes      int64 = 4 << 20
+	defaultInputTimeout             = 5 * time.Second
+)
+
+// InputServerConfig is intentionally separate from the persistence config.
+// A foundation-only Store can still be constructed for migrations and smoke
+// tests, while a running F3 owner must explicitly opt into a loopback input.
+type InputServerConfig struct {
+	ListenAddress  string
+	SharedSecret   string
+	MaxBytes       int64
+	RequestTimeout time.Duration
+}
+
+func LoadInputServerConfig(getenv func(string) string) (InputServerConfig, error) {
+	cfg := InputServerConfig{
+		ListenAddress:  strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS")),
+		SharedSecret:   strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_SECRET")),
+		MaxBytes:       defaultInputMaxBytes,
+		RequestTimeout: defaultInputTimeout,
+	}
+	if cfg.ListenAddress == "" {
+		return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS 是 F3 sidecar 的必填配置")
+	}
+	if err := validateLoopbackAddress(cfg.ListenAddress); err != nil {
+		return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS 必须是 loopback IP:port: %w", err)
+	}
+	if cfg.SharedSecret == "" {
+		return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_SECRET 是 F3 loopback HMAC 的必填配置")
+	}
+	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_MAX_BYTES")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1024 || parsed > defaultInputMaxBytes {
+			return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_MAX_BYTES 必须在 1024..%d", defaultInputMaxBytes)
+		}
+		cfg.MaxBytes = parsed
+	}
+	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 || parsed > 30*time.Second {
+			return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT 必须为不超过 30s 的正 duration")
+		}
+		cfg.RequestTimeout = parsed
+	}
+	return cfg, nil
+}
+
+func validateLoopbackAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return fmt.Errorf("地址必须为 IP:port")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%q 不是 loopback IP", host)
+	}
+	return nil
+}
+
+type auditInputEnvelope struct {
+	SchemaVersion int           `json:"schemaVersion"`
+	AuditLog      AuditLogInput `json:"auditLog"`
+}
+
+// RunInputServer binds only a loopback address, keeps an owner lease alive,
+// and performs the audit write synchronously in the request goroutine. It is
+// an RPC handoff, not a queue: a 204 means the F3 store transaction finished.
+func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg InputServerConfig, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	lease, acquired, err := store.AcquireOwnerLease(ctx, cfg.InstanceID, cfg.OwnerLease)
+	if err != nil {
+		return fmt.Errorf("获取 F3 audit owner lease 失败: %w", err)
+	}
+	if !acquired {
+		return fmt.Errorf("F3 audit owner lease 已被其他实例持有")
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if releaseErr := store.ReleaseOwnerLease(releaseCtx, lease); releaseErr != nil {
+			logger.Error("释放 F3 audit owner lease 失败", "error", releaseErr)
+		}
+	}()
+
+	listener, err := net.Listen("tcp", inputCfg.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("监听 F3 loopback input 失败: %w", err)
+	}
+	defer listener.Close()
+	handler := &auditInputHandler{store: store, lease: lease, cfg: inputCfg, logger: logger}
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: inputCfg.RequestTimeout,
+		ReadTimeout:       inputCfg.RequestTimeout,
+		WriteTimeout:      inputCfg.RequestTimeout,
+		IdleTimeout:       30 * time.Second,
+	}
+	serveResult := make(chan error, 1)
+	go func() { serveResult <- server.Serve(listener) }()
+
+	interval := cfg.OwnerLease / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return shutdownInputServer(server, logger)
+		case err := <-serveResult:
+			if errors.Is(err, http.ErrServerClosed) {
+				return nil
+			}
+			return fmt.Errorf("F3 loopback input server 异常退出: %w", err)
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(ctx, minDuration(5*time.Second, interval))
+			renewed, renewErr := store.RenewOwnerLease(renewCtx, lease, cfg.OwnerLease)
+			cancel()
+			if renewErr != nil {
+				_ = shutdownInputServer(server, logger)
+				return fmt.Errorf("续租 F3 audit owner lease 失败: %w", renewErr)
+			}
+			if !renewed {
+				_ = shutdownInputServer(server, logger)
+				return ErrOwnerLeaseLost
+			}
+		}
+	}
+}
+
+func shutdownInputServer(server *http.Server, logger *slog.Logger) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Error("关闭 F3 loopback input server 失败", "error", err)
+		return err
+	}
+	return nil
+}
+
+func minDuration(first, second time.Duration) time.Duration {
+	if first < second {
+		return first
+	}
+	return second
+}
+
+type auditInputHandler struct {
+	store  Store
+	lease  OwnerLease
+	cfg    InputServerConfig
+	logger *slog.Logger
+}
+
+func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path == AuditInputHealthPath && request.Method == http.MethodGet {
+		if !isLoopbackRemote(request.RemoteAddr) {
+			writer.WriteHeader(http.StatusForbidden)
+			return
+		}
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if request.URL.Path != AuditInputPath || request.Method != http.MethodPost {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !isLoopbackRemote(request.RemoteAddr) {
+		writer.WriteHeader(http.StatusForbidden)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writer.WriteHeader(http.StatusUnsupportedMediaType)
+		return
+	}
+	if request.ContentLength < 0 || request.ContentLength > h.cfg.MaxBytes {
+		writer.WriteHeader(http.StatusRequestEntityTooLarge)
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, h.cfg.MaxBytes)
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		writer.WriteHeader(http.StatusRequestEntityTooLarge)
+		return
+	}
+	if !validAuditInputSignature(h.cfg.SharedSecret, body, request.Header.Get(AuditInputSignatureHeader)) {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	var envelope auditInputEnvelope
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil || envelope.SchemaVersion != 1 {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(request.Context(), h.cfg.RequestTimeout)
+	defer cancel()
+	result, err := h.store.Persist(writeCtx, h.lease, envelope.AuditLog)
+	if err != nil {
+		if errors.Is(err, ErrOwnerLeaseLost) || errors.Is(err, context.DeadlineExceeded) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		h.logger.Error("F3 audit input 持久化失败", "error", err, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
+		writer.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	logger := h.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Debug("F3 audit input 已持久化", "auditLogID", envelope.AuditLog.ID, "ignored", result.Ignored)
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func isLoopbackRemote(remoteAddress string) bool {
+	host, _, err := net.SplitHostPort(remoteAddress)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func SignAuditInput(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(auditInputSignatureDomain))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write(body)
+	return "v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func validAuditInputSignature(secret string, body []byte, supplied string) bool {
+	if !strings.HasPrefix(supplied, "v1=") {
+		return false
+	}
+	expected, err := hex.DecodeString(strings.TrimPrefix(SignAuditInput(secret, body), "v1="))
+	if err != nil {
+		return false
+	}
+	actual, err := hex.DecodeString(strings.TrimPrefix(supplied, "v1="))
+	return err == nil && hmac.Equal(expected, actual)
+}
