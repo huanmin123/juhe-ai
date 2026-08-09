@@ -168,7 +168,7 @@ flowchart LR
 - OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。OAuth token endpoint 响应体必须有固定字节上限，超限主动中断，不能在刷新路径无界累积 chunk 或拼接完整异常响应。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
-- 使用记录、原始审计、操作日志和账号状态副作用都必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，索引启用时由 `ingest-worker` 按持久化 cursor 有界消费，不得另建 IPC、内存或 Redis 逐行队列。部署可临时关闭审计写入和运行日志数据库索引，但不得借此关闭或清理使用记录。
+- 使用记录、原始审计、操作日志和账号状态副作用都必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，独立 Go F1 indexer 按持久化 cursor 直接索引到专用运行日志库，不得另建 Node IPC、内存或 Redis 逐行队列。F1 不能由 Node 开关关闭或回退，且不得借此关闭或清理使用记录。
 - 真实上游派发开始后，opaque 非 `2xx`、本地 transport failure、timeout、正文中断或精确协议声明的失败结构都属于当前 attempt，默认直接向客户端返回实际失败；不得按 Key -> 账户 -> 后续分组隐式接管。只有用户显式账户错误策略命中 `retry_next` 时，才允许在 `semanticCommitted = false` 且端点可安全重放的前提下切换候选。已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
 
 ## 6. 数据库设计
@@ -176,7 +176,7 @@ flowchart LR
 ### 6.1 存储原则
 
 - standalone 模式下 SQLite 是当前持久化存储；performance 模式显式引入 PostgreSQL 与 Redis。当前不引入 ClickHouse 或独立任务队列。
-- 运行时必须明确区分业务库、统计数据集域和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志、运行日志索引和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
+- 运行时必须明确区分业务库、统计数据集域、运行日志索引库和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；运行日志索引库由 Go F1 唯一写入，Node 只读；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
 - 多进程写入必须按 SQLite 文件级单写者治理。WAL 和 `busy_timeout` 只能吸收短冲突，不能允许多个 worker 长期并发写同一个数据库文件。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
@@ -292,7 +292,7 @@ erDiagram
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
 - 涉及多 worker、worker 角色、job registry、任务租约、热点隔离或进程拓扑调整时，先按 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md) 执行；worker 数量不设固定上限，但必须有明确隔离域、队列上限、租约边界和健康指标。
 - 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
-- 当前后台任务按三类常驻 worker 隔离：使用记录 / 审计 / 操作日志 / 公开接口日志 / 运行日志索引写入和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口、账号质量和表空间监控固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、代理检测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
+- 当前 Node 后台任务按三类常驻 worker 隔离：使用记录 / 审计 / 操作日志 / 公开接口日志和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口、账号质量和表空间监控固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、代理检测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。运行日志索引、cursor、facet 和保留清理由独立 Go F1 indexer 完整接管，不属于 Node worker。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
 - 请求链路产生的审计、操作日志或使用记录批量写入数据如需异步处理，应通过有界 IPC 或等价轻量通道投递到 `ingest-worker`；普通运行日志只允许顺序追加角色 JSONL 文件，解析、正则、脱敏、哈希、索引 DTO、数据库调用和 Redis 投递必须留在业务热路径之外。
 - 原始审计日志队列是 best-effort 队列，不要求系统重启后恢复；队列溢出和进程重启允许丢失待落库审计记录，但必须不阻塞网关请求。

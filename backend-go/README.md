@@ -10,7 +10,7 @@
 
 - 稳定且唯一的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`；它用于 Go 多实例 fencing，不是 Node/Go 选择开关。
 - `JUHE_AI_RUNTIME_LOG_STORE=sqlite` 或 `postgres`；未设置时只可从 `JUHE_AI_DATABASE_DRIVER` 取得同值。
-- SQLite 提供 `JUHE_AI_DATASET_DATABASE_PATH` 和 `JUHE_AI_DATABASE_PATH`；后者只读 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
+- SQLite 提供 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 和 `JUHE_AI_DATABASE_PATH`；前者是 Go 唯一写入的 F1 专用文件，后者只读 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
 - 两种模式均提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
 
 示例：
@@ -18,7 +18,7 @@
 ```powershell
 $env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'runtime-log-indexer-a'
 $env:JUHE_AI_RUNTIME_LOG_STORE = 'sqlite'
-$env:JUHE_AI_DATASET_DATABASE_PATH = 'F:\temp\juhe-ai\dataset.sqlite'
+$env:JUHE_AI_RUNTIME_LOG_DATABASE_PATH = 'F:\temp\juhe-ai\runtime-log.sqlite'
 $env:JUHE_AI_DATABASE_PATH = 'F:\temp\juhe-ai\business.sqlite'
 $env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
 $env:JUHE_AI_RUNTIME_LOG_ONCE = 'true'
@@ -26,6 +26,14 @@ go run ./cmd/juhe-ai-runtime-log-indexer
 ```
 
 主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。Node 仅继续产生 JSONL 文件并只读查询 Go 产物。
+
+已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置额外的 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，再执行：
+
+```powershell
+go run ./cmd/juhe-ai-runtime-log-indexer --migrate-legacy-sqlite
+```
+
+该一次性命令会校验源库完整性、F1 表、数量、主键和字段值；失败时保留原文件，不能回退到 Node F1 或将 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 改成 dataset 文件。
 
 验证：
 
