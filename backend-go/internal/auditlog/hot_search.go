@@ -16,15 +16,18 @@ import (
 )
 
 const (
-	hotSearchFilePrefix    = "audit-hot-"
-	hotSearchFileSuffix    = ".ndjson"
-	hotSearchBucket        = time.Hour
-	defaultHotSearchLimit  = 50
-	maxHotSearchLimit      = 500
-	defaultHotSearchFiles  = 256
-	defaultHotSearchLines  = 100000
-	maxHotSearchLineBytes  = 256 * 1024
-	maxHotSearchChunkBytes = 64 * 1024
+	hotSearchFilePrefix      = "audit-hot-"
+	hotSearchFileSuffix      = ".ndjson"
+	hotSearchBucket          = time.Hour
+	defaultHotSearchLimit    = 50
+	maxHotSearchLimit        = 500
+	defaultHotSearchFiles    = 256
+	defaultHotSearchLines    = 100000
+	maxHotSearchScanEntries  = 4096
+	maxHotSearchLineBytes    = 256 * 1024
+	maxHotSearchChunkBytes   = 64 * 1024
+	maxHotSearchKeywords     = 32
+	maxHotSearchKeywordRunes = 100
 )
 
 type hotSearchLine struct {
@@ -195,12 +198,24 @@ func isNonPersistedTrafficSource(value string) bool {
 
 func buildHotSearchText(input AuditLogInput) string {
 	includePayloadBody := !input.Success || input.AuditOutcome != AuditOutcomeSuccess || strings.HasPrefix(input.SampleReason, "success_sample_")
-	parts := []string{input.TraceID, string(input.TrafficSource), input.Method, input.Path, input.QueryString, input.Model, input.UpstreamModel, input.PricingModel, input.ClientIP, input.UserAgent, string(input.AuditOutcome), input.ErrorPhase, input.ErrorCode, input.ErrorMessage, input.SystemAccountID, input.APIKeyID, input.GroupID, input.AccountID, input.ProviderCode}
+	parts := []string{input.TraceID, string(input.TrafficSource), input.Method, input.Path, input.QueryString, input.Model, input.UpstreamModel, input.PricingModel, input.ModelMappingSource, input.ClientIP, input.UserAgent, string(input.AuditOutcome), input.ErrorPhase, input.ErrorCode, input.ErrorMessage, input.SystemAccountID, input.APIKeyID, input.GroupID, input.AccountID, input.ProviderCode}
+	if input.ModelMappingApplied != nil && *input.ModelMappingApplied {
+		parts = append(parts, "model_mapping_applied")
+	}
+	if input.FinalStatusCode != nil {
+		parts = append(parts, strconv.Itoa(*input.FinalStatusCode))
+	}
 	for _, attempt := range input.Attempts {
 		parts = append(parts, strconv.Itoa(attempt.AttemptIndex), attempt.AccountID, attempt.GroupID, attempt.ProviderCode, attempt.UpstreamMethod, attempt.UpstreamURL, attempt.ErrorPhase, attempt.ErrorCode, attempt.ErrorMessage)
+		if attempt.UpstreamStatusCode != nil {
+			parts = append(parts, strconv.Itoa(*attempt.UpstreamStatusCode))
+		}
 	}
 	for _, payload := range input.Payloads {
 		parts = append(parts, string(payload.PartType), payload.ContentType, payload.ContentEncoding, payload.BodySHA256, string(payload.CaptureStatus), string(payload.DropReason))
+		if payload.RawBodySizeBytes != nil {
+			parts = append(parts, strconv.FormatInt(*payload.RawBodySizeBytes, 10))
+		}
 		if payload.Headers != nil {
 			if encoded, err := json.Marshal(payload.Headers); err == nil {
 				parts = append(parts, string(encoded))
@@ -241,6 +256,11 @@ func hotSearchFileName(when time.Time) string {
 
 // SearchHotSearch scans only bounded hourly files and returns newest unique IDs.
 func (s *sqlStore) SearchHotSearch(ctx context.Context, options HotSearchOptions) (HotSearchResult, error) {
+	select {
+	case <-ctx.Done():
+		return HotSearchResult{}, ctx.Err()
+	default:
+	}
 	if len(options.Keywords) == 0 {
 		return HotSearchResult{}, fmt.Errorf("hot-search 至少需要一个关键词")
 	}
@@ -323,6 +343,10 @@ func normalizeHotKeywords(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
+		runes := []rune(value)
+		if len(runes) > maxHotSearchKeywordRunes {
+			value = string(runes[:maxHotSearchKeywordRunes])
+		}
 		if len([]rune(value)) < 2 {
 			continue
 		}
@@ -332,6 +356,9 @@ func normalizeHotKeywords(values []string) []string {
 		}
 		seen[key] = struct{}{}
 		result = append(result, key)
+		if len(result) >= maxHotSearchKeywords {
+			break
+		}
 	}
 	return result
 }
@@ -349,6 +376,10 @@ func (s *sqlStore) listHotSearchFiles(start, end time.Time, maxFiles int) ([]str
 		bucket time.Time
 	}
 	candidates := make([]candidate, 0)
+	entryScanTruncated := len(entries) > maxHotSearchScanEntries
+	if entryScanTruncated {
+		entries = entries[:maxHotSearchScanEntries]
+	}
 	for _, entry := range entries {
 		if !entry.Type().IsRegular() {
 			continue
@@ -363,7 +394,7 @@ func (s *sqlStore) listHotSearchFiles(start, end time.Time, maxFiles int) ([]str
 		candidates = append(candidates, candidate{path: filepath.Join(s.hotDir, entry.Name()), bucket: bucket})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].bucket.After(candidates[j].bucket) })
-	truncated := len(candidates) > maxFiles
+	truncated := entryScanTruncated || len(candidates) > maxFiles
 	if truncated {
 		candidates = candidates[:maxFiles]
 	}
@@ -442,6 +473,9 @@ func (s *sqlStore) cleanupHotSearchFilesBefore(cutoff time.Time, maxFiles int) (
 		return 0, fmt.Errorf("读取 F3 hot-search 清理目录失败: %w", err)
 	}
 	var deleted int64
+	if len(entries) > maxHotSearchScanEntries {
+		entries = entries[:maxHotSearchScanEntries]
+	}
 	for _, entry := range entries {
 		if deleted >= int64(maxFiles) || !entry.Type().IsRegular() {
 			continue
