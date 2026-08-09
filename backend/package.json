@@ -317,6 +317,7 @@
     "test:operation-log-default-window": "tsx src/scripts/regression/operation-log-default-window-regression.ts",
     "test:f3-audit-log-contract": "tsx src/scripts/regression/f3-audit-log-contract-regression.ts",
     "test:f3-audit-log-go-input-contract": "tsx src/scripts/regression/audit-log-go-input-contract-regression.ts",
+    "test:f3-audit-log-query-adapter": "tsx src/scripts/regression/audit-log-f3-query-adapter-regression.ts",
     "test:logging-body-performance-boundary": "tsx src/scripts/regression/logging-body-performance-boundary-regression.ts",
     "test:audit-log-prepared-ipc-ownership": "tsx src/scripts/regression/audit-log-prepared-ipc-ownership-regression.ts",
     "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",
