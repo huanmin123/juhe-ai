@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "test:dev-go-sidecar-env": "node scripts/regression/dev-go-sidecar-env-regression.mjs",
     "mockdata": "pnpm --filter juhe-ai-backend mockdata",
     "build": "pnpm -r build",
     "package:release": "pwsh ./scripts/package-release.ps1",
