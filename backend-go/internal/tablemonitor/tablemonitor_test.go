@@ -34,12 +34,56 @@ func TestLoadConfigRequiresDedicatedSQLiteOutput(t *testing.T) {
 		t.Fatal("expected output inside Codex shard root to fail")
 	}
 	env = sqliteTestEnv(root)
+	env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"]
+	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") {
+		t.Fatalf("表监控 SQLite 不能与 F1 运行日志文件共用，实际为 %v", err)
+	}
+	env = sqliteTestEnv(root)
+	env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = filepath.Join(root, "runtime-log.sqlite3")
+	createSQLiteSource(t, env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"])
+	if err := os.Link(env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"], env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"]); err != nil {
+		t.Fatalf("create F1/F2 hard-link collision fixture: %v", err)
+	}
+	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") {
+		t.Fatalf("表监控 SQLite 不能与 F1 硬链接文件共用，实际为 %v", err)
+	}
+	env = sqliteTestEnv(root)
+	env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = filepath.Join(root, "table-monitor-source-collision.sqlite3")
 	createSQLiteSource(t, env["JUHE_AI_DATABASE_PATH"])
 	if err := os.Link(env["JUHE_AI_DATABASE_PATH"], env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"]); err != nil {
 		t.Fatalf("create hard-link collision fixture: %v", err)
 	}
 	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil {
 		t.Fatal("expected hard-link output/source file identity collision to fail")
+	}
+}
+
+func TestSQLiteStoreForcesWALAndBusyTimeout(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteTestEnv(root)
+	cfg, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var timeout int
+	if err := store.db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != sqliteBusyTimeoutMs {
+		t.Fatalf("SQLite busy_timeout = %d, want %d", timeout, sqliteBusyTimeoutMs)
+	}
+	var journalMode string
+	if err := store.db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		t.Fatalf("SQLite journal_mode = %q, want WAL", journalMode)
 	}
 }
 

@@ -194,6 +194,9 @@ func assertPostgresTableMonitorSamplerSmoke(t *testing.T, ctx context.Context, s
 			t.Fatalf("写入 PostgreSQL 采样源表 %s 失败: %s", schema, redactPostgresTableMonitorSmokeError(err, url))
 		}
 	}
+	if _, err := collectPostgresTarget(ctx, store.db, postgresTarget{role: "missing", schema: prefix + "_missing_schema", path: "postgres:missing"}, time.Now().UTC(), 1); err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("缺失 PostgreSQL schema 必须显式失败而不是生成零值快照，实际为 %v", redactPostgresTableMonitorSmokeError(err, url))
+	}
 
 	cfg := Config{
 		InstanceID:           prefix + "-sampler-owner",

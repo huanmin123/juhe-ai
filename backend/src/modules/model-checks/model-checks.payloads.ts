@@ -55,6 +55,29 @@ export function createModelCheckProbeRequest(
   }
 }
 
+/**
+ * GPT-5.6 Juice is an OpenAI Responses-specific diagnostic contract.  Keeping
+ * it separate from the generic probe factory prevents those fields from being
+ * sent to other protocol profiles.
+ */
+export function createGpt56JuiceProbeRequest(
+  model: string,
+  prompt: string,
+  options: { reasoningEffort: 'high'; instructions?: string }
+): ModelCheckProbeRequest {
+  return {
+    path: '/v1/responses',
+    responseProtocol: 'openai_responses',
+    expectedModel: model,
+    body: {
+      ...createResponsesPayload(model, prompt, { maxOutputTokens: 16, stream: false, temperature: 0 }),
+      instructions: options.instructions ?? 'You are an isolated GPT-5.6 account diagnostic. Follow the requested output exactly.',
+      reasoning: { effort: options.reasoningEffort },
+      include: ['reasoning.encrypted_content']
+    }
+  }
+}
+
 export function createModelCheckDistributionProbeRequest(
   protocol: ModelCheckProbeProtocol,
   model: string,

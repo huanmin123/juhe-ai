@@ -31,6 +31,11 @@ export function buildModelCheckTrustReport(
   const hasModelResponseEvidence = responseEvidence.length > 0
   const mappingApplied = evidence.some((item) => item.modelMappingApplied === true)
   const modelMismatch = responseEvidence.some((item) => item.modelMismatch === true)
+  const gpt56JuiceAnomaly = targetChecks.some((item) => (
+    item.itemKey === 'target.gpt56_juice'
+    && item.itemType === 'gpt56_juice'
+    && record(item.evidenceSummary)?.hardAnomaly === true
+  ))
   const representative = responseEvidence.find((item) => item.requestModel || item.upstreamModel || item.responseModel)
   const configuredRepresentative = evidence.find((item) => item.requestModel || item.upstreamModel)
   const mappedUpstreamModel = text(representative?.upstreamModel) ?? text(configuredRepresentative?.upstreamModel) ?? input.requestedModel
@@ -52,7 +57,7 @@ export function buildModelCheckTrustReport(
         || successfulProtocolChecks.some((item) => item.status === 'warning' || item.status === 'skipped')
         ? 'warning'
         : 'consistent'
-  const identityStatus: ModelIdentityStatus = modelMismatch
+  const identityStatus: ModelIdentityStatus = modelMismatch || gpt56JuiceAnomaly
     ? 'suspected_downgrade'
     : hasModelResponseEvidence
       ? 'consistent'
@@ -60,6 +65,7 @@ export function buildModelCheckTrustReport(
   const reasonCodes = [
     ...(mappingStatus === 'configured_mapping' ? ['configured_model_mapping'] : []),
     ...(mappingStatus === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
+    ...(gpt56JuiceAnomaly ? ['gpt56_juice_mixed_or_replaced'] : []),
     ...(protocolStatus === 'failed' ? ['protocol_check_failed'] : []),
     ...(!hasModelResponseEvidence ? ['model_response_evidence_unavailable'] : []),
     'tokenizer_calibration_unavailable',
@@ -93,6 +99,10 @@ const protocolItemTypes = new Set([
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
 function boundedPercentage(value: number): number {

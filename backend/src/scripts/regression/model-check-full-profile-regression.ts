@@ -31,6 +31,8 @@ const fullPolicy: ModelQualityPolicy = {
 }
 let upstreamResponseRequestCount = 0
 let tokenIntegrityRequestCount = 0
+let gpt56JuiceRequestCount = 0
+let forceGpt56JuiceMismatch = false
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -61,16 +63,18 @@ try {
   assert(account, 'mock fixture should create a target account')
   assert(secondAccount, 'mock fixture should create a second group account')
   repositories.updateAccount(account.id, {
-    supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.6-sol', 'gpt-5.6-terra']
+    supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']
   }, { systemAccountId: 'sys_admin', role: 'admin' })
 
   const quickRun = await runModelCheck({
     targetType: 'account',
     targetId: account.id,
-    model: 'gpt-5.5'
+    model: 'gpt-5.6-sol'
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   assert.equal(quickRun.status, 'completed')
   assert.equal(quickRun.profile, 'quick', '省略 profile 时必须使用快速检测')
+  assert(!quickRun.checks.some((item) => item.itemKey === 'target.gpt56_juice'), 'GPT-5.6 快速检测不得执行 Juice 专项探针')
+  assert.equal(gpt56JuiceRequestCount, 0, 'GPT-5.6 快速检测不得向上游发送 Juice 专项请求')
   assert.equal(upstreamResponseRequestCount, 8, '快速检测应执行基础、流式、结构化、工具、三点 Token 与配对跨模型请求')
   assert(!quickRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '基础连通成功只用于内部早停，不应生成模型评分项')
   for (const itemKey of ['target.responses_stream', 'target.structured_output', 'target.tool_calling', 'target.usage_shape', 'target.token_integrity', 'target.cross_model']) {
@@ -83,22 +87,24 @@ try {
   assert.notEqual(quickRun.level, 'high_confidence', '快速检测不允许输出高可信结论')
   upstreamResponseRequestCount = 0
   tokenIntegrityRequestCount = 0
+  forceGpt56JuiceMismatch = true
 
   const progressItemKeys: string[] = []
   const accountRun = await runModelCheck({
     targetType: 'account',
     targetId: account.id,
-    model: 'gpt-5.5',
+    model: 'gpt-5.6-luna',
     profile: 'full',
     trustedComparison: false
   }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, (event) => {
     if ('itemKey' in event) progressItemKeys.push(event.itemKey)
   }, { policy: fullPolicy })
+  forceGpt56JuiceMismatch = false
   await assertRunShape(accountRun, {
     targetType: 'account',
     targetId: account.id,
     expectedAccountId: account.id,
-    highConfidence: true
+    highConfidence: false
   })
   assert.equal(accountRun.accountId, account.id, '账户目标报告应记录被测账号 ID')
   assert.equal(tokenIntegrityRequestCount, 9, '完整检测 Token 诚信探针必须保持三轮共 9 个物理请求')
@@ -116,7 +122,21 @@ try {
   assert(!usageRows.some((row) => row.accountId && row.accountId !== account.id), '账户目标检测不应静默切到同分组其他账号')
   assert(!usageRows.some((row) => row.accountId === secondAccount.id), '账户目标检测不应命中第二个分组账号')
 
-  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环，辅助模型对照与长上下文探针通过')
+  const juiceItem = accountRun.checks.find((item) => item.itemKey === 'target.gpt56_juice')
+  assert(juiceItem, 'GPT-5.6 深度检测必须生成 Juice 专项汇总项')
+  assert.equal(accountRun.level, 'suspicious', 'Juice 命中其他 GPT-5.6 签名时必须标记疑似混用')
+  assert.equal(juiceItem.status, 'failed', 'Juice 混用必须保留失败专项项')
+  assert.equal(juiceItem.maxScore, 0, 'Juice 专项不得改写通用评分标尺')
+  assert.equal(juiceItem.evidenceSummary.hardAnomaly, true, 'Juice 混用必须保留硬异常证据')
+  assert.equal(gpt56JuiceRequestCount, 6, 'GPT-5.6 深度检测必须发送六个 Juice 专项请求')
+  const juiceContract = accountRun.requestSummary.gpt56Juice as Record<string, unknown> | undefined
+  assert.equal(juiceContract?.version, 'gpt56-juice-v1', '报告必须记录 Juice 专项契约版本')
+  assert.match(String(juiceContract?.hash ?? ''), /^[a-f0-9]{64}$/, '报告必须记录 Juice 专项契约哈希')
+  assert(accountRun.probeSetVersion.includes('gpt56-juice-v1'), 'GPT-5.6 深度检测必须把 Juice 版本并入探针集版本')
+  assert.equal(accountRun.qualityDecision?.triggered, false, '单独 Juice 异常当前不得自动处罚')
+  assert(accountRun.qualityDecision?.reasonCodes.includes('gpt56_juice_diagnostic_only'), '单独 Juice 异常必须标记为仅诊断质量决策')
+
+  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环、GPT-5.6 Juice 隔离与专项契约通过')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -171,6 +191,7 @@ function createMockUpstream(): http.Server {
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         upstreamResponseRequestCount += 1
         if (JSON.stringify(body).includes('Controlled token integrity probe')) tokenIntegrityRequestCount += 1
+        if (Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content')) gpt56JuiceRequestCount += 1
         const outputText = outputForProbe(body)
         if (body.stream === true) {
           sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText)
@@ -236,6 +257,16 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
 
 function outputForProbe(body: Record<string, unknown>): string {
   const text = JSON.stringify(body).toUpperCase()
+  const coverage = JSON.stringify(body).match(/Juice=(\d+)/i)
+  if (coverage) return coverage[1]
+  if (text.includes('REPLY WITH EXACTLY: 32')) return '32'
+  if (text.includes('REPLY WITH EXACTLY: 48')) return '48'
+  if (text.includes('JUICE NUMBER') || text.includes('SOURCE\\\":\\\"VALID CHANNELS')) {
+    if (forceGpt56JuiceMismatch) return '40'
+    if (body.model === 'gpt-5.6-terra') return '32'
+    if (body.model === 'gpt-5.6-luna') return '48'
+    return '40'
+  }
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
   if (text.includes('BETA')) return '{"sum":83,"code":"BETA"}'

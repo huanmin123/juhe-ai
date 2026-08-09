@@ -24,6 +24,8 @@ type Store struct {
 	schemaReady bool
 }
 
+const sqliteBusyTimeoutMs = 5000
+
 func OpenStore(cfg Config) (*Store, error) {
 	if cfg.Mode == ModeSQLite {
 		dsn, err := sqliteOutputDSN(cfg.OutputPath)
@@ -36,6 +38,10 @@ func OpenStore(cfg Config) (*Store, error) {
 		}
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
+		if err := configureSQLiteWriter(db); err != nil {
+			db.Close()
+			return nil, err
+		}
 		return &Store{db: db, mode: cfg.Mode}, nil
 	}
 	db, err := sql.Open("pgx", cfg.PostgresURL)
@@ -45,6 +51,24 @@ func OpenStore(cfg Config) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(4)
 	return &Store{db: db, mode: cfg.Mode}, nil
+}
+
+func configureSQLiteWriter(db *sql.DB) error {
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMs)); err != nil {
+		return fmt.Errorf("设置表监控 SQLite busy_timeout 失败: %w", err)
+	}
+	var journalMode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
+		return fmt.Errorf("启用表监控 SQLite WAL journal_mode 失败: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(journalMode), "wal") {
+		return fmt.Errorf("表监控 SQLite WAL journal_mode 未生效，实际为 %q", journalMode)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("检查表监控 SQLite 连接失败: %w", err)
+	}
+	return nil
 }
 
 func sqliteOutputDSN(path string) (string, error) {

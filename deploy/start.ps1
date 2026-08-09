@@ -107,7 +107,8 @@ function Test-RipgrepDependency {
 
 function Get-RuntimeLogIndexerNodeLauncher {
   return @'
-import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
@@ -227,8 +228,7 @@ try {
 
 function Get-TableMonitorNodeLauncher {
   return @'
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'

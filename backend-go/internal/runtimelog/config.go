@@ -92,6 +92,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if config.RuntimeLogDatabasePath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
 		}
+		if tableMonitorPath := strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH")); tableMonitorPath != "" && sameSQLitePath(tableMonitorPath, config.RuntimeLogDatabasePath) {
+			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 指向同一个 SQLite 文件")
+		}
 		if config.DatasetPath != "" && sameSQLitePath(config.DatasetPath, config.RuntimeLogDatabasePath) {
 			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_DATASET_DATABASE_PATH 指向同一个 SQLite 文件")
 		}

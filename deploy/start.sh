@@ -200,7 +200,8 @@ start_runtime_log_indexer() {
   fi
 
   runtime_log_indexer_pid="$(node --input-type=module -e '
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs"
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { isAbsolute, resolve } from "node:path"
 import { createRequire } from "node:module"
 import { spawn } from "node:child_process"
@@ -347,8 +348,7 @@ start_table_monitor() {
 
   table_monitor_pid="$(
     node --input-type=module - "$table_monitor_binary" "$APP_DIR/backend" "$table_monitor_log_file" <<'NODE'
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs"
-import { randomUUID } from "node:crypto"
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs"
 import { isAbsolute, resolve } from "node:path"
 import { createRequire } from "node:module"
 import { spawn } from "node:child_process"

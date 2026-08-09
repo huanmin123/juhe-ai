@@ -576,6 +576,43 @@ func TestLoadConfigRejectsSharedBusinessAndRuntimeLogSQLitePath(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsSharedTableMonitorAndRuntimeLogSQLitePath(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":     "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":           "sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":   "shared.sqlite",
+		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": "shared.sqlite",
+		"JUHE_AI_DATABASE_PATH":               "business.sqlite",
+		"JUHE_AI_LOG_DIR":                     "logs",
+	}
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") {
+		t.Fatalf("运行日志 SQLite 不能与 F2 表监控文件共用，实际为 %v", err)
+	}
+}
+
+func TestLoadConfigRejectsHardLinkedTableMonitorAndRuntimeLogSQLitePath(t *testing.T) {
+	root := t.TempDir()
+	runtimeLogPath := filepath.Join(root, "runtime-log.sqlite")
+	tableMonitorPath := filepath.Join(root, "table-monitor.sqlite")
+	if err := os.WriteFile(runtimeLogPath, []byte("sqlite-fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(runtimeLogPath, tableMonitorPath); err != nil {
+		t.Fatalf("创建 F1/F2 硬链接 fixture 失败: %v", err)
+	}
+	values := map[string]string{
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":     "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":           "sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":   runtimeLogPath,
+		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": tableMonitorPath,
+		"JUHE_AI_DATABASE_PATH":               filepath.Join(root, "business.sqlite"),
+		"JUHE_AI_LOG_DIR":                     filepath.Join(root, "logs"),
+	}
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") {
+		t.Fatalf("F1/F2 硬链接 SQLite 文件必须拒绝启动，实际为 %v", err)
+	}
+}
+
 func TestOwnerLeaseRejectsSecondGoInstance(t *testing.T) {
 	store, config := openTestSQLiteStore(t)
 	secondOpened, err := OpenStore(context.Background(), config)

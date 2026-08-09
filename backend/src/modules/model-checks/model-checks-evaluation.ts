@@ -833,6 +833,7 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   const targetBehavior = checks.find((item) => item.itemKey === 'target.behavior_probe')
   const targetLongContext = checks.find((item) => item.itemKey === 'target.long_context')
   const targetStability = checks.find((item) => item.itemKey === 'target.stability')
+  const targetGpt56Juice = checks.find((item) => item.itemKey === 'target.gpt56_juice' && item.itemType === 'gpt56_juice')
   const trustedComparisonItem = checks.find((item) => item.itemKey === 'trusted_comparison.comparison')
   const behaviorPassed = targetBehavior?.status === 'passed'
   const longContextPassed = targetLongContext?.status === 'passed'
@@ -841,6 +842,9 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   const trustedComparisonPassed = !options.trustedComparison || checks.some((item) => item.itemType === 'trusted_comparison' && item.status === 'passed')
   if (modelMismatchCount > 0) {
     return { level: 'suspicious', score, maxScore: 100, message: '响应模型字段与请求模型不一致，目标链路疑似被替换或降级' }
+  }
+  if (recordValue(targetGpt56Juice?.evidenceSummary)?.hardAnomaly === true) {
+    return { level: 'suspicious', score, maxScore: 100, message: 'GPT-5.6 Juice 专项探针发现疑似混用或响应替换，建议结合其他证据复核' }
   }
   if (targetBasic?.status === 'failed' && recordValue(targetBasic.evidenceSummary)?.success !== true) {
     return { level: 'unavailable', score, maxScore: 100, message: '目标模型链路不可检测或上游不可用' }

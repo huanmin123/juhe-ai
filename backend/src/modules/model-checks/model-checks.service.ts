@@ -120,6 +120,12 @@ import {
   createControlledBehaviorObservations,
   executeModelIdentityObservationProbes
 } from './model-checks-identity-features.js'
+import {
+  executeGpt56JuiceProbes,
+  gpt56JuiceProbeContract,
+  gpt56JuiceProbeVersion,
+  isGpt56JuiceModel
+} from './model-checks-gpt56-juice.js'
 import { getModelQualityPolicyAsync } from '../../storage/model-quality.repository.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
@@ -330,6 +336,14 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   const comparison = trustedComparisonAccountId
     ? await resolveTrustedComparisonTargetAsync(trustedComparisonAccountId, target, model, access)
     : undefined
+  const gpt56JuiceEnabled = profile === 'full'
+    && target.modelCheckProfile.protocol === 'openai_responses'
+    && isGpt56JuiceModel(model)
+  const effectiveProbeSetVersion = profile === 'quick'
+    ? quickProbeSetVersion
+    : gpt56JuiceEnabled
+      ? `${probeSetVersion}+${gpt56JuiceProbeVersion}`
+      : probeSetVersion
   emitModelCheckProgress(progress, {
     type: 'run_started',
     message: '检测任务已启动，正在准备真实网关探针',
@@ -365,7 +379,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       trustedComparison,
       trustedComparisonAvailable: Boolean(comparison),
       traceId: runTraceId,
-      probeSetVersion: profile === 'quick' ? quickProbeSetVersion : probeSetVersion,
+      probeSetVersion: effectiveProbeSetVersion,
       startedAt,
       policySnapshot,
       requestSummary: {
@@ -382,7 +396,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         scheduleId: execution.scheduleId,
         trustedComparison,
         trustedComparisonAccountId: comparison?.targetId,
-        trustedComparisonAccountName: comparison?.targetName
+        trustedComparisonAccountName: comparison?.targetName,
+        ...(gpt56JuiceEnabled ? { gpt56Juice: gpt56JuiceProbeContract() } : {})
       }
     }
   })
@@ -573,7 +588,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
           baseUrl: target.candidateAccounts[0].baseUrl,
           credentialMode: target.candidateAccounts[0].type,
-          probeSetVersion,
+          probeSetVersion: effectiveProbeSetVersion,
           signal,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
@@ -598,7 +613,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
           baseUrl: target.candidateAccounts[0].baseUrl,
           credentialMode: target.candidateAccounts[0].type,
-          probeSetVersion,
+          probeSetVersion: effectiveProbeSetVersion,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
     if (identityObservation && hasTerminalNon200Probe([identityObservation.item])) {
@@ -630,6 +645,35 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       })
       throw new ModelCheckRunAlreadyFinishedError()
     }
+    const gpt56Juice = targetUnavailable || !gpt56JuiceEnabled
+      ? undefined
+      : await executeGpt56JuiceProbes({
+          model,
+          prefix: 'target',
+          signal,
+          runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
+        })
+    if (gpt56Juice?.item) emitModelCheckItemProgress(progress, gpt56Juice.item)
+    if (gpt56Juice?.item && hasTerminalNon200Probe([gpt56Juice.item])) {
+      await finishModelCheckRunWithoutQualityEvidence({
+        runId: run.id,
+        items: [
+          ...targetSuite.items,
+          ...(tokenIntegrity ? [tokenIntegrity.item] : []),
+          ...(identityObservation ? [identityObservation.item] : []),
+          ...(crossModelComparison ? [crossModelComparison] : []),
+          gpt56Juice.item
+        ],
+        model,
+        profile,
+        trustedComparison,
+        comparisonTargetId: comparison?.targetId,
+        startedAtMs,
+        probeSetVersion: effectiveProbeSetVersion,
+        reason: 'GPT-5.6 Juice 专项探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+      })
+      throw new ModelCheckRunAlreadyFinishedError()
+    }
     const comparisonSuite = comparison
       ? targetUnavailable
         ? undefined
@@ -638,7 +682,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
       await finishModelCheckRunWithoutQualityEvidence({
         runId: run.id,
-        items: [...targetSuite.items, ...(tokenIntegrity ? [tokenIntegrity.item] : []), ...(identityObservation ? [identityObservation.item] : []), ...(crossModelComparison ? [crossModelComparison] : []), ...comparisonSuite.items],
+        items: [...targetSuite.items, ...(tokenIntegrity ? [tokenIntegrity.item] : []), ...(identityObservation ? [identityObservation.item] : []), ...(crossModelComparison ? [crossModelComparison] : []), ...(gpt56Juice?.item ? [gpt56Juice.item] : []), ...comparisonSuite.items],
         model,
         profile,
         trustedComparison,
@@ -665,6 +709,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           ...(tokenIntegrity ? [tokenIntegrity.item] : []),
           ...(identityObservation ? [identityObservation.item] : []),
           ...(crossModelComparison ? [crossModelComparison] : []),
+          ...(gpt56Juice?.item ? [gpt56Juice.item] : []),
           ...(comparisonSuite?.items ?? []),
           ...(trustedComparisonItem ? [trustedComparisonItem] : []),
           distributionSimilarityItem
@@ -683,6 +728,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       ...(tokenIntegrity ? [tokenIntegrity.item] : []),
       ...(identityObservation ? [identityObservation.item] : []),
       ...(crossModelComparison ? [crossModelComparison] : []),
+      ...(gpt56Juice?.item ? [gpt56Juice.item] : []),
       ...(comparisonSuite?.items ?? []),
       ...(trustedComparisonItem ? [trustedComparisonItem] : []),
       ...(distributionSimilarityItem ? [distributionSimilarityItem] : [])
@@ -696,7 +742,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
     const trustReport = buildModelCheckTrustReport(checks, {
       requestedModel: model,
-      probeSetVersion,
+      probeSetVersion: effectiveProbeSetVersion,
       evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
     })
     if (tokenIntegrity || identityObservation) {
@@ -707,7 +753,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
             providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
             baseUrl: target.candidateAccounts[0].baseUrl,
             credentialMode: target.candidateAccounts[0].type,
-            probeSetVersion,
+            probeSetVersion: effectiveProbeSetVersion,
             observations: targetSuite.behaviorObservations
           })
         : []
@@ -809,6 +855,7 @@ async function finishModelCheckRunWithoutQualityEvidence(input: {
   trustedComparison: boolean
   comparisonTargetId?: string
   startedAtMs: number
+  probeSetVersion?: string
   reason: string
 }): Promise<void> {
   const checks = await requestDatasetWriter({
@@ -820,7 +867,7 @@ async function finishModelCheckRunWithoutQualityEvidence(input: {
   const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
   const trustReport = buildModelCheckTrustReport(checks, {
     requestedModel: input.model,
-    probeSetVersion: input.profile === 'quick' ? quickProbeSetVersion : probeSetVersion,
+    probeSetVersion: input.probeSetVersion ?? (input.profile === 'quick' ? quickProbeSetVersion : probeSetVersion),
     evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
   })
   await requestDatasetWriter({
@@ -875,6 +922,32 @@ async function applyModelQualityOutcome(
       result: 'not_triggered',
       reasonCodes: ['quality_evidence_not_formed'],
       message: '未形成质量判定证据，本次不执行质量处罚、质量隔离/降级或健康统计失败写入',
+      decidedAt
+    }
+    emitModelCheckProgress(progress, {
+      type: 'quality_decision',
+      triggered: false,
+      score: detail.score,
+      threshold: snapshot.threshold,
+      hardFailure: false,
+      configuredAction: snapshot.action,
+      message: decision.message
+    })
+    await requestDatasetWriter({ type: 'update_model_check_quality_decision', runId: detail.id, decision })
+    const persisted = await getModelCheckRunDetailAsync(detail.id)
+    return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
+  }
+  if (isGpt56JuiceDiagnosticOnlyAnomaly(detail, snapshot)) {
+    const decision: ModelQualityDecision = {
+      triggerKind,
+      triggered: false,
+      hardFailure: false,
+      threshold: snapshot.threshold,
+      score: detail.score,
+      configuredAction: snapshot.action,
+      result: 'not_triggered',
+      reasonCodes: ['gpt56_juice_diagnostic_only'],
+      message: 'GPT-5.6 Juice 专项探针发现异常，但未叠加其他质量失败证据；本阶段仅保留报告，不执行质量处罚、质量隔离/降级或健康统计失败写入',
       decidedAt
     }
     emitModelCheckProgress(progress, {
@@ -1088,6 +1161,21 @@ async function applyModelQualityOutcome(
   await requestDatasetWriter({ type: 'update_model_check_quality_decision', runId: detail.id, decision })
   const persisted = await getModelCheckRunDetailAsync(detail.id)
   return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
+}
+
+function isGpt56JuiceDiagnosticOnlyAnomaly(detail: ModelCheckRunDetail, snapshot: ModelQualityPolicySnapshot): boolean {
+  const juiceAnomaly = detail.checks.some((item) => (
+    item.itemKey === 'target.gpt56_juice'
+    && item.itemType === 'gpt56_juice'
+    && recordValue(item.evidenceSummary)?.hardAnomaly === true
+  ))
+  if (!juiceAnomaly || detail.score < snapshot.threshold) return false
+  return !detail.checks.some((item) => (
+    item.itemKey !== 'target.gpt56_juice'
+    && item.itemKey.startsWith('target.')
+    && item.maxScore > 0
+    && item.status === 'failed'
+  ))
 }
 
 async function requestModelQualityEnforcement(input: import('../../storage/model-quality.repository.js').ModelQualityEnforcementInput) {

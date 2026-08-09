@@ -481,6 +481,13 @@ func collectPostgres(ctx context.Context, cfg Config, sampledAt time.Time) (coll
 }
 
 func collectPostgresTarget(ctx context.Context, db *sql.DB, target postgresTarget, sampledAt time.Time, maxTables int) (collectedSample, error) {
+	var schemaExists bool
+	if err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", target.schema).Scan(&schemaExists); err != nil {
+		return collectedSample{}, fmt.Errorf("检查 PostgreSQL schema %s 是否存在失败: %w", target.schema, err)
+	}
+	if !schemaExists {
+		return collectedSample{}, fmt.Errorf("PostgreSQL schema %s 不存在，无法采集表监控快照", target.schema)
+	}
 	var blockSize int64
 	if err := db.QueryRowContext(ctx, "SELECT current_setting('block_size')::bigint").Scan(&blockSize); err != nil {
 		return collectedSample{}, fmt.Errorf("读取 PostgreSQL block_size 失败: %w", err)
