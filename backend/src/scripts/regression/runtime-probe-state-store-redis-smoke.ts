@@ -18,6 +18,9 @@ interface ProbeState {
   runtimeKey: string
   generation: number
   nextProbeAtMs: number
+  configRevision?: number
+  outcome?: string
+  sourceFences?: string[]
   probeRunId?: string
   probeRunUntilMs?: number
   probeRunPreviousNextProbeAtMs?: number
@@ -51,6 +54,34 @@ try {
     await store.renewGenerationRun(runtimeKey, 2, 'run-generation-2', now + 20_000, ttlMs),
     false,
     '新 generation 覆盖后，旧 generation + runId 不得续租'
+  )
+
+  const settled = {
+    runtimeKey,
+    generation: 4,
+    nextProbeAtMs: now,
+    configRevision: 7,
+    outcome: 'success',
+    sourceFences: ['["source-state","account-a",1,"00000000-0000-4000-8000-000000000001"]']
+  } satisfies ProbeState
+  assert.equal(await store.set(settled, ttlMs), true)
+  const replacement = {
+    runtimeKey,
+    generation: 5,
+    nextProbeAtMs: now + 1_000,
+    configRevision: 7,
+    probeRunId: 'replacement-owner',
+    probeRunUntilMs: now + 10_000
+  } satisfies ProbeState
+  assert.deepEqual(
+    await store.replaceSettledGeneration(replacement, settled.generation, ttlMs),
+    settled,
+    'Redis 原子替换必须返回完整旧 settled 快照，供调用方结算旧 fence'
+  )
+  assert.deepEqual(
+    await store.get(runtimeKey),
+    replacement,
+    'Redis 原子替换后新 generation 不能继承旧 outcome 或 source fence'
   )
 
   console.log('runtime-probe-state-store-redis-smoke passed')

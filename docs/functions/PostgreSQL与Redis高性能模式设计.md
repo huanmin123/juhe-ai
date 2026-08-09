@@ -125,7 +125,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 | PostgreSQL schema | 当前 SQLite 域 | 主要表 |
 | --- | --- | --- |
 | `juhe_business` | 业务库 | 系统账户、会话、供应商、账号、分组、API Key、授权、代理、设置、公告 |
-| `juhe_dataset` | 数据集目录库 | 审计元数据、操作日志、公开接口日志、运行日志索引、模型检测、记录清理目标 |
+| `juhe_dataset` | 数据集目录库 | 审计元数据、操作日志、公开接口日志、模型检测、记录清理目标；运行日志索引表由 Go F1 indexer 唯一写入，Node 仅只读 |
 | `juhe_usage` | 使用记录目录库 + usage shard | `usage_records`、使用记录列表索引、账号 / API Key scope catalog |
 | `juhe_stats` | 统计结果库 | 用量桶、额度窗口、范围窗口、排行、账号质量、系统监控、表监控、`stats_job_state` |
 | `juhe_codex_context` | Responses 桥接状态索引 | Responses session / response / compact 索引 |

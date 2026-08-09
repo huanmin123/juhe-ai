@@ -24,6 +24,9 @@ interface ProbeState {
   probeRunId?: string
   probeRunUntilMs?: number
   probeRunPreviousNextProbeAtMs?: number
+  configRevision?: number
+  outcome?: string
+  sourceFences?: string[]
 }
 
 const store = createRuntimeProbeStateStore<ProbeState>(`runtime-probe-state-regression-${Date.now()}`)
@@ -86,6 +89,36 @@ assert.deepEqual(await store.listDue(now + 120_000, 10), ['acct_b'], '删除状�
 
 await store.delete('acct_b')
 assert.equal(await store.get('acct_b'), undefined, '无条件删除应继续可用于手动清理状态')
+
+const settledReplacementState = {
+  runtimeKey: 'acct_settled_replacement',
+  generation: await store.nextGeneration('acct_settled_replacement', 60_000),
+  nextProbeAtMs: now,
+  accountId: 'acct_settled_replacement',
+  configRevision: 7,
+  outcome: 'success',
+  sourceFences: ['["source-state","account-a",1,"00000000-0000-4000-8000-000000000001"]']
+} satisfies ProbeState
+assert.equal(await store.set(settledReplacementState, 60_000), true, '已结算 generation 必须可写入供原子替换')
+const replacementState = {
+  runtimeKey: settledReplacementState.runtimeKey,
+  generation: await store.nextGeneration(settledReplacementState.runtimeKey, 60_000),
+  nextProbeAtMs: now + 1_000,
+  accountId: settledReplacementState.accountId,
+  configRevision: 7,
+  probeRunId: 'replacement-owner',
+  probeRunUntilMs: now + 10_000
+} satisfies ProbeState
+assert.deepEqual(
+  await store.replaceSettledGeneration(replacementState, settledReplacementState.generation, 60_000),
+  settledReplacementState,
+  '原子替换必须返回完整旧 settled 快照，供调用方结算旧 source fence'
+)
+assert.deepEqual(
+  await store.get(settledReplacementState.runtimeKey),
+  replacementState,
+  '新 generation 不得继承旧 outcome 或 source fence'
+)
 
 const mergeOptions = {
   preserveCurrentFields: ['phase'],

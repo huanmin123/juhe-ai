@@ -24,11 +24,28 @@ interface AvailabilityProbeState {
   sourceFences?: string[]
 }
 
+export interface ReplacedAvailabilityProbeFenceSettlement {
+  generation: number
+  configRevision: number
+  outcome: AvailabilityProbeOutcome
+  sourceFences: AvailabilityProbeSourceFence[]
+}
+
 export type AvailabilityProbeAcquireResult =
-  | { disposition: 'owner'; runtimeKey: string; generation: number; ownerToken: string }
+  | {
+    disposition: 'owner'
+    runtimeKey: string
+    generation: number
+    ownerToken: string
+    /** Fences from the atomically replaced settled generation. */
+    replacedFenceSettlement?: ReplacedAvailabilityProbeFenceSettlement
+  }
   | { disposition: 'joined'; runtimeKey: string; generation: number; retryAtMs: number }
 
-const defaultLeaseMs = 45_000
+// The account health diagnostic deadline is 65 seconds by default. Keep the
+// ownership lease longer than the full diagnostic ladder so a healthy owner
+// is not taken over while it is still completing its bounded probe.
+const defaultLeaseMs = 90_000
 const defaultRetentionMs = 5 * 60_000
 const availabilityProbeStateStore = createRuntimeProbeStateStore<AvailabilityProbeState>('gateway-availability-probe-coordinator')
 let availabilityProbeStateStoreForTest: RuntimeProbeStateStore<AvailabilityProbeState> | undefined
@@ -47,6 +64,8 @@ export async function acquireAvailabilityProbe(input: {
   retentionMs?: number
   sourceFence?: AvailabilityProbeSourceFence
   executionRole?: 'source_dispatch' | 'health_probe'
+  /** A new request_failure must not consume a previously settled probe result. */
+  forceNewGeneration?: boolean
 }): Promise<AvailabilityProbeAcquireResult> {
   const accountRuntimeScope = input.accountRuntimeScope.trim()
   if (!accountRuntimeScope) throw new Error('availability probe requires an account runtime scope')
@@ -81,7 +100,10 @@ export async function acquireAvailabilityProbe(input: {
       configRevision
     })
   }
-  if (current.outcome !== undefined && input.executionRole === 'source_dispatch' && input.sourceFence) {
+  if (
+    current.outcome !== undefined
+    && (input.forceNewGeneration || (input.executionRole === 'source_dispatch' && input.sourceFence))
+  ) {
     return await replaceSettledAvailabilityProbeGeneration({
       store,
       current,
@@ -93,7 +115,8 @@ export async function acquireAvailabilityProbe(input: {
       nowMs,
       leaseMs,
       retentionMs,
-      sourceFence: input.sourceFence
+      sourceFence: input.sourceFence,
+      executionRole: input.executionRole
     })
   }
   return await joinOrTakeOverAvailabilityProbe(store, runtimeKey, ownerToken, nowMs, leaseMs, retentionMs, current, input.sourceFence, input.executionRole, {
@@ -332,11 +355,11 @@ async function replaceSettledAvailabilityProbeGeneration(input: {
   nowMs: number
   leaseMs: number
   retentionMs: number
-  sourceFence: AvailabilityProbeSourceFence
+  sourceFence?: AvailabilityProbeSourceFence
+  executionRole?: 'source_dispatch' | 'health_probe'
 }): Promise<AvailabilityProbeAcquireResult> {
-  // A settled result is consumable only by fences registered before it was
-  // settled. Replace it in one state-store transaction: deleting first opens
-  // a window where a concurrent source can join the stale generation.
+  // Replace a settled result in one state-store transaction: deleting first
+  // opens a window where a concurrent source can join the stale generation.
   const generation = await input.store.nextGeneration(input.runtimeKey, input.retentionMs)
   const next: AvailabilityProbeState = {
     runtimeKey: input.runtimeKey,
@@ -347,18 +370,47 @@ async function replaceSettledAvailabilityProbeGeneration(input: {
     configRevision: input.configRevision,
     probeRunId: input.ownerToken,
     probeRunUntilMs: input.nowMs + input.leaseMs,
-    sourceFences: [encodeSourceFence(input.sourceFence)]
+    ...(input.sourceFence ? { sourceFences: [encodeSourceFence(input.sourceFence)] } : {})
   }
-  if (!await input.store.replaceSettledGeneration(next, input.current.generation, input.retentionMs)) {
+  const replaced = await input.store.replaceSettledGeneration(next, input.current.generation, input.retentionMs)
+  if (!replaced) {
     const latest = await input.store.get(input.runtimeKey)
     if (latest?.outcome !== undefined) {
       return await replaceSettledAvailabilityProbeGeneration({ ...input, current: latest, ownerToken: randomUUID() })
     }
     return latest
-      ? await joinOrTakeOverAvailabilityProbe(input.store, input.runtimeKey, input.ownerToken, input.nowMs, input.leaseMs, input.retentionMs, latest, input.sourceFence, 'source_dispatch', input)
+      ? await joinOrTakeOverAvailabilityProbe(
+          input.store,
+          input.runtimeKey,
+          input.ownerToken,
+          input.nowMs,
+          input.leaseMs,
+          input.retentionMs,
+          latest,
+          input.sourceFence,
+          input.executionRole,
+          input
+        )
       : { disposition: 'joined', runtimeKey: input.runtimeKey, generation: input.current.generation, retryAtMs: input.nowMs + input.leaseMs }
   }
-  return { disposition: 'owner', runtimeKey: input.runtimeKey, generation, ownerToken: input.ownerToken }
+  const replacedFenceSettlement = settlementFromReplacedGeneration(replaced)
+  return {
+    disposition: 'owner',
+    runtimeKey: input.runtimeKey,
+    generation,
+    ownerToken: input.ownerToken,
+    ...(replacedFenceSettlement ? { replacedFenceSettlement } : {})
+  }
+}
+
+function settlementFromReplacedGeneration(state: AvailabilityProbeState): ReplacedAvailabilityProbeFenceSettlement | undefined {
+  if (!state.outcome) return undefined
+  return {
+    generation: state.generation,
+    configRevision: state.configRevision,
+    outcome: state.outcome,
+    sourceFences: (state.sourceFences ?? []).flatMap(decodeSourceFence)
+  }
 }
 
 function encodeSourceFence(fence: AvailabilityProbeSourceFence): string {

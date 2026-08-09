@@ -143,7 +143,7 @@ assert.match(
 assert.match(tagSelectSource, /@dropdown-visible-change="\$emit\('dropdown-visible-change', \$event\)"/, '标签选择器必须透传下拉展开事件')
 assert.match(apiKeySectionSource, /@dropdown-visible-change="\$emit\('model-options-open', \$event\)"/, 'API Key 支持模型下拉必须发出按需加载事件')
 assert.match(editModalSource, /<AccountApiKeySection[\s\S]*?@model-options-open="\$emit\('model-options-open', \$event\)"[\s\S]*?@model-options-search="\$emit\('model-options-search', \$event\)"/, '账户弹窗必须把 API Key 模型展开和搜索事件传到页面加载器')
-assert.match(editFormSource, /async function loadAccountApiKeyRuntimeDetails\(\)[\s\S]*?apiKeys\.length < 2[\s\S]*?fetchAccountApiKeyRuntimeForEdit/, 'API Key 运行态只能由显式多 Key 加载动作请求')
+assert.match(editFormSource, /async function loadAccountApiKeyRuntimeDetails\(force = false\)[\s\S]*?apiKeys\.length < 2[\s\S]*?fetchAccountApiKeyRuntimeForEdit/, 'API Key 运行态只能由显式多 Key 加载动作请求')
 assert.match(saveFlowSource, /if \(options\.editingId\.value && !options\.accountAdvancedDetailLoaded\.value\)[\s\S]*?saveBasicAccountEdit\(\)/, '未加载高级配置时必须走基础字段增量保存')
 assert.doesNotMatch(
   `${savePayloadSource}\n${draftTestPayloadSource}`,
@@ -206,40 +206,67 @@ assert.match(
   /requestKey !== currentModelCatalogDiscoveryRequestKey\(\)/,
   '上游模型目录响应返回时必须确认代理、分组和凭据等连接草稿没有变更'
 )
-assert.match(
+assert.doesNotMatch(
   accountsViewSource,
-  /function shouldAutoRefreshAccountModelCatalog\(\): boolean[\s\S]*?modalOpen\.value[\s\S]*?editingId\.value[\s\S]*?form\.type !== 'api_key'[\s\S]*?form\.supportedModels\.some[\s\S]*?currentModelCatalogDiscoveryPayload\(\)/,
-  '自动同步必须只在新增 API Key 弹窗、支持模型为空且连接草稿完整时触发'
+  /shouldAutoRefreshAccountModelCatalog|scheduleAutomaticAccountModelCatalogSync|automaticModelCatalogAttemptedRequestKeys|clearAccountModelCatalogAutoSyncTimer/,
+  '账户弹窗不得包含已移除的自动模型目录同步状态或调度器'
+)
+const manualModelCatalogRefreshSource = sourceBetween(
+  accountsViewSource,
+  'async function refreshAccountModelCatalog(): Promise<void> {',
+  'let accountModelOptionsSearchTimer'
+)
+assert.match(accountsViewSource, /@refresh-models="refreshAccountModelCatalog"/, '账户弹窗必须保留用户手动同步上游模型入口')
+assert.equal(
+  [...manualModelCatalogRefreshSource.matchAll(/api\.(?:accounts|myAccounts)\.refreshModelCatalog/g)].length,
+  2,
+  '上游模型目录同步只能保留在手动同步处理函数中'
+)
+assert.doesNotMatch(
+  accountsViewSource.replace(manualModelCatalogRefreshSource, ''),
+  /\brefreshAccountModelCatalog\s*\(/,
+  '新增、编辑、取消和其他弹窗生命周期不得调用上游模型目录同步'
+)
+assert.doesNotMatch(
+  accountsViewSource.replace(manualModelCatalogRefreshSource, ''),
+  /api\.(?:accounts|myAccounts)\.refreshModelCatalog/,
+  '上游模型目录接口不得在手动同步处理函数外调用'
+)
+assert.doesNotMatch(
+  editFormSource,
+  /refreshAccountModelCatalog|refreshModelCatalog/,
+  '账户表单打开、切换、取消和卸载生命周期不得调用上游模型目录同步'
+)
+assert.doesNotMatch(
+  `${editTestSource}\n${saveFlowSource}`,
+  /refreshAccountModelCatalog|refreshModelCatalog/,
+  '测试和确认只能校验模型，不得自动同步上游模型目录'
 )
 assert.match(
-  accountsViewSource,
-  /automaticModelCatalogAttemptedRequestKeys\.has\(requestKey\)[\s\S]*?setTimeout\(\(\) => \{[\s\S]*?requestKey !== currentModelCatalogDiscoveryRequestKey\(\)\)[\s\S]*?automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)[\s\S]*?void refreshAccountModelCatalog\(\)[\s\S]*?\}, 700\)/,
-  '自动同步必须对同一草稿只尝试一次，并使用 700ms 防抖确认请求 key 仍有效'
+  editTestSource,
+  /const validationMessage = validateAccountDraftTestForm\([\s\S]*?if \(validationMessage\) \{[\s\S]*?message\.warning\(validationMessage\)[\s\S]*?return/,
+  '测试必须在模型校验失败后中止，不得继续创建草稿测试'
 )
 assert.match(
-  accountsViewSource,
-  /async function refreshAccountModelCatalog\(\): Promise<void> \{[\s\S]*?clearAccountModelCatalogAutoSyncTimer\(\)[\s\S]*?const payload/,
-  '手动同步开始前必须取消尚未触发的自动同步'
+  saveFlowSource,
+  /const validationMessage = validateAccountSaveForm\([\s\S]*?if \(validationMessage\) \{[\s\S]*?message\.warning\(validationMessage\)[\s\S]*?return/,
+  '新增和完整编辑确认必须在模型校验失败后中止，不得继续保存账户'
 )
+const basicEditSaveSource = sourceBetween(saveFlowSource, 'async function saveBasicAccountEdit(): Promise<void> {', 'function finishUnchangedEdit(): void {')
 assert.match(
-  accountsViewSource,
-  /automaticModelCatalogAttemptedRequestKeys\.add\(requestKey\)/,
-  '目录同步必须记录已尝试的 payload key，避免相同草稿重复请求'
+  basicEditSaveSource,
+  /if \(!healthCheckModel\) \{[\s\S]*?message\.warning\('请选择检查模型'\)[\s\S]*?return/,
+  '基础编辑确认必须在检查模型为空时中止，不得继续保存账户'
 )
 assert.match(
   accountsViewSource,
   /requestId === modelCatalogSyncRequestId && !controller\.signal\.aborted\)[\s\S]*?message\.error/,
-  '自动同步失败必须保留可观察错误提示'
+  '模型目录同步失败必须保留可观察错误提示'
 )
 assert.match(
   accountsViewSource,
   /if \(requestId !== modelCatalogSyncRequestId \|\| requestKey !== currentModelCatalogDiscoveryRequestKey\(\)\) return/,
   '目录同步响应返回时必须确认请求仍对应当前草稿'
-)
-assert.match(
-  accountsViewSource,
-  /clearAccountModelCatalogAutoSyncTimer\(\)[\s\S]*?cancelAccountModelCatalogSync\(\)/,
-  '输入变更、关闭弹窗或卸载时必须清理自动同步延迟任务并取消旧请求'
 )
 assert.match(
   accountsViewSource,
@@ -378,7 +405,17 @@ assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, [' sk
 assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-edited-a', 'sk-saved-b']), undefined, '编辑 Key 后必须隐藏旧运行状态')
 assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-a', '', 'sk-saved-b']), undefined, '新增 Key 输入行后必须隐藏旧运行状态')
 assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-a']), undefined, '删除 Key 后必须隐藏旧运行状态')
-assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-b', 'sk-saved-a']), undefined, '重排 Key 后必须隐藏旧运行状态，避免按 keyIndex 错贴')
+assert.deepEqual(
+  visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-b', 'sk-saved-a'])?.map((item) => ({
+    keyIndex: item.keyIndex,
+    keyFingerprintPrefix: item.keyFingerprintPrefix
+  })),
+  [
+    { keyIndex: 0, keyFingerprintPrefix: 'fingerprint-b' },
+    { keyIndex: 1, keyFingerprintPrefix: 'fingerprint-a' }
+  ],
+  '重排 Key 后必须按 Key 身份重映射运行状态，避免按旧 keyIndex 错贴'
+)
 assert.equal(createSavedAccountApiKeyRuntimeSnapshot({
   accountId: 'account-runtime-display',
   configRevision: 8,

@@ -59,6 +59,41 @@ if (newSource.disposition !== 'owner') throw new Error('expected new source owne
 assert(newSource.generation > oldSource.generation, '新 activation 必须使用更高 coordinator generation')
 assert.deepEqual(await coordinator.availabilityProbeSourceFences(newSource.runtimeKey, newSource.generation), [sourceFence('source_new', 2)], '新 generation 不得继承或清除旧 settled fence')
 
+const forceReplaceOldFence = sourceFence('source_force_replace_old', 3)
+const forceReplaceOld = await coordinator.acquireAvailabilityProbe({
+  accountRuntimeScope: 'acct_force_replace', probeKind: 'account_health_check', configRevision: 7,
+  sourceFence: forceReplaceOldFence, executionRole: 'source_dispatch'
+})
+assert.equal(forceReplaceOld.disposition, 'owner')
+if (forceReplaceOld.disposition !== 'owner') throw new Error('expected force replacement old owner')
+assert.equal(await coordinator.settleAvailabilityProbe({
+  runtimeKey: forceReplaceOld.runtimeKey,
+  generation: forceReplaceOld.generation,
+  ownerToken: forceReplaceOld.ownerToken,
+  outcome: 'success'
+}), true)
+const forceReplacement = await coordinator.acquireAvailabilityProbe({
+  accountRuntimeScope: 'acct_force_replace', probeKind: 'account_health_check', configRevision: 7,
+  executionRole: 'health_probe', forceNewGeneration: true
+})
+assert.equal(forceReplacement.disposition, 'owner', '普通 request_failure 必须为已结算结果创建新 generation')
+if (forceReplacement.disposition !== 'owner') throw new Error('expected force replacement owner')
+assert.deepEqual(
+  forceReplacement.replacedFenceSettlement,
+  {
+    generation: forceReplaceOld.generation,
+    configRevision: 7,
+    outcome: 'success',
+    sourceFences: [forceReplaceOldFence]
+  },
+  '原子替换必须把旧 settled generation 的完整 fence 快照交给新 owner 结算'
+)
+assert.deepEqual(
+  await coordinator.availabilityProbeSourceFences(forceReplacement.runtimeKey, forceReplacement.generation),
+  [],
+  '新 generation 不得继承旧 fence；旧 fence 只能按旧 outcome 结算'
+)
+
 const replacementRaceOwner = await coordinator.acquireAvailabilityProbe({
   accountRuntimeScope: 'acct_source_replacement_race', probeKind: 'account_health_check', configRevision: 7,
   sourceFence: sourceFence('source_race_old', 1), executionRole: 'source_dispatch'

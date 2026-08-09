@@ -1292,7 +1292,12 @@ let codexTurnAvoidedFallbackEnabled = false
               throw error
             }
             const provenBodyTransportFailure = isProvenUpstreamBodyTransportError(error)
-            if (res.headersSent || res.writableEnded || res.destroyed) {
+            const downstreamTransportCommitted = currentPreflight.downstreamCommitState.transportCommitted
+              || currentPreflight.downstreamCommitState.downstreamBytesWritten > 0
+              || res.headersSent
+              || res.writableEnded
+              || res.destroyed
+            if (downstreamTransportCommitted) {
               const accountTransportFailure = provenBodyTransportFailure && !requestExecutionSignal.aborted
               await hotQualityAttempt.recordTerminal({
                 outcomeClass: requestExecutionSignal.aborted
@@ -1362,12 +1367,24 @@ let codexTurnAvoidedFallbackEnabled = false
               accountStateMutationEnabled: false
             })
             nonStreamResponseStartedFailedAccountIds.add(account.id)
+            streamServerRetryExcludedAccountIds.add(account.id)
+            const remainingAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
             const circuitDecision = !requestExecutionSignal.aborted
               && accountCircuitAttempt
               ? await accountCircuitAttempt.reportTransportFailure(bodyFailure)
               : undefined
             if (circuitDecision?.outcome === 'confirmation_acquired') {
               await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
+            }
+            if (remainingAccounts.length > 0) {
+              auditCapture.addGatewayMetadata({
+                label: 'non_stream_precommit_body_retry_dispatch',
+                metadata: {
+                  failedAccountIds: [account.id],
+                  remainingCandidateAccountIds: remainingAccounts.map((item) => item.id)
+                }
+              })
+              continue
             }
             if (requestErrorResult.action === 'skip_account') {
               throw new UpstreamAttemptError(
@@ -1376,7 +1393,7 @@ let codexTurnAvoidedFallbackEnabled = false
                 [account.id],
                 undefined,
                 [],
-                true
+                remainingAccounts.length === 0
               )
             }
             throw error
@@ -2099,16 +2116,15 @@ let codexTurnAvoidedFallbackEnabled = false
       })
       return
     }
-    const terminalUpstreamFailure = error instanceof UpstreamAttemptError
-      && error.terminalUpstreamFailure
     const knownUpstreamHttpFailure = error instanceof UpstreamAttemptError
-      && lastAttempt?.status !== undefined
-    // Customer gateway traffic must never expose the last account's complete
-    // HTTP error after candidate exhaustion.  Keep raw upstream diagnostics
-    // for explicit diagnostics/non-gateway callers only.
+      && isCompleteUpstreamHttpFailureStatus(lastAttempt?.status)
+    // Customer gateway traffic normally receives a stable gateway failure after
+    // candidate exhaustion. DeepSeek native Responses is a protocol exception:
+    // its clients need the upstream HTTP error to distinguish unsupported
+    // rollout/precompatibility states from a locally generated success.
     const exposeKnownUpstreamHttpFailure = gatewayUsageContext.trafficSource !== 'gateway'
+      || isDeepSeekNativeResponsesUpstreamAttempt(lastAttempt)
     const diagnosticError = options.exposeUpstreamDiagnostics
-      || terminalUpstreamFailure
       || (knownUpstreamHttpFailure && exposeKnownUpstreamHttpFailure)
       ? buildDiagnosticUpstreamError(lastAttempt, message)
       : undefined
@@ -2405,6 +2421,22 @@ function shouldSendDispatchExhaustedProtocolRetry(
     && !preflight.downstreamCommitState.semanticCommitted
     && !res.writableEnded
     && !res.destroyed
+}
+
+function isDeepSeekNativeResponsesUpstreamAttempt(attempt: UpstreamAttempt | undefined): boolean {
+  if (attempt?.providerCode !== 'deepseek') {
+    return false
+  }
+  try {
+    const pathname = new URL(attempt.upstreamUrl).pathname.replace(/\/+$/, '')
+    return pathname.endsWith('/responses')
+  } catch {
+    return false
+  }
+}
+
+function isCompleteUpstreamHttpFailureStatus(status: number | undefined): boolean {
+  return status !== undefined && status >= 400 && status <= 599
 }
 
 function shouldKeepCodexCompactSseAliveDuringUpstreamWait(

@@ -51,8 +51,9 @@ releaseAll()
 await waitFor(() => queue.snapshot().pendingCount === 0 && queue.snapshot().runningCount === 0, '队列最终应清空')
 await assertConditionalPriorityReplacement()
 await assertRequestFailureUsesReservedConcurrency()
+await assertDelayedFollowUp()
 
-console.log('retry queue 优先级回归通过：保留并发、等待升级和运行后补执行符合契约')
+console.log('retry queue 优先级回归通过：保留并发、等待升级、延时尾随和运行后补执行符合契约')
 
 async function assertConditionalPriorityReplacement(): Promise<void> {
   const pendingStarted: string[] = []
@@ -75,18 +76,21 @@ async function assertConditionalPriorityReplacement(): Promise<void> {
   assert.equal(pendingQueue.enqueue('scheduled', { id: 'scheduled', revision: 2 }, {
     priority: 15,
     replaceExisting: true,
-    replaceExistingOnlyIfHigherPriority: true
+    replaceExistingOnlyIfHigherPriority: true,
+    followUpWhenRunning: true
   }), true, '更高优先级 request_failure 应替换等待中的 scheduled')
   assert.equal(pendingQueue.enqueue('scheduled', { id: 'scheduled', revision: 3 }, {
     priority: 15,
     replaceExisting: true,
-    replaceExistingOnlyIfHigherPriority: true
+    replaceExistingOnlyIfHigherPriority: true,
+    followUpWhenRunning: true
   }), false, '同优先级 request_failure 不得反复替换等待任务')
   pendingQueue.enqueue('configuration', { id: 'configuration', revision: 1 }, { priority: 10 })
   assert.equal(pendingQueue.enqueue('configuration', { id: 'configuration', revision: 2 }, {
     priority: 15,
     replaceExisting: true,
-    replaceExistingOnlyIfHigherPriority: true
+    replaceExistingOnlyIfHigherPriority: true,
+    followUpWhenRunning: true
   }), false, 'request_failure 不得覆盖更高优先级 configuration')
   blockerRelease.current?.()
   await waitFor(() => pendingQueue.snapshot().pendingCount === 0 && pendingQueue.snapshot().runningCount === 0, '条件替换等待队列应清空')
@@ -111,11 +115,52 @@ async function assertConditionalPriorityReplacement(): Promise<void> {
   assert.equal(runningQueue.enqueue('scheduled', { id: 'request-failure', revision: 2 }, {
     priority: 15,
     replaceExisting: true,
-    replaceExistingOnlyIfHigherPriority: true
+    replaceExistingOnlyIfHigherPriority: true,
+    followUpWhenRunning: true
   }), true, '运行中的 scheduled 应保留一次 request_failure follow-up')
+  assert.equal(runningQueue.enqueue('scheduled', { id: 'request-failure', revision: 3 }, {
+    priority: 15,
+    replaceExisting: true,
+    replaceExistingOnlyIfHigherPriority: true,
+    followUpWhenRunning: true
+  }), true, '运行中的 request_failure follow-up 应仅保留最新一次')
   scheduledRelease.current?.()
   await waitFor(() => runningQueue.snapshot().pendingCount === 0 && runningQueue.snapshot().runningCount === 0, '运行中条件替换队列应清空')
-  assert.deepEqual(runningStarted, ['scheduled:1', 'request-failure:2'])
+  assert.deepEqual(runningStarted, ['scheduled:1', 'request-failure:3'])
+
+  for (const scenario of [
+    { id: 'activation', priority: 0 },
+    { id: 'configuration', priority: 10 }
+  ]) {
+    const highPriorityStarted: string[] = []
+    const highPriorityRelease: { current?: () => void } = {}
+    const highPriorityQueue = createRetryQueue<{ id: string; revision: number }>({
+      name: `retry-queue-running-${scenario.id}-regression`,
+      policy: fixedRetryPolicy(`retry_queue_running_${scenario.id}_regression`, 1000, 1),
+      concurrency: 1,
+      run: async (item) => {
+        highPriorityStarted.push(`${item.id}:${item.revision}`)
+        if (item.revision === 1) {
+          await new Promise<void>((resolve) => { highPriorityRelease.current = resolve })
+        }
+        return true
+      }
+    })
+    highPriorityQueue.enqueue(scenario.id, { id: scenario.id, revision: 1 }, { priority: scenario.priority })
+    await waitFor(() => highPriorityStarted.length === 1, `${scenario.id} 运行中任务应先开始`)
+    assert.equal(highPriorityQueue.enqueue(scenario.id, { id: 'request-failure', revision: 2 }, {
+      priority: 15,
+      replaceExisting: true,
+      replaceExistingOnlyIfHigherPriority: true,
+      followUpWhenRunning: true
+    }), false, `运行中的 ${scenario.id} 不得追加较低优先级 request_failure`)
+    highPriorityRelease.current?.()
+    await waitFor(
+      () => highPriorityQueue.snapshot().pendingCount === 0 && highPriorityQueue.snapshot().runningCount === 0,
+      `${scenario.id} 优先级回归队列应清空`
+    )
+    assert.deepEqual(highPriorityStarted, [`${scenario.id}:1`])
+  }
 }
 
 async function assertRequestFailureUsesReservedConcurrency(): Promise<void> {
@@ -146,6 +191,36 @@ async function assertRequestFailureUsesReservedConcurrency(): Promise<void> {
   blocking = false
   for (const release of releases.splice(0)) release()
   await waitFor(() => healthQueue.snapshot().pendingCount === 0 && healthQueue.snapshot().runningCount === 0, '保留并发回归队列应清空')
+}
+
+async function assertDelayedFollowUp(): Promise<void> {
+  const started: string[] = []
+  let releaseFirst!: () => void
+  const delayedQueue = createRetryQueue<{ revision: number }>({
+    name: 'retry-queue-delayed-follow-up-regression',
+    policy: fixedRetryPolicy('retry_queue_delayed_follow_up_regression', 1000, 1),
+    concurrency: 1,
+    run: async (item) => {
+      started.push(String(item.revision))
+      if (item.revision === 1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve })
+      }
+      return true
+    }
+  })
+  assert.equal(delayedQueue.enqueue('account', { revision: 1 }), true)
+  await waitFor(() => started.length === 1, '延时尾随回归必须先运行首轮任务')
+  const followUpEnqueuedAtMs = Date.now()
+  assert.equal(delayedQueue.enqueue('account', { revision: 2 }, {
+    followUpWhenRunning: true,
+    delayMs: 80
+  }), true, '运行中的任务必须接受延时尾随')
+  releaseFirst()
+  await sleep(25)
+  assert.deepEqual(started, ['1'], '延时尾随不能在首轮完成后立即运行')
+  await waitFor(() => started.length === 2, '延时尾随必须在指定等待后运行')
+  assert(Date.now() - followUpEnqueuedAtMs >= 60, '延时尾随不能忽略 enqueue 的 delayMs')
+  await waitFor(() => delayedQueue.snapshot().pendingCount === 0 && delayedQueue.snapshot().runningCount === 0, '延时尾随队列应清空')
 }
 
 function releaseOne(): void {

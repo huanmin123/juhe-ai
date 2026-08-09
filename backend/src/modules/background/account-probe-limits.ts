@@ -49,6 +49,8 @@ export async function runWithBackgroundAccountAvailabilityProbe<T>(
   options: {
     signal?: AbortSignal
     abortedObservation?: () => BackgroundAccountAvailabilityProbeObservation
+    /** A new request_failure may not reuse a completed observation. */
+    joinSettled?: boolean
   } = {}
 ): Promise<T> {
   const normalizedKey = runtimeKey.trim()
@@ -56,6 +58,9 @@ export async function runWithBackgroundAccountAvailabilityProbe<T>(
     return await consume(await task(), { joined: false })
   }
   let entry = backgroundAccountAvailabilityProbesInFlight.get(normalizedKey)
+  if (entry?.settled && options.joinSettled === false) {
+    entry = undefined
+  }
   const joined = Boolean(entry)
   if (!entry) {
     const createdEntry = {

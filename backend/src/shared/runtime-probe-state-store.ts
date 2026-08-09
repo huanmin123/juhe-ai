@@ -7,7 +7,12 @@ export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; gen
   getMany(runtimeKeys: string[]): Promise<Map<string, TState>>
   set(state: TState, ttlMs: number): Promise<boolean>
   setIfAbsent(state: TState, ttlMs: number): Promise<boolean>
-  replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<boolean>
+  /**
+   * Atomically replaces a settled generation and returns its exact prior
+   * snapshot. Callers use that snapshot to settle any fences before the next
+   * generation can make the old state unreachable.
+   */
+  replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<TState | undefined>
   merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined>
   delete(runtimeKey: string): Promise<void>
   deleteGeneration(runtimeKey: string, generation: number): Promise<boolean>
@@ -105,7 +110,7 @@ implements RuntimeProbeStateStore<TState> {
     return true
   }
 
-  async replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<boolean> {
+  async replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<TState | undefined> {
     const current = this.freshEntry(state.runtimeKey)?.value as (TState & ProbeCoordinationFields & { outcome?: unknown }) | undefined
     if (
       !current
@@ -113,13 +118,13 @@ implements RuntimeProbeStateStore<TState> {
       || current.outcome === undefined
       || current.probeRunId !== undefined
     ) {
-      return false
+      return undefined
     }
     this.entries.set(state.runtimeKey, {
       value: state,
       expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
     })
-    return true
+    return current
   }
 
   async merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined> {
@@ -418,7 +423,7 @@ implements RuntimeProbeStateStore<TState> {
     return numericRedisResult(result) === 1
   }
 
-  async replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<boolean> {
+  async replaceSettledGeneration(state: TState, previousGeneration: number, ttlMs: number): Promise<TState | undefined> {
     const result = await (await this.client()).eval(redisReplaceSettledProbeGenerationScript, {
       keys: [this.stateKey(state.runtimeKey), this.dueKey],
       arguments: [
@@ -429,7 +434,13 @@ implements RuntimeProbeStateStore<TState> {
         String(Math.max(0, Math.trunc(previousGeneration)))
       ]
     })
-    return numericRedisResult(result) === 1
+    const encoded = typeof result === 'string' ? result : Buffer.isBuffer(result) ? result.toString('utf8') : ''
+    if (!encoded) return undefined
+    try {
+      return JSON.parse(encoded) as TState
+    } catch {
+      return undefined
+    }
   }
 
   async merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined> {
@@ -599,7 +610,7 @@ if decoded['probeRunId'] ~= nil and decoded['probeRunId'] ~= cjson.null then ret
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 redis.call('PEXPIRE', KEYS[2], ARGV[2])
-return 1
+return current
 `
 
 const redisMergeProbeStateScript = `

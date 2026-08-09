@@ -282,7 +282,7 @@ export const DEEPSEEK_PROVIDER: ProviderDefinition = {
   defaultHealthCheckModel: 'deepseek-v4-flash',
   defaultSupportedModels: DEFAULT_DEEPSEEK_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
-  capabilities: ['chat', 'messages', 'passthrough'],
+  capabilities: ['chat', 'responses', 'messages', 'passthrough'],
   protocolProfiles: [
     {
       id: DEEPSEEK_OPENAI_V1_PROFILE_ID,
@@ -294,9 +294,10 @@ export const DEEPSEEK_PROVIDER: ProviderDefinition = {
       baseUrl: 'https://api.deepseek.com',
       defaultHealthCheckModel: 'deepseek-v4-flash',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'messages', 'passthrough'],
+      capabilities: ['chat', 'responses', 'passthrough'],
       endpointFamilies: [
-        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
+        { code: OPENAI_RESPONSES_FAMILY, name: 'Responses' }
       ]
     },
     {

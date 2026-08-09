@@ -126,7 +126,7 @@ const coalesced = await runCodexTurnAvoidanceAvailabilityProbe({
   account: { id: 'acct_coalesced', name: 'acct_coalesced', priority: 0, configRevision: 7 } as unknown as import('../../storage/openai-account-selector.types.js').OpenAIAccountSecret,
   strategy: coalescedStrategy,
   activation: coalescedActivation,
-  dispatch: () => ({ outcome: 'coalesced', decisionCode: 'request_failure_cooldown', targetRole: 'ops-worker', cooldownRemainingMs: 1_000 })
+  dispatch: () => ({ outcome: 'coalesced', decisionCode: 'request_failure_in_flight', targetRole: 'ops-worker' })
 })
 assert.equal(coalesced.outcome, 'unknown', '冷却合并不能假定既有 worker 会接管本 generation，必须结算为 unknown')
 assert.equal(orderOpenAIAccountsByCodexTurnAvoidance([{ id: 'acct_coalesced', name: 'acct_coalesced' } as never], coalescedStrategy).thresholdReached, true, 'coalesced unknown 不得清除来源避让')

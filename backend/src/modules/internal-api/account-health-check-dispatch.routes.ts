@@ -43,9 +43,9 @@ export type AccountHealthCheckDispatchOutcome = AccountHealthCheckDispatchQueueD
   }
   | {
     outcome: 'coalesced'
-    decisionCode: 'request_failure_cooldown'
+    decisionCode: 'request_failure_in_flight' | 'request_failure_cooldown'
     targetRole: 'ops-worker'
-    cooldownRemainingMs: number
+    cooldownRemainingMs?: number
   }
   | {
     outcome: 'rejected'
@@ -271,7 +271,7 @@ function logDispatchOutcome(
     messageBytes: outcome.messageBytes ?? null,
     maxQueueMessages: outcome.maxQueueMessages ?? null,
     maxQueueBytes: outcome.maxQueueBytes ?? null,
-    cooldownRemainingMs: outcome.outcome === 'coalesced' ? outcome.cooldownRemainingMs : null,
+    cooldownRemainingMs: outcome.outcome === 'coalesced' ? outcome.cooldownRemainingMs ?? null : null,
     statusCode
   }, '账户健康检查派发决策')
 }

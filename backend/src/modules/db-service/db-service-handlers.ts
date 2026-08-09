@@ -601,7 +601,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         if (updated) {
           clearGatewayRuntimeCacheLocal()
         }
-        return { updated: Boolean(updated), accountStatus: updated?.status }
+        return accountTemporaryUnavailableMutationResult(account, updated)
       }
       return handleDbServiceOperationSync(operation)
     }
@@ -1611,7 +1611,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }
-      return { updated: Boolean(updated), accountStatus: updated?.status }
+      return accountTemporaryUnavailableMutationResult(account, updated)
     }
     case 'find_account_for_test': {
       return findAccountForTest(operation.accountId, operation.access)
@@ -2272,6 +2272,31 @@ async function listActiveResponseInspectionPoliciesForAccountsAsync(accounts: re
 
 function hasDispatchableGatewayAccount(accounts: OpenAIAccountSecret[]): boolean {
   return accounts.some((account) => account.status === 'active' && account.proxyProfileUnavailable !== true)
+}
+
+function accountTemporaryUnavailableMutationResult(
+  account: { status: string; schedulable: boolean } | undefined,
+  updated: { status?: string } | undefined
+): {
+  updated: boolean
+  accountStatus?: string
+  skippedReason?: 'account_not_found' | 'status_ineligible' | 'mutation_cas_rejected'
+} {
+  if (updated) {
+    return { updated: true, accountStatus: updated.status }
+  }
+  if (!account) {
+    return { updated: false, skippedReason: 'account_not_found' }
+  }
+  const statusEligible = account.status === 'active'
+    || account.status === 'rate_limited'
+    || account.status === 'temporary_unavailable'
+  if (!statusEligible || (account.status === 'active' && !account.schedulable)) {
+    return { updated: false, accountStatus: account.status, skippedReason: 'status_ineligible' }
+  }
+  // The repository rechecks config, health observation, and success fences in
+  // the same statement. A failed update here is therefore a safe CAS refusal.
+  return { updated: false, accountStatus: account.status, skippedReason: 'mutation_cas_rejected' }
 }
 
 function assertNever(value: never): never {

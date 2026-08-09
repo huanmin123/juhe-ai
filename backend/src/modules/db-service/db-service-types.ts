@@ -1262,7 +1262,11 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
   T extends { type: 'clear_account_failure_state' } ? { changed: boolean; accountStatus?: string } :
-  T extends { type: 'mark_account_test_temporary_unavailable' } ? { updated: boolean; accountStatus?: string } :
+  T extends { type: 'mark_account_test_temporary_unavailable' } ? {
+    updated: boolean
+    accountStatus?: string
+    skippedReason?: 'account_not_found' | 'status_ineligible' | 'mutation_cas_rejected'
+  } :
   T extends { type: 'find_account_for_test' } ? AccountSummary | undefined :
   T extends { type: 'list_accounts_due_for_health_check' } ? AccountSummary[] :
   T extends { type: 'find_account_for_health_check' } ? AccountSummary | undefined :

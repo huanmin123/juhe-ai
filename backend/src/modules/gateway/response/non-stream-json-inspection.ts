@@ -362,9 +362,9 @@ function validateBufferedJsonProtocolResponse(
       errorCode: 'upstream_protocol_error'
     }
   }
-  if (endpointFamily === 'messages' && (root.type !== 'message' || !Array.isArray(root.content))) {
+  if (endpointFamily === 'messages' && (root.type !== 'message' || !Array.isArray(root.content) || root.content.length === 0)) {
     return {
-      message: '上游 Anthropic Messages JSON 响应结构无效：content 必须是数组',
+      message: '上游 Anthropic Messages JSON 响应结构无效：content 必须是非空数组',
       errorCode: 'upstream_protocol_error'
     }
   }

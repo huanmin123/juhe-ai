@@ -2,7 +2,6 @@ import {
   normalizeAnthropicEndpointModesForWrite
 } from '../../../../domain/anthropic-endpoint-modes.js'
 import {
-  OPENAI_CHAT_ENDPOINT_MODES,
   normalizeOpenAIEndpointModesForWrite
 } from '../../../../domain/openai-endpoint-modes.js'
 import {
@@ -50,10 +49,6 @@ export const deepSeekAccountCredentialDriver: ProviderAccountCredentialDriver = 
       ...context,
       providerCode: DEEPSEEK_PROVIDER_CODE
     })
-    const unsupported = modes.filter((mode) => !OPENAI_CHAT_ENDPOINT_MODES.includes(mode))
-    if (unsupported.length) {
-      throw new Error(`DeepSeek 账户上游接口能力只支持 Chat Completion (JSON) 或 Chat Completion (Streaming)：${unsupported.join(', ')}`)
-    }
     return modes
   }
 }

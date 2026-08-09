@@ -44,6 +44,7 @@ export async function runCodexTurnAvoidanceAvailabilityProbe(input: {
       sourceFenceId: input.activation.sourceFenceId
     }
   })
+  await clearReplacedSettledSourceFences(coordination)
   if (coordination.disposition === 'joined') {
     // A source that joined after a successful shared probe lazily consumes the
     // settled result; non-success outcomes retain its short avoidance.
@@ -128,6 +129,23 @@ export async function runCodexTurnAvoidanceAvailabilityProbe(input: {
       sourceGeneration: input.activation.sourceGeneration
     }), 'Codex turn 避让探活未形成可靠结果，保留短期避让')
     return { disposition: 'owner', generation: coordination.generation, outcome: 'probe_task_failure' }
+  }
+}
+
+async function clearReplacedSettledSourceFences(
+  coordination: Awaited<ReturnType<typeof acquireAvailabilityProbe>>
+): Promise<void> {
+  if (coordination.disposition !== 'owner' || coordination.replacedFenceSettlement?.outcome !== 'success') return
+  for (const fence of coordination.replacedFenceSettlement.sourceFences) {
+    try {
+      await clearCodexTurnAccountAvoidanceByFenceAsync(fence)
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_codex_turn_replaced_probe_fence_clear_failed',
+        accountId: fence.accountId,
+        sourceGeneration: fence.sourceGeneration
+      }), '替换已结算探活 generation 后未能清理旧来源避让')
+    }
   }
 }
 

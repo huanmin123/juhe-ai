@@ -18,7 +18,7 @@ import {
 import {
   inspectAnthropicStreamText
 } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
-import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing, listProviderModelPricingAsOf } from '../../modules/model-pricing/model-pricing.service.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import { externalIntegrationScopeOptions } from '../../storage/external-integration-source-constants.js'
@@ -410,8 +410,8 @@ const deepSeekPricingById = new Map(deepSeekModelPricingList.map((item) => [item
 for (const id of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
   assert(deepSeekPricingById.has(id), `DeepSeek 模型价格目录应包含 ${id}`)
 }
-assert.deepEqual(deepSeekPricingById.get('deepseek-v4-flash')?.supportedApiProtocols, ['chat_completions', 'messages'])
-assert.deepEqual(deepSeekPricingById.get('deepseek-v4-pro')?.supportedApiProtocols, ['chat_completions', 'messages', 'completions'])
+assert.deepEqual(deepSeekPricingById.get('deepseek-v4-flash')?.supportedApiProtocols, ['chat_completions', 'responses', 'messages'])
+assert.deepEqual(deepSeekPricingById.get('deepseek-v4-pro')?.supportedApiProtocols, ['chat_completions', 'responses', 'messages', 'completions'])
 assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.inputUsdPer1M, 0.14)
 assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.cachedInputUsdPer1M, 0.0028)
 assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.outputUsdPer1M, 0.28)
@@ -643,16 +643,14 @@ assert.deepEqual(openAIModelPricingList.slice(0, 8).map((item) => item.model), [
 ], 'GPT/OpenAI 价格目录首屏应按官方当前模型从新到旧排序')
 const anthropicModelPricingList = listProviderModelPricing(ANTHROPIC_PROVIDER_CODE)
 const anthropicOfficialModelIds = [
+  'claude-opus-5',
   'claude-fable-5',
-  'claude-mythos-5',
   'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-opus-4-5',
   'claude-opus-4-5-20251101',
-  'claude-opus-4-1',
-  'claude-opus-4-1-20250805',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5',
   'claude-sonnet-4-5-20250929',
@@ -662,6 +660,9 @@ const anthropicOfficialModelIds = [
 assert.deepEqual(anthropicModelPricingList.map((item) => item.model), anthropicOfficialModelIds, 'Anthropic 公开目录只能包含官方模型')
 assert.equal(anthropicModelPricingList.every((item) => item.providerCode === ANTHROPIC_PROVIDER_CODE), true)
 const anthropicPricingById = new Map(anthropicModelPricingList.map((item) => [item.model, item]))
+assert.equal(anthropicPricingById.has('claude-mythos-5'), false, 'Claude Mythos 5 仅限获批客户，不得进入内置目录')
+const anthropicPricingSource = readSource('modules/model-pricing/anthropic-model-pricing.data.ts')
+assert.match(anthropicPricingSource, /Sonnet 5 remains at its \$2\/\$10 introductory price through 2026-08-31/, 'Sonnet 5 引介价断言必须注明 2026-08-31 截止')
 for (const id of anthropicOfficialModelIds) {
   const item = anthropicPricingById.get(id)
   assert(item, `Anthropic 官方模型 ${id} 必须进入目录`)
@@ -688,6 +689,8 @@ for (const id of [
 }
 assert.equal(anthropicPricingById.get('claude-fable-5')?.inputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('claude-fable-5')?.outputUsdPer1M, 50)
+assert.equal(anthropicPricingById.get('claude-opus-5')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-opus-5')?.outputUsdPer1M, 25)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.inputUsdPer1M, 2)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.outputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('claude-opus-4-8')?.inputUsdPer1M, 5)
@@ -697,22 +700,35 @@ assert.equal(anthropicPricingById.get('claude-sonnet-4-6')?.outputUsdPer1M, 15)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.inputUsdPer1M, 1)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.outputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-fable-5')?.maxOutputTokens, 128_000)
+assert.equal(anthropicPricingById.get('claude-opus-5')?.releaseDate, '2026-07-24')
+assert.equal(anthropicPricingById.get('claude-opus-5')?.contextWindowTokens, 1_000_000)
+assert.equal(anthropicPricingById.get('claude-opus-5')?.maxInputTokens, 1_000_000)
+assert.equal(anthropicPricingById.get('claude-opus-5')?.maxOutputTokens, 128_000)
 assert.equal(anthropicPricingById.get('claude-opus-4-8')?.maxOutputTokens, 128_000)
 assert.equal(anthropicPricingById.get('claude-opus-4-5')?.maxOutputTokens, 64_000)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.maxOutputTokens, 64_000)
-assert.equal(anthropicPricingById.get('claude-opus-4-1')?.shutdownDate, '2026-08-05')
-assert.equal(anthropicPricingById.get('claude-opus-4-1-20250805')?.shutdownDate, '2026-08-05')
+const anthropicHistoricalPricingById = new Map(listProviderModelPricingAsOf(ANTHROPIC_PROVIDER_CODE, '2026-08-04').map((item) => [item.model, item]))
+assert.equal(anthropicHistoricalPricingById.get('claude-opus-4-1')?.shutdownDate, '2026-08-05')
+assert.equal(anthropicHistoricalPricingById.get('claude-opus-4-1-20250805')?.shutdownDate, '2026-08-05')
+assert.equal(listProviderModelPricingAsOf(ANTHROPIC_PROVIDER_CODE, '2026-08-05').some((item) => item.model === 'claude-opus-4-1'), false, 'Opus 4.1 应从 2026-08-05 起隐藏')
+assert.equal(listProviderModelPricingAsOf(ANTHROPIC_PROVIDER_CODE, '2026-08-05').some((item) => item.model === 'claude-opus-4-1-20250805'), false, 'Opus 4.1 dated ID 应从 2026-08-05 起隐藏')
 assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.releaseDate, '2025-10-01')
 assert.equal(anthropicPricingById.get('claude-sonnet-4-5-20250929')?.releaseDate, '2025-09-29')
 assert.equal(anthropicPricingById.get('claude-opus-4-5-20251101')?.releaseDate, '2025-11-01')
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(anthropicPricingById.get('claude-fable-5')?.defaultReasoningEffort, 'high')
+assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+assert.equal(anthropicPricingById.get('claude-opus-5')?.defaultReasoningEffort, 'high')
 assert.deepEqual(anthropicPricingById.get('claude-sonnet-4-6')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'max'])
-assert.equal(anthropicPricingById.get('claude-opus-4-1')?.supportedReasoningEfforts.length, 0)
+assert.equal(anthropicHistoricalPricingById.get('claude-opus-4-1')?.supportedReasoningEfforts.length, 0)
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.inputModalities, ['text', 'image'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.outputModalities, ['text'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedTools, ['function_calling', 'code_execution'])
+assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
+assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.inputModalities, ['text', 'image'])
+assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.outputModalities, ['text'])
+assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.supportedTools, ['function_calling', 'code_execution'])
 for (const id of ['claude-opus-4-20250514', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022']) {
   assert.equal(anthropicPricingById.has(id), false, `${id} 已退休，不应进入 Anthropic 目录`)
 }

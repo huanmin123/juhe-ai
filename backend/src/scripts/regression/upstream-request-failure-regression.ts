@@ -116,6 +116,17 @@ async function main(): Promise<void> {
     upstreamServer = http.createServer((req, res) => {
       const authorization = String(req.headers.authorization ?? '')
       upstreamAuthorizations.push(authorization)
+      if (req.url?.includes('mock_truncated_success_body=1')) {
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-length': '4096',
+          connection: 'close'
+        })
+        res.flushHeaders()
+        res.write('{"choices":[{"message":{"role":"assistant","content":"partial')
+        setTimeout(() => res.destroy(), 5)
+        return
+      }
       if (req.url?.includes('mock_truncated_error_body=1')) {
         res.writeHead(400, {
           'content-type': 'application/json; charset=utf-8',
@@ -197,6 +208,13 @@ async function main(): Promise<void> {
       createAccount(truncatedBodyGroup.id, '02-正文截断健康后备账户', 'sk-truncated-body-backup', upstreamBaseUrl, false, 100)
     ]
     const truncatedBodyApiKey = createRegressionApiKey(truncatedBodyGroup.id, 'sk-truncated-body-regression')
+
+    const truncatedSuccessBodyGroup = repositories.createGroup({ name: '成功响应正文截断终态分组', providerCode: 'gpt', enabled: true }, access)
+    const truncatedSuccessBodyAccounts = [
+      createAccount(truncatedSuccessBodyGroup.id, '01-成功正文截断账户', 'sk-truncated-success-body-primary', upstreamBaseUrl, false, 0),
+      createAccount(truncatedSuccessBodyGroup.id, '02-成功正文截断后备账户', 'sk-truncated-success-body-backup', upstreamBaseUrl, false, 100)
+    ]
+    const truncatedSuccessBodyApiKey = createRegressionApiKey(truncatedSuccessBodyGroup.id, 'sk-truncated-success-body-regression')
 
     const localDispatchFailureGroup = repositories.createGroup({ name: '本地派发异常不得切号分组', providerCode: 'gpt', enabled: true }, access)
     const localDispatchFailureAccounts = [
@@ -335,6 +353,32 @@ async function main(): Promise<void> {
       'content-length 未满足的真实正文 framing failure 必须保留 transport circuit 证据'
     )
     assertAccountsRemainAvailable(truncatedBodyAccounts, '正文客观截断')
+
+    const truncatedSuccessBodyCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
+    const truncatedSuccessBodyOffset = upstreamAuthorizations.length
+    const truncatedSuccessBodyResponse = await fetch(`${baseUrl}/v1/chat/completions?mock_truncated_success_body=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${truncatedSuccessBodyApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'partial 200 body must fail over before downstream commit' }],
+        stream: false
+      })
+    })
+    const truncatedSuccessBodyText = await truncatedSuccessBodyResponse.text()
+    assert.equal(truncatedSuccessBodyResponse.status, 503, `200 后正文截断时应返回统一网关错误：${truncatedSuccessBodyText}`)
+    assert.match(truncatedSuccessBodyText, /upstream_retryable_error/, '200 后正文截断必须返回统一可重试网关错误')
+    assert.doesNotMatch(truncatedSuccessBodyText, /aborted|ECONN|partial|socket|upstream_transport_error/i, '200 后正文截断不得向客户透传 transport 诊断')
+    assert.deepEqual(
+      upstreamAuthorizations.slice(truncatedSuccessBodyOffset),
+      ['Bearer sk-truncated-success-body-primary', 'Bearer sk-truncated-success-body-backup'],
+      '200 后正文截断必须在下游提交前切到后备账户'
+    )
+    assert.ok(
+      await accountCircuit.getGatewayAccountCircuitStore().size() > truncatedSuccessBodyCircuitSizeBefore,
+      '200 后正文截断必须保留 transport circuit 证据'
+    )
+    assertAccountsRemainAvailable(truncatedSuccessBodyAccounts, '成功正文客观截断')
 
     const localDispatchFailureCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
     const localDispatchFailureOffset = upstreamAuthorizations.length

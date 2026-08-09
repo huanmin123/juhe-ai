@@ -60,7 +60,7 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   {
     name: '账户级健康检查模型与请求形态',
     exportedPattern: /`healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时 GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_json`、Anthropic 默认 `messages_json`、Gemini Native 默认 `generate_content_json`/,
-    formalPattern: /\| `healthCheckEndpointMode` \| 否 \| 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`。省略时 GPT 官方默认 `responses_sse`，OpenAI-compatible 默认 `chat_json`，Anthropic 默认 `messages_json`，Gemini Native 默认 `generate_content_json`。 \|/
+    formalPattern: /\| `healthCheckEndpointMode` \| 否 \| 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。省略时 GPT 文本模型默认 `responses_sse`，纯图片模型默认 `images_json`，OpenAI-compatible 默认 `chat_json`，Anthropic 默认 `messages_json`，Gemini Native 默认 `generate_content_json`。 \|/
   },
   {
     name: 'xAI / Grok OAuth 约束',
@@ -129,7 +129,7 @@ assertTrue(Array.isArray(oauthAccount.credentials?.supported_endpoint_modes), 'O
 assertEqual(typeof deepSeekOpenAIAccount.credentials?.api_key, 'string', 'DeepSeek OpenAI-compatible 示例必须保留 credentials.api_key')
 assertEqual(deepSeekOpenAIAccount.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek OpenAI-compatible 示例应显式填写 OpenAI v1 profile')
 assertEqual(deepSeekOpenAIAccount.credentials?.base_url, 'https://api.deepseek.com', 'DeepSeek OpenAI-compatible 示例应使用官方 base URL')
-assertEqual(JSON.stringify(deepSeekOpenAIAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse']), 'DeepSeek OpenAI-compatible 示例应只启用 Chat Completions JSON/Streaming')
+assertEqual(JSON.stringify(deepSeekOpenAIAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse', 'responses_json', 'responses_sse']), 'DeepSeek OpenAI-compatible 示例应启用 Chat Completions 与原生 Responses JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(deepSeekOpenAIAccount, 'clientCompatibility'), 'DeepSeek OpenAI-compatible 普通示例不应默认暴露客户端兼容字段')
 assertEqual(deepSeekClaudeCodeAccount.providerProtocolProfileId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID, 'DeepSeek Claude Code 示例应显式填写 Anthropic v1 profile')
 assertFalse(Object.prototype.hasOwnProperty.call(deepSeekClaudeCodeAccount, 'clientCompatibility'), 'DeepSeek Claude Code 示例不应暴露客户端兼容字段')
@@ -175,7 +175,7 @@ assertFalse(accountImportProtocolMarkdown.includes('workload_identity'), '协议
 assertMatch(accountImportProtocolMarkdown, /`google_oauth`/, '协议 Markdown 应说明 Gemini Google OAuth 账户类型')
 assertMatch(accountImportProtocolMarkdown, /`interactions_json`、`interactions_sse`/, '协议 Markdown 应说明 Gemini Interactions 请求形态')
 assertMatch(accountImportProtocolMarkdown, /不要导入 Claude 订阅 OAuth \/ Setup Token/, '协议 Markdown 应说明 Claude 订阅 OAuth 不可导入')
-assertMatch(accountImportProtocolMarkdown, /DeepSeek OpenAI-compatible 默认 Chat Completion \(JSON\/Streaming\)/, '协议 Markdown 应说明 DeepSeek OpenAI-compatible 默认接口能力')
+assertMatch(accountImportProtocolMarkdown, /DeepSeek OpenAI-compatible 默认启用 Chat Completions 与 Responses 的 JSON\/Streaming/, '协议 Markdown 应说明 DeepSeek OpenAI-compatible 默认接口能力')
 assertMatch(accountImportProtocolMarkdown, /账号导入不填写 `clientCompatibility`/, '协议 Markdown 应说明账号导入不再填写客户端兼容字段')
 assertFalse(/\| `clientCompatibility` \| 否 \| string \|/.test(accountImportProtocolMarkdown), '协议 Markdown 不应把 clientCompatibility 暴露为导入字段')
 assertMatch(accountImportProtocolMarkdown, /\| `providerProtocolProfileId` \| 是 \| string \|/, '协议 Markdown 应把 providerProtocolProfileId 暴露为必填导入字段')

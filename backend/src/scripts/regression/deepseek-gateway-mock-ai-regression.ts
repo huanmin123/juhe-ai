@@ -33,6 +33,8 @@ interface DeepSeekUpstreamHit {
   rawUrl: string
   method: string
   authorization: string
+  xApiKey: string
+  anthropicVersion: string
   contentLength: string
   transferEncoding: string
   bodyText: string
@@ -148,8 +150,30 @@ try {
     }, access)
     assert.equal(account.providerCode, DEEPSEEK_PROVIDER_CODE)
     assert.equal(account.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID)
-    assert.deepEqual(account.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
+    assert.deepEqual(account.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'])
     assertDeepSeekDispatchCapability(group.id, account.id)
+
+    const prefixedResponsesGroup = repositories.createGroup({
+      name: 'DeepSeek Responses 路径前缀 Mock AI 回归分组',
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      enabled: true
+    }, access)
+    repositories.createAccount({
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+      name: 'DeepSeek Responses 路径前缀 Mock AI 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-deepseek-prefixed-responses-upstream',
+        base_url: `${upstreamBaseUrl}/deepseek`
+      },
+      groupId: prefixedResponsesGroup.id,
+      status: 'active',
+      schedulable: true,
+      supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      healthCheckModel: 'deepseek-v4-flash',
+      healthCheckEndpointMode: 'chat_json'
+    }, access)
 
     const bodyInterruptedGroup = repositories.createGroup({
       name: 'DeepSeek Mock AI JSON 正文中断重试分组',
@@ -289,7 +313,8 @@ try {
       type: 'api_key',
       credentials: {
         api_key: 'sk-deepseek-codex-upstream',
-        base_url: upstreamBaseUrl
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
       groupId: codexBridgeGroup.id,
       status: 'active',
@@ -314,6 +339,29 @@ try {
     assert.deepEqual(codexBridgeAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
     assertDeepSeekCodexDispatchCapability(codexBridgeGroup.id, codexBridgeAccount.id)
 
+    const anthropicGroup = repositories.createGroup({
+      name: 'DeepSeek Anthropic Messages Mock AI 回归分组',
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      enabled: true
+    }, access)
+    repositories.createAccount({
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+      name: 'DeepSeek Anthropic Messages Mock AI 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-deepseek-anthropic-upstream',
+        base_url: `${upstreamBaseUrl}/anthropic`,
+        supported_endpoint_modes: ['messages_json', 'messages_sse']
+      },
+      groupId: anthropicGroup.id,
+      status: 'active',
+      schedulable: true,
+      supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      healthCheckModel: 'deepseek-v4-flash',
+      healthCheckEndpointMode: 'messages_json'
+    }, access)
+
     for (const created of repositories.listAccounts(access).filter((item) => item.providerCode === DEEPSEEK_PROVIDER_CODE)) {
       repositories.recordAccountHealthCheckSuccess(created.id, {
         intervalHours: 24,
@@ -329,6 +377,12 @@ try {
       status: 'active'
     }, access)
     assert(apiKey.key, '回归 API Key 未返回明文密钥')
+    const prefixedResponsesApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+      name: 'DeepSeek Responses 路径前缀 Mock AI 回归 Key',
+      groupBindings: [{ groupId: prefixedResponsesGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(prefixedResponsesApiKey.key, '路径前缀 Responses 回归 API Key 未返回明文密钥')
     const bodyInterruptedApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Mock AI JSON 正文中断重试 Key',
       groupBindings: [{ groupId: bodyInterruptedGroup.id, priority: 1, status: 'active' }],
@@ -353,6 +407,12 @@ try {
       status: 'active'
     }, access)
     assert(codexBridgeApiKey.key, 'Codex bridge 回归 API Key 未返回明文密钥')
+    const anthropicApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+      name: 'DeepSeek Anthropic Messages Mock AI 回归 Key',
+      groupBindings: [{ groupId: anthropicGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(anthropicApiKey.key, 'DeepSeek Anthropic Messages 回归 API Key 未返回明文密钥')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -373,7 +433,12 @@ try {
       await assertDeepSeekChatSse(baseUrl, apiKey.key)
       await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key, account.id)
       await assertDeepSeekChatSse(baseUrl, apiKey.key)
-      await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
+      await assertDeepSeekNativeResponsesJson(baseUrl, apiKey.key)
+      await assertDeepSeekNativeResponsesSse(baseUrl, apiKey.key)
+      await assertDeepSeekNativeResponsesJson(baseUrl, apiKey.key, 'deepseek-v4-pro')
+      await assertDeepSeekNativeResponsesSse(baseUrl, apiKey.key, 'deepseek-v4-pro')
+      await assertDeepSeekNativeResponsesUpstreamFailure(baseUrl, apiKey.key)
+      await assertDeepSeekNativeResponsesUpstreamFailure(baseUrl, prefixedResponsesApiKey.key, '/deepseek/v1/responses')
       await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
       await assertDeepSeekCodexResponsesBridgeContinuesWithUnsupportedHostedToolGuidance(baseUrl, codexBridgeApiKey.key)
       await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
@@ -386,6 +451,8 @@ try {
       await assertDeepSeekCodexResponsesBridgeTreatsInsufficientResourceFinishReasonAsOpaque(baseUrl, codexBridgeApiKey.key)
       await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
       await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
+      await assertDeepSeekAnthropicMessagesJson(baseUrl, anthropicApiKey.key)
+      await assertDeepSeekAnthropicMessagesSse(baseUrl, anthropicApiKey.key)
       assertDeepSeekSemanticParsing()
     }
 
@@ -464,6 +531,69 @@ async function assertInvalidModelsApiKeyRejected(baseUrl: string): Promise<void>
   assert.equal(body.object, undefined, '无效 API Key 不应返回公开模型列表 object=list')
   assert.equal(body.data, undefined, '无效 API Key 不应返回公开模型列表 data')
   assert.equal(upstreamHits.length, 0, '无效 API Key 的模型目录不应命中上游 mock')
+}
+
+async function assertDeepSeekAnthropicMessagesJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': localApiKey,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-pro',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'hello deepseek anthropic json' }]
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `DeepSeek Anthropic Messages JSON 应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    type?: string
+    content?: Array<{ text?: string }>
+    usage?: { input_tokens?: number; output_tokens?: number }
+  }
+  assert.equal(body.type, 'message', 'DeepSeek Anthropic JSON 应保留 Message 类型')
+  assert.equal(body.content?.[0]?.text, 'deepseek anthropic json ok')
+  assert.equal(body.usage?.input_tokens, 7)
+  assert.equal(body.usage?.output_tokens, 4)
+  assert.equal(upstreamHits.length, 1, 'DeepSeek Anthropic JSON 应命中一次 mock 上游')
+  const hit = upstreamHits[0]
+  assert.equal(hit.path, '/anthropic/v1/messages')
+  assert.equal(hit.xApiKey, 'sk-deepseek-anthropic-upstream', 'DeepSeek Anthropic 上游应使用 x-api-key')
+  assert.equal(hit.authorization, '', 'DeepSeek Anthropic 上游不应透传 Bearer Authorization')
+  assert.equal(hit.anthropicVersion, '2023-06-01', 'DeepSeek Anthropic 上游应携带 anthropic-version')
+  assert.match(hit.bodyText, /hello deepseek anthropic json/)
+}
+
+async function assertDeepSeekAnthropicMessagesSse(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'hello deepseek anthropic sse' }],
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `DeepSeek Anthropic Messages SSE 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(text, /event: content_block_delta/)
+  assert.match(text, /deepseek anthropic sse ok/)
+  assert.match(text, /event: message_stop/)
+  assert.equal(upstreamHits.length, 1, 'DeepSeek Anthropic SSE 应命中一次 mock 上游')
+  const hit = upstreamHits[0]
+  assert.equal(hit.path, '/anthropic/v1/messages')
+  assert.equal(hit.xApiKey, 'sk-deepseek-anthropic-upstream')
+  assert.match(hit.bodyText, /hello deepseek anthropic sse/)
 }
 
 async function assertDeepSeekChatJson(baseUrl: string, localApiKey: string): Promise<void> {
@@ -546,11 +676,10 @@ async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `DeepSeek Chat JSON 上游 choices:null 应先服务端换号重试，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(JSON.parse(text).choices?.[0]?.message?.content, 'deepseek json ok')
-  assert.equal(upstreamHits.length, 2, 'DeepSeek invalid choices 场景应先命中坏账号，再命中备用账号')
+  assert.equal(response.status, 502, `DeepSeek Chat JSON 上游 choices:null 应返回协议错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_protocol_error/, '协议结构错误应返回稳定的协议错误码')
+  assert.equal(upstreamHits.length, 1, '完整 2xx 协议结构错误不得切换备用账号')
   assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-deepseek-upstream')
-  assert.equal(upstreamHits[1]?.authorization, 'Bearer sk-deepseek-rescue-upstream')
   await assertProtocolShapeFailureSharedStateNeutral(accounts, 1)
 
   upstreamHits.length = 0
@@ -567,11 +696,10 @@ async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(
     })
   })
   const secondText = await secondResponse.text()
-  assert.equal(secondResponse.status, 200, `DeepSeek Chat JSON 协议失败二次请求仍应在请求内完成切号，实际 HTTP ${secondResponse.status}: ${secondText}`)
-  assert.equal(JSON.parse(secondText).choices?.[0]?.message?.content, 'deepseek json ok')
-  assert.equal(upstreamHits.length, 2, 'DeepSeek invalid choices 不得形成跨请求共享屏蔽，二次请求仍应重新评估主账户后在请求内切号')
+  assert.equal(secondResponse.status, 502, `DeepSeek Chat JSON 协议失败二次请求仍应返回协议错误，实际 HTTP ${secondResponse.status}: ${secondText}`)
+  assert.match(secondText, /upstream_protocol_error/, '二次协议结构错误应返回稳定的协议错误码')
+  assert.equal(upstreamHits.length, 1, '完整 2xx 协议结构错误二次请求也不得切换备用账号')
   assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-deepseek-upstream')
-  assert.equal(upstreamHits[1]?.authorization, 'Bearer sk-deepseek-rescue-upstream')
   await assertProtocolShapeFailureSharedStateNeutral(accounts, 2)
 }
 
@@ -611,13 +739,17 @@ async function assertProtocolShapeFailureSharedStateNeutral(
   const quality = await hotQuality.getGatewayHotQualityRuntime().hotQualityStore.get(scope)
   assert(quality, '协议结构失败请求应保留中性 attempt 可观测性')
   assert.equal(quality.window5m.qualityAttempts, 0, '请求局部协议异常不得进入共享质量分母')
-  assert.equal(quality.window5m.upstreamResponseFailures, 0, '请求局部协议异常不得写成共享上游质量失败')
+  assert.equal(
+    quality.window5m.upstreamResponseFailures,
+    primary.id === accounts.primaryAccountId ? expectedNeutralObservationCount : 0,
+    '协议结构异常只应记录命中账号的上游响应失败观测'
+  )
   assert.equal(quality.window5m.localTransportFailures, 0, '完整 2xx 协议异常不得写成传输失败')
   assert.equal(quality.window5m.explicitPolicyFailures, 0, '内部协议验证不得伪造成用户显式策略失败')
   assert.equal(
     quality.window5m.unknownOutcomes,
-    expectedNeutralObservationCount,
-    '协议结构异常只允许形成不影响调度的中性请求观测'
+    0,
+    '协议结构异常不应伪造成 unknown 请求观测'
   )
 }
 
@@ -640,10 +772,11 @@ async function assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `DeepSeek Chat JSON 协议失败账号耗尽后应转成可重试网关错误，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /upstream_retryable_error/, '账号耗尽后应返回稳定的客户端重试错误码')
+  assert.equal(response.status, 502, `DeepSeek Chat JSON 协议失败应返回协议错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_protocol_error/, '协议失败应返回稳定的协议错误码')
   assert.doesNotMatch(text, /"choices"\s*:\s*null/, '网关不应把上游 choices:null 原样暴露给下游客户端')
-  assert.equal(upstreamHits.length, 2, 'DeepSeek invalid choices 耗尽场景应尝试同组全部候选账号')
+  assert.equal(upstreamHits.length, 1, '完整 2xx 协议结构错误不得尝试同组其他账号')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-deepseek-allbad-a')
   const accounts = accountIds.map((accountId) => repositories.findAccountForTest(accountId, access))
   assert(accounts[0] && accounts[1], '协议失败耗尽账户都应仍可读取')
   const availableAccounts = [accounts[0], accounts[1]]
@@ -662,10 +795,15 @@ async function assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(
       requestLane: 'text',
       modelFamily: hotQuality.gatewayHotQualityModelFamily('deepseek-v4-flash')
     })
-    assert(quality, '每个协议异常账户都应保留中性 attempt 可观测性')
-    assert.equal(quality.window5m.qualityAttempts, 0, '协议异常耗尽不得进入共享质量分母')
-    assert.equal(quality.window5m.upstreamResponseFailures, 0, '协议异常耗尽不得写成共享上游质量失败')
-    assert.equal(quality.window5m.unknownOutcomes, 1, '每个协议异常账户只应记录一次中性请求结果')
+    if (account === accounts[0]) {
+      assert(quality, '命中的协议异常账户应保留请求观测')
+      assert.equal(quality.window5m.qualityAttempts, 0, '协议异常不得进入共享质量分母')
+      assert.equal(quality.window5m.upstreamResponseFailures, 1, '命中的协议异常账户应记录一次上游响应失败')
+      assert.equal(quality.window5m.unknownOutcomes, 0, '协议异常不应伪造成 unknown 请求观测')
+    } else if (quality) {
+      assert.equal(quality.window5m.upstreamResponseFailures, 0, '未命中的协议异常账户不得记录上游响应失败')
+      assert.equal(quality.window5m.unknownOutcomes, 0, '未命中的协议异常账户不得记录请求观测')
+    }
   }
 }
 
@@ -729,7 +867,11 @@ async function assertDeepSeekChatSsePreCommitFailureUsesHttpError(
   )
 }
 
-async function assertDeepSeekRejectsResponses(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekNativeResponsesJson(
+  baseUrl: string,
+  localApiKey: string,
+  model = 'deepseek-v4-flash'
+): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -738,14 +880,79 @@ async function assertDeepSeekRejectsResponses(baseUrl: string, localApiKey: stri
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-v4-flash',
-      input: 'must not reach upstream',
+      model,
+      input: 'deepseek native responses json',
       stream: false
     })
   })
   const text = await response.text()
-  assert.notEqual(response.status, 200, `DeepSeek 不应承接 Responses，实际响应不应成功：${text}`)
-  assert.equal(upstreamHits.length, 0, 'DeepSeek Responses 请求不应命中上游')
+  assert.equal(response.status, 200, `DeepSeek 原生 Responses JSON 应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { object?: string; model?: string; output?: Array<{ content?: Array<{ text?: string }> }> }
+  assert.equal(body.object, 'response', 'DeepSeek 原生 Responses JSON 应保留上游 response object')
+  assert.equal(body.model, model, 'DeepSeek 原生 Responses JSON 应保留目标模型')
+  assert.equal(body.output?.[0]?.content?.[0]?.text, 'deepseek native responses json ok')
+  assert.equal(upstreamHits.length, 1, 'DeepSeek 原生 Responses JSON 应命中一次上游')
+  assert.equal(upstreamHits[0]?.path, '/v1/responses')
+  assert.equal(JSON.parse(upstreamHits[0]?.bodyText ?? '{}').model, model, 'DeepSeek 原生 Responses JSON 不得改写模型')
+  assert.match(upstreamHits[0]?.bodyText ?? '', /deepseek native responses json/)
+}
+
+async function assertDeepSeekNativeResponsesSse(
+  baseUrl: string,
+  localApiKey: string,
+  model = 'deepseek-v4-flash'
+): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model,
+      input: 'deepseek native responses sse',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `DeepSeek 原生 Responses SSE 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(text, /event: response\.completed/, 'DeepSeek 原生 Responses SSE 应保留语义完成事件')
+  assert.doesNotMatch(text, /\[DONE\]/, 'DeepSeek 原生 Responses SSE 不应伪造 Chat 的 [DONE] 终止符')
+  assert.match(text, new RegExp(`"model":"${model}"`), 'DeepSeek 原生 Responses SSE 应保留目标模型')
+  assert.equal(upstreamHits.length, 1, 'DeepSeek 原生 Responses SSE 应命中一次上游')
+  assert.equal(upstreamHits[0]?.path, '/v1/responses')
+  assert.equal(JSON.parse(upstreamHits[0]?.bodyText ?? '{}').model, model, 'DeepSeek 原生 Responses SSE 不得改写模型')
+}
+
+async function assertDeepSeekNativeResponsesUpstreamFailure(
+  baseUrl: string,
+  localApiKey: string,
+  expectedUpstreamPath = '/v1/responses'
+): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-pro',
+      input: 'deepseek native responses upstream failure',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 429, `DeepSeek 原生 Responses 上游失败应保留 HTTP 状态，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { error?: { message?: string; type?: string; code?: string } }
+  assert.equal(body.error?.message, 'deepseek native responses upstream rate limit', 'DeepSeek 原生 Responses 上游错误消息应可见')
+  assert.equal(body.error?.type, 'rate_limit_error', 'DeepSeek 原生 Responses 上游错误类型应可见')
+  assert.equal(body.error?.code, 'deepseek_native_responses_rate_limited', 'DeepSeek 原生 Responses 上游错误码应可见')
+  assert.equal(upstreamHits.length, 1, 'DeepSeek 原生 Responses 上游失败应只命中一次上游')
+  assert.equal(upstreamHits[0]?.path, expectedUpstreamPath)
 }
 
 async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1291,7 +1498,7 @@ async function requestDeepSeekCodexBridgeUsage(baseUrl: string, localApiKey: str
 async function assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl: string, localApiKey: string): Promise<void> {
   const text = await requestDeepSeekCodexBridgeFailure(baseUrl, localApiKey, 'hello deepseek codex bridge truncated')
   assert.match(text, /event: response\.failed/, '上游 Chat SSE 截断时 DeepSeek bridge 应输出 Responses failed 事件')
-  assert.match(text, /upstream_stream_interrupted/, '截断错误应带稳定机器错误码')
+  assert.match(text, /upstream_retryable_error/, '截断错误应带稳定客户端重试错误码')
   assert(!text.includes('event: response.completed'), '上游 Chat SSE 截断时 DeepSeek bridge 不应输出 completed 事件')
 }
 
@@ -1488,7 +1695,7 @@ function assertDeepSeekDispatchCapability(groupId: string, accountId: string): v
     path: '/v1/chat/completions',
     originalUrl: '/v1/chat/completions',
     headers: { 'content-type': 'application/json' },
-    body: { stream: false }
+    body: { model: 'deepseek-v4-flash', stream: false }
   } as unknown as express.Request
   assert.equal(providerDriverForAccount(dispatchAccount)?.id, 'deepseek', `DeepSeek dispatch account 应匹配 deepseek driver: ${JSON.stringify({
     providerCode: dispatchAccount.providerCode,
@@ -1500,6 +1707,23 @@ function assertDeepSeekDispatchCapability(groupId: string, accountId: string): v
   })}`)
   assert.deepEqual(buildGatewayUpstreamUrlsForAccount(dispatchAccount, request), [`${dispatchAccount.baseUrl}/v1/chat/completions`])
   assert.equal(accountSupportsGatewayRequest(request, dispatchAccount), true, 'DeepSeek dispatch account 应支持 Chat Completions JSON')
+
+  const responsesRequest = {
+    method: 'POST',
+    path: '/v1/responses',
+    originalUrl: '/v1/responses',
+    headers: { 'content-type': 'application/json' },
+    body: { model: 'deepseek-v4-flash', stream: false }
+  } as unknown as express.Request
+  assert.deepEqual(buildGatewayUpstreamUrlsForAccount(dispatchAccount, responsesRequest), [`${dispatchAccount.baseUrl}/v1/responses`])
+  assert.equal(accountSupportsGatewayRequest(responsesRequest, dispatchAccount), true, 'DeepSeek dispatch account 应支持 V4 Flash 原生 Responses JSON')
+
+  const proResponsesRequest = {
+    ...responsesRequest,
+    body: { model: 'deepseek-v4-pro', stream: false }
+  } as unknown as express.Request
+  assert.deepEqual(buildGatewayUpstreamUrlsForAccount(dispatchAccount, proResponsesRequest), [`${dispatchAccount.baseUrl}/v1/responses`], 'DeepSeek V4 Pro 预兼容应构造原生 Responses 上游 URL')
+  assert.equal(accountSupportsGatewayRequest(proResponsesRequest, dispatchAccount), true, 'DeepSeek V4 Pro 预兼容应承接原生 Responses')
 
   const getRequest = {
     method: 'GET',
@@ -1571,12 +1795,76 @@ function createDeepSeekMockUpstream(): http.Server {
         rawUrl: req.url ?? '',
         method: req.method ?? '',
         authorization: String(req.headers.authorization ?? ''),
+        xApiKey: String(req.headers['x-api-key'] ?? ''),
+        anthropicVersion: String(req.headers['anthropic-version'] ?? ''),
         contentLength: String(req.headers['content-length'] ?? ''),
         transferEncoding: String(req.headers['transfer-encoding'] ?? ''),
         bodyText
       })
       const body = safeJson(bodyText)
-      if (req.url?.split('?', 1)[0] !== '/v1/chat/completions') {
+      const path = req.url?.split('?', 1)[0]
+      if (path === '/anthropic/v1/messages') {
+        if (body.stream === true) {
+          res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+          res.write('event: message_start\ndata: {"type":"message_start","message":{"id":"msg-deepseek-anthropic","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"stop_reason":null,"usage":{"input_tokens":7,"output_tokens":0}}}\n\n')
+          res.write('event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n')
+          res.write('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"deepseek anthropic sse ok"}}\n\n')
+          res.write('event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n')
+          res.write('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}\n\n')
+          res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'msg-deepseek-anthropic',
+          type: 'message',
+          role: 'assistant',
+          model: 'deepseek-v4-pro',
+          content: [{ type: 'text', text: 'deepseek anthropic json ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 7, output_tokens: 4 }
+        }))
+        return
+      }
+      if (path === '/v1/responses' || path === '/deepseek/v1/responses') {
+        const responseModel = body.model === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-v4-flash'
+        if (body.input === 'deepseek native responses upstream failure') {
+          res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({
+            error: {
+              message: 'deepseek native responses upstream rate limit',
+              type: 'rate_limit_error',
+              code: 'deepseek_native_responses_rate_limited'
+            }
+          }))
+          return
+        }
+        if (body.stream === true) {
+          res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+          res.write(`event: response.created\ndata: {"type":"response.created","sequence_number":1,"response":{"id":"resp-deepseek-native","model":"${responseModel}","status":"in_progress"}}\n\n`)
+          res.write('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":2,"delta":"deepseek native responses sse ok"}\n\n')
+          res.end(`event: response.completed\ndata: {"type":"response.completed","sequence_number":3,"response":{"id":"resp-deepseek-native","model":"${responseModel}","status":"completed","usage":{"input_tokens":5,"output_tokens":6,"total_tokens":11}}}\n\n`)
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'resp-deepseek-native',
+          object: 'response',
+          created_at: 1782259200,
+          status: 'completed',
+          model: responseModel,
+          output: [{
+            id: 'msg-deepseek-native',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'deepseek native responses json ok' }]
+          }],
+          usage: { input_tokens: 5, output_tokens: 6, total_tokens: 11 }
+        }))
+        return
+      }
+      if (path !== '/v1/chat/completions') {
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ error: { message: 'not found' } }))
         return

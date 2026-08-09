@@ -15,14 +15,17 @@ import {
 
 const accountHealthCheckDispatchPath = '/v1/account-health-check/dispatch'
 const accountHealthCheckDispatchTimeoutMs = 2_000
-const requestFailureDispatchCooldownMs = 5 * 60_000
-const requestFailureDispatchInFlight = new Set<string>()
-const requestFailureDispatchInFlightAt = new Map<string, number>()
-const requestFailureDispatchAcceptedAt = new Map<string, number>()
+interface RequestFailureControlDispatchState {
+  running: boolean
+  trailing: boolean
+  latestTraceId?: string
+}
+
+const requestFailureControlDispatches = new Map<string, RequestFailureControlDispatchState>()
 let missingGatewayDispatchTargetLogged = false
 
 export function dispatchAccountHealthCheck(accountId: string, reason: AccountHealthCheckTriggerReason, traceId = getTraceId()): boolean {
-  return dispatchAccountHealthCheckWithOutcome(accountId, reason, traceId).outcome === 'queued'
+  return dispatchAccountHealthCheckWithOutcome(accountId, reason, traceId).outcome !== 'rejected'
 }
 
 export function dispatchAccountHealthCheckWithOutcome(
@@ -33,13 +36,6 @@ export function dispatchAccountHealthCheckWithOutcome(
 ): AccountHealthCheckDispatchOutcome {
   const normalizedId = accountId.trim()
   if (!normalizedId) return rejectedDispatchOutcome('ops_ipc_unavailable')
-  const cooldownRemainingMs = sourceFence ? undefined : requestFailureDispatchCooldownRemainingMs(normalizedId, reason)
-  if (cooldownRemainingMs !== undefined) return {
-    outcome: 'coalesced',
-    decisionCode: 'request_failure_cooldown',
-    targetRole: 'ops-worker',
-    cooldownRemainingMs
-  }
   if (
     runtimeConfig.runtimeMode === 'performance'
     && runtimeConfig.performanceNodeRole === 'gateway'
@@ -48,11 +44,7 @@ export function dispatchAccountHealthCheckWithOutcome(
     return dispatchAccountHealthCheckToControl(normalizedId, reason, traceId, sourceFence)
   }
   if (runtimeConfig.processRole !== 'db-service') {
-    return rememberAccountHealthCheckDispatchOutcome(
-      normalizedId,
-      reason,
-      workerDispatchOutcome(sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId, sourceFence))
-    )
+    return workerDispatchOutcome(sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId, sourceFence))
   }
   if (!process.send || process.connected === false) return rejectedDispatchOutcome('ops_ipc_unavailable')
   try {
@@ -70,7 +62,7 @@ export function dispatchAccountHealthCheckWithOutcome(
         }), 'DB service 投递账户健康检查触发消息失败')
       }
     })
-    return rememberAccountHealthCheckDispatchOutcome(normalizedId, reason, queuedDispatchOutcome())
+    return queuedDispatchOutcome()
   } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'account_health_check_db_service_dispatch_failed',
@@ -96,18 +88,25 @@ function dispatchAccountHealthCheckToControl(
     }
     return rejectedDispatchOutcome('ops_ipc_unavailable')
   }
-  if (reason === 'request_failure') {
-    requestFailureDispatchInFlight.add(accountId)
-    requestFailureDispatchInFlightAt.set(accountId, Date.now())
+  if (reason === 'request_failure' && !sourceFence) {
+    const existing = requestFailureControlDispatches.get(accountId)
+    if (existing) {
+      existing.trailing = true
+      existing.latestTraceId = traceId
+      return coalescedInFlightDispatchOutcome()
+    }
+    const state: RequestFailureControlDispatchState = {
+      running: true,
+      trailing: false,
+      latestTraceId: traceId
+    }
+    requestFailureControlDispatches.set(accountId, state)
+    void dispatchRequestFailureAccountHealthCheckToControl(dispatchUrl, accountId, state)
+    return queuedDispatchOutcome()
   }
   void postAccountHealthCheckDispatch(dispatchUrl, accountId, reason, traceId, sourceFence)
     .then((accepted) => {
       if (!accepted) settleClientSourceFenceAfterControlDispatchFailure(sourceFence, accountId, 'rejected')
-      rememberAccountHealthCheckDispatchOutcome(
-        accountId,
-        reason,
-        accepted ? queuedDispatchOutcome() : rejectedDispatchOutcome('ops_ipc_unavailable')
-      )
     })
     .catch((error) => {
       settleClientSourceFenceAfterControlDispatchFailure(sourceFence, accountId, 'failed')
@@ -116,14 +115,33 @@ function dispatchAccountHealthCheckToControl(
         accountId
       }), 'Gateway 向 control 投递账户健康检查失败')
     })
-    .finally(() => {
-      if (reason === 'request_failure') {
-        requestFailureDispatchInFlight.delete(accountId)
-        requestFailureDispatchInFlightAt.delete(accountId)
-      }
-      cleanupRequestFailureDispatchCooldowns(Date.now())
-    })
   return queuedDispatchOutcome()
+}
+
+async function dispatchRequestFailureAccountHealthCheckToControl(
+  dispatchUrl: URL,
+  accountId: string,
+  state: RequestFailureControlDispatchState
+): Promise<void> {
+  while (state.running) {
+    const traceId = state.latestTraceId
+    try {
+      await postAccountHealthCheckDispatch(dispatchUrl, accountId, 'request_failure', traceId)
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'account_health_check_control_dispatch_failed',
+        accountId
+      }), 'Gateway 向 control 投递账户健康检查失败')
+    }
+    if (state.trailing) {
+      state.trailing = false
+      continue
+    }
+    state.running = false
+    if (requestFailureControlDispatches.get(accountId) === state) {
+      requestFailureControlDispatches.delete(accountId)
+    }
+  }
 }
 
 function settleClientSourceFenceAfterControlDispatchFailure(
@@ -198,38 +216,18 @@ function accountHealthCheckDispatchTargetUrl(): URL | undefined {
   }
 }
 
-function requestFailureDispatchCooldownRemainingMs(
-  accountId: string,
-  reason: AccountHealthCheckTriggerReason
-): number | undefined {
-  if (reason !== 'request_failure') return undefined
-  const now = Date.now()
-  const inFlightAt = requestFailureDispatchInFlightAt.get(accountId)
-  if (requestFailureDispatchInFlight.has(accountId)) {
-    return Math.max(1, requestFailureDispatchCooldownMs - Math.max(0, now - (inFlightAt ?? now)))
-  }
-  cleanupRequestFailureDispatchCooldowns(now)
-  const acceptedAt = requestFailureDispatchAcceptedAt.get(accountId)
-  if (acceptedAt === undefined) return undefined
-  const remainingMs = requestFailureDispatchCooldownMs - (now - acceptedAt)
-  return remainingMs > 0 ? remainingMs : undefined
-}
-
-function rememberAccountHealthCheckDispatchOutcome(
-  accountId: string,
-  reason: AccountHealthCheckTriggerReason,
-  outcome: AccountHealthCheckDispatchOutcome
-): AccountHealthCheckDispatchOutcome {
-  if (outcome.outcome === 'queued' && reason === 'request_failure') {
-    requestFailureDispatchAcceptedAt.set(accountId, Date.now())
-  }
-  return outcome
-}
-
 function queuedDispatchOutcome(): AccountHealthCheckDispatchOutcome {
   return {
     outcome: 'queued',
     decisionCode: 'queued',
+    targetRole: 'ops-worker'
+  }
+}
+
+function coalescedInFlightDispatchOutcome(): AccountHealthCheckDispatchOutcome {
+  return {
+    outcome: 'coalesced',
+    decisionCode: 'request_failure_in_flight',
     targetRole: 'ops-worker'
   }
 }
@@ -270,12 +268,5 @@ function workerDispatchOutcome(
     messageBytes: outcome.messageBytes,
     maxQueueMessages: accountHealthCheckWorkerIpcQueueLimits.maxQueueMessages,
     maxQueueBytes: accountHealthCheckWorkerIpcQueueLimits.maxQueueBytes
-  }
-}
-
-function cleanupRequestFailureDispatchCooldowns(now: number): void {
-  const cutoff = now - requestFailureDispatchCooldownMs
-  for (const [accountId, acceptedAt] of requestFailureDispatchAcceptedAt) {
-    if (acceptedAt <= cutoff) requestFailureDispatchAcceptedAt.delete(accountId)
   }
 }

@@ -296,7 +296,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
     const healthCheckModel = options.form.healthCheckModel.trim()
-    if (healthCheckModel && !supportedModels.includes(healthCheckModel)) {
+    if (!healthCheckModel) {
+      message.warning('请选择检查模型')
+      return
+    }
+    if (!supportedModels.includes(healthCheckModel)) {
       message.warning('检查模型必须从账户支持模型中选择')
       return
     }

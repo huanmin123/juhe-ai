@@ -43,8 +43,8 @@ assert.deepEqual(
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'deepseek', accountType: 'api_key' }),
-  ['chat_json', 'chat_sse'],
-  'DeepSeek API Key 默认只启用 Chat Completion JSON/Streaming'
+  ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+  'DeepSeek API Key 默认启用 Chat Completion 与原生 Responses JSON/Streaming'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'openai', accountType: 'api_key', clientCompatibility: 'codex_responses' }),
@@ -68,8 +68,8 @@ assert.deepEqual(
     accountType: 'api_key',
     clientCompatibility: 'codex_responses'
   }),
-  ['chat_json', 'chat_sse'],
-  'DeepSeek OpenAI 档案默认只保存真实 Chat Completion JSON/Streaming 能力'
+  ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+  'DeepSeek OpenAI 档案默认保存 Chat Completion 与原生 Responses JSON/Streaming 能力'
 )
 assert.deepEqual(
   defaultAnthropicEndpointModes({
@@ -221,10 +221,10 @@ assert.deepEqual(
     protocolVersion: 'v1',
     providerProtocolProfileId: 'profile_deepseek_openai_v1'
   }).supported_endpoint_modes,
-  ['chat_json', 'chat_sse'],
-  'DeepSeek API Key 凭据归一化应通过 provider driver 使用 Chat 默认能力'
+  ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+  'DeepSeek API Key 凭据归一化应通过 provider driver 使用 Chat 与原生 Responses 默认能力'
 )
-assert.throws(
+assert.doesNotThrow(
   () => normalizeAccountCredentialsForWrite('api_key', {
     api_key: 'sk-deepseek',
     base_url: 'https://api.deepseek.com',
@@ -236,8 +236,7 @@ assert.throws(
     protocolVersion: 'v1',
     providerProtocolProfileId: 'profile_deepseek_openai_v1'
   }),
-  /DeepSeek 账户上游接口能力只支持 Chat Completion \(JSON\) 或 Chat Completion \(Streaming\)/,
-  'DeepSeek API Key 凭据归一化应拒绝 Responses 能力'
+  'DeepSeek API Key 凭据归一化应允许 Responses 能力'
 )
 assert.deepEqual(
   normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ant', base_url: 'https://api.anthropic.com/v1' }, {

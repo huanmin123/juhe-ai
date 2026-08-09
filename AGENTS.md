@@ -32,6 +32,42 @@
 - 只有自动登录功能本身就是被测对象，或自动登录经上述预检确认不可用时，才允许测试登录流程；仍不得尝试破解验证码。
 - 测试凭据只能从用户明确指定的本地文件或当次消息读取，不写入源码、文档、日志或测试产物；输出、审计检查和最终报告必须脱敏。
 
+## 私有环境资源
+
+- `/.local/` 是当前工作区的私有环境资源根目录，已由 `.gitignore` 忽略；其中的任何文件都不得 `git add`、提交、打包进发布产物或复制到 `docs/`。
+- 开发与生产资料统一放在 `.local/project-resources/`，仅供本机维护者和 Agent 在用户授权的范围内读取：
+
+  ```text
+  .local/project-resources/
+  ├── dev/                 # 本地开发资源、数据库约定、环境变量模板和运行记录
+  │   ├── env/             # `shared.env.example` 是模板；真实 `shared.env` 不提交
+  │   ├── database/        # 开发 PostgreSQL / Redis 隔离约定
+  │   ├── accounts/
+  │   ├── runbooks/
+  │   ├── issues/
+  │   └── logs/
+  └── prod/                # 当前 Mac 部署与八台流量 Edge 的私有证据和手册
+      ├── README.md         # 范围、资料导航和证据边界
+      ├── assets/           # Mac / Edge 资产与访问台账
+      ├── database/         # Mac PostgreSQL、PgBouncer、Redis 事实和验证入口
+      ├── issues/           # 当前项目问题记录
+      ├── runbooks/         # Mac 拓扑、部署验证、回滚和临时接管硬门禁
+      ├── edge-cluster/     # 八台 Edge 的流量入口、WireGuard 回源、当前原件和现场验证
+      │   └── current-config/ # 已核验 Edge 的 Caddy/systemd/WireGuard 私有快照
+      ├── sources/          # Mac 当前配置/LaunchDaemon 原件、Mac 操作资料和临时接管旧实现
+      │   ├── mac-active-config/
+      │   ├── mac-launchdaemons/
+      │   ├── mac-operations/
+      │   └── temporary-cutover-legacy/
+      ├── migration-manifest.json
+      └── checksums.sha256
+  ```
+
+- `dev` 使用远端 `192.168.1.203` 的 PostgreSQL 数据库 `juhe_ai_sub2api_dev`、专用登录角色 `juhe_ai_sub2api_dev_app`，以及 cache/state/queue 三个 Redis 实例各自的 DB `9`；统一 namespace 是 `juhe-ai:dev`。真实连接配置在 `dev/env/shared.env`，初始化和加载入口在 `dev/runbooks/`。
+- `F:\juhe-ai-public-welfare\.local` 仅供目录设计参考；当前项目不读取或复用其中的数据库、Redis、连接串或命名空间。
+- `prod` 仅保存当前 Mac 部署与八台仅负责流量入口的 Edge 的私有证据和手册；`database/production-connection.env` 和 `edge-cluster/current-config/` 是用户明确授权保留的真实连接/配置快照。它不能自动执行部署、安装、切流或远端写操作。`sources/temporary-cutover-legacy` 明确标记旧日期/旧端口，仅供人工对齐，不作为现行默认。除这两处快照外，禁止复制 env、logs、releases、backups、shared、temporary 数据或向远端写操作。
+- 操作 `.local` 后必须验证 `git check-ignore -v --no-index .local/<探针路径>` 命中忽略规则，并确认 `git ls-files -- .local` 没有输出。
+
 ## 事件导航
 
 | 事件 | 必读入口 |

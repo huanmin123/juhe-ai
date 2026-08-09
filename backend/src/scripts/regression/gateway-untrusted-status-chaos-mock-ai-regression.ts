@@ -106,6 +106,10 @@ interface MixedSessionStormScenario {
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const hits: UpstreamHit[] = []
 const app = express()
+// The mixed-session scenario models independently routed callers. Express
+// must therefore accept the test proxy's forwarded client address; arbitrary
+// session headers remain untrusted for generic OpenAI traffic.
+app.set('trust proxy', 1)
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 
@@ -160,13 +164,15 @@ try {
     label: '独立确认多Key轮换',
     upstreamBaseUrl,
     keyPrefix: 'sk-confirmation-rotation',
-    mode: 'truncated'
+    mode: 'truncated',
+    apiKeyStrategy: 'failover'
   })
   const confirmationAllKeysFailScenario = createMixedSessionStormScenario({
     label: '独立确认多Key全失败',
     upstreamBaseUrl,
     keyPrefix: 'sk-confirmation-all-fail',
-    mode: 'truncated'
+    mode: 'truncated',
+    apiKeyStrategy: 'failover'
   })
 
   gatewayServer = http.createServer(app)
@@ -375,7 +381,7 @@ async function assertInterleavedMixedSessionStorm(
     `${scenario.mode} 坏会话必须有界收口为稳定网关 503：${JSON.stringify(badResults.filter(({ response }) => response.status !== 503).slice(0, 3))}`
   )
   assert(
-    badResults.every(({ response }) => !/chaos[_ -]error|invalid[_ -]api[_ -]key|rate[_ -]limit|content[_ -]policy|partial/i.test(response.text)),
+    badResults.every(({ response }) => !/aborted|chaos[_ -]error|ECONN|hang up|invalid[_ -]api[_ -]key|rate[_ -]limit|content[_ -]policy|partial|socket|upstream_transport_error/i.test(response.text)),
     `${scenario.mode} 坏会话不得泄露上游正文或 transport 细节`
   )
   assert(elapsedMs < 12_000, `${scenario.mode} 96 路混合风暴必须受 10 秒 no-available 墙钟约束，实际 ${elapsedMs}ms`)
@@ -769,6 +775,7 @@ function createMixedSessionStormScenario(input: {
   upstreamBaseUrl: string
   keyPrefix: string
   mode: MixedSessionFailureMode
+  apiKeyStrategy?: 'round_robin' | 'failover'
 }): MixedSessionStormScenario {
   const group = repositories.createGroup({
     name: `${input.label}-单组`,
@@ -792,7 +799,7 @@ function createMixedSessionStormScenario(input: {
     credentials: {
       api_key: accountKeys[0],
       api_keys: accountKeys,
-      api_key_strategy: 'round_robin',
+      api_key_strategy: input.apiKeyStrategy ?? 'round_robin',
       base_url: input.upstreamBaseUrl
     },
     groupId: group.id,

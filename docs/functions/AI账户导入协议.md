@@ -183,9 +183,9 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "credentials": {
         "api_key": "sk-xxx",
         "base_url": "https://api.deepseek.com",
-        "supported_endpoint_modes": ["chat_json", "chat_sse"]
+        "supported_endpoint_modes": ["chat_json", "chat_sse", "responses_json", "responses_sse"]
       },
-      "notes": "DeepSeek OpenAI-compatible Chat Completions API Key 账号"
+      "notes": "DeepSeek OpenAI-compatible Chat Completions / Responses API Key 账号"
     },
     {
       "ref": "deepseek-claude-code-001",
@@ -297,7 +297,7 @@ API Key 账户：
 {
   "api_key": "sk-xxx",
   "base_url": "https://api.openai.com/v1",
-  "supported_endpoint_modes": ["chat_json", "chat_sse"]
+  "supported_endpoint_modes": ["chat_json", "chat_sse", "responses_json", "responses_sse"]
 }
 ```
 
@@ -307,7 +307,7 @@ DeepSeek OpenAI-compatible API Key 账户：
 {
   "api_key": "sk-xxx",
   "base_url": "https://api.deepseek.com",
-  "supported_endpoint_modes": ["chat_json", "chat_sse"]
+  "supported_endpoint_modes": ["chat_json", "chat_sse", "responses_json", "responses_sse"]
 }
 ```
 
@@ -410,7 +410,7 @@ Grok OAuth 账户：
 - `providerCode = deepseek` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。DeepSeek OpenAI-compatible 必须显式填写 `providerProtocolProfileId = profile_deepseek_openai_v1`；DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId = profile_deepseek_anthropic_v1`。当前不接受 DeepSeek OAuth、Refresh Token、Setup Token 或 Claude Code token；Anthropic-compatible 只通过 API Key + 协议档案导入。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com`；如使用代理地址或专属部署地址，仍必须通过 SSRF 防护和 OpenAI-compatible base URL 校验。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_anthropic_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com/anthropic`；使用 NewAPI 类代理时可以填写代理根地址，例如 `https://vsllm.com`。
-- `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，账号只保存真实上游能力 `chat_json`、`chat_sse`；Responses / Codex Responses 桥接由普通账号显式 `responses -> chat_completions` 模型别名处理。DeepSeek Claude Code 档案不使用这条规则。
+- `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，账号可保存 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`。官方当前列出的原生 Responses 模型是 `deepseek-v4-flash`，产品预兼容 `deepseek-v4-pro`；Pro 的真实可用性仍以实际上游响应为准。Responses / Codex Responses 需要改写到 Chat 时仍由普通账号显式 `responses -> chat_completions` 模型别名处理。DeepSeek Claude Code 档案不使用这条规则。
 - DeepSeek beta 能力不能只靠导入 `base_url` 猜测启用，必须由后续明确 endpoint mode / 能力开关控制。
 - `providerCode = gemini` 且 `type = api_key` 时必须有 `credentials.api_key`；`type = google_oauth` 时必须有 Access Token，或 Refresh Token + 与签发令牌一致的 Client ID / Secret，并显式保存 `credentials.oauth_type = code_assist|google_one|ai_studio`。没有 Refresh Token 的 access-only 账户按静态 token 使用。Google OAuth 必须落到 `profile_gemini_native_v1beta`；Gemini OpenAI Chat 档案只接受 API Key。
 - `oauth_type = code_assist|google_one` 时 `credentials.base_url` 使用 `https://cloudcode-pa.googleapis.com`、必须有 `project_id`，endpoint modes 只能是 `generate_content_json/generate_content_sse`；`code_assist` 默认 `tier_id=gcp_standard`，`google_one` 默认 `tier_id=google_one_free`。`oauth_type = ai_studio` 时使用 `https://generativelanguage.googleapis.com`、自定义 Google OAuth client 和 native 档案 endpoint modes，默认 `tier_id=aistudio_free`。
@@ -420,7 +420,7 @@ Grok OAuth 账户：
 - `providerCode = hybrid` 时，`credentials.base_url` 填真实上游根地址；可按真实上游能力在 OpenAI、Anthropic 和 Gemini endpoint modes 中选择 `credentials.supported_endpoint_modes`。`modelMappings.upstreamEndpointFamily` 决定本条映射实际请求 Chat Completions、Messages 还是 Gemini GenerateContent 上游。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
 - `credentials.supported_endpoint_modes` 可限制协议端点能力。xAI API Key 可用 Chat / Responses，Grok OAuth 固定 Responses；Anthropic 使用 Messages / Count Tokens；Gemini native 枚举 GenerateContent、Interactions、Count Tokens、Embedding，但 Code Assist / Google One 固定只有 GenerateContent JSON / SSE。省略时按供应商、协议档案和认证模式默认值回填，不能只按协议大类放宽。
-- Codex Responses 请求的客户端画像由网关自动识别；目标账号必须具备对应真实上游能力。GPT / 通用 OpenAI 原生 Responses 账号必须具备 `responses_sse`；GLM Coding、DeepSeek 和 Gemini OpenAI Chat 账号必须配置 `responses -> chat_completions` 模型别名并具备 `chat_sse`。Gemini native `streamGenerateContent` 通过混合供应商账户桥接到 Chat 上游时要求真实上游具备 `chat_sse`，桥接到 Anthropic Messages 上游时要求真实上游具备 `messages_sse`。
+- Codex Responses 请求的客户端画像由网关自动识别；目标账号必须具备对应真实上游能力。GPT / 通用 OpenAI 原生 Responses 账号必须具备 `responses_sse`；DeepSeek `deepseek-v4-flash` 与预兼容的 `deepseek-v4-pro` 原生 Responses 账号必须具备 `responses_sse`，其他需要改写到 Chat 的显式 Chat-only DeepSeek、GLM Coding 和 Gemini OpenAI Chat 账号必须配置 `responses -> chat_completions` 模型别名并具备 `chat_sse`。Gemini native `streamGenerateContent` 通过混合供应商账户桥接到 Chat 上游时要求真实上游具备 `chat_sse`，桥接到 Anthropic Messages 上游时要求真实上游具备 `messages_sse`。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
 

@@ -1,7 +1,6 @@
 import type { Request } from 'express'
 
 import {
-  OPENAI_CHAT_ENDPOINT_MODES,
   accountSupportsOpenAIEndpointMode,
   openAIEndpointModeForRequestShape
 } from '../../../../domain/openai-endpoint-modes.js'
@@ -56,13 +55,14 @@ import {
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 
 const DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL = 'deepseek-v4-flash'
+const DEEPSEEK_NATIVE_RESPONSES_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro'])
 
 function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
   if (req.method.toUpperCase() !== 'POST') return undefined
   const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
   const requestPath = path.startsWith('/') ? path : `/${path}`
   const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
-  if (normalizedPath !== '/chat/completions') return undefined
+  if (normalizedPath !== '/chat/completions' && normalizedPath !== '/responses') return undefined
   return openAIEndpointModeForRequestShape({
     endpoint: normalizedPath,
     stream: isEffectiveOpenAIStreamRequest(req, account)
@@ -219,7 +219,10 @@ export const deepSeekProviderDriver: ProviderDriver = {
       })
     }
     const mode = openAIEndpointModeForGatewayRequest(req, account)
-    if (!mode || !OPENAI_CHAT_ENDPOINT_MODES.includes(mode)) return false
+    if (!mode) return false
+    if (isDeepSeekNativeResponsesRequest(req) && !isDeepSeekNativeResponsesModel(req, modelMapping)) {
+      return false
+    }
     return accountSupportsOpenAIEndpointMode({
       mode,
       supportedEndpointModes: account.supportedEndpointModes,
@@ -249,8 +252,24 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
   const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
-  if (normalizedPath !== '/chat/completions') {
+  if (normalizedPath !== '/chat/completions' && normalizedPath !== '/responses') {
+    return []
+  }
+  if (normalizedPath === '/responses' && !isDeepSeekNativeResponsesModel(req, modelMapping)) {
     return []
   }
   return [buildUpstreamUrl(account.baseUrl, `${normalizedPath}${query}`)]
+}
+
+function isDeepSeekNativeResponsesRequest(req: Request): boolean {
+  const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
+  const requestPath = path.startsWith('/') ? path : `/${path}`
+  return (requestPath.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses'
+}
+
+function isDeepSeekNativeResponsesModel(
+  req: Request,
+  modelMapping: ReturnType<typeof resolveOpenAIRequestModelMapping>
+): boolean {
+  return DEEPSEEK_NATIVE_RESPONSES_MODELS.has(modelMapping?.upstreamModel ?? requestModel(req) ?? '')
 }

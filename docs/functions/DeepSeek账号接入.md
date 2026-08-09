@@ -2,13 +2,13 @@
 
 ## 范围
 
-> 目录同步边界：DeepSeek 新增 API Key 草稿完整后的自动同步或用户手动刷新会发起上游目录请求，并由内部标记保护。账户测试、激活、健康、恢复和调度只看配置模型的真实 Chat / Messages 请求协议结果；`/models` 不开放或返回 `404` 不会阻断账户使用，本地客户端模型目录不转发到 DeepSeek。
+> 目录同步边界：DeepSeek 只有用户手动刷新账户草稿时才会发起上游目录请求，并由内部标记保护。账户弹框打开、字段变更、取消以及测试或确认不会自动同步；测试或确认遇到缺少支持模型或检查模型时只提示并中止。账户测试、激活、健康、恢复和调度只看配置模型的真实 Chat / Responses / Messages 请求协议结果；`/models` 不开放或返回 `404` 不会阻断已配置完整模型账户的使用，本地客户端模型目录不转发到 DeepSeek。
 
-本文记录 DeepSeek 供应商的接入方案、账户创建类型、协议档案、网关透传边界、模型目录、验证结果和后续实现注意事项。当前代码已落地 DeepSeek OpenAI-compatible 独立供应商，支持 Chat Completions JSON / SSE；OpenAI v1 Responses -> Chat SSE 可由 DeepSeek 普通 AI 账户通过显式 `responses -> chat_completions` 模型别名桥接到真实 Chat 上游；同时新增 DeepSeek Anthropic v1 Messages 档案用于 Claude Code / Anthropic 客户端画像直连。真实上游验证结果见本文“验证记录”。
+本文记录 DeepSeek 供应商的接入方案、账户创建类型、协议档案、网关透传边界、模型目录、验证结果和后续实现注意事项。当前代码已落地 DeepSeek OpenAI-compatible 独立供应商，支持 Chat Completions JSON / SSE，并为 `deepseek-v4-flash`、`deepseek-v4-pro` 预兼容原生 OpenAI Responses JSON / semantic SSE；显式 `responses -> chat_completions` 模型别名桥接仍可用于目标上游只支持 Chat 的兼容场景。同时保留 DeepSeek Anthropic v1 Messages 档案用于 Claude Code / Anthropic 客户端画像直连。真实上游验证结果见本文“验证记录”。
 
 DeepSeek 对外 hosted API 提供 OpenAI-compatible surface 和 Anthropic-compatible surface。OpenAI-compatible 默认地址为 `https://api.deepseek.com`，部分 beta 能力走 `https://api.deepseek.com/beta`；Anthropic v1 Messages 默认地址为 `https://api.deepseek.com/anthropic`，由本地 Anthropic v1 URL helper 拼接为 `/anthropic/v1/messages` 或 `/anthropic/v1/models`。第三方 NewAPI 代理可能直接把 Anthropic surface 挂在站点根路径，例如 `https://vsllm.com/v1/messages`，因此代理场景的 `base_url` 应按实际代理根地址填写，不由代码硬猜。
 
-DeepSeek hosted API 没有需要本项目优先接入的独立 native 网关协议；当前更准确的理解是“OpenAI-compatible Chat Completions + DeepSeek 供应商扩展字段”。Codex 兼容由本地桥接完成，不把 DeepSeek 声明成原生 OpenAI Responses 供应商。
+DeepSeek hosted API 当前提供 OpenAI-compatible Chat Completions、原生 OpenAI Responses 和 Anthropic-compatible Messages surface。官方当前只将 `deepseek-v4-flash` 列为 Responses 模型；产品按用户确认同时预兼容 `deepseek-v4-pro`，两者都会原样请求上游 `/responses`，上游尚未开放时如实返回其失败。Codex 兼容仍可按显式模型映射降级到本地 Chat bridge，不能把 bridge 的 hosted-tool 语义当成 DeepSeek 原生 Responses 能力。
 
 结论：
 
@@ -16,20 +16,20 @@ DeepSeek hosted API 没有需要本项目优先接入的独立 native 网关协�
 - 两个当前协议档案：`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`
 - 两个当前账户创建类型：DeepSeek OpenAI-compatible API Key、DeepSeek Claude Code API Key
 - 底层账户类型仍为 `api_key`
-- OpenAI-compatible 是默认接入类型，默认只声明 Chat Completions JSON / SSE 能力
-- Responses / Codex Responses 到 Chat 桥接通过普通 DeepSeek OpenAI v1 账户的显式 `responses -> chat_completions` 模型别名启用，账户底层 endpoint modes 仍保存真实上游能力 `chat_json`、`chat_sse`
-- 当前不声明 DeepSeek 原生 OpenAI Responses、DeepSeek native 协议、`message_token_counting`、MCP、代码执行或 Codex / Responses 原生 `web_search` 能力；Chat-only bridge 不在网关内代执行搜索。Anthropic v1 档案默认只声明 `messages_json`、`messages_sse`
+- OpenAI-compatible 是默认接入类型，默认声明 Chat Completions 与 Responses 的 JSON / SSE 能力；实际模型仍由目录协议字段精确筛选
+- `deepseek-v4-flash` 与 `deepseek-v4-pro` 都可直连 `/responses` 或 `/v1/responses`；V4 Pro 是本地预兼容，真实可用性以其上游响应为准。Responses / Codex Responses 到 Chat 桥接仍通过显式 `responses -> chat_completions` 模型别名启用
+- 当前不声明 DeepSeek 原生 `message_token_counting`、MCP、代码执行或未经官方确认的 Codex / Responses hosted tool 能力；Anthropic v1 档案默认只声明 `messages_json`、`messages_sse`
 
 ## 落地状态
 
-截至 `2026-06-20`：
+截至 `2026-08-09`：
 
 - 后端已新增 `deepseek` provider、`profile_deepseek_openai_v1`、默认 DeepSeek 分组、DeepSeek provider driver、credential driver、模型价格目录和 usage / response 语义解析。
 - 前端已新增 DeepSeek 供应商展示、账户表单能力、导入协议示例、模型目录分类和模型检测入口隔离。
-- 已落地部分支持 OpenAI-compatible Chat Completions JSON / SSE；当前不进入 Responses 模型检测。
-- 已落地 DeepSeek 普通 OpenAI v1 账户下的显式 Responses -> Chat SSE 桥接，覆盖 `/v1/responses` 入站、上游 `/v1/chat/completions` 改写、function tools、`web_search` guidance、`input_image` data URL、`reasoning_content`、截断失败和 SSE error 事件。
+- 已落地 OpenAI-compatible Chat Completions JSON / SSE 与 `deepseek-v4-flash`、`deepseek-v4-pro` 原生 Responses JSON / SSE；原生 Responses 上游事件直接透传，保留 `response.completed` / `response.incomplete` / `response.failed` 终止语义，不合成 `[DONE]`。原生 Responses 最终上游非 `2xx` 保留原 HTTP 状态和经现有诊断脱敏后的错误载荷，不改写为本地成功或统一 `503`。
+- 已保留 DeepSeek 普通 OpenAI v1 账户下的显式 Responses -> Chat SSE 桥接，覆盖 `/v1/responses` 入站、上游 `/v1/chat/completions` 改写、function tools、`web_search` guidance、`input_image` data URL、`reasoning_content`、截断失败和 SSE error 事件。
 - DeepSeek Anthropic v1 已新增 `profile_deepseek_anthropic_v1`、前端接入类型、凭据归一化和 Anthropic 协议 driver 分支；默认只启用 Messages JSON / SSE，不启用 Count Tokens。默认分组按 `providerCode=deepseek` 归并。
-- 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、同协议模型映射、未配置映射的 `/responses` 拒绝、普通账号显式 Responses -> Chat bridge、`web_search` guidance 且不命中上游、cache usage、`reasoning_content`、`insufficient_system_resource` 原样透传 / bridge 中性完成和上游 `Content-Length`。
+- 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、同协议模型映射、`deepseek-v4-flash` 与 `deepseek-v4-pro` 原生 `/responses` JSON / semantic SSE 及非 `2xx` 错误可见性、DeepSeek Anthropic Messages JSON / SSE、普通账号显式 Responses -> Chat bridge、`web_search` guidance 且不命中上游、cache usage、`reasoning_content`、`insufficient_system_resource` 原样透传 / bridge 中性完成和上游 `Content-Length`。
 - 历史 `https://vsllm.com` 验证中，`deepseek-ai-v4-flash` JSON / SSE 曾通过；本轮 `2026-06-24` 使用当前 vsllm 账号复测时，`deepseek-v4-flash` 直连和网关链路均超时，`deepseek-ai-v4-flash` 返回当天额度耗尽，`deepseek-v4-pro` 超时或 TLS 连接错误。当前不能把该通道作为 DeepSeek 真实成功样本，待更换 Key、额度恢复或上游稳定后补测。
 
 ## 供应商与协议档案
@@ -46,10 +46,10 @@ type ProviderCode = 'deepseek'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 默认能力 |
 | --- | --- | --- | --- | --- | --- |
-| `profile_deepseek_openai_v1` | `deepseek` | `openai/v1` | `https://api.deepseek.com` | DeepSeek OpenAI-compatible API Key | `chat_json`、`chat_sse` |
+| `profile_deepseek_openai_v1` | `deepseek` | `openai/v1` | `https://api.deepseek.com` | DeepSeek OpenAI-compatible API Key | `chat_json`、`chat_sse`、`responses_json`、`responses_sse` |
 | `profile_deepseek_anthropic_v1` | `deepseek` | `anthropic/v1` | `https://api.deepseek.com/anthropic` | DeepSeek Claude Code API Key | `messages_json`、`messages_sse` |
 
-OpenAI-compatible 档案当前只声明 Chat Completions 语义，不把 Responses 当成默认能力。Responses -> Chat bridge 由普通 DeepSeek OpenAI v1 账户的账号模型别名显式声明：只有该账户配置把 OpenAI Responses 来源桥接到 DeepSeek OpenAI-compatible 真实上游，且真实上游支持 `chat_sse` 时生效。`/beta` 下的 Chat Prefix Completion 和 FIM Completion 作为 DeepSeek 供应商 beta 能力记录，不扩展成通用 OpenAI Responses 档案。
+OpenAI-compatible 档案声明 Chat Completions 与 Responses 语义，但账号 endpoint modes 只表达账户入口能力，模型目录继续精确筛选。`deepseek-v4-flash` 由官方目录声明 `responses`，`deepseek-v4-pro` 按产品决策同时声明预兼容 `responses`；V4 Pro 的真实可用性仍由上游响应决定。Responses -> Chat bridge 仍由账号模型别名显式声明：只有映射目标是 Chat 且真实上游支持 `chat_sse` 时生效。`/beta` 下的 Chat Prefix Completion 和 FIM Completion 作为 DeepSeek 供应商 beta 能力记录，不扩展成通用 Responses 档案。
 
 DeepSeek Anthropic-compatible 必须保留 `providerCode=deepseek`、独立 Base URL、独立默认分组、独立模型价格和独立账户测试策略，不能复用官方 `anthropic` 供应商账号池。`message_token_counting` 在真实验证前不进入默认 endpoint modes。
 
@@ -70,12 +70,12 @@ DeepSeek Anthropic-compatible 必须保留 `providerCode=deepseek`、独立 Base
 
 - 新建 DeepSeek 账户默认写入 `pending_test`，测试通过后才允许正常调度
 - `profile_deepseek_openai_v1` 的 `base_url` 默认填充 `https://api.deepseek.com`，允许用户修改为同协议的代理地址或专属部署地址，但必须继续通过 SSRF 防护和 OpenAI-compatible base URL 校验
-- `profile_deepseek_openai_v1` 的 `credentials.supported_endpoint_modes` 省略时默认启用 `chat_json`、`chat_sse`
+- `profile_deepseek_openai_v1` 的 `credentials.supported_endpoint_modes` 省略时默认启用 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；模型测试和模型映射仍按模型目录协议字段筛选，`deepseek-v4-flash` 和 `deepseek-v4-pro` 都可用于原生 Responses，其中 V4 Pro 为预兼容
 - `profile_deepseek_anthropic_v1` 的 `base_url` 默认填充 `https://api.deepseek.com/anthropic`，允许用户修改为同协议的代理地址或专属部署地址；使用 NewAPI 类代理时可以填写代理根地址，例如 `https://vsllm.com`
 - `profile_deepseek_anthropic_v1` 的 `credentials.supported_endpoint_modes` 省略时默认启用 `messages_json`、`messages_sse`，不启用 `message_token_counting`
 - DeepSeek 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token；账号表单不再展示客户端兼容选择
 - 下游客户端画像由网关请求自动识别决定，不能单独决定上游协议档案
-- 同一个 DeepSeek 上游 Key 如需同时承担普通 OpenAI Chat 和 Responses / Codex bridge，可以放在同一真实 Chat 能力账号中，由该账号的模型别名决定哪些下游 Responses 模型桥接到真实 Chat 上游
+- 同一个 DeepSeek 上游 Key 可在同一账户承担普通 OpenAI Chat 与 V4 Flash / V4 Pro 原生 Responses；其他下游 Responses / Codex 目标若需改写到 Chat，仍由账号模型别名决定
 
 ## 网关请求边界
 
@@ -83,11 +83,11 @@ DeepSeek OpenAI v1 档案优先复用现有 OpenAI v1 Chat Completions 协议适
 
 请求路径：
 
-- 客户端可请求 `/chat/completions` 或 `/v1/chat/completions`
+- 客户端可请求 `/chat/completions`、`/v1/chat/completions`、`/responses` 或 `/v1/responses`
 - beta 能力按 `https://api.deepseek.com/beta` 单独拼接，只能由 DeepSeek beta endpoint mode 或账户能力显式启用，不能靠客户端路径自动猜测
-- 客户端 `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不进入网关热路径；新增 API Key 草稿完整后的自动同步或用户手动刷新时，带内部标记的 DeepSeek OpenAI API Key 请求才会转发到上游 `/v1/models`
-- 未配置 `responses -> chat_completions` 模型别名的普通 OpenAI SDK / Responses 请求不由 DeepSeek 承接；配置显式映射后，DeepSeek OpenAI-compatible 账号可接收 `/responses` 或 `/v1/responses` 并改写到上游 `/chat/completions`
-- Codex bridge 必须使用流式 Responses 入站和上游 Chat SSE；账号 endpoint modes 仍保存 `chat_json`、`chat_sse`，不能为此写入 `responses_json` 或 `responses_sse`
+- 客户端 `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不进入网关热路径；用户手动刷新账户草稿时，带内部标记的 DeepSeek OpenAI API Key 请求才会转发到上游 `/v1/models`
+- `deepseek-v4-flash` 与 `deepseek-v4-pro` 的普通 OpenAI SDK / Responses 请求直连上游 `/responses`；V4 Pro 的预兼容在上游非 `2xx` 时保留上游 HTTP 状态及脱敏后的错误载荷，不改写为本地成功或统一 `503`
+- 需要改写到 Chat 的兼容请求必须显式配置 `responses -> chat_completions` 模型别名；Codex bridge 继续使用流式 Responses 入站和上游 Chat SSE，且仅在该映射命中时生效
 - DeepSeek 官方 List Models 接口可用于受控账户目录同步、人工校验或后续后台刷新；它不接受客户端请求透传，也不进入网关热路径
 - DeepSeek 官方 Balance 接口只作为后续人工诊断或账户页辅助信息候选，第一阶段不做余额轮询、不把余额快照接入额度判断，也不在请求链路调用
 
@@ -316,7 +316,7 @@ DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混�
 
 - `providerCode = deepseek`
 - `model` 使用 DeepSeek 官方模型 ID，小写和连字符按官方写法保留
-- `supportedApiProtocols` 至少覆盖 OpenAI-compatible 档案对应的 `chat_completions`；新增 Anthropic-compatible 后应补 `anthropic_messages` 或等价本地协议标识，但仍归属 `providerCode=deepseek`
+- `supportedApiProtocols` 对 `deepseek-v4-flash` 覆盖 `chat_completions`、`responses`、`messages`；`deepseek-v4-pro` 也按预兼容策略覆盖 `responses`，并保留 `completions`，仍归属 `providerCode=deepseek`
 - 服务等级和思考级别只复用模型行现有 `supportedServiceTiers`、`supportedReasoningEfforts` 和账户现有 `service_tier_override`、`reasoning_effort_override`。DeepSeek 当前没有可登记的请求级服务档位，`supportedServiceTiers` 保持空数组；思考级别只登记已核验的离散值，其他 thinking 字段继续按目标 driver 的现有白名单透传或明确拒绝，模型能力继续直接维护在当前模型行。
 - `contextWindowTokens` 和 `releaseDate` 以官方模型页或官方文档为准；同一发布日期的模型使用内置目录顺序字段保持下拉框稳定
 - 价格只采信 DeepSeek 官方文档或官方 API 文档；第三方价格库和社区表格只能作为线索
@@ -329,7 +329,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 - DeepSeek 必须作为独立供应商接入 provider driver registry，不能复用 GPT driver 或通用 `openai` 聚合供应商的账号创建类型
 - `providerCode=openai` 仍只表达通用 OpenAI-compatible 聚合目录；`providerCode=deepseek` 表达 DeepSeek 自身账号、模型、价格、测试和展示，DeepSeek 不进入 `openai` 聚合模型目录
-- DeepSeek driver 负责按 `profile_deepseek_openai_v1` 选择默认 base URL、协议档案默认检查模型、默认 endpoint modes、Codex bridge、特殊字段说明、导入导出 round-trip、模型检测入口隔离和供应商局部响应语义
+- DeepSeek driver 负责按 `profile_deepseek_openai_v1` 选择默认 base URL、协议档案默认检查模型、默认 endpoint modes、原生 Responses、Codex bridge、特殊字段说明、导入导出 round-trip、模型检测入口隔离和供应商局部响应语义
 - DeepSeek Anthropic-compatible 复用 `anthropic/v1` 协议适配器的 URL、请求体和响应语义，但不能复用官方 Anthropic 供应商账号池；DeepSeek 的 Base URL、模型映射、headers、账户测试和价格归属都归属 `deepseek`
 - PLAN-0050 的供应商驱动化重构尚未完全关闭时，DeepSeek 实现必须沿用新 driver 边界，不把新逻辑硬写回 GPT / OpenAI-compatible 旧分支
 
@@ -345,7 +345,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 ### 账户、分组与 API Key 路由
 
 - DeepSeek 账户只允许加入 `providerCode=deepseek` 的分组；OpenAI-compatible 与 Anthropic-compatible 的差异由账户 `provider_protocol_profile_id`、endpoint mode、支持模型和模型映射表达
-- 默认 DeepSeek 分组可容纳两个 profile 的 DeepSeek 账户但不承接协议语义。OpenAI Chat / Responses bridge 只筛 `profile_deepseek_openai_v1`；Anthropic Messages 只筛 `profile_deepseek_anthropic_v1`。普通 DeepSeek OpenAI v1 账户显式配置精确 `responses -> chat_completions` 模型映射后，流式 Responses / Codex Responses 才可通过本地 bridge 承接
+- 默认 DeepSeek 分组可容纳两个 profile 的 DeepSeek 账户但不承接协议语义。OpenAI Chat / 原生 Responses / Responses bridge 只筛 `profile_deepseek_openai_v1`；Anthropic Messages 只筛 `profile_deepseek_anthropic_v1`。`deepseek-v4-flash` 与 `deepseek-v4-pro` 都可直连原生 Responses；普通 DeepSeek OpenAI v1 账户显式配置精确 `responses -> chat_completions` 模型映射后，其他目标的流式 Responses / Codex Responses 才可通过本地 bridge 承接
 - DeepSeek 分组本身不承接协议语义；OpenAI-compatible 账户不承接 Anthropic Messages、FIM 或 Chat Prefix beta，DeepSeek Claude Code 账户只承接 Anthropic v1 Messages / Models，不承接 OpenAI Chat 或 Count Tokens
 - API Key 只绑定策略路由；每次请求先由策略路由选择分组，再由账户模型别名、模型目录和协议档案定位真实 DeepSeek 上游能力。
 - 会话亲和、IP 级账号回避、本地账号屏蔽、上游桶避让和高并发队列继续使用现有运行态，不为 DeepSeek 另起一套调度状态
@@ -358,7 +358,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 - DeepSeek 错误码、错误类型、错误文案和 `finish_reason` 只允许原样透传、审计，或作为用户显式响应检查 / 账户错误策略的匹配输入；系统不写死余额不足、限流、可重试或账号坏等分支
 - `insufficient_system_resource` 与其他未知 `finish_reason` 等价：未命中用户显式策略时不观察为故障、不自动重试或切号，也不产生账户、Key、代理、模型或质量状态副作用
 - Keep-alive comment / 空行不能触发流式缺终止事件错误，也不能被记录成可见输出
-- DeepSeek OpenAI-compatible 不提供失败后的请求改写策略；Responses -> Chat bridge 只由账号模型别名显式触发，不能把未配置映射的普通 OpenAI Responses 请求临时改写到 DeepSeek
+- DeepSeek OpenAI-compatible 不提供失败后的请求改写策略；Flash 与 Pro 原生 Responses 直连上游，Responses -> Chat bridge 只由账号模型别名显式触发，不能把未配置映射的其他模型请求临时改写到 DeepSeek
 
 ### 统计、价格与审计
 
@@ -370,9 +370,9 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 ### 账户测试、模型检测与前端
 
-- OpenAI-compatible 账户测试使用真实网关链路和 `/v1/chat/completions`，默认模型 `deepseek-v4-flash`
-- DeepSeek 账户普通测试从 `/v1/chat/completions` 入口验证真实上游能力；需要验证 Responses / Codex bridge 时，在普通 DeepSeek OpenAI v1 账户配置 `responses -> chat_completions` 模型别名后，从 `/v1/responses` 入口进入本地 bridge，并由 bridge 改写到上游 `/v1/chat/completions`
-- 当前已落地的 Responses 模型检测不选择 DeepSeek；后续如果新增 DeepSeek 模型检测，应按协议档案分别使用 Chat Completions 或 Messages，不启用 beta prefix、FIM、Responses、count_tokens 或多模态能力
+- OpenAI-compatible 账户测试使用真实网关链路，默认模型 `deepseek-v4-flash`；可按账户实际启用的 endpoint mode 选择 `/v1/chat/completions` 或 `/v1/responses`
+- DeepSeek Responses Mock 测试覆盖 `deepseek-v4-flash` 与 `deepseek-v4-pro` 的 JSON / semantic SSE，以及 V4 Pro 预兼容上游非 `2xx` 的状态与错误载荷透传；真实上游测试仍按实际可用模型选择。需要验证 Responses / Codex bridge 时，在普通 DeepSeek OpenAI v1 账户配置 `responses -> chat_completions` 模型别名后，才从 `/v1/responses` 进入本地 bridge 并改写到上游 `/v1/chat/completions`
+- 当前模型检测仍以 DeepSeek Chat 与 Anthropic Messages 探针为准；这不是对原生 Responses 的否定，Responses 探针需要独立设计，不能复用双模型 Chat 对照集
 - 前端供应商、账户类型、分组、模型目录、账号测试、导入预览、公开推送和错误提示都必须使用中文文案
 - DeepSeek 创建页展示 API Key、base URL 和接入类型；不展示 OAuth、Anthropic version、Anthropic beta 或账号级客户端兼容选择
 - Claude Code / Anthropic-compatible 作为下游客户端画像由请求自动识别处理，不作为 DeepSeek 账户表单开关
@@ -384,7 +384,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 | --- | --- | --- |
 | 协议误扩散 | DeepSeek 账户进入官方 Anthropic 分组，或官方 Anthropic 账户进入 DeepSeek 分组 | 分组按 `providerCode=deepseek` 隔离；`profile_deepseek_openai_v1` 和 `profile_deepseek_anthropic_v1` 是账户接入类型，不拆分默认分组 |
 | 客户端画像误当协议 | 只改 API Key 默认画像就切换 Base URL 或 endpoint modes | 上游协议由 `provider_protocol_profile_id` 决定，客户端画像只影响下游工具语义和显式路由匹配 |
-| endpoint mode 误放开 | 普通 `/responses`、FIM、Prefix beta、Images、count_tokens 被路由到 DeepSeek | OpenAI 档案默认只开 `chat_json`、`chat_sse`；Responses bridge 只在普通账号显式模型别名命中时接收 `/responses` |
+| endpoint mode 误放开 | FIM、Prefix beta、Images、count_tokens 或未登记模型被误路由到 DeepSeek 原生 Responses | OpenAI 档案可开 Chat / Responses；原生 `/responses` 当前只接受目录登记的 V4 Flash / V4 Pro，其他模型或 beta 能力必须显式建模和验证 |
 | 通用 OpenAI 层丢字段 | `thinking` 被 sanitizer 删除，`reasoning_content` 或 cache usage 解析不到 | DeepSeek 扩展字段由供应商层保留 |
 | Anthropic header 误配置 | 把 `anthropic-version`、`anthropic-beta` 做成 DeepSeek 账户必填项或能力开关 | DeepSeek 官方会忽略这些 header，账户不配置、不依赖 |
 | Claude 模型名静默 fallback | 任意未知 `claude-*` 被上游自动映射到 flash | 只接受逐个登记的目录模型或账户一跳映射；未知模型一律本地拒绝，不使用前缀或通配 fallback |
@@ -413,11 +413,11 @@ DeepSeek 默认只创建一个供应商默认分组：默认 DeepSeek 分组。O
 
 DeepSeek 账户测试必须复用真实网关链路：
 
-- OpenAI-compatible 测试路径使用 `/v1/chat/completions`
+- OpenAI-compatible 测试路径使用 `/v1/chat/completions`；`deepseek-v4-flash` 与预兼容的 `deepseek-v4-pro` 可额外使用 `/v1/responses`
 - Anthropic-compatible 测试路径使用 `/v1/messages`
 - 默认检查模型建议优先使用 `deepseek-v4-flash`
 - 测试请求不发送不相关的 OpenAI / GPT 专属字段
-- 测试默认不启用 beta prefix、FIM、Responses、count_tokens、多模态、MCP 或 code execution 能力
+- 测试默认不启用 beta prefix、FIM、count_tokens、多模态、MCP 或 code execution；原生 Responses 在 V4 Flash / V4 Pro 的定向 Mock 回归中启用，V4 Pro 真实上游仍需单独验收
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则
 
 ## 开源与官方资料
@@ -426,6 +426,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 
 - API 文档：<https://api-docs.deepseek.com/>
 - Chat Completions：<https://api-docs.deepseek.com/api/create-chat-completion>
+- Responses API：<https://api-docs.deepseek.com/zh-cn/guides/responses_api>
 - Anthropic API：<https://api-docs.deepseek.com/guides/anthropic_api>
 - Thinking Mode：<https://api-docs.deepseek.com/guides/thinking_mode>
 - Tool Calls：<https://api-docs.deepseek.com/guides/tool_calls>
@@ -448,7 +449,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 - 前端账户创建在选择 `DeepSeek` 后展示 `DeepSeek OpenAI-compatible API Key`
 - 前端账户创建在选择 `DeepSeek` 后展示 `DeepSeek Claude Code API Key`
 - 后端账户创建、编辑、导入和公开推送接口按协议档案解析 DeepSeek 接入类型
-- DeepSeek OpenAI 档案默认只启用 Chat JSON/SSE
+- DeepSeek OpenAI 档案默认启用 Chat 与 Responses JSON/SSE，V4 Flash / V4 Pro 均作为原生 Responses 目标，其中 V4 Pro 为预兼容
 - DeepSeek Anthropic 档案默认只启用 Messages JSON/SSE，不默认启用 Count Tokens
 - DeepSeek 供应商策略保留 `user_id`、`thinking`、`reasoning_effort`、`reasoning_content`、cache usage、keep-alive 和 beta 能力边界
 - DeepSeek Codex bridge 保留 Codex `/v1/responses` 入站形态、function tools、`input_image` data URL、reasoning 和上游 Chat SSE 错误事件语义
@@ -466,9 +467,9 @@ DeepSeek 账户测试必须复用真实网关链路：
 - DeepSeek OpenAI-compatible 账户保存后落到 `profile_deepseek_openai_v1`
 - DeepSeek Claude Code 账户保存后落到 `profile_deepseek_anthropic_v1`
 - 只创建一个默认 DeepSeek 供应商分组；分组不绑定 protocol profile，可同时容纳两个档案的 DeepSeek 账户，候选由账户 `providerProtocolProfileId`、endpoint mode、支持模型和模型映射精确过滤
-- OpenAI-compatible 面只声明 Chat Completions；Codex bridge 只作为显式客户端兼容适配
+- OpenAI-compatible 面声明 Chat Completions 与原生 Responses；Codex bridge 仍只作为显式模型映射客户端兼容适配
 - 不创建 DeepSeek native 协议档案
-- 不把普通 `/responses`、`/completions`、FIM 或 beta prefix 作为默认测试能力
+- 不把 `completions`、FIM 或 beta prefix 作为默认测试能力；V4 Flash / V4 Pro Responses 使用定向原生 Mock 回归，V4 Pro 真实上游仍需以实际可用性验收
 - DeepSeek Anthropic-compatible 不进入官方 Anthropic 账号池、默认分组或价格目录；真实客户端验收必须覆盖 Claude Code / Anthropic SDK 请求，不能只看官方兼容文档
 - `user_id`、`thinking`、`reasoning_effort`、`reasoning_content`、keep-alive 和 cache usage 只作为 DeepSeek 供应商扩展
 - `GET /v1/models` 继续由本地模型目录返回，不请求 DeepSeek 上游

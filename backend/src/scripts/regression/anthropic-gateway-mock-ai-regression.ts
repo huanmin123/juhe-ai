@@ -1014,8 +1014,8 @@ async function assertAnthropicEmptyJsonContentUsesUnifiedFailureHandling(baseUrl
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `Anthropic empty content 未形成可交付成功且无后备时应返回稳定错误，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /upstream_retryable_error/)
+  assert.equal(response.status, 502, `Anthropic empty content 必须被识别为协议错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_protocol_error/)
   assert.doesNotMatch(text, /upstream_outcome_unknown|"content"\s*:\s*\[\]/)
   assert.equal(upstreamHits.length, 1, 'Anthropic empty content 候选耗尽应只命中唯一账户一次')
   assertAnthropicUpstreamHit(upstreamHits[0], {
@@ -1143,7 +1143,7 @@ async function assertAnthropicApiKeyPoolOpaqueFailover(baseUrl: string, upstream
     ['sk-ant-keypool-bad', 'sk-ant-keypool-good'],
     '通用 Anthropic 文本请求应只依据完整 HTTP 失败做请求内 opaque Key 轮换，并优先耗尽兄弟 Key'
   )
-  await assertRequestLocalSwitchDidNotMutateSharedState([sourceAccount.id, rescueAccount.id], apiKey.id)
+  await assertConfirmedSameAccountKeyFailureIsScoped(sourceAccount.id, rescueAccount.id, apiKey.id)
 }
 
 async function assertAnthropicConfiguredResponseInspectionSwitchesRequestLocally(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -1437,6 +1437,23 @@ async function assertRequestLocalSwitchDidNotMutateSharedState(accountIds: strin
     assert.equal(summary.apiKeyRuntime?.disabled ?? 0, 0, `请求内切号不得写 Key disabled：${accountId}`)
   }
   assert.equal(repositories.findApiKeySummary(gatewayApiKeyId, access)?.status, 'active', '请求内切号不得修改客户端网关 API Key 状态')
+}
+
+async function assertConfirmedSameAccountKeyFailureIsScoped(
+  sourceAccountId: string,
+  rescueAccountId: string,
+  gatewayApiKeyId: string
+): Promise<void> {
+  await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+  const source = repositories.findAccountForTest(sourceAccountId, access)
+  assert(source, `缺少同账户 Key 确认来源账户：${sourceAccountId}`)
+  assert.equal(source.status, 'active', '同账户 Key 确认不得修改账户状态')
+  assert.equal(source.schedulable, true, '同账户 Key 确认不得关闭账户调度')
+  assert.equal(source.apiKeyRuntime?.temporaryUnavailable ?? 0, 1, '后继 Key 成功后必须只标记失败 Key 为临时避让')
+  assert.equal(source.apiKeyRuntime?.rateLimited ?? 0, 0)
+  assert.equal(source.apiKeyRuntime?.error ?? 0, 0)
+  assert.equal(source.apiKeyRuntime?.disabled ?? 0, 0)
+  await assertRequestLocalSwitchDidNotMutateSharedState([rescueAccountId], gatewayApiKeyId)
 }
 
 async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, upstreamBaseUrl: string): Promise<void> {

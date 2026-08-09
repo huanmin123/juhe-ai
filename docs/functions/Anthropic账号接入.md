@@ -377,6 +377,7 @@ Anthropic usage 与 OpenAI usage 不同，必须单独维护语义。
 价格口径：
 
 - Anthropic 官方价格直接维护在 `providerCode=anthropic + model` 对应模型行，由管理员修改当前价格；现有 usage cost breakdown 保存请求当次实际单价和成本，后续改价不重算历史记录。
+- 当前 `claude-opus-5` 为 `$5/$25`（输入 / 输出，每百万 token）；`claude-sonnet-5` 保持 `$2/$10` 引介价，截止 `2026-08-31`。截止日期后应更新价格快照，不增加运行时日期分支。
 - Long context、prompt cache 读写、1h cache、batch 折扣等价格差异必须有明确模型价格字段支撑；没有字段前只记录 token，不编造成本。`thinking_tokens` 是 `output_tokens` 的分解字段，不单独重复计费。
 - Anthropic-compatible 国产入口的价格按对应供应商维护，不能套用 Anthropic 官方价格。
 
@@ -386,26 +387,26 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 
 模型目录从官方 Models API / 模型文档同步，优先覆盖当前可调用 Claude 文本模型。目录维护应能跟随官方 Models API 返回，不把具体型号写成长期硬编码依赖；列表顺序同时作为账户测试和模型下拉框的默认优先顺序，按官方 Models API“新模型在前”的口径维护。
 
-截至 `2026-06-22`，当前可见官方 / Claude Code 兼容模型顺序：
+截至 `2026-08-09`，当前可见官方模型顺序：
 
+- `claude-opus-5`（`2026-07-24` 发布）
+- `claude-sonnet-5`
 - `claude-fable-5`
-- `claude-mythos-5`
-- `claude-mythos-preview`（`2026-06-30` 前可见）
 - `claude-opus-4-8`
 - `claude-opus-4-7`
 - `claude-opus-4-6`
-- `claude-opus-4-6-thinking`
 - `claude-opus-4-5`
 - `claude-opus-4-5-20251101`
-- `claude-opus-4-1`（`2026-08-05` 前可见）
-- `claude-opus-4-1-20250805`（`2026-08-05` 前可见）
 - `claude-sonnet-4-6`
-- `claude-sonnet-4-6-thinking`
 - `claude-sonnet-4-5`
 - `claude-sonnet-4-5-20250929`
 - `claude-haiku-4-5`
 - `claude-haiku-4-5-20251001`
-- `claude-sonnet-5`
+
+`claude-opus-4-1` 与 `claude-opus-4-1-20250805` 仍保留为带 `shutdown_date = 2026-08-05` 的历史价格行，但不再出现在当前目录。`claude-mythos-5` 仅面向 Project Glasswing 获批客户有限可用，不纳入内置公开目录；需要时由管理员显式维护自定义模型。
+
+Claude Code 模型配置别名仍单独处理，不作为官方模型目录项：
+
 - `best`
 - `fable`
 - `opus`
@@ -419,7 +420,7 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 
 - `providerCode = anthropic`
 - `model` 优先使用 Anthropic 官方模型 ID，保留官方大小写和连字符写法；Claude Code 官方模型配置别名必须通过显式模型别名或账户模型映射落到 `providerCode=anthropic + model`，兼容网关 / 代理专用别名不能混入官方 Anthropic 模型发现目录。
-- 当前内置目录补充保留官方 current / dated ID：`claude-mythos-preview`、`claude-haiku-4-5-20251001`、`claude-sonnet-4-5-20250929`、`claude-opus-4-5-20251101`、`claude-opus-4-1`、`claude-opus-4-1-20250805`。其中 `claude-opus-4-1*` 已有 `shutdown_date = 2026-08-05`，到期后自动不再展示和计价。
+- 当前内置目录补充保留官方 current / dated ID：`claude-haiku-4-5-20251001`、`claude-sonnet-4-5-20250929`、`claude-opus-4-5-20251101`、`claude-opus-4-1`、`claude-opus-4-1-20250805`。其中 `claude-opus-4-1*` 已有 `shutdown_date = 2026-08-05`，到期后自动不再展示和计价。
 - Claude Code 模型配置别名进入目录：`best`、`fable`、`opus`、`opus[1m]`、`opusplan`、`sonnet`、`sonnet[1m]`、`haiku`。`default` 只是 Claude Code 用来清除模型覆盖并回到推荐模型的控制值，不是模型别名，不进入目录。
 - `claude-opus-4-6-thinking`、`claude-sonnet-4-6-thinking` 如进入模型发现目录，必须各自拥有明确的 `providerCode + model` 模型行；管理员可以在价格编辑表单中复制同族模型当前价格作为录入起点，但保存的是该模型行自己的完整当前价格，运行时不能按名称寻找同族价格。Antigravity 前缀 / 后缀 / `google-antigravity` 等兼容代理写法不进入官方 Anthropic 模型发现目录。
 - Antigravity 的 `-low`、`-medium`、`-high`、`-max` 等 effort 后缀不作为单独模型展示；可信 driver 必须在计价前将其显式规范化为最终上游模型和思考级别，再按 `providerCode + model` 查当前价格，不允许字符串价格回落。旧的 `claude-opus-4-5-thinking` / `google/antigravity-claude-opus-4-5-thinking` 不收录。以上 Antigravity 名称不代表 Anthropic 官方直连模型 ID。
@@ -559,6 +560,10 @@ Bearer Token 型 OAuth 导入示例：
 - Claude Code authentication：<https://code.claude.com/docs/en/authentication>
 - Claude Code model configuration：<https://docs.anthropic.com/en/docs/claude-code/model-config>
 - Claude Code legal and credential use：<https://docs.anthropic.com/en/docs/claude-code/legal-and-compliance>
+- Models：<https://docs.anthropic.com/en/docs/about-claude/models>
+- Pricing：<https://docs.anthropic.com/en/docs/about-claude/pricing>
+- Claude Opus 5：<https://www.anthropic.com/news/claude-opus-5>
+- Introducing Claude Fable 5 and Claude Mythos 5：<https://docs.anthropic.com/en/docs/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5>
 - Models overview：<https://platform.claude.com/docs/en/about-claude/models/overview>
 - Choosing a model：<https://platform.claude.com/docs/en/about-claude/models/choosing-a-model>
 - Model IDs and versioning：<https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions>

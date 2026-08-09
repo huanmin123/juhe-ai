@@ -1,4 +1,6 @@
 // Curated from official DeepSeek API pricing docs and change log on 2026-07-23.
+// DeepSeek currently documents Responses for deepseek-v4-flash only. V4 Pro is
+// deliberately listed for product-level pre-compatibility until upstream status changes.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 
 export const deepSeekModelPricingData = [
@@ -13,7 +15,7 @@ export const deepSeekModelPricingData = [
     context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions', 'messages'],
+    supported_api_protocols: ['chat_completions', 'responses', 'messages'],
     input_modalities: ['text'],
     output_modalities: ['text'],
     supported_tools: ['function_calling'],
@@ -31,7 +33,7 @@ export const deepSeekModelPricingData = [
     context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions', 'messages', 'completions'],
+    supported_api_protocols: ['chat_completions', 'responses', 'messages', 'completions'],
     input_modalities: ['text'],
     output_modalities: ['text'],
     supported_tools: ['function_calling'],

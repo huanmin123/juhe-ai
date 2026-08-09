@@ -1,9 +1,9 @@
 // Curated from Anthropic's official model API, model announcements, pricing,
 // and deprecation pages. Prices are USD per token.
-// https://platform.claude.com/docs/en/api/models
-// https://www.anthropic.com/news/claude-sonnet-5
-// https://www.anthropic.com/news/claude-fable-5-mythos-5
-// https://www.anthropic.com/news/claude-opus-4-8
+// https://docs.anthropic.com/en/docs/about-claude/models
+// https://docs.anthropic.com/en/docs/about-claude/pricing
+// https://www.anthropic.com/news/claude-opus-5
+// https://docs.anthropic.com/en/docs/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5
 
 type AnthropicModelConfig = {
   model: string
@@ -44,17 +44,19 @@ const model = (config: AnthropicModelConfig) => ({
 
 export const anthropicModelPricingData = [
   model({
+    model: 'claude-opus-5', catalog_order: 5, release_date: '2026-07-24',
+    input_usd_per_million: 5, output_usd_per_million: 25,
+    context_window_tokens: 1_000_000, max_input_tokens: 1_000_000, max_output_tokens: 128_000,
+    supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default_reasoning_effort: 'high'
+  }),
+  model({
     model: 'claude-fable-5', catalog_order: 10, release_date: '2026-06-09',
     input_usd_per_million: 10, output_usd_per_million: 50,
     context_window_tokens: 1_000_000, max_input_tokens: 1_000_000, max_output_tokens: 128_000,
     supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default_reasoning_effort: 'high'
   }),
-  model({
-    model: 'claude-mythos-5', catalog_order: 20, release_date: '2026-06-09',
-    input_usd_per_million: 10, output_usd_per_million: 50,
-    context_window_tokens: 1_000_000, max_input_tokens: 1_000_000, max_output_tokens: 128_000,
-    supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default_reasoning_effort: 'high'
-  }),
+  // Claude Sonnet 5 remains at its $2/$10 introductory price through 2026-08-31;
+  // update the snapshot after that date instead of adding a runtime date branch.
   model({
     model: 'claude-sonnet-5', catalog_order: 25, release_date: '2026-06-30',
     input_usd_per_million: 2, output_usd_per_million: 10,

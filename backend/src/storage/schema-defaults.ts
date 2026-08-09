@@ -182,7 +182,7 @@ export const DEEPSEEK_PROVIDER_SEED = {
   code: DEEPSEEK_PROVIDER_CODE,
   name: 'DeepSeek',
   parentCode: null,
-  description: 'DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code',
+  description: 'DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 与 Responses 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code',
   enabled: 1,
   defaultSupportedModels: DEFAULT_DEEPSEEK_SUPPORTED_MODELS
 } as const
@@ -457,15 +457,15 @@ export const DEEPSEEK_OPENAI_V1_PROFILE_SEED = {
   id: DEEPSEEK_OPENAI_V1_PROFILE_ID,
   providerCode: DEEPSEEK_PROVIDER_CODE,
   name: 'DeepSeek / OpenAI v1',
-  description: 'DeepSeek 供应商的 OpenAI-compatible v1 协议档案，承载 API Key、Chat Completions、DeepSeek 响应扩展字段与 Codex Responses 桥接',
+  description: 'DeepSeek 供应商的 OpenAI-compatible v1 协议档案，承载 API Key、Chat Completions、原生 Responses、DeepSeek 响应扩展字段与 Codex Responses 桥接',
   enabled: 1,
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.deepseek.com',
   defaultHealthCheckModel: 'deepseek-v4-flash',
   accountTypes: ['api_key'],
-  capabilities: ['chat', 'passthrough'],
-  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
+  capabilities: ['chat', 'responses', 'passthrough'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
 } as const
 
 export const DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED = {

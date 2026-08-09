@@ -218,6 +218,10 @@ const deepSeekBridgeProfile = {
   type: 'api_key' as const,
   clientCompatibility: 'codex_responses' as const
 }
+const deepSeekNativeResponsesProfile = {
+  ...deepSeekBridgeProfile,
+  endpointFamilies: ['chat_completions', 'responses']
+}
 assertEqual(profileSupportsCodexResponsesChatBridge(deepSeekBridgeProfile), true, '前端应识别 DeepSeek 支持 Codex Responses 到 Chat SSE 桥接')
 assertEqual(canSelectClientCompatibility(deepSeekBridgeProfile), true, 'DeepSeek API Key 应允许选择 Codex Responses 客户端兼容')
 assertEqual(
@@ -233,6 +237,15 @@ assertEqual(
   }).join(','),
   'chat_json,chat_sse',
   'DeepSeek Codex bridge 账号前端默认仍保存真实 Chat Completions JSON/Streaming 能力'
+)
+assertEqual(
+  defaultEndpointModesForAccount({
+    profile: deepSeekNativeResponsesProfile,
+    type: 'api_key',
+    clientCompatibility: 'openai_standard'
+  }).join(','),
+  'chat_json,chat_sse,responses_json,responses_sse',
+  'DeepSeek 原生 Responses 档案应按 endpointFamilies 公开 Chat 与 Responses 两类能力'
 )
 assertEqual(
   profileSupportsCodexResponsesChatBridge({

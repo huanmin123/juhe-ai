@@ -46,7 +46,7 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 - 下游请求是流式请求，即 `stream=true` 且 `Accept: text/event-stream` 语义成立。
 - 账户真实 endpoint mode 支持 `chat_sse`。
 
-未配置模型映射的通用 GLM / DeepSeek / OpenAI-compatible Chat-only 账号不启用桥接；普通 OpenAI-compatible 客户端发起 `/v1/responses` 时，只有模型映射命中才进入桥接。
+未配置模型映射的显式 Chat-only GLM / DeepSeek / OpenAI-compatible 账号不启用桥接；普通 OpenAI-compatible 客户端发起 `/v1/responses` 时，只有模型映射命中才进入桥接。DeepSeek OpenAI 档案的 Flash / 预兼容 Pro 原生 Responses 不经过本设计的 Chat bridge。
 
 ## 请求转换
 

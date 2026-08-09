@@ -56,9 +56,8 @@ mountAccountHealthCheckDispatchBridge(app, {
     if (accountId === 'dispatch-coalesced') {
       return {
         outcome: 'coalesced' as const,
-        decisionCode: 'request_failure_cooldown' as const,
-        targetRole: 'ops-worker' as const,
-        cooldownRemainingMs: 299_000
+        decisionCode: 'request_failure_in_flight' as const,
+        targetRole: 'ops-worker' as const
       }
     }
     if (accountId === 'dispatch-queue-full') {
@@ -418,8 +417,8 @@ try {
   const dispatchCoalesced = await request(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'dispatch-coalesced', reason: 'request_failure' }))
   })
-  assert.equal(dispatchCoalesced.statusCode, 202, '请求失败冷却去重仍应表示为已受理')
-  assert.equal(dispatchCoalesced.body.length, 0, '去重后的 202 响应必须为空 body')
+  assert.equal(dispatchCoalesced.statusCode, 202, '请求失败在途合并仍应表示为已受理')
+  assert.equal(dispatchCoalesced.body.length, 0, '在途合并后的 202 响应必须为空 body')
 
   const dispatchQueueFull = await request(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'dispatch-queue-full', reason: 'request_failure' }))
@@ -534,7 +533,7 @@ function assertRouterConfiguration(): void {
   for (const field of [
     'outcome:', 'triggerReason:', 'decisionCode:', 'targetRole:',
     'queueLength:', 'queueBytes:', 'messageBytes:', 'maxQueueMessages:',
-    'maxQueueBytes:', 'cooldownRemainingMs:', 'statusCode'
+    'maxQueueBytes:', 'statusCode'
   ]) {
     assert(source.includes(field), `派发决策日志必须包含 ${field}`)
   }

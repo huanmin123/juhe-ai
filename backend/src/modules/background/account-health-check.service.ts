@@ -32,6 +32,7 @@ import { gatewayAccountRuntimeKey } from '../gateway/runtime/account-runtime-key
 import {
   acquireAvailabilityProbe,
   availabilityProbeSourceFences,
+  getAvailabilityProbeState,
   settleAvailabilityProbe,
   type AvailabilityProbeOutcome
 } from '../gateway/runtime/availability-probe-coordinator.js'
@@ -62,11 +63,14 @@ interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   configRevision: number
   maxPauseMinutes: number
   reason: AccountHealthCheckTriggerReason
+  coordinatorFailureRetryCount?: number
 }
 
 interface AccountHealthCheckExecution {
   ordinaryAccountHealthSemantics: boolean
   sourceFences: Map<string, CodexSourceProbeFence>
+  settledSourceFenceOutcome?: AvailabilityProbeOutcome
+  settledSourceFenceGeneration?: number
 }
 
 type AccountHealthCheckProbeRunner = (
@@ -77,10 +81,10 @@ type AccountHealthCheckProbeRunner = (
 ) => Promise<AccountHealthCheckProbeResult>
 
 const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check', [], 0)
-const requestFailureHealthCheckCooldownMs = 5 * 60_000
 const maxSourceFencesPerHealthExecution = 64
-const recentRequestFailureHealthChecks = new Map<string, number>()
-let lastRequestFailureHealthCheckCleanupAt = 0
+const coordinatorJoinRetryMinimumDelayMs = 50
+const coordinatorJoinRetryMaximumDelayMs = 90_000
+const coordinatorFailureRetryDelaysMs = [1_000, 5_000] as const
 const accountHealthCheckExecutions = new Map<string, AccountHealthCheckExecution>()
 let accountHealthCheckProbeRunnerForTest: AccountHealthCheckProbeRunner | undefined
 
@@ -115,13 +119,23 @@ export function enqueueAccountHealthCheck(
   sourceFence?: CodexSourceProbeFence
 ): boolean {
   const effectiveReason = account.status === 'pending_test' ? 'activation' : reason
-  const now = Date.now()
   const executionKey = accountHealthCheckExecutionKey(account.id)
-  const existingExecution = accountHealthCheckExecutions.get(executionKey)
+  let existingExecution = accountHealthCheckExecutions.get(executionKey)
   if (sourceFence) {
     if (sourceFence.configRevision !== (account.configRevision ?? 1)) {
       sendCodexSourceFenceSettledToServer(sourceFence, 'stale')
       return true
+    }
+    if (existingExecution?.settledSourceFenceOutcome !== undefined && !accountHealthCheckQueue.hasFollowUp(account.id)) {
+      if (existingExecution.settledSourceFenceGeneration === sourceFence.probeGeneration) {
+        sendCodexSourceFenceSettledToServer(sourceFence, existingExecution.settledSourceFenceOutcome)
+        return true
+      }
+      // This fence belongs to a coordinator generation created after the
+      // previous local probe settled. It must create fresh source-only work,
+      // rather than accidentally consuming the old outcome.
+      accountHealthCheckExecutions.delete(executionKey)
+      existingExecution = undefined
     }
     // A source handoff is metadata for an existing physical probe when one is
     // queued/running. It must not create retry-queue follow-up work.
@@ -132,13 +146,6 @@ export function enqueueAccountHealthCheck(
     if (existingExecution) return true
   } else if (existingExecution) {
     existingExecution.ordinaryAccountHealthSemantics = true
-  }
-  if (!sourceFence && effectiveReason === 'request_failure') {
-    cleanupRecentRequestFailureHealthChecks(now)
-    const lastTriggeredAt = recentRequestFailureHealthChecks.get(account.id)
-    if (lastTriggeredAt !== undefined && now - lastTriggeredAt < requestFailureHealthCheckCooldownMs) {
-      return false
-    }
   }
   const enqueued = accountHealthCheckQueue.enqueue(account.id, {
     accountId: account.id,
@@ -152,7 +159,8 @@ export function enqueueAccountHealthCheck(
   }, {
     priority: accountHealthCheckTriggerPriority(effectiveReason),
     replaceExisting: effectiveReason !== 'scheduled',
-    replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure'
+    replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure',
+    followUpWhenRunning: effectiveReason === 'request_failure'
   })
   if (enqueued && !existingExecution) {
     accountHealthCheckExecutions.set(executionKey, {
@@ -160,20 +168,12 @@ export function enqueueAccountHealthCheck(
       sourceFences: sourceFence ? new Map([[sourceFenceKey(sourceFence), sourceFence]]) : new Map()
     })
   }
-  if (!enqueued && sourceFence) accountHealthCheckExecutions.delete(executionKey)
-  if (!sourceFence && effectiveReason === 'request_failure') {
-    recentRequestFailureHealthChecks.set(account.id, now)
+  if (!enqueued && sourceFence) {
+    const unqueuedFences = takeAccountHealthCheckExecutionSourceFences(executionKey)
+    accountHealthCheckExecutions.delete(executionKey)
+    settleCompletedSourceFences(unqueuedFences, 'unknown')
   }
   return enqueued
-}
-
-function cleanupRecentRequestFailureHealthChecks(now: number): void {
-  if (now - lastRequestFailureHealthCheckCleanupAt < 60_000) return
-  lastRequestFailureHealthCheckCleanupAt = now
-  const cutoff = now - requestFailureHealthCheckCooldownMs
-  for (const [accountId, triggeredAt] of recentRequestFailureHealthChecks) {
-    if (triggeredAt <= cutoff) recentRequestFailureHealthChecks.delete(accountId)
-  }
 }
 
 export async function enqueueAccountHealthCheckById(
@@ -210,10 +210,24 @@ async function runAccountHealthCheckQueueItem(
 ) {
   const executionKey = accountHealthCheckExecutionKey(item.accountId)
   const execution = accountHealthCheckExecutions.get(executionKey)
+  if (execution) {
+    execution.settledSourceFenceOutcome = undefined
+    execution.settledSourceFenceGeneration = undefined
+  }
   let deadline: ReturnType<typeof accountHealthCheckDeadline> | undefined
   let coordination: Awaited<ReturnType<typeof acquireAvailabilityProbe>> | undefined
   let completedExecution: AccountHealthCheckExecution | undefined
+  let completedExecutionSourceFences: CodexSourceProbeFence[] = []
   let completedExecutionSourceFencesSettled = false
+  let coordinatorOperationFailed = false
+  const runCoordinatorOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation()
+    } catch (error) {
+      coordinatorOperationFailed = true
+      throw error
+    }
+  }
   try {
     const account = await accountForHealthCheckQueueItem(item)
     if (!isAccountHealthCheckEligible(account, item.reason)) {
@@ -246,13 +260,15 @@ async function runAccountHealthCheckQueueItem(
     const observedAt = new Date().toISOString()
     const executionDeadline = accountHealthCheckDeadline()
     deadline = executionDeadline
-    const acquiredCoordination = await acquireAvailabilityProbe({
+    const acquiredCoordination = await runCoordinatorOperation(async () => await acquireAvailabilityProbe({
       accountRuntimeScope: gatewayAccountRuntimeKey(account),
       probeKind: 'account_health_check',
       configRevision: item.configRevision,
-      executionRole: 'health_probe'
-    })
+      executionRole: 'health_probe',
+      forceNewGeneration: item.reason === 'request_failure'
+    }))
     coordination = acquiredCoordination
+    settleReplacedCoordinatorSourceFences(acquiredCoordination)
     if (acquiredCoordination.disposition === 'joined') {
       logger.debug({
         event: 'background_account_health_check_runtime_coordinator_joined',
@@ -263,9 +279,13 @@ async function runAccountHealthCheckQueueItem(
         retryAtMs: acquiredCoordination.retryAtMs
       }, '共享可用性探活已有 owner，本轮健康检查不追加实际诊断')
       // A local source-only queue item that lost the distributed lease has no
-      // authority to consume the remote owner's outcome. Return an explicit
-      // non-success fence result instead of retaining its worker-local record.
-      settleSourceFences(executionKey, 'unknown')
+      // authority to consume the remote owner's outcome. Its fence is unknown,
+      // but the execution record must survive a queued ordinary tail.
+      settleCompletedSourceFences(
+        takeAccountHealthCheckExecutionSourceFences(executionKey, execution),
+        'unknown'
+      )
+      enqueueRequestFailureTailAfterCoordinatorWait(item, execution, acquiredCoordination.retryAtMs)
       executionDeadline.cancel()
       return true
     }
@@ -293,21 +313,29 @@ async function runAccountHealthCheckQueueItem(
         diagnosticTimeoutExhausted
       })
       const coordinatorOutcome = availabilityProbeCoordinatorOutcome(probeOutcome, diagnosticCanceled)
-      const probeSettled = await settleAvailabilityProbe({
+      const probeSettled = await runCoordinatorOperation(async () => await settleAvailabilityProbe({
         runtimeKey: acquiredCoordination.runtimeKey,
         generation: acquiredCoordination.generation,
         ownerToken: acquiredCoordination.ownerToken,
         outcome: coordinatorOutcome
-      })
-      // This is the worker completion/fence boundary. Removing the execution
-      // record before any asynchronous account mutation means a late IPC fence
-      // starts a fresh generation instead of consuming this finished result.
-      completedExecution = takeAccountHealthCheckExecution(executionKey)
+      }))
+      // Settle the current probe's source fences, but retain the execution
+      // record while a request_failure follow-up is queued. A fence arriving
+      // between the first probe and its tail must join that tail rather than
+      // replacing it with source-only work.
+      completedExecution = execution
+      const executionSourceFences = takeAccountHealthCheckExecutionSourceFences(executionKey, execution)
+      completedExecutionSourceFences = executionSourceFences
+      const sourceFenceOutcome = probeSettled ? coordinatorOutcome : 'stale'
+      if (completedExecution) {
+        completedExecution.settledSourceFenceOutcome = sourceFenceOutcome
+        completedExecution.settledSourceFenceGeneration = acquiredCoordination.generation
+      }
       const coordinatorSourceFences = probeSettled
-        ? await availabilityProbeSourceFences(acquiredCoordination.runtimeKey, acquiredCoordination.generation)
+        ? await runCoordinatorOperation(async () => await availabilityProbeSourceFences(acquiredCoordination.runtimeKey, acquiredCoordination.generation))
         : []
       const sourceFences = mergeSourceFences(
-        [...(completedExecution?.sourceFences.values() ?? [])],
+        executionSourceFences,
         coordinatorSourceFences.map((fence) => ({
           ...fence,
           runtimeKey: acquiredCoordination.runtimeKey,
@@ -322,12 +350,19 @@ async function runAccountHealthCheckQueueItem(
       // A missing local execution record must preserve ordinary health behavior.
       // Source-only queue work always registers its record before enqueueing.
       const sourceOnlyProbe = completedExecution?.ordinaryAccountHealthSemantics === false
-      const sourceFenceOutcome = probeSettled ? coordinatorOutcome : 'stale'
       if (!probeSettled) {
         // A lease-taken-over owner has no authority to write either account
         // health or a source success. The current owner will produce the next
         // generation's result.
         settleCompletedExecutionSourceFences('stale')
+        if (item.reason === 'request_failure' && completedExecution?.ordinaryAccountHealthSemantics) {
+          const latestState = await runCoordinatorOperation(async () => await getAvailabilityProbeState(acquiredCoordination.runtimeKey))
+          enqueueRequestFailureTailAfterCoordinatorWait(
+            item,
+            completedExecution,
+            latestState?.probeRunUntilMs ?? latestState?.nextProbeAtMs ?? Date.now() + coordinatorJoinRetryMaximumDelayMs
+          )
+        }
         return true
       }
       const availabilityProbeFailed = automaticAccountAvailabilityProbeFailed(probeOutcome)
@@ -405,7 +440,16 @@ async function runAccountHealthCheckQueueItem(
       }, backgroundProbeDbServiceTimeoutMs)
 
       let markedTemporaryUnavailable = false
-      if (failure && account.status !== 'pending_test' && availabilityProbeFailed && (failure.reachedThreshold || immediateTemporaryUnavailable)) {
+      let temporaryUnavailableSkippedReason: string | undefined
+      if (failure?.changed !== true) {
+        temporaryUnavailableSkippedReason = 'failure_write_not_applied'
+      } else if (account.status === 'pending_test') {
+        temporaryUnavailableSkippedReason = 'status_ineligible'
+      } else if (!availabilityProbeFailed) {
+        temporaryUnavailableSkippedReason = 'availability_not_confirmed'
+      } else if (!failure.reachedThreshold && !immediateTemporaryUnavailable) {
+        temporaryUnavailableSkippedReason = 'threshold_not_reached'
+      } else {
         const updated = await requestBackgroundWorkerDbService({
           type: 'mark_account_test_temporary_unavailable',
           accountId: account.id,
@@ -423,6 +467,9 @@ async function runAccountHealthCheckQueueItem(
           }
         }, backgroundProbeDbServiceTimeoutMs)
         markedTemporaryUnavailable = updated?.updated ?? false
+        temporaryUnavailableSkippedReason = markedTemporaryUnavailable
+          ? undefined
+          : updated?.skippedReason ?? 'mutation_cas_rejected'
       }
 
       const logFields = {
@@ -433,6 +480,7 @@ async function runAccountHealthCheckQueueItem(
         errorCode: result.errorCode,
         durationMs: result.durationMs,
         failureCount: failure?.failureCount ?? 0,
+        healthFailureRecorded: failure?.changed === true,
         reachedThreshold: failure?.reachedThreshold ?? false,
         failureStartedAt: failure?.failureStartedAt,
         transitionedToError: failure?.transitionedToError ?? false,
@@ -442,6 +490,7 @@ async function runAccountHealthCheckQueueItem(
         diagnosticCompleted,
         nextHealthCheckAt: failure?.nextHealthCheckAt,
         markedTemporaryUnavailable,
+        temporaryUnavailableSkippedReason,
         attemptIndex: context.attemptIndex,
         retryNumber: context.retryNumber,
         message: result.message,
@@ -459,17 +508,19 @@ async function runAccountHealthCheckQueueItem(
       return true
     }, {
       signal: deadline.signal,
-      abortedObservation: () => accountHealthCheckDeadlineResult(account)
+      abortedObservation: () => accountHealthCheckDeadlineResult(account),
+      joinSettled: item.reason !== 'request_failure'
     })
   } catch (error) {
-    if (coordination?.disposition === 'owner') {
+    const ownerCoordination = coordination?.disposition === 'owner' ? coordination : undefined
+    if (ownerCoordination) {
       try {
-        await settleAvailabilityProbe({
-          runtimeKey: coordination.runtimeKey,
-          generation: coordination.generation,
-          ownerToken: coordination.ownerToken,
+        await runCoordinatorOperation(async () => await settleAvailabilityProbe({
+          runtimeKey: ownerCoordination.runtimeKey,
+          generation: ownerCoordination.generation,
+          ownerToken: ownerCoordination.ownerToken,
           outcome: 'probe_task_failure'
-        })
+        }))
       } catch (settlementError) {
         logger.warn(errorLogFields(settlementError, {
           event: 'background_account_health_check_coordinator_settlement_failed',
@@ -478,16 +529,38 @@ async function runAccountHealthCheckQueueItem(
         }), '账号健康检查未能结算共享探针，继续结算本地来源 fence')
       }
     }
-    if (completedExecution && !completedExecutionSourceFencesSettled) {
-      settleCompletedSourceFences([...completedExecution.sourceFences.values()], 'probe_task_failure')
+    if (completedExecution) {
+      const completedExecutionOutcome = completedExecution.settledSourceFenceOutcome ?? 'probe_task_failure'
+      if (!completedExecutionSourceFencesSettled) {
+        settleCompletedSourceFences(completedExecutionSourceFences, completedExecutionOutcome)
+      }
+      settleCompletedSourceFences(
+        takeAccountHealthCheckExecutionSourceFences(executionKey, completedExecution),
+        completedExecutionOutcome
+      )
     } else {
-      settleSourceFencesForExecution(executionKey, execution, 'probe_task_failure')
+      settleCompletedSourceFences(
+        takeAccountHealthCheckExecutionSourceFences(executionKey, execution),
+        'probe_task_failure'
+      )
+    }
+    if (coordinatorOperationFailed && enqueueCoordinatorFailureRetry(item, execution)) {
+      logger.warn(errorLogFields(error, {
+        event: 'background_account_health_check_coordinator_retry_enqueued',
+        accountId: item.accountId,
+        accountName: item.accountName,
+        retryCount: (item.coordinatorFailureRetryCount ?? 0) + 1
+      }), '共享探活协调器异常，已保留有界 request_failure 尾随重试')
     }
     throw error
   } finally {
     deadline?.cancel()
-    if (accountHealthCheckExecutions.get(executionKey) === execution) {
+    if (
+      accountHealthCheckExecutions.get(executionKey) === execution
+      && !accountHealthCheckQueue.hasFollowUp(item.accountId)
+    ) {
       accountHealthCheckExecutions.delete(executionKey)
+      settleCompletedSourceFences([...execution?.sourceFences.values() ?? []], 'unknown')
     }
   }
 }
@@ -516,33 +589,102 @@ function registerSourceFence(executionKey: string, sourceFence: CodexSourceProbe
   return true
 }
 
-function takeAccountHealthCheckExecution(executionKey: string): AccountHealthCheckExecution | undefined {
+function takeAccountHealthCheckExecutionSourceFences(
+  executionKey: string,
+  expectedExecution?: AccountHealthCheckExecution
+): CodexSourceProbeFence[] {
   const execution = accountHealthCheckExecutions.get(executionKey)
-  accountHealthCheckExecutions.delete(executionKey)
-  return execution
+  if (!execution || (expectedExecution && execution !== expectedExecution)) return []
+  const sourceFences = [...execution.sourceFences.values()]
+  execution.sourceFences.clear()
+  return sourceFences
 }
 
 function settleSourceFences(
   executionKey: string,
   outcome: AvailabilityProbeOutcome,
-  sourceFences = [...(takeAccountHealthCheckExecution(executionKey)?.sourceFences.values() ?? [])]
+  sourceFences = takeAccountHealthCheckExecutionSourceFences(executionKey)
 ): void {
+  if (!accountHealthCheckQueue.hasFollowUp(executionKey)) {
+    accountHealthCheckExecutions.delete(executionKey)
+  }
   settleCompletedSourceFences(sourceFences, outcome)
-}
-
-function settleSourceFencesForExecution(
-  executionKey: string,
-  execution: AccountHealthCheckExecution | undefined,
-  outcome: AvailabilityProbeOutcome
-): void {
-  if (!execution || accountHealthCheckExecutions.get(executionKey) !== execution) return
-  accountHealthCheckExecutions.delete(executionKey)
-  settleCompletedSourceFences([...execution.sourceFences.values()], outcome)
 }
 
 function settleCompletedSourceFences(sourceFences: readonly CodexSourceProbeFence[], outcome: AvailabilityProbeOutcome): void {
   for (const sourceFence of sourceFences) {
     sendCodexSourceFenceSettledToServer(sourceFence, outcome)
+  }
+}
+
+function settleReplacedCoordinatorSourceFences(
+  coordination: Awaited<ReturnType<typeof acquireAvailabilityProbe>>
+): void {
+  if (coordination.disposition !== 'owner' || !coordination.replacedFenceSettlement) return
+  const settlement = coordination.replacedFenceSettlement
+  settleCompletedSourceFences(
+    settlement.sourceFences.map((fence) => ({
+      ...fence,
+      runtimeKey: coordination.runtimeKey,
+      probeGeneration: settlement.generation,
+      configRevision: settlement.configRevision
+    })),
+    settlement.outcome
+  )
+}
+
+function enqueueCoordinatorFailureRetry(
+  item: AccountHealthCheckQueueItem,
+  execution: AccountHealthCheckExecution | undefined
+): boolean {
+  if (item.reason !== 'request_failure' || execution?.ordinaryAccountHealthSemantics !== true) return false
+  const retryCount = item.coordinatorFailureRetryCount ?? 0
+  const delayMs = coordinatorFailureRetryDelaysMs[retryCount]
+  if (delayMs === undefined) return false
+  return accountHealthCheckQueue.enqueue(item.accountId, {
+    ...item,
+    coordinatorFailureRetryCount: retryCount + 1
+  }, {
+    priority: accountHealthCheckTriggerPriority('request_failure'),
+    delayMs,
+    replaceExisting: true,
+    followUpWhenRunning: true
+  })
+}
+
+function coordinatorJoinRetryDelayMs(retryAtMs: number): number {
+  const remainingMs = Number.isFinite(retryAtMs) ? retryAtMs - Date.now() : coordinatorJoinRetryMaximumDelayMs
+  return Math.max(
+    coordinatorJoinRetryMinimumDelayMs,
+    Math.min(coordinatorJoinRetryMaximumDelayMs, Math.trunc(remainingMs))
+  )
+}
+
+function enqueueRequestFailureTailAfterCoordinatorWait(
+  item: AccountHealthCheckQueueItem,
+  execution: AccountHealthCheckExecution | undefined,
+  retryAtMs: number
+): void {
+  if (item.reason !== 'request_failure' || !execution?.ordinaryAccountHealthSemantics) return
+  const deferred = accountHealthCheckQueue.enqueue(item.accountId, {
+    ...item,
+    failureThreshold: 1,
+    reason: 'request_failure'
+  }, {
+    priority: accountHealthCheckTriggerPriority('request_failure'),
+    delayMs: coordinatorJoinRetryDelayMs(retryAtMs),
+    replaceExisting: true,
+    replaceExistingOnlyIfHigherPriority: true,
+    followUpWhenRunning: true
+  })
+  if (!deferred) {
+    logger.debug({
+      event: 'background_account_health_check_runtime_coordinator_join_tail_preserved',
+      accountId: item.accountId,
+      accountName: item.accountName,
+      reason: item.reason,
+      retryAtMs
+    }, '共享探活占用期间保留了更高优先级的健康检查任务')
   }
 }
 

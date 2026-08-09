@@ -39,7 +39,7 @@
 
 | 角色 | 生命周期 | 核心职责 | 扩容触发 |
 | --- | --- | --- | --- |
-| `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、运行日志索引、运行日志文件导入、record maintenance、dataset / usage shard 清理 | server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
+| `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、record maintenance、dataset / usage shard 清理 | 运行日志索引由独立 Go F1 indexer 负责；server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
 | `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
 | `log-worker` | performance persistent | 审计、操作、公开接口日志消费；副本 0 负责运行日志文件导入与保留期任务 | 各日志 Stream lag 或运行日志文件 backlog 持续超标 |
 | `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量、表监控、统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |

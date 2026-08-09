@@ -326,14 +326,20 @@ function sendCommittedThenTruncate(
   attemptKind: AttemptKind,
   hit: UpstreamHit
 ): void {
-  const event = `event: response.output_text.delta\ndata: ${JSON.stringify({
-    type: 'response.output_text.delta',
-    delta: `postcommit-partial-${responseKind}-${attemptKind}`
-  })}\n\n`
+  const marker = `postcommit-partial-${responseKind}-${attemptKind}`
+  const event = responseKind === 'sse'
+    ? `data: ${JSON.stringify({
+        id: `chatcmpl-${attemptKind}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, delta: { role: 'assistant', content: marker }, finish_reason: null }]
+      })}\n\n`
+    : `ID3${marker}`
   res.writeHead(200, {
     'content-type': responseKind === 'sse'
       ? 'text/event-stream; charset=utf-8'
-      : 'text/plain; charset=utf-8',
+      : 'audio/mpeg',
     'content-length': String(Buffer.byteLength(event) + 4096),
     connection: 'close',
     'x-provider-private-error': 'must-not-drive-state'
@@ -342,11 +348,15 @@ function sendCommittedThenTruncate(
   const socket = res.socket
   res.write(event, () => {
     hit.partialWriteFlushed = true
-    if (socket && !socket.destroyed) {
-      socket.end()
-      return
+    const truncate = () => {
+      if (socket && !socket.destroyed) {
+        socket.destroy()
+        return
+      }
+      res.destroy()
     }
-    res.destroy()
+    const timer = setTimeout(truncate, 75)
+    timer.unref()
   })
 }
 
@@ -364,12 +374,8 @@ function sendBackupResponse(
     })}\n\n`)
     return
   }
-  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-  res.end(JSON.stringify({
-    id: marker,
-    object: 'chat.completion',
-    choices: [{ index: 0, message: { role: 'assistant', content: marker }, finish_reason: 'stop' }]
-  }))
+  res.writeHead(200, { 'content-type': 'audio/mpeg' })
+  res.end(`ID3${marker}`)
 }
 
 async function runTruncatedAttempt(
@@ -381,19 +387,42 @@ async function runTruncatedAttempt(
     postcommit_kind: scenario.responseKind,
     postcommit_attempt: attemptKind
   })
-  const path = `/v1/chat/completions?${query}`
-  const body = JSON.stringify({
-    model,
-    messages: [{ role: 'user', content: `postcommit ${scenario.responseKind} ${attemptKind}` }],
-    stream: scenario.responseKind === 'sse'
-  })
+  const isSse = scenario.responseKind === 'sse'
+  const path = isSse
+    ? `/v1/chat/completions?${query}`
+    : `/v1/audio/speech?${query}`
+  const body = JSON.stringify(isSse
+    ? {
+        model,
+        messages: [{ role: 'user', content: `postcommit ${scenario.responseKind} ${attemptKind}` }],
+        stream: true
+      }
+    : {
+        model,
+        input: `postcommit ${scenario.responseKind} ${attemptKind}`,
+        voice: 'alloy',
+        response_format: 'mp3'
+      })
   return await rawHttpPost(`${gatewayBaseUrl}${path}`, body, {
     authorization: `Bearer ${scenario.apiKey}`,
     'content-type': 'application/json',
-    accept: scenario.responseKind === 'sse' ? 'text/event-stream' : 'application/json',
-    'x-forwarded-for': clientIp,
+    accept: isSse ? 'text/event-stream' : 'audio/mpeg',
+    'x-forwarded-for': clientIpForAttempt(attemptKind),
     'x-session-id': `postcommit-${scenario.responseKind}-${attemptKind}`
   })
+}
+
+function clientIpForAttempt(attemptKind: AttemptKind): string {
+  switch (attemptKind) {
+    case 'ordinary':
+      return clientIp
+    case 'observer':
+      return '198.51.100.211'
+    case 'confirmation_1':
+      return '198.51.100.212'
+    case 'confirmation_2':
+      return '198.51.100.213'
+  }
 }
 
 function rawHttpPost(
@@ -471,7 +500,7 @@ function assertCommittedClientBoundary(
   )
   assert.match(
     String(result.headers['content-type'] ?? ''),
-    scenario.responseKind === 'sse' ? /text\/event-stream/i : /text\/plain/i,
+    scenario.responseKind === 'sse' ? /text\/event-stream/i : /audio\/mpeg/i,
     `${label} 必须保留已提交响应形态`
   )
   assert.equal(result.terminated, true, `${label} 正文截断后必须中断下游，不能伪造完整成功`)

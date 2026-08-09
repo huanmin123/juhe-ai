@@ -181,7 +181,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 105, '当前 Node 权威模型目录应包含 105 个可用完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 103, '截至 2026-08-09，当前 Node 权威模型目录应包含 103 个可用完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -608,6 +608,16 @@ try {
   const deepSeekModels = new Set(deepSeekCatalog.map((item) => item.model))
   assert(deepSeekModels.has('deepseek-v4-flash'), 'DeepSeek 模型目录应包含官方 V4 Flash')
   assert(deepSeekModels.has('deepseek-v4-pro'), 'DeepSeek 模型目录应包含官方 V4 Pro')
+  assert.deepEqual(
+    deepSeekCatalog.find((item) => item.model === 'deepseek-v4-flash')?.supportedApiProtocols,
+    ['chat_completions', 'responses', 'messages'],
+    'DeepSeek V4 Flash 目录应声明官方原生 Responses、Chat 与 Anthropic Messages 协议'
+  )
+  assert.deepEqual(
+    deepSeekCatalog.find((item) => item.model === 'deepseek-v4-pro')?.supportedApiProtocols,
+    ['chat_completions', 'responses', 'messages', 'completions'],
+    'DeepSeek V4 Pro 应按产品预兼容策略声明原生 Responses、Chat、Anthropic Messages 与 Completions 协议'
+  )
   assert.equal(deepSeekModels.has('deepseek-ai-v4-flash'), false, 'DeepSeek 模型目录不得暴露官方列表不存在的 deepseek-ai V4 Flash 别名')
   assert.equal(deepSeekModels.has('deepseek-ai-v4-pro'), false, 'DeepSeek 模型目录不得暴露官方列表不存在的 deepseek-ai V4 Pro 别名')
   if (new Date().toISOString().slice(0, 10) < '2026-07-24') {
@@ -766,8 +776,8 @@ try {
     assert.equal(anthropicModels.has(id), false, `Claude Code 本地别名 ${id} 不得作为 Anthropic 公开模型目录项`)
   }
   for (const id of [
+    'claude-opus-5',
     'claude-fable-5',
-    'claude-mythos-5',
     'claude-sonnet-5',
     'claude-opus-4-8',
     'claude-opus-4-7',
@@ -775,23 +785,17 @@ try {
     'claude-sonnet-4-6',
     'claude-haiku-4-5',
     'claude-sonnet-4-5',
-    'claude-opus-4-5',
-    'claude-opus-4-1'
+    'claude-opus-4-5'
   ]) {
     assert(anthropicModels.has(id), `Anthropic 模型目录应包含当前官网模型 ${id}`)
   }
+  assert.equal(anthropicModels.has('claude-mythos-5'), false, 'Claude Mythos 5 仅限获批客户，不得进入公开目录')
   assert(anthropicModels.has('claude-haiku-4-5-20251001'), 'Anthropic 模型目录应包含 Haiku 4.5 官方 dated ID')
   assert(anthropicModels.has('claude-sonnet-4-5-20250929'), 'Anthropic 模型目录应包含 Sonnet 4.5 官方 dated ID')
   assert(anthropicModels.has('claude-opus-4-5-20251101'), 'Anthropic 模型目录应包含 Opus 4.5 官方 dated ID')
-  if (new Date().toISOString().slice(0, 10) < '2026-06-30') {
-    assert(anthropicModels.has('claude-mythos-preview'), 'Anthropic 模型目录在 Mythos preview 退休前应包含该模型')
-  } else {
-    assert.equal(anthropicModels.has('claude-mythos-preview'), false, 'Mythos preview 已退休，不应进入 Anthropic 模型目录')
-  }
-  if (new Date().toISOString().slice(0, 10) < '2026-08-05') {
-    assert(anthropicModels.has('claude-opus-4-1'), 'Anthropic 模型目录在 Opus 4.1 shutdown date 前应包含稳定别名')
-    assert(anthropicModels.has('claude-opus-4-1-20250805'), 'Anthropic 模型目录在 Opus 4.1 shutdown date 前应包含 dated ID')
-  }
+  assert.equal(anthropicModels.has('claude-mythos-preview'), false, 'Mythos preview 已退休，不应进入 Anthropic 模型目录')
+  assert.equal(anthropicModels.has('claude-opus-4-1'), false, 'Opus 4.1 已于 2026-08-05 shutdown，不应进入当前目录')
+  assert.equal(anthropicModels.has('claude-opus-4-1-20250805'), false, 'Opus 4.1 dated ID 已于 2026-08-05 shutdown，不应进入当前目录')
   for (const id of [
     'default',
     'claude-opus-4-20250514',
@@ -823,9 +827,9 @@ try {
   assert.deepEqual(
     anthropicCatalog.map((item) => item.model),
     [
+      'claude-opus-5',
       'claude-sonnet-5',
       'claude-fable-5',
-      'claude-mythos-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-sonnet-4-6',
@@ -835,8 +839,7 @@ try {
       'claude-haiku-4-5',
       'claude-haiku-4-5-20251001',
       'claude-sonnet-4-5',
-      'claude-sonnet-4-5-20250929',
-      ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : [])
+      'claude-sonnet-4-5-20250929'
     ],
     'Anthropic 模型目录应按官方当前模型从新到旧排序，并隐藏 Claude Code 本地别名'
   )

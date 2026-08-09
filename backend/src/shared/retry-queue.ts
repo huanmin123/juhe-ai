@@ -46,6 +46,7 @@ export interface RetryQueueOptions<T> {
 export interface RetryQueue<T> {
   readonly name: string
   enqueue(key: string, item: T, options?: RetryQueueEnqueueOptions): boolean
+  hasFollowUp(key: string): boolean
   delete(key: string): void
   clear(): void
   setConcurrency(concurrency: number): void
@@ -54,8 +55,14 @@ export interface RetryQueue<T> {
 
 export interface RetryQueueEnqueueOptions {
   priority?: number
+  delayMs?: number
   replaceExisting?: boolean
   replaceExistingOnlyIfHigherPriority?: boolean
+  /**
+   * Adds at most one latest follow-up only while the keyed item is running.
+   * Pending items continue to use the normal replacement policy.
+   */
+  followUpWhenRunning?: boolean
 }
 
 export interface RetryQueueSnapshot {
@@ -75,6 +82,7 @@ interface RetryQueueItem<T> {
   followUp?: {
     item: T
     priority: number
+    nextRunAtMs: number
   }
 }
 
@@ -174,7 +182,7 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
       queueItem.item = followUp.item
       queueItem.priority = followUp.priority
       queueItem.attemptIndex = 0
-      queueItem.nextRunAtMs = Date.now()
+      queueItem.nextRunAtMs = followUp.nextRunAtMs
       queueItem.followUp = undefined
       scheduleNext()
       return
@@ -266,19 +274,36 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     name: options.name,
     enqueue: (key, item, enqueueOptions = {}) => {
       const priority = normalizedPriority(enqueueOptions.priority)
+      const nextRunAtMs = Date.now() + Math.max(0, Math.trunc(enqueueOptions.delayMs ?? 0))
       const existing = items.get(key)
       if (existing) {
+        if (existing.running && enqueueOptions.followUpWhenRunning) {
+          const existingFollowUpPriority = existing.followUp?.priority
+          if (
+            existingFollowUpPriority === undefined
+            && enqueueOptions.replaceExistingOnlyIfHigherPriority
+            && priority > existing.priority
+          ) return false
+          if (existingFollowUpPriority !== undefined && existingFollowUpPriority < priority) return false
+          existing.followUp = {
+            item,
+            priority: existingFollowUpPriority === undefined ? priority : Math.min(existingFollowUpPriority, priority),
+            nextRunAtMs
+          }
+          scheduleDrain(0)
+          return true
+        }
         if (!enqueueOptions.replaceExisting) return false
         const existingPriority = existing.followUp?.priority ?? existing.priority
         if (enqueueOptions.replaceExistingOnlyIfHigherPriority && priority >= existingPriority) return false
         const replacementPriority = Math.min(existing.followUp?.priority ?? existing.priority, priority)
         if (existing.running) {
-          existing.followUp = { item, priority: replacementPriority }
+          existing.followUp = { item, priority: replacementPriority, nextRunAtMs }
         } else {
           existing.item = item
           existing.priority = replacementPriority
           existing.attemptIndex = 0
-          existing.nextRunAtMs = Date.now()
+          existing.nextRunAtMs = nextRunAtMs
         }
         scheduleDrain(0)
         return true
@@ -287,13 +312,14 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
         key,
         item,
         attemptIndex: 0,
-        nextRunAtMs: Date.now(),
+        nextRunAtMs,
         running: false,
         priority
       })
       scheduleDrain(0)
       return true
     },
+    hasFollowUp: (key) => items.get(key)?.followUp !== undefined,
     delete: (key) => {
       items.delete(key)
       scheduleNext()

@@ -56,7 +56,28 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const regressionModel = 'gpt-5.5'
-const concurrentRequestCount = 32
+const concurrentRequestsPerFailureCase = 16
+const completeHttpFailureCases = [
+  {
+    label: 'forbidden_balance',
+    statusCode: 403,
+    errorCode: 'insufficient_balance',
+    message: 'mock insufficient balance'
+  },
+  {
+    label: 'rate_limited',
+    statusCode: 429,
+    errorCode: 'provider_rate_limited',
+    message: 'mock provider rate limited'
+  },
+  {
+    label: 'upstream_unavailable',
+    statusCode: 503,
+    errorCode: 'provider_unavailable',
+    message: 'mock upstream unavailable'
+  }
+] as const
+type CompleteHttpFailureCase = (typeof completeHttpFailureCases)[number]
 const originalProcessSend = process.send
 const triggerPromises: Array<Promise<boolean>> = []
 let requestFailureDispatchCount = 0
@@ -65,6 +86,8 @@ let upstreamCatalogHits = 0
 let upstreamProbeHits = 0
 let upstreamServer: http.Server | undefined
 let gatewayServer: http.Server | undefined
+const trackedAccountIds = new Set<string>()
+const upstreamFailureByAccountApiKey = new Map<string, CompleteHttpFailureCase>()
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -91,31 +114,6 @@ try {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     enabled: true
   }, access)
-  const account = repositories.createAccount({
-    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-    name: '请求失败健康确认 E2E 账户',
-    type: 'api_key',
-    credentials: {
-      api_key: 'sk-request-failure-health-check-e2e',
-      base_url: upstreamBaseUrl,
-      supported_endpoint_modes: ['chat_json', 'responses_json']
-    },
-    groupId: group.id,
-    status: 'active',
-    schedulable: true,
-    supportedModels: [regressionModel],
-    healthCheckModel: regressionModel,
-    healthCheckEndpointMode: 'responses_json'
-  }, access)
-  activateFixtureAccount(account.id)
-  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: '请求失败健康确认 E2E Key',
-    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-    status: 'active'
-  }, access)
-  assert(apiKey.key, 'E2E API Key 未返回明文密钥')
-
   process.send = ((message: unknown, ...args: unknown[]) => {
     const callback = args.find((item): item is (error: Error | null) => void => typeof item === 'function')
     callback?.(null)
@@ -125,12 +123,13 @@ try {
       && 'type' in message
       && message.type === 'background_worker_account_health_check_trigger'
       && 'accountId' in message
-      && message.accountId === account.id
+      && typeof message.accountId === 'string'
+      && trackedAccountIds.has(message.accountId)
       && 'reason' in message
       && message.reason === 'request_failure'
     ) {
       requestFailureDispatchCount += 1
-      triggerPromises.push(triggerAccountHealthCheckNow(account.id, 'request_failure'))
+      triggerPromises.push(triggerAccountHealthCheckNow(message.accountId, 'request_failure'))
     }
     return true
   }) as typeof process.send
@@ -141,91 +140,30 @@ try {
   gatewayServer = http.createServer(app)
   await listen(gatewayServer)
   const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
-
-  const responses = await Promise.all(Array.from({ length: concurrentRequestCount }, (_value, index) =>
-    requestChatCompletion(gatewayBaseUrl, apiKey.key!, `request-failure-storm-${index}`)))
-  assert.equal(responses.every((response) => response.status === 503), true, '并发失败请求必须统一返回可重试 503')
-  assert.equal(responses.every((response) => /upstream_retryable_error/.test(response.text)), true, '并发失败响应必须保持统一脱敏错误')
-  assert.equal(requestFailureDispatchCount, 1, '32 路并发失败在 5 分钟窗口内只能投递一次账户健康确认')
-
-  const triggerResults = await Promise.all(triggerPromises)
-  assert.deepEqual(triggerResults, [true], '唯一请求失败任务必须成功进入健康检查队列')
-  const transitioned = await waitForCondition(() => {
-    const current = repositories.findAccountForTest(account.id, access)
-    const queue = getAccountHealthCheckQueueSnapshot()
-    return current?.status === 'temporary_unavailable' && queue.pendingCount === 0 && queue.runningCount === 0
-  }, 10_000)
-
-  if (!transitioned) {
-    const current = repositories.findAccountForTest(account.id, access)
-    const candidate = repositories.findOpenAIAccountForGroup(
-      group.id,
-      account.id,
-      access.systemAccountId,
-      { includeUnavailable: true, ignoreAvailability: true }
-    )
-    assert.fail(`请求失败独立探针未完成状态收敛：${JSON.stringify({
-      requestFailureDispatchCount,
-      triggerResults,
-      upstreamGatewayHits,
-      upstreamCatalogHits,
-      upstreamProbeHits,
-      queue: getAccountHealthCheckQueueSnapshot(),
-      account: current && {
-        status: current.status,
-        schedulable: current.schedulable,
-        lastHealthCheckAt: current.lastHealthCheckAt,
-        lastHealthSuccessAt: current.lastHealthSuccessAt,
-        healthCheckFailureCount: current.healthCheckFailureCount,
-        lastHealthCheckStatusCode: current.lastHealthCheckStatusCode,
-        lastHealthCheckErrorCode: current.lastHealthCheckErrorCode,
-        lastHealthCheckErrorMessage: current.lastHealthCheckErrorMessage,
-        cooldownUntil: current.cooldownUntil
-      },
-      candidate: candidate && {
-        providerCode: candidate.providerCode,
-        providerProtocolProfileId: candidate.providerProtocolProfileId,
-        protocolCode: candidate.protocolCode,
-        protocolVersion: candidate.protocolVersion,
-        type: candidate.type,
-        clientCompatibility: candidate.clientCompatibility,
-        supportedEndpointModes: candidate.supportedEndpointModes,
-        supportedModels: candidate.supportedModels,
-        healthCheckModel: candidate.healthCheckModel,
-        healthCheckEndpointMode: candidate.healthCheckEndpointMode,
-        baseUrl: candidate.baseUrl,
-        boundGroupId: candidate.boundGroupId
-      }
-    })}`)
+  const scenarios = []
+  for (const failureCase of completeHttpFailureCases) {
+    scenarios.push(await runCompleteHttpFailureScenario({
+      failureCase,
+      groupId: group.id,
+      upstreamBaseUrl,
+      gatewayBaseUrl,
+      repositories,
+      gatewayCache,
+      getAccountHealthCheckQueueSnapshot
+    }))
   }
-
-  const failedAccount = repositories.findAccountForTest(account.id, access)
-  assert.equal(failedAccount?.status, 'temporary_unavailable', '独立探针确认失败后账户必须进入 temporary_unavailable')
-  assert.equal(failedAccount?.schedulable, true, 'temporary_unavailable 应保留自动恢复资格，不能改成管理员停用')
   assert.equal(upstreamCatalogHits, 0, '独立探针不得请求上游模型目录')
-  assert.equal(upstreamProbeHits, 3, '独立探针应按统一三档诊断执行三次固定健康端点请求')
-  assert(upstreamGatewayHits > 0, '并发风暴必须真实命中 mock 上游业务端点')
-
-  gatewayCache.clearGatewayRuntimeCache()
-  assert.equal(
-    repositories.findOpenAIAccountForGroup(group.id, account.id, access.systemAccountId),
-    undefined,
-    'temporary_unavailable 账户必须从普通路由候选中排除'
-  )
-  assert(
-    repositories.findOpenAIAccountForGroup(group.id, account.id, access.systemAccountId, { includeUnavailable: true }),
-    '诊断和恢复入口必须仍能显式读取 temporary_unavailable 账户'
-  )
+  assert(upstreamProbeHits >= completeHttpFailureCases.length, '每种完整 HTTP 失败必须至少执行一次固定健康端点确认')
+  assert(upstreamGatewayHits >= completeHttpFailureCases.length * concurrentRequestsPerFailureCase, '每种失败矩阵都必须真实命中 mock 上游业务端点')
 
   console.log(JSON.stringify({
     message: 'request failure health check e2e passed',
-    concurrentRequestCount,
+    concurrentRequestsPerFailureCase,
     requestFailureDispatchCount,
     upstreamGatewayHits,
     upstreamCatalogHits,
     upstreamProbeHits,
-    finalStatus: failedAccount?.status,
-    schedulable: failedAccount?.schedulable
+    scenarios
   }))
 } finally {
   process.send = originalProcessSend
@@ -260,15 +198,112 @@ function createMockUpstream(): http.Server {
     } else if (req.method === 'POST' && pathname === '/v1/chat/completions') {
       upstreamGatewayHits += 1
     }
-    res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+    const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : ''
+    const accountApiKey = authorization.replace(/^Bearer\s+/i, '')
+    const failureCase = upstreamFailureByAccountApiKey.get(accountApiKey)
+    assert(failureCase, `mock 上游未找到账户 API Key 的失败矩阵：${accountApiKey}`)
+    res.writeHead(failureCase.statusCode, { 'content-type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
       error: {
-        message: 'mock upstream generic failure',
-        code: 'provider_defined_error',
-        type: 'provider_defined_error'
+        message: failureCase.message,
+        code: failureCase.errorCode,
+        type: failureCase.errorCode
       }
     }))
   })
+}
+
+async function runCompleteHttpFailureScenario(input: {
+  failureCase: CompleteHttpFailureCase
+  groupId: string
+  upstreamBaseUrl: string
+  gatewayBaseUrl: string
+  repositories: typeof import('../../storage/repositories.js')
+  gatewayCache: typeof import('../../modules/gateway/runtime/runtime-cache.service.js')
+  getAccountHealthCheckQueueSnapshot: typeof import('../../modules/background/account-health-check.service.js').getAccountHealthCheckQueueSnapshot
+}): Promise<{ statusCode: number; accountStatus?: string; schedulable?: boolean; requestFailureDispatchCount: number }> {
+  const { failureCase, groupId, upstreamBaseUrl, gatewayBaseUrl, repositories, gatewayCache, getAccountHealthCheckQueueSnapshot } = input
+  const accountApiKey = `sk-request-failure-health-check-${failureCase.label}`
+  const account = repositories.createAccount({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+    name: `请求失败健康确认 E2E ${failureCase.statusCode}`,
+    type: 'api_key',
+    credentials: {
+      api_key: accountApiKey,
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['chat_json', 'responses_json']
+    },
+    groupId,
+    status: 'active',
+    schedulable: true,
+    supportedModels: [regressionModel],
+    healthCheckModel: regressionModel,
+    healthCheckEndpointMode: 'responses_json'
+  }, access)
+  activateFixtureAccount(account.id)
+  upstreamFailureByAccountApiKey.set(accountApiKey, failureCase)
+  trackedAccountIds.add(account.id)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: `请求失败健康确认 E2E Key ${failureCase.statusCode}`,
+    groupBindings: [{ groupId, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'E2E API Key 未返回明文密钥')
+
+  const initialDispatchCount = requestFailureDispatchCount
+  const initialTriggerCount = triggerPromises.length
+  const responses = await Promise.all(Array.from({ length: concurrentRequestsPerFailureCase }, (_value, index) =>
+    requestChatCompletion(gatewayBaseUrl, apiKey.key!, `${failureCase.label}-${index}`)))
+  assert.equal(responses.every((response) => response.status === 503), true, `${failureCase.statusCode} 完整上游失败必须统一返回可重试 503`)
+  assert.equal(responses.every((response) => /upstream_retryable_error/.test(response.text)), true, `${failureCase.statusCode} 失败响应必须保持统一脱敏错误`)
+
+  const scenarioDispatchCount = requestFailureDispatchCount - initialDispatchCount
+  assert(scenarioDispatchCount >= 1, `${failureCase.statusCode} 并发失败至少应投递一次独立账户健康确认`)
+  const triggerResults = await Promise.all(triggerPromises.slice(initialTriggerCount))
+  assert.equal(triggerResults.length, scenarioDispatchCount, `${failureCase.statusCode} 每条已投递消息都必须对应一个后台健康检查触发任务`)
+  assert(triggerResults.some(Boolean), `${failureCase.statusCode} 首条请求失败任务必须成功进入健康检查队列`)
+  const transitioned = await waitForCondition(() => {
+    const current = repositories.findAccountForTest(account.id, access)
+    const queue = getAccountHealthCheckQueueSnapshot()
+    return current?.status === 'temporary_unavailable' && queue.pendingCount === 0 && queue.runningCount === 0
+  }, 10_000)
+  if (!transitioned) {
+    const current = repositories.findAccountForTest(account.id, access)
+    assert.fail(`${failureCase.statusCode} 请求失败独立探针未完成状态收敛：${JSON.stringify({
+      failureCase,
+      scenarioDispatchCount,
+      triggerResults,
+      queue: getAccountHealthCheckQueueSnapshot(),
+      account: current && {
+        status: current.status,
+        schedulable: current.schedulable,
+        healthCheckFailureCount: current.healthCheckFailureCount,
+        lastHealthCheckStatusCode: current.lastHealthCheckStatusCode,
+        lastHealthCheckErrorCode: current.lastHealthCheckErrorCode,
+        lastHealthCheckErrorMessage: current.lastHealthCheckErrorMessage
+      }
+    })}`)
+  }
+  const failedAccount = repositories.findAccountForTest(account.id, access)
+  assert.equal(failedAccount?.status, 'temporary_unavailable', `${failureCase.statusCode} 独立探针确认失败后账户必须进入 temporary_unavailable`)
+  assert.equal(failedAccount?.schedulable, true, `${failureCase.statusCode} temporary_unavailable 应保留自动恢复资格，不能改成管理员停用`)
+  gatewayCache.clearGatewayRuntimeCache()
+  assert.equal(
+    repositories.findOpenAIAccountForGroup(groupId, account.id, access.systemAccountId),
+    undefined,
+    `${failureCase.statusCode} temporary_unavailable 账户必须从普通路由候选中排除`
+  )
+  assert(
+    repositories.findOpenAIAccountForGroup(groupId, account.id, access.systemAccountId, { includeUnavailable: true }),
+    `${failureCase.statusCode} 诊断和恢复入口必须仍能显式读取 temporary_unavailable 账户`
+  )
+  return {
+    statusCode: failureCase.statusCode,
+    accountStatus: failedAccount?.status,
+    schedulable: failedAccount?.schedulable,
+    requestFailureDispatchCount: scenarioDispatchCount
+  }
 }
 
 function activateFixtureAccount(accountId: string): void {

@@ -23,9 +23,7 @@ import { dispatchRequestFailureAccountHealthCheck } from '../../modules/gateway/
 
 const originalProcessRole = runtimeConfig.processRole
 const originalSend = process.send
-const originalDateNow = Date.now
 const messages: unknown[] = []
-let nowMs = originalDateNow()
 
 try {
   runtimeConfig.processRole = 'server'
@@ -50,7 +48,7 @@ try {
   assert.equal(
     dispatchAccountHealthCheckWithOutcome('acc_ops_unavailable_cooldown', 'request_failure').outcome,
     'rejected',
-    '不可用 ops IPC 不得写入 5 分钟 accepted 冷却'
+    '不可用 ops IPC 不得留下 accepted/in-flight 状态'
   )
   const missingOpsQueueState = getBackgroundWorkerState().opsWorker
   assert.deepEqual(
@@ -121,7 +119,6 @@ try {
   )
 
   runtimeConfig.processRole = 'db-service'
-  Date.now = () => nowMs
   process.send = ((message: unknown, ...args: unknown[]) => {
     messages.push(message)
     const callback = args.find((item): item is (error: Error | null) => void => typeof item === 'function')
@@ -147,23 +144,14 @@ try {
   }, '真实网关失败应向后台 worker 投递规范化的独立健康检查')
 
   const requestFailureMessageCount = messages.length
-  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), false, '本地投递端必须在 worker 前执行请求失败冷却')
-  assert.equal(messages.length, requestFailureMessageCount, '冷却中的请求失败不得重复写入 worker IPC')
+  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), true, 'standalone 请求失败不得被固定时间窗口吞掉')
+  assert.equal(messages.length, requestFailureMessageCount + 1, '后续请求失败应立即再次进入 worker IPC，由队列做运行期合并')
   const coalescedDispatch = dispatchAccountHealthCheckWithOutcome('acc_request_failed', 'request_failure')
   assert.deepEqual(
     { outcome: coalescedDispatch.outcome, decisionCode: coalescedDispatch.decisionCode },
-    { outcome: 'coalesced', decisionCode: 'request_failure_cooldown' },
-    '请求失败冷却必须通过结构化结果明确标为已合并，而不是服务不可用'
+    { outcome: 'queued', decisionCode: 'queued' },
+    'standalone 后续请求失败必须保持即时 queued 语义'
   )
-  assert(
-    coalescedDispatch.outcome !== 'coalesced' || coalescedDispatch.cooldownRemainingMs > 0,
-    '冷却去重结果必须记录剩余冷却时间供内部日志使用'
-  )
-  nowMs += 5 * 60_000 - 1
-  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), false, '请求失败探针在 5 分钟边界前必须继续限流')
-  nowMs += 1
-  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), true, '请求失败探针满 5 分钟后必须允许下一轮确认')
-  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'configuration'), true, '请求失败冷却不得阻止更高优先级配置复检')
 
   const gatewayRequest = {} as Parameters<typeof dispatchRequestFailureAccountHealthCheck>[0]
   assert.equal(dispatchRequestFailureAccountHealthCheck(gatewayRequest, 'manual_account_test', 'acc_manual'), false)
@@ -298,13 +286,14 @@ try {
     requestFailureDispatchSource.includes("trafficSource !== 'gateway'"),
     '人工测试和后台探针失败不得递归投递请求失败确认'
   )
-  assert(healthCheckServiceSource.includes('requestFailureHealthCheckCooldownMs = 5 * 60_000'), '请求失败健康检查必须按账户执行 5 分钟限频')
+  assert(!healthCheckServiceSource.includes('requestFailureHealthCheckCooldownMs = 5 * 60_000'), '请求失败健康检查不得保留固定 5 分钟限频')
   assert(healthCheckServiceSource.includes("failureThreshold: effectiveReason === 'request_failure' ? 1 : settings.failureThreshold"), '请求失败后的独立确认失败必须立即阻止继续调度')
   assert(requestFailureDispatchSource.includes('requestFailureHealthCheckDispatched'), '单个真实请求最多只能触发一个账户独立检查')
   assert(nonStreamInspectionSource.includes('dispatchRequestFailureAccountHealthCheck(input.req, input.usageContext.trafficSource, input.account.id)'), '完整 2xx JSON 协议失败必须投递独立账户可用性确认')
   assert(responseFinalizationSource.includes('context.availabilityProbeEligible'), '流式协议失败、缺失终态和读取失败必须按明确资格投递独立账户可用性确认')
   assert(responseFinalizationSource.includes('if (provenTransportFailure)'), '非流式响应正文读取中断必须投递独立账户可用性确认')
   assert(healthCheckServiceSource.includes("replaceExistingOnlyIfHigherPriority: effectiveReason === 'request_failure'"), '请求失败只能升级低优先级周期检查，不得覆盖激活或配置复检')
+  assert(healthCheckServiceSource.includes("followUpWhenRunning: effectiveReason === 'request_failure'"), '请求失败只能在运行中追加一个尾随检查')
   assert(
     healthCheckServiceSource.includes('priority: accountHealthCheckTriggerPriority(effectiveReason)')
       && healthCheckServiceSource.includes("replaceExisting: effectiveReason !== 'scheduled'"),
@@ -317,7 +306,8 @@ try {
   assert(probeLimitsSource.includes('backgroundAccountAvailabilityProbesInFlight'), '后台可用性探针必须共享同一账户占用表')
   assert(internalDispatchSource.includes('createAccountHealthCheckDispatchSignature'), 'performance gateway 必须通过 HMAC 内部通道投递到 control')
   assert(internalDispatchSource.includes("runtimeConfig.performanceNodeRole === 'gateway'"), '独立 gateway 节点不得把触发消息留在本进程 IPC 队列')
-  assert(internalDispatchSource.includes('rememberAccountHealthCheckDispatchOutcome'), 'standalone 与 performance 必须在投递端共享请求失败冷却语义')
+  assert(internalDispatchSource.includes('request_failure_in_flight'), 'performance gateway 必须只在 control POST 在途期间合并请求失败')
+  assert(!internalDispatchSource.includes('requestFailureDispatchAcceptedAt'), '投递端不得保留固定 accepted 冷却 Map')
   assert(internalDispatchSource.includes('getTraceId'), 'gateway 到 control 的内部派发必须读取已验证请求 traceId')
   assert(internalDispatchSource.includes("'x-trace-id': traceId"), 'gateway 到 control 的内部派发必须透传已验证 traceId')
   assert(internalDispatchSource.includes('sendAccountHealthCheckTriggerToWorkerWithOutcome(normalizedId, reason, traceId, sourceFence)'), 'control 到 ops-worker 的健康检查投递必须继续携带 traceId 和来源 fence')
@@ -341,7 +331,6 @@ try {
 } finally {
   runtimeConfig.processRole = originalProcessRole
   process.send = originalSend
-  Date.now = originalDateNow
 }
 
 function createFakeOpsChild(

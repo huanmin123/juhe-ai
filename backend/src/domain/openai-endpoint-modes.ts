@@ -57,7 +57,10 @@ export function defaultOpenAIEndpointModes(input: OpenAIEndpointModeDefaultConte
   if (providerCode === GPT_VENDOR_CODE) {
     return [...OPENAI_ENDPOINT_MODE_VALUES]
   }
-  if (providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE || providerCode === DEEPSEEK_PROVIDER_CODE || providerCode === GLM_PROVIDER_CODE || providerCode === GEMINI_PROVIDER_CODE || providerCode === HYBRID_PROVIDER_CODE) {
+  if (providerCode === DEEPSEEK_PROVIDER_CODE) {
+    return [...OPENAI_ENDPOINT_MODE_VALUES]
+  }
+  if (providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE || providerCode === GLM_PROVIDER_CODE || providerCode === GEMINI_PROVIDER_CODE || providerCode === HYBRID_PROVIDER_CODE) {
     return [...OPENAI_CHAT_ENDPOINT_MODES]
   }
   if (input.clientCompatibility === 'codex_responses') {

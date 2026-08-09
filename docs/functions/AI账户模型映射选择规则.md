@@ -75,7 +75,7 @@
 | 供应商 / 档案 | 左侧模型范围 | 允许的协议方向 |
 | --- | --- | --- |
 | GPT、通用 OpenAI-compatible、xAI OpenAI v1 | 当前供应商目录 | Chat -> Chat；Responses -> Responses；Responses -> Chat，具体目标还需账户上游能力 |
-| DeepSeek OpenAI v1 | DeepSeek 目录 | Chat -> Chat；Responses -> Chat |
+| DeepSeek OpenAI v1 | DeepSeek 目录 | Chat -> Chat；Responses -> Responses；Responses -> Chat |
 | GLM OpenAI Chat | GLM 目录 | Chat -> Chat；Responses -> Chat |
 | Gemini OpenAI Chat | Gemini 目录 | Chat -> Chat；Responses -> Chat；目标只能是 Chat |
 | Anthropic、DeepSeek Anthropic、GLM Anthropic | 当前供应商目录 | Messages -> Messages |
@@ -143,4 +143,3 @@
 - 右侧模型始终来自账户支持模型并符合目标协议。
 - 单账户编辑、批量编辑、前端保存和后端保存使用同一规则。
 - 同模型名的 `Responses -> Chat Completions` 显式映射在网关候选分类和最终驱动中都按映射处理。
-
