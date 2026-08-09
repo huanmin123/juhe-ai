@@ -53,6 +53,7 @@ export interface RuntimeConfig {
   dbServiceHttpHost: string
   dbServiceHttpPort: number
   accountHealthCheckDispatchUrl?: string
+  auditLogInputUrl?: string
   systemApi: {
     dbServiceMaxInFlight: number
   }
@@ -450,6 +451,10 @@ const configuredAccountHealthCheckDispatchUrl = accountHealthCheckDispatchUrlCon
     processRole: configuredProcessRole
   }
 )
+const configuredAuditLogInputUrl = auditLogInputUrlConfig(
+  'JUHE_AI_AUDIT_LOG_INPUT_URL',
+  optionalStringConfig('JUHE_AI_AUDIT_LOG_INPUT_URL')
+)
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
@@ -513,6 +518,7 @@ export const runtimeConfig: RuntimeConfig = {
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
+  auditLogInputUrl: configuredAuditLogInputUrl,
   systemApi: {
     dbServiceMaxInFlight: numberConfig(
       'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT',
@@ -1058,6 +1064,29 @@ function accountHealthCheckDispatchUrlConfig(
     }
     return undefined
   }
+  let url: URL
+  try {
+    url = new URL(configuredValue)
+  } catch {
+    throw new Error(`${name} 必须是有效 URL`)
+  }
+  if (
+    url.protocol !== 'http:'
+    || (url.hostname !== '127.0.0.1' && url.hostname !== '[::1]' && url.hostname !== '::1')
+    || !url.port
+    || url.username
+    || url.password
+    || (url.pathname !== '/' && url.pathname !== '')
+    || url.search
+    || url.hash
+  ) {
+    throw new Error(`${name} 只能配置为带显式端口的 loopback HTTP Origin，不能包含路径、用户名密码、查询参数或片段`)
+  }
+  return url.origin
+}
+
+function auditLogInputUrlConfig(name: string, configuredValue: string | undefined): string | undefined {
+  if (!configuredValue) return undefined
   let url: URL
   try {
     url = new URL(configuredValue)
