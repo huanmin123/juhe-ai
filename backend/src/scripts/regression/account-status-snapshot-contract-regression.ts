@@ -218,6 +218,19 @@ const [databaseModule, repositories, statusSnapshotRepository, sqliteReadWorkerP
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
+const postgresGroupBindingsJoin = statusSnapshotRepository.accountStatusGroupBindingsJoin(
+  { driver: 'postgres' },
+  '"juhe_business"."group_accounts"'
+)
+assert.match(postgresGroupBindingsJoin, /LEFT JOIN LATERAL[\s\S]*group_accounts\.account_id = accounts\.id[\s\S]*group_accounts\.system_account_id = accounts\.system_account_id[\s\S]*ORDER BY group_accounts\.updated_at DESC[\s\S]*LIMIT 1/)
+assert.doesNotMatch(postgresGroupBindingsJoin, /ROW_NUMBER\(\) OVER/)
+const sqliteGroupBindingsJoin = statusSnapshotRepository.accountStatusGroupBindingsJoin(
+  { driver: 'sqlite' },
+  'group_accounts'
+)
+assert.match(sqliteGroupBindingsJoin, /ROW_NUMBER\(\) OVER[\s\S]*group_accounts\.enabled = 1/)
+assert.doesNotMatch(sqliteGroupBindingsJoin, /LEFT JOIN LATERAL/)
+
 try {
   const user = repositories.createSystemAccount({
     username: 'account_status_snapshot_user',

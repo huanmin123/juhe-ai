@@ -226,6 +226,7 @@
     "test:account-api-key-probe-generation-contract": "tsx src/scripts/regression/account-api-key-probe-generation-contract-regression.ts",
     "test:account-api-key-redis-transient-avoidance": "tsx src/scripts/regression/account-api-key-redis-transient-avoidance-regression.ts",
     "test:account-api-key-transient-redis-smoke": "tsx src/scripts/regression/account-api-key-transient-redis-smoke.ts",
+    "test:authorization-read-loader-batching": "tsx src/scripts/regression/authorization-read-loader-batching-regression.ts",
     "test:gateway-failure-classification-observation": "tsx src/scripts/regression/gateway-failure-classification-observation-regression.ts",
     "test:account-api-key-runtime-state-postgres-smoke": "tsx src/scripts/regression/account-api-key-runtime-state-postgres-smoke.ts",
     "test:account-expiry-runtime-postgres-smoke": "tsx src/scripts/regression/account-expiry-runtime-postgres-smoke.ts",

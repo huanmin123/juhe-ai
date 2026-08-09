@@ -36,6 +36,18 @@ function uniqueIds(values: string[]): string[] {
   return [...new Set(values)].filter(Boolean)
 }
 
+export async function loadSharedCacheEntriesByBatches<T>(
+  values: string[],
+  load: (id: string) => Promise<T | undefined>
+): Promise<Array<readonly [string, T | undefined]>> {
+  const ids = uniqueIds(values)
+  const result: Array<readonly [string, T | undefined]> = []
+  for (const chunk of chunkValues(ids, 100)) {
+    result.push(...await Promise.all(chunk.map(async (id) => [id, await load(id)] as const)))
+  }
+  return result
+}
+
 const authorizationStatsCache = createAppCache<string, ResourceAuthorizationStats>({
   name: 'lookup:resource-authorization-stats',
   max: 10_000,
@@ -137,9 +149,12 @@ export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceT
   if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingSharedIds) {
+  const sharedResults = await loadSharedCacheEntriesByBatches(missingSharedIds, async (id) => {
     const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
-    const sharedCached = await getAuthorizationStatsSharedCacheEntry(cacheKey)
+    return getAuthorizationStatsSharedCacheEntry(cacheKey)
+  })
+  for (const [id, sharedCached] of sharedResults) {
+    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
     if (sharedCached !== undefined) {
       authorizationStatsCache.set(cacheKey, sharedCached)
       result.set(id, sharedCached)
@@ -241,8 +256,11 @@ export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(au
   if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingSharedIds) {
-    const sharedCached = await getAuthorizationSourcesSharedCacheEntry(id)
+  const sharedResults = await loadSharedCacheEntriesByBatches(
+    missingSharedIds,
+    async (id) => getAuthorizationSourcesSharedCacheEntry(id)
+  )
+  for (const [id, sharedCached] of sharedResults) {
     if (sharedCached !== undefined) {
       authorizationSourcesCache.set(id, sharedCached)
       result.set(id, [...sharedCached])

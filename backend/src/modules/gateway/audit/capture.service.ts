@@ -13,7 +13,7 @@ import type {
   AuditPayloadPartType,
   OpenAIAccountSecret
 } from '../../../storage/repositories.js'
-import { enqueueAuditLog } from '../../audit-logs/audit-log-queue.service.js'
+import { dispatchAuditLogToGo } from '../../audit-logs/audit-log-go-input.service.js'
 import {
   auditBodySummaryEdgeBytes,
   summarizeAuditPayloadForLimit
@@ -683,7 +683,7 @@ export class AuditCaptureContext {
       captureStatus: auditLog.captureStatus,
       sampleReason: auditLog.sampleReason
     }, '网关审计捕获已完成，准备投递')
-    enqueueAuditLog(auditLog)
+    dispatchAuditLogToGo(auditLog)
     logRequestStage('audit.finalize', {
       traceId: this.traceId,
       outcome,
@@ -709,7 +709,7 @@ export class AuditCaptureContext {
     if (this.inProgressAuditEnqueued || !requestStream(this.req)) return
     this.inProgressAuditEnqueued = true
     const sanitizedOriginalUrl = sanitizeUrlForLog(this.req.originalUrl)
-    enqueueAuditLog({
+    dispatchAuditLogToGo({
       id: this.auditLogId,
       lifecycleStatus: 'in_progress',
       traceId: this.traceId,

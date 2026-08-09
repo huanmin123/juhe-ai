@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto'
 import type { ErrorRequestHandler, NextFunction, RequestHandler, Response } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { nowIso } from '../../../storage/database.js'
+import type { AuditLogInput } from '../../../storage/audit-log-types.js'
 import type { UsageFailureAttribution } from '../../../storage/usage-records.repository.js'
 import { getRequestContext } from '../../../shared/request-context.js'
 import {
@@ -11,7 +14,8 @@ import {
   sanitizeUrlForLog
 } from '../../../shared/request-context.js'
 import type { GatewayRequestStageOutcome } from '../../../shared/request-context.js'
-import { recordDroppedAuditCapture } from '../../audit-logs/audit-log-queue.service.js'
+import { dispatchAuditLogToGo } from '../../audit-logs/audit-log-go-input.service.js'
+import { readAuditLogSettings } from '../../audit-logs/audit-log-settings.js'
 import {
   createGatewayRequestBodyState,
   gatewayImageRawBodyHardLimitBytes,

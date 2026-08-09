@@ -375,6 +375,40 @@ async function loadAccountStatusProjectionBatches(
   return output
 }
 
+export function accountStatusGroupBindingsJoin(
+  client: Pick<DatabaseClient, 'driver'>,
+  groupAccountsTable: string
+): string {
+  return client.driver === 'postgres'
+    ? `LEFT JOIN LATERAL (
+        SELECT
+          group_accounts.system_account_id,
+          group_accounts.group_id,
+          group_accounts.account_authorization_id
+        FROM ${groupAccountsTable} group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = accounts.system_account_id
+          AND group_accounts.enabled = 1
+        ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+        LIMIT 1
+      ) group_bindings ON true`
+    : `LEFT JOIN (
+        SELECT account_id, system_account_id, group_id, account_authorization_id
+        FROM (
+          SELECT group_accounts.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY group_accounts.account_id, group_accounts.system_account_id
+              ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+            ) AS binding_rank
+          FROM ${groupAccountsTable} group_accounts
+          WHERE group_accounts.enabled = 1
+        ) ranked_group_bindings
+        WHERE binding_rank = 1
+      ) group_bindings
+      ON group_bindings.account_id = accounts.id
+      AND group_bindings.system_account_id = accounts.system_account_id`
+}
+
 async function listAccountStatusProjectionsDirect(
   access: AccessScope | undefined,
   ids: string[],
@@ -384,6 +418,7 @@ async function listAccountStatusProjectionsDirect(
   const authorizations = businessTable(client, 'resource_authorizations')
   const groupAccounts = businessTable(client, 'group_accounts')
   const systemAccountId = scopedSystemAccountId(access)
+  const groupBindingsJoin = accountStatusGroupBindingsJoin(client, groupAccounts)
   const rows = await client.query<AccountStatusProjectionSeed>(`
     SELECT
       accounts.id, accounts.system_account_id, accounts.status, accounts.schedulable,
@@ -424,21 +459,7 @@ async function listAccountStatusProjectionsDirect(
     LEFT JOIN ${accounts} source_accounts
       ON source_accounts.id = accounts.authorization_instance_source_account_id
       AND source_accounts.deleted_at IS NULL
-    LEFT JOIN (
-      SELECT account_id, system_account_id, group_id, account_authorization_id
-      FROM (
-        SELECT group_accounts.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY group_accounts.account_id, group_accounts.system_account_id
-            ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
-          ) AS binding_rank
-        FROM ${groupAccounts} group_accounts
-        WHERE group_accounts.enabled = 1
-      ) ranked_group_bindings
-      WHERE binding_rank = 1
-    ) group_bindings
-      ON group_bindings.account_id = accounts.id
-      AND group_bindings.system_account_id = accounts.system_account_id
+    ${groupBindingsJoin}
     WHERE accounts.deleted_at IS NULL
       AND accounts.id IN (${ids.map(() => '?').join(', ')})
       ${systemAccountId ? 'AND accounts.system_account_id = ?' : ''}
