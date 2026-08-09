@@ -33,11 +33,11 @@
 | 数据库文件 | 写 owner | 可并行边界 | 说明 |
 | --- | --- | --- | --- |
 | 业务库 `JUHE_AI_DATABASE_PATH` | DB service | 无，同一业务库串行写 | 管理 CRUD、账户状态、API Key、授权、会话、账号测试任务状态等核心事实写入。 |
-| 数据集目录库 `JUHE_AI_DATASET_DATABASE_PATH` | ingest / log writer | 无，同一数据集目录库串行写 | 审计、操作日志、公开接口日志、运行日志索引、模型检测、清理目标等记录类写入。 |
-| 统计结果库 `JUHE_AI_STATS_DATABASE_PATH` | stats writer | 无，同一统计库串行写 | 统计聚合、窗口刷新、系统采样、表监控、任务状态、维护扣减账本等结果写入。 |
+| 数据集目录库 `JUHE_AI_DATASET_DATABASE_PATH` | ingest / log writer | 无，同一数据集目录库串行写 | 审计、操作日志、公开接口日志、模型检测、清理目标等记录类写入；F1 运行日志索引已迁至 Go 专用输出。 |
+| 统计结果库 `JUHE_AI_STATS_DATABASE_PATH` | stats writer | 无，同一统计库串行写 | 非 F2 统计聚合、窗口刷新、系统采样、任务状态和维护扣减账本等结果写入；F2 快照由 Go 独立写入专用 SQLite 或 PostgreSQL `juhe_stats`。 |
 | usage shard 文件 | per-shard writer | 不同 shard 文件可并行，同一 shard 串行写 | `usage_records` 按日期与 shard key 路由；每个 shard 文件独立队列。 |
 
-owner 是写锁归属，不等于业务角色。`stats-worker` 负责生产并提交系统采样和统计 command；`ops-worker` 可以生产账号状态 command，但业务库写入仍由 DB service owner 提交。
+owner 是写锁归属，不等于业务角色。`stats-worker` 负责生产并提交未迁移的系统采样和统计 command；F2 不进入该 writer 边界。`ops-worker` 可以生产账号状态 command，但业务库写入仍由 DB service owner 提交。
 
 ## 运行时强制边界
 
@@ -72,7 +72,7 @@ owner 是写锁归属，不等于业务角色。`stats-worker` 负责生产并�
 
 writer 不能让低优先级大任务饥饿高优先级写入。长窗口刷新、保留清理和物理删除必须拆成 staged command 或短批次 command。
 
-当前 ingest-worker 的 IPC 入队按语义分组限流：`usageRecords` 使用独立队列；运行日志、审计、操作日志、公开接口日志、dataset writer 同步请求等进入高优先级 regular 组；`recordMaintenance` 作为低优先级维护组独立计数并在出队时让位给高优先级 regular。这样仍保持数据集目录库 / usage shard 只有 ingest 一个写 owner，但不会让保留期清理压死日志索引或模型检测写入。
+当前 ingest-worker 的 IPC 入队按语义分组限流：`usageRecords` 使用独立队列；审计、操作日志、公开接口日志、dataset writer 同步请求等进入高优先级 regular 组；`recordMaintenance` 作为低优先级维护组独立计数并在出队时让位给高优先级 regular。运行日志 JSONL 由 Go F1 直接扫描和写入专用输出，不进入该 Node 队列；这样仍保持数据集目录库 / usage shard 只有 ingest 一个写 owner，但不会让保留期清理压死模型检测写入。
 
 DB service 的父进程 IPC 请求同样必须支持优先级：后台管理、网关请求链路、账号状态、API Key、授权、会话等用户可感知同步写入默认进入高优先级；过期会话清理、账号测试任务维护、授权过期扫描、分组统计 dirty 标记和全量刷新游标等定时维护写入进入低优先级。DB service 每处理一个父进程 IPC 写请求后都要让出事件循环，避免低优先级维护请求连续 drain 导致 DB service 内部 system API / 管理操作出现明显卡顿。HTTP 形式进入 DB service 的系统管理 API 不经过父进程 IPC 队列，但仍共享同一个业务库 owner，因此维护类 IPC 必须主动让位给管理面请求。
 
@@ -113,7 +113,7 @@ SQLite locked 不是统一硬失败：
 
 1. 静态盘点所有 `getBusinessDatabase()`、`getDatasetDatabase()`、`getStatsDatabase()` 和 usage shard 写入路径，按目标库、角色、任务归属分类。
 2. 先收口业务库写入：除 DB service 和测试 / 脚本外，worker 不直接写业务库，改为 DB service typed operation。
-3. 收口统计库写入：由 `stats-worker` 作为 stats writer owner 串行提交系统采样、增量聚合、窗口刷新、表监控、任务状态和统计清理；`ingest-worker` 和 `ops-worker` 不直接写统计库。
+3. 收口统计库写入：由 `stats-worker` 作为非 F2 stats writer owner 串行提交系统采样、增量聚合、窗口刷新、任务状态和统计清理；F2 快照由独立 Go owner 提交，`ingest-worker` 和 `ops-worker` 不直接写这些结果。
 4. 收口数据集目录库写入：确认 ingest writer 是唯一 owner；维护清理需要通过低优先级 command 短批次提交。
 5. 强化 usage shard per-shard writer：同一 shard 只允许 ingest writer 写入；统计聚合只读取 shard，不能把估算字段回写到原始 shard；不同 shard 文件可在 owner 内分批处理。
 6. 增加直接写边界回归：禁止非 owner 运行时代码直接写目标库。
@@ -123,7 +123,7 @@ SQLite locked 不是统一硬失败：
 
 - **worker 绕过 owner 直接写业务库**：探测、冷却复测、时间计划同步、授权到期扫描等路径容易直接改 `accounts`、`api_keys` 或授权表。
 - **过渡期 worker -> server -> DB service 转发桥失控**：如果 worker 新增写回只转发 message、不校验 operation、或者 server 继续允许任意 DB service write op，会把写 owner 变成伪单写者。
-- **统计库多角色同时写**：系统采样、统计聚合、窗口刷新、表监控 / 清理统一收口到 `stats-worker` typed operation，新增 stats 写入不得落回 `ingest-worker` 或 `ops-worker`。
+- **统计库多角色同时写**：未迁移的系统采样、统计聚合和窗口刷新统一收口到 `stats-worker` typed operation；F2 快照由 Go 独立 owner 写入，新增非 F2 stats 写入不得落回 `ingest-worker` 或 `ops-worker`。
 - **数据集目录库 append-only 与清理抢锁**：ingest 高频写日志时，维护清理如果直接删除数据集表，会放大 locked。
 - **长事务窗口刷新**：范围窗口、TopN、概览或授权窗口如果单事务过大，会压住系统采样和增量统计。
 - **跨库事务链路**：dataset / stats / usage shard 混在一个流程里等待，会把一个库的 locked 扩散到其他库。
