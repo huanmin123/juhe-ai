@@ -96,9 +96,10 @@ type auditInputEnvelope struct {
 // and performs the audit write synchronously in the request goroutine. It is
 // an RPC handoff, not a queue: a 204 means the F3 store transaction finished.
 func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg InputServerConfig, logger *slog.Logger) error {
-	if logger == nil {
-		logger = slog.Default()
+	if err := cfg.validateRetentionPolicy(); err != nil {
+		return fmt.Errorf("F3 audit retention 配置无效: %w", err)
 	}
+	logger = loggerOrDefault(logger)
 	lease, acquired, err := store.AcquireOwnerLease(ctx, cfg.InstanceID, cfg.OwnerLease)
 	if err != nil {
 		return fmt.Errorf("获取 F3 audit owner lease 失败: %w", err)
@@ -129,6 +130,13 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 	}
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- server.Serve(listener) }()
+	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
+	maintenanceFatal := make(chan error, 1)
+	maintenanceDone := runRetentionMaintenance(maintenanceCtx, store, lease, cfg, logger, maintenanceFatal)
+	defer func() {
+		stopMaintenance()
+		<-maintenanceDone
+	}()
 
 	interval := cfg.OwnerLease / 3
 	if interval < time.Second {
@@ -145,6 +153,9 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 				return nil
 			}
 			return fmt.Errorf("F3 loopback input server 异常退出: %w", err)
+		case err := <-maintenanceFatal:
+			_ = shutdownInputServer(server, logger)
+			return fmt.Errorf("F3 audit retention 失去 owner lease: %w", err)
 		case <-ticker.C:
 			renewCtx, cancel := context.WithTimeout(ctx, minDuration(5*time.Second, interval))
 			renewed, renewErr := store.RenewOwnerLease(renewCtx, lease, cfg.OwnerLease)
@@ -159,6 +170,41 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 			}
 		}
 	}
+}
+
+// runRetentionMaintenance keeps one bounded maintenance pass per configured
+// interval. Retention also removes completed hot-search buckets, so both
+// cleanup surfaces share the same owner fence and do not need a second task.
+func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease, cfg Config, logger *slog.Logger, fatal chan<- error) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(cfg.RetentionInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, err := store.CleanupRetention(ctx, lease, cfg.RetentionConfigAt(time.Now()))
+				if err == nil {
+					continue
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				if errors.Is(err, ErrOwnerLeaseLost) {
+					select {
+					case fatal <- err:
+					case <-ctx.Done():
+					}
+					return
+				}
+				logger.Error("F3 audit retention maintenance failed", "error", err)
+			}
+		}
+	}()
+	return done
 }
 
 func shutdownInputServer(server *http.Server, logger *slog.Logger) error {
@@ -248,12 +294,24 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 		writer.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	logger := h.logger
-	if logger == nil {
-		logger = slog.Default()
+	logger := loggerOrDefault(h.logger)
+	if !result.Ignored {
+		if _, appendErr := h.store.AppendHotSearch(writeCtx, h.lease, []AuditLogInput{envelope.AuditLog}); appendErr != nil {
+			// Node's hot-search mirror is post-commit best-effort. The audit row
+			// is already durable, so an append failure is observable but does not
+			// report a false persistence failure or invoke another transport path.
+			logger.Error("F3 audit hot-search append failed", "error", appendErr, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
+		}
 	}
 	logger.Debug("F3 audit input 已持久化", "auditLogID", envelope.AuditLog.ID, "ignored", result.Ignored)
 	writer.WriteHeader(http.StatusNoContent)
+}
+
+func loggerOrDefault(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
 }
 
 func isLoopbackRemote(remoteAddress string) bool {

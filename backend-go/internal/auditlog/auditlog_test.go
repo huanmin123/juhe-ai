@@ -100,6 +100,55 @@ func TestLoadConfigRejectsPhysicalSQLiteConflict(t *testing.T) {
 	}
 }
 
+func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteEnv(root)
+	cfg, err := LoadConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RetentionInterval != time.Minute || cfg.RetentionBatchSize != 100 || cfg.SuccessHotRetentionHours != 1 || cfg.SuccessSampleRate != 0.1 || cfg.SuccessRetentionDays != 3 || cfg.ProblemRetentionDays != 7 {
+		t.Fatalf("Node-compatible retention defaults mismatch: %+v", cfg)
+	}
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	retention := cfg.RetentionConfigAt(now)
+	if !retention.SuccessHotCutoff.Equal(now.Add(-time.Hour)) || !retention.SuccessCutoff.Equal(now.Add(-72*time.Hour)) || !retention.FailureCutoff.Equal(now.Add(-168*time.Hour)) || !retention.ErrorGroupCutoff.Equal(now.Add(-168*time.Hour)) || retention.SuccessSampleBucketThreshold != 1000 || retention.BatchSize != 100 {
+		t.Fatalf("Node-compatible retention cutoffs mismatch: %+v", retention)
+	}
+
+	env["JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL"] = "2m"
+	env["JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE"] = "42"
+	env["JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS"] = "24"
+	env["JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE"] = "0.1234"
+	env["JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS"] = "2"
+	env["JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS"] = "9"
+	cfg, err = LoadConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RetentionInterval != 2*time.Minute || cfg.RetentionBatchSize != 42 || cfg.SuccessHotRetentionHours != 24 || cfg.SuccessSampleRate != 0.1234 || cfg.SuccessRetentionDays != 2 || cfg.ProblemRetentionDays != 9 {
+		t.Fatalf("configured retention policy mismatch: %+v", cfg)
+	}
+	for name, overrides := range map[string]map[string]string{
+		"rate-days-mismatch": {"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "0"},
+		"zero-days-mismatch": {"JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "0"},
+		"short-interval":     {"JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL": "500ms"},
+		"zero-batch":         {"JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE": "0"},
+		"zero-problem-days":  {"JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS": "0"},
+		"hot-hours-over-max": {"JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS": "169"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := sqliteEnv(root)
+			for key, value := range overrides {
+				candidate[key] = value
+			}
+			if _, err := LoadConfig(func(key string) string { return candidate[key] }); err == nil {
+				t.Fatalf("invalid retention settings %s must fail", name)
+			}
+		})
+	}
+}
+
 func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 	cfg := sqliteConfig(t, t.TempDir())
 	store := openSQLiteStore(t, cfg)
