@@ -65,7 +65,7 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 - `JUHE_AI_TABLE_MONITOR_STORE=sqlite` 或 `postgres`；未设置时只可从 `JUHE_AI_DATABASE_DRIVER` 取得同值。
 - SQLite 提供 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 作为 F2 专用输出文件，以及 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 作为只读采样源；输出文件不得与任何源库或 shard 共用。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，快照写入 `juhe_stats`。
 - `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` 默认 `5m`；同一事实库同一时间只允许一个 Go owner，第二实例拒绝启动，失去 lease 后采样和保留清理拒写。
-- `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `8`（范围 `1..256`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `1000`（范围 `1..10000`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `1000`（范围 `1..100000`）。达到 retention 批次数上限仍有过期数据时显式失败，不静默遗漏。
+- `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，单轮 `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` 默认 `45s`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `8`（范围 `1..256`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `1000`（范围 `1..10000`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `1000`（范围 `1..100000`）。达到 retention 批次数上限后仍有过期数据才显式失败，不静默遗漏。
 
 Node 只保留表监控 HTTP 读取，SQLite 读取只打开 F2 专用输出文件；Node scheduler、stats writer 和 Node retention 已退出。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
 
