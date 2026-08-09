@@ -19,6 +19,9 @@ type Config struct {
 	DatasetPath            string
 	RuntimeLogDatabasePath string
 	BusinessPath           string
+	UsageCatalogPath       string
+	StatsPath              string
+	CodexShardRoot         string
 	PostgresURL            string
 	LogDirectory           string
 	FileEnabled            bool

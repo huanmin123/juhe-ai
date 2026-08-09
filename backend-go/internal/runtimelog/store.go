@@ -57,6 +57,15 @@ func OpenStore(ctx context.Context, config Config) (Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("设置 SQLite busy_timeout 失败: %w", err)
 		}
+		var busyTimeout int
+		if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("读取 SQLite busy_timeout 失败: %w", err)
+		}
+		if busyTimeout != sqliteBusyTimeoutMs {
+			db.Close()
+			return nil, fmt.Errorf("SQLite busy_timeout 未生效，实际为 %d", busyTimeout)
+		}
 		var journalMode string
 		if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
 			db.Close()

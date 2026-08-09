@@ -525,12 +525,16 @@ func TestLoadConfigRequiresOwnerLeaseInstanceID(t *testing.T) {
 
 func TestLoadConfigAcceptsInstanceWithoutNodeGoOwnerSwitch(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":         "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH":     "dataset.sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": "runtime-log.sqlite",
-		"JUHE_AI_DATABASE_PATH":             "business.sqlite",
-		"JUHE_AI_LOG_DIR":                   "logs",
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
+		"JUHE_AI_DATASET_DATABASE_PATH":          "dataset.sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      "runtime-log.sqlite",
+		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    "table-monitor.sqlite",
+		"JUHE_AI_DATABASE_PATH":                  "business.sqlite",
+		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    "usage-catalog.sqlite",
+		"JUHE_AI_STATS_DATABASE_PATH":            "stats.sqlite",
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": "codex-context-shards",
+		"JUHE_AI_LOG_DIR":                        "logs",
 	}
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err != nil {
 		t.Fatalf("运行日志索引不应依赖 Node/Go owner 开关，实际为 %v", err)
@@ -550,66 +554,104 @@ func TestLoadConfigRequiresDedicatedRuntimeLogSQLitePath(t *testing.T) {
 }
 
 func TestLoadConfigRejectsSharedDatasetAndRuntimeLogSQLitePath(t *testing.T) {
-	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":         "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH":     "shared.sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": "shared.sqlite",
-		"JUHE_AI_DATABASE_PATH":             "business.sqlite",
-		"JUHE_AI_LOG_DIR":                   "logs",
-	}
+	_, values := runtimeLogSQLiteConfigValues(t)
+	values["JUHE_AI_DATASET_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "不得与 JUHE_AI_DATASET_DATABASE_PATH") {
 		t.Fatalf("运行日志 SQLite 不能与 Node dataset 文件共用，实际为 %v", err)
 	}
 }
 
 func TestLoadConfigRejectsSharedBusinessAndRuntimeLogSQLitePath(t *testing.T) {
-	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":         "sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": "shared.sqlite",
-		"JUHE_AI_DATABASE_PATH":             "shared.sqlite",
-		"JUHE_AI_LOG_DIR":                   "logs",
-	}
+	_, values := runtimeLogSQLiteConfigValues(t)
+	values["JUHE_AI_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "不得与 JUHE_AI_DATABASE_PATH") {
 		t.Fatalf("运行日志 SQLite 不能与 Node 业务库共用，实际为 %v", err)
 	}
 }
 
 func TestLoadConfigRejectsSharedTableMonitorAndRuntimeLogSQLitePath(t *testing.T) {
-	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":     "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":           "sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":   "shared.sqlite",
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": "shared.sqlite",
-		"JUHE_AI_DATABASE_PATH":               "business.sqlite",
-		"JUHE_AI_LOG_DIR":                     "logs",
-	}
+	_, values := runtimeLogSQLiteConfigValues(t)
+	values["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") {
 		t.Fatalf("运行日志 SQLite 不能与 F2 表监控文件共用，实际为 %v", err)
 	}
 }
 
 func TestLoadConfigRejectsHardLinkedTableMonitorAndRuntimeLogSQLitePath(t *testing.T) {
-	root := t.TempDir()
-	runtimeLogPath := filepath.Join(root, "runtime-log.sqlite")
+	root, values := runtimeLogSQLiteConfigValues(t)
+	runtimeLogPath := values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
 	tableMonitorPath := filepath.Join(root, "table-monitor.sqlite")
-	if err := os.WriteFile(runtimeLogPath, []byte("sqlite-fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Link(runtimeLogPath, tableMonitorPath); err != nil {
 		t.Fatalf("创建 F1/F2 硬链接 fixture 失败: %v", err)
 	}
-	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":     "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":           "sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":   runtimeLogPath,
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": tableMonitorPath,
-		"JUHE_AI_DATABASE_PATH":               filepath.Join(root, "business.sqlite"),
-		"JUHE_AI_LOG_DIR":                     filepath.Join(root, "logs"),
-	}
+	values["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = tableMonitorPath
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") {
 		t.Fatalf("F1/F2 硬链接 SQLite 文件必须拒绝启动，实际为 %v", err)
+	}
+}
+
+func TestLoadConfigRejectsRuntimeLogSQLiteAliasesForAllNodeOwners(t *testing.T) {
+	t.Run("usage catalog direct path", func(t *testing.T) {
+		_, values := runtimeLogSQLiteConfigValues(t)
+		values["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
+		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH")
+	})
+
+	t.Run("stats hard link", func(t *testing.T) {
+		root, values := runtimeLogSQLiteConfigValues(t)
+		alias := filepath.Join(root, "stats-hard-link.sqlite")
+		if err := os.Link(values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"], alias); err != nil {
+			t.Fatalf("创建 stats 硬链接 fixture 失败: %v", err)
+		}
+		values["JUHE_AI_STATS_DATABASE_PATH"] = alias
+		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_STATS_DATABASE_PATH")
+	})
+
+	t.Run("codex shard symlink", func(t *testing.T) {
+		_, values := runtimeLogSQLiteConfigValues(t)
+		shard := filepath.Join(values["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "state-001.sqlite3")
+		if err := os.Symlink(values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"], shard); err != nil {
+			t.Skipf("当前环境不能创建 Codex shard symlink fixture: %v", err)
+		}
+		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
+	})
+
+	t.Run("runtime database under codex shard root", func(t *testing.T) {
+		_, values := runtimeLogSQLiteConfigValues(t)
+		values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = filepath.Join(values["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "runtime-log.sqlite3")
+		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
+	})
+}
+
+func runtimeLogSQLiteConfigValues(t *testing.T) (string, map[string]string) {
+	t.Helper()
+	root := t.TempDir()
+	codexRoot := filepath.Join(root, "codex-context-shards")
+	if err := os.MkdirAll(codexRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := filepath.Join(root, "runtime-log.sqlite")
+	if err := os.WriteFile(runtimePath, []byte("sqlite-fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root, map[string]string{
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "test-instance",
+		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      runtimePath,
+		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    filepath.Join(root, "table-monitor.sqlite"),
+		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite"),
+		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite"),
+		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    filepath.Join(root, "usage-catalog.sqlite"),
+		"JUHE_AI_STATS_DATABASE_PATH":            filepath.Join(root, "stats.sqlite"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": codexRoot,
+		"JUHE_AI_LOG_DIR":                        filepath.Join(root, "logs"),
+	}
+}
+
+func assertRuntimeLogSQLiteConfigRejected(t *testing.T, values map[string]string, expected string) {
+	t.Helper()
+	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), expected) {
+		t.Fatalf("运行日志专库与 %s 共用物理 SQLite 文件必须拒绝启动，实际为 %v", expected, err)
 	}
 }
 

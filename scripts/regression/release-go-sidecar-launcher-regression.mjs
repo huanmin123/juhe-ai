@@ -30,7 +30,7 @@ for (const launcher of launcherSources) {
   assertRuntimeLauncherGeneratesInstanceID(launcher.platform, launcher.runtime)
   assertTableMonitorLauncherRejectsMissingInstanceID(launcher.platform, launcher.tableMonitor)
   assertTableMonitorLauncherStartsWithConfiguredInstanceID(launcher.platform, launcher.tableMonitor)
-  assertRuntimeLauncherForwardsTableMonitorPath(launcher.platform, launcher.runtime)
+  assertRuntimeLauncherForwardsSQLiteIsolationPaths(launcher.platform, launcher.runtime)
   assertTableMonitorLauncherForwardsRuntimeLogPath(launcher.platform, launcher.tableMonitor)
 }
 
@@ -88,18 +88,24 @@ function assertTableMonitorLauncherStartsWithConfiguredInstanceID(platform, sour
   }
 }
 
-function assertRuntimeLauncherForwardsTableMonitorPath(platform, source) {
+function assertRuntimeLauncherForwardsSQLiteIsolationPaths(platform, source) {
   const result = runLauncher(captureChildEnvironment(source), {}, {
     captureChildEnvironment: true,
     baseEnv: [
       'JUHE_AI_DATABASE_DRIVER=sqlite',
       'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
-      'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
+      'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3',
+      'JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/usage-catalog.sqlite3',
+      'JUHE_AI_STATS_DATABASE_PATH=./data/stats.sqlite3',
+      'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=./data/codex-context/state-shards'
     ].join('\n')
   })
   try {
     assert.equal(result.status, 0, `${platform} F1 launcher failed: ${result.output}`)
     assert.equal(result.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(result.backendRoot, 'data', 'table-monitor.sqlite3'))
+    assert.equal(result.childEnvironment.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, join(result.backendRoot, 'data', 'usage-catalog.sqlite3'))
+    assert.equal(result.childEnvironment.JUHE_AI_STATS_DATABASE_PATH, join(result.backendRoot, 'data', 'stats.sqlite3'))
+    assert.equal(result.childEnvironment.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, join(result.backendRoot, 'data', 'codex-context', 'state-shards'))
   } finally {
     result.cleanup()
   }
@@ -150,7 +156,10 @@ function runLauncher(source, overrides, options = {}) {
     'JUHE_AI_RUNTIME_LOG_STORE',
     'JUHE_AI_TABLE_MONITOR_STORE',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
-    'JUHE_AI_TABLE_MONITOR_DATABASE_PATH'
+    'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
+    'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
+    'JUHE_AI_STATS_DATABASE_PATH',
+    'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT'
   ]) {
     if (!Object.hasOwn(overrides, key)) delete env[key]
   }

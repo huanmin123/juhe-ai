@@ -266,6 +266,18 @@ function resolveRuntimeLogIndexerEnv() {
     childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH,
     resolve(backendRoot, 'data', 'juhe-ai-table-monitor.sqlite3')
   )
+  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
+  )
+  childEnv.JUHE_AI_STATS_DATABASE_PATH = resolveBackendPath(
+    childEnv.JUHE_AI_STATS_DATABASE_PATH,
+    resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
+  )
+  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = resolveBackendPath(
+    childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT,
+    resolve(backendRoot, 'data', 'codex-context', 'state-shards')
+  )
   childEnv.JUHE_AI_LOG_DIR = resolveBackendPath(childEnv.JUHE_AI_LOG_DIR, resolve(backendRoot, 'logs'))
   childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = firstConfiguredValue(
     childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID,

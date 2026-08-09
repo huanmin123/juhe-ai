@@ -164,6 +164,9 @@ const names = [
   'JUHE_AI_RUNTIME_LOG_BATCH_SIZE',
   'JUHE_AI_DATABASE_PATH',
   'JUHE_AI_DATASET_DATABASE_PATH',
+  'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
+  'JUHE_AI_STATS_DATABASE_PATH',
+  'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT',
   'JUHE_AI_POSTGRES_URL',
   'JUHE_AI_LOG_DIR',
   'JUHE_AI_LOG_FILE_ENABLED',
@@ -208,6 +211,9 @@ if (runtimeLogStore.toLowerCase() === 'sqlite') {
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
   childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
   childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
+  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, './data/juhe-ai-usage-catalog.sqlite3')
+  childEnv.JUHE_AI_STATS_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, './data/juhe-ai-stats.sqlite3')
+  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, './data/codex-context/state-shards')
 }
 
 const logFd = openSync(logPath, 'a')

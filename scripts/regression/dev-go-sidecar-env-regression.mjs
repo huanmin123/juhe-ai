@@ -43,6 +43,9 @@ try {
   const tableMonitorEnv = module.resolveTableMonitorEnv()
 
   assert.equal(runtimeLogEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(backendRoot, 'data', 'table-monitor.sqlite3'))
+  assert.equal(runtimeLogEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
+  assert.equal(runtimeLogEnv.JUHE_AI_STATS_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-stats.sqlite3'))
+  assert.equal(runtimeLogEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, join(backendRoot, 'data', 'codex-context', 'state-shards'))
   assert.equal(tableMonitorEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(backendRoot, 'data', 'runtime-log.sqlite3'))
   assert.equal(runtimeLogEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(backendRoot, 'data', 'runtime-log.sqlite3'))
   assert.equal(tableMonitorEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(backendRoot, 'data', 'table-monitor.sqlite3'))

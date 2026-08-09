@@ -3,6 +3,7 @@ package runtimelog
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +71,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		DatasetPath:            strings.TrimSpace(getenv("JUHE_AI_DATASET_DATABASE_PATH")),
 		RuntimeLogDatabasePath: strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH")),
 		BusinessPath:           strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
+		UsageCatalogPath:       strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH")),
+		StatsPath:              strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
+		CodexShardRoot:         strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
 		PostgresURL:            strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
 		LogDirectory:           strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
 		FileEnabled:            fileEnabled,
@@ -92,17 +96,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if config.RuntimeLogDatabasePath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
 		}
-		if tableMonitorPath := strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH")); tableMonitorPath != "" && sameSQLitePath(tableMonitorPath, config.RuntimeLogDatabasePath) {
-			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 指向同一个 SQLite 文件")
-		}
-		if config.DatasetPath != "" && sameSQLitePath(config.DatasetPath, config.RuntimeLogDatabasePath) {
-			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_DATASET_DATABASE_PATH 指向同一个 SQLite 文件")
-		}
-		if config.BusinessPath == "" {
-			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_DATABASE_PATH，无法读取运行日志保留设置")
-		}
-		if sameSQLitePath(config.BusinessPath, config.RuntimeLogDatabasePath) {
-			return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_DATABASE_PATH 指向同一个 SQLite 文件")
+		if err := validateSQLiteIsolation(config, strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH"))); err != nil {
+			return Config{}, err
 		}
 	case ModePostgres:
 		if config.PostgresURL == "" {
@@ -110,6 +105,43 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	}
 	return config, nil
+}
+
+func validateSQLiteIsolation(config Config, tableMonitorPath string) error {
+	candidates := []struct {
+		name string
+		path string
+	}{
+		{name: "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", path: tableMonitorPath},
+		{name: "JUHE_AI_DATABASE_PATH", path: config.BusinessPath},
+		{name: "JUHE_AI_DATASET_DATABASE_PATH", path: config.DatasetPath},
+		{name: "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", path: config.UsageCatalogPath},
+		{name: "JUHE_AI_STATS_DATABASE_PATH", path: config.StatsPath},
+	}
+	for _, candidate := range candidates {
+		if candidate.path == "" {
+			return fmt.Errorf("sqlite 模式缺少 %s，无法验证运行日志专库隔离", candidate.name)
+		}
+		if sameSQLitePath(candidate.path, config.RuntimeLogDatabasePath) {
+			return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 %s 指向同一个 SQLite 文件", candidate.name)
+		}
+	}
+	if config.CodexShardRoot == "" {
+		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT，无法验证运行日志专库隔离")
+	}
+	if sqlitePathWithin(config.CodexShardRoot, config.RuntimeLogDatabasePath) {
+		return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
+	}
+	entries, err := filepath.Glob(filepath.Join(config.CodexShardRoot, "*.sqlite3"))
+	if err != nil {
+		return fmt.Errorf("枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
+	}
+	for _, entry := range entries {
+		if sameSQLitePath(entry, config.RuntimeLogDatabasePath) {
+			return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 中的 SQLite shard 指向同一个文件")
+		}
+	}
+	return nil
 }
 
 func parseMode(value string) (Mode, error) {

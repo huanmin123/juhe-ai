@@ -166,8 +166,8 @@ func sameSQLitePath(left, right string) bool {
 	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
 		return false
 	}
-	leftAbs, leftErr := filepath.Abs(left)
-	rightAbs, rightErr := filepath.Abs(right)
+	leftAbs, leftErr := canonicalSQLitePath(left)
+	rightAbs, rightErr := canonicalSQLitePath(right)
 	if leftErr != nil || rightErr != nil {
 		return false
 	}
@@ -177,4 +177,38 @@ func sameSQLitePath(left, right string) bool {
 	leftInfo, leftErr := os.Stat(left)
 	rightInfo, rightErr := os.Stat(right)
 	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+}
+
+func sqlitePathWithin(root, candidate string) bool {
+	rootPath, rootErr := canonicalSQLitePath(root)
+	candidatePath, candidateErr := canonicalSQLitePath(candidate)
+	if rootErr != nil || candidateErr != nil {
+		return false
+	}
+	relative, err := filepath.Rel(rootPath, candidatePath)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func canonicalSQLitePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	parent := filepath.Dir(abs)
+	suffix := []string{filepath.Base(abs)}
+	for parent != filepath.Dir(parent) {
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Join(append([]string{resolved}, suffix...)...), nil
+		}
+		suffix = append([]string{filepath.Base(parent)}, suffix...)
+		parent = filepath.Dir(parent)
+	}
+	return abs, nil
 }

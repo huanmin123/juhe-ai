@@ -58,6 +58,13 @@ func configureSQLiteWriter(db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMs)); err != nil {
 		return fmt.Errorf("设置表监控 SQLite busy_timeout 失败: %w", err)
 	}
+	var busyTimeout int
+	if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		return fmt.Errorf("读取表监控 SQLite busy_timeout 失败: %w", err)
+	}
+	if busyTimeout != sqliteBusyTimeoutMs {
+		return fmt.Errorf("表监控 SQLite busy_timeout 未生效，实际为 %d", busyTimeout)
+	}
 	var journalMode string
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
 		return fmt.Errorf("启用表监控 SQLite WAL journal_mode 失败: %w", err)

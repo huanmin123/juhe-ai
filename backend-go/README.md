@@ -10,7 +10,7 @@
 
 - 稳定且唯一的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`；它用于 Go 多实例 fencing，不是 Node/Go 选择开关。
 - `JUHE_AI_RUNTIME_LOG_STORE=sqlite` 或 `postgres`；未设置时只可从 `JUHE_AI_DATABASE_DRIVER` 取得同值。
-- SQLite 提供 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 和 `JUHE_AI_DATABASE_PATH`；前者是 Go 唯一写入的 F1 专用文件，后者只读 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
+- SQLite 提供 F1 专用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，以及业务、数据集目录、usage catalog、stats 和 Codex Context shard 的路径。F1 会拒绝这些任一路径、F2 专用库或任一 shard 与 F1 指向同一个物理 SQLite 文件；只读业务库的 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
 - 两种模式均提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
 
 示例：
@@ -19,7 +19,12 @@
 $env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'runtime-log-indexer-a'
 $env:JUHE_AI_RUNTIME_LOG_STORE = 'sqlite'
 $env:JUHE_AI_RUNTIME_LOG_DATABASE_PATH = 'F:\temp\juhe-ai\runtime-log.sqlite'
+$env:JUHE_AI_TABLE_MONITOR_DATABASE_PATH = 'F:\temp\juhe-ai\table-monitor.sqlite'
 $env:JUHE_AI_DATABASE_PATH = 'F:\temp\juhe-ai\business.sqlite'
+$env:JUHE_AI_DATASET_DATABASE_PATH = 'F:\temp\juhe-ai\dataset.sqlite'
+$env:JUHE_AI_USAGE_CATALOG_DATABASE_PATH = 'F:\temp\juhe-ai\usage-catalog.sqlite'
+$env:JUHE_AI_STATS_DATABASE_PATH = 'F:\temp\juhe-ai\stats.sqlite'
+$env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = 'F:\temp\juhe-ai\codex-context\state-shards'
 $env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
 $env:JUHE_AI_RUNTIME_LOG_ONCE = 'true'
 go run ./cmd/juhe-ai-runtime-log-indexer
@@ -27,7 +32,7 @@ go run ./cmd/juhe-ai-runtime-log-indexer
 
 主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。Node 仅继续产生 JSONL 文件并只读查询 Go 产物。
 
-已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置额外的 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，再执行：
+已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，并提供所有 SQLite owner 路径以完成物理隔离校验，再执行：
 
 ```powershell
 go run ./cmd/juhe-ai-runtime-log-indexer --migrate-legacy-sqlite
