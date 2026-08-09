@@ -107,8 +107,7 @@ function Test-RipgrepDependency {
 
 function Get-RuntimeLogIndexerNodeLauncher {
   return @'
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
@@ -280,6 +279,9 @@ const names = [
   'JUHE_AI_TABLE_MONITOR_OWNER_LEASE',
   'JUHE_AI_TABLE_MONITOR_RETENTION_DAYS',
   'JUHE_AI_TABLE_MONITOR_MAX_TABLES',
+  'JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES',
+  'JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE',
+  'JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES',
   'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
   'JUHE_AI_DATABASE_PATH',
   'JUHE_AI_DATASET_DATABASE_PATH',
@@ -298,12 +300,7 @@ if (configuredInstance.defined) {
   if (!configuredInstance.value.trim()) throw new Error('JUHE_AI_TABLE_MONITOR_INSTANCE_ID is configured but empty.')
   childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = configuredInstance.value
 } else {
-  if (disableBaseEnv) {
-    throw new Error('JUHE_AI_TABLE_MONITOR_INSTANCE_ID must be set outside backend/.env when JUHE_AI_DISABLE_BASE_ENV=true.')
-  }
-  const instanceId = `table-monitor-${randomUUID()}`
-  appendFileSync(baseEnvPath, `\nJUHE_AI_TABLE_MONITOR_INSTANCE_ID=${instanceId}\n`, 'utf8')
-  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = instanceId
+  throw new Error('JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required; release startup does not generate owner identities.')
 }
 
 const runtimeMode = (childEnv.JUHE_AI_RUNTIME_MODE ?? '').trim().toLowerCase()
