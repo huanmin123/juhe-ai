@@ -459,6 +459,13 @@ func TestSQLiteStoreUsesNodeBusyTimeout(t *testing.T) {
 	if timeout != sqliteBusyTimeoutMs {
 		t.Fatalf("SQLite busy_timeout = %d, want %d", timeout, sqliteBusyTimeoutMs)
 	}
+	var journalMode string
+	if err := store.db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		t.Fatalf("SQLite journal_mode = %q, want WAL", journalMode)
+	}
 }
 
 func TestCheckSchemaRejectsMissingRuntimeLogIndex(t *testing.T) {

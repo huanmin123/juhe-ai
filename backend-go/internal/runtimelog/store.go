@@ -57,6 +57,15 @@ func OpenStore(ctx context.Context, config Config) (Store, error) {
 			db.Close()
 			return nil, fmt.Errorf("设置 SQLite busy_timeout 失败: %w", err)
 		}
+		var journalMode string
+		if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("启用 SQLite WAL journal_mode 失败: %w", err)
+		}
+		if !strings.EqualFold(journalMode, "wal") {
+			db.Close()
+			return nil, fmt.Errorf("SQLite WAL journal_mode 未生效，实际为 %q", journalMode)
+		}
 		if err := db.PingContext(ctx); err != nil {
 			db.Close()
 			return nil, err
