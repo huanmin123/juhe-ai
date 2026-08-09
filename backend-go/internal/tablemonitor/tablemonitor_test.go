@@ -24,6 +24,12 @@ func TestLoadConfigRequiresDedicatedSQLiteOutput(t *testing.T) {
 	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil {
 		t.Fatal("expected missing dedicated output path to fail")
 	}
+	env = sqliteTestEnv(root)
+	delete(env, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
+	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") {
+		t.Fatalf("缺少 F1 专用库路径必须拒绝 F2 SQLite 启动，实际为 %v", err)
+	}
+	env = sqliteTestEnv(root)
 	env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = env["JUHE_AI_STATS_DATABASE_PATH"]
 	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil {
 		t.Fatal("expected output/source path collision to fail")
@@ -509,6 +515,7 @@ func sqliteTestEnv(root string) map[string]string {
 		"JUHE_AI_TABLE_MONITOR_INSTANCE_ID":      "test-instance",
 		"JUHE_AI_TABLE_MONITOR_STORE":            "sqlite",
 		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    filepath.Join(root, "table-monitor.sqlite3"),
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      filepath.Join(root, "runtime-log.sqlite3"),
 		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite3"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    filepath.Join(root, "usage.sqlite3"),

@@ -89,7 +89,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.OutputPath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH")
 		}
-		if runtimeLogPath := strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH")); runtimeLogPath != "" && sameSQLiteFile(cfg.OutputPath, runtimeLogPath) {
+		runtimeLogPath := strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH"))
+		if runtimeLogPath == "" {
+			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH，无法验证 F1/F2 专用库隔离")
+		}
+		if sameSQLiteFile(cfg.OutputPath, runtimeLogPath) {
 			return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得与 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 共用 SQLite 文件")
 		}
 		for role, path := range cfg.sourcePaths() {
