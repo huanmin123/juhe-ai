@@ -65,7 +65,7 @@ pnpm --filter juhe-ai-backend postgres:init-schema
 
 两个 Compose 文件都会启动 `runtime-log-indexer`。它由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，Compose 示例使用稳定名称；同一 SQLite 运行日志专用卷或 PostgreSQL 数据库的多实例部署必须改为各自稳定且唯一的值。standalone Compose 将 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 放在独立卷：Node 只读挂载，Go sidecar 写入；sidecar 只有在应用 `/__aisys__/api/health` 确认 DB service 就绪后才启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是默认常驻扫描模式，不能改为默认一次性任务。
 
-standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 sidecar，并显式传入 `JUHE_AI_DATASET_DATABASE_PATH` 与 `JUHE_AI_DATABASE_PATH`。performance 模式只共享 `juhe-ai-logs`，并直接使用 `JUHE_AI_POSTGRES_URL`；它只等待 PgBouncer 健康，不依赖 Node 或任何 Redis 服务。
+standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 sidecar，并显式传入 `JUHE_AI_DATASET_DATABASE_PATH` 与 `JUHE_AI_DATABASE_PATH`。performance 模式只共享 `juhe-ai-logs`，并直接使用 `JUHE_AI_POSTGRES_URL`；它等待 PgBouncer 健康和 Node `/__aisys__/api/health` 的 DB-service 就绪，不依赖 Redis 数据面。
 
 ## 按需配置
 

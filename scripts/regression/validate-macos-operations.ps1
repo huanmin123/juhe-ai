@@ -170,14 +170,15 @@ $activationGatewayLoopEnd = $activationFunctionBlock.IndexOf('  done', $activati
 $activationControlWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' control-1", [StringComparison]::Ordinal)
 $activationHealthCheck = $performanceInstaller.IndexOf('  wait_for_health "$name"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationRegistryCheck = $performanceInstaller.IndexOf('  wait_for_metrics_registry "$name"', $activationHealthCheck, [StringComparison]::Ordinal)
-$activationControlLast = $performanceInstaller.IndexOf("  printf '%s\n' control-1", $activationFunctionStart, [StringComparison]::Ordinal)
+$activationRuntimeWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' runtime-log-indexer", [StringComparison]::Ordinal)
+$activationRuntimeLast = $performanceInstaller.IndexOf("  printf '%s\n' runtime-log-indexer", $activationFunctionStart, [StringComparison]::Ordinal)
 $activationLoopEnd = $performanceInstaller.IndexOf("`ndone", $activationRegistryCheck, [StringComparison]::Ordinal)
 $activationFence = $performanceInstaller.IndexOf('  metrics_fence_ms="$(performance_metrics_registry_time_ms)"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationBootout = $performanceInstaller.IndexOf('  launchctl bootout "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationBootstrap = $performanceInstaller.IndexOf('  launchctl bootstrap "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationKickstart = $performanceInstaller.IndexOf('  launchctl kickstart -k "$DOMAIN/$(service_label "$name")"', $activationBootstrap, [StringComparison]::Ordinal)
-if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationControlLast -lt $activationFunctionStart -or $activationControlLast -gt $activationLoopStart) {
-  throw 'Performance topology must activate and verify gateway publishers before restarting control/workers'
+if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationRuntimeWithinFunction -lt $activationControlWithinFunction -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationRuntimeLast -lt $activationFunctionStart -or $activationRuntimeLast -gt $activationLoopStart) {
+  throw 'Performance topology must activate Node gateway/control and verify DB readiness before starting the Go runtime-log-indexer'
 }
 if (-not $performanceInstaller.Contains('wait_for_metrics_registry "$name" "$metrics_fence_ms"', [StringComparison]::Ordinal)) {
   throw 'Performance topology registry gate must require a Redis-time freshness fence captured after bootout'

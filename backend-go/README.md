@@ -51,6 +51,6 @@ $env:JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED = 'true'
 rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmoke$' -count=1
 ```
 
-未设置 URL 时，该 smoke 会显式 `skipped`，绝不等同 PostgreSQL 验证通过。设为强制模式后，缺 URL 或 URL 无法连接都会失败。本机当前未提供 PostgreSQL，因此本轮未实际执行该真实 smoke。
+2026-08-09 已在专用可销毁开发 PostgreSQL 数据库中强制执行并通过该 smoke；测试完成后已终止残留会话并删除临时数据库，连接串未写入仓库或文档。未设置 URL 时，该 smoke 会显式 `skipped`，绝不等同 PostgreSQL 验证通过。设为强制模式后，缺 URL 或 URL 无法连接都会失败。
 
-完整边界、归档和未完成的 PostgreSQL smoke 见 [F1 运行日志索引与保留](../docs/migration/F1-运行日志索引与保留功能冻结.md)。
+完整边界、归档和 PostgreSQL smoke 记录见 [F1 运行日志索引与保留](../docs/migration/F1-运行日志索引与保留功能冻结.md)。

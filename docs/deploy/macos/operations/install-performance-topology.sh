@@ -178,7 +178,7 @@ printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%
   "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
-printf 'plan: restart and verify runtime-log-indexer, then %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
+printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers, verify DB readiness, then runtime-log-indexer, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
 
 [ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }
 CURRENT_DIR="$(cd "$CURRENT_DIR" && pwd -P)"
@@ -461,13 +461,14 @@ nginx_reload() {
 }
 
 activation_service_names() {
-  printf '%s\n' runtime-log-indexer
   index=1
   while [ "$index" -le "$GATEWAY_COUNT" ]; do
     printf 'gateway-%s\n' "$index"
     index=$((index + 1))
   done
   printf '%s\n' control-1
+  # Start the Go sidecar only after the Node DB-service health proxy passes.
+  printf '%s\n' runtime-log-indexer
 }
 
 service_port() {
