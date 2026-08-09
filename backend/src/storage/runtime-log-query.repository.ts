@@ -317,11 +317,11 @@ function runtimeLogDetailDeltaFromRow(row: RuntimeLogRow): RuntimeLogDetailDelta
 }
 
 function currentRuntimeLogIndexRetentionDays(): number {
-  try { return runtimeLogIndexRetentionDaysFromSettings(getSettings()) } catch { return runtimeLogIndexRetentionDays }
+  return runtimeLogIndexRetentionDaysFromSettings(getSettings())
 }
 
 async function currentRuntimeLogIndexRetentionDaysAsync(): Promise<number> {
-  try { return runtimeLogIndexRetentionDaysFromSettings(await getSettingsAsync()) } catch { return runtimeLogIndexRetentionDays }
+  return runtimeLogIndexRetentionDaysFromSettings(await getSettingsAsync())
 }
 
 function runtimeLogIndexRetentionDaysFromSettings(settings: Record<string, unknown>): number {
