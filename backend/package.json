@@ -7,6 +7,7 @@
     "check:runtime": "tsx src/scripts/preflight/check-node-sqlite.ts",
     "dev": "tsx src/scripts/preflight/check-node-sqlite.ts && tsx watch --exclude \"logs/**\" --exclude \"data/**\" --exclude \"dist/**\" src/server.ts",
     "mockdata": "tsx src/scripts/maintenance/mockdata.ts",
+    "test:mockdata-f2-snapshot-writer": "tsx src/scripts/regression/mockdata-f2-snapshot-writer-regression.ts",
     "test:worker-real-load": "tsx src/scripts/performance/worker-real-load-test.ts",
     "test:worker-owner-routing": "tsx src/scripts/regression/worker-owner-routing-regression.ts",
     "maintenance:rebuild-usage-stats": "tsx src/scripts/maintenance/rebuild-usage-stats.ts",
