@@ -8,12 +8,15 @@ import {
   type ProxyProfileTestConfig
 } from '../../storage/repositories.js'
 import {
-  accountImportMaxAccounts,
   accountImportProtocolType,
   accountImportProtocolVersion
 } from './account-import.service.js'
 
 type AccountExportStatus = 'active' | 'pending_test' | 'disabled'
+
+export const accountExportMaxAccounts = 500
+
+const accountExportAsyncReadConcurrency = 10
 
 export interface AccountExportOptions {
   accountIds: string[]
@@ -114,7 +117,7 @@ export function exportAccountsAsImportDocument(options: AccountExportOptions, ac
     listAccounts(access, {
       ids: accountIds,
       page: 1,
-      pageSize: accountImportMaxAccounts
+      pageSize: accountExportMaxAccounts
     })
       .filter(isExportableOwnerAccount)
       .map((account) => [account.id, account])
@@ -147,7 +150,11 @@ export function exportAccountsAsImportDocument(options: AccountExportOptions, ac
 
 export async function exportAccountsAsImportDocumentAsync(options: AccountExportOptions, access: AccessScope): Promise<AccountExportResult> {
   const accountIds = normalizeExportAccountIds(options.accountIds)
-  const loadedAccounts = await Promise.all(accountIds.map((id) => findAccountSummaryAsync(id, access)))
+  const loadedAccounts = await mapWithConcurrency(
+    accountIds,
+    accountExportAsyncReadConcurrency,
+    (id) => findAccountSummaryAsync(id, access)
+  )
   const accountsById = new Map(
     loadedAccounts
       .filter((account): account is AccountSummary => Boolean(account))
@@ -161,7 +168,11 @@ export async function exportAccountsAsImportDocumentAsync(options: AccountExport
 
   const proxies: AccountExportProxy[] = []
   const proxyRefsById = new Map<string, string>()
-  const exportedAccounts = await Promise.all(accounts.map((account) => exportAccountAsync(account, proxyRefsById, proxies)))
+  const exportedAccounts: AccountExportAccount[] = []
+  // Proxy refs are shared document state. Serialize materialization to keep each ref unique.
+  for (const account of accounts) {
+    exportedAccounts.push(await exportAccountAsync(account, proxyRefsById, proxies))
+  }
   const document: AccountExportDocument = {
     type: accountImportProtocolType,
     version: accountImportProtocolVersion,
@@ -180,13 +191,31 @@ export async function exportAccountsAsImportDocumentAsync(options: AccountExport
   }
 }
 
+async function mapWithConcurrency<T, U>(
+  values: readonly T[],
+  concurrency: number,
+  callback: (value: T) => Promise<U>
+): Promise<U[]> {
+  const output = new Array<U>(values.length)
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, concurrency), values.length)
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex
+      nextIndex += 1
+      output[index] = await callback(values[index])
+    }
+  }))
+  return output
+}
+
 function normalizeExportAccountIds(values: string[]): string[] {
   const ids = [...new Set(values.map((value) => typeof value === 'string' ? value.trim() : '').filter(Boolean))]
   if (!ids.length) {
     throw new Error('请选择要导出的 AI 账户')
   }
-  if (ids.length > accountImportMaxAccounts) {
-    throw new Error(`单次最多导出 ${accountImportMaxAccounts} 个 AI 账户`)
+  if (ids.length > accountExportMaxAccounts) {
+    throw new Error(`单次最多导出 ${accountExportMaxAccounts} 个 AI 账户`)
   }
   return ids
 }

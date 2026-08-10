@@ -1,7 +1,6 @@
-import type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
 import type { AccountModelMappingSourceEndpointFamily, AccountModelMappingUpstreamEndpointFamily } from '../domain/types.js'
 
-export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
+export type AuditPayloadBlobStorageStatus = 'not_saved' | 'metadata_missing' | 'file_missing' | 'available'
 
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeeded' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'downstream_closed'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'

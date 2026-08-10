@@ -35,15 +35,6 @@ import {
   listApiKeysReadOnly
 } from './api-key.repository.js'
 import {
-  getAuditLogDetail,
-  getAuditLogPayloadReadOnly,
-  listAuditErrorGroupEvents,
-  listAuditErrorGroups,
-  listAuditLogs,
-  listAuditLogsByIds
-} from './audit-log-read.repository.js'
-import { getAuditLogDetailSupplement } from './audit-log-detail-supplement.repository.js'
-import {
   listAuthorizationGranteeAccounts,
   listAuthorizationGranteeGroups,
   listAuthorizationGranteeTeams
@@ -283,20 +274,6 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listSystemTeamMembers(operation.id, operation.options, operation.access)
     case 'list_system_team_member_history_read_only':
       return listSystemTeamMemberHistory(operation.id, operation.options, operation.access)
-    case 'list_audit_logs_read_only':
-      return listAuditLogs(operation.options)
-    case 'list_audit_logs_by_ids_read_only':
-      return listAuditLogsByIds(operation.ids)
-    case 'list_audit_error_groups_read_only':
-      return listAuditErrorGroups(operation.options)
-    case 'list_audit_error_group_events_read_only':
-      return listAuditErrorGroupEvents(operation.errorGroupId, operation.options)
-    case 'get_audit_log_detail_read_only':
-      return getAuditLogDetail(operation.id)
-    case 'get_audit_log_detail_supplement_read_only':
-      return getAuditLogDetailSupplement(operation.id)
-    case 'get_audit_log_payload_read_only':
-      return await getAuditLogPayloadReadOnly(operation.auditLogId, operation.payloadId, operation.options)
     case 'list_usage_records_read_only':
       return listUsageRecords(operation.access, operation.options)
     case 'get_usage_record_detail_read_only':

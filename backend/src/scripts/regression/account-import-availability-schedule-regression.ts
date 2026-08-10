@@ -36,6 +36,84 @@ const schedule = {
     { daysOfWeek: [1, 2, 3, 4, 5], start: '22:00', end: '23:55' }
   ]
 }
+const sourceServiceImports = [
+  {
+    label: 'Sub2API',
+    mode: 'sub2api' as const,
+    expectedName: '来源服务 Sub2API',
+    expectedProviderCode: 'openai',
+    data: {
+      type: 'sub2api-data',
+      version: 1,
+      accounts: [
+        {
+          name: '来源服务 Sub2API',
+          platform: 'openai',
+          type: 'apikey',
+          credentials: {
+            api_key: 'sk-source-service-sub2api',
+            base_url: 'https://api.openai.com/v1',
+            runtime_only: 'ignored'
+          },
+          runtime_only: 'ignored'
+        }
+      ]
+    }
+  },
+  {
+    label: 'NewAPI',
+    mode: 'newapi' as const,
+    expectedName: '来源服务 NewAPI',
+    expectedProviderCode: 'openai',
+    data: [
+      {
+        type: 1,
+        name: '来源服务 NewAPI',
+        key: 'sk-source-service-newapi',
+        base_url: 'https://api.openai.com/v1',
+        group: '来源服务 NewAPI 分组',
+        runtime_only: 'ignored'
+      }
+    ]
+  },
+  {
+    label: 'One-API',
+    mode: 'oneapi' as const,
+    expectedName: '来源服务 OneAPI',
+    expectedProviderCode: 'openai',
+    data: [
+      {
+        type: 'openai',
+        name: '来源服务 OneAPI',
+        key: 'sk-source-service-oneapi',
+        base_url: 'https://api.openai.com/v1',
+        group: '来源服务 OneAPI 分组',
+        runtime_only: 'ignored'
+      }
+    ]
+  },
+  {
+    label: 'CPA API Key YAML',
+    mode: 'cpa' as const,
+    expectedName: '来源服务 CPA 1',
+    expectedProviderCode: 'openai',
+    data: `openai-compatibility:\n  - name: 来源服务 CPA\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-source-service-cpa\n        runtime_only: ignored\n`
+  },
+  {
+    label: 'CPA Codex OAuth',
+    mode: 'cpa' as const,
+    expectedName: '来源服务 CPA OAuth',
+    expectedProviderCode: 'gpt',
+    data: {
+      type: 'codex',
+      name: '来源服务 CPA OAuth',
+      refresh_token: 'rt-source-service-cpa',
+      account_id: 'acct-source-service-cpa',
+      base_url: 'https://api.openai.com/v1',
+      runtime_only: 'ignored'
+    }
+  }
+]
 const importGroupName = '导入回归分组'
 
 function assertAccountImportRouteBoundary(): void {
@@ -275,6 +353,22 @@ try {
   assert(asyncScheduled, 'async 导入账户应创建成功')
   assert.equal(asyncScheduled.availabilitySchedule?.enabled, true, 'async 账户导入应保存账户级 availabilitySchedule')
 
+  for (const sourceImport of sourceServiceImports) {
+    const sourcePreview = await accountImport.previewAccountImportAsync(sourceImport.data, {}, access, sourceImport.mode)
+    assert.equal(sourcePreview.source.mode, sourceImport.mode, `${sourceImport.label} 的来源摘要应保留导入模式`)
+    assert.equal(sourcePreview.source.accepted, 1, `${sourceImport.label} 应接受一条可导入账户`)
+    assert.equal(sourcePreview.canImport, true, `${sourceImport.label} 经过实际导入服务预览后应可导入：${JSON.stringify(sourcePreview)}`)
+    assert.equal(sourcePreview.summary.accounts.create, 1, `${sourceImport.label} 应计划创建一条账户`)
+
+    const sourceResult = await accountImport.executeAccountImportAsync(sourceImport.data, {}, access, sourceImport.mode)
+    assert.equal(sourceResult.imported, true, `${sourceImport.label} 经过实际导入服务确认后应成功`)
+    const importedSourceAccount = repositories.listAccounts(access, {
+      keyword: sourceImport.expectedName,
+      providerCode: sourceImport.expectedProviderCode
+    }).find((item) => item.name === sourceImport.expectedName)
+    assert(importedSourceAccount, `${sourceImport.label} 账户应通过来源适配器落库`)
+  }
+
   const invalidPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
     version: accountImport.accountImportProtocolVersion,
@@ -510,7 +604,7 @@ try {
   )
   assert(!frontendImportTemplateSource.includes('metadata:'), '前端账户导入模板不应包含后端协议拒绝的 metadata 根字段')
 
-  console.log('账户导入时间计划回归通过：显式账户计划、非法计划、字段白名单、凭据契约和小批量边界校验符合预期')
+  console.log('账户导入回归通过：原生计划与字段契约、Sub2API/NewAPI/One-API/CPA 实际服务导入、非法输入和小批量边界校验符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

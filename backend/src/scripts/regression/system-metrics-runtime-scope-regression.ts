@@ -74,12 +74,9 @@ for (const required of [
 for (const forbidden of [
   "import('../../shared/account-concurrency.js')",
   "import('../gateway/audit/capture.service.js')",
-  "import('../audit-logs/audit-log-transport.service.js')",
-  "import('../audit-logs/audit-log-queue.service.js')",
   "import('../gateway/usage/failure-finalization.service.js')",
   'snapshotAccountConcurrency()',
   'getActiveAuditCaptureCount()',
-  'getAuditLogTransportRuntime()',
   'getGatewayUsageFinalizationRuntime()',
   'pendingMessageCount:',
   'pendingSnapshotRequestCount:',

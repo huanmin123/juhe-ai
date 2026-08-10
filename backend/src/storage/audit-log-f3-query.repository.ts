@@ -10,24 +10,20 @@ import {
   auditLogPayloadSummaryFromRow,
   auditLogSummaryFromRow,
   type AuditLogRow
-} from './audit-log-mappers.js'
+} from './audit-log-f3-mappers.js'
 import {
   auditLogDefaultPageSize,
-  auditLogListSelectColumns,
+  listColumns as auditLogListSelectColumns,
   auditLogMaxPageSize,
-  auditErrorGroupListSelectColumns,
+  errorGroupColumns as auditErrorGroupListSelectColumns,
   errorGroupDefaultPageSize,
   errorGroupMaxPageSize,
   normalizeAuditLogPage,
   normalizePage,
   normalizePageSize,
   persistedAuditTrafficSourceParams
-} from './audit-log-list-query.js'
-import {
-  auditPayloadBodyDetail,
-  type AuditPayloadBlobStorageStatus,
-  type AuditPayloadBlobWindow
-} from './audit-log-payload-blobs.js'
+} from './audit-log-f3-query-helpers.js'
+import { auditPayloadBodyDetail, type AuditPayloadBlobStorageStatus, type AuditPayloadBlobWindow } from './audit-log-f3-query-helpers.js'
 import type {
   AuditErrorGroupListOptions,
   AuditErrorGroupListResult,
@@ -40,11 +36,11 @@ import type {
   AuditLogPayloadReadOptions,
   AuditLogPayloadSummary,
   AuditErrorGroupSummary
-} from './audit-log-types.js'
-import { pagedTotalUpperBound, takePageRows, textPrefixUpperBound } from './query-utils.js'
-import { optionalString } from './value-utils.js'
+} from './audit-log-f3-types.js'
+import { pagedTotalUpperBound, takePageRows, textPrefixUpperBound } from './audit-log-f3-query-helpers.js'
 import { convertQuestionPlaceholdersToPostgres } from './database-client.js'
-import { nonPersistedAuditTrafficSources } from './audit-log-traffic-source.js'
+const nonPersistedAuditTrafficSources = ['account_health_check', 'runtime_recovery_probe', 'cooldown_retest'] as const
+const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined
 
 const f3RequiredTables = [
   'audit_logs',
@@ -75,6 +71,8 @@ export interface AuditLogF3QueryOptions {
   payloadBlobDirectory?: string
   /** Optional PostgreSQL pool size for the read-only adapter. */
   postgresPoolMax?: number
+  /** Dedicated F3 hot-search root. Read-only searches use this directory. */
+  hotSearchDirectory?: string
 }
 
 export type AuditLogF3QueryMode = 'sqlite' | 'postgres'
@@ -110,10 +108,31 @@ export interface AuditLogF3QueryRepository {
   getAuditLogPayload(auditLogId: string, payloadId: string, options?: AuditLogPayloadReadOptions): Promise<AuditLogPayloadDetail | undefined>
   listAuditErrorGroups(options?: AuditErrorGroupListOptions): Promise<AuditErrorGroupListResult>
   listAuditErrorGroupEvents(errorGroupId: string, options?: AuditLogListOptions): Promise<AuditLogListResult>
+  searchHot(options: AuditLogF3HotSearchOptions): Promise<AuditLogF3HotSearchResult>
   getRuntime(): AuditLogF3Runtime
   getAuditLogRuntime(): AuditLogF3Runtime
   runtime(): AuditLogF3Runtime
   close(): Promise<void>
+}
+
+export interface AuditLogF3HotSearchOptions {
+  keywords: string[]
+  limit?: number
+  startAt?: string
+  endAt?: string
+}
+
+export interface AuditLogF3HotSearchResult {
+  available: boolean
+  elapsedMs: number
+  keywords: string[]
+  startAt: string
+  endAt: string
+  limit: number
+  auditLogIds: string[]
+  truncated: boolean
+  scannedFileCount: number
+  message?: string
 }
 
 interface QueryBackend {
@@ -134,7 +153,7 @@ export async function createAuditLogF3QueryRepository(options: AuditLogF3QueryOp
     : await createPostgresBackend(source.url, source.schema, options.postgresPoolMax)
   try {
     await assertF3Schema(backend, source.schema)
-    return new AuditLogF3QueryRepositoryImpl(backend, source.schema, options.payloadBlobDirectory)
+    return new AuditLogF3QueryRepositoryImpl(backend, source.schema, options.payloadBlobDirectory, options.hotSearchDirectory)
   } catch (error) {
     await backend.close().catch(() => undefined)
     throw error
@@ -148,12 +167,14 @@ class AuditLogF3QueryRepositoryImpl implements AuditLogF3QueryRepository {
   private readonly backend: QueryBackend
   private readonly schema: string
   private readonly payloadBlobDirectory?: string
+  private readonly hotSearchDirectory?: string
 
-  constructor(backend: QueryBackend, schema: string, payloadBlobDirectory?: string) {
+  constructor(backend: QueryBackend, schema: string, payloadBlobDirectory?: string, hotSearchDirectory?: string) {
     this.backend = backend
     this.mode = backend.mode
     this.schema = schema
     this.payloadBlobDirectory = payloadBlobDirectory?.trim() ? resolve(payloadBlobDirectory) : undefined
+    this.hotSearchDirectory = hotSearchDirectory?.trim() ? resolve(hotSearchDirectory) : undefined
   }
 
   async listAuditLogs(options: AuditLogListOptions = {}): Promise<AuditLogListResult> {
@@ -322,6 +343,48 @@ class AuditLogF3QueryRepositoryImpl implements AuditLogF3QueryRepository {
 
   async listAuditErrorGroupEvents(errorGroupId: string, options: AuditLogListOptions = {}): Promise<AuditLogListResult> {
     return this.listAuditLogs({ ...options, errorGroupId: errorGroupId.trim() })
+  }
+
+  async searchHot(options: AuditLogF3HotSearchOptions): Promise<AuditLogF3HotSearchResult> {
+    const startedAt = performance.now()
+    const keywords = normalizeHotKeywords(options.keywords)
+    const limit = normalizeHotLimit(options.limit)
+    const now = Date.now()
+    const endMs = clampHotTime(Date.parse(options.endAt ?? ''), now)
+    const startMs = Math.max(endMs - 60 * 60 * 1000, clampHotTime(Date.parse(options.startAt ?? ''), endMs - 60 * 60 * 1000))
+    const range = { startAt: new Date(startMs).toISOString(), endAt: new Date(endMs).toISOString() }
+    const base = { available: true, elapsedMs: 0, keywords, ...range, limit, auditLogIds: [] as string[], truncated: false, scannedFileCount: 0 }
+    if (keywords.length === 0) return { ...base, elapsedMs: Math.round(performance.now() - startedAt), message: '请输入要搜索的审计内容关键字' }
+    if (!this.hotSearchDirectory) return { ...base, available: false, elapsedMs: Math.round(performance.now() - startedAt), message: 'F3 审计内容搜索目录未配置' }
+    const { readdir, readFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    let entries: string[]
+    try { entries = await readdir(this.hotSearchDirectory) } catch (error) {
+      if (isFileNotFound(error)) return { ...base, elapsedMs: Math.round(performance.now() - startedAt), message: '最近 1 小时没有可搜索的审计内容' }
+      throw error
+    }
+    const seen = new Map<string, number>()
+    const files = entries.filter((name) => /^audit-hot-\d{10}\.ndjson$/.test(name)).sort().reverse()
+    for (const name of files) {
+      const file = join(this.hotSearchDirectory, name)
+      const bucket = Date.parse(`${name.slice(10, 14)}-${name.slice(14, 16)}-${name.slice(16, 18)}T${name.slice(18, 20)}:00:00.000Z`)
+      if (!Number.isFinite(bucket) || bucket + 3_600_000 < startMs || bucket > endMs) continue
+      const text = await readFile(file, 'utf8')
+      for (const line of text.split(/\r?\n/)) {
+        try {
+          const row = JSON.parse(line) as { auditLogId?: string; createdAt?: string; text?: string }
+          const when = Date.parse(row.createdAt ?? '')
+          if (!row.auditLogId || !Number.isFinite(when) || when < startMs || when > endMs) continue
+          if (!keywords.some((keyword) => (row.text ?? '').toLowerCase().includes(keyword))) continue
+          const previous = seen.get(row.auditLogId)
+          if (previous === undefined || when > previous) seen.set(row.auditLogId, when)
+        } catch { /* malformed lines are ignored */ }
+      }
+    }
+    const ids = [...seen.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([id]) => id)
+    const truncated = ids.length > limit
+    const auditLogIds = ids.slice(0, limit)
+    return { ...base, elapsedMs: Math.round(performance.now() - startedAt), auditLogIds, truncated, scannedFileCount: files.length, message: truncated ? `结果超过 ${limit} 条，已按最新优先截断显示` : undefined }
   }
 
   getRuntime(): AuditLogF3Runtime {
@@ -675,6 +738,28 @@ function resolveBlobPath(root: string, storageKey: string): string {
 
 function isFileNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && String((error as { code?: unknown }).code) === 'ENOENT'
+}
+
+function normalizeHotKeywords(values: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const keyword = value.trim().toLowerCase()
+    if (keyword.length < 2 || seen.has(keyword)) continue
+    seen.add(keyword)
+    result.push(keyword)
+    if (result.length >= 10) break
+  }
+  return result
+}
+
+function normalizeHotLimit(value: number | undefined): number {
+  if (!Number.isFinite(value)) return 100
+  return Math.min(100, Math.max(1, Math.trunc(value as number)))
+}
+
+function clampHotTime(value: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(value, fallback) : fallback
 }
 
 function shouldIncludeAuditPayloadHeaders(options: AuditLogPayloadReadOptions): boolean {

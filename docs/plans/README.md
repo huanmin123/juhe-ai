@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20260809T155526144Z](计划-20260809T155526144Z-中转账户导入与CCS导出.md)：为 AI 账户导入增加 Sub2API、NewAPI、CPA / CLIProxyAPI 和 One-API 来源适配器，并在 API Key 更多操作中提供 CCS deeplink 导出。
+
 - [PLAN-20260809T140000000Z](计划-20260809T140000000Z-我的AI账户运行态分页根治.md)：将“我的 AI 账户”的动态状态筛选从候选扩窗水合改为可对账的 PostgreSQL 读模型直接分页；Redis 保持网关热状态，不作为列表唯一事实。
 
 - [PLAN-20260731T184701562Z](计划-20260731T184701562Z-受限WireGuard自动恢复与根权限收口.md)：针对 macOS 网络切换后 WireGuard 假活，收口 root wrapper 权限并增加受限的全 Edge 恢复器；不管理业务服务。

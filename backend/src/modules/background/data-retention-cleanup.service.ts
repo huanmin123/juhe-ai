@@ -1,8 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getDatasetDatabase } from '../../storage/database.js'
-import { cleanupAuditHotSearchFilesBefore, cleanupNonPersistedAuditHotSearchEntries } from '../../storage/audit-log-hot-search-files.js'
-import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
 import {
@@ -13,8 +11,6 @@ import { getSettings } from '../../storage/settings.repository.js'
 import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../storage/sqlite-maintenance.js'
 import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
-import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
-import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { processCodexContextStorageCleanupBatch } from './codex-context-storage-cleanup.service.js'
@@ -42,10 +38,6 @@ const modelCheckRetentionMaxDays = 365
 let cleanupRunning = false
 
 interface DataRetentionPolicy {
-  auditLogSuccessHotHours: number
-  auditLogSuccessDays: number
-  auditLogFailureDays: number
-  auditErrorGroupDays: number
   operationLogDays: number
   publicApiLogDays: number
   modelCheckDays: number
@@ -65,8 +57,6 @@ interface DataRetentionPolicy {
 export interface DataRetentionCleanupResult {
   operationLogs: number
   publicApiLogs: number
-  auditLogs: number
-  auditHotSearchFiles: number
   modelCheckRuns: number
   modelCheckItems: number
   usageRecords: number
@@ -144,12 +134,7 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
     const batchSize = DATA_RETENTION_CLEANUP_BATCH_SIZE
     const maxBatches = DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
     const now = Date.now()
-    const auditSettings = readAuditLogSettings()
     const retention: DataRetentionPolicy = {
-      auditLogSuccessHotHours: auditSettings.successHotRetentionHours,
-      auditLogSuccessDays: auditSettings.successRetentionDays,
-      auditLogFailureDays: auditSettings.problemRetentionDays,
-      auditErrorGroupDays: auditSettings.problemRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
       modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
@@ -173,7 +158,6 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
         retention,
         batchSize,
         maxBatches,
-        successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000),
         signal
       })
       addCleanupResult(result, datasetCleanup)
@@ -225,7 +209,6 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   retention: DataRetentionPolicy
   batchSize: number
   maxBatches: number
-  successSampleBucketThreshold: number
   signal: AbortSignal
 }): Promise<Partial<Record<keyof DataRetentionCleanupResult, number>>> {
   const result = emptyCleanupResult()
@@ -246,23 +229,6 @@ async function cleanupDatasetAndUsageRetainedData(input: {
         maxBatches,
         input.signal
       )
-    },
-    async () => {
-      result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
-        successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
-        successCutoffCreatedAt: auditSuccessRetentionCutoffIso(now, retention.auditLogSuccessHotHours, retention.auditLogSuccessDays),
-        failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
-        errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
-        successSampleBucketThreshold: input.successSampleBucketThreshold,
-        limit: batchSize
-      }), batchSize, maxBatches, input.signal)
-    },
-    async () => {
-      result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
-      result.auditHotSearchFiles += await cleanupNonPersistedAuditHotSearchEntries({
-        maxFiles: batchSize,
-        maxRunMs: 5000
-      })
     },
     async () => {
       await cleanupRetentionInBatches(
@@ -500,10 +466,6 @@ function cutoffIso(now: number, retentionDays: number): string {
   return new Date(now - retentionDays * dayMs).toISOString()
 }
 
-function cutoffHoursIso(now: number, retentionHours: number): string {
-  return new Date(now - retentionHours * 60 * 60 * 1000).toISOString()
-}
-
 function cutoffDateKey(now: number, retentionDays: number, timezone: string): string {
   return dateKey(new Date(now - retentionDays * dayMs), timezone)
 }
@@ -541,8 +503,6 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
   return {
     operationLogs: 0,
     publicApiLogs: 0,
-    auditLogs: 0,
-    auditHotSearchFiles: 0,
     modelCheckRuns: 0,
     modelCheckItems: 0,
     usageRecords: 0,

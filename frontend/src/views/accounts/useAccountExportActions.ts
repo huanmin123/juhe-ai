@@ -8,19 +8,19 @@ import {
   accountExportFilename,
   accountExportFiltersFromState,
   accountExportPayloadByIds,
+  ACCOUNT_EXPORT_MAX_ACCOUNTS,
   downloadJsonFile,
   type AccountExportTargetState
 } from './accountExportHelpers'
 import type { AccountFilters } from './accountFormTypes'
 import type { AccountScopeParams } from './accountOperationScope'
 
-const ACCOUNT_EXPORT_MAX_ACCOUNTS = 50
-
 interface UseAccountExportActionsConfig {
   accountScopeParams: MaybeRefOrGetter<AccountScopeParams>
   accountSorts: MaybeRefOrGetter<AccountListSortParam[]>
   filters: AccountFilters
   isManagementView: MaybeRefOrGetter<boolean>
+  allLoadedAccountsSelected: MaybeRefOrGetter<boolean>
   selectedAccounts: MaybeRefOrGetter<AccountListItem[]>
   systemAccounts: MaybeRefOrGetter<SystemAccountPrincipalSummary[]>
 }
@@ -44,6 +44,10 @@ export function useAccountExportActions(config: UseAccountExportActionsConfig) {
 
   async function exportAccounts(): Promise<void> {
     const selectedAccounts = toValue(config.selectedAccounts)
+    if (toValue(config.allLoadedAccountsSelected)) {
+      await exportFilteredAccounts()
+      return
+    }
     if (selectedAccounts.length) {
       await exportAccountsByIds(selectedAccounts)
       return
@@ -73,7 +77,7 @@ export function useAccountExportActions(config: UseAccountExportActionsConfig) {
       return
     }
     if (exportableAccounts.length > ACCOUNT_EXPORT_MAX_ACCOUNTS) {
-      message.warning(`单次最多导出 ${ACCOUNT_EXPORT_MAX_ACCOUNTS} 个账户，请先筛选或勾选部分账户`)
+      message.warning(`单次最多导出 ${ACCOUNT_EXPORT_MAX_ACCOUNTS} 个账户，请先筛选或分批次导出`)
       return
     }
     exportLoading.value = true
@@ -108,8 +112,7 @@ export function useAccountExportActions(config: UseAccountExportActionsConfig) {
 function accountFilterExportSuccessMessage(summary: AccountExportResult['summary']): string {
   const matchedText = typeof summary.matchedAccounts === 'number' ? `，匹配 ${summary.matchedAccounts} 个` : ''
   const skippedText = summary.skippedAccounts ? `，跳过 ${summary.skippedAccounts} 个不可导出账户` : ''
-  const truncatedText = summary.truncated ? `，仅处理前 ${ACCOUNT_EXPORT_MAX_ACCOUNTS} 条匹配结果` : ''
-  return `已按当前筛选导出 ${summary.accounts} 个账户${matchedText}${skippedText}${truncatedText}`
+  return `已按当前筛选导出 ${summary.accounts} 个账户${matchedText}${skippedText}`
 }
 
 function canExportAccount(account: AccountListItem): boolean {

@@ -4,10 +4,6 @@ import {
   stopUsageRecordRedisStreamConsumer
 } from '../../modules/gateway/usage/record-queue.service.js'
 import {
-  startAuditLogRedisStreamConsumer,
-  stopAuditLogRedisStreamConsumer
-} from '../../modules/audit-logs/audit-log-queue.service.js'
-import {
   startOperationLogRedisStreamConsumer,
   stopOperationLogRedisStreamConsumer
 } from '../../modules/operation-logs/operation-log-queue.service.js'
@@ -116,7 +112,7 @@ function assertRequiredConsumerGroupsPresent(
 
 function enabledDrainContracts(): RedisStreamDrainContract[] {
   return redisStreamDrainContracts.filter((contract) => {
-    return contract.name !== 'audit-logs' || runtimeConfig.auditLog.enabled
+    return contract.name !== 'audit-logs'
   })
 }
 
@@ -140,7 +136,6 @@ function assertDrainRuntime(): void {
 
 function startConsumers(): void {
   startUsageRecordRedisStreamConsumer()
-  startAuditLogRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
@@ -149,7 +144,6 @@ function startConsumers(): void {
 async function stopConsumers(): Promise<void> {
   await Promise.allSettled([
     stopUsageRecordRedisStreamConsumer(),
-    stopAuditLogRedisStreamConsumer(),
     stopOperationLogRedisStreamConsumer(),
     stopPublicApiLogRedisStreamConsumer(),
     stopRecordMaintenanceRedisStreamConsumer()

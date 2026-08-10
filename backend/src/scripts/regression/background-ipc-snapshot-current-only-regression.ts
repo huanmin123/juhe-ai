@@ -138,8 +138,7 @@ function buildWorkerSnapshot(pid: number, workerRole: BackgroundWorkerProcessRol
     usageRecordQueue: { ...queue },
     operationLogQueue: { ...queue },
     publicApiLogQueue: { ...queue },
-    recordMaintenanceQueue: { ...queue },
-    auditLogQueue: { ...queue }
+    recordMaintenanceQueue: { ...queue }
   }
 }
 

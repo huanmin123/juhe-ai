@@ -22,7 +22,7 @@ export function registerAccountImportRoutes(router: Router): void {
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     try {
-      res.json(ok(await previewAccountImportAsync(parsed.data.data, parsed.data.options, requestAccess)))
+      res.json(ok(await previewAccountImportAsync(parsed.data.data, parsed.data.options, requestAccess, parsed.data.sourceMode)))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '账户导入预览失败'))
     }
@@ -34,6 +34,7 @@ export function registerAccountImportRoutes(router: Router): void {
     fingerprint: (req) => ({
       owner: normalizedText(queryField(req, 'systemAccountId')),
       data: bodyField(req, 'data'),
+      sourceMode: bodyField(req, 'sourceMode'),
       options: bodyField(req, 'options')
     })
   }), async (req, res) => {
@@ -55,7 +56,7 @@ export function registerAccountImportRoutes(router: Router): void {
     const importOptions: AccountImportOptions = parsed.data.options ?? {}
     try {
       const result = await runLoggedOperationAsync(async () => {
-        const result = await executeAccountImportAsync(parsed.data.data, importOptions, requestAccess)
+        const result = await executeAccountImportAsync(parsed.data.data, importOptions, requestAccess, parsed.data.sourceMode)
         const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
         return {
           result,
@@ -67,7 +68,7 @@ export function registerAccountImportRoutes(router: Router): void {
             operationKey: 'accounts.import',
             resourceType: 'account',
             resourceName: 'AI 账户导入',
-            summary: `导入 AI 账户：创建 ${result.summary.accounts.create} 个，跳过 ${result.summary.accounts.skip} 个，失败 ${result.summary.accounts.failed} 个`,
+            summary: `从 ${result.source.mode} 导入 AI 账户：创建 ${result.summary.accounts.create} 个，跳过 ${result.summary.accounts.skip + result.source.skipped} 个，失败 ${result.summary.accounts.failed} 个`,
             changes: [
               safeChange('accountCreated', '创建账户数', undefined, result.summary.accounts.create),
               safeChange('accountSkipped', '跳过账户数', undefined, result.summary.accounts.skip),

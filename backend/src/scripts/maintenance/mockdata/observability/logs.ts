@@ -1,5 +1,3 @@
-import { getDatasetDatabase } from '../../../../storage/database.js'
-import type { AuditLogInput } from '../../../../storage/audit-logs.repository.js'
 import {
   builtInExternalIntegrationTestSourceId,
   builtInExternalIntegrationTestTokenId,
@@ -9,7 +7,6 @@ import type { OperationLogInput } from '../../../../storage/operation-logs.repos
 import { createPublicApiLog } from '../../../../storage/public-api-logs.repository.js'
 import * as repositories from '../../../../storage/repositories.js'
 import {
-  chunks,
   dayMs,
   idPrefix,
   minuteMs,
@@ -26,114 +23,12 @@ import {
   type UsageRecordSeed
 } from '../shared.js'
 
-export function createAuditMockdata(records: UsageRecordSeed[]): number {
-  const auditLogs: AuditLogInput[] = records
-    .filter((record, index) => index % 4 === 0 || record.upstreamResponseModel !== undefined)
-    .map((record, index) => {
-      const startedAt = record.createdAt
-      const endedAt = new Date(Date.parse(startedAt) + (record.durationMs ?? 200)).toISOString()
-      const retrySuccess = record.success && index % 13 === 0
-      const auditOutcome = record.success
-        ? retrySuccess ? 'success_after_retry' : 'success'
-        : record.stream ? 'stream_failed' : 'upstream_failed'
-      const firstAttemptFailed = retrySuccess
-      return {
-        id: `${idPrefix}audit_${String(index + 1).padStart(5, '0')}`,
-        traceId: record.traceId,
-        systemAccountId: record.systemAccountId,
-        apiKeyId: record.apiKeyId,
-        groupId: record.groupId,
-        accountId: record.accountId,
-        providerCode: record.providerCode,
-        method: record.endpoint?.split(' ')[0] ?? 'POST',
-        path: record.endpoint?.split(' ')[1] ?? '/v1/responses',
-        model: record.model,
-        stream: record.stream,
-        clientIp: record.clientIp,
-        userAgent: 'mockdata-client/1.0',
-        auditOutcome,
-        success: record.success,
-        finalStatusCode: record.statusCode,
-        errorPhase: record.success ? undefined : 'upstream_response',
-        errorCode: record.errorCode,
-        errorMessage: record.errorMessage,
-        sampleBucket: index % 100,
-        sampleReason: record.success ? 'mockdata_success_sample' : 'mockdata_failure_sample',
-        startedAt,
-        endedAt,
-        durationMs: record.durationMs,
-        firstTokenMs: record.firstTokenMs,
-        attempts: [
-          ...(firstAttemptFailed ? [{
-            id: `${idPrefix}audit_attempt_${String(index + 1).padStart(5, '0')}_1`,
-            tempId: `attempt-${index}-1`,
-            attemptIndex: 1,
-            accountId: record.accountId,
-            accountOwnerSystemAccountId: record.accountOwnerSystemAccountId,
-            groupId: record.groupId,
-            providerCode: record.providerCode,
-            upstreamMethod: record.endpoint?.split(' ')[0] ?? 'POST',
-            upstreamUrl: `https://api.openai.com${record.endpoint?.split(' ')[1] ?? '/v1/responses'}`,
-            upstreamStatusCode: 503,
-            success: false,
-            errorPhase: 'upstream_response',
-            errorCode: 'service_unavailable',
-            errorMessage: 'Mockdata 首次上游尝试失败',
-            startedAt,
-            endedAt: new Date(Date.parse(startedAt) + 180).toISOString(),
-            durationMs: 180
-          }] : []),
-          {
-            id: `${idPrefix}audit_attempt_${String(index + 1).padStart(5, '0')}_${firstAttemptFailed ? '2' : '1'}`,
-            tempId: `attempt-${index}-final`,
-            attemptIndex: firstAttemptFailed ? 2 : 1,
-            accountId: record.accountId,
-            accountOwnerSystemAccountId: record.accountOwnerSystemAccountId,
-            groupId: record.groupId,
-            providerCode: record.providerCode,
-            upstreamMethod: record.endpoint?.split(' ')[0] ?? 'POST',
-            upstreamUrl: `https://api.openai.com${record.endpoint?.split(' ')[1] ?? '/v1/responses'}`,
-            upstreamStatusCode: record.statusCode,
-            success: record.success,
-            errorPhase: record.success ? undefined : 'upstream_response',
-            errorCode: record.errorCode,
-            errorMessage: record.errorMessage,
-            startedAt: firstAttemptFailed ? new Date(Date.parse(startedAt) + 220).toISOString() : startedAt,
-            endedAt,
-            durationMs: record.durationMs
-          }
-        ],
-        payloads: [
-          {
-            id: `${idPrefix}audit_payload_${String(index + 1).padStart(5, '0')}_client`,
-            attemptTempId: `attempt-${index}-final`,
-            partType: 'client_request',
-            sequenceIndex: 0,
-            contentType: 'application/json',
-            headers: {
-              'content-type': 'application/json',
-              'x-mockdata': 'true'
-            },
-            body: JSON.stringify(record.requestSnapshot ?? {})
-          },
-          {
-            id: `${idPrefix}audit_payload_${String(index + 1).padStart(5, '0')}_response`,
-            attemptTempId: `attempt-${index}-final`,
-            partType: record.success ? 'upstream_response' : 'gateway_error',
-            sequenceIndex: 1,
-            contentType: 'application/json',
-            body: JSON.stringify(record.responseSnapshot ?? {})
-          }
-        ],
-        createdAt: record.createdAt
-      }
-    })
-
-  for (const chunk of chunks(auditLogs, 200)) {
-    repositories.createAuditLogsBatch(chunk)
-  }
-  const row = getDatasetDatabase().prepare("SELECT COUNT(*) AS value FROM audit_logs WHERE id LIKE 'mockdata_audit_%'").get() as { value?: number } | undefined
-  return Number(row?.value ?? 0)
+/**
+ * F3 审计日志由 Go owner 接收并持久化。Node mockdata 不再直接写入审计表；
+ * 需要审计样本时应通过 Go 输入端点注入。
+ */
+export function createAuditMockdata(_records: UsageRecordSeed[]): number {
+  return 0
 }
 
 export function createPublicApiLogMockdata(created: CreatedMockdata, options: MockdataOptions): number {

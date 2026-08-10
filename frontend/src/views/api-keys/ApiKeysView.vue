@@ -194,6 +194,7 @@ const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initial
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
+const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
 let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
@@ -293,7 +294,8 @@ const {
   removeItems: removeApiKeyItems,
   reload: () => loadData({ quiet: true }),
   openEdit,
-  showCreatedKey
+  showCreatedKey,
+  gatewayBaseUrl: () => gatewayBaseUrl.value
 })
 
 const rawColumns = computed(() => buildApiKeyTableColumns(isManagementView.value))
@@ -317,7 +319,6 @@ const activeFilterCount = computed(() => [
   isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue
 ].filter(Boolean).length)
 const advancedFilterCount = computed(() => 0)
-const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填复制到的完整密钥'].join('\n'))
 const clientHttpRequestPlatform = computed(inferClientHttpRequestPlatform)
 const createdKeyMinimalHttpRequestPlatformLabel = computed(() => clientHttpRequestPlatformLabel(clientHttpRequestPlatform.value))

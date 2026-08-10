@@ -187,6 +187,7 @@ try {
     false,
     '账户导出不应暴露客户端兼容字段'
   )
+
   const legacyCompatibilityPreview = accountImport.previewAccountImport({
     ...exported.document,
     accounts: exported.document.accounts.map((item) => ({

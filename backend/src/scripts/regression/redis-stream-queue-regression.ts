@@ -121,10 +121,6 @@ assert.doesNotMatch(redisStreamQueueSource, /payload-bytes|payloadByteCounter|IN
 assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*'XLEN', this\.streamKey[\s\S]*streamLength:/, 'Redis Stream runtime should expose XLEN for queue capacity monitoring')
 assert.doesNotMatch(redisStreamQueueSource, /MAXLEN|redisStreamMaxLen|maxLen/, 'Redis Stream reliable queue must not expose trimming controls')
 
-const auditLogQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
-assert.match(auditLogQueueSource, /const flushed = await flushAuditLogRedisStreamMessages\(queue, messages\)[\s\S]*if \(!flushed\) \{[\s\S]*await delay\(auditLogRedisConsumerErrorRetryMs\)/, '审计 Redis Stream 落库失败必须进入消费者退避，避免立即重复 claim pending 消息')
-assert.match(auditLogQueueSource, /async function flushAuditLogRedisStreamMessages[\s\S]*\): Promise<boolean> \{[\s\S]*await queue\.ack[\s\S]*return true[\s\S]*catch \(error\) \{[\s\S]*audit_log_redis_stream_flush_failed[\s\S]*return false/, '审计 Redis Stream 仅在成功 ACK 后报告成功，落库失败必须保留 pending 并反馈给重试循环')
-
 const usageQueueSource = readFileSync(new URL('../../modules/gateway/usage/record-queue.service.ts', import.meta.url), 'utf8')
 assert.match(usageQueueSource, /shouldEnqueueUsageRecordToRedisStream/, 'usage record queue should route producers through Redis Stream in redis_stream mode')
 assertProducerPrefersRedisStream(usageQueueSource, 'enqueueUsageRecord', 'shouldEnqueueUsageRecordToRedisStream()', [
@@ -136,33 +132,6 @@ assert.match(usageQueueSource, /startUsageRecordRedisStreamConsumer/, 'usage rec
 assert.match(usageQueueSource, /queue\.ack\(messages\.map/, 'usage record Redis Stream consumer should ack only after flush')
 assert.match(usageQueueSource, /Redis Stream 使用记录落库失败，消息保持 pending 等待重投/, 'usage record Redis Stream consumer should keep failed messages pending')
 assert.doesNotMatch(usageQueueSource, /AfterRedisStreamFailure/, 'usage record Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
-
-const auditQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
-const auditCodecSource = readFileSync(new URL('../../modules/audit-logs/audit-log-stream-codec.ts', import.meta.url), 'utf8')
-const auditTransportSource = readFileSync(new URL('../../modules/audit-logs/audit-log-transport.service.ts', import.meta.url), 'utf8')
-assert.match(auditQueueSource, /shouldEnqueueAuditLogToRedisStream/, 'audit log queue should route producers through Redis Stream in redis_stream mode')
-assertProducerPrefersRedisStream(auditQueueSource, 'enqueueAuditLog', 'shouldEnqueueAuditLogToRedisStream()', [
-  'sendAuditLogsToWorker',
-  'sendAuditLogFromDbServiceToServer',
-  'enqueueAuditLogLocal'
-], 'audit log producer must short-circuit to Redis Stream before IPC/local queues')
-assert.match(auditQueueSource, /startAuditLogRedisStreamConsumer/, 'audit log queue should expose an ingest-worker Redis Stream consumer')
-assert.match(auditQueueSource, /queue\.ack\(messages\.map/, 'audit log Redis Stream consumer should ack only after flush')
-assert.match(auditQueueSource, /Redis Stream 审计日志落库失败，消息保持 pending 等待重投/, 'audit log Redis Stream consumer should keep failed messages pending')
-assert.doesNotMatch(auditQueueSource, /AfterRedisStreamFailure/, 'audit log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
-assert.match(auditQueueSource, /encode: encodeAuditLogStreamPayload/, 'audit log Redis Stream queue should use custom payload encoding')
-assert.match(auditQueueSource, /decode: decodeAuditLogStreamPayload/, 'audit log Redis Stream queue should use custom payload decoding')
-assert.match(auditQueueSource, /readCount: runtimeConfig\.databaseDriver === 'postgres' \? auditLogPostgresFlushBatchSize : undefined/, 'audit log Redis Stream consumer should keep PG audit batches bounded')
-assert.match(auditQueueSource, /auditLogPostgresFlushBatchSize = runtimeConfig\.background\.auditLogPostgresFlushBatchSize/, 'audit log Redis Stream consumer batch must come from runtime configuration')
-assert.match(auditQueueSource, /auditLogPostgresRedisConsumerConcurrency = runtimeConfig\.background\.auditLogPostgresRedisConsumerConcurrency/, 'audit log Redis Stream consumer concurrency must come from runtime configuration')
-assert.match(auditQueueSource, /auditLogRedisStreamMaxItems = 50_000/, 'audit Redis Stream should have a bounded item budget')
-assert.match(auditQueueSource, /auditLogRedisStreamMaxMemoryBytes = 256 \* 1024 \* 1024/, 'audit Redis Stream should have a bounded actual-memory budget')
-assert.match(auditQueueSource, /error instanceof RedisStreamQueueCapacityExceededError[\s\S]*new AuditLogTransportQueueFullError/, 'audit Redis Stream capacity rejection must enter the existing bounded body-removal fallback')
-assert.match(auditQueueSource, /Array\.from\(\{ length: concurrency \}/, 'audit log Redis Stream consumer should start all bounded consumer loops')
-assert.match(auditCodecSource, /__juheAuditBuffer/, 'audit log Redis Stream payload encoding should preserve Buffer bodies')
-assert.match(auditCodecSource, /Buffer\.from\(body\.base64, 'base64'\)/, 'audit log Redis Stream payload decoding should restore Buffer bodies')
-assert.match(auditQueueSource, /encodeAuditLogForRedisStreamInWorker/, 'large audit Redis encoding should be offloaded from the server event loop')
-assert.match(auditTransportSource, /auditLogTransportMaxTotalBytes/, 'audit transport worker should have a hard total-byte budget')
 
 const operationQueueSource = readFileSync(new URL('../../modules/operation-logs/operation-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(operationQueueSource, /shouldEnqueueOperationLogToRedisStream/, 'operation log queue should route producers through Redis Stream in redis_stream mode')
@@ -209,8 +178,7 @@ assert.match(recordMaintenanceQueueSource, /readCount: recordMaintenanceBatchSiz
 assert.doesNotMatch(recordMaintenanceQueueSource, /AfterRedisStreamFailure/, 'record maintenance Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const workerSource = readFileSync(new URL('../../worker.ts', import.meta.url), 'utf8')
-assert.match(workerSource, /startAuditLogRedisStreamConsumer\(\)/, 'ingest worker should start audit log Redis Stream consumer')
-assert.match(workerSource, /await stopAuditLogRedisStreamConsumer\(\)/, 'worker shutdown should stop audit log Redis Stream consumer')
+assert.doesNotMatch(workerSource, /startAuditLogRedisStreamConsumer\(\)|stopAuditLogRedisStreamConsumer\(\)/, 'F3 owner exit must remove the audit Redis Stream consumer from Node')
 assert.match(workerSource, /startOperationLogRedisStreamConsumer\(\)/, 'ingest worker should start operation log Redis Stream consumer')
 assert.match(workerSource, /await stopOperationLogRedisStreamConsumer\(\)/, 'worker shutdown should stop operation log Redis Stream consumer')
 assert.match(workerSource, /startPublicApiLogRedisStreamConsumer\(\)/, 'ingest worker should start public API log Redis Stream consumer')

@@ -54,7 +54,7 @@ const [
   import('../../modules/gateway/request/json-parser.js'),
   import('../../modules/gateway/request/body.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
   import('../../modules/background/background-ipc.js'),

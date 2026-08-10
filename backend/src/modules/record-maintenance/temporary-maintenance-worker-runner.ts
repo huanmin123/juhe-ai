@@ -114,8 +114,8 @@ async function getTemporaryBackgroundTaskRun(runId: string): Promise<ReturnType<
     : getBackgroundTaskRun(runId)
 }
 
-function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): job is Extract<RecordMaintenanceJob, { type: 'usage_records_cleanup' | 'non_business_data_cleanup' | 'audit_retained_data_cleanup' }> {
-  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup' || job.type === 'audit_retained_data_cleanup'
+function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): job is Extract<RecordMaintenanceJob, { type: 'usage_records_cleanup' | 'non_business_data_cleanup' }> {
+  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup'
 }
 
 function leaseUntilIso(): string {

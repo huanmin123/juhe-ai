@@ -37,7 +37,6 @@ const postgresAccountFixtureSources = [
   'src/scripts/regression/authorization-usage-range-postgres-smoke.ts',
   'src/scripts/regression/client-ip-stats-postgres-smoke.ts',
   'src/scripts/regression/client-ip-stats-node-writer-go-reader-fixture.ts',
-  'src/scripts/regression/performance-gateway-persistence-readiness-regression.ts',
   'src/scripts/regression/usage-record-list-postgres-smoke.ts'
 ].map((path) => ({ path, source: readFileSync(path, 'utf8') }))
 const schemaNames = new Set(statements.map((statement) => statement.schemaName))
@@ -162,11 +161,7 @@ assert.match(postgresSeedDefaultsSource, /model\.supportsPromptCaching === true,
 assert.match(sql, /health_check_endpoint_mode text NOT NULL CHECK \(health_check_endpoint_mode IN \([^)]*'interactions_json', 'interactions_sse'\)\)/, 'PG 当前 accounts schema 必须允许 Gemini Interactions 健康检查模式')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+type text NOT NULL/, 'PG 当前 accounts schema 必须保留账户认证类型字段')
 assert.match(sql, /idx_accounts_health_check_candidate_order[\s\S]+type IN \('api_key', 'oauth', 'google_oauth'\)/, 'PG 当前健康检查候选索引必须覆盖当前认证类型')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
-assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
-assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
-assert.match(sql, /audit_logs[\s\S]+raw_payload_bytes bigint NOT NULL DEFAULT 0[\s\S]+compressed_payload_bytes bigint NOT NULL DEFAULT 0[\s\S]+compression_saved_bytes bigint NOT NULL DEFAULT 0/, 'PG 审计日志 payload 字节累计字段必须使用 bigint')
-assert.match(sql, /audit_payload_blobs[\s\S]+raw_size_bytes bigint NOT NULL DEFAULT 0[\s\S]+compressed_size_bytes bigint NOT NULL DEFAULT 0/, 'PG 审计 payload blob 大小字段必须使用 bigint')
+assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS audit_(?:logs|log_attempts|payload_blobs|payload_refs|error_groups)\b/, 'Node PostgreSQL schema 不得重新创建 F3 审计表')
 assert.match(sql, /public_api_logs[\s\S]+request_size_bytes bigint NOT NULL DEFAULT 0[\s\S]+response_size_bytes bigint NOT NULL DEFAULT 0/, 'PG 公开接口日志请求/响应大小字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_records/, '应包含使用记录主表 schema')
 assert.match(usageRecordsCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PARTITION BY RANGE \(created_at\)/, 'PG 使用记录主表必须按 created_at 日范围分区，主键必须包含分区键')
@@ -300,12 +295,7 @@ assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_gr
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_records_system_trace_c_created_sort ON usage_records\(system_account_id, \(trace_id COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 使用记录 trace 前缀查询必须有用户范围 + C collation 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_trace_c_created_sort\b/, 'PG 使用记录不应再给目录表创建全局 trace 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort\b/, 'PG 使用记录不应再给目录表创建全局 client IP 前缀索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_c_created_sort ON audit_logs\(system_account_id, \(trace_id COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 审计日志用户范围 trace 前缀查询必须有 owner + C collation 前缀索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_c_created_sort ON audit_logs\(system_account_id, \(client_ip COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 审计日志用户范围 client IP 前缀查询必须有 owner + C collation 前缀索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_persisted_created\s+ON audit_logs\(created_at, id\)\s+WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志默认来源过滤必须有持久化来源部分索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_system_persisted_created\s+ON audit_logs\(system_account_id, created_at, id\)\s+WHERE traffic_source NOT IN \('account_health_check', 'runtime_recovery_probe', 'cooldown_retest'\)/, 'PG 审计日志用户范围来源过滤必须有持久化来源部分索引')
-assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_c_created_sort\b/, 'PG 审计日志不应再创建全局 trace 前缀索引')
-assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_c_created_sort\b/, 'PG 审计日志不应再创建全局 client IP 前缀索引')
+assert.doesNotMatch(sql, /idx_audit_logs_/, 'Node PostgreSQL schema 不得保留 F3 审计索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_c_created_sort\b/, 'PG 公开接口日志不应再创建全局 trace 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_public_api_logs_client_ip_c_created_sort\b/, 'PG 公开接口日志不应再创建全局 client IP 前缀索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs\(\(trace_id COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 操作日志 trace 前缀查询必须有 C collation 前缀索引')
@@ -327,10 +317,7 @@ assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXIST
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS client_profile text NOT NULL DEFAULT 'auto'/, 'PostgreSQL schema 不应再补 client_profile')
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS explicit_hybrid_route_rules_json text/, 'PostgreSQL schema 不应再补 explicit_hybrid_route_rules_json')
 assert.doesNotMatch(sql, /ALTER TABLE openai_compatible_files ADD COLUMN container_id\b/, 'PostgreSQL schema 不应重复为 openai_compatible_files.container_id 补列')
-assert.match(sql, /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized'/, '既有 PostgreSQL audit_logs 必须补生命周期状态列')
-assert.match(sql, /ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text/, '既有 PostgreSQL audit payload 引用必须补丢弃原因列')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created\s+ON audit_logs\(session_id, created_at, id, session_client_type\)\s+WHERE session_id IS NOT NULL/, 'PostgreSQL 必须创建全局 session 非唯一复合索引')
-assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_(?:system_)?session_created/, 'PostgreSQL session 复合索引不得唯一')
+assert.doesNotMatch(sql, /ALTER TABLE (?:audit_logs|audit_payload_refs)\b/, 'Node PostgreSQL schema 不得通过运行时 DDL 补齐 F3 审计表')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 账号范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text/, 'PostgreSQL 使用记录当前迁移必须保留上游响应模型列')

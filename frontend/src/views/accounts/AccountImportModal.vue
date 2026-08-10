@@ -14,10 +14,14 @@
         type="info"
         show-icon
         :message="targetSystemAccountLabel ? `目标系统账户：${targetSystemAccountLabel}` : '导入目标为当前系统账户'"
-        description="只支持 juhe-ai-account-import v1 JSON。其他系统的数据请先用 AI 或脚本整理为本协议后再导入。"
+        :description="sourceDescription"
       />
 
       <div class="import-options">
+        <label class="import-mode-field">
+          <span>导入模式</span>
+          <a-select v-model:value="sourceMode" class="import-mode-select" :options="sourceModeOptions" />
+        </label>
         <a-checkbox v-model:checked="options.createMissingGroups">自动创建缺失分组</a-checkbox>
         <a-checkbox v-model:checked="options.createMissingProxies">自动创建缺失代理</a-checkbox>
         <a-checkbox v-model:checked="options.skipDuplicates">导入时跳过重复账户</a-checkbox>
@@ -26,8 +30,8 @@
       <div class="import-layout">
         <section class="import-editor">
           <div class="import-section-head">
-            <h4>导入 JSON</h4>
-            <div class="import-head-actions">
+            <h4>{{ sourceEditorTitle }}</h4>
+            <div v-if="sourceMode === 'native'" class="import-head-actions">
               <a-button size="small" @click="fillTemplate">填入模板</a-button>
               <a-button size="small" @click="copyTemplate">复制模板</a-button>
             </div>
@@ -36,7 +40,7 @@
             v-model:value="importText"
             class="import-textarea"
             :auto-size="{ minRows: 18, maxRows: 26 }"
-            placeholder="粘贴 juhe-ai-account-import v1 JSON"
+            :placeholder="sourcePlaceholder"
           />
           <div class="import-actions">
             <a-button :disabled="!importText.trim()" :loading="previewLoading" @click="runPreview">解析预览</a-button>
@@ -46,16 +50,16 @@
 
         <section class="protocol-panel">
           <div class="import-section-head">
-            <h4>AI 提示词</h4>
-            <a-button size="small" @click="downloadProtocolMarkdown">
+            <h4>{{ sourceMode === 'native' ? 'AI 提示词' : '来源格式' }}</h4>
+            <a-button v-if="sourceMode === 'native'" size="small" @click="downloadProtocolMarkdown">
               <template #icon>
                 <DownloadOutlined />
               </template>
               导出协议 Markdown
             </a-button>
           </div>
-          <a-typography-paragraph class="ai-prompt" :copyable="{ text: aiConversionPrompt }">
-            {{ aiConversionPrompt }}
+          <a-typography-paragraph class="ai-prompt" :copyable="sourceMode === 'native' ? { text: aiConversionPrompt } : false">
+            {{ sourceGuide }}
           </a-typography-paragraph>
         </section>
       </div>
@@ -84,12 +88,27 @@
           </div>
         </div>
 
+        <div v-if="previewResult.source.mode !== 'native'" class="source-summary">
+          <span>来源处理</span>
+          <strong>{{ previewResult.source.accepted }} / {{ previewResult.source.records }}</strong>
+          <em>接受 / 读取，跳过 {{ previewResult.source.skipped }} 条，忽略 {{ previewResult.source.ignoredFields }} 个非核心字段</em>
+        </div>
+
         <a-alert
           v-if="previewResult.messages.length"
           class="preview-message"
           type="error"
           show-icon
           :message="previewResult.messages.join('；')"
+        />
+
+        <a-alert
+          v-if="previewResult.source.messages.length"
+          class="preview-message"
+          type="warning"
+          show-icon
+          message="来源记录处理提示"
+          :description="previewResult.source.messages.join('；')"
         />
 
         <a-table
@@ -139,13 +158,13 @@
 <script setup lang="ts">
 import { DownloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountImportItem, AccountImportOptions, AccountImportProxyItem, AccountImportResult } from '@/types/domain'
+import type { AccountImportItem, AccountImportOptions, AccountImportProxyItem, AccountImportResult, AccountImportSourceMode } from '@/types/domain'
 import { accountImportProtocolMarkdown, aiConversionPrompt, importTemplate } from './accountImportProtocol'
 
 const props = defineProps<{
@@ -161,6 +180,7 @@ const emit = defineEmits<{
 }>()
 
 const importText = ref('')
+const sourceMode = ref<AccountImportSourceMode>('native')
 const previewResult = ref<AccountImportResult>()
 const previewLoading = ref(false)
 const importLoading = ref(false)
@@ -168,6 +188,31 @@ const options = reactive<Required<AccountImportOptions>>({
   createMissingGroups: true,
   createMissingProxies: true,
   skipDuplicates: true
+})
+
+const sourceModeOptions = [
+  { label: '原生', value: 'native' },
+  { label: 'Sub2API', value: 'sub2api' },
+  { label: 'NewAPI', value: 'newapi' },
+  { label: 'CPA / CLIProxyAPI', value: 'cpa' },
+  { label: 'One-API', value: 'oneapi' }
+] satisfies Array<{ label: string; value: AccountImportSourceMode }>
+
+const sourceEditorTitle = computed(() => sourceMode.value === 'native' ? '导入 JSON' : `${sourceModeLabel(sourceMode.value)} 数据`)
+const sourcePlaceholder = computed(() => sourceMode.value === 'cpa'
+  ? '粘贴 CPA config.yaml 或 Codex auth JSON'
+  : sourceMode.value === 'native'
+    ? '粘贴 juhe-ai-account-import v1 JSON'
+    : `粘贴 ${sourceModeLabel(sourceMode.value)} 的 JSON 数据`)
+const sourceDescription = computed(() => sourceMode.value === 'native'
+  ? '原生模式只接受 juhe-ai-account-import v1 JSON，并保持严格字段校验。'
+  : `${sourceModeLabel(sourceMode.value)} 模式只提取可确认的 OpenAI 账户；不支持的供应商和非核心字段会在预览中跳过或计数忽略。`)
+const sourceGuide = computed(() => {
+  if (sourceMode.value === 'native') return aiConversionPrompt
+  if (sourceMode.value === 'sub2api') return '支持 Sub2API sub2api-data / sub2api-bundle v1 的 accounts 与 proxies。仅导入 OpenAI API Key/OAuth。'
+  if (sourceMode.value === 'newapi') return '支持 NewAPI Channel JSON。仅识别来源定义中明确的 OpenAI Channel，key 映射为 API Key。'
+  if (sourceMode.value === 'oneapi') return '支持 One-API Channel JSON。仅识别 OpenAI Channel，数字 type 不做跨项目猜测。'
+  return '支持 CPA config.yaml 中 codex-api-key、openai-compatibility，以及 type=codex 的 auth JSON。'
 })
 
 const accountColumns = [
@@ -193,7 +238,7 @@ watch(() => props.open, (open) => {
   previewResult.value = undefined
 })
 
-watch([importText, () => options.createMissingGroups, () => options.createMissingProxies, () => options.skipDuplicates], () => {
+watch([importText, sourceMode, () => options.createMissingGroups, () => options.createMissingProxies, () => options.skipDuplicates], () => {
   previewResult.value = undefined
 })
 
@@ -212,11 +257,11 @@ function downloadProtocolMarkdown() {
 }
 
 async function runPreview() {
-  const data = parseImportJson()
+  const data = parseImportInput()
   if (!data) return
   previewLoading.value = true
   try {
-    const payload = { data, options: { ...options } }
+    const payload = { data, sourceMode: sourceMode.value, options: { ...options } }
     previewResult.value = props.isManagementView
       ? await api.accounts.importPreview(payload, props.scopeParams)
       : await api.myAccounts.importPreview(payload)
@@ -229,17 +274,18 @@ async function runPreview() {
 }
 
 async function confirmImport() {
-  const data = parseImportJson()
+  const data = parseImportInput()
   if (!data) return
   importLoading.value = true
   try {
-    const payload = { data, options: { ...options } }
+    const payload = { data, sourceMode: sourceMode.value, options: { ...options } }
     previewResult.value = props.isManagementView
       ? await api.accounts.importConfirm(payload, props.scopeParams)
       : await api.myAccounts.importConfirm(payload)
     const created = previewResult.value.summary.accounts.create
     const skipped = previewResult.value.summary.accounts.skip
-    message.success(`导入完成：创建 ${created} 个账户，跳过 ${skipped} 个`)
+    const sourceSkipped = previewResult.value.source.skipped
+    message.success(`导入完成：创建 ${created} 个账户，跳过 ${skipped + sourceSkipped} 个`)
     emit('imported')
     if (previewResult.value.summary.accounts.failed === 0) {
       emit('update:open', false)
@@ -252,13 +298,22 @@ async function confirmImport() {
   }
 }
 
-function parseImportJson(): unknown | undefined {
+function parseImportInput(): unknown | undefined {
+  if (sourceMode.value === 'cpa') return importText.value
   try {
     return JSON.parse(importText.value)
   } catch {
     message.error('JSON 解析失败，请检查格式是否完整')
     return undefined
   }
+}
+
+function sourceModeLabel(mode: AccountImportSourceMode): string {
+  if (mode === 'native') return '原生'
+  if (mode === 'sub2api') return 'Sub2API'
+  if (mode === 'newapi') return 'NewAPI'
+  if (mode === 'oneapi') return 'One-API'
+  return 'CPA'
 }
 
 function actionText(action: AccountImportItem['action']): string {
@@ -308,6 +363,19 @@ function downloadTextFile(filename: string, content: string, type: string): void
   display: flex;
   flex-wrap: wrap;
   gap: 12px 18px;
+}
+
+.import-mode-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.import-mode-select {
+  min-width: 190px;
 }
 
 .import-layout {
@@ -400,6 +468,28 @@ function downloadTextFile(filename: string, content: string, type: string): void
 
 .summary-item.danger strong {
   color: #dc2626;
+}
+
+.source-summary {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+
+.source-summary span,
+.source-summary em {
+  color: #475569;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.source-summary strong {
+  color: #0f172a;
+  font-size: 18px;
 }
 
 .preview-message,

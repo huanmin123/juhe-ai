@@ -1,7 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
@@ -68,7 +67,6 @@ interface AccountUsageCleanupStepResult {
 
 interface AccountDatasetCleanupStepResult {
   deletedRows: number
-  hasAuditMore: boolean
   hasModelCheckMore: boolean
 }
 
@@ -231,7 +229,7 @@ export function hasDeletedAccountRelatedRecordData(input: DeletedAccountRecordCl
     return true
   }
   const datasetDatabase = getDatasetDatabase()
-  if (hasAccountAuditData(datasetDatabase, input) || hasAccountModelCheckRuns(datasetDatabase, input)) {
+  if (hasAccountModelCheckRuns(datasetDatabase, input)) {
     return true
   }
   return hasDeletedAccountStatsRows(getStatsDatabase(), input)
@@ -257,7 +255,6 @@ export function cleanupDeletedAccountDetachedStats(input: DeletedAccountDetached
 export function cleanupDeletedAccountRelatedRecordData(input: DeletedAccountRecordCleanupTarget): DeletedAccountRecordCleanupResult {
   assertSqliteAccountRecordCleanup('cleanupDeletedAccountRelatedRecordData')
   const cleanup = cleanupDeletedAccountRelatedRecordDataCore(input)
-  cleanupAuditPayloadBlobsBestEffort(cleanup.batchLimit)
   return cleanup.result
 }
 
@@ -266,7 +263,6 @@ export async function cleanupDeletedAccountRelatedRecordDataAsync(
   statsWriter?: DeletedAccountRecordStatsCleanupWriter
 ): Promise<DeletedAccountRecordCleanupResult> {
   const cleanup = await cleanupDeletedAccountRelatedRecordDataCoreAsync(input, statsWriter)
-  await cleanupAuditPayloadBlobsBestEffortAsync(cleanup.batchLimit)
   return cleanup.result
 }
 
@@ -297,9 +293,8 @@ function cleanupDeletedAccountRelatedRecordDataCore(input: DeletedAccountRecordC
         hasUsageMore = true
       }
     }
-    const hasAuditMore = datasetCleanup.hasAuditMore
     const hasModelCheckMore = datasetCleanup.hasModelCheckMore
-    let hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore
+    let hasMore = hasUsageMore || hasModelCheckMore
     if (!blockedReason && !hasMore) {
       blockedReason = cleanupDeletedAccountFinalStats(statsDatabase, input)
       hasMore = Boolean(blockedReason)
@@ -314,7 +309,6 @@ function cleanupDeletedAccountRelatedRecordDataCore(input: DeletedAccountRecordC
       hasMore,
       blockedReason: blockedReason ?? (hasMore
         ? accountCleanupPendingReason({
-          hasAuditMore,
           hasModelCheckMore,
           hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
           hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
@@ -386,9 +380,8 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
         hasUsageMore = true
       }
     }
-    const hasAuditMore = datasetCleanup.hasAuditMore
     const hasModelCheckMore = datasetCleanup.hasModelCheckMore
-    let hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore || Boolean(blockedReason)
+    let hasMore = hasUsageMore || hasModelCheckMore || Boolean(blockedReason)
     if (!blockedReason && !hasMore) {
       await statsWriter({
         target: input,
@@ -404,7 +397,6 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
       hasMore,
       blockedReason: blockedReason ?? (hasMore
         ? accountCleanupPendingReason({
-          hasAuditMore,
           hasModelCheckMore,
           hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
           hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
@@ -437,16 +429,14 @@ async function cleanupDeletedAccountRelatedRecordDataCorePostgresAsync(
     let deletedRows = 0
     await client.transaction(async (tx) => {
       deletedRows += await deletePostgresAccountUsageDataBatch(tx, input, batchLimit, updatedAt)
-      deletedRows += await deletePostgresAccountAuditDataBatch(tx, input, batchLimit)
       deletedRows += await deletePostgresAccountModelCheckRunsBatch(tx, input, batchLimit)
     })
 
-    const [hasUsageMore, hasAuditMore, hasModelCheckMore] = await Promise.all([
+    const [hasUsageMore, hasModelCheckMore] = await Promise.all([
       hasPostgresAccountUsageRecords(client, input),
-      hasPostgresAccountAuditData(client, input),
       hasPostgresAccountModelCheckRuns(client, input)
     ])
-    let hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore
+    let hasMore = hasUsageMore || hasModelCheckMore
     if (!hasMore) {
       await cleanupDeletedAccountFinalStatsAsync(client, input)
     }
@@ -458,7 +448,6 @@ async function cleanupDeletedAccountRelatedRecordDataCorePostgresAsync(
       hasMore,
       blockedReason: hasMore
         ? accountCleanupPendingReason({
-          hasAuditMore,
           hasModelCheckMore,
           hasMoreCoveredRows: hasUsageMore,
           hasUncoveredRows: false
@@ -534,14 +523,11 @@ function cleanupDeletedAccountDatasetRecordData(
   let deletedRows = 0
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    deletedRows += deleteAccountAuditDataBatch(database, input, batchLimit)
     deletedRows += deleteAccountModelCheckRunsBatch(database, input, batchLimit)
-    const hasAuditMore = hasAccountAuditData(database, input)
     const hasModelCheckMore = hasAccountModelCheckRuns(database, input)
     commitDatabaseTransaction(database, transactionStarted)
     return {
       deletedRows,
-      hasAuditMore,
       hasModelCheckMore
     }
   } catch (error) {
@@ -576,14 +562,11 @@ function emptyAccountUsageShardBatch(): AccountUsageShardBatch {
 }
 
 function accountCleanupPendingReason(input: {
-  hasAuditMore: boolean
   hasModelCheckMore: boolean
   hasMoreCoveredRows: boolean
   hasUncoveredRows: boolean
 }): string {
-  return input.hasAuditMore
-    ? '仍有已删除 AI 账户的原始审计记录待后续批次清理，已保留待后台重试'
-    : input.hasModelCheckMore
+  return input.hasModelCheckMore
     ? '仍有已删除 AI 账户的模型检测记录待后续批次清理，已保留待后台重试'
     : input.hasMoreCoveredRows
     ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
@@ -1112,59 +1095,6 @@ async function hasPostgresAccountUsageRecords(client: DatabaseClient, input: Del
   return Boolean(row?.found)
 }
 
-async function hasPostgresAccountAuditData(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return false
-  const row = await client.one<{ found?: number }>(`
-    SELECT 1 AS found
-    FROM juhe_dataset.audit_logs
-    WHERE account_id = ANY(?::text[])
-    UNION ALL
-    SELECT 1 AS found
-    FROM juhe_dataset.audit_error_groups
-    WHERE account_id = ANY(?::text[])
-    LIMIT 1
-  `, [accountIds, accountIds])
-  return Boolean(row?.found)
-}
-
-async function deletePostgresAccountAuditDataBatch(
-  client: DatabaseClient,
-  input: DeletedAccountRecordCleanupTarget,
-  limit: number
-): Promise<number> {
-  const batchLimit = Math.max(1, Math.trunc(limit))
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return 0
-  const rows = await client.query<{ id?: string | null }>(`
-    SELECT id
-    FROM juhe_dataset.audit_logs
-    WHERE account_id = ANY(?::text[])
-    ORDER BY created_at ASC, id ASC
-    LIMIT ?
-  `, [accountIds, batchLimit])
-  const auditLogIds = uniqueNonEmpty(rows.map((row) => row.id))
-  let deletedRows = 0
-  if (auditLogIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[]) AND account_id = ANY(?::text[])', [auditLogIds, accountIds]))
-  }
-
-  const groupRows = await client.query<{ id?: string | null }>(`
-    SELECT id
-    FROM juhe_dataset.audit_error_groups
-    WHERE account_id = ANY(?::text[])
-    ORDER BY updated_at ASC, id ASC
-    LIMIT ?
-  `, [accountIds, batchLimit])
-  const groupIds = uniqueNonEmpty(groupRows.map((row) => row.id))
-  if (groupIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?::text[]) AND account_id = ANY(?::text[])', [groupIds, accountIds]))
-  }
-  return deletedRows
-}
-
 async function hasPostgresAccountModelCheckRuns(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
   const accountIds = deletedAccountCleanupAccountIds(input)
   if (!accountIds.length) return false
@@ -1198,59 +1128,6 @@ async function deletePostgresAccountModelCheckRunsBatch(
   let deletedRows = 0
   deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?::text[])', [runIds]))
   deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?::text[])', [runIds]))
-  return deletedRows
-}
-
-function hasAccountAuditData(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return false
-  const placeholders = sqlPlaceholders(accountIds.length)
-  const auditLog = database
-    .prepare(`SELECT id FROM audit_logs WHERE account_id IN (${placeholders}) LIMIT 1`)
-    .get(...accountIds) as unknown as { id?: string } | undefined
-  if (auditLog?.id) return true
-  const auditErrorGroup = database
-    .prepare(`SELECT id FROM audit_error_groups WHERE account_id IN (${placeholders}) LIMIT 1`)
-    .get(...accountIds) as unknown as { id?: string } | undefined
-  return Boolean(auditErrorGroup?.id)
-}
-
-function deleteAccountAuditDataBatch(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, limit: number): number {
-  const batchLimit = Math.max(1, Math.trunc(limit))
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return 0
-  const accountPlaceholders = sqlPlaceholders(accountIds.length)
-  const rows = database
-    .prepare(`
-      SELECT id
-      FROM audit_logs
-      WHERE account_id IN (${accountPlaceholders})
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(...accountIds, batchLimit) as unknown as Array<{ id?: string }>
-  const auditLogIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  let deletedRows = 0
-  if (auditLogIds.length > 0) {
-    const placeholders = sqlPlaceholders(auditLogIds.length)
-    deletedRows += changed(database.prepare(`DELETE FROM audit_payload_refs WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
-    deletedRows += changed(database.prepare(`DELETE FROM audit_log_attempts WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
-    deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND account_id IN (${accountPlaceholders})`).run(...auditLogIds, ...accountIds))
-  }
-  const groupRows = database
-    .prepare(`
-      SELECT id
-      FROM audit_error_groups
-      WHERE account_id IN (${accountPlaceholders})
-      ORDER BY updated_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(...accountIds, batchLimit) as unknown as Array<{ id?: string }>
-  const groupIds = groupRows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (groupIds.length > 0) {
-    const placeholders = sqlPlaceholders(groupIds.length)
-    deletedRows += changed(database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders}) AND account_id IN (${accountPlaceholders})`).run(...groupIds, ...accountIds))
-  }
   return deletedRows
 }
 
@@ -1587,19 +1464,6 @@ function refreshDeletedAccountDerivedWindowsIfNeeded(input: DeletedAccountRecord
   }
 }
 
-function cleanupAuditPayloadBlobsBestEffort(limit: number): void {
-  try {
-    cleanupUnreferencedAuditPayloadBlobs(limit)
-  } catch {
-  }
-}
-
-async function cleanupAuditPayloadBlobsBestEffortAsync(limit: number): Promise<void> {
-  try {
-    await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
-  } catch {
-  }
-}
 
 async function postgresRowsExist(client: DatabaseClient, sql: string, params: unknown[]): Promise<boolean> {
   const rows = await client.query<{ found?: number }>(sql, params)

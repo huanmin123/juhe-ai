@@ -32,13 +32,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
           oldestQueuedMs: 42_000,
           flushLastSuccessAt: minutesAgo(now, 2)
         }),
-        auditLogs: queue({
-          queueLength: 6,
-          queueBytes: 72_000,
-          completedCount: 933,
-          oldestQueuedMs: 18_000,
-          flushLastSuccessAt: minutesAgo(now, 3)
-        }),
         operationLogs: queue({
           queueLength: 3,
           queueBytes: 24_000,
@@ -96,16 +89,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
           completedCount: 372,
           oldestQueuedMs: 15_000,
           flushLastSuccessAt: minutesAgo(now, 4)
-        }),
-        auditLogQueue: queue({
-          queueLength: 6,
-          queueBytes: 72_000,
-          completedCount: 933,
-          droppedCount: 1,
-          droppedSuccessCount: 1,
-          droppedFailureCount: 0,
-          oldestQueuedMs: 18_000,
-          flushLastSuccessAt: minutesAgo(now, 3)
         }),
         recordMaintenanceQueue: queue({
           queueLength: datasetCounts.accountCleanupTargets + datasetCounts.apiKeyCleanupTargets,

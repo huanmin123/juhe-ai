@@ -21,13 +21,12 @@ class FakeRedisClient implements RedisStreamDrainCommandClient {
   }
 }
 
-assert.equal(redisStreamDrainContracts.length, 5, '排空工具必须覆盖五条可靠队列流')
-assert.equal(new Set(redisStreamDrainContracts.map((item) => item.streamKey)).size, 5, '五条流 key 不得重复')
-assert.equal(new Set(redisStreamDrainContracts.map((item) => item.groupName)).size, 5, '五个 consumer group 不得重复')
+assert.equal(redisStreamDrainContracts.length, 4, '排空工具必须覆盖四条仍由 Node 拥有的可靠队列流')
+assert.equal(new Set(redisStreamDrainContracts.map((item) => item.streamKey)).size, 4, '四条流 key 不得重复')
+assert.equal(new Set(redisStreamDrainContracts.map((item) => item.groupName)).size, 4, '四个 consumer group 不得重复')
 
 for (const [relativePath, contractName] of [
   ['../../modules/gateway/usage/record-queue.service.ts', 'usageRecords'],
-  ['../../modules/audit-logs/audit-log-queue.service.ts', 'auditLogs'],
   ['../../modules/operation-logs/operation-log-queue.service.ts', 'operationLogs'],
   ['../../modules/public-api-logs/public-api-log-queue.service.ts', 'publicApiLogs'],
   ['../../modules/record-maintenance/record-maintenance-queue.service.ts', 'recordMaintenance']

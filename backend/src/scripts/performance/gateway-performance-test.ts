@@ -89,7 +89,6 @@ interface ScenarioResult {
   usageRecordBreakdownDelta: UsageRecordBreakdown
   auditLogBreakdownDelta: AuditLogBreakdown
   usageRecordQueueLength: number
-  auditLogQueueLength: number
   upstreamRequestsDelta: number
   accountSideEffects?: unknown
 }
@@ -186,7 +185,6 @@ const [
   mockdataFixtures,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue,
   usageRecordShards,
   gatewayAccountSideEffects
 ] = await Promise.all([
@@ -199,13 +197,11 @@ const [
   import('../maintenance/mockdata/fixtures.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../storage/usage-record-shards.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js')
 ])
 
 usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -260,7 +256,6 @@ async function main(): Promise<void> {
     }
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
-    await auditLogQueue.flushAllAuditLogQueueAsync()
     await closeServer(appServer)
     await closeServer(upstreamServer)
     await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
@@ -464,7 +459,6 @@ async function runScenario(input: {
       record: false
     })
     usageRecordQueue.flushAllUsageRecordQueue()
-    await auditLogQueue.flushAllAuditLogQueueAsync()
   }
 
   const usageRecordsBefore = countRows('usage_records')
@@ -489,7 +483,6 @@ async function runScenario(input: {
   const cpu = process.cpuUsage(cpuStart)
   const memoryEnd = process.memoryUsage()
   usageRecordQueue.flushAllUsageRecordQueue()
-  await auditLogQueue.flushAllAuditLogQueueAsync()
   const usageRecordsAfter = countRows('usage_records')
   const auditLogsAfter = countRows('audit_logs')
   const usageRecordBreakdownAfter = usageRecordBreakdown(usageRecordsAfter)
@@ -536,7 +529,6 @@ async function runScenario(input: {
     usageRecordBreakdownDelta: subtractUsageRecordBreakdown(usageRecordBreakdownAfter, usageRecordBreakdownBefore),
     auditLogBreakdownDelta: subtractAuditLogBreakdown(auditLogBreakdownAfter, auditLogBreakdownBefore),
     usageRecordQueueLength: usageRecordQueue.getUsageRecordQueueRuntime().queueLength,
-    auditLogQueueLength: auditLogQueue.getAuditLogQueueRuntime().queueLength,
     upstreamRequestsDelta: input.upstreamRuntime.totalRequests - upstreamRequestsBefore,
     accountSideEffects: gatewayAccountSideEffects.getGatewayAccountSideEffectState()
   }

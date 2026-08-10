@@ -20,13 +20,17 @@ let backend
 let frontend
 let runtimeLogIndexer
 let tableMonitor
+let auditLogWriter
 let shuttingDown = false
+
+let auditLogWriterEnv
 
 process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
 process.on('SIGHUP', () => shutdown(129))
 
 try {
+  auditLogWriterEnv = resolveAuditLogWriterEnv()
   console.log('[dev] starting backend...')
   const backendReadiness = createBackendReadinessTracker(backendHealthUrl, backendReadyTimeoutMs)
   backend = startPnpm(['--filter', 'juhe-ai-backend', 'dev'], 'backend', backendReadiness.acceptChunk)
@@ -34,6 +38,7 @@ try {
   console.log(`[dev] backend system API is ready: ${backendHealthUrl}`)
   runtimeLogIndexer = startRuntimeLogIndexer()
   tableMonitor = startTableMonitor()
+  auditLogWriter = startAuditLogWriter()
   console.log('[dev] starting frontend...')
   frontend = startPnpm(['--filter', 'juhe-ai-frontend', 'dev'], 'frontend')
 } catch (error) {
@@ -47,7 +52,7 @@ function startPnpm(args, label, onOutput) {
   const developmentAutoLoginUsername = resolveDevelopmentAutoLoginUsername(process.env.JUHE_AI_DEV_AUTO_LOGIN_USERNAME)
   const childEnv = label === 'backend'
     ? {
-        ...process.env,
+        ...auditLogWriterEnv,
         ...(developmentAutoLoginUsername === undefined
           ? {}
           : { JUHE_AI_DEV_AUTO_LOGIN_USERNAME: developmentAutoLoginUsername })
@@ -104,6 +109,21 @@ function startTableMonitor() {
   pipeChildOutput(child.stderr, process.stderr)
   monitorChild(child, 'Go table monitor')
 
+  return child
+}
+
+function startAuditLogWriter() {
+  console.log(`[dev] starting Go audit log writer (${auditLogWriterEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID})...`)
+  const child = spawn('go', ['run', './cmd/juhe-ai-audit-log-writer'], {
+    cwd: backendGoRoot,
+    env: auditLogWriterEnv,
+    detached: process.platform !== 'win32',
+    shell: false,
+    stdio: ['inherit', 'pipe', 'pipe']
+  })
+  pipeChildOutput(child.stdout, process.stdout)
+  pipeChildOutput(child.stderr, process.stderr)
+  monitorChild(child, 'Go audit log writer')
   return child
 }
 
@@ -335,6 +355,36 @@ function resolveTableMonitorEnv() {
   return childEnv
 }
 
+function resolveAuditLogWriterEnv() {
+  const childEnv = { ...loadBackendEnv(), ...process.env }
+  const instanceID = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID)
+  if (!instanceID) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
+  const secret = firstConfiguredValue(childEnv.JUHE_AI_SECRET)
+  if (!secret) throw new Error('JUHE_AI_SECRET is required for F3 loopback HMAC input.')
+  const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
+  const inputPort = listenAddress.slice(listenAddress.lastIndexOf(':') + 1)
+  childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID
+  childEnv.JUHE_AI_AUDIT_LOG_STORE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_STORE, childEnv.JUHE_AI_DATABASE_DRIVER, 'sqlite')
+  childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = listenAddress
+  childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret
+  childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL, `http://127.0.0.1:${inputPort}`)
+  childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-audit-log.sqlite3'))
+  childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(backendRoot, 'data', 'audit-log-blobs'))
+  childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(backendRoot, 'data', 'audit-log-hot-search'))
+  childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
+  childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
+  childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3'))
+  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
+  childEnv.JUHE_AI_STATS_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3'))
+  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-runtime-log.sqlite3'))
+  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-table-monitor.sqlite3'))
+  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = resolveBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, resolve(backendRoot, 'data', 'codex-context', 'state-shards'))
+  childEnv.JUHE_AI_USAGE_SHARD_ROOT = resolveBackendPath(childEnv.JUHE_AI_USAGE_SHARD_ROOT, resolve(backendRoot, 'data', 'usage-shards'))
+  childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '30s')
+  childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL, '1m')
+  return childEnv
+}
+
 function resolveBackendPath(value, fallback) {
   const configuredValue = value?.trim()
   return configuredValue ? (isAbsolute(configuredValue) ? configuredValue : resolve(backendRoot, configuredValue)) : fallback
@@ -428,6 +478,7 @@ function shutdown(exitCode) {
   stopChild(frontend)
   stopChild(tableMonitor, { processGroup: process.platform !== 'win32' })
   stopChild(runtimeLogIndexer, { processGroup: process.platform !== 'win32' })
+  stopChild(auditLogWriter, { processGroup: process.platform !== 'win32' })
   stopChild(backend)
   process.exit(exitCode)
 }

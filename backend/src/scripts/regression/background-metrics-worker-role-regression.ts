@@ -39,7 +39,6 @@ const retiredRoles = ['metrics-worker', 'snapshot-worker', 'probe-worker', 'main
 
 for (const type of [
   'background_worker_usage_records',
-  'background_worker_audit_logs',
   'background_worker_operation_logs',
   'background_worker_public_api_logs',
   'background_worker_record_maintenance',
@@ -71,7 +70,6 @@ assert(serverSource.includes('startDbServiceSupervisor({') && serverSource.inclu
 assertRoleBlockContainsOnly('ingest-worker', [
   'api-key-record-cleanup-retry',
   'account-record-cleanup-retry',
-  'audit-hot-retention-cleanup',
   'data-retention-cleanup'
 ])
 assertRoleBlockContainsOnly('stats-worker', [

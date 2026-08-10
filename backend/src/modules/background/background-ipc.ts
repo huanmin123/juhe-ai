@@ -7,7 +7,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { normalizeHeaderId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
-import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -18,7 +18,6 @@ import {
   type AccountHealthCheckTriggerReason,
   type CodexSourceProbeFence
 } from '../accounts/account-health-check-trigger.js'
-import { auditWorkerMessageMaxBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
 import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
 import {
   clonePendingQueueRuntime,
@@ -270,20 +269,6 @@ function attachOpsWorkerProcess(child: ChildProcess, options: { onReady?: () => 
 export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
   return sendBackgroundWorkerMessageToWorker({
     type: 'background_worker_usage_records',
-    items
-  })
-}
-
-export function sendAuditLogsToWorker(items: AuditLogInput[]): boolean {
-  return sendBackgroundWorkerMessageToWorker({
-    type: 'background_worker_audit_logs',
-    items: trimAuditLogsForWorkerIpc(items)
-  })
-}
-
-export function sendPreparedAuditLogsToWorker(items: AuditLogInput[]): boolean {
-  return sendBackgroundWorkerMessageToWorker({
-    type: 'background_worker_audit_logs',
     items
   })
 }
@@ -789,7 +774,6 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       finishWorkerStatusResponse(role, record.requestId, record.snapshot as BackgroundWorkerRuntimeSnapshot | undefined)
       break
     case 'background_worker_usage_records':
-    case 'background_worker_audit_logs':
     case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
     case 'background_worker_record_maintenance':
@@ -1249,9 +1233,6 @@ function queueWorkerMessageWithOutcome(inputMessage: BackgroundWorkerMessage): W
 }
 
 function coalesceWorkerMessage(message: BackgroundWorkerMessage): BackgroundWorkerMessage | undefined {
-  if (message.type === 'background_worker_audit_logs') {
-    return coalesceAuditLogMessage(message)
-  }
   if (message.type !== 'background_worker_record_maintenance') {
     return message
   }
@@ -1269,37 +1250,6 @@ function coalesceWorkerMessage(message: BackgroundWorkerMessage): BackgroundWork
   return remainingItems.length === message.items.length
     ? message
     : { ...message, items: remainingItems }
-}
-
-function coalesceAuditLogMessage(
-  message: Extract<BackgroundWorkerMessage, { type: 'background_worker_audit_logs' }>
-): BackgroundWorkerMessage | undefined {
-  if (message.items.length === 0) {
-    return undefined
-  }
-  const queueIndex = ingestRegularWorkerMessageQueue.findIndex((queued) => queued.type === 'background_worker_audit_logs')
-  if (queueIndex < 0) {
-    return message
-  }
-  const current = ingestRegularWorkerMessageQueue.at(queueIndex)
-  if (!current || current.type !== 'background_worker_audit_logs') {
-    return message
-  }
-  const currentBytes = estimateWorkerMessageBytes(current)
-  const nextMessage: BackgroundWorkerMessage = {
-    ...current,
-    items: [...current.items, ...message.items]
-  }
-  const nextBytes = estimateWorkerMessageBytes(nextMessage)
-  const runtime = ingestPendingQueueRuntime.auditLogs
-  const nextQueueBytes = (runtime.queueBytes ?? 0) - currentBytes + nextBytes
-  if (nextBytes > auditWorkerMessageMaxBytes || nextQueueBytes > regularWorkerMessageQueueMaxBytes) {
-    return message
-  }
-  ingestRegularWorkerMessageQueue.set(queueIndex, nextMessage)
-  ingestRegularWorkerMessageQueueBytes = Math.max(0, ingestRegularWorkerMessageQueueBytes - currentBytes + nextBytes)
-  runtime.queueBytes = Math.max(0, (runtime.queueBytes ?? 0) - currentBytes + nextBytes)
-  return undefined
 }
 
 function compactRecordMaintenanceJobsForCoalescing(items: RecordMaintenanceJob[]): RecordMaintenanceJob[] {
@@ -1378,9 +1328,7 @@ function workerMessageQueueDecision(
   const regularQueueRuntime = regularQueueCapacityRuntimeForMessage(targetRole, queueKey)
   const regularQueueLength = regularQueueRuntime.queueLength
   const regularQueueBytes = regularQueueRuntime.queueBytes
-  const maxMessageBytes = message.type === 'background_worker_audit_logs'
-    ? auditWorkerMessageMaxBytes
-    : regularWorkerMessageMaxBytes
+  const maxMessageBytes = regularWorkerMessageMaxBytes
   if (regularQueueLength >= regularWorkerMessageQueueMaxMessages) {
     return {
       accepted: false,
@@ -1678,7 +1626,6 @@ function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void
 function isRedisStreamManagedIngestQueueMessage(message: BackgroundWorkerMessage): boolean {
   switch (message.type) {
     case 'background_worker_usage_records':
-    case 'background_worker_audit_logs':
     case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
     case 'background_worker_record_maintenance':

@@ -444,19 +444,6 @@ export const backgroundScheduledJobs = [
     writes: ['runtime:account_circuit']
   }),
   scheduled({
-    jobName: 'audit-hot-retention-cleanup',
-    category: 'scheduled',
-    kind: 'maintenance',
-    lifecycle: 'hybrid',
-    defaultRole: 'ingest-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:audit_logs', 'dataset:audit_payload_refs', 'dataset:audit_payload_blobs']
-  }),
-  scheduled({
     jobName: 'data-retention-cleanup',
     category: 'scheduled',
     kind: 'maintenance',
@@ -511,19 +498,6 @@ export const backgroundWorkerRegistry = [
     leaseRequired: false,
     blocksUserVisibleFreshness: true,
     writes: ['usage-shards:usage_records']
-  }),
-  entry({
-    jobName: 'background_worker_audit_logs',
-    category: 'ipc-queue',
-    kind: 'log',
-    lifecycle: 'persistent',
-    defaultRole: 'ingest-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: false,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:audit_logs', 'dataset:audit_payload_refs', 'dataset:audit_payload_blobs']
   }),
   entry({
     jobName: 'background_worker_operation_logs',
@@ -967,19 +941,6 @@ export const backgroundWorkerRegistry = [
     leaseRequired: true,
     blocksUserVisibleFreshness: false,
     writes: ['dataset:*', 'stats:*', 'usage-shards:usage_records', 'audit-payload-files:*']
-  }),
-  entry({
-    jobName: 'record-maintenance:audit_retained_data_cleanup',
-    category: 'maintenance-task',
-    kind: 'maintenance',
-    lifecycle: 'hybrid',
-    defaultRole: 'ingest-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:audit_logs', 'dataset:audit_log_attempts', 'dataset:audit_payload_refs', 'dataset:audit_error_groups', 'dataset:audit_payload_blobs', 'audit-payload-files:*']
   }),
   entry({
     jobName: 'record-maintenance:account_usage_snapshot_upsert',

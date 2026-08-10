@@ -6,16 +6,16 @@ export type AccountTableSortOrderResolver = (field: AccountListSortField) => Tab
 
 export function buildAccountTableColumns(isManagementView: boolean, sortOrder: AccountTableSortOrderResolver): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
-    sortableColumn({ title: '名称', dataIndex: 'name', key: 'name', width: 230, fixed: 'left' }, 'name', sortOrder),
-    sortableColumn({ title: '账户类型', dataIndex: 'type', key: 'type', width: 120 }, 'type', sortOrder),
-    sortableColumn({ title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }, 'providerCode', sortOrder)
+    { title: '名称', dataIndex: 'name', key: 'name', width: 230, fixed: 'left' },
+    { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
+    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
   ]
   if (isManagementView) {
     baseColumns.push(sortableColumn({ title: '系统账户', key: 'systemAccount', width: 180 }, 'systemAccount', sortOrder))
   }
   baseColumns.push(
     sortableColumn({ title: '并发数', key: 'concurrency', width: 100, align: 'center' }, 'concurrency', sortOrder),
-    sortableColumn({ title: '状态', key: 'status', width: 120, align: 'center' }, 'status', sortOrder),
+    { title: '状态', key: 'status', width: 120, align: 'center' },
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '标签', key: 'tags', width: 160 },
@@ -49,9 +49,17 @@ export function normalizeAccountTableSorts(sorts: ResponsiveDataListSort[]): Acc
     })
     .filter((sort): sort is AccountListSortParam & { priority: number } => Boolean(sort))
     .sort((left, right) => right.priority - left.priority)
-  return mappedSorts.length
-    ? mappedSorts.map(({ field, order }) => ({ field, order }))
-    : [{ field: 'priority', order: 'asc' }]
+  return normalizeAccountTableSortParams(mappedSorts)
+}
+
+export function normalizeAccountTableSortParams(sorts: AccountListSortParam[]): AccountListSortParam[] {
+  const seenFields = new Set<AccountListSortField>()
+  const normalized = sorts.filter((sort) => {
+    if (!accountSortFields.includes(sort.field) || seenFields.has(sort.field)) return false
+    seenFields.add(sort.field)
+    return sort.order === 'asc' || sort.order === 'desc'
+  })
+  return normalized.length ? normalized : [{ field: 'priority', order: 'asc' }]
 }
 
 function accountSortFieldFromColumn(columnKey: string): AccountListSortField | undefined {
@@ -76,12 +84,8 @@ const accountSortFields: AccountListSortField[] = [
   'priority',
   'superPriority',
   'fallback',
-  'name',
-  'type',
-  'providerCode',
   'systemAccount',
   'concurrency',
-  'status',
   'lastUsedAt',
   'accountExpiresAt'
 ]

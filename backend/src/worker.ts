@@ -6,14 +6,6 @@ import {
 } from './modules/background/background-ipc.js'
 import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, stopBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
 import {
-  enqueueAuditLogsLocal,
-  flushAuditLogQueueForShutdown,
-  getAuditLogQueueRuntime,
-  installAuditLogQueueShutdownHooks,
-  startAuditLogRedisStreamConsumer,
-  stopAuditLogRedisStreamConsumer
-} from './modules/audit-logs/audit-log-queue.service.js'
-import {
   enqueueOperationLogsLocal,
   flushOperationLogQueueForShutdown,
   getOperationLogQueueRuntime,
@@ -71,7 +63,6 @@ import { isAccountHealthCheckTriggerReason, normalizeCodexSourceProbeFence } fro
 
 type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
-  | { type: 'background_worker_audit_logs'; items: unknown[] }
   | { type: 'background_worker_operation_logs'; items: unknown[] }
   | { type: 'background_worker_public_api_logs'; items: unknown[] }
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
@@ -95,14 +86,12 @@ if (isIngestWorker()) {
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
   installOperationLogQueueShutdownHooks()
-  installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
   startUsageRecordRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
-  startAuditLogRedisStreamConsumer()
 } else if (isUsageWorker()) {
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
@@ -115,11 +104,9 @@ if (isIngestWorker()) {
 } else if (isLogWorker()) {
   startLogMaintenance()
   installOperationLogQueueShutdownHooks()
-  installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
-  startAuditLogRedisStreamConsumer()
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
@@ -153,9 +140,6 @@ process.on('message', (message: unknown) => {
   switch (message.type) {
     case 'background_worker_usage_records':
       enqueueUsageRecordsLocal(message.items as Parameters<typeof enqueueUsageRecordsLocal>[0])
-      break
-    case 'background_worker_audit_logs':
-      enqueueAuditLogsLocal(message.items as Parameters<typeof enqueueAuditLogsLocal>[0])
       break
     case 'background_worker_operation_logs':
       enqueueOperationLogsLocal(message.items as Parameters<typeof enqueueOperationLogsLocal>[0])
@@ -280,7 +264,6 @@ logger.info({
 }, workerStartedMessage())
 
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
-  const auditRuntime = getAuditLogQueueRuntime()
   return {
     pid: process.pid,
     ready: true,
@@ -291,25 +274,6 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
     publicApiLogQueue: queueRuntime(getPublicApiLogQueueRuntime()),
     recordMaintenanceQueue: queueRuntime(getRecordMaintenanceQueueRuntime()),
-    auditLogQueue: queueRuntime({
-      queueLength: auditRuntime.queueLength,
-      queueBytes: auditRuntime.queueBytes,
-      flushLastSuccessAt: auditRuntime.flushLastSuccessAt,
-      flushLastError: auditRuntime.flushLastError,
-      droppedCount: auditRuntime.droppedSuccessCount
-        + auditRuntime.droppedFailureCount
-        + auditRuntime.droppedOverflowCount
-        + auditRuntime.droppedOversizeCount,
-      droppedSuccessCount: auditRuntime.droppedSuccessCount,
-      droppedFailureCount: auditRuntime.droppedFailureCount,
-      droppedOverflowCount: auditRuntime.droppedOverflowCount,
-      droppedOversizeCount: auditRuntime.droppedOversizeCount,
-      successHotRetentionHours: auditRuntime.successHotRetentionHours,
-      successRetentionDays: auditRuntime.successRetentionDays,
-      problemRetentionDays: auditRuntime.problemRetentionDays,
-      successFullBodyLimitBytes: auditRuntime.successFullBodyLimitBytes,
-      problemFullBodyLimitBytes: auditRuntime.problemFullBodyLimitBytes
-    }),
     accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
     cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
@@ -462,13 +426,11 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     await stopOperationLogRedisStreamConsumer()
     await stopPublicApiLogRedisStreamConsumer()
     await stopRecordMaintenanceRedisStreamConsumer()
-    await stopAuditLogRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
     await flushRecordMaintenanceQueueForShutdown()
-    await flushAuditLogQueueForShutdown()
     stopPerformanceProcessMetricsPublisher()
     await closeLogger()
     return
@@ -488,10 +450,8 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
   if (isLogWorker()) {
     await stopOperationLogRedisStreamConsumer()
     await stopPublicApiLogRedisStreamConsumer()
-    await stopAuditLogRedisStreamConsumer()
     flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
-    await flushAuditLogQueueForShutdown()
     stopPerformanceProcessMetricsPublisher()
     await closeLogger()
     return
@@ -533,7 +493,6 @@ function isWorkerControlMessage(message: WorkerIncomingMessage): boolean {
 function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
     || message.type === 'background_worker_usage_records'
-    || message.type === 'background_worker_audit_logs'
     || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
@@ -549,7 +508,6 @@ function isUsageWorkerMessage(message: WorkerIncomingMessage): boolean {
 
 function isLogWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
-    || message.type === 'background_worker_audit_logs'
     || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
 }
@@ -562,7 +520,6 @@ function assertLocalQueueIpcAllowed(message: WorkerIncomingMessage): void {
 
 function isLocalQueueIpcMessage(message: WorkerIncomingMessage): boolean {
   return message.type === 'background_worker_usage_records'
-    || message.type === 'background_worker_audit_logs'
     || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'

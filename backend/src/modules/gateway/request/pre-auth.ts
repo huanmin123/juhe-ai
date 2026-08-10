@@ -14,7 +14,11 @@ import {
   sanitizeUrlForLog
 } from '../../../shared/request-context.js'
 import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.js'
-import { recordDroppedAuditCapture } from '../../audit-logs/audit-log-queue.service.js'
+import { dispatchAuditLogToGo } from '../../audit-logs/audit-log-go-input.service.js'
+import { readAuditLogSettings } from '../../audit-logs/audit-log-settings.js'
+import { nowIso } from '../../../storage/database.js'
+import { randomUUID } from 'node:crypto'
+import type { AuditLogInput } from '../../../storage/audit-log-types.js'
 import { readCachedGatewayRuntimeAsync } from '../runtime/runtime-cache.service.js'
 import { inspectClientIpPolicy, recordClientIpPolicyHitAsync } from '../runtime/client-ip-policy-cache.service.js'
 import { startUserRequestLimitCoordinator } from '../runtime/user-request-limit-coordinator.js'
@@ -422,7 +426,7 @@ function recordEarlyGatewayAuthFailure(req: Request, res: Response): void {
   const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
     ? locals.gatewayAuthFailureErrorCode
     : 'invalid_request_error'
-  recordDroppedAuditCapture({
+  dispatchDroppedAuditCapture({
     traceId: context?.traceId ?? createTraceId(),
     auditOutcome: 'gateway_failed',
     success: false,
@@ -450,7 +454,7 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
     )
   }
   const context = getRequestContext()
-  recordDroppedAuditCapture({
+  dispatchDroppedAuditCapture({
     traceId: context?.traceId ?? createTraceId(),
     auditOutcome: 'gateway_failed',
     success: false,
@@ -484,7 +488,7 @@ function sendUserRequestLimitExceededResponse(req: Request, res: Response, decis
     { protocol: gatewayErrorProtocolForRequest(req) }
   )
   const context = getRequestContext()
-  recordDroppedAuditCapture({
+  dispatchDroppedAuditCapture({
     traceId: context?.traceId ?? createTraceId(),
     auditOutcome: 'gateway_failed',
     success: false,
@@ -507,6 +511,51 @@ function userRequestLimitWindowLabel(window: UserRequestLimitDecision['window'])
   if (window === 'perDay') return '每日'
   if (window === 'perWeek') return '每周'
   return '每月'
+}
+
+function dispatchDroppedAuditCapture(input: {
+  traceId: string
+  auditOutcome: AuditLogInput['auditOutcome']
+  success: boolean
+  bytes: number
+  reason: 'gateway_auth_rejected' | 'gateway_permission_rejected' | 'user_request_limit_exceeded'
+  method?: string
+  path?: string
+  queryString?: string
+  statusCode?: number
+  errorPhase?: string
+  errorCode?: string
+  errorMessage?: string
+  clientIp?: string
+  userAgent?: string
+}): void {
+  if (!readAuditLogSettings().enabled) return
+  const timestamp = nowIso()
+  const rawPath = input.path?.trim() || 'unknown'
+  const [path, ...queryParts] = sanitizeUrlForLog(input.queryString ? `${rawPath}?${input.queryString}` : rawPath).split('?')
+  dispatchAuditLogToGo({
+    id: `audit_${Date.now()}_${randomUUID()}`,
+    lifecycleStatus: 'finalized',
+    traceId: input.traceId,
+    auditOutcome: input.auditOutcome,
+    success: input.success,
+    method: input.method?.toUpperCase() ?? 'UNKNOWN',
+    path: path || 'unknown',
+    queryString: queryParts.length ? queryParts.join('?') : undefined,
+    clientIp: input.clientIp,
+    userAgent: input.userAgent,
+    finalStatusCode: input.statusCode,
+    errorPhase: input.errorPhase,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    sampleBucket: 0,
+    sampleReason: input.reason,
+    captureStatus: 'complete',
+    startedAt: timestamp,
+    endedAt: timestamp,
+    attempts: [],
+    payloads: []
+  })
 }
 
 function gatewayErrorProtocolForRequest(req: Request): 'openai' | 'anthropic' | 'gemini' {

@@ -7,10 +7,6 @@ const queueFiles = [
     required: ['peekUsageRecordFlushBatch', 'removeUsageRecordFlushBatch']
   },
   {
-    path: '../../modules/audit-logs/audit-log-queue.service.ts',
-    required: ['peekAuditLogFlushBatch', 'removeAuditLogFlushBatch']
-  },
-  {
     path: '../../modules/operation-logs/operation-log-queue.service.ts',
     required: ['pendingOperationLogs.slice(0, operationLogBatchSize)']
   },

@@ -10,9 +10,7 @@ import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.r
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezoneAsync, weekKey } from '../../storage/usage-stats-helpers.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
-import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
-import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { processCodexContextStorageCleanupBatch } from './codex-context-storage-cleanup.service.js'
 import {
   DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
@@ -132,23 +130,10 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(signal: AbortSignal):
     const nowMs = Date.now()
     const retention = postgresRetentionPolicy(settings)
     const cutoffAt = new Date(nowMs - retention.usageRecordDays * dayMs).toISOString()
-    const auditSettings = readAuditLogSettings()
     const nowAt = new Date(nowMs).toISOString()
     await enqueueRecordMaintenanceJobAsync({
       type: 'usage_records_cleanup',
       cutoffAt,
-      batchSize,
-      maxBatches
-    })
-    signal.throwIfAborted()
-    await enqueueRecordMaintenanceJobAsync({
-      type: 'audit_retained_data_cleanup',
-      nowAt,
-      successHotRetentionHours: auditSettings.successHotRetentionHours,
-      successRetentionDays: auditSettings.successRetentionDays,
-      failureRetentionDays: auditSettings.problemRetentionDays,
-      errorGroupRetentionDays: auditSettings.problemRetentionDays,
-      successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000),
       batchSize,
       maxBatches
     })
@@ -172,7 +157,6 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(signal: AbortSignal):
     logger.info({
       event: 'postgres_data_retention_maintenance_jobs_enqueued',
       cutoffAt,
-      auditNowAt: nowAt,
       usageRecordRetentionDays: retention.usageRecordDays,
       batchSize,
       maxBatches,
@@ -402,11 +386,6 @@ function cutoffMonthKey(now: number, retentionMonths: number, timezone: string):
   const date = new Date(now)
   date.setMonth(date.getMonth() - retentionMonths)
   return monthKey(date, timezone)
-}
-
-export async function runAuditHotRetentionCleanup(): Promise<void> {
-  if (runtimeConfig.databaseDriver === 'postgres') return
-  await cleanupExpiredAuditHotRetentionData()
 }
 
 export async function runExpiredDeletedAccountCleanup(): Promise<void> {

@@ -16,7 +16,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
-import { normalizeAccountTableSorts } from './accountTableColumns'
+import { normalizeAccountTableSortParams, normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
 import { isAbortError } from './accountTestTaskHelpers'
 import {
@@ -77,7 +77,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const accountOptionsScopeKey = ref('')
   const accountOptionsInFlight = new Map<string, AccountOptionsRequest>()
   let accountOptionsRequestId = 0
-  const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
+  const accountSorts = ref<AccountListSortParam[]>(normalizeAccountTableSortParams(initialPageState.sorts))
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
   let listRequestController: AbortController | undefined
   const {

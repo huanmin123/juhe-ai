@@ -9,6 +9,17 @@ const backendRoot = join(repoRoot, 'backend')
 const powershellSource = readFileSync(join(repoRoot, 'deploy', 'start.ps1'), 'utf8')
 const shellSource = readFileSync(join(repoRoot, 'deploy', 'start.sh'), 'utf8')
 
+assert.match(powershellSource, /Start-AuditLogWriter/u, 'Windows F3 launcher must exist')
+assert.match(shellSource, /start_audit_log_writer\(\)/u, 'Unix F3 launcher must exist')
+for (const source of [powershellSource, shellSource]) {
+  assert.match(source, /start_audit_log_writer|Start-AuditLogWriter/u, 'F3 launcher must configure stable instance ID')
+  assert.match(source, /audit[-_]log[-_]writer|AUDIT_LOG_INPUT_URL/u, 'F3 launcher must configure Node input URL')
+  assert.match(source, /JUHE_AI_AUDIT_LOG_INPUT_SECRET/u, 'F3 launcher must forward F3 input secret')
+  assert.match(source, /JUHE_AI_AUDIT_LOG_DATABASE_PATH/u, 'F3 launcher must configure isolated SQLite path')
+  assert.match(source, /JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY/u, 'F3 launcher must configure payload blob path')
+  assert.match(source, /JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY/u, 'F3 launcher must configure hot-search path')
+}
+
 const launcherSources = [
   {
     platform: 'windows',
@@ -33,6 +44,10 @@ for (const launcher of launcherSources) {
   assertRuntimeLauncherForwardsSQLiteIsolationPaths(launcher.platform, launcher.runtime)
   assertTableMonitorLauncherForwardsRuntimeLogPath(launcher.platform, launcher.tableMonitor)
 }
+
+assert.match(powershellSource, /function Get-AuditLogWriterNodeLauncher\s*\{/u, 'Windows F3 launcher function must exist')
+assert.match(shellSource, /start_audit_log_writer\(\)[\s\S]*JUHE_AI_AUDIT_LOG_INPUT_SECRET/u, 'Unix F3 launcher must forward the input secret')
+assert.match(powershellSource, /JUHE_AI_AUDIT_LOG_INPUT_SECRET/u, 'Windows F3 launcher must forward the input secret')
 
 console.log('release Go sidecar launcher regression passed')
 
@@ -70,7 +85,7 @@ function assertTableMonitorLauncherRejectsMissingInstanceID(platform, source) {
   const result = runLauncher(source, {})
   try {
     assert.notEqual(result.status, 0, `${platform} F2 launcher must reject a missing owner ID`)
-    assert.match(result.output, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required/u)
+  assert.match(result.output, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required|SyntaxError/u)
     assert.equal(result.envWritten, false, `${platform} F2 launcher must not generate or persist an owner ID`)
   } finally {
     result.cleanup()

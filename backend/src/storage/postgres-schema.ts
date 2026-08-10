@@ -35,16 +35,6 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text'
   },
   {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-lifecycle-pg-columns',
-    sql: "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized'"
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'audit-log-transport-pg-columns',
-    sql: 'ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text'
-  },
-  {
     schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
@@ -91,17 +81,7 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_trace_c_created_sort ON audit_logs(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_client_ip_c_created_sort ON audit_logs(system_account_id, (client_ip COLLATE "C"), created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'dataset-log-pg-prefix-indexes',
+    source: 'operation-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
 ]

@@ -1,6 +1,6 @@
 import type { AccountRuntimeProbePresentation, AccountStatus, AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
-import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { RuntimeLogFacets } from '../../storage/runtime-log-query.repository.js'
@@ -243,7 +243,6 @@ export interface DbServiceServerRuntimeSnapshot {
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
       operationLogQueue: DbServiceRuntimeQueueSnapshot
       publicApiLogQueue: DbServiceRuntimeQueueSnapshot
-      auditLogQueue: DbServiceRuntimeQueueSnapshot
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
     }
   }
@@ -380,17 +379,6 @@ export interface DbServiceServerRuntimeSnapshot {
     maxItems: number
     maxBytes: number
     maxConcurrency: number
-  }
-  auditLogTransport?: {
-    queuedJobs: number
-    queuedBytes: number
-    activeJobs: number
-    activeBytes: number
-    workerCount: number
-    completedCount: number
-    failedCount: number
-    rejectedCount: number
-    pendingDispatchCount: number
   }
 }
 
@@ -1475,10 +1463,6 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_usage_records'
     items: UsageRecordInput[]
-  }
-  | {
-    type: 'background_worker_audit_logs'
-    items: AuditLogInput[]
   }
   | {
     type: 'background_worker_operation_logs'

@@ -1,7 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
@@ -96,7 +95,6 @@ interface ApiKeyUsageCleanupStepResult {
 
 interface ApiKeyDatasetCleanupStepResult {
   deletedRows: number
-  hasAuditMore: boolean
 }
 
 export interface DeletedApiKeyRecordStatsCleanupInput {
@@ -313,7 +311,6 @@ export function listDeletedApiKeyRecordCleanupQueueTargets(limit = 50): DeletedA
 export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecordCleanupTarget): DeletedApiKeyRecordCleanupResult {
   assertSqliteApiKeyRecordCleanup('cleanupDeletedApiKeyRelatedRecordData')
   const cleanup = cleanupDeletedApiKeyRelatedRecordDataCore(input)
-  cleanupAuditPayloadBlobsBestEffort(cleanup.batchLimit)
   return cleanup.result
 }
 
@@ -322,7 +319,6 @@ export async function cleanupDeletedApiKeyRelatedRecordDataAsync(
   statsWriter?: DeletedApiKeyRecordStatsCleanupWriter
 ): Promise<DeletedApiKeyRecordCleanupResult> {
   const cleanup = await cleanupDeletedApiKeyRelatedRecordDataCoreAsync(input, statsWriter)
-  await cleanupAuditPayloadBlobsBestEffortAsync(cleanup.batchLimit)
   return cleanup.result
 }
 
@@ -353,8 +349,7 @@ function cleanupDeletedApiKeyRelatedRecordDataCore(input: DeletedApiKeyRecordCle
         hasUsageMore = true
       }
     }
-    const hasAuditMore = datasetCleanup.hasAuditMore
-    let hasMore = hasUsageMore || hasAuditMore
+    let hasMore = hasUsageMore
     if (!blockedReason && !hasMore) {
       blockedReason = cleanupDeletedApiKeyFinalStats(statsDatabase, input)
       hasMore = Boolean(blockedReason)
@@ -369,7 +364,6 @@ function cleanupDeletedApiKeyRelatedRecordDataCore(input: DeletedApiKeyRecordCle
       hasMore,
       blockedReason: blockedReason ?? (hasMore
         ? apiKeyCleanupPendingReason({
-          hasAuditMore,
           hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
           hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
         })
@@ -440,8 +434,7 @@ async function cleanupDeletedApiKeyRelatedRecordDataCoreAsync(
         hasUsageMore = true
       }
     }
-    const hasAuditMore = datasetCleanup.hasAuditMore
-    let hasMore = hasUsageMore || hasAuditMore || Boolean(blockedReason)
+    let hasMore = hasUsageMore || Boolean(blockedReason)
     if (!blockedReason && !hasMore) {
       await statsWriter({
         target: input,
@@ -457,7 +450,6 @@ async function cleanupDeletedApiKeyRelatedRecordDataCoreAsync(
       hasMore,
       blockedReason: blockedReason ?? (hasMore
         ? apiKeyCleanupPendingReason({
-          hasAuditMore,
           hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
           hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
         })
@@ -489,13 +481,9 @@ async function cleanupDeletedApiKeyRelatedRecordDataCorePostgresAsync(
     let deletedRows = 0
     await client.transaction(async (tx) => {
       deletedRows += await deletePostgresApiKeyUsageDataBatch(tx, input, batchLimit, updatedAt)
-      deletedRows += await deletePostgresApiKeyAuditDataBatch(tx, input, batchLimit)
     })
-    const [hasUsageMore, hasAuditMore] = await Promise.all([
-      hasPostgresApiKeyUsageRecords(client, input),
-      hasPostgresApiKeyAuditLogs(client, input)
-    ])
-    let hasMore = hasUsageMore || hasAuditMore
+    const hasUsageMore = await hasPostgresApiKeyUsageRecords(client, input)
+    let hasMore = hasUsageMore
     if (!hasMore) {
       await cleanupDeletedApiKeyFinalStatsAsync(client, input)
     }
@@ -506,7 +494,6 @@ async function cleanupDeletedApiKeyRelatedRecordDataCorePostgresAsync(
       hasMore,
       blockedReason: hasMore
         ? apiKeyCleanupPendingReason({
-          hasAuditMore,
           hasMoreCoveredRows: hasUsageMore,
           hasUncoveredRows: false
         })
@@ -581,13 +568,8 @@ function cleanupDeletedApiKeyDatasetRecordData(
   let deletedRows = 0
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    deletedRows += deleteApiKeyAuditDataBatch(database, input, batchLimit)
-    const hasAuditMore = hasApiKeyAuditLogs(database, input)
     commitDatabaseTransaction(database, transactionStarted)
-    return {
-      deletedRows,
-      hasAuditMore
-    }
+    return { deletedRows }
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
@@ -620,13 +602,10 @@ function emptyApiKeyUsageShardBatch(): ApiKeyUsageShardBatch {
 }
 
 function apiKeyCleanupPendingReason(input: {
-  hasAuditMore: boolean
   hasMoreCoveredRows: boolean
   hasUncoveredRows: boolean
 }): string {
-  return input.hasAuditMore
-    ? '仍有已删除 API Key 的原始审计记录待后续批次清理，已保留待后台重试'
-    : input.hasMoreCoveredRows
+  return input.hasMoreCoveredRows
     ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
     : input.hasUncoveredRows
     ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
@@ -1090,115 +1069,6 @@ async function hasPostgresApiKeyUsageRecords(client: DatabaseClient, input: Dele
   return Boolean(row?.found)
 }
 
-async function hasPostgresApiKeyAuditLogs(client: DatabaseClient, input: DeletedApiKeyRecordCleanupTarget): Promise<boolean> {
-  const row = await client.one<{ found?: number }>(`
-    SELECT 1 AS found
-    FROM juhe_dataset.audit_logs
-    WHERE api_key_id = ?
-      AND system_account_id = ?
-    UNION ALL
-    SELECT 1 AS found
-    FROM juhe_dataset.audit_error_groups
-    WHERE api_key_id = ?
-      AND system_account_id = ?
-    LIMIT 1
-  `, [input.apiKeyId, input.systemAccountId, input.apiKeyId, input.systemAccountId])
-  return Boolean(row?.found)
-}
-
-async function deletePostgresApiKeyAuditDataBatch(
-  client: DatabaseClient,
-  input: DeletedApiKeyRecordCleanupTarget,
-  limit: number
-): Promise<number> {
-  const batchLimit = Math.max(1, Math.trunc(limit))
-  const rows = await client.query<{ id?: string | null }>(`
-    SELECT id
-    FROM juhe_dataset.audit_logs
-    WHERE api_key_id = ?
-      AND system_account_id = ?
-    ORDER BY created_at ASC, id ASC
-    LIMIT ?
-  `, [input.apiKeyId, input.systemAccountId, batchLimit])
-  const auditLogIds = uniqueNonEmpty(rows.map((row) => row.id))
-  let deletedRows = 0
-  if (auditLogIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [auditLogIds]))
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[]) AND api_key_id = ? AND system_account_id = ?', [
-      auditLogIds,
-      input.apiKeyId,
-      input.systemAccountId
-    ]))
-  }
-  const groupRows = await client.query<{ id?: string | null }>(`
-    SELECT id
-    FROM juhe_dataset.audit_error_groups
-    WHERE api_key_id = ?
-      AND system_account_id = ?
-    ORDER BY updated_at ASC, id ASC
-    LIMIT ?
-  `, [input.apiKeyId, input.systemAccountId, batchLimit])
-  const groupIds = uniqueNonEmpty(groupRows.map((row) => row.id))
-  if (groupIds.length > 0) {
-    deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?::text[]) AND api_key_id = ? AND system_account_id = ?', [
-      groupIds,
-      input.apiKeyId,
-      input.systemAccountId
-    ]))
-  }
-  return deletedRows
-}
-
-function hasApiKeyAuditLogs(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): boolean {
-  const auditLog = database
-    .prepare('SELECT id FROM audit_logs WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
-    .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
-  if (auditLog?.id) return true
-  const auditErrorGroup = database
-    .prepare('SELECT id FROM audit_error_groups WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
-    .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
-  return Boolean(auditErrorGroup?.id)
-}
-
-function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, limit: number): number {
-  const batchLimit = Math.max(1, Math.trunc(limit))
-  const rows = database
-    .prepare(`
-      SELECT id
-      FROM audit_logs
-      WHERE api_key_id = ?
-        AND system_account_id = ?
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(input.apiKeyId, input.systemAccountId, batchLimit) as unknown as Array<{ id?: string }>
-  const auditLogIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  let deletedRows = 0
-  if (auditLogIds.length > 0) {
-    const placeholders = sqlPlaceholders(auditLogIds.length)
-    deletedRows += changed(database.prepare(`DELETE FROM audit_payload_refs WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
-    deletedRows += changed(database.prepare(`DELETE FROM audit_log_attempts WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
-    deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND api_key_id = ? AND system_account_id = ?`).run(...auditLogIds, input.apiKeyId, input.systemAccountId))
-  }
-  const groupRows = database
-    .prepare(`
-      SELECT id
-      FROM audit_error_groups
-      WHERE api_key_id = ?
-        AND system_account_id = ?
-      ORDER BY updated_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(input.apiKeyId, input.systemAccountId, batchLimit) as unknown as Array<{ id?: string }>
-  const groupIds = groupRows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (groupIds.length > 0) {
-    const placeholders = sqlPlaceholders(groupIds.length)
-    deletedRows += changed(database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders}) AND api_key_id = ? AND system_account_id = ?`).run(...groupIds, input.apiKeyId, input.systemAccountId))
-  }
-  return deletedRows
-}
-
 function deleteApiKeyScopeStatsRows(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
   for (const tableName of apiKeyScopeStatsTables) {
     database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`)
@@ -1277,19 +1147,6 @@ function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCl
   }
 }
 
-function cleanupAuditPayloadBlobsBestEffort(limit: number): void {
-  try {
-    cleanupUnreferencedAuditPayloadBlobs(limit)
-  } catch {
-  }
-}
-
-async function cleanupAuditPayloadBlobsBestEffortAsync(limit: number): Promise<void> {
-  try {
-    await cleanupUnreferencedAuditPayloadBlobsAsync(limit)
-  } catch {
-  }
-}
 
 async function postgresRowsExist(client: DatabaseClient, sql: string, params: unknown[]): Promise<boolean> {
   const rows = await client.query<{ found?: number }>(sql, params)

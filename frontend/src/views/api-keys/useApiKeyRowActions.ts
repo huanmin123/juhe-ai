@@ -9,6 +9,7 @@ import type { ApiKeySummary } from '@/types/domain'
 import { mergeApiKeyMutationResult } from './apiKeyMutation'
 import { refreshedApiKeyListItem } from './apiKeyRefreshRow'
 import type { ApiKeyScopeParams } from './apiKeyScope'
+import { buildCcSwitchExportUrl } from './ccswitchExport'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
 
@@ -23,6 +24,7 @@ interface UseApiKeyRowActionsInput {
   operationScopeParams: (apiKey?: Pick<ApiKeySummary, 'systemAccountId'>) => ApiKeyScopeParams
   openEdit: (apiKey: ApiKeySummary) => void | Promise<void>
   reload: () => void | Promise<unknown>
+  gatewayBaseUrl: () => string
   removeItems: (predicate: (item: ApiKeySummary) => boolean) => number
   showCreatedKey: (payload: CreatedKeyPayload) => void
   updateItems: (predicate: (item: ApiKeySummary) => boolean, updater: (item: ApiKeySummary) => ApiKeySummary) => number
@@ -32,6 +34,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   const statusUpdatingId = ref('')
   const keyRefreshingId = ref('')
   const keyCopyingId = ref('')
+  const ccsExportingId = ref('')
 
   async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
     if (keyCopyingId.value) return
@@ -98,6 +101,15 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
         disabled: refreshDisabled,
         confirmTitle: `确认刷新 API Key ${apiKey.name} 的密钥？刷新后旧密钥会立即失效，请先确认客户端配置可同步更新。`,
         confirmOkText: '刷新'
+      },
+      {
+        key: 'export-ccs',
+        label: '导出 CCS',
+        icon: 'export',
+        tone: 'info',
+        disabled: busy || Boolean(ccsExportingId.value),
+        confirmTitle: '导出 CCS 会把完整 API Key 通过本机 ccswitch:// 协议交给 CC Switch 客户端。确认继续？',
+        confirmOkText: '导出'
       }
     ]
   }
@@ -115,8 +127,35 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
       void refreshApiKeySecret(apiKey)
       return
     }
+    if (key === 'export-ccs') {
+      void exportToCcSwitch(apiKey)
+      return
+    }
     if (key === 'delete') {
       void removeApiKey(apiKey)
+    }
+  }
+
+  async function exportToCcSwitch(apiKey: ApiKeySummary): Promise<void> {
+    if (ccsExportingId.value) return
+    ccsExportingId.value = apiKey.id
+    try {
+      const key = (await input.apiKeysApi.secret(apiKey.id, input.operationScopeParams(apiKey))).key
+      const url = buildCcSwitchExportUrl({
+        apiKey: key,
+        endpoint: input.gatewayBaseUrl(),
+        homepage: input.gatewayBaseUrl(),
+        name: apiKey.name
+      })
+      if (typeof window === 'undefined') throw new Error('当前环境不支持 CCS 导出')
+      window.open(url, '_self')
+      window.setTimeout(() => {
+        if (document.hasFocus()) message.warning('未检测到 CC Switch 客户端，请确认已安装并允许打开 ccswitch:// 链接')
+      }, 300)
+    } catch (error) {
+      message.error(extractApiErrorMessage(error, '导出 CCS 失败'))
+    } finally {
+      if (ccsExportingId.value === apiKey.id) ccsExportingId.value = ''
     }
   }
 
@@ -184,6 +223,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
 
   return {
     keyCopyingId,
+    ccsExportingId,
     keyRefreshingId,
     statusUpdatingId,
     apiKeyMoreActions,

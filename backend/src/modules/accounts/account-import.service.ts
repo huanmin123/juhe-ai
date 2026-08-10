@@ -17,6 +17,11 @@ import { planImportProxies, planImportProxiesAsync, type AccountImportProxyPlan 
 import { planImportAccount, planImportAccountAsync, type AccountImportAccountPlan } from './account-import-account-plan.js'
 import { validateAccountImportRoot } from './account-import-root-validation.js'
 import { executeAccountImportPlan, executeAccountImportPlanAsync } from './account-import-executor.js'
+import {
+  adaptAccountImportSource,
+  type AccountImportSourceMode,
+  type AccountImportSourceSummary
+} from './account-import-source-adapters.js'
 
 export const accountImportProtocolType = 'juhe-ai-account-import'
 export const accountImportProtocolVersion = 1
@@ -89,6 +94,7 @@ export interface AccountImportResult {
   accounts: AccountImportItem[]
   proxies: AccountImportProxyItem[]
   messages: string[]
+  source: AccountImportSourceSummary
 }
 
 interface ImportPlan {
@@ -105,16 +111,31 @@ interface ImportContext extends AccountImportResourceContext, AccountImportProvi
   targetSystemAccountId?: string
 }
 
-export function previewAccountImport(data: unknown, options: AccountImportOptions = {}, access?: AccessScope): AccountImportResult {
-  return buildImportPlan(data, options, access).result
+export function previewAccountImport(
+  data: unknown,
+  options: AccountImportOptions = {},
+  access?: AccessScope,
+  sourceMode: AccountImportSourceMode = 'native'
+): AccountImportResult {
+  return buildImportPlan(data, options, access, sourceMode).result
 }
 
-export async function previewAccountImportAsync(data: unknown, options: AccountImportOptions = {}, access?: AccessScope): Promise<AccountImportResult> {
-  return (await buildImportPlanAsync(data, options, access)).result
+export async function previewAccountImportAsync(
+  data: unknown,
+  options: AccountImportOptions = {},
+  access?: AccessScope,
+  sourceMode: AccountImportSourceMode = 'native'
+): Promise<AccountImportResult> {
+  return (await buildImportPlanAsync(data, options, access, sourceMode)).result
 }
 
-export function executeAccountImport(data: unknown, options: AccountImportOptions = {}, access: AccessScope): AccountImportResult {
-  const plan = buildImportPlan(data, options, access)
+export function executeAccountImport(
+  data: unknown,
+  options: AccountImportOptions = {},
+  access: AccessScope,
+  sourceMode: AccountImportSourceMode = 'native'
+): AccountImportResult {
+  const plan = buildImportPlan(data, options, access, sourceMode)
   const result = plan.result
   result.mode = 'import'
   if (!result.canImport) {
@@ -124,8 +145,13 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
   return executeAccountImportPlan(plan, access)
 }
 
-export async function executeAccountImportAsync(data: unknown, options: AccountImportOptions = {}, access: AccessScope): Promise<AccountImportResult> {
-  const plan = await buildImportPlanAsync(data, options, access)
+export async function executeAccountImportAsync(
+  data: unknown,
+  options: AccountImportOptions = {},
+  access: AccessScope,
+  sourceMode: AccountImportSourceMode = 'native'
+): Promise<AccountImportResult> {
+  const plan = await buildImportPlanAsync(data, options, access, sourceMode)
   const result = plan.result
   result.mode = 'import'
   if (!result.canImport) {
@@ -143,7 +169,12 @@ export function defaultAccountImportOptions(options: AccountImportOptions = {}):
   }
 }
 
-function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access?: AccessScope): ImportPlan {
+function buildImportPlan(
+  data: unknown,
+  rawOptions: AccountImportOptions,
+  access: AccessScope | undefined,
+  sourceMode: AccountImportSourceMode
+): ImportPlan {
   const options = defaultAccountImportOptions(rawOptions)
   const providers = listProviders()
   const context: ImportContext = {
@@ -155,13 +186,17 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
     proxyLookup: new Map()
   }
   const result = emptyResult('preview')
-  const root = validateAccountImportRoot(data, result.messages, {
+  const adaptation = adaptAccountImportSource(data, sourceMode)
+  result.source = adaptation.source
+  const validationMessages: string[] = []
+  const root = validateAccountImportRoot(adaptation.data, validationMessages, {
     maxAccounts: accountImportMaxAccounts,
     maxProxies: accountImportMaxProxies,
     protocolType: accountImportProtocolType,
     protocolVersion: accountImportProtocolVersion
   })
   if (!root.success) {
+    result.messages.push(...validationMessages)
     return emptyPlan(result)
   }
 
@@ -190,7 +225,12 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
   }
 }
 
-async function buildImportPlanAsync(data: unknown, rawOptions: AccountImportOptions, access?: AccessScope): Promise<ImportPlan> {
+async function buildImportPlanAsync(
+  data: unknown,
+  rawOptions: AccountImportOptions,
+  access: AccessScope | undefined,
+  sourceMode: AccountImportSourceMode
+): Promise<ImportPlan> {
   const options = defaultAccountImportOptions(rawOptions)
   const providers = await listProvidersAsync()
   const context: ImportContext = {
@@ -202,13 +242,17 @@ async function buildImportPlanAsync(data: unknown, rawOptions: AccountImportOpti
     proxyLookup: new Map()
   }
   const result = emptyResult('preview')
-  const root = validateAccountImportRoot(data, result.messages, {
+  const adaptation = adaptAccountImportSource(data, sourceMode)
+  result.source = adaptation.source
+  const validationMessages: string[] = []
+  const root = validateAccountImportRoot(adaptation.data, validationMessages, {
     maxAccounts: accountImportMaxAccounts,
     maxProxies: accountImportMaxProxies,
     protocolType: accountImportProtocolType,
     protocolVersion: accountImportProtocolVersion
   })
   if (!root.success) {
+    result.messages.push(...validationMessages)
     return emptyPlan(result)
   }
 
@@ -265,6 +309,14 @@ function emptyResult(mode: AccountImportResult['mode']): AccountImportResult {
     },
     accounts: [],
     proxies: [],
-    messages: []
+    messages: [],
+    source: {
+      mode: 'native',
+      records: 0,
+      accepted: 0,
+      skipped: 0,
+      ignoredFields: 0,
+      messages: []
+    }
   }
 }

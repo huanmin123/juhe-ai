@@ -27,11 +27,6 @@ const queueContracts = [
     startConsumer: 'startUsageRecordRedisStreamConsumer'
   },
   {
-    file: 'modules/audit-logs/audit-log-queue.service.ts',
-    functionName: 'shouldEnqueueAuditLogToRedisStream',
-    startConsumer: 'startAuditLogRedisStreamConsumer'
-  },
-  {
     file: 'modules/operation-logs/operation-log-queue.service.ts',
     functionName: 'shouldEnqueueOperationLogToRedisStream',
     startConsumer: 'startOperationLogRedisStreamConsumer'
@@ -550,9 +545,6 @@ function assertStrictRedisCacheBoundaries(): void {
 
   const auditCaptureSource = source('modules/gateway/audit/capture.service.ts')
   assert.match(functionBody(auditCaptureSource, 'auditModelAccounting'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*resolveCatalogPricingModel/, '高性能审计尝试记录不能同步读取模型目录解析 pricingModel')
-  const auditLogsRepositorySource = source('storage/audit-logs.repository.ts')
-  assert.match(auditLogsRepositorySource, /resolveCatalogPricingModelAsync/, 'PostgreSQL 审计日志写入前必须在异步落库链路补齐 pricingModel')
-  assert.match(functionBody(auditLogsRepositorySource, 'createAuditLogsBatchPostgres'), /await enrichPostgresAuditLogPricing\(inputs\)[\s\S]*for \(const input of enrichedInputs\)/, 'PostgreSQL 审计日志必须先异步补齐 pricingModel，再生成写入计划')
 }
 
 function assertPostgresAsyncRuntimeFactReads(): void {

@@ -13,13 +13,14 @@ import { createDedicatedRedisClient } from '../../shared/redis-client.js'
 import { closeStorageDatabases } from '../../storage/database.js'
 import type { DatabaseClient } from '../../storage/database-client.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
-import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import { closePostgresPool, getPostgresPool, postgresApplicationName } from '../../storage/postgres-client.js'
 
 interface LoadConfig {
   durationMs: number
   concurrency: number
   writeRatio: number
   accountCount: number
+  activeAccountCount: number
   warmupRequests: number
   sampleIntervalMs: number
   requestTimeoutMs: number
@@ -64,7 +65,16 @@ interface RequestMetric {
   status: number
   ok: boolean
   latencyMs: number
+  serverTiming?: Record<string, number>
   error?: string
+}
+
+interface TimingReport {
+  count: number
+  p50Ms: number
+  p95Ms: number
+  p99Ms: number
+  maxMs: number
 }
 
 interface OperationReport {
@@ -76,6 +86,7 @@ interface OperationReport {
   p99Ms: number
   maxMs: number
   statuses: Record<string, number>
+  serverTiming: Record<string, TimingReport>
 }
 
 interface PostgresSample {
@@ -266,12 +277,13 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
   try {
     const accounts: Array<{ id: string; name: string }> = []
     for (let index = 0; index < input.accountCount; index += 1) {
-      const account = await postEnvelope<{ id: string; name: string }>(baseUrl, '/__aisys__/api/accounts', {
-        name: `压测AI账户${suffix}-${index + 1}`,
+      const accountName = `压测AI账户${suffix}-${index + 1}`
+      const account = await postEnvelope<{ id: string }>(baseUrl, '/__aisys__/api/accounts', {
+        name: accountName,
         providerCode: 'gpt',
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
-        status: 'temporary_unavailable',
+        status: index < input.activeAccountCount ? 'active' : 'disabled',
         groupId: group.id,
         credentials: {
           api_key: `sk-load-account-${suffix}-${index + 1}`,
@@ -289,14 +301,7 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
         priority: 5
       }, cookie, input.requestTimeoutMs)
       partial.accountIds?.push(account.id)
-      await patchEnvelope<{ id: string; status: string; schedulable: boolean }>(
-        baseUrl,
-        `/__aisys__/api/accounts/${account.id}`,
-        { clearFailureState: true },
-        cookie,
-        input.requestTimeoutMs
-      )
-      accounts.push(account)
+      accounts.push({ id: account.id, name: accountName })
     }
     const primaryAccount = accounts[0]
     assert.ok(primaryAccount, '压测至少需要创建一个 AI 账户')
@@ -346,6 +351,7 @@ async function runWorkers(
   metrics: RequestMetric[]
 ): Promise<void> {
   const endAt = performance.now() + input.durationMs
+  const accountWriteChains = new Map<string, Promise<void>>()
   await Promise.all(Array.from({ length: input.concurrency }, async (_item, workerIndex) => {
     let requestIndex = 0
     while (performance.now() < endAt) {
@@ -353,13 +359,15 @@ async function runWorkers(
       const started = performance.now()
       try {
         const response = await selected.run(workerIndex, requestIndex)
+        const serverTiming = parseServerTiming(response.headers.get('server-timing'))
         await response.arrayBuffer()
         const latencyMs = performance.now() - started
         metrics.push({
           operation: selected.name,
           status: response.status,
           ok: response.ok,
-          latencyMs
+          latencyMs,
+          serverTiming
         })
       } catch (error) {
         metrics.push({
@@ -392,14 +400,22 @@ async function runWorkers(
       }
       return {
         name: 'PATCH /accounts/:id',
-        run: () => fetch(`${baseUrl}/__aisys__/api/accounts/${writeAccount.id}`, {
-          method: 'PATCH',
-          headers: {
+        run: () => enqueueAccountWrite(writeAccount.id, async () => {
+          const editable = await getEnvelope<{ configRevision: number }>(
+            baseUrl,
+            `/__aisys__/api/accounts/${writeAccount.id}/edit-basic`,
             cookie,
-            'content-type': 'application/json'
-          },
-          signal: AbortSignal.timeout(input.requestTimeoutMs),
-          body: JSON.stringify(patchBody)
+            input.requestTimeoutMs
+          )
+          return fetch(`${baseUrl}/__aisys__/api/accounts/${writeAccount.id}`, {
+            method: 'PATCH',
+            headers: {
+              cookie,
+              'content-type': 'application/json'
+            },
+            signal: AbortSignal.timeout(input.requestTimeoutMs),
+            body: JSON.stringify({ ...patchBody, expectedConfigRevision: editable.configRevision })
+          })
         })
       }
     }
@@ -426,6 +442,19 @@ async function runWorkers(
       name: selected.name,
       run: () => getRaw(baseUrl, selected.path, cookie, input.requestTimeoutMs)
     }
+  }
+
+  function enqueueAccountWrite<T>(accountId: string, task: () => Promise<T>): Promise<T> {
+    const previous = accountWriteChains.get(accountId) ?? Promise.resolve()
+    const queued = previous.catch(() => undefined).then(task)
+    const tail = queued.then(() => undefined, () => undefined)
+    accountWriteChains.set(accountId, tail)
+    void tail.then(() => {
+      if (accountWriteChains.get(accountId) === tail) {
+        accountWriteChains.delete(accountId)
+      }
+    })
+    return queued
   }
 }
 
@@ -572,8 +601,8 @@ async function samplePostgres(): Promise<PostgresSample> {
       COALESCE(max(EXTRACT(EPOCH FROM (now() - query_start))) FILTER (WHERE state = 'active' AND query_start IS NOT NULL), 0) AS max_active_query_seconds
     FROM pg_stat_activity
     WHERE datname = current_database()
-      AND application_name = 'juhe-ai-backend'
-  `)
+      AND application_name = $1
+  `, [postgresApplicationName()])
   const locks = await pool.query(`
     SELECT count(*) AS not_granted_locks
     FROM pg_locks
@@ -737,9 +766,19 @@ function collectViolations(
 function summarizeOperation(items: RequestMetric[]): OperationReport {
   const latencies = items.map((item) => item.latencyMs)
   const statuses: Record<string, number> = {}
+  const timingSamples = new Map<string, number[]>()
   for (const item of items) {
     const key = String(item.status)
     statuses[key] = (statuses[key] ?? 0) + 1
+    for (const [name, durationMs] of Object.entries(item.serverTiming ?? {})) {
+      const samples = timingSamples.get(name) ?? []
+      samples.push(durationMs)
+      timingSamples.set(name, samples)
+    }
+  }
+  const serverTiming: Record<string, TimingReport> = {}
+  for (const [name, samples] of timingSamples) {
+    serverTiming[name] = summarizeTiming(samples)
   }
   return {
     count: items.length,
@@ -749,8 +788,55 @@ function summarizeOperation(items: RequestMetric[]): OperationReport {
     p95Ms: percentile(latencies, 0.95),
     p99Ms: percentile(latencies, 0.99),
     maxMs: percentile(latencies, 1),
-    statuses
+    statuses,
+    serverTiming
   }
+}
+
+function summarizeTiming(samples: number[]): TimingReport {
+  return {
+    count: samples.length,
+    p50Ms: percentile(samples, 0.50),
+    p95Ms: percentile(samples, 0.95),
+    p99Ms: percentile(samples, 0.99),
+    maxMs: percentile(samples, 1)
+  }
+}
+
+function parseServerTiming(value: string | null): Record<string, number> | undefined {
+  if (!value?.trim()) return undefined
+  const timings: Record<string, number> = {}
+  for (const metric of splitServerTiming(value)) {
+    const [rawName, ...parameters] = metric.split(';')
+    const name = rawName?.trim()
+    if (!name) continue
+    for (const parameter of parameters) {
+      const match = /^\s*dur\s*=\s*(?:"([^"]+)"|([^\s;]+))\s*$/i.exec(parameter)
+      if (!match) continue
+      const durationMs = Number(match[1] ?? match[2])
+      if (Number.isFinite(durationMs) && durationMs >= 0) {
+        timings[name] = durationMs
+      }
+      break
+    }
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined
+}
+
+function splitServerTiming(value: string): string[] {
+  const metrics: string[] = []
+  let start = 0
+  let quoted = false
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (character === '"') quoted = !quoted
+    if (character === ',' && !quoted) {
+      metrics.push(value.slice(start, index))
+      start = index + 1
+    }
+  }
+  metrics.push(value.slice(start))
+  return metrics
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie: string | undefined, timeoutMs: number): Promise<T> {
@@ -811,13 +897,15 @@ function validateRuntime(): void {
 
 function loadConfig(): LoadConfig {
   const concurrency = intEnv('JUHE_PERFORMANCE_LOAD_CONCURRENCY', 50, 1, 500)
+  const accountCount = intEnv('JUHE_PERFORMANCE_LOAD_ACCOUNT_COUNT', Math.min(concurrency, 20), 1, 1000)
   const reportPath = process.env.JUHE_PERFORMANCE_LOAD_REPORT_PATH?.trim()
   const baseUrl = normalizeBaseUrl(process.env.JUHE_PERFORMANCE_LOAD_BASE_URL)
   return {
     durationMs: intEnv('JUHE_PERFORMANCE_LOAD_DURATION_MS', 30_000, 1_000, 600_000),
     concurrency,
     writeRatio: numberEnv('JUHE_PERFORMANCE_LOAD_WRITE_RATIO', 0.15, 0, 1),
-    accountCount: intEnv('JUHE_PERFORMANCE_LOAD_ACCOUNT_COUNT', Math.min(concurrency, 20), 1, 1000),
+    accountCount,
+    activeAccountCount: intEnv('JUHE_PERFORMANCE_LOAD_ACTIVE_ACCOUNT_COUNT', accountCount, 0, accountCount),
     warmupRequests: intEnv('JUHE_PERFORMANCE_LOAD_WARMUP_REQUESTS', 100, 0, 10_000),
     sampleIntervalMs: intEnv('JUHE_PERFORMANCE_LOAD_SAMPLE_INTERVAL_MS', 1000, 100, 10_000),
     requestTimeoutMs: intEnv('JUHE_PERFORMANCE_LOAD_REQUEST_TIMEOUT_MS', 15_000, 1000, 120_000),

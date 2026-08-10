@@ -10,6 +10,7 @@
       :is-management-view="isManagementView"
       :providers="availableProviders"
       :refresh-loading="loading"
+      :all-loaded-selected="allLoadedAccountsSelected"
       :selected-count="selectedAccounts.length"
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
@@ -717,6 +718,10 @@ const batchEditDisabledReason = computed(() => {
   }
   return ''
 })
+const allLoadedAccountsSelected = computed(() => {
+  const loadedSelectableCount = accounts.value.filter(canSelectAccountForBatch).length
+  return loadedSelectableCount > 0 && selectedAccounts.value.length === loadedSelectableCount
+})
 const {
   exportAccounts,
   exportLoading
@@ -725,6 +730,7 @@ const {
   accountSorts,
   filters,
   isManagementView,
+  allLoadedAccountsSelected,
   selectedAccounts,
   systemAccounts
 })

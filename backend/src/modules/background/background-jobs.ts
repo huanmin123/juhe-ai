@@ -49,7 +49,6 @@ import {
 import {
   runAccountRecordCleanupRetry,
   runApiKeyRecordCleanupRetry,
-  runAuditHotRetentionCleanup,
   runChatRetentionCleanup,
   runDataRetentionCleanup,
   runExpiredDeletedAccountCleanup
@@ -413,7 +412,6 @@ function scheduleAccountQualityRefreshJob(): void {
 }
 
 function scheduleLogIngestJobs(): void {
-  scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
 }
 
 async function runAccountCircuitControlPlaneMaintenance(): Promise<void> {

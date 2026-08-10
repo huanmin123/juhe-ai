@@ -1,6 +1,8 @@
 import type { AccountExportFilters, AccountListSortParam } from '@/api/client'
 import type { AccountListItem } from '@/types/domain'
 
+export const ACCOUNT_EXPORT_MAX_ACCOUNTS = 500
+
 export interface AccountExportFilterState {
   keyword: string
   providerCode: string

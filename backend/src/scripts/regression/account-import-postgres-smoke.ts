@@ -64,6 +64,84 @@ const importPayload = {
     skipDuplicates: true
   }
 }
+const sourceImportPayloads = [
+  {
+    label: 'Sub2API',
+    sourceMode: 'sub2api' as const,
+    accountName: `Sub2API PG烟测账号${marker}`,
+    groupName: 'Sub2API 导入',
+    data: {
+      type: 'sub2api-data',
+      version: 1,
+      accounts: [
+        {
+          name: `Sub2API PG烟测账号${marker}`,
+          platform: 'openai',
+          type: 'apikey',
+          credentials: {
+            api_key: `sk-sub2api-${marker}`,
+            base_url: 'https://api.openai.com/v1',
+            runtime_only: 'ignored'
+          },
+          runtime_only: 'ignored'
+        }
+      ]
+    }
+  },
+  {
+    label: 'NewAPI',
+    sourceMode: 'newapi' as const,
+    accountName: `NewAPI PG烟测账号${marker}`,
+    groupName: `NewAPI PG烟测分组${marker}`,
+    data: [
+      {
+        type: 1,
+        name: `NewAPI PG烟测账号${marker}`,
+        key: `sk-newapi-${marker}`,
+        base_url: 'https://api.openai.com/v1',
+        group: `NewAPI PG烟测分组${marker}`,
+        runtime_only: 'ignored'
+      }
+    ]
+  },
+  {
+    label: 'One-API',
+    sourceMode: 'oneapi' as const,
+    accountName: `OneAPI PG烟测账号${marker}`,
+    groupName: `OneAPI PG烟测分组${marker}`,
+    data: [
+      {
+        type: 'openai',
+        name: `OneAPI PG烟测账号${marker}`,
+        key: `sk-oneapi-${marker}`,
+        base_url: 'https://api.openai.com/v1',
+        group: `OneAPI PG烟测分组${marker}`,
+        runtime_only: 'ignored'
+      }
+    ]
+  },
+  {
+    label: 'CPA YAML',
+    sourceMode: 'cpa' as const,
+    accountName: `CPA PG烟测提供商${marker} 1`,
+    groupName: 'CPA 导入',
+    data: `openai-compatibility:\n  - name: CPA PG烟测提供商${marker}\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-cpa-${marker}\n        runtime_only: ignored\n`
+  },
+  {
+    label: 'CPA Codex OAuth',
+    sourceMode: 'cpa' as const,
+    accountName: `CPA OAuth PG烟测账号${marker}`,
+    groupName: 'CPA 导入',
+    data: {
+      type: 'codex',
+      name: `CPA OAuth PG烟测账号${marker}`,
+      refresh_token: `rt-cpa-${marker}`,
+      account_id: `acct-cpa-${marker}`,
+      base_url: 'https://api.openai.com/v1',
+      runtime_only: 'ignored'
+    }
+  }
+]
 
 const createdAccountIds: string[] = []
 const createdGroupIds: string[] = []
@@ -100,6 +178,34 @@ try {
   assert.equal(smokeRows.tagCount, 1, 'PG 导入账户标签应落库')
   if (smokeRows.group?.id) {
     createdGroupIds.push(smokeRows.group.id)
+  }
+
+  for (const sourceImport of sourceImportPayloads) {
+    const sourcePayload = {
+      data: sourceImport.data,
+      sourceMode: sourceImport.sourceMode,
+      options: importPayload.options
+    }
+    const sourcePreview = await postEnvelope<ImportResult>(baseUrl, '/__aisys__/api/accounts/import/preview', sourcePayload, cookie)
+    assert.equal(sourcePreview.mode, 'preview', `${sourceImport.label} PG smoke 预览应返回 preview 模式`)
+    assert.equal(sourcePreview.canImport, true, `${sourceImport.label} PG smoke 预览应可导入：${JSON.stringify(sourcePreview)}`)
+    assert.equal(sourcePreview.summary.accounts.create, 1, `${sourceImport.label} PG smoke 应计划创建 1 个账户`)
+
+    const sourceImported = await postEnvelope<ImportResult>(baseUrl, '/__aisys__/api/accounts/import/confirm', sourcePayload, cookie)
+    assert.equal(sourceImported.mode, 'import', `${sourceImport.label} PG smoke 确认应返回 import 模式`)
+    assert.equal(sourceImported.imported, true, `${sourceImport.label} PG smoke 确认应成功：${JSON.stringify(sourceImported)}`)
+    const sourceAccountId = sourceImported.accounts[0]?.accountId
+    assert(sourceAccountId, `${sourceImport.label} PG smoke 确认应返回新账户 ID`)
+    createdAccountIds.push(sourceAccountId)
+
+    const sourceRows = await readImportedRows(sourceAccountId)
+    assert.equal(sourceRows.account?.name, sourceImport.accountName, `${sourceImport.label} PG smoke 账户名称应落库`)
+    assert.equal(sourceRows.account?.status, 'pending_test', `${sourceImport.label} PG smoke active 账户应先进入 pending_test`)
+    assert.equal(sourceRows.group?.name, sourceImport.groupName, `${sourceImport.label} PG smoke 应绑定来源分组`)
+    assert.equal(sourceRows.bindingCount, 1, `${sourceImport.label} PG smoke 应保存分组绑定`)
+    if (sourceRows.group?.id) {
+      createdGroupIds.push(sourceRows.group.id)
+    }
   }
 
   console.log(JSON.stringify({

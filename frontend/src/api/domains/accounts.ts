@@ -6,6 +6,7 @@ import type {
   AccountExportResult,
   AccountImportOptions,
   AccountImportResult,
+  AccountImportSourceMode,
   AccountApiKeyRuntimeResponse,
   AccountAdvancedDetail,
   AccountCreateResult,
@@ -62,6 +63,12 @@ export interface AccountUpdatePayload extends Record<string, unknown> {
   expectedConfigRevision: number
 }
 
+interface AccountImportRequestPayload {
+  data: unknown
+  sourceMode?: AccountImportSourceMode
+  options?: AccountImportOptions
+}
+
 export interface AuthorizedAccountDispatchPayload {
   expectedConfigRevision: number
   status?: 'active' | 'disabled'
@@ -83,8 +90,8 @@ export const accountsApi = {
   apiKeyRuntime: (id: string, params?: ListParams) => unwrap<AccountApiKeyRuntimeResponse>(http.get(`/accounts/${id}/api-key-runtime`, { params })),
   revalidateApiKeyRuntime: (id: string, payload: { expectedConfigRevision: number }, params?: ListParams) => unwrap<{ id: string; configRevision: number; changed: number }>(http.post(`/accounts/${id}/api-key-runtime/revalidate`, payload, { params })),
   export: (payload: AccountExportPayload, params?: ListParams) => unwrap<AccountExportResult>(http.post('/accounts/export', payload, { params })),
-  importPreview: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
-  importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
+  importPreview: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
+  importConfirm: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
   create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountCreateResult>(http.post('/accounts', payload, { params })),
   update: (id: string, payload: AccountUpdatePayload, params?: ListParams) => unwrap<AccountMutationResult>(http.patch(`/accounts/${id}`, payload, { params })),
   forceActivate: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/force-activate`, { acknowledgedAccountAvailable: true }, { params })),
@@ -122,8 +129,8 @@ export const myAccountsApi = {
   apiKeyRuntime: (id: string) => unwrap<AccountApiKeyRuntimeResponse>(http.get(`/my-accounts/${id}/api-key-runtime`)),
   revalidateApiKeyRuntime: (id: string, payload: { expectedConfigRevision: number }) => unwrap<{ id: string; configRevision: number; changed: number }>(http.post(`/my-accounts/${id}/api-key-runtime/revalidate`, payload)),
   export: (payload: AccountExportPayload) => unwrap<AccountExportResult>(http.post('/my-accounts/export', payload)),
-  importPreview: (payload: { data: unknown; options?: AccountImportOptions }) => unwrap<AccountImportResult>(http.post('/my-accounts/import/preview', payload)),
-  importConfirm: (payload: { data: unknown; options?: AccountImportOptions }) => unwrap<AccountImportResult>(http.post('/my-accounts/import/confirm', payload)),
+  importPreview: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/preview', payload)),
+  importConfirm: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/confirm', payload)),
   create: (payload: Record<string, unknown>) => unwrap<AccountCreateResult>(http.post('/my-accounts', payload)),
   update: (id: string, payload: AccountUpdatePayload) => unwrap<AccountMutationResult>(http.patch(`/my-accounts/${id}`, payload)),
   forceActivate: (id: string) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/force-activate`, { acknowledgedAccountAvailable: true })),

@@ -6,7 +6,6 @@ import {
   getCodexContextStateShardDatabase,
   getUsageCatalogDatabase
 } from '../../../../storage/database.js'
-import { cleanupUnreferencedAuditPayloadBlobs } from '../../../../storage/repositories.js'
 import {
   deleteUsageRecordShardEntries,
   getUsageRecordShardDatabase,
@@ -137,17 +136,6 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
          OR last_error_message LIKE ?
     `).run(`${namePrefix}%`, 'Mockdata%')
 
-    database.prepare(`
-      DELETE FROM audit_error_groups
-      WHERE first_event_id LIKE ?
-        OR last_event_id LIKE ?
-        OR sample_event_id LIKE ?
-        OR last_message LIKE ?
-    `).run(`${idPrefix}%`, `${idPrefix}%`, `${idPrefix}%`, 'Mockdata%')
-
-    const auditIds = selectIds(database, 'SELECT id FROM audit_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
-    deleteWhereIn(database, 'audit_logs', 'id', auditIds)
-
     const operationIds = selectIds(database, 'SELECT id FROM operation_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'operation_logs', 'id', operationIds)
 
@@ -161,7 +149,6 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
     database.exec('ROLLBACK')
     throw error
   }
-  cleanupUnreferencedAuditPayloadBlobs(10000)
 }
 
 function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): void {

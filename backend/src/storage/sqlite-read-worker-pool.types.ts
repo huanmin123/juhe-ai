@@ -14,17 +14,6 @@ import type { AccessScope } from './access-scope.js'
 import type { AnnouncementListOptions, AnnouncementListResult } from './announcements.repository.js'
 import type { ApiKeyListItem, ApiKeyListOptions, ApiKeyListResult, ApiKeySecretRecord } from './api-key.repository.js'
 import type {
-  AuditErrorGroupListOptions,
-  AuditErrorGroupListResult,
-  AuditLogDetail,
-  AuditLogDetailSupplement,
-  AuditLogListOptions,
-  AuditLogListResult,
-  AuditLogPayloadDetail,
-  AuditLogPayloadReadOptions,
-  AuditLogListItem
-} from './audit-logs.repository.js'
-import type {
   AuthorizationGranteeGroupOptionListOptions,
   AuthorizationPrincipalOptionListOptions
 } from './authorization-options.repository.js'
@@ -415,37 +404,6 @@ export type SqliteReadWorkerOperation =
   | {
     type: 'get_public_api_log_detail_supplement_read_only'
     id: string
-  }
-  | {
-    type: 'list_audit_logs_read_only'
-    options?: AuditLogListOptions
-  }
-  | {
-    type: 'list_audit_logs_by_ids_read_only'
-    ids: string[]
-  }
-  | {
-    type: 'list_audit_error_groups_read_only'
-    options?: AuditErrorGroupListOptions
-  }
-  | {
-    type: 'list_audit_error_group_events_read_only'
-    errorGroupId: string
-    options?: AuditLogListOptions
-  }
-  | {
-    type: 'get_audit_log_detail_read_only'
-    id: string
-  }
-  | {
-    type: 'get_audit_log_detail_supplement_read_only'
-    id: string
-  }
-  | {
-    type: 'get_audit_log_payload_read_only'
-    auditLogId: string
-    payloadId: string
-    options?: AuditLogPayloadReadOptions
   }
   | {
     type: 'list_client_ip_stats_read_only'
@@ -950,13 +908,6 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_public_api_logs_read_only' } ? PublicApiLogListResult :
   T extends { type: 'get_public_api_log_detail_read_only' } ? PublicApiLogDetail | undefined :
   T extends { type: 'get_public_api_log_detail_supplement_read_only' } ? PublicApiLogDetailSupplement | undefined :
-  T extends { type: 'list_audit_logs_read_only' } ? AuditLogListResult :
-  T extends { type: 'list_audit_logs_by_ids_read_only' } ? AuditLogListItem[] :
-  T extends { type: 'list_audit_error_groups_read_only' } ? AuditErrorGroupListResult :
-  T extends { type: 'list_audit_error_group_events_read_only' } ? AuditLogListResult :
-  T extends { type: 'get_audit_log_detail_read_only' } ? AuditLogDetail | undefined :
-  T extends { type: 'get_audit_log_detail_supplement_read_only' } ? AuditLogDetailSupplement | undefined :
-  T extends { type: 'get_audit_log_payload_read_only' } ? AuditLogPayloadDetail | undefined :
   T extends { type: 'list_client_ip_stats_read_only' } ? ClientIpStatsListResult :
   T extends { type: 'get_client_ip_stats_detail_read_only' } ? ClientIpStatsDetailResult | undefined :
   T extends { type: 'get_table_storage_overview_read_only' } ? TableStorageOverview :

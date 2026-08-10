@@ -408,7 +408,6 @@ function assertGroupSummaryAsyncTimezoneBoundary(): void {
 
 function assertSqliteOnlyAsyncHelperGuards(): void {
   const guardedHelpers: Array<[string, string, string]> = [
-    ['storage/audit-log-read.repository.ts', 'getAuditLogPayloadReadOnly', 'getAuditLogPayload 的 async driver 路径'],
     ['storage/audit-log-payload-blobs.ts', 'readAuditPayloadBlobWindow', 'WithClient async driver 路径'],
     ['storage/group-account-stats-cache.repository.ts', 'refreshDirtyGroupAccountStatsCacheWithWriter', 'refreshDirtyGroupAccountStatsCacheAsync'],
     ['storage/external-integration-source-auth.repository.ts', 'flushExternalIntegrationSourceLastUsedTouchesForTest', 'PostgreSQL 测试必须使用 async driver']

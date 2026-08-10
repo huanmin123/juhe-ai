@@ -64,7 +64,7 @@ interface WorkerQueueSpec {
   key: string
   label: string
   workerRole: 'ingest-worker' | 'stats-worker'
-  snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue'
+  snapshotKey: 'usageRecordQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue'
 }
 
 type IngestWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['ingestWorker']>['snapshot']>
@@ -79,7 +79,6 @@ interface IpcQueueSpec {
   label: string
   snapshotKey:
     | 'usageRecords'
-    | 'auditLogs'
     | 'operationLogs'
     | 'publicApiLogs'
     | 'recordMaintenance'
@@ -95,7 +94,6 @@ const queueBytesBacklogWarning = 8 * 1024 * 1024
 
 const workerQueueSpecs: WorkerQueueSpec[] = [
   { key: 'usageRecords', label: '使用记录', workerRole: 'ingest-worker', snapshotKey: 'usageRecordQueue' },
-  { key: 'auditLogs', label: '审计日志', workerRole: 'ingest-worker', snapshotKey: 'auditLogQueue' },
   { key: 'operationLogs', label: '操作日志', workerRole: 'ingest-worker', snapshotKey: 'operationLogQueue' },
   { key: 'publicApiLogs', label: '公开接口日志', workerRole: 'ingest-worker', snapshotKey: 'publicApiLogQueue' },
   { key: 'recordMaintenanceIngest', label: '数据维护 ingest', workerRole: 'ingest-worker', snapshotKey: 'recordMaintenanceQueue' },
@@ -104,7 +102,6 @@ const workerQueueSpecs: WorkerQueueSpec[] = [
 
 const ipcQueueSpecs: IpcQueueSpec[] = [
   { key: 'usageRecords', label: '使用记录 IPC', snapshotKey: 'usageRecords' },
-  { key: 'auditLogs', label: '审计日志 IPC', snapshotKey: 'auditLogs' },
   { key: 'operationLogs', label: '操作日志 IPC', snapshotKey: 'operationLogs' },
   { key: 'publicApiLogs', label: '公开接口日志 IPC', snapshotKey: 'publicApiLogs' },
   { key: 'recordMaintenance', label: '数据维护 IPC', snapshotKey: 'recordMaintenance' },

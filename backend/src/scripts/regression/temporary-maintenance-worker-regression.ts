@@ -9,7 +9,6 @@ import type { BackgroundTaskRunSummary } from '../../storage/background-task-run
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-temporary-maintenance-worker-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const recordMaintenanceQueueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
-const temporaryMaintenanceWorkerSource = readFileSync(new URL('../../modules/record-maintenance/temporary-maintenance-worker-runner.ts', import.meta.url), 'utf8')
 const backgroundTaskRunRepositorySource = readFileSync(new URL('../../storage/background-task-runs.repository.ts', import.meta.url), 'utf8')
 const backgroundTaskRunReconcileJobSource = readFileSync(new URL('../../modules/background/background-task-run-reconcile.job.ts', import.meta.url), 'utf8')
 assert.match(recordMaintenanceQueueSource, /child\.on\('message'[\s\S]*handleTemporaryMaintenanceWorkerMessage/, '临时维护 worker 父进程必须接收子进程 IPC 请求')
@@ -17,7 +16,6 @@ assert.match(recordMaintenanceQueueSource, /background_worker_stats_write_reques
 assert.match(recordMaintenanceQueueSource, /background_worker_db_service_request[\s\S]*requestBackgroundWorkerDbService[\s\S]*background_worker_db_service_response/, '临时维护 worker DB service 请求必须由父进程转发并响应')
 assert.match(recordMaintenanceQueueSource, /await spawnTemporaryMaintenanceWorker\(run\.runId, job\)/, 'Redis Stream 数据维护消息必须等临时 worker 成功退出后才能 ACK')
 assert.match(recordMaintenanceQueueSource, /function spawnTemporaryMaintenanceWorker[\s\S]*Promise<void>[\s\S]*child\.once\('exit'[\s\S]*code === 0[\s\S]*settle\(\)[\s\S]*settle\(new Error/, '临时维护 worker 非 0 退出必须让父任务失败，消息保持 pending 等待重投')
-assert.match(recordMaintenanceQueueSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '使用记录清理、非业务数据清理和审计保留清理必须走临时维护 worker，不能阻塞主 ingest-worker 消费')
 for (const token of [
   'JUHE_AI_RUNTIME_MODE: runtimeConfig.runtimeMode',
   'JUHE_AI_DATABASE_DRIVER: runtimeConfig.databaseDriver',
@@ -31,7 +29,6 @@ for (const token of [
 ]) {
   assert(recordMaintenanceQueueSource.includes(token), `临时维护 worker 子进程必须显式继承运行驱动配置：${token}`)
 }
-assert.match(temporaryMaintenanceWorkerSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '临时维护 worker runner 必须允许审计保留清理任务')
 assert.match(backgroundTaskRunRepositorySource, /client\.transaction\(async \(tx\)[\s\S]*reconcileQueuedTaskRunsSql[\s\S]*reconcileRunningTaskRunsSql[\s\S]*deleteExpiredTemporaryLeasesSql/, 'PostgreSQL 陈旧任务回收必须在同一事务内收口任务并清理租约')
 assert.match(backgroundTaskRunRepositorySource, /leases\.lease_until > \?[\s\S]*runs\.status = 'running'/, '陈旧任务回收必须检查有效租约，不能仅凭旧心跳误伤活跃 worker')
 assert.match(backgroundTaskRunReconcileJobSource, /backgroundTaskRunReconcileInitialDelayMs = 2_000[\s\S]*backgroundTaskRunReconcileIntervalMs = 5 \* 60_000[\s\S]*backgroundTaskRunStaleAfterMs = 10 \* 60_000/, '陈旧任务回收必须在 worker 启动后执行并保持低频、带宽限的周期扫描')
@@ -59,18 +56,6 @@ const [
   import('../../storage/background-task-runs.repository.js'),
   import('../../storage/repositories.js')
 ])
-
-assert.equal(recordMaintenanceQueue.isRecordMaintenanceJob({
-  type: 'audit_retained_data_cleanup',
-  nowAt: '2026-07-14T00:00:00.000Z',
-  successHotRetentionHours: 1,
-  successRetentionDays: 3,
-  failureRetentionDays: 7,
-  errorGroupRetentionDays: 7,
-  successSampleBucketThreshold: 1000,
-  batchSize: 100,
-  maxBatches: 3
-}), true, '审计保留任务必须继续接受既有 Redis wire 字段，避免升级时在途任务变成 poison message')
 
 try {
   seedUsageRecord('temporary_usage_cleanup_regression', '2000-01-01T00:00:00.000Z')
@@ -205,7 +190,7 @@ function seedTaskRun(input: {
     INSERT INTO background_task_runs (
       run_id, job_name, job_type, worker_role, status, lease_key, owner_id,
       params_json, result_json, submitted_at, started_at, heartbeat_at, finished_at, created_at, updated_at
-    ) VALUES (?, 'record-maintenance:audit_retained_data_cleanup', 'audit_retained_data_cleanup',
+    ) VALUES (?, 'record-maintenance:usage_records_cleanup', 'usage_records_cleanup',
       'temporary-maintenance-worker', ?, ?, ?, '{}', '{}', ?, ?, ?, ?, ?, ?)
   `).run(
     input.runId,

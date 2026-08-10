@@ -1326,7 +1326,7 @@ const usageRecordListQuerySource = readSource('storage/usage-record-list-query.t
 assert.match(usageRecordListQuerySource, /\$\{columns\.trafficSource\} = \?/)
 assert.doesNotMatch(usageRecordListQuerySource, /COALESCE\(\$\{columns\.trafficSource\}, 'gateway'\)/)
 
-const auditLogListQuerySource = readSource('storage/audit-log-list-query.ts')
+const auditLogListQuerySource = readSource('storage/audit-log-f3-query-helpers.ts')
 assert.match(auditLogListQuerySource, /al\.traffic_source = \?/)
 assert.doesNotMatch(auditLogListQuerySource, /COALESCE\(al\.traffic_source, 'gateway'\)/)
 

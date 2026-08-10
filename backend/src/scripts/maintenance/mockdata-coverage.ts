@@ -1,9 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
-import { gunzipSync } from 'node:zlib'
 
-import { runtimeConfig } from '../../config/runtime.js'
 import {
   codexContextStateShardIndexes,
   getBusinessDatabase,
@@ -255,59 +251,6 @@ function assertUpstreamResponseModelCoverage(created: CreatedMockdata): void {
     }
   }
 
-  for (const sample of samples) {
-    const audit = repositories.listAuditLogs({ traceId: sample.traceId, pageSize: 10 }).items
-      .find((item) => item.traceId === sample.traceId)
-    if (!audit) {
-      throw new Error(`上游响应模型样本缺少同 trace 审计记录：${sample.traceId}`)
-    }
-    const auditDetail = repositories.getAuditLogDetail(audit.id)
-    const payload = auditDetail?.payloads.find((item) => item.partType === 'upstream_response' && item.hasBody)
-    if (auditDetail?.traceId !== sample.traceId || !payload) {
-      throw new Error(`上游响应模型样本审计 payload 关联不完整：${sample.traceId}`)
-    }
-    const payloadBody = readAuditPayloadBody(audit.id, payload.id)
-    if (
-      payloadBody.model !== sample.upstreamResponseModel
-      || payloadBody.upstream_model !== sample.upstreamModel
-    ) {
-      throw new Error(`上游响应模型样本审计 payload 模型字段不完整：${sample.traceId}`)
-    }
-  }
-}
-
-function readAuditPayloadBody(auditLogId: string, payloadId: string): Record<string, unknown> {
-  const row = getDatasetDatabase().prepare(`
-    SELECT blobs.storage_key, blobs.compression
-    FROM audit_payload_refs refs
-    INNER JOIN audit_payload_blobs blobs ON blobs.id = refs.body_blob_id
-    WHERE refs.audit_log_id = ?
-      AND refs.id = ?
-  `).get(auditLogId, payloadId) as { storage_key?: unknown; compression?: unknown } | undefined
-  const storageKey = typeof row?.storage_key === 'string' ? row.storage_key : undefined
-  if (!storageKey || (row?.compression !== 'none' && row?.compression !== 'gzip')) {
-    throw new Error(`审计 payload body 不可读：${auditLogId}/${payloadId}`)
-  }
-  const root = resolve(dirname(runtimeConfig.datasetDatabasePath), 'audit', 'blobs')
-  const filePath = resolve(root, storageKey)
-  const relativePath = relative(root, filePath)
-  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
-    throw new Error(`审计 payload 存储路径非法：${auditLogId}/${payloadId}`)
-  }
-  let text: string
-  try {
-    const bytes = readFileSync(filePath)
-    text = (row.compression === 'gzip' ? gunzipSync(bytes) : bytes).toString('utf8')
-  } catch (error) {
-    throw new Error(`审计 payload body 读取失败：${auditLogId}/${payloadId}`, { cause: error })
-  }
-  try {
-    const value: unknown = JSON.parse(text)
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value as Record<string, unknown>
-  } catch (error) {
-    throw new Error(`审计 payload body 不是 JSON：${auditLogId}/${payloadId}`, { cause: error })
-  }
-  throw new Error(`审计 payload body 不是对象：${auditLogId}/${payloadId}`)
 }
 
 function assertCreatedShape(created: CreatedMockdata): void {

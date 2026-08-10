@@ -560,6 +560,126 @@ function Start-TableMonitor {
   return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath }
 }
 
+function Get-AuditLogWriterNodeLauncher {
+  return @'
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { spawn } from 'node:child_process'
+
+const [binaryPath, backendRoot, logPath] = process.argv.slice(1)
+const require = createRequire(resolve(backendRoot, 'package.json'))
+const { parse } = require('dotenv')
+const baseEnvPath = resolve(backendRoot, '.env')
+const capacityEnvPath = resolve(backendRoot, '.env.capacity')
+const readEnv = (path) => existsSync(path) ? parse(readFileSync(path)) : {}
+const baseEnv = readEnv(baseEnvPath)
+const overlayName = (process.env.JUHE_AI_ENV_FILE ?? baseEnv.JUHE_AI_ENV_FILE ?? '').trim()
+const overlayEnv = overlayName ? readEnv(isAbsolute(overlayName) ? overlayName : resolve(backendRoot, overlayName)) : {}
+const capacityEnv = readEnv(capacityEnvPath)
+const configured = (name) => {
+  if (Object.hasOwn(process.env, name)) return process.env[name] ?? ''
+  if (Object.hasOwn(overlayEnv, name)) return overlayEnv[name] ?? ''
+  if (Object.hasOwn(capacityEnv, name)) return capacityEnv[name] ?? ''
+  return baseEnv[name] ?? ''
+}
+const childEnv = { ...process.env }
+const names = [
+  'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_RUNTIME_MODE', 'JUHE_AI_AUDIT_LOG_STORE',
+  'JUHE_AI_AUDIT_LOG_DATABASE_PATH', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY',
+  'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH',
+  'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL', 'JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA',
+  'JUHE_AI_AUDIT_LOG_OWNER_LEASE', 'JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL',
+  'JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS',
+  'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_INPUT_URL',
+  'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_DATABASE_PATH',
+  'JUHE_AI_DATASET_DATABASE_PATH', 'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
+  'JUHE_AI_STATS_DATABASE_PATH', 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+  'JUHE_AI_TABLE_MONITOR_DATABASE_PATH', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT',
+  'JUHE_AI_USAGE_SHARD_ROOT'
+]
+for (const name of names) {
+  const value = configured(name)
+  if (value.trim()) childEnv[name] = value
+}
+const instanceId = configured('JUHE_AI_AUDIT_LOG_INSTANCE_ID').trim()
+if (!instanceId) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; release startup does not generate owner identities.')
+const secret = (configured('JUHE_AI_AUDIT_LOG_INPUT_SECRET') || configured('JUHE_AI_SECRET')).trim()
+if (!secret) throw new Error('JUHE_AI_SECRET is required for the F3 input listener.')
+childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceId
+childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret
+childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = configured('JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS').trim() || '127.0.0.1:3303'
+childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL = configured('JUHE_AI_AUDIT_LOG_INPUT_URL').trim() || 'http://127.0.0.1:3303'
+const store = (configured('JUHE_AI_AUDIT_LOG_STORE') || configured('JUHE_AI_DATABASE_DRIVER') || (configured('JUHE_AI_RUNTIME_MODE').trim().toLowerCase() === 'performance' ? 'postgres' : 'sqlite')).trim().toLowerCase()
+childEnv.JUHE_AI_AUDIT_LOG_STORE = store
+const absoluteBackendPath = (value, fallback) => {
+  const selected = (value || fallback).trim()
+  return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
+}
+if (store === 'sqlite' || !store) {
+  for (const [name, fallback] of [
+    ['JUHE_AI_AUDIT_LOG_DATABASE_PATH', './data/juhe-ai-audit-log.sqlite3'],
+    ['JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', './data/audit-log-blobs'],
+    ['JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', './data/audit-log-hot-search'],
+    ['JUHE_AI_DATABASE_PATH', './data/juhe-ai.sqlite3'],
+    ['JUHE_AI_DATASET_DATABASE_PATH', './data/juhe-ai-dataset.sqlite3'],
+    ['JUHE_AI_USAGE_CATALOG_DATABASE_PATH', './data/juhe-ai-usage-catalog.sqlite3'],
+    ['JUHE_AI_STATS_DATABASE_PATH', './data/juhe-ai-stats.sqlite3'],
+    ['JUHE_AI_RUNTIME_LOG_DATABASE_PATH', './data/juhe-ai-runtime-log.sqlite3'],
+    ['JUHE_AI_TABLE_MONITOR_DATABASE_PATH', './data/juhe-ai-table-monitor.sqlite3'],
+    ['JUHE_AI_USAGE_SHARD_ROOT', './data/usage-shards'],
+    ['JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', './data/codex-context/state-shards']
+  ]) childEnv[name] = absoluteBackendPath(childEnv[name], fallback)
+  childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = absoluteBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH)
+} else if (store === 'postgres' && !childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL) {
+  childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = childEnv.JUHE_AI_POSTGRES_URL ?? ''
+}
+const logFd = openSync(logPath, 'a')
+try {
+  const child = spawn(binaryPath, [], { cwd: backendRoot, detached: true, env: childEnv, stdio: ['ignore', logFd, logFd], windowsHide: true })
+  if (!child.pid) throw new Error('Unable to start juhe-ai-audit-log-writer.')
+  child.unref()
+  process.stdout.write(String(child.pid))
+} finally {
+  closeSync(logFd)
+}
+'@
+}
+
+function Get-AuditLogWriterProcess {
+  param([Parameter(Mandatory = $true)][string]$PidPath, [switch]$RemoveStalePid)
+  if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) { return $null }
+  $pidText = (Get-Content -LiteralPath $PidPath -Raw).Trim()
+  if ($pidText -notmatch '^[1-9][0-9]*$') { if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }; return $null }
+  $writerPid = [int]$pidText; $process = Get-Process -Id $writerPid -ErrorAction SilentlyContinue
+  if ($null -eq $process) { if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }; return $null }
+  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $writerPid" -ErrorAction SilentlyContinue
+  if ($null -eq $processInfo -or $processInfo.CommandLine -notmatch 'juhe-ai-audit-log-writer(?:\.exe)?') { if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }; return $null }
+  return $process
+}
+
+function Stop-AuditLogWriter { param([Parameter(Mandatory = $true)][string]$PidPath)
+  $process = Get-AuditLogWriterProcess -PidPath $PidPath -RemoveStalePid; if ($null -eq $process) { return }
+  Stop-Process -Id $process.Id -ErrorAction Stop; $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200; $process.Refresh() }
+  if (-not $process.HasExited) { throw "juhe-ai-audit-log-writer did not stop within 10 seconds (PID $($process.Id))." }
+  Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
+}
+
+function Start-AuditLogWriter { param([Parameter(Mandatory = $true)][string]$AppDirectory)
+  $binaryPath = Join-Path $AppDirectory 'backend-go/juhe-ai-audit-log-writer.exe'; $runtimeDir = Join-Path $AppDirectory 'backend/runtime'; $pidPath = Join-Path $runtimeDir 'juhe-ai-audit-log-writer.pid'; $logPath = Join-Path $AppDirectory 'backend/logs/juhe-ai-audit-log-writer.log'
+  if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) { throw "Go audit-log writer binary not found: $binaryPath. Rebuild the release package for Windows." }
+  New-Item -ItemType Directory -Force $runtimeDir | Out-Null; New-Item -ItemType Directory -Force (Split-Path -Parent $logPath) | Out-Null
+  $existingProcess = Get-AuditLogWriterProcess -PidPath $pidPath -RemoveStalePid; if ($null -ne $existingProcess) { throw "juhe-ai-audit-log-writer is already running (PID $($existingProcess.Id)); stop the existing release before starting another one." }
+  $launcher = Get-AuditLogWriterNodeLauncher; $previous = $PSNativeCommandUseErrorActionPreference; $PSNativeCommandUseErrorActionPreference = $false
+  try { $output = @(& node --input-type=module -e $launcher $binaryPath (Join-Path $AppDirectory 'backend') $logPath 2>&1); $code = $LASTEXITCODE } finally { $PSNativeCommandUseErrorActionPreference = $previous }
+  if ($code -ne 0) { $output | Write-Error; throw 'Unable to start juhe-ai-audit-log-writer.' }
+  $pidText = (($output | ForEach-Object { $_.ToString() }) -join '').Trim(); if ($pidText -notmatch '^[1-9][0-9]*$') { throw "juhe-ai-audit-log-writer returned an invalid PID: $pidText" }
+  Set-Content -LiteralPath $pidPath -Value $pidText -NoNewline -Encoding utf8; Start-Sleep -Milliseconds 500
+  $process = Get-AuditLogWriterProcess -PidPath $pidPath -RemoveStalePid; if ($null -eq $process) { $tail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @('No audit writer log was created.') }; $tail | Write-Error; throw 'juhe-ai-audit-log-writer exited during startup.' }
+  return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath }
+}
+
 function Start-ManagedNodeProcess {
   param(
     [Parameter(Mandatory = $true)][string]$WorkingDirectory,
@@ -674,6 +794,8 @@ if (-not (Test-Path -LiteralPath 'node_modules') -or -not (Test-Path -LiteralPat
 
 $hostValue = Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallback '127.0.0.1'
 $portValue = Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_PORT' -Fallback '3000'
+$auditInputUrl = if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }
+$env:JUHE_AI_AUDIT_LOG_INPUT_URL = $auditInputUrl
 
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue}"
 Write-Host 'The Web/API process will supervise separate background worker and DB service processes.'
@@ -710,6 +832,7 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
 
 $runtimeLogIndexer = $null
 $tableMonitor = $null
+$auditLogWriter = $null
 $serverProcess = $null
 $serverExitCode = 1
 try {
@@ -719,11 +842,14 @@ try {
   Write-Host "Started juhe-ai-runtime-log-indexer (PID $($runtimeLogIndexer.Process.Id))."
   $tableMonitor = Start-TableMonitor -AppDirectory $appDir
   Write-Host "Started juhe-ai-table-monitor (PID $($tableMonitor.Process.Id))."
-  while (-not $serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited -and -not $tableMonitor.Process.HasExited) {
+  $auditLogWriter = Start-AuditLogWriter -AppDirectory $appDir
+  Write-Host "Started juhe-ai-audit-log-writer (PID $($auditLogWriter.Process.Id))."
+  while (-not $serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited -and -not $tableMonitor.Process.HasExited -and -not $auditLogWriter.Process.HasExited) {
     Start-Sleep -Seconds 1
     $serverProcess.Refresh()
     $runtimeLogIndexer.Process.Refresh()
     $tableMonitor.Process.Refresh()
+    $auditLogWriter.Process.Refresh()
   }
   if ($runtimeLogIndexer.Process.HasExited -and -not $serverProcess.HasExited) {
     $logTail = if (Test-Path -LiteralPath $runtimeLogIndexer.LogPath) { Get-Content -LiteralPath $runtimeLogIndexer.LogPath -Tail 20 } else { @('No indexer log was created.') }
@@ -738,6 +864,11 @@ try {
   if ($serverProcess.HasExited -and -not $runtimeLogIndexer.Process.HasExited -and -not $tableMonitor.Process.HasExited) {
     throw "juhe-ai Web/API process exited unexpectedly (PID $($serverProcess.Id))."
   }
+  if ($auditLogWriter.Process.HasExited -and -not $serverProcess.HasExited) {
+    $logTail = if (Test-Path -LiteralPath $auditLogWriter.LogPath) { Get-Content -LiteralPath $auditLogWriter.LogPath -Tail 20 } else { @('No audit writer log was created.') }
+    $logTail | Write-Error
+    throw "juhe-ai-audit-log-writer exited unexpectedly (PID $($auditLogWriter.Process.Id))."
+  }
   $serverProcess.WaitForExit()
   $serverExitCode = $serverProcess.ExitCode
   if ($serverExitCode -eq 0) { $serverExitCode = 1 }
@@ -750,6 +881,9 @@ try {
   }
   if ($null -ne $tableMonitor) {
     Stop-TableMonitor -PidPath $tableMonitor.PidPath
+  }
+  if ($null -ne $auditLogWriter) {
+    Stop-AuditLogWriter -PidPath $auditLogWriter.PidPath
   }
 }
 exit $serverExitCode

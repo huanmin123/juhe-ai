@@ -883,6 +883,17 @@ export interface AccountImportOptions {
   skipDuplicates?: boolean
 }
 
+export type AccountImportSourceMode = 'native' | 'sub2api' | 'newapi' | 'cpa' | 'oneapi'
+
+export interface AccountImportSourceSummary {
+  mode: AccountImportSourceMode
+  records: number
+  accepted: number
+  skipped: number
+  ignoredFields: number
+  messages: string[]
+}
+
 export interface AccountImportSummary {
   accounts: {
     total: number
@@ -964,6 +975,7 @@ export interface AccountImportResult {
   accounts: AccountImportItem[]
   proxies: AccountImportProxyItem[]
   messages: string[]
+  source: AccountImportSourceSummary
 }
 
 export interface AccountExportDocument {

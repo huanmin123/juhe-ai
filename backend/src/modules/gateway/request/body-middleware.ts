@@ -651,7 +651,7 @@ export async function recordGatewayBodyRejection(req: GatewayRawBodyRequest, inp
     const auditErrorMessage = input.limitBytes !== undefined && input.limitScope
       ? `${input.errorMessage ?? input.responsePayload.error.message}（rawBodyBytes=${input.rawBodyBytes}, limitBytes=${input.limitBytes}, limitScope=${input.limitScope}）`
       : input.errorMessage ?? input.responsePayload.error.message
-    recordDroppedAuditCapture({
+    dispatchDroppedAuditCapture({
       traceId,
       auditOutcome: 'gateway_failed',
       success: false,
@@ -740,6 +740,66 @@ function requestHeaderValue(req: GatewayRawBodyRequest, name: string): string | 
   }
   const value = req.headers[name.toLowerCase()]
   return Array.isArray(value) ? value.join(', ') : value
+}
+
+function dispatchDroppedAuditCapture(input: {
+  traceId: string
+  trafficSource?: AuditLogInput['trafficSource']
+  auditOutcome: AuditLogInput['auditOutcome']
+  success: boolean
+  bytes: number
+  reason: 'active_capture_overflow' | 'gateway_auth_rejected' | 'gateway_body_rejected' | 'gateway_permission_rejected' | 'user_request_limit_exceeded'
+  method?: string
+  path?: string
+  queryString?: string
+  statusCode?: number
+  errorPhase?: string
+  errorCode?: string
+  errorMessage?: string
+  contentType?: string
+  clientIp?: string
+  userAgent?: string
+  systemAccountId?: string
+  apiKeyId?: string
+  groupId?: string
+  providerCode?: string
+}): void {
+  if (!readAuditLogSettings().enabled) return
+  const timestamp = nowIso()
+  const rawPath = input.path?.trim() || 'unknown'
+  const pathWithoutQuery = rawPath.split('?')[0] || 'unknown'
+  const sanitized = sanitizeUrlForLog(input.queryString ? `${pathWithoutQuery}?${input.queryString}` : rawPath)
+  const [path, ...queryParts] = sanitized.split('?')
+  dispatchAuditLogToGo({
+    id: `audit_${Date.now()}_${randomUUID()}`,
+    lifecycleStatus: 'finalized',
+    traceId: input.traceId,
+    trafficSource: input.trafficSource,
+    auditOutcome: input.auditOutcome,
+    success: input.success,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    providerCode: input.providerCode,
+    method: input.method?.toUpperCase() ?? 'UNKNOWN',
+    path: path || 'unknown',
+    queryString: queryParts.length ? queryParts.join('?') : undefined,
+    clientIp: input.clientIp,
+    userAgent: input.userAgent,
+    finalStatusCode: input.statusCode,
+    errorPhase: input.errorPhase,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    sampleBucket: 0,
+    sampleReason: input.reason,
+    captureStatus: input.reason === 'gateway_body_rejected' ? 'overflow' : 'complete',
+    startedAt: timestamp,
+    endedAt: timestamp,
+    attempts: [],
+    payloads: input.reason === 'gateway_body_rejected' && input.statusCode === 413
+      ? [{ partType: 'client_request', sequenceIndex: 0, contentType: input.contentType, rawBodySizeBytes: input.bytes, captureStatus: 'overflow' }]
+      : []
+  })
 }
 
 function requestClientIp(req: GatewayRawBodyRequest): string | undefined {

@@ -62,6 +62,7 @@
     "test:account-import-protocol": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-import-protocol-regression.ts",
     "test:account-status-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-status-formatters-regression.ts",
     "test:account-list-inline-dynamic": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-list-inline-dynamic-regression.ts",
+    "test:account-list-sort-policy": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-list-sort-policy-regression.ts",
     "test:account-list-mutation-coordination": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-list-mutation-coordination-regression.ts",
     "test:group-list-inline-dynamic": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/group-list-inline-dynamic-regression.ts",
     "test:account-status-snapshot-polling": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-status-snapshot-polling-regression.ts",

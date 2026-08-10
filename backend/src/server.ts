@@ -11,14 +11,6 @@ import {
   stopBackgroundWorkerSupervisor
 } from './modules/background/background-worker-supervisor.js'
 import { requestIngestWorkerDrainStatus } from './modules/background/background-ipc.js'
-import {
-  getAuditLogServerDispatchPendingCount,
-  waitForAuditLogServerDispatchIdle
-} from './modules/audit-logs/audit-log-queue.service.js'
-import {
-  getAuditLogTransportRuntime,
-  stopAuditLogTransportWorker
-} from './modules/audit-logs/audit-log-transport.service.js'
 import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
 import { getDbServiceState } from './modules/db-service/db-service-ipc.js'
 import {
@@ -555,25 +547,20 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
       waitForGatewayFailureUsageFinalizationsIdle(8_000),
       waitForActiveAuditCapturesIdle(8_000)
     ])
-    const dispatchIdle = await waitForAuditLogServerDispatchIdle(8_000)
     const ingestFactQueuesIdle = await waitForIngestFactQueueDrain(5_000)
     const userRequestLimitCountersFlushed = await stopUserRequestLimitCoordinator(3_000)
-    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestFactQueuesIdle || !userRequestLimitCountersFlushed) {
+    if (!httpClosed || !failureUsageIdle || !captureIdle || !ingestFactQueuesIdle || !userRequestLimitCountersFlushed) {
       logger.warn({
         event: 'server_shutdown_drain_incomplete',
         httpClosed,
         failureUsageIdle,
         captureIdle,
-        dispatchIdle,
         ingestFactQueuesIdle,
         userRequestLimitCountersFlushed,
         activeAuditCaptureCount: getActiveAuditCaptureCount(),
         pendingFailureUsageFinalizationCount: getPendingGatewayFailureUsageFinalizationCount(),
-        pendingAuditDispatchCount: getAuditLogServerDispatchPendingCount(),
-        auditLogTransport: getAuditLogTransportRuntime()
       }, '服务退出前部分请求或审计任务未在时限内排空')
     }
-    await stopAuditLogTransportWorker()
     await stopModelCheckTokenWorker()
     await closeLogger()
   } catch (error) {
@@ -614,14 +601,10 @@ async function waitForIngestFactQueueDrain(timeoutMs: number): Promise<boolean> 
       continue
     }
     const parentUsageQueueLength = status.pendingQueues.usageRecords.queueLength
-    const parentAuditQueueLength = status.pendingQueues.auditLogs.queueLength
     const workerUsageQueueLength = status.snapshot.usageRecordQueue.queueLength
-    const workerAuditQueueLength = status.snapshot.auditLogQueue.queueLength
     if (
       parentUsageQueueLength === 0
-      && parentAuditQueueLength === 0
       && workerUsageQueueLength === 0
-      && workerAuditQueueLength === 0
     ) return true
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 25))
   }

@@ -36,7 +36,6 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.dbServiceHttpProxy.chatMaxInFlight, 2200, '聊天 DB service HTTP proxy 容量应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit, 3456, '账户 API Key 尝试上限应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.dispatchAccountCandidateLimit, 3456, '调度候选账户窗口应支持进程环境变量覆盖')
-  assert.equal(runtimeConfig.background.auditPayloadBlobWriteConcurrency, 5, '审计 payload 异步写入并发应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.background.modelCheckTokenWorkerTargetSize, 5, '模型检测 Token worker 并发应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.upstreamAgentMaxSockets, 3456, 'HTTP Agent 单源连接容量应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.upstreamAgentMaxTotalSockets, 4567, 'HTTP Agent 总连接容量应支持进程环境变量覆盖')
@@ -45,9 +44,6 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.gateway.accountCircuitRecoveryLeaseDurationMs, 240000, '熔断恢复租约应支持进程环境变量覆盖')
   assert.deepEqual(runtimeConfig.gateway.accountCircuitBackoffMs, [1000, 2000, 3000], '熔断退避阶梯应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.background.proxyLatencyRefreshRunBudgetMs, 55000, '代理刷新时间预算应支持进程环境变量覆盖')
-  assert.equal(runtimeConfig.background.auditHotRetentionCleanupBatchSize, 120, '审计热保留清理批次应支持进程环境变量覆盖')
-  assert.equal(runtimeConfig.background.auditHotRetentionCleanupMaxBatches, 4, '审计热保留清理轮次应支持进程环境变量覆盖')
-  assert.equal(runtimeConfig.background.auditHotRetentionCleanupMaxRunMs, 9000, '审计热保留清理时间预算应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.runtimeMode, 'standalone', '默认运行模式应为 standalone')
   assert.equal(runtimeConfig.databaseDriver, 'sqlite', 'standalone 默认数据库 driver 应为 sqlite')
   assert.equal(runtimeConfig.cacheDriver, 'memory', 'standalone 默认缓存 driver 应为 memory')
@@ -207,7 +203,6 @@ const result = spawnRegression({
   JUHE_AI_CHAT_DB_SERVICE_HTTP_PROXY_MAX_IN_FLIGHT: '2200',
   JUHE_AI_GATEWAY_ACCOUNT_API_KEY_REQUEST_ATTEMPT_SAFETY_LIMIT: '3456',
   JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT: '3456',
-  JUHE_AI_BACKGROUND_AUDIT_PAYLOAD_BLOB_WRITE_CONCURRENCY: '5',
   JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_TARGET_SIZE: '5',
   JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS: '3456',
   JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS: '4567',
@@ -215,10 +210,7 @@ const result = spawnRegression({
   JUHE_AI_GATEWAY_AUTOMATIC_PROBE_SWEEP_INTERVAL_MS: '750',
   JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_LEASE_DURATION_MS: '240000',
   JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_BACKOFF_MS: '1000,2000,3000',
-  JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_RUN_BUDGET_MS: '55000',
-  JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_BATCH_SIZE: '120',
-  JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_BATCHES: '4',
-  JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_RUN_MS: '9000'
+  JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_RUN_BUDGET_MS: '55000'
 })
 
 assertRegressionSuccess(result)

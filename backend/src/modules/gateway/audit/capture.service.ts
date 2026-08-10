@@ -6,13 +6,15 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { logger } from '../../../shared/logger.js'
 import { logRequestStage, sanitizeUrlCredentialsForLog, sanitizeUrlForLog } from '../../../shared/request-context.js'
 import type {
+  OpenAIAccountSecret
+} from '../../../storage/repositories.js'
+import type {
   AuditLogAttemptInput,
   AuditLogInput,
   AuditLogPayloadInput,
   AuditOutcome,
-  AuditPayloadPartType,
-  OpenAIAccountSecret
-} from '../../../storage/repositories.js'
+  AuditPayloadPartType
+} from '../../../storage/audit-log-types.js'
 import { dispatchAuditLogToGo } from '../../audit-logs/audit-log-go-input.service.js'
 import {
   auditBodySummaryEdgeBytes,

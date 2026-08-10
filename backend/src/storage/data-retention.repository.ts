@@ -9,7 +9,6 @@ import {
   listPostgresUsageRecordPartitions,
 } from './postgres-usage-record-partitions.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { cleanupAuditPayloadBlobsBeforeAsync } from './audit-log-payload-blobs.js'
 import { deletePostgresUsageRecordCatalogRowsByUsageIds } from './usage-record-catalog-cleanup.js'
 import {
   cleanupDiscoveredHardCleanupTablesBefore,
@@ -428,10 +427,6 @@ export async function cleanupNonBusinessDataBeforeWithResult(input: {
   }
 
   if (scope === 'all' || scope === 'dataset') {
-    const oldAuditBlobs = await cleanupAuditPayloadBlobsBeforeAsync(cutoffs.iso, batchLimit)
-    addRows('dataset.audit_payload_blobs', oldAuditBlobs.deletedRows)
-    addFiles('audit_payload_blobs', oldAuditBlobs.deletedFiles)
-
     const usageRecords = cleanupProcessedUsageRecordsBeforeWithResult(cutoffs.iso, batchLimit)
     addRows('usage_shards.usage_records', usageRecords.deletedRows)
     hasMore = hasMore || usageRecords.hasMore
@@ -494,10 +489,6 @@ async function cleanupNonBusinessDataBeforeWithResultPostgres(input: {
   }
 
   if (scope === 'all' || scope === 'dataset') {
-    const oldAuditBlobs = await cleanupAuditPayloadBlobsBeforeAsync(cutoffs.iso, batchLimit)
-    addRows('dataset.audit_payload_blobs', oldAuditBlobs.deletedRows)
-    addFiles('audit_payload_blobs', oldAuditBlobs.deletedFiles)
-
     const usageRecords = await cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffs.iso, batchLimit)
     addRows('juhe_usage.usage_records', usageRecords.deletedRows)
     hasMore = hasMore || usageRecords.hasMore

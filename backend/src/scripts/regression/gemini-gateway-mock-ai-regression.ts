@@ -75,7 +75,7 @@ const [
   import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/providers/drivers/registry.js'),
   import('../../modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')

@@ -303,6 +303,7 @@ export type AccountBatchEditContextRequest = z.infer<typeof accountBatchEditCont
 
 export const accountImportRequestSchema = z.object({
   data: z.unknown(),
+  sourceMode: z.enum(['native', 'sub2api', 'newapi', 'cpa', 'oneapi']).optional(),
   options: z.object({
     createMissingGroups: z.boolean().optional(),
     createMissingProxies: z.boolean().optional(),

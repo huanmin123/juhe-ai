@@ -1,5 +1,4 @@
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
-import { estimateAuditLogBytes } from './background-ipc-audit-trim.js'
 import type { BackgroundWorkerMessage } from './background-ipc.types.js'
 
 export const usageRecordWorkerMessageMaxBytes = 8 * 1024 * 1024
@@ -21,9 +20,6 @@ export function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): nu
   switch (message.type) {
     case 'background_worker_usage_records':
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
-      break
-    case 'background_worker_audit_logs':
-      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateAuditLogBytes(item)), 128)
       break
     case 'background_worker_operation_logs':
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)

@@ -9,7 +9,6 @@ export type IpcQueueKey = keyof BackgroundWorkerIpcQueuesRuntime
 export function clonePendingQueueRuntime(input: BackgroundWorkerIpcQueuesRuntime): BackgroundWorkerIpcQueuesRuntime {
   return {
     usageRecords: { ...input.usageRecords },
-    auditLogs: { ...input.auditLogs },
     operationLogs: { ...input.operationLogs },
     publicApiLogs: { ...input.publicApiLogs },
     recordMaintenance: { ...input.recordMaintenance },
@@ -25,8 +24,6 @@ export function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueu
   switch (message.type) {
     case 'background_worker_usage_records':
       return 'usageRecords'
-    case 'background_worker_audit_logs':
-      return 'auditLogs'
     case 'background_worker_operation_logs':
       return 'operationLogs'
     case 'background_worker_public_api_logs':
@@ -62,7 +59,6 @@ export function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
   })
   return {
     usageRecords: emptyQueueRuntime(),
-    auditLogs: emptyQueueRuntime(),
     operationLogs: emptyQueueRuntime(),
     publicApiLogs: emptyQueueRuntime(),
     recordMaintenance: emptyQueueRuntime(),
@@ -77,7 +73,6 @@ export function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
 export function ipcQueueKeys(): IpcQueueKey[] {
   return [
     'usageRecords',
-    'auditLogs',
     'operationLogs',
     'publicApiLogs',
     'recordMaintenance',

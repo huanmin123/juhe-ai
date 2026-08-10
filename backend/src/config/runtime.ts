@@ -106,6 +106,13 @@ export interface RuntimeConfig {
   databasePath: string
   chatDatabasePath: string
   datasetDatabasePath: string
+  auditLogF3: {
+    sqlitePath: string
+    payloadBlobDirectory: string
+    hotSearchDirectory: string
+    postgresSchema: string
+    postgresPoolMax: number
+  }
   runtimeLogDatabasePath: string
   usageCatalogDatabasePath: string
   statsDatabasePath: string
@@ -206,9 +213,6 @@ export interface RuntimeConfig {
     accountBalanceAutoDetectionBackfillPageSize: number
     accountBalanceRefreshBatchSize: number
     accountBalanceRefreshRecoveryBatchSize: number
-    auditLogPostgresFlushBatchSize: number
-    auditLogPostgresRedisConsumerConcurrency: number
-    auditPayloadBlobWriteConcurrency: number
     auditBlobCleanupDeleteConcurrency: number
     modelCheckTokenWorkerTargetSize: number
     modelCheckTokenWorkerQueueMaxItems: number
@@ -239,22 +243,10 @@ export interface RuntimeConfig {
     modelQualityHealthSyncRetryBatchSize: number
     taskRunReconcileBatchSize: number
     modelTrustObservationAggregationBatchSize: number
-    auditHotRetentionCleanupBatchSize: number
-    auditHotRetentionCleanupMaxBatches: number
-    auditHotRetentionCleanupMaxRunMs: number
     operationLogBatchSize: number
     operationLogShutdownFlushMaxBatches: number
     operationLogQueueMaxItems: number
     operationLogQueueMaxMb: number
-    auditLogTransportMaxQueuedJobs: number
-    auditLogTransportMaxTotalMb: number
-    auditLogTransportMaxActiveMb: number
-    auditLogTransportMaxJobMb: number
-    auditLogFlushBatchMaxMb: number
-    auditLogScheduledFlushMaxBatches: number
-    auditLogShutdownFlushMaxBatches: number
-    auditLogRedisStreamMaxItems: number
-    auditLogRedisStreamMaxMb: number
     ipcUsageRecordQueueMaxMessages: number
     ipcUsageRecordQueueMaxMb: number
     ipcRegularWorkerQueueMaxMessages: number
@@ -359,6 +351,9 @@ export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
 export const defaultChatDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-chat.sqlite3')
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
+export const defaultAuditLogF3DatabasePath = resolve(backendRoot, 'data', 'juhe-ai-audit-log.sqlite3')
+export const defaultAuditLogF3PayloadBlobDirectory = resolve(backendRoot, 'data', 'audit-payload-blobs')
+export const defaultAuditLogF3HotSearchDirectory = resolve(backendRoot, 'data', 'audit-hot-search')
 export const defaultRuntimeLogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-runtime-log.sqlite3')
 export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
@@ -576,6 +571,13 @@ export const runtimeConfig: RuntimeConfig = {
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   chatDatabasePath: pathConfig('JUHE_AI_CHAT_DATABASE_PATH', defaultChatDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
+  auditLogF3: {
+    sqlitePath: pathConfig('JUHE_AI_AUDIT_LOG_DATABASE_PATH', defaultAuditLogF3DatabasePath),
+    payloadBlobDirectory: pathConfig('JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', defaultAuditLogF3PayloadBlobDirectory),
+    hotSearchDirectory: pathConfig('JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', defaultAuditLogF3HotSearchDirectory),
+    postgresSchema: stringConfig('JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA', 'juhe_dataset'),
+    postgresPoolMax: numberConfig('JUHE_AI_AUDIT_LOG_QUERY_POOL_MAX', 4, 1, 32)
+  },
   runtimeLogDatabasePath: pathConfig('JUHE_AI_RUNTIME_LOG_DATABASE_PATH', defaultRuntimeLogDatabasePath),
   usageCatalogDatabasePath: pathConfig('JUHE_AI_USAGE_CATALOG_DATABASE_PATH', defaultUsageCatalogDatabasePath),
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
@@ -708,9 +710,6 @@ export const runtimeConfig: RuntimeConfig = {
     accountBalanceAutoDetectionBackfillPageSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_AUTO_DETECTION_BACKFILL_PAGE_SIZE', 50, 1, 10_000),
     accountBalanceRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_BATCH_SIZE', 36, 1, 1_000),
     accountBalanceRefreshRecoveryBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_RECOVERY_BATCH_SIZE', 4, 1, 1_000),
-    auditLogPostgresFlushBatchSize: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_POSTGRES_FLUSH_BATCH_SIZE', 25, 1, 1_000),
-    auditLogPostgresRedisConsumerConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_POSTGRES_REDIS_CONSUMER_CONCURRENCY', 20, 1, 1_000),
-    auditPayloadBlobWriteConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_PAYLOAD_BLOB_WRITE_CONCURRENCY', 10, 1, 1_000),
     auditBlobCleanupDeleteConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_BLOB_CLEANUP_DELETE_CONCURRENCY', 5, 1, 1_000),
     modelCheckTokenWorkerTargetSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_TARGET_SIZE', 5, 1, 64),
     modelCheckTokenWorkerQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_QUEUE_MAX_ITEMS', 16, 1, 100_000),
@@ -741,22 +740,10 @@ export const runtimeConfig: RuntimeConfig = {
     modelQualityHealthSyncRetryBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_QUALITY_HEALTH_SYNC_RETRY_BATCH_SIZE', 20, 1, 1_000),
     taskRunReconcileBatchSize: integerConfig('JUHE_AI_BACKGROUND_TASK_RUN_RECONCILE_BATCH_SIZE', 500, 1, 10_000),
     modelTrustObservationAggregationBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_TRUST_OBSERVATION_AGGREGATION_BATCH_SIZE', 100, 1, 10_000),
-    auditHotRetentionCleanupBatchSize: integerConfig('JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_BATCH_SIZE', 100, 1, 10_000),
-    auditHotRetentionCleanupMaxBatches: integerConfig('JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_BATCHES', 1, 1, 1_000),
-    auditHotRetentionCleanupMaxRunMs: integerConfig('JUHE_AI_BACKGROUND_AUDIT_HOT_RETENTION_CLEANUP_MAX_RUN_MS', 3_000, 100, 300_000),
     operationLogBatchSize: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_BATCH_SIZE', 200, 1, 10_000),
     operationLogShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),
     operationLogQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_QUEUE_MAX_ITEMS', 5_000, 1, 1_000_000),
     operationLogQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_QUEUE_MAX_MB', 32, 1, 4_096),
-    auditLogTransportMaxQueuedJobs: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_QUEUED_JOBS', 256, 1, 100_000),
-    auditLogTransportMaxTotalMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_TOTAL_MB', 128, 1, 4_096),
-    auditLogTransportMaxActiveMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_ACTIVE_MB', 72, 1, 4_096),
-    auditLogTransportMaxJobMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_TRANSPORT_MAX_JOB_MB', 64, 1, 4_096),
-    auditLogFlushBatchMaxMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_FLUSH_BATCH_MAX_MB', 8, 1, 4_096),
-    auditLogScheduledFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_SCHEDULED_FLUSH_MAX_BATCHES', 20, 1, 10_000),
-    auditLogShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),
-    auditLogRedisStreamMaxItems: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_REDIS_STREAM_MAX_ITEMS', 50_000, 1, 5_000_000),
-    auditLogRedisStreamMaxMb: integerConfig('JUHE_AI_BACKGROUND_AUDIT_LOG_REDIS_STREAM_MAX_MB', 256, 1, 16_384),
     ipcUsageRecordQueueMaxMessages: integerConfig('JUHE_AI_BACKGROUND_IPC_USAGE_RECORD_QUEUE_MAX_MESSAGES', 10_000, 1, 1_000_000),
     ipcUsageRecordQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_IPC_USAGE_RECORD_QUEUE_MAX_MB', 64, 1, 4_096),
     ipcRegularWorkerQueueMaxMessages: integerConfig('JUHE_AI_BACKGROUND_IPC_REGULAR_WORKER_QUEUE_MAX_MESSAGES', 5_000, 1, 1_000_000),

@@ -62,7 +62,7 @@ const [
   import('../../storage/account-api-key-rotation.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/accounts/account-import.service.js'),
   import('../../modules/accounts/account-export.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')

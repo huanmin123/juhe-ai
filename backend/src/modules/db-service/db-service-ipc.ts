@@ -725,11 +725,6 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardUsageRecordsToWorker(record.items)
       }
       break
-    case 'background_worker_audit_logs':
-      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
-        void forwardAuditLogsToWorker(record.items)
-      }
-      break
     case 'background_worker_operation_logs':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
         void forwardOperationLogsToWorker(record.items)
@@ -1164,8 +1159,6 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   const [
     systemMetrics,
     auditCapture,
-    auditLogTransport,
-    auditLogQueue,
     gatewayUsageFinalization,
     accountConcurrency,
     backgroundIpc,
@@ -1173,8 +1166,6 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   ] = await Promise.all([
     buildServerSystemMetricsRuntimeSnapshot(),
     import('../gateway/audit/capture.service.js'),
-    import('../audit-logs/audit-log-transport.service.js'),
-    import('../audit-logs/audit-log-queue.service.js'),
     import('../gateway/usage/failure-finalization.service.js'),
     import('../../shared/account-concurrency.js'),
     import('../background/background-ipc.js'),
@@ -1235,10 +1226,6 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
     gatewayUsageFinalization: gatewayUsageFinalization.getGatewayUsageFinalizationRuntime(),
-    auditLogTransport: {
-      ...auditLogTransport.getAuditLogTransportRuntime(),
-      pendingDispatchCount: auditLogQueue.getAuditLogServerDispatchPendingCount()
-    }
   }
 }
 
@@ -1289,7 +1276,6 @@ async function buildServerSystemMetricsRuntimeSnapshot(): Promise<DbServiceSyste
           usageRecordQueue: { ...ingestWorkerSnapshot.usageRecordQueue },
           operationLogQueue: { ...ingestWorkerSnapshot.operationLogQueue },
           publicApiLogQueue: { ...ingestWorkerSnapshot.publicApiLogQueue },
-          auditLogQueue: { ...ingestWorkerSnapshot.auditLogQueue },
           recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue }
         }
         : undefined
@@ -1651,19 +1637,6 @@ async function forwardUsageRecordsToWorker(items: unknown[]): Promise<void> {
       event: 'db_service_usage_records_forward_failed',
       itemCount: usageRecords.length
     }, 'DB service 转发使用记录到后台 worker 失败')
-  }
-}
-
-async function forwardAuditLogsToWorker(items: unknown[]): Promise<void> {
-  if (rejectRedisStreamLocalQueueForward('background_worker_audit_logs', items.length)) return
-  const backgroundIpc = await import('../background/background-ipc.js')
-  const auditLogQueue = await import('../audit-logs/audit-log-queue.service.js')
-  const auditLogs = items.filter(auditLogQueue.isAuditLogInput)
-  if (auditLogs.length > 0 && !backgroundIpc.sendAuditLogsToWorker(auditLogs)) {
-    logger.warn({
-      event: 'db_service_audit_logs_forward_failed',
-      itemCount: auditLogs.length
-    }, 'DB service 转发审计日志到后台 worker 失败')
   }
 }
 

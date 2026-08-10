@@ -94,16 +94,16 @@
       <a-tooltip :title="exportTooltip">
         <a-button :loading="exportLoading" @click="emit('export')">
           <template #icon>
-            <DownloadOutlined />
+            <UploadOutlined />
           </template>
-          导出 JSON
+          导出
         </a-button>
       </a-tooltip>
       <a-button @click="emit('import')">
         <template #icon>
-          <UploadOutlined />
+          <DownloadOutlined />
         </template>
-        导入账户
+        导入
       </a-button>
       <a-button type="primary" @click="emit('create')">添加账户</a-button>
     </template>
@@ -223,6 +223,7 @@ const props = defineProps<{
   isManagementView: boolean
   providers: ProviderDefinition[]
   refreshLoading: boolean
+  allLoadedSelected?: boolean
   selectedCount?: number
   statusOptions: Array<FilterOption<AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
@@ -259,9 +260,11 @@ const emit = defineEmits<{
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated'])
 const resolvedProviders = computed(() => props.providers.length ? props.providers : FALLBACK_PROVIDERS)
-const exportTooltip = computed(() => props.selectedCount
-  ? `已选择 ${props.selectedCount} 个账户，将优先导出已选自有账户`
-  : '未选择账户时按当前筛选导出自有账户')
+const exportTooltip = computed(() => props.allLoadedSelected
+  ? '已全选当前列表，将按当前筛选导出全部账户（最多 500 个）'
+  : props.selectedCount
+    ? `已选择 ${props.selectedCount} 个账户，将导出所选自有账户`
+    : '按当前筛选导出全部账户，最多 500 个，超过后请筛选或分批导出')
 const providerOptions = computed(() => [
   { label: '全部供应商', value: 'all' },
   ...resolvedProviders.value.map((provider) => ({ label: provider.name, value: provider.code }))

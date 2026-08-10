@@ -31,7 +31,7 @@ assert.doesNotMatch(dataRetentionCleanupSource, /data_retention_cleanup_skipped_
 assert.match(dataRetentionCleanupSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw new Error/, '高性能模式数据保留 worker 不能返回空清理结果，必须 fail-fast')
 const maintenanceCleanupJobsSource = source('../../modules/background/maintenance-cleanup-jobs.ts')
 assert.match(maintenanceCleanupJobsSource, /runDataRetentionCleanup\([^)]*\)[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*enqueuePostgresDataRetentionMaintenanceJobs/, 'PG 高性能 data-retention 定时入口必须投递 record-maintenance 任务，不能直接跑单机清理链路')
-assert.match(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*getSettingsAsync[\s\S]*readAuditLogSettings\(\)[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'usage_records_cleanup'[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'audit_retained_data_cleanup'[\s\S]*successHotRetentionHours[\s\S]*successSampleBucketThreshold/, 'PG 高性能 data-retention 必须分别按系统设置和审计设置投递 usage 与审计保留维护任务')
+assert.doesNotMatch(maintenanceCleanupJobsSource, /audit_retained_data_cleanup|readAuditLogSettings\(\)/, 'F3 接管后 Node data-retention 不得继续读取或投递审计保留任务')
 assert.match(maintenanceCleanupJobsSource, /cleanupPostgresDatasetRetainedData[\s\S]*cleanupOperationLogsBeforeAsync[\s\S]*cleanupPublicApiLogsBeforeAsync[\s\S]*cleanupModelCheckRunsBeforeAsync/, 'PG 高性能 data-retention 必须按保留设置清理非审计 dataset 日志和模型检测历史')
 assert.doesNotMatch(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*type: 'non_business_data_cleanup'/, 'PG 高性能定时保留清理不能用 usage cutoff 投递通用非业务硬清理，避免误删审计数据')
 assert.doesNotMatch(source('../../modules/background/background-jobs.ts'), /if \(!isPostgresHighPerformanceMode\(\)\) \{[\s\S]*backgroundScheduledJobName\('data-retention-cleanup'\)/, 'PG 高性能 ingest-worker 不能跳过 data-retention-cleanup 调度')
@@ -114,17 +114,6 @@ assert.match(apiKeyRecordCleanupSource, /deletePostgresApiKeyUsageDataBatch[\s\S
 assert.match(apiKeyRecordCleanupSource, /deletePostgresApiKeyUsageDataBatch[\s\S]*await client\.transaction\(async \(tx\) => \{[\s\S]*subtractPostgresApiKeyUsageRowsOnce\(tx[\s\S]*deletePostgresUsageRecordCatalogRowsByUsageIds\(tx[\s\S]*markPostgresUsageCleanupRowsDeleted\(tx/, 'PG API Key usage 删除、统计扣减和 deduction 标记必须在同一个事务里完成')
 assert.match(apiKeyRecordCleanupSource, /SELECT stats_subtracted_at[\s\S]*FOR UPDATE/, 'PG API Key 记录清理必须锁定 deduction 行，避免并发重复扣减统计')
 assert.match(apiKeyRecordCleanupSource, /assertSqliteApiKeyRecordCleanup/, 'API Key 同步清理入口必须在 PostgreSQL 模式 fail-fast')
-
-const auditPayloadSource = source('../../storage/audit-log-payload-blobs.ts')
-assert.match(auditPayloadSource, /cleanupUnreferencedAuditPayloadBlobsPostgresAsync/, '审计 payload blob 清理必须提供 PostgreSQL 异步实现')
-assert.match(auditPayloadSource, /cleanupAuditPayloadBlobsBeforePostgresAsync/, '审计 payload blob 保留清理必须提供 PostgreSQL 异步实现')
-assert.match(auditPayloadSource, /listAuditPayloadBlobRowsBefore[\s\S]*NOT EXISTS[\s\S]*audit_payload_refs[\s\S]*headers_blob_id = b\.id OR r\.body_blob_id = b\.id/, '审计 payload 按时间清理时必须跳过仍被 audit_payload_refs 引用的 blob')
-assert.match(auditPayloadSource, /assertSqliteAuditPayloadBlobCleanup/, '审计 payload blob 同步清理入口必须在 PostgreSQL 模式 fail-fast')
-
-const auditRetentionSource = source('../../storage/audit-log-retention.repository.ts')
-assert.match(auditRetentionSource, /deleteAuditLogsByWhereAsync/, '审计日志保留清理必须提供 PostgreSQL 异步删除实现')
-assert.match(auditRetentionSource, /cleanupAuditErrorGroupsBeforeAsync/, '审计错误分组保留清理必须提供 PostgreSQL 异步删除实现')
-assert.match(auditRetentionSource, /assertSqliteAuditLogRetention/, '审计日志同步保留清理入口必须在 PostgreSQL 模式 fail-fast')
 
 console.log('performance-mode-isolation-regression passed')
 

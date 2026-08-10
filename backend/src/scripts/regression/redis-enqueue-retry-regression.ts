@@ -31,8 +31,7 @@ await assert.rejects(
 assert.equal(attempts, 1, '发布 fence 拒绝是确定性结果，不得重试')
 
 for (const relativePath of [
-  '../../modules/gateway/usage/record-queue.service.ts',
-  '../../modules/audit-logs/audit-log-queue.service.ts'
+  '../../modules/gateway/usage/record-queue.service.ts'
 ]) {
   const source = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
   assert.match(source, /runRedisEnqueueWithBoundedRetry\(/, `${relativePath} 必须使用共享有界重试`)

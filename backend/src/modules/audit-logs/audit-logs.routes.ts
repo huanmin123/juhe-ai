@@ -2,25 +2,42 @@ import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import type {
+  AuditErrorGroupListOptions,
+  AuditLogListOptions,
+  AuditOutcome,
+  PersistedAuditTrafficSource
+} from '../../storage/audit-log-types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import {
-  getAuditLogDetailSupplementAsync,
-  getAuditLogPayload,
-  listAuditErrorGroupEventsAsync,
-  listAuditErrorGroupsAsync,
-  listAuditLogsByIdsAsync,
-  type AuditErrorGroupListOptions,
-  listAuditLogsAsync,
-  type AuditLogListOptions,
-  type AuditOutcome,
-  type PersistedAuditTrafficSource
-} from '../../storage/repositories.js'
-import { readAuditLogSettings } from './audit-log-settings.js'
-import { grepAuditHotSearchFiles } from '../../storage/audit-log-hot-search-files.js'
-import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
+  createAuditLogF3QueryRepository,
+  type AuditLogF3QueryRepository
+} from '../../storage/audit-log-f3-query.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const auditLogsRouter = Router()
 const auditLogRouteTimeoutMs = 120_000
+let f3RepositoryPromise: Promise<AuditLogF3QueryRepository> | undefined
+
+async function getF3Repository(): Promise<AuditLogF3QueryRepository> {
+  if (!f3RepositoryPromise) {
+    const isPostgres = runtimeConfig.databaseDriver === 'postgres'
+    f3RepositoryPromise = createAuditLogF3QueryRepository({
+      ...(isPostgres ? { postgresUrl: runtimeConfig.postgres.url } : { sqlitePath: runtimeConfig.auditLogF3.sqlitePath }),
+      postgresSchema: runtimeConfig.auditLogF3.postgresSchema,
+      postgresPoolMax: runtimeConfig.auditLogF3.postgresPoolMax,
+      payloadBlobDirectory: runtimeConfig.auditLogF3.payloadBlobDirectory,
+      hotSearchDirectory: runtimeConfig.auditLogF3.hotSearchDirectory
+    })
+  }
+  return f3RepositoryPromise
+}
+
+export async function closeAuditLogF3QueryRepository(): Promise<void> {
+  const repositoryPromise = f3RepositoryPromise
+  f3RepositoryPromise = undefined
+  if (repositoryPromise) await (await repositoryPromise).close()
+}
 
 auditLogsRouter.use((req, res, next) => {
   req.setTimeout(auditLogRouteTimeoutMs)
@@ -31,7 +48,7 @@ auditLogsRouter.use(requireAdmin)
 
 auditLogsRouter.get('/', async (req, res, next) => {
   try {
-    res.json(ok(await listAuditLogsAsync(parseAuditLogListOptions(req.query))))
+    res.json(ok(await (await getF3Repository()).listAuditLogs(parseAuditLogListOptions(req.query))))
   } catch (error) {
     if (isInvalidAuditTrafficSourceQueryError(error)) {
       res.status(400).json({ message: error.message })
@@ -43,8 +60,8 @@ auditLogsRouter.get('/', async (req, res, next) => {
 
 auditLogsRouter.get('/search-hot', async (req, res, next) => {
   try {
-    const grepResult = await grepAuditHotSearchFiles(parseAuditHotSearchOptions(req.query))
-    const items = await listAuditLogsByIdsAsync(grepResult.auditLogIds)
+    const grepResult = await (await getF3Repository()).searchHot(parseAuditHotSearchOptions(req.query))
+    const items = await (await getF3Repository()).listAuditLogsByIds(grepResult.auditLogIds)
     res.json(ok({
       items,
       total: grepResult.truncated ? Math.max(items.length + 1, grepResult.auditLogIds.length) : items.length,
@@ -68,52 +85,10 @@ auditLogsRouter.get('/search-hot', async (req, res, next) => {
 
 auditLogsRouter.get('/runtime', async (_req, res, next) => {
   try {
-    const serverRuntime = await requestServerRuntimeSnapshot()
-    const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
-    const auditLogQueue = workerSnapshot?.auditLogQueue
-    const workerRuntime = serverRuntime?.ingestWorker
-    const runtimeAvailable = Boolean(serverRuntime)
-    const workerSnapshotAvailable = Boolean(workerSnapshot)
-    const auditLogQueueAvailable = Boolean(auditLogQueue)
-    const settings = readAuditLogSettings()
+    const runtime = (await getF3Repository()).getRuntime()
     res.json(ok({
-      enabled: settings.enabled,
-      runtimeAvailable,
-      workerSnapshotAvailable,
-      auditLogQueueAvailable,
-      activeCaptureAvailable: serverRuntime?.activeAuditCaptureCount !== undefined,
-      unavailableReason: auditLogRuntimeUnavailableReason(settings.enabled, runtimeAvailable, workerSnapshotAvailable, auditLogQueueAvailable),
-      queueLength: auditLogQueue?.queueLength ?? null,
-      queueBytes: auditLogQueue?.queueBytes ?? null,
-      flushLastSuccessAt: auditLogQueue?.flushLastSuccessAt,
-      flushLastError: auditLogQueue?.flushLastError,
-      droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? null,
-      droppedFailureCount: auditLogQueue?.droppedFailureCount ?? null,
-      droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? null,
-      droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? null,
-      activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? null,
-      transport: serverRuntime?.auditLogTransport
-        ? { available: true, ...serverRuntime.auditLogTransport }
-        : {
-          available: false,
-          queuedJobs: null,
-          queuedBytes: null,
-          activeJobs: null,
-          activeBytes: null,
-          workerCount: null,
-          completedCount: null,
-          failedCount: null,
-          rejectedCount: null,
-          pendingDispatchCount: null
-        },
-      worker: {
-        available: Boolean(workerSnapshot ?? workerRuntime),
-        snapshotAvailable: workerSnapshotAvailable,
-        pid: workerSnapshot?.pid ?? workerRuntime?.pid,
-        ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
-        pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
-      },
-      settings
+      ...runtime,
+      available: true
     }))
   } catch (error) {
     next(error)
@@ -122,7 +97,7 @@ auditLogsRouter.get('/runtime', async (_req, res, next) => {
 
 auditLogsRouter.get('/error-groups', async (req, res, next) => {
   try {
-    res.json(ok(await listAuditErrorGroupsAsync(parseAuditErrorGroupListOptions(req.query))))
+    res.json(ok(await (await getF3Repository()).listAuditErrorGroups(parseAuditErrorGroupListOptions(req.query))))
   } catch (error) {
     next(error)
   }
@@ -130,7 +105,7 @@ auditLogsRouter.get('/error-groups', async (req, res, next) => {
 
 auditLogsRouter.get('/error-groups/:id/events', async (req, res, next) => {
   try {
-    res.json(ok(await listAuditErrorGroupEventsAsync(req.params.id, parseAuditLogListOptions(req.query))))
+    res.json(ok(await (await getF3Repository()).listAuditErrorGroupEvents(req.params.id, parseAuditLogListOptions(req.query))))
   } catch (error) {
     if (isInvalidAuditTrafficSourceQueryError(error)) {
       res.status(400).json({ message: error.message })
@@ -142,7 +117,7 @@ auditLogsRouter.get('/error-groups/:id/events', async (req, res, next) => {
 
 auditLogsRouter.get('/:id', async (req, res, next) => {
   try {
-    const detail = await getAuditLogDetailSupplementAsync(req.params.id)
+    const detail = await (await getF3Repository()).getAuditLogDetail(req.params.id)
     if (!detail) {
       sendNotFound(res, '审计日志不存在')
       return
@@ -155,7 +130,7 @@ auditLogsRouter.get('/:id', async (req, res, next) => {
 
 auditLogsRouter.get('/:id/payloads/:payloadId', async (req, res, next) => {
   try {
-    const payload = await getAuditLogPayload(req.params.id, req.params.payloadId, {
+    const payload = await (await getF3Repository()).getAuditLogPayload(req.params.id, req.params.payloadId, {
       full: true
     })
     if (!payload) {
@@ -264,17 +239,4 @@ function isInvalidAuditTrafficSourceQueryError(error: unknown): error is Error &
   return error instanceof Error
     && (error as Error & { statusCode?: unknown }).statusCode === 400
     && error.message === '审计日志来源筛选无效，仅支持网关请求、AI 账户测试、混合路由选型或回答质量复核'
-}
-
-function auditLogRuntimeUnavailableReason(
-  enabled: boolean,
-  runtimeAvailable: boolean,
-  workerSnapshotAvailable: boolean,
-  auditLogQueueAvailable: boolean
-): string | undefined {
-  if (!enabled) return 'audit_disabled'
-  if (!runtimeAvailable) return 'server_runtime_unavailable'
-  if (!workerSnapshotAvailable) return 'worker_snapshot_unavailable'
-  if (!auditLogQueueAvailable) return 'audit_log_queue_unavailable'
-  return undefined
 }

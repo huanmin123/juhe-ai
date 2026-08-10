@@ -69,9 +69,6 @@ function testStatsRecordMaintenanceBackloggedRuntime(): void {
 
 function testDegradedRuntime(): void {
   const runtime = buildRuntimeSnapshot()
-  runtime.ingestWorker!.snapshot!.auditLogQueue.droppedFailureCount = 2
-  runtime.ingestWorker!.snapshot!.auditLogQueue.flushFailureCount = 1
-  runtime.ingestWorker!.snapshot!.auditLogQueue.flushLastError = 'SQLITE_BUSY'
   runtime.ingestWorker!.snapshot!.usageRecordQueue.slowFlushCount = 1
   runtime.ingestWorker!.snapshot!.usageRecordQueue.writerPoolFailedJobs = 1
   runtime.ingestWorker!.snapshot!.usageRecordQueue.writerPoolQueueLength = 1000
@@ -82,7 +79,6 @@ function testDegradedRuntime(): void {
 
   const health = buildBackgroundQueueHealthSnapshot(runtime)
   const usageQueue = health.workerQueues.find((queue) => queue.key === 'usageRecords')
-  const auditQueue = health.workerQueues.find((queue) => queue.key === 'auditLogs')
   const usageIpcQueue = health.serverIpcQueues.find((queue) => queue.key === 'usageRecords')
   assert.equal(health.status, 'degraded')
   assert.equal(usageQueue?.status, 'degraded')
@@ -94,19 +90,13 @@ function testDegradedRuntime(): void {
   assert.equal(usageQueue?.oldestPendingWriteMs, 6000)
   assert.equal(usageQueue?.writerPoolFailedJobs, 1)
   assert.equal(usageQueue?.writerPoolQueueLength, 1000)
-  assert.equal(auditQueue?.status, 'degraded')
-  assert.equal(auditQueue?.droppedCount, 2)
-  assert.equal(auditQueue?.flushFailureCount, 1)
-  assert.equal(auditQueue?.flushLastError, 'SQLITE_BUSY')
-  assert(auditQueue?.reasons.includes('queue_dropped'))
-  assert(auditQueue?.reasons.includes('queue_flush_failed'))
   assert.equal(usageIpcQueue?.status, 'degraded')
   assert.equal(usageIpcQueue?.rejectedCount, 3)
   assert.deepEqual(usageIpcQueue?.reasons, ['ipc_rejected'])
-  assert.equal(health.summary.degradedCount, 3)
-  assert.equal(health.summary.droppedCount, 2)
+  assert.equal(health.summary.degradedCount, 2)
+  assert.equal(health.summary.droppedCount, 0)
   assert.equal(health.summary.rejectedCount, 3)
-  assert.equal(health.summary.flushFailureCount, 1)
+  assert.equal(health.summary.flushFailureCount, 0)
   assert.equal(health.summary.pendingWriteRequestCount, 2)
   assert.equal(health.summary.writerPoolQueuedCount, 1000)
   assert.equal(health.summary.writerPoolActiveJobs, 2)
@@ -123,7 +113,6 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
       oldestPendingWriteMs: 0,
       pendingQueues: {
         usageRecords: queue({ queueLength: 1, queueBytes: 1024 }),
-        auditLogs: queue(),
         operationLogs: queue(),
         publicApiLogs: queue(),
         recordMaintenance: queue(),
@@ -156,7 +145,6 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
           writerPoolMaxQueueWaitMs: 3,
           writerPoolMaxRunMs: 15
         }),
-        auditLogQueue: queue(),
         operationLogQueue: queue(),
         publicApiLogQueue: queue(),
         recordMaintenanceQueue: queue({ queueLength: 3, queueBytes: 3072 })

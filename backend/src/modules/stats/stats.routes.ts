@@ -25,7 +25,6 @@ import {
 import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { DAY_MS, fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import type { RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
-import { getAuditLogRedisStreamRuntime } from '../audit-logs/audit-log-queue.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -564,7 +563,6 @@ function accountBalanceSnapshotCleanupRuntimeRows(runtime: DbServiceSystemMetric
 async function redisStreamRuntimeQueueRows(): Promise<BackgroundJobRuntimeRow[]> {
   const runtimes = await Promise.all([
     redisStreamRuntime('Redis Stream 使用记录', getUsageRecordRedisStreamRuntime),
-    redisStreamRuntime('Redis Stream 审计日志', getAuditLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 操作日志', getOperationLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 公开接口日志', getPublicApiLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 数据维护', getRecordMaintenanceRedisStreamRuntime),

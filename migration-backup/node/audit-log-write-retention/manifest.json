@@ -1,0 +1,340 @@
+{
+  "manifestVersion": 2,
+  "featureId": "F3",
+  "archivedAt": "2026-08-10T02:00:00+08:00",
+  "maintainer": "migration team",
+  "cutoverCommit": "779ab71fc",
+  "rollbackCommit": "779ab71fc",
+  "archiveOverlayAllowed": false,
+  "restoreProcedure": "停止 Go F3 sidecar 与 Node 应用后，以 rollbackCommit 整体恢复完整 Node 基线；归档文件仅供比对，禁止覆盖更新工作树或与 Go owner 双写运行。",
+  "goImplementationPaths": [
+    "backend-go/cmd/juhe-ai-audit-log-writer/main.go",
+    "backend-go/cmd/juhe-ai-audit-log-migrate/main.go",
+    "backend-go/internal/auditlog"
+  ],
+  "disabledNodeEntrypoints": [
+    "backend/src/modules/audit-logs/audit-log-queue.service.ts",
+    "backend/src/modules/audit-logs/audit-log-transport.service.ts",
+    "backend/src/modules/audit-logs/audit-log-transport-worker.ts",
+    "backend/src/modules/audit-logs/audit-log-stream-codec.ts",
+    "backend/src/modules/audit-logs/audit-log-capacity-fallback.ts",
+    "backend/src/modules/background/background-ipc-audit-trim.ts",
+    "backend/src/storage/audit-logs.repository.ts",
+    "backend/src/storage/audit-log-retention.repository.ts",
+    "backend/src/storage/audit-log-read.repository.ts",
+    "backend/src/storage/audit-log-detail-supplement.repository.ts",
+    "backend/src/storage/audit-log-payload-blobs.ts",
+    "backend/src/storage/audit-log-hot-search-files.ts",
+    "backend/src/storage/audit-log-error-groups.repository.ts",
+    "backend/src/storage/audit-log-list-query.ts",
+    "backend/src/storage/audit-log-mappers.ts",
+    "backend/src/storage/audit-log-traffic-source.ts",
+    "backend/src/storage/audit-log-payload-input.ts",
+    "backend/src/scripts/regression/audit-log-transport-worker-regression.ts",
+    "backend/src/scripts/regression/audit-log-retention-regression.ts",
+    "backend/src/scripts/regression/server-audit-shutdown-regression.ts"
+  ],
+  "verification": {
+    "status": "partial",
+    "sqlite": {
+      "status": "passed",
+      "evidence": "Go F3 SQLite tests and race tests passed; Node F3 query/read-only and owner-exit regressions passed.",
+      "remaining": "当前候选 Node capture -> Go -> Node 隔离端到端、重启/停机闭环仍待独立验收。"
+    },
+    "postgresRedis": {
+      "status": "passed",
+      "evidence": "显式配置的可销毁专用 PostgreSQL F3 smoke 通过并完成清理复核；F3 不使用 Redis。",
+      "remaining": "当前候选双模式端到端及部署接线仍待独立验收。"
+    },
+    "activeNodePathZeroEvidence": "F3 owner-exit、schema-retirement、DB-read-retirement、capture-direct-input 和 route 回归已通过；完整部署验证仍未完成。"
+  },
+  "files": [
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/README.md",
+      "sha256": "8b7cf780a7c78265fc17716860fefc757f1de917b95f6a6147546e4a362cee44",
+      "originalPath": "migration-backup/node/audit-log-write-retention/README.md"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-capacity-fallback.ts",
+      "sha256": "8765aed8d82c7b44640edf286a6cef3a61be2c80c83822a0a1918b312049a81b",
+      "originalPath": "backend/src/modules/audit-logs/audit-log-capacity-fallback.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-queue.service.ts",
+      "sha256": "db0a546900028a30567ce20137a78b6fa23d3d73c7ac472884e339c5f62fe7ab",
+      "originalPath": "backend/src/modules/audit-logs/audit-log-queue.service.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-stream-codec.ts",
+      "sha256": "64187c5c2214d8b509e77dc31b68b3b0b7e5300b72e6bcfd8ec4b7d773d0daab",
+      "originalPath": "backend/src/modules/audit-logs/audit-log-stream-codec.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-transport-worker.ts",
+      "sha256": "512be0402ed667dbe3a42c782d82f9c6a3e28be209a4cc5e4d3b536a5ebdd625",
+      "originalPath": "backend/src/modules/audit-logs/audit-log-transport-worker.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-transport.service.ts",
+      "sha256": "27ab73217e489453d38f8640eea818c762888a65969fd5d2f5068d8346bf4eb5",
+      "originalPath": "backend/src/modules/audit-logs/audit-log-transport.service.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/background/background-ipc-audit-trim.ts",
+      "sha256": "2b1c56af958de41b7200d0073603a988cf2f05c44ed8b3c10d0b3e9955b4a61a",
+      "originalPath": "backend/src/modules/background/background-ipc-audit-trim.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-async-flush-regression.ts",
+      "sha256": "da97fb666b0718b339d3ff5a0c1c0aa6ae763492ce25b5ad5d36435225468e41",
+      "originalPath": "backend/src/scripts/regression/audit-log-async-flush-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-batch-existing-lookup-regression.ts",
+      "sha256": "7396006b796f1039b4f570c4d86e4fdf65c2ac77e28e2eb02dc1218525c36e8e",
+      "originalPath": "backend/src/scripts/regression/audit-log-batch-existing-lookup-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-detail-supplement-regression.ts",
+      "sha256": "4f9c38f071572a0da97df043f0ab933a1abbe82d75f9e5e7ca11dc09fe297434",
+      "originalPath": "backend/src/scripts/regression/audit-log-detail-supplement-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-disabled-regression.ts",
+      "sha256": "b41094a44a0b15592c18e3811363b947797f199978e9c53fb47277ffa6ce424b",
+      "originalPath": "backend/src/scripts/regression/audit-log-disabled-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts",
+      "sha256": "c272f10ac10541221dd399eed869f56419e12147b0ccca35b72091b434219555",
+      "originalPath": "backend/src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-hot-search-regression.ts",
+      "sha256": "e8dfeef42d4efbbc0b5f51a507535165bfa67fc7a828c7b6416052ee3f60ceb9",
+      "originalPath": "backend/src/scripts/regression/audit-log-hot-search-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-in-progress-queue-priority-regression.ts",
+      "sha256": "ad09f1c4160a3ecac35e79dda7a7653892c9227f11ba32a54951ef23f0b1afef",
+      "originalPath": "backend/src/scripts/regression/audit-log-in-progress-queue-priority-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-list-projection-regression.ts",
+      "sha256": "6f5c17b826ec6ac88c984664776a058d619797fd70b83887033c54da3ad6d13a",
+      "originalPath": "backend/src/scripts/regression/audit-log-list-projection-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-postgres-concurrency-smoke.ts",
+      "sha256": "d235801a844d3258c80bb672624bb89310cc055a63fb404fccc2e167a62e9f09",
+      "originalPath": "backend/src/scripts/regression/audit-log-postgres-concurrency-smoke.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-postgres-smoke.ts",
+      "sha256": "4ccd6bd58c73472c323991342a711ee07fd1e8bcc759398664756ad82b20407f",
+      "originalPath": "backend/src/scripts/regression/audit-log-postgres-smoke.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-prepared-ipc-ownership-regression.ts",
+      "sha256": "3d92503b8fb1958cc931f84e3629c0a1213dc9de18da98d43cc01225bd5453f5",
+      "originalPath": "backend/src/scripts/regression/audit-log-prepared-ipc-ownership-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-retention-regression.ts",
+      "sha256": "0c53ec518fdae8d2644d90e9e572a283e334190665d8f74a1912a60507a39659",
+      "originalPath": "backend/src/scripts/regression/audit-log-retention-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-session-correlation-regression.ts",
+      "sha256": "3fe81800a9652156eac9a0027c7e28bb51bc3c29d2a30543b35413fd383eda63",
+      "originalPath": "backend/src/scripts/regression/audit-log-session-correlation-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-settings-contract-regression.ts",
+      "sha256": "af9c6eb0f19ddbbbbf9540d56c75b67a055fdf5fe35a966ae5d1a00085e220d7",
+      "originalPath": "backend/src/scripts/regression/audit-log-settings-contract-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-sqlite-concurrency-closure-regression.ts",
+      "sha256": "e4bee0e052b4e7ae53bd89582a88b49185e62df19a6956f2f036c13df266344c",
+      "originalPath": "backend/src/scripts/regression/audit-log-sqlite-concurrency-closure-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-success-disabled-regression.ts",
+      "sha256": "db58335f13325c52ee49647fd6b992e77e94095ba8302741f18537fbbe8637c2",
+      "originalPath": "backend/src/scripts/regression/audit-log-success-disabled-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-log-transport-worker-regression.ts",
+      "sha256": "e0c68ae26e5696a2b55c1bdcdb4d0abbeffa89a0eaa63a0481f2c20f87b392c9",
+      "originalPath": "backend/src/scripts/regression/audit-log-transport-worker-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-payload-large-window-regression.ts",
+      "sha256": "36356f6c6fe56c55d647fa4209c5595b3d4ab70f2e8f5207e4e565e815f15291",
+      "originalPath": "backend/src/scripts/regression/audit-payload-large-window-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/audit-writer-contract-golden-regression.ts",
+      "sha256": "c976e5bc82b725ac5c2e7228306010fb367e97b09163a16892b6f8634454aa53",
+      "originalPath": "backend/src/scripts/regression/audit-writer-contract-golden-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/fixtures/README.md",
+      "sha256": "5eda07d188a8a8f17ddfd71f44280f0b9b89eaf694165cd77e8ec3b08f624fa8",
+      "originalPath": "backend/src/scripts/regression/fixtures/README.md"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/fixtures/audit-writer-contract-v1.json",
+      "sha256": "b363f1f0ca12e1cfc9e334cbadc0473f1c183842e5f8b8894396c208a3f20450",
+      "originalPath": "backend/src/scripts/regression/fixtures/audit-writer-contract-v1.json"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/gateway-audit-payload-storage-regression.ts",
+      "sha256": "4341d8032cb8c229ed6cf43346658e1239b4e808f219e2531b3a9b3de1ef8fdb",
+      "originalPath": "backend/src/scripts/regression/gateway-audit-payload-storage-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/gateway-session-audit-e2e-regression.ts",
+      "sha256": "ba8d8d4e0cce4f31a2cc122b506ecb0528ea95f1cd826af14026889d8efca594",
+      "originalPath": "backend/src/scripts/regression/gateway-session-audit-e2e-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/scripts/regression/server-audit-shutdown-regression.ts",
+      "sha256": "f59979ec29ddece5435d356108422a5802a39d3e06d4d3e422713e79fa62d935",
+      "originalPath": "backend/src/scripts/regression/server-audit-shutdown-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-detail-supplement.repository.ts",
+      "sha256": "1efebddb82813b834804b7dfb8d72ea91a08b88bf2017fb1a3c6cd25eb6f9f01",
+      "originalPath": "backend/src/storage/audit-log-detail-supplement.repository.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-error-groups.repository.ts",
+      "sha256": "7b29cb5784e52e8bca42b9f470b92e96742d2c3ef1b9a6d895125f2cd9642502",
+      "originalPath": "backend/src/storage/audit-log-error-groups.repository.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-hot-search-files.ts",
+      "sha256": "4dd421b21718a5bde0ac800ae89e2767b1babbfcb583adad20036e856f7ba1a8",
+      "originalPath": "backend/src/storage/audit-log-hot-search-files.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-list-query.ts",
+      "sha256": "3b83c6c5120d535482ce358682ef4bd577d63151e192f71a1d37b2dd22717379",
+      "originalPath": "backend/src/storage/audit-log-list-query.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-mappers.ts",
+      "sha256": "ce42ce773fff1b4d75fa8bf717d8f508a6bb42259eeaccd97132c91754bdaa73",
+      "originalPath": "backend/src/storage/audit-log-mappers.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-payload-blobs.ts",
+      "sha256": "1c912b69205c56b3ac5cd2d1002bd2196f0138c7efadf242db016b721c962151",
+      "originalPath": "backend/src/storage/audit-log-payload-blobs.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-payload-input.ts",
+      "sha256": "8f413d4b7b74a07fd9460845759257e5fa212e21f1defeeef49f9e10bc7af270",
+      "originalPath": "backend/src/storage/audit-log-payload-input.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-read.repository.ts",
+      "sha256": "4ac59b3f1f8b898a60bde979f36a4faa3072d3c50800c2336e86b00ca5530698",
+      "originalPath": "backend/src/storage/audit-log-read.repository.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-retention.repository.ts",
+      "sha256": "a3cc89e33e08ef486e4507704b8159611efc3fc378b53a99c3f2806a6057f0db",
+      "originalPath": "backend/src/storage/audit-log-retention.repository.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-log-traffic-source.ts",
+      "sha256": "a0b10ab9aba36f01706e35670b6c8293502d68870616914ab7de5de0b88e1b04",
+      "originalPath": "backend/src/storage/audit-log-traffic-source.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/storage/audit-logs.repository.ts",
+      "sha256": "ff92875b0b5b285be6a9474c5ef03e015d134f0fa7fb6a36ae500160d8b39a1c",
+      "originalPath": "backend/src/storage/audit-logs.repository.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/account-model-mapping-regression.ts",
+      "sha256": "54c49f3e3adfbf9136123f8d64ba3cbdd0c7bd34f89ef12946823a32bb9b4c91",
+      "originalPath": "backend/src/scripts/regression/account-model-mapping-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/api-key-group-route-capability-regression.ts",
+      "sha256": "f015b301ac6baaf9e6ff1693f4c822d1b48b5cc2c883e6cd2a0e1b292dc45d59",
+      "originalPath": "backend/src/scripts/regression/api-key-group-route-capability-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/background-ipc-payload-boundary-regression.ts",
+      "sha256": "589d4defe351d611a678390de52f2ab82ac624ddaec90fdcc549458ef3c0ffb2",
+      "originalPath": "backend/src/scripts/regression/background-ipc-payload-boundary-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/gateway-cross-group-wall-budget-mock-ai-regression.ts",
+      "sha256": "f3381c4e6f760f0d1780ea24e506deda6a6684317240daf347d7ce773209778a",
+      "originalPath": "backend/src/scripts/regression/gateway-cross-group-wall-budget-mock-ai-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/gateway-db-service-append-ipc-regression.ts",
+      "sha256": "4476da2a43c7f246e7a54f893069c0201927c49baf21f9563d4cb1c36652dde1",
+      "originalPath": "backend/src/scripts/regression/gateway-db-service-append-ipc-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/gateway-request-wall-budget-mock-ai-regression.ts",
+      "sha256": "9b42bbbcda4b55f2ea060072930e3fd171dd07ccb2513c0bd98a5c27a6973365",
+      "originalPath": "backend/src/scripts/regression/gateway-request-wall-budget-mock-ai-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/gateway-upstream-semantic-policy-regression.ts",
+      "sha256": "6237221d4a36e0163f747bf44949fa49520a0e50ea470c584e8a6104ef7c9f49",
+      "originalPath": "backend/src/scripts/regression/gateway-upstream-semantic-policy-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/log-list-query-guard-regression.ts",
+      "sha256": "70f662b19a3ca7f3488bc8bf7be1ba74a5bb6df1f6ac3f16684c62d2bdd6d642",
+      "originalPath": "backend/src/scripts/regression/log-list-query-guard-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/logging-body-performance-boundary-regression.ts",
+      "sha256": "1e19757fa2714c4df928e9a2b6887d29ca5eb7852a2699e6cf48eba14a1e6150",
+      "originalPath": "backend/src/scripts/regression/logging-body-performance-boundary-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/non-business-data-hard-cleanup-regression.ts",
+      "sha256": "bfcc237f20443c1de28ffa4ed0365898b28108b1be885dcaed7c902558a5f7ee",
+      "originalPath": "backend/src/scripts/regression/non-business-data-hard-cleanup-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/performance-gateway-persistence-readiness-regression.ts",
+      "sha256": "7992c2107201eeb4fb35a30cff54082b26aa146b11abc4c16a7193ec8f56117d",
+      "originalPath": "backend/src/scripts/regression/performance-gateway-persistence-readiness-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/record-endpoint-path-preservation-regression.ts",
+      "sha256": "10a18242ca5a8a5da513f3aacff10ba9a3b84c7776a49eadab86321c7d6f73a5",
+      "originalPath": "backend/src/scripts/regression/record-endpoint-path-preservation-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/response-inspection-mock-ai-fields-regression.ts",
+      "sha256": "7df4683d8ded4fcc887bb330502236a80ad69c88abb2ba4a1925d6e21fb3a932",
+      "originalPath": "backend/src/scripts/regression/response-inspection-mock-ai-fields-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/stream-first-output-timeout-regression.ts",
+      "sha256": "8c5a31febe66a63f045e0ac0d441d46c5b83020e3edc71c308c6d15668aa31c5",
+      "originalPath": "backend/src/scripts/regression/stream-first-output-timeout-regression.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/worker-local-queue-limit-regression.ts",
+      "sha256": "e8df608dd47bd1e053a85cbccc44ad3d49b5d732368760ddd90b1a5b5fc45611",
+      "originalPath": "backend/src/scripts/regression/worker-local-queue-limit-regression.ts"
+    }
+  ],
+  "featureName": "audit-log-write-retention",
+  "archiveSourceBaseline": "779ab71fc"
+}
