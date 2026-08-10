@@ -431,7 +431,25 @@ if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   echo "==> Creating tar.gz archive"
   assert_safe_removal_target "$TAR_ARCHIVE_PATH" "$RELEASE_ROOT"
   rm -f "$TAR_ARCHIVE_PATH"
-  tar -czf "$TAR_ARCHIVE_PATH" -C "$RELEASE_ROOT" "$PACKAGE_NAME"
+  TMP_TAR_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar"
+  assert_safe_removal_target "$TMP_TAR_PATH" "$RELEASE_ROOT"
+  rm -f "$TMP_TAR_PATH"
+  # Git Bash on Windows does not reliably preserve chmod bits in the tar input.
+  # Exclude runtime entrypoints from the bulk archive and append them explicitly
+  # with executable mode so Linux/macOS extraction can launch the release.
+  tar -cf "$TMP_TAR_PATH" \
+    --exclude="$PACKAGE_NAME/start.sh" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer" \
+    -C "$RELEASE_ROOT" "$PACKAGE_NAME"
+  tar --append --file="$TMP_TAR_PATH" --mode=0755 -C "$RELEASE_ROOT" \
+    "$PACKAGE_NAME/start.sh" \
+    "$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
+    "$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
+    "$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer"
+  gzip -c "$TMP_TAR_PATH" > "$TAR_ARCHIVE_PATH"
+  rm -f "$TMP_TAR_PATH"
   echo "==> Done: $TAR_ARCHIVE_PATH"
 fi
 
