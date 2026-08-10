@@ -14,16 +14,26 @@ RUN go mod download
 
 COPY backend-go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai-audit-log-writer ./cmd/juhe-ai-audit-log-writer
+RUN printf '%s\n' \
+  'package main' \
+  'import ("net/http"; "os"; "time")' \
+  'func main() {' \
+  '  client := http.Client{Timeout: 2 * time.Second}' \
+  '  response, err := client.Get("http://127.0.0.1:3303/__aiinternal__/health")' \
+  '  if err != nil { os.Exit(1) }' \
+  '  defer response.Body.Close()' \
+  '  if response.StatusCode != http.StatusNoContent { os.Exit(1) }' \
+  '}' > /tmp/audit-log-healthcheck.go \
+  && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai-audit-log-healthcheck /tmp/audit-log-healthcheck.go
 
 FROM ${RUNTIME_IMAGE} AS runtime
 WORKDIR /app
 
 COPY --from=build /out/juhe-ai-audit-log-writer /usr/local/bin/juhe-ai-audit-log-writer
+COPY --from=build /out/juhe-ai-audit-log-healthcheck /usr/local/bin/juhe-ai-audit-log-healthcheck
 
 RUN test -x /usr/local/bin/juhe-ai-audit-log-writer \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl \
-  && rm -rf /var/lib/apt/lists/* \
+  && test -x /usr/local/bin/juhe-ai-audit-log-healthcheck \
   && mkdir -p /app/backend/audit-log-data
 
 ENTRYPOINT ["/usr/local/bin/juhe-ai-audit-log-writer"]
