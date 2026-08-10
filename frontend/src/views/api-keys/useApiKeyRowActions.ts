@@ -1,7 +1,8 @@
 import { ref } from 'vue'
 
 import type { RowActionItem } from '@/components/rowActions'
-import type { useScopedApiKeysApi } from '@/composables/useScopedDomainApi'
+import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
+import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
@@ -9,9 +10,15 @@ import type { ApiKeySummary } from '@/types/domain'
 import { mergeApiKeyMutationResult } from './apiKeyMutation'
 import { refreshedApiKeyListItem } from './apiKeyRefreshRow'
 import type { ApiKeyScopeParams } from './apiKeyScope'
-import { buildCcSwitchExportUrl } from './ccswitchExport'
+import {
+  buildCcSwitchExportGroupOptions,
+  buildCcSwitchExportUrl,
+  type CcSwitchClientApp,
+  type CcSwitchExportGroupOption
+} from './ccswitchExport'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
+type ScopedRouteStrategiesApi = ReturnType<typeof useScopedRouteStrategiesApi>
 
 interface CreatedKeyPayload {
   key: string
@@ -21,6 +28,8 @@ interface CreatedKeyPayload {
 
 interface UseApiKeyRowActionsInput {
   apiKeysApi: Pick<ScopedApiKeysApi, 'delete' | 'refreshKey' | 'secret' | 'update'>
+  routeStrategiesApi: Pick<ScopedRouteStrategiesApi, 'editBasicDetail'>
+  isManagementView: () => boolean
   operationScopeParams: (apiKey?: Pick<ApiKeySummary, 'systemAccountId'>) => ApiKeyScopeParams
   openEdit: (apiKey: ApiKeySummary) => void | Promise<void>
   reload: () => void | Promise<unknown>
@@ -34,7 +43,11 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   const statusUpdatingId = ref('')
   const keyRefreshingId = ref('')
   const keyCopyingId = ref('')
+  const ccsExportPreparingId = ref('')
   const ccsExportingId = ref('')
+  const ccsExportModalOpen = ref(false)
+  const ccsExportApiKey = ref<ApiKeySummary>()
+  const ccsExportGroups = ref<CcSwitchExportGroupOption[]>([])
 
   async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
     if (keyCopyingId.value) return
@@ -74,6 +87,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   function apiKeyMoreActions(apiKey: ApiKeySummary): RowActionItem[] {
     const busy = apiKeyActionBusy(apiKey)
     const refreshDisabled = Boolean(keyRefreshingId.value) || statusUpdatingId.value === apiKey.id
+    const ccsExportBusy = Boolean(ccsExportPreparingId.value) || Boolean(ccsExportingId.value)
     const statusAction: RowActionItem = apiKey.status === 'active'
       ? {
           key: 'disable',
@@ -107,9 +121,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
         label: '导出 CCS',
         icon: 'export',
         tone: 'info',
-        disabled: busy || Boolean(ccsExportingId.value),
-        confirmTitle: '导出 CCS 会把完整 API Key 通过本机 ccswitch:// 协议交给 CC Switch 客户端。确认继续？',
-        confirmOkText: '导出'
+        disabled: busy || ccsExportBusy
       }
     ]
   }
@@ -128,7 +140,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
       return
     }
     if (key === 'export-ccs') {
-      void exportToCcSwitch(apiKey)
+      void prepareCcSwitchExport(apiKey)
       return
     }
     if (key === 'delete') {
@@ -136,22 +148,61 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     }
   }
 
-  async function exportToCcSwitch(apiKey: ApiKeySummary): Promise<void> {
+  async function prepareCcSwitchExport(apiKey: ApiKeySummary): Promise<void> {
+    if (ccsExportPreparingId.value || ccsExportingId.value) return
+    ccsExportPreparingId.value = apiKey.id
+    try {
+      const scope = input.operationScopeParams(apiKey)
+      const [strategy, providerResource] = await Promise.all([
+        input.routeStrategiesApi.editBasicDetail(apiKey.routeStrategyId, scope),
+        loadProviderOptionsResource({
+          isManagementView: input.isManagementView(),
+          systemAccountId: scope?.systemAccountId,
+          viewScope: input.isManagementView() ? 'admin' : 'self',
+          includeDefinitions: true
+        })
+      ])
+      const groups = buildCcSwitchExportGroupOptions(strategy.groupBindings, providerResource.data)
+      if (!groups.length) {
+        message.warning('当前策略路由没有可用于导出 CCS 的启用分组')
+        return
+      }
+      ccsExportApiKey.value = apiKey
+      ccsExportGroups.value = groups
+      ccsExportModalOpen.value = true
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载 CCS 导出配置失败'))
+    } finally {
+      if (ccsExportPreparingId.value === apiKey.id) ccsExportPreparingId.value = ''
+    }
+  }
+
+  async function exportToCcSwitch(selection: { groupId: string; app: CcSwitchClientApp; model: string }): Promise<void> {
+    const apiKey = ccsExportApiKey.value
+    if (!apiKey) {
+      message.error('请重新选择要导出的 API Key')
+      return
+    }
+    if (!ccsExportGroups.value.some((group) => group.groupId === selection.groupId)) {
+      message.error('所选分组已不可用，请重新打开导出窗口')
+      return
+    }
     if (ccsExportingId.value) return
     ccsExportingId.value = apiKey.id
     try {
       const key = (await input.apiKeysApi.secret(apiKey.id, input.operationScopeParams(apiKey))).key
       const url = buildCcSwitchExportUrl({
         apiKey: key,
+        app: selection.app,
+        model: selection.model,
         endpoint: input.gatewayBaseUrl(),
         homepage: input.gatewayBaseUrl(),
         name: apiKey.name
       })
       if (typeof window === 'undefined') throw new Error('当前环境不支持 CCS 导出')
+      ccsExportModalOpen.value = false
       window.open(url, '_self')
-      window.setTimeout(() => {
-        if (document.hasFocus()) message.warning('未检测到 CC Switch 客户端，请确认已安装并允许打开 ccswitch:// 链接')
-      }, 300)
     } catch (error) {
       message.error(extractApiErrorMessage(error, '导出 CCS 失败'))
     } finally {
@@ -223,12 +274,17 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
 
   return {
     keyCopyingId,
+    ccsExportApiKey,
+    ccsExportGroups,
+    ccsExportModalOpen,
+    ccsExportPreparingId,
     ccsExportingId,
     keyRefreshingId,
     statusUpdatingId,
     apiKeyMoreActions,
     apiKeyPrimaryActions,
     copyKeyPreview,
+    exportToCcSwitch,
     handleApiKeyAction
   }
 }

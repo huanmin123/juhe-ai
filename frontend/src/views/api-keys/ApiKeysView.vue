@@ -123,6 +123,13 @@
       @updated="handleApiKeyUpdated"
     />
 
+    <ApiKeyCcsExportModal
+      v-model:open="ccsExportModalOpen"
+      :exporting="Boolean(ccsExportingId)"
+      :groups="ccsExportGroups"
+      @export="exportToCcSwitch"
+    />
+
     <ApiKeyCreatedSecretModal
       v-model:open="createdKeyOpen"
       :api-key="createdKey"
@@ -170,6 +177,7 @@ import {
   buildApiKeyTableColumns
 } from './apiKeyTableConfig'
 import type { ApiKeyScopeParams } from './apiKeyScope'
+import ApiKeyCcsExportModal from './ApiKeyCcsExportModal.vue'
 import ApiKeyCreatedSecretModal from './ApiKeyCreatedSecretModal.vue'
 import ApiKeyEditModal from './ApiKeyEditModal.vue'
 import ApiKeyHelpModal from './ApiKeyHelpModal.vue'
@@ -282,13 +290,19 @@ const {
   },
 })
 const {
+  ccsExportingId,
+  ccsExportGroups,
+  ccsExportModalOpen,
   keyCopyingId,
   apiKeyMoreActions,
   apiKeyPrimaryActions,
   copyKeyPreview,
+  exportToCcSwitch,
   handleApiKeyAction
 } = useApiKeyRowActions({
   apiKeysApi,
+  routeStrategiesApi,
+  isManagementView: () => isManagementView.value,
   operationScopeParams: apiKeyOperationScopeParams,
   updateItems: updateApiKeyItems,
   removeItems: removeApiKeyItems,

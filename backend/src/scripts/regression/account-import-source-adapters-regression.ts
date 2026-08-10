@@ -83,10 +83,32 @@ assert.equal(oneApi.source.accepted, 1)
 assert.equal((oneApi.data as { accounts: unknown[] }).accounts.length, 1)
 
 const oneApiNumeric = adaptAccountImportSource([
-  { type: 1, key: 'one-api-numeric-key', name: 'One-API Numeric' }
+  { type: 1, key: 'one-api-numeric-key', name: 'One-API Numeric', status: 1 }
 ], 'oneapi')
-assert.equal(oneApiNumeric.source.accepted, 0)
-assert.equal(oneApiNumeric.source.skipped, 1)
+assert.equal(oneApiNumeric.source.accepted, 1)
+assert.equal(oneApiNumeric.source.skipped, 0)
+assert.equal(
+  (oneApiNumeric.data as { accounts: Array<{ status: string }> }).accounts[0]?.status,
+  'active',
+  'One-API type=1 是来源定义的 OpenAI 渠道，必须导入为可用账户'
+)
+
+for (const [mode, status, expectedStatus] of [
+  ['newapi', 2, 'disabled'],
+  ['newapi', 3, 'disabled'],
+  ['oneapi', 2, 'disabled'],
+  ['oneapi', 3, 'disabled']
+] as const) {
+  const disabledChannel = adaptAccountImportSource([
+    { type: 1, key: `${mode}-status-${status}-key`, name: `${mode} 状态 ${status}`, status }
+  ], mode)
+  assert.equal(disabledChannel.source.accepted, 1, `${mode} 已禁用渠道仍应可作为禁用账户导入`)
+  assert.equal(
+    (disabledChannel.data as { accounts: Array<{ status: string }> }).accounts[0]?.status,
+    expectedStatus,
+    `${mode} status=${status} 不能被重新启用`
+  )
+}
 
 const maskedChannel = adaptAccountImportSource([
   { type: 'openai', key: 'sk-****abcd', name: 'Masked Channel' },

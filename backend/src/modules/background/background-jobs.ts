@@ -74,6 +74,7 @@ import {
   runDueModelQualityRecoveries,
   runDueModelQualityScheduledChecks
 } from './model-quality-scheduled-check.service.js'
+import { runAccountListAvailabilityProjectionMaintenance } from '../accounts/account-list-availability-projection.service.js'
 
 let started = false
 let startGeneration = 0
@@ -330,6 +331,35 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, task: runNormalRouteSpeedFirstRecoveryProbe })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })
+      if (runtimeConfig.background.accountListAvailabilityProjectionEnabled) {
+        scheduler.schedule({
+          name: backgroundScheduledJobName('account-list-availability-projection-maintenance'),
+          intervalMs: runtimeConfig.background.accountListAvailabilityProjectionIntervalMs,
+          initialDelayMs: secondMs,
+          stablePhaseWindowMs: secondMs,
+          overlapPolicy: 'coalesceOne',
+          resourceLane: 'account-list-projection',
+          timeoutMs: 60 * secondMs,
+          failureBackoff: { baseMs: secondMs, maxMs: minuteMs },
+          task: ({ signal }) => runWithPostgresScheduledLease(
+            'account-list-availability-projection-maintenance',
+            2 * minuteMs,
+            signal,
+            async (leaseSignal, scheduledLease) => {
+              const result = await runAccountListAvailabilityProjectionMaintenance({
+                ownerId: scheduledLease?.ownerId ?? `${runtimeConfig.instanceId}:${randomUUID()}`,
+                batchSize: runtimeConfig.background.accountListAvailabilityProjectionBatchSize,
+                maximumProjectionAgeMs: runtimeConfig.background.accountListAvailabilityProjectionMaximumAgeMs,
+                signal: leaseSignal
+              })
+              logger.debug({
+                event: 'account_list_availability_projection_maintenance_completed',
+                ...result
+              }, '账户列表可用性读模型维护完成')
+            }
+          )
+        })
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-recovery'), intervalMs: 5 * secondMs, initialDelayMs: 5 * secondMs, task: runScheduledAccountCircuitRecovery })
       scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runProxyLatencyRefresh(signal) })
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 90 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runOpenAIOAuthAccessTokenRefresh(signal) })

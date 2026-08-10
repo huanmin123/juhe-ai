@@ -431,6 +431,24 @@ export const backgroundScheduledJobs = [
     notes: '投影 dispatch revision / incident outbox，并有界修复 Redis 状态与 due 索引孤儿'
   }),
   scheduled({
+    jobName: 'account-list-availability-projection-maintenance',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: [
+      'business:account_list_availability_projections',
+      'business:account_list_availability_projection_tags',
+      'business:account_list_availability_dirty'
+    ],
+    notes: '只在 PostgreSQL 读模型特性显式启用后运行；缺失、脏或过期投影必须重放，不能让列表请求回退实时扫描'
+  }),
+  scheduled({
     jobName: 'account-circuit-recovery',
     category: 'scheduled',
     kind: 'probe',

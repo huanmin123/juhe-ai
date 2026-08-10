@@ -30,6 +30,16 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-pg-trigram-extension',
+    sql: 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-pg-trigram-index',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_name_trgm ON account_list_availability_projections USING gin (name_sort_key gin_trgm_ops)'
+  },
+  {
     schemaName: 'juhe_usage',
     source: 'upstream-response-model-pg-columns',
     sql: 'ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text'
@@ -84,6 +94,503 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     source: 'operation-log-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
+]
+
+const accountListAvailabilityProjectionTriggerStatements: PostgresSchemaStatement[] = [
+  {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-pg-dirty-triggers',
+    sql: `
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_accounts(
+  p_account_ids text[],
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+DECLARE
+  v_now_ms bigint;
+BEGIN
+  IF COALESCE(array_length(p_account_ids, 1), 0) = 0 THEN
+    RETURN;
+  END IF;
+  v_now_ms := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
+  WITH requested_accounts AS (
+    SELECT DISTINCT account_id
+    FROM unnest(p_account_ids) AS requested(account_id)
+    WHERE account_id IS NOT NULL AND btrim(account_id) <> ''
+  )
+  INSERT INTO account_list_availability_dirty (
+    account_id, viewer_system_account_id, generation, applied_generation, reason,
+    available_at_ms, claim_token, claimed_by, claim_until_ms, attempt_count,
+    created_at_ms, updated_at_ms
+  )
+  SELECT accounts.id, accounts.system_account_id,
+    COALESCE((
+      SELECT MAX(projections.source_generation)
+      FROM account_list_availability_projections projections
+      WHERE projections.account_id = accounts.id
+    ), 0) + 1,
+    0, left(p_reason, 128), v_now_ms, NULL, NULL, NULL, 0, v_now_ms, v_now_ms
+  FROM requested_accounts
+  INNER JOIN accounts ON accounts.id = requested_accounts.account_id
+  ON CONFLICT (account_id) DO UPDATE SET
+    viewer_system_account_id = excluded.viewer_system_account_id,
+    generation = account_list_availability_dirty.generation + 1,
+    reason = excluded.reason,
+    available_at_ms = LEAST(account_list_availability_dirty.available_at_ms, excluded.available_at_ms),
+    claim_token = NULL,
+    claimed_by = NULL,
+    claim_until_ms = NULL,
+    updated_at_ms = excluded.updated_at_ms;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_account_family(
+  p_account_id text,
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id
+    FROM accounts
+    WHERE accounts.id = p_account_id
+       OR accounts.authorization_instance_source_account_id = p_account_id
+  ), p_reason);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_authorization_family(
+  p_authorization_id text,
+  p_resource_type text,
+  p_resource_id text,
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id
+    FROM accounts
+    WHERE accounts.authorization_instance_authorization_id = p_authorization_id
+       OR (
+         p_resource_type = 'account'
+         AND (accounts.id = p_resource_id OR accounts.authorization_instance_source_account_id = p_resource_id)
+       )
+  ), p_reason);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_group(
+  p_group_id text,
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT group_accounts.account_id
+    FROM group_accounts
+    WHERE group_accounts.group_id = p_group_id
+  ), p_reason);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_tag(
+  p_tag_id text,
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT account_tag_bindings.account_id
+    FROM account_tag_bindings
+    WHERE account_tag_bindings.tag_id = p_tag_id
+  ), p_reason);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_proxy(
+  p_proxy_id text,
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id FROM accounts WHERE accounts.proxy_profile_id = p_proxy_id
+  ), p_reason);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_profile(
+  p_profile_id text,
+  p_reason text
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id FROM accounts WHERE accounts.provider_protocol_profile_id = p_profile_id
+  ), p_reason);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_quota_crossing(
+  p_scope_type text,
+  p_scope_id text,
+  p_period text,
+  p_old_cost double precision,
+  p_new_cost double precision
+) RETURNS void
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  IF p_scope_type <> 'account_authorization' THEN
+    RETURN;
+  END IF;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+    SELECT accounts.id
+    FROM accounts
+    INNER JOIN resource_authorizations authorizations
+      ON authorizations.id = accounts.authorization_instance_authorization_id
+    WHERE authorizations.id = p_scope_id
+      AND COALESCE((authorizations.limits_json::jsonb -> p_period ->> 'enabled')::boolean, false)
+      AND (
+        COALESCE(p_old_cost, 0) >= COALESCE((authorizations.limits_json::jsonb -> p_period ->> 'limit')::double precision, 0)
+      ) IS DISTINCT FROM (
+        COALESCE(p_new_cost, 0) >= COALESCE((authorizations.limits_json::jsonb -> p_period ->> 'limit')::double precision, 0)
+      )
+  ), 'authorization_quota_' || p_period || '_crossed');
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_accounts_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_account_family(NEW.id, 'account_fact_changed');
+  RETURN NEW;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_authorizations_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_authorization_family(
+      NEW.id, NEW.resource_type, NEW.resource_id, 'authorization_fact_changed'
+    );
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_authorization_family(
+      OLD.id, OLD.resource_type, OLD.resource_id, 'authorization_fact_changed'
+    );
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_authorization_sources_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_authorization_family(NEW.authorization_id, '', '', 'authorization_source_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_authorization_family(OLD.authorization_id, '', '', 'authorization_source_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_group_accounts_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[NEW.account_id], 'group_binding_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[OLD.account_id], 'group_binding_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_groups_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_group(COALESCE(NEW.id, OLD.id), 'group_fact_changed');
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_tag_bindings_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[NEW.account_id], 'tag_binding_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[OLD.account_id], 'tag_binding_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_tags_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_tag(NEW.id, 'tag_fact_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_tag(OLD.id, 'tag_fact_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_name_search_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+  v_account_id text;
+BEGIN
+  v_account_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.account_id ELSE NEW.account_id END;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(
+    ARRAY[v_account_id], 'account_name_search_changed'
+  );
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_runtime_state_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[COALESCE(NEW.account_id, OLD.account_id)], 'api_key_runtime_changed');
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_circuit_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  PERFORM juhe_business.account_list_availability_mark_dirty_account_family(COALESCE(NEW.account_id, OLD.account_id), 'circuit_changed');
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_proxy_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_proxy(NEW.id, 'proxy_fact_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_proxy(OLD.id, 'proxy_fact_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_profile_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_profile(NEW.id, 'profile_fact_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_profile(OLD.id, 'profile_fact_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_system_account_health_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  INSERT INTO account_list_availability_projection_viewer_health (
+    viewer_system_account_id, projection_count, oldest_projected_at,
+    next_transition_at, is_current, updated_at
+  ) VALUES (NEW.id, 0, NULL, NULL, 1, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+  ON CONFLICT(viewer_system_account_id) DO NOTHING;
+  RETURN NEW;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_projection_delete_health_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  INSERT INTO account_list_availability_projection_viewer_health (
+    viewer_system_account_id, projection_count, oldest_projected_at,
+    next_transition_at, is_current, updated_at
+  ) VALUES (OLD.viewer_system_account_id, 0, NULL, NULL, 0, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+  ON CONFLICT(viewer_system_account_id) DO UPDATE SET
+    is_current = 0,
+    updated_at = excluded.updated_at;
+  RETURN OLD;
+END;
+$function$;
+
+DROP TRIGGER IF EXISTS account_list_availability_accounts_insert ON accounts;
+CREATE TRIGGER account_list_availability_accounts_insert
+AFTER INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION account_list_availability_accounts_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_accounts_update ON accounts;
+CREATE TRIGGER account_list_availability_accounts_update
+AFTER UPDATE OF config_revision, system_account_id, provider_code, provider_protocol_profile_id,
+  protocol_code, protocol_version, name, type, status, credentials_encrypted,
+  proxy_profile_id, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
+  client_compatibility, schedulable, availability_schedule_json,
+  availability_schedule_next_check_at, notes, account_expires_at, cooldown_until,
+  last_error_code, last_error_message, last_error_trace_id, health_check_model,
+  health_check_endpoint_mode, next_health_check_at, last_health_check_at,
+  last_health_success_at, health_check_failure_count, last_health_check_status_code,
+  last_health_check_error_code, last_health_check_error_message,
+  authorization_instance_source_account_id, authorization_instance_authorization_id,
+  authorization_instance_owner_system_account_id, deleted_at
+ON accounts FOR EACH ROW EXECUTE FUNCTION account_list_availability_accounts_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_authorizations ON resource_authorizations;
+CREATE TRIGGER account_list_availability_authorizations
+AFTER INSERT OR UPDATE OR DELETE ON resource_authorizations
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_authorizations_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_authorization_sources ON resource_authorization_sources;
+CREATE TRIGGER account_list_availability_authorization_sources
+AFTER INSERT OR UPDATE OR DELETE ON resource_authorization_sources
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_authorization_sources_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_group_accounts ON group_accounts;
+CREATE TRIGGER account_list_availability_group_accounts
+AFTER INSERT OR UPDATE OR DELETE ON group_accounts
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_group_accounts_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_groups ON groups;
+CREATE TRIGGER account_list_availability_groups
+AFTER UPDATE OR DELETE ON groups
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_groups_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_tag_bindings ON account_tag_bindings;
+CREATE TRIGGER account_list_availability_tag_bindings
+AFTER INSERT OR UPDATE OR DELETE ON account_tag_bindings
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_tag_bindings_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_tags ON account_tags;
+CREATE TRIGGER account_list_availability_tags
+AFTER UPDATE OR DELETE ON account_tags
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_tags_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_name_search_documents ON account_name_search_documents;
+CREATE TRIGGER account_list_availability_name_search_documents
+AFTER INSERT OR UPDATE OR DELETE ON account_name_search_documents
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_name_search_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_name_search_terms ON account_name_search_terms;
+CREATE TRIGGER account_list_availability_name_search_terms
+AFTER INSERT OR UPDATE OR DELETE ON account_name_search_terms
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_name_search_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_api_key_runtime ON account_api_key_runtime_states;
+CREATE TRIGGER account_list_availability_api_key_runtime
+AFTER INSERT OR UPDATE OR DELETE ON account_api_key_runtime_states
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_runtime_state_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_circuits ON account_circuit_incidents;
+CREATE TRIGGER account_list_availability_circuits
+AFTER INSERT OR UPDATE OR DELETE ON account_circuit_incidents
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_circuit_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_proxies ON proxy_profiles;
+CREATE TRIGGER account_list_availability_proxies
+AFTER UPDATE OR DELETE ON proxy_profiles
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_profiles ON provider_protocol_profiles;
+CREATE TRIGGER account_list_availability_profiles
+AFTER UPDATE OR DELETE ON provider_protocol_profiles
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_profile_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_system_account_health ON system_accounts;
+CREATE TRIGGER account_list_availability_system_account_health
+AFTER INSERT ON system_accounts
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_system_account_health_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_projection_delete_health ON account_list_availability_projections;
+CREATE TRIGGER account_list_availability_projection_delete_health
+AFTER DELETE ON account_list_availability_projections
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health_trigger();
+`
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'account-list-projection-pg-quota-crossing-triggers',
+    sql: `
+CREATE OR REPLACE FUNCTION account_list_availability_quota_crossing_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+  v_old_cost double precision;
+  v_new_cost double precision;
+BEGIN
+  v_old_cost := CASE WHEN TG_OP = 'INSERT' THEN 0 ELSE COALESCE(OLD.total_cost_usd, 0) END;
+  v_new_cost := CASE WHEN TG_OP = 'DELETE' THEN 0 ELSE COALESCE(NEW.total_cost_usd, 0) END;
+  PERFORM juhe_business.account_list_availability_mark_dirty_quota_crossing(
+    COALESCE(NEW.scope_type, OLD.scope_type),
+    COALESCE(NEW.scope_id, OLD.scope_id),
+    TG_ARGV[0], v_old_cost, v_new_cost
+  );
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
+DROP TRIGGER IF EXISTS account_list_availability_quota_total ON usage_stats_totals;
+CREATE TRIGGER account_list_availability_quota_total
+AFTER INSERT OR UPDATE OR DELETE ON usage_stats_totals
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('total');
+DROP TRIGGER IF EXISTS account_list_availability_quota_daily ON usage_stats_daily;
+CREATE TRIGGER account_list_availability_quota_daily
+AFTER INSERT OR UPDATE OR DELETE ON usage_stats_daily
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('daily');
+DROP TRIGGER IF EXISTS account_list_availability_quota_weekly ON usage_stats_weekly;
+CREATE TRIGGER account_list_availability_quota_weekly
+AFTER INSERT OR UPDATE OR DELETE ON usage_stats_weekly
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('weekly');
+DROP TRIGGER IF EXISTS account_list_availability_quota_monthly ON usage_stats_monthly;
+CREATE TRIGGER account_list_availability_quota_monthly
+AFTER INSERT OR UPDATE OR DELETE ON usage_stats_monthly
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('monthly');
+DROP TRIGGER IF EXISTS account_list_availability_quota_hourly ON usage_quota_hourly_windows;
+CREATE TRIGGER account_list_availability_quota_hourly
+AFTER INSERT OR UPDATE OR DELETE ON usage_quota_hourly_windows
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('hourly');
+`
+  }
 ]
 
 const postgresBigintColumnNames = new Set([
@@ -189,7 +696,7 @@ export function collectPostgresSchemaStatements(): PostgresSchemaStatement[] {
       })
     }
   }
-  statements.push(...supplementalSchemaStatements)
+  statements.push(...supplementalSchemaStatements, ...accountListAvailabilityProjectionTriggerStatements)
   return orderSchemaStatements(statements)
 }
 

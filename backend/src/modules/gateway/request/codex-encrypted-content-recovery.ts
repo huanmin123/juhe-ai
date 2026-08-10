@@ -16,7 +16,7 @@ export type CodexEncryptedContentRecoverySignal =
   | 'encrypted_content_decryption_failed'
 
 export const codexEncryptedContentRecoveryExhaustedMessage =
-  '上游拒绝了加密上下文，网关已尝试一次兼容性清理但仍然失败。请新建会话，或不要携带上一会话的加密 reasoning / 工具输出后重新发送请求。'
+  '上游拒绝了加密上下文，网关已尝试一次兼容性清理但仍然失败。请新建会话，或不要携带上一会话的加密 reasoning、工具输出或 compaction 后重新发送请求。'
 
 export interface CodexEncryptedContentRecoveryMetadata {
   strategy: 'codex_encrypted_content_cleanup'
@@ -24,8 +24,10 @@ export interface CodexEncryptedContentRecoveryMetadata {
   removedReasoningEncryptedContentCount: number
   removedFunctionOutputEncryptedContentCount: number
   removedAgentMessageEncryptedContentCount: number
+  removedCompactionEncryptedContentCount: number
   removedReasoningItemCount: number
   removedAgentMessageItemCount: number
+  removedCompactionItemCount: number
   preservedPreviousResponseId: boolean
   bodyBytesBefore: number
   bodyBytesAfter: number
@@ -91,8 +93,10 @@ export async function recoverCodexEncryptedContentRequest(input: {
       removedReasoningEncryptedContentCount: sanitized.removedReasoningEncryptedContentCount,
       removedFunctionOutputEncryptedContentCount: sanitized.removedFunctionOutputEncryptedContentCount,
       removedAgentMessageEncryptedContentCount: sanitized.removedAgentMessageEncryptedContentCount,
+      removedCompactionEncryptedContentCount: sanitized.removedCompactionEncryptedContentCount,
       removedReasoningItemCount: sanitized.removedReasoningItemCount,
       removedAgentMessageItemCount: sanitized.removedAgentMessageItemCount,
+      removedCompactionItemCount: sanitized.removedCompactionItemCount,
       preservedPreviousResponseId: typeof sanitized.body.previous_response_id === 'string'
         && sanitized.body.previous_response_id.trim().length > 0,
       bodyBytesBefore: bodyByteLength(input.body),
@@ -214,8 +218,10 @@ function removeRejectedCodexEncryptedContent(body: JsonRecord): {
   removedReasoningEncryptedContentCount: number
   removedFunctionOutputEncryptedContentCount: number
   removedAgentMessageEncryptedContentCount: number
+  removedCompactionEncryptedContentCount: number
   removedReasoningItemCount: number
   removedAgentMessageItemCount: number
+  removedCompactionItemCount: number
 } {
   const inputItems = Array.isArray(body.input)
     ? body.input
@@ -229,8 +235,10 @@ function removeRejectedCodexEncryptedContent(body: JsonRecord): {
       removedReasoningEncryptedContentCount: 0,
       removedFunctionOutputEncryptedContentCount: 0,
       removedAgentMessageEncryptedContentCount: 0,
+      removedCompactionEncryptedContentCount: 0,
       removedReasoningItemCount: 0,
-      removedAgentMessageItemCount: 0
+      removedAgentMessageItemCount: 0,
+      removedCompactionItemCount: 0
     }
   }
 
@@ -238,8 +246,10 @@ function removeRejectedCodexEncryptedContent(body: JsonRecord): {
   let removedReasoningEncryptedContentCount = 0
   let removedFunctionOutputEncryptedContentCount = 0
   let removedAgentMessageEncryptedContentCount = 0
+  let removedCompactionEncryptedContentCount = 0
   let removedReasoningItemCount = 0
   let removedAgentMessageItemCount = 0
+  let removedCompactionItemCount = 0
   const input: unknown[] = []
 
   for (const item of inputItems) {
@@ -258,6 +268,13 @@ function removeRejectedCodexEncryptedContent(body: JsonRecord): {
         continue
       }
       input.push(copy)
+      continue
+    }
+
+    if (isCodexCompactionItemWithEncryptedContent(item)) {
+      changed = true
+      removedCompactionEncryptedContentCount += 1
+      removedCompactionItemCount += 1
       continue
     }
 
@@ -295,9 +312,20 @@ function removeRejectedCodexEncryptedContent(body: JsonRecord): {
     removedReasoningEncryptedContentCount,
     removedFunctionOutputEncryptedContentCount,
     removedAgentMessageEncryptedContentCount,
+    removedCompactionEncryptedContentCount,
     removedReasoningItemCount,
-    removedAgentMessageItemCount
+    removedAgentMessageItemCount,
+    removedCompactionItemCount
   }
+}
+
+function isCodexCompactionItemWithEncryptedContent(item: JsonRecord): boolean {
+  return (
+    (item.type === 'compaction'
+      || item.type === 'compaction_summary'
+      || item.type === 'context_compaction')
+    && typeof item.encrypted_content === 'string'
+  )
 }
 
 function stripEncryptedContentItems(value: unknown): {

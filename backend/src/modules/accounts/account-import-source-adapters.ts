@@ -253,7 +253,7 @@ function adaptChannelSource(input: unknown, mode: 'newapi' | 'oneapi', state: Ad
       baseUrl,
       name: text(record.name) || `${sourceLabel(mode)} Channel ${index + 1}`,
       groupName: sourceGroupName(record.group, `${sourceLabel(mode)} 导入`),
-      status: normalizeSourceStatus(record.status),
+      status: normalizeChannelStatus(record.status),
       notes: undefined
     })
     acceptAccount(state, index + 1, account)
@@ -611,7 +611,7 @@ function isOpenAiSourcePlatform(value: unknown): boolean {
 }
 
 function isOpenAiChannel(value: unknown, mode: 'newapi' | 'oneapi'): boolean {
-  if (mode === 'newapi' && value === 1) return true
+  if (value === 1) return true
   const normalized = text(value).toLowerCase().replace(/[ _-]+/g, '')
   return normalized === 'openai' || normalized === 'openaicompatible'
 }
@@ -620,6 +620,12 @@ function normalizeSourceStatus(value: unknown): 'active' | 'disabled' {
   if (value === 0 || value === false) return 'disabled'
   const normalized = text(value).toLowerCase()
   return normalized === 'disabled' || normalized === 'inactive' || normalized === 'banned' ? 'disabled' : 'active'
+}
+
+function normalizeChannelStatus(value: unknown): 'active' | 'disabled' {
+  if (value === 1) return 'active'
+  const normalized = text(value).toLowerCase()
+  return normalized === '1' || normalized === 'active' || normalized === 'enabled' ? 'active' : 'disabled'
 }
 
 function sourceGroupName(value: unknown, fallback: string): string {

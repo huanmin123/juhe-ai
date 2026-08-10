@@ -101,6 +101,7 @@ assertRoleBlockContainsOnly('ops-worker', [
   'account-balance-refresh',
   'account-balance-auto-detect-recovery',
   'account-circuit-control-plane-maintenance',
+  'account-list-availability-projection-maintenance',
   'account-circuit-recovery',
   'account-health-check',
   'model-quality-scheduled-check',

@@ -42,6 +42,7 @@ const sourceServiceImports = [
     mode: 'sub2api' as const,
     expectedName: '来源服务 Sub2API',
     expectedProviderCode: 'openai',
+    expectedStatus: 'pending_test',
     data: {
       type: 'sub2api-data',
       version: 1,
@@ -65,6 +66,7 @@ const sourceServiceImports = [
     mode: 'newapi' as const,
     expectedName: '来源服务 NewAPI',
     expectedProviderCode: 'openai',
+    expectedStatus: 'pending_test',
     data: [
       {
         type: 1,
@@ -72,6 +74,7 @@ const sourceServiceImports = [
         key: 'sk-source-service-newapi',
         base_url: 'https://api.openai.com/v1',
         group: '来源服务 NewAPI 分组',
+        status: 1,
         runtime_only: 'ignored'
       }
     ]
@@ -79,15 +82,17 @@ const sourceServiceImports = [
   {
     label: 'One-API',
     mode: 'oneapi' as const,
-    expectedName: '来源服务 OneAPI',
+    expectedName: '来源服务 OneAPI 数值禁用',
     expectedProviderCode: 'openai',
+    expectedStatus: 'disabled',
     data: [
       {
-        type: 'openai',
-        name: '来源服务 OneAPI',
+        type: 1,
+        name: '来源服务 OneAPI 数值禁用',
         key: 'sk-source-service-oneapi',
         base_url: 'https://api.openai.com/v1',
         group: '来源服务 OneAPI 分组',
+        status: 2,
         runtime_only: 'ignored'
       }
     ]
@@ -97,6 +102,7 @@ const sourceServiceImports = [
     mode: 'cpa' as const,
     expectedName: '来源服务 CPA 1',
     expectedProviderCode: 'openai',
+    expectedStatus: 'pending_test',
     data: `openai-compatibility:\n  - name: 来源服务 CPA\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-source-service-cpa\n        runtime_only: ignored\n`
   },
   {
@@ -104,6 +110,7 @@ const sourceServiceImports = [
     mode: 'cpa' as const,
     expectedName: '来源服务 CPA OAuth',
     expectedProviderCode: 'gpt',
+    expectedStatus: 'pending_test',
     data: {
       type: 'codex',
       name: '来源服务 CPA OAuth',
@@ -367,6 +374,7 @@ try {
       providerCode: sourceImport.expectedProviderCode
     }).find((item) => item.name === sourceImport.expectedName)
     assert(importedSourceAccount, `${sourceImport.label} 账户应通过来源适配器落库`)
+    assert.equal(importedSourceAccount.status, sourceImport.expectedStatus, `${sourceImport.label} 导入后状态必须符合来源状态映射`)
   }
 
   const invalidPreview = accountImport.previewAccountImport({

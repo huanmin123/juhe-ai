@@ -647,6 +647,97 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
+    -- The management-list projection moves availability filtering and paging off
+    -- the request path. SQLite keeps the schema for contract parity; only the
+    -- PostgreSQL performance path will consume it after migration cutover.
+    CREATE TABLE IF NOT EXISTS account_list_availability_projections (
+      viewer_system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      source_account_id TEXT,
+      authorization_id TEXT,
+      effective_status TEXT NOT NULL,
+      schedulable_bucket TEXT NOT NULL CHECK (schedulable_bucket IN ('enabled', 'disabled', 'cooling')),
+      provider_code TEXT NOT NULL,
+      provider_protocol_profile_id TEXT NOT NULL,
+      account_type TEXT NOT NULL,
+      bound_group_id TEXT,
+      name_sort_key TEXT NOT NULL,
+      priority_sort_key INTEGER NOT NULL,
+      super_priority_sort_key INTEGER NOT NULL,
+      fallback_sort_key INTEGER NOT NULL,
+      concurrency_sort_key INTEGER NOT NULL,
+      account_expires_at_sort_key TEXT,
+      last_used_at_sort_key TEXT,
+      created_at_sort_key TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      source_generation INTEGER NOT NULL CHECK (source_generation >= 1),
+      next_transition_at TEXT,
+      projected_at TEXT NOT NULL,
+      PRIMARY KEY (viewer_system_account_id, account_id),
+      FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS account_list_availability_projection_tags (
+      viewer_system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL,
+      PRIMARY KEY (viewer_system_account_id, account_id, tag_id),
+      FOREIGN KEY (viewer_system_account_id, account_id)
+        REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)
+        ON DELETE CASCADE,
+      FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE
+    );
+
+    -- Mirrors only terms backed by a completed search document. This keeps
+    -- indexed keyword semantics on the projection read path.
+    CREATE TABLE IF NOT EXISTS account_list_availability_projection_search_terms (
+      viewer_system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      term TEXT NOT NULL,
+      PRIMARY KEY (viewer_system_account_id, account_id, term),
+      FOREIGN KEY (viewer_system_account_id, account_id)
+        REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)
+        ON DELETE CASCADE
+    );
+
+    -- One row per visible viewer keeps request freshness checks O(1). The
+    -- materializer sets is_current only after it has atomically refreshed the
+    -- aggregate from all rows for that viewer.
+    CREATE TABLE IF NOT EXISTS account_list_availability_projection_viewer_health (
+      viewer_system_account_id TEXT PRIMARY KEY,
+      projection_count INTEGER NOT NULL CHECK (projection_count >= 0),
+      oldest_projected_at TEXT,
+      next_transition_at TEXT,
+      is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS account_list_availability_dirty (
+      account_id TEXT PRIMARY KEY,
+      viewer_system_account_id TEXT NOT NULL,
+      generation INTEGER NOT NULL CHECK (generation >= 1),
+      applied_generation INTEGER NOT NULL DEFAULT 0 CHECK (applied_generation >= 0 AND applied_generation <= generation),
+      reason TEXT NOT NULL,
+      available_at_ms INTEGER NOT NULL,
+      claim_token TEXT,
+      claimed_by TEXT,
+      claim_until_ms INTEGER,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      CHECK (
+        (claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL)
+        OR (claim_token IS NOT NULL AND claimed_by IS NOT NULL AND claim_until_ms IS NOT NULL)
+      )
+    );
+
     CREATE TABLE IF NOT EXISTS account_test_tasks (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -1063,6 +1154,73 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON account_name_search_terms(account_id);
     CREATE INDEX IF NOT EXISTS idx_account_name_search_documents_owner
       ON account_name_search_documents(system_account_id, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_status_priority
+      ON account_list_availability_projections(
+        viewer_system_account_id,
+        effective_status,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_priority
+      ON account_list_availability_projections(
+        viewer_system_account_id,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_name
+      ON account_list_availability_projections(
+        viewer_system_account_id,
+        name_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_schedulable_priority
+      ON account_list_availability_projections(
+        viewer_system_account_id,
+        schedulable_bucket,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_group_status_priority
+      ON account_list_availability_projections(
+        viewer_system_account_id,
+        bound_group_id,
+        effective_status,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      )
+      WHERE bound_group_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_provider_status_priority
+      ON account_list_availability_projections(
+        viewer_system_account_id,
+        provider_code,
+        effective_status,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_due
+      ON account_list_availability_projections(next_transition_at ASC, viewer_system_account_id, account_id)
+      WHERE next_transition_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_tags_lookup
+      ON account_list_availability_projection_tags(viewer_system_account_id, tag_id, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_search_terms_lookup
+      ON account_list_availability_projection_search_terms(viewer_system_account_id, term, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_viewer_health_refresh
+      ON account_list_availability_projection_viewer_health(is_current, updated_at ASC, viewer_system_account_id ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_dirty_claim
+      ON account_list_availability_dirty(available_at_ms ASC, created_at_ms ASC, account_id ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_dirty_viewer
+      ON account_list_availability_dirty(viewer_system_account_id, available_at_ms ASC, account_id ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_viewer_projected
+      ON account_list_availability_projections(viewer_system_account_id, projected_at ASC, account_id ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_viewer_transition
+      ON account_list_availability_projections(viewer_system_account_id, next_transition_at ASC, account_id ASC)
+      WHERE next_transition_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_lookup ON accounts(provider_protocol_profile_id, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code, id);

@@ -224,6 +224,11 @@ export interface RuntimeConfig {
     accountAvailabilityScheduleSyncBatchLimit: number
     apiKeyScheduleSyncBatchLimit: number
     accountRuntimeStatusHydrationBatchSize: number
+    accountListAvailabilityProjectionEnabled: boolean
+    accountListAvailabilityProjectionReadEnabled: boolean
+    accountListAvailabilityProjectionIntervalMs: number
+    accountListAvailabilityProjectionBatchSize: number
+    accountListAvailabilityProjectionMaximumAgeMs: number
     proxyLatencyRefreshConcurrency: number
     proxyLatencyRefreshBatchSize: number
     proxyProbeTimeoutMs: number
@@ -718,6 +723,11 @@ export const runtimeConfig: RuntimeConfig = {
     accountAvailabilityScheduleSyncBatchLimit: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_AVAILABILITY_SCHEDULE_SYNC_BATCH_LIMIT', 500, 1, 100_000),
     apiKeyScheduleSyncBatchLimit: integerConfig('JUHE_AI_BACKGROUND_API_KEY_SCHEDULE_SYNC_BATCH_LIMIT', 500, 1, 100_000),
     accountRuntimeStatusHydrationBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_RUNTIME_STATUS_HYDRATION_BATCH_SIZE', 100, 1, 100_000),
+    accountListAvailabilityProjectionEnabled: booleanConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED', false),
+    accountListAvailabilityProjectionReadEnabled: booleanConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_READ_ENABLED', false),
+    accountListAvailabilityProjectionIntervalMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS', 1_000, 1_000, 60_000),
+    accountListAvailabilityProjectionBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE', 100, 1, 100),
+    accountListAvailabilityProjectionMaximumAgeMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAXIMUM_AGE_MS', 30_000, 1_000, 24 * 60 * 60_000),
     proxyLatencyRefreshConcurrency: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CONCURRENCY', defaultBackgroundConcurrency, 1, 1_000),
     proxyLatencyRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_BATCH_SIZE', 20, 1, 1_000),
     proxyProbeTimeoutMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_PROBE_TIMEOUT_MS', 15_000, 1_000, 5 * 60_000),

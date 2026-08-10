@@ -121,8 +121,10 @@ try {
 
     if (requestedScenario === 'codex_encrypted_content_recovery_sse') {
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl)
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, false, true)
     } else if (requestedScenario === 'codex_encrypted_content_recovery_exhausted_sse') {
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true)
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true, true)
     } else if (requestedScenario === 'codex_compaction_sse') {
       await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
     } else if (requestedScenario === 'codex_compaction_interrupted_sse') {
@@ -437,7 +439,8 @@ async function runCodexCompactionInterruptedScenario(baseUrl: string, upstreamBa
 async function runCodexEncryptedContentRecoveryScenario(
   baseUrl: string,
   upstreamBaseUrl: string,
-  expectRecoveryExhausted = false
+  expectRecoveryExhausted = false,
+  includeCompaction = false
 ): Promise<void> {
   const scenario: ScenarioName = expectRecoveryExhausted
     ? 'codex_encrypted_content_recovery_exhausted_sse'
@@ -445,14 +448,14 @@ async function runCodexEncryptedContentRecoveryScenario(
   upstreamHits.length = 0
   const accountProvider = providerForScenario(scenario)
   const group = repositories.createGroup({
-    name: 'Codex 密文恢复 E2E',
+    name: includeCompaction ? 'Codex 密文恢复 E2E（compaction）' : 'Codex 密文恢复 E2E',
     providerCode: accountProvider.providerCode,
     enabled: true
   }, access)
   const account = repositories.createAccount({
     providerCode: accountProvider.providerCode,
     providerProtocolProfileId: accountProvider.providerProtocolProfileId,
-    name: 'Codex 密文恢复单账号',
+    name: includeCompaction ? 'Codex 密文恢复单账号（compaction）' : 'Codex 密文恢复单账号',
     type: 'api_key',
     credentials: {
       api_key: `sk-upstream-clean-${scenario}`,
@@ -466,35 +469,55 @@ async function runCodexEncryptedContentRecoveryScenario(
   }, access)
   activateAccount(account.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: 'Codex 密文恢复 E2E Key',
+    name: includeCompaction ? 'Codex 密文恢复 E2E Key（compaction）' : 'Codex 密文恢复 E2E Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
   assert(apiKey.key, '回归 API Key 未返回明文密钥')
 
+  const input: Array<Record<string, unknown>> = [
+    {
+      type: 'reasoning',
+      summary: [],
+      encrypted_content: 'fixture-rejected-reasoning-content'
+    },
+    {
+      type: 'agent_message',
+      author: '/root/subtask',
+      content: [
+        { type: 'input_text', text: 'subtask plaintext remains available' },
+        { type: 'encrypted_content', encrypted_content: 'fixture-rejected-agent-message-content' }
+      ]
+    }
+  ]
+  if (includeCompaction) {
+    input.push(
+      {
+        type: 'compaction',
+        id: 'cmp_fixture_rejected',
+        encrypted_content: 'fixture-rejected-compaction-content'
+      },
+      {
+        type: 'compaction_summary',
+        id: 'cmp_summary_fixture_rejected',
+        encrypted_content: 'fixture-rejected-compaction-summary-content'
+      },
+      {
+        type: 'context_compaction',
+        id: 'cmp_context_fixture_rejected',
+        encrypted_content: 'fixture-rejected-context-compaction-content'
+      }
+    )
+  }
+  input.push({
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: `run ${scenario}` }]
+  })
   const requestBody = {
     model: 'gpt-5.5',
     stream: true,
-    input: [
-      {
-        type: 'reasoning',
-        summary: [],
-        encrypted_content: 'fixture-rejected-reasoning-content'
-      },
-      {
-        type: 'agent_message',
-        author: '/root/subtask',
-        content: [
-          { type: 'input_text', text: 'subtask plaintext remains available' },
-          { type: 'encrypted_content', encrypted_content: 'fixture-rejected-agent-message-content' }
-        ]
-      },
-      {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: `run ${scenario}` }]
-      }
-    ]
+    input
   }
   const requestHeaders = {
     authorization: `Bearer ${apiKey.key}`,
@@ -525,9 +548,11 @@ async function runCodexEncryptedContentRecoveryScenario(
     systemAccountId: access.systemAccountId,
     apiKeyId: apiKey.id,
     groupId: group.id,
-    endpoint: 'POST /v1/responses'
+    endpoint: 'POST /v1/responses',
+    clientIp: '127.0.0.1'
   })
-  assert(turnStrategy.codexTurn?.stateKey, 'E2E 请求必须解析出 Codex turn state key')
+  const codexTurnStateKey = turnStrategy.codexTurn?.stateKey
+  assert(codexTurnStateKey, 'E2E 请求必须解析出 Codex turn state key')
   const response = await sendRequest()
   const responseText = await response.text()
   assert.equal(response.status, 200, `密文恢复应保留 Codex SSE 协议响应：${responseText}`)
@@ -541,6 +566,23 @@ async function runCodexEncryptedContentRecoveryScenario(
   assert.equal(secondInput.some((item) => item.type === 'reasoning' && typeof item.encrypted_content === 'string'), false, '恢复请求不得保留 reasoning 密文')
   const recoveredAgentMessage = secondInput.find((item) => item.type === 'agent_message')
   assert.deepEqual(recoveredAgentMessage?.content, [{ type: 'input_text', text: 'subtask plaintext remains available' }], '恢复请求必须仅移除 agent_message 密文')
+  if (includeCompaction) {
+    assert.equal(
+      firstInput.some((item) => (
+        (item.type === 'compaction' || item.type === 'compaction_summary' || item.type === 'context_compaction')
+        && typeof item.encrypted_content === 'string'
+      )),
+      true,
+      '首次请求必须保留原始 compaction 密文'
+    )
+    assert.equal(
+      secondInput.some((item) => (
+        item.type === 'compaction' || item.type === 'compaction_summary' || item.type === 'context_compaction'
+      )),
+      false,
+      '恢复请求必须移除整个被拒绝的 compaction 输入项'
+    )
+  }
   assert.doesNotMatch(responseText, /resp-rejected-encrypted-content/, '上游首个 response.created 不得泄露给下游')
   if (expectRecoveryExhausted) {
     assert.doesNotMatch(responseText, /resp-rejected-cleaned-content/, '第二次上游失败的 response.created 不得泄露给下游')
@@ -554,7 +596,7 @@ async function runCodexEncryptedContentRecoveryScenario(
     assert.doesNotMatch(responseText, /Encrypted function output content could not be decrypted or decoded\./, '客户端响应不得泄露上游拒绝正文')
     assert.doesNotMatch(responseText, /response\.completed/, '清洗后的第二次失败不得伪造完成事件')
     assert.deepEqual(
-      getCodexTurnRetryStateForTest(turnStrategy.codexTurn.stateKey),
+      getCodexTurnRetryStateForTest(codexTurnStateKey),
       { failureCount: 1, failedAccountIds: [account.id] },
       '专属客户端 code 不得替换 Codex turn 内部 upstream_retryable_error 失败记录'
     )
@@ -822,7 +864,11 @@ function sendCodexEncryptedContentRecoverySse(
         && typeof (content as { encrypted_content?: unknown }).encrypted_content === 'string'
       ))
   )) === true
-  if (rejectedReasoning || rejectedAgentMessage) {
+  const rejectedCompaction = requestBody.input?.some((item) => (
+    (item.type === 'compaction' || item.type === 'compaction_summary' || item.type === 'context_compaction')
+      && typeof item.encrypted_content === 'string'
+  )) === true
+  if (rejectedReasoning || rejectedAgentMessage || rejectedCompaction) {
     sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-encrypted-content')
     return
   }

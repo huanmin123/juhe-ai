@@ -50,6 +50,21 @@ const originalBody = {
       ]
     },
     {
+      type: 'compaction',
+      id: 'cmp_rejected',
+      encrypted_content: 'rejected-compaction-content'
+    },
+    {
+      type: 'compaction_summary',
+      id: 'cmp_summary_rejected',
+      encrypted_content: 'rejected-compaction-summary-content'
+    },
+    {
+      type: 'context_compaction',
+      id: 'cmp_context_rejected',
+      encrypted_content: 'rejected-context-compaction-content'
+    },
+    {
       type: 'message',
       role: 'user',
       content: [{ type: 'input_text', text: 'continue' }]
@@ -72,6 +87,8 @@ assert.equal(recovery.metadata.removedReasoningItemCount, 1)
 assert.equal(recovery.metadata.removedFunctionOutputEncryptedContentCount, 1)
 assert.equal(recovery.metadata.removedAgentMessageEncryptedContentCount, 1)
 assert.equal(recovery.metadata.removedAgentMessageItemCount, 0)
+assert.equal(recovery.metadata.removedCompactionEncryptedContentCount, 3)
+assert.equal(recovery.metadata.removedCompactionItemCount, 3)
 assert.equal(recovery.metadata.preservedPreviousResponseId, true)
 assert.equal(recovery.semanticRetryId, 'codex_encrypted_content_cleanup:thinking_signature_invalid')
 
@@ -83,9 +100,22 @@ const functionOutput = recoveredInput.find((item) => item.type === 'function_cal
 assert.deepEqual(functionOutput?.output, [{ type: 'input_text', text: 'package content remains available' }], '只移除失败的 encrypted_content，保留可读工具输出')
 const agentMessage = recoveredInput.find((item) => item.type === 'agent_message')
 assert.deepEqual(agentMessage?.content, [{ type: 'input_text', text: '子任务可读结果仍保留' }], 'Codex agent_message 中的失败密文也必须移除，普通子任务结果保持可读')
+assert.equal(
+  recoveredInput.some((item) => (
+    item.type === 'compaction'
+      || item.type === 'compaction_summary'
+      || item.type === 'context_compaction'
+  )),
+  false,
+  '被拒绝密文所在的 compaction 输入项必须整体移除，不能留下无 encrypted_content 的非法项'
+)
+assert.equal(countEncryptedContent(recoveredInput), 0, '清洗重试变体不得遗留任意 fixture encrypted_content')
 assert.equal((originalBody.input[0] as Record<string, unknown>).encrypted_content, 'rejected-reasoning-content', '清洗不得原地改写客户端请求对象')
 assert.equal(((originalBody.input[2] as Record<string, unknown>).output as Array<Record<string, unknown>>)[1]?.encrypted_content, 'rejected-function-output-content', '清洗不得原地改写客户端工具输出')
 assert.equal(((originalBody.input[3] as Record<string, unknown>).content as Array<Record<string, unknown>>)[1]?.encrypted_content, 'rejected-agent-message-content', '清洗不得原地改写 Codex 子任务消息')
+assert.equal((originalBody.input[4] as Record<string, unknown>).encrypted_content, 'rejected-compaction-content', '清洗不得原地改写 compaction')
+assert.equal((originalBody.input[5] as Record<string, unknown>).encrypted_content, 'rejected-compaction-summary-content', '清洗不得原地改写 compaction_summary')
+assert.equal((originalBody.input[6] as Record<string, unknown>).encrypted_content, 'rejected-context-compaction-content', '清洗不得原地改写 context_compaction')
 
 const onlyEncryptedFunctionOutput = {
   model: 'gpt-5.6-codex',
@@ -195,7 +225,15 @@ assert.equal(
   'HTTP JSON error.message 仍可触发受限恢复'
 )
 
-console.log('Codex 加密内容恢复回归通过：精确失败后仅清理 reasoning、工具输出与 agent_message 密文，保留关联且不修改原始请求')
+console.log('Codex 加密内容恢复回归通过：精确失败后清理 reasoning、工具输出、agent_message 与 compaction 密文，保留关联且不修改原始请求')
+
+function countEncryptedContent(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((count, item) => count + countEncryptedContent(item), 0)
+  if (typeof value !== 'object' || value === null) return 0
+  const item = value as Record<string, unknown>
+  return (typeof item.encrypted_content === 'string' ? 1 : 0)
+    + Object.values(item).reduce<number>((count, child) => count + countEncryptedContent(child), 0)
+}
 
 function request(body: Record<string, unknown>): Request {
   return {

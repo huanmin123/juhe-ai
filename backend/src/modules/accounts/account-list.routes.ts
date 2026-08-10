@@ -1,7 +1,14 @@
 import type { Router } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { ok } from '../../shared/http.js'
+import {
+  AccountListAvailabilityProjectionUnavailableError,
+  listAccountListAvailabilityProjectionPageInClient
+} from '../../storage/account-list-availability-projection.repository.js'
 import { listAccountManagementItemsPageAsync, type AccountManagementListResult } from '../../storage/account-management-list.repository.js'
+import { createPostgresDatabaseClient } from '../../storage/database-client.js'
+import { getPostgresPool } from '../../storage/postgres-client.js'
 import { listAccountOptionsAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import {
@@ -21,15 +28,32 @@ export function registerAccountListRoutes(router: Router): void {
       let listDurationMs = 0
       let statusFilterDurationMs = 0
       let listHydrationDurationMs = 0
+      let projectionDurationMs = 0
       let runtimeStatusTiming: ReturnType<typeof takeAccountRuntimeStatusFilterTiming>
-      const needsRuntimeStatusFilter = accountListNeedsRuntimeStatusFilter(listOptions)
+      const projectionAccess = requestAccess?.role === 'user' ? requestAccess : undefined
+      const useAvailabilityProjection = Boolean(projectionAccess)
+        && runtimeConfig.databaseDriver === 'postgres'
+        && runtimeConfig.background.accountListAvailabilityProjectionReadEnabled
+      const needsRuntimeStatusFilter = !useAvailabilityProjection && accountListNeedsRuntimeStatusFilter(listOptions)
 
-      const statusFilterStartedAt = performance.now()
-      let completePage: AccountManagementListResult | undefined = needsRuntimeStatusFilter
-        ? await listAccountsPageWithRuntimeStatusFilter(requestAccess, listOptions)
-        : undefined
-      statusFilterDurationMs = performance.now() - statusFilterStartedAt
-      if (completePage) runtimeStatusTiming = takeAccountRuntimeStatusFilterTiming(completePage)
+      let completePage: AccountManagementListResult | undefined
+      if (useAvailabilityProjection && projectionAccess) {
+        const projectionStartedAt = performance.now()
+        const client = createPostgresDatabaseClient(await getPostgresPool())
+        completePage = await listAccountListAvailabilityProjectionPageInClient(client, {
+          viewerSystemAccountId: projectionAccess.systemAccountId,
+          options: listOptions,
+          maximumProjectionAgeMs: runtimeConfig.background.accountListAvailabilityProjectionMaximumAgeMs
+        })
+        projectionDurationMs = performance.now() - projectionStartedAt
+      } else {
+        const statusFilterStartedAt = performance.now()
+        completePage = needsRuntimeStatusFilter
+          ? await listAccountsPageWithRuntimeStatusFilter(requestAccess, listOptions)
+          : undefined
+        statusFilterDurationMs = performance.now() - statusFilterStartedAt
+        if (completePage) runtimeStatusTiming = takeAccountRuntimeStatusFilterTiming(completePage)
+      }
 
       if (!completePage) {
         const listStartedAt = performance.now()
@@ -43,7 +67,8 @@ export function registerAccountListRoutes(router: Router): void {
       const serverTiming = [
         serverTimingMetric('account-list', listDurationMs),
         serverTimingMetric('account-list-hydrate', listHydrationDurationMs),
-        serverTimingMetric('account-status-filter', statusFilterDurationMs)
+        serverTimingMetric('account-status-filter', statusFilterDurationMs),
+        serverTimingMetric('account-list-projection', projectionDurationMs)
       ]
       if (runtimeStatusTiming) {
         serverTiming.push(
@@ -59,6 +84,14 @@ export function registerAccountListRoutes(router: Router): void {
     } catch (error) {
       if (error instanceof AccountRuntimeStatusFilterScanLimitError) {
         res.status(422).json({ message: error.message })
+        return
+      }
+      if (error instanceof AccountListAvailabilityProjectionUnavailableError) {
+        res.setHeader('Retry-After', '1')
+        res.status(503).json({
+          code: 'account_list_projection_unavailable',
+          message: '账户列表正在更新，请稍后重试'
+        })
         return
       }
       next(error)
