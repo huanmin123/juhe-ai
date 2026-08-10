@@ -1,5 +1,6 @@
-import type { AccountOptionSummary, AccountStatus, AuthorizationStatus, ModelCheckAccountOption } from '../domain/types.js'
-import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import type { AccountListItem, AccountOptionSummary, AccountStatus, AuthorizationStatus, ModelCheckAccountOption } from '../domain/types.js'
+import { accountFilterStatuses } from '../domain/account-status-classification.js'
+import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountOptionListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
 import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
@@ -18,6 +19,7 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-r
 import { loadSupportedModelsByAccountIds, loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { configuredModelCheckModelsForAccount } from '../modules/model-checks/model-checks.profiles.js'
+import { listAccountListAvailabilityProjectionPageInClient } from './account-list-availability-projection.repository.js'
 
 type AccountOptionFilterValue = string | number
 type AccountOptionFilterExpression = {
@@ -247,11 +249,77 @@ export async function listAccountOptionsAsync(access?: AccessScope, options?: Ac
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const listOptions = normalizeAccountOptionListOptions(options)
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  const resolvedAccess = resolveAccessScope(access)
+  if (resolvedAccess?.role === 'user'
+    && runtimeConfig.background.accountListAvailabilityProjectionReadEnabled
+    && viewerSystemAccountId) {
+    const projectionPage = await listAccountListAvailabilityProjectionPageInClient(client, {
+      viewerSystemAccountId,
+      options: listOptions,
+      includeDynamicOverlays: false
+    })
+    return accountOptionSummariesFromProjectionItems(projectionPage.items, resolvedAccess, listOptions)
+  }
   if (accountOptionQuotaFilterRequested(listOptions)) {
     return listAccountOptionsWithQuotaFilterAsync(client, access, listOptions, viewerSystemAccountId)
   }
   const rows = await queryAccountOptionRowsForAccessAsync(client, access, listOptions)
   return accountOptionSummariesFromRowsAsync(client, rows, access, viewerSystemAccountId)
+}
+
+/**
+ * Account options intentionally expose only the small AccountOptionSummary
+ * contract. The projection payload is an AccountListItem superset and may
+ * contain runtime, diagnostics, credentials-adjacent or presentation data.
+ */
+function accountOptionSummariesFromProjectionItems(
+  items: AccountListItem[],
+  access: AccessScope | undefined,
+  options: ReturnType<typeof normalizeAccountOptionListOptions>
+): AccountOptionSummary[] {
+  const hasAuthorizedRows = items.some((item) => item.accessType === 'authorized')
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const useProjectionStatus = accountStatusFilterValues(options.status).length > 0 || options.schedulable !== 'all'
+  return items.map((item) => {
+    const isAuthorizedView = item.accessType === 'authorized'
+    const projectionStatuses = [...accountFilterStatuses(item)]
+    const projectionStatus = projectionStatuses.length === 1 ? projectionStatuses[0] : undefined
+    const effectiveStatus = useProjectionStatus
+      ? projectionStatus ?? (isAuthorizedView
+          ? authorizationRuntimeBlockingStatus(item.authorizationStatus, item.authorizationExpiresAt) ?? item.status
+          : item.status)
+      : isAuthorizedView
+        ? projectionStatus === 'rate_limited' && item.authorizationQuotaExceeded
+          ? item.status
+          : projectionStatus ?? authorizationRuntimeBlockingStatus(item.authorizationStatus, item.authorizationExpiresAt) ?? item.status
+        : item.status
+    return {
+      id: item.id,
+      ...(shouldIncludeSystemAccountFields && item.systemAccountId
+        ? {
+            systemAccountId: item.systemAccountId,
+            ...(item.systemAccountName ? { systemAccountName: item.systemAccountName } : {})
+          }
+        : {}),
+      ownerSystemAccountId: item.ownerSystemAccountId,
+      ...(hasAuthorizedRows && item.ownerSystemAccountName
+        ? { ownerSystemAccountName: item.ownerSystemAccountName }
+        : {}),
+      providerCode: item.providerCode,
+      providerProtocolProfileId: item.providerProtocolProfileId,
+      protocolCode: item.protocolCode,
+      protocolVersion: item.protocolVersion,
+      name: item.name,
+      type: item.type,
+      status: effectiveStatus,
+      accessType: item.accessType,
+      ...(item.accountAuthorizationId ? { accountAuthorizationId: item.accountAuthorizationId } : {}),
+      ...(item.authorizationStatus ? { authorizationStatus: item.authorizationStatus } : {}),
+      ...(item.authorizationExpiresAt ? { authorizationExpiresAt: item.authorizationExpiresAt } : {}),
+      ...(item.accountExpiresAt ? { accountExpiresAt: item.accountExpiresAt } : {}),
+      permissions: isAuthorizedView ? authorizedAccountPermissions(false) : ownerPermissions()
+    }
+  })
 }
 
 async function listAccountOptionsWithQuotaFilterAsync(

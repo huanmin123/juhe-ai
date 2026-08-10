@@ -127,7 +127,12 @@
       v-model:open="ccsExportModalOpen"
       :exporting="Boolean(ccsExportingId)"
       :groups="ccsExportGroups"
+      :model-options="ccsExportModelOptions"
+      :models-loading="ccsExportModelsLoading"
+      :models-ready="ccsExportModelsReady"
       @export="exportToCcSwitch"
+      @model-options-open="handleCcSwitchModelOptionsOpen"
+      @model-options-search="handleCcSwitchModelOptionsSearch"
     />
 
     <ApiKeyCreatedSecretModal
@@ -292,12 +297,17 @@ const {
 const {
   ccsExportingId,
   ccsExportGroups,
+  ccsExportModelOptions,
+  ccsExportModelsLoading,
+  ccsExportModelsReady,
   ccsExportModalOpen,
   keyCopyingId,
   apiKeyMoreActions,
   apiKeyPrimaryActions,
   copyKeyPreview,
   exportToCcSwitch,
+  handleCcSwitchModelOptionsOpen,
+  handleCcSwitchModelOptionsSearch,
   handleApiKeyAction
 } = useApiKeyRowActions({
   apiKeysApi,

@@ -6,6 +6,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getBusinessDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { loadSharedCacheEntriesByBatches } from './shared-cache-read-batching.js'
 
 export type GroupAccountStatsRow = {
   system_account_id: string
@@ -115,8 +116,11 @@ export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Pr
   if (!missingSharedIds.length) return result
 
   const missingDatabaseIds: string[] = []
-  for (const id of missingSharedIds) {
-    const sharedCached = await getGroupAccountIdsSharedCacheEntry(id)
+  const sharedResults = await loadSharedCacheEntriesByBatches(
+    missingSharedIds,
+    (id) => getGroupAccountIdsSharedCacheEntry(id)
+  )
+  for (const [id, sharedCached] of sharedResults) {
     if (sharedCached !== undefined) {
       groupAccountIdsCache.set(id, sharedCached)
       result.set(id, [...sharedCached])
@@ -127,11 +131,16 @@ export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Pr
   if (!missingDatabaseIds.length) return result
 
   const loaded = await loadGroupAccountIdsFromDatabaseAsync(missingDatabaseIds)
-  for (const id of missingDatabaseIds) {
-    const accountIds = loaded.get(id) ?? []
-    await setGroupAccountIdsSharedCacheEntryAsync(id, accountIds)
-    groupAccountIdsCache.set(id, accountIds)
-    result.set(id, [...accountIds])
+  for (const chunk of chunkValues(missingDatabaseIds, 100)) {
+    const written = await Promise.all(chunk.map(async (id) => {
+      const accountIds = loaded.get(id) ?? []
+      await setGroupAccountIdsSharedCacheEntryAsync(id, accountIds)
+      return [id, accountIds] as const
+    }))
+    for (const [id, accountIds] of written) {
+      groupAccountIdsCache.set(id, accountIds)
+      result.set(id, [...accountIds])
+    }
   }
   return result
 }

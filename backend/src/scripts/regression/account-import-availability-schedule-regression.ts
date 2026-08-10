@@ -98,22 +98,22 @@ const sourceServiceImports = [
     ]
   },
   {
-    label: 'CPA API Key YAML',
+    label: 'CLIProxyAPI API Key YAML',
     mode: 'cpa' as const,
-    expectedName: '来源服务 CPA 1',
+    expectedName: '来源服务 CLIProxyAPI 1',
     expectedProviderCode: 'openai',
     expectedStatus: 'pending_test',
-    data: `openai-compatibility:\n  - name: 来源服务 CPA\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-source-service-cpa\n        runtime_only: ignored\n`
+    data: `openai-compatibility:\n  - name: 来源服务 CLIProxyAPI\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-source-service-cpa\n        runtime_only: ignored\n`
   },
   {
-    label: 'CPA Codex OAuth',
+    label: 'CLIProxyAPI Codex OAuth',
     mode: 'cpa' as const,
-    expectedName: '来源服务 CPA OAuth',
+    expectedName: '来源服务 CLIProxyAPI OAuth',
     expectedProviderCode: 'gpt',
     expectedStatus: 'pending_test',
     data: {
       type: 'codex',
-      name: '来源服务 CPA OAuth',
+      name: '来源服务 CLIProxyAPI OAuth',
       refresh_token: 'rt-source-service-cpa',
       account_id: 'acct-source-service-cpa',
       base_url: 'https://api.openai.com/v1',
@@ -360,6 +360,29 @@ try {
   assert(asyncScheduled, 'async 导入账户应创建成功')
   assert.equal(asyncScheduled.availabilitySchedule?.enabled, true, 'async 账户导入应保存账户级 availabilitySchedule')
 
+  const sub2ApiImport = sourceServiceImports.find((item) => item.mode === 'sub2api')
+  assert(sub2ApiImport, '回归夹具必须包含 Sub2API 无分组账户')
+  const sub2ApiNoCreateGroupPreview = await accountImport.previewAccountImportAsync(
+    sub2ApiImport.data,
+    { createMissingGroups: false },
+    access,
+    sub2ApiImport.mode
+  )
+  assert.equal(sub2ApiNoCreateGroupPreview.canImport, false, 'Sub2API 无分组且关闭自动建组时不得允许导入')
+  assert.equal(sub2ApiNoCreateGroupPreview.summary.accounts.create, 0, '缺少分组时不得计划创建 Sub2API 账户')
+  assert.match(
+    sub2ApiNoCreateGroupPreview.accounts[0]?.messages.join('\\n') ?? '',
+    /分组不存在：Sub2API 导入/,
+    'Sub2API 缺少来源分组时应明确提示默认导入分组不存在'
+  )
+  const sub2ApiNoCreateGroupResult = await accountImport.executeAccountImportAsync(
+    sub2ApiImport.data,
+    { createMissingGroups: false },
+    access,
+    sub2ApiImport.mode
+  )
+  assert.equal(sub2ApiNoCreateGroupResult.imported, false, 'Sub2API 无分组且关闭自动建组时确认不得写入账户')
+
   for (const sourceImport of sourceServiceImports) {
     const sourcePreview = await accountImport.previewAccountImportAsync(sourceImport.data, {}, access, sourceImport.mode)
     assert.equal(sourcePreview.source.mode, sourceImport.mode, `${sourceImport.label} 的来源摘要应保留导入模式`)
@@ -369,6 +392,9 @@ try {
 
     const sourceResult = await accountImport.executeAccountImportAsync(sourceImport.data, {}, access, sourceImport.mode)
     assert.equal(sourceResult.imported, true, `${sourceImport.label} 经过实际导入服务确认后应成功`)
+    if (sourceImport.mode === 'sub2api') {
+      assert.equal(sourceResult.summary.groups.create, 1, 'Sub2API 无来源分组时应自动创建默认导入分组')
+    }
     const importedSourceAccount = repositories.listAccounts(access, {
       keyword: sourceImport.expectedName,
       providerCode: sourceImport.expectedProviderCode
@@ -612,7 +638,7 @@ try {
   )
   assert(!frontendImportTemplateSource.includes('metadata:'), '前端账户导入模板不应包含后端协议拒绝的 metadata 根字段')
 
-  console.log('账户导入回归通过：原生计划与字段契约、Sub2API/NewAPI/One-API/CPA 实际服务导入、非法输入和小批量边界校验符合预期')
+  console.log('账户导入回归通过：原生计划与字段契约、Sub2API/NewAPI/One-API/CLIProxyAPI 实际服务导入、非法输入和小批量边界校验符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

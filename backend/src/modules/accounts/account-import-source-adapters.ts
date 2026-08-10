@@ -278,8 +278,8 @@ function adaptCliProxyApi(input: unknown, state: AdapterState): void {
   for (let index = 0; index < codexEntries.length; index += 1) {
     adaptCpaApiKeyEntry(codexEntries[index], {
       index: index + 1,
-      label: 'CPA Codex API Key',
-      groupName: 'CPA 导入'
+      label: 'CLIProxyAPI Codex API Key',
+      groupName: 'CLIProxyAPI 导入'
     }, state)
   }
 
@@ -291,21 +291,21 @@ function adaptCliProxyApi(input: unknown, state: AdapterState): void {
       continue
     }
     countIgnoredRecordKeys(provider, new Set(['name', 'base-url', 'base_url', 'api-key-entries', 'api_key_entries']), state)
-    const providerName = text(provider.name) || `CPA OpenAI Provider ${providerIndex + 1}`
+    const providerName = text(provider.name) || `CLIProxyAPI OpenAI Provider ${providerIndex + 1}`
     const providerBaseUrl = firstText(provider['base-url'], provider.base_url)
     const entries = arrayValue(provider['api-key-entries'] ?? provider.api_key_entries)
     for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
       adaptCpaApiKeyEntry(entries[entryIndex], {
         index: entryIndex + 1,
         label: providerName,
-        groupName: 'CPA 导入',
+        groupName: 'CLIProxyAPI 导入',
         baseUrl: providerBaseUrl
       }, state)
     }
   }
 
   if (state.source.records === 0) {
-    addSourceMessage(state, 'CPA 配置未包含 codex-api-key 或 openai-compatibility API Key')
+    addSourceMessage(state, 'CLIProxyAPI 配置未包含 codex-api-key 或 openai-compatibility API Key')
   }
 }
 
@@ -352,14 +352,14 @@ function adaptCpaCodexAuthFile(root: Record<string, unknown>, state: AdapterStat
     skipSourceRecord(state, 1, 'Codex auth-file 缺少可用 OAuth 凭据')
     return
   }
-  const name = firstText(tokens.email, root.email, root.name, root.id) || 'CPA Codex OAuth'
+  const name = firstText(tokens.email, root.email, root.name, root.id) || 'CLIProxyAPI Codex OAuth'
   acceptAccount(state, 1, compactRecord({
     name,
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     type: 'oauth',
     status: 'active',
-    groupName: 'CPA 导入',
+    groupName: 'CLIProxyAPI 导入',
     credentials
   }))
 }
@@ -526,7 +526,7 @@ function parseCpaInput(value: unknown): unknown {
   try {
     return parseYaml(value)
   } catch {
-    throw new Error('CPA 导入内容必须是有效 YAML 或 JSON')
+    throw new Error('CLIProxyAPI 导入内容必须是有效 YAML 或 JSON')
   }
 }
 

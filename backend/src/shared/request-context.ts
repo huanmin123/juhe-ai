@@ -709,7 +709,23 @@ function isHealthPath(path: string): boolean {
 }
 
 export function sanitizeUrlForLog(value: string): string {
-  return value
+  try {
+    const parsed = new URL(value, 'http://localhost')
+    if (parsed.pathname !== '/oauth/authorize' && parsed.pathname !== '/oauth/device') return value
+    const sensitiveNames = new Set([
+      'state',
+      'nonce',
+      'code_challenge',
+      'transaction_id',
+      'user_code'
+    ])
+    for (const name of sensitiveNames) {
+      if (parsed.searchParams.has(name)) parsed.searchParams.set(name, '[redacted]')
+    }
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return value
+  }
 }
 
 export function sanitizeUrlCredentialsForLog(value?: string | null): string | undefined {

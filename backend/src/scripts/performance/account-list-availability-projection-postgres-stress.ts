@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { runAccountListAvailabilityProjectionMaintenance } from '../../modules/accounts/account-list-availability-projection.service.js'
 import { accountNameSearchQueryTerms } from '../../storage/account-name-search.repository.js'
 import {
   closePostgresPool,
@@ -9,9 +10,12 @@ import {
 import { createPostgresDatabaseClient, type DatabaseClient } from '../../storage/database-client.js'
 import {
   AccountListAvailabilityProjectionUnavailableError,
+  completeAccountListAvailabilityProjectionRuntimeDependencyRecoveryInClient,
+  ensureAccountListAvailabilityProjectionRuntimeDependencyInClient,
   listAccountListAvailabilityProjectionPageInClient,
   markAccountListAvailabilityDirtyInClient,
-  refreshAccountListAvailabilityProjectionViewerHealthInClient
+  refreshAccountListAvailabilityProjectionViewerHealthInClient,
+  touchAccountListAvailabilityProjectionRuntimeDependencyInClient
 } from '../../storage/account-list-availability-projection.repository.js'
 
 const viewerSystemAccountId = 'account-list-projection-stress-viewer-20260810'
@@ -24,6 +28,7 @@ const pageSize = 20
 interface StressCase {
   name: string
   options: Record<string, unknown>
+  includeDynamicOverlays: boolean
 }
 
 interface LatencySummary {
@@ -32,6 +37,8 @@ interface LatencySummary {
   p50Ms: number
   p95Ms: number
   p99Ms: number
+  queryP95Ms: number
+  postQueryP95Ms: number
   maxMs: number
   errors: number
 }
@@ -48,17 +55,32 @@ interface PoolMetricsSource {
   waitingCount?: number
 }
 
-const cases: StressCase[] = [
-  { name: 'default', options: { page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] } },
-  { name: 'status-active', options: { status: 'active', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] } },
-  { name: 'status-sparse', options: { status: 'quality_isolated', page: 1, pageSize, sorts: [{ field: 'name', order: 'asc' }] } },
-  { name: 'schedulable-cooling', options: { schedulable: 'cooling', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] } },
-  { name: 'provider-status', options: { providerCode: '__stress_provider__', status: 'active', page: 1, pageSize } },
-  { name: 'group-status', options: { groupId: 'projection-stress-group-3', status: 'active', page: 1, pageSize } },
-  { name: 'tag-status', options: { tagIds: ['projection-stress-tag-3'], status: 'active', page: 1, pageSize } },
-  { name: 'keyword-contains', options: { keyword: 'batch', page: 1, pageSize, sorts: [{ field: 'name', order: 'asc' }] } },
-  { name: 'deep-page', options: { status: 'active', page: 50, pageSize, sorts: [{ field: 'priority', order: 'asc' }] } }
+const managementCases: StressCase[] = [
+  { name: 'default', options: { page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: true },
+  { name: 'status-active', options: { status: 'active', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: true },
+  { name: 'status-sparse', options: { status: 'quality_isolated', page: 1, pageSize, sorts: [{ field: 'name', order: 'asc' }] }, includeDynamicOverlays: true },
+  { name: 'schedulable-cooling', options: { schedulable: 'cooling', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: true },
+  { name: 'provider-status', options: { providerCode: '__stress_provider__', status: 'active', page: 1, pageSize }, includeDynamicOverlays: true },
+  { name: 'group-status', options: { groupId: 'projection-stress-group-3', status: 'active', page: 1, pageSize }, includeDynamicOverlays: true },
+  { name: 'tag-status', options: { tagIds: ['projection-stress-tag-3'], status: 'active', page: 1, pageSize }, includeDynamicOverlays: true },
+  { name: 'keyword-contains', options: { keyword: 'batch', page: 1, pageSize, sorts: [{ field: 'name', order: 'asc' }] }, includeDynamicOverlays: true },
+  { name: 'deep-page', options: { status: 'active', page: 50, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: true }
 ]
+
+const optionsCases: StressCase[] = [
+  { name: 'options-default', options: { page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: false },
+  { name: 'options-status-active', options: { status: 'active', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: false },
+  { name: 'options-status-sparse', options: { status: 'quality_isolated', page: 1, pageSize, sorts: [{ field: 'name', order: 'asc' }] }, includeDynamicOverlays: false },
+  { name: 'options-schedulable-enabled', options: { schedulable: 'enabled', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: false },
+  { name: 'options-schedulable-disabled', options: { schedulable: 'disabled', page: 1, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: false },
+  { name: 'options-provider-status', options: { providerCode: '__stress_provider__', status: 'active', page: 1, pageSize }, includeDynamicOverlays: false },
+  { name: 'options-group-status', options: { groupId: 'projection-stress-group-3', status: 'active', page: 1, pageSize }, includeDynamicOverlays: false },
+  { name: 'options-tag-status', options: { tagIds: ['projection-stress-tag-3'], status: 'active', page: 1, pageSize }, includeDynamicOverlays: false },
+  { name: 'options-keyword-contains', options: { keyword: 'batch', page: 1, pageSize, sorts: [{ field: 'name', order: 'asc' }] }, includeDynamicOverlays: false },
+  { name: 'options-deep-page', options: { status: 'active', page: 50, pageSize, sorts: [{ field: 'priority', order: 'asc' }] }, includeDynamicOverlays: false }
+]
+
+const cases: StressCase[] = [...managementCases, ...optionsCases]
 
 async function main(): Promise<void> {
   assertScratchDatabase()
@@ -75,15 +97,28 @@ async function main(): Promise<void> {
     await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, {
       viewerSystemAccountId
     })
+    await touchAccountListAvailabilityProjectionRuntimeDependencyInClient(client, {})
+    if (process.argv.includes('--print-explain')) await printProjectionReadiness(client)
+    await ensureAccountListAvailabilityProjectionRuntimeDependencyInClient(client, {})
+    await touchAccountListAvailabilityProjectionRuntimeDependencyInClient(client, {})
+    await completeAccountListAvailabilityProjectionRuntimeDependencyRecoveryInClient(client, {})
     await verifyPostgresDirtyTriggers(client)
+    // Trigger coverage intentionally dirties one row; restore the fixture's
+    // health watermark before measuring request latency.
+    await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, {
+      viewerSystemAccountId
+    })
     console.error('account-list projection stress: verifying plan and one-query filters')
     await verifyExplainUsesProjectionIndex(client)
     await verifyOneQueryPerFilteredPage(client)
-    await verifyFilteredQueryPlans(client)
+    const planSummaries = await verifyFilteredQueryPlans(client)
     await verifyDirtyReadFailsClosed(client)
     console.error('account-list projection stress: running concurrent queries')
     const poolMetrics: PoolMetrics = { maxTotal: 0, maxIdle: 0, maxWaiting: 0 }
-    const summaries = await runConcurrentPressure(client, durationMs, concurrency, pool as PoolMetricsSource, poolMetrics)
+    await warmPostgresPool(client, concurrency)
+    const summaries = await runWithProjectionMaintenanceHeartbeat(
+      () => runConcurrentPressure(client, durationMs, concurrency, pool as PoolMetricsSource, poolMetrics)
+    )
     const report = {
       database: scratchDatabaseName(),
       redisNamespace: runtimeConfig.redis.namespace,
@@ -94,16 +129,58 @@ async function main(): Promise<void> {
       completedAt: new Date().toISOString(),
       profile,
       poolMetrics,
+      planSummaries,
       summaries
     }
     console.log(JSON.stringify(report, null, 2))
+    assertPressureAcceptance(summaries, concurrency)
   } finally {
     await cleanupStressFixture(client)
     await closePostgresPool()
   }
 }
 
-async function verifyFilteredQueryPlans(client: DatabaseClient): Promise<void> {
+/**
+ * The request reader deliberately rejects an expired runtime heartbeat. Keep
+ * the pressure run faithful to the enabled deployment by running the same
+ * bounded maintenance path that refreshes it in production.
+ */
+async function runWithProjectionMaintenanceHeartbeat<T>(work: () => Promise<T>): Promise<T> {
+  let stopped = false
+  let heartbeatFailure: unknown
+  const heartbeat = (async () => {
+    while (!stopped) {
+      try {
+        await runAccountListAvailabilityProjectionMaintenance({
+          ownerId: `account-list-projection-stress-heartbeat-${process.pid}`,
+          batchSize: 100,
+          maxBatchesPerRun: 1,
+          workerConcurrency: 1
+        })
+      } catch (error) {
+        heartbeatFailure = error
+        return
+      }
+      await waitForProjectionMaintenanceHeartbeat()
+    }
+  })()
+  try {
+    const result = await work()
+    if (heartbeatFailure) throw heartbeatFailure
+    return result
+  } finally {
+    stopped = true
+    await heartbeat
+    if (heartbeatFailure) throw heartbeatFailure
+  }
+}
+
+function waitForProjectionMaintenanceHeartbeat(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 1_000))
+}
+
+async function verifyFilteredQueryPlans(client: DatabaseClient): Promise<Array<{ name: string; executionMs: number }>> {
+  const summaries: Array<{ name: string; executionMs: number }> = []
   for (const testCase of cases.filter(({ name }) => name === 'default' || name === 'keyword-contains')) {
     let captured: { sql: string; params: readonly unknown[] } | undefined
     const capturingClient: DatabaseClient = {
@@ -119,7 +196,7 @@ async function verifyFilteredQueryPlans(client: DatabaseClient): Promise<void> {
     await listAccountListAvailabilityProjectionPageInClient(capturingClient, {
       viewerSystemAccountId,
       options: testCase.options,
-      maximumProjectionAgeMs: 60 * 60_000
+      includeDynamicOverlays: testCase.includeDynamicOverlays
     })
     assert(captured, `筛选 ${testCase.name} 未捕获到 SQL`)
     const planRows = await client.query<Record<string, unknown>>(
@@ -132,16 +209,28 @@ async function verifyFilteredQueryPlans(client: DatabaseClient): Promise<void> {
       /"Alias":"(?:stale_projections|due_projections)"/,
       `筛选 ${testCase.name} 的 request freshness 不得扫描账户投影表`
     )
-    console.error(JSON.stringify({
-      plan: testCase.name,
-      explain: planRows
-    }))
+    const executionMs = postgresExplainExecutionMs(planRows)
+    if (process.argv.includes('--print-explain')) {
+      console.error(JSON.stringify({
+        name: testCase.name,
+        executionMs,
+        hotNodes: postgresExplainHotNodes(planRows),
+        jit: postgresExplainJit(planRows)
+      }, null, 2))
+    }
+    assert(
+      executionMs <= 50,
+      `筛选 ${testCase.name} 的单条 PostgreSQL SQL 执行必须在 50ms 内，实际 ${executionMs}ms；热节点=${JSON.stringify(postgresExplainHotNodes(planRows))}`
+    )
+    summaries.push({ name: testCase.name, executionMs })
   }
+  return summaries
 }
 
 async function seedStressFixture(client: DatabaseClient): Promise<{ providerCode: string; protocolProfileId: string }> {
   const accounts = table(client, 'accounts')
   const projections = table(client, 'account_list_availability_projections')
+  const projectionIndex = table(client, 'account_list_availability_projection_index')
   const projectionTags = table(client, 'account_list_availability_projection_tags')
   const projectionSearchTerms = table(client, 'account_list_availability_projection_search_terms')
   const dirty = table(client, 'account_list_availability_dirty')
@@ -242,6 +331,29 @@ async function seedStressFixture(client: DatabaseClient): Promise<{ providerCode
         ON accounts.id = ? || lpad(generated.gs::text, 6, '0')
     `, [viewerSystemAccountId, profile.id, now, rowCount, accountPrefix])
     await tx.execute(`
+      INSERT INTO ${projectionIndex} (
+        viewer_system_account_id, account_id, effective_status, schedulable_bucket,
+        provider_code, provider_protocol_profile_id, account_type, bound_group_id,
+        name_sort_key, priority_sort_key, super_priority_sort_key, fallback_sort_key,
+        concurrency_sort_key, account_expires_at_sort_key, last_used_at_sort_key,
+        created_at_sort_key, access_type_sort_key, search_index_complete, authorization_quota_exceeded
+      )
+      SELECT ?, accounts.id,
+        accounts.status,
+        CASE WHEN generated.gs % 5 = 0 THEN 'cooling'
+             WHEN generated.gs % 7 = 0 THEN 'disabled'
+             ELSE 'enabled' END,
+        '__stress_provider__', ?, accounts.type,
+        CASE WHEN generated.gs % 3 = 0 THEN 'projection-stress-group-3' ELSE 'projection-stress-group-1' END,
+        accounts.name, generated.gs % 100,
+        CASE WHEN generated.gs % 2 = 0 THEN 1 ELSE 0 END,
+        CASE WHEN generated.gs % 13 = 0 THEN 1 ELSE 0 END,
+        5000, NULL, NULL, accounts.created_at, 'owner', 1, 0
+      FROM ${accounts} accounts
+      INNER JOIN generate_series(1, ?) AS generated(gs)
+        ON accounts.id = ? || lpad(generated.gs::text, 6, '0')
+    `, [viewerSystemAccountId, profile.id, rowCount, accountPrefix])
+    await tx.execute(`
       INSERT INTO ${projectionTags} (viewer_system_account_id, account_id, tag_id)
       SELECT ?, accounts.id, 'projection-stress-tag-' || ((generated.gs % 5) + 1)::text
       FROM ${accounts} accounts
@@ -263,8 +375,10 @@ async function seedStressFixture(client: DatabaseClient): Promise<{ providerCode
       WHERE accounts.id LIKE ?
     `, [viewerSystemAccountId, now, ...searchTermsForBatch, `${accountPrefix}%`])
     await tx.execute(`
-      INSERT INTO ${projectionSearchTerms} (viewer_system_account_id, account_id, term)
-      SELECT ?, accounts.id, terms.term
+      INSERT INTO ${projectionSearchTerms} (
+        viewer_system_account_id, account_id, term, name_sort_key, created_at_sort_key
+      )
+      SELECT ?, accounts.id, terms.term, accounts.name, accounts.created_at
       FROM ${accounts} accounts
       CROSS JOIN (VALUES ${values}) AS terms(term)
       WHERE accounts.id LIKE ?
@@ -277,6 +391,7 @@ async function seedStressFixture(client: DatabaseClient): Promise<{ providerCode
     `, [`${accountPrefix}%`])
     await tx.execute(`ANALYZE ${accounts}`)
     await tx.execute(`ANALYZE ${projections}`)
+    await tx.execute(`ANALYZE ${projectionIndex}`)
     await tx.execute(`ANALYZE ${projectionTags}`)
     await tx.execute(`ANALYZE ${projectionSearchTerms}`)
     await tx.execute(`ANALYZE ${searchTerms}`)
@@ -304,7 +419,7 @@ async function setProjectionFixtureTriggersEnabled(client: DatabaseClient, enabl
 }
 
 async function verifyExplainUsesProjectionIndex(client: DatabaseClient): Promise<void> {
-  const projections = table(client, 'account_list_availability_projections')
+  const projections = table(client, 'account_list_availability_projection_index')
   const result = await client.one<{ 'QUERY PLAN': unknown }>(`
     EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
     SELECT account_id
@@ -314,7 +429,26 @@ async function verifyExplainUsesProjectionIndex(client: DatabaseClient): Promise
     LIMIT 21
   `, [viewerSystemAccountId])
   const plan = JSON.stringify(result?.['QUERY PLAN'] ?? result)
-  assert.match(plan, /idx_account_list_availability_projection_status_priority/, '状态分页必须命中投影状态/排序索引')
+  assert.match(plan, /idx_account_list_availability_projection_index_status_priority/, '状态分页必须命中窄投影状态/排序索引')
+}
+
+async function printProjectionReadiness(client: DatabaseClient): Promise<void> {
+  const health = await client.one<Record<string, unknown>>(`
+    SELECT projection_count, oldest_projected_at, next_transition_at, is_current, updated_at
+    FROM ${table(client, 'account_list_availability_projection_viewer_health')}
+    WHERE viewer_system_account_id = ?
+  `, [viewerSystemAccountId])
+  const dependency = await client.one<Record<string, unknown>>(`
+    SELECT dependency_name, state, updated_at
+    FROM ${table(client, 'account_list_availability_projection_dependency_health')}
+    WHERE dependency_name = 'runtime_state'
+  `)
+  const dirty = await client.one<{ count: string }>(`
+    SELECT count(*)::text AS count
+    FROM ${table(client, 'account_list_availability_dirty')}
+    WHERE viewer_system_account_id = ?
+  `, [viewerSystemAccountId])
+  console.error(JSON.stringify({ readiness: { health, dependency, dirty: dirty?.count } }, null, 2))
 }
 
 async function verifyOneQueryPerFilteredPage(client: DatabaseClient): Promise<void> {
@@ -335,7 +469,7 @@ async function verifyOneQueryPerFilteredPage(client: DatabaseClient): Promise<vo
     const page = await listAccountListAvailabilityProjectionPageInClient(countedClient, {
       viewerSystemAccountId,
       options: testCase.options,
-      maximumProjectionAgeMs: 60 * 60_000
+      includeDynamicOverlays: testCase.includeDynamicOverlays
     })
     assert.equal(queryCount, 1, `筛选 ${testCase.name} 必须一次 SQL 完成，不得拆成多次聚合`)
     assert.doesNotMatch(capturedSql, /\b(accounts|resource_authorizations)\b/, `筛选 ${testCase.name} 请求 SQL 不得回读业务事实表`)
@@ -420,14 +554,18 @@ async function verifyDirtyReadFailsClosed(client: DatabaseClient): Promise<void>
   await assert.rejects(
     () => listAccountListAvailabilityProjectionPageInClient(client, {
       viewerSystemAccountId,
-      options: { page: 1, pageSize },
-      maximumProjectionAgeMs: 60 * 60_000
+      options: { page: 1, pageSize }
     }),
     AccountListAvailabilityProjectionUnavailableError,
     'dirty 投影必须 fail-closed，不能返回旧快照'
   )
   const dirty = table(client, 'account_list_availability_dirty')
   await client.execute(`DELETE FROM ${dirty} WHERE account_id = ?`, [targetAccountId])
+}
+
+async function warmPostgresPool(client: DatabaseClient, concurrency: number): Promise<void> {
+  const connectionCount = Math.min(concurrency, runtimeConfig.postgres.poolMax)
+  await Promise.all(Array.from({ length: connectionCount }, () => client.query('SELECT 1')))
 }
 
 async function runConcurrentPressure(
@@ -438,9 +576,13 @@ async function runConcurrentPressure(
   poolMetrics: PoolMetrics
 ): Promise<LatencySummary[]> {
   const samples = new Map<string, number[]>()
+  const querySamples = new Map<string, number[]>()
+  const postQuerySamples = new Map<string, number[]>()
   const errors = new Map<string, number>()
   for (const testCase of cases) {
     samples.set(testCase.name, [])
+    querySamples.set(testCase.name, [])
+    postQuerySamples.set(testCase.name, [])
     errors.set(testCase.name, 0)
   }
   const deadline = Date.now() + durationMs
@@ -450,30 +592,49 @@ async function runConcurrentPressure(
       const testCase = cases[index % cases.length]!
       index += 1
       const startedAt = performance.now()
+      let queryMs = 0
+      const timedClient: DatabaseClient = {
+        ...client,
+        async query<T extends object = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<T[]> {
+          const queryStartedAt = performance.now()
+          try {
+            return await client.query<T>(sql, params)
+          } finally {
+            queryMs += performance.now() - queryStartedAt
+          }
+        }
+      }
       try {
         poolMetrics.maxTotal = Math.max(poolMetrics.maxTotal, Number(pool.totalCount ?? 0))
         poolMetrics.maxIdle = Math.max(poolMetrics.maxIdle, Number(pool.idleCount ?? 0))
         poolMetrics.maxWaiting = Math.max(poolMetrics.maxWaiting, Number(pool.waitingCount ?? 0))
-        await listAccountListAvailabilityProjectionPageInClient(client, {
+        await listAccountListAvailabilityProjectionPageInClient(timedClient, {
           viewerSystemAccountId,
           options: testCase.options,
-          maximumProjectionAgeMs: 60 * 60_000
+          includeDynamicOverlays: testCase.includeDynamicOverlays
         })
       } catch {
         errors.set(testCase.name, errors.get(testCase.name)! + 1)
       } finally {
-        samples.get(testCase.name)!.push(performance.now() - startedAt)
+        const totalMs = performance.now() - startedAt
+        samples.get(testCase.name)!.push(totalMs)
+        querySamples.get(testCase.name)!.push(queryMs)
+        postQuerySamples.get(testCase.name)!.push(Math.max(0, totalMs - queryMs))
       }
     }
   })()))
   return cases.map((testCase) => {
     const values = samples.get(testCase.name)!.sort((left, right) => left - right)
+    const queryValues = querySamples.get(testCase.name)!.sort((left, right) => left - right)
+    const postQueryValues = postQuerySamples.get(testCase.name)!.sort((left, right) => left - right)
     return {
       name: testCase.name,
       count: values.length,
       p50Ms: percentile(values, 0.5),
       p95Ms: percentile(values, 0.95),
       p99Ms: percentile(values, 0.99),
+      queryP95Ms: percentile(queryValues, 0.95),
+      postQueryP95Ms: percentile(postQueryValues, 0.95),
       maxMs: values.at(-1) ?? 0,
       errors: errors.get(testCase.name)!
     }
@@ -485,6 +646,7 @@ async function cleanupStressFixture(client: DatabaseClient): Promise<void> {
     'account_list_availability_projection_tags',
     'account_list_availability_projection_search_terms',
     'account_list_availability_dirty',
+    'account_list_availability_projection_index',
     'account_list_availability_projections',
     'account_name_search_terms',
     'account_name_search_documents',
@@ -548,6 +710,62 @@ function percentile(values: number[], quantile: number): number {
   if (!values.length) return 0
   const index = Math.min(values.length - 1, Math.ceil(values.length * quantile) - 1)
   return Number(values[index]!.toFixed(3))
+}
+
+function assertPressureAcceptance(summaries: LatencySummary[], concurrency: number): void {
+  const p95LimitMs = concurrency >= 80 ? 700 : 300
+  const p99LimitMs = concurrency >= 80 ? 900 : 500
+  for (const summary of summaries) {
+    assert(summary.count > 0, `筛选 ${summary.name} 压测必须产生样本`)
+    assert.equal(summary.errors, 0, `筛选 ${summary.name} 压测不得返回 unavailable 或 SQL 错误`)
+    assert(summary.p95Ms <= p95LimitMs, `筛选 ${summary.name} P95 必须 <= ${p95LimitMs}ms，实际 ${summary.p95Ms}ms`)
+    assert(summary.p99Ms <= p99LimitMs, `筛选 ${summary.name} P99 必须 <= ${p99LimitMs}ms，实际 ${summary.p99Ms}ms`)
+  }
+}
+
+function postgresExplainExecutionMs(rows: Array<Record<string, unknown>>): number {
+  const match = /"Execution Time":([0-9.]+)/.exec(JSON.stringify(rows))
+  const value = Number(match?.[1])
+  if (!Number.isFinite(value) || value < 0) throw new Error('PostgreSQL EXPLAIN 未返回 Execution Time')
+  return value
+}
+
+function postgresExplainHotNodes(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const root = rows[0]?.['QUERY PLAN']
+  const nodes: Array<Record<string, unknown>> = []
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    const record = value as Record<string, unknown>
+    const actualTotalTime = Number(record['Actual Total Time'])
+    if (Number.isFinite(actualTotalTime) && actualTotalTime >= 5) {
+      nodes.push({
+        node: record['Node Type'],
+        relation: record['Relation Name'],
+        index: record['Index Name'],
+        subplan: record['Subplan Name'],
+        cte: record['CTE Name'],
+        startupMs: record['Actual Startup Time'],
+        totalMs: record['Actual Total Time'],
+        rows: record['Actual Rows'],
+        loops: record['Actual Loops'],
+        filter: record.Filter
+      })
+    }
+    const children = record.Plans
+    if (Array.isArray(children)) children.forEach(visit)
+    visit(record.Plan)
+  }
+  if (Array.isArray(root)) root.forEach(visit)
+  return nodes
+}
+
+function postgresExplainJit(rows: Array<Record<string, unknown>>): unknown {
+  const root = rows[0]?.['QUERY PLAN']
+  if (!Array.isArray(root)) return undefined
+  const first = root[0]
+  return first && typeof first === 'object' && !Array.isArray(first)
+    ? (first as Record<string, unknown>).JIT
+    : undefined
 }
 
 function integerArg(name: string, fallback: number, min: number, max: number): number {

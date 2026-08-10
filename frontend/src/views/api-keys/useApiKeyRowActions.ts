@@ -7,14 +7,19 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ApiKeySummary } from '@/types/domain'
+import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
 import { mergeApiKeyMutationResult } from './apiKeyMutation'
 import { refreshedApiKeyListItem } from './apiKeyRefreshRow'
 import type { ApiKeyScopeParams } from './apiKeyScope'
 import {
+  buildCcSwitchExportModelOptions,
   buildCcSwitchExportGroupOptions,
   buildCcSwitchExportUrl,
+  isCcSwitchExportModelSelectionValid,
+  shouldLoadCcSwitchExportModelOptions,
   type CcSwitchClientApp,
-  type CcSwitchExportGroupOption
+  type CcSwitchExportGroupOption,
+  type CcSwitchExportModelOption
 } from './ccswitchExport'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
@@ -48,6 +53,12 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   const ccsExportModalOpen = ref(false)
   const ccsExportApiKey = ref<ApiKeySummary>()
   const ccsExportGroups = ref<CcSwitchExportGroupOption[]>([])
+  const ccsExportModelOptions = ref<CcSwitchExportModelOption[]>([])
+  const ccsExportModelsLoading = ref(false)
+  const ccsExportModelsReady = ref(false)
+  const ccsExportModelOptionsGroupId = ref('')
+  let ccsExportModelOptionsRequestId = 0
+  let ccsExportModelSearchTimer: ReturnType<typeof setTimeout> | undefined
 
   async function copyKeyPreview(apiKey: ApiKeySummary): Promise<void> {
     if (keyCopyingId.value) return
@@ -169,6 +180,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
       }
       ccsExportApiKey.value = apiKey
       ccsExportGroups.value = groups
+      resetCcSwitchExportModelOptions()
       ccsExportModalOpen.value = true
     } catch (error) {
       console.error(error)
@@ -186,6 +198,18 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     }
     if (!ccsExportGroups.value.some((group) => group.groupId === selection.groupId)) {
       message.error('所选分组已不可用，请重新打开导出窗口')
+      return
+    }
+    if (
+      !ccsExportModelsReady.value
+      || ccsExportModelsLoading.value
+      || ccsExportModelOptionsGroupId.value !== selection.groupId
+    ) {
+      message.error('分组供应商模型尚未加载完成，请稍后重试')
+      return
+    }
+    if (!isCcSwitchExportModelSelectionValid(ccsExportModelOptions.value, selection.model)) {
+      message.error('所选模型不属于当前分组供应商，请重新选择')
       return
     }
     if (ccsExportingId.value) return
@@ -208,6 +232,75 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     } finally {
       if (ccsExportingId.value === apiKey.id) ccsExportingId.value = ''
     }
+  }
+
+  function handleCcSwitchModelOptionsOpen(groupId: string, open: boolean): void {
+    if (!open) return
+    if (ccsExportModelSearchTimer) clearTimeout(ccsExportModelSearchTimer)
+    ccsExportModelSearchTimer = undefined
+    if (!shouldLoadCcSwitchExportModelOptions({
+      groupId,
+      catalogGroupId: ccsExportModelOptionsGroupId.value,
+      modelsLoading: ccsExportModelsLoading.value,
+      modelsReady: ccsExportModelsReady.value
+    })) return
+    void loadCcSwitchExportModelOptions(groupId)
+  }
+
+  function handleCcSwitchModelOptionsSearch(groupId: string, keyword: string): void {
+    if (ccsExportModelSearchTimer) clearTimeout(ccsExportModelSearchTimer)
+    ccsExportModelSearchTimer = setTimeout(() => {
+      ccsExportModelSearchTimer = undefined
+      void loadCcSwitchExportModelOptions(groupId, keyword)
+    }, 180)
+  }
+
+  async function loadCcSwitchExportModelOptions(groupId: string, keyword = ''): Promise<void> {
+    const apiKey = ccsExportApiKey.value
+    const group = ccsExportGroups.value.find((item) => item.groupId === groupId)
+    if (!apiKey || !group) return
+
+    const requestId = ++ccsExportModelOptionsRequestId
+    const sameGroupWithReadyCatalog = ccsExportModelOptionsGroupId.value === groupId && ccsExportModelsReady.value
+    ccsExportModelOptionsGroupId.value = groupId
+    if (!sameGroupWithReadyCatalog) {
+      ccsExportModelOptions.value = []
+      ccsExportModelsReady.value = false
+    }
+    ccsExportModelsLoading.value = true
+    try {
+      const resource = await loadAccountProviderModelOptionsResource({
+        isManagementView: input.isManagementView(),
+        providerCode: group.providerCode,
+        scopeParams: input.operationScopeParams(apiKey),
+        selectedIds: group.defaultModel ? [group.defaultModel] : [],
+        keyword
+      })
+      if (requestId !== ccsExportModelOptionsRequestId || ccsExportModelOptionsGroupId.value !== groupId) return
+      ccsExportModelOptions.value = buildCcSwitchExportModelOptions([
+        ...ccsExportModelOptions.value,
+        ...resource.data
+      ])
+      ccsExportModelsReady.value = true
+    } catch (error) {
+      if (requestId !== ccsExportModelOptionsRequestId || ccsExportModelOptionsGroupId.value !== groupId) return
+      ccsExportModelOptions.value = []
+      ccsExportModelsReady.value = false
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载分组供应商模型失败'))
+    } finally {
+      if (requestId === ccsExportModelOptionsRequestId) ccsExportModelsLoading.value = false
+    }
+  }
+
+  function resetCcSwitchExportModelOptions(): void {
+    ccsExportModelOptionsRequestId += 1
+    if (ccsExportModelSearchTimer) clearTimeout(ccsExportModelSearchTimer)
+    ccsExportModelSearchTimer = undefined
+    ccsExportModelOptions.value = []
+    ccsExportModelsLoading.value = false
+    ccsExportModelsReady.value = false
+    ccsExportModelOptionsGroupId.value = ''
   }
 
   function apiKeyActionBusy(apiKey: ApiKeySummary): boolean {
@@ -276,6 +369,9 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     keyCopyingId,
     ccsExportApiKey,
     ccsExportGroups,
+    ccsExportModelOptions,
+    ccsExportModelsLoading,
+    ccsExportModelsReady,
     ccsExportModalOpen,
     ccsExportPreparingId,
     ccsExportingId,
@@ -285,6 +381,8 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     apiKeyPrimaryActions,
     copyKeyPreview,
     exportToCcSwitch,
+    handleCcSwitchModelOptionsOpen,
+    handleCcSwitchModelOptionsSearch,
     handleApiKeyAction
   }
 }

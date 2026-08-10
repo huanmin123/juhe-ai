@@ -43,7 +43,6 @@ export function registerAccountListRoutes(router: Router): void {
         completePage = await listAccountListAvailabilityProjectionPageInClient(client, {
           viewerSystemAccountId: projectionAccess.systemAccountId,
           options: listOptions,
-          maximumProjectionAgeMs: runtimeConfig.background.accountListAvailabilityProjectionMaximumAgeMs
         })
         projectionDurationMs = performance.now() - projectionStartedAt
       } else {
@@ -105,6 +104,14 @@ export function registerAccountListRoutes(router: Router): void {
       const options = await listAccountOptionsAsync(access, query)
       res.json(ok(options))
     } catch (error) {
+      if (error instanceof AccountListAvailabilityProjectionUnavailableError) {
+        res.setHeader('Retry-After', '1')
+        res.status(503).json({
+          code: 'account_list_projection_unavailable',
+          message: '账户列表正在更新，请稍后重试'
+        })
+        return
+      }
       next(error)
     }
   })

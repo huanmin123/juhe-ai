@@ -116,6 +116,7 @@ interface AccountManagementListRow extends AccountManagementStatusSeed {
   source_proxy_profile_id: string | null
   source_concurrency_limit: number | string | null
   source_client_compatibility: AccountClientCompatibility | null
+  source_availability_schedule_json: string | null
   binding_system_account_id: string | null
   bound_group_id: string | null
   bound_group_name: string | null
@@ -297,6 +298,7 @@ async function listAccountManagementItemsPageDirect(
         source_accounts.type AS source_type,
         source_accounts.status AS source_status,
         source_accounts.schedulable AS source_schedulable,
+        source_accounts.availability_schedule_json AS source_availability_schedule_json,
         source_accounts.account_expires_at AS source_account_expires_at,
         source_accounts.cooldown_until AS source_cooldown_until,
         source_accounts.last_error_code AS source_last_error_code,
@@ -388,6 +390,7 @@ async function listAccountManagementItemsPageDirect(
       account_rows.source_type,
       account_rows.source_status,
       account_rows.source_schedulable,
+      account_rows.source_availability_schedule_json,
       account_rows.source_account_expires_at,
       account_rows.source_cooldown_until,
       account_rows.source_last_error_code,

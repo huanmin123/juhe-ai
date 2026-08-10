@@ -40,6 +40,26 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_name_trgm ON account_list_availability_projections USING gin (name_sort_key gin_trgm_ops)'
   },
   {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-index-pg-trigram-index',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name_trgm ON account_list_availability_projection_index USING gin (name_sort_key gin_trgm_ops)'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-search-terms-pg-name-order-index',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_alap_search_term_name_c ON account_list_availability_projection_search_terms(viewer_system_account_id, term, (name_sort_key COLLATE "C") ASC, created_at_sort_key ASC, account_id ASC)'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-index-pg-name-search-incomplete-index',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_alap_index_name_incomplete_c ON account_list_availability_projection_index(viewer_system_account_id, (name_sort_key COLLATE "C") ASC, created_at_sort_key ASC, account_id ASC) WHERE search_index_complete = 0'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'account-list-projection-pg-name-order-index',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_name_order ON account_list_availability_projections(viewer_system_account_id, ((payload_json::jsonb ->> \'name\') COLLATE "C") ASC, created_at_sort_key ASC, account_id ASC)'
+  },
+  {
     schemaName: 'juhe_usage',
     source: 'upstream-response-model-pg-columns',
     sql: 'ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text'
@@ -116,9 +136,15 @@ BEGIN
   END IF;
   v_now_ms := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
   WITH requested_accounts AS (
-    SELECT DISTINCT account_id
+    SELECT DISTINCT requested.account_id
     FROM unnest(p_account_ids) AS requested(account_id)
     WHERE account_id IS NOT NULL AND btrim(account_id) <> ''
+  ), affected_accounts AS (
+    SELECT DISTINCT accounts.id
+    FROM accounts
+    INNER JOIN requested_accounts
+      ON accounts.id = requested_accounts.account_id
+        OR accounts.authorization_instance_source_account_id = requested_accounts.account_id
   )
   INSERT INTO account_list_availability_dirty (
     account_id, viewer_system_account_id, generation, applied_generation, reason,
@@ -132,8 +158,8 @@ BEGIN
       WHERE projections.account_id = accounts.id
     ), 0) + 1,
     0, left(p_reason, 128), v_now_ms, NULL, NULL, NULL, 0, v_now_ms, v_now_ms
-  FROM requested_accounts
-  INNER JOIN accounts ON accounts.id = requested_accounts.account_id
+  FROM affected_accounts
+  INNER JOIN accounts ON accounts.id = affected_accounts.id
   ON CONFLICT (account_id) DO UPDATE SET
     viewer_system_account_id = excluded.viewer_system_account_id,
     generation = account_list_availability_dirty.generation + 1,
@@ -154,12 +180,7 @@ LANGUAGE plpgsql
 SET search_path = juhe_business, public
 AS $function$
 BEGIN
-  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
-    SELECT accounts.id
-    FROM accounts
-    WHERE accounts.id = p_account_id
-       OR accounts.authorization_instance_source_account_id = p_account_id
-  ), p_reason);
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[p_account_id], p_reason);
 END;
 $function$;
 
@@ -256,7 +277,7 @@ LANGUAGE plpgsql
 SET search_path = juhe_business, public
 AS $function$
 BEGIN
-  IF p_scope_type <> 'account_authorization' THEN
+  IF p_scope_type NOT IN ('account_authorization', 'account_authorization_team') THEN
     RETURN;
   END IF;
   PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
@@ -264,23 +285,195 @@ BEGIN
     FROM accounts
     INNER JOIN resource_authorizations authorizations
       ON authorizations.id = accounts.authorization_instance_authorization_id
-    WHERE authorizations.id = p_scope_id
-      AND COALESCE((authorizations.limits_json::jsonb -> p_period ->> 'enabled')::boolean, false)
+    LEFT JOIN resource_authorization_grants team_grants
+      ON p_scope_type = 'account_authorization_team'
+      AND team_grants.resource_type = authorizations.resource_type
+      AND team_grants.resource_id = authorizations.resource_id
+      AND team_grants.grantee_type = 'team'
+      AND team_grants.grantee_team_id = authorizations.effective_source_team_id
+      AND team_grants.status = 'active'
+      AND (team_grants.expires_at IS NULL OR team_grants.expires_at > to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+    WHERE ((
+          p_scope_type = 'account_authorization'
+          AND authorizations.id = p_scope_id
+        ) OR (
+          p_scope_type = 'account_authorization_team'
+          AND accounts.id || ':' || authorizations.effective_source_team_id = p_scope_id
+        ))
+      AND COALESCE(((CASE
+        WHEN p_scope_type = 'account_authorization_team' THEN team_grants.limits_json
+        ELSE authorizations.limits_json
+      END)::jsonb -> p_period ->> 'enabled')::boolean, false)
       AND (
-        COALESCE(p_old_cost, 0) >= COALESCE((authorizations.limits_json::jsonb -> p_period ->> 'limit')::double precision, 0)
+        COALESCE(p_old_cost, 0) >= COALESCE(((CASE
+          WHEN p_scope_type = 'account_authorization_team' THEN team_grants.limits_json
+          ELSE authorizations.limits_json
+        END)::jsonb -> p_period ->> 'limit')::double precision, 0)
       ) IS DISTINCT FROM (
-        COALESCE(p_new_cost, 0) >= COALESCE((authorizations.limits_json::jsonb -> p_period ->> 'limit')::double precision, 0)
+        COALESCE(p_new_cost, 0) >= COALESCE(((CASE
+          WHEN p_scope_type = 'account_authorization_team' THEN team_grants.limits_json
+          ELSE authorizations.limits_json
+        END)::jsonb -> p_period ->> 'limit')::double precision, 0)
       )
   ), 'authorization_quota_' || p_period || '_crossed');
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION account_list_availability_accounts_dirty_trigger()
+CREATE OR REPLACE FUNCTION account_list_availability_accounts_insert_dirty_statement_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+DECLARE
+  v_account_ids text[];
+BEGIN
+  SELECT array_agg(id) INTO v_account_ids FROM new_accounts;
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(v_account_ids, 'account_fact_changed');
+  RETURN NULL;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION account_list_availability_accounts_update_dirty_statement_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+DECLARE
+  v_account_ids text[];
+BEGIN
+  SELECT array_agg(new_accounts.id) INTO v_account_ids
+  FROM new_accounts
+  INNER JOIN old_accounts USING (id)
+  WHERE ROW(
+    new_accounts.config_revision,
+    new_accounts.system_account_id,
+    new_accounts.provider_code,
+    new_accounts.provider_protocol_profile_id,
+    new_accounts.protocol_code,
+    new_accounts.protocol_version,
+    new_accounts.name,
+    new_accounts.type,
+    new_accounts.status,
+    new_accounts.proxy_profile_id,
+    new_accounts.concurrency_limit,
+    new_accounts.priority,
+    new_accounts.super_priority_enabled,
+    new_accounts.fallback_enabled,
+    new_accounts.client_compatibility,
+    new_accounts.schedulable,
+    new_accounts.availability_schedule_json,
+    new_accounts.availability_schedule_next_check_at,
+    new_accounts.notes,
+    new_accounts.account_expires_at,
+    new_accounts.cooldown_until,
+    new_accounts.last_error_code,
+    new_accounts.last_error_message,
+    new_accounts.last_error_trace_id,
+    new_accounts.cooldown_retest_failure_count,
+    new_accounts.cooldown_retest_observation_started_at,
+    new_accounts.cooldown_retest_last_at,
+    new_accounts.cooldown_retest_last_status_code,
+    new_accounts.temporary_unavailable_continuous_probe_enabled,
+    new_accounts.health_check_model,
+    new_accounts.health_check_endpoint_mode,
+    new_accounts.last_health_check_at,
+    new_accounts.next_health_check_at,
+    new_accounts.last_health_success_at,
+    new_accounts.health_check_failure_count,
+    new_accounts.health_check_failure_started_at,
+    new_accounts.last_health_check_status_code,
+    new_accounts.last_health_check_error_code,
+    new_accounts.last_health_check_error_message,
+    new_accounts.last_health_check_trace_id,
+    new_accounts.stream_failure_count,
+    new_accounts.stream_failure_window_started_at,
+    new_accounts.balance_query_enabled,
+    new_accounts.balance_query_config_json,
+    new_accounts.balance_query_next_refresh_at,
+    new_accounts.authorization_instance_source_account_id,
+    new_accounts.authorization_instance_authorization_id,
+    new_accounts.authorization_instance_owner_system_account_id,
+    new_accounts.deleted_at
+  ) IS DISTINCT FROM ROW(
+    old_accounts.config_revision,
+    old_accounts.system_account_id,
+    old_accounts.provider_code,
+    old_accounts.provider_protocol_profile_id,
+    old_accounts.protocol_code,
+    old_accounts.protocol_version,
+    old_accounts.name,
+    old_accounts.type,
+    old_accounts.status,
+    old_accounts.proxy_profile_id,
+    old_accounts.concurrency_limit,
+    old_accounts.priority,
+    old_accounts.super_priority_enabled,
+    old_accounts.fallback_enabled,
+    old_accounts.client_compatibility,
+    old_accounts.schedulable,
+    old_accounts.availability_schedule_json,
+    old_accounts.availability_schedule_next_check_at,
+    old_accounts.notes,
+    old_accounts.account_expires_at,
+    old_accounts.cooldown_until,
+    old_accounts.last_error_code,
+    old_accounts.last_error_message,
+    old_accounts.last_error_trace_id,
+    old_accounts.cooldown_retest_failure_count,
+    old_accounts.cooldown_retest_observation_started_at,
+    old_accounts.cooldown_retest_last_at,
+    old_accounts.cooldown_retest_last_status_code,
+    old_accounts.temporary_unavailable_continuous_probe_enabled,
+    old_accounts.health_check_model,
+    old_accounts.health_check_endpoint_mode,
+    old_accounts.last_health_check_at,
+    old_accounts.next_health_check_at,
+    old_accounts.last_health_success_at,
+    old_accounts.health_check_failure_count,
+    old_accounts.health_check_failure_started_at,
+    old_accounts.last_health_check_status_code,
+    old_accounts.last_health_check_error_code,
+    old_accounts.last_health_check_error_message,
+    old_accounts.last_health_check_trace_id,
+    old_accounts.stream_failure_count,
+    old_accounts.stream_failure_window_started_at,
+    old_accounts.balance_query_enabled,
+    old_accounts.balance_query_config_json,
+    old_accounts.balance_query_next_refresh_at,
+    old_accounts.authorization_instance_source_account_id,
+    old_accounts.authorization_instance_authorization_id,
+    old_accounts.authorization_instance_owner_system_account_id,
+    old_accounts.deleted_at
+  );
+  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(v_account_ids, 'account_fact_changed');
+  RETURN NULL;
+END;
+$function$;
+
+/**
+ * Usage traffic updates last_used_at continuously. It is a displayed/sorted
+ * telemetry value, not an availability decision, so update that projection
+ * column in place instead of making the whole viewer unavailable for every
+ * gateway request.
+ */
+CREATE OR REPLACE FUNCTION account_list_availability_accounts_last_used_projection_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
-  PERFORM juhe_business.account_list_availability_mark_dirty_account_family(NEW.id, 'account_fact_changed');
+  UPDATE account_list_availability_projections projections
+  SET last_used_at_sort_key = NEW.last_used_at,
+      payload_json = CASE
+        WHEN NEW.last_used_at IS NULL THEN (projections.payload_json::jsonb - 'lastUsedAt')::text
+        ELSE jsonb_set(
+          projections.payload_json::jsonb,
+          '{lastUsedAt}',
+          to_jsonb(NEW.last_used_at),
+          true
+        )::text
+      END
+  WHERE projections.account_id = NEW.id;
   RETURN NEW;
 END;
 $function$;
@@ -288,6 +481,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_authorizations_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -307,6 +501,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_authorization_sources_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -319,9 +514,42 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION account_list_availability_authorization_grants_dirty_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = juhe_business, public
+AS $function$
+BEGIN
+  IF TG_OP <> 'DELETE' AND NEW.grantee_type = 'team' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+      SELECT accounts.id
+      FROM accounts
+      INNER JOIN resource_authorizations authorizations
+        ON authorizations.id = accounts.authorization_instance_authorization_id
+      WHERE authorizations.resource_type = NEW.resource_type
+        AND authorizations.resource_id = NEW.resource_id
+        AND authorizations.effective_source_team_id = NEW.grantee_team_id
+    ), 'authorization_team_grant_changed');
+  END IF;
+  IF TG_OP <> 'INSERT' AND OLD.grantee_type = 'team' THEN
+    PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
+      SELECT accounts.id
+      FROM accounts
+      INNER JOIN resource_authorizations authorizations
+        ON authorizations.id = accounts.authorization_instance_authorization_id
+      WHERE authorizations.resource_type = OLD.resource_type
+        AND authorizations.resource_id = OLD.resource_id
+        AND authorizations.effective_source_team_id = OLD.grantee_team_id
+    ), 'authorization_team_grant_changed');
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$function$;
+
 CREATE OR REPLACE FUNCTION account_list_availability_group_accounts_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -337,6 +565,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_groups_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   PERFORM juhe_business.account_list_availability_mark_dirty_group(COALESCE(NEW.id, OLD.id), 'group_fact_changed');
@@ -347,6 +576,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_tag_bindings_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -362,6 +592,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_tags_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -377,6 +608,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_name_search_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 DECLARE
   v_account_id text;
@@ -392,6 +624,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_runtime_state_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY[COALESCE(NEW.account_id, OLD.account_id)], 'api_key_runtime_changed');
@@ -402,6 +635,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_circuit_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   PERFORM juhe_business.account_list_availability_mark_dirty_account_family(COALESCE(NEW.account_id, OLD.account_id), 'circuit_changed');
@@ -412,6 +646,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_proxy_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -427,6 +662,7 @@ $function$;
 CREATE OR REPLACE FUNCTION account_list_availability_profile_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 BEGIN
   IF TG_OP <> 'DELETE' THEN
@@ -473,21 +709,18 @@ $function$;
 
 DROP TRIGGER IF EXISTS account_list_availability_accounts_insert ON accounts;
 CREATE TRIGGER account_list_availability_accounts_insert
-AFTER INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION account_list_availability_accounts_dirty_trigger();
+AFTER INSERT ON accounts
+REFERENCING NEW TABLE AS new_accounts
+FOR EACH STATEMENT EXECUTE FUNCTION account_list_availability_accounts_insert_dirty_statement_trigger();
 DROP TRIGGER IF EXISTS account_list_availability_accounts_update ON accounts;
 CREATE TRIGGER account_list_availability_accounts_update
-AFTER UPDATE OF config_revision, system_account_id, provider_code, provider_protocol_profile_id,
-  protocol_code, protocol_version, name, type, status, credentials_encrypted,
-  proxy_profile_id, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-  client_compatibility, schedulable, availability_schedule_json,
-  availability_schedule_next_check_at, notes, account_expires_at, cooldown_until,
-  last_error_code, last_error_message, last_error_trace_id, health_check_model,
-  health_check_endpoint_mode, next_health_check_at, last_health_check_at,
-  last_health_success_at, health_check_failure_count, last_health_check_status_code,
-  last_health_check_error_code, last_health_check_error_message,
-  authorization_instance_source_account_id, authorization_instance_authorization_id,
-  authorization_instance_owner_system_account_id, deleted_at
-ON accounts FOR EACH ROW EXECUTE FUNCTION account_list_availability_accounts_dirty_trigger();
+AFTER UPDATE ON accounts
+REFERENCING OLD TABLE AS old_accounts NEW TABLE AS new_accounts
+FOR EACH STATEMENT EXECUTE FUNCTION account_list_availability_accounts_update_dirty_statement_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_accounts_last_used ON accounts;
+CREATE TRIGGER account_list_availability_accounts_last_used
+AFTER UPDATE OF last_used_at ON accounts
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_accounts_last_used_projection_trigger();
 DROP TRIGGER IF EXISTS account_list_availability_authorizations ON resource_authorizations;
 CREATE TRIGGER account_list_availability_authorizations
 AFTER INSERT OR UPDATE OR DELETE ON resource_authorizations
@@ -496,6 +729,10 @@ DROP TRIGGER IF EXISTS account_list_availability_authorization_sources ON resour
 CREATE TRIGGER account_list_availability_authorization_sources
 AFTER INSERT OR UPDATE OR DELETE ON resource_authorization_sources
 FOR EACH ROW EXECUTE FUNCTION account_list_availability_authorization_sources_dirty_trigger();
+DROP TRIGGER IF EXISTS account_list_availability_authorization_grants ON resource_authorization_grants;
+CREATE TRIGGER account_list_availability_authorization_grants
+AFTER INSERT OR UPDATE OR DELETE ON resource_authorization_grants
+FOR EACH ROW EXECUTE FUNCTION account_list_availability_authorization_grants_dirty_trigger();
 DROP TRIGGER IF EXISTS account_list_availability_group_accounts ON group_accounts;
 CREATE TRIGGER account_list_availability_group_accounts
 AFTER INSERT OR UPDATE OR DELETE ON group_accounts
@@ -553,6 +790,7 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
 CREATE OR REPLACE FUNCTION account_list_availability_quota_crossing_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
+SET search_path = juhe_business, public
 AS $function$
 DECLARE
   v_old_cost double precision;

@@ -647,7 +647,7 @@ export interface PublicAccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
   reason?: string
   since?: string
-  probePresentation?: Pick<AccountRuntimeProbePresentation, 'lastObservation' | 'schedule'>
+  probePresentation?: Pick<AccountRuntimeProbePresentation, 'lastObservation' | 'schedule' | 'recoveryAt' | 'recoveryAtKind'>
 }
 
 export interface AccountRuntimeAvailability extends PublicAccountRuntimeAvailability {

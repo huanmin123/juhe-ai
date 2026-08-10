@@ -46,6 +46,11 @@ export interface RuntimeConfig {
     captchaDisabled: boolean
     temporaryAccessIpAllowlist: string[]
   }
+  oidc: {
+    enabled: boolean
+    issuer?: string
+    keyEncryptionSecret?: string
+  }
   upstreamUrlSecurity: {
     allowPrivateBaseUrls: boolean
     privateBaseUrlAllowlist: string[]
@@ -79,6 +84,7 @@ export interface RuntimeConfig {
   postgres: {
     url?: string
     poolMax: number
+    jitEnabled: boolean
     writeMaxConcurrency: number
     writeQueueMaxItems: number
     connectionTimeoutMs: number
@@ -229,7 +235,9 @@ export interface RuntimeConfig {
     accountListAvailabilityProjectionReadEnabled: boolean
     accountListAvailabilityProjectionIntervalMs: number
     accountListAvailabilityProjectionBatchSize: number
-    accountListAvailabilityProjectionMaximumAgeMs: number
+    accountListAvailabilityProjectionMaxBatchesPerRun: number
+    accountListAvailabilityProjectionWorkerConcurrency: number
+    accountListAvailabilityProjectionRuntimeDependencyMaxAgeMs: number
     proxyLatencyRefreshConcurrency: number
     proxyLatencyRefreshBatchSize: number
     proxyProbeTimeoutMs: number
@@ -518,6 +526,7 @@ export const runtimeConfig: RuntimeConfig = {
   development: {
     autoLoginUsername: configuredDevelopmentAutoLoginUsername
   },
+  oidc: oidcRuntimeConfig(),
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
@@ -552,6 +561,9 @@ export const runtimeConfig: RuntimeConfig = {
   postgres: {
     url: configuredPostgresUrl,
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
+    // Interactive API reads are short OLTP queries. JIT compilation adds a
+    // large cold-query tail without helping these bounded result sets.
+    jitEnabled: booleanConfig('JUHE_AI_POSTGRES_JIT_ENABLED', false),
     writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 100, 1, 1000),
     writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000),
     connectionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_CONNECTION_TIMEOUT_MS', 10000, 100, 3600000),
@@ -734,7 +746,9 @@ export const runtimeConfig: RuntimeConfig = {
     accountListAvailabilityProjectionReadEnabled: booleanConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_READ_ENABLED', false),
     accountListAvailabilityProjectionIntervalMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS', 1_000, 1_000, 60_000),
     accountListAvailabilityProjectionBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE', 100, 1, 100),
-    accountListAvailabilityProjectionMaximumAgeMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAXIMUM_AGE_MS', 30_000, 1_000, 24 * 60 * 60_000),
+    accountListAvailabilityProjectionMaxBatchesPerRun: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN', 200, 1, 400),
+    accountListAvailabilityProjectionWorkerConcurrency: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY', 4, 1, 8),
+    accountListAvailabilityProjectionRuntimeDependencyMaxAgeMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_RUNTIME_DEPENDENCY_MAX_AGE_MS', 15_000, 1_000, 120_000),
     proxyLatencyRefreshConcurrency: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CONCURRENCY', defaultBackgroundConcurrency, 1, 1_000),
     proxyLatencyRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_BATCH_SIZE', 20, 1, 1_000),
     proxyProbeTimeoutMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_PROBE_TIMEOUT_MS', 15_000, 1_000, 5 * 60_000),
@@ -1391,6 +1405,31 @@ function strictBooleanConfig(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
   throw new Error(`${name} 只能配置为 true/false/1/0/yes/no/on/off`)
+}
+
+function oidcRuntimeConfig(): RuntimeConfig['oidc'] {
+  const enabled = strictBooleanConfig('JUHE_AI_OIDC_ENABLED', false)
+  const issuer = optionalStringConfig('JUHE_AI_OIDC_ISSUER')
+  const keyEncryptionSecret = optionalStringConfig('JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET')
+  if (!enabled) return { enabled: false, issuer, keyEncryptionSecret }
+  if (!issuer) throw new Error('启用 JUHE_AI_OIDC_ENABLED 时必须显式配置 JUHE_AI_OIDC_ISSUER')
+  if (!keyEncryptionSecret) throw new Error('启用 JUHE_AI_OIDC_ENABLED 时必须显式配置 JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET')
+  let url: URL
+  try {
+    url = new URL(issuer)
+  } catch {
+    throw new Error('JUHE_AI_OIDC_ISSUER 必须是有效 Origin')
+  }
+  const loopbackTestIssuer = (process.env.NODE_ENV === 'test' || isScriptEntryRuntime())
+    && url.protocol === 'http:'
+    && (url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === '::1')
+  if (
+    (!loopbackTestIssuer && url.protocol !== 'https:')
+    || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')
+  ) {
+    throw new Error('JUHE_AI_OIDC_ISSUER 必须是生产 HTTPS Origin；仅 NODE_ENV=test 或回归脚本允许 http://127.0.0.1 或 http://[::1]')
+  }
+  return { enabled: true, issuer: url.origin, keyEncryptionSecret }
 }
 
 function cookieSameSiteConfig(name: string, fallback: CookieSameSiteRuntimeConfig): CookieSameSiteRuntimeConfig {

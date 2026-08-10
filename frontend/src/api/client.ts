@@ -13,6 +13,7 @@ import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, r
 import { modelChecksApi, myModelChecksApi } from './domains/modelChecks'
 import { anthropicOAuthApi, myAnthropicOAuthApi } from './domains/anthropicOAuth'
 import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
+import { oauthApplicationsApi } from './domains/oauthApplications'
 import { providersApi } from './domains/providers'
 import { proxiesApi } from './domains/proxies'
 import { responseInspectionPoliciesApi } from './domains/responseInspectionPolicies'
@@ -56,6 +57,7 @@ export const api = {
   myGrokOAuth: myGrokOAuthApi,
   openaiOAuth: openaiOAuthApi,
   myOpenaiOAuth: myOpenaiOAuthApi,
+  oauthApplications: oauthApplicationsApi,
   proxies: proxiesApi,
   usageRecords: usageRecordsApi,
   myUsageRecords: myUsageRecordsApi,

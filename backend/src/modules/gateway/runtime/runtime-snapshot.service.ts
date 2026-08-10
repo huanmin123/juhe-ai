@@ -27,6 +27,25 @@ export interface AccountRuntimeSnapshotStatus {
   accountCircuitSummaryAvailable: boolean
 }
 
+/**
+ * Background-only dependency probe. It deliberately uses synthetic keys so
+ * both Redis-backed reads execute without coupling health to a customer
+ * account or turning an unavailable dependency into an empty map.
+ */
+export async function probeAccountRuntimeState(): Promise<{
+  accountConcurrencyAvailable: boolean
+  accountRuntimeAvailabilityAvailable: boolean
+}> {
+  const [runtime, concurrency] = await Promise.all([
+    loadAccountRuntimeAvailabilityByKeys(['__account_list_projection_runtime_probe__']),
+    loadAccountConcurrencyByIds(['__account_list_projection_concurrency_probe__'])
+  ])
+  return {
+    accountConcurrencyAvailable: concurrency.available,
+    accountRuntimeAvailabilityAvailable: runtime.available
+  }
+}
+
 export async function loadAccountRuntimeAvailabilityByKeys(runtimeKeys: string[]): Promise<{
   available: boolean
   values: AccountRuntimeAvailabilitySnapshot

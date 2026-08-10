@@ -206,6 +206,15 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/connected-applications',
+    component: () => import('@/views/connected-applications/ConnectedApplicationsView.vue'),
+    meta: {
+      title: '已连接应用',
+      description: '查看第三方应用获得的个人资源授权，并可立即终止授权。',
+      viewScope: 'self'
+    }
+  },
+  {
     path: '/stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
@@ -523,6 +532,18 @@ export const menuRoutes: RouteRecordRaw[] = [
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
+    }
+  },
+  {
+    path: '/oauth-applications',
+    component: () => import('@/views/oauth-applications/OAuthApplicationsView.vue'),
+    meta: {
+      title: '第三方应用',
+      description: '登记 OAuth/OIDC Client、回调地址和可申请的个人委托权限。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles
     }
   },
   {

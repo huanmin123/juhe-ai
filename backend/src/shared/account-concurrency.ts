@@ -17,6 +17,17 @@ let redisAccountConcurrencySlotRefreshTimer: NodeJS.Timeout | undefined
 
 export type AccountConcurrencyLane = 'text' | 'image'
 
+export interface AccountConcurrencyProjectionDirtyEntry {
+  accountId: string
+  generation: number
+}
+
+export interface AccountConcurrencyProjectionSnapshot {
+  accountId: string
+  currentConcurrency: number
+  nextReconcileAt?: string
+}
+
 export interface AccountConcurrencySlot {
   acquired: boolean
   current: number
@@ -194,6 +205,89 @@ export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string
     chunk.forEach((accountId, valueIndex) => result.set(accountId, values[valueIndex] ?? 0))
   }
   return result
+}
+
+/**
+ * Reads coalesced Redis changes without removing them. A PostgreSQL worker
+ * acknowledges a generation only after its durable overlay write commits.
+ */
+export async function listAccountConcurrencyProjectionDirtyEntriesAsync(limit: number): Promise<AccountConcurrencyProjectionDirtyEntry[]> {
+  const normalizedLimit = Math.min(1_000, Math.max(1, Math.trunc(limit)))
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return []
+  const values = stringRedisArray(await (await redisStateClient()).eval(redisListAccountConcurrencyProjectionDirtyScript, {
+    keys: [
+      redisAccountConcurrencyProjectionDirtyKey(),
+      redisAccountConcurrencyProjectionGenerationKey()
+    ],
+    arguments: [String(normalizedLimit)]
+  }))
+  const output: AccountConcurrencyProjectionDirtyEntry[] = []
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    const accountId = values[index]?.trim()
+    const generation = Number(values[index + 1])
+    if (!accountId || !Number.isSafeInteger(generation) || generation < 1) continue
+    output.push({ accountId, generation })
+  }
+  return output
+}
+
+/** Returns current counts plus the earliest slot expiry for durable rechecks. */
+export async function loadAccountConcurrencyProjectionSnapshotsAsync(accountIds: string[]): Promise<AccountConcurrencyProjectionSnapshot[]> {
+  const ids = uniqueAccountIds(accountIds)
+  if (!ids.length) return []
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return ids.map((accountId) => ({ accountId, currentConcurrency: getLocalAccountCurrentConcurrency(accountId) }))
+  }
+  const client = await redisStateClient()
+  const output: AccountConcurrencyProjectionSnapshot[] = []
+  for (let index = 0; index < ids.length; index += 100) {
+    const chunk = ids.slice(index, index + 100)
+    const values = numericRedisArray(await client.eval(redisLoadAccountConcurrencyProjectionSnapshotScript, {
+      keys: chunk.flatMap((accountId) => [
+        redisAccountConcurrencyKey(accountId),
+        redisAccountConcurrencyLaneKey(accountId, 'text'),
+        redisAccountConcurrencyLaneKey(accountId, 'image'),
+        redisAccountConcurrencyKey(accountId),
+        redisAccountConcurrencyMetadataKey(accountId)
+      ]),
+      arguments: []
+    }))
+    chunk.forEach((accountId, chunkIndex) => {
+      const valueOffset = chunkIndex * 2
+      const nextReconcileAtMs = values[valueOffset + 1] ?? 0
+      output.push({
+        accountId,
+        currentConcurrency: Math.max(0, Math.trunc(values[valueOffset] ?? 0)),
+        ...(nextReconcileAtMs > Date.now() ? { nextReconcileAt: new Date(nextReconcileAtMs).toISOString() } : {})
+      })
+    })
+  }
+  return output
+}
+
+/**
+ * Keeps a future expiry check only when no newer acquire/release changed the
+ * account generation while the PostgreSQL overlay was being written.
+ */
+export async function acknowledgeAccountConcurrencyProjectionDirtyEntriesAsync(
+  entries: Array<AccountConcurrencyProjectionDirtyEntry & { nextReconcileAt?: string }>
+): Promise<void> {
+  if (!entries.length || runtimeConfig.runtimeStateDriver !== 'redis') return
+  const args = [String(Date.now())]
+  for (const entry of entries) {
+    args.push(
+      entry.accountId,
+      String(entry.generation),
+      String(entry.nextReconcileAt ? Date.parse(entry.nextReconcileAt) : 0)
+    )
+  }
+  await (await redisStateClient()).eval(redisAcknowledgeAccountConcurrencyProjectionDirtyScript, {
+    keys: [
+      redisAccountConcurrencyProjectionDirtyKey(),
+      redisAccountConcurrencyProjectionGenerationKey()
+    ],
+    arguments: args
+  })
 }
 
 export function loadAccountInFlightStatsByIds(accountIds: string[], input: {
@@ -404,13 +498,16 @@ async function acquireRedisAccountConcurrency(
       redisAccountConcurrencyLaneKey(accountId, 'text'),
       redisAccountConcurrencyLaneKey(accountId, 'image'),
       redisAccountConcurrencyLaneKey(accountId, lane),
-      redisAccountConcurrencyMetadataKey(accountId)
+      redisAccountConcurrencyMetadataKey(accountId),
+      redisAccountConcurrencyProjectionDirtyKey(),
+      redisAccountConcurrencyProjectionGenerationKey()
     ],
     arguments: [
       String(limit),
       String(laneLimit),
       String(redisAccountConcurrencySlotLeaseTtlMs),
-      redisToken
+      redisToken,
+      accountId
     ]
   })
   const values = numericRedisArray(result)
@@ -423,9 +520,11 @@ async function releaseRedisAccountConcurrency(accountId: string, redisToken: str
       redisAccountConcurrencyKey(accountId),
       redisAccountConcurrencyLaneKey(accountId, 'text'),
       redisAccountConcurrencyLaneKey(accountId, 'image'),
-      redisAccountConcurrencyMetadataKey(accountId)
+      redisAccountConcurrencyMetadataKey(accountId),
+      redisAccountConcurrencyProjectionDirtyKey(),
+      redisAccountConcurrencyProjectionGenerationKey()
     ],
-    arguments: [redisToken]
+    arguments: [redisToken, accountId]
   })
 }
 
@@ -500,10 +599,14 @@ async function refreshRedisAccountConcurrencySlots(): Promise<void> {
         redisAccountConcurrencyKey(slot.accountId),
         redisAccountConcurrencyLaneKey(slot.accountId, slot.lane),
         redisAccountConcurrencyMetadataKey(slot.accountId)
+      ]).concat([
+        redisAccountConcurrencyProjectionDirtyKey(),
+        redisAccountConcurrencyProjectionGenerationKey()
       ]),
       arguments: [
         String(redisAccountConcurrencySlotLeaseTtlMs),
-        ...chunk.map((slot) => slot.redisToken)
+        ...chunk.map((slot) => slot.redisToken),
+        ...chunk.map((slot) => slot.accountId)
       ]
     })
     const refreshed = numericRedisArray(result)
@@ -616,6 +719,14 @@ function redisAccountConcurrencyMetadataKey(accountId: string): string {
   return redisNamespacedKey(`juhe-ai:account-concurrency-v2:${accountId}:metadata`)
 }
 
+function redisAccountConcurrencyProjectionDirtyKey(): string {
+  return redisNamespacedKey('juhe-ai:account-concurrency-projection-dirty')
+}
+
+function redisAccountConcurrencyProjectionGenerationKey(): string {
+  return redisNamespacedKey('juhe-ai:account-concurrency-projection-generation')
+}
+
 function redisAccountConcurrencySlotToken(): string {
   return `${redisAccountConcurrencyOwnerId}|${randomUUID()}`
 }
@@ -625,6 +736,7 @@ local total_limit = tonumber(ARGV[1])
 local lane_limit = tonumber(ARGV[2])
 local slot_ttl_ms = tonumber(ARGV[3])
 local slot_token = ARGV[4]
+local account_id = ARGV[5]
 local redis_time = redis.call('TIME')
 local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
 local started_at_ms = now_ms
@@ -643,6 +755,8 @@ local function cleanup_expired()
   local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
   if #expired > 0 then
     hdel_expired(KEYS[5], expired)
+    redis.call('HINCRBY', KEYS[7], account_id, 1)
+    redis.call('ZADD', KEYS[6], now_ms, account_id)
   end
   redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
   redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
@@ -673,6 +787,8 @@ end
 redis.call('ZADD', KEYS[1], expires_at_ms, slot_token)
 redis.call('ZADD', KEYS[4], expires_at_ms, slot_token)
 redis.call('HSET', KEYS[5], slot_token, cjson.encode({startedAtMs = started_at_ms}))
+redis.call('HINCRBY', KEYS[7], account_id, 1)
+redis.call('ZADD', KEYS[6], now_ms, account_id)
 local total_latest_expiry_ms = latest_expiry_ms(KEYS[1])
 local lane_latest_expiry_ms = latest_expiry_ms(KEYS[4])
 expire_at_latest_slot(KEYS[1], total_latest_expiry_ms)
@@ -683,6 +799,7 @@ return {1, current + 1, lane_current + 1}
 
 const redisReleaseAccountConcurrencyScript = `
 local slot_token = ARGV[1]
+local account_id = ARGV[2]
 redis.call('ZREM', KEYS[1], slot_token)
 redis.call('ZREM', KEYS[2], slot_token)
 redis.call('ZREM', KEYS[3], slot_token)
@@ -699,6 +816,10 @@ end
 if redis.call('HLEN', KEYS[4]) == 0 then
   redis.call('DEL', KEYS[4])
 end
+redis.call('HINCRBY', KEYS[6], account_id, 1)
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+redis.call('ZADD', KEYS[5], now_ms, account_id)
 return 1
 `
 
@@ -733,6 +854,74 @@ end
 return results
 `
 
+const redisLoadAccountConcurrencyProjectionSnapshotScript = `
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local results = {}
+
+local function hdel_expired(metadata_key, expired)
+  local index = 1
+  while index <= #expired do
+    local last = math.min(index + 199, #expired)
+    redis.call('HDEL', metadata_key, unpack(expired, index, last))
+    index = last + 1
+  end
+end
+
+for key_index = 1, #KEYS, 5 do
+  local expired = redis.call('ZRANGEBYSCORE', KEYS[key_index], '-inf', now_ms)
+  if #expired > 0 then
+    hdel_expired(KEYS[key_index + 4], expired)
+  end
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', now_ms)
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index + 1], '-inf', now_ms)
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index + 2], '-inf', now_ms)
+  if redis.call('ZCARD', KEYS[key_index]) == 0 then redis.call('DEL', KEYS[key_index]) end
+  if redis.call('ZCARD', KEYS[key_index + 1]) == 0 then redis.call('DEL', KEYS[key_index + 1]) end
+  if redis.call('ZCARD', KEYS[key_index + 2]) == 0 then redis.call('DEL', KEYS[key_index + 2]) end
+  if redis.call('HLEN', KEYS[key_index + 4]) == 0 then redis.call('DEL', KEYS[key_index + 4]) end
+  table.insert(results, redis.call('ZCARD', KEYS[key_index + 3]))
+  local next_expiry = redis.call('ZRANGE', KEYS[key_index], 0, 0, 'WITHSCORES')
+  table.insert(results, tonumber(next_expiry[2]) or 0)
+end
+return results
+`
+
+const redisListAccountConcurrencyProjectionDirtyScript = `
+local limit = tonumber(ARGV[1])
+local entries = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', '+inf', 'LIMIT', 0, limit)
+local results = {}
+for _, account_id in ipairs(entries) do
+  local generation = redis.call('HGET', KEYS[2], account_id)
+  if generation ~= false then
+    table.insert(results, account_id)
+    table.insert(results, generation)
+  else
+    redis.call('ZREM', KEYS[1], account_id)
+  end
+end
+return results
+`
+
+const redisAcknowledgeAccountConcurrencyProjectionDirtyScript = `
+local now_ms = tonumber(ARGV[1])
+for arg_index = 2, #ARGV, 3 do
+  local account_id = ARGV[arg_index]
+  local expected_generation = ARGV[arg_index + 1]
+  local next_reconcile_at_ms = tonumber(ARGV[arg_index + 2]) or 0
+  local current_generation = redis.call('HGET', KEYS[2], account_id)
+  if current_generation ~= false and current_generation == expected_generation then
+    if next_reconcile_at_ms > now_ms then
+      redis.call('ZADD', KEYS[1], next_reconcile_at_ms, account_id)
+    else
+      redis.call('ZREM', KEYS[1], account_id)
+      redis.call('HDEL', KEYS[2], account_id)
+    end
+  end
+end
+return 1
+`
+
 const redisRefreshAccountConcurrencySlotsScript = `
 local slot_ttl_ms = tonumber(ARGV[1])
 local redis_time = redis.call('TIME')
@@ -755,8 +944,10 @@ local function expire_at_latest_slot(key, expiry_ms)
 end
 
 for arg_index = 2, #ARGV do
+  if arg_index > 1 + ((#KEYS - 2) / 3) then break end
   local key_index = (arg_index - 2) * 3 + 1
   local slot_token = ARGV[arg_index]
+  local account_id = ARGV[arg_index + ((#KEYS - 2) / 3)]
   local total_expiry_raw = redis.call('ZSCORE', KEYS[key_index], slot_token)
   local lane_expiry_raw = redis.call('ZSCORE', KEYS[key_index + 1], slot_token)
   local total_expiry_ms = tonumber(total_expiry_raw)
@@ -775,6 +966,8 @@ for arg_index = 2, #ARGV do
     redis.call('ZREM', KEYS[key_index], slot_token)
     redis.call('ZREM', KEYS[key_index + 1], slot_token)
     redis.call('HDEL', KEYS[key_index + 2], slot_token)
+    redis.call('HINCRBY', KEYS[#KEYS], account_id, 1)
+    redis.call('ZADD', KEYS[#KEYS - 1], now_ms, account_id)
     table.insert(results, 0)
   end
 end
@@ -881,6 +1074,11 @@ function numericRedisArray(value: unknown): number[] {
     const parsed = Number(item)
     return Number.isFinite(parsed) ? parsed : 0
   })
+}
+
+function stringRedisArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item ?? ''))
 }
 
 function delay(ms: number): Promise<void> {

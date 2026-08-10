@@ -100,6 +100,7 @@ const sourceImportPayloads = [
         key: `sk-newapi-${marker}`,
         base_url: 'https://api.openai.com/v1',
         group: `NewAPI PG烟测分组${marker}`,
+        status: 1,
         runtime_only: 'ignored'
       }
     ]
@@ -116,25 +117,26 @@ const sourceImportPayloads = [
         key: `sk-oneapi-${marker}`,
         base_url: 'https://api.openai.com/v1',
         group: `OneAPI PG烟测分组${marker}`,
+        status: 1,
         runtime_only: 'ignored'
       }
     ]
   },
   {
-    label: 'CPA YAML',
+    label: 'CLIProxyAPI YAML',
     sourceMode: 'cpa' as const,
-    accountName: `CPA PG烟测提供商${marker} 1`,
-    groupName: 'CPA 导入',
-    data: `openai-compatibility:\n  - name: CPA PG烟测提供商${marker}\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-cpa-${marker}\n        runtime_only: ignored\n`
+    accountName: `CLIProxyAPI PG烟测提供商${marker} 1`,
+    groupName: 'CLIProxyAPI 导入',
+    data: `openai-compatibility:\n  - name: CLIProxyAPI PG烟测提供商${marker}\n    base-url: https://api.openai.com/v1\n    api-key-entries:\n      - api-key: sk-cpa-${marker}\n        runtime_only: ignored\n`
   },
   {
-    label: 'CPA Codex OAuth',
+    label: 'CLIProxyAPI Codex OAuth',
     sourceMode: 'cpa' as const,
-    accountName: `CPA OAuth PG烟测账号${marker}`,
-    groupName: 'CPA 导入',
+    accountName: `CLIProxyAPI OAuth PG烟测账号${marker}`,
+    groupName: 'CLIProxyAPI 导入',
     data: {
       type: 'codex',
-      name: `CPA OAuth PG烟测账号${marker}`,
+      name: `CLIProxyAPI OAuth PG烟测账号${marker}`,
       refresh_token: `rt-cpa-${marker}`,
       account_id: `acct-cpa-${marker}`,
       base_url: 'https://api.openai.com/v1',

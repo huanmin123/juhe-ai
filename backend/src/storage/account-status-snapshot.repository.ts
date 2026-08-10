@@ -18,7 +18,8 @@ import {
   loadRequestQuotaCostsBatchAsync,
   requestQuotaCostKey,
   requestQuotaCostKeyAsync,
-  type RequestQuotaCostInput
+  type RequestQuotaCostInput,
+  type RequestQuotaCosts
 } from '../modules/gateway/quota/request-quota-checker.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
@@ -31,7 +32,16 @@ import {
   type AccountManagementListUsageScope,
   type AccountManagementListUsageValue
 } from './account-management-list-usage.repository.js'
-import { todayDateKey, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import {
+  dateKey,
+  monthKey,
+  nextZonedHourBoundaryIso,
+  startOfZonedDateKeyIso,
+  todayDateKey,
+  usageStatsTimezoneAsync,
+  weekKey
+} from './usage-stats-helpers.js'
+import { nextDateKey } from './usage-stats-window-helpers.js'
 import { chunkValues } from './query-utils.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
@@ -74,6 +84,7 @@ export interface AccountStatusProjectionSeed {
   authorization_effective_source_type: 'manual' | 'team' | null
   source_status: AccountStatus | null
   source_schedulable: number | null
+  source_availability_schedule_json: string | null
   source_account_expires_at: string | null
   source_cooldown_until: string | null
   source_last_error_code: string | null
@@ -130,6 +141,7 @@ export interface AccountManagementStatusSeed {
   authorization_effective_source_type: 'manual' | 'team' | null
   source_status: AccountStatus | null
   source_schedulable: number | null
+  source_availability_schedule_json: string | null
   source_account_expires_at: string | null
   source_cooldown_until: string | null
   source_last_error_code: string | null
@@ -165,6 +177,8 @@ export interface AccountStatusProjection extends AccountEffectiveAvailabilityInp
   balanceQueryEnabled?: boolean
   balanceQueryNextRefreshAt?: string
   lastUsedAt?: string
+  /** Internal transition used to make a quota-exceeded projection naturally due. */
+  quotaResetAt?: string
 }
 
 export type AccountStatusFilterProjection = Omit<
@@ -254,12 +268,12 @@ async function hydrateAccountManagementStatusSeedsDirect(
     if (row.authorization_id) authorizationTotalScopes.push(scope)
   }
   const client = await accountStatusDatabaseClient()
-  const [todayUsage, authorizationTotal, quotaExceeded] = await Promise.all([
+  const [todayUsage, authorizationTotal, quotaStatusByAuthorization] = await Promise.all([
     loadAccountManagementListUsageAsync(todayScopes, todayDateKey(timezone)),
     loadAccountManagementListUsageAsync(authorizationTotalScopes),
     loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
   ])
-  const filtersById = new Map((await hydrateAccountManagementStatusFilterSeedsDirect(client, rows, orderedIds, quotaExceeded))
+  const filtersById = new Map((await hydrateAccountManagementStatusFilterSeedsDirect(client, rows, orderedIds, quotaStatusByAuthorization))
     .map((projection) => [projection.id, projection]))
   const rowsById = new Map(rows.map((row) => [row.id, row]))
   return orderedIds.flatMap((id) => {
@@ -282,9 +296,9 @@ async function hydrateAccountManagementStatusFilterSeedsDirect(
   client: DatabaseClient,
   rows: AccountManagementStatusSeed[],
   orderedIds: string[],
-  providedQuotaExceeded?: Map<string, boolean>
+  providedQuotaStatusByAuthorization?: Map<string, AccountAuthorizationQuotaStatus>
 ): Promise<AccountStatusFilterProjection[]> {
-  const quotaExceeded = providedQuotaExceeded ?? await loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
+  const quotaStatusByAuthorization = providedQuotaStatusByAuthorization ?? await loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
   const byId = new Map(rows.map((row) => [row.id, row]))
   return orderedIds.flatMap((id) => {
     const row = byId.get(id)
@@ -304,7 +318,8 @@ async function hydrateAccountManagementStatusFilterSeedsDirect(
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       authorizationLimits: row.authorization_id ? parseRequestQuotaLimitsJson(row.authorization_limits_json) : undefined,
-      authorizationQuotaExceeded: row.authorization_id ? quotaExceeded.get(row.authorization_id) : undefined,
+      authorizationQuotaExceeded: row.authorization_id ? quotaStatusByAuthorization.get(row.authorization_id)?.exceeded : undefined,
+      quotaResetAt: row.authorization_id ? quotaStatusByAuthorization.get(row.authorization_id)?.resetAt : undefined,
       authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
       authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,
       authorizationInstanceSourceAccountSchedulable: row.source_schedulable === null ? undefined : row.source_schedulable === 1,
@@ -438,6 +453,7 @@ async function listAccountStatusProjectionsDirect(
       ra.effective_source_team_id AS authorization_effective_source_team_id,
       ra.effective_source_type AS authorization_effective_source_type,
       source_accounts.status AS source_status, source_accounts.schedulable AS source_schedulable,
+      source_accounts.availability_schedule_json AS source_availability_schedule_json,
       source_accounts.account_expires_at AS source_account_expires_at,
       source_accounts.cooldown_until AS source_cooldown_until,
       source_accounts.last_error_code AS source_last_error_code,
@@ -496,7 +512,7 @@ async function hydrateAccountStatusProjectionSeedsDirect(
       })
     }
   }
-  const [todayUsage, authorizationTotal, quotaExceeded] = await Promise.all([
+  const [todayUsage, authorizationTotal, quotaStatusByAuthorization] = await Promise.all([
     loadAccountManagementListUsageAsync(todayScopes, todayDateKey(timezone)),
     loadAccountManagementListUsageAsync(authorizationTotalScopes),
     loadAccountStatusAuthorizationQuotaExceededAsync(client, rows)
@@ -524,7 +540,8 @@ async function hydrateAccountStatusProjectionSeedsDirect(
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       authorizationLimits: row.authorization_id ? parseRequestQuotaLimitsJson(row.authorization_limits_json) : undefined,
-      authorizationQuotaExceeded: row.authorization_id ? quotaExceeded.get(row.authorization_id) : undefined,
+      authorizationQuotaExceeded: row.authorization_id ? quotaStatusByAuthorization.get(row.authorization_id)?.exceeded : undefined,
+      quotaResetAt: row.authorization_id ? quotaStatusByAuthorization.get(row.authorization_id)?.resetAt : undefined,
       authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
       authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,
       authorizationInstanceSourceAccountSchedulable: row.source_schedulable === null ? undefined : row.source_schedulable === 1,
@@ -614,11 +631,16 @@ function accountStatusTodayUsage(
   }
 }
 
+interface AccountAuthorizationQuotaStatus {
+  exceeded: boolean
+  resetAt?: string
+}
+
 async function loadAccountStatusAuthorizationQuotaExceededAsync(
   client: DatabaseClient,
   rows: AccountStatusProjectionSeed[]
-): Promise<Map<string, boolean>> {
-  const output = new Map<string, boolean>()
+): Promise<Map<string, AccountAuthorizationQuotaStatus>> {
+  const output = new Map<string, AccountAuthorizationQuotaStatus>()
   const teamLimits = await loadAccountStatusTeamLimitJsonAsync(client, rows)
   const checks: Array<{
     authorizationId: string
@@ -626,9 +648,10 @@ async function loadAccountStatusAuthorizationQuotaExceededAsync(
     input: RequestQuotaCostInput
   }> = []
   const now = new Date()
+  const timezone = await usageStatsTimezoneAsync()
   for (const row of rows) {
     if (!row.authorization_id) continue
-    output.set(row.authorization_id, false)
+    output.set(row.authorization_id, { exceeded: false })
     const directLimits = parseRequestQuotaLimitsJson(row.authorization_limits_json)
     if (hasEnabledRequestQuotaLimit(directLimits)) {
       checks.push({
@@ -663,20 +686,72 @@ async function loadAccountStatusAuthorizationQuotaExceededAsync(
     const costs = await loadRequestQuotaCostsBatchAsync(client, checks.map((check) => check.input))
     for (const check of checks) {
       const value = costs.get(await requestQuotaCostKeyAsync(check.input))
-      if (value && isRequestQuotaExceeded(check.limits, value)) {
-        output.set(check.authorizationId, true)
-      }
+      applyAccountAuthorizationQuotaStatus(output, check.authorizationId, check.limits, value, now, timezone)
     }
     return output
   }
   const costs = loadRequestQuotaCostsBatch(getStatsDatabase(), checks.map((check) => check.input))
   for (const check of checks) {
     const value = costs.get(requestQuotaCostKey(check.input))
-    if (value && isRequestQuotaExceeded(check.limits, value)) {
-      output.set(check.authorizationId, true)
-    }
+    applyAccountAuthorizationQuotaStatus(output, check.authorizationId, check.limits, value, now, timezone)
   }
   return output
+}
+
+function applyAccountAuthorizationQuotaStatus(
+  output: Map<string, AccountAuthorizationQuotaStatus>,
+  authorizationId: string,
+  limits: RequestQuotaLimits,
+  costs: RequestQuotaCosts | undefined,
+  now: Date,
+  timezone: string
+): void {
+  if (!costs || !isRequestQuotaExceeded(limits, costs)) return
+  const current = output.get(authorizationId) ?? { exceeded: false }
+  const resetAt = requestQuotaResetAt(limits, costs, now, timezone)
+  output.set(authorizationId, {
+    exceeded: true,
+    resetAt: earliestFutureIso(current.resetAt, resetAt)
+  })
+}
+
+function requestQuotaResetAt(
+  limits: RequestQuotaLimits,
+  costs: RequestQuotaCosts,
+  now: Date,
+  timezone: string
+): string | undefined {
+  const resets: string[] = []
+  if (limits.hourly?.enabled && costs.hourly >= limits.hourly.limit) {
+    resets.push(nextZonedHourBoundaryIso(now, timezone))
+  }
+  if (limits.daily?.enabled && costs.daily >= limits.daily.limit) {
+    const value = startOfZonedDateKeyIso(nextDateKey(dateKey(now, timezone)), timezone)
+    if (value) resets.push(value)
+  }
+  if (limits.weekly?.enabled && costs.weekly >= limits.weekly.limit) {
+    let nextWeek = weekKey(now, timezone)
+    for (let index = 0; index < 7; index += 1) nextWeek = nextDateKey(nextWeek)
+    const value = startOfZonedDateKeyIso(nextWeek, timezone)
+    if (value) resets.push(value)
+  }
+  if (limits.monthly?.enabled && costs.monthly >= limits.monthly.limit) {
+    const [yearText, monthText] = monthKey(now, timezone).split('-')
+    const year = Number(yearText)
+    const month = Number(monthText)
+    if (Number.isInteger(year) && Number.isInteger(month)) {
+      const nextMonth = new Date(Date.UTC(year, month, 1))
+      const value = startOfZonedDateKeyIso(`${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, '0')}-01`, timezone)
+      if (value) resets.push(value)
+    }
+  }
+  return resets.sort()[0]
+}
+
+function earliestFutureIso(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) return right
+  if (!right) return left
+  return left < right ? left : right
 }
 
 async function loadAccountStatusTeamLimitJsonAsync(

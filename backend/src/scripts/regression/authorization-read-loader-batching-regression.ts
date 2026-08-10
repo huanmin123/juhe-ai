@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { loadSharedCacheEntriesByBatches } from '../../storage/authorization-read-loaders.js'
+import { loadSharedCacheEntriesByBatches } from '../../storage/shared-cache-read-batching.js'
 
 const ids = [...Array.from({ length: 205 }, (_value, index) => `authorization-${index}`), 'authorization-10', '']
 let active = 0

@@ -181,7 +181,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 103, '截至 2026-08-09，当前 Node 权威模型目录应包含 103 个可用完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 101, '截至 2026-08-10，当前 Node 权威模型目录应包含 101 个可用完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -1920,6 +1920,16 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert(selectedWithWindow.some((item) => item.id === 'gpt-http-user-a-gpt'), '已选模型必须在窗口查询中补齐')
     assert(selectedWithWindow.length > 1, 'selectedIds 不得把基础 limit 窗口误收窄为仅已选项')
+
+    const bracketSelectedWithKeyword = await getEnvelope<Array<{ id: string; name: string }>>(
+      baseUrl,
+      '/__aisys__/api/providers/models/options?providerCode=gpt&keyword=does-not-match&selectedIds[]=gpt-http-user-a-gpt&limit=1',
+      userACookie
+    )
+    assert(
+      bracketSelectedWithKeyword.some((item) => item.id === 'gpt-http-user-a-gpt'),
+      'selectedIds[] 必须保留搜索结果之外的已选模型'
+    )
 
     const capability = await getEnvelope<{
       id: string

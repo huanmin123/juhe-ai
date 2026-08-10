@@ -58,7 +58,10 @@ export function normalizeProviderModelOptionQuery(query: Record<string, unknown>
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
     throw new Error('limit 必须是 1 到 50 的整数')
   }
-  const selectedIds = normalizedTextList(query.selectedIds, 50)
+  const selectedIds = [...new Set([
+    ...normalizedTextList(query.selectedIds, 50),
+    ...normalizedTextList(query['selectedIds[]'], 50)
+  ])].slice(0, 50)
   return {
     ...(providerCode ? { providerCode } : {}),
     ...(protocol ? { protocol } : {}),

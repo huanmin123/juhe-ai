@@ -140,7 +140,7 @@ async function handleLogin() {
       message.warning('当前账户使用初始密码，请先完成修改')
     }
     const redirect = resolveLoginRedirect(user)
-    if (isStaticHelpRedirect(redirect)) {
+    if (isStaticHelpRedirect(redirect) || isOAuthContinuationRedirect(redirect)) {
       window.location.assign(redirect)
       return
     }
@@ -178,6 +178,9 @@ function resolveLoginRedirect(user: Awaited<ReturnType<typeof login>>): string {
   if (isStaticHelpRedirect(redirect)) {
     return redirect
   }
+  if (isOAuthContinuationRedirect(redirect)) {
+    return redirect
+  }
   if (redirect.startsWith('/') && !redirect.startsWith('//')) {
     const resolved = router.resolve(redirect)
     if (resolved.name !== 'not-found' && resolved.path !== '/login') {
@@ -194,6 +197,16 @@ function isStaticHelpRedirect(value: string): boolean {
     || value === '/__aisys__/help/admin'
     || value.startsWith('/__aisys__/help/user/')
     || value.startsWith('/__aisys__/help/admin/')
+}
+
+function isOAuthContinuationRedirect(value: string): boolean {
+  try {
+    const parsed = new URL(value, window.location.origin)
+    if (parsed.origin !== window.location.origin) return false
+    return parsed.pathname === '/oauth/authorize' || parsed.pathname === '/oauth/device'
+  } catch {
+    return false
+  }
 }
 
 function hasWhitespace(value: string): boolean {

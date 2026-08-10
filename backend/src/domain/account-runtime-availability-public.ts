@@ -17,7 +17,10 @@ export function publicAccountRuntimeAvailability(
             ...(runtime.probePresentation.lastObservation
               ? { lastObservation: { ...runtime.probePresentation.lastObservation } }
               : {}),
-            schedule: { ...runtime.probePresentation.schedule }
+            schedule: { ...runtime.probePresentation.schedule },
+            ...(runtime.probePresentation.recoveryAt
+              ? { recoveryAt: runtime.probePresentation.recoveryAt, recoveryAtKind: runtime.probePresentation.recoveryAtKind }
+              : {})
           }
         }
       : {})

@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { createPostgresDatabaseClient } from '../../../storage/database-client.js'
+import { markAccountListAvailabilityDirtyFamilyInClient } from '../../../storage/account-list-availability-projection.repository.js'
+import { getPostgresPool } from '../../../storage/postgres-client.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../../shared/concurrency-governor.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
 import type { AccountProbeObservation, AccountRuntimeProbePresentation } from '../../../domain/types.js'
@@ -64,6 +67,7 @@ import {
   gatewayAccountId,
   gatewayAccountRuntimeClearKeys,
   gatewayAccountRuntimeKey,
+  runtimeAccountIdFromKey,
   type GatewayAccountRuntimeClearTarget,
   type SuppressibleGatewayAccount
 } from './account-runtime-keys.js'
@@ -85,6 +89,27 @@ export type {
   LocalAccountDegradationOrderResult,
   LocalAccountSuppressionFilterResult
 } from './account-local-suppression-store.js'
+
+/**
+ * The list projection must become unavailable before Redis changes a runtime
+ * availability decision. This prevents an expired or newly written runtime
+ * key from being presented as a healthy account while the projector catches
+ * up. Source-family marking covers authorized account instances as well.
+ */
+async function markAccountListRuntimeProjectionDirty(runtimeKey: string): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return
+  if (!runtimeConfig.background.accountListAvailabilityProjectionEnabled
+    && !runtimeConfig.background.accountListAvailabilityProjectionReadEnabled) {
+    return
+  }
+  const accountId = runtimeAccountIdFromKey(runtimeKey).trim()
+  if (!accountId) return
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await markAccountListAvailabilityDirtyFamilyInClient(client, {
+    sourceAccountIds: [accountId],
+    reason: 'runtime_availability_changed'
+  })
+}
 
 export interface GatewayAccountRuntimeClearResult {
   cleared: boolean
@@ -463,6 +488,7 @@ export async function suppressGatewayAccountLocallyForSeconds(
     startedAtMs: now,
     untilMs: now + ttlMs
   }
+  await markAccountListRuntimeProjectionDirty(runtimeKey)
   await configuredPolicyAvoidanceStore.setJson(runtimeKey, state, ttlMs)
   rememberConfiguredPolicyAvoidanceState(runtimeKey, state)
   if (runtimeConfig.runtimeStateDriver !== 'redis') {
@@ -730,6 +756,7 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
     precheckRequested: input.forcePrecheck === true,
     probePresentation: runtimeProbeScheduledPresentation(undefined, nextProbeAtMs)
   }
+  await markAccountListRuntimeProjectionDirty(runtimeKey)
   const created = await distributedRecoveryProbeStore.setIfAbsent(state, distributedRecoveryProbeStateTtlMs)
   if (!created) {
     const existing = await distributedRecoveryProbeStore.get(runtimeKey).catch(() => undefined)
@@ -943,6 +970,7 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
   try {
     const persisted = await distributedRecoveryProbeStore.get(runtimeKey)
     if (!persisted) {
+      await markAccountListRuntimeProjectionDirty(runtimeKey)
       await distributedRecoveryProbeStore.delete(runtimeKey)
       return
     }
@@ -1424,6 +1452,7 @@ function logStalePrecheckResult(runtimeKey: string, staleGeneration: number, eve
 }
 
 async function persistDistributedRecoveryProbeState(state: DistributedRecoveryProbeState): Promise<boolean> {
+  await markAccountListRuntimeProjectionDirty(state.runtimeKey)
   const persisted = await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
   if (!persisted) {
     const current = await distributedRecoveryProbeStore.get(state.runtimeKey).catch(() => undefined)
@@ -1440,6 +1469,7 @@ async function commitDistributedRecoveryProbeRun(
   state: DistributedRecoveryProbeState,
   runId: string
 ): Promise<boolean> {
+  await markAccountListRuntimeProjectionDirty(state.runtimeKey)
   const committed = await distributedRecoveryProbeStore.commitGenerationRun(state, runId, distributedRecoveryProbeStateTtlMs)
   if (!committed) return false
   scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - Date.now()))
@@ -1453,6 +1483,7 @@ async function clearDistributedRecoveryProbeRun(
   generation: number,
   runId: string
 ): Promise<boolean> {
+  await markAccountListRuntimeProjectionDirty(runtimeKey)
   const cleared = await distributedRecoveryProbeStore.deleteGenerationRun(runtimeKey, generation, runId)
   if (!cleared) return false
   notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey)
@@ -1464,13 +1495,20 @@ function distributedProbeRunId(runtimeKey: string, generation: number): string {
   return `${process.pid}:${generation}:${Date.now()}:${createHash('sha256').update(`${runtimeKey}:${Math.random()}`).digest('base64url').slice(0, 12)}`
 }
 
-async function clearDistributedRecoveryProbeState(runtimeKey: string): Promise<void> {
+async function clearDistributedRecoveryProbeState(
+  runtimeKey: string,
+  input: { projectionAlreadyDirty?: boolean } = {}
+): Promise<void> {
+  if (!input.projectionAlreadyDirty) {
+    await markAccountListRuntimeProjectionDirty(runtimeKey)
+  }
   await distributedRecoveryProbeStore.delete(runtimeKey)
   notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey)
   clearGatewayRuntimeCache()
 }
 
 async function clearDistributedRecoveryProbeStateGeneration(runtimeKey: string, generation: number): Promise<boolean> {
+  await markAccountListRuntimeProjectionDirty(runtimeKey)
   const cleared = await distributedRecoveryProbeStore.deleteGeneration(runtimeKey, generation)
   if (cleared) {
     notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey)
@@ -2249,10 +2287,13 @@ export function clearGatewayAccountRuntimeAvailability(
   const clearedKeys: string[] = []
   for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
     if (runtimeConfig.runtimeStateDriver === 'redis') {
-      void Promise.all([
-        clearDistributedRecoveryProbeState(runtimeKey),
-        configuredPolicyAvoidanceStore.delete(runtimeKey)
-      ]).catch((error) => {
+      void (async () => {
+        await markAccountListRuntimeProjectionDirty(runtimeKey)
+        await Promise.all([
+          clearDistributedRecoveryProbeState(runtimeKey, { projectionAlreadyDirty: true }),
+          configuredPolicyAvoidanceStore.delete(runtimeKey)
+        ])
+      })().catch((error) => {
         logger.error(errorLogFields(error, {
           event: 'gateway_account_distributed_runtime_availability_clear_failed',
           runtimeKey

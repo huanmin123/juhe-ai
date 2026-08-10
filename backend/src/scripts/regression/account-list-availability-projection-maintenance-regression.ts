@@ -18,14 +18,76 @@ const viewerSystemAccountId = 'projection_maintenance_viewer'
 const activeAccountId = 'projection_maintenance_active'
 const deletedAccountId = 'projection_maintenance_deleted'
 const failedAccountId = 'projection_maintenance_failed'
+const emptyViewerSystemAccountId = 'projection_maintenance_empty_viewer'
+const drainAccountPrefix = 'projection_maintenance_drain_'
 
 try {
   insertFixture()
   await verifyBatchProjectsVisibleRowsAndDeletesInvisibleRows()
+  await verifyExistingEmptyViewerHealthIsBackfilled()
+  await verifyMaintenanceDrainsMultipleBoundedBatches()
   await verifyReadFailureLeavesTheProjectionUnavailable()
   console.log('account list availability projection maintenance regression passed')
 } finally {
   database.close()
+}
+
+async function verifyExistingEmptyViewerHealthIsBackfilled(): Promise<void> {
+  const now = new Date(1_500).toISOString()
+  database.prepare(`
+    INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
+    VALUES (?, ?, 'Projection empty viewer', 'user', 'active', 'test-only', ?, ?)
+  `).run(emptyViewerSystemAccountId, emptyViewerSystemAccountId, now, now)
+  const result = await runAccountListAvailabilityProjectionMaintenanceInClient(client, {
+    ownerId: 'projection-maintenance-empty-viewer',
+    batchSize: 10,
+    maxBatchesPerRun: 1,
+    now: new Date(1_500),
+    loadItems: async () => {
+      throw new Error('空账户 viewer 不应调用旧列表水合')
+    }
+  })
+  assert.equal(result.viewerHealthBootstrapped, 1, '既有空账户 viewer 必须补齐 health 行')
+  const page = await listAccountListAvailabilityProjectionPageInClient(client, {
+    viewerSystemAccountId: emptyViewerSystemAccountId,
+    nowMs: 1_500,
+    options: { page: 1, pageSize: 20 }
+  })
+  assert.deepEqual(page.items, [], '无账户的已存在 viewer 完成 health 回填后必须返回 200 空页')
+}
+
+async function verifyMaintenanceDrainsMultipleBoundedBatches(): Promise<void> {
+  const accountIds = Array.from({ length: 25 }, (_, index) => `${drainAccountPrefix}${String(index + 1).padStart(2, '0')}`)
+  for (const accountId of accountIds) {
+    insertAccount(accountId)
+    await markAccountListAvailabilityDirtyInClient(client, {
+      accountId,
+      reason: 'bulk_bootstrap',
+      nowMs: 1_750
+    })
+  }
+  const observedBatchSizes: number[] = []
+  const result = await runAccountListAvailabilityProjectionMaintenanceInClient(client, {
+    ownerId: 'projection-maintenance-drain',
+    batchSize: 10,
+    maxBatchesPerRun: 3,
+    now: new Date(1_750),
+    loadItems: async (viewerId, ids) => {
+      assert.equal(viewerId, viewerSystemAccountId)
+      assert(ids.length <= 10, '单个 legacy hydration 批次不得突破既有 100 账户边界')
+      observedBatchSizes.push(ids.length)
+      return ids.map((id) => projectionItem(id))
+    }
+  })
+  assert.equal(result.claimed, accountIds.length, '受限 drain 必须在本轮处理所有可领取的三批账户')
+  assert.equal(result.projected, accountIds.length)
+  assert.deepEqual(observedBatchSizes, [10, 10, 5], '大范围 bootstrap 必须拆为固定上限的批次')
+  const remaining = database.prepare(`
+    SELECT COUNT(*) AS count
+    FROM account_list_availability_dirty
+    WHERE account_id LIKE ?
+  `).get(`${drainAccountPrefix}%`) as { count: number }
+  assert.equal(remaining.count, 0, 'drain 完成后不能留下已可处理的脏行')
 }
 
 async function verifyBatchProjectsVisibleRowsAndDeletesInvisibleRows(): Promise<void> {
@@ -56,10 +118,25 @@ async function verifyBatchProjectsVisibleRowsAndDeletesInvisibleRows(): Promise<
   assert.equal(result.projected, 1)
   assert.equal(result.deleted, 1)
   assert.equal(result.released, 0)
+  const remainingDirty = database.prepare(`
+    SELECT account_id, generation, claim_token
+    FROM account_list_availability_dirty
+    WHERE viewer_system_account_id = ?
+  `).all(viewerSystemAccountId)
+  const health = database.prepare(`
+    SELECT is_current, projection_count, next_transition_at
+    FROM account_list_availability_projection_viewer_health
+    WHERE viewer_system_account_id = ?
+  `).get(viewerSystemAccountId) as { is_current: number; projection_count: number; next_transition_at: string | null } | undefined
+  assert.deepEqual(remainingDirty, [], `物化后不能残留 viewer 脏行：${JSON.stringify(remainingDirty)}`)
+  assert.equal(health?.is_current, 1, `物化后 viewer health 必须可读：${JSON.stringify(health)}`)
+  assert(
+    !health?.next_transition_at || Date.parse(health.next_transition_at) > 1_000,
+    `未到期的测试投影不能将 viewer health 标成不可读：${JSON.stringify(health)}`
+  )
 
   const page = await listAccountListAvailabilityProjectionPageInClient(client, {
     viewerSystemAccountId,
-    maximumProjectionAgeMs: 10_000,
     nowMs: 1_000,
     options: { status: 'active', page: 1, pageSize: 20 }
   })
@@ -87,7 +164,6 @@ async function verifyReadFailureLeavesTheProjectionUnavailable(): Promise<void> 
   await assert.rejects(
     () => listAccountListAvailabilityProjectionPageInClient(client, {
       viewerSystemAccountId,
-      maximumProjectionAgeMs: 10_000,
       nowMs: 2_000,
       options: { page: 1, pageSize: 20 }
     }),

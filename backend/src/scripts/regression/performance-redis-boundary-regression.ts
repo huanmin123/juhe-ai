@@ -394,7 +394,8 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(settingsSource, 'setGlobalSettingsCacheAsync'), /await setSettingsSharedCache[\s\S]*globalSettingsCache\.set/, '全局设置必须先写 Redis shared cache 再写本地近端缓存')
 
   const authorizationLoaderSource = source('storage/authorization-read-loaders.ts')
-  assert.match(functionBody(authorizationLoaderSource, 'loadSharedCacheEntriesByBatches'), /chunkValues\(ids, 100\)[\s\S]*Promise\.all\(chunk\.map/, 'shared cache lookup 必须按 100 个 ID 的有界批次并发读取')
+  const sharedCacheReadBatchingSource = source('storage/shared-cache-read-batching.ts')
+  assert.match(functionBody(sharedCacheReadBatchingSource, 'loadSharedCacheEntriesByBatches'), /chunkValues\(ids, 100\)[\s\S]*Promise\.all\(chunk\.map/, 'shared cache lookup 必须按 100 个 ID 的有界批次并发读取')
   assert.match(functionBody(authorizationLoaderSource, 'loadResourceAuthorizationStatsByResourceIdsAsync'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*authorizationStatsCache\.get/, 'Redis cache driver 下授权统计不能先读本地 LRU')
   assert.match(functionBody(authorizationLoaderSource, 'loadResourceAuthorizationStatsByResourceIdsAsync'), /loadSharedCacheEntriesByBatches\(\s*missingSharedIds/, '授权统计 shared cache 必须使用有界批量读取器')
   assert.match(functionBody(authorizationLoaderSource, 'loadResourceAuthorizationStatsByResourceIdsAsync'), /await setAuthorizationStatsSharedCacheEntryAsync[\s\S]*authorizationStatsCache\.set/, '授权统计 PG 回源后必须先写 Redis shared cache')

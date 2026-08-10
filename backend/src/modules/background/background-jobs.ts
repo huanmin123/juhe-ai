@@ -349,7 +349,8 @@ function scheduleBackgroundJobs(): void {
               const result = await runAccountListAvailabilityProjectionMaintenance({
                 ownerId: scheduledLease?.ownerId ?? `${runtimeConfig.instanceId}:${randomUUID()}`,
                 batchSize: runtimeConfig.background.accountListAvailabilityProjectionBatchSize,
-                maximumProjectionAgeMs: runtimeConfig.background.accountListAvailabilityProjectionMaximumAgeMs,
+                maxBatchesPerRun: runtimeConfig.background.accountListAvailabilityProjectionMaxBatchesPerRun,
+                workerConcurrency: runtimeConfig.background.accountListAvailabilityProjectionWorkerConcurrency,
                 signal: leaseSignal
               })
               logger.debug({

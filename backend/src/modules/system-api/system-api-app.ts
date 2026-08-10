@@ -10,6 +10,7 @@ import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.mi
 import { authRouter } from '../auth/auth.routes.js'
 import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
 import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
+import { delegatedApiRouter } from '../delegated-api/delegated-api.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
 import { chatRouter } from '../chat/chat.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
@@ -19,6 +20,7 @@ import { anthropicOAuthRouter } from '../anthropic-oauth/anthropic-oauth.routes.
 import { geminiOAuthRouter } from '../gemini-oauth/gemini-oauth.routes.js'
 import { grokOAuthRouter } from '../grok-oauth/grok-oauth.routes.js'
 import { openAIOAuthRouter } from '../openai-oauth/openai-oauth.routes.js'
+import { oauthManagementRouter, oauthPublicRouter } from '../oidc-provider/oidc-provider.routes.js'
 import { providersRouter } from '../providers/providers.routes.js'
 import { proxiesRouter } from '../proxies/proxies.routes.js'
 import { capturePublicApiLog } from '../public-api-logs/public-api-log-capture.middleware.js'
@@ -85,10 +87,14 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(publicApiPrefix, systemApiDbAccessModeMiddleware(publicApiPrefix), systemApiDbServiceAdmissionControl)
+  app.use('/__aidelegated__/v1', noStoreSystemApiResponse, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
+  app.use('/__aidelegated__/v1', systemApiDbAccessModeMiddleware('/__aidelegated__/v1'), systemApiDbServiceAdmissionControl, delegatedApiRouter)
 
   app.get(`${systemApiPrefix}/health`, (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-db-service' })
   })
+
+  app.use(systemApiDbServiceAdmissionControl, oauthPublicRouter)
 
   app.use(`${systemApiPrefix}/auth`, systemApiDbServiceAdmissionControl, authRouter)
   app.get(`${systemApiPrefix}/settings/public`, async (_req, res, next) => {
@@ -144,6 +150,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/stats`, requireAdmin, statsRouter)
   app.use(`${systemApiPrefix}/ip-stats`, requireAdmin, ipStatsRouter)
   app.use(`${systemApiPrefix}/external-integration-sources`, requireAdmin, externalIntegrationSourcesRouter)
+  app.use(`${systemApiPrefix}/oauth`, requireAdmin, oauthManagementRouter)
   app.use(`${systemApiPrefix}/table-monitor`, requireAdmin, tableMonitorRouter)
   app.use(`${systemApiPrefix}/settings`, settingsRouter)
   app.use(`${systemApiPrefix}/system-accounts`, systemAccountsRouter)

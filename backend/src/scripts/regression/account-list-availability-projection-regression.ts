@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
+import { fileURLToPath } from 'node:url'
 
 import type { AccountListItem } from '../../domain/types.js'
 import { buildAccountNameSearchTerms, normalizeAccountNameSearchText } from '../../storage/account-name-search.repository.js'
@@ -8,12 +10,16 @@ import {
   acknowledgeAccountListAvailabilityDirtyInClient,
   applyAccountListAvailabilityProjectionDirtyClaimInClient,
   claimAccountListAvailabilityDirtyInClient,
+  completeAccountListAvailabilityProjectionRuntimeDependencyRecoveryInClient,
   enqueueDueAccountListAvailabilityProjectionsInClient,
   enqueueMissingAccountListAvailabilityProjectionsInClient,
+  ensureAccountListAvailabilityProjectionViewerHealthInClient,
+  ensureAccountListAvailabilityProjectionRuntimeDependencyInClient,
   listAccountListAvailabilityProjectionPageInClient,
   listAccountListAvailabilityProjectionScopesInClient,
   markAccountListAvailabilityDirtyFamilyInTransaction,
   markAccountListAvailabilityDirtyInClient,
+  refreshAccountListAvailabilityProjectionViewerHealthInClient,
   releaseAccountListAvailabilityDirtyForReplayInClient,
   upsertAccountListAvailabilityProjectionInClient,
   type AccountListAvailabilityProjectionWrite
@@ -30,13 +36,61 @@ const accountIds = ['projection_account_alpha', 'projection_account_beta', 'proj
 
 try {
   insertSchemaFixture()
+  await verifyExistingViewerHealthBackfill()
   await verifyDirtyLeaseAndGenerationFence()
   await verifySingleQueryPaginationAndFilters()
   await verifyFamilyExpansionAndBoundedWorkerQueues()
+  verifyRuntimeDirtyBridgeContract()
   verifyPostgresSchemaProjectionParity()
   console.log('account list availability projection regression passed')
 } finally {
   database.close()
+}
+
+async function verifyExistingViewerHealthBackfill(): Promise<void> {
+  const legacyViewerSystemAccountId = 'projection_legacy_empty_viewer'
+  const now = new Date(0).toISOString()
+  database.prepare(`
+    INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(legacyViewerSystemAccountId, 'projection_legacy_empty_viewer', 'Legacy empty viewer', 'user', 'active', 'test-only', now, now)
+
+  await assert.rejects(
+    () => listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+      viewerSystemAccountId: legacyViewerSystemAccountId
+    })),
+    AccountListAvailabilityProjectionUnavailableError,
+    '历史 viewer 缺 health 行时必须 fail-closed，不能把未知状态当作空列表'
+  )
+  assert.equal(await ensureAccountListAvailabilityProjectionViewerHealthInClient(client, {
+    limit: 10,
+    updatedAt: now
+  }), 2, '维护任务必须补齐历史 viewer 和当前 fixture 的 health 行')
+  await assert.rejects(
+    () => listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+      viewerSystemAccountId: legacyViewerSystemAccountId
+    })),
+    AccountListAvailabilityProjectionUnavailableError,
+    'health 回填但尚未完成投影时仍不得返回旧或未知结果'
+  )
+  await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, {
+    viewerSystemAccountId: legacyViewerSystemAccountId,
+    updatedAt: now
+  })
+  await ensureAccountListAvailabilityProjectionRuntimeDependencyInClient(client, { updatedAt: now })
+  assert.equal(await completeAccountListAvailabilityProjectionRuntimeDependencyRecoveryInClient(client, {
+    updatedAt: now
+  }), true, '无待重放行时，运行态依赖初始化后必须显式转为可读')
+  const emptyPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+    viewerSystemAccountId: legacyViewerSystemAccountId
+  }))
+  assert.deepEqual(emptyPage.items, [])
+  assert.equal(emptyPage.page, 1)
+  assert.equal(emptyPage.pageSize, 20)
+  assert.equal(emptyPage.total, 0)
+  assert.equal(emptyPage.hasMore, false)
+  assert.equal(emptyPage.generatedAt, new Date(1_000).toISOString())
+  assert.equal(emptyPage.projectedAt, '')
 }
 
 async function verifyDirtyLeaseAndGenerationFence(): Promise<void> {
@@ -172,6 +226,7 @@ async function verifySingleQueryPaginationAndFilters(): Promise<void> {
     projectedAt: new Date(2_200).toISOString(),
     tagIds: ['tag_green', 'tag_blue']
   }))
+  await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, { viewerSystemAccountId })
 
   const observed = { query: 0, one: 0 }
   const countedClient: DatabaseClient = {
@@ -193,6 +248,16 @@ async function verifySingleQueryPaginationAndFilters(): Promise<void> {
   assert.deepEqual(page.items.map((item) => item.id), accountIds.slice(0, 2))
   assert.equal(page.hasMore, true, 'LIMIT pageSize + 1 必须直接得出 hasMore')
   assert.equal(page.total, 3, 'total 只保留当前页上界，不允许额外 COUNT(*)')
+
+  const agedPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+    nowMs: 60 * 60_000,
+    options: { status: 'active', page: 1, pageSize: 2, sorts: [{ field: 'priority', order: 'asc' }] }
+  }))
+  assert.deepEqual(
+    agedPage.items.map((item) => item.id),
+    accountIds.slice(0, 2),
+    '无 dirty 且无已到期 transition 时，投影年龄不得触发全量重建或把大账户列表变为 unavailable'
+  )
 
   const greenPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
     options: { tagIds: ['tag_green'], page: 1, pageSize: 20 }
@@ -230,6 +295,7 @@ async function verifySingleQueryPaginationAndFilters(): Promise<void> {
     nameSortKey: containedName,
     searchTerms: buildAccountNameSearchTerms(containedName)
   }))
+  await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, { viewerSystemAccountId })
   const containsKeywordPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
     options: { keyword: 'suffix', page: 1, pageSize: 20 }
   }))
@@ -327,7 +393,6 @@ async function verifyFamilyExpansionAndBoundedWorkerQueues(): Promise<void> {
 function projectionQuery(overrides: Partial<Parameters<typeof listAccountListAvailabilityProjectionPageInClient>[1]> = {}) {
   return {
     viewerSystemAccountId,
-    maximumProjectionAgeMs: 10_000,
     nowMs: 1_000,
     options: { page: 1, pageSize: 20 },
     ...overrides
@@ -342,6 +407,8 @@ function projectionWrite(
   return {
     viewerSystemAccountId,
     accountId,
+    concurrencyAccountId: accountId,
+    currentConcurrency: 0,
     effectiveStatus: 'active',
     schedulableBucket: 'enabled',
     providerCode: 'gpt',
@@ -417,4 +484,28 @@ function verifyPostgresSchemaProjectionParity(): void {
   assert.match(projection, /payload_json text NOT NULL/)
   assert.match(projection, /source_generation integer NOT NULL/)
   assert.match(dirty, /available_at_ms bigint NOT NULL/)
+}
+
+function verifyRuntimeDirtyBridgeContract(): void {
+  const source = readFileSync(fileURLToPath(new URL('../../modules/gateway/runtime/account-side-effects.service.ts', import.meta.url)), 'utf8')
+  assert.match(
+    source,
+    /async function markAccountListRuntimeProjectionDirty\(runtimeKey: string\)[\s\S]*sourceAccountIds: \[accountId\][\s\S]*reason: 'runtime_availability_changed'/,
+    'Redis 运行态变更必须将 source 账户及授权实例标为 durable dirty'
+  )
+  assert.match(
+    source,
+    /async function suppressGatewayAccountLocallyForSeconds[\s\S]*await markAccountListRuntimeProjectionDirty\(runtimeKey\)[\s\S]*configuredPolicyAvoidanceStore\.setJson/,
+    '策略避让必须先标 dirty，后写 Redis'
+  )
+  assert.match(
+    source,
+    /async function persistDistributedRecoveryProbeState[\s\S]*await markAccountListRuntimeProjectionDirty\(state\.runtimeKey\)[\s\S]*distributedRecoveryProbeStore\.set/,
+    '恢复探针更新必须先标 dirty，后写 Redis'
+  )
+  assert.match(
+    source,
+    /async function clearDistributedRecoveryProbeState[\s\S]*markAccountListRuntimeProjectionDirty\(runtimeKey\)[\s\S]*distributedRecoveryProbeStore\.delete/,
+    '恢复探针删除必须先标 dirty，后删除 Redis 状态'
+  )
 }

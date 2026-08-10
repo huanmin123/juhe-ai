@@ -227,6 +227,31 @@ export function hourKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): st
   return `${year}-${two(month)}-${two(day)}T${two(hour)}`
 }
 
+/**
+ * The rolling hourly quota snapshot changes at the next local-hour boundary.
+ * This binary search also handles non-whole-hour offsets and DST transitions.
+ */
+export function nextZonedHourBoundaryIso(date = new Date(), timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  const currentHour = hourKey(date, timezone)
+  let low = date.getTime() + 1
+  let high = low + 3 * hourMs
+  for (let guard = 0; guard < 8 && hourKey(new Date(high), timezone) === currentHour; guard += 1) {
+    high += 3 * hourMs
+  }
+  if (hourKey(new Date(high), timezone) === currentHour) {
+    throw new Error(`无法定位时区 ${timezone} 的下一小时边界`)
+  }
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (hourKey(new Date(middle), timezone) === currentHour) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return new Date(low).toISOString()
+}
+
 export function minuteKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
   const { year, month, day, hour, minute } = zonedDateParts(date, timezone)
   return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}`

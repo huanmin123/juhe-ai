@@ -61,6 +61,13 @@
           <a-typography-paragraph class="ai-prompt" :copyable="sourceMode === 'native' ? { text: aiConversionPrompt } : false">
             {{ sourceGuide }}
           </a-typography-paragraph>
+          <template v-if="sourceExample">
+            <div class="source-example-head">
+              <span>格式示例</span>
+              <a-button size="small" @click="copySourceExample">复制示例</a-button>
+            </div>
+            <pre class="source-example">{{ sourceExample }}</pre>
+          </template>
         </section>
       </div>
 
@@ -194,13 +201,13 @@ const sourceModeOptions = [
   { label: '原生', value: 'native' },
   { label: 'Sub2API', value: 'sub2api' },
   { label: 'NewAPI', value: 'newapi' },
-  { label: 'CPA / CLIProxyAPI', value: 'cpa' },
+  { label: 'CLIProxyAPI', value: 'cpa' },
   { label: 'One-API', value: 'oneapi' }
 ] satisfies Array<{ label: string; value: AccountImportSourceMode }>
 
 const sourceEditorTitle = computed(() => sourceMode.value === 'native' ? '导入 JSON' : `${sourceModeLabel(sourceMode.value)} 数据`)
 const sourcePlaceholder = computed(() => sourceMode.value === 'cpa'
-  ? '粘贴 CPA config.yaml 或 Codex auth JSON'
+  ? '粘贴 CLIProxyAPI config.yaml 或 Codex auth JSON'
   : sourceMode.value === 'native'
     ? '粘贴 juhe-ai-account-import v1 JSON'
     : `粘贴 ${sourceModeLabel(sourceMode.value)} 的 JSON 数据`)
@@ -212,7 +219,49 @@ const sourceGuide = computed(() => {
   if (sourceMode.value === 'sub2api') return '支持 Sub2API sub2api-data / sub2api-bundle v1 的 accounts 与 proxies。仅导入 OpenAI API Key/OAuth。'
   if (sourceMode.value === 'newapi') return '支持 NewAPI Channel JSON。仅识别来源定义中明确的 OpenAI Channel，key 映射为 API Key。'
   if (sourceMode.value === 'oneapi') return '支持 One-API Channel JSON。仅识别 OpenAI Channel，数字 type 不做跨项目猜测。'
-  return '支持 CPA config.yaml 中 codex-api-key、openai-compatibility，以及 type=codex 的 auth JSON。'
+  return '支持 CLIProxyAPI config.yaml 中 codex-api-key、openai-compatibility，以及 type=codex 的 auth JSON。'
+})
+
+const sourceExample = computed(() => {
+  if (sourceMode.value === 'native') return ''
+  if (sourceMode.value === 'sub2api') return `{
+  "type": "sub2api-data",
+  "version": 1,
+  "accounts": [{
+    "name": "OpenAI API Key",
+    "platform": "openai",
+    "type": "apikey",
+    "credentials": {
+      "api_key": "<API_KEY>",
+      "base_url": "https://api.openai.com/v1"
+    }
+  }]
+}`
+  if (sourceMode.value === 'newapi') return `[
+  {
+    "type": 1,
+    "name": "OpenAI Channel",
+    "key": "<API_KEY>",
+    "base_url": "https://api.openai.com/v1",
+    "group": "默认分组",
+    "status": 1
+  }
+]`
+  if (sourceMode.value === 'oneapi') return `[
+  {
+    "type": 1,
+    "name": "OpenAI Channel",
+    "key": "<API_KEY>",
+    "base_url": "https://api.openai.com/v1",
+    "group": "默认分组",
+    "status": 1
+  }
+]`
+  return `openai-compatibility:
+  - name: OpenAI 上游
+    base-url: https://api.openai.com/v1
+    api-key-entries:
+      - api-key: <API_KEY>`
 })
 
 const accountColumns = [
@@ -248,6 +297,11 @@ function fillTemplate() {
 
 async function copyTemplate() {
   await copyTextToClipboard(importTemplate)
+}
+
+async function copySourceExample() {
+  await copyTextToClipboard(sourceExample.value)
+  message.success('来源格式示例已复制')
 }
 
 function downloadProtocolMarkdown() {
@@ -313,7 +367,7 @@ function sourceModeLabel(mode: AccountImportSourceMode): string {
   if (mode === 'sub2api') return 'Sub2API'
   if (mode === 'newapi') return 'NewAPI'
   if (mode === 'oneapi') return 'One-API'
-  return 'CPA'
+  return 'CLIProxyAPI'
 }
 
 function actionText(action: AccountImportItem['action']): string {
@@ -434,6 +488,33 @@ function downloadTextFile(filename: string, content: string, type: string): void
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+.source-example-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 6px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.source-example {
+  max-height: 304px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #334155;
+  background: #f8fafc;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .summary-grid {

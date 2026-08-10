@@ -234,6 +234,9 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
 })
 
 app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)
+app.use('/.well-known', dbServiceHttpProxy)
+app.use('/oauth', dbServiceHttpProxy)
+app.use('/__aidelegated__', dbServiceHttpProxy)
 app.use(systemApiPrefix, dbServiceHttpProxy)
 app.use(publicApiPrefix, dbServiceHttpProxy)
 

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   AccountListAvailabilityProjectionUnavailableError,
@@ -32,7 +34,6 @@ export async function shadowCompareAccountListAvailabilityProjectionPage(
   input: {
     access: AccessScope
     options: AccountListOptions
-    maximumProjectionAgeMs: number
   }
 ): Promise<AccountListAvailabilityProjectionShadowResult> {
   let legacy: AccountManagementListResult
@@ -52,8 +53,7 @@ export async function shadowCompareAccountListAvailabilityProjectionPage(
   try {
     projection = await listAccountListAvailabilityProjectionPageInClient(client, {
       viewerSystemAccountId: input.access.systemAccountId,
-      options: input.options,
-      maximumProjectionAgeMs: input.maximumProjectionAgeMs
+      options: input.options
     })
   } catch (error) {
     if (!(error instanceof AccountListAvailabilityProjectionUnavailableError)) throw error
@@ -71,7 +71,7 @@ export async function shadowCompareAccountListAvailabilityProjectionPage(
   const projectionItemIds = projection.items.map((item) => item.id)
   const structuralEqual = legacy.hasMore === projection.hasMore
     && legacy.total === projection.total
-    && JSON.stringify(legacy.items) === JSON.stringify(projection.items)
+    && jsonResponseEqual(legacy.items, projection.items)
   return {
     outcome: structuralEqual ? 'equal' : 'different',
     legacyItemIds,
@@ -102,13 +102,19 @@ function projectionComparisonDifference(
     if (legacyItem.id !== projectionItem.id) {
       return `第 ${index + 1} 项 ID 不一致：legacy=${legacyItem.id}, projection=${projectionItem.id}`
     }
-    const legacyJson = JSON.stringify(legacyItem)
-    const projectionJson = JSON.stringify(projectionItem)
-    if (legacyJson !== projectionJson) {
-      return `账户 ${legacyItem.id} 快照字段不一致：legacy=${legacyJson}, projection=${projectionJson}`
+    if (!jsonResponseEqual(legacyItem, projectionItem)) {
+      return `账户 ${legacyItem.id} 快照字段不一致：legacy=${JSON.stringify(legacyItem)}, projection=${JSON.stringify(projectionItem)}`
     }
   }
   return '分页元数据或完整 AccountListItem 快照不一致'
+}
+
+/** HTTP JSON omits undefined and does not preserve object key insertion order. */
+function jsonResponseEqual(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(
+    JSON.parse(JSON.stringify(left)),
+    JSON.parse(JSON.stringify(right))
+  )
 }
 
 async function loadLegacyAccountListPage(

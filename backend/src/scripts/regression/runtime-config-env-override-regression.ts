@@ -96,6 +96,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.redis.queueUrl, 'redis://:queue-secret@127.0.0.1:6381/0', 'Redis queue URL 应正确读取')
   assert.equal(runtimeConfig.redis.namespace, 'runtime-test', 'Redis namespace 应正确读取')
   assert.equal(runtimeConfig.postgres.poolMax, 25, 'PostgreSQL pool max 应正确读取')
+  assert.equal(runtimeConfig.postgres.jitEnabled, false, 'PostgreSQL JIT 开关应正确读取')
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
   assert.equal(runtimeConfig.postgres.statementTimeoutMs, 45000, 'PostgreSQL statement timeout 应正确读取')
@@ -130,6 +131,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 5000, 'performance 默认 System API DB service 在途上限应跟随全局容量')
   assert.equal('readOnly' in runtimeConfig.systemApi, false, '正式环境不得保留临时发布拦截模式')
   assert.equal(runtimeConfig.postgres.statementTimeoutMs, 30000, 'performance 默认 PostgreSQL statement timeout 应为 30 秒')
+  assert.equal(runtimeConfig.postgres.jitEnabled, false, 'performance 默认必须关闭 PostgreSQL JIT，避免交互读请求产生编译长尾')
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 2000, 'performance 默认 PostgreSQL lock timeout 应为 2 秒')
   assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 30000, 'performance 默认 PostgreSQL idle transaction timeout 应为 30 秒')
   assert.match(runtimeConfig.redis.namespace, /^env-[a-f0-9]{12}$/, '未显式配置 Redis namespace 时应由运行密钥派生稳定环境前缀')
@@ -263,6 +265,7 @@ const performanceResult = spawnRegression({
   JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0',
   JUHE_AI_REDIS_NAMESPACE: 'runtime-test',
   JUHE_AI_DB_POOL_MAX: '25',
+  JUHE_AI_POSTGRES_JIT_ENABLED: 'false',
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
   JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',
   JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS: '45000',

@@ -71,6 +71,19 @@ export async function loadPublicAccountCircuitSummaries(
     type: 'list_account_circuit_incidents_by_runtime_keys',
     accountRuntimeKeys: keys
   })
+  return publicAccountCircuitSummariesFromIncidents(keys, incidents)
+}
+
+/**
+ * Converts durable circuit rows to the public, per-runtime-key shape. The
+ * projection worker can reuse this pure reducer with a direct PostgreSQL
+ * read, while request hydration retains its DB-service boundary.
+ */
+export function publicAccountCircuitSummariesFromIncidents(
+  accountRuntimeKeys: string[],
+  incidents: AccountCircuitIncidentRecord[]
+): Record<string, PublicAccountCircuitSummary> {
+  const keys = [...new Set(accountRuntimeKeys.map((key) => key.trim()).filter(Boolean))].slice(0, 100)
   const grouped = new Map<string, typeof incidents>()
   for (const incident of incidents) {
     const values = grouped.get(incident.accountRuntimeKey) ?? []

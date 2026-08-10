@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20260810T000000000Z](计划-20260810T000000000Z-第三方登录与个人委托授权.md)：已完成本地实现、待生产接入门禁的 juhe-ai OAuth 2.1 / OIDC Provider，覆盖 7 天可撤销的个人委托 token、浏览器/本地客户端回调和 Device Flow。
+
 - [PLAN-20260809T155526144Z](计划-20260809T155526144Z-中转账户导入与CCS导出.md)：为 AI 账户导入增加 Sub2API、NewAPI、CPA / CLIProxyAPI 和 One-API 来源适配器，并在 API Key 更多操作中提供 CCS deeplink 导出。
 
 - [PLAN-20260809T140000000Z](计划-20260809T140000000Z-我的AI账户运行态分页根治.md)：将“我的 AI 账户”的动态状态筛选从候选扩窗水合改为可对账的 PostgreSQL 读模型直接分页；Redis 保持网关热状态，不作为列表唯一事实。
@@ -309,6 +311,7 @@ docs/plans/
 
 | 计划 ID | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-20260810T000000000Z | 第三方登录与个人委托授权 | 本地实现完成，待生产接入门禁 | 2026-08-10 | Node / Vue / OAuth 2.1 / OIDC / 个人委托 API / 用户请求限制 | `docs/plans/计划-20260810T000000000Z-第三方登录与个人委托授权.md` |
 | PLAN-20260729T130300133Z | Codex 压缩失败终态结构处理修复 | 本地修复完成，待统一上线/生产验证 | 2026-07-29 | Node 后端 / 网关 / Codex Responses / SSE / 响应检查 | `docs/plans/计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md` |
 | PLAN-20260729T094521796Z | 使用记录 PostgreSQL 死锁修复 | 待发布验证 | 2026-07-29 | Node 后端 / Usage worker / Redis Stream / PostgreSQL / accounts | `docs/plans/计划-20260729T094521796Z-使用记录PostgreSQL死锁修复.md` |
 | PLAN-20260729T071220373Z | AI 账户余额探测与刷新闭环修复 | 已完成（本地验证完成） | 2026-07-29 | Node 后端 / AI 账户 / ops-worker / 余额快照 / 前端展示 / PostgreSQL | `docs/plans/计划-20260729T071220373Z-AI账户余额探测与刷新闭环修复.md` |

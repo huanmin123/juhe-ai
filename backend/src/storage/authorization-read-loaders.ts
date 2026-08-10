@@ -10,6 +10,7 @@ import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { loadSharedCacheEntriesByBatches } from './shared-cache-read-batching.js'
 
 interface ResourceAuthorizationSourceRow {
   id: string
@@ -34,18 +35,6 @@ export interface ResourceAuthorizationStats {
 
 function uniqueIds(values: string[]): string[] {
   return [...new Set(values)].filter(Boolean)
-}
-
-export async function loadSharedCacheEntriesByBatches<T>(
-  values: string[],
-  load: (id: string) => Promise<T | undefined>
-): Promise<Array<readonly [string, T | undefined]>> {
-  const ids = uniqueIds(values)
-  const result: Array<readonly [string, T | undefined]> = []
-  for (const chunk of chunkValues(ids, 100)) {
-    result.push(...await Promise.all(chunk.map(async (id) => [id, await load(id)] as const)))
-  }
-  return result
 }
 
 const authorizationStatsCache = createAppCache<string, ResourceAuthorizationStats>({

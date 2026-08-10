@@ -2,9 +2,11 @@ import type { ProviderDefinition, RouteStrategyGroupBindingSummary } from '@/typ
 
 export const ccswitchClientOptions = [
   { label: 'Codex', value: 'codex' },
-  { label: 'Claude', value: 'claude' },
+  { label: 'Claude CLI', value: 'claude' },
+  { label: 'Claude Desktop', value: 'claude-desktop' },
   { label: 'Gemini', value: 'gemini' },
-  { label: 'Grok', value: 'grokbuild' }
+  { label: 'Grok Build', value: 'grokbuild' },
+  { label: 'OpenCode', value: 'opencode' }
 ] as const
 
 export type CcSwitchClientApp = typeof ccswitchClientOptions[number]['value']
@@ -17,6 +19,11 @@ export interface CcSwitchExportGroupOption {
   defaultModel: string
 }
 
+export interface CcSwitchExportModelOption {
+  label: string
+  value: string
+}
+
 export interface CcSwitchExportInput {
   apiKey: string
   app: CcSwitchClientApp
@@ -26,8 +33,74 @@ export interface CcSwitchExportInput {
   name?: string
 }
 
-export function canSubmitCcSwitchExport(input: { groupId?: string; app?: CcSwitchClientApp; confirmed?: boolean }): boolean {
-  return Boolean(input.confirmed && input.groupId?.trim() && input.app)
+export function canSubmitCcSwitchExport(input: {
+  groupId?: string
+  app?: CcSwitchClientApp
+  modelsLoading?: boolean
+  modelsReady?: boolean
+}): boolean {
+  return Boolean(input.groupId?.trim() && input.app && input.modelsReady && !input.modelsLoading)
+}
+
+export function defaultCcSwitchClientAppForGroups(
+  groups: readonly CcSwitchExportGroupOption[]
+): CcSwitchClientApp | undefined {
+  if (groups.length !== 1) return undefined
+  return defaultCcSwitchClientAppForProvider(groups[0].providerCode)
+}
+
+export function defaultCcSwitchClientAppForProvider(providerCode: string): CcSwitchClientApp | undefined {
+  switch (providerCode.trim().toLowerCase()) {
+    case 'gpt':
+    case 'openai':
+      return 'codex'
+    case 'anthropic':
+      return 'claude'
+    case 'gemini':
+      return 'gemini'
+    case 'xai':
+      return 'grokbuild'
+    default:
+      return undefined
+  }
+}
+
+export function buildCcSwitchExportModelOptions(
+  models: readonly CcSwitchExportModelOption[]
+): CcSwitchExportModelOption[] {
+  const options: CcSwitchExportModelOption[] = []
+  const seen = new Set<string>()
+  const append = (value: string, label: string) => {
+    const normalizedValue = value.trim()
+    if (!normalizedValue || seen.has(normalizedValue)) return
+    seen.add(normalizedValue)
+    options.push({ label: label.trim() || normalizedValue, value: normalizedValue })
+  }
+
+  for (const model of models) append(model.value, model.label)
+  return options
+}
+
+export function isCcSwitchExportModelSelectionValid(
+  modelOptions: readonly CcSwitchExportModelOption[],
+  model: string
+): boolean {
+  const selectedModel = model.trim()
+  return !selectedModel || modelOptions.some((option) => option.value === selectedModel)
+}
+
+export function shouldLoadCcSwitchExportModelOptions(input: {
+  groupId: string
+  catalogGroupId?: string
+  modelsLoading?: boolean
+  modelsReady?: boolean
+}): boolean {
+  const groupId = input.groupId.trim()
+  const currentCatalog = input.catalogGroupId === groupId
+  return Boolean(
+    groupId
+    && !(currentCatalog && (input.modelsReady || input.modelsLoading))
+  )
 }
 
 export function buildCcSwitchExportUrl(input: CcSwitchExportInput): string {

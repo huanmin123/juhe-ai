@@ -681,6 +681,35 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id)
     );
 
+    -- Keeps only predicate and ordering fields. Request-time paging must not
+    -- scan the wide JSON payload table before it has narrowed to one page.
+    -- It is fenced and refreshed in the same transaction as the payload row.
+    CREATE TABLE IF NOT EXISTS account_list_availability_projection_index (
+      viewer_system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      effective_status TEXT NOT NULL,
+      schedulable_bucket TEXT NOT NULL CHECK (schedulable_bucket IN ('enabled', 'disabled', 'cooling')),
+      provider_code TEXT NOT NULL,
+      provider_protocol_profile_id TEXT NOT NULL,
+      account_type TEXT NOT NULL,
+      bound_group_id TEXT,
+      name_sort_key TEXT NOT NULL,
+      priority_sort_key INTEGER NOT NULL,
+      super_priority_sort_key INTEGER NOT NULL,
+      fallback_sort_key INTEGER NOT NULL,
+      concurrency_sort_key INTEGER NOT NULL,
+      account_expires_at_sort_key TEXT,
+      last_used_at_sort_key TEXT,
+      created_at_sort_key TEXT NOT NULL,
+      access_type_sort_key TEXT NOT NULL,
+      search_index_complete INTEGER NOT NULL DEFAULT 0 CHECK (search_index_complete IN (0, 1)),
+      authorization_quota_exceeded INTEGER NOT NULL DEFAULT 0 CHECK (authorization_quota_exceeded IN (0, 1)),
+      PRIMARY KEY (viewer_system_account_id, account_id),
+      FOREIGN KEY (viewer_system_account_id, account_id)
+        REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)
+        ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_list_availability_projection_tags (
       viewer_system_account_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
@@ -698,6 +727,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       viewer_system_account_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
       term TEXT NOT NULL,
+      name_sort_key TEXT NOT NULL,
+      created_at_sort_key TEXT NOT NULL,
       PRIMARY KEY (viewer_system_account_id, account_id, term),
       FOREIGN KEY (viewer_system_account_id, account_id)
         REFERENCES account_list_availability_projections(viewer_system_account_id, account_id)
@@ -715,6 +746,28 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)),
       updated_at TEXT NOT NULL,
       FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    -- Request reads are PostgreSQL-only. Redis remains the source for short-
+    -- lived runtime state, while this durable overlay carries the last
+    -- reconciled concurrency value into the one-query list response.
+    CREATE TABLE IF NOT EXISTS account_list_availability_runtime_overlays (
+      account_id TEXT PRIMARY KEY,
+      current_concurrency INTEGER NOT NULL CHECK (current_concurrency >= 0),
+      observed_at TEXT NOT NULL,
+      next_reconcile_at TEXT,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
+    -- A missing or unhealthy dependency row is intentionally fail-closed.
+    -- Recovery remains unavailable until the worker has replayed every dirty
+    -- list row, so a Redis outage can never publish an old availability view.
+    CREATE TABLE IF NOT EXISTS account_list_availability_projection_dependency_health (
+      dependency_name TEXT PRIMARY KEY CHECK (dependency_name = 'runtime_state'),
+      state TEXT NOT NULL CHECK (state IN ('healthy', 'unavailable', 'recovering')),
+      generation INTEGER NOT NULL CHECK (generation >= 1),
+      reason TEXT,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS account_list_availability_dirty (
@@ -1210,6 +1263,71 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON account_list_availability_projection_tags(viewer_system_account_id, tag_id, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_search_terms_lookup
       ON account_list_availability_projection_search_terms(viewer_system_account_id, term, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_search_terms_name_order
+      ON account_list_availability_projection_search_terms(
+        viewer_system_account_id,
+        term,
+        name_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_status_priority
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        effective_status,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_priority
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        name_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name_search_incomplete
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        name_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      )
+      WHERE search_index_complete = 0;
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_schedulable_priority
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        schedulable_bucket,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_group_status_priority
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        bound_group_id,
+        effective_status,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      )
+      WHERE bound_group_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_provider_status_priority
+      ON account_list_availability_projection_index(
+        viewer_system_account_id,
+        provider_code,
+        effective_status,
+        priority_sort_key ASC,
+        created_at_sort_key ASC,
+        account_id ASC
+      );
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_viewer_health_refresh
       ON account_list_availability_projection_viewer_health(is_current, updated_at ASC, viewer_system_account_id ASC);
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_dirty_claim
@@ -1221,6 +1339,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_viewer_transition
       ON account_list_availability_projections(viewer_system_account_id, next_transition_at ASC, account_id ASC)
       WHERE next_transition_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_list_availability_runtime_overlay_due
+      ON account_list_availability_runtime_overlays(next_reconcile_at ASC, account_id ASC)
+      WHERE next_reconcile_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_lookup ON accounts(provider_protocol_profile_id, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code, id);
@@ -1472,6 +1593,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureAccountHealthCheckEndpointModeSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
+  ensureOidcProviderSchema(database)
   ensureAuthorizationInstanceIndexes(database)
 }
 
@@ -1557,6 +1679,133 @@ function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_external_integration_sources_status ON external_integration_sources(status, name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_external_integration_sources_name_unique_lower ON external_integration_sources(lower(name));
+  `)
+}
+
+function ensureOidcProviderSchema(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS oauth_clients (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      client_type TEXT NOT NULL CHECK (client_type IN ('public', 'confidential')),
+      client_secret_hash TEXT,
+      redirect_uris_json TEXT NOT NULL,
+      allowed_scopes_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_grants (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      scopes_json TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_authorization_transactions (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      scopes_json TEXT NOT NULL,
+      state_ciphertext TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      csrf_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+      id TEXT PRIMARY KEY,
+      code_hash TEXT NOT NULL UNIQUE,
+      client_id TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (grant_id) REFERENCES oauth_grants(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      client_id TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      issued_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      replaced_at TEXT,
+      successor_token_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (grant_id) REFERENCES oauth_grants(id) ON DELETE CASCADE,
+      FOREIGN KEY (successor_token_id) REFERENCES oauth_access_tokens(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_authorization_code_oidc_contexts (
+      code_id TEXT PRIMARY KEY,
+      nonce_ciphertext TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (code_id) REFERENCES oauth_authorization_codes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_signing_keys (
+      id TEXT PRIMARY KEY,
+      kid TEXT NOT NULL UNIQUE,
+      private_key_ciphertext TEXT NOT NULL,
+      public_jwk_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active', 'retired')),
+      created_at TEXT NOT NULL,
+      retired_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS oauth_device_authorizations (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      device_code_hash TEXT NOT NULL UNIQUE,
+      user_code TEXT NOT NULL UNIQUE,
+      verification_uri TEXT NOT NULL,
+      scopes_json TEXT NOT NULL,
+      nonce_ciphertext TEXT,
+      expires_at TEXT NOT NULL,
+      interval_seconds INTEGER NOT NULL CHECK (interval_seconds BETWEEN 1 AND 60),
+      last_polled_at TEXT,
+      csrf_hash TEXT,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'consumed', 'expired')),
+      system_account_id TEXT,
+      approved_at TEXT,
+      denied_at TEXT,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_oauth_grants_user_client_active
+      ON oauth_grants(system_account_id, client_id, expires_at, revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_expiry
+      ON oauth_authorization_codes(expires_at, consumed_at);
+    CREATE INDEX IF NOT EXISTS idx_oauth_authorization_transactions_expiry
+      ON oauth_authorization_transactions(expires_at, completed_at);
+    CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_grant_expiry
+      ON oauth_access_tokens(grant_id, expires_at, revoked_at, replaced_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_signing_keys_one_active
+      ON oauth_signing_keys(status) WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_oauth_device_authorizations_poll
+      ON oauth_device_authorizations(device_code_hash, client_id, expires_at, status);
+    CREATE INDEX IF NOT EXISTS idx_oauth_device_authorizations_user_code
+      ON oauth_device_authorizations(user_code, expires_at, status);
   `)
 }
 

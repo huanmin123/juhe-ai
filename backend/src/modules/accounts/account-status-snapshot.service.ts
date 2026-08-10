@@ -33,26 +33,68 @@ export interface AccountRuntimeStatusFilterCandidate {
   circuitSummary?: PublicAccountCircuitSummary
 }
 
+export interface AccountListPageHydration {
+  result: AccountManagementListResult
+  runtimeSnapshot: AccountStatusSnapshotResult['runtimeSnapshot']
+  projectionNextTransitionAtByAccountId: Map<string, string>
+}
+
+interface AccountStatusSnapshotInternalResult extends AccountStatusSnapshotResult {
+  projectionNextTransitionAtByAccountId: Map<string, string>
+}
+
+export interface AccountListPageHydrationDependencies {
+  loadCircuitSummaries?: (accountRuntimeKeys: string[]) => Promise<Record<string, PublicAccountCircuitSummary>>
+}
+
 export async function hydrateAccountListPage(
   access: AccessScope | undefined,
   page: AccountManagementListPage
 ): Promise<AccountManagementListResult> {
+  return (await hydrateAccountListPageWithRuntimeSnapshot(access, page)).result
+}
+
+/**
+ * Internal callers that materialize a durable list projection need the
+ * runtime dependency result. Public list hydration deliberately keeps that
+ * transport detail out of the response DTO.
+ */
+export async function hydrateAccountListPageWithRuntimeSnapshot(
+  access: AccessScope | undefined,
+  page: AccountManagementListPage,
+  dependencies: AccountListPageHydrationDependencies = {}
+): Promise<AccountListPageHydration> {
   const { statusSeeds, ...listPage } = page
   if (page.items.length === 0) {
-    return { ...listPage, items: [], generatedAt: new Date().toISOString() }
+    return {
+      result: { ...listPage, items: [], generatedAt: new Date().toISOString() },
+      runtimeSnapshot: {
+        accountConcurrencyAvailable: true,
+        accountRuntimeAvailabilityAvailable: true,
+        accountCircuitSummaryAvailable: true
+      },
+      projectionNextTransitionAtByAccountId: new Map()
+    }
   }
   const snapshot = statusSeeds.length === page.items.length
-    ? await getAccountStatusSnapshotFromProjections(await hydrateAccountManagementStatusSeedsAsync(statusSeeds))
-    : await getAccountStatusSnapshot(access, page.items.map((item) => item.id))
+    ? await getAccountStatusSnapshotFromProjections(
+      await hydrateAccountManagementStatusSeedsAsync(statusSeeds),
+      dependencies
+    )
+    : await getAccountStatusSnapshotInternal(access, page.items.map((item) => item.id), dependencies)
   const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
   return {
-    ...listPage,
-    generatedAt: snapshot.generatedAt,
-    items: page.items.map((item) => ({
-      ...item,
-      ...snapshotById.get(item.id),
-      currentConcurrency: snapshotById.get(item.id)?.currentConcurrency ?? 0
-    } as AccountManagementListResult['items'][number]))
+    result: {
+      ...listPage,
+      generatedAt: snapshot.generatedAt,
+      items: page.items.map((item) => ({
+        ...item,
+        ...snapshotById.get(item.id),
+        currentConcurrency: snapshotById.get(item.id)?.currentConcurrency ?? 0
+      } as AccountManagementListResult['items'][number]))
+    },
+    runtimeSnapshot: snapshot.runtimeSnapshot,
+    projectionNextTransitionAtByAccountId: snapshot.projectionNextTransitionAtByAccountId
   }
 }
 
@@ -106,22 +148,32 @@ export function parseAccountStatusSnapshotAccountIds(value: unknown): string[] {
 
 export async function getAccountStatusSnapshot(
   access: AccessScope | undefined,
-  accountIds: string[]
+  accountIds: string[],
+  dependencies: AccountListPageHydrationDependencies = {}
 ): Promise<AccountStatusSnapshotResult> {
+  return getAccountStatusSnapshotInternal(access, accountIds, dependencies)
+}
+
+async function getAccountStatusSnapshotInternal(
+  access: AccessScope | undefined,
+  accountIds: string[],
+  dependencies: AccountListPageHydrationDependencies = {}
+): Promise<AccountStatusSnapshotInternalResult> {
   const projections = await listAccountStatusProjectionsAsync(access, accountIds)
-  return getAccountStatusSnapshotFromProjections(projections)
+  return getAccountStatusSnapshotFromProjections(projections, dependencies)
 }
 
 async function getAccountStatusSnapshotFromProjections(
-  projections: Awaited<ReturnType<typeof listAccountStatusProjectionsAsync>>
-): Promise<AccountStatusSnapshotResult> {
+  projections: Awaited<ReturnType<typeof listAccountStatusProjectionsAsync>>,
+  dependencies: AccountListPageHydrationDependencies = {}
+): Promise<AccountStatusSnapshotInternalResult> {
   const ownerIds = projections
     .filter((item) => item.accessType !== 'authorized' && item.balanceQueryEnabled === true)
     .map((item) => item.id)
   const [runtime, concurrency, circuits, balanceSnapshots, apiKeyRuntimeByAccountId] = await Promise.all([
     loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
     loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId)),
-    loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
+    (dependencies.loadCircuitSummaries ?? loadPublicAccountCircuitSummaries)(projections.map((item) => item.runtimeKey))
       .then((values) => ({ available: true, values }))
       .catch(() => ({ available: false, values: {} as Record<string, PublicAccountCircuitSummary> })),
     loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds),
@@ -131,6 +183,9 @@ async function getAccountStatusSnapshotFromProjections(
   ])
   return {
     generatedAt: new Date().toISOString(),
+    projectionNextTransitionAtByAccountId: new Map(projections.flatMap((projection) =>
+      projection.quotaResetAt ? [[projection.id, projection.quotaResetAt] as const] : []
+    )),
     runtimeSnapshot: {
       accountConcurrencyAvailable: concurrency.available,
       accountRuntimeAvailabilityAvailable: runtime.available,
@@ -170,6 +225,7 @@ async function getAccountStatusSnapshotFromProjections(
         authorizationInstanceSourceAccountLastErrorCode: _authorizationInstanceSourceAccountLastErrorCode,
         authorizationInstanceSourceAccountLastErrorMessage: _authorizationInstanceSourceAccountLastErrorMessage,
         authorizationInstanceSourceAccountLastErrorTraceId: _authorizationInstanceSourceAccountLastErrorTraceId,
+        quotaResetAt: _quotaResetAt,
         authorizationInstanceSourceAccountExpiresAt: _authorizationInstanceSourceAccountExpiresAt,
         authorizationInstanceSourceAccountCooldownUntil: _authorizationInstanceSourceAccountCooldownUntil,
         authorizationInstanceSourceAccountStatus: _authorizationInstanceSourceAccountStatus,
