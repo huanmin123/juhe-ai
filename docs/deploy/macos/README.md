@@ -16,5 +16,6 @@
 - Docker 部署依赖 Docker Desktop 或等价容器环境。
 - 公网 HTTPS 默认优先用 [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md)。
 - 长期运行默认由 launchd 负责常驻，外部探针只告警；确有无人值守自动恢复需求时再看 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+- 当前高性能 `install-performance-topology.sh` 只编排 F1/F2；F3 macOS launchd 编排、temporary release 验收和回滚尚未现场验证。F3 已接管审计的候选不能用该 F1/F2-only 脚本执行生产 apply。
 - 高性能模式在 macOS 固定使用 main `6379/6380/6381` 三个 system LaunchDaemon；临时接管使用独立 `16379/16380/16381`，namespace 不能替代物理 PID 隔离。
 - 如果上游 API 需要代理访问，先看 [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md)。

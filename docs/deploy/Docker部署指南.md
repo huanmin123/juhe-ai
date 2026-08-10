@@ -60,14 +60,20 @@ Docker 镜像不会在服务器镜像构建阶段重新跑前端构建，避免�
 
 ```powershell
 Set-Location docker
-docker compose up -d --build
+Copy-Item .env.example .env
+# 编辑 .env：必须填写独立的 JUHE_AI_AUDIT_LOG_INPUT_SECRET。
+docker compose config --quiet
+docker compose up -d --build --wait
 ```
 
 Linux / macOS：
 
 ```bash
 cd docker
-docker compose up -d --build
+cp .env.example .env
+# 编辑 .env：必须填写独立的 JUHE_AI_AUDIT_LOG_INPUT_SECRET。
+docker compose config --quiet
+docker compose up -d --build --wait
 ```
 
 启动后访问：
@@ -81,15 +87,16 @@ http://localhost:3000/__aisys__/
 ```bash
 cd docker
 cp .env.performance.example .env.performance
-# 填写 JUHE_AI_SECRET、PostgreSQL / Redis 密码，以及对应 URL
-docker compose --env-file .env.performance -f compose.performance.yml up -d --build
+# 填写 JUHE_AI_SECRET、PostgreSQL / Redis 密码、对应 URL 和独立 JUHE_AI_AUDIT_LOG_INPUT_SECRET
+docker compose --env-file .env.performance -f compose.performance.yml config --quiet
+docker compose --env-file .env.performance -f compose.performance.yml up -d --build --wait
 ```
 
 高性能模式未迁移的 PostgreSQL adapter 入口会 fail-fast，不回退写 SQLite；中间件容器、schema 初始化和已迁移链路按 [高性能模式部署指南](高性能模式部署指南.md) 验证。
 
 ## 4. 配置
 
-不复制配置文件也能启动。需要改端口、公网访问地址，或沿用已按当前 schema 准备好的数据目录 / `.env` 时，再复制：
+首次启动必须复制配置文件。F3 input secret 没有默认值；不复制或不填写该值时 Compose 会在配置校验阶段失败：
 
 ```powershell
 Copy-Item .env.example .env
@@ -126,6 +133,7 @@ JUHE_AI_TRUST_PROXY=false
 
 - `JUHE_AI_PUBLIC_BIND` 是宿主机绑定地址；宿主机 Caddy 反代时建议 `127.0.0.1`，需要局域网 HTTP 临时访问时才用 `0.0.0.0`。
 - `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成 `/app/backend/data/.juhe-ai-secret` 并复用；生产建议在宿主机 env 显式保存稳定密钥。
+- `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 必须填写为独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它同时提供给 Node 和 F3 loopback HMAC 输入端点。
 - 如果现有部署使用容器自动生成的密钥，创建 `business-*` 业务备份时必须把容器内当前有效 `JUHE_AI_SECRET` 单独写入受限权限的恢复 env / secret 文件。不得为了保留这个密钥备份整个数据卷；缺少有效密钥时，业务库中的上游凭据无法恢复。
 - 迁移已有业务库时必须填写原来的 `JUHE_AI_SECRET`。
 - 直接 HTTP 访问时 `JUHE_AI_COOKIE_SECURE=false`；HTTPS 反向代理后建议改为 `true`。
@@ -145,9 +153,9 @@ standalone 首次初始化空数据卷时，F2 entrypoint 会在启动 Go 采样
 - F1：`JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL），以及 `JUHE_AI_LOG_DIR`。`JUHE_AI_RUNTIME_LOG_ONCE=false` 用于常驻运行。
 - F2：`JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、`JUHE_AI_TABLE_MONITOR_STORE`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL）。生产常驻还应明确 interval、lease、retention 等 F2 参数。
 - F3：`JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_STORE`、`JUHE_AI_AUDIT_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL）、独立 blob/hot-search 目录、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`。
-- SQLite：F1、F2、业务、dataset、usage catalog、stats 和 usage shard 路径必须物理隔离；F1/F2 输出库分别由 Go 强制 `WAL` 和 `busy_timeout=5000`，Node 只读其产物。
-- PostgreSQL：F1 写其对应日志 schema，F2 写 `juhe_stats`；两者不以 Redis 或队列为依赖。
-- Go 目前尚未校验 usage shard root。SQLite 部署前仍须由人工确认该目录与 F1/F2 输出、其源库均不重叠；这是一项未来 usage 迁移前必须补齐的启动校验门禁，不是已完成的生产验证。
+- SQLite：F1、F2、F3、业务、dataset、usage catalog、stats 和 usage shard 路径必须物理隔离；F1/F2/F3 输出库分别由 Go 强制 `WAL` 和 `busy_timeout=5000`，Node 只读其产物。
+- PostgreSQL：F1 写其对应日志 schema，F2 写 `juhe_stats`，F3 写其审计 schema；三者不以 Redis 或队列为依赖。
+- F3 已校验 usage shard root，但 F1/F2 当前没有该 root 的完整启动校验。SQLite 部署前仍须由人工确认该目录与任一 F1/F2/F3 输出、其源库均不重叠；这是一项未来 usage 迁移前必须补齐的统一启动门禁，不是已完成的生产验证。
 
 ## 5. 持久化
 
@@ -166,6 +174,7 @@ juhe-ai-audit-log-data -> /app/backend/audit-log-data
 ## 6. 验证
 
 ```powershell
+docker compose ps
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
@@ -177,6 +186,7 @@ docker compose logs --tail=100 table-monitor
 Linux / macOS：
 
 ```bash
+docker compose ps
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
@@ -190,6 +200,7 @@ docker compose logs --tail=100 table-monitor
 - `/__aisys__/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/api/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/` 返回前端页面。
+- `docker compose ps` 中 Node、F1、F2、F3 均为 `healthy`；performance 还应包含 PostgreSQL、PgBouncer 和三类 Redis。
 - 日志中能看到主服务、DB service、background worker 以及 F1/F2/F3 sidecar 启动记录；F3 health probe 必须返回 `204`，并用一次合法输入确认 Node → Go → Node 审计读回；还必须用 F1 `/runtime-logs` 与 F2 `/table-monitor` 的只读接口确认数据新鲜度。
 
 ## 7. 状态检测和恢复

@@ -13,8 +13,8 @@
 - `Dockerfile.table-monitor`：F2 Go 表监控 sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-table-monitor`。
 - `Dockerfile.audit-log-writer`：F3 Go 原始审计 writer sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-audit-log-writer`，并内置 loopback HTTP `204` health probe。
 - `entrypoint.sh`：容器启动入口，设置默认环境变量、创建数据目录、生成或复用 `JUHE_AI_SECRET`，并执行 SQLite 运行时预检。
-- `.env.example`：可选配置模板。不复制也能使用默认值启动；需要改端口、公网地址、密钥或镜像名时复制为 `.env`。
-- `.env.performance.example`：高性能模式配置模板，复制为 `.env.performance` 后必须修改数据库、Redis 和应用密钥。
+- `.env.example`：standalone 必填配置模板。首次启动必须复制为 `.env` 并填写 F3 input secret；不能直接使用默认 Compose 配置。
+- `.env.performance.example`：高性能模式必填配置模板。复制为 `.env.performance` 后必须填写数据库、Redis、应用密钥和 F3 input secret。
 
 ## 构建产物
 
@@ -33,7 +33,10 @@ F1、F2、F3 sidecar 都在镜像构建时独立编译 Go 程序，不需要预�
 
 ```bash
 cd docker
-docker compose up -d --build
+cp .env.example .env
+# 在 .env 填写稳定的 JUHE_AI_AUDIT_LOG_INPUT_SECRET；production 至少 32 位，不能使用 JUHE_AI_SECRET。
+docker compose config --quiet
+docker compose up -d --build --wait
 ```
 
 浏览器访问：
@@ -49,8 +52,9 @@ http://localhost:3000/__aisys__/
 ```bash
 cd docker
 cp .env.performance.example .env.performance
-# 填写 JUHE_AI_SECRET、PostgreSQL / Redis 密码、对应 URL 和访问 Origin
-docker compose --env-file .env.performance -f compose.performance.yml up -d --build
+# 填写 JUHE_AI_SECRET、PostgreSQL / Redis 密码、对应 URL、访问 Origin 和独立 JUHE_AI_AUDIT_LOG_INPUT_SECRET。
+docker compose --env-file .env.performance -f compose.performance.yml config --quiet
+docker compose --env-file .env.performance -f compose.performance.yml up -d --build --wait
 ```
 
 当前 PostgreSQL repository adapter 未整体完成；未迁移入口会在 performance 模式下 fail-fast，避免误回退到 SQLite。PostgreSQL、PgBouncer、Redis、schema 初始化和已迁移链路按 `docs/deploy/高性能模式部署指南.md` 验证。
@@ -65,19 +69,19 @@ pnpm --filter juhe-ai-backend postgres:init-schema
 
 如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`、`redis-queue:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`、redis-queue `6381`，不要把 Redis 容器内 `6379` 误当宿主机端口。
 
-## F1 / F2 Go sidecar
+## F1 / F2 / F3 Go sidecar
 
 两个 Compose 文件都会启动 `runtime-log-indexer`、`table-monitor` 与 `audit-log-writer`。F1 由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，F2 由 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 标识，F3 由 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` 标识；多实例部署必须为各自事实库使用稳定且唯一的值。三者只有在应用 `/__aisys__/api/health` 确认 DB service 就绪后才启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是 F1 默认常驻扫描模式，不能改为默认一次性任务；F2 按 interval、lease 和 retention 参数常驻采样；F3 使用独立输入密钥和 loopback 输入端点。
 
 standalone 首次使用空数据卷时，F2 Docker entrypoint 会等待 Node 创建 `JUHE_AI_STATS_DATABASE_PATH` 指向的统计源库，默认最多 `90` 秒；超时会显式失败。performance 的 F2 使用 PostgreSQL，不经过该 SQLite 等待。
 
-standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 F1，并为 F1/F2 提供独立输出 volume；两者显式接收对方输出路径和所有 Node SQLite owner 路径，以便拒绝物理文件复用。各自只写自己的 volume，Node 只读其产物。F1/F2 对 SQLite 输出强制 `WAL` 与 `busy_timeout=5000`。performance 模式使用 `JUHE_AI_POSTGRES_URL`：F1 写其日志 schema，F2 写 `juhe_stats`；两者等待 PgBouncer 健康和 Node `/__aisys__/api/health` 的 DB-service 就绪，不依赖 Redis 数据面。
+standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 F1，并为 F1/F2/F3 提供独立输出 volume；三者显式接收对方输出路径和 Node SQLite owner 路径，以便拒绝物理文件复用。各自只写自己的 volume，Node 只读其产物。F1/F2/F3 对 SQLite 输出强制 `WAL` 与 `busy_timeout=5000`。performance 模式使用 `JUHE_AI_POSTGRES_URL`：F1 写其日志 schema，F2 写 `juhe_stats`，F3 写其审计 schema；三者等待所需依赖与 Node `/__aisys__/api/health` 的 DB-service 就绪，F1/F2/F3 不依赖 Redis 数据面。
 
 F1 需要 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、store、对应 SQLite 路径或 PG URL、`JUHE_AI_LOG_DIR`；F2 需要 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、store、对应 SQLite 输出路径或 PG URL；F3 需要稳定的 `JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`、`JUHE_AI_AUDIT_LOG_INPUT_URL`、独立 SQLite/PG 输出配置、blob 目录和 hot-search 目录。Docker 中 F3 与 Node 使用 `network_mode: service:juhe-ai` 共享 loopback namespace，不能改成仅监听容器网卡。SQLite 部署人工预检还必须确认 usage shard root 不与任一 F1/F2/F3 输出或源库重叠：Go 当前未实现该 root 的启动校验，此项应作为未来 usage 迁移门禁，不能写成已完成的部署验证。
 
 ## 按需配置
 
-复制示例配置：
+首次启动先复制示例配置。F3 input secret 没有默认值，未配置时 `docker compose config` 和 `up` 都会失败：
 
 ```bash
 cd docker
@@ -112,6 +116,7 @@ JUHE_AI_TRUST_PROXY=false
 - `JUHE_AI_PUBLIC_ORIGIN` 是 Docker entrypoint 的便捷变量，会在 `JUHE_AI_ALLOWED_ORIGINS` 留空时转换成后端 CORS 白名单；直接运行 Node / PM2 / systemd 时必须配置 `JUHE_AI_ALLOWED_ORIGINS`。
 - `JUHE_AI_PUBLIC_ORIGIN` 填浏览器实际访问的完整 Origin，例如 `http://1.2.3.4:3000` 或 `https://ai.example.com`。
 - `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成并复用。迁移旧业务库时必须填写旧密钥，否则 OAuth token、上游 API Key、代理密码等敏感字段无法解密。
+- `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 必须显式填写为独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它同时提供给 Node 和 F3 loopback HMAC 输入端点。
 - 直接 HTTP 访问时保持 `JUHE_AI_COOKIE_SECURE=false` 和 `JUHE_AI_TRUST_PROXY=false`；HTTPS 反向代理后改为 `true`，并确保容器端口只被 Caddy 或可信入口访问。
 - Docker Hub 拉取慢时，可以在 `.env` 中覆盖 `JUHE_AI_NODE_IMAGE` 为可访问的 Node 22 slim 镜像。
 
@@ -132,6 +137,7 @@ juhe-ai-audit-log-data -> /app/backend/audit-log-data
 ## 验证
 
 ```bash
+docker compose ps
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
@@ -142,7 +148,7 @@ docker compose logs --tail=100 audit-log-writer
 docker compose exec -T audit-log-writer /usr/local/bin/juhe-ai-audit-log-healthcheck
 ```
 
-期望前两个接口返回 `200`，F3 health probe 返回 `204`，前端路径返回页面，并且日志里能看到主服务、DB service、background worker、F1、F2 与 F3 启动记录。还必须通过 Node 只读 `/runtime-logs` 和 `/table-monitor` 接口确认 F1/F2 数据新鲜度，并用 F3 输入 POST 与审计详情读回确认 F3；Node health 不能替代任一 sidecar 验证。
+期望 `docker compose ps` 中 Node、F1、F2、F3 均为 `healthy`；前两个接口返回 `200`，F3 health probe 返回 `204`，前端路径返回页面，并且日志里能看到主服务、DB service、background worker、F1、F2 与 F3 启动记录。还必须通过 Node 只读 `/runtime-logs` 和 `/table-monitor` 接口确认 F1/F2 数据新鲜度，并用 F3 输入 POST 与审计详情读回确认 F3；Node health 不能替代任一 sidecar 验证。
 
 ## 清理
 

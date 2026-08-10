@@ -24,6 +24,15 @@ JUHE_AI_PORT=3000
 JUHE_AI_ALLOWED_ORIGINS=http://127.0.0.1:3000
 JUHE_AI_COOKIE_SECURE=false
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
+JUHE_AI_AUDIT_LOG_STORE=sqlite
+JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
+JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
+JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search
+JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
 启动并验证：
@@ -31,7 +40,12 @@ JUHE_AI_SECRET=替换为至少32位稳定随机密钥
 ```powershell
 pwsh .\start.ps1
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
+Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
+Invoke-WebRequest http://127.0.0.1:3303/__aiinternal__/health
+Get-Content .\backend\logs\juhe-ai-audit-log-writer.log -Tail 100
 ```
+
+Node 两个 health 应为 `200`，F3 health 应为 `204`。继续按 [AI 部署执行清单](../AI部署执行清单.md) 验证 F1/F2 新鲜度和 Node -> F3 -> Node 审计读回。
 
 后台“代理管理”新增：
 

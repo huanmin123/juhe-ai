@@ -11,7 +11,7 @@
 | Linux | `bash ./start.sh` |
 
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包同时包含目标平台的 `backend-go/juhe-ai-runtime-log-indexer` 与 `backend-go/juhe-ai-table-monitor`（Windows 为 `.exe`）；Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包同时包含目标平台的 `backend-go/juhe-ai-runtime-log-indexer`、`backend-go/juhe-ai-table-monitor` 与 `backend-go/juhe-ai-audit-log-writer`（Windows 为 `.exe`）；Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
 
 ## 部署前检查
 
@@ -29,7 +29,7 @@ Copy-Item .\backend\.env.example .\backend\.env -ErrorAction SilentlyContinue
 notepad .\backend\.env
 ```
 
-如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动从 example 创建 `backend/.env`，生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/Caddy自动HTTPS部署指南.md`。
+如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动从 example 创建 `backend/.env`，生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。这不会生成 F2/F3 owner ID 或 F3 input secret；F3 的必填项缺失时启动会明确失败。因此首次启动前仍应手工编辑 `backend/.env`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/Caddy自动HTTPS部署指南.md`。
 
 最低配置：
 
@@ -45,6 +45,14 @@ JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/juhe-ai-table-monitor.sqlite3
 JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
+JUHE_AI_AUDIT_LOG_STORE=sqlite
+JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
+JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
+JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search
+JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为稳定的高熵密钥，production 至少 32 位
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
@@ -52,7 +60,7 @@ JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
 ```
 
-新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`。六个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 是另一把密钥，不能留示例文字、不能回退到 `JUHE_AI_SECRET`，并须在安全的密码管理或受限 env 中保存。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；操作日志、公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径。七个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
 启动脚本会独立启动 Go `juhe-ai-runtime-log-indexer`，并把稳定随机的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 首次写入 `backend/.env`。它不是 Node/Go owner switch：Node 只继续写 JSONL 和只读查询，Go 是运行日志索引、cursor、facet 与保留清理的唯一 writer，不使用队列或 Node worker。Go 使用与 Node 相同的环境来源（进程环境、`backend/.env`、可选 `JUHE_AI_ENV_FILE` / `.env.capacity`）；SQLite 读取 `JUHE_AI_DATABASE_PATH` 与独立的 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，PostgreSQL 读取 `JUHE_AI_POSTGRES_URL`。相对的 SQLite / 日志目录路径会按 `backend/` 解析成同一绝对位置。启动期间先等待 `/__aisys__/api/health` 确认 DB service 已就绪，才启动 indexer；它在 `backend/runtime/juhe-ai-runtime-log-indexer.pid` 跟踪进程，并把输出写入 `backend/logs/juhe-ai-runtime-log-indexer.log`；Web/API 进程或 indexer 任一退出时，启动脚本会停止另一方，避免留下无主 writer。
 
@@ -69,6 +77,8 @@ pwsh .\start.ps1
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
+Invoke-WebRequest http://127.0.0.1:3303/__aiinternal__/health
+Get-Content .\backend\logs\juhe-ai-audit-log-writer.log -Tail 100
 ```
 
 macOS/Linux：
@@ -78,7 +88,11 @@ bash ./start.sh
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
+curl -i http://127.0.0.1:3303/__aiinternal__/health
+tail -n 100 ./backend/logs/juhe-ai-audit-log-writer.log
 ```
+
+上例使用默认 F3 端口；如变更 `JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`，health URL 也必须相应变更。上述 HTTP health 只证明 listener 可用，发布验收仍须从 Node 只读接口确认 F1/F2 数据新鲜，并发起一次可审计业务请求后在管理员审计详情中读回同一记录，证明 Node -> F3 -> Node 完整链路。
 
 ## 备份
 

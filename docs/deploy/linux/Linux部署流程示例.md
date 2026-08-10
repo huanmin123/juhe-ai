@@ -30,6 +30,15 @@ JUHE_AI_ALLOWED_ORIGINS=https://ai.example.com
 JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
+JUHE_AI_AUDIT_LOG_STORE=sqlite
+JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
+JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
+JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search
+JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
 ```bash
@@ -65,7 +74,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now juhe-ai
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
+curl -i http://127.0.0.1:3303/__aiinternal__/health
+sudo journalctl -u juhe-ai -n 100 --no-pager
 ```
+
+Node 两个 health 应为 `200`，F3 health 应为 `204`。随后按 [AI 部署执行清单](../AI部署执行清单.md) 验证 F1/F2 新鲜度和 Node -> F3 -> Node 审计读回；示例不构成生产切流授权。
 
 后台代理：
 
