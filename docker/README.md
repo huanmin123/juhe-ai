@@ -69,6 +69,8 @@ pnpm --filter juhe-ai-backend postgres:init-schema
 
 两个 Compose 文件都会启动 `runtime-log-indexer`、`table-monitor` 与 `audit-log-writer`。F1 由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，F2 由 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 标识，F3 由 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` 标识；多实例部署必须为各自事实库使用稳定且唯一的值。三者只有在应用 `/__aisys__/api/health` 确认 DB service 就绪后才启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是 F1 默认常驻扫描模式，不能改为默认一次性任务；F2 按 interval、lease 和 retention 参数常驻采样；F3 使用独立输入密钥和 loopback 输入端点。
 
+standalone 首次使用空数据卷时，F2 Docker entrypoint 会等待 Node 创建 `JUHE_AI_STATS_DATABASE_PATH` 指向的统计源库，默认最多 `90` 秒；超时会显式失败。performance 的 F2 使用 PostgreSQL，不经过该 SQLite 等待。
+
 standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 F1，并为 F1/F2 提供独立输出 volume；两者显式接收对方输出路径和所有 Node SQLite owner 路径，以便拒绝物理文件复用。各自只写自己的 volume，Node 只读其产物。F1/F2 对 SQLite 输出强制 `WAL` 与 `busy_timeout=5000`。performance 模式使用 `JUHE_AI_POSTGRES_URL`：F1 写其日志 schema，F2 写 `juhe_stats`；两者等待 PgBouncer 健康和 Node `/__aisys__/api/health` 的 DB-service 就绪，不依赖 Redis 数据面。
 
 F1 需要 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、store、对应 SQLite 路径或 PG URL、`JUHE_AI_LOG_DIR`；F2 需要 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、store、对应 SQLite 输出路径或 PG URL；F3 需要稳定的 `JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`、`JUHE_AI_AUDIT_LOG_INPUT_URL`、独立 SQLite/PG 输出配置、blob 目录和 hot-search 目录。Docker 中 F3 与 Node 使用 `network_mode: service:juhe-ai` 共享 loopback namespace，不能改成仅监听容器网卡。SQLite 部署人工预检还必须确认 usage shard root 不与任一 F1/F2/F3 输出或源库重叠：Go 当前未实现该 root 的启动校验，此项应作为未来 usage 迁移门禁，不能写成已完成的部署验证。

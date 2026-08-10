@@ -140,6 +140,8 @@ JUHE_AI_TRUST_PROXY=false
 
 两个 sidecar 都在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动，并保留独立容器、PID 和日志；任何一个退出或不新鲜都应使部署验证失败，不得把 Node health 成功当作 sidecar 成功。
 
+standalone 首次初始化空数据卷时，F2 entrypoint 会在启动 Go 采样器前等待 `JUHE_AI_STATS_DATABASE_PATH` 源库出现，默认超时 `90` 秒；超时保留原始错误并退出。performance 的 F2 使用 PostgreSQL，不等待该 SQLite 文件。
+
 - F1：`JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL），以及 `JUHE_AI_LOG_DIR`。`JUHE_AI_RUNTIME_LOG_ONCE=false` 用于常驻运行。
 - F2：`JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、`JUHE_AI_TABLE_MONITOR_STORE`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL）。生产常驻还应明确 interval、lease、retention 等 F2 参数。
 - F3：`JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_STORE`、`JUHE_AI_AUDIT_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL）、独立 blob/hot-search 目录、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`。
