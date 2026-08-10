@@ -26,6 +26,7 @@ import {
 import { authorizationInstanceAccount } from './core/account-helpers.js'
 import { updateApiKeyLastUsedAt } from './maintenance/api-key-last-used.js'
 import { createMockUsers, createProxies } from './business/foundation.js'
+import { createOidcProviderMockdata } from './business/oidc-provider.js'
 import {
   createAnnouncements,
   createCustomProviderModels,
@@ -180,6 +181,9 @@ async function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: 
   const apiKeys = createApiKeys(adminAccess, groups, users)
   const externalSources = createExternalSources()
   const responseInspectionPolicies = createResponseInspectionPolicies()
+  const oidc = runtimeConfig.oidc.enabled
+    ? await createOidcProviderMockdata(admin)
+    : undefined
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
   tuneGroupAccountBindings(groups, accounts)
@@ -191,6 +195,7 @@ async function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: 
     teams,
     authorizations,
     externalSources,
+    oidc,
     responseInspectionPolicies,
     customProviderModels
   })
@@ -203,6 +208,7 @@ async function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: 
     teams,
     authorizations,
     externalSources,
+    oidc,
     responseInspectionPolicies,
     customProviderModels
   }

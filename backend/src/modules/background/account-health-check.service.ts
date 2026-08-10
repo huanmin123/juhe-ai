@@ -393,7 +393,7 @@ async function runAccountHealthCheckQueueItem(
           // It must not clear account runtime/circuit state or write health.
           return true
         }
-        const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account)
+        const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection(account, item.reason)
         const healthCheckResult = await requestBackgroundWorkerDbService({
           type: 'record_account_health_check_success',
           accountId: account.id,
@@ -739,8 +739,12 @@ export function sourceBoundProbePermitsAccountHealthMutation(outcome: Availabili
   return outcome === 'health_failure'
 }
 
-function shouldScheduleAccountBalanceAutoDetection(account: AccountSummary): boolean {
-  return account.status === 'pending_test'
+function shouldScheduleAccountBalanceAutoDetection(
+  account: AccountSummary,
+  reason: AccountHealthCheckTriggerReason
+): boolean {
+  return reason === 'activation'
+    && (account.status === 'pending_test' || account.status === 'active')
     && account.type === 'api_key'
     && effectiveAccountApiKeyCount(account.credentials) === 1
     && account.balanceQueryEnabled !== true

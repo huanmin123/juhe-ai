@@ -162,6 +162,18 @@ export function writeSummary(
       })),
     apiKeys: apiKeySummariesForMockdata(created.apiKeys, groupById, groupOwnerById, created.users),
     authorizationSamples: groupAuthorizationSamples(created.authorizations),
+    oauthClients: created.oidc
+      ? {
+          browser: {
+            clientId: created.oidc.browserClientId,
+            displayName: created.oidc.browserClientName
+          },
+          service: {
+            clientId: created.oidc.serviceClientId,
+            displayName: created.oidc.serviceClientName
+          }
+        }
+      : undefined,
     counts: {
       users: Object.keys(created.users).length - 1,
       groups: Object.keys(created.groups).length,
@@ -170,6 +182,7 @@ export function writeSummary(
       teams: Object.keys(created.teams).length,
       authorizations: created.authorizations.length,
       externalSources: Object.keys(created.externalSources).length,
+      oauthClients: created.oidc ? 2 : 0,
       responseInspectionPolicies: created.responseInspectionPolicies,
       customProviderModels: created.customProviderModels,
       usageRecords: records.length,

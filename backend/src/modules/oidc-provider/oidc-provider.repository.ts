@@ -851,7 +851,7 @@ export function listConnectedOAuthApplications(systemAccountId: string): Array<{
   const rows = database.prepare(`
     SELECT grants.client_id, grants.scopes_json, grants.expires_at, grants.revoked_at, grants.created_at,
       clients.display_name, clients.status AS client_status,
-      MAX(tokens.issued_at) AS last_token_renewed_at
+      MAX(CASE WHEN tokens.replaced_at IS NOT NULL THEN tokens.replaced_at END) AS last_token_renewed_at
     FROM oauth_grants grants
     INNER JOIN oauth_clients clients ON clients.client_id = grants.client_id
     LEFT JOIN oauth_access_tokens tokens ON tokens.grant_id = grants.id

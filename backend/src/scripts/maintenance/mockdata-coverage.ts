@@ -20,8 +20,27 @@ type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 const allowedEmptyTables = new Set([
   'stats.model_trust_latest_dirty_accounts',
   'stats.usage_range_window_requests',
+  'stats.background_job_leases',
   // 下列游标、dirty、receipt 和 cleanup queue 都按真实请求或后台消费按需写入；Mockdata 不伪造待处理工作。
   'business.account_api_key_pool_probe_cursors',
+  // 账户可用性投影只由 PostgreSQL 高性能路径消费；SQLite Mockdata 保留 schema parity，不伪造无效投影行。
+  'business.account_list_availability_dirty',
+  'business.account_list_availability_projection_dependency_health',
+  'business.account_list_availability_projection_index',
+  'business.account_list_availability_projection_search_terms',
+  'business.account_list_availability_projection_tags',
+  'business.account_list_availability_projection_viewer_health',
+  'business.account_list_availability_projections',
+  'business.account_list_availability_runtime_overlays',
+  // OIDC Provider 未启用时不会生成签名密钥、Client 或授权状态；启用时由 assertOidcProviderCoverage 强制校验。
+  'business.oauth_access_tokens',
+  'business.oauth_authorization_code_oidc_contexts',
+  'business.oauth_authorization_codes',
+  'business.oauth_authorization_transactions',
+  'business.oauth_clients',
+  'business.oauth_device_authorizations',
+  'business.oauth_grants',
+  'business.oauth_signing_keys',
   'stats.ai_performance_summary_dirty_system_accounts',
   'stats.model_trust_observation_receipts',
   'stats.usage_overview_dirty_scopes',
@@ -35,6 +54,7 @@ export function assertMockdataCoverage(created: CreatedMockdata, options: Mockda
   assertAccountHealthMonitorCoverage(created, options)
   assertCreatedShape(created)
   assertModelTrustCoverage()
+  assertOidcProviderCoverage(database, created)
   assertApplicationTablesHaveRows()
 }
 
@@ -256,6 +276,39 @@ function assertUpstreamResponseModelCoverage(created: CreatedMockdata): void {
 function assertCreatedShape(created: CreatedMockdata): void {
   assertMinimum('Mockdata 账户对象数量不足', Object.keys(created.accounts).length, 24)
   assertMinimum('Mockdata API Key 对象数量不足', Object.keys(created.apiKeys).length, 18)
+}
+
+function assertOidcProviderCoverage(database: BusinessDatabase, created: CreatedMockdata): void {
+  if (!created.oidc) return
+  const clientIds = [created.oidc.browserClientId, created.oidc.serviceClientId]
+  assertMinimum('OIDC Client Mockdata 缺失', scalar(database, `
+    SELECT COUNT(*) AS value
+    FROM oauth_clients
+    WHERE client_id IN (${placeholders(clientIds)})
+  `, ...clientIds), 2)
+  assertMinimum('OIDC 已授权应用 Mockdata 缺失', scalar(database, `
+    SELECT COUNT(*) AS value
+    FROM oauth_grants
+    WHERE client_id = ? AND system_account_id = ? AND revoked_at IS NULL
+  `, created.oidc.browserClientId, created.users.admin.id), 1)
+  assertMinimum('OIDC access token Mockdata 缺失', scalar(database, `
+    SELECT COUNT(*) AS value
+    FROM oauth_access_tokens
+    WHERE client_id = ? AND revoked_at IS NULL AND replaced_at IS NULL
+  `, created.oidc.browserClientId), 1)
+  assertMinimum('OIDC 授权码上下文 Mockdata 缺失', scalar(database, `
+    SELECT COUNT(*) AS value
+    FROM oauth_authorization_code_oidc_contexts contexts
+    INNER JOIN oauth_authorization_codes codes ON codes.id = contexts.code_id
+    WHERE codes.client_id = ?
+  `, created.oidc.browserClientId), 1)
+  assertMinimum('OIDC 授权事务 Mockdata 缺失', scalar(database, `
+    SELECT COUNT(*) AS value FROM oauth_authorization_transactions WHERE client_id = ?
+  `, created.oidc.serviceClientId), 1)
+  assertMinimum('OIDC Device Flow Mockdata 缺失', scalar(database, `
+    SELECT COUNT(*) AS value FROM oauth_device_authorizations WHERE client_id = ? AND status = 'approved'
+  `, created.oidc.browserClientId), 1)
+  assertMinimum('OIDC 签名密钥缺失', scalar(database, 'SELECT COUNT(*) AS value FROM oauth_signing_keys WHERE status = ?', 'active'), 1)
 }
 
 function assertApplicationTablesHaveRows(): void {

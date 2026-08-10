@@ -155,7 +155,7 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
               last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
               last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
               balance_query_next_refresh_at = CASE
-                WHEN status = 'pending_test'
+                WHEN status IN ('pending_test', 'active')
                   AND ? = 1
                   AND type = 'api_key'
                   AND balance_query_enabled = 0
@@ -251,7 +251,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
           last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
           last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
           balance_query_next_refresh_at = CASE
-            WHEN status = 'pending_test'
+            WHEN status IN ('pending_test', 'active')
               AND ? = 1
               AND type = 'api_key'
               AND balance_query_enabled = 0

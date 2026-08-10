@@ -21,7 +21,7 @@ const resolved = await queryBuiltinAccountBalance({
 }, {
   queryAdapter: async (_input, adapter) => {
     preferredAttempts.push(adapter)
-    if (adapter === 'newapi') throw new Error('saved preference no longer matches')
+    if (adapter === 'newapi') return { status: 'unsupported', errorMessage: 'saved preference no longer matches' }
     if (adapter === 'sub2api') return { status: 'fresh', remainingUsd: '8.000000' }
     throw new Error('should stop at the first fallback success')
   }
@@ -74,8 +74,8 @@ const rejected = await detectAccountBalanceAdapter(candidate, {
 assert.equal(rejected, undefined, '查询异常不能自动开启')
 
 const healthSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
-assert.match(healthSource, /account\.status === 'pending_test'.*enqueueAccountBalanceAutoDetection/s, '只有首次激活成功应投递余额自动探测')
-assert.match(healthSource, /changed/, '健康检查写回失败时不能投递余额自动探测')
+assert.match(healthSource, /reason === 'activation'[\s\S]*account\.status === 'pending_test'[\s\S]*account\.status === 'active'/, '首次创建健康检查成功后应允许待检查和直接启用的单 Key 账户成为余额自动探测候选')
+assert.match(healthSource, /const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection\(account, item\.reason\)[\s\S]*if \(changed && scheduleBalanceAutoDetection\) \{[\s\S]*enqueueAccountBalanceAutoDetection/, '健康检查写回成功后才能投递余额自动探测')
 
 const querySource = readFileSync(resolve('src/modules/accounts/account-balance-query.service.ts'), 'utf8')
 assert.match(querySource, /resolveProxyUrlForProfileAsync\(candidate\.proxyProfileId\)/, '所有余额查询路径必须解析账户绑定代理')

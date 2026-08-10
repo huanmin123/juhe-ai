@@ -49,7 +49,7 @@ import { registerAccountBalanceRoutes } from './account-balance.routes.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
 import {
   dispatchAccountHealthCheck,
-  dispatchPendingAccountHealthCheck
+  dispatchInitialAccountHealthCheck
 } from './account-health-check-dispatch.service.js'
 import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 import { registerAccountForceActivateRoutes } from './account-force-activate.routes.js'
@@ -267,7 +267,7 @@ accountsRouter.post('/', mutationGuard({
         }
       }
     }, req)
-    dispatchPendingAccountHealthCheck(account)
+    dispatchInitialAccountHealthCheck(account)
     res.status(201).json(ok({
       id: account.id,
       status: account.status

@@ -51,7 +51,7 @@
           {{ formatDateTime(record.expiresAt) }}
         </template>
         <template v-else-if="column.key === 'lastTokenRotatedAt'">
-          {{ formatDateTime(record.lastTokenRotatedAt) }}
+          {{ formatDateTime(lastTokenRotatedAt(record)) }}
         </template>
         <template v-else-if="column.key === 'lastUsedAt'">
           {{ formatDateTime(record.lastUsedAt) }}
@@ -77,7 +77,7 @@
             </div>
             <div class="mobile-list-meta-item">
               <span>最近轮换</span>
-              <strong>{{ formatDateTime(record.lastTokenRotatedAt) }}</strong>
+              <strong>{{ formatDateTime(lastTokenRotatedAt(record)) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>最近使用</span>
@@ -198,7 +198,11 @@ function connectedApplicationItems(
 }
 
 function authorizedAt(record: OAuthConnectedApplicationSummary): string | undefined {
-  return record.authorizedAt ?? record.createdAt
+  return record.grantedAt ?? record.authorizedAt ?? record.createdAt
+}
+
+function lastTokenRotatedAt(record: OAuthConnectedApplicationSummary): string | undefined {
+  return record.lastTokenRenewedAt ?? record.lastTokenRotatedAt
 }
 
 function statusLabel(status: OAuthConnectedApplicationStatus): string {

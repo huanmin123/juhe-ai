@@ -9,6 +9,7 @@ import {
   accountUpdateNeedsImmediateHealthCheck,
   dispatchAccountHealthCheck,
   dispatchAccountHealthCheckWithOutcome,
+  dispatchInitialAccountHealthCheck,
   dispatchPendingAccountHealthCheck
 } from '../../modules/accounts/account-health-check-dispatch.service.js'
 import { accountHealthCheckTriggerPriority } from '../../modules/accounts/account-health-check-trigger.js'
@@ -136,6 +137,35 @@ try {
     reason: 'activation'
   }], '待检查账户应只向后台 worker 投递规范化账户 ID')
 
+  assert.equal(dispatchInitialAccountHealthCheck({
+    id: ' acc_active_single_key ',
+    status: 'active',
+    type: 'api_key',
+    credentials: { api_key: 'sk-single-key' },
+    balanceQueryEnabled: false
+  }), true, '新建时直接启用的未配置单 Key 账户仍必须投递首次余额探测前的健康检查')
+  assert.deepEqual(messages.at(-1), {
+    type: 'background_worker_account_health_check_trigger',
+    accountId: 'acc_active_single_key',
+    reason: 'activation'
+  }, '直接启用账户的首次检查必须使用 activation 原因')
+
+  assert.equal(dispatchInitialAccountHealthCheck({
+    id: 'acc_active_multi_key',
+    status: 'active',
+    type: 'api_key',
+    credentials: { api_keys: ['sk-a', 'sk-b'] },
+    balanceQueryEnabled: false
+  }), false, '多 Key 账户没有余额自动探测资格，不得额外投递首次健康检查')
+  assert.equal(dispatchInitialAccountHealthCheck({
+    id: 'acc_active_configured',
+    status: 'active',
+    type: 'api_key',
+    credentials: { api_key: 'sk-configured' },
+    balanceQueryEnabled: false,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+  }), false, '用户已配置过余额查询时不得被当作从未配置的新账户重新探测')
+
   assert.equal(dispatchAccountHealthCheck(' acc_request_failed ', 'request_failure'), true)
   assert.deepEqual(messages.at(-1), {
     type: 'background_worker_account_health_check_trigger',
@@ -236,18 +266,22 @@ try {
   assert.deepEqual(await Promise.all([producer, laterConsumer]), ['producer', true], '取消 consumer 后未结束的共享探针必须继续供后来任务复用')
   assert.equal(cancelableProbeExecutions, 1, '取消 consumer 不得删除未完成 singleflight entry 或启动重复探针')
 
-  for (const [name, sourcePath] of [
-    ['普通账户新增', '../../modules/accounts/accounts.routes.ts'],
-    ['账户导入', '../../modules/accounts/account-import-account-creator.ts'],
-    ['OpenAI OAuth 新增', '../../modules/openai-oauth/openai-oauth.routes.ts'],
-    ['外部账户推送', '../../modules/external-integrations/external-public-account-push.service.ts']
+  for (const [name, sourcePath, dispatchFunction] of [
+    ['普通账户新增', '../../modules/accounts/accounts.routes.ts', 'dispatchInitialAccountHealthCheck('],
+    ['账户导入', '../../modules/accounts/account-import-account-creator.ts', 'dispatchPendingAccountHealthCheck('],
+    ['OpenAI OAuth 新增', '../../modules/openai-oauth/openai-oauth.routes.ts', 'dispatchPendingAccountHealthCheck('],
+    ['外部账户推送', '../../modules/external-integrations/external-public-account-push.service.ts', 'dispatchPendingAccountHealthCheck(']
   ] as const) {
     const source = readFileSync(new URL(sourcePath, import.meta.url), 'utf8')
-    assert(source.includes('dispatchPendingAccountHealthCheck('), `${name}必须在保存完成后立即投递后台健康检查`)
+    assert(source.includes(dispatchFunction), `${name}必须在保存完成后立即投递后台健康检查`)
   }
 
   const accountRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
   const accountManagementPatchSource = readFileSync(new URL('../../storage/account-management-patch.repository.ts', import.meta.url), 'utf8')
+  assert(
+    accountRoutesSource.includes('dispatchInitialAccountHealthCheck(account)'),
+    '普通 API Key 新增必须让直接启用的单 Key 账户也进入首次余额探测前的健康检查'
+  )
   assert(
     accountRoutesSource.includes('dispatchAccountHealthCheck(account.id, account.healthCheckReason)'),
     '账户路由必须投递集中写入层声明的配置复检优先级'

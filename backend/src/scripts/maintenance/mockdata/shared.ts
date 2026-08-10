@@ -113,6 +113,13 @@ export interface MockExternalSources {
   readonly: CreatedExternalIntegrationSourceAuthorization
 }
 
+export interface OidcProviderMockdata {
+  browserClientId: string
+  browserClientName: string
+  serviceClientId: string
+  serviceClientName: string
+}
+
 export interface CreatedMockdata {
   users: MockSystemAccounts
   groups: MockGroups
@@ -121,6 +128,7 @@ export interface CreatedMockdata {
   teams: MockTeams
   authorizations: ResourceAuthorizationSummary[]
   externalSources: MockExternalSources
+  oidc?: OidcProviderMockdata
   responseInspectionPolicies: number
   customProviderModels: number
 }

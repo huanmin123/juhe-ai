@@ -22,6 +22,9 @@ export class UnsafeUpstreamUrlError extends Error {
   }
 }
 
+/** DNS 解析结果命中受限地址，与静态 URL 格式或字面地址错误区分。 */
+export class UnsafeResolvedUpstreamUrlError extends UnsafeUpstreamUrlError {}
+
 interface ResolvedAddress {
   address: string
   family: 4 | 6
@@ -90,7 +93,7 @@ export async function prepareSafeUpstreamRequestUrl(
   const addresses = await lookup(url.hostname, { all: true, verbatim: true }) as ResolvedAddress[]
   for (const address of addresses) {
     if (!allowlistedOrigin && isPrivateOrReservedIp(address.address)) {
-      throw new UnsafeUpstreamUrlError()
+      throw new UnsafeResolvedUpstreamUrlError()
     }
   }
   return { url, lookup: fixedLookup(addresses) }

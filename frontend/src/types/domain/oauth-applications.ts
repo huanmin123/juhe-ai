@@ -44,8 +44,10 @@ export interface OAuthConnectedApplicationSummary {
   scopes: string[]
   status: OAuthConnectedApplicationStatus
   statusReason?: string
+  grantedAt?: string
   authorizedAt?: string
   expiresAt?: string
+  lastTokenRenewedAt?: string
   lastTokenRotatedAt?: string
   lastUsedAt?: string
   createdAt?: string

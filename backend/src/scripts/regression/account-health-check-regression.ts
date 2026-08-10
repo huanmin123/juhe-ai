@@ -95,7 +95,7 @@ try {
   assert.match(repositorySource, /expectedConfigRevision[\s\S]+config_revision = \?/, '健康检查结果写入必须绑定账户配置版本')
   assert.doesNotMatch(postgresSuccessSource, /\(\? IS NULL OR/, 'PostgreSQL 健康成功写回不能使用无法推断参数类型的 NULL 守卫')
   assert.doesNotMatch(postgresFailureSource, /\(\? IS NULL OR/, 'PostgreSQL 健康失败写回不能使用无法推断参数类型的 NULL 守卫')
-  assert.match(postgresSuccessSource, /schedulable = CASE WHEN status = 'pending_test' THEN 1[\s\S]+AND \? = 1[\s\S]+balance_query_enabled = 0/, 'PostgreSQL 健康成功必须按 Node INTEGER 写入首次余额探测意图')
+  assert.match(postgresSuccessSource, /schedulable = CASE WHEN status = 'pending_test' THEN 1[\s\S]+status IN \('pending_test', 'active'\)[\s\S]+AND \? = 1[\s\S]+balance_query_enabled = 0/, 'PostgreSQL 健康成功必须为首次创建的待检查或直接启用账户按 Node INTEGER 写入余额探测意图')
   assert.match(postgresSuccessSource, /const scheduleBalanceAutoDetection = input\.scheduleBalanceAutoDetection === true \? 1 : 0/, 'PostgreSQL 首次余额探测开关必须绑定 INTEGER 0/1 参数')
   assert.match(repositorySource, /group_accounts\.enabled = 1[\s\S]+accounts\.schedulable = 1/, 'PostgreSQL 健康检查候选必须匹配 Node INTEGER 分组和可调度字段')
   assert.match(repositorySource, /CASE WHEN accounts\.status = 'pending_test' THEN 0 ELSE 1 END/, '周期兜底应优先处理待检查账户')

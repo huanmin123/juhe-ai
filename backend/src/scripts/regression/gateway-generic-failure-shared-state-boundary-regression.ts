@@ -403,6 +403,23 @@ async function assertUpstreamAbortNamedReaderErrorIsNotClientCancellation(): Pro
 }
 
 function assertSourceBoundaries(): void {
+  const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
+  const unprovenTransportFailureSource = sourceBetween(
+    dispatchSource,
+    'if (!provenStartedTransportFailure) {',
+    '\n                const requestErrorResult = await handleUpstreamRequestError('
+  )
+  assert.match(
+    unprovenTransportFailureSource,
+    /usageContext\.trafficSource === 'gateway'[\s\S]{0,200}error instanceof UnsafeResolvedUpstreamUrlError[\s\S]{0,300}markGatewayAccountTemporaryUnavailableWithCacheInvalidation/,
+    'DNS 解析命中受限地址必须把当前网关账户标记为临时不可调度'
+  )
+  assert.doesNotMatch(
+    unprovenTransportFailureSource,
+    /error instanceof UnsafeUpstreamUrlError[\s\S]{0,120}markGatewayAccountTemporaryUnavailableWithCacheInvalidation/,
+    '不得把静态 URL 格式或字面私网地址错误误判为可恢复的 DNS 账户异常'
+  )
+
   const failureSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
   const requestFailureSource = sourceBetween(
     failureSource,

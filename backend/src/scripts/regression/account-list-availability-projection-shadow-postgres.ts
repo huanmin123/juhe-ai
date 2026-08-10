@@ -6,6 +6,7 @@ import { runAccountListAvailabilityProjectionMaintenance } from '../../modules/a
 import { shadowCompareAccountListAvailabilityProjectionPage } from '../../modules/accounts/account-list-availability-projection-shadow.service.js'
 import { createSystemApiApp } from '../../modules/system-api/system-api-app.js'
 import {
+  AccountListAvailabilityProjectionUnavailableError,
   markAccountListAvailabilityProjectionRuntimeDependencyUnavailableInClient,
   claimAccountListAvailabilityDirtyInClient,
   listAccountListAvailabilityProjectionPageInClient,
@@ -688,6 +689,18 @@ async function verifyRuntimeDependencyFailureRecovery(
     options: { page: 1, pageSize: 20, status: 'active' }
   })
   assert.equal(staleHeartbeat.outcome, 'projection_unavailable', '运行态依赖心跳过期时必须 fail-closed')
+
+  const previousReadEnabled = runtimeConfig.background.accountListAvailabilityProjectionReadEnabled
+  try {
+    runtimeConfig.background.accountListAvailabilityProjectionReadEnabled = true
+    await assert.rejects(
+      () => listAccountOptionsAsync(access, { page: 1, limit: 20 }),
+      (error: unknown) => error instanceof AccountListAvailabilityProjectionUnavailableError,
+      '运行态依赖心跳过期时 user options 也必须 fail-closed，而不是返回旧投影'
+    )
+  } finally {
+    runtimeConfig.background.accountListAvailabilityProjectionReadEnabled = previousReadEnabled
+  }
 
   await markAccountListAvailabilityProjectionRuntimeDependencyUnavailableInClient(client, {
     reason: 'shadow_redis_dependency_outage'

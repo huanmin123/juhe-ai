@@ -167,6 +167,13 @@ try {
   const multi = create('multi', 'api_key', { api_keys: ['sk-a', 'sk-b'], api_key: 'sk-a', base_url: 'https://relay.example/v1' })
   const future = create('future')
   const autoDetect = create('auto-detect')
+  const directActiveAutoDetect = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'direct-active-auto-detect', type: 'api_key',
+    credentials: { api_key: 'sk-direct-active-auto-detect', base_url: 'https://relay.example/v1' },
+    supportedModels: ['gpt-5.5'], groupId: group.id,
+    status: 'active', skipInitialHealthCheck: true
+  }, access)
   const durableAutoDetect = create('durable-auto-detect')
   const retryAutoDetect = create('retry-auto-detect')
   const unsupportedAutoDetect = create('unsupported-auto-detect')
@@ -231,6 +238,25 @@ try {
     assert.equal(row.balance_query_next_refresh_at, checkedAt)
     return checkedAt
   }
+
+  const directActiveDetectionAt = new Date(Date.now() - 1_000).toISOString()
+  assert.equal(accountHealthCheckRepository.recordAccountHealthCheckSuccess(directActiveAutoDetect.id, {
+    intervalHours: 1,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    checkedAt: directActiveDetectionAt,
+    expectedConfigRevision: directActiveAutoDetect.configRevision,
+    scheduleBalanceAutoDetection: true
+  }), true, '直接启用的新单 Key 账户首次健康检查成功也必须写入余额自动探测意图')
+  const directActiveDetectionRow = database.prepare(`
+    SELECT status, schedulable, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    FROM accounts WHERE id = ?
+  `).get(directActiveAutoDetect.id) as Record<string, unknown>
+  assert.equal(directActiveDetectionRow.status, 'active')
+  assert.equal(directActiveDetectionRow.schedulable, 1)
+  assert.equal(directActiveDetectionRow.balance_query_enabled, 0)
+  assert.equal(directActiveDetectionRow.balance_query_config_json, '{}')
+  assert.equal(directActiveDetectionRow.balance_query_next_refresh_at, directActiveDetectionAt)
 
   const durableDetectionAt = activateFirstBalanceDetection(durableAutoDetect)
   const durableCandidate = (await balanceRepository.listAccountsDueForBalanceAutoDetectionAsync({

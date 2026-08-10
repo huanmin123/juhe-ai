@@ -1,11 +1,17 @@
 import { strict as assert } from 'node:assert'
 import { spawnSync } from 'node:child_process'
+import dns from 'node:dns'
 import http from 'node:http'
+import { syncBuiltinESMExports } from 'node:module'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { closeGatewayUpstreamAgentsForTest, requestUpstream } from '../../modules/gateway/upstream/request.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
-import { prepareSafeUpstreamRequestUrl } from '../../shared/upstream-url-policy.js'
+import {
+  prepareSafeUpstreamRequestUrl,
+  UnsafeResolvedUpstreamUrlError,
+  UnsafeUpstreamUrlError
+} from '../../shared/upstream-url-policy.js'
 
 const previousPolicy = { ...runtimeConfig.upstreamUrlSecurity }
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = false
@@ -47,6 +53,24 @@ const invalidShapeBaseUrls = [
 ] as const
 
 try {
+  const originalLookup = dns.promises.lookup
+  try {
+    dns.promises.lookup = (async () => [{ address: '2001::1', family: 6 }]) as unknown as typeof dns.promises.lookup
+    syncBuiltinESMExports()
+    await assert.rejects(
+      () => prepareSafeUpstreamRequestUrl('https://dns-policy-regression.example/v1', runtimeConfig.upstreamUrlSecurity),
+      (error: unknown) => {
+        assert(error instanceof UnsafeResolvedUpstreamUrlError, 'DNS 命中受限地址必须使用专用错误类型')
+        assert(error instanceof UnsafeUpstreamUrlError, 'DNS 专用错误必须保留通用 SSRF 错误兼容性')
+        return true
+      },
+      'DNS 命中受限地址必须拒绝请求'
+    )
+  } finally {
+    dns.promises.lookup = originalLookup
+    syncBuiltinESMExports()
+  }
+
   assert.throws(
     () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://127.0.0.1:9/v1' }),
     /JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST|JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS/,

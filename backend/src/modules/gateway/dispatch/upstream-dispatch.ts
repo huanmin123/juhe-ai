@@ -2,6 +2,7 @@ import type { Request } from 'express'
 import { createHash, randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { UnsafeResolvedUpstreamUrlError } from '../../../shared/upstream-url-policy.js'
 import {
   loadAccountCurrentConcurrencyByIdsAsync,
   tryAcquireAccountConcurrencyAsync,
@@ -38,6 +39,7 @@ import {
   orderGatewayAccountsByRuntimeDegradation,
   type GatewayAccountHalfOpenLease
 } from '../runtime/account-side-effects.service.js'
+import { markGatewayAccountTemporaryUnavailableWithCacheInvalidation } from '../runtime/account-effects.js'
 import {
   notifyOneRecoverableUnavailableRuntimeWaiter,
   waitForRecoverableUnavailableState
@@ -1199,6 +1201,20 @@ export async function fetchFirstAvailableUpstream(
                       endpoint: usageContext.endpoint
                     }
                   })
+                  if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && error instanceof UnsafeResolvedUpstreamUrlError) {
+                    const markedTemporaryUnavailable = await markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
+                      account,
+                      '上游 Base URL 的 DNS 解析命中本机、内网、链路本地或保留地址，已临时停止调度',
+                      'unsafe_resolved_upstream_url'
+                    )
+                    auditCapture.addGatewayMetadata({
+                      label: 'gateway_unsafe_resolved_upstream_url_account_temporary_unavailable',
+                      metadata: {
+                        accountId: account.id,
+                        markedTemporaryUnavailable
+                      }
+                    })
+                  }
                   await accountCircuitAttempt?.reportUnknown()
                   throw error
                 }

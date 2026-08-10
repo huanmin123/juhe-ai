@@ -51,6 +51,7 @@ async function runChild(): Promise<void> {
     createOAuthClient,
     exchangeAuthorizationCode,
     findAccessTokenContext,
+    listConnectedOAuthApplications,
     revokeClientGrant,
     rotateOidcSigningKey,
     rotateAccessToken
@@ -115,6 +116,11 @@ async function runChild(): Promise<void> {
       redirectUri: client.redirectUris[0],
       codeVerifier: verifier
     }), undefined, '授权码必须一次性消费')
+    assert.equal(
+      listConnectedOAuthApplications('oidc-user').find(application => application.clientId === client.clientId)?.lastTokenRenewedAt,
+      undefined,
+      '首次签发 access token 不能被展示为 Token 轮换'
+    )
     assert.equal(rotateAccessToken({ clientId: client.clientId, currentAccessToken: exchanged.accessToken }), 'not_eligible', '72 小时内不得轮换')
 
     database.prepare('UPDATE oauth_access_tokens SET issued_at = ? WHERE id = ?').run(
@@ -126,6 +132,10 @@ async function runChild(): Promise<void> {
     assert.equal(findAccessTokenContext(exchanged.accessToken), undefined, '轮换成功后旧 token 必须立即失效')
     assert(findAccessTokenContext(rotated.accessToken), 'successor token 必须可用')
     assert.equal(Date.parse(rotated.context.expiresAt), Date.parse(exchanged.context.expiresAt), '轮换不得延长 grant 硬到期')
+    assert(
+      listConnectedOAuthApplications('oidc-user').find(application => application.clientId === client.clientId)?.lastTokenRenewedAt,
+      '实际轮换后必须展示 Token 轮换时间'
+    )
     assert.equal(revokeClientGrant('oidc-user', client.clientId), true, '撤销应命中当前用户和 Client 的 grant')
     assert.equal(findAccessTokenContext(rotated.accessToken), undefined, '撤销 grant 后全部 token 必须失效')
 

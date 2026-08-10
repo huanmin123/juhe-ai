@@ -35,6 +35,9 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
   const likeName = `${namePrefix}%`
   database.exec('BEGIN')
   try {
+    const mockOidcClientIds = selectIds(database, 'SELECT client_id AS id FROM oauth_clients WHERE display_name LIKE ?', likeName)
+    deleteWhereIn(database, 'oauth_clients', 'client_id', mockOidcClientIds)
+
     const mockAnnouncementIds = selectIds(database, 'SELECT id FROM announcements WHERE title LIKE ?', likeName)
     deleteWhereIn(database, 'announcement_reads', 'announcement_id', mockAnnouncementIds)
     deleteWhereIn(database, 'announcements', 'id', mockAnnouncementIds)

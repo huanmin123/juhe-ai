@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
@@ -10,17 +10,18 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-options-lightweight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
-const blockedDatasetDatabasePath = join(tempRoot, 'dataset-as-directory.sqlite3')
-const blockedStatsDatabasePath = join(tempRoot, 'stats-as-directory.sqlite3')
+const unusedDatasetDatabasePath = join(tempRoot, 'unused-dataset.sqlite3')
+const unusedStatsDatabasePath = join(tempRoot, 'unused-stats.sqlite3')
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.datasetDatabasePath = blockedDatasetDatabasePath
-runtimeConfig.statsDatabasePath = blockedStatsDatabasePath
+runtimeConfig.datasetDatabasePath = unusedDatasetDatabasePath
+runtimeConfig.statsDatabasePath = unusedStatsDatabasePath
 runtimeConfig.secret = 'account-options-lightweight-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
-mkdirSync(blockedDatasetDatabasePath, { recursive: true })
-mkdirSync(blockedStatsDatabasePath, { recursive: true })
+mkdirSync(tempRoot, { recursive: true })
+writeFileSync(unusedDatasetDatabasePath, '')
+writeFileSync(unusedStatsDatabasePath, '')
 logger.level = 'silent'
 
 const [
@@ -209,6 +210,8 @@ try {
   assertBusinessIndexExists('idx_accounts_system_account_type_lookup')
   assertBusinessIndexExists('idx_group_accounts_account_scope_enabled')
   assertBusinessIndexExists('idx_groups_system_account_name_lookup')
+  assert.equal(statSync(unusedDatasetDatabasePath).size, 0, '账户 options 不得打开数据集库')
+  assert.equal(statSync(unusedStatsDatabasePath).size, 0, '账户 options 不得打开统计结果库')
 
   console.log('账户选项轻量回归通过：options 接口不读取统计结果库质量统计，不返回完整账户摘要字段，关键词仅按账户名称匹配，分组使用独立筛选')
 } finally {
