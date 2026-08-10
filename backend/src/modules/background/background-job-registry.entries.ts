@@ -335,7 +335,7 @@ export const backgroundScheduledJobs = [
     shardable: true,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
+    writes: ['business:accounts', 'usage-shards:usage_records']
   }),
   scheduled({
     jobName: 'model-quality-scheduled-check',
@@ -388,7 +388,7 @@ export const backgroundScheduledJobs = [
     shardable: true,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
+    writes: ['business:accounts', 'usage-shards:usage_records']
   }),
   scheduled({
     jobName: 'account-api-key-cooldown-retest',
@@ -401,7 +401,7 @@ export const backgroundScheduledJobs = [
     shardable: true,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records', 'dataset:audit_logs']
+    writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records']
   }),
   scheduled({
     jobName: 'normal-route-speed-first-recovery-probe',
@@ -414,7 +414,7 @@ export const backgroundScheduledJobs = [
     shardable: true,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['runtime-state:gateway-normal-route-latency-degradation', 'usage-shards:usage_records', 'dataset:audit_logs']
+    writes: ['runtime-state:gateway-normal-route-latency-degradation', 'usage-shards:usage_records']
   }),
   scheduled({
     jobName: 'account-circuit-control-plane-maintenance',
@@ -823,7 +823,7 @@ export const backgroundWorkerRegistry = [
     shardable: true,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
+    writes: ['business:accounts', 'usage-shards:usage_records']
   }),
   entry({
     jobName: 'account-api-key-cooldown-retest-queue',
@@ -836,7 +836,7 @@ export const backgroundWorkerRegistry = [
     shardable: true,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records', 'dataset:audit_logs']
+    writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records']
   }),
   entry({
     jobName: 'account-quality-failure-precheck-queue',

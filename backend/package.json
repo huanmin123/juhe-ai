@@ -298,6 +298,7 @@
     "test:f3-audit-db-read-retirement": "tsx src/scripts/regression/f3-audit-db-read-retirement-regression.ts",
     "test:f3-audit-log-go-input-budget": "tsx src/scripts/regression/audit-log-go-input-budget-regression.ts",
     "test:f3-audit-log-go-input-dispatch": "tsx src/scripts/regression/audit-log-go-input-dispatch-regression.ts",
+    "test:f3-audit-go-sidecar-e2e": "tsx src/scripts/regression/f3-audit-go-sidecar-e2e-regression.ts",
     "test:f3-audit-log-hot-search-boundary": "tsx src/scripts/regression/audit-log-hot-search-regression.ts",
     "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",
     "test:public-api-log-list-lightweight": "tsx src/scripts/regression/public-api-log-list-lightweight-regression.ts",

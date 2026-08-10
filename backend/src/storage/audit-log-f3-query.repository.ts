@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises'
-import { resolve, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
+import { StringDecoder } from 'node:string_decoder'
 
 import {
   auditErrorGroupFromRow,
@@ -59,6 +60,13 @@ const f3BooleanColumns = new Set([
 
 const f3DefaultPayloadReadLimit = 256 * 1024
 const f3MaxPayloadReadLimit = 1024 * 1024
+const f3HotSearchMaxFiles = 2
+const f3HotSearchMaxDirectoryEntries = 4096
+const f3HotSearchMaxScanBytes = 4 * 1024 * 1024
+const f3HotSearchMaxScanLines = 10_000
+const f3HotSearchMaxLineBytes = 256 * 1024
+const f3HotSearchReadChunkBytes = 64 * 1024
+const f3HotSearchFileNamePattern = /^audit-hot-\d{10}\.ndjson$/
 
 export interface AuditLogF3QueryOptions {
   /** Dedicated F3 SQLite fact file. Exactly one database source is required. */
@@ -356,35 +364,34 @@ class AuditLogF3QueryRepositoryImpl implements AuditLogF3QueryRepository {
     const base = { available: true, elapsedMs: 0, keywords, ...range, limit, auditLogIds: [] as string[], truncated: false, scannedFileCount: 0 }
     if (keywords.length === 0) return { ...base, elapsedMs: Math.round(performance.now() - startedAt), message: '请输入要搜索的审计内容关键字' }
     if (!this.hotSearchDirectory) return { ...base, available: false, elapsedMs: Math.round(performance.now() - startedAt), message: 'F3 审计内容搜索目录未配置' }
-    const { readdir, readFile } = await import('node:fs/promises')
-    const { join } = await import('node:path')
-    let entries: string[]
-    try { entries = await readdir(this.hotSearchDirectory) } catch (error) {
-      if (isFileNotFound(error)) return { ...base, elapsedMs: Math.round(performance.now() - startedAt), message: '最近 1 小时没有可搜索的审计内容' }
-      throw error
-    }
+    const files = await listF3HotSearchFiles(this.hotSearchDirectory, startMs, endMs)
+    if (files.directoryMissing) return { ...base, elapsedMs: Math.round(performance.now() - startedAt), message: '最近 1 小时没有可搜索的审计内容' }
     const seen = new Map<string, number>()
-    const files = entries.filter((name) => /^audit-hot-\d{10}\.ndjson$/.test(name)).sort().reverse()
-    for (const name of files) {
-      const file = join(this.hotSearchDirectory, name)
-      const bucket = Date.parse(`${name.slice(10, 14)}-${name.slice(14, 16)}-${name.slice(16, 18)}T${name.slice(18, 20)}:00:00.000Z`)
-      if (!Number.isFinite(bucket) || bucket + 3_600_000 < startMs || bucket > endMs) continue
-      const text = await readFile(file, 'utf8')
-      for (const line of text.split(/\r?\n/)) {
-        try {
-          const row = JSON.parse(line) as { auditLogId?: string; createdAt?: string; text?: string }
-          const when = Date.parse(row.createdAt ?? '')
-          if (!row.auditLogId || !Number.isFinite(when) || when < startMs || when > endMs) continue
-          if (!keywords.some((keyword) => (row.text ?? '').toLowerCase().includes(keyword))) continue
-          const previous = seen.get(row.auditLogId)
-          if (previous === undefined || when > previous) seen.set(row.auditLogId, when)
-        } catch { /* malformed lines are ignored */ }
+    let remainingBytes = f3HotSearchMaxScanBytes
+    let remainingLines = f3HotSearchMaxScanLines
+    let contentTruncated = false
+    let scannedFileCount = 0
+    for (const filePath of files.paths) {
+      if (remainingBytes <= 0 || remainingLines <= 0) {
+        contentTruncated = true
+        break
       }
+      const scan = await scanF3HotSearchFile({ filePath, keywords, startMs, endMs, maxBytes: remainingBytes, maxLines: remainingLines, seen })
+      scannedFileCount += 1
+      remainingBytes -= scan.bytesRead
+      remainingLines -= scan.linesRead
+      contentTruncated ||= scan.truncated
     }
     const ids = [...seen.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([id]) => id)
-    const truncated = ids.length > limit
+    const resultTruncated = ids.length > limit
+    const truncated = files.truncated || contentTruncated || resultTruncated
     const auditLogIds = ids.slice(0, limit)
-    return { ...base, elapsedMs: Math.round(performance.now() - startedAt), auditLogIds, truncated, scannedFileCount: files.length, message: truncated ? `结果超过 ${limit} 条，已按最新优先截断显示` : undefined }
+    const messages = [
+      files.truncated ? '热搜索文件范围超过读取上限，结果可能不完整' : undefined,
+      contentTruncated ? '热搜索内容超过读取上限，结果可能不完整' : undefined,
+      resultTruncated ? `结果超过 ${limit} 条，已按最新优先截断显示` : undefined
+    ].filter((message): message is string => Boolean(message))
+    return { ...base, elapsedMs: Math.round(performance.now() - startedAt), auditLogIds, truncated, scannedFileCount, message: messages.join('；') || undefined }
   }
 
   getRuntime(): AuditLogF3Runtime {
@@ -738,6 +745,158 @@ function resolveBlobPath(root: string, storageKey: string): string {
 
 function isFileNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && String((error as { code?: unknown }).code) === 'ENOENT'
+}
+
+interface F3HotSearchFileList {
+  directoryMissing: boolean
+  paths: string[]
+  truncated: boolean
+}
+
+interface F3HotSearchFileScanOptions {
+  filePath: string
+  keywords: readonly string[]
+  startMs: number
+  endMs: number
+  maxBytes: number
+  maxLines: number
+  seen: Map<string, number>
+}
+
+interface F3HotSearchFileScanResult {
+  bytesRead: number
+  linesRead: number
+  truncated: boolean
+}
+
+async function listF3HotSearchFiles(directoryPath: string, startMs: number, endMs: number): Promise<F3HotSearchFileList> {
+  const { opendir } = await import('node:fs/promises')
+  let directory: Awaited<ReturnType<typeof opendir>>
+  try {
+    directory = await opendir(directoryPath)
+  } catch (error) {
+    if (isFileNotFound(error)) return { directoryMissing: true, paths: [], truncated: false }
+    throw error
+  }
+
+  const candidates: Array<{ name: string; bucket: number }> = []
+  let scannedDirectoryEntries = 0
+  let directoryTruncated = false
+  for await (const entry of directory) {
+    scannedDirectoryEntries += 1
+    if (scannedDirectoryEntries > f3HotSearchMaxDirectoryEntries) {
+      directoryTruncated = true
+      break
+    }
+    if (!f3HotSearchFileNamePattern.test(entry.name)) continue
+    const bucket = parseF3HotSearchBucket(entry.name)
+    if (bucket === undefined || bucket + 3_600_000 < startMs || bucket > endMs) continue
+    candidates.push({ name: entry.name, bucket })
+  }
+  candidates.sort((left, right) => right.bucket - left.bucket || right.name.localeCompare(left.name))
+  const fileTruncated = directoryTruncated || candidates.length > f3HotSearchMaxFiles
+  return {
+    directoryMissing: false,
+    paths: candidates.slice(0, f3HotSearchMaxFiles).map((candidate) => join(directoryPath, candidate.name)),
+    truncated: fileTruncated
+  }
+}
+
+function parseF3HotSearchBucket(name: string): number | undefined {
+  const bucket = Date.parse(`${name.slice(10, 14)}-${name.slice(14, 16)}-${name.slice(16, 18)}T${name.slice(18, 20)}:00:00.000Z`)
+  return Number.isFinite(bucket) ? bucket : undefined
+}
+
+async function scanF3HotSearchFile(options: F3HotSearchFileScanOptions): Promise<F3HotSearchFileScanResult> {
+  const { open } = await import('node:fs/promises')
+  const file = await open(options.filePath, 'r')
+  const buffer = Buffer.allocUnsafe(f3HotSearchReadChunkBytes)
+  const decoder = new StringDecoder('utf8')
+  let bytesRead = 0
+  let linesRead = 0
+  let truncated = false
+  let reachedEndOfFile = false
+  let pendingLine = ''
+  let pendingLineBytes = 0
+  let discardingLongLine = false
+
+  const processPendingLine = (): void => {
+    linesRead += 1
+    if (discardingLongLine) {
+      truncated = true
+    } else {
+      collectF3HotSearchMatch(pendingLine.endsWith('\r') ? pendingLine.slice(0, -1) : pendingLine, options)
+    }
+    pendingLine = ''
+    pendingLineBytes = 0
+    discardingLongLine = false
+  }
+
+  const appendLineSegment = (segment: string): void => {
+    if (discardingLongLine) return
+    pendingLineBytes += Buffer.byteLength(segment)
+    if (pendingLineBytes > f3HotSearchMaxLineBytes) {
+      pendingLine = ''
+      discardingLongLine = true
+      truncated = true
+      return
+    }
+    pendingLine += segment
+  }
+
+  const consumeText = (text: string): boolean => {
+    let offset = 0
+    while (offset < text.length) {
+      const newline = text.indexOf('\n', offset)
+      const segmentEnd = newline === -1 ? text.length : newline
+      appendLineSegment(text.slice(offset, segmentEnd))
+      if (newline === -1) return false
+      processPendingLine()
+      if (linesRead >= options.maxLines) {
+        truncated = true
+        return true
+      }
+      offset = newline + 1
+    }
+    return false
+  }
+
+  try {
+    while (bytesRead < options.maxBytes && linesRead < options.maxLines) {
+      const remainingBytes = options.maxBytes - bytesRead
+      const read = await file.read(buffer, 0, Math.min(buffer.length, remainingBytes), null)
+      if (read.bytesRead === 0) {
+        reachedEndOfFile = true
+        break
+      }
+      bytesRead += read.bytesRead
+      if (consumeText(decoder.write(buffer.subarray(0, read.bytesRead)))) break
+      if (bytesRead >= options.maxBytes) {
+        truncated = true
+        break
+      }
+    }
+    if (!reachedEndOfFile) return { bytesRead, linesRead, truncated: true }
+    if (consumeText(decoder.end())) return { bytesRead, linesRead, truncated: true }
+    if (pendingLine.length > 0 || discardingLongLine) {
+      if (linesRead >= options.maxLines) return { bytesRead, linesRead, truncated: true }
+      processPendingLine()
+    }
+    return { bytesRead, linesRead, truncated }
+  } finally {
+    await file.close()
+  }
+}
+
+function collectF3HotSearchMatch(line: string, options: F3HotSearchFileScanOptions): void {
+  try {
+    const row = JSON.parse(line) as { auditLogId?: string; createdAt?: string; text?: string }
+    const when = Date.parse(row.createdAt ?? '')
+    if (!row.auditLogId || !Number.isFinite(when) || when < options.startMs || when > options.endMs) return
+    if (!options.keywords.some((keyword) => (row.text ?? '').toLowerCase().includes(keyword))) return
+    const previous = options.seen.get(row.auditLogId)
+    if (previous === undefined || when > previous) options.seen.set(row.auditLogId, when)
+  } catch { /* malformed lines are ignored */ }
 }
 
 function normalizeHotKeywords(values: string[]): string[] {

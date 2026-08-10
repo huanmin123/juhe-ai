@@ -8,6 +8,7 @@ const tempRoot = mkdtempSync(join(process.env.TEMP ?? process.cwd(), 'juhe-ai-f3
 const sqlitePath = join(tempRoot, 'audit.sqlite3')
 const emptyPath = join(tempRoot, 'empty.sqlite3')
 const blobRoot = join(tempRoot, 'blobs')
+const hotSearchRoot = join(tempRoot, 'hot-search')
 
 const adapterSource = readFileSync(fileURLToPath(new URL('../../storage/audit-log-f3-query.repository.ts', import.meta.url)), 'utf8')
 assert.doesNotMatch(adapterSource, /\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|CREATE\s+TABLE|DROP\s+TABLE)\b/i, 'F3 Node query adapter 不得包含写 SQL')
@@ -15,6 +16,16 @@ assert.match(adapterSource, /readOnly:\s*true/, 'SQLite adapter 必须以 readOn
 assert.match(adapterSource, /PRAGMA\s+query_only\s*=\s*ON/i, 'SQLite adapter 必须设置 query_only')
 assert.match(adapterSource, /BEGIN\s+READ\s+ONLY/i, 'PostgreSQL adapter 必须使用 READ ONLY 事务')
 assert.doesNotMatch(adapterSource, /runtimeConfig/, 'F3 query adapter 不得依赖全局 runtimeConfig')
+const searchHotStart = adapterSource.indexOf('async searchHot(options: AuditLogF3HotSearchOptions)')
+const searchHotEnd = adapterSource.indexOf('\n  getRuntime(): AuditLogF3Runtime', searchHotStart)
+assert.ok(searchHotStart >= 0 && searchHotEnd > searchHotStart, '必须能定位 F3 hot-search 实现')
+const searchHotSource = adapterSource.slice(searchHotStart, searchHotEnd)
+assert.doesNotMatch(searchHotSource, /\breadFile\s*\(/, 'F3 hot-search 不得完整 readFile 小时 NDJSON')
+assert.match(searchHotSource, /scanF3HotSearchFile/, 'F3 hot-search 必须通过有界文件扫描器读取 NDJSON')
+assert.match(adapterSource, /const f3HotSearchMaxFiles = 2/, 'F3 hot-search 必须限制扫描文件数')
+assert.match(adapterSource, /const f3HotSearchMaxScanBytes = 4 \* 1024 \* 1024/, 'F3 hot-search 必须限制总扫描字节数')
+assert.match(adapterSource, /const f3HotSearchMaxScanLines = 10_000/, 'F3 hot-search 必须限制扫描行数')
+assert.match(adapterSource, /const f3HotSearchMaxLineBytes = 256 \* 1024/, 'F3 hot-search 必须限制单行大小')
 
 const { createAuditLogF3QueryRepository, AuditLogF3SchemaError } = await import('../../storage/audit-log-f3-query.repository.js')
 
@@ -119,10 +130,36 @@ try {
 
   // The adapter keeps blob roots explicit and never creates them.
   mkdirSync(blobRoot, { recursive: true })
+  mkdirSync(hotSearchRoot, { recursive: true })
   writeFileSync(join(blobRoot, 'headers.json'), '{"x-test":"ok"}')
   writeFileSync(join(blobRoot, 'body.txt'), 'hello world')
 
-  const repository = await createAuditLogF3QueryRepository({ sqlitePath, payloadBlobDirectory: blobRoot })
+  const hotSearchEndMs = Date.now() - 1_000
+  const hotSearchStartMs = hotSearchEndMs - 10 * 60 * 1_000
+  const hotSearchBucket = new Date(hotSearchEndMs)
+  const hotSearchBucketName = [
+    hotSearchBucket.getUTCFullYear(),
+    String(hotSearchBucket.getUTCMonth() + 1).padStart(2, '0'),
+    String(hotSearchBucket.getUTCDate()).padStart(2, '0'),
+    String(hotSearchBucket.getUTCHours()).padStart(2, '0')
+  ].join('')
+  const hotSearchRecord = (id: string, createdAtMs: number, text: string): string => JSON.stringify({
+    auditLogId: id,
+    createdAt: new Date(createdAtMs).toISOString(),
+    text
+  })
+  const hotSearchRows = [
+    hotSearchRecord('audit-hot-old', hotSearchEndMs - 20_000, 'needle old match'),
+    hotSearchRecord('audit-hot-latest', hotSearchEndMs - 10_000, 'needle latest match')
+  ]
+  const hotSearchFiller = hotSearchRecord('audit-hot-filler', hotSearchEndMs - 5_000, `filler ${'x'.repeat(64 * 1024)}`)
+  while (Buffer.byteLength(`${hotSearchRows.join('\n')}\n`) <= 4 * 1024 * 1024) {
+    hotSearchRows.push(hotSearchFiller)
+  }
+  hotSearchRows.push(hotSearchRecord('audit-hot-out-of-budget', hotSearchEndMs - 2_000, 'needle after scan budget'))
+  writeFileSync(join(hotSearchRoot, `audit-hot-${hotSearchBucketName}.ndjson`), hotSearchRows.join('\n'))
+
+  const repository = await createAuditLogF3QueryRepository({ sqlitePath, payloadBlobDirectory: blobRoot, hotSearchDirectory: hotSearchRoot })
   try {
     assert.deepEqual(repository.getRuntime(), { mode: 'sqlite', readOnly: true, queryOnly: true, schemaReady: true })
     const page = await repository.listAuditLogs({ pageSize: 1 })
@@ -138,6 +175,26 @@ try {
     assert.deepEqual(payload?.headers, { 'x-test': 'ok' })
     assert.equal((await repository.listAuditErrorGroups()).items[0]?.id, 'eg1')
     assert.equal((await repository.listAuditErrorGroupEvents('eg1')).items[0]?.id, 'audit-1')
+
+    const boundedHotSearch = await repository.searchHot({
+      keywords: ['needle'],
+      startAt: new Date(hotSearchStartMs).toISOString(),
+      endAt: new Date(hotSearchEndMs).toISOString(),
+      limit: 100
+    })
+    assert.deepEqual(boundedHotSearch.auditLogIds, ['audit-hot-latest', 'audit-hot-old'])
+    assert.equal(boundedHotSearch.scannedFileCount, 1)
+    assert.equal(boundedHotSearch.truncated, true)
+    assert.match(boundedHotSearch.message ?? '', /读取上限/)
+
+    const limitedHotSearch = await repository.searchHot({
+      keywords: ['needle'],
+      startAt: new Date(hotSearchStartMs).toISOString(),
+      endAt: new Date(hotSearchEndMs).toISOString(),
+      limit: 1
+    })
+    assert.deepEqual(limitedHotSearch.auditLogIds, ['audit-hot-latest'])
+    assert.equal(limitedHotSearch.truncated, true)
   } finally {
     await repository.close()
   }
@@ -161,4 +218,4 @@ try {
   }
 }
 
-console.log('F3 Node audit query adapter regression passed: SQLite readOnly/query_only, list/detail/attempt/payload/error-group/runtime and schema errors are visible.')
+console.log('F3 Node audit query adapter regression passed: SQLite readOnly/query_only, list/detail/attempt/payload/error-group/runtime/schema errors and bounded hot-search reads are visible.')

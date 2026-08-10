@@ -189,13 +189,14 @@ assert.doesNotMatch(workerSource, /RuntimeLogRedisStreamConsumer/, 'ingest worke
 
 const gatewayLoadSource = readFileSync(new URL('../performance/performance-gateway-load-test.ts', import.meta.url), 'utf8')
 assert.match(gatewayLoadSource, /XINFO', 'GROUPS'/, 'gateway load test should sample Redis Stream group lag, not only pending')
-assert.match(gatewayLoadSource, /backlogCount: usageRecords\.backlogCount \+ auditLogs\.backlogCount \+ operationLogs\.backlogCount \+ publicApiLogs\.backlogCount \+ recordMaintenance\.backlogCount/, 'gateway load test should gate total Redis Stream backlog')
+assert.match(gatewayLoadSource, /backlogCount: usageRecords\.backlogCount \+ operationLogs\.backlogCount \+ publicApiLogs\.backlogCount \+ recordMaintenance\.backlogCount/, 'gateway load test should gate total active Redis Stream backlog')
 assert.match(gatewayLoadSource, /redisStreamsDelta\(input\.redisBefore,\s*input\.redisAfter\)/, 'gateway load test should compare Redis Stream backlog against the pre-test baseline')
 assert.match(gatewayLoadSource, /redisDelta\.positiveBacklogDelta > input\.input\.maxAllowedRedisPending/, 'gateway load test should fail only on new Redis Stream backlog produced by the current run')
 assert.doesNotMatch(gatewayLoadSource, /input\.redisAfter\.backlogCount > input\.input\.maxAllowedRedisPending/, 'gateway load test should not fail on historical Redis Stream backlog alone')
 assert.match(gatewayLoadSource, /operationLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:operation-logs'\)/, 'gateway load test should sample operation log Redis Stream')
 assert.match(gatewayLoadSource, /publicApiLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:public-api-logs'\)/, 'gateway load test should sample public API log Redis Stream')
 assert.match(gatewayLoadSource, /recordMaintenanceRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:record-maintenance'\)/, 'gateway load test should sample record maintenance Redis Stream')
+assert.doesNotMatch(gatewayLoadSource, /auditLogRedisStreamKey|auditLogRedisStreamGroup|auditLogs: RedisStream/, 'F3 audit input must not be sampled as a Redis Stream')
 assert.doesNotMatch(gatewayLoadSource, /runtimeLogRedisStreamKey/, 'gateway load test must not sample a removed runtime log Redis Stream')
 
 console.log('redis-stream-queue-regression passed')

@@ -197,7 +197,7 @@ func isNonPersistedTrafficSource(value string) bool {
 }
 
 func buildHotSearchText(input AuditLogInput) string {
-	includePayloadBody := !input.Success || input.AuditOutcome != AuditOutcomeSuccess || strings.HasPrefix(input.SampleReason, "success_sample_")
+	includePayloadBody := !input.Success || input.AuditOutcome != AuditOutcomeSuccess || input.SampleReason == "success_hot_full_retention" || strings.HasPrefix(input.SampleReason, "success_sample_")
 	parts := []string{input.TraceID, string(input.TrafficSource), input.Method, input.Path, input.QueryString, input.Model, input.UpstreamModel, input.PricingModel, input.ModelMappingSource, input.ClientIP, input.UserAgent, string(input.AuditOutcome), input.ErrorPhase, input.ErrorCode, input.ErrorMessage, input.SystemAccountID, input.APIKeyID, input.GroupID, input.AccountID, input.ProviderCode}
 	if input.ModelMappingApplied != nil && *input.ModelMappingApplied {
 		parts = append(parts, "model_mapping_applied")

@@ -4,10 +4,6 @@ export interface AuditLogSettings {
   enabled: boolean
   fullBodyCaptureEnabled: boolean
   successSampleRate: number
-  flushIntervalSeconds: number
-  batchSize: number
-  queueMaxItems: number
-  queueMaxBytes: number
   activeCaptureMaxBytes: number
   successHotRetentionHours: number
   successRetentionDays: number
@@ -23,10 +19,6 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
   enabled: runtimeConfig.auditLog.enabled,
   fullBodyCaptureEnabled: true,
   successSampleRate: runtimeConfig.auditLog.successSampleRate,
-  flushIntervalSeconds: 5,
-  batchSize: 500,
-  queueMaxItems: 50000,
-  queueMaxBytes: 256 * auditLogMb,
   activeCaptureMaxBytes: 64 * auditLogMb,
   successHotRetentionHours: runtimeConfig.auditLog.successHotRetentionHours,
   successRetentionDays: runtimeConfig.auditLog.successRetentionDays,

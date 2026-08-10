@@ -65,7 +65,6 @@ export class RedisStreamDrainStabilityTracker {
 
 export const redisStreamQueueContracts = {
   usageRecords: { name: 'usage-records', streamKey: 'juhe-ai:queue:usage-records', groupName: 'juhe-ai:usage-record-writers' },
-  auditLogs: { name: 'audit-logs', streamKey: 'juhe-ai:queue:audit-logs', groupName: 'juhe-ai:audit-log-writers' },
   operationLogs: { name: 'operation-logs', streamKey: 'juhe-ai:queue:operation-logs', groupName: 'juhe-ai:operation-log-writers' },
   publicApiLogs: { name: 'public-api-logs', streamKey: 'juhe-ai:queue:public-api-logs', groupName: 'juhe-ai:public-api-log-writers' },
   recordMaintenance: { name: 'record-maintenance', streamKey: 'juhe-ai:queue:record-maintenance', groupName: 'juhe-ai:record-maintenance-writers' }

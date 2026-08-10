@@ -24,6 +24,7 @@ class FakeRedisClient implements RedisStreamDrainCommandClient {
 assert.equal(redisStreamDrainContracts.length, 4, '排空工具必须覆盖四条仍由 Node 拥有的可靠队列流')
 assert.equal(new Set(redisStreamDrainContracts.map((item) => item.streamKey)).size, 4, '四条流 key 不得重复')
 assert.equal(new Set(redisStreamDrainContracts.map((item) => item.groupName)).size, 4, '四个 consumer group 不得重复')
+assert.equal(redisStreamDrainContracts.some((item) => item.name === 'audit-logs'), false, 'F3 接管后 Redis Stream 排空不得再登记审计日志')
 
 for (const [relativePath, contractName] of [
   ['../../modules/gateway/usage/record-queue.service.ts', 'usageRecords'],
@@ -52,7 +53,7 @@ for (const contract of redisStreamDrainContracts) {
 drainedReplies.set('INFO commandstats', '# Commandstats\r\ncmdstat_xadd:calls=42,usec=10,usec_per_call=0.24\r\n')
 const drainedClient = new FakeRedisClient(drainedReplies)
 const drained = await inspectRedisStreamDrain(drainedClient)
-assert.equal(drained.drained, true, '五条流都为空时应允许完成排空')
+assert.equal(drained.drained, true, '四条流都为空时应允许完成排空')
 assert.equal(drained.xaddCalls, 42, '应记录 XADD 调用总数用于稳定窗口判断')
 
 const objectGroupReplies = new Map(drainedReplies)

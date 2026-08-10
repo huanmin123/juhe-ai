@@ -213,7 +213,6 @@ export interface RuntimeConfig {
     accountBalanceAutoDetectionBackfillPageSize: number
     accountBalanceRefreshBatchSize: number
     accountBalanceRefreshRecoveryBatchSize: number
-    auditBlobCleanupDeleteConcurrency: number
     modelCheckTokenWorkerTargetSize: number
     modelCheckTokenWorkerQueueMaxItems: number
     diagnosticTaskMaxInFlight: number
@@ -256,8 +255,6 @@ export interface RuntimeConfig {
     recordMaintenanceShutdownFlushMaxBatches: number
     recordMaintenanceQueueMaxItems: number
     recordMaintenanceQueueMaxMb: number
-    recordMaintenanceAuditCleanupBatchSize: number
-    recordMaintenanceAuditCleanupMaxBatches: number
     usageRecordBatchSize: number
     usageRecordFlushBatchMaxMb: number
     usageRecordShutdownFlushMaxBatches: number
@@ -710,7 +707,6 @@ export const runtimeConfig: RuntimeConfig = {
     accountBalanceAutoDetectionBackfillPageSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_AUTO_DETECTION_BACKFILL_PAGE_SIZE', 50, 1, 10_000),
     accountBalanceRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_BATCH_SIZE', 36, 1, 1_000),
     accountBalanceRefreshRecoveryBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_REFRESH_RECOVERY_BATCH_SIZE', 4, 1, 1_000),
-    auditBlobCleanupDeleteConcurrency: integerConfig('JUHE_AI_BACKGROUND_AUDIT_BLOB_CLEANUP_DELETE_CONCURRENCY', 5, 1, 1_000),
     modelCheckTokenWorkerTargetSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_TARGET_SIZE', 5, 1, 64),
     modelCheckTokenWorkerQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_MODEL_CHECK_TOKEN_WORKER_QUEUE_MAX_ITEMS', 16, 1, 100_000),
     diagnosticTaskMaxInFlight: integerConfig('JUHE_AI_BACKGROUND_DIAGNOSTIC_TASK_MAX_IN_FLIGHT', 5, 1, 1_000),
@@ -753,8 +749,6 @@ export const runtimeConfig: RuntimeConfig = {
     recordMaintenanceShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES', 1, 1, 10_000),
     recordMaintenanceQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_ITEMS', 5_000, 1, 1_000_000),
     recordMaintenanceQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_MB', 32, 1, 4_096),
-    recordMaintenanceAuditCleanupBatchSize: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_AUDIT_CLEANUP_BATCH_SIZE', 100, 1, 10_000),
-    recordMaintenanceAuditCleanupMaxBatches: integerConfig('JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_AUDIT_CLEANUP_MAX_BATCHES', 3, 1, 10_000),
     usageRecordBatchSize: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_BATCH_SIZE', 1_000, 1, 100_000),
     usageRecordFlushBatchMaxMb: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_FLUSH_BATCH_MAX_MB', 8, 1, 4_096),
     usageRecordShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_USAGE_RECORD_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),

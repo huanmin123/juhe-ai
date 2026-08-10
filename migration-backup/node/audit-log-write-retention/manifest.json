@@ -38,15 +38,15 @@
     "status": "partial",
     "sqlite": {
       "status": "passed",
-      "evidence": "Go F3 SQLite tests and race tests passed; Node F3 query/read-only and owner-exit regressions passed.",
-      "remaining": "当前候选 Node capture -> Go -> Node 隔离端到端、重启/停机闭环仍待独立验收。"
+      "evidence": "Go F3 SQLite tests and race tests passed; Node F3 query/read-only and owner-exit regressions passed; 2026-08-10 isolated Node -> Go sidecar -> Node read-only flow passed for in_progress/finalized, payload read, invalid HMAC, stop and lease-expiry restart, with all temporary resources removed.",
+      "remaining": "发布包、Docker/Mac 常驻生命周期和生产部署仍待独立验收。"
     },
     "postgresRedis": {
       "status": "passed",
-      "evidence": "显式配置的可销毁专用 PostgreSQL F3 smoke 通过并完成清理复核；F3 不使用 Redis。",
-      "remaining": "当前候选双模式端到端及部署接线仍待独立验收。"
+      "evidence": "显式配置的可销毁专用 PostgreSQL F3 smoke 通过并完成清理复核；隔离 Node -> Go -> Node flow 使用应用 PgBouncer 6432 与管理员 5432 DDL/cleanup 通道；F3 不使用 Redis。",
+      "remaining": "发布/部署接线和生产运行态仍待独立验收。"
     },
-    "activeNodePathZeroEvidence": "F3 owner-exit、schema-retirement、DB-read-retirement、capture-direct-input 和 route 回归已通过；完整部署验证仍未完成。"
+    "activeNodePathZeroEvidence": "F3 owner-exit、schema-retirement、DB-read-retirement、capture-direct-input、route 和 Go sidecar E2E 回归已通过；完整部署验证仍未完成。"
   },
   "files": [
     {

@@ -43,6 +43,40 @@ func TestSQLiteHotSearchAppendSearchAndTrim(t *testing.T) {
 	}
 }
 
+func TestSQLiteHotSearchIndexesHotRetainedSuccessfulPayload(t *testing.T) {
+	root := t.TempDir()
+	store := openSQLiteStore(t, sqliteConfig(t, root))
+	defer store.Close()
+	ctx := context.Background()
+	lease := acquireLease(t, store)
+	now := time.Now().UTC().Truncate(time.Second)
+	input := fixture("hot-search-success-body", LifecycleFinalized)
+	input.AuditOutcome = AuditOutcomeSuccess
+	input.SampleReason = "success_hot_full_retention"
+	input.CreatedAt = now.Format(time.RFC3339Nano)
+	input.Payloads = []AuditLogPayloadInput{{
+		PartType:      PayloadPartClientRequest,
+		ContentType:   "application/json",
+		CaptureStatus: PayloadCaptureComplete,
+		Body:          PayloadBody{Bytes: []byte(`{"prompt":"hot-success-body-needle"}`), Present: true},
+	}}
+	if n, err := store.AppendHotSearch(ctx, lease, []AuditLogInput{input}); err != nil || n == 0 {
+		t.Fatalf("append n=%d err=%v", n, err)
+	}
+	result, err := store.SearchHotSearch(ctx, HotSearchOptions{
+		Keywords: []string{"hot-success-body-needle"},
+		StartAt:  now.Add(-time.Minute),
+		EndAt:    now.Add(time.Minute),
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AuditLogIDs) != 1 || result.AuditLogIDs[0] != input.ID {
+		t.Fatalf("search result=%+v", result)
+	}
+}
+
 func TestSQLiteHotSearchRejectsLostLeaseBeforeFileWrite(t *testing.T) {
 	root := t.TempDir()
 	store := openSQLiteStore(t, sqliteConfig(t, root))
