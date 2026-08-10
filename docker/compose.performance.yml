@@ -242,6 +242,7 @@ services:
       args:
         GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
         RUNTIME_IMAGE: ${JUHE_AI_RUNTIME_LOG_INDEXER_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -273,6 +274,7 @@ services:
       args:
         GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
         RUNTIME_IMAGE: ${JUHE_AI_TABLE_MONITOR_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -308,6 +310,7 @@ services:
       args:
         GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
         RUNTIME_IMAGE: ${JUHE_AI_AUDIT_LOG_WRITER_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       pgbouncer:
         condition: service_healthy

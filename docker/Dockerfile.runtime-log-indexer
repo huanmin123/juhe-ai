@@ -2,8 +2,11 @@
 
 ARG GO_IMAGE=golang:1.26-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG GO_PROXY=https://proxy.golang.org,direct
 
 FROM ${GO_IMAGE} AS build
+ARG GO_PROXY
+ENV GOPROXY=${GO_PROXY}
 WORKDIR /source/backend-go
 
 COPY backend-go/go.mod backend-go/go.sum ./
