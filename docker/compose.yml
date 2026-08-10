@@ -36,6 +36,11 @@ services:
       JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS: ${JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS:-7}
       JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB: ${JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB:-512}
       JUHE_AI_AUDIT_LOG_PROBLEM_FULL_BODY_LIMIT_KB: ${JUHE_AI_AUDIT_LOG_PROBLEM_FULL_BODY_LIMIT_KB:-2048}
+      JUHE_AI_AUDIT_LOG_INPUT_URL: ${JUHE_AI_AUDIT_LOG_INPUT_URL:-http://127.0.0.1:3303}
+      JUHE_AI_AUDIT_LOG_INPUT_SECRET: ${JUHE_AI_AUDIT_LOG_INPUT_SECRET:?JUHE_AI_AUDIT_LOG_INPUT_SECRET is required}
+      JUHE_AI_AUDIT_LOG_DATABASE_PATH: ${JUHE_AI_AUDIT_LOG_DATABASE_PATH:-/app/backend/audit-log-data/juhe-ai-audit-log.sqlite3}
+      JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY: ${JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:-/app/backend/audit-log-data/audit-payload-blobs}
+      JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY: ${JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY:-/app/backend/audit-log-data/audit-hot-search}
       JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:-}
       JUHE_AI_REDIS_CACHE_URL: ${JUHE_AI_REDIS_CACHE_URL:-}
       JUHE_AI_REDIS_STATE_URL: ${JUHE_AI_REDIS_STATE_URL:-}
@@ -62,6 +67,7 @@ services:
       - juhe-ai-data:/app/backend/data
       - juhe-ai-runtime-log-data:/app/backend/runtime-log-data:ro
       - juhe-ai-table-monitor-data:/app/backend/table-monitor-data:ro
+      - juhe-ai-audit-log-data:/app/backend/audit-log-data:ro
       - juhe-ai-logs:/app/backend/logs
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:' + (process.env.JUHE_AI_PORT || '3000') + '/__aisys__/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
@@ -150,8 +156,60 @@ services:
       start_period: 20s
       retries: 3
 
+  audit-log-writer:
+    image: ${JUHE_AI_AUDIT_LOG_WRITER_IMAGE:-juhe-ai-audit-log-writer:local}
+    container_name: ${JUHE_AI_AUDIT_LOG_WRITER_CONTAINER_NAME:-juhe-ai-audit-log-writer}
+    restart: unless-stopped
+    network_mode: service:juhe-ai
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.audit-log-writer
+      args:
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
+        RUNTIME_IMAGE: ${JUHE_AI_AUDIT_LOG_WRITER_RUNTIME_IMAGE:-debian:bookworm-slim}
+    depends_on:
+      juhe-ai:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_AUDIT_LOG_INSTANCE_ID: ${JUHE_AI_AUDIT_LOG_INSTANCE_ID:?JUHE_AI_AUDIT_LOG_INSTANCE_ID is required}
+      JUHE_AI_AUDIT_LOG_STORE: ${JUHE_AI_AUDIT_LOG_STORE:-sqlite}
+      JUHE_AI_AUDIT_LOG_DATABASE_PATH: ${JUHE_AI_AUDIT_LOG_DATABASE_PATH:-/app/backend/audit-log-data/juhe-ai-audit-log.sqlite3}
+      JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY: ${JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:-/app/backend/audit-log-data/audit-payload-blobs}
+      JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY: ${JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY:-/app/backend/audit-log-data/audit-hot-search}
+      JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH: ${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH:-/app/backend/data/juhe-ai.sqlite3}
+      JUHE_AI_AUDIT_LOG_OWNER_LEASE: ${JUHE_AI_AUDIT_LOG_OWNER_LEASE:-30s}
+      JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL: ${JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL:-1m}
+      JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE: ${JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE:-100}
+      JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: ${JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS:-1}
+      JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: ${JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE:-0.1}
+      JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS: ${JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS:-3}
+      JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS: ${JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS:-7}
+      JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS: ${JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS:-127.0.0.1:3303}
+      JUHE_AI_AUDIT_LOG_INPUT_SECRET: ${JUHE_AI_AUDIT_LOG_INPUT_SECRET:?JUHE_AI_AUDIT_LOG_INPUT_SECRET is required}
+      JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
+      JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
+      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: ${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-/app/backend/data/juhe-ai-usage-catalog.sqlite3}
+      JUHE_AI_STATS_DATABASE_PATH: ${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}
+      JUHE_AI_RUNTIME_LOG_DATABASE_PATH: ${JUHE_AI_RUNTIME_LOG_DATABASE_PATH:-/app/backend/runtime-log-data/juhe-ai-runtime-log.sqlite3}
+      JUHE_AI_TABLE_MONITOR_DATABASE_PATH: ${JUHE_AI_TABLE_MONITOR_DATABASE_PATH:-/app/backend/table-monitor-data/juhe-ai-table-monitor.sqlite3}
+      JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
+      JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: ${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT:-/app/backend/data/codex-context/state-shards}
+    volumes:
+      - juhe-ai-data:/app/backend/data:ro
+      - juhe-ai-runtime-log-data:/app/backend/runtime-log-data:ro
+      - juhe-ai-table-monitor-data:/app/backend/table-monitor-data:ro
+      - juhe-ai-audit-log-data:/app/backend/audit-log-data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3303/__aiinternal__/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
 volumes:
   juhe-ai-data:
   juhe-ai-runtime-log-data:
   juhe-ai-table-monitor-data:
+  juhe-ai-audit-log-data:
   juhe-ai-logs:

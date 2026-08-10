@@ -616,11 +616,13 @@ const absoluteBackendPath = (value, fallback) => {
   const selected = (value || fallback).trim()
   return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
 }
+for (const [name, fallback] of [
+  ['JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', './data/audit-payload-blobs'],
+  ['JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', './data/audit-hot-search']
+]) childEnv[name] = absoluteBackendPath(childEnv[name], fallback)
 if (store === 'sqlite' || !store) {
   for (const [name, fallback] of [
     ['JUHE_AI_AUDIT_LOG_DATABASE_PATH', './data/juhe-ai-audit-log.sqlite3'],
-    ['JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', './data/audit-log-blobs'],
-    ['JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', './data/audit-log-hot-search'],
     ['JUHE_AI_DATABASE_PATH', './data/juhe-ai.sqlite3'],
     ['JUHE_AI_DATASET_DATABASE_PATH', './data/juhe-ai-dataset.sqlite3'],
     ['JUHE_AI_USAGE_CATALOG_DATABASE_PATH', './data/juhe-ai-usage-catalog.sqlite3'],

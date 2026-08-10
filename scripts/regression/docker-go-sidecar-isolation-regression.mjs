@@ -4,9 +4,14 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-const source = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
-const runtimeLogIndexer = serviceBlock('runtime-log-indexer')
-const tableMonitor = serviceBlock('table-monitor')
+const standaloneSource = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
+const performanceSource = readFileSync(resolve(root, 'docker', 'compose.performance.yml'), 'utf8').replaceAll('\r\n', '\n')
+const runtimeLogIndexer = serviceBlock(standaloneSource, 'runtime-log-indexer')
+const tableMonitor = serviceBlock(standaloneSource, 'table-monitor')
+const standaloneNode = serviceBlock(standaloneSource, 'juhe-ai')
+const standaloneAuditWriter = serviceBlock(standaloneSource, 'audit-log-writer')
+const performanceNode = serviceBlock(performanceSource, 'juhe-ai')
+const performanceAuditWriter = serviceBlock(performanceSource, 'audit-log-writer')
 
 assertDatabasePathMount(runtimeLogIndexer, {
   environment: 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
@@ -43,9 +48,12 @@ assertDatabasePathMount(tableMonitor, {
   label: 'F2 读取 F1 SQLite 输出库'
 })
 
-console.log('Docker Go sidecar SQLite isolation regression passed')
+assertAuditWriterContract(standaloneNode, standaloneAuditWriter, 'standalone')
+assertAuditWriterContract(performanceNode, performanceAuditWriter, 'performance')
 
-function serviceBlock(name) {
+console.log('Docker Go sidecar deployment isolation regression passed')
+
+function serviceBlock(source, name) {
   const header = `  ${name}:\n`
   const start = source.indexOf(header)
   assert.notEqual(start, -1, `missing Compose service: ${name}`)
@@ -53,6 +61,19 @@ function serviceBlock(name) {
   const body = remaining.slice(header.length)
   const next = body.search(/^  [a-zA-Z0-9_-]+:\n/mu)
   return next === -1 ? remaining : remaining.slice(0, header.length + next)
+}
+
+function assertAuditWriterContract(node, writer, mode) {
+  assert.match(writer, /dockerfile:\s+docker\/Dockerfile\.audit-log-writer/u, `${mode} Compose must build F3 from its dedicated Dockerfile`)
+  assert.match(writer, /^\s+network_mode:\s+service:juhe-ai\s*$/mu, `${mode} F3 must share Node's loopback network namespace`)
+  assert.match(writer, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, `${mode} F3 must require a stable instance ID`)
+  assert.match(writer, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} F3 must receive the explicit input secret`)
+  assert.match(writer, /JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:/u, `${mode} F3 must own a blob directory`)
+  assert.match(writer, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data\s*$/mu, `${mode} F3 must write its dedicated volume`)
+  assert.match(writer, /__aiinternal__\/health/u, `${mode} F3 healthcheck must probe the loopback input listener`)
+  assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:/u, `${mode} Node must send audit input to F3`)
+  assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} Node must receive the explicit F3 input secret`)
+  assert.match(node, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data:ro/u, `${mode} Node must mount F3 artifacts read-only`)
 }
 
 function assertDatabasePathMount(block, { environment, mountTarget, readOnly, label }) {

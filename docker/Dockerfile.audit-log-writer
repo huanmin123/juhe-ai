@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+
+ARG GO_IMAGE=golang:1.26-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+
+FROM ${GO_IMAGE} AS build
+WORKDIR /source/backend-go
+
+COPY backend-go/go.mod backend-go/go.sum ./
+RUN go mod download
+
+COPY backend-go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai-audit-log-writer ./cmd/juhe-ai-audit-log-writer
+
+FROM ${RUNTIME_IMAGE} AS runtime
+WORKDIR /app
+
+COPY --from=build /out/juhe-ai-audit-log-writer /usr/local/bin/juhe-ai-audit-log-writer
+
+RUN test -x /usr/local/bin/juhe-ai-audit-log-writer \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /app/backend/audit-log-data
+
+ENTRYPOINT ["/usr/local/bin/juhe-ai-audit-log-writer"]
