@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const standaloneSource = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
 const performanceSource = readFileSync(resolve(root, 'docker', 'compose.performance.yml'), 'utf8').replaceAll('\r\n', '\n')
+const auditWriterDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.audit-log-writer'), 'utf8').replaceAll('\r\n', '\n')
 const runtimeLogIndexer = serviceBlock(standaloneSource, 'runtime-log-indexer')
 const tableMonitor = serviceBlock(standaloneSource, 'table-monitor')
 const standaloneNode = serviceBlock(standaloneSource, 'juhe-ai')
@@ -50,6 +51,7 @@ assertDatabasePathMount(tableMonitor, {
 
 assertAuditWriterContract(standaloneNode, standaloneAuditWriter, 'standalone')
 assertAuditWriterContract(performanceNode, performanceAuditWriter, 'performance')
+assert.match(auditWriterDockerfile, /__aiinternal__\/health/u, 'F3 healthcheck binary must probe the loopback input listener')
 
 console.log('Docker Go sidecar deployment isolation regression passed')
 
@@ -70,7 +72,7 @@ function assertAuditWriterContract(node, writer, mode) {
   assert.match(writer, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} F3 must receive the explicit input secret`)
   assert.match(writer, /JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:/u, `${mode} F3 must own a blob directory`)
   assert.match(writer, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data\s*$/mu, `${mode} F3 must write its dedicated volume`)
-  assert.match(writer, /__aiinternal__\/health/u, `${mode} F3 healthcheck must probe the loopback input listener`)
+  assert.match(writer, /audit-log-healthcheck/u, `${mode} F3 healthcheck must use the HTTP probe binary`)
   assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:/u, `${mode} Node must send audit input to F3`)
   assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} Node must receive the explicit F3 input secret`)
   assert.match(node, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data:ro/u, `${mode} Node must mount F3 artifacts read-only`)
