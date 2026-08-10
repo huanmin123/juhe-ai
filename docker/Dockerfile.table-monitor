@@ -17,8 +17,11 @@ FROM ${RUNTIME_IMAGE} AS runtime
 WORKDIR /app
 
 COPY --from=build /out/juhe-ai-table-monitor /usr/local/bin/juhe-ai-table-monitor
+COPY docker/table-monitor-entrypoint.sh /usr/local/bin/juhe-ai-table-monitor-entrypoint
 
 RUN test -x /usr/local/bin/juhe-ai-table-monitor \
+  && chmod +x /usr/local/bin/juhe-ai-table-monitor-entrypoint \
+  && test -x /usr/local/bin/juhe-ai-table-monitor-entrypoint \
   && mkdir -p /app/backend/data /app/backend/table-monitor-data
 
-ENTRYPOINT ["/usr/local/bin/juhe-ai-table-monitor"]
+ENTRYPOINT ["/usr/local/bin/juhe-ai-table-monitor-entrypoint"]

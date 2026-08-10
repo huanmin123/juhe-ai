@@ -7,6 +7,8 @@ const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const standaloneSource = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
 const performanceSource = readFileSync(resolve(root, 'docker', 'compose.performance.yml'), 'utf8').replaceAll('\r\n', '\n')
 const auditWriterDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.audit-log-writer'), 'utf8').replaceAll('\r\n', '\n')
+const tableMonitorDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.table-monitor'), 'utf8').replaceAll('\r\n', '\n')
+const tableMonitorEntrypoint = readFileSync(resolve(root, 'docker', 'table-monitor-entrypoint.sh'), 'utf8').replaceAll('\r\n', '\n')
 const runtimeLogIndexer = serviceBlock(standaloneSource, 'runtime-log-indexer')
 const tableMonitor = serviceBlock(standaloneSource, 'table-monitor')
 const standaloneNode = serviceBlock(standaloneSource, 'juhe-ai')
@@ -42,6 +44,10 @@ assertDatabasePathMount(tableMonitor, {
   readOnly: false,
   label: 'F2 自身 SQLite 输出库'
 })
+assert.match(tableMonitor, /JUHE_AI_TABLE_MONITOR_STARTUP_TIMEOUT_SECONDS:/u, 'F2 Docker sidecar must receive an explicit source readiness timeout')
+assert.match(tableMonitorDockerfile, /table-monitor-entrypoint\.sh/u, 'F2 Dockerfile must install the source readiness entrypoint')
+assert.match(tableMonitorEntrypoint, /JUHE_AI_STATS_DATABASE_PATH/u, 'F2 entrypoint must wait for the Node-managed stats SQLite source')
+assert.match(tableMonitorEntrypoint, /timed out waiting for stats SQLite source/u, 'F2 entrypoint must fail visibly after the readiness timeout')
 assertDatabasePathMount(tableMonitor, {
   environment: 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
   mountTarget: '/app/backend/runtime-log-data',
