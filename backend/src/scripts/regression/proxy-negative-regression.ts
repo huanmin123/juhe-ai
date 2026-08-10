@@ -44,7 +44,6 @@ const [
   repositories,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue,
   usageRecordWriterPool
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
@@ -62,7 +61,6 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/usage-record-writer-pool.js')
 ])
 
@@ -263,7 +261,6 @@ async function main(): Promise<void> {
     gatewayCache.clearGatewayRuntimeCache()
 
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     let gatewayResponse: Record<string, unknown> & { status: number }
     try {
       gatewayResponse = await withProcessRole('db-service', async () => {
@@ -280,12 +277,10 @@ async function main(): Promise<void> {
           })
         })
         await usageRecordQueue.flushAllUsageRecordQueueAsync()
-        auditLogQueue.flushAllAuditLogQueue()
         return response
       })
     } finally {
       usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
-      auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     }
     assert(gatewayResponse.status === 503, `停用代理网关请求应失败为 503，实际 ${gatewayResponse.status}`)
     const gatewayResponseText = JSON.stringify(gatewayResponse)
@@ -302,7 +297,6 @@ async function main(): Promise<void> {
     console.log('代理负向回归通过：停用代理阻止账户测试，网关请求失败，没有直连上游，使用中的代理不能删除')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
-    auditLogQueue.flushAllAuditLogQueue()
     await usageRecordWriterPool.closeUsageRecordWriterPool()
     await closeServer(appServer)
     await closeServer(upstreamServer)

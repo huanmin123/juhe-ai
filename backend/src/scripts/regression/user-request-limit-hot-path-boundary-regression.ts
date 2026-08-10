@@ -22,6 +22,5 @@ assert.doesNotMatch(preAuthSource, /await\s+userRequestLimitCounter\.consume/, '
 assert.match(preAuthSource, /user_request_limit_exceeded/, '超限错误码必须稳定')
 assert.match(preAuthSource, /请求数已达到 \$\{decision\.limit \?\? 0\} 次，请联系管理员提升额度。/, '超限中文提示必须包含限制值、次数单位和完整句号')
 assert.match(preAuthSource, /gatewayErrorPayload\(message, 'rate_limit_exceeded', 'user_request_limit_exceeded'\)/, '超限响应必须保持 OpenAI 兼容错误结构')
-assert.match(preAuthSource, /recordDroppedAuditCapture\([\s\S]*reason: 'user_request_limit_exceeded'/, '超限 429 必须写入丢弃请求审计')
 
 console.log('user request limit hot path boundary regression passed')

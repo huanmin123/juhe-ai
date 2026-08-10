@@ -1079,6 +1079,349 @@ func TestPostgresLeaseSmokeWhenExplicitlyConfigured(t *testing.T) {
 	if refCount != 0 {
 		t.Fatalf("PostgreSQL ref_count must remain reference-derived, got %d", refCount)
 	}
+
+	// Commit a real retention GC intent, then interleave its physical-delete
+	// phase with a new Persist of the same canonical content. Either operation
+	// may win the per-blob lock; the end state must retain the new reference,
+	// metadata and physical file.
+	gcOld := fixture(runID+"-gc-old", LifecycleFinalized)
+	gcOld.CreatedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	gcOld.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, ContentType: "text/plain", Body: PayloadBody{Bytes: []byte("postgres gc interleave"), Present: true}}}
+	if _, err := store.Persist(ctx, successor, gcOld); err != nil {
+		t.Fatalf("真实 PostgreSQL GC 旧引用写入失败: %v", err)
+	}
+	var gcBlobID, gcStorageKey string
+	if err := impl.db.QueryRowContext(ctx, `SELECT b.id,b.storage_key FROM juhe_dataset.audit_payload_blobs b JOIN juhe_dataset.audit_payload_refs r ON r.body_blob_id=b.id WHERE r.audit_log_id=$1`, gcOld.ID).Scan(&gcBlobID, &gcStorageKey); err != nil {
+		t.Fatalf("读取真实 PostgreSQL GC blob 失败: %v", err)
+	}
+	gcScheduleTx, err := impl.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.verifyLeaseTx(ctx, gcScheduleTx, successor); err != nil {
+		t.Fatal(err)
+	}
+	_, gcCandidates, err := impl.deleteRetentionChildren(ctx, gcScheduleTx, []string{gcOld.ID}, true)
+	if err != nil {
+		t.Fatalf("真实 PostgreSQL GC 删除旧子行失败: %v", err)
+	}
+	if _, err := impl.deleteAuditLogRows(ctx, gcScheduleTx, []string{gcOld.ID}); err != nil {
+		t.Fatalf("真实 PostgreSQL GC 删除旧日志失败: %v", err)
+	}
+	gcRows, err := impl.unreferencedBlobRows(ctx, gcScheduleTx, gcCandidates, 10)
+	if err != nil {
+		t.Fatalf("真实 PostgreSQL GC 查询候选失败: %v", err)
+	}
+	if len(gcRows) != 1 || gcRows[0].id != gcBlobID {
+		t.Fatalf("真实 PostgreSQL GC 候选=%+v, want blob=%s", gcRows, gcBlobID)
+	}
+	// Retention may only inspect candidates before it takes the per-blob
+	// advisory lock. Persist takes that advisory lock before it subsequently
+	// writes the canonical blob row. This ordered, real-PostgreSQL interleave
+	// fails by deadline if a candidate scan regresses to FOR UPDATE.
+	orderCtx, cancelOrder := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelOrder()
+	persistOrderTx, err := impl.db.BeginTx(orderCtx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = persistOrderTx.Rollback() }()
+	if err := impl.lockBlobLifecycleTx(orderCtx, persistOrderTx, gcBlobID); err != nil {
+		t.Fatalf("真实 PostgreSQL Persist advisory blob lock 失败: %v", err)
+	}
+	var lockedBlobID string
+	if err := persistOrderTx.QueryRowContext(orderCtx, `UPDATE juhe_dataset.audit_payload_blobs SET last_seen_at=last_seen_at WHERE id=$1 RETURNING id`, gcBlobID).Scan(&lockedBlobID); err != nil {
+		t.Fatalf("retention 候选扫描不得阻塞 Persist advisory 后的 blob 元数据更新: %v", err)
+	}
+	if lockedBlobID != gcBlobID {
+		t.Fatalf("真实 PostgreSQL Persist 锁定错误 blob: got=%s want=%s", lockedBlobID, gcBlobID)
+	}
+	if err := persistOrderTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.scheduleUnreferencedBlobGC(ctx, gcScheduleTx, gcRows); err != nil {
+		t.Fatalf("真实 PostgreSQL GC 排程失败: %v", err)
+	}
+	if err := impl.verifyLeaseBeforeCommit(ctx, gcScheduleTx, successor); err != nil {
+		t.Fatal(err)
+	}
+	if err := gcScheduleTx.Commit(); err != nil {
+		t.Fatalf("真实 PostgreSQL GC 排程提交失败: %v", err)
+	}
+	var scheduled int
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id=$1 AND storage_key=$2`, gcBlobID, gcStorageKey).Scan(&scheduled); err != nil {
+		t.Fatal(err)
+	}
+	if scheduled != 1 {
+		t.Fatalf("真实 PostgreSQL GC locator 未持久化: %d", scheduled)
+	}
+
+	gcNew := fixture(runID+"-gc-new", LifecycleFinalized)
+	gcNew.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, ContentType: "text/plain", Body: PayloadBody{Bytes: []byte("postgres gc interleave"), Present: true}}}
+	interleaveCtx, cancelInterleave := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelInterleave()
+	startInterleave := make(chan struct{})
+	persistInterleave := make(chan error, 1)
+	cleanupInterleave := make(chan error, 1)
+	go func() {
+		<-startInterleave
+		_, err := store.Persist(interleaveCtx, successor, gcNew)
+		persistInterleave <- err
+	}()
+	go func() {
+		<-startInterleave
+		_, err := impl.cleanupScheduledBlobFile(interleaveCtx, successor, pendingBlobGCRow{blobID: gcBlobID, storageKey: gcStorageKey})
+		cleanupInterleave <- err
+	}()
+	close(startInterleave)
+	if err := <-persistInterleave; err != nil {
+		t.Fatalf("真实 PostgreSQL GC 交错 Persist 失败: %v", err)
+	}
+	if err := <-cleanupInterleave; err != nil {
+		t.Fatalf("真实 PostgreSQL GC 交错 cleanup 失败: %v", err)
+	}
+	gcPath := filepath.Join(blobRoot, filepath.FromSlash(gcStorageKey))
+	if _, err := os.Stat(gcPath); err != nil {
+		t.Fatalf("真实 PostgreSQL GC 交错后新引用缺少物理文件: %v", err)
+	}
+	var survivingMetadata, survivingRefs, remainingLocator int
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_blobs b JOIN juhe_dataset.audit_payload_refs r ON r.body_blob_id=b.id WHERE b.id=$1 AND r.audit_log_id=$2`, gcBlobID, gcNew.ID).Scan(&survivingMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1 AND body_blob_id=$2`, gcNew.ID, gcBlobID).Scan(&survivingRefs); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id=$1`, gcBlobID).Scan(&remainingLocator); err != nil {
+		t.Fatal(err)
+	}
+	if survivingMetadata != 1 || survivingRefs != 1 || remainingLocator != 0 {
+		t.Fatalf("真实 PostgreSQL GC 交错后状态 metadata=%d refs=%d locator=%d", survivingMetadata, survivingRefs, remainingLocator)
+	}
+
+	// A physical delete error must not make the orphan untraceable: the blob
+	// metadata and the durable GC locator stay available for a later pass.
+	failureBlobID := runID + "-gc-delete-failure"
+	failureStorageKey := "smoke-delete-failure.blob"
+	failurePath := filepath.Join(blobRoot, failureStorageKey)
+	if err := os.MkdirAll(failurePath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(failurePath, "held"), []byte("block deletion"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := impl.db.ExecContext(ctx, `INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)`, failureBlobID, runID+"-gc-delete-failure-hash", 1, 1, "text/plain", failureStorageKey, now); err != nil {
+		t.Fatalf("写入真实 PostgreSQL 失败删除 blob metadata 失败: %v", err)
+	}
+	failureScheduleTx, err := impl.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.verifyLeaseTx(ctx, failureScheduleTx, successor); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.scheduleUnreferencedBlobGC(ctx, failureScheduleTx, []retentionBlobRow{{id: failureBlobID, storageKey: failureStorageKey}}); err != nil {
+		t.Fatalf("排程真实 PostgreSQL 失败删除 blob 失败: %v", err)
+	}
+	if err := impl.verifyLeaseBeforeCommit(ctx, failureScheduleTx, successor); err != nil {
+		t.Fatal(err)
+	}
+	if err := failureScheduleTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := impl.cleanupScheduledBlobFile(ctx, successor, pendingBlobGCRow{blobID: failureBlobID, storageKey: failureStorageKey}); err == nil || !strings.Contains(err.Error(), "删除 F3 audit blob 文件失败") {
+		t.Fatalf("真实 PostgreSQL GC 文件删除失败错误=%v", err)
+	}
+	var retainedMetadata, retainedLocator int
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_blobs WHERE id=$1`, failureBlobID).Scan(&retainedMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id=$1 AND storage_key=$2`, failureBlobID, failureStorageKey).Scan(&retainedLocator); err != nil {
+		t.Fatal(err)
+	}
+	if retainedMetadata != 1 || retainedLocator != 1 {
+		t.Fatalf("真实 PostgreSQL GC 删除失败未保留可重试状态 metadata=%d locator=%d", retainedMetadata, retainedLocator)
+	}
+}
+
+func TestPostgresRetentionSameIDPersistLockOrderSmokeWhenExplicitlyConfigured(t *testing.T) {
+	postgresURL := strings.TrimSpace(os.Getenv("JUHE_AI_AUDIT_LOG_TEST_POSTGRES_URL"))
+	if postgresURL == "" {
+		t.Skip("未设置 JUHE_AI_AUDIT_LOG_TEST_POSTGRES_URL；跳过真实 PostgreSQL same-ID retention/Persist 锁序 smoke")
+	}
+	assertDestructivePostgresSmokeTarget(t, postgresURL)
+	blobRoot := t.TempDir()
+	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PayloadBlobDirectory: blobRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	impl := store.(*sqlStore)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertEmptyPostgresF3Tables(t, ctx, impl.db)
+	defer func() {
+		cleanupPostgresSmokeRows(t, ctx, impl.db)
+		if err := os.RemoveAll(blobRoot); err != nil {
+			t.Errorf("清理 PostgreSQL same-ID smoke 测试 blob 目录失败: %v", err)
+		}
+	}()
+
+	runID := "f3pgsameid" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	lease, acquired, err := store.AcquireOwnerLease(ctx, runID+"-owner", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("真实 PostgreSQL same-ID smoke 获取 lease 失败: acquired=%v err=%v", acquired, err)
+	}
+	old := fixture(runID+"-audit", LifecycleFinalized)
+	old.CreatedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	old.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, ContentType: "text/plain", Body: PayloadBody{Bytes: []byte("same audit lifecycle blob"), Present: true}}}
+	if _, err := store.Persist(ctx, lease, old); err != nil {
+		t.Fatalf("真实 PostgreSQL same-ID 旧审计写入失败: %v", err)
+	}
+	var blobID, storageKey string
+	if err := impl.db.QueryRowContext(ctx, `SELECT b.id,b.storage_key FROM juhe_dataset.audit_payload_blobs b JOIN juhe_dataset.audit_payload_refs r ON r.body_blob_id=b.id WHERE r.audit_log_id=$1`, old.ID).Scan(&blobID, &storageKey); err != nil {
+		t.Fatalf("读取真实 PostgreSQL same-ID blob 失败: %v", err)
+	}
+
+	retentionTx, err := impl.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.verifyLeaseTx(ctx, retentionTx, lease); err != nil {
+		_ = retentionTx.Rollback()
+		t.Fatal(err)
+	}
+	_, candidates, err := impl.deleteRetentionChildren(ctx, retentionTx, []string{old.ID}, true)
+	if err != nil {
+		_ = retentionTx.Rollback()
+		t.Fatalf("真实 PostgreSQL same-ID retention 删除子行失败: %v", err)
+	}
+	if _, err := impl.deleteAuditLogRows(ctx, retentionTx, []string{old.ID}); err != nil {
+		_ = retentionTx.Rollback()
+		t.Fatalf("真实 PostgreSQL same-ID retention 删除父行失败: %v", err)
+	}
+	rows, err := impl.unreferencedBlobRows(ctx, retentionTx, candidates, 10)
+	if err != nil {
+		_ = retentionTx.Rollback()
+		t.Fatalf("真实 PostgreSQL same-ID retention 查询候选失败: %v", err)
+	}
+	if len(rows) != 1 || rows[0].id != blobID {
+		_ = retentionTx.Rollback()
+		t.Fatalf("真实 PostgreSQL same-ID retention 候选=%+v，want blob=%s", rows, blobID)
+	}
+
+	// Retention now owns the audit-ID gate and its row locks, but intentionally
+	// has not taken the blob lock. Persist must be waiting on that audit gate,
+	// leaving the blob advisory lock available for retention's GC scheduling.
+	interleaveCtx, cancelInterleave := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelInterleave()
+	newInput := fixture(old.ID, LifecycleFinalized)
+	newInput.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, ContentType: "text/plain", Body: PayloadBody{Bytes: []byte("same audit lifecycle blob"), Present: true}}}
+	type persistOutcome struct {
+		result PersistResult
+		err    error
+	}
+	persisted := make(chan persistOutcome, 1)
+	go func() {
+		result, err := store.Persist(interleaveCtx, lease, newInput)
+		persisted <- persistOutcome{result: result, err: err}
+	}()
+	if err := waitForPostgresBlockedPersist(interleaveCtx, impl.db); err != nil {
+		_ = retentionTx.Rollback()
+		outcome := <-persisted
+		t.Fatalf("真实 PostgreSQL same-ID Persist 未进入锁等待: wait=%v persist=%+v", err, outcome)
+	}
+	probeTx, err := impl.db.BeginTx(interleaveCtx, nil)
+	if err != nil {
+		_ = retentionTx.Rollback()
+		outcome := <-persisted
+		t.Fatalf("开始 PostgreSQL blob 锁探测事务失败: %v; Persist=%+v", err, outcome)
+	}
+	var blobLockAvailable bool
+	err = probeTx.QueryRowContext(interleaveCtx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, $2::bigint))`, blobID, postgresBlobLifecycleLockSeed).Scan(&blobLockAvailable)
+	rollbackProbeErr := probeTx.Rollback()
+	if err != nil || rollbackProbeErr != nil {
+		_ = retentionTx.Rollback()
+		outcome := <-persisted
+		t.Fatalf("探测 PostgreSQL same-ID blob 锁失败: query=%v rollback=%v persist=%+v", err, rollbackProbeErr, outcome)
+	}
+	if !blobLockAvailable {
+		_ = retentionTx.Rollback()
+		outcome := <-persisted
+		t.Fatalf("same-ID Persist 在等待 retention audit 行时已持有 blob advisory，锁序回归为 blob->audit: %+v", outcome)
+	}
+	if err := impl.scheduleUnreferencedBlobGC(interleaveCtx, retentionTx, rows); err != nil {
+		_ = retentionTx.Rollback()
+		outcome := <-persisted
+		t.Fatalf("真实 PostgreSQL same-ID retention GC 排程失败: %v; Persist=%+v", err, outcome)
+	}
+	if err := impl.verifyLeaseBeforeCommit(interleaveCtx, retentionTx, lease); err != nil {
+		_ = retentionTx.Rollback()
+		outcome := <-persisted
+		t.Fatalf("真实 PostgreSQL same-ID retention 提交 fence 失败: %v; Persist=%+v", err, outcome)
+	}
+	if err := retentionTx.Commit(); err != nil {
+		outcome := <-persisted
+		t.Fatalf("真实 PostgreSQL same-ID retention 提交失败: %v; Persist=%+v", err, outcome)
+	}
+	outcome := <-persisted
+	if outcome.err != nil || outcome.result.Ignored {
+		t.Fatalf("真实 PostgreSQL delayed same-ID Persist 丢失输入: result=%+v err=%v", outcome.result, outcome.err)
+	}
+	replay, err := store.Persist(ctx, lease, newInput)
+	if err != nil || !replay.Ignored {
+		t.Fatalf("真实 PostgreSQL duplicate same-ID Persist 结果=%+v err=%v", replay, err)
+	}
+	var auditRows, refs, locators int
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_logs WHERE id=$1`, newInput.ID).Scan(&auditRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1 AND body_blob_id=$2`, newInput.ID, blobID).Scan(&refs); err != nil {
+		t.Fatal(err)
+	}
+	if err := impl.db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id=$1`, blobID).Scan(&locators); err != nil {
+		t.Fatal(err)
+	}
+	if auditRows != 1 || refs != 1 || locators != 0 {
+		t.Fatalf("真实 PostgreSQL same-ID 最终状态 audit=%d refs=%d gc=%d", auditRows, refs, locators)
+	}
+	if _, err := os.Stat(filepath.Join(blobRoot, filepath.FromSlash(storageKey))); err != nil {
+		t.Fatalf("真实 PostgreSQL same-ID 交错后 canonical blob 丢失: %v", err)
+	}
+}
+
+func waitForPostgresBlockedPersist(ctx context.Context, db *sql.DB) error {
+	delay := 10 * time.Millisecond
+	for {
+		var blocked bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database()
+				AND pid <> pg_backend_pid()
+				AND wait_event_type = 'Lock'
+				AND (query LIKE '%pg_advisory_xact_lock%' OR query LIKE '%audit_logs%')
+		)`).Scan(&blocked)
+		if err != nil {
+			return err
+		}
+		if blocked {
+			return nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+			if delay < 250*time.Millisecond {
+				delay *= 2
+			}
+		}
+	}
 }
 
 const postgresSmokeDestructiveToken = "I_UNDERSTAND_THIS_EMPTY_DB_IS_DISPOSABLE"
@@ -1116,7 +1459,7 @@ func assertDestructivePostgresSmokeTarget(t *testing.T, postgresURL string) {
 	}
 }
 
-var postgresF3Tables = []string{"audit_log_owner_leases", "audit_logs", "audit_log_attempts", "audit_payload_blobs", "audit_payload_refs", "audit_error_groups"}
+var postgresF3Tables = []string{"audit_log_owner_leases", "audit_logs", "audit_log_attempts", "audit_payload_blobs", "audit_payload_refs", "audit_error_groups", "audit_payload_blob_gc"}
 
 func assertEmptyPostgresF3Tables(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
@@ -1156,7 +1499,7 @@ func assertPostgresCollatedPrefixIndexes(t *testing.T, ctx context.Context, db *
 
 func cleanupPostgresSmokeRows(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
-	for _, table := range []string{"audit_logs", "audit_error_groups", "audit_payload_blobs", "audit_log_owner_leases"} {
+	for _, table := range []string{"audit_payload_blob_gc", "audit_logs", "audit_error_groups", "audit_payload_blobs", "audit_log_owner_leases"} {
 		if _, err := db.ExecContext(ctx, `DELETE FROM juhe_dataset.`+table); err != nil {
 			t.Errorf("清理 PostgreSQL smoke F3 表 %s 失败: %v", table, err)
 		}

@@ -3,7 +3,7 @@
   "featureId": "F3",
   "archivedAt": "2026-08-10T02:00:00+08:00",
   "maintainer": "migration team",
-  "cutoverCommit": "779ab71fc",
+  "cutoverCommit": "649f0a9e3",
   "rollbackCommit": "779ab71fc",
   "archiveOverlayAllowed": false,
   "restoreProcedure": "停止 Go F3 sidecar 与 Node 应用后，以 rollbackCommit 整体恢复完整 Node 基线；归档文件仅供比对，禁止覆盖更新工作树或与 Go owner 双写运行。",
@@ -18,6 +18,7 @@
     "backend/src/modules/audit-logs/audit-log-transport-worker.ts",
     "backend/src/modules/audit-logs/audit-log-stream-codec.ts",
     "backend/src/modules/audit-logs/audit-log-capacity-fallback.ts",
+    "backend/src/modules/audit-logs/audit-log-retention-policy.ts",
     "backend/src/modules/background/background-ipc-audit-trim.ts",
     "backend/src/storage/audit-logs.repository.ts",
     "backend/src/storage/audit-log-retention.repository.ts",
@@ -51,7 +52,7 @@
   "files": [
     {
       "archivePath": "migration-backup/node/audit-log-write-retention/README.md",
-      "sha256": "8b7cf780a7c78265fc17716860fefc757f1de917b95f6a6147546e4a362cee44",
+      "sha256": "f110146c9d358f975e0517121fce570ec76732e20f762b32e9a4f28fb42a3966",
       "originalPath": "migration-backup/node/audit-log-write-retention/README.md"
     },
     {
@@ -63,6 +64,11 @@
       "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-queue.service.ts",
       "sha256": "db0a546900028a30567ce20137a78b6fa23d3d73c7ac472884e339c5f62fe7ab",
       "originalPath": "backend/src/modules/audit-logs/audit-log-queue.service.ts"
+    },
+    {
+      "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-retention-policy.ts",
+      "sha256": "acb9938a870f1e19e23217c96aa502546e1aae7429c175c1585d755d13560aa4",
+      "originalPath": "backend/src/modules/audit-logs/audit-log-retention-policy.ts"
     },
     {
       "archivePath": "migration-backup/node/audit-log-write-retention/backend/src/modules/audit-logs/audit-log-stream-codec.ts",
@@ -260,6 +266,11 @@
       "originalPath": "backend/src/storage/audit-logs.repository.ts"
     },
     {
+      "archivePath": "migration-backup/node/audit-log-write-retention/regressions/f3-audit-direct-input-test-support.ts",
+      "sha256": "90da43277dbdf1a8952bb340e83efcad9a935cb3f94e48333297902704a1995b",
+      "originalPath": "backend/src/scripts/regression/f3-audit-direct-input-test-support.ts"
+    },
+    {
       "archivePath": "migration-backup/node/audit-log-write-retention/regressions/backend/src/scripts/regression/account-model-mapping-regression.ts",
       "sha256": "54c49f3e3adfbf9136123f8d64ba3cbdd0c7bd34f89ef12946823a32bb9b4c91",
       "originalPath": "backend/src/scripts/regression/account-model-mapping-regression.ts"
@@ -336,5 +347,6 @@
     }
   ],
   "featureName": "audit-log-write-retention",
-  "archiveSourceBaseline": "779ab71fc"
+  "archiveSourceBaseline": null,
+  "archiveSourceEvidence": "归档文件不来自单一 Git 提交；rollbackCommit=779ab71fc 仅表示 F3 输入接线前的整体回滚基线。每个归档文件的 archivePath、originalPath 和 sha256 是唯一内容来源证据，必须逐项复算，不得按单一源提交推断字节一致性。"
 }

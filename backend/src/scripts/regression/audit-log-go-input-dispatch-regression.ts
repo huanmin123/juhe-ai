@@ -7,6 +7,7 @@ import type { AuditLogInput } from '../../storage/audit-log-types.js'
 const originalEnvironment = new Map<string, string | undefined>()
 for (const name of [
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
+  'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
   'JUHE_AI_SECRET',
   'JUHE_AI_LOG_FILE_ENABLED',
   'JUHE_AI_LOG_CONSOLE_ENABLED',
@@ -15,8 +16,10 @@ for (const name of [
   originalEnvironment.set(name, process.env[name])
 }
 
-const sharedSecret = 'f3-dispatch-regression-secret'
-process.env.JUHE_AI_SECRET = sharedSecret
+const businessSecret = 'f3-dispatch-regression-business-secret'
+const inputSecret = 'f3-dispatch-regression-input-secret'
+process.env.JUHE_AI_SECRET = businessSecret
+process.env.JUHE_AI_AUDIT_LOG_INPUT_SECRET = inputSecret
 process.env.JUHE_AI_LOG_FILE_ENABLED = 'false'
 process.env.JUHE_AI_LOG_CONSOLE_ENABLED = 'false'
 process.env.NODE_ENV = 'test'
@@ -52,7 +55,7 @@ try {
   const parsed = JSON.parse(successRequest.body.toString('utf8')) as { schemaVersion?: number; auditLog?: AuditLogInput }
   assert.equal(parsed.schemaVersion, 1, 'Go 输入 envelope schemaVersion 必须为 1')
   assert.equal(parsed.auditLog?.traceId, largeInput.traceId, 'Go 输入 envelope 必须包含原审计记录')
-  const expectedSignature = `v1=${createHmac('sha256', sharedSecret)
+  const expectedSignature = `v1=${createHmac('sha256', inputSecret)
     .update('juhe-ai/audit-log-input/v1')
     .update('\n')
     .update(successRequest.body)

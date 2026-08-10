@@ -93,7 +93,6 @@ const [
   apiKeyFailureGuard,
   latencyDegradation,
   usageRecordQueue,
-  auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -108,7 +107,6 @@ const [
   import('../../modules/gateway/runtime/account-api-key-failure-guard.service.js'),
   import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -125,7 +123,6 @@ async function main(): Promise<void> {
   const contractFailures: string[] = []
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     clearAccountConcurrency()
     clearHighConcurrencyGroupQueues()
     accountCircuit.resetGatewayAccountCircuitStoreForTest()
@@ -443,7 +440,6 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest().catch(() => undefined)
-    auditLogQueue.flushAllAuditLogQueue()
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     clearAccountConcurrency()
@@ -731,7 +727,6 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
   })
 
   usageRecordQueue.flushAllUsageRecordQueue()
-  await auditLogQueue.flushAllAuditLogQueueAsync()
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
 
   await verifyContract(failures, 'circuit 状态', async () => {
@@ -784,45 +779,7 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
     )
   })
 
-  await verifyContract(failures, 'audit attempt 唯一性与请求局部归因', async () => {
-    const auditFailures: string[] = []
-    const auditAttempts = databaseModule.getDatasetDatabase().prepare(`
-      SELECT attempts.id, attempts.attempt_index, attempts.account_id, attempts.success,
-             attempts.error_phase, attempts.error_code
-      FROM audit_log_attempts attempts
-      INNER JOIN audit_logs logs ON logs.id = attempts.audit_log_id
-      WHERE logs.trace_id = ?
-      ORDER BY attempts.attempt_index ASC
-    `).all(traceId) as Array<{
-      id: string
-      attempt_index: number
-      account_id: string | null
-      success: number
-      error_phase: string | null
-      error_code: string | null
-    }>
-    await verifyContract(auditFailures, 'attempt 数量与 ID', async () => {
-      assert.equal(auditAttempts.length, 2, `两个真实 dispatch 必须写两个 audit attempt：${JSON.stringify(auditAttempts)}`)
-      assert.equal(new Set(auditAttempts.map((attempt) => attempt.id)).size, 2, '每次真实 dispatch 的 audit attempt ID 必须唯一')
-    })
-    await verifyContract(auditFailures, 'attempt 顺序与账户', async () => {
-      assert.deepEqual(
-        auditAttempts.map((attempt) => ({
-          attemptIndex: attempt.attempt_index,
-          accountId: attempt.account_id,
-          success: attempt.success
-        })),
-        [
-          { attemptIndex: 1, accountId: fixture.accounts[0]!.accountId, success: 0 },
-          { attemptIndex: 1, accountId: fixture.accounts[1]!.accountId, success: 1 }
-        ],
-        '两个真实 dispatch 必须分别归属失败账户与后备账户'
-      )
-    })
-    await verifyContract(auditFailures, 'audit 失败诊断', async () => {
-      assert.equal(auditAttempts[0]?.error_phase, 'upstream_request', '失败账户的审计必须记录上游请求失败阶段')
-    })
-
+  await verifyContract(failures, '中间 transport 失败必须保持请求局部归因', async () => {
     const usageItems = requireUsageRecordDetails(
       repositories,
       repositories.listUsageRecords(access, { page: 1, pageSize: 100 }).items
@@ -830,13 +787,10 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
       access
     )
     const intermediateUsage = usageItems.filter((item) => item.success === false)
-    await verifyContract(auditFailures, 'usage 请求局部归因', async () => {
-      assert(
-        intermediateUsage.every((item) => item.failureAttribution === 'account_upstream'),
-        `确认的上游 transport 失败必须归因为 account_upstream：${JSON.stringify(intermediateUsage)}`
-      )
-    })
-    if (auditFailures.length > 0) assert.fail(auditFailures.join('；'))
+    assert(
+      intermediateUsage.every((item) => item.failureAttribution === 'account_upstream'),
+      `确认的上游 transport 失败必须归因为 account_upstream：${JSON.stringify(intermediateUsage)}`
+    )
   })
 
   await assertFixtureResourcesClean(fixture, '中间失败成功收口')

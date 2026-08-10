@@ -20,12 +20,13 @@ import (
 )
 
 const (
-	AuditInputPath                  = "/__aiinternal__/v1/audit-captures"
-	AuditInputHealthPath            = "/__aiinternal__/health"
-	AuditInputSignatureHeader       = "X-Juhe-AI-Signature"
-	auditInputSignatureDomain       = "juhe-ai/audit-log-input/v1"
-	defaultInputMaxBytes      int64 = 4 << 20
-	defaultInputTimeout             = 5 * time.Second
+	AuditInputPath                        = "/__aiinternal__/v1/audit-captures"
+	AuditInputHealthPath                  = "/__aiinternal__/health"
+	AuditInputSignatureHeader             = "X-Juhe-AI-Signature"
+	auditInputSignatureDomain             = "juhe-ai/audit-log-input/v1"
+	defaultInputMaxBytes            int64 = 4 << 20
+	defaultInputTimeout                   = 5 * time.Second
+	minimumProductionInputSecretLen       = 32
 )
 
 // InputServerConfig is intentionally separate from the persistence config.
@@ -53,6 +54,9 @@ func LoadInputServerConfig(getenv func(string) string) (InputServerConfig, error
 	}
 	if cfg.SharedSecret == "" {
 		return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_SECRET 是 F3 loopback HMAC 的必填配置")
+	}
+	if strings.EqualFold(strings.TrimSpace(getenv("NODE_ENV")), "production") && len(cfg.SharedSecret) < minimumProductionInputSecretLen {
+		return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_SECRET 在 production 环境必须至少 %d 位", minimumProductionInputSecretLen)
 	}
 	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_MAX_BYTES")); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)

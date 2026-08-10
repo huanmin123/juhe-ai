@@ -48,6 +48,18 @@ for (const launcher of launcherSources) {
 assert.match(powershellSource, /function Get-AuditLogWriterNodeLauncher\s*\{/u, 'Windows F3 launcher function must exist')
 assert.match(shellSource, /start_audit_log_writer\(\)[\s\S]*JUHE_AI_AUDIT_LOG_INPUT_SECRET/u, 'Unix F3 launcher must forward the input secret')
 assert.match(powershellSource, /JUHE_AI_AUDIT_LOG_INPUT_SECRET/u, 'Windows F3 launcher must forward the input secret')
+for (const source of [powershellSource, shellSource]) {
+  assert.doesNotMatch(
+    source,
+    /configured\('JUHE_AI_AUDIT_LOG_INPUT_SECRET'\)\s*\|\|\s*configured\('JUHE_AI_SECRET'\)/u,
+    'F3 launcher must not fall back to JUHE_AI_SECRET'
+  )
+  assert.match(
+    source,
+    /JUHE_AI_AUDIT_LOG_INPUT_SECRET is required for (?:the )?F3 (?:input listener|loopback HMAC input)\./u,
+    'F3 launcher must reject a missing explicit input secret'
+  )
+}
 
 console.log('release Go sidecar launcher regression passed')
 

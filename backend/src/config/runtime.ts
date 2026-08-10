@@ -54,6 +54,7 @@ export interface RuntimeConfig {
   dbServiceHttpPort: number
   accountHealthCheckDispatchUrl?: string
   auditLogInputUrl?: string
+  auditLogInputSecret?: string
   systemApi: {
     dbServiceMaxInFlight: number
   }
@@ -452,6 +453,11 @@ const configuredAuditLogInputUrl = auditLogInputUrlConfig(
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
   optionalStringConfig('JUHE_AI_AUDIT_LOG_INPUT_URL')
 )
+const configuredAuditLogInputSecret = auditLogInputSecretConfig(
+  'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
+  configuredAuditLogInputUrl,
+  optionalStringConfig('JUHE_AI_AUDIT_LOG_INPUT_SECRET')
+)
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
@@ -516,6 +522,7 @@ export const runtimeConfig: RuntimeConfig = {
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
   auditLogInputUrl: configuredAuditLogInputUrl,
+  auditLogInputSecret: configuredAuditLogInputSecret,
   systemApi: {
     dbServiceMaxInFlight: numberConfig(
       'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT',
@@ -1097,6 +1104,19 @@ function auditLogInputUrlConfig(name: string, configuredValue: string | undefine
     throw new Error(`${name} 只能配置为带显式端口的 loopback HTTP Origin，不能包含路径、用户名密码、查询参数或片段`)
   }
   return url.origin
+}
+
+function auditLogInputSecretConfig(
+  name: string,
+  inputUrl: string | undefined,
+  configuredValue: string | undefined
+): string | undefined {
+  if (!inputUrl) return undefined
+  if (!configuredValue) {
+    throw new Error(`${name} 在配置 JUHE_AI_AUDIT_LOG_INPUT_URL 时必须显式配置`)
+  }
+  assertProductionSecret(name, configuredValue)
+  return configuredValue
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {

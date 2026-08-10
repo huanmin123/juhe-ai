@@ -29,7 +29,6 @@ const [
   databaseModule,
   repositories,
   usageRecordQueue,
-  auditLogQueue,
   sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -37,7 +36,6 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -65,7 +63,6 @@ async function main(): Promise<void> {
   let upstreamServer: http.Server | undefined
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     upstreamServer = createLargeResponseUpstreamServer()
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
@@ -145,8 +142,6 @@ async function main(): Promise<void> {
     console.log(`非流式大响应回归通过：完整转发 ${bodyRead.bytes} bytes，堆增长 ${Math.max(0, heapDelta)} bytes`)
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
-    auditLogQueue.flushAllAuditLogQueue()
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(appServer)
     await closeServer(upstreamServer)

@@ -63,7 +63,6 @@ const [
   accountCircuit,
   hotQuality,
   usageRecordQueue,
-  auditLogQueue,
   readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -76,7 +75,6 @@ const [
   import('../../modules/gateway/runtime/account-circuit.service.js'),
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -115,7 +113,6 @@ try {
     accountCircuitConfirmationFailuresRequired: 2
   })
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
   hotQuality.resetGatewayHotQualityRuntimeForTest()
@@ -153,7 +150,6 @@ try {
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   hotQuality.resetGatewayHotQualityRuntimeForTest()
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
   clearHighConcurrencyGroupQueues()

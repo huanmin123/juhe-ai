@@ -92,7 +92,6 @@ const [
   circuitRecovery,
   accountProbeOutcome,
   usageRecordQueue,
-  auditLogQueue,
   readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -109,7 +108,6 @@ const [
   import('../../modules/background/account-circuit-recovery.service.js'),
   import('../../modules/accounts/automatic-account-probe-outcome.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -131,7 +129,6 @@ try {
     noAvailableAccountWaitTimeoutSeconds: 10
   })
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
 
   upstreamServer = createMockUpstream()
@@ -200,7 +197,6 @@ try {
   clearHighConcurrencyGroupQueues()
   clearAccountConcurrency()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   await readWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

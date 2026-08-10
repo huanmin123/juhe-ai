@@ -359,8 +359,8 @@ function resolveAuditLogWriterEnv() {
   const childEnv = { ...loadBackendEnv(), ...process.env }
   const instanceID = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID)
   if (!instanceID) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
-  const secret = firstConfiguredValue(childEnv.JUHE_AI_SECRET)
-  if (!secret) throw new Error('JUHE_AI_SECRET is required for F3 loopback HMAC input.')
+  const secret = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET)
+  if (!secret) throw new Error('JUHE_AI_AUDIT_LOG_INPUT_SECRET is required for F3 loopback HMAC input.')
   const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
   const inputPort = listenAddress.slice(listenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID

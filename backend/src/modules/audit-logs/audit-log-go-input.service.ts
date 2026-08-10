@@ -43,7 +43,7 @@ export function dispatchAuditLogToGo(input: AuditLogInput): void {
   const { body } = prepared
   // Copy into an exact ArrayBuffer. Buffer may be a view into a larger pool.
   const requestBody = new Uint8Array(body).buffer
-  const signature = createHmac('sha256', runtimeConfig.secret)
+  const signature = createHmac('sha256', runtimeConfig.auditLogInputSecret!)
     .update(auditLogGoInputSignatureDomain)
     .update('\n')
     .update(body)

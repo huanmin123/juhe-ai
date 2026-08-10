@@ -63,7 +63,6 @@ const [
   clientIpErrorCircuit,
   proxyHealth,
   usageRecordQueue,
-  auditLogQueue,
   readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -80,7 +79,6 @@ const [
   import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
   import('../../modules/gateway/runtime/proxy-health.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -130,7 +128,6 @@ try {
     noAvailableAccountWaitTimeoutSeconds: 10
   })
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   clearRuntimeState()
 
   upstreamServer = createMockUpstream()
@@ -196,9 +193,7 @@ try {
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   clearRuntimeState()
   await readWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.getBusinessDatabase().close()

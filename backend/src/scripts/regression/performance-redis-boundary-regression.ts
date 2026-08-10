@@ -139,7 +139,6 @@ const dbServiceIpcSource = source('modules/db-service/db-service-ipc.ts')
 assert.match(dbServiceIpcSource, /function rejectRedisStreamLocalQueueForward[\s\S]*runtimeConfig\.queueDriver !== 'redis_stream'[^]*return false[\s\S]*db_service_redis_stream_local_queue_forward_rejected/, 'redis_stream driver 下 DB service 父消息不能转发记录类 IPC 本地队列')
 for (const functionName of [
   'forwardUsageRecordsToWorker',
-  'forwardAuditLogsToWorker',
   'forwardOperationLogsToWorker',
   'forwardPublicApiLogsToWorker',
   'forwardRecordMaintenanceJobsToWorker'

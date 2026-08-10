@@ -37,7 +37,6 @@ const [
   gatewayJsonParser,
   gatewayRequestBody,
   usageRecordQueue,
-  auditLogQueue,
   gatewayCache,
   clientIpErrorCircuit,
   backgroundIpc,
@@ -54,7 +53,6 @@ const [
   import('../../modules/gateway/request/json-parser.js'),
   import('../../modules/gateway/request/body.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
   import('../../modules/background/background-ipc.js'),
@@ -112,7 +110,6 @@ let rawBodyMiddlewareHitCount = 0
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   const apiKey = seedGatewayRuntime()
   const seededRuntime = await dbServiceHandlers.handleDbServiceOperation({
     type: 'read_gateway_runtime',
@@ -228,8 +225,6 @@ try {
   await gatewayJsonParser.stopGatewayJsonParseWorker()
   clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
 usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
 try {
   await readWorkerPool.closeSqliteReadWorkerPool()

@@ -125,25 +125,43 @@ func TestLoadInputServerConfigRequiresLoopbackAndSecret(t *testing.T) {
 	if err != nil || config.ListenAddress != "127.0.0.1:3303" {
 		t.Fatalf("valid input config: cfg=%+v err=%v", config, err)
 	}
-	for name, override := range map[string]string{
-		"missing-secret":  "",
-		"public-listener": "0.0.0.0:3303",
-		"zero-port":       "127.0.0.1:0",
+	for _, testCase := range []struct {
+		name        string
+		environment map[string]string
+		wantError   string
+	}{
+		{name: "missing-secret", environment: map[string]string{"NODE_ENV": "production", "JUHE_AI_AUDIT_LOG_INPUT_SECRET": ""}, wantError: "JUHE_AI_AUDIT_LOG_INPUT_SECRET"},
+		{name: "blank-secret", environment: map[string]string{"NODE_ENV": "production", "JUHE_AI_AUDIT_LOG_INPUT_SECRET": "   "}, wantError: "JUHE_AI_AUDIT_LOG_INPUT_SECRET"},
+		{name: "does-not-fallback-to-business-secret", environment: map[string]string{"NODE_ENV": "production", "JUHE_AI_AUDIT_LOG_INPUT_SECRET": "", "JUHE_AI_SECRET": strings.Repeat("x", minimumProductionInputSecretLen)}, wantError: "JUHE_AI_AUDIT_LOG_INPUT_SECRET"},
+		{name: "production-short-secret", environment: map[string]string{"NODE_ENV": "production", "JUHE_AI_AUDIT_LOG_INPUT_SECRET": "short"}, wantError: "至少 32 位"},
+		{name: "public-listener", environment: map[string]string{"JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS": "0.0.0.0:3303"}, wantError: "JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS"},
+		{name: "zero-port", environment: map[string]string{"JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS": "127.0.0.1:0"}, wantError: "JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(testCase.name, func(t *testing.T) {
 			candidate := map[string]string{}
 			for key, value := range valid {
 				candidate[key] = value
 			}
-			if name == "missing-secret" {
-				candidate["JUHE_AI_AUDIT_LOG_INPUT_SECRET"] = override
-			} else {
-				candidate["JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS"] = override
+			for key, value := range testCase.environment {
+				candidate[key] = value
 			}
-			if _, err := LoadInputServerConfig(func(key string) string { return candidate[key] }); err == nil {
+			_, err := LoadInputServerConfig(func(key string) string { return candidate[key] })
+			if err == nil {
 				t.Fatal("invalid input config must fail")
 			}
+			if !strings.Contains(err.Error(), testCase.wantError) {
+				t.Fatalf("error=%q must contain %q", err, testCase.wantError)
+			}
 		})
+	}
+
+	production := map[string]string{
+		"NODE_ENV":                               "production",
+		"JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS": "127.0.0.1:3303",
+		"JUHE_AI_AUDIT_LOG_INPUT_SECRET":         strings.Repeat("x", minimumProductionInputSecretLen),
+	}
+	if _, err := LoadInputServerConfig(func(key string) string { return production[key] }); err != nil {
+		t.Fatalf("production input config with a 32-byte secret must succeed: %v", err)
 	}
 }
 

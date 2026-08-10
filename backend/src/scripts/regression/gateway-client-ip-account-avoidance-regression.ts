@@ -34,7 +34,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   clientIpAvoidance,
   clientIpErrorCircuit,
   proxyHealth,
@@ -50,7 +49,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
   import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
   import('../../modules/gateway/runtime/proxy-health.service.js'),
@@ -83,7 +81,6 @@ async function main(): Promise<void> {
 
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     assertSourceAvoidsPendingFailureArrayRebuilds()
     clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
     clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
@@ -130,8 +127,6 @@ async function main(): Promise<void> {
     proxyHealth.clearGatewayProxyHealthForTest()
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)

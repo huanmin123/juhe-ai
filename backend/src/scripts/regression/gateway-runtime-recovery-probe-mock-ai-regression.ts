@@ -54,7 +54,6 @@ const [
   accountTest,
   accountProbeOutcome,
   usageRecordQueue,
-  auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -68,7 +67,6 @@ const [
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/accounts/automatic-account-probe-outcome.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -111,7 +109,6 @@ try {
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()
   await removeTempRoot()

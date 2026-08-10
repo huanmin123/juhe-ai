@@ -41,7 +41,6 @@ const fullBuilderSource = functionSource(
 for (const required of [
   'snapshotAccountConcurrency()',
   'getActiveAuditCaptureCount()',
-  'getAuditLogTransportRuntime()',
   'getGatewayUsageFinalizationRuntime()',
   'getGatewayAccountSideEffectState()',
   'pendingMessageCount:',

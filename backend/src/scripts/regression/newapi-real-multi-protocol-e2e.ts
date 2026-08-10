@@ -98,7 +98,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -109,7 +108,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -151,7 +149,6 @@ let mockServer: http.Server | undefined
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
   gatewayCache.clearGatewayRuntimeCache()
 
@@ -270,7 +267,6 @@ try {
   await runScenario('hybrid-gemini-to-chat-json-failover', hybridGeminiRuntime, () => assertHybridGeminiToChatJson(gatewayBaseUrl, hybridGeminiRuntime.apiKey))
 
   usageRecordQueue.flushAllUsageRecordQueue()
-  auditLogQueue.flushAllAuditLogQueue()
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
   const runtimes = [
     openAIChatRuntime,
@@ -327,8 +323,6 @@ try {
   await closeServer(mockServer)
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()

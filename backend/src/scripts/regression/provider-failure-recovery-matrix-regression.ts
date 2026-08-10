@@ -73,7 +73,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -85,7 +84,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -150,7 +148,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
   gatewayCache.clearGatewayRuntimeCache()
 
@@ -171,9 +168,7 @@ try {
     }
 
     usageRecordQueue.flushAllUsageRecordQueue()
-    auditLogQueue.flushAllAuditLogQueue()
     assertUsageRecords(runtimes)
-    assertAuditLogs(runtimes)
 
     console.log('provider failure recovery matrix regression passed')
   } finally {
@@ -183,8 +178,6 @@ try {
 } finally {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
@@ -374,25 +367,6 @@ function assertUsageRecords(runtimes: CaseRuntime[]): void {
     assert(providerRecords.filter((record) => record.accountId === runtime.primaryAccountId && record.success === false && record.statusCode === transparentStatusCode).length >= 2, `${item.label} usage 应保留主账号完整失败状态码`)
     assert(providerRecords.filter((record) => record.accountId === runtime.rescueAccountId && record.success === true && record.statusCode === 200).length >= 2, `${item.label} usage 应记录当前请求内备用账号接管成功`)
     assert(providerRecords.some((record) => record.accountId === runtime.primaryAccountId && record.success === true && record.statusCode === 200), `${item.label} 主账号恢复成功 usage 应存在`)
-  }
-}
-
-function assertAuditLogs(runtimes: CaseRuntime[]): void {
-  const database = databaseModule.getDatasetDatabase()
-  const logs = database.prepare(`
-    SELECT provider_code, group_id, account_id, success, final_status_code
-    FROM audit_logs
-  `).all() as Array<{ provider_code: string | null; group_id: string | null; account_id: string | null; success: number; final_status_code: number | null }>
-  const attempts = database.prepare(`
-    SELECT provider_code, group_id, account_id, success, upstream_status_code
-    FROM audit_log_attempts
-  `).all() as Array<{ provider_code: string | null; group_id: string | null; account_id: string | null; success: number; upstream_status_code: number | null }>
-  for (const runtime of runtimes) {
-    const { item } = runtime
-    const transparentStatusCode = item.protocolKind === 'anthropic' ? 529 : 503
-    assert(logs.some((log) => log.provider_code === item.providerCode && log.group_id === runtime.groupId && log.success === 1), `${item.label} 应写入成功审计日志`)
-    assert(attempts.filter((attempt) => attempt.provider_code === item.providerCode && attempt.group_id === runtime.groupId && attempt.account_id === runtime.primaryAccountId && attempt.success === 0 && attempt.upstream_status_code === transparentStatusCode).length >= 2, `${item.label} 审计 attempt 应保留主账号失败与上游状态码`)
-    assert(attempts.filter((attempt) => attempt.provider_code === item.providerCode && attempt.group_id === runtime.groupId && attempt.account_id === runtime.rescueAccountId && attempt.success === 1 && attempt.upstream_status_code === 200).length >= 2, `${item.label} 审计 attempt 应记录备用账号接管成功`)
   }
 }
 

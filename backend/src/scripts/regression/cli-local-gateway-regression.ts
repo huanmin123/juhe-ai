@@ -80,7 +80,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -89,7 +88,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -103,7 +101,6 @@ async function main(): Promise<void> {
   let gatewayServer: http.Server | undefined
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     gatewayCache.clearGatewayRuntimeCache()
 
     anthropicUpstreamServer = createAnthropicMockUpstream()
@@ -148,8 +145,6 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(anthropicUpstreamServer)

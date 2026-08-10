@@ -67,7 +67,6 @@ const [
   accountCircuit,
   hotQuality,
   usageRecordQueue,
-  auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -80,7 +79,6 @@ const [
   import('../../modules/gateway/runtime/account-circuit.service.js'),
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -94,7 +92,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   accountApiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
@@ -469,8 +466,6 @@ try {
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
   hotQuality.resetGatewayHotQualityRuntimeForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await import('../../storage/sqlite-read-worker-pool.js').then((module) => module.closeSqliteReadWorkerPool()).catch(() => undefined)
   databaseModule.closeStorageDatabases()

@@ -63,7 +63,6 @@ const [
   modelCatalog,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue,
   providerDriverRegistry,
   interactionAffinity,
   readWorkerPool
@@ -75,7 +74,6 @@ const [
   import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/providers/drivers/registry.js'),
   import('../../modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
@@ -93,7 +91,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
 
   let upstreamServer: http.Server | undefined
@@ -546,8 +543,6 @@ try {
   }
 } finally {
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()

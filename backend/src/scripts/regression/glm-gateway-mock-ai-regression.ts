@@ -50,7 +50,6 @@ const [
   apiKeyRotation,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   accountImportService,
   accountExportService,
   sqliteReadWorkerPool
@@ -62,7 +61,6 @@ const [
   import('../../storage/account-api-key-rotation.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/accounts/account-import.service.js'),
   import('../../modules/accounts/account-export.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
@@ -78,7 +76,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
@@ -162,8 +159,6 @@ try {
 } finally {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()

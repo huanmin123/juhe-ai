@@ -288,7 +288,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -299,7 +298,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -327,7 +325,6 @@ async function main(): Promise<void> {
   const hits: UpstreamHit[] = []
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     const imagePermissionOwner = repositories.updateSystemAccount(access.systemAccountId, { imageGenerationEnabled: true })
     assert.equal(imagePermissionOwner?.imageGenerationEnabled, true, '副作用回归必须为图片场景显式开启系统账号图像权限')
     settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
@@ -352,7 +349,6 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
@@ -573,7 +569,6 @@ async function exerciseScenario(
     )
   }
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-  await auditLogQueue.flushAllAuditLogQueueAsync()
   assert.deepEqual(
     gatewayMiddlewareErrors.slice(middlewareErrorOffset),
     [],

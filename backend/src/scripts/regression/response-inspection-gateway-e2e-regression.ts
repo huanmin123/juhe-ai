@@ -66,7 +66,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -77,7 +76,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -165,7 +163,6 @@ try {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

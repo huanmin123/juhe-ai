@@ -127,7 +127,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   hybridAffinity,
   scoringService
 ] = await Promise.all([
@@ -138,7 +137,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/hybrid/affinity.service.js'),
   import('../../modules/gateway/hybrid/scoring.service.js')
 ])
@@ -156,7 +154,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '2mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   hybridAffinity.clearHybridRouteAffinityForTest()
   scoringService.clearHybridScoringCacheForTest()
@@ -227,8 +224,6 @@ try {
   scoringService.clearHybridScoringCacheForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

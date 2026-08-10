@@ -44,7 +44,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   codexTurnRetry,
   sessionAffinity,
   accountCircuit,
@@ -60,7 +59,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/client-profiles/codex-turn-retry.service.js'),
   import('../../modules/gateway/runtime/session-affinity.service.js'),
   import('../../modules/gateway/runtime/account-circuit.service.js'),
@@ -114,7 +112,6 @@ async function main(): Promise<void> {
 
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     codexTurnRetry.clearCodexTurnRetryStateForTest()
     settingsRepository.updateSettings({
       textFirstResponseTimeoutSeconds: 10,
@@ -186,11 +183,8 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
-    auditLogQueue.clearAuditLogQueueForTest()
     usageRecordQueue.clearUsageRecordQueueForTest()
     accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)

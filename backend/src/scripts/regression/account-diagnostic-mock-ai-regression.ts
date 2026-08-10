@@ -52,7 +52,6 @@ const [
   { handleOpenAIGatewayRequest },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
-  auditLogQueue,
   databaseModule,
   repositories
 ] = await Promise.all([
@@ -64,7 +63,6 @@ const [
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
@@ -117,7 +115,6 @@ assert.doesNotMatch(
 
 try {
   setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   upstream = createMockAIUpstream()
   await listen(upstream)
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}`
@@ -350,8 +347,6 @@ try {
   console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖模型目录与手动测试三档重试、持续失败不分类、完整诊断阶梯超时的健康检查立即临时不可调度，以及冷却复测失败退避')
 } finally {
   AbortSignal.timeout = originalAbortSignalTimeout
-  auditLogQueue.flushAllAuditLogQueue()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(upstream)
   await import('../../storage/sqlite-read-worker-pool.js')

@@ -77,7 +77,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   readWorkerPool,
   accountConcurrency
 ] = await Promise.all([
@@ -89,7 +88,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
   import('../../shared/account-concurrency.js')
 ])
@@ -108,7 +106,6 @@ try {
     textFirstResponseTimeoutSeconds: 30,
     temporaryUnschedulableRetryAttempts: 0
   })
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
 
   let upstreamServer: http.Server | undefined
@@ -155,7 +152,6 @@ try {
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
   accountConcurrency.clearAccountConcurrency()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   await readWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.getBusinessDatabase().close()
   databaseModule.closeStorageDatabases()

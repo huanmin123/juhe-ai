@@ -56,7 +56,6 @@ const [
   apiKeyFailureGuard,
   clientIpAvoidance,
   usageRecordQueue,
-  auditLogQueue,
   readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -71,7 +70,6 @@ const [
   import('../../modules/gateway/runtime/account-api-key-failure-guard.service.js'),
   import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -124,7 +122,6 @@ try {
     noAvailableAccountWaitTimeoutSeconds: 10
   })
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
   hotQuality.resetGatewayHotQualityRuntimeForTest()
@@ -209,7 +206,6 @@ try {
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
   clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
   apiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
   hotQuality.resetGatewayHotQualityRuntimeForTest()

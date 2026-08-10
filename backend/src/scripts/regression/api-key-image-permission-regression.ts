@@ -35,7 +35,6 @@ const [
   repositories,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue,
   upstreamModule,
   requestBodyModule,
   jsonParserModule,
@@ -50,7 +49,6 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/upstream/request.js'),
   import('../../modules/gateway/request/body.js'),
   import('../../modules/gateway/request/json-parser.js'),
@@ -230,7 +228,6 @@ try {
   console.log('API Key 图像生成权限回归通过：默认禁用图片接口不上游，auto image_generation 工具降级为文本，normal 路由后强制工具仍拦截，开启后同一 Key 立即放行')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
-  auditLogQueue.flushAllAuditLogQueue()
   upstreamModule.closeGatewayUpstreamAgentsForTest()
   await jsonParserModule.stopGatewayJsonParseWorker()
   await closeServer(gatewayServer)

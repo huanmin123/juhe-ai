@@ -728,7 +728,6 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
     gatewayCache,
     accountSideEffects,
     usageRecordQueue,
-    auditLogQueue,
     accountCircuit,
     latencyDegradation,
     readWorkerPool
@@ -741,7 +740,6 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
     import('../../modules/gateway/runtime/runtime-cache.service.js'),
     import('../../modules/gateway/runtime/account-side-effects.service.js'),
     import('../../modules/gateway/usage/record-queue.service.js'),
-    import('./f3-audit-direct-input-test-support.js'),
     import('../../modules/gateway/runtime/account-circuit.service.js'),
     import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js'),
     import('../../storage/sqlite-read-worker-pool.js')
@@ -764,7 +762,6 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
 
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     settingsRepository.updateSettings({
       temporaryUnschedulableRetryAttempts: 0,
       textFirstResponseTimeoutSeconds: 30,
@@ -949,8 +946,6 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
     clearAccountConcurrency()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     usageRecordQueue.clearUsageRecordQueueForTest()
-    auditLogQueue.clearAuditLogQueueForTest()
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
     databaseModule.closeStorageDatabases()

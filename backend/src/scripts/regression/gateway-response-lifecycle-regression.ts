@@ -25,7 +25,6 @@ const { createAuditCapture, observeGatewayHttpCompletion } = await import('../..
 const { withRequestContext } = await import('../../shared/request-context.js')
 const { sendGatewayFailureResponse } = await import('../../modules/gateway/response/failure-response.js')
 const { gatewayErrorPayload } = await import('../../modules/gateway/response/responses.js')
-const auditLogQueue = await import('./f3-audit-direct-input-test-support.js')
 const usageRecordQueue = await import('../../modules/gateway/usage/record-queue.service.js')
 const failureUsageFinalization = await import('../../modules/gateway/usage/failure-finalization.service.js')
 
@@ -255,7 +254,6 @@ assert(
     <= Number(auditFinalizeStage.endedOffsetMs) - auditHttpFinishOffsetMs + 2,
   'audit.finalize 阶段耗时只能覆盖组装与入队，不能包含延迟的 HTTP completion 等待'
 )
-auditLogQueue.clearAuditLogQueueForTest()
 
 usageRecordQueue.clearUsageRecordQueueForTest()
 const failureRequest = {

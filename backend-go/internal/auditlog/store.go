@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,8 @@ const sqliteBusyTimeoutMS = 5000
 const (
 	auditBlobCompressionThresholdBytes = 4 * 1024
 	auditBlobCompressionMaxBytes       = 1024 * 1024
+	postgresBlobLifecycleLockSeed      = 763847294
+	postgresAuditLogLifecycleLockSeed  = 763847295
 )
 
 var ErrOwnerLeaseLost = errors.New("F3 audit owner lease 已失效或已移交")
@@ -52,6 +55,20 @@ type blobPlan struct {
 	tempPath string
 	existing bool
 }
+
+const sqliteBlobGCSchema = `
+CREATE TABLE IF NOT EXISTS audit_payload_blob_gc (
+  blob_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, scheduled_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_payload_blob_gc_scheduled ON audit_payload_blob_gc(scheduled_at, blob_id);
+`
+
+const postgresBlobGCSchema = `
+CREATE TABLE IF NOT EXISTS juhe_dataset.audit_payload_blob_gc (
+  blob_id text PRIMARY KEY, storage_key text NOT NULL, scheduled_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_payload_blob_gc_scheduled ON juhe_dataset.audit_payload_blob_gc(scheduled_at, blob_id);
+`
 
 // PostgreSQL lease predicates use the database's wall clock.  The first
 // predicate is deliberately non-locking so concurrent Persist calls do not
@@ -160,6 +177,9 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, sqliteSchema); err != nil {
 			return fmt.Errorf("初始化 F3 SQLite schema 失败: %w", err)
 		}
+		if _, err := s.db.ExecContext(ctx, sqliteBlobGCSchema); err != nil {
+			return fmt.Errorf("初始化 F3 SQLite blob GC schema 失败: %w", err)
+		}
 	} else {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -175,6 +195,14 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 			}
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("初始化 F3 PostgreSQL schema 失败: %w", err)
+			}
+		}
+		for _, statement := range strings.Split(postgresBlobGCSchema, ";") {
+			if statement = strings.TrimSpace(statement); statement == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("初始化 F3 PostgreSQL blob GC schema 失败: %w", err)
 			}
 		}
 		if err := tx.Commit(); err != nil {
@@ -316,8 +344,17 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 	if err := s.verifyLeaseTx(ctx, tx, lease); err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
+	if err := s.lockAuditLogLifecycleTx(ctx, tx, input.ID); err != nil {
+		return PersistResult{}, errors.Join(err, tx.Rollback())
+	}
 	prepared, plans, err := s.planPayloads(ctx, tx, input)
 	if err != nil {
+		return PersistResult{}, errors.Join(err, tx.Rollback())
+	}
+	if err := s.lockBlobLifecyclePlans(ctx, tx, plans); err != nil {
+		return PersistResult{}, errors.Join(err, tx.Rollback())
+	}
+	if err := s.reactivateScheduledBlobGC(ctx, tx, plans); err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
 	prepared, plans, err = s.prepareExistingBlobRecords(ctx, tx, prepared, plans)
@@ -365,6 +402,129 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 	}
 	committed = true
 	return PersistResult{}, nil
+}
+
+// PostgreSQL transactions that can both mutate an audit event and its blob
+// references enter through this per-audit-ID gate before taking a blob lock or
+// an audit row lock. It prevents Persist from holding a blob lifecycle lock
+// while retention holds the same audit row and waits for that blob lock.
+func (s *sqlStore) lockAuditLogLifecycleTx(ctx context.Context, tx *sql.Tx, auditLogID string) error {
+	if s.mode != ModePostgres || auditLogID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, `+strconv.FormatInt(postgresAuditLogLifecycleLockSeed, 10)+`::bigint))`), auditLogID); err != nil {
+		return fmt.Errorf("获取 F3 audit log 生命周期锁失败: %w", err)
+	}
+	return nil
+}
+
+func (s *sqlStore) lockAuditLogLifecycleIDs(ctx context.Context, tx *sql.Tx, auditLogIDs []string) error {
+	ids := uniqueStrings(auditLogIDs)
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := s.lockAuditLogLifecycleTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lockBlobLifecyclePlans serializes only a canonical blob's lifecycle in
+// PostgreSQL. Persist takes the audit-ID lifecycle gate first, while different
+// audit IDs remain concurrent until they contend for the same canonical blob.
+func (s *sqlStore) lockBlobLifecyclePlans(ctx context.Context, tx *sql.Tx, plans []blobPlan) error {
+	ids := make([]string, 0, len(plans))
+	seen := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		if plan.record.id == "" {
+			continue
+		}
+		if _, ok := seen[plan.record.id]; ok {
+			continue
+		}
+		seen[plan.record.id] = struct{}{}
+		ids = append(ids, plan.record.id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := s.lockBlobLifecycleTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *sqlStore) lockBlobLifecycleTx(ctx context.Context, tx *sql.Tx, blobID string) error {
+	if s.mode != ModePostgres || blobID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, `+strconv.FormatInt(postgresBlobLifecycleLockSeed, 10)+`::bigint))`), blobID); err != nil {
+		return fmt.Errorf("获取 F3 blob 生命周期锁失败: %w", err)
+	}
+	return nil
+}
+
+// reactivateScheduledBlobGC cancels a pending deletion while the same
+// per-blob lock is held. If an earlier file deletion succeeded but the
+// metadata transaction did not, it removes that stale metadata first so this
+// Persist can publish a fresh canonical file rather than reference a missing
+// one.
+func (s *sqlStore) reactivateScheduledBlobGC(ctx context.Context, tx *sql.Tx, plans []blobPlan) error {
+	ids := make([]string, 0, len(plans))
+	seen := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		if plan.record.id == "" {
+			continue
+		}
+		if _, ok := seen[plan.record.id]; ok {
+			continue
+		}
+		seen[plan.record.id] = struct{}{}
+		ids = append(ids, plan.record.id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		var storageKey string
+		err := tx.QueryRowContext(ctx, s.bind(`SELECT storage_key FROM `+s.table("audit_payload_blob_gc")+` WHERE blob_id=?`), id).Scan(&storageKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("读取 F3 pending blob GC 失败: %w", err)
+		}
+
+		var compressedSize int64
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT compressed_size_bytes FROM `+s.table("audit_payload_blobs")+` WHERE id=?`), id).Scan(&compressedSize)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("audit_payload_blob_gc")+` WHERE blob_id=?`), id); err != nil {
+				return fmt.Errorf("清理失配的 F3 pending blob GC 失败: %w", err)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("读取 F3 pending blob 元数据失败: %w", err)
+		}
+
+		present, err := blobFileMatchesMetadata(s.blobDir, storageKey, compressedSize)
+		if err != nil {
+			return err
+		}
+		if !present {
+			deleted, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("audit_payload_blobs")+` WHERE id=? AND NOT EXISTS (SELECT 1 FROM `+s.table("audit_payload_refs")+` WHERE headers_blob_id=? OR body_blob_id=?)`), id, id, id)
+			if err != nil {
+				return fmt.Errorf("删除缺失物理文件的 F3 pending blob 元数据失败: %w", err)
+			}
+			if affected, affectedErr := deleted.RowsAffected(); affectedErr != nil {
+				return fmt.Errorf("读取缺失物理文件的 F3 pending blob 删除结果失败: %w", affectedErr)
+			} else if affected != 1 {
+				return fmt.Errorf("F3 pending blob 在恢复期间重新获得引用: id=%s", id)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("audit_payload_blob_gc")+` WHERE blob_id=?`), id); err != nil {
+			return fmt.Errorf("取消 F3 pending blob GC 失败: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *sqlStore) verifyLeaseTx(ctx context.Context, tx *sql.Tx, lease OwnerLease) error {

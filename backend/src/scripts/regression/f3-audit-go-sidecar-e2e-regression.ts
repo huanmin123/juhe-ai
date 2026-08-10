@@ -13,7 +13,8 @@ const goRoot = join(root, 'backend-go')
 const testRoot = await mkdtemp(join(tmpdir(), 'juhe-ai-f3-sidecar-e2e-'))
 const port = await allocatePort()
 const inputUrl = `http://127.0.0.1:${port}`
-const secret = 'f3-local-sidecar-e2e-secret'
+const businessSecret = 'f3-local-sidecar-e2e-business-secret'
+const inputSecret = 'f3-local-sidecar-e2e-input-secret'
 const databasePath = join(testRoot, 'f3-audit.sqlite3')
 const blobDirectory = join(testRoot, 'blobs')
 const hotSearchDirectory = join(testRoot, 'hot-search')
@@ -21,7 +22,7 @@ const binaryPath = join(testRoot, process.platform === 'win32' ? 'juhe-ai-audit-
 
 const originalEnvironment = new Map<string, string | undefined>()
 const environment = {
-  JUHE_AI_SECRET: secret,
+  JUHE_AI_SECRET: businessSecret,
   JUHE_AI_AUDIT_LOG_INPUT_URL: inputUrl,
   JUHE_AI_AUDIT_LOG_STORE: 'sqlite',
   JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-local-sidecar-e2e',
@@ -38,7 +39,7 @@ const environment = {
   JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: join(testRoot, 'codex-shards'),
   JUHE_AI_USAGE_SHARD_ROOT: join(testRoot, 'usage-shards'),
   JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS: `127.0.0.1:${port}`,
-  JUHE_AI_AUDIT_LOG_INPUT_SECRET: secret,
+  JUHE_AI_AUDIT_LOG_INPUT_SECRET: inputSecret,
   JUHE_AI_AUDIT_LOG_OWNER_LEASE: '5s',
   JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL: '1h',
   JUHE_AI_LOG_FILE_ENABLED: 'false',

@@ -62,7 +62,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   { withCostBreakdown }
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -72,7 +71,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/usage-records/usage-records.routes.js')
 ])
 
@@ -92,7 +90,6 @@ app.use('/v1beta', express.raw({ type: () => true, limit: '8mb' }), captureGatew
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
 
   let upstreamServer: http.Server | undefined
@@ -127,7 +124,6 @@ try {
 
     usageRecordQueue.flushAllUsageRecordQueue()
     assertUsageRecordsReflectMappings()
-    auditLogQueue.flushAllAuditLogQueue()
 
     console.log('protocol cross matrix mock ai boundary regression passed')
   } finally {
@@ -137,8 +133,6 @@ try {
 } finally {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()

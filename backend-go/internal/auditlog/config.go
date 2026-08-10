@@ -367,9 +367,9 @@ func (cfg Config) validateRetentionPolicy() error {
 	return nil
 }
 
-// RetentionConfigAt produces the same cutoff policy Node uses for its audit
-// maintenance. The zero-success-retention mode intentionally falls back to
-// the hot window, matching auditSuccessRetentionCutoffIso in Node.
+// RetentionConfigAt derives F3 cleanup cutoffs from retention settings the Go
+// audit-log owner reads directly. The zero-success-retention mode
+// intentionally falls back to the hot window.
 func (cfg Config) RetentionConfigAt(now time.Time) RetentionConfig {
 	now = now.UTC()
 	successCutoff := now.Add(-time.Duration(cfg.SuccessHotRetentionHours) * time.Hour)

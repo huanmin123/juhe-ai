@@ -37,7 +37,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -50,7 +49,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -91,7 +89,6 @@ const upstreamFailureByAccountApiKey = new Map<string, CompleteHttpFailureCase>(
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   updateSystemSettingsForTest({
     temporaryUnschedulableRetryAttempts: 0,
     temporaryUnschedulableRetryIntervalSeconds: 0,
@@ -174,8 +171,6 @@ try {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   await closeSqliteReadWorkerPool()
   try {
     databaseModule.closeStorageDatabases()

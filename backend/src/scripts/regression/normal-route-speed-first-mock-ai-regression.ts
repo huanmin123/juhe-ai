@@ -96,7 +96,6 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue,
   latencyDegradation,
   gatewayHotQuality,
   accountCircuit,
@@ -111,7 +110,6 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js'),
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../modules/gateway/runtime/account-circuit.service.js'),
@@ -139,7 +137,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   settingsRepository.updateSettings({
     temporaryUnschedulableRetryAttempts: 0,
     textFirstResponseTimeoutSeconds: 30,
@@ -192,8 +189,6 @@ try {
   cutoverReservations.setSpeedFirstCutoverSlotAcquirerForTest(undefined)
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   await removeTempRootWithRetry(tempRoot)

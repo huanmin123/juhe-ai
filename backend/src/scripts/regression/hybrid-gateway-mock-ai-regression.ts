@@ -92,7 +92,6 @@ const [
   accountSideEffects,
   usageRecordQueue,
   failureUsageFinalization,
-  auditLogQueue,
   hybridAffinity,
   hybridScoring,
   hotQualityRuntime,
@@ -107,7 +106,6 @@ const [
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/gateway/usage/failure-finalization.service.js'),
-  import('./f3-audit-direct-input-test-support.js'),
   import('../../modules/gateway/hybrid/affinity.service.js'),
   import('../../modules/gateway/hybrid/scoring.service.js'),
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
@@ -126,7 +124,6 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   repositories.updateSettings({
     temporaryUnschedulableRetryAttempts: 0,
     temporaryUnschedulableRetryIntervalSeconds: 0
@@ -501,8 +498,6 @@ try {
   }
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
-  auditLogQueue.clearAuditLogQueueForTest()
-  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   await redisClientModule.closeRedisClients()

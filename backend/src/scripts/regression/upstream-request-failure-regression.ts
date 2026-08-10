@@ -40,7 +40,6 @@ const [
   gatewayBody,
   storageCrypto,
   usageRecordQueue,
-  auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -56,7 +55,6 @@ const [
   import('../../modules/gateway/upstream/body.js'),
   import('../../storage/crypto.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('./f3-audit-direct-input-test-support.js')
 ])
 
 const timeoutError = Object.assign(new Error(''), { code: 'ETIMEDOUT' })
@@ -110,7 +108,6 @@ async function main(): Promise<void> {
   let closedTransportServer: http.Server | undefined
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
-    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
 
     const upstreamAuthorizations: string[] = []
     upstreamServer = http.createServer((req, res) => {
@@ -466,7 +463,6 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    auditLogQueue.flushAllAuditLogQueue()
     await closeServer(appServer)
     await closeServer(upstreamServer)
     await closeServer(closedTransportServer)

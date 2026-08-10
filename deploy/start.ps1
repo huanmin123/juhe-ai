@@ -604,8 +604,8 @@ for (const name of names) {
 }
 const instanceId = configured('JUHE_AI_AUDIT_LOG_INSTANCE_ID').trim()
 if (!instanceId) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; release startup does not generate owner identities.')
-const secret = (configured('JUHE_AI_AUDIT_LOG_INPUT_SECRET') || configured('JUHE_AI_SECRET')).trim()
-if (!secret) throw new Error('JUHE_AI_SECRET is required for the F3 input listener.')
+const secret = configured('JUHE_AI_AUDIT_LOG_INPUT_SECRET').trim()
+if (!secret) throw new Error('JUHE_AI_AUDIT_LOG_INPUT_SECRET is required for the F3 input listener.')
 childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceId
 childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret
 childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = configured('JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS').trim() || '127.0.0.1:3303'
