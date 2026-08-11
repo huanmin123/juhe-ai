@@ -397,11 +397,19 @@ if [ ! -f "$INDEXER_SOURCE_DIR/go.mod" ]; then
 fi
 
 echo "==> Building Go runtime log indexer for $TARGET_GOOS/$TARGET_GOARCH"
+GO_BUILD_MOD='-mod=readonly'
+if [ -d "$INDEXER_SOURCE_DIR/vendor" ]; then
+  if [ -L "$INDEXER_SOURCE_DIR/vendor" ] || [ ! -f "$INDEXER_SOURCE_DIR/vendor/modules.txt" ]; then
+    echo "Go vendor directory must be a regular directory with modules.txt: $INDEXER_SOURCE_DIR/vendor" >&2
+    exit 1
+  fi
+  GO_BUILD_MOD='-mod=vendor'
+fi
 (
   cd "$INDEXER_SOURCE_DIR"
-  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$INDEXER_BINARY_PATH" ./cmd/juhe-ai-runtime-log-indexer
-  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$TABLE_MONITOR_BINARY_PATH" ./cmd/juhe-ai-table-monitor
-  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$AUDIT_LOG_WRITER_BINARY_PATH" ./cmd/juhe-ai-audit-log-writer
+  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$INDEXER_BINARY_PATH" ./cmd/juhe-ai-runtime-log-indexer
+  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$TABLE_MONITOR_BINARY_PATH" ./cmd/juhe-ai-table-monitor
+  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$AUDIT_LOG_WRITER_BINARY_PATH" ./cmd/juhe-ai-audit-log-writer
 )
 
 if [ ! -f "$INDEXER_BINARY_PATH" ] || [ -L "$INDEXER_BINARY_PATH" ]; then
