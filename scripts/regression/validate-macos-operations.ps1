@@ -105,7 +105,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_indexer', 'wait_for_table_monitor', 'runtime-log-indexer', 'table-monitor', 'juhe-ai-runtime-log-indexer', 'juhe-ai-table-monitor', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go runtime log indexer must be a regular file', 'Go table monitor must be a regular file', 'service user cannot execute Go runtime log indexer', 'service user cannot execute Go table monitor', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_indexer', 'wait_for_table_monitor', 'wait_for_audit_log_writer', 'runtime-log-indexer', 'table-monitor', 'audit-log-writer', 'juhe-ai-runtime-log-indexer', 'juhe-ai-table-monitor', 'juhe-ai-audit-log-writer', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go runtime log indexer must be a regular file', 'Go table monitor must be a regular file', 'Go audit log writer must be a regular file', 'service user cannot execute Go runtime log indexer', 'service user cannot execute Go table monitor', 'service user cannot execute Go audit log writer', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 $releaseInputGateIndex = $performanceInstaller.IndexOf('[ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }', [StringComparison]::Ordinal)
@@ -174,13 +174,15 @@ $activationRuntimeWithinFunction = $activationFunctionBlock.IndexOf("  printf '%
 $activationRuntimeLast = $performanceInstaller.IndexOf("  printf '%s\n' runtime-log-indexer", $activationFunctionStart, [StringComparison]::Ordinal)
 $activationTableMonitorWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' table-monitor", [StringComparison]::Ordinal)
 $activationTableMonitorLast = $performanceInstaller.IndexOf("  printf '%s\n' table-monitor", $activationFunctionStart, [StringComparison]::Ordinal)
+$activationAuditWriterWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' audit-log-writer", [StringComparison]::Ordinal)
+$activationAuditWriterLast = $performanceInstaller.IndexOf("  printf '%s\n' audit-log-writer", $activationFunctionStart, [StringComparison]::Ordinal)
 $activationLoopEnd = $performanceInstaller.IndexOf("`ndone", $activationRegistryCheck, [StringComparison]::Ordinal)
 $activationFence = $performanceInstaller.IndexOf('  metrics_fence_ms="$(performance_metrics_registry_time_ms)"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationBootout = $performanceInstaller.IndexOf('  launchctl bootout "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationBootstrap = $performanceInstaller.IndexOf('  launchctl bootstrap "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationKickstart = $performanceInstaller.IndexOf('  launchctl kickstart -k "$DOMAIN/$(service_label "$name")"', $activationBootstrap, [StringComparison]::Ordinal)
-if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationRuntimeWithinFunction -lt $activationControlWithinFunction -or $activationTableMonitorWithinFunction -lt $activationRuntimeWithinFunction -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationRuntimeLast -lt $activationFunctionStart -or $activationRuntimeLast -gt $activationLoopStart -or $activationTableMonitorLast -lt $activationRuntimeLast -or $activationTableMonitorLast -gt $activationLoopStart) {
-  throw 'Performance topology must activate Node gateway/control and verify DB readiness before starting the Go runtime-log-indexer and table-monitor'
+if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationRuntimeWithinFunction -lt $activationControlWithinFunction -or $activationTableMonitorWithinFunction -lt $activationRuntimeWithinFunction -or $activationAuditWriterWithinFunction -lt $activationTableMonitorWithinFunction -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationRuntimeLast -lt $activationFunctionStart -or $activationRuntimeLast -gt $activationLoopStart -or $activationTableMonitorLast -lt $activationRuntimeLast -or $activationTableMonitorLast -gt $activationLoopStart -or $activationAuditWriterLast -lt $activationTableMonitorLast -or $activationAuditWriterLast -gt $activationLoopStart) {
+  throw 'Performance topology must activate Node gateway/control and verify DB readiness before starting the Go runtime-log-indexer, table-monitor and audit-log-writer'
 }
 if (-not $performanceInstaller.Contains('wait_for_metrics_registry "$name" "$metrics_fence_ms"', [StringComparison]::Ordinal)) {
   throw 'Performance topology registry gate must require a Redis-time freshness fence captured after bootout'
@@ -213,17 +215,39 @@ foreach ($contract in @('launchctl print "$DOMAIN/$label"', 'state = running|pid
 if ($tableMonitorWaitFunction -match 'curl|psql|postgres|sqlite') {
   throw 'Performance topology must not claim table-monitor snapshot readiness with a direct Node query or database probe'
 }
+$auditWriterRunScriptStart = $performanceInstaller.IndexOf('elif [ "$name" = audit-log-writer ]; then', [StringComparison]::Ordinal)
+$auditWriterRunScriptEnd = $performanceInstaller.IndexOf("    else`n", $auditWriterRunScriptStart, [StringComparison]::Ordinal)
+$auditWriterRunScript = $performanceInstaller.Substring($auditWriterRunScriptStart, $auditWriterRunScriptEnd - $auditWriterRunScriptStart)
+foreach ($contract in @('JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_INPUT_URL must match the F3 loopback listen address', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL', 'JUHE_AI_POSTGRES_URL', 'juhe-ai-audit-log-writer')) {
+  if (-not $auditWriterRunScript.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology audit-log-writer run script missing: $contract"
+  }
+}
+foreach ($forbidden in @('JUHE_AI_AUDIT_LOG_STORE=sqlite', 'JUHE_AI_SECRET', 'JUHE_AI_REDIS_', 'node backend/dist/server.js')) {
+  if ($auditWriterRunScript.Contains($forbidden, [StringComparison]::Ordinal)) {
+    throw "Performance topology audit-log-writer run script must not introduce fallback or Node/Redis coupling: $forbidden"
+  }
+}
+$auditWriterWaitFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'wait_for_audit_log_writer'
+foreach ($contract in @('launchctl print "$DOMAIN/$label"', 'curl -fsS --max-time 2 -o /dev/null', '/__aiinternal__/health', 'Node -> F3 -> Node audit readback')) {
+  if (-not $auditWriterWaitFunction.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology audit-log-writer liveness contract missing: $contract"
+  }
+}
+if ($auditWriterWaitFunction -match 'psql|postgres|sqlite|POST ') {
+  throw 'Performance topology must not claim audit-log-writer input or Node readback readiness with a direct database or synthetic-write probe'
+}
 $performanceServiceNamesFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'service_names'
 $rollbackFunctionStart = $performanceInstaller.IndexOf('rollback() {', [StringComparison]::Ordinal)
 $onExitFunctionStart = $performanceInstaller.IndexOf('on_exit() {', $rollbackFunctionStart, [StringComparison]::Ordinal)
 $rollbackFunction = $performanceInstaller.Substring($rollbackFunctionStart, $onExitFunctionStart - $rollbackFunctionStart)
-foreach ($contract in @('runtime-log-indexer', 'table-monitor')) {
+foreach ($contract in @('runtime-log-indexer', 'table-monitor', 'audit-log-writer')) {
   if (-not $performanceServiceNamesFunction.Contains("printf '%s\n' $contract", [StringComparison]::Ordinal)) {
     throw "Performance topology service lifecycle missing Go service: $contract"
   }
 }
 if (-not $rollbackFunction.Contains('for name in $(service_names); do', [StringComparison]::Ordinal) -or -not $rollbackFunction.Contains('$STAGE_DIR/$name.was-loaded', [StringComparison]::Ordinal)) {
-  throw 'Performance topology rollback must restore every managed service, including F1 and F2, with prior loaded state'
+  throw 'Performance topology rollback must restore every managed service, including F1, F2 and F3, with prior loaded state'
 }
 $metricsGateFunctionStart = $performanceInstaller.IndexOf('wait_for_metrics_registry() {', [StringComparison]::Ordinal)
 $metricsRolePidFunctionStart = $performanceInstaller.IndexOf('metrics_registry_role_pids() {', $metricsGateFunctionStart, [StringComparison]::Ordinal)
@@ -341,6 +365,7 @@ mkdir -p "$base" "$release/backend/dist/scripts/preflight" "$release/backend-go"
   : > "$release/backend/.env"
   cp "$fixture_executable" "$release/backend-go/juhe-ai-runtime-log-indexer"
   cp "$fixture_executable" "$release/backend-go/juhe-ai-table-monitor"
+  cp "$fixture_executable" "$release/backend-go/juhe-ai-audit-log-writer"
 
 default_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.performance --nginx-config "$base/nginx.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
 printf '%s\n' "$default_output" | rg -Fq "data=$base/shared/data"
@@ -364,6 +389,14 @@ fi
     exit 1
   fi
   grep -Fq 'missing Go table monitor' "$root/missing-table-monitor.out"
+
+  cp "$fixture_executable" "$release/backend-go/juhe-ai-table-monitor"
+  rm -f -- "$release/backend-go/juhe-ai-audit-log-writer"
+  if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" >"$root/missing-audit-log-writer.out" 2>&1; then
+    echo 'performance topology dry-run accepted a release without the Go audit log writer' >&2
+    exit 1
+  fi
+  grep -Fq 'missing Go audit log writer' "$root/missing-audit-log-writer.out"
 '@
     & $bash.Source -c $performanceDryRunHarness bash ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') ($bash.Source -replace '\\', '/')
     if ($LASTEXITCODE -ne 0) { throw 'performance topology immutable release dry-run harness failed' }
@@ -838,6 +871,18 @@ GATEWAY_UPSTREAM=juhe_ai_gateway_pool_temporary_20260730
 CONTROL_UPSTREAM=juhe_ai_control_temporary_20260730
 INSTALL_TOKEN=temporary-install-token
 INSTANCE_ID_PREFIX=temporary
+mkdir -p "$CURRENT_DIR/backend" "$CURRENT_DIR/backend-go"
+cat > "$CURRENT_DIR/backend/.env" <<'EOF'
+JUHE_AI_POSTGRES_URL=postgres://temporary
+JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
+JUHE_AI_AUDIT_LOG_INPUT_SECRET=temporary-f3-input-secret-with-32-bytes
+EOF
+cat > "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$NODE_ENV|$JUHE_AI_AUDIT_LOG_STORE|$JUHE_AI_AUDIT_LOG_INSTANCE_ID|$JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY|$JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY|$JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS|$JUHE_AI_AUDIT_LOG_INPUT_SECRET"
+EOF
+chmod 755 "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer"
 service_role() { printf gateway; }
 service_port() { printf 3501; }
 __INSTANCE_ID_FOR_FUNCTION__
@@ -846,6 +891,7 @@ __RENDER_NGINX_FUNCTION__
 render_run_script gateway-1 "$root/gateway-1.sh"
 render_run_script runtime-log-indexer "$root/runtime-log-indexer.sh"
 render_run_script table-monitor "$root/table-monitor.sh"
+render_run_script audit-log-writer "$root/audit-log-writer.sh"
 render_nginx "$root/nginx.conf"
 rg -Fqx 'export JUHE_AI_INSTANCE_ID=temporary-gateway-1' "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_LOG_DIR=\"$RUNTIME_LOG_DIR\"" "$root/gateway-1.sh"
@@ -864,6 +910,19 @@ if rg -Fq 'JUHE_AI_TABLE_MONITOR_STORE=sqlite' "$root/table-monitor.sh" || rg -F
   echo 'table-monitor run script introduced a forbidden fallback or Redis coupling' >&2
   exit 67
 fi
+rg -Fqx 'export JUHE_AI_AUDIT_LOG_STORE=postgres' "$root/audit-log-writer.sh"
+rg -Fqx 'export JUHE_AI_AUDIT_LOG_INSTANCE_ID="temporary-audit-log-writer"' "$root/audit-log-writer.sh"
+rg -Fqx "export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=\"$DATA_DIR/audit/blobs\"" "$root/audit-log-writer.sh"
+rg -Fqx "export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=\"$DATA_DIR/audit/hot-search\"" "$root/audit-log-writer.sh"
+rg -Fqx 'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="$input_address"' "$root/audit-log-writer.sh"
+rg -Fqx 'export JUHE_AI_AUDIT_LOG_INPUT_SECRET="$input_secret"' "$root/audit-log-writer.sh"
+rg -Fqx "exec \"$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer\"" "$root/audit-log-writer.sh"
+if rg -Fq 'JUHE_AI_AUDIT_LOG_STORE=sqlite' "$root/audit-log-writer.sh" || rg -Fq 'JUHE_AI_SECRET' "$root/audit-log-writer.sh" || rg -Fq 'JUHE_AI_REDIS_' "$root/audit-log-writer.sh"; then
+  echo 'audit-log-writer run script introduced a forbidden fallback or Redis coupling' >&2
+  exit 69
+fi
+"$root/audit-log-writer.sh" > "$root/audit-log-writer.env"
+rg -Fqx "production|postgres|temporary-audit-log-writer|$DATA_DIR/audit/blobs|$DATA_DIR/audit/hot-search|127.0.0.1:3303|temporary-f3-input-secret-with-32-bytes" "$root/audit-log-writer.env"
 rg -Fq "upstream $GATEWAY_UPSTREAM {" "$root/nginx.conf"
 rg -Fq "upstream $CONTROL_UPSTREAM {" "$root/nginx.conf"
 rg -Fq "proxy_pass http://$CONTROL_UPSTREAM;" "$root/nginx.conf"

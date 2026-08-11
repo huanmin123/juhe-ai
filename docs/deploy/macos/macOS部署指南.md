@@ -185,15 +185,17 @@ macOS 裸机高性能模式固定使用三个物理进程：
 
 queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空 usage、audit、operation log、public API log 和 record maintenance 五条 Stream。普通运行日志不进入 Redis，必须单独确认角色 JSONL 文件 backlog 已由 Go F1 `runtime-log-indexer` 追平并且 cursor/freshness 正常。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
 
-### 4.2 高性能模式 Go F1/F2 launchd 与 F3 限制
+### 4.2 高性能模式 Go F1/F2/F3 launchd
 
-`install-performance-topology.sh` 当前只支持 Go F1 `runtime-log-indexer` 与 Go F2 `juhe-ai-table-monitor` 的 launchd 生命周期；它没有 F3 `juhe-ai-audit-log-writer` 服务定义、F3 HMAC 输入校验或 F3 读回验收。AI 不得把此脚本的 F1/F2 通过结果解释为完整 F1/F2/F3 的 macOS 发布，也不得在 F3 已接管审计的候选上执行其 `--apply`。完整 F3 macOS launchd 拓扑、temporary release 验收和回滚尚待单独实现及现场验证。dry-run/apply 都要求当前 release 内的 `backend-go/juhe-ai-runtime-log-indexer` 与 `backend-go/juhe-ai-table-monitor` 是可执行常规文件；system scope 还验证服务用户可读/执行二者。F2 固定 PostgreSQL 模式，稳定 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 由 `--instance-id-prefix` 加固定 `table-monitor` 服务名生成；运行脚本优先使用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，否则只继承 `JUHE_AI_POSTGRES_URL`，两者均缺失即失败，不会回退 SQLite、Redis、Node worker 或 queue。
+`install-performance-topology.sh` 把 F1 `runtime-log-indexer`、F2 `juhe-ai-table-monitor` 和 F3 `juhe-ai-audit-log-writer` 作为三个独立的 launchd 服务安装、停止、回滚和记录日志。dry-run/apply 都要求 release 内三个 Go 二进制是可执行常规文件；system scope 还验证服务用户可读/执行三者。F2 固定 PostgreSQL 模式，稳定 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 由 `--instance-id-prefix` 加固定 `table-monitor` 服务名生成；运行脚本优先使用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，否则只继承 `JUHE_AI_POSTGRES_URL`，两者均缺失即失败，不会回退 SQLite、Redis、Node worker 或 queue。
 
-脚本先连续通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness）后，才启动 F1、F2；失败恢复两侧 Go 服务、Node 服务、Nginx 的原 plist、run script 和 loaded 状态。F2 在脚本内仅做有界 launchd 存活验证，不能证明 owner lease 或快照已新鲜：生产 cutover 前必须通过 Node 只读 API 人工核对 F2 owner lease 与 `juhe_stats` snapshot freshness。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。F3 迁移完成后的 Mac production 只能走完成三 sidecar 支持的新编排，不允许用当前 F1/F2-only 脚本绕过 F3。
+F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log-writer`。它从 release 的 `backend/.env`（或 launchd 明确环境）读取 `JUHE_AI_POSTGRES_URL`、可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`、`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`、同一地址的 `JUHE_AI_AUDIT_LOG_INPUT_URL` 与独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`；缺失、非 loopback、URL 与监听地址不一致或短密钥都会失败。F3 不会回退 `JUHE_AI_SECRET`、SQLite、Redis、Node worker 或旧审计队列。Node service 与 F3 writer 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 payload/hot-search 写读目录漂移。
+
+脚本先连续通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再依次启动 F1、F2、F3；F3 必须连续返回 loopback `GET /__aiinternal__/health` 的 `204`。失败时恢复三项 Go 服务、Node 服务、Nginx 的原 plist、run script 和 loaded 状态。F2/F3 的 liveness 都不等价于数据完成：生产 cutover 前必须通过 Node 只读 API 人工核对 F1 日志新鲜度、F2 owner lease/snapshot freshness，并以真实可审计请求完成 Node -> F3 -> Node 详情读回。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
 
 2026-08-11 已完成目标 Mac 上隔离 temporary release 的直接 `start.sh` 预演：空的可销毁 PostgreSQL 库先安装 release 生产依赖并执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`，随后 Node 两个 health、F3 `204`、F1/F2 Node readback、F3 lifecycle/payload Node readback、真实网关审计捕获和无效 HMAC `401` 均通过。预演未改动 `current`、launchd、Nginx、Caddy、Edge、生产库或 Redis，结束后已清理临时目录、进程、监听和测试库。Mac 默认 Node 路径若不是受支持的 22.x/24.x LTS，必须在 launchd 和手工命令中显式使用同一条受支持 PATH。
 
-这不是 Mac `--apply`、listener、rolling、rollback 或完整 launchd 预演；这些现场验证完成前不得宣称生产成功。
+2026-08-11 已完成三 sidecar launchd 编排的本机静态/干跑门禁，但这不是 Mac `--apply`、listener、rolling、rollback 或完整 launchd 预演；这些现场验证完成前不得宣称生产成功。
 
 ## 5. HTTPS 和端口边界
 
