@@ -286,7 +286,10 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	writeCtx, cancel := context.WithTimeout(request.Context(), h.cfg.RequestTimeout)
+	// Node deliberately makes a non-blocking one-shot RPC and may abandon the
+	// response before F3 commits. Persistence remains bounded by the F3 server
+	// deadline, not by the peer connection's cancellation.
+	writeCtx, cancel := context.WithTimeout(context.Background(), h.cfg.RequestTimeout)
 	defer cancel()
 	result, err := h.store.Persist(writeCtx, h.lease, envelope.AuditLog)
 	if err != nil {

@@ -572,9 +572,10 @@ render_run_script() {
         '  file="$2"' \
         '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") || (substr(line, 1, 1) == "\x27" && substr(line, length(line), 1) == "\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
         '}' \
-        'postgres_url="${JUHE_AI_POSTGRES_URL:-}"' \
+        'postgres_url="${JUHE_AI_AUDIT_LOG_POSTGRES_URL:-${JUHE_AI_POSTGRES_URL:-}}"' \
+        'if [ -z "$postgres_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_AUDIT_LOG_POSTGRES_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
         'if [ -z "$postgres_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_POSTGRES_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
+        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_AUDIT_LOG_POSTGRES_URL or JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
         'business_settings_url="${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL:-}"' \
         'if [ -z "$business_settings_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then business_settings_url="$(read_dotenv_value JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
         'if [ -z "$business_settings_url" ]; then business_settings_url="$postgres_url"; fi' \
@@ -591,6 +592,7 @@ render_run_script() {
         'export NODE_ENV=production' \
         'export JUHE_AI_RUNTIME_MODE=performance' \
         'export JUHE_AI_AUDIT_LOG_STORE=postgres' \
+        'export JUHE_AI_AUDIT_LOG_POSTGRES_URL="$postgres_url"' \
         'export JUHE_AI_POSTGRES_URL="$postgres_url"' \
         'export JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="$business_settings_url"' \
         'export JUHE_AI_AUDIT_LOG_INSTANCE_ID="'"$instance_id"'"' \

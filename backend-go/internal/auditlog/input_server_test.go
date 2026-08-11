@@ -80,6 +80,39 @@ func TestAuditInputHandlerPersistsSignedLoopbackInput(t *testing.T) {
 	}
 }
 
+func TestAuditInputHandlerPersistsAfterClientContextCancellation(t *testing.T) {
+	cfg := sqliteConfig(t, t.TempDir())
+	store := openSQLiteStore(t, cfg)
+	defer store.Close()
+	handler := &auditInputHandler{
+		store: store,
+		lease: acquireLease(t, store),
+		cfg:   InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second},
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-client-cancelled", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	cancelClient()
+	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body)).WithContext(clientCtx)
+	request.RemoteAddr = "127.0.0.1:32100"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("cancelled client context input status=%d", response.Code)
+	}
+	var count int
+	if err := store.(*sqlStore).db.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE id=?`, "input-client-cancelled").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("persisted audit logs=%d want 1", count)
+	}
+}
+
 func TestAuditInputHandlerRejectsUnsignedOrNonLoopbackInput(t *testing.T) {
 	cfg := sqliteConfig(t, t.TempDir())
 	store := openSQLiteStore(t, cfg)

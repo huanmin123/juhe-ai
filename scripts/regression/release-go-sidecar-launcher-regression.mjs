@@ -27,6 +27,7 @@ for (const source of [powershellSource, shellSource]) {
   assert.match(source, /JUHE_AI_AUDIT_LOG_DATABASE_PATH/u, 'F3 launcher must configure isolated SQLite path')
   assert.match(source, /JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY/u, 'F3 launcher must configure payload blob path')
   assert.match(source, /JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY/u, 'F3 launcher must configure hot-search path')
+  assert.match(source, /JUHE_AI_AUDIT_LOG_POSTGRES_URL/u, 'F3 launcher must forward its dedicated PostgreSQL URL')
 }
 
 const launcherSources = [

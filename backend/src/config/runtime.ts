@@ -60,6 +60,7 @@ export interface RuntimeConfig {
   accountHealthCheckDispatchUrl?: string
   auditLogInputUrl?: string
   auditLogInputSecret?: string
+  auditLogInputTimeoutMs?: number
   systemApi: {
     dbServiceMaxInFlight: number
   }
@@ -466,6 +467,10 @@ const configuredAuditLogInputSecret = auditLogInputSecretConfig(
   configuredAuditLogInputUrl,
   optionalStringConfig('JUHE_AI_AUDIT_LOG_INPUT_SECRET')
 )
+const configuredAuditLogInputTimeoutMs = auditLogInputTimeoutMsConfig(
+  'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS',
+  configuredAuditLogInputUrl
+)
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
@@ -532,6 +537,7 @@ export const runtimeConfig: RuntimeConfig = {
   accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
   auditLogInputUrl: configuredAuditLogInputUrl,
   auditLogInputSecret: configuredAuditLogInputSecret,
+  auditLogInputTimeoutMs: configuredAuditLogInputTimeoutMs,
   systemApi: {
     dbServiceMaxInFlight: numberConfig(
       'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT',
@@ -1131,6 +1137,13 @@ function auditLogInputSecretConfig(
   }
   assertProductionSecret(name, configuredValue)
   return configuredValue
+}
+
+function auditLogInputTimeoutMsConfig(name: string, inputUrl: string | undefined): number | undefined {
+  if (!inputUrl) return undefined
+  // The Node call happens after the client response. It must outlive F3's
+  // bounded 5s persistence window without turning into a retrying queue.
+  return numberConfig(name, 7_000, 1_000, 60_000)
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {

@@ -52,9 +52,11 @@ JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
 JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search
+JUHE_AI_AUDIT_LOG_POSTGRES_URL=
 JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为稳定的高熵密钥，production 至少 32 位
+JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS=7000
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
@@ -68,7 +70,7 @@ JUHE_AI_OAUTH_PROXY_URL=
 
 启动脚本随后独立启动 Go `juhe-ai-table-monitor`。F2 是表存储监控采样、快照写入和快照保留清理的唯一 owner；Node 只读 F2 产物，不注册 Node scheduler、stats writer 或 retention。`JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 必须在 `backend/.env` 或更高优先级环境中保持非空且稳定；SQLite 使用专用 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`，PostgreSQL 使用 `JUHE_AI_POSTGRES_URL` 写入 `juhe_stats`。它同样在 API health 就绪后启动，在 `backend/runtime/juhe-ai-table-monitor.pid` 和 `backend/logs/juhe-ai-table-monitor.log` 留下受控进程状态；Web/API、F1 或 F2 任一退出时，启动脚本会收尾其他进程，避免留下无主 writer。
 
-启动脚本还会独立启动 Go `juhe-ai-audit-log-writer`。F3 是原始审计日志持久化与保留的唯一 writer；Node 只将审计捕获以 loopback 一次性 RPC 交给它，不保留 Node writer、队列或 fallback。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 是 Node 和 Go 共用的显式 HMAC 密钥，不能省略、不能回退到 `JUHE_AI_SECRET`，并且在 production 必须至少 32 位；缺失、空白或无效配置会阻止 Node/release 启动。`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS` 与 `JUHE_AI_AUDIT_LOG_INPUT_URL` 必须指向同一 loopback 端口。F3 同样在 API health 就绪后启动，并由启动脚本与 Web/API、F1、F2 一并收尾，避免留下无主 writer。
+启动脚本还会独立启动 Go `juhe-ai-audit-log-writer`。F3 是原始审计日志持久化与保留的唯一 writer；Node 只将审计捕获以 loopback 一次性 RPC 交给它，不保留 Node writer、队列或 fallback。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 是 Node 和 Go 共用的显式 HMAC 密钥，不能省略、不能回退到 `JUHE_AI_SECRET`，并且在 production 必须至少 32 位；缺失、空白或无效配置会阻止 Node/release 启动。`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS` 与 `JUHE_AI_AUDIT_LOG_INPUT_URL` 必须指向同一 loopback 端口。Node 默认等待 F3 最多 `7000ms` 的 `204` 确认，但业务响应不会等待这次 RPC；可用 `JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS` 在 `1000..60000` 毫秒内调整。PostgreSQL 模式优先使用 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`，以便 F3 单独声明驱动连接选项（例如服务端未启用 TLS 时的 `sslmode=disable`）；未设置时才回退 `JUHE_AI_POSTGRES_URL`。F3 同样在 API health 就绪后启动，并由启动脚本与 Web/API、F1、F2 一并收尾，避免留下无主 writer。
 
 ### 空 PostgreSQL 库的首次初始化
 

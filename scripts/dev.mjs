@@ -364,7 +364,12 @@ function resolveAuditLogWriterEnv() {
   const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
   const inputPort = listenAddress.slice(listenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID
-  childEnv.JUHE_AI_AUDIT_LOG_STORE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_STORE, childEnv.JUHE_AI_DATABASE_DRIVER, 'sqlite')
+  childEnv.JUHE_AI_AUDIT_LOG_STORE = firstConfiguredValue(
+    childEnv.JUHE_AI_AUDIT_LOG_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER,
+    childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ? 'postgres' : undefined,
+    'sqlite'
+  )
   childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = listenAddress
   childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret
   childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL, `http://127.0.0.1:${inputPort}`)
@@ -382,6 +387,9 @@ function resolveAuditLogWriterEnv() {
   childEnv.JUHE_AI_USAGE_SHARD_ROOT = resolveBackendPath(childEnv.JUHE_AI_USAGE_SHARD_ROOT, resolve(backendRoot, 'data', 'usage-shards'))
   childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '30s')
   childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL, '1m')
+  if (childEnv.JUHE_AI_AUDIT_LOG_STORE === 'postgres' && !childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL) {
+    childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ?? childEnv.JUHE_AI_POSTGRES_URL ?? ''
+  }
   return childEnv
 }
 

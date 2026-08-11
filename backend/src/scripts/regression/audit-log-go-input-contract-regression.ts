@@ -21,7 +21,7 @@ for (const contract of [
   "'content-length'",
   "'x-juhe-ai-signature'",
   "createHmac('sha256', runtimeConfig.auditLogInputSecret!)",
-  "AbortSignal.timeout(auditLogGoInputTimeoutMs)",
+  'AbortSignal.timeout(runtimeConfig.auditLogInputTimeoutMs!)',
   'auditLogGoInputMaxBytes',
   'void fetch(endpoint',
   "response.status === 204"
@@ -44,10 +44,13 @@ assert.doesNotMatch(
 for (const contract of [
   'auditLogInputUrl?: string',
   'auditLogInputSecret?: string',
+  'auditLogInputTimeoutMs?: number',
   "'JUHE_AI_AUDIT_LOG_INPUT_URL'",
   "'JUHE_AI_AUDIT_LOG_INPUT_SECRET'",
+  "'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS'",
   'function auditLogInputUrlConfig',
   'function auditLogInputSecretConfig',
+  'function auditLogInputTimeoutMsConfig',
   'loopback HTTP Origin'
 ]) {
   includes(runtime, contract, 'F3 input URL 配置门禁')

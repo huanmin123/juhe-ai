@@ -54,13 +54,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if mode != ModeSQLite && mode != ModePostgres {
 		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_STORE 必须为 sqlite 或 postgres")
 	}
+	postgresURL := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_POSTGRES_URL"))
+	if postgresURL == "" {
+		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
+	}
 	cfg := Config{
 		InstanceID:               strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INSTANCE_ID")),
 		Mode:                     mode,
 		AuditDatabasePath:        strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_DATABASE_PATH")),
 		PayloadBlobDirectory:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")),
 		HotSearchDirectory:       strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY")),
-		PostgresURL:              strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresURL:              postgresURL,
 		BusinessSettingsPath:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH")),
 		BusinessSettingsURL:      strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL")),
 		BusinessPath:             strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
@@ -118,7 +122,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if mode == ModePostgres {
 		if cfg.PostgresURL == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_POSTGRES_URL")
+			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_POSTGRES_URL 或 JUHE_AI_POSTGRES_URL")
 		}
 		if cfg.PayloadBlobDirectory == "" {
 			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")

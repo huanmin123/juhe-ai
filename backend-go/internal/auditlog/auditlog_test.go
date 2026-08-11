@@ -100,6 +100,32 @@ func TestLoadConfigRejectsPhysicalSQLiteConflict(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
+	env := map[string]string{
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":           "f3-postgres-config",
+		"JUHE_AI_AUDIT_LOG_STORE":                 "postgres",
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL":          "postgres://dedicated-owner@localhost/dedicated",
+		"JUHE_AI_POSTGRES_URL":                    "postgres://shared-owner@localhost/shared",
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":       t.TempDir(),
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://settings-owner@localhost/business",
+	}
+	cfg, err := LoadConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PostgresURL != env["JUHE_AI_AUDIT_LOG_POSTGRES_URL"] {
+		t.Fatalf("PostgresURL=%q want dedicated F3 URL", cfg.PostgresURL)
+	}
+	delete(env, "JUHE_AI_AUDIT_LOG_POSTGRES_URL")
+	cfg, err = LoadConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] {
+		t.Fatalf("PostgresURL=%q want shared fallback URL", cfg.PostgresURL)
+	}
+}
+
 func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 	root := t.TempDir()
 	env := sqliteEnv(root)

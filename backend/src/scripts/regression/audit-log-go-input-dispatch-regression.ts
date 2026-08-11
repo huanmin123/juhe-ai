@@ -8,6 +8,7 @@ const originalEnvironment = new Map<string, string | undefined>()
 for (const name of [
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
   'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
+  'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS',
   'JUHE_AI_SECRET',
   'JUHE_AI_LOG_FILE_ENABLED',
   'JUHE_AI_LOG_CONSOLE_ENABLED',
@@ -20,6 +21,7 @@ const businessSecret = 'f3-dispatch-regression-business-secret'
 const inputSecret = 'f3-dispatch-regression-input-secret'
 process.env.JUHE_AI_SECRET = businessSecret
 process.env.JUHE_AI_AUDIT_LOG_INPUT_SECRET = inputSecret
+process.env.JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS = '1000'
 process.env.JUHE_AI_LOG_FILE_ENABLED = 'false'
 process.env.JUHE_AI_LOG_CONSOLE_ENABLED = 'false'
 process.env.NODE_ENV = 'test'
@@ -74,7 +76,7 @@ try {
   requestCount = 0
   dispatchAuditLogToGo(auditInput('dispatch-timeout', [Buffer.from('timeout')]))
   await waitForRequest()
-  await delay(700)
+  await delay(1_200)
   assert.equal(requestCount, 1, '超时只记录失败，不得自动重试')
 
   console.log('F3 Go input dispatch regression passed: loopback POST, exact HMAC/length, 4MiB wire budget, 204 acknowledgement and no retry.')

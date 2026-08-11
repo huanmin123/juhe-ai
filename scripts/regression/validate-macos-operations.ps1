@@ -218,7 +218,7 @@ if ($tableMonitorWaitFunction -match 'curl|psql|postgres|sqlite') {
 $auditWriterRunScriptStart = $performanceInstaller.IndexOf('elif [ "$name" = audit-log-writer ]; then', [StringComparison]::Ordinal)
 $auditWriterRunScriptEnd = $performanceInstaller.IndexOf("    else`n", $auditWriterRunScriptStart, [StringComparison]::Ordinal)
 $auditWriterRunScript = $performanceInstaller.Substring($auditWriterRunScriptStart, $auditWriterRunScriptEnd - $auditWriterRunScriptStart)
-foreach ($contract in @('JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_INPUT_URL must match the F3 loopback listen address', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL', 'JUHE_AI_POSTGRES_URL', 'juhe-ai-audit-log-writer')) {
+foreach ($contract in @('JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_INPUT_URL must match the F3 loopback listen address', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL', 'JUHE_AI_AUDIT_LOG_POSTGRES_URL', 'JUHE_AI_POSTGRES_URL', 'juhe-ai-audit-log-writer')) {
   if (-not $auditWriterRunScript.Contains($contract, [StringComparison]::Ordinal)) {
     throw "Performance topology audit-log-writer run script missing: $contract"
   }
@@ -928,6 +928,7 @@ if rg -Fq 'JUHE_AI_TABLE_MONITOR_STORE=sqlite' "$root/table-monitor.sh" || rg -F
   exit 67
 fi
 rg -Fqx 'export JUHE_AI_AUDIT_LOG_STORE=postgres' "$root/audit-log-writer.sh"
+rg -Fqx 'export JUHE_AI_AUDIT_LOG_POSTGRES_URL="$postgres_url"' "$root/audit-log-writer.sh"
 rg -Fqx 'export JUHE_AI_AUDIT_LOG_INSTANCE_ID="temporary-audit-log-writer"' "$root/audit-log-writer.sh"
 rg -Fqx "export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=\"$DATA_DIR/audit/blobs\"" "$root/audit-log-writer.sh"
 rg -Fqx "export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=\"$DATA_DIR/audit/hot-search\"" "$root/audit-log-writer.sh"

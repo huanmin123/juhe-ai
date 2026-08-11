@@ -9,7 +9,6 @@ export { auditLogGoInputMaxBytes } from './audit-log-go-input-budget.js'
 
 export const auditLogGoInputPath = '/__aiinternal__/v1/audit-captures'
 const auditLogGoInputSignatureDomain = 'juhe-ai/audit-log-input/v1'
-const auditLogGoInputTimeoutMs = 500
 
 // This is a one-shot RPC, deliberately without local buffering, retries,
 // cross-process fallback, or a Node writer. The caller remains non-blocking and
@@ -58,7 +57,7 @@ export function dispatchAuditLogToGo(input: AuditLogInput): void {
       ...(input.traceId ? { 'x-trace-id': input.traceId } : {})
     },
     body: requestBody,
-    signal: AbortSignal.timeout(auditLogGoInputTimeoutMs)
+    signal: AbortSignal.timeout(runtimeConfig.auditLogInputTimeoutMs!)
   }).then(async (response) => {
     try {
       await response.body?.cancel()

@@ -82,7 +82,7 @@ JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
-`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 不能复用或回退 `JUHE_AI_SECRET`。`start.sh` 会启动 F1/F2/F3，但 F3 依赖上面的显式 instance ID、专用事实路径和 loopback HMAC 配置；任一项缺失时必须失败，不得跳过 F3 继续运行。PostgreSQL performance 模式改用 `JUHE_AI_AUDIT_LOG_STORE=postgres`、`JUHE_AI_POSTGRES_URL` 和独立 blob/hot-search 目录。
+`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 不能复用或回退 `JUHE_AI_SECRET`。`start.sh` 会启动 F1/F2/F3，但 F3 依赖上面的显式 instance ID、专用事实路径和 loopback HMAC 配置；任一项缺失时必须失败，不得跳过 F3 继续运行。PostgreSQL performance 模式改用 `JUHE_AI_AUDIT_LOG_STORE=postgres`、优先的 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（未设置才回退 `JUHE_AI_POSTGRES_URL`）和独立 blob/hot-search 目录；仅 F3 需要的连接选项，例如服务端未启用 TLS 时的 `sslmode=disable`，必须写在前者，不能修改 Node 通用 URL。Node 对 F3 的一次性输入确认默认等待 `7000ms`，可用 `JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS` 在 `1000..60000` 毫秒内调整，且不阻塞已完成的业务响应。
 
 ## 4. launchd 常驻
 
@@ -193,7 +193,7 @@ queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/d
 
 system scope 的 `--apply` 必须由 `sudo` 执行；Node、F1、F2、F3 仍以 `--service-user` 指定的非 root 用户运行。目标机完成 `pnpm install --prod` 后，release 必须对服务用户递归可读/可执行、但不可写；安装器会拒绝服务用户可写的 release。运行目录、日志和 spool 才可以交给服务用户写入，不能用递归 `chown` 或放宽 release 权限来解决启动失败。
 
-F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log-writer`。它从 release 的 `backend/.env`（或 launchd 明确环境）读取 `JUHE_AI_POSTGRES_URL`、可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`、`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`、同一地址的 `JUHE_AI_AUDIT_LOG_INPUT_URL` 与独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`；缺失、非 loopback、URL 与监听地址不一致或短密钥都会失败。F3 不会回退 `JUHE_AI_SECRET`、SQLite、Redis、Node worker 或旧审计队列。Node service 与 F3 writer 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 payload/hot-search 写读目录漂移。
+F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log-writer`。它从 release 的 `backend/.env`（或 launchd 明确环境）读取优先的 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（未设置才读取 `JUHE_AI_POSTGRES_URL`）、可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`、`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`、同一地址的 `JUHE_AI_AUDIT_LOG_INPUT_URL`、独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 和可选的 `JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS`；缺失、非 loopback、URL 与监听地址不一致或短密钥都会失败。F3 不会回退 `JUHE_AI_SECRET`、SQLite、Redis、Node worker 或旧审计队列。Node service 与 F3 writer 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 payload/hot-search 写读目录漂移。
 
 脚本先连续通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再依次启动 F1、F2、F3；F3 必须连续返回 loopback `GET /__aiinternal__/health` 的 `204`。失败时恢复三项 Go 服务、Node 服务、Nginx 的原 plist、run script 和 loaded 状态。F2/F3 的 liveness 都不等价于数据完成：生产 cutover 前必须通过 Node 只读 API 人工核对 F1 日志新鲜度、F2 owner lease/snapshot freshness，并以真实可审计请求完成 Node -> F3 -> Node 详情读回。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
 
