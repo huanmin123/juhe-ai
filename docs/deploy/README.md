@@ -49,4 +49,4 @@
 - 压测、性能分析和容量结论统一放入 `docs/reports/`，不要混入部署操作手册。
 - 影响本地开发启动或测试验证的内容应优先更新 `docs/develop/`，不要混入部署文档。
 - 影响环境变量、数据目录、加密密钥或发布包结构时，需要同时确认构建指南和部署指南。
-- 当前 F1（运行日志索引与保留）、F2（表监控采样、快照与保留）和 F3（原始审计日志持久化、payload/blob、hot-search 与保留）分别由 Go sidecar 唯一写入；Node 仍拥有网关、账户、主 API、usage、操作日志、公开接口日志、model-check、stats 和 ops。三项均为直接异步任务，不使用队列。2026-08-10 已在隔离开发 Linux 环境完成固定 release 直接启动及 Docker standalone/performance 闭环；此证据不构成 macOS 或生产环境已运行、已发布或已切流的声明。
+- 当前 F1（运行日志索引与保留）、F2（表监控采样、快照与保留）和 F3（原始审计日志持久化、payload/blob、hot-search 与保留）分别由 Go sidecar 唯一写入；Node 仍拥有网关、账户、主 API、usage、操作日志、公开接口日志、model-check、stats 和 ops。三项均为直接异步任务，不使用队列。2026-08-10 已在隔离开发 Linux 环境完成固定 release 直接启动及 Docker standalone/performance 闭环；2026-08-11 还在目标 Mac 的隔离 temporary release 通过了 `start.sh`、三 sidecar health/readback、真实网关审计捕获与稳定观察，所有临时资源已清理。两类证据都不构成 launchd、生产数据、生产流量、切流或回滚已经通过的声明。

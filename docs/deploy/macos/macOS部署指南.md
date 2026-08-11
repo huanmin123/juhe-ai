@@ -30,7 +30,7 @@ lsof -iTCP:3000 -sTCP:LISTEN || true
 - Node.js 使用官方 LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`。
 - 生产只暴露 Caddy `80/443` 或 WireGuard 回源 listener；不要暴露 juhe-ai `3000`、sing-box `7890`、PostgreSQL 或 Redis。
 - 远端 SSH、launchd 和手工预检必须使用同一条 Node LTS PATH。
-- 发布包必须包含目标 macOS 架构的 F1、F2、F3 三个 Go 二进制。当前 Mac 现场尚未验证 F3 常驻、读回与回滚；没有完成 temporary release 预演前，不能把本指南当成生产切流步骤。
+- 发布包必须包含目标 macOS 架构的 F1、F2、F3 三个 Go 二进制。2026-08-11 已在目标 Mac 的隔离 temporary release 上通过 `start.sh` 验证三项二进制、Node 两个 health、F3 `204`、F1/F2 新鲜度、F3 Node -> Go -> Node 读回、HMAC `401` 拒绝和稳定观察；该 release、临时数据库与进程均已清理。它没有验证 launchd、`current` 切换、反向代理/Edge、生产数据或回滚，不能把本指南当成生产切流步骤。
 
 ## 3. 发布包目录
 
@@ -69,6 +69,8 @@ JUHE_AI_ALLOWED_ORIGINS=https://ai.example.com
 JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
+# performance 模式下每个 Node control/gateway/worker 都要使用稳定且唯一的值。
+JUHE_AI_INSTANCE_ID=juhe-ai-control-1
 JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
 JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
 JUHE_AI_AUDIT_LOG_STORE=sqlite
@@ -189,7 +191,9 @@ queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/d
 
 脚本先连续通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness）后，才启动 F1、F2；失败恢复两侧 Go 服务、Node 服务、Nginx 的原 plist、run script 和 loaded 状态。F2 在脚本内仅做有界 launchd 存活验证，不能证明 owner lease 或快照已新鲜：生产 cutover 前必须通过 Node 只读 API 人工核对 F2 owner lease 与 `juhe_stats` snapshot freshness。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。F3 迁移完成后的 Mac production 只能走完成三 sidecar 支持的新编排，不允许用当前 F1/F2-only 脚本绕过 F3。
 
-2026-08-09 的开发 PostgreSQL 闭环只适用于开发环境，未完成 Mac `--apply`、listener、rolling、rollback 或完整 temporary release 预演；这些现场验证完成前不得宣称生产成功。
+2026-08-11 已完成目标 Mac 上隔离 temporary release 的直接 `start.sh` 预演：空的可销毁 PostgreSQL 库先安装 release 生产依赖并执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`，随后 Node 两个 health、F3 `204`、F1/F2 Node readback、F3 lifecycle/payload Node readback、真实网关审计捕获和无效 HMAC `401` 均通过。预演未改动 `current`、launchd、Nginx、Caddy、Edge、生产库或 Redis，结束后已清理临时目录、进程、监听和测试库。Mac 默认 Node 路径若不是受支持的 22.x/24.x LTS，必须在 launchd 和手工命令中显式使用同一条受支持 PATH。
+
+这不是 Mac `--apply`、listener、rolling、rollback 或完整 launchd 预演；这些现场验证完成前不得宣称生产成功。
 
 ## 5. HTTPS 和端口边界
 

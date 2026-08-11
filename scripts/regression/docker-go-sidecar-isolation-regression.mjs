@@ -57,6 +57,7 @@ assertDatabasePathMount(tableMonitor, {
 
 assertAuditWriterContract(standaloneNode, standaloneAuditWriter, 'standalone')
 assertAuditWriterContract(performanceNode, performanceAuditWriter, 'performance')
+assert.match(performanceNode, /JUHE_AI_INSTANCE_ID:\s*\$\{JUHE_AI_INSTANCE_ID:\?JUHE_AI_INSTANCE_ID is required\}/u, 'performance Compose must fail closed without a stable Node instance ID')
 assert.match(auditWriterDockerfile, /__aiinternal__\/health/u, 'F3 healthcheck binary must probe the loopback input listener')
 
 console.log('Docker Go sidecar deployment isolation regression passed')
