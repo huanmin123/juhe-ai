@@ -189,6 +189,8 @@ queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/d
 
 `install-performance-topology.sh` 把 F1 `runtime-log-indexer`、F2 `juhe-ai-table-monitor` 和 F3 `juhe-ai-audit-log-writer` 作为三个独立的 launchd 服务安装、停止、回滚和记录日志。dry-run/apply 都要求 release 内三个 Go 二进制是可执行常规文件；system scope 还验证服务用户可读/执行三者。F2 固定 PostgreSQL 模式，稳定 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 由 `--instance-id-prefix` 加固定 `table-monitor` 服务名生成；运行脚本优先使用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，否则只继承 `JUHE_AI_POSTGRES_URL`，两者均缺失即失败，不会回退 SQLite、Redis、Node worker 或 queue。
 
+发布包内的运维脚本按文档一律用 `bash docs/deploy/macos/operations/<脚本>.sh ...` 调用；不要假设这些文档脚本本身带可执行位并直接以 `./<脚本>.sh` 运行。`start.sh` 与三个 Go 二进制才是发布包必须具备执行权限的运行入口。
+
 F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log-writer`。它从 release 的 `backend/.env`（或 launchd 明确环境）读取 `JUHE_AI_POSTGRES_URL`、可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`、`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`、同一地址的 `JUHE_AI_AUDIT_LOG_INPUT_URL` 与独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`；缺失、非 loopback、URL 与监听地址不一致或短密钥都会失败。F3 不会回退 `JUHE_AI_SECRET`、SQLite、Redis、Node worker 或旧审计队列。Node service 与 F3 writer 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 payload/hot-search 写读目录漂移。
 
 脚本先连续通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再依次启动 F1、F2、F3；F3 必须连续返回 loopback `GET /__aiinternal__/health` 的 `204`。失败时恢复三项 Go 服务、Node 服务、Nginx 的原 plist、run script 和 loaded 状态。F2/F3 的 liveness 都不等价于数据完成：生产 cutover 前必须通过 Node 只读 API 人工核对 F1 日志新鲜度、F2 owner lease/snapshot freshness，并以真实可审计请求完成 Node -> F3 -> Node 详情读回。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
@@ -196,6 +198,8 @@ F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-au
 2026-08-11 已完成目标 Mac 上隔离 temporary release 的直接 `start.sh` 预演：空的可销毁 PostgreSQL 库先安装 release 生产依赖并执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`，随后 Node 两个 health、F3 `204`、F1/F2 Node readback、F3 lifecycle/payload Node readback、真实网关审计捕获和无效 HMAC `401` 均通过。预演未改动 `current`、launchd、Nginx、Caddy、Edge、生产库或 Redis，结束后已清理临时目录、进程、监听和测试库。Mac 默认 Node 路径若不是受支持的 22.x/24.x LTS，必须在 launchd 和手工命令中显式使用同一条受支持 PATH。
 
 2026-08-11 已完成三 sidecar launchd 编排的本机静态/干跑门禁，但这不是 Mac `--apply`、listener、rolling、rollback 或完整 launchd 预演；这些现场验证完成前不得宣称生产成功。
+
+同日已在目标 Intel Mac 的隔离目录从固定 commit `39b2cc68983c88959872d797312ece2f6de714cb` 使用 Node 22 与 BSD tar 生成 `tar.gz`，校验归档内 `start.sh` 和 F1/F2/F3 三个二进制的执行权限，解包后完成该安装器的 `--dry-run`，并确认缺少 F3 时必然拒绝。该归档及临时目录均已删除；它仅证明构建与静态安装输入，不替代 temporary `--apply`、Node -> F3 -> Node 读回、稳定观察或 rollback。正式候选必须在最终冻结 commit 重新生成并记录 archive SHA-256。
 
 ## 5. HTTPS 和端口边界
 

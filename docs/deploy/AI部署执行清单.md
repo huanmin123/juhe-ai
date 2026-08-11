@@ -55,6 +55,8 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 
 2026-08-11 的 Mac 隔离 temporary release 已验证 `start.sh`、三项二进制、Node DB-ready 后启动、F3 `204`、F1/F2 新鲜度、F3 读回和稳定观察；该 release 和全部临时资源已清理。它没有验证 launchd、`current` 切换、Nginx/Caddy/Edge、生产数据库或回滚演练。生产 Mac 仍必须先在隔离 temporary release 上完成三 sidecar 的 launchd 生命周期与回滚验证，才可以讨论切流。
 
+同日还在目标 Intel Mac 的隔离目录，以 commit `39b2cc68983c88959872d797312ece2f6de714cb` 使用受支持的 Node 22 与 BSD tar 完成了 `tar.gz` 构建、发布目录校验、F1/F2/F3 可执行权限校验、解包后的 `install-performance-topology.sh --dry-run`，并验证缺少 F3 二进制会被明确拒绝。该归档和全部临时目录已删除，不可作为正式候选复用。正式窗口仍须从最终冻结 commit 重新构建，记录 archive SHA-256，并完成 temporary `--apply`、Node HTTP 读回、稳定观察和回滚演练。
+
 不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。
 
 ## 6. 验收记录格式
