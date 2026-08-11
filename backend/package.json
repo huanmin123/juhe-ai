@@ -26,6 +26,7 @@
     "test:user-request-limit-hot-path-boundary": "tsx src/scripts/regression/user-request-limit-hot-path-boundary-regression.ts",
     "test:user-request-limit-performance": "node --import tsx src/scripts/performance/user-request-limit-performance.ts",
     "test:oidc-provider": "tsx src/scripts/regression/oidc-provider-regression.ts",
+    "e2e:oidc-public-client-browser": "tsx src/scripts/regression/oidc-public-client-browser-e2e-runner.ts",
     "test:scope": "tsx src/scripts/regression/scope-boundary-regression.ts",
     "test:auth-memory-maintenance-boundary": "tsx src/scripts/regression/auth-memory-maintenance-boundary-regression.ts",
     "test:captcha-rate-limit": "tsx src/scripts/regression/captcha-rate-limit-regression.ts",

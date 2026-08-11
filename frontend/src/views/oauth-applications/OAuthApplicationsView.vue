@@ -169,13 +169,39 @@
         <a-form-item label="应用名称" required>
           <a-input v-model:value="createForm.displayName" :maxlength="120" placeholder="例如 运营数据看板" />
         </a-form-item>
-        <a-form-item label="Client 类型" required>
+        <a-form-item required>
+          <template #label>
+            <div class="client-type-label">
+              <span>Client 类型</span>
+              <a-popover placement="bottomLeft" trigger="click">
+                <template #content>
+                  <div class="client-type-help-content">
+                    <div>
+                      <strong>公开 Client</strong>
+                      <span>适合浏览器网页、桌面客户端、手机 App 和 CLI。不提供 client_secret，授权码兑换必须使用 PKCE。</span>
+                    </div>
+                    <div>
+                      <strong>机密 Client</strong>
+                      <span>适合有可信服务端或 BFF 的网站与服务端集成。当前 client_secret 会写入应用专属对接文档，只能保存于该服务端。</span>
+                    </div>
+                    <div>
+                      <strong>怎么选</strong>
+                      <span>客户端能被用户安装、查看或反编译时选择公开 Client；只有第三方服务端兑换 Token 时选择机密 Client。</span>
+                    </div>
+                  </div>
+                </template>
+                <button type="button" class="client-type-help-button" aria-label="Client 类型说明">
+                  <InfoCircleOutlined />
+                </button>
+              </a-popover>
+            </div>
+          </template>
           <a-radio-group v-model:value="createForm.clientType">
             <a-radio value="public">公开 Client</a-radio>
             <a-radio value="confidential">机密 Client</a-radio>
           </a-radio-group>
           <div class="form-help-text">
-            {{ createForm.clientType === 'confidential' ? '机密 Client 的当前 client_secret 会写入应用专属对接文档，可随时从应用操作中重新下载；只能由第三方服务端或 BFF 保存。' : '公开 Client 不签发 client_secret，必须配合 PKCE 使用。' }}
+            {{ createForm.clientType === 'confidential' ? '机密 Client：由第三方服务端或 BFF 保存 client_secret；当前值可随时从应用操作中重新下载。' : '公开 Client：面向浏览器和本地客户端，不签发 client_secret，必须配合 PKCE 使用。' }}
           </div>
         </a-form-item>
         <a-form-item label="回调地址" required>
@@ -218,7 +244,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { DownloadOutlined, KeyOutlined } from '@ant-design/icons-vue'
+import { DownloadOutlined, InfoCircleOutlined, KeyOutlined } from '@ant-design/icons-vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -514,6 +540,50 @@ function createEmptyClientForm(): {
   color: #64748b;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.client-type-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.client-type-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: #64748b;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.client-type-help-button:hover,
+.client-type-help-button:focus-visible {
+  color: #1677ff;
+}
+
+.client-type-help-content {
+  display: grid;
+  width: min(360px, calc(100vw - 48px));
+  gap: 10px;
+}
+
+.client-type-help-content > div {
+  display: grid;
+  gap: 2px;
+}
+
+.client-type-help-content strong {
+  color: #1f2937;
+}
+
+.client-type-help-content span {
+  color: #64748b;
+  line-height: 1.55;
 }
 
 .created-secret-content {
