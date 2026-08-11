@@ -28,7 +28,7 @@ if [ -n "$EXPECTED_COMMIT" ] && [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
   exit 1
 fi
 
-STATUS="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
+STATUS="$(git -C "$REPO_ROOT" -c core.quotePath=false status --porcelain=v1 --untracked-files=all)"
 if [ -n "$ALLOWED_UNTRACKED_DIRECTORY" ]; then
   case "$ALLOWED_UNTRACKED_DIRECTORY" in
     /*|*'..'*|*'\'*|*:*|"")
