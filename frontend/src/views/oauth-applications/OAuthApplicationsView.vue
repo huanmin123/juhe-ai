@@ -9,7 +9,6 @@
       @refresh="loadClients"
     >
       <template #actions>
-        <a-button :loading="rotatingSigningKey" @click="rotateSigningKey">轮换签名密钥</a-button>
         <a-button type="primary" @click="openCreateModal">新建第三方应用</a-button>
       </template>
     </ResponsiveListToolbar>
@@ -59,13 +58,43 @@
           {{ formatDateTime(record.createdAt) }}
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-switch
-            :checked="record.status === 'active'"
-            :loading="updatingClientIds.has(record.clientId)"
-            checked-children="启用"
-            un-checked-children="停用"
-            @change="(checked: boolean) => void updateClientStatus(record, checked)"
-          />
+          <a-space :size="4">
+            <a-switch
+              :checked="record.status === 'active'"
+              :loading="updatingClientIds.has(record.clientId)"
+              checked-children="启用"
+              un-checked-children="停用"
+              @change="(checked: boolean) => void updateClientStatus(record, checked)"
+            />
+            <a-tooltip title="下载该应用的对接文档">
+              <a-button
+                type="text"
+                :loading="downloadingClientIds.has(record.clientId)"
+                :aria-label="`下载${record.displayName}的对接文档`"
+                @click="downloadIntegrationGuide(record)"
+              >
+                <template #icon><DownloadOutlined /></template>
+              </a-button>
+            </a-tooltip>
+            <a-popconfirm
+              v-if="record.clientType === 'confidential'"
+              title="重新签发 Client Secret？"
+              description="旧 secret 会立即失效。请下载新的完整对接文档并交给客户服务端。"
+              ok-text="重新签发"
+              cancel-text="取消"
+              @confirm="reissueClientSecret(record)"
+            >
+              <a-tooltip title="重新签发 Client Secret 并下载完整对接文档">
+                <a-button
+                  type="text"
+                  :loading="reissuingSecretClientIds.has(record.clientId)"
+                  :aria-label="`重新签发${record.displayName}的 Client Secret`"
+                >
+                  <template #icon><KeyOutlined /></template>
+                </a-button>
+              </a-tooltip>
+            </a-popconfirm>
+          </a-space>
         </template>
       </template>
       <template #card="{ record }">
@@ -96,6 +125,32 @@
               <a-tag v-for="scope in record.allowedScopes" :key="scope">{{ scope }}</a-tag>
             </div>
           </div>
+          <div class="mobile-list-actions">
+            <a-switch
+              :checked="record.status === 'active'"
+              :loading="updatingClientIds.has(record.clientId)"
+              checked-children="启用"
+              un-checked-children="停用"
+              @change="(checked: boolean) => void updateClientStatus(record, checked)"
+            />
+            <a-button :loading="downloadingClientIds.has(record.clientId)" @click="downloadIntegrationGuide(record)">
+              <template #icon><DownloadOutlined /></template>
+              下载对接文档
+            </a-button>
+            <a-popconfirm
+              v-if="record.clientType === 'confidential'"
+              title="重新签发 Client Secret？"
+              description="旧 secret 会立即失效。"
+              ok-text="重新签发"
+              cancel-text="取消"
+              @confirm="reissueClientSecret(record)"
+            >
+              <a-button :loading="reissuingSecretClientIds.has(record.clientId)">
+                <template #icon><KeyOutlined /></template>
+                重新签发密钥
+              </a-button>
+            </a-popconfirm>
+          </div>
         </article>
       </template>
     </ResponsiveDataList>
@@ -120,7 +175,7 @@
             <a-radio value="confidential">机密 Client</a-radio>
           </a-radio-group>
           <div class="form-help-text">
-            {{ createForm.clientType === 'confidential' ? '机密 Client 创建后只显示一次 client_secret，请立即保存到第三方服务端。' : '公开 Client 不签发 client_secret，必须配合 PKCE 使用。' }}
+            {{ createForm.clientType === 'confidential' ? '机密 Client 的当前 client_secret 会写入应用专属对接文档，可随时从应用操作中重新下载；只能由第三方服务端或 BFF 保存。' : '公开 Client 不签发 client_secret，必须配合 PKCE 使用。' }}
           </div>
         </a-form-item>
         <a-form-item label="回调地址" required>
@@ -139,7 +194,7 @@
 
     <a-modal
       :open="createdSecretOpen"
-      title="Client Secret 已生成"
+      title="Client Secret 已就绪"
       width="620px"
       :footer="null"
       :mask-closable="false"
@@ -149,27 +204,12 @@
         <a-alert
           type="warning"
           show-icon
-          message="该 client_secret 仅显示一次"
-          description="请立即保存到第三方应用的服务端安全配置中。关闭此窗口后无法再次查看，且不要写入前端包、日志或公开文档。"
+          message="完整对接文档可随时重新下载"
+          description="机密 Client 的当前 client_secret 会自动写入该应用的对接文档。后续在应用操作中再次下载即可取得当前值；重新签发后旧 secret 会立即失效。"
         />
-        <div class="created-secret-row">
-          <span>Client ID</span>
-          <a-input :value="createdClientId" readonly>
-            <template #suffix>
-              <a-button type="text" size="small" @click="copyClientId">复制</a-button>
-            </template>
-          </a-input>
-        </div>
-        <div class="created-secret-row">
-          <span>Client Secret</span>
-          <a-input :value="createdClientSecret" readonly>
-            <template #suffix>
-              <a-button type="text" size="small" @click="copyClientSecret">复制</a-button>
-            </template>
-          </a-input>
-        </div>
         <div class="created-secret-actions">
-          <a-button type="primary" @click="closeCreatedSecret">我已保存</a-button>
+          <a-button @click="downloadCreatedClientGuide">下载完整对接文档</a-button>
+          <a-button type="primary" @click="closeCreatedSecret">知道了</a-button>
         </div>
       </div>
     </a-modal>
@@ -178,17 +218,20 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { DownloadOutlined, KeyOutlined } from '@ant-design/icons-vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime } from '@/shared/formatters'
 import type { OAuthClientCreatePayload, OAuthClientSummary, OAuthClientType } from '@/types/domain'
+import { buildOAuthIntegrationGuide, oauthIntegrationGuideFilename } from './oauthIntegrationGuide'
 
 const scopeOptions = [
+  { label: 'OIDC 登录', value: 'openid' },
+  { label: '基础身份资料', value: 'profile' },
   { label: '个人资料读取', value: 'juhe:profile.read' },
   { label: '个人资料写入', value: 'juhe:profile.write' },
   { label: '分组读取', value: 'juhe:groups.read' },
@@ -202,6 +245,14 @@ const scopeOptions = [
   { label: '请求限额读取', value: 'juhe:request_limits.read' }
 ]
 
+const requiredReadScopeByWriteScope: Record<string, string> = {
+  'juhe:profile.write': 'juhe:profile.read',
+  'juhe:groups.write': 'juhe:groups.read',
+  'juhe:route_strategies.write': 'juhe:route_strategies.read',
+  'juhe:api_keys.write': 'juhe:api_keys.read',
+  'juhe:ai_accounts.write': 'juhe:ai_accounts.read'
+}
+
 const columns = [
   { title: '第三方应用', key: 'displayName', width: 260, fixed: 'left', align: 'left' },
   { title: '类型', key: 'clientType', width: 110, align: 'left' },
@@ -209,19 +260,19 @@ const columns = [
   { title: '精确回调地址', key: 'redirectUris', width: 320, align: 'left' },
   { title: '允许 Scope', key: 'allowedScopes', width: 340, align: 'left' },
   { title: '创建时间', key: 'createdAt', width: 180, align: 'left' },
-  { title: '启用状态', key: 'actions', width: 110, fixed: 'right', align: 'center' }
+  { title: '操作', key: 'actions', width: 210, align: 'center' }
 ]
 
 const loading = ref(false)
 const creating = ref(false)
-const rotatingSigningKey = ref(false)
 const keyword = ref('')
 const clients = ref<OAuthClientSummary[]>([])
 const updatingClientIds = ref(new Set<string>())
+const downloadingClientIds = ref(new Set<string>())
+const reissuingSecretClientIds = ref(new Set<string>())
 const createModalOpen = ref(false)
 const createdSecretOpen = ref(false)
-const createdClientId = ref('')
-const createdClientSecret = ref('')
+const createdClient = ref<OAuthClientSummary>()
 const createForm = reactive(createEmptyClientForm())
 let listRequestId = 0
 
@@ -267,12 +318,11 @@ async function createClient(): Promise<void> {
   if (!payload) return
   creating.value = true
   try {
-    const created = await api.oauthApplications.createClient(payload)
-    clients.value = [created, ...clients.value]
+    const { clientSecret: _clientSecret, ...client } = await api.oauthApplications.createClient(payload)
+    clients.value = [client, ...clients.value]
     createModalOpen.value = false
-    if (created.clientSecret) {
-      createdClientId.value = created.clientId
-      createdClientSecret.value = created.clientSecret
+    if (client.clientType === 'confidential') {
+      createdClient.value = client
       createdSecretOpen.value = true
     }
     message.success('第三方应用已创建')
@@ -300,16 +350,57 @@ async function updateClientStatus(client: OAuthClientSummary, enabled: boolean):
   }
 }
 
-async function rotateSigningKey(): Promise<void> {
-  rotatingSigningKey.value = true
+async function reissueClientSecret(client: OAuthClientSummary): Promise<void> {
+  reissuingSecretClientIds.value = new Set(reissuingSecretClientIds.value).add(client.clientId)
   try {
-    const key = await api.oauthApplications.rotateSigningKey()
-    message.success(`OIDC 签名密钥已轮换：${key.kid}`)
+    const { clientSecret: _clientSecret, ...updated } = await api.oauthApplications.reissueClientSecret(client.clientId)
+    clients.value = clients.value.map((item) => item.clientId === updated.clientId ? updated : item)
+    createdClient.value = updated
+    createdSecretOpen.value = true
+    message.success('新的 Client Secret 已签发，请下载完整对接文档')
   } catch (error) {
-    message.error(extractApiErrorMessage(error, '轮换 OIDC 签名密钥失败'))
+    message.error(extractApiErrorMessage(error, '重新签发 Client Secret 失败'))
   } finally {
-    rotatingSigningKey.value = false
+    const next = new Set(reissuingSecretClientIds.value)
+    next.delete(client.clientId)
+    reissuingSecretClientIds.value = next
   }
+}
+
+async function downloadIntegrationGuide(client: OAuthClientSummary): Promise<void> {
+  downloadingClientIds.value = new Set(downloadingClientIds.value).add(client.clientId)
+  try {
+    const [integration, integrationPackage] = await Promise.all([
+      api.oauthApplications.integrationInfo(),
+      api.oauthApplications.integrationPackage(client.clientId)
+    ])
+    const guideClient = integrationPackage.client
+    const blob = new Blob([buildOAuthIntegrationGuide({
+      client: guideClient,
+      integration,
+      clientSecret: integrationPackage.clientSecret
+    })], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = oauthIntegrationGuideFilename(guideClient.clientId)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    message.success(`“${guideClient.displayName}”的对接文档已下载`)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '下载 OIDC 对接文档失败'))
+  } finally {
+    const next = new Set(downloadingClientIds.value)
+    next.delete(client.clientId)
+    downloadingClientIds.value = next
+  }
+}
+
+function downloadCreatedClientGuide(): void {
+  if (!createdClient.value) return
+  void downloadIntegrationGuide(createdClient.value)
 }
 
 function buildCreatePayload(): OAuthClientCreatePayload | undefined {
@@ -330,21 +421,23 @@ function buildCreatePayload(): OAuthClientCreatePayload | undefined {
     message.error('请至少选择一个允许申请的 Scope')
     return undefined
   }
+  if (allowedScopes.includes('profile') && !allowedScopes.includes('openid')) {
+    message.error('基础身份资料需要同时选择 OIDC 登录')
+    return undefined
+  }
+  const missingReadScope = Object.entries(requiredReadScopeByWriteScope).find(([writeScope, readScope]) => (
+    allowedScopes.includes(writeScope) && !allowedScopes.includes(readScope)
+  ))
+  if (missingReadScope) {
+    message.error(`${missingReadScope[0]} 需要同时选择 ${missingReadScope[1]}`)
+    return undefined
+  }
   return { displayName, clientType: createForm.clientType, redirectUris, allowedScopes }
 }
 
 function closeCreatedSecret(): void {
   createdSecretOpen.value = false
-  createdClientId.value = ''
-  createdClientSecret.value = ''
-}
-
-function copyClientId(): void {
-  void copyTextToClipboard(createdClientId.value, 'Client ID 已复制')
-}
-
-function copyClientSecret(): void {
-  void copyTextToClipboard(createdClientSecret.value, 'Client Secret 已复制')
+  createdClient.value = undefined
 }
 
 function clientTypeLabel(type: OAuthClientType): string {
@@ -361,7 +454,7 @@ function createEmptyClientForm(): {
     displayName: '',
     clientType: 'public',
     redirectUrisText: '',
-    allowedScopes: []
+    allowedScopes: ['openid', 'profile']
   }
 }
 </script>
@@ -369,7 +462,6 @@ function createEmptyClientForm(): {
 <style scoped>
 .application-name-cell,
 .created-secret-content,
-.created-secret-row,
 .mobile-list-note {
   display: flex;
   min-width: 0;
@@ -428,11 +520,6 @@ function createEmptyClientForm(): {
   gap: 14px;
 }
 
-.created-secret-row {
-  gap: 6px;
-}
-
-.created-secret-row > span,
 .mobile-list-note > span {
   color: #64748b;
   font-size: 12px;
@@ -440,6 +527,15 @@ function createEmptyClientForm(): {
 
 .created-secret-actions {
   display: flex;
+  gap: 8px;
   justify-content: flex-end;
+}
+
+.mobile-list-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px;
 }
 </style>

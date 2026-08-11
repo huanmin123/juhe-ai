@@ -21,39 +21,24 @@ export interface OAuthClientCreatePayload {
 }
 
 export interface CreatedOAuthClient extends OAuthClientSummary {
-  // 机密 Client 的密钥只在创建响应中出现一次，后续列表不包含该字段。
+  // 机密 Client 的当前密钥不会出现在列表中；管理员可通过专属对接文档重新获取。
   clientSecret?: string
 }
 
-export interface OAuthSigningKeyRotationResult {
-  kid: string
-  status: 'active'
-  createdAt: string
+export interface OAuthClientIntegrationPackage {
+  client: OAuthClientSummary
+  clientSecret?: string
 }
 
-export type OAuthConnectedApplicationStatus = 'active' | 'disabled' | 'expired' | 'revoked' | 'invalid'
-
-export interface OAuthConnectedApplicationSummary {
-  clientId: string
-  displayName: string
-  clientType?: OAuthClientType
-  iconUrl?: string
-  websiteUrl?: string
-  systemAccountId?: string
-  systemAccountName?: string
-  scopes: string[]
-  status: OAuthConnectedApplicationStatus
-  statusReason?: string
-  grantedAt?: string
-  authorizedAt?: string
-  expiresAt?: string
-  lastTokenRenewedAt?: string
-  lastTokenRotatedAt?: string
-  lastUsedAt?: string
-  createdAt?: string
-  updatedAt?: string
-}
-
-export interface OAuthConnectedApplicationListResult {
-  items: OAuthConnectedApplicationSummary[]
+export interface OAuthIntegrationInfo {
+  issuer: string
+  discoveryUrl: string
+  jwksUrl: string
+  authorizationEndpoint: string
+  tokenEndpoint: string
+  userinfoEndpoint: string
+  deviceAuthorizationEndpoint: string
+  revocationEndpoint: string
+  tokenRenewalEndpoint: string
+  idTokenSigningAlgorithm: 'RS256'
 }

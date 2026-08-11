@@ -206,15 +206,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/connected-applications',
-    component: () => import('@/views/connected-applications/ConnectedApplicationsView.vue'),
-    meta: {
-      title: '已连接应用',
-      description: '查看第三方应用获得的个人资源授权，并可立即终止授权。',
-      viewScope: 'self'
-    }
-  },
-  {
     path: '/stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {

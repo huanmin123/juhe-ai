@@ -6,7 +6,7 @@
 
 当前发布拓扑是 Node 主服务加三个 Go sidecar：F1 `juhe-ai-runtime-log-indexer`、F2 `juhe-ai-table-monitor`、F3 `juhe-ai-audit-log-writer`。Node 仍负责网关、账户、主 API、usage、操作日志、公开接口日志、model-check、stats 和 ops。
 
-已完成的运行证据包括隔离开发 Linux 的固定 release 直接启动、Docker standalone 与 Docker performance 闭环，以及 2026-08-11 目标 Mac 上隔离 temporary release 的 `start.sh` 直接启动、F1/F2/F3 Node 读回、F3 HMAC 拒绝和稳定观察；测试资源均已清理。这些证据不等于 macOS launchd、生产数据、生产 Docker 常驻、切流或回滚已经验证。
+已完成的运行证据包括隔离开发 Linux 的固定 release 直接启动、Docker standalone 与 Docker performance 闭环，以及 2026-08-11 目标 Mac 上隔离 temporary release 的 `start.sh` 直接启动、system `launchd --apply`、F3 重启接管、F1/F2/F3 读回、F3 HMAC 拒绝、稳定观察和完整 rollback；测试资源均已清理。这些证据不等于生产数据、生产 Docker 常驻、`current` 切换、Nginx/Caddy/Edge 或真实流量已经验证。
 
 部署前先选择一种方式：
 
@@ -34,8 +34,9 @@
 3. SQLite 默认 F3 配置应使用独立的 `JUHE_AI_AUDIT_LOG_DATABASE_PATH`、`JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` 和 `JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY`。performance PostgreSQL 模式还必须提供 `JUHE_AI_POSTGRES_URL` 和 F3 blob 目录。
 4. 新建且确认为空的 PostgreSQL 库必须在 release 根目录先执行 `pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...`，再执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`。它会写当前 schema 与默认种子数据；`start.sh` / `start.ps1` 不会替代该步骤。已有业务库不得直接执行完整初始化，必须按既有库备份、`schema-only` 与受控迁移流程处理。
 5. 仅通过 release 根目录的 `start.sh` 或 `start.ps1` 启动。它会在 Node DB-ready health 成功后启动 F1、F2、F3，并维持 PID、日志与退出联动；不要绕过它单独常驻 Node、worker 或 sidecar。
-6. 验证 Node `/__aisys__/health` 和 `/__aisys__/api/health` 均为 `200`，F3 `GET /__aiinternal__/health` 为 `204`，并检查 `backend/logs/` 中三个 sidecar 的日志。随后通过 Node 只读接口确认 F1 runtime logs 和 F2 snapshots 新鲜，再通过一次真实审计输入的管理端详情读回确认 Node -> F3 -> Node。
-7. 升级前保留当前 release 和业务恢复点；生产不得使用会删除数据的清理操作。
+6. macOS system `launchd` 场景中，完成目标机 `pnpm install --prod` 后再由 root 固定 release 的所有权与权限：服务用户必须可递归读取/执行 release，但不能写 release；只有 runtime、日志和 spool 目录可由服务用户写入。`--apply` 必须通过 `sudo` 运行并显式传 `--service-user`。
+7. 验证 Node `/__aisys__/health` 和 `/__aisys__/api/health` 均为 `200`，F3 `GET /__aiinternal__/health` 为 `204`，并检查 `backend/logs/` 中三个 sidecar 的日志。随后通过 Node 只读接口确认 F1 runtime logs 和 F2 snapshots 新鲜，再通过一次真实审计输入的管理端详情读回确认 Node -> F3 -> Node。
+8. 升级前保留当前 release 和业务恢复点；生产不得使用会删除数据的清理操作。
 
 发布包具体变量、命令和 PID/log 路径以 [快速部署说明](../../deploy/README.md) 为准。
 
@@ -53,7 +54,7 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 
 ## 5. macOS 与生产门禁
 
-2026-08-11 的 Mac 隔离 temporary release 已验证 `start.sh`、三项二进制、Node DB-ready 后启动、F3 `204`、F1/F2 新鲜度、F3 读回和稳定观察；该 release 和全部临时资源已清理。它没有验证 launchd、`current` 切换、Nginx/Caddy/Edge、生产数据库或回滚演练。生产 Mac 仍必须先在隔离 temporary release 上完成三 sidecar 的 launchd 生命周期与回滚验证，才可以讨论切流。
+2026-08-11 的 Mac 隔离 temporary release 已验证 `start.sh`、三项二进制、Node DB-ready 后启动、F3 `204`、F1/F2 新鲜度、F3 读回和稳定观察；随后还完成了三 sidecar system `launchd` 的 temporary apply、F3 重启接管和 rollback，临时资源均已清理且 `main` 未切换。它没有验证 `current` 切换、Nginx/Caddy/Edge、生产数据库或真实流量。生产 Mac 必须从最终冻结 release 重做同一预演并复核 release SHA-256，才可以讨论切流。
 
 同日还在目标 Intel Mac 的隔离目录，以 commit `39b2cc68983c88959872d797312ece2f6de714cb` 使用受支持的 Node 22 与 BSD tar 完成了 `tar.gz` 构建、发布目录校验、F1/F2/F3 可执行权限校验、解包后的 `install-performance-topology.sh --dry-run`，并验证缺少 F3 二进制会被明确拒绝。该归档和全部临时目录已删除，不可作为正式候选复用。正式窗口仍须从最终冻结 commit 重新构建，记录 archive SHA-256，并完成 temporary `--apply`、Node HTTP 读回、稳定观察和回滚演练。
 

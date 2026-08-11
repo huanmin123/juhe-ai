@@ -794,10 +794,30 @@ wait_for_table_monitor() {
   return 1
 }
 
+read_dotenv_value() {
+  dotenv_key="$1"
+  dotenv_file="$2"
+  awk -v wanted="$dotenv_key" '
+    $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
+      line=$0
+      sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line)
+      gsub("^[[:space:]]+|[[:space:]]+$", "", line)
+      first=substr(line, 1, 1)
+      last=substr(line, length(line), 1)
+      if ((first == sprintf("%c", 34) && last == sprintf("%c", 34)) || (first == sprintf("%c", 39) && last == sprintf("%c", 39))) {
+        line=substr(line, 2, length(line) - 2)
+      }
+      value=line
+      found=1
+    }
+    END { if (found) print value }
+  ' "$dotenv_file"
+}
+
 audit_log_input_address() {
   input_address="${JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS:-}"
   if [ -z "$input_address" ] && [ -f "$CURRENT_DIR/backend/.env" ]; then
-    input_address="$(awk '$0 ~ "^[[:space:]]*JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS[[:space:]]*=" { line=$0; sub("^[[:space:]]*JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\\\"" && substr(line, length(line), 1) == "\\\"") || (substr(line, 1, 1) == "\\x27" && substr(line, length(line), 1) == "\\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }' "$CURRENT_DIR/backend/.env")"
+    input_address="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS "$CURRENT_DIR/backend/.env")"
   fi
   case "$input_address" in
     127.0.0.1:*|[::1]:*) printf '%s' "$input_address" ;;

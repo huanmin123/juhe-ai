@@ -5,12 +5,23 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 
 import { decodeProtectedHeader, importJWK, jwtVerify } from 'jose'
 import type { JWK } from 'jose'
 
+if (process.env.JUHE_AI_OIDC_PROVIDER_DISABLED_REGRESSION_CHILD === '1') {
+  await runDisabledChild()
+  process.exit(0)
+}
+
 if (process.env.JUHE_AI_OIDC_PROVIDER_REGRESSION_CHILD === '1') {
   await runChild()
+  process.exit(0)
+}
+
+if (process.env.JUHE_AI_OIDC_PROVIDER_LEGACY_SCHEMA_REGRESSION_CHILD === '1') {
+  await runLegacySchemaUpgradeChild()
   process.exit(0)
 }
 
@@ -38,6 +49,77 @@ try {
     process.exit(result.status ?? 1)
   }
   process.stdout.write(result.stdout)
+
+  const disabledResult = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url)], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      JUHE_AI_OIDC_PROVIDER_DISABLED_REGRESSION_CHILD: '1',
+      JUHE_AI_PROCESS_ROLE: 'db-service',
+      JUHE_AI_DATABASE_PATH: join(tempRoot, 'disabled-provider.sqlite3'),
+      JUHE_AI_OIDC_ENABLED: 'false',
+      JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
+      JUHE_AI_LOG_FILE_ENABLED: 'false'
+    },
+    encoding: 'utf8'
+  })
+  if (disabledResult.status !== 0) {
+    process.stdout.write(disabledResult.stdout)
+    process.stderr.write(disabledResult.stderr)
+    process.exit(disabledResult.status ?? 1)
+  }
+  process.stdout.write(disabledResult.stdout)
+
+  const legacyDatabasePath = join(tempRoot, 'legacy-provider.sqlite3')
+  const legacyDatabase = new DatabaseSync(legacyDatabasePath)
+  try {
+    legacyDatabase.exec(`
+      CREATE TABLE oauth_clients (
+        id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        client_type TEXT NOT NULL CHECK (client_type IN ('public', 'confidential')),
+        client_secret_hash TEXT,
+        redirect_uris_json TEXT NOT NULL,
+        allowed_scopes_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO oauth_clients (
+        id, client_id, display_name, client_type, client_secret_hash,
+        redirect_uris_json, allowed_scopes_json, status, created_at, updated_at
+      ) VALUES (
+        'legacy-client-id', 'legacy-confidential-client', 'Legacy confidential client', 'confidential', 'legacy-secret-hash',
+        '["https://legacy.example.test/callback"]', '["juhe:profile.read"]', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      );
+    `)
+  } finally {
+    legacyDatabase.close()
+  }
+  const legacySchemaResult = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url)], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      JUHE_AI_OIDC_PROVIDER_LEGACY_SCHEMA_REGRESSION_CHILD: '1',
+      JUHE_AI_PROCESS_ROLE: 'db-service',
+      JUHE_AI_DATABASE_PATH: legacyDatabasePath,
+      JUHE_AI_OIDC_ENABLED: 'true',
+      JUHE_AI_OIDC_ISSUER: 'http://127.0.0.1:39001',
+      JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET: 'oidc-regression-key-encryption-secret-32-bytes',
+      JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
+      JUHE_AI_LOG_FILE_ENABLED: 'false'
+    },
+    encoding: 'utf8'
+  })
+  if (legacySchemaResult.status !== 0) {
+    process.stdout.write(legacySchemaResult.stdout)
+    process.stderr.write(legacySchemaResult.stderr)
+    process.exit(legacySchemaResult.status ?? 1)
+  }
+  process.stdout.write(legacySchemaResult.stdout)
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -49,11 +131,10 @@ async function runChild(): Promise<void> {
     createAuthorizationCode,
     createAuthorizationTransaction,
     createOAuthClient,
+    findActiveOidcSigningKey,
     exchangeAuthorizationCode,
     findAccessTokenContext,
-    listConnectedOAuthApplications,
-    revokeClientGrant,
-    rotateOidcSigningKey,
+    oidcSigningKeyRotationIntervalMs,
     rotateAccessToken
   } = await import('../../modules/oidc-provider/oidc-provider.repository.js')
   const { clearOidcProtocolRateLimitStateForTest } = await import('../../modules/oidc-provider/oidc-rate-limit.middleware.js')
@@ -68,13 +149,6 @@ async function runChild(): Promise<void> {
       image_generation_enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run('oidc-user', 'oidc-user', 'OIDC User', 'user', 'active', 'not-used', 0, 0, now, now)
-  database.prepare(`
-    INSERT INTO system_accounts (
-      id, username, display_name, role, status, password_hash, must_change_password,
-      image_generation_enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('oidc-normal-user', 'oidc-normal-user', 'OIDC Normal User', 'user', 'active', 'not-used', 0, 0, now, now)
-
   try {
     const client = createOAuthClient({
       displayName: 'OIDC Regression Client',
@@ -116,11 +190,6 @@ async function runChild(): Promise<void> {
       redirectUri: client.redirectUris[0],
       codeVerifier: verifier
     }), undefined, '授权码必须一次性消费')
-    assert.equal(
-      listConnectedOAuthApplications('oidc-user').find(application => application.clientId === client.clientId)?.lastTokenRenewedAt,
-      undefined,
-      '首次签发 access token 不能被展示为 Token 轮换'
-    )
     assert.equal(rotateAccessToken({ clientId: client.clientId, currentAccessToken: exchanged.accessToken }), 'not_eligible', '72 小时内不得轮换')
 
     database.prepare('UPDATE oauth_access_tokens SET issued_at = ? WHERE id = ?').run(
@@ -132,32 +201,11 @@ async function runChild(): Promise<void> {
     assert.equal(findAccessTokenContext(exchanged.accessToken), undefined, '轮换成功后旧 token 必须立即失效')
     assert(findAccessTokenContext(rotated.accessToken), 'successor token 必须可用')
     assert.equal(Date.parse(rotated.context.expiresAt), Date.parse(exchanged.context.expiresAt), '轮换不得延长 grant 硬到期')
-    assert(
-      listConnectedOAuthApplications('oidc-user').find(application => application.clientId === client.clientId)?.lastTokenRenewedAt,
-      '实际轮换后必须展示 Token 轮换时间'
-    )
-    assert.equal(revokeClientGrant('oidc-user', client.clientId), true, '撤销应命中当前用户和 Client 的 grant')
-    assert.equal(findAccessTokenContext(rotated.accessToken), undefined, '撤销 grant 后全部 token 必须失效')
-
     const httpClient = createOAuthClient({
       displayName: 'OIDC HTTP Regression Client',
       clientType: 'public',
       redirectUris: ['https://example.com/oauth/callback'],
       allowedScopes: ['openid', 'profile', 'juhe:profile.read']
-    })
-    const normalConnectedClient = createOAuthClient({
-      displayName: 'OIDC Normal User Connected Client',
-      clientType: 'public',
-      redirectUris: ['com.example.normal:/oauth/callback'],
-      allowedScopes: ['openid']
-    })
-    createAuthorizationCode({
-      clientId: normalConnectedClient.clientId,
-      systemAccountId: 'oidc-normal-user',
-      scopes: ['openid'],
-      redirectUri: normalConnectedClient.redirectUris[0],
-      codeChallenge: createHash('sha256').update('n'.repeat(64)).digest('base64url'),
-      nonce: 'normal-connected-nonce'
     })
     const httpServer = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' }).listen(0, '127.0.0.1')
     try {
@@ -173,24 +221,220 @@ async function runChild(): Promise<void> {
         url.port = String(address.port)
         return url.toString()
       }
-      const unavailableDiscovery = await fetch(`${baseUrl}/.well-known/openid-configuration`)
-      assert.equal(unavailableDiscovery.status, 503, '未显式轮换 active key 时 discovery 必须不可用')
-      assert.equal((await fetch(`${baseUrl}/oauth/jwks`)).status, 503, '未显式轮换 active key 时 JWKS 必须不可用')
-      assert.equal((await fetch(`${baseUrl}/oauth/authorize`)).status, 503, '未显式轮换 active key 时授权端点必须不可用')
-      assert.equal((await fetch(`${baseUrl}/oauth/token`, { method: 'POST' })).status, 503, '未显式轮换 active key 时 token 端点必须不可用')
-      assert.equal((await fetch(`${baseUrl}/oauth/device_authorization`, { method: 'POST' })).status, 503, '未显式轮换 active key 时设备端点必须不可用')
-      assert.equal((await fetch(`${baseUrl}/oauth/userinfo`)).status, 503, '未显式轮换 active key 时 UserInfo 必须不可用')
-      const signingKey = await rotateOidcSigningKey()
+      const cookie = `juhe_ai_session=${createSession('sys_admin', 1).token}`
+      const normalUserCookie = `juhe_ai_session=${createSession('oidc-user', 1).token}`
+      assert.equal((await fetch(`${baseUrl}/__aisys__/api/oauth/integration-info`)).status, 401, '对接信息必须要求登录')
+      assert.equal(
+        (await fetch(`${baseUrl}/__aisys__/api/oauth/integration-info`, { headers: { cookie: normalUserCookie } })).status,
+        403,
+        '对接信息必须要求管理员'
+      )
+      const integrationInfoResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/integration-info`, { headers: { cookie } })
+      assert.equal(integrationInfoResponse.status, 200, '管理员必须能读取 OIDC 对接信息')
+      const integrationInfo = await integrationInfoResponse.json() as { data?: Record<string, unknown> }
+      assert.deepEqual(Object.keys(integrationInfo.data ?? {}).sort(), [
+        'authorizationEndpoint',
+        'deviceAuthorizationEndpoint',
+        'discoveryUrl',
+        'idTokenSigningAlgorithm',
+        'issuer',
+        'jwksUrl',
+        'revocationEndpoint',
+        'tokenEndpoint',
+        'tokenRenewalEndpoint',
+        'userinfoEndpoint'
+      ], '对接信息只能返回固定的公开字段')
+      assert.deepEqual(integrationInfo.data, {
+        issuer: 'http://127.0.0.1:39001',
+        discoveryUrl: 'http://127.0.0.1:39001/.well-known/openid-configuration',
+        jwksUrl: 'http://127.0.0.1:39001/oauth/jwks',
+        authorizationEndpoint: 'http://127.0.0.1:39001/oauth/authorize',
+        tokenEndpoint: 'http://127.0.0.1:39001/oauth/token',
+        userinfoEndpoint: 'http://127.0.0.1:39001/oauth/userinfo',
+        deviceAuthorizationEndpoint: 'http://127.0.0.1:39001/oauth/device_authorization',
+        revocationEndpoint: 'http://127.0.0.1:39001/oauth/revoke',
+        tokenRenewalEndpoint: 'http://127.0.0.1:39001/oauth/token/renew',
+        idTokenSigningAlgorithm: 'RS256'
+      }, '对接信息必须从 runtime issuer 推导公开地址')
+      const serializedIntegrationInfo = JSON.stringify(integrationInfo.data).toLowerCase()
+      assert(!serializedIntegrationInfo.includes('private') && !serializedIntegrationInfo.includes('secret') && !serializedIntegrationInfo.includes('ciphertext'), '对接信息不得泄漏私钥、密文或 Client secret')
+      const profileOnlyClientResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'Invalid Profile Client',
+          clientType: 'public',
+          redirectUris: ['https://invalid.example.test/callback'],
+          allowedScopes: ['profile']
+        })
+      })
+      assert.equal(profileOnlyClientResponse.status, 400, '管理 API 必须拒绝未同时登记 openid 的 profile scope')
+      const writeOnlyClientResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'Invalid Write Only Client',
+          clientType: 'public',
+          redirectUris: ['https://invalid.example.test/write-callback'],
+          allowedScopes: ['juhe:profile.write']
+        })
+      })
+      assert.equal(writeOnlyClientResponse.status, 400, '管理 API 必须拒绝没有对应 read scope 的 write scope')
+      const confidentialClientResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'Repeatable Guide Client',
+          clientType: 'confidential',
+          redirectUris: ['https://repeatable-guide.example.test/callback'],
+          allowedScopes: ['openid', 'profile', 'juhe:profile.read']
+        })
+      })
+      const confidentialClientResult = await confidentialClientResponse.json() as {
+        data?: { clientId?: string; clientSecret?: string }
+      }
+      const confidentialClientId = confidentialClientResult.data?.clientId
+      const initialClientSecret = confidentialClientResult.data?.clientSecret
+      assert.equal(confidentialClientResponse.status, 201, '管理员必须能创建机密 Client')
+      assert(confidentialClientId && initialClientSecret, '机密 Client 创建必须返回标识和初始密钥')
+      assert.equal(
+        (await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(confidentialClientId)}/integration-package`, {
+          headers: { cookie: normalUserCookie }
+        })).status,
+        403,
+        '机密 Client 对接包必须要求管理员权限'
+      )
+      const firstIntegrationPackageResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(confidentialClientId)}/integration-package`, {
+        headers: { cookie }
+      })
+      const firstIntegrationPackage = await firstIntegrationPackageResponse.json() as {
+        data?: { client?: { clientId?: string; clientSecretHash?: unknown }; clientSecret?: string }
+      }
+      assert.equal(firstIntegrationPackageResponse.status, 200, '管理员必须能下载机密 Client 对接包')
+      assert.equal(firstIntegrationPackageResponse.headers.get('cache-control'), 'no-store', '含 Client Secret 的对接包不得被缓存')
+      assert.equal(firstIntegrationPackage.data?.client?.clientId, confidentialClientId, '对接包必须绑定目标 Client')
+      assert.equal(firstIntegrationPackage.data?.client?.clientSecretHash, undefined, '对接包不得返回 Client Secret 哈希')
+      assert.equal(firstIntegrationPackage.data?.clientSecret, initialClientSecret, '首次下载必须返回当前 Client Secret')
+      const repeatedIntegrationPackageResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(confidentialClientId)}/integration-package`, {
+        headers: { cookie }
+      })
+      const repeatedIntegrationPackage = await repeatedIntegrationPackageResponse.json() as { data?: { clientSecret?: string } }
+      assert.equal(repeatedIntegrationPackageResponse.status, 200, '管理员必须能重复下载机密 Client 对接包')
+      assert.equal(repeatedIntegrationPackage.data?.clientSecret, initialClientSecret, '重复下载必须返回同一个当前 Client Secret')
+      const reissueClientSecretResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(confidentialClientId)}/secret/reissue`, {
+        method: 'POST',
+        headers: { cookie }
+      })
+      const reissueClientSecretResult = await reissueClientSecretResponse.json() as { data?: { clientSecret?: string } }
+      const reissuedClientSecret = reissueClientSecretResult.data?.clientSecret
+      assert.equal(reissueClientSecretResponse.status, 200, '管理员必须能重新签发 Client Secret')
+      assert(reissuedClientSecret && reissuedClientSecret !== initialClientSecret, '重新签发必须生成新的 Client Secret')
+      const reissuedIntegrationPackageResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(confidentialClientId)}/integration-package`, {
+        headers: { cookie }
+      })
+      const reissuedIntegrationPackage = await reissuedIntegrationPackageResponse.json() as { data?: { clientSecret?: string } }
+      assert.equal(reissuedIntegrationPackage.data?.clientSecret, reissuedClientSecret, '重新签发后下载必须返回新的 Client Secret')
+      const legacyClient = createOAuthClient({
+        displayName: 'Legacy Secret Recovery Client',
+        clientType: 'confidential',
+        redirectUris: ['https://legacy-client.example.test/callback'],
+        allowedScopes: ['juhe:profile.read']
+      })
+      database.prepare('UPDATE oauth_clients SET client_secret_ciphertext = NULL WHERE client_id = ?').run(legacyClient.clientId)
+      assert.equal(
+        (await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(legacyClient.clientId)}/integration-package`, {
+          headers: { cookie }
+        })).status,
+        409,
+        '历史 Client 没有密钥加密副本时必须要求重新签发，而不能伪造可下载密钥'
+      )
+      const legacyReissueResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(legacyClient.clientId)}/secret/reissue`, {
+        method: 'POST',
+        headers: { cookie }
+      })
+      const legacyReissue = await legacyReissueResponse.json() as { data?: { clientSecret?: string } }
+      const legacyIntegrationPackageResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(legacyClient.clientId)}/integration-package`, {
+        headers: { cookie }
+      })
+      const legacyIntegrationPackage = await legacyIntegrationPackageResponse.json() as { data?: { clientSecret?: string } }
+      assert.equal(legacyReissueResponse.status, 200, '历史 Client 必须能通过重新签发恢复可下载文档')
+      assert.equal(legacyIntegrationPackage.data?.clientSecret, legacyReissue.data?.clientSecret, '历史 Client 重新签发后文档必须含当前密钥')
+      const unreadableSecretClient = createOAuthClient({
+        displayName: 'Unreadable Secret Recovery Client',
+        clientType: 'confidential',
+        redirectUris: ['https://unreadable-client.example.test/callback'],
+        allowedScopes: ['juhe:profile.read']
+      })
+      database.prepare('UPDATE oauth_clients SET client_secret_ciphertext = ? WHERE client_id = ?').run('corrupted-client-secret', unreadableSecretClient.clientId)
+      const unreadableSecretResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(unreadableSecretClient.clientId)}/integration-package`, {
+        headers: { cookie }
+      })
+      const unreadableSecretPayload = await unreadableSecretResponse.json() as { message?: string }
+      assert.equal(unreadableSecretResponse.status, 409, '无法解密的 Client Secret 不得导致下载文档接口返回 500')
+      assert.equal(unreadableSecretPayload.message, '该 Client 的当前 Client Secret 无法读取，请重新签发后再下载对接文档', '无法读取的 Client Secret 必须给出可恢复指引')
+      const originalPrepare = database.prepare.bind(database)
+      Object.defineProperty(database, 'prepare', {
+        configurable: true,
+        value(sql: string) {
+          if (/SELECT\s+client_type,\s+client_secret_ciphertext/i.test(sql)) {
+            throw new Error('forced oauth client secret storage failure')
+          }
+          return originalPrepare(sql)
+        }
+      })
+      try {
+        const storageFailureResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/${encodeURIComponent(confidentialClientId)}/integration-package`, {
+          headers: { cookie }
+        })
+        assert.equal(storageFailureResponse.status, 500, '未知 Client Secret 存储错误不得伪装成可重新签发的 409')
+      } finally {
+        Reflect.deleteProperty(database, 'prepare')
+      }
+      assert.equal(findActiveOidcSigningKey(), undefined, '首次 OIDC 请求前不得依赖管理员手动生成签名密钥')
+      const initialDiscoveryResponse = await fetch(`${baseUrl}/.well-known/openid-configuration`)
+      assert.equal(initialDiscoveryResponse.status, 200, '首次 discovery 必须自动生成签名密钥并可用')
+      const initialSigningKey = findActiveOidcSigningKey()
+      assert(initialSigningKey, '首次 discovery 后必须存在 active signing key')
+      database.prepare('UPDATE oauth_signing_keys SET created_at = ? WHERE kid = ?').run(
+        new Date(Date.now() - oidcSigningKeyRotationIntervalMs - 1).toISOString(),
+        initialSigningKey.kid
+      )
+      const discoveryResponse = await fetch(`${baseUrl}/.well-known/openid-configuration`)
+      assert.equal(discoveryResponse.status, 200, '超过 7 天后的下一次 discovery 必须自动轮换签名密钥')
+      const signingKey = findActiveOidcSigningKey()
+      assert(signingKey && signingKey.kid !== initialSigningKey.kid, '每周自动轮换必须产生新的 active kid')
       const storedSigningKey = database.prepare('SELECT private_key_ciphertext FROM oauth_signing_keys WHERE kid = ?').get(signingKey.kid) as { private_key_ciphertext?: string } | undefined
       assert(storedSigningKey?.private_key_ciphertext && !storedSigningKey.private_key_ciphertext.includes('BEGIN PRIVATE KEY'), 'OIDC 私钥必须仅以密文持久化')
-      const discoveryResponse = await fetch(`${baseUrl}/.well-known/openid-configuration`)
-      assert.equal(discoveryResponse.status, 200, '显式轮换 active key 后 discovery 必须可用')
       const discovery = await discoveryResponse.json() as { jwks_uri?: string; userinfo_endpoint?: string; device_authorization_endpoint?: string; juhe_token_renewal_endpoint?: string }
       assert(discovery.jwks_uri && discovery.userinfo_endpoint && discovery.device_authorization_endpoint && discovery.juhe_token_renewal_endpoint, 'discovery 必须公开 OIDC 端点元数据和受控轮换端点')
       const jwksResponse = await fetch(localOidcUrl(discovery.jwks_uri))
       const jwks = await jwksResponse.json() as { keys?: JWK[] }
       const publicJwk = jwks.keys?.find(key => key.kid === signingKey.kid)
-      assert(publicJwk && publicJwk.kty === 'RSA' && publicJwk.d === undefined, 'JWKS 只能公开当前 RSA 公钥')
+      const retiredPublicJwk = jwks.keys?.find(key => key.kid === initialSigningKey.kid)
+      assert(publicJwk && publicJwk.kty === 'RSA' && publicJwk.d === undefined, 'JWKS 必须公开新的 RSA 公钥且不包含私钥')
+      assert(retiredPublicJwk && retiredPublicJwk.d === undefined, 'JWKS 必须暂时保留旧 kid 的公开密钥，供已签发 ID Token 验签')
+      assert.equal(
+        (await fetch(`${baseUrl}/__aisys__/api/oauth/keys/rotate`, { method: 'POST', headers: { cookie } })).status,
+        404,
+        '管理面不得再提供手动轮换签名密钥接口'
+      )
+      clearOidcProtocolRateLimitStateForTest()
+      const deviceAuthorizationHeaders = (secret: string): Record<string, string> => ({
+        authorization: `Basic ${Buffer.from(`${confidentialClientId}:${secret}`).toString('base64')}`,
+        'content-type': 'application/x-www-form-urlencoded'
+      })
+      const staleSecretDeviceAuthorization = await fetch(`${baseUrl}/oauth/device_authorization`, {
+        method: 'POST',
+        headers: deviceAuthorizationHeaders(initialClientSecret),
+        body: new URLSearchParams({ scope: 'openid', nonce: 'stale-secret-nonce' })
+      })
+      assert.equal(staleSecretDeviceAuthorization.status, 401, '重新签发后旧 Client Secret 必须立即失效')
+      const currentSecretDeviceAuthorization = await fetch(`${baseUrl}/oauth/device_authorization`, {
+        method: 'POST',
+        headers: deviceAuthorizationHeaders(reissuedClientSecret),
+        body: new URLSearchParams({ scope: 'openid', nonce: 'current-secret-nonce' })
+      })
+      assert.equal(currentSecretDeviceAuthorization.status, 200, '重新签发后的当前 Client Secret 必须立即可用')
       clearOidcProtocolRateLimitStateForTest()
       for (let index = 0; index < 30; index += 1) {
         assert.equal((await fetch(`${baseUrl}/oauth/token`, { method: 'POST' })).status, 401, '未超限的 token 请求应先按 Client 鉴权处理')
@@ -199,6 +443,32 @@ async function runChild(): Promise<void> {
       assert.equal(rateLimitedTokenResponse.status, 429, 'OAuth token 端点必须有独立限流')
       assert(rateLimitedTokenResponse.headers.get('retry-after'), 'OAuth 限流响应必须给出 Retry-After')
       clearOidcProtocolRateLimitStateForTest()
+      const pairedWriteScopeClient = createOAuthClient({
+        displayName: 'OIDC Paired Write Scope Regression Client',
+        clientType: 'public',
+        redirectUris: ['https://paired-write.example.test/oauth/callback'],
+        allowedScopes: ['juhe:profile.read', 'juhe:profile.write']
+      })
+      const writeOnlyAuthorizeUrl = new URL(`${baseUrl}/oauth/authorize`)
+      writeOnlyAuthorizeUrl.search = new URLSearchParams({
+        response_type: 'code',
+        client_id: pairedWriteScopeClient.clientId,
+        redirect_uri: pairedWriteScopeClient.redirectUris[0],
+        scope: 'juhe:profile.write',
+        state: 'write-only-state',
+        code_challenge: createHash('sha256').update('w'.repeat(64)).digest('base64url'),
+        code_challenge_method: 'S256'
+      }).toString()
+      const writeOnlyAuthorizeResponse = await fetch(writeOnlyAuthorizeUrl, { redirect: 'manual' })
+      assert.equal(writeOnlyAuthorizeResponse.status, 400, '授权码流程必须拒绝未同时申请 read scope 的 write scope')
+      assert.equal((await writeOnlyAuthorizeResponse.json() as { error?: string }).error, 'invalid_scope', '授权码流程的 write-only scope 必须返回 invalid_scope')
+      const writeOnlyDeviceAuthorizationResponse = await fetch(`${baseUrl}/oauth/device_authorization`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: pairedWriteScopeClient.clientId, scope: 'juhe:profile.write' })
+      })
+      assert.equal(writeOnlyDeviceAuthorizationResponse.status, 400, 'Device Flow 必须拒绝未同时申请 read scope 的 write scope')
+      assert.equal((await writeOnlyDeviceAuthorizationResponse.json() as { error?: string }).error, 'invalid_scope', 'Device Flow 的 write-only scope 必须返回 invalid_scope')
       const verifier2 = 'b'.repeat(64)
       const authorizeUrl = new URL(`${baseUrl}/oauth/authorize`)
       authorizeUrl.search = new URLSearchParams({
@@ -217,8 +487,6 @@ async function runChild(): Promise<void> {
       const transactionId = new URL(`http://127.0.0.1${loginLocation}`).searchParams.get('transaction_id')
         ?? new URL(`http://127.0.0.1${loginLocation}`).searchParams.get('redirect')?.match(/transaction_id=([0-9a-f-]+)/)?.[1]
       assert(transactionId, '登录跳转必须只携带服务端 transaction_id')
-      const cookie = `juhe_ai_session=${createSession('sys_admin', 1).token}`
-      const normalUserCookie = `juhe_ai_session=${createSession('oidc-normal-user', 1).token}`
       const consent = await fetch(`${baseUrl}/oauth/authorize?transaction_id=${transactionId}`, {
         headers: { cookie },
         redirect: 'manual'
@@ -273,6 +541,13 @@ async function runChild(): Promise<void> {
       assert.equal(typeof userinfo.name, 'string', 'profile scope 必须提供标准 name claim')
       assert.equal(userinfo.role, undefined, 'UserInfo 不得泄漏内部 role')
       assert.deepEqual(Object.keys(userinfo).sort(), ['name', 'preferred_username', 'sub'], 'UserInfo 只能返回已授权的标准低敏 claims')
+      const revokeHttpTokenResponse = await fetch(`${baseUrl}/oauth/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: httpClient.clientId, token: tokenPayload.access_token ?? '' })
+      })
+      assert.equal(revokeHttpTokenResponse.status, 200, 'Client 必须能撤销自己的 access token')
+      assert.equal((await fetch(`${baseUrl}/oauth/userinfo`, { headers: { authorization: `Bearer ${tokenPayload.access_token}` } })).status, 401, '标准撤销后 access token 必须立即失效')
 
       const delegatedClient = createOAuthClient({
         displayName: 'Delegated API Regression Client',
@@ -314,27 +589,6 @@ async function runChild(): Promise<void> {
       })
       assert.equal(disableClientResponse.status, 200, '管理员必须能停用 Client')
       assert.equal((await fetch(`${baseUrl}/__aidelegated__/v1/profile`, { headers: delegatedHeaders })).status, 401, '停用 Client 后其现有 token 必须立即失效')
-
-      const connectedApplicationsResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/connected-applications`, { headers: { cookie } })
-      const connectedApplications = await connectedApplicationsResponse.json() as { data?: Array<{ clientId?: string; status?: string }> }
-      assert.equal(connectedApplicationsResponse.status, 200, '正常会话用户必须可读取自己的已授权应用')
-      assert(connectedApplications.data?.some(application => application.clientId === httpClient.clientId && application.status === 'active'), '已授权应用必须包含当前用户的 active grant')
-      const revokeConnectedApplication = await fetch(`${baseUrl}/__aisys__/api/oauth/connected-applications/${encodeURIComponent(httpClient.clientId)}`, {
-        method: 'DELETE',
-        headers: { cookie }
-      })
-      assert.equal(revokeConnectedApplication.status, 200, '正常会话用户必须能撤销自己的已授权应用')
-      assert.equal((await fetch(`${baseUrl}/oauth/userinfo`, { headers: { authorization: `Bearer ${tokenPayload.access_token}` } })).status, 401, '撤销已授权应用后其 access token 必须失效')
-      const normalConnectedApplicationsResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/connected-applications`, { headers: { cookie: normalUserCookie } })
-      const normalConnectedApplications = await normalConnectedApplicationsResponse.json() as { data?: Array<{ clientId?: string }> }
-      assert.equal(normalConnectedApplicationsResponse.status, 200, '普通用户必须可读取自己的已授权应用')
-      assert(normalConnectedApplications.data?.some(application => application.clientId === normalConnectedClient.clientId), '普通用户列表必须包含自己的 grant')
-      assert(!normalConnectedApplications.data?.some(application => application.clientId === httpClient.clientId), '普通用户列表不得泄漏其他用户的 grant')
-      const normalRevoke = await fetch(`${baseUrl}/__aisys__/api/oauth/connected-applications/${encodeURIComponent(normalConnectedClient.clientId)}`, {
-        method: 'DELETE',
-        headers: { cookie: normalUserCookie }
-      })
-      assert.equal(normalRevoke.status, 200, '普通用户必须只能撤销自己的 grant')
 
       const deviceClient = createOAuthClient({
         displayName: 'OIDC Device Regression Client',
@@ -531,6 +785,82 @@ async function runChild(): Promise<void> {
     }
     process.stdout.write('oidc-provider-regression: passed\n')
   } finally {
+    closeStorageDatabases()
+  }
+}
+
+async function runDisabledChild(): Promise<void> {
+  const { closeStorageDatabases } = await import('../../storage/database.js')
+  const { createSystemApiApp } = await import('../../modules/system-api/system-api-app.js')
+  const { createSession } = await import('../../storage/repositories.js')
+  const httpServer = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' }).listen(0, '127.0.0.1')
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once('listening', () => resolve())
+      httpServer.once('error', reject)
+    })
+    const address = httpServer.address()
+    assert(address && typeof address !== 'string', 'OIDC disabled HTTP 回归监听地址无效')
+    const cookie = `juhe_ai_session=${createSession('sys_admin', 1).token}`
+    const response = await fetch(`http://127.0.0.1:${address.port}/__aisys__/api/oauth/clients`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        displayName: 'Disabled Provider Client',
+        clientType: 'confidential',
+        redirectUris: ['https://disabled.example.test/callback'],
+        allowedScopes: ['openid', 'profile']
+      })
+    })
+    assert.equal(response.status, 409, 'OIDC 未启用时不得创建会失去一次性交付文档的 Client')
+    process.stdout.write('oidc-provider-disabled-regression: passed\n')
+  } finally {
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()))
+    closeStorageDatabases()
+  }
+}
+
+async function runLegacySchemaUpgradeChild(): Promise<void> {
+  const { getBusinessDatabase, closeStorageDatabases } = await import('../../storage/database.js')
+  const { createSystemApiApp } = await import('../../modules/system-api/system-api-app.js')
+  const { createSession } = await import('../../storage/repositories.js')
+  const database = getBusinessDatabase()
+  const columns = database.prepare('PRAGMA table_info(oauth_clients)').all() as Array<{ name?: string }>
+  assert(columns.some((column) => column.name === 'client_secret_ciphertext'), '旧 SQLite 业务库启动后必须补齐 client_secret_ciphertext 列')
+  const now = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO system_accounts (
+      id, username, display_name, role, status, password_hash, must_change_password,
+      image_generation_enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('legacy-admin', 'legacy-admin', 'Legacy Admin', 'admin', 'active', 'not-used', 0, 0, now, now)
+  const httpServer = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' }).listen(0, '127.0.0.1')
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once('listening', () => resolve())
+      httpServer.once('error', reject)
+    })
+    const address = httpServer.address()
+    assert(address && typeof address !== 'string', '旧 schema OIDC 回归监听地址无效')
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    const cookie = `juhe_ai_session=${createSession('legacy-admin', 1).token}`
+    const packageUrl = `${baseUrl}/__aisys__/api/oauth/clients/legacy-confidential-client/integration-package`
+    const unavailableResponse = await fetch(packageUrl, { headers: { cookie } })
+    assert.equal(unavailableResponse.status, 409, '升级前没有加密副本的历史 Client 下载必须返回可恢复 409')
+    const reissueResponse = await fetch(`${baseUrl}/__aisys__/api/oauth/clients/legacy-confidential-client/secret/reissue`, {
+      method: 'POST',
+      headers: { cookie }
+    })
+    const reissuePayload = await reissueResponse.json() as { data?: { clientSecret?: string } }
+    assert.equal(reissueResponse.status, 200, '旧 schema 升级后必须能重新签发 Client Secret')
+    assert(reissuePayload.data?.clientSecret, '旧 schema 升级后的重新签发必须返回新 Client Secret')
+    const recoveredResponse = await fetch(packageUrl, { headers: { cookie } })
+    const recoveredPayload = await recoveredResponse.json() as { data?: { clientSecret?: string } }
+    assert.equal(recoveredResponse.status, 200, '重新签发后历史 Client 必须可以下载对接文档')
+    assert.equal(recoveredPayload.data?.clientSecret, reissuePayload.data?.clientSecret, '恢复下载必须返回重新签发后的当前 Client Secret')
+    process.stdout.write('oidc-provider-legacy-schema-regression: passed\n')
+  } finally {
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()))
     closeStorageDatabases()
   }
 }

@@ -1690,6 +1690,7 @@ function ensureOidcProviderSchema(database: DatabaseSync): void {
       display_name TEXT NOT NULL,
       client_type TEXT NOT NULL CHECK (client_type IN ('public', 'confidential')),
       client_secret_hash TEXT,
+      client_secret_ciphertext TEXT,
       redirect_uris_json TEXT NOT NULL,
       allowed_scopes_json TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
@@ -1807,6 +1808,11 @@ function ensureOidcProviderSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_oauth_device_authorizations_user_code
       ON oauth_device_authorizations(user_code, expires_at, status);
   `)
+
+  const oauthClientColumns = database.prepare('PRAGMA table_info(oauth_clients)').all() as Array<{ name?: unknown }>
+  if (!oauthClientColumns.some((column) => column.name === 'client_secret_ciphertext')) {
+    database.exec('ALTER TABLE oauth_clients ADD COLUMN client_secret_ciphertext TEXT')
+  }
 }
 
 function ensureResponseInspectionPolicyIndexes(database: DatabaseSync): void {

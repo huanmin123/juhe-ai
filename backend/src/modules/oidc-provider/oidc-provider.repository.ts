@@ -12,6 +12,9 @@ import {
 const authorizationCodeLifetimeMs = 120_000
 const grantLifetimeMs = 168 * 60 * 60 * 1_000
 const tokenRenewalDelayMs = 72 * 60 * 60 * 1_000
+export const oidcSigningKeyRotationIntervalMs = 7 * 24 * 60 * 60 * 1_000
+
+let oidcSigningKeyEnsurePromise: Promise<OAuthSigningKey> | undefined
 
 export type OAuthClientType = 'public' | 'confidential'
 
@@ -116,6 +119,7 @@ export function createOAuthClient(input: {
   const clientSecret = input.clientType === 'confidential'
     ? `jcs_${randomBytes(32).toString('base64url')}`
     : undefined
+  const clientSecretCiphertext = clientSecret ? encryptOidcValue({ clientSecret }) : undefined
   const client: OAuthClient = {
     id: randomUUID(),
     clientId,
@@ -131,14 +135,16 @@ export function createOAuthClient(input: {
   database.prepare(`
     INSERT INTO oauth_clients (
       id, client_id, display_name, client_type, client_secret_hash,
+      client_secret_ciphertext,
       redirect_uris_json, allowed_scopes_json, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     client.id,
     client.clientId,
     client.displayName,
     client.clientType,
     client.clientSecretHash ?? null,
+    clientSecretCiphertext ?? null,
     JSON.stringify(client.redirectUris),
     JSON.stringify(client.allowedScopes),
     client.status,
@@ -213,14 +219,67 @@ export function updateOAuthClientStatus(
   return updated.changes === 1 ? findOAuthClient(clientId) : undefined
 }
 
-export async function rotateOidcSigningKey(): Promise<OAuthSigningKey> {
+export function reissueOAuthClientSecret(clientId: string): (OAuthClient & { clientSecret: string }) | undefined {
+  const current = findOAuthClient(clientId)
+  if (!current || current.clientType !== 'confidential') return undefined
+  const clientSecret = `jcs_${randomBytes(32).toString('base64url')}`
+  const updated = getBusinessDatabase().prepare(`
+    UPDATE oauth_clients
+    SET client_secret_hash = ?, client_secret_ciphertext = ?, updated_at = ?
+    WHERE client_id = ? AND client_type = 'confidential'
+  `).run(hashSecret(clientSecret), encryptOidcValue({ clientSecret }), nowIso(), clientId)
+  const client = updated.changes === 1 ? findOAuthClient(clientId) : undefined
+  return client ? { ...client, clientSecret } : undefined
+}
+
+export function findOAuthClientSecret(clientId: string): string | undefined {
+  const row = getBusinessDatabase().prepare(`
+    SELECT client_type, client_secret_ciphertext
+    FROM oauth_clients
+    WHERE client_id = ?
+  `).get(clientId) as Record<string, unknown> | undefined
+  if (!row || row.client_type !== 'confidential' || typeof row.client_secret_ciphertext !== 'string') return undefined
+  const payload = decryptOidcValue<{ clientSecret?: unknown }>(row.client_secret_ciphertext)
+  return typeof payload.clientSecret === 'string' && payload.clientSecret ? payload.clientSecret : undefined
+}
+
+/**
+ * Ensures a usable signing key exists. Rotation is deliberately lazy: the
+ * first protocol request after the weekly boundary performs the single write.
+ */
+export function ensureOidcSigningKey(): Promise<OAuthSigningKey> {
+  if (!oidcSigningKeyEnsurePromise) {
+    oidcSigningKeyEnsurePromise = ensureOidcSigningKeyInternal().finally(() => {
+      oidcSigningKeyEnsurePromise = undefined
+    })
+  }
+  return oidcSigningKeyEnsurePromise
+}
+
+async function ensureOidcSigningKeyInternal(): Promise<OAuthSigningKey> {
   const database = getBusinessDatabase()
-  const now = nowIso()
+  const current = findActiveOidcSigningKey()
+  if (current && !isOidcSigningKeyRotationDue(current)) return current
+
   const keyId = randomUUID()
   const kid = `oidc_${randomBytes(12).toString('base64url')}`
   const material: OidcSigningKeyMaterial = await createOidcSigningKeyMaterial(kid)
+  const now = nowIso()
   database.exec('BEGIN IMMEDIATE')
   try {
+    const activeRow = database.prepare(`
+      SELECT id, kid, private_key_ciphertext, public_jwk_json, status, created_at, retired_at
+      FROM oauth_signing_keys
+      WHERE status = 'active'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get() as Record<string, unknown> | undefined
+    const active = activeRow ? signingKeyFromRow(activeRow) : undefined
+    if (active && !isOidcSigningKeyRotationDue(active)) {
+      database.exec('COMMIT')
+      return active
+    }
+
     database.prepare(`
       UPDATE oauth_signing_keys
       SET status = 'retired', retired_at = ?
@@ -244,6 +303,11 @@ export async function rotateOidcSigningKey(): Promise<OAuthSigningKey> {
     status: 'active',
     createdAt: now
   }
+}
+
+function isOidcSigningKeyRotationDue(key: OAuthSigningKey, now = Date.now()): boolean {
+  const createdAt = Date.parse(key.createdAt)
+  return !Number.isFinite(createdAt) || now - createdAt >= oidcSigningKeyRotationIntervalMs
 }
 
 export function findActiveOidcSigningKey(): OAuthSigningKey | undefined {
@@ -813,84 +877,6 @@ export function revokeAccessToken(accessToken: string, clientId: string): boolea
     WHERE token_hash = ? AND client_id = ? AND revoked_at IS NULL
   `).run(nowIso(), hashSecret(accessToken), clientId)
   return result.changes === 1
-}
-
-export function revokeClientGrant(systemAccountId: string, clientId: string): boolean {
-  const database = getBusinessDatabase()
-  const now = nowIso()
-  database.exec('BEGIN IMMEDIATE')
-  try {
-    const grants = database.prepare(`
-      UPDATE oauth_grants SET revoked_at = ?
-      WHERE system_account_id = ? AND client_id = ? AND revoked_at IS NULL
-    `).run(now, systemAccountId, clientId)
-    database.prepare(`
-      UPDATE oauth_access_tokens SET revoked_at = ?
-      WHERE grant_id IN (
-        SELECT id FROM oauth_grants WHERE system_account_id = ? AND client_id = ?
-      ) AND revoked_at IS NULL
-    `).run(now, systemAccountId, clientId)
-    database.exec('COMMIT')
-    return grants.changes > 0
-  } catch (error) {
-    rollback(database)
-    throw error
-  }
-}
-
-export function listConnectedOAuthApplications(systemAccountId: string): Array<{
-  clientId: string
-  displayName: string
-  scopes: string[]
-  status: 'active' | 'revoked' | 'expired' | 'disabled'
-  grantedAt: string
-  expiresAt: string
-  lastTokenRenewedAt?: string
-}> {
-  const database = getBusinessDatabase()
-  const rows = database.prepare(`
-    SELECT grants.client_id, grants.scopes_json, grants.expires_at, grants.revoked_at, grants.created_at,
-      clients.display_name, clients.status AS client_status,
-      MAX(CASE WHEN tokens.replaced_at IS NOT NULL THEN tokens.replaced_at END) AS last_token_renewed_at
-    FROM oauth_grants grants
-    INNER JOIN oauth_clients clients ON clients.client_id = grants.client_id
-    LEFT JOIN oauth_access_tokens tokens ON tokens.grant_id = grants.id
-    WHERE grants.system_account_id = ?
-    GROUP BY grants.id
-    ORDER BY grants.created_at DESC, grants.id DESC
-  `).all(systemAccountId) as Array<Record<string, unknown>>
-  const applications = new Map<string, {
-    clientId: string
-    displayName: string
-    scopes: string[]
-    status: 'active' | 'revoked' | 'expired' | 'disabled'
-    grantedAt: string
-    expiresAt: string
-    lastTokenRenewedAt?: string
-  }>()
-  const now = Date.now()
-  for (const row of rows) {
-    const clientId = stringValue(row.client_id)
-    if (!clientId || applications.has(clientId)) continue
-    const expiresAt = stringValue(row.expires_at)
-    const status = stringValue(row.client_status) === 'disabled'
-      ? 'disabled'
-      : optionalString(row.revoked_at)
-        ? 'revoked'
-        : Date.parse(expiresAt) <= now
-          ? 'expired'
-          : 'active'
-    applications.set(clientId, {
-      clientId,
-      displayName: stringValue(row.display_name),
-      scopes: parseStringArray(row.scopes_json),
-      status,
-      grantedAt: stringValue(row.created_at),
-      expiresAt,
-      lastTokenRenewedAt: optionalString(row.last_token_renewed_at)
-    })
-  }
-  return [...applications.values()]
 }
 
 function issueAccessTokenInTransaction(

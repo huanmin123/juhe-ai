@@ -276,7 +276,6 @@ const menuIconMap = {
   '/usage-records': HistoryOutlined,
   '/my-operation-logs': ProfileOutlined,
   '/operation-logs': ProfileOutlined,
-  '/connected-applications': LinkOutlined,
   '/public-api-logs': ApiOutlined,
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,

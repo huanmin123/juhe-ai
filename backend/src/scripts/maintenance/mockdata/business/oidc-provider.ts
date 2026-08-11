@@ -7,10 +7,9 @@ import {
   createDeviceAuthorization,
   createOAuthClient,
   decideDeviceAuthorization,
+  ensureOidcSigningKey,
   exchangeAuthorizationCode,
-  findActiveOidcSigningKey,
   prepareDeviceAuthorization,
-  rotateOidcSigningKey
 } from '../../../../modules/oidc-provider/oidc-provider.repository.js'
 import { namePrefix, type OidcProviderMockdata } from '../shared.js'
 
@@ -28,9 +27,7 @@ const browserScopes = [
 ]
 
 export async function createOidcProviderMockdata(admin: SystemAccountSummary): Promise<OidcProviderMockdata> {
-  if (!findActiveOidcSigningKey()) {
-    await rotateOidcSigningKey()
-  }
+  await ensureOidcSigningKey()
 
   const browserClient = createOAuthClient({
     displayName: `${namePrefix}浏览器授权演示应用`,

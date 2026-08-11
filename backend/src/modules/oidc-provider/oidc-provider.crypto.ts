@@ -4,6 +4,13 @@ import { SignJWT, exportJWK, exportPKCS8, generateKeyPair, importPKCS8 } from 'j
 
 import { runtimeConfig } from '../../config/runtime.js'
 
+export class OidcCiphertextError extends Error {
+  constructor(message = 'OIDC 密文无法读取') {
+    super(message)
+    this.name = 'OidcCiphertextError'
+  }
+}
+
 function encryptionKey(): Buffer {
   const secret = runtimeConfig.oidc.keyEncryptionSecret
   if (!secret) throw new Error('OIDC 事务加密密钥未配置')
@@ -19,11 +26,16 @@ export function encryptOidcValue(value: unknown): string {
 
 export function decryptOidcValue<T>(value: string): T {
   const [ivText, tagText, encryptedText] = value.split('.')
-  if (!ivText || !tagText || !encryptedText) throw new Error('OIDC 事务密文格式无效')
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(ivText, 'base64url'))
-  decipher.setAuthTag(Buffer.from(tagText, 'base64url'))
-  const plainText = Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64url')), decipher.final()])
-  return JSON.parse(plainText.toString('utf8')) as T
+  if (!ivText || !tagText || !encryptedText) throw new OidcCiphertextError('OIDC 密文格式无效')
+  const key = encryptionKey()
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivText, 'base64url'))
+    decipher.setAuthTag(Buffer.from(tagText, 'base64url'))
+    const plainText = Buffer.concat([decipher.update(Buffer.from(encryptedText, 'base64url')), decipher.final()])
+    return JSON.parse(plainText.toString('utf8')) as T
+  } catch {
+    throw new OidcCiphertextError()
+  }
 }
 
 export interface OidcSigningKeyMaterial {

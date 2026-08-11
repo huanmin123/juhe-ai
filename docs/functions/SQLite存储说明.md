@@ -1058,6 +1058,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - OpenAI API Key
 - Anthropic API Key
 - 代理密码
+- OIDC `oauth_signing_keys.private_key_ciphertext`：仅保存 RS256 签名私钥密文；公钥 JSON 可发布到 JWKS。平台按 7 天周期在下一次 OIDC 协议请求时自动轮换，退役公钥保留到 grant 验证窗口结束。已有 SQLite 业务库启动时会幂等补齐 `oauth_clients.client_secret_ciphertext`；历史 Client 的该列为 `NULL`，必须重新签发 Client Secret 后才能下载完整文档。
 - 操作日志非敏感字段、metadata 或 summary 中由调用方错误传入的敏感值；精确 allowlist 敏感容器只保存状态摘要
 
 本地网关 API Key 的完整明文在创建成功时返回，也可通过单条完整密钥读取接口按资源权限返回；列表和更新响应只返回空 `key` 以及 `key_prefix` / `key_suffix` 组成的安全标识，不能批量暴露完整密钥。授权账户和授权分组接口不能返回完整密钥，只能返回列表摘要和必要状态。数据库中必须通过 `key_secret_encrypted` 密文保存本地 API Key，`key_hash` 用于网关校验，`key_prefix` 和 `key_suffix` 用于摘要展示；API Key 列表通用搜索只按名称匹配。缺少 `key_secret_encrypted` 或密文不可解的数据不进入运行时，应停机离线修复或重建 API Key。

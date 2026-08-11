@@ -8,10 +8,9 @@ import { badRequest, ok } from '../../shared/http.js'
 import { findSessionByTokenAsync } from '../../storage/repositories.js'
 import { hashSecret } from '../../storage/crypto.js'
 import { parseCookie, sessionCookieName } from '../auth/auth.routes.js'
-import { requireAdmin, requireAuth } from '../auth/auth.middleware.js'
-import { getRequestAuthContext } from '../auth/request-context.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 import { oauthProtocolRateLimit } from './oidc-rate-limit.middleware.js'
-import { assertOidcSigningKeyUsable, oidcSubjectForSystemAccount, signOidcIdToken } from './oidc-provider.crypto.js'
+import { assertOidcSigningKeyUsable, OidcCiphertextError, oidcSubjectForSystemAccount, signOidcIdToken } from './oidc-provider.crypto.js'
 import {
   consumeAuthorizationTransaction,
   createAuthorizationCode,
@@ -20,21 +19,21 @@ import {
   createOAuthClient,
   decideDeviceAuthorization,
   deviceAuthorizationRequestsIdToken,
+  ensureOidcSigningKey,
   exchangeAuthorizationCode,
   authorizationCodeRequestsIdToken,
   findAccessTokenContext,
   findAuthorizationTransaction,
   findActiveOidcSigningKey,
   findOAuthClient,
+  findOAuthClientSecret,
   findSystemAccountProfile,
-  listConnectedOAuthApplications,
   listOidcSigningJwks,
   listOAuthClients,
   pollDeviceAuthorization,
   prepareDeviceAuthorization,
+  reissueOAuthClientSecret,
   revokeAccessToken,
-  revokeClientGrant,
-  rotateOidcSigningKey,
   rotateAccessToken,
   updateOAuthClientStatus
 } from './oidc-provider.repository.js'
@@ -53,6 +52,13 @@ const resourceScopes = [
 ].map((scope) => `juhe:${scope}`)
 const oidcScopes = ['openid', 'profile']
 const supportedScopes = [...oidcScopes, ...resourceScopes]
+const requiredReadScopeByWriteScope: Record<string, string> = {
+  'juhe:profile.write': 'juhe:profile.read',
+  'juhe:groups.write': 'juhe:groups.read',
+  'juhe:route_strategies.write': 'juhe:route_strategies.read',
+  'juhe:api_keys.write': 'juhe:api_keys.read',
+  'juhe:ai_accounts.write': 'juhe:ai_accounts.read'
+}
 const deviceCodeGrantType = 'urn:ietf:params:oauth:grant-type:device_code'
 
 const authorizeQuerySchema = z.object({
@@ -92,6 +98,18 @@ const deviceDecisionSchema = z.object({
 
 oauthPublicRouter.use(express.urlencoded({ extended: false, limit: '32kb' }))
 oauthPublicRouter.use(oauthProtocolRateLimit)
+oauthPublicRouter.use(async (req, res, next) => {
+  if (!isOidcProtocolRequest(req.originalUrl) || !runtimeConfig.oidc.enabled || !runtimeConfig.oidc.issuer) {
+    next()
+    return
+  }
+  try {
+    await ensureOidcSigningKey()
+    next()
+  } catch {
+    oidcUnavailable(res)
+  }
+})
 
 oauthPublicRouter.get('/.well-known/openid-configuration', (_req, res) => {
   if (!runtimeConfig.oidc.enabled || !runtimeConfig.oidc.issuer) {
@@ -245,7 +263,7 @@ oauthPublicRouter.post('/oauth/device_authorization', (req, res) => {
   const requestedScope = typeof body.scope === 'string' ? body.scope : ''
   const scopes = normalizeScopes(requestedScope)
   const nonce = typeof body.nonce === 'string' && body.nonce.trim() ? body.nonce.trim() : undefined
-  if (!scopes.length || scopes.some((scope) => !client.allowedScopes.includes(scope)) || (scopes.includes('profile') && !scopes.includes('openid'))) {
+  if (!scopes.length || scopes.some((scope) => !client.allowedScopes.includes(scope)) || (scopes.includes('profile') && !scopes.includes('openid')) || !hasRequiredReadScopes(scopes)) {
     res.status(400).json(oauthError('invalid_scope', '请求的 scope 未登记'))
     return
   }
@@ -493,28 +511,6 @@ oauthPublicRouter.get('/oauth/userinfo', (req, res) => {
   res.json(claims)
 })
 
-oauthPublicRouter.get('/__aisys__/api/oauth/connected-applications', requireAuth, (_req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
-  res.json(ok(listConnectedOAuthApplications(context.systemAccountId)))
-})
-
-oauthPublicRouter.delete('/__aisys__/api/oauth/connected-applications/:clientId', requireAuth, (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
-  if (!revokeClientGrant(context.systemAccountId, req.params.clientId)) {
-    res.status(404).json({ message: '已授权应用不存在或已撤销' })
-    return
-  }
-  res.json(ok({ revoked: true }))
-})
-
 oauthManagementRouter.get('/clients', requireAdmin, (_req, res) => {
   res.json(ok(listOAuthClients().map((client) => ({
     ...client,
@@ -522,9 +518,71 @@ oauthManagementRouter.get('/clients', requireAdmin, (_req, res) => {
   }))))
 })
 
+oauthManagementRouter.get('/clients/:clientId/integration-package', requireAdmin, (req, res, next) => {
+  if (!runtimeConfig.oidc.enabled || !runtimeConfig.oidc.issuer) {
+    res.status(409).json(badRequest('OIDC Provider 未启用，不能下载对接文档'))
+    return
+  }
+  const client = findOAuthClient(req.params.clientId)
+  if (!client) {
+    res.status(404).json({ message: 'Client 不存在' })
+    return
+  }
+  let clientSecret: string | undefined
+  try {
+    clientSecret = client.clientType === 'confidential'
+      ? findOAuthClientSecret(client.clientId)
+      : undefined
+  } catch (error) {
+    if (error instanceof OidcCiphertextError) {
+      res.status(409).json(badRequest('该 Client 的当前 Client Secret 无法读取，请重新签发后再下载对接文档'))
+      return
+    }
+    next(error)
+    return
+  }
+  if (client.clientType === 'confidential' && !clientSecret) {
+    res.status(409).json(badRequest('该 Client 没有可下载的当前 Client Secret，请先重新签发密钥后再下载对接文档'))
+    return
+  }
+  res.json(ok({
+    client: { ...client, clientSecretHash: undefined },
+    clientSecret
+  }))
+})
+
+oauthManagementRouter.get('/integration-info', requireAdmin, (_req, res) => {
+  if (!runtimeConfig.oidc.enabled || !runtimeConfig.oidc.issuer) {
+    res.status(404).json({ message: 'OIDC Provider 未启用' })
+    return
+  }
+  const issuer = runtimeConfig.oidc.issuer
+  res.json(ok({
+    issuer,
+    discoveryUrl: `${issuer}/.well-known/openid-configuration`,
+    jwksUrl: `${issuer}/oauth/jwks`,
+    authorizationEndpoint: `${issuer}/oauth/authorize`,
+    tokenEndpoint: `${issuer}/oauth/token`,
+    userinfoEndpoint: `${issuer}/oauth/userinfo`,
+    deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
+    revocationEndpoint: `${issuer}/oauth/revoke`,
+    tokenRenewalEndpoint: `${issuer}/oauth/token/renew`,
+    idTokenSigningAlgorithm: 'RS256'
+  }))
+})
+
 oauthManagementRouter.post('/clients', requireAdmin, (req, res) => {
+  if (!runtimeConfig.oidc.enabled || !runtimeConfig.oidc.issuer) {
+    res.status(409).json(badRequest('OIDC Provider 未启用，不能创建 Client'))
+    return
+  }
   const parsed = clientCreateSchema.safeParse(req.body)
-  if (!parsed.success || !parsed.data.allowedScopes.every((scope) => supportedScopes.includes(scope))) {
+  if (
+    !parsed.success
+    || !parsed.data.allowedScopes.every((scope) => supportedScopes.includes(scope))
+    || (parsed.data.allowedScopes.includes('profile') && !parsed.data.allowedScopes.includes('openid'))
+    || !hasRequiredReadScopes(parsed.data.allowedScopes)
+  ) {
     res.status(400).json(badRequest('Client 参数或 scope 无效'))
     return
   }
@@ -551,17 +609,26 @@ oauthManagementRouter.patch('/clients/:clientId', requireAdmin, (req, res) => {
   res.json(ok({ ...updated, clientSecretHash: undefined }))
 })
 
-oauthManagementRouter.post('/keys/rotate', requireAdmin, async (_req, res, next) => {
-  try {
-    if (!runtimeConfig.oidc.enabled) {
-      res.status(404).json({ message: 'OIDC Provider 未启用' })
-      return
-    }
-    const key = await rotateOidcSigningKey()
-    res.status(201).json(ok({ kid: key.kid, status: key.status, createdAt: key.createdAt }))
-  } catch (error) {
-    next(error)
+oauthManagementRouter.post('/clients/:clientId/secret/reissue', requireAdmin, (req, res) => {
+  if (!runtimeConfig.oidc.enabled || !runtimeConfig.oidc.issuer) {
+    res.status(409).json(badRequest('OIDC Provider 未启用，不能重新签发 Client Secret'))
+    return
   }
+  const client = findOAuthClient(req.params.clientId)
+  if (!client) {
+    res.status(404).json({ message: 'Client 不存在' })
+    return
+  }
+  if (client.clientType !== 'confidential') {
+    res.status(400).json(badRequest('公开 Client 不使用 Client Secret'))
+    return
+  }
+  const reissued = reissueOAuthClientSecret(client.clientId)
+  if (!reissued) {
+    res.status(404).json({ message: 'Client 不存在' })
+    return
+  }
+  res.json(ok({ ...reissued, clientSecretHash: undefined }))
 })
 
 function createAuthorizationRequest(req: Request) {
@@ -581,7 +648,7 @@ function createAuthorizationRequest(req: Request) {
     throw new OAuthRouteError('invalid_request', 'Client 或回调地址无效', 400)
   }
   const scopes = normalizeScopes(parsed.data.scope)
-  if (scopes.some((scope) => !client.allowedScopes.includes(scope)) || (scopes.includes('profile') && !scopes.includes('openid'))) {
+  if (scopes.some((scope) => !client.allowedScopes.includes(scope)) || (scopes.includes('profile') && !scopes.includes('openid')) || !hasRequiredReadScopes(scopes)) {
     throw new OAuthRouteError('invalid_scope', '请求的 scope 未登记', 400)
   }
   if (scopes.includes('openid') && !parsed.data.nonce) {
@@ -696,6 +763,11 @@ function oidcUnavailable(res: Response): void {
   res.status(503).json(oauthError('temporarily_unavailable', 'OIDC 签名密钥未配置或不可用'))
 }
 
+function isOidcProtocolRequest(originalUrl: string): boolean {
+  const path = originalUrl.split('?', 1)[0]
+  return path === '/.well-known/openid-configuration' || path === '/oauth' || path.startsWith('/oauth/')
+}
+
 function devicePollDescription(error: string): string {
   if (error === 'authorization_pending') return '用户尚未完成设备授权确认'
   if (error === 'slow_down') return '设备轮询过于频繁，请降低频率'
@@ -710,6 +782,13 @@ function secondsUntil(expiresAt: string): number {
 
 function normalizeScopes(value: string): string[] {
   return Array.from(new Set(value.split(/\s+/).map(scope => scope.trim()).filter(Boolean)))
+}
+
+function hasRequiredReadScopes(scopes: string[]): boolean {
+  const granted = new Set(scopes)
+  return Object.entries(requiredReadScopeByWriteScope).every(([writeScope, readScope]) => (
+    !granted.has(writeScope) || granted.has(readScope)
+  ))
 }
 
 function bearerToken(req: Request): string | undefined {

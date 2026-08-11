@@ -237,6 +237,23 @@ foreach ($contract in @('launchctl print "$DOMAIN/$label"', 'curl -fsS --max-tim
 if ($auditWriterWaitFunction -match 'psql|postgres|sqlite|POST ') {
   throw 'Performance topology must not claim audit-log-writer input or Node readback readiness with a direct database or synthetic-write probe'
 }
+$auditInputAddressFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'audit_log_input_address'
+foreach ($contract in @('read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', '127.0.0.1:*|[::1]:*')) {
+  if (-not $auditInputAddressFunction.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology audit input address parser missing: $contract"
+  }
+}
+$auditInputAddressStart = $performanceInstaller.IndexOf('audit_log_input_address() {', [StringComparison]::Ordinal)
+$dotenvReaderStart = $performanceInstaller.LastIndexOf('read_dotenv_value() {', $auditInputAddressStart, [StringComparison]::Ordinal)
+if ($auditInputAddressStart -lt 0 -or $dotenvReaderStart -lt 0) {
+  throw 'Performance topology audit input address parser helpers are missing'
+}
+$dotenvReaderFunction = $performanceInstaller.Substring($dotenvReaderStart, $auditInputAddressStart - $dotenvReaderStart)
+foreach ($contract in @('sprintf("%c", 34)', 'sprintf("%c", 39)', 'gsub("^[[:space:]]+|[[:space:]]+$", "", line)')) {
+  if (-not $dotenvReaderFunction.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology dotenv reader must trim quoted values: $contract"
+  }
+}
 $performanceServiceNamesFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'service_names'
 $rollbackFunctionStart = $performanceInstaller.IndexOf('rollback() {', [StringComparison]::Ordinal)
 $onExitFunctionStart = $performanceInstaller.IndexOf('on_exit() {', $rollbackFunctionStart, [StringComparison]::Ordinal)
