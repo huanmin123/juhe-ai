@@ -9,6 +9,15 @@ const backendRoot = join(repoRoot, 'backend')
 const powershellSource = readFileSync(join(repoRoot, 'deploy', 'start.ps1'), 'utf8')
 const shellSource = readFileSync(join(repoRoot, 'deploy', 'start.sh'), 'utf8')
 
+assert.ok(
+  shellSource.indexOf('pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...') < shellSource.indexOf('node "$RUNTIME_CHECK_SCRIPT"'),
+  'Unix release startup must install production dependencies before the runtime preflight imports them'
+)
+assert.ok(
+  powershellSource.indexOf('pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...') < powershellSource.indexOf('node $runtimeCheckPath'),
+  'Windows release startup must install production dependencies before the runtime preflight imports them'
+)
+
 assert.match(powershellSource, /Start-AuditLogWriter/u, 'Windows F3 launcher must exist')
 assert.match(shellSource, /start_audit_log_writer\(\)/u, 'Unix F3 launcher must exist')
 for (const source of [powershellSource, shellSource]) {

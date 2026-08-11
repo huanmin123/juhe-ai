@@ -761,11 +761,6 @@ if (-not (Test-Path -LiteralPath $runtimeCheckPath)) {
   throw "Runtime preflight script not found: $runtimeCheckPath. Please rebuild the release package."
 }
 
-node $runtimeCheckPath
-if ($LASTEXITCODE -ne 0) {
-  exit $LASTEXITCODE
-}
-
 if (-not (Test-CommandExists 'pnpm')) {
   if (Test-CommandExists 'corepack') {
     corepack enable
@@ -792,6 +787,13 @@ if (-not (Test-Path -LiteralPath 'node_modules') -or -not (Test-Path -LiteralPat
   pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
 } else {
   Write-Host 'Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall.'
+}
+
+# The preflight imports dotenv and @vscode/ripgrep from production dependencies.
+# Run it only after the release has installed those dependencies on a clean host.
+node $runtimeCheckPath
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
 }
 
 $hostValue = Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallback '127.0.0.1'

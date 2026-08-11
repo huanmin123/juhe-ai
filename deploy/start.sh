@@ -16,7 +16,6 @@ if [ ! -f "$RUNTIME_CHECK_SCRIPT" ]; then
   echo "Runtime preflight script not found: $RUNTIME_CHECK_SCRIPT. Please rebuild the release package." >&2
   exit 1
 fi
-node "$RUNTIME_CHECK_SCRIPT"
 
 if ! command -v pnpm >/dev/null 2>&1; then
   if command -v corepack >/dev/null 2>&1; then
@@ -635,6 +634,10 @@ if [ ! -d node_modules ] || [ ! -d backend/node_modules ] || ! ripgrep_dependenc
 else
   echo "Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall."
 fi
+
+# The preflight imports dotenv and @vscode/ripgrep from production dependencies.
+# Run it only after the release has installed those dependencies on a clean host.
+node "$RUNTIME_CHECK_SCRIPT"
 
 HOST="$(grep -E '^JUHE_AI_HOST=' backend/.env | tail -n 1 | cut -d= -f2- || true)"
 PORT="$(grep -E '^JUHE_AI_PORT=' backend/.env | tail -n 1 | cut -d= -f2- || true)"
