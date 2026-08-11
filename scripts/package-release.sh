@@ -309,7 +309,7 @@ create_zip_archive() {
 
 cd "$REPO_ROOT"
 
-bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$EXPECTED_COMMIT"
+bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$EXPECTED_COMMIT" "$OUTPUT_DIR"
 RELEASE_SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -347,7 +347,7 @@ else
 fi
 pnpm build
 
-bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$RELEASE_SOURCE_COMMIT"
+bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$RELEASE_SOURCE_COMMIT" "$OUTPUT_DIR"
 
 echo "==> Preparing release folder"
 assert_safe_output_ancestors

@@ -3,9 +3,10 @@ set -euo pipefail
 
 REPO_ROOT="${1:-}"
 EXPECTED_COMMIT="${2:-}"
+ALLOWED_UNTRACKED_DIRECTORY="${3:-}"
 
 if [ -z "$REPO_ROOT" ]; then
-  echo "Usage: bash ./scripts/assert-release-source.sh <repo-root> [expected-commit]" >&2
+  echo "Usage: bash ./scripts/assert-release-source.sh <repo-root> [expected-commit] [allowed-untracked-directory]" >&2
   exit 2
 fi
 if ! command -v git >/dev/null 2>&1; then
@@ -28,6 +29,16 @@ if [ -n "$EXPECTED_COMMIT" ] && [ "$COMMIT" != "$EXPECTED_COMMIT" ]; then
 fi
 
 STATUS="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
+if [ -n "$ALLOWED_UNTRACKED_DIRECTORY" ]; then
+  case "$ALLOWED_UNTRACKED_DIRECTORY" in
+    /*|*'..'*|*'\'*|*:*|"")
+      echo "Allowed untracked directory must be a non-empty relative POSIX path inside the repository." >&2
+      exit 2
+      ;;
+  esac
+
+  STATUS="$(printf '%s\n' "$STATUS" | awk -v directory="$ALLOWED_UNTRACKED_DIRECTORY/" '$0 !~ /^\?\? / || index(substr($0, 4), directory) != 1')"
+fi
 if [ -n "$STATUS" ]; then
   echo "Release source is not clean. Build from a clean checkout of the fixed release SHA." >&2
   printf '%s\n' "$STATUS" | sed -n '1,20p' >&2
