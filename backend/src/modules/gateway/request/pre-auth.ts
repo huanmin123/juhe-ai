@@ -428,6 +428,7 @@ function recordEarlyGatewayAuthFailure(req: Request, res: Response): void {
     : 'invalid_request_error'
   dispatchDroppedAuditCapture({
     traceId: context?.traceId ?? createTraceId(),
+    trafficSource: 'gateway',
     auditOutcome: 'gateway_failed',
     success: false,
     bytes: 0,
@@ -456,6 +457,7 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
   const context = getRequestContext()
   dispatchDroppedAuditCapture({
     traceId: context?.traceId ?? createTraceId(),
+    trafficSource: 'gateway',
     auditOutcome: 'gateway_failed',
     success: false,
     bytes: 0,
@@ -490,6 +492,7 @@ function sendUserRequestLimitExceededResponse(req: Request, res: Response, decis
   const context = getRequestContext()
   dispatchDroppedAuditCapture({
     traceId: context?.traceId ?? createTraceId(),
+    trafficSource: 'gateway',
     auditOutcome: 'gateway_failed',
     success: false,
     bytes: 0,
@@ -515,6 +518,7 @@ function userRequestLimitWindowLabel(window: UserRequestLimitDecision['window'])
 
 function dispatchDroppedAuditCapture(input: {
   traceId: string
+  trafficSource: AuditLogInput['trafficSource']
   auditOutcome: AuditLogInput['auditOutcome']
   success: boolean
   bytes: number
@@ -537,6 +541,7 @@ function dispatchDroppedAuditCapture(input: {
     id: `audit_${Date.now()}_${randomUUID()}`,
     lifecycleStatus: 'finalized',
     traceId: input.traceId,
+    trafficSource: input.trafficSource,
     auditOutcome: input.auditOutcome,
     success: input.success,
     method: input.method?.toUpperCase() ?? 'UNKNOWN',
