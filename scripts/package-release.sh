@@ -443,11 +443,23 @@ if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
     --exclude="$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
     --exclude="$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer" \
     -C "$RELEASE_ROOT" "$PACKAGE_NAME"
-  tar --append --file="$TMP_TAR_PATH" --mode=0755 -C "$RELEASE_ROOT" \
-    "$PACKAGE_NAME/start.sh" \
-    "$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
-    "$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
-    "$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer"
+  if tar --version 2>/dev/null | grep -qi 'GNU tar'; then
+    tar --append --file="$TMP_TAR_PATH" --mode=0755 -C "$RELEASE_ROOT" \
+      "$PACKAGE_NAME/start.sh" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer"
+  elif tar --help 2>&1 | grep -Fq -- ' -r Add/Replace'; then
+    # BSD tar preserves the source modes, which were set explicitly above.
+    tar -rf "$TMP_TAR_PATH" -C "$RELEASE_ROOT" \
+      "$PACKAGE_NAME/start.sh" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer"
+  else
+    echo "tar must support GNU --append/--mode or BSD tar -r to create a release archive." >&2
+    exit 1
+  fi
   gzip -c "$TMP_TAR_PATH" > "$TAR_ARCHIVE_PATH"
   rm -f "$TMP_TAR_PATH"
   echo "==> Done: $TAR_ARCHIVE_PATH"
