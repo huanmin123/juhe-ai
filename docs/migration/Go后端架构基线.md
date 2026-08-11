@@ -1,6 +1,6 @@
 # Go 后端架构基线
 
-> **待建设双模式基线（2026-08-08）。** 当前没有受版本控制的 Go 源码或 `go.mod`；下文任何早期实现叙述不得视为现状。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。
+> **现行双模式基线（2026-08-12）。** 当前已有受版本控制的 `backend-go/go.mod` 及 F1/F2/F3 实现。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 [当前状态页](迁移状态与后续批次-20260812.md) 为准。
 
 ## 1. 技术基线
 
@@ -99,7 +99,7 @@ Go 目标不是复制当前 Node 进程树。
 - worker：保留 `ingest`、`stats`、`ops` 三类角色的业务边界，但不再因为 Node 事件循环阻塞而拆出额外 DB service。
 - maintenance：生产维护脚本以独立命令运行，必须明确 dry run、影响范围和失败行为。
 - DB service：当前 SQLite 模式保留。Go 与 Node 共存期间，Go 只能经 typed command / owner bridge 写入 Node 正在拥有的业务 SQLite；完成冻结、drain 与 handoff 后才可独占目标文件。
-- W1b 到 W7 的既有 bridge 叙述是历史实现记录；当前 Node Web 与 `ops-worker` 仍需运行，直到某个完整功能完成 F1-F4 接管；不得由局部 Go 实现推导 Go-only、网关、账户管理或主要 HTTP 接口接管。
+- W1b 到 W7 的既有 bridge 叙述是历史实现记录；当前 Node Web 与 `ops-worker` 仍需运行，直到对应完整功能完成 L1-L4 接管；不得由局部 Go 实现推导 Go-only、网关、账户管理或主要 HTTP 接口接管。
 
 历史 PG/Redis 进程与命令记录如下，仅用于保留原方案的接口和验证线索；当前不证明这些 Go 命令、worker runtime 或依赖已存在。B0 必须先分别完成 SQLite owner bridge 与 PostgreSQL/Redis Store、直接异步执行的 PoC：
 
@@ -140,7 +140,7 @@ Go 解决的是 Node 单事件循环问题。迁移默认使用 Go 原生 gorout
 - PostgreSQL 通过 PgBouncer / pool budget 隔离 server、gateway hot path、management API、ingest、stats 和 ops；慢管理查询、后台批量写和网关热路径不能共用一个无差别池。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
 - 仅 PostgreSQL/Redis adapter 使用 Redis cache、state；SQLite adapter 默认不依赖 Redis。新 Go 功能不把 Redis / Asynq / Node Redis Streams 当作直接异步执行的默认前提；来源系统已有跨实例运行态契约时，按该功能的完整契约保留。
-- W1b-W3 的 Redis queue、Node health bridge、`JUHE_AI_*_API_ENABLED` opt-in、会话鉴权和管理接口切片均只是历史 PG/Redis 灰度记录；当前工作区没有对应 Go 代码，且它们不构成 B0/F1-F4 的实现前提。现行完整功能不得依赖 Node bridge、历史 queue 或局部 HTTP 切片。
+- W1b-W3 的 Redis queue、Node health bridge、`JUHE_AI_*_API_ENABLED` opt-in、会话鉴权和管理接口切片均只是历史 PG/Redis 灰度记录；它们不构成 B0/L1-L4 的实现前提。现行完整功能不得依赖 Node bridge、历史 queue 或局部 HTTP 切片。
 - B0 为每个 profile 定义 Store、直接异步执行和 owner 的启动 fail-fast 条件。
 - Node Redis Streams 是当前 Node adapter；它不进入新 Go 功能的默认执行模型。
 - 内存 map、LRU、账号并发快照、IP 运行态、会话亲和和短 TTL 状态必须使用 mutex、RWMutex、atomic 或专用并发结构。
@@ -168,13 +168,13 @@ Go 运行边界矩阵：
 | 审计 payload / 日志文件 | offset / cursor / stream / window | 不完整读入内存分页；只在完整行或完整窗口后推进游标 |
 | 导入导出 / 离线迁移 | 离线批处理 | 明确 dry run、批量窗口、失败续跑和报告位置 |
 
-## 6. 未来可评估的 Node 专用复杂度（非 B0 / F1-F4 整体删除清单）
+## 6. 未来可评估的 Node 专用复杂度（非 B0 / L1-L4 整体删除清单）
 
 只有未来另立退出决策且不破坏双模式契约时，才可评估下列实现收敛：
 
 - `node:sqlite` 能力预检和 Node 版本分支。
-- SQLite standalone、SQLite 多库拆分、usage shard 文件写入、SQLite read worker、SQLite writer owner 和相关测试矩阵：**B0 / F1-F4 不整体删除**，它们是 SQLite profile 的现行边界；只有已接管完整功能的专属 Node 文件可在 F4 归档。
-- DB service HTTP/IPC 代理层：**B0 / F1-F4 不整体删除**，SQLite profile 继续通过它保持单 writer / typed command 正确性；除非其已成为已接管完整功能的唯一专属实现。
+- SQLite standalone、SQLite 多库拆分、usage shard 文件写入、SQLite read worker、SQLite writer owner 和相关测试矩阵：**B0 / L1-L4 不整体删除**，它们是 SQLite profile 的现行边界；只有已接管完整功能的专属 Node 文件可在 L4 归档。
+- DB service HTTP/IPC 代理层：**B0 / L1-L4 不整体删除**，SQLite profile 继续通过它保持单 writer / typed command 正确性；除非其已成为已接管完整功能的唯一专属实现。
 - Node 专属系统指标：`eventLoopLagMs`、`process_event_loop_*`、V8 `processHeap*` / `external` / `arrayBuffers`、DB service 运行态、SQLite 文件体积、usage shard 文件路径和 IPC pending 队列指标。
 - worker thread 大 JSON 解析边界，改为 Go 请求 goroutine + 有界解析策略。
 - `p-limit` 等为 Node 并发协调补出来的通用胶水，不作为 Go 的通用队列或业务限流复刻；Go 以 context、连接池、SQLite owner 和直接 goroutine 生命周期保证正确性。

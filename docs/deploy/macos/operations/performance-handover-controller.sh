@@ -257,6 +257,8 @@ read_config() {
   case "$main_label$temporary_label" in *[!A-Za-z0-9_-]*|'') echo 'route labels contain unsupported characters' >&2; exit 2;; esac
   [ "$main_label" != "$temporary_label" ] || { echo 'route labels must differ' >&2; exit 2; }
   case "$main_instance_id$temporary_instance_id$main_gateway_instance_prefix$temporary_gateway_instance_prefix$main_topology_identity$temporary_topology_identity" in *[!A-Za-z0-9._-]*|'') echo 'topology identities contain unsupported characters' >&2; exit 2;; esac
+  [ "$main_instance_id" != "$temporary_instance_id" ] || { echo 'main and temporary control instance IDs must differ' >&2; exit 2; }
+  [ "$main_gateway_instance_prefix" != "$temporary_gateway_instance_prefix" ] || { echo 'main and temporary gateway instance prefixes must differ' >&2; exit 2; }
   [ "$main_topology_identity" != "$temporary_topology_identity" ] || { echo 'slot topology identities must differ' >&2; exit 2; }
   if [ "$MODE" = apply ]; then
     assert_private_ancestry "$PLAN_DIR" 'plan directory'

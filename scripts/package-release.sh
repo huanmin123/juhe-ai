@@ -9,6 +9,10 @@ FRONTEND_GATEWAY_BASE_URL=""
 EXPECTED_COMMIT=""
 TARGET_GOOS=""
 TARGET_GOARCH=""
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VALIDATOR_PATH="$SCRIPT_DIR/validate-release-package.mjs"
+API_BASE_CONTRACT_PATH="$SCRIPT_DIR/frontend-api-base-contract.mjs"
 
 usage() {
   cat <<'USAGE'
@@ -73,6 +77,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+command -v node >/dev/null 2>&1 || { echo 'node is required to validate the frontend API base URL' >&2; exit 2; }
+node "$API_BASE_CONTRACT_PATH" "$FRONTEND_API_BASE_URL" \
+  || { echo 'frontend API base URL must satisfy the shared strict contract' >&2; exit 2; }
+
 case "$ARCHIVE_FORMAT" in
   tar.gz|zip|both) ;;
   *)
@@ -126,10 +134,6 @@ case "$TARGET_GOARCH" in
     exit 1
     ;;
 esac
-
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VALIDATOR_PATH="$SCRIPT_DIR/validate-release-package.mjs"
 
 case "$PACKAGE_NAME" in
   ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)

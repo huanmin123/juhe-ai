@@ -1,10 +1,10 @@
 # Go 系统指标字段迁移清单
 
-> **现行口径（2026-08-08）。** 本文的 W6-W10 条目是旧 PG/Redis-only 迁移记录，不是当前删除授权。现行 B0、F1-F4 保留 SQLite 与 PostgreSQL/Redis 两种模式：SQLite 下 Node DB service、SQLite 文件和 usage shard 仍可作为 `runtimeKind=node` 观测；只有 Go 自己的 `runtimeKind=go` DTO 不得伪装为 Node event loop 或 DB service。
+> **现行口径（2026-08-12）。** 本文的 W6-W10 条目是旧 PG/Redis-only 迁移记录，不是当前删除授权。现行 B0、L1-L4 保留 SQLite 与 PostgreSQL/Redis 两种模式：SQLite 下 Node DB service、SQLite 文件和 usage shard 仍可作为 `runtimeKind=node` 观测；只有 Go 自己的 `runtimeKind=go` DTO 不得伪装为 Node event loop 或 DB service。
 
 ## 1. 文档目标
 
-本文是 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 的字段清单。W6 / W7 / W8 保留为历史索引；当前按 B0、F1-F4 为每个完整功能的 Go runtime、Store 与直接异步执行分别验收。
+本文是 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md) 的字段清单。W6 / W7 / W8 保留为历史索引；当前按 B0、L1-L4 为每个完整功能的 Go runtime、Store 与直接异步执行分别验收。
 
 本文不描述当前 Node 运行态的正确性。当前 Node 后端在未接管前仍可以继续使用事件循环、DB service 和 SQLite 文件指标；Go owner 接管后，下面列为删除的字段不能再作为正式 API、前端类型、Prometheus 指标、窗口表或告警口径存在。
 
@@ -40,7 +40,7 @@ Go owner 接管 `/__aisys__/api/stats/system-metrics` 时，以下字段不得�
 
 允许保留的例外：历史文档、未迁移 Node 代码、迁移记录和明确标注为 Node 过渡事实的测试基线。Go runtime、Go API DTO、Go 前端目标类型和 Go 发布文档中不得保留这些字段作为正式口径。
 
-历史 2026-07-22 opt-in `GET /__aisys__/api/stats/system-metrics` reader 记录只能作为旧 PostgreSQL 灰度对照；当前工作区没有该 Go 路由，现行 B0/F1-F4 也不以只读路由作为完整功能接管证据。
+历史 2026-07-22 opt-in `GET /__aisys__/api/stats/system-metrics` reader 记录只能作为旧 PostgreSQL 灰度对照；现行 B0/L1-L4 也不以只读路由作为完整功能接管证据。
 
 ## 4. Go 字段目标清单
 
@@ -89,14 +89,14 @@ Go 系统监控接口建议保留当前路径 `GET /__aisys__/api/stats/system-m
 
 前端迁移验收必须运行类型检查和页面 smoke。页面可以短期支持 Node / Go 双视图用于灰度对照，但必须通过 `runtimeKind` 明确分支，不能把 Go 数据塞进 Node `processEventLoop*` 字段。
 
-## 7. 当前 B0、F1-F4 字段门禁
+## 7. 当前 B0、L1-L4 字段门禁
 
 | 阶段 | 必须完成 | 不允许 |
 | --- | --- | --- |
 | B0 | 两个 profile 的 `runtimeKind`、Store / 直接异步执行和启动错配字段可辨 | 将 SQLite Node DB service 或 event loop 字段伪装为 Go runtime |
-| F1 | 完整功能的 Node / Go 运行指标边界和归档计划明确 | 用局部 Go 指标证明完整功能已接管 |
-| F2/F3 | 已接管功能的 running、write latency、cancel、failure、restart recovery 和 owner 指标按 profile 验收 | 用未接管功能的 Go 指标证明 Node 路径已删除 |
-| F4 | 活跃 Node 功能指标清零，归档目录不生成 runtime 指标 | 删除 SQLite 模式的 DB service、文件或 Node 观测 |
+| L1 | 完整功能的 Node / Go 运行指标边界和归档计划明确 | 用局部 Go 指标证明完整功能已接管 |
+| L2/L3 | 已接管功能的 running、write latency、cancel、failure、restart recovery 和 owner 指标按 profile 验收 | 用未接管功能的 Go 指标证明 Node 路径已删除 |
+| L4 | 活跃 Node 功能指标清零，归档目录不生成 runtime 指标 | 删除 SQLite 模式的 DB service、文件或 Node 观测 |
 
 ### 历史 W6-W10 字段门禁（非当前执行依据）
 

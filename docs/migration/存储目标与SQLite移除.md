@@ -9,7 +9,7 @@ Go 的正式目标有两种部署模式：
 - **SQLite 模式**：保留 SQLite 文件、DB service、按文件单 writer、typed command 和既有本地运行态边界。Go 功能在 Node 共存期只能经 owner bridge 写入，或在完整功能冻结、drain 与 handoff 后独占目标文件。
 - **PostgreSQL/Redis 模式**：以 PostgreSQL 承载可恢复事实，Redis adapter 按需承载 cache、state 和 counter。连接池、事务、lease、幂等和完整功能单 owner 仍是必需约束。
 
-部署模式只选择 Store、Runtime 和直接异步执行方式，绝不决定 Go 是否可用；SQLite 模式默认不要求 Redis。Store Port 必须屏蔽 schema、SQL 方言和事务差异，业务规则不能因 driver 分叉。当前没有受版本控制的 Go 源码或 `go.mod`，SQLite driver / owner bridge、直接异步和资源维度并发都是 B0 PoC 待定事项。
+部署模式只选择 Store、Runtime 和直接异步执行方式，绝不决定 Go 是否可用；SQLite 模式默认不要求 Redis。Store Port 必须屏蔽 schema、SQL 方言和事务差异，业务规则不能因 driver 分叉。当前已有受版本控制的 `backend-go/go.mod` 与 F1/F2/F3 双模式实现；后续功能仍必须在 L2/L3 分别证明 SQLite owner、PostgreSQL 事务、直接异步和资源维度并发。
 
 ## 2. 单 owner 与直接异步契约
 

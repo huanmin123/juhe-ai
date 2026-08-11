@@ -1,5 +1,7 @@
 # Bug 记录目录
 
+- [BUG-0148](问题-0148-Windows路径转换破坏前端APIBase.md)：Windows/MSYS 把根相对前端 API base 转换为磁盘路径，导致 health 和静态页面正常但浏览器管理 API 全部失败；已增加打包拒绝、bundle 扫描和真实浏览器 candidate 门禁。
+
 - [BUG-0147](问题-0147-mac候选发布依赖预检缺失.md)：macOS temporary 候选发布没有在启动前验证离线依赖 store 与受支持 Node 版本，在线安装会无界等待；待补齐预检门禁。
 
 - [BUG-0146](问题-0146-mac网络切换导致WireGuard假活与root-wrapper权限缺陷.md)：macOS 网络切换后 WireGuard job 假活，并且 root job 执行服务用户可写 wrapper；收口为 root-only manifest、wrapper/config 迁移与受限全 Edge 恢复器。
@@ -104,6 +106,7 @@ docs/bug/
 
 | 编号 | 标题 | 状态 | 严重程度 | 模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| BUG-0148 | Windows 路径转换破坏前端 API Base | 已修复并完成生产浏览器验证 | P0 | 发布包 / Vite / Windows / macOS / 生产切流 | [问题-0148-Windows路径转换破坏前端APIBase.md](问题-0148-Windows路径转换破坏前端APIBase.md) |
 | BUG-0147 | mac 候选发布依赖预检缺失 | 待修复，阻断 temporary 候选启动 | P1 | macOS / 发布包 / pnpm / Node | [问题-0147-mac候选发布依赖预检缺失.md](问题-0147-mac候选发布依赖预检缺失.md) |
 | BUG-0146 | macOS 网络切换导致 WireGuard 假活与 root wrapper 权限缺陷 | 已实现，待生产验证 | P0 | macOS / WireGuard / launchd / 生产稳定性 | [问题-0146-mac网络切换导致WireGuard假活与root-wrapper权限缺陷.md](问题-0146-mac网络切换导致WireGuard假活与root-wrapper权限缺陷.md) |
 | BUG-0145 | 模型目录预检错误阻断账户可用性 | 已修复（本地回归通过） | P1 | Node 后端 / Vue 前端 / AI 账户测试与健康检查 | [问题-0145-模型目录预检错误阻断账户可用性.md](问题-0145-模型目录预检错误阻断账户可用性.md) |

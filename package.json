@@ -245,7 +245,9 @@
   "directories": {
     "doc": "docs"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "acorn": "8.16.0"
+  },
   "repository": {
     "type": "git",
     "url": "git@gitee.com:huanminabc/juhe-ai.git"

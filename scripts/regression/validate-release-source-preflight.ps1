@@ -99,8 +99,125 @@ try {
     }
   }
 
+  $packagePowerShellPath = Join-Path $repoRoot 'scripts\package-release.ps1'
+  $contractPath = Join-Path $repoRoot 'scripts\frontend-api-base-contract.mjs'
+  $invalidPowerShellOutput = try {
+    & $packagePowerShellPath -OutputDir (Join-Path $tempRoot 'invalid-powershell-output') -FrontendApiBaseUrl 'E:/Git/__aisys__/api' 2>&1 | Out-String
+    throw 'PowerShell package script accepted a filesystem frontend API base URL'
+  } catch {
+    $_.ToString()
+  }
+  if ($invalidPowerShellOutput -notmatch 'FrontendApiBaseUrl is invalid') {
+    throw "PowerShell package script returned the wrong API base error: $invalidPowerShellOutput"
+  }
+  if (Test-Path -LiteralPath (Join-Path $tempRoot 'invalid-powershell-output')) {
+    throw 'PowerShell package script mutated output before rejecting the API base URL'
+  }
+
+  $invalidUnixPowerShellPath = Join-Path $tempRoot 'invalid-powershell-unix-output'
+  $invalidUnixPowerShellOutput = try {
+    & $packagePowerShellPath -OutputDir $invalidUnixPowerShellPath -FrontendApiBaseUrl '/Users/example/release/__aisys__/api' 2>&1 | Out-String
+    throw 'PowerShell package script accepted a Unix filesystem frontend API base URL'
+  } catch {
+    $_.ToString()
+  }
+  if ($invalidUnixPowerShellOutput -notmatch 'FrontendApiBaseUrl is invalid') {
+    throw "PowerShell package script returned the wrong Unix API base error: $invalidUnixPowerShellOutput"
+  }
+  if (Test-Path -LiteralPath $invalidUnixPowerShellPath) {
+    throw 'PowerShell package script mutated output before rejecting the Unix API base URL'
+  }
+
+  $pathAtLimit = "https://example.test/$((('x' * 1009) -join ''))/__aisys__/api"
+  $pathOverLimit = "https://example.test/$((('x' * 1010) -join ''))/__aisys__/api"
+  $hostAtTotalLimit = ((('a.' * 1010) -join '') + 'comx')
+  $totalAtLimit = "https://$hostAtTotalLimit/x/__aisys__/api"
+  $totalOverLimit = "${totalAtLimit}x"
+  foreach ($boundaryValue in @($pathAtLimit, $totalAtLimit)) {
+    $boundaryOutput = @(& node $contractPath $boundaryValue 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      throw "shared API base contract rejected a boundary value that should pass: $($boundaryOutput -join "`n")"
+    }
+  }
+
+  $invalidApiBases = @(
+    'http:///__aisys__/api',
+    'https:////example.test/__aisys__/api',
+    'https://example.test/__aisys__/api?',
+    'https://example.test/__aisys__/api#',
+    'https://user@example.test/__aisys__/api',
+    'https://example.test:/__aisys__/api',
+    'https://example.test:invalid/__aisys__/api',
+    'https://example.test:65536/__aisys__/api',
+    'https://%65xample.test/__aisys__/api',
+    'https://example.test/release path/__aisys__/api',
+    'https://example.test/%ZZ/__aisys__/api',
+    'HTTPS://example.test/__aisys__/api',
+    'https://example.test/a/../__aisys__/api',
+    $pathOverLimit,
+    $totalOverLimit
+  )
+  foreach ($invalidApiBase in $invalidApiBases) {
+    $invalidOutputName = 'invalid-powershell-contract-' + ([Guid]::NewGuid().ToString('N'))
+    $invalidOutputPath = Join-Path $tempRoot $invalidOutputName
+    $invalidOutput = try {
+      & $packagePowerShellPath -OutputDir $invalidOutputPath -FrontendApiBaseUrl $invalidApiBase 2>&1 | Out-String
+      throw "PowerShell package script accepted invalid API base: $invalidApiBase"
+    } catch {
+      $_.ToString()
+    }
+    if ($invalidOutput -notmatch 'FrontendApiBaseUrl is invalid') {
+      throw "PowerShell package script returned the wrong API base error for ${invalidApiBase}: $invalidOutput"
+    }
+    if (Test-Path -LiteralPath $invalidOutputPath) {
+      throw "PowerShell package script mutated output before rejecting invalid API base: $invalidApiBase"
+    }
+  }
+
+  $bashCommand = Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($bashCommand) {
+    $packageBashPath = (Join-Path $repoRoot 'scripts\package-release.sh') -replace '\\', '/'
+    $invalidBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir (($tempRoot -replace '\\', '/') + '/invalid-bash-output') --frontend-api-base-url 'E:/Git/__aisys__/api' 2>&1)
+    if ($LASTEXITCODE -eq 0 -or ($invalidBashOutput -join "`n") -notmatch 'shared strict contract') {
+      throw "bash package script did not reject a filesystem frontend API base URL: $($invalidBashOutput -join "`n")"
+    }
+    if (Test-Path -LiteralPath (Join-Path $tempRoot 'invalid-bash-output')) {
+      throw 'bash package script mutated output before rejecting the API base URL'
+    }
+    $invalidUnixBashPath = Join-Path $tempRoot 'invalid-bash-unix-output'
+    $invalidUnixBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir ($invalidUnixBashPath -replace '\\', '/') --frontend-api-base-url '/Users/example/release/__aisys__/api' 2>&1)
+    if ($LASTEXITCODE -eq 0 -or ($invalidUnixBashOutput -join "`n") -notmatch 'shared strict contract') {
+      throw "bash package script accepted a Unix filesystem frontend API base URL: $($invalidUnixBashOutput -join "`n")"
+    }
+    if (Test-Path -LiteralPath $invalidUnixBashPath) {
+      throw 'bash package script mutated output before rejecting the Unix API base URL'
+    }
+    foreach ($malformedUrl in @('http://', 'https://')) {
+      $malformedOutputName = 'invalid-bash-http-' + ([Guid]::NewGuid().ToString('N'))
+      $malformedOutputPath = Join-Path $tempRoot $malformedOutputName
+      $malformedBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir ($malformedOutputPath -replace '\\', '/') --frontend-api-base-url $malformedUrl 2>&1)
+      if ($LASTEXITCODE -eq 0 -or ($malformedBashOutput -join "`n") -notmatch 'shared strict contract') {
+        throw "bash package script accepted malformed HTTP API base ${malformedUrl}: $($malformedBashOutput -join "`n")"
+      }
+      if (Test-Path -LiteralPath $malformedOutputPath) {
+        throw "bash package script mutated output before rejecting malformed HTTP API base ${malformedUrl}"
+      }
+    }
+    foreach ($invalidApiBase in $invalidApiBases) {
+      $invalidOutputName = 'invalid-bash-contract-' + ([Guid]::NewGuid().ToString('N'))
+      $invalidOutputPath = Join-Path $tempRoot $invalidOutputName
+      $invalidBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir ($invalidOutputPath -replace '\\', '/') --frontend-api-base-url $invalidApiBase 2>&1)
+      if ($LASTEXITCODE -eq 0 -or ($invalidBashOutput -join "`n") -notmatch 'shared strict contract') {
+        throw "bash package script accepted invalid API base ${invalidApiBase}: $($invalidBashOutput -join "`n")"
+      }
+      if (Test-Path -LiteralPath $invalidOutputPath) {
+        throw "bash package script mutated output before rejecting invalid API base: $invalidApiBase"
+      }
+    }
+  }
+
   $packagePowerShell = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\package-release.ps1') -Raw
-  foreach ($required in @('ExpectedCommit', 'assert-release-source.ps1', 'RELEASE_SOURCE_COMMIT')) {
+  foreach ($required in @('ExpectedCommit', 'assert-release-source.ps1', 'RELEASE_SOURCE_COMMIT', 'Assert-SafeFrontendApiBaseUrl', 'frontend-api-base-contract.mjs', 'Invoke-ReleasePackageValidator -Paths @($packageRoot)', 'New-VerifiedTarGzArchive', '& tar -tzf $ArchivePath', 'tar.gz archive creation failed with exit code')) {
     if ($packagePowerShell -notmatch [regex]::Escape($required)) {
       throw "PowerShell package script must include release source gate: $required"
     }
@@ -108,8 +225,61 @@ try {
   if ([regex]::Matches($packagePowerShell, 'assert-release-source\.ps1').Count -lt 2) {
     throw 'PowerShell package script must recheck the release source after the build'
   }
+  if ($packagePowerShell.IndexOf("Copy-RequiredItem (Join-Path `$repoRoot 'frontend/dist')", [StringComparison]::Ordinal) -gt $packagePowerShell.IndexOf('Invoke-ReleasePackageValidator -Paths @($packageRoot)', [StringComparison]::Ordinal)) {
+    throw 'PowerShell package script must validate the completed frontend bundle before archive creation'
+  }
+  $parserTokens = $null
+  $parserErrors = $null
+  $packagePowerShellAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $repoRoot 'scripts\package-release.ps1'),
+    [ref]$parserTokens,
+    [ref]$parserErrors
+  )
+  if ($parserErrors.Count -ne 0) {
+    throw "PowerShell package script failed to parse: $($parserErrors -join '; ')"
+  }
+  $tarFunctionAst = $packagePowerShellAst.Find({
+      param($node)
+      $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-VerifiedTarGzArchive'
+    }, $true)
+  if ($null -eq $tarFunctionAst) {
+    throw 'PowerShell package script must define New-VerifiedTarGzArchive'
+  }
+  Invoke-Expression $tarFunctionAst.Extent.Text
+  $fakeTarDirectory = Join-Path $tempRoot 'fake-tar-bin'
+  $fakeTarReleaseDirectory = Join-Path $tempRoot 'fake-tar-release'
+  $fakeTarArchive = Join-Path $tempRoot 'fake-tar-output.tar.gz'
+  New-Item -ItemType Directory -Path $fakeTarDirectory, (Join-Path $fakeTarReleaseDirectory 'package') -Force | Out-Null
+  if ($IsWindows) {
+    Set-Content -LiteralPath (Join-Path $fakeTarDirectory 'tar.cmd') -Value "@echo off`r`nexit /b 7`r`n" -NoNewline
+  } else {
+    $fakeTarPath = Join-Path $fakeTarDirectory 'tar'
+    Set-Content -LiteralPath $fakeTarPath -Value "#!/bin/sh`nexit 7`n" -NoNewline
+    & chmod +x $fakeTarPath
+    if ($LASTEXITCODE -ne 0) {
+      throw 'failed to make the fake tar command executable'
+    }
+  }
+  $originalPath = $env:PATH
+  try {
+    $env:PATH = "$fakeTarDirectory$([System.IO.Path]::PathSeparator)$originalPath"
+    $tarFailureOutput = try {
+      New-VerifiedTarGzArchive -ArchivePath $fakeTarArchive -ReleaseDirectory $fakeTarReleaseDirectory -ReleasePackageName 'package' 2>&1 | Out-String
+      throw 'PowerShell package script accepted a failed tar command'
+    } catch {
+      $_.ToString()
+    }
+  } finally {
+    $env:PATH = $originalPath
+  }
+  if ($tarFailureOutput -notmatch 'tar\.gz archive creation failed with exit code 7') {
+    throw "PowerShell package script returned the wrong tar failure: $tarFailureOutput"
+  }
+  if ($tarFailureOutput -match '==> Done:') {
+    throw 'PowerShell package script reported completion after tar failed'
+  }
   $packageBash = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\package-release.sh') -Raw
-  foreach ($required in @('--expected-commit', 'assert-release-source.sh', 'RELEASE_SOURCE_COMMIT')) {
+  foreach ($required in @('--expected-commit', 'assert-release-source.sh', 'RELEASE_SOURCE_COMMIT', 'frontend-api-base-contract.mjs', 'shared strict contract', 'node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"')) {
     if ($packageBash -notmatch [regex]::Escape($required)) {
       throw "bash package script must include release source gate: $required"
     }
@@ -119,6 +289,9 @@ try {
   }
   if ([regex]::Matches($packageBash, 'assert-release-source\.sh').Count -lt 2) {
     throw 'bash package script must recheck the release source after the build'
+  }
+  if ($packageBash.IndexOf('copy_required_item "$REPO_ROOT/frontend/dist"', [StringComparison]::Ordinal) -gt $packageBash.IndexOf('node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"', [StringComparison]::Ordinal)) {
+    throw 'bash package script must validate the completed frontend bundle before archive creation'
   }
 
   Write-Output 'release source preflight regression passed'
