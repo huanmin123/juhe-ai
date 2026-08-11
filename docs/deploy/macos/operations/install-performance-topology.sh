@@ -570,7 +570,7 @@ render_run_script() {
         'read_dotenv_value() {' \
         '  key="$1"' \
         '  file="$2"' \
-        '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\\\"" && substr(line, length(line), 1) == "\\\"") || (substr(line, 1, 1) == "\\x27" && substr(line, length(line), 1) == "\\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
+        '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") || (substr(line, 1, 1) == "\x27" && substr(line, length(line), 1) == "\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
         '}' \
         'postgres_url="${JUHE_AI_POSTGRES_URL:-}"' \
         'if [ -z "$postgres_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_POSTGRES_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
