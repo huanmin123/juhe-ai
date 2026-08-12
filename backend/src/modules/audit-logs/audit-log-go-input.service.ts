@@ -10,10 +10,19 @@ export { auditLogGoInputMaxBytes } from './audit-log-go-input-budget.js'
 export const auditLogGoInputPath = '/__aiinternal__/v1/audit-captures'
 const auditLogGoInputSignatureDomain = 'juhe-ai/audit-log-input/v1'
 
+// These background probe sources were intentionally excluded by the former
+// audit queue and are outside F3's persisted audit domain as well.
+const nonPersistedAuditTrafficSources = new Set([
+  'account_health_check',
+  'runtime_recovery_probe',
+  'cooldown_retest'
+])
+
 // This is a one-shot RPC, deliberately without local buffering, retries,
 // cross-process fallback, or a Node writer. The caller remains non-blocking and
 // records only an observable dispatch failure when the Go owner is unavailable.
 export function dispatchAuditLogToGo(input: AuditLogInput): void {
+  if (input.trafficSource && nonPersistedAuditTrafficSources.has(input.trafficSource)) return
   const origin = runtimeConfig.auditLogInputUrl?.trim()
   if (!origin) {
     logger.error({

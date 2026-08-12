@@ -65,6 +65,16 @@ try {
   assert.equal(successRequest.signature, expectedSignature, 'Go 输入签名必须覆盖 domain、换行和原始 JSON body')
   assert.equal(requestCount, 1, '204 成功必须只发送一次 one-shot 请求')
 
+  for (const trafficSource of ['account_health_check', 'runtime_recovery_probe', 'cooldown_retest'] as const) {
+    requestCount = 0
+    dispatchAuditLogToGo({
+      ...auditInput(`dispatch-non-persisted-${trafficSource}`, [Buffer.from(trafficSource)]),
+      trafficSource
+    })
+    await delay(50)
+    assert.equal(requestCount, 0, `${trafficSource} 不属于持久化审计范围，不得发送 F3 输入请求`)
+  }
+
   requestMode = 'rejected'
   requestCount = 0
   dispatchAuditLogToGo(auditInput('dispatch-rejected', [Buffer.from('rejected')]))
