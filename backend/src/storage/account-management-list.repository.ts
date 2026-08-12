@@ -666,7 +666,16 @@ function accountManagementSortColumn(
   if (field === 'providerCode') return `COALESCE(account_rows.source_provider_code, account_rows.provider_code)${textCollation}`
   if (field === 'systemAccount') return `COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id)${textCollation}`
   if (field === 'concurrency') return 'COALESCE(account_rows.source_concurrency_limit, account_rows.concurrency_limit)'
-  if (field === 'status') return accountManagementEffectiveStatusSql()
+  if (field === 'status') return `CASE ${accountManagementEffectiveStatusSql()}
+    WHEN 'active' THEN 1
+    WHEN 'temporary_unavailable' THEN 2
+    WHEN 'rate_limited' THEN 3
+    WHEN 'pending_test' THEN 4
+    WHEN 'quality_isolated' THEN 5
+    WHEN 'error' THEN 6
+    WHEN 'disabled' THEN 7
+    ELSE 8
+  END`
   if (field === 'accountExpiresAt') return 'COALESCE(account_rows.authorization_expires_at, account_rows.source_account_expires_at, account_rows.account_expires_at)'
   if (field === 'lastUsedAt') return 'account_rows.last_used_at'
   return 'account_rows.priority'

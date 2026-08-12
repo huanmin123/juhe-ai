@@ -1926,7 +1926,16 @@ function projectionOrderParts(
     providerCode: `${tableAlias}.provider_code${textCollation}`,
     systemAccount: `${tableAlias}.viewer_system_account_id${textCollation}`,
     concurrency: `${tableAlias}.concurrency_sort_key`,
-    status: `${tableAlias}.effective_status`,
+    status: `CASE ${tableAlias}.effective_status
+      WHEN 'active' THEN 1
+      WHEN 'temporary_unavailable' THEN 2
+      WHEN 'rate_limited' THEN 3
+      WHEN 'pending_test' THEN 4
+      WHEN 'quality_isolated' THEN 5
+      WHEN 'error' THEN 6
+      WHEN 'disabled' THEN 7
+      ELSE 8
+    END`,
     accountExpiresAt: `${tableAlias}.account_expires_at_sort_key`,
     lastUsedAt: `${tableAlias}.last_used_at_sort_key`
   }

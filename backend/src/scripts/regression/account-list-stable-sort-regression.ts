@@ -36,7 +36,11 @@ try {
   const accounts = [
     createStableAccount('列表稳定排序-A', 'sk-list-stable-a', '2026-01-01T00:00:00.000Z'),
     createStableAccount('列表稳定排序-B', 'sk-list-stable-b', '2026-01-01T00:00:01.000Z'),
-    createStableAccount('列表稳定排序-C', 'sk-list-stable-c', '2026-01-01T00:00:02.000Z')
+    createStableAccount('列表稳定排序-C', 'sk-list-stable-c', '2026-01-01T00:00:02.000Z'),
+    createStableAccount('列表稳定排序-D', 'sk-list-stable-d', '2026-01-01T00:00:03.000Z'),
+    createStableAccount('列表稳定排序-E', 'sk-list-stable-e', '2026-01-01T00:00:04.000Z'),
+    createStableAccount('列表稳定排序-F', 'sk-list-stable-f', '2026-01-01T00:00:05.000Z'),
+    createStableAccount('列表稳定排序-G', 'sk-list-stable-g', '2026-01-01T00:00:06.000Z')
   ]
   const expectedIds = accounts.map((account) => account.id)
 
@@ -68,13 +72,32 @@ try {
   )
 
   const updateStatus = databaseModule.getBusinessDatabase().prepare('UPDATE accounts SET status = ? WHERE id = ?')
-  updateStatus.run('error', accounts[0].id)
-  updateStatus.run('active', accounts[1].id)
-  updateStatus.run('disabled', accounts[2].id)
+  const statusSortedAccounts = [
+    { account: accounts[0]!, status: 'error' },
+    { account: accounts[1]!, status: 'active' },
+    { account: accounts[2]!, status: 'disabled' },
+    { account: accounts[3]!, status: 'temporary_unavailable' },
+    { account: accounts[4]!, status: 'rate_limited' },
+    { account: accounts[5]!, status: 'pending_test' },
+    { account: accounts[6]!, status: 'quality_isolated' }
+  ] as const
+  for (const { account, status } of statusSortedAccounts) updateStatus.run(status, account.id)
+  const statusAscendingIds = [accounts[1]!.id, accounts[3]!.id, accounts[4]!.id, accounts[5]!.id, accounts[6]!.id, accounts[0]!.id, accounts[2]!.id]
   assert.deepEqual(
     listStableAccountIds(expectedIds, { sorts: [{ field: 'status', order: 'asc' }] }),
-    [accounts[1].id, accounts[2].id, accounts[0].id],
-    '普通 SQLite 列表在同优先级账户间必须将状态作为二级排序'
+    statusAscendingIds,
+    '普通 SQLite 列表在同优先级账户间必须按业务状态排名升序排序'
+  )
+  assert.deepEqual(
+    listStableAccountIds(expectedIds, { sorts: [{ field: 'status', order: 'desc' }] }),
+    [...statusAscendingIds].reverse(),
+    '普通 SQLite 列表的状态降序必须完整反转业务状态排名'
+  )
+  databaseModule.getBusinessDatabase().prepare('UPDATE accounts SET priority = ? WHERE id = ?').run(5, accounts[0]!.id)
+  assert.deepEqual(
+    listStableAccountIds(expectedIds, { sorts: [{ field: 'status', order: 'asc' }] }),
+    [accounts[0]!.id, ...statusAscendingIds.filter((id) => id !== accounts[0]!.id)],
+    'priority 必须始终先于状态排序'
   )
 
   console.log('AI 账户列表稳定排序回归通过')

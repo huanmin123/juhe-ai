@@ -333,29 +333,85 @@ async function verifySingleQueryPaginationAndFilters(): Promise<void> {
   )
   database.prepare('DELETE FROM account_list_availability_dirty WHERE account_id = ?').run(accountIds[2])
 
-  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[0]!, {
-    sourceGeneration: 102,
-    prioritySortKey: 10,
-    effectiveStatus: 'error'
-  }))
-  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[1]!, {
-    sourceGeneration: 102,
-    prioritySortKey: 10,
-    effectiveStatus: 'active'
-  }))
-  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[2]!, {
-    sourceGeneration: 102,
-    prioritySortKey: 10,
-    effectiveStatus: 'disabled'
-  }))
+  const statusSortAccounts = [
+    { accountId: accountIds[0]!, status: 'error' },
+    { accountId: accountIds[1]!, status: 'active' },
+    { accountId: accountIds[2]!, status: 'disabled' },
+    { accountId: 'projection_status_temporary_unavailable', status: 'temporary_unavailable' },
+    { accountId: 'projection_status_rate_limited', status: 'rate_limited' },
+    { accountId: 'projection_status_pending_test', status: 'pending_test' },
+    { accountId: 'projection_status_quality_isolated', status: 'quality_isolated' }
+  ] as const
+  for (const { accountId, status } of statusSortAccounts) {
+    if (!accountIds.includes(accountId)) {
+      database.prepare(`
+        INSERT INTO accounts (
+          id, system_account_id, provider_code, provider_protocol_profile_id,
+          protocol_code, protocol_version, name, type, status, credentials_encrypted,
+          health_check_model, health_check_endpoint_mode, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        accountId,
+        viewerSystemAccountId,
+        'gpt',
+        'profile_projection',
+        'openai',
+        'v1',
+        accountId,
+        'api_key',
+        status,
+        '{}',
+        'gpt-5-mini',
+        'chat_json',
+        new Date(0).toISOString(),
+        new Date(0).toISOString()
+      )
+    }
+    await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountId, {
+      sourceGeneration: accountIds.includes(accountId) ? 102 : 1,
+      prioritySortKey: 10,
+      effectiveStatus: status
+    }))
+  }
   await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, { viewerSystemAccountId })
+  const statusAscendingIds = [
+    accountIds[1]!,
+    'projection_status_temporary_unavailable',
+    'projection_status_rate_limited',
+    'projection_status_pending_test',
+    'projection_status_quality_isolated',
+    accountIds[0]!,
+    accountIds[2]!
+  ]
   const statusSortedPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
-    options: { page: 1, pageSize: 20, sorts: [{ field: 'status', order: 'asc' }] }
+    options: { ids: statusAscendingIds, page: 1, pageSize: 20, sorts: [{ field: 'status', order: 'asc' }] }
   }))
   assert.deepEqual(
     statusSortedPage.items.map((item) => item.id),
-    [accountIds[1], accountIds[2], accountIds[0]],
-    '投影查询必须在相同优先级时将状态作为二级排序'
+    statusAscendingIds,
+    '投影查询必须在同优先级账户间按业务状态排名升序排序'
+  )
+  const descendingStatusSortedPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+    options: { ids: statusAscendingIds, page: 1, pageSize: 20, sorts: [{ field: 'status', order: 'desc' }] }
+  }))
+  assert.deepEqual(
+    descendingStatusSortedPage.items.map((item) => item.id),
+    [...statusAscendingIds].reverse(),
+    '投影查询的状态降序必须完整反转业务状态排名'
+  )
+  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[0]!, {
+    sourceGeneration: 103,
+    prioritySortKey: 5,
+    effectiveStatus: 'error'
+  }))
+  await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, { viewerSystemAccountId })
+  const priorityFirstPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+    options: { ids: statusAscendingIds, page: 1, pageSize: 20, sorts: [{ field: 'status', order: 'asc' }] }
+  }))
+  assert.deepEqual(
+    priorityFirstPage.items.map((item) => item.id),
+    [accountIds[0]!, ...statusAscendingIds.filter((id) => id !== accountIds[0]!)],
+    '投影查询必须始终先按 priority 排序，再按状态排序'
   )
 }
 

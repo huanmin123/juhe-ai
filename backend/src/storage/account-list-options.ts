@@ -48,16 +48,7 @@ interface AccountListNormalizationOptions {
   maxPageSize?: number
 }
 
-const accountListSortColumns: Record<AccountListSortField, string> = {
-  priority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_priority, account_rows.priority) ELSE account_rows.priority END",
-  superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END",
-  fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END",
-  name: 'account_rows.name',
-  type: 'account_rows.type',
-  providerCode: 'account_rows.provider_code',
-  systemAccount: 'system_account_sort_name',
-  concurrency: 'account_rows.concurrency_limit',
-  status: `CASE
+const accountListEffectiveStatusExpression = `CASE
     WHEN account_rows.access_type = 'authorized' THEN
       CASE
         WHEN group_bindings.group_id IS NULL
@@ -82,7 +73,29 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
         ELSE account_rows.status
       END
     ELSE account_rows.status
-  END`,
+  END`
+
+const accountListStatusRankExpression = `CASE ${accountListEffectiveStatusExpression}
+    WHEN 'active' THEN 1
+    WHEN 'temporary_unavailable' THEN 2
+    WHEN 'rate_limited' THEN 3
+    WHEN 'pending_test' THEN 4
+    WHEN 'quality_isolated' THEN 5
+    WHEN 'error' THEN 6
+    WHEN 'disabled' THEN 7
+    ELSE 8
+  END`
+
+const accountListSortColumns: Record<AccountListSortField, string> = {
+  priority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_priority, account_rows.priority) ELSE account_rows.priority END",
+  superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END",
+  fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END",
+  name: 'account_rows.name',
+  type: 'account_rows.type',
+  providerCode: 'account_rows.provider_code',
+  systemAccount: 'system_account_sort_name',
+  concurrency: 'account_rows.concurrency_limit',
+  status: accountListStatusRankExpression,
   accountExpiresAt: 'COALESCE(account_rows.authorization_expires_at, account_rows.account_expires_at)',
   lastUsedAt: 'account_rows.last_used_at'
 }

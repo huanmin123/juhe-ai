@@ -169,6 +169,68 @@ try {
     })
     return statusSnapshotService.hydrateAccountListPage(access, page)
   })
+
+  const managementStatusFixtures = [
+    { status: 'active', priority: 10 },
+    { status: 'temporary_unavailable', priority: 10 },
+    { status: 'rate_limited', priority: 10 },
+    { status: 'pending_test', priority: 10 },
+    { status: 'quality_isolated', priority: 10 },
+    { status: 'error', priority: 10 },
+    { status: 'disabled', priority: 10 },
+    { status: 'management_unknown', priority: 10 }
+  ] as const
+  const managementStatusAccounts = managementStatusFixtures.map(({ status, priority }, index) => {
+    const created = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: providerProtocol.GPT_OPENAI_V1_PROFILE_ID,
+      name: `管理列表状态排序-${String(index + 1).padStart(2, '0')}`,
+      type: 'api_key',
+      credentials: {
+        api_key: `sk-management-list-status-${index + 1}`,
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: ['gpt-5.4-mini'],
+      groupId: group.id,
+      status: 'active',
+      priority,
+      skipInitialHealthCheck: true
+    }, access)
+    businessDatabase.prepare('UPDATE accounts SET status = ?, schedulable = 1, cooldown_until = NULL, last_error_code = NULL WHERE id = ?').run(status, created.id)
+    return { id: created.id, status }
+  })
+  const statusFixtureIds = managementStatusAccounts.map(({ id }) => id)
+  const statusAscending = await listRepository.listAccountManagementItemsPageReadOnly(access, {
+    page: 1,
+    pageSize: statusFixtureIds.length,
+    ids: statusFixtureIds,
+    sorts: [{ field: 'status', order: 'asc' }]
+  })
+  assert.deepEqual(statusAscending.statusSeeds.map((item) => item.status), managementStatusAccounts.map(({ status }) => status), '管理列表 status ASC 必须按业务状态排名，未知值排在末尾')
+  const statusDescending = await listRepository.listAccountManagementItemsPageReadOnly(access, {
+    page: 1,
+    pageSize: statusFixtureIds.length,
+    ids: statusFixtureIds,
+    sorts: [{ field: 'status', order: 'desc' }]
+  })
+  assert.deepEqual(statusDescending.statusSeeds.map((item) => item.status), [...managementStatusAccounts].reverse().map(({ status }) => status), '管理列表 status DESC 必须反转业务状态排名')
+  const priorityDisabled = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: providerProtocol.GPT_OPENAI_V1_PROFILE_ID,
+    name: '管理列表 priority 一级停用', type: 'api_key',
+    credentials: { api_key: 'sk-management-list-priority-disabled', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.4-mini'], groupId: group.id, status: 'active', priority: 1, skipInitialHealthCheck: true
+  }, access)
+  const priorityActive = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: providerProtocol.GPT_OPENAI_V1_PROFILE_ID,
+    name: '管理列表 priority 一级启用', type: 'api_key',
+    credentials: { api_key: 'sk-management-list-priority-active', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.4-mini'], groupId: group.id, status: 'active', priority: 2, skipInitialHealthCheck: true
+  }, access)
+  businessDatabase.prepare('UPDATE accounts SET status = ? WHERE id = ?').run('disabled', priorityDisabled.id)
+  const priorityProbe = await listRepository.listAccountManagementItemsPageReadOnly(access, {
+    page: 1, pageSize: 2, ids: [priorityDisabled.id, priorityActive.id], sorts: [{ field: 'status', order: 'asc' }]
+  })
+  assert.deepEqual(priorityProbe.items.map((item) => item.id), [priorityDisabled.id, priorityActive.id], '管理列表 priority 必须保持一级排序，不得被 status 越级')
   const listSqlCapture = await captureSql(async () => {
     const page = await listRepository.listAccountManagementItemsPageReadOnly(access, {
       page: 1,
