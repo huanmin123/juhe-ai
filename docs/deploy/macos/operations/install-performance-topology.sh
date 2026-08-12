@@ -105,6 +105,10 @@ if { [ -n "$RUNTIME_DIR" ] && [ -z "$NGINX_UPSTREAM_SUFFIX" ]; } \
   echo '--runtime-dir and --nginx-upstream-suffix must be provided together' >&2
   exit 2
 fi
+if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ -z "$INSTANCE_ID_PREFIX" ]; then
+  echo '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled' >&2
+  exit 2
+fi
 case "$BASE_DIR$RELEASE_DIR$RUNTIME_DIR$NODE_PATH$NGINX_CONFIG$NGINX_BIN$NGINX_MAIN_CONFIG" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
     echo 'paths contain unsafe shell characters' >&2
@@ -173,6 +177,88 @@ fi
 if [ -n "$NGINX_MAIN_CONFIG" ]; then
   case "$NGINX_MAIN_CONFIG" in /*) ;; *) echo '--nginx-main-config must be absolute' >&2; exit 2 ;; esac
 fi
+if [ "$SCOPE" = system ] && [ -z "$NGINX_MAIN_CONFIG" ]; then
+  echo 'system scope requires an explicit --nginx-main-config' >&2
+  exit 2
+fi
+
+normalize_absolute_path() {
+  raw_path="$1"
+  normalized_path=
+  remaining_path="${raw_path#/}"
+  while :; do
+    case "$remaining_path" in
+      */*)
+        path_component="${remaining_path%%/*}"
+        remaining_path="${remaining_path#*/}"
+        has_more=1
+        ;;
+      *)
+        path_component="$remaining_path"
+        remaining_path=
+        has_more=0
+        ;;
+    esac
+    case "$path_component" in
+      ''|.) ;;
+      ..)
+        normalized_path="${normalized_path%/*}"
+        ;;
+      *)
+        normalized_path="$normalized_path/$path_component"
+        ;;
+    esac
+    [ "$has_more" -eq 1 ] || break
+  done
+  [ -n "$normalized_path" ] || normalized_path=/
+  printf '%s\n' "$normalized_path"
+}
+
+resolve_config_target_path() {
+  config_path="$(normalize_absolute_path "$1")" || return 1
+  config_parent="$(dirname -- "$config_path")"
+  config_name="$(basename -- "$config_path")"
+  unresolved_suffix=
+  existing_parent="$config_parent"
+  while [ ! -e "$existing_parent" ]; do
+    parent_name="$(basename -- "$existing_parent")"
+    unresolved_suffix="/$parent_name$unresolved_suffix"
+    next_parent="$(dirname -- "$existing_parent")"
+    [ "$next_parent" != "$existing_parent" ] \
+      || { echo "unable to resolve nginx config parent: $config_parent" >&2; return 1; }
+    existing_parent="$next_parent"
+  done
+  [ -d "$existing_parent" ] && [ ! -L "$existing_parent" ] \
+    || { echo "nginx config ancestor must be a real directory: $existing_parent" >&2; return 1; }
+  resolved_existing_parent="$(cd "$existing_parent" && pwd -P)" || return 1
+  if [ "$resolved_existing_parent" = / ]; then
+    resolved_parent="$unresolved_suffix"
+  else
+    resolved_parent="$resolved_existing_parent$unresolved_suffix"
+  fi
+  if [ "$resolved_parent" = / ]; then
+    printf '/%s\n' "$config_name"
+  else
+    printf '%s/%s\n' "$resolved_parent" "$config_name"
+  fi
+}
+
+NGINX_CONFIG="$(resolve_config_target_path "$NGINX_CONFIG")" || exit 2
+if [ -n "$NGINX_MAIN_CONFIG" ]; then
+  NGINX_MAIN_CONFIG="$(resolve_config_target_path "$NGINX_MAIN_CONFIG")" || exit 2
+  if [ "$NGINX_CONFIG" = "$NGINX_MAIN_CONFIG" ]; then
+    echo '--nginx-config must be an included slot file, not the nginx main config' >&2
+    exit 2
+  fi
+  if [ -e "$NGINX_CONFIG" ]; then
+    [ ! -L "$NGINX_CONFIG" ] \
+      || { echo "nginx slot config must not be a symbolic link: $NGINX_CONFIG" >&2; exit 2; }
+    if [ "$NGINX_CONFIG" -ef "$NGINX_MAIN_CONFIG" ]; then
+      echo '--nginx-config must not resolve to the nginx main config' >&2
+      exit 2
+    fi
+  fi
+fi
 
 printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s instance_id_prefix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
   "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
@@ -208,6 +294,21 @@ RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)" || exit 1
 # Dry-run only gates immutable release inputs. Platform and mutable runtime checks stay apply-only.
 [ "$MODE" = apply ] || exit 0
 
+assert_nginx_slot_included() {
+  expanded_config="$1"
+  slot_config="$2"
+  marker="# configuration file $slot_config:"
+  marker_line="$marker"$'\n'
+  slot_contents="$(cat -- "$slot_config")" \
+    || { echo "failed to read nginx slot config: $slot_config" >&2; return 1; }
+  normalized_expanded=$'\n'"$expanded_config"
+  include_block=$'\n'"$marker_line$slot_contents"
+  case "$normalized_expanded" in
+    *"$include_block"*) ;;
+    *) echo "nginx slot config is not included with matching contents by the active main config: $slot_config" >&2; return 1 ;;
+  esac
+}
+
 NODE_BIN="$(command -v node)"
 command -v launchctl >/dev/null
 command -v plutil >/dev/null
@@ -217,6 +318,11 @@ if [ "$NGINX_BIN" = nginx ]; then NGINX_BIN="$(command -v nginx)"; fi
 if [ -n "$NGINX_MAIN_CONFIG" ]; then
   [ -f "$NGINX_MAIN_CONFIG" ] && [ ! -L "$NGINX_MAIN_CONFIG" ] \
     || { echo "nginx main config is not a regular file: $NGINX_MAIN_CONFIG" >&2; exit 1; }
+  [ -f "$NGINX_CONFIG" ] && [ ! -L "$NGINX_CONFIG" ] \
+    || { echo "nginx slot config must already be an included regular file: $NGINX_CONFIG" >&2; exit 1; }
+  NGINX_EXPANDED_CONFIG="$("$NGINX_BIN" -T -c "$NGINX_MAIN_CONFIG" 2>&1)" \
+    || { echo 'nginx expanded configuration preflight failed' >&2; exit 1; }
+  assert_nginx_slot_included "$NGINX_EXPANDED_CONFIG" "$NGINX_CONFIG" || exit 1
 fi
 if [ "$SCOPE" = system ]; then
   [ "$(id -u)" -eq 0 ] || { echo 'system scope requires root' >&2; exit 1; }

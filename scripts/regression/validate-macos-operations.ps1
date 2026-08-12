@@ -105,7 +105,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_indexer', 'wait_for_table_monitor', 'wait_for_audit_log_writer', 'runtime-log-indexer', 'table-monitor', 'audit-log-writer', 'juhe-ai-runtime-log-indexer', 'juhe-ai-table-monitor', 'juhe-ai-audit-log-writer', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go runtime log indexer must be a regular file', 'Go table monitor must be a regular file', 'Go audit log writer must be a regular file', 'service user cannot execute Go runtime log indexer', 'service user cannot execute Go table monitor', 'service user cannot execute Go audit log writer', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'system scope requires an explicit --nginx-main-config', '--nginx-config must be an included slot file, not the nginx main config', 'nginx slot config must already be an included regular file', 'nginx slot config is not included with matching contents by the active main config', 'NGINX_EXPANDED_CONFIG', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'DATA_DIR="$RUNTIME_DIR/data"', 'DATA_DIR="$BASE_DIR/shared/data"', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_indexer', 'wait_for_table_monitor', 'wait_for_audit_log_writer', 'runtime-log-indexer', 'table-monitor', 'audit-log-writer', 'juhe-ai-runtime-log-indexer', 'juhe-ai-table-monitor', 'juhe-ai-audit-log-writer', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go runtime log indexer must be a regular file', 'Go table monitor must be a regular file', 'Go audit log writer must be a regular file', 'service user cannot execute Go runtime log indexer', 'service user cannot execute Go table monitor', 'service user cannot execute Go audit log writer', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 $releaseInputGateIndex = $performanceInstaller.IndexOf('[ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }', [StringComparison]::Ordinal)
@@ -115,7 +115,7 @@ $runtimeCreateIndex = $performanceInstaller.IndexOf('mkdir -p "$BIN_DIR" "$LOG_D
 if ($releaseInputGateIndex -lt 0 -or $dryRunExitIndex -lt $releaseInputGateIndex -or $nodeLookupIndex -lt $dryRunExitIndex -or $runtimeCreateIndex -lt $dryRunExitIndex) {
   throw 'Performance topology dry-run must gate immutable release inputs before exiting, while platform and mutable runtime work remains apply-only'
 }
-foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s')) {
+foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s', '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology instance identity contract missing: $contract" }
 }
 $productionCleanup = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'cleanup-production-artifacts.sh')
@@ -298,6 +298,7 @@ $renderRunScriptFunction = $performanceInstaller.Substring($renderRunScriptFunct
 $renderNginxFunctionStart = $performanceInstaller.IndexOf('render_nginx() {', [StringComparison]::Ordinal)
 $renderNginxFunctionEnd = $performanceInstaller.IndexOf("`n}", $renderNginxFunctionStart, [StringComparison]::Ordinal) + 3
 $renderNginxFunction = $performanceInstaller.Substring($renderNginxFunctionStart, $renderNginxFunctionEnd - $renderNginxFunctionStart)
+$nginxIncludeFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_nginx_slot_included'
 if (-not $runtimeManagedPathsFunction.Contains('"$DATA_DIR"', [StringComparison]::Ordinal) -or -not $runtimeOwnershipFunction.Contains('"$DATA_DIR"', [StringComparison]::Ordinal)) {
   throw 'Performance topology must manage and transfer ownership of the release-external data directory'
 }
@@ -336,8 +337,11 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
 }
 
 $performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
-foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'verify_gateway_ingress_once', 'verify_slots_stable', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_route_and_slots_stable', 'verify_target_and_ingress_stable', 'verify_degraded_source_preflight', 'verify_gateway_ingress_once', 'preflight receipt expired', 'preflight file fingerprint changed', '--preflight-max-age-seconds', '--degraded-source', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', '.route-target.', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
   if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
+}
+foreach ($contract in @('main and temporary control instance IDs must differ', 'main and temporary gateway instance prefixes must differ', 'slot topology identities must differ')) {
+  if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover identity isolation contract missing: $contract" }
 }
 if ($performanceHandover -match '\\beval\\b') { throw 'Performance handover must not evaluate plan values as shell code' }
 
@@ -391,6 +395,12 @@ printf '%s\n' "$default_output" | rg -Fq "data=$base/shared/data"
 isolated_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
 printf '%s\n' "$isolated_output" | rg -Fq "runtime=$base/runtime-temporary data=$base/runtime-temporary/data upstream_suffix=temporary_20260730 instance_id_prefix=temporary"
 [ ! -e "$base/runtime-temporary" ]
+
+if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf" >"$root/missing-instance-prefix.out" 2>&1; then
+  echo 'performance topology dry-run accepted isolated mode without an instance ID prefix' >&2
+  exit 1
+fi
+grep -Fq -- '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled' "$root/missing-instance-prefix.out"
 
 rm -f -- "$release/backend-go/juhe-ai-runtime-log-indexer"
 if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" >"$root/missing-indexer.out" 2>&1; then
@@ -490,6 +500,29 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
+[ -z "${HANDOVER_MUTATE_DURING_PROBE_FILE:-}" ] || [ -e "${HANDOVER_MUTATE_DURING_PROBE_MARKER:-}" ] || {
+  printf '\nmutated-during-probe\n' >> "$HANDOVER_MUTATE_DURING_PROBE_FILE"
+  touch "$HANDOVER_MUTATE_DURING_PROBE_MARKER"
+}
+[ -z "${HANDOVER_EXPIRE_DURING_PROBE_JOURNAL:-}" ] || [ -e "${HANDOVER_EXPIRE_DURING_PROBE_MARKER:-}" ] || {
+  sed 's/^preflight_epoch=.*/preflight_epoch=1/' "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL" > "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL.next"
+  mv "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL.next" "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL"
+  chmod 600 "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL"
+  touch "$HANDOVER_EXPIRE_DURING_PROBE_MARKER"
+}
+temporary_down="${HANDOVER_TEMPORARY_DOWN:-0}"
+[ -z "${HANDOVER_TEMPORARY_DOWN_FILE:-}" ] || [ ! -e "$HANDOVER_TEMPORARY_DOWN_FILE" ] || temporary_down=1
+main_down="${HANDOVER_MAIN_DOWN:-0}"
+[ -z "${HANDOVER_MAIN_DOWN_FILE:-}" ] || [ ! -e "$HANDOVER_MAIN_DOWN_FILE" ] || main_down=1
+case "$url" in
+  http://127.0.0.1:3599/*|http://127.0.0.1:3501/*|http://127.0.0.1:3502/*|http://127.0.0.1:3503/*) [ "$temporary_down" = 0 ] || exit 28 ;;
+  http://127.0.0.1:3399/*|http://127.0.0.1:3301/*|http://127.0.0.1:3302/*|http://127.0.0.1:3303/*) [ "$main_down" = 0 ] || exit 29 ;;
+  http://127.0.0.1:3099/*)
+    active_label="$(tr -d '\n' < "$HANDOVER_ROUTE_FILE")"
+    [ "$active_label" != temporary ] || [ "$temporary_down" = 0 ] || exit 28
+    [ "$active_label" != main ] || [ "$main_down" = 0 ] || exit 29
+    ;;
+esac
 case "$url" in
   http://127.0.0.1:3399/__aisys__/health) label=main; topology=main-identity; control_pid=101 ;;
   http://127.0.0.1:3599/__aisys__/health) label=temporary; topology=temporary-identity; control_pid=201 ;;
@@ -538,9 +571,24 @@ set -euo pipefail
 if [ "$1" = -t ]; then exit 0; fi
 if [ "$1" = -s ]; then
   if [ -n "${HANDOVER_FAIL_ONCE_FILE:-}" ] && [ ! -e "$HANDOVER_FAIL_ONCE_FILE" ]; then touch "$HANDOVER_FAIL_ONCE_FILE"; exit 1; fi
+  [ -z "${HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE:-}" ] || touch "$HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE"
+  [ -z "${HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE:-}" ] || touch "$HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE"
   exit 0
 fi
 exit 64
+EOF
+export HANDOVER_REAL_MV="$(command -v mv)"
+cat > "$root/fakebin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE:-}" ] \
+  && [ ! -e "$HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE" ] \
+  && [ -f "${1:-}" ] \
+  && grep -qx 'state=committed' "${1:-}"; then
+  touch "$HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE"
+  exit 74
+fi
+exec "$HANDOVER_REAL_MV" "$@"
 EOF
 chmod 700 "$root/fakebin"/*
 export PATH="$root/fakebin:$PATH"
@@ -652,6 +700,26 @@ fi
 cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
 chmod 600 "$root/plan/handover.conf"
 
+sed 's#^temporary_instance_id=.*#temporary_instance_id=control-1#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted equal main and temporary control instance IDs' >&2
+  exit 87
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
+sed 's#^temporary_topology_identity=.*#temporary_topology_identity=main-identity#' "$root/plan/handover.conf" > "$root/plan/handover.conf.next"
+mv "$root/plan/handover.conf.next" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted equal main and temporary topology identities' >&2
+  exit 88
+fi
+cp -p "$root/plan/handover.conf.clean" "$root/plan/handover.conf"
+chmod 600 "$root/plan/handover.conf"
+
 export HANDOVER_OVERLAP_PID=1
 if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
   echo 'handover accepted a PID shared by main and temporary gateway pools' >&2
@@ -680,13 +748,113 @@ if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/de
 fi
 unset HANDOVER_BAD_TOPOLOGY
 bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
+cp -p "$root/temporary" "$root/temporary.clean"
+printf 'changed-after-preflight\n' >> "$root/temporary"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a route fragment changed after preflight' >&2
+  exit 89
+fi
+cp -p "$root/temporary.clean" "$root/temporary"
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+sed 's/^preflight_epoch=.*/preflight_epoch=1/' "$root/plan/handover.journal" > "$root/plan/handover.journal.next"
+mv "$root/plan/handover.journal.next" "$root/plan/handover.journal"
+chmod 600 "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" --preflight-max-age-seconds 60 >/dev/null 2>&1; then
+  echo 'handover accepted an expired preflight receipt' >&2
+  exit 90
+fi
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+receipt_epoch="$(($(date +%s) - 61))"
+sed -e "s/^preflight_epoch=.*/preflight_epoch=$receipt_epoch/" -e 's/^preflight_max_age_seconds=.*/preflight_max_age_seconds=60/' "$root/plan/handover.journal" > "$root/plan/handover.journal.next"
+mv "$root/plan/handover.journal.next" "$root/plan/handover.journal"
+chmod 600 "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" --preflight-max-age-seconds 900 >/dev/null 2>&1; then
+  echo 'handover allowed the takeover command to extend the receipt max age' >&2
+  exit 91
+fi
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+sed 's/^route_sha256=\([0-9a-f]\{63\}\)[0-9a-f]$/route_sha256=\1/' "$root/plan/handover.journal" > "$root/plan/handover.journal.next"
+mv "$root/plan/handover.journal.next" "$root/plan/handover.journal"
+chmod 600 "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a truncated preflight fingerprint' >&2
+  exit 92
+fi
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
+expect_probe_mutation_rejected() {
+  mutation_file="$1" description="$2" backup="$mutation_file.probe-clean" marker="$root/probe-mutation-marker"
+  cp -p "$mutation_file" "$backup"
+  rm -f "$marker"
+  export HANDOVER_MUTATE_DURING_PROBE_FILE="$mutation_file" HANDOVER_MUTATE_DURING_PROBE_MARKER="$marker"
+  if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+    echo "handover accepted $description changed during the real-time probe" >&2
+    exit 93
+  fi
+  unset HANDOVER_MUTATE_DURING_PROBE_FILE HANDOVER_MUTATE_DURING_PROBE_MARKER
+  cp -p "$backup" "$mutation_file"
+  rm -f "$backup" "$marker"
+  chmod 600 "$root/plan/handover.conf"
+  bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+  bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+}
+
+expect_probe_mutation_rejected "$root/route" 'active route'
+expect_probe_mutation_rejected "$root/temporary" 'target fragment'
+expect_probe_mutation_rejected "$root/plan/handover.conf" 'handover plan'
+expect_probe_mutation_rejected "$root/nginx.conf" 'Nginx main config'
+
+export HANDOVER_EXPIRE_DURING_PROBE_JOURNAL="$root/plan/handover.journal" HANDOVER_EXPIRE_DURING_PROBE_MARKER="$root/probe-expiry-marker"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a receipt that expired during the real-time probe' >&2
+  exit 94
+fi
+unset HANDOVER_EXPIRE_DURING_PROBE_JOURNAL HANDOVER_EXPIRE_DURING_PROBE_MARKER
+rm -f "$root/probe-expiry-marker"
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
+export HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE="$root/temporary-down-after-reload"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover unexpectedly committed after the candidate failed following reload' >&2
+  exit 95
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
+unset HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE
+rm -f "$root/temporary-down-after-reload"
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
 bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null
 cmp "$root/temporary" "$root/route"
 grep -qx 'state=committed' "$root/plan/handover.journal"
 
-bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+export HANDOVER_TEMPORARY_DOWN=1
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'normal reverse preflight accepted a failed active candidate' >&2
+  exit 96
+fi
+export HANDOVER_MAIN_DOWN=1
+if bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source preflight accepted an unhealthy rollback target' >&2
+  exit 97
+fi
+unset HANDOVER_MAIN_DOWN
+cp -p "$root/main" "$root/route"
+if bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source preflight accepted a route that no longer points to the committed candidate' >&2
+  exit 98
+fi
+cp -p "$root/temporary" "$root/route"
+bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null
 bash '__CONTROLLER__' --apply --action switchback --plan-dir "$root/plan" >/dev/null
 cmp "$root/main" "$root/route"
+unset HANDOVER_TEMPORARY_DOWN
 if bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null 2>&1; then
   echo 'handover accepted recover from committed state' >&2
   exit 74
@@ -710,16 +878,127 @@ grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
 unset HANDOVER_FAIL_ONCE_FILE
 bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
 grep -qx 'state=preflight' "$root/plan/handover.journal"
+
+export HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE="$root/fail-committed-journal-once"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover unexpectedly succeeded after the committed journal write failed' >&2
+  exit 101
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
+unset HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE
+
+# A failed degraded-source switch must never restore the known-dead source slot.
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null
+export HANDOVER_TEMPORARY_DOWN=1 HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE="$root/main-down-after-reload" HANDOVER_MAIN_DOWN_FILE="$root/main-down-after-reload"
+bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null
+if bash '__CONTROLLER__' --apply --action switchback --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source switchback unexpectedly committed with an unhealthy target' >&2
+  exit 99
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-unproven' "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source recover accepted an unhealthy target' >&2
+  exit 100
+fi
+cmp "$root/main" "$root/route"
+rm -f "$root/main-down-after-reload"
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+cmp "$root/main" "$root/route"
+grep -qx 'state=committed' "$root/plan/handover.journal"
+unset HANDOVER_TEMPORARY_DOWN HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE HANDOVER_MAIN_DOWN_FILE
 '@
     $handoverUnixName = (& $bash.Source -c 'uname -s').Trim()
-    if ($handoverUnixName -in @('Darwin', 'Linux')) {
+    if ($handoverUnixName -match '^(Darwin|Linux|MINGW|MSYS|CYGWIN)') {
       & $bash.Source -c ($performanceHandoverHarness.Replace('__CONTROLLER__', ((Join-Path $operationsRoot 'performance-handover-controller.sh') -replace '\\', '/')))
       if ($LASTEXITCODE -ne 0) { throw 'performance handover controller apply/rollback harness failed' }
     } else {
-      Write-Verbose "Performance handover apply harness requires Darwin/Linux bash; current shell reports $handoverUnixName."
+      Write-Verbose "Performance handover apply harness requires a POSIX-compatible bash; current shell reports $handoverUnixName."
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted a missing service user' }
+    $systemMainConfigError = (& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/slot.conf' 2>&1) | Out-String
+    if ($LASTEXITCODE -eq 0 -or -not $systemMainConfigError.Contains('system scope requires an explicit --nginx-main-config', [StringComparison]::Ordinal)) {
+      throw 'performance topology system scope did not reject a missing nginx main config'
+    }
+    $sameNginxConfigError = (& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --nginx-main-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>&1) | Out-String
+    if ($LASTEXITCODE -eq 0 -or -not $sameNginxConfigError.Contains('--nginx-config must be an included slot file, not the nginx main config', [StringComparison]::Ordinal)) {
+      throw 'performance topology accepted the nginx main config as its included slot file'
+    }
+    $aliasedNginxConfigError = (& $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/./nginx.conf' --nginx-main-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>&1) | Out-String
+    if ($LASTEXITCODE -eq 0 -or -not $aliasedNginxConfigError.Contains('--nginx-config must be an included slot file, not the nginx main config', [StringComparison]::Ordinal)) {
+      throw 'performance topology accepted a dot-segment alias of the nginx main config'
+    }
+    $nginxIncludeMarkerHarness = @'
+set -euo pipefail
+slot_config=/tmp/juhe-ai-nginx-slot.conf
+marker="# configuration file $slot_config:"
+filler="$(printf '%1048576s' '')"
+slot_contents='server { listen 127.0.0.1:4400; }'
+printf '%s\n' "$slot_contents" > "$slot_config"
+expanded_config="$marker
+$slot_contents
+# configuration file /tmp/juhe-ai-next.conf:
+$filler"
+__NGINX_INCLUDE_FUNCTION__
+assert_nginx_slot_included "$expanded_config" "$slot_config"
+if assert_nginx_slot_included "$filler" "$slot_config" >/dev/null 2>&1; then
+  echo 'performance topology accepted an nginx expanded config without the slot include marker' >&2
+  exit 1
+fi
+forged_config="$marker
+server { listen 127.0.0.1:4499; }"
+if assert_nginx_slot_included "$forged_config" "$slot_config" >/dev/null 2>&1; then
+  echo 'performance topology accepted a forged nginx include marker with mismatched contents' >&2
+  exit 1
+fi
+rm -f -- "$slot_config"
+'@.Replace('__NGINX_INCLUDE_FUNCTION__', $nginxIncludeFunction)
+    & $bash.Source -c $nginxIncludeMarkerHarness
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology nginx include marker large-config harness failed' }
+    $nginxAliasHarness = @'
+set -euo pipefail
+installer="$1"
+root="/tmp/juhe-ai-nginx-alias.$$"
+mkdir -p "$root"
+trap 'rm -rf -- "$root"' EXIT
+printf 'events {}\n' > "$root/nginx.conf"
+mkdir "$root/sub"
+if bash "$installer" --dry-run --scope user --base-dir "$root" --nginx-config "$root/sub/../nginx.conf" --nginx-main-config "$root/nginx.conf" > "$root/output" 2>&1; then
+  echo 'performance topology accepted a parent-segment alias of the nginx main config' >&2
+  exit 1
+fi
+grep -Fq -- '--nginx-config must be an included slot file, not the nginx main config' "$root/output"
+ln "$root/nginx.conf" "$root/slot.conf"
+if bash "$installer" --dry-run --scope user --base-dir "$root" --nginx-config "$root/slot.conf" --nginx-main-config "$root/nginx.conf" > "$root/output" 2>&1; then
+  echo 'performance topology accepted a hard-link alias of the nginx main config' >&2
+  exit 1
+fi
+grep -Fq -- '--nginx-config must not resolve to the nginx main config' "$root/output"
+ln -s "$root/nginx.conf" "$root/symlink-slot.conf"
+if bash "$installer" --dry-run --scope user --base-dir "$root" --nginx-config "$root/symlink-slot.conf" --nginx-main-config "$root/nginx.conf" > "$root/output" 2>&1; then
+  echo 'performance topology accepted a symbolic-link slot config' >&2
+  exit 1
+fi
+grep -Fq 'nginx slot config must not be a symbolic link' "$root/output"
+printf 'events {}\n' > "$root/Nginx-Case.conf"
+if [ -e "$root/nginx-case.conf" ]; then
+  if bash "$installer" --dry-run --scope user --base-dir "$root" --nginx-config "$root/nginx-case.conf" --nginx-main-config "$root/Nginx-Case.conf" > "$root/output" 2>&1; then
+    echo 'performance topology accepted a case alias of the nginx main config' >&2
+    exit 1
+  fi
+  grep -Fq -- '--nginx-config must not resolve to the nginx main config' "$root/output"
+fi
+'@
+    $nginxAliasUnixName = (& $bash.Source -c 'uname -s').Trim()
+    if ($nginxAliasUnixName -in @('Darwin', 'Linux')) {
+      & $bash.Source -c $nginxAliasHarness bash ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/')
+      if ($LASTEXITCODE -ne 0) { throw 'performance topology nginx physical-alias harness failed' }
+    } else {
+      Write-Verbose "Nginx physical-alias harness requires Darwin/Linux bash; current shell reports $nginxAliasUnixName."
+    }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology user scope accepted a service user' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user root --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null

@@ -17,6 +17,19 @@ function Assert-SafePackageName {
   }
 }
 
+function Assert-SafeFrontendApiBaseUrl {
+  param([Parameter(Mandatory = $true)][string]$Value)
+
+  $contractPath = Join-Path $PSScriptRoot 'frontend-api-base-contract.mjs'
+  if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+    throw "Frontend API base validator not found: $contractPath"
+  }
+  $validationOutput = @(& node $contractPath $Value 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "FrontendApiBaseUrl is invalid: $($validationOutput -join ' ')"
+  }
+}
+
 function Resolve-SafeReleaseRoot {
   param(
     [Parameter(Mandatory = $true)][string]$BasePath,
@@ -142,8 +155,30 @@ function Invoke-ReleasePackageValidator {
   }
 }
 
+function New-VerifiedTarGzArchive {
+  param(
+    [Parameter(Mandatory = $true)][string]$ArchivePath,
+    [Parameter(Mandatory = $true)][string]$ReleaseDirectory,
+    [Parameter(Mandatory = $true)][string]$ReleasePackageName
+  )
+
+  & tar -czf $ArchivePath -C $ReleaseDirectory $ReleasePackageName
+  if ($LASTEXITCODE -ne 0) {
+    throw "tar.gz archive creation failed with exit code $LASTEXITCODE"
+  }
+  if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
+    throw "tar.gz archive was not created: $ArchivePath"
+  }
+  & tar -tzf $ArchivePath *> $null
+  if ($LASTEXITCODE -ne 0) {
+    throw "tar.gz archive verification failed with exit code $LASTEXITCODE"
+  }
+  Write-Host "==> Done: $ArchivePath"
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Assert-SafePackageName -Name $PackageName
+Assert-SafeFrontendApiBaseUrl -Value $FrontendApiBaseUrl
 $releaseRoot = Resolve-SafeReleaseRoot -BasePath $repoRoot -OutputDirectory $OutputDir
 Assert-SafeOutputAncestors -BasePath $repoRoot -CandidatePath $releaseRoot
 $packageRoot = [System.IO.Path]::Combine($releaseRoot, $PackageName)
@@ -350,8 +385,7 @@ if ($ArchiveFormat -eq 'tar.gz' -or $ArchiveFormat -eq 'both') {
   Write-Host '==> Creating tar.gz archive'
   Assert-SafeRemovalTarget -TargetPath $tarArchivePath -ExpectedParent $releaseRoot
   Remove-Item -LiteralPath $tarArchivePath -Force -ErrorAction SilentlyContinue
-  tar -czf $tarArchivePath -C $releaseRoot $PackageName
-  Write-Host "==> Done: $tarArchivePath"
+  New-VerifiedTarGzArchive -ArchivePath $tarArchivePath -ReleaseDirectory $releaseRoot -ReleasePackageName $PackageName
 }
 
 if ($ArchiveFormat -eq 'zip' -or $ArchiveFormat -eq 'both') {

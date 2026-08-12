@@ -45,7 +45,7 @@ curl -i http://127.0.0.1:3303/__aiinternal__/health
 tail -n 100 ./backend/logs/juhe-ai-audit-log-writer.log
 ```
 
-Node 两个 health 应为 `200`，F3 health 应为 `204`。macOS 三 sidecar 的常驻、readback 与回滚仍未现场验收；本示例只能用于 temporary release 预验证，不能直接执行生产切流。完整门禁见 [AI 部署执行清单](../AI部署执行清单.md)。
+Node 两个 health 应为 `200`，F3 health 应为 `204`。2026-08-11 已在隔离 temporary system launchd 环境完成三 sidecar 常驻、F1/F2/F3 readback、F3 重启接管与 rollback；2026-08-12 已完成正式拓扑接线，但首次上线发生硬停机和前端 API-base 构建事故。因此本页只保留为单进程手工启动示例，不能替代下一次独立 candidate 槽、真实登录态业务页、稳定窗口和 handover controller 验收，也不能直接执行生产切流。完整门禁见 [AI 部署执行清单](../AI部署执行清单.md)。
 
 后台“代理管理”新增：
 

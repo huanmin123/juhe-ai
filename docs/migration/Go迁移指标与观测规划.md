@@ -1,12 +1,12 @@
 # Go 迁移指标与观测规划
 
-> **现行观测口径（2026-08-08）。** 本文早期 W0-W11、PostgreSQL/Redis-only 和“W8 删除 DB service / SQLite”的条目仅保留为历史规划。当前以 B0、F1-F4 双模式完整功能策略为准：SQLite 与 PostgreSQL/Redis 都是 Go 的正式部署模式；SQLite 下 Node DB service、文件单 writer 和其 Node 运行态观测仍是正确性边界，不能因 Go runtime 指标替代而删除。Go runtime 仅以 `runtimeKind=go` 记录自身字段，不伪装为 Node `eventLoop` 或 `db-service`。
+> **现行观测口径（2026-08-12）。** 本文早期 W0-W11、PostgreSQL/Redis-only 和“W8 删除 DB service / SQLite”的条目仅保留为历史规划。当前以 B0、L1-L4 双模式完整功能策略为准：SQLite 与 PostgreSQL/Redis 都是 Go 的正式部署模式；SQLite 下 Node DB service、文件单 writer 和其 Node 运行态观测仍是正确性边界，不能因 Go runtime 指标替代而删除。Go runtime 仅以 `runtimeKind=go` 记录自身字段，不伪装为 Node `eventLoop` 或 `db-service`。
 
 ## 1. 文档目标
 
 本文用于固定 Node 转 Go 后的系统指标统计和观测口径，避免 Go 后端迁移完成后仍沿用 Node 事件循环、DB service 和 IPC 时代的指标字段。
 
-本文只规划 Go 目标口径和迁移门禁，不代表当前 Node 运行态已经改变。迁移期间当前 Node 系统监控页面、`system_metrics_*`、`process_event_loop_*`、DB service 和相关回归仍按现有实现维护；当某个完整功能完成 F3 / F4 接管时，仅替换该 Go runtime 的专属字段，不能据此删除 SQLite 模式的 Node 观测。
+本文只规划 Go 目标口径和迁移门禁，不代表当前 Node 运行态已经整体改变。迁移期间未接管功能的 Node 系统监控页面、`system_metrics_*`、`process_event_loop_*`、DB service 和相关回归仍按现有实现维护；当某个完整功能完成 L3/L4 接管时，仅替换该 Go runtime 的专属字段，不能据此删除 SQLite 模式的 Node 观测。
 
 字段级执行清单见 [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)。本文回答目标观测分层和指标口径，字段清单回答哪些 Node 字段必须删除、哪些 Go 字段接管、前端和测试如何验收。
 
@@ -124,7 +124,7 @@ Redis cache 与 state 必须使用不同 Redis 进程的物理 `host:port`；不
 - 用 `goRuntimeLatestStatus` / `goRuntimePeakStatus` / `goRuntimeTrend` 或等价字段替代 `processEventLoopLatestStatus` / `processEventLoopPeakStatus` / `processEventLoopTrend`。
 - 每个角色的不可观测状态继续使用 `sampleAvailable=false` 和 `null` 值，不能用 0 伪装正常。
 - Node 过渡期间如需要同时展示 Node 和 Go canary，只能在测试 / 灰度页显式区分 `runtimeKind=node|go`，不能把 Go 数据塞进 Node event loop 字段。
-- F4 只清零已接管完整功能的 Node 指标；SQLite profile 的 `db-service` 仍可作为 `runtimeKind=node` 显示，不能因 Go 功能接管而删除。
+- L4 只清零已接管完整功能的 Node 指标；SQLite profile 的 `db-service` 仍可作为 `runtimeKind=node` 显示，不能因 Go 功能接管而删除。
 
 推荐 Go runtime 行字段：
 
@@ -165,14 +165,14 @@ Go 系统指标迁移时建议拆分：
 
 上述表属于 Go 目标 schema 规划。迁移执行时可以按当时的 PostgreSQL schema 命名微调，但必须遵守两个原则：不继续维护 `process_event_loop_*` 作为 Go 长期表，不把 Prometheus 原始高基数时序完整复制进 PostgreSQL。
 
-## 8. 当前 B0、F1-F4 观测门禁
+## 8. 当前 B0、L1-L4 观测门禁
 
 | 阶段 | 指标要求 | 验收证据 |
 | --- | --- | --- |
 | B0 | SQLite 与 PostgreSQL/Redis Store、直接异步执行的启动错配 fail-fast；Node 与 Go `runtimeKind` 分离 | 双模式 adapter smoke、配置错误失败记录 |
-| F1 | 完整功能的 Node 文件、入口、调用方和副作用边界可观测 | 功能清单与归档计划 |
-| F2/F3 | Go 唯一 owner 的直接异步运行数、写入延迟、取消、失败、重启恢复和资源维度饱和可观测 | 双模式 smoke、Node drain、Go readiness、回滚演练 |
-| F4 | 活跃 Node 功能指标为零，归档不进入 runtime 指标 | manifest、静态搜索、构建和部署验证 |
+| L1 | 完整功能的 Node 文件、入口、调用方和副作用边界可观测 | 功能清单与归档计划 |
+| L2/L3 | Go 唯一 owner 的直接异步运行数、写入延迟、取消、失败、重启恢复和资源维度饱和可观测 | 双模式 smoke、Node drain、Go readiness、回滚演练 |
+| L4 | 活跃 Node 功能指标为零，归档不进入 runtime 指标 | manifest、静态搜索、构建和部署验证 |
 
 ### 历史 W0-W11 观测门禁（非当前执行依据）
 

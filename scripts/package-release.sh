@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+HOST_UNAME="$(uname -s 2>/dev/null || printf '%s' 'unknown')"
+case "${OS:-}:$HOST_UNAME" in
+  Windows_NT:*|*:Windows_NT|*:MINGW*|*:MSYS*|*:CYGWIN*)
+    echo 'package-release.sh requires native macOS or Linux. On Windows use: pnpm package:release:windows' >&2
+    exit 2
+    ;;
+esac
+unset HOST_UNAME
+
 OUTPUT_DIR="release"
 PACKAGE_NAME="juhe-ai-release"
 ARCHIVE_FORMAT="both"
@@ -9,6 +18,10 @@ FRONTEND_GATEWAY_BASE_URL=""
 EXPECTED_COMMIT=""
 TARGET_GOOS=""
 TARGET_GOARCH=""
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VALIDATOR_PATH="$SCRIPT_DIR/validate-release-package.mjs"
+API_BASE_CONTRACT_PATH="$SCRIPT_DIR/frontend-api-base-contract.mjs"
 
 usage() {
   cat <<'USAGE'
@@ -73,6 +86,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+command -v node >/dev/null 2>&1 || { echo 'node is required to validate the frontend API base URL' >&2; exit 2; }
+node "$API_BASE_CONTRACT_PATH" "$FRONTEND_API_BASE_URL" \
+  || { echo 'frontend API base URL must satisfy the shared strict contract' >&2; exit 2; }
+
 case "$ARCHIVE_FORMAT" in
   tar.gz|zip|both) ;;
   *)
@@ -126,10 +143,6 @@ case "$TARGET_GOARCH" in
     exit 1
     ;;
 esac
-
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VALIDATOR_PATH="$SCRIPT_DIR/validate-release-package.mjs"
 
 case "$PACKAGE_NAME" in
   ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)
@@ -442,7 +455,6 @@ if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   TMP_TAR_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar"
   assert_safe_removal_target "$TMP_TAR_PATH" "$RELEASE_ROOT"
   rm -f "$TMP_TAR_PATH"
-  # Git Bash on Windows does not reliably preserve chmod bits in the tar input.
   # Exclude runtime entrypoints from the bulk archive and append them explicitly
   # with executable mode so Linux/macOS extraction can launch the release.
   tar -cf "$TMP_TAR_PATH" \

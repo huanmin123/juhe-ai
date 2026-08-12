@@ -203,6 +203,18 @@ F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-au
 
 同日已在目标 Intel Mac 的隔离目录从固定 commit `39b2cc68983c88959872d797312ece2f6de714cb` 使用 Node 22 与 BSD tar 生成 `tar.gz`，校验归档内 `start.sh` 和 F1/F2/F3 三个二进制的执行权限，解包后完成该安装器的 `--dry-run`，并确认缺少 F3 时必然拒绝。该归档及临时目录均已删除；它仅证明构建与静态安装输入，不替代 temporary `--apply`、Node -> F3 -> Node 读回、稳定观察或 rollback。正式候选必须在最终冻结 commit 重新生成并记录 archive SHA-256。
 
+### 4.3 生产升级与无感切流
+
+生产升级不再通过“切换 `current` 后重启 active 服务”完成。该做法会在同端口、同 label 上停止现有进程，无法提供零停机证明。
+
+1. 从冻结 commit 构建不可变 release，核对 archive SHA-256、`RELEASE_SOURCE_COMMIT`、前端 `buildId` 和目标架构。
+2. 使用独立 candidate runtime、label、端口、Nginx slot include、upstream suffix、instance ID、Redis 身份和 F1/F2/F3 owner 身份执行 system `--apply`。system scope 必须同时传入 `--nginx-config <slot include>` 与 `--nginx-main-config <main config>`，两者不得相同。
+3. 在 candidate 直连入口完成 Node 双 health、三个 gateway、worker/PID、F1/F2 freshness、F3 HMAC/读回、网关请求、登录态管理页和业务 API 验证。浏览器必须实际进入至少一个依赖 API 的页面；只加载 `index.html` 或得到 health `200` 不算通过。
+4. 高性能拓扑只使用 `performance-handover-controller.sh` 执行 `preflight -> takeover`。先在旧槽承流时完成 candidate 全部慢验证；`preflight` 将两槽与当前入口合并观察并生成默认 300 秒有效的文件指纹凭证，`takeover` 复用该证据，只做一次实时身份复核、原子 route 切换和一轮合并稳定观察。保存 committed journal、route identity、access-log 增量和稳定窗口证据。`temporary-cutover.sh` 不适用于多 gateway 生产；完整顺序见 [生产发布快速流程](../生产发布快速流程.md)。
+5. 切流后保留旧槽。稳定观察通过后才更新 `current` 指针并清理旧槽。若 takeover 尚未 committed 而中断，按 journal 执行 `recover`；若已经 committed 后业务页或稳定窗口失败，重新对旧槽执行反向 `preflight`，再执行 `switchback`。新槽已宕机时使用显式 `preflight --degraded-source`，它只证明旧槽回切目标健康且当前 route 仍指向 committed 新槽，不要求故障源恢复；随后执行 `switchback`。`stable` 不是可执行命令。不得在未知状态下杀进程或原地重装。
+
+2026-08-12 的首次 F3 正式上线发生过硬停机，且前端构建把根相对 API base 错误转换成 Windows 磁盘路径，导致静态页面和 health 正常但浏览器 API 全部失败。该事故证明“HTTP `200`”不足以验收发布；后续必须同时执行构建产物 API-base 扫描和真实浏览器登录态业务页验证。此记录不表示零停机流程已经在生产证明，下一次发布必须先完成完整 candidate/handover 演练。
+
 ## 5. HTTPS 和端口边界
 
 macOS 生产建议宿主机 Caddy 监听 `80/443`，反向代理到 `127.0.0.1:3000`。完整 Caddyfile 见 [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md)。

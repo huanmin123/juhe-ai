@@ -12,7 +12,7 @@
 
 - 发布包：阅读 [构建指南](构建指南.md) 和 release 内的 [快速部署说明](../../deploy/README.md)。
 - Docker standalone 或 performance：阅读 [Docker 部署指南](Docker部署指南.md) 和 `docker/README.md`。
-- macOS：先阅读 [macOS 部署指南](macos/macOS部署指南.md)；生产 Mac 还必须按受限的现场 runbook 执行，不能把本开发文档当成切流授权。
+- macOS：先阅读 [生产发布快速流程](生产发布快速流程.md) 和 [macOS 部署指南](macos/macOS部署指南.md)；生产 Mac 还必须按受限的现场 runbook 执行，不能把本开发文档当成切流授权。
 
 同一数据目录、数据库或 Redis namespace 不能同时由发布包与 Docker 两套部署使用。
 
@@ -24,6 +24,7 @@
 4. SQLite 模式下，业务、dataset、usage catalog、stats、F1、F2、F3 的七个 SQLite 文件必须物理隔离；usage shard 根目录也不得与它们重叠。路径、hard link 或 symlink 不能用来绕过该约束。
 5. F3 不能只依赖 `JUHE_AI_SECRET`。必须配置稳定的 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` 和独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`；production 中该 secret 至少 32 位。Node 与 F3 还必须使用同一个 loopback `JUHE_AI_AUDIT_LOG_INPUT_URL` / `JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS` 端口。
 6. `NODE_ENV=production` 的 performance 模式必须为每个 Node 进程配置稳定且唯一的 `JUHE_AI_INSTANCE_ID`；缺失时 Node 拒绝启动。不得把临时 PID 当作生产 owner。
+7. 构建入口必须与目标平台一致：Windows 只在原生 PowerShell 执行 Windows 打包；生产 Mac 只在目标 Mac 或受控原生 macOS 构建。不得从 Git Bash、MSYS、Cygwin 或 w64devkit 启动发布构建。核对 `RELEASE_SOURCE_COMMIT`、`frontend/dist/build-info.json` 的 `buildId` 与冻结 commit 一致；字符串搜索只用于故障诊断，不作为压缩 bundle 的发布契约。
 
 任一项无法证明时停止部署，保留原始错误；不得用另一种存储、旧 Node writer、队列或临时 fallback 继续运行。
 
@@ -36,7 +37,8 @@
 5. 仅通过 release 根目录的 `start.sh` 或 `start.ps1` 启动。它会在 Node DB-ready health 成功后启动 F1、F2、F3，并维持 PID、日志与退出联动；不要绕过它单独常驻 Node、worker 或 sidecar。
 6. macOS system `launchd` 场景中，完成目标机 `pnpm install --prod` 后再由 root 固定 release 的所有权与权限：服务用户必须可递归读取/执行 release，但不能写 release；只有 runtime、日志和 spool 目录可由服务用户写入。`--apply` 必须通过 `sudo` 运行并显式传 `--service-user`。
 7. 验证 Node `/__aisys__/health` 和 `/__aisys__/api/health` 均为 `200`，F3 `GET /__aiinternal__/health` 为 `204`，并检查 `backend/logs/` 中三个 sidecar 的日志。随后通过 Node 只读接口确认 F1 runtime logs 和 F2 snapshots 新鲜，再通过一次真实审计输入的管理端详情读回确认 Node -> F3 -> Node。
-8. 升级前保留当前 release 和业务恢复点；生产不得使用会删除数据的清理操作。
+8. 使用真实浏览器和现有登录态打开 candidate 的管理页，至少进入一个依赖业务 API 的账户页或统计页，确认无恢复页、Axios scheme/network 错误，且业务数据实际渲染。health、静态 HTML、HTTP `200` 均不能替代这一步。
+9. 升级前保留当前 release 和业务恢复点；生产不得使用会删除数据的清理操作。
 
 发布包具体变量、命令和 PID/log 路径以 [快速部署说明](../../deploy/README.md) 为准。
 
@@ -58,7 +60,7 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 
 同日还在目标 Intel Mac 的隔离目录，以 commit `39b2cc68983c88959872d797312ece2f6de714cb` 使用受支持的 Node 22 与 BSD tar 完成了 `tar.gz` 构建、发布目录校验、F1/F2/F3 可执行权限校验、解包后的 `install-performance-topology.sh --dry-run`，并验证缺少 F3 二进制会被明确拒绝。该归档和全部临时目录已删除，不可作为正式候选复用。正式窗口仍须从最终冻结 commit 重新构建，记录 archive SHA-256，并完成 temporary `--apply`、Node HTTP 读回、稳定观察和回滚演练。
 
-不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。
+不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。2026-08-12 首次 F3 正式上线发生过硬停机，且错误的 Windows 盘符 API base 使静态页面可加载但所有管理 API 失败；后续 Mac 高性能发布必须按 [生产发布快速流程](生产发布快速流程.md) 使用独立 candidate 槽，把所有慢操作移出切流窗口，完成真实浏览器登录态业务页验证后再使用带时效和文件指纹的 `preflight -> takeover`。同槽原地 apply 不是零停机流程。
 
 ## 6. 验收记录格式
 
@@ -67,6 +69,8 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 - release commit、archive SHA-256、目标 OS/arch、部署方式和开始/结束时间；
 - 配置文件路径与变量名是否齐全，不记录变量值或密钥；
 - Node 两个 health、F3 `204`、F1/F2 新鲜度、F3 读回的命令和结果；
+- 原生构建环境、固定 commit/buildId、真实浏览器登录态业务页、控制台网络错误与恢复页检查结果；
+- candidate/main 的独立 label、端口、PID、route identity、handover journal、access-log 增量和稳定观察结果；
 - 四个进程或容器的 PID/名称、日志路径、退出联动结果；
 - 使用的临时数据库/Redis namespace、清理或保留结论；
 - 失败时的原始错误、未执行的步骤和回滚状态。
