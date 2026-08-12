@@ -180,7 +180,9 @@ export function scanJavaScriptLexicalRanges(contents) {
           end: value.end,
           value: evaluated.value
         })
-      } else if (containsApiMarker(value)) {
+      } else if (value.type === 'TemplateLiteral'
+        ? value.quasis.some((quasi) => quasi.value.cooked?.includes(FRONTEND_API_MARKER))
+        : containsApiMarker(value)) {
         ranges.push({
           type: 'dynamic-string',
           start: value.start,
@@ -189,9 +191,10 @@ export function scanJavaScriptLexicalRanges(contents) {
           hasMarker: true
         })
       }
-      if (value.type === 'Literal'
-        || value.type === 'TemplateLiteral'
-        || value.type === 'BinaryExpression') {
+      if (evaluated.known
+        || value.type === 'Literal'
+        || value.type === 'BinaryExpression'
+        || ranges.at(-1)?.start === value.start) {
         return
       }
     }

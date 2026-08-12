@@ -280,7 +280,8 @@ try {
 
   for (const staticExpression of [
     'const apiBase = "/__aisys__" + "/api"',
-    'const apiBase = `/__aisys__/api`'
+    'const apiBase = `/__aisys__/api`',
+    'const requestUrl = `${normalize("/__aisys__/api")}${endpoint}`'
   ]) {
     const staticExpressionFixture = await resetFixture()
     const staticExpressionBundlePath = path.join(
