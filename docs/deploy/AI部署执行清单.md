@@ -24,7 +24,7 @@
 4. SQLite 模式下，业务、dataset、usage catalog、stats、F1、F2、F3 的七个 SQLite 文件必须物理隔离；usage shard 根目录也不得与它们重叠。路径、hard link 或 symlink 不能用来绕过该约束。
 5. F3 不能只依赖 `JUHE_AI_SECRET`。必须配置稳定的 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` 和独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`；production 中该 secret 至少 32 位。Node 与 F3 还必须使用同一个 loopback `JUHE_AI_AUDIT_LOG_INPUT_URL` / `JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS` 端口。
 6. `NODE_ENV=production` 的 performance 模式必须为每个 Node 进程配置稳定且唯一的 `JUHE_AI_INSTANCE_ID`；缺失时 Node 拒绝启动。不得把临时 PID 当作生产 owner。
-7. 扫描最终 `frontend/dist/assets`：必须存在根相对 `/__aisys__/api`，不得存在 `[A-Za-z]:/.../__aisys__/api` 或其它文件系统形式的 API base。不能只检查 `index.html`、`build-info.json` 或静态资源 HTTP `200`。
+7. 构建入口必须与目标平台一致：Windows 只在原生 PowerShell 执行 Windows 打包；生产 Mac 只在目标 Mac 或受控原生 macOS 构建。不得从 Git Bash、MSYS、Cygwin 或 w64devkit 启动发布构建。核对 `RELEASE_SOURCE_COMMIT`、`frontend/dist/build-info.json` 的 `buildId` 与冻结 commit 一致；字符串搜索只用于故障诊断，不作为压缩 bundle 的发布契约。
 
 任一项无法证明时停止部署，保留原始错误；不得用另一种存储、旧 Node writer、队列或临时 fallback 继续运行。
 
@@ -69,7 +69,7 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 - release commit、archive SHA-256、目标 OS/arch、部署方式和开始/结束时间；
 - 配置文件路径与变量名是否齐全，不记录变量值或密钥；
 - Node 两个 health、F3 `204`、F1/F2 新鲜度、F3 读回的命令和结果；
-- 前端 bundle API-base 扫描、真实浏览器登录态业务页、控制台网络错误与恢复页检查结果；
+- 原生构建环境、固定 commit/buildId、真实浏览器登录态业务页、控制台网络错误与恢复页检查结果；
 - candidate/main 的独立 label、端口、PID、route identity、handover journal、access-log 增量和稳定观察结果；
 - 四个进程或容器的 PID/名称、日志路径、退出联动结果；
 - 使用的临时数据库/Redis namespace、清理或保留结论；

@@ -2,7 +2,7 @@
 
 - [BUG-0149](问题-0149-多轮生产发布停机与流程失控.md)：多轮生产发布把构建、候选准备、切流、验证和清理混在同一窗口，导致硬停机和小时级操作；现收敛为独立 candidate、带时效指纹 preflight、原子 handover 与保留旧槽回切。
 
-- [BUG-0148](问题-0148-Windows路径转换破坏前端APIBase.md)：Windows/MSYS 把根相对前端 API base 转换为磁盘路径，导致 health 和静态页面正常但浏览器管理 API 全部失败；已增加打包拒绝、bundle 扫描和真实浏览器 candidate 门禁。
+- [BUG-0148](问题-0148-Windows路径转换破坏前端APIBase.md)：Windows/MSYS 把根相对前端 API base 转换为磁盘路径，导致 health 和静态页面正常但浏览器管理 API 全部失败；已禁止 Windows Bash 正式构建，生产 Mac 包改为原生 macOS 构建，并保留真实浏览器 candidate 门禁。
 
 - [BUG-0147](问题-0147-mac候选发布依赖预检缺失.md)：macOS temporary 候选发布没有在启动前验证离线依赖 store 与受支持 Node 版本，在线安装会无界等待；待补齐预检门禁。
 

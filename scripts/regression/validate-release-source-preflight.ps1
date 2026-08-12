@@ -174,44 +174,45 @@ try {
     }
   }
 
-  $bashCommand = Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($bashCommand) {
+  $bashCommands = @(Get-Command bash -All -ErrorAction SilentlyContinue | Where-Object Source | Sort-Object Source -Unique)
+  if ($bashCommands.Count -gt 0) {
     $packageBashPath = (Join-Path $repoRoot 'scripts\package-release.sh') -replace '\\', '/'
-    $invalidBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir (($tempRoot -replace '\\', '/') + '/invalid-bash-output') --frontend-api-base-url 'E:/Git/__aisys__/api' 2>&1)
-    if ($LASTEXITCODE -eq 0 -or ($invalidBashOutput -join "`n") -notmatch 'shared strict contract') {
-      throw "bash package script did not reject a filesystem frontend API base URL: $($invalidBashOutput -join "`n")"
-    }
-    if (Test-Path -LiteralPath (Join-Path $tempRoot 'invalid-bash-output')) {
-      throw 'bash package script mutated output before rejecting the API base URL'
-    }
-    $invalidUnixBashPath = Join-Path $tempRoot 'invalid-bash-unix-output'
-    $invalidUnixBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir ($invalidUnixBashPath -replace '\\', '/') --frontend-api-base-url '/Users/example/release/__aisys__/api' 2>&1)
-    if ($LASTEXITCODE -eq 0 -or ($invalidUnixBashOutput -join "`n") -notmatch 'shared strict contract') {
-      throw "bash package script accepted a Unix filesystem frontend API base URL: $($invalidUnixBashOutput -join "`n")"
-    }
-    if (Test-Path -LiteralPath $invalidUnixBashPath) {
-      throw 'bash package script mutated output before rejecting the Unix API base URL'
-    }
-    foreach ($malformedUrl in @('http://', 'https://')) {
-      $malformedOutputName = 'invalid-bash-http-' + ([Guid]::NewGuid().ToString('N'))
-      $malformedOutputPath = Join-Path $tempRoot $malformedOutputName
-      $malformedBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir ($malformedOutputPath -replace '\\', '/') --frontend-api-base-url $malformedUrl 2>&1)
-      if ($LASTEXITCODE -eq 0 -or ($malformedBashOutput -join "`n") -notmatch 'shared strict contract') {
-        throw "bash package script accepted malformed HTTP API base ${malformedUrl}: $($malformedBashOutput -join "`n")"
+    if ($IsWindows) {
+      $originalOS = $env:OS
+      try {
+        foreach ($windowsBashCommand in $bashCommands) {
+          $bashLabel = [IO.Path]::GetFileName((Split-Path -Parent $windowsBashCommand.Source))
+          $windowsBashCases = @(
+            [pscustomobject]@{ Name = 'normal'; OS = $originalOS; Args = @('--output-dir', ((Join-Path $tempRoot "unsupported-$bashLabel-normal") -replace '\\', '/')); OutputPath = (Join-Path $tempRoot "unsupported-$bashLabel-normal") },
+            [pscustomobject]@{ Name = 'help'; OS = $originalOS; Args = @('--help'); OutputPath = $null },
+            [pscustomobject]@{ Name = 'unknown'; OS = $originalOS; Args = @('--unknown-option'); OutputPath = $null },
+            [pscustomobject]@{ Name = 'missing-value'; OS = $originalOS; Args = @('--output-dir'); OutputPath = $null },
+            [pscustomobject]@{ Name = 'empty-os'; OS = ''; Args = @('--goos', 'darwin', '--goarch', 'amd64', '--output-dir', ((Join-Path $tempRoot "unsupported-$bashLabel-empty-os") -replace '\\', '/')); OutputPath = (Join-Path $tempRoot "unsupported-$bashLabel-empty-os") },
+            [pscustomobject]@{ Name = 'overridden-os'; OS = 'NotWindows'; Args = @('--goos', 'darwin', '--goarch', 'amd64', '--output-dir', ((Join-Path $tempRoot "unsupported-$bashLabel-overridden-os") -replace '\\', '/')); OutputPath = (Join-Path $tempRoot "unsupported-$bashLabel-overridden-os") }
+          )
+          foreach ($windowsBashCase in $windowsBashCases) {
+            $env:OS = $windowsBashCase.OS
+            $unsupportedOutput = @(& $windowsBashCommand.Source $packageBashPath @($windowsBashCase.Args) 2>&1)
+            if ($LASTEXITCODE -ne 2 -or ($unsupportedOutput -join "`n") -notmatch 'requires native macOS or Linux') {
+              throw "Windows bash package entry must fail at the environment gate ($($windowsBashCommand.Source), $($windowsBashCase.Name)): $($unsupportedOutput -join "`n")"
+            }
+            if ($windowsBashCase.OutputPath -and (Test-Path -LiteralPath $windowsBashCase.OutputPath)) {
+              throw "Windows bash package entry mutated output before rejecting the unsupported environment: $($windowsBashCommand.Source), $($windowsBashCase.Name)"
+            }
+          }
+        }
+      } finally {
+        $env:OS = $originalOS
       }
-      if (Test-Path -LiteralPath $malformedOutputPath) {
-        throw "bash package script mutated output before rejecting malformed HTTP API base ${malformedUrl}"
+    } else {
+      $bashCommand = $bashCommands | Select-Object -First 1
+      $invalidUnixBashPath = Join-Path $tempRoot 'invalid-bash-unix-output'
+      $invalidUnixBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir $invalidUnixBashPath --frontend-api-base-url '/Users/example/release/__aisys__/api' 2>&1)
+      if ($LASTEXITCODE -eq 0 -or ($invalidUnixBashOutput -join "`n") -notmatch 'shared strict contract') {
+        throw "native bash package script accepted a Unix filesystem frontend API base URL: $($invalidUnixBashOutput -join "`n")"
       }
-    }
-    foreach ($invalidApiBase in $invalidApiBases) {
-      $invalidOutputName = 'invalid-bash-contract-' + ([Guid]::NewGuid().ToString('N'))
-      $invalidOutputPath = Join-Path $tempRoot $invalidOutputName
-      $invalidBashOutput = @(& $bashCommand.Source $packageBashPath --output-dir ($invalidOutputPath -replace '\\', '/') --frontend-api-base-url $invalidApiBase 2>&1)
-      if ($LASTEXITCODE -eq 0 -or ($invalidBashOutput -join "`n") -notmatch 'shared strict contract') {
-        throw "bash package script accepted invalid API base ${invalidApiBase}: $($invalidBashOutput -join "`n")"
-      }
-      if (Test-Path -LiteralPath $invalidOutputPath) {
-        throw "bash package script mutated output before rejecting invalid API base: $invalidApiBase"
+      if (Test-Path -LiteralPath $invalidUnixBashPath) {
+        throw 'native bash package script mutated output before rejecting the Unix API base URL'
       }
     }
   }
@@ -279,13 +280,16 @@ try {
     throw 'PowerShell package script reported completion after tar failed'
   }
   $packageBash = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\package-release.sh') -Raw
-  foreach ($required in @('--expected-commit', 'assert-release-source.sh', 'RELEASE_SOURCE_COMMIT', 'frontend-api-base-contract.mjs', 'shared strict contract', 'node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"')) {
+  foreach ($required in @('--expected-commit', 'assert-release-source.sh', 'RELEASE_SOURCE_COMMIT', 'frontend-api-base-contract.mjs', 'shared strict contract', 'Windows_NT:*', '*:Windows_NT', 'requires native macOS or Linux', 'node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"')) {
     if ($packageBash -notmatch [regex]::Escape($required)) {
       throw "bash package script must include release source gate: $required"
     }
   }
   if ($packageBash -match 'BASH_SOURCE') {
     throw 'bash package script must resolve its directory from portable $0 semantics'
+  }
+  if ($packageBash -match 'MSYS2_(?:ARG|ENV)_CONV_EXCL|MSYS_NO_PATHCONV|JUHE_AI_FRONTEND_API_BASE_URL') {
+    throw 'bash package script must reject MSYS instead of maintaining path-conversion compatibility'
   }
   if ([regex]::Matches($packageBash, 'assert-release-source\.sh').Count -lt 2) {
     throw 'bash package script must recheck the release source after the build'

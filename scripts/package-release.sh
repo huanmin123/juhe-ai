@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+HOST_UNAME="$(uname -s 2>/dev/null || printf '%s' 'unknown')"
+case "${OS:-}:$HOST_UNAME" in
+  Windows_NT:*|*:Windows_NT|*:MINGW*|*:MSYS*|*:CYGWIN*)
+    echo 'package-release.sh requires native macOS or Linux. On Windows use: pnpm package:release:windows' >&2
+    exit 2
+    ;;
+esac
+unset HOST_UNAME
+
 OUTPUT_DIR="release"
 PACKAGE_NAME="juhe-ai-release"
 ARCHIVE_FORMAT="both"
-FRONTEND_API_BASE_URL="${JUHE_AI_FRONTEND_API_BASE_URL:-/__aisys__/api}"
+FRONTEND_API_BASE_URL="/__aisys__/api"
 FRONTEND_GATEWAY_BASE_URL=""
 EXPECTED_COMMIT=""
 TARGET_GOOS=""
@@ -23,7 +32,6 @@ Options:
   --package-name <name>              Package folder/archive name. Default: juhe-ai-release
   --archive-format <tar.gz|zip|both> Archive format. Default: both
   --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /__aisys__/api
-                                     May also be supplied via JUHE_AI_FRONTEND_API_BASE_URL.
   --frontend-gateway-base-url <url>  Frontend gateway base URL injected at build time. Default: infer from browser origin
   --expected-commit <sha>            Require the release source to match this full commit SHA
   --goos <linux|darwin>              Go indexer target OS. Default: current Unix host OS
@@ -77,15 +85,6 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*)
-    # Git Bash rewrites POSIX-looking arguments and environment values before
-    # starting Windows executables. Keep the validated API base byte-for-byte.
-    export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+${MSYS2_ARG_CONV_EXCL};}${FRONTEND_API_BASE_URL}"
-    export MSYS2_ENV_CONV_EXCL="${MSYS2_ENV_CONV_EXCL:+${MSYS2_ENV_CONV_EXCL};}JUHE_AI_FRONTEND_API_BASE_URL;VITE_JUHE_AI_API_BASE_URL"
-    ;;
-esac
 
 command -v node >/dev/null 2>&1 || { echo 'node is required to validate the frontend API base URL' >&2; exit 2; }
 node "$API_BASE_CONTRACT_PATH" "$FRONTEND_API_BASE_URL" \
@@ -456,7 +455,6 @@ if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   TMP_TAR_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar"
   assert_safe_removal_target "$TMP_TAR_PATH" "$RELEASE_ROOT"
   rm -f "$TMP_TAR_PATH"
-  # Git Bash on Windows does not reliably preserve chmod bits in the tar input.
   # Exclude runtime entrypoints from the bulk archive and append them explicitly
   # with executable mode so Linux/macOS extraction can launch the release.
   tar -cf "$TMP_TAR_PATH" \

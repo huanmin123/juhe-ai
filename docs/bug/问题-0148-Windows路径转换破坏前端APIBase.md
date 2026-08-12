@@ -12,7 +12,7 @@
 
 ## 根因
 
-正式包由 Windows 侧构建。根相对参数经过 Git Bash/MSYS 到 PowerShell 的 shell 边界时发生路径转换，最终把磁盘路径注入 Vite bundle。发布流程只校验了 source commit、文件存在、静态资源和 health，没有扫描最终 bundle，也没有在 candidate 上执行真实浏览器登录态业务页。
+正式包由 Windows 侧通过 Git Bash/MSYS 启动 Windows `node`/`pnpm` 构建。MSYS 在进程启动边界把根相对参数和环境变量当作 POSIX 路径转换，最终把磁盘路径注入 Vite bundle。Vite、压缩器、Node 和 pnpm 接收到的已经是错误值；它们不是转换源。
 
 该问题与 recovery 开关、认证 session、Go F3 writer 或 Nginx route 无关。页面进入恢复路由只是前端认证/API 请求失败后的可见结果。
 
@@ -25,15 +25,16 @@
 
 ## 永久门禁
 
-- `scripts/package-release.ps1` 和 `scripts/package-release.sh` 在修改输出目录前只接受严格的 HTTP(S) API base 或精确的根相对值 `/__aisys__/api`（总长度上限 2048、path 上限 1024 字符），并拒绝其它根相对路径、盘符、UNC、协议相对、userinfo、无效端口、query、fragment、空白、反斜杠、authority percent escape 和畸形 percent escape。
-- Windows 正式构建从 PowerShell 调用 PowerShell 打包器，默认值不必显式传入；不得从 Git Bash/MSYS 传根相对路径参数。
-- 构建后用 `rg` 检查 bundle：必须命中 `/__aisys__/api`，盘符加 `__aisys__/api` 的表达式必须无输出。
+- `scripts/package-release.ps1` 和原生 Unix 下的 `scripts/package-release.sh` 在修改输出目录前只接受严格的 HTTP(S) API base 或精确的根相对值 `/__aisys__/api`。
+- Windows 正式构建只从 PowerShell 调用 PowerShell 打包器。Unix 打包器在任何 Windows Bash（包括 `MINGW/MSYS/CYGWIN` 和 w64devkit）中立即失败，不通过环境变量排除规则兼容该 shell。
+- 生产 Mac 包在目标 Mac 或受控原生 macOS 构建机生成。项目不再解析压缩后的 JavaScript bundle 来猜测 API base。
+- 构建后 `rg` 只用于事故诊断；真正的发布门禁是原生构建环境、固定 commit/buildId、独立 candidate 和真实登录态业务页。
 - production candidate 必须用真实浏览器现有登录态打开依赖 API 的页面，并确认无 recovery page、scheme/network 错误；`index.html`、health 和任意单个 `200` 都不能替代。
 - 高性能发布必须先启动独立 candidate，再用 `performance-handover-controller.sh` 切流。不能先停 active 后在线修包。
 
 ## 验证证据
 
-- PowerShell 与 Bash 打包器的动态回归均以事故形态的盘符 API base 执行，并证明在创建输出目录前拒绝。
+- PowerShell 打包器会在创建输出目录前拒绝事故形态的盘符 API base；Windows Bash 入口会在任何构建或输出变更前拒绝运行。
 - release source、release package、Go sidecar launcher 和 macOS operations 回归通过。
 - 正式浏览器加载新 bundle，并在保留登录态的情况下成功进入账户页和统计页。
 
