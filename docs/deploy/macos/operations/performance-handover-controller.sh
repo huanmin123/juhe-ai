@@ -613,6 +613,14 @@ restore_route() {
   fi
 }
 
+restore_preflight_mode_from_journal() {
+  PREFLIGHT_MODE="$(journal_value preflight_mode)"
+  case "$PREFLIGHT_MODE" in
+    normal|degraded-source) ;;
+    *) echo 'handover journal is missing a valid preflight mode' >&2; return 1 ;;
+  esac
+}
+
 on_exit() {
   code="$?"
   set +e
@@ -690,9 +698,14 @@ case "$ACTION" in
   recover)
     [ -f "$JOURNAL" ] || { echo 'no handover journal to recover' >&2; exit 1; }
     SOURCE_LABEL="$(journal_value source)" TARGET_LABEL="$(journal_value target)" state="$(journal_value state)"; assert_journal_route "$SOURCE_LABEL" "$TARGET_LABEL"
+    restore_preflight_mode_from_journal
     case "$state" in
       preflight)
-        verify_route_and_slots_stable "$SOURCE_LABEL"
+        if [ "$PREFLIGHT_MODE" = degraded-source ]; then
+          verify_degraded_source_preflight "$SOURCE_LABEL" "$TARGET_LABEL"
+        else
+          verify_route_and_slots_stable "$SOURCE_LABEL"
+        fi
         write_journal preflight-cancelled recover "$SOURCE_LABEL" "$TARGET_LABEL"
         printf 'RECOVERY_OK route=%s; no route change had been staged\n' "$SOURCE_LABEL"
         exit 0
@@ -701,6 +714,12 @@ case "$ACTION" in
       preflight-cancelled|rollback-proven|committed) echo "recover is not valid from stable state: $state" >&2; exit 1 ;;
       *) echo "recover is not valid from journal state: $state" >&2; exit 1 ;;
     esac
+    if [ "$PREFLIGHT_MODE" = degraded-source ]; then
+      verify_target_and_ingress_stable "$TARGET_LABEL" || { echo 'ROLLBACK_UNPROVEN: degraded source cannot be restored; target remains unproven' >&2; exit 70; }
+      write_journal committed recover "$SOURCE_LABEL" "$TARGET_LABEL"
+      printf 'RECOVERY_OK route=%s; degraded source was not restored\n' "$TARGET_LABEL"
+      exit 0
+    fi
     restore_route || { write_journal rollback-unproven recover "$SOURCE_LABEL" "$TARGET_LABEL"; echo 'ROLLBACK_UNPROVEN: retain both slots and investigate' >&2; exit 70; }
     write_journal rollback-proven recover "$SOURCE_LABEL" "$(journal_value target)"
     printf 'RECOVERY_OK route=%s\n' "$SOURCE_LABEL"
@@ -711,7 +730,7 @@ esac
 if [ "$PREFLIGHT_VERIFIED" = 1 ]; then
   umask 077
   ROLLBACK_STAGE="$PLAN_DIR/.route-before-switch.$$"
-  TARGET_STAGE="$PLAN_DIR/.route-target.$$"
+  TARGET_STAGE="$(dirname "$route_file")/.route-target.$$"
   cp -p -- "$route_file" "$ROLLBACK_STAGE"
   cp -p -- "$(fragment_for "$TARGET_LABEL")" "$TARGET_STAGE"
   chmod 600 "$ROLLBACK_STAGE" "$TARGET_STAGE"
@@ -753,8 +772,8 @@ else
   verify_route_and_slots_stable "$TARGET_LABEL"
 fi
 write_journal stable "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
-SWITCH_ATTEMPTED=0
 write_journal committed "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
+SWITCH_ATTEMPTED=0
 release_lock
 trap - EXIT
 printf 'HANDOVER_OK target=%s; both performance slots remain running\n' "$TARGET_LABEL"

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   ReleasePackageValidationError,
@@ -276,6 +277,74 @@ try {
       `expected dynamic API base ${JSON.stringify(dynamicTemplate)} to be rejected`
     )
   }
+
+  for (const staticExpression of [
+    'const apiBase = "/__aisys__" + "/api"',
+    'const apiBase = `/__aisys__/api`'
+  ]) {
+    const staticExpressionFixture = await resetFixture()
+    const staticExpressionBundlePath = path.join(
+      staticExpressionFixture,
+      'frontend',
+      'dist',
+      'assets',
+      'index.js'
+    )
+    await mkdir(path.dirname(staticExpressionBundlePath), { recursive: true })
+    await writeFile(
+      staticExpressionBundlePath,
+      `${staticExpression}\n`
+    )
+    await validateReleasePackagePaths([staticExpressionFixture])
+  }
+
+  const invalidStaticConcatFixture = await resetFixture()
+  const invalidStaticConcatBundlePath = path.join(
+    invalidStaticConcatFixture,
+    'frontend',
+    'dist',
+    'assets',
+    'index.js'
+  )
+  await mkdir(path.dirname(invalidStaticConcatBundlePath), { recursive: true })
+  await writeFile(
+    invalidStaticConcatBundlePath,
+    'const apiBase = "E:/Git" + "/__aisys__/api"\n'
+  )
+  await assert.rejects(
+    validateReleasePackagePaths([invalidStaticConcatFixture]),
+    /frontend API base contains a Windows drive path/u,
+    'static string concatenation must be validated after AST evaluation'
+  )
+
+  const escapedMarkerFixture = await resetFixture()
+  const escapedMarkerBundlePath = path.join(
+    escapedMarkerFixture,
+    'frontend',
+    'dist',
+    'assets',
+    'index.js'
+  )
+  await mkdir(path.dirname(escapedMarkerBundlePath), { recursive: true })
+  await writeFile(
+    escapedMarkerBundlePath,
+    String.raw`const apiBase = "/\u005f\u005faisys__/api"` + '\n'
+  )
+  await assert.rejects(
+    validateReleasePackagePaths([escapedMarkerFixture]),
+    /must not hide the API marker behind a Unicode or hexadecimal escape/u,
+    'Unicode-escaped API markers must fail closed'
+  )
+
+  const packageReleaseShell = await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'package-release.sh'),
+    'utf8'
+  )
+  assert.match(
+    packageReleaseShell,
+    /FRONTEND_API_BASE_URL="\$\{JUHE_AI_FRONTEND_API_BASE_URL:-\/__aisys__\/api\}"/u,
+    'Git Bash/MSYS packaging must expose an explicit environment-variable API base entry'
+  )
 
   const frontendTextPaths = [
     'frontend/dist/runtime-config.json',

@@ -4,7 +4,7 @@ set -euo pipefail
 OUTPUT_DIR="release"
 PACKAGE_NAME="juhe-ai-release"
 ARCHIVE_FORMAT="both"
-FRONTEND_API_BASE_URL="/__aisys__/api"
+FRONTEND_API_BASE_URL="${JUHE_AI_FRONTEND_API_BASE_URL:-/__aisys__/api}"
 FRONTEND_GATEWAY_BASE_URL=""
 EXPECTED_COMMIT=""
 TARGET_GOOS=""
@@ -23,6 +23,7 @@ Options:
   --package-name <name>              Package folder/archive name. Default: juhe-ai-release
   --archive-format <tar.gz|zip|both> Archive format. Default: both
   --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /__aisys__/api
+                                     May also be supplied via JUHE_AI_FRONTEND_API_BASE_URL.
   --frontend-gateway-base-url <url>  Frontend gateway base URL injected at build time. Default: infer from browser origin
   --expected-commit <sha>            Require the release source to match this full commit SHA
   --goos <linux|darwin>              Go indexer target OS. Default: current Unix host OS

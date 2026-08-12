@@ -108,6 +108,59 @@ export function scanJavaScriptLexicalRanges(contents) {
     ranges.push({ type: 'comment', start: comment.start, end: comment.end })
   }
 
+  function evaluateStaticString(value) {
+    if (!value || typeof value !== 'object') {
+      return { known: false, value: null }
+    }
+    if (value.type === 'Literal') {
+      return typeof value.value === 'string'
+        ? { known: true, value: value.value }
+        : { known: false, value: null }
+    }
+    if (value.type === 'TemplateLiteral') {
+      if (value.expressions.length !== 0 || value.quasis.length !== 1) {
+        return { known: false, value: null }
+      }
+      const cooked = value.quasis[0].value.cooked
+      return cooked === null
+        ? { known: false, value: null }
+        : { known: true, value: cooked }
+    }
+    if (value.type === 'BinaryExpression' && value.operator === '+') {
+      const left = evaluateStaticString(value.left)
+      const right = evaluateStaticString(value.right)
+      return left.known && right.known
+        ? { known: true, value: left.value + right.value }
+        : { known: false, value: null }
+    }
+    return { known: false, value: null }
+  }
+
+  function containsApiMarker(value, visited = new WeakSet()) {
+    if (!value || typeof value !== 'object' || visited.has(value)) {
+      return false
+    }
+    visited.add(value)
+    const evaluated = evaluateStaticString(value)
+    if (evaluated.known) {
+      return evaluated.value.includes(FRONTEND_API_MARKER)
+    }
+    if (value.type === 'TemplateLiteral') {
+      return value.quasis.some((quasi) => quasi.value.cooked?.includes(FRONTEND_API_MARKER))
+        || value.expressions.some((expression) => containsApiMarker(expression, visited))
+    }
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) {
+        if (child.some((item) => containsApiMarker(item, visited))) {
+          return true
+        }
+      } else if (containsApiMarker(child, visited)) {
+        return true
+      }
+    }
+    return false
+  }
+
   const visited = new WeakSet()
   function visit(value) {
     if (!value || typeof value !== 'object' || visited.has(value)) {
@@ -115,12 +168,31 @@ export function scanJavaScriptLexicalRanges(contents) {
     }
     visited.add(value)
 
-    if (value.type === 'Literal' && typeof value.value === 'string') {
-      ranges.push({ type: 'string', start: value.start + 1, end: value.end - 1 })
-    } else if (value.type === 'TemplateLiteral') {
-      const rangeType = value.expressions.length === 0 ? 'string' : 'dynamic-string'
-      for (const quasi of value.quasis) {
-        ranges.push({ type: rangeType, start: quasi.start, end: quasi.end })
+    const isExpression = value.type === 'Literal'
+      || value.type === 'TemplateLiteral'
+      || (value.type === 'BinaryExpression' && value.operator === '+')
+    if (isExpression) {
+      const evaluated = evaluateStaticString(value)
+      if (evaluated.known) {
+        ranges.push({
+          type: 'string',
+          start: value.start,
+          end: value.end,
+          value: evaluated.value
+        })
+      } else if (containsApiMarker(value)) {
+        ranges.push({
+          type: 'dynamic-string',
+          start: value.start,
+          end: value.end,
+          value: null,
+          hasMarker: true
+        })
+      }
+      if (value.type === 'Literal'
+        || value.type === 'TemplateLiteral'
+        || value.type === 'BinaryExpression') {
+        return
       }
     }
 
@@ -257,9 +329,35 @@ function validateFrontendBundleText(relativePath, contents, frontendState) {
     }
   }
 
-  for (const marker of contents.matchAll(markerPattern)) {
-    const markerEnd = marker.index + marker[0].length
-    const lexicalRange = lexicalRanges.find(
+  const markerMatches = [...contents.matchAll(markerPattern)].map((marker) => ({
+    index: marker.index,
+    length: marker[0].length,
+    range: lexicalRanges.find(
+      (range) => marker.index >= range.start && marker.index + marker[0].length <= range.end
+    )
+  }))
+  for (const range of lexicalRanges) {
+    if (range.type !== 'string' && range.type !== 'dynamic-string') {
+      continue
+    }
+    if (range.type === 'string' && !range.value?.includes(FRONTEND_API_MARKER)) {
+      continue
+    }
+    if (range.type === 'dynamic-string' && !range.hasMarker) {
+      continue
+    }
+    const rawSource = contents.slice(range.start, range.end)
+    if (range.type === 'string' && /\\(?:u|x)[0-9a-f]{2,4}/iu.test(rawSource)) {
+      fail(relativePath, 'frontend API base must not hide the API marker behind a Unicode or hexadecimal escape')
+    }
+    if (range.type === 'string' && !rawSource.match(markerPattern)) {
+      markerMatches.push({ index: range.start, length: 0, range })
+    }
+  }
+
+  for (const marker of markerMatches) {
+    const markerEnd = marker.index + marker.length
+    const lexicalRange = marker.range ?? lexicalRanges.find(
       (range) => marker.index >= range.start && markerEnd <= range.end
     )
     if (lexicalRange?.type === 'comment') {
@@ -276,11 +374,11 @@ function validateFrontendBundleText(relativePath, contents, frontendState) {
     const lineEnd = nextLineBreak === -1 ? contents.length : nextLineBreak
     const line = contents.slice(lineStart, lineEnd)
     const candidate = lexicalRange?.type === 'string'
-      ? contents.slice(lexicalRange.start, lexicalRange.end)
+      ? lexicalRange.value
       : extractFrontendApiCandidate(
           line,
           marker.index - lineStart,
-          marker[0].length
+          marker.length
         )
     if (isStandaloneDocumentationReference(candidate)) {
       continue

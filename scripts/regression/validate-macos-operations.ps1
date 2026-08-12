@@ -513,6 +513,7 @@ done
 temporary_down="${HANDOVER_TEMPORARY_DOWN:-0}"
 [ -z "${HANDOVER_TEMPORARY_DOWN_FILE:-}" ] || [ ! -e "$HANDOVER_TEMPORARY_DOWN_FILE" ] || temporary_down=1
 main_down="${HANDOVER_MAIN_DOWN:-0}"
+[ -z "${HANDOVER_MAIN_DOWN_FILE:-}" ] || [ ! -e "$HANDOVER_MAIN_DOWN_FILE" ] || main_down=1
 case "$url" in
   http://127.0.0.1:3599/*|http://127.0.0.1:3501/*|http://127.0.0.1:3502/*|http://127.0.0.1:3503/*) [ "$temporary_down" = 0 ] || exit 28 ;;
   http://127.0.0.1:3399/*|http://127.0.0.1:3301/*|http://127.0.0.1:3302/*|http://127.0.0.1:3303/*) [ "$main_down" = 0 ] || exit 29 ;;
@@ -571,9 +572,23 @@ if [ "$1" = -t ]; then exit 0; fi
 if [ "$1" = -s ]; then
   if [ -n "${HANDOVER_FAIL_ONCE_FILE:-}" ] && [ ! -e "$HANDOVER_FAIL_ONCE_FILE" ]; then touch "$HANDOVER_FAIL_ONCE_FILE"; exit 1; fi
   [ -z "${HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE:-}" ] || touch "$HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE"
+  [ -z "${HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE:-}" ] || touch "$HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE"
   exit 0
 fi
 exit 64
+EOF
+export HANDOVER_REAL_MV="$(command -v mv)"
+cat > "$root/fakebin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE:-}" ] \
+  && [ ! -e "$HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE" ] \
+  && [ -f "${1:-}" ] \
+  && grep -qx 'state=committed' "${1:-}"; then
+  touch "$HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE"
+  exit 74
+fi
+exec "$HANDOVER_REAL_MV" "$@"
 EOF
 chmod 700 "$root/fakebin"/*
 export PATH="$root/fakebin:$PATH"
@@ -863,6 +878,37 @@ grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
 unset HANDOVER_FAIL_ONCE_FILE
 bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
 grep -qx 'state=preflight' "$root/plan/handover.journal"
+
+export HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE="$root/fail-committed-journal-once"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover unexpectedly succeeded after the committed journal write failed' >&2
+  exit 101
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
+unset HANDOVER_FAIL_COMMITTED_JOURNAL_ONCE_FILE
+
+# A failed degraded-source switch must never restore the known-dead source slot.
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null
+export HANDOVER_TEMPORARY_DOWN=1 HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE="$root/main-down-after-reload" HANDOVER_MAIN_DOWN_FILE="$root/main-down-after-reload"
+bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null
+if bash '__CONTROLLER__' --apply --action switchback --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source switchback unexpectedly committed with an unhealthy target' >&2
+  exit 99
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-unproven' "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source recover accepted an unhealthy target' >&2
+  exit 100
+fi
+cmp "$root/main" "$root/route"
+rm -f "$root/main-down-after-reload"
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+cmp "$root/main" "$root/route"
+grep -qx 'state=committed' "$root/plan/handover.journal"
+unset HANDOVER_TEMPORARY_DOWN HANDOVER_MAIN_DOWN_AFTER_RELOAD_FILE HANDOVER_MAIN_DOWN_FILE
 '@
     $handoverUnixName = (& $bash.Source -c 'uname -s').Trim()
     if ($handoverUnixName -match '^(Darwin|Linux|MINGW|MSYS|CYGWIN)') {
