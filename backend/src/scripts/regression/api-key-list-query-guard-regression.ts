@@ -177,6 +177,9 @@ try {
   assertBusinessIndexExists('idx_api_keys_system_account_name_lookup')
   assertBusinessIndexExists('idx_api_keys_default_updated')
   assertBusinessIndexExists('idx_api_keys_system_account_default_updated')
+  assertBusinessIndexMissing('idx_api_keys_system_account')
+  assertBusinessIndexMissing('idx_api_keys_system_account_updated')
+  assertOwnerListIndexCoversSystemAccountScope()
   assertBusinessIndexMissing('idx_api_keys_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_description_lookup')
@@ -205,7 +208,24 @@ function assertBusinessIndexMissing(indexName: string): void {
   const row = databaseModule.getBusinessDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, undefined, `业务库不应创建 API Key 长文本搜索索引 ${indexName}`)
+  assert.equal(row?.name, undefined, `业务库不应创建索引 ${indexName}`)
+}
+
+function assertOwnerListIndexCoversSystemAccountScope(): void {
+  const details = databaseModule.getBusinessDatabase()
+    .prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id
+      FROM api_keys
+      WHERE system_account_id = ?
+      ORDER BY is_default DESC, updated_at DESC, created_at DESC, id DESC
+      LIMIT ?
+    `)
+    .all('sys_admin', 20)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+  assert(details.includes('idx_api_keys_system_account_default_updated'), `账户内 API Key 列表应使用主排序索引，实际计划：${details}`)
+  assert(!details.includes('USE TEMP B-TREE FOR ORDER BY'), `账户内 API Key 列表不应额外排序，实际计划：${details}`)
 }
 
 function assertPostgresApiKeyListKeywordUsesLowerPrefixRange(): void {

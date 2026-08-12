@@ -1207,14 +1207,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON account_name_search_terms(account_id);
     CREATE INDEX IF NOT EXISTS idx_account_name_search_documents_owner
       ON account_name_search_documents(system_account_id, account_id);
-    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_status_priority
-      ON account_list_availability_projections(
-        viewer_system_account_id,
-        effective_status,
-        priority_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      );
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_priority
       ON account_list_availability_projections(
         viewer_system_account_id,
@@ -1237,25 +1229,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
         created_at_sort_key ASC,
         account_id ASC
       );
-    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_group_status_priority
-      ON account_list_availability_projections(
-        viewer_system_account_id,
-        bound_group_id,
-        effective_status,
-        priority_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      )
-      WHERE bound_group_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_provider_status_priority
-      ON account_list_availability_projections(
-        viewer_system_account_id,
-        provider_code,
-        effective_status,
-        priority_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      );
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_due
       ON account_list_availability_projections(next_transition_at ASC, viewer_system_account_id, account_id)
       WHERE next_transition_at IS NOT NULL;
@@ -1268,14 +1241,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
         viewer_system_account_id,
         term,
         name_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      );
-    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_status_priority
-      ON account_list_availability_projection_index(
-        viewer_system_account_id,
-        effective_status,
-        priority_sort_key ASC,
         created_at_sort_key ASC,
         account_id ASC
       );
@@ -1305,25 +1270,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON account_list_availability_projection_index(
         viewer_system_account_id,
         schedulable_bucket,
-        priority_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      );
-    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_group_status_priority
-      ON account_list_availability_projection_index(
-        viewer_system_account_id,
-        bound_group_id,
-        effective_status,
-        priority_sort_key ASC,
-        created_at_sort_key ASC,
-        account_id ASC
-      )
-      WHERE bound_group_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_provider_status_priority
-      ON account_list_availability_projection_index(
-        viewer_system_account_id,
-        provider_code,
-        effective_status,
         priority_sort_key ASC,
         created_at_sort_key ASC,
         account_id ASC
@@ -1508,9 +1454,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_group_authorization_settings_scope_group
       ON group_authorization_settings(system_account_id, group_id);
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_route_strategy ON api_keys(route_strategy_id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot

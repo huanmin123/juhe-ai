@@ -94,13 +94,20 @@ const maxAccountOptionPageSize = 50
 
 export function normalizeAccountListOptions(options?: AccountListOptions, normalizationOptions: AccountListNormalizationOptions = {}): NormalizedAccountListOptions {
   const seenFields = new Set<AccountListSortField>()
-  const sorts = (options?.sorts ?? [])
+  const inputSorts = (options?.sorts ?? [])
     .filter((sort): sort is AccountListSort => isAccountListSortField(sort.field) && isAccountListSortDirection(sort.order))
     .filter((sort) => {
       if (seenFields.has(sort.field)) return false
       seenFields.add(sort.field)
       return true
-  })
+    })
+  const prioritySort = inputSorts.find((sort) => sort.field === 'priority') ?? defaultAccountListSorts[0]!
+  const statusSort = inputSorts.find((sort) => sort.field === 'status')
+  const sorts = [
+    prioritySort,
+    ...(statusSort ? [statusSort] : []),
+    ...inputSorts.filter((sort) => sort.field !== 'priority' && sort.field !== 'status')
+  ]
   const rawPage = options?.page
   const rawPageSize = options?.pageSize
   const maxPageSize = normalizationOptions.maxPageSize ?? maxAccountListPageSize
@@ -109,7 +116,7 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
     : defaultAccountListPageSize
   const page = normalizeListPage(rawPage, pageSize)
   return {
-    sorts: sorts.length ? sorts : defaultAccountListSorts,
+    sorts,
     ids: normalizeTextList(options?.ids),
     page,
     pageSize,

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-list-stable-sort-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-list-stable-sort.sqlite3')
@@ -47,6 +48,35 @@ try {
   repositories.updateAccount(accounts[2].id, { fallbackEnabled: true }, access)
   assert.deepEqual(listStableAccountIds(expectedIds), expectedIds, '切换降级备用不应改变默认列表相对顺序')
 
+  assert.deepEqual(
+    normalizeAccountListOptions({
+      sorts: [
+        { field: 'lastUsedAt', order: 'desc' },
+        { field: 'status', order: 'asc' },
+        { field: 'concurrency', order: 'desc' },
+        { field: 'priority', order: 'desc' },
+        { field: 'status', order: 'desc' }
+      ]
+    }).sorts,
+    [
+      { field: 'priority', order: 'desc' },
+      { field: 'status', order: 'asc' },
+      { field: 'lastUsedAt', order: 'desc' },
+      { field: 'concurrency', order: 'desc' }
+    ],
+    'API 和内部列表请求必须把优先级固定为首位、状态固定为次位，并保留每字段首个合法输入'
+  )
+
+  const updateStatus = databaseModule.getBusinessDatabase().prepare('UPDATE accounts SET status = ? WHERE id = ?')
+  updateStatus.run('error', accounts[0].id)
+  updateStatus.run('active', accounts[1].id)
+  updateStatus.run('disabled', accounts[2].id)
+  assert.deepEqual(
+    listStableAccountIds(expectedIds, { sorts: [{ field: 'status', order: 'asc' }] }),
+    [accounts[1].id, accounts[2].id, accounts[0].id],
+    '普通 SQLite 列表在同优先级账户间必须将状态作为二级排序'
+  )
+
   console.log('AI 账户列表稳定排序回归通过')
 } finally {
   try {
@@ -79,9 +109,9 @@ function createStableAccount(name: string, apiKey: string, createdAt: string): {
   return { id: account.id }
 }
 
-function listStableAccountIds(expectedIds: string[]): string[] {
+function listStableAccountIds(expectedIds: string[], options?: AccountListOptions): string[] {
   const expected = new Set(expectedIds)
-  return repositories.listAccounts(access)
+  return repositories.listAccounts(access, options)
     .filter((account) => expected.has(account.id))
     .map((account) => account.id)
 }

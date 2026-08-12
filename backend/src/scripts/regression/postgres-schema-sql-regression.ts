@@ -280,6 +280,8 @@ assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应�
 assert.match(sql, /api_keys[\s\S]+is_default integer NOT NULL DEFAULT 0/, 'api_keys 建表语句应包含默认 API Key 标识')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys\(route_strategy_id\) WHERE is_default = 1/, '默认 API Key 应按路由策略保持唯一')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys\(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC\)/, 'API Key 按默认项置顶的账户列表排序应有匹配索引')
+assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_api_keys_system_account\b/, 'API Key 不应保留仅按账户筛选的冗余索引')
+assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated\b/, 'API Key 不应保留被默认项主排序覆盖的冗余索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys\(system_account_id, \(name COLLATE "C"\), id\)/, 'PG API Key 名称前缀查询必须有 owner + C collation 表达式索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_owner_list_order\s+ON accounts\(system_account_id, priority ASC, created_at ASC, id ASC\)\s+WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL/, 'PG 自有账户列表默认排序必须有 owner/order 部分索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_lookup\s+ON accounts\(system_account_id, name, id\)\s+WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL/, 'PG 自有账户名称精确/前缀查询必须有 owner/name 部分索引')

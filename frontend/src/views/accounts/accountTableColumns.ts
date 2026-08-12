@@ -14,8 +14,8 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     baseColumns.push(sortableColumn({ title: '系统账户', key: 'systemAccount', width: 180 }, 'systemAccount', sortOrder))
   }
   baseColumns.push(
-    sortableColumn({ title: '并发数', key: 'concurrency', width: 100, align: 'center' }, 'concurrency', sortOrder),
-    { title: '状态', key: 'status', width: 120, align: 'center' },
+    { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
+    sortableColumn({ title: '状态', key: 'status', width: 120, align: 'center' }, 'status', sortOrder),
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '标签', key: 'tags', width: 160 },
@@ -54,12 +54,18 @@ export function normalizeAccountTableSorts(sorts: ResponsiveDataListSort[]): Acc
 
 export function normalizeAccountTableSortParams(sorts: AccountListSortParam[]): AccountListSortParam[] {
   const seenFields = new Set<AccountListSortField>()
-  const normalized = sorts.filter((sort) => {
+  const inputSorts = sorts.filter((sort) => {
     if (!accountSortFields.includes(sort.field) || seenFields.has(sort.field)) return false
     seenFields.add(sort.field)
     return sort.order === 'asc' || sort.order === 'desc'
   })
-  return normalized.length ? normalized : [{ field: 'priority', order: 'asc' }]
+  const prioritySort = inputSorts.find((sort) => sort.field === 'priority') ?? { field: 'priority', order: 'asc' }
+  const statusSort = inputSorts.find((sort) => sort.field === 'status')
+  return [
+    prioritySort,
+    ...(statusSort ? [statusSort] : []),
+    ...inputSorts.filter((sort) => sort.field !== 'priority' && sort.field !== 'status')
+  ]
 }
 
 function accountSortFieldFromColumn(columnKey: string): AccountListSortField | undefined {
@@ -82,10 +88,10 @@ function accountSortMultiple(field: AccountListSortField): number {
 
 const accountSortFields: AccountListSortField[] = [
   'priority',
+  'status',
   'superPriority',
   'fallback',
   'systemAccount',
-  'concurrency',
   'lastUsedAt',
   'accountExpiresAt'
 ]

@@ -332,6 +332,31 @@ async function verifySingleQueryPaginationAndFilters(): Promise<void> {
     '进入待处理队列的自然到期投影必须 unavailable，不能返回旧页面'
   )
   database.prepare('DELETE FROM account_list_availability_dirty WHERE account_id = ?').run(accountIds[2])
+
+  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[0]!, {
+    sourceGeneration: 102,
+    prioritySortKey: 10,
+    effectiveStatus: 'error'
+  }))
+  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[1]!, {
+    sourceGeneration: 102,
+    prioritySortKey: 10,
+    effectiveStatus: 'active'
+  }))
+  await upsertAccountListAvailabilityProjectionInClient(client, projectionWrite(accountIds[2]!, {
+    sourceGeneration: 102,
+    prioritySortKey: 10,
+    effectiveStatus: 'disabled'
+  }))
+  await refreshAccountListAvailabilityProjectionViewerHealthInClient(client, { viewerSystemAccountId })
+  const statusSortedPage = await listAccountListAvailabilityProjectionPageInClient(client, projectionQuery({
+    options: { page: 1, pageSize: 20, sorts: [{ field: 'status', order: 'asc' }] }
+  }))
+  assert.deepEqual(
+    statusSortedPage.items.map((item) => item.id),
+    [accountIds[1], accountIds[2], accountIds[0]],
+    '投影查询必须在相同优先级时将状态作为二级排序'
+  )
 }
 
 async function verifyFamilyExpansionAndBoundedWorkerQueues(): Promise<void> {
@@ -477,6 +502,7 @@ function insertSchemaFixture(): void {
 
 function verifyPostgresSchemaProjectionParity(): void {
   const statements = collectPostgresSchemaStatements()
+  const schemaSql = statements.map((statement) => statement.sql).join('\n')
   const projection = statements.find((statement) => /^CREATE TABLE IF NOT EXISTS account_list_availability_projections\b/.test(statement.sql))?.sql
   const dirty = statements.find((statement) => /^CREATE TABLE IF NOT EXISTS account_list_availability_dirty\b/.test(statement.sql))?.sql
   assert.ok(projection, 'PostgreSQL schema 必须创建账户列表投影表')
@@ -484,6 +510,16 @@ function verifyPostgresSchemaProjectionParity(): void {
   assert.match(projection, /payload_json text NOT NULL/)
   assert.match(projection, /source_generation integer NOT NULL/)
   assert.match(dirty, /available_at_ms bigint NOT NULL/)
+  for (const indexName of [
+    'idx_account_list_availability_projection_status_priority',
+    'idx_account_list_availability_projection_group_status_priority',
+    'idx_account_list_availability_projection_provider_status_priority',
+    'idx_account_list_availability_projection_index_status_priority',
+    'idx_account_list_availability_projection_index_group_status_priority',
+    'idx_account_list_availability_projection_index_provider_status_priority'
+  ]) {
+    assert.doesNotMatch(schemaSql, new RegExp(`\\b${indexName}\\b`), `PostgreSQL schema 不得维护已移除索引 ${indexName}`)
+  }
 }
 
 function verifyRuntimeDirtyBridgeContract(): void {
