@@ -352,7 +352,18 @@ assert_nginx_slot_included() {
   esac
 }
 
-NODE_BIN="$(command -v node)"
+NODE_BIN="$(PATH="$NODE_PATH" command -v node || true)"
+[ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ] || {
+  echo "Node.js executable was not found in --node-path: $NODE_PATH" >&2
+  exit 1
+}
+if ! (
+  cd "$CURRENT_DIR/backend"
+  "$NODE_BIN" --input-type=module -e "await import('pino'); process.exit(0)" >/dev/null 2>&1
+); then
+  echo 'Node runtime dependencies are unavailable in the candidate release; run pnpm install --prod --frozen-lockfile in the release directory before apply.' >&2
+  exit 1
+fi
 command -v launchctl >/dev/null
 command -v plutil >/dev/null
 command -v curl >/dev/null
