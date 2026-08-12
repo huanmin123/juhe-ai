@@ -36,9 +36,9 @@
 4. 新建且确认为空的 PostgreSQL 库必须在 release 根目录先执行 `pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...`，再执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`。它会写当前 schema 与默认种子数据；`start.sh` / `start.ps1` 不会替代该步骤。已有业务库不得直接执行完整初始化，必须按既有库备份、`schema-only` 与受控迁移流程处理。
 5. 仅通过 release 根目录的 `start.sh` 或 `start.ps1` 启动。它会在 Node DB-ready health 成功后启动唯一 Go sidecar，并维持单个 PID、日志与退出联动；不要绕过它单独常驻 Node、worker 或 sidecar。
 6. macOS system `launchd` 场景中，完成目标机 `pnpm install --prod` 后再由 root 固定 release 的所有权与权限：服务用户必须可递归读取/执行 release，但不能写 release；只有 runtime、日志和 spool 目录可由服务用户写入。`--apply` 必须通过 `sudo` 运行并显式传 `--service-user`。
-7. 验证 Node `/__aisys__/health` 和 `/__aisys__/api/health` 均为 `200`，F3 `GET /__aiinternal__/health` 为 `204`，并检查 `backend/logs/juhe-ai-go-sidecar.log`。随后通过 Node 只读接口确认 F1 runtime logs 和 F2 snapshots 新鲜，再通过一次真实审计输入的管理端详情读回确认 Node -> F3 -> Node。
-8. 使用真实浏览器和现有登录态打开 candidate 的管理页，至少进入一个依赖业务 API 的账户页或统计页，确认无恢复页、Axios scheme/network 错误，且业务数据实际渲染。health、静态 HTML、HTTP `200` 均不能替代这一步。
-9. 升级前保留当前 release 和业务恢复点；生产不得使用会删除数据的清理操作。
+7. 常规升级只请求 Node `/__aisys__/health`、`/__aisys__/api/health`（均为 `200`）、F3 `GET /__aiinternal__/health`（`204`）以及无 Key 的 `/v1/models`（`401`），再人工查看 `backend/logs/juhe-ai-go-sidecar.log` 的最后 80 行，不得有 `panic` 或 `fatal`。这些是发布包、Node、Go 和网关路由的最小真实检查。
+8. 浏览器登录态、F1/F2 数据新鲜度、F3 写后读回、长时间观察和完整回滚演练只用于首次新拓扑、存储/owner 改动、事故调查或回切，不作为无代码路径变化的 routine release 前置。
+9. 升级前保留当前 release；生产不得在 routine release 中执行数据库、Redis、日志或 payload 清理。
 
 发布包具体变量、命令和 PID/log 路径以 [快速部署说明](../../deploy/README.md) 为准。
 
@@ -48,7 +48,7 @@
 2. 进入 `docker/`，先复制 `.env.example` 为 `.env`；standalone 也必须填写 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`，不能直接执行 Compose 默认配置。performance 必须复制 `.env.performance.example` 并填写 PostgreSQL、三类 Redis、应用密钥和 F3 input secret。
 3. 在启动前运行 `docker compose config --quiet`；performance 使用 `docker compose --env-file .env.performance -f compose.performance.yml config --quiet`。配置校验失败时不得启动。
 4. 使用 `docker compose up -d --build --wait` 启动，并以 `docker compose ps` 确认 Node 与 `go-sidecar` 均 healthy。performance 还需确认 PostgreSQL、PgBouncer、Redis cache/state/queue 均 healthy。
-5. 验证 Node 两个 health 为 `200`、F3 sidecar health 为 `204`、两个服务日志无启动失败；至少执行 `docker compose exec -T go-sidecar /usr/local/bin/juhe-ai-go-sidecar-healthcheck`（performance 命令前加 `--env-file .env.performance -f compose.performance.yml`）。继续执行 F1/F2 新鲜度和 F3 Node -> Go -> Node 读回。健康 `200` 不能代替 sidecar 数据验证。
+5. 常规升级验证 Node 两个 health 为 `200`、F3 sidecar health 为 `204`、无 Key gateway 为 `401`，并查看 Node 与 sidecar 启动日志。F1/F2 新鲜度和 F3 Node -> Go -> Node 读回只在首次部署、owner/存储变更或故障调查时执行。
 6. Docker 中 F3 与 Node 必须共享 loopback network namespace；不得把 F3 改成暴露在容器网卡上，也不能把 `127.0.0.1` 替换成另一个 service 地址。
 7. 生产只使用 `docker compose down` 停止。`docker compose down -v` 会删除事实库、日志和密钥，只能用于明确可销毁的验证环境。
 
@@ -56,11 +56,9 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 
 ## 5. macOS 与生产门禁
 
-历史 Mac temporary release 曾验证三二进制拓扑；它已经归档，不能作为单 sidecar 的上线证据。生产 Mac 必须从最终冻结 release 验证唯一 sidecar、候选 Node 槽复用 owner、F1/F2/F3 数据读回和 handover rollback，才可以讨论切流。
+历史 Mac temporary release 曾验证旧三二进制拓扑；它已经归档，不能作为当前单 sidecar 的上线证据。routine release 必须从最终冻结 release 启动独立 candidate Node 槽，并以 `--go-sidecar-mode reuse` 复用唯一 Go owner。
 
-历史归档的三二进制 dry-run 不可作为正式候选复用。正式窗口仍须从最终冻结 commit 重新构建，记录 archive SHA-256，并完成唯一 sidecar 的候选 Node `--apply --go-sidecar-mode reuse`、Node HTTP 读回、稳定观察和回滚演练。
-
-不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。2026-08-12 首次 F3 正式上线发生过硬停机，且错误的 Windows 盘符 API base 使静态页面可加载但所有管理 API 失败；后续 Mac 高性能发布必须按 [生产发布快速流程](生产发布快速流程.md) 使用独立 candidate 槽，把所有慢操作移出切流窗口，完成真实浏览器登录态业务页验证后再使用带时效和文件指纹的 `preflight -> takeover`。同槽原地 apply 不是零停机流程。
+不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。2026-08-12 首次 F3 正式上线发生过硬停机，且错误的 Windows 盘符 API base 使静态页面可加载但所有管理 API 失败；后续 Mac 高性能发布必须按 [生产发布快速流程](生产发布快速流程.md) 使用独立 candidate 槽、`--quick` 和 `quick-performance-cutover.sh`。routine release 的放行证据是 candidate control/API/gateway、共享 Go health、启动日志以及切换后的三条公网请求；同槽原地 apply 不是零停机流程。
 
 ## 6. 验收记录格式
 
@@ -68,10 +66,10 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 
 - release commit、archive SHA-256、目标 OS/arch、部署方式和开始/结束时间；
 - 配置文件路径与变量名是否齐全，不记录变量值或密钥；
-- Node 两个 health、F3 `204`、F1/F2 新鲜度、F3 读回的命令和结果；
-- 原生构建环境、固定 commit/buildId、真实浏览器登录态业务页、控制台网络错误与恢复页检查结果；
-- candidate/main 的独立 label、端口、PID、route identity、handover journal、access-log 增量和稳定观察结果；
-- 四个进程或容器的 PID/名称、日志路径、退出联动结果；
+- Node 两个 health、无 Key gateway `401`、F3 `204` 和启动日志最后 80 行的结果；
+- 原生构建环境、固定 commit/buildId、candidate/main 的独立 label、端口和 route identity；
+- `QUICK_CUTOVER_OK` 或自动恢复结果，以及旧槽保留状态；
+- 首次拓扑、owner/存储变更、事故或回切时，额外记录浏览器、F1/F2/F3 读回、handover journal、access-log 和稳定观察结果；
 - 使用的临时数据库/Redis namespace、清理或保留结论；
 - 失败时的原始错误、未执行的步骤和回滚状态。
 

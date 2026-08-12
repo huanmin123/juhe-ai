@@ -79,7 +79,7 @@ curl -i http://127.0.0.1:3303/__aiinternal__/health
 sudo journalctl -u juhe-ai -n 100 --no-pager
 ```
 
-Node 两个 health 应为 `200`，F3 health 应为 `204`。随后按 [AI 部署执行清单](../AI部署执行清单.md) 验证 F1/F2 新鲜度和 Node -> F3 -> Node 审计读回；示例不构成生产切流授权。
+Node 两个 health 应为 `200`，F3 health 应为 `204`。routine upgrade 再检查无 Key gateway `401` 和 sidecar 启动日志；F1/F2 新鲜度和 Node -> F3 -> Node 审计读回只在首次部署、owner/存储变更、故障或回切时执行。示例不构成生产切流授权。
 
 后台代理：
 

@@ -9,6 +9,7 @@
 - `manage-sing-box.sh`：只接管已证明为 loopback、唯一且由 `sing-box` 持有的监听，并通过实际 SOCKS5 代理探测；也可显式选择 Homebrew service 或 user launchd。
 - `diagnose-proxy-dns.sh`：只读检查 DNS、监听端口、launchd 状态和直连/代理连通性。
 - `temporary-cutover.sh`：仅用于单进程或非高性能拓扑，在已经准备好的主服务与临时服务之间调用环境私有 switch adapter。高性能多 gateway 生产切流不得使用该脚本。
+- `quick-performance-cutover.sh`：高性能生产的默认快速切流入口。它只验证已经启动的 candidate control/API/gateway、单个 Go sidecar health 和启动日志，然后原子替换外层 route fragment、reload Nginx、验证三条公网请求；失败立即恢复原 route。它不启动、停止或重配任何 Node/Go 服务。
 - `performance-handover-controller.sh`：针对多 gateway 性能槽的外层 Nginx route-fragment 控制器。它只接受由当前部署控制器私有持有的非秘密 plan；切换前先连续验证两套 slot 内层 Nginx 的 `/__aisys__/health` control 路径、顺序绑定的 `gateway-1` 至 `gateway-3` direct health，以及同一内层监听的 `/v1/models` gateway 路径。两套槽位不得复用 loopback listener、进程 PID 或 DB service PID；随后再验证外层 route header、内层 `X-Juhe-Topology-Install` identity、固定 worker PID 集合和 access-log 增量。`/v1/models` 不携带 Key 时必须精确返回认证性 `401` 并带有该 slot 的 topology header。失败时恢复同一个先前 fragment，且不停止任一槽位。
 - `install-redis-role-services.sh`：默认 dry-run，按 cache/state/queue 角色渲染独立 Redis 配置与 system LaunchDaemon；apply 使用 bootout、端口释放、原子替换、bootstrap、kickstart 和失败恢复。
 - `verify-redis-role-isolation.sh`：只读验证 main `6379/6380/6381` 或 temporary `16379/16380/16381` 的三个 URL、PID、launchd job、PING、AOF/RDB 和淘汰策略，不输出密码。
@@ -44,9 +45,8 @@
 
 - 零停机只适用于“独立 candidate 槽已完整运行，再由外层 handover 原子切流”。对 active 槽使用同端口、同 label 的原地 `install-performance-topology.sh --apply` 会逐项重启服务，不得称为零停机。
 - candidate 必须使用不可变 release、独立 Node runtime、label、端口、Nginx slot include、upstream suffix、Node instance ID 与 Redis 身份；业务槽连接同一权威业务库，不能把预演 clone 当成生产权威库。candidate 必须显式使用 `--go-sidecar-mode reuse --audit-input-port <正式 owner 端口>`，共享正式槽唯一 Go sidecar 的 F1/F2/F3 owner、Store、lease、审计 blob/hot-search 目录与 loopback 输入端口，不能创建第二个 Go owner。reuse apply 会检查候选 label 对应的 Go sidecar launchd job、plist 与 run script；任一残留即拒绝，必须先人工确认并清理，绝不自动停止未知 owner。
-- 切流前必须通过 Node 双 health、三个 gateway direct health、worker/PID 集合、F1/F2 freshness、F3 Node -> Go -> Node 读回、真实管理页登录态 API 和网关认证性探针，并完成稳定观察。静态 HTML、单个 `200` 或 F3 `204` 都不能独立放行。
-- 高性能生产切流的唯一入口是 `performance-handover-controller.sh` 的 `preflight -> takeover`。`preflight` 在一个稳定循环中同时证明两槽和当前入口，并写入默认 300 秒有效的 plan、route、两个 fragment 与 Nginx main config SHA-256；`takeover` 必须在凭证有效期内执行，先生成并验证 controller-owned rollback/target 快照，做一次实时身份复核，再次校验 TTL/指纹后原子换 route，并在一个稳定循环中同时证明新入口和两槽。成功必须有 committed journal、route identity、access-log 增量和稳定窗口。尚未 committed 的中断 journal 才能使用 `recover`；已经 committed 后如需正常回退，必须重新对反向目标执行 `preflight`，再执行 `switchback`。如果已 committed 的新槽宕机，则显式执行 `preflight --degraded-source`，只证明旧槽目标健康且 route 仍指向故障新槽，再执行 `switchback`；该模式不会要求故障源恢复。`stable` 只是控制器内部瞬时 journal 状态，不是 CLI action。`temporary-cutover.sh` 只适用于单进程或非高性能部署。完整的窗口分层和目标耗时见 [生产发布快速流程](../../生产发布快速流程.md)。
-- 切流后旧槽继续运行到观察窗口结束；确认无错误率、审计 backlog、连接或业务页异常后，才更新 `current` 标记并按精确 allowlist 清理旧槽。不得先停止 active 槽再验证 candidate。
+- 常规发布只需 candidate control health、API health、无 Key 的 gateway `401`、Go sidecar health 和启动日志无 `panic`/`fatal`；随后由 `quick-performance-cutover.sh` 原子切 route，并验证同样三条公网请求。静态 HTML、单个 `200` 或 F3 `204` 仍不能单独放行。
+- `performance-handover-controller.sh` 的长 preflight、PID/worker 集合、access-log 稳定窗口和 journal 只保留给故障调查、异常回切或需要深入证明的变更，不是常规发布前置。快速切换失败时脚本自动恢复原 route，两个槽均保留；下一次 routine release 前再清理旧槽即可。
 
 ## 静态验证
 

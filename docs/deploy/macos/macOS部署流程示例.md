@@ -46,7 +46,7 @@ curl -i http://127.0.0.1:3303/__aiinternal__/health
 tail -n 100 ./backend/logs/juhe-ai-go-sidecar.log
 ```
 
-Node 两个 health 应为 `200`，F3 health 应为 `204`。唯一的 Go sidecar 会在同一进程内恢复 F1/F2/F3 中发生普通运行错误的组件；它不是三个独立 launchd 服务。2026-08-12 已完成正式拓扑接线，但首次上线发生硬停机和前端 API-base 构建事故。因此本页只保留为单进程手工启动示例，不能替代下一次独立 candidate 槽、真实登录态业务页、稳定窗口和 handover controller 验收，也不能直接执行生产切流。完整门禁见 [AI 部署执行清单](../AI部署执行清单.md)。
+Node 两个 health 应为 `200`，F3 health 应为 `204`。唯一的 Go sidecar 会在同一进程内恢复 F1/F2/F3 中发生普通运行错误的组件；它不是三个独立 launchd 服务。生产 routine release 不在 active 槽手工执行本页命令：应启动独立 candidate Node 槽，验证 control/API/gateway、共享 Go health 和启动日志，再通过 [生产发布快速流程](../生产发布快速流程.md) 的快速 route 切换上线。浏览器、数据读回、稳定窗口和 handover controller 只用于首次新拓扑、故障或回切。
 
 后台“代理管理”新增：
 

@@ -39,6 +39,7 @@ $requiredFiles = @(
   'install-performance-topology.sh',
   'cleanup-production-artifacts.sh',
   'performance-handover-controller.sh',
+  'quick-performance-cutover.sh',
   'manage-sing-box.sh',
   'migrate-wireguard-root-wrappers.sh',
   'wireguard-reconciler.sh',
@@ -107,6 +108,22 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
 foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'system scope requires an explicit --nginx-main-config', '--nginx-config must be an included slot file, not the nginx main config', 'nginx slot config must already be an included regular file', 'nginx slot config is not included with matching contents by the active main config', 'NGINX_EXPANDED_CONFIG', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', '--go-sidecar-mode owner|reuse', 'GO_SIDECAR_MODE=owner', 'isolated candidate topology must use --go-sidecar-mode reuse', 'assert_reuse_has_no_candidate_go_sidecar', 'candidate reuse refuses a residual Go sidecar owner', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'GO_SIDECAR_DATA_DIR', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_go_sidecar', 'wait_for_shared_go_sidecar', 'go-sidecar', 'juhe-ai-go-sidecar', '--node-path', 'NODE_BIN="$(PATH="$NODE_PATH" command -v node || true)"', "await import('pino')", 'Node runtime dependencies are unavailable in the candidate release', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go sidecar must be a regular file', 'service user cannot execute Go sidecar', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+foreach ($contract in @('--quick', 'QUICK=0', '[ "$QUICK" -eq 1 ] && required_consecutive=1', 'if [ "$name" != go-sidecar ] && [ "$QUICK" -eq 0 ]; then', 'if [ "$QUICK" -eq 0 ]; then')) {
+  if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology quick-start contract missing: $contract"
+  }
+}
+$quickCutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'quick-performance-cutover.sh')
+foreach ($contract in @('--dry-run', '--apply', '--active-route-file', '--candidate-route-file', '--candidate-control-url', '--candidate-api-health-url', '--candidate-gateway-url', '--go-health-url', '--ingress-control-url', '--ingress-api-health-url', '--ingress-gateway-url', '--startup-log', 'probe_ok "$CANDIDATE_CONTROL"', 'probe_ok "$CANDIDATE_API"', 'probe_gateway "$CANDIDATE_GATEWAY"', 'probe_ok "$GO_HEALTH"', 'tail -n 80 "$STARTUP_LOG"', 'probe_ok "$PUBLIC_CONTROL"', 'probe_ok "$PUBLIC_API"', 'probe_gateway "$PUBLIC_GATEWAY"', 'reload_nginx', 'quick cutover failed; restoring the original route', 'QUICK_CUTOVER_OK')) {
+  if (-not $quickCutover.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Quick cutover contract missing: $contract"
+  }
+}
+foreach ($forbidden in @('launchctl ', 'node backend/dist/server.js', 'juhe-ai-go-sidecar', 'kill ', 'pkill ', 'performance-handover-controller.sh')) {
+  if ($quickCutover.Contains($forbidden, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Quick cutover must only switch an already-running route: $forbidden"
+  }
 }
 $releaseInputGateIndex = $performanceInstaller.IndexOf('[ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }', [StringComparison]::Ordinal)
 $dryRunExitIndex = $performanceInstaller.IndexOf('[ "$MODE" = apply ] || exit 0', [StringComparison]::Ordinal)

@@ -57,7 +57,7 @@ JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
-F3 secret 不能复用或回退 `JUHE_AI_SECRET`。启动后除 Node 两个 health 外，必须检查 `curl -i http://127.0.0.1:3303/__aiinternal__/health` 返回 `204`、唯一 `backend/logs/juhe-ai-go-sidecar.log`、F1/F2 数据新鲜度和 Node -> F3 -> Node 审计详情读回；完整顺序见 [AI 部署执行清单](../AI部署执行清单.md)。
+F3 secret 不能复用或回退 `JUHE_AI_SECRET`。routine upgrade 启动后只检查 Node 两个 health、`curl -i http://127.0.0.1:3303/__aiinternal__/health` 返回 `204`、无 Key gateway `401` 和唯一 `backend/logs/juhe-ai-go-sidecar.log` 的启动错误。F1/F2 新鲜度和 Node -> F3 -> Node 审计详情读回只在首次部署、owner/存储变更、故障或回切时执行；完整边界见 [AI 部署执行清单](../AI部署执行清单.md)。
 
 配置完成后才可启动：
 

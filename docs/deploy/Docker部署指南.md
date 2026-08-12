@@ -197,7 +197,7 @@ docker compose logs --tail=100 go-sidecar
 - `/__aisys__/api/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/` 返回前端页面。
 - `docker compose ps` 中 Node 与 `go-sidecar` 均为 `healthy`；performance 还应包含 PostgreSQL、PgBouncer 和三类 Redis。
-- 日志中能看到主服务、DB service、background worker 以及 sidecar 的 F1/F2/F3 启动或恢复记录；F3 health probe 必须返回 `204`，并用一次合法输入确认 Node → Go → Node 审计读回；还必须用 F1 `/runtime-logs` 与 F2 `/table-monitor` 的只读接口确认数据新鲜度。
+- routine upgrade 只检查主服务与 sidecar 启动日志、Node control/API health、无 Key gateway `401` 和 F3 health `204`。Node → Go → Node 审计读回及 F1 `/runtime-logs`、F2 `/table-monitor` 新鲜度只在首次部署、owner/存储变更、故障或回切时执行。
 
 ## 7. 状态检测和恢复
 

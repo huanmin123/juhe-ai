@@ -158,7 +158,7 @@ curl -i http://127.0.0.1:3303/__aiinternal__/health
 pgrep -af 'juhe-ai-go-sidecar' || true
 ```
 
-前三项的预期是 Node health 为 `200`、F3 health 为 `204`、唯一 Go sidecar 来自当前 release。仍须通过 Node 只读 `/runtime-logs`、`/table-monitor` 确认 F1/F2 新鲜度，并通过一次真实审计输入后的管理端详情读回确认 Node -> F3 -> Node；不能只凭 launchd loaded 或 Node health 继续切流。
+前三项的预期是 Node health 为 `200`、F3 health 为 `204`、唯一 Go sidecar 来自当前 release。routine release 还要验证无 Key gateway 返回 `401` 并查看 sidecar 启动日志；这四项能覆盖发布包、Node、Go 和网关路由。F1/F2 新鲜度与 Node -> F3 -> Node 读回只在首次新拓扑、owner/存储变更、故障或回切时追加，不能把 launchd loaded 或单个 Node health 当作切流证据。
 
 升级只切 `current` 并重启：
 
@@ -196,13 +196,13 @@ system scope 的 `--apply` 必须由 `sudo` 执行；Node 与唯一 Go sidecar �
 
 F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log`。它从 release 的 `backend/.env`（或 launchd 明确环境）读取优先的 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（未设置才读取 `JUHE_AI_POSTGRES_URL`）、可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`、`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`、同一地址的 `JUHE_AI_AUDIT_LOG_INPUT_URL`、独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 和可选的 `JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS`；缺失、非 loopback、URL 与监听地址不一致或短密钥都会失败。F3 不会回退 `JUHE_AI_SECRET`、SQLite、Redis、Node worker 或旧审计队列。Node service 与 sidecar 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 payload/hot-search 写读目录漂移。
 
-脚本先连续通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再启动并验证唯一 Go sidecar；F3 必须连续返回 loopback `GET /__aiinternal__/health` 的 `204`。失败时恢复 Go sidecar、Node 服务、Nginx 的原 plist、run script 和 loaded 状态。F2/F3 的 liveness 都不等价于数据完成：生产 cutover 前必须通过 Node 只读 API 人工核对 F1 日志新鲜度、F2 owner lease/snapshot freshness，并以真实可审计请求完成 Node -> F3 -> Node 详情读回。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
+脚本先通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再启动并验证唯一 Go sidecar；F3 loopback `GET /__aiinternal__/health` 返回 `204`。`--quick` 只要求一次成功，跳过指标注册和重复稳定轮询。routine cutover 再检查无 Key gateway `401` 和启动日志。F1/F2 新鲜度、F3 写后读回和完整回滚演练只在首次新拓扑、owner/存储变更、故障或回切时进行。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
 
 2026-08-11 已完成目标 Mac 上隔离 temporary release 的直接 `start.sh` 预演：空的可销毁 PostgreSQL 库先安装 release 生产依赖并执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`，随后 Node 两个 health、F3 `204`、F1/F2 Node readback、F3 lifecycle/payload Node readback、真实网关审计捕获和无效 HMAC `401` 均通过。预演未改动 `current`、launchd、Nginx、Caddy、Edge、生产库或 Redis，结束后已清理临时目录、进程、监听和测试库。Mac 默认 Node 路径若不是受支持的 22.x/24.x LTS，必须在 launchd 和手工命令中显式使用同一条受支持 PATH。
 
-2026-08-11 的隔离 temporary 服务空间曾验证旧三 sidecar 拓扑；它已经归档，不能外推到当前单一 sidecar。当前候选槽必须复用承流槽的 Go sidecar，不能创建第二个 F1/F2/F3 data owner。候选 Node 只完成业务验证，随后通过 handover controller 原子切流；它仍不是 `current` 切换、Nginx/Caddy/Edge 变更、生产数据验证或真实流量演练。
+2026-08-11 的隔离 temporary 服务空间曾验证旧三 sidecar 拓扑；它已经归档，不能外推到当前单一 sidecar。当前候选槽必须复用承流槽的 Go sidecar，不能创建第二个 F1/F2/F3 data owner。routine release 只完成 control/API/gateway、共享 Go health 和启动日志，再通过快速 route 切换上线；它仍不是 `current` 切换、Nginx/Caddy/Edge 变更或生产数据验证。
 
-旧归档中的三二进制 dry-run 证据仅代表历史输入，不能作为当前版本的构建或部署证明。正式候选必须从最终冻结 commit 生成一个 `juhe-ai-go-sidecar`、记录 archive SHA-256，并重新完成候选 Node 验证、Node -> F3 -> Node 读回、稳定观察和 handover rollback 演练。
+旧归档中的三二进制 dry-run 证据仅代表历史输入，不能作为当前版本的构建或部署证明。正式候选必须从最终冻结 commit 生成一个 `juhe-ai-go-sidecar`、记录 archive SHA-256，并完成 candidate control/API/gateway、共享 Go health 和启动日志检查。Node -> F3 -> Node 读回、稳定观察和 handover rollback 演练只在首次新拓扑、owner/存储变更、故障或回切时进行。
 
 ### 4.3 生产升级与无感切流
 
@@ -210,11 +210,11 @@ F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-au
 
 1. 从冻结 commit 构建不可变 release，核对 archive SHA-256、`RELEASE_SOURCE_COMMIT`、前端 `buildId` 和目标架构。
 2. 使用独立 candidate Node runtime、label、端口、Nginx slot include、upstream suffix、Node instance ID 与 Redis 身份执行 system `--apply`，同时传入 `--go-sidecar-mode reuse --audit-input-port <正式 owner F3 loopback端口>` 复用正式槽唯一 sidecar；candidate 不得创建 F1/F2/F3 的第二个 owner。reuse apply 若发现该 candidate label 的 Go sidecar job、plist 或 run script 残留会直接拒绝，必须人工确认后清理，禁止自动停止未知 owner。system scope 必须同时传入 `--nginx-config <slot include>` 与 `--nginx-main-config <main config>`，两者不得相同。
-3. 在 candidate 直连入口完成 Node 双 health、三个 gateway、worker/PID、F1/F2 freshness、F3 HMAC/读回、网关请求、登录态管理页和业务 API 验证。浏览器必须实际进入至少一个依赖 API 的页面；只加载 `index.html` 或得到 health `200` 不算通过。
-4. 高性能拓扑只使用 `performance-handover-controller.sh` 执行 `preflight -> takeover`。先在旧槽承流时完成 candidate 全部慢验证；`preflight` 将两槽与当前入口合并观察并生成默认 300 秒有效的文件指纹凭证，`takeover` 复用该证据，只做一次实时身份复核、原子 route 切换和一轮合并稳定观察。保存 committed journal、route identity、access-log 增量和稳定窗口证据。`temporary-cutover.sh` 不适用于多 gateway 生产；完整顺序见 [生产发布快速流程](../生产发布快速流程.md)。
-5. 切流后保留旧槽。稳定观察通过后才更新 `current` 指针并清理旧槽。若 takeover 尚未 committed 而中断，按 journal 执行 `recover`；若已经 committed 后业务页或稳定窗口失败，重新对旧槽执行反向 `preflight`，再执行 `switchback`。新槽已宕机时使用显式 `preflight --degraded-source`，它只证明旧槽回切目标健康且当前 route 仍指向 committed 新槽，不要求故障源恢复；随后执行 `switchback`。`stable` 不是可执行命令。不得在未知状态下杀进程或原地重装。
+3. 对 candidate 只请求 control health、API health、无 Key 的 gateway `401` 与 Go sidecar health，并读取启动日志末尾确认没有 `panic` 或 `fatal`。静态 `index.html` 或单个 `200` 不算通过。
+4. 使用 `quick-performance-cutover.sh` 原子切 route；它会再次请求公网 control health、API health 和 gateway `401`，任一失败自动恢复原 route。完整命令见 [生产发布快速流程](../生产发布快速流程.md)。
+5. 切流后保留旧槽到下一次 routine release。只有异常回切或需要深入调查时才使用 `performance-handover-controller.sh` 的 `preflight -> takeover/switchback`；不得在未知状态下杀进程或原地重装。
 
-2026-08-12 的首次 F3 正式上线发生过硬停机，且前端构建把根相对 API base 错误转换成 Windows 磁盘路径，导致静态页面和 health 正常但浏览器 API 全部失败。该事故证明“HTTP `200`”不足以验收发布；后续必须同时执行构建产物 API-base 扫描和真实浏览器登录态业务页验证。此记录不表示零停机流程已经在生产证明，下一次发布必须先完成完整 candidate/handover 演练。
+2026-08-12 的首次 F3 正式上线发生过硬停机，且前端构建把根相对 API base 错误转换成 Windows 磁盘路径，导致静态页面和 health 正常但浏览器 API 全部失败。根因是 MSYS shell 边界转换，生产 Mac 构建必须使用原生 macOS。常规发布用 candidate control/API/gateway、共享 Go health、启动日志和切换后的三条公网请求验收；静态页面或单个 `200` 不能单独放行。真实浏览器登录态业务页只在首次新拓扑、事故或回切时执行。
 
 ## 5. HTTPS 和端口边界
 

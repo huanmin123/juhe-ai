@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODE=dry-run
+QUICK=0
 SCOPE=user
 SERVICE_USER=
 BASE_DIR="${HOME}/juhe-ai-lite"
@@ -31,6 +32,7 @@ TEST_BIN=
 usage() {
   cat <<'EOF'
 Usage: install-performance-topology.sh [--dry-run|--apply] [options]
+  --quick
   --scope user|system
   --service-user USER_FOR_SYSTEM_SCOPE
   --base-dir ABSOLUTE_PATH
@@ -58,6 +60,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) MODE=dry-run; shift ;;
     --apply) MODE=apply; shift ;;
+    --quick) QUICK=1; shift ;;
     --scope) SCOPE="${2:-}"; shift 2 ;;
     --service-user) SERVICE_USER="${2:-}"; shift 2 ;;
     --base-dir) BASE_DIR="${2:-}"; shift 2 ;;
@@ -84,6 +87,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$SCOPE" in user|system) ;; *) echo '--scope must be user or system' >&2; exit 2 ;; esac
+case "$QUICK" in 0|1) ;; *) echo '--quick must not take a value' >&2; exit 2 ;; esac
 case "$GO_SIDECAR_MODE" in owner|reuse) ;; *) echo '--go-sidecar-mode must be owner or reuse' >&2; exit 2 ;; esac
 if [ "$SCOPE" = system ]; then
   [ -n "$SERVICE_USER" ] || { echo '--service-user is required for system scope' >&2; exit 2; }
@@ -864,6 +868,8 @@ wait_for_health() {
   instance_id="$(instance_id_for "$name")"
   port="$(service_port "$name")"
   role="$(service_role "$name")"
+  required_consecutive=3
+  [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 40 ]; do
@@ -873,7 +879,7 @@ wait_for_health() {
       && health_identity_matches "$health_json" "$instance_id" "$role" \
       && curl -fsS --max-time 2 "http://127.0.0.1:$port/__aisys__/api/health" >/dev/null; then
       consecutive=$((consecutive + 1))
-      if [ "$consecutive" -ge 3 ]; then
+      if [ "$consecutive" -ge "$required_consecutive" ]; then
         VERIFIED_HEALTH_JSON="$health_json"
         return 0
       fi
@@ -911,13 +917,15 @@ wait_for_go_sidecar() {
   name=go-sidecar
   label="$(service_label "$name")"
   input_address="127.0.0.1:$AUDIT_INPUT_PORT"
+  required_consecutive=3
+  [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
     if launchctl print "$DOMAIN/$label" >/dev/null 2>&1 \
       && curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health"; then
       consecutive=$((consecutive + 1))
-      [ "$consecutive" -ge 3 ] && return 0
+      [ "$consecutive" -ge "$required_consecutive" ] && return 0
     else
       consecutive=0
     fi
@@ -930,12 +938,14 @@ wait_for_go_sidecar() {
 
 wait_for_shared_go_sidecar() {
   input_address="127.0.0.1:$AUDIT_INPUT_PORT"
+  required_consecutive=3
+  [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
     if curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health"; then
       consecutive=$((consecutive + 1))
-      [ "$consecutive" -ge 3 ] && return 0
+      [ "$consecutive" -ge "$required_consecutive" ] && return 0
     else
       consecutive=0
     fi
@@ -948,6 +958,8 @@ wait_for_shared_go_sidecar() {
 
 wait_for_ingress() {
   control_instance_id="$(instance_id_for control-1)"
+  required_consecutive=3
+  [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
@@ -958,7 +970,7 @@ wait_for_ingress() {
         | tr -d '\r' | grep -Fqx "X-Juhe-Topology-Install: $INSTALL_TOKEN" \
       && curl -fsS --max-time 2 "http://127.0.0.1:$INGRESS_PORT/__aisys__/api/health" >/dev/null; then
       consecutive=$((consecutive + 1))
-      [ "$consecutive" -ge 3 ] && return 0
+      [ "$consecutive" -ge "$required_consecutive" ] && return 0
     else
       consecutive=0
     fi
@@ -1129,7 +1141,7 @@ for name in $(activation_service_names); do
   mv -f -- "$STAGE_DIR/$name.sh" "$run_script"
   mv -f -- "$STAGE_DIR/$name.plist" "$plist"
   launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || true
-  if [ "$name" != go-sidecar ]; then
+  if [ "$name" != go-sidecar ] && [ "$QUICK" -eq 0 ]; then
     metrics_fence_ms="$(performance_metrics_registry_time_ms)"
   fi
   launchctl bootstrap "$DOMAIN" "$plist"
@@ -1138,19 +1150,23 @@ for name in $(activation_service_names); do
     wait_for_go_sidecar
   else
     wait_for_health "$name"
-    wait_for_metrics_registry "$name" "$metrics_fence_ms"
+    if [ "$QUICK" -eq 0 ]; then
+      wait_for_metrics_registry "$name" "$metrics_fence_ms"
+    fi
   fi
 done
 if [ "$GO_SIDECAR_MODE" = reuse ]; then
   wait_for_shared_go_sidecar
 fi
-for name in $(service_names); do
-  if [ "$name" = go-sidecar ]; then
-    wait_for_go_sidecar
-  else
-    wait_for_health "$name"
-  fi
-done
+if [ "$QUICK" -eq 0 ]; then
+  for name in $(service_names); do
+    if [ "$name" = go-sidecar ]; then
+      wait_for_go_sidecar
+    else
+      wait_for_health "$name"
+    fi
+  done
+fi
 
 mv -f -- "$STAGE_DIR/nginx.conf" "$NGINX_CONFIG"
 nginx_test
@@ -1164,5 +1180,6 @@ rm -f -- "$NGINX_BACKUP"
 MUTATED=0
 trap - EXIT INT TERM
 rm -rf -- "$STAGE_DIR"
-printf 'performance topology installed: control=1 gateway=%s usage=%s log=%s stats=1 ops=1 go_sidecar=juhe-ai-go-sidecar ingress=127.0.0.1:%s; verify F1/F2 freshness and a real Node -> F3 -> Node audit readback through Node read-only APIs before production cutover\n' \
+printf 'performance topology installed: mode=%s quick=%s control=1 gateway=%s usage=%s log=%s stats=1 ops=1 go_sidecar=juhe-ai-go-sidecar ingress=127.0.0.1:%s\n' \
+  "$MODE" "$QUICK" \
   "$GATEWAY_COUNT" "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT"
