@@ -111,9 +111,9 @@ foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir
 $releaseInputGateIndex = $performanceInstaller.IndexOf('[ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }', [StringComparison]::Ordinal)
 $dryRunExitIndex = $performanceInstaller.IndexOf('[ "$MODE" = apply ] || exit 0', [StringComparison]::Ordinal)
 $nodeLookupIndex = $performanceInstaller.IndexOf('NODE_BIN="$(PATH="$NODE_PATH" command -v node || true)"', [StringComparison]::Ordinal)
-$runtimeCreateIndex = $performanceInstaller.IndexOf('mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR"', [StringComparison]::Ordinal)
+$runtimeCreateIndex = $performanceInstaller.IndexOf('mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR" "$PLIST_DIR"', [StringComparison]::Ordinal)
 if ($releaseInputGateIndex -lt 0 -or $dryRunExitIndex -lt $releaseInputGateIndex -or $nodeLookupIndex -lt $dryRunExitIndex -or $runtimeCreateIndex -lt $dryRunExitIndex) {
-  throw 'Performance topology dry-run must gate immutable release inputs before exiting, while platform and mutable runtime work remains apply-only'
+  throw 'Performance topology must gate immutable release inputs before creating every isolated runtime directory in apply mode'
 }
 foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s', '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled', '--audit-input-port is required when isolated runtime and upstream suffix are enabled', '--go-sidecar-mode')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology instance identity contract missing: $contract" }

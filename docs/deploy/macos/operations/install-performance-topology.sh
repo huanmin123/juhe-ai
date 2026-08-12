@@ -555,7 +555,7 @@ elif [ ! -d "$GO_SIDECAR_DATA_DIR/audit/blobs" ] || [ -L "$GO_SIDECAR_DATA_DIR/a
   echo "shared Go sidecar audit blob directory is unavailable: $GO_SIDECAR_DATA_DIR/audit/blobs" >&2
   exit 1
 fi
-mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
+mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
 if [ -n "$RUNTIME_DIR" ]; then
   for runtime_path in "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
 fi
