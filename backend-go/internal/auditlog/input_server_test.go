@@ -115,7 +115,7 @@ func TestAuditInputHandlerPersistsAfterClientContextCancellation(t *testing.T) {
 	}
 }
 
-func TestAuditInputHandlerRecoversPersistPanic(t *testing.T) {
+func TestAuditInputHandlerContainsPersistPanic(t *testing.T) {
 	store := newLifecycleStore()
 	store.persistPanic = true
 	healthy := &atomic.Bool{}
@@ -142,20 +142,17 @@ func TestAuditInputHandlerRecoversPersistPanic(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("persist panic status=%d want=%d", response.Code, http.StatusInternalServerError)
 	}
-	if healthy.Load() {
-		t.Fatal("persist panic must downgrade F3 health before the supervisor restart")
+	if !healthy.Load() {
+		t.Fatal("persist panic must stay contained to the request")
 	}
 	select {
 	case err := <-componentFatal:
-		if !strings.Contains(err.Error(), "persist fixture panic") {
-			t.Fatalf("persist panic component error=%v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("persist panic did not report a component failure")
+		t.Fatalf("persist panic must not restart the component: %v", err)
+	default:
 	}
 }
 
-func TestAuditInputHandlerReportsPersistFailureToSupervisor(t *testing.T) {
+func TestAuditInputHandlerContainsPersistFailure(t *testing.T) {
 	store := newLifecycleStore()
 	store.persistErr = errors.New("persist fixture failure")
 	healthy := &atomic.Bool{}
@@ -181,16 +178,13 @@ func TestAuditInputHandlerReportsPersistFailureToSupervisor(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("persist failure status=%d want=%d", response.Code, http.StatusInternalServerError)
 	}
-	if healthy.Load() {
-		t.Fatal("persist failure must downgrade F3 health before the supervisor restart")
+	if !healthy.Load() {
+		t.Fatal("persist failure must stay contained to the request")
 	}
 	select {
 	case componentErr := <-componentFatal:
-		if !strings.Contains(componentErr.Error(), "persist fixture failure") {
-			t.Fatalf("persist component error=%v", componentErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("persist failure did not report a component failure")
+		t.Fatalf("persist failure must not restart the component: %v", componentErr)
+	default:
 	}
 }
 
@@ -233,7 +227,7 @@ func TestAuditInputHandlerReportsLeaseLossToSupervisor(t *testing.T) {
 	}
 }
 
-func TestAuditInputHandlerReportsHotSearchFailureToSupervisorAfterCommit(t *testing.T) {
+func TestAuditInputHandlerContainsHotSearchFailureAfterCommit(t *testing.T) {
 	store := newLifecycleStore()
 	store.hotSearchErr = errors.New("hot-search fixture failure")
 	healthy := &atomic.Bool{}
@@ -259,20 +253,17 @@ func TestAuditInputHandlerReportsHotSearchFailureToSupervisorAfterCommit(t *test
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("durable audit commit with hot-search failure status=%d want=%d", response.Code, http.StatusNoContent)
 	}
-	if healthy.Load() {
-		t.Fatal("hot-search failure must downgrade F3 health before the supervisor restart")
+	if !healthy.Load() {
+		t.Fatal("hot-search failure must stay contained to the request")
 	}
 	select {
 	case componentErr := <-componentFatal:
-		if !strings.Contains(componentErr.Error(), "hot-search fixture failure") {
-			t.Fatalf("hot-search component error=%v", componentErr)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("hot-search failure did not report a component failure")
+		t.Fatalf("hot-search failure must not restart the component: %v", componentErr)
+	default:
 	}
 }
 
-func TestRunInputServerReturnsPersistFailureToSupervisor(t *testing.T) {
+func TestRunInputServerKeepsServingAfterPersistFailure(t *testing.T) {
 	store := newLifecycleStore()
 	store.persistErr = errors.New("input server persist fixture failure")
 	inputConfig := lifecycleInputConfigAt(t)
@@ -296,13 +287,19 @@ func TestRunInputServerReturnsPersistFailureToSupervisor(t *testing.T) {
 	if response.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("persist failure HTTP status=%d want=%d", response.StatusCode, http.StatusInternalServerError)
 	}
+	response = eventuallySendInput(t, inputConfig, body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("second persist failure HTTP status=%d want=%d", response.StatusCode, http.StatusInternalServerError)
+	}
+	cancel()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "input server persist fixture failure") {
-			t.Fatalf("RunInputServer must return the persist component failure, got %v", err)
+		if err != nil {
+			t.Fatalf("RunInputServer must remain alive until shutdown, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("RunInputServer did not return after the persist component failure")
+		t.Fatal("RunInputServer did not stop after cancellation")
 	}
 }
 

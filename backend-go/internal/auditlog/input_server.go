@@ -296,9 +296,7 @@ func failInputComponent(healthy *atomic.Bool, ctx context.Context, fatal chan<- 
 func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err := fmt.Errorf("F3 audit input request panic: %v\n%s", recovered, debug.Stack())
 			loggerOrDefault(h.logger).Error("F3 audit input request panic", "error", fmt.Errorf("%v", recovered), "stack", string(debug.Stack()))
-			h.failComponent(err)
 			writer.WriteHeader(http.StatusInternalServerError)
 		}
 	}()
@@ -363,23 +361,26 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 	defer cancel()
 	result, err := h.store.Persist(writeCtx, h.lease, envelope.AuditLog)
 	if err != nil {
-		h.failComponent(fmt.Errorf("F3 audit input 持久化失败: %w", err))
-		if errors.Is(err, ErrOwnerLeaseLost) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, ErrOwnerLeaseLost) {
+			h.failComponent(fmt.Errorf("F3 audit input owner lease 丢失: %w", err))
 			writer.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		loggerOrDefault(h.logger).Error("F3 audit input 持久化失败", "error", err, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
+		if errors.Is(err, context.DeadlineExceeded) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		writer.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	logger := loggerOrDefault(h.logger)
 	if !result.Ignored {
 		if _, appendErr := h.store.AppendHotSearch(writeCtx, h.lease, []AuditLogInput{envelope.AuditLog}); appendErr != nil {
-			// The audit row is already durable, so do not report a false persistence
-			// failure for this request. The mirror failure is still component-fatal:
-			// mark health down and let the sidecar supervisor reacquire F3 cleanly.
+			// The audit row is already durable. The mirror can be rebuilt from the
+			// canonical store, so this request-level failure must not take the input
+			// listener down or turn one bad hot-search write into an audit outage.
 			logger.Error("F3 audit hot-search append failed", "error", appendErr, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
-			h.failComponent(fmt.Errorf("F3 audit hot-search append failed: %w", appendErr))
 		}
 	}
 	logger.Debug("F3 audit input 已持久化", "auditLogID", envelope.AuditLog.ID, "ignored", result.Ignored)
