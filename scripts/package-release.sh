@@ -78,6 +78,15 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    # Git Bash rewrites POSIX-looking arguments and environment values before
+    # starting Windows executables. Keep the validated API base byte-for-byte.
+    export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+${MSYS2_ARG_CONV_EXCL};}${FRONTEND_API_BASE_URL}"
+    export MSYS2_ENV_CONV_EXCL="${MSYS2_ENV_CONV_EXCL:+${MSYS2_ENV_CONV_EXCL};}JUHE_AI_FRONTEND_API_BASE_URL;VITE_JUHE_AI_API_BASE_URL"
+    ;;
+esac
+
 command -v node >/dev/null 2>&1 || { echo 'node is required to validate the frontend API base URL' >&2; exit 2; }
 node "$API_BASE_CONTRACT_PATH" "$FRONTEND_API_BASE_URL" \
   || { echo 'frontend API base URL must satisfy the shared strict contract' >&2; exit 2; }

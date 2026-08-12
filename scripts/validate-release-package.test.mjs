@@ -345,6 +345,16 @@ try {
     /FRONTEND_API_BASE_URL="\$\{JUHE_AI_FRONTEND_API_BASE_URL:-\/__aisys__\/api\}"/u,
     'Git Bash/MSYS packaging must expose an explicit environment-variable API base entry'
   )
+  assert.match(
+    packageReleaseShell,
+    /export MSYS2_ARG_CONV_EXCL=.*\$\{FRONTEND_API_BASE_URL\}/u,
+    'Git Bash/MSYS packaging must protect the validated API base command argument'
+  )
+  assert.match(
+    packageReleaseShell,
+    /export MSYS2_ENV_CONV_EXCL=.*VITE_JUHE_AI_API_BASE_URL/u,
+    'Git Bash/MSYS packaging must protect the frontend build environment value'
+  )
 
   const frontendTextPaths = [
     'frontend/dist/runtime-config.json',
