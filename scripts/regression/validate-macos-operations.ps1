@@ -337,7 +337,7 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
 }
 
 $performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
-foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_route_and_slots_stable', 'verify_gateway_ingress_once', 'preflight receipt expired', 'preflight file fingerprint changed', '--preflight-max-age-seconds', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_route_and_slots_stable', 'verify_target_and_ingress_stable', 'verify_degraded_source_preflight', 'verify_gateway_ingress_once', 'preflight receipt expired', 'preflight file fingerprint changed', '--preflight-max-age-seconds', '--degraded-source', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', '.route-target.', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
   if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
 }
 foreach ($contract in @('main and temporary control instance IDs must differ', 'main and temporary gateway instance prefixes must differ', 'slot topology identities must differ')) {
@@ -500,6 +500,28 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
+[ -z "${HANDOVER_MUTATE_DURING_PROBE_FILE:-}" ] || [ -e "${HANDOVER_MUTATE_DURING_PROBE_MARKER:-}" ] || {
+  printf '\nmutated-during-probe\n' >> "$HANDOVER_MUTATE_DURING_PROBE_FILE"
+  touch "$HANDOVER_MUTATE_DURING_PROBE_MARKER"
+}
+[ -z "${HANDOVER_EXPIRE_DURING_PROBE_JOURNAL:-}" ] || [ -e "${HANDOVER_EXPIRE_DURING_PROBE_MARKER:-}" ] || {
+  sed 's/^preflight_epoch=.*/preflight_epoch=1/' "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL" > "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL.next"
+  mv "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL.next" "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL"
+  chmod 600 "$HANDOVER_EXPIRE_DURING_PROBE_JOURNAL"
+  touch "$HANDOVER_EXPIRE_DURING_PROBE_MARKER"
+}
+temporary_down="${HANDOVER_TEMPORARY_DOWN:-0}"
+[ -z "${HANDOVER_TEMPORARY_DOWN_FILE:-}" ] || [ ! -e "$HANDOVER_TEMPORARY_DOWN_FILE" ] || temporary_down=1
+main_down="${HANDOVER_MAIN_DOWN:-0}"
+case "$url" in
+  http://127.0.0.1:3599/*|http://127.0.0.1:3501/*|http://127.0.0.1:3502/*|http://127.0.0.1:3503/*) [ "$temporary_down" = 0 ] || exit 28 ;;
+  http://127.0.0.1:3399/*|http://127.0.0.1:3301/*|http://127.0.0.1:3302/*|http://127.0.0.1:3303/*) [ "$main_down" = 0 ] || exit 29 ;;
+  http://127.0.0.1:3099/*)
+    active_label="$(tr -d '\n' < "$HANDOVER_ROUTE_FILE")"
+    [ "$active_label" != temporary ] || [ "$temporary_down" = 0 ] || exit 28
+    [ "$active_label" != main ] || [ "$main_down" = 0 ] || exit 29
+    ;;
+esac
 case "$url" in
   http://127.0.0.1:3399/__aisys__/health) label=main; topology=main-identity; control_pid=101 ;;
   http://127.0.0.1:3599/__aisys__/health) label=temporary; topology=temporary-identity; control_pid=201 ;;
@@ -548,6 +570,7 @@ set -euo pipefail
 if [ "$1" = -t ]; then exit 0; fi
 if [ "$1" = -s ]; then
   if [ -n "${HANDOVER_FAIL_ONCE_FILE:-}" ] && [ ! -e "$HANDOVER_FAIL_ONCE_FILE" ]; then touch "$HANDOVER_FAIL_ONCE_FILE"; exit 1; fi
+  [ -z "${HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE:-}" ] || touch "$HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE"
   exit 0
 fi
 exit 64
@@ -748,13 +771,75 @@ if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev
 fi
 bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
 bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
+expect_probe_mutation_rejected() {
+  mutation_file="$1" description="$2" backup="$mutation_file.probe-clean" marker="$root/probe-mutation-marker"
+  cp -p "$mutation_file" "$backup"
+  rm -f "$marker"
+  export HANDOVER_MUTATE_DURING_PROBE_FILE="$mutation_file" HANDOVER_MUTATE_DURING_PROBE_MARKER="$marker"
+  if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+    echo "handover accepted $description changed during the real-time probe" >&2
+    exit 93
+  fi
+  unset HANDOVER_MUTATE_DURING_PROBE_FILE HANDOVER_MUTATE_DURING_PROBE_MARKER
+  cp -p "$backup" "$mutation_file"
+  rm -f "$backup" "$marker"
+  chmod 600 "$root/plan/handover.conf"
+  bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+  bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+}
+
+expect_probe_mutation_rejected "$root/route" 'active route'
+expect_probe_mutation_rejected "$root/temporary" 'target fragment'
+expect_probe_mutation_rejected "$root/plan/handover.conf" 'handover plan'
+expect_probe_mutation_rejected "$root/nginx.conf" 'Nginx main config'
+
+export HANDOVER_EXPIRE_DURING_PROBE_JOURNAL="$root/plan/handover.journal" HANDOVER_EXPIRE_DURING_PROBE_MARKER="$root/probe-expiry-marker"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a receipt that expired during the real-time probe' >&2
+  exit 94
+fi
+unset HANDOVER_EXPIRE_DURING_PROBE_JOURNAL HANDOVER_EXPIRE_DURING_PROBE_MARKER
+rm -f "$root/probe-expiry-marker"
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
+export HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE="$root/temporary-down-after-reload"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover unexpectedly committed after the candidate failed following reload' >&2
+  exit 95
+fi
+cmp "$root/main" "$root/route"
+grep -qx 'state=rollback-proven' "$root/plan/handover.journal"
+unset HANDOVER_TEMPORARY_DOWN_AFTER_RELOAD_FILE
+rm -f "$root/temporary-down-after-reload"
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
 bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null
 cmp "$root/temporary" "$root/route"
 grep -qx 'state=committed' "$root/plan/handover.journal"
 
-bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+export HANDOVER_TEMPORARY_DOWN=1
+if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'normal reverse preflight accepted a failed active candidate' >&2
+  exit 96
+fi
+export HANDOVER_MAIN_DOWN=1
+if bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source preflight accepted an unhealthy rollback target' >&2
+  exit 97
+fi
+unset HANDOVER_MAIN_DOWN
+cp -p "$root/main" "$root/route"
+if bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'degraded-source preflight accepted a route that no longer points to the committed candidate' >&2
+  exit 98
+fi
+cp -p "$root/temporary" "$root/route"
+bash '__CONTROLLER__' --apply --action preflight --degraded-source --plan-dir "$root/plan" >/dev/null
 bash '__CONTROLLER__' --apply --action switchback --plan-dir "$root/plan" >/dev/null
 cmp "$root/main" "$root/route"
+unset HANDOVER_TEMPORARY_DOWN
 if bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null 2>&1; then
   echo 'handover accepted recover from committed state' >&2
   exit 74

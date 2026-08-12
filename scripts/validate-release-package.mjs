@@ -363,8 +363,12 @@ export async function validateReleasePackagePaths(paths, options = {}) {
 
   for (const inputPath of paths) {
     const absolutePath = path.resolve(inputPath)
+    const normalizedAbsolutePath = absolutePath.split(path.sep).join('/')
+    const initialRelativePath = normalizedAbsolutePath.endsWith('/frontend/dist')
+      ? 'frontend/dist'
+      : ''
     const frontendState = { apiMarkerSeen: false, directorySeen: false }
-    await visitPath(absolutePath, '', linksOnly, frontendState)
+    await visitPath(absolutePath, initialRelativePath, linksOnly, frontendState)
     if (!linksOnly && frontendState.directorySeen && !frontendState.apiMarkerSeen) {
       fail('frontend/dist/assets', 'frontend runtime bundle does not contain the required API marker')
     }

@@ -87,6 +87,30 @@ try {
   )
   await writeFile(path.join(validFixture, 'docs', 'deploy', 'migration.sql'), 'select 1;\n')
   await validateReleasePackagePaths([validFixture])
+  await validateReleasePackagePaths([path.join(validFixture, 'frontend', 'dist')])
+
+  const invalidDirectFrontendFixture = await resetFixture()
+  const invalidDirectFrontendDist = path.join(invalidDirectFrontendFixture, 'frontend', 'dist')
+  await mkdir(path.join(invalidDirectFrontendDist, 'assets'), { recursive: true })
+  await writeFile(
+    path.join(invalidDirectFrontendDist, 'assets', 'index.js'),
+    'const apiBase = "E:/Git/__aisys__/api"\n'
+  )
+  await assert.rejects(
+    validateReleasePackagePaths([invalidDirectFrontendDist]),
+    /frontend API base contains a Windows drive path/u,
+    'direct frontend/dist validation must reject an invalid API base'
+  )
+
+  const missingDirectFrontendFixture = await resetFixture()
+  const missingDirectFrontendDist = path.join(missingDirectFrontendFixture, 'frontend', 'dist')
+  await mkdir(path.join(missingDirectFrontendDist, 'assets'), { recursive: true })
+  await writeFile(path.join(missingDirectFrontendDist, 'assets', 'index.js'), 'const apiBase = "/api"\n')
+  await assert.rejects(
+    validateReleasePackagePaths([missingDirectFrontendDist]),
+    /frontend runtime bundle does not contain the required API marker/u,
+    'direct frontend/dist validation must require the runtime API marker'
+  )
 
   for (const { value: invalidApiBase, reason } of [
     { value: 'E:/Git/__aisys__/api', reason: 'frontend API base contains a Windows drive path' },
