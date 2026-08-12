@@ -10,13 +10,22 @@ ACTION=status
 PLAN_DIR=
 ROUTE_HEADER_NAME=X-Juhe-Active-Upstream
 STABILITY_SECONDS=60
+PREFLIGHT_MAX_AGE_SECONDS=300
 LOCK_DIR=
 LOCK_HELD=0
+PREFLIGHT_VERIFIED=0
+PREFLIGHT_EPOCH=
+PREFLIGHT_CONFIG_SHA256=
+PREFLIGHT_ROUTE_SHA256=
+PREFLIGHT_MAIN_FRAGMENT_SHA256=
+PREFLIGHT_TEMPORARY_FRAGMENT_SHA256=
+PREFLIGHT_NGINX_MAIN_SHA256=
 
 usage() {
   cat <<'EOF'
 Usage: performance-handover-controller.sh [--dry-run|--apply] --action <status|preflight|takeover|switchback|recover> --plan-dir <absolute path>
   [--route-header-name <HTTP token>] [--stability-seconds <60..600>]
+  [--preflight-max-age-seconds <60..900>]
 
 The plan directory must contain a mode-0600 handover.conf with these non-secret
 absolute paths and labels: route_file, main_fragment, temporary_fragment,
@@ -44,6 +53,7 @@ while [ "$#" -gt 0 ]; do
     --plan-dir) PLAN_DIR="${2:-}"; shift 2 ;;
     --route-header-name) ROUTE_HEADER_NAME="${2:-}"; shift 2 ;;
     --stability-seconds) STABILITY_SECONDS="${2:-}"; shift 2 ;;
+    --preflight-max-age-seconds) PREFLIGHT_MAX_AGE_SECONDS="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -54,6 +64,8 @@ case "$PLAN_DIR" in /*) ;; *) echo '--plan-dir must be absolute' >&2; exit 2;; e
 case "$ROUTE_HEADER_NAME" in ''|*[!A-Za-z0-9_-]*) echo 'invalid route header name' >&2; exit 2;; esac
 case "$STABILITY_SECONDS" in ''|*[!0-9]*) echo 'stability seconds must be an integer' >&2; exit 2;; esac
 [ "$STABILITY_SECONDS" -ge 60 ] && [ "$STABILITY_SECONDS" -le 600 ] || { echo 'stability seconds must be 60..600' >&2; exit 2; }
+case "$PREFLIGHT_MAX_AGE_SECONDS" in ''|*[!0-9]*) echo 'preflight max age seconds must be an integer' >&2; exit 2;; esac
+[ "$PREFLIGHT_MAX_AGE_SECONDS" -ge 60 ] && [ "$PREFLIGHT_MAX_AGE_SECONDS" -le 900 ] || { echo 'preflight max age seconds must be 60..900' >&2; exit 2; }
 
 CONF="$PLAN_DIR/handover.conf"
 JOURNAL="$PLAN_DIR/handover.journal"
@@ -271,12 +283,35 @@ read_config() {
   fi
 }
 
+file_sha256() {
+  "$node_bin" -e '
+    const fs = require("fs")
+    const crypto = require("crypto")
+    const path = process.argv[1]
+    process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex"))
+  ' "$1"
+}
+
+capture_preflight_fingerprints() {
+  PREFLIGHT_EPOCH="$(date +%s)"
+  PREFLIGHT_CONFIG_SHA256="$(file_sha256 "$CONF")"
+  PREFLIGHT_ROUTE_SHA256="$(file_sha256 "$route_file")"
+  PREFLIGHT_MAIN_FRAGMENT_SHA256="$(file_sha256 "$main_fragment")"
+  PREFLIGHT_TEMPORARY_FRAGMENT_SHA256="$(file_sha256 "$temporary_fragment")"
+  PREFLIGHT_NGINX_MAIN_SHA256="$(file_sha256 "$nginx_main_config")"
+}
+
 write_journal() {
   state="$1" action="$2" source="$3" target="$4"
   tmp="$JOURNAL.tmp.$$"
   umask 077
   {
     printf 'format_version=1\nstate=%s\naction=%s\nsource=%s\ntarget=%s\nupdated_at=%s\n' "$state" "$action" "$source" "$target" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ -n "$PREFLIGHT_EPOCH" ]; then
+      printf 'preflight_epoch=%s\npreflight_max_age_seconds=%s\nconfig_sha256=%s\nroute_sha256=%s\nmain_fragment_sha256=%s\ntemporary_fragment_sha256=%s\nnginx_main_config_sha256=%s\n' \
+        "$PREFLIGHT_EPOCH" "$PREFLIGHT_MAX_AGE_SECONDS" "$PREFLIGHT_CONFIG_SHA256" "$PREFLIGHT_ROUTE_SHA256" \
+        "$PREFLIGHT_MAIN_FRAGMENT_SHA256" "$PREFLIGHT_TEMPORARY_FRAGMENT_SHA256" "$PREFLIGHT_NGINX_MAIN_SHA256"
+    fi
   } > "$tmp"
   chmod 600 "$tmp"
   mv -f -- "$tmp" "$JOURNAL"
@@ -290,13 +325,38 @@ assert_journal_route() {
 }
 
 require_preflight() {
-  expected_source="$1" expected_target="$2"
+  expected_source="$1" expected_target="$2" now= preflight_epoch= receipt_max_age= allowed_age= age= expected_hash= actual_hash=
   [ -f "$JOURNAL" ] || { echo 'takeover requires a matching preflight journal' >&2; exit 1; }
   state="$(journal_value state)" source="$(journal_value source)" target="$(journal_value target)"
   [ "$state" = preflight ] && [ "$source" = "$expected_source" ] && [ "$target" = "$expected_target" ] || {
     echo "matching preflight journal required for $expected_source to $expected_target" >&2
     exit 1
   }
+  preflight_epoch="$(journal_value preflight_epoch)"
+  case "$preflight_epoch" in ''|*[!0-9]*) echo 'preflight receipt is missing a valid epoch' >&2; exit 1;; esac
+  receipt_max_age="$(journal_value preflight_max_age_seconds)"
+  case "$receipt_max_age" in ''|*[!0-9]*) echo 'preflight receipt is missing a valid max age' >&2; exit 1;; esac
+  [ "$receipt_max_age" -ge 60 ] && [ "$receipt_max_age" -le 900 ] || { echo 'preflight receipt max age must be 60..900' >&2; exit 1; }
+  allowed_age="$PREFLIGHT_MAX_AGE_SECONDS"
+  [ "$receipt_max_age" -ge "$allowed_age" ] || allowed_age="$receipt_max_age"
+  now="$(date +%s)"
+  [ "$now" -ge "$preflight_epoch" ] || { echo 'preflight receipt is dated in the future' >&2; exit 1; }
+  age=$((now - preflight_epoch))
+  [ "$age" -le "$allowed_age" ] || { echo "preflight receipt expired after ${age}s" >&2; exit 1; }
+  for fingerprint in \
+    "config_sha256:$CONF" \
+    "route_sha256:$route_file" \
+    "main_fragment_sha256:$main_fragment" \
+    "temporary_fragment_sha256:$temporary_fragment" \
+    "nginx_main_config_sha256:$nginx_main_config"; do
+    key="${fingerprint%%:*}" path="${fingerprint#*:}"
+    expected_hash="$(journal_value "$key")"
+    case "$expected_hash" in ''|*[!0-9a-f]*) echo "preflight receipt is missing a valid $key" >&2; exit 1;; esac
+    [ "${#expected_hash}" -eq 64 ] || { echo "preflight receipt is missing a valid $key" >&2; exit 1; }
+    actual_hash="$(file_sha256 "$path")"
+    [ "$actual_hash" = "$expected_hash" ] || { echo "preflight file fingerprint changed: $path" >&2; exit 1; }
+  done
+  PREFLIGHT_VERIFIED=1
 }
 
 label_for() { [ "$1" = main ] && printf '%s' "$main_label" || printf '%s' "$temporary_label"; }
@@ -427,23 +487,6 @@ verify_slots_once() {
 ${temporary_slot_identity}"
 }
 
-verify_slots_stable() {
-  local pair_identity= attempts=$((STABILITY_SECONDS / 5))
-  [ "$attempts" -ge 12 ] || attempts=12
-  for _ in $(seq 1 "$attempts"); do
-    verify_slots_once
-    if [ -z "$pair_identity" ]; then
-      pair_identity="$OBSERVED_SLOT_PAIR_IDENTITY"
-    elif [ "$pair_identity" != "$OBSERVED_SLOT_PAIR_IDENTITY" ]; then
-      printf 'slot topology identity changed during stability proof; previous=%s observed=%s\n' "$pair_identity" "$OBSERVED_SLOT_PAIR_IDENTITY" >&2
-      return 1
-    fi
-    sleep 5
-  done
-}
-
-verify_slot_stable() { verify_slots_stable; }
-
 verify_ingress_once() {
   target="$1" expected_label="$(label_for "$target")" expected_instance="$(instance_for "$target")" expected_topology_identity="$(topology_identity_for "$target")"
   case "$ingress_health_url" in
@@ -461,15 +504,17 @@ verify_ingress_once() {
   )"
 }
 
-verify_ingress_stable() {
-  local target="$1" prior_size="$(stat -f '%z' "$access_log" 2>/dev/null || printf 0)" attempts=$((STABILITY_SECONDS / 5)) topology_identity= current_size=
+verify_route_and_slots_stable() {
+  local target="$1" prior_size="$(stat -f '%z' "$access_log" 2>/dev/null || printf 0)" attempts=$((STABILITY_SECONDS / 5)) pair_identity= ingress_identity= current_size=
   [ "$attempts" -ge 12 ] || attempts=12
   for _ in $(seq 1 "$attempts"); do
+    verify_slots_once
     verify_ingress_once "$target"
-    if [ -z "$topology_identity" ]; then
-      topology_identity="$OBSERVED_TOPOLOGY_IDENTITY"
-    elif [ "$topology_identity" != "$OBSERVED_TOPOLOGY_IDENTITY" ]; then
-      printf 'ingress topology identity changed during stability proof for target=%s; previous=%s observed=%s\n' "$target" "$topology_identity" "$OBSERVED_TOPOLOGY_IDENTITY" >&2
+    if [ -z "$pair_identity" ]; then
+      pair_identity="$OBSERVED_SLOT_PAIR_IDENTITY"
+      ingress_identity="$OBSERVED_TOPOLOGY_IDENTITY"
+    elif [ "$pair_identity" != "$OBSERVED_SLOT_PAIR_IDENTITY" ] || [ "$ingress_identity" != "$OBSERVED_TOPOLOGY_IDENTITY" ]; then
+      printf 'route or slot identity changed during stability proof for target=%s\n' "$target" >&2
       return 1
     fi
     sleep 5
@@ -485,7 +530,7 @@ restore_route() {
   stage="$route_file.handover-restore.$$"
   cp -p -- "$ROLLBACK_FRAGMENT" "$stage"
   mv -f -- "$stage" "$route_file"
-  nginx_test_reload && verify_ingress_stable "$SOURCE_LABEL" && verify_slots_stable
+  nginx_test_reload && verify_route_and_slots_stable "$SOURCE_LABEL"
 }
 
 on_exit() {
@@ -534,10 +579,10 @@ case "$ACTION" in
       SOURCE_LABEL=main
       TARGET_LABEL=temporary
     fi
-    verify_slots_stable
-    verify_ingress_stable "$SOURCE_LABEL"
+    verify_route_and_slots_stable "$SOURCE_LABEL"
+    capture_preflight_fingerprints
     write_journal preflight preflight "$SOURCE_LABEL" "$TARGET_LABEL"
-    printf 'PREFLIGHT_OK source=%s target=%s\n' "$SOURCE_LABEL" "$TARGET_LABEL"
+    printf 'PREFLIGHT_OK source=%s target=%s valid_for=%ss\n' "$SOURCE_LABEL" "$TARGET_LABEL" "$PREFLIGHT_MAX_AGE_SECONDS"
     exit 0
     ;;
   takeover)
@@ -553,8 +598,7 @@ case "$ACTION" in
     SOURCE_LABEL="$(journal_value source)" TARGET_LABEL="$(journal_value target)" state="$(journal_value state)"; assert_journal_route "$SOURCE_LABEL" "$TARGET_LABEL"
     case "$state" in
       preflight)
-        verify_slots_stable
-        verify_ingress_stable "$SOURCE_LABEL"
+        verify_route_and_slots_stable "$SOURCE_LABEL"
         write_journal preflight-cancelled recover "$SOURCE_LABEL" "$TARGET_LABEL"
         printf 'RECOVERY_OK route=%s; no route change had been staged\n' "$SOURCE_LABEL"
         exit 0
@@ -570,8 +614,13 @@ case "$ACTION" in
     ;;
 esac
 
-verify_slots_stable
-verify_ingress_stable "$SOURCE_LABEL"
+if [ "$PREFLIGHT_VERIFIED" = 1 ]; then
+  verify_slots_once
+  verify_ingress_once "$SOURCE_LABEL"
+else
+  echo 'internal error: cutover reached without a verified preflight receipt' >&2
+  exit 1
+fi
 cp -p -- "$route_file" "$ROLLBACK_FRAGMENT"
 chmod 600 "$ROLLBACK_FRAGMENT"
 write_journal rollback-armed "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
@@ -583,8 +632,7 @@ mv -f -- "$stage" "$route_file"
 write_journal route-staged "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
 nginx_test_reload
 write_journal reload-requested "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
-verify_ingress_stable "$TARGET_LABEL"
-verify_slots_stable
+verify_route_and_slots_stable "$TARGET_LABEL"
 write_journal stable "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"
 SWITCH_ATTEMPTED=0
 write_journal committed "$ACTION" "$SOURCE_LABEL" "$TARGET_LABEL"

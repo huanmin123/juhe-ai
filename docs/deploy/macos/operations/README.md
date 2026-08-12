@@ -45,7 +45,7 @@
 - 零停机只适用于“独立 candidate 槽已完整运行，再由外层 handover 原子切流”。对 active 槽使用同端口、同 label 的原地 `install-performance-topology.sh --apply` 会逐项重启服务，不得称为零停机。
 - candidate 必须使用不可变 release、独立 runtime、label、端口、Nginx slot include、upstream suffix、instance ID、Redis 身份及 F1/F2/F3 owner 身份；业务槽连接同一权威业务库，不能把预演 clone 当成生产权威库。
 - 切流前必须通过 Node 双 health、三个 gateway direct health、worker/PID 集合、F1/F2 freshness、F3 Node -> Go -> Node 读回、真实管理页登录态 API 和网关认证性探针，并完成稳定观察。静态 HTML、单个 `200` 或 F3 `204` 都不能独立放行。
-- 高性能生产切流的唯一入口是 `performance-handover-controller.sh` 的 `preflight -> takeover`。成功必须有 committed journal、route identity、access-log 增量和稳定窗口。尚未 committed 的中断 journal 才能使用 `recover`；已经 committed 后如需正常回退，必须重新对反向目标执行 `preflight`，再执行 `switchback`。`stable` 只是控制器内部瞬时 journal 状态，不是 CLI action。`temporary-cutover.sh` 只适用于单进程或非高性能部署。
+- 高性能生产切流的唯一入口是 `performance-handover-controller.sh` 的 `preflight -> takeover`。`preflight` 在一个稳定循环中同时证明两槽和当前入口，并写入默认 300 秒有效的 plan、route、两个 fragment 与 Nginx main config SHA-256；`takeover` 必须在凭证有效期内执行，先做一次实时身份复核，再原子换 route，并在一个稳定循环中同时证明新入口和两槽。成功必须有 committed journal、route identity、access-log 增量和稳定窗口。尚未 committed 的中断 journal 才能使用 `recover`；已经 committed 后如需正常回退，必须重新对反向目标执行 `preflight`，再执行 `switchback`。`stable` 只是控制器内部瞬时 journal 状态，不是 CLI action。`temporary-cutover.sh` 只适用于单进程或非高性能部署。完整的窗口分层和目标耗时见 [生产发布快速流程](../../生产发布快速流程.md)。
 - 切流后旧槽继续运行到观察窗口结束；确认无错误率、审计 backlog、连接或业务页异常后，才更新 `current` 标记并按精确 allowlist 清理旧槽。不得先停止 active 槽再验证 candidate。
 
 ## 静态验证

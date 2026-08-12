@@ -12,7 +12,7 @@
 
 - 发布包：阅读 [构建指南](构建指南.md) 和 release 内的 [快速部署说明](../../deploy/README.md)。
 - Docker standalone 或 performance：阅读 [Docker 部署指南](Docker部署指南.md) 和 `docker/README.md`。
-- macOS：先阅读 [macOS 部署指南](macos/macOS部署指南.md)；生产 Mac 还必须按受限的现场 runbook 执行，不能把本开发文档当成切流授权。
+- macOS：先阅读 [生产发布快速流程](生产发布快速流程.md) 和 [macOS 部署指南](macos/macOS部署指南.md)；生产 Mac 还必须按受限的现场 runbook 执行，不能把本开发文档当成切流授权。
 
 同一数据目录、数据库或 Redis namespace 不能同时由发布包与 Docker 两套部署使用。
 
@@ -60,7 +60,7 @@ Compose 名称、变量和 sidecar 卷以 [Docker 部署指南](Docker部署指�
 
 同日还在目标 Intel Mac 的隔离目录，以 commit `39b2cc68983c88959872d797312ece2f6de714cb` 使用受支持的 Node 22 与 BSD tar 完成了 `tar.gz` 构建、发布目录校验、F1/F2/F3 可执行权限校验、解包后的 `install-performance-topology.sh --dry-run`，并验证缺少 F3 二进制会被明确拒绝。该归档和全部临时目录已删除，不可作为正式候选复用。正式窗口仍须从最终冻结 commit 重新构建，记录 archive SHA-256，并完成 temporary `--apply`、Node HTTP 读回、稳定观察和回滚演练。
 
-不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。2026-08-12 首次 F3 正式上线发生过硬停机，且错误的 Windows 盘符 API base 使静态页面可加载但所有管理 API 失败；后续 Mac 高性能发布必须使用独立 candidate 槽和 `performance-handover-controller.sh`，完成真实浏览器登录态业务页验证后才切流。同槽原地 apply 不是零停机流程。
+不得把开发 Linux 或 Docker 的通过结果写成 macOS 或生产通过，也不得因一次 Node health `200` 宣称部署完成。2026-08-12 首次 F3 正式上线发生过硬停机，且错误的 Windows 盘符 API base 使静态页面可加载但所有管理 API 失败；后续 Mac 高性能发布必须按 [生产发布快速流程](生产发布快速流程.md) 使用独立 candidate 槽，把所有慢操作移出切流窗口，完成真实浏览器登录态业务页验证后再使用带时效和文件指纹的 `preflight -> takeover`。同槽原地 apply 不是零停机流程。
 
 ## 6. 验收记录格式
 

@@ -337,7 +337,7 @@ if ($rollbackProof -lt 0 -or $rollbackProof -gt $attemptMarker) {
 }
 
 $performanceHandover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'performance-handover-controller.sh')
-foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_ingress_stable', 'verify_gateway_ingress_once', 'verify_slots_stable', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
+foreach ($contract in @('rollback-armed', 'route-staged', 'reload-requested', 'rollback-unproven', 'ROLLBACK_UNPROVEN', 'verify_route_and_slots_stable', 'verify_gateway_ingress_once', 'preflight receipt expired', 'preflight file fingerprint changed', '--preflight-max-age-seconds', 'gateway health URLs must map to', 'main_gateway_instance_prefix', 'temporary_gateway_instance_prefix', 'gateway_instance_prefix_for', 'main_gateway_ingress_url', 'temporary_gateway_ingress_url', 'main and temporary slots share process or database-service PIDs', 'route-before-switch.conf', 'require_preflight', 'preflight-cancelled', '--action <status|preflight|takeover|switchback|recover>', 'secret-like plan key is forbidden')) {
   if (-not $performanceHandover.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance handover contract missing: $contract" }
 }
 foreach ($contract in @('main and temporary control instance IDs must differ', 'main and temporary gateway instance prefixes must differ', 'slot topology identities must differ')) {
@@ -710,6 +710,44 @@ if bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/de
 fi
 unset HANDOVER_BAD_TOPOLOGY
 bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+
+cp -p "$root/temporary" "$root/temporary.clean"
+printf 'changed-after-preflight\n' >> "$root/temporary"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a route fragment changed after preflight' >&2
+  exit 89
+fi
+cp -p "$root/temporary.clean" "$root/temporary"
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+sed 's/^preflight_epoch=.*/preflight_epoch=1/' "$root/plan/handover.journal" > "$root/plan/handover.journal.next"
+mv "$root/plan/handover.journal.next" "$root/plan/handover.journal"
+chmod 600 "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" --preflight-max-age-seconds 60 >/dev/null 2>&1; then
+  echo 'handover accepted an expired preflight receipt' >&2
+  exit 90
+fi
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+receipt_epoch="$(($(date +%s) - 61))"
+sed -e "s/^preflight_epoch=.*/preflight_epoch=$receipt_epoch/" -e 's/^preflight_max_age_seconds=.*/preflight_max_age_seconds=60/' "$root/plan/handover.journal" > "$root/plan/handover.journal.next"
+mv "$root/plan/handover.journal.next" "$root/plan/handover.journal"
+chmod 600 "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" --preflight-max-age-seconds 900 >/dev/null 2>&1; then
+  echo 'handover allowed the takeover command to extend the receipt max age' >&2
+  exit 91
+fi
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
+sed 's/^route_sha256=\([0-9a-f]\{63\}\)[0-9a-f]$/route_sha256=\1/' "$root/plan/handover.journal" > "$root/plan/handover.journal.next"
+mv "$root/plan/handover.journal.next" "$root/plan/handover.journal"
+chmod 600 "$root/plan/handover.journal"
+if bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null 2>&1; then
+  echo 'handover accepted a truncated preflight fingerprint' >&2
+  exit 92
+fi
+bash '__CONTROLLER__' --apply --action recover --plan-dir "$root/plan" >/dev/null
+bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/null
 bash '__CONTROLLER__' --apply --action takeover --plan-dir "$root/plan" >/dev/null
 cmp "$root/temporary" "$root/route"
 grep -qx 'state=committed' "$root/plan/handover.journal"
@@ -742,11 +780,11 @@ bash '__CONTROLLER__' --apply --action preflight --plan-dir "$root/plan" >/dev/n
 grep -qx 'state=preflight' "$root/plan/handover.journal"
 '@
     $handoverUnixName = (& $bash.Source -c 'uname -s').Trim()
-    if ($handoverUnixName -in @('Darwin', 'Linux')) {
+    if ($handoverUnixName -match '^(Darwin|Linux|MINGW|MSYS|CYGWIN)') {
       & $bash.Source -c ($performanceHandoverHarness.Replace('__CONTROLLER__', ((Join-Path $operationsRoot 'performance-handover-controller.sh') -replace '\\', '/')))
       if ($LASTEXITCODE -ne 0) { throw 'performance handover controller apply/rollback harness failed' }
     } else {
-      Write-Verbose "Performance handover apply harness requires Darwin/Linux bash; current shell reports $handoverUnixName."
+      Write-Verbose "Performance handover apply harness requires a POSIX-compatible bash; current shell reports $handoverUnixName."
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted a missing service user' }
