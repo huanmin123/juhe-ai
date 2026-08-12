@@ -24,8 +24,9 @@ JUHE_AI_PORT=3000
 JUHE_AI_ALLOWED_ORIGINS=http://127.0.0.1:3000
 JUHE_AI_COOKIE_SECURE=false
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
-JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
+JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-sidecar-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-sidecar-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
@@ -42,10 +43,10 @@ bash ./start.sh
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -i http://127.0.0.1:3303/__aiinternal__/health
-tail -n 100 ./backend/logs/juhe-ai-audit-log-writer.log
+tail -n 100 ./backend/logs/juhe-ai-go-sidecar.log
 ```
 
-Node 两个 health 应为 `200`，F3 health 应为 `204`。2026-08-11 已在隔离 temporary system launchd 环境完成三 sidecar 常驻、F1/F2/F3 readback、F3 重启接管与 rollback；2026-08-12 已完成正式拓扑接线，但首次上线发生硬停机和前端 API-base 构建事故。因此本页只保留为单进程手工启动示例，不能替代下一次独立 candidate 槽、真实登录态业务页、稳定窗口和 handover controller 验收，也不能直接执行生产切流。完整门禁见 [AI 部署执行清单](../AI部署执行清单.md)。
+Node 两个 health 应为 `200`，F3 health 应为 `204`。唯一的 Go sidecar 会在同一进程内恢复 F1/F2/F3 中发生普通运行错误的组件；它不是三个独立 launchd 服务。2026-08-12 已完成正式拓扑接线，但首次上线发生硬停机和前端 API-base 构建事故。因此本页只保留为单进程手工启动示例，不能替代下一次独立 candidate 槽、真实登录态业务页、稳定窗口和 handover controller 验收，也不能直接执行生产切流。完整门禁见 [AI 部署执行清单](../AI部署执行清单.md)。
 
 后台“代理管理”新增：
 

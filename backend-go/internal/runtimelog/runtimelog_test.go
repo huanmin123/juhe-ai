@@ -164,6 +164,63 @@ func TestWriteFailureKeepsLastCommittedCursorAndRecovers(t *testing.T) {
 	}
 }
 
+func TestRunReturnsManagedImportGoroutinePanic(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	ctx := testOwnerContext(t, store)
+	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
+	writeTestFile(t, rotatedPath, logLine("panic", "2026-08-08T00:00:00.000Z")+"\n")
+	indexer := NewIndexer(config, panicFindCursorStore{Store: store})
+	err := indexer.Run(ctx)
+	if !errors.Is(err, errManagedGoroutinePanic) {
+		t.Fatalf("managed import panic must leave F1 component for supervisor recovery, got %v", err)
+	}
+}
+
+func TestRunReturnsOrdinaryRuntimeFailureToSupervisor(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	ctx := testOwnerContext(t, store)
+	configuredFailure := errors.New("runtime retention settings fixture failure")
+	indexer := NewIndexer(config, failingRuntimeRetentionStore{Store: store, err: configuredFailure})
+	err := indexer.Run(ctx)
+	if !errors.Is(err, configuredFailure) {
+		t.Fatalf("ordinary F1 runtime failure must return to the sidecar supervisor, got %v", err)
+	}
+}
+
+func TestRunWithOwnerLeaseReleasesLeaseAfterRunPanic(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	config.OwnerID = "panic-owner"
+	config.OwnerLease = time.Minute
+	err := RunWithOwnerLease(context.Background(), config, store, func(context.Context) error {
+		panic("runtime owner callback fixture panic")
+	})
+	if err == nil || !strings.Contains(err.Error(), "runtime owner callback fixture panic") {
+		t.Fatalf("owner callback panic must return with its stack context, got %v", err)
+	}
+	lease, acquired, acquireErr := store.AcquireOwnerLease(context.Background(), "replacement-owner", time.Minute)
+	if acquireErr != nil || !acquired {
+		t.Fatalf("panic path must release the old F1 owner lease immediately: acquired=%t err=%v", acquired, acquireErr)
+	}
+	if err := store.ReleaseOwnerLease(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type panicFindCursorStore struct{ Store }
+
+func (panicFindCursorStore) FindCursor(context.Context, string) (*Cursor, error) {
+	panic("find cursor fixture panic")
+}
+
+type failingRuntimeRetentionStore struct {
+	Store
+	err error
+}
+
+func (store failingRuntimeRetentionStore) RuntimeRetentionDays(context.Context, int) (int, error) {
+	return 0, store.err
+}
+
 func TestCurrentLogReplacementPreservesDisplacedCursorAndIndexesNewFile(t *testing.T) {
 	store, config := openTestSQLiteStore(t)
 	ctx := testOwnerContext(t, store)

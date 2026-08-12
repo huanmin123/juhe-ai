@@ -299,57 +299,27 @@ Write-Utf8NoBom -Path (Join-Path $packageRoot 'RELEASE_SOURCE_COMMIT') -Content 
 
 $goCommand = Get-Command go -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $goCommand) {
-  throw 'Go 1.26.x is required to build the juhe-ai-runtime-log-indexer release binary.'
+  throw 'Go 1.26.x is required to build the juhe-ai-go-sidecar release binary.'
 }
 $goPath = $goCommand.Source
 $goModuleRoot = Join-Path $repoRoot 'backend-go'
-$runtimeLogIndexerBinary = Join-Path $packageRoot 'backend-go/juhe-ai-runtime-log-indexer.exe'
-$tableMonitorBinary = Join-Path $packageRoot 'backend-go/juhe-ai-table-monitor.exe'
-$auditLogWriterBinary = Join-Path $packageRoot 'backend-go/juhe-ai-audit-log-writer.exe'
+$goSidecarBinary = Join-Path $packageRoot 'backend-go/juhe-ai-go-sidecar.exe'
 if (-not (Test-Path -LiteralPath $goModuleRoot -PathType Container)) {
-  throw "Go runtime-log indexer module not found: $goModuleRoot"
+  throw "Go sidecar module not found: $goModuleRoot"
 }
 
-Write-Host '==> Building Go runtime-log indexer'
+Write-Host '==> Building Go sidecar'
 $goBuildArguments = @(
   'build',
   '-C', $goModuleRoot,
   '-trimpath',
   '-buildvcs=false',
-  '-o', $runtimeLogIndexerBinary,
-  './cmd/juhe-ai-runtime-log-indexer'
+  '-o', $goSidecarBinary,
+  './cmd/juhe-ai-go-sidecar'
 )
 & $goPath @goBuildArguments
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $runtimeLogIndexerBinary -PathType Leaf)) {
-  throw 'Go runtime-log indexer build failed.'
-}
-
-Write-Host '==> Building Go table monitor'
-$tableMonitorBuildArguments = @(
-  'build',
-  '-C', $goModuleRoot,
-  '-trimpath',
-  '-buildvcs=false',
-  '-o', $tableMonitorBinary,
-  './cmd/juhe-ai-table-monitor'
-)
-& $goPath @tableMonitorBuildArguments
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tableMonitorBinary -PathType Leaf)) {
-  throw 'Go table monitor build failed.'
-}
-
-Write-Host '==> Building Go audit log writer'
-$auditLogWriterBuildArguments = @(
-  'build',
-  '-C', $goModuleRoot,
-  '-trimpath',
-  '-buildvcs=false',
-  '-o', $auditLogWriterBinary,
-  './cmd/juhe-ai-audit-log-writer'
-)
-& $goPath @auditLogWriterBuildArguments
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $auditLogWriterBinary -PathType Leaf)) {
-  throw 'Go audit log writer build failed.'
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $goSidecarBinary -PathType Leaf)) {
+  throw 'Go sidecar build failed.'
 }
 
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
@@ -364,6 +334,7 @@ Copy-RequiredItem (Join-Path $repoRoot 'frontend/dist') (Join-Path $packageRoot 
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.sh') (Join-Path $packageRoot 'start.sh')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.ps1') (Join-Path $packageRoot 'start.ps1')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/run-with-owner-lock.mjs') (Join-Path $packageRoot 'scripts/run-with-owner-lock.mjs')
+Copy-RequiredItem (Join-Path $repoRoot 'scripts/start-go-sidecar.mjs') (Join-Path $packageRoot 'scripts/start-go-sidecar.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/validate-owner-manifest.mjs') (Join-Path $packageRoot 'scripts/validate-owner-manifest.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.json') (Join-Path $packageRoot 'deploy/owner-manifest.json')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.schema.json') (Join-Path $packageRoot 'deploy/owner-manifest.schema.json')

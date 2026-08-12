@@ -398,7 +398,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - standalone 常驻后台进程保持 ingest-worker、stats-worker、ops-worker 三类；performance 拆为可配置的 usage-worker、log-worker，以及单例 stats-worker、ops-worker，写入 PostgreSQL 时按 typed operation、consumer group 和连接池背压并发消费。
 - 高性能模式下 ops-worker 承接 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账户激活检查、始终存在的周期健康检测、账号冷却复测、账户内 API Key 检查 / 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；不存在 `health_check_enabled` 候选条件。这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
 - 高性能模式下 primary usage-worker 注册 `data-retention-cleanup` 并处理 record-maintenance，primary log-worker 只注册审计、操作和公开接口日志保留。PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup`；其他保留入口继续按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
-- 运行日志索引、cursor、facet 与索引保留由独立 Go F1 `runtime-log-indexer` 完整负责，不再由任何 Node worker 注册或维护。
+- 运行日志索引、cursor、facet 与索引保留由唯一 `juhe-ai-go-sidecar` 内的 F1 完整负责，不再由任何 Node worker 注册或维护。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
 - 人工账户测试仍是独立单账户诊断任务：每次使用独立 `testSessionId`，A/B 会话互不阻塞，不建立用户级全局锁，也不提供多账户批量测试。测试结果只写任务、使用记录和审计，不修改账户、授权实例、Key、额度快照、健康或 Redis 调度运行态。
 - OpenAI OAuth access token 自动刷新已恢复 PG 调度；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。远端 smoke 使用测试替身 token endpoint 验证 PG 候选、写回、任意远端失败只诊断 / 退避、来源匹配恢复和错误脱敏，真实上游 refresh token 仍按真实账号和生产网络单独验证。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。
@@ -410,7 +410,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - 跨事实域强一致需求应优先收敛到同一个 PostgreSQL 事务；不再按 SQLite 跨库短事务拆解。
 - 对 usage 明细、审计、日志、统计缓存这类异步事实链路，仍保持“事实先落库，统计后聚合”的最终一致模型。
 - 统计结果和统计游标必须同事务提交。
-- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态；Redis queue 承接 usage、audit、operation log、public API log 和 record maintenance 等未落库消息，未 ACK 前不能当作可丢缓存处理。`redis-queue` 必须使用 `noeviction`、持久化和 pending / lag 监控；事实最终以 PostgreSQL 落库为准。普通运行日志只追加到角色 JSONL 文件，由 Go F1 `runtime-log-indexer` 按持久 cursor 批量索引，不进入 Redis queue。
+- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态；Redis queue 承接 usage、audit、operation log、public API log 和 record maintenance 等未落库消息，未 ACK 前不能当作可丢缓存处理。`redis-queue` 必须使用 `noeviction`、持久化和 pending / lag 监控；事实最终以 PostgreSQL 落库为准。普通运行日志只追加到角色 JSONL 文件，由唯一 Go sidecar 内 F1 按持久 cursor 批量索引，不进入 Redis queue。
 
 ### 使用记录批量落库锁顺序
 

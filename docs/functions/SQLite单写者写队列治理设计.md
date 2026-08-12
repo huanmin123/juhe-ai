@@ -124,7 +124,7 @@ SQLite locked 不是统一硬失败：
 
 - **worker 绕过 owner 直接写业务库**：探测、冷却复测、时间计划同步、授权到期扫描等路径容易直接改 `accounts`、`api_keys` 或授权表。
 - **过渡期 worker -> server -> DB service 转发桥失控**：如果 worker 新增写回只转发 message、不校验 operation、或者 server 继续允许任意 DB service write op，会把写 owner 变成伪单写者。
-- **统计库多角色同时写**：系统采样、统计聚合、窗口刷新和统计清理统一收口到 `stats-worker` typed operation；F2 的 `database_storage_snapshots` / `table_storage_snapshots` 只允许 Go `juhe-ai-table-monitor` 写入专用 SQLite 输出文件，Node 不得恢复 writer、scheduler 或 retention。
+- **统计库多角色同时写**：系统采样、统计聚合、窗口刷新和统计清理统一收口到 `stats-worker` typed operation；F2 的 `database_storage_snapshots` / `table_storage_snapshots` 只允许 `juhe-ai-go-sidecar` 内的 F2 写入专用 SQLite 输出文件，Node 不得恢复 writer、scheduler 或 retention。
 - **数据集目录库 append-only 与清理抢锁**：ingest 高频写日志时，维护清理如果直接删除数据集表，会放大 locked。
 - **长事务窗口刷新**：范围窗口、TopN、概览或授权窗口如果单事务过大，会压住系统采样和增量统计。
 - **跨库事务链路**：dataset / stats / usage shard 混在一个流程里等待，会把一个库的 locked 扩散到其他库。

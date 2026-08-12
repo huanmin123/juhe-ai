@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -586,19 +587,28 @@ func collectBounded[T any, R any](ctx context.Context, limit int, targets []T, c
 	}
 	workers := min(limit, len(targets))
 	results := make([]R, len(targets))
-	jobs := make(chan int)
+	jobs := make(chan int, len(targets))
 	errs := make(chan error, len(targets))
+	for index := range targets {
+		jobs <- index
+	}
+	close(jobs)
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					errs <- fmt.Errorf("表监控采样 worker panic: %v\n%s", recovered, debug.Stack())
+				}
+			}()
 			for index := range jobs {
 				if err := ctx.Err(); err != nil {
 					errs <- err
 					continue
 				}
-				result, err := collect(targets[index])
+				result, err := collectSafely(collect, targets[index])
 				if err != nil {
 					errs <- err
 					continue
@@ -607,10 +617,6 @@ func collectBounded[T any, R any](ctx context.Context, limit int, targets []T, c
 			}
 		}()
 	}
-	for index := range targets {
-		jobs <- index
-	}
-	close(jobs)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -619,4 +625,13 @@ func collectBounded[T any, R any](ctx context.Context, limit int, targets []T, c
 		}
 	}
 	return results, nil
+}
+
+func collectSafely[T any, R any](collect func(T) (R, error), target T) (result R, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("表监控采样回调 panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	return collect(target)
 }

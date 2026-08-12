@@ -1,7 +1,6 @@
 # 后台 Worker 多角色拆分设计
 
-> **迁移说明（2026-08-09）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 仅支持 PostgreSQL/Redis，也不定义 Go 按旧 job / queue 拆分的迁移路线。F1“运行日志索引与保留”已被 Go 直接完整接管，任何 Node runtime-log importer / scheduler 记载均为历史，不得重新接入 Node worker。既有 W6/W7 接管叙述均为历史记录，须服从[完整功能接管与 Node 归档迁移规则](../../migration/完整功能接管与Node归档迁移规则.md)。
-> **F2 现行边界（2026-08-09）。** `juhe-ai-table-monitor` 已由独立 Go 进程完整接管：每分钟直接异步并发采样，SQLite 只写专用 F2 输出库，PostgreSQL 写入 `juhe_stats`。Node 仅通过 HTTP 查询，不注册调度、采样、writer 或 retention 清理；下文的 Node `stats-worker` 只描述与 F2 无关的系统统计。
+> **Go sidecar 现行边界（2026-08-12）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 按旧 job / queue 拆分。F1、F2、F3 均被唯一 `juhe-ai-go-sidecar` 接管，功能独立而进程统一；任何 Node runtime-log importer、F2 scheduler 或 F3 writer/queue 记载均为历史，不得重新接入 Node worker。
 
 > 面向后端实现、部署和 AI 维护者。
 > 本文的三角色拓扑现在只描述 `standalone`。`performance` 使用 `usage-worker`、`log-worker`、`stats-worker`、`ops-worker`，默认副本数为 `2/2/1/1`，并由 3 个独立 gateway 事件循环承接 AI 流量；权威设计见 [高性能模式同机多进程拓扑设计](../../functions/高性能模式同机多进程拓扑设计.md)。原三角色收敛历史见 [PLAN-20260623T122020000Z](../../plans/计划-20260623T122020000Z-后台Worker三角色收敛.md)。
@@ -24,7 +23,7 @@
 - 保持轻量部署：外部进程管理器只守护 `server`，由 server supervisor 拉起 DB service 和三类 worker。
 - 热写入优先：使用记录、审计、日志和 record maintenance 不被重统计或外部探测拖住。
 - 重统计隔离：所有 Node 统计聚合、窗口刷新和系统指标集中在 `stats-worker`，便于定位慢任务。
-- F2 独立接管：表存储监控由 Go `juhe-ai-table-monitor` 每分钟直接异步并发采样，写入专用 SQLite 输出库或 PostgreSQL `juhe_stats`；Node 仅保留 HTTP 查询。
+- F1/F2/F3 接管：表存储监控、运行日志索引和原始审计分别由唯一 Go sidecar 内的组件直接执行；Node 仅保留对应输入或只读查询。
 - 轻运维合并：账号测试、复测、OAuth、代理检测、可用时段同步、授权到期和过期删除协调统一在 `ops-worker`。
 - 运行态和前端展示只暴露当前角色，避免旧角色造成误判。
 - `standalone` 不引入外部队列或多实例假设；`performance` 使用 Redis Stream consumer group 在同机多进程间分工。
@@ -41,9 +40,9 @@
 
 | 角色 | 生命周期 | 核心职责 | 扩容触发 |
 | --- | --- | --- | --- |
-| `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、record maintenance、dataset / usage shard 清理 | 运行日志索引由独立 Go F1 indexer 负责；server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
+| `ingest-worker` | persistent | 使用记录、操作日志、公开接口日志、record maintenance、dataset / usage shard 清理 | 运行日志索引与原始审计持久化由 Go sidecar 负责；server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
 | `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
-| `log-worker` | performance persistent | 审计、操作、公开接口日志消费；运行日志文件索引与保留由独立 Go F1 `runtime-log-indexer` 负责 | 各日志 Stream lag 持续超标 |
+| `log-worker` | performance persistent | 操作、公开接口日志消费；运行日志文件索引与保留、原始审计持久化由 Go sidecar 负责 | 各日志 Stream lag 持续超标 |
 | `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量和统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量；F2 表存储监控不属于 Node worker |
 | `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、代理延迟刷新、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活 |
 | `temporary-maintenance-worker` | temporary | 历史按需任务入口，运行后退出 | 不作为常驻扩容对象 |
@@ -55,10 +54,9 @@
 | 任务 / 队列 | 当前角色 | 说明 |
 | --- | --- | --- |
 | `background_worker_usage_records` | standalone: `ingest-worker`; performance: `usage-worker` | 高频计费事实；performance 由同一 consumer group 多副本分摊 |
-| `background_worker_audit_logs` | standalone: `ingest-worker`; performance: `log-worker` | 原始审计 append-only，失败样本优先保留 |
 | `background_worker_operation_logs` | standalone: `ingest-worker`; performance: `log-worker` | 操作日志批量写入和摘要索引 |
 | `background_worker_public_api_logs` | standalone: `ingest-worker`; performance: `log-worker` | 公开接口调用明细 |
-| Go F1 `juhe-ai-runtime-log-indexer` | 独立 Go 进程 | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor；Node worker 不再拥有该功能 |
+| Go sidecar F1 | 同一 Go sidecar 内 | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor；Node worker 不再拥有该功能 |
 | `background_worker_record_maintenance` | standalone: `ingest-worker` / `stats-worker`; performance: `usage-worker#1` / `stats-worker` | usage / dataset 进 usage owner；stats-only command 进 stats writer |
 | `api-key-record-cleanup-retry` / `account-record-cleanup-retry` | standalone: `ingest-worker`; performance: `usage-worker#1` | 关联明细清理，等待统计安全游标 |
 | `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | standalone: `ingest-worker`; performance: `log-worker#1` / `usage-worker#1` | 小批多轮，不能压住热写入 |
@@ -70,7 +68,8 @@
 | `usage-rank-snapshots-refresh` | `stats-worker` | TopN 和重窗口刷新 |
 | `usage-overview-windows-refresh` / `usage-scope-range-windows-refresh` / `authorization-usage-range-windows-refresh` | `stats-worker` | 概览、范围和授权窗口 |
 | `system-metrics-trend-windows-refresh` | `stats-worker` | 系统趋势窗口 |
-| Go F2 `juhe-ai-table-monitor` | 独立 Go 进程 | 每分钟直接异步并发采样；SQLite 只写专用 F2 输出库，PostgreSQL 写入 `juhe_stats`，由 Go 负责快照写入、owner lease 和 retention；Node 仅保留 HTTP 查询 |
+| Go sidecar F2 | 同一 Go sidecar 内 | 每分钟直接异步并发采样；SQLite 只写专用 F2 输出库，PostgreSQL 写入 `juhe_stats`，由 Go 负责快照写入、owner lease 和 retention；Node 仅保留 HTTP 查询 |
+| Go sidecar F3 | 同一 Go sidecar 内 | 接收 Node loopback HMAC RPC，直接持久化审计、payload/blob、hot-search 与 retention；Node 不保留 writer、queue、transport 或 fallback |
 | `manual-account-test-queue` | `ops-worker` | 手动测试队列，支持取消和等待上限 |
 | `account-health-check` | `ops-worker` | 正常账户低频健康检测 |
 | `cooldown-account-retest` / `account-api-key-cooldown-retest` | `ops-worker` | 外部复测 I/O，可受控并发，写记录仍投递 ingest |
@@ -118,7 +117,7 @@
 | IPC 路由 | append-only 和 record maintenance 进 ingest；账号测试进 ops；stats write 进 stats |
 | SQLite 单写者 | 非 owner 不直接 import repository 写目标库 |
 | 统计新鲜度 | ingest 未 drain 时 stats 聚合跳过，等待下一轮 |
-| 运行态 | Node 系统监控、后台任务表、队列健康和前端文案只出现三类 worker；F2 由独立 Go 进程单独观测 |
+| 运行态 | Node 系统监控、后台任务表、队列健康和前端文案只出现三类 worker；F1/F2/F3 由唯一 Go sidecar 单独观测 |
 | 资源占用 | Node 子进程数、SQLite 连接、定时器和日志输出明显少于旧七角色方案 |
 
 ## 验证要求
@@ -131,6 +130,6 @@
 - system metrics process latest：standalone 确认只有 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`；performance 确认每个 Gateway、DB service、Usage / Log / Stats / Ops 副本都有独立动态角色；退出节点的注册表 key 在 TTL 后消失，latest 超过 2 分钟必须标记缺失，24 小时峰值和趋势继续保留。
 - background IPC snapshot current only，确认旧角色 snapshot 请求不再进入当前状态。
 - queue health 和 local queue limit，确认 record maintenance 仍归 ingest，账号测试归 ops。
-- F2 `juhe-ai-table-monitor`，确认独立 Go 进程每分钟直接异步并发采样，SQLite 只写专用输出库、PostgreSQL 写 `juhe_stats`，Node 仅 HTTP 查询且 `stats-worker` 不调度、不写、不清理 F2。
+- Go sidecar，确认 F1/F2/F3 在同一进程运行且每个组件仍保留独立 owner；F2 每分钟直接异步并发采样，SQLite 只写专用输出库、PostgreSQL 写 `juhe_stats`，Node 仅 HTTP 查询且 `stats-worker` 不调度、不写、不清理 F2。
 
 禁止覆盖为空的“通过”：如果某项不能执行，必须在计划验证记录里写明原因和残余风险。

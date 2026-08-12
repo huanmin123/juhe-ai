@@ -331,7 +331,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 if ! command -v go >/dev/null 2>&1; then
-  echo "Go is required to build backend-go/juhe-ai-runtime-log-indexer for $TARGET_GOOS/$TARGET_GOARCH." >&2
+  echo "Go is required to build backend-go/juhe-ai-go-sidecar for $TARGET_GOOS/$TARGET_GOARCH." >&2
   exit 1
 fi
 
@@ -394,52 +394,39 @@ copy_required_item "$REPO_ROOT/frontend/dist" "$PACKAGE_ROOT/frontend/dist"
 copy_required_item "$REPO_ROOT/deploy/start.sh" "$PACKAGE_ROOT/start.sh"
 copy_required_item "$REPO_ROOT/deploy/start.ps1" "$PACKAGE_ROOT/start.ps1"
 copy_required_item "$REPO_ROOT/scripts/run-with-owner-lock.mjs" "$PACKAGE_ROOT/scripts/run-with-owner-lock.mjs"
+copy_required_item "$REPO_ROOT/scripts/start-go-sidecar.mjs" "$PACKAGE_ROOT/scripts/start-go-sidecar.mjs"
 copy_required_item "$REPO_ROOT/scripts/validate-owner-manifest.mjs" "$PACKAGE_ROOT/scripts/validate-owner-manifest.mjs"
 copy_required_item "$REPO_ROOT/deploy/owner-manifest.json" "$PACKAGE_ROOT/deploy/owner-manifest.json"
 copy_required_item "$REPO_ROOT/deploy/owner-manifest.schema.json" "$PACKAGE_ROOT/deploy/owner-manifest.schema.json"
 copy_required_item "$REPO_ROOT/deploy/README.md" "$PACKAGE_ROOT/README.md"
 copy_required_item "$REPO_ROOT/docs/deploy" "$PACKAGE_ROOT/docs/deploy"
 
-INDEXER_SOURCE_DIR="$REPO_ROOT/backend-go"
-INDEXER_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-runtime-log-indexer"
-TABLE_MONITOR_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-table-monitor"
-AUDIT_LOG_WRITER_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-audit-log-writer"
-if [ ! -f "$INDEXER_SOURCE_DIR/go.mod" ]; then
-  echo "Go indexer module file not found: $INDEXER_SOURCE_DIR/go.mod" >&2
-  exit 1
+GO_SIDECAR_SOURCE_DIR="$REPO_ROOT/backend-go"
+GO_SIDECAR_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-go-sidecar"
+if [ ! -f "$GO_SIDECAR_SOURCE_DIR/go.mod" ]; then
+	 echo "Go sidecar module file not found: $GO_SIDECAR_SOURCE_DIR/go.mod" >&2
+	 exit 1
 fi
 
-echo "==> Building Go runtime log indexer for $TARGET_GOOS/$TARGET_GOARCH"
+echo "==> Building Go sidecar for $TARGET_GOOS/$TARGET_GOARCH"
 GO_BUILD_MOD='-mod=readonly'
-if [ -d "$INDEXER_SOURCE_DIR/vendor" ]; then
-  if [ -L "$INDEXER_SOURCE_DIR/vendor" ] || [ ! -f "$INDEXER_SOURCE_DIR/vendor/modules.txt" ]; then
-    echo "Go vendor directory must be a regular directory with modules.txt: $INDEXER_SOURCE_DIR/vendor" >&2
-    exit 1
-  fi
-  GO_BUILD_MOD='-mod=vendor'
+if [ -d "$GO_SIDECAR_SOURCE_DIR/vendor" ]; then
+	 if [ -L "$GO_SIDECAR_SOURCE_DIR/vendor" ] || [ ! -f "$GO_SIDECAR_SOURCE_DIR/vendor/modules.txt" ]; then
+		 echo "Go vendor directory must be a regular directory with modules.txt: $GO_SIDECAR_SOURCE_DIR/vendor" >&2
+		 exit 1
+	 fi
+	 GO_BUILD_MOD='-mod=vendor'
 fi
 (
-  cd "$INDEXER_SOURCE_DIR"
-  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$INDEXER_BINARY_PATH" ./cmd/juhe-ai-runtime-log-indexer
-  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$TABLE_MONITOR_BINARY_PATH" ./cmd/juhe-ai-table-monitor
-  CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$AUDIT_LOG_WRITER_BINARY_PATH" ./cmd/juhe-ai-audit-log-writer
+	 cd "$GO_SIDECAR_SOURCE_DIR"
+	 CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$GO_SIDECAR_BINARY_PATH" ./cmd/juhe-ai-go-sidecar
 )
 
-if [ ! -f "$INDEXER_BINARY_PATH" ] || [ -L "$INDEXER_BINARY_PATH" ]; then
-  echo "Go runtime log indexer build did not produce a regular file: $INDEXER_BINARY_PATH" >&2
-  exit 1
+if [ ! -f "$GO_SIDECAR_BINARY_PATH" ] || [ -L "$GO_SIDECAR_BINARY_PATH" ]; then
+	 echo "Go sidecar build did not produce a regular file: $GO_SIDECAR_BINARY_PATH" >&2
+	 exit 1
 fi
-chmod +x "$INDEXER_BINARY_PATH"
-if [ ! -f "$TABLE_MONITOR_BINARY_PATH" ] || [ -L "$TABLE_MONITOR_BINARY_PATH" ]; then
-  echo "Go table monitor build did not produce a regular file: $TABLE_MONITOR_BINARY_PATH" >&2
-  exit 1
-fi
-chmod +x "$TABLE_MONITOR_BINARY_PATH"
-if [ ! -f "$AUDIT_LOG_WRITER_BINARY_PATH" ] || [ -L "$AUDIT_LOG_WRITER_BINARY_PATH" ]; then
-  echo "Go audit log writer build did not produce a regular file: $AUDIT_LOG_WRITER_BINARY_PATH" >&2
-  exit 1
-fi
-chmod +x "$AUDIT_LOG_WRITER_BINARY_PATH"
+chmod +x "$GO_SIDECAR_BINARY_PATH"
 
 TMP_START_SCRIPT="$(mktemp)"
 tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"
@@ -459,23 +446,17 @@ if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   # with executable mode so Linux/macOS extraction can launch the release.
   tar -cf "$TMP_TAR_PATH" \
     --exclude="$PACKAGE_NAME/start.sh" \
-    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
-    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
-    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-go-sidecar" \
     -C "$RELEASE_ROOT" "$PACKAGE_NAME"
   if tar --version 2>/dev/null | grep -qi 'GNU tar'; then
     tar --append --file="$TMP_TAR_PATH" --mode=0755 -C "$RELEASE_ROOT" \
       "$PACKAGE_NAME/start.sh" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer"
+      "$PACKAGE_NAME/backend-go/juhe-ai-go-sidecar"
   elif tar --help 2>&1 | grep -Fq -- ' -r Add/Replace'; then
     # BSD tar preserves the source modes, which were set explicitly above.
     tar -rf "$TMP_TAR_PATH" -C "$RELEASE_ROOT" \
       "$PACKAGE_NAME/start.sh" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-runtime-log-indexer" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-table-monitor" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-audit-log-writer"
+      "$PACKAGE_NAME/backend-go/juhe-ai-go-sidecar"
   else
     echo "tar must support GNU --append/--mode or BSD tar -r to create a release archive." >&2
     exit 1

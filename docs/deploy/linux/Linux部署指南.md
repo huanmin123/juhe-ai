@@ -42,11 +42,12 @@ cp -n backend/.env.example backend/.env
 nano backend/.env
 ```
 
-首次启动前，`backend/.env` 除 Node 配置外还必须填写稳定的 F2/F3 owner 与 F3 独立 HMAC 输入配置。`start.sh` 会为 F1 生成 instance ID，但不会为 F2/F3 生成 owner ID 或 F3 secret：
+首次启动前，`backend/.env` 除 Node 配置外还必须填写稳定的 F1/F2/F3 owner 与 F3 独立 HMAC 输入配置。`start.sh` 不会生成任一 Go owner ID 或 F3 secret：
 
 ```env
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
-JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
+JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-sidecar-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-sidecar-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
@@ -56,7 +57,7 @@ JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
-F3 secret 不能复用或回退 `JUHE_AI_SECRET`。启动后除 Node 两个 health 外，必须检查 `curl -i http://127.0.0.1:3303/__aiinternal__/health` 返回 `204`、三个 sidecar 日志、F1/F2 数据新鲜度和 Node -> F3 -> Node 审计详情读回；完整顺序见 [AI 部署执行清单](../AI部署执行清单.md)。
+F3 secret 不能复用或回退 `JUHE_AI_SECRET`。启动后除 Node 两个 health 外，必须检查 `curl -i http://127.0.0.1:3303/__aiinternal__/health` 返回 `204`、唯一 `backend/logs/juhe-ai-go-sidecar.log`、F1/F2 数据新鲜度和 Node -> F3 -> Node 审计详情读回；完整顺序见 [AI 部署执行清单](../AI部署执行清单.md)。
 
 配置完成后才可启动：
 

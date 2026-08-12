@@ -4,14 +4,14 @@
 
 ## 1. 适用方式
 
-Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖。Compose 拓扑是一个 Node 应用容器加三个 Go sidecar：F1 `runtime-log-indexer`、F2 `table-monitor` 与 F3 `audit-log-writer`。Node 应用容器承载：
+Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖。Compose 拓扑是一个 Node 应用容器加一个 `go-sidecar` 容器；同一 Go 进程承载 F1 运行日志索引、F2 表监控与 F3 审计持久化。Node 应用容器承载：
 
 - 管理后台：`/__aisys__/`
 - 系统 API：`/__aisys__/api`
 - OpenAI 兼容网关：`/v1`
 - background worker 和本地 DB service 子进程
 
-F1/F2 分别是运行日志索引/保留与表监控采样、快照/保留的唯一 Go writer；F3 是原始审计日志持久化、payload/blob、hot-search 与保留的唯一 Go writer。三者直接异步执行，不使用队列；Node 只保留 F3 capture 的一次性 loopback HMAC 输入和 F1/F2/F3 只读查询。
+F1/F2/F3 在同一 sidecar 内仍分别是各自事实的唯一 Go owner：F1 负责运行日志索引/保留，F2 负责表监控采样、快照/保留，F3 负责原始审计、payload/blob、hot-search 与保留。三者直接异步执行，不使用队列；Node 只保留 F3 capture 的一次性 loopback HMAC 输入和 F1/F2/F3 只读查询。
 
 默认 standalone 模式不需要 Nginx、Redis、PostgreSQL 或额外 Node worker 容器。如果需要 PostgreSQL + Redis 高性能模式，使用 `docker/compose.performance.yml`，并先阅读 [高性能模式部署指南](高性能模式部署指南.md)。2026-08-10 已在开发 Linux 服务器完成两种 Compose runtime 闭环；这不等于 macOS 或生产环境已部署。
 
@@ -138,21 +138,19 @@ JUHE_AI_TRUST_PROXY=false
 - 迁移已有业务库时必须填写原来的 `JUHE_AI_SECRET`。
 - 直接 HTTP 访问时 `JUHE_AI_COOKIE_SECURE=false`；HTTPS 反向代理后建议改为 `true`。
 - `JUHE_AI_PUBLIC_ORIGIN` 是 Docker entrypoint 的便捷变量，会在 `JUHE_AI_ALLOWED_ORIGINS` 留空时转换成后端 CORS 白名单；直接运行 `backend/dist/server.js`、PM2、systemd 或托管平台注入环境变量时，必须配置 `JUHE_AI_ALLOWED_ORIGINS`。
-- F3 必须显式配置稳定的 `JUHE_AI_AUDIT_LOG_INSTANCE_ID`、独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`（不回退 `JUHE_AI_SECRET`）、`JUHE_AI_AUDIT_LOG_INPUT_URL`，以及 `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` / `JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY`。Compose F3 监听 loopback，需与 Node 共享 network namespace。
+- 单一 sidecar 必须显式配置稳定的 F1/F2/F3 owner ID，F3 还必须配置独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`（不回退 `JUHE_AI_SECRET`）、`JUHE_AI_AUDIT_LOG_INPUT_URL`，以及 `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` / `JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY`。F3 listener 仅监听 loopback，所以 sidecar 必须与 Node 共享 network namespace。
 - Docker 构建阶段默认使用官方 Go proxy；受限网络可覆盖 `JUHE_AI_GO_PROXY=https://goproxy.cn,direct`，不影响运行时数据库或 Redis URL。
 - 公网 IP 或域名访问时建议填写 `JUHE_AI_PUBLIC_ORIGIN`，例如 `http://你的服务器IP:3000` 或 `https://ai.example.com`。
 - HTTPS 反向代理后，后台真实客户端 IP 依赖 `JUHE_AI_TRUST_PROXY=true` 和前置代理传递 `X-Forwarded-For`；完整说明见 [Caddy 自动 HTTPS 部署指南](https/Caddy自动HTTPS部署指南.md)。
 - 需要免费证书自动续期时，优先使用宿主机 Caddy；完整示例见 [HTTPS 部署示例](https/HTTPS部署示例.md)。
 
-### F1 / F2 sidecar 必填项与存储隔离
+### 单一 sidecar 的 owner 与存储隔离
 
-两个 sidecar 都在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动，并保留独立容器、PID 和日志；任何一个退出或不新鲜都应使部署验证失败，不得把 Node health 成功当作 sidecar 成功。
+sidecar 在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动，保留一个容器、PID 和日志。组件错误由进程内恢复循环记录并只重启该组件；sidecar 进程退出或功能数据不新鲜都会使部署验证失败，不得把 Node health 成功当作 sidecar 成功。
 
-standalone 首次初始化空数据卷时，F2 entrypoint 会在启动 Go 采样器前等待 `JUHE_AI_STATS_DATABASE_PATH` 源库出现，默认超时 `90` 秒；超时保留原始错误并退出。performance 的 F2 使用 PostgreSQL，不等待该 SQLite 文件。
-
-- F1：`JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL），以及 `JUHE_AI_LOG_DIR`。`JUHE_AI_RUNTIME_LOG_ONCE=false` 用于常驻运行。
-- F2：`JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、`JUHE_AI_TABLE_MONITOR_STORE`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL）。生产常驻还应明确 interval、lease、retention 等 F2 参数。
-- F3：`JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_STORE`、`JUHE_AI_AUDIT_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_POSTGRES_URL`（PostgreSQL）、独立 blob/hot-search 目录、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`。
+- F1：`JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`（PostgreSQL），以及 `JUHE_AI_LOG_DIR`。`JUHE_AI_RUNTIME_LOG_ONCE=false` 用于常驻运行。
+- F2：`JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、`JUHE_AI_TABLE_MONITOR_STORE`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`（PostgreSQL）。生产常驻还应明确 interval、lease、retention 等 F2 参数。
+- F3：`JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_STORE`、`JUHE_AI_AUDIT_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（PostgreSQL）、独立 blob/hot-search 目录、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`。
 - SQLite：F1、F2、F3、业务、dataset、usage catalog、stats 和 usage shard 路径必须物理隔离；F1/F2/F3 输出库分别由 Go 强制 `WAL` 和 `busy_timeout=5000`，Node 只读其产物。
 - PostgreSQL：F1 写其对应日志 schema，F2 写 `juhe_stats`，F3 写其审计 schema；三者不以 Redis 或队列为依赖。
 - F3 已校验 usage shard root，但 F1/F2 当前没有该 root 的完整启动校验。SQLite 部署前仍须由人工确认该目录与任一 F1/F2/F3 输出、其源库均不重叠；这是一项未来 usage 迁移前必须补齐的统一启动门禁，不是已完成的生产验证。
@@ -179,8 +177,7 @@ Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
-docker compose logs --tail=100 runtime-log-indexer
-docker compose logs --tail=100 table-monitor
+docker compose logs --tail=100 go-sidecar
 ```
 
 Linux / macOS：
@@ -191,8 +188,7 @@ curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
-docker compose logs --tail=100 runtime-log-indexer
-docker compose logs --tail=100 table-monitor
+docker compose logs --tail=100 go-sidecar
 ```
 
 期望：
@@ -200,8 +196,8 @@ docker compose logs --tail=100 table-monitor
 - `/__aisys__/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/api/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/` 返回前端页面。
-- `docker compose ps` 中 Node、F1、F2、F3 均为 `healthy`；performance 还应包含 PostgreSQL、PgBouncer 和三类 Redis。
-- 日志中能看到主服务、DB service、background worker 以及 F1/F2/F3 sidecar 启动记录；F3 health probe 必须返回 `204`，并用一次合法输入确认 Node → Go → Node 审计读回；还必须用 F1 `/runtime-logs` 与 F2 `/table-monitor` 的只读接口确认数据新鲜度。
+- `docker compose ps` 中 Node 与 `go-sidecar` 均为 `healthy`；performance 还应包含 PostgreSQL、PgBouncer 和三类 Redis。
+- 日志中能看到主服务、DB service、background worker 以及 sidecar 的 F1/F2/F3 启动或恢复记录；F3 health probe 必须返回 `204`，并用一次合法输入确认 Node → Go → Node 审计读回；还必须用 F1 `/runtime-logs` 与 F2 `/table-monitor` 的只读接口确认数据新鲜度。
 
 ## 7. 状态检测和恢复
 

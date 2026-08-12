@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { once } from 'node:events'
@@ -18,11 +18,18 @@ const inputSecret = 'f3-local-sidecar-e2e-input-secret'
 const databasePath = join(testRoot, 'f3-audit.sqlite3')
 const blobDirectory = join(testRoot, 'blobs')
 const hotSearchDirectory = join(testRoot, 'hot-search')
-const binaryPath = join(testRoot, process.platform === 'win32' ? 'juhe-ai-audit-log-writer.exe' : 'juhe-ai-audit-log-writer')
+const binaryPath = join(testRoot, process.platform === 'win32' ? 'juhe-ai-go-sidecar.exe' : 'juhe-ai-go-sidecar')
 
 const originalEnvironment = new Map<string, string | undefined>()
 const environment = {
   JUHE_AI_SECRET: businessSecret,
+  JUHE_AI_RUNTIME_LOG_STORE: 'sqlite',
+  JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f3-local-sidecar-e2e-runtime-log',
+  JUHE_AI_LOG_DIR: join(testRoot, 'logs'),
+  JUHE_AI_TABLE_MONITOR_STORE: 'sqlite',
+  JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f3-local-sidecar-e2e-table-monitor',
+  JUHE_AI_TABLE_MONITOR_INTERVAL: '1h',
+  JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT: '5s',
   JUHE_AI_AUDIT_LOG_INPUT_URL: inputUrl,
   JUHE_AI_AUDIT_LOG_STORE: 'sqlite',
   JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-local-sidecar-e2e',
@@ -42,7 +49,7 @@ const environment = {
   JUHE_AI_AUDIT_LOG_INPUT_SECRET: inputSecret,
   JUHE_AI_AUDIT_LOG_OWNER_LEASE: '5s',
   JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL: '1h',
-  JUHE_AI_LOG_FILE_ENABLED: 'false',
+  JUHE_AI_LOG_FILE_ENABLED: 'true',
   JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
   NODE_ENV: 'test'
 }
@@ -54,8 +61,16 @@ let sidecar: ChildProcess | undefined
 try {
   await mkdir(join(testRoot, 'codex-shards'), { recursive: true })
   await mkdir(join(testRoot, 'usage-shards'), { recursive: true })
-  await buildWriter()
-  sidecar = await startWriter()
+  await Promise.all([
+    environment.JUHE_AI_DATABASE_PATH,
+    environment.JUHE_AI_DATASET_DATABASE_PATH,
+    environment.JUHE_AI_USAGE_CATALOG_DATABASE_PATH,
+    environment.JUHE_AI_STATS_DATABASE_PATH,
+    environment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH,
+    environment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH
+  ].map((path) => writeFile(path, Buffer.alloc(0))))
+  await buildSidecar()
+  sidecar = await startSidecar()
 
   const { dispatchAuditLogToGo } = await import('../../modules/audit-logs/audit-log-go-input.service.js')
   const { createAuditLogF3QueryRepository } = await import('../../storage/audit-log-f3-query.repository.js')
@@ -88,17 +103,17 @@ try {
     await repository.close()
   }
 
-  await stopWriter(sidecar)
+  await stopSidecar(sidecar)
   // A force-stopped Windows child cannot run Go's deferred lease release.
   // The minimum configured lease is 5s, so wait once for it to expire before
   // proving that the same stable instance ID can start again.
   await delay(5_500)
-  sidecar = await startWriter()
-  await stopWriter(sidecar)
+  sidecar = await startSidecar()
+  await stopSidecar(sidecar)
   sidecar = undefined
   console.log('F3 Go sidecar E2E regression passed: Node input, Go SQLite persistence, stream finalization, Node read-only query, payload read, and sidecar restart.')
 } finally {
-  if (sidecar) await stopWriter(sidecar).catch(() => undefined)
+  if (sidecar) await stopSidecar(sidecar).catch(() => undefined)
   for (const [name, value] of originalEnvironment) {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
@@ -153,18 +168,18 @@ function input(options: { id: string, traceId: string, timestamp: string, lifecy
   }
 }
 
-async function buildWriter(): Promise<void> {
-  const result = spawn(process.env.JUHE_AI_GO_BINARY ?? 'go', ['build', '-o', binaryPath, './cmd/juhe-ai-audit-log-writer'], {
+async function buildSidecar(): Promise<void> {
+  const result = spawn(process.env.JUHE_AI_GO_BINARY ?? 'go', ['build', '-o', binaryPath, './cmd/juhe-ai-go-sidecar'], {
     cwd: goRoot,
     env: process.env,
     stdio: 'pipe',
     windowsHide: true
   })
   const failure = await processResult(result)
-  assert.equal(failure.code, 0, `F3 Go writer build failed: ${failure.output}`)
+  assert.equal(failure.code, 0, `Go sidecar build failed: ${failure.output}`)
 }
 
-async function startWriter(): Promise<ChildProcess> {
+async function startSidecar(): Promise<ChildProcess> {
   const child = spawn(binaryPath, [], { cwd: goRoot, env: process.env, stdio: 'pipe', windowsHide: true })
   const ready = waitForReady(child)
   await ready
@@ -177,7 +192,7 @@ async function waitForReady(child: ChildProcess): Promise<void> {
   child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8') })
   const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`F3 Go sidecar exited before ready: ${output}`)
+    if (child.exitCode !== null) throw new Error(`Go sidecar exited before ready: ${output}`)
     try {
       const response = await fetch(`${inputUrl}/__aiinternal__/health`)
       if (response.status === 204) return
@@ -186,14 +201,14 @@ async function waitForReady(child: ChildProcess): Promise<void> {
     }
     await delay(50)
   }
-  throw new Error(`F3 Go sidecar did not become ready: ${output}`)
+  throw new Error(`Go sidecar did not become ready: ${output}`)
 }
 
-async function stopWriter(child: ChildProcess): Promise<void> {
+async function stopSidecar(child: ChildProcess): Promise<void> {
   if (child.exitCode === null) child.kill()
   await Promise.race([
     once(child, 'exit'),
-    delay(5_000).then(() => { throw new Error('F3 Go sidecar did not stop within 5s') })
+    delay(5_000).then(() => { throw new Error('Go sidecar did not stop within 5s') })
   ])
 }
 

@@ -74,7 +74,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		UsageCatalogPath:       strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH")),
 		StatsPath:              strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
 		CodexShardRoot:         strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
-		PostgresURL:            strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresURL:            firstNonEmpty(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL")),
 		LogDirectory:           strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
 		FileEnabled:            fileEnabled,
 		Once:                   once,
@@ -101,7 +101,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	case ModePostgres:
 		if config.PostgresURL == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_POSTGRES_URL")
+			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_RUNTIME_LOG_POSTGRES_URL 或 JUHE_AI_POSTGRES_URL")
 		}
 	}
 	return config, nil

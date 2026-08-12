@@ -70,7 +70,7 @@
 - AI 性能摘要从 TopN 组合任务拆出为独立 5 分钟错峰任务，每轮最多领取 10 个系统账户、只重算与 `min_stat_date..max_stat_date` 相交的窗口，并用 upsert 发布。SQLite 暂时保留原组合刷新语义。
 - 首页预热只处理近期活跃、最近使用账户，并使用跨重启确定性的时间槽轮转、批次和总时间预算；performance 多 usage-worker 时仅 replica 0 注册，避免每个副本重复读取候选和预热相同账户。
 - 首页预热正常路径读取既有 7 日 `usage_overview_summary_windows` 排序索引；窗口尚未生成时最多执行 7 个单日 Top-512 查询，候选池 128、每轮热门 8 + 轮转 24，PostgreSQL 候选事务使用 1.5 秒 statement timeout。
-- F2 表监控由独立 Go `juhe-ai-table-monitor` 直接异步并发采样；SQLite 使用只读源和精确 `COUNT(*)`，PostgreSQL 使用 catalog/relation size，快照与 retention 均由 Go owner 负责，不进入 Node scheduler 或中央清理任务。
+- F2 表监控由唯一 `juhe-ai-go-sidecar` 内部组件直接异步并发采样；SQLite 使用只读源和精确 `COUNT(*)`，PostgreSQL 使用 catalog/relation size，快照与 retention 均由 Go owner 负责，不进入 Node scheduler 或中央清理任务。
 - Codex Context 的 cursor 模式连 shard 目录查询和 PRAGMA 访问也受 pair budget 约束；局部扫描不伪装成全库汇总，数据库级未知值写 `NULL`。
 - performance process publisher 使用实例、角色和 replica 派生 0～5 秒稳定相位；sampler 放在 publisher 波次之间。
 - performance process publisher 的 Redis key 包含 `instanceId + processRole`，读侧保留公共前缀扫描以兼容滚动升级，退出实例仍由 TTL 清理。

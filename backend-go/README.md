@@ -1,10 +1,30 @@
-# Go 后端完整功能实现
+# Go 后端 sidecar
+
+正常常驻入口只有 `cmd/juhe-ai-go-sidecar`（发布二进制名
+`juhe-ai-go-sidecar`）。它在同一进程中启动 F1 运行日志索引、F2 表存储
+监控和 F3 审计日志输入，但每项功能仍独立加载配置、打开 Store、初始化
+schema 并持有自己的 owner lease。普通运行错误、owner lease 暂失、组件
+panic 或异常返回只会记录该组件的原因、连续失败次数和退避时间，然后仅重启
+该组件；不会取消其余组件。外部 `SIGTERM`/`SIGINT`、运行时无法恢复的进程级
+故障（例如 OOM 或 runtime fatal），或启动前配置、Store、schema 预检失败，才会
+停止整个 sidecar 并交由服务管理器处理。日志是诊断和组件自愈的依据，不会掩盖
+进程已经无法继续执行的故障。
+
+常驻 sidecar 不支持 `--once` 或 `JUHE_AI_RUNTIME_LOG_ONCE=true`，因为 F3
+必须持续提供本地输入服务。离线迁移收敛到同一二进制的互斥显式模式：
+`--migrate-runtime-log-legacy-sqlite` 和
+`--migrate-audit-log-legacy-sqlite --source-db ... --target-db ...`
+（F3 仍必须显式传入 `--node-stopped --go-stopped`）。迁移不能与 sidecar
+常驻模式并发运行。
+
+以下 F1/F2 章节描述 sidecar 内保留的独立数据契约和环境变量，不再表示旧
+独立常驻命令是发布入口。
 
 本目录当前承载 F1“运行日志索引与保留”和 F2“表存储监控采样与保留”。两项均已由 Go 直接完整接管各自功能；这不表示 Node 的网关、账户管理或其他管理 API 已迁移。
 
 ## F1：运行日志索引与保留
 
-`cmd/juhe-ai-runtime-log-indexer` 是 F1 的 Go 实现。它直接扫描 Node 已落盘的 JSONL 运行日志，按文件 goroutine 并发处理，并直接提交索引、cursor、facet 和保留清理；不使用 Redis Stream、Asynq、任务队列或常驻通用 worker pool。
+sidecar 内的 F1 直接扫描 Node 已落盘的 JSONL 运行日志，按文件 goroutine 并发处理，并直接提交索引、cursor、facet 和保留清理；不使用 Redis Stream、Asynq、任务队列或常驻通用 worker pool。
 
 运行前必须满足：
 
@@ -16,7 +36,7 @@
 示例：
 
 ```powershell
-$env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'runtime-log-indexer-a'
+$env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'go-sidecar-runtime-log-a'
 $env:JUHE_AI_RUNTIME_LOG_STORE = 'sqlite'
 $env:JUHE_AI_RUNTIME_LOG_DATABASE_PATH = 'F:\temp\juhe-ai\runtime-log.sqlite'
 $env:JUHE_AI_TABLE_MONITOR_DATABASE_PATH = 'F:\temp\juhe-ai\table-monitor.sqlite'
@@ -26,8 +46,7 @@ $env:JUHE_AI_USAGE_CATALOG_DATABASE_PATH = 'F:\temp\juhe-ai\usage-catalog.sqlite
 $env:JUHE_AI_STATS_DATABASE_PATH = 'F:\temp\juhe-ai\stats.sqlite'
 $env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = 'F:\temp\juhe-ai\codex-context\state-shards'
 $env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
-$env:JUHE_AI_RUNTIME_LOG_ONCE = 'true'
-go run ./cmd/juhe-ai-runtime-log-indexer
+go run ./cmd/juhe-ai-go-sidecar
 ```
 
 主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。Node 仅继续产生 JSONL 文件并只读查询 Go 产物。
@@ -35,7 +54,7 @@ go run ./cmd/juhe-ai-runtime-log-indexer
 已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，并提供所有 SQLite owner 路径以完成物理隔离校验，再执行：
 
 ```powershell
-go run ./cmd/juhe-ai-runtime-log-indexer --migrate-legacy-sqlite
+go run ./cmd/juhe-ai-go-sidecar --migrate-runtime-log-legacy-sqlite
 ```
 
 该一次性命令会校验源库完整性、F1 表、数量、主键和字段值；失败时保留原文件，不能回退到 Node F1 或将 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 改成 dataset 文件。
@@ -62,7 +81,7 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 
 ## F2：表存储监控采样与保留
 
-`cmd/juhe-ai-table-monitor` 是 F2 的唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
+sidecar 内的 F2 是唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
 
 运行前必须满足：
 

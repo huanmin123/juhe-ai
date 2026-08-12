@@ -400,6 +400,50 @@ func TestCollectBoundedLimitsHighShardCounts(t *testing.T) {
 	}
 }
 
+func TestCollectBoundedConvertsCallbackPanicToError(t *testing.T) {
+	_, err := collectBounded(context.Background(), 2, []string{"first", "second"}, func(string) (string, error) {
+		panic("fixture panic")
+	})
+	if err == nil || !strings.Contains(err.Error(), "fixture panic") || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("callback panic must become a component error, got %v", err)
+	}
+}
+
+func TestRunWithOwnerLeaseReleasesLeaseAfterRunPanic(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteTestEnv(root)
+	for _, path := range []string{env["JUHE_AI_DATABASE_PATH"], env["JUHE_AI_DATASET_DATABASE_PATH"], env["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"], env["JUHE_AI_STATS_DATABASE_PATH"]} {
+		createSQLiteSource(t, path)
+	}
+	if err := os.MkdirAll(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.InstanceID = "panic-owner"
+	cfg.OwnerLease = time.Minute
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	err = RunWithOwnerLease(context.Background(), cfg, store, func(context.Context) error {
+		panic("table-monitor owner callback fixture panic")
+	})
+	if err == nil || !strings.Contains(err.Error(), "table-monitor owner callback fixture panic") {
+		t.Fatalf("owner callback panic must return with its stack context, got %v", err)
+	}
+	lease, acquired, acquireErr := store.AcquireOwnerLease(context.Background(), "replacement-owner", time.Minute)
+	if acquireErr != nil || !acquired {
+		t.Fatalf("panic path must release the old F2 owner lease immediately: acquired=%t err=%v", acquired, acquireErr)
+	}
+	if err := store.ReleaseOwnerLease(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSelectShardWindowBoundsAndRotates(t *testing.T) {
 	entries := make([]string, 96)
 	for index := range entries {

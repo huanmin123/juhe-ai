@@ -13,6 +13,9 @@ GATEWAY_COUNT=3
 USAGE_WORKERS=2
 LOG_WORKERS=2
 INGRESS_PORT=3000
+AUDIT_INPUT_PORT=3303
+AUDIT_INPUT_PORT_SET=0
+GO_SIDECAR_MODE=owner
 NGINX_CONFIG=
 NGINX_BIN=nginx
 NGINX_MAIN_CONFIG=
@@ -39,6 +42,8 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --usage-workers 1..32
   --log-workers 1..32
   --ingress-port PORT
+  --audit-input-port PORT
+  --go-sidecar-mode owner|reuse
   --nginx-config ABSOLUTE_INCLUDED_CONF_PATH
   --nginx-bin ABSOLUTE_PATH
   --nginx-main-config ABSOLUTE_PATH
@@ -64,6 +69,8 @@ while [ "$#" -gt 0 ]; do
     --usage-workers) USAGE_WORKERS="${2:-}"; shift 2 ;;
     --log-workers) LOG_WORKERS="${2:-}"; shift 2 ;;
     --ingress-port) INGRESS_PORT="${2:-}"; shift 2 ;;
+    --audit-input-port) AUDIT_INPUT_PORT="${2:-}"; AUDIT_INPUT_PORT_SET=1; shift 2 ;;
+    --go-sidecar-mode) GO_SIDECAR_MODE="${2:-}"; shift 2 ;;
     --nginx-config) NGINX_CONFIG="${2:-}"; shift 2 ;;
     --nginx-bin) NGINX_BIN="${2:-}"; shift 2 ;;
     --nginx-main-config) NGINX_MAIN_CONFIG="${2:-}"; shift 2 ;;
@@ -77,6 +84,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$SCOPE" in user|system) ;; *) echo '--scope must be user or system' >&2; exit 2 ;; esac
+case "$GO_SIDECAR_MODE" in owner|reuse) ;; *) echo '--go-sidecar-mode must be owner or reuse' >&2; exit 2 ;; esac
 if [ "$SCOPE" = system ]; then
   [ -n "$SERVICE_USER" ] || { echo '--service-user is required for system scope' >&2; exit 2; }
   printf '%s' "$SERVICE_USER" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.-]{0,63}$' \
@@ -109,6 +117,14 @@ if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ -z "$INSTANCE_I
   echo '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled' >&2
   exit 2
 fi
+if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ "$AUDIT_INPUT_PORT_SET" -ne 1 ]; then
+  echo '--audit-input-port is required when isolated runtime and upstream suffix are enabled' >&2
+  exit 2
+fi
+if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ "$GO_SIDECAR_MODE" != reuse ]; then
+  echo 'isolated candidate topology must use --go-sidecar-mode reuse; a candidate must not start a second Go data owner' >&2
+  exit 2
+fi
 case "$BASE_DIR$RELEASE_DIR$RUNTIME_DIR$NODE_PATH$NGINX_CONFIG$NGINX_BIN$NGINX_MAIN_CONFIG" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
     echo 'paths contain unsafe shell characters' >&2
@@ -133,11 +149,15 @@ assert_number "$GATEWAY_COUNT" 1 32 gateway-count
 assert_number "$USAGE_WORKERS" 1 32 usage-workers
 assert_number "$LOG_WORKERS" 1 32 log-workers
 assert_number "$INGRESS_PORT" 1 65535 ingress-port
+assert_number "$AUDIT_INPUT_PORT" 1 65535 audit-input-port
 LAST_GATEWAY_PORT=$((GATEWAY_BASE_PORT + GATEWAY_COUNT - 1))
 [ "$LAST_GATEWAY_PORT" -le 65535 ] || { echo 'gateway port range exceeds 65535' >&2; exit 2; }
 [ "$CONTROL_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$CONTROL_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'control port overlaps gateway ports' >&2; exit 2; }
 [ "$INGRESS_PORT" -ne "$CONTROL_PORT" ] || { echo 'ingress port overlaps control port' >&2; exit 2; }
 [ "$INGRESS_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$INGRESS_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'ingress port overlaps gateway ports' >&2; exit 2; }
+[ "$AUDIT_INPUT_PORT" -ne "$CONTROL_PORT" ] || { echo 'audit input port overlaps control port' >&2; exit 2; }
+[ "$AUDIT_INPUT_PORT" -ne "$INGRESS_PORT" ] || { echo 'audit input port overlaps ingress port' >&2; exit 2; }
+[ "$AUDIT_INPUT_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$AUDIT_INPUT_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'audit input port overlaps gateway ports' >&2; exit 2; }
 
 CURRENT_DIR="$RELEASE_DIR"
 if [ -n "$RUNTIME_DIR" ]; then
@@ -153,6 +173,12 @@ else
   SPOOL_DIR="$BASE_DIR/shared/usage-spool"
   DATA_DIR="$BASE_DIR/shared/data"
 fi
+GO_SIDECAR_DATA_DIR="$DATA_DIR"
+if [ "$GO_SIDECAR_MODE" = reuse ]; then
+  # A candidate Node slot reads the live Go owner's audit artifacts. It never
+  # creates a second F1/F2/F3 owner, blob directory, or lease identity.
+  GO_SIDECAR_DATA_DIR="$BASE_DIR/shared/data"
+fi
 if [ -n "$NGINX_UPSTREAM_SUFFIX" ]; then
   GATEWAY_UPSTREAM="juhe_ai_gateway_pool_${NGINX_UPSTREAM_SUFFIX}"
   CONTROL_UPSTREAM="juhe_ai_control_${NGINX_UPSTREAM_SUFFIX}"
@@ -167,6 +193,20 @@ else
   DOMAIN=system
   PLIST_DIR=/Library/LaunchDaemons
 fi
+
+assert_reuse_has_no_candidate_go_sidecar() {
+  [ "$GO_SIDECAR_MODE" = reuse ] || return 0
+  residual_label="$LABEL_PREFIX.go-sidecar"
+  residual_plist="$PLIST_DIR/$residual_label.plist"
+  residual_run_script="$BIN_DIR/go-sidecar.sh"
+  if launchctl print "$DOMAIN/$residual_label" >/dev/null 2>&1 \
+    || [ -e "$residual_plist" ] \
+    || [ -e "$residual_run_script" ]; then
+    echo "candidate reuse refuses a residual Go sidecar owner: label=$residual_label plist=$residual_plist run=$residual_run_script" >&2
+    return 1
+  fi
+}
+
 if [ -z "$NGINX_CONFIG" ]; then
   NGINX_CONFIG="$BASE_DIR/config/nginx/juhe-ai-performance.conf"
 fi
@@ -260,11 +300,15 @@ if [ -n "$NGINX_MAIN_CONFIG" ]; then
   fi
 fi
 
-printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s instance_id_prefix=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
-  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
-  "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
+printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s instance_id_prefix=%s go_sidecar_mode=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s audit_input=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
+  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$GO_SIDECAR_MODE" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
+  "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$AUDIT_INPUT_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
-printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers, verify DB readiness, then runtime-log-indexer, table-monitor and audit-log-writer, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
+if [ "$GO_SIDECAR_MODE" = owner ]; then
+  printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers, verify DB readiness, then the single Go sidecar, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
+else
+  printf 'plan: restart and verify %s candidate gateway publishers and control/workers, prove the shared single Go sidecar healthy, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
+fi
 
 [ -d "$CURRENT_DIR" ] || { echo "missing release directory: $CURRENT_DIR" >&2; exit 1; }
 CURRENT_DIR="$(cd "$CURRENT_DIR" && pwd -P)"
@@ -275,15 +319,9 @@ case "$CURRENT_DIR" in
     ;;
 esac
 [ -f "$CURRENT_DIR/backend/dist/server.js" ] || { echo "missing built server: $CURRENT_DIR/backend/dist/server.js" >&2; exit 1; }
-[ -f "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" ] || { echo "missing Go runtime log indexer: $CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" >&2; exit 1; }
-[ ! -L "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" ] || { echo 'Go runtime log indexer must be a regular file' >&2; exit 1; }
-[ -x "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" ] || { echo 'Go runtime log indexer is not executable' >&2; exit 1; }
-[ -f "$CURRENT_DIR/backend-go/juhe-ai-table-monitor" ] || { echo "missing Go table monitor: $CURRENT_DIR/backend-go/juhe-ai-table-monitor" >&2; exit 1; }
-[ ! -L "$CURRENT_DIR/backend-go/juhe-ai-table-monitor" ] || { echo 'Go table monitor must be a regular file' >&2; exit 1; }
-[ -x "$CURRENT_DIR/backend-go/juhe-ai-table-monitor" ] || { echo 'Go table monitor is not executable' >&2; exit 1; }
-[ -f "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer" ] || { echo "missing Go audit log writer: $CURRENT_DIR/backend-go/juhe-ai-audit-log-writer" >&2; exit 1; }
-[ ! -L "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer" ] || { echo 'Go audit log writer must be a regular file' >&2; exit 1; }
-[ -x "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer" ] || { echo 'Go audit log writer is not executable' >&2; exit 1; }
+[ -f "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar" ] || { echo "missing Go sidecar: $CURRENT_DIR/backend-go/juhe-ai-go-sidecar" >&2; exit 1; }
+[ ! -L "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar" ] || { echo 'Go sidecar must be a regular file' >&2; exit 1; }
+[ -x "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar" ] || { echo 'Go sidecar is not executable' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" ] || { echo 'missing runtime preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" ] || { echo 'missing performance metrics registry preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/.env" ] || { echo 'missing release backend/.env' >&2; exit 1; }
@@ -293,6 +331,11 @@ RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)" || exit 1
 
 # Dry-run only gates immutable release inputs. Platform and mutable runtime checks stay apply-only.
 [ "$MODE" = apply ] || exit 0
+
+# A candidate reuses the live sidecar only. Any candidate-labelled service or
+# run artifact means a previous attempt was not cleanly removed, so fail rather
+# than accidentally creating a second data owner.
+assert_reuse_has_no_candidate_go_sidecar
 
 assert_nginx_slot_included() {
   expanded_config="$1"
@@ -495,7 +538,12 @@ if [ -n "$RUNTIME_DIR" ]; then
   [ -d "$BASE_DIR" ] || { echo '--runtime-dir requires an existing base directory' >&2; exit 1; }
   assert_isolated_runtime_parent "$RUNTIME_DIR"
 fi
-ensure_audit_payload_blob_directory
+if [ "$GO_SIDECAR_MODE" = owner ]; then
+  ensure_audit_payload_blob_directory
+elif [ ! -d "$GO_SIDECAR_DATA_DIR/audit/blobs" ] || [ -L "$GO_SIDECAR_DATA_DIR/audit/blobs" ]; then
+  echo "shared Go sidecar audit blob directory is unavailable: $GO_SIDECAR_DATA_DIR/audit/blobs" >&2
+  exit 1
+fi
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
 if [ -n "$RUNTIME_DIR" ]; then
   for runtime_path in "$RUNTIME_DIR" "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
@@ -522,9 +570,7 @@ if [ "$SCOPE" = system ]; then
     "$CURRENT_DIR/backend/dist/server.js" \
     "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" \
     "$CURRENT_DIR/backend/.env" \
-    "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" \
-    "$CURRENT_DIR/backend-go/juhe-ai-table-monitor" \
-    "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer"; do
+    "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar"; do
     "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -r "$readable" \
       || { echo "service user cannot read required release file: $readable" >&2; exit 1; }
     if "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -w "$readable"; then
@@ -534,12 +580,8 @@ if [ "$SCOPE" = system ]; then
   done
   "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$NODE_BIN" \
     || { echo "service user cannot execute node: $NODE_BIN" >&2; exit 1; }
-  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer" \
-    || { echo 'service user cannot execute Go runtime log indexer' >&2; exit 1; }
-  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$CURRENT_DIR/backend-go/juhe-ai-table-monitor" \
-    || { echo 'service user cannot execute Go table monitor' >&2; exit 1; }
-  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer" \
-    || { echo 'service user cannot execute Go audit log writer' >&2; exit 1; }
+  "$SUDO_BIN" -n -u "$SERVICE_USER" "$TEST_BIN" -x "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar" \
+    || { echo 'service user cannot execute Go sidecar' >&2; exit 1; }
   migrate_runtime_ownership
   for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do assert_runtime_directory "$runtime_path"; done
   for writable in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$DATA_DIR"; do
@@ -547,15 +589,17 @@ if [ "$SCOPE" = system ]; then
       || { echo "service user cannot write runtime directory: $writable" >&2; exit 1; }
   done
 fi
-assert_audit_payload_blob_write_preflight
+if [ "$GO_SIDECAR_MODE" = owner ]; then
+  assert_audit_payload_blob_write_preflight
+fi
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/juhe-ai-performance.XXXXXX")"
 MUTATED=0
 NGINX_BACKUP="$NGINX_CONFIG.performance-backup.$$"
 
 service_names() {
-  printf '%s\n' runtime-log-indexer
-  printf '%s\n' table-monitor
-  printf '%s\n' audit-log-writer
+  if [ "$GO_SIDECAR_MODE" = owner ]; then
+    printf '%s\n' go-sidecar
+  fi
   printf '%s\n' control-1
   index=1
   while [ "$index" -le "$GATEWAY_COUNT" ]; do
@@ -587,26 +631,24 @@ activation_service_names() {
     index=$((index + 1))
   done
   printf '%s\n' control-1
-  # Start each Go service only after the Node DB-service health proxy passes.
-  printf '%s\n' runtime-log-indexer
-  printf '%s\n' table-monitor
-  printf '%s\n' audit-log-writer
+  if [ "$GO_SIDECAR_MODE" = owner ]; then
+    # Start the sole data owner only after the Node DB-service health proxy passes.
+    printf '%s\n' go-sidecar
+  fi
 }
 
 service_port() {
   case "$1" in
     control-1) printf '%s' "$CONTROL_PORT" ;;
     gateway-*) index="${1#gateway-}"; printf '%s' "$((GATEWAY_BASE_PORT + index - 1))" ;;
-    runtime-log-indexer|table-monitor|audit-log-writer) printf '%s' 0 ;;
+    go-sidecar) printf '%s' 0 ;;
   esac
 }
 
 service_role() {
   case "$1" in
     control-1) printf control ;;
-    runtime-log-indexer) printf runtime-log-indexer ;;
-    table-monitor) printf table-monitor ;;
-    audit-log-writer) printf audit-log-writer ;;
+    go-sidecar) printf go-sidecar ;;
     *) printf gateway ;;
   esac
 }
@@ -632,82 +674,50 @@ render_run_script() {
   {
     printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
     printf 'export PATH="%s"\n' "$NODE_PATH"
-    if [ "$name" = runtime-log-indexer ]; then
+    if [ "$name" = go-sidecar ]; then
       printf '%s\n' \
         'read_dotenv_value() {' \
         '  key="$1"' \
         '  file="$2"' \
         '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") || (substr(line, 1, 1) == "\x27" && substr(line, length(line), 1) == "\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
         '}' \
-        'postgres_url="${JUHE_AI_RUNTIME_LOG_POSTGRES_URL:-${JUHE_AI_POSTGRES_URL:-}}"' \
-        'if [ -z "$postgres_url" ] && [ -f "backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_RUNTIME_LOG_POSTGRES_URL backend/.env)"; fi' \
+        'postgres_url="${JUHE_AI_POSTGRES_URL:-}"' \
         'if [ -z "$postgres_url" ] && [ -f "backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_POSTGRES_URL backend/.env)"; fi' \
-        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_RUNTIME_LOG_POSTGRES_URL or JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
+        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
+        'runtime_log_url="${JUHE_AI_RUNTIME_LOG_POSTGRES_URL:-$postgres_url}"' \
+        'table_monitor_url="${JUHE_AI_TABLE_MONITOR_POSTGRES_URL:-$postgres_url}"' \
+        'table_monitor_interval="${JUHE_AI_TABLE_MONITOR_INTERVAL:-}"' \
+        'audit_log_url="${JUHE_AI_AUDIT_LOG_POSTGRES_URL:-$postgres_url}"' \
+        'business_settings_url="${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL:-$audit_log_url}"' \
+        'input_address="127.0.0.1:'"$AUDIT_INPUT_PORT"'"' \
+        'input_url="http://$input_address"' \
+        'input_secret="${JUHE_AI_AUDIT_LOG_INPUT_SECRET:-}"' \
+        'if [ -z "$input_secret" ] && [ -f "backend/.env" ]; then input_secret="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_SECRET backend/.env)"; fi' \
+        '[ -n "$input_secret" ] || { echo "missing JUHE_AI_AUDIT_LOG_INPUT_SECRET" >&2; exit 1; }' \
+        'if [ -z "$table_monitor_interval" ] && [ -f "backend/.env" ]; then table_monitor_interval="$(read_dotenv_value JUHE_AI_TABLE_MONITOR_INTERVAL backend/.env)"; fi' \
+        'export NODE_ENV=production' \
         'export JUHE_AI_RUNTIME_MODE=performance' \
-        'export JUHE_AI_RUNTIME_LOG_STORE=postgres' \
-        'export JUHE_AI_RUNTIME_LOG_POSTGRES_URL="$postgres_url"' \
         'export JUHE_AI_POSTGRES_URL="$postgres_url"' \
-        'export JUHE_AI_RUNTIME_LOG_INSTANCE_ID="'"$instance_id"'"' \
+        'export JUHE_AI_RUNTIME_LOG_STORE=postgres' \
+        'export JUHE_AI_RUNTIME_LOG_POSTGRES_URL="$runtime_log_url"' \
+        'export JUHE_AI_RUNTIME_LOG_INSTANCE_ID="'"$(instance_id_for runtime-log)"'"' \
+        'export JUHE_AI_TABLE_MONITOR_STORE=postgres' \
+        'export JUHE_AI_TABLE_MONITOR_POSTGRES_URL="$table_monitor_url"' \
+        'export JUHE_AI_TABLE_MONITOR_INSTANCE_ID="'"$(instance_id_for table-monitor)"'"' \
+        'export JUHE_AI_TABLE_MONITOR_INTERVAL="${table_monitor_interval:-1m}"' \
+        'export JUHE_AI_AUDIT_LOG_STORE=postgres' \
+        'export JUHE_AI_AUDIT_LOG_POSTGRES_URL="$audit_log_url"' \
+        'export JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="$business_settings_url"' \
+        'export JUHE_AI_AUDIT_LOG_INSTANCE_ID="'"$(instance_id_for audit-log)"'"' \
+        'export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="'"$GO_SIDECAR_DATA_DIR/audit/blobs"'"' \
+        'export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="'"$GO_SIDECAR_DATA_DIR/audit/hot-search"'"' \
+        'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="$input_address"' \
+        'export JUHE_AI_AUDIT_LOG_INPUT_URL="$input_url"' \
+        'export JUHE_AI_AUDIT_LOG_INPUT_SECRET="$input_secret"' \
         'export JUHE_AI_LOG_DIR="'"$RUNTIME_LOG_DIR"'"' \
         'export JUHE_AI_LOG_FILE_ENABLED=true' \
         'cd "'"$CURRENT_DIR"'"' \
-        'exec "'"$CURRENT_DIR/backend-go/juhe-ai-runtime-log-indexer"'"'
-    elif [ "$name" = table-monitor ]; then
-      printf '%s\n' \
-        'read_dotenv_value() {' \
-        '  key="$1"' \
-        '  file="$2"' \
-        '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") || (substr(line, 1, 1) == "\x27" && substr(line, length(line), 1) == "\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
-        '}' \
-        'postgres_url="${JUHE_AI_TABLE_MONITOR_POSTGRES_URL:-${JUHE_AI_POSTGRES_URL:-}}"' \
-        'if [ -z "$postgres_url" ] && [ -f "backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_TABLE_MONITOR_POSTGRES_URL backend/.env)"; fi' \
-        'if [ -z "$postgres_url" ] && [ -f "backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_POSTGRES_URL backend/.env)"; fi' \
-        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_TABLE_MONITOR_POSTGRES_URL or JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
-        'export JUHE_AI_RUNTIME_MODE=performance' \
-        'export JUHE_AI_TABLE_MONITOR_STORE=postgres' \
-        'export JUHE_AI_TABLE_MONITOR_POSTGRES_URL="$postgres_url"' \
-        'export JUHE_AI_POSTGRES_URL="$postgres_url"' \
-        'export JUHE_AI_TABLE_MONITOR_INSTANCE_ID="'"$instance_id"'"' \
-        'if [ -n "${JUHE_AI_TABLE_MONITOR_INTERVAL:-}" ]; then export JUHE_AI_TABLE_MONITOR_INTERVAL; fi' \
-        'cd "'"$CURRENT_DIR"'"' \
-        'exec "'"$CURRENT_DIR/backend-go/juhe-ai-table-monitor"'"'
-    elif [ "$name" = audit-log-writer ]; then
-      printf '%s\n' \
-        'read_dotenv_value() {' \
-        '  key="$1"' \
-        '  file="$2"' \
-        '  awk -v wanted="$key" '\''$0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" { line=$0; sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line); gsub("^[[:space:]]+|[[:space:]]+$", "", line); if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") || (substr(line, 1, 1) == "\x27" && substr(line, length(line), 1) == "\x27")) line = substr(line, 2, length(line) - 2); value=line; found=1 } END { if (found) print value }'\'' "$file"' \
-        '}' \
-        'postgres_url="${JUHE_AI_AUDIT_LOG_POSTGRES_URL:-${JUHE_AI_POSTGRES_URL:-}}"' \
-        'if [ -z "$postgres_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_AUDIT_LOG_POSTGRES_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        'if [ -z "$postgres_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then postgres_url="$(read_dotenv_value JUHE_AI_POSTGRES_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        '[ -n "$postgres_url" ] || { echo "missing JUHE_AI_AUDIT_LOG_POSTGRES_URL or JUHE_AI_POSTGRES_URL" >&2; exit 1; }' \
-        'business_settings_url="${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL:-}"' \
-        'if [ -z "$business_settings_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then business_settings_url="$(read_dotenv_value JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        'if [ -z "$business_settings_url" ]; then business_settings_url="$postgres_url"; fi' \
-        'input_address="${JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS:-}"' \
-        'if [ -z "$input_address" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then input_address="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        '[ -n "$input_address" ] || { echo "missing JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS" >&2; exit 1; }' \
-        'case "$input_address" in 127.0.0.1:*|[::1]:*) ;; *) echo "JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS must stay loopback" >&2; exit 1 ;; esac' \
-        'input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-}"' \
-        'if [ -z "$input_url" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then input_url="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        '[ "$input_url" = "http://$input_address" ] || { echo "JUHE_AI_AUDIT_LOG_INPUT_URL must match the F3 loopback listen address" >&2; exit 1; }' \
-        'input_secret="${JUHE_AI_AUDIT_LOG_INPUT_SECRET:-}"' \
-        'if [ -z "$input_secret" ] && [ -f "'"$CURRENT_DIR"'/backend/.env" ]; then input_secret="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_SECRET "'"$CURRENT_DIR"'/backend/.env")"; fi' \
-        '[ -n "$input_secret" ] || { echo "missing JUHE_AI_AUDIT_LOG_INPUT_SECRET" >&2; exit 1; }' \
-        'export NODE_ENV=production' \
-        'export JUHE_AI_RUNTIME_MODE=performance' \
-        'export JUHE_AI_AUDIT_LOG_STORE=postgres' \
-        'export JUHE_AI_AUDIT_LOG_POSTGRES_URL="$postgres_url"' \
-        'export JUHE_AI_POSTGRES_URL="$postgres_url"' \
-        'export JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="$business_settings_url"' \
-        'export JUHE_AI_AUDIT_LOG_INSTANCE_ID="'"$instance_id"'"' \
-        'export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="'"$DATA_DIR/audit/blobs"'"' \
-        'export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="'"$DATA_DIR/audit/hot-search"'"' \
-        'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="$input_address"' \
-        'export JUHE_AI_AUDIT_LOG_INPUT_SECRET="$input_secret"' \
-        'cd "'"$CURRENT_DIR"'"' \
-        'exec "'"$CURRENT_DIR/backend-go/juhe-ai-audit-log-writer"'"'
+        'exec "'"$CURRENT_DIR/backend-go/juhe-ai-go-sidecar"'"'
     else
     printf '%s\n' 'export NODE_ENV=production'
     printf 'export JUHE_AI_RUNTIME_MODE=performance\n'
@@ -727,8 +737,10 @@ render_run_script() {
     printf 'export JUHE_AI_LOG_DIR="%s"\n' "$RUNTIME_LOG_DIR"
     printf 'export JUHE_AI_USAGE_SPOOL_DIR="%s"\n' "$SPOOL_DIR"
     printf 'export JUHE_AI_DATASET_DATABASE_PATH="%s/juhe-ai-dataset.sqlite3"\n' "$DATA_DIR"
-    printf 'export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="%s/audit/blobs"\n' "$DATA_DIR"
-    printf 'export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="%s/audit/hot-search"\n' "$DATA_DIR"
+    printf 'export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="%s/audit/blobs"\n' "$GO_SIDECAR_DATA_DIR"
+    printf 'export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="%s/audit/hot-search"\n' "$GO_SIDECAR_DATA_DIR"
+    printf 'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="127.0.0.1:%s"\n' "$AUDIT_INPUT_PORT"
+    printf 'export JUHE_AI_AUDIT_LOG_INPUT_URL="http://127.0.0.1:%s"\n' "$AUDIT_INPUT_PORT"
     printf 'cd "%s"\n' "$CURRENT_DIR"
     printf '%s\n' 'node backend/dist/scripts/preflight/check-node-sqlite.js'
     printf '%s\n' 'exec node backend/dist/server.js'
@@ -864,44 +876,6 @@ wait_for_health() {
   return 1
 }
 
-wait_for_indexer() {
-  name=runtime-log-indexer
-  label="$(service_label "$name")"
-  consecutive=0
-  attempt=1
-  while [ "$attempt" -le 20 ]; do
-    if launchctl print "$DOMAIN/$label" 2>/dev/null | grep -Eq 'state = running|pid = [1-9][0-9]*'; then
-      consecutive=$((consecutive + 1))
-      [ "$consecutive" -ge 3 ] && return 0
-    else
-      consecutive=0
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-  done
-  echo 'runtime-log-indexer launchd service did not remain running' >&2
-  return 1
-}
-
-wait_for_table_monitor() {
-  name=table-monitor
-  label="$(service_label "$name")"
-  consecutive=0
-  attempt=1
-  while [ "$attempt" -le 20 ]; do
-    if launchctl print "$DOMAIN/$label" 2>/dev/null | grep -Eq 'state = running|pid = [1-9][0-9]*'; then
-      consecutive=$((consecutive + 1))
-      [ "$consecutive" -ge 3 ] && return 0
-    else
-      consecutive=0
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-  done
-  echo 'table-monitor launchd service did not remain running; verify table-monitor snapshot freshness through the Node read-only API before production cutover' >&2
-  return 1
-}
-
 read_dotenv_value() {
   dotenv_key="$1"
   dotenv_file="$2"
@@ -922,21 +896,10 @@ read_dotenv_value() {
   ' "$dotenv_file"
 }
 
-audit_log_input_address() {
-  input_address="${JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS:-}"
-  if [ -z "$input_address" ] && [ -f "$CURRENT_DIR/backend/.env" ]; then
-    input_address="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS "$CURRENT_DIR/backend/.env")"
-  fi
-  case "$input_address" in
-    127.0.0.1:*|[::1]:*) printf '%s' "$input_address" ;;
-    *) echo 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS must be an explicit loopback IP:port' >&2; return 1 ;;
-  esac
-}
-
-wait_for_audit_log_writer() {
-  name=audit-log-writer
+wait_for_go_sidecar() {
+  name=go-sidecar
   label="$(service_label "$name")"
-  input_address="$(audit_log_input_address)" || return 1
+  input_address="127.0.0.1:$AUDIT_INPUT_PORT"
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
@@ -950,7 +913,25 @@ wait_for_audit_log_writer() {
     sleep 1
     attempt=$((attempt + 1))
   done
-  echo 'audit-log-writer launchd service did not remain healthy; verify a real Node -> F3 -> Node audit readback before production cutover' >&2
+  echo 'Go sidecar did not remain healthy; verify F1/F2 freshness and a real Node -> F3 -> Node audit readback before production cutover' >&2
+  return 1
+}
+
+wait_for_shared_go_sidecar() {
+  input_address="127.0.0.1:$AUDIT_INPUT_PORT"
+  consecutive=0
+  attempt=1
+  while [ "$attempt" -le 20 ]; do
+    if curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health"; then
+      consecutive=$((consecutive + 1))
+      [ "$consecutive" -ge 3 ] && return 0
+    else
+      consecutive=0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  echo 'shared Go sidecar is not healthy; candidate must not take traffic without its sole data owner' >&2
   return 1
 }
 
@@ -1137,29 +1118,24 @@ for name in $(activation_service_names); do
   mv -f -- "$STAGE_DIR/$name.sh" "$run_script"
   mv -f -- "$STAGE_DIR/$name.plist" "$plist"
   launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || true
-  if [ "$name" != runtime-log-indexer ] && [ "$name" != table-monitor ] && [ "$name" != audit-log-writer ]; then
+  if [ "$name" != go-sidecar ]; then
     metrics_fence_ms="$(performance_metrics_registry_time_ms)"
   fi
   launchctl bootstrap "$DOMAIN" "$plist"
   launchctl kickstart -k "$DOMAIN/$(service_label "$name")"
-  if [ "$name" = runtime-log-indexer ]; then
-    wait_for_indexer
-  elif [ "$name" = table-monitor ]; then
-    wait_for_table_monitor
-  elif [ "$name" = audit-log-writer ]; then
-    wait_for_audit_log_writer
+  if [ "$name" = go-sidecar ]; then
+    wait_for_go_sidecar
   else
     wait_for_health "$name"
     wait_for_metrics_registry "$name" "$metrics_fence_ms"
   fi
 done
+if [ "$GO_SIDECAR_MODE" = reuse ]; then
+  wait_for_shared_go_sidecar
+fi
 for name in $(service_names); do
-  if [ "$name" = runtime-log-indexer ]; then
-    wait_for_indexer
-  elif [ "$name" = table-monitor ]; then
-    wait_for_table_monitor
-  elif [ "$name" = audit-log-writer ]; then
-    wait_for_audit_log_writer
+  if [ "$name" = go-sidecar ]; then
+    wait_for_go_sidecar
   else
     wait_for_health "$name"
   fi
@@ -1177,5 +1153,5 @@ rm -f -- "$NGINX_BACKUP"
 MUTATED=0
 trap - EXIT INT TERM
 rm -rf -- "$STAGE_DIR"
-printf 'performance topology installed: control=1 gateway=%s usage=%s log=%s stats=1 ops=1 go_sidecars=runtime-log-indexer,table-monitor,audit-log-writer ingress=127.0.0.1:%s; verify F1/F2 freshness and a real Node -> F3 -> Node audit readback through Node read-only APIs before production cutover\n' \
+printf 'performance topology installed: control=1 gateway=%s usage=%s log=%s stats=1 ops=1 go_sidecar=juhe-ai-go-sidecar ingress=127.0.0.1:%s; verify F1/F2 freshness and a real Node -> F3 -> Node audit readback through Node read-only APIs before production cutover\n' \
   "$GATEWAY_COUNT" "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT"

@@ -515,7 +515,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 | `process_event_loop_samples` | 进程事件循环 / 内存原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理 | 按 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service` 分进程角色保存，用于短期定位哪个进程卡顿或内存爬升 |
 | `process_event_loop_hourly` | 进程事件循环 / 内存小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理 | 长期粗粒度排障缓存，包含延迟有效样本数、RSS / Heap 平均值和峰值 |
 | `process_event_loop_trend_windows` | 进程运行态窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理；刷新任务会覆盖当前窗口 | 供进程事件循环趋势和进程内存占用趋势接口直读 |
-| `database_storage_snapshots`、`table_storage_snapshots` | Go F2 表监控采样历史 | 默认 30 天 | 否，Node `data-retention-cleanup` 和 stats-writer 均不得处理；由 `juhe-ai-table-monitor` owner 在提交快照后清理 | standalone 位于 F2 专用 SQLite 文件，performance 位于 PostgreSQL `juhe_stats`；用于管理员表监控页面，不纳入默认业务备份 |
+| `database_storage_snapshots`、`table_storage_snapshots` | Go sidecar 内 F2 表监控采样历史 | 默认 30 天 | 否，Node `data-retention-cleanup` 和 stats-writer 均不得处理；由 F2 owner 在提交快照后清理 | standalone 位于 F2 专用 SQLite 文件，performance 位于 PostgreSQL `juhe_stats`；用于管理员表监控页面，不纳入默认业务备份 |
 | `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理 | 查询时也会校验过期时间，定时清理用于回收表数据；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
 
 不按保留期物理清理：
@@ -1069,6 +1069,6 @@ API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_jso
 
 ## F2 表监控专用库
 
-`JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 是 F2 表存储监控的专用 SQLite 输出库。Go `juhe-ai-table-monitor` 是该文件唯一 writer，启动时使用 WAL 和 `busy_timeout`，并以 owner lease 防止第二个 Go 实例并发写入；Node 的表监控路由只读打开该文件。该路径不得与业务、dataset、usage catalog、stats、F1 runtime log 或 Codex Context shard 共用，也不得因缺失或失败回退到旧统计库。F2 使用直接异步采样，不通过 Node IPC、Redis 或任务队列。
+`JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 是 F2 表存储监控的专用 SQLite 输出库。`juhe-ai-go-sidecar` 内的 F2 是该文件唯一 writer，启动时使用 WAL 和 `busy_timeout`，并以 owner lease 防止第二个 Go 实例并发写入；Node 的表监控路由只读打开该文件。该路径不得与业务、dataset、usage catalog、stats、F1 runtime log 或 Codex Context shard 共用，也不得因缺失或失败回退到旧统计库。F2 使用直接异步采样，不通过 Node IPC、Redis 或任务队列。
 
 更完整的凭据展示、请求快照、操作日志、原始审计日志、日志原文保留、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md)、[操作日志设计](操作日志设计.md) 与 [原始审计日志设计](原始审计日志设计.md)。

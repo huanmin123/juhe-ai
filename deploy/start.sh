@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$APP_DIR"
 export NODE_ENV="${NODE_ENV:-production}"
 export JUHE_AI_LOG_CONSOLE_ENABLED="${JUHE_AI_LOG_CONSOLE_ENABLED:-false}"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script." >&2
-  exit 1
-fi
-
-RUNTIME_CHECK_SCRIPT="backend/dist/scripts/preflight/check-node-sqlite.js"
-if [ ! -f "$RUNTIME_CHECK_SCRIPT" ]; then
-  echo "Runtime preflight script not found: $RUNTIME_CHECK_SCRIPT. Please rebuild the release package." >&2
+  echo 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.' >&2
   exit 1
 fi
 
@@ -22,491 +16,20 @@ if ! command -v pnpm >/dev/null 2>&1; then
     corepack enable
     corepack prepare pnpm@latest --activate
   else
-    echo "pnpm is required. Install pnpm or enable corepack first." >&2
+    echo 'pnpm is required. Install pnpm or enable corepack first.' >&2
     exit 1
   fi
 fi
 
+RUNTIME_CHECK_SCRIPT='backend/dist/scripts/preflight/check-node-sqlite.js'
+SIDECAR_START_SCRIPT='scripts/start-go-sidecar.mjs'
+server_pid=''
+go_sidecar_pid=''
+go_sidecar_pid_file='backend/runtime/juhe-ai-go-sidecar.pid'
+go_sidecar_log_file='backend/logs/juhe-ai-go-sidecar.log'
+
 ripgrep_dependency_ready() {
   (cd backend && node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" >/dev/null 2>&1)
-}
-
-runtime_log_indexer_pid=""
-table_monitor_pid=""
-audit_log_writer_pid=""
-server_pid=""
-runtime_log_indexer_pid_file="backend/runtime/juhe-ai-runtime-log-indexer.pid"
-runtime_log_indexer_log_file="backend/logs/juhe-ai-runtime-log-indexer.log"
-table_monitor_pid_file="backend/runtime/juhe-ai-table-monitor.pid"
-table_monitor_log_file="backend/logs/juhe-ai-table-monitor.log"
-audit_log_writer_pid_file="backend/runtime/juhe-ai-audit-log-writer.pid"
-audit_log_writer_log_file="backend/logs/juhe-ai-audit-log-writer.log"
-
-runtime_log_indexer_process() {
-  pid_path="$1"
-  if [ ! -f "$pid_path" ]; then
-    return 1
-  fi
-  IFS= read -r pid < "$pid_path" || true
-  case "$pid" in
-    ''|*[!0-9]*)
-      rm -f -- "$pid_path"
-      return 1
-      ;;
-  esac
-  if ! kill -0 "$pid" 2>/dev/null; then
-    rm -f -- "$pid_path"
-    return 1
-  fi
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  case "$command_line" in
-    *juhe-ai-runtime-log-indexer*)
-      printf '%s' "$pid"
-      return 0
-      ;;
-    *)
-      rm -f -- "$pid_path"
-      return 1
-      ;;
-  esac
-}
-
-stop_runtime_log_indexer() {
-  pid="$(runtime_log_indexer_process "$runtime_log_indexer_pid_file" || true)"
-  if [ -z "$pid" ]; then
-    return 0
-  fi
-  kill -TERM "$pid"
-  attempts=0
-  while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
-    sleep 1
-    attempts=$((attempts + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "juhe-ai-runtime-log-indexer did not stop within 10 seconds (PID $pid)." >&2
-    return 1
-  fi
-  rm -f -- "$runtime_log_indexer_pid_file"
-}
-
-table_monitor_process() {
-  pid_path="$1"
-  if [ ! -f "$pid_path" ]; then
-    return 1
-  fi
-  IFS= read -r pid < "$pid_path" || true
-  case "$pid" in
-    ''|*[!0-9]*)
-      rm -f -- "$pid_path"
-      return 1
-      ;;
-  esac
-  if ! kill -0 "$pid" 2>/dev/null; then
-    rm -f -- "$pid_path"
-    return 1
-  fi
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  case "$command_line" in
-    *juhe-ai-table-monitor*)
-      printf '%s' "$pid"
-      return 0
-      ;;
-    *)
-      rm -f -- "$pid_path"
-      return 1
-      ;;
-  esac
-}
-
-stop_table_monitor() {
-  pid="$(table_monitor_process "$table_monitor_pid_file" || true)"
-  if [ -z "$pid" ]; then
-    return 0
-  fi
-  kill -TERM "$pid"
-  attempts=0
-  while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
-    sleep 1
-    attempts=$((attempts + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "juhe-ai-table-monitor did not stop within 10 seconds (PID $pid)." >&2
-    return 1
-  fi
-  rm -f -- "$table_monitor_pid_file"
-}
-
-audit_log_writer_process() {
-  pid_path="$1"; [ -f "$pid_path" ] || return 1; IFS= read -r pid < "$pid_path" || true
-  case "$pid" in ''|*[!0-9]*) rm -f -- "$pid_path"; return 1;; esac
-  kill -0 "$pid" 2>/dev/null || { rm -f -- "$pid_path"; return 1; }
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  case "$command_line" in *juhe-ai-audit-log-writer*) printf '%s' "$pid"; return 0;; *) rm -f -- "$pid_path"; return 1;; esac
-}
-
-stop_audit_log_writer() {
-  pid="$(audit_log_writer_process "$audit_log_writer_pid_file" || true)"; [ -n "$pid" ] || return 0
-  kill -TERM "$pid"; attempts=0; while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do sleep 1; attempts=$((attempts + 1)); done
-  if kill -0 "$pid" 2>/dev/null; then echo "juhe-ai-audit-log-writer did not stop within 10 seconds (PID $pid)." >&2; return 1; fi
-  rm -f -- "$audit_log_writer_pid_file"
-}
-
-stop_server_process() {
-  if [ -z "$server_pid" ] || ! kill -0 "$server_pid" 2>/dev/null; then
-    return 0
-  fi
-  kill -TERM "$server_pid"
-  attempts=0
-  while kill -0 "$server_pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
-    sleep 1
-    attempts=$((attempts + 1))
-  done
-  if kill -0 "$server_pid" 2>/dev/null; then
-    echo "juhe-ai Web/API process did not stop within 10 seconds (PID $server_pid)." >&2
-    return 1
-  fi
-}
-
-wait_for_server_ready() {
-  attempts=0
-  health_url="http://${HOST}:${PORT}/__aisys__/api/health"
-  while kill -0 "$server_pid" 2>/dev/null && [ "$attempts" -lt 60 ]; do
-    if node --input-type=module -e '
-const response = await fetch(process.argv[1])
-if (!response.ok) process.exit(1)
-' "$health_url" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-    attempts=$((attempts + 1))
-  done
-  if ! kill -0 "$server_pid" 2>/dev/null; then
-    echo "juhe-ai Web/API process exited before becoming ready." >&2
-  else
-    echo "juhe-ai Web/API process did not become ready within 60 seconds." >&2
-  fi
-  return 1
-}
-
-on_exit() {
-  exit_code=$?
-  trap - EXIT INT TERM
-  if ! stop_server_process && [ "$exit_code" -eq 0 ]; then
-    exit_code=1
-  fi
-  if ! stop_runtime_log_indexer && [ "$exit_code" -eq 0 ]; then
-    exit_code=1
-  fi
-  if ! stop_table_monitor && [ "$exit_code" -eq 0 ]; then
-    exit_code=1
-  fi
-  if ! stop_audit_log_writer && [ "$exit_code" -eq 0 ]; then
-    exit_code=1
-  fi
-  exit "$exit_code"
-}
-
-start_runtime_log_indexer() {
-  runtime_log_indexer_binary="$APP_DIR/backend-go/juhe-ai-runtime-log-indexer"
-  if [ ! -f "$runtime_log_indexer_binary" ] || [ ! -x "$runtime_log_indexer_binary" ]; then
-    echo "Go runtime-log indexer binary not found or not executable: $runtime_log_indexer_binary. Rebuild the release package for this Unix platform." >&2
-    return 1
-  fi
-  mkdir -p backend/runtime backend/logs
-  existing_pid="$(runtime_log_indexer_process "$runtime_log_indexer_pid_file" || true)"
-  if [ -n "$existing_pid" ]; then
-    echo "juhe-ai-runtime-log-indexer is already running (PID $existing_pid); stop the existing release before starting another one." >&2
-    return 1
-  fi
-
-  runtime_log_indexer_pid="$(node --input-type=module -e '
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs"
-import { randomUUID } from "node:crypto"
-import { isAbsolute, resolve } from "node:path"
-import { createRequire } from "node:module"
-import { spawn } from "node:child_process"
-
-const [binaryPath, backendRoot, logPath] = process.argv.slice(1)
-const require = createRequire(resolve(backendRoot, "package.json"))
-const { parse } = require("dotenv")
-const baseEnvPath = resolve(backendRoot, ".env")
-const capacityEnvPath = resolve(backendRoot, ".env.capacity")
-
-function readEnv(path) {
-  return existsSync(path) ? parse(readFileSync(path)) : {}
-}
-
-function configured(name) {
-  if (Object.hasOwn(process.env, name)) return { defined: true, value: process.env[name] ?? "" }
-  if (Object.hasOwn(overlayEnv, name)) return { defined: true, value: overlayEnv[name] ?? "" }
-  if (Object.hasOwn(capacityEnv, name)) return { defined: true, value: capacityEnv[name] ?? "" }
-  if (Object.hasOwn(baseEnv, name)) return { defined: true, value: baseEnv[name] ?? "" }
-  return { defined: false, value: "" }
-}
-
-function isCapacityEnvironmentVariable(name) {
-  return name.startsWith("JUHE_AI_CONCURRENCY_")
-    || name.startsWith("JUHE_AI_ACCOUNT_")
-    || name.startsWith("JUHE_AI_BACKGROUND_")
-    || name.startsWith("JUHE_AI_GATEWAY_")
-    || name.startsWith("JUHE_AI_DB_")
-    || name.startsWith("JUHE_AI_CHAT_DB_SERVICE_")
-    || name.startsWith("JUHE_AI_REDIS_STREAM_")
-    || name.startsWith("JUHE_AI_USAGE_SPOOL_")
-    || name === "JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT"
-    || /^JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$/.test(name)
-}
-
-const disableBaseEnv = String(process.env.JUHE_AI_DISABLE_BASE_ENV ?? "").trim().toLowerCase() === "true"
-const baseEnv = disableBaseEnv ? {} : readEnv(baseEnvPath)
-const overlayName = (process.env.JUHE_AI_ENV_FILE ?? baseEnv.JUHE_AI_ENV_FILE ?? "").trim()
-const overlayEnv = overlayName ? readEnv(isAbsolute(overlayName) ? overlayName : resolve(backendRoot, overlayName)) : {}
-const capacityEnv = Object.fromEntries(Object.entries(readEnv(capacityEnvPath)).filter(([name]) => isCapacityEnvironmentVariable(name)))
-const childEnv = { ...process.env }
-const names = [
-  "JUHE_AI_DATABASE_DRIVER",
-  "JUHE_AI_RUNTIME_MODE",
-  "JUHE_AI_RUNTIME_LOG_STORE",
-  "JUHE_AI_RUNTIME_LOG_DATABASE_PATH",
-  "JUHE_AI_TABLE_MONITOR_DATABASE_PATH",
-  "JUHE_AI_RUNTIME_LOG_OWNER_LEASE",
-  "JUHE_AI_RUNTIME_LOG_ONCE",
-  "JUHE_AI_RUNTIME_LOG_POLL_INTERVAL",
-  "JUHE_AI_RUNTIME_LOG_RETENTION_INTERVAL",
-  "JUHE_AI_RUNTIME_LOG_RETENTION_DAYS",
-  "JUHE_AI_RUNTIME_LOG_BATCH_SIZE",
-  "JUHE_AI_DATABASE_PATH",
-  "JUHE_AI_DATASET_DATABASE_PATH",
-  "JUHE_AI_USAGE_CATALOG_DATABASE_PATH",
-  "JUHE_AI_STATS_DATABASE_PATH",
-  "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT",
-  "JUHE_AI_POSTGRES_URL",
-  "JUHE_AI_LOG_DIR",
-  "JUHE_AI_LOG_FILE_ENABLED",
-  "JUHE_AI_LOG_RETENTION_DAYS",
-  "JUHE_AI_LOG_MAX_FILES",
-  "JUHE_AI_RG_PATH"
-]
-for (const name of names) {
-  const value = configured(name)
-  if (value.defined) childEnv[name] = value.value
-}
-
-const configuredInstance = configured("JUHE_AI_RUNTIME_LOG_INSTANCE_ID")
-if (configuredInstance.defined) {
-  if (!configuredInstance.value.trim()) throw new Error("JUHE_AI_RUNTIME_LOG_INSTANCE_ID is configured but empty.")
-  childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = configuredInstance.value
-} else {
-  if (disableBaseEnv) {
-    throw new Error("JUHE_AI_RUNTIME_LOG_INSTANCE_ID must be set outside backend/.env when JUHE_AI_DISABLE_BASE_ENV=true.")
-  }
-  const instanceId = `runtime-log-indexer-${randomUUID()}`
-  appendFileSync(baseEnvPath, `\nJUHE_AI_RUNTIME_LOG_INSTANCE_ID=${instanceId}\n`, "utf8")
-  childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = instanceId
-}
-
-const runtimeMode = (childEnv.JUHE_AI_RUNTIME_MODE ?? "").trim().toLowerCase()
-const hasPerformanceHints = ["JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL", "JUHE_AI_REDIS_QUEUE_URL"]
-  .some((name) => Boolean(configured(name).value.trim()))
-if (!(childEnv.JUHE_AI_RUNTIME_LOG_STORE ?? "").trim() && !(childEnv.JUHE_AI_DATABASE_DRIVER ?? "").trim()) {
-  childEnv.JUHE_AI_DATABASE_DRIVER = runtimeMode === "performance" || (!runtimeMode && hasPerformanceHints) ? "postgres" : "sqlite"
-}
-
-function absoluteBackendPath(value, fallback) {
-  const selected = (value ?? fallback).trim()
-  return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
-}
-
-childEnv.JUHE_AI_LOG_DIR = absoluteBackendPath(childEnv.JUHE_AI_LOG_DIR, "./logs")
-const runtimeLogStore = (childEnv.JUHE_AI_RUNTIME_LOG_STORE ?? "").trim() || (childEnv.JUHE_AI_DATABASE_DRIVER ?? "").trim()
-if (runtimeLogStore.toLowerCase() === "sqlite") {
-  childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, "./data/juhe-ai.sqlite3")
-  childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, "./data/juhe-ai-dataset.sqlite3")
-  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, "./data/juhe-ai-runtime-log.sqlite3")
-  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, "./data/juhe-ai-table-monitor.sqlite3")
-  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, "./data/juhe-ai-usage-catalog.sqlite3")
-  childEnv.JUHE_AI_STATS_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, "./data/juhe-ai-stats.sqlite3")
-  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, "./data/codex-context/state-shards")
-}
-
-const logFd = openSync(logPath, "a")
-try {
-  const child = spawn(binaryPath, [], {
-    cwd: process.cwd(),
-    detached: true,
-    env: childEnv,
-    stdio: ["ignore", logFd, logFd]
-  })
-  if (!child.pid) throw new Error("Unable to start juhe-ai-runtime-log-indexer.")
-  child.unref()
-  process.stdout.write(String(child.pid))
-} finally {
-  closeSync(logFd)
-}
-' "$runtime_log_indexer_binary" "$APP_DIR/backend" "$runtime_log_indexer_log_file")"
-  case "$runtime_log_indexer_pid" in
-    ''|*[!0-9]*)
-      echo "juhe-ai-runtime-log-indexer returned an invalid PID: $runtime_log_indexer_pid" >&2
-      return 1
-      ;;
-  esac
-  printf '%s' "$runtime_log_indexer_pid" > "$runtime_log_indexer_pid_file"
-  sleep 1
-  if ! runtime_log_indexer_process "$runtime_log_indexer_pid_file" >/dev/null; then
-    if [ -f "$runtime_log_indexer_log_file" ]; then
-      tail -n 20 "$runtime_log_indexer_log_file" >&2
-    fi
-    echo "juhe-ai-runtime-log-indexer exited during startup." >&2
-    return 1
-  fi
-}
-
-start_table_monitor() {
-  table_monitor_binary="$APP_DIR/backend-go/juhe-ai-table-monitor"
-  if [ ! -f "$table_monitor_binary" ] || [ ! -x "$table_monitor_binary" ]; then
-    echo "Go table monitor binary not found or not executable: $table_monitor_binary. Rebuild the release package for this Unix platform." >&2
-    return 1
-  fi
-  mkdir -p backend/runtime backend/logs
-  existing_pid="$(table_monitor_process "$table_monitor_pid_file" || true)"
-  if [ -n "$existing_pid" ]; then
-    echo "juhe-ai-table-monitor is already running (PID $existing_pid); stop the existing release before starting another one." >&2
-    return 1
-  fi
-
-  table_monitor_pid="$(
-    node --input-type=module - "$table_monitor_binary" "$APP_DIR/backend" "$table_monitor_log_file" <<'NODE'
-import { closeSync, existsSync, openSync, readFileSync } from "node:fs"
-import { isAbsolute, resolve } from "node:path"
-import { createRequire } from "node:module"
-import { spawn } from "node:child_process"
-
-const [binaryPath, backendRoot, logPath] = process.argv.slice(2)
-const require = createRequire(resolve(backendRoot, "package.json"))
-const { parse } = require("dotenv")
-const baseEnvPath = resolve(backendRoot, ".env")
-const capacityEnvPath = resolve(backendRoot, ".env.capacity")
-
-function readEnv(path) {
-  return existsSync(path) ? parse(readFileSync(path)) : {}
-}
-
-function isCapacityEnvironmentVariable(name) {
-  return name.startsWith("JUHE_AI_CONCURRENCY_")
-    || name.startsWith("JUHE_AI_ACCOUNT_")
-    || name.startsWith("JUHE_AI_BACKGROUND_")
-    || name.startsWith("JUHE_AI_GATEWAY_")
-    || name.startsWith("JUHE_AI_DB_")
-    || name.startsWith("JUHE_AI_CHAT_DB_SERVICE_")
-    || name.startsWith("JUHE_AI_REDIS_STREAM_")
-    || name.startsWith("JUHE_AI_USAGE_SPOOL_")
-    || name === "JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT"
-    || /^JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$/.test(name)
-}
-
-const disableBaseEnv = String(process.env.JUHE_AI_DISABLE_BASE_ENV ?? "").trim().toLowerCase() === "true"
-const baseEnv = disableBaseEnv ? {} : readEnv(baseEnvPath)
-const overlayName = (process.env.JUHE_AI_ENV_FILE ?? baseEnv.JUHE_AI_ENV_FILE ?? "").trim()
-const overlayEnv = overlayName ? readEnv(isAbsolute(overlayName) ? overlayName : resolve(backendRoot, overlayName)) : {}
-const capacityEnv = Object.fromEntries(Object.entries(readEnv(capacityEnvPath)).filter(([name]) => isCapacityEnvironmentVariable(name)))
-
-function configured(name) {
-  if (Object.hasOwn(process.env, name)) return { defined: true, value: process.env[name] ?? "" }
-  if (Object.hasOwn(overlayEnv, name)) return { defined: true, value: overlayEnv[name] ?? "" }
-  if (Object.hasOwn(capacityEnv, name)) return { defined: true, value: capacityEnv[name] ?? "" }
-  if (Object.hasOwn(baseEnv, name)) return { defined: true, value: baseEnv[name] ?? "" }
-  return { defined: false, value: "" }
-}
-
-const childEnv = { ...process.env }
-const names = [
-  "JUHE_AI_DATABASE_DRIVER",
-  "JUHE_AI_RUNTIME_MODE",
-  "JUHE_AI_TABLE_MONITOR_STORE",
-  "JUHE_AI_TABLE_MONITOR_INTERVAL",
-  "JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT",
-  "JUHE_AI_TABLE_MONITOR_OWNER_LEASE",
-  "JUHE_AI_TABLE_MONITOR_RETENTION_DAYS",
-  "JUHE_AI_TABLE_MONITOR_MAX_TABLES",
-  "JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES",
-  "JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE",
-  "JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES",
-  "JUHE_AI_TABLE_MONITOR_DATABASE_PATH",
-  "JUHE_AI_RUNTIME_LOG_DATABASE_PATH",
-  "JUHE_AI_DATABASE_PATH",
-  "JUHE_AI_DATASET_DATABASE_PATH",
-  "JUHE_AI_USAGE_CATALOG_DATABASE_PATH",
-  "JUHE_AI_STATS_DATABASE_PATH",
-  "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT",
-  "JUHE_AI_POSTGRES_URL"
-]
-for (const name of names) {
-  const value = configured(name)
-  if (value.defined) childEnv[name] = value.value
-}
-
-const configuredInstance = configured("JUHE_AI_TABLE_MONITOR_INSTANCE_ID")
-if (configuredInstance.defined) {
-  if (!configuredInstance.value.trim()) throw new Error("JUHE_AI_TABLE_MONITOR_INSTANCE_ID is configured but empty.")
-  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = configuredInstance.value
-} else {
-  throw new Error("JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required; release startup does not generate owner identities.")
-}
-
-const runtimeMode = (childEnv.JUHE_AI_RUNTIME_MODE ?? "").trim().toLowerCase()
-const hasPerformanceHints = ["JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL", "JUHE_AI_REDIS_QUEUE_URL"]
-  .some((name) => Boolean(configured(name).value.trim()))
-if (!(childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? "").trim() && !(childEnv.JUHE_AI_DATABASE_DRIVER ?? "").trim()) {
-  childEnv.JUHE_AI_DATABASE_DRIVER = runtimeMode === "performance" || (!runtimeMode && hasPerformanceHints) ? "postgres" : "sqlite"
-}
-
-function absoluteBackendPath(value, fallback) {
-  const selected = (value ?? fallback).trim()
-  return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
-}
-
-const tableMonitorStore = (childEnv.JUHE_AI_TABLE_MONITOR_STORE ?? "").trim() || (childEnv.JUHE_AI_DATABASE_DRIVER ?? "").trim() || "sqlite"
-if (tableMonitorStore.toLowerCase() === "sqlite") {
-  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, "./data/juhe-ai-table-monitor.sqlite3")
-  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, "./data/juhe-ai-runtime-log.sqlite3")
-  childEnv.JUHE_AI_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATABASE_PATH, "./data/juhe-ai.sqlite3")
-  childEnv.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, "./data/juhe-ai-dataset.sqlite3")
-  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, "./data/juhe-ai-usage-catalog.sqlite3")
-  childEnv.JUHE_AI_STATS_DATABASE_PATH = absoluteBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, "./data/juhe-ai-stats.sqlite3")
-  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, "./data/codex-context/state-shards")
-}
-
-const logFd = openSync(logPath, "a")
-try {
-  const child = spawn(binaryPath, [], {
-    cwd: process.cwd(),
-    detached: true,
-    env: childEnv,
-    stdio: ["ignore", logFd, logFd]
-  })
-  if (!child.pid) throw new Error("Unable to start juhe-ai-table-monitor.")
-  child.unref()
-  process.stdout.write(String(child.pid))
-} finally {
-  closeSync(logFd)
-}
-NODE
-  )"
-  case "$table_monitor_pid" in
-    ''|*[!0-9]*)
-      echo "juhe-ai-table-monitor returned an invalid PID: $table_monitor_pid" >&2
-      return 1
-      ;;
-  esac
-  printf '%s' "$table_monitor_pid" > "$table_monitor_pid_file"
-  sleep 1
-  if ! table_monitor_process "$table_monitor_pid_file" >/dev/null; then
-    if [ -f "$table_monitor_log_file" ]; then
-      tail -n 20 "$table_monitor_log_file" >&2
-    fi
-    echo "juhe-ai-table-monitor exited during startup." >&2
-    return 1
-  fi
 }
 
 read_dotenv_value() {
@@ -534,17 +57,9 @@ set_dotenv_value() {
   tmp_file="$(mktemp)"
   awk -v key="$name" -v next_value="$value" '
     BEGIN { updated = 0 }
-    $0 ~ "^[[:space:]]*" key "=" {
-      print key "=" next_value
-      updated = 1
-      next
-    }
+    $0 ~ "^[[:space:]]*" key "=" { print key "=" next_value; updated = 1; next }
     { print }
-    END {
-      if (!updated) {
-        print key "=" next_value
-      }
-    }
+    END { if (!updated) print key "=" next_value }
   ' backend/.env > "$tmp_file"
   mv "$tmp_file" backend/.env
 }
@@ -559,15 +74,14 @@ ensure_deployment_defaults() {
     generated_secret="$(generate_secret)"
     set_dotenv_value JUHE_AI_SECRET "$generated_secret"
     export JUHE_AI_SECRET="$generated_secret"
-    echo "Generated JUHE_AI_SECRET and saved it to backend/.env. Keep this value when migrating existing data."
-  elif [ -z "${JUHE_AI_SECRET:-}" ] && [ -n "$file_secret" ]; then
+    echo 'Generated JUHE_AI_SECRET and saved it to backend/.env. Keep this value when migrating existing data.'
+  elif [ -z "${JUHE_AI_SECRET:-}" ]; then
     export JUHE_AI_SECRET="$file_secret"
   fi
 
   file_origins="$(read_dotenv_value JUHE_AI_ALLOWED_ORIGINS '')"
   if [ -z "${JUHE_AI_ALLOWED_ORIGINS:-}" ] && [ -z "$file_origins" ]; then
-    public_origin="$(read_dotenv_value JUHE_AI_PUBLIC_ORIGIN '')"
-    public_origin="${JUHE_AI_PUBLIC_ORIGIN:-$public_origin}"
+    public_origin="${JUHE_AI_PUBLIC_ORIGIN:-$(read_dotenv_value JUHE_AI_PUBLIC_ORIGIN '')}"
     public_port="${JUHE_AI_PUBLIC_PORT:-${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT 3000)}}"
     if [ -n "$public_origin" ]; then
       default_origins="$public_origin"
@@ -577,101 +91,163 @@ ensure_deployment_defaults() {
     set_dotenv_value JUHE_AI_ALLOWED_ORIGINS "$default_origins"
     export JUHE_AI_ALLOWED_ORIGINS="$default_origins"
     echo "Set JUHE_AI_ALLOWED_ORIGINS to $default_origins. Adjust backend/.env if using a public domain or reverse proxy."
-  elif [ -z "${JUHE_AI_ALLOWED_ORIGINS:-}" ] && [ -n "$file_origins" ]; then
+  elif [ -z "${JUHE_AI_ALLOWED_ORIGINS:-}" ]; then
     export JUHE_AI_ALLOWED_ORIGINS="$file_origins"
   fi
 }
 
-start_audit_log_writer() {
-  audit_log_writer_binary="$APP_DIR/backend-go/juhe-ai-audit-log-writer"
-  if [ ! -f "$audit_log_writer_binary" ] || [ ! -x "$audit_log_writer_binary" ]; then echo "Go audit-log writer binary not found or not executable: $audit_log_writer_binary." >&2; return 1; fi
+go_sidecar_process() {
+  pid_path="$1"
+  [ -f "$pid_path" ] || return 1
+  IFS= read -r pid < "$pid_path" || true
+  case "$pid" in
+    ''|*[!0-9]*) rm -f -- "$pid_path"; return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null || { rm -f -- "$pid_path"; return 1; }
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command_line" in
+    *juhe-ai-go-sidecar*) printf '%s' "$pid"; return 0 ;;
+    *) rm -f -- "$pid_path"; return 1 ;;
+  esac
+}
+
+stop_go_sidecar() {
+  pid="$(go_sidecar_process "$go_sidecar_pid_file" || true)"
+  [ -n "$pid" ] || return 0
+  kill -TERM "$pid"
+  attempts=0
+  while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "juhe-ai-go-sidecar did not stop within 10 seconds (PID $pid)." >&2
+    return 1
+  fi
+  rm -f -- "$go_sidecar_pid_file"
+}
+
+stop_server_process() {
+  if [ -z "$server_pid" ] || ! kill -0 "$server_pid" 2>/dev/null; then
+    return 0
+  fi
+  kill -TERM "$server_pid"
+  attempts=0
+  while kill -0 "$server_pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  if kill -0 "$server_pid" 2>/dev/null; then
+    echo "juhe-ai Web/API process did not stop within 10 seconds (PID $server_pid)." >&2
+    return 1
+  fi
+}
+
+wait_for_http_status() {
+  process_id="$1"
+  url="$2"
+  expected_status="$3"
+  description="$4"
+  attempts=0
+  while kill -0 "$process_id" 2>/dev/null && [ "$attempts" -lt 60 ]; do
+    if node --input-type=module -e '
+const response = await fetch(process.argv[1])
+process.exit(response.status === Number(process.argv[2]) ? 0 : 1)
+' "$url" "$expected_status" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  if ! kill -0 "$process_id" 2>/dev/null; then
+    echo "$description exited before becoming ready." >&2
+  else
+    echo "$description did not become ready within 60 seconds." >&2
+  fi
+  return 1
+}
+
+start_go_sidecar() {
+  binary="$APP_DIR/backend-go/juhe-ai-go-sidecar"
+  if [ ! -f "$binary" ] || [ ! -x "$binary" ]; then
+    echo "Go sidecar binary not found or not executable: $binary. Rebuild the release package for this Unix platform." >&2
+    return 1
+  fi
+  if [ ! -f "$APP_DIR/$SIDECAR_START_SCRIPT" ]; then
+    echo "Go sidecar launcher not found: $APP_DIR/$SIDECAR_START_SCRIPT. Rebuild the release package." >&2
+    return 1
+  fi
   mkdir -p backend/runtime backend/logs
-  audit_log_writer_pid="$(node --input-type=module - "$audit_log_writer_binary" "$APP_DIR/backend" "$audit_log_writer_log_file" <<'NODE'
-import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
-import { createRequire } from 'node:module'
-import { spawn } from 'node:child_process'
-const [binaryPath, backendRoot, logPath] = process.argv.slice(2)
-const require = createRequire(resolve(backendRoot, 'package.json'))
-const { parse } = require('dotenv')
-const baseEnvPath = resolve(backendRoot, '.env')
-const capacityEnvPath = resolve(backendRoot, '.env.capacity')
-const readEnv = (path) => existsSync(path) ? parse(readFileSync(path)) : {}
-const baseEnv = readEnv(baseEnvPath)
-const overlayName = (process.env.JUHE_AI_ENV_FILE ?? baseEnv.JUHE_AI_ENV_FILE ?? '').trim()
-const overlayEnv = overlayName ? readEnv(isAbsolute(overlayName) ? overlayName : resolve(backendRoot, overlayName)) : {}
-const capacityEnv = readEnv(capacityEnvPath)
-const configured = (name) => Object.hasOwn(process.env, name) ? process.env[name] ?? '' : Object.hasOwn(overlayEnv, name) ? overlayEnv[name] ?? '' : Object.hasOwn(capacityEnv, name) ? capacityEnv[name] ?? '' : baseEnv[name] ?? ''
-const env = { ...process.env }
-const names = ['JUHE_AI_DATABASE_DRIVER','JUHE_AI_RUNTIME_MODE','JUHE_AI_AUDIT_LOG_STORE','JUHE_AI_AUDIT_LOG_DATABASE_PATH','JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY','JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY','JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH','JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL','JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA','JUHE_AI_AUDIT_LOG_POSTGRES_URL','JUHE_AI_AUDIT_LOG_OWNER_LEASE','JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL','JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE','JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS','JUHE_AI_AUDIT_LOG_INPUT_SECRET','JUHE_AI_AUDIT_LOG_INPUT_URL','JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS','JUHE_AI_AUDIT_LOG_INSTANCE_ID','JUHE_AI_POSTGRES_URL','JUHE_AI_DATABASE_PATH','JUHE_AI_DATASET_DATABASE_PATH','JUHE_AI_USAGE_CATALOG_DATABASE_PATH','JUHE_AI_STATS_DATABASE_PATH','JUHE_AI_RUNTIME_LOG_DATABASE_PATH','JUHE_AI_TABLE_MONITOR_DATABASE_PATH','JUHE_AI_USAGE_SHARD_ROOT','JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT']
-for (const name of names) { const value = configured(name); if (value.trim()) env[name] = value }
-const instance = configured('JUHE_AI_AUDIT_LOG_INSTANCE_ID').trim(); const secret = configured('JUHE_AI_AUDIT_LOG_INPUT_SECRET').trim()
-if (!instance) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; release startup does not generate owner identities.')
-if (!secret) throw new Error('JUHE_AI_AUDIT_LOG_INPUT_SECRET is required for the F3 input listener.')
-env.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instance; env.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret; env.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = configured('JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS').trim() || '127.0.0.1:3303'; env.JUHE_AI_AUDIT_LOG_INPUT_URL = configured('JUHE_AI_AUDIT_LOG_INPUT_URL').trim() || 'http://127.0.0.1:3303'
-const store = (configured('JUHE_AI_AUDIT_LOG_STORE') || configured('JUHE_AI_DATABASE_DRIVER') || (configured('JUHE_AI_RUNTIME_MODE').trim().toLowerCase() === 'performance' ? 'postgres' : 'sqlite')).trim().toLowerCase(); env.JUHE_AI_AUDIT_LOG_STORE = store; const absolute = (value, fallback) => { const selected = (value || fallback).trim(); return isAbsolute(selected) ? selected : resolve(backendRoot, selected) }
-for (const [name, fallback] of [['JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY','./data/audit-payload-blobs'],['JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY','./data/audit-hot-search']]) env[name] = absolute(env[name], fallback)
-if (store === 'sqlite') { for (const [name, fallback] of [['JUHE_AI_AUDIT_LOG_DATABASE_PATH','./data/juhe-ai-audit-log.sqlite3'],['JUHE_AI_DATABASE_PATH','./data/juhe-ai.sqlite3'],['JUHE_AI_DATASET_DATABASE_PATH','./data/juhe-ai-dataset.sqlite3'],['JUHE_AI_USAGE_CATALOG_DATABASE_PATH','./data/juhe-ai-usage-catalog.sqlite3'],['JUHE_AI_STATS_DATABASE_PATH','./data/juhe-ai-stats.sqlite3'],['JUHE_AI_RUNTIME_LOG_DATABASE_PATH','./data/juhe-ai-runtime-log.sqlite3'],['JUHE_AI_TABLE_MONITOR_DATABASE_PATH','./data/juhe-ai-table-monitor.sqlite3'],['JUHE_AI_USAGE_SHARD_ROOT','./data/usage-shards'],['JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT','./data/codex-context/state-shards']]) env[name] = absolute(env[name], fallback); env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = absolute(env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, env.JUHE_AI_DATABASE_PATH) } else if (store === 'postgres' && !env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL) env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = env.JUHE_AI_AUDIT_LOG_POSTGRES_URL || env.JUHE_AI_POSTGRES_URL || ''
-const fd = openSync(logPath, 'a'); const child = spawn(binaryPath, [], { cwd: backendRoot, detached: true, env, stdio: ['ignore', fd, fd] }); closeSync(fd); if (!child.pid) throw new Error('Unable to start juhe-ai-audit-log-writer.'); child.unref(); process.stdout.write(String(child.pid))
-NODE
-  )"
-  case "$audit_log_writer_pid" in ''|*[!0-9]*) echo "$audit_log_writer_pid" >&2; return 1;; esac
-  printf '%s' "$audit_log_writer_pid" > "$audit_log_writer_pid_file"
+  existing_pid="$(go_sidecar_process "$go_sidecar_pid_file" || true)"
+  if [ -n "$existing_pid" ]; then
+    echo "juhe-ai-go-sidecar is already running (PID $existing_pid); stop the existing release before starting another one." >&2
+    return 1
+  fi
+  go_sidecar_pid="$(node "$APP_DIR/$SIDECAR_START_SCRIPT" "$binary" "$APP_DIR/backend" "$APP_DIR/$go_sidecar_log_file")"
+  case "$go_sidecar_pid" in
+    ''|*[!0-9]*) echo "juhe-ai-go-sidecar returned an invalid PID: $go_sidecar_pid" >&2; return 1 ;;
+  esac
+  printf '%s' "$go_sidecar_pid" > "$go_sidecar_pid_file"
+  if ! go_sidecar_process "$go_sidecar_pid_file" >/dev/null; then
+    [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
+    echo 'juhe-ai-go-sidecar exited during startup.' >&2
+    return 1
+  fi
+  input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
+  input_url="${input_url%/}"
+  if ! wait_for_http_status "$go_sidecar_pid" "$input_url/__aiinternal__/health" 204 'juhe-ai-go-sidecar'; then
+    [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
+    return 1
+  fi
+}
+
+on_exit() {
+  exit_code=$?
+  trap - EXIT INT TERM
+  if ! stop_server_process && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
+  if ! stop_go_sidecar && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
+  exit "$exit_code"
 }
 
 if [ ! -f backend/.env ]; then
   cp backend/.env.example backend/.env
-  echo "Created backend/.env from backend/.env.example"
-  echo "Please review backend/.env before production use, especially JUHE_AI_SECRET."
+  echo 'Created backend/.env from backend/.env.example'
+  echo 'Configure all JUHE_AI_*_INSTANCE_ID values and JUHE_AI_AUDIT_LOG_INPUT_SECRET before production use.'
 fi
 
 ensure_deployment_defaults
-
 mkdir -p backend/data
+
+if [ ! -f "$RUNTIME_CHECK_SCRIPT" ]; then
+  echo "Runtime preflight script not found: $RUNTIME_CHECK_SCRIPT. Please rebuild the release package." >&2
+  exit 1
+fi
 if [ ! -d node_modules ] || [ ! -d backend/node_modules ] || ! ripgrep_dependency_ready; then
-  echo "Installing production dependencies..."
+  echo 'Installing production dependencies...'
   pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
 else
-  echo "Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall."
+  echo 'Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall.'
 fi
-
-# The preflight imports dotenv and @vscode/ripgrep from production dependencies.
-# Run it only after the release has installed those dependencies on a clean host.
 node "$RUNTIME_CHECK_SCRIPT"
 
-HOST="$(grep -E '^JUHE_AI_HOST=' backend/.env | tail -n 1 | cut -d= -f2- || true)"
-PORT="$(grep -E '^JUHE_AI_PORT=' backend/.env | tail -n 1 | cut -d= -f2- || true)"
-HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-3000}"
-JUHE_AI_AUDIT_LOG_INPUT_URL="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
-export JUHE_AI_AUDIT_LOG_INPUT_URL
+HOST="${JUHE_AI_HOST:-$(read_dotenv_value JUHE_AI_HOST '127.0.0.1')}"
+PORT="${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT '3000')}"
+export JUHE_AI_AUDIT_LOG_INPUT_URL="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
 
 echo "Starting juhe-ai at http://${HOST}:${PORT}"
-echo "The Web/API process will supervise separate background worker and DB service processes."
+echo 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2 and F3.'
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
 OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
 SERVER_WITH_OWNER_LOCK=false
-if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = "true" ]; then
+if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = 'true' ]; then
   OWNER_MANIFEST_PATH="$APP_DIR/deploy/owner-manifest.json"
   MANIFEST_EPOCH="$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)")"
-  if [ -z "$MANIFEST_EPOCH" ]; then
-    echo "Unable to read deploy/owner-manifest.json deploymentEpoch." >&2
-    exit 1
-  fi
+  [ -n "$MANIFEST_EPOCH" ] || { echo 'Unable to read deploy/owner-manifest.json deploymentEpoch.' >&2; exit 1; }
   node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
   OWNER_LOCK_PATH="${JUHE_AI_OWNER_LOCK_PATH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_PATH '')}"
-  case "$OWNER_LOCK_PATH" in
-    /*) ;;
-    *)
-      echo "JUHE_AI_OWNER_LOCK_PATH must be an absolute shared path outside the release directory." >&2
-      exit 1
-      ;;
-  esac
+  case "$OWNER_LOCK_PATH" in /*) ;; *) echo 'JUHE_AI_OWNER_LOCK_PATH must be an absolute shared path outside the release directory.' >&2; exit 1 ;; esac
   OWNER_LOCK_EPOCH="${JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH "$MANIFEST_EPOCH")}"
-  if [ "$OWNER_LOCK_EPOCH" != "$MANIFEST_EPOCH" ]; then
-    echo "JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json." >&2
-    exit 1
-  fi
+  [ "$OWNER_LOCK_EPOCH" = "$MANIFEST_EPOCH" ] || { echo 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json.' >&2; exit 1; }
   NODE_VERSION="$(node -p "require('./package.json').version")"
   node scripts/validate-owner-manifest.mjs --require-deployment-epoch="$OWNER_LOCK_EPOCH" --require-node-version="$NODE_VERSION" deploy/owner-manifest.json
   export JUHE_AI_OWNER_MANIFEST_PATH="$OWNER_MANIFEST_PATH"
@@ -682,52 +258,27 @@ fi
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-if [ "$SERVER_WITH_OWNER_LOCK" = "true" ]; then
+
+if [ "$SERVER_WITH_OWNER_LOCK" = 'true' ]; then
   node scripts/run-with-owner-lock.mjs --lock-path "$OWNER_LOCK_PATH" --release-root "$APP_DIR" --deployment-epoch "$OWNER_LOCK_EPOCH" --role server --version "$NODE_VERSION" -- node backend/dist/server.js &
 else
   node backend/dist/server.js &
 fi
 server_pid=$!
-if ! wait_for_server_ready; then
-  exit 1
-fi
-start_runtime_log_indexer
-echo "Started juhe-ai-runtime-log-indexer (PID $runtime_log_indexer_pid)."
-start_table_monitor
-echo "Started juhe-ai-table-monitor (PID $table_monitor_pid)."
-start_audit_log_writer
-echo "Started juhe-ai-audit-log-writer (PID $audit_log_writer_pid)."
-while kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$table_monitor_pid" 2>/dev/null && kill -0 "$audit_log_writer_pid" 2>/dev/null; do
+wait_for_http_status "$server_pid" "http://${HOST}:${PORT}/__aisys__/api/health" 200 'juhe-ai Web/API process'
+start_go_sidecar
+echo "Started juhe-ai-go-sidecar (PID $go_sidecar_pid)."
+
+while kill -0 "$server_pid" 2>/dev/null && kill -0 "$go_sidecar_pid" 2>/dev/null; do
   sleep 1
 done
-if ! kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
-  if [ -f "$runtime_log_indexer_log_file" ]; then
-    tail -n 20 "$runtime_log_indexer_log_file" >&2
-  fi
-  echo "juhe-ai-runtime-log-indexer exited unexpectedly (PID $runtime_log_indexer_pid)." >&2
+if ! kill -0 "$go_sidecar_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
+  [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
+  echo "juhe-ai-go-sidecar exited unexpectedly (PID $go_sidecar_pid)." >&2
   exit 1
 fi
-if ! kill -0 "$table_monitor_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null; then
-  if [ -f "$table_monitor_log_file" ]; then
-    tail -n 20 "$table_monitor_log_file" >&2
-  fi
-  echo "juhe-ai-table-monitor exited unexpectedly (PID $table_monitor_pid)." >&2
-  exit 1
-fi
-if ! kill -0 "$server_pid" 2>/dev/null && kill -0 "$runtime_log_indexer_pid" 2>/dev/null && kill -0 "$table_monitor_pid" 2>/dev/null; then
+if ! kill -0 "$server_pid" 2>/dev/null; then
   echo "juhe-ai Web/API process exited unexpectedly (PID $server_pid)." >&2
   exit 1
 fi
-if ! kill -0 "$audit_log_writer_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
-  [ -f "$audit_log_writer_log_file" ] && tail -n 20 "$audit_log_writer_log_file" >&2
-  echo "juhe-ai-audit-log-writer exited unexpectedly (PID $audit_log_writer_pid)." >&2
-  exit 1
-fi
-set +e
-wait "$server_pid"
-server_exit_code=$?
-set -e
-if [ "$server_exit_code" -eq 0 ]; then
-  server_exit_code=1
-fi
-exit "$server_exit_code"
+exit 1

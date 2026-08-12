@@ -1,17 +1,15 @@
 # Docker 部署
 
-这是轻量 Docker 入口。默认模式的 Compose 拓扑为 Node（Web、管理 API、`/v1` 网关、background worker、DB service）加 F1 `runtime-log-indexer`、F2 `table-monitor`、F3 `audit-log-writer` 三个独立 Go sidecar；它们不经 Node owner switch、bridge 或队列。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue、Node 应用和同样三个 Go sidecar；Redis Streams 可靠队列默认写入 `redis-queue`，但 F1/F2/F3 不使用 Redis 数据面。
+这是轻量 Docker 入口。默认模式的 Compose 拓扑为 Node（Web、管理 API、`/v1` 网关、background worker、DB service）加一个 `go-sidecar` 容器；同一 Go 进程承载 F1 运行日志索引、F2 表监控与 F3 审计持久化。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue、Node 应用和同一个 Go sidecar；Redis Streams 可靠队列默认写入 `redis-queue`，但 F1/F2/F3 不使用 Redis 数据面。
 
-> 2026-08-10 已在开发 Linux 服务器用固定 release 构建完成 standalone 与 performance Compose runtime 闭环：三类 Go sidecar、Node/F3 输入与 Node 只读回读、F1/F2 快照均通过，临时容器/卷已清理。该证据不构成 macOS 或生产部署已完成的声明；生产候选仍必须从干净、固定 commit 的 release 构建。
+> 旧三 sidecar 的开发验证不能外推到当前单一 `go-sidecar` 拓扑。当前生产候选必须从干净、固定 commit 构建，并重新验证 Node -> F3 -> Node 读回、F1/F2 新鲜度与 sidecar 重启恢复。
 
 ## 文件说明
 
 - `compose.yml`：单容器 Compose 配置，包含端口、环境变量、数据卷和镜像构建参数。
 - `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue 和应用服务。
 - `Dockerfile`：运行镜像构建文件，只组装已构建好的 `backend/dist`、`frontend/dist` 和后端生产依赖。
-- `Dockerfile.runtime-log-indexer`：F1 Go 运行日志索引 sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-runtime-log-indexer`。
-- `Dockerfile.table-monitor`：F2 Go 表监控 sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-table-monitor`。
-- `Dockerfile.audit-log-writer`：F3 Go 原始审计 writer sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-audit-log-writer`，并内置 loopback HTTP `204` health probe。
+- `Dockerfile.go-sidecar`：唯一 Go sidecar 镜像，直接编译 `backend-go/cmd/juhe-ai-go-sidecar`，并内置 F3 loopback HTTP `204` health probe。
 - `entrypoint.sh`：容器启动入口，设置默认环境变量、创建数据目录、生成或复用 `JUHE_AI_SECRET`，并执行 SQLite 运行时预检。
 - `.env.example`：standalone 必填配置模板。首次启动必须复制为 `.env` 并填写 F3 input secret；不能直接使用默认 Compose 配置。
 - `.env.performance.example`：高性能模式必填配置模板。复制为 `.env.performance` 后必须填写数据库、Redis、应用密钥和 F3 input secret。
@@ -27,7 +25,7 @@ pnpm build
 
 Docker 镜像使用当前 `backend/dist` 和 `frontend/dist`，不会在服务器镜像构建阶段重新跑前端构建。如果缺少必要产物，`docker compose up -d --build` 会直接提示缺失文件，并要求先执行上面的构建命令。
 
-F1、F2、F3 sidecar 都在镜像构建时独立编译 Go 程序，不需要预先生成 Go 二进制。受限网络可在 `.env` / `.env.performance` 设置 `JUHE_AI_GO_PROXY=https://goproxy.cn,direct`；默认仍使用官方 Go proxy。
+唯一 `go-sidecar` 在镜像构建时编译，不需要预先生成 Go 二进制。受限网络可在 `.env` / `.env.performance` 设置 `JUHE_AI_GO_PROXY=https://goproxy.cn,direct`；默认仍使用官方 Go proxy。
 
 ## 启动
 
@@ -69,15 +67,13 @@ pnpm --filter juhe-ai-backend postgres:init-schema
 
 如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`、`redis-queue:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`、redis-queue `6381`，不要把 Redis 容器内 `6379` 误当宿主机端口。
 
-## F1 / F2 / F3 Go sidecar
+## 单一 Go sidecar
 
-两个 Compose 文件都会启动 `runtime-log-indexer`、`table-monitor` 与 `audit-log-writer`。F1 由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，F2 由 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 标识，F3 由 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` 标识；多实例部署必须为各自事实库使用稳定且唯一的值。三者只有在应用 `/__aisys__/api/health` 确认 DB service 就绪后才启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 是 F1 默认常驻扫描模式，不能改为默认一次性任务；F2 按 interval、lease 和 retention 参数常驻采样；F3 使用独立输入密钥和 loopback 输入端点。
+两个 Compose 文件都会启动一个 `go-sidecar`。F1 仍由 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID` 标识，F2 仍由 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID` 标识，F3 仍由 `JUHE_AI_AUDIT_LOG_INSTANCE_ID` 标识；这三项是同一进程中各自的 owner lease，不是三个部署程序。sidecar 只在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动。`JUHE_AI_RUNTIME_LOG_ONCE=false` 保持 F1 常驻扫描；F2 按 interval、lease 和 retention 采样；F3 使用独立输入密钥和 loopback 输入端点。
 
-standalone 首次使用空数据卷时，F2 Docker entrypoint 会等待 Node 创建 `JUHE_AI_STATS_DATABASE_PATH` 指向的统计源库，默认最多 `90` 秒；超时会显式失败。performance 的 F2 使用 PostgreSQL，不经过该 SQLite 等待。
+standalone 模式将 `juhe-ai-data`、日志与三类专用 SQLite 输出目录挂载给同一个 sidecar；Node 对 F1/F2/F3 产物只读。F1/F2/F3 的 SQLite 路径仍必须互相物理隔离，sidecar 对各自输出维持 `WAL` 与 `busy_timeout=5000`。performance 模式的同一 sidecar 使用 PostgreSQL：F1 写日志 schema，F2 写 `juhe_stats`，F3 写审计 schema。组件运行错误只在 sidecar 内记录并重启该组件；容器进程退出才由 Compose restart policy 重启整个 sidecar。
 
-standalone 模式将 `juhe-ai-data` 与 `juhe-ai-logs` 同时挂载给 F1，并为 F1/F2/F3 提供独立输出 volume；三者显式接收对方输出路径和 Node SQLite owner 路径，以便拒绝物理文件复用。各自只写自己的 volume，Node 只读其产物。F1/F2/F3 对 SQLite 输出强制 `WAL` 与 `busy_timeout=5000`。performance 模式使用 `JUHE_AI_POSTGRES_URL`：F1 写其日志 schema，F2 写 `juhe_stats`，F3 写其审计 schema；三者等待所需依赖与 Node `/__aisys__/api/health` 的 DB-service 就绪，F1/F2/F3 不依赖 Redis 数据面。
-
-F1 需要 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、store、对应 SQLite 路径或 PG URL、`JUHE_AI_LOG_DIR`；F2 需要 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、store、对应 SQLite 输出路径或 PG URL；F3 需要稳定的 `JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`、`JUHE_AI_AUDIT_LOG_INPUT_URL`、独立 SQLite/PG 输出配置、blob 目录和 hot-search 目录。Docker 中 F3 与 Node 使用 `network_mode: service:juhe-ai` 共享 loopback namespace，不能改成仅监听容器网卡。SQLite 部署人工预检还必须确认 usage shard root 不与任一 F1/F2/F3 输出或源库重叠：Go 当前未实现该 root 的启动校验，此项应作为未来 usage 迁移门禁，不能写成已完成的部署验证。
+F3 listener 只允许 loopback，因此 Docker 必须以 `network_mode: service:juhe-ai` 让唯一 sidecar 与 Node 共享 network namespace；不要改成容器 service DNS 或 `0.0.0.0`。SQLite 部署人工预检还必须确认 usage shard root 不与任一 F1/F2/F3 输出或源库重叠。
 
 ## 按需配置
 
@@ -142,13 +138,11 @@ curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
-docker compose logs --tail=100 runtime-log-indexer
-docker compose logs --tail=100 table-monitor
-docker compose logs --tail=100 audit-log-writer
-docker compose exec -T audit-log-writer /usr/local/bin/juhe-ai-audit-log-healthcheck
+docker compose logs --tail=100 go-sidecar
+docker compose exec -T go-sidecar /usr/local/bin/juhe-ai-go-sidecar-healthcheck
 ```
 
-期望 `docker compose ps` 中 Node、F1、F2、F3 均为 `healthy`；前两个接口返回 `200`，F3 health probe 返回 `204`，前端路径返回页面，并且日志里能看到主服务、DB service、background worker、F1、F2 与 F3 启动记录。还必须通过 Node 只读 `/runtime-logs` 和 `/table-monitor` 接口确认 F1/F2 数据新鲜度，并用 F3 输入 POST 与审计详情读回确认 F3；Node health 不能替代任一 sidecar 验证。
+期望 `docker compose ps` 中 Node 与 `go-sidecar` 均为 `healthy`；前两个接口返回 `200`，F3 health probe 返回 `204`，前端路径返回页面，并且 sidecar 日志能看见 F1/F2/F3 初始化或组件恢复记录。还必须通过 Node 只读 `/runtime-logs` 和 `/table-monitor` 接口确认 F1/F2 数据新鲜度，并用 F3 输入 POST 与审计详情读回确认 F3；Node health 不能替代 sidecar 验证。
 
 ## 清理
 

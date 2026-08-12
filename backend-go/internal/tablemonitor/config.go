@@ -77,7 +77,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		UsageCatalogPath:     strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH")),
 		StatsPath:            strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
 		CodexShardRoot:       strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
-		PostgresURL:          strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresURL:          firstNonEmpty(getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL")),
 		Interval:             interval,
 		RunTimeout:           runTimeout,
 		RetentionDays:        retentionDays,
@@ -149,7 +149,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
 		}
 	} else if cfg.PostgresURL == "" {
-		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_POSTGRES_URL")
+		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_TABLE_MONITOR_POSTGRES_URL 或 JUHE_AI_POSTGRES_URL")
 	}
 	return cfg, nil
 }

@@ -14,8 +14,10 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -124,7 +126,17 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 		return fmt.Errorf("监听 F3 loopback input 失败: %w", err)
 	}
 	defer listener.Close()
-	handler := &auditInputHandler{store: store, lease: lease, cfg: inputCfg, logger: logger}
+	healthy := &atomic.Bool{}
+	healthy.Store(true)
+	componentFatal := make(chan error, 1)
+	handler := &auditInputHandler{
+		store:          store,
+		lease:          lease,
+		cfg:            inputCfg,
+		logger:         logger,
+		healthy:        healthy,
+		componentFatal: componentFatal,
+	}
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: inputCfg.RequestTimeout,
@@ -133,10 +145,18 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 		IdleTimeout:       30 * time.Second,
 	}
 	serveResult := make(chan error, 1)
-	go func() { serveResult <- server.Serve(listener) }()
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				healthy.Store(false)
+				serveResult <- fmt.Errorf("F3 loopback input server goroutine panic: %v\n%s", recovered, debug.Stack())
+			}
+		}()
+		serveResult <- server.Serve(listener)
+	}()
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	maintenanceFatal := make(chan error, 1)
-	maintenanceDone := runRetentionMaintenance(maintenanceCtx, store, lease, cfg, logger, maintenanceFatal)
+	maintenanceDone := runRetentionMaintenance(maintenanceCtx, store, lease, cfg, logger, healthy, maintenanceFatal)
 	defer func() {
 		stopMaintenance()
 		<-maintenanceDone
@@ -153,22 +173,30 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 		case <-ctx.Done():
 			return shutdownInputServer(server, logger)
 		case err := <-serveResult:
+			healthy.Store(false)
 			if errors.Is(err, http.ErrServerClosed) {
 				return nil
 			}
 			return fmt.Errorf("F3 loopback input server 异常退出: %w", err)
-		case err := <-maintenanceFatal:
+		case err := <-componentFatal:
+			healthy.Store(false)
 			_ = shutdownInputServer(server, logger)
-			return fmt.Errorf("F3 audit retention 失去 owner lease: %w", err)
+			return fmt.Errorf("F3 audit input 组件异常: %w", err)
+		case err := <-maintenanceFatal:
+			healthy.Store(false)
+			_ = shutdownInputServer(server, logger)
+			return fmt.Errorf("F3 audit retention 组件异常: %w", err)
 		case <-ticker.C:
 			renewCtx, cancel := context.WithTimeout(ctx, minDuration(5*time.Second, interval))
 			renewed, renewErr := store.RenewOwnerLease(renewCtx, lease, cfg.OwnerLease)
 			cancel()
 			if renewErr != nil {
+				healthy.Store(false)
 				_ = shutdownInputServer(server, logger)
 				return fmt.Errorf("续租 F3 audit owner lease 失败: %w", renewErr)
 			}
 			if !renewed {
+				healthy.Store(false)
 				_ = shutdownInputServer(server, logger)
 				return ErrOwnerLeaseLost
 			}
@@ -179,10 +207,17 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 // runRetentionMaintenance keeps one bounded maintenance pass per configured
 // interval. Retention also removes completed hot-search buckets, so both
 // cleanup surfaces share the same owner fence and do not need a second task.
-func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease, cfg Config, logger *slog.Logger, fatal chan<- error) <-chan struct{} {
+func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease, cfg Config, logger *slog.Logger, healthy *atomic.Bool, fatal chan<- error) <-chan struct{} {
+	logger = loggerOrDefault(logger)
 	done := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err := fmt.Errorf("F3 audit retention maintenance goroutine panic: %v\n%s", recovered, debug.Stack())
+				failInputComponent(healthy, ctx, fatal, err)
+			}
+			close(done)
+		}()
 		ticker := time.NewTicker(cfg.RetentionInterval)
 		defer ticker.Stop()
 		for {
@@ -198,13 +233,12 @@ func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease,
 					return
 				}
 				if errors.Is(err, ErrOwnerLeaseLost) {
-					select {
-					case fatal <- err:
-					case <-ctx.Done():
-					}
+					failInputComponent(healthy, ctx, fatal, err)
 					return
 				}
 				logger.Error("F3 audit retention maintenance failed", "error", err)
+				failInputComponent(healthy, ctx, fatal, fmt.Errorf("F3 audit retention maintenance failed: %w", err))
+				return
 			}
 		}
 	}()
@@ -229,16 +263,52 @@ func minDuration(first, second time.Duration) time.Duration {
 }
 
 type auditInputHandler struct {
-	store  Store
-	lease  OwnerLease
-	cfg    InputServerConfig
-	logger *slog.Logger
+	store          Store
+	lease          OwnerLease
+	cfg            InputServerConfig
+	logger         *slog.Logger
+	healthy        *atomic.Bool
+	componentFatal chan<- error
+}
+
+func reportInputComponentFatal(ctx context.Context, fatal chan<- error, err error) {
+	if fatal == nil {
+		return
+	}
+	select {
+	case fatal <- err:
+	case <-ctx.Done():
+	default:
+	}
+}
+
+func (h *auditInputHandler) failComponent(err error) {
+	failInputComponent(h.healthy, context.Background(), h.componentFatal, err)
+}
+
+func failInputComponent(healthy *atomic.Bool, ctx context.Context, fatal chan<- error, err error) {
+	if healthy != nil {
+		healthy.Store(false)
+	}
+	reportInputComponentFatal(ctx, fatal, err)
 }
 
 func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err := fmt.Errorf("F3 audit input request panic: %v\n%s", recovered, debug.Stack())
+			loggerOrDefault(h.logger).Error("F3 audit input request panic", "error", fmt.Errorf("%v", recovered), "stack", string(debug.Stack()))
+			h.failComponent(err)
+			writer.WriteHeader(http.StatusInternalServerError)
+		}
+	}()
 	if request.URL.Path == AuditInputHealthPath && request.Method == http.MethodGet {
 		if !isLoopbackRemote(request.RemoteAddr) {
 			writer.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if h.healthy != nil && !h.healthy.Load() {
+			writer.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		writer.WriteHeader(http.StatusNoContent)
@@ -293,21 +363,23 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 	defer cancel()
 	result, err := h.store.Persist(writeCtx, h.lease, envelope.AuditLog)
 	if err != nil {
+		h.failComponent(fmt.Errorf("F3 audit input 持久化失败: %w", err))
 		if errors.Is(err, ErrOwnerLeaseLost) || errors.Is(err, context.DeadlineExceeded) {
 			writer.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		h.logger.Error("F3 audit input 持久化失败", "error", err, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
+		loggerOrDefault(h.logger).Error("F3 audit input 持久化失败", "error", err, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
 		writer.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	logger := loggerOrDefault(h.logger)
 	if !result.Ignored {
 		if _, appendErr := h.store.AppendHotSearch(writeCtx, h.lease, []AuditLogInput{envelope.AuditLog}); appendErr != nil {
-			// Node's hot-search mirror is post-commit best-effort. The audit row
-			// is already durable, so an append failure is observable but does not
-			// report a false persistence failure or invoke another transport path.
+			// The audit row is already durable, so do not report a false persistence
+			// failure for this request. The mirror failure is still component-fatal:
+			// mark health down and let the sidecar supervisor reacquire F3 cleanly.
 			logger.Error("F3 audit hot-search append failed", "error", appendErr, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
+			h.failComponent(fmt.Errorf("F3 audit hot-search append failed: %w", appendErr))
 		}
 	}
 	logger.Debug("F3 audit input 已持久化", "auditLogID", envelope.AuditLog.ID, "ignored", result.Ignored)

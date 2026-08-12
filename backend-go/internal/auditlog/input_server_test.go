@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -110,6 +112,219 @@ func TestAuditInputHandlerPersistsAfterClientContextCancellation(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("persisted audit logs=%d want 1", count)
+	}
+}
+
+func TestAuditInputHandlerRecoversPersistPanic(t *testing.T) {
+	store := newLifecycleStore()
+	store.persistPanic = true
+	healthy := &atomic.Bool{}
+	healthy.Store(true)
+	componentFatal := make(chan error, 1)
+	handler := &auditInputHandler{
+		store:          store,
+		lease:          OwnerLease{OwnerID: "lifecycle-test-owner", FenceToken: 1},
+		cfg:            InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second},
+		logger:         slog.New(recordSignalHandler{records: make(chan slog.Record, 1)}),
+		healthy:        healthy,
+		componentFatal: componentFatal,
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-panic", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:32100"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("persist panic status=%d want=%d", response.Code, http.StatusInternalServerError)
+	}
+	if healthy.Load() {
+		t.Fatal("persist panic must downgrade F3 health before the supervisor restart")
+	}
+	select {
+	case err := <-componentFatal:
+		if !strings.Contains(err.Error(), "persist fixture panic") {
+			t.Fatalf("persist panic component error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("persist panic did not report a component failure")
+	}
+}
+
+func TestAuditInputHandlerReportsPersistFailureToSupervisor(t *testing.T) {
+	store := newLifecycleStore()
+	store.persistErr = errors.New("persist fixture failure")
+	healthy := &atomic.Bool{}
+	healthy.Store(true)
+	componentFatal := make(chan error, 1)
+	handler := &auditInputHandler{
+		store:          store,
+		lease:          OwnerLease{OwnerID: "lifecycle-test-owner", FenceToken: 1},
+		cfg:            InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second},
+		healthy:        healthy,
+		componentFatal: componentFatal,
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-persist-failure", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:32100"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("persist failure status=%d want=%d", response.Code, http.StatusInternalServerError)
+	}
+	if healthy.Load() {
+		t.Fatal("persist failure must downgrade F3 health before the supervisor restart")
+	}
+	select {
+	case componentErr := <-componentFatal:
+		if !strings.Contains(componentErr.Error(), "persist fixture failure") {
+			t.Fatalf("persist component error=%v", componentErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("persist failure did not report a component failure")
+	}
+}
+
+func TestAuditInputHandlerReportsLeaseLossToSupervisor(t *testing.T) {
+	store := newLifecycleStore()
+	store.persistErr = ErrOwnerLeaseLost
+	healthy := &atomic.Bool{}
+	healthy.Store(true)
+	componentFatal := make(chan error, 1)
+	handler := &auditInputHandler{
+		store:          store,
+		lease:          OwnerLease{OwnerID: "lifecycle-test-owner", FenceToken: 1},
+		cfg:            InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second},
+		healthy:        healthy,
+		componentFatal: componentFatal,
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-lease-loss", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:32100"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("lease loss status=%d want=%d", response.Code, http.StatusServiceUnavailable)
+	}
+	if healthy.Load() {
+		t.Fatal("lease loss must downgrade F3 health before the supervisor restart")
+	}
+	select {
+	case componentErr := <-componentFatal:
+		if !errors.Is(componentErr, ErrOwnerLeaseLost) {
+			t.Fatalf("lease loss component error=%v", componentErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lease loss did not report a component failure")
+	}
+}
+
+func TestAuditInputHandlerReportsHotSearchFailureToSupervisorAfterCommit(t *testing.T) {
+	store := newLifecycleStore()
+	store.hotSearchErr = errors.New("hot-search fixture failure")
+	healthy := &atomic.Bool{}
+	healthy.Store(true)
+	componentFatal := make(chan error, 1)
+	handler := &auditInputHandler{
+		store:          store,
+		lease:          OwnerLease{OwnerID: "lifecycle-test-owner", FenceToken: 1},
+		cfg:            InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second},
+		healthy:        healthy,
+		componentFatal: componentFatal,
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-hot-search-failure", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:32100"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("durable audit commit with hot-search failure status=%d want=%d", response.Code, http.StatusNoContent)
+	}
+	if healthy.Load() {
+		t.Fatal("hot-search failure must downgrade F3 health before the supervisor restart")
+	}
+	select {
+	case componentErr := <-componentFatal:
+		if !strings.Contains(componentErr.Error(), "hot-search fixture failure") {
+			t.Fatalf("hot-search component error=%v", componentErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hot-search failure did not report a component failure")
+	}
+}
+
+func TestRunInputServerReturnsPersistFailureToSupervisor(t *testing.T) {
+	store := newLifecycleStore()
+	store.persistErr = errors.New("input server persist fixture failure")
+	inputConfig := lifecycleInputConfigAt(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunInputServer(ctx, store, lifecycleConfig(), inputConfig, nil)
+	}()
+	select {
+	case <-store.acquired:
+	case <-time.After(time.Second):
+		t.Fatal("RunInputServer did not acquire the test owner lease")
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-server-persist-failure", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := eventuallySendInput(t, inputConfig, body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("persist failure HTTP status=%d want=%d", response.StatusCode, http.StatusInternalServerError)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "input server persist fixture failure") {
+			t.Fatalf("RunInputServer must return the persist component failure, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunInputServer did not return after the persist component failure")
+	}
+}
+
+func eventuallySendInput(t *testing.T, inputConfig InputServerConfig, body []byte) *http.Response {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	client := &http.Client{Timeout: 100 * time.Millisecond}
+	for {
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+inputConfig.ListenAddress+AuditInputPath, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(AuditInputSignatureHeader, SignAuditInput(inputConfig.SharedSecret, body))
+		response, err := client.Do(request)
+		if err == nil {
+			return response
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("F3 input server did not become reachable: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -231,16 +446,14 @@ func TestRunInputServerRunsRetentionAndStopsWithContext(t *testing.T) {
 	}
 }
 
-func TestRunInputServerLogsMaintenanceFailureAndKeepsServing(t *testing.T) {
+func TestRunInputServerReturnsMaintenanceFailureAsComponentError(t *testing.T) {
 	store := newLifecycleStore()
 	store.cleanupErr = errors.New("retention fixture failure")
-	loggerRecords := make(chan slog.Record, 4)
-	logger := slog.New(recordSignalHandler{records: loggerRecords})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- RunInputServer(ctx, store, lifecycleConfig(), lifecycleInputConfig(), logger)
+		done <- RunInputServer(ctx, store, lifecycleConfig(), lifecycleInputConfig(), nil)
 	}()
 	select {
 	case <-store.retentionCalls:
@@ -248,26 +461,63 @@ func TestRunInputServerLogsMaintenanceFailureAndKeepsServing(t *testing.T) {
 		t.Fatal("RunInputServer did not attempt failing retention maintenance")
 	}
 	select {
-	case record := <-loggerRecords:
-		if record.Message != "F3 audit retention maintenance failed" || record.Level != slog.LevelError {
-			t.Fatalf("maintenance failure was not observable as error: %+v", record)
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "retention fixture failure") {
+			t.Fatalf("maintenance failure must return a component error, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("maintenance failure did not reach logger")
+		t.Fatal("RunInputServer did not return after maintenance failure")
+	}
+}
+
+func TestRetentionFailureDowngradesHealthBeforeReportingFatal(t *testing.T) {
+	store := newLifecycleStore()
+	store.cleanupErr = errors.New("retention health fixture failure")
+	healthy := &atomic.Bool{}
+	healthy.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fatal := make(chan error, 1)
+	done := runRetentionMaintenance(ctx, store, OwnerLease{OwnerID: "lifecycle-test-owner", FenceToken: 1}, lifecycleConfig(), nil, healthy, fatal)
+	select {
+	case <-store.retentionCalls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retention maintenance did not execute")
 	}
 	select {
-	case err := <-done:
-		t.Fatalf("ordinary maintenance failure must not stop input server: %v", err)
-	default:
+	case err := <-fatal:
+		if !strings.Contains(err.Error(), "retention health fixture failure") {
+			t.Fatalf("retention fatal=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retention failure did not report component fatal")
 	}
-	cancel()
+	if healthy.Load() {
+		t.Fatal("retention failure must downgrade F3 health before fatal handling")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("retention maintenance did not stop after a fatal failure")
+	}
+}
+
+func TestRunInputServerReturnsRetentionPanicAsComponentError(t *testing.T) {
+	store := newLifecycleStore()
+	store.cleanupPanic = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunInputServer(ctx, store, lifecycleConfig(), lifecycleInputConfig(), nil)
+	}()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("RunInputServer cancellation after maintenance failure failed: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "maintenance goroutine panic") || !strings.Contains(err.Error(), "retention fixture panic") {
+			t.Fatalf("retention panic must return a component error, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("RunInputServer did not stop after maintenance failure cancellation")
+		t.Fatal("RunInputServer did not return after retention panic")
 	}
 }
 
@@ -288,19 +538,41 @@ func lifecycleInputConfig() InputServerConfig {
 	return InputServerConfig{ListenAddress: "127.0.0.1:0", SharedSecret: "lifecycle-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second}
 }
 
+func lifecycleInputConfigAt(t *testing.T) InputServerConfig {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return InputServerConfig{ListenAddress: address, SharedSecret: "lifecycle-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second}
+}
+
 type lifecycleStore struct {
+	acquired       chan struct{}
 	retentionCalls chan RetentionConfig
 	released       chan struct{}
 	cleanupErr     error
+	cleanupPanic   bool
+	persistPanic   bool
+	persistErr     error
+	hotSearchErr   error
 }
 
 func newLifecycleStore() *lifecycleStore {
-	return &lifecycleStore{retentionCalls: make(chan RetentionConfig, 1), released: make(chan struct{}, 1)}
+	return &lifecycleStore{acquired: make(chan struct{}, 1), retentionCalls: make(chan RetentionConfig, 1), released: make(chan struct{}, 1)}
 }
 
 func (s *lifecycleStore) EnsureSchema(context.Context) error { return nil }
 
 func (s *lifecycleStore) AcquireOwnerLease(context.Context, string, time.Duration) (OwnerLease, bool, error) {
+	select {
+	case s.acquired <- struct{}{}:
+	default:
+	}
 	return OwnerLease{OwnerID: "lifecycle-test-owner", FenceToken: 1}, true, nil
 }
 
@@ -325,7 +597,10 @@ func (s *lifecycleStore) CleanupOrphanedBlobTemps(context.Context, OwnerLease, t
 }
 
 func (s *lifecycleStore) Persist(context.Context, OwnerLease, AuditLogInput) (PersistResult, error) {
-	return PersistResult{}, nil
+	if s.persistPanic {
+		panic("persist fixture panic")
+	}
+	return PersistResult{}, s.persistErr
 }
 
 func (s *lifecycleStore) CleanupRetention(_ context.Context, _ OwnerLease, config RetentionConfig) (RetentionResult, error) {
@@ -333,11 +608,14 @@ func (s *lifecycleStore) CleanupRetention(_ context.Context, _ OwnerLease, confi
 	case s.retentionCalls <- config:
 	default:
 	}
+	if s.cleanupPanic {
+		panic("retention fixture panic")
+	}
 	return RetentionResult{}, s.cleanupErr
 }
 
 func (s *lifecycleStore) AppendHotSearch(context.Context, OwnerLease, []AuditLogInput) (int, error) {
-	return 0, nil
+	return 0, s.hotSearchErr
 }
 
 func (s *lifecycleStore) CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error) {

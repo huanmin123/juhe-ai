@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -32,7 +33,7 @@ func ownerLeaseFromContext(ctx context.Context) (OwnerLease, error) {
 // RunWithOwnerLease makes a Go process the sole F1 writer for one Store. The
 // lease lives beside the indexed facts, so it works in both SQLite and PG mode
 // without introducing a queue or a separate coordination service.
-func RunWithOwnerLease(ctx context.Context, config Config, store Store, run func(context.Context) error) error {
+func RunWithOwnerLease(ctx context.Context, config Config, store Store, run func(context.Context) error) (resultErr error) {
 	lease, acquired, err := store.AcquireOwnerLease(ctx, config.OwnerID, config.OwnerLease)
 	if err != nil {
 		return fmt.Errorf("获取运行日志 owner lease 失败: %w", err)
@@ -42,13 +43,40 @@ func RunWithOwnerLease(ctx context.Context, config Config, store Store, run func
 	}
 
 	runCtx, cancel := context.WithCancelCause(withOwnerLease(ctx, lease))
-	defer cancel(nil)
 	stopRenewal := make(chan struct{})
 	renewalDone := make(chan struct{})
 	var renewalErr error
 	var renewalMu sync.Mutex
+	var stopRenewalOnce sync.Once
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			resultErr = fmt.Errorf("运行日志 owner lease 回调 panic: %v\n%s", recovered, debug.Stack())
+		}
+		cancel(nil)
+		stopRenewalOnce.Do(func() { close(stopRenewal) })
+		<-renewalDone
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		releaseErr := releaseOwnerLeaseRecoverably(releaseCtx, store, lease)
+		releaseCancel()
+		renewalMu.Lock()
+		leaseErr := renewalErr
+		renewalMu.Unlock()
+		if errors.Is(resultErr, context.Canceled) && leaseErr != nil {
+			resultErr = nil
+		}
+		resultErr = errors.Join(resultErr, leaseErr, releaseErr)
+	}()
 	go func() {
-		defer close(renewalDone)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err := fmt.Errorf("运行日志 owner lease 续租 goroutine panic: %v\n%s", recovered, debug.Stack())
+				renewalMu.Lock()
+				renewalErr = err
+				renewalMu.Unlock()
+				cancel(err)
+			}
+			close(renewalDone)
+		}()
 		interval := config.OwnerLease / 3
 		if interval <= 0 {
 			interval = time.Second
@@ -78,17 +106,15 @@ func RunWithOwnerLease(ctx context.Context, config Config, store Store, run func
 		}
 	}()
 
-	runErr := run(runCtx)
-	close(stopRenewal)
-	<-renewalDone
-	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	releaseErr := store.ReleaseOwnerLease(releaseCtx, lease)
-	releaseCancel()
-	renewalMu.Lock()
-	leaseErr := renewalErr
-	renewalMu.Unlock()
-	if errors.Is(runErr, context.Canceled) && leaseErr != nil {
-		runErr = nil
-	}
-	return errors.Join(runErr, leaseErr, releaseErr)
+	resultErr = run(runCtx)
+	return resultErr
+}
+
+func releaseOwnerLeaseRecoverably(ctx context.Context, store Store, lease OwnerLease) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("释放运行日志 owner lease panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	return store.ReleaseOwnerLease(ctx, lease)
 }

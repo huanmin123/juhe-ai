@@ -67,8 +67,9 @@ JUHE_AI_ALLOWED_ORIGINS=https://ai.example.com
 JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-table-monitor
-JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-audit-log-writer
+JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-sidecar-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-sidecar-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
@@ -78,7 +79,7 @@ JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
-F3 input secret 不能复用或回退 `JUHE_AI_SECRET`。`start.ps1` 会生成 F1 instance ID，但不会生成 F2/F3 owner ID 或 F3 secret；缺失时必须失败。
+F3 input secret 不能复用或回退 `JUHE_AI_SECRET`。`start.ps1` 不会生成任何 Go owner ID 或 F3 secret；缺失时必须失败。
 
 验证：
 
@@ -89,7 +90,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3303/__aiinternal__/health
-Get-Content .\backend\logs\juhe-ai-audit-log-writer.log -Tail 100
+Get-Content .\backend\logs\juhe-ai-go-sidecar.log -Tail 100
 ```
 
 预期 Node 两个 health 为 `200`、F3 health 为 `204`。继续通过 Node 只读接口确认 F1/F2 新鲜度，并以审计详情读回确认 Node -> F3 -> Node；不能只凭 NSSM 已启动或 Node health 结束验收。

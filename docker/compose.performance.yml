@@ -197,6 +197,7 @@ services:
       JUHE_AI_AUDIT_LOG_INPUT_SECRET: ${JUHE_AI_AUDIT_LOG_INPUT_SECRET:?JUHE_AI_AUDIT_LOG_INPUT_SECRET is required}
       JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY: ${JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:-/app/backend/audit-log-data/audit-payload-blobs}
       JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY: ${JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY:-/app/backend/audit-log-data/audit-hot-search}
+      JUHE_AI_AUDIT_LOG_POSTGRES_URL: ${JUHE_AI_AUDIT_LOG_POSTGRES_URL:-}
       JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA: ${JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA:-juhe_dataset}
       JUHE_AI_AUDIT_LOG_QUERY_POOL_MAX: ${JUHE_AI_AUDIT_LOG_QUERY_POOL_MAX:-4}
       JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
@@ -233,84 +234,17 @@ services:
       - juhe-ai-audit-log-data:/app/backend/audit-log-data:ro
       - juhe-ai-logs:/app/backend/logs
 
-  runtime-log-indexer:
-    image: ${JUHE_AI_RUNTIME_LOG_INDEXER_IMAGE:-juhe-ai-runtime-log-indexer:local}
-    container_name: ${JUHE_AI_RUNTIME_LOG_INDEXER_CONTAINER_NAME:-juhe-ai-runtime-log-indexer-performance}
-    restart: unless-stopped
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.runtime-log-indexer
-      args:
-        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_RUNTIME_LOG_INDEXER_RUNTIME_IMAGE:-debian:bookworm-slim}
-        GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-      juhe-ai:
-        condition: service_healthy
-    environment:
-      JUHE_AI_RUNTIME_LOG_INSTANCE_ID: ${JUHE_AI_RUNTIME_LOG_INSTANCE_ID:-juhe-ai-runtime-log-indexer-performance}
-      JUHE_AI_RUNTIME_LOG_STORE: ${JUHE_AI_RUNTIME_LOG_STORE:-postgres}
-      JUHE_AI_RUNTIME_LOG_ONCE: ${JUHE_AI_RUNTIME_LOG_ONCE:-false}
-      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
-      JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
-      JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
-    volumes:
-      - juhe-ai-logs:/app/backend/logs
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1 && test -d \"$${JUHE_AI_LOG_DIR}\""]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
-
-  table-monitor:
-    image: ${JUHE_AI_TABLE_MONITOR_IMAGE:-juhe-ai-table-monitor:local}
-    container_name: ${JUHE_AI_TABLE_MONITOR_CONTAINER_NAME:-juhe-ai-table-monitor-performance}
-    restart: unless-stopped
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.table-monitor
-      args:
-        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_TABLE_MONITOR_RUNTIME_IMAGE:-debian:bookworm-slim}
-        GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-      juhe-ai:
-        condition: service_healthy
-    environment:
-      JUHE_AI_TABLE_MONITOR_INSTANCE_ID: ${JUHE_AI_TABLE_MONITOR_INSTANCE_ID:?JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required}
-      JUHE_AI_TABLE_MONITOR_STORE: ${JUHE_AI_TABLE_MONITOR_STORE:-postgres}
-      JUHE_AI_TABLE_MONITOR_INTERVAL: ${JUHE_AI_TABLE_MONITOR_INTERVAL:-1m}
-      JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT: ${JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT:-45s}
-      JUHE_AI_TABLE_MONITOR_OWNER_LEASE: ${JUHE_AI_TABLE_MONITOR_OWNER_LEASE:-5m}
-      JUHE_AI_TABLE_MONITOR_RETENTION_DAYS: ${JUHE_AI_TABLE_MONITOR_RETENTION_DAYS:-30}
-      JUHE_AI_TABLE_MONITOR_MAX_TABLES: ${JUHE_AI_TABLE_MONITOR_MAX_TABLES:-256}
-      JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES: ${JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES:-8}
-      JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE: ${JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE:-1000}
-      JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES: ${JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES:-1000}
-      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
-
-  audit-log-writer:
-    image: ${JUHE_AI_AUDIT_LOG_WRITER_IMAGE:-juhe-ai-audit-log-writer:local}
-    container_name: ${JUHE_AI_AUDIT_LOG_WRITER_CONTAINER_NAME:-juhe-ai-audit-log-writer-performance}
+  go-sidecar:
+    image: ${JUHE_AI_GO_SIDECAR_IMAGE:-juhe-ai-go-sidecar:local}
+    container_name: ${JUHE_AI_GO_SIDECAR_CONTAINER_NAME:-juhe-ai-go-sidecar-performance}
     restart: unless-stopped
     network_mode: service:juhe-ai
     build:
       context: ..
-      dockerfile: docker/Dockerfile.audit-log-writer
+      dockerfile: docker/Dockerfile.go-sidecar
       args:
         GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_AUDIT_LOG_WRITER_RUNTIME_IMAGE:-debian:bookworm-slim}
+        RUNTIME_IMAGE: ${JUHE_AI_GO_SIDECAR_RUNTIME_IMAGE:-debian:bookworm-slim}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       pgbouncer:
@@ -319,11 +253,28 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-postgres}
+      JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-performance}
+      JUHE_AI_RUNTIME_LOG_INSTANCE_ID: ${JUHE_AI_RUNTIME_LOG_INSTANCE_ID:?JUHE_AI_RUNTIME_LOG_INSTANCE_ID is required}
+      JUHE_AI_RUNTIME_LOG_STORE: ${JUHE_AI_RUNTIME_LOG_STORE:-postgres}
+      JUHE_AI_RUNTIME_LOG_POSTGRES_URL: ${JUHE_AI_RUNTIME_LOG_POSTGRES_URL:-}
+      JUHE_AI_TABLE_MONITOR_INSTANCE_ID: ${JUHE_AI_TABLE_MONITOR_INSTANCE_ID:?JUHE_AI_TABLE_MONITOR_INSTANCE_ID is required}
+      JUHE_AI_TABLE_MONITOR_STORE: ${JUHE_AI_TABLE_MONITOR_STORE:-postgres}
+      JUHE_AI_TABLE_MONITOR_POSTGRES_URL: ${JUHE_AI_TABLE_MONITOR_POSTGRES_URL:-}
+      JUHE_AI_TABLE_MONITOR_INTERVAL: ${JUHE_AI_TABLE_MONITOR_INTERVAL:-1m}
+      JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT: ${JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT:-45s}
+      JUHE_AI_TABLE_MONITOR_OWNER_LEASE: ${JUHE_AI_TABLE_MONITOR_OWNER_LEASE:-5m}
+      JUHE_AI_TABLE_MONITOR_RETENTION_DAYS: ${JUHE_AI_TABLE_MONITOR_RETENTION_DAYS:-30}
+      JUHE_AI_TABLE_MONITOR_MAX_TABLES: ${JUHE_AI_TABLE_MONITOR_MAX_TABLES:-256}
+      JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES: ${JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES:-8}
+      JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE: ${JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE:-1000}
+      JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES: ${JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES:-1000}
       JUHE_AI_AUDIT_LOG_INSTANCE_ID: ${JUHE_AI_AUDIT_LOG_INSTANCE_ID:?JUHE_AI_AUDIT_LOG_INSTANCE_ID is required}
       JUHE_AI_AUDIT_LOG_STORE: ${JUHE_AI_AUDIT_LOG_STORE:-postgres}
       JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY: ${JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:-/app/backend/audit-log-data/audit-payload-blobs}
       JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY: ${JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY:-/app/backend/audit-log-data/audit-hot-search}
-      JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL: ${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL:?JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL is required}
+      JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL: ${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL:-}
+      JUHE_AI_AUDIT_LOG_POSTGRES_URL: ${JUHE_AI_AUDIT_LOG_POSTGRES_URL:-}
       JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA: ${JUHE_AI_AUDIT_LOG_POSTGRES_SCHEMA:-juhe_dataset}
       JUHE_AI_AUDIT_LOG_OWNER_LEASE: ${JUHE_AI_AUDIT_LOG_OWNER_LEASE:-30s}
       JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL: ${JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL:-1m}
@@ -335,10 +286,13 @@ services:
       JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS: ${JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS:-127.0.0.1:3303}
       JUHE_AI_AUDIT_LOG_INPUT_SECRET: ${JUHE_AI_AUDIT_LOG_INPUT_SECRET:?JUHE_AI_AUDIT_LOG_INPUT_SECRET is required}
       JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
+      JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
+      JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
     volumes:
       - juhe-ai-audit-log-data:/app/backend/audit-log-data
+      - juhe-ai-logs:/app/backend/logs
     healthcheck:
-      test: ["CMD", "/usr/local/bin/juhe-ai-audit-log-healthcheck"]
+      test: ["CMD", "/usr/local/bin/juhe-ai-go-sidecar-healthcheck"]
       interval: 10s
       timeout: 5s
       start_period: 20s

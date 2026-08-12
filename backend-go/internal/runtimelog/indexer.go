@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,8 @@ import (
 
 const displacedIdentityPrefix = "__runtime_log_identity__:"
 const writeFailureCursorMessage = "运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试"
+
+var errManagedGoroutinePanic = errors.New("运行日志受控 goroutine panic")
 
 type cursorCommitError struct {
 	cause  error
@@ -41,11 +44,11 @@ func NewIndexer(config Config, store Store) *Indexer {
 }
 
 func (indexer *Indexer) Run(ctx context.Context) error {
-	if err := indexer.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		indexer.reportFailure("索引", err)
+	if err := indexer.RunOnce(ctx); err != nil {
+		return err
 	}
-	if err := indexer.RunRetention(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		indexer.reportFailure("保留清理", err)
+	if err := indexer.RunRetention(ctx); err != nil {
+		return err
 	}
 	pollTicker := time.NewTicker(indexer.config.PollInterval)
 	retentionTicker := time.NewTicker(indexer.config.RetentionInterval)
@@ -56,19 +59,15 @@ func (indexer *Indexer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-pollTicker.C:
-			if err := indexer.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				indexer.reportFailure("索引", err)
+			if err := indexer.RunOnce(ctx); err != nil {
+				return err
 			}
 		case <-retentionTicker.C:
-			if err := indexer.RunRetention(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				indexer.reportFailure("保留清理", err)
+			if err := indexer.RunRetention(ctx); err != nil {
+				return err
 			}
 		}
 	}
-}
-
-func (indexer *Indexer) reportFailure(operation string, err error) {
-	fmt.Fprintf(os.Stderr, "运行日志%s失败，将在下一周期重试: %v\n", operation, err)
 }
 
 func (indexer *Indexer) RunOnce(ctx context.Context) error {
@@ -90,6 +89,13 @@ func (indexer *Indexer) RunOnce(ctx context.Context) error {
 		group.Add(1)
 		go func() {
 			defer group.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					errorsMu.Lock()
+					importErrors = append(importErrors, fmt.Errorf("%w: %s: %v\n%s", errManagedGoroutinePanic, file.Path, recovered, debug.Stack()))
+					errorsMu.Unlock()
+				}
+			}()
 			if err := indexer.importFile(ctx, file); err != nil && !errors.Is(err, context.Canceled) {
 				errorsMu.Lock()
 				importErrors = append(importErrors, fmt.Errorf("%s: %w", file.Path, err))

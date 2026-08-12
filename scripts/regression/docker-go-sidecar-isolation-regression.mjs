@@ -6,61 +6,23 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const standaloneSource = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
 const performanceSource = readFileSync(resolve(root, 'docker', 'compose.performance.yml'), 'utf8').replaceAll('\r\n', '\n')
-const auditWriterDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.audit-log-writer'), 'utf8').replaceAll('\r\n', '\n')
-const tableMonitorDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.table-monitor'), 'utf8').replaceAll('\r\n', '\n')
-const tableMonitorEntrypoint = readFileSync(resolve(root, 'docker', 'table-monitor-entrypoint.sh'), 'utf8').replaceAll('\r\n', '\n')
-const runtimeLogIndexer = serviceBlock(standaloneSource, 'runtime-log-indexer')
-const tableMonitor = serviceBlock(standaloneSource, 'table-monitor')
+const sidecarDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-sidecar'), 'utf8').replaceAll('\r\n', '\n')
 const standaloneNode = serviceBlock(standaloneSource, 'juhe-ai')
-const standaloneAuditWriter = serviceBlock(standaloneSource, 'audit-log-writer')
+const standaloneSidecar = serviceBlock(standaloneSource, 'go-sidecar')
 const performanceNode = serviceBlock(performanceSource, 'juhe-ai')
-const performanceAuditWriter = serviceBlock(performanceSource, 'audit-log-writer')
+const performanceSidecar = serviceBlock(performanceSource, 'go-sidecar')
 
-assertDatabasePathMount(runtimeLogIndexer, {
-  environment: 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
-  mountTarget: '/app/backend/runtime-log-data',
-  readOnly: false,
-  label: 'F1 自身 SQLite 输出库'
-})
-assertDatabasePathMount(runtimeLogIndexer, {
-  environment: 'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
-  mountTarget: '/app/backend/table-monitor-data',
-  readOnly: true,
-  label: 'F1 读取 F2 SQLite 输出库'
-})
-for (const name of [
-  'JUHE_AI_DATABASE_PATH',
-  'JUHE_AI_DATASET_DATABASE_PATH',
-  'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
-  'JUHE_AI_STATS_DATABASE_PATH',
-  'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT'
-]) {
-  assert.match(runtimeLogIndexer, new RegExp(`${name}:`, 'u'), `F1 Docker sidecar must receive ${name}`)
+assertSingleSidecarContract(standaloneNode, standaloneSidecar, 'standalone')
+assertSingleSidecarContract(performanceNode, performanceSidecar, 'performance')
+assert.match(performanceNode, /JUHE_AI_INSTANCE_ID:\s*\$\{JUHE_AI_INSTANCE_ID:\?JUHE_AI_INSTANCE_ID is required\}/u, 'performance Compose must fail closed without a stable Node instance ID')
+assert.match(sidecarDockerfile, /cmd\/juhe-ai-go-sidecar/u, 'Dockerfile must build the only Go sidecar command')
+assert.match(sidecarDockerfile, /__aiinternal__\/health/u, 'sidecar healthcheck binary must probe the loopback input listener')
+
+for (const source of [standaloneSource, performanceSource, sidecarDockerfile]) {
+  assert.doesNotMatch(source, /runtime-log-indexer|table-monitor-entrypoint|audit-log-writer|Dockerfile\.runtime-log-indexer|Dockerfile\.table-monitor|Dockerfile\.audit-log-writer/u, 'Docker deployment must not retain standalone Go program paths')
 }
 
-assertDatabasePathMount(tableMonitor, {
-  environment: 'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
-  mountTarget: '/app/backend/table-monitor-data',
-  readOnly: false,
-  label: 'F2 自身 SQLite 输出库'
-})
-assert.match(tableMonitor, /JUHE_AI_TABLE_MONITOR_STARTUP_TIMEOUT_SECONDS:/u, 'F2 Docker sidecar must receive an explicit source readiness timeout')
-assert.match(tableMonitorDockerfile, /table-monitor-entrypoint\.sh/u, 'F2 Dockerfile must install the source readiness entrypoint')
-assert.match(tableMonitorEntrypoint, /JUHE_AI_STATS_DATABASE_PATH/u, 'F2 entrypoint must wait for the Node-managed stats SQLite source')
-assert.match(tableMonitorEntrypoint, /timed out waiting for stats SQLite source/u, 'F2 entrypoint must fail visibly after the readiness timeout')
-assertDatabasePathMount(tableMonitor, {
-  environment: 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
-  mountTarget: '/app/backend/runtime-log-data',
-  readOnly: true,
-  label: 'F2 读取 F1 SQLite 输出库'
-})
-
-assertAuditWriterContract(standaloneNode, standaloneAuditWriter, 'standalone')
-assertAuditWriterContract(performanceNode, performanceAuditWriter, 'performance')
-assert.match(performanceNode, /JUHE_AI_INSTANCE_ID:\s*\$\{JUHE_AI_INSTANCE_ID:\?JUHE_AI_INSTANCE_ID is required\}/u, 'performance Compose must fail closed without a stable Node instance ID')
-assert.match(auditWriterDockerfile, /__aiinternal__\/health/u, 'F3 healthcheck binary must probe the loopback input listener')
-
-console.log('Docker Go sidecar deployment isolation regression passed')
+console.log('Docker single Go sidecar deployment regression passed')
 
 function serviceBlock(source, name) {
   const header = `  ${name}:\n`
@@ -72,40 +34,16 @@ function serviceBlock(source, name) {
   return next === -1 ? remaining : remaining.slice(0, header.length + next)
 }
 
-function assertAuditWriterContract(node, writer, mode) {
-  assert.match(writer, /dockerfile:\s+docker\/Dockerfile\.audit-log-writer/u, `${mode} Compose must build F3 from its dedicated Dockerfile`)
-  assert.match(writer, /^\s+network_mode:\s+service:juhe-ai\s*$/mu, `${mode} F3 must share Node's loopback network namespace`)
-  assert.match(writer, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, `${mode} F3 must require a stable instance ID`)
-  assert.match(writer, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} F3 must receive the explicit input secret`)
-  assert.match(writer, /JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:/u, `${mode} F3 must own a blob directory`)
-  assert.match(writer, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data\s*$/mu, `${mode} F3 must write its dedicated volume`)
-  assert.match(writer, /audit-log-healthcheck/u, `${mode} F3 healthcheck must use the HTTP probe binary`)
-  assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:/u, `${mode} Node must send audit input to F3`)
+function assertSingleSidecarContract(node, sidecar, mode) {
+  assert.match(sidecar, /dockerfile:\s+docker\/Dockerfile\.go-sidecar/u, `${mode} Compose must build the sole Go sidecar image`)
+  assert.match(sidecar, /^\s+network_mode:\s+service:juhe-ai\s*$/mu, `${mode} Go sidecar must share Node's loopback network namespace`)
+  assert.match(sidecar, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:/u, `${mode} sidecar must receive F1 stable owner identity`)
+  assert.match(sidecar, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} sidecar must receive F2 stable owner identity`)
+  assert.match(sidecar, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, `${mode} sidecar must receive F3 stable owner identity`)
+  assert.match(sidecar, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} sidecar must receive the explicit input secret`)
+  assert.match(sidecar, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data\s*$/mu, `${mode} sidecar must write F3 artifacts through its dedicated volume`)
+  assert.match(sidecar, /juhe-ai-go-sidecar-healthcheck/u, `${mode} sidecar healthcheck must use the Go loopback HTTP probe`)
+  assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:/u, `${mode} Node must send F3 input to the sidecar`)
   assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_SECRET:/u, `${mode} Node must receive the explicit F3 input secret`)
   assert.match(node, /juhe-ai-audit-log-data:\/app\/backend\/audit-log-data:ro/u, `${mode} Node must mount F3 artifacts read-only`)
-}
-
-function assertDatabasePathMount(block, { environment, mountTarget, readOnly, label }) {
-  const configuredPath = defaultEnvironmentPath(block, environment)
-  assert.equal(
-    configuredPath === mountTarget || configuredPath.startsWith(`${mountTarget}/`),
-    true,
-    `${label} 的 ${environment} 默认路径必须位于 ${mountTarget}`
-  )
-  const expectedSuffix = readOnly ? ':ro' : ''
-  assert.match(
-    block,
-    new RegExp(`^\\s+- [^\\s:]+:${escapeRegExp(mountTarget)}${escapeRegExp(expectedSuffix)}\\s*$`, 'mu'),
-    `${label} 的 ${environment} 必须由同一 service 中${readOnly ? '只读' : '可写'}挂载的 ${mountTarget} 提供`
-  )
-}
-
-function defaultEnvironmentPath(block, name) {
-  const match = block.match(new RegExp(`^\\s+${escapeRegExp(name)}:\\s*\\$\\{[^}:]+:-([^}]+)\\}\\s*$`, 'mu'))
-  assert(match, `${name} 必须以显式容器内默认 SQLite 路径配置`)
-  return match[1]
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }

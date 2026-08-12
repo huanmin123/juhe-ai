@@ -18,27 +18,23 @@ const pnpmRunner = resolvePnpmRunner()
 
 let backend
 let frontend
-let runtimeLogIndexer
-let tableMonitor
-let auditLogWriter
+let goSidecar
 let shuttingDown = false
 
-let auditLogWriterEnv
+let goSidecarEnv
 
 process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
 process.on('SIGHUP', () => shutdown(129))
 
 try {
-  auditLogWriterEnv = resolveAuditLogWriterEnv()
+  goSidecarEnv = resolveGoSidecarEnv()
   console.log('[dev] starting backend...')
   const backendReadiness = createBackendReadinessTracker(backendHealthUrl, backendReadyTimeoutMs)
   backend = startPnpm(['--filter', 'juhe-ai-backend', 'dev'], 'backend', backendReadiness.acceptChunk)
   await backendReadiness.ready
   console.log(`[dev] backend system API is ready: ${backendHealthUrl}`)
-  runtimeLogIndexer = startRuntimeLogIndexer()
-  tableMonitor = startTableMonitor()
-  auditLogWriter = startAuditLogWriter()
+  goSidecar = startGoSidecar()
   console.log('[dev] starting frontend...')
   frontend = startPnpm(['--filter', 'juhe-ai-frontend', 'dev'], 'frontend')
 } catch (error) {
@@ -52,7 +48,7 @@ function startPnpm(args, label, onOutput) {
   const developmentAutoLoginUsername = resolveDevelopmentAutoLoginUsername(process.env.JUHE_AI_DEV_AUTO_LOGIN_USERNAME)
   const childEnv = label === 'backend'
     ? {
-        ...auditLogWriterEnv,
+        ...goSidecarEnv,
         ...(developmentAutoLoginUsername === undefined
           ? {}
           : { JUHE_AI_DEV_AUTO_LOGIN_USERNAME: developmentAutoLoginUsername })
@@ -76,54 +72,18 @@ function startPnpm(args, label, onOutput) {
   return child
 }
 
-function startRuntimeLogIndexer() {
-  const childEnv = resolveRuntimeLogIndexerEnv()
-  console.log(`[dev] starting Go runtime log indexer (${childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID})...`)
-  const child = spawn('go', ['run', './cmd/juhe-ai-runtime-log-indexer'], {
+function startGoSidecar() {
+  console.log('[dev] starting Go sidecar (F1/F2/F3)...')
+  const child = spawn('go', ['run', './cmd/juhe-ai-go-sidecar'], {
     cwd: backendGoRoot,
-    env: childEnv,
-    detached: process.platform !== 'win32',
-    shell: false,
-    stdio: ['inherit', 'pipe', 'pipe']
-  })
-
-  pipeChildOutput(child.stdout, process.stdout)
-  pipeChildOutput(child.stderr, process.stderr)
-  monitorChild(child, 'Go runtime log indexer')
-
-  return child
-}
-
-function startTableMonitor() {
-  const childEnv = resolveTableMonitorEnv()
-  console.log(`[dev] starting Go table monitor (${childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID})...`)
-  const child = spawn('go', ['run', './cmd/juhe-ai-table-monitor'], {
-    cwd: backendGoRoot,
-    env: childEnv,
-    detached: process.platform !== 'win32',
-    shell: false,
-    stdio: ['inherit', 'pipe', 'pipe']
-  })
-
-  pipeChildOutput(child.stdout, process.stdout)
-  pipeChildOutput(child.stderr, process.stderr)
-  monitorChild(child, 'Go table monitor')
-
-  return child
-}
-
-function startAuditLogWriter() {
-  console.log(`[dev] starting Go audit log writer (${auditLogWriterEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID})...`)
-  const child = spawn('go', ['run', './cmd/juhe-ai-audit-log-writer'], {
-    cwd: backendGoRoot,
-    env: auditLogWriterEnv,
+    env: goSidecarEnv,
     detached: process.platform !== 'win32',
     shell: false,
     stdio: ['inherit', 'pipe', 'pipe']
   })
   pipeChildOutput(child.stdout, process.stdout)
   pipeChildOutput(child.stderr, process.stderr)
-  monitorChild(child, 'Go audit log writer')
+  monitorChild(child, 'Go sidecar')
   return child
 }
 
@@ -259,17 +219,27 @@ function resolveBackendTarget() {
   return resolveDevelopmentBackendTarget(process.env, frontendEnv, loadBackendEnv())
 }
 
-function resolveRuntimeLogIndexerEnv() {
+function resolveGoSidecarEnv() {
   const childEnv = { ...loadBackendEnv(), ...process.env }
-  const configuredStore = firstConfiguredValue(
-    childEnv.JUHE_AI_RUNTIME_LOG_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER
-  )
   const inferredStore = childEnv.JUHE_AI_RUNTIME_MODE?.trim().toLowerCase() === 'performance' || childEnv.JUHE_AI_POSTGRES_URL?.trim()
     ? 'postgres'
     : 'sqlite'
-
-  childEnv.JUHE_AI_RUNTIME_LOG_STORE = configuredStore ?? inferredStore
+  childEnv.JUHE_AI_RUNTIME_LOG_STORE = firstConfiguredValue(
+    childEnv.JUHE_AI_RUNTIME_LOG_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER,
+    inferredStore
+  )
+  childEnv.JUHE_AI_TABLE_MONITOR_STORE = firstConfiguredValue(
+    childEnv.JUHE_AI_TABLE_MONITOR_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER,
+    inferredStore
+  )
+  childEnv.JUHE_AI_AUDIT_LOG_STORE = firstConfiguredValue(
+    childEnv.JUHE_AI_AUDIT_LOG_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER,
+    childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ? 'postgres' : undefined,
+    inferredStore
+  )
   childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(
     childEnv.JUHE_AI_DATABASE_PATH,
     resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -301,62 +271,12 @@ function resolveRuntimeLogIndexerEnv() {
   childEnv.JUHE_AI_LOG_DIR = resolveBackendPath(childEnv.JUHE_AI_LOG_DIR, resolve(backendRoot, 'logs'))
   childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = firstConfiguredValue(
     childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID,
-    'dev-runtime-log-indexer'
-  )
-  delete childEnv.JUHE_AI_RUNTIME_LOG_ONCE
-
-  return childEnv
-}
-
-function resolveTableMonitorEnv() {
-  const childEnv = { ...loadBackendEnv(), ...process.env }
-  const configuredStore = firstConfiguredValue(
-    childEnv.JUHE_AI_TABLE_MONITOR_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER
-  )
-  const inferredStore = childEnv.JUHE_AI_RUNTIME_MODE?.trim().toLowerCase() === 'performance' || childEnv.JUHE_AI_POSTGRES_URL?.trim()
-    ? 'postgres'
-    : 'sqlite'
-
-  childEnv.JUHE_AI_TABLE_MONITOR_STORE = configuredStore ?? inferredStore
-  childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_DATABASE_PATH,
-    resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
-  )
-  childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_DATASET_DATABASE_PATH,
-    resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
-  )
-  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH,
-    resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
-  )
-  childEnv.JUHE_AI_STATS_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_STATS_DATABASE_PATH,
-    resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
-  )
-  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH,
-    resolve(backendRoot, 'data', 'juhe-ai-table-monitor.sqlite3')
-  )
-  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH,
-    resolve(backendRoot, 'data', 'juhe-ai-runtime-log.sqlite3')
-  )
-  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = resolveBackendPath(
-    childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT,
-    resolve(backendRoot, 'data', 'codex-context', 'state-shards')
+    'dev-go-sidecar-runtime-log'
   )
   childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = firstConfiguredValue(
     childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID,
-    'dev-table-monitor'
+    'dev-go-sidecar-table-monitor'
   )
-
-  return childEnv
-}
-
-function resolveAuditLogWriterEnv() {
-  const childEnv = { ...loadBackendEnv(), ...process.env }
   const instanceID = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID)
   if (!instanceID) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
   const secret = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET)
@@ -364,18 +284,12 @@ function resolveAuditLogWriterEnv() {
   const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
   const inputPort = listenAddress.slice(listenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID
-  childEnv.JUHE_AI_AUDIT_LOG_STORE = firstConfiguredValue(
-    childEnv.JUHE_AI_AUDIT_LOG_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER,
-    childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ? 'postgres' : undefined,
-    'sqlite'
-  )
   childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = listenAddress
   childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret
   childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL, `http://127.0.0.1:${inputPort}`)
   childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-audit-log.sqlite3'))
-  childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(backendRoot, 'data', 'audit-log-blobs'))
-  childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(backendRoot, 'data', 'audit-log-hot-search'))
+  childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(backendRoot, 'data', 'audit-payload-blobs'))
+  childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(backendRoot, 'data', 'audit-hot-search'))
   childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
   childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3'))
@@ -484,9 +398,7 @@ function shutdown(exitCode) {
   if (shuttingDown) return
   shuttingDown = true
   stopChild(frontend)
-  stopChild(tableMonitor, { processGroup: process.platform !== 'win32' })
-  stopChild(runtimeLogIndexer, { processGroup: process.platform !== 'win32' })
-  stopChild(auditLogWriter, { processGroup: process.platform !== 'win32' })
+  stopChild(goSidecar, { processGroup: process.platform !== 'win32' })
   stopChild(backend)
   process.exit(exitCode)
 }
