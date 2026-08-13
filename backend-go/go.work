@@ -1,0 +1,9 @@
+go 1.26.0
+
+use (
+	./shared/contracts
+	./shared/platform
+	./projects/gateway
+	./projects/jobs
+	./projects/maintenance
+)

@@ -22,11 +22,14 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 RUNTIME_CHECK_SCRIPT='backend/dist/scripts/preflight/check-node-sqlite.js'
-SIDECAR_START_SCRIPT='scripts/start-go-sidecar.mjs'
+GO_PROJECT_START_SCRIPT='scripts/start-go-project.mjs'
 server_pid=''
-go_sidecar_pid=''
-go_sidecar_pid_file='backend/runtime/juhe-ai-go-sidecar.pid'
-go_sidecar_log_file='backend/logs/juhe-ai-go-sidecar.log'
+go_gateway_pid=''
+go_jobs_pid=''
+go_gateway_pid_file='backend/runtime/juhe-ai-gateway.pid'
+go_jobs_pid_file='backend/runtime/juhe-ai-jobs.pid'
+go_gateway_log_file='backend/logs/juhe-ai-gateway.log'
+go_jobs_log_file='backend/logs/juhe-ai-jobs.log'
 
 ripgrep_dependency_ready() {
   (cd backend && node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" >/dev/null 2>&1)
@@ -96,8 +99,9 @@ ensure_deployment_defaults() {
   fi
 }
 
-go_sidecar_process() {
+go_project_process() {
   pid_path="$1"
+  binary_name="$2"
   [ -f "$pid_path" ] || return 1
   IFS= read -r pid < "$pid_path" || true
   case "$pid" in
@@ -106,13 +110,15 @@ go_sidecar_process() {
   kill -0 "$pid" 2>/dev/null || { rm -f -- "$pid_path"; return 1; }
   command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   case "$command_line" in
-    *juhe-ai-go-sidecar*) printf '%s' "$pid"; return 0 ;;
+    *"$binary_name"*) printf '%s' "$pid"; return 0 ;;
     *) rm -f -- "$pid_path"; return 1 ;;
   esac
 }
 
-stop_go_sidecar() {
-  pid="$(go_sidecar_process "$go_sidecar_pid_file" || true)"
+stop_go_project() {
+  pid_path="$1"
+  binary_name="$2"
+  pid="$(go_project_process "$pid_path" "$binary_name" || true)"
   [ -n "$pid" ] || return 0
   kill -TERM "$pid"
   attempts=0
@@ -121,10 +127,10 @@ stop_go_sidecar() {
     attempts=$((attempts + 1))
   done
   if kill -0 "$pid" 2>/dev/null; then
-    echo "juhe-ai-go-sidecar did not stop within 10 seconds (PID $pid)." >&2
+    echo "$binary_name did not stop within 10 seconds (PID $pid)." >&2
     return 1
   fi
-  rm -f -- "$go_sidecar_pid_file"
+  rm -f -- "$pid_path"
 }
 
 stop_server_process() {
@@ -167,51 +173,49 @@ process.exit(response.status === Number(process.argv[2]) ? 0 : 1)
   return 1
 }
 
-start_go_sidecar() {
-  binary="$APP_DIR/backend-go/juhe-ai-go-sidecar"
+start_go_project() {
+  project="$1"
+  health_url="$2"
+  binary="$APP_DIR/backend-go/juhe-ai-$project"
+  pid_path="backend/runtime/juhe-ai-$project.pid"
+  log_path="backend/logs/juhe-ai-$project.log"
   if [ ! -f "$binary" ] || [ ! -x "$binary" ]; then
-    echo "Go sidecar binary not found or not executable: $binary. Rebuild the release package for this Unix platform." >&2
+    echo "Go $project binary not found or not executable: $binary. Rebuild the release package for this Unix platform." >&2
     return 1
   fi
-  if [ ! -f "$APP_DIR/$SIDECAR_START_SCRIPT" ]; then
-    echo "Go sidecar launcher not found: $APP_DIR/$SIDECAR_START_SCRIPT. Rebuild the release package." >&2
+  if [ ! -f "$APP_DIR/$GO_PROJECT_START_SCRIPT" ]; then
+    echo "Go project launcher not found: $APP_DIR/$GO_PROJECT_START_SCRIPT. Rebuild the release package." >&2
     return 1
   fi
   mkdir -p backend/runtime backend/logs
-  existing_pid="$(go_sidecar_process "$go_sidecar_pid_file" || true)"
+  existing_pid="$(go_project_process "$pid_path" "juhe-ai-$project" || true)"
   if [ -n "$existing_pid" ]; then
-    echo "juhe-ai-go-sidecar is already running (PID $existing_pid); stop the existing release before starting another one." >&2
+    echo "juhe-ai-go-$project is already running (PID $existing_pid); stop the existing release before starting another one." >&2
     return 1
   fi
-  go_sidecar_pid="$(node "$APP_DIR/$SIDECAR_START_SCRIPT" "$binary" "$APP_DIR/backend" "$APP_DIR/$go_sidecar_log_file")"
-  case "$go_sidecar_pid" in
-    ''|*[!0-9]*) echo "juhe-ai-go-sidecar returned an invalid PID: $go_sidecar_pid" >&2; return 1 ;;
+  go_project_pid="$(node "$APP_DIR/$GO_PROJECT_START_SCRIPT" "$project" "$binary" "$APP_DIR/backend" "$APP_DIR/$log_path")"
+  case "$go_project_pid" in
+    ''|*[!0-9]*) echo "juhe-ai-go-$project returned an invalid PID: $go_project_pid" >&2; return 1 ;;
   esac
-  printf '%s' "$go_sidecar_pid" > "$go_sidecar_pid_file"
-  if ! go_sidecar_process "$go_sidecar_pid_file" >/dev/null; then
-    [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
-    echo 'juhe-ai-go-sidecar exited during startup.' >&2
+  printf '%s' "$go_project_pid" > "$pid_path"
+  if ! go_project_process "$pid_path" "juhe-ai-$project" >/dev/null; then
+    [ -f "$log_path" ] && tail -n 20 "$log_path" >&2
+    echo "juhe-ai-go-$project exited during startup." >&2
     return 1
   fi
-  audit_input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
-  operation_input_url="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
-  audit_input_url="${audit_input_url%/}"
-  operation_input_url="${operation_input_url%/}"
-  if ! wait_for_http_status "$go_sidecar_pid" "$audit_input_url/__aiinternal__/health" 204 'juhe-ai-go-sidecar F3'; then
-    [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
+  if ! wait_for_http_status "$go_project_pid" "${health_url%/}/health" 200 "juhe-ai-go-$project"; then
+    [ -f "$log_path" ] && tail -n 20 "$log_path" >&2
     return 1
   fi
-  if ! wait_for_http_status "$go_sidecar_pid" "$operation_input_url/__aiinternal__/v1/operation-logs/health" 204 'juhe-ai-go-sidecar F4'; then
-    [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
-    return 1
-  fi
+  printf '%s' "$go_project_pid"
 }
 
 on_exit() {
   exit_code=$?
   trap - EXIT INT TERM
   if ! stop_server_process && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
-  if ! stop_go_sidecar && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
+  if ! stop_go_project "$go_jobs_pid_file" 'juhe-ai-jobs' && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
+  if ! stop_go_project "$go_gateway_pid_file" 'juhe-ai-gateway' && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
   exit "$exit_code"
 }
 
@@ -242,7 +246,7 @@ export JUHE_AI_AUDIT_LOG_INPUT_URL="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv
 export JUHE_AI_OPERATION_LOG_INPUT_URL="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
 
 echo "Starting juhe-ai at http://${HOST}:${PORT}"
-echo 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2, F3 and F4.'
+echo 'The Web/API process supervises its Node worker and DB service; Go jobs owns F1/F2 and Go gateway owns F3/F4.'
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
 OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
 SERVER_WITH_OWNER_LOCK=false
@@ -273,15 +277,27 @@ else
 fi
 server_pid=$!
 wait_for_http_status "$server_pid" "http://${HOST}:${PORT}/__aisys__/api/health" 200 'juhe-ai Web/API process'
-start_go_sidecar
-echo "Started juhe-ai-go-sidecar (PID $go_sidecar_pid)."
+gateway_health_url="${JUHE_AI_GATEWAY_HEALTH_URL:-$(read_dotenv_value JUHE_AI_GATEWAY_HEALTH_URL 'http://127.0.0.1:3306')}"
+jobs_health_url="${JUHE_AI_JOBS_HEALTH_URL:-$(read_dotenv_value JUHE_AI_JOBS_HEALTH_URL 'http://127.0.0.1:3305')}"
+go_gateway_pid="$(start_go_project gateway "$gateway_health_url")"
+go_jobs_pid="$(start_go_project jobs "$jobs_health_url")"
+audit_input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
+operation_input_url="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
+wait_for_http_status "$go_gateway_pid" "${audit_input_url%/}/__aiinternal__/health" 204 'juhe-ai-go-gateway F3'
+wait_for_http_status "$go_gateway_pid" "${operation_input_url%/}/__aiinternal__/v1/operation-logs/health" 204 'juhe-ai-go-gateway F4'
+echo "Started juhe-ai-go-gateway (PID $go_gateway_pid) and juhe-ai-go-jobs (PID $go_jobs_pid)."
 
-while kill -0 "$server_pid" 2>/dev/null && kill -0 "$go_sidecar_pid" 2>/dev/null; do
+while kill -0 "$server_pid" 2>/dev/null && kill -0 "$go_gateway_pid" 2>/dev/null && kill -0 "$go_jobs_pid" 2>/dev/null; do
   sleep 1
 done
-if ! kill -0 "$go_sidecar_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
-  [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
-  echo "juhe-ai-go-sidecar exited unexpectedly (PID $go_sidecar_pid)." >&2
+if ! kill -0 "$go_gateway_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
+  [ -f "$go_gateway_log_file" ] && tail -n 20 "$go_gateway_log_file" >&2
+  echo "juhe-ai-go-gateway exited unexpectedly (PID $go_gateway_pid)." >&2
+  exit 1
+fi
+if ! kill -0 "$go_jobs_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
+  [ -f "$go_jobs_log_file" ] && tail -n 20 "$go_jobs_log_file" >&2
+  echo "juhe-ai-go-jobs exited unexpectedly (PID $go_jobs_pid)." >&2
   exit 1
 fi
 if ! kill -0 "$server_pid" 2>/dev/null; then

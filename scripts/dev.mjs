@@ -18,23 +18,25 @@ const pnpmRunner = resolvePnpmRunner()
 
 let backend
 let frontend
-let goSidecar
+let goGateway
+let goJobs
 let shuttingDown = false
 
-let goSidecarEnv
+let goProjectEnv
 
 process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
 process.on('SIGHUP', () => shutdown(129))
 
 try {
-  goSidecarEnv = resolveGoSidecarEnv()
+  goProjectEnv = resolveGoProjectEnv()
   console.log('[dev] starting backend...')
   const backendReadiness = createBackendReadinessTracker(backendHealthUrl, backendReadyTimeoutMs)
   backend = startPnpm(['--filter', 'juhe-ai-backend', 'dev'], 'backend', backendReadiness.acceptChunk)
   await backendReadiness.ready
   console.log(`[dev] backend system API is ready: ${backendHealthUrl}`)
-  goSidecar = startGoSidecar()
+  goGateway = startGoProject('gateway')
+  goJobs = startGoProject('jobs')
   console.log('[dev] starting frontend...')
   frontend = startPnpm(['--filter', 'juhe-ai-frontend', 'dev'], 'frontend')
 } catch (error) {
@@ -48,7 +50,7 @@ function startPnpm(args, label, onOutput) {
   const developmentAutoLoginUsername = resolveDevelopmentAutoLoginUsername(process.env.JUHE_AI_DEV_AUTO_LOGIN_USERNAME)
   const childEnv = label === 'backend'
     ? {
-        ...goSidecarEnv,
+        ...goProjectEnv,
         ...(developmentAutoLoginUsername === undefined
           ? {}
           : { JUHE_AI_DEV_AUTO_LOGIN_USERNAME: developmentAutoLoginUsername })
@@ -72,18 +74,19 @@ function startPnpm(args, label, onOutput) {
   return child
 }
 
-function startGoSidecar() {
-  console.log('[dev] starting Go sidecar (F1/F2/F3/F4)...')
-  const child = spawn('go', ['run', './cmd/juhe-ai-go-sidecar'], {
-    cwd: backendGoRoot,
-    env: goSidecarEnv,
+function startGoProject(project) {
+  const command = project === 'gateway' ? 'juhe-ai-gateway' : 'juhe-ai-jobs'
+  console.log(`[dev] starting Go ${project} project...`)
+  const child = spawn('go', ['run', `./cmd/${command}`], {
+    cwd: resolve(backendGoRoot, 'projects', project),
+    env: goProjectEnv,
     detached: process.platform !== 'win32',
     shell: false,
     stdio: ['inherit', 'pipe', 'pipe']
   })
   pipeChildOutput(child.stdout, process.stdout)
   pipeChildOutput(child.stderr, process.stderr)
-  monitorChild(child, 'Go sidecar')
+  monitorChild(child, `Go ${project}`)
   return child
 }
 
@@ -219,7 +222,7 @@ function resolveBackendTarget() {
   return resolveDevelopmentBackendTarget(process.env, frontendEnv, loadBackendEnv())
 }
 
-function resolveGoSidecarEnv() {
+function resolveGoProjectEnv() {
   const childEnv = { ...loadBackendEnv(), ...process.env }
   const inferredStore = childEnv.JUHE_AI_RUNTIME_MODE?.trim().toLowerCase() === 'performance' || childEnv.JUHE_AI_POSTGRES_URL?.trim()
     ? 'postgres'
@@ -277,11 +280,11 @@ function resolveGoSidecarEnv() {
   childEnv.JUHE_AI_LOG_DIR = resolveBackendPath(childEnv.JUHE_AI_LOG_DIR, resolve(backendRoot, 'logs'))
   childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = firstConfiguredValue(
     childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID,
-    'dev-go-sidecar-runtime-log'
+    'dev-go-jobs-runtime-log'
   )
   childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = firstConfiguredValue(
     childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID,
-    'dev-go-sidecar-table-monitor'
+    'dev-go-jobs-table-monitor'
   )
   const instanceID = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID)
   if (!instanceID) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
@@ -309,6 +312,8 @@ function resolveGoSidecarEnv() {
   childEnv.JUHE_AI_OPERATION_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, `http://127.0.0.1:${operationInputPort}`)
   childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-operation-log.sqlite3'))
   childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
+  childEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS = firstConfiguredValue(childEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
+  childEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS = firstConfiguredValue(childEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3306')
   childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3'))
   childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
@@ -419,7 +424,8 @@ function shutdown(exitCode) {
   if (shuttingDown) return
   shuttingDown = true
   stopChild(frontend)
-  stopChild(goSidecar, { processGroup: process.platform !== 'win32' })
+  stopChild(goJobs, { processGroup: process.platform !== 'win32' })
+  stopChild(goGateway, { processGroup: process.platform !== 'win32' })
   stopChild(backend)
   process.exit(exitCode)
 }

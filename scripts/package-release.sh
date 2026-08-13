@@ -331,7 +331,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 if ! command -v go >/dev/null 2>&1; then
-  echo "Go is required to build backend-go/juhe-ai-go-sidecar for $TARGET_GOOS/$TARGET_GOARCH." >&2
+  echo "Go is required to build the gateway and jobs projects for $TARGET_GOOS/$TARGET_GOARCH." >&2
   exit 1
 fi
 
@@ -394,39 +394,32 @@ copy_required_item "$REPO_ROOT/frontend/dist" "$PACKAGE_ROOT/frontend/dist"
 copy_required_item "$REPO_ROOT/deploy/start.sh" "$PACKAGE_ROOT/start.sh"
 copy_required_item "$REPO_ROOT/deploy/start.ps1" "$PACKAGE_ROOT/start.ps1"
 copy_required_item "$REPO_ROOT/scripts/run-with-owner-lock.mjs" "$PACKAGE_ROOT/scripts/run-with-owner-lock.mjs"
-copy_required_item "$REPO_ROOT/scripts/start-go-sidecar.mjs" "$PACKAGE_ROOT/scripts/start-go-sidecar.mjs"
+copy_required_item "$REPO_ROOT/scripts/start-go-project.mjs" "$PACKAGE_ROOT/scripts/start-go-project.mjs"
 copy_required_item "$REPO_ROOT/scripts/validate-owner-manifest.mjs" "$PACKAGE_ROOT/scripts/validate-owner-manifest.mjs"
 copy_required_item "$REPO_ROOT/deploy/owner-manifest.json" "$PACKAGE_ROOT/deploy/owner-manifest.json"
 copy_required_item "$REPO_ROOT/deploy/owner-manifest.schema.json" "$PACKAGE_ROOT/deploy/owner-manifest.schema.json"
 copy_required_item "$REPO_ROOT/deploy/README.md" "$PACKAGE_ROOT/README.md"
 copy_required_item "$REPO_ROOT/docs/deploy" "$PACKAGE_ROOT/docs/deploy"
 
-GO_SIDECAR_SOURCE_DIR="$REPO_ROOT/backend-go"
-GO_SIDECAR_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-go-sidecar"
-if [ ! -f "$GO_SIDECAR_SOURCE_DIR/go.mod" ]; then
-	 echo "Go sidecar module file not found: $GO_SIDECAR_SOURCE_DIR/go.mod" >&2
-	 exit 1
-fi
-
-echo "==> Building Go sidecar for $TARGET_GOOS/$TARGET_GOARCH"
-GO_BUILD_MOD='-mod=readonly'
-if [ -d "$GO_SIDECAR_SOURCE_DIR/vendor" ]; then
-	 if [ -L "$GO_SIDECAR_SOURCE_DIR/vendor" ] || [ ! -f "$GO_SIDECAR_SOURCE_DIR/vendor/modules.txt" ]; then
-		 echo "Go vendor directory must be a regular directory with modules.txt: $GO_SIDECAR_SOURCE_DIR/vendor" >&2
-		 exit 1
-	 fi
-	 GO_BUILD_MOD='-mod=vendor'
-fi
-(
-	 cd "$GO_SIDECAR_SOURCE_DIR"
-	 CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build "$GO_BUILD_MOD" -trimpath -ldflags="-s -w" -o "$GO_SIDECAR_BINARY_PATH" ./cmd/juhe-ai-go-sidecar
-)
-
-if [ ! -f "$GO_SIDECAR_BINARY_PATH" ] || [ -L "$GO_SIDECAR_BINARY_PATH" ]; then
-	 echo "Go sidecar build did not produce a regular file: $GO_SIDECAR_BINARY_PATH" >&2
-	 exit 1
-fi
-chmod +x "$GO_SIDECAR_BINARY_PATH"
+GO_PROJECTS_SOURCE_DIR="$REPO_ROOT/backend-go/projects"
+for go_project in gateway jobs maintenance; do
+  GO_PROJECT_SOURCE_DIR="$GO_PROJECTS_SOURCE_DIR/$go_project"
+  GO_PROJECT_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-$go_project"
+  if [ ! -f "$GO_PROJECT_SOURCE_DIR/go.mod" ]; then
+    echo "Go $go_project module file not found: $GO_PROJECT_SOURCE_DIR/go.mod" >&2
+    exit 1
+  fi
+  echo "==> Building Go $go_project project for $TARGET_GOOS/$TARGET_GOARCH"
+  (
+    cd "$GO_PROJECT_SOURCE_DIR"
+    CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$GO_PROJECT_BINARY_PATH" "./cmd/juhe-ai-$go_project"
+  )
+  if [ ! -f "$GO_PROJECT_BINARY_PATH" ] || [ -L "$GO_PROJECT_BINARY_PATH" ]; then
+    echo "Go $go_project build did not produce a regular file: $GO_PROJECT_BINARY_PATH" >&2
+    exit 1
+  fi
+  chmod +x "$GO_PROJECT_BINARY_PATH"
+done
 
 TMP_START_SCRIPT="$(mktemp)"
 tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"
@@ -446,17 +439,23 @@ if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   # with executable mode so Linux/macOS extraction can launch the release.
   tar -cf "$TMP_TAR_PATH" \
     --exclude="$PACKAGE_NAME/start.sh" \
-    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-go-sidecar" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-gateway" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-jobs" \
+    --exclude="$PACKAGE_NAME/backend-go/juhe-ai-maintenance" \
     -C "$RELEASE_ROOT" "$PACKAGE_NAME"
   if tar --version 2>/dev/null | grep -qi 'GNU tar'; then
     tar --append --file="$TMP_TAR_PATH" --mode=0755 -C "$RELEASE_ROOT" \
       "$PACKAGE_NAME/start.sh" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-go-sidecar"
+      "$PACKAGE_NAME/backend-go/juhe-ai-gateway" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-jobs" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-maintenance"
   elif tar --help 2>&1 | grep -Fq -- ' -r Add/Replace'; then
     # BSD tar preserves the source modes, which were set explicitly above.
     tar -rf "$TMP_TAR_PATH" -C "$RELEASE_ROOT" \
       "$PACKAGE_NAME/start.sh" \
-      "$PACKAGE_NAME/backend-go/juhe-ai-go-sidecar"
+      "$PACKAGE_NAME/backend-go/juhe-ai-gateway" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-jobs" \
+      "$PACKAGE_NAME/backend-go/juhe-ai-maintenance"
   else
     echo "tar must support GNU --append/--mode or BSD tar -r to create a release archive." >&2
     exit 1

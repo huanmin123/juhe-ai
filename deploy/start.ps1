@@ -86,25 +86,25 @@ function Test-RipgrepDependency {
   }
 }
 
-function Get-GoSidecarProcess {
-  param([Parameter(Mandatory = $true)][string]$PidPath, [switch]$RemoveStalePid)
+function Get-GoProjectProcess {
+  param([Parameter(Mandatory = $true)][string]$PidPath, [Parameter(Mandatory = $true)][string]$BinaryName, [switch]$RemoveStalePid)
   if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) { return $null }
   $pidText = (Get-Content -LiteralPath $PidPath -Raw).Trim()
   if ($pidText -notmatch '^[1-9][0-9]*$') { if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }; return $null }
-  $sidecarPid = [int]$pidText
-  $process = Get-Process -Id $sidecarPid -ErrorAction SilentlyContinue
+  $projectPid = [int]$pidText
+  $process = Get-Process -Id $projectPid -ErrorAction SilentlyContinue
   if ($null -eq $process) { if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }; return $null }
-  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $sidecarPid" -ErrorAction SilentlyContinue
-  if ($null -eq $processInfo -or $processInfo.CommandLine -notmatch 'juhe-ai-go-sidecar(?:\.exe)?') {
+  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $projectPid" -ErrorAction SilentlyContinue
+  if ($null -eq $processInfo -or $processInfo.CommandLine -notmatch [regex]::Escape($BinaryName)) {
     if ($RemoveStalePid) { Remove-Item -LiteralPath $PidPath -Force }
     return $null
   }
   return $process
 }
 
-function Stop-GoSidecar {
-  param([Parameter(Mandatory = $true)][string]$PidPath)
-  $process = Get-GoSidecarProcess -PidPath $PidPath -RemoveStalePid
+function Stop-GoProject {
+  param([Parameter(Mandatory = $true)][string]$PidPath, [Parameter(Mandatory = $true)][string]$BinaryName)
+  $process = Get-GoProjectProcess -PidPath $PidPath -BinaryName $BinaryName -RemoveStalePid
   if ($null -eq $process) { return }
   Stop-Process -Id $process.Id -ErrorAction Stop
   $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -112,7 +112,7 @@ function Stop-GoSidecar {
     Start-Sleep -Milliseconds 200
     $process.Refresh()
   }
-  if (-not $process.HasExited) { throw "juhe-ai-go-sidecar did not stop within 10 seconds (PID $($process.Id))." }
+  if (-not $process.HasExited) { throw "$BinaryName did not stop within 10 seconds (PID $($process.Id))." }
   Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
 }
 
@@ -137,42 +137,44 @@ function Wait-HttpStatus {
   throw "$Description did not become ready within 60 seconds."
 }
 
-function Start-GoSidecar {
-  param([Parameter(Mandatory = $true)][string]$AppDirectory)
-  $binaryPath = Join-Path $AppDirectory 'backend-go/juhe-ai-go-sidecar.exe'
-  $launcherPath = Join-Path $AppDirectory 'scripts/start-go-sidecar.mjs'
+function Start-GoProject {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppDirectory,
+    [Parameter(Mandatory = $true)][ValidateSet('gateway', 'jobs')][string]$Project,
+    [Parameter(Mandatory = $true)][string]$HealthUrl
+  )
+  $binaryName = "juhe-ai-$Project.exe"
+  $binaryPath = Join-Path $AppDirectory "backend-go/$binaryName"
+  $launcherPath = Join-Path $AppDirectory 'scripts/start-go-project.mjs'
   $runtimeDir = Join-Path $AppDirectory 'backend/runtime'
-  $pidPath = Join-Path $runtimeDir 'juhe-ai-go-sidecar.pid'
-  $logPath = Join-Path $AppDirectory 'backend/logs/juhe-ai-go-sidecar.log'
-  if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) { throw "Go sidecar binary not found: $binaryPath. Rebuild the release package for Windows." }
-  if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) { throw "Go sidecar launcher not found: $launcherPath. Rebuild the release package." }
+  $pidPath = Join-Path $runtimeDir "juhe-ai-go-$Project.pid"
+  $logPath = Join-Path $AppDirectory "backend/logs/juhe-ai-go-$Project.log"
+  if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) { throw "Go $Project binary not found: $binaryPath. Rebuild the release package for Windows." }
+  if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) { throw "Go project launcher not found: $launcherPath. Rebuild the release package." }
   New-Item -ItemType Directory -Force $runtimeDir | Out-Null
   New-Item -ItemType Directory -Force (Split-Path -Parent $logPath) | Out-Null
-  $existingProcess = Get-GoSidecarProcess -PidPath $pidPath -RemoveStalePid
-  if ($null -ne $existingProcess) { throw "juhe-ai-go-sidecar is already running (PID $($existingProcess.Id)); stop the existing release before starting another one." }
+  $existingProcess = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
+  if ($null -ne $existingProcess) { throw "juhe-ai-go-$Project is already running (PID $($existingProcess.Id)); stop the existing release before starting another one." }
   $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
   $PSNativeCommandUseErrorActionPreference = $false
   try {
-    $launcherOutput = @(& node $launcherPath $binaryPath (Join-Path $AppDirectory 'backend') $logPath 2>&1)
+    $launcherOutput = @(& node $launcherPath $Project $binaryPath (Join-Path $AppDirectory 'backend') $logPath 2>&1)
     $launcherExitCode = $LASTEXITCODE
   } finally {
     $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
   }
-  if ($launcherExitCode -ne 0) { $launcherOutput | Write-Error; throw 'Unable to start juhe-ai-go-sidecar.' }
+  if ($launcherExitCode -ne 0) { $launcherOutput | Write-Error; throw "Unable to start juhe-ai-go-$Project." }
   $pidText = (($launcherOutput | ForEach-Object { $_.ToString() }) -join '').Trim()
-  if ($pidText -notmatch '^[1-9][0-9]*$') { throw "juhe-ai-go-sidecar returned an invalid PID: $pidText" }
+  if ($pidText -notmatch '^[1-9][0-9]*$') { throw "juhe-ai-go-$Project returned an invalid PID: $pidText" }
   Set-Content -LiteralPath $pidPath -Value $pidText -NoNewline -Encoding utf8
-  $process = Get-GoSidecarProcess -PidPath $pidPath -RemoveStalePid
+  $process = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
   if ($null -eq $process) {
-    $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @('No Go sidecar log was created.') }
+    $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @("No Go $Project log was created.") }
     $logTail | Write-Error
-    throw 'juhe-ai-go-sidecar exited during startup.'
+    throw "juhe-ai-go-$Project exited during startup."
   }
-  $auditInputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path (Join-Path $AppDirectory 'backend/.env') -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
-  $operationInputUrl = (if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path (Join-Path $AppDirectory 'backend/.env') -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }).TrimEnd('/')
   try {
-    Wait-HttpStatus -Process $process -Url "$auditInputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-sidecar F3'
-    Wait-HttpStatus -Process $process -Url "$operationInputUrl/__aiinternal__/v1/operation-logs/health" -ExpectedStatus 204 -Description 'juhe-ai-go-sidecar F4'
+    Wait-HttpStatus -Process $process -Url "$($HealthUrl.TrimEnd('/'))/health" -ExpectedStatus 200 -Description "juhe-ai-go-$Project"
   } catch {
     if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 | Write-Error }
     throw
@@ -232,7 +234,7 @@ $env:JUHE_AI_AUDIT_LOG_INPUT_URL = if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:
 $env:JUHE_AI_OPERATION_LOG_INPUT_URL = if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }
 
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue}"
-Write-Host 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2, F3 and F4.'
+Write-Host 'The Web/API process supervises its Node worker and DB service; Go jobs owns F1/F2 and Go gateway owns F3/F4.'
 $ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
 $serverArguments = @('backend/dist/server.js')
 if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -254,26 +256,40 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
   $serverArguments = @('scripts/run-with-owner-lock.mjs', '--lock-path', $ownerLockPath, '--release-root', $appDir, '--deployment-epoch', $ownerLockEpoch, '--role', 'server', '--version', $nodeVersion, '--', 'node', 'backend/dist/server.js')
 }
 
-$goSidecar = $null
+$goGateway = $null
+$goJobs = $null
 $serverProcess = $null
 $serverExitCode = 1
 try {
   $serverProcess = Start-ManagedNodeProcess -WorkingDirectory $appDir -Arguments $serverArguments
   Wait-HttpStatus -Process $serverProcess -Url "http://${hostValue}:${portValue}/__aisys__/api/health" -ExpectedStatus 200 -Description 'juhe-ai Web/API process'
-  $goSidecar = Start-GoSidecar -AppDirectory $appDir
-  Write-Host "Started juhe-ai-go-sidecar (PID $($goSidecar.Process.Id))."
-  while (-not $serverProcess.HasExited -and -not $goSidecar.Process.HasExited) {
+  $gatewayHealthUrl = if ($env:JUHE_AI_GATEWAY_HEALTH_URL) { $env:JUHE_AI_GATEWAY_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GATEWAY_HEALTH_URL' -Fallback 'http://127.0.0.1:3306' }
+  $jobsHealthUrl = if ($env:JUHE_AI_JOBS_HEALTH_URL) { $env:JUHE_AI_JOBS_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_JOBS_HEALTH_URL' -Fallback 'http://127.0.0.1:3305' }
+  $goGateway = Start-GoProject -AppDirectory $appDir -Project gateway -HealthUrl $gatewayHealthUrl
+  $goJobs = Start-GoProject -AppDirectory $appDir -Project jobs -HealthUrl $jobsHealthUrl
+  $auditInputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
+  $operationInputUrl = (if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }).TrimEnd('/')
+  Wait-HttpStatus -Process $goGateway.Process -Url "$auditInputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F3'
+  Wait-HttpStatus -Process $goGateway.Process -Url "$operationInputUrl/__aiinternal__/v1/operation-logs/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F4'
+  Write-Host "Started juhe-ai-go-gateway (PID $($goGateway.Process.Id)) and juhe-ai-go-jobs (PID $($goJobs.Process.Id))."
+  while (-not $serverProcess.HasExited -and -not $goGateway.Process.HasExited -and -not $goJobs.Process.HasExited) {
     Start-Sleep -Seconds 1
     $serverProcess.Refresh()
-    $goSidecar.Process.Refresh()
+    $goGateway.Process.Refresh()
+    $goJobs.Process.Refresh()
   }
-  if ($goSidecar.Process.HasExited -and -not $serverProcess.HasExited) {
-    if (Test-Path -LiteralPath $goSidecar.LogPath) { Get-Content -LiteralPath $goSidecar.LogPath -Tail 20 | Write-Error }
-    throw "juhe-ai-go-sidecar exited unexpectedly (PID $($goSidecar.Process.Id))."
+  if ($goGateway.Process.HasExited -and -not $serverProcess.HasExited) {
+    if (Test-Path -LiteralPath $goGateway.LogPath) { Get-Content -LiteralPath $goGateway.LogPath -Tail 20 | Write-Error }
+    throw "juhe-ai-go-gateway exited unexpectedly (PID $($goGateway.Process.Id))."
+  }
+  if ($goJobs.Process.HasExited -and -not $serverProcess.HasExited) {
+    if (Test-Path -LiteralPath $goJobs.LogPath) { Get-Content -LiteralPath $goJobs.LogPath -Tail 20 | Write-Error }
+    throw "juhe-ai-go-jobs exited unexpectedly (PID $($goJobs.Process.Id))."
   }
   if ($serverProcess.HasExited) { throw "juhe-ai Web/API process exited unexpectedly (PID $($serverProcess.Id))." }
 } finally {
   if ($null -ne $serverProcess) { Stop-ManagedNodeProcess -Process $serverProcess }
-  if ($null -ne $goSidecar) { Stop-GoSidecar -PidPath $goSidecar.PidPath }
+  if ($null -ne $goJobs) { Stop-GoProject -PidPath $goJobs.PidPath -BinaryName 'juhe-ai-jobs.exe' }
+  if ($null -ne $goGateway) { Stop-GoProject -PidPath $goGateway.PidPath -BinaryName 'juhe-ai-gateway.exe' }
 }
 exit $serverExitCode

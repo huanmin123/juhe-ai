@@ -11,7 +11,7 @@
 | Linux | `bash ./start.sh` |
 
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包只包含一个常驻 Go 二进制 `backend-go/juhe-ai-go-sidecar`（Windows 为 `.exe`）：同一进程内承载 F1 运行日志索引、F2 表监控、F3 审计持久化和 F4 操作日志持久化。Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载 F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
 
 ## 部署前检查
 
@@ -46,11 +46,11 @@ JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/juhe-ai-runtime-log.sqlite3
 JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/juhe-ai-table-monitor.sqlite3
-JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
+JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-jobs-runtime-log
 JUHE_AI_RUNTIME_LOG_POSTGRES_URL=
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-sidecar-table-monitor
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-jobs-table-monitor
 JUHE_AI_TABLE_MONITOR_POSTGRES_URL=
-JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-sidecar-audit-log
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-gateway-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
@@ -60,7 +60,7 @@ JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为稳定的高熵密钥，production 至少 32 位
 JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS=7000
-JUHE_AI_OPERATION_LOG_INSTANCE_ID=juhe-ai-go-sidecar-operation-log
+JUHE_AI_OPERATION_LOG_INSTANCE_ID=juhe-ai-go-gateway-operation-log
 JUHE_AI_OPERATION_LOG_STORE=sqlite
 JUHE_AI_OPERATION_LOG_DATABASE_PATH=./data/juhe-ai-operation-log.sqlite3
 JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH=./data/juhe-ai.sqlite3
@@ -78,7 +78,7 @@ JUHE_AI_OAUTH_PROXY_URL=
 
 新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 是两把不同密钥，不能留示例文字、不能相互复用或回退到 `JUHE_AI_SECRET`，并须在安全的密码管理或受限 env 中保存。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
-启动脚本先启动 Node 并等待其 DB-ready health，再启动唯一的 Go `juhe-ai-go-sidecar`，并等待 F3 与 F4 loopback health 返回 `204` 后才视为启动完成。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，但 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通组件错误、owner lease 暂失、panic 或异常返回只记录组件原因并在 sidecar 内退避重试，不会中断其余功能；只有启动预检失败、外部停止或 OOM / runtime fatal 等进程级不可恢复故障才会结束 sidecar 并交由服务管理器恢复。单一 PID 和日志分别位于 `backend/runtime/juhe-ai-go-sidecar.pid` 与 `backend/logs/juhe-ai-go-sidecar.log`。
+启动脚本先启动 Node 并等待其 DB-ready health，再分别启动 Go `juhe-ai-gateway` 与 `juhe-ai-jobs`，确认两个 `/health` 返回 `200` 后，再确认 gateway 的 F3/F4 loopback health 返回 `204`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-go-{gateway,jobs}.pid` 和 `backend/logs/juhe-ai-go-{gateway,jobs}.log`。
 
 F1 是运行日志索引、cursor、facet 与保留清理的唯一 writer；F2 是表监控采样、快照写入和保留清理的唯一 owner；F3 是原始审计持久化、payload/blob、hot-search 与保留的唯一 writer；F4 是操作日志写入、读取、摘要索引与保留的唯一 owner。Node 对 F1/F2/F3/F4 只保留各自的生产输入或只读查询，不保留旧 Node writer、队列或 fallback。SQLite 的 F1/F2/F3/F4 路径必须物理隔离；PostgreSQL 下各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时才回退 `JUHE_AI_POSTGRES_URL`。
 
@@ -107,7 +107,8 @@ Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
 Invoke-WebRequest http://127.0.0.1:3303/__aiinternal__/health
 Invoke-WebRequest http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health
-Get-Content .\backend\logs\juhe-ai-go-sidecar.log -Tail 100
+Get-Content .\backend\logs\juhe-ai-go-gateway.log -Tail 100
+Get-Content .\backend\logs\juhe-ai-go-jobs.log -Tail 100
 ```
 
 macOS/Linux：
@@ -119,7 +120,8 @@ curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
 curl -i http://127.0.0.1:3303/__aiinternal__/health
 curl -i http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health
-tail -n 100 ./backend/logs/juhe-ai-go-sidecar.log
+tail -n 100 ./backend/logs/juhe-ai-go-gateway.log
+tail -n 100 ./backend/logs/juhe-ai-go-jobs.log
 ```
 
 上例使用默认 F3/F4 端口；如变更对应 `*_INPUT_LISTEN_ADDRESS`，health URL 也必须相应变更。上述 HTTP health 只证明 listener 可用，发布验收仍须从 Node 只读接口确认 F1/F2 数据新鲜，并发起一次可审计业务请求后在管理员审计与操作日志详情中读回同一记录，证明 Node -> F3/F4 -> Node 完整链路。

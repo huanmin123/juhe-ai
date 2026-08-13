@@ -3,7 +3,7 @@
 > 面向 Go 后端迁移执行者。
 > 本文固定 Go 迁移期默认依赖、禁用依赖、评估门禁和封装规则。后续新增 Go 模块不得临时自选框架或把第三方库类型暴露到业务层。
 
-> **2026-08-12 现行边界。** 当前已有受版本控制的 `backend-go/go.mod` 及 F1/F2/F3 实现；本文件中的早期依赖版本和“已落地”段落若与当前代码冲突，只作历史记录。Go 功能默认直接异步执行，不以 Redis、Asynq 或通用 Queue Port 为前置；每个功能仍须分别验证 SQLite 与 PostgreSQL/Redis Store adapter、goroutine 生命周期和资源维度并发。详见 [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md)。
+> **2026-08-14 现行边界。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块，F1/F2 在 `jobs`，F3/F4 在 `gateway`；本文件中的早期依赖版本和“已落地”段落若与当前代码冲突，只作历史记录。Go 功能默认直接异步执行，不以 Redis、Asynq 或通用 Queue Port 为前置；每个功能仍须分别验证 SQLite 与 PostgreSQL/Redis Store adapter、goroutine 生命周期和资源维度并发。详见 [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md)。
 
 ## 1. 选型原则
 

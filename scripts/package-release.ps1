@@ -299,27 +299,29 @@ Write-Utf8NoBom -Path (Join-Path $packageRoot 'RELEASE_SOURCE_COMMIT') -Content 
 
 $goCommand = Get-Command go -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $goCommand) {
-  throw 'Go 1.26.x is required to build the juhe-ai-go-sidecar release binary.'
+  throw 'Go 1.26.x is required to build the Go gateway and jobs release binaries.'
 }
 $goPath = $goCommand.Source
-$goModuleRoot = Join-Path $repoRoot 'backend-go'
-$goSidecarBinary = Join-Path $packageRoot 'backend-go/juhe-ai-go-sidecar.exe'
-if (-not (Test-Path -LiteralPath $goModuleRoot -PathType Container)) {
-  throw "Go sidecar module not found: $goModuleRoot"
-}
-
-Write-Host '==> Building Go sidecar'
-$goBuildArguments = @(
-  'build',
-  '-C', $goModuleRoot,
-  '-trimpath',
-  '-buildvcs=false',
-  '-o', $goSidecarBinary,
-  './cmd/juhe-ai-go-sidecar'
-)
-& $goPath @goBuildArguments
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $goSidecarBinary -PathType Leaf)) {
-  throw 'Go sidecar build failed.'
+$goProjectsRoot = Join-Path $repoRoot 'backend-go/projects'
+foreach ($project in @('gateway', 'jobs', 'maintenance')) {
+  $goModuleRoot = Join-Path $goProjectsRoot $project
+  $binaryPath = Join-Path $packageRoot "backend-go/juhe-ai-$project.exe"
+  if (-not (Test-Path -LiteralPath (Join-Path $goModuleRoot 'go.mod') -PathType Leaf)) {
+    throw "Go $project module not found: $goModuleRoot"
+  }
+  Write-Host "==> Building Go $project project"
+  $goBuildArguments = @(
+    'build',
+    '-C', $goModuleRoot,
+    '-trimpath',
+    '-buildvcs=false',
+    '-o', $binaryPath,
+    "./cmd/juhe-ai-$project"
+  )
+  & $goPath @goBuildArguments
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+    throw "Go $project build failed."
+  }
 }
 
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
@@ -334,7 +336,7 @@ Copy-RequiredItem (Join-Path $repoRoot 'frontend/dist') (Join-Path $packageRoot 
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.sh') (Join-Path $packageRoot 'start.sh')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.ps1') (Join-Path $packageRoot 'start.ps1')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/run-with-owner-lock.mjs') (Join-Path $packageRoot 'scripts/run-with-owner-lock.mjs')
-Copy-RequiredItem (Join-Path $repoRoot 'scripts/start-go-sidecar.mjs') (Join-Path $packageRoot 'scripts/start-go-sidecar.mjs')
+Copy-RequiredItem (Join-Path $repoRoot 'scripts/start-go-project.mjs') (Join-Path $packageRoot 'scripts/start-go-project.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/validate-owner-manifest.mjs') (Join-Path $packageRoot 'scripts/validate-owner-manifest.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.json') (Join-Path $packageRoot 'deploy/owner-manifest.json')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.schema.json') (Join-Path $packageRoot 'deploy/owner-manifest.schema.json')

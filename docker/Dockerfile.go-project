@@ -1,0 +1,40 @@
+ARG GO_IMAGE=golang:1.26-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG GO_PROXY=https://proxy.golang.org,direct
+ARG GO_PROJECT
+
+FROM ${GO_IMAGE} AS build
+ARG GO_PROXY
+ARG GO_PROJECT
+ENV GOPROXY=${GO_PROXY}
+WORKDIR /source
+
+COPY backend-go ./backend-go
+RUN test -n "$GO_PROJECT" \
+  && test -f "/source/backend-go/projects/$GO_PROJECT/go.mod" \
+  && CGO_ENABLED=0 GOOS=linux go build -C "/source/backend-go/projects/$GO_PROJECT" -trimpath -ldflags="-s -w" -o "/out/juhe-ai-go-$GO_PROJECT" "./cmd/juhe-ai-$GO_PROJECT" \
+  && printf '%s\n' \
+    'package main' \
+    'import ("net"; "net/http"; "os"; "time")' \
+    'func main() {' \
+    '  address := os.Getenv("JUHE_AI_PROJECT_HEALTH_LISTEN_ADDRESS")' \
+    '  if address == "" { os.Exit(1) }' \
+    '  host, port, err := net.SplitHostPort(address); if err != nil { os.Exit(1) }' \
+    '  response, err := (&http.Client{Timeout: 2 * time.Second}).Get("http://" + net.JoinHostPort(host, port) + "/health")' \
+    '  if err != nil { os.Exit(1) }; defer response.Body.Close()' \
+    '  if response.StatusCode != http.StatusOK { os.Exit(1) }' \
+    '}' > /tmp/go-project-healthcheck.go \
+  && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai-go-project-healthcheck /tmp/go-project-healthcheck.go
+
+FROM ${RUNTIME_IMAGE} AS runtime
+ARG GO_PROJECT
+WORKDIR /app
+
+COPY --from=build /out/juhe-ai-go-${GO_PROJECT} /usr/local/bin/juhe-ai-go-project
+COPY --from=build /out/juhe-ai-go-project-healthcheck /usr/local/bin/juhe-ai-go-project-healthcheck
+
+RUN test -x /usr/local/bin/juhe-ai-go-project \
+  && test -x /usr/local/bin/juhe-ai-go-project-healthcheck \
+  && mkdir -p /app/backend/data /app/backend/runtime-log-data /app/backend/table-monitor-data /app/backend/audit-log-data /app/backend/operation-log-data /app/backend/logs
+
+ENTRYPOINT ["/usr/local/bin/juhe-ai-go-project"]

@@ -288,6 +288,7 @@
     "test:supervisor-restart-policy": "tsx src/scripts/regression/supervisor-restart-policy-regression.ts",
     "test:gateway-background-side-effect-priority": "tsx src/scripts/regression/gateway-background-side-effect-priority-regression.ts",
     "test:operation-log-go-rpc": "tsx src/scripts/regression/operation-log-go-rpc-regression.ts",
+    "test:go-project-boundaries": "node ../scripts/regression/go-project-boundary-regression.mjs",
     "test:operation-log-go-system-api-smoke": "tsx src/scripts/regression/operation-log-go-system-api-settings-smoke.ts",
     "test:operation-log-performance-producer": "tsx src/scripts/regression/operation-log-performance-producer-regression.ts",
     "test:operation-log-default-window": "tsx src/scripts/regression/operation-log-default-window-regression.ts",
