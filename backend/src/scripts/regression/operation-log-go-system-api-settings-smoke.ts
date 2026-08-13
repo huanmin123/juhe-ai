@@ -37,13 +37,15 @@ try {
     { captchaAnswerForTest },
     { logger },
     databaseModule,
-    readWorkerPool
+    readWorkerPool,
+    accountApiKeyRuntimeState
   ] = await Promise.all([
     import('../../modules/system-api/system-api-app.js'),
     import('../../modules/auth/captcha.service.js'),
     import('../../shared/logger.js'),
     import('../../storage/database.js'),
-    import('../../storage/sqlite-read-worker-pool.js')
+    import('../../storage/sqlite-read-worker-pool.js'),
+    import('../../storage/account-api-key-runtime-state.repository.js')
   ])
   logger.level = 'silent'
   closeStorageDatabases = databaseModule.closeStorageDatabases
@@ -296,6 +298,30 @@ try {
   })
   assert.equal(trafficMigrationTarget.status, 201, `真实 accounts 流量目标创建应成功：${trafficMigrationTarget.text}`)
   const trafficMigrationTargetID = envelope<{ id: string }>(trafficMigrationTarget.text).id
+  const revalidationCredentials = {
+    api_keys: ['sk-f4-system-api-traffic-a', 'sk-f4-system-api-traffic-b'],
+    base_url: 'https://api.openai.com/v1'
+  }
+  const initializedRuntimeStates = accountApiKeyRuntimeState.initializeAddedAccountApiKeyRuntimeStates({
+    accountId: trafficMigrationTargetID,
+    systemAccountId: adminSystemAccountID,
+    providerCode: 'gpt',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    type: 'api_key',
+    currentCredentials: {},
+    nextCredentials: revalidationCredentials,
+    now: new Date().toISOString()
+  })
+  assert(initializedRuntimeStates, '多 Key 活跃账户必须通过 runtime-state 服务建立可重新验证状态')
+  const trafficMigrationTargetDetail = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(trafficMigrationTargetID)}/edit-basic`, cookie)
+  assert.equal(trafficMigrationTargetDetail.status, 200, `真实 accounts runtime 重验证前读取应成功：${trafficMigrationTargetDetail.text}`)
+  const trafficMigrationTargetConfigRevision = envelope<{ configRevision: number }>(trafficMigrationTargetDetail.text).configRevision
+  const revalidateAccountApiKeyRuntime = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(trafficMigrationTargetID)}/api-key-runtime/revalidate`, cookie, {
+    method: 'POST',
+    body: { expectedConfigRevision: trafficMigrationTargetConfigRevision }
+  })
+  assert.equal(revalidateAccountApiKeyRuntime.status, 200, `真实 accounts API Key runtime 重验证应成功：${revalidateAccountApiKeyRuntime.text}`)
   const trafficMigration = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(accountID)}/traffic-migration`, cookie, {
     method: 'POST',
     body: { targetAccountId: trafficMigrationTargetID, sourceStatus: 'unchanged' }
@@ -445,6 +471,11 @@ try {
   assert.equal(externalAccountDetail.path, '/__aipublic__/account/add')
   await assertPersonalSummary(baseURL, cookie, externalAccountItem.id, false, false)
 
+  const accountRuntimeRevalidateItem = await assertOperation(baseURL, cookie, 'accounts', 'api_key_runtime_revalidate', `重新验证账户 API Key 池：${trafficMigrationTargetID}`)
+  const accountRuntimeRevalidateDetail = await readAdminDetail(baseURL, cookie, accountRuntimeRevalidateItem.id, 'accounts.api_key_runtime_revalidate', 'account')
+  assert.equal(accountRuntimeRevalidateDetail.path, `/__aisys__/api/accounts/${trafficMigrationTargetID}/api-key-runtime/revalidate`)
+  await assertPersonalSummary(baseURL, cookie, accountRuntimeRevalidateItem.id, true, true)
+
   const groupItem = await assertOperation(baseURL, cookie, 'groups', 'create', '创建分组：F4 System API group smoke')
   const groupDetail = await readAdminDetail(baseURL, cookie, groupItem.id, 'groups.create', 'group')
   assert.equal(groupDetail.path, '/__aisys__/api/groups/')
@@ -550,7 +581,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, external-integrations, providers, groups, account-import, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, external-integrations, providers, groups, account-detail, account-import, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
