@@ -1,7 +1,12 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { postgresApplicationName, postgresPoolTimeoutConfig, postgresSessionStartupOptions } from '../../storage/postgres-client.js'
+import { postgresApplicationName, postgresPoolTimeoutConfig, postgresTransactionLocalSettingsSql } from '../../storage/postgres-client.js'
+
+const postgresClientSource = readFileSync(fileURLToPath(new URL('../../storage/postgres-client.ts', import.meta.url)), 'utf8')
+assert.doesNotMatch(postgresClientSource, /\boptions\s*:/, '连接池不得发送 PgBouncer transaction pooling 不兼容的 startup options')
 
 const originalProcessRole = runtimeConfig.processRole
 const originalWorkerRole = runtimeConfig.workerRole
@@ -29,12 +34,12 @@ try {
   )
 
   runtimeConfig.postgres.jitEnabled = false
-  assert.equal(postgresSessionStartupOptions(), '-c jit=off', '应用连接默认必须在启动时关闭 PostgreSQL JIT')
+  assert.match(postgresTransactionLocalSettingsSql(), /SET LOCAL jit = off/, '应用连接不得发送 PgBouncer 不兼容的启动参数，应在事务内关闭 JIT')
 
   runtimeConfig.postgres.jitEnabled = true
-  assert.equal(postgresSessionStartupOptions(), undefined, '显式启用 JIT 时不得传入覆盖启动参数')
+  assert.doesNotMatch(postgresTransactionLocalSettingsSql(), /SET LOCAL jit = off/, '显式启用 JIT 时事务不得覆盖 JIT')
 
-  console.log('PostgreSQL 连接边界回归通过：application_name、超时和 JIT 启动参数均由运行配置收口')
+  console.log('PostgreSQL 连接边界回归通过：application_name、事务超时和 PgBouncer 兼容的事务级 JIT 设置均由运行配置收口')
 } finally {
   runtimeConfig.processRole = originalProcessRole
   runtimeConfig.workerRole = originalWorkerRole

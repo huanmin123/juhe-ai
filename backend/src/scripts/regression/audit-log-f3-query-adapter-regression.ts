@@ -15,6 +15,8 @@ assert.doesNotMatch(adapterSource, /\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE
 assert.match(adapterSource, /readOnly:\s*true/, 'SQLite adapter 必须以 readOnly 打开')
 assert.match(adapterSource, /PRAGMA\s+query_only\s*=\s*ON/i, 'SQLite adapter 必须设置 query_only')
 assert.match(adapterSource, /BEGIN\s+READ\s+ONLY/i, 'PostgreSQL adapter 必须使用 READ ONLY 事务')
+assert.match(adapterSource, /postgresTransactionLocalSettingsSql/, 'PostgreSQL adapter 必须接收运行时提供的事务本地设置')
+assert.match(adapterSource, /BEGIN READ ONLY[\s\S]{0,240}transactionLocalSettingsSql[\s\S]{0,240}connection\.query\(convertQuestionPlaceholdersToPostgres/, 'F3 PostgreSQL 读取必须在查询前应用事务本地设置')
 assert.doesNotMatch(adapterSource, /runtimeConfig/, 'F3 query adapter 不得依赖全局 runtimeConfig')
 const searchHotStart = adapterSource.indexOf('async searchHot(options: AuditLogF3HotSearchOptions)')
 const searchHotEnd = adapterSource.indexOf('\n  getRuntime(): AuditLogF3Runtime', searchHotStart)

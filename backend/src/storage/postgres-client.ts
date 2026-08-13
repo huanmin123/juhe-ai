@@ -91,20 +91,13 @@ export function postgresPoolTimeoutConfig(): {
   }
 }
 
-export function postgresSessionStartupOptions(): string | undefined {
-  // Pass this at PostgreSQL startup rather than issuing SET for every request.
-  // It also keeps the setting scoped to this application's pool, not the DB server.
-  return runtimeConfig.postgres.jitEnabled ? undefined : '-c jit=off'
-}
-
 async function createPostgresPool(): Promise<PostgresPool> {
   const { Pool } = await import('pg')
   const pool = new Pool({
     connectionString: runtimeConfig.postgres.url,
     max: runtimeConfig.postgres.poolMax,
     connectionTimeoutMillis: runtimeConfig.postgres.connectionTimeoutMs,
-    application_name: postgresApplicationName(),
-    options: postgresSessionStartupOptions()
+    application_name: postgresApplicationName()
   }) as unknown as PostgresPool
   pool.on('error', () => {
     // Pool level errors are surfaced by individual query promises and health checks.
@@ -112,11 +105,18 @@ async function createPostgresPool(): Promise<PostgresPool> {
   return pool
 }
 
-export function postgresTransactionLocalTimeoutSetSql(): string {
+export function postgresTransactionLocalSettingsSql(): string {
   const config = postgresPoolTimeoutConfig()
-  return [
+  const statements = [
     `SET LOCAL statement_timeout = ${config.statement_timeout}`,
     `SET LOCAL lock_timeout = ${config.lock_timeout}`,
     `SET LOCAL idle_in_transaction_session_timeout = ${config.idle_in_transaction_session_timeout}`
-  ].join('; ')
+  ]
+  if (!runtimeConfig.postgres.jitEnabled) {
+    // PgBouncer transaction pooling rejects the libpq "options" startup
+    // parameter. SET LOCAL is scoped to this transaction and cannot leak to
+    // another client when the backend connection is returned to the pool.
+    statements.push('SET LOCAL jit = off')
+  }
+  return statements.join('; ')
 }

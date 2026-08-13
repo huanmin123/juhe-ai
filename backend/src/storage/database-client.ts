@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
-import { postgresTransactionLocalTimeoutSetSql, type PostgresQueryClient, type PostgresPoolClient } from './postgres-client.js'
+import { postgresTransactionLocalSettingsSql, type PostgresQueryClient, type PostgresPoolClient } from './postgres-client.js'
 
 export type DatabaseClientDriver = 'sqlite' | 'postgres'
 
@@ -319,7 +319,7 @@ function createPostgresDatabaseClientInternal(
       let commitStarted = false
       try {
         await connection.query('BEGIN')
-        await connection.query(postgresTransactionLocalTimeoutSetSql())
+        await connection.query(postgresTransactionLocalSettingsSql())
         const queryState: PostgresTransactionQueryState = { tail: Promise.resolve() }
         const tx = createPostgresDatabaseClientInternal(connection, true, queryState)
         const result = await Promise.race([operation(tx), connectionError])

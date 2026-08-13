@@ -79,6 +79,8 @@ export interface AuditLogF3QueryOptions {
   payloadBlobDirectory?: string
   /** Optional PostgreSQL pool size for the read-only adapter. */
   postgresPoolMax?: number
+  /** PostgreSQL transaction-local settings supplied by the runtime boundary. */
+  postgresTransactionLocalSettingsSql?: string
   /** Dedicated F3 hot-search root. Read-only searches use this directory. */
   hotSearchDirectory?: string
 }
@@ -158,7 +160,7 @@ export async function createAuditLogF3QueryRepository(options: AuditLogF3QueryOp
   const source = selectF3QuerySource(options)
   const backend = source.mode === 'sqlite'
     ? await createSqliteBackend(source.path)
-    : await createPostgresBackend(source.url, source.schema, options.postgresPoolMax)
+    : await createPostgresBackend(source.url, source.schema, options.postgresPoolMax, options.postgresTransactionLocalSettingsSql)
   try {
     await assertF3Schema(backend, source.schema)
     return new AuditLogF3QueryRepositoryImpl(backend, source.schema, options.payloadBlobDirectory, options.hotSearchDirectory)
@@ -529,7 +531,12 @@ async function createSqliteBackend(path: string): Promise<QueryBackend> {
   }
 }
 
-async function createPostgresBackend(url: string, schema: string, poolMax = 4): Promise<QueryBackend> {
+async function createPostgresBackend(
+  url: string,
+  schema: string,
+  poolMax = 4,
+  transactionLocalSettingsSql?: string
+): Promise<QueryBackend> {
   const { Pool } = await import('pg')
   const pool = new Pool({ connectionString: url, max: Math.max(1, Math.min(32, Math.trunc(poolMax))) })
   return {
@@ -540,6 +547,7 @@ async function createPostgresBackend(url: string, schema: string, poolMax = 4): 
       try {
         await connection.query('BEGIN READ ONLY')
         inTransaction = true
+        if (transactionLocalSettingsSql) await connection.query(transactionLocalSettingsSql)
         const result = await connection.query(convertQuestionPlaceholdersToPostgres(sql), params as any[]) as { rows: Array<Record<string, unknown>> }
         await connection.query('COMMIT')
         inTransaction = false
@@ -557,6 +565,7 @@ async function createPostgresBackend(url: string, schema: string, poolMax = 4): 
       try {
         await connection.query('BEGIN READ ONLY')
         inTransaction = true
+        if (transactionLocalSettingsSql) await connection.query(transactionLocalSettingsSql)
         const result = await connection.query(convertQuestionPlaceholdersToPostgres(sql), params as any[]) as { rows: Array<Record<string, unknown>> }
         await connection.query('COMMIT')
         inTransaction = false

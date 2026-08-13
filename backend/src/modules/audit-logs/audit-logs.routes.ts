@@ -13,6 +13,7 @@ import {
   createAuditLogF3QueryRepository,
   type AuditLogF3QueryRepository
 } from '../../storage/audit-log-f3-query.repository.js'
+import { postgresTransactionLocalSettingsSql } from '../../storage/postgres-client.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const auditLogsRouter = Router()
@@ -26,6 +27,7 @@ async function getF3Repository(): Promise<AuditLogF3QueryRepository> {
       ...(isPostgres ? { postgresUrl: runtimeConfig.postgres.url } : { sqlitePath: runtimeConfig.auditLogF3.sqlitePath }),
       postgresSchema: runtimeConfig.auditLogF3.postgresSchema,
       postgresPoolMax: runtimeConfig.auditLogF3.postgresPoolMax,
+      postgresTransactionLocalSettingsSql: isPostgres ? postgresTransactionLocalSettingsSql() : undefined,
       payloadBlobDirectory: runtimeConfig.auditLogF3.payloadBlobDirectory,
       hotSearchDirectory: runtimeConfig.auditLogF3.hotSearchDirectory
     })

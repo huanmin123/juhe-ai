@@ -9,7 +9,9 @@ process.env.JUHE_AI_RUNTIME_MODE = 'performance'
 process.env.JUHE_AI_PERFORMANCE_NODE_ROLE = 'control'
 process.env.JUHE_AI_DATABASE_DRIVER = 'postgres'
 process.env.JUHE_AI_POSTGRES_URL = postgresURL
-process.env.JUHE_AI_POSTGRES_JIT_ENABLED = 'true'
+// Keep the production default: PgBouncer must accept the connection without
+// libpq startup options, while explicit transactions apply SET LOCAL jit=off.
+process.env.JUHE_AI_POSTGRES_JIT_ENABLED = 'false'
 process.env.JUHE_AI_CACHE_DRIVER = 'redis'
 process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'redis'
 process.env.JUHE_AI_QUEUE_DRIVER = 'redis_stream'
@@ -45,7 +47,8 @@ globalThis.fetch = (async (_input, init) => {
 
 try {
   const { logger } = await import('../../shared/logger.js')
-  const { closePostgresPool } = await import('../../storage/postgres-client.js')
+  const { closePostgresPool, getPostgresPool } = await import('../../storage/postgres-client.js')
+  const { createPostgresDatabaseClient } = await import('../../storage/database-client.js')
   const { closeRedisClients } = await import('../../shared/redis-client.js')
   const { getSettingsAsync } = await import('../../storage/settings.repository.js')
   const { runLoggedOperationAsync } = await import('../../modules/operation-logs/operation-log.service.js')
@@ -53,6 +56,15 @@ try {
 
   const settings = await getSettingsAsync()
   assert.equal(typeof settings.operationLogMaxChangesPerRecord, 'number', 'performance settings 必须可通过异步 PostgreSQL/Redis 路径读取')
+
+  const pool = await getPostgresPool()
+  const database = createPostgresDatabaseClient(pool)
+  await database.transaction(async (tx) => {
+    const row = await tx.one<{ jit: string }>("SELECT current_setting('jit') AS jit")
+    assert.equal(row?.jit, 'off', '默认关闭 JIT 时，显式 PgBouncer 事务必须使用 SET LOCAL jit = off')
+  })
+  const afterTransaction = await pool.query("SELECT current_setting('jit') AS jit")
+  assert.equal(afterTransaction.rows[0]?.jit, 'on', '提交后 JIT 设置不得泄漏到 PgBouncer 复用连接')
 
   let afterCommitRan = false
   const result = await within(
