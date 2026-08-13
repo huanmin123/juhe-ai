@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const inputURL = requiredEnv('JUHE_AI_OPERATION_LOG_INPUT_URL')
 requiredEnv('JUHE_AI_OPERATION_LOG_INPUT_SECRET')
-const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-f4-system-api-settings-'))
+const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-f4-system-api-producer-'))
 
 process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
 process.env.JUHE_AI_PROCESS_ROLE = 'db-service'
@@ -131,6 +131,61 @@ try {
   assert.equal(group.status, 201, `真实 groups 业务写入应成功：${group.text}`)
   const groupID = envelope<{ id: string }>(group.text).id
 
+  const account = await request(baseURL, '/__aisys__/api/accounts', cookie, {
+    method: 'POST',
+    body: {
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      name: 'F4 System API account smoke',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-f4-system-api-smoke',
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: ['gpt-5.4-mini'],
+      healthCheckModel: 'gpt-5.4-mini',
+      status: 'disabled',
+      groupId: groupID
+    }
+  })
+  assert.equal(account.status, 201, `真实 accounts 业务写入应成功：${account.text}`)
+  const accountID = envelope<{ id: string }>(account.text).id
+
+  const secondaryGroup = await request(baseURL, '/__aisys__/api/groups', cookie, {
+    method: 'POST',
+    body: { name: 'F4 System API account target group smoke', providerCode: 'gpt', enabled: true }
+  })
+  assert.equal(secondaryGroup.status, 201, `真实 accounts 分组目标写入应成功：${secondaryGroup.text}`)
+  const secondaryGroupID = envelope<{ id: string }>(secondaryGroup.text).id
+  const accountDetail = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(accountID)}/edit-basic`, cookie)
+  assert.equal(accountDetail.status, 200, `真实 accounts 基础详情应成功：${accountDetail.text}`)
+  const initialAccountConfigRevision = envelope<{ configRevision: number }>(accountDetail.text).configRevision
+
+  const bindAccountGroup = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(accountID)}/group`, cookie, {
+    method: 'POST',
+    body: { groupId: secondaryGroupID, expectedConfigRevision: initialAccountConfigRevision }
+  })
+  assert.equal(bindAccountGroup.status, 200, `真实 accounts 分组绑定应成功：${bindAccountGroup.text}`)
+  const boundAccountConfigRevision = envelope<{ configRevision: number }>(bindAccountGroup.text).configRevision
+
+  const updateAccountTags = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(accountID)}/tags`, cookie, {
+    method: 'PATCH',
+    body: { tags: ['f4-system-api-smoke'], expectedConfigRevision: boundAccountConfigRevision }
+  })
+  assert.equal(updateAccountTags.status, 200, `真实 accounts 标签更新应成功：${updateAccountTags.text}`)
+
+  const exportAccounts = await request(baseURL, '/__aisys__/api/accounts/export', cookie, {
+    method: 'POST',
+    body: { accountIds: [accountID] }
+  })
+  assert.equal(exportAccounts.status, 200, `真实 accounts 导出应成功：${exportAccounts.text}`)
+
+  const updateOwnProfile = await request(baseURL, '/__aisys__/api/auth/me', memberCookie, {
+    method: 'PATCH',
+    body: { displayName: 'F4SystemAPIMemberUpdated' }
+  })
+  assert.equal(updateOwnProfile.status, 200, `真实 auth 个人资料更新应成功：${updateOwnProfile.text}`)
+
   const routeStrategy = await request(baseURL, '/__aisys__/api/route-strategies', cookie, {
     method: 'POST',
     body: {
@@ -176,6 +231,32 @@ try {
   assert.equal(groupDetail.path, '/__aisys__/api/groups/')
   await assertPersonalSummary(baseURL, cookie, groupItem.id, true, true)
 
+  const accountItem = await assertOperation(baseURL, cookie, 'accounts', 'create', '创建 AI 账户：F4 System API account smoke')
+  const accountLogDetail = await readAdminDetail(baseURL, cookie, accountItem.id, 'accounts.create', 'account')
+  assert.equal(accountLogDetail.path, '/__aisys__/api/accounts/')
+  assert(accountLogDetail.changes?.some((change) => change.field === 'credentials'), '账户创建详情必须保留脱敏后的凭据字段变更')
+  await assertPersonalSummary(baseURL, cookie, accountItem.id, true, true)
+
+  const bindGroupItem = await assertOperation(baseURL, cookie, 'accounts', 'bind_group', '绑定账户分组：F4 System API account smoke')
+  const bindGroupDetail = await readAdminDetail(baseURL, cookie, bindGroupItem.id, 'accounts.bind_group', 'account')
+  assert.equal(bindGroupDetail.path, `/__aisys__/api/accounts/${accountID}/group`)
+  await assertPersonalSummary(baseURL, cookie, bindGroupItem.id, true, true)
+
+  const tagsItem = await assertOperation(baseURL, cookie, 'accounts', 'update_tags', '更新账户标签：F4 System API account smoke')
+  const tagsDetail = await readAdminDetail(baseURL, cookie, tagsItem.id, 'accounts.update_tags', 'account')
+  assert.equal(tagsDetail.path, `/__aisys__/api/accounts/${accountID}/tags`)
+  await assertPersonalSummary(baseURL, cookie, tagsItem.id, true, true)
+
+  const exportItem = await assertOperation(baseURL, cookie, 'accounts', 'export', '导出 AI 账户：1 个账户，0 个代理')
+  const exportDetail = await readAdminDetail(baseURL, cookie, exportItem.id, 'accounts.export', 'account')
+  assert.equal(exportDetail.path, '/__aisys__/api/accounts/export')
+  await assertPersonalSummary(baseURL, cookie, exportItem.id, false, false)
+
+  const profileItem = await assertOperation(baseURL, cookie, 'system_accounts', 'update', '修改显示名称：F4SystemAPIMemberUpdated')
+  const profileDetail = await readAdminDetail(baseURL, cookie, profileItem.id, 'auth.update_profile', 'system_account')
+  assert.equal(profileDetail.path, '/__aisys__/api/auth/me')
+  await assertPersonalSummary(baseURL, memberCookie, profileItem.id, true, true)
+
   const routeStrategyItem = await assertOperation(baseURL, cookie, 'route_strategies', 'create', '创建策略路由：F4 System API route strategy smoke')
   const routeStrategyDetail = await readAdminDetail(baseURL, cookie, routeStrategyItem.id, 'route_strategies.create', 'route_strategy')
   assert.equal(routeStrategyDetail.path, '/__aisys__/api/route-strategies/')
@@ -207,7 +288,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-group-binding, account-tags, account-export, auth, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
@@ -217,7 +298,7 @@ try {
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()
-  if (!value) throw new Error(`${name} is required for the F4 System API settings smoke`)
+  if (!value) throw new Error(`${name} is required for the F4 System API producer smoke`)
   return value
 }
 
