@@ -142,6 +142,19 @@ assert.equal(
 assert.equal(client.commandNames.includes('SCAN'), false, 'reader 不得扫描 10000 个无关业务 key')
 assert.equal(client.indexExpiresAtMs, sampledAtMs + 60_000, '活跃索引必须使用独立短 TTL')
 assert.equal(performanceProcessMetricsTopologyComplete(samples, defaultTopology), true, '默认拓扑的角色集合必须判定完整')
+
+const dualControlTopology = topology(3, 2, 2, 2)
+const dualControlRoles = performanceRoles(dualControlTopology)
+const dualControlSamples = dualControlRoles.map((processRole, index) => buildSample(processRole, sampledAtMs, 18_000 + index))
+assert.equal(performanceProcessMetricsTopologyComplete(dualControlSamples, dualControlTopology), true, '双 Control 拓扑必须要求管理副本及其 DB service')
+assert.equal(
+  performanceProcessMetricsTopologyComplete(
+    dualControlSamples.filter((sample) => sample.processRole !== 'control-replica:control-2'),
+    dualControlTopology
+  ),
+  false,
+  '缺失管理副本时不得把双 Control 拓扑误判为完整'
+)
 assert.equal(
   performanceProcessMetricsTopologyComplete(
     [...samples.filter((sample) => sample.processRole !== 'gateway:gateway-3'), samples[1]],
@@ -251,8 +264,9 @@ await assert.rejects(
 
 console.log('performance 进程指标注册表回归通过：Redis 时钟、132 角色容量、拓扑完整性、短 TTL 与 churn 上限正确')
 
-function topology(gatewayReplicas: number, usageWorkerReplicas: number, logWorkerReplicas: number) {
+function topology(gatewayReplicas: number, usageWorkerReplicas: number, logWorkerReplicas: number, controlReplicas = 1) {
   return {
+    controlReplicas,
     gatewayReplicas,
     usageWorkerReplicas,
     logWorkerReplicas,
@@ -263,6 +277,9 @@ function topology(gatewayReplicas: number, usageWorkerReplicas: number, logWorke
 
 function performanceRoles(value: ReturnType<typeof topology>): ProcessEventLoopRole[] {
   const roles: ProcessEventLoopRole[] = ['control:control-1', 'db-service:control-1']
+  for (let replica = 2; replica <= value.controlReplicas; replica += 1) {
+    roles.push(`control-replica:control-${replica}`, `db-service:control-${replica}`)
+  }
   for (let replica = 1; replica <= value.gatewayReplicas; replica += 1) {
     roles.push(`gateway:gateway-${replica}`, `db-service:gateway-${replica}`)
   }

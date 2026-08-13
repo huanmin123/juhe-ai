@@ -16,6 +16,7 @@ export interface RuntimeConfig {
   workerReplicaIndex: number
   topology: {
     backgroundWorkerSupervisorEnabled: boolean
+    controlReplicas: number
     gatewayReplicas: number
     usageWorkerReplicas: number
     logWorkerReplicas: number
@@ -341,7 +342,7 @@ export interface RuntimeConfig {
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
 export type RuntimeMode = 'standalone' | 'performance'
-export type PerformanceNodeRole = 'combined' | 'gateway' | 'control'
+export type PerformanceNodeRole = 'combined' | 'gateway' | 'control' | 'control-replica'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
 export type DatabaseDriver = 'sqlite' | 'postgres'
 export type CacheDriver = 'memory' | 'redis'
@@ -517,7 +518,10 @@ export const runtimeConfig: RuntimeConfig = {
   workerReplicaIndex: numberConfig('JUHE_AI_WORKER_REPLICA_INDEX', 0, 0, 63),
   topology: {
     backgroundWorkerSupervisorEnabled: configuredRuntimeMode === 'standalone'
-      || configuredPerformanceNodeRole !== 'gateway',
+      || (configuredPerformanceNodeRole !== 'gateway' && configuredPerformanceNodeRole !== 'control-replica'),
+    controlReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_CONTROL_REPLICAS', 1, 1, 2)
+      : 1,
     gatewayReplicas: configuredRuntimeMode === 'performance'
       ? numberConfig('JUHE_AI_GATEWAY_REPLICAS', 3, 1, 32)
       : 1,
@@ -966,8 +970,8 @@ function runtimeModeConfig(name: string, fallback: RuntimeMode): RuntimeMode {
 function performanceNodeRoleConfig(name: string, fallback: PerformanceNodeRole): PerformanceNodeRole {
   const value = rawStringConfig(name)?.toLowerCase()
   if (!value) return fallback
-  if (value === 'combined' || value === 'gateway' || value === 'control') return value
-  throw new Error(`${name} 只能配置为 combined、gateway 或 control`)
+  if (value === 'combined' || value === 'gateway' || value === 'control' || value === 'control-replica') return value
+  throw new Error(`${name} 只能配置为 combined、gateway、control 或 control-replica`)
 }
 
 function runtimeInstanceIdConfig(name: string, runtimeMode: RuntimeMode): string {
@@ -1085,11 +1089,11 @@ function accountHealthCheckDispatchUrlConfig(
   }
 ): string | undefined {
   const required = runtime.runtimeMode === 'performance'
-    && runtime.performanceNodeRole === 'gateway'
+    && (runtime.performanceNodeRole === 'gateway' || runtime.performanceNodeRole === 'control-replica')
     && runtime.processRole === 'server'
   if (!configuredValue) {
     if (required) {
-      throw new Error(`${name} 在 performance gateway server 模式下必须配置为 control 的 loopback Origin`)
+      throw new Error(`${name} 在 performance gateway/control-replica server 模式下必须配置为 control 的 loopback Origin`)
     }
     return undefined
   }

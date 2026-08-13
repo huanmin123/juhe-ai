@@ -110,7 +110,7 @@ async function refreshCachedEndpoints(): Promise<Awaited<ReturnType<typeof listI
 
 function requiresDiscoveredGateway(): boolean {
   return runtimeConfig.runtimeMode === 'performance'
-    && runtimeConfig.performanceNodeRole === 'control'
+    && (runtimeConfig.performanceNodeRole === 'control' || runtimeConfig.performanceNodeRole === 'control-replica')
     && runtimeConfig.processRole === 'db-service'
 }
 
