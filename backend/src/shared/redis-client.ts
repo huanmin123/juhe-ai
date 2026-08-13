@@ -115,9 +115,11 @@ export async function runRedisOperationWithDeadline<T>(
       options.operationName
     )
   } catch (error) {
-    // A caller cancellation only belongs to that caller. Destroying this shared
-    // connection here aborts unrelated gateway requests that are using it.
-    if (!options.signal?.aborted && (error instanceof RedisOperationDeadlineError || isRecoverableRedisClientError(error))) {
+    // A local deadline or caller cancellation belongs only to this operation.
+    // Destroying the shared connection here aborts unrelated gateway requests
+    // and background recovery probes that are using it. Only a concrete client
+    // transport failure can prove that the connection itself is unusable.
+    if (!options.signal?.aborted && !(error instanceof RedisOperationDeadlineError) && isRecoverableRedisClientError(error)) {
       invalidateRedisClientGeneration(normalizedUrl, generation)
     }
     throw error
