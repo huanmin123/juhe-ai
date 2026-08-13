@@ -132,7 +132,7 @@ $runtimeCreateIndex = $performanceInstaller.IndexOf('mkdir -p "$BIN_DIR" "$LOG_D
 if ($releaseInputGateIndex -lt 0 -or $dryRunExitIndex -lt $releaseInputGateIndex -or $nodeLookupIndex -lt $dryRunExitIndex -or $runtimeCreateIndex -lt $dryRunExitIndex) {
   throw 'Performance topology must gate immutable release inputs before creating every isolated runtime directory in apply mode'
 }
-foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s', '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled', '--audit-input-port and --operation-log-input-port are required when isolated runtime and upstream suffix are enabled', '--operation-log-input-port', '--go-sidecar-mode')) {
+foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s', '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled', '--audit-input-port is required when isolated runtime and upstream suffix are enabled', '--operation-log-input-port', '--go-sidecar-mode')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology instance identity contract missing: $contract" }
 }
 $productionCleanup = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'cleanup-production-artifacts.sh')
@@ -231,7 +231,7 @@ if ($goSidecarWaitFunction -match 'psql|postgres|sqlite|POST ') {
   throw 'Performance topology must not claim Go sidecar input or Node readback readiness with a direct database or synthetic-write probe'
 }
 $sharedGoSidecarWaitFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'wait_for_shared_go_sidecar'
-if (-not $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/health', [StringComparison]::Ordinal) -or -not $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/v1/operation-logs/health', [StringComparison]::Ordinal) -or $sharedGoSidecarWaitFunction.Contains('launchctl', [StringComparison]::Ordinal)) {
+if (-not $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/health', [StringComparison]::Ordinal) -or $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/v1/operation-logs/health', [StringComparison]::Ordinal) -or $sharedGoSidecarWaitFunction.Contains('launchctl', [StringComparison]::Ordinal)) {
   throw 'Candidate topology must verify the shared Go sidecar health without managing a second launchd owner'
 }
 $reuseResidualGuard = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_reuse_has_no_candidate_go_sidecar'
@@ -266,8 +266,8 @@ if ($metricsGateFunction -notmatch '(?m)^  current_role_pid_lines="\$\(metrics_r
 if (-not $metricsGateFunction.Contains('role_pid_lines="$VERIFIED_GATEWAY_METRICS_ROLE_PIDS', [StringComparison]::Ordinal) -or $metricsGateFunction -notmatch 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS="\$VERIFIED_GATEWAY_METRICS_ROLE_PIDS\r?\n\$current_role_pid_lines"') {
   throw 'Performance topology final control gate must reuse the verified PID mappings from every gateway activation'
 }
-if (-not $metricsGateFunction.Contains('management_instance_id="$(instance_id_for "control-$index")"', [StringComparison]::Ordinal) -or -not $metricsGateFunction.Contains('--role "gateway:$management_instance_id"', [StringComparison]::Ordinal)) {
-  throw 'Performance topology metrics preflight must treat control-2 as gateway/db-service, not as a second control worker set'
+if (-not $metricsGateFunction.Contains('management_instance_id="$(instance_id_for "control-$index")"', [StringComparison]::Ordinal) -or -not $metricsGateFunction.Contains('--role "control-replica:$management_instance_id"', [StringComparison]::Ordinal) -or -not $metricsGateFunction.Contains('elif [ "$(service_role "$name")" = control-replica ]; then', [StringComparison]::Ordinal)) {
+  throw 'Performance topology metrics preflight must treat control-2 as control-replica/db-service, not as a second control worker set'
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('wait_for_health "$name"', [StringComparison]::Ordinal)
 $performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx_reload', [StringComparison]::Ordinal)
@@ -1155,7 +1155,7 @@ fi
     & $bash.Source -c $runtimeOwnershipHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology root-to-nonroot runtime ownership harness failed' }
 
-    $isolatedRenderHarness = @'
+$isolatedRenderHarness = @'
 set -euo pipefail
 root="$(mktemp -d)"
 trap 'rm -rf -- "$root"' EXIT
@@ -1200,6 +1200,7 @@ chmod 755 "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar"
 service_role() {
   case "$1" in
     control-1) printf control ;;
+    control-*) printf control-replica ;;
     *) printf gateway ;;
   esac
 }
@@ -1218,10 +1219,14 @@ render_run_script control-2 "$root/control-2.sh"
 render_run_script go-sidecar "$root/go-sidecar.sh"
 render_nginx "$root/nginx.conf"
 rg -Fqx 'export JUHE_AI_INSTANCE_ID=temporary-gateway-1' "$root/gateway-1.sh"
-rg -Fqx 'export JUHE_AI_PERFORMANCE_NODE_ROLE=gateway' "$root/control-2.sh"
+rg -Fqx 'export JUHE_AI_PERFORMANCE_NODE_ROLE=control-replica' "$root/control-2.sh"
 rg -Fqx 'export JUHE_AI_INSTANCE_ID=temporary-control-2' "$root/control-2.sh"
 rg -Fqx 'export JUHE_AI_PORT=3601' "$root/control-2.sh"
 rg -Fqx 'export JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL=http://127.0.0.1:3600' "$root/control-2.sh"
+rg -Fqx 'export JUHE_AI_CONTROL_REPLICAS=2' "$root/control-2.sh"
+rg -Fq 'map $request_method $juhe_ai_control_target' "$root/nginx.conf"
+rg -Fq 'proxy_pass http://$juhe_ai_control_target;' "$root/nginx.conf"
+rg -Fq "proxy_pass http://${CONTROL_UPSTREAM}_primary;" "$root/nginx.conf"
 rg -Fqx "export JUHE_AI_LOG_DIR=\"$RUNTIME_LOG_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_USAGE_SPOOL_DIR=\"$SPOOL_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_DATASET_DATABASE_PATH=\"$DATA_DIR/juhe-ai-dataset.sqlite3\"" "$root/gateway-1.sh"
@@ -1252,7 +1257,8 @@ rg -Fq "upstream $GATEWAY_UPSTREAM {" "$root/nginx.conf"
 rg -Fq "upstream $CONTROL_UPSTREAM {" "$root/nginx.conf"
 rg -Fq 'server 127.0.0.1:3600;' "$root/nginx.conf"
 rg -Fq 'server 127.0.0.1:3601;' "$root/nginx.conf"
-rg -Fq "proxy_pass http://$CONTROL_UPSTREAM;" "$root/nginx.conf"
+rg -Fq "proxy_pass http://\$juhe_ai_control_target;" "$root/nginx.conf"
+rg -Fq "proxy_pass http://${CONTROL_UPSTREAM}_primary;" "$root/nginx.conf"
 rg -Fq "proxy_pass http://$GATEWAY_UPSTREAM;" "$root/nginx.conf"
 if rg -Fq "$root/base/bin/performance" "$root/gateway-1.sh" "$root/nginx.conf"; then
   echo 'isolated topology retained the fixed performance run-script directory' >&2
@@ -1351,12 +1357,19 @@ HARNESS_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$HARNESS_ROOT"' EXIT
 __METRICS_GATE_FUNCTION__
 __INSTANCE_ID_FOR_FUNCTION__
+service_role() {
+  case "$1" in
+    control-1) printf control ;;
+    control-*) printf control-replica ;;
+    *) printf gateway ;;
+  esac
+}
 metrics_registry_role_pids() {
   case "$1" in
     gateway-1) printf '%s\n' 'gateway:gateway-1=101' 'db-service:gateway-1=201' ;;
     gateway-2) printf '%s\n' 'gateway:gateway-2=102' 'db-service:gateway-2=202' ;;
     gateway-3) printf '%s\n' 'gateway:gateway-3=103' 'db-service:gateway-3=203' ;;
-    control-2) printf '%s\n' 'gateway:control-2=105' 'db-service:control-2=205' ;;
+    control-2) printf '%s\n' 'control-replica:control-2=105' 'db-service:control-2=205' ;;
     control-1) printf '%s\n' 'control:control-1=104' 'db-service:control-1=204' 'usage-worker:1=301' 'usage-worker:2=302' 'log-worker:1=401' 'log-worker:2=402' 'stats-worker:1=501' 'ops-worker:1=601' ;;
     *) return 2 ;;
   esac
@@ -1370,7 +1383,7 @@ for instance in gateway-1 gateway-2 gateway-3 control-2 control-1; do
   wait_for_metrics_registry "$instance" 123456789
 done
 [ "$(rg -c -- '--role-pid' "$HARNESS_ROOT/control-1.args")" -eq 16 ]
-for mapping in 'gateway:gateway-1=101' 'db-service:gateway-1=201' 'gateway:gateway-2=102' 'db-service:gateway-2=202' 'gateway:gateway-3=103' 'db-service:gateway-3=203' 'gateway:control-2=105' 'db-service:control-2=205'; do
+for mapping in 'gateway:gateway-1=101' 'db-service:gateway-1=201' 'gateway:gateway-2=102' 'db-service:gateway-2=202' 'gateway:gateway-3=103' 'db-service:gateway-3=203' 'control-replica:control-2=105' 'db-service:control-2=205'; do
   rg -qx -- "$mapping" "$HARNESS_ROOT/control-1.args"
 done
 '@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction).Replace('__INSTANCE_ID_FOR_FUNCTION__', $instanceIdForFunction)
@@ -1381,6 +1394,10 @@ done
 set -euo pipefail
 CURRENT_DIR=/tmp/juhe-ai-performance-harness
 INGRESS_PORT=3599
+CONTROL_COUNT=2
+GATEWAY_COUNT=3
+USAGE_WORKERS=2
+LOG_WORKERS=2
 __METRICS_TIME_FUNCTION__
 node() {
   [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]
@@ -1400,6 +1417,7 @@ esac
 set -euo pipefail
 CURRENT_DIR=/tmp/juhe-ai-performance-harness
 GATEWAY_COUNT=3
+CONTROL_COUNT=2
 USAGE_WORKERS=2
 LOG_WORKERS=2
 VERIFIED_HEALTH_JSON=broken

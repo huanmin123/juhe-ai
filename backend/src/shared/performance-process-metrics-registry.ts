@@ -50,6 +50,7 @@ return redis.call('ZRANGEBYSCORE', KEYS[1], minimum_score, observed_at_ms, 'WITH
 `
 
 export interface PerformanceProcessMetricsTopology {
+  controlReplicas: number
   gatewayReplicas: number
   usageWorkerReplicas: number
   logWorkerReplicas: number
@@ -256,9 +257,11 @@ export function performanceProcessMetricsTopologyComplete(
 ): boolean {
   const roles = new Set(samples.map((sample) => sample.processRole))
   const controlInstanceIds = roleInstanceIds(roles, 'control:')
+  const controlReplicaInstanceIds = roleInstanceIds(roles, 'control-replica:')
   const gatewayInstanceIds = roleInstanceIds(roles, 'gateway:')
   const dbServiceInstanceIds = roleInstanceIds(roles, 'db-service:')
   if (matchingInstanceCount(controlInstanceIds, dbServiceInstanceIds) < 1) return false
+  if (matchingInstanceCount(controlReplicaInstanceIds, dbServiceInstanceIds) < topology.controlReplicas - 1) return false
   if (matchingInstanceCount(gatewayInstanceIds, dbServiceInstanceIds) < topology.gatewayReplicas) return false
   return numberedWorkerRolesComplete(roles, 'usage-worker', topology.usageWorkerReplicas)
     && numberedWorkerRolesComplete(roles, 'log-worker', topology.logWorkerReplicas)

@@ -29,6 +29,7 @@ if (childMode) {
     assert.equal(runtimeConfig.performanceNodeRole, 'combined')
     assert.deepEqual(runtimeConfig.topology, {
       backgroundWorkerSupervisorEnabled: true,
+      controlReplicas: 1,
       gatewayReplicas: 3,
       usageWorkerReplicas: 2,
       logWorkerReplicas: 2,
@@ -52,6 +53,13 @@ if (childMode) {
     assert.equal(runtimeConfig.topology.usageWorkerReplicas, 4)
     assert.equal(runtimeConfig.topology.logWorkerReplicas, 3)
     assert.equal(currentProcessEventLoopRole(), 'gateway:gateway-2')
+    assert.deepEqual(processes, [])
+  } else if (childMode === 'performance-control-replica') {
+    assert.equal(runtimeConfig.performanceNodeRole, 'control-replica')
+    assert.equal(runtimeConfig.instanceId, 'control-2')
+    assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, false)
+    assert.equal(runtimeConfig.topology.controlReplicas, 2)
+    assert.equal(currentProcessEventLoopRole(), 'control-replica:control-2')
     assert.deepEqual(processes, [])
   } else {
     assert.equal(runtimeConfig.processRole, 'worker')
@@ -114,6 +122,19 @@ try {
     JUHE_AI_USAGE_WORKER_REPLICAS: '4',
     JUHE_AI_LOG_WORKER_REPLICAS: '3'
   })
+  runChild('performance-control-replica', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'control-replica',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: 'http://127.0.0.1:3200',
+    JUHE_AI_INSTANCE_ID: 'control-2',
+    JUHE_AI_CONTROL_REPLICAS: '2',
+    JUHE_AI_GATEWAY_REPLICAS: '5'
+  })
+  runChildFailure('performance-control-replica-missing-health-dispatch', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'control-replica',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: ''
+  }, 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL')
   runChildFailure('performance-gateway-missing-health-dispatch', {
     ...performanceEnv(),
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',

@@ -339,7 +339,7 @@ try {
   assert(healthCheckServiceSource.includes('runWithBackgroundAccountAvailabilityProbe'), '周期和即时健康检查必须加入账户级 single-flight')
   assert(probeLimitsSource.includes('backgroundAccountAvailabilityProbesInFlight'), '后台可用性探针必须共享同一账户占用表')
   assert(internalDispatchSource.includes('createAccountHealthCheckDispatchSignature'), 'performance gateway 必须通过 HMAC 内部通道投递到 control')
-  assert(internalDispatchSource.includes("runtimeConfig.performanceNodeRole === 'gateway'"), '独立 gateway 节点不得把触发消息留在本进程 IPC 队列')
+  assert(internalDispatchSource.includes("runtimeConfig.performanceNodeRole === 'gateway'") && internalDispatchSource.includes("runtimeConfig.performanceNodeRole === 'control-replica'"), 'gateway 和管理副本不得把触发消息留在本进程 IPC 队列')
   assert(internalDispatchSource.includes('request_failure_in_flight'), 'performance gateway 必须只在 control POST 在途期间合并请求失败')
   assert(!internalDispatchSource.includes('requestFailureDispatchAcceptedAt'), '投递端不得保留固定 accepted 冷却 Map')
   assert(internalDispatchSource.includes('getTraceId'), 'gateway 到 control 的内部派发必须读取已验证请求 traceId')
@@ -359,7 +359,7 @@ try {
   assert(internalDispatchSource.includes('settleClientSourceFenceAfterControlDispatchFailure'), 'control 异步拒绝或网络失败必须结算来源 fence，不能只写日志')
   assert(backgroundIpcSource.includes("'ops_ipc_message_limit'") && backgroundIpcSource.includes("'ops_ipc_byte_limit'"), '健康检查 IPC 必须区分消息数和字节数容量拒绝')
   assert(serverSource.includes('dispatch: dispatchAccountHealthCheckWithOutcome'), 'control bridge 必须使用结构化健康检查派发结果')
-  assert(runtimeConfigSource.includes("throw new Error(`${name} 在 performance gateway server 模式下必须配置为 control 的 loopback Origin`)"), 'performance gateway 缺少 control 投递地址时必须拒绝启动')
+  assert(runtimeConfigSource.includes("throw new Error(`${name} 在 performance gateway/control-replica server 模式下必须配置为 control 的 loopback Origin`)"), 'performance gateway 或管理副本缺少 control 投递地址时必须拒绝启动')
 
   console.log('账户健康检查即时投递回归通过：所有新增入口统一投递，非健康配置编辑不误触发')
 } finally {

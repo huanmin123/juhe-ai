@@ -128,8 +128,8 @@ if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ -z "$INSTANCE_I
   echo '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled' >&2
   exit 2
 fi
-if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && { [ "$AUDIT_INPUT_PORT_SET" -ne 1 ] || [ "$OPERATION_LOG_INPUT_PORT_SET" -ne 1 ]; }; then
-  echo '--audit-input-port and --operation-log-input-port are required when isolated runtime and upstream suffix are enabled' >&2
+if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ "$AUDIT_INPUT_PORT_SET" -ne 1 ]; then
+  echo '--audit-input-port is required when isolated runtime and upstream suffix are enabled' >&2
   exit 2
 fi
 if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ "$GO_SIDECAR_MODE" != reuse ]; then
@@ -691,7 +691,7 @@ service_port() {
 service_role() {
   case "$1" in
     control-1) printf control ;;
-    control-*) printf gateway ;;
+    control-*) printf control-replica ;;
     go-sidecar) printf go-sidecar ;;
     *) printf gateway ;;
   esac
@@ -779,10 +779,11 @@ render_run_script() {
     printf 'export JUHE_AI_INSTANCE_ID=%s\n' "$instance_id"
     printf 'export JUHE_AI_HOST=127.0.0.1\n'
     printf 'export JUHE_AI_PORT=%s\n' "$port"
-    if [ "$role" = gateway ]; then
+    if [ "$role" = gateway ] || [ "$role" = control-replica ]; then
       printf 'export JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL=http://127.0.0.1:%s\n' "$CONTROL_PORT"
     fi
     printf 'export JUHE_AI_DB_SERVICE_HTTP_PORT=0\n'
+    printf 'export JUHE_AI_CONTROL_REPLICAS=%s\n' "$CONTROL_COUNT"
     printf 'export JUHE_AI_GATEWAY_REPLICAS=%s\n' "$GATEWAY_COUNT"
     printf 'export JUHE_AI_USAGE_WORKER_REPLICAS=%s\n' "$USAGE_WORKERS"
     printf 'export JUHE_AI_LOG_WORKER_REPLICAS=%s\n' "$LOG_WORKERS"
@@ -795,7 +796,9 @@ render_run_script() {
     printf 'export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="%s/audit/hot-search"\n' "$GO_SIDECAR_DATA_DIR"
     printf 'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="127.0.0.1:%s"\n' "$AUDIT_INPUT_PORT"
     printf 'export JUHE_AI_AUDIT_LOG_INPUT_URL="http://127.0.0.1:%s"\n' "$AUDIT_INPUT_PORT"
-    printf 'export JUHE_AI_OPERATION_LOG_INPUT_URL="http://127.0.0.1:%s"\n' "$OPERATION_LOG_INPUT_PORT"
+    if [ "$GO_SIDECAR_MODE" = owner ]; then
+      printf 'export JUHE_AI_OPERATION_LOG_INPUT_URL="http://127.0.0.1:%s"\n' "$OPERATION_LOG_INPUT_PORT"
+    fi
     printf 'cd "%s"\n' "$CURRENT_DIR"
     printf '%s\n' 'node backend/dist/scripts/preflight/check-node-sqlite.js'
     printf '%s\n' 'exec node backend/dist/server.js'
@@ -851,16 +854,24 @@ render_nginx() {
       printf '    server 127.0.0.1:%s;\n' "$((CONTROL_PORT + index - 1))"
       index=$((index + 1))
     done
-    printf '%s\n' '    keepalive 32;' '}' '' 'server {'
+    printf '%s\n' '    keepalive 32;' '}' ''
+    printf 'upstream %s_primary {\n' "$CONTROL_UPSTREAM"
+    printf '    server 127.0.0.1:%s;\n' "$CONTROL_PORT"
+    printf '%s\n' '    keepalive 32;' '}' ''
+    printf 'map $request_method $juhe_ai_control_target {\n'
+    printf '    default %s_primary;\n' "$CONTROL_UPSTREAM"
+    printf '    GET %s;\n' "$CONTROL_UPSTREAM"
+    printf '    HEAD %s;\n' "$CONTROL_UPSTREAM"
+    printf '%s\n' '}' '' 'server {'
     printf '    listen 127.0.0.1:%s;\n' "$INGRESS_PORT"
     printf '    add_header X-Juhe-Topology-Install "%s" always;\n' "$INSTALL_TOKEN"
     printf '%s\n' \
       '    client_max_body_size 256m;' \
       '    location = /__aisys__ {' \
-      "        proxy_pass http://$CONTROL_UPSTREAM;" \
+      "        proxy_pass http://\$juhe_ai_control_target;" \
       '    }' \
       '    location ^~ /__aisys__/ {' \
-      "        proxy_pass http://$CONTROL_UPSTREAM;" \
+      "        proxy_pass http://\$juhe_ai_control_target;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \
@@ -868,10 +879,10 @@ render_nginx() {
       '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location = /__aipublic__ {' \
-      "        proxy_pass http://$CONTROL_UPSTREAM;" \
+      "        proxy_pass http://\$juhe_ai_control_target;" \
       '    }' \
       '    location ^~ /__aipublic__/ {' \
-      "        proxy_pass http://$CONTROL_UPSTREAM;" \
+      "        proxy_pass http://\$juhe_ai_control_target;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \
@@ -879,10 +890,10 @@ render_nginx() {
       '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location = /__aiinternal__ {' \
-      "        proxy_pass http://$CONTROL_UPSTREAM;" \
+      "        proxy_pass http://${CONTROL_UPSTREAM}_primary;" \
       '    }' \
       '    location ^~ /__aiinternal__/ {' \
-      "        proxy_pass http://$CONTROL_UPSTREAM;" \
+      "        proxy_pass http://${CONTROL_UPSTREAM}_primary;" \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
       '        proxy_set_header X-Real-IP $http_x_real_ip;' \
@@ -984,14 +995,12 @@ wait_for_go_sidecar() {
 
 wait_for_shared_go_sidecar() {
   input_address="127.0.0.1:$AUDIT_INPUT_PORT"
-  operation_input_address="127.0.0.1:$OPERATION_LOG_INPUT_PORT"
   required_consecutive=3
   [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
-    if curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health" \
-      && curl -fsS --max-time 2 -o /dev/null "http://$operation_input_address/__aiinternal__/v1/operation-logs/health"; then
+    if curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health"; then
       consecutive=$((consecutive + 1))
       [ "$consecutive" -ge "$required_consecutive" ] && return 0
     else
@@ -1044,7 +1053,7 @@ wait_for_metrics_registry() {
     index=2
     while [ "$index" -le "$CONTROL_COUNT" ]; do
       management_instance_id="$(instance_id_for "control-$index")"
-      set -- "$@" --role "gateway:$management_instance_id" --role "db-service:$management_instance_id"
+      set -- "$@" --role "control-replica:$management_instance_id" --role "db-service:$management_instance_id"
       index=$((index + 1))
     done
     index=1
@@ -1052,6 +1061,8 @@ wait_for_metrics_registry() {
     index=1
     while [ "$index" -le "$LOG_WORKERS" ]; do set -- "$@" --role "log-worker:$index"; index=$((index + 1)); done
     set -- "$@" --role stats-worker:1 --role ops-worker:1
+  elif [ "$(service_role "$name")" = control-replica ]; then
+    set -- "$@" --role "control-replica:$instance_id" --role "db-service:$instance_id"
   else
     set -- "$@" --role "gateway:$instance_id" --role "db-service:$instance_id"
   fi
@@ -1073,6 +1084,7 @@ EOF
     JUHE_AI_PERFORMANCE_NODE_ROLE=control \
     JUHE_AI_PROCESS_ROLE=server \
     JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
+    JUHE_AI_CONTROL_REPLICAS="$CONTROL_COUNT" \
     JUHE_AI_GATEWAY_REPLICAS="$GATEWAY_COUNT" \
     JUHE_AI_USAGE_WORKER_REPLICAS="$USAGE_WORKERS" \
     JUHE_AI_LOG_WORKER_REPLICAS="$LOG_WORKERS" \
@@ -1116,6 +1128,12 @@ performance_metrics_registry_time_ms() {
   JUHE_AI_PERFORMANCE_NODE_ROLE=control \
   JUHE_AI_PROCESS_ROLE=server \
   JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
+  JUHE_AI_CONTROL_REPLICAS="$CONTROL_COUNT" \
+  JUHE_AI_GATEWAY_REPLICAS="$GATEWAY_COUNT" \
+  JUHE_AI_USAGE_WORKER_REPLICAS="$USAGE_WORKERS" \
+  JUHE_AI_LOG_WORKER_REPLICAS="$LOG_WORKERS" \
+  JUHE_AI_STATS_WORKER_REPLICAS=1 \
+  JUHE_AI_OPS_WORKER_REPLICAS=1 \
   JUHE_AI_LOG_FILE_ENABLED=false \
   JUHE_AI_LOG_CONSOLE_ENABLED=false \
   node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --print-redis-time-ms
@@ -1133,7 +1151,7 @@ management_ingress_health_matches() {
   set -- node -e '
     const health = JSON.parse(process.argv[1])
     const allowedInstanceIds = process.argv.slice(2)
-    if (health.status !== "ok" || !allowedInstanceIds.includes(health.instanceId) || (health.nodeRole !== "control" && health.nodeRole !== "gateway")) process.exit(1)
+    if (health.status !== "ok" || !allowedInstanceIds.includes(health.instanceId) || (health.nodeRole !== "control" && health.nodeRole !== "control-replica")) process.exit(1)
   ' "$health_json"
   index=1
   while [ "$index" -le "$CONTROL_COUNT" ]; do

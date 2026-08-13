@@ -7,6 +7,7 @@ export type ProcessEventLoopRole =
   | WorkerRuntimeRole
   | `gateway:${string}`
   | `control:${string}`
+  | `control-replica:${string}`
   | `db-service:${string}`
   | `${Exclude<WorkerRuntimeRole, 'worker'>}:${number}`
 
@@ -62,7 +63,9 @@ export function buildProcessEventLoopSample(processRole: ProcessEventLoopRole = 
 export function currentProcessEventLoopRole(): ProcessEventLoopRole {
   if (runtimeConfig.runtimeMode === 'performance') {
     if (runtimeConfig.processRole === 'server') {
-      return `${runtimeConfig.performanceNodeRole === 'gateway' ? 'gateway' : 'control'}:${runtimeConfig.instanceId}`
+      if (runtimeConfig.performanceNodeRole === 'gateway') return `gateway:${runtimeConfig.instanceId}`
+      if (runtimeConfig.performanceNodeRole === 'control-replica') return `control-replica:${runtimeConfig.instanceId}`
+      return `control:${runtimeConfig.instanceId}`
     }
     if (runtimeConfig.processRole === 'db-service') {
       return `db-service:${runtimeConfig.instanceId}`
@@ -95,7 +98,7 @@ export function processEventLoopRoleFromUnknown(value: unknown): ProcessEventLoo
   ) {
     return value
   }
-  if (/^(?:gateway|control|db-service):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
+  if (/^(?:gateway|control|control-replica|db-service):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
     return value as ProcessEventLoopRole
   }
   if (/^(?:ingest-worker|usage-worker|log-worker|stats-worker|ops-worker):(?:[1-9]|[1-5][0-9]|6[0-4])$/.test(value)) {

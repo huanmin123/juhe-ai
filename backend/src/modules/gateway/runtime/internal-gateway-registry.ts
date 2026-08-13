@@ -272,7 +272,7 @@ function internalGatewayRegistryPublisherEnabled(): boolean {
 
 function internalGatewayRegistryReaderEnabled(): boolean {
   return runtimeConfig.runtimeMode === 'performance'
-    && runtimeConfig.performanceNodeRole === 'control'
+    && (runtimeConfig.performanceNodeRole === 'control' || runtimeConfig.performanceNodeRole === 'control-replica')
     && runtimeConfig.processRole === 'db-service'
     && runtimeConfig.runtimeStateDriver === 'redis'
     && Boolean(runtimeConfig.redis.stateUrl)

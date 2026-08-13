@@ -472,7 +472,10 @@ app.use(
 )
 
 function rejectGatewayTrafficOnControlNode(_req: Request, res: Response, next: NextFunction): void {
-  if (runtimeConfig.runtimeMode !== 'performance' || runtimeConfig.performanceNodeRole !== 'control') {
+  if (
+    runtimeConfig.runtimeMode !== 'performance'
+    || (runtimeConfig.performanceNodeRole !== 'control' && runtimeConfig.performanceNodeRole !== 'control-replica')
+  ) {
     next()
     return
   }

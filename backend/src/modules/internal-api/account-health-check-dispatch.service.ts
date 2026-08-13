@@ -38,7 +38,7 @@ export function dispatchAccountHealthCheckWithOutcome(
   if (!normalizedId) return rejectedDispatchOutcome('ops_ipc_unavailable')
   if (
     runtimeConfig.runtimeMode === 'performance'
-    && runtimeConfig.performanceNodeRole === 'gateway'
+    && (runtimeConfig.performanceNodeRole === 'gateway' || runtimeConfig.performanceNodeRole === 'control-replica')
     && runtimeConfig.processRole === 'server'
   ) {
     return dispatchAccountHealthCheckToControl(normalizedId, reason, traceId, sourceFence)
