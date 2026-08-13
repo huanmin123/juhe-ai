@@ -103,10 +103,33 @@ try {
     body: {
       name: 'F4 System API external source smoke',
       status: 'active',
-      scopes: ['juhe_ai_public:account_list:read']
+      scopes: [
+        'juhe_ai_public:account_list:read',
+        'juhe_ai_public:account_add:write'
+      ]
     }
   })
   assert.equal(externalIntegrationSource.status, 201, `真实 external-integration-sources 业务写入应成功：${externalIntegrationSource.text}`)
+  const externalSourceToken = envelope<{ token: { token: string } }>(externalIntegrationSource.text).token.token
+
+  const externalAccount = await request(baseURL, '/__aipublic__/account/add', undefined, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${externalSourceToken}` },
+    body: {
+      targetUsername: 'f4_external_target',
+      targetDisplayName: 'F4ExternalTarget',
+      targetGroupName: 'F4 external target group smoke',
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      name: 'F4 external integration account smoke',
+      type: 'api_key',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-f4-external-integration-smoke',
+      supportedModels: ['gpt-5.5'],
+      status: 'active'
+    }
+  })
+  assert.equal(externalAccount.status, 201, `真实 external-integrations 业务写入应成功：${externalAccount.text}`)
 
   const providerModels = await request(baseURL, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', cookie)
   assert.equal(providerModels.status, 200, `真实 providers 模型列表读取应成功：${providerModels.text}`)
@@ -391,6 +414,11 @@ try {
   assert.equal(providerDetail.path, `/__aisys__/api/providers/gpt/models/${builtInProviderModel.id}`)
   await assertPersonalSummary(baseURL, cookie, providerItem.id, false, false)
 
+  const externalAccountItem = await assertOperation(baseURL, cookie, 'external_integrations', 'account_add', 'F4 System API external source smoke 新增账号：F4 external integration account smoke')
+  const externalAccountDetail = await readAdminDetail(baseURL, cookie, externalAccountItem.id, 'external_integrations.public_account_add', 'account')
+  assert.equal(externalAccountDetail.path, '/__aipublic__/account/add')
+  await assertPersonalSummary(baseURL, cookie, externalAccountItem.id, false, false)
+
   const groupItem = await assertOperation(baseURL, cookie, 'groups', 'create', '创建分组：F4 System API group smoke')
   const groupDetail = await readAdminDetail(baseURL, cookie, groupItem.id, 'groups.create', 'group')
   assert.equal(groupDetail.path, '/__aisys__/api/groups/')
@@ -491,7 +519,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, providers, groups, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, external-integrations, providers, groups, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
@@ -521,11 +549,12 @@ async function login(baseURL: string, captchaAnswerForTest: (captchaID: string) 
   return cookie
 }
 
-async function request(baseURL: string, path: string, cookie?: string, options: { method?: string; body?: unknown } = {}): Promise<{ status: number; text: string; headers: Headers }> {
+async function request(baseURL: string, path: string, cookie?: string, options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<{ status: number; text: string; headers: Headers }> {
   const response = await fetch(`${baseURL}${path}`, {
     method: options.method,
     headers: {
       ...(cookie ? { cookie } : {}),
+      ...options.headers,
       ...(options.body === undefined ? {} : { 'content-type': 'application/json' })
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
