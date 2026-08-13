@@ -9,13 +9,16 @@ BASE_DIR="${HOME}/juhe-ai-lite"
 RELEASE_DIR=
 LABEL_PREFIX=com.example.juhe-ai.performance
 CONTROL_PORT=3200
+CONTROL_COUNT=1
 GATEWAY_BASE_PORT=3101
 GATEWAY_COUNT=3
 USAGE_WORKERS=2
 LOG_WORKERS=2
 INGRESS_PORT=3000
 AUDIT_INPUT_PORT=3303
+OPERATION_LOG_INPUT_PORT=3304
 AUDIT_INPUT_PORT_SET=0
+OPERATION_LOG_INPUT_PORT_SET=0
 GO_SIDECAR_MODE=owner
 NGINX_CONFIG=
 NGINX_BIN=nginx
@@ -39,12 +42,14 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --release-dir ABSOLUTE_RELEASE_PATH
   --label-prefix LAUNCHD_LABEL_PREFIX
   --control-port PORT
+  --control-count 1..2
   --gateway-base-port PORT
   --gateway-count 1..32
   --usage-workers 1..32
   --log-workers 1..32
   --ingress-port PORT
   --audit-input-port PORT
+  --operation-log-input-port PORT
   --go-sidecar-mode owner|reuse
   --nginx-config ABSOLUTE_INCLUDED_CONF_PATH
   --nginx-bin ABSOLUTE_PATH
@@ -67,12 +72,14 @@ while [ "$#" -gt 0 ]; do
     --release-dir) RELEASE_DIR="${2:-}"; shift 2 ;;
     --label-prefix) LABEL_PREFIX="${2:-}"; shift 2 ;;
     --control-port) CONTROL_PORT="${2:-}"; shift 2 ;;
+    --control-count) CONTROL_COUNT="${2:-}"; shift 2 ;;
     --gateway-base-port) GATEWAY_BASE_PORT="${2:-}"; shift 2 ;;
     --gateway-count) GATEWAY_COUNT="${2:-}"; shift 2 ;;
     --usage-workers) USAGE_WORKERS="${2:-}"; shift 2 ;;
     --log-workers) LOG_WORKERS="${2:-}"; shift 2 ;;
     --ingress-port) INGRESS_PORT="${2:-}"; shift 2 ;;
     --audit-input-port) AUDIT_INPUT_PORT="${2:-}"; AUDIT_INPUT_PORT_SET=1; shift 2 ;;
+    --operation-log-input-port) OPERATION_LOG_INPUT_PORT="${2:-}"; OPERATION_LOG_INPUT_PORT_SET=1; shift 2 ;;
     --go-sidecar-mode) GO_SIDECAR_MODE="${2:-}"; shift 2 ;;
     --nginx-config) NGINX_CONFIG="${2:-}"; shift 2 ;;
     --nginx-bin) NGINX_BIN="${2:-}"; shift 2 ;;
@@ -121,8 +128,8 @@ if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ -z "$INSTANCE_I
   echo '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled' >&2
   exit 2
 fi
-if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ "$AUDIT_INPUT_PORT_SET" -ne 1 ]; then
-  echo '--audit-input-port is required when isolated runtime and upstream suffix are enabled' >&2
+if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && { [ "$AUDIT_INPUT_PORT_SET" -ne 1 ] || [ "$OPERATION_LOG_INPUT_PORT_SET" -ne 1 ]; }; then
+  echo '--audit-input-port and --operation-log-input-port are required when isolated runtime and upstream suffix are enabled' >&2
   exit 2
 fi
 if [ -n "$RUNTIME_DIR" ] && [ -n "$NGINX_UPSTREAM_SUFFIX" ] && [ "$GO_SIDECAR_MODE" != reuse ]; then
@@ -148,20 +155,28 @@ assert_number() {
 }
 
 assert_number "$CONTROL_PORT" 1 65535 control-port
+assert_number "$CONTROL_COUNT" 1 2 control-count
 assert_number "$GATEWAY_BASE_PORT" 1 65535 gateway-base-port
 assert_number "$GATEWAY_COUNT" 1 32 gateway-count
 assert_number "$USAGE_WORKERS" 1 32 usage-workers
 assert_number "$LOG_WORKERS" 1 32 log-workers
 assert_number "$INGRESS_PORT" 1 65535 ingress-port
 assert_number "$AUDIT_INPUT_PORT" 1 65535 audit-input-port
+assert_number "$OPERATION_LOG_INPUT_PORT" 1 65535 operation-log-input-port
+LAST_CONTROL_PORT=$((CONTROL_PORT + CONTROL_COUNT - 1))
 LAST_GATEWAY_PORT=$((GATEWAY_BASE_PORT + GATEWAY_COUNT - 1))
+[ "$LAST_CONTROL_PORT" -le 65535 ] || { echo 'control port range exceeds 65535' >&2; exit 2; }
 [ "$LAST_GATEWAY_PORT" -le 65535 ] || { echo 'gateway port range exceeds 65535' >&2; exit 2; }
-[ "$CONTROL_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$CONTROL_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'control port overlaps gateway ports' >&2; exit 2; }
-[ "$INGRESS_PORT" -ne "$CONTROL_PORT" ] || { echo 'ingress port overlaps control port' >&2; exit 2; }
+[ "$LAST_CONTROL_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$CONTROL_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'control port overlaps gateway ports' >&2; exit 2; }
+[ "$INGRESS_PORT" -lt "$CONTROL_PORT" ] || [ "$INGRESS_PORT" -gt "$LAST_CONTROL_PORT" ] || { echo 'ingress port overlaps control port' >&2; exit 2; }
 [ "$INGRESS_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$INGRESS_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'ingress port overlaps gateway ports' >&2; exit 2; }
-[ "$AUDIT_INPUT_PORT" -ne "$CONTROL_PORT" ] || { echo 'audit input port overlaps control port' >&2; exit 2; }
+[ "$AUDIT_INPUT_PORT" -lt "$CONTROL_PORT" ] || [ "$AUDIT_INPUT_PORT" -gt "$LAST_CONTROL_PORT" ] || { echo 'audit input port overlaps control port' >&2; exit 2; }
 [ "$AUDIT_INPUT_PORT" -ne "$INGRESS_PORT" ] || { echo 'audit input port overlaps ingress port' >&2; exit 2; }
+[ "$OPERATION_LOG_INPUT_PORT" -ne "$AUDIT_INPUT_PORT" ] || { echo 'operation-log input port overlaps audit input port' >&2; exit 2; }
+[ "$OPERATION_LOG_INPUT_PORT" -lt "$CONTROL_PORT" ] || [ "$OPERATION_LOG_INPUT_PORT" -gt "$LAST_CONTROL_PORT" ] || { echo 'operation-log input port overlaps control port' >&2; exit 2; }
+[ "$OPERATION_LOG_INPUT_PORT" -ne "$INGRESS_PORT" ] || { echo 'operation-log input port overlaps ingress port' >&2; exit 2; }
 [ "$AUDIT_INPUT_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$AUDIT_INPUT_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'audit input port overlaps gateway ports' >&2; exit 2; }
+[ "$OPERATION_LOG_INPUT_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$OPERATION_LOG_INPUT_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'operation-log input port overlaps gateway ports' >&2; exit 2; }
 
 CURRENT_DIR="$RELEASE_DIR"
 if [ -n "$RUNTIME_DIR" ]; then
@@ -304,8 +319,10 @@ if [ -n "$NGINX_MAIN_CONFIG" ]; then
   fi
 fi
 
+CONTROL_PORTS="$CONTROL_PORT"
+if [ "$CONTROL_COUNT" -gt 1 ]; then CONTROL_PORTS="$CONTROL_PORT-$LAST_CONTROL_PORT"; fi
 printf 'mode=%s scope=%s base=%s release=%s runtime=%s data=%s upstream_suffix=%s instance_id_prefix=%s go_sidecar_mode=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s audit_input=%s nginx=%s nginx_bin=%s nginx_main=%s service_user=%s\n' \
-  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$GO_SIDECAR_MODE" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
+  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "${RUNTIME_DIR:-default}" "$DATA_DIR" "${NGINX_UPSTREAM_SUFFIX:-default}" "${INSTANCE_ID_PREFIX:-default}" "$GO_SIDECAR_MODE" "$CONTROL_PORTS" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$AUDIT_INPUT_PORT" "$NGINX_CONFIG" "$NGINX_BIN" \
   "${NGINX_MAIN_CONFIG:-default}" "${SERVICE_USER:-current}"
 if [ "$GO_SIDECAR_MODE" = owner ]; then
@@ -615,7 +632,11 @@ service_names() {
   if [ "$GO_SIDECAR_MODE" = owner ]; then
     printf '%s\n' go-sidecar
   fi
-  printf '%s\n' control-1
+  index=1
+  while [ "$index" -le "$CONTROL_COUNT" ]; do
+    printf 'control-%s\n' "$index"
+    index=$((index + 1))
+  done
   index=1
   while [ "$index" -le "$GATEWAY_COUNT" ]; do
     printf 'gateway-%s\n' "$index"
@@ -645,6 +666,13 @@ activation_service_names() {
     printf 'gateway-%s\n' "$index"
     index=$((index + 1))
   done
+  # control-2 is a management HTTP replica in gateway role. It must be ready
+  # before control-1 verifies the single worker supervisor topology.
+  index=2
+  while [ "$index" -le "$CONTROL_COUNT" ]; do
+    printf 'control-%s\n' "$index"
+    index=$((index + 1))
+  done
   printf '%s\n' control-1
   if [ "$GO_SIDECAR_MODE" = owner ]; then
     # Start the sole data owner only after the Node DB-service health proxy passes.
@@ -654,7 +682,7 @@ activation_service_names() {
 
 service_port() {
   case "$1" in
-    control-1) printf '%s' "$CONTROL_PORT" ;;
+    control-*) index="${1#control-}"; printf '%s' "$((CONTROL_PORT + index - 1))" ;;
     gateway-*) index="${1#gateway-}"; printf '%s' "$((GATEWAY_BASE_PORT + index - 1))" ;;
     go-sidecar) printf '%s' 0 ;;
   esac
@@ -663,6 +691,7 @@ service_port() {
 service_role() {
   case "$1" in
     control-1) printf control ;;
+    control-*) printf gateway ;;
     go-sidecar) printf go-sidecar ;;
     *) printf gateway ;;
   esac
@@ -704,11 +733,15 @@ render_run_script() {
         'table_monitor_interval="${JUHE_AI_TABLE_MONITOR_INTERVAL:-}"' \
         'audit_log_url="${JUHE_AI_AUDIT_LOG_POSTGRES_URL:-$postgres_url}"' \
         'business_settings_url="${JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL:-$audit_log_url}"' \
+        'operation_log_url="${JUHE_AI_OPERATION_LOG_POSTGRES_URL:-$postgres_url}"' \
         'input_address="127.0.0.1:'"$AUDIT_INPUT_PORT"'"' \
         'input_url="http://$input_address"' \
         'input_secret="${JUHE_AI_AUDIT_LOG_INPUT_SECRET:-}"' \
         'if [ -z "$input_secret" ] && [ -f "backend/.env" ]; then input_secret="$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_SECRET backend/.env)"; fi' \
         '[ -n "$input_secret" ] || { echo "missing JUHE_AI_AUDIT_LOG_INPUT_SECRET" >&2; exit 1; }' \
+        'operation_input_secret="${JUHE_AI_OPERATION_LOG_INPUT_SECRET:-}"' \
+        'if [ -z "$operation_input_secret" ] && [ -f "backend/.env" ]; then operation_input_secret="$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_SECRET backend/.env)"; fi' \
+        '[ -n "$operation_input_secret" ] || { echo "missing JUHE_AI_OPERATION_LOG_INPUT_SECRET" >&2; exit 1; }' \
         'if [ -z "$table_monitor_interval" ] && [ -f "backend/.env" ]; then table_monitor_interval="$(read_dotenv_value JUHE_AI_TABLE_MONITOR_INTERVAL backend/.env)"; fi' \
         'export NODE_ENV=production' \
         'export JUHE_AI_RUNTIME_MODE=performance' \
@@ -729,6 +762,12 @@ render_run_script() {
         'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="$input_address"' \
         'export JUHE_AI_AUDIT_LOG_INPUT_URL="$input_url"' \
         'export JUHE_AI_AUDIT_LOG_INPUT_SECRET="$input_secret"' \
+        'export JUHE_AI_OPERATION_LOG_STORE=postgres' \
+        'export JUHE_AI_OPERATION_LOG_POSTGRES_URL="$operation_log_url"' \
+        'export JUHE_AI_OPERATION_LOG_INSTANCE_ID="'"$(instance_id_for operation-log)"'"' \
+        'export JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS="127.0.0.1:'"$OPERATION_LOG_INPUT_PORT"'"' \
+        'export JUHE_AI_OPERATION_LOG_INPUT_URL="http://127.0.0.1:'"$OPERATION_LOG_INPUT_PORT"'"' \
+        'export JUHE_AI_OPERATION_LOG_INPUT_SECRET="$operation_input_secret"' \
         'export JUHE_AI_LOG_DIR="'"$RUNTIME_LOG_DIR"'"' \
         'export JUHE_AI_LOG_FILE_ENABLED=true' \
         'cd "'"$CURRENT_DIR"'"' \
@@ -756,6 +795,7 @@ render_run_script() {
     printf 'export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="%s/audit/hot-search"\n' "$GO_SIDECAR_DATA_DIR"
     printf 'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="127.0.0.1:%s"\n' "$AUDIT_INPUT_PORT"
     printf 'export JUHE_AI_AUDIT_LOG_INPUT_URL="http://127.0.0.1:%s"\n' "$AUDIT_INPUT_PORT"
+    printf 'export JUHE_AI_OPERATION_LOG_INPUT_URL="http://127.0.0.1:%s"\n' "$OPERATION_LOG_INPUT_PORT"
     printf 'cd "%s"\n' "$CURRENT_DIR"
     printf '%s\n' 'node backend/dist/scripts/preflight/check-node-sqlite.js'
     printf '%s\n' 'exec node backend/dist/server.js'
@@ -806,7 +846,11 @@ render_nginx() {
     done
     printf '%s\n' '    keepalive 256;' '}' ''
     printf 'upstream %s {\n' "$CONTROL_UPSTREAM"
-    printf '    server 127.0.0.1:%s;\n' "$CONTROL_PORT"
+    index=1
+    while [ "$index" -le "$CONTROL_COUNT" ]; do
+      printf '    server 127.0.0.1:%s;\n' "$((CONTROL_PORT + index - 1))"
+      index=$((index + 1))
+    done
     printf '%s\n' '    keepalive 32;' '}' '' 'server {'
     printf '    listen 127.0.0.1:%s;\n' "$INGRESS_PORT"
     printf '    add_header X-Juhe-Topology-Install "%s" always;\n' "$INSTALL_TOKEN"
@@ -917,13 +961,15 @@ wait_for_go_sidecar() {
   name=go-sidecar
   label="$(service_label "$name")"
   input_address="127.0.0.1:$AUDIT_INPUT_PORT"
+  operation_input_address="127.0.0.1:$OPERATION_LOG_INPUT_PORT"
   required_consecutive=3
   [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
     if launchctl print "$DOMAIN/$label" >/dev/null 2>&1 \
-      && curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health"; then
+      && curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health" \
+      && curl -fsS --max-time 2 -o /dev/null "http://$operation_input_address/__aiinternal__/v1/operation-logs/health"; then
       consecutive=$((consecutive + 1))
       [ "$consecutive" -ge "$required_consecutive" ] && return 0
     else
@@ -932,18 +978,20 @@ wait_for_go_sidecar() {
     sleep 1
     attempt=$((attempt + 1))
   done
-  echo 'Go sidecar did not remain healthy; verify F1/F2 freshness and a real Node -> F3 -> Node audit readback before production cutover' >&2
+  echo 'Go sidecar did not remain healthy; verify F1/F2 freshness plus real Node -> F3/F4 -> Node readback before production cutover' >&2
   return 1
 }
 
 wait_for_shared_go_sidecar() {
   input_address="127.0.0.1:$AUDIT_INPUT_PORT"
+  operation_input_address="127.0.0.1:$OPERATION_LOG_INPUT_PORT"
   required_consecutive=3
   [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
   attempt=1
   while [ "$attempt" -le 20 ]; do
-    if curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health"; then
+    if curl -fsS --max-time 2 -o /dev/null "http://$input_address/__aiinternal__/health" \
+      && curl -fsS --max-time 2 -o /dev/null "http://$operation_input_address/__aiinternal__/v1/operation-logs/health"; then
       consecutive=$((consecutive + 1))
       [ "$consecutive" -ge "$required_consecutive" ] && return 0
     else
@@ -957,7 +1005,6 @@ wait_for_shared_go_sidecar() {
 }
 
 wait_for_ingress() {
-  control_instance_id="$(instance_id_for control-1)"
   required_consecutive=3
   [ "$QUICK" -eq 1 ] && required_consecutive=1
   consecutive=0
@@ -965,7 +1012,7 @@ wait_for_ingress() {
   while [ "$attempt" -le 20 ]; do
     health_json=
     if health_json="$(curl -fsS --max-time 2 "http://127.0.0.1:$INGRESS_PORT/__aisys__/health")" \
-      && health_identity_matches "$health_json" "$control_instance_id" control \
+      && management_ingress_health_matches "$health_json" \
       && curl -fsS --max-time 2 -D - -o /dev/null "http://127.0.0.1:$INGRESS_PORT/__aisys__/health" \
         | tr -d '\r' | grep -Fqx "X-Juhe-Topology-Install: $INSTALL_TOKEN" \
       && curl -fsS --max-time 2 "http://127.0.0.1:$INGRESS_PORT/__aisys__/api/health" >/dev/null; then
@@ -977,7 +1024,7 @@ wait_for_ingress() {
     sleep 1
     attempt=$((attempt + 1))
   done
-  echo "nginx ingress did not remain on $control_instance_id after reload on port $INGRESS_PORT" >&2
+  echo "nginx ingress management upstream did not remain healthy after reload on port $INGRESS_PORT" >&2
   return 1
 }
 
@@ -992,6 +1039,12 @@ wait_for_metrics_registry() {
     while [ "$index" -le "$GATEWAY_COUNT" ]; do
       gateway_instance_id="$(instance_id_for "gateway-$index")"
       set -- "$@" --role "gateway:$gateway_instance_id" --role "db-service:$gateway_instance_id"
+      index=$((index + 1))
+    done
+    index=2
+    while [ "$index" -le "$CONTROL_COUNT" ]; do
+      management_instance_id="$(instance_id_for "control-$index")"
+      set -- "$@" --role "gateway:$management_instance_id" --role "db-service:$management_instance_id"
       index=$((index + 1))
     done
     index=1
@@ -1073,6 +1126,21 @@ health_identity_matches() {
     const health = JSON.parse(process.argv[1])
     if (health.status !== "ok" || health.instanceId !== process.argv[2] || health.nodeRole !== process.argv[3]) process.exit(1)
   ' "$1" "$2" "$3" >/dev/null 2>&1
+}
+
+management_ingress_health_matches() {
+  health_json="$1"
+  set -- node -e '
+    const health = JSON.parse(process.argv[1])
+    const allowedInstanceIds = process.argv.slice(2)
+    if (health.status !== "ok" || !allowedInstanceIds.includes(health.instanceId) || (health.nodeRole !== "control" && health.nodeRole !== "gateway")) process.exit(1)
+  ' "$health_json"
+  index=1
+  while [ "$index" -le "$CONTROL_COUNT" ]; do
+    set -- "$@" "$(instance_id_for "control-$index")"
+    index=$((index + 1))
+  done
+  "$@" >/dev/null 2>&1
 }
 
 rollback() {
@@ -1180,6 +1248,6 @@ rm -f -- "$NGINX_BACKUP"
 MUTATED=0
 trap - EXIT INT TERM
 rm -rf -- "$STAGE_DIR"
-printf 'performance topology installed: mode=%s quick=%s control=1 gateway=%s usage=%s log=%s stats=1 ops=1 go_sidecar=juhe-ai-go-sidecar ingress=127.0.0.1:%s\n' \
-  "$MODE" "$QUICK" \
+printf 'performance topology installed: mode=%s quick=%s control=%s gateway=%s usage=%s log=%s stats=1 ops=1 go_sidecar=juhe-ai-go-sidecar ingress=127.0.0.1:%s\n' \
+  "$MODE" "$QUICK" "$CONTROL_COUNT" \
   "$GATEWAY_COUNT" "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT"

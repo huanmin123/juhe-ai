@@ -106,7 +106,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'system scope requires an explicit --nginx-main-config', '--nginx-config must be an included slot file, not the nginx main config', 'nginx slot config must already be an included regular file', 'nginx slot config is not included with matching contents by the active main config', 'NGINX_EXPANDED_CONFIG', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', '--go-sidecar-mode owner|reuse', 'GO_SIDECAR_MODE=owner', 'isolated candidate topology must use --go-sidecar-mode reuse', 'assert_reuse_has_no_candidate_go_sidecar', 'candidate reuse refuses a residual Go sidecar owner', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'GO_SIDECAR_DATA_DIR', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_go_sidecar', 'wait_for_shared_go_sidecar', 'go-sidecar', 'juhe-ai-go-sidecar', '--node-path', 'NODE_BIN="$(PATH="$NODE_PATH" command -v node || true)"', "await import('pino')", 'Node runtime dependencies are unavailable in the candidate release', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go sidecar must be a regular file', 'service user cannot execute Go sidecar', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'system scope requires an explicit --nginx-main-config', '--nginx-config must be an included slot file, not the nginx main config', 'nginx slot config must already be an included regular file', 'nginx slot config is not included with matching contents by the active main config', 'NGINX_EXPANDED_CONFIG', '--runtime-dir', '--nginx-upstream-suffix', '--runtime-dir and --nginx-upstream-suffix must be provided together', '--go-sidecar-mode owner|reuse', 'GO_SIDECAR_MODE=owner', 'isolated candidate topology must use --go-sidecar-mode reuse', 'assert_reuse_has_no_candidate_go_sidecar', 'candidate reuse refuses a residual Go sidecar owner', 'CONTROL_COUNT=1', '--control-count 1..2', 'control-count', 'control port range exceeds 65535', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'GATEWAY_UPSTREAM', 'CONTROL_UPSTREAM', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'JUHE_AI_DATASET_DATABASE_PATH', 'GO_SIDECAR_DATA_DIR', 'assert_audit_payload_blob_write_preflight', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_go_sidecar', 'wait_for_shared_go_sidecar', 'go-sidecar', 'juhe-ai-go-sidecar', '--node-path', 'NODE_BIN="$(PATH="$NODE_PATH" command -v node || true)"', "await import('pino')", 'Node runtime dependencies are unavailable in the candidate release', 'JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_POSTGRES_URL', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_POSTGRES_URL', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INTERVAL', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_POSTGRES_URL', 'JUHE_AI_LOG_FILE_ENABLED=true', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', 'management_ingress_health_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', 'SUDO_BIN', 'TEST_BIN', '/bin/test', '/bin/bash -s -- "$CURRENT_DIR"', 'assert_runtime_directory', 'assert_isolated_runtime_parent', 'runtime_managed_paths', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'Go sidecar must be a regular file', 'service user cannot execute Go sidecar', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 foreach ($contract in @('--quick', 'QUICK=0', '[ "$QUICK" -eq 1 ] && required_consecutive=1', 'if [ "$name" != go-sidecar ] && [ "$QUICK" -eq 0 ]; then', 'if [ "$QUICK" -eq 0 ]; then')) {
@@ -132,7 +132,7 @@ $runtimeCreateIndex = $performanceInstaller.IndexOf('mkdir -p "$BIN_DIR" "$LOG_D
 if ($releaseInputGateIndex -lt 0 -or $dryRunExitIndex -lt $releaseInputGateIndex -or $nodeLookupIndex -lt $dryRunExitIndex -or $runtimeCreateIndex -lt $dryRunExitIndex) {
   throw 'Performance topology must gate immutable release inputs before creating every isolated runtime directory in apply mode'
 }
-foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s', '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled', '--audit-input-port is required when isolated runtime and upstream suffix are enabled', '--go-sidecar-mode')) {
+foreach ($contract in @('--instance-id-prefix', 'instance_id_for', 'instance_id_prefix=%s', '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled', '--audit-input-port and --operation-log-input-port are required when isolated runtime and upstream suffix are enabled', '--operation-log-input-port', '--go-sidecar-mode')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology instance identity contract missing: $contract" }
 }
 $productionCleanup = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'cleanup-production-artifacts.sh')
@@ -184,6 +184,8 @@ $activationFunctionEnd = $performanceInstaller.IndexOf("`n}", $activationFunctio
 $activationFunctionBlock = $performanceInstaller.Substring($activationFunctionStart, $activationFunctionEnd - $activationFunctionStart)
 $activationGatewayLoop = $activationFunctionBlock.IndexOf('while [ "$index" -le "$GATEWAY_COUNT" ]; do', [StringComparison]::Ordinal)
 $activationGatewayLoopEnd = $activationFunctionBlock.IndexOf('  done', $activationGatewayLoop, [StringComparison]::Ordinal)
+$activationSecondaryControlLoop = $activationFunctionBlock.IndexOf('while [ "$index" -le "$CONTROL_COUNT" ]; do', $activationGatewayLoopEnd, [StringComparison]::Ordinal)
+$activationSecondaryControlLoopEnd = $activationFunctionBlock.IndexOf('  done', $activationSecondaryControlLoop, [StringComparison]::Ordinal)
 $activationControlWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' control-1", [StringComparison]::Ordinal)
 $activationGoSidecarWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' go-sidecar", [StringComparison]::Ordinal)
 $activationGoSidecarLast = $performanceInstaller.IndexOf("  printf '%s\n' go-sidecar", $activationFunctionStart, [StringComparison]::Ordinal)
@@ -194,7 +196,7 @@ $activationFence = $performanceInstaller.IndexOf('  metrics_fence_ms="$(performa
 $activationBootout = $performanceInstaller.IndexOf('  launchctl bootout "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationBootstrap = $performanceInstaller.IndexOf('  launchctl bootstrap "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationKickstart = $performanceInstaller.IndexOf('  launchctl kickstart -k "$DOMAIN/$(service_label "$name")"', $activationBootstrap, [StringComparison]::Ordinal)
-if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationGoSidecarWithinFunction -lt $activationControlWithinFunction -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationGoSidecarLast -lt $activationFunctionStart -or $activationGoSidecarLast -gt $activationLoopStart) {
+if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationSecondaryControlLoop -lt $activationGatewayLoopEnd -or $activationSecondaryControlLoopEnd -lt $activationSecondaryControlLoop -or $activationControlWithinFunction -lt $activationSecondaryControlLoopEnd -or $activationGoSidecarWithinFunction -lt $activationControlWithinFunction -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationGoSidecarLast -lt $activationFunctionStart -or $activationGoSidecarLast -gt $activationLoopStart) {
   throw 'Performance topology must activate Node gateway/control and verify DB readiness before starting the single Go sidecar'
 }
 if (-not $performanceInstaller.Contains('wait_for_metrics_registry "$name" "$metrics_fence_ms"', [StringComparison]::Ordinal)) {
@@ -209,7 +211,7 @@ if ($performanceInstaller.Contains('for role_pid in $(metrics_registry_role_pids
 $goSidecarRunScriptStart = $performanceInstaller.IndexOf('if [ "$name" = go-sidecar ]; then', [StringComparison]::Ordinal)
 $goSidecarRunScriptEnd = $performanceInstaller.IndexOf("    else`n", $goSidecarRunScriptStart, [StringComparison]::Ordinal)
 $goSidecarRunScript = $performanceInstaller.Substring($goSidecarRunScriptStart, $goSidecarRunScriptEnd - $goSidecarRunScriptStart)
-foreach ($contract in @('JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL', 'JUHE_AI_AUDIT_LOG_POSTGRES_URL', 'JUHE_AI_POSTGRES_URL', 'juhe-ai-go-sidecar')) {
+foreach ($contract in @('JUHE_AI_RUNTIME_LOG_STORE=postgres', 'JUHE_AI_TABLE_MONITOR_STORE=postgres', 'JUHE_AI_AUDIT_LOG_STORE=postgres', 'JUHE_AI_OPERATION_LOG_STORE=postgres', 'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_OPERATION_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_OPERATION_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL', 'JUHE_AI_AUDIT_LOG_POSTGRES_URL', 'JUHE_AI_OPERATION_LOG_POSTGRES_URL', 'JUHE_AI_POSTGRES_URL', 'juhe-ai-go-sidecar')) {
   if (-not $goSidecarRunScript.Contains($contract, [StringComparison]::Ordinal)) {
     throw "Performance topology Go sidecar run script missing: $contract"
   }
@@ -220,7 +222,7 @@ foreach ($forbidden in @('JUHE_AI_RUNTIME_LOG_STORE=sqlite', 'JUHE_AI_TABLE_MONI
   }
 }
 $goSidecarWaitFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'wait_for_go_sidecar'
-foreach ($contract in @('launchctl print "$DOMAIN/$label"', 'curl -fsS --max-time 2 -o /dev/null', '/__aiinternal__/health', 'Node -> F3 -> Node audit readback')) {
+foreach ($contract in @('launchctl print "$DOMAIN/$label"', 'curl -fsS --max-time 2 -o /dev/null', '/__aiinternal__/health', '/__aiinternal__/v1/operation-logs/health', 'Node -> F3/F4 -> Node readback')) {
   if (-not $goSidecarWaitFunction.Contains($contract, [StringComparison]::Ordinal)) {
     throw "Performance topology Go sidecar liveness contract missing: $contract"
   }
@@ -229,7 +231,7 @@ if ($goSidecarWaitFunction -match 'psql|postgres|sqlite|POST ') {
   throw 'Performance topology must not claim Go sidecar input or Node readback readiness with a direct database or synthetic-write probe'
 }
 $sharedGoSidecarWaitFunction = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'wait_for_shared_go_sidecar'
-if (-not $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/health', [StringComparison]::Ordinal) -or $sharedGoSidecarWaitFunction.Contains('launchctl', [StringComparison]::Ordinal)) {
+if (-not $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/health', [StringComparison]::Ordinal) -or -not $sharedGoSidecarWaitFunction.Contains('/__aiinternal__/v1/operation-logs/health', [StringComparison]::Ordinal) -or $sharedGoSidecarWaitFunction.Contains('launchctl', [StringComparison]::Ordinal)) {
   throw 'Candidate topology must verify the shared Go sidecar health without managing a second launchd owner'
 }
 $reuseResidualGuard = Get-ShellFunctionBlock -Content $performanceInstaller -FunctionName 'assert_reuse_has_no_candidate_go_sidecar'
@@ -263,6 +265,9 @@ if ($metricsGateFunction -notmatch '(?m)^  current_role_pid_lines="\$\(metrics_r
 }
 if (-not $metricsGateFunction.Contains('role_pid_lines="$VERIFIED_GATEWAY_METRICS_ROLE_PIDS', [StringComparison]::Ordinal) -or $metricsGateFunction -notmatch 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS="\$VERIFIED_GATEWAY_METRICS_ROLE_PIDS\r?\n\$current_role_pid_lines"') {
   throw 'Performance topology final control gate must reuse the verified PID mappings from every gateway activation'
+}
+if (-not $metricsGateFunction.Contains('management_instance_id="$(instance_id_for "control-$index")"', [StringComparison]::Ordinal) -or -not $metricsGateFunction.Contains('--role "gateway:$management_instance_id"', [StringComparison]::Ordinal)) {
+  throw 'Performance topology metrics preflight must treat control-2 as gateway/db-service, not as a second control worker set'
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('wait_for_health "$name"', [StringComparison]::Ordinal)
 $performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx_reload', [StringComparison]::Ordinal)
@@ -376,9 +381,19 @@ mkdir -p "$base" "$release/backend/dist/scripts/preflight" "$release/backend-go"
 
 default_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.performance --nginx-config "$base/nginx.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
 printf '%s\n' "$default_output" | rg -Fq "data=$base/shared/data"
+printf '%s\n' "$default_output" | rg -Fq 'control=3200'
 [ ! -e "$base/bin" ] && [ ! -e "$base/logs" ] && [ ! -e "$base/shared" ]
 
-isolated_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --audit-input-port 3303 --go-sidecar-mode reuse --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
+dual_control_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --control-port 3200 --control-count 2 --gateway-base-port 3101 --gateway-count 5 --nginx-config "$base/nginx.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
+printf '%s\n' "$dual_control_output" | rg -Fq 'control=3200-3201 gateways=3101-3105'
+
+if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --control-port 65535 --control-count 2 --nginx-config "$base/nginx.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf" >"$root/control-port-range.out" 2>&1; then
+  echo 'performance topology dry-run accepted a control port range past 65535' >&2
+  exit 1
+fi
+grep -Fq 'control port range exceeds 65535' "$root/control-port-range.out"
+
+isolated_output="$(bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --audit-input-port 3303 --operation-log-input-port 3304 --go-sidecar-mode reuse --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf")"
 printf '%s\n' "$isolated_output" | rg -Fq "runtime=$base/runtime-temporary data=$base/runtime-temporary/data upstream_suffix=temporary_20260730 instance_id_prefix=temporary go_sidecar_mode=reuse"
 [ ! -e "$base/runtime-temporary" ]
 
@@ -395,7 +410,7 @@ exit 1
 EOF
 chmod 755 "$apply_fixture/bin/launchctl"
 : > "$apply_fixture/Library/LaunchAgents/com.example.juhe-ai.temporary.go-sidecar.plist"
-if PATH="$apply_fixture/bin:$PATH" HOME="$apply_fixture" bash "$installer" --apply --scope user --base-dir "$apply_fixture" --release-dir "$apply_fixture/release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$apply_fixture/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --audit-input-port 3303 --go-sidecar-mode reuse --nginx-config "$apply_fixture/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf" >"$root/residual-go-sidecar.out" 2>&1; then
+if PATH="$apply_fixture/bin:$PATH" HOME="$apply_fixture" bash "$installer" --apply --scope user --base-dir "$apply_fixture" --release-dir "$apply_fixture/release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$apply_fixture/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --audit-input-port 3303 --operation-log-input-port 3304 --go-sidecar-mode reuse --nginx-config "$apply_fixture/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf" >"$root/residual-go-sidecar.out" 2>&1; then
   echo 'performance topology apply accepted a residual candidate Go sidecar artifact' >&2
   exit 1
 fi
@@ -407,7 +422,7 @@ if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$r
 fi
 grep -Fq -- '--instance-id-prefix is required when isolated runtime and upstream suffix are enabled' "$root/missing-instance-prefix.out"
 
-if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --audit-input-port 3303 --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf" >"$root/missing-reuse-mode.out" 2>&1; then
+if bash "$installer" --dry-run --scope user --base-dir "$base" --release-dir "$release" --label-prefix com.example.juhe-ai.temporary --runtime-dir "$base/runtime-temporary" --nginx-upstream-suffix temporary_20260730 --instance-id-prefix temporary --audit-input-port 3303 --operation-log-input-port 3304 --nginx-config "$base/temporary.conf" --nginx-bin /not-a-real-nginx --nginx-main-config "$root/not-a-real-nginx.conf" >"$root/missing-reuse-mode.out" 2>&1; then
   echo 'performance topology dry-run accepted an isolated candidate that would start a second Go data owner' >&2
   exit 1
 fi
@@ -1153,12 +1168,14 @@ DATA_DIR="$RUNTIME_DIR/data"
 CURRENT_DIR="$root/release"
 NODE_PATH=/usr/local/opt/node@22/bin:/usr/bin:/bin
 GATEWAY_COUNT=3
+CONTROL_COUNT=2
 USAGE_WORKERS=2
 LOG_WORKERS=2
 GATEWAY_BASE_PORT=3501
 CONTROL_PORT=3600
 INGRESS_PORT=3599
 AUDIT_INPUT_PORT=3303
+OPERATION_LOG_INPUT_PORT=3304
 GATEWAY_UPSTREAM=juhe_ai_gateway_pool_temporary_20260730
 CONTROL_UPSTREAM=juhe_ai_control_temporary_20260730
 INSTALL_TOKEN=temporary-install-token
@@ -1172,21 +1189,39 @@ JUHE_AI_POSTGRES_URL=postgres://temporary
 JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=temporary-f3-input-secret-with-32-bytes
+JUHE_AI_OPERATION_LOG_INPUT_URL=http://127.0.0.1:3304
+JUHE_AI_OPERATION_LOG_INPUT_SECRET=temporary-f4-input-secret-with-32-bytes
 EOF
 cat > "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar" <<'EOF'
 #!/bin/sh
-printf '%s\n' "$NODE_ENV|$JUHE_AI_RUNTIME_LOG_STORE|$JUHE_AI_RUNTIME_LOG_INSTANCE_ID|$JUHE_AI_TABLE_MONITOR_STORE|$JUHE_AI_TABLE_MONITOR_INSTANCE_ID|$JUHE_AI_AUDIT_LOG_STORE|$JUHE_AI_AUDIT_LOG_INSTANCE_ID|$JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY|$JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY|$JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS|$JUHE_AI_AUDIT_LOG_INPUT_SECRET"
+printf '%s\n' "$NODE_ENV|$JUHE_AI_RUNTIME_LOG_STORE|$JUHE_AI_RUNTIME_LOG_INSTANCE_ID|$JUHE_AI_TABLE_MONITOR_STORE|$JUHE_AI_TABLE_MONITOR_INSTANCE_ID|$JUHE_AI_AUDIT_LOG_STORE|$JUHE_AI_AUDIT_LOG_INSTANCE_ID|$JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY|$JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY|$JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS|$JUHE_AI_AUDIT_LOG_INPUT_SECRET|$JUHE_AI_OPERATION_LOG_STORE|$JUHE_AI_OPERATION_LOG_INSTANCE_ID|$JUHE_AI_OPERATION_LOG_POSTGRES_URL|$JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS|$JUHE_AI_OPERATION_LOG_INPUT_SECRET"
 EOF
 chmod 755 "$CURRENT_DIR/backend-go/juhe-ai-go-sidecar"
-service_role() { printf gateway; }
-service_port() { printf 3501; }
+service_role() {
+  case "$1" in
+    control-1) printf control ;;
+    *) printf gateway ;;
+  esac
+}
+service_port() {
+  case "$1" in
+    control-1) printf 3600 ;;
+    control-2) printf 3601 ;;
+    *) printf 3501 ;;
+  esac
+}
 __INSTANCE_ID_FOR_FUNCTION__
 __RENDER_RUN_SCRIPT_FUNCTION__
 __RENDER_NGINX_FUNCTION__
 render_run_script gateway-1 "$root/gateway-1.sh"
+render_run_script control-2 "$root/control-2.sh"
 render_run_script go-sidecar "$root/go-sidecar.sh"
 render_nginx "$root/nginx.conf"
 rg -Fqx 'export JUHE_AI_INSTANCE_ID=temporary-gateway-1' "$root/gateway-1.sh"
+rg -Fqx 'export JUHE_AI_PERFORMANCE_NODE_ROLE=gateway' "$root/control-2.sh"
+rg -Fqx 'export JUHE_AI_INSTANCE_ID=temporary-control-2' "$root/control-2.sh"
+rg -Fqx 'export JUHE_AI_PORT=3601' "$root/control-2.sh"
+rg -Fqx 'export JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL=http://127.0.0.1:3600' "$root/control-2.sh"
 rg -Fqx "export JUHE_AI_LOG_DIR=\"$RUNTIME_LOG_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_USAGE_SPOOL_DIR=\"$SPOOL_DIR\"" "$root/gateway-1.sh"
 rg -Fqx "export JUHE_AI_DATASET_DATABASE_PATH=\"$DATA_DIR/juhe-ai-dataset.sqlite3\"" "$root/gateway-1.sh"
@@ -1201,15 +1236,22 @@ rg -Fqx "export JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=\"$GO_SIDECAR_DATA_DIR/audit/bl
 rg -Fqx "export JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=\"$GO_SIDECAR_DATA_DIR/audit/hot-search\"" "$root/go-sidecar.sh"
 rg -Fqx 'export JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS="$input_address"' "$root/go-sidecar.sh"
 rg -Fqx 'export JUHE_AI_AUDIT_LOG_INPUT_SECRET="$input_secret"' "$root/go-sidecar.sh"
+rg -Fqx 'export JUHE_AI_OPERATION_LOG_STORE=postgres' "$root/go-sidecar.sh"
+rg -Fqx 'export JUHE_AI_OPERATION_LOG_POSTGRES_URL="$operation_log_url"' "$root/go-sidecar.sh"
+rg -Fqx 'export JUHE_AI_OPERATION_LOG_INSTANCE_ID="temporary-operation-log"' "$root/go-sidecar.sh"
+rg -Fqx 'export JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS="127.0.0.1:3304"' "$root/go-sidecar.sh"
+rg -Fqx 'export JUHE_AI_OPERATION_LOG_INPUT_SECRET="$operation_input_secret"' "$root/go-sidecar.sh"
 rg -Fqx "exec \"$CURRENT_DIR/backend-go/juhe-ai-go-sidecar\"" "$root/go-sidecar.sh"
-if rg -Fq 'JUHE_AI_RUNTIME_LOG_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_TABLE_MONITOR_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_AUDIT_LOG_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_SECRET' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_REDIS_' "$root/go-sidecar.sh"; then
+if rg -Fq 'JUHE_AI_RUNTIME_LOG_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_TABLE_MONITOR_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_AUDIT_LOG_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_OPERATION_LOG_STORE=sqlite' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_SECRET' "$root/go-sidecar.sh" || rg -Fq 'JUHE_AI_REDIS_' "$root/go-sidecar.sh"; then
   echo 'Go sidecar run script introduced a forbidden fallback or Redis coupling' >&2
   exit 69
 fi
 (cd "$CURRENT_DIR" && "$root/go-sidecar.sh") > "$root/go-sidecar.env"
-rg -Fqx "production|postgres|temporary-runtime-log|postgres|temporary-table-monitor|postgres|temporary-audit-log|$GO_SIDECAR_DATA_DIR/audit/blobs|$GO_SIDECAR_DATA_DIR/audit/hot-search|127.0.0.1:3303|temporary-f3-input-secret-with-32-bytes" "$root/go-sidecar.env"
+rg -Fqx "production|postgres|temporary-runtime-log|postgres|temporary-table-monitor|postgres|temporary-audit-log|$GO_SIDECAR_DATA_DIR/audit/blobs|$GO_SIDECAR_DATA_DIR/audit/hot-search|127.0.0.1:3303|temporary-f3-input-secret-with-32-bytes|postgres|temporary-operation-log|postgres://temporary|127.0.0.1:3304|temporary-f4-input-secret-with-32-bytes" "$root/go-sidecar.env"
 rg -Fq "upstream $GATEWAY_UPSTREAM {" "$root/nginx.conf"
 rg -Fq "upstream $CONTROL_UPSTREAM {" "$root/nginx.conf"
+rg -Fq 'server 127.0.0.1:3600;' "$root/nginx.conf"
+rg -Fq 'server 127.0.0.1:3601;' "$root/nginx.conf"
 rg -Fq "proxy_pass http://$CONTROL_UPSTREAM;" "$root/nginx.conf"
 rg -Fq "proxy_pass http://$GATEWAY_UPSTREAM;" "$root/nginx.conf"
 if rg -Fq "$root/base/bin/performance" "$root/gateway-1.sh" "$root/nginx.conf"; then
@@ -1299,6 +1341,7 @@ set -euo pipefail
 CURRENT_DIR=/tmp/juhe-ai-performance-harness
 INGRESS_PORT=3599
 GATEWAY_COUNT=3
+CONTROL_COUNT=2
 USAGE_WORKERS=2
 LOG_WORKERS=2
 INSTANCE_ID_PREFIX=
@@ -1313,6 +1356,7 @@ metrics_registry_role_pids() {
     gateway-1) printf '%s\n' 'gateway:gateway-1=101' 'db-service:gateway-1=201' ;;
     gateway-2) printf '%s\n' 'gateway:gateway-2=102' 'db-service:gateway-2=202' ;;
     gateway-3) printf '%s\n' 'gateway:gateway-3=103' 'db-service:gateway-3=203' ;;
+    control-2) printf '%s\n' 'gateway:control-2=105' 'db-service:control-2=205' ;;
     control-1) printf '%s\n' 'control:control-1=104' 'db-service:control-1=204' 'usage-worker:1=301' 'usage-worker:2=302' 'log-worker:1=401' 'log-worker:2=402' 'stats-worker:1=501' 'ops-worker:1=601' ;;
     *) return 2 ;;
   esac
@@ -1321,12 +1365,12 @@ node() {
   [ "$JUHE_AI_LOG_FILE_ENABLED" = false ]
   printf '%s\n' "$@" > "$HARNESS_ROOT/$VERIFIED_HEALTH_JSON.args"
 }
-for instance in gateway-1 gateway-2 gateway-3 control-1; do
+for instance in gateway-1 gateway-2 gateway-3 control-2 control-1; do
   VERIFIED_HEALTH_JSON="$instance"
   wait_for_metrics_registry "$instance" 123456789
 done
-[ "$(rg -c -- '--role-pid' "$HARNESS_ROOT/control-1.args")" -eq 14 ]
-for mapping in 'gateway:gateway-1=101' 'db-service:gateway-1=201' 'gateway:gateway-2=102' 'db-service:gateway-2=202' 'gateway:gateway-3=103' 'db-service:gateway-3=203'; do
+[ "$(rg -c -- '--role-pid' "$HARNESS_ROOT/control-1.args")" -eq 16 ]
+for mapping in 'gateway:gateway-1=101' 'db-service:gateway-1=201' 'gateway:gateway-2=102' 'db-service:gateway-2=202' 'gateway:gateway-3=103' 'db-service:gateway-3=203' 'gateway:control-2=105' 'db-service:control-2=205'; do
   rg -qx -- "$mapping" "$HARNESS_ROOT/control-1.args"
 done
 '@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction).Replace('__INSTANCE_ID_FOR_FUNCTION__', $instanceIdForFunction)
