@@ -765,7 +765,7 @@ func TestNodeGoNodeSmokeServer(t *testing.T) {
 	runNodeGoNodeSmokeScript(t, "operation-log-go-real-sidecar-smoke.ts")
 }
 
-func TestNodeGoNodeSystemAPISettingsSmoke(t *testing.T) {
+func TestNodeGoNodeSystemAPIProducerSmoke(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_SYSTEM_API_SMOKE")) == "" {
 		t.Skip("未设置 JUHE_AI_OPERATION_LOG_SYSTEM_API_SMOKE；真实 System API F4 smoke 未执行")
 	}

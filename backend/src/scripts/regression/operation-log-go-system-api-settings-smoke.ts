@@ -95,6 +95,35 @@ try {
   })
   assert.equal(responsePolicy.status, 201, `真实 response-inspection-policies 业务写入应成功：${responsePolicy.text}`)
 
+  const memberUsername = 'f4_smoke_member'
+  const memberPassword = 'f4-smoke-member-password'
+  const systemAccount = await request(baseURL, '/__aisys__/api/system-accounts', cookie, {
+    method: 'POST',
+    body: {
+      username: memberUsername,
+      displayName: 'F4SystemAPIMemberSmoke',
+      password: memberPassword,
+      role: 'user',
+      status: 'active',
+      mustChangePassword: false
+    }
+  })
+  assert.equal(systemAccount.status, 201, `真实 system-accounts 业务写入应成功：${systemAccount.text}`)
+  const systemAccountID = envelope<{ id: string }>(systemAccount.text).id
+  const memberCookie = await login(baseURL, captchaAnswerForTest, memberUsername, memberPassword)
+
+  const systemTeam = await request(baseURL, '/__aisys__/api/system-teams', cookie, {
+    method: 'POST',
+    body: { name: 'F4 System API team smoke', description: 'F4 team smoke', status: 'active' }
+  })
+  assert.equal(systemTeam.status, 201, `真实 system-teams 业务写入应成功：${systemTeam.text}`)
+  const team = envelope<{ id: string; updatedAt: string }>(systemTeam.text)
+  const addTeamMember = await request(baseURL, `/__aisys__/api/system-teams/${encodeURIComponent(team.id)}/members`, cookie, {
+    method: 'POST',
+    body: { systemAccountIds: [systemAccountID], expectedUpdatedAt: team.updatedAt }
+  })
+  assert.equal(addTeamMember.status, 200, `真实 system-teams 成员写入应成功：${addTeamMember.text}`)
+
   const group = await request(baseURL, '/__aisys__/api/groups', cookie, {
     method: 'POST',
     body: { name: 'F4 System API group smoke', providerCode: 'gpt', enabled: true }
@@ -162,7 +191,23 @@ try {
   assert.equal(proxyDetail.path, '/__aisys__/api/proxies/')
   await assertPersonalSummary(baseURL, cookie, proxyItem.id, false, false)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, route_strategies, api_keys, proxies (${inputURL})`)
+  const systemAccountItem = await assertOperation(baseURL, cookie, 'system_accounts', 'create', '创建系统账户：F4SystemAPIMemberSmoke')
+  const systemAccountDetail = await readAdminDetail(baseURL, cookie, systemAccountItem.id, 'system_accounts.create', 'system_account')
+  assert.equal(systemAccountDetail.path, '/__aisys__/api/system-accounts/')
+  await assertPersonalSummary(baseURL, cookie, systemAccountItem.id, true, true)
+
+  const teamItem = await assertOperation(baseURL, cookie, 'system_teams', 'create', '创建系统团队：F4 System API team smoke')
+  const teamDetail = await readAdminDetail(baseURL, cookie, teamItem.id, 'system_teams.create', 'system_team')
+  assert.equal(teamDetail.path, '/__aisys__/api/system-teams/')
+  await assertPersonalSummary(baseURL, cookie, teamItem.id, true, true)
+
+  const addMemberItem = await assertOperation(baseURL, cookie, 'system_teams', 'add_members', '添加团队成员：F4 System API team smoke')
+  const addMemberDetail = await readAdminDetail(baseURL, cookie, addMemberItem.id, 'system_teams.add_members', 'system_team')
+  assert.equal(addMemberDetail.path, `/__aisys__/api/system-teams/${team.id}/members`)
+  await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
+  await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
+
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
@@ -176,7 +221,7 @@ function requiredEnv(name: string): string {
   return value
 }
 
-async function login(baseURL: string, captchaAnswerForTest: (captchaID: string) => string | undefined): Promise<string> {
+async function login(baseURL: string, captchaAnswerForTest: (captchaID: string) => string | undefined, username = 'admin', password = 'admin'): Promise<string> {
   const captcha = await request(baseURL, '/__aisys__/api/auth/captcha')
   assert.equal(captcha.status, 200, `captcha 应成功：${captcha.text}`)
   const captchaID = envelope<{ captchaId: string }>(captcha.text).captchaId
@@ -184,7 +229,7 @@ async function login(baseURL: string, captchaAnswerForTest: (captchaID: string) 
   assert.ok(captchaCode, '测试必须能取得 captcha 答案')
   const response = await request(baseURL, '/__aisys__/api/auth/login', undefined, {
     method: 'POST',
-    body: { username: 'admin', password: 'admin', captchaId: captchaID, captchaCode }
+    body: { username, password, captchaId: captchaID, captchaCode }
   })
   assert.equal(response.status, 200, `登录应成功：${response.text}`)
   const cookie = response.headers.get('set-cookie')?.split(';')[0]
