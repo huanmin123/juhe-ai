@@ -6,14 +6,6 @@ import {
 } from './modules/background/background-ipc.js'
 import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, stopBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
 import {
-  enqueueOperationLogsLocal,
-  flushOperationLogQueueForShutdown,
-  getOperationLogQueueRuntime,
-  installOperationLogQueueShutdownHooks,
-  startOperationLogRedisStreamConsumer,
-  stopOperationLogRedisStreamConsumer
-} from './modules/operation-logs/operation-log-queue.service.js'
-import {
   enqueuePublicApiLogsLocal,
   flushPublicApiLogQueueForShutdown,
   getPublicApiLogQueueRuntime,
@@ -63,7 +55,6 @@ import { isAccountHealthCheckTriggerReason, normalizeCodexSourceProbeFence } fro
 
 type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
-  | { type: 'background_worker_operation_logs'; items: unknown[] }
   | { type: 'background_worker_public_api_logs'; items: unknown[] }
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
@@ -85,11 +76,9 @@ if (isIngestWorker()) {
   }
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
-  installOperationLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
   startUsageRecordRedisStreamConsumer()
-  startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
 } else if (isUsageWorker()) {
@@ -103,9 +92,7 @@ if (isIngestWorker()) {
   }
 } else if (isLogWorker()) {
   startLogMaintenance()
-  installOperationLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
-  startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
@@ -140,9 +127,6 @@ process.on('message', (message: unknown) => {
   switch (message.type) {
     case 'background_worker_usage_records':
       enqueueUsageRecordsLocal(message.items as Parameters<typeof enqueueUsageRecordsLocal>[0])
-      break
-    case 'background_worker_operation_logs':
-      enqueueOperationLogsLocal(message.items as Parameters<typeof enqueueOperationLogsLocal>[0])
       break
     case 'background_worker_public_api_logs':
       enqueuePublicApiLogsLocal(message.items as Parameters<typeof enqueuePublicApiLogsLocal>[0])
@@ -271,7 +255,6 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     workerRole: currentBackgroundWorkerRole(),
     jobs: getBackgroundJobRuntimeSnapshots(),
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
-    operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
     publicApiLogQueue: queueRuntime(getPublicApiLogQueueRuntime()),
     recordMaintenanceQueue: queueRuntime(getRecordMaintenanceQueueRuntime()),
     accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
@@ -423,12 +406,10 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
   }
   if (isIngestWorker()) {
     await stopUsageRecordRedisStreamConsumer()
-    await stopOperationLogRedisStreamConsumer()
     await stopPublicApiLogRedisStreamConsumer()
     await stopRecordMaintenanceRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
-    flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
     await flushRecordMaintenanceQueueForShutdown()
     stopPerformanceProcessMetricsPublisher()
@@ -448,9 +429,7 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     return
   }
   if (isLogWorker()) {
-    await stopOperationLogRedisStreamConsumer()
     await stopPublicApiLogRedisStreamConsumer()
-    flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
     stopPerformanceProcessMetricsPublisher()
     await closeLogger()
@@ -493,7 +472,6 @@ function isWorkerControlMessage(message: WorkerIncomingMessage): boolean {
 function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
     || message.type === 'background_worker_usage_records'
-    || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_dataset_write_request'
@@ -508,7 +486,6 @@ function isUsageWorkerMessage(message: WorkerIncomingMessage): boolean {
 
 function isLogWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
-    || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
 }
 
@@ -520,7 +497,6 @@ function assertLocalQueueIpcAllowed(message: WorkerIncomingMessage): void {
 
 function isLocalQueueIpcMessage(message: WorkerIncomingMessage): boolean {
   return message.type === 'background_worker_usage_records'
-    || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
 }

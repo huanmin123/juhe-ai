@@ -100,7 +100,6 @@ await assert.rejects(
 assert.equal(directConflictRevisionReads, 0, '专用 revision 冲突不得重复读取 summary')
 
 const requiredRouteTokens = [
-  'createOperationLogAsync',
   'listPublicGroupsAsync',
   'listPublicRouteStrategiesAsync',
   'listPublicApiKeysAsync',

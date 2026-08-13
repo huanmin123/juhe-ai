@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs'
 
 const queueFiles = [
   '../../modules/gateway/usage/record-queue.service.ts',
-  '../../modules/operation-logs/operation-log-queue.service.ts',
   '../../modules/public-api-logs/public-api-log-queue.service.ts',
   '../../modules/record-maintenance/record-maintenance-queue.service.ts'
 ] as const

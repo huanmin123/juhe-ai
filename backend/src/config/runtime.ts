@@ -61,6 +61,9 @@ export interface RuntimeConfig {
   auditLogInputUrl?: string
   auditLogInputSecret?: string
   auditLogInputTimeoutMs?: number
+  operationLogInputUrl?: string
+  operationLogInputSecret?: string
+  operationLogInputTimeoutMs?: number
   systemApi: {
     dbServiceMaxInFlight: number
   }
@@ -257,10 +260,6 @@ export interface RuntimeConfig {
     modelQualityHealthSyncRetryBatchSize: number
     taskRunReconcileBatchSize: number
     modelTrustObservationAggregationBatchSize: number
-    operationLogBatchSize: number
-    operationLogShutdownFlushMaxBatches: number
-    operationLogQueueMaxItems: number
-    operationLogQueueMaxMb: number
     ipcUsageRecordQueueMaxMessages: number
     ipcUsageRecordQueueMaxMb: number
     ipcRegularWorkerQueueMaxMessages: number
@@ -471,6 +470,19 @@ const configuredAuditLogInputTimeoutMs = auditLogInputTimeoutMsConfig(
   'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS',
   configuredAuditLogInputUrl
 )
+const configuredOperationLogInputUrl = auditLogInputUrlConfig(
+  'JUHE_AI_OPERATION_LOG_INPUT_URL',
+  optionalStringConfig('JUHE_AI_OPERATION_LOG_INPUT_URL')
+)
+const configuredOperationLogInputSecret = auditLogInputSecretConfig(
+  'JUHE_AI_OPERATION_LOG_INPUT_SECRET',
+  configuredOperationLogInputUrl,
+  optionalStringConfig('JUHE_AI_OPERATION_LOG_INPUT_SECRET')
+)
+const configuredOperationLogInputTimeoutMs = auditLogInputTimeoutMsConfig(
+  'JUHE_AI_OPERATION_LOG_INPUT_TIMEOUT_MS',
+  configuredOperationLogInputUrl
+)
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
@@ -538,6 +550,9 @@ export const runtimeConfig: RuntimeConfig = {
   auditLogInputUrl: configuredAuditLogInputUrl,
   auditLogInputSecret: configuredAuditLogInputSecret,
   auditLogInputTimeoutMs: configuredAuditLogInputTimeoutMs,
+  operationLogInputUrl: configuredOperationLogInputUrl,
+  operationLogInputSecret: configuredOperationLogInputSecret,
+  operationLogInputTimeoutMs: configuredOperationLogInputTimeoutMs,
   systemApi: {
     dbServiceMaxInFlight: numberConfig(
       'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT',
@@ -773,10 +788,6 @@ export const runtimeConfig: RuntimeConfig = {
     modelQualityHealthSyncRetryBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_QUALITY_HEALTH_SYNC_RETRY_BATCH_SIZE', 20, 1, 1_000),
     taskRunReconcileBatchSize: integerConfig('JUHE_AI_BACKGROUND_TASK_RUN_RECONCILE_BATCH_SIZE', 500, 1, 10_000),
     modelTrustObservationAggregationBatchSize: integerConfig('JUHE_AI_BACKGROUND_MODEL_TRUST_OBSERVATION_AGGREGATION_BATCH_SIZE', 100, 1, 10_000),
-    operationLogBatchSize: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_BATCH_SIZE', 200, 1, 10_000),
-    operationLogShutdownFlushMaxBatches: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_SHUTDOWN_FLUSH_MAX_BATCHES', 100, 1, 10_000),
-    operationLogQueueMaxItems: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_QUEUE_MAX_ITEMS', 5_000, 1, 1_000_000),
-    operationLogQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_OPERATION_LOG_QUEUE_MAX_MB', 32, 1, 4_096),
     ipcUsageRecordQueueMaxMessages: integerConfig('JUHE_AI_BACKGROUND_IPC_USAGE_RECORD_QUEUE_MAX_MESSAGES', 10_000, 1, 1_000_000),
     ipcUsageRecordQueueMaxMb: integerConfig('JUHE_AI_BACKGROUND_IPC_USAGE_RECORD_QUEUE_MAX_MB', 64, 1, 4_096),
     ipcRegularWorkerQueueMaxMessages: integerConfig('JUHE_AI_BACKGROUND_IPC_REGULAR_WORKER_QUEUE_MAX_MESSAGES', 5_000, 1, 1_000_000),

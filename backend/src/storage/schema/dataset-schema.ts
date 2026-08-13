@@ -140,64 +140,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           created_at TEXT NOT NULL
         );
 
-    CREATE TABLE IF NOT EXISTS operation_logs (
-          id TEXT PRIMARY KEY,
-          trace_id TEXT,
-          actor_system_account_id TEXT NOT NULL,
-          actor_username TEXT,
-          actor_display_name TEXT,
-          actor_role TEXT NOT NULL,
-          operation_scope_system_account_id TEXT,
-          mode TEXT NOT NULL DEFAULT 'self',
-          module TEXT NOT NULL,
-          action TEXT NOT NULL,
-          operation_key TEXT NOT NULL,
-          resource_type TEXT NOT NULL,
-          resource_id TEXT,
-          resource_name TEXT,
-          summary TEXT NOT NULL,
-          detail_level TEXT NOT NULL DEFAULT 'full',
-          visibility_scope TEXT NOT NULL DEFAULT 'targeted',
-          changes_json TEXT NOT NULL DEFAULT '[]',
-          metadata_json TEXT NOT NULL DEFAULT '{}',
-          method TEXT,
-          path TEXT,
-          status_code INTEGER,
-          client_ip TEXT,
-          user_agent TEXT,
-          created_at TEXT NOT NULL
-        );
-
-    CREATE TABLE IF NOT EXISTS operation_log_targets (
-          id TEXT PRIMARY KEY,
-          operation_log_id TEXT NOT NULL,
-          target_type TEXT NOT NULL,
-          target_id TEXT,
-          target_name TEXT,
-          target_owner_system_account_id TEXT,
-          relation TEXT NOT NULL DEFAULT 'affected',
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
-        );
-
-    CREATE TABLE IF NOT EXISTS operation_log_viewers (
-          operation_log_id TEXT NOT NULL,
-          system_account_id TEXT NOT NULL,
-          visibility_reason TEXT NOT NULL,
-          detail_level TEXT NOT NULL DEFAULT 'full',
-          created_at TEXT NOT NULL,
-          PRIMARY KEY (operation_log_id, system_account_id, visibility_reason),
-          FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
-        );
-
-    CREATE TABLE IF NOT EXISTS operation_log_summary_search_terms (
-          operation_log_id TEXT NOT NULL,
-          term TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          PRIMARY KEY (term, operation_log_id),
-          FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
-        );
-
     CREATE TABLE IF NOT EXISTS api_key_record_cleanup_targets (
           api_key_id TEXT PRIMARY KEY,
           system_account_id TEXT NOT NULL,
@@ -274,38 +216,6 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_public_api_logs_created ON public_api_logs(created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_public_api_logs_source_created ON public_api_logs(source_ref_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_actor_created ON operation_logs(actor_system_account_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_scope_created ON operation_logs(operation_scope_system_account_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_module_action_created ON operation_logs(module, action, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_resource_created ON operation_logs(resource_type, resource_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_resource_id_created ON operation_logs(resource_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_visibility_created ON operation_logs(visibility_scope, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_id ON operation_logs(trace_id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_created ON operation_logs(trace_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_targets_target ON operation_log_targets(target_type, target_id, created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_targets_log_created ON operation_log_targets(operation_log_id, created_at, id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_account_created ON operation_log_viewers(system_account_id, created_at, operation_log_id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_account_log ON operation_log_viewers(system_account_id, operation_log_id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_log_account ON operation_log_viewers(operation_log_id, system_account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_summary_search_terms_term_created ON operation_log_summary_search_terms(term, created_at DESC, operation_log_id DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_operation_log_summary_search_terms_log ON operation_log_summary_search_terms(operation_log_id);
 
     CREATE INDEX IF NOT EXISTS idx_api_key_record_cleanup_targets_attempt ON api_key_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, api_key_id);
 

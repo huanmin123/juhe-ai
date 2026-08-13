@@ -32,7 +32,6 @@ const [
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   { flushAllUsageRecordQueue },
-  { flushAllOperationLogQueue },
   { closeSqliteReadWorkerPool },
   databaseModule,
   repositories
@@ -41,7 +40,6 @@ const [
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
@@ -360,7 +358,6 @@ try {
   await closeServer(mockOpenAIServer)
   try {
     flushAllUsageRecordQueue()
-    flushAllOperationLogQueue()
     await closeSqliteReadWorkerPool()
     databaseModule.closeStorageDatabases()
   } catch {

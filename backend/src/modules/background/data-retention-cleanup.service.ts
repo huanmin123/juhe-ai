@@ -1,7 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getDatasetDatabase } from '../../storage/database.js'
-import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
 import {
   cleanupModelCheckRunsBefore,
@@ -32,13 +31,11 @@ const rankSnapshotRetentionMaxDays = 365
 const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
-const operationLogRetentionMaxDays = 3650
 const publicApiLogRetentionMaxDays = 365
 const modelCheckRetentionMaxDays = 365
 let cleanupRunning = false
 
 interface DataRetentionPolicy {
-  operationLogDays: number
   publicApiLogDays: number
   modelCheckDays: number
   usageRecordDays: number
@@ -55,7 +52,6 @@ interface DataRetentionPolicy {
 }
 
 export interface DataRetentionCleanupResult {
-  operationLogs: number
   publicApiLogs: number
   modelCheckRuns: number
   modelCheckItems: number
@@ -135,7 +131,6 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
     const maxBatches = DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
     const now = Date.now()
     const retention: DataRetentionPolicy = {
-      operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
       modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
@@ -214,14 +209,6 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   const result = emptyCleanupResult()
   const { now, retention, batchSize, maxBatches } = input
   await runDataRetentionCleanupStages([
-    async () => {
-      result.operationLogs = await cleanupInBatches(
-        () => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize),
-        batchSize,
-        maxBatches,
-        input.signal
-      )
-    },
     async () => {
       result.publicApiLogs = await cleanupInBatches(
         () => cleanupPublicApiLogsBefore(cutoffIso(now, retention.publicApiLogDays), batchSize),
@@ -501,7 +488,6 @@ function settingNumber(settings: Record<string, unknown>, key: string, min: numb
 
 function emptyCleanupResult(): DataRetentionCleanupResult {
   return {
-    operationLogs: 0,
     publicApiLogs: 0,
     modelCheckRuns: 0,
     modelCheckItems: 0,

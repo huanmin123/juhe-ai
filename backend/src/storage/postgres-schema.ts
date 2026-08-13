@@ -109,11 +109,6 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     source: 'usage-records-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_usage_records_system_trace_c_created_sort ON usage_records(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)'
   },
-  {
-    schemaName: 'juhe_dataset',
-    source: 'operation-log-pg-prefix-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs((trace_id COLLATE "C"), created_at DESC, id DESC)'
-  },
 ]
 
 const accountListAvailabilityProjectionTriggerStatements: PostgresSchemaStatement[] = [

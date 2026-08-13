@@ -4,10 +4,6 @@ import {
   stopUsageRecordRedisStreamConsumer
 } from '../../modules/gateway/usage/record-queue.service.js'
 import {
-  startOperationLogRedisStreamConsumer,
-  stopOperationLogRedisStreamConsumer
-} from '../../modules/operation-logs/operation-log-queue.service.js'
-import {
   startPublicApiLogRedisStreamConsumer,
   stopPublicApiLogRedisStreamConsumer
 } from '../../modules/public-api-logs/public-api-log-queue.service.js'
@@ -136,7 +132,6 @@ function assertDrainRuntime(): void {
 
 function startConsumers(): void {
   startUsageRecordRedisStreamConsumer()
-  startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
 }
@@ -144,7 +139,6 @@ function startConsumers(): void {
 async function stopConsumers(): Promise<void> {
   await Promise.allSettled([
     stopUsageRecordRedisStreamConsumer(),
-    stopOperationLogRedisStreamConsumer(),
     stopPublicApiLogRedisStreamConsumer(),
     stopRecordMaintenanceRedisStreamConsumer()
   ])

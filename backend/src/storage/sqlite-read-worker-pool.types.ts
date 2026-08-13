@@ -91,12 +91,6 @@ import type {
 } from './external-integration-source.repository.js'
 import type { ModelCheckRunListOptions } from './model-checks.repository.js'
 import type {
-  OperationLogDetail,
-  OperationLogDetailSupplement,
-  OperationLogListOptions,
-  OperationLogListResult
-} from './operation-logs.repository.js'
-import type {
   PublicApiLogDetail,
   PublicApiLogDetailSupplement,
   PublicApiLogListOptions,
@@ -365,33 +359,6 @@ export type SqliteReadWorkerOperation =
     type: 'get_usage_record_detail_read_only'
     id: string
     access?: AccessScope
-  }
-  | {
-    type: 'list_operation_logs_read_only'
-    options?: OperationLogListOptions
-  }
-  | {
-    type: 'list_operation_logs_for_viewer_read_only'
-    systemAccountId: string
-    options?: OperationLogListOptions
-  }
-  | {
-    type: 'get_operation_log_detail_read_only'
-    id: string
-  }
-  | {
-    type: 'get_operation_log_detail_for_viewer_read_only'
-    id: string
-    systemAccountId: string
-  }
-  | {
-    type: 'get_operation_log_detail_supplement_read_only'
-    id: string
-  }
-  | {
-    type: 'get_operation_log_detail_supplement_for_viewer_read_only'
-    id: string
-    systemAccountId: string
   }
   | {
     type: 'list_public_api_logs_read_only'
@@ -899,12 +866,6 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_system_team_member_history_read_only' } ? SystemTeamMemberHistoryResult | undefined :
   T extends { type: 'list_usage_records_read_only' } ? UsageRecordListResult :
   T extends { type: 'get_usage_record_detail_read_only' } ? UsageRecordSummary | undefined :
-  T extends { type: 'list_operation_logs_read_only' } ? OperationLogListResult :
-  T extends { type: 'list_operation_logs_for_viewer_read_only' } ? OperationLogListResult :
-  T extends { type: 'get_operation_log_detail_read_only' } ? OperationLogDetail | undefined :
-  T extends { type: 'get_operation_log_detail_for_viewer_read_only' } ? OperationLogDetail | undefined :
-  T extends { type: 'get_operation_log_detail_supplement_read_only' } ? OperationLogDetailSupplement | undefined :
-  T extends { type: 'get_operation_log_detail_supplement_for_viewer_read_only' } ? OperationLogDetailSupplement | undefined :
   T extends { type: 'list_public_api_logs_read_only' } ? PublicApiLogListResult :
   T extends { type: 'get_public_api_log_detail_read_only' } ? PublicApiLogDetail | undefined :
   T extends { type: 'get_public_api_log_detail_supplement_read_only' } ? PublicApiLogDetailSupplement | undefined :

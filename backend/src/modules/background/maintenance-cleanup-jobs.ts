@@ -3,7 +3,6 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
 import { cleanupModelCheckRunsBeforeAsync } from '../../storage/data-retention.repository.js'
-import { cleanupOperationLogsBeforeAsync } from '../../storage/operation-log-cleanup.repository.js'
 import { cleanupPublicApiLogsBeforeAsync } from '../../storage/public-api-logs.repository.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
@@ -31,14 +30,12 @@ const rankSnapshotRetentionMaxDays = 365
 const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
-const operationLogRetentionMaxDays = 3650
 const publicApiLogRetentionMaxDays = 365
 const modelCheckRetentionMaxDays = 365
 const expiredDeletedAccountCleanupDbServiceTimeoutMs = 60_000
 let postgresDataRetentionDispatchRunning = false
 
 interface PostgresRetentionPolicy {
-  operationLogDays: number
   publicApiLogDays: number
   modelCheckDays: number
   usageRecordDays: number
@@ -184,12 +181,6 @@ async function cleanupPostgresDatasetRetainedData(input: {
   signal: AbortSignal
 }): Promise<Record<string, number>> {
   const result: Record<string, number> = {}
-  result.operationLogs = await cleanupCountedRetentionBatches(
-    input.maxBatches,
-    () => cleanupOperationLogsBeforeAsync(cutoffIso(input.nowMs, input.retention.operationLogDays), input.batchSize),
-    input.batchSize,
-    input.signal
-  )
   result.publicApiLogs = await cleanupCountedRetentionBatches(
     input.maxBatches,
     () => cleanupPublicApiLogsBeforeAsync(cutoffIso(input.nowMs, input.retention.publicApiLogDays), input.batchSize),
@@ -321,7 +312,6 @@ function sumNumbers(deleted: object): number {
 
 function postgresRetentionPolicy(settings: Record<string, unknown>): PostgresRetentionPolicy {
   return {
-    operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
     publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
     modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
     usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),

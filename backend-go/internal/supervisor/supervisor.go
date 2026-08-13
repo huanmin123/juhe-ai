@@ -1,4 +1,4 @@
-// Package supervisor runs the three independent Go sidecar functions in one
+// Package supervisor runs the four independent Go sidecar functions in one
 // process. It deliberately does not merge their configuration, stores, schema
 // or owner leases: those boundaries are part of the F1/F2/F3 contracts.
 package supervisor
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go/internal/tablemonitor"
 )
@@ -165,7 +166,7 @@ func min(left, right time.Duration) time.Duration {
 	return right
 }
 
-// Supervisor owns the independently opened F1, F2 and F3 stores until Run
+// Supervisor owns the independently opened F1, F2, F3 and optional F4 stores until Run
 // returns. Constructing it performs every configuration, store and schema
 // preflight before any long-running component goroutine starts.
 type Supervisor struct {
@@ -197,12 +198,37 @@ func New(ctx context.Context, getenv func(string) string, logger *slog.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("load F3 audit input config: %w", err)
 	}
+	operationConfig, err := operationlog.LoadConfig(getenv)
+	if err != nil {
+		return nil, fmt.Errorf("load F4 operation-log config: %w", err)
+	}
+	var operationInputConfig operationlog.InputServerConfig
+	var operationStore operationlog.Store
+	if operationConfig.Enabled {
+		operationInputConfig, err = operationlog.LoadInputServerConfig(getenv)
+		if err != nil {
+			return nil, fmt.Errorf("load F4 operation-log input config: %w", err)
+		}
+		operationStore, err = operationlog.OpenStore(operationConfig)
+		if err != nil {
+			return nil, fmt.Errorf("open F4 operation-log store: %w", err)
+		}
+		if err = operationStore.EnsureSchema(ctx); err != nil {
+			_ = operationStore.Close()
+			return nil, fmt.Errorf("initialize F4 operation-log schema: %w", err)
+		}
+	}
 
 	runtimeStore, err := runtimelog.OpenStore(ctx, runtimeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("open F1 runtime-log-indexer store: %w", err)
 	}
-	cleanup := func() { _ = runtimeStore.Close() }
+	cleanup := func() {
+		_ = runtimeStore.Close()
+		if operationStore != nil {
+			_ = operationStore.Close()
+		}
+	}
 	if err := runtimelog.EnsureSchema(ctx, runtimeStore); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err)
@@ -220,6 +246,9 @@ func New(ctx context.Context, getenv func(string) string, logger *slog.Logger) (
 	cleanup = func() {
 		_ = tableStore.Close()
 		_ = runtimeStore.Close()
+		if operationStore != nil {
+			_ = operationStore.Close()
+		}
 	}
 	if err := tableStore.EnsureSchema(ctx); err != nil {
 		cleanup()
@@ -235,6 +264,9 @@ func New(ctx context.Context, getenv func(string) string, logger *slog.Logger) (
 		_ = auditStore.Close()
 		_ = tableStore.Close()
 		_ = runtimeStore.Close()
+		if operationStore != nil {
+			_ = operationStore.Close()
+		}
 	}
 	if err := auditStore.EnsureSchema(ctx); err != nil {
 		cleanup()
@@ -270,7 +302,7 @@ func New(ctx context.Context, getenv func(string) string, logger *slog.Logger) (
 		}
 	}
 
-	return &Supervisor{components: []Component{
+	components := []Component{
 		{
 			Name: "F1 runtime-log-indexer",
 			Run: func(runCtx context.Context) error {
@@ -292,7 +324,13 @@ func New(ctx context.Context, getenv func(string) string, logger *slog.Logger) (
 			},
 			Close: auditStore.Close,
 		},
-	}}, nil
+	}
+	if operationConfig.Enabled {
+		components = append(components, Component{Name: "F4 operation-log-owner", Run: func(runCtx context.Context) error {
+			return operationlog.RunInputServer(runCtx, operationStore, operationConfig, operationInputConfig, logger)
+		}, Close: operationStore.Close})
+	}
+	return &Supervisor{components: components}, nil
 }
 
 func (supervisor *Supervisor) Run(ctx context.Context, logger *slog.Logger) error {

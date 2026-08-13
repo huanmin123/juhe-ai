@@ -4,7 +4,7 @@ import { isAdminRole } from '../../domain/types.js'
 import { errorLogFields } from '../../shared/logger.js'
 import { getRequestContext, getRequestLogger } from '../../shared/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { nowIso, runInDatabaseTransaction } from '../../storage/database.js'
+import { newId, nowIso, runInDatabaseTransaction } from '../../storage/database.js'
 import {
   getSettings,
   getSettingsAsync,
@@ -16,7 +16,7 @@ import {
   type SystemAccountRole
 } from '../../storage/repositories.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
-import { enqueueOperationLog } from './operation-log-queue.service.js'
+import { dispatchOperationLogToGo } from './operation-log-go-input.service.js'
 
 export type OperationLogRecordInput = Omit<OperationLogInput, 'actorSystemAccountId' | 'actorUsername' | 'actorDisplayName' | 'actorRole'> & {
   actorSystemAccountId?: string
@@ -32,12 +32,12 @@ type LoggedOperationResult<T> = {
 }
 
 export function recordOperationLog(input: OperationLogRecordInput, req?: Request): void {
+	const operationLogId = input.id ?? newId('oplog')
+	const inputWithId = { ...input, id: operationLogId }
   try {
-    recordOperationLogUnsafe(input, req)
+    recordOperationLogUnsafe(inputWithId, req)
   } catch (error) {
-    getRequestLogger().warn(errorLogFields(error, {
-      event: 'operation_log_enqueue_failed'
-    }), '操作日志入队失败')
+    logOperationLogFailure(error, inputWithId, operationLogId)
   }
 }
 
@@ -52,7 +52,8 @@ function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request)
   const settings = getSettings()
 
   const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
-  enqueueOperationLog({
+  const operationLogId = input.id ?? newId('oplog')
+  void dispatchOperationLogToGo({
     ...input,
     actorSystemAccountId,
     actorUsername: input.actorUsername ?? actor?.username,
@@ -66,7 +67,10 @@ function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request)
     changes: sanitizeOperationChanges(input.changes ?? [], operationLogMaxChangesPerRecord(settings)),
     targets: input.targets,
     viewers: input.viewers,
+    id: operationLogId,
     createdAt: input.createdAt ?? nowIso()
+  }).catch((error) => {
+    logOperationLogFailure(error, input, operationLogId)
   })
 }
 
@@ -97,12 +101,12 @@ export async function runLoggedOperationAsync<T>(operation: () => Promise<Logged
 }
 
 export async function recordOperationLogAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
+	const operationLogId = input.id ?? newId('oplog')
+	const inputWithId = { ...input, id: operationLogId }
   try {
-    await recordOperationLogUnsafeAsync(input, req)
+    await recordOperationLogUnsafeAsync(inputWithId, req)
   } catch (error) {
-    getRequestLogger().warn(errorLogFields(error, {
-      event: 'operation_log_enqueue_failed'
-    }), '操作日志入队失败')
+    logOperationLogFailure(error, inputWithId, operationLogId)
   }
 }
 
@@ -117,7 +121,8 @@ async function recordOperationLogUnsafeAsync(input: OperationLogRecordInput, req
   const settings = await getSettingsAsync()
 
   const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
-  enqueueOperationLog({
+  const operationLogId = input.id ?? newId('oplog')
+  await dispatchOperationLogToGo({
     ...input,
     actorSystemAccountId,
     actorUsername: input.actorUsername ?? actor?.username,
@@ -131,8 +136,20 @@ async function recordOperationLogUnsafeAsync(input: OperationLogRecordInput, req
     changes: sanitizeOperationChanges(input.changes ?? [], operationLogMaxChangesPerRecord(settings)),
     targets: input.targets,
     viewers: input.viewers,
+    id: operationLogId,
     createdAt: input.createdAt ?? nowIso()
   })
+}
+
+function logOperationLogFailure(error: unknown, input: Pick<OperationLogRecordInput, 'id' | 'module' | 'action'>, operationLogId = input.id): void {
+  getRequestLogger().warn(errorLogFields(error, {
+    event: 'operation_log_go_input_failed',
+    operationLogId,
+    producer: 'node_operation_log_service',
+    module: input.module,
+    action: input.action,
+    errorClass: error instanceof Error ? error.name : typeof error
+  }), 'F4 Go 操作日志提交失败')
 }
 
 export function operationMode(access?: Pick<AccessScope, 'role'>): 'admin' | 'self' {

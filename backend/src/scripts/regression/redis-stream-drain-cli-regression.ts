@@ -6,11 +6,9 @@ const source = readFileSync(fileURLToPath(new URL('../operations/drain-redis-str
 
 for (const functionName of [
   'startUsageRecordRedisStreamConsumer',
-  'startOperationLogRedisStreamConsumer',
   'startPublicApiLogRedisStreamConsumer',
   'startRecordMaintenanceRedisStreamConsumer',
   'stopUsageRecordRedisStreamConsumer',
-  'stopOperationLogRedisStreamConsumer',
   'stopPublicApiLogRedisStreamConsumer',
   'stopRecordMaintenanceRedisStreamConsumer'
 ]) {

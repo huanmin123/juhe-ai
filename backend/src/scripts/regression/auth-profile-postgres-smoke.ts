@@ -233,7 +233,6 @@ async function cleanupSmokeRows(): Promise<void> {
   if (systemAccountIds.length === 0) {
     return
   }
-  await cleanupOperationLogs(systemAccountIds)
   await pool.query('DELETE FROM juhe_business.api_keys WHERE system_account_id = ANY($1::text[]) OR route_strategy_id IN (SELECT id FROM juhe_business.route_strategies WHERE system_account_id = ANY($1::text[]))', [systemAccountIds])
   await pool.query('DELETE FROM juhe_business.route_strategy_groups WHERE system_account_id = ANY($1::text[]) OR route_strategy_id IN (SELECT id FROM juhe_business.route_strategies WHERE system_account_id = ANY($1::text[]))', [systemAccountIds])
   await pool.query('DELETE FROM juhe_business.route_strategies WHERE system_account_id = ANY($1::text[])', [systemAccountIds])
@@ -245,27 +244,6 @@ async function cleanupSmokeRows(): Promise<void> {
   await pool.query('DELETE FROM juhe_business.groups WHERE system_account_id = ANY($1::text[])', [systemAccountIds])
   await pool.query('DELETE FROM juhe_business.system_sessions WHERE system_account_id = ANY($1::text[])', [systemAccountIds])
   await pool.query('DELETE FROM juhe_business.system_accounts WHERE id = ANY($1::text[])', [systemAccountIds])
-}
-
-async function cleanupOperationLogs(systemAccountIds: string[]): Promise<void> {
-  const pool = await getPostgresPool()
-  const operationLogIds = await pool.query(`
-    SELECT id
-    FROM juhe_dataset.operation_logs
-    WHERE actor_system_account_id = ANY($1::text[])
-       OR operation_scope_system_account_id = ANY($1::text[])
-       OR resource_id = ANY($1::text[])
-  `, [systemAccountIds]).catch(() => ({ rows: [] }))
-  const ids = operationLogIds.rows
-    .map((row: Record<string, unknown>) => row.id)
-    .filter((id: unknown): id is string => typeof id === 'string')
-  if (ids.length === 0) {
-    return
-  }
-  await pool.query('DELETE FROM juhe_dataset.operation_log_targets WHERE operation_log_id = ANY($1::text[])', [ids]).catch(() => undefined)
-  await pool.query('DELETE FROM juhe_dataset.operation_log_viewers WHERE operation_log_id = ANY($1::text[])', [ids]).catch(() => undefined)
-  await pool.query('DELETE FROM juhe_dataset.operation_log_summary_search_terms WHERE operation_log_id = ANY($1::text[])', [ids]).catch(() => undefined)
-  await pool.query('DELETE FROM juhe_dataset.operation_logs WHERE id = ANY($1::text[])', [ids]).catch(() => undefined)
 }
 
 function listen(server: http.Server): Promise<void> {

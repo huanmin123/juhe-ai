@@ -7,7 +7,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { normalizeHeaderId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
-import type { OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -269,13 +269,6 @@ function attachOpsWorkerProcess(child: ChildProcess, options: { onReady?: () => 
 export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
   return sendBackgroundWorkerMessageToWorker({
     type: 'background_worker_usage_records',
-    items
-  })
-}
-
-export function sendOperationLogsToWorker(items: OperationLogInput[]): boolean {
-  return sendBackgroundWorkerMessageToWorker({
-    type: 'background_worker_operation_logs',
     items
   })
 }
@@ -774,7 +767,6 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       finishWorkerStatusResponse(role, record.requestId, record.snapshot as BackgroundWorkerRuntimeSnapshot | undefined)
       break
     case 'background_worker_usage_records':
-    case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
     case 'background_worker_record_maintenance':
       if (runtimeConfig.processRole === 'server') {
@@ -1626,7 +1618,6 @@ function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void
 function isRedisStreamManagedIngestQueueMessage(message: BackgroundWorkerMessage): boolean {
   switch (message.type) {
     case 'background_worker_usage_records':
-    case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
     case 'background_worker_record_maintenance':
       return true

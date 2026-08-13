@@ -32,13 +32,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
           oldestQueuedMs: 42_000,
           flushLastSuccessAt: minutesAgo(now, 2)
         }),
-        operationLogs: queue({
-          queueLength: 3,
-          queueBytes: 24_000,
-          completedCount: 180,
-          oldestQueuedMs: 12_000,
-          flushLastSuccessAt: minutesAgo(now, 3)
-        }),
         publicApiLogs: queue({
           queueLength: 4,
           queueBytes: 36_000,
@@ -75,13 +68,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
           completedCount: 3729,
           oldestQueuedMs: 42_000,
           flushLastSuccessAt: minutesAgo(now, 2)
-        }),
-        operationLogQueue: queue({
-          queueLength: 3,
-          queueBytes: 24_000,
-          completedCount: 180,
-          oldestQueuedMs: 12_000,
-          flushLastSuccessAt: minutesAgo(now, 3)
         }),
         publicApiLogQueue: queue({
           queueLength: 4,

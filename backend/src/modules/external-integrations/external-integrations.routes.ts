@@ -24,7 +24,8 @@ import {
   externalIntegrationRouteStrategyListReadScope,
   externalIntegrationRouteStrategyUpdateWriteScope
 } from '../../storage/external-integration-source-constants.js'
-import { ApiKeyValidationCacheInvalidationError, createOperationLogAsync } from '../../storage/repositories.js'
+import { ApiKeyValidationCacheInvalidationError } from '../../storage/repositories.js'
+import { recordOperationLogAsync } from '../operation-logs/operation-log.service.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from '../api-keys/api-key-availability-schedule.schema.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
@@ -697,7 +698,7 @@ async function recordPublicWelfareAccountWriteOperation(
 ): Promise<void> {
   const created = result.action === 'created'
   try {
-    await createOperationLogAsync({
+    await recordOperationLogAsync({
       actorSystemAccountId: `external:${context.sourceRefId}`,
       actorUsername: context.sourceName,
       actorDisplayName: `外部来源：${context.sourceName}`,
@@ -766,7 +767,7 @@ async function recordPublicWelfareAccountDeleteOperation(
   }
 
   try {
-    await createOperationLogAsync({
+    await recordOperationLogAsync({
       actorSystemAccountId: `external:${context.sourceRefId}`,
       actorUsername: context.sourceName,
       actorDisplayName: `外部来源：${context.sourceName}`,

@@ -6,7 +6,6 @@ export type BackgroundWorkerSnapshotRole = Extract<BackgroundWorkerProcessRole, 
 export function workerMessageTargetRole(message: BackgroundWorkerMessage): BackgroundWorkerQueueTargetRole {
   switch (message.type) {
     case 'background_worker_usage_records':
-    case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
       return 'ingest-worker'
     case 'background_worker_account_test_tasks':

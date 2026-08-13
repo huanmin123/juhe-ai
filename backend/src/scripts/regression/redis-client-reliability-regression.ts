@@ -57,6 +57,7 @@ assert.equal(isRecoverableRedisClientError(new Error('BUSYGROUP Consumer Group n
 await import('redis')
 await assertSharedClientDeadlineInvalidationAndReconnect()
 await assertConnectionGenerationCas()
+await assertCallerAbortDoesNotDestroySharedClient()
 await assertInjectedStreamProducerDeadline()
 
 console.log('Redis client 可靠性回归通过：hard deadline 有界失败，失效共享代际会被淘汰并在后续操作重连')
@@ -204,6 +205,54 @@ async function assertConnectionGenerationCas(): Promise<void> {
       timeoutMs: 3_000
     }, (client) => client.get('generation')), 'ok')
     assert.equal(connectionCount, connectionCountAfterReplacement, 'B 超时后应继续复用 P2，不得触发连接风暴')
+  } finally {
+    await closeRedisClients()
+    for (const socket of sockets) socket.destroy()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
+
+async function assertCallerAbortDoesNotDestroySharedClient(): Promise<void> {
+  const sockets = new Set<Socket>()
+  const server = createServer((socket) => {
+    sockets.add(socket)
+    socket.on('close', () => sockets.delete(socket))
+    let pending = Buffer.alloc(0)
+    socket.on('data', (chunk) => {
+      pending = Buffer.concat([pending, chunk])
+      while (true) {
+        const parsed = parseRespCommand(pending)
+        if (!parsed) return
+        pending = pending.subarray(parsed.consumedBytes)
+        socket.write(redisFixtureResponse(parsed.command))
+      }
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  assert(address && typeof address === 'object', '调用方取消 fixture 必须取得监听地址')
+  const redisUrl = `redis://127.0.0.1:${address.port}/0`
+  const controller = new AbortController()
+
+  try {
+    const cancelled = runRedisOperationWithDeadline(redisUrl, {
+      operationName: 'Redis 已取消调用方',
+      timeoutMs: 3_000,
+      signal: controller.signal
+    }, async () => await new Promise<never>(() => undefined))
+    await waitFor(() => hasRedisClient(redisUrl), 750)
+    controller.abort(new Error('下游客户端已断开'))
+    await assert.rejects(cancelled, /下游客户端已断开/)
+    assert.equal(hasRedisClient(redisUrl), true, '单个调用方取消不得销毁共享 Redis client')
+
+    assert.equal(await runRedisOperationWithDeadline(redisUrl, {
+      operationName: 'Redis 并发调用方继续执行',
+      timeoutMs: 3_000
+    }, (client) => client.get('shared-client-survives-cancel')), 'ok', '另一调用方必须继续使用共享 Redis client 成功')
   } finally {
     await closeRedisClients()
     for (const socket of sockets) socket.destroy()

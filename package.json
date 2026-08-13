@@ -48,7 +48,6 @@
     "test:system-metrics-window-incremental": "pnpm --filter juhe-ai-backend test:system-metrics-window-incremental",
     "test:provider-catalog-progressive-loading": "pnpm --filter juhe-ai-backend test:provider-repository-driver && pnpm --filter juhe-ai-frontend test:provider-catalog-progressive-loading",
     "test:settings-sections-progressive-loading": "pnpm --filter juhe-ai-backend test:settings-sections-progressive-loading && pnpm --filter juhe-ai-frontend test:settings-sections-progressive-loading",
-    "test:log-list-projection": "pnpm --filter juhe-ai-backend test:log-list-projection",
     "test:response-inspection-gateway-e2e": "pnpm --filter juhe-ai-backend test:response-inspection-gateway-e2e",
     "test:response-inspection-mock-ai-fields": "pnpm --filter juhe-ai-backend test:response-inspection-mock-ai-fields",
     "test:codex-client-strategy": "pnpm --filter juhe-ai-backend test:codex-client-strategy",
@@ -231,8 +230,7 @@
     "test:proxy-options-progressive-contract": "pnpm --filter juhe-ai-backend test:proxy-options-progressive-contract",
     "test:public-api-log-list-lightweight": "pnpm --filter juhe-ai-backend test:public-api-log-list-lightweight",
     "test:public-api-log-detail-delta": "pnpm --filter juhe-ai-backend test:public-api-log-detail-delta && pnpm --filter juhe-ai-frontend test:public-api-log-detail-delta",
-    "test:operation-log-list-lightweight": "pnpm --filter juhe-ai-backend test:operation-log-list-lightweight",
-    "test:operation-log-detail-supplement": "pnpm --filter juhe-ai-backend test:operation-log-detail-supplement && pnpm --filter juhe-ai-frontend test:operation-log-detail-supplement",
+    "test:operation-log-go-rpc": "pnpm --filter juhe-ai-backend test:operation-log-go-rpc",
     "test:public-api-log-page-window": "pnpm --filter juhe-ai-frontend test:public-api-log-page-window",
     "test:operation-log-default-window": "pnpm --filter juhe-ai-backend test:operation-log-default-window && pnpm --filter juhe-ai-frontend test:operation-log-default-window"
   },

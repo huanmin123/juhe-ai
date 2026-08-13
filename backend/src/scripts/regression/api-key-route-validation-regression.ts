@@ -26,8 +26,7 @@ const [
   { captchaAnswerForTest },
   { requireAdmin, requireAuth },
   { requestContextMiddleware },
-  databaseModule,
-  operationLogQueue
+  databaseModule
 ] = await Promise.all([
   import('../../modules/api-keys/api-keys.routes.js'),
   import('../../modules/route-strategies/route-strategies.routes.js'),
@@ -35,8 +34,7 @@ const [
   import('../../modules/auth/captcha.service.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
-  import('../../storage/database.js'),
-  import('../../modules/operation-logs/operation-log-queue.service.js')
+  import('../../storage/database.js')
 ])
 
 const app = express()
@@ -325,7 +323,6 @@ async function main(): Promise<void> {
 
     console.log('API Key HTTP 按需契约回归通过：创建回执、列表 seed、字段级 PATCH、revision 冲突、密钥读取及时间字段均符合预期')
   } finally {
-    operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)
     try {
       databaseModule.getBusinessDatabase().close()

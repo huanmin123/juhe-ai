@@ -45,15 +45,6 @@ try {
 
   assertPlanUsesIndex(
     datasetDatabase,
-    'operation_log_targets 详情读取',
-    'EXPLAIN QUERY PLAN SELECT * FROM operation_log_targets WHERE operation_log_id = ? ORDER BY created_at ASC, id ASC',
-    ['op_guard'],
-    'idx_operation_log_targets_log_created',
-    { rejectTempSort: true }
-  )
-
-  assertPlanUsesIndex(
-    datasetDatabase,
     'audit_error_groups API Key 删除清理',
     'EXPLAIN QUERY PLAN SELECT id FROM audit_error_groups WHERE api_key_id = ? AND system_account_id = ?',
     ['key_guard', 'sys_admin'],

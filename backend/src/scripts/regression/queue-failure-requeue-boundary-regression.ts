@@ -7,10 +7,6 @@ const queueFiles = [
     required: ['peekUsageRecordFlushBatch', 'removeUsageRecordFlushBatch']
   },
   {
-    path: '../../modules/operation-logs/operation-log-queue.service.ts',
-    required: ['pendingOperationLogs.slice(0, operationLogBatchSize)']
-  },
-  {
     path: '../../modules/public-api-logs/public-api-log-queue.service.ts',
     required: ['publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)', 'publicApiLogQueue.splice(0, batch.length)']
   },

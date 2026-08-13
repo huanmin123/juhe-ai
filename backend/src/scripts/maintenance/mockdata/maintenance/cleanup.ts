@@ -139,9 +139,6 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
          OR last_error_message LIKE ?
     `).run(`${namePrefix}%`, 'Mockdata%')
 
-    const operationIds = selectIds(database, 'SELECT id FROM operation_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
-    deleteWhereIn(database, 'operation_logs', 'id', operationIds)
-
     const modelCheckRunIds = selectIds(database, 'SELECT id FROM model_check_runs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'model_check_items', 'run_id', modelCheckRunIds)
     deleteWhereIn(database, 'model_check_runs', 'id', modelCheckRunIds)

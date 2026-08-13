@@ -725,11 +725,6 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardUsageRecordsToWorker(record.items)
       }
       break
-    case 'background_worker_operation_logs':
-      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
-        void forwardOperationLogsToWorker(record.items)
-      }
-      break
     case 'background_worker_public_api_logs':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
         void forwardPublicApiLogsToWorker(record.items)
@@ -1274,7 +1269,6 @@ async function buildServerSystemMetricsRuntimeSnapshot(): Promise<DbServiceSyste
           workerRole: ingestWorkerSnapshot.workerRole,
           jobs: ingestWorkerSnapshot.jobs.map((job) => ({ ...job })),
           usageRecordQueue: { ...ingestWorkerSnapshot.usageRecordQueue },
-          operationLogQueue: { ...ingestWorkerSnapshot.operationLogQueue },
           publicApiLogQueue: { ...ingestWorkerSnapshot.publicApiLogQueue },
           recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue }
         }
@@ -1637,19 +1631,6 @@ async function forwardUsageRecordsToWorker(items: unknown[]): Promise<void> {
       event: 'db_service_usage_records_forward_failed',
       itemCount: usageRecords.length
     }, 'DB service 转发使用记录到后台 worker 失败')
-  }
-}
-
-async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
-  if (rejectRedisStreamLocalQueueForward('background_worker_operation_logs', items.length)) return
-  const backgroundIpc = await import('../background/background-ipc.js')
-  const operationLogQueue = await import('../operation-logs/operation-log-queue.service.js')
-  const operationLogs = items.filter(operationLogQueue.isOperationLogInput)
-  if (operationLogs.length > 0 && !backgroundIpc.sendOperationLogsToWorker(operationLogs)) {
-    logger.warn({
-      event: 'db_service_operation_logs_forward_failed',
-      itemCount: operationLogs.length
-    }, 'DB service 转发操作日志到后台 worker 失败')
   }
 }
 

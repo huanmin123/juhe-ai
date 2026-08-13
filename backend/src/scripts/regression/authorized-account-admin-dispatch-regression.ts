@@ -33,7 +33,6 @@ const [
   { testOpenAIAccount },
   { orderOpenAIAccountsBySessionAffinity },
   { flushAllUsageRecordQueue },
-  { flushAllOperationLogQueue },
   databaseModule,
   repositories
 ] = await Promise.all([
@@ -43,7 +42,6 @@ const [
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/runtime/session-affinity.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
@@ -504,7 +502,6 @@ try {
   restoreWorkerParentIpc()
   try {
     flushAllUsageRecordQueue()
-    flushAllOperationLogQueue()
     databaseModule.closeStorageDatabases()
   } catch {
   }

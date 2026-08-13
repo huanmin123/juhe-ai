@@ -300,7 +300,6 @@ assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entr
 assert.doesNotMatch(sql, /idx_audit_logs_/, 'Node PostgreSQL schema 不得保留 F3 审计索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_public_api_logs_trace_c_created_sort\b/, 'PG 公开接口日志不应再创建全局 trace 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_public_api_logs_client_ip_c_created_sort\b/, 'PG 公开接口日志不应再创建全局 client IP 前缀索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_c_created ON operation_logs\(\(trace_id COLLATE "C"\), created_at DESC, id DESC\)/, 'PG 操作日志 trace 前缀查询必须有 C collation 前缀索引')
 assert.doesNotMatch(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_traffic_created_sort\b/, 'PG 使用记录列表不应再依赖目录表来源索引')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups\(system_account_id, provider_code\) WHERE is_default = 1/, '默认分组应按 provider_code 保持唯一')
 assert.doesNotMatch(sql, /idx_groups_owner_protocol_profile_default_unique|groups\(system_account_id, provider_protocol_profile_id\)/, '默认分组不应再按 provider protocol profile 限制唯一')

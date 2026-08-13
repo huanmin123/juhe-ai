@@ -32,7 +32,6 @@ import { buildBackgroundQueueHealthSnapshot, type BackgroundQueueHealthItem } fr
 import { requestServerSystemMetricsRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import type { DbServiceRuntimeQueueSnapshot, DbServiceSystemMetricsRuntimeSnapshot } from '../db-service/db-service-types.js'
 import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
-import { getOperationLogRedisStreamRuntime } from '../operation-logs/operation-log-queue.service.js'
 import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
 import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
 
@@ -563,7 +562,6 @@ function accountBalanceSnapshotCleanupRuntimeRows(runtime: DbServiceSystemMetric
 async function redisStreamRuntimeQueueRows(): Promise<BackgroundJobRuntimeRow[]> {
   const runtimes = await Promise.all([
     redisStreamRuntime('Redis Stream 使用记录', getUsageRecordRedisStreamRuntime),
-    redisStreamRuntime('Redis Stream 操作日志', getOperationLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 公开接口日志', getPublicApiLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 数据维护', getRecordMaintenanceRedisStreamRuntime),
   ])

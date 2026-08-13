@@ -39,7 +39,6 @@ const retiredRoles = ['metrics-worker', 'snapshot-worker', 'probe-worker', 'main
 
 for (const type of [
   'background_worker_usage_records',
-  'background_worker_operation_logs',
   'background_worker_public_api_logs',
   'background_worker_record_maintenance',
   'background_worker_dataset_write_request'
@@ -141,7 +140,7 @@ assert(dbServiceIpcSource.includes("import('../gateway/runtime/high-concurrency-
 assert(dbServiceHandlersSource.includes('getCodexContextStateWriterPoolRuntime()') && dbServiceIpcSource.includes('codexContextStateWriterPool: dbServiceState.lastSnapshot?.codexContextStateWriterPool'), 'DB service runtime snapshot 必须暴露 Codex 状态写入池队列')
 assert(statsRoutesSource.includes('buildBackgroundQueueHealthSnapshot(runtime)') && statsRoutesSource.includes('queueHealth.workerQueues') && statsRoutesSource.includes('queueHealth.serverIpcQueues'), '系统指标接口必须复用后台队列健康快照接入 worker 本地队列和 IPC 队列')
 assert(!statsRoutesSource.includes('loadMockBackgroundRuntimeSnapshot'), '系统指标接口不能在 runtime snapshot 不可用时回退 mock 运行态，避免误导运维排障')
-assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoutesSource.includes('Redis Stream 使用记录') && statsRoutesSource.includes('getAuditLogRedisStreamRuntime'), '系统指标接口必须接入仍存在的高性能模式 Redis Stream 队列')
+assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoutesSource.includes('Redis Stream 使用记录'), '系统指标接口必须接入仍存在的高性能模式 Redis Stream 队列')
 assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
 assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
 assert(statsRoutesSource.includes('highConcurrencyRuntimeQueueRows(runtime)') && statsRoutesSource.includes('高并发短队列'), '系统指标接口必须接入高并发短队列')

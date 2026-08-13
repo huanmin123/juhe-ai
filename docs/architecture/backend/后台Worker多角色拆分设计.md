@@ -54,7 +54,7 @@
 | 任务 / 队列 | 当前角色 | 说明 |
 | --- | --- | --- |
 | `background_worker_usage_records` | standalone: `ingest-worker`; performance: `usage-worker` | 高频计费事实；performance 由同一 consumer group 多副本分摊 |
-| `background_worker_operation_logs` | standalone: `ingest-worker`; performance: `log-worker` | 操作日志批量写入和摘要索引 |
+| Go sidecar F4 | 同一 Go sidecar 内 | 操作日志接收、SQLite/PostgreSQL 写入、查询、摘要索引和保留；Node 仅在业务成功后作一次签名 RPC 提交，不再注册 `background_worker_operation_logs`。 |
 | `background_worker_public_api_logs` | standalone: `ingest-worker`; performance: `log-worker` | 公开接口调用明细 |
 | Go sidecar F1 | 同一 Go sidecar 内 | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor；Node worker 不再拥有该功能 |
 | `background_worker_record_maintenance` | standalone: `ingest-worker` / `stats-worker`; performance: `usage-worker#1` / `stats-worker` | usage / dataset 进 usage owner；stats-only command 进 stats writer |

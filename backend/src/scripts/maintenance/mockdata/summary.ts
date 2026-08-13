@@ -188,7 +188,6 @@ export function writeSummary(
       usageRecords: records.length,
       publicApiLogs: extraCounts.publicApiLogs,
       auditLogs,
-      operationLogs: 90,
       modelCheckRuns: modelCheckCounts.runs,
       modelCheckItems: modelCheckCounts.items,
       accountCleanupTargets: extraCounts.accountCleanupTargets,

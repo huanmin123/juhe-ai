@@ -3,9 +3,7 @@ import {
   builtInExternalIntegrationTestTokenId,
   findExternalIntegrationSource
 } from '../../../../storage/external-integration-source.repository.js'
-import type { OperationLogInput } from '../../../../storage/operation-logs.repository.js'
 import { createPublicApiLog } from '../../../../storage/public-api-logs.repository.js'
-import * as repositories from '../../../../storage/repositories.js'
 import {
   dayMs,
   idPrefix,
@@ -98,87 +96,6 @@ export function createPublicApiLogMockdata(created: CreatedMockdata, options: Mo
     })
   }
   return total
-}
-
-export function createOperationMockdata(created: CreatedMockdata, usageRecords: UsageRecordSeed[]): void {
-  const resources = [
-    { module: 'accounts', resourceType: 'account', resourceId: created.accounts.primary.id, resourceName: created.accounts.primary.name, action: 'create', summary: '创建主力 API Key 账户' },
-    { module: 'accounts', resourceType: 'account', resourceId: created.accounts.rateLimited.id, resourceName: created.accounts.rateLimited.name, action: 'cooldown', summary: '标记账户限流冷却' },
-    { module: 'groups', resourceType: 'group', resourceId: created.groups.main.id, resourceName: created.groups.main.name, action: 'create', summary: '创建主力分组' },
-    { module: 'api_keys', resourceType: 'api_key', resourceId: created.apiKeys.adminMain.id, resourceName: created.apiKeys.adminMain.name, action: 'create', summary: '创建主力本地网关 Key' },
-    { module: 'authorizations', resourceType: 'authorization', resourceId: created.authorizations[0]?.id, resourceName: '研发用户分组授权', action: 'create', summary: '创建研发用户分组授权' },
-    { module: 'system_teams', resourceType: 'system_team', resourceId: created.teams.devTeam.id, resourceName: created.teams.devTeam.name, action: 'update_members', summary: '维护研发团队成员' },
-    { module: 'proxies', resourceType: 'proxy', resourceId: `${idPrefix}proxy`, resourceName: `${namePrefix}HTTP 代理`, action: 'test', summary: '完成代理连通性测试' },
-    { module: 'announcements', resourceType: 'announcement', resourceId: `${idPrefix}announcement`, resourceName: `${namePrefix}系统维护公告`, action: 'publish', summary: '发布系统维护公告' },
-    { module: 'settings', resourceType: 'system_settings', resourceId: 'sys_admin', resourceName: '系统设置', action: 'update', summary: '调整统计聚合和数据保留参数' },
-    { module: 'usage_records', resourceType: 'usage_record', resourceId: usageRecords[0]?.id, resourceName: '使用记录', action: 'query', summary: '查询近 1 月使用记录' }
-  ]
-  const logs: OperationLogInput[] = []
-  for (let index = 0; index < 90; index += 1) {
-    const resource = resources[index % resources.length]
-    const actor = index % 13 === 0 ? created.users.manager : index % 7 === 0 ? created.users.dev : index % 11 === 0 ? created.users.ops : created.users.admin
-    const createdAt = new Date(Date.now() - Math.floor((index / 90) * 30 * dayMs)).toISOString()
-    logs.push({
-      id: `${idPrefix}operation_${String(index + 1).padStart(4, '0')}`,
-      traceId: usageRecords[index * 5 % usageRecords.length]?.traceId,
-      actorSystemAccountId: actor.id,
-      actorUsername: actor.username,
-      actorDisplayName: actor.displayName,
-      actorRole: actor.role,
-      operationScopeSystemAccountId: created.users.admin.id,
-      mode: actor.id === created.users.admin.id ? 'self' : 'admin',
-      module: resource.module,
-      action: resource.action,
-      operationKey: `mockdata.${resource.module}.${resource.action}`,
-      resourceType: resource.resourceType,
-      resourceId: resource.resourceId,
-      resourceName: resource.resourceName,
-      summary: `${namePrefix}${resource.summary}`,
-      detailLevel: index % 5 === 0 ? 'summary' : 'full',
-      visibilityScope: 'targeted',
-      changes: [
-        {
-          field: 'status',
-          label: '状态',
-          before: index % 3 === 0 ? 'disabled' : 'draft',
-          after: index % 3 === 0 ? 'active' : 'published'
-        }
-      ],
-      metadata: {
-        source: 'mockdata',
-        batch: 'admin-full-business',
-        index
-      },
-      method: index % 2 === 0 ? 'POST' : 'PATCH',
-      path: `/__aisys__/api/mockdata/${resource.module}`,
-      statusCode: index % 17 === 0 ? 409 : 200,
-      clientIp: `10.30.0.${20 + index}`,
-      userAgent: 'mockdata-admin/1.0',
-      targets: [
-        {
-          targetType: resource.resourceType,
-          targetId: resource.resourceId,
-          targetName: resource.resourceName,
-          targetOwnerSystemAccountId: created.users.admin.id,
-          relation: 'primary'
-        }
-      ],
-      viewers: [
-        {
-          systemAccountId: created.users.dev.id,
-          visibilityReason: 'authorization_grantee',
-          detailLevel: index % 3 === 0 ? 'summary' : 'full'
-        },
-        {
-          systemAccountId: created.users.ops.id,
-          visibilityReason: 'team_member',
-          detailLevel: 'summary'
-        }
-      ],
-      createdAt
-    })
-  }
-  repositories.createOperationLogsBatch(logs)
 }
 
 function publicApiLogRequestData(

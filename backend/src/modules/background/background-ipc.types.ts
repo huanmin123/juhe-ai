@@ -1,5 +1,5 @@
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import type { OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { UsageRecordInput } from '../../storage/repositories.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { AccountRuntimeAvailabilityClearTarget, DbServiceOperation, DbServiceRequestPriority } from '../db-service/db-service-types.js'
@@ -73,7 +73,6 @@ export interface BackgroundWorkerIpcQueueRuntime extends BackgroundWorkerQueueRu
 
 export interface BackgroundWorkerIpcQueuesRuntime {
   usageRecords: BackgroundWorkerIpcQueueRuntime
-  operationLogs: BackgroundWorkerIpcQueueRuntime
   publicApiLogs: BackgroundWorkerIpcQueueRuntime
   recordMaintenance: BackgroundWorkerIpcQueueRuntime
   statusRequests: BackgroundWorkerIpcQueueRuntime
@@ -90,7 +89,6 @@ export interface BackgroundWorkerRuntimeSnapshot {
   workerRole: BackgroundWorkerProcessRole
   jobs: WorkerScheduledJobRuntimeSnapshot[]
   usageRecordQueue: BackgroundWorkerQueueRuntime
-  operationLogQueue: BackgroundWorkerQueueRuntime
   publicApiLogQueue: BackgroundWorkerQueueRuntime
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
   accountHealthCheckQueue?: BackgroundWorkerRetryQueueRuntime
@@ -132,7 +130,6 @@ export interface BackgroundWorkerDbServiceRequestOptions {
 export type BackgroundWorkerMessage =
   | { type: 'background_worker_ready'; pid: number; workerRole?: BackgroundWorkerProcessRole }
   | { type: 'background_worker_usage_records'; items: UsageRecordInput[] }
-  | { type: 'background_worker_operation_logs'; items: OperationLogInput[] }
   | { type: 'background_worker_public_api_logs'; items: PublicApiLogInput[] }
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }

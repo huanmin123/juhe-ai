@@ -57,16 +57,6 @@ import {
   listGroupsReadOnly
 } from './group-summary.repository.js'
 import { getModelCheckRunDetail, listModelCheckRuns } from './model-checks.repository.js'
-import {
-  getOperationLogDetailSupplement,
-  getOperationLogDetailSupplementForViewer
-} from './operation-log-detail-supplement.repository.js'
-import {
-  getOperationLogDetail,
-  getOperationLogDetailForViewer,
-  listOperationLogs,
-  listOperationLogsForViewer
-} from './operation-log-read.repository.js'
 import { listProviderDefaultHealthCheckModelPreferenceEntriesReadOnly } from './provider-default-health-check-model.repository.js'
 import {
   defaultProviderProtocolProfile,
@@ -278,18 +268,6 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listUsageRecords(operation.access, operation.options)
     case 'get_usage_record_detail_read_only':
       return getUsageRecordDetail(operation.id, operation.access)
-    case 'list_operation_logs_read_only':
-      return listOperationLogs(operation.options)
-    case 'list_operation_logs_for_viewer_read_only':
-      return listOperationLogsForViewer(operation.systemAccountId, operation.options)
-    case 'get_operation_log_detail_read_only':
-      return getOperationLogDetail(operation.id)
-    case 'get_operation_log_detail_for_viewer_read_only':
-      return getOperationLogDetailForViewer(operation.id, operation.systemAccountId)
-    case 'get_operation_log_detail_supplement_read_only':
-      return getOperationLogDetailSupplement(operation.id)
-    case 'get_operation_log_detail_supplement_for_viewer_read_only':
-      return getOperationLogDetailSupplementForViewer(operation.id, operation.systemAccountId)
     case 'list_public_api_logs_read_only':
       return listPublicApiLogs(operation.options)
     case 'get_public_api_log_detail_read_only':

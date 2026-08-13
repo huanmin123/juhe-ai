@@ -518,19 +518,6 @@ export const backgroundWorkerRegistry = [
     writes: ['usage-shards:usage_records']
   }),
   entry({
-    jobName: 'background_worker_operation_logs',
-    category: 'ipc-queue',
-    kind: 'log',
-    lifecycle: 'persistent',
-    defaultRole: 'ingest-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: false,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:operation_logs']
-  }),
-  entry({
     jobName: 'background_worker_public_api_logs',
     category: 'ipc-queue',
     kind: 'log',

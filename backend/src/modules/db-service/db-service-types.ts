@@ -1,6 +1,6 @@
 import type { AccountRuntimeProbePresentation, AccountStatus, AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
-import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { RuntimeLogFacets } from '../../storage/runtime-log-query.repository.js'
@@ -241,7 +241,6 @@ export interface DbServiceServerRuntimeSnapshot {
       workerRole?: string
       jobs?: DbServiceBackgroundScheduledJobSnapshot[]
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
-      operationLogQueue: DbServiceRuntimeQueueSnapshot
       publicApiLogQueue: DbServiceRuntimeQueueSnapshot
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
     }
@@ -1463,10 +1462,6 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_usage_records'
     items: UsageRecordInput[]
-  }
-  | {
-    type: 'background_worker_operation_logs'
-    items: OperationLogInput[]
   }
   | {
     type: 'background_worker_public_api_logs'

@@ -33,7 +33,6 @@ const [
   { requireAdmin, requireAuth },
   { requestContextMiddleware },
   { flushAllUsageRecordQueueAsync },
-  { flushAllOperationLogQueue },
   databaseModule,
   repositories,
   usageRecordWriterPool
@@ -42,7 +41,6 @@ const [
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-record-writer-pool.js')
@@ -203,7 +201,6 @@ try {
   try {
     await flushAllUsageRecordQueueAsync()
     await usageRecordWriterPool.closeUsageRecordWriterPool()
-    flushAllOperationLogQueue()
     databaseModule.closeStorageDatabases()
   } catch {
   }
