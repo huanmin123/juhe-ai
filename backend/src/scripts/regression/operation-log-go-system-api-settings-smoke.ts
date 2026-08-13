@@ -95,24 +95,74 @@ try {
   })
   assert.equal(responsePolicy.status, 201, `真实 response-inspection-policies 业务写入应成功：${responsePolicy.text}`)
 
+  const group = await request(baseURL, '/__aisys__/api/groups', cookie, {
+    method: 'POST',
+    body: { name: 'F4 System API group smoke', providerCode: 'gpt', enabled: true }
+  })
+  assert.equal(group.status, 201, `真实 groups 业务写入应成功：${group.text}`)
+  const groupID = envelope<{ id: string }>(group.text).id
+
+  const routeStrategy = await request(baseURL, '/__aisys__/api/route-strategies', cookie, {
+    method: 'POST',
+    body: {
+      name: 'F4 System API route strategy smoke',
+      mode: 'normal',
+      groupBindings: [{ groupId: groupID, priority: 1, weight: 100, status: 'active' }]
+    }
+  })
+  assert.equal(routeStrategy.status, 201, `真实 route-strategies 业务写入应成功：${routeStrategy.text}`)
+  const routeStrategyID = envelope<{ id: string }>(routeStrategy.text).id
+
+  const apiKey = await request(baseURL, '/__aisys__/api/api-keys', cookie, {
+    method: 'POST',
+    body: { name: 'F4 System API key smoke', routeStrategyId: routeStrategyID, status: 'active' }
+  })
+  assert.equal(apiKey.status, 201, `真实 api-keys 业务写入应成功：${apiKey.text}`)
+
+  const proxy = await request(baseURL, '/__aisys__/api/proxies', cookie, {
+    method: 'POST',
+    body: { name: 'F4 System API proxy smoke', type: 'http', host: '127.0.0.1', port: 7890, enabled: true }
+  })
+  assert.equal(proxy.status, 201, `真实 proxies 业务写入应成功：${proxy.text}`)
+
   const settingsItem = await assertOperation(baseURL, cookie, 'settings', 'update_global', '更新全局品牌设置')
   const settingsDetail = await readAdminDetail(baseURL, cookie, settingsItem.id, 'settings.update_global', 'global_settings')
   assert.equal(settingsDetail.method, 'PATCH')
   assert.equal(settingsDetail.path, '/__aisys__/api/settings/global')
   assert(settingsDetail.changes?.some((change) => change.field === 'appName' && change.after === 'F4 System API settings smoke'), '管理详情必须保留真实业务字段变更')
-  await assertPersonalSummary(baseURL, cookie, settingsItem.id, true)
+  await assertPersonalSummary(baseURL, cookie, settingsItem.id, true, false)
 
   const announcementItem = await assertOperation(baseURL, cookie, 'announcements', 'create', '创建公告：F4 System API announcement smoke')
   const announcementDetail = await readAdminDetail(baseURL, cookie, announcementItem.id, 'announcements.create', 'announcement')
   assert.equal(announcementDetail.path, '/__aisys__/api/announcements/')
-  await assertPersonalSummary(baseURL, cookie, announcementItem.id, false)
+  await assertPersonalSummary(baseURL, cookie, announcementItem.id, false, false)
 
   const policyItem = await assertOperation(baseURL, cookie, 'response_inspection_policies', 'create', '创建响应检查策略：F4 System API response policy smoke')
   const policyDetail = await readAdminDetail(baseURL, cookie, policyItem.id, 'response_inspection_policies.create', 'response_inspection_policy')
   assert.equal(policyDetail.path, '/__aisys__/api/response-inspection-policies/')
-  await assertPersonalSummary(baseURL, cookie, policyItem.id, false)
+  await assertPersonalSummary(baseURL, cookie, policyItem.id, false, false)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies (${inputURL})`)
+  const groupItem = await assertOperation(baseURL, cookie, 'groups', 'create', '创建分组：F4 System API group smoke')
+  const groupDetail = await readAdminDetail(baseURL, cookie, groupItem.id, 'groups.create', 'group')
+  assert.equal(groupDetail.path, '/__aisys__/api/groups/')
+  await assertPersonalSummary(baseURL, cookie, groupItem.id, true, true)
+
+  const routeStrategyItem = await assertOperation(baseURL, cookie, 'route_strategies', 'create', '创建策略路由：F4 System API route strategy smoke')
+  const routeStrategyDetail = await readAdminDetail(baseURL, cookie, routeStrategyItem.id, 'route_strategies.create', 'route_strategy')
+  assert.equal(routeStrategyDetail.path, '/__aisys__/api/route-strategies/')
+  await assertPersonalSummary(baseURL, cookie, routeStrategyItem.id, true, true)
+
+  const apiKeyItem = await assertOperation(baseURL, cookie, 'api_keys', 'create', '创建 API Key：F4 System API key smoke')
+  const apiKeyDetail = await readAdminDetail(baseURL, cookie, apiKeyItem.id, 'api_keys.create', 'api_key')
+  assert.equal(apiKeyDetail.path, '/__aisys__/api/api-keys/')
+  await assertPersonalSummary(baseURL, cookie, apiKeyItem.id, true, true)
+
+  const proxyItem = await assertOperation(baseURL, cookie, 'proxies', 'create', '创建代理：F4 System API proxy smoke')
+  const proxyDetail = await readAdminDetail(baseURL, cookie, proxyItem.id, 'proxies.create', 'proxy')
+  assert.equal(proxyDetail.path, '/__aisys__/api/proxies/')
+  await assertPersonalSummary(baseURL, cookie, proxyItem.id, false, false)
+
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, route_strategies, api_keys, proxies (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
@@ -176,14 +226,23 @@ async function readAdminDetail(baseURL: string, cookie: string, id: string, oper
   return data
 }
 
-async function assertPersonalSummary(baseURL: string, cookie: string, id: string, visible: boolean): Promise<void> {
+async function assertPersonalSummary(baseURL: string, cookie: string, id: string, visible: boolean, expectChanges: boolean): Promise<void> {
   const response = await request(baseURL, `/__aisys__/api/my-operation-logs/${encodeURIComponent(id)}`, cookie)
   assert.equal(response.status, visible ? 200 : 404, `个人详情可见性不符合 operation log contract：${response.text}`)
   if (!visible) return
   const data = envelope<{ changes?: unknown[]; targets?: unknown[]; viewers?: unknown[]; clientIp?: unknown }>(response.text)
-  assert.deepEqual(data.changes, [], 'summary 个人详情不得展开完整变更')
-  assert.deepEqual(data.targets, [], 'summary 个人详情 targets 必须保持数组 JSON 形状')
-  assert.deepEqual(data.viewers, [], 'summary 个人详情 viewers 必须保持数组 JSON 形状')
+  if (expectChanges) {
+    assert((data.changes?.length ?? 0) > 0, 'full 个人详情必须保留脱敏后的业务变更')
+  } else {
+    assert.deepEqual(data.changes, [], 'summary 个人详情不得展开完整变更')
+  }
+  if (expectChanges) {
+    assert(Array.isArray(data.targets), 'full 个人详情 targets 必须保持数组 JSON 形状')
+    assert(Array.isArray(data.viewers), 'full 个人详情 viewers 必须保持数组 JSON 形状')
+  } else {
+    assert.deepEqual(data.targets, [], 'summary 个人详情 targets 必须为空数组')
+    assert.deepEqual(data.viewers, [], 'summary 个人详情 viewers 必须为空数组')
+  }
   assert.equal(data.clientIp, undefined, '个人详情不得返回 clientIp')
 }
 
