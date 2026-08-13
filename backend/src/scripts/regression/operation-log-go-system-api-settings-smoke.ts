@@ -62,6 +62,9 @@ try {
   await listen(server)
   const baseURL = `http://127.0.0.1:${addressPort(server)}`
   const cookie = await login(baseURL, captchaAnswerForTest)
+  const adminProfile = await request(baseURL, '/__aisys__/api/auth/me', cookie)
+  assert.equal(adminProfile.status, 200, `管理员身份读取应成功：${adminProfile.text}`)
+  const adminSystemAccountID = envelope<{ id: string }>(adminProfile.text).id
 
   const patch = await request(baseURL, '/__aisys__/api/settings/global', cookie, {
     method: 'PATCH',
@@ -111,6 +114,12 @@ try {
   assert.equal(systemAccount.status, 201, `真实 system-accounts 业务写入应成功：${systemAccount.text}`)
   const systemAccountID = envelope<{ id: string }>(systemAccount.text).id
   const memberCookie = await login(baseURL, captchaAnswerForTest, memberUsername, memberPassword)
+  const memberGroup = await request(baseURL, '/__aisys__/api/my-groups', memberCookie, {
+    method: 'POST',
+    body: { name: 'F4 System API member target group smoke', providerCode: 'gpt', enabled: true }
+  })
+  assert.equal(memberGroup.status, 201, `真实普通用户分组写入应成功：${memberGroup.text}`)
+  const memberGroupID = envelope<{ id: string }>(memberGroup.text).id
 
   const systemTeam = await request(baseURL, '/__aisys__/api/system-teams', cookie, {
     method: 'POST',
@@ -218,6 +227,19 @@ try {
   })
   assert.equal(exportAccounts.status, 200, `真实 accounts 导出应成功：${exportAccounts.text}`)
 
+  const createAuthorization = await request(baseURL, `/__aisys__/api/authorizations?systemAccountId=${encodeURIComponent(adminSystemAccountID)}`, cookie, {
+    method: 'POST',
+    body: {
+      resourceType: 'account',
+      resourceId: accountID,
+      granteeType: 'system_account',
+      granteeId: systemAccountID,
+      targetGroupId: memberGroupID,
+      remark: 'F4 System API authorization smoke'
+    }
+  })
+  assert.equal(createAuthorization.status, 201, `真实 authorizations 业务写入应成功：${createAuthorization.text}`)
+
   const deleteBatchTargetAccount = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(batchTargetAccountID)}`, cookie, {
     method: 'DELETE'
   })
@@ -300,6 +322,12 @@ try {
   assert.equal(exportDetail.path, '/__aisys__/api/accounts/export')
   await assertPersonalSummary(baseURL, cookie, exportItem.id, false, false)
 
+  const authorizationItem = await assertOperation(baseURL, cookie, 'authorizations', 'create', '创建资源授权：F4 System API account smoke -> F4SystemAPIMemberSmoke')
+  const authorizationDetail = await readAdminDetail(baseURL, cookie, authorizationItem.id, 'authorizations.create', 'authorization')
+  assert.equal(authorizationDetail.path, '/__aisys__/api/authorizations/')
+  await assertPersonalSummary(baseURL, cookie, authorizationItem.id, true, true)
+  await assertPersonalSummary(baseURL, memberCookie, authorizationItem.id, true, true)
+
   const deleteItem = await assertOperation(baseURL, cookie, 'accounts', 'delete', '删除 AI 账户：F4 System API batch target smoke')
   const deleteDetail = await readAdminDetail(baseURL, cookie, deleteItem.id, 'accounts.delete', 'account')
   assert.equal(deleteDetail.path, `/__aisys__/api/accounts/${batchTargetAccountID}`)
@@ -341,7 +369,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-group-binding, account-tags, account-export, auth, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-group-binding, account-tags, account-export, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
