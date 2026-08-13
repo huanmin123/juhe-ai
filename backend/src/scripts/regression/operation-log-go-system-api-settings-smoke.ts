@@ -108,6 +108,20 @@ try {
   })
   assert.equal(externalIntegrationSource.status, 201, `真实 external-integration-sources 业务写入应成功：${externalIntegrationSource.text}`)
 
+  const providerModels = await request(baseURL, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', cookie)
+  assert.equal(providerModels.status, 200, `真实 providers 模型列表读取应成功：${providerModels.text}`)
+  const builtInProviderModel = envelope<Array<{ id?: string; model: string; scope: string; updatedAt?: string; catalogVisible?: boolean }>>(providerModels.text)
+    .find((candidate) => candidate.scope === 'built_in' && candidate.id && candidate.updatedAt)
+  assert(builtInProviderModel?.id && builtInProviderModel.updatedAt, '测试初始化必须提供可修改的内置 gpt 模型')
+  const patchProviderModel = await request(baseURL, `/__aisys__/api/providers/gpt/models/${encodeURIComponent(builtInProviderModel.id)}`, cookie, {
+    method: 'PATCH',
+    body: {
+      catalogVisible: !Boolean(builtInProviderModel.catalogVisible),
+      expectedUpdatedAt: builtInProviderModel.updatedAt
+    }
+  })
+  assert.equal(patchProviderModel.status, 200, `真实 providers 内置模型更新应成功：${patchProviderModel.text}`)
+
   const memberUsername = 'f4_smoke_member'
   const memberPassword = 'f4-smoke-member-password'
   const systemAccount = await request(baseURL, '/__aisys__/api/system-accounts', cookie, {
@@ -372,6 +386,11 @@ try {
   assert.equal(externalSourceDetail.path, '/__aisys__/api/external-integration-sources/')
   await assertPersonalSummary(baseURL, cookie, externalSourceItem.id, false, false)
 
+  const providerItem = await assertOperation(baseURL, cookie, 'providers', 'update_model_configuration', `更新模型配置：${builtInProviderModel.model}`)
+  const providerDetail = await readAdminDetail(baseURL, cookie, providerItem.id, 'providers.update_model_configuration', 'provider_model')
+  assert.equal(providerDetail.path, `/__aisys__/api/providers/gpt/models/${builtInProviderModel.id}`)
+  await assertPersonalSummary(baseURL, cookie, providerItem.id, false, false)
+
   const groupItem = await assertOperation(baseURL, cookie, 'groups', 'create', '创建分组：F4 System API group smoke')
   const groupDetail = await readAdminDetail(baseURL, cookie, groupItem.id, 'groups.create', 'group')
   assert.equal(groupDetail.path, '/__aisys__/api/groups/')
@@ -472,7 +491,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, groups, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, providers, groups, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
