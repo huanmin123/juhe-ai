@@ -151,6 +151,26 @@ try {
   assert.equal(account.status, 201, `真实 accounts 业务写入应成功：${account.text}`)
   const accountID = envelope<{ id: string }>(account.text).id
 
+  const batchTargetAccount = await request(baseURL, '/__aisys__/api/accounts', cookie, {
+    method: 'POST',
+    body: {
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      name: 'F4 System API batch target smoke',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-f4-system-api-batch-target',
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: ['gpt-5.4-mini'],
+      healthCheckModel: 'gpt-5.4-mini',
+      status: 'disabled',
+      groupId: groupID
+    }
+  })
+  assert.equal(batchTargetAccount.status, 201, `真实 accounts 批量目标创建应成功：${batchTargetAccount.text}`)
+  const batchTargetAccountID = envelope<{ id: string }>(batchTargetAccount.text).id
+
   const secondaryGroup = await request(baseURL, '/__aisys__/api/groups', cookie, {
     method: 'POST',
     body: { name: 'F4 System API account target group smoke', providerCode: 'gpt', enabled: true }
@@ -173,12 +193,35 @@ try {
     body: { tags: ['f4-system-api-smoke'], expectedConfigRevision: boundAccountConfigRevision }
   })
   assert.equal(updateAccountTags.status, 200, `真实 accounts 标签更新应成功：${updateAccountTags.text}`)
+  const taggedAccountConfigRevision = envelope<{ configRevision: number }>(updateAccountTags.text).configRevision
+
+  const batchTargetAccountDetail = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(batchTargetAccountID)}/edit-basic`, cookie)
+  assert.equal(batchTargetAccountDetail.status, 200, `真实 accounts 批量目标详情应成功：${batchTargetAccountDetail.text}`)
+  const batchTargetAccountConfigRevision = envelope<{ configRevision: number }>(batchTargetAccountDetail.text).configRevision
+  const batchUpdateAccounts = await request(baseURL, '/__aisys__/api/accounts/batch-update', cookie, {
+    method: 'POST',
+    body: {
+      targets: [
+        { accountId: accountID, configRevision: taggedAccountConfigRevision },
+        { accountId: batchTargetAccountID, configRevision: batchTargetAccountConfigRevision }
+      ],
+      updates: {
+        notes: { enabled: true, value: 'F4 System API batch edit smoke' }
+      }
+    }
+  })
+  assert.equal(batchUpdateAccounts.status, 200, `真实 accounts 批量编辑应成功：${batchUpdateAccounts.text}`)
 
   const exportAccounts = await request(baseURL, '/__aisys__/api/accounts/export', cookie, {
     method: 'POST',
     body: { accountIds: [accountID] }
   })
   assert.equal(exportAccounts.status, 200, `真实 accounts 导出应成功：${exportAccounts.text}`)
+
+  const deleteBatchTargetAccount = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(batchTargetAccountID)}`, cookie, {
+    method: 'DELETE'
+  })
+  assert.equal(deleteBatchTargetAccount.status, 204, `真实 accounts 删除应成功：${deleteBatchTargetAccount.text}`)
 
   const updateOwnProfile = await request(baseURL, '/__aisys__/api/auth/me', memberCookie, {
     method: 'PATCH',
@@ -247,10 +290,20 @@ try {
   assert.equal(tagsDetail.path, `/__aisys__/api/accounts/${accountID}/tags`)
   await assertPersonalSummary(baseURL, cookie, tagsItem.id, true, true)
 
+  const batchUpdateItem = await assertOperation(baseURL, cookie, 'accounts', 'batch_update', '批量更新 2 个 AI 账户')
+  const batchUpdateDetail = await readAdminDetail(baseURL, cookie, batchUpdateItem.id, 'accounts.batch_update', 'account_batch')
+  assert.equal(batchUpdateDetail.path, '/__aisys__/api/accounts/batch-update')
+  await assertPersonalSummary(baseURL, cookie, batchUpdateItem.id, true, true)
+
   const exportItem = await assertOperation(baseURL, cookie, 'accounts', 'export', '导出 AI 账户：1 个账户，0 个代理')
   const exportDetail = await readAdminDetail(baseURL, cookie, exportItem.id, 'accounts.export', 'account')
   assert.equal(exportDetail.path, '/__aisys__/api/accounts/export')
   await assertPersonalSummary(baseURL, cookie, exportItem.id, false, false)
+
+  const deleteItem = await assertOperation(baseURL, cookie, 'accounts', 'delete', '删除 AI 账户：F4 System API batch target smoke')
+  const deleteDetail = await readAdminDetail(baseURL, cookie, deleteItem.id, 'accounts.delete', 'account')
+  assert.equal(deleteDetail.path, `/__aisys__/api/accounts/${batchTargetAccountID}`)
+  await assertPersonalSummary(baseURL, cookie, deleteItem.id, true, true)
 
   const profileItem = await assertOperation(baseURL, cookie, 'system_accounts', 'update', '修改显示名称：F4SystemAPIMemberUpdated')
   const profileDetail = await readAdminDetail(baseURL, cookie, profileItem.id, 'auth.update_profile', 'system_account')
@@ -288,7 +341,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-group-binding, account-tags, account-export, auth, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-group-binding, account-tags, account-export, auth, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
