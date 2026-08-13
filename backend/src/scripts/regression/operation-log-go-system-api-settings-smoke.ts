@@ -180,6 +180,55 @@ try {
   assert.equal(batchTargetAccount.status, 201, `真实 accounts 批量目标创建应成功：${batchTargetAccount.text}`)
   const batchTargetAccountID = envelope<{ id: string }>(batchTargetAccount.text).id
 
+  const pendingAccount = await request(baseURL, '/__aisys__/api/accounts', cookie, {
+    method: 'POST',
+    body: {
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      name: 'F4 System API pending account smoke',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-f4-system-api-pending',
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: ['gpt-5.4-mini'],
+      healthCheckModel: 'gpt-5.4-mini',
+      groupId: groupID
+    }
+  })
+  assert.equal(pendingAccount.status, 201, `真实 accounts 待检查账户创建应成功：${pendingAccount.text}`)
+  const pendingAccountID = envelope<{ id: string }>(pendingAccount.text).id
+  const forceActivatePendingAccount = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(pendingAccountID)}/force-activate`, cookie, {
+    method: 'POST',
+    body: { acknowledgedAccountAvailable: true }
+  })
+  assert.equal(forceActivatePendingAccount.status, 200, `真实 accounts 人工恢复应成功：${forceActivatePendingAccount.text}`)
+
+  const trafficMigrationTarget = await request(baseURL, '/__aisys__/api/accounts', cookie, {
+    method: 'POST',
+    body: {
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      name: 'F4 System API traffic target smoke',
+      type: 'api_key',
+      credentials: {
+        api_keys: ['sk-f4-system-api-traffic-a', 'sk-f4-system-api-traffic-b'],
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: ['gpt-5.4-mini'],
+      healthCheckModel: 'gpt-5.4-mini',
+      status: 'active',
+      groupId: groupID
+    }
+  })
+  assert.equal(trafficMigrationTarget.status, 201, `真实 accounts 流量目标创建应成功：${trafficMigrationTarget.text}`)
+  const trafficMigrationTargetID = envelope<{ id: string }>(trafficMigrationTarget.text).id
+  const trafficMigration = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(accountID)}/traffic-migration`, cookie, {
+    method: 'POST',
+    body: { targetAccountId: trafficMigrationTargetID, sourceStatus: 'unchanged' }
+  })
+  assert.equal(trafficMigration.status, 200, `真实 accounts 流量迁移应成功：${trafficMigration.text}`)
+
   const secondaryGroup = await request(baseURL, '/__aisys__/api/groups', cookie, {
     method: 'POST',
     body: { name: 'F4 System API account target group smoke', providerCode: 'gpt', enabled: true }
@@ -319,6 +368,16 @@ try {
   assert(accountLogDetail.changes?.some((change) => change.field === 'credentials'), '账户创建详情必须保留脱敏后的凭据字段变更')
   await assertPersonalSummary(baseURL, cookie, accountItem.id, true, true)
 
+  const forceActivateItem = await assertOperation(baseURL, cookie, 'accounts', 'force_activate', '人工恢复待检查 AI 账户：F4 System API pending account smoke')
+  const forceActivateDetail = await readAdminDetail(baseURL, cookie, forceActivateItem.id, 'accounts.force_activate_pending', 'account')
+  assert.equal(forceActivateDetail.path, `/__aisys__/api/accounts/${pendingAccountID}/force-activate`)
+  await assertPersonalSummary(baseURL, cookie, forceActivateItem.id, true, true)
+
+  const trafficMigrationItem = await assertOperation(baseURL, cookie, 'accounts', 'traffic_migration', '迁移账户流量：F4 System API account smoke -> F4 System API traffic target smoke')
+  const trafficMigrationDetail = await readAdminDetail(baseURL, cookie, trafficMigrationItem.id, 'accounts.traffic_migration', 'account')
+  assert.equal(trafficMigrationDetail.path, `/__aisys__/api/accounts/${accountID}/traffic-migration`)
+  await assertPersonalSummary(baseURL, cookie, trafficMigrationItem.id, true, true)
+
   const bindGroupItem = await assertOperation(baseURL, cookie, 'accounts', 'bind_group', '绑定账户分组：F4 System API account smoke')
   const bindGroupDetail = await readAdminDetail(baseURL, cookie, bindGroupItem.id, 'accounts.bind_group', 'account')
   assert.equal(bindGroupDetail.path, `/__aisys__/api/accounts/${accountID}/group`)
@@ -398,7 +457,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
