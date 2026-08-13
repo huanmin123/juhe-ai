@@ -4,14 +4,14 @@
 
 ## 1. 适用方式
 
-Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖。Compose 拓扑是一个 Node 应用容器加一个 `go-sidecar` 容器；同一 Go 进程承载 F1 运行日志索引、F2 表监控与 F3 审计持久化。Node 应用容器承载：
+Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖。Compose 拓扑是一个 Node 应用容器加一个 `go-sidecar` 容器；同一 Go 进程承载 F1 运行日志索引、F2 表监控、F3 审计持久化与 F4 操作日志。Node 应用容器承载：
 
 - 管理后台：`/__aisys__/`
 - 系统 API：`/__aisys__/api`
 - OpenAI 兼容网关：`/v1`
 - background worker 和本地 DB service 子进程
 
-F1/F2/F3 在同一 sidecar 内仍分别是各自事实的唯一 Go owner：F1 负责运行日志索引/保留，F2 负责表监控采样、快照/保留，F3 负责原始审计、payload/blob、hot-search 与保留。三者直接异步执行，不使用队列；Node 只保留 F3 capture 的一次性 loopback HMAC 输入和 F1/F2/F3 只读查询。
+F1/F2/F3/F4 在同一 sidecar 内仍分别是各自事实的 Go owner：F1 负责运行日志索引/保留，F2 负责表监控采样、快照/保留，F3 负责原始审计、payload/blob、hot-search 与保留，F4 负责操作日志写入/读取/保留。它们直接异步执行，不使用 Node 队列；Node 只保留 F3 capture、F4 operation log 的一次性 loopback HMAC 输入和对应只读查询。F4 尚待独立发布切流。
 
 默认 standalone 模式不需要 Nginx、Redis、PostgreSQL 或额外 Node worker 容器。如果需要 PostgreSQL + Redis 高性能模式，使用 `docker/compose.performance.yml`，并先阅读 [高性能模式部署指南](高性能模式部署指南.md)。2026-08-10 已在开发 Linux 服务器完成两种 Compose runtime 闭环；这不等于 macOS 或生产环境已部署。
 
@@ -133,12 +133,12 @@ JUHE_AI_TRUST_PROXY=false
 
 - `JUHE_AI_PUBLIC_BIND` 是宿主机绑定地址；宿主机 Caddy 反代时建议 `127.0.0.1`，需要局域网 HTTP 临时访问时才用 `0.0.0.0`。
 - `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成 `/app/backend/data/.juhe-ai-secret` 并复用；生产建议在宿主机 env 显式保存稳定密钥。
-- `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 必须填写为独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它同时提供给 Node 和 F3 loopback HMAC 输入端点。
+- `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 必须填写为两把独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它们分别提供给 Node/F3、Node/F4 loopback HMAC 输入端点。
 - 如果现有部署使用容器自动生成的密钥，创建 `business-*` 业务备份时必须把容器内当前有效 `JUHE_AI_SECRET` 单独写入受限权限的恢复 env / secret 文件。不得为了保留这个密钥备份整个数据卷；缺少有效密钥时，业务库中的上游凭据无法恢复。
 - 迁移已有业务库时必须填写原来的 `JUHE_AI_SECRET`。
 - 直接 HTTP 访问时 `JUHE_AI_COOKIE_SECURE=false`；HTTPS 反向代理后建议改为 `true`。
 - `JUHE_AI_PUBLIC_ORIGIN` 是 Docker entrypoint 的便捷变量，会在 `JUHE_AI_ALLOWED_ORIGINS` 留空时转换成后端 CORS 白名单；直接运行 `backend/dist/server.js`、PM2、systemd 或托管平台注入环境变量时，必须配置 `JUHE_AI_ALLOWED_ORIGINS`。
-- 单一 sidecar 必须显式配置稳定的 F1/F2/F3 owner ID，F3 还必须配置独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET`（不回退 `JUHE_AI_SECRET`）、`JUHE_AI_AUDIT_LOG_INPUT_URL`，以及 `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` / `JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY`。F3 listener 仅监听 loopback，所以 sidecar 必须与 Node 共享 network namespace。
+- 单一 sidecar 必须显式配置稳定的 F1/F2/F3/F4 owner ID；F3/F4 均需独立 input secret 与 loopback input URL，F3 另需 blob/hot-search 目录。两类 listener 都仅监听 loopback，所以 sidecar 必须与 Node 共享 network namespace。
 - Docker 构建阶段默认使用官方 Go proxy；受限网络可覆盖 `JUHE_AI_GO_PROXY=https://goproxy.cn,direct`，不影响运行时数据库或 Redis URL。
 - 公网 IP 或域名访问时建议填写 `JUHE_AI_PUBLIC_ORIGIN`，例如 `http://你的服务器IP:3000` 或 `https://ai.example.com`。
 - HTTPS 反向代理后，后台真实客户端 IP 依赖 `JUHE_AI_TRUST_PROXY=true` 和前置代理传递 `X-Forwarded-For`；完整说明见 [Caddy 自动 HTTPS 部署指南](https/Caddy自动HTTPS部署指南.md)。
@@ -151,9 +151,9 @@ sidecar 在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动，保
 - F1：`JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`（PostgreSQL），以及 `JUHE_AI_LOG_DIR`。`JUHE_AI_RUNTIME_LOG_ONCE=false` 用于常驻运行。
 - F2：`JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、`JUHE_AI_TABLE_MONITOR_STORE`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`（PostgreSQL）。生产常驻还应明确 interval、lease、retention 等 F2 参数。
 - F3：`JUHE_AI_AUDIT_LOG_INSTANCE_ID`、`JUHE_AI_AUDIT_LOG_STORE`、`JUHE_AI_AUDIT_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（PostgreSQL）、独立 blob/hot-search 目录、`JUHE_AI_AUDIT_LOG_INPUT_SECRET`。
-- SQLite：F1、F2、F3、业务、dataset、usage catalog、stats 和 usage shard 路径必须物理隔离；F1/F2/F3 输出库分别由 Go 强制 `WAL` 和 `busy_timeout=5000`，Node 只读其产物。
-- PostgreSQL：F1 写其对应日志 schema，F2 写 `juhe_stats`，F3 写其审计 schema；三者不以 Redis 或队列为依赖。
-- F3 已校验 usage shard root，但 F1/F2 当前没有该 root 的完整启动校验。SQLite 部署前仍须由人工确认该目录与任一 F1/F2/F3 输出、其源库均不重叠；这是一项未来 usage 迁移前必须补齐的统一启动门禁，不是已完成的生产验证。
+- F4：`JUHE_AI_OPERATION_LOG_INSTANCE_ID`、`JUHE_AI_OPERATION_LOG_STORE`、`JUHE_AI_OPERATION_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_OPERATION_LOG_POSTGRES_URL`（PostgreSQL）、`JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`（SQLite）或业务 schema、独立 input secret。PostgreSQL 启动会校验既有 F4 schema，不兼容旧 Node 表必须离线迁移后再切换。
+- SQLite：F1、F2、F3、F4、业务、dataset、usage catalog、stats 和 usage shard 路径必须物理隔离；F1-F4 输出库分别由 Go 强制 `WAL` 和 `busy_timeout=5000`，Node 只读其产物。
+- PostgreSQL：F1 写其对应日志 schema，F2 写 `juhe_stats`，F3 写其审计 schema，F4 写 operation-log schema；均不以 Redis 或 Node 队列为依赖。
 
 ## 5. 持久化
 
@@ -165,9 +165,10 @@ juhe-ai-logs -> /app/backend/logs
 juhe-ai-runtime-log-data -> /app/backend/runtime-log-data
 juhe-ai-table-monitor-data -> /app/backend/table-monitor-data
 juhe-ai-audit-log-data -> /app/backend/audit-log-data
+juhe-ai-operation-log-data -> /app/backend/operation-log-data
 ```
 
-业务库、数据集目录库、使用记录目录库、统计库、usage shard、F1/F2/F3 专用事实、自动生成的密钥和日志都会跟随 volume 保留。不要在生产环境执行 `docker compose down -v`，否则会删除这些数据。
+业务库、数据集目录库、使用记录目录库、统计库、usage shard、F1/F2/F3/F4 专用事实、自动生成的密钥和日志都会跟随 volume 保留。不要在生产环境执行 `docker compose down -v`，否则会删除这些数据。
 
 ## 6. 验证
 

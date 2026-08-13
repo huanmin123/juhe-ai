@@ -15,7 +15,8 @@ import (
 	"time"
 	"unicode"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/text/unicode/norm"
 	_ "modernc.org/sqlite"
 )
@@ -25,6 +26,15 @@ var ErrOwnerLeaseLost = errors.New("F4 operation-log owner lease lost")
 const (
 	maxListWindowRows = 1001
 	maxPageSize       = 50
+
+	postgresApplicationName         = "juhe-ai-go-sidecar-f4-operationlog"
+	postgresStatementTimeout        = "10s"
+	postgresLockTimeout             = "1s"
+	postgresIdleTransactionTimeout  = "10s"
+	legacyMigrationDeadline         = 30 * time.Minute
+	legacyMigrationStatementTimeout = "5min"
+	legacyMigrationLockTimeout      = "30s"
+	legacyMigrationIdleTimeout      = "10min"
 )
 
 type OwnerLease struct {
@@ -78,13 +88,54 @@ func OpenStore(cfg Config) (Store, error) {
 		}
 		return &sqlStore{db: db, businessDB: businessDB, mode: cfg.Mode}, nil
 	}
-	db, err := sql.Open("pgx", cfg.PostgresURL)
+	pgConfig, err := pgx.ParseConfig(cfg.PostgresURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse F4 PostgreSQL URL: %w", err)
 	}
+	if pgConfig.RuntimeParams == nil {
+		pgConfig.RuntimeParams = map[string]string{}
+	}
+	pgConfig.RuntimeParams["application_name"] = postgresApplicationName
+	db := stdlib.OpenDB(*pgConfig)
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
 	return &sqlStore{db: db, mode: cfg.Mode}, nil
+}
+
+func (s *sqlStore) beginTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil || s.mode != ModePostgres {
+		return tx, err
+	}
+	for _, setting := range []string{
+		"SET LOCAL statement_timeout = '" + postgresStatementTimeout + "'",
+		"SET LOCAL lock_timeout = '" + postgresLockTimeout + "'",
+		"SET LOCAL idle_in_transaction_session_timeout = '" + postgresIdleTransactionTimeout + "'",
+	} {
+		if _, err = tx.ExecContext(ctx, setting); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("configure F4 PostgreSQL transaction: %w", err)
+		}
+	}
+	return tx, nil
+}
+
+func (s *sqlStore) beginLegacyMigrationTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil || s.mode != ModePostgres {
+		return tx, err
+	}
+	for _, setting := range []string{
+		"SET LOCAL statement_timeout = '" + legacyMigrationStatementTimeout + "'",
+		"SET LOCAL lock_timeout = '" + legacyMigrationLockTimeout + "'",
+		"SET LOCAL idle_in_transaction_session_timeout = '" + legacyMigrationIdleTimeout + "'",
+	} {
+		if _, err = tx.ExecContext(ctx, setting); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("configure F4 PostgreSQL legacy migration transaction: %w", err)
+		}
+	}
+	return tx, nil
 }
 
 func ensureDistinctSQLitePaths(operationPath string, otherPaths ...string) error {
@@ -177,6 +228,8 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 }
 
 func (s *sqlStore) RetentionDays(ctx context.Context, fallback int) (int, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	var value string
 	var err error
 	if s.mode == ModeSQLite {
@@ -216,6 +269,8 @@ func (s *sqlStore) bind(q string) string {
 	return q
 }
 func (s *sqlStore) EnsureSchema(ctx context.Context) error {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	s.schemaMu.Lock()
 	defer s.schemaMu.Unlock()
 	if s.schemaReady {
@@ -228,7 +283,7 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 			return fmt.Errorf("initialize F4 sqlite schema: %w", err)
 		}
 	} else {
-		tx, err := s.db.BeginTx(ctx, nil)
+		tx, err := s.beginTx(ctx)
 		if err != nil {
 			return err
 		}
@@ -236,12 +291,11 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(763847296)"); err != nil {
 			return err
 		}
-		for _, q := range strings.Split(postgresSchema, ";") {
-			if q = strings.TrimSpace(q); q != "" {
-				if _, err = tx.ExecContext(ctx, q); err != nil {
-					return fmt.Errorf("initialize F4 postgres schema: %w", err)
-				}
-			}
+		if err = applyPostgresSchema(ctx, tx); err != nil {
+			return err
+		}
+		if err = validatePostgresSchema(ctx, postgresSQLCatalog{queryer: tx}); err != nil {
+			return err
 		}
 		if err = tx.Commit(); err != nil {
 			return err
@@ -250,7 +304,178 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 	s.schemaReady = true
 	return nil
 }
+
+func applyPostgresSchema(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range strings.Split(postgresSchema, ";") {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("initialize F4 postgres schema: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+type postgresSchemaQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type postgresSchemaCatalog interface {
+	String(context.Context, string, ...any) (string, error)
+	Bool(context.Context, string, ...any) (bool, error)
+}
+
+type postgresSQLCatalog struct{ queryer postgresSchemaQueryer }
+
+func (c postgresSQLCatalog) String(ctx context.Context, query string, args ...any) (string, error) {
+	var value string
+	err := c.queryer.QueryRowContext(ctx, query, args...).Scan(&value)
+	return value, err
+}
+
+func (c postgresSQLCatalog) Bool(ctx context.Context, query string, args ...any) (bool, error) {
+	var value bool
+	err := c.queryer.QueryRowContext(ctx, query, args...).Scan(&value)
+	return value, err
+}
+
+type postgresColumn struct {
+	name     string
+	typeName string
+}
+
+var postgresSchemaColumns = map[string][]postgresColumn{
+	"operation_log_owner_leases": {
+		{"lease_key", "text"}, {"owner_id", "text"}, {"fence_token", "bigint"}, {"lease_until", "timestamp with time zone"}, {"updated_at", "timestamp with time zone"},
+	},
+	"operation_logs": {
+		{"id", "text"}, {"trace_id", "text"}, {"actor_system_account_id", "text"}, {"actor_username", "text"}, {"actor_display_name", "text"}, {"actor_role", "text"}, {"operation_scope_system_account_id", "text"}, {"mode", "text"}, {"module", "text"}, {"action", "text"}, {"operation_key", "text"}, {"resource_type", "text"}, {"resource_id", "text"}, {"resource_name", "text"}, {"summary", "text"}, {"detail_level", "text"}, {"visibility_scope", "text"}, {"changes_json", "jsonb"}, {"metadata_json", "jsonb"}, {"method", "text"}, {"path", "text"}, {"status_code", "integer"}, {"client_ip", "text"}, {"user_agent", "text"}, {"created_at", "timestamp with time zone"},
+	},
+	"operation_log_targets": {
+		{"id", "text"}, {"operation_log_id", "text"}, {"target_type", "text"}, {"target_id", "text"}, {"target_name", "text"}, {"target_owner_system_account_id", "text"}, {"relation", "text"}, {"created_at", "timestamp with time zone"},
+	},
+	"operation_log_viewers": {
+		{"operation_log_id", "text"}, {"system_account_id", "text"}, {"visibility_reason", "text"}, {"detail_level", "text"}, {"created_at", "timestamp with time zone"},
+	},
+	"operation_log_summary_search_terms": {
+		{"operation_log_id", "text"}, {"term", "text"}, {"created_at", "timestamp with time zone"},
+	},
+}
+
+var postgresPrimaryKeys = map[string]string{
+	"operation_log_owner_leases":         "lease_key",
+	"operation_logs":                     "id",
+	"operation_log_targets":              "id",
+	"operation_log_viewers":              "operation_log_id,system_account_id,visibility_reason,detail_level",
+	"operation_log_summary_search_terms": "term,operation_log_id",
+}
+
+var postgresForeignKeyTables = []string{
+	"operation_log_targets",
+	"operation_log_viewers",
+	"operation_log_summary_search_terms",
+}
+
+var postgresRequiredNotNull = map[string][]string{
+	"operation_log_owner_leases": {"lease_key", "owner_id", "fence_token", "lease_until", "updated_at"},
+	"operation_logs": {
+		"id", "actor_system_account_id", "actor_role", "mode", "module", "action", "operation_key", "resource_type", "summary", "detail_level", "visibility_scope", "changes_json", "metadata_json", "created_at",
+	},
+	"operation_log_targets":              {"id", "operation_log_id", "target_type", "relation", "created_at"},
+	"operation_log_viewers":              {"operation_log_id", "system_account_id", "visibility_reason", "detail_level", "created_at"},
+	"operation_log_summary_search_terms": {"operation_log_id", "term", "created_at"},
+}
+
+var postgresRequiredIndexDefinitions = map[string]string{
+	"idx_operation_logs_created":                          "CREATE INDEX idx_operation_logs_created ON juhe_dataset.operation_logs USING btree (created_at, id)",
+	"idx_operation_logs_actor_created":                    "CREATE INDEX idx_operation_logs_actor_created ON juhe_dataset.operation_logs USING btree (actor_system_account_id, created_at, id)",
+	"idx_operation_logs_scope_created":                    "CREATE INDEX idx_operation_logs_scope_created ON juhe_dataset.operation_logs USING btree (operation_scope_system_account_id, created_at, id)",
+	"idx_operation_logs_module_action_created":            "CREATE INDEX idx_operation_logs_module_action_created ON juhe_dataset.operation_logs USING btree (module, action, created_at, id)",
+	"idx_operation_logs_resource_created":                 "CREATE INDEX idx_operation_logs_resource_created ON juhe_dataset.operation_logs USING btree (resource_type, resource_id, created_at, id)",
+	"idx_operation_logs_resource_id_created":              "CREATE INDEX idx_operation_logs_resource_id_created ON juhe_dataset.operation_logs USING btree (resource_id, created_at, id)",
+	"idx_operation_logs_visibility_created":               "CREATE INDEX idx_operation_logs_visibility_created ON juhe_dataset.operation_logs USING btree (visibility_scope, created_at, id)",
+	"idx_operation_logs_trace_created":                    "CREATE INDEX idx_operation_logs_trace_created ON juhe_dataset.operation_logs USING btree (trace_id, created_at, id)",
+	"idx_operation_logs_trace_c_created":                  "CREATE INDEX idx_operation_logs_trace_c_created ON juhe_dataset.operation_logs USING btree (trace_id COLLATE \"C\", created_at, id)",
+	"idx_operation_log_targets_log":                       "CREATE INDEX idx_operation_log_targets_log ON juhe_dataset.operation_log_targets USING btree (operation_log_id)",
+	"idx_operation_log_targets_target":                    "CREATE INDEX idx_operation_log_targets_target ON juhe_dataset.operation_log_targets USING btree (target_type, target_id, created_at, id)",
+	"idx_operation_log_viewers_account_created":           "CREATE INDEX idx_operation_log_viewers_account_created ON juhe_dataset.operation_log_viewers USING btree (system_account_id, created_at, operation_log_id)",
+	"idx_operation_log_terms_log":                         "CREATE INDEX idx_operation_log_terms_log ON juhe_dataset.operation_log_summary_search_terms USING btree (operation_log_id)",
+	"idx_operation_log_summary_search_terms_term_created": "CREATE INDEX idx_operation_log_summary_search_terms_term_created ON juhe_dataset.operation_log_summary_search_terms USING btree (term, created_at, operation_log_id)",
+}
+
+// validatePostgresSchema rejects legacy Node F4 tables instead of silently treating them as Go-compatible.
+func validatePostgresSchema(ctx context.Context, catalog postgresSchemaCatalog) error {
+	for table, columns := range postgresSchemaColumns {
+		qualified := "juhe_dataset." + table
+		for _, column := range columns {
+			var actual string
+			actual, err := catalog.String(ctx, `SELECT format_type(a.atttypid,a.atttypmod) FROM pg_attribute a WHERE a.attrelid=$1::regclass AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped`, qualified, column.name)
+			if err != nil {
+				return fmt.Errorf("F4 PostgreSQL schema incompatible: %s.%s is missing: %w", table, column.name, err)
+			}
+			if actual != column.typeName {
+				return fmt.Errorf("F4 PostgreSQL schema incompatible: %s.%s type=%s want=%s; migrate historical operation logs offline before cutover", table, column.name, actual, column.typeName)
+			}
+		}
+		primaryKey, err := catalog.String(ctx, `SELECT string_agg(a.attname,',' ORDER BY key.ordinality) FROM pg_constraint c CROSS JOIN unnest(c.conkey) WITH ORDINALITY AS key(attnum,ordinality) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid=$1::regclass AND c.contype='p'`, qualified)
+		if err != nil {
+			return fmt.Errorf("F4 PostgreSQL schema incompatible: read primary key for %s: %w", table, err)
+		}
+		if primaryKey != postgresPrimaryKeys[table] {
+			return fmt.Errorf("F4 PostgreSQL schema incompatible: %s primary key=%q want=%q; migrate historical operation logs offline before cutover", table, primaryKey, postgresPrimaryKeys[table])
+		}
+		for _, column := range postgresRequiredNotNull[table] {
+			notNull, err := catalog.Bool(ctx, `SELECT a.attnotnull FROM pg_attribute a WHERE a.attrelid=$1::regclass AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped`, qualified, column)
+			if err != nil {
+				return fmt.Errorf("F4 PostgreSQL schema incompatible: read nullability for %s.%s: %w", table, column, err)
+			}
+			if !notNull {
+				return fmt.Errorf("F4 PostgreSQL schema incompatible: %s.%s must be NOT NULL; migrate historical operation logs offline before cutover", table, column)
+			}
+		}
+	}
+	for _, table := range postgresForeignKeyTables {
+		present, err := catalog.Bool(ctx, `SELECT EXISTS(
+			SELECT 1
+			FROM pg_constraint c
+			JOIN unnest(c.conkey) WITH ORDINALITY AS local_key(attnum,ordinality) ON true
+			JOIN unnest(c.confkey) WITH ORDINALITY AS remote_key(attnum,ordinality) ON remote_key.ordinality=local_key.ordinality
+			JOIN pg_attribute local_column ON local_column.attrelid=c.conrelid AND local_column.attnum=local_key.attnum
+			JOIN pg_attribute remote_column ON remote_column.attrelid=c.confrelid AND remote_column.attnum=remote_key.attnum
+			WHERE c.conrelid=$1::regclass
+			  AND c.contype='f'
+			  AND c.confrelid='juhe_dataset.operation_logs'::regclass
+			  AND c.confdeltype='c'
+			  AND cardinality(c.conkey)=1
+			  AND cardinality(c.confkey)=1
+			  AND local_column.attname='operation_log_id'
+			  AND remote_column.attname='id'
+		)`, "juhe_dataset."+table)
+		if err != nil {
+			return fmt.Errorf("F4 PostgreSQL schema incompatible: read foreign key for %s: %w", table, err)
+		}
+		if !present {
+			return fmt.Errorf("F4 PostgreSQL schema incompatible: %s must have an exact single-column operation_log_id->operation_logs.id cascade foreign key; migrate historical operation logs offline before cutover", table)
+		}
+	}
+	for index, expectedDefinition := range postgresRequiredIndexDefinitions {
+		definition, err := catalog.String(ctx, `SELECT CASE WHEN i.indisvalid AND i.indisready THEN pg_get_indexdef(i.indexrelid) ELSE '' END FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='juhe_dataset' AND c.relname=$1`, index)
+		if err != nil {
+			return fmt.Errorf("F4 PostgreSQL schema incompatible: read index %s: %w", index, err)
+		}
+		if normalizeSQLDefinition(definition) != normalizeSQLDefinition(expectedDefinition) {
+			return fmt.Errorf("F4 PostgreSQL schema incompatible: index %s definition is missing, invalid, or incompatible; migrate historical operation logs offline before cutover", index)
+		}
+	}
+	return nil
+}
+
+func normalizeSQLDefinition(definition string) string {
+	return strings.Join(strings.Fields(definition), " ")
+}
 func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.Duration) (OwnerLease, bool, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	if err := s.EnsureSchema(ctx); err != nil {
 		return OwnerLease{}, false, err
 	}
@@ -259,35 +484,65 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 		defer s.writeMu.Unlock()
 	}
 	if s.mode == ModePostgres {
+		tx, err := s.beginTx(ctx)
+		if err != nil {
+			return OwnerLease{}, false, err
+		}
+		defer tx.Rollback()
 		q := `INSERT INTO juhe_dataset.operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,clock_timestamp()+(? * INTERVAL '1 millisecond'),clock_timestamp()) ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_dataset.operation_log_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=clock_timestamp() WHERE juhe_dataset.operation_log_owner_leases.lease_until<=clock_timestamp() RETURNING fence_token`
 		var token int64
-		err := s.db.QueryRowContext(ctx, s.bind(q), owner, d.Milliseconds()).Scan(&token)
+		err = tx.QueryRowContext(ctx, s.bind(q), owner, d.Milliseconds()).Scan(&token)
 		if errors.Is(err, sql.ErrNoRows) {
-			return OwnerLease{}, false, nil
+			return OwnerLease{}, false, tx.Commit()
 		}
-		return OwnerLease{owner, token}, err == nil, err
+		if err != nil {
+			return OwnerLease{}, false, err
+		}
+		if err = tx.Commit(); err != nil {
+			return OwnerLease{}, false, err
+		}
+		return OwnerLease{owner, token}, true, nil
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	q := `INSERT INTO operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,?,?) ON CONFLICT(lease_key) DO UPDATE SET owner_id=excluded.owner_id,fence_token=operation_log_owner_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at WHERE operation_log_owner_leases.lease_until<=? RETURNING fence_token`
 	var token int64
-	err := s.db.QueryRowContext(ctx, q, owner, now.Add(d).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)).Scan(&token)
+	err := s.db.QueryRowContext(ctx, q, owner, storageTime(now.Add(d)), storageTime(now), storageTime(now)).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
 	return OwnerLease{owner, token}, err == nil, err
 }
 func (s *sqlStore) RenewOwnerLease(ctx context.Context, l OwnerLease, d time.Duration) (bool, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	if s.mode == ModeSQLite {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 	}
 	q := `UPDATE ` + s.table("operation_log_owner_leases") + ` SET lease_until=?,updated_at=? WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>?`
-	args := []any{time.Now().UTC().Add(d).Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), l.OwnerID, l.FenceToken, time.Now().UTC().Format(time.RFC3339Nano)}
+	now := time.Now()
+	args := []any{storageTime(now.Add(d)), storageTime(now), l.OwnerID, l.FenceToken, storageTime(now)}
 	if s.mode == ModePostgres {
 		q = `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=clock_timestamp()+(? * INTERVAL '1 millisecond'),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp()`
 		args = []any{d.Milliseconds(), l.OwnerID, l.FenceToken}
 	}
-	r, err := s.db.ExecContext(ctx, s.bind(q), args...)
+	if s.mode == ModePostgres {
+		tx, err := s.beginTx(ctx)
+		if err != nil {
+			return false, err
+		}
+		defer tx.Rollback()
+		r, err := tx.ExecContext(ctx, s.bind(q), args...)
+		if err != nil {
+			return false, err
+		}
+		n, err := r.RowsAffected()
+		if err != nil || n != 1 {
+			return n == 1, err
+		}
+		return true, tx.Commit()
+	}
+	r, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return false, err
 	}
@@ -295,17 +550,35 @@ func (s *sqlStore) RenewOwnerLease(ctx context.Context, l OwnerLease, d time.Dur
 	return n == 1, err
 }
 func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, l OwnerLease) error {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	if s.mode == ModeSQLite {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 	}
 	q := `UPDATE ` + s.table("operation_log_owner_leases") + ` SET lease_until=?,updated_at=? WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=?`
-	args := []any{time.Unix(0, 0).UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), l.OwnerID, l.FenceToken}
+	args := []any{storageTime(time.Unix(0, 0)), storageTime(time.Now()), l.OwnerID, l.FenceToken}
 	if s.mode == ModePostgres {
 		q = `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=?`
 		args = []any{l.OwnerID, l.FenceToken}
 	}
-	r, err := s.db.ExecContext(ctx, s.bind(q), args...)
+	if s.mode == ModePostgres {
+		tx, err := s.beginTx(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		r, err := tx.ExecContext(ctx, s.bind(q), args...)
+		if err != nil {
+			return err
+		}
+		n, _ := r.RowsAffected()
+		if n != 1 {
+			return ErrOwnerLeaseLost
+		}
+		return tx.Commit()
+	}
+	r, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return err
 	}
@@ -317,18 +590,23 @@ func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, l OwnerLease) error {
 }
 func (s *sqlStore) verifyLease(ctx context.Context, tx *sql.Tx, l OwnerLease) error {
 	q := `SELECT 1 FROM ` + s.table("operation_log_owner_leases") + ` WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>?`
-	args := []any{l.OwnerID, l.FenceToken, time.Now().UTC().Format(time.RFC3339Nano)}
+	args := []any{l.OwnerID, l.FenceToken, storageTime(time.Now())}
 	if s.mode == ModePostgres {
 		q = `SELECT 1 FROM juhe_dataset.operation_log_owner_leases WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp() FOR UPDATE`
 		args = []any{l.OwnerID, l.FenceToken}
 	}
 	var one int
 	if err := tx.QueryRowContext(ctx, s.bind(q), args...).Scan(&one); err != nil {
-		return ErrOwnerLeaseLost
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOwnerLeaseLost
+		}
+		return fmt.Errorf("verify F4 operation-log owner lease: %w", err)
 	}
 	return nil
 }
 func (s *sqlStore) Persist(ctx context.Context, l OwnerLease, input Input) (bool, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	input, err := normalizeInput(input)
 	if err != nil {
 		return false, err
@@ -340,7 +618,7 @@ func (s *sqlStore) Persist(ctx context.Context, l OwnerLease, input Input) (bool
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -361,28 +639,69 @@ func (s *sqlStore) Persist(ctx context.Context, l OwnerLease, input Input) (bool
 	if n == 0 {
 		return true, tx.Commit()
 	}
-	for i, t := range input.Targets {
-		_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("operation_log_targets")+` (id,operation_log_id,target_type,target_id,target_name,target_owner_system_account_id,relation,created_at) VALUES (?,?,?,?,?,?,?,?)`), fmt.Sprintf("optgt_%s_%d", input.ID, i), input.ID, t.TargetType, nilIf(t.TargetID), nilIf(t.TargetName), nilIf(t.TargetOwnerSystemAccountID), t.Relation, input.CreatedAt)
-		if err != nil {
+	if s.mode == ModePostgres {
+		if err = persistPostgresChildren(ctx, tx, input); err != nil {
 			return false, err
 		}
-	}
-	for _, v := range input.Viewers {
-		_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("operation_log_viewers")+` (operation_log_id,system_account_id,visibility_reason,detail_level,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING`), input.ID, v.SystemAccountID, v.VisibilityReason, v.DetailLevel, input.CreatedAt)
-		if err != nil {
-			return false, err
-		}
-	}
-	for _, term := range searchTerms(input.Summary) {
-		_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("operation_log_summary_search_terms")+` (operation_log_id,term,created_at) VALUES (?,?,?) ON CONFLICT DO NOTHING`), input.ID, term, input.CreatedAt)
-		if err != nil {
-			return false, err
-		}
+	} else if err = persistSQLiteChildren(ctx, tx, s, input); err != nil {
+		return false, err
 	}
 	if err = s.verifyLease(ctx, tx, l); err != nil {
 		return false, err
 	}
 	return false, tx.Commit()
+}
+
+func persistSQLiteChildren(ctx context.Context, tx *sql.Tx, store *sqlStore, input Input) error {
+	for i, target := range input.Targets {
+		if _, err := tx.ExecContext(ctx, store.bind(`INSERT INTO `+store.table("operation_log_targets")+` (id,operation_log_id,target_type,target_id,target_name,target_owner_system_account_id,relation,created_at) VALUES (?,?,?,?,?,?,?,?)`), fmt.Sprintf("optgt_%s_%d", input.ID, i), input.ID, target.TargetType, nilIf(target.TargetID), nilIf(target.TargetName), nilIf(target.TargetOwnerSystemAccountID), target.Relation, input.CreatedAt); err != nil {
+			return err
+		}
+	}
+	for _, viewer := range input.Viewers {
+		if _, err := tx.ExecContext(ctx, store.bind(`INSERT INTO `+store.table("operation_log_viewers")+` (operation_log_id,system_account_id,visibility_reason,detail_level,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING`), input.ID, viewer.SystemAccountID, viewer.VisibilityReason, viewer.DetailLevel, input.CreatedAt); err != nil {
+			return err
+		}
+	}
+	for _, term := range searchTerms(input.Summary) {
+		if _, err := tx.ExecContext(ctx, store.bind(`INSERT INTO `+store.table("operation_log_summary_search_terms")+` (operation_log_id,term,created_at) VALUES (?,?,?) ON CONFLICT DO NOTHING`), input.ID, term, input.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func persistPostgresChildren(ctx context.Context, tx *sql.Tx, input Input) error {
+	if len(input.Targets) > 0 {
+		ids, logIDs, types, targetIDs, names, owners, relations, created := make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets)), make([]string, 0, len(input.Targets))
+		for index, target := range input.Targets {
+			ids, logIDs, types = append(ids, fmt.Sprintf("optgt_%s_%d", input.ID, index)), append(logIDs, input.ID), append(types, target.TargetType)
+			targetIDs, names, owners, relations, created = append(targetIDs, target.TargetID), append(names, target.TargetName), append(owners, target.TargetOwnerSystemAccountID), append(relations, target.Relation), append(created, input.CreatedAt)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO juhe_dataset.operation_log_targets (id,operation_log_id,target_type,target_id,target_name,target_owner_system_account_id,relation,created_at) SELECT id,operation_log_id,target_type,NULLIF(target_id,''),NULLIF(target_name,''),NULLIF(owner_id,''),relation,created_at::timestamptz FROM unnest($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::text[]) AS t(id,operation_log_id,target_type,target_id,target_name,owner_id,relation,created_at)`, ids, logIDs, types, targetIDs, names, owners, relations, created); err != nil {
+			return err
+		}
+	}
+	if len(input.Viewers) > 0 {
+		logIDs, ids, reasons, levels, created := make([]string, 0, len(input.Viewers)), make([]string, 0, len(input.Viewers)), make([]string, 0, len(input.Viewers)), make([]string, 0, len(input.Viewers)), make([]string, 0, len(input.Viewers))
+		for _, viewer := range input.Viewers {
+			logIDs, ids, reasons, levels, created = append(logIDs, input.ID), append(ids, viewer.SystemAccountID), append(reasons, viewer.VisibilityReason), append(levels, viewer.DetailLevel), append(created, input.CreatedAt)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO juhe_dataset.operation_log_viewers (operation_log_id,system_account_id,visibility_reason,detail_level,created_at) SELECT operation_log_id,system_account_id,visibility_reason,detail_level,created_at::timestamptz FROM unnest($1::text[],$2::text[],$3::text[],$4::text[],$5::text[]) AS v(operation_log_id,system_account_id,visibility_reason,detail_level,created_at) ON CONFLICT DO NOTHING`, logIDs, ids, reasons, levels, created); err != nil {
+			return err
+		}
+	}
+	terms := searchTerms(input.Summary)
+	if len(terms) > 0 {
+		logIDs, created := make([]string, len(terms)), make([]string, len(terms))
+		for index := range terms {
+			logIDs[index], created[index] = input.ID, input.CreatedAt
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO juhe_dataset.operation_log_summary_search_terms (operation_log_id,term,created_at) SELECT operation_log_id,term,created_at::timestamptz FROM unnest($1::text[],$2::text[],$3::text[]) AS s(operation_log_id,term,created_at) ON CONFLICT DO NOTHING`, logIDs, terms, created); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func nilIf(v string) any {
 	if v == "" {
@@ -450,6 +769,8 @@ func normalizeSearchText(value string) string {
 }
 
 func (s *sqlStore) List(ctx context.Context, options ListOptions) (ListResult, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	page := options.Page
 	if page < 1 {
 		page = 1
@@ -488,17 +809,22 @@ func (s *sqlStore) List(ctx context.Context, options ListOptions) (ListResult, e
 		where = append(where, traceColumn+">=? AND "+traceColumn+"<?")
 		args = append(args, traceID, textPrefixUpperBound(traceID))
 	}
-	if options.StartAt != "" {
+	startAt, startOK := parseStorageTime(options.StartAt)
+	endAt, endOK := parseStorageTime(options.EndAt)
+	if startOK == nil && endOK == nil && startAt > endAt {
+		startAt, endAt = endAt, startAt
+	}
+	if startOK == nil {
 		where = append(where, "ol.created_at>=?")
-		args = append(args, options.StartAt)
+		args = append(args, startAt)
 	}
-	if options.EndAt != "" {
+	if endOK == nil {
 		where = append(where, "ol.created_at<=?")
-		args = append(args, options.EndAt)
+		args = append(args, endAt)
 	}
-	if options.AffectedSystemAccountID != "" {
+	if affected := strings.TrimSpace(options.AffectedSystemAccountID); affected != "" && affected != "all" {
 		where = append(where, "(ol.visibility_scope='all_users' OR EXISTS (SELECT 1 FROM "+s.table("operation_log_viewers")+" av WHERE av.operation_log_id=ol.id AND av.system_account_id=?))")
-		args = append(args, options.AffectedSystemAccountID)
+		args = append(args, affected)
 	}
 	if options.SummaryKeyword != "" {
 		term := normalizeSearchText(options.SummaryKeyword)
@@ -527,9 +853,11 @@ func (s *sqlStore) List(ctx context.Context, options ListOptions) (ListResult, e
 		items := []ListItem{}
 		for rows.Next() {
 			var item ListItem
-			if scanErr := rows.Scan(&item.ID, &item.TraceID, &item.ActorSystemAccountID, &item.ActorDisplayName, &item.OperationScopeSystemAccountID, &item.Module, &item.Action, &item.Summary, &item.CreatedAt); scanErr != nil {
+			var createdAt storageTimestamp
+			if scanErr := rows.Scan(&item.ID, &item.TraceID, &item.ActorSystemAccountID, &item.ActorDisplayName, &item.OperationScopeSystemAccountID, &item.Module, &item.Action, &item.Summary, &createdAt); scanErr != nil {
 				return nil, scanErr
 			}
+			item.CreatedAt = string(createdAt)
 			items = append(items, item)
 		}
 		if rowsErr := rows.Err(); rowsErr != nil {
@@ -608,6 +936,8 @@ func textPrefixUpperBound(value string) string {
 }
 
 func (s *sqlStore) Detail(ctx context.Context, id, viewerID string) (DetailSupplement, bool, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	where := "ol.id=?"
 	args := []any{id}
 	if viewerID != "" {
@@ -632,6 +962,8 @@ func (s *sqlStore) Detail(ctx context.Context, id, viewerID string) (DetailSuppl
 		}
 		if !full || logLevel != "full" {
 			detail.Changes = []Change{}
+			detail.Targets = []DetailTarget{}
+			detail.Viewers = []DetailViewer{}
 			return detail, true, nil
 		}
 	}
@@ -716,32 +1048,56 @@ func listAccountIDs(items []ListItem) []string {
 
 func (s *sqlStore) accountNames(ctx context.Context, ids []string) (map[string]string, error) {
 	result := map[string]string{}
+	unique := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if id == "" {
+		if id == "" || result[id] != "" {
 			continue
 		}
-		if _, found := result[id]; found {
-			continue
+		result[id] = "\x00"
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return result, nil
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if s.mode == ModeSQLite {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+		args := make([]any, len(unique))
+		for index := range unique {
+			args[index] = unique[index]
 		}
-		var name string
-		var err error
-		if s.mode == ModeSQLite {
-			err = s.businessDB.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM system_accounts WHERE id=?", id).Scan(&name)
-		} else {
-			err = s.db.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM juhe_business.system_accounts WHERE id=$1", id).Scan(&name)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read F4 system account name %q: %w", id, err)
+		rows, err = s.businessDB.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM system_accounts WHERE id IN ("+placeholders+")", args...)
+	} else {
+		rows, err = s.db.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM juhe_business.system_accounts WHERE id=ANY($1::text[])", unique)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read F4 system account names: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("scan F4 system account name: %w", err)
 		}
 		result[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate F4 system account names: %w", err)
+	}
+	for _, id := range unique {
+		if result[id] == "\x00" {
+			delete(result, id)
+		}
 	}
 	return result, nil
 }
 
 func (s *sqlStore) CleanupRetention(ctx context.Context, l OwnerLease, cutoff time.Time, limit int) (int64, error) {
+	ctx, cancel := storeContext(ctx)
+	defer cancel()
 	if limit < 1 {
 		limit = 1
 	}
@@ -749,7 +1105,7 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, l OwnerLease, cutoff ti
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -758,7 +1114,7 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, l OwnerLease, cutoff ti
 		return 0, err
 	}
 	q := `SELECT id FROM ` + s.table("operation_logs") + ` WHERE created_at<? ORDER BY created_at,id LIMIT ?`
-	rows, err := tx.QueryContext(ctx, s.bind(q), cutoff.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, s.bind(q), storageTime(cutoff), limit)
 	if err != nil {
 		return 0, err
 	}
@@ -772,9 +1128,17 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, l OwnerLease, cutoff ti
 		ids = append(ids, id)
 	}
 	rows.Close()
-	for _, id := range ids {
-		if _, err = tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("operation_logs")+` WHERE id=?`), id); err != nil {
-			return 0, err
+	if len(ids) > 0 {
+		if s.mode == ModePostgres {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM juhe_dataset.operation_logs WHERE id=ANY($1::text[])`, ids); err != nil {
+				return 0, err
+			}
+		} else {
+			for _, id := range ids {
+				if _, err = tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("operation_logs")+` WHERE id=?`), id); err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
 	if err = s.verifyLease(ctx, tx, l); err != nil {

@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go/internal/sqlitepath"
 )
 
 const (
@@ -143,7 +144,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if candidate.path == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 %s，无法验证 F3 专库隔离", candidate.name)
 		}
-		same, err := sameSQLiteFile(cfg.AuditDatabasePath, candidate.path)
+		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, candidate.path)
 		if err != nil {
 			return Config{}, fmt.Errorf("校验 JUHE_AI_AUDIT_LOG_DATABASE_PATH 与 %s 的物理隔离失败: %w", candidate.name, err)
 		}
@@ -152,7 +153,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	}
 	if cfg.BusinessSettingsPath != "" {
-		same, err := sameSQLiteFile(cfg.AuditDatabasePath, cfg.BusinessSettingsPath)
+		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, cfg.BusinessSettingsPath)
 		if err != nil {
 			return Config{}, fmt.Errorf("校验业务设置只读路径与 F3 SQLite 专库隔离失败: %w", err)
 		}
@@ -163,10 +164,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.CodexShardRoot == "" {
 		return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT，无法验证 Node SQLite shard 隔离")
 	}
-	if err := requirePhysicalShardRoot(cfg.CodexShardRoot, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"); err != nil {
+	if err := sqlitepath.RequirePhysicalRoot(cfg.CodexShardRoot, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"); err != nil {
 		return Config{}, err
 	}
-	within, err := pathWithin(cfg.CodexShardRoot, cfg.AuditDatabasePath)
+	within, err := sqlitepath.PathWithin(cfg.CodexShardRoot, cfg.AuditDatabasePath)
 	if err != nil {
 		return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 Codex shard 根目录隔离失败: %w", err)
 	}
@@ -178,7 +179,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("递归枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
 	}
 	for _, entry := range codexEntries {
-		same, err := sameSQLiteFile(cfg.AuditDatabasePath, entry)
+		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, entry)
 		if err != nil {
 			return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 Codex state shard %q 的物理隔离失败: %w", entry, err)
 		}
@@ -189,22 +190,22 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.UsageShardRoot == "" {
 		return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_USAGE_SHARD_ROOT，无法验证 usage shard 物理隔离")
 	}
-	if err := requirePhysicalShardRoot(cfg.UsageShardRoot, "JUHE_AI_USAGE_SHARD_ROOT"); err != nil {
+	if err := sqlitepath.RequirePhysicalRoot(cfg.UsageShardRoot, "JUHE_AI_USAGE_SHARD_ROOT"); err != nil {
 		return Config{}, err
 	}
-	within, err = pathWithin(cfg.UsageShardRoot, cfg.AuditDatabasePath)
+	within, err = sqlitepath.PathWithin(cfg.UsageShardRoot, cfg.AuditDatabasePath)
 	if err != nil {
 		return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 usage shard 根目录隔离失败: %w", err)
 	}
 	if within {
 		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得放入 JUHE_AI_USAGE_SHARD_ROOT")
 	}
-	entries, err := listUsageShardFiles(cfg.UsageShardRoot)
+	entries, err := sqlitepath.ListUsageShardFiles(cfg.UsageShardRoot)
 	if err != nil {
 		return Config{}, fmt.Errorf("递归枚举 JUHE_AI_USAGE_SHARD_ROOT 失败: %w", err)
 	}
 	for _, entry := range entries {
-		same, err := sameSQLiteFile(cfg.AuditDatabasePath, entry)
+		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, entry)
 		if err != nil {
 			return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 usage shard %q 隔离失败: %w", entry, err)
 		}
@@ -215,25 +216,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-var usageShardRelativePath = regexp.MustCompile(`^(\d{4})[\\/](\d{2})[\\/](\d{2})[\\/]usage-(\d{8})-s\d+\.sqlite3$`)
 var codexStateShardFileName = regexp.MustCompile(`^state-\d{3}\.sqlite3$`)
-
-func requirePhysicalShardRoot(root, environmentName string) error {
-	info, err := os.Lstat(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("读取 %s 失败: %w", environmentName, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s 不允许 symbolic link，无法证明物理隔离", environmentName)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s 必须是目录", environmentName)
-	}
-	return nil
-}
 
 // listCodexStateShardFiles follows Node's state-NNN.sqlite3 files. The root
 // currently stores them directly, but recurse to fail closed if a future
@@ -253,44 +236,6 @@ func listCodexStateShardFiles(root string) ([]string, error) {
 		}
 		if entry.IsDir() || !codexStateShardFileName.MatchString(entry.Name()) {
 			return nil
-		}
-		entries = append(entries, path)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-// listUsageShardFiles follows Node's physical YYYY/MM/DD/usage-YYYYMMDD-sN
-// layout.  WalkDir does not follow symlink directories; fail closed instead
-// of silently skipping an alias that could point at F3's dedicated SQLite.
-func listUsageShardFiles(root string) ([]string, error) {
-	entries := make([]string, 0)
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) && path == root {
-				return nil
-			}
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("usage shard 路径不允许 symbolic link: %q", path)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		matches := usageShardRelativePath.FindStringSubmatch(filepath.ToSlash(relative))
-		if matches == nil {
-			return nil
-		}
-		if matches[1]+matches[2]+matches[3] != matches[4] {
-			return fmt.Errorf("usage shard 日期目录与文件名不一致: %q", path)
 		}
 		entries = append(entries, path)
 		return nil
@@ -389,84 +334,4 @@ func (cfg Config) RetentionConfigAt(now time.Time) RetentionConfig {
 		SuccessSampleBucketThreshold: int(math.Round(cfg.SuccessSampleRate * 10000)),
 		BatchSize:                    cfg.RetentionBatchSize,
 	}
-}
-
-func sameSQLiteFile(left, right string) (bool, error) {
-	leftInfo, leftErr := os.Stat(left)
-	rightInfo, rightErr := os.Stat(right)
-	if leftErr != nil && !errors.Is(leftErr, os.ErrNotExist) {
-		return false, leftErr
-	}
-	if rightErr != nil && !errors.Is(rightErr, os.ErrNotExist) {
-		return false, rightErr
-	}
-	if leftErr == nil && rightErr == nil {
-		return os.SameFile(leftInfo, rightInfo), nil
-	}
-	leftPath, err := canonicalPath(left)
-	if err != nil {
-		return false, err
-	}
-	rightPath, err := canonicalPath(right)
-	if err != nil {
-		return false, err
-	}
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(leftPath, rightPath), nil
-	}
-	return leftPath == rightPath, nil
-}
-
-func canonicalPath(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("路径不能为空")
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	abs = filepath.Clean(abs)
-	if _, err := os.Lstat(abs); err == nil {
-		resolved, err := filepath.EvalSymlinks(abs)
-		if err != nil {
-			return "", err
-		}
-		return filepath.Clean(resolved), nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	parent, suffix := filepath.Dir(abs), []string{filepath.Base(abs)}
-	for {
-		if _, err := os.Lstat(parent); err == nil {
-			resolved, err := filepath.EvalSymlinks(parent)
-			if err != nil {
-				return "", err
-			}
-			return filepath.Clean(filepath.Join(append([]string{resolved}, suffix...)...)), nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		next := filepath.Dir(parent)
-		if next == parent {
-			return "", fmt.Errorf("没有可解析的真实父目录")
-		}
-		suffix = append([]string{filepath.Base(parent)}, suffix...)
-		parent = next
-	}
-}
-
-func pathWithin(root, candidate string) (bool, error) {
-	rootPath, err := canonicalPath(root)
-	if err != nil {
-		return false, err
-	}
-	candidatePath, err := canonicalPath(candidate)
-	if err != nil {
-		return false, err
-	}
-	relative, err := filepath.Rel(rootPath, candidatePath)
-	if err != nil {
-		return false, err
-	}
-	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }

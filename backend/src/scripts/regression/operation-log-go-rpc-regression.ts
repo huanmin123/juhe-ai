@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { createHmac } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 
 const original = new Map<string, string | undefined>()
@@ -58,6 +58,12 @@ try {
   const safePayload = normalizeOperationLogRpcPayload({ schemaVersion: 1, operationLog: { metadata: cyclic, changes: [cyclic] } }) as { operationLog: { metadata: unknown; changes: unknown[] } }
   assert.deepEqual(safePayload.operationLog.metadata, {}, '不可序列化 metadata 必须在 Node 发送边界降级为空对象')
   assert.deepEqual(safePayload.operationLog.changes, [], '不可序列化 changes 必须在 Node 发送边界降级为空数组')
+  const metadataOnlyCyclic = normalizeOperationLogRpcPayload({ schemaVersion: 1, operationLog: { metadata: cyclic, changes: [{ field: 'status', after: 'active' }] } }) as { operationLog: { metadata: unknown; changes: unknown[] } }
+  assert.deepEqual(metadataOnlyCyclic.operationLog.metadata, {}, '循环 metadata 不得阻塞或清空有效 changes')
+  assert.deepEqual(metadataOnlyCyclic.operationLog.changes, [{ field: 'status', after: 'active' }], '有效 changes 必须保留')
+  const changesOnlyCyclic = normalizeOperationLogRpcPayload({ schemaVersion: 1, operationLog: { metadata: { source: 'management' }, changes: [cyclic] } }) as { operationLog: { metadata: unknown; changes: unknown[] } }
+  assert.deepEqual(changesOnlyCyclic.operationLog.metadata, { source: 'management' }, '有效 metadata 必须保留')
+  assert.deepEqual(changesOnlyCyclic.operationLog.changes, [], '循环 changes 不得阻塞或清空有效 metadata')
 
   await listOperationLogsFromGo({ page: 1, pageSize: 20 }, 'viewer-1')
   assert.equal(requests.length, 2)
@@ -82,6 +88,11 @@ try {
   const routesSource = readFileSync(new URL('../../modules/operation-logs/operation-logs.routes.ts', import.meta.url), 'utf8')
   const externalIntegrationSource = readFileSync(new URL('../../modules/external-integrations/external-integrations.routes.ts', import.meta.url), 'utf8')
   assert.match(serviceSource, /void dispatchOperationLogToGo\([\s\S]*?\.catch\(/, '同步业务路径必须 best-effort 提交 Go')
+  assert.match(serviceSource, /runLoggedOperationAsync[\s\S]*?recordOperationLog\(log, req\)[\s\S]*?await runAfterCommitEffectAsync/, '异步业务路径必须在 afterCommit 前 fire-and-forget 提交 F4')
+  assert.doesNotMatch(serviceSource, /await recordOperationLogAsync\(/, '异步业务路径不得等待 F4 RPC')
+  assert.match(serviceSource, /getSettingsAsync\(\)/, 'F4 producer 必须使用异步 settings 读取，兼容 PostgreSQL/performance 模式')
+  assert.doesNotMatch(serviceSource, /\bgetSettings\(\)/, 'F4 producer 不得调用 performance/PG 禁用的同步 settings 读取')
+  assert.match(serviceSource, /recordOperationLogUnsafe\(inputWithId, req\)\.catch/, 'settings/RPC 异步失败必须可见且不得改变业务返回')
   assert.match(serviceSource, /producer: 'node_operation_log_service'[\s\S]*module: input\.module[\s\S]*action: input\.action[\s\S]*errorClass:/, 'Node 日志失败必须记录 producer、module/action 与错误类别')
   assert.match(serviceSource, /const operationLogId = input\.id \?\? newId\('oplog'\)/, 'Node 日志失败必须记录实际生成的 operation log ID')
   assert.doesNotMatch(serviceSource, /enqueueOperationLog|operation-log-queue|createOperationLog/, '操作日志 service 不得回退 Node queue 或 repository')
@@ -90,6 +101,7 @@ try {
   assert.doesNotMatch(routesSource, /listOperationLogsForViewerAsync|getOperationLogDetailSupplementForViewerAsync|listOperationLogsAsync|getOperationLogDetailSupplementAsync/, '读取路由不得保留 Node read repository')
   assert.match(externalIntegrationSource, /recordOperationLogAsync/, '外部集成写入成功后必须复用 F4 Go dispatch service')
   assert.doesNotMatch(externalIntegrationSource, /createOperationLogAsync/, '外部集成不得直写 Node operation log repository')
+  assert.deepEqual(operationLogProducerRoutes(), expectedOperationLogProducerRoutes(), 'F4 L1 producer 路由清单漂移；新增、删除或绕过 shared operation-log service 必须先更新迁移契约和类别验收')
   console.log('F4 Go RPC regression passed: signed 204 one-shot write, fixed ID/createdAt, viewer list wiring, and no retry/fallback.')
 } finally {
   await close(server)
@@ -151,4 +163,60 @@ function addressPort(serverInstance: Server): number {
 
 function close(serverInstance: Server): Promise<void> {
   return new Promise((resolve, reject) => serverInstance.close((error) => error ? reject(error) : resolve()))
+}
+
+function expectedOperationLogProducerRoutes(): string[] {
+  return [
+  'accounts/account-authorization-return.routes.ts',
+  'accounts/account-authorized-dispatch.routes.ts',
+  'accounts/account-batch-edit.routes.ts',
+  'accounts/account-delete.routes.ts',
+  'accounts/account-detail.routes.ts',
+  'accounts/account-export.routes.ts',
+  'accounts/account-force-activate.routes.ts',
+  'accounts/account-group-binding.routes.ts',
+  'accounts/account-import.routes.ts',
+  'accounts/account-tags.routes.ts',
+  'accounts/account-traffic-migration.routes.ts',
+  'accounts/accounts.routes.ts',
+  'announcements/announcements.routes.ts',
+  'anthropic-oauth/anthropic-oauth.routes.ts',
+  'api-keys/api-keys.routes.ts',
+  'auth/auth.routes.ts',
+  'authorizations/authorizations.routes.ts',
+  'external-integrations/external-integration-sources.routes.ts',
+  'external-integrations/external-integrations.routes.ts',
+  'gemini-oauth/gemini-oauth.routes.ts',
+  'grok-oauth/grok-oauth.routes.ts',
+  'groups/groups.routes.ts',
+  'ip-stats/ip-stats.routes.ts',
+  'openai-oauth/openai-oauth.routes.ts',
+  'providers/providers.routes.ts',
+  'proxies/proxies.routes.ts',
+  'response-inspection-policies/response-inspection-policies.routes.ts',
+  'route-strategies/route-strategies.routes.ts',
+  'settings/settings.routes.ts',
+  'system-accounts/system-accounts.routes.ts',
+  'system-teams/system-teams.routes.ts',
+    'table-monitor/table-monitor.routes.ts'
+  ]
+}
+
+function operationLogProducerRoutes(): string[] {
+  const modulesRoot = new URL('../../modules/', import.meta.url)
+  const collected: string[] = []
+  const walk = (directory: URL, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        walk(new URL(`${entry.name}/`, directory), `${prefix}${entry.name}/`)
+      } else if (entry.isFile() && entry.name.endsWith('.routes.ts')) {
+        const file = new URL(entry.name, directory)
+        if (readFileSync(file, 'utf8').includes("operation-logs/operation-log.service.js")) {
+          collected.push(`${prefix}${entry.name}`)
+        }
+      }
+    }
+  }
+  walk(modulesRoot, '')
+  return collected.sort()
 }

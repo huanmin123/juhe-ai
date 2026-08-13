@@ -6,7 +6,6 @@ import { getRequestContext, getRequestLogger } from '../../shared/request-contex
 import type { AccessScope } from '../../storage/access-scope.js'
 import { newId, nowIso, runInDatabaseTransaction } from '../../storage/database.js'
 import {
-  getSettings,
   getSettingsAsync,
   type OperationLogChange,
   type OperationLogInput,
@@ -34,14 +33,12 @@ type LoggedOperationResult<T> = {
 export function recordOperationLog(input: OperationLogRecordInput, req?: Request): void {
 	const operationLogId = input.id ?? newId('oplog')
 	const inputWithId = { ...input, id: operationLogId }
-  try {
-    recordOperationLogUnsafe(inputWithId, req)
-  } catch (error) {
+  void recordOperationLogUnsafe(inputWithId, req).catch((error) => {
     logOperationLogFailure(error, inputWithId, operationLogId)
-  }
+  })
 }
 
-function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request): void {
+async function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request): Promise<void> {
   const actor = getRequestAuthContext()
   const requestContext = getRequestContext()
   const actorSystemAccountId = input.actorSystemAccountId ?? actor?.systemAccountId
@@ -49,7 +46,7 @@ function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request)
     return
   }
 
-  const settings = getSettings()
+  const settings = await getSettingsAsync()
 
   const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
   const operationLogId = input.id ?? newId('oplog')
@@ -94,51 +91,14 @@ export async function runLoggedOperationAsync<T>(operation: () => Promise<Logged
   const outcome = await operation()
   const logs = Array.isArray(outcome.log) ? outcome.log : outcome.log ? [outcome.log] : []
   for (const log of logs) {
-    await recordOperationLogAsync(log, req)
+    recordOperationLog(log, req)
   }
   await runAfterCommitEffectAsync(outcome.afterCommit)
   return outcome.result
 }
 
 export async function recordOperationLogAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
-	const operationLogId = input.id ?? newId('oplog')
-	const inputWithId = { ...input, id: operationLogId }
-  try {
-    await recordOperationLogUnsafeAsync(inputWithId, req)
-  } catch (error) {
-    logOperationLogFailure(error, inputWithId, operationLogId)
-  }
-}
-
-async function recordOperationLogUnsafeAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
-  const actor = getRequestAuthContext()
-  const requestContext = getRequestContext()
-  const actorSystemAccountId = input.actorSystemAccountId ?? actor?.systemAccountId
-  if (!actorSystemAccountId) {
-    return
-  }
-
-  const settings = await getSettingsAsync()
-
-  const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
-  const operationLogId = input.id ?? newId('oplog')
-  await dispatchOperationLogToGo({
-    ...input,
-    actorSystemAccountId,
-    actorUsername: input.actorUsername ?? actor?.username,
-    actorDisplayName: input.actorDisplayName ?? actor?.displayName,
-    actorRole: input.actorRole ?? actor?.role ?? 'user',
-    traceId: input.traceId ?? requestContext?.traceId,
-    method: input.method ?? req?.method ?? requestContext?.method,
-    path: requestPath,
-    clientIp: input.clientIp ?? requestContext?.clientIp,
-    userAgent: input.userAgent ?? req?.header('user-agent'),
-    changes: sanitizeOperationChanges(input.changes ?? [], operationLogMaxChangesPerRecord(settings)),
-    targets: input.targets,
-    viewers: input.viewers,
-    id: operationLogId,
-    createdAt: input.createdAt ?? nowIso()
-  })
+  recordOperationLog(input, req)
 }
 
 function logOperationLogFailure(error: unknown, input: Pick<OperationLogRecordInput, 'id' | 'module' | 'action'>, operationLogId = input.id): void {

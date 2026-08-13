@@ -4,11 +4,58 @@
 package operationlog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
+
+const storageTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
+const storeOperationTimeout = 10 * time.Second
+
+func storeContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, storeOperationTimeout)
+}
+
+func storageTime(value time.Time) string {
+	return value.UTC().Format(storageTimeLayout)
+}
+
+func parseStorageTime(value string) (string, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return "", err
+	}
+	return storageTime(parsed), nil
+}
+
+type storageTimestamp string
+
+func (timestamp *storageTimestamp) Scan(value any) error {
+	switch typed := value.(type) {
+	case time.Time:
+		*timestamp = storageTimestamp(storageTime(typed))
+		return nil
+	case string:
+		normalized, err := parseStorageTime(typed)
+		if err != nil {
+			return err
+		}
+		*timestamp = storageTimestamp(normalized)
+		return nil
+	case []byte:
+		normalized, err := parseStorageTime(string(typed))
+		if err != nil {
+			return err
+		}
+		*timestamp = storageTimestamp(normalized)
+		return nil
+	default:
+		return fmt.Errorf("operation log storage timestamp has unsupported type %T", value)
+	}
+}
 
 type Mode string
 
@@ -143,9 +190,11 @@ func normalizeInput(input Input) (Input, error) {
 			return Input{}, fmt.Errorf("operation log input missing %s", name)
 		}
 	}
-	if _, err := time.Parse(time.RFC3339Nano, input.CreatedAt); err != nil {
+	createdAt, err := parseStorageTime(input.CreatedAt)
+	if err != nil {
 		return Input{}, fmt.Errorf("operation log createdAt invalid: %w", err)
 	}
+	input.CreatedAt = createdAt
 	if input.Mode == "" {
 		input.Mode = "self"
 	}

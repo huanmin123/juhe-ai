@@ -2,7 +2,7 @@
 
 正常常驻入口只有 `cmd/juhe-ai-go-sidecar`（发布二进制名
 `juhe-ai-go-sidecar`）。它在同一进程中启动 F1 运行日志索引、F2 表存储
-监控和 F3 审计日志输入，但每项功能仍独立加载配置、打开 Store、初始化
+监控、F3 审计日志和 F4 操作日志；每项功能仍独立加载配置、打开 Store、初始化
 schema 并持有自己的 owner lease。普通运行错误、owner lease 暂失、组件
 panic 或异常返回只会记录该组件的原因、连续失败次数和退避时间，然后仅重启
 该组件；不会取消其余组件。外部 `SIGTERM`/`SIGINT`、运行时无法恢复的进程级
@@ -10,17 +10,37 @@ panic 或异常返回只会记录该组件的原因、连续失败次数和退�
 停止整个 sidecar 并交由服务管理器处理。日志是诊断和组件自愈的依据，不会掩盖
 进程已经无法继续执行的故障。
 
-常驻 sidecar 不支持 `--once` 或 `JUHE_AI_RUNTIME_LOG_ONCE=true`，因为 F3
+常驻 sidecar 不支持 `--once` 或 `JUHE_AI_RUNTIME_LOG_ONCE=true`，因为 F3/F4
 必须持续提供本地输入服务。离线迁移收敛到同一二进制的互斥显式模式：
-`--migrate-runtime-log-legacy-sqlite` 和
-`--migrate-audit-log-legacy-sqlite --source-db ... --target-db ...`
-（F3 仍必须显式传入 `--node-stopped --go-stopped`）。迁移不能与 sidecar
+`--migrate-runtime-log-legacy-sqlite`、
+`--migrate-audit-log-legacy-sqlite --source-db ... --target-db ...`、
+`--migrate-operation-log-legacy-sqlite --operation-log-source-db ...` 和
+`--migrate-operation-log-legacy-postgres`
+（F3/F4 均必须显式传入 `--node-stopped --go-stopped --backup-confirmed`）。迁移不能与 sidecar
 常驻模式并发运行。
 
 以下 F1/F2 章节描述 sidecar 内保留的独立数据契约和环境变量，不再表示旧
 独立常驻命令是发布入口。
 
-本目录当前承载 F1“运行日志索引与保留”和 F2“表存储监控采样与保留”。两项均已由 Go 直接完整接管各自功能；这不表示 Node 的网关、账户管理或其他管理 API 已迁移。
+本目录当前承载 F1“运行日志索引与保留”、F2“表存储监控采样与保留”、F3“原始审计日志”和 F4“操作日志”。四项均由同一 Go sidecar 独立持有各自的存储和 lease；这不表示 Node 的网关、账户管理或其他管理 API 已迁移。
+
+## F4：操作日志离线历史迁移
+
+F4 正常由同一 sidecar 的 `internal/operationlog` 负责签名输入、写入、读取和保留。历史迁移不是常驻启动的一部分，也不能在 Node 或任何 Go sidecar 仍可能写入时执行。两种模式均必须先完成可恢复备份，并显式传入 `--node-stopped --go-stopped --backup-confirmed`。
+
+SQLite 旧 Node dataset 只读复制到已配置的 F4 专库，保留原始稳定 ID、JSON 与 target/viewer 事实，只重建 Go 的派生 search terms：
+
+```powershell
+go run ./cmd/juhe-ai-go-sidecar --migrate-operation-log-legacy-sqlite --operation-log-source-db 'F:\path\to\legacy-dataset.sqlite' --node-stopped --go-stopped --backup-confirmed
+```
+
+源和目标是同一物理文件（包括 hard link/symlink）会明确拒绝，源库不会被修改。PostgreSQL 的旧 Node 表与 Go F4 表同名并位于 `juhe_dataset`，因此只能在停机窗口内原地升级旧 viewer 三列主键、重建索引和 search terms；不复制到第二个运行中的 owner：
+
+```powershell
+go run ./cmd/juhe-ai-go-sidecar --migrate-operation-log-legacy-postgres --node-stopped --go-stopped --backup-confirmed
+```
+
+两条命令都会输出 JSON 计数和迁移结果。它们不是生产切流授权：完成后仍须按 [F4 操作日志完整迁移契约](../docs/migration/F4-操作日志完整迁移契约.md) 核验可读性、首尾样本、发布候选与回滚提交。
 
 ## F1：运行日志索引与保留
 

@@ -168,9 +168,11 @@ function Start-GoSidecar {
     $logTail | Write-Error
     throw 'juhe-ai-go-sidecar exited during startup.'
   }
-  $inputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path (Join-Path $AppDirectory 'backend/.env') -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
+  $auditInputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path (Join-Path $AppDirectory 'backend/.env') -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
+  $operationInputUrl = (if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path (Join-Path $AppDirectory 'backend/.env') -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }).TrimEnd('/')
   try {
-    Wait-HttpStatus -Process $process -Url "$inputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-sidecar'
+    Wait-HttpStatus -Process $process -Url "$auditInputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-sidecar F3'
+    Wait-HttpStatus -Process $process -Url "$operationInputUrl/__aiinternal__/v1/operation-logs/health" -ExpectedStatus 204 -Description 'juhe-ai-go-sidecar F4'
   } catch {
     if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 | Write-Error }
     throw
@@ -211,7 +213,7 @@ if (-not (Test-Path -LiteralPath $runtimeCheckPath)) { throw "Runtime preflight 
 if (-not (Test-Path -LiteralPath 'backend/.env')) {
   Copy-Item -LiteralPath 'backend/.env.example' -Destination 'backend/.env'
   Write-Host 'Created backend/.env from backend/.env.example'
-  Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values and JUHE_AI_AUDIT_LOG_INPUT_SECRET before production use.'
+  Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values and F3/F4 input secrets before production use.'
 }
 Ensure-DeploymentDefaults
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
@@ -227,9 +229,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $hostValue = if ($env:JUHE_AI_HOST) { $env:JUHE_AI_HOST } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallback '127.0.0.1' }
 $portValue = if ($env:JUHE_AI_PORT) { $env:JUHE_AI_PORT } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_PORT' -Fallback '3000' }
 $env:JUHE_AI_AUDIT_LOG_INPUT_URL = if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }
+$env:JUHE_AI_OPERATION_LOG_INPUT_URL = if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }
 
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue}"
-Write-Host 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2 and F3.'
+Write-Host 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2, F3 and F4.'
 $ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
 $serverArguments = @('backend/dist/server.js')
 if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {

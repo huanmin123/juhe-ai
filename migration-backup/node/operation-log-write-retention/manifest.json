@@ -1,44 +1,52 @@
 {
-  "feature": "F4 operation-log-write-retention",
+  "featureId": "operation-log-write-retention",
+  "archivedAt": "2026-08-13T16:11:12+08:00",
+  "maintainer": "juhe-ai maintainers",
+  "lifecycleStatus": "pre_cutover_source_archive",
   "cutoverCommit": null,
   "rollbackCommit": null,
-  "goReplacement": "backend-go/internal/operationlog",
-  "disabledEntrances": [
+  "goImplementationPaths": [
+    "backend-go/internal/operationlog",
+    "backend-go/internal/supervisor/supervisor.go"
+  ],
+  "disabledNodeEntrypoints": [
     "backend/src/modules/operation-logs/operation-log-queue.service.ts",
     "backend/src/storage/operation-log-*.ts",
-    "backend/src/worker.ts",
-    "backend/src/modules/background/* F4 branches",
-    "backend/src/modules/db-service/* F4 branches"
+    "backend/src/worker.ts F4 branches",
+    "backend/src/modules/background F4 retention branches",
+    "backend/src/modules/db-service F4 branches"
   ],
-  "fileEntryDefaults": {
-    "goReplacement": "backend-go/internal/operationlog",
-    "disabledEntrypoints": [
-      "backend/src/modules/operation-logs/operation-log-queue.service.ts",
-      "backend/src/storage/operation-log-*.ts",
-      "backend/src/worker.ts and F4 background/db-service branches"
-    ]
+  "originalFiles": [
+    {"originalPath":"backend/src/modules/operation-logs/operation-log-queue.service.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/modules/operation-logs/operation-log-queue.service.ts","sha256":"2c5051905f60f14a3e418fe906e9c29074d33ab87fc63e2e692e9b934af3cde0"},
+    {"originalPath":"backend/src/scripts/maintenance/rebuild-operation-log-search-terms.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/maintenance/rebuild-operation-log-search-terms.ts","sha256":"c2a9742bb1b73063d3622370ed5203449ad902e14ba135cbbf6c85fa6ef3ccec"},
+    {"originalPath":"backend/src/scripts/regression/authorized-account-record-ownership-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/authorized-account-record-ownership-regression.ts","sha256":"4716ae0d5fc02c3c360fd90999925de6d94fb0309fb8dd1f24e763e7da347c46"},
+    {"originalPath":"backend/src/scripts/regression/background-ipc-snapshot-current-only-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/background-ipc-snapshot-current-only-regression.ts","sha256":"2c93d81d8fb66695b3cc1c57b6af512b4343e45b7ec7395fadd3c8b9b4129569"},
+    {"originalPath":"backend/src/scripts/regression/background-queue-health-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/background-queue-health-regression.ts","sha256":"f353e1d5186069873c75c877126572503970763a0737ccb75e3c3e42b0f421bc"},
+    {"originalPath":"backend/src/scripts/regression/log-list-projection-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/log-list-projection-regression.ts","sha256":"760852e326bae46002306e9e04b8eb821ddeb69cadbaf64c7bd76904a056cd32"},
+    {"originalPath":"backend/src/scripts/regression/management-progressive-list-contract-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/management-progressive-list-contract-regression.ts","sha256":"d8d8aa3daaec1a7dc06d4734a903d79f76e435720402198000f135aff2fe7d0a"},
+    {"originalPath":"backend/src/scripts/regression/operation-log-db-service-ipc-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/operation-log-db-service-ipc-regression.ts","sha256":"77748c44a3ad30dd077750e91ae368e5fe7e6ea4b163e964589201eb12ce225b"},
+    {"originalPath":"backend/src/scripts/regression/operation-log-detail-supplement-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/operation-log-detail-supplement-regression.ts","sha256":"e7a18005f7677c9f09abc4e758fe97580c62e6ac5c36e27997a63644144aa1d3"},
+    {"originalPath":"backend/src/scripts/regression/operation-log-list-lightweight-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/operation-log-list-lightweight-regression.ts","sha256":"b173907be1a3df7d4e8ef233bf2f36becf3d1a4dc9992a700e56105d636b05d6"},
+    {"originalPath":"backend/src/scripts/regression/operation-log-queue-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/operation-log-queue-regression.ts","sha256":"fcb78804a6e4d7e4b4214f4f74460bd0467e7ffcba59776f9e09739d9c565e71"},
+    {"originalPath":"backend/src/scripts/regression/operation-log-search-maintenance-regression.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/scripts/regression/operation-log-search-maintenance-regression.ts","sha256":"350da0500707cfe21d530cc370f47f67e0666c53cf7a97bfa102c8d52fed5da9"},
+    {"originalPath":"backend/src/storage/operation-log-cleanup.repository.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-cleanup.repository.ts","sha256":"86e46124a459e0c7d030d1841b2c3ce6629e9218207d22268d9d563ea4cdd085"},
+    {"originalPath":"backend/src/storage/operation-log-detail-supplement.repository.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-detail-supplement.repository.ts","sha256":"9cfa9a3e31df6227eae3fbcbf8cb895d8401f8a306fb85250de4feedc8f6be82"},
+    {"originalPath":"backend/src/storage/operation-log-mappers.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-mappers.ts","sha256":"9c93458527d05df225577a0ac1eb261e7d3641b286260da0127980b661c3f268"},
+    {"originalPath":"backend/src/storage/operation-log-read.repository.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-read.repository.ts","sha256":"d25464487612eebabc22c9ae03f67245895e099e62290eaf74751770b949c65b"},
+    {"originalPath":"backend/src/storage/operation-log-search-maintenance.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-search-maintenance.ts","sha256":"fd0e6b1ec8ce8d633eb47b6d021c5d1c10a0d9080c61a2c89b3e5cacc639b121"},
+    {"originalPath":"backend/src/storage/operation-log-search.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-search.ts","sha256":"ef3dce0f98c2fa6abebce32216f77832106254e8d35db5a577a582190e1fc6ee"},
+    {"originalPath":"backend/src/storage/operation-log-write-input.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-write-input.ts","sha256":"f464e322b7fb62624d3045e1da612664b5c3e8f9879efc58577d42c9bffe4293"},
+    {"originalPath":"backend/src/storage/operation-log-write.repository.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-log-write.repository.ts","sha256":"dee35c67215dc00793a434c75928c6b112272d47d39245833d35b69941d3b63d"},
+    {"originalPath":"backend/src/storage/operation-logs.repository.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-logs.repository.ts","sha256":"18816af51bae57073f935197ca27a635069e62af5f638f6f7c2a88e50c91647f"}
+  ],
+  "dualModeVerification": {
+    "sqlite": "backend-go/internal/operationlog/operationlog_test.go; pnpm --filter juhe-ai-backend test:operation-log-go-rpc",
+    "postgresRedis": "backend-go/internal/operationlog TestPostgresOperationLogStoreSmoke using isolated development PostgreSQL; F4 has no Redis transport dependency"
   },
-  "files": [
-    {"originalPath":"backend/src/modules/operation-logs/operation-log-queue.service.ts","sha256":"2c5051905f60f14a3e418fe906e9c29074d33ab87fc63e2e692e9b934af3cde0"},
-    {"originalPath":"backend/src/storage/operation-log-write-input.ts","sha256":"f464e322b7fb62624d3045e1da612664b5c3e8f9879efc58577d42c9bffe4293"},
-    {"originalPath":"backend/src/storage/operation-log-write.repository.ts","sha256":"dee35c67215dc00793a434c75928c6b112272d47d39245833d35b69941d3b63d"},
-    {"originalPath":"backend/src/storage/operation-log-read.repository.ts","sha256":"d25464487612eebabc22c9ae03f67245895e099e62290eaf74751770b949c65b"},
-    {"originalPath":"backend/src/storage/operation-log-detail-supplement.repository.ts","sha256":"9cfa9a3e31df6227eae3fbcbf8cb895d8401f8a306fb85250de4feedc8f6be82"},
-    {"originalPath":"backend/src/storage/operation-log-cleanup.repository.ts","sha256":"86e46124a459e0c7d030d1841b2c3ce6629e9218207d22268d9d563ea4cdd085"},
-    {"originalPath":"backend/src/storage/operation-log-search-maintenance.ts","sha256":"fd0e6b1ec8ce8d633eb47b6d021c5d1c10a0d9080c61a2c89b3e5cacc639b121"},
-    {"originalPath":"backend/src/storage/operation-log-search.ts","sha256":"ef3dce0f98c2fa6abebce32216f77832106254e8d35db5a577a582190e1fc6ee"},
-    {"originalPath":"backend/src/storage/operation-log-mappers.ts","sha256":"9c93458527d05df225577a0ac1eb261e7d3641b286260da0127980b661c3f268"},
-    {"originalPath":"backend/src/storage/operation-logs.repository.ts","sha256":"18816af51bae57073f935197ca27a635069e62af5f638f6f7c2a88e50c91647f"},
-    {"originalPath":"backend/src/scripts/maintenance/rebuild-operation-log-search-terms.ts","sha256":"c2a9742bb1b73063d3622370ed5203449ad902e14ba135cbbf6c85fa6ef3ccec"},
-    {"originalPath":"backend/src/scripts/regression/authorized-account-record-ownership-regression.ts","sha256":"4716ae0d5fc02c3c360fd90999925de6d94fb0309fb8dd1f24e763e7da347c46"},
-    {"originalPath":"backend/src/scripts/regression/background-ipc-snapshot-current-only-regression.ts","sha256":"2c93d81d8fb66695b3cc1c57b6af512b4343e45b7ec7395fadd3c8b9b4129569"},
-    {"originalPath":"backend/src/scripts/regression/background-queue-health-regression.ts","sha256":"f353e1d5186069873c75c877126572503970763a0737ccb75e3c3e42b0f421bc"},
-    {"originalPath":"backend/src/scripts/regression/log-list-projection-regression.ts","sha256":"760852e326bae46002306e9e04b8eb821ddeb69cadbaf64c7bd76904a056cd32"},
-    {"originalPath":"backend/src/scripts/regression/management-progressive-list-contract-regression.ts","sha256":"d8d8aa3daaec1a7dc06d4734a903d79f76e435720402198000f135aff2fe7d0a"},
-    {"originalPath":"backend/src/scripts/regression/operation-log-db-service-ipc-regression.ts","sha256":"77748c44a3ad30dd077750e91ae368e5fe7e6ea4b163e964589201eb12ce225b"},
-    {"originalPath":"backend/src/scripts/regression/operation-log-detail-supplement-regression.ts","sha256":"e7a18005f7677c9f09abc4e758fe97580c62e6ac5c36e27997a63644144aa1d3"},
-    {"originalPath":"backend/src/scripts/regression/operation-log-list-lightweight-regression.ts","sha256":"b173907be1a3df7d4e8ef233bf2f36becf3d1a4dc9992a700e56105d636b05d6"},
-    {"originalPath":"backend/src/scripts/regression/operation-log-queue-regression.ts","sha256":"fcb78804a6e4d7e4b4214f4f74460bd0467e7ffcba59776f9e09739d9c565e71"},
-    {"originalPath":"backend/src/scripts/regression/operation-log-search-maintenance-regression.ts","sha256":"350da0500707cfe21d530cc370f47f67e0666c53cf7a97bfa102c8d52fed5da9"}
+  "activeNodePathZeroEvidence": "rg scans in backend/src, scripts, docker and package scripts; backend/src/scripts/regression/operation-log-go-rpc-regression.ts negative assertions",
+  "remainingGates": [
+    "Create a release cutover commit and an exact rollback commit only after candidate validation.",
+    "Validate production candidate F3/F4 health and real signed Node-to-Go-to-Node readback.",
+    "Perform any historical operation-log migration as a separate offline data operation."
   ]
 }

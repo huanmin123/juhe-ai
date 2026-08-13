@@ -30,7 +30,7 @@ lsof -iTCP:3000 -sTCP:LISTEN || true
 - Node.js 使用官方 LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`。
 - 生产只暴露 Caddy `80/443` 或 WireGuard 回源 listener；不要暴露 juhe-ai `3000`、sing-box `7890`、PostgreSQL 或 Redis。
 - 远端 SSH、launchd 和手工预检必须使用同一条 Node LTS PATH。
-- 发布包必须包含目标 macOS 架构的唯一 Go 二进制 `juhe-ai-go-sidecar`。历史 temporary release 曾验证三二进制拓扑，现已归档，不能外推到当前部署。当前候选槽只启动独立 Node 拓扑，并强制复用承流槽 sidecar；它不得创建第二个 F1/F2/F3 owner。任何候选记录都不替代 `current` 切换、反向代理/Edge、生产数据或真实流量验证。
+- 发布包必须包含目标 macOS 架构的唯一 Go 二进制 `juhe-ai-go-sidecar`。历史 temporary release 曾验证三二进制拓扑，现已归档，不能外推到当前部署。当前候选槽只启动独立 Node 拓扑，并强制复用承流槽 sidecar；它不得创建第二个 F1/F2/F3/F4 owner。任何候选记录都不替代 `current` 切换、反向代理/Edge、生产数据或真实流量验证。
 
 ## 3. 发布包目录
 
@@ -83,7 +83,7 @@ JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
 ```
 
-`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 不能复用或回退 `JUHE_AI_SECRET`。`start.sh` 启动唯一 Go sidecar，但不会生成 F1/F2/F3 owner ID 或 F3 secret；任一项缺失时必须失败，不得跳过 F3 继续运行。PostgreSQL performance 模式改用 `JUHE_AI_AUDIT_LOG_STORE=postgres`、优先的 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（未设置才回退 `JUHE_AI_POSTGRES_URL`）和独立 blob/hot-search 目录；仅 F3 需要的连接选项，例如服务端未启用 TLS 时的 `sslmode=disable`，必须写在前者，不能修改 Node 通用 URL。Node 对 F3 的一次性输入确认默认等待 `7000ms`，可用 `JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS` 在 `1000..60000` 毫秒内调整，且不阻塞已完成的业务响应。
+`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 都不能复用或回退 `JUHE_AI_SECRET`。`start.sh` 启动唯一 Go sidecar，但不会生成 F1/F2/F3/F4 owner ID 或 F3/F4 input secret；任一项缺失时必须失败，不得跳过对应组件继续运行。PostgreSQL performance 模式中 F3 优先使用 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`、F4 优先使用 `JUHE_AI_OPERATION_LOG_POSTGRES_URL`，两者未设置才回退 `JUHE_AI_POSTGRES_URL`；F3 仍使用独立 blob/hot-search 目录。Node 对 F3/F4 的一次性输入确认不阻塞已完成的业务响应。
 
 ## 4. launchd 常驻
 
@@ -158,7 +158,7 @@ curl -i http://127.0.0.1:3303/__aiinternal__/health
 pgrep -af 'juhe-ai-go-sidecar' || true
 ```
 
-前三项的预期是 Node health 为 `200`、F3 health 为 `204`、唯一 Go sidecar 来自当前 release。routine release 还要验证无 Key gateway 返回 `401` 并查看 sidecar 启动日志；这四项能覆盖发布包、Node、Go 和网关路由。F1/F2 新鲜度与 Node -> F3 -> Node 读回只在首次新拓扑、owner/存储变更、故障或回切时追加，不能把 launchd loaded 或单个 Node health 当作切流证据。
+前三项的预期是 Node health 为 `200`、F3/F4 health 均为 `204`、唯一 Go sidecar 来自当前 release。routine release 还要验证无 Key gateway 返回 `401` 并查看 sidecar 启动日志；这四项能覆盖发布包、Node、Go 和网关路由。F1/F2 新鲜度与 Node -> F3/F4 -> Node 读回只在首次新拓扑、owner/存储变更、故障或回切时追加，不能把 launchd loaded 或单个 Node health 当作切流证据。
 
 升级只切 `current` 并重启：
 
@@ -184,32 +184,32 @@ macOS 裸机高性能模式固定使用三个物理进程：
 
 使用 [macOS 运维脚本](operations/README.md) 中的 `install-redis-role-services.sh` 和 `verify-redis-role-isolation.sh`。安装器默认 dry-run；apply 只能在临时服务接管、已留存 plist/config 哈希与恢复副本后执行。temporary 的三个 PID、PostgreSQL 数据库和 namespace 必须都与 main 不同，不能复制 main env 后只换 namespace。
 
-queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空 usage、audit、operation log、public API log 和 record maintenance 五条 Stream。普通运行日志不进入 Redis，必须单独确认角色 JSONL 文件 backlog 已由唯一 Go sidecar 内 F1 追平并且 cursor/freshness 正常。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
+queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空 usage、public API log 和 record maintenance 三条 Stream。F3 审计和 F4 操作日志不进入 Redis，必须分别确认 Go sidecar loopback health、owner lease 和写后读回；普通运行日志也不进入 Redis，必须单独确认角色 JSONL 文件 backlog 已由唯一 Go sidecar 内 F1 追平并且 cursor/freshness 正常。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
 
 ### 4.2 高性能模式单一 Go sidecar
 
-`install-performance-topology.sh` 只安装一个 `juhe-ai-go-sidecar` launchd 服务，服务内承载 F1、F2、F3。dry-run/apply 都要求 release 内唯一 Go 二进制是可执行常规文件；system scope 也只验证该二进制的读取与执行权限。F1/F2/F3 仍保留独立 Store、schema 和 owner lease，稳定 ID 由 `--instance-id-prefix` 加固定组件名生成；它们不是三个 launchd 服务。F2 固定 PostgreSQL 模式，优先使用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，否则只继承 `JUHE_AI_POSTGRES_URL`，两者均缺失即失败，不会回退 SQLite、Redis、Node worker 或 queue。
+`install-performance-topology.sh` 只安装一个 `juhe-ai-go-sidecar` launchd 服务，服务内承载 F1、F2、F3、F4。dry-run/apply 都要求 release 内唯一 Go 二进制是可执行常规文件；system scope 也只验证该二进制的读取与执行权限。F1/F2/F3/F4 仍保留独立 Store、schema 和 owner lease，稳定 ID 由 `--instance-id-prefix` 加固定组件名生成；它们不是四个 launchd 服务。F2 固定 PostgreSQL 模式，优先使用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，否则只继承 `JUHE_AI_POSTGRES_URL`，两者均缺失即失败，不会回退 SQLite、Redis、Node worker 或 queue。
 
 发布包内的运维脚本按文档一律用 `bash docs/deploy/macos/operations/<脚本>.sh ...` 调用；不要假设这些文档脚本本身带可执行位并直接以 `./<脚本>.sh` 运行。`start.sh` 与唯一 Go sidecar 二进制才是发布包必须具备执行权限的运行入口。
 
 system scope 的 `--apply` 必须由 `sudo` 执行；Node 与唯一 Go sidecar 均以 `--service-user` 指定的非 root 用户运行。目标机完成 `pnpm install --prod` 后，release 必须对服务用户递归可读/可执行、但不可写；安装器会拒绝服务用户可写的 release。运行目录、日志和 spool 才可以交给服务用户写入，不能用递归 `chown` 或放宽 release 权限来解决启动失败。
 
-F3 同样固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log`。它从 release 的 `backend/.env`（或 launchd 明确环境）读取优先的 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`（未设置才读取 `JUHE_AI_POSTGRES_URL`）、可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`、`JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS`、同一地址的 `JUHE_AI_AUDIT_LOG_INPUT_URL`、独立的 `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 和可选的 `JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS`；缺失、非 loopback、URL 与监听地址不一致或短密钥都会失败。F3 不会回退 `JUHE_AI_SECRET`、SQLite、Redis、Node worker 或旧审计队列。Node service 与 sidecar 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 payload/hot-search 写读目录漂移。
+F3 固定 PostgreSQL 模式，稳定实例 ID 为 `<instance-id-prefix>-audit-log`；F4 为 `<instance-id-prefix>-operation-log`。F3 读取优先的 `JUHE_AI_AUDIT_LOG_POSTGRES_URL`，F4 读取优先的 `JUHE_AI_OPERATION_LOG_POSTGRES_URL`，两者未设置才读取 `JUHE_AI_POSTGRES_URL`；F3 另读取可选的 `JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL`。二者均要求同地址的 loopback input URL/listen address 和各自独立 input secret；缺失、非 loopback、地址不一致或短密钥都会失败。F3/F4 不会回退 `JUHE_AI_SECRET`、SQLite、Redis 或 Node worker。Node service 与 sidecar 统一使用运行槽位的 `$DATA_DIR/audit/blobs` 和 `$DATA_DIR/audit/hot-search`，避免 F3 payload/hot-search 写读目录漂移。
 
-脚本先通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再启动并验证唯一 Go sidecar；F3 loopback `GET /__aiinternal__/health` 返回 `204`。`--quick` 只要求一次成功，跳过指标注册和重复稳定轮询。routine cutover 再检查无 Key gateway `401` 和启动日志。F1/F2 新鲜度、F3 写后读回和完整回滚演练只在首次新拓扑、owner/存储变更、故障或回切时进行。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
+脚本先通过 gateway/control 的 `/__aisys__/health` 和 `/__aisys__/api/health`（后者是 Node DB-service readiness），再启动并验证唯一 Go sidecar；F3 `/__aiinternal__/health` 与 F4 `/__aiinternal__/v1/operation-logs/health` 均返回 `204`。`--quick` 只要求一次成功，跳过指标注册和重复稳定轮询。routine cutover 再检查无 Key gateway `401` 和启动日志。F1/F2 新鲜度、F3/F4 写后读回和完整回滚演练只在首次新拓扑、owner/存储变更、故障或回切时进行。不得在脚本中读取 PostgreSQL 凭据、直接查询数据库或把存活误报为数据完成。
 
 2026-08-11 已完成目标 Mac 上隔离 temporary release 的直接 `start.sh` 预演：空的可销毁 PostgreSQL 库先安装 release 生产依赖并执行 `node ./backend/dist/scripts/maintenance/init-postgres-schema.js`，随后 Node 两个 health、F3 `204`、F1/F2 Node readback、F3 lifecycle/payload Node readback、真实网关审计捕获和无效 HMAC `401` 均通过。预演未改动 `current`、launchd、Nginx、Caddy、Edge、生产库或 Redis，结束后已清理临时目录、进程、监听和测试库。Mac 默认 Node 路径若不是受支持的 22.x/24.x LTS，必须在 launchd 和手工命令中显式使用同一条受支持 PATH。
 
-2026-08-11 的隔离 temporary 服务空间曾验证旧三 sidecar 拓扑；它已经归档，不能外推到当前单一 sidecar。当前候选槽必须复用承流槽的 Go sidecar，不能创建第二个 F1/F2/F3 data owner。routine release 只完成 control/API/gateway、共享 Go health 和启动日志，再通过快速 route 切换上线；它仍不是 `current` 切换、Nginx/Caddy/Edge 变更或生产数据验证。
+2026-08-11 的隔离 temporary 服务空间曾验证旧三 sidecar 拓扑；它已经归档，不能外推到当前单一 sidecar。当前候选槽必须复用承流槽的 Go sidecar，不能创建第二个 F1/F2/F3/F4 data owner。routine release 只完成 control/API/gateway、F3/F4 共享 Go health 和启动日志，再通过快速 route 切换上线；它仍不是 `current` 切换、Nginx/Caddy/Edge 变更或生产数据验证。
 
-旧归档中的三二进制 dry-run 证据仅代表历史输入，不能作为当前版本的构建或部署证明。正式候选必须从最终冻结 commit 生成一个 `juhe-ai-go-sidecar`、记录 archive SHA-256，并完成 candidate control/API/gateway、共享 Go health 和启动日志检查。Node -> F3 -> Node 读回、稳定观察和 handover rollback 演练只在首次新拓扑、owner/存储变更、故障或回切时进行。
+旧归档中的三二进制 dry-run 证据仅代表历史输入，不能作为当前版本的构建或部署证明。正式候选必须从最终冻结 commit 生成一个 `juhe-ai-go-sidecar`、记录 archive SHA-256，并完成 candidate control/API/gateway、F3/F4 共享 Go health 和启动日志检查。Node -> F3/F4 -> Node 读回、稳定观察和 handover rollback 演练只在首次新拓扑、owner/存储变更、故障或回切时进行。
 
 ### 4.3 生产升级与无感切流
 
 生产升级不再通过“切换 `current` 后重启 active 服务”完成。该做法会在同端口、同 label 上停止现有进程，无法提供零停机证明。
 
 1. 从冻结 commit 构建不可变 release，核对 archive SHA-256、`RELEASE_SOURCE_COMMIT`、前端 `buildId` 和目标架构。
-2. 使用独立 candidate Node runtime、label、端口、Nginx slot include、upstream suffix、Node instance ID 与 Redis 身份执行 system `--apply`，同时传入 `--go-sidecar-mode reuse --audit-input-port <正式 owner F3 loopback端口>` 复用正式槽唯一 sidecar；candidate 不得创建 F1/F2/F3 的第二个 owner。reuse apply 若发现该 candidate label 的 Go sidecar job、plist 或 run script 残留会直接拒绝，必须人工确认后清理，禁止自动停止未知 owner。system scope 必须同时传入 `--nginx-config <slot include>` 与 `--nginx-main-config <main config>`，两者不得相同。
+2. 使用独立 candidate Node runtime、label、端口、Nginx slot include、upstream suffix、Node instance ID 与 Redis 身份执行 system `--apply`，同时传入 `--go-sidecar-mode reuse --audit-input-port <正式 owner F3 loopback端口> --operation-log-input-port <正式 owner F4 loopback端口>` 复用正式槽唯一 sidecar；candidate 不得创建 F1/F2/F3/F4 的第二个 owner。reuse apply 若发现该 candidate label 的 Go sidecar job、plist 或 run script 残留会直接拒绝，必须人工确认后清理，禁止自动停止未知 owner。system scope 必须同时传入 `--nginx-config <slot include>` 与 `--nginx-main-config <main config>`，两者不得相同。
 3. 对 candidate 只请求 control health、API health、无 Key 的 gateway `401` 与 Go sidecar health，并读取启动日志末尾确认没有 `panic` 或 `fatal`。静态 `index.html` 或单个 `200` 不算通过。
 4. 使用 `quick-performance-cutover.sh` 原子切 route；它会再次请求公网 control health、API health 和 gateway `401`，任一失败自动恢复原 route。完整命令见 [生产发布快速流程](../生产发布快速流程.md)。
 5. 切流后保留旧槽到下一次 routine release。只有异常回切或需要深入调查时才使用 `performance-handover-controller.sh` 的 `preflight -> takeover/switchback`；不得在未知状态下杀进程或原地重装。

@@ -14,21 +14,25 @@ const operationLogGoDetailPath = '/__aiinternal__/v1/operation-logs/detail/'
 const operationLogGoInputSignatureDomain = 'juhe-ai/operation-log-input/v1'
 
 export function normalizeOperationLogRpcPayload(payload: unknown): unknown {
-  try {
-    JSON.stringify(payload)
-    return payload
-  } catch {
-    if (!payload || typeof payload !== 'object') return payload
-    const envelope = payload as { operationLog?: Record<string, unknown> }
-    if (!envelope.operationLog) return payload
-    return {
-      ...envelope,
-      operationLog: {
-        ...envelope.operationLog,
-        metadata: {},
-        changes: []
-      }
+  if (!payload || typeof payload !== 'object') return payload
+  const envelope = payload as { operationLog?: Record<string, unknown> }
+  if (!envelope.operationLog) return payload
+  return {
+    ...envelope,
+    operationLog: {
+      ...envelope.operationLog,
+      metadata: jsonValueOr(envelope.operationLog.metadata, {}),
+      changes: jsonValueOr(envelope.operationLog.changes, [])
     }
+  }
+}
+
+function jsonValueOr<T>(value: T, fallback: T): T {
+  try {
+    JSON.stringify(value)
+    return value
+  } catch {
+    return fallback
   }
 }
 

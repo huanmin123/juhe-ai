@@ -15,16 +15,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai
   && printf '%s\n' \
     'package main' \
     'import ("net"; "net/http"; "os"; "time")' \
-    'func main() {' \
-    '  address := os.Getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS")' \
-    '  if address == "" { address = "127.0.0.1:3303" }' \
+    'func probe(address, path string) bool {' \
     '  host, port, err := net.SplitHostPort(address)' \
-    '  if err != nil { os.Exit(1) }' \
-    '  endpoint := "http://" + net.JoinHostPort(host, port) + "/__aiinternal__/health"' \
+    '  if err != nil { return false }' \
+    '  endpoint := "http://" + net.JoinHostPort(host, port) + path' \
     '  response, err := (&http.Client{Timeout: 2 * time.Second}).Get(endpoint)' \
-    '  if err != nil { os.Exit(1) }' \
+    '  if err != nil { return false }' \
     '  defer response.Body.Close()' \
-    '  if response.StatusCode != http.StatusNoContent { os.Exit(1) }' \
+    '  return response.StatusCode == http.StatusNoContent' \
+    '}' \
+    'func main() {' \
+    '  auditAddress := os.Getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS")' \
+    '  if auditAddress == "" { auditAddress = "127.0.0.1:3303" }' \
+    '  operationAddress := os.Getenv("JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS")' \
+    '  if operationAddress == "" { operationAddress = "127.0.0.1:3304" }' \
+    '  if !probe(auditAddress, "/__aiinternal__/health") || !probe(operationAddress, "/__aiinternal__/v1/operation-logs/health") { os.Exit(1) }' \
     '}' > /tmp/sidecar-healthcheck.go \
   && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/juhe-ai-go-sidecar-healthcheck /tmp/sidecar-healthcheck.go
 
@@ -36,6 +41,6 @@ COPY --from=build /out/juhe-ai-go-sidecar-healthcheck /usr/local/bin/juhe-ai-go-
 
 RUN test -x /usr/local/bin/juhe-ai-go-sidecar \
   && test -x /usr/local/bin/juhe-ai-go-sidecar-healthcheck \
-  && mkdir -p /app/backend/data /app/backend/runtime-log-data /app/backend/table-monitor-data /app/backend/audit-log-data /app/backend/logs
+  && mkdir -p /app/backend/data /app/backend/runtime-log-data /app/backend/table-monitor-data /app/backend/audit-log-data /app/backend/operation-log-data /app/backend/logs
 
 ENTRYPOINT ["/usr/local/bin/juhe-ai-go-sidecar"]

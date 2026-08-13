@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go/internal/sqlitepath"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -68,7 +70,7 @@ func MigrateLegacySQLite(ctx context.Context, options LegacyMigrationOptions) (L
 	if targetPath, err = filepath.Abs(targetPath); err != nil {
 		return LegacyMigrationResult{}, fmt.Errorf("解析迁移目标 SQLite 路径失败: %w", err)
 	}
-	same, err := sameSQLiteFile(sourcePath, targetPath)
+	same, err := sqlitepath.SameFile(sourcePath, targetPath)
 	if err != nil {
 		return LegacyMigrationResult{}, fmt.Errorf("校验迁移源/目标 SQLite 隔离失败: %w", err)
 	}
@@ -97,11 +99,11 @@ func MigrateLegacySQLite(ctx context.Context, options LegacyMigrationOptions) (L
 	if sourceBlobRoot == "" || targetBlobRoot == "" {
 		return LegacyMigrationResult{}, errors.New("F3 审计 SQLite 迁移必须提供 source 和 target blob 目录")
 	}
-	sourceBlobPath, err := canonicalPath(sourceBlobRoot)
+	sourceBlobPath, err := sqlitepath.CanonicalPath(sourceBlobRoot)
 	if err != nil {
 		return LegacyMigrationResult{}, fmt.Errorf("解析 source blob 目录失败: %w", err)
 	}
-	targetBlobPath, err := canonicalPath(targetBlobRoot)
+	targetBlobPath, err := sqlitepath.CanonicalPath(targetBlobRoot)
 	if err != nil {
 		return LegacyMigrationResult{}, fmt.Errorf("解析 target blob 目录失败: %w", err)
 	}
@@ -297,7 +299,7 @@ func verifyBlobFile(root, storageKey, digest string, rawSize, compressedSize int
 		return nil, errors.New("storage_key 必须是相对且不可越界路径")
 	}
 	path := filepath.Join(root, filepath.FromSlash(storageKey))
-	inside, err := pathWithin(root, path)
+	inside, err := sqlitepath.PathWithin(root, path)
 	if err != nil || !inside {
 		return nil, errors.New("storage_key 越出 blob 根目录")
 	}

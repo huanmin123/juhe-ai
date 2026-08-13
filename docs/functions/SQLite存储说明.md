@@ -69,7 +69,6 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `usage_record_shards`、`usage_record_shard_entries`、`usage_record_account_shards`、`usage_record_api_key_shards`（使用记录目录库）
 - `audit_logs`、`audit_log_attempts`、`audit_payload_blobs`、`audit_payload_refs`、`audit_error_groups`
 - `public_api_logs`
-- `operation_logs`、`operation_log_targets`、`operation_log_viewers`
 - `runtime_logs`、`runtime_log_file_cursors`
 - `model_check_runs`、`model_check_items`、`model_check_observations`（仅受控探针有界脱敏事实，不保存普通用户正文）
 - `api_key_record_cleanup_targets`
@@ -99,7 +98,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 当前实现已经落地数据集目录库、使用记录目录库、usage shard 和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，数据集与统计职责按当前模型拆为：
 
-- 数据集目录库：保存原始审计、操作日志、公开接口日志、模型检测明细和记录清理目标等非 usage 高增长事实元数据；不保存 Go F1 运行日志索引。
+- 数据集目录库：保存原始审计、公开接口日志、模型检测明细和记录清理目标等非 usage 高增长事实元数据；不保存 Go F1 运行日志索引或 Go F4 操作日志。
 - 使用记录目录库：保存 `usage_record_shards`、`usage_record_shard_entries` 以及按账号 / API Key 去重的 shard scope catalog，只用于定位 usage shard、列表筛选和清理，不保存完整使用记录正文。
 - usage shard 文件：保存新写入的 `usage_records` 明细，按日期和稳定 hash 分散到多个 SQLite 文件。
 - 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、系统监控采样、监控趋势、`stats_job_state` 和使用记录清理扣减账本等紧凑结果。
@@ -110,7 +109,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 四个主库拆分解决了业务库、数据集目录库、使用记录目录库和统计结果库之间互相拖慢的问题，但不能消除单个 SQLite 文件内部的单 writer 上限。当前高频写入优化以 [数据集库分片写入设计](数据集库分片写入设计.md) 为准，先只拆最热的 `usage_records`：
 
-- `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、操作日志、公开接口日志和模型检测等非 usage 明细。
+- `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、公开接口日志和模型检测等非 usage 明细；F4 操作日志使用 `JUHE_AI_OPERATION_LOG_DATABASE_PATH` 专用库。
 - `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 是 Go F1 唯一写入的运行日志索引库，保存运行日志、cursor、facet 和索引保留状态；Node 只读，且不得和 dataset 库共用。
 - `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 作为使用记录目录库，保存 usage shard 注册表、列表筛选目录和按账号 / API Key 去重的 shard scope catalog。它是高频写入瓶颈之一，必须独立于数据集目录库，避免审计、日志和 usage 目录抢同一个 SQLite 写锁。
 - `JUHE_AI_USAGE_SHARD_ROOT` 未配置或留空时默认跟随使用记录目录库所在目录生成 `usage-shards`；生产也可以显式配置为 `./data/usage-shards` 或其他独立目录。
@@ -208,7 +207,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `JUHE_AI_RUNTIME_MODE=performance` 必须搭配 `JUHE_AI_CACHE_DRIVER=redis`、`JUHE_AI_RUNTIME_STATE_DRIVER=redis` 和 `JUHE_AI_QUEUE_DRIVER=redis_stream`；不能用 `memory` driver 作为高性能模式兜底。
 - `SharedJsonCache` 在 Redis cache driver 下必须读写 Redis；同文件的 `createAppCache` 只能作为本地 L1，缓存 miss、清理版本、跨进程复用和失效事实必须能回到 Redis、PostgreSQL 或已落表窗口。
 - 登录限流、验证码、账号并发槽、网关缓存失效版本等运行态必须通过 `RuntimeStateStore` 或等价 Redis state 路径保存；进程内 Map / LRU 只能服务 standalone 或单进程内观测，不能决定跨进程是否允许登录、是否占用并发、是否已失效。
-- 使用记录、审计日志、操作日志和数据维护这类记录型队列，在 performance 模式必须写入 Redis Streams；Usage / Log worker consumer 成功落库后 `XACK` 并 `XDEL` 已处理条目。普通运行日志不属于 Redis Stream，业务进程只追加实例独立 JSONL 文件，由独立 Go F1 indexer 按 cursor 直接索引专用运行日志库。usage 入队失败时允许进入 release 外本机 durable spool 并保留稳定 ID 重放；这不是 memory 回退。其他记录队列仍不得回退本地 memory 后声明已接收。
+- 使用记录、公开接口日志和维护任务等仍由 Node worker/Redis Streams 承载的记录型队列，在 performance 模式必须使用对应的 Streams consumer；普通运行日志不属于 Redis Stream，业务进程只追加实例独立 JSONL 文件，由独立 Go F1 indexer 按 cursor 直接索引专用运行日志库。原始审计和操作日志已经分别由 Go F3/F4 sidecar 通过受签名 loopback HTTP 直接接收、读取和保留，不再经过 Node queue、Redis Stream 或 Node fallback。usage 入队失败时允许进入 release 外本机 durable spool 并保留稳定 ID 重放；这不是 memory 回退。其他记录队列仍不得回退本地 memory 后声明已接收。
 - 新增缓存、运行态或队列实现时，必须同步更新 `pnpm --filter juhe-ai-backend test:performance-redis-boundary` 的分类或断言；未分类的进程内缓存视为潜在跨进程事实源风险。
 
 ## 大文件与频繁读取底线
@@ -439,12 +438,12 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 默认任务策略：
 
-- 所有定时和批处理任务都必须在独立 background worker 进程内调度和执行，不能在 Web/API 主进程里用 `setInterval`、cron 或调度框架直接执行任务函数。
-- 调度框架只负责 worker 进程内的注册、不可重入、错误隔离和触发时机；worker 不能通过 IPC 回到主进程执行统计、清理、刷新或批量落库。
-- 主进程和 DB service 可以把请求链路产生的待处理记录投递给其对应 owner，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求；server / DB service 角色下使用记录和审计记录只能进入其既有 worker 输入，操作日志只在业务提交后一次签名提交给 Go F4，普通运行日志不进入 IPC，也不能因为 worker 未就绪回退到本地 SQLite 逐行索引队列。
+- Node 专属的定时和批处理任务必须在独立 background worker 进程内调度和执行，不能在 Web/API 主进程里用 `setInterval`、cron 或调度框架直接执行任务函数。Go sidecar 的 F1-F4 按各自 owner lease 和组件生命周期执行，不能回退到 Node worker。
+- Node 调度框架只负责 Node worker 内的注册、不可重入、错误隔离和触发时机；Node worker 不能通过 IPC 回到主进程执行统计、清理、刷新或批量落库。
+- 主进程和 DB service 可以把仍由 Node owner 的请求链路记录投递给其对应 owner，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求；操作日志在业务提交后一次签名提交给 Go F4，原始审计在请求终态一次签名提交给 Go F3，二者不进入 Node worker、IPC、Redis Stream 或本地 SQLite writer；普通运行日志不进入 IPC，也不能因为 worker 未就绪回退到本地 SQLite 逐行索引队列。
 - SQLite writer boundary strict 模式是常规运行时默认状态：非 owner 进程打开非所属 SQLite 文件时只允许 `query_only` 读取，生产环境不能关闭；只有 `src/scripts/` / `dist/scripts/` 下离线维护、回归和造数脚本按停机 / 离线边界默认关闭 strict，不得作为常驻运行路径。
 - worker 本地队列 flush 失败时必须保持原队列等待重试，不能用 `pending = [...batch, ...pending]` 或全量 reduce 字节数的方式把失败 batch 拼回队头；成功写入后再从队头移除已提交 batch，避免数据库异常期间按积压量复制数组阻塞 worker 事件循环。
-- DB service 负责系统管理 API 与数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、审计、未接管数据保留、代理检测和 OAuth 后台刷新，操作日志的接收、落库、读取与保留由 Go F4 owner 负责，运行日志索引与保留由 Go F1 indexer 负责。server 角色下 DB service 未就绪、队列满、IPC 超时或内部系统 API 不可用时，请求链路返回可读错误并等待 supervisor 重启，不能在主进程同步执行 DB service 操作，也不能恢复主进程管理 CRUD。业务库写入必须通过 DB service 短事务同步提交；DB service 父进程 IPC 请求按优先级 drain，管理面、网关请求链路、账号状态、API Key、授权和会话等用户可感知写入默认高优先级，过期清理、dirty 标记、后台维护和全量刷新游标等定时任务写入低优先级，且每个 IPC 请求后必须让出事件循环，避免维护写入让后台管理体感卡顿。统计数据集域记录型写入优先投递对应 writer 队列，由单写者消费端使用短事务、优先级和 blocked 重试控制 SQLite 写锁等待。`busy_timeout` 只是最后一道短等待保护，不能作为多 writer 抢锁的常态方案。
+- DB service 负责系统管理 API 与数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、未接管数据保留、代理检测和 OAuth 后台刷新，运行日志索引与保留由 Go F1 owner 负责，表监控由 F2 owner 负责，原始审计由 F3 owner 负责；F4 已完成切换前 Go owner 实现，生产切流后由 F4 接管操作日志接收、落库、读取与保留。server 角色下 DB service 未就绪、队列满、IPC 超时或内部系统 API 不可用时，请求链路返回可读错误并等待 supervisor 重启，不能在主进程同步执行 DB service 操作，也不能恢复主进程管理 CRUD。业务库写入必须通过 DB service 短事务同步提交；DB service 父进程 IPC 请求按优先级 drain，管理面、网关请求链路、账号状态、API Key、授权和会话等用户可感知写入默认高优先级，过期清理、dirty 标记、后台维护和全量刷新游标等定时任务写入低优先级，且每个 IPC 请求后必须让出事件循环，避免维护写入让后台管理体感卡顿。统计数据集域记录型写入优先投递对应 writer 队列，由单写者消费端使用短事务、优先级和 blocked 重试控制 SQLite 写锁等待。`busy_timeout` 只是最后一道短等待保护，不能作为多 writer 抢锁的常态方案。
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。usage 分片落地后，统计输入侧改为每个 shard 独立维护 `(created_at, id)` 游标，统计结果库表和查询口径不变。
 - 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：用户侧 `我的用量` 和管理侧 `用量统计管理` 页面日期范围都默认最近 31 天，最大最近 31 天；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10。趋势点读取 `usage_stats_daily` 的日行，范围累计读取 `usage_scope_range_windows` 的范围行；账户关键词必须先在业务库解析为当前调用方 `caller_account` 范围窗口中的实际账户 ID，解析范围包含自有账户名、授权实例名、授权实例来源账户当前名，以及分组授权来源账户名，再用 `scope_id IN (...)` 读取窗口。点选账户时页面只在当前已返回的账户范围窗口行内切换卡片和明细展示，不回扫明细表。管理员全部用户视图的顶部摘要读取 `system_account = global` 的范围行。接口不能把每日行再相加生成范围汇总，前端也不能把日行汇总成摘要。
 - 统计概览属于监控窗口；页面日期范围默认今天，最大最近 31 天。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均读取 worker 写入的 `usage_overview_*_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`，不在接口中按小时缓存临时相加；这些窗口快照由 worker 按功能表分阶段短事务刷新，阶段之间让出事件循环。概览 scope 发现按 `usage_stats_totals.updated_at` 读取固定上限窗口，避免异常系统账号数量让单轮 worker 装载全部 scope；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势、进程事件循环趋势和进程内存占用趋势只在管理侧展示。
@@ -607,10 +606,10 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 源码边界：
 
-- schema 入口及 `storage/schema/` 拆分文件中只维护当前审计事件、尝试、payload 引用、blob 元数据和错误聚合表结构。
-- 网关模块只创建请求内捕获上下文、追加原始片段和终态投递，不直接调用 repository 同步写审计表。
-- 独立 background worker 进程里的审计批量落库服务负责从 worker 队列取终态记录，计算正文保全策略、压缩、去重和错误聚合，并用短事务写入元数据。
-- 大 payload blob 第一版存放在 `backend/data/audit/blobs/` 下的本地文件中，SQLite 只保存 blob 元数据和引用。
+- F3 Go sidecar schema/store 维护审计事件、尝试、payload 引用、blob 元数据和错误聚合；Node `storage/schema/` 不再拥有审计表 schema/writer。
+- 网关模块只创建请求内捕获上下文、追加原始片段并在终态作一次签名 RPC 投递，不直接调用 repository 同步写审计表。
+- Go F3 在同一请求事务中计算正文保全策略、压缩、去重和错误聚合；它不是 Node worker queue，单条输入失败只返回该条失败且 listener 保持可用。
+- 大 payload blob 由 `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` 指向的 Go F3 专用目录保存，SQLite/PostgreSQL 仅保存 blob 元数据和引用。
 - 审计 payload 不参与统计 worker，不作为用量事实源。
 
 当前 `audit_logs` 表：
@@ -741,7 +740,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - payload blob 可以压缩存储，压缩算法、原始大小和压缩后大小必须记录。
 - 相同 `sha256 + raw_size_bytes + content_type` 的 blob 只存一份，多条事件通过 `audit_payload_refs` 引用。
 - 未完整保留正文时，`capture_status` 必须明确标记为 `summary_only`、`hash_only`、`expired`、`overflow` 或 `dropped`，不能伪装成完整原文。
-- 单条请求超过活跃捕获上限或队列上限时，允许只保存轻量事件和降级原因；不能写入伪完整 payload。
+- 单条请求超过活跃捕获上限或 Go 输入请求上限时，允许只保存轻量事件和降级原因；不能写入伪完整 payload。
 - 错误聚合只影响展示和排障汇总，不删除 `audit_logs` 事件。
 
 ## 系统团队与统一授权存储
@@ -1027,8 +1026,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 正文 blob 压缩后按原始 hash 精确去重，并通过 payload 引用关联到事件。
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。
-- 审计队列固定每 `5` 秒批量落库一次；SQLite / 本地队列默认单批最多 `500` 条，PostgreSQL + Redis Streams 审计消费单批按当前实现限制为 `25` 条，并受批次字节上限和连续 drain 批次数限制。
-- 待写队列有固定请求数和字节数上限，默认 `queueMaxItems=50000`、`queueMaxBytes=256MB`；队列满载时按审计策略丢弃低价值成功样本，队列异常不能阻塞网关请求。
+- F3 没有 Node 审计队列或 Redis Stream consumer。每条终态审计由 Node 一次签名 RPC 直接提交；Go 用受限请求大小、SQLite 单 writer 或 PostgreSQL pool/事务超时控制资源。RPC 或单条存储失败不能阻塞网关，也不得伪造成功。
 - 单个请求活跃捕获上限为 `64MB`，超过后丢弃整条审计记录。
 - 默认固定保留：成功样本 `7` 天，失败 / 异常事件 `30` 天，失败 / 异常正文随事件引用分层清理，错误聚合组 `30` 天；具体以 [审计日志保全策略设计](审计日志保全策略设计.md) 为准。
 
@@ -1036,7 +1034,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 系统账户隔离补充
 
-- `accounts`、`system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_authorization_settings`、`group_accounts`、`route_strategies`、`route_strategy_groups`、`api_keys`、`usage_records`、`operation_logs`、`operation_log_targets`、`operation_log_viewers`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee/viewer 字段隔离；`system_settings` 当前按默认超级管理员作用域保存系统级运行策略；账户错误处理策略跟随 `accounts.credentials`，按账户所属作用域隔离。
+- `accounts`、`system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_authorization_settings`、`group_accounts`、`route_strategies`、`route_strategy_groups`、`api_keys`、`usage_records`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee/viewer 字段隔离；F4 专用库中的操作日志按 `operation_log_viewers` 和 `visibility_scope` 隔离；`system_settings` 当前按默认超级管理员作用域保存系统级运行策略；账户错误处理策略跟随 `accounts.credentials`，按账户所属作用域隔离。
 - `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*` 和各类窗口 / 排行快照也必须按 `system_account_id` 或全局虚拟账户明确隔离。
 - `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly`、`process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。进程事件循环趋势和进程内存占用趋势不按系统账户隔离，只按管理侧选择的日期范围读取全局窗口缓存。`proxy_profiles.latency_ms`、`outbound_ip`、`outbound_region`、`test_status`、`last_tested_at` 和 `last_test_message` 是代理最近检测缓存，不参与账号调度事实判断。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。

@@ -42,7 +42,7 @@ cp -n backend/.env.example backend/.env
 nano backend/.env
 ```
 
-首次启动前，`backend/.env` 除 Node 配置外还必须填写稳定的 F1/F2/F3 owner 与 F3 独立 HMAC 输入配置。`start.sh` 不会生成任一 Go owner ID 或 F3 secret：
+首次启动前，`backend/.env` 除 Node 配置外还必须填写稳定的 F1/F2/F3/F4 owner 与 F3/F4 独立 HMAC 输入配置。`start.sh` 不会生成任一 Go owner ID 或 F3/F4 secret：
 
 ```env
 JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
@@ -55,9 +55,16 @@ JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search
 JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
 JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密钥
+JUHE_AI_OPERATION_LOG_INSTANCE_ID=juhe-ai-go-sidecar-operation-log
+JUHE_AI_OPERATION_LOG_STORE=sqlite
+JUHE_AI_OPERATION_LOG_DATABASE_PATH=./data/juhe-ai-operation-log.sqlite3
+JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH=./data/juhe-ai.sqlite3
+JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3304
+JUHE_AI_OPERATION_LOG_INPUT_URL=http://127.0.0.1:3304
+JUHE_AI_OPERATION_LOG_INPUT_SECRET=替换为另一把独立且至少32位的稳定随机密钥
 ```
 
-F3 secret 不能复用或回退 `JUHE_AI_SECRET`。routine upgrade 启动后只检查 Node 两个 health、`curl -i http://127.0.0.1:3303/__aiinternal__/health` 返回 `204`、无 Key gateway `401` 和唯一 `backend/logs/juhe-ai-go-sidecar.log` 的启动错误。F1/F2 新鲜度和 Node -> F3 -> Node 审计详情读回只在首次部署、owner/存储变更、故障或回切时执行；完整边界见 [AI 部署执行清单](../AI部署执行清单.md)。
+F3/F4 secret 不能复用或回退 `JUHE_AI_SECRET`。routine upgrade 启动后检查 Node 两个 health、`curl -i http://127.0.0.1:3303/__aiinternal__/health` 与 `curl -i http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health` 均返回 `204`、无 Key gateway `401` 和唯一 `backend/logs/juhe-ai-go-sidecar.log` 的启动错误。F1/F2 新鲜度和 Node -> F3/F4 -> Node 详情读回只在首次部署、owner/存储变更、故障或回切时执行；F4 尚待独立生产切流。完整边界见 [AI 部署执行清单](../AI部署执行清单.md)。
 
 配置完成后才可启动：
 

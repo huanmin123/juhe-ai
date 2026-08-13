@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/huanminabc/juhe-ai/backend-go/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go/internal/supervisor"
 )
@@ -26,16 +27,29 @@ func main() {
 	once := flag.Bool("once", false, "unsupported for the persistent sidecar")
 	runtimeLegacyMigration := flag.Bool("migrate-runtime-log-legacy-sqlite", false, "offline F1 legacy SQLite migration")
 	auditLegacyMigration := flag.Bool("migrate-audit-log-legacy-sqlite", false, "offline F3 legacy SQLite migration")
+	operationLegacySQLiteMigration := flag.Bool("migrate-operation-log-legacy-sqlite", false, "offline F4 legacy SQLite migration")
+	operationLegacyPostgresMigration := flag.Bool("migrate-operation-log-legacy-postgres", false, "offline F4 legacy PostgreSQL schema migration")
+	nodeStopped := flag.Bool("node-stopped", false, "confirm Node is stopped for the offline migration")
+	goStopped := flag.Bool("go-stopped", false, "confirm all Go sidecars are stopped for the offline migration")
+	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified for the offline migration")
 	var auditMigration auditlog.LegacyMigrationOptions
+	var operationMigration operationlog.LegacyMigrationOptions
 	flag.StringVar(&auditMigration.SourceDatabasePath, "source-db", "", "legacy Node audit SQLite database")
 	flag.StringVar(&auditMigration.TargetDatabasePath, "target-db", "", "dedicated Go F3 SQLite database")
 	flag.StringVar(&auditMigration.SourceBlobDirectory, "source-blob-dir", "", "legacy audit blob directory")
 	flag.StringVar(&auditMigration.TargetBlobDirectory, "target-blob-dir", "", "dedicated Go F3 blob directory")
-	flag.BoolVar(&auditMigration.NodeStopped, "node-stopped", false, "confirm Node is stopped for the offline migration")
-	flag.BoolVar(&auditMigration.GoStopped, "go-stopped", false, "confirm all Go sidecars are stopped for the offline migration")
+	flag.StringVar(&operationMigration.SourceDatabasePath, "operation-log-source-db", "", "legacy Node operation-log SQLite database")
 	flag.Parse()
-	if (*runtimeLegacyMigration && *auditLegacyMigration) || (*once && (*runtimeLegacyMigration || *auditLegacyMigration)) {
-		fmt.Fprintln(os.Stderr, "--once and the two offline migration modes are mutually exclusive")
+	auditMigration.NodeStopped, auditMigration.GoStopped = *nodeStopped, *goStopped
+	operationMigration.NodeStopped, operationMigration.GoStopped, operationMigration.BackupConfirmed = *nodeStopped, *goStopped, *backupConfirmed
+	migrationCount := 0
+	for _, enabled := range []bool{*runtimeLegacyMigration, *auditLegacyMigration, *operationLegacySQLiteMigration, *operationLegacyPostgresMigration} {
+		if enabled {
+			migrationCount++
+		}
+	}
+	if migrationCount > 1 || (*once && migrationCount != 0) {
+		fmt.Fprintln(os.Stderr, "--once and all offline migration modes are mutually exclusive")
 		os.Exit(2)
 	}
 	if *runtimeLegacyMigration {
@@ -44,6 +58,10 @@ func main() {
 	}
 	if *auditLegacyMigration {
 		runAuditLegacyMigration(auditMigration)
+		return
+	}
+	if *operationLegacySQLiteMigration || *operationLegacyPostgresMigration {
+		runOperationLogLegacyMigration(operationMigration, *operationLegacyPostgresMigration)
 		return
 	}
 	if *once {
@@ -68,6 +86,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func runOperationLogLegacyMigration(options operationlog.LegacyMigrationOptions, postgres bool) {
+	config, err := operationlog.LoadConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("加载 F4 操作日志配置失败: %w", err))
+	}
+	var result operationlog.LegacyMigrationResult
+	if postgres {
+		result, err = operationlog.MigrateLegacyPostgres(context.Background(), config, options)
+	} else {
+		result, err = operationlog.MigrateLegacySQLite(context.Background(), config, options)
+	}
+	if err != nil {
+		fail(fmt.Errorf("F4 操作日志历史迁移失败: %w", err))
+	}
+	encoded, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		fail(fmt.Errorf("序列化 F4 操作日志迁移结果失败: %w", err))
+	}
+	fmt.Println(string(encoded))
 }
 
 func runRuntimeLegacyMigration() {

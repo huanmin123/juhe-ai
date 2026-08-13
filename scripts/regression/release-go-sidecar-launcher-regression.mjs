@@ -27,7 +27,7 @@ assert.ok(
 )
 assert.match(launcherSource, /release startup does not generate owner identities or transport secrets/u, 'shared launcher must reject missing owner identities and the explicit F3 input secret')
 assert.doesNotMatch(launcherSource, /JUHE_AI_AUDIT_LOG_INPUT_SECRET[^\n]*JUHE_AI_SECRET/u, 'shared launcher must not fall back to JUHE_AI_SECRET')
-for (const name of ['JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID']) {
+for (const name of ['JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_OPERATION_LOG_INSTANCE_ID']) {
   assert.match(launcherSource, new RegExp(name, 'u'), `shared launcher must require ${name}`)
 }
 
@@ -40,7 +40,8 @@ function assertLauncherRejectsMissingOwnerOrSecret() {
   const result = runLauncher({
     'JUHE_AI_RUNTIME_LOG_INSTANCE_ID': 'f1-owner',
     'JUHE_AI_TABLE_MONITOR_INSTANCE_ID': 'f2-owner',
-    'JUHE_AI_AUDIT_LOG_INSTANCE_ID': 'f3-owner'
+    'JUHE_AI_AUDIT_LOG_INSTANCE_ID': 'f3-owner',
+    'JUHE_AI_OPERATION_LOG_INSTANCE_ID': 'f4-owner'
   })
   try {
     assert.notEqual(result.status, 0, 'sidecar launcher must reject a missing F3 input secret')
@@ -55,7 +56,9 @@ function assertLauncherForwardsAllSQLitePaths() {
     'JUHE_AI_RUNTIME_LOG_INSTANCE_ID': 'f1-owner',
     'JUHE_AI_TABLE_MONITOR_INSTANCE_ID': 'f2-owner',
     'JUHE_AI_AUDIT_LOG_INSTANCE_ID': 'f3-owner',
-    'JUHE_AI_AUDIT_LOG_INPUT_SECRET': 'release-sidecar-input-secret-with-32-bytes'
+    'JUHE_AI_AUDIT_LOG_INPUT_SECRET': 'release-sidecar-input-secret-with-32-bytes',
+    'JUHE_AI_OPERATION_LOG_INSTANCE_ID': 'f4-owner',
+    'JUHE_AI_OPERATION_LOG_INPUT_SECRET': 'release-operation-log-input-secret-with-32-bytes'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
@@ -63,6 +66,7 @@ function assertLauncherForwardsAllSQLitePaths() {
     'JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/audit-log.sqlite3',
     'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs',
     'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search',
+    'JUHE_AI_OPERATION_LOG_DATABASE_PATH=./data/operation-log.sqlite3',
     'JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/usage-catalog.sqlite3',
     'JUHE_AI_STATS_DATABASE_PATH=./data/stats.sqlite3',
     'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=./data/codex-context/state-shards'
@@ -74,6 +78,9 @@ function assertLauncherForwardsAllSQLitePaths() {
     assert.equal(result.childEnvironment.JUHE_AI_AUDIT_LOG_DATABASE_PATH, join(result.backendRoot, 'data', 'audit-log.sqlite3'))
     assert.equal(result.childEnvironment.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, join(result.backendRoot, 'data', 'audit-payload-blobs'))
     assert.equal(result.childEnvironment.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, join(result.backendRoot, 'data', 'audit-hot-search'))
+    assert.equal(result.childEnvironment.JUHE_AI_OPERATION_LOG_DATABASE_PATH, join(result.backendRoot, 'data', 'operation-log.sqlite3'))
+    assert.equal(result.childEnvironment.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, join(result.backendRoot, 'data', 'juhe-ai.sqlite3'))
+    assert.equal(result.childEnvironment.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
     assert.equal(result.childEnvironment.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, join(result.backendRoot, 'data', 'usage-catalog.sqlite3'))
     assert.equal(result.childEnvironment.JUHE_AI_STATS_DATABASE_PATH, join(result.backendRoot, 'data', 'stats.sqlite3'))
   } finally {
@@ -93,9 +100,11 @@ function runLauncher(overrides, baseEnv = '') {
   for (const key of [
     'JUHE_AI_ENV_FILE', 'JUHE_AI_DISABLE_BASE_ENV', 'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_RUNTIME_MODE',
     'JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INSTANCE_ID',
-    'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_RUNTIME_LOG_STORE', 'JUHE_AI_TABLE_MONITOR_STORE', 'JUHE_AI_AUDIT_LOG_STORE',
+    'JUHE_AI_OPERATION_LOG_INSTANCE_ID', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_OPERATION_LOG_INPUT_SECRET',
+    'JUHE_AI_RUNTIME_LOG_STORE', 'JUHE_AI_TABLE_MONITOR_STORE', 'JUHE_AI_AUDIT_LOG_STORE', 'JUHE_AI_OPERATION_LOG_STORE',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH', 'JUHE_AI_TABLE_MONITOR_DATABASE_PATH', 'JUHE_AI_AUDIT_LOG_DATABASE_PATH',
-    'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
+    'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY', 'JUHE_AI_OPERATION_LOG_DATABASE_PATH',
+    'JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH', 'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_OPERATION_LOG_INPUT_URL', 'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
     'JUHE_AI_STATS_DATABASE_PATH', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT'
   ]) {
     if (!Object.hasOwn(overrides, key)) delete env[key]

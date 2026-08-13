@@ -105,6 +105,18 @@ const names = [
   'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
   'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS',
+  'JUHE_AI_OPERATION_LOG_STORE',
+  'JUHE_AI_OPERATION_LOG_POSTGRES_URL',
+  'JUHE_AI_OPERATION_LOG_DATABASE_PATH',
+  'JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH',
+  'JUHE_AI_OPERATION_LOG_INSTANCE_ID',
+  'JUHE_AI_OPERATION_LOG_OWNER_LEASE',
+  'JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL',
+  'JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE',
+  'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS',
+  'JUHE_AI_OPERATION_LOG_INPUT_SECRET',
+  'JUHE_AI_OPERATION_LOG_INPUT_URL',
+  'JUHE_AI_OPERATION_LOG_INPUT_TIMEOUT_MS',
   'JUHE_AI_DATABASE_PATH',
   'JUHE_AI_DATASET_DATABASE_PATH',
   'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
@@ -121,7 +133,9 @@ for (const name of [
   'JUHE_AI_RUNTIME_LOG_INSTANCE_ID',
   'JUHE_AI_TABLE_MONITOR_INSTANCE_ID',
   'JUHE_AI_AUDIT_LOG_INSTANCE_ID',
-  'JUHE_AI_AUDIT_LOG_INPUT_SECRET'
+  'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
+  'JUHE_AI_OPERATION_LOG_INSTANCE_ID',
+  'JUHE_AI_OPERATION_LOG_INPUT_SECRET'
 ]) {
   if (!String(env[name] ?? '').trim()) {
     throw new Error(`${name} is required; release startup does not generate owner identities or transport secrets.`)
@@ -134,14 +148,17 @@ const hasPerformanceHints = ['JUHE_AI_POSTGRES_URL', 'JUHE_AI_REDIS_CACHE_URL', 
 const runtimeLogStore = resolveStore('JUHE_AI_RUNTIME_LOG_STORE', env, runtimeMode, hasPerformanceHints)
 const tableMonitorStore = resolveStore('JUHE_AI_TABLE_MONITOR_STORE', env, runtimeMode, hasPerformanceHints)
 const auditLogStore = resolveStore('JUHE_AI_AUDIT_LOG_STORE', env, runtimeMode, hasPerformanceHints)
+const operationLogStore = resolveStore('JUHE_AI_OPERATION_LOG_STORE', env, runtimeMode, hasPerformanceHints)
 
 env.JUHE_AI_LOG_DIR = absoluteBackendPath(env.JUHE_AI_LOG_DIR, './logs')
 env.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = String(env.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS ?? '').trim() || '127.0.0.1:3303'
 env.JUHE_AI_AUDIT_LOG_INPUT_URL = String(env.JUHE_AI_AUDIT_LOG_INPUT_URL ?? '').trim() || 'http://127.0.0.1:3303'
 env.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, './data/audit-payload-blobs')
 env.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, './data/audit-hot-search')
+env.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS = String(env.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS ?? '').trim() || '127.0.0.1:3304'
+env.JUHE_AI_OPERATION_LOG_INPUT_URL = String(env.JUHE_AI_OPERATION_LOG_INPUT_URL ?? '').trim() || 'http://127.0.0.1:3304'
 
-if (runtimeLogStore === 'sqlite' || tableMonitorStore === 'sqlite' || auditLogStore === 'sqlite') {
+if (runtimeLogStore === 'sqlite' || tableMonitorStore === 'sqlite' || auditLogStore === 'sqlite' || operationLogStore === 'sqlite') {
   env.JUHE_AI_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
   env.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
   env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, './data/juhe-ai-usage-catalog.sqlite3')
@@ -149,12 +166,17 @@ if (runtimeLogStore === 'sqlite' || tableMonitorStore === 'sqlite' || auditLogSt
   env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
   env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
   env.JUHE_AI_AUDIT_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_DATABASE_PATH, './data/juhe-ai-audit-log.sqlite3')
+  env.JUHE_AI_OPERATION_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_OPERATION_LOG_DATABASE_PATH, './data/juhe-ai-operation-log.sqlite3')
   env.JUHE_AI_USAGE_SHARD_ROOT = absoluteBackendPath(env.JUHE_AI_USAGE_SHARD_ROOT, './data/usage-shards')
   env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, './data/codex-context/state-shards')
   env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, env.JUHE_AI_DATABASE_PATH)
+  env.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH = absoluteBackendPath(env.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, env.JUHE_AI_DATABASE_PATH)
 }
 if (auditLogStore === 'postgres' && !String(env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL ?? '').trim()) {
   env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = String(env.JUHE_AI_AUDIT_LOG_POSTGRES_URL || env.JUHE_AI_POSTGRES_URL || '').trim()
+}
+if (operationLogStore === 'postgres' && !String(env.JUHE_AI_OPERATION_LOG_POSTGRES_URL ?? '').trim()) {
+  env.JUHE_AI_OPERATION_LOG_POSTGRES_URL = String(env.JUHE_AI_POSTGRES_URL || '').trim()
 }
 
 const logFd = openSync(logPath, 'a')

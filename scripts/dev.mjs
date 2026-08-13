@@ -73,7 +73,7 @@ function startPnpm(args, label, onOutput) {
 }
 
 function startGoSidecar() {
-  console.log('[dev] starting Go sidecar (F1/F2/F3)...')
+  console.log('[dev] starting Go sidecar (F1/F2/F3/F4)...')
   const child = spawn('go', ['run', './cmd/juhe-ai-go-sidecar'], {
     cwd: backendGoRoot,
     env: goSidecarEnv,
@@ -240,6 +240,12 @@ function resolveGoSidecarEnv() {
     childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ? 'postgres' : undefined,
     inferredStore
   )
+  childEnv.JUHE_AI_OPERATION_LOG_STORE = firstConfiguredValue(
+    childEnv.JUHE_AI_OPERATION_LOG_STORE,
+    childEnv.JUHE_AI_DATABASE_DRIVER,
+    childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL ? 'postgres' : undefined,
+    inferredStore
+  )
   childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(
     childEnv.JUHE_AI_DATABASE_PATH,
     resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -291,6 +297,18 @@ function resolveGoSidecarEnv() {
   childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(backendRoot, 'data', 'audit-payload-blobs'))
   childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(backendRoot, 'data', 'audit-hot-search'))
   childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
+  const operationInstanceID = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID)
+  if (!operationInstanceID) throw new Error('JUHE_AI_OPERATION_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
+  const operationSecret = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET)
+  if (!operationSecret) throw new Error('JUHE_AI_OPERATION_LOG_INPUT_SECRET is required for F4 loopback HMAC input.')
+  const operationListenAddress = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
+  const operationInputPort = operationListenAddress.slice(operationListenAddress.lastIndexOf(':') + 1)
+  childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID = operationInstanceID
+  childEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS = operationListenAddress
+  childEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET = operationSecret
+  childEnv.JUHE_AI_OPERATION_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, `http://127.0.0.1:${operationInputPort}`)
+  childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-operation-log.sqlite3'))
+  childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
   childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
   childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3'))
   childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
@@ -303,6 +321,9 @@ function resolveGoSidecarEnv() {
   childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL, '1m')
   if (childEnv.JUHE_AI_AUDIT_LOG_STORE === 'postgres' && !childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL) {
     childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ?? childEnv.JUHE_AI_POSTGRES_URL ?? ''
+  }
+  if (childEnv.JUHE_AI_OPERATION_LOG_STORE === 'postgres' && !childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL) {
+    childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL = childEnv.JUHE_AI_POSTGRES_URL ?? ''
   }
   return childEnv
 }

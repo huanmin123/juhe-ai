@@ -374,7 +374,7 @@ AI 账户运行态探针在 performance 模式下必须按多节点设计运行�
 | --- | --- | --- |
 | DB service 业务写 | 业务库单 owner 串行 | 保持 typed operation，可并发执行，按事务和同 key 顺序约束 |
 | usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，多个 usage worker 通过同一 consumer group 消费，落库成功后 ack；Redis 入队失败时写入 release 外的本机 durable spool，保留稳定 ID 等待 primary Usage worker 重放，禁止回退 IPC / 内存队列 |
-| audit / operation / public logs | ingest owner 串行 | performance 模式先写入对应 Redis Stream，再由多个 log worker 在同一 consumer group 内分摊，落库成功后 ack；旁路异常不能回滚已经成功的客户端或管理业务结果 |
+| 原始审计 / 操作日志 / public logs | F3/F4 与 ingest 分别 owner | 原始审计和操作日志由 Node 一次签名 RPC 直接提交给 Go F3/F4，不注册 Redis Stream、log worker 或回退；公开接口日志才写入 Redis Stream，由 log worker 同一 consumer group 分摊，落库成功后 ack；旁路异常不能回滚已经成功的客户端或管理业务结果 |
 | stats aggregation | stats writer 串行短事务 | 可按作用域 / 分区并行读取，写入仍按窗口事务控制，避免同一 summary key 并发 upsert 放大冲突 |
 | record maintenance | 低优先级串行小批 | 低优先级并发小批，受全局并发和连接池限制 |
 
@@ -397,7 +397,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
 - standalone 常驻后台进程保持 ingest-worker、stats-worker、ops-worker 三类；performance 拆为可配置的 usage-worker、log-worker，以及单例 stats-worker、ops-worker，写入 PostgreSQL 时按 typed operation、consumer group 和连接池背压并发消费。
 - 高性能模式下 ops-worker 承接 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账户激活检查、始终存在的周期健康检测、账号冷却复测、账户内 API Key 检查 / 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；不存在 `health_check_enabled` 候选条件。这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
-- 高性能模式下 primary usage-worker 注册 `data-retention-cleanup` 并处理 record-maintenance，primary log-worker 只注册审计、操作和公开接口日志保留。PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup`；其他保留入口继续按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
+- 高性能模式下 primary usage-worker 注册 `data-retention-cleanup` 并处理 record-maintenance，primary log-worker 只注册公开接口日志保留。F3/F4 分别在 Go sidecar 内按各自 owner lease 和设置执行审计、操作日志 retention；PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup`；其他保留入口继续按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
 - 运行日志索引、cursor、facet 与索引保留由唯一 `juhe-ai-go-sidecar` 内的 F1 完整负责，不再由任何 Node worker 注册或维护。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
 - 人工账户测试仍是独立单账户诊断任务：每次使用独立 `testSessionId`，A/B 会话互不阻塞，不建立用户级全局锁，也不提供多账户批量测试。测试结果只写任务、使用记录和审计，不修改账户、授权实例、Key、额度快照、健康或 Redis 调度运行态。
@@ -410,7 +410,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - 跨事实域强一致需求应优先收敛到同一个 PostgreSQL 事务；不再按 SQLite 跨库短事务拆解。
 - 对 usage 明细、审计、日志、统计缓存这类异步事实链路，仍保持“事实先落库，统计后聚合”的最终一致模型。
 - 统计结果和统计游标必须同事务提交。
-- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态；Redis queue 承接 usage、audit、operation log、public API log 和 record maintenance 等未落库消息，未 ACK 前不能当作可丢缓存处理。`redis-queue` 必须使用 `noeviction`、持久化和 pending / lag 监控；事实最终以 PostgreSQL 落库为准。普通运行日志只追加到角色 JSONL 文件，由唯一 Go sidecar 内 F1 按持久 cursor 批量索引，不进入 Redis queue。
+- Redis cache / Redis state 只承接可重建缓存和短 TTL 运行态；Redis queue 承接 usage、public API log 和 record maintenance 等未落库消息，未 ACK 前不能当作可丢缓存处理。原始审计和操作日志分别由 Node 一次签名 RPC 直接提交给 Go F3/F4，不进入 Redis queue。`redis-queue` 必须使用 `noeviction`、持久化和 pending / lag 监控；事实最终以 PostgreSQL 落库为准。普通运行日志只追加到角色 JSONL 文件，由唯一 Go sidecar 内 F1 按持久 cursor 批量索引，不进入 Redis queue。
 
 ### 使用记录批量落库锁顺序
 
@@ -477,7 +477,7 @@ PostgreSQL 使用记录批事务必须遵守以下边界：
 1. 新增配置模型、运行模式校验和文档。已完成基础配置、`.env` 示例和 fail-fast 校验。
 2. 抽象 `DatabaseClient` / `SqlDialect`，保持 SQLite 默认路径不变，并接入 PostgreSQL 初始化脚本、schema 映射、默认种子和主要 repository async adapter。
 3. 完成核心管理链路和网关链路的 PostgreSQL adapter：登录 / 会话、系统账户、系统团队、分组、API Key、授权、AI 账户、代理、设置、模型目录、网关 Key 校验、候选账号读取、使用记录、审计 / 操作 / 公开接口 / 运行日志和主要统计读写已纳入 smoke 或 readiness。
-4. 完成 Redis cache / runtime state / Redis Streams 基础 driver 与关键调用点：共享缓存、硬约束运行态计数、短 TTL 调度状态、验证码状态、网关缓存失效版本、使用记录、审计日志、操作日志、公开接口日志和维护队列均有回归覆盖；普通运行日志由 JSONL 文件 spool / Go F1 cursor 回归覆盖，不属于 Redis Streams。
+4. 完成 Redis cache / runtime state / Redis Streams 基础 driver 与关键调用点：共享缓存、硬约束运行态计数、短 TTL 调度状态、验证码状态、网关缓存失效版本、使用记录、公开接口日志和维护队列均有回归覆盖；原始审计和操作日志分别由 Go F3/F4 受签名 loopback RPC 接收，不属于 Redis Streams；普通运行日志由 JSONL 文件 spool / Go F1 cursor 回归覆盖。
 5. 完成高性能模式测试栈、schema 初始化、远端 PG/Redis smoke、readiness、压测、故障演练和备份恢复验证；生产上线前仍必须在目标机器执行本机安装、配置、数据导出 / 导入演练和维护窗口回归。
 6. 明确数据切换边界：代码库不提供 SQLite -> PostgreSQL 自动迁移、旧 schema 兼容、双读双写或启动期自动迁移；历史数据保留和导入只在上线窗口按当前 schema 离线处理。
 7. 保留 fail-fast 边界：低频管理入口、复杂筛选、长周期运维任务或未验证路径如果尚未覆盖 PostgreSQL，必须显式失败并补专项验证，不能在 performance 模式回退 SQLite。

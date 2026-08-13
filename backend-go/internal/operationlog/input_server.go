@@ -66,14 +66,20 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 	if logger == nil {
 		logger = slog.Default()
 	}
-	lease, ok, err := store.AcquireOwnerLease(ctx, cfg.InstanceID, cfg.OwnerLease)
+	acquireCtx, cancelAcquire := storeContext(ctx)
+	lease, ok, err := store.AcquireOwnerLease(acquireCtx, cfg.InstanceID, cfg.OwnerLease)
+	cancelAcquire()
 	if err != nil {
 		return fmt.Errorf("F4 acquire owner lease: %w", err)
 	}
 	if !ok {
 		return fmt.Errorf("F4 operation log owner lease held by another sidecar")
 	}
-	defer store.ReleaseOwnerLease(context.Background(), lease)
+	defer func() {
+		releaseCtx, cancelRelease := storeContext(context.Background())
+		defer cancelRelease()
+		_ = store.ReleaseOwnerLease(releaseCtx, lease)
+	}()
 	listener, err := net.Listen("tcp", inputCfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen F4 operation log: %w", err)
@@ -81,7 +87,8 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 	defer listener.Close()
 	healthy := &atomic.Bool{}
 	healthy.Store(true)
-	h := &handler{store: store, lease: lease, cfg: inputCfg, logger: logger, healthy: healthy}
+	fatal := make(chan error, 1)
+	h := &handler{store: store, lease: lease, cfg: inputCfg, logger: logger, healthy: healthy, fatal: fatal}
 	server := &http.Server{Handler: h, ReadHeaderTimeout: inputCfg.RequestTimeout, ReadTimeout: inputCfg.RequestTimeout, WriteTimeout: inputCfg.RequestTimeout, IdleTimeout: 30 * time.Second}
 	result := make(chan error, 1)
 	go func() { result <- server.Serve(listener) }()
@@ -100,8 +107,12 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 				return nil
 			}
 			return err
+		case err := <-fatal:
+			return err
 		case <-renew.C:
-			ok, err := store.RenewOwnerLease(ctx, lease, cfg.OwnerLease)
+			renewCtx, cancelRenew := storeContext(ctx)
+			ok, err := store.RenewOwnerLease(renewCtx, lease, cfg.OwnerLease)
+			cancelRenew()
 			if err != nil {
 				return err
 			}
@@ -109,14 +120,20 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 				return ErrOwnerLeaseLost
 			}
 		case <-retention.C:
-			days, err := store.RetentionDays(ctx, cfg.RetentionDays)
+			retentionCtx, cancelRetention := storeContext(ctx)
+			days, err := store.RetentionDays(retentionCtx, cfg.RetentionDays)
 			if err != nil {
+				cancelRetention()
 				logger.Error("F4 operation log retention setting unavailable; skip pass", "error", err)
 				continue
 			}
 			cutoff := time.Now().UTC().AddDate(0, 0, -days)
-			deleted, err := store.CleanupRetention(ctx, lease, cutoff, cfg.RetentionBatchSize)
+			deleted, err := store.CleanupRetention(retentionCtx, lease, cutoff, cfg.RetentionBatchSize)
+			cancelRetention()
 			if err != nil {
+				if errors.Is(err, ErrOwnerLeaseLost) {
+					return err
+				}
 				logger.Error("F4 operation log retention failed", "error", err, "mode", cfg.Mode, "cutoff", cutoff.Format(time.RFC3339Nano))
 			} else {
 				logger.Info("F4 operation log retention complete", "mode", cfg.Mode, "retentionDays", days, "cutoff", cutoff.Format(time.RFC3339Nano), "deleted", deleted)
@@ -131,7 +148,18 @@ type handler struct {
 	cfg     InputServerConfig
 	logger  *slog.Logger
 	healthy *atomic.Bool
+	fatal   chan<- error
 	replays replayCache
+}
+
+func (h *handler) signalFatal(err error) {
+	if h.fatal == nil {
+		return
+	}
+	select {
+	case h.fatal <- err:
+	default:
+	}
 }
 
 type replayCache struct {
@@ -219,29 +247,30 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == InputPath:
-		h.write(w, body)
+		h.write(w, r.Context(), body)
 	case r.URL.Path == ListPath:
-		h.list(w, body)
+		h.list(w, r.Context(), body)
 	case strings.HasPrefix(r.URL.Path, DetailPath):
-		h.detail(w, body, strings.TrimPrefix(r.URL.Path, DetailPath))
+		h.detail(w, r.Context(), body, strings.TrimPrefix(r.URL.Path, DetailPath))
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
-func (h *handler) write(w http.ResponseWriter, body []byte) {
+func (h *handler) write(w http.ResponseWriter, parent context.Context, body []byte) {
 	var e envelope
 	if err := json.Unmarshal(body, &e); err != nil || e.SchemaVersion != 1 {
 		h.logRejectedInput("json_invalid", body, err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.RequestTimeout)
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
 	defer cancel()
 	_, err := h.store.Persist(ctx, h.lease, e.OperationLog)
 	if err != nil {
 		h.logger.Error("F4 operation log single record rejected", "error", err, "operationLogID", e.OperationLog.ID)
 		if errors.Is(err, ErrOwnerLeaseLost) {
 			h.healthy.Store(false)
+			h.signalFatal(err)
 			w.WriteHeader(http.StatusServiceUnavailable)
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -259,13 +288,13 @@ func (h *handler) logRejectedInput(reason string, body []byte, err error) {
 	}
 	h.logger.Warn("F4 operation log request rejected", fields...)
 }
-func (h *handler) list(w http.ResponseWriter, body []byte) {
+func (h *handler) list(w http.ResponseWriter, parent context.Context, body []byte) {
 	var request listRequest
 	if json.Unmarshal(body, &request) != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.RequestTimeout)
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
 	defer cancel()
 	result, err := h.store.List(ctx, request.Options)
 	if err != nil {
@@ -275,13 +304,13 @@ func (h *handler) list(w http.ResponseWriter, body []byte) {
 	}
 	writeJSON(w, result)
 }
-func (h *handler) detail(w http.ResponseWriter, body []byte, id string) {
+func (h *handler) detail(w http.ResponseWriter, parent context.Context, body []byte, id string) {
 	var request detailRequest
 	if json.Unmarshal(body, &request) != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.RequestTimeout)
+	ctx, cancel := context.WithTimeout(parent, h.cfg.RequestTimeout)
 	defer cancel()
 	result, found, err := h.store.Detail(ctx, id, request.ViewerID)
 	if err != nil {

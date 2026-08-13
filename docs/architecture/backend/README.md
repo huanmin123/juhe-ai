@@ -101,7 +101,8 @@
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
 | 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户所有者 / 管理员显式配置的 `credentials.error_handling_rules` 校验；规则只在其声明的客户端、协议和请求范围内匹配，可以覆盖 `generic_*` 的安全推理请求。命中后按 provenance / generation / CAS 直接执行用户配置的状态动作；`retry_next` 仍受请求重放安全门禁，不能让已派发副作用请求再次执行 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
-| 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
+| 原始审计日志 | `modules/audit-logs/` | 审计捕获与查询适配；终态输入一次签名提交 Go F3，Go 是持久化、读取和保留 owner |
+| 操作日志 | `modules/operation-logs/` | 管理业务提交后的上下文/脱敏适配；切换前实现由 Node 一次签名提交 Go F4，Go 负责持久化、读取和保留，生产 owner 切换须按 F4 契约执行 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
 | 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
 | 网关 | `modules/gateway/routes.ts` | `/*` / `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
@@ -157,8 +158,8 @@ flowchart LR
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
 - 流式响应需要稳定转发 SSE。完整 HTTP / SSE 的状态码、错误码、类型和正文只作诊断或用户显式策略输入；普通请求不能直接执行“默认冷却规则”。真实 gateway 上游失败每个请求最多投递一个按账户去重限频的固定模型、固定协议独立健康检查；该二次确认失败按专用阈值 1 只写通用 `temporary_unavailable`，周期健康仍按配置阈值抗抖，不得按状态码或正文派生具体语义；transport 电路仍只接受匹配来源的未完成 transport 独立证据。
-- 原始审计日志只允许在网关内维护内存捕获上下文，必须等请求结束、失败或客户端中断后终态入队；网关请求链路不能同步写审计表。
-- SSE 和其他流式响应不能按 chunk 实时写库，必须在流自然结束、失败、超时或客户端断开后，以终态记录进入审计队列。
+- 原始审计日志只允许在网关内维护内存捕获上下文，必须等请求结束、失败或客户端中断后终态作一次签名 RPC 提交 Go F3；网关请求链路不能同步写审计表，也不能恢复 Node queue。
+- SSE 和其他流式响应不能按 chunk 实时写库，必须在流自然结束、失败、超时或客户端断开后，以单条终态记录直接提交 F3；该 RPC 失败只记录该条失败，不能终止 listener 或阻塞客户端响应。
 - 网关错误保持 OpenAI 兼容结构；网关日志、请求快照、原始审计日志和敏感头处理见 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 
 客户端一次请求从进入网关到返回响应的性能边界：
@@ -169,7 +170,7 @@ flowchart LR
 - OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。OAuth token endpoint 响应体必须有固定字节上限，超限主动中断，不能在刷新路径无界累积 chunk 或拼接完整异常响应。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
-- 使用记录、操作日志和账号状态副作用都必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；原始审计由 Node 一次性 loopback HMAC RPC 交给 Go sidecar。server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，sidecar 内 F1 按持久化 cursor 直接索引到专用运行日志库，不得另建 Node IPC、内存或 Redis 逐行队列。F1 不能由 Node 开关关闭或回退，且不得借此关闭或清理使用记录。
+- 使用记录和账号状态副作用必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；原始审计和操作日志分别由 Node 一次性 loopback HMAC RPC 交给 Go sidecar 的 F3/F4。server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，sidecar 内 F1 按持久化 cursor 直接索引到专用运行日志库，不得另建 Node IPC、内存或 Redis 逐行队列。F1 不能由 Node 开关关闭或回退，且不得借此关闭或清理使用记录。
 - 真实上游派发开始后，opaque 非 `2xx`、本地 transport failure、timeout、正文中断或精确协议声明的失败结构都属于当前 attempt，默认直接向客户端返回实际失败；不得按 Key -> 账户 -> 后续分组隐式接管。只有用户显式账户错误策略命中 `retry_next` 时，才允许在 `semanticCommitted = false` 且端点可安全重放的前提下切换候选。已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
 
 ## 6. 数据库设计
@@ -177,10 +178,10 @@ flowchart LR
 ### 6.1 存储原则
 
 - standalone 模式下 SQLite 是当前持久化存储；performance 模式显式引入 PostgreSQL 与 Redis。当前不引入 ClickHouse 或独立任务队列。
-- 运行时必须明确区分业务库、统计数据集域、运行日志索引库和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；运行日志索引库由 Go F1 唯一写入，Node 只读；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
+- 运行时必须明确区分业务库、统计数据集域、F1/F2/F3/F4 专库和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库只保存仍由 Node owner 的公开接口日志和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；运行日志索引、表监控、原始审计和操作日志分别由 Go F1/F2/F3/F4 专库 owner 写入，Node 只保留输入或查询适配；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
 - 多进程写入必须按 SQLite 文件级单写者治理。WAL 和 `busy_timeout` 只能吸收短冲突，不能允许多个 worker 长期并发写同一个数据库文件。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。
-- `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
+- 原始审计的 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 由 Go F3 专库 owner 持久化，不参与用量统计；Node 在请求终态一次签名提交，不能恢复 Node 队列或批量 writer。
 - 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
 - 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
 - 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引。
@@ -293,10 +294,10 @@ erDiagram
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
 - 涉及多 worker、worker 角色、job registry、任务租约、热点隔离或进程拓扑调整时，先按 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md) 执行；worker 数量不设固定上限，但必须有明确隔离域、队列上限、租约边界和健康指标。
 - 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
-- 当前 Node 后台任务按三类常驻 worker 隔离：使用记录 / 操作日志 / 公开接口日志和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口和账号质量固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、代理检测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。Go sidecar 内 F1 完整接管运行日志索引、cursor、facet 和保留清理，F2 完整接管表数据/表空间监控采样、快照写入和 retention，F3 完整接管原始审计持久化和 retention，均不属于 Node worker。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
+- 当前 Node 后台任务按三类常驻 worker 隔离：使用记录 / 公开接口日志和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口和账号质量固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、代理检测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。Go sidecar 内 F1 完整接管运行日志索引、cursor、facet 和保留清理，F2 完整接管表数据/表空间监控采样、快照写入和 retention，F3 完整接管原始审计持久化、读取和 retention；F4 的 Go owner、Node direct RPC 和 Node 专属源码退出已完成切换前实现，生产切流后接管操作日志写入、读取和保留。F1-F4 都不属于 Node worker，F3/F4 不使用 Node queue、Redis Stream 或 IPC。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
-- 请求链路产生的审计、操作日志或使用记录批量写入数据如需异步处理，应通过有界 IPC 或等价轻量通道投递到 `ingest-worker`；普通运行日志只允许顺序追加角色 JSONL 文件，解析、正则、脱敏、哈希、索引 DTO、数据库调用和 Redis 投递必须留在业务热路径之外。
-- 原始审计日志队列是 best-effort 队列，不要求系统重启后恢复；队列溢出和进程重启允许丢失待落库审计记录，但必须不阻塞网关请求。
+- 请求链路产生的使用记录如需异步处理，应通过有界 IPC 或等价轻量通道投递到 `ingest-worker`；原始审计和操作日志分别以一次签名 RPC 交给 Go F3/F4，不得回退 IPC、Redis 或 Node writer。普通运行日志只允许顺序追加角色 JSONL 文件，解析、正则、脱敏、哈希、索引 DTO、数据库调用和 Redis 投递必须留在业务热路径之外。
+- 原始审计和操作日志均是 Node 一次直接 RPC 到 Go sidecar 的 best-effort 输入；业务成功不等待该旁路写入。进程在 RPC 完成前退出时允许丢失该条旁路记录，但失败必须可观察，不能恢复 Node queue、Redis Stream、IPC 或本地 writer。
 - 当前版本不引入复杂分布式锁；如果后续支持多实例部署，再评估共享锁、任务归属和幂等边界。
 - 后台任务失败应记录错误并等待下一轮重试；worker 崩溃不应导致管理 API 或网关主进程直接退出，主进程或进程管理器应按退避策略重启 worker。
 

@@ -193,9 +193,15 @@ start_go_sidecar() {
     echo 'juhe-ai-go-sidecar exited during startup.' >&2
     return 1
   fi
-  input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
-  input_url="${input_url%/}"
-  if ! wait_for_http_status "$go_sidecar_pid" "$input_url/__aiinternal__/health" 204 'juhe-ai-go-sidecar'; then
+  audit_input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
+  operation_input_url="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
+  audit_input_url="${audit_input_url%/}"
+  operation_input_url="${operation_input_url%/}"
+  if ! wait_for_http_status "$go_sidecar_pid" "$audit_input_url/__aiinternal__/health" 204 'juhe-ai-go-sidecar F3'; then
+    [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
+    return 1
+  fi
+  if ! wait_for_http_status "$go_sidecar_pid" "$operation_input_url/__aiinternal__/v1/operation-logs/health" 204 'juhe-ai-go-sidecar F4'; then
     [ -f "$go_sidecar_log_file" ] && tail -n 20 "$go_sidecar_log_file" >&2
     return 1
   fi
@@ -212,7 +218,7 @@ on_exit() {
 if [ ! -f backend/.env ]; then
   cp backend/.env.example backend/.env
   echo 'Created backend/.env from backend/.env.example'
-  echo 'Configure all JUHE_AI_*_INSTANCE_ID values and JUHE_AI_AUDIT_LOG_INPUT_SECRET before production use.'
+  echo 'Configure all JUHE_AI_*_INSTANCE_ID values and F3/F4 input secrets before production use.'
 fi
 
 ensure_deployment_defaults
@@ -233,9 +239,10 @@ node "$RUNTIME_CHECK_SCRIPT"
 HOST="${JUHE_AI_HOST:-$(read_dotenv_value JUHE_AI_HOST '127.0.0.1')}"
 PORT="${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT '3000')}"
 export JUHE_AI_AUDIT_LOG_INPUT_URL="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
+export JUHE_AI_OPERATION_LOG_INPUT_URL="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
 
 echo "Starting juhe-ai at http://${HOST}:${PORT}"
-echo 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2 and F3.'
+echo 'The Web/API process supervises its Node worker and DB service; one Go sidecar owns F1, F2, F3 and F4.'
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
 OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
 SERVER_WITH_OWNER_LOCK=false
