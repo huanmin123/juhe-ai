@@ -55,17 +55,24 @@ assert.equal(isRecoverableRedisClientError(new Error('BUSYGROUP Consumer Group n
 
 // 先预热 ESM 依赖，计时只覆盖 Redis 连接与命令，不把冷启动模块解析算入网络 deadline。
 await import('redis')
-await assertSharedClientDeadlineInvalidationAndReconnect()
+await assertSharedClientDeadlineKeepsSharedClientAlive()
 await assertConnectionGenerationCas()
 await assertCallerAbortDoesNotDestroySharedClient()
 await assertInjectedStreamProducerDeadline()
 
-console.log('Redis client 可靠性回归通过：hard deadline 有界失败，失效共享代际会被淘汰并在后续操作重连')
+console.log('Redis client 可靠性回归通过：hard deadline 有界失败且不破坏共享代际，连接故障仍会淘汰并重连')
 
-async function assertSharedClientDeadlineInvalidationAndReconnect(): Promise<void> {
+async function assertSharedClientDeadlineKeepsSharedClientAlive(): Promise<void> {
   const sockets = new Set<Socket>()
   let responsive = false
   let connectionCount = 0
+  const heldCommands: Array<{ socket: Socket; command: string[] }> = []
+  const releaseHeldCommands = () => {
+    while (heldCommands.length > 0) {
+      const held = heldCommands.shift()!
+      held.socket.write(redisFixtureResponse(held.command))
+    }
+  }
   const server = createServer((socket) => {
     connectionCount += 1
     sockets.add(socket)
@@ -77,7 +84,11 @@ async function assertSharedClientDeadlineInvalidationAndReconnect(): Promise<voi
         const parsed = parseRespCommand(pending)
         if (!parsed) return
         pending = pending.subarray(parsed.consumedBytes)
-        if (!responsive) continue
+        if (!responsive) {
+          heldCommands.push({ socket, command: parsed.command })
+          continue
+        }
+        releaseHeldCommands()
         socket.write(redisFixtureResponse(parsed.command))
       }
     })
@@ -102,16 +113,16 @@ async function assertSharedClientDeadlineInvalidationAndReconnect(): Promise<voi
     )
     const elapsedMs = performance.now() - startedAt
     assert(elapsedMs < 2_500, `Redis hard deadline 应有界失败，实际耗时 ${Math.round(elapsedMs)}ms`)
-    await waitFor(() => !hasRedisClient(redisUrl), 750)
-    assert.equal(hasRedisClient(redisUrl), false, 'deadline 后必须淘汰共享 Redis client 代际')
+    assert.equal(hasRedisClient(redisUrl), true, '单次 deadline 不得淘汰共享 Redis client 代际')
 
     responsive = true
+    releaseHeldCommands()
     const value = await runRedisOperationWithDeadline(redisUrl, {
-      operationName: 'Redis deadline 后重连 GET',
+      operationName: 'Redis deadline 后复用 GET',
       timeoutMs: 3_000
     }, (client) => client.get('deadline-fixture'))
-    assert.equal(value, 'ok', 'deadline 后的下一次操作必须通过新连接成功')
-    assert(connectionCount >= 2, `deadline 后必须建立新连接，实际连接数 ${connectionCount}`)
+    assert.equal(value, 'ok', 'deadline 后的下一次操作必须继续使用共享连接成功')
+    assert.equal(connectionCount, 1, 'deadline 后不得为了单个操作重建共享连接')
 
     const queue = new RedisStreamQueue<{ id: string }>({
       streamKey: 'juhe-ai:test:deadline-stream',
@@ -127,16 +138,17 @@ async function assertSharedClientDeadlineInvalidationAndReconnect(): Promise<voi
       (error: unknown) => error instanceof RedisOperationDeadlineError
     )
     assert(performance.now() - queueStartedAt < 2_500, 'Redis Stream producer 必须受统一 hard deadline 约束')
-    await waitFor(() => !hasRedisClient(redisUrl), 750)
+    assert.equal(hasRedisClient(redisUrl), true, 'Redis Stream producer deadline 不得销毁共享连接')
     responsive = true
+    releaseHeldCommands()
     const reconnectedQueue = new RedisStreamQueue<{ id: string }>({
       streamKey: 'juhe-ai:test:deadline-stream',
       groupName: 'juhe-ai:test:deadline-group',
       redisUrl,
       producerTimeoutMs: 3_000
     })
-    assert.equal(await reconnectedQueue.enqueue({ id: 'reconnected' }), 'OK', 'Redis Stream producer deadline 后必须通过新连接恢复')
-    assert(connectionCount > connectionCountBeforeQueueFailure, 'Redis Stream producer deadline 后必须重建共享连接')
+    assert.equal(await reconnectedQueue.enqueue({ id: 'reconnected' }), 'OK', 'Redis Stream producer deadline 后必须继续运行')
+    assert.equal(connectionCount, connectionCountBeforeQueueFailure, 'Redis Stream producer deadline 后不得重建共享连接')
   } finally {
     await closeRedisClients()
     for (const socket of sockets) socket.destroy()
@@ -148,6 +160,13 @@ async function assertConnectionGenerationCas(): Promise<void> {
   const sockets = new Set<Socket>()
   let responsive = false
   let connectionCount = 0
+  const heldCommands: Array<{ socket: Socket; command: string[] }> = []
+  const releaseHeldCommands = () => {
+    while (heldCommands.length > 0) {
+      const held = heldCommands.shift()!
+      held.socket.write(redisFixtureResponse(held.command))
+    }
+  }
   const server = createServer((socket) => {
     connectionCount += 1
     sockets.add(socket)
@@ -159,8 +178,12 @@ async function assertConnectionGenerationCas(): Promise<void> {
         const parsed = parseRespCommand(pending)
         if (!parsed) return
         pending = pending.subarray(parsed.consumedBytes)
-        // 丢弃旧连接的 AUTH，保证 A/B 都停留在同一个尚未 ready 的 P1 代际。
-        if (!responsive) continue
+        // Keep the handshake pending until A/B have reached their local deadline.
+        if (!responsive) {
+          heldCommands.push({ socket, command: parsed.command })
+          continue
+        }
+        releaseHeldCommands()
         socket.write(redisFixtureResponse(parsed.command))
       }
     })
@@ -186,25 +209,74 @@ async function assertConnectionGenerationCas(): Promise<void> {
     }, (client) => client.get('generation'))
 
     await assert.rejects(first, (error: unknown) => error instanceof RedisOperationDeadlineError)
-    assert.equal(hasRedisClient(redisUrl), false, 'A 超时后应同步摘除 P1 代际')
+    assert.equal(hasRedisClient(redisUrl), true, 'A 本地超时不得销毁尚在连接中的 P1 代际')
     await assert.rejects(
       second,
       (error: unknown) => error instanceof RedisOperationDeadlineError || /连接不可用|closed/i.test(String(error))
     )
-    assert.equal(hasRedisClient(redisUrl), false, 'P1 被主动取消后，共享该代际的 B 不得留下失效缓存')
+    assert.equal(hasRedisClient(redisUrl), true, 'P1 上的 B 超时不得导致共享代际被销毁')
 
     responsive = true
+    releaseHeldCommands()
     assert.equal(await runRedisOperationWithDeadline(redisUrl, {
       operationName: 'Redis 连接代际 C',
       timeoutMs: 3_000
-    }, (client) => client.get('generation')), 'ok', 'C 应创建并使用 P2 代际')
-    const connectionCountAfterReplacement = connectionCount
-    assert.equal(hasRedisClient(redisUrl), true, 'C 成功后 P2 必须保留在共享池')
+    }, (client) => client.get('generation')), 'ok', 'C 应继续使用仍健康的 P1 代际')
+    const connectionCountAfterReuse = connectionCount
+    assert.equal(hasRedisClient(redisUrl), true, 'C 成功后 P1 必须保留在共享池')
     assert.equal(await runRedisOperationWithDeadline(redisUrl, {
       operationName: 'Redis 连接代际 P2 复用',
       timeoutMs: 3_000
     }, (client) => client.get('generation')), 'ok')
-    assert.equal(connectionCount, connectionCountAfterReplacement, 'B 超时后应继续复用 P2，不得触发连接风暴')
+    assert.equal(connectionCount, connectionCountAfterReuse, 'A/B 超时后应继续复用 P1，不得触发连接风暴')
+  } finally {
+    await closeRedisClients()
+    for (const socket of sockets) socket.destroy()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
+
+async function assertCallerAbortDoesNotDestroySharedClient(): Promise<void> {
+  const sockets = new Set<Socket>()
+  const server = createServer((socket) => {
+    sockets.add(socket)
+    socket.on('close', () => sockets.delete(socket))
+    let pending = Buffer.alloc(0)
+    socket.on('data', (chunk) => {
+      pending = Buffer.concat([pending, chunk])
+      while (true) {
+        const parsed = parseRespCommand(pending)
+        if (!parsed) return
+        pending = pending.subarray(parsed.consumedBytes)
+        socket.write(redisFixtureResponse(parsed.command))
+      }
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  assert(address && typeof address === 'object', '调用方取消 fixture 必须取得监听地址')
+  const redisUrl = `redis://127.0.0.1:${address.port}/0`
+  const controller = new AbortController()
+
+  try {
+    const cancelled = runRedisOperationWithDeadline(redisUrl, {
+      operationName: 'Redis 已取消调用方',
+      timeoutMs: 3_000,
+      signal: controller.signal
+    }, async () => await new Promise<never>(() => undefined))
+    await waitFor(() => hasRedisClient(redisUrl), 750)
+    controller.abort(new Error('下游客户端已断开'))
+    await assert.rejects(cancelled, /下游客户端已断开/)
+    assert.equal(hasRedisClient(redisUrl), true, '单个调用方取消不得销毁共享 Redis client')
+
+    assert.equal(await runRedisOperationWithDeadline(redisUrl, {
+      operationName: 'Redis 并发调用方继续执行',
+      timeoutMs: 3_000
+    }, (client) => client.get('shared-client-survives-cancel')), 'ok', '另一调用方必须继续使用共享 Redis client 成功')
   } finally {
     await closeRedisClients()
     for (const socket of sockets) socket.destroy()
