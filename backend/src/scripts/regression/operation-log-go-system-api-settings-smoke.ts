@@ -187,6 +187,32 @@ try {
   assert.equal(group.status, 201, `真实 groups 业务写入应成功：${group.text}`)
   const groupID = envelope<{ id: string }>(group.text).id
 
+  const importedAccount = await request(baseURL, '/__aisys__/api/accounts/import/confirm', cookie, {
+    method: 'POST',
+    body: {
+      data: {
+        type: 'juhe-ai-account-import',
+        version: 1,
+        accounts: [{
+          name: 'F4 System API imported account smoke',
+          providerCode: 'gpt',
+          providerProtocolProfileId: 'profile_gpt_openai_v1',
+          type: 'api_key',
+          status: 'disabled',
+          groupName: 'F4 System API group smoke',
+          supportedModels: ['gpt-5.4-mini'],
+          healthCheckModel: 'gpt-5.4-mini',
+          credentials: {
+            api_key: 'sk-f4-system-api-import',
+            base_url: 'https://api.openai.com/v1'
+          }
+        }]
+      },
+      sourceMode: 'native'
+    }
+  })
+  assert.equal(importedAccount.status, 200, `真实 accounts 导入确认应成功：${importedAccount.text}`)
+
   const account = await request(baseURL, '/__aisys__/api/accounts', cookie, {
     method: 'POST',
     body: {
@@ -424,6 +450,11 @@ try {
   assert.equal(groupDetail.path, '/__aisys__/api/groups/')
   await assertPersonalSummary(baseURL, cookie, groupItem.id, true, true)
 
+  const accountImportItem = await assertOperation(baseURL, cookie, 'accounts', 'import', '从 native 导入 AI 账户：创建 1 个，跳过 0 个，失败 0 个')
+  const accountImportDetail = await readAdminDetail(baseURL, cookie, accountImportItem.id, 'accounts.import', 'account')
+  assert.equal(accountImportDetail.path, '/__aisys__/api/accounts/import/confirm')
+  await assertPersonalSummary(baseURL, cookie, accountImportItem.id, true, true)
+
   const accountItem = await assertOperation(baseURL, cookie, 'accounts', 'create', '创建 AI 账户：F4 System API account smoke')
   const accountLogDetail = await readAdminDetail(baseURL, cookie, accountItem.id, 'accounts.create', 'account')
   assert.equal(accountLogDetail.path, '/__aisys__/api/accounts/')
@@ -519,7 +550,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, external-integrations, providers, groups, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, external-integration-sources, external-integrations, providers, groups, account-import, accounts, account-batch-edit, account-delete, account-force-activate, account-traffic-migration, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system-teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
