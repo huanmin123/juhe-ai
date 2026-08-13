@@ -240,6 +240,23 @@ try {
   })
   assert.equal(createAuthorization.status, 201, `真实 authorizations 业务写入应成功：${createAuthorization.text}`)
 
+  const memberAccounts = await request(baseURL, '/__aisys__/api/my-accounts?page=1&pageSize=50', memberCookie)
+  assert.equal(memberAccounts.status, 200, `真实授权账户列表读取应成功：${memberAccounts.text}`)
+  const authorizedAccount = envelope<{ items: Array<{ id: string; configRevision: number; authorizationInstanceSourceAccountId?: string }> }>(memberAccounts.text)
+    .items.find((candidate) => candidate.authorizationInstanceSourceAccountId === accountID)
+  assert(authorizedAccount, '普通用户必须能在账户列表中看到刚创建的授权账户实例')
+
+  const updateAuthorizedDispatch = await request(baseURL, `/__aisys__/api/my-accounts/${encodeURIComponent(authorizedAccount.id)}/authorized-dispatch`, memberCookie, {
+    method: 'PATCH',
+    body: { priority: 7, expectedConfigRevision: authorizedAccount.configRevision }
+  })
+  assert.equal(updateAuthorizedDispatch.status, 200, `真实授权账户调度修改应成功：${updateAuthorizedDispatch.text}`)
+
+  const returnAuthorizedAccount = await request(baseURL, `/__aisys__/api/my-accounts/${encodeURIComponent(authorizedAccount.id)}/return-authorization`, memberCookie, {
+    method: 'POST'
+  })
+  assert.equal(returnAuthorizedAccount.status, 204, `真实授权账户归还应成功：${returnAuthorizedAccount.text}`)
+
   const deleteBatchTargetAccount = await request(baseURL, `/__aisys__/api/accounts/${encodeURIComponent(batchTargetAccountID)}`, cookie, {
     method: 'DELETE'
   })
@@ -328,6 +345,18 @@ try {
   await assertPersonalSummary(baseURL, cookie, authorizationItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, authorizationItem.id, true, true)
 
+  const authorizedDispatchItem = await assertOperation(baseURL, cookie, 'accounts', 'authorized_dispatch', '调整授权账户使用设置：F4 System API account smoke')
+  const authorizedDispatchDetail = await readAdminDetail(baseURL, cookie, authorizedDispatchItem.id, 'accounts.authorized_dispatch', 'account')
+  assert.equal(authorizedDispatchDetail.path, `/__aisys__/api/my-accounts/${authorizedAccount.id}/authorized-dispatch`)
+  await assertPersonalSummary(baseURL, cookie, authorizedDispatchItem.id, false, false)
+  await assertPersonalSummary(baseURL, memberCookie, authorizedDispatchItem.id, true, true)
+
+  const returnAuthorizationItem = await assertOperation(baseURL, cookie, 'authorizations', 'return', '归还授权账户：F4 System API account smoke')
+  const returnAuthorizationDetail = await readAdminDetail(baseURL, cookie, returnAuthorizationItem.id, 'accounts.return_authorization', 'authorization')
+  assert.equal(returnAuthorizationDetail.path, `/__aisys__/api/my-accounts/${authorizedAccount.id}/return-authorization`)
+  await assertPersonalSummary(baseURL, cookie, returnAuthorizationItem.id, true, true)
+  await assertPersonalSummary(baseURL, memberCookie, returnAuthorizationItem.id, true, true)
+
   const deleteItem = await assertOperation(baseURL, cookie, 'accounts', 'delete', '删除 AI 账户：F4 System API batch target smoke')
   const deleteDetail = await readAdminDetail(baseURL, cookie, deleteItem.id, 'accounts.delete', 'account')
   assert.equal(deleteDetail.path, `/__aisys__/api/accounts/${batchTargetAccountID}`)
@@ -369,7 +398,7 @@ try {
   await assertPersonalSummary(baseURL, cookie, addMemberItem.id, true, true)
   await assertPersonalSummary(baseURL, memberCookie, addMemberItem.id, true, true)
 
-  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-group-binding, account-tags, account-export, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies, groups, accounts, account-batch-edit, account-delete, account-group-binding, account-tags, account-export, account-authorized-dispatch, account-authorization-return, auth, authorizations, route_strategies, api_keys, proxies, system_accounts, system_teams (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
