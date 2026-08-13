@@ -69,34 +69,50 @@ try {
   })
   assert.equal(patch.status, 200, `真实 settings/global 业务写入应成功：${patch.text}`)
 
-  const item = await eventually(async () => {
-    const response = await request(baseURL, '/__aisys__/api/operation-logs?module=settings&action=update_global&page=1&pageSize=20', cookie)
-    assert.equal(response.status, 200, `Go owner 管理读取应成功：${response.text}`)
-    const data = envelope<{ items?: Array<{ id: string; module: string; action: string; summary: string }> }>(response.text)
-    return data.items?.find((candidate) => candidate.module === 'settings'
-      && candidate.action === 'update_global'
-      && candidate.summary === '更新全局品牌设置')
-  }, 10_000, '真实 settings/global 操作未通过 Node -> Go F4 -> Node 管理列表读回')
-  assert.ok(item, '真实 settings/global 操作日志必须存在')
+  const announcement = await request(baseURL, '/__aisys__/api/announcements', cookie, {
+    method: 'POST',
+    body: {
+      title: 'F4 System API announcement smoke',
+      content: 'F4 System API announcement smoke content',
+      level: 'info',
+      status: 'draft'
+    }
+  })
+  assert.equal(announcement.status, 201, `真实 announcements 业务写入应成功：${announcement.text}`)
 
-  const adminDetail = await request(baseURL, `/__aisys__/api/operation-logs/${encodeURIComponent(item.id)}`, cookie)
-  assert.equal(adminDetail.status, 200, `Go owner 管理详情应成功：${adminDetail.text}`)
-  const adminData = envelope<{ operationKey?: string; resourceType?: string; changes?: Array<{ field?: string; after?: unknown }>; method?: string; path?: string }>(adminDetail.text)
-  assert.equal(adminData.operationKey, 'settings.update_global')
-  assert.equal(adminData.resourceType, 'global_settings')
-  assert.equal(adminData.method, 'PATCH')
-  assert.equal(adminData.path, '/__aisys__/api/settings/global')
-  assert(adminData.changes?.some((change) => change.field === 'appName' && change.after === 'F4 System API settings smoke'), '管理详情必须保留真实业务字段变更')
+  const responsePolicy = await request(baseURL, '/__aisys__/api/response-inspection-policies', cookie, {
+    method: 'POST',
+    body: {
+      name: 'F4 System API response policy smoke',
+      enabled: true,
+      priority: 10,
+      scopeType: 'protocol',
+      protocolCode: 'openai',
+      match: { outputTextIncludes: ['F4-smoke'] },
+      action: 'observe',
+      notes: 'F4 System API response policy smoke'
+    }
+  })
+  assert.equal(responsePolicy.status, 201, `真实 response-inspection-policies 业务写入应成功：${responsePolicy.text}`)
 
-  const personalDetail = await request(baseURL, `/__aisys__/api/my-operation-logs/${encodeURIComponent(item.id)}`, cookie)
-  assert.equal(personalDetail.status, 200, `all_users settings 日志必须能由个人入口读回：${personalDetail.text}`)
-  const personalData = envelope<{ changes?: unknown[]; targets?: unknown[]; viewers?: unknown[]; clientIp?: unknown }>(personalDetail.text)
-  assert.deepEqual(personalData.changes, [], 'summary 个人详情不得展开完整变更')
-  assert.deepEqual(personalData.targets, [], 'summary 个人详情 targets 必须保持数组 JSON 形状')
-  assert.deepEqual(personalData.viewers, [], 'summary 个人详情 viewers 必须保持数组 JSON 形状')
-  assert.equal(personalData.clientIp, undefined, '个人详情不得返回 clientIp')
+  const settingsItem = await assertOperation(baseURL, cookie, 'settings', 'update_global', '更新全局品牌设置')
+  const settingsDetail = await readAdminDetail(baseURL, cookie, settingsItem.id, 'settings.update_global', 'global_settings')
+  assert.equal(settingsDetail.method, 'PATCH')
+  assert.equal(settingsDetail.path, '/__aisys__/api/settings/global')
+  assert(settingsDetail.changes?.some((change) => change.field === 'appName' && change.after === 'F4 System API settings smoke'), '管理详情必须保留真实业务字段变更')
+  await assertPersonalSummary(baseURL, cookie, settingsItem.id, true)
 
-  console.log(`F4 System API settings smoke passed: ${inputURL}`)
+  const announcementItem = await assertOperation(baseURL, cookie, 'announcements', 'create', '创建公告：F4 System API announcement smoke')
+  const announcementDetail = await readAdminDetail(baseURL, cookie, announcementItem.id, 'announcements.create', 'announcement')
+  assert.equal(announcementDetail.path, '/__aisys__/api/announcements/')
+  await assertPersonalSummary(baseURL, cookie, announcementItem.id, false)
+
+  const policyItem = await assertOperation(baseURL, cookie, 'response_inspection_policies', 'create', '创建响应检查策略：F4 System API response policy smoke')
+  const policyDetail = await readAdminDetail(baseURL, cookie, policyItem.id, 'response_inspection_policies.create', 'response_inspection_policy')
+  assert.equal(policyDetail.path, '/__aisys__/api/response-inspection-policies/')
+  await assertPersonalSummary(baseURL, cookie, policyItem.id, false)
+
+  console.log(`F4 System API producer smoke passed: settings, announcements, response_inspection_policies (${inputURL})`)
 } finally {
   if (server) await close(server)
   await closeSqliteReadWorkerPool?.().catch(() => undefined)
@@ -137,6 +153,38 @@ async function request(baseURL: string, path: string, cookie?: string, options: 
     signal: AbortSignal.timeout(10_000)
   })
   return { status: response.status, text: await response.text(), headers: response.headers }
+}
+
+type OperationListItem = { id: string; module: string; action: string; summary: string }
+type OperationDetail = { operationKey?: string; resourceType?: string; changes?: Array<{ field?: string; after?: unknown }>; method?: string; path?: string }
+
+async function assertOperation(baseURL: string, cookie: string, module: string, action: string, summary: string): Promise<OperationListItem> {
+  return eventually(async () => {
+    const response = await request(baseURL, `/__aisys__/api/operation-logs?module=${encodeURIComponent(module)}&action=${encodeURIComponent(action)}&page=1&pageSize=20`, cookie)
+    assert.equal(response.status, 200, `Go owner 管理读取 ${module}.${action} 应成功：${response.text}`)
+    const data = envelope<{ items?: OperationListItem[] }>(response.text)
+    return data.items?.find((candidate) => candidate.module === module && candidate.action === action && candidate.summary === summary)
+  }, 10_000, `真实 ${module}.${action} 操作未通过 Node -> Go F4 -> Node 管理列表读回`)
+}
+
+async function readAdminDetail(baseURL: string, cookie: string, id: string, operationKey: string, resourceType: string): Promise<OperationDetail> {
+  const response = await request(baseURL, `/__aisys__/api/operation-logs/${encodeURIComponent(id)}`, cookie)
+  assert.equal(response.status, 200, `Go owner 管理详情应成功：${response.text}`)
+  const data = envelope<OperationDetail>(response.text)
+  assert.equal(data.operationKey, operationKey)
+  assert.equal(data.resourceType, resourceType)
+  return data
+}
+
+async function assertPersonalSummary(baseURL: string, cookie: string, id: string, visible: boolean): Promise<void> {
+  const response = await request(baseURL, `/__aisys__/api/my-operation-logs/${encodeURIComponent(id)}`, cookie)
+  assert.equal(response.status, visible ? 200 : 404, `个人详情可见性不符合 operation log contract：${response.text}`)
+  if (!visible) return
+  const data = envelope<{ changes?: unknown[]; targets?: unknown[]; viewers?: unknown[]; clientIp?: unknown }>(response.text)
+  assert.deepEqual(data.changes, [], 'summary 个人详情不得展开完整变更')
+  assert.deepEqual(data.targets, [], 'summary 个人详情 targets 必须保持数组 JSON 形状')
+  assert.deepEqual(data.viewers, [], 'summary 个人详情 viewers 必须保持数组 JSON 形状')
+  assert.equal(data.clientIp, undefined, '个人详情不得返回 clientIp')
 }
 
 function envelope<T>(text: string): T {
