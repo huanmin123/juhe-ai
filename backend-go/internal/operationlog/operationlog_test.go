@@ -762,6 +762,18 @@ func TestNodeGoNodeSmokeServer(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_NODE_GO_SMOKE")) == "" {
 		t.Skip("未设置 JUHE_AI_OPERATION_LOG_NODE_GO_SMOKE；真实 Node-Go-Node smoke 未执行")
 	}
+	runNodeGoNodeSmokeScript(t, "operation-log-go-real-sidecar-smoke.ts")
+}
+
+func TestNodeGoNodeSystemAPISettingsSmoke(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_SYSTEM_API_SMOKE")) == "" {
+		t.Skip("未设置 JUHE_AI_OPERATION_LOG_SYSTEM_API_SMOKE；真实 System API F4 smoke 未执行")
+	}
+	runNodeGoNodeSmokeScript(t, "operation-log-go-system-api-settings-smoke.ts")
+}
+
+func runNodeGoNodeSmokeScript(t *testing.T, script string) {
+	t.Helper()
 	root := t.TempDir()
 	business := filepath.Join(root, "business.sqlite3")
 	createBusinessSettings(t, business, "365")
@@ -794,12 +806,12 @@ func TestNodeGoNodeSmokeServer(t *testing.T) {
 	if !ok {
 		t.Fatal("cannot locate F4 smoke test source")
 	}
-	command := exec.Command("node", "--import", "tsx", "src/scripts/regression/operation-log-go-real-sidecar-smoke.ts")
+	command := exec.Command("node", "--import", "tsx", filepath.ToSlash(filepath.Join("src", "scripts", "regression", script)))
 	command.Dir = filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", "..", "backend"))
 	command.Env = append(os.Environ(), "JUHE_AI_OPERATION_LOG_INPUT_URL=http://"+listener.Addr().String(), "JUHE_AI_OPERATION_LOG_INPUT_SECRET="+secret, "JUHE_AI_OPERATION_LOG_INPUT_TIMEOUT_MS=5000", "JUHE_AI_LOG_FILE_ENABLED=false", "JUHE_AI_LOG_CONSOLE_ENABLED=false", "NODE_ENV=test")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("真实 Node-Go-Node smoke 失败: %v\n%s", err, output)
+		t.Fatalf("真实 Node-Go-Node smoke %s 失败: %v\n%s", script, err, output)
 	}
 }
 
