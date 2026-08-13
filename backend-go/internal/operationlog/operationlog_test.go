@@ -772,6 +772,20 @@ func TestNodeGoNodeSystemAPIProducerSmoke(t *testing.T) {
 	runNodeGoNodeSmokeScript(t, "operation-log-go-system-api-settings-smoke.ts")
 }
 
+func TestNodeGoNodeOAuthProducerSmoke(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_OAUTH_SMOKE")) == "" {
+		t.Skip("未设置 JUHE_AI_OPERATION_LOG_OAUTH_SMOKE；真实 OAuth producer F4 smoke 未执行")
+	}
+	runNodeGoNodeSmokeScript(t, "operation-log-go-oauth-producer-smoke.ts")
+}
+
+func TestNodeGoNodeWorkerProducerSmoke(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_WORKER_SMOKE")) == "" {
+		t.Skip("未设置 JUHE_AI_OPERATION_LOG_WORKER_SMOKE；真实 worker producer F4 smoke 未执行")
+	}
+	runNodeGoNodeSmokeScript(t, "operation-log-go-worker-producer-smoke.ts")
+}
+
 func runNodeGoNodeSmokeScript(t *testing.T, script string) {
 	t.Helper()
 	root := t.TempDir()
