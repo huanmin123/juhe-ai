@@ -33,11 +33,25 @@ async function expectRejected(relativePath, contents = 'blocked') {
 try {
   const validFixture = await resetFixture()
   await mkdir(path.join(validFixture, 'backend', 'dist'), { recursive: true })
+  await mkdir(path.join(validFixture, 'backend-go'), { recursive: true })
   await mkdir(path.join(validFixture, 'docs', 'deploy'), { recursive: true })
+  await mkdir(path.join(validFixture, 'frontend', 'dist'), { recursive: true })
   await writeFile(path.join(validFixture, 'backend', '.env.example'), 'PORT=3001\n')
   await writeFile(path.join(validFixture, 'backend', 'dist', 'server.js'), 'export {}\n')
+  await writeFile(path.join(validFixture, 'frontend', 'dist', 'index.html'), '<!doctype html>\n')
+  await writeFile(path.join(validFixture, 'start.sh'), '#!/usr/bin/env bash\n')
+  await writeFile(path.join(validFixture, 'start.ps1'), 'exit 0\n')
+  for (const project of ['jobs', 'gateway', 'maintenance']) {
+    await writeFile(path.join(validFixture, 'backend-go', `juhe-ai-${project}`), 'binary\n')
+  }
   await writeFile(path.join(validFixture, 'docs', 'deploy', 'migration.sql'), 'select 1;\n')
   await validateReleasePackagePaths([validFixture])
+
+  await rm(path.join(validFixture, 'backend-go', 'juhe-ai-gateway'))
+  await assert.rejects(
+    validateReleasePackagePaths([validFixture]),
+    /backend-go\/juhe-ai-gateway.*required Go project release binary is missing/u
+  )
 
   for (const forbiddenPath of [
     'backend/data/state.json',

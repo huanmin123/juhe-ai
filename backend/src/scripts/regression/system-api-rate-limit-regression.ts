@@ -54,6 +54,7 @@ async function main(): Promise<void> {
     await assertAuthenticatedUserLimit(baseUrl, adminSession.cookie)
     await assertAllowlistedIpBypassesRateLimit(baseUrl, adminSession.cookie)
     await assertTestAppBypassesRateLimit(adminSession.cookie)
+    await assertControlReplicaRejectsPrimaryOnlyRoutes()
 
     console.log('后台系统 API 限流回归通过：DB access mode 在 limiter 前统一分类，GET/HEAD、健康检查、IP 白名单和测试 app 旁路符合预期')
   } finally {
@@ -70,17 +71,30 @@ async function main(): Promise<void> {
 function assertSystemApiRateLimitSourceOrder(): void {
   const source = readFileSync(resolve('src/modules/system-api/system-api-app.ts'), 'utf8')
   const dbAccessMode = source.indexOf('app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))')
+  const replicaGuard = source.indexOf('app.use(systemApiPrefix, controlReadReplicaRequestGuard)')
+  const publicReplicaGuard = source.indexOf('app.use(publicApiPrefix, controlReadReplicaPrimaryOnlyRequestGuard)')
+  const publicCapture = source.indexOf('app.use(publicApiPrefix, capturePublicApiLog')
+  const delegatedReplicaGuard = source.indexOf("app.use('/__aidelegated__/v1', noStoreSystemApiResponse, controlReadReplicaPrimaryOnlyRequestGuard")
+  const oauthReplicaGuard = source.indexOf("app.use('/oauth', controlReadReplicaPrimaryOnlyRequestGuard)")
   const ipLimiter = source.indexOf('app.use(systemApiPrefix, systemApiIpRateLimit)')
   const jsonParser = source.indexOf('app.use(systemApiPrefix, express.json')
   const authMiddleware = source.indexOf('app.use(systemApiPrefix, requireAuth)')
   const userLimiter = source.indexOf('app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)')
+  const replicaProxy = source.indexOf('app.use(systemApiPrefix, controlReadReplicaProxy)')
   assert(dbAccessMode >= 0, '系统 API DB access mode middleware 必须挂载在应用入口')
+  assert(replicaGuard >= 0, 'control replica 必须在入口校验只读转发凭据')
+  assert(publicReplicaGuard >= 0, '公开接口必须在副 control 上拒绝直连请求')
+  assert(publicReplicaGuard < publicCapture, '公开接口副 control guard 必须先于日志采集，避免拒绝请求仍写入共享日志队列')
+  assert(delegatedReplicaGuard >= 0, '委派接口必须在副 control 上拒绝直连请求')
+  assert(oauthReplicaGuard >= 0, 'OAuth 公开接口必须在副 control 上拒绝直连请求')
   assert(ipLimiter >= 0, '系统 API IP 级限流必须挂载在应用入口')
   assert(jsonParser >= 0, '系统 API JSON parser 必须存在')
   assert(dbAccessMode < ipLimiter, 'DB access mode 必须在 IP limiter 前解析，供 read/write bucket 统一分类')
+  assert(dbAccessMode < replicaGuard && replicaGuard < ipLimiter, 'control replica guard 必须在 DB access mode 后、IP limiter 前拒绝非主节点转发请求')
   assert(ipLimiter < jsonParser, 'IP 级限流必须位于 JSON body parser 前')
   assert(authMiddleware >= 0, '系统 API 登录态中间件必须存在')
   assert(userLimiter > authMiddleware, '用户级限流必须位于 requireAuth 之后')
+  assert(replicaProxy > userLimiter, '主 control 的只读代理必须在认证和用户限流后执行')
 }
 
 function assertDefaultSettings(): void {
@@ -212,6 +226,28 @@ async function assertTestAppBypassesRateLimit(adminCookie: string): Promise<void
     await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
   } finally {
     await closeServer(server)
+  }
+}
+
+async function assertControlReplicaRejectsPrimaryOnlyRoutes(): Promise<void> {
+  const originalRuntimeMode = runtimeConfig.runtimeMode
+  const originalPerformanceNodeRole = runtimeConfig.performanceNodeRole
+  let replicaServer: http.Server | undefined
+  try {
+    runtimeConfig.runtimeMode = 'performance'
+    runtimeConfig.performanceNodeRole = 'control-replica'
+    const replicaApp = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', trustProxy: true })
+    replicaServer = replicaApp.listen(0, '127.0.0.1')
+    await listen(replicaServer)
+    const replicaUrl = `http://127.0.0.1:${serverAddress(replicaServer).port}`
+
+    await assertStatus(replicaUrl, '/__aipublic__/group/add', 503, { method: 'POST', body: {} })
+    await assertStatus(replicaUrl, '/__aidelegated__/v1', 503, { method: 'POST', body: {} })
+    await assertStatus(replicaUrl, '/oauth/token', 503, { method: 'POST', body: {} })
+  } finally {
+    await closeServer(replicaServer)
+    runtimeConfig.runtimeMode = originalRuntimeMode
+    runtimeConfig.performanceNodeRole = originalPerformanceNodeRole
   }
 }
 

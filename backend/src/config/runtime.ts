@@ -59,6 +59,7 @@ export interface RuntimeConfig {
   dbServiceHttpHost: string
   dbServiceHttpPort: number
   accountHealthCheckDispatchUrl?: string
+  controlReadReplicaOrigins: string[]
   auditLogInputUrl?: string
   auditLogInputSecret?: string
   auditLogInputTimeoutMs?: number
@@ -458,6 +459,18 @@ const configuredAccountHealthCheckDispatchUrl = accountHealthCheckDispatchUrlCon
     processRole: configuredProcessRole
   }
 )
+const configuredControlReadReplicaOrigins = controlReadReplicaOriginsConfig(
+  'JUHE_AI_CONTROL_READ_REPLICA_ORIGINS',
+  optionalStringConfig('JUHE_AI_CONTROL_READ_REPLICA_ORIGINS'),
+  {
+    runtimeMode: configuredRuntimeMode,
+    performanceNodeRole: configuredPerformanceNodeRole,
+    processRole: configuredProcessRole,
+    controlReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_CONTROL_REPLICAS', 1, 1, 3)
+      : 1
+  }
+)
 const configuredAuditLogInputUrl = auditLogInputUrlConfig(
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
   optionalStringConfig('JUHE_AI_AUDIT_LOG_INPUT_URL')
@@ -520,7 +533,7 @@ export const runtimeConfig: RuntimeConfig = {
     backgroundWorkerSupervisorEnabled: configuredRuntimeMode === 'standalone'
       || (configuredPerformanceNodeRole !== 'gateway' && configuredPerformanceNodeRole !== 'control-replica'),
     controlReplicas: configuredRuntimeMode === 'performance'
-      ? numberConfig('JUHE_AI_CONTROL_REPLICAS', 1, 1, 2)
+      ? numberConfig('JUHE_AI_CONTROL_REPLICAS', 1, 1, 3)
       : 1,
     gatewayReplicas: configuredRuntimeMode === 'performance'
       ? numberConfig('JUHE_AI_GATEWAY_REPLICAS', 3, 1, 32)
@@ -551,6 +564,7 @@ export const runtimeConfig: RuntimeConfig = {
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
+  controlReadReplicaOrigins: configuredControlReadReplicaOrigins,
   auditLogInputUrl: configuredAuditLogInputUrl,
   auditLogInputSecret: configuredAuditLogInputSecret,
   auditLogInputTimeoutMs: configuredAuditLogInputTimeoutMs,
@@ -1110,6 +1124,54 @@ function accountHealthCheckDispatchUrlConfig(
     || url.username
     || url.password
     || (url.pathname !== '/' && url.pathname !== '')
+    || url.search
+    || url.hash
+  ) {
+    throw new Error(`${name} 只能配置为带显式端口的 loopback HTTP Origin，不能包含路径、用户名密码、查询参数或片段`)
+  }
+  return url.origin
+}
+
+function controlReadReplicaOriginsConfig(
+  name: string,
+  configuredValue: string | undefined,
+  runtime: {
+    runtimeMode: RuntimeMode
+    performanceNodeRole: PerformanceNodeRole
+    processRole: ProcessRole
+    controlReplicas: number
+  }
+): string[] {
+  const required = runtime.runtimeMode === 'performance'
+    && runtime.performanceNodeRole === 'control'
+    && runtime.processRole === 'server'
+    && runtime.controlReplicas > 1
+  const values = (configuredValue ?? '').split(',').map((value) => value.trim()).filter(Boolean)
+  if (required && values.length !== runtime.controlReplicas - 1) {
+    throw new Error(`${name} 在多 control 高性能主节点中必须配置全部只读副本的 loopback Origin`)
+  }
+  if (!required && values.length === 0) return []
+  const origins = values.map((value) => loopbackHttpOriginConfig(name, value))
+  if (new Set(origins).size !== origins.length) {
+    throw new Error(`${name} 不能包含重复 Origin`)
+  }
+  return origins
+}
+
+function loopbackHttpOriginConfig(name: string, configuredValue: string): string {
+  let url: URL
+  try {
+    url = new URL(configuredValue)
+  } catch {
+    throw new Error(`${name} 必须是有效 URL`)
+  }
+  if (
+    url.protocol !== 'http:'
+    || !url.port
+    || (url.hostname !== '127.0.0.1' && url.hostname !== '[::1]' && url.hostname !== '::1')
+    || url.username
+    || url.password
+    || url.pathname !== '/'
     || url.search
     || url.hash
   ) {

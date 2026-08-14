@@ -15,6 +15,13 @@ const FORBIDDEN_PERSISTENCE_SUFFIXES = [
   '.rdb',
   '.aof'
 ]
+const REQUIRED_RELEASE_FILES = [
+  'start.sh',
+  'start.ps1',
+  'backend/dist/server.js',
+  'frontend/dist/index.html'
+]
+const REQUIRED_GO_PROJECTS = ['jobs', 'gateway', 'maintenance']
 
 export class ReleasePackageValidationError extends Error {
   constructor(message) {
@@ -105,6 +112,44 @@ export async function validateReleasePackagePaths(paths, options = {}) {
   for (const inputPath of paths) {
     const absolutePath = path.resolve(inputPath)
     await visitPath(absolutePath, '', linksOnly)
+    if (!linksOnly) {
+      await validateRequiredReleaseFiles(absolutePath)
+    }
+  }
+}
+
+async function validateRequiredReleaseFiles(releaseRoot) {
+  for (const relativePath of REQUIRED_RELEASE_FILES) {
+    const absolutePath = path.join(releaseRoot, ...relativePath.split('/'))
+    let stats
+    try {
+      stats = await lstat(absolutePath)
+    } catch {
+      fail(relativePath, 'required release file is missing')
+    }
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      fail(relativePath, 'required release entry must be a regular file')
+    }
+  }
+  for (const project of REQUIRED_GO_PROJECTS) {
+    const candidates = [
+      `backend-go/juhe-ai-${project}`,
+      `backend-go/juhe-ai-${project}.exe`
+    ]
+    let regularFileFound = false
+    for (const relativePath of candidates) {
+      try {
+        const stats = await lstat(path.join(releaseRoot, ...relativePath.split('/')))
+        if (stats.isFile() && !stats.isSymbolicLink()) {
+          regularFileFound = true
+          break
+        }
+      } catch {
+      }
+    }
+    if (!regularFileFound) {
+      fail(candidates[0], 'required Go project release binary is missing or not a regular file')
+    }
   }
 }
 

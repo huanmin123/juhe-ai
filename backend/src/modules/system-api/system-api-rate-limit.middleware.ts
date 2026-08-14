@@ -9,6 +9,7 @@ import { getSettingsAsync } from '../../storage/repositories.js'
 import { getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { inspectClientIpPolicy } from '../gateway/runtime/client-ip-policy-cache.service.js'
 import { systemApiDbAccessModeFromResponse } from './system-api-db-access.js'
+import { isAuthorizedControlReadReplicaRequest } from './control-read-replica-proxy.js'
 
 type MethodClass = 'read' | 'write'
 type LimiterScope = 'ip' | 'user'
@@ -65,7 +66,7 @@ const ipBurstStore: RateLimitStore = createStore('system_api_ip_burst', burstWin
 const userMinuteStore: RateLimitStore = createStore('system_api_user_minute', minuteWindowMs)
 
 export async function systemApiIpRateLimit(req: Request, res: Response, next: NextFunction): Promise<void> {
-  if (isSystemApiHealthPath(req)) {
+  if (isSystemApiHealthPath(req) || isAuthorizedControlReadReplicaRequest(req)) {
     next()
     return
   }
@@ -108,6 +109,10 @@ export async function systemApiIpRateLimit(req: Request, res: Response, next: Ne
 }
 
 export async function systemApiAuthenticatedRateLimit(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (isAuthorizedControlReadReplicaRequest(req)) {
+    next()
+    return
+  }
   let settings: SystemApiRateLimitSettings
   try {
     settings = await currentSystemApiRateLimitSettings()

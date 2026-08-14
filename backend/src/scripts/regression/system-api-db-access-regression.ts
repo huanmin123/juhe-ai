@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { createHash, createHmac } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type { Request, Response } from 'express'
 
@@ -14,10 +15,19 @@ import {
   systemApiLongReadMaxInFlight
 } from '../../modules/system-api/system-api-db-access.js'
 import { logger } from '../../shared/logger.js'
+import {
+  controlReadReplicaPrimaryOnlyRequestGuard,
+  controlReadReplicaRequestGuard,
+  isAuthorizedControlReadReplicaRequest
+} from '../../modules/system-api/control-read-replica-proxy.js'
 
 logger.level = 'silent'
 
 const originalDatabaseDriver = runtimeConfig.databaseDriver
+const originalRuntimeMode = runtimeConfig.runtimeMode
+const originalPerformanceNodeRole = runtimeConfig.performanceNodeRole
+const originalPort = runtimeConfig.port
+const originalSecret = runtimeConfig.secret
 
 function assertAccessModeMetadata(): void {
   assert.equal(
@@ -204,6 +214,76 @@ function assertPostgresSkipsSqliteWriteAdmission(): void {
   assert.equal(writeResult.response.statusCode, undefined, 'PostgreSQL 模式不应因为 SQLite 写 admission 返回 busy')
 }
 
+function assertControlReplicaRejectsUnsignedRequests(): void {
+  runtimeConfig.runtimeMode = 'performance'
+  runtimeConfig.performanceNodeRole = 'control-replica'
+
+  const writeResponse = new FakeResponse()
+  setSystemApiDbAccessMode(writeResponse as unknown as Response, 'write')
+  let writeNextCalled = false
+  controlReadReplicaRequestGuard(requestFor('POST', '/__aisys__/api/accounts') as Request, writeResponse as unknown as Response, () => {
+    writeNextCalled = true
+  })
+  assert.equal(writeNextCalled, false, '只读 Control 副本不得处理未经主节点授权的写请求')
+  assert.equal(writeResponse.statusCode, 503, '只读 Control 副本必须明确拒绝直接写请求')
+  assert.equal(writeResponse.body?.code, 'control_read_replica_write_rejected', '只读 Control 副本必须返回稳定拒绝码')
+
+  const healthResponse = new FakeResponse()
+  setSystemApiDbAccessMode(healthResponse as unknown as Response, 'noDb')
+  let healthNextCalled = false
+  controlReadReplicaRequestGuard(requestFor('GET', '/__aisys__/api/health') as Request, healthResponse as unknown as Response, () => {
+    healthNextCalled = true
+  })
+  assert.equal(healthNextCalled, true, '只读 Control 副本必须保留无状态健康检查')
+
+  const publicWriteResponse = new FakeResponse()
+  let publicWriteNextCalled = false
+  controlReadReplicaPrimaryOnlyRequestGuard(requestFor('POST', '/__aipublic__/group/add') as Request, publicWriteResponse as unknown as Response, () => {
+    publicWriteNextCalled = true
+  })
+  assert.equal(publicWriteNextCalled, false, '只读 Control 副本不得处理直连公开接口写请求')
+  assert.equal(publicWriteResponse.statusCode, 503, '直连公开接口写请求必须被副本拒绝')
+  assert.equal(publicWriteResponse.body?.code, 'control_read_replica_primary_only_rejected', '公开接口拒绝必须返回稳定错误码')
+
+  runtimeConfig.port = 3201
+  runtimeConfig.secret = 'control-read-replica-regression-secret'
+  const grantedRead = grantedReplicaReadRequest('3201')
+  assert.equal(isAuthorizedControlReadReplicaRequest(grantedRead as Request), true, '主 control 签发的读授权必须只在目标副本接受一次')
+  assert.equal(isAuthorizedControlReadReplicaRequest(grantedRead as Request), false, '副本不得在授权窗口内重复接受同一读授权')
+
+  const wrongAudienceRead = grantedReplicaReadRequest('3202')
+  assert.equal(isAuthorizedControlReadReplicaRequest(wrongAudienceRead as Request), false, '读授权必须绑定目标副本，不能跨副本重放')
+}
+
+function grantedReplicaReadRequest(audience: string): Pick<Request, 'method' | 'originalUrl' | 'headers'> {
+  const issuedAtMs = Date.now()
+  const nonce = `replica-${Math.random().toString(16).slice(2)}`
+  const credentialHash = createHash('sha256').update('\n').digest('base64url')
+  const signature = createHmac('sha256', runtimeConfig.secret)
+    .update('juhe-ai/control-read-replica/v1')
+    .update('\n')
+    .update(String(issuedAtMs))
+    .update('\n')
+    .update(nonce)
+    .update('\n')
+    .update(audience)
+    .update('\n')
+    .update('GET')
+    .update('\n')
+    .update('/__aisys__/api/accounts')
+    .update('\n')
+    .update(credentialHash)
+    .digest('base64url')
+  return {
+    method: 'GET',
+    originalUrl: '/__aisys__/api/accounts',
+    headers: {
+      'x-juhe-control-read-proxy': '1',
+      'x-juhe-control-read-grant': `v1.${issuedAtMs}.${nonce}.${signature}`
+    }
+  }
+}
+
 function runAdmission(method: string, path: string, prefix = '/__aisys__/api'): { nextCalled: boolean; response: FakeResponse } {
   const req = requestFor(method, path)
   const response = new FakeResponse()
@@ -258,8 +338,13 @@ try {
   assertAccessModeMetadata()
   assertSqliteAdmissionByAccessMode()
   assertPostgresSkipsSqliteWriteAdmission()
+  assertControlReplicaRejectsUnsignedRequests()
   console.log('System/Public API DB access 回归通过：读路由不受写 admission 拦截，readWithSideEffect/write/longRead 元数据可识别，导入预览和公开列表为读，写请求受 SQLite admission，PG 不套 SQLite 写 admission')
 } finally {
   runtimeConfig.databaseDriver = originalDatabaseDriver
+  runtimeConfig.runtimeMode = originalRuntimeMode
+  runtimeConfig.performanceNodeRole = originalPerformanceNodeRole
+  runtimeConfig.port = originalPort
+  runtimeConfig.secret = originalSecret
   clearSystemApiDbAccessAdmissionStateForTest()
 }

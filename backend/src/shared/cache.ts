@@ -155,6 +155,10 @@ export function canUseProcessLocalAppCacheAsFactSource(): boolean {
   return runtimeConfig.cacheDriver !== 'redis'
 }
 
+function sharedCacheWritesDisabledForCurrentProcess(): boolean {
+  return runtimeConfig.runtimeMode === 'performance' && runtimeConfig.performanceNodeRole === 'control-replica'
+}
+
 export function createSharedJsonCache<V extends {}>(options: SharedJsonCacheOptions<V>): SharedJsonCache<V> {
   return new DriverSharedJsonCache(options)
 }
@@ -289,18 +293,19 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async get(key: string, options?: SharedJsonCacheOperationOptions): Promise<V | undefined> {
-    const location = await this.redisLocation(key, options)
+    const location = await this.redisLocation(key, options, !sharedCacheWritesDisabledForCurrentProcess())
     const rawValue = await this.runRedis('共享缓存读取', options, (client) => client.get(location.key))
     if (rawValue === null) return undefined
     try {
       return JSON.parse(rawValue) as V
     } catch {
-      await this.delete(key, options)
+      if (!sharedCacheWritesDisabledForCurrentProcess()) await this.delete(key, options)
       return undefined
     }
   }
 
   async set(key: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<void> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return
     const ttlMs = normalizeTtlMs(options?.ttlMs ?? this.options.ttlMs)
     const location = await this.redisLocation(key, options)
     await this.runRedis('共享缓存写入', options, async (client) => {
@@ -310,6 +315,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async delete(key: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return
     const location = await this.redisLocation(key, options)
     await this.runRedis('共享缓存删除', options, async (client) => {
       await client.del(location.key)
@@ -318,12 +324,14 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async clear(options?: SharedJsonCacheOperationOptions): Promise<void> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return
     await this.runRedis('共享缓存清空', options, async (client) => {
       await client.set(this.versionKey, nextCacheVersion(), { PX: 30 * 24 * 60 * 60 * 1000 })
     })
   }
 
   async acquireLease(key: string, options: { ttlMs: number; token: string } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return false
     const result = await this.runRedis('共享缓存租约获取', options, (client) => client.set(
       `${this.leaseKeyPrefix}${key}`, options.token, { PX: normalizeTtlMs(options.ttlMs), NX: true }
     ))
@@ -331,6 +339,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async renewLease(key: string, token: string, options: { ttlMs: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return false
     const result = await this.runRedis('共享缓存租约续期', options, (client) => client.eval(renewSharedCacheLeaseScript, {
       keys: [`${this.leaseKeyPrefix}${key}`],
       arguments: [token, String(normalizeTtlMs(options.ttlMs))]
@@ -339,6 +348,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return false
     const ttlMs = normalizeTtlMs(options?.ttlMs ?? this.options.ttlMs)
     const location = await this.redisLocation(key, options)
     return await this.runRedis('共享缓存租约写入', options, async (client) => {
@@ -353,6 +363,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async releaseLease(key: string, token: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    if (sharedCacheWritesDisabledForCurrentProcess()) return
     await this.runRedis('共享缓存租约释放', options, (client) => client.eval(releaseSharedCacheLeaseScript, {
       keys: [`${this.leaseKeyPrefix}${key}`],
       arguments: [token]
@@ -372,19 +383,20 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     }, operation)
   }
 
-  private async redisLocation(key: string, options?: SharedJsonCacheOperationOptions): Promise<{ key: string; indexKey: string }> {
-    const version = await this.namespaceVersion(options)
+  private async redisLocation(key: string, options?: SharedJsonCacheOperationOptions, createVersion = true): Promise<{ key: string; indexKey: string }> {
+    const version = await this.namespaceVersion(options, createVersion)
     return {
       key: `${this.keyPrefix}${version}:${key}`,
       indexKey: `${this.indexKeyPrefix}${version}`
     }
   }
 
-  private async namespaceVersion(options?: SharedJsonCacheOperationOptions): Promise<string> {
+  private async namespaceVersion(options?: SharedJsonCacheOperationOptions, createVersion = true): Promise<string> {
     return await this.runRedis('共享缓存版本读取', options, async (client) => {
       const existing = await client.get(this.versionKey)
       if (existing) return existing
       const version = this.options.version?.trim() || nextCacheVersion()
+      if (!createVersion) return this.options.version?.trim() || 'read-only-miss'
       const inserted = await client.set(this.versionKey, version, { NX: true, PX: 30 * 24 * 60 * 60 * 1000 })
       return inserted === 'OK' ? version : (await client.get(this.versionKey)) ?? version
     })

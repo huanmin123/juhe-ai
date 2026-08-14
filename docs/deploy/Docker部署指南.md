@@ -4,14 +4,14 @@
 
 ## 1. 适用方式
 
-Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖。Compose 拓扑是一个 Node 应用容器加一个 `go-sidecar` 容器；同一 Go 进程承载 F1 运行日志索引、F2 表监控、F3 审计持久化与 F4 操作日志。Node 应用容器承载：
+Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖。Compose 拓扑是一个 Node 应用容器、`go-jobs`（F1/F2）与 `go-gateway`（F3/F4）两个 Go 容器。Node 应用容器承载：
 
 - 管理后台：`/__aisys__/`
 - 系统 API：`/__aisys__/api`
 - OpenAI 兼容网关：`/v1`
 - background worker 和本地 DB service 子进程
 
-F1/F2/F3/F4 在同一 sidecar 内仍分别是各自事实的 Go owner：F1 负责运行日志索引/保留，F2 负责表监控采样、快照/保留，F3 负责原始审计、payload/blob、hot-search 与保留，F4 负责操作日志写入/读取/保留。它们直接异步执行，不使用 Node 队列；Node 只保留 F3 capture、F4 operation log 的一次性 loopback HMAC 输入和对应只读查询。F4 尚待独立发布切流。
+F1/F2/F3/F4 分别是各自事实的 Go owner：jobs 负责 F1 运行日志索引/保留与 F2 表监控采样、快照/保留，gateway 负责 F3 原始审计、payload/blob、hot-search 与 F4 操作日志写入/读取/保留。它们直接异步执行，不使用 Node 队列；Node 只保留 F3 capture、F4 operation log 的一次性 loopback HMAC 输入和对应只读查询。
 
 默认 standalone 模式不需要 Nginx、Redis、PostgreSQL 或额外 Node worker 容器。如果需要 PostgreSQL + Redis 高性能模式，使用 `docker/compose.performance.yml`，并先阅读 [高性能模式部署指南](高性能模式部署指南.md)。2026-08-10 已在开发 Linux 服务器完成两种 Compose runtime 闭环；这不等于 macOS 或生产环境已部署。
 
@@ -138,15 +138,15 @@ JUHE_AI_TRUST_PROXY=false
 - 迁移已有业务库时必须填写原来的 `JUHE_AI_SECRET`。
 - 直接 HTTP 访问时 `JUHE_AI_COOKIE_SECURE=false`；HTTPS 反向代理后建议改为 `true`。
 - `JUHE_AI_PUBLIC_ORIGIN` 是 Docker entrypoint 的便捷变量，会在 `JUHE_AI_ALLOWED_ORIGINS` 留空时转换成后端 CORS 白名单；直接运行 `backend/dist/server.js`、PM2、systemd 或托管平台注入环境变量时，必须配置 `JUHE_AI_ALLOWED_ORIGINS`。
-- 单一 sidecar 必须显式配置稳定的 F1/F2/F3/F4 owner ID；F3/F4 均需独立 input secret 与 loopback input URL，F3 另需 blob/hot-search 目录。两类 listener 都仅监听 loopback，所以 sidecar 必须与 Node 共享 network namespace。
+- Go jobs 与 gateway 都必须显式配置稳定的 owner ID；F3/F4 均需独立 input secret 与 loopback input URL，F3 另需 blob/hot-search 目录。F3/F4 listener 都仅监听 loopback，所以 go-gateway 必须与 Node 共享 network namespace。
 - Docker 构建阶段默认使用官方 Go proxy；受限网络可覆盖 `JUHE_AI_GO_PROXY=https://goproxy.cn,direct`，不影响运行时数据库或 Redis URL。
 - 公网 IP 或域名访问时建议填写 `JUHE_AI_PUBLIC_ORIGIN`，例如 `http://你的服务器IP:3000` 或 `https://ai.example.com`。
 - HTTPS 反向代理后，后台真实客户端 IP 依赖 `JUHE_AI_TRUST_PROXY=true` 和前置代理传递 `X-Forwarded-For`；完整说明见 [Caddy 自动 HTTPS 部署指南](https/Caddy自动HTTPS部署指南.md)。
 - 需要免费证书自动续期时，优先使用宿主机 Caddy；完整示例见 [HTTPS 部署示例](https/HTTPS部署示例.md)。
 
-### 单一 sidecar 的 owner 与存储隔离
+### Go 项目的 owner 与存储隔离
 
-sidecar 在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动，保留一个容器、PID 和日志。组件错误由进程内恢复循环记录并只重启该组件；sidecar 进程退出或功能数据不新鲜都会使部署验证失败，不得把 Node health 成功当作 sidecar 成功。
+jobs 与 gateway 在 Node `/__aisys__/api/health` 确认 DB service 就绪后启动，各自保留容器、PID 和日志。任一 Go project 退出或功能数据不新鲜都会使部署验证失败，不得把 Node health 成功当作 Go project 成功。
 
 - F1：`JUHE_AI_RUNTIME_LOG_INSTANCE_ID`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_DATABASE_PATH`（SQLite）或 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`（PostgreSQL），以及 `JUHE_AI_LOG_DIR`。`JUHE_AI_RUNTIME_LOG_ONCE=false` 用于常驻运行。
 - F2：`JUHE_AI_TABLE_MONITOR_INSTANCE_ID`、`JUHE_AI_TABLE_MONITOR_STORE`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`（SQLite）或 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`（PostgreSQL）。生产常驻还应明确 interval、lease、retention 等 F2 参数。
@@ -178,7 +178,7 @@ Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
-docker compose logs --tail=100 go-sidecar
+docker compose logs --tail=100 go-jobs go-gateway
 ```
 
 Linux / macOS：
@@ -189,7 +189,7 @@ curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
 docker compose logs --tail=100 juhe-ai
-docker compose logs --tail=100 go-sidecar
+docker compose logs --tail=100 go-jobs go-gateway
 ```
 
 期望：
@@ -197,8 +197,8 @@ docker compose logs --tail=100 go-sidecar
 - `/__aisys__/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/api/health` 返回 `200` 和 `status: ok`。
 - `/__aisys__/` 返回前端页面。
-- `docker compose ps` 中 Node 与 `go-sidecar` 均为 `healthy`；performance 还应包含 PostgreSQL、PgBouncer 和三类 Redis。
-- routine upgrade 只检查主服务与 sidecar 启动日志、Node control/API health、无 Key gateway `401` 和 F3 health `204`。Node → Go → Node 审计读回及 F1 `/runtime-logs`、F2 `/table-monitor` 新鲜度只在首次部署、owner/存储变更、故障或回切时执行。
+- `docker compose ps` 中 Node、`go-jobs` 与 `go-gateway` 均为 `healthy`；performance 还应包含 PostgreSQL、PgBouncer 和三类 Redis。
+- routine upgrade 只检查主服务、jobs 与 gateway 启动日志、Node control/API health、Go project health、无 Key gateway `401` 和 F3/F4 input health `204`。Node → Go → Node 审计读回及 F1 `/runtime-logs`、F2 `/table-monitor` 新鲜度只在首次部署、owner/存储变更、故障或回切时执行。
 
 ## 7. 状态检测和恢复
 

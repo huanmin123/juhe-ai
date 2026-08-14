@@ -155,6 +155,18 @@ assert.equal(
   false,
   '缺失管理副本时不得把双 Control 拓扑误判为完整'
 )
+const tripleControlTopology = topology(5, 2, 2, 3)
+const tripleControlRoles = performanceRoles(tripleControlTopology)
+const tripleControlSamples = tripleControlRoles.map((processRole, index) => buildSample(processRole, sampledAtMs, 18_500 + index))
+assert.equal(performanceProcessMetricsTopologyComplete(tripleControlSamples, tripleControlTopology), true, '三 Control 拓扑必须同时要求两个管理副本及其 DB service')
+assert.equal(
+  performanceProcessMetricsTopologyComplete(
+    tripleControlSamples.filter((sample) => sample.processRole !== 'control-replica:control-3'),
+    tripleControlTopology
+  ),
+  false,
+  '缺失第二个管理副本时不得把三 Control 拓扑误判为完整'
+)
 assert.equal(
   performanceProcessMetricsTopologyComplete(
     [...samples.filter((sample) => sample.processRole !== 'gateway:gateway-3'), samples[1]],

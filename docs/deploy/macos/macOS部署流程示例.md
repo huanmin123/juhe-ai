@@ -24,9 +24,9 @@ JUHE_AI_PORT=3000
 JUHE_AI_ALLOWED_ORIGINS=http://127.0.0.1:3000
 JUHE_AI_COOKIE_SECURE=false
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
-JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-sidecar-table-monitor
-JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-sidecar-audit-log
+JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-jobs-runtime-log
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-jobs-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-gateway-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
@@ -42,11 +42,13 @@ JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为独立且至少32位的稳定随机密�
 bash ./start.sh
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
+curl -i http://127.0.0.1:3305/health
+curl -i http://127.0.0.1:3306/health
 curl -i http://127.0.0.1:3303/__aiinternal__/health
-tail -n 100 ./backend/logs/juhe-ai-go-sidecar.log
+curl -i http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health
 ```
 
-Node 两个 health 应为 `200`，F3 health 与 F4 operation-log health 均应为 `204`。唯一的 Go sidecar 会在同一进程内恢复 F1/F2/F3/F4 中发生普通运行错误的组件；它不是多个独立 launchd 服务。F4 仍须经过独立 candidate 切流验收。生产 routine release 不在 active 槽手工执行本页命令：应启动独立 candidate Node 槽，验证 control/API/gateway、共享 Go health 和启动日志，再通过 [生产发布快速流程](../生产发布快速流程.md) 的快速 route 切换上线。浏览器、数据读回、稳定窗口和 handover controller 只用于首次新拓扑、故障或回切。
+Node 两个 health 与 `3305`（jobs）、`3306`（gateway）project health 应为 `200`；F3 health 与 F4 operation-log health 均应为 `204`。`juhe-ai-jobs` 是 F1/F2 的唯一 owner，`juhe-ai-gateway` 是 F3/F4 的唯一 owner；它们是两个独立进程，`maintenance` 仅执行一次性维护命令。生产 routine release 不在 active 槽手工执行本页命令：应启动独立 candidate Node 槽，复用正式的 Go jobs/gateway，验证 control/API/gateway、两个 Go project health 和 F3/F4 input health，再通过 [生产发布快速流程](../生产发布快速流程.md) 的快速 route 切换上线。浏览器、数据读回、稳定窗口和 handover controller 只用于首次新拓扑、故障或回切。
 
 后台“代理管理”新增：
 

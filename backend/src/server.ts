@@ -53,8 +53,10 @@ import {
   createAccountTestDispatchRouter
 } from './modules/internal-api/account-test-dispatch.routes.js'
 import {
+  accountHealthCheckDispatchInternalPrefix,
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
+import { controlReadReplicaPrimaryOnlyRequestGuard } from './modules/system-api/control-read-replica-proxy.js'
 import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
 import {
   getPendingGatewayFailureUsageFinalizationCount,
@@ -175,14 +177,16 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }
     startBackgroundWorkerSupervisor()
   }
-  void prewarmGatewayApiKeyValidationCacheAsync()
-    .then((apiKeyCount) => logger.info({
-      event: 'gateway_api_key_cache_prewarmed',
-      apiKeyCount
-    }, 'API Key 校验缓存已预热'))
-    .catch((error) => logger.warn(errorLogFields(error, {
-      event: 'gateway_api_key_cache_prewarm_failed'
-    }), 'API Key 校验缓存预热失败'))
+  if (runtimeConfig.performanceNodeRole !== 'control-replica') {
+    void prewarmGatewayApiKeyValidationCacheAsync()
+      .then((apiKeyCount) => logger.info({
+        event: 'gateway_api_key_cache_prewarmed',
+        apiKeyCount
+      }, 'API Key 校验缓存已预热'))
+      .catch((error) => logger.warn(errorLogFields(error, {
+        event: 'gateway_api_key_cache_prewarm_failed'
+      }), 'API Key 校验缓存预热失败'))
+  }
 }
 
 function stopInternalGatewayRegistryAfterDbServiceUnavailable(): void {
@@ -203,6 +207,8 @@ app.use(requestContextMiddleware)
 app.use(systemErrorMessageLocalizationMiddleware)
 app.use(systemPrefix, managementSecurityHeadersMiddleware)
 const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
+app.use(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard)
+app.use(accountHealthCheckDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard)
 app.use(accountTestDispatchInternalPrefix, createAccountTestDispatchRouter({
   secret: runtimeConfig.secret,
   dispatch: dispatchAccountTestTask

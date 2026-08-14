@@ -58,9 +58,14 @@ if (childMode) {
     assert.equal(runtimeConfig.performanceNodeRole, 'control-replica')
     assert.equal(runtimeConfig.instanceId, 'control-2')
     assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, false)
-    assert.equal(runtimeConfig.topology.controlReplicas, 2)
+    assert.equal(runtimeConfig.topology.controlReplicas, 3)
     assert.equal(currentProcessEventLoopRole(), 'control-replica:control-2')
     assert.deepEqual(processes, [])
+  } else if (childMode === 'performance-control-primary-with-read-replicas') {
+    assert.equal(runtimeConfig.performanceNodeRole, 'control')
+    assert.equal(runtimeConfig.topology.controlReplicas, 3)
+    assert.deepEqual(runtimeConfig.controlReadReplicaOrigins, ['http://127.0.0.1:3201', 'http://127.0.0.1:3202'])
+    assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, true)
   } else {
     assert.equal(runtimeConfig.processRole, 'worker')
     assert.equal(runtimeConfig.workerRole, 'usage-worker')
@@ -89,6 +94,11 @@ assert.match(
 )
 assert.doesNotMatch(backgroundJobsSource, /registryProcessSamples\.length\s*>?=/, '重复旧实例不得用数量掩盖当前角色缺失')
 assert.match(serverSource, /startInternalGatewayRegistryWhenReady[\s\S]*startInternalGatewayRegistry\(\)/, 'Gateway 实例必须在监听和 DB service ready 后注册内部调度端点')
+assert.match(
+  serverSource,
+  /app\.use\(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)[\s\S]*app\.use\(accountHealthCheckDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)/,
+  'control-replica 必须拒绝所有直连内部派发写接口'
+)
 assert.match(
   supervisorSource,
   /attachBackgroundAuxiliaryWorkerProcess\(child/,
@@ -127,7 +137,7 @@ try {
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'control-replica',
     JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: 'http://127.0.0.1:3200',
     JUHE_AI_INSTANCE_ID: 'control-2',
-    JUHE_AI_CONTROL_REPLICAS: '2',
+    JUHE_AI_CONTROL_REPLICAS: '3',
     JUHE_AI_GATEWAY_REPLICAS: '5'
   })
   runChildFailure('performance-control-replica-missing-health-dispatch', {
@@ -135,6 +145,20 @@ try {
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'control-replica',
     JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: ''
   }, 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL')
+  runChild('performance-control-primary-with-read-replicas', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
+    JUHE_AI_INSTANCE_ID: 'control-1',
+    JUHE_AI_CONTROL_REPLICAS: '3',
+    JUHE_AI_CONTROL_READ_REPLICA_ORIGINS: 'http://127.0.0.1:3201,http://127.0.0.1:3202'
+  })
+  runChildFailure('performance-control-primary-missing-read-replicas', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'control',
+    JUHE_AI_INSTANCE_ID: 'control-1',
+    JUHE_AI_CONTROL_REPLICAS: '3',
+    JUHE_AI_CONTROL_READ_REPLICA_ORIGINS: ''
+  }, 'JUHE_AI_CONTROL_READ_REPLICA_ORIGINS')
   runChildFailure('performance-gateway-missing-health-dispatch', {
     ...performanceEnv(),
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',

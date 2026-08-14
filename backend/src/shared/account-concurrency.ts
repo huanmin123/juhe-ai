@@ -192,7 +192,11 @@ export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string
   const client = await redisStateClient()
   for (let index = 0; index < normalizedAccountIds.length; index += 100) {
     const chunk = normalizedAccountIds.slice(index, index + 100)
-    const values = numericRedisArray(await client.eval(redisLoadAccountConcurrencyBatchScript, {
+    const values = numericRedisArray(await client.eval(
+      runtimeConfig.performanceNodeRole === 'control-replica'
+        ? redisReadOnlyAccountConcurrencyBatchScript
+        : redisLoadAccountConcurrencyBatchScript,
+      {
       keys: chunk.flatMap((accountId) => [
         redisAccountConcurrencyKey(accountId),
         redisAccountConcurrencyLaneKey(accountId, 'text'),
@@ -201,7 +205,8 @@ export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string
         redisAccountConcurrencyMetadataKey(accountId)
       ]),
       arguments: []
-    }))
+      }
+    ))
     chunk.forEach((accountId, valueIndex) => result.set(accountId, values[valueIndex] ?? 0))
   }
   return result
@@ -850,6 +855,16 @@ for key_index = 1, #KEYS, 5 do
   if redis.call('ZCARD', KEYS[key_index + 2]) == 0 then redis.call('DEL', KEYS[key_index + 2]) end
   if redis.call('HLEN', KEYS[key_index + 4]) == 0 then redis.call('DEL', KEYS[key_index + 4]) end
   table.insert(results, redis.call('ZCARD', KEYS[key_index + 3]))
+end
+return results
+`
+
+const redisReadOnlyAccountConcurrencyBatchScript = `
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local results = {}
+for key_index = 1, #KEYS, 5 do
+  table.insert(results, redis.call('ZCOUNT', KEYS[key_index + 3], '(' .. tostring(now_ms), '+inf'))
 end
 return results
 `

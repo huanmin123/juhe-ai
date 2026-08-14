@@ -67,9 +67,9 @@ JUHE_AI_ALLOWED_ORIGINS=https://ai.example.com
 JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 JUHE_AI_SECRET=替换为至少32位稳定随机密钥
-JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-sidecar-runtime-log
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-sidecar-table-monitor
-JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-sidecar-audit-log
+JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-jobs-runtime-log
+JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-jobs-table-monitor
+JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-gateway-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
@@ -89,11 +89,15 @@ Set-Location 'C:\juhe-ai-lite\current'
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\start.ps1
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
+Invoke-WebRequest http://127.0.0.1:3305/health
+Invoke-WebRequest http://127.0.0.1:3306/health
 Invoke-WebRequest http://127.0.0.1:3303/__aiinternal__/health
-Get-Content .\backend\logs\juhe-ai-go-sidecar.log -Tail 100
+Invoke-WebRequest http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health
+Get-Content .\backend\logs\juhe-ai-jobs.log -Tail 100
+Get-Content .\backend\logs\juhe-ai-gateway.log -Tail 100
 ```
 
-预期 Node 两个 health 为 `200`、F3 health 为 `204`。继续通过 Node 只读接口确认 F1/F2 新鲜度，并以审计详情读回确认 Node -> F3 -> Node；不能只凭 NSSM 已启动或 Node health 结束验收。
+预期 Node 两个 health 与 Go jobs/gateway project health 为 `200`、F3/F4 input health 为 `204`。继续通过 Node 只读接口确认 F1/F2 新鲜度，并以详情读回确认 Node -> F3/F4 -> Node；不能只凭 NSSM 已启动或 Node health 结束验收。
 
 ## 4. 常驻运行
 
