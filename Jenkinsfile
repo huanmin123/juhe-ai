@@ -9,6 +9,7 @@ pipeline {
 
   parameters {
     booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '仅手动运行：将已验证的 test 三镜像晋级到 prod。')
+    booleanParam(name: 'VERIFY_TEST_ONLY', defaultValue: false, description: '仅手动运行：验证并回写当前待验证 test release，不构建或改写镜像。')
   }
 
   environment {
@@ -45,7 +46,7 @@ pipeline {
     }
 
     stage('构建前端与 Node 产物') {
-      when { expression { !params.DEPLOY_PROD } }
+      when { expression { !params.DEPLOY_PROD && !params.VERIFY_TEST_ONLY } }
       steps {
         sh '''#!/bin/sh
           set -eu
@@ -65,7 +66,7 @@ pipeline {
     }
 
     stage('构建并推送三镜像') {
-      when { expression { !params.DEPLOY_PROD } }
+      when { expression { !params.DEPLOY_PROD && !params.VERIFY_TEST_ONLY } }
       steps {
         script {
           env.NODE_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_NODE}:${env.SOURCE_COMMIT}"
@@ -102,7 +103,7 @@ pipeline {
     }
 
     stage('写入 test release state') {
-      when { expression { !params.DEPLOY_PROD } }
+      when { expression { !params.DEPLOY_PROD && !params.VERIFY_TEST_ONLY } }
       steps {
         script {
           writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-ci')
@@ -114,8 +115,17 @@ pipeline {
       when { expression { !params.DEPLOY_PROD } }
       steps {
         script {
+          def release = params.VERIFY_TEST_ONLY ? readTestRelease() : [
+            sourceCommit: env.SOURCE_COMMIT,
+            nodeDigest: env.NODE_DIGEST,
+            jobsDigest: env.JOBS_DIGEST,
+            gatewayDigest: env.GATEWAY_DIGEST
+          ]
+          if (params.VERIFY_TEST_ONLY && release.status != 'pending') {
+            error 'VERIFY_TEST_ONLY 只能验证当前 pending 的 test release。'
+          }
           waitForIngress('test')
-          markReleaseVerified('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
+          markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest)
         }
       }
     }
@@ -167,12 +177,12 @@ def refreshPlatformReleaseWorkspace() {
 
 def metadataValue(environmentName, key) {
   def file = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}/release-metadata.yaml"
-  def value = sh(script: "sed -n 's/^  ${key}: \"\\(.*\\)\"/\\\\1/p' '${file}' | head -n1", returnStdout: true).trim()
+  def value = sh(script: "sed -n 's/^  ${key}: \"\\(.*\\)\"/\\1/p' '${file}' | head -n1", returnStdout: true).trim()
   if (!value) error "${environmentName} release state 缺少 ${key}。"
   return value
 }
 
-def readVerifiedTestRelease() {
+def readTestRelease() {
   refreshPlatformReleaseWorkspace()
   def release = [
     sourceCommit: metadataValue('test', 'sourceCommit'),
@@ -182,8 +192,16 @@ def readVerifiedTestRelease() {
     status: metadataValue('test', 'verification.status'),
     verifiedCommit: metadataValue('test', 'verification.sourceCommit')
   ]
-  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || release.status != 'passed' || release.verifiedCommit != release.sourceCommit) {
-    error 'test release state 未通过完整性与验证门禁。'
+  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest)) {
+    error 'test release state 未通过完整性检查。'
+  }
+  return release
+}
+
+def readVerifiedTestRelease() {
+  def release = readTestRelease()
+  if (release.status != 'passed' || release.verifiedCommit != release.sourceCommit) {
+    error 'test release state 未通过验证门禁。'
   }
   return release
 }
