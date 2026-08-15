@@ -78,6 +78,7 @@ const projectNames = project === 'jobs'
     ]
   : [
       'JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS',
+      'JUHE_AI_RUNTIME_LOG_DATABASE_PATH', 'JUHE_AI_TABLE_MONITOR_DATABASE_PATH',
       'JUHE_AI_AUDIT_LOG_STORE', 'JUHE_AI_AUDIT_LOG_POSTGRES_URL', 'JUHE_AI_AUDIT_LOG_DATABASE_PATH',
       'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY', 'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY',
       'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH', 'JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL',
@@ -134,6 +135,8 @@ if (project === 'jobs') {
   if (auditLogStore === 'sqlite' || operationLogStore === 'sqlite') {
     env.JUHE_AI_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
     env.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
+    env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
+    env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
     env.JUHE_AI_AUDIT_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_DATABASE_PATH, './data/juhe-ai-audit-log.sqlite3')
     env.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, './data/audit-payload-blobs')
     env.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, './data/audit-hot-search')
