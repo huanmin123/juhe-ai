@@ -79,6 +79,13 @@ try {
   assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(backendRoot, 'data', 'runtime-log.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-operation-log.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, join(backendRoot, 'data', 'juhe-ai.sqlite3'))
+
+  delete process.env.JUHE_AI_AUDIT_LOG_INSTANCE_ID
+  writeFileSync(join(backendRoot, '.env'), readFileSync(join(backendRoot, '.env'), 'utf8')
+    .replace(/^JUHE_AI_AUDIT_LOG_INSTANCE_ID=.*\r?\n/mu, ''))
+  const generatedEnv = module.resolveGoProjectEnv()
+  assert.equal(generatedEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID, `dev-go-gateway-audit-log-pid-${process.pid}`)
+  assert.equal(generatedEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, 'dev-audit-log-input-secret-with-32-bytes')
 } finally {
   for (const [key, value] of previousEnvironment) {
     if (value === undefined) delete process.env[key]

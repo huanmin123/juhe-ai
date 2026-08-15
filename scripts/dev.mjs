@@ -286,8 +286,10 @@ function resolveGoProjectEnv() {
     childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID,
     'dev-go-jobs-table-monitor'
   )
-  const instanceID = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID)
-  if (!instanceID) throw new Error('JUHE_AI_AUDIT_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
+  const instanceID = firstConfiguredValue(
+    childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID,
+    `dev-go-gateway-audit-log-pid-${process.pid}`
+  )
   const secret = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET)
   if (!secret) throw new Error('JUHE_AI_AUDIT_LOG_INPUT_SECRET is required for F3 loopback HMAC input.')
   const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
