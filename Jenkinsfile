@@ -181,7 +181,7 @@ def readVerifiedTestRelease() {
 }
 
 def replaceDigest(file, imageName, digest) {
-  def expression = '''s{(- name: IMAGE\n\s+newName: [^\n]+\n\s+digest: )sha256:[a-f0-9]{64}}{$1DIGEST}'''
+  def expression = 's{(- name: IMAGE\\n\\s+newName: [^\\n]+\\n\\s+digest: )sha256:[a-f0-9]{64}}{$1DIGEST}'
     .replace('IMAGE', imageName)
     .replace('DIGEST', digest)
   sh "perl -0pi -e '${expression}' '${file}'"
