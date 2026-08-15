@@ -412,7 +412,7 @@ for go_project in gateway jobs maintenance; do
   echo "==> Building Go $go_project project for $TARGET_GOOS/$TARGET_GOARCH"
   (
     cd "$GO_PROJECT_SOURCE_DIR"
-    CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -ldflags="-s -w" -o "$GO_PROJECT_BINARY_PATH" "./cmd/juhe-ai-$go_project"
+    CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -buildvcs=false -ldflags="-s -w" -o "$GO_PROJECT_BINARY_PATH" "./cmd/juhe-ai-$go_project"
   )
   if [ ! -f "$GO_PROJECT_BINARY_PATH" ] || [ -L "$GO_PROJECT_BINARY_PATH" ]; then
     echo "Go $go_project build did not produce a regular file: $GO_PROJECT_BINARY_PATH" >&2
