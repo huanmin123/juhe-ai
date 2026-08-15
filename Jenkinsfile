@@ -31,6 +31,7 @@ pipeline {
         checkout scm
         script {
           env.SOURCE_COMMIT = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
+          env.SOURCE_COMMIT_FULL = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
           env.SOURCE_SUBJECT = sh(script: 'git log -1 --pretty=%s', returnStdout: true).trim()
           env.HARBOR_REGISTRY = readFile(env.HARBOR_REGISTRY_FILE).trim()
           if (!validRegistry(env.HARBOR_REGISTRY)) {
@@ -53,6 +54,7 @@ pipeline {
           trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
           docker build --network host \
             --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+            --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
             --tag "$builder_image" --file docker/Dockerfile.builder .
           docker create --name "$builder_container" "$builder_image" >/dev/null
           mkdir -p backend/dist frontend/dist
