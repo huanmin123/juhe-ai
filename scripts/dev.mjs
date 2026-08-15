@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -290,8 +291,10 @@ function resolveGoProjectEnv() {
     childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID,
     `dev-go-gateway-audit-log-pid-${process.pid}`
   )
-  const secret = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET)
-  if (!secret) throw new Error('JUHE_AI_AUDIT_LOG_INPUT_SECRET is required for F3 loopback HMAC input.')
+  const secret = firstConfiguredValue(
+    childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET,
+    randomBytes(32).toString('hex')
+  )
   const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
   const inputPort = listenAddress.slice(listenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID
@@ -302,10 +305,14 @@ function resolveGoProjectEnv() {
   childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(backendRoot, 'data', 'audit-payload-blobs'))
   childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(backendRoot, 'data', 'audit-hot-search'))
   childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(backendRoot, 'data', 'juhe-ai.sqlite3'))
-  const operationInstanceID = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID)
-  if (!operationInstanceID) throw new Error('JUHE_AI_OPERATION_LOG_INSTANCE_ID is required; development startup does not generate owner identities.')
-  const operationSecret = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET)
-  if (!operationSecret) throw new Error('JUHE_AI_OPERATION_LOG_INPUT_SECRET is required for F4 loopback HMAC input.')
+  const operationInstanceID = firstConfiguredValue(
+    childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID,
+    `dev-go-gateway-operation-log-pid-${process.pid}`
+  )
+  const operationSecret = firstConfiguredValue(
+    childEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET,
+    randomBytes(32).toString('hex')
+  )
   const operationListenAddress = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
   const operationInputPort = operationListenAddress.slice(operationListenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID = operationInstanceID
