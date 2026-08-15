@@ -17,6 +17,12 @@ for (const [source, mode] of [[standaloneSource, 'standalone'], [performanceSour
   assert.match(gateway, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, `${mode} gateway must own F3`)
   assert.match(gateway, /JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, `${mode} gateway must own F4`)
   assert.doesNotMatch(gateway, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:|JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} gateway must not receive F1/F2 ownership`)
+  if (mode === 'standalone') {
+    assert.match(gateway, /JUHE_AI_RUNTIME_LOG_DATABASE_PATH:/u, 'standalone gateway must receive the F1 source path for F3/F4 SQLite isolation checks')
+    assert.match(gateway, /JUHE_AI_TABLE_MONITOR_DATABASE_PATH:/u, 'standalone gateway must receive the F2 source path for F3/F4 SQLite isolation checks')
+    assert.match(gateway, /juhe-ai-runtime-log-data:\/app\/backend\/runtime-log-data:ro/u, 'standalone gateway must mount the F1 source read-only')
+    assert.match(gateway, /juhe-ai-table-monitor-data:\/app\/backend\/table-monitor-data:ro/u, 'standalone gateway must mount the F2 source read-only')
+  }
   assert.match(jobs, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:/u, `${mode} jobs must own F1`)
   assert.match(jobs, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} jobs must own F2`)
   assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, `${mode} jobs must not receive F3/F4 ownership`)
