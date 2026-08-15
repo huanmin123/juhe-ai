@@ -48,10 +48,16 @@ pipeline {
       steps {
         sh '''#!/bin/sh
           set -eu
-          docker run --rm --network host \
-            -e HTTP_PROXY="$BUILD_HTTP_PROXY" -e HTTPS_PROXY="$BUILD_HTTP_PROXY" -e NO_PROXY="$BUILD_NO_PROXY" \
-            -v "$PWD:/source" -w /source node:22-bookworm-slim sh -eu -c \
-            'corepack enable && corepack prepare pnpm@10.32.1 --activate && pnpm install --frozen-lockfile && pnpm build'
+          builder_image="juhe-ai-node-builder:${BUILD_TAG}"
+          builder_container="juhe-ai-node-builder-${BUILD_TAG}"
+          trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
+          docker build --network host \
+            --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+            --tag "$builder_image" --file docker/Dockerfile.builder .
+          docker create --name "$builder_container" "$builder_image" >/dev/null
+          mkdir -p backend/dist frontend/dist
+          docker cp "$builder_container:/source/backend/dist/." backend/dist/
+          docker cp "$builder_container:/source/frontend/dist/." frontend/dist/
         '''
       }
     }
