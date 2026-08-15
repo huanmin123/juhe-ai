@@ -159,7 +159,7 @@ def refreshPlatformReleaseWorkspace() {
 
 def metadataValue(environmentName, key) {
   def file = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}/release-metadata.yaml"
-  def value = sh(script: "sed -n 's/^  ${key}: \"\(.*\)\"/\\1/p' '${file}' | head -n1", returnStdout: true).trim()
+  def value = sh(script: "sed -n 's/^  ${key}: \"\\(.*\\)\"/\\\\1/p' '${file}' | head -n1", returnStdout: true).trim()
   if (!value) error "${environmentName} release state 缺少 ${key}。"
   return value
 }
