@@ -237,7 +237,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       '${overlay}/release-metadata.yaml'
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
-    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml'
+    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml'
     git commit -m '[skip ci] release(juhe-ai-${environmentName}): ${sourceCommit}'
     GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
   """
