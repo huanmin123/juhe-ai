@@ -220,6 +220,9 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-jobs', jobsDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-gateway', gatewayDigest)
+  if (environmentName == 'prod') {
+    sh "sed -i 's/^  replicas: 0$/  replicas: 1/' '${overlay}/statefulset-patch.yaml'"
+  }
   sh """#!/bin/sh
     set -eu
     cd '${releaseWorkspace()}'
