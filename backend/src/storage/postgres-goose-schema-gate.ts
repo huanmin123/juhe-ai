@@ -1,9 +1,10 @@
 import { runtimeConfig, type DatabaseDriver } from '../config/runtime.js'
+import { CURRENT_RELEASE_SCHEMA_VERSION } from '../shared/release-schema-version.js'
 
-// Keep this in lockstep with backend-go/internal/migrationcatalog/catalog.go.
-// Node starts before its background services only when the Go-owned schema
-// catalog has reached the expected durable control-plane version.
-export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = 93
+// This deployment compatibility gate is shared with Node worker owner-lock
+// validation. Split Go projects intentionally do not expose a shared schema
+// migration catalog.
+export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = CURRENT_RELEASE_SCHEMA_VERSION
 export const POSTGRES_GOOSE_CURRENT_VERSION_QUERY = `
   WITH latest_versions AS (
     SELECT DISTINCT ON (version_id) id, version_id, is_applied

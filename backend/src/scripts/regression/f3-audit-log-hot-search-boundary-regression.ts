@@ -10,9 +10,9 @@ function rootSource(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(`../../../../${relativePath}`, import.meta.url)), 'utf8')
 }
 
-const goHotSearch = rootSource('backend-go/internal/auditlog/hot_search.go')
-const goRetention = rootSource('backend-go/internal/auditlog/retention.go')
-const inputServer = rootSource('backend-go/internal/auditlog/input_server.go')
+const goHotSearch = rootSource('backend-go/projects/gateway/internal/auditlog/hot_search.go')
+const goRetention = rootSource('backend-go/projects/gateway/internal/auditlog/retention.go')
+const inputServer = rootSource('backend-go/projects/gateway/internal/auditlog/input_server.go')
 const routes = backendSource('modules/audit-logs/audit-logs.routes.ts')
 
 for (const retiredNodeFile of [

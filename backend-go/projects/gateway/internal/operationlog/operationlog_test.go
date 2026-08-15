@@ -821,7 +821,7 @@ func runNodeGoNodeSmokeScript(t *testing.T, script string) {
 		t.Fatal("cannot locate F4 smoke test source")
 	}
 	command := exec.Command("node", "--import", "tsx", filepath.ToSlash(filepath.Join("src", "scripts", "regression", script)))
-	command.Dir = filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", "..", "backend"))
+	command.Dir = filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", "..", "..", "..", "backend"))
 	command.Env = append(os.Environ(), "JUHE_AI_OPERATION_LOG_INPUT_URL=http://"+listener.Addr().String(), "JUHE_AI_OPERATION_LOG_INPUT_SECRET="+secret, "JUHE_AI_OPERATION_LOG_INPUT_TIMEOUT_MS=5000", "JUHE_AI_LOG_FILE_ENABLED=false", "JUHE_AI_LOG_CONSOLE_ENABLED=false", "NODE_ENV=test")
 	output, err := command.CombinedOutput()
 	if err != nil {

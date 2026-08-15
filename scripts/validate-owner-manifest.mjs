@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 
-import { readdir, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REQUIRED_ROUTE_OWNERS = ['management', 'public', 'gateway', 'worker']
 const HTTP_ROUTE_SURFACES = new Set(['management', 'public', 'gateway'])
 const ALLOWED_OWNERS = new Set(['node', 'go'])
-const MIGRATION_FILENAME_PATTERN = /^([0-9]{6})_[a-z0-9_]+\.sql$/
-
-// Release packages omit the source migration catalog; the source-tree regression derives and verifies this value.
+// This is the deployment compatibility gate. Node runtime code exports the
+// same value from TypeScript; validate-owner-manifest.test.mjs keeps the two
+// package boundaries synchronized without relying on a retired Go catalog.
 export const CURRENT_SCHEMA_VERSION = 93
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 const MAX_EXACT_ROUTES = 2048
@@ -258,39 +258,6 @@ export async function readAndValidateOwnerManifest(manifestPath) {
     fail(reason)
   }
   return validateOwnerManifest(parsed)
-}
-
-export async function readMigrationCatalogSchemaVersion(catalogPath) {
-  let entries
-  try {
-    entries = await readdir(catalogPath, { withFileTypes: true })
-  } catch {
-    fail('migration catalog could not be read')
-  }
-
-  const versions = []
-  const namesByVersion = new Map()
-  for (const entry of entries) {
-    if (!entry.isFile()) fail(`migration catalog contains non-file entry ${JSON.stringify(entry.name)}`)
-    const match = MIGRATION_FILENAME_PATTERN.exec(entry.name)
-    if (!match) fail(`invalid migration filename ${JSON.stringify(entry.name)}`)
-    const version = Number(match[1])
-    if (version < 1) fail(`migration version must be positive in ${JSON.stringify(entry.name)}`)
-    const previous = namesByVersion.get(version)
-    if (previous !== undefined) {
-      fail(`migration version ${version} is duplicated by ${JSON.stringify(previous)} and ${JSON.stringify(entry.name)}`)
-    }
-    namesByVersion.set(version, entry.name)
-    versions.push(version)
-  }
-
-  versions.sort((left, right) => left - right)
-  if (versions.length === 0) fail('migration catalog is empty')
-  for (const [index, version] of versions.entries()) {
-    const expected = index + 1
-    if (version !== expected) fail(`migration catalog version ${version} is not contiguous; expected ${expected}`)
-  }
-  return versions.at(-1)
 }
 
 function parseRequiredOwners(value) {

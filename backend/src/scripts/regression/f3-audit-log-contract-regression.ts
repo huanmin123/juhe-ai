@@ -18,9 +18,9 @@ const capture = backendSource('modules/gateway/audit/capture.service.ts')
 const directInput = backendSource('modules/audit-logs/audit-log-go-input.service.ts')
 const routes = backendSource('modules/audit-logs/audit-logs.routes.ts')
 const f3ReadAdapter = backendSource('storage/audit-log-f3-query.repository.ts')
-const goStore = rootSource('backend-go/internal/auditlog/store.go')
-const goInputServer = rootSource('backend-go/internal/auditlog/input_server.go')
-const goRetention = rootSource('backend-go/internal/auditlog/retention.go')
+const goStore = rootSource('backend-go/projects/gateway/internal/auditlog/store.go')
+const goInputServer = rootSource('backend-go/projects/gateway/internal/auditlog/input_server.go')
+const goRetention = rootSource('backend-go/projects/gateway/internal/auditlog/retention.go')
 
 // Gateway capture keeps the stable record ID across streaming in_progress and finalization,
 // but sends both records directly to Go. Node no longer owns their delivery or persistence.

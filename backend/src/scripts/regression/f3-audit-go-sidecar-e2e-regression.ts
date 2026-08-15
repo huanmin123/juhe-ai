@@ -9,7 +9,7 @@ import { once } from 'node:events'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 
 const root = resolve(import.meta.dirname, '../../../..')
-const goRoot = join(root, 'backend-go')
+const goRoot = join(root, 'backend-go', 'projects', 'gateway')
 const testRoot = await mkdtemp(join(tmpdir(), 'juhe-ai-f3-sidecar-e2e-'))
 const port = await allocatePort()
 const inputUrl = `http://127.0.0.1:${port}`
@@ -18,7 +18,7 @@ const inputSecret = 'f3-local-sidecar-e2e-input-secret'
 const databasePath = join(testRoot, 'f3-audit.sqlite3')
 const blobDirectory = join(testRoot, 'blobs')
 const hotSearchDirectory = join(testRoot, 'hot-search')
-const binaryPath = join(testRoot, process.platform === 'win32' ? 'juhe-ai-go-sidecar.exe' : 'juhe-ai-go-sidecar')
+const binaryPath = join(testRoot, process.platform === 'win32' ? 'juhe-ai-gateway.exe' : 'juhe-ai-gateway')
 
 const originalEnvironment = new Map<string, string | undefined>()
 const environment = {
@@ -69,8 +69,8 @@ try {
     environment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH,
     environment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH
   ].map((path) => writeFile(path, Buffer.alloc(0))))
-  await buildSidecar()
-  sidecar = await startSidecar()
+  await buildGateway()
+  sidecar = await startGateway()
 
   const { dispatchAuditLogToGo } = await import('../../modules/audit-logs/audit-log-go-input.service.js')
   const { createAuditLogF3QueryRepository } = await import('../../storage/audit-log-f3-query.repository.js')
@@ -103,17 +103,17 @@ try {
     await repository.close()
   }
 
-  await stopSidecar(sidecar)
+  await stopGateway(sidecar)
   // A force-stopped Windows child cannot run Go's deferred lease release.
   // The minimum configured lease is 5s, so wait once for it to expire before
   // proving that the same stable instance ID can start again.
   await delay(5_500)
-  sidecar = await startSidecar()
-  await stopSidecar(sidecar)
+  sidecar = await startGateway()
+  await stopGateway(sidecar)
   sidecar = undefined
-  console.log('F3 Go sidecar E2E regression passed: Node input, Go SQLite persistence, stream finalization, Node read-only query, payload read, and sidecar restart.')
+  console.log('F3 Go gateway-owner E2E regression passed: Node input, Go SQLite persistence, stream finalization, Node read-only query, payload read, and gateway restart.')
 } finally {
-  if (sidecar) await stopSidecar(sidecar).catch(() => undefined)
+  if (sidecar) await stopGateway(sidecar).catch(() => undefined)
   for (const [name, value] of originalEnvironment) {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
@@ -168,18 +168,18 @@ function input(options: { id: string, traceId: string, timestamp: string, lifecy
   }
 }
 
-async function buildSidecar(): Promise<void> {
-  const result = spawn(process.env.JUHE_AI_GO_BINARY ?? 'go', ['build', '-o', binaryPath, './cmd/juhe-ai-go-sidecar'], {
+async function buildGateway(): Promise<void> {
+  const result = spawn(process.env.JUHE_AI_GO_BINARY ?? 'go', ['build', '-o', binaryPath, './cmd/juhe-ai-gateway'], {
     cwd: goRoot,
     env: process.env,
     stdio: 'pipe',
     windowsHide: true
   })
   const failure = await processResult(result)
-  assert.equal(failure.code, 0, `Go sidecar build failed: ${failure.output}`)
+  assert.equal(failure.code, 0, `Go gateway build failed: ${failure.output}`)
 }
 
-async function startSidecar(): Promise<ChildProcess> {
+async function startGateway(): Promise<ChildProcess> {
   const child = spawn(binaryPath, [], { cwd: goRoot, env: process.env, stdio: 'pipe', windowsHide: true })
   const ready = waitForReady(child)
   await ready
@@ -192,7 +192,7 @@ async function waitForReady(child: ChildProcess): Promise<void> {
   child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8') })
   const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Go sidecar exited before ready: ${output}`)
+    if (child.exitCode !== null) throw new Error(`Go gateway exited before ready: ${output}`)
     try {
       const response = await fetch(`${inputUrl}/__aiinternal__/health`)
       if (response.status === 204) return
@@ -201,14 +201,14 @@ async function waitForReady(child: ChildProcess): Promise<void> {
     }
     await delay(50)
   }
-  throw new Error(`Go sidecar did not become ready: ${output}`)
+  throw new Error(`Go gateway did not become ready: ${output}`)
 }
 
-async function stopSidecar(child: ChildProcess): Promise<void> {
+async function stopGateway(child: ChildProcess): Promise<void> {
   if (child.exitCode === null) child.kill()
   await Promise.race([
     once(child, 'exit'),
-    delay(5_000).then(() => { throw new Error('Go sidecar did not stop within 5s') })
+    delay(5_000).then(() => { throw new Error('Go gateway did not stop within 5s') })
   ])
 }
 

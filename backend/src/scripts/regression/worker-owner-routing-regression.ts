@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolveNodeWorkerOwnership, runIfNodeOwnsWorkerJob } from '../../shared/worker-owner.js'
+import { CURRENT_RELEASE_SCHEMA_VERSION } from '../../shared/release-schema-version.js'
 
 const job = 'cooldown-account-retest'
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-ai-worker-owner-routing-'))
@@ -67,7 +68,7 @@ try {
 
   const wrongReleaseSchemaPath = writeManifest('wrong-release-schema.json', {
     ...manifest(3, 'epoch-wrong-schema', 'node', []),
-    release: { nodeVersion: '0.1.0', goVersion: '0.1.0-w0', schemaVersion: 91 }
+    release: { nodeVersion: '0.1.0', goVersion: '0.1.0-w0', schemaVersion: CURRENT_RELEASE_SCHEMA_VERSION - 1 }
   })
   assertFailClosed(decide(wrongReleaseSchemaPath, 'epoch-wrong-schema'), 'manifest_invalid')
 
@@ -132,7 +133,7 @@ function manifest(
   const result: Record<string, unknown> = {
     schemaVersion,
     deploymentEpoch,
-    release: { nodeVersion: '0.1.0', goVersion: '0.1.0-w0', schemaVersion: 92 },
+    release: { nodeVersion: '0.1.0', goVersion: '0.1.0-w0', schemaVersion: CURRENT_RELEASE_SCHEMA_VERSION },
     routeOwners: ownerMap,
     rollbackRouteOwners: { ...ownerMap },
     routeAllowlist: []

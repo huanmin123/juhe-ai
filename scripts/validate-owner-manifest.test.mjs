@@ -10,16 +10,14 @@ import {
   createRollbackManifest,
   CURRENT_SCHEMA_VERSION,
   OwnerManifestValidationError,
-  readMigrationCatalogSchemaVersion,
   resolveRouteOwner,
   resolveWorkerOwner,
   validateOwnerManifest
 } from './validate-owner-manifest.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const currentMigrationVersion = await readMigrationCatalogSchemaVersion(path.join(repoRoot, 'backend-go/db/migrations'))
-const migrationCatalogSource = await readFile(path.join(repoRoot, 'backend-go/internal/migrationcatalog/catalog.go'), 'utf8')
-const currentGoCatalogVersion = Number(/^const CurrentSchemaVersion int64 = (\d+)$/mu.exec(migrationCatalogSource)?.[1])
+const releaseSchemaSource = await readFile(path.join(repoRoot, 'backend/src/shared/release-schema-version.ts'), 'utf8')
+const currentRuntimeSchemaVersion = Number(/^export const CURRENT_RELEASE_SCHEMA_VERSION = (\d+)$/mu.exec(releaseSchemaSource)?.[1])
 const currentManifest = JSON.parse(await readFile(path.join(repoRoot, 'deploy/owner-manifest.json'), 'utf8'))
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
 const startupScripts = await Promise.all(
@@ -81,17 +79,16 @@ validateOwnerManifest(currentManifest)
 assert.equal(currentManifest.schemaVersion, 3)
 assert.deepEqual(currentManifest.workerAllowlist, [])
 assertAllRoutesOwnedBy(currentManifest, 'node')
-assert.equal(CURRENT_SCHEMA_VERSION, currentMigrationVersion)
-assert.equal(currentGoCatalogVersion, currentMigrationVersion)
-assert.equal(CURRENT_SCHEMA_VERSION, currentGoCatalogVersion)
+assert(Number.isSafeInteger(currentRuntimeSchemaVersion), 'Node 共享发布 schema 版本必须为安全整数')
+assert.equal(CURRENT_SCHEMA_VERSION, currentRuntimeSchemaVersion)
 assert.throws(
   () => validateOwnerManifest({
     ...valid,
-    release: { ...valid.release, schemaVersion: currentMigrationVersion - 1 }
+    release: { ...valid.release, schemaVersion: currentRuntimeSchemaVersion - 1 }
   }),
   OwnerManifestValidationError
 )
-assert.equal(currentManifest.release.schemaVersion, currentMigrationVersion)
+assert.equal(currentManifest.release.schemaVersion, currentRuntimeSchemaVersion)
 assert.equal(
   rootPackage.scripts['validate:owner-manifest:node'].includes('--require-migration-catalog='),
   false,

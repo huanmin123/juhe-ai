@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
+import { CURRENT_RELEASE_SCHEMA_VERSION } from './release-schema-version.js'
+
 export type WorkerOwner = 'node' | 'go'
 
 export interface WorkerOwnerLockConfig {
@@ -66,7 +68,6 @@ const workerJobFields = ['job', 'owner', 'rollbackOwner']
 const allowedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 const allowedSurfaces = new Set(['management', 'public', 'gateway'])
 const workerJobPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-const currentReleaseSchemaVersion = 92
 
 export function runIfNodeOwnsWorkerJob(
   config: WorkerOwnerLockConfig,
@@ -157,8 +158,8 @@ function validateRelease(value: unknown): void {
   requireExactFields(value, releaseFields, 'release')
   requireNonEmptyString(value.nodeVersion, 'release.nodeVersion')
   requireNonEmptyString(value.goVersion, 'release.goVersion')
-  if (value.schemaVersion !== currentReleaseSchemaVersion) {
-    throw new Error(`release.schemaVersion must equal ${currentReleaseSchemaVersion}`)
+  if (value.schemaVersion !== CURRENT_RELEASE_SCHEMA_VERSION) {
+    throw new Error(`release.schemaVersion must equal ${CURRENT_RELEASE_SCHEMA_VERSION}`)
   }
 }
 

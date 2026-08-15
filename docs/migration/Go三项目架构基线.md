@@ -16,6 +16,8 @@
 
 三项目必须支持独立构建、独立配置、独立发布、独立重启和独立健康检查。一个项目退出、升级或依赖故障，不得通过进程内 import 或进程看护让另外两个项目被动退出。
 
+当前 Node 网关与主业务尚未迁移时，Go `gateway` 不是 jobs 的服务依赖；后台任务不得调用 Node 或 Go gateway。需要主业务输入的任务只能使用本基线规定的稳定数据契约，或由当前业务 owner 单向推送的签名、版本化 jobs 输入协议。
+
 ## 2. 源码与依赖方向
 
 ```text
@@ -57,6 +59,8 @@ backend-go/
 - 复制、探活、统计、窗口聚合和保留清理由这里逐项迁移。迁移一个完整功能后，Node 原 scheduler/worker 和旧 Go owner 必须退出活跃路径并归档，不做长期双写。
 - 可实时的探活、账号检测和独立外部 I/O 按候选窗口直接 fan-out goroutine；统计按游标/批次并发；低优先级历史扫描和冷数据清理使用较小窗口，让位于实时任务。
 - `jobs` 不提供业务 API。若必须接受人工触发，使用明确的受认证内部命令/一次性 maintenance 命令，不把管理 API 反向接入 jobs 包。
+- `jobs` 直接向账户配置的上游执行轻量诊断，不经 Node 或 Go gateway。该诊断不实现用户请求路由、鉴权、配额、流式响应、G2/G3 网关状态或账户策略写入；业务网关继续由 Node owner 处理，直到其完整迁移批次另行验收。
+- PostgreSQL 使用稳定数据库契约；SQLite 使用 jobs 自己拥有的 Store 和单向输入/只读结果协议。`jobs` 绝不成为 Node SQLite 文件的第二 writer，也不以 Node/gateway RPC 为 fallback。
 
 ### `maintenance`
 
@@ -101,7 +105,7 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 - 配置按项目命名空间隔离：`JUHE_AI_GATEWAY_*`、`JUHE_AI_JOBS_*`、`JUHE_AI_MAINTENANCE_*`。共享数据库连接只在明确 owner 的项目中配置，不能通过“默认共享全部 env”隐藏依赖。
 - 每个项目有独立 release、日志目录、健康/就绪端点、进程身份和重启策略。部署编排可以放在同一机器，但不能以同一进程或同一 supervisor 作为运行前提。
 - `gateway` 的健康检查覆盖 HTTP/API 和上游桥接依赖；`jobs` 的健康检查覆盖 scheduler、lease、任务滞后和关键 Store；`maintenance` 以退出码和报告文件验收，不伪造长驻 health。
-- 旧 `juhe-ai-go-sidecar` 已删除；F1/F2 的常驻 owner 是 `jobs`，F3/F4 的常驻 owner 是 `gateway`。后续不修改已上线 F3 主链路，也不把新定时功能放入 gateway。
+- 当前源码已将 F1/F2 放入 `jobs`、F3/F4 放入 `gateway`；每个环境的实际常驻 owner 仍须由该环境的部署、健康、读回和回滚证据确认。后续不把新定时功能放入 gateway。
 
 ## 7. 验收门
 
