@@ -44,8 +44,6 @@ $requiredFiles = @(
   'migrate-wireguard-root-wrappers.sh',
   'wireguard-reconciler.sh',
   'install-wireguard-reconciler.sh',
-  'wireguard-203-tls-nonce-probe-adapter.sh',
-  'install-wireguard-203-tls-nonce-probe-adapter.sh',
   'diagnose-proxy-dns.sh',
   'temporary-cutover.sh',
   'templates\com.juhe-ai.plist.tpl',

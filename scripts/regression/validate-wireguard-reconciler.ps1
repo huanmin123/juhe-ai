@@ -6,9 +6,7 @@ $operationsRoot = Join-Path $repoRoot 'docs\deploy\macos\operations'
 $files = @(
   'wireguard-reconciler.sh',
   'migrate-wireguard-root-wrappers.sh',
-  'install-wireguard-reconciler.sh',
-  'wireguard-203-tls-nonce-probe-adapter.sh',
-  'install-wireguard-203-tls-nonce-probe-adapter.sh'
+  'install-wireguard-reconciler.sh'
 )
 
 foreach ($file in $files) {
@@ -19,8 +17,6 @@ foreach ($file in $files) {
 $reconciler = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'wireguard-reconciler.sh')
 $migrator = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'migrate-wireguard-root-wrappers.sh')
 $installer = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-wireguard-reconciler.sh')
-$probeAdapter = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'wireguard-203-tls-nonce-probe-adapter.sh')
-$probeInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-wireguard-203-tls-nonce-probe-adapter.sh')
 $all = "$reconciler`n$migrator`n$installer"
 
 foreach ($contract in @(
@@ -49,16 +45,6 @@ foreach ($contract in @(
     throw "WireGuard reconciler contract missing: $contract"
   }
 }
-foreach ($contract in @('exit 75', 'juhe_tunnel_probe_', '--min-observed-at', '--runtime-manifest', 'root_path_chain', '--nonce', '--mode', 'SSH_BIN', 'StrictHostKeyChecking=yes', "HOST_KEY_ALIAS='juhe-wg-probe-203'", 'juhe-tunnel-probe-read-v1', 'node', 'public_ip', 'ProxyCommand=none')) {
-  if (-not $probeAdapter.Contains($contract, [StringComparison]::Ordinal)) { throw "203 probe adapter contract missing: $contract" }
-}
-foreach ($forbidden in @('case "$url" in http://*|https://*', 'CURL_BIN', 'curl --fail')) {
-  if ($probeAdapter.Contains($forbidden, [StringComparison]::Ordinal)) { throw "203 probe adapter still accepts unauthenticated HTTP: $forbidden" }
-}
-foreach ($contract in @('--mapping', '--runtime-manifest', '--script-sha256', 'root-only', 'unique node/public_ip series', 'wireguard-203-tls-nonce-probe-adapter.sh')) {
-  if (-not $probeInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "203 probe adapter installer contract missing: $contract" }
-}
-
 foreach ($contract in @(
   'the root WireGuard allowlist must contain exactly eight edges',
   'ProgramArguments',
@@ -196,8 +182,6 @@ if ($bash) {
   if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted an unsafe remove path' }
   & $bash.Source ((Join-Path $operationsRoot 'install-wireguard-reconciler.sh') -replace '\\', '/') --remove --dry-run --install-dir '/' 2>$null
   if ($LASTEXITCODE -eq 0) { throw 'WireGuard installer accepted filesystem root as install-dir' }
-  & $bash.Source ((Join-Path $operationsRoot 'wireguard-203-tls-nonce-probe-adapter.sh') -replace '\\', '/') --edge-id edge1 --nonce invalid --mode observe 2>$null
-  if ($LASTEXITCODE -ne 75) { throw '203 probe adapter must classify invalid probe input as unknown (75)' }
   $unixName = (& $bash.Source -c 'uname -s').Trim()
   if ($unixName -in @('Darwin', 'Linux')) {
     & $bash.Source ((Join-Path $repoRoot 'scripts/regression/validate-wireguard-reconciler-harness.sh') -replace '\\', '/') ($repoRoot -replace '\\', '/')

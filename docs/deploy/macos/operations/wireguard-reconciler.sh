@@ -38,7 +38,7 @@ Options:
   --state-dir <absolute-path>    root-owned state directory; default <install-dir>/wireguard-reconciler-state
   --maintenance-lock <path>      when present, record and do not take recovery action
   --wg-bin <absolute-path>       wg executable; default /usr/local/bin/wg
-  --probe-helper <absolute-path> root-owned adapter for the independent 203 TLS nonce probe
+  --probe-helper <absolute-path> root-owned external Edge-to-Kubernetes ingress probe helper
   --release-lock <path>          root-owned deployment lock; when present, do not take recovery action
   --stale-seconds <seconds>      minimum latest-handshake age; default 120
   --stale-confirmations <count>  consecutive stale samples; default 2
@@ -297,7 +297,7 @@ validate_manifest_and_collect() {
 validate_manifest_and_collect
 
 probe_observation() {
-  # Adapter contract: 0=fresh/healthy, 1=known edge failure, 75=unknown transport or collector state.
+  # External probe contract: 0=fresh/healthy, 1=known edge failure, 75=unknown state.
   # Its stdout/stderr are intentionally not persisted because they can contain endpoint metadata.
   local edge="$1" nonce="$2" status
   set +e

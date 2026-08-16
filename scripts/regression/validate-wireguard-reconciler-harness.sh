@@ -5,9 +5,8 @@ set -euo pipefail
 
 REPO_ROOT="${1:?repository root is required}"
 SOURCE="$REPO_ROOT/docs/deploy/macos/operations/wireguard-reconciler.sh"
-# The probe adapter deliberately rejects a symlinked parent chain. macOS login
-# sessions commonly expose TMPDIR below /var, which is a symlink to /private/var.
-# Keep Darwin fixtures under the physical private temp root instead.
+# macOS login sessions commonly expose TMPDIR below /var, which is a symlink to
+# /private/var. Keep Darwin fixtures under the physical private temp root.
 HARNESS_TMP_BASE="${JUHE_WG_HARNESS_TMPDIR:-${TMPDIR:-/tmp}}"
 if [ "$(uname -s)" = Darwin ] && [ -d /private/tmp ]; then
   HARNESS_TMP_BASE=/private/tmp
@@ -18,9 +17,6 @@ RUN="$ROOT/run"
 STATE="$ROOT/state"
 MANIFEST="$ROOT/manifest"
 ACTION_LOG="$ROOT/actions.log"
-PROBE_MAPPING="$ROOT/probe.map"
-PROBE_ADAPTER="$ROOT/probe-adapter.sh"
-PROBE_INSTALLER="$ROOT/probe-installer.sh"
 MIGRATION_MANIFEST="$ROOT/migration.manifest"
 REUSE_MANIFEST="$ROOT/reuse.manifest"
 MIGRATOR="$ROOT/migrator.sh"
@@ -352,15 +348,6 @@ sed \
   "$SOURCE" > "$ROOT/reconciler.sh"
 chmod 700 "$ROOT/reconciler.sh"
 
-sed \
-  -e "s|/usr/bin/stat|$FAKE/stat|g" \
-  -e "s|/usr/bin/ssh|$FAKE/ssh|g" \
-  "$REPO_ROOT/docs/deploy/macos/operations/wireguard-203-tls-nonce-probe-adapter.sh" > "$PROBE_ADAPTER"
-chmod 700 "$PROBE_ADAPTER"
-sed \
-  -e "s|/usr/bin/stat|$FAKE/stat|g" \
-  "$REPO_ROOT/docs/deploy/macos/operations/install-wireguard-203-tls-nonce-probe-adapter.sh" > "$PROBE_INSTALLER"
-chmod 700 "$PROBE_INSTALLER"
 mkdir -p "$ROOT/launchd"
 sed \
   -e "s|/usr/bin/stat|$FAKE/stat|g" \
@@ -407,55 +394,6 @@ make_manifest() {
     printf 'utun%s\n' "$index" > "$RUN/wg-edge$index.name"
     : > "$ROOT/launchd-loaded/com.example.wg.edge$index"
   done
-}
-
-make_probe_mapping() {
-  : > "$PROBE_MAPPING"
-  : > "$ROOT/known_hosts"
-  : > "$ROOT/probe_identity"
-  local index
-  for index in 1 2 3 4 5 6 7 8; do
-    printf 'edge%s\tprobe@monitoring.internal\tnode%s\t198.51.100.%s\t%s/known_hosts\t%s/probe_identity\n' "$index" "$index" "$index" "$ROOT" "$ROOT" >> "$PROBE_MAPPING"
-  done
-}
-
-write_probe_metrics() {
-  local edge_status="$1" observed_at="$2" index status
-  : > "$ROOT/probe.metrics"
-  for index in 1 2 3 4 5 6 7 8; do
-    status=1
-    [ "$index" -eq 1 ] && status="$edge_status"
-    # Label order is not part of the contract; node/public_ip identity is.
-    if [ $((index % 2)) -eq 0 ]; then
-      printf 'juhe_tunnel_probe_up{public_ip="198.51.100.%s",node="node%s"} %s\n' "$index" "$index" "$status" >> "$ROOT/probe.metrics"
-      printf 'juhe_tunnel_probe_last_observed_timestamp_seconds{public_ip="198.51.100.%s",node="node%s"} %s\n' "$index" "$index" "$observed_at" >> "$ROOT/probe.metrics"
-    else
-      printf 'juhe_tunnel_probe_up{node="node%s",public_ip="198.51.100.%s"} %s\n' "$index" "$index" "$status" >> "$ROOT/probe.metrics"
-      printf 'juhe_tunnel_probe_last_observed_timestamp_seconds{node="node%s",public_ip="198.51.100.%s"} %s\n' "$index" "$index" "$observed_at" >> "$ROOT/probe.metrics"
-    fi
-  done
-}
-
-expect_adapter_status() {
-  local mapping="$1" expected="$2" mode="${3:-observe}" min_observed_at="${4:-}"
-  set +e
-  if [ "$mode" = verify ]; then
-    FAKE_METRICS="$ROOT/probe.metrics" bash "$PROBE_ADAPTER" --edge-id edge1 --nonce probe-nonce-0001 --mode verify --min-observed-at "$min_observed_at" --mapping "$mapping" --runtime-manifest "$MANIFEST" >/dev/null 2>&1
-  else
-    FAKE_METRICS="$ROOT/probe.metrics" bash "$PROBE_ADAPTER" --edge-id edge1 --nonce probe-nonce-0001 --mode observe --mapping "$mapping" --runtime-manifest "$MANIFEST" >/dev/null 2>&1
-  fi
-  local status=$?
-  set -e
-  [ "$status" -eq "$expected" ] || { echo "probe adapter expected $expected, got $status" >&2; exit 1; }
-}
-
-expect_installer_reject() {
-  local mapping="$1"
-  set +e
-  bash "$PROBE_INSTALLER" --dry-run --mapping "$mapping" --runtime-manifest "$MANIFEST" --script-sha256 0000000000000000000000000000000000000000000000000000000000000000 >/dev/null 2>&1
-  local status=$?
-  set -e
-  [ "$status" -ne 0 ] || { echo "probe installer accepted invalid mapping: $mapping" >&2; exit 1; }
 }
 
 make_migration_manifest() {
@@ -727,49 +665,6 @@ run_once_expect_status() {
   cat "$ROOT/events.log" >&2 2>/dev/null
   return 1
 }
-
-if [ "${JUHE_WG_HARNESS_TRANSACTION_ONLY:-0}" != 1 ]; then
-make_manifest
-make_probe_mapping
-
-# The adapter receives metrics only through a dedicated SSH forced-command protocol. Its
-# strict mapping protects the root reconciler from missing, duplicate or mismatched series.
-now_probe="$(date +%s)"
-write_probe_metrics 1 "$now_probe"
-expect_adapter_status "$PROBE_MAPPING" 0
-expect_adapter_status "$PROBE_MAPPING" 0 verify "$now_probe"
-write_probe_metrics 0 "$(date +%s)"
-expect_adapter_status "$PROBE_MAPPING" 1
-write_probe_metrics 1 "$(date +%s)"
-bash "$PROBE_INSTALLER" --dry-run --mapping "$PROBE_MAPPING" --runtime-manifest "$MANIFEST" --script-sha256 0000000000000000000000000000000000000000000000000000000000000000 >/dev/null
-
-cp "$PROBE_MAPPING" "$ROOT/probe.duplicate-edge.map"
-sed -i.bak 's/^edge8\t/edge7\t/' "$ROOT/probe.duplicate-edge.map"; rm -f "$ROOT/probe.duplicate-edge.map.bak"
-expect_adapter_status "$ROOT/probe.duplicate-edge.map" 75
-expect_installer_reject "$ROOT/probe.duplicate-edge.map"
-
-cp "$PROBE_MAPPING" "$ROOT/probe.wrong-edge-set.map"
-sed -i.bak 's/^edge8\t/edge9\t/' "$ROOT/probe.wrong-edge-set.map"; rm -f "$ROOT/probe.wrong-edge-set.map.bak"
-expect_adapter_status "$ROOT/probe.wrong-edge-set.map" 75
-expect_installer_reject "$ROOT/probe.wrong-edge-set.map"
-
-awk 'BEGIN { FS=OFS="\t" } $1 == "edge2" { $3="node1"; $4="198.51.100.1" } { print }' "$PROBE_MAPPING" > "$ROOT/probe.duplicate-series.map"
-expect_adapter_status "$ROOT/probe.duplicate-series.map" 75
-expect_installer_reject "$ROOT/probe.duplicate-series.map"
-
-sed '$d' "$PROBE_MAPPING" > "$ROOT/probe.missing.map"
-expect_adapter_status "$ROOT/probe.missing.map" 75
-expect_installer_reject "$ROOT/probe.missing.map"
-
-cp "$PROBE_MAPPING" "$ROOT/probe.extraneous.map"
-printf 'edge9\tprobe@monitoring.internal\tnode9\t198.51.100.9\t%s/known_hosts\t%s/probe_identity\n' "$ROOT" "$ROOT" >> "$ROOT/probe.extraneous.map"
-expect_adapter_status "$ROOT/probe.extraneous.map" 75
-expect_installer_reject "$ROOT/probe.extraneous.map"
-
-awk 'BEGIN { FS=OFS="\t" } $1 == "edge1" { $2="http://untrusted.invalid" } { print }' "$PROBE_MAPPING" > "$ROOT/probe.http.map"
-expect_adapter_status "$ROOT/probe.http.map" 75
-expect_installer_reject "$ROOT/probe.http.map"
-fi
 
 # The migration accepts a real legacy wrapper from a service-user-writable parent as
 # hash-bound input, but it must never execute or copy that source into a root job.

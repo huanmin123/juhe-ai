@@ -33,7 +33,7 @@ Usage: install-wireguard-reconciler.sh [--dry-run|--apply] --manifest <absolute-
   --wg-bin <absolute-path>          default <install-dir>/wireguard-bin/wg
   --wg-quick-bin <absolute-path>    default <install-dir>/wireguard-bin/wg-quick
   --runtime-path <PATH>             default <install-dir>/wireguard-bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-  --probe-helper <absolute-path>    root-owned adapter for the independent 203 TLS nonce probe
+  --probe-helper <absolute-path>    root-owned external Edge-to-Kubernetes ingress probe helper
   --maintenance-lock <path>         suppress recovery while this root-owned marker exists
   --release-lock <path>             suppress recovery during a root-owned deployment marker
   --reuse-existing-root-wrappers    install only when every Edge already binds a root-only hashed wrapper/config pair

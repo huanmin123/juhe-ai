@@ -15,8 +15,7 @@
 - `verify-redis-role-isolation.sh`：只读验证 main `6379/6380/6381` 或 temporary `16379/16380/16381` 的三个 URL、PID、launchd job、PING、AOF/RDB 和淘汰策略，不输出密码。
 - `migrate-wireguard-root-wrappers.sh`：只针对私有 manifest 明确列出的 8 条 system WireGuard job，将已校验 SHA-256、无 `PreUp`/`PostUp`/`PreDown`/`PostDown` hook 的来源配置原子复制到 `/usr/local/libexec/juhe-ai/wireguard-config/<逻辑接口>.conf`。运行时目录为 `root:wheel 0700`、配置为 `root:wheel 0600`；`/usr/local/etc/wireguard` 只保留为迁移输入，绝不修改其父目录所有权。wrapper 固定生成在 root-only libexec，来源 wrapper 只用于哈希、精确 plist 绑定和回滚元数据，绝不复制或执行。任一 bootstrap 失败会回滚已改 job。
 - `wireguard-reconciler.sh`：root LaunchDaemon 的单次 WireGuard 数据面恢复器。未传 `--state-dir` 时使用 `<install-dir>/wireguard-reconciler-state`；它不管理 Node、Caddy、Nginx、数据库、DNS 或旧 SSH healer；单 Edge、外部 probe 未知、DNS/Caddy/Node 故障都只记录。
-- `install-wireguard-reconciler.sh`：默认 dry-run 的上述迁移与恢复器安装入口。apply 需要私有 root manifest、两个受控脚本 SHA-256 和独立 203 TLS nonce probe adapter；未传 `--state-dir` 时使用 `<install-dir>/wireguard-reconciler-state`，避免 macOS `/var` 符号链接与 root-only 路径链契约冲突；`--remove --apply` 仅移除恢复器，不回退已经收口到 root-only 的 WireGuard job。
-- `wireguard-203-tls-nonce-probe-adapter.sh` 与 `install-wireguard-203-tls-nonce-probe-adapter.sh`：通过 root-only 专用 SSH identity、固定 `known_hosts` 指纹和受限 `juhe-tunnel-probe-read-v1` forced-command 读取 203 的回环 collector。私有 mapping 必须和运行 manifest 的 8 个 Edge 精确一致，并以唯一 `node + public_ip` 指标序列绑定每条 Edge；adapter 每次调用前再次比对已安装 runtime manifest。它只返回 `0=已知健康`、`1=已知 Edge 失败`、`75=未知`，不输出 endpoint、私钥或响应正文。canary verify 传入本次重建开始时间，只有同序列成功样本时间不早于该时刻且仍新鲜才通过。
+- `install-wireguard-reconciler.sh`：默认 dry-run 的上述迁移与恢复器安装入口。apply 需要私有 root manifest、两个受控脚本 SHA-256 和由部署环境提供的 root-owned Edge→Kubernetes 入口探针；未传 `--state-dir` 时使用 `<install-dir>/wireguard-reconciler-state`，避免 macOS `/var` 符号链接与 root-only 路径链契约冲突；`--remove --apply` 仅移除恢复器，不回退已经收口到 root-only 的 WireGuard job。
 - `legacy-node-postgres-index-bridge.mjs`：历史 Node PostgreSQL 的固定索引桥接。默认只读 inspect；apply 和 cleanup-invalid 使用独立 PG 会话与 advisory lock，只允许固定目录内三条索引，不写 Goose ledger、表或业务行。详细操作见 [遗留 Node PostgreSQL 索引桥接说明](遗留NodePostgreSQL索引桥接说明.md)。
 - `cleanup-production-artifacts.sh`：生产残留清理入口。默认 dry-run，只在显式 `--apply` 下清理已证明未引用的历史发布、已过配置热保留窗口的审计热搜索文件和足够陈旧的 `current.next.*` 临时链接；不会删除当前发布、数据库、审计问题归档或业务备份。
 - `templates/`：无用户、域名、IP、密钥或生产路径的 plist 模板。
@@ -24,9 +23,8 @@
 ## 安全边界
 
 - 外部 HTTP watchdog 已退役，不提供安装、恢复或启动脚本。主进程退出由 launchd `KeepAlive` 拉起，DB service 和 worker 继续由主进程 supervisor 管理。
-- WireGuard reconciler 是唯一的窄例外：它只可对私有 manifest 的全部 Edge 同时满足两次陈旧握手、稳定默认路由、sleep/wake 宽限结束、无维护/发布锁和预算允许时，先处理一个 canary。canary 必须在旧映射已清理后重新观察到 `utun` 映射、连续新握手、传输增量以及独立 203 TLS nonce probe 成功，才会串行处理余下 Edge；macOS 可复用 `utun` 编号。任一步失败立即停止。它不会把公网 HTTP 失败直接当成 WireGuard 故障。
-- 私有 manifest、203 mapping、SSH private key 和 `known_hosts` 必须由 root 持有且不可由服务用户、组或其他用户写入。203 collector 保持仅回环监听，不为恢复器临时开放 Prometheus；专用 SSH 公钥在 203 上必须设为无转发、无 PTY、无 shell 的固定 read-only forced-command。manifest 用于构成精确 allowlist，不得以通配 label、Shell 片段、环境变量或网络返回值扩展动作目标；wrapper 和配置的源 SHA-256 由 apply 前私有预检写入，不得写入仓库。
-- 203 接入前置：先在 203 为专用公钥安装固定 `juhe-tunnel-probe-read-v1` forced-command，使其只读取 collector 文本；Mac 侧再以 root 创建 `0400/0600` identity 与 `0400/0600` 的仅该 host key 的 `known_hosts`。adapter 安装时传入的 6 字段 runtime manifest 必须就是恢复器随后安装的 manifest；任一文件尚未就绪时 adapter 返回 `75`，不得跳过校验或临时开放 Prometheus。
+- WireGuard reconciler 是唯一的窄例外：它只可对私有 manifest 的全部 Edge 同时满足两次陈旧握手、稳定默认路由、sleep/wake 宽限结束、无维护/发布锁和预算允许时，先处理一个 canary。canary 必须在旧映射已清理后重新观察到 `utun` 映射、连续新握手、传输增量以及外部 Edge→Kubernetes 入口探针成功，才会串行处理余下 Edge；macOS 可复用 `utun` 编号。任一步失败立即停止。它不会把公网 HTTP 失败直接当成 WireGuard 故障。
+- 私有 manifest 和外部 probe helper 必须由 root 持有且不可由服务用户、组或其他用户写入。probe helper 只返回 `0=已知健康`、`1=已知 Edge 失败`、`75=未知`；未知不得触发恢复。其实现、指标传输和凭据必须留在部署环境，不在恢复期间临时开放 Prometheus。manifest 用于构成精确 allowlist，不得以通配 label、Shell 片段、环境变量或网络返回值扩展动作目标；wrapper 和配置的源 SHA-256 由 apply 前私有预检写入，不得写入仓库。
 - 发布流程在替换任何 WireGuard plist、wrapper 或配置前必须创建 root-owned release lock；恢复器看到该标记只记录。发布完成、回滚完成或人工确认停止恢复后才可删除标记。
 - 真实路径、label、用户、入口域名、端口、代理订阅和凭据由部署人员通过参数或服务器私有配置提供，不写入仓库。
 - 高性能拓扑脚本不会安装 Nginx，也不会修改 Nginx 主配置；`--nginx-config` 必须是主配置已 include 的槽位配置绝对路径，绝不能等于 `--nginx-main-config`。脚本在任何目录创建、ownership 调整或配置覆盖前解析两者的物理父路径，拒绝同一规范路径、现有同 inode 文件和链接别名，并通过实际 Nginx `-T -c <main config>` 确认槽位文件已被活动主配置 include。system scope 必须显式传入两者并通过 `--nginx-bin` 绑定实际运行实例。生产 apply 还应通过 `--release-dir` 绑定不可变发布目录，脚本会解析物理路径后再生成运行脚本，避免 `current` 并发切换造成进程版本混用。`--dry-run` 不是流程模拟：它只读门禁不可变发布输入，要求真实发布目录、构建产物、两个 Node 预检脚本、`backend/.env` 与三个 `backend-go/juhe-ai-{jobs,gateway,maintenance}` 常规可执行文件存在；任一缺失必定失败。F3/F4 都要求后续 apply 提供一致的 loopback input URL/listen address、独立 input secret 和 PostgreSQL；F3 另要求专用 blob/hot-search 目录，缺失绝不回退。`--apply` 才要求 Node、launchd、Nginx 和所有目标端口可用，并执行运行目录创建或服务、Nginx 状态变更。
@@ -57,7 +55,7 @@ pnpm test:macos-operations
 pnpm test:redis-role-operations
 ```
 
-该门禁会检查敏感生产常量、只读诊断边界、代理监听/进程/探测身份、PID/cwd/端口/双 health 身份、适配器部分失败回滚、launchd 安装失败恢复、plist `KeepAlive`、shell 语法和 dry-run；在 Darwin/Linux + gcc 环境还会执行临时原生命令桩的 bootstrap/kickstart/监听/探测失败回滚模拟。
+该门禁会检查敏感生产常量、只读诊断边界、代理监听/进程/探测身份、PID/cwd/端口/双 health 身份、外部 probe 返回未知或失败时的恢复边界、launchd 安装失败恢复、plist `KeepAlive`、shell 语法和 dry-run；在 Darwin/Linux + gcc 环境还会执行临时原生命令桩的 bootstrap/kickstart/监听/探测失败回滚模拟。
 
 ## 示例
 
