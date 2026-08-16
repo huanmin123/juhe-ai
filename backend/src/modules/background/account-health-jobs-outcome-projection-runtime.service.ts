@@ -21,6 +21,7 @@ const consumerKey = 'juhe-ai-account-health-jobs-projector-v1'
 let stopping = true
 let runPromise: Promise<void> | undefined
 let wakeTimer: NodeJS.Timeout | undefined
+let wakeResolver: (() => void) | undefined
 
 // DB-service owns the business projection. The jobs store is read-only here;
 // Go remains the only writer of outcomes/current state/leases.
@@ -41,6 +42,9 @@ export async function stopAccountHealthJobsOutcomeProjectionRuntime(): Promise<v
     clearTimeout(wakeTimer)
     wakeTimer = undefined
   }
+  const resolveWake = wakeResolver
+  wakeResolver = undefined
+  resolveWake?.()
   await runPromise
 }
 
@@ -103,8 +107,10 @@ function outcomeStoreSource(): AccountHealthJobsStoreSource {
 
 function waitForNextTick(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
+    wakeResolver = resolve
     wakeTimer = setTimeout(() => {
       wakeTimer = undefined
+      wakeResolver = undefined
       resolve()
     }, delayMs)
   })

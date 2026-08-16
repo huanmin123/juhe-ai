@@ -7,6 +7,7 @@ import {
 let stopping = true
 let runPromise: Promise<void> | undefined
 let wakeTimer: NodeJS.Timeout | undefined
+let wakeResolver: (() => void) | undefined
 
 // The DB service is the only process allowed to run this loop for SQLite.
 // It publishes durable, signed inputs; it never probes, calls Go/Gateway, or
@@ -25,6 +26,9 @@ export async function stopAccountHealthJobsInputPublisherRuntime(): Promise<void
     clearTimeout(wakeTimer)
     wakeTimer = undefined
   }
+  const resolveWake = wakeResolver
+  wakeResolver = undefined
+  resolveWake?.()
   await runPromise
 }
 
@@ -47,8 +51,10 @@ async function runPublisherLoop(): Promise<void> {
 
 function waitForNextPublisherTick(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
+    wakeResolver = resolve
     wakeTimer = setTimeout(() => {
       wakeTimer = undefined
+      wakeResolver = undefined
       resolve()
     }, delayMs)
   })
