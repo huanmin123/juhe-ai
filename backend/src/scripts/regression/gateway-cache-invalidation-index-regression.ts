@@ -15,6 +15,7 @@ const gatewayRuntimeCacheSource = readSource('modules/gateway/runtime/runtime-ca
 const clientIpPolicyCacheSource = readSource('modules/gateway/runtime/client-ip-policy-cache.service.ts')
 const hybridScoringSource = readSource('modules/gateway/hybrid/scoring.service.ts')
 const modelCatalogSource = readSource('modules/model-pricing/model-catalog.service.ts')
+const modelCatalogCachePolicySource = readSource('modules/gateway/response/model-catalog-cache-policy.ts')
 const groupReadLoadersSource = readSource('storage/group-read-loaders.ts')
 const authorizationReadLoadersSource = readSource('storage/authorization-read-loaders.ts')
 const appCacheSource = readSource('shared/cache.ts')
@@ -110,6 +111,10 @@ assertFunctionIncludes(modelCatalogSource, 'listProviderModelCatalogAsync', 'get
 assertFunctionIncludes(modelCatalogSource, 'listProviderModelCatalogAsync', 'setProviderModelCatalogCacheEntryAsync(cacheKey', '模型目录服务 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(modelCatalogSource, 'clearProviderModelCatalogCaches', 'clearProviderModelCatalogSharedCacheAsync()', '模型目录服务失效应清理 Redis 共享缓存命名空间')
 assert(modelCatalogSource.includes('shouldInvalidateProviderModelCatalog(reason)'), '模型目录服务只应响应模型目录变更事件')
+assert(modelCatalogCachePolicySource.includes("'custom_provider_model_saved'"), '自定义模型保存必须失效模型目录')
+assert(modelCatalogCachePolicySource.includes("'custom_provider_model_deleted'"), '自定义模型删除必须失效模型目录')
+assert(modelCatalogCachePolicySource.includes("'provider_model_configuration_updated'"), '模型目录配置更新必须失效模型目录')
+assert(!modelCatalogCachePolicySource.includes('reason === undefined'), '缺失失效原因不能切换 Redis 模型目录 generation')
 
 assert(groupReadLoadersSource.includes('createSharedJsonCache<string[]>'), '分组账号 ID lookup 应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(groupReadLoadersSource, 'loadGroupAccountIdsByGroupIdsAsync', 'getGroupAccountIdsSharedCacheEntry(id)', '分组账号 ID async lookup 应先读取 Redis 共享缓存')
@@ -128,8 +133,24 @@ assertFunctionIncludes(authorizationReadLoadersSource, 'clearResourceAuthorizati
 
 assert(!/store\.clear\(\)/.test(appCacheSource), '通用缓存 clear 不应线性清空 LRU 条目')
 assert(appCacheSource.includes('store = createStore(options)'), '通用缓存 clear 应替换底层 LRU 实例以保持常量时间')
+const redisSharedJsonCacheSource = appCacheSource.slice(appCacheSource.indexOf('class RedisSharedJsonCache'))
+const redisSharedJsonCacheClearStart = redisSharedJsonCacheSource.indexOf('async clear(options?: SharedJsonCacheOperationOptions): Promise<void>')
+const redisSharedJsonCacheClearEnd = redisSharedJsonCacheSource.indexOf('async acquireLease(', redisSharedJsonCacheClearStart)
+const redisSharedJsonCacheClearSource = redisSharedJsonCacheSource.slice(redisSharedJsonCacheClearStart, redisSharedJsonCacheClearEnd)
+assert(redisSharedJsonCacheClearSource.includes('this.namespaceVersionWithClient(client)'), 'Redis shared cache clear 必须在当前 Redis client 中读取或初始化 generation')
+assert(!redisSharedJsonCacheClearSource.includes('this.namespaceVersion(options)'), 'Redis shared cache clear 不能嵌套 Redis deadline 操作读取 generation')
+assert(redisSharedJsonCacheClearSource.includes("client.sendCommand(['ZRANGE', indexKey, '0', '-1'])"), 'Redis shared cache clear 必须只读取当前 generation 的索引键')
+assert(redisSharedJsonCacheClearSource.includes("client.sendCommand(['DEL', ...indexedKeys])"), 'Redis shared cache clear 必须批量删除索引列出的缓存键')
+assert(redisSharedJsonCacheClearSource.includes('client.del(indexKey)'), 'Redis shared cache clear 必须删除当前 generation 索引')
+assert(!redisSharedJsonCacheClearSource.includes('SCAN'), 'Redis shared cache clear 不能扫描 Redis keyspace')
+assert(
+  redisSharedJsonCacheClearSource.indexOf("client.sendCommand(['DEL', ...indexedKeys])") < redisSharedJsonCacheClearSource.indexOf('client.del(indexKey)')
+    && redisSharedJsonCacheClearSource.indexOf('client.del(indexKey)') < redisSharedJsonCacheClearSource.indexOf('client.set(this.versionKey'),
+  'Redis shared cache clear 必须先清理索引键和索引，再推进 generation'
+)
 
 await assertGatewayCacheInvalidationBehavior()
+await assertProviderModelCatalogInvalidationBehavior()
 
 console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，网关设置、分组访问、网关 / 管理端模型目录、模型路由索引、响应检查策略、客户端 IP 封禁策略单 IP 条目和混合路由评分结果包含 Redis shared cache 路径，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
 
@@ -262,6 +283,19 @@ function functionBody(source: string, functionName: string): string {
     }
   }
   throw new Error(`函数 ${functionName} 函数体未闭合`)
+}
+
+async function assertProviderModelCatalogInvalidationBehavior(): Promise<void> {
+  const { shouldInvalidateProviderModelCatalog } = await import('../../modules/gateway/response/model-catalog-cache-policy.js')
+  for (const reason of [
+    'custom_provider_model_saved',
+    'custom_provider_model_deleted',
+    'provider_model_configuration_updated'
+  ]) {
+    assert.equal(shouldInvalidateProviderModelCatalog(reason), true, `${reason} 必须失效模型目录缓存`)
+  }
+  assert.equal(shouldInvalidateProviderModelCatalog(undefined), false, '缺失失效原因不能切换 24 小时 Redis 模型目录 generation')
+  assert.equal(shouldInvalidateProviderModelCatalog('route_strategy_updated'), false, '无关失效原因不能切换 24 小时 Redis 模型目录 generation')
 }
 
 async function assertGatewayCacheInvalidationBehavior(): Promise<void> {

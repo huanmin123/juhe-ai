@@ -116,22 +116,7 @@ func main() {
 		},
 	}
 	healthServer := &http.Server{
-		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-			if request.Method != http.MethodGet || request.URL.Path != "/health" {
-				http.NotFound(response, request)
-				return
-			}
-			ready := runtimeRunning.Load() && tableRunner.Ready()
-			response.Header().Set("Content-Type", "application/json")
-			if !ready {
-				response.WriteHeader(http.StatusServiceUnavailable)
-			}
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"ready":               ready,
-				"runtimeLogOwnerHeld": runtimeRunning.Load(),
-				"tableMonitorReady":   tableRunner.Ready(),
-			})
-		}),
+		Handler:           healthHandler(&runtimeRunning, tableRunner.Ready),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -153,6 +138,23 @@ func main() {
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
 		fail(fmt.Errorf("jobs health endpoint stopped: %w", serveResult))
 	}
+}
+
+func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/health" {
+			http.NotFound(response, request)
+			return
+		}
+		runtimeLogOwnerHeld := runtimeRunning.Load()
+		tableMonitorIsReady := tableMonitorReady()
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"ready":               runtimeLogOwnerHeld && tableMonitorIsReady,
+			"runtimeLogOwnerHeld": runtimeLogOwnerHeld,
+			"tableMonitorReady":   tableMonitorIsReady,
+		})
+	})
 }
 
 func runRuntimeLegacyMigration(config runtimelog.Config) {

@@ -326,6 +326,13 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   async clear(options?: SharedJsonCacheOperationOptions): Promise<void> {
     if (sharedCacheWritesDisabledForCurrentProcess()) return
     await this.runRedis('共享缓存清空', options, async (client) => {
+      const currentVersion = await this.namespaceVersionWithClient(client)
+      const indexKey = `${this.indexKeyPrefix}${currentVersion}`
+      const indexedKeys = stringArray(await client.sendCommand(['ZRANGE', indexKey, '0', '-1']))
+      if (indexedKeys.length > 0) {
+        await client.sendCommand(['DEL', ...indexedKeys])
+      }
+      await client.del(indexKey)
       await client.set(this.versionKey, nextCacheVersion(), { PX: 30 * 24 * 60 * 60 * 1000 })
     })
   }
@@ -392,14 +399,16 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   private async namespaceVersion(options?: SharedJsonCacheOperationOptions, createVersion = true): Promise<string> {
-    return await this.runRedis('共享缓存版本读取', options, async (client) => {
-      const existing = await client.get(this.versionKey)
-      if (existing) return existing
-      const version = this.options.version?.trim() || nextCacheVersion()
-      if (!createVersion) return this.options.version?.trim() || 'read-only-miss'
-      const inserted = await client.set(this.versionKey, version, { NX: true, PX: 30 * 24 * 60 * 60 * 1000 })
-      return inserted === 'OK' ? version : (await client.get(this.versionKey)) ?? version
-    })
+    return await this.runRedis('共享缓存版本读取', options, (client) => this.namespaceVersionWithClient(client, createVersion))
+  }
+
+  private async namespaceVersionWithClient(client: RedisCommandClient, createVersion = true): Promise<string> {
+    const existing = await client.get(this.versionKey)
+    if (existing) return existing
+    const version = this.options.version?.trim() || nextCacheVersion()
+    if (!createVersion) return this.options.version?.trim() || 'read-only-miss'
+    const inserted = await client.set(this.versionKey, version, { NX: true, PX: 30 * 24 * 60 * 60 * 1000 })
+    return inserted === 'OK' ? version : (await client.get(this.versionKey)) ?? version
   }
 
   private async trackKeyAndTrim(client: RedisCommandClient, indexKey: string, key: string, ttlMs: number): Promise<void> {
