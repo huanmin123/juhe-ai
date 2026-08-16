@@ -22,7 +22,10 @@ import {
 const goNanosecondTime = '2026-07-14T12:34:56.123456789Z'
 logger.level = 'silent'
 assert.notEqual(formatDateTime(goNanosecondTime), '时间格式异常', 'Go RFC3339Nano 时间必须可显示')
+assert.equal(formatDateTime(goNanosecondTime), '2026-07-14 20:34:56.123', 'RFC3339Nano 必须统一显示为上海时间且不带时区后缀')
+assert.equal(formatDateTime('2026-07-14 20:34:56.123'), '2026-07-14 20:34:56.123', '上海时间展示值必须保持可显示')
 assert.equal(serverDateTimeTimestamp('2026-07-14T20:34:56.123456+08:00'), Date.parse('2026-07-14T12:34:56.123456Z'))
+assert.equal(serverDateTimeTimestamp('2026-07-14 20:34:56.123'), Date.parse('2026-07-14T12:34:56.123Z'), '无时区展示值必须按上海时间解析')
 assert(parseStrictDatePickerValue('2026-07-14T12:34:56.1Z'), '1 位小数 RFC3339 时间必须可用于时间选择器')
 for (const invalid of [
   '2026-07-14T12:34:56',

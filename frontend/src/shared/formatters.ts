@@ -4,12 +4,24 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 dayjs.extend(relativeTime)
 
 const serverDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/
+const shanghaiDateTimePattern = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/
+const shanghaiTimeZone = 'Asia/Shanghai'
+const shanghaiDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: shanghaiTimeZone,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+})
 
 export function formatDateTime(value?: string): string {
   if (!value) return '-'
   const date = strictServerDateTime(value)
   if (!date) return '时间格式异常'
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return formatShanghaiDateTime(date)
 }
 
 export function serverDateTimeTimestamp(value?: string): number | undefined {
@@ -83,9 +95,9 @@ export function formatServerDateTimeInput(value?: Dayjs | null): string | null {
 }
 
 function strictServerDateTime(value: string): Date | undefined {
-  const match = serverDateTimePattern.exec(value)
+  const match = serverDateTimePattern.exec(value) ?? shanghaiDateTimePattern.exec(value)
   if (!match) return undefined
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , timezone] = match
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText, timezone] = match
   const year = Number(yearText)
   const month = Number(monthText)
   const day = Number(dayText)
@@ -97,11 +109,22 @@ function strictServerDateTime(value: string): Date | undefined {
     || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
     || hour > 23 || minute > 59 || second > 59
   ) return undefined
-  if (timezone !== 'Z') {
+  if (timezone && timezone !== 'Z') {
     const offsetHour = Number(timezone.slice(1, 3))
     const offsetMinute = Number(timezone.slice(4, 6))
     if (offsetHour > 23 || offsetMinute > 59) return undefined
   }
+  if (timezone === undefined) {
+    const millisecond = Number((fractionText ?? '').padEnd(3, '0').slice(0, 3))
+    return new Date(Date.UTC(year, month - 1, day, hour - 8, minute, second, millisecond))
+  }
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+function formatShanghaiDateTime(value: Date): string {
+  const parts = Object.fromEntries(shanghaiDateTimeFormatter.formatToParts(value)
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}.${String(value.getMilliseconds()).padStart(3, '0')}`
 }

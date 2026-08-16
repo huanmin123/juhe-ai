@@ -36,6 +36,11 @@ import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
 import { uiBootstrapRouter } from '../ui-bootstrap/ui-bootstrap.routes.js'
 import { ok } from '../../shared/http.js'
+import {
+  displayTimeResponseMiddleware,
+  formatShanghaiNow,
+  normalizeDisplayTimeRequestMiddleware
+} from '../../shared/time-display.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
 import { systemApiAuthenticatedRateLimit, systemApiIpRateLimit } from './system-api-rate-limit.middleware.js'
@@ -81,24 +86,26 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(requestContextMiddleware)
   app.use(systemErrorMessageLocalizationMiddleware)
   app.use(createHttpCompressionMiddleware())
+  app.use(systemApiPrefix, displayTimeResponseMiddleware)
   app.use(systemApiPrefix, noStoreSystemApiResponse)
   app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   app.use(systemApiPrefix, controlReadReplicaRequestGuard)
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
-    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, normalizeDisplayTimeRequestMiddleware, forceSelfAccessScope, chatRouter)
   } else {
-    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, normalizeDisplayTimeRequestMiddleware, forceSelfAccessScope, chatRouter)
   }
-  app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
+  app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError, normalizeDisplayTimeRequestMiddleware)
+  app.use(publicApiPrefix, displayTimeResponseMiddleware)
   app.use(publicApiPrefix, controlReadReplicaPrimaryOnlyRequestGuard)
-  app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
+  app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError, normalizeDisplayTimeRequestMiddleware)
   app.use(publicApiPrefix, systemApiDbAccessModeMiddleware(publicApiPrefix), systemApiDbServiceAdmissionControl)
   app.use('/__aidelegated__/v1', noStoreSystemApiResponse, controlReadReplicaPrimaryOnlyRequestGuard, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use('/__aidelegated__/v1', systemApiDbAccessModeMiddleware('/__aidelegated__/v1'), systemApiDbServiceAdmissionControl, delegatedApiRouter)
 
   app.get(`${systemApiPrefix}/health`, (_req, res) => {
-    res.json({ status: 'ok', service: 'juhe-ai-db-service' })
+    res.json({ status: 'ok', service: 'juhe-ai-db-service', checkedAt: formatShanghaiNow() })
   })
 
   app.use('/.well-known', controlReadReplicaPrimaryOnlyRequestGuard)

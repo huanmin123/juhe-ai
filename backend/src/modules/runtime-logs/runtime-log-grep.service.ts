@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { parseShanghaiDisplayTime } from '../../shared/time-display.js'
 import {
   defaultGrepRangeDays,
   earliestLogFileMs,
@@ -863,6 +864,8 @@ function parseRuntimeLogTimeMs(value: string): number {
   if (!value) return Number.NaN
   const numeric = Number(value)
   if (Number.isFinite(numeric)) return numeric
+  const shanghaiTime = parseShanghaiDisplayTime(value)
+  if (shanghaiTime) return shanghaiTime.getTime()
   return Date.parse(value)
 }
 

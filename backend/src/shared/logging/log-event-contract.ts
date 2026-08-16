@@ -1,3 +1,5 @@
+import { formatShanghaiNow } from '../time-display.js'
+
 export const LOG_EVENT_VERSION = 1 as const
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
@@ -43,7 +45,7 @@ export function createLogEventEnvelope(input: LogEventInput): LogEventEnvelope {
     throw new Error(`无效失败分类: ${input.failureClass}`)
   }
   return {
-    time: input.time ?? new Date().toISOString(),
+    time: input.time ?? formatShanghaiNow(),
     version: LOG_EVENT_VERSION,
     level: input.level,
     service: input.service,
