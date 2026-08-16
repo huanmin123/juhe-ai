@@ -252,6 +252,7 @@ def readVerifiedTestRelease() {
 
 def prodRollbackSnapshot() {
   refreshPlatformReleaseWorkspace()
+  def metadataFile = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod/release-metadata.yaml"
   def historyFile = prodHistoryPath()
   return [
     gitHead: sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim(),
