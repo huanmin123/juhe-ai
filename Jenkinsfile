@@ -9,7 +9,7 @@ pipeline {
 
   parameters {
     booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '仅手动运行：将已验证的 test 三镜像晋级到 prod。')
-    booleanParam(name: 'VERIFY_TEST_ONLY', defaultValue: false, description: '仅手动运行：验证并回写当前待验证 test release，不构建或改写镜像。')
+    booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '仅手动运行：从已验证的 prod 三镜像历史中选择一个版本回滚。')
   }
 
   environment {
@@ -45,8 +45,19 @@ pipeline {
       }
     }
 
+    stage('检查手动发布参数') {
+      when { expression { params.DEPLOY_PROD || rollbackRequested() } }
+      steps {
+        script {
+          if (params.DEPLOY_PROD && rollbackRequested()) {
+            error 'DEPLOY_PROD 与 ROLLBACK_PROD 不能同时选择。'
+          }
+        }
+      }
+    }
+
     stage('构建前端与 Node 产物') {
-      when { expression { !params.DEPLOY_PROD && !params.VERIFY_TEST_ONLY } }
+      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         sh '''#!/bin/sh
           set -eu
@@ -66,7 +77,7 @@ pipeline {
     }
 
     stage('构建并推送三镜像') {
-      when { expression { !params.DEPLOY_PROD && !params.VERIFY_TEST_ONLY } }
+      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
           env.NODE_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_NODE}:${env.SOURCE_COMMIT}"
@@ -103,7 +114,7 @@ pipeline {
     }
 
     stage('写入 test release state') {
-      when { expression { !params.DEPLOY_PROD && !params.VERIFY_TEST_ONLY } }
+      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
           writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-ci')
@@ -112,18 +123,15 @@ pipeline {
     }
 
     stage('验证 test') {
-      when { expression { !params.DEPLOY_PROD } }
+      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
-          def release = params.VERIFY_TEST_ONLY ? readTestRelease() : [
+          def release = [
             sourceCommit: env.SOURCE_COMMIT,
             nodeDigest: env.NODE_DIGEST,
             jobsDigest: env.JOBS_DIGEST,
             gatewayDigest: env.GATEWAY_DIGEST
           ]
-          if (params.VERIFY_TEST_ONLY && release.status != 'pending') {
-            error 'VERIFY_TEST_ONLY 只能验证当前 pending 的 test release。'
-          }
           waitForIngress('test')
           markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest)
         }
@@ -131,7 +139,7 @@ pipeline {
     }
 
     stage('读取已验证 test') {
-      when { expression { params.DEPLOY_PROD } }
+      when { expression { params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
           def release = readVerifiedTestRelease()
@@ -144,7 +152,7 @@ pipeline {
     }
 
     stage('写入 prod 晋级状态') {
-      when { expression { params.DEPLOY_PROD } }
+      when { expression { params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
           def release = readVerifiedTestRelease()
@@ -156,8 +164,38 @@ pipeline {
       }
     }
 
+    stage('选择 prod 回滚版本') {
+      when { expression { rollbackRequested() } }
+      steps {
+        script {
+          def rollbackSnapshot = prodRollbackSnapshot()
+          def candidates = prodRollbackCandidates()
+          if (candidates.isEmpty()) {
+            error '没有可回滚的历史 prod 发布。首个 K3s prod 版本已记录；完成下一次验证通过的 prod 晋级后才会出现可选旧版本。'
+          }
+          def selectedLabel = input(
+            message: '选择要恢复的 prod 发布版本。三组件 digest 与 source commit 均从 Git 历史读取，不能手工填写。',
+            ok: '开始回滚',
+            parameters: [choice(name: 'TARGET_PROD_RELEASE', choices: candidates.keySet().join('\n'), description: '只显示已验证且与当前 prod 不同的历史发布。')]
+          )
+          if (prodRollbackSnapshot() != rollbackSnapshot) {
+            error '等待回滚确认期间，prod release state 或 history 已变化；拒绝回滚。'
+          }
+          def selected = candidates[selectedLabel]
+          if (selected == null) {
+            error '所选 prod 发布不存在或已失效。'
+          }
+          env.SOURCE_COMMIT = selected.sourceCommit
+          env.NODE_DIGEST = selected.nodeDigest
+          env.JOBS_DIGEST = selected.jobsDigest
+          env.GATEWAY_DIGEST = selected.gatewayDigest
+          writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-rollback')
+        }
+      }
+    }
+
     stage('验证 prod') {
-      when { expression { params.DEPLOY_PROD } }
+      when { expression { (params.DEPLOY_PROD && !rollbackRequested()) || rollbackRequested() } }
       steps {
         script {
           waitForIngress('prod')
@@ -171,8 +209,11 @@ pipeline {
 def validRegistry(value) { return value ==~ /^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/ }
 def validDigest(value) { return value ==~ /^sha256:[a-f0-9]{64}$/ }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
+def rollbackRequested() { return params.ROLLBACK_PROD }
 
 def releaseWorkspace() { return "${env.WORKSPACE}/.platform-release" }
+
+def prodHistoryPath() { return "${releaseWorkspace()}/apps/juhe-ai/overlays/prod/release-history.tsv" }
 
 def refreshPlatformReleaseWorkspace() {
   sh "rm -rf '${releaseWorkspace()}' && GIT_SSH_COMMAND=\"ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts\" git clone --depth 1 --branch '${env.RELEASE_BRANCH}' '${env.PLATFORM_REPOSITORY}' '${releaseWorkspace()}'"
@@ -207,6 +248,55 @@ def readVerifiedTestRelease() {
     error 'test release state 未通过验证门禁。'
   }
   return release
+}
+
+def prodRollbackSnapshot() {
+  refreshPlatformReleaseWorkspace()
+  def historyFile = prodHistoryPath()
+  return [
+    gitHead: sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim(),
+    metadata: readFile(metadataFile),
+    history: fileExists(historyFile) ? readFile(historyFile) : null
+  ]
+}
+
+def prodRollbackCandidates() {
+  def metadataFile = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod/release-metadata.yaml"
+  def historyFile = prodHistoryPath()
+  if (!fileExists(historyFile)) {
+    return [:]
+  }
+  def current = [
+    sourceCommit: metadataValue('prod', 'sourceCommit'),
+    nodeDigest: metadataValue('prod', 'nodeImageDigest'),
+    jobsDigest: metadataValue('prod', 'jobsImageDigest'),
+    gatewayDigest: metadataValue('prod', 'gatewayImageDigest')
+  ]
+  def candidates = [:]
+  readFile(historyFile).readLines().eachWithIndex { line, index ->
+    if (!line || line.startsWith('#')) {
+      return
+    }
+    def fields = line.split('\\t', -1)
+    if (fields.size() != 7) {
+      error "prod release-history.tsv 第 ${index + 1} 行字段数错误。"
+    }
+    def sourceCommit = fields[2]
+    def nodeDigest = fields[3]
+    def jobsDigest = fields[4]
+    def gatewayDigest = fields[5]
+    if (!(fields[0] ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/) ||
+        !(fields[1] in ['legacy-prod-state', 'jenkins-prod-promotion', 'jenkins-prod-rollback']) ||
+        !validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !fields[6]) {
+      error "prod release-history.tsv 第 ${index + 1} 行字段非法。"
+    }
+    if (sourceCommit == current.sourceCommit && nodeDigest == current.nodeDigest && jobsDigest == current.jobsDigest && gatewayDigest == current.gatewayDigest) {
+      return
+    }
+    def label = "${fields[0]} | ${fields[6]} | ${sourceCommit} | ${nodeDigest.take(19)} / ${jobsDigest.take(19)} / ${gatewayDigest.take(19)}"
+    candidates[label] = [sourceCommit: sourceCommit, nodeDigest: nodeDigest, jobsDigest: jobsDigest, gatewayDigest: gatewayDigest]
+  }
+  return candidates
 }
 
 def replaceDigest(file, imageName, digest) {
@@ -268,13 +358,29 @@ def markReleaseVerified(environmentName, sourceCommit, nodeDigest, jobsDigest, g
   refreshPlatformReleaseWorkspace()
   def file = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}/release-metadata.yaml"
   if (metadataValue(environmentName, 'sourceCommit') != sourceCommit || metadataValue(environmentName, 'nodeImageDigest') != nodeDigest || metadataValue(environmentName, 'jobsImageDigest') != jobsDigest || metadataValue(environmentName, 'gatewayImageDigest') != gatewayDigest) error 'release state 在验证期间变化。'
+  def releaseActor = environmentName == 'prod' ? metadataValue('prod', 'releaseActor') : ''
+  if (environmentName == 'prod' && !(releaseActor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'])) {
+    error 'prod releaseActor 非法，拒绝记录可回滚历史。'
+  }
   sh """#!/bin/sh
     set -eu
     sed -i -e 's|^  verification.status: ".*"|  verification.status: "passed"|' -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: "${sourceCommit}"|' '${file}'
     cd '${releaseWorkspace()}'
+    if [ '${environmentName}' = 'prod' ]; then
+      history='apps/juhe-ai/overlays/prod/release-history.tsv'
+      if [ ! -f "\$history" ]; then
+        printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tjenkinsBuild\\n' > "\$history"
+      fi
+      if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway { found = 1 } END { exit !found }' "\$history"; then
+        printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${releaseActor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' "\${BUILD_TAG:-unknown}" >> "\$history"
+      fi
+    fi
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
     git add '${file}'
+    if [ '${environmentName}' = 'prod' ]; then
+      git add 'apps/juhe-ai/overlays/prod/release-history.tsv'
+    fi
     if git diff --cached --quiet; then
       echo 'release verification 已标记为 passed；不重复提交。'
     else
