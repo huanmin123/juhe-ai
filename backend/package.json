@@ -130,6 +130,7 @@
     "test:account-health-projection-cursor": "tsx src/scripts/regression/account-health-projection-cursor-regression.ts",
     "test:account-health-jobs-source-fence-consumer": "tsx src/scripts/regression/account-health-jobs-source-fence-consumer-regression.ts",
     "test:account-health-jobs-runtime-config": "tsx src/scripts/regression/account-health-jobs-runtime-config-regression.ts",
+    "test:account-health-jobs-owner-handoff-scheduler": "tsx src/scripts/regression/account-health-jobs-owner-handoff-scheduler-regression.ts",
     "test:account-health-jobs-outcome-drain": "tsx src/scripts/regression/account-health-jobs-outcome-drain-regression.ts",
     "maintenance:publish-account-health-jobs-input": "tsx src/scripts/maintenance/publish-account-health-jobs-input.ts",
     "test:account-api-key-pool-diagnostic": "tsx src/scripts/regression/account-api-key-pool-diagnostic-regression.ts",
