@@ -133,6 +133,7 @@
     "test:account-health-jobs-owner-handoff-scheduler": "tsx src/scripts/regression/account-health-jobs-owner-handoff-scheduler-regression.ts",
     "test:account-health-jobs-cross-language-lifecycle": "tsx src/scripts/regression/account-health-jobs-cross-language-lifecycle-regression.ts",
     "test:account-health-jobs-release-lifecycle": "tsx src/scripts/regression/account-health-jobs-release-lifecycle-regression.ts",
+    "test:account-health-jobs-release-db-service-runtime": "tsx src/scripts/regression/account-health-jobs-release-db-service-runtime-regression.ts",
     "test:account-health-jobs-db-service-projection-runtime": "tsx src/scripts/regression/account-health-jobs-db-service-projection-runtime-regression.ts",
     "test:account-health-jobs-outcome-drain": "tsx src/scripts/regression/account-health-jobs-outcome-drain-regression.ts",
     "maintenance:publish-account-health-jobs-input": "tsx src/scripts/maintenance/publish-account-health-jobs-input.ts",
