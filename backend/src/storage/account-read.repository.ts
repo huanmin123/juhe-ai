@@ -696,6 +696,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
 
   const sourceRows: Array<{
     id: string
+    config_revision: number
     provider_code: AccountListRow['provider_code']
     provider_protocol_profile_id: string
     protocol_code: string
@@ -719,7 +720,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
   for (const chunk of chunkValues(sourceIds, 900)) {
     sourceRows.push(...database
       .prepare(`
-        SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
+        SELECT id, config_revision, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
           temporary_unavailable_continuous_probe_enabled, last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
           proxy_profile_id, concurrency_limit, client_compatibility
@@ -738,6 +739,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     return {
       ...row,
       source_provider_code: source.provider_code,
+      source_config_revision: source.config_revision,
       source_provider_protocol_profile_id: source.provider_protocol_profile_id,
       source_protocol_code: source.protocol_code,
       source_protocol_version: source.protocol_version,

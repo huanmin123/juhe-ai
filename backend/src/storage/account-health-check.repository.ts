@@ -43,6 +43,7 @@ const businessSchemaName = 'juhe_business'
 const pendingHealthCheckRetryIntervalMs = 60 * 60_000
 const pendingHealthCheckFailureTimeoutMs = 24 * 60 * 60_000
 const pendingHealthCheckFailureTimeoutCode = 'account_activation_check_timeout'
+const accountHealthJobsFrozenEndpointModes = ['chat_json', 'responses_json', 'images_json'] as const
 
 export interface AccountHealthCheckSettings {
   intervalHours: number
@@ -115,6 +116,25 @@ export async function findAccountForHealthCheckAsync(
   await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await queryAccountsDueForHealthCheckAsync(client, 1, accountId, options.ignoreSchedule === true)
+  return (await healthCheckAccountSummariesAsync(client, rows))[0]
+}
+
+// This is an input-producer read adapter, not a health candidate scan.  It
+// deliberately accepts a cooling account so a configuration change can replace
+// its immutable J1 input without converting the cooling state into a
+// tombstone.  It never records success/failure, advances a schedule, or starts
+// a probe; Go remains the only J1 task owner.
+export function findAccountForAccountHealthJobsInput(accountId: string): AccountSummary | undefined {
+  const rows = queryAccountForAccountHealthJobsInput(accountId)
+  return healthCheckAccountSummaries(rows)[0]
+}
+
+export async function findAccountForAccountHealthJobsInputAsync(accountId: string): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findAccountForAccountHealthJobsInput(accountId)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await queryAccountForAccountHealthJobsInputAsync(client, accountId)
   return (await healthCheckAccountSummariesAsync(client, rows))[0]
 }
 
@@ -976,6 +996,108 @@ async function queryAccountsDueForHealthCheckAsync(
   ))
 }
 
+function queryAccountForAccountHealthJobsInput(accountId: string): AccountListRow[] {
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) return []
+  const endpointModes = [...accountHealthJobsFrozenEndpointModes]
+  const now = nowIso()
+  return hydrateAccountRowsWithRuntimeState(getBusinessDatabase()
+    .prepare(`
+      SELECT ${healthCheckAccountSelectColumns()}
+      FROM accounts
+      LEFT JOIN resource_authorizations ra
+        ON ra.id = accounts.authorization_instance_authorization_id
+      WHERE accounts.id = ?
+        AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
+        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.deleted_at IS NULL
+        AND accounts.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
+        AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
+        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+        AND (
+          accounts.authorization_instance_authorization_id IS NULL
+          OR (
+            ra.id IS NOT NULL
+            AND ra.status = 'active'
+            AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+          )
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM group_accounts
+          WHERE group_accounts.account_id = accounts.id
+            AND group_accounts.system_account_id = accounts.system_account_id
+            AND group_accounts.enabled = 1
+            AND (
+              accounts.authorization_instance_authorization_id IS NULL
+              OR group_accounts.account_authorization_id = accounts.authorization_instance_authorization_id
+            )
+        )
+      LIMIT 1
+    `)
+    .all(normalizedAccountId, ...endpointModes, now, now) as unknown as AccountListRow[], { includeCredentials: true })
+    .filter((row) => row.access_type !== 'authorized' || (
+      Boolean(row.source_provider_code)
+      && isAuthorizedSourceAccountAvailableForDispatch(row, now)
+    ))
+}
+
+async function queryAccountForAccountHealthJobsInputAsync(client: DatabaseClient, accountId: string): Promise<AccountListRow[]> {
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) return []
+  const endpointModes = [...accountHealthJobsFrozenEndpointModes]
+  const now = nowIso()
+  const rows = await client.query<AccountListRow>(`
+    SELECT ${healthCheckAccountSelectColumnsAsync(client)}
+    FROM ${healthCheckTable(client, 'accounts')} accounts
+    LEFT JOIN ${healthCheckTable(client, 'resource_authorizations')} ra
+      ON ra.id = accounts.authorization_instance_authorization_id
+    LEFT JOIN ${healthCheckTable(client, 'accounts')} source_accounts
+      ON source_accounts.id = accounts.authorization_instance_source_account_id
+      AND source_accounts.deleted_at IS NULL
+    LEFT JOIN LATERAL (
+      SELECT
+        group_accounts.system_account_id,
+        group_accounts.group_id,
+        group_accounts.account_authorization_id,
+        group_accounts.updated_at
+      FROM ${healthCheckTable(client, 'group_accounts')} group_accounts
+      WHERE group_accounts.account_id = accounts.id
+        AND group_accounts.system_account_id = accounts.system_account_id
+        AND group_accounts.enabled = 1
+        AND (
+          accounts.authorization_instance_authorization_id IS NULL
+          OR group_accounts.account_authorization_id = accounts.authorization_instance_authorization_id
+        )
+      ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+      LIMIT 1
+    ) group_bindings ON TRUE
+    LEFT JOIN ${healthCheckTable(client, 'groups')} bound_groups
+      ON bound_groups.id = group_bindings.group_id
+    WHERE accounts.id = ?
+      AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
+      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.deleted_at IS NULL
+      AND accounts.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
+      AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+      AND (
+        accounts.authorization_instance_authorization_id IS NULL
+        OR (
+          ra.id IS NOT NULL
+          AND ra.status = 'active'
+          AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+        )
+      )
+      AND group_bindings.group_id IS NOT NULL
+    LIMIT 1
+  `, [normalizedAccountId, ...endpointModes, now, now])
+  return rows.filter((row) => row.access_type !== 'authorized' || (
+    Boolean(row.source_provider_code)
+    && isAuthorizedSourceAccountAvailableForDispatch(row, now)
+  ))
+}
+
 function postgresHealthCheckMutationGuard(input: {
   expectedConfigRevision?: number
   observedAt?: string
@@ -1019,6 +1141,7 @@ function healthCheckAccountSelectColumnsAsync(client: DatabaseClient): string {
         ra.effective_source_team_id AS authorization_effective_source_team_id,
         ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
         ra.resource_id AS authorization_resource_id,
+        source_accounts.config_revision AS source_config_revision,
         source_accounts.provider_code AS source_provider_code,
         source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id,
         source_accounts.protocol_code AS source_protocol_code,
@@ -1060,6 +1183,7 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       configRevision: Number(row.config_revision ?? 1),
+	  dispatchRevision: Number(row.dispatch_revision ?? 1),
       systemAccountId: row.system_account_id,
       systemAccountName: accountNames.get(row.system_account_id),
       ownerSystemAccountId: displayOwnerSystemAccountId,
@@ -1092,6 +1216,9 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       lastErrorMessage: row.last_error_message ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+	  cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
+	  cooldownRetestDispatchRevision: Number(row.dispatch_revision ?? 1),
+	  cooldownRetestSourceConfigRevision: isAuthorizedView ? optionalNumber(row.source_config_revision) : undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       lastHealthCheckAt: accountHealthCheckDatabaseDateTimeIso(row.last_health_check_at),
@@ -1111,6 +1238,7 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: isAuthorizedView ? row.authorization_id ?? undefined : undefined,
       authorizationInstanceSourceAccountId: isAuthorizedView ? row.authorization_instance_source_account_id ?? undefined : undefined,
+      sourceConfigRevision: isAuthorizedView ? optionalNumber(row.source_config_revision) : undefined,
       authorizationInstanceOwnerSystemAccountId: isAuthorizedView ? row.authorization_instance_owner_system_account_id ?? row.authorization_resource_owner_system_account_id ?? undefined : undefined,
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
@@ -1169,6 +1297,7 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       configRevision: Number(row.config_revision ?? 1),
+	  dispatchRevision: Number(row.dispatch_revision ?? 1),
       systemAccountId: row.system_account_id,
       systemAccountName: accountNames.get(row.system_account_id),
       ownerSystemAccountId: displayOwnerSystemAccountId,
@@ -1201,6 +1330,9 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       lastErrorMessage: row.last_error_message ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+	  cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
+	  cooldownRetestDispatchRevision: Number(row.dispatch_revision ?? 1),
+	  cooldownRetestSourceConfigRevision: isAuthorizedView ? optionalNumber(row.source_config_revision) : undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       lastHealthCheckAt: accountHealthCheckDatabaseDateTimeIso(row.last_health_check_at),
@@ -1220,6 +1352,7 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: isAuthorizedView ? row.authorization_id ?? undefined : undefined,
       authorizationInstanceSourceAccountId: isAuthorizedView ? row.authorization_instance_source_account_id ?? undefined : undefined,
+      sourceConfigRevision: isAuthorizedView ? optionalNumber(row.source_config_revision) : undefined,
       authorizationInstanceOwnerSystemAccountId: isAuthorizedView ? row.authorization_instance_owner_system_account_id ?? row.authorization_resource_owner_system_account_id ?? undefined : undefined,
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,

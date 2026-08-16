@@ -133,6 +133,18 @@ import {
   validateGatewayApiKey,
   validateGatewayApiKeyAsync
 } from '../../storage/repositories.js'
+import {
+  projectAccountHealthJobsOutcome,
+  projectAccountHealthJobsOutcomeAsync
+} from '../../storage/account-health-projection.repository.js'
+import { decodeAccountHealthJobsOutcomePayload } from '../../storage/account-health-jobs-outcome.repository.js'
+import type { AccountHealthJobsOutcome } from '../../storage/account-health-jobs-outcome.repository.js'
+import {
+  advanceAccountHealthProjectionCursor,
+  advanceAccountHealthProjectionCursorAsync,
+  currentAccountHealthProjectionCursor,
+  currentAccountHealthProjectionCursorAsync
+} from '../../storage/account-health-projection-cursor.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync } from '../../storage/oauth-credential-rotation.repository.js'
 import {
@@ -977,6 +989,25 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return result
       }
       return handleDbServiceOperationSync(operation)
+    case 'project_account_health_jobs_outcome': {
+      const outcome = decodeAccountHealthJobsOutcomePayload(operation.outcome)
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const client = createPostgresDatabaseClient(await getPostgresPool())
+        const result = await projectAccountHealthJobsOutcomeAsync(client, outcome)
+        const cursorAdvanced = operation.consumerKey && operation.sourceCursor
+          ? await advanceAccountHealthProjectionCursorAsync(client, operation.consumerKey, verifiedSourceCursor(outcome, operation.sourceCursor))
+          : false
+        if (result.changed) clearGatewayRuntimeCacheLocal()
+        return { ...result, cursorAdvanced }
+      }
+      return handleDbServiceOperationSync({ ...operation, outcome })
+    }
+    case 'read_account_health_projection_cursor':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const client = createPostgresDatabaseClient(await getPostgresPool())
+        return await currentAccountHealthProjectionCursorAsync(client, operation.consumerKey)
+      }
+      return handleDbServiceOperationSync(operation)
     case 'list_accounts_due_for_cooldown_retest':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listAccountsDueForCooldownRetestPageAsync(operation.limit, operation.cursor)
@@ -1641,6 +1672,18 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
       return result
     }
+    case 'project_account_health_jobs_outcome': {
+      const outcome = decodeAccountHealthJobsOutcomePayload(operation.outcome)
+      const result = projectAccountHealthJobsOutcome(outcome)
+      const cursorAdvanced = operation.consumerKey && operation.sourceCursor
+        ? advanceAccountHealthProjectionCursor(operation.consumerKey, verifiedSourceCursor(outcome, operation.sourceCursor))
+        : false
+      if (result.changed) clearGatewayRuntimeCacheLocal()
+      return { ...result, cursorAdvanced }
+    }
+    case 'read_account_health_projection_cursor': {
+      return currentAccountHealthProjectionCursor(operation.consumerKey)
+    }
     case 'list_accounts_due_for_cooldown_retest': {
       return listAccountsDueForCooldownRetestPage(operation.limit, operation.cursor)
     }
@@ -2297,6 +2340,16 @@ function accountTemporaryUnavailableMutationResult(
   // The repository rechecks config, health observation, and success fences in
   // the same statement. A failed update here is therefore a safe CAS refusal.
   return { updated: false, accountStatus: account.status, skippedReason: 'mutation_cas_rejected' }
+}
+
+function verifiedSourceCursor(
+  outcome: AccountHealthJobsOutcome,
+  cursor: { observedAt: string; outcomeId: string }
+): { observedAt: string; outcomeId: string } {
+  if (cursor.observedAt !== outcome.observed_at || cursor.outcomeId !== outcome.outcome_id) {
+    throw new Error('J1 source cursor 必须与已解码 outcome 精确匹配')
+  }
+  return cursor
 }
 
 function assertNever(value: never): never {

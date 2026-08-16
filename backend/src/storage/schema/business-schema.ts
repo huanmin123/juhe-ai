@@ -602,6 +602,68 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
+    -- A snapshot epoch is independent from config/dispatch revisions. It
+    -- prevents an already-running Go probe from projecting after a later
+    -- tombstone or eligibility-only snapshot has been published.
+    CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
+      account_id TEXT PRIMARY KEY,
+      current_version INTEGER NOT NULL CHECK (current_version >= 1),
+      reserved_at TEXT NOT NULL
+    );
+
+    -- This is an intent outbox, not a task queue. Business mutations reserve
+    -- the epoch and write an intent in the same DB-service transaction; a
+    -- separate Node input producer may publish the signed immutable snapshot
+    -- only after that transaction commits. It never stores credentials.
+    CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (
+      event_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      input_version INTEGER NOT NULL CHECK (input_version >= 1),
+      event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')),
+      reason TEXT NOT NULL,
+      config_revision INTEGER NOT NULL CHECK (config_revision >= 1),
+      dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')),
+      claim_token TEXT,
+      claimed_until TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      available_at TEXT NOT NULL,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (account_id, input_version),
+      CHECK ((status = 'leased' AND claim_token IS NOT NULL AND claimed_until IS NOT NULL) OR (status <> 'leased' AND claim_token IS NULL AND claimed_until IS NULL))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_health_jobs_input_outbox_pending
+      ON account_health_jobs_input_outbox(status, available_at, created_at, event_id);
+    CREATE INDEX IF NOT EXISTS idx_account_health_jobs_input_outbox_account
+      ON account_health_jobs_input_outbox(account_id, input_version DESC);
+
+    -- Go jobs owns J1 outcomes; Node DB-service owns only these receipts and
+    -- the fenced projection into accounts. A receipt makes replays harmless
+    -- without turning Node into a scheduler or second outcome writer.
+    CREATE TABLE IF NOT EXISTS account_health_projection_receipts (
+      outcome_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      input_version INTEGER NOT NULL CHECK (input_version >= 1),
+      disposition TEXT NOT NULL CHECK (disposition IN ('applied', 'stale', 'ignored', 'rejected')),
+      reason TEXT,
+      applied_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
+    -- Every J1 consumer owns its own monotonic cursor. The tuple cursor keeps
+    -- outcomes with the same observed_at visible to projector and Gateway
+    -- consumers without making either process an outcome writer.
+    CREATE TABLE IF NOT EXISTS account_health_projection_cursors (
+      consumer_key TEXT PRIMARY KEY,
+      observed_at TEXT,
+      outcome_id TEXT,
+      updated_at TEXT NOT NULL,
+      CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
+    );
+
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
@@ -1364,6 +1426,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_health_projection_receipts_account
+      ON account_health_projection_receipts(account_id, applied_at DESC, outcome_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_health_projection_cursors_updated
+      ON account_health_projection_cursors(updated_at ASC, consumer_key ASC);
+    CREATE INDEX IF NOT EXISTS idx_account_health_jobs_input_versions_reserved
+      ON account_health_jobs_input_versions(reserved_at ASC, account_id ASC);
     CREATE INDEX IF NOT EXISTS idx_accounts_balance_query_due
       ON accounts(balance_query_next_refresh_at ASC, id ASC)
       WHERE balance_query_enabled = 1

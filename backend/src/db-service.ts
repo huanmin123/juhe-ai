@@ -19,6 +19,8 @@ import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLo
 import { dbServiceSuccessLogLevel } from './shared/logging/runtime-log-policy.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
+import { startAccountHealthJobsInputPublisherRuntime, stopAccountHealthJobsInputPublisherRuntime } from './modules/background/account-health-jobs-input-publisher-runtime.service.js'
+import { startAccountHealthJobsOutcomeProjectionRuntime, stopAccountHealthJobsOutcomeProjectionRuntime } from './modules/background/account-health-jobs-outcome-projection-runtime.service.js'
 
 const systemApiPrefix = '/__aisys__/api'
 const publicApiPrefix = '/__aipublic__'
@@ -72,6 +74,8 @@ async function startDbService(): Promise<void> {
   if (runtimeConfig.databaseDriver === 'sqlite') {
     getBusinessDatabase()
   }
+  startAccountHealthJobsInputPublisherRuntime()
+  startAccountHealthJobsOutcomeProjectionRuntime()
   const httpEndpoint = await startDbServiceHttpServer()
   setDbServiceHttpEndpoint({ host: httpEndpoint.host, port: httpEndpoint.port })
 
@@ -129,6 +133,16 @@ async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: 
     logger.error(errorLogFields(error, { event: 'db_service_chat_generation_shutdown_failed' }), 'DB service 退出时排空 AI 问答生成任务失败')
   }
   await Promise.race([httpClosed, new Promise<void>((resolve) => setTimeout(resolve, 2_000))])
+  try {
+    await stopAccountHealthJobsInputPublisherRuntime()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'account_health_jobs_input_publisher_shutdown_failed' }), 'J1 输入发布器退出失败')
+  }
+  try {
+    await stopAccountHealthJobsOutcomeProjectionRuntime()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'account_health_jobs_outcome_projection_shutdown_failed' }), 'J1 outcome 投影器退出失败')
+  }
   try {
     closeStorageDatabases()
   } catch (error) {

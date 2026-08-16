@@ -53,6 +53,8 @@ export const dbServiceOperationAccessModeByType = {
   commit_account_balance_refresh: 'write',
   enable_detected_account_balance_query: 'write',
   record_account_health_check_failure: 'write',
+  project_account_health_jobs_outcome: 'write',
+  read_account_health_projection_cursor: 'read',
   list_accounts_due_for_cooldown_retest: 'maintenance',
   list_account_api_key_runtime_states_due_for_probe: 'maintenance',
   account_api_key_pool_probe_cursor: 'maintenance',

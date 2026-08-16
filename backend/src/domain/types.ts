@@ -830,6 +830,8 @@ export interface GroupAccountStats {
 export interface AccountSummary {
   id: string
   configRevision?: number
+  /** Internal J1/Gateway stale-work fence; never a user-editable setting. */
+  dispatchRevision?: number
   systemAccountId?: string
   systemAccountName?: string
   providerCode: ProviderCode
@@ -912,6 +914,8 @@ export interface AccountSummary {
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
   authorizationInstanceSourceAccountId?: string
+  /** Physical credential-source revision for authorized-account J1 fences. */
+  sourceConfigRevision?: number
   authorizationInstanceOwnerSystemAccountId?: string
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean

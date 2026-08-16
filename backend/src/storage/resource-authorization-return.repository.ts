@@ -12,6 +12,7 @@ import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.
 import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { getPostgresPool } from './postgres-client.js'
+import { enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync } from './account-health-jobs-input-authorization-fanout.repository.js'
 import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
 import type { ResourceAuthorizationTerminalMutationOutcome } from './resource-authorization-write.repository.js'
 import { syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync } from './request-quota-hourly-windows.repository.js'
@@ -591,6 +592,7 @@ async function returnResourceAuthorizationGrantAsync(grant: ResourceAuthorizatio
     granteeSystemAccountId: grant.grantee_system_account_id,
     granteeTeamId: grant.grantee_team_id
   }, now)
+  await enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync(client, grant, 'authorization_grant_changed')
 }
 
 async function refreshResourceAuthorizationEffectiveSourceAsync(

@@ -1,12 +1,16 @@
+import { randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { getTraceId } from '../../shared/request-context.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   accountHealthCheckWorkerIpcQueueLimits,
-  sendAccountHealthCheckTriggerToWorkerWithOutcome,
-  settleClientSourceFenceFromWorker
+  sendAccountHealthCheckTriggerToWorkerWithOutcome
 } from '../background/background-ipc.js'
 import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
+import { settleAccountHealthJobsSourceFence } from '../gateway/runtime/account-health-jobs-source-fence.consumer.js'
+import { findAccountForAccountHealthJobsInputAsync } from '../../storage/account-health-check.repository.js'
+import { currentAccountHealthJobsInputVersionForRuntimeAsync } from '../../storage/account-health-jobs-input-version.repository.js'
+import { publishAccountHealthJobsProbeRequest } from '../background/account-health-jobs-input.service.js'
 import {
   accountHealthCheckDispatchInternalPrefix,
   createAccountHealthCheckDispatchSignature,
@@ -36,6 +40,9 @@ export function dispatchAccountHealthCheckWithOutcome(
 ): AccountHealthCheckDispatchOutcome {
   const normalizedId = accountId.trim()
   if (!normalizedId) return rejectedDispatchOutcome('ops_ipc_unavailable')
+  if (runtimeConfig.accountHealthJobs.owner === 'go') {
+    return dispatchAccountHealthJobsRequestToFile(normalizedId, reason, traceId, sourceFence)
+  }
   if (
     runtimeConfig.runtimeMode === 'performance'
     && (runtimeConfig.performanceNodeRole === 'gateway' || runtimeConfig.performanceNodeRole === 'control-replica')
@@ -70,6 +77,45 @@ export function dispatchAccountHealthCheckWithOutcome(
     }), 'DB service 投递账户健康检查触发消息失败')
     return rejectedDispatchOutcome('ops_ipc_unavailable')
   }
+}
+
+function dispatchAccountHealthJobsRequestToFile(
+  accountId: string,
+  reason: AccountHealthCheckTriggerReason,
+  traceId: string | undefined,
+  sourceFence: CodexSourceProbeFence | undefined
+): AccountHealthCheckDispatchOutcome {
+  const root = runtimeConfig.accountHealthJobs.inputDirectory?.trim()
+  const signingKey = runtimeConfig.accountHealthJobs.inputSigningKey?.trim()
+  if (!root || !signingKey) return rejectedDispatchOutcome('dispatch_rejected')
+  const requestId = `j1-${randomUUID()}`
+  void (async () => {
+    const account = await findAccountForAccountHealthJobsInputAsync(accountId)
+    const inputVersion = account ? await currentAccountHealthJobsInputVersionForRuntimeAsync(accountId) : undefined
+    if (!account || inputVersion === undefined) throw new Error('J1 request 缺少当前账户或 input epoch')
+    publishAccountHealthJobsProbeRequest({
+      account,
+      inputVersion,
+      root,
+      signingKey,
+      requestId,
+      reason,
+      deadline: new Date(Date.now() + runtimeConfig.background.accountHealthCheckProbeDeadlineMs),
+      sourceFence
+    })
+  })().catch((error) => {
+    logger.warn({
+      event: 'account_health_jobs_request_publish_failed',
+      accountId,
+      requestId,
+      traceId,
+      error: error instanceof Error ? error.name : 'unknown'
+    }, 'J1 请求文件发布失败')
+    if (sourceFence) {
+      void settleAccountHealthJobsSourceFence(sourceFence, 'unknown').catch(() => undefined)
+    }
+  })
+  return queuedDispatchOutcome()
 }
 
 function dispatchAccountHealthCheckToControl(
@@ -150,7 +196,7 @@ function settleClientSourceFenceAfterControlDispatchFailure(
   reason: 'rejected' | 'failed'
 ): void {
   if (!sourceFence) return
-  void settleClientSourceFenceFromWorker(sourceFence, 'unknown').catch((error) => {
+  void settleAccountHealthJobsSourceFence(sourceFence, 'unknown').catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'account_health_check_control_source_fence_settlement_failed',
       accountId,

@@ -173,6 +173,7 @@ export function accountHealthCheckScanLimit(
 }
 
 export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
+  if (runtimeConfig.accountHealthJobs.owner !== 'node') return
   const batchSize = runtimeConfig.background.accountHealthCheckBatchSize
   const queueConcurrency = globalSharedQueueConcurrency
   const queueBeforeScan = getAccountHealthCheckQueueSnapshot()

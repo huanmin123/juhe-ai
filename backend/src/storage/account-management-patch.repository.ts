@@ -115,6 +115,7 @@ import {
   requiredTextInput
 } from './repository-input-normalization.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
+import { reserveAndEnqueueAccountHealthJobsInputInTransactionAsync } from './account-health-jobs-input-outbox.repository.js'
 import { canManageResourceOwner } from './resource-authorization-helpers.js'
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizedAccountStatusInput } from './account-status.js'
 import { nullableServerDateTimeIso } from './value-utils.js'
@@ -883,6 +884,50 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   ])
   const authorizationInstancesAffected = credentialsChanged
     || [...changedFields].some((field) => authorizationDependencyFields.has(field))
+  const accountHealthInputAffected = credentialsChanged
+    || supportedModelsChanged
+    || modelMappingsChanged
+    || groupChanged
+    || [...changedFields].some((field) => new Set([
+      'status', 'schedulable', 'proxyProfileId', 'healthCheckModel', 'healthCheckEndpointMode',
+      'availabilitySchedule', 'accountExpiresAt', 'temporaryUnavailableContinuousProbeEnabled'
+    ]).has(field))
+  if (accountHealthInputAffected) {
+    const revision = await client.one<{ config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
+      SELECT config_revision, dispatch_revision
+      FROM ${patchTable(client, 'accounts')}
+      WHERE id = ?
+    `, [row.id])
+    if (!revision) throw new Error('J1 input outbox 找不到已更新账户')
+    await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+      accountId: row.id,
+      configRevision: Number(revision.config_revision),
+      dispatchRevision: Number(revision.dispatch_revision),
+      kind: 'snapshot',
+      reason: 'account_management_patch'
+    })
+  }
+  if (authorizationInstancesAffected) {
+    const instances = await client.query<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
+      SELECT id, config_revision, dispatch_revision
+      FROM ${patchTable(client, 'accounts')}
+      WHERE authorization_instance_source_account_id = ?
+        AND deleted_at IS NULL
+        AND provider_code = 'openai'
+        AND type IN ('api_key', 'oauth')
+      ORDER BY id ASC
+      ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
+    `, [row.id])
+    for (const instance of instances) {
+      await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+        accountId: instance.id,
+        configRevision: Number(instance.config_revision),
+        dispatchRevision: Number(instance.dispatch_revision),
+        kind: 'snapshot',
+        reason: 'authorization_source_account_changed'
+      })
+    }
+  }
   return {
     id: row.id,
     configRevision: integerValue(row.config_revision) + 1,

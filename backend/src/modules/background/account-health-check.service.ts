@@ -203,6 +203,12 @@ export function getAccountHealthCheckQueueSnapshot() {
   return accountHealthCheckQueue.snapshot()
 }
 
+export async function stopAccountHealthCheckQueue(timeoutMs = 10_000): Promise<{ drained: boolean; activeCount: number }> {
+  const result = await accountHealthCheckQueue.stopAndDrain(timeoutMs)
+  accountHealthCheckExecutions.clear()
+  return result
+}
+
 export function setAccountHealthCheckProbeRunnerForTest(runner: AccountHealthCheckProbeRunner | undefined): void {
   accountHealthCheckProbeRunnerForTest = runner
 }

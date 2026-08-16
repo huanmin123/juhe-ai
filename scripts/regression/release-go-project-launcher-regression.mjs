@@ -10,6 +10,7 @@ const launcherPath = join(repoRoot, 'scripts', 'start-go-project.mjs')
 const launcherSource = readFileSync(launcherPath, 'utf8')
 const powershellSource = readFileSync(join(repoRoot, 'deploy', 'start.ps1'), 'utf8')
 const shellSource = readFileSync(join(repoRoot, 'deploy', 'start.sh'), 'utf8')
+const j1InputSigningKey = Buffer.alloc(32, 17).toString('base64url')
 
 for (const source of [powershellSource, shellSource]) {
   assert.match(source, /juhe-ai-gateway/u, 'release startup must run Go gateway')
@@ -20,6 +21,8 @@ for (const source of [powershellSource, shellSource]) {
 
 assert.match(launcherSource, /gateway\|jobs/u, 'launcher must accept only declared Go projects')
 assertLauncherRejectsMissingProjectIdentity()
+assertLauncherRejectsJ1WithoutGoOwner()
+assertLauncherRejectsMissingJ1InputDirectory()
 assertLauncherForwardsProjectScopedPaths()
 
 console.log('release Go project launcher regression passed')
@@ -36,10 +39,51 @@ function assertLauncherRejectsMissingProjectIdentity() {
   }
 }
 
+function assertLauncherRejectsJ1WithoutGoOwner() {
+  const result = runLauncher('jobs', {
+    JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
+    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
+    JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'node'
+  })
+  try {
+    assert.notEqual(result.status, 0, 'J1 Go process must reject a Node owner declaration')
+    assert.match(result.output, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER=go/u)
+  } finally {
+    result.cleanup()
+  }
+}
+
+function assertLauncherRejectsMissingJ1InputDirectory() {
+  const result = runLauncher('jobs', {
+    JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
+    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
+    JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go',
+    JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID: 'j1-owner',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
+    JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET: 'j1-release-credential-secret'
+  })
+  try {
+    assert.notEqual(result.status, 0, 'J1 release startup must reject a missing shared input directory')
+    assert.match(result.output, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY is required/u)
+  } finally {
+    result.cleanup()
+  }
+}
+
 function assertLauncherForwardsProjectScopedPaths() {
   const jobs = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
-    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner'
+    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
+    JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go',
+    JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID: 'j1-owner',
+    JUHE_AI_ACCOUNT_HEALTH_STORE: 'sqlite',
+    JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH: './data/account-health.sqlite3',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY: './data/account-health-inputs',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
+    JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET: 'j1-release-credential-secret'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
@@ -63,6 +107,9 @@ function assertLauncherForwardsProjectScopedPaths() {
     assert.equal(jobs.status, 0, `jobs launcher failed: ${jobs.output}`)
     assert.equal(jobs.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(jobs.backendRoot, 'data', 'runtime-log.sqlite3'))
     assert.equal(jobs.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(jobs.backendRoot, 'data', 'table-monitor.sqlite3'))
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH, join(jobs.backendRoot, 'data', 'account-health.sqlite3'))
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, join(jobs.backendRoot, 'data', 'account-health-inputs'))
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER, 'go')
     assert.equal(jobs.childEnvironment.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
     assert.equal(gateway.status, 0, `gateway launcher failed: ${gateway.output}`)
     assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(gateway.backendRoot, 'data', 'runtime-log.sqlite3'))

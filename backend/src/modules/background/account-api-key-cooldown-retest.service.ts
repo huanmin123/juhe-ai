@@ -50,6 +50,10 @@ export function getAccountApiKeyCooldownRetestQueueSnapshot() {
   return accountApiKeyCooldownRetestQueue.snapshot()
 }
 
+export async function stopAccountApiKeyCooldownRetestQueue(timeoutMs = 10_000): Promise<{ drained: boolean; activeCount: number }> {
+  return await accountApiKeyCooldownRetestQueue.stopAndDrain(timeoutMs)
+}
+
 async function runAccountApiKeyCooldownRetestQueueItem(
   item: AccountApiKeyCooldownRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }

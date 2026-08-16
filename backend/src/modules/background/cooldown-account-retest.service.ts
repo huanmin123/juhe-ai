@@ -265,6 +265,10 @@ export function getCooldownAccountRetestQueueSnapshot() {
   return cooldownAccountRetestQueue.snapshot()
 }
 
+export async function stopCooldownAccountRetestQueue(timeoutMs = 10_000): Promise<{ drained: boolean; activeCount: number }> {
+  return await cooldownAccountRetestQueue.stopAndDrain(timeoutMs)
+}
+
 async function runCooldownAccountRetestQueueItem(
   item: CooldownAccountRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }

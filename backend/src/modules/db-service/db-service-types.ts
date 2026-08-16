@@ -907,6 +907,21 @@ export type DbServiceOperation =
     }
   }
   | {
+    // Generic J1 business projection only. The handler decodes this untrusted
+    // payload before it reaches the fenced projector.
+    type: 'project_account_health_jobs_outcome'
+    outcome: unknown
+    consumerKey?: string
+    sourceCursor?: {
+      observedAt: string
+      outcomeId: string
+    }
+  }
+  | {
+    type: 'read_account_health_projection_cursor'
+    consumerKey: string
+  }
+  | {
     type: 'list_accounts_due_for_cooldown_retest'
     limit: number
     cursor?: import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestCursor

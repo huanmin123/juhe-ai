@@ -18,6 +18,10 @@ import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForSta
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
+import {
+  reserveAndEnqueueAccountHealthJobsInputInTransaction,
+  reserveAndEnqueueAccountHealthJobsInputInTransactionAsync
+} from './account-health-jobs-input-outbox.repository.js'
 import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
 import {
   initializeAddedAccountApiKeyRuntimeStates,
@@ -2150,6 +2154,17 @@ function createAccountInSqliteTransaction(input: Record<string, unknown>, access
       transitionId: newId('dispatch'),
       nowMs
     })
+    if (providerCode === 'openai' && (account.type === 'api_key' || account.type === 'oauth')) {
+      const revision = database.prepare('SELECT config_revision, dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number | string | bigint, dispatch_revision: number | string | bigint } | undefined
+      if (!revision) throw new Error('J1 input outbox 找不到新建账户')
+      reserveAndEnqueueAccountHealthJobsInputInTransaction({
+        accountId: account.id,
+        configRevision: Number(revision.config_revision),
+        dispatchRevision: Number(revision.dispatch_revision),
+        kind: 'snapshot',
+        reason: 'account_created'
+      }, database)
+    }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -2425,6 +2440,21 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
       transitionId: newId('dispatch'),
       nowMs
     })
+    if (providerCode === 'openai' && (account.type === 'api_key' || account.type === 'oauth')) {
+      const revision = await client.one<{ config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
+        SELECT config_revision, dispatch_revision
+        FROM ${accountWriteTable(client, 'accounts')}
+        WHERE id = ?
+      `, [account.id])
+      if (!revision) throw new Error('J1 input outbox 找不到新建账户')
+      await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+        accountId: account.id,
+        configRevision: Number(revision.config_revision),
+        dispatchRevision: Number(revision.dispatch_revision),
+        kind: 'snapshot',
+        reason: 'account_created'
+      })
+    }
   } catch (error) {
     if (isDuplicateAccountNameError(error)) {
       throw new Error(`同一用户下账户名称已存在：${account.name}`)

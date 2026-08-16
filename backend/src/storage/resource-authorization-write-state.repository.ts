@@ -28,6 +28,7 @@ import type {
   SystemTeamMemberRow
 } from './repository-row-types.js'
 import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
+import { enqueueAccountHealthJobsInputsForAuthorizationSourceInTransaction } from './account-health-jobs-input-authorization-fanout.repository.js'
 
 interface RefreshEffectiveSourceOptions {
   noActiveSourceReason?: string
@@ -736,6 +737,7 @@ export function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizati
     syncTeamGrantMemberAuthorizations(grant, actor, database, now)
   }
   syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings(resourceAuthorizationQuotaBindingGrant(grant), database, now)
+  enqueueAccountHealthJobsInputsForAuthorizationSourceInTransaction(grant, 'authorization_grant_changed', database)
 }
 
 function resourceAuthorizationQuotaBindingGrant(grant: ResourceAuthorizationGrantRow) {

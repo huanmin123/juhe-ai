@@ -9,6 +9,10 @@ import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, 
 import { optionalString } from './value-utils.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import {
+  reserveAndEnqueueAccountHealthJobsInputInTransaction,
+  reserveAndEnqueueAccountHealthJobsInputInTransactionAsync
+} from './account-health-jobs-input-outbox.repository.js'
 
 const proxyTypeValues = ['http', 'https', 'socks5', 'socks5h'] as const
 const proxyTestStatusValues = ['unknown', 'passed', 'warning', 'failed'] as const
@@ -577,7 +581,8 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   if (!current) {
     return undefined
   }
-  const currentSecret = getBusinessDatabase()
+  const database = getBusinessDatabase()
+  const currentSecret = database
     .prepare('SELECT password_encrypted FROM proxy_profiles WHERE id = ?')
     .get(id) as unknown as { password_encrypted?: string | null } | undefined
   const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
@@ -603,8 +608,9 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     ? encryptJson({ password: nextPassword })
     : currentSecret?.password_encrypted ?? null
   const updatedAtCandidate = nowIso()
+  const transactionStarted = beginImmediateDatabaseTransaction(database)
   try {
-    getBusinessDatabase()
+    database
       .prepare(`
         UPDATE proxy_profiles
         SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
@@ -634,7 +640,10 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
         updatedAtCandidate,
         id
       )
+    enqueueProxyAffectedAccountHealthInputsInTransaction(id, 'proxy_updated', database)
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateProxyNameError(error)) {
       throw new Error(`代理名称已存在：${next.name}`)
     }
@@ -720,6 +729,9 @@ export async function updateProxyAsync(id: string, input: Record<string, unknown
         updatedAtCandidate,
         id
       ])
+      if (updatedRow) {
+        await enqueueProxyAffectedAccountHealthInputsInTransactionAsync(tx, id, 'proxy_updated')
+      }
       return updatedRow ? proxySummaryFromRow(updatedRow) : undefined
     })
   } catch (error) {
@@ -793,6 +805,7 @@ export function patchProxyForManagement(
         if (!updatedRow) {
           throw new ProxyProfileUpdateConflictError(id)
         }
+        enqueueProxyAffectedAccountHealthInputsInTransaction(id, 'proxy_management_patch', database)
         runtimeChanged = plan.runtimeChanged
         outcome = proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
       }
@@ -860,6 +873,7 @@ export async function patchProxyForManagementAsync(
       if (!updatedRow) {
         throw new ProxyProfileUpdateConflictError(id)
       }
+      await enqueueProxyAffectedAccountHealthInputsInTransactionAsync(tx, id, 'proxy_management_patch')
       runtimeChanged = plan.runtimeChanged
       return proxyManagementPatchOutcome(id, proxyPatchTimestamp(updatedRow.updated_at), plan, true)
     })
@@ -1428,6 +1442,63 @@ async function getProxyDatabaseClient(): Promise<DatabaseClient> {
     return createPostgresDatabaseClient(await getPostgresPool())
   }
   return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function enqueueProxyAffectedAccountHealthInputsInTransaction(
+  proxyProfileId: string,
+  reason: string,
+  database = getBusinessDatabase()
+): void {
+  const rows = database.prepare(`
+    SELECT target.id, target.config_revision, target.dispatch_revision
+    FROM accounts target
+    LEFT JOIN accounts source
+      ON source.id = target.authorization_instance_source_account_id
+      AND source.deleted_at IS NULL
+    WHERE target.deleted_at IS NULL
+      AND target.provider_code = 'openai'
+      AND target.type IN ('api_key', 'oauth')
+      AND (target.proxy_profile_id = ? OR source.proxy_profile_id = ?)
+    ORDER BY target.id ASC
+  `).all(proxyProfileId, proxyProfileId) as Array<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>
+  for (const row of rows) {
+    reserveAndEnqueueAccountHealthJobsInputInTransaction({
+      accountId: row.id,
+      configRevision: Number(row.config_revision),
+      dispatchRevision: Number(row.dispatch_revision),
+      kind: 'snapshot',
+      reason
+    }, database)
+  }
+}
+
+async function enqueueProxyAffectedAccountHealthInputsInTransactionAsync(
+  client: DatabaseClient,
+  proxyProfileId: string,
+  reason: string
+): Promise<void> {
+  const rows = await client.query<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
+    SELECT target.id, target.config_revision, target.dispatch_revision
+    FROM ${client.dialect.qualifyTable(businessSchemaName, 'accounts')} target
+    LEFT JOIN ${client.dialect.qualifyTable(businessSchemaName, 'accounts')} source
+      ON source.id = target.authorization_instance_source_account_id
+      AND source.deleted_at IS NULL
+    WHERE target.deleted_at IS NULL
+      AND target.provider_code = 'openai'
+      AND target.type IN ('api_key', 'oauth')
+      AND (target.proxy_profile_id = ? OR source.proxy_profile_id = ?)
+    ORDER BY target.id ASC
+    ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
+  `, [proxyProfileId, proxyProfileId])
+  for (const row of rows) {
+    await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+      accountId: row.id,
+      configRevision: Number(row.config_revision),
+      dispatchRevision: Number(row.dispatch_revision),
+      kind: 'snapshot',
+      reason
+    })
+  }
 }
 
 function proxyProfilesTable(client: DatabaseClient): string {

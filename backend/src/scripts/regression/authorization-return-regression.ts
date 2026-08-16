@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorization-return-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -72,6 +73,45 @@ try {
   const authorizedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
   const accountAuthorizationId = authorizedAccount?.accountAuthorizationId
   assert(accountAuthorizationId, '被授权账户应带运行态授权 ID')
+  const j1SourceGroup = repositories.createGroup({
+    name: 'J1 授权归还来源分组',
+    providerCode: 'openai'
+  }, ownerAccess)
+  const j1TargetGroup = repositories.createGroup({
+    name: 'J1 授权归还目标分组',
+    providerCode: 'openai'
+  }, granteeAccess)
+  const j1SourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+    name: 'J1 授权归还来源账户',
+    type: 'api_key',
+    status: 'active',
+    schedulable: true,
+    credentials: { api_key: 'sk-j1-authorization-return', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    groupId: j1SourceGroup.id
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: j1SourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: seed.granteeId,
+    targetGroupId: j1TargetGroup.id,
+    remark: 'J1 授权归还输入 epoch 回归'
+  }, ownerAccess)
+  const j1AuthorizedAccount = authorizedAccountForSource(j1SourceAccount.id, granteeAccess)
+  assert(j1AuthorizedAccount?.id, 'J1 授权账户必须创建授权实例')
+  databaseModule.getBusinessDatabase().prepare('DELETE FROM account_health_jobs_input_outbox').run()
+  await postOk(baseUrl, `/__aisys__/api/my-accounts/${j1AuthorizedAccount.id}/return-authorization`, seed.granteeCookie)
+  const returnedInputIntent = databaseModule.getBusinessDatabase().prepare(`
+    SELECT account_id, event_kind, reason
+    FROM account_health_jobs_input_outbox
+    ORDER BY created_at ASC, event_id ASC
+  `).get() as { account_id?: string, event_kind?: string, reason?: string } | undefined
+  assert.equal(returnedInputIntent?.account_id, j1AuthorizedAccount.id, '归还授权前必须为授权实例保留新的 J1 input epoch')
+  assert.equal(returnedInputIntent?.event_kind, 'snapshot', '归还授权由发布器按最新资格转换为 tombstone，业务事务本身只保存可重放意图')
+  assert.equal(returnedInputIntent?.reason, 'authorization_grant_changed', '归还授权必须留下可审计的授权输入发布原因')
   assert.equal(repositories.findAccountSummary(seed.ownerAccountId, ownerAccess)?.status, 'active', '持续探活同步回归要求来源账户保持正常')
   const oldObservationStartedAt = '2020-01-01T00:00:00.000Z'
   databaseModule.getBusinessDatabase().prepare(`

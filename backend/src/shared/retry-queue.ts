@@ -51,6 +51,7 @@ export interface RetryQueue<T> {
   clear(): void
   setConcurrency(concurrency: number): void
   snapshot(): RetryQueueSnapshot
+  stopAndDrain(timeoutMs?: number): Promise<{ drained: boolean; activeCount: number }>
 }
 
 export interface RetryQueueEnqueueOptions {
@@ -92,6 +93,8 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
   const limit = pLimit(concurrency)
   let timer: NodeJS.Timeout | undefined
   let timerDueAtMs: number | undefined
+  let stopped = false
+  let drainWaiters: Array<() => void> = []
 
   const scheduleDrain = (delayMs: number): void => {
     const dueAtMs = Date.now() + Math.max(0, Math.trunc(delayMs))
@@ -160,6 +163,12 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     }
 
     queueItem.running = false
+    if (stopped) {
+      if (items.get(queueItem.key) === queueItem) items.delete(queueItem.key)
+      resolveDrainWaiters()
+      return
+    }
+    resolveDrainWaiters()
     if (items.get(queueItem.key) !== queueItem) {
       scheduleNext()
       return
@@ -223,6 +232,13 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     return count
   }
 
+  const resolveDrainWaiters = (): void => {
+    if (runningCount() !== 0) return
+    const waiters = drainWaiters
+    drainWaiters = []
+    for (const waiter of waiters) waiter()
+  }
+
   const nextDueItem = (
     currentConcurrency: number,
     reservation: RetryQueueOptions<T>['reservedPriorityConcurrency']
@@ -273,6 +289,7 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
   return {
     name: options.name,
     enqueue: (key, item, enqueueOptions = {}) => {
+      if (stopped) return false
       const priority = normalizedPriority(enqueueOptions.priority)
       const nextRunAtMs = Date.now() + Math.max(0, Math.trunc(enqueueOptions.delayMs ?? 0))
       const existing = items.get(key)
@@ -345,6 +362,35 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
         runningCount: runningCount(),
         nextRunAt: nextRunAtMs === undefined ? undefined : new Date(nextRunAtMs).toISOString()
       }
+    },
+    stopAndDrain: async (timeoutMs = 10_000) => {
+      stopped = true
+      for (const [key, item] of items) {
+        if (item.running) {
+          item.followUp = undefined
+        } else {
+          items.delete(key)
+        }
+      }
+      if (timer) {
+        clearTimeout(timer)
+        timer = undefined
+        timerDueAtMs = undefined
+      }
+      const activeCount = runningCount()
+      if (activeCount === 0) return { drained: true, activeCount: 0 }
+      const normalizedTimeoutMs = Math.max(1, Math.trunc(timeoutMs))
+      let timeout: NodeJS.Timeout | undefined
+      let resolveWaiter: (() => void) | undefined
+      const drained = new Promise<boolean>((resolve) => {
+        resolveWaiter = () => resolve(true)
+        drainWaiters.push(resolveWaiter)
+        timeout = setTimeout(() => resolve(false), normalizedTimeoutMs)
+      })
+      const didDrain = await drained
+      if (timeout) clearTimeout(timeout)
+      if (resolveWaiter) drainWaiters = drainWaiters.filter((waiter) => waiter !== resolveWaiter)
+      return { drained: didDrain, activeCount: didDrain ? 0 : runningCount() }
     }
   }
 }

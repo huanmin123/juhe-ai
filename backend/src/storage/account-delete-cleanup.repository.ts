@@ -18,6 +18,10 @@ import { cleanupInactiveAuthorizationBindings, revokeResourceAuthorizationGrant,
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
+import {
+  reserveAndEnqueueAccountHealthJobsInputInTransaction,
+  reserveAndEnqueueAccountHealthJobsInputInTransactionAsync
+} from './account-health-jobs-input-outbox.repository.js'
 
 const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const deletedAccountPhysicalCleanupRetentionMonths = 1
@@ -252,6 +256,24 @@ function logicallyDeleteAccounts(database: DatabaseSync, accountIds: string[], a
       }
     }
   }
+  const tombstones = database.prepare(`
+    SELECT id, config_revision, dispatch_revision
+    FROM accounts
+    WHERE deleted_at = ?
+      AND id IN (${sqlPlaceholders(ids.length)})
+      AND provider_code = 'openai'
+      AND type IN ('api_key', 'oauth')
+    ORDER BY id ASC
+  `).all(deletedAt, ...ids) as Array<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>
+  for (const account of tombstones) {
+    reserveAndEnqueueAccountHealthJobsInputInTransaction({
+      accountId: account.id,
+      configRevision: Number(account.config_revision),
+      dispatchRevision: Number(account.dispatch_revision),
+      kind: 'tombstone',
+      reason: 'account_deleted'
+    }, database)
+  }
   deleteAccountTagBindingsForAccounts(deletedIds, database)
   deleteAccountNameSearchTermsForAccounts(deletedIds, database)
   return deletedIds
@@ -282,6 +304,25 @@ async function logicallyDeleteAccountsAsync(client: DatabaseClient, accountIds: 
     deletedIds.push(...rows.map((row) => row.id))
   }
   if (deletedIds.length > 0) {
+    const tombstones = await client.query<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
+      SELECT id, config_revision, dispatch_revision
+      FROM ${accountDeleteCleanupTable(client, 'accounts')}
+      WHERE deleted_at = ?
+        AND id IN (${deletedIds.map(() => '?').join(', ')})
+        AND provider_code = 'openai'
+        AND type IN ('api_key', 'oauth')
+      ORDER BY id ASC
+      ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
+    `, [deletedAt, ...deletedIds])
+    for (const account of tombstones) {
+      await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+        accountId: account.id,
+        configRevision: Number(account.config_revision),
+        dispatchRevision: Number(account.dispatch_revision),
+        kind: 'tombstone',
+        reason: 'account_deleted'
+      })
+    }
     for (const chunk of chunkValues(deletedIds, 900)) {
       await client.execute(`
         DELETE FROM ${accountDeleteCleanupTable(client, 'account_tag_bindings')}

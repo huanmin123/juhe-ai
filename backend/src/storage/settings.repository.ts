@@ -8,6 +8,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { reserveAndEnqueueAccountHealthJobsInputInTransactionAsync } from './account-health-jobs-input-outbox.repository.js'
 
 interface GlobalSettingRow {
   key: string
@@ -300,6 +301,26 @@ export async function updateManagementSettingsSectionAsync(sectionKey: Managemen
       const columns = section.domain === 'global' ? '(key, value_json, updated_at)' : '(system_account_id, key, value_json, updated_at)'
       const values = section.domain === 'global' ? [key, JSON.stringify(value), now] : [SYSTEM_SETTINGS_ACCOUNT_ID, key, JSON.stringify(value), now]
       await tx.execute(`INSERT INTO ${table} ${columns} VALUES (${values.map(() => '?').join(', ')}) ON CONFLICT(${section.domain === 'global' ? 'key' : 'system_account_id, key'}) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`, values)
+    }
+    if (sectionKey === 'account-health') {
+      const accounts = await tx.query<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
+        SELECT id, config_revision, dispatch_revision
+        FROM ${tx.dialect.qualifyTable('juhe_business', 'accounts')}
+        WHERE deleted_at IS NULL
+          AND provider_code = 'openai'
+          AND type IN ('api_key', 'oauth')
+        ORDER BY id ASC
+        ${tx.driver === 'postgres' ? 'FOR UPDATE' : ''}
+      `)
+      for (const account of accounts) {
+        await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(tx, {
+          accountId: account.id,
+          configRevision: Number(account.config_revision),
+          dispatchRevision: Number(account.dispatch_revision),
+          kind: 'snapshot',
+          reason: 'account_health_settings_changed'
+        })
+      }
     }
   })
   if (section.domain === 'global') await refreshGlobalSettingsCacheAfterSectionWrite()

@@ -46,6 +46,8 @@ import {
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { maxSystemTeamActiveGrantCount, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import { optionalNullableServerDateTimeIso } from './value-utils.js'
+import { reserveAndEnqueueAccountHealthJobsInputInTransactionAsync } from './account-health-jobs-input-outbox.repository.js'
+import { enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync } from './account-health-jobs-input-authorization-fanout.repository.js'
 
 const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits'])
 const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'limits'])
@@ -619,7 +621,7 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
             limits_json = ?,
             updated_at = ?
         WHERE id = ?
-      `)
+    `)
       .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextLimits, now, authorizationId)
     syncResourceAuthorizationGrantRuntime({ ...grant, status: nextStatus, expires_at: nextExpiresAt, limits_json: nextLimits, revoked_by: nextRevokedBy, revoked_at: nextRevokedAt, updated_at: now }, currentSystemAccountId(access), database, now)
     commitDatabaseTransaction(database, transactionStarted)
@@ -995,6 +997,7 @@ async function syncResourceAuthorizationGrantRuntimeAsync(grant: ResourceAuthori
     await syncTeamGrantMemberAuthorizationsAsync(grant, actor, client, now)
   }
   await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(client, resourceAuthorizationQuotaBindingGrant(grant), now)
+  await enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync(client, grant, 'authorization_grant_changed')
 }
 
 async function upsertResourceAuthorizationGrantAsync(input: {
@@ -1753,7 +1756,30 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
       enabled = 1,
       updated_at = excluded.updated_at
   `, [authorization.grantee_system_account_id, bindGroupId, instance.id, authorization.id, now, now])
+  await enqueueAuthorizationInstanceAccountHealthInputInTransaction(client, instance.id, 'authorization_binding_changed')
   invalidateGroupAccountIdsCache(bindGroupId)
+}
+
+async function enqueueAuthorizationInstanceAccountHealthInputInTransaction(
+  client: DatabaseClient,
+  accountId: string,
+  reason: string
+): Promise<void> {
+  const account = await client.one<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint, provider_code: string, type: string }>(`
+    SELECT id, config_revision, dispatch_revision, provider_code, type
+    FROM ${resourceAuthorizationWriteTable(client, 'accounts')}
+    WHERE id = ?
+      AND deleted_at IS NULL
+    ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
+  `, [accountId])
+  if (!account || account.provider_code !== 'openai' || (account.type !== 'api_key' && account.type !== 'oauth')) return
+  await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+    accountId: account.id,
+    configRevision: Number(account.config_revision),
+    dispatchRevision: Number(account.dispatch_revision),
+    kind: 'snapshot',
+    reason
+  })
 }
 
 async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, authorization: ResourceAuthorizationRow, now: string): Promise<AccountRow | undefined> {

@@ -65,6 +65,7 @@ import {
 } from './modules/gateway/usage/failure-finalization.service.js'
 import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
 import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
+import { startAccountHealthJobsSourceFenceConsumerRuntime, stopAccountHealthJobsSourceFenceConsumerRuntime } from './modules/gateway/runtime/account-health-jobs-source-fence-runtime.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -147,6 +148,7 @@ if (runtimeConfig.auth.captchaDisabled) {
 }
 startProcessEventLoopMonitor()
 startPerformanceProcessMetricsPublisher()
+startAccountHealthJobsSourceFenceConsumerRuntime()
 startDbServiceSupervisor({
   onReady: startBackgroundWorkerSupervisorAfterDbServiceReady,
   onUnavailable: stopInternalGatewayRegistryAfterDbServiceUnavailable
@@ -556,6 +558,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
 
   try {
     const httpClosed = await closeHttpServer(httpServer, httpShutdownGraceMs)
+    await stopAccountHealthJobsSourceFenceConsumerRuntime()
     await stopInternalGatewayRegistry()
     const [failureUsageIdle, captureIdle] = await Promise.all([
       waitForGatewayFailureUsageFinalizationsIdle(8_000),
