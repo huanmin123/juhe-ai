@@ -159,7 +159,10 @@ pipeline {
     stage('验证 prod') {
       when { expression { params.DEPLOY_PROD } }
       steps {
-        script { waitForIngress('prod') }
+        script {
+          waitForIngress('prod')
+          markReleaseVerified('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
+        }
       }
     }
   }
@@ -272,7 +275,11 @@ def markReleaseVerified(environmentName, sourceCommit, nodeDigest, jobsDigest, g
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
     git add '${file}'
-    git commit -m '[skip ci] release(juhe-ai-${environmentName}): ${sourceCommit} verified'
-    GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
+    if git diff --cached --quiet; then
+      echo 'release verification 已标记为 passed；不重复提交。'
+    else
+      git commit -m '[skip ci] release(juhe-ai-${environmentName}): ${sourceCommit} verified'
+      GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
+    fi
   """
 }
