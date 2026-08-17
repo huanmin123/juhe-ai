@@ -491,6 +491,7 @@ async function authorizedAccountSummaryFromRowAsync(
     lastErrorMessage: row.last_error_message ?? undefined,
     lastErrorTraceId: row.last_error_trace_id ?? undefined,
     cooldownRetestFailureCount: 0,
+    cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
     lastHealthCheckAt: row.last_health_check_at ?? undefined,
     nextHealthCheckAt: row.next_health_check_at ?? undefined,
     lastHealthSuccessAt: row.last_health_success_at ?? undefined,
@@ -983,6 +984,7 @@ async function ownerAccountSummariesFromRowsAsync(
       lastErrorTraceId: row.last_error_trace_id ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+      cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       temporaryUnavailableContinuousProbeEnabled: row.temporary_unavailable_continuous_probe_enabled === 1,
@@ -1547,6 +1549,7 @@ function accountSummariesFromRows(
       lastErrorTraceId: row.last_error_trace_id ?? undefined,
       cooldownRetestFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
+      cooldownRetestGeneration: isAuthorizedView ? undefined : row.cooldown_retest_generation ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
       temporaryUnavailableContinuousProbeEnabled: isAuthorizedView

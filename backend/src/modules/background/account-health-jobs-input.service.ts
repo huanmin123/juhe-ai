@@ -2,6 +2,7 @@ import type { AccountSummary } from '../../domain/types.js'
 import { isJ1OpenAIProviderCode } from '../../storage/account-health-jobs-input.repository.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
+import { parseRfc3339Instant } from '../../shared/rfc3339.js'
 
 import { publishAccountHealthJobsInput, publishAccountHealthJobsRequest } from './account-health-jobs-input.protocol.js'
 
@@ -129,7 +130,7 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
       && account.authorizationInstanceSourceAccountSchedulable === true
       && !isExpired(account.authorizationInstanceSourceAccountExpiresAt)
       && !isFuture(account.authorizationInstanceSourceAccountCooldownUntil))
-  const cooldownFence = cooldownInputFence(account, sourceConfigRevision)
+  const cooldownFence = cooldownInputFence(account, sourceConfigRevision, dispatchRevision)
   const cooldownUntil = account.cooldownUntil ? parseDate(account.cooldownUntil) : undefined
   const payload: Record<string, unknown> = {
     account_id: account.id,
@@ -271,24 +272,29 @@ function requiredText(value: unknown, field: string): string {
 }
 
 function parseFutureDate(value: unknown): Date | undefined {
-  const parsed = typeof value === 'string' ? new Date(value) : undefined
+  const parsed = parseRfc3339Instant(value)
   return parsed && Number.isFinite(parsed.getTime()) && parsed > new Date() ? parsed : undefined
 }
 
 function isExpired(value: string | undefined): boolean {
-  return value !== undefined && new Date(value).getTime() <= Date.now()
+  const parsed = value === undefined ? undefined : parseRfc3339Instant(value)
+  return parsed !== undefined && parsed.getTime() <= Date.now()
 }
 
 function isFuture(value: string | undefined): boolean {
-  return value !== undefined && new Date(value).getTime() > Date.now()
+  const parsed = value === undefined ? undefined : parseRfc3339Instant(value)
+  return parsed !== undefined && parsed.getTime() > Date.now()
 }
 
-function cooldownInputFence(account: AccountSummary, sourceConfigRevision: number | undefined): Record<string, unknown> | undefined {
+function cooldownInputFence(
+  account: AccountSummary,
+  sourceConfigRevision: number | undefined,
+  dispatchRevision: number
+): Record<string, unknown> | undefined {
   if (account.status !== 'temporary_unavailable' && account.status !== 'rate_limited') return undefined
   const observation = requiredText(account.cooldownRetestObservationStartedAt, 'cooldownRetestObservationStartedAt')
   const generation = requiredText(account.cooldownRetestGeneration, 'cooldownRetestGeneration')
-  const dispatchRevision = positiveInteger(account.cooldownRetestDispatchRevision ?? account.dispatchRevision, 'cooldownRetestDispatchRevision')
-  if (account.dispatchRevision !== undefined && dispatchRevision !== account.dispatchRevision) {
+  if (account.cooldownRetestDispatchRevision !== undefined && account.cooldownRetestDispatchRevision !== dispatchRevision) {
     throw new Error('J1 cooldown dispatchRevision 与账户 fence 不一致')
   }
   const parsedObservation = parseDate(observation)
@@ -310,6 +316,5 @@ function cooldownInputFence(account: AccountSummary, sourceConfigRevision: numbe
 }
 
 function parseDate(value: string): Date | undefined {
-  const parsed = new Date(value)
-  return Number.isFinite(parsed.getTime()) ? parsed : undefined
+  return parseRfc3339Instant(value)
 }

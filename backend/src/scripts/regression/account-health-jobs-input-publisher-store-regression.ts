@@ -57,6 +57,31 @@ try {
   assert.equal(outboxStatus(database, account.id, 1), 'published')
 
   const row = database.prepare('SELECT config_revision, dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number, dispatch_revision: number }
+  const cooldownObservedAt = new Date(Date.now() - 60_000).toISOString()
+  const cooldownUntil = new Date(Date.now() + 60_000).toISOString()
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'temporary_unavailable', schedulable = 1, cooldown_until = ?,
+        cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
+    WHERE id = ?
+  `).run(cooldownUntil, cooldownObservedAt, 'publisher-store-generation', account.id)
+  const cooldown = reserveAndEnqueueAccountHealthJobsInput({
+    accountId: account.id,
+    configRevision: row.config_revision,
+    dispatchRevision: row.dispatch_revision,
+    kind: 'snapshot',
+    reason: 'cooldown_retest'
+  }, database)
+  assert.equal(cooldown.inputVersion, 2)
+  assert.equal(await publishNextAccountHealthJobsInputFromBusinessOutbox(), 'published', '冷却账户必须发布完整 J1 fence input')
+  const cooldownInput = readPublishedAccountHealthJobsInput(inputPath)
+  const cooldownPayload = JSON.parse(Buffer.from(cooldownInput.payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.deepEqual(cooldownPayload.cooldown_fence, {
+    observation_started_at: cooldownObservedAt,
+    generation: 'publisher-store-generation'
+  })
+  assert.equal(outboxStatus(database, account.id, 2), 'published')
+
   database.prepare('UPDATE accounts SET status = ?, schedulable = ? WHERE id = ?').run('disabled', 0, account.id)
   const tombstone = reserveAndEnqueueAccountHealthJobsInput({
     accountId: account.id,
@@ -65,11 +90,11 @@ try {
     kind: 'snapshot',
     reason: 'account_disabled'
   }, database)
-  assert.equal(tombstone.inputVersion, 2)
+  assert.equal(tombstone.inputVersion, 3)
   assert.equal(await publishNextAccountHealthJobsInputFromBusinessOutbox(), 'published', '当前资格失效的 snapshot intent 必须转换成 tombstone 并 ACK')
   const tombstoneInput = readPublishedAccountHealthJobsInput(inputPath)
   const tombstonePayload = JSON.parse(Buffer.from(tombstoneInput.payload, 'base64url').toString('utf8')) as Record<string, unknown>
-  assert.equal(tombstonePayload.input_version, 2)
+  assert.equal(tombstonePayload.input_version, 3)
   assert.equal((tombstonePayload.eligibility as Record<string, unknown>).schedulable, false)
   assert.equal(outboxStatus(database, account.id, 2), 'published')
 
