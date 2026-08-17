@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createPostgresDatabaseClient } from '../../../storage/database-client.js'
 import { markAccountListAvailabilityDirtyFamilyInClient } from '../../../storage/account-list-availability-projection.repository.js'
@@ -252,9 +252,11 @@ function visibleRuntimeProbePresentation(
   const lastObservation = presentation?.lastObservation
   if (input.running) return { lastObservation, schedule: { state: 'running' } }
   const nextAttemptAt = presentation?.schedule.nextAttemptAt
-  if (!input.taskScheduled || !nextAttemptAt) return { lastObservation, schedule: { state: 'none' } }
-  const nextAttemptAtMs = Date.parse(nextAttemptAt)
-  if (!Number.isFinite(nextAttemptAtMs)) return { lastObservation, schedule: { state: 'none' } }
+  if (!input.taskScheduled || nextAttemptAt === undefined) return { lastObservation, schedule: { state: 'none' } }
+  const nextAttemptAtMs = rfc3339InstantMilliseconds(nextAttemptAt)
+  if (nextAttemptAtMs === undefined) {
+    throw new Error('账户运行态 probe nextAttemptAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
   return {
     lastObservation,
     schedule: {

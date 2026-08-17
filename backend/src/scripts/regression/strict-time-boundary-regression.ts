@@ -141,6 +141,36 @@ assert.doesNotMatch(openAICompatibleVectorStoreRouteSource, /function openAITime
 assert.match(openAICompatibleVectorStoreRouteSource, /rfc3339InstantMilliseconds\(value\)/, 'OpenAI 兼容向量库输出必须严格解析存储时间')
 assert.match(openAICompatibleVectorStoreRouteSource, /OpenAI 兼容向量库时间必须是带 Z 或数值 offset 的 RFC3339 时间/, 'OpenAI 兼容向量库非法时间不得伪造当前秒')
 
+const clientIpPolicyCacheSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(clientIpPolicyCacheSource, /Date\.parse\(/, 'Client-IP 策略缓存不得按本机时区解析 expiresAt')
+assert.match(clientIpPolicyCacheSource, /policy\.expiresAt === undefined/, 'Client-IP 策略只有 expiresAt 缺失时才表示永久')
+assert.match(clientIpPolicyCacheSource, /Client-IP 策略 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间/, 'Client-IP supplied invalid expiresAt 必须可见失败')
+
+const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(preflightSource, /Date\.parse\(/, '可恢复账户冷却等待不得按本机时区解析 cooldownUntil')
+assert.match(preflightSource, /可恢复账户 cooldownUntil 必须是带 Z 或数值 offset 的 RFC3339 时间/, '可恢复账户 supplied invalid cooldownUntil 必须可见失败')
+
+const runtimeSideEffectsSource = readFileSync(new URL('../../modules/gateway/runtime/account-side-effects.service.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(runtimeSideEffectsSource, /Date\.parse\(/, '账户运行态 probe 展示不得按本机时区解析 nextAttemptAt')
+assert.match(runtimeSideEffectsSource, /账户运行态 probe nextAttemptAt 必须是带 Z 或数值 offset 的 RFC3339 时间/, 'runtime-state supplied invalid nextAttemptAt 必须可见失败')
+
+const anthropicRouteHelpers = await import('../../modules/gateway/protocols/anthropic-v1/route-helpers.js')
+assert.equal(
+  anthropicRouteHelpers.buildAnthropicModelsResponse([{ model: 'strict-release-date', releaseDate: '2026-08-16' } as never]).data[0]?.created_at,
+  '2026-08-16T00:00:00.000Z',
+  '模型 releaseDate 是日期业务字段，转换到协议绝对时间时必须明确使用 UTC 日界线'
+)
+assert.throws(
+  () => anthropicRouteHelpers.buildAnthropicModelsResponse([{ model: 'invalid-release-date', releaseDate: '2026-08-16T12:00:00' } as never]),
+  /Anthropic 模型 releaseDate 必须是 YYYY-MM-DD 日期/,
+  '模型 releaseDate 不得以裸绝对时间混入协议输出'
+)
+assert.throws(
+  () => anthropicRouteHelpers.buildAnthropicModelsResponse([{ model: 'invalid-created-at', createdAt: '2026-08-16T12:00:00' } as never]),
+  /Anthropic 模型 createdAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '模型 createdAt 裸时间必须可见失败'
+)
+
 const grokOAuthSource = readFileSync(new URL('../../modules/grok-oauth/grok-oauth.routes.ts', import.meta.url), 'utf8')
 const grokSsoExpirySource = grokOAuthSource.match(
   /function grokSSOImportAccountExpiresAt\([\s\S]*?\n}\n\nasync function mapWithConcurrency/

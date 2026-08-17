@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 
 import { logger } from '../../../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { bindRequestContextFields, logRequestStage } from '../../../shared/request-context.js'
 import { type GatewayApiKeyRow, type GroupUsageAccessMetadata, type OpenAIAccountsForGroupDiagnostics } from '../../../storage/repositories.js'
 import {
@@ -1583,12 +1584,12 @@ function nextRecoverableAccountRetryAfterMs(accounts: UpstreamAccount[]): number
   const now = Date.now()
   let nextRetryAfterMs: number | undefined
   for (const account of accounts) {
-    if (!account.cooldownUntil) {
+    if (account.cooldownUntil === undefined) {
       continue
     }
-    const cooldownUntilMs = Date.parse(account.cooldownUntil)
-    if (!Number.isFinite(cooldownUntilMs)) {
-      continue
+    const cooldownUntilMs = rfc3339InstantMilliseconds(account.cooldownUntil)
+    if (cooldownUntilMs === undefined) {
+      throw new Error('可恢复账户 cooldownUntil 必须是带 Z 或数值 offset 的 RFC3339 时间')
     }
     const retryAfterMs = Math.max(0, cooldownUntilMs - now)
     nextRetryAfterMs = nextRetryAfterMs === undefined

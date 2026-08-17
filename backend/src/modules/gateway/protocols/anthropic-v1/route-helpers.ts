@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../../shared/rfc3339.js'
 import type { OpenAIAccountSecret } from '../../../../storage/repositories.js'
 import type { ProviderModelCatalogItem } from '../../../model-pricing/model-catalog.service.js'
 import { anthropicClaudeCodePathAndQueryForRequest } from './client-compatibility.js'
@@ -99,8 +100,17 @@ function splitPathAndQuery(pathAndQuery: string): { path: string; query: string 
 }
 
 function modelCreatedAt(item: ProviderModelCatalogItem): string | undefined {
-  const source = item.releaseDate || item.createdAt
-  if (!source) return undefined
-  const timestamp = Date.parse(source)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
+  if (item.releaseDate !== undefined) {
+    const releaseDate = item.releaseDate.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) {
+      throw new Error('Anthropic 模型 releaseDate 必须是 YYYY-MM-DD 日期')
+    }
+    const timestamp = rfc3339InstantMilliseconds(`${releaseDate}T00:00:00.000Z`)
+    if (timestamp === undefined) {
+      throw new Error('Anthropic 模型 releaseDate 必须是有效日期')
+    }
+    return new Date(timestamp).toISOString()
+  }
+  if (item.createdAt === undefined) return undefined
+  return requiredRfc3339Instant(item.createdAt, 'Anthropic 模型 createdAt')
 }

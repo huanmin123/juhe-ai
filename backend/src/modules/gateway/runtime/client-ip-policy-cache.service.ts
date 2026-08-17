@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import {
   findActiveClientIpPolicyByHashAsync,
@@ -247,9 +248,12 @@ function clientIpPolicyTtlMs(policy: ActiveClientIpPolicy | undefined): number {
 }
 
 function policyExpiresAtTime(policy: ActiveClientIpPolicy): number | undefined {
-  if (!policy.expiresAt) return undefined
-  const expiresAtMs = Date.parse(policy.expiresAt)
-  return Number.isFinite(expiresAtMs) ? expiresAtMs : undefined
+  if (policy.expiresAt === undefined) return undefined
+  const expiresAtMs = rfc3339InstantMilliseconds(policy.expiresAt)
+  if (expiresAtMs === undefined) {
+    throw new Error('Client-IP 策略 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return expiresAtMs
 }
 
 function cloneActiveClientIpPolicy(policy: ActiveClientIpPolicy): ActiveClientIpPolicy {
@@ -260,7 +264,9 @@ function cloneActiveClientIpPolicy(policy: ActiveClientIpPolicy): ActiveClientIp
     aggregateIpKey: policy.aggregateIpKey,
     clientIp: policy.clientIp,
     reason: policy.reason,
-    expiresAt: policy.expiresAt
+    expiresAt: policy.expiresAt === undefined
+      ? undefined
+      : requiredRfc3339Instant(policy.expiresAt, 'Client-IP 策略 expiresAt')
   }
 }
 
