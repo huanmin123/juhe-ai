@@ -1,6 +1,7 @@
 import type { SQLInputValue } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import {
   beginDatabaseTransaction,
   commitDatabaseTransaction,
@@ -81,6 +82,7 @@ export function createClientIpPolicy(input: ClientIpPolicyMutationInput): Client
   }
   const id = newId('ip_policy')
   const now = nowIso()
+  const expiresAt = optionalRfc3339Instant(input.expiresAt, 'Client-IP 策略 expiresAt')
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database.prepare(`
@@ -103,7 +105,7 @@ export function createClientIpPolicy(input: ClientIpPolicyMutationInput): Client
       ipHash,
       policyType,
       normalizeOptionalText(input.reason) ?? null,
-      normalizeOptionalIso(input.expiresAt) ?? null,
+      expiresAt ?? null,
       input.actorSystemAccountId,
       now,
       now
@@ -137,6 +139,7 @@ export async function createClientIpPolicyAsync(input: ClientIpPolicyMutationInp
   }
   const id = newId('ip_policy')
   const now = nowIso()
+  const expiresAt = optionalRfc3339Instant(input.expiresAt, 'Client-IP 策略 expiresAt')
   await client.transaction(async (tx) => {
     await tx.execute(`
       UPDATE ${statsTable(tx, 'client_ip_policies')}
@@ -158,7 +161,7 @@ export async function createClientIpPolicyAsync(input: ClientIpPolicyMutationInp
       ipHash,
       policyType,
       normalizeOptionalText(input.reason) ?? null,
-      normalizeOptionalIso(input.expiresAt) ?? null,
+      expiresAt ?? null,
       input.actorSystemAccountId,
       now,
       now
@@ -233,17 +236,13 @@ export async function disableClientIpPoliciesAsync(input: ClientIpPolicyDisableI
 }
 
 export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
-  const now = nowIso()
-  const params: SQLInputValue[] = [now]
   const rows = getStatsDatabase().prepare(`
     SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
       registry.aggregate_ip_key, registry.client_ip
     FROM client_ip_policies policies
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.status = 'active'
-      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
-    ORDER BY policies.created_at DESC, policies.id DESC
-  `).all(...params) as unknown as Array<{
+  `).all() as unknown as Array<{
     id: string
     ip_hash: string
     policy_type: string
@@ -252,7 +251,10 @@ export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
     aggregate_ip_key: string
     client_ip: string
   }>
-  return rows.map(mapActiveClientIpPolicyRow)
+  const nowMs = Date.now()
+  return rows
+    .map(mapActiveClientIpPolicyRow)
+    .filter((policy) => isActiveClientIpPolicyAt(policy, nowMs))
 }
 
 export async function listActiveClientIpPoliciesAsync(): Promise<ActiveClientIpPolicy[]> {
@@ -264,7 +266,6 @@ export async function listActiveClientIpPoliciesAsync(): Promise<ActiveClientIpP
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listActiveClientIpPolicies()
   }
-  const now = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<ActiveClientIpPolicyRow>(`
     SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
@@ -272,10 +273,11 @@ export async function listActiveClientIpPoliciesAsync(): Promise<ActiveClientIpP
     FROM ${statsTable(client, 'client_ip_policies')} policies
     INNER JOIN ${statsTable(client, 'client_ip_registry')} registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.status = 'active'
-      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
-    ORDER BY policies.created_at DESC, policies.id DESC
-  `, [now])
-  return rows.map(mapActiveClientIpPolicyRow)
+  `)
+  const nowMs = Date.now()
+  return rows
+    .map(mapActiveClientIpPolicyRow)
+    .filter((policy) => isActiveClientIpPolicyAt(policy, nowMs))
 }
 
 export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClientIpPolicy | undefined {
@@ -283,7 +285,6 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
   if (!ipHash) {
     return undefined
   }
-  const now = nowIso()
   const row = getStatsDatabase().prepare(`
     SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
       registry.aggregate_ip_key, registry.client_ip
@@ -291,10 +292,8 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.ip_hash = ?
       AND policies.status = 'active'
-      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
-    ORDER BY policies.created_at DESC, policies.id DESC
     LIMIT 1
-  `).get(ipHash, now) as unknown as {
+  `).get(ipHash) as unknown as {
     id: string
     ip_hash: string
     policy_type: string
@@ -303,7 +302,9 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
     aggregate_ip_key: string
     client_ip: string
   } | undefined
-  return row ? mapActiveClientIpPolicyRow(row) : undefined
+  if (!row) return undefined
+  const policy = mapActiveClientIpPolicyRow(row)
+  return isActiveClientIpPolicyAt(policy, Date.now()) ? policy : undefined
 }
 
 export async function findActiveClientIpPolicyByHashAsync(inputIpHash: string): Promise<ActiveClientIpPolicy | undefined> {
@@ -320,7 +321,6 @@ export async function findActiveClientIpPolicyByHashAsync(inputIpHash: string): 
   if (!ipHash) {
     return undefined
   }
-  const now = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await client.one<ActiveClientIpPolicyRow>(`
     SELECT policies.id, policies.ip_hash, policies.policy_type, policies.reason, policies.expires_at,
@@ -329,11 +329,11 @@ export async function findActiveClientIpPolicyByHashAsync(inputIpHash: string): 
     INNER JOIN ${statsTable(client, 'client_ip_registry')} registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.ip_hash = ?
       AND policies.status = 'active'
-      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
-    ORDER BY policies.created_at DESC, policies.id DESC
     LIMIT 1
-  `, [ipHash, now])
-  return row ? mapActiveClientIpPolicyRow(row) : undefined
+  `, [ipHash])
+  if (!row) return undefined
+  const policy = mapActiveClientIpPolicyRow(row)
+  return isActiveClientIpPolicyAt(policy, Date.now()) ? policy : undefined
 }
 
 export function recordClientIpPolicyHits(hits: ClientIpPolicyHitInput[]): { recorded: number } {
@@ -359,7 +359,7 @@ export function recordClientIpPolicyHits(hits: ClientIpPolicyHitInput[]): { reco
       const ipHash = normalizeIpHash(hit.ipHash)
       const policyId = normalizeOptionalText(hit.policyId)
       if (!ipHash || !policyId) continue
-      const hitAt = normalizeOptionalIso(hit.hitAt) ?? updatedAt
+      const hitAt = optionalRfc3339Instant(hit.hitAt, 'Client-IP 策略 hitAt') ?? updatedAt
       insert.run(
         ipHash,
         dateKey(new Date(hitAt), usageStatsTimezone()),
@@ -422,7 +422,7 @@ function normalizeClientIpPolicyHitEntries(
     const ipHash = normalizeIpHash(hit.ipHash)
     const policyId = normalizeOptionalText(hit.policyId)
     if (!ipHash || !policyId) continue
-    const hitAt = normalizeOptionalIso(hit.hitAt) ?? updatedAt
+    const hitAt = optionalRfc3339Instant(hit.hitAt, 'Client-IP 策略 hitAt') ?? updatedAt
     entries.push({
       ipHash,
       statDate: dateKey(new Date(hitAt), timezone),
@@ -450,7 +450,7 @@ function mapActiveClientIpPolicyRow(row: {
     aggregateIpKey: row.aggregate_ip_key,
     clientIp: row.client_ip,
     reason: row.reason ?? undefined,
-    expiresAt: row.expires_at ?? undefined
+    expiresAt: optionalRfc3339Instant(row.expires_at, 'Client-IP 策略 expiresAt')
   }
 }
 
@@ -480,11 +480,11 @@ function mapClientIpPolicyRow(row: ClientIpPolicyRow): ClientIpPolicySummary {
     policyType: normalizeClientIpPolicyType(row.policy_type),
     status: row.status === 'disabled' ? 'disabled' : 'active',
     reason: row.reason ?? undefined,
-    expiresAt: row.expires_at ?? undefined,
+    expiresAt: optionalRfc3339Instant(row.expires_at, 'Client-IP 策略 expiresAt'),
     createdBySystemAccountId: row.created_by_system_account_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    disabledAt: row.disabled_at ?? undefined,
+    createdAt: requiredRfc3339Instant(row.created_at, 'Client-IP 策略 createdAt'),
+    updatedAt: requiredRfc3339Instant(row.updated_at, 'Client-IP 策略 updatedAt'),
+    disabledAt: optionalRfc3339Instant(row.disabled_at, 'Client-IP 策略 disabledAt'),
     disabledBySystemAccountId: row.disabled_by_system_account_id ?? undefined,
     disabledReason: row.disabled_reason ?? undefined
   }
@@ -503,11 +503,18 @@ function activePolicyReplacementReason(nextPolicyType: ClientIpPolicyType): stri
   return nextPolicyType === 'allowlist' ? '被新的白名单策略替换' : '被新的封禁策略替换'
 }
 
-function normalizeOptionalIso(value?: string | null): string | undefined {
-  const text = normalizeOptionalText(value)
-  if (!text) return undefined
-  const time = Date.parse(text)
-  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
+function optionalRfc3339Instant(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
+}
+
+function isActiveClientIpPolicyAt(policy: ActiveClientIpPolicy, nowMs: number): boolean {
+  if (policy.expiresAt === undefined) return true
+  const expiresAtMs = rfc3339InstantMilliseconds(policy.expiresAt)
+  if (expiresAtMs === undefined) {
+    throw new Error('Client-IP 策略 expiresAt必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return expiresAtMs > nowMs
 }
 
 interface ClientIpPolicyRow {

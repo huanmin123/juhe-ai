@@ -530,6 +530,47 @@ try {
   }).disabledCount, 1, '范围外 IP 回归策略应可停用')
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === outsideRangePolicy.id), false, '范围外 IP 回归策略停用后不应保持 active')
 
+  const offsetExpiryPolicy = clientIpStats.createClientIpPolicy({
+    ipHash: ipv4Identity.ipHash,
+    reason: 'strict timestamp regression',
+    expiresAt: '2099-08-16T06:34:49.137+08:00',
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.equal(offsetExpiryPolicy.expiresAt, '2099-08-15T22:34:49.137Z', 'IP 策略 expiresAt 的 numeric offset 必须存储并输出为 UTC')
+  assert.throws(
+    () => clientIpStats.createClientIpPolicy({
+      ipHash: ipv4Identity.ipHash,
+      reason: 'invalid bare expiry',
+      expiresAt: '2099-08-16T06:34:49.137',
+      actorSystemAccountId: 'sys_admin'
+    }),
+    /Client-IP 策略 expiresAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    'IP 策略 supplied bare expiresAt 不得被静默改成永久策略'
+  )
+  assert.equal(clientIpStats.findActiveClientIpPolicyByHash(ipv4Identity.ipHash)?.id, offsetExpiryPolicy.id, '非法 expiresAt 被拒绝后不得替换现有 active 策略')
+  assert.throws(
+    () => clientIpStats.recordClientIpPolicyHits([{
+      ipHash: ipv4Identity.ipHash,
+      policyId: offsetExpiryPolicy.id,
+      hitAt: '2026-08-16T06:34:49.137'
+    }]),
+    /Client-IP 策略 hitAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    'IP 策略 supplied bare hitAt 不得静默回退当前时间'
+  )
+  assert.equal(clientIpStats.recordClientIpPolicyHits([{
+    ipHash: ipv4Identity.ipHash,
+    policyId: offsetExpiryPolicy.id,
+    hitAt: '2026-08-16T06:34:49.137+08:00'
+  }]).recorded, 1, 'IP 策略命中应接受带 numeric offset 的 hitAt')
+  const strictHit = statsDatabase.prepare('SELECT last_hit_at FROM client_ip_policy_hits WHERE policy_id = ?').get(offsetExpiryPolicy.id) as { last_hit_at?: string } | undefined
+  assert.equal(strictHit?.last_hit_at, '2026-08-15T22:34:49.137Z', 'IP 策略命中 hitAt 必须规范为 UTC 后写入')
+  statsDatabase.prepare('UPDATE client_ip_policies SET expires_at = ? WHERE id = ?').run('2000-01-01T00:00:00', offsetExpiryPolicy.id)
+  assert.throws(
+    () => clientIpStats.findActiveClientIpPolicyByHash(ipv4Identity.ipHash),
+    /Client-IP 策略 expiresAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '持久化裸 expiresAt 即使按文本比较已过期，也必须可见失败而不是被静默跳过'
+  )
+
   const cursorCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM stats_job_state WHERE job_name = 'client_ip_stats_aggregation' AND scope_type = 'usage_shard' AND cursor_id IS NOT NULL")
     .get() as { total?: number } | undefined
@@ -731,18 +772,14 @@ function delay(ms: number): Promise<void> {
 }
 
 function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {
-  const policyNow = new Date().toISOString()
   const details = explainStatsQuery(`
     SELECT policies.id
     FROM client_ip_policies policies
     INNER JOIN client_ip_registry registry ON registry.ip_hash = policies.ip_hash
     WHERE policies.ip_hash = ?
       AND policies.status = 'active'
-      AND policies.policy_type = 'blacklist'
-      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
-    ORDER BY policies.created_at DESC, policies.id DESC
     LIMIT 1
-  `, [ipHash, policyNow])
+  `, [ipHash])
   assert(/idx_client_ip_policies_(active|ip)/.test(details), `IP 封禁运行态查询应按 ip_hash 命中策略索引，实际计划：${details}`)
   assert(!/SCAN (client_ip_policies|policies)\b/.test(details), `IP 封禁运行态查询不应扫描策略表，实际计划：${details}`)
 }
