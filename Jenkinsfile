@@ -246,6 +246,14 @@ pipeline {
 
 def validRegistry(value) { return value ==~ /^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/ }
 def validDigest(value) { return value ==~ /^sha256:[a-f0-9]{64}$/ }
+def validHarborDigestImage(value) {
+  if (!value || value != value.trim()) return false
+  def prefix = "${env.HARBOR_REGISTRY}/"
+  def parts = value.split('@sha256:', 2)
+  return parts.size() == 2 && parts[0].startsWith(prefix) &&
+    (parts[0].substring(prefix.length()) ==~ /^[a-z0-9][a-z0-9._\/-]*$/) &&
+    validDigest("sha256:${parts[1]}")
+}
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
 
@@ -268,8 +276,7 @@ def readHarborBaseImages() {
   }
   requiredKeys.each { key ->
     def image = values[key]
-    if (!image || !image.startsWith("${env.HARBOR_REGISTRY}/") ||
-        !(image ==~ /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[a-z0-9][a-z0-9._-]*)+@sha256:[a-f0-9]{64}$/)) {
+    if (!validHarborDigestImage(image)) {
       error "Harbor 基础镜像清单中的 ${key} 必须是当前 Harbor 的不可变 digest 引用。"
     }
   }
