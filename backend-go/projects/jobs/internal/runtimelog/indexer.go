@@ -11,7 +11,6 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -81,29 +80,19 @@ func (indexer *Indexer) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var group sync.WaitGroup
-	var errorsMu sync.Mutex
 	var importErrors []error
 	for _, file := range files {
-		file := file
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					errorsMu.Lock()
 					importErrors = append(importErrors, fmt.Errorf("%w: %s: %v\n%s", errManagedGoroutinePanic, file.Path, recovered, debug.Stack()))
-					errorsMu.Unlock()
 				}
 			}()
 			if err := indexer.importFile(ctx, file); err != nil && !errors.Is(err, context.Canceled) {
-				errorsMu.Lock()
 				importErrors = append(importErrors, fmt.Errorf("%s: %w", file.Path, err))
-				errorsMu.Unlock()
 			}
 		}()
 	}
-	group.Wait()
 	return errors.Join(importErrors...)
 }
 

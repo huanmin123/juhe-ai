@@ -223,23 +223,44 @@ mountAccountHealthCheckDispatchBridge(app, {
   dispatch: dispatchAccountHealthCheckWithOutcome
 })
 
-app.get(`${systemPrefix}/health`, (_req, res) => {
+function getRuntimeHealthSnapshot() {
   const workerProcesses = getBackgroundWorkerSupervisorRuntime()
   const dbService = getDbServiceState()
   const workerTopologyReady = workerProcesses.length === 0 || workerProcesses.every((processRuntime) => processRuntime.ready)
   const topologyGatesHealth = runtimeConfig.runtimeMode === 'performance'
     && runtimeConfig.performanceNodeRole === 'control'
-  res.status(topologyGatesHealth && !workerTopologyReady ? 503 : 200).json({
+
+  return {
+    statusCode: topologyGatesHealth && !workerTopologyReady ? 503 : 200,
     status: topologyGatesHealth && !workerTopologyReady ? 'starting' : 'ok',
+    dbService,
+    workerProcesses,
+    workerTopologyReady
+  }
+}
+
+app.get('/health', (_req, res) => {
+  const health = getRuntimeHealthSnapshot()
+  res.status(health.statusCode).json({
+    status: health.status,
+    service: 'juhe-ai',
+    checkedAt: formatShanghaiNow()
+  })
+})
+
+app.get(`${systemPrefix}/health`, (_req, res) => {
+  const health = getRuntimeHealthSnapshot()
+  res.status(health.statusCode).json({
+    status: health.status,
     service: 'juhe-ai',
     runtimeMode: runtimeConfig.runtimeMode,
     checkedAt: formatShanghaiNow(),
     nodeRole: runtimeConfig.performanceNodeRole,
     instanceId: runtimeConfig.instanceId,
     processPid: process.pid,
-    dbServicePid: dbService.pid,
-    workerProcesses,
-    workerTopologyReady
+    dbServicePid: health.dbService.pid,
+    workerProcesses: health.workerProcesses,
+    workerTopologyReady: health.workerTopologyReady
   })
 })
 

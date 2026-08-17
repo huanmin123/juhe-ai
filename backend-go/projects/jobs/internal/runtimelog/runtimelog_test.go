@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -109,6 +110,22 @@ func TestRotatedFileIsIdempotent(t *testing.T) {
 	cursor := findCursor(t, store, rotatedPath)
 	if cursor.LineNumber != 2 || cursor.LastErrorMessage != "" {
 		t.Fatalf("轮转文件 cursor 不正确: %#v", cursor)
+	}
+}
+
+func TestRunOnceProcessesFilesSerially(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	ctx := testOwnerContext(t, store)
+	writeTestFile(t, filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"), logLine("first", "2026-08-08T00:00:00.000Z")+"\n")
+	writeTestFile(t, filepath.Join(config.LogDirectory, "juhe-ai.20260721T121501Z.c3d4.log"), logLine("second", "2026-08-08T00:00:01.000Z")+"\n")
+
+	probe := &runOnceCommitProbeStore{Store: store}
+	if err := NewIndexer(config, probe).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeLogCount(t, store, 2)
+	if probe.maxConcurrentCommits != 1 {
+		t.Fatalf("同一次 RunOnce 的 Commit 必须串行执行，最大并发为 %d", probe.maxConcurrentCommits)
 	}
 }
 
@@ -922,6 +939,30 @@ func TestFileIdentityMatchesNodeFsStat(t *testing.T) {
 	if actual != expected {
 		t.Fatalf("Go file identity 与 Node fs.stat 不一致: got %q, want %q", actual, expected)
 	}
+}
+
+type runOnceCommitProbeStore struct {
+	Store
+	mu                   sync.Mutex
+	activeCommits        int
+	maxConcurrentCommits int
+}
+
+func (store *runOnceCommitProbeStore) Commit(ctx context.Context, lease OwnerLease, records []Record, cursor Cursor, retentionCutoff time.Time) error {
+	store.mu.Lock()
+	store.activeCommits++
+	if store.activeCommits > store.maxConcurrentCommits {
+		store.maxConcurrentCommits = store.activeCommits
+	}
+	store.mu.Unlock()
+	defer func() {
+		store.mu.Lock()
+		store.activeCommits--
+		store.mu.Unlock()
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	return store.Store.Commit(ctx, lease, records, cursor, retentionCutoff)
 }
 
 func openTestSQLiteStore(t *testing.T) (*sqliteStore, Config) {
