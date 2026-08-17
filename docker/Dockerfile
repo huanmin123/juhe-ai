@@ -9,7 +9,8 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY backend/package.json backend/package.json
-RUN pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
+RUN --mount=type=cache,id=juhe-ai-prod-pnpm-store,target=/pnpm/store \
+    pnpm install --prod --frozen-lockfile --filter juhe-ai-backend... --store-dir=/pnpm/store
 
 FROM ${NODE_RUNTIME_IMAGE} AS artifacts
 WORKDIR /source

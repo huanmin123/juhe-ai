@@ -10,7 +10,9 @@ ENV GOPROXY=${GO_PROXY}
 WORKDIR /source
 
 COPY backend-go ./backend-go
-RUN test -n "$GO_PROJECT" \
+RUN --mount=type=cache,id=juhe-ai-go-mod,target=/go/pkg/mod \
+  --mount=type=cache,id=juhe-ai-go-build,target=/root/.cache/go-build \
+  test -n "$GO_PROJECT" \
   && test -f "/source/backend-go/projects/$GO_PROJECT/go.mod" \
   && CGO_ENABLED=0 GOOS=linux go build -C "/source/backend-go/projects/$GO_PROJECT" -trimpath -ldflags="-s -w" -o "/out/juhe-ai-go-$GO_PROJECT" "./cmd/juhe-ai-$GO_PROJECT" \
   && printf '%s\n' \

@@ -16,6 +16,7 @@ pipeline {
     HARBOR_REPOSITORY_NODE = 'platform/juhe-ai'
     HARBOR_REPOSITORY_JOBS = 'platform/juhe-ai-go-jobs'
     HARBOR_REPOSITORY_GATEWAY = 'platform/juhe-ai-go-gateway'
+    HARBOR_CACHE_REPOSITORY = 'platform/ci-cache'
     HARBOR_REGISTRY_FILE = '/run/jenkins-secrets/harbor-registry'
     HARBOR_BASE_IMAGES_FILE = '/run/jenkins-secrets/harbor-base-images'
     GITEE_WRITE_KEY = '/run/jenkins-secrets/gitee-k8s-write'
@@ -65,21 +66,34 @@ pipeline {
     stage('构建前端与 Node 产物') {
       when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
-        sh '''#!/bin/sh
-          set -eu
-          builder_image="juhe-ai-node-builder:${BUILD_TAG}"
-          builder_container="juhe-ai-node-builder-${BUILD_TAG}"
-          trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
-          docker build --network host \
-            --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
-            --build-arg NODE_BUILDER_IMAGE="$NODE_BUILDER_IMAGE" \
-            --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
-            --tag "$builder_image" --file docker/Dockerfile.builder .
-          docker create --name "$builder_container" "$builder_image" >/dev/null
-          mkdir -p backend/dist frontend/dist
-          docker cp "$builder_container:/source/backend/dist/." backend/dist/
-          docker cp "$builder_container:/source/frontend/dist/." frontend/dist/
-        '''
+        withCredentials([usernamePassword(credentialsId: 'harbor-platform-push', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+          sh '''#!/bin/sh
+            set -eu
+            builder_image="juhe-ai-node-builder:${BUILD_TAG}"
+            builder_container="juhe-ai-node-builder-${BUILD_TAG}"
+            cache_ref="$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-builder:buildcache"
+            trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
+            printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
+            build_with_cache() {
+              cache_ref=$1
+              shift
+              if docker manifest inspect "$cache_ref" >/dev/null 2>&1; then
+                docker buildx build --cache-from "type=registry,ref=$cache_ref" --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
+              else
+                docker buildx build --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
+              fi
+            }
+            build_with_cache "$cache_ref" --load --network host \
+              --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+              --build-arg NODE_BUILDER_IMAGE="$NODE_BUILDER_IMAGE" \
+              --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
+              --tag "$builder_image" --file docker/Dockerfile.builder .
+            docker create --name "$builder_container" "$builder_image" >/dev/null
+            mkdir -p backend/dist frontend/dist
+            docker cp "$builder_container:/source/backend/dist/." backend/dist/
+            docker cp "$builder_container:/source/frontend/dist/." frontend/dist/
+          '''
+        }
       }
     }
 
@@ -95,15 +109,24 @@ pipeline {
           sh '''#!/bin/sh
             set -eu
             printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
-            docker build --network host \
+            build_with_cache() {
+              cache_ref=$1
+              shift
+              if docker manifest inspect "$cache_ref" >/dev/null 2>&1; then
+                docker buildx build --cache-from "type=registry,ref=$cache_ref" --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
+              else
+                docker buildx build --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
+              fi
+            }
+            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-runtime:buildcache" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
               --build-arg NODE_RUNTIME_IMAGE="$NODE_RUNTIME_IMAGE" \
               --tag "$NODE_IMAGE" --file docker/Dockerfile .
-            docker build --network host \
+            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-go-jobs:buildcache" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
               --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
               --build-arg GO_PROJECT=jobs --tag "$JOBS_IMAGE" --file docker/Dockerfile.go-project .
-            docker build --network host \
+            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-go-gateway:buildcache" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
               --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
               --build-arg GO_PROJECT=gateway --tag "$GATEWAY_IMAGE" --file docker/Dockerfile.go-project .
