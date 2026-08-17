@@ -34,6 +34,13 @@ child.stderr?.on('data', (chunk: Buffer) => {
 try {
   await waitForHealth(`http://127.0.0.1:${port}/__aisys__/health`, child)
   await waitForHealth(`http://127.0.0.1:${port}/__aisys__/api/health`, child)
+  const publicHealth = await fetch(`http://127.0.0.1:${port}/health`)
+  const publicHealthBody = await publicHealth.json() as Record<string, unknown>
+  assert.equal(publicHealth.status, 200, '公开 /health 必须在网关认证前返回健康状态')
+  assert.equal(publicHealthBody.status, 'ok', '公开 /health 必须返回当前健康状态')
+  assert.equal(publicHealthBody.service, 'juhe-ai', '公开 /health 必须标识服务')
+  assert.equal(typeof publicHealthBody.checkedAt, 'string', '公开 /health 必须提供检查时间')
+  assert.deepEqual(Object.keys(publicHealthBody).sort(), ['checkedAt', 'service', 'status'], '公开 /health 只能返回无敏感运行态的健康摘要')
 
   const { workerChildren, dbServiceChildren } = await waitForChildProcessTopology(child, 3, 1)
   assert.equal(workerChildren.length, 3, `server 必须拉起 ingest-worker、stats-worker 和 ops-worker 三个子进程，实际 worker 子进程数：${workerChildren.length}`)
