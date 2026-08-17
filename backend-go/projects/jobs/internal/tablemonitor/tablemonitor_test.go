@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,37 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func TestPostgresIndexSummaryScopesTargetSchema(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("无法定位 tablemonitor 测试源码")
+	}
+	source, err := os.ReadFile(filepath.Join(filepath.Dir(testFile), "sampler.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := string(source)
+	indexSummaryStart := strings.Index(query, "WITH index_summary AS")
+	if indexSummaryStart < 0 {
+		t.Fatal("未找到 PostgreSQL index_summary 查询")
+	}
+	indexSummary := query[indexSummaryStart:]
+	indexSummaryEnd := strings.Index(indexSummary, ")\nSELECT c.relname")
+	if indexSummaryEnd < 0 {
+		t.Fatal("未找到 PostgreSQL index_summary 查询结尾")
+	}
+	indexSummary = indexSummary[:indexSummaryEnd]
+	for _, requirement := range []string{
+		"JOIN pg_class table_class ON table_class.oid = i.indrelid",
+		"JOIN pg_namespace table_schema ON table_schema.oid = table_class.relnamespace",
+		"WHERE table_schema.nspname = $1",
+	} {
+		if !strings.Contains(indexSummary, requirement) {
+			t.Fatalf("PostgreSQL index_summary 必须按目标 schema 限定，缺少 %q", requirement)
+		}
+	}
+}
 
 func TestLoadConfigRequiresDedicatedSQLiteOutput(t *testing.T) {
 	t.Parallel()

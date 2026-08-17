@@ -5,5 +5,5 @@ const providerModelCatalogInvalidationReasons = new Set([
 ])
 
 export function shouldInvalidateProviderModelCatalog(reason: string | undefined): boolean {
-  return reason === undefined || providerModelCatalogInvalidationReasons.has(reason)
+  return reason !== undefined && providerModelCatalogInvalidationReasons.has(reason)
 }

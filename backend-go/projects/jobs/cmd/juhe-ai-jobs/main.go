@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,7 +16,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
@@ -92,37 +90,6 @@ func main() {
 		}
 		return
 	}
-	accountHealthConfig, err := accounthealth.LoadConfig(os.Getenv)
-	if err != nil {
-		fail(fmt.Errorf("load J1 account-health config: %w", err))
-	}
-	var accountHealthStore *accounthealth.Store
-	var accountHealthRunner *accounthealth.Runner
-	var accountHealthBusinessDB *sql.DB
-	if accountHealthConfig.Enabled {
-		accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
-		if err != nil {
-			fail(fmt.Errorf("open J1 account-health store: %w", err))
-		}
-		defer accountHealthStore.Close()
-		if err := accountHealthStore.EnsureSchema(context.Background()); err != nil {
-			fail(fmt.Errorf("initialize J1 account-health schema: %w", err))
-		}
-		if accountHealthConfig.InputSource == "postgres" {
-			accountHealthBusinessDB, err = sql.Open("pgx", accountHealthConfig.BusinessPostgresURL)
-			if err != nil {
-				fail(fmt.Errorf("open J1 direct business PostgreSQL: %w", err))
-			}
-			defer accountHealthBusinessDB.Close()
-			reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthBusinessDB, accountHealthConfig.CredentialSecret, 24*time.Hour, accountHealthConfig.Now)
-			if readerErr != nil {
-				fail(fmt.Errorf("initialize J1 direct input reader: %w", readerErr))
-			}
-			accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
-		} else {
-			accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
-		}
-	}
 
 	listener, err := net.Listen("tcp", *healthAddress)
 	if err != nil {
@@ -148,33 +115,8 @@ func main() {
 			Close: store.Close,
 		},
 	}
-	if accountHealthRunner != nil {
-		components = append(components, supervisor.Component{
-			Name:  "J1 account-health",
-			Run:   accountHealthRunner.Run,
-			Close: accountHealthStore.Close,
-		})
-	}
 	healthServer := &http.Server{
-		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-			if request.Method != http.MethodGet || request.URL.Path != "/health" {
-				http.NotFound(response, request)
-				return
-			}
-			accountHealthReady := accountHealthRunner == nil || accountHealthRunner.Ready()
-			ready := runtimeRunning.Load() && tableRunner.Ready() && accountHealthReady
-			response.Header().Set("Content-Type", "application/json")
-			if !ready {
-				response.WriteHeader(http.StatusServiceUnavailable)
-			}
-			_ = json.NewEncoder(response).Encode(map[string]any{
-				"ready":                ready,
-				"runtimeLogOwnerHeld":  runtimeRunning.Load(),
-				"tableMonitorReady":    tableRunner.Ready(),
-				"accountHealthEnabled": accountHealthRunner != nil,
-				"accountHealthReady":   accountHealthReady,
-			})
-		}),
+		Handler:           healthHandler(&runtimeRunning, tableRunner.Ready),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -196,6 +138,23 @@ func main() {
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
 		fail(fmt.Errorf("jobs health endpoint stopped: %w", serveResult))
 	}
+}
+
+func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/health" {
+			http.NotFound(response, request)
+			return
+		}
+		runtimeLogOwnerHeld := runtimeRunning.Load()
+		tableMonitorIsReady := tableMonitorReady()
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"ready":               runtimeLogOwnerHeld && tableMonitorIsReady,
+			"runtimeLogOwnerHeld": runtimeLogOwnerHeld,
+			"tableMonitorReady":   tableMonitorIsReady,
+		})
+	})
 }
 
 func runRuntimeLegacyMigration(config runtimelog.Config) {

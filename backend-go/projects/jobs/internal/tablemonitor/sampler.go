@@ -502,7 +502,10 @@ func collectPostgresTarget(ctx context.Context, db *sql.DB, target postgresTarge
 	rows, err := db.QueryContext(ctx, `WITH index_summary AS (
   SELECT i.indrelid, COALESCE(SUM(index_class.relpages), 0)::bigint AS index_pages, COUNT(*)::integer AS index_count
   FROM pg_index i
+  JOIN pg_class table_class ON table_class.oid = i.indrelid
+  JOIN pg_namespace table_schema ON table_schema.oid = table_class.relnamespace
   JOIN pg_class index_class ON index_class.oid = i.indexrelid
+  WHERE table_schema.nspname = $1
   GROUP BY i.indrelid
 )
 SELECT c.relname,
