@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { encryptJson } from '../../storage/crypto.js'
-import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { currentAccountHealthJobsInputVersionForRuntimeAsync } from '../../storage/account-health-jobs-input-version.repository.js'
 import { createAccountAsync, createGroupAsync } from '../../storage/repositories.js'
 import { createResourceAuthorizationAsync } from '../../storage/resource-authorization-write.repository.js'
@@ -17,12 +17,12 @@ let succeeded = false
 try {
   const group = await createGroupAsync({
     name: `J1 PG direct input ${marker}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, access)
   const account = await createAccountAsync({
-    providerCode: 'openai',
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: `J1 PG direct input ${marker}`,
     type: 'api_key',
     credentials: {
@@ -64,7 +64,7 @@ try {
   const granteeAccess: AccessScope = { systemAccountId: granteeId, role: 'user' }
   const granteeGroup = await createGroupAsync({
     name: `J1 PG direct input grantee ${marker}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, granteeAccess)
   await createResourceAuthorizationAsync({
@@ -85,7 +85,7 @@ try {
   const quotaAccess: AccessScope = { systemAccountId: quotaGranteeId, role: 'user' }
   const quotaGroup = await createGroupAsync({
     name: `J1 PG quota grantee ${marker}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, quotaAccess)
   await createResourceAuthorizationAsync({
@@ -110,7 +110,7 @@ try {
   const cooldownAccess: AccessScope = { systemAccountId: cooldownGranteeId, role: 'user' }
   const cooldownGroup = await createGroupAsync({
     name: `J1 PG cooldown grantee ${marker}`,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     enabled: true
   }, cooldownAccess)
   await createResourceAuthorizationAsync({
