@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import type { AccountSummary } from '../../domain/types.js'
 import { readPublishedAccountHealthJobsInput } from '../../modules/background/account-health-jobs-input.protocol.js'
 import { publishAccountHealthJobsInputFromAccount, publishAccountHealthJobsProbeRequest } from '../../modules/background/account-health-jobs-input.service.js'
+import { isJ1AccountHealthEndpointModeEligible } from '../../storage/account-health-jobs-input.repository.js'
 
 const testRoot = resolve(process.env.JUHE_AI_TEST_TEMP_ROOT?.trim() || tmpdir())
 const root = mkdtempSync(join(testRoot, 'juhe-ai-account-health-service-'))
@@ -57,6 +58,22 @@ try {
   })
   const responsesSsePayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(responsesSsePath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
   assert.equal(responsesSsePayload.endpoint_mode, 'responses_sse', 'GPT Responses SSE 必须可进入 Go J1 输入协议')
+  assert.equal(isJ1AccountHealthEndpointModeEligible('api_key', 'responses_sse'), true)
+  assert.equal(isJ1AccountHealthEndpointModeEligible('oauth', 'responses_sse'), false)
+  assert.throws(() => publishAccountHealthJobsInputFromAccount({
+    account: {
+      ...account,
+      type: 'oauth',
+      healthCheckEndpointMode: 'responses_sse',
+      credentials: { access_token: 'oauth-access-token', expires_at: new Date(Date.now() + 60_000).toISOString() }
+    } as AccountSummary,
+    dispatchRevision: 3,
+    inputVersion: 18,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  }), /账户类型 oauth 不支持探活 endpoint mode：responses_sse/u)
 
   const cooldownAccount = {
     ...account,
@@ -85,6 +102,7 @@ try {
   const oauthAccount = {
     ...account,
     type: 'oauth',
+    healthCheckEndpointMode: 'responses_json',
     credentials: { access_token: 'oauth-access-token', expires_at: '2030-08-16T08:00:00.000+08:00' }
   } as AccountSummary
   const oauthPath = publishAccountHealthJobsInputFromAccount({
@@ -97,6 +115,7 @@ try {
     expiresAt: new Date(Date.now() + 60_000)
   })
   const oauthPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(oauthPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(oauthPayload.endpoint_mode, 'responses_json')
   assert.equal(oauthPayload.oauth_expires_at, '2030-08-16T00:00:00.000Z')
 
   for (const invalidTime of ['2030-08-16T08:00:00.000', '2030-08-16 08:00:00+08:00', 'not-a-time']) {

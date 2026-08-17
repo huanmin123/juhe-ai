@@ -16,6 +16,14 @@ export function isJ1OpenAIProviderCode(value: string): boolean {
   return value === 'gpt' || value === 'openai'
 }
 
+// Go J1 deliberately uses the Codex OAuth /responses JSON contract. API Key
+// accounts additionally support the Responses SSE probe; accepting that mode
+// for OAuth would enqueue inputs that the Go direct reader must reject.
+export function isJ1AccountHealthEndpointModeEligible(accountType: string, endpointMode: string): boolean {
+  return frozenEndpointModes.has(endpointMode)
+    && (accountType !== 'oauth' || endpointMode === 'responses_json')
+}
+
 export interface AccountHealthJobsInputRevisions {
   configRevision: number
   dispatchRevision: number
@@ -65,7 +73,7 @@ function isEligibleForAccountHealthJobsInput(account: AccountSummary | undefined
   if (!account) return false
   if (!isJ1OpenAIProviderCode(account.providerCode)) return false
   if (account.type !== 'api_key' && account.type !== 'oauth') return false
-  if (!frozenEndpointModes.has(account.healthCheckEndpointMode)) return false
+  if (!isJ1AccountHealthEndpointModeEligible(account.type, account.healthCheckEndpointMode)) return false
   if (!acceptedStatuses.has(account.status)) return false
   if (account.status !== 'pending_test' && !account.schedulable) return false
   if (account.accountExpiresAt && (rfc3339InstantMilliseconds(account.accountExpiresAt) === undefined || rfc3339InstantMilliseconds(account.accountExpiresAt)! <= Date.now())) return false

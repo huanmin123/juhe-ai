@@ -22,6 +22,28 @@ func TestDirectInputCandidatesIncludeResponsesSSE(t *testing.T) {
 	if !strings.Contains(directInputCandidatesSQL, "'responses_sse'") {
 		t.Fatal("PG direct input 候选查询必须包含 responses_sse")
 	}
+	if !strings.Contains(directInputCandidatesSQL, "a.type <> 'oauth' OR a.health_check_endpoint_mode = 'responses_json'") {
+		t.Fatal("PG direct input 候选查询必须排除 OAuth responses_sse")
+	}
+}
+
+func TestDirectInputRejectsOAuthResponsesSSE(t *testing.T) {
+	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
+	err := validateDirectAccount(DirectAccount{
+		ID:                   "oauth-account",
+		ConfigRevision:       1,
+		DispatchRevision:     1,
+		Provider:             "openai",
+		Type:                 "oauth",
+		Status:               "active",
+		Schedulable:          true,
+		EndpointMode:         "responses_sse",
+		HealthModel:          "gpt-test",
+		CredentialsEncrypted: "encrypted",
+	}, now)
+	if err == nil {
+		t.Fatal("OAuth responses_sse must remain outside the frozen Go J1 scope")
+	}
 }
 
 func TestDirectInputToInputUsesEffectiveSourceAndProxy(t *testing.T) {

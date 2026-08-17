@@ -55,6 +55,7 @@ interface LegacyAccountRow extends Record<string, unknown> {
 
 interface ExactAccountRow extends Record<string, unknown> {
   id: string
+  type: string
   provider_code: string
   client_compatibility: string
   credentials_encrypted: string
@@ -269,7 +270,7 @@ async function verifyExactRows(
   let afterId = ''
   while (true) {
     const result = await client.query(`
-      SELECT id, provider_code, client_compatibility, credentials_encrypted,
+      SELECT id, type, provider_code, client_compatibility, credentials_encrypted,
         health_check_endpoint_mode, authorization_instance_authorization_id
       FROM juhe_business.accounts
       WHERE id > $1
@@ -296,14 +297,15 @@ async function verifyExactRows(
       if (row.authorization_instance_authorization_id) stats.authorizationInstances += 1
       if (row.provider_code !== 'gpt') continue
       stats.gptAccounts += 1
-      if (row.health_check_endpoint_mode !== 'responses_sse') {
-        throw new Error(`GPT 账户 ${row.id} 未切换到 responses_sse`)
+      const expectedGptMode = row.type.trim() === 'oauth' ? 'responses_json' : 'responses_sse'
+      if (row.health_check_endpoint_mode !== expectedGptMode) {
+        throw new Error(`GPT 账户 ${row.id} 未切换到 ${expectedGptMode}`)
       }
       if (row.client_compatibility !== 'codex_responses') {
         throw new Error(`GPT 账户 ${row.id} 未切换到 codex_responses`)
       }
-      if (!supportedModes.includes('responses_sse')) {
-        throw new Error(`GPT 账户 ${row.id} 的加密 supported_endpoint_modes 缺少 responses_sse`)
+      if (!supportedModes.includes(expectedGptMode)) {
+        throw new Error(`GPT 账户 ${row.id} 的加密 supported_endpoint_modes 缺少 ${expectedGptMode}`)
       }
     }
     afterId = rows.at(-1)?.id ?? afterId
@@ -319,7 +321,7 @@ export function resolveLegacyHealthCheckEndpointMode(input: {
   legacyFamily: keyof typeof legacyModeMap
   credentials: Record<string, unknown>
 }): string {
-  if (input.providerCode === 'gpt') return 'responses_sse'
+  if (input.providerCode === 'gpt') return input.accountType.trim() === 'oauth' ? 'responses_json' : 'responses_sse'
   const candidates = legacyFamilyGenerationModes[input.legacyFamily]
   const supportedModes = supportedGenerationModes(
     input.accountId,
