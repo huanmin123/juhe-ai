@@ -30,6 +30,56 @@ func NewPostgresDirectInputReader(db *sql.DB, credentialSecret string, inputTTL 
 	return &PostgresDirectInputReader{db: db, credentialSecret: credentialSecret, inputTTL: inputTTL, now: now}, nil
 }
 
+// CheckContract verifies the frozen business-read contract before the runner
+// can acquire a J1 lease. It deliberately performs only zero-row reads: jobs
+// must fail clearly when Node-owned schema/bootstrap or SELECT grants are
+// incomplete, never try to repair business schema themselves.
+func (r *PostgresDirectInputReader) CheckContract(ctx context.Context) error {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return fmt.Errorf("开始 PG direct input 契约预检事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL TRANSACTION READ ONLY"); err != nil {
+		return fmt.Errorf("设置 PG direct input 契约预检只读事务失败: %w", err)
+	}
+	for _, relation := range directInputRequiredRelations {
+		if _, err := tx.ExecContext(ctx, "SELECT 1 FROM "+relation+" LIMIT 0"); err != nil {
+			return fmt.Errorf("PG direct input 缺少业务只读契约 %s: %w", relation, err)
+		}
+	}
+	if _, _, err := loadDirectSchedule(ctx, tx); err != nil {
+		return err
+	}
+	now := r.now().UTC()
+	rows, err := tx.QueryContext(ctx, directInputCandidatesSQL, now.Format(time.RFC3339Nano), 0, false, "")
+	if err != nil {
+		return fmt.Errorf("验证 PG direct input 候选查询失败: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("关闭 PG direct input 契约预检游标失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交 PG direct input 契约预检事务失败: %w", err)
+	}
+	return nil
+}
+
+var directInputRequiredRelations = []string{
+	"juhe_business.accounts",
+	"juhe_business.account_health_jobs_input_versions",
+	"juhe_business.group_accounts",
+	"juhe_business.proxy_profiles",
+	"juhe_business.resource_authorizations",
+	"juhe_business.resource_authorization_grants",
+	"juhe_business.system_settings",
+	"juhe_stats.usage_stats_totals",
+	"juhe_stats.usage_stats_daily",
+	"juhe_stats.usage_stats_weekly",
+	"juhe_stats.usage_stats_monthly",
+	"juhe_stats.usage_quota_hourly_windows",
+}
+
 func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]Input, error) {
 	return r.load(ctx, limit, false, "")
 }

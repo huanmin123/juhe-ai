@@ -2,9 +2,21 @@ package accounthealth
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDirectInputRequiredRelationsStayOutsideJobsSchema(t *testing.T) {
+	if len(directInputRequiredRelations) == 0 {
+		t.Fatal("direct input contract must declare its read-only business relations")
+	}
+	for _, relation := range directInputRequiredRelations {
+		if strings.HasPrefix(relation, "juhe_jobs.") || !strings.Contains(relation, ".") {
+			t.Fatalf("direct input relation %q must remain outside the jobs-owned schema", relation)
+		}
+	}
+}
 
 func TestDirectInputToInputUsesEffectiveSourceAndProxy(t *testing.T) {
 	secret := "j1-direct-input-secret"

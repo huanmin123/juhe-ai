@@ -130,6 +130,14 @@ func main() {
 				_ = accountHealthStore.Close()
 				fail(fmt.Errorf("configure J1 account-health direct-input reader: %w", readerErr))
 			}
+			contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			contractErr := reader.CheckContract(contractContext)
+			contractCancel()
+			if contractErr != nil {
+				_ = accountHealthInputDB.Close()
+				_ = accountHealthStore.Close()
+				fail(fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
+			}
 			accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
 		} else {
 			accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
