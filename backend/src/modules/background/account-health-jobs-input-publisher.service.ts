@@ -16,7 +16,9 @@ import {
 } from '../../storage/account-health-jobs-input-version.repository.js'
 import {
   findAccountForAccountHealthJobsInput,
-  findAccountForAccountHealthJobsInputAsync
+  findAccountForAccountHealthJobsInputAsync,
+  findAccountHealthJobsInputRevisions,
+  findAccountHealthJobsInputRevisionsAsync
 } from '../../storage/account-health-jobs-input.repository.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
@@ -72,7 +74,8 @@ function publishCurrentSnapshot(event: AccountHealthJobsInputOutboxEvent, root: 
     publishTombstone(event, root, signingKey)
     return
   }
-  assertEventRevision(event, account.configRevision, account.dispatchRevision)
+  const revisions = findAccountHealthJobsInputRevisions(event.accountId)
+  assertEventRevision(event, revisions?.configRevision, revisions?.dispatchRevision)
   const settings = inputSettings(getSettings())
   publishAccountHealthJobsInputFromAccount({
     account,
@@ -93,7 +96,8 @@ async function publishCurrentSnapshotAsync(event: AccountHealthJobsInputOutboxEv
     publishTombstone(event, root, signingKey)
     return
   }
-  assertEventRevision(event, account.configRevision, account.dispatchRevision)
+  const revisions = await findAccountHealthJobsInputRevisionsAsync(event.accountId)
+  assertEventRevision(event, revisions?.configRevision, revisions?.dispatchRevision)
   const settings = inputSettings(await getSettingsAsync())
   publishAccountHealthJobsInputFromAccount({
     account,

@@ -280,18 +280,6 @@ export interface DbServiceServerRuntimeSnapshot {
       ready: boolean
       workerRole?: string
       jobs?: DbServiceBackgroundScheduledJobSnapshot[]
-      accountHealthCheckQueue?: {
-        name: string
-        pendingCount: number
-        runningCount: number
-        nextRunAt?: string
-      }
-      cooldownAccountRetestQueue?: {
-        name: string
-        pendingCount: number
-        runningCount: number
-        nextRunAt?: string
-      }
       accountApiKeyCooldownRetestQueue?: {
         name: string
         pendingCount: number
