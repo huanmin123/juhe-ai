@@ -10,6 +10,7 @@ import {
 import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 export type AccountBalanceSnapshotCleanupReason = 'balance_configuration_changed' | 'multiple_api_keys' | 'batch_multiple_api_keys' | 'batch_balance_identity_changed'
 
@@ -69,7 +70,8 @@ export function createAccountBalanceSnapshotCleanupCoordinator(
   let lastSuccessAt: string | undefined
   let lastErrorAt: string | undefined
   let lastError: string | undefined
-  const now = options.now ?? (() => new Date().toISOString())
+  const readNow = options.now ?? (() => new Date().toISOString())
+  const now = () => requiredRfc3339Instant(readNow(), '余额快照清理 now')
   const log = options.onLog ?? (() => undefined)
 
   const retryQueue = createRetryQueue<AccountBalanceSnapshotCleanupQueueItem>({
@@ -262,9 +264,13 @@ function snapshotSupersedesCleanup(
   if (!snapshotRecord || !accountBalanceSnapshotMatchesConfiguration(current.configuration, snapshotRecord)) {
     return false
   }
-  const snapshotUpdatedAtMs = Date.parse(snapshotRecord.updatedAt)
-  const cleanupCutoffMs = Date.parse(item.updatedBefore)
-  return Number.isFinite(snapshotUpdatedAtMs)
-    && Number.isFinite(cleanupCutoffMs)
-    && snapshotUpdatedAtMs > cleanupCutoffMs
+  const snapshotUpdatedAtMs = rfc3339InstantMilliseconds(snapshotRecord.updatedAt)
+  const cleanupCutoffMs = rfc3339InstantMilliseconds(item.updatedBefore)
+  if (snapshotUpdatedAtMs === undefined) {
+    throw new Error('余额快照 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  if (cleanupCutoffMs === undefined) {
+    throw new Error('余额快照清理 updatedBefore 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return snapshotUpdatedAtMs > cleanupCutoffMs
 }

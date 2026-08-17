@@ -36,6 +36,35 @@ const exhaustedCoordinator = createAccountBalanceSnapshotCleanupCoordinator({
   deleteSnapshot: async () => { throw new Error('stats writer unavailable') },
   now: () => '2026-07-14T02:00:00.000Z'
 })
+
+let offsetCleanupCutoff: string | undefined
+const offsetCoordinator = createAccountBalanceSnapshotCleanupCoordinator({
+  now: () => '2026-07-14T10:00:00.000+08:00',
+  deleteSnapshot: async (item) => {
+    offsetCleanupCutoff = item.updatedBefore
+  }
+})
+offsetCoordinator.cleanupAfterSave({
+  accountId: 'account-offset-cutoff',
+  configRevision: 8,
+  reason: 'balance_configuration_changed'
+})
+await waitFor(() => offsetCoordinator.snapshot().completedCount === 1)
+assert.equal(offsetCleanupCutoff, '2026-07-14T02:00:00.000Z', '余额快照清理 now 的 numeric offset 必须 canonical 为 UTC')
+
+const invalidNowCoordinator = createAccountBalanceSnapshotCleanupCoordinator({
+  now: () => '2026-07-14T02:00:00.000',
+  deleteSnapshot: async () => undefined
+})
+assert.throws(
+  () => invalidNowCoordinator.cleanupAfterSave({
+    accountId: 'account-invalid-cutoff',
+    configRevision: 8,
+    reason: 'balance_configuration_changed'
+  }),
+  /余额快照清理 now必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '余额快照清理 supplied bare now 必须显式失败'
+)
 exhaustedCoordinator.cleanupAfterSave({
   accountId: 'account-exhausted',
   configRevision: 9,
@@ -64,6 +93,14 @@ assert.equal(exhaustedCoordinator.isSuppressed('account-exhausted', {
   configuration: currentGeneration,
   snapshotRecord: staleCurrentGenerationSnapshot
 }), true, '清理截止点之前的同代次旧快照仍必须被屏蔽')
+assert.throws(
+  () => exhaustedCoordinator.isSuppressed('account-exhausted', {
+    configuration: currentGeneration,
+    snapshotRecord: { ...staleCurrentGenerationSnapshot, updatedAt: '2026-07-14T01:59:59.999' }
+  }),
+  /余额快照 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '余额快照持久化裸 updatedAt 必须显式失败'
+)
 const cutoffCurrentGenerationSnapshot: AccountBalanceSnapshotRecord = {
   snapshot: { status: 'fresh', remainingUsd: '66.50' },
   nextRefreshAfter: currentGeneration.nextRefreshAt,
