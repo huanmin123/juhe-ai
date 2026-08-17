@@ -7,6 +7,10 @@ import type { SQLInputValue } from 'node:sqlite'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import {
+  accountBalanceSnapshotMatchesConfiguration,
+  type AccountBalanceSnapshotRecord
+} from '../../storage/account-balance.repository.js'
+import {
   getAccountStatusSnapshot,
   hydrateAccountListPage,
   parseAccountStatusSnapshotAccountIds
@@ -21,6 +25,65 @@ import {
 } from '../../modules/accounts/account-list-runtime-status-filter.js'
 import { logger } from '../../shared/logger.js'
 import { todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+
+const balanceGenerationSnapshot: AccountBalanceSnapshotRecord = {
+  snapshot: { status: 'fresh', remainingUsd: '12.34' },
+  nextRefreshAfter: '2026-08-17T03:00:00.000Z',
+  updatedAt: '2026-08-17T03:01:00.000Z'
+}
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T11:00:00.000+08:00' }, balanceGenerationSnapshot),
+  true,
+  '余额快照配置与持久化代次同一瞬时的不同 offset 必须匹配'
+)
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000Z' }, balanceGenerationSnapshot),
+  true,
+  '余额快照配置与持久化代次相同 Z 时间必须匹配'
+)
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T04:00:00.000Z' }, balanceGenerationSnapshot),
+  false,
+  '余额快照配置与持久化代次不同瞬时不得匹配'
+)
+assert.throws(
+  () => accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000' }, balanceGenerationSnapshot),
+  /余额快照配置 nextRefreshAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '余额快照配置裸时间必须显式失败'
+)
+assert.throws(
+  () => accountBalanceSnapshotMatchesConfiguration(
+    { nextRefreshAt: '2026-08-17T03:00:00.000Z' },
+    { ...balanceGenerationSnapshot, nextRefreshAfter: 'not-a-timestamp' }
+  ),
+  /余额快照 nextRefreshAfter必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '余额快照持久化非法时间必须显式失败'
+)
+assert.throws(
+  () => accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000' }, { ...balanceGenerationSnapshot, nextRefreshAfter: undefined }),
+  /余额快照配置 nextRefreshAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '即使持久化代次缺失，余额快照配置裸时间也必须显式失败'
+)
+assert.throws(
+  () => accountBalanceSnapshotMatchesConfiguration({}, { ...balanceGenerationSnapshot, nextRefreshAfter: 'not-a-timestamp' }),
+  /余额快照 nextRefreshAfter必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '即使配置代次缺失，余额快照持久化非法时间也必须显式失败'
+)
+assert.throws(
+  () => accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000' }, undefined),
+  /余额快照配置 nextRefreshAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '即使持久化快照缺失，余额快照配置裸时间也必须显式失败'
+)
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({}, { ...balanceGenerationSnapshot, nextRefreshAfter: undefined }),
+  true,
+  '原有可选余额刷新代次均缺失时必须保留匹配语义'
+)
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({}, balanceGenerationSnapshot),
+  false,
+  '仅持久化代次存在时不得静默视为匹配'
+)
 
 assert.deepEqual(
   parseAccountStatusSnapshotAccountIds(' account_b,account_a,account_b '),

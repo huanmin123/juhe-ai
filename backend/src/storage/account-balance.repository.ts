@@ -7,6 +7,7 @@ import { decryptJson } from './crypto.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export interface AccountBalanceRefreshCandidate {
   id: string
@@ -749,8 +750,27 @@ export function accountBalanceSnapshotMatchesConfiguration(
   configuration: { nextRefreshAt?: string },
   record: AccountBalanceSnapshotRecord | undefined
 ): record is AccountBalanceSnapshotRecord {
+  const configuredNextRefreshAt = configuration.nextRefreshAt ?? undefined
+  const configuredNextRefreshAtMs = configuredNextRefreshAt === undefined
+    ? undefined
+    : requiredAccountBalanceTimestampMilliseconds(configuredNextRefreshAt, '余额快照配置 nextRefreshAt')
   if (!record) return false
-  return (record.nextRefreshAfter ?? undefined) === (configuration.nextRefreshAt ?? undefined)
+  const persistedNextRefreshAfter = record.nextRefreshAfter ?? undefined
+  const persistedNextRefreshAfterMs = persistedNextRefreshAfter === undefined
+    ? undefined
+    : requiredAccountBalanceTimestampMilliseconds(persistedNextRefreshAfter, '余额快照 nextRefreshAfter')
+  if (configuredNextRefreshAtMs === undefined || persistedNextRefreshAfterMs === undefined) {
+    return configuredNextRefreshAtMs === undefined && persistedNextRefreshAfterMs === undefined
+  }
+  return configuredNextRefreshAtMs === persistedNextRefreshAfterMs
+}
+
+function requiredAccountBalanceTimestampMilliseconds(value: unknown, label: string): number {
+  const milliseconds = rfc3339InstantMilliseconds(value)
+  if (milliseconds === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return milliseconds
 }
 
 export function updateAccountBalanceNextRefresh(accountId: string, nextRefreshAt: string | null): void {
