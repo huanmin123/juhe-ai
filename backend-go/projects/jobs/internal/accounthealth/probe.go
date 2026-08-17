@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -318,6 +319,18 @@ func transportFailure(err error) ProbeResult {
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
+		switch {
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+			return ProbeResult{Outcome: OutcomeUpstreamFailed, ErrorCode: "upstream_connection_closed", ErrorMessage: "上游提前关闭连接"}
+		case errors.Is(err, syscall.ECONNREFUSED):
+			return ProbeResult{Outcome: OutcomeUpstreamFailed, ErrorCode: "upstream_connection_refused", ErrorMessage: "上游拒绝连接"}
+		case errors.Is(err, syscall.ECONNRESET):
+			return ProbeResult{Outcome: OutcomeUpstreamFailed, ErrorCode: "upstream_connection_reset", ErrorMessage: "上游重置连接"}
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) {
+			return ProbeResult{Outcome: OutcomeUpstreamFailed, ErrorCode: "upstream_dns", ErrorMessage: "上游域名解析失败"}
+		}
 		return ProbeResult{Outcome: OutcomeUpstreamFailed, ErrorCode: "upstream_connection", ErrorMessage: "上游连接失败"}
 	}
 	return taskFailure("probe_local_failure", "探活本地执行失败")

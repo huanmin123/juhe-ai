@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +51,13 @@ func TestProbeTransportDisablesHTTP2ForDirectProviderProbe(t *testing.T) {
 	}
 	if transport.ForceAttemptHTTP2 {
 		t.Fatal("direct provider probe must not negotiate HTTP/2")
+	}
+}
+
+func TestTransportFailureClassifiesClosedConnectionWithoutRawError(t *testing.T) {
+	result := transportFailure(&url.Error{Op: "Post", URL: "https://example.invalid/v1/chat/completions", Err: io.EOF})
+	if result.Outcome != OutcomeUpstreamFailed || result.ErrorCode != "upstream_connection_closed" || result.ErrorMessage != "上游提前关闭连接" {
+		t.Fatalf("unexpected closed connection classification: %#v", result)
 	}
 }
 
