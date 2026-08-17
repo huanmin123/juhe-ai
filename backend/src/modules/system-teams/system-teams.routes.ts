@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import {
   addSystemTeamMembersAsync,
   createSystemTeamAsync,
@@ -38,22 +39,24 @@ const createTeamSchema = z.object({
   status: z.enum(['active', 'disabled']).optional()
 }).strict()
 
+const expectedTeamUpdatedAtSchema = rfc3339InstantSchema('团队版本格式不正确')
+
 const updateTeamSchema = z.object({
   name: z.string().trim().min(1, '团队名称不能为空').max(100, '团队名称不能超过 100 个字符').optional(),
   description: z.string().trim().max(200).nullable().optional(),
   status: z.enum(['active', 'disabled']).optional(),
-  expectedUpdatedAt: z.string().datetime({ message: '团队版本格式不正确' })
+  expectedUpdatedAt: expectedTeamUpdatedAtSchema
 }).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请至少提交一个团队变更字段'
 })
 
 const teamMembersSchema = z.object({
   systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员').max(maxSystemTeamMemberBatchSize, `单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`),
-  expectedUpdatedAt: z.string().datetime({ message: '团队版本格式不正确' })
+  expectedUpdatedAt: expectedTeamUpdatedAtSchema
 }).strict()
 
 const teamMemberMutationSchema = z.object({
-  expectedUpdatedAt: z.string().datetime({ message: '团队版本格式不正确' })
+  expectedUpdatedAt: expectedTeamUpdatedAtSchema
 }).strict()
 
 function currentUserTeamScope() {

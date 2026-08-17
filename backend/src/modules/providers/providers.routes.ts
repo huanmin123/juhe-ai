@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import {
   findProviderOptionByCodeAsync,
   listEnabledProviderOptionsAsync,
@@ -303,7 +304,7 @@ const customModelSchema = z.object({
   capabilityNotes: nullableTrimmedStringSchema,
   notes: nullableTrimmedStringSchema
 }).strict()
-const expectedModelUpdatedAtSchema = z.string().datetime()
+const expectedModelUpdatedAtSchema = rfc3339InstantSchema('模型版本格式不正确')
 const customModelPatchSchema = customModelSchema.omit({
   configurationTemplateId: true,
   scope: true,

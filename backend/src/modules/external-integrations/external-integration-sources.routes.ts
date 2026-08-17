@@ -2,11 +2,11 @@ import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import {
   builtInExternalIntegrationTestSourceId,
   externalIntegrationScopeOptions
 } from '../../storage/external-integration-source-constants.js'
-import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
   createExternalIntegrationSourceAuthorizationAsync,
   createExternalIntegrationSourceTokenAsync,
@@ -38,7 +38,7 @@ const rateLimitRuleSchema = z.object({
 }).strict()
 
 const expiresAtSchema = z.union([
-  z.string().trim().min(1, '过期时间无效').refine((value) => Boolean(optionalServerDateTimeIso(value)), '过期时间无效'),
+  rfc3339InstantSchema('过期时间无效'),
   z.null()
 ]).optional()
 
@@ -51,7 +51,7 @@ const sourceBodySchema = z.object({
   notes: z.string().trim().max(500, '备注不能超过 500 个字符').nullable().optional()
 }).strict()
 
-const expectedUpdatedAtSchema = z.string().datetime({ message: '外部来源配置版本格式不正确' })
+const expectedUpdatedAtSchema = rfc3339InstantSchema('外部来源配置版本格式不正确')
 const sourceUpdateBodySchema = sourceBodySchema.partial().extend({
   expectedUpdatedAt: expectedUpdatedAtSchema
 }).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {

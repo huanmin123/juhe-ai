@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import { getAuthorizationTeamUsageRowsAsync, getAuthorizationTeamUsageSummaryAsync, getAuthorizationUserUsageRowsAsync, getAuthorizationUserUsageSummaryAsync } from '../../storage/authorization-usage.repository.js'
 import {
   createResourceAuthorizationMutationAsync,
@@ -12,7 +13,6 @@ import {
   revokeResourceAuthorizationMutationAsync,
   returnResourceAuthorizationForGranteeMutationAsync
 } from '../../storage/repositories.js'
-import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import { normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
@@ -24,14 +24,14 @@ import { isAdminRole, type ResourceAuthorizationListItem, type ResourceAuthoriza
 
 export const authorizationsRouter = Router()
 
-const authorizationExpiresAtSchema = z.string().trim().min(1, '过期时间格式不正确').refine((value) => Boolean(optionalServerDateTimeIso(value)), '过期时间格式不正确')
+const authorizationExpiresAtSchema = rfc3339InstantSchema('过期时间格式不正确')
 
 const authorizationIdParamsSchema = z.object({
   id: z.string().trim().min(1, '授权记录 ID 不能为空')
 })
 
 const authorizationMutationVersionSchema = z.object({
-  expectedUpdatedAt: z.string().datetime({ message: '授权配置版本格式不正确' })
+  expectedUpdatedAt: rfc3339InstantSchema('授权配置版本格式不正确')
 }).strict()
 
 const authorizationsQuerySchema = z.object({
@@ -121,7 +121,7 @@ const createAuthorizationSchema = z.object({
 })
 
 const updateAuthorizationSchema = z.object({
-  expectedUpdatedAt: z.string().datetime({ message: '授权配置版本格式不正确' }),
+  expectedUpdatedAt: rfc3339InstantSchema('授权配置版本格式不正确'),
   status: z.enum(['active', 'paused']).optional(),
   expiresAt: z.union([
     authorizationExpiresAtSchema,
@@ -133,7 +133,7 @@ const updateAuthorizationSchema = z.object({
 })
 
 const updateAuthorizationExpireSchema = z.object({
-  expectedUpdatedAt: z.string().datetime({ message: '授权配置版本格式不正确' }),
+  expectedUpdatedAt: rfc3339InstantSchema('授权配置版本格式不正确'),
   expiresAt: z.union([
     authorizationExpiresAtSchema,
     z.null()

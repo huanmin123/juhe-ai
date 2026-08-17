@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import { createProxyAsync, deleteProxyForManagementAsync, findProxyAsync, listProxiesPageAsync, listProxyOptionsAsync, patchProxyForManagementAsync, ProxyInUseError, ProxyProfileUpdateConflictError } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -26,7 +27,7 @@ const proxySchema = z.object({
 }).strict()
 
 const proxyUpdateSchema = proxySchema.partial().extend({
-  expectedUpdatedAt: z.string().datetime({ message: '代理配置版本无效' })
+  expectedUpdatedAt: rfc3339InstantSchema('代理配置版本无效')
 }).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '代理更新内容不能为空'
 })

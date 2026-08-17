@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { normalizeUserRequestLimitExpiresOn } from '../../domain/user-request-limits.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import { createSystemAccountWithPasswordHashAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, patchSystemAccountManagementAsync, SystemAccountManagementPatchConflictError, type SystemAccountManagementPatchField } from '../../storage/repositories.js'
@@ -40,7 +41,7 @@ const createSchema = z.object({
 }).strict()
 
 const updateSchema = z.object({
-  expectedUpdatedAt: z.string().datetime({ message: '系统账户编辑版本格式不正确' }),
+  expectedUpdatedAt: rfc3339InstantSchema('系统账户编辑版本格式不正确'),
   displayName: z.string().min(1).optional(),
   description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),

@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import {
   createResponseInspectionPolicyAsync,
   deleteResponseInspectionPolicyAsync,
@@ -93,7 +94,7 @@ const policyBodySchema = z.object({
 })
 
 const policyPatchSchema = z.object({
-  expectedUpdatedAt: z.string().datetime('响应检查策略版本无效'),
+  expectedUpdatedAt: rfc3339InstantSchema('响应检查策略版本无效'),
   name: z.string().trim().min(1, '规则名称不能为空').max(100, '规则名称不能超过 100 个字符').optional(),
   enabled: z.boolean().optional(),
   priority: z.number().int().min(1).max(9999).optional(),

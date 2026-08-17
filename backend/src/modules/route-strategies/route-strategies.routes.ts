@@ -5,6 +5,7 @@ import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gateway-cache-invalidation.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import {
   createRouteStrategyListItemAsync,
   deleteRouteStrategyAsync,
@@ -134,7 +135,7 @@ const routeStrategyCreateSchema = routeStrategyMutationSchema.refine((value) => 
 })
 
 const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().extend({
-  expectedUpdatedAt: z.string().datetime({ message: '策略路由配置版本格式不正确' })
+  expectedUpdatedAt: rfc3339InstantSchema('策略路由配置版本格式不正确')
 }).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的策略路由内容'
 })

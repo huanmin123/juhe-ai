@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { GroupListItem } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import { DefaultGroupReadonlyError, GroupPatchConflictError, createGroupWithReceiptAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, findProviderOptionByCodeAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listRouteStrategyGroupOptionsAsync, patchGroupAsync, returnGroupAuthorizationForGranteeAsync, type DeletedGroupRouteStrategyChange, type GroupCreateStorageReceipt } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -28,7 +29,7 @@ const groupSchema = z.object({
   }).strict().optional()
 }).strict()
 const groupPatchSchema = groupSchema.partial().extend({
-  expectedUpdatedAt: z.string().datetime({ message: '分组版本格式不正确' })
+  expectedUpdatedAt: rfc3339InstantSchema('分组版本格式不正确')
 }).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的分组内容'
 })

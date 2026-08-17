@@ -6,6 +6,7 @@ import { resolveEffectiveUserRequestLimits, type GlobalUserRequestLimitSettings,
 import type { AccountSummary, GroupListItem, GroupSummary, RouteStrategySummary, SystemAccountSummary, UserRequestLimitWindow } from '../../domain/types.js'
 import { runRedisOperationWithDeadline } from '../../shared/redis-client.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
 import {
   ApiKeyRevisionConflictError,
   GroupPatchConflictError,
@@ -50,7 +51,7 @@ const groupMutationSchema = z.object({
 }).strict()
 
 const groupPatchSchema = groupMutationSchema.partial().extend({
-  expectedUpdatedAt: z.string().datetime()
+  expectedUpdatedAt: rfc3339InstantSchema('分组版本格式不正确')
 }).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的分组内容'
 })
@@ -77,7 +78,7 @@ const routeStrategyCreateSchema = routeStrategyMutationSchema.refine((value) => 
 })
 
 const routeStrategyPatchSchema = routeStrategyMutationSchema.partial().extend({
-  expectedUpdatedAt: z.string().datetime()
+  expectedUpdatedAt: rfc3339InstantSchema('策略路由配置版本格式不正确')
 }).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的策略路由内容'
 })
