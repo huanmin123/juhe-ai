@@ -3,7 +3,7 @@ import type { SQLInputValue } from 'node:sqlite'
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountUsageStatsRange } from '../domain/types.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
-import { getStatsDatabase } from './database.js'
+import { getStatsDatabase, nowIso } from './database.js'
 import { listActiveClientIpPolicies, listActiveClientIpPoliciesAsync, type ActiveClientIpPolicy } from './client-ip-policy.repository.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -101,9 +101,10 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
   const page = boundedPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const policySets = activeClientIpPolicySets(listActiveClientIpPolicies())
+  const policyNow = nowIso()
   const queryStartDate = rangeReady ? range.startDate : ''
   const queryEndDate = rangeReady ? range.endDate : ''
-  const where = buildClientIpRangeWhere(options, policySets)
+  const where = buildClientIpRangeWhere(options, policyNow, 'client_ip_policies', 'sqlite')
   const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder, options.lastUsedSortScope)
   const fromClause = clientIpStatsFromClause(options)
   const rows = database.prepare(`
@@ -155,9 +156,10 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
   const page = boundedPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const policySets = activeClientIpPolicySets(await listActiveClientIpPoliciesAsync())
+  const policyNow = nowIso()
   const queryStartDate = rangeReady ? range.startDate : ''
   const queryEndDate = rangeReady ? range.endDate : ''
-  const where = buildClientIpRangeWhere(options, policySets)
+  const where = buildClientIpRangeWhere(options, policyNow, statsTable(client, 'client_ip_policies'), 'postgres')
   const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder, options.lastUsedSortScope)
   const fromClause = clientIpStatsFromClauseAsync(client, options)
   const rows = await client.query<ClientIpStatsRangeRow>(`
@@ -198,7 +200,9 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
 
 function buildClientIpRangeWhere(
   options: ClientIpStatsListOptions,
-  policySets: ClientIpPolicySets
+  policyNow: string,
+  policyTableName: string,
+  dialect: 'sqlite' | 'postgres'
 ): ClientIpRangeWhere {
   const clauses: string[] = []
   const params: SQLInputValue[] = []
@@ -210,16 +214,40 @@ function buildClientIpRangeWhere(
   }
   const status = options.status ?? 'all'
   if (status === 'blacklisted') {
-    appendClientIpHashSetClause(clauses, params, policySets.blacklist, false)
+    clauses.push(activePolicyExistsSql('registry.ip_hash', 'blacklist', policyTableName, dialect))
+    params.push(policyNow)
   } else if (status === 'allowlisted') {
-    appendClientIpHashSetClause(clauses, params, policySets.allowlist, false)
+    clauses.push(activePolicyExistsSql('registry.ip_hash', 'allowlist', policyTableName, dialect))
+    params.push(policyNow)
   } else if (status === 'normal') {
-    appendClientIpHashSetClause(clauses, params, new Set([...policySets.blacklist, ...policySets.allowlist]), true)
+    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', 'blacklist', policyTableName, dialect)}`)
+    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', 'allowlist', policyTableName, dialect)}`)
+    params.push(policyNow, policyNow)
   }
   return {
     clause: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function activePolicyExistsSql(
+  ipHashExpression: string,
+  policyType: 'blacklist' | 'allowlist',
+  policyTableName: string,
+  dialect: 'sqlite' | 'postgres'
+): string {
+  const expiresAtAfterNow = dialect === 'postgres'
+    ? "EXTRACT(EPOCH FROM active_policies.expires_at::timestamptz) > EXTRACT(EPOCH FROM ?::timestamptz)"
+    : 'unixepoch(active_policies.expires_at) > unixepoch(?)'
+  return `EXISTS (
+    SELECT 1
+    FROM ${policyTableName} active_policies
+    WHERE active_policies.status = 'active'
+      AND active_policies.policy_type = '${policyType}'
+      AND active_policies.ip_hash = ${ipHashExpression}
+      AND (active_policies.expires_at IS NULL OR ${expiresAtAfterNow})
+    LIMIT 1
+  )`
 }
 
 function normalizeClientIpLastUsedRange(options: ClientIpStatsListOptions, timezone: string): AccountUsageStatsRange | undefined {
@@ -358,21 +386,6 @@ function activeClientIpPolicySets(policies: ActiveClientIpPolicy[]): ClientIpPol
     sets[policy.policyType].add(policy.ipHash)
   }
   return sets
-}
-
-function appendClientIpHashSetClause(
-  clauses: string[],
-  params: SQLInputValue[],
-  values: Set<string>,
-  negate: boolean
-): void {
-  const hashes = [...values].sort()
-  if (hashes.length === 0) {
-    if (!negate) clauses.push('1 = 0')
-    return
-  }
-  clauses.push(`registry.ip_hash ${negate ? 'NOT IN' : 'IN'} (${hashes.map(() => '?').join(', ')})`)
-  params.push(...hashes)
 }
 
 function clientIpStatsRowMatchesLastUsedWindow(row: ClientIpStatsRow, window: ClientIpLastUsedEpochWindow | undefined): boolean {
