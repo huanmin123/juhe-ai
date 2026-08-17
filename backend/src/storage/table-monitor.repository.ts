@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getTableMonitorDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -140,7 +140,7 @@ export function getTableStorageOverview(input: TableStorageOverviewInput = {}): 
     )
   `).all() as unknown as LatestDatabaseSnapshotRow[])
     .sort(compareDatabaseSnapshotsByRole)
-  const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
+  const sampledAt = latestSnapshotSampledAt(databases, 'database_storage_snapshots.sampled_at')
   const pagination = normalizeOverviewPagination(input)
   const keywordPattern = tableNamePrefixPattern(input.keyword)
   const keywordClause = keywordPattern ? "AND lower(table_name) LIKE lower(?) ESCAPE '\\'" : ''
@@ -210,7 +210,7 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
     ORDER BY database_role, sampled_at DESC, id DESC
   `))
     .sort(compareDatabaseSnapshotsByRole)
-  const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
+  const sampledAt = latestSnapshotSampledAt(databases, 'database_storage_snapshots.sampled_at')
   const pagination = normalizeOverviewPagination(input)
   const keywordPattern = tableNamePrefixPattern(input.keyword)
   const keywordClause = keywordPattern ? "WHERE lower(table_name) LIKE lower(?) ESCAPE '\\'" : ''
@@ -280,7 +280,9 @@ export function listTableStorageHistory(input: {
       range.endAt,
       normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
     ) as unknown as TableStorageHistoryRow[]
-  return rows.reverse().map(tableHistoryPointFromRow)
+  return rows
+    .map(tableHistoryPointFromRow)
+    .sort((left, right) => compareSnapshotSampledAt(left.sampledAt, right.sampledAt, 'table_storage_snapshots.sampled_at'))
 }
 
 export async function listTableStorageHistoryAsync(input: {
@@ -317,7 +319,9 @@ export async function listTableStorageHistoryAsync(input: {
     range.endAt,
     normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
   ])
-  return rows.reverse().map(tableHistoryPointFromRow)
+  return rows
+    .map(tableHistoryPointFromRow)
+    .sort((left, right) => compareSnapshotSampledAt(left.sampledAt, right.sampledAt, 'table_storage_snapshots.sampled_at'))
 }
 
 export function listDatabaseStorageHistory(input: {
@@ -446,7 +450,7 @@ function compareDatabaseSnapshotsByTimeAsc(
   left: Pick<LatestDatabaseSnapshotRow, 'database_role' | 'sampled_at'>,
   right: Pick<LatestDatabaseSnapshotRow, 'database_role' | 'sampled_at'>
 ): number {
-  const sampledAt = left.sampled_at.localeCompare(right.sampled_at)
+  const sampledAt = compareSnapshotSampledAt(left.sampled_at, right.sampled_at, 'database_storage_snapshots.sampled_at')
   return sampledAt !== 0 ? sampledAt : compareDatabaseSnapshotsByRole(left, right)
 }
 
@@ -471,24 +475,50 @@ function tableNamePrefixPattern(keyword: string | undefined): string | undefined
 }
 
 function normalizeDateTime(value: string | undefined, fallback: string): string {
-  if (!value) return fallback
-  return requiredRfc3339Instant(value)
+  return value === undefined ? fallback : requiredRfc3339Instant(value, '表监控时间范围')
 }
 
 function normalizeDateRange(startAt?: string, endAt?: string): { startAt: string; endAt: string } {
   const defaultEndAt = nowIso()
-  const defaultStartAt = new Date(Date.parse(defaultEndAt) - tableMonitorHistoryWindowDays * 24 * 60 * 60 * 1000).toISOString()
+  const defaultEndAtMilliseconds = rfc3339InstantMilliseconds(defaultEndAt)
+  if (defaultEndAtMilliseconds === undefined) {
+    throw new Error('表监控默认结束时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  const defaultStartAt = new Date(defaultEndAtMilliseconds - tableMonitorHistoryWindowDays * 24 * 60 * 60 * 1000).toISOString()
   const normalizedStartAt = normalizeDateTime(startAt, defaultStartAt)
   const normalizedEndAt = normalizeDateTime(endAt, defaultEndAt)
-  return normalizedStartAt <= normalizedEndAt
+  const normalizedStartAtMilliseconds = rfc3339InstantMilliseconds(normalizedStartAt)
+  const normalizedEndAtMilliseconds = rfc3339InstantMilliseconds(normalizedEndAt)
+  if (normalizedStartAtMilliseconds === undefined || normalizedEndAtMilliseconds === undefined) {
+    throw new Error('表监控时间范围必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return normalizedStartAtMilliseconds <= normalizedEndAtMilliseconds
     ? { startAt: normalizedStartAt, endAt: normalizedEndAt }
     : { startAt: normalizedEndAt, endAt: normalizedStartAt }
+}
+
+function latestSnapshotSampledAt(rows: Array<Pick<LatestDatabaseSnapshotRow, 'sampled_at'>>, label: string): string | undefined {
+  let latest: string | undefined
+  for (const row of rows) {
+    const sampledAt = requiredRfc3339Instant(row.sampled_at, label)
+    if (latest === undefined || compareSnapshotSampledAt(sampledAt, latest, label) > 0) latest = sampledAt
+  }
+  return latest
+}
+
+function compareSnapshotSampledAt(left: unknown, right: unknown, label: string): number {
+  const leftMilliseconds = rfc3339InstantMilliseconds(requiredRfc3339Instant(left, label))
+  const rightMilliseconds = rfc3339InstantMilliseconds(requiredRfc3339Instant(right, label))
+  if (leftMilliseconds === undefined || rightMilliseconds === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return leftMilliseconds === rightMilliseconds ? 0 : leftMilliseconds > rightMilliseconds ? 1 : -1
 }
 
 function databaseHistoryPointFromRow(row: DatabaseStorageHistoryRow): DatabaseStorageHistoryPoint {
   return {
     databaseRole: row.database_role,
-    sampledAt: row.sampled_at,
+    sampledAt: requiredRfc3339Instant(row.sampled_at, 'database_storage_snapshots.sampled_at'),
     fileBytes: optionalNumber(row.file_bytes),
     walBytes: optionalNumber(row.wal_bytes),
     freeBytes: optionalNumber(row.free_bytes),
@@ -500,7 +530,7 @@ function databaseOverviewSnapshotFromRow(row: LatestDatabaseSnapshotRow): Databa
   return {
     databaseRole: row.database_role,
     databasePath: basename(row.database_path),
-    sampledAt: row.sampled_at,
+    sampledAt: requiredRfc3339Instant(row.sampled_at, 'database_storage_snapshots.sampled_at'),
     fileBytes: optionalNumber(row.file_bytes),
     walBytes: optionalNumber(row.wal_bytes),
     shmBytes: optionalNumber(row.shm_bytes),
@@ -515,7 +545,7 @@ function tableOverviewSnapshotFromRow(row: LatestTableSnapshotRow): TableStorage
   return {
     databaseRole: row.database_role,
     tableName: row.table_name,
-    sampledAt: row.sampled_at,
+    sampledAt: requiredRfc3339Instant(row.sampled_at, 'table_storage_snapshots.sampled_at'),
     tableKind: row.table_kind ?? undefined,
     parentTableName: row.parent_table_name ?? undefined,
     isPartition: booleanFromSnapshot(row.is_partition),
@@ -534,7 +564,7 @@ function tableOverviewSnapshotFromRow(row: LatestTableSnapshotRow): TableStorage
 
 function tableHistoryPointFromRow(row: TableStorageHistoryRow): TableStorageHistoryPoint {
   return {
-    sampledAt: row.sampled_at,
+    sampledAt: requiredRfc3339Instant(row.sampled_at, 'table_storage_snapshots.sampled_at'),
     rowCount: optionalNumber(row.row_count),
     totalBytes: optionalNumber(row.total_bytes)
   }
