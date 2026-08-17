@@ -131,6 +131,16 @@ assert.match(apiKeyRuntimeStateSource, /value === undefined\) return normalizedF
 assert.match(apiKeyRuntimeStateSource, /input\.cooldownUntil === undefined/, 'API Key supplied cooldownUntil 必须先区分缺失和空串')
 assert.match(apiKeyRuntimeStateSource, /requiredRfc3339Instant\(input\.cooldownUntil, 'cooldownUntil'\)/, 'API Key cooldownUntil 必须严格 canonical')
 
+const openAICompatibleFileRouteSource = readFileSync(new URL('../../modules/openai-compatible-files/files.routes.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(openAICompatibleFileRouteSource, /function openAITimestamp\([\s\S]*?Date\.parse\(/, 'OpenAI 兼容文件输出不得按本机时区解析时间')
+assert.match(openAICompatibleFileRouteSource, /rfc3339InstantMilliseconds\(value\)/, 'OpenAI 兼容文件输出必须严格解析存储时间')
+assert.match(openAICompatibleFileRouteSource, /OpenAI 兼容文件时间必须是带 Z 或数值 offset 的 RFC3339 时间/, 'OpenAI 兼容文件非法时间不得伪造当前秒')
+
+const openAICompatibleVectorStoreRouteSource = readFileSync(new URL('../../modules/openai-compatible-vector-stores/vector-stores.routes.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(openAICompatibleVectorStoreRouteSource, /function openAITimestamp\([\s\S]*?Date\.parse\(/, 'OpenAI 兼容向量库输出不得按本机时区解析时间')
+assert.match(openAICompatibleVectorStoreRouteSource, /rfc3339InstantMilliseconds\(value\)/, 'OpenAI 兼容向量库输出必须严格解析存储时间')
+assert.match(openAICompatibleVectorStoreRouteSource, /OpenAI 兼容向量库时间必须是带 Z 或数值 offset 的 RFC3339 时间/, 'OpenAI 兼容向量库非法时间不得伪造当前秒')
+
 const grokOAuthSource = readFileSync(new URL('../../modules/grok-oauth/grok-oauth.routes.ts', import.meta.url), 'utf8')
 const grokSsoExpirySource = grokOAuthSource.match(
   /function grokSSOImportAccountExpiresAt\([\s\S]*?\n}\n\nasync function mapWithConcurrency/

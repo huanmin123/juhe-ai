@@ -9,6 +9,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { GatewayRuntimeRequest } from '../gateway/request/pre-auth.js'
 import { gatewayErrorPayload } from '../gateway/response/responses.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import type { OpenAICompatibleFileRecord } from '../../storage/openai-compatible-files.repository.js'
 import {
   ensureOpenAICompatibleFileObjectParent,
@@ -398,6 +399,9 @@ function queryInteger(value: unknown): number | undefined {
 }
 
 function openAITimestamp(value: string): number {
-  const ms = Date.parse(value)
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : Math.floor(Date.now() / 1000)
+  const milliseconds = rfc3339InstantMilliseconds(value)
+  if (milliseconds === undefined) {
+    throw new Error('OpenAI 兼容文件时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return Math.floor(milliseconds / 1000)
 }
