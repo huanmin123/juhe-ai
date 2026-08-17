@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -63,11 +64,12 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
           LIMIT ?
         `)
         .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, rowLimit) as unknown as UsageStatsRecordRow[]
+      const normalizedRows = rows.map((row) => normalizeUsageStatsRecordTimestamp(row, 'usage_records.created_at'))
 
-      if (rows.length > 0) {
-        writeClientIpStatsAggregatesFromUsageRows(database, rows, updatedAt)
-        processedRows += rows.length
-        const last = rows[rows.length - 1]
+      if (normalizedRows.length > 0) {
+        writeClientIpStatsAggregatesFromUsageRows(database, normalizedRows, updatedAt)
+        processedRows += normalizedRows.length
+        const last = normalizedRows[normalizedRows.length - 1]
         updateClientIpStatsShardJobState(database, location, {
           cursorCreatedAt: last.created_at,
           cursorId: last.id,
@@ -76,7 +78,7 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
         })
         globalCursor = latestCursor(globalCursor, { created_at: last.created_at, id: last.id })
         maxLagSeconds = Math.max(maxLagSeconds, cursorLagSecondsFromCreatedAt(last.created_at))
-        return rows.length >= rowLimit
+        return normalizedRows.length >= rowLimit
       }
 
       if (!updateIgnoredCursor) return false
@@ -231,7 +233,10 @@ function clientIpStatsShardJobState(database: DatabaseSync, shardKey: string): {
   const row = database
     .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = ?")
     .get(shardKey, clientIpStatsJobName) as unknown as StatsJobStateRow | undefined
-  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+  return {
+    cursorCreatedAt: optionalCursorTimestamp(row?.cursor_created_at, 'stats_job_state.cursor_created_at'),
+    cursorId: row?.cursor_id ?? ''
+  }
 }
 
 async function postgresClientIpStatsJobState(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string }> {
@@ -245,7 +250,10 @@ async function postgresClientIpStatsJobState(client: DatabaseClient): Promise<{ 
     LIMIT 1
     FOR UPDATE
   `, [clientIpStatsJobName])
-  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+  return {
+    cursorCreatedAt: optionalCursorTimestamp(row?.cursor_created_at, 'stats_job_state.cursor_created_at'),
+    cursorId: row?.cursor_id ?? ''
+  }
 }
 
 async function ensurePostgresClientIpStatsJobStateRow(client: DatabaseClient): Promise<void> {
@@ -257,6 +265,8 @@ async function ensurePostgresClientIpStatsJobStateRow(client: DatabaseClient): P
 }
 
 function updateClientIpStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
+  const cursorCreatedAt = optionalSuppliedTimestamp(input.cursorCreatedAt, '客户端 IP 统计 cursorCreatedAt')
+  const lastSuccessAt = optionalSuppliedTimestamp(input.lastSuccessAt, '客户端 IP 统计 lastSuccessAt')
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('global', '', ?, ?, ?, ?, ?, ?, ?)
@@ -267,10 +277,12 @@ function updateClientIpStatsJobState(database: DatabaseSync, input: { cursorCrea
       last_error_message = excluded.last_error_message,
       lag_seconds = excluded.lag_seconds,
       updated_at = excluded.updated_at
-  `).run(clientIpStatsJobName, input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
+  `).run(clientIpStatsJobName, cursorCreatedAt ?? null, input.cursorId ?? null, lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
 }
 
 function updateClientIpStatsShardJobState(database: DatabaseSync, location: UsageRecordShardLocation, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
+  const cursorCreatedAt = optionalSuppliedTimestamp(input.cursorCreatedAt, '客户端 IP 统计 shard cursorCreatedAt')
+  const lastSuccessAt = optionalSuppliedTimestamp(input.lastSuccessAt, '客户端 IP 统计 shard lastSuccessAt')
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('usage_shard', ?, ?, ?, ?, ?, ?, ?, ?)
@@ -281,13 +293,15 @@ function updateClientIpStatsShardJobState(database: DatabaseSync, location: Usag
       last_error_message = excluded.last_error_message,
       lag_seconds = excluded.lag_seconds,
       updated_at = excluded.updated_at
-  `).run(location.shardKey, clientIpStatsJobName, input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
+  `).run(location.shardKey, clientIpStatsJobName, cursorCreatedAt ?? null, input.cursorId ?? null, lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
 }
 
 async function updatePostgresClientIpStatsJobState(
   client: DatabaseClient,
   input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }
 ): Promise<void> {
+  const cursorCreatedAt = optionalSuppliedTimestamp(input.cursorCreatedAt, '客户端 IP 统计 PG cursorCreatedAt')
+  const lastSuccessAt = optionalSuppliedTimestamp(input.lastSuccessAt, '客户端 IP 统计 PG lastSuccessAt')
   await client.execute(`
     INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('global', '', ?, ?, ?, ?, ?, ?, ?)
@@ -300,9 +314,9 @@ async function updatePostgresClientIpStatsJobState(
       updated_at = EXCLUDED.updated_at
   `, [
     clientIpStatsJobName,
-    input.cursorCreatedAt ?? null,
+    cursorCreatedAt ?? null,
     input.cursorId ?? null,
-    input.lastSuccessAt ?? null,
+    lastSuccessAt ?? null,
     input.lastErrorMessage ?? null,
     input.lagSeconds ?? null,
     nowIso()
@@ -325,7 +339,14 @@ function latestIgnoredUsageRecordCursor(database: DatabaseSync, safeCreatedBefor
       LIMIT 1
     `)
     .get(safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId) as unknown as { created_at?: string; id?: string } | undefined
-  return latest?.created_at && latest.id ? { created_at: latest.created_at, id: latest.id } : undefined
+  if (!latest) return undefined
+  if (latest.created_at === undefined || latest.id === undefined) {
+    throw new Error('usage_records 忽略游标缺少 created_at 或 id')
+  }
+  return {
+    created_at: requiredRfc3339Instant(latest.created_at, 'usage_records.created_at'),
+    id: latest.id
+  }
 }
 
 function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): number {
@@ -340,7 +361,9 @@ function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: 
       LIMIT 1
     `)
     .get(safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId) as unknown as { created_at?: string } | undefined
-  return latest?.created_at ? cursorLagSecondsFromCreatedAt(latest.created_at) : 0
+  if (!latest) return 0
+  if (latest.created_at === undefined) throw new Error('usage_records 游标缺少 created_at')
+  return cursorLagSecondsFromCreatedAt(latest.created_at)
 }
 
 async function latestPostgresIgnoredUsageRecordCursor(
@@ -358,7 +381,14 @@ async function latestPostgresIgnoredUsageRecordCursor(
     ORDER BY created_at DESC, id DESC
     LIMIT 1
   `, [safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId])
-  return latest?.created_at && latest.id ? { created_at: latest.created_at, id: latest.id } : undefined
+  if (!latest) return undefined
+  if (latest.created_at === undefined || latest.created_at === null || latest.id === undefined || latest.id === null) {
+    throw new Error('usage_records PG 忽略游标缺少 created_at 或 id')
+  }
+  return {
+    created_at: requiredRfc3339Instant(latest.created_at, 'usage_records.created_at'),
+    id: latest.id
+  }
 }
 
 async function latestPostgresUsageRecordLagSeconds(
@@ -376,7 +406,9 @@ async function latestPostgresUsageRecordLagSeconds(
     ORDER BY created_at DESC, id DESC
     LIMIT 1
   `, [safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId])
-  return latest?.created_at ? cursorLagSecondsFromCreatedAt(latest.created_at) : 0
+  if (!latest) return 0
+  if (latest.created_at === undefined || latest.created_at === null) throw new Error('usage_records PG 游标缺少 created_at')
+  return cursorLagSecondsFromCreatedAt(latest.created_at)
 }
 
 function latestCursor(
@@ -384,19 +416,22 @@ function latestCursor(
   next: { created_at: string; id: string }
 ): { created_at: string; id: string } {
   if (!current) return next
-  if (next.created_at > current.created_at) return next
-  if (next.created_at === current.created_at && next.id > current.id) return next
+  const nextTime = requiredTimestamp(next.created_at, '客户端 IP 统计 next cursor')
+  const currentTime = requiredTimestamp(current.created_at, '客户端 IP 统计 current cursor')
+  if (nextTime > currentTime) return next
+  if (nextTime === currentTime && next.id > current.id) return next
   return current
 }
 
 function cursorLagSecondsFromCreatedAt(cursorCreatedAt: string): number {
-  const cursorTime = Date.parse(cursorCreatedAt)
-  return Number.isFinite(cursorTime) ? Math.max(0, Math.floor((Date.now() - cursorTime) / 1000)) : 0
+  const cursorTime = requiredTimestamp(cursorCreatedAt, '客户端 IP 统计 cursorCreatedAt')
+  return Math.max(0, Math.floor((Date.now() - cursorTime) / 1000))
 }
 
 function normalizePostgresUsageStatsRecordRow(row: UsageStatsRecordRow): UsageStatsRecordRow {
   return {
     ...row,
+    created_at: requiredRfc3339Instant(row.created_at, 'usage_records.created_at'),
     status_code: nullableNumber(row.status_code),
     success: Number(row.success ?? 0),
     first_token_ms: nullableNumber(row.first_token_ms),
@@ -413,4 +448,26 @@ function nullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
+}
+
+function normalizeUsageStatsRecordTimestamp(row: UsageStatsRecordRow, label: string): UsageStatsRecordRow {
+  return {
+    ...row,
+    created_at: requiredRfc3339Instant(row.created_at, label)
+  }
+}
+
+function optionalCursorTimestamp(value: unknown, label: string): string {
+  if (value === undefined || value === null) return ''
+  return requiredRfc3339Instant(value, label)
+}
+
+function optionalSuppliedTimestamp(value: string | undefined, label: string): string | undefined {
+  return value === undefined ? undefined : requiredRfc3339Instant(value, label)
+}
+
+function requiredTimestamp(value: string, label: string): number {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  return timestamp
 }

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { parseRfc3339Instant, requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { DatabaseClient } from './database-client.js'
 import {
   clientIpRegistryBucketCount,
@@ -71,8 +72,9 @@ interface ClientIpRegistryAggregate {
 }
 
 export function writeClientIpStatsAggregatesFromUsageRows(database: DatabaseSync, rows: UsageStatsRecordRow[], updatedAt: string): void {
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '客户端 IP 统计 updatedAt')
   const aggregates = buildClientIpAggregates(rows)
-  writeClientIpAggregates(database, aggregates.ipAggregates, aggregates.accountAggregates, updatedAt)
+  writeClientIpAggregates(database, aggregates.ipAggregates, aggregates.accountAggregates, normalizedUpdatedAt)
 }
 
 export async function writeClientIpStatsAggregatesFromUsageRowsAsync(
@@ -81,8 +83,9 @@ export async function writeClientIpStatsAggregatesFromUsageRowsAsync(
   updatedAt: string,
   timezone: string
 ): Promise<void> {
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '客户端 IP 统计 updatedAt')
   const aggregates = buildClientIpAggregates(rows, timezone)
-  await writeClientIpAggregatesAsync(client, aggregates.ipAggregates, aggregates.accountAggregates, updatedAt)
+  await writeClientIpAggregatesAsync(client, aggregates.ipAggregates, aggregates.accountAggregates, normalizedUpdatedAt)
 }
 
 function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageStatsTimezone()): ClientIpAggregateBuildResult {
@@ -91,12 +94,16 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageSt
   for (const row of rows) {
     const normalized = normalizeClientIpForStats(row.client_ip)
     if (!normalized) continue
-    const statDate = dateKey(new Date(row.created_at), timezone)
+    const createdAt = requiredRfc3339Instant(row.created_at, '使用记录 created_at')
+    const createdAtDate = parseRfc3339Instant(createdAt)
+    if (!createdAtDate) throw new Error('使用记录 created_at 必须是带 Z 或数值 offset 的 RFC3339 时间')
+    const normalizedRow = row.created_at === createdAt ? row : { ...row, created_at: createdAt }
+    const statDate = dateKey(createdAtDate, timezone)
     const key = `${normalized.ipHash}:${statDate}`
-    const accumulator = usageStatsAccumulatorFromRecord(row)
+    const accumulator = usageStatsAccumulatorFromRecord(normalizedRow)
     const current = ipAggregates.get(key)
     if (current) {
-      addAccumulatorToClientIpAggregate(current, accumulator, row.created_at)
+      addAccumulatorToClientIpAggregate(current, accumulator, createdAt)
     } else {
       ipAggregates.set(key, {
         normalized,
@@ -120,8 +127,8 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageSt
         durationMsMax: accumulator.durationMsMax,
         firstTokenMsSum: accumulator.firstTokenMsSum,
         firstTokenMsCount: accumulator.firstTokenMsCount,
-        firstSeenAt: row.created_at,
-        lastUsedAt: row.created_at,
+        firstSeenAt: createdAt,
+        lastUsedAt: createdAt,
         lastErrorAt: accumulator.lastErrorAt
       })
     }
@@ -130,7 +137,7 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageSt
     const accountKey = `${normalized.ipHash}:${accountId}:${statDate}`
     const accountCurrent = accountAggregates.get(accountKey)
     if (accountCurrent) {
-      addAccumulatorToClientIpAggregate(accountCurrent, accumulator, row.created_at)
+      addAccumulatorToClientIpAggregate(accountCurrent, accumulator, createdAt)
       continue
     }
     accountAggregates.set(accountKey, {
@@ -156,8 +163,8 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageSt
       durationMsMax: accumulator.durationMsMax,
       firstTokenMsSum: accumulator.firstTokenMsSum,
       firstTokenMsCount: accumulator.firstTokenMsCount,
-      firstSeenAt: row.created_at,
-      lastUsedAt: row.created_at,
+      firstSeenAt: createdAt,
+      lastUsedAt: createdAt,
       lastErrorAt: accumulator.lastErrorAt
     })
   }
@@ -551,10 +558,17 @@ function registryAggregatesFromIpAggregates(aggregates: ClientIpAggregate[]): Cl
       })
       continue
     }
-    if (aggregate.firstSeenAt < current.firstSeenAt) {
+    const aggregateFirstSeenAtMs = rfc3339InstantMilliseconds(aggregate.firstSeenAt)
+    const currentFirstSeenAtMs = rfc3339InstantMilliseconds(current.firstSeenAt)
+    const aggregateLastSeenAtMs = rfc3339InstantMilliseconds(aggregate.lastUsedAt)
+    const currentLastSeenAtMs = rfc3339InstantMilliseconds(current.lastSeenAt)
+    if (aggregateFirstSeenAtMs === undefined || currentFirstSeenAtMs === undefined || aggregateLastSeenAtMs === undefined || currentLastSeenAtMs === undefined) {
+      throw new Error('客户端 IP 注册表时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+    }
+    if (aggregateFirstSeenAtMs < currentFirstSeenAtMs) {
       current.firstSeenAt = aggregate.firstSeenAt
     }
-    if (aggregate.lastUsedAt > current.lastSeenAt) {
+    if (aggregateLastSeenAtMs > currentLastSeenAtMs) {
       current.lastSeenAt = aggregate.lastUsedAt
     }
   }
@@ -658,9 +672,23 @@ function addAccumulatorToClientIpAggregate(target: ClientIpAggregate, accumulato
   target.durationMsMax = Math.max(target.durationMsMax, accumulator.durationMsMax)
   target.firstTokenMsSum += accumulator.firstTokenMsSum
   target.firstTokenMsCount += accumulator.firstTokenMsCount
-  if (createdAt < target.firstSeenAt) target.firstSeenAt = createdAt
-  if (createdAt > target.lastUsedAt) target.lastUsedAt = createdAt
-  if (accumulator.lastErrorAt && (!target.lastErrorAt || accumulator.lastErrorAt > target.lastErrorAt)) {
-    target.lastErrorAt = accumulator.lastErrorAt
+  const createdAtMs = rfc3339InstantMilliseconds(createdAt)
+  if (createdAtMs === undefined) throw new Error('客户端 IP 统计 createdAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const firstSeenAtMs = rfc3339InstantMilliseconds(target.firstSeenAt)
+  const lastUsedAtMs = rfc3339InstantMilliseconds(target.lastUsedAt)
+  if (firstSeenAtMs === undefined || lastUsedAtMs === undefined) {
+    throw new Error('客户端 IP 统计聚合时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  if (createdAtMs < firstSeenAtMs) target.firstSeenAt = createdAt
+  if (createdAtMs > lastUsedAtMs) target.lastUsedAt = createdAt
+  if (accumulator.lastErrorAt) {
+    const lastErrorAtMs = rfc3339InstantMilliseconds(accumulator.lastErrorAt)
+    const targetLastErrorAtMs = target.lastErrorAt === undefined ? undefined : rfc3339InstantMilliseconds(target.lastErrorAt)
+    if (lastErrorAtMs === undefined || (target.lastErrorAt !== undefined && targetLastErrorAtMs === undefined)) {
+      throw new Error('客户端 IP 统计错误时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+    }
+    if (targetLastErrorAtMs === undefined || lastErrorAtMs > targetLastErrorAtMs) {
+      target.lastErrorAt = accumulator.lastErrorAt
+    }
   }
 }

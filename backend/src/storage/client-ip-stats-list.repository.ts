@@ -2,7 +2,9 @@ import type { SQLInputValue } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountUsageStatsRange } from '../domain/types.js'
-import { getStatsDatabase, nowIso } from './database.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
+import { getStatsDatabase } from './database.js'
+import { listActiveClientIpPolicies, listActiveClientIpPoliciesAsync, type ActiveClientIpPolicy } from './client-ip-policy.repository.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound } from './query-utils.js'
@@ -79,6 +81,16 @@ interface ClientIpRangeWhere {
   params: SQLInputValue[]
 }
 
+interface ClientIpPolicySets {
+  blacklist: Set<string>
+  allowlist: Set<string>
+}
+
+interface ClientIpLastUsedEpochWindow {
+  startMs: number
+  endExclusiveMs: number
+}
+
 export function listClientIpStats(options: ClientIpStatsListOptions = {}): ClientIpStatsListResult {
   const database = getStatsDatabase()
   const timezone = usageStatsTimezone()
@@ -88,10 +100,10 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
   const pageSize = boundedPageSize(options.pageSize)
   const page = boundedPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
-  const policyNow = nowIso()
+  const policySets = activeClientIpPolicySets(listActiveClientIpPolicies())
   const queryStartDate = rangeReady ? range.startDate : ''
   const queryEndDate = rangeReady ? range.endDate : ''
-  const where = buildClientIpRangeWhere(options, policyNow, lastUsedRange, timezone)
+  const where = buildClientIpRangeWhere(options, policySets)
   const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder, options.lastUsedSortScope)
   const fromClause = clientIpStatsFromClause(options)
   const rows = database.prepare(`
@@ -106,18 +118,21 @@ export function listClientIpStats(options: ClientIpStatsListOptions = {}): Clien
       range_stats.average_duration_ms,
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
       range_stats.average_first_token_ms,
-      range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at,
-      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'blacklist')} THEN 1 ELSE 0 END AS blacklisted,
-      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'allowlist')} THEN 1 ELSE 0 END AS allowlisted
+      range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at
     FROM ${fromClause}
     ${where.clause}
     ORDER BY ${orderBy}
-    LIMIT ? OFFSET ?
-  `).all(policyNow, policyNow, queryStartDate, queryEndDate, ...where.params, pageSize + 1, offset) as unknown as ClientIpStatsRangeRow[]
-  const pageRows = rows.slice(0, pageSize)
-  const hasMore = rows.length > pageSize
+    LIMIT ?
+  `).all(queryStartDate, queryEndDate, ...where.params, clientIpStatsMaxListWindowRows) as unknown as ClientIpStatsRangeRow[]
+  const lastUsedWindow = lastUsedRange ? clientIpLastUsedEpochWindow(lastUsedRange, timezone) : undefined
+  const filteredRows = rows
+    .map((row) => mapClientIpStatsRangeRow(row, policySets))
+    .filter((row) => clientIpStatsRowMatchesLastUsedWindow(row, lastUsedWindow))
+  const sortedRows = sortClientIpStatsRows(filteredRows, options.sortField, options.sortOrder, options.lastUsedSortScope)
+  const pageRows = sortedRows.slice(offset, offset + pageSize)
+  const hasMore = sortedRows.length > offset + pageSize || rows.length === clientIpStatsMaxListWindowRows
   return {
-    items: pageRows.map(mapClientIpStatsRangeRow),
+    items: pageRows,
     pageUpperBound: pagedTotalUpperBound(page, pageSize, pageRows.length, hasMore),
     hasMore,
     page,
@@ -139,10 +154,10 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
   const pageSize = boundedPageSize(options.pageSize)
   const page = boundedPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
-  const policyNow = nowIso()
+  const policySets = activeClientIpPolicySets(await listActiveClientIpPoliciesAsync())
   const queryStartDate = rangeReady ? range.startDate : ''
   const queryEndDate = rangeReady ? range.endDate : ''
-  const where = buildClientIpRangeWhere(options, policyNow, lastUsedRange, timezone, statsTable(client, 'client_ip_policies'))
+  const where = buildClientIpRangeWhere(options, policySets)
   const orderBy = clientIpStatsOrderBy(options.sortField, options.sortOrder, options.lastUsedSortScope)
   const fromClause = clientIpStatsFromClauseAsync(client, options)
   const rows = await client.query<ClientIpStatsRangeRow>(`
@@ -157,18 +172,21 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
       range_stats.average_duration_ms,
       range_stats.first_token_ms_sum, range_stats.first_token_ms_count,
       range_stats.average_first_token_ms,
-      range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at,
-      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'blacklist', statsTable(client, 'client_ip_policies'))} THEN 1 ELSE 0 END AS blacklisted,
-      CASE WHEN ${activePolicyExistsSql('registry.ip_hash', 'allowlist', statsTable(client, 'client_ip_policies'))} THEN 1 ELSE 0 END AS allowlisted
+      range_stats.active_days, range_stats.last_used_at, range_stats.last_error_at
     FROM ${fromClause}
     ${where.clause}
     ORDER BY ${orderBy}
-    LIMIT ? OFFSET ?
-  `, [policyNow, policyNow, queryStartDate, queryEndDate, ...where.params, pageSize + 1, offset])
-  const pageRows = rows.slice(0, pageSize)
-  const hasMore = rows.length > pageSize
+    LIMIT ?
+  `, [queryStartDate, queryEndDate, ...where.params, clientIpStatsMaxListWindowRows])
+  const lastUsedWindow = lastUsedRange ? clientIpLastUsedEpochWindow(lastUsedRange, timezone) : undefined
+  const filteredRows = rows
+    .map((row) => mapClientIpStatsRangeRow(row, policySets))
+    .filter((row) => clientIpStatsRowMatchesLastUsedWindow(row, lastUsedWindow))
+  const sortedRows = sortClientIpStatsRows(filteredRows, options.sortField, options.sortOrder, options.lastUsedSortScope)
+  const pageRows = sortedRows.slice(offset, offset + pageSize)
+  const hasMore = sortedRows.length > offset + pageSize || rows.length === clientIpStatsMaxListWindowRows
   return {
-    items: pageRows.map(mapClientIpStatsRangeRow),
+    items: pageRows,
     pageUpperBound: pagedTotalUpperBound(page, pageSize, pageRows.length, hasMore),
     hasMore,
     page,
@@ -180,18 +198,10 @@ export async function listClientIpStatsAsync(options: ClientIpStatsListOptions =
 
 function buildClientIpRangeWhere(
   options: ClientIpStatsListOptions,
-  policyNow: string,
-  lastUsedRange: AccountUsageStatsRange | undefined,
-  timezone: string,
-  policyTableName = 'client_ip_policies'
+  policySets: ClientIpPolicySets
 ): ClientIpRangeWhere {
   const clauses: string[] = []
   const params: SQLInputValue[] = []
-  const lastUsedWindow = lastUsedRange ? clientIpLastUsedIsoWindow(lastUsedRange, timezone) : undefined
-  if (lastUsedWindow) {
-    clauses.push('registry.last_seen_at >= ? AND registry.last_seen_at < ?')
-    params.push(lastUsedWindow.startIso, lastUsedWindow.endExclusiveIso)
-  }
   const keyword = options.keyword?.trim()
   if (keyword) {
     const keywordUpperBound = clientIpKeywordPrefixUpperBound(keyword)
@@ -200,15 +210,11 @@ function buildClientIpRangeWhere(
   }
   const status = options.status ?? 'all'
   if (status === 'blacklisted') {
-    clauses.push(activePolicyExistsSql('registry.ip_hash', 'blacklist', policyTableName))
-    params.push(policyNow)
+    appendClientIpHashSetClause(clauses, params, policySets.blacklist, false)
   } else if (status === 'allowlisted') {
-    clauses.push(activePolicyExistsSql('registry.ip_hash', 'allowlist', policyTableName))
-    params.push(policyNow)
+    appendClientIpHashSetClause(clauses, params, policySets.allowlist, false)
   } else if (status === 'normal') {
-    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', 'blacklist', policyTableName)}`)
-    clauses.push(`NOT ${activePolicyExistsSql('registry.ip_hash', 'allowlist', policyTableName)}`)
-    params.push(policyNow, policyNow)
+    appendClientIpHashSetClause(clauses, params, new Set([...policySets.blacklist, ...policySets.allowlist]), true)
   }
   return {
     clause: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
@@ -224,23 +230,16 @@ function normalizeClientIpLastUsedRange(options: ClientIpStatsListOptions, timez
   }, timezone)
 }
 
-function clientIpLastUsedIsoWindow(range: AccountUsageStatsRange, timezone: string): { startIso: string; endExclusiveIso: string } | undefined {
+function clientIpLastUsedEpochWindow(range: AccountUsageStatsRange, timezone: string): ClientIpLastUsedEpochWindow | undefined {
   const startIso = startOfZonedDateKeyIso(range.startDate, timezone)
   const endExclusiveIso = startOfZonedDateKeyIso(nextDateKey(range.endDate), timezone)
   if (!startIso || !endExclusiveIso) return undefined
-  return { startIso, endExclusiveIso }
-}
-
-function activePolicyExistsSql(ipHashExpression: string, policyType: 'blacklist' | 'allowlist', policyTableName = 'client_ip_policies'): string {
-  return `EXISTS (
-    SELECT 1
-    FROM ${policyTableName} active_policies
-    WHERE active_policies.status = 'active'
-      AND active_policies.policy_type = '${policyType}'
-      AND active_policies.ip_hash = ${ipHashExpression}
-      AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
-    LIMIT 1
-  )`
+  const startMs = rfc3339InstantMilliseconds(startIso)
+  const endExclusiveMs = rfc3339InstantMilliseconds(endExclusiveIso)
+  if (startMs === undefined || endExclusiveMs === undefined) {
+    throw new Error('客户端 IP 最后使用时间窗口必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return { startMs, endExclusiveMs }
 }
 
 function clientIpStatsFromClause(options: ClientIpStatsListOptions): string {
@@ -248,9 +247,7 @@ function clientIpStatsFromClause(options: ClientIpStatsListOptions): string {
       ON range_stats.ip_hash = registry.ip_hash
       AND range_stats.start_date = ?
       AND range_stats.end_date = ?`
-  if (options.sortField === 'lastUsedAt' && options.lastUsedSortScope === 'global') {
-    return `client_ip_registry registry INDEXED BY idx_client_ip_registry_last_seen ${rangeJoin}`
-  }
+  void options
   return `client_ip_registry registry ${rangeJoin}`
 }
 
@@ -287,9 +284,8 @@ function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 
     case 'activeDays':
       return `COALESCE(range_stats.active_days, 0) ${direction}, registry.ip_hash ASC`
     case 'lastUsedAt':
-      return lastUsedSortScope === 'global'
-        ? `registry.last_seen_at ${direction}, registry.ip_hash ${direction === 'ASC' ? 'DESC' : 'ASC'}`
-        : `range_stats.last_used_at ${direction}, registry.ip_hash ASC`
+      void lastUsedSortScope
+      return 'registry.ip_hash ASC'
     case 'requestCount':
       return `COALESCE(range_stats.request_count, 0) ${direction}, registry.ip_hash ASC`
     case 'totalCost':
@@ -299,14 +295,14 @@ function clientIpStatsOrderBy(field: ClientIpStatsSortField | undefined, order: 
   }
 }
 
-function mapClientIpStatsRangeRow(row: ClientIpStatsRangeRow): ClientIpStatsRow {
+function mapClientIpStatsRangeRow(row: ClientIpStatsRangeRow, policySets: ClientIpPolicySets): ClientIpStatsRow {
   const rangeUsage = usageSummaryFromRow(row)
-  const blacklisted = Number(row.blacklisted ?? 0) > 0
-  const allowlisted = Number(row.allowlisted ?? 0) > 0
+  const blacklisted = policySets.blacklist.has(row.ip_hash)
+  const allowlisted = policySets.allowlist.has(row.ip_hash)
   return {
     ipHash: row.ip_hash,
     aggregateIpKey: row.aggregate_ip_key,
-    lastSeenAt: row.registry_last_seen_at ?? undefined,
+    lastSeenAt: optionalTimestamp(row.registry_last_seen_at, 'client_ip_registry.last_seen_at'),
     status: blacklisted ? 'blacklisted' : allowlisted ? 'allowlisted' : 'normal',
     rangeUsage
   }
@@ -348,9 +344,82 @@ function usageSummaryFromRow(row: Partial<ClientIpStatsUsageRow> | undefined): C
     averageDurationMs: Number.isFinite(averageDurationMs) ? averageDurationMs : undefined,
     averageFirstTokenMs: Number.isFinite(averageFirstTokenMs) ? averageFirstTokenMs : undefined,
     maxDurationMs: durationMsCount > 0 && durationMsMax > 0 ? durationMsMax : undefined,
-    lastUsedAt: row?.last_used_at ?? undefined,
-    lastErrorAt: row?.last_error_at ?? undefined
+    lastUsedAt: optionalTimestamp(row?.last_used_at, 'client_ip_usage_range_windows.last_used_at'),
+    lastErrorAt: optionalTimestamp(row?.last_error_at, 'client_ip_usage_range_windows.last_error_at')
   }
+}
+
+function activeClientIpPolicySets(policies: ActiveClientIpPolicy[]): ClientIpPolicySets {
+  const sets: ClientIpPolicySets = {
+    blacklist: new Set<string>(),
+    allowlist: new Set<string>()
+  }
+  for (const policy of policies) {
+    sets[policy.policyType].add(policy.ipHash)
+  }
+  return sets
+}
+
+function appendClientIpHashSetClause(
+  clauses: string[],
+  params: SQLInputValue[],
+  values: Set<string>,
+  negate: boolean
+): void {
+  const hashes = [...values].sort()
+  if (hashes.length === 0) {
+    if (!negate) clauses.push('1 = 0')
+    return
+  }
+  clauses.push(`registry.ip_hash ${negate ? 'NOT IN' : 'IN'} (${hashes.map(() => '?').join(', ')})`)
+  params.push(...hashes)
+}
+
+function clientIpStatsRowMatchesLastUsedWindow(row: ClientIpStatsRow, window: ClientIpLastUsedEpochWindow | undefined): boolean {
+  if (!window) return true
+  if (row.lastSeenAt === undefined) return false
+  const lastSeenAtMs = rfc3339InstantMilliseconds(row.lastSeenAt)
+  if (lastSeenAtMs === undefined) throw new Error('client_ip_registry.last_seen_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return lastSeenAtMs >= window.startMs && lastSeenAtMs < window.endExclusiveMs
+}
+
+function sortClientIpStatsRows(
+  rows: ClientIpStatsRow[],
+  field: ClientIpStatsSortField | undefined,
+  order: 'asc' | 'desc' | undefined,
+  lastUsedSortScope: ClientIpLastUsedSortScope = 'range'
+): ClientIpStatsRow[] {
+  if (field !== 'lastUsedAt') return rows
+  const direction = order === 'asc' ? 1 : -1
+  return [...rows].sort((left, right) => {
+    const leftTime = optionalTimestampMilliseconds(
+      lastUsedSortScope === 'global' ? left.lastSeenAt : left.rangeUsage.lastUsedAt,
+      '客户端 IP lastUsedAt'
+    )
+    const rightTime = optionalTimestampMilliseconds(
+      lastUsedSortScope === 'global' ? right.lastSeenAt : right.rangeUsage.lastUsedAt,
+      '客户端 IP lastUsedAt'
+    )
+    if (leftTime !== rightTime) {
+      if (leftTime === undefined) return -direction
+      if (rightTime === undefined) return direction
+      return (leftTime - rightTime) * direction
+    }
+    const tieDirection = lastUsedSortScope === 'global' && direction === 1 ? -1 : 1
+    return left.ipHash.localeCompare(right.ipHash) * tieDirection
+  })
+}
+
+function optionalTimestamp(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
+}
+
+function optionalTimestampMilliseconds(value: string | undefined, label: string): number | undefined {
+  if (value === undefined) return undefined
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  return timestamp
 }
 
 function boundedPage(value: unknown, pageSize: number): number {
@@ -399,6 +468,4 @@ interface ClientIpStatsRangeRow extends ClientIpStatsUsageRow {
   ip_hash: string
   aggregate_ip_key: string
   registry_last_seen_at: string | null
-  blacklisted: number
-  allowlisted: number
 }

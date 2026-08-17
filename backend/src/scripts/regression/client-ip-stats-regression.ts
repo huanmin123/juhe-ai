@@ -20,13 +20,15 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache, crypto] = await Promise.all([
+const [databaseModule, repositories, clientIpStats, usageStatsHelpers, clientIpPolicyCache, crypto, clientIpStatsWriter, usageRecordShards] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
   import('../../storage/usage-stats-helpers.js'),
   import('../../modules/gateway/runtime/client-ip-policy-cache.service.js'),
-  import('../../storage/crypto.js')
+  import('../../storage/crypto.js'),
+  import('../../storage/client-ip-stats-writer.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 try {
@@ -510,6 +512,19 @@ try {
   assert(outsideRangeRow, 'IP 管理列表应包含所选统计范围内无用量的已注册 IP')
   assert.equal(outsideRangeRow.rangeUsage.requestCount, 0, '范围外 IP 的当前窗口请求数应为 0')
   assert.equal(outsideRangeRow.rangeUsage.totalTokens, 0, '范围外 IP 的当前窗口 Token 应为 0')
+  statsDatabase.prepare('UPDATE client_ip_registry SET last_seen_at = ? WHERE ip_hash = ?')
+    .run('2026-08-16T06:34:49.137+08:00', outsideRangeIdentity.ipHash)
+  const offsetRegistryRow = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 100 }).items.find((item) => item.ipHash === outsideRangeIdentity.ipHash)
+  assert.equal(offsetRegistryRow?.lastSeenAt, '2026-08-15T22:34:49.137Z', 'IP 列表读取 registry last_seen_at 时必须规范为 UTC')
+  statsDatabase.prepare('UPDATE client_ip_registry SET last_seen_at = ? WHERE ip_hash = ?')
+    .run('2026-08-16T06:34:49.137', outsideRangeIdentity.ipHash)
+  assert.throws(
+    () => clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 100 }),
+    /client_ip_registry\.last_seen_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    'IP 列表读取持久化裸 last_seen_at 时必须显式失败'
+  )
+  statsDatabase.prepare('UPDATE client_ip_registry SET last_seen_at = ? WHERE ip_hash = ?')
+    .run('2026-08-15T22:34:49.137Z', outsideRangeIdentity.ipHash)
 
   const outsideRangePolicy = clientIpStats.createClientIpPolicy({
     ipHash: outsideRangeIdentity.ipHash,
@@ -571,10 +586,59 @@ try {
     '持久化裸 expiresAt 即使按文本比较已过期，也必须可见失败而不是被静默跳过'
   )
 
+  const strictWriterIdentity = clientIpStats.normalizeClientIpForStats('192.0.2.88')
+  assert(strictWriterIdentity, '严格时间 writer fixture IP 应可规范化')
+  clientIpStatsWriter.writeClientIpStatsAggregatesFromUsageRows(
+    statsDatabase,
+    [clientIpUsageRowAt('client_ip_stats_strict_offset', strictWriterIdentity.clientIp, '2026-08-16T06:34:49.137+08:00')],
+    '2026-08-16T06:35:49.137+08:00'
+  )
+  const strictWriterRegistry = statsDatabase.prepare(`
+    SELECT first_seen_at, last_seen_at, created_at, updated_at
+    FROM client_ip_registry
+    WHERE ip_hash = ?
+  `).get(strictWriterIdentity.ipHash) as { first_seen_at?: string; last_seen_at?: string; created_at?: string; updated_at?: string } | undefined
+  assert.deepEqual({ ...strictWriterRegistry }, {
+    first_seen_at: '2026-08-15T22:34:49.137Z',
+    last_seen_at: '2026-08-15T22:34:49.137Z',
+    created_at: '2026-08-15T22:35:49.137Z',
+    updated_at: '2026-08-15T22:35:49.137Z'
+  }, '客户端 IP writer 必须把 numeric offset 规范为 UTC 后持久化')
+  assert.throws(
+    () => clientIpStatsWriter.writeClientIpStatsAggregatesFromUsageRows(
+      statsDatabase,
+      [clientIpUsageRowAt('client_ip_stats_strict_bare', '192.0.2.89', '2026-08-16T06:34:49.137')],
+      '2026-08-16T06:35:49.137Z'
+    ),
+    /使用记录 created_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '客户端 IP writer 不得按本地时区解释裸 usage created_at'
+  )
+  assert.throws(
+    () => clientIpStatsWriter.writeClientIpStatsAggregatesFromUsageRows(statsDatabase, [], '2026-08-16T06:35:49.137'),
+    /客户端 IP 统计 updatedAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '客户端 IP writer 即使没有聚合行也不得接受裸 updatedAt'
+  )
+
   const cursorCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM stats_job_state WHERE job_name = 'client_ip_stats_aggregation' AND scope_type = 'usage_shard' AND cursor_id IS NOT NULL")
     .get() as { total?: number } | undefined
   assert(Number(cursorCount?.total ?? 0) > 0, 'IP 统计应维护独立 usage shard 游标')
+  const strictShardLocation = usageRecordShards.listUsageRecordShardLocations()[0]
+  assert(strictShardLocation, '严格时间聚合 fixture 应存在 usage shard')
+  const strictShardDatabase = usageRecordShards.getUsageRecordShardDatabase(strictShardLocation)
+  const strictShardRow = strictShardDatabase.prepare('SELECT id, created_at FROM usage_records ORDER BY created_at ASC, id ASC LIMIT 1').get() as { id?: string; created_at?: string } | undefined
+  assert(strictShardRow?.id && strictShardRow.created_at, '严格时间聚合 fixture 应存在 usage record')
+  strictShardDatabase.prepare('UPDATE usage_records SET created_at = ? WHERE id = ?').run('2026-08-16T06:34:49.137', strictShardRow.id)
+  statsDatabase.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = NULL, cursor_id = NULL
+    WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'client_ip_stats_aggregation'
+  `).run(strictShardLocation.shardKey)
+  assert.throws(
+    () => clientIpStats.aggregateClientIpStatsBatch(100),
+    /usage_records\.created_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '客户端 IP 聚合读取持久化裸 usage created_at 时必须显式失败'
+  )
 
   console.log('IP 统计回归通过：IPv4 注册、非 IPv4 忽略、预聚合窗口、封禁策略过期边界和命中计数均符合预期')
 } finally {
@@ -769,6 +833,52 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function clientIpUsageRowAt(id: string, clientIp: string, createdAt: string): Parameters<typeof clientIpStatsWriter.writeClientIpStatsAggregatesFromUsageRows>[1][number] {
+  return {
+    id,
+    system_account_id: 'sys_admin',
+    trace_id: `trace-${id}`,
+    traffic_source: 'gateway',
+    client_ip: clientIp,
+    api_key_id: null,
+    group_id: null,
+    account_id: null,
+    endpoint: '/v1/responses',
+    provider_code: 'gpt',
+    provider_protocol_profile_id: null,
+    model: 'gpt-5.1',
+    status_code: 200,
+    success: 1,
+    failure_attribution: null,
+    first_token_ms: null,
+    duration_ms: 10,
+    input_tokens: 1,
+    output_tokens: 1,
+    cache_read_tokens: null,
+    cache_read_cost_usd: null,
+    cache_write_tokens: null,
+    cache_write_1h_tokens: null,
+    cache_write_cost_usd: null,
+    thinking_tokens: null,
+    input_image_tokens: null,
+    output_image_tokens: null,
+    cost_usd: 0.001,
+    error_code: null,
+    error_message: null,
+    account_owner_system_account_id: null,
+    group_owner_system_account_id: null,
+    account_access_type: null,
+    group_access_type: null,
+    account_authorization_id: null,
+    account_authorization_source_type: null,
+    account_authorization_source_team_id: null,
+    group_authorization_id: null,
+    group_authorization_source_type: null,
+    group_authorization_source_team_id: null,
+    created_at: createdAt
+  }
 }
 
 function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {
