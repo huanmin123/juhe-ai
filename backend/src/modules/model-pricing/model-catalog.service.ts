@@ -69,6 +69,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { generationParameterCapabilitiesForModel, limitGenerationParameterMaxOutputTokens } from '../chat/chat-generation-parameters.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from '../../storage/sqlite-read-worker-pool.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -968,12 +969,30 @@ function sortableCatalogReleaseDate(item: ProviderModelCatalogItem): string | un
 }
 
 function modelCreatedUnixSeconds(item: ProviderModelCatalogItem): number {
-  const source = item.releaseDate
-    ? `${item.releaseDate}T00:00:00.000Z`
-    : item.createdAt
-  if (!source) return 0
-  const time = Date.parse(source)
-  return Number.isFinite(time) ? Math.trunc(time / 1000) : 0
+  if (item.releaseDate !== undefined && item.releaseDate !== null && item.releaseDate !== '') {
+    return Math.trunc(requiredCatalogDateOnlyMilliseconds(item.releaseDate, '模型 releaseDate') / 1000)
+  }
+  if (item.createdAt === undefined || item.createdAt === null) return 0
+  const time = rfc3339InstantMilliseconds(item.createdAt)
+  if (time === undefined) {
+    throw new Error('模型 createdAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return Math.trunc(time / 1000)
+}
+
+function requiredCatalogDateOnlyMilliseconds(value: unknown, label: string): number {
+  if (typeof value !== 'string') throw new Error(`${label} 必须是 YYYY-MM-DD 日期`)
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value)
+  if (!match) throw new Error(`${label} 必须是 YYYY-MM-DD 日期`)
+  const year = Number(match[1])
+  const month = Number(match[2]) - 1
+  const day = Number(match[3])
+  const timestamp = Date.UTC(year, month, day)
+  const date = new Date(timestamp)
+  if (!Number.isFinite(timestamp) || date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day) {
+    throw new Error(`${label} 必须是有效 YYYY-MM-DD 日期`)
+  }
+  return timestamp
 }
 
 function hasAnyCostDimension(input: CostInput): boolean {
