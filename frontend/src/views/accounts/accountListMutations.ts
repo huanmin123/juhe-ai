@@ -1,6 +1,7 @@
 import { toRaw } from 'vue'
 
 import type { AccountListSortParam } from '@/api/client'
+import { compareServerDateTime } from '@/shared/formatters'
 import type {
   AccountBalanceSnapshot,
   AccountListItem,
@@ -146,7 +147,8 @@ export function sortAccountListRows(accounts: AccountListItem[], sorts: AccountL
         accountListSortValue(left, sort.field),
         accountListSortValue(right, sort.field),
         sort.order,
-        sort.field === 'lastUsedAt'
+        sort.field === 'lastUsedAt' || sort.field === 'accountExpiresAt',
+        sort.field === 'lastUsedAt' || sort.field === 'accountExpiresAt'
       )
       if (compared !== 0) return compared
     }
@@ -251,7 +253,8 @@ function compareAccountListSortValues(
   left: string | number | boolean | undefined,
   right: string | number | boolean | undefined,
   order: AccountListSortParam['order'],
-  nullsAlwaysLast: boolean
+  nullsAlwaysLast: boolean,
+  absoluteTime: boolean
 ): number {
   const leftMissing = left === undefined || left === ''
   const rightMissing = right === undefined || right === ''
@@ -262,6 +265,10 @@ function compareAccountListSortValues(
     return order === 'desc' ? -compared : compared
   }
   if (left === right) return 0
+  if (absoluteTime && typeof left === 'string' && typeof right === 'string') {
+    const leftTimestamp = compareServerDateTime(left, right)
+    if (leftTimestamp !== 0) return order === 'desc' ? -leftTimestamp : leftTimestamp
+  }
   const compared = left < right ? -1 : 1
   return order === 'desc' ? -compared : compared
 }

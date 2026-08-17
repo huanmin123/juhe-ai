@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs'
+import assert from 'node:assert/strict'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { parseTaskTime } from '../../src/views/accounts/accountTestTaskHelpers'
+import { accountTestTaskTimeoutResult, waitForAccountTestResult } from '../../src/views/accounts/accountTestTaskPolling'
+import type { AccountListItem, AccountTestTask } from '../../src/types/domain'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -17,6 +22,57 @@ const waitForSubmittedAccountTestResultSource = accountTestModalSource.slice(
   accountTestModalSource.indexOf('function persistAccountTestRunSession')
 )
 
+const strictEpoch = 1784032496123
+assert.equal(parseTaskTime('2026-07-14T12:34:56.123Z'), strictEpoch, 'RFC3339 startedAt 应按绝对时间解析')
+assert.equal(parseTaskTime('2026-07-14 20:34:56.123'), undefined, '无时区 legacy startedAt 必须拒绝')
+assert.equal(parseTaskTime('2026-07-14T12:34:56'), undefined, '无时区 startedAt 必须拒绝')
+assert.equal(parseTaskTime('2026-02-30T12:34:56Z'), undefined, '非法日期 startedAt 必须拒绝')
+
+const testAccount = { id: 'account-time-contract', name: '时间契约账号', providerCode: 'openai', type: 'api_key' } as AccountListItem
+const invalidTask = {
+  id: 'task-invalid-time',
+  accountId: testAccount.id,
+  accountName: testAccount.name,
+  providerCode: testAccount.providerCode,
+  type: testAccount.type,
+  status: 'running',
+  model: 'gpt-test',
+  createdAt: '2026-07-14T12:34:56Z',
+  queuedAt: '2026-07-14T12:34:56Z',
+  updatedAt: '2026-07-14T12:34:56Z'
+} as AccountTestTask
+const invalidStartedAtResult = accountTestTaskTimeoutResult({
+  account: testAccount,
+  testEndpointMode: 'account_default',
+  model: 'gpt-test',
+  task: invalidTask
+})
+assert.match(invalidStartedAtResult?.message ?? '', /缺少 startedAt/, '缺失 startedAt 必须返回显式失败')
+const expiredTask = { ...invalidTask, id: 'task-expired-time', startedAt: '2020-01-01T00:00:00Z' } as AccountTestTask
+assert.match(accountTestTaskTimeoutResult({ account: testAccount, testEndpointMode: 'account_default', model: 'gpt-test', task: expiredTask })?.message ?? '', /超过/, '真实超时 startedAt 必须返回超时失败')
+let invalidTaskCancelCount = 0
+const invalidTaskResult = await waitForAccountTestResult({
+  account: testAccount,
+  cancelTask: async () => { invalidTaskCancelCount += 1 },
+  currentTestEndpointMode: () => 'account_default',
+  currentModel: () => 'gpt-test',
+  fetchTask: async () => invalidTask,
+  initialTask: invalidTask,
+  signal: new AbortController().signal
+})
+assert.equal(invalidTaskCancelCount, 1, 'invalid startedAt 必须停止后台任务')
+assert.match(invalidTaskResult.message, /缺少 startedAt/, '轮询 invalid startedAt 必须返回显式失败')
+const canceledTaskResult = await waitForAccountTestResult({
+  account: testAccount,
+  cancelTask: async () => undefined,
+  currentTestEndpointMode: () => 'account_default',
+  currentModel: () => 'gpt-test',
+  fetchTask: async () => { throw new Error('canceled task 不应继续轮询') },
+  initialTask: { ...expiredTask, status: 'canceled', message: '后台已取消' },
+  signal: new AbortController().signal
+})
+assert.match(canceledTaskResult.message, /后台已取消/, '服务端 canceled 任务必须返回可见失败，而非伪装成本地 Abort')
+
 assertIncludes(accountTestModalSource, "import { waitForAccountTestResult } from './accountTestTaskPolling'", '账户测试弹窗应通过 task polling helper 等待后台任务结果')
 assertIncludes(accountTestTaskPollingSource, 'export async function waitForAccountTestResult', '任务轮询 helper 应导出后台测试任务结果等待函数')
 assertIncludes(accountTestTaskPollingSource, 'export function accountTestTaskTimeoutResult', '任务轮询 helper 应负责测试任务超时结果构造')
@@ -24,6 +80,10 @@ assertIncludes(accountTestTaskPollingSource, 'waitForPollDelay', '任务轮询 h
 assertIncludes(accountTestTaskPollingSource, 'accountTestTaskRemainingWaitMs(task)', '任务轮询 helper 应按任务剩余等待窗口控制轮询延迟')
 assertIncludes(accountTestTaskPollingSource, 'accountTestTaskMaxWaitMs', '任务轮询 helper 应负责最大等待时间判断')
 assertIncludes(accountTestTaskPollingSource, 'failedAccountTestResult', '任务轮询 helper 应负责无结果任务和超时任务的失败结果兜底')
+assertIncludes(accountTestTaskPollingSource, 'startedAt 无法严格解析', '非法 startedAt 必须显式失败')
+assertIncludes(accountTestTaskPollingSource, '缺少 startedAt', '缺失 startedAt 必须显式失败')
+assertNotIncludes(accountTestTaskPollingSource, 'Date.parse(task.startedAt)', '任务轮询不得直接使用 Date.parse')
+assertNotIncludes(accountTestTaskPollingSource, ': Date.now()', '任务轮询不得以 Date.now 静默补 startedAt')
 assertIncludes(accountTestTaskPollingSource, 'fetchTask(task.id, account, signal)', '任务轮询 helper 应通过调用方传入的 fetchTask 拉取最新任务')
 assertIncludes(accountTestTaskPollingSource, 'cancelTask(task.id, account)', '任务轮询 helper 应通过调用方传入的 cancelTask 停止超时任务')
 assertIncludes(accountTestTaskPollingSource, 'onTaskSettled?.(task.id)', '任务轮询 helper 应通知调用方清理已结束任务')

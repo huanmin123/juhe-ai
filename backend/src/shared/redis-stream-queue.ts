@@ -2,6 +2,7 @@ import { hostname } from 'node:os'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
+import { rfc3339InstantMilliseconds } from './rfc3339.js'
 import {
   createDedicatedRedisClient,
   getRedisClient,
@@ -657,8 +658,7 @@ function parsePendingRuntime(result: unknown): Partial<RedisStreamQueueRuntime> 
 }
 
 function backlogCreatedAtScore(value: string): number | undefined {
-  const time = Date.parse(value)
-  return Number.isFinite(time) ? time : undefined
+  return rfc3339InstantMilliseconds(value)
 }
 
 function normalizeRedisStreamQueueCapacity(value: number | undefined, name: string): number | undefined {

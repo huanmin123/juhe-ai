@@ -4,6 +4,7 @@ import { isGptVendorCode } from '@/shared/providerProtocol'
 import { accountDiagnosticMessageWithoutRepeatedFields } from './accountDiagnosticMessages'
 
 import type { AccountTestEndpointMode } from './accountTestFlow'
+import { parseTaskTime } from './accountTestTaskHelpers'
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
 import { accountEndpointModeLabel, accountTestEndpointModesForAccount } from './accountEndpointModes'
 import { accountTypeText } from './accountBasicFormatters'
@@ -318,10 +319,4 @@ function accountTestApiKeyPreview(
 
 function previewPart(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function parseTaskTime(value?: string): number | undefined {
-  if (!value) return undefined
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : undefined
 }

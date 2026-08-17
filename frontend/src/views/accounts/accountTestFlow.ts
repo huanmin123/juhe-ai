@@ -49,7 +49,7 @@ export function failedAccountTestResult(input: {
   error: unknown
   model: string
   testEndpointMode: AccountTestEndpointMode
-  startedAt: number
+  startedAt?: number
 }): AccountTestResult {
   const fallbackMessage = extractApiErrorMessage(input.error, '测试失败')
   const testEndpointMode = effectiveAccountTestEndpointMode(input.account, input.testEndpointMode)
@@ -63,7 +63,7 @@ export function failedAccountTestResult(input: {
     model: input.model,
     testEndpointMode,
     responseText: fallbackMessage,
-    durationMs: Date.now() - input.startedAt
+    ...(input.startedAt !== undefined ? { durationMs: Math.max(0, Date.now() - input.startedAt) } : {})
   }
 }
 

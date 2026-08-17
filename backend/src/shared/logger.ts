@@ -13,7 +13,6 @@ import { setImmediate as yieldImmediate } from 'node:timers/promises'
 import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig, type RuntimeConfig } from '../config/runtime.js'
-import { formatShanghaiNow } from './time-display.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import {
   drainProcessDiagnosticAsync,
@@ -178,7 +177,7 @@ class LogStreamDiagnostics {
     const failure = isFailureLogLevel(level)
     const previewBuffer = chunk.subarray(0, Math.max(0, maxPreviewBytes))
     const metadata: LogDropMetadata = {
-      at: formatShanghaiNow(),
+      at: new Date().toISOString(),
       destination: boundedDiagnosticText(destination, 128),
       level: boundedDiagnosticText(level, 32),
       byteLength: chunk.byteLength,
@@ -262,7 +261,7 @@ function boundedLogDestinationError(
     ? error as Record<string, unknown>
     : undefined
   return {
-    at: formatShanghaiNow(),
+      at: new Date().toISOString(),
     destination: boundedDiagnosticText(destination, 128),
     operation: boundedDiagnosticText(operation, 64),
     name: boundedDiagnosticText(error instanceof Error ? error.name : 'Error', 128),
@@ -852,7 +851,7 @@ const logDestinations: NamedLogDestination[] = [
 const loggerOptions: LoggerOptions = {
   level: runtimeConfig.log.level,
   base: undefined,
-  timestamp: () => `,"time":"${formatShanghaiNow()}"`,
+  timestamp: () => `,"time":"${new Date().toISOString()}"`,
   mixin: () => ({
     version: LOG_EVENT_VERSION,
     service: 'juhe-ai',

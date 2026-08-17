@@ -2,6 +2,7 @@ import type { AccountUsageSummary, ProviderCode, ResourceAuthorizationResourceTy
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import type { UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
@@ -121,8 +122,9 @@ export function resourceAuthorizationSelectColumns(alias?: string): string {
 
 export function isResourceAuthorizationExpired(expiresAt: string | null | undefined, now = Date.now()): boolean {
   if (!expiresAt) return false
-  const timestamp = Date.parse(expiresAt)
-  return Number.isFinite(timestamp) && timestamp <= now
+  const timestamp = rfc3339InstantMilliseconds(expiresAt)
+  if (timestamp === undefined) throw new Error(`授权 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${expiresAt}`)
+  return timestamp <= now
 }
 
 export function usageScope(rowKey: string, systemAccountId: string, scopeId: string): UsageSummaryScopeRequest {

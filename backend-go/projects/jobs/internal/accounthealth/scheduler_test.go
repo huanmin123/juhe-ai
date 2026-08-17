@@ -126,6 +126,28 @@ func TestRunnerCancellationReleasesLeaseForRestart(t *testing.T) {
 	}
 }
 
+func TestScheduleMillisecondsAreBoundedWithoutDurationOverflow(t *testing.T) {
+	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	input := Input{
+		AccountID: "bounded", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
+		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+		Eligibility: Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true},
+		Schedule:    Schedule{HealthIntervalMS: maxScheduleMilliseconds + 1, FailureThreshold: 1, FailureRetryMS: 3_000},
+	}
+	if err := validateScheduledInput(input, now); err == nil {
+		t.Fatal("schedule duration over the configured upper bound must be rejected")
+	}
+	if got := durationMS(1<<63-1, time.Second); got != maxScheduleDuration {
+		t.Fatalf("durationMS overflow guard=%s, want %s", got, maxScheduleDuration)
+	}
+	if got := stableJitter("bounded", 1<<63-1); got < 0 || got > maxScheduleDuration {
+		t.Fatalf("stableJitter must remain in the bounded duration range: %s", got)
+	}
+	if got := stableCooldownDefer("bounded", 1000, maxScheduleDuration, maxScheduleDuration); got < 0 || got > maxScheduleDuration+maxScheduleDuration/10 {
+		t.Fatalf("stable cooldown defer overflowed: %s", got)
+	}
+}
+
 func TestRunnerDirectPostgresInputLoadsExplicitRequestEvenWhenNotDue(t *testing.T) {
 	secret := "direct-explicit-credential-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

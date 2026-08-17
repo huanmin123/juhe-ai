@@ -58,15 +58,41 @@ try {
     { input_version: 2, event_kind: 'tombstone', status: 'pending' }
   ])
 
-  const claimed = claimNextAccountHealthJobsInputOutboxEvent(30_000, database, '2030-08-16T00:00:00.000Z')
+  reserveAndEnqueueAccountHealthJobsInputInTransaction({
+    accountId: 'account-offset-created', configRevision: 4, dispatchRevision: 8, kind: 'snapshot', reason: 'timestamp_contract'
+  }, database, '2030-08-16T08:00:20.000+08:00')
+  const offsetCreated = database.prepare('SELECT available_at, created_at, updated_at FROM account_health_jobs_input_outbox WHERE account_id = ?').get('account-offset-created') as {
+    available_at: string
+    created_at: string
+    updated_at: string
+  }
+  assert.equal(offsetCreated.available_at, '2030-08-16T00:00:20.000Z')
+  assert.equal(offsetCreated.created_at, '2030-08-16T00:00:20.000Z')
+  assert.equal(offsetCreated.updated_at, '2030-08-16T00:00:20.000Z')
+  for (const invalidTime of ['2030-08-16T08:00:00.000', '2030-08-16 08:00:00+08:00', 'not-a-time']) {
+    assert.throws(() => reserveAndEnqueueAccountHealthJobsInputInTransaction({
+      accountId: `account-invalid-created-${invalidTime}`, configRevision: 4, dispatchRevision: 8, kind: 'snapshot', reason: 'timestamp_contract'
+    }, database, invalidTime), /J1 input outbox createdAt必须是带 Z 或数值 offset 的 RFC3339 时间/u, `createdAt 必须拒绝：${invalidTime}`)
+    assert.throws(() => claimNextAccountHealthJobsInputOutboxEvent(30_000, database, invalidTime), /J1 input outbox observedAt必须是带 Z 或数值 offset 的 RFC3339 时间/u, `observedAt 必须拒绝：${invalidTime}`)
+  }
+
+  const claimed = claimNextAccountHealthJobsInputOutboxEvent(30_000, database, '2030-08-16T08:00:00.000+08:00')
   assert.ok(claimed)
   assert.equal(claimed?.attemptCount, 1)
+  assert.equal(claimed?.claimedUntil, '2030-08-16T00:00:30.000Z')
   assert.equal(acknowledgeAccountHealthJobsInputOutboxEvent(claimed!.eventId, claimed!.claimToken, database, '2030-08-16T00:00:01.000Z'), true)
   assert.equal(acknowledgeAccountHealthJobsInputOutboxEvent(claimed!.eventId, claimed!.claimToken, database, '2030-08-16T00:00:02.000Z'), false)
 
   const retry = claimNextAccountHealthJobsInputOutboxEvent(30_000, database, '2030-08-16T00:00:03.000Z')
   assert.ok(retry)
   assert.notEqual(retry?.inputVersion, claimed.inputVersion)
+  for (const invalidTime of ['2030-08-16T08:00:00.000', '2030-08-16 08:00:00+08:00', 'not-a-time']) {
+    assert.throws(
+      () => failAccountHealthJobsInputOutboxEvent(retry!.eventId, retry!.claimToken, 'rename failed', invalidTime, database, '2030-08-16T00:00:04.000Z'),
+      /J1 input outbox retryAt必须是带 Z 或数值 offset 的 RFC3339 时间/u,
+      `retryAt 必须拒绝：${invalidTime}`
+    )
+  }
   assert.equal(failAccountHealthJobsInputOutboxEvent(retry!.eventId, retry!.claimToken, 'rename failed', '2030-08-16T00:00:10.000Z', database, '2030-08-16T00:00:04.000Z'), true)
   assert.equal(claimNextAccountHealthJobsInputOutboxEvent(30_000, database, '2030-08-16T00:00:09.000Z'), undefined)
   const replay = claimNextAccountHealthJobsInputOutboxEvent(30_000, database, '2030-08-16T00:00:10.000Z')

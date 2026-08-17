@@ -809,16 +809,29 @@ func (s *sqlStore) List(ctx context.Context, options ListOptions) (ListResult, e
 		where = append(where, traceColumn+">=? AND "+traceColumn+"<?")
 		args = append(args, traceID, textPrefixUpperBound(traceID))
 	}
-	startAt, startOK := parseStorageTime(options.StartAt)
-	endAt, endOK := parseStorageTime(options.EndAt)
-	if startOK == nil && endOK == nil && startAt > endAt {
+	var startAt, endAt string
+	if raw := strings.TrimSpace(options.StartAt); raw != "" {
+		var err error
+		startAt, err = parseStorageTime(raw)
+		if err != nil {
+			return ListResult{}, fmt.Errorf("%w: startAt: %v", ErrInvalidListTime, err)
+		}
+	}
+	if raw := strings.TrimSpace(options.EndAt); raw != "" {
+		var err error
+		endAt, err = parseStorageTime(raw)
+		if err != nil {
+			return ListResult{}, fmt.Errorf("%w: endAt: %v", ErrInvalidListTime, err)
+		}
+	}
+	if startAt != "" && endAt != "" && startAt > endAt {
 		startAt, endAt = endAt, startAt
 	}
-	if startOK == nil {
+	if startAt != "" {
 		where = append(where, "ol.created_at>=?")
 		args = append(args, startAt)
 	}
-	if endOK == nil {
+	if endAt != "" {
 		where = append(where, "ol.created_at<=?")
 		args = append(args, endAt)
 	}

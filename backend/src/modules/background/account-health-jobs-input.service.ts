@@ -2,6 +2,7 @@ import type { AccountSummary } from '../../domain/types.js'
 import { isJ1OpenAIProviderCode } from '../../storage/account-health-jobs-input.repository.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
+import { parseRfc3339Instant, requiredRfc3339Instant } from '../../shared/rfc3339.js'
 
 import { publishAccountHealthJobsInput, publishAccountHealthJobsRequest } from './account-health-jobs-input.protocol.js'
 
@@ -117,6 +118,15 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
   if (source.sourceConfigRevision !== undefined && source.sourceConfigRevision !== sourceConfigRevision) {
     throw new Error('J1 sourceConfigRevision 与账户 source fence 不一致')
   }
+  const authorizationExpiresAt = optionalRfc3339Instant(account.authorizationExpiresAt, 'J1 authorizationExpiresAt')
+  const authorizationInstanceSourceAccountExpiresAt = optionalRfc3339Instant(
+    account.authorizationInstanceSourceAccountExpiresAt,
+    'J1 authorizationInstanceSourceAccountExpiresAt'
+  )
+  const authorizationInstanceSourceAccountCooldownUntil = optionalRfc3339Instant(
+    account.authorizationInstanceSourceAccountCooldownUntil,
+    'J1 authorizationInstanceSourceAccountCooldownUntil'
+  )
   if (!(source.expiresAt instanceof Date) || !Number.isFinite(source.expiresAt.getTime()) || source.expiresAt <= now) {
     throw new Error('J1 input expiresAt 必须在未来')
   }
@@ -124,13 +134,13 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
     || (account.groupBindStatus === 'bound'
       && account.authorizationStatus === 'active'
       && account.authorizationQuotaExceeded !== true
-      && !isExpired(account.authorizationExpiresAt)
+      && !isExpired(authorizationExpiresAt)
       && account.authorizationInstanceSourceAccountStatus === 'active'
       && account.authorizationInstanceSourceAccountSchedulable === true
-      && !isExpired(account.authorizationInstanceSourceAccountExpiresAt)
-      && !isFuture(account.authorizationInstanceSourceAccountCooldownUntil))
+      && !isExpired(authorizationInstanceSourceAccountExpiresAt)
+      && !isFuture(authorizationInstanceSourceAccountCooldownUntil))
   const cooldownFence = cooldownInputFence(account, sourceConfigRevision, dispatchRevision)
-  const cooldownUntil = account.cooldownUntil ? parseDate(account.cooldownUntil) : undefined
+  const cooldownUntil = optionalRfc3339Instant(account.cooldownUntil, 'J1 cooldownUntil')
   const payload: Record<string, unknown> = {
     account_id: account.id,
     input_version: inputVersion,
@@ -151,7 +161,7 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
       bound_group: Boolean(account.boundGroupId),
       authorization_eligible: authorizationEligible,
       ...(sourceConfigRevision === undefined ? {} : { source_config_revision: sourceConfigRevision }),
-      ...(cooldownUntil === undefined ? {} : { cooldown_until: cooldownUntil.toISOString() })
+      ...(cooldownUntil === undefined ? {} : { cooldown_until: cooldownUntil })
     },
     schedule: normalizedSchedule(source.settings)
   }
@@ -168,7 +178,7 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
     }))
   } else {
     const accessToken = optionalString(account.credentials.access_token)
-    const expiresAt = parseFutureDate(account.credentials.expires_at)
+    const expiresAt = parseFutureDate(account.credentials.expires_at, 'J1 OAuth credentials.expires_at')
     if (!accessToken || !expiresAt) throw new Error('J1 OAuth account 缺少有效 access token 或 expires_at')
     payload.oauth_access = { kind: 'oauth_access', ciphertext: encryptJson({ access_token: accessToken }) }
     payload.oauth_expires_at = expiresAt.toISOString()
@@ -270,17 +280,19 @@ function requiredText(value: unknown, field: string): string {
   return text
 }
 
-function parseFutureDate(value: unknown): Date | undefined {
-  const parsed = typeof value === 'string' ? new Date(value) : undefined
-  return parsed && Number.isFinite(parsed.getTime()) && parsed > new Date() ? parsed : undefined
+function parseFutureDate(value: unknown, label: string): Date | undefined {
+  const text = optionalString(value)
+  if (text === undefined) return undefined
+  const parsed = parseRfc3339Instant(requiredRfc3339Instant(text, label))
+  return parsed && parsed > new Date() ? parsed : undefined
 }
 
 function isExpired(value: string | undefined): boolean {
-  return value !== undefined && new Date(value).getTime() <= Date.now()
+  return value !== undefined && new Date(requiredRfc3339Instant(value, 'J1 authorization expiry')).getTime() <= Date.now()
 }
 
 function isFuture(value: string | undefined): boolean {
-  return value !== undefined && new Date(value).getTime() > Date.now()
+  return value !== undefined && new Date(requiredRfc3339Instant(value, 'J1 authorization cooldownUntil')).getTime() > Date.now()
 }
 
 function cooldownInputFence(
@@ -294,11 +306,11 @@ function cooldownInputFence(
   if (account.cooldownRetestDispatchRevision !== undefined && account.cooldownRetestDispatchRevision !== dispatchRevision) {
     throw new Error('J1 cooldown dispatchRevision 与账户 fence 不一致')
   }
-  const parsedObservation = parseDate(observation)
-  if (!parsedObservation) throw new Error('J1 cooldownRetestObservationStartedAt 无效')
-  if (account.cooldownUntil === undefined || !parseDate(account.cooldownUntil)) {
+  const normalizedObservation = requiredRfc3339Instant(observation, 'J1 cooldownRetestObservationStartedAt')
+  if (account.cooldownUntil === undefined) {
     throw new Error('J1 冷却账户缺少有效 cooldownUntil')
   }
+  requiredRfc3339Instant(account.cooldownUntil, 'J1 cooldownUntil')
   if (sourceConfigRevision === undefined && account.cooldownRetestSourceConfigRevision !== undefined) {
     throw new Error('J1 owner cooldown 不得携带 sourceConfigRevision')
   }
@@ -306,13 +318,12 @@ function cooldownInputFence(
     throw new Error('J1 authorized cooldown sourceConfigRevision 与账户 fence 不一致')
   }
   return {
-    observation_started_at: parsedObservation.toISOString(),
+    observation_started_at: normalizedObservation,
     generation,
     ...(sourceConfigRevision === undefined ? {} : { source_config_revision: sourceConfigRevision })
   }
 }
 
-function parseDate(value: string): Date | undefined {
-  const parsed = new Date(value)
-  return Number.isFinite(parsed.getTime()) ? parsed : undefined
+function optionalRfc3339Instant(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : requiredRfc3339Instant(value, label)
 }

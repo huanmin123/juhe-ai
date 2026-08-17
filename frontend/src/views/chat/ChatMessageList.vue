@@ -78,9 +78,9 @@
 import { CopyOutlined, DownloadOutlined, EditOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { message as antdMessage } from 'ant-design-vue'
-import dayjs from 'dayjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { writeTextToClipboard } from '@/shared/clipboard'
+import { formatLocalTime, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { ChatMessage, ChatMessageContentBlock } from '@/types/domain/chat'
 import type { ChatGenerationLivenessState, RunningTurn } from './chatGenerationRuntime'
 import ChatMarkdown from './ChatMarkdown.vue'
@@ -201,13 +201,13 @@ function runtimeFor(message: ChatMessage): RunningTurn | undefined {
 function shouldShowThinking(message: ChatMessage): boolean {
   return message.role === 'assistant' && message.status === 'streaming' && !message.contentText.trim()
     && !message.reasoningText?.trim() && !message.toolEvents?.length && !message.contentBlocks?.length
+    && (runtimeFor(message) !== undefined || serverDateTimeTimestamp(message.createdAt) !== undefined)
 }
 function thinkingStartedAt(message: ChatMessage): number {
-  const parsed = Date.parse(message.createdAt)
-  return runtimeFor(message)?.startedAt ?? (Number.isFinite(parsed) ? parsed : Date.now())
+  return runtimeFor(message)?.startedAt ?? serverDateTimeTimestamp(message.createdAt) ?? 0
 }
 function thinkingLiveness(message: ChatMessage): ChatGenerationLivenessState { return runtimeFor(message)?.livenessState ?? 'active' }
-function formatMessageTime(value: string): string { return dayjs(value).format('HH:mm') }
+function formatMessageTime(value: string): string { return formatLocalTime(value) }
 async function copyMessage(content: string): Promise<void> {
   try { await writeTextToClipboard(content) } catch { antdMessage.error('复制失败，请稍后重试') }
 }

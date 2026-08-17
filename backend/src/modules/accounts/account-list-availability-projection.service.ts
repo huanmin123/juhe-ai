@@ -1,4 +1,5 @@
 import { runtimeConfig } from '../../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { accountFilterStatuses } from '../../domain/account-status-classification.js'
 import type { AccountListItem } from '../../domain/types.js'
 import {
@@ -544,8 +545,8 @@ function nextTransitionAt(item: AccountListAvailabilityProjectionMaterializedIte
   ]
     .filter((value): value is string => typeof value === 'string')
     .filter((value) => {
-      const timestamp = Date.parse(value)
-      return Number.isFinite(timestamp) && timestamp > nowMs
+      const timestamp = rfc3339InstantMilliseconds(value)
+      return timestamp !== undefined && timestamp > nowMs
     })
   return candidates.sort()[0]
 }

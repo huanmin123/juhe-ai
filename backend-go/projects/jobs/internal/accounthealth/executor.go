@@ -15,19 +15,19 @@ const healthKeyCursorPurpose = "health_check"
 // service or mutates a business database.
 func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, input Input, request ProbeRequest, options ProbeOptions) (Outcome, error) {
 	if strings.TrimSpace(request.RequestID) == "" || request.AccountID != input.AccountID || request.InputVersion != input.InputVersion || request.ConfigRevision != input.ConfigRevision || request.DispatchRevision != input.DispatchRevision {
-		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "request_fence_invalid", ErrorMessage: "请求与 input fence 不匹配"}, nil), nil
+		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "request_fence_invalid", ErrorMessage: "请求与 input fence 不匹配"}, nil, now(options)), nil
 	}
 	if !request.Deadline.IsZero() && !request.Deadline.After(now(options)) {
-		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "request_deadline_elapsed", ErrorMessage: "探活请求已过期"}, nil), nil
+		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "request_deadline_elapsed", ErrorMessage: "探活请求已过期"}, nil, now(options)), nil
 	}
 	if input.Type == "oauth" {
 		if input.OAuthAccess == nil {
-			return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "oauth_access_missing", ErrorMessage: "OAuth access token 缺失"}, nil), nil
+			return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "oauth_access_missing", ErrorMessage: "OAuth access token 缺失"}, nil, now(options)), nil
 		}
-		return newOutcome(input, request, ProbeOpenAI(ctx, input, *input.OAuthAccess, options), nil), nil
+		return newOutcome(input, request, ProbeOpenAI(ctx, input, *input.OAuthAccess, options), nil, now(options)), nil
 	}
 	if len(input.APIKeys) == 0 || strings.TrimSpace(input.KeySetFingerprint) == "" {
-		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "api_key_pool_missing", ErrorMessage: "API Key pool 缺失"}, nil), nil
+		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "api_key_pool_missing", ErrorMessage: "API Key pool 缺失"}, nil, now(options)), nil
 	}
 	start, found, err := store.LoadKeyCursor(ctx, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint)
 	if err != nil {
@@ -47,7 +47,7 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 			if err := store.SaveKeyCursor(ctx, lease, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint, next); err != nil {
 				return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
 			}
-			return newOutcome(input, request, result, &index), nil
+			return newOutcome(input, request, result, &index, now(options)), nil
 		}
 		last = result
 	}
@@ -55,16 +55,16 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 	if err := store.SaveKeyCursor(ctx, lease, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint, next); err != nil {
 		return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
 	}
-	return newOutcome(input, request, last, nil), nil
+	return newOutcome(input, request, last, nil, now(options)), nil
 }
 
-func newOutcome(input Input, request ProbeRequest, result ProbeResult, winner *int) Outcome {
+func newOutcome(input Input, request ProbeRequest, result ProbeResult, winner *int, observedAt time.Time) Outcome {
 	return Outcome{
 		OutcomeID:        newOutcomeID(),
 		RequestID:        request.RequestID,
 		AccountID:        input.AccountID,
 		Outcome:          result.Outcome,
-		ObservedAt:       time.Now().UTC(),
+		ObservedAt:       observedAt.UTC(),
 		InputVersion:     input.InputVersion,
 		ConfigRevision:   input.ConfigRevision,
 		DispatchRevision: input.DispatchRevision,

@@ -298,6 +298,11 @@ func (h *handler) list(w http.ResponseWriter, parent context.Context, body []byt
 	defer cancel()
 	result, err := h.store.List(ctx, request.Options)
 	if err != nil {
+		if errors.Is(err, ErrInvalidListTime) {
+			h.logger.Warn("F4 operation log list time rejected", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		h.logger.Error("F4 operation log list failed", "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return

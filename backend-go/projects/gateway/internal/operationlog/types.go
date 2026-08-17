@@ -6,6 +6,7 @@ package operationlog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,11 @@ import (
 const storageTimeLayout = "2006-01-02T15:04:05.000000000Z"
 
 const storeOperationTimeout = 10 * time.Second
+
+// ErrInvalidListTime marks a client-supplied list range that is not an
+// RFC3339 instant.  The HTTP boundary maps this to a 4xx response instead of
+// silently dropping the filter or reporting an internal server failure.
+var ErrInvalidListTime = errors.New("operation log list time is invalid")
 
 func storeContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, storeOperationTimeout)

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { AccountStatus } from '../domain/types.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { isCoolingAccountStatus } from './account-status.js'
 import { getSettings, getSettingsAsync } from './settings.repository.js'
 
@@ -9,8 +10,8 @@ const temporaryUnavailableInitialBackoffSeconds = 3
 
 export function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
   if (!accountExpiresAt) return false
-  const timestamp = Date.parse(accountExpiresAt)
-  return Number.isFinite(timestamp) && timestamp <= now
+  const timestamp = rfc3339InstantMilliseconds(accountExpiresAt)
+  return timestamp !== undefined && timestamp <= now
 }
 
 export function defaultTemporaryUnschedulableMinutes(): number {

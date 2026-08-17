@@ -71,14 +71,14 @@ CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_logs (
   log_file text,
   log_offset bigint,
   line_number integer,
-  time text NOT NULL,
+  time timestamptz NOT NULL,
   level text NOT NULL,
   trace_id text,
   event text,
   message text,
   error_message text,
   raw_json text NOT NULL,
-  created_at text NOT NULL
+  created_at timestamptz NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_file_cursors (
   log_file text PRIMARY KEY,
@@ -88,38 +88,38 @@ CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_file_cursors (
   file_size bigint NOT NULL DEFAULT 0,
   truncation_generation integer NOT NULL DEFAULT 0,
   file_mtime_ms bigint,
-  last_read_at text,
+  last_read_at timestamptz,
   last_error_message text,
-  created_at text NOT NULL,
-  updated_at text NOT NULL
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_index_owner_leases (
   lease_key text PRIMARY KEY,
   owner_id text NOT NULL,
   fence_token bigint NOT NULL DEFAULT 0,
-  lease_until text NOT NULL,
-  updated_at text NOT NULL
+  lease_until timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_facet_summary (
   bucket_key text PRIMARY KEY,
   total_count integer NOT NULL DEFAULT 0,
-  earliest_time text,
-  latest_time text,
-  updated_at text NOT NULL
+  earliest_time timestamptz,
+  latest_time timestamptz,
+  updated_at timestamptz NOT NULL
 );
 CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_level_facets (
   bucket_key text NOT NULL,
   level text NOT NULL,
   count integer NOT NULL DEFAULT 0,
-  updated_at text NOT NULL,
+  updated_at timestamptz NOT NULL,
   PRIMARY KEY (bucket_key, level)
 );
 CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_event_facets (
   bucket_key text NOT NULL,
   event text NOT NULL,
   count integer NOT NULL DEFAULT 0,
-  latest_time text,
-  updated_at text NOT NULL,
+  latest_time timestamptz,
+  updated_at timestamptz NOT NULL,
   PRIMARY KEY (bucket_key, event)
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_logs_time ON juhe_dataset.runtime_logs(time DESC, id DESC);

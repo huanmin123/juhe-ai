@@ -1,5 +1,6 @@
 import type { AnnouncementLevel, AnnouncementStatus } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
@@ -300,9 +301,10 @@ function addChangedAssignment(
 }
 
 function nextAnnouncementRevision(currentRevision: string): string {
-  const currentTime = Date.parse(currentRevision)
+  const currentTime = rfc3339InstantMilliseconds(currentRevision)
+  if (currentTime === undefined) throw new Error(`公告 revision 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentRevision}`)
   const now = Date.now()
-  return new Date(Number.isFinite(currentTime) && currentTime >= now ? currentTime + 1 : now).toISOString()
+  return new Date(currentTime >= now ? currentTime + 1 : now).toISOString()
 }
 
 function normalizeRequiredText(value: unknown): string {

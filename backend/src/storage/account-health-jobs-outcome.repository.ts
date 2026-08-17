@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 
 export type AccountHealthJobsStoreSource =
   | { mode: 'sqlite'; databasePath: string }
@@ -261,6 +262,5 @@ function boundedInteger(value: unknown, field: string, minimum: number, maximum:
 
 function requiredIso(value: unknown, field: string): string {
   const text = requiredText(value, field)
-  if (!Number.isFinite(Date.parse(text))) throw new Error(`${field} 必须是 ISO 时间`)
-  return text
+  return requiredRfc3339Instant(text, field)
 }

@@ -4,6 +4,7 @@ services:
     container_name: ${JUHE_AI_POSTGRES_CONTAINER_NAME:-juhe-ai-postgres}
     restart: unless-stopped
     environment:
+      TZ: UTC
       POSTGRES_DB: ${JUHE_AI_POSTGRES_DB:-juhe_ai}
       POSTGRES_USER: ${JUHE_AI_POSTGRES_USER:-juhe_ai}
       POSTGRES_PASSWORD: ${JUHE_AI_POSTGRES_PASSWORD:?JUHE_AI_POSTGRES_PASSWORD is required}
@@ -43,6 +44,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      TZ: UTC
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${JUHE_AI_POSTGRES_DB:-juhe_ai}
@@ -77,6 +79,7 @@ services:
         --maxmemory-policy allkeys-lru
         --requirepass "$${REDIS_CACHE_PASSWORD}"
     environment:
+      TZ: UTC
       REDIS_CACHE_PASSWORD: ${JUHE_AI_REDIS_CACHE_PASSWORD:?JUHE_AI_REDIS_CACHE_PASSWORD is required}
       REDIS_CACHE_MAXMEMORY: ${JUHE_AI_REDIS_CACHE_MAXMEMORY:-768mb}
     ports:
@@ -104,6 +107,7 @@ services:
         --maxmemory-policy noeviction
         --requirepass "$${REDIS_STATE_PASSWORD}"
     environment:
+      TZ: UTC
       REDIS_STATE_PASSWORD: ${JUHE_AI_REDIS_STATE_PASSWORD:?JUHE_AI_REDIS_STATE_PASSWORD is required}
       REDIS_STATE_MAXMEMORY: ${JUHE_AI_REDIS_STATE_MAXMEMORY:-2048mb}
     ports:
@@ -133,6 +137,7 @@ services:
         --maxmemory-policy noeviction
         --requirepass "$${REDIS_QUEUE_PASSWORD}"
     environment:
+      TZ: UTC
       REDIS_QUEUE_PASSWORD: ${JUHE_AI_REDIS_QUEUE_PASSWORD:?JUHE_AI_REDIS_QUEUE_PASSWORD is required}
       REDIS_QUEUE_AOF_REWRITE_MIN_SIZE: ${JUHE_AI_REDIS_QUEUE_AOF_REWRITE_MIN_SIZE:-1gb}
       REDIS_QUEUE_MAXMEMORY: ${JUHE_AI_REDIS_QUEUE_MAXMEMORY:-2048mb}
@@ -168,7 +173,9 @@ services:
     ports:
       - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
     environment:
+      TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_USAGE_STATS_TIMEZONE: ${JUHE_AI_USAGE_STATS_TIMEZONE:-UTC}
       JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
       JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
       JUHE_AI_PUBLIC_PORT: ${JUHE_AI_PUBLIC_PORT:-3000}
@@ -268,6 +275,7 @@ services:
       juhe-ai:
         condition: service_healthy
     environment:
+      TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-postgres}
       JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-performance}
@@ -326,6 +334,7 @@ services:
       juhe-ai:
         condition: service_healthy
     environment:
+      TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-postgres}
       JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-performance}

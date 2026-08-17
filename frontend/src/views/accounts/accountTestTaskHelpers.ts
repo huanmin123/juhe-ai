@@ -1,5 +1,6 @@
 import axios from 'axios'
 
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import type { AccountTestTask } from '@/types/domain'
 
 export const accountTestPollIntervalMs = 3000
@@ -19,15 +20,13 @@ export function accountTestTaskRemainingWaitMs(task: AccountTestTask, nowMs = Da
   }
   const startedAt = parseTaskTime(task.startedAt)
   if (startedAt === undefined) {
-    return accountTestPollIntervalMs
+    return 0
   }
   return Math.max(0, accountTestTaskMaxWaitMs(task.testEndpointMode) - (nowMs - startedAt))
 }
 
 export function parseTaskTime(value?: string): number | undefined {
-  if (!value) return undefined
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : undefined
+  return serverDateTimeTimestamp(value)
 }
 
 export function isAbortError(error: unknown): boolean {

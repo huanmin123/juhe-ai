@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'
@@ -1743,7 +1744,7 @@ function precheckTemporaryUnavailableSkipReason(
   operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
   authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
 ): string | undefined {
-  const startedAtMs = operation.precheckStartedAt ? Date.parse(operation.precheckStartedAt) : NaN
+  const startedAtMs = operation.precheckStartedAt ? rfc3339InstantMilliseconds(operation.precheckStartedAt) ?? NaN : NaN
   if (!Number.isFinite(startedAtMs)) {
     return 'invalid_precheck_fence'
   }
@@ -1766,11 +1767,18 @@ function precheckTemporaryUnavailableSkipReason(
   if (state.status !== operation.expectedStatus) {
     return 'stale_account_status'
   }
-  const lastHealthSuccessAtMs = state.lastHealthSuccessAt ? Date.parse(state.lastHealthSuccessAt) : NaN
-  if (Number.isFinite(lastHealthSuccessAtMs) && lastHealthSuccessAtMs >= startedAtMs) {
+  const lastHealthSuccessAtMs = state.lastHealthSuccessAt ? rfc3339InstantMilliseconds(state.lastHealthSuccessAt) : undefined
+  if (state.lastHealthSuccessAt && lastHealthSuccessAtMs === undefined) {
+    return 'invalid_runtime_state'
+  }
+  if (lastHealthSuccessAtMs !== undefined && lastHealthSuccessAtMs >= startedAtMs) {
     return 'newer_health_success'
   }
-  if (state.updatedAt && Date.parse(state.updatedAt) > startedAtMs && state.updatedAt !== state.lastUsedAt) {
+  const updatedAtMs = state.updatedAt ? rfc3339InstantMilliseconds(state.updatedAt) : undefined
+  if (state.updatedAt && updatedAtMs === undefined) {
+    return 'invalid_runtime_state'
+  }
+  if (updatedAtMs !== undefined && updatedAtMs > startedAtMs && state.updatedAt !== state.lastUsedAt) {
     return 'stale_account_updated'
   }
   return undefined
@@ -1780,7 +1788,7 @@ async function precheckTemporaryUnavailableSkipReasonAsync(
   operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
   authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
 ): Promise<string | undefined> {
-  const startedAtMs = operation.precheckStartedAt ? Date.parse(operation.precheckStartedAt) : NaN
+  const startedAtMs = operation.precheckStartedAt ? rfc3339InstantMilliseconds(operation.precheckStartedAt) ?? NaN : NaN
   if (!Number.isFinite(startedAtMs)) {
     return 'invalid_precheck_fence'
   }
@@ -1803,11 +1811,18 @@ async function precheckTemporaryUnavailableSkipReasonAsync(
   if (state.status !== operation.expectedStatus) {
     return 'stale_account_status'
   }
-  const lastHealthSuccessAtMs = state.lastHealthSuccessAt ? Date.parse(state.lastHealthSuccessAt) : NaN
-  if (Number.isFinite(lastHealthSuccessAtMs) && lastHealthSuccessAtMs >= startedAtMs) {
+  const lastHealthSuccessAtMs = state.lastHealthSuccessAt ? rfc3339InstantMilliseconds(state.lastHealthSuccessAt) : undefined
+  if (state.lastHealthSuccessAt && lastHealthSuccessAtMs === undefined) {
+    return 'invalid_runtime_state'
+  }
+  if (lastHealthSuccessAtMs !== undefined && lastHealthSuccessAtMs >= startedAtMs) {
     return 'newer_health_success'
   }
-  if (state.updatedAt && Date.parse(state.updatedAt) > startedAtMs && state.updatedAt !== state.lastUsedAt) {
+  const updatedAtMs = state.updatedAt ? rfc3339InstantMilliseconds(state.updatedAt) : undefined
+  if (state.updatedAt && updatedAtMs === undefined) {
+    return 'invalid_runtime_state'
+  }
+  if (updatedAtMs !== undefined && updatedAtMs > startedAtMs && state.updatedAt !== state.lastUsedAt) {
     return 'stale_account_updated'
   }
   return undefined
@@ -1857,7 +1872,7 @@ function recoverableUnavailableOpenAIAccounts(
   const windowMs = Math.max(0, Math.min(Math.trunc(Number(windowMsInput ?? 0)), 60_000))
   const latestRecoverableAtMs = nowMs + windowMs
   return result.accounts.filter((account) => {
-    const cooldownUntilMs = account.cooldownUntil ? Date.parse(account.cooldownUntil) : undefined
+    const cooldownUntilMs = account.cooldownUntil ? rfc3339InstantMilliseconds(account.cooldownUntil) : undefined
     if (cooldownUntilMs === undefined || !Number.isFinite(cooldownUntilMs) || cooldownUntilMs > latestRecoverableAtMs) {
       return false
     }

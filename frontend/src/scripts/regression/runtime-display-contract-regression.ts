@@ -22,10 +22,15 @@ import {
 const goNanosecondTime = '2026-07-14T12:34:56.123456789Z'
 logger.level = 'silent'
 assert.notEqual(formatDateTime(goNanosecondTime), '时间格式异常', 'Go RFC3339Nano 时间必须可显示')
-assert.equal(formatDateTime(goNanosecondTime), '2026-07-14 20:34:56.123', 'RFC3339Nano 必须统一显示为上海时间且不带时区后缀')
-assert.equal(formatDateTime('2026-07-14 20:34:56.123'), '2026-07-14 20:34:56.123', '上海时间展示值必须保持可显示')
-assert.equal(serverDateTimeTimestamp('2026-07-14T20:34:56.123456+08:00'), Date.parse('2026-07-14T12:34:56.123456Z'))
-assert.equal(serverDateTimeTimestamp('2026-07-14 20:34:56.123'), Date.parse('2026-07-14T12:34:56.123Z'), '无时区展示值必须按上海时间解析')
+const originalTimeZone = process.env.TZ
+for (const [timeZone, expected] of [['UTC', '2026-07-14 12:34:56.123'], ['Asia/Shanghai', '2026-07-14 20:34:56.123'], ['Asia/Tokyo', '2026-07-14 21:34:56.123']] as const) {
+  process.env.TZ = timeZone
+  assert.equal(formatDateTime(goNanosecondTime), expected, `RFC3339Nano 必须按浏览器本地时区显示：${timeZone}`)
+}
+if (originalTimeZone === undefined) delete process.env.TZ
+else process.env.TZ = originalTimeZone
+assert.equal(serverDateTimeTimestamp('2026-07-14T20:34:56.123456+08:00'), serverDateTimeTimestamp('2026-07-14T12:34:56.123456Z'))
+assert.equal(serverDateTimeTimestamp('2026-07-14 20:34:56.123'), undefined, '无时区 legacy 时间必须拒绝')
 assert(parseStrictDatePickerValue('2026-07-14T12:34:56.1Z'), '1 位小数 RFC3339 时间必须可用于时间选择器')
 for (const invalid of [
   '2026-07-14T12:34:56',
@@ -120,9 +125,9 @@ for (const apiName of ['systemMetricsRuntimeSummary', 'systemMetricsRuntimeJobs'
   assert.match(statsApiSource, new RegExp(`${apiName}:[\\s\\S]*\\/stats\\/system-metrics\\/runtime`), `后台运行态必须暴露 ${apiName} 独立 API`)
 }
 assert.match(systemMetricsViewSource, /if \(backgroundJobsSectionLoaded\.value\) void loadBackgroundJobs\(\)[\s\S]*if \(backgroundQueuesSectionLoaded\.value\) void loadBackgroundQueues\(\)[\s\S]*return loadData\(\)/, '只有运行态区块进入视口后，页面刷新才应并行刷新已加载的分段运行态')
-assert(loadPageDataSource.includes('void loadUsageStatsWindow('), '页面加载必须并行启动窗口配置请求')
-assert(!loadPageDataSource.includes('await loadUsageStatsWindow('), '窗口配置不得阻塞趋势业务请求')
-assert(loadPageDataSource.indexOf('void loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadData()'), '趋势请求必须在窗口配置请求启动后立即返回')
+assert.match(loadPageDataSource, /const windowLoad = loadUsageStatsWindow\(/, '页面加载必须先启动窗口配置请求')
+assert.match(loadPageDataSource, /if \(isDynamicRangeMode\(rangeMode\.value\)\) \{\s*await windowLoad/, '动态日期范围必须等待窗口配置后再计算合法日期范围')
+assert(loadPageDataSource.indexOf('const windowLoad = loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadData()'), '趋势请求必须在窗口配置请求启动后立即返回')
 assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
 assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
 assert.match(statsRoutesSource, /systemMetricsRuntimeJobRows\(runtime\)/, 'system-metrics jobs 必须通过页面场景 DTO 显式投影')

@@ -42,6 +42,15 @@ type hotSearchLine struct {
 // AppendHotSearch appends bounded NDJSON search records while holding the same
 // owner fence used by audit persistence. A stale owner cannot publish lines.
 func (s *sqlStore) AppendHotSearch(ctx context.Context, lease OwnerLease, inputs []AuditLogInput) (int, error) {
+	normalizedInputs := make([]AuditLogInput, 0, len(inputs))
+	for _, input := range inputs {
+		normalized, err := normalizeAuditInput(input)
+		if err != nil {
+			return 0, err
+		}
+		normalizedInputs = append(normalizedInputs, normalized)
+	}
+	inputs = normalizedInputs
 	if len(inputs) == 0 {
 		return 0, nil
 	}

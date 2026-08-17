@@ -14,11 +14,18 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// Windows may deny os.Symlink when Developer Mode/admin privileges are unavailable.
+// The test remains mandatory on hosts that support symlink creation.
+func symlinkCreationUnavailable(err error) bool {
+	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.Errno(1314))
+}
 
 func TestSQLiteSchemaAndWriterPragmas(t *testing.T) {
 	cfg := sqliteConfig(t, t.TempDir())
@@ -211,6 +218,65 @@ func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 	}
 	if lifecycle != string(LifecycleFinalized) || outcome != string(AuditOutcomeSuccessAfterRetry) || attempts != 1 || payloads != 1 {
 		t.Fatalf("finalized state was not preserved: lifecycle=%s outcome=%s attempts=%d payloads=%d", lifecycle, outcome, attempts, payloads)
+	}
+}
+
+func TestPersistRejectsInvalidAbsoluteTimesAndStoresCanonicalUTC(t *testing.T) {
+	cfg := sqliteConfig(t, t.TempDir())
+	store := openSQLiteStore(t, cfg)
+	defer store.Close()
+	lease := acquireLease(t, store)
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*AuditLogInput)
+	}{
+		{name: "main startedAt without offset", mutate: func(input *AuditLogInput) { input.StartedAt = "2026-08-09T12:00:00" }},
+		{name: "main createdAt malformed", mutate: func(input *AuditLogInput) { input.CreatedAt = "not-a-time" }},
+		{name: "optional HTTP completed malformed", mutate: func(input *AuditLogInput) { input.HTTPCompletedAt = "2026-08-09 12:00:00Z" }},
+		{name: "attempt endedAt without offset", mutate: func(input *AuditLogInput) {
+			input.Attempts = []AuditLogAttemptInput{{AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://upstream.example", StartedAt: input.StartedAt, EndedAt: "2026-08-09T12:00:00"}}
+		}},
+		{name: "payload createdAt malformed", mutate: func(input *AuditLogInput) {
+			input.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, CreatedAt: "bad"}}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := fixture("invalid-time-"+strings.ReplaceAll(test.name, " ", "-"), LifecycleFinalized)
+			test.mutate(&input)
+			if _, err := store.Persist(context.Background(), lease, input); err == nil {
+				t.Fatal("invalid supplied absolute time must be rejected")
+			}
+		})
+	}
+
+	input := fixture("canonical-times", LifecycleFinalized)
+	input.StartedAt = "2026-08-09T20:00:00+08:00"
+	input.EndedAt = "2026-08-09T20:00:01+08:00"
+	input.HTTPCompletedAt = "2026-08-09T20:00:00.500+08:00"
+	input.CreatedAt = "2026-08-09T20:00:02+08:00"
+	input.Attempts = []AuditLogAttemptInput{{ID: "canonical-attempt", AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://upstream.example", StartedAt: input.StartedAt, EndedAt: input.EndedAt}}
+	input.Payloads = []AuditLogPayloadInput{{ID: "canonical-payload", PartType: PayloadPartGatewayResponse, CreatedAt: input.CreatedAt}}
+	if _, err := store.Persist(context.Background(), lease, input); err != nil {
+		t.Fatal(err)
+	}
+	implementation := store.(*sqlStore)
+	var startedAt, endedAt, completedAt, createdAt string
+	if err := implementation.db.QueryRow(`SELECT started_at,ended_at,http_completed_at,created_at FROM audit_logs WHERE id=?`, input.ID).Scan(&startedAt, &endedAt, &completedAt, &createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if startedAt != "2026-08-09T12:00:00Z" || endedAt != "2026-08-09T12:00:01Z" || completedAt != "2026-08-09T12:00:00.5Z" || createdAt != "2026-08-09T12:00:02Z" {
+		t.Fatalf("main timestamps not canonical UTC: started=%q ended=%q completed=%q created=%q", startedAt, endedAt, completedAt, createdAt)
+	}
+	var attemptStartedAt, attemptEndedAt, payloadCreatedAt string
+	if err := implementation.db.QueryRow(`SELECT started_at,ended_at FROM audit_log_attempts WHERE id='canonical-attempt'`).Scan(&attemptStartedAt, &attemptEndedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := implementation.db.QueryRow(`SELECT created_at FROM audit_payload_refs WHERE id='canonical-payload'`).Scan(&payloadCreatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if attemptStartedAt != "2026-08-09T12:00:00Z" || attemptEndedAt != "2026-08-09T12:00:01Z" || payloadCreatedAt != "2026-08-09T12:00:02Z" {
+		t.Fatalf("child timestamps not canonical UTC: attempt=%q/%q payload=%q", attemptStartedAt, attemptEndedAt, payloadCreatedAt)
 	}
 }
 
@@ -568,7 +634,7 @@ func TestLoadConfigRejectsUsageShardSymlinkConflict(t *testing.T) {
 	}
 	conflict := filepath.Join(conflictDir, "usage-20260809-s000.sqlite3")
 	if err := os.Symlink(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], conflict); err != nil {
-		if errors.Is(err, os.ErrPermission) {
+		if symlinkCreationUnavailable(err) {
 			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 symlink 物理隔离回归: %v", err)
 		}
 		t.Fatal(err)
@@ -612,7 +678,7 @@ func TestLoadConfigRejectsCodexStateShardSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"]); err != nil {
-		if errors.Is(err, os.ErrPermission) {
+		if symlinkCreationUnavailable(err) {
 			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 Codex root symlink 回归: %v", err)
 		}
 		t.Fatal(err)
@@ -632,7 +698,7 @@ func TestLoadConfigRejectsCodexStateShardSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "state-000.sqlite3")); err != nil {
-		if errors.Is(err, os.ErrPermission) {
+		if symlinkCreationUnavailable(err) {
 			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 Codex shard symlink 回归: %v", err)
 		}
 		t.Fatal(err)

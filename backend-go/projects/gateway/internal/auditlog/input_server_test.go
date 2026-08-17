@@ -82,6 +82,25 @@ func TestAuditInputHandlerPersistsSignedLoopbackInput(t *testing.T) {
 	}
 }
 
+func TestAuditInputHandlerRejectsInvalidAbsoluteTime(t *testing.T) {
+	handler := &auditInputHandler{cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second}}
+	input := fixture("input-invalid-time", LifecycleFinalized)
+	input.CreatedAt = "2026-08-09T12:00:00"
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:32100"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid absolute time status=%d, want 400", response.Code)
+	}
+}
+
 func TestAuditInputHandlerPersistsAfterClientContextCancellation(t *testing.T) {
 	cfg := sqliteConfig(t, t.TempDir())
 	store := openSQLiteStore(t, cfg)

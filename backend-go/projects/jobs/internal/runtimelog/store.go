@@ -692,6 +692,15 @@ var runtimeLogSQLiteIndexes = []string{
 
 var runtimeLogPostgresIndexes = append(append([]string{}, runtimeLogSQLiteIndexes...), "idx_runtime_logs_trace_c_time")
 
+var runtimeLogPostgresInstantColumns = map[string]map[string]bool{
+	"runtime_logs":                   {"time": true, "created_at": true},
+	"runtime_log_file_cursors":       {"last_read_at": true, "created_at": true, "updated_at": true},
+	"runtime_log_index_owner_leases": {"lease_until": true, "updated_at": true},
+	"runtime_log_facet_summary":      {"earliest_time": true, "latest_time": true, "updated_at": true},
+	"runtime_log_level_facets":       {"updated_at": true},
+	"runtime_log_event_facets":       {"latest_time": true, "updated_at": true},
+}
+
 func checkSQLiteColumns(ctx context.Context, db *sql.DB, table string) error {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
@@ -721,25 +730,30 @@ func checkSQLiteColumns(ctx context.Context, db *sql.DB, table string) error {
 }
 
 func checkPostgresColumns(ctx context.Context, pool *pgxpool.Pool, table string) error {
-	rows, err := pool.Query(ctx, "SELECT column_name FROM information_schema.columns WHERE table_schema = 'juhe_dataset' AND table_name = $1", table)
+	rows, err := pool.Query(ctx, "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'juhe_dataset' AND table_name = $1", table)
 	if err != nil {
 		return fmt.Errorf("读取 PostgreSQL 表 juhe_dataset.%s 的字段失败: %w", table, err)
 	}
 	defer rows.Close()
-	found := map[string]bool{}
+	found := map[string]string{}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, dataType string
+		if err := rows.Scan(&name, &dataType); err != nil {
 			return fmt.Errorf("读取 PostgreSQL 表 juhe_dataset.%s 的字段失败: %w", table, err)
 		}
-		found[name] = true
+		found[name] = dataType
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("读取 PostgreSQL 表 juhe_dataset.%s 的字段失败: %w", table, err)
 	}
 	for _, column := range runtimeLogColumns[table] {
-		if !found[column] {
+		if _, ok := found[column]; !ok {
 			return fmt.Errorf("PostgreSQL 表 juhe_dataset.%s 缺少运行日志字段 %s", table, column)
+		}
+	}
+	for column := range runtimeLogPostgresInstantColumns[table] {
+		if found[column] != "timestamp with time zone" {
+			return fmt.Errorf("PostgreSQL 表 juhe_dataset.%s.%s 必须是 timestamptz，实际为 %s；请先离线迁移", table, column, found[column])
 		}
 	}
 	return nil
@@ -774,7 +788,10 @@ func insertSQLiteRecords(ctx context.Context, tx *sql.Tx, records []Record) ([]f
 	}
 	defer insertLog.Close()
 	for _, record := range records {
-		record = normalizeRecord(record)
+		record, err = normalizeRecord(record)
+		if err != nil {
+			return nil, err
+		}
 		result, err := insertLog.ExecContext(ctx, record.ID, nullable(record.LogFile), record.LogOffset, record.LineNumber, record.Time, record.Level, nullable(record.TraceID), nullable(record.Event), nullable(record.Message), nullable(record.ErrorMessage), record.RawJSON, record.CreatedAt)
 		if err != nil {
 			return nil, err
@@ -791,8 +808,12 @@ func insertSQLiteRecords(ctx context.Context, tx *sql.Tx, records []Record) ([]f
 }
 
 func upsertSQLiteCursor(ctx context.Context, tx *sql.Tx, cursor Cursor) error {
-	cursor = normalizeCursor(cursor)
-	_, err := tx.ExecContext(ctx, `INSERT INTO runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(log_file) DO UPDATE SET file_identity = excluded.file_identity, cursor_offset = excluded.cursor_offset, line_number = excluded.line_number, file_size = excluded.file_size, truncation_generation = excluded.truncation_generation, file_mtime_ms = excluded.file_mtime_ms, last_read_at = excluded.last_read_at, last_error_message = excluded.last_error_message, updated_at = excluded.updated_at`, cursor.LogFile, nullable(cursor.FileIdentity), cursor.CursorOffset, cursor.LineNumber, cursor.FileSize, cursor.TruncationGeneration, cursor.FileMtimeMs, nullable(cursor.LastReadAt), nullable(cursor.LastErrorMessage), cursor.CreatedAt, cursor.UpdatedAt)
+	var err error
+	cursor, err = normalizeCursor(cursor)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(log_file) DO UPDATE SET file_identity = excluded.file_identity, cursor_offset = excluded.cursor_offset, line_number = excluded.line_number, file_size = excluded.file_size, truncation_generation = excluded.truncation_generation, file_mtime_ms = excluded.file_mtime_ms, last_read_at = excluded.last_read_at, last_error_message = excluded.last_error_message, updated_at = excluded.updated_at`, cursor.LogFile, nullable(cursor.FileIdentity), cursor.CursorOffset, cursor.LineNumber, cursor.FileSize, cursor.TruncationGeneration, cursor.FileMtimeMs, nullable(cursor.LastReadAt), nullable(cursor.LastErrorMessage), cursor.CreatedAt, cursor.UpdatedAt)
 	return err
 }
 
@@ -886,41 +907,57 @@ func facetRowsFrom(rows []facetRow, earliestCountedTime string) []facetRow {
 	return counted
 }
 
-func normalizeCursor(cursor Cursor) Cursor {
+func normalizeCursor(cursor Cursor) (Cursor, error) {
 	now := nowISO()
 	if cursor.CreatedAt == "" {
 		cursor.CreatedAt = now
+	} else {
+		var err error
+		cursor.CreatedAt, err = normalizeNodeTimestamp(cursor.CreatedAt)
+		if err != nil {
+			return Cursor{}, fmt.Errorf("runtime log cursor createdAt invalid: %w", err)
+		}
 	}
 	if cursor.LastReadAt == "" {
 		cursor.LastReadAt = now
+	} else {
+		var err error
+		cursor.LastReadAt, err = normalizeNodeTimestamp(cursor.LastReadAt)
+		if err != nil {
+			return Cursor{}, fmt.Errorf("runtime log cursor lastReadAt invalid: %w", err)
+		}
 	}
 	cursor.UpdatedAt = now
-	return cursor
+	return cursor, nil
 }
 
-func normalizeRecord(record Record) Record {
-	fallback := nowISO()
-	record.Time = normalizeNodeTimestamp(record.Time, fallback)
-	record.CreatedAt = normalizeNodeTimestamp(record.CreatedAt, fallback)
+func normalizeRecord(record Record) (Record, error) {
+	var err error
+	record.Time, err = normalizeNodeTimestamp(record.Time)
+	if err != nil {
+		return Record{}, fmt.Errorf("runtime log time invalid: %w", err)
+	}
+	record.CreatedAt, err = normalizeNodeTimestamp(record.CreatedAt)
+	if err != nil {
+		return Record{}, fmt.Errorf("runtime log createdAt invalid: %w", err)
+	}
 	record.Level = strings.ToLower(strings.TrimSpace(record.Level))
 	if record.Level == "" {
 		record.Level = "info"
 	}
-	return record
+	return record, nil
 }
 
-func normalizeNodeTimestamp(value string, fallback string) string {
+func normalizeNodeTimestamp(value string) (string, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
-		return fallback
+		return "", fmt.Errorf("时间不能为空")
 	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC1123, time.RFC1123Z} {
-		parsed, err := time.Parse(layout, text)
-		if err == nil {
-			return nodeISO(parsed)
-		}
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return "", fmt.Errorf("必须是 RFC3339 瞬时值: %w", err)
 	}
-	return fallback
+	return nodeISO(parsed), nil
 }
 
 func nullable(value string) any {
@@ -931,7 +968,7 @@ func nullable(value string) any {
 }
 
 func nowISO() string {
-	return nodeISO(time.Now())
+	return nodeISO(time.Now().UTC())
 }
 
 func nodeISO(value time.Time) string {
@@ -1076,7 +1113,10 @@ func insertPostgresRecords(ctx context.Context, tx pgx.Tx, records []Record) ([]
 		values := make([]string, 0, end-start)
 		args := make([]any, 0, (end-start)*12)
 		for _, source := range records[start:end] {
-			record := normalizeRecord(source)
+			record, err := normalizeRecord(source)
+			if err != nil {
+				return nil, err
+			}
 			values = append(values, "("+dollarMarks(len(args)+1, 12)+")")
 			args = append(args,
 				record.ID,
@@ -1115,8 +1155,12 @@ func insertPostgresRecords(ctx context.Context, tx pgx.Tx, records []Record) ([]
 }
 
 func upsertPostgresCursor(ctx context.Context, tx pgx.Tx, cursor Cursor) error {
-	cursor = normalizeCursor(cursor)
-	_, err := tx.Exec(ctx, `INSERT INTO juhe_dataset.runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT(log_file) DO UPDATE SET file_identity = excluded.file_identity, cursor_offset = excluded.cursor_offset, line_number = excluded.line_number, file_size = excluded.file_size, truncation_generation = excluded.truncation_generation, file_mtime_ms = excluded.file_mtime_ms, last_read_at = excluded.last_read_at, last_error_message = excluded.last_error_message, updated_at = excluded.updated_at`, cursor.LogFile, nullable(cursor.FileIdentity), cursor.CursorOffset, cursor.LineNumber, cursor.FileSize, cursor.TruncationGeneration, cursor.FileMtimeMs, nullable(cursor.LastReadAt), nullable(cursor.LastErrorMessage), cursor.CreatedAt, cursor.UpdatedAt)
+	var err error
+	cursor, err = normalizeCursor(cursor)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO juhe_dataset.runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT(log_file) DO UPDATE SET file_identity = excluded.file_identity, cursor_offset = excluded.cursor_offset, line_number = excluded.line_number, file_size = excluded.file_size, truncation_generation = excluded.truncation_generation, file_mtime_ms = excluded.file_mtime_ms, last_read_at = excluded.last_read_at, last_error_message = excluded.last_error_message, updated_at = excluded.updated_at`, cursor.LogFile, nullable(cursor.FileIdentity), cursor.CursorOffset, cursor.LineNumber, cursor.FileSize, cursor.TruncationGeneration, cursor.FileMtimeMs, nullable(cursor.LastReadAt), nullable(cursor.LastErrorMessage), cursor.CreatedAt, cursor.UpdatedAt)
 	return err
 }
 

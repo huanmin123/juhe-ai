@@ -1,4 +1,5 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
@@ -833,8 +834,9 @@ function responseInspectionPolicyFieldEqual(
 }
 
 function nextPolicyUpdatedAt(expectedUpdatedAt: string): string {
-  const expectedMs = Date.parse(expectedUpdatedAt)
-  return new Date(Math.max(Date.now(), Number.isFinite(expectedMs) ? expectedMs + 1 : 0)).toISOString()
+  const expectedMs = rfc3339InstantMilliseconds(expectedUpdatedAt)
+  if (expectedMs === undefined) throw new Error(`响应检查策略 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${expectedUpdatedAt}`)
+  return new Date(Math.max(Date.now(), expectedMs + 1)).toISOString()
 }
 
 export function deleteResponseInspectionPolicy(id: string): boolean {

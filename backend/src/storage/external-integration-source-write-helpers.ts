@@ -1,3 +1,5 @@
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
+
 export function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {
   const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
   if (unknownKeys.length) {
@@ -33,8 +35,7 @@ export class ExternalIntegrationSourcePatchConflictError extends Error {
 }
 
 export function nextExternalIntegrationUpdatedAt(currentUpdatedAt: string): string {
-  const now = new Date().toISOString()
-  if (now > currentUpdatedAt) return now
-  const currentMs = Date.parse(currentUpdatedAt)
-  return Number.isFinite(currentMs) ? new Date(currentMs + 1).toISOString() : now
+  const currentMs = rfc3339InstantMilliseconds(currentUpdatedAt)
+  if (currentMs === undefined) throw new Error(`外部集成来源 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentUpdatedAt}`)
+  return new Date(Math.max(Date.now(), currentMs + 1)).toISOString()
 }

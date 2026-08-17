@@ -6,6 +6,7 @@ import { accountSummaryWithEffectiveAvailability } from '../domain/account-effec
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
 import { errorLogFields, logger } from '../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { accountCredentialsForList, accountRowSelectColumns, findAccountRowForAccess, hydrateAccountRowsWithQualityState, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
@@ -1868,13 +1869,13 @@ export function accountResourceClientCompatibility(row: AccountListRow): Account
 
 export function isAuthorizedSourceAccountAvailableForDispatch(row: AccountListRow, now: string): boolean {
   if (row.access_type !== 'authorized') return true
-  const nowMs = Date.parse(now)
-  const nowDate = Number.isFinite(nowMs) ? new Date(nowMs) : new Date()
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (nowMs === undefined) throw new Error(`调度 now 必须是带 Z 或数值 offset 的 RFC3339 时间：${now}`)
   return Boolean(row.source_status)
     && row.source_status === 'active'
     && row.source_schedulable === 1
     && row.source_last_error_code !== 'account_expired'
-    && !isAccountExpired(row.source_account_expires_at ?? undefined, Number.isFinite(nowMs) ? nowMs : undefined)
+    && !isAccountExpired(row.source_account_expires_at ?? undefined, nowMs)
     && !isLaterIso(row.source_cooldown_until ?? undefined, now)
 }
 
@@ -2060,16 +2061,19 @@ function authorizationInstanceRuntimeAuthorization(accountId: string, systemAcco
 
 function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
   if (!accountExpiresAt) return false
-  const timestamp = Date.parse(accountExpiresAt)
-  return Number.isFinite(timestamp) && timestamp <= now
+  const timestamp = rfc3339InstantMilliseconds(accountExpiresAt)
+  if (timestamp === undefined) throw new Error(`账户 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${accountExpiresAt}`)
+  return timestamp <= now
 }
 
 function isLaterIso(value?: string, current?: string): boolean {
   if (!value) return false
   if (!current) return true
-  const nextTime = Date.parse(value)
-  const currentTime = Date.parse(current)
-  return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
+  const nextTime = rfc3339InstantMilliseconds(value)
+  const currentTime = rfc3339InstantMilliseconds(current)
+  if (nextTime === undefined) throw new Error(`候选时间必须是带 Z 或数值 offset 的 RFC3339 时间：${value}`)
+  if (currentTime === undefined) throw new Error(`当前时间必须是带 Z 或数值 offset 的 RFC3339 时间：${current}`)
+  return nextTime > currentTime
 }
 
 function accountSummaryTable(client: DatabaseClient, tableName: string): string {

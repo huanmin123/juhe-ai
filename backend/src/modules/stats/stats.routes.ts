@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { AccountUsageStatsRange } from '../../domain/types.js'
 import { badRequest, firstIssueMessage, ok, sendNotFound } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import {
   getAccountUsageStatsOverviewPageAsync,
   type AccountListOptions,
@@ -1021,9 +1022,14 @@ statsRouter.get('/system-metrics/runtime/summary', requireAdmin, async (_req, re
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
     const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
     const opsWorkerSnapshot = runtime?.opsWorker?.snapshot
-    const runtimeSnapshotAgeMs = runtime?.observedAt
-      ? Math.max(0, Date.now() - Date.parse(runtime.observedAt))
-      : undefined
+    let runtimeSnapshotAgeMs: number | undefined
+    if (runtime?.observedAt !== undefined) {
+      const observedAtMs = rfc3339InstantMilliseconds(runtime.observedAt)
+      if (observedAtMs === undefined) {
+        throw new Error('系统指标运行时快照 observedAt必须是带 Z 或数值 offset 的 RFC3339 时间')
+      }
+      runtimeSnapshotAgeMs = Math.max(0, Date.now() - observedAtMs)
+    }
     res.setHeader('Cache-Control', 'no-store')
     res.json(ok({
       runtimeSnapshotAvailable: Boolean(runtime),

@@ -1,4 +1,4 @@
-import { formatShanghaiNow } from '../time-display.js'
+import { requiredRfc3339Instant } from '../rfc3339.js'
 
 export const LOG_EVENT_VERSION = 1 as const
 
@@ -45,7 +45,7 @@ export function createLogEventEnvelope(input: LogEventInput): LogEventEnvelope {
     throw new Error(`无效失败分类: ${input.failureClass}`)
   }
   return {
-    time: input.time ?? formatShanghaiNow(),
+    time: input.time === undefined ? new Date().toISOString() : requiredRfc3339Instant(input.time, '日志时间'),
     version: LOG_EVENT_VERSION,
     level: input.level,
     service: input.service,

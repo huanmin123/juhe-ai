@@ -2,6 +2,7 @@ import type { SQLInputValue } from 'node:sqlite'
 
 import type { ProviderModelPricing } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
@@ -1358,8 +1359,9 @@ function patchValuesEqual(left: unknown, right: unknown): boolean {
 }
 
 function nextUpdatedAt(current: string): string {
-  const currentMs = Date.parse(current)
-  const nextMs = Math.max(Date.now(), Number.isFinite(currentMs) ? currentMs + 1 : 0)
+  const currentMs = rfc3339InstantMilliseconds(current)
+  if (currentMs === undefined) throw new Error(`自定义供应商模型 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${current}`)
+  const nextMs = Math.max(Date.now(), currentMs + 1)
   return new Date(nextMs).toISOString()
 }
 

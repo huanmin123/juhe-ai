@@ -297,8 +297,8 @@ function daysOfWeekText(days: number[]): string {
 }
 
 function defaultScheduleTimezone(): string {
-  if (typeof Intl === 'undefined') return 'Asia/Shanghai'
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+  if (typeof Intl === 'undefined') return 'UTC'
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 }
 
 function cloneScheduleDateRange<TDateRange extends TimeSchedule['dateRange']>(dateRange: TDateRange): TDateRange {

@@ -1,26 +1,34 @@
 import dayjs, { type Dayjs } from 'dayjs'
 
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import type { RuntimeLogFacets, RuntimeLogGrepRuntime } from '@/types/domain'
 
 export type RuntimeLogTimeRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
 export type RuntimeLogDayjsRange = [Dayjs, Dayjs]
 
+export function parseRuntimeLogDateTime(value?: string): Dayjs | undefined {
+  const timestamp = serverDateTimeTimestamp(value)
+  return timestamp === undefined ? undefined : dayjs(timestamp)
+}
+
 export function parseStoredGrepRangeWithoutRuntime(value?: [string, string]): RuntimeLogDayjsRange | undefined {
   if (!value) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  return start.isValid() && end.isValid() ? [start, end] : undefined
+  const start = parseRuntimeLogDateTime(value[0])
+  const end = parseRuntimeLogDateTime(value[1])
+  return start && end && start.isValid() && end.isValid() ? [start, end] : undefined
 }
 
 export function defaultGrepRange(runtime?: RuntimeLogGrepRuntime): RuntimeLogDayjsRange {
-  const end = dayjs(runtime?.defaultEndAt ?? new Date())
-  const start = dayjs(runtime?.defaultStartAt ?? end.subtract(3, 'day'))
+  const end = runtime?.defaultEndAt === undefined ? dayjs() : requireRuntimeLogDateTime(runtime.defaultEndAt, 'defaultEndAt')
+  const start = runtime?.defaultStartAt === undefined ? end.subtract(3, 'day') : requireRuntimeLogDateTime(runtime.defaultStartAt, 'defaultStartAt')
   return normalizeGrepRange([start, end], runtime)
 }
 
 export function normalizeGrepRange(value: RuntimeLogDayjsRange | undefined, runtime?: RuntimeLogGrepRuntime): RuntimeLogDayjsRange {
   const now = dayjs()
-  const earliest = runtime?.earliestFileTime ? dayjs(runtime.earliestFileTime) : now.subtract(runtime?.fileRetentionDays ?? 30, 'day')
+  const earliest = runtime?.earliestFileTime === undefined
+    ? now.subtract(runtime?.fileRetentionDays ?? 30, 'day')
+    : requireRuntimeLogDateTime(runtime.earliestFileTime, 'earliestFileTime')
   const maxRangeDays = runtime?.maxRangeDays ?? 7
   let end = value?.[1]?.isValid() ? value[1] : now
   if (end.isAfter(now)) end = now
@@ -44,20 +52,30 @@ export function isDefaultGrepRange(range: RuntimeLogDayjsRange | undefined, runt
 }
 
 export function isGrepDateDisabled(current: Dayjs, runtime?: RuntimeLogGrepRuntime): boolean {
-  const earliest = runtime?.earliestFileTime ? dayjs(runtime.earliestFileTime).startOf('day') : dayjs().subtract(runtime?.fileRetentionDays ?? 30, 'day').startOf('day')
+  const earliest = (runtime?.earliestFileTime === undefined
+    ? dayjs().subtract(runtime?.fileRetentionDays ?? 30, 'day')
+    : requireRuntimeLogDateTime(runtime.earliestFileTime, 'earliestFileTime')).startOf('day')
   return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
 }
 
 export function isIndexDateDisabled(current: Dayjs, facets?: RuntimeLogFacets): boolean {
-  const earliest = facets?.earliestIndexedAt ? dayjs(facets.earliestIndexedAt).startOf('day') : dayjs().subtract(facets?.retentionDays ?? 3, 'day').startOf('day')
+  const earliest = (facets?.earliestIndexedAt === undefined
+    ? dayjs().subtract(facets?.retentionDays ?? 3, 'day')
+    : requireRuntimeLogDateTime(facets.earliestIndexedAt, 'earliestIndexedAt')).startOf('day')
   return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
+}
+
+function requireRuntimeLogDateTime(value: string, label: string): Dayjs {
+  const parsed = parseRuntimeLogDateTime(value)
+  if (!parsed) throw new Error(`运行日志 ${label} 时间格式异常：${value}`)
+  return parsed
 }
 
 export function parseOptionalTimeRange(value?: [string, string]): RuntimeLogDayjsRange | undefined {
   if (!value) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  return normalizeOptionalTimeRange(start.isValid() && end.isValid() ? [start, end] : undefined)
+  const start = parseRuntimeLogDateTime(value[0])
+  const end = parseRuntimeLogDateTime(value[1])
+  return normalizeOptionalTimeRange(start && end && start.isValid() && end.isValid() ? [start, end] : undefined)
 }
 
 export function normalizeOptionalTimeRange(value: RuntimeLogTimeRangeValue): RuntimeLogDayjsRange | undefined {

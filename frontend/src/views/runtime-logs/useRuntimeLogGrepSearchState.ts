@@ -1,6 +1,6 @@
 import { message } from '@/lib/antd'
 import { computed, ref, type Ref } from 'vue'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import type { RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogGrepRuntime } from '@/types/domain'
@@ -10,6 +10,7 @@ import {
   isDefaultGrepRange as isDefaultRuntimeLogGrepRange,
   isGrepDateDisabled,
   normalizeGrepRange as normalizeRuntimeLogGrepRange,
+  parseRuntimeLogDateTime,
   parseStoredGrepRangeWithoutRuntime
 } from './runtimeLogTimeRanges'
 
@@ -103,8 +104,13 @@ export function useRuntimeLogGrepSearchState(options: UseRuntimeLogGrepSearchSta
         limit: 100
       })
       if (requestId !== grepSearchRequestId) return
+      const resultStart = parseRuntimeLogDateTime(result.startAt)
+      const resultEnd = parseRuntimeLogDateTime(result.endAt)
+      if (!resultStart || !resultEnd) {
+        throw new Error('运行日志 grep 返回了无法严格解析的时间范围')
+      }
       grepResult.value = result
-      grepTimeRange.value = normalizeGrepRange([dayjs(result.startAt), dayjs(result.endAt)])
+      grepTimeRange.value = normalizeGrepRange([resultStart, resultEnd])
       grepRecords.value = result.items
       if (!result.available) {
         message.warning(result.message || 'grep 模式不可用')

@@ -350,7 +350,8 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if err := validateInput(envelope.AuditLog); err != nil {
+	normalized, err := normalizeAuditInput(envelope.AuditLog)
+	if err != nil {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -359,7 +360,7 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 	// deadline, not by the peer connection's cancellation.
 	writeCtx, cancel := context.WithTimeout(context.Background(), h.cfg.RequestTimeout)
 	defer cancel()
-	result, err := h.store.Persist(writeCtx, h.lease, envelope.AuditLog)
+	result, err := h.store.Persist(writeCtx, h.lease, normalized)
 	if err != nil {
 		if errors.Is(err, ErrOwnerLeaseLost) {
 			h.failComponent(fmt.Errorf("F3 audit input owner lease 丢失: %w", err))
@@ -376,11 +377,11 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 	}
 	logger := loggerOrDefault(h.logger)
 	if !result.Ignored {
-		if _, appendErr := h.store.AppendHotSearch(writeCtx, h.lease, []AuditLogInput{envelope.AuditLog}); appendErr != nil {
+		if _, appendErr := h.store.AppendHotSearch(writeCtx, h.lease, []AuditLogInput{normalized}); appendErr != nil {
 			// The audit row is already durable. The mirror can be rebuilt from the
 			// canonical store, so this request-level failure must not take the input
 			// listener down or turn one bad hot-search write into an audit outage.
-			logger.Error("F3 audit hot-search append failed", "error", appendErr, "traceID", envelope.AuditLog.TraceID, "auditLogID", envelope.AuditLog.ID)
+			logger.Error("F3 audit hot-search append failed", "error", appendErr, "traceID", normalized.TraceID, "auditLogID", normalized.ID)
 		}
 	}
 	logger.Debug("F3 audit input 已持久化", "auditLogID", envelope.AuditLog.ID, "ignored", result.Ignored)

@@ -1,4 +1,5 @@
 import {
+  compareServerDateTime,
   formatCompactUsageAmount,
   formatDateTime,
   formatNumber,
@@ -182,7 +183,7 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
     const current = normalizeUsageSummary(usage)
     const lastUsedAt = [summary.lastUsedAt, current.lastUsedAt]
       .filter((value): value is string => Boolean(value) && serverDateTimeTimestamp(value) !== undefined)
-      .sort((left, right) => serverDateTimeTimestamp(right)! - serverDateTimeTimestamp(left)!)[0]
+      .sort((left, right) => compareServerDateTime(right, left))[0]
     return {
       requestCount: summary.requestCount + current.requestCount,
       inputTokens: summary.inputTokens + current.inputTokens,

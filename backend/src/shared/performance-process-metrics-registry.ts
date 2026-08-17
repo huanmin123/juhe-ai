@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import { logger } from './logger.js'
+import { canonicalizeRfc3339Instant, requiredRfc3339Instant } from './rfc3339.js'
 import {
   buildProcessEventLoopSample,
   currentProcessEventLoopRole,
@@ -214,14 +215,11 @@ export async function writePerformanceProcessMetricsRegistrySample(
   sample: ProcessEventLoopSample
 ): Promise<void> {
   const key = performanceProcessMetricsRegistryKey(instanceId, sample.processRole)
-  const sampledAtMs = Date.parse(sample.sampledAt)
-  if (!Number.isFinite(sampledAtMs)) {
-    throw new Error('高性能进程指标采样时间无效')
-  }
+  const sampledAt = requiredRfc3339Instant(sample.sampledAt, '高性能进程指标采样时间')
   await client.eval(publishRegistrySampleScript, {
     keys: [key, registryIndexKey],
     arguments: [
-      JSON.stringify(sample),
+      JSON.stringify({ ...sample, sampledAt }),
       String(registryTtlSeconds),
       String(registryEntryLimit),
       String(registryIndexTtlSeconds)
@@ -294,9 +292,8 @@ function parseRegistrySample(value: unknown, observedAtMs: number): ProcessEvent
     const parsed = JSON.parse(value) as Record<string, unknown>
     const processRole = processEventLoopRoleFromUnknown(parsed.processRole)
     const processPid = finitePositiveInteger(parsed.processPid)
-    const sampledAt = typeof parsed.sampledAt === 'string' ? parsed.sampledAt : ''
-    const sampledAtMs = Date.parse(sampledAt)
-    if (!processRole || !processPid || !Number.isFinite(sampledAtMs)) return undefined
+    const sampledAt = canonicalizeRfc3339Instant(parsed.sampledAt)
+    if (!processRole || !processPid || !sampledAt) return undefined
     return {
       processRole,
       processPid,

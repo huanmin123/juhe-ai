@@ -8,6 +8,7 @@ import type {
 import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { normalizeRouteStrategyMode } from '../domain/route-strategy.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import {
   notifyGatewayApiKeyValidationCacheInvalidationAsync,
   notifyApiKeyQuotaCacheInvalidation,
@@ -1346,10 +1347,11 @@ async function syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync(
 }
 
 function nextApiKeyRevision(currentRevision: string): string {
-  const currentTimestamp = Date.parse(currentRevision)
+  const currentTimestamp = rfc3339InstantMilliseconds(currentRevision)
+  if (currentTimestamp === undefined) throw new Error(`API Key revision 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentRevision}`)
   const nextTimestamp = Math.max(
     Date.now(),
-    Number.isFinite(currentTimestamp) ? currentTimestamp + 1 : 0
+    currentTimestamp + 1
   )
   return apiKeyRevisionFromTimestamp(nextTimestamp)
 }

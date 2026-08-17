@@ -10,6 +10,11 @@ const currentDir = dirname(fileURLToPath(import.meta.url))
 const backendSrc = resolve(currentDir, '../..')
 const sideEffectServiceSource = readFileSync(resolve(backendSrc, 'modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
 const sideEffectPolicySource = readFileSync(resolve(backendSrc, 'modules/gateway/runtime/account-side-effect-policy.ts'), 'utf8')
+const queueObservedAtBaseMs = Date.parse('2026-07-24T12:00:00.000Z')
+
+function queueObservedAt(offsetMs: number): string {
+  return new Date(queueObservedAtBaseMs + offsetMs).toISOString()
+}
 
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -37,17 +42,17 @@ try {
   assert.doesNotMatch(sideEffectServiceSource, /dropExpiredSideEffects/, 'drain 不得每处理一项都全队列扫描过期项')
   assert.match(sideEffectPolicySource, /shouldSkipHealthySuccessfulAccountSideEffect/, '账号副作用 policy 应暴露健康成功跳过策略')
 
-  const healthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_healthy_success', true)
-  const unhealthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_unhealthy_success', true)
+  const healthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_healthy_success', true, queueObservedAt(0))
+  const unhealthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_unhealthy_success', true, queueObservedAt(1))
   unhealthySuccess.account.lastErrorMessage = 'previous failure'
-  const failedOperation = buildAccountErrorHandlingOperation('acct_side_effect_failed', false, 503, 'failed')
+  const failedOperation = buildAccountErrorHandlingOperation('acct_side_effect_failed', false, queueObservedAt(2), 503, 'failed')
   assert.equal(sideEffectPolicy.shouldSkipHealthySuccessfulAccountSideEffect(healthySuccess), true, '健康 active 账号成功副作用应允许跳过持久写')
   assert.equal(sideEffectPolicy.shouldSkipHealthySuccessfulAccountSideEffect(unhealthySuccess), false, '带历史错误的成功副作用不能跳过持久写')
   assert.equal(sideEffectPolicy.shouldSkipHealthySuccessfulAccountSideEffect(failedOperation), false, '失败副作用不能被健康成功策略跳过')
 
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
   const beforeGatewaySuccess = accountSideEffects.getGatewayAccountSideEffectState()
-  const gatewayHealthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_gateway_healthy_success', true)
+  const gatewayHealthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_gateway_healthy_success', true, queueObservedAt(3))
   gatewayHealthySuccess.input.trafficSource = 'gateway'
   await accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(gatewayHealthySuccess)
   assert.equal(
@@ -60,20 +65,20 @@ try {
   const before = accountSideEffects.getGatewayAccountSideEffectState()
 
   accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-    buildAccountErrorHandlingOperation('acct_side_effect_coalesce', false, 503, 'first failed write')
+    buildAccountErrorHandlingOperation('acct_side_effect_coalesce', false, queueObservedAt(4), 503, 'first failed write')
   )
   const firstPending = accountSideEffects.getGatewayAccountSideEffectState()
   assert.equal(firstPending.queueLength, before.queueLength + 1, '首次账号失败副作用应进入队列')
 
   accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-    buildAccountErrorHandlingOperation('acct_side_effect_coalesce', false, 429, 'latest failed write')
+    buildAccountErrorHandlingOperation('acct_side_effect_coalesce', false, queueObservedAt(5), 429, 'latest failed write')
   )
   const coalesced = accountSideEffects.getGatewayAccountSideEffectState()
   assert.equal(coalesced.queueLength, firstPending.queueLength, '同账号待执行失败副作用应只保留最新一条')
   assert.equal(coalesced.coalescedCount, before.coalescedCount + 1, '同账号失败副作用合并次数应递增')
 
   accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-    buildAccountErrorHandlingOperation('acct_side_effect_coalesce', true)
+    buildAccountErrorHandlingOperation('acct_side_effect_coalesce', true, queueObservedAt(6))
   )
   const canceled = accountSideEffects.getGatewayAccountSideEffectState()
   assert.equal(canceled.queueLength, before.queueLength + 1, '成功回写取消旧失败后仍必须入队，不能因 active 快照丢失持久 watermark')
@@ -84,7 +89,7 @@ try {
 
   for (let index = 0; index < 5000; index += 1) {
     accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-      buildAccountErrorHandlingOperation(`acct_side_effect_limit_${index}`, false, 502, 'queue limit regression')
+      buildAccountErrorHandlingOperation(`acct_side_effect_limit_${index}`, false, queueObservedAt(1_000 + index), 502, 'queue limit regression')
     )
   }
   const full = accountSideEffects.getGatewayAccountSideEffectState()
@@ -92,7 +97,7 @@ try {
   assert.equal(full.droppedCount, beforeLimit.droppedCount, '达到上限前不应丢弃账号副作用')
 
   accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-    buildAccountErrorHandlingOperation('acct_side_effect_success_at_capacity', true)
+    buildAccountErrorHandlingOperation('acct_side_effect_success_at_capacity', true, queueObservedAt(6_000))
   )
   const successAtCapacity = accountSideEffects.getGatewayAccountSideEffectState()
   assert.equal(successAtCapacity.queueLength, 5000, '满队列成功 watermark 应淘汰一条失败并保持容量上限')
@@ -104,7 +109,7 @@ try {
   )
 
   accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-    buildAccountErrorHandlingOperation('acct_side_effect_limit_overflow', false, 502, 'queue overflow regression')
+    buildAccountErrorHandlingOperation('acct_side_effect_limit_overflow', false, queueObservedAt(6_001), 502, 'queue overflow regression')
   )
   const overflow = accountSideEffects.getGatewayAccountSideEffectState()
   assert.equal(overflow.queueLength, 5000, '超过上限后账号副作用队列长度不应继续增长')
@@ -112,7 +117,7 @@ try {
 
   for (let index = 0; index < 10_000; index += 1) {
     accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-      buildAccountErrorHandlingOperation(`acct_side_effect_overflow_storm_${index}`, false, 502, 'queue overflow storm')
+      buildAccountErrorHandlingOperation(`acct_side_effect_overflow_storm_${index}`, false, queueObservedAt(7_000 + index), 502, 'queue overflow storm')
     )
   }
   const overflowStorm = accountSideEffects.getGatewayAccountSideEffectState()
@@ -128,7 +133,7 @@ try {
   const allSuccessCapacityEnqueues: Array<Promise<void>> = []
   for (let index = 0; index < 5000; index += 1) {
     allSuccessCapacityEnqueues.push(accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(
-      buildAccountErrorHandlingOperation(`acct_side_effect_success_limit_${index}`, true)
+      buildAccountErrorHandlingOperation(`acct_side_effect_success_limit_${index}`, true, queueObservedAt(8_000 + index))
     ))
   }
   assert.equal(
@@ -137,7 +142,7 @@ try {
     '全 success 队列应能稳定达到容量上限'
   )
 
-  const sameRuntimeReplacement = buildAccountErrorHandlingOperation('acct_side_effect_success_limit_0', true)
+  const sameRuntimeReplacement = buildAccountErrorHandlingOperation('acct_side_effect_success_limit_0', true, queueObservedAt(9_000))
   sameRuntimeReplacement.input.observedAt = '2098-07-24T12:00:00.000Z'
   allSuccessCapacityEnqueues.push(
     accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(sameRuntimeReplacement)
@@ -155,7 +160,7 @@ try {
     '同 runtime 新 success 应取消旧 watermark 并保留最新观测'
   )
 
-  const droppedRecovery = buildAccountErrorHandlingOperation('acct_side_effect_recovery_after_capacity', true)
+  const droppedRecovery = buildAccountErrorHandlingOperation('acct_side_effect_recovery_after_capacity', true, queueObservedAt(10_000))
   droppedRecovery.input.observedAt = '2026-07-24T12:00:02.000Z'
   allSuccessCapacityEnqueues.push(accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(droppedRecovery))
   const afterDroppedRecovery = accountSideEffects.getGatewayAccountSideEffectState()
@@ -169,6 +174,7 @@ try {
   const replaceableFailure = buildAccountErrorHandlingOperation(
     'acct_side_effect_success_limit_0',
     false,
+    queueObservedAt(11_000),
     502,
     'replaceable failure'
   )
@@ -180,7 +186,7 @@ try {
     '同 runtime 的 failure 应替换已排队 success 并释放可淘汰槽位'
   )
 
-  const olderRecoverableSuccess = buildAccountErrorHandlingOperation('acct_side_effect_recovery_after_capacity', true)
+  const olderRecoverableSuccess = buildAccountErrorHandlingOperation('acct_side_effect_recovery_after_capacity', true, queueObservedAt(12_000))
   olderRecoverableSuccess.input.observedAt = '2026-07-24T12:00:01.000Z'
   allSuccessCapacityEnqueues.push(accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect(olderRecoverableSuccess))
   const recoveredAfterCapacity = accountSideEffects.getGatewayAccountSideEffectState()
@@ -206,6 +212,7 @@ try {
 function buildAccountErrorHandlingOperation(
   accountId: string,
   success: boolean,
+  observedAt: string,
   statusCode?: number,
   errorMessage?: string
 ): Parameters<typeof accountSideEffects.enqueueGatewayAccountErrorHandlingSideEffect>[0] {
@@ -239,6 +246,7 @@ function buildAccountErrorHandlingOperation(
     },
     input: {
       success,
+      observedAt,
       statusCode,
       errorMessage
     }

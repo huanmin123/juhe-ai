@@ -10,6 +10,7 @@ import {
   gatewayAccountConcurrencyAccountIds
 } from '../dispatch/account-concurrency-identity.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import {
   registerGatewayApiKeyValidationCacheInvalidator,
   registerGatewayRuntimeCacheInvalidator,
@@ -1257,8 +1258,9 @@ function accountRecoverableCooldownUntilMs(account: OpenAIAccountSecret): number
   if (!account.cooldownUntil) {
     return undefined
   }
-  const cooldownUntilMs = Date.parse(account.cooldownUntil)
-  return Number.isFinite(cooldownUntilMs) ? cooldownUntilMs : undefined
+  const cooldownUntilMs = rfc3339InstantMilliseconds(account.cooldownUntil)
+  if (cooldownUntilMs === undefined) throw new Error(`账户 cooldownUntil 必须是带 Z 或数值 offset 的 RFC3339 时间：${account.cooldownUntil}`)
+  return cooldownUntilMs
 }
 
 function responseInspectionPolicyCacheEntry(
@@ -1281,10 +1283,8 @@ function groupUsageAccessFromCacheEntry(entry: GroupUsageAccessCacheEntry, now =
 function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime, now = Date.now()): number {
   let ttlMs = gatewayRuntimeTtlMs
   for (const expiresAt of runtimeCacheExpiryCandidates(runtime)) {
-    const expiresAtMs = Date.parse(expiresAt)
-    if (!Number.isFinite(expiresAtMs)) {
-      continue
-    }
+    const expiresAtMs = rfc3339InstantMilliseconds(expiresAt)
+    if (expiresAtMs === undefined) throw new Error(`网关运行态 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${expiresAt}`)
     ttlMs = Math.min(ttlMs, expiresAtMs - now)
   }
   return Math.max(1, ttlMs)
@@ -1308,8 +1308,8 @@ function ttlBoundedByIsoExpiries(baseTtlMs: number, expiresAtValues: Array<strin
   let ttlMs = baseTtlMs
   for (const expiresAt of expiresAtValues) {
     if (!expiresAt) continue
-    const expiresAtMs = Date.parse(expiresAt)
-    if (!Number.isFinite(expiresAtMs)) continue
+    const expiresAtMs = rfc3339InstantMilliseconds(expiresAt)
+    if (expiresAtMs === undefined) throw new Error(`缓存 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${expiresAt}`)
     ttlMs = Math.min(ttlMs, expiresAtMs - now)
   }
   return Math.max(1, ttlMs)
@@ -1335,8 +1335,9 @@ function isOpenAIAccountRuntimeUsableAt(account: OpenAIAccountSecret, now = Date
 
 function isoTimeExpired(value: string | undefined, now = Date.now()): boolean {
   if (!value) return false
-  const expiresAtMs = Date.parse(value)
-  return Number.isFinite(expiresAtMs) && expiresAtMs <= now
+  const expiresAtMs = rfc3339InstantMilliseconds(value)
+  if (expiresAtMs === undefined) throw new Error(`网关运行态过期时间必须是带 Z 或数值 offset 的 RFC3339 时间：${value}`)
+  return expiresAtMs <= now
 }
 
 function runtimeCacheExpiryCandidates(runtime: DbServiceGatewayRuntime): string[] {

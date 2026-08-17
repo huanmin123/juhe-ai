@@ -1,5 +1,6 @@
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
@@ -257,8 +258,9 @@ function isAccountQualityFailurePrecheckEligible(account: AccountSummary | undef
   if (!account) return false
   if (account.status !== 'active' || !account.schedulable || !account.boundGroupId) return false
   if (account.accountExpiresAt) {
-    const expiresAtMs = Date.parse(account.accountExpiresAt)
-    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return false
+    const expiresAtMs = rfc3339InstantMilliseconds(account.accountExpiresAt)
+    if (expiresAtMs === undefined) throw new Error(`账号质量预检 accountExpiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${account.accountExpiresAt}`)
+    if (expiresAtMs <= Date.now()) return false
   }
   if (account.effectiveAvailability && !account.effectiveAvailability.available) return false
   return true

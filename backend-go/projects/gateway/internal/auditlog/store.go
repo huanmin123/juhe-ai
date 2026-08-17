@@ -319,7 +319,9 @@ func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) erro
 }
 
 func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLogInput) (PersistResult, error) {
-	if err := validateInput(input); err != nil {
+	var err error
+	input, err = normalizeAuditInput(input)
+	if err != nil {
 		return PersistResult{}, err
 	}
 	if err := s.EnsureSchema(ctx); err != nil {
@@ -1073,9 +1075,6 @@ func (s *sqlStore) upsertLog(ctx context.Context, tx *sql.Tx, input AuditLogInpu
 		capture = "complete"
 	}
 	createdAt := input.CreatedAt
-	if strings.TrimSpace(createdAt) == "" {
-		createdAt = time.Now().UTC().Format(time.RFC3339Nano)
-	}
 	query := `INSERT INTO ` + s.table("audit_logs") + ` (id,trace_id,traffic_source,system_account_id,api_key_id,conversation_key,session_id,session_client_type,group_id,account_id,provider_code,method,path,query_string,model,upstream_model,pricing_model,model_mapping_applied,model_mapping_source,source_endpoint_family,upstream_endpoint_family,stream,client_ip,user_agent,audit_outcome,success,final_status_code,error_phase,error_code,error_message,sample_bucket,sample_reason,attempt_count,payload_count,raw_payload_bytes,compressed_payload_bytes,compression_saved_bytes,capture_status,lifecycle_status,started_at,ended_at,duration_ms,http_completed_at,http_duration_ms,first_token_ms,created_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET trace_id=excluded.trace_id,traffic_source=excluded.traffic_source,system_account_id=excluded.system_account_id,api_key_id=excluded.api_key_id,conversation_key=excluded.conversation_key,session_id=excluded.session_id,session_client_type=excluded.session_client_type,group_id=excluded.group_id,account_id=excluded.account_id,provider_code=excluded.provider_code,method=excluded.method,path=excluded.path,query_string=excluded.query_string,model=excluded.model,upstream_model=excluded.upstream_model,pricing_model=excluded.pricing_model,model_mapping_applied=excluded.model_mapping_applied,model_mapping_source=excluded.model_mapping_source,source_endpoint_family=excluded.source_endpoint_family,upstream_endpoint_family=excluded.upstream_endpoint_family,stream=excluded.stream,client_ip=excluded.client_ip,user_agent=excluded.user_agent,audit_outcome=excluded.audit_outcome,success=excluded.success,final_status_code=excluded.final_status_code,error_phase=excluded.error_phase,error_code=excluded.error_code,error_message=excluded.error_message,sample_bucket=excluded.sample_bucket,sample_reason=excluded.sample_reason,attempt_count=excluded.attempt_count,payload_count=excluded.payload_count,raw_payload_bytes=excluded.raw_payload_bytes,compressed_payload_bytes=excluded.compressed_payload_bytes,compression_saved_bytes=excluded.compression_saved_bytes,error_group_id=excluded.error_group_id,capture_status=excluded.capture_status,lifecycle_status=excluded.lifecycle_status,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,http_completed_at=excluded.http_completed_at,http_duration_ms=excluded.http_duration_ms,first_token_ms=excluded.first_token_ms,created_at=excluded.created_at WHERE ` + s.table("audit_logs") + `.lifecycle_status='in_progress' AND excluded.lifecycle_status='finalized'`
@@ -1146,7 +1145,7 @@ func (s *sqlStore) insertFinalChildren(ctx context.Context, tx *sql.Tx, input Au
 		query := `INSERT INTO ` + s.table("audit_payload_refs") + ` (id,audit_log_id,attempt_id,part_type,sequence_index,content_type,content_encoding,headers_blob_id,body_blob_id,headers_sha256,body_sha256,raw_size_bytes,compressed_size_bytes,capture_status,drop_reason,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`
 		createdAt := payload.input.CreatedAt
 		if strings.TrimSpace(createdAt) == "" {
-			createdAt = time.Now().UTC().Format(time.RFC3339Nano)
+			createdAt = input.CreatedAt
 		}
 		result, err := tx.ExecContext(ctx, s.bind(query), id, input.ID, attemptRef, string(payload.input.PartType), payload.sequenceIndex, nullText(payload.input.ContentType), nullText(payload.input.ContentEncoding), headerID, bodyID, headerSHA, bodySHA, raw, compressed, string(status), nullText(string(payload.input.DropReason)), nullableTime(s.mode, createdAt))
 		if err != nil {
@@ -1204,12 +1203,12 @@ func (s *sqlStore) incrementRefs(ctx context.Context, tx *sql.Tx, blobs ...*blob
 func shouldMaintainBlobRefCount(mode Mode) bool { return mode == ModeSQLite }
 
 func (s *sqlStore) upsertErrorGroup(ctx context.Context, tx *sql.Tx, input AuditLogInput, payloads []preparedPayload) error {
-	group := derivedErrorGroup(input, payloads)
+	group, err := derivedErrorGroup(input, payloads)
+	if err != nil {
+		return err
+	}
 	id := stableID("error", shortHash(group.fingerprint), shortHash(group.windowStartedAt))
 	eventAt := input.CreatedAt
-	if strings.TrimSpace(eventAt) == "" {
-		eventAt = time.Now().UTC().Format(time.RFC3339Nano)
-	}
 	eventTime := nullableTime(s.mode, eventAt)
 	table := s.table("audit_error_groups")
 	query := `INSERT INTO ` + table + ` (id,fingerprint,window_started_at,window_ended_at,system_account_id,api_key_id,group_id,account_id,provider_code,path,model,status_code,error_phase,error_code,error_type,request_fingerprint,error_fingerprint,count,first_event_id,last_event_id,sample_event_id,last_message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?, ?,?,?) ON CONFLICT(fingerprint,window_started_at) DO UPDATE SET count=` + table + `.count+1,window_ended_at=CASE WHEN excluded.window_ended_at > ` + table + `.window_ended_at THEN excluded.window_ended_at ELSE ` + table + `.window_ended_at END,first_event_id=CASE WHEN excluded.created_at < ` + table + `.created_at OR (excluded.created_at = ` + table + `.created_at AND excluded.first_event_id < ` + table + `.first_event_id) THEN excluded.first_event_id ELSE ` + table + `.first_event_id END,last_event_id=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_event_id ELSE ` + table + `.last_event_id END,sample_event_id=COALESCE(` + table + `.sample_event_id, excluded.sample_event_id),last_message=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_message ELSE ` + table + `.last_message END,created_at=CASE WHEN excluded.created_at < ` + table + `.created_at THEN excluded.created_at ELSE ` + table + `.created_at END,updated_at=CASE WHEN excluded.updated_at > ` + table + `.updated_at THEN excluded.updated_at ELSE ` + table + `.updated_at END RETURNING id`
@@ -1233,14 +1232,10 @@ type derivedAuditErrorGroup struct {
 	fingerprint, windowStartedAt, windowEndedAt, requestFingerprint, errorFingerprint string
 }
 
-func derivedErrorGroup(input AuditLogInput, payloads []preparedPayload) derivedAuditErrorGroup {
-	createdAt := input.CreatedAt
-	if strings.TrimSpace(createdAt) == "" {
-		createdAt = time.Now().UTC().Format(time.RFC3339Nano)
-	}
-	when, err := time.Parse(time.RFC3339Nano, createdAt)
+func derivedErrorGroup(input AuditLogInput, payloads []preparedPayload) (derivedAuditErrorGroup, error) {
+	when, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(input.CreatedAt))
 	if err != nil {
-		when = time.Now().UTC()
+		return derivedAuditErrorGroup{}, fmt.Errorf("审计 error group createdAt 非法: %w", err)
 	}
 	windowStart := when.UTC().Truncate(auditErrorGroupWindow)
 	windowEnd := windowStart.Add(auditErrorGroupWindow)
@@ -1279,7 +1274,7 @@ func derivedErrorGroup(input AuditLogInput, payloads []preparedPayload) derivedA
 	}
 	errorFingerprint := hashNodeValue(map[string]any{"outcome": string(input.AuditOutcome), "statusCode": nodeStatusCode(statusCode), "phase": errorPhase, "code": errorCode, "message": normalizeErrorMessage(errorMessage)})
 	fingerprint := hashNodeValue(map[string]any{"systemAccountId": input.SystemAccountID, "apiKeyId": input.APIKeyID, "groupId": input.GroupID, "accountId": input.AccountID, "providerCode": input.ProviderCode, "trafficSource": string(input.TrafficSource), "path": input.Path, "model": input.Model, "statusCode": nodeStatusCode(input.FinalStatusCode), "errorPhase": input.ErrorPhase, "errorCode": input.ErrorCode, "requestFingerprint": requestFingerprint, "errorFingerprint": errorFingerprint})
-	return derivedAuditErrorGroup{fingerprint: fingerprint, windowStartedAt: nodeISOString(windowStart), windowEndedAt: nodeISOString(windowEnd), requestFingerprint: requestFingerprint, errorFingerprint: errorFingerprint}
+	return derivedAuditErrorGroup{fingerprint: fingerprint, windowStartedAt: nodeISOString(windowStart), windowEndedAt: nodeISOString(windowEnd), requestFingerprint: requestFingerprint, errorFingerprint: errorFingerprint}, nil
 }
 
 func hashNodeValue(value any) string {
@@ -1412,18 +1407,25 @@ func dbTime(mode Mode, value time.Time) any {
 	}
 	return value.UTC().Format(time.RFC3339Nano)
 }
-func dbTimeText(value string) any { return value }
+func dbTimeText(value string) any {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return nil
+	}
+	return parsed.UTC().Format(time.RFC3339Nano)
+}
 func nullableTime(mode Mode, value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
-	if mode == ModePostgres {
-		parsed, err := time.Parse(time.RFC3339Nano, value)
-		if err == nil {
-			return parsed.UTC()
-		}
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return nil
 	}
-	return value
+	if mode == ModePostgres {
+		return parsed.UTC()
+	}
+	return parsed.UTC().Format(time.RFC3339Nano)
 }
 func nullText(value string) any {
 	if strings.TrimSpace(value) == "" {

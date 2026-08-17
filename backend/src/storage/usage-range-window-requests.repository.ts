@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { getStatsDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export type UsageRangeWindowRequestDomain = 'usage_scope'
 
@@ -30,7 +31,8 @@ const usageRangeWindowRequestBatchLimit = 5
 
 export function registerUsageRangeWindowRequest(input: UsageRangeWindowRequestInput, requestedAt = nowIso()): void {
   const normalized = normalizeUsageRangeWindowRequestInput(input)
-  const expiresAt = expiresAtFrom(requestedAt)
+  const canonicalRequestedAt = requiredRfc3339Instant(requestedAt, '用量范围窗口请求 requestedAt')
+  const expiresAt = expiresAtFrom(canonicalRequestedAt)
   getStatsDatabase().prepare(`
     INSERT INTO usage_range_window_requests (
       id, domain, system_account_id, scope_type, scope_id, start_date, end_date,
@@ -55,16 +57,17 @@ export function registerUsageRangeWindowRequest(input: UsageRangeWindowRequestIn
     normalized.scopeId,
     normalized.startDate,
     normalized.endDate,
-    requestedAt,
+    canonicalRequestedAt,
     expiresAt,
-    requestedAt,
-    requestedAt
+    canonicalRequestedAt,
+    canonicalRequestedAt
   )
 }
 
 export async function registerUsageRangeWindowRequestAsync(client: DatabaseClient, input: UsageRangeWindowRequestInput, requestedAt = nowIso()): Promise<void> {
   const normalized = normalizeUsageRangeWindowRequestInput(input)
-  const expiresAt = expiresAtFrom(requestedAt)
+  const canonicalRequestedAt = requiredRfc3339Instant(requestedAt, '用量范围窗口请求 requestedAt')
+  const expiresAt = expiresAtFrom(canonicalRequestedAt)
   await client.execute(`
     INSERT INTO juhe_stats.usage_range_window_requests (
       id, domain, system_account_id, scope_type, scope_id, start_date, end_date,
@@ -89,10 +92,10 @@ export async function registerUsageRangeWindowRequestAsync(client: DatabaseClien
     normalized.scopeId,
     normalized.startDate,
     normalized.endDate,
-    requestedAt,
+    canonicalRequestedAt,
     expiresAt,
-    requestedAt,
-    requestedAt
+    canonicalRequestedAt,
+    canonicalRequestedAt
   ])
 }
 
@@ -190,8 +193,10 @@ function normalizeUsageRangeWindowRequestInput(input: UsageRangeWindowRequestInp
 }
 
 function expiresAtFrom(requestedAt: string): string {
-  const time = Date.parse(requestedAt)
-  const baseTime = Number.isFinite(time) ? time : Date.now()
+  const baseTime = rfc3339InstantMilliseconds(requestedAt)
+  if (baseTime === undefined) {
+    throw new Error(`用量范围窗口请求 requestedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${requestedAt}`)
+  }
   return new Date(baseTime + usageRangeWindowRequestTtlDays * 24 * 60 * 60 * 1000).toISOString()
 }
 

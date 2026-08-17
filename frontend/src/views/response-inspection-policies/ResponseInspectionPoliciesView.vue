@@ -61,6 +61,7 @@ import { api, type ResponseInspectionPolicyCreatePayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { compareServerDateTime } from '@/shared/formatters'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import type {
   ResponseInspectionPolicyDetail,
@@ -403,7 +404,7 @@ function upsertPolicyOverview(overview: ResponseInspectionPolicyOverview): void 
 function upsertOverview(items: ResponseInspectionPolicyOverview[], overview: ResponseInspectionPolicyOverview): ResponseInspectionPolicyOverview[] {
   const next = items.filter((item) => item.id !== overview.id)
   next.push(overview)
-  return next.sort((left, right) => left.priority - right.priority || String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? '')) || left.id.localeCompare(right.id))
+  return next.sort((left, right) => left.priority - right.priority || compareServerDateTime(right.updatedAt, left.updatedAt) || left.id.localeCompare(right.id))
 }
 
 onMounted(loadPolicies)

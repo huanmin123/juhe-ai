@@ -10,6 +10,7 @@ import {
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 
 export interface CodexContextStateBoundary {
   systemAccountId: string
@@ -1543,7 +1544,8 @@ function storageCleanupRetryAt(now: string, attemptCount: number): string {
   const baseDelayMs = 30_000
   const maxDelayMs = 6 * 60 * 60 * 1000
   const delayMs = Math.min(maxDelayMs, baseDelayMs * (2 ** Math.min(Math.max(0, attemptCount - 1), 10)))
-  return new Date(Date.parse(now) + delayMs).toISOString()
+  const nowMs = new Date(requiredRfc3339Instant(now)).getTime()
+  return new Date(nowMs + delayMs).toISOString()
 }
 
 function uniqueStorageKeys(storageKeys: string[]): string[] {

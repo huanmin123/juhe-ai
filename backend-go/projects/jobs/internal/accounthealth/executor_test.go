@@ -46,3 +46,16 @@ func TestExecuteInputProbeUsesKeyPoolCursorAndReportsWinner(t *testing.T) {
 		t.Fatalf("cursor next=%d found=%t err=%v", next, found, err)
 	}
 }
+
+func TestExecuteInputProbeUsesInjectedClockForOutcome(t *testing.T) {
+	fixed := time.Date(2026, 8, 17, 3, 4, 5, 678000000, time.FixedZone("UTC+8", 8*60*60))
+	input := Input{AccountID: "account", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}
+	outcome, err := ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, ProbeRequest{RequestID: "request", AccountID: "other"}, ProbeOptions{Now: func() time.Time { return fixed }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fixed.UTC()
+	if !outcome.ObservedAt.Equal(want) || outcome.ObservedAt.Location() != time.UTC {
+		t.Fatalf("outcome observedAt=%s, want injected UTC clock %s", outcome.ObservedAt, want)
+	}
+}

@@ -1,4 +1,4 @@
-import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { finiteNumberQueryValue, optionalQueryText, strictDateTimeRangeQueryValue } from '../../shared/query-values.js'
 import type { OperationLogListOptions } from '../../storage/repositories.js'
 
 const managementDefaultOperationLogWindowDays = 31
@@ -9,7 +9,7 @@ export function parseOperationLogListOptions(
   now = new Date()
 ): OperationLogListOptions {
   const traceId = optionalQueryText(query.traceId)
-  const requestedRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
+  const requestedRange = strictDateTimeRangeQueryValue(query.startAt, query.endAt)
   const createdAtRange = includeAdminFilters && !isExactTraceId(traceId) && !requestedRange.startAt && !requestedRange.endAt
     ? defaultManagementOperationLogDateRange(now)
     : requestedRange
@@ -37,22 +37,6 @@ export function defaultManagementOperationLogDateRange(now = new Date()): { star
   startAt.setDate(startAt.getDate() - (managementDefaultOperationLogWindowDays - 1))
   startAt.setHours(0, 0, 0, 0)
   return { startAt: startAt.toISOString(), endAt: endAt.toISOString() }
-}
-
-function dateTimeRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {
-  const startAt = dateTimeQueryValue(startValue)
-  const endAt = dateTimeQueryValue(endValue)
-  if (startAt && endAt && startAt > endAt) {
-    return { startAt: endAt, endAt: startAt }
-  }
-  return { startAt, endAt }
-}
-
-function dateTimeQueryValue(value: unknown): string | undefined {
-  const text = optionalQueryText(value)
-  if (!text) return undefined
-  const time = Date.parse(text)
-  return Number.isNaN(time) ? undefined : new Date(time).toISOString()
 }
 
 function isExactTraceId(value: string | undefined): boolean {

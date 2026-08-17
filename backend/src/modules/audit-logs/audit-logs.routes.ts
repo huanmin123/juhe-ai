@@ -1,7 +1,7 @@
 import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
-import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { finiteNumberQueryValue, optionalQueryText, strictDateTimeRangeQueryValue } from '../../shared/query-values.js'
 import type {
   AuditErrorGroupListOptions,
   AuditLogListOptions,
@@ -184,8 +184,7 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     groupId: optionalQueryText(query.groupId),
     accountId: optionalQueryText(query.accountId),
     clientIp: optionalQueryText(query.clientIp),
-    startAt: optionalQueryText(query.startAt),
-    endAt: optionalQueryText(query.endAt),
+    ...strictDateTimeRangeQueryValue(query.startAt, query.endAt),
     trafficSource: auditTrafficSourceQueryValue(query.trafficSource)
   }
 }
@@ -208,11 +207,12 @@ function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditE
 }
 
 function parseAuditHotSearchOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number; startAt?: string; endAt?: string } {
+  const timeRange = strictDateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
     keywords: stringArrayQueryValues(query.keywords),
     limit: finiteNumberQueryValue(query.limit),
-    startAt: optionalQueryText(query.startAt),
-    endAt: optionalQueryText(query.endAt)
+    startAt: timeRange.startAt,
+    endAt: timeRange.endAt
   }
 }
 

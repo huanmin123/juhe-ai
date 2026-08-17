@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$APP_DIR"
+export TZ=UTC
 export NODE_ENV="${NODE_ENV:-production}"
 export JUHE_AI_LOG_CONSOLE_ENABLED="${JUHE_AI_LOG_CONSOLE_ENABLED:-false}"
 

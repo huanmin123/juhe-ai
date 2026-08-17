@@ -1,4 +1,5 @@
 import type { SystemTeamListItem, SystemTeamMutationResult } from '@/types/domain'
+import { compareServerDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
 
 export interface SystemTeamListMutationContext {
   accumulated: boolean
@@ -91,7 +92,7 @@ export function reconcileSystemTeamMemberMutation(
   if (!current || isOlderRevision(mutation.updatedAt, current.updatedAt)) {
     return { items, requiresReload: false, total: context.total }
   }
-  const orderingChanged = mutation.updatedAt.localeCompare(current.updatedAt) > 0
+  const orderingChanged = compareServerDateTime(mutation.updatedAt, current.updatedAt) > 0
   if (orderingChanged && context.page > 1 && !context.accumulated) {
     return { items, requiresReload: true, total: context.total }
   }
@@ -106,7 +107,8 @@ export function reconcileSystemTeamMemberMutation(
 }
 
 export function isOlderRevision(candidate: string, current: string): boolean {
-  return candidate.localeCompare(current) < 0
+  if (serverDateTimeTimestamp(candidate) === undefined) return true
+  return compareServerDateTime(candidate, current) < 0
 }
 
 function matchesSystemTeamKeyword(item: Pick<SystemTeamListItem, 'name'>, keyword: string): boolean {
@@ -118,7 +120,7 @@ function sortSystemTeamItems(items: SystemTeamListItem[]): SystemTeamListItem[] 
   return [...items].sort((left, right) => {
     const statusComparison = compareBinaryText(left.status, right.status)
     if (statusComparison !== 0) return statusComparison
-    const revisionComparison = compareBinaryText(right.updatedAt, left.updatedAt)
+    const revisionComparison = compareServerDateTime(right.updatedAt, left.updatedAt)
     if (revisionComparison !== 0) return revisionComparison
     const nameComparison = compareBinaryText(left.name, right.name)
     return nameComparison !== 0 ? nameComparison : compareBinaryText(left.id, right.id)

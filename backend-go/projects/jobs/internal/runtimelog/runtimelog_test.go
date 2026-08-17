@@ -475,10 +475,7 @@ func TestStoreNormalizesTimestampsLikeNodeRepository(t *testing.T) {
 	ctx := testOwnerContext(t, store)
 	lease := testOwnerLease(t, ctx)
 	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "test:1:1"}
-	records := []Record{
-		{ID: "normalized-valid", Time: "2026-08-08T08:00:00+08:00", CreatedAt: "2026-08-08T08:00:00+08:00", Level: " WARN ", RawJSON: "{}"},
-		{ID: "normalized-invalid", Time: "not-a-date", CreatedAt: "also-not-a-date", Level: "", RawJSON: "{}"},
-	}
+	records := []Record{{ID: "normalized-valid", Time: "2026-08-08T08:00:00+08:00", CreatedAt: "2026-08-08T08:00:00+08:00", Level: " WARN ", RawJSON: "{}"}}
 	if err := store.Commit(ctx, lease, records, cursor, time.Now().AddDate(0, 0, -1)); err != nil {
 		t.Fatal(err)
 	}
@@ -489,19 +486,16 @@ func TestStoreNormalizesTimestampsLikeNodeRepository(t *testing.T) {
 	if validTime != "2026-08-08T00:00:00.000Z" || validCreatedAt != validTime || validLevel != "warn" {
 		t.Fatalf("有效时间和级别未按 Node repository 归一化: %q, %q, %q", validTime, validCreatedAt, validLevel)
 	}
-	var invalidTime, invalidCreatedAt, invalidLevel string
-	if err := store.db.QueryRow("SELECT time, created_at, level FROM runtime_logs WHERE id = ?", "normalized-invalid").Scan(&invalidTime, &invalidCreatedAt, &invalidLevel); err != nil {
-		t.Fatal(err)
+	if err := store.Commit(ctx, lease, []Record{{ID: "normalized-invalid", Time: "not-a-date", CreatedAt: "also-not-a-date", RawJSON: "{}"}}, cursor, time.Now().UTC().AddDate(0, 0, -1)); err == nil {
+		t.Fatal("invalid supplied runtime timestamp must be rejected instead of replaced with now")
 	}
-	if invalidTime == "not-a-date" || invalidCreatedAt == "also-not-a-date" || invalidLevel != "info" {
-		t.Fatalf("非法时间或空 level 未按 Node repository 回退: %q, %q, %q", invalidTime, invalidCreatedAt, invalidLevel)
-	}
-	if _, err := time.Parse(time.RFC3339, invalidTime); err != nil {
-		t.Fatalf("非法时间回退值必须为 ISO 时间: %q", invalidTime)
+	var invalidCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM runtime_logs WHERE id = ?", "normalized-invalid").Scan(&invalidCount); err != nil || invalidCount != 0 {
+		t.Fatalf("invalid timestamp record must not persist: count=%d err=%v", invalidCount, err)
 	}
 }
 
-func TestStoreNormalizesRFC1123TimestampLikeNodeRepository(t *testing.T) {
+func TestStoreRejectsRFC1123Timestamp(t *testing.T) {
 	store, config := openTestSQLiteStore(t)
 	ctx := testOwnerContext(t, store)
 	lease := testOwnerLease(t, ctx)
@@ -512,15 +506,23 @@ func TestStoreNormalizesRFC1123TimestampLikeNodeRepository(t *testing.T) {
 		CreatedAt: "Tue, 14 Jul 2026 10:45:13 GMT",
 		Level:     "info",
 		RawJSON:   "{}",
-	}}, cursor, time.Now().AddDate(0, 0, -1)); err != nil {
-		t.Fatal(err)
+	}}, cursor, time.Now().UTC().AddDate(0, 0, -1)); err == nil {
+		t.Fatal("RFC1123 absolute time must be rejected")
 	}
-	var timestamp, createdAt string
-	if err := store.db.QueryRow("SELECT time, created_at FROM runtime_logs WHERE id = ?", "rfc1123").Scan(&timestamp, &createdAt); err != nil {
-		t.Fatal(err)
-	}
-	if timestamp != "2026-07-14T10:45:12.000Z" || createdAt != "2026-07-14T10:45:13.000Z" {
-		t.Fatalf("RFC1123 未按 Node Date.parse 归一化: %q, %q", timestamp, createdAt)
+}
+
+func TestPostgresRuntimeLogSchemaUsesTimestamptzForInstants(t *testing.T) {
+	for _, fragment := range []string{
+		"time timestamptz NOT NULL",
+		"created_at timestamptz NOT NULL",
+		"last_read_at timestamptz",
+		"lease_until timestamptz NOT NULL",
+		"earliest_time timestamptz",
+		"latest_time timestamptz",
+	} {
+		if !strings.Contains(postgresSchema, fragment) {
+			t.Fatalf("PostgreSQL F1 schema must preserve absolute instants as timestamptz: missing %q", fragment)
+		}
 	}
 }
 
@@ -889,6 +891,21 @@ VALUES ('current', 'legacy-event', 1, '2026-08-09T00:00:00.000Z', '2026-08-09T00
 	}
 	if eventCount != 1 {
 		t.Fatalf("旧 event facet 未完整迁移: got %d, want 1", eventCount)
+	}
+}
+
+func TestMigrateLegacySQLiteRejectsNonCanonicalAbsoluteTime(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	legacy, err := sql.Open("sqlite", config.DatasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if _, err := legacy.Exec(`INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, raw_json, created_at) VALUES ('legacy-invalid-time', 'juhe-ai.log', 1, 1, '2026-08-09T00:00:00', 'info', '{}', '2026-08-09T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacySQLite(testOwnerContext(t, store), config, store); err == nil {
+		t.Fatal("legacy offset-less absolute time must fail closed before copying rows")
 	}
 }
 

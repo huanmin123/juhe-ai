@@ -158,6 +158,8 @@ assert.equal(JSON.stringify(deepToolPayload).includes('raw-upstream-body'), fals
 assert.equal(deepToolPayload!.toolEvents?.[0]?.item, undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), contentText: 'data:image/png;base64,AAAA' }), undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), model: 'data:application/octet-stream;base64,AAAA' }), undefined)
+assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), expiresAt: '2026-07-20 08:00:00' }), undefined, '缓存消息不得持久化无时区 expiresAt')
+assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), expiresAt: '2026-07-20T08:00:00+08:00' })?.expiresAt, '2026-07-20T00:00:00.000Z', '缓存 expiresAt 必须规范为 UTC RFC3339')
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), blob: new Blob(['x']) } as unknown as ChatMessage), undefined)
 const cyclic = message(1, 'x') as ChatMessage & { metadata?: unknown }; cyclic.metadata = cyclic
 assert.equal(cloneVisibleChatMessage(cyclic), undefined)
@@ -268,6 +270,11 @@ await expiry.putMessages('A', 'c2', [{ ...message(1, 'old', '2026-07-15T00:00:00
 const cleaned = await expiry.cleanupExpired('2026-07-16T00:00:00.000Z', { conversationLimit: 1, messageLimit: 1 })
 assert.deepEqual(cleaned.value, { conversations: 1, messages: 1 })
 assert.equal(expiryAdapter.heads.size, 2, '有界清理不得越过单次会话上限')
+const invalidExpiryDiagnostics: string[] = []
+const invalidExpiry = new ChatLocalCache({ adapter: new MemoryAdapter(), diagnostic: (code) => invalidExpiryDiagnostics.push(code) })
+const invalidExpiryResult = await invalidExpiry.cleanupExpired('2026-07-16 08:00:00')
+assert.deepEqual({ ok: invalidExpiryResult.ok, enabled: invalidExpiryResult.enabled }, { ok: false, enabled: false }, '非法 serverTime 必须禁用缓存并返回失败')
+assert.match(invalidExpiryDiagnostics[0] ?? '', /^cache_cleanup_invalid_server_time_/, '非法 serverTime 必须向诊断通道传播')
 
 for (const error of [Object.assign(new Error('quota'), { name: 'QuotaExceededError' }), Object.assign(new Error('security'), { name: 'SecurityError' })]) {
   const failing = new MemoryAdapter(); failing.failWith = error

@@ -1,5 +1,6 @@
 import type { SystemTeamDetail, SystemTeamListItem, SystemTeamListResult, SystemTeamMemberDetail, SystemTeamMemberHistoryItem, SystemTeamMemberHistoryResult, SystemTeamMembersResult, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
@@ -1394,10 +1395,9 @@ function requiredSystemTeamPatchVersion(value: unknown): string {
 }
 
 function nextSystemTeamUpdatedAt(expectedUpdatedAt: string): string {
-  const now = nowIso()
-  if (now > expectedUpdatedAt) return now
-  const expectedMs = Date.parse(expectedUpdatedAt)
-  return Number.isFinite(expectedMs) ? new Date(expectedMs + 1).toISOString() : now
+  const expectedMs = rfc3339InstantMilliseconds(expectedUpdatedAt)
+  if (expectedMs === undefined) throw new Error(`系统团队 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${expectedUpdatedAt}`)
+  return new Date(Math.max(Date.now(), expectedMs + 1)).toISOString()
 }
 
 function invalidateSystemTeamPatchCaches(id: string, changedFields: SystemTeamPatchField[]): void {

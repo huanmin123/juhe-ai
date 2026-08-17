@@ -73,6 +73,7 @@ const crossDaySchedule: ApiKeyAvailabilitySchedule = {
 
 const emptyForm = createTimeScheduleForm()
 assertEqual(emptyForm.enabled, false, '默认时间计划表单应关闭')
+assertEqual(emptyForm.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', '默认时间计划必须使用浏览器 IANA 时区或 UTC')
 assertEqual(buildTimeSchedulePayload(emptyForm), null, '关闭时间计划时保存 payload 应为 null')
 
 const form = createTimeScheduleForm(crossDaySchedule)

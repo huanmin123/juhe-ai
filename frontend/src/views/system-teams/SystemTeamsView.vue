@@ -183,7 +183,7 @@ import { useScopedSystemTeamsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { compareServerDateTime, formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemTeamListItem, SystemTeamMemberDetail, SystemTeamMemberHistoryItem, SystemTeamMemberListResult, SystemTeamMutationResult } from '@/types/domain'
@@ -708,7 +708,7 @@ async function commitSystemTeamPatch(mutation: SystemTeamMutationResult): Promis
   const selected = teams.value.find((team) => team.id === mutation.id)
   if (selectedTeamId.value === mutation.id && selected) {
     selectedTeamSnapshot.value = selected
-    if (selectedTeamMembers.value && selectedTeamMembers.value.updatedAt.localeCompare(mutation.updatedAt) <= 0) {
+    if (selectedTeamMembers.value && compareServerDateTime(selectedTeamMembers.value.updatedAt, mutation.updatedAt) <= 0) {
       selectedTeamMembers.value = { ...selectedTeamMembers.value, updatedAt: mutation.updatedAt }
     }
   }
@@ -723,7 +723,7 @@ async function commitMemberCountMutation(mutation: { id: string; memberCount: nu
   } else {
     teams.value = state.items
   }
-  if (selectedTeamId.value === mutation.id && selectedTeamSnapshot.value && selectedTeamSnapshot.value.updatedAt.localeCompare(mutation.updatedAt) <= 0) {
+  if (selectedTeamId.value === mutation.id && selectedTeamSnapshot.value && compareServerDateTime(selectedTeamSnapshot.value.updatedAt, mutation.updatedAt) <= 0) {
     selectedTeamSnapshot.value = {
       ...selectedTeamSnapshot.value,
       memberCount: mutation.memberCount,

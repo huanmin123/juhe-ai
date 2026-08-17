@@ -5,6 +5,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 
 $appDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $appDir
+$env:TZ = 'UTC'
 
 function Test-CommandExists {
   param([Parameter(Mandatory = $true)][string]$Name)

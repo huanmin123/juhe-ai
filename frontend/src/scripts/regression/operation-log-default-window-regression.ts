@@ -5,7 +5,8 @@ import { operationLogListParams } from '@/views/operation-logs/operationLogFilte
 import {
   defaultManagementOperationLogDateRange,
   defaultOperationLogsPageState,
-  operationLogPageStateForTrace
+  operationLogPageStateForTrace,
+  parseCreatedAtRange
 } from '@/views/operation-logs/operationLogPageState'
 
 const pageSize = 20
@@ -24,6 +25,12 @@ const managementParams = operationLogListParams({
 }, managementState.pagination, true)
 assert.equal(managementParams.startAt, defaultRange[0])
 assert.equal(managementParams.endAt, defaultRange[1])
+assert.deepEqual(
+  parseCreatedAtRange(['2026-06-22T20:30:00+08:00', '2026-06-22T12:00:00Z'])?.map((item) => item.toISOString()),
+  ['2026-06-22T12:00:00.000Z', '2026-06-22T12:30:00.000Z'],
+  '持久化操作日志范围必须按 epoch 排序'
+)
+assert.equal(parseCreatedAtRange(['2026-06-22 20:30:00', '2026-06-22T12:00:00Z']), undefined, '持久化操作日志范围不得接受无时区时间')
 
 const selfState = defaultOperationLogsPageState(pageSize)
 assert.equal(selfState.createdAtRange, undefined, '个人页面默认不得被管理窗口限制')

@@ -5,6 +5,7 @@ import type {
   ResourceAuthorizationMutationResult,
   ResourceAuthorizationTerminalMutationResult
 } from '@/types/domain'
+import { compareServerDateTime } from '@/shared/formatters'
 
 import type { AuthorizationListFilterContext } from './authorizationListFilters'
 
@@ -143,6 +144,6 @@ function authorizationWithStatus(
 }
 
 function compareAuthorizationListItems(left: ResourceAuthorizationListItem, right: ResourceAuthorizationListItem): number {
-  const createdAtOrder = right.createdAt.localeCompare(left.createdAt)
+  const createdAtOrder = compareServerDateTime(right.createdAt, left.createdAt)
   return createdAtOrder || right.id.localeCompare(left.id)
 }

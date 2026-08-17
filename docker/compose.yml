@@ -12,7 +12,9 @@ services:
     ports:
       - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
     environment:
+      TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_USAGE_STATS_TIMEZONE: ${JUHE_AI_USAGE_STATS_TIMEZONE:-UTC}
       JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
       JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
       JUHE_AI_PUBLIC_PORT: ${JUHE_AI_PUBLIC_PORT:-3000}
@@ -109,6 +111,7 @@ services:
       juhe-ai:
         condition: service_healthy
     environment:
+      TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-sqlite}
       JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-standalone}
@@ -172,6 +175,7 @@ services:
       juhe-ai:
         condition: service_healthy
     environment:
+      TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-sqlite}
       JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-standalone}

@@ -2,6 +2,7 @@ import type { RequestQuotaCosts } from './request-quota-checker.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { logger } from '../../../shared/logger.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../../shared/runtime-state-store.js'
 
 export interface GatewayQuotaDecision {
@@ -104,11 +105,19 @@ export function clearGatewayQuotaSnapshot(): void {
 }
 
 export function invalidateGatewayAuthorizationQuotaSnapshot(metadata: { publishedAt?: string } = {}): void {
-  const publishedAtMs = Date.parse(metadata.publishedAt ?? '')
+  const publishedAt = metadata.publishedAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(metadata.publishedAt, '网关额度快照授权失效 publishedAt')
+  const publishedAtMs = publishedAt === undefined
+    ? Date.now()
+    : rfc3339InstantMilliseconds(publishedAt)
+  if (publishedAtMs === undefined) {
+    throw new Error('网关额度快照授权失效 publishedAt 规范化后无效')
+  }
   authorizationSnapshotInvalidated = true
   authorizationSnapshotInvalidatedAtMs = Math.max(
     authorizationSnapshotInvalidatedAtMs,
-    Number.isFinite(publishedAtMs) ? publishedAtMs : Date.now()
+    publishedAtMs
   )
   authorizationSnapshotComplete = false
   authorizationSnapshotVersion += 1
@@ -281,34 +290,38 @@ function runtimeState(): RuntimeStateStore {
 
 function replaceSharedGatewayQuotaSnapshotMemo(snapshot: GatewayQuotaSnapshot | undefined): void {
   sharedSnapshotFetchedAtMs = Date.now()
-  if (!snapshot?.generatedAt) {
+  if (!snapshot || snapshot.generatedAt === undefined) {
     sharedSnapshot = undefined
     sharedSnapshotCostEntries = new Map()
     sharedSnapshotAuthorizationEntries = new Map()
     return
   }
-  sharedSnapshot = snapshot
-  sharedSnapshotCostEntries = new Map(snapshot.costEntries.map((entry) => [
+  const normalizedSnapshot: GatewayQuotaSnapshot = {
+    ...snapshot,
+    generatedAt: requiredRfc3339Instant(snapshot.generatedAt, 'Redis runtime state 网关额度快照 generatedAt')
+  }
+  sharedSnapshot = normalizedSnapshot
+  sharedSnapshotCostEntries = new Map(normalizedSnapshot.costEntries.map((entry) => [
     costSnapshotKey(entry),
     cloneRequestQuotaCosts(entry.costs)
   ]))
-  sharedSnapshotAuthorizationEntries = new Map(snapshot.authorizationEntries.map((entry) => [
+  sharedSnapshotAuthorizationEntries = new Map(normalizedSnapshot.authorizationEntries.map((entry) => [
     authorizationSnapshotKey(entry.scopeType, entry.authorizationId),
     { ...entry.decision }
   ]))
-  if (authorizationSnapshotInvalidated && sharedSnapshotAuthorizationUsable(snapshot)) {
+  if (authorizationSnapshotInvalidated && sharedSnapshotAuthorizationUsable(normalizedSnapshot)) {
     authorizationSnapshotInvalidated = false
     authorizationSnapshotInvalidatedAtMs = 0
     authorizationSnapshotVersion += 1
   }
-  if (!(snapshot.costEntriesComplete ?? true) || !sharedSnapshotAuthorizationComplete(snapshot)) {
+  if (!(normalizedSnapshot.costEntriesComplete ?? true) || !sharedSnapshotAuthorizationComplete(normalizedSnapshot)) {
     logger.warn({
       event: 'gateway_quota_snapshot_runtime_state_incomplete',
-      generatedAt: snapshot.generatedAt,
-      costEntryCount: snapshot.costEntries.length,
-      authorizationEntryCount: snapshot.authorizationEntries.length,
-      costEntriesComplete: snapshot.costEntriesComplete ?? true,
-      authorizationEntriesComplete: sharedSnapshotAuthorizationComplete(snapshot),
+      generatedAt: normalizedSnapshot.generatedAt,
+      costEntryCount: normalizedSnapshot.costEntries.length,
+      authorizationEntryCount: normalizedSnapshot.authorizationEntries.length,
+      costEntriesComplete: normalizedSnapshot.costEntriesComplete ?? true,
+      authorizationEntriesComplete: sharedSnapshotAuthorizationComplete(normalizedSnapshot),
       maxCostEntries: maxGatewayQuotaSnapshotCostEntries,
       maxAuthorizationEntries: maxGatewayQuotaSnapshotAuthorizationEntries
     }, 'Redis runtime state 网关配额快照不完整，运行时将对缺失 scope 通过 DB service 精确补判')
@@ -329,8 +342,11 @@ function sharedSnapshotAuthorizationComplete(snapshot: GatewayQuotaSnapshot): bo
 
 function sharedSnapshotAuthorizationUsable(snapshot: GatewayQuotaSnapshot): boolean {
   if (!authorizationSnapshotInvalidated) return true
-  const generatedAtMs = Date.parse(snapshot.generatedAt)
-  return Number.isFinite(generatedAtMs) && generatedAtMs > authorizationSnapshotInvalidatedAtMs
+  const generatedAtMs = rfc3339InstantMilliseconds(snapshot.generatedAt)
+  if (generatedAtMs === undefined) {
+    throw new Error('Redis runtime state 网关额度快照 generatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return generatedAtMs > authorizationSnapshotInvalidatedAtMs
 }
 
 function costSnapshotKey(input: {

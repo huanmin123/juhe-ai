@@ -1,3 +1,5 @@
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
+
 export interface RuntimeLogGrepTimeRange {
   startMs: number
   endMs: number
@@ -139,6 +141,7 @@ export function filterLogFilesByTimeRange<TFile extends RuntimeLogSearchableFile
 
 function parseTimeMs(value: string | undefined): number | undefined {
   if (!value) return undefined
-  const time = Date.parse(value)
-  return Number.isFinite(time) ? time : undefined
+  const time = rfc3339InstantMilliseconds(value)
+  if (time === undefined) throw new Error('运行日志时间范围必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return time
 }

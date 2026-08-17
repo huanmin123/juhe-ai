@@ -1,14 +1,16 @@
 import dayjs, { type Dayjs } from 'dayjs'
 
-import { formatMillisecondsAsSeconds } from '@/shared/formatters'
+import { formatMillisecondsAsSeconds, serverDateTimeTimestamp } from '@/shared/formatters'
 
 export type PublicApiLogTimeRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
 
 export function parseStoredPublicApiLogTimeRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
   if (!value) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  return normalizePublicApiLogTimeRange(start.isValid() && end.isValid() ? [start, end] : undefined)
+  const startTimestamp = serverDateTimeTimestamp(value[0])
+  const endTimestamp = serverDateTimeTimestamp(value[1])
+  const start = startTimestamp === undefined ? undefined : dayjs(startTimestamp)
+  const end = endTimestamp === undefined ? undefined : dayjs(endTimestamp)
+  return start?.isValid() && end?.isValid() ? normalizePublicApiLogTimeRange([start, end]) : undefined
 }
 
 export function normalizePublicApiLogTimeRange(value: PublicApiLogTimeRangeValue): [Dayjs, Dayjs] | undefined {

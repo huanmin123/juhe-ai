@@ -108,6 +108,61 @@ func TestSQLiteCreatedAtIsCanonicalUTCForOrderAndRetention(t *testing.T) {
 	}
 }
 
+func TestSQLiteListRejectsInvalidAbsoluteTimesAndCanonicalizesOffsets(t *testing.T) {
+	root := t.TempDir()
+	business := filepath.Join(root, "business.sqlite3")
+	createBusinessSettings(t, business, "365")
+	store, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	lease, ok, err := store.AcquireOwnerLease(context.Background(), "list-times", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("lease: ok=%v err=%v", ok, err)
+	}
+	created := Input{ID: "list-time", ActorSystemAccountID: "actor", ActorRole: "user", Module: "x", Action: "y", OperationKey: "x.y", ResourceType: "r", Summary: "list time", CreatedAt: "2026-08-13T00:00:00.000000000Z"}
+	if _, err = store.Persist(context.Background(), lease, created); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		list ListOptions
+	}{
+		{name: "start without offset", list: ListOptions{StartAt: "2026-08-13T00:00:00"}},
+		{name: "invalid start", list: ListOptions{StartAt: "not-a-time"}},
+		{name: "end without offset", list: ListOptions{EndAt: "2026-08-13T00:00:01"}},
+		{name: "invalid end", list: ListOptions{EndAt: "2026-08-13T00:00:01+bad"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, listErr := store.List(context.Background(), test.list)
+			if !errors.Is(listErr, ErrInvalidListTime) {
+				t.Fatalf("list error=%v, want ErrInvalidListTime", listErr)
+			}
+		})
+	}
+	result, err := store.List(context.Background(), ListOptions{StartAt: "2026-08-13T08:00:00+08:00", EndAt: "2026-08-13T08:00:01+08:00"})
+	if err != nil || len(result.Items) != 1 || result.Items[0].ID != created.ID {
+		t.Fatalf("offset range must match canonical UTC instant: result=%+v err=%v", result, err)
+	}
+}
+
+func TestHTTPListRejectsInvalidAbsoluteTimesWithBadRequest(t *testing.T) {
+	store := &requestContextStore{list: func(context.Context) error {
+		return fmt.Errorf("wrapped: %w", ErrInvalidListTime)
+	}}
+	h := &handler{store: store, cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second, ReplayWindow: time.Minute}, logger: slog.Default(), healthy: newAtomicTrue()}
+	body := []byte(`{"options":{"startAt":"2026-08-13T00:00:00"}}`)
+	request := httptest.NewRequest(http.MethodPost, ListPath, bytes.NewReader(body))
+	request.RemoteAddr = "127.0.0.1:1"
+	signRequest(request, "test-secret", body, time.Now().UTC(), "list-invalid-time")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid list time status=%d, want 400", response.Code)
+	}
+}
+
 func TestLoadConfigRejectsUsageShardPhysicalOverlap(t *testing.T) {
 	root := t.TempDir()
 	shardRoot := filepath.Join(root, "usage-shards")

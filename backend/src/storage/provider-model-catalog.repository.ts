@@ -2,6 +2,7 @@ import type { SQLInputValue } from 'node:sqlite'
 
 import type { ProviderModelPriceSet, ProviderModelPricing } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -472,8 +473,9 @@ export async function updateBuiltInProviderModelConfigurationAsync(
 }
 
 function nextProviderModelUpdatedAt(current?: string): string {
-  const currentMs = current ? Date.parse(current) : Number.NaN
-  const nextMs = Math.max(Date.now(), Number.isFinite(currentMs) ? currentMs + 1 : 0)
+  const currentMs = current === undefined ? undefined : rfc3339InstantMilliseconds(current)
+  if (current !== undefined && currentMs === undefined) throw new Error(`供应商模型 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${current}`)
+  const nextMs = Math.max(Date.now(), currentMs === undefined ? 0 : currentMs + 1)
   return new Date(nextMs).toISOString()
 }
 

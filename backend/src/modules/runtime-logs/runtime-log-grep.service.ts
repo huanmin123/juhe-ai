@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { parseShanghaiDisplayTime } from '../../shared/time-display.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import {
   defaultGrepRangeDays,
   earliestLogFileMs,
@@ -862,11 +862,7 @@ function runtimeLogTimeValue(value: unknown): string {
 
 function parseRuntimeLogTimeMs(value: string): number {
   if (!value) return Number.NaN
-  const numeric = Number(value)
-  if (Number.isFinite(numeric)) return numeric
-  const shanghaiTime = parseShanghaiDisplayTime(value)
-  if (shanghaiTime) return shanghaiTime.getTime()
-  return Date.parse(value)
+  return rfc3339InstantMilliseconds(value) ?? Number.NaN
 }
 
 function normalizeLevel(value: unknown): string {

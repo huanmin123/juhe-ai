@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { getTableMonitorDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -471,8 +472,7 @@ function tableNamePrefixPattern(keyword: string | undefined): string | undefined
 
 function normalizeDateTime(value: string | undefined, fallback: string): string {
   if (!value) return fallback
-  const time = Date.parse(value)
-  return Number.isNaN(time) ? fallback : new Date(time).toISOString()
+  return requiredRfc3339Instant(value)
 }
 
 function normalizeDateRange(startAt?: string, endAt?: string): { startAt: string; endAt: string } {

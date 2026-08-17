@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { canonicalizeRfc3339Instant, requiredRfc3339Instant } from '../../shared/rfc3339.js'
 import { nowIso } from '../../storage/database.js'
 import { getTableStorageOverviewAsync, listDatabaseStorageHistoryAsync, listTableStorageHistoryAsync, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
@@ -14,6 +15,11 @@ export const tableMonitorRouter = Router()
 const defaultCleanupBatchSize = 5000
 const defaultCleanupMaxBatches = 100
 const maxHistoryPointsPerSeries = 2000
+const absoluteDateTimeQuerySchema = z.string()
+  .trim()
+  .min(1, '时间不能为空')
+  .refine((value) => canonicalizeRfc3339Instant(value) !== undefined, '时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  .transform((value) => canonicalizeRfc3339Instant(value)!)
 
 const overviewQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
@@ -24,19 +30,19 @@ const overviewQuerySchema = z.object({
 const historyQuerySchema = z.object({
   databaseRole: z.enum(['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']),
   tableName: z.string().trim().min(1),
-  startAt: z.string().trim().optional(),
-  endAt: z.string().trim().optional(),
+  startAt: absoluteDateTimeQuerySchema.optional(),
+  endAt: absoluteDateTimeQuerySchema.optional(),
   limit: z.coerce.number().int().min(1).max(maxHistoryPointsPerSeries).optional()
 })
 
 const databaseHistoryQuerySchema = z.object({
-  startAt: z.string().trim().optional(),
-  endAt: z.string().trim().optional(),
+  startAt: absoluteDateTimeQuerySchema.optional(),
+  endAt: absoluteDateTimeQuerySchema.optional(),
   limit: z.coerce.number().int().min(1).max(maxHistoryPointsPerSeries).optional()
 })
 
 const nonBusinessDataCleanupSchema = z.object({
-  cutoffAt: z.string().trim().min(1, '请选择清理截止时间')
+  cutoffAt: absoluteDateTimeQuerySchema
 }).strict()
 
 interface NonBusinessDataCleanupReceipt {
@@ -77,10 +83,6 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
   }
 
   const cutoff = normalizeCleanupCutoff(parsed.data.cutoffAt)
-  if (!cutoff) {
-    res.status(400).json(badRequest('清理截止时间无效'))
-    return
-  }
   if (cutoff.iso > nowIso()) {
     res.status(400).json(badRequest('清理截止时间不能晚于当前时间'))
     return
@@ -115,9 +117,9 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
   res.json(ok(result))
 })
 
-function normalizeCleanupCutoff(value: string): { iso: string; time: number } | undefined {
-  const time = Date.parse(value)
-  return Number.isNaN(time) ? undefined : { iso: new Date(time).toISOString(), time }
+function normalizeCleanupCutoff(value: string): { iso: string; time: number } {
+  const iso = requiredRfc3339Instant(value, '清理截止时间')
+  return { iso, time: new Date(iso).getTime() }
 }
 
 async function recordNonBusinessDataCleanupOperation(

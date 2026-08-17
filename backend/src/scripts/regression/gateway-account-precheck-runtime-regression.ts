@@ -47,6 +47,15 @@ const [
 ])
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const precheckObservedAtBaseMs = Date.parse('2026-07-24T13:00:00.000Z')
+let precheckObservedAtOffsetMs = 0
+
+function nextPrecheckObservedAt(): string {
+  const observedAt = new Date(precheckObservedAtBaseMs + precheckObservedAtOffsetMs).toISOString()
+  precheckObservedAtOffsetMs += 1
+  return observedAt
+}
+
 const gatewaySettings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
   accountCircuitConfirmationFailuresRequired: 2,
@@ -337,7 +346,7 @@ function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
   gatewaySideEffects.enqueueGatewayAccountErrorHandlingSideEffect({
     type: 'apply_account_error_handling',
     account: primary,
-    input: { success: true }
+    input: { success: true, observedAt: nextPrecheckObservedAt() }
   })
   const afterSuccess = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
   assert.equal(afterSuccess[primary.id], undefined, '账号真实成功后应解除运行态调度降级')
@@ -479,7 +488,7 @@ async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
   gatewaySideEffects.enqueueGatewayAccountErrorHandlingSideEffect({
     type: 'apply_account_error_handling',
     account,
-    input: { success: true }
+    input: { success: true, observedAt: nextPrecheckObservedAt() }
   })
   assert.equal(
     gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
@@ -902,6 +911,7 @@ async function testGatewayRequestCannotPersistAccountStatus(): Promise<void> {
     account: gatewayAccount,
     input: {
       success: false,
+      observedAt: nextPrecheckObservedAt(),
       statusCode: 529,
       bodyText: '{"error":{"message":"用户请求模拟失败"}}',
       trafficSource: 'gateway'
@@ -928,6 +938,7 @@ async function testExplicitAccountErrorPolicyCanPersistAccountStatus(): Promise<
     account: gatewayAccount,
     input: {
       success: false,
+      observedAt: nextPrecheckObservedAt(),
       statusCode: 529,
       bodyText: '{"error":{"message":"用户策略命中"}}',
       trafficSource: 'gateway',
@@ -952,6 +963,7 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
     account: gatewayAccount,
     input: {
       success: false,
+      observedAt: nextPrecheckObservedAt(),
       statusCode: 529,
       bodyText: '{"error":{"code":"overloaded","message":"模拟 529 失败"}}',
       trafficSource: 'gateway',

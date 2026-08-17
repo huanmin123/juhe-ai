@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../../shared/concurrency-governor.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 import { gatewayAccountRuntimeKey, runtimeAccountIdFromKey, type SuppressibleGatewayAccount } from './account-runtime-keys.js'
@@ -502,7 +503,11 @@ async function loadLatencyStateGeneration(): Promise<string> {
 
 async function loadLatencyGenerationEvent(): Promise<NormalRouteLatencyGenerationEvent | undefined> {
   const event = await latencyStateStore.getJson<unknown>(latencyStateGenerationKey)
-  return isNormalRouteLatencyGenerationEvent(event) ? event : undefined
+  if (event === undefined) return undefined
+  if (!isNormalRouteLatencyGenerationEvent(event)) {
+    throw new Error('普通路由速度优先 runtime-state generation event publishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return event
 }
 
 async function loadOrCreateLatencyGenerationEvent(): Promise<NormalRouteLatencyGenerationEvent> {
@@ -540,13 +545,13 @@ function normalizeLatencyGenerationEvent(
   event: NormalRouteLatencyGenerationEvent
 ): NormalRouteLatencyGenerationEvent {
   const version = event.version.trim()
-  const publishedAt = event.publishedAt.trim()
   if (!version) {
     throw new Error('普通路由速度优先 generation event 缺少 version')
   }
-  if (!Number.isFinite(Date.parse(publishedAt))) {
-    throw new Error(`普通路由速度优先 generation event publishedAt 无效：${publishedAt}`)
-  }
+  const publishedAt = requiredRfc3339Instant(
+    event.publishedAt,
+    '普通路由速度优先 generation event publishedAt'
+  )
   return { version, publishedAt }
 }
 
@@ -554,7 +559,12 @@ function compareLatencyGenerationEvents(
   left: NormalRouteLatencyGenerationEvent,
   right: NormalRouteLatencyGenerationEvent
 ): number {
-  const publishedAtDifference = Date.parse(left.publishedAt) - Date.parse(right.publishedAt)
+  const leftPublishedAtMs = rfc3339InstantMilliseconds(left.publishedAt)
+  const rightPublishedAtMs = rfc3339InstantMilliseconds(right.publishedAt)
+  if (leftPublishedAtMs === undefined || rightPublishedAtMs === undefined) {
+    throw new Error('普通路由速度优先 generation event publishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  const publishedAtDifference = leftPublishedAtMs - rightPublishedAtMs
   if (publishedAtDifference !== 0) {
     return publishedAtDifference
   }
@@ -566,7 +576,11 @@ function latencyGenerationToken(
   event: NormalRouteLatencyGenerationEvent | undefined
 ): string {
   if (!event) return 'initial'
-  return JSON.stringify([Date.parse(event.publishedAt), event.version])
+  const publishedAtMs = rfc3339InstantMilliseconds(event.publishedAt)
+  if (publishedAtMs === undefined) {
+    throw new Error('普通路由速度优先 generation event publishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return JSON.stringify([publishedAtMs, event.version])
 }
 
 async function loadLatencyState(
@@ -954,7 +968,7 @@ function isNormalRouteLatencyGenerationEvent(
   return typeof record.version === 'string'
     && record.version.trim() !== ''
     && typeof record.publishedAt === 'string'
-    && Number.isFinite(Date.parse(record.publishedAt))
+    && rfc3339InstantMilliseconds(record.publishedAt) !== undefined
 }
 
 function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {

@@ -217,7 +217,11 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       }
       if (status === 'active' && item.expiresAt) {
         const expiresAtTimestamp = serverDateTimeTimestamp(item.expiresAt)
-        if (expiresAtTimestamp === undefined || expiresAtTimestamp <= Date.now()) {
+        if (expiresAtTimestamp === undefined) {
+          message.error('授权到期时间格式异常，无法恢复授权，请清理后重试')
+          return
+        }
+        if (expiresAtTimestamp <= Date.now()) {
           payload.expiresAt = null
         }
       }

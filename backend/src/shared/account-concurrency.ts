@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
+import { rfc3339InstantMilliseconds } from './rfc3339.js'
 import { getRedisClient, type RedisCommandClient } from './redis-client.js'
 import { redisNamespacedKey } from './redis-namespace.js'
 
@@ -280,10 +281,14 @@ export async function acknowledgeAccountConcurrencyProjectionDirtyEntriesAsync(
   if (!entries.length || runtimeConfig.runtimeStateDriver !== 'redis') return
   const args = [String(Date.now())]
   for (const entry of entries) {
+    const nextReconcileAtMs = entry.nextReconcileAt ? rfc3339InstantMilliseconds(entry.nextReconcileAt) : undefined
+    if (entry.nextReconcileAt && nextReconcileAtMs === undefined) {
+      throw new Error('账户并发 nextReconcileAt 必须是带 offset 的 RFC3339 时间')
+    }
     args.push(
       entry.accountId,
       String(entry.generation),
-      String(entry.nextReconcileAt ? Date.parse(entry.nextReconcileAt) : 0)
+      String(nextReconcileAtMs ?? 0)
     )
   }
   await (await redisStateClient()).eval(redisAcknowledgeAccountConcurrencyProjectionDirtyScript, {

@@ -210,6 +210,33 @@ try {
   await assertDbServiceAuthorizationQuotaInvalidationBridge()
 
   clearGatewayQuotaSnapshot()
+  replaceGatewayQuotaSnapshot({
+    generatedAt: '2026-08-15T22:34:49.137Z',
+    costEntries: [],
+    authorizationEntries: [],
+    authorizationEntriesComplete: true
+  })
+  for (const publishedAt of ['2026-08-16T06:34:49.137', '2026-08-16 06:34:49.137', 'bad']) {
+    assert.throws(
+      () => invalidateGatewayAuthorizationQuotaSnapshot({ publishedAt }),
+      /网关额度快照授权失效 publishedAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+      `提供的非法授权快照失效 publishedAt 必须失败：${publishedAt}`
+    )
+  }
+  assert.equal(
+    gatewayQuotaSnapshotRuntime().authorizationEntriesComplete,
+    true,
+    '非法授权快照失效 publishedAt 不得被当作缺失并改用本机时间'
+  )
+  invalidateGatewayAuthorizationQuotaSnapshot({ publishedAt: '2026-08-16T07:34:49.137+09:00' })
+  invalidateGatewayAuthorizationQuotaSnapshot({ publishedAt: '2026-08-16T06:34:49.137+08:00' })
+  assert.equal(
+    gatewayQuotaSnapshotRuntime().authorizationEntriesComplete,
+    false,
+    '带数字 offset 的授权快照失效 publishedAt 必须被接受'
+  )
+
+  clearGatewayQuotaSnapshot()
   invalidateGatewayAuthorizationQuotaSnapshot()
   const invalidatedWithoutCostSnapshotDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_auth_invalidation_without_cost_snapshot',
@@ -381,7 +408,13 @@ function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
   assert(dbServiceIpcSource.includes('invalidateGatewayAuthorizationQuotaSnapshot()'), 'server 收到授权配额失效后必须同步让授权配额快照失效')
   assert(cacheSource.includes('authorizationSnapshotInvalidated'), '授权配额快照缓存必须有独立失效标记，避免误伤 API Key 成本快照')
   assert(runtimeApplyBlock.includes('handler({ publishedAt: state.publishedAt })'), 'Redis runtime state 授权失效必须把事件 publishedAt 传给快照失效器')
-  assert(cacheSource.includes("Date.parse(metadata.publishedAt ?? '')"), '授权快照失效时间必须优先使用跨运行时事件 publishedAt，不能使用本机观察时间')
+  const invalidationBlock = sourceFunctionBlock(cacheSource, 'export function invalidateGatewayAuthorizationQuotaSnapshot')
+  const sharedSnapshotBlock = sourceFunctionBlock(cacheSource, 'function replaceSharedGatewayQuotaSnapshotMemo')
+  assert(!invalidationBlock.includes('Date.parse('), '授权快照失效 publishedAt 不得使用宽松 Date.parse')
+  assert(invalidationBlock.includes("metadata.publishedAt === undefined"), '仅真正缺失的授权快照失效 publishedAt 才可保留本机失效时间语义')
+  assert(invalidationBlock.includes("requiredRfc3339Instant(metadata.publishedAt, '网关额度快照授权失效 publishedAt')"), '提供的授权快照失效 publishedAt 必须严格解析并 canonical')
+  assert(!sharedSnapshotBlock.includes('Date.parse('), 'Redis runtime state 网关额度快照 generatedAt 不得使用宽松 Date.parse')
+  assert(sharedSnapshotBlock.includes("requiredRfc3339Instant(snapshot.generatedAt, 'Redis runtime state 网关额度快照 generatedAt')"), 'Redis runtime state 网关额度快照 generatedAt 必须严格解析并 canonical')
   assert(authorizationQuotaSource.includes('gatewayAuthorizationQuotaSnapshotVersion()'), '授权配额快照缓存版本必须参与 server 运行时缓存 key，避免复用旧决策')
 }
 

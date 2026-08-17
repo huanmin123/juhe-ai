@@ -34,7 +34,7 @@ func ParseLine(rawLine string, options LineOptions) *Record {
 	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
 		return fallbackRecord(line, options, metadata, "运行日志行不是有效 JSON", now)
 	}
-	timestamp := firstNonEmpty(readString(parsed["time"]), nodeISO(now))
+	timestamp := readString(parsed["time"])
 	return &Record{
 		ID:           stableID(sourceKey(options, line)),
 		LogFile:      metadata.LogFile,
@@ -124,5 +124,5 @@ func (options LineOptions) now() time.Time {
 	if options.Now != nil {
 		return options.Now()
 	}
-	return time.Now()
+	return time.Now().UTC()
 }

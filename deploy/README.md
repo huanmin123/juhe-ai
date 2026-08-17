@@ -74,9 +74,13 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
 JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
+# 业务日界线使用显式 IANA timezone；绝对 API 时间仍始终为 RFC3339 UTC/offset。
+JUHE_AI_USAGE_STATS_TIMEZONE=UTC
 ```
 
 新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 是两把不同密钥，不能留示例文字、不能相互复用或回退到 `JUHE_AI_SECRET`，并须在安全的密码管理或受限 env 中保存。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
+
+发布包启动器会为 Node 与 Go 子进程设置 `TZ=UTC`。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone。`JUHE_AI_USAGE_STATS_TIMEZONE` 必须配置为部署实际采用的 IANA 值，例如 `UTC` 或 `Asia/Shanghai`，它不改变绝对时间协议。
 
 启动脚本先启动 Node 并等待其 DB-ready health，再分别启动 Go `juhe-ai-gateway` 与 `juhe-ai-jobs`，确认两个 `/health` 返回 `200` 后，再确认 gateway 的 F3/F4 loopback health 返回 `204`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-go-{gateway,jobs}.pid` 和 `backend/logs/juhe-ai-go-{gateway,jobs}.log`。
 

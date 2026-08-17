@@ -14,6 +14,8 @@ API Key : 聚合 AI 后台生成的本地 sk-... 密钥
 
 OpenAI OAuth、OpenAI API Key、代理、分组、额度、高并发策略、失败切换、统计和审计都留在后台。账号换了、限流了、过期了、代理波动了，客户端尽量不用跟着改。
 
+时间契约：API 与异步回执的绝对时间始终使用 RFC3339 `Z` 或明确数字 offset；管理页面按浏览器本地时区展示。统计日界线、排班和可用时段等业务日历独立使用显式 IANA timezone，例如 `UTC` 或 `Asia/Shanghai`，不与绝对时间混用。
+
 ![聚合 AI 控制台入口预览](resources/images/home-page.png)
 
 ![聚合 AI 管理后台统计预览](resources/images/statistics-page.png)

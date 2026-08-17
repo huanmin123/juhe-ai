@@ -13,6 +13,8 @@ pipeline {
   }
 
   environment {
+    // CI 墙上时钟固定为 UTC；业务日历时区由应用显式配置。
+    TZ = 'UTC'
     HARBOR_REPOSITORY_NODE = 'platform/juhe-ai'
     HARBOR_REPOSITORY_JOBS = 'platform/juhe-ai-go-jobs'
     HARBOR_REPOSITORY_GATEWAY = 'platform/juhe-ai-go-gateway'

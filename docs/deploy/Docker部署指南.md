@@ -131,6 +131,8 @@ JUHE_AI_TRUST_PROXY=false
 
 说明：
 
+- Compose 将 Node、Go、PostgreSQL、PgBouncer 和 Redis 的进程 `TZ` 固定为 `UTC`，避免宿主机本地时区渗入日志、测试或默认日期计算。它不改变任何 API 的绝对时间：绝对时间只接受或输出 RFC3339 `Z` 或明确数字 offset。
+- `JUHE_AI_USAGE_STATS_TIMEZONE` 是统计日界线等业务日历的显式 IANA timezone，默认 `UTC`；需要按中国业务日统计时可设为 `Asia/Shanghai`。不得以该值格式化、解析或比较 API 中的绝对时间。
 - `JUHE_AI_PUBLIC_BIND` 是宿主机绑定地址；宿主机 Caddy 反代时建议 `127.0.0.1`，需要局域网 HTTP 临时访问时才用 `0.0.0.0`。
 - `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成 `/app/backend/data/.juhe-ai-secret` 并复用；生产建议在宿主机 env 显式保存稳定密钥。
 - `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 必须填写为两把独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它们分别提供给 Node/F3、Node/F4 loopback HMAC 输入端点。

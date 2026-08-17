@@ -64,6 +64,9 @@ func MigrateLegacySQLite(ctx context.Context, config Config, store Store) error 
 	if err := verifyLegacyTables(ctx, tx); err != nil {
 		return err
 	}
+	if err := verifyLegacyInstantColumns(ctx, tx); err != nil {
+		return err
+	}
 	copyStatements := []string{
 		`INSERT OR IGNORE INTO runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at) SELECT id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at FROM legacy_runtime_log.runtime_logs`,
 		`INSERT OR IGNORE INTO runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at) SELECT log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at FROM legacy_runtime_log.runtime_log_file_cursors`,
@@ -142,6 +145,64 @@ func verifyLegacyTables(ctx context.Context, tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, "SELECT name FROM legacy_runtime_log.sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&found); err != nil {
 			return fmt.Errorf("旧运行日志 SQLite 数据源缺少表 %s: %w", table, err)
 		}
+	}
+	return nil
+}
+
+// The old Node dataset is read-only evidence.  It must already contain the
+// canonical UTC representation used by F1; accepting offset-less or malformed
+// strings here would reintroduce an invalid absolute time into the new store.
+func verifyLegacyInstantColumns(ctx context.Context, tx *sql.Tx) error {
+	columns := []struct {
+		table    string
+		column   string
+		optional bool
+	}{
+		{table: "runtime_logs", column: "time"},
+		{table: "runtime_logs", column: "created_at"},
+		{table: "runtime_log_file_cursors", column: "last_read_at", optional: true},
+		{table: "runtime_log_file_cursors", column: "created_at"},
+		{table: "runtime_log_file_cursors", column: "updated_at"},
+		{table: "runtime_log_facet_summary", column: "earliest_time", optional: true},
+		{table: "runtime_log_facet_summary", column: "latest_time", optional: true},
+		{table: "runtime_log_facet_summary", column: "updated_at"},
+		{table: "runtime_log_level_facets", column: "updated_at"},
+		{table: "runtime_log_event_facets", column: "latest_time", optional: true},
+		{table: "runtime_log_event_facets", column: "updated_at"},
+	}
+	for _, spec := range columns {
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM legacy_runtime_log.%s", spec.column, spec.table))
+		if err != nil {
+			return fmt.Errorf("读取旧运行日志 %s.%s 失败: %w", spec.table, spec.column, err)
+		}
+		for rows.Next() {
+			var value sql.NullString
+			if err := rows.Scan(&value); err != nil {
+				rows.Close()
+				return fmt.Errorf("读取旧运行日志 %s.%s 值失败: %w", spec.table, spec.column, err)
+			}
+			if !value.Valid || strings.TrimSpace(value.String) == "" {
+				if spec.optional {
+					continue
+				}
+				rows.Close()
+				return fmt.Errorf("旧运行日志 %s.%s 缺少绝对时间", spec.table, spec.column)
+			}
+			canonical, err := normalizeNodeTimestamp(value.String)
+			if err != nil {
+				rows.Close()
+				return fmt.Errorf("旧运行日志 %s.%s 非法: %w", spec.table, spec.column, err)
+			}
+			if canonical != value.String {
+				rows.Close()
+				return fmt.Errorf("旧运行日志 %s.%s 不是 canonical UTC，需离线清洗后再迁移", spec.table, spec.column)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("遍历旧运行日志 %s.%s 失败: %w", spec.table, spec.column, err)
+		}
+		rows.Close()
 	}
 	return nil
 }

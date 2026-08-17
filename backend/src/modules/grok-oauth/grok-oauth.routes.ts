@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { XAI_OPENAI_V1_PROFILE_ID, XAI_PROVIDER_CODE, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { getRequestLogger } from '../../shared/request-context.js'
 import { markResponseErrorMessageAsUpstream } from '../../shared/system-error-message.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -646,12 +647,18 @@ function grokSSOImportAccountName(baseName: string | undefined, tokenInfo: GrokO
 }
 
 function grokSSOImportAccountExpiresAt(requested: string | null | undefined, tokenInfo: GrokOAuthTokenInfo): string | null | undefined {
-  if (tokenInfo.refreshToken) return requested
-  const tokenExpiresAt = Date.parse(tokenInfo.expiresAt)
-  if (!Number.isFinite(tokenExpiresAt)) return requested
-  if (!requested) return tokenInfo.expiresAt
-  const requestedExpiresAt = Date.parse(requested)
-  return Number.isFinite(requestedExpiresAt) && requestedExpiresAt < tokenExpiresAt ? requested : tokenInfo.expiresAt
+  const normalizedRequested = requested === undefined || requested === null
+    ? requested
+    : requiredRfc3339Instant(requested, 'Grok OAuth accountExpiresAt')
+  if (tokenInfo.refreshToken) return normalizedRequested
+  const tokenExpiresAt = requiredRfc3339Instant(tokenInfo.expiresAt, 'Grok OAuth token expiresAt')
+  if (normalizedRequested === undefined || normalizedRequested === null) return tokenExpiresAt
+  const requestedExpiresAtMs = rfc3339InstantMilliseconds(normalizedRequested)
+  const tokenExpiresAtMs = rfc3339InstantMilliseconds(tokenExpiresAt)
+  if (requestedExpiresAtMs === undefined || tokenExpiresAtMs === undefined) {
+    throw new Error('Grok OAuth 到期时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return requestedExpiresAtMs < tokenExpiresAtMs ? normalizedRequested : tokenExpiresAt
 }
 
 async function mapWithConcurrency<T, R>(

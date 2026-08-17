@@ -1,4 +1,5 @@
 import type { DbServiceOperation } from '../../db-service/db-service-types.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 
 export type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 export type AccountSideEffectOperation = AccountErrorHandlingOperation
@@ -33,12 +34,17 @@ export class AccountSideEffectEpochRegistry {
   ): AccountSideEffectEpochDecision {
     const normalizedRuntimeKey = runtimeKey.trim()
     if (!normalizedRuntimeKey) throw new Error('account side effect runtimeKey is required')
-    const observedAtMs = Date.parse(observation.observedAt)
-    if (!Number.isFinite(observedAtMs)) throw new Error('account side effect observedAt must be an ISO timestamp')
-    const observedAt = new Date(observedAtMs).toISOString()
+    const observedAt = requiredRfc3339Instant(observation.observedAt, 'account side effect observedAt')
+    const observedAtMs = rfc3339InstantMilliseconds(observedAt)
+    if (observedAtMs === undefined) throw new Error('account side effect observedAt must be a RFC3339 instant')
     const dispatchRevision = normalizedDispatchRevision(observation.dispatchRevision)
     const current = this.currentByRuntimeKey.get(normalizedRuntimeKey)
-    const currentObservedAtMs = current ? Date.parse(current.observedAt) : Number.NEGATIVE_INFINITY
+    let currentObservedAtMs = Number.NEGATIVE_INFINITY
+    if (current) {
+      const parsedCurrentObservedAtMs = rfc3339InstantMilliseconds(current.observedAt)
+      if (parsedCurrentObservedAtMs === undefined) throw new Error('account side effect current observedAt must be a RFC3339 instant')
+      currentObservedAtMs = parsedCurrentObservedAtMs
+    }
     const staleByRevision = current?.dispatchRevision !== undefined
       && (dispatchRevision === undefined || dispatchRevision < current.dispatchRevision)
     const newerRevision = dispatchRevision !== undefined

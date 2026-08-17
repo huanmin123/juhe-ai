@@ -7,6 +7,7 @@ import type {
   AuthorizationStatus
 } from './types.js'
 import { accountAvailabilityPresentation } from './account-status-presentation.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export type AccountEffectiveAvailabilityInput = Omit<Pick<
   AccountSummary,
@@ -293,12 +294,14 @@ function isUnavailableAuthorizationStatus(status?: AuthorizationStatus): boolean
 
 function isExpired(value: string | undefined, now: number): boolean {
   if (!value) return false
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) && timestamp <= now
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) throw new Error(`账户有效期必须是带 Z 或数值 offset 的 RFC3339 时间：${value}`)
+  return timestamp <= now
 }
 
 function isFuture(value: string | undefined, now: number): boolean {
   if (!value) return false
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) && timestamp > now
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) throw new Error(`账户冷却时间必须是带 Z 或数值 offset 的 RFC3339 时间：${value}`)
+  return timestamp > now
 }

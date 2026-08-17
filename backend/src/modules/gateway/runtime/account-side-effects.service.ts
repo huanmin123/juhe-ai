@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createPostgresDatabaseClient } from '../../../storage/database-client.js'
 import { markAccountListAvailabilityDirtyFamilyInClient } from '../../../storage/account-list-availability-projection.repository.js'
@@ -2137,15 +2138,13 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
 function normalizedObservedAccountSideEffectOperation(
   operation: AccountErrorHandlingOperation
 ): AccountErrorHandlingOperation {
-  const observedAtMs = operation.input.observedAt ? Date.parse(operation.input.observedAt) : Number.NaN
+  const observedAt = requiredRfc3339Instant(operation.input.observedAt, 'account side effect observedAt')
   const dispatchRevision = operation.input.dispatchRevision ?? operation.account.dispatchRevision
   return {
     ...operation,
     input: {
       ...operation.input,
-      observedAt: Number.isFinite(observedAtMs)
-        ? new Date(observedAtMs).toISOString()
-        : new Date().toISOString(),
+      observedAt,
       ...(Number.isSafeInteger(dispatchRevision) && (dispatchRevision ?? 0) > 0
         ? { dispatchRevision }
         : {})

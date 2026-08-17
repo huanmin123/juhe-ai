@@ -46,6 +46,7 @@ import {
   refreshUsageScopeRangeWindowSnapshotsInStages
 } from './usage-range-windows.repository.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import {
   refreshAccountLast7dRequestRankSnapshot,
   refreshAccountLast7dRequestRankSnapshotAsync,
@@ -1761,10 +1762,14 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
       WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_quota_hourly_windows_expiry'
     `)
     if (expiryState?.cursor_id !== currentHour) {
-      const parsedPreviousBoundaryMs = Date.parse(expiryState?.cursor_created_at ?? '')
-      const previousBoundaryMs = Number.isFinite(parsedPreviousBoundaryMs)
-        ? Math.min(nowMs, parsedPreviousBoundaryMs)
-        : nowMs - HOUR_MS
+      const storedPreviousBoundary = expiryState?.cursor_created_at?.trim()
+      const parsedPreviousBoundaryMs = storedPreviousBoundary ? rfc3339InstantMilliseconds(storedPreviousBoundary) : undefined
+      if (storedPreviousBoundary && parsedPreviousBoundaryMs === undefined) {
+        throw new Error(`用量统计 expiry cursor_created_at 必须是带 Z 或数值 offset 的 RFC3339 时间：${storedPreviousBoundary}`)
+      }
+      const previousBoundaryMs = parsedPreviousBoundaryMs === undefined
+        ? nowMs - HOUR_MS
+        : Math.min(nowMs, parsedPreviousBoundaryMs)
       const activeWindows = await tx.query<{ window_hours: number | string }>(`
         SELECT DISTINCT window_hours
         FROM juhe_business.request_quota_hourly_window_scope_bindings
@@ -3374,6 +3379,9 @@ function updateUsageStatsShardJobState(database: DatabaseSync, location: UsageRe
 }
 
 function statsLagSecondsFromCursor(cursorCreatedAt: string): number {
-  const cursorTime = Date.parse(cursorCreatedAt)
-  return Number.isFinite(cursorTime) ? Math.max(0, Math.floor((Date.now() - cursorTime) / 1000)) : 0
+  const cursorTime = rfc3339InstantMilliseconds(cursorCreatedAt)
+  if (cursorTime === undefined) {
+    throw new Error(`用量统计 cursor_created_at 必须是带 Z 或数值 offset 的 RFC3339 时间：${cursorCreatedAt}`)
+  }
+  return Math.max(0, Math.floor((Date.now() - cursorTime) / 1000))
 }

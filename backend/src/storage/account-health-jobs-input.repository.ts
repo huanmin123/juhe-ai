@@ -3,6 +3,7 @@ import type { AccessScope } from './access-scope.js'
 import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import { getBusinessDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 const frozenEndpointModes = new Set(['chat_json', 'responses_json', 'responses_sse', 'images_json'])
 const acceptedStatuses = new Set(['active', 'pending_test', 'temporary_unavailable', 'rate_limited'])
@@ -67,16 +68,16 @@ function isEligibleForAccountHealthJobsInput(account: AccountSummary | undefined
   if (!frozenEndpointModes.has(account.healthCheckEndpointMode)) return false
   if (!acceptedStatuses.has(account.status)) return false
   if (account.status !== 'pending_test' && !account.schedulable) return false
-  if (account.accountExpiresAt && Date.parse(account.accountExpiresAt) <= Date.now()) return false
+  if (account.accountExpiresAt && (rfc3339InstantMilliseconds(account.accountExpiresAt) === undefined || rfc3339InstantMilliseconds(account.accountExpiresAt)! <= Date.now())) return false
   if (!account.boundGroupId || account.groupBindStatus !== 'bound') return false
   if (account.accessType !== 'authorized') return true
   if (!account.accountAuthorizationId || !account.bindingSystemAccountId) return false
   if (account.authorizationStatus !== 'active' || account.authorizationQuotaExceeded) return false
-  if (account.authorizationExpiresAt && Date.parse(account.authorizationExpiresAt) <= Date.now()) return false
+  if (account.authorizationExpiresAt && (rfc3339InstantMilliseconds(account.authorizationExpiresAt) === undefined || rfc3339InstantMilliseconds(account.authorizationExpiresAt)! <= Date.now())) return false
   if (account.authorizationInstanceSourceAccountStatus !== 'active') return false
   if (!account.authorizationInstanceSourceAccountSchedulable) return false
-  if (account.authorizationInstanceSourceAccountExpiresAt && Date.parse(account.authorizationInstanceSourceAccountExpiresAt) <= Date.now()) return false
-  if (account.authorizationInstanceSourceAccountCooldownUntil && Date.parse(account.authorizationInstanceSourceAccountCooldownUntil) > Date.now()) return false
+  if (account.authorizationInstanceSourceAccountExpiresAt && (rfc3339InstantMilliseconds(account.authorizationInstanceSourceAccountExpiresAt) === undefined || rfc3339InstantMilliseconds(account.authorizationInstanceSourceAccountExpiresAt)! <= Date.now())) return false
+  if (account.authorizationInstanceSourceAccountCooldownUntil && (rfc3339InstantMilliseconds(account.authorizationInstanceSourceAccountCooldownUntil) === undefined || rfc3339InstantMilliseconds(account.authorizationInstanceSourceAccountCooldownUntil)! > Date.now())) return false
   return true
 }
 

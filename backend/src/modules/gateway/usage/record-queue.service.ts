@@ -11,6 +11,7 @@ import {
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../../shared/redis-stream-drain.js'
@@ -686,15 +687,12 @@ function authorizationSourcePairIsValid(
 }
 
 function normalizeUsageRecordCreatedAt(value: unknown): string {
-  return normalizeUsageRecordCreatedAtForBacklog(value) ?? nowIso()
+  return value === undefined ? nowIso() : requiredRfc3339Instant(value, '使用记录 createdAt')
 }
 
 function normalizeUsageRecordCreatedAtForBacklog(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  if (!trimmed) return undefined
-  const time = Date.parse(trimmed)
-  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
+  if (value === undefined) return undefined
+  return requiredRfc3339Instant(value, '使用记录 backlog createdAt')
 }
 
 export function pendingUsageRecordCount(): number {
@@ -1051,8 +1049,7 @@ function oldestUsageRecordQueuedMs(): number {
 function oldestUsageRecordCreatedAt(): string | undefined {
   let oldest: string | undefined
   for (const item of pendingUsageRecords) {
-    const createdAt = item.input.createdAt?.trim()
-    if (!createdAt) continue
+    const createdAt = requiredRfc3339Instant(item.input.createdAt, '使用记录队列 createdAt')
     if (!oldest || createdAt < oldest) {
       oldest = createdAt
     }

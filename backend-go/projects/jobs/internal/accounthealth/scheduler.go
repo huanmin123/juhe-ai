@@ -47,6 +47,9 @@ type RunnerStatus struct {
 	Executed    int
 }
 
+const maxScheduleDuration = 365 * 24 * time.Hour
+const maxScheduleMilliseconds = int64(maxScheduleDuration / time.Millisecond)
+
 func NewRunner(cfg Config, store *Store, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
@@ -529,7 +532,7 @@ func validateScheduledInput(input Input, now time.Time) error {
 	if input.IssuedAt.IsZero() || input.ExpiresAt.IsZero() || !input.ExpiresAt.After(now) {
 		return errors.New("input 已过期或缺少时间 fence")
 	}
-	if input.Schedule.HealthIntervalMS < 60_000 || input.Schedule.HealthJitterMS < 0 || input.Schedule.FailureThreshold < 1 || input.Schedule.FailureRetryMS < 3_000 {
+	if input.Schedule.HealthIntervalMS < 60_000 || input.Schedule.HealthIntervalMS > maxScheduleMilliseconds || input.Schedule.HealthJitterMS < 0 || input.Schedule.HealthJitterMS > maxScheduleMilliseconds || input.Schedule.HealthJitterMS > input.Schedule.HealthIntervalMS || input.Schedule.FailureThreshold < 1 || input.Schedule.FailureRetryMS < 3_000 || input.Schedule.FailureRetryMS > maxScheduleMilliseconds || input.Schedule.CooldownNeutralBaseMS < 0 || input.Schedule.CooldownNeutralBaseMS > maxScheduleMilliseconds || input.Schedule.CooldownNeutralMaxMS < 0 || input.Schedule.CooldownNeutralMaxMS > maxScheduleMilliseconds || input.Schedule.CooldownFailureBackoffMS < 0 || input.Schedule.CooldownFailureBackoffMS > maxScheduleMilliseconds {
 		return errors.New("input schedule 无效")
 	}
 	if !input.Eligibility.BoundGroup || !input.Eligibility.AuthorizationEligible {
@@ -576,17 +579,36 @@ func stableJitter(accountID string, maximumMS int64) time.Duration {
 	if maximumMS <= 0 {
 		return 0
 	}
+	if maximumMS > maxScheduleMilliseconds {
+		maximumMS = maxScheduleMilliseconds
+	}
 	value := sha256.Sum256([]byte(accountID))
 	n := uint64(value[0])<<56 | uint64(value[1])<<48 | uint64(value[2])<<40 | uint64(value[3])<<32 | uint64(value[4])<<24 | uint64(value[5])<<16 | uint64(value[6])<<8 | uint64(value[7])
-	return time.Duration(n%uint64(maximumMS+1)) * time.Millisecond
+	return time.Duration(n%(uint64(maximumMS)+1)) * time.Millisecond
 }
 
 func stableCooldownDefer(accountID string, failures int, base, maximum time.Duration) time.Duration {
 	if failures < 0 {
 		failures = 0
 	}
+	if base < 0 {
+		base = 0
+	}
+	if base > maxScheduleDuration {
+		base = maxScheduleDuration
+	}
+	if maximum < 0 {
+		maximum = 0
+	}
+	if maximum > maxScheduleDuration {
+		maximum = maxScheduleDuration
+	}
 	delay := base
 	for step := 0; step < failures && delay < maximum; step++ {
+		if delay > maximum/2 {
+			delay = maximum
+			break
+		}
 		delay *= 2
 	}
 	if delay > maximum {
@@ -598,6 +620,9 @@ func stableCooldownDefer(accountID string, failures int, base, maximum time.Dura
 func durationMS(value int64, fallback time.Duration) time.Duration {
 	if value <= 0 {
 		return fallback
+	}
+	if value > maxScheduleMilliseconds {
+		return maxScheduleDuration
 	}
 	return time.Duration(value) * time.Millisecond
 }

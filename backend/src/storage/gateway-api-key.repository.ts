@@ -1,4 +1,5 @@
 import { clearSharedJsonCacheInBackground, createAppCache, createProcessLocalResourceCache, createSharedJsonCache } from '../shared/cache.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import {
   registerGatewayApiKeyValidationCacheInvalidator,
   registerGatewayRuntimeCacheInvalidator,
@@ -607,17 +608,17 @@ async function syncGatewayApiKeyValidationGenerationAfterAsyncRead(generation: n
 
 function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
   if (!row.expires_at) return false
-  const expiresAt = Date.parse(row.expires_at)
-  return Number.isFinite(expiresAt) && expiresAt <= now
+  const expiresAt = rfc3339InstantMilliseconds(row.expires_at)
+  if (expiresAt === undefined) throw new Error(`API Key expires_at 必须是带 Z 或数值 offset 的 RFC3339 时间：${row.expires_at}`)
+  return expiresAt <= now
 }
 
 function gatewayApiKeyCacheTtlMs(now: number, row: GatewayApiKeyRow): number {
   let ttlMs = GATEWAY_API_KEY_CACHE_TTL_MS
   if (row.expires_at) {
-    const keyExpiresAt = Date.parse(row.expires_at)
-    if (Number.isFinite(keyExpiresAt)) {
-      ttlMs = Math.min(ttlMs, keyExpiresAt - now)
-    }
+    const keyExpiresAt = rfc3339InstantMilliseconds(row.expires_at)
+    if (keyExpiresAt === undefined) throw new Error(`API Key expires_at 必须是带 Z 或数值 offset 的 RFC3339 时间：${row.expires_at}`)
+    ttlMs = Math.min(ttlMs, keyExpiresAt - now)
   }
   return Math.max(1, ttlMs)
 }

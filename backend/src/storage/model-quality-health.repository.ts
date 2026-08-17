@@ -4,6 +4,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getPostgresPool } from './postgres-client.js'
 import { getStatsDatabase, nowIso } from './database.js'
 import { hourKey, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 
 export interface ModelQualityHealthFailureInput {
   accountId: string
@@ -80,6 +81,5 @@ async function statsClient(): Promise<DatabaseClient> {
 }
 
 function normalizedIso(value: string): string {
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : nowIso()
+  return requiredRfc3339Instant(value, '模型质量健康 observedAt')
 }

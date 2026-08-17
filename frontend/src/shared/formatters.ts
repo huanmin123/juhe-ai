@@ -4,10 +4,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 dayjs.extend(relativeTime)
 
 const serverDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/
-const shanghaiDateTimePattern = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/
-const shanghaiTimeZone = 'Asia/Shanghai'
-const shanghaiDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: shanghaiTimeZone,
+const localDateTimeFormatterOptions: Intl.DateTimeFormatOptions = {
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -15,23 +12,31 @@ const shanghaiDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
   minute: '2-digit',
   second: '2-digit',
   hourCycle: 'h23'
-})
+}
 
 export function formatDateTime(value?: string): string {
   if (!value) return '-'
-  const date = strictServerDateTime(value)
+  const date = parseStrictServerDateTime(value)
   if (!date) return '时间格式异常'
-  return formatShanghaiDateTime(date)
+  return formatLocalDateTime(date)
 }
 
 export function serverDateTimeTimestamp(value?: string): number | undefined {
   if (!value) return undefined
-  return strictServerDateTime(value)?.getTime()
+  return parseStrictServerDateTime(value)?.getTime()
+}
+
+export function compareServerDateTime(left?: string | null, right?: string | null): number {
+  const leftTimestamp = serverDateTimeTimestamp(left ?? undefined)
+  const rightTimestamp = serverDateTimeTimestamp(right ?? undefined)
+  if (leftTimestamp === undefined) return rightTimestamp === undefined ? 0 : 1
+  if (rightTimestamp === undefined) return -1
+  return leftTimestamp - rightTimestamp
 }
 
 export function formatRelativeDateTime(value?: string): string {
   if (!value) return '-'
-  const date = strictServerDateTime(value)
+  const date = parseStrictServerDateTime(value)
   if (!date) return '时间格式异常'
   const parsed = dayjs(date)
   return `${parsed.fromNow()} ${parsed.format('YYYY-MM-DD HH:mm')}`
@@ -83,7 +88,7 @@ export function formatMillisecondsAsSeconds(value?: number | null): string {
 
 export function parseStrictDatePickerValue(value?: string, label = '时间'): Dayjs | undefined {
   if (!value) return undefined
-  const parsedDate = strictServerDateTime(value)
+  const parsedDate = parseStrictServerDateTime(value)
   if (!parsedDate) {
     throw new Error(`${label}格式异常，请清理后再编辑`)
   }
@@ -94,8 +99,9 @@ export function formatServerDateTimeInput(value?: Dayjs | null): string | null {
   return value ? value.toDate().toISOString() : null
 }
 
-function strictServerDateTime(value: string): Date | undefined {
-  const match = serverDateTimePattern.exec(value) ?? shanghaiDateTimePattern.exec(value)
+export function parseStrictServerDateTime(value?: string): Date | undefined {
+  if (!value) return undefined
+  const match = serverDateTimePattern.exec(value)
   if (!match) return undefined
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText, timezone] = match
   const year = Number(yearText)
@@ -114,17 +120,29 @@ function strictServerDateTime(value: string): Date | undefined {
     const offsetMinute = Number(timezone.slice(4, 6))
     if (offsetHour > 23 || offsetMinute > 59) return undefined
   }
-  if (timezone === undefined) {
-    const millisecond = Number((fractionText ?? '').padEnd(3, '0').slice(0, 3))
-    return new Date(Date.UTC(year, month - 1, day, hour - 8, minute, second, millisecond))
-  }
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? undefined : date
 }
 
-function formatShanghaiDateTime(value: Date): string {
-  const parts = Object.fromEntries(shanghaiDateTimeFormatter.formatToParts(value)
+function formatLocalDateTime(value: Date): string {
+  // 未指定 timeZone 时由浏览器运行时使用用户本地时区；每次创建 formatter 也能响应运行时 TZ 变化。
+  const formatter = new Intl.DateTimeFormat('en-CA', localDateTimeFormatterOptions)
+  const parts = Object.fromEntries(formatter.formatToParts(value)
     .filter((part) => part.type !== 'literal')
     .map((part) => [part.type, part.value]))
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}.${String(value.getMilliseconds()).padStart(3, '0')}`
+}
+
+export function formatLocalTime(value?: string): string {
+  const date = parseStrictServerDateTime(value)
+  if (!date) return '-'
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  })
+  const parts = Object.fromEntries(formatter.formatToParts(date)
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]))
+  return `${parts.hour}:${parts.minute}`
 }

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
+import { canonicalizeRfc3339Instant, requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -74,7 +75,7 @@ export type RecordMaintenanceJob =
     kind: 'openai_codex'
     source?: string
     snapshot: Record<string, unknown>
-    updatedAt?: string
+    updatedAt: string
     createdAt?: string
   }
 
@@ -547,6 +548,7 @@ async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<v
 }
 
 export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Promise<Record<string, unknown>> {
+  job = normalizeRecordMaintenanceJob(job)
   switch (job.type) {
     case 'api_key_related_cleanup': {
       const result = await cleanupDeletedApiKeyRelatedRecordDataAsync({
@@ -881,18 +883,7 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
   let batches = 0
   let hasMore = false
   let blockedReason: string | undefined
-  const cutoffTime = Date.parse(input.cutoffAt)
-  if (Number.isNaN(cutoffTime)) {
-    return {
-      cutoffAt: input.cutoffAt,
-      deletedRows: 0,
-      batches: 0,
-      batchSize: input.batchSize,
-      maxBatches: input.maxBatches,
-      hasMore: false,
-      blockedReason: '使用记录清理截止时间无效'
-    }
-  }
+  const cutoffTime = requiredRecordMaintenanceInstantMilliseconds(input.cutoffAt, '使用记录清理截止时间')
   if (cutoffTime > Date.now() - minimumUsageRecordCleanupAgeMs) {
     return {
       cutoffAt: input.cutoffAt,
@@ -935,7 +926,7 @@ async function cleanupNonBusinessDataBefore(input: { cutoffAt: string; batchSize
   batchSize: number
   maxBatches: number
 }> {
-  const cutoffTime = Date.parse(input.cutoffAt)
+  const cutoffTime = requiredRecordMaintenanceInstantMilliseconds(input.cutoffAt, '非业务数据清理截止时间')
   const base = {
     cutoffAt: input.cutoffAt,
     deletedRows: 0,
@@ -944,15 +935,6 @@ async function cleanupNonBusinessDataBefore(input: { cutoffAt: string; batchSize
     tableRows: {} as Record<string, number>,
     fileDeletes: {} as Record<string, number>
   }
-  if (Number.isNaN(cutoffTime)) {
-    return {
-      ...base,
-      batches: 0,
-      batchSize: input.batchSize,
-      maxBatches: input.maxBatches
-    }
-  }
-
   let batches = 0
   let result: NonBusinessDataHardCleanupResult = base
   for (let index = 0; index < input.maxBatches; index += 1) {
@@ -1007,10 +989,29 @@ function mergeNonBusinessCleanupResult(
 }
 
 function normalizeRecordMaintenanceJob(input: RecordMaintenanceJob): RecordMaintenanceJob {
-  return {
-    ...input,
-    id: input.id ?? newId('recmaint'),
-    createdAt: input.createdAt ?? nowIso()
+  const id = input.id ?? newId('recmaint')
+  const createdAt = input.createdAt === undefined
+    ? nowIso()
+    : requiredRfc3339Instant(input.createdAt, '数据维护任务 createdAt')
+  switch (input.type) {
+    case 'api_key_related_cleanup':
+    case 'account_related_cleanup':
+      return { ...input, id, createdAt }
+    case 'usage_records_cleanup':
+    case 'non_business_data_cleanup':
+      return {
+        ...input,
+        id,
+        createdAt,
+        cutoffAt: requiredRfc3339Instant(input.cutoffAt, '数据维护清理 cutoffAt')
+      }
+    case 'account_usage_snapshot_upsert':
+      return {
+        ...input,
+        id,
+        createdAt,
+        updatedAt: requiredRfc3339Instant(input.updatedAt, '账号用量快照 updatedAt')
+      }
   }
 }
 
@@ -1023,7 +1024,7 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
     return typeof record.apiKeyId === 'string'
       && typeof record.systemAccountId === 'string'
       && (record.id === undefined || typeof record.id === 'string')
-      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+      && isOptionalRfc3339Instant(record.createdAt)
   }
   if (record.type === 'account_related_cleanup') {
     return typeof record.accountId === 'string'
@@ -1032,25 +1033,25 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
       && (record.authorizationIds === undefined || isStringArray(record.authorizationIds))
       && (record.teamScopeIds === undefined || isStringArray(record.teamScopeIds))
       && (record.id === undefined || typeof record.id === 'string')
-      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+      && isOptionalRfc3339Instant(record.createdAt)
   }
   if (record.type === 'usage_records_cleanup') {
-    return typeof record.cutoffAt === 'string'
+    return isRfc3339Instant(record.cutoffAt)
       && typeof record.batchSize === 'number'
       && Number.isFinite(record.batchSize)
       && typeof record.maxBatches === 'number'
       && Number.isFinite(record.maxBatches)
       && (record.id === undefined || typeof record.id === 'string')
-      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+      && isOptionalRfc3339Instant(record.createdAt)
   }
   if (record.type === 'non_business_data_cleanup') {
-    return typeof record.cutoffAt === 'string'
+    return isRfc3339Instant(record.cutoffAt)
       && typeof record.batchSize === 'number'
       && Number.isFinite(record.batchSize)
       && typeof record.maxBatches === 'number'
       && Number.isFinite(record.maxBatches)
       && (record.id === undefined || typeof record.id === 'string')
-      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+      && isOptionalRfc3339Instant(record.createdAt)
   }
   if (record.type === 'account_usage_snapshot_upsert') {
     return typeof record.accountId === 'string'
@@ -1059,9 +1060,9 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
       && typeof record.snapshot === 'object'
       && record.snapshot !== null
       && !Array.isArray(record.snapshot)
-      && (record.updatedAt === undefined || typeof record.updatedAt === 'string')
+      && isRfc3339Instant(record.updatedAt)
       && (record.id === undefined || typeof record.id === 'string')
-      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+      && isOptionalRfc3339Instant(record.createdAt)
   }
   return false
 }
@@ -1134,6 +1135,23 @@ export function clearRecordMaintenanceQueueForTest(): void {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isRfc3339Instant(value: unknown): value is string {
+  return canonicalizeRfc3339Instant(value) !== undefined
+}
+
+function isOptionalRfc3339Instant(value: unknown): boolean {
+  return value === undefined || isRfc3339Instant(value)
+}
+
+function requiredRecordMaintenanceInstantMilliseconds(value: unknown, label: string): number {
+  const normalized = requiredRfc3339Instant(value, label)
+  const milliseconds = rfc3339InstantMilliseconds(normalized)
+  if (milliseconds === undefined) {
+    throw new Error(`${label}无法解析为绝对时间`)
+  }
+  return milliseconds
 }
 
 function normalizeMaxBatches(value: number | undefined): number {

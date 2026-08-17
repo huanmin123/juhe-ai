@@ -141,7 +141,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 
 - 分区键：`created_at` 日 range partition；过期在线数据在统计安全游标追平后按分区事务内 `DETACH / DROP`，不保留同库冷归档副本或归档 manifest。
 - 热查询索引白名单以用户维度开头：`system_account_id + created_at + id`、`system_account_id + api_key_id + created_at + id`、`system_account_id + account_id + created_at + id`、`system_account_id + trace_id COLLATE "C" + created_at + id`。
-- 管理员使用记录页未限定用户时只能读取部署时区当天、`created_at DESC, id DESC` 的全用户列表，由当天分区和父表复合主键 `(created_at, id)` 承接；账户名称、结果、状态码、IP、分组、模型、trace ID、请求来源、手工日期或非默认排序必须先选择系统账户。其他管理员大表页面仍按各自功能边界先限定用户和日期窗口；独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
+- 管理员使用记录页未限定用户时只能读取配置的 `usageStatsTimezone`（显式 IANA）当天、`created_at DESC, id DESC` 的全用户列表，由当天分区和父表复合主键 `(created_at, id)` 承接；账户名称、结果、状态码、IP、分组、模型、trace ID、请求来源、手工日期或非默认排序必须先选择系统账户。其他管理员大表页面仍按各自功能边界先限定用户和日期窗口；独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
 - PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip`、API Key 名称和 AI 性能账号选项名称等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为和 SQLite 一致。
 - 清理策略：常规过期清理按统计安全游标追平后处理整日分区；已删除账号 / API Key 的关联明细小批次清理必须使用 `(created_at, id)` 命中分区，不能只按裸 `id` 删除。
 - 统计游标：`stats.stats_job_state` 继续记录按分区 / shard 窗口推进的游标，统计写入和游标推进在同一 PostgreSQL 事务提交。
@@ -149,7 +149,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 ### JSON 与时间
 
 - SQLite JSON 字符串字段在 PostgreSQL 中按用途选择 `jsonb` 或 `text`。需要按字段筛选、局部更新或索引的配置字段使用 `jsonb`。
-- 所有时间统一保存为 `timestamptz`；内部传输、比较和持久化继续使用 ISO/绝对时间。管理 API 对人展示的时间字段统一输出 `Asia/Shanghai` 的 `YYYY-MM-DD HH:mm:ss.SSS`，不带 `T`、`Z` 或偏移；同格式请求值会在进入业务层前还原为 ISO 瞬时值。
+- 真正表示 PostgreSQL instant 的查询和持久化列优先使用 `timestamptz`；SQLite 以及经明确证明需要版本、CAS 或共享 schema 兼容的列，可以保存 canonical UTC RFC3339 text，但写入必须严格校验并拒绝无 offset。内部传输、比较和持久化继续使用 RFC3339 绝对时间，管理 API 输出 UTC `Z` 或明确数字 offset；Vue / 浏览器按用户本地时区展示。date-only 与业务日历字段另行明确，并使用显式 IANA timezone；不得把这些例外机械扩展为 schema-wide 数据库迁移。
 - 金额和成本如果需要精确累加，优先使用 `numeric`；只作为展示缓存且已有浮点口径的字段可以保持 `double precision`，但统计总量字段必须固定类型并写清楚。
 - `juhe_business.accounts` 使用 `health_check_model` 保存账户必填检查模型，不保留 `default_test_model` 或 `health_check_enabled`；`provider_default_health_check_models` 保存个人供应商默认，`provider_system_default_health_check_models` 保存管理员系统默认，协议档案保留内置默认。三层默认只初始化新账户。
 - `juhe_business.provider_model_catalog` 和 `juhe_business.custom_provider_models` 复用 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`，并各用一个 `service_tier_prices_json` 保存非标准实际档位价格；标准价继续使用现有扁平字段，不新增价格表。支持请求覆盖的供应商账户凭据 JSON 可选保存现有 `service_tier_override`、`reasoning_effort_override`。字段值由所属供应商模型共同能力和目标 driver 校验，`ultra` 与 Responses Multi-agent Beta 不属于这两个账户覆盖字段。

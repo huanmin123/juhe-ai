@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import {
@@ -55,6 +56,7 @@ export function reserveAndEnqueueAccountHealthJobsInputInTransaction(
   createdAt = nowIso()
 ): ReservedAccountHealthJobsInputIntent {
   const normalized = normalizeIntent(intent)
+  const normalizedCreatedAt = checkedIso(createdAt, 'createdAt')
   const inputVersion = reserveAccountHealthJobsInputVersionInTransaction(normalized.accountId, database)
   const eventId = randomUUID()
   database.prepare(`
@@ -71,9 +73,9 @@ export function reserveAndEnqueueAccountHealthJobsInputInTransaction(
     normalized.reason,
     normalized.configRevision,
     normalized.dispatchRevision,
-    createdAt,
-    createdAt,
-    createdAt
+    normalizedCreatedAt,
+    normalizedCreatedAt,
+    normalizedCreatedAt
   )
   return { eventId, accountId: normalized.accountId, inputVersion, kind: normalized.kind }
 }
@@ -91,6 +93,7 @@ export async function reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(
   createdAt = nowIso()
 ): Promise<ReservedAccountHealthJobsInputIntent> {
   const normalized = normalizeIntent(intent)
+  const normalizedCreatedAt = checkedIso(createdAt, 'createdAt')
   const inputVersion = await reserveAccountHealthJobsInputVersionInTransactionAsync(client, normalized.accountId)
   const eventId = randomUUID()
   const table = client.dialect.qualifyTable('juhe_business', 'account_health_jobs_input_outbox')
@@ -108,9 +111,9 @@ export async function reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(
     normalized.reason,
     normalized.configRevision,
     normalized.dispatchRevision,
-    createdAt,
-    createdAt,
-    createdAt
+    normalizedCreatedAt,
+    normalizedCreatedAt,
+    normalizedCreatedAt
   ])
   return { eventId, accountId: normalized.accountId, inputVersion, kind: normalized.kind }
 }
@@ -130,7 +133,8 @@ export function claimNextAccountHealthJobsInputOutboxEvent(
   database: DatabaseSync = getBusinessDatabase(),
   observedAt = nowIso()
 ): AccountHealthJobsInputOutboxEvent | undefined {
-  return runInDatabaseTransaction(() => claimNextInSqlite(leaseMs, database, observedAt), database)
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
+  return runInDatabaseTransaction(() => claimNextInSqlite(leaseMs, database, normalizedObservedAt), database)
 }
 
 export async function claimNextAccountHealthJobsInputOutboxEventAsync(
@@ -138,6 +142,7 @@ export async function claimNextAccountHealthJobsInputOutboxEventAsync(
   leaseMs: number,
   observedAt = nowIso()
 ): Promise<AccountHealthJobsInputOutboxEvent | undefined> {
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
   return await client.transaction(async (tx) => {
     const normalizedLeaseMs = checkedLeaseMs(leaseMs)
     const table = tx.dialect.qualifyTable('juhe_business', 'account_health_jobs_input_outbox')
@@ -150,16 +155,16 @@ export async function claimNextAccountHealthJobsInputOutboxEventAsync(
       ORDER BY available_at ASC, created_at ASC, event_id ASC
       LIMIT 1
       ${lockClause}
-    `, [observedAt, observedAt])
+    `, [normalizedObservedAt, normalizedObservedAt])
     if (!row) return undefined
     const claimToken = randomUUID()
-    const claimedUntil = futureIso(observedAt, normalizedLeaseMs)
+    const claimedUntil = futureIso(normalizedObservedAt, normalizedLeaseMs)
     const changed = await tx.execute(`
       UPDATE ${table}
       SET status = 'leased', claim_token = ?, claimed_until = ?,
           attempt_count = attempt_count + 1, updated_at = ?
       WHERE event_id = ?
-    `, [claimToken, claimedUntil, observedAt, row.event_id])
+    `, [claimToken, claimedUntil, normalizedObservedAt, row.event_id])
     if (changed.changes !== 1) throw new Error('J1 input outbox claim CAS 失败')
     return rowToLeasedEvent(row, claimToken, claimedUntil)
   })
@@ -171,7 +176,8 @@ export function acknowledgeAccountHealthJobsInputOutboxEvent(
   database: DatabaseSync = getBusinessDatabase(),
   observedAt = nowIso()
 ): boolean {
-  return runInDatabaseTransaction(() => acknowledgeInSqlite(eventId, claimToken, database, observedAt), database)
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
+  return runInDatabaseTransaction(() => acknowledgeInSqlite(eventId, claimToken, database, normalizedObservedAt), database)
 }
 
 export async function acknowledgeAccountHealthJobsInputOutboxEventAsync(
@@ -180,6 +186,7 @@ export async function acknowledgeAccountHealthJobsInputOutboxEventAsync(
   claimToken: string,
   observedAt = nowIso()
 ): Promise<boolean> {
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
   return await client.transaction(async (tx) => {
     const table = tx.dialect.qualifyTable('juhe_business', 'account_health_jobs_input_outbox')
     const changed = await tx.execute(`
@@ -187,7 +194,7 @@ export async function acknowledgeAccountHealthJobsInputOutboxEventAsync(
       SET status = 'published', claim_token = NULL, claimed_until = NULL,
           last_error = NULL, updated_at = ?
       WHERE event_id = ? AND status = 'leased' AND claim_token = ?
-    `, [observedAt, requiredId(eventId, 'event ID'), requiredId(claimToken, 'claim token')])
+    `, [normalizedObservedAt, requiredId(eventId, 'event ID'), requiredId(claimToken, 'claim token')])
     return changed.changes === 1
   })
 }
@@ -200,7 +207,9 @@ export function failAccountHealthJobsInputOutboxEvent(
   database: DatabaseSync = getBusinessDatabase(),
   observedAt = nowIso()
 ): boolean {
-  return runInDatabaseTransaction(() => failInSqlite(eventId, claimToken, error, retryAt, database, observedAt), database)
+  const normalizedRetryAt = checkedIso(retryAt, 'retryAt')
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
+  return runInDatabaseTransaction(() => failInSqlite(eventId, claimToken, error, normalizedRetryAt, database, normalizedObservedAt), database)
 }
 
 export async function failAccountHealthJobsInputOutboxEventAsync(
@@ -211,6 +220,8 @@ export async function failAccountHealthJobsInputOutboxEventAsync(
   retryAt: string,
   observedAt = nowIso()
 ): Promise<boolean> {
+  const normalizedRetryAt = checkedIso(retryAt, 'retryAt')
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
   return await client.transaction(async (tx) => {
     const table = tx.dialect.qualifyTable('juhe_business', 'account_health_jobs_input_outbox')
     const changed = await tx.execute(`
@@ -218,7 +229,7 @@ export async function failAccountHealthJobsInputOutboxEventAsync(
       SET status = 'failed', claim_token = NULL, claimed_until = NULL,
           last_error = ?, available_at = ?, updated_at = ?
       WHERE event_id = ? AND status = 'leased' AND claim_token = ?
-    `, [safeError(error), checkedIso(retryAt, 'retryAt'), observedAt, requiredId(eventId, 'event ID'), requiredId(claimToken, 'claim token')])
+    `, [safeError(error), normalizedRetryAt, normalizedObservedAt, requiredId(eventId, 'event ID'), requiredId(claimToken, 'claim token')])
     return changed.changes === 1
   })
 }
@@ -229,7 +240,8 @@ export function supersedeAccountHealthJobsInputOutboxEvent(
   database: DatabaseSync = getBusinessDatabase(),
   observedAt = nowIso()
 ): boolean {
-  return runInDatabaseTransaction(() => supersedeInSqlite(eventId, claimToken, database, observedAt), database)
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
+  return runInDatabaseTransaction(() => supersedeInSqlite(eventId, claimToken, database, normalizedObservedAt), database)
 }
 
 export async function supersedeAccountHealthJobsInputOutboxEventAsync(
@@ -238,13 +250,14 @@ export async function supersedeAccountHealthJobsInputOutboxEventAsync(
   claimToken: string,
   observedAt = nowIso()
 ): Promise<boolean> {
+  const normalizedObservedAt = checkedIso(observedAt, 'observedAt')
   return await client.transaction(async (tx) => {
     const table = tx.dialect.qualifyTable('juhe_business', 'account_health_jobs_input_outbox')
     const changed = await tx.execute(`
       UPDATE ${table}
       SET status = 'superseded', claim_token = NULL, claimed_until = NULL, updated_at = ?
       WHERE event_id = ? AND status = 'leased' AND claim_token = ?
-    `, [observedAt, requiredId(eventId, 'event ID'), requiredId(claimToken, 'claim token')])
+    `, [normalizedObservedAt, requiredId(eventId, 'event ID'), requiredId(claimToken, 'claim token')])
     return changed.changes === 1
   })
 }
@@ -336,9 +349,7 @@ function futureIso(observedAt: string, delayMs: number): string {
 }
 
 function checkedIso(value: string, field: string): string {
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) throw new Error(`J1 input outbox ${field} 必须是 ISO 时间`)
-  return date.toISOString()
+  return requiredRfc3339Instant(value, `J1 input outbox ${field}`)
 }
 
 function safeError(value: string): string {

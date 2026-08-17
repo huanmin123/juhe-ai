@@ -1,7 +1,7 @@
 import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
-import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { finiteNumberQueryValue, optionalQueryText, strictDateTimeRangeQueryValue } from '../../shared/query-values.js'
 import {
   getPublicApiLogDetailSupplementAsync,
   listPublicApiLogsAsync,
@@ -51,8 +51,7 @@ function parsePublicApiLogListOptions(query: Record<string, unknown>): PublicApi
     result: resultFilters.has(result as PublicApiLogResultFilter) ? result as PublicApiLogResultFilter : undefined,
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,
     clientIp: optionalQueryText(query.clientIp),
-    startAt: optionalQueryText(query.startAt),
-    endAt: optionalQueryText(query.endAt)
+    ...strictDateTimeRangeQueryValue(query.startAt, query.endAt)
   }
 }
 

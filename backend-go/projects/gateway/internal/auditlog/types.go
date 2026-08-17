@@ -374,3 +374,59 @@ func validateInput(input AuditLogInput) error {
 	}
 	return nil
 }
+
+func canonicalAuditTime(value, field string, optional bool) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		if optional {
+			return "", nil
+		}
+		return "", fmt.Errorf("审计字段 %s 不能为空", field)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+	if err != nil {
+		return "", fmt.Errorf("审计字段 %s 必须是 RFC3339 瞬时值: %w", field, err)
+	}
+	return parsed.UTC().Format(time.RFC3339Nano), nil
+}
+
+// normalizeAuditInput is the sole boundary that turns the wire DTO's time
+// strings into canonical UTC instants before any SQL or hot-search write.
+// Missing CreatedAt is intentionally generated once here; supplied values
+// are never replaced after a parse failure.
+func normalizeAuditInput(input AuditLogInput) (AuditLogInput, error) {
+	if err := validateInput(input); err != nil {
+		return AuditLogInput{}, err
+	}
+	var err error
+	if input.StartedAt, err = canonicalAuditTime(input.StartedAt, "startedAt", false); err != nil {
+		return AuditLogInput{}, err
+	}
+	if input.EndedAt, err = canonicalAuditTime(input.EndedAt, "endedAt", false); err != nil {
+		return AuditLogInput{}, err
+	}
+	if strings.TrimSpace(input.CreatedAt) == "" {
+		input.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	} else if input.CreatedAt, err = canonicalAuditTime(input.CreatedAt, "createdAt", false); err != nil {
+		return AuditLogInput{}, err
+	}
+	if input.HTTPCompletedAt, err = canonicalAuditTime(input.HTTPCompletedAt, "httpCompletedAt", true); err != nil {
+		return AuditLogInput{}, err
+	}
+	for index := range input.Attempts {
+		attempt := &input.Attempts[index]
+		if attempt.StartedAt, err = canonicalAuditTime(attempt.StartedAt, fmt.Sprintf("attempts[%d].startedAt", index), false); err != nil {
+			return AuditLogInput{}, err
+		}
+		if attempt.EndedAt, err = canonicalAuditTime(attempt.EndedAt, fmt.Sprintf("attempts[%d].endedAt", index), true); err != nil {
+			return AuditLogInput{}, err
+		}
+	}
+	for index := range input.Payloads {
+		payload := &input.Payloads[index]
+		if payload.CreatedAt, err = canonicalAuditTime(payload.CreatedAt, fmt.Sprintf("payloads[%d].createdAt", index), true); err != nil {
+			return AuditLogInput{}, err
+		}
+	}
+	return input, nil
+}

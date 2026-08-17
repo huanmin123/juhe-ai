@@ -1,5 +1,6 @@
 import dayjs, { type Dayjs } from 'dayjs'
 
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -62,9 +63,11 @@ export function isExactOperationLogTraceId(value: string): boolean {
 
 export function parseCreatedAtRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
   if (!value) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  return normalizeCreatedAtRange(start.isValid() && end.isValid() ? [start, end] : undefined)
+  const startTimestamp = serverDateTimeTimestamp(value[0])
+  const endTimestamp = serverDateTimeTimestamp(value[1])
+  const start = startTimestamp === undefined ? undefined : dayjs(startTimestamp)
+  const end = endTimestamp === undefined ? undefined : dayjs(endTimestamp)
+  return start?.isValid() && end?.isValid() ? normalizeCreatedAtRange([start, end]) : undefined
 }
 
 export function normalizeCreatedAtRange(value: CreatedAtRangeValue): [Dayjs, Dayjs] | undefined {

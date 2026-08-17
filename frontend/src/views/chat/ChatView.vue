@@ -149,6 +149,7 @@ import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
+import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { beginLatestTurnEdit, beginLatestTurnRetry, isDefinitiveChatHttpRejection, removeInvalidatedGeneratedAssetsFromDraft, resolveChatReconciliationNotice, resolveChatSubmitFailure, restoreChatMessagesAfterRejectedReplacement } from './chatTurnEditing'
 import {
@@ -1568,8 +1569,17 @@ async function togglePinned(item: ChatConversation): Promise<void> {
 }
 async function confirmDeleteConversation(): Promise<void> { const item = pendingConversation.value; if (!item || conversationUpdating.value) return; conversationUpdating.value = true; try { await removeConversation(item.id); deleteDialogOpen.value = false } finally { conversationUpdating.value = false } }
 function replaceConversation(next: ChatConversation): void { const index = conversations.value.findIndex((item) => item.id === next.id); if (index >= 0) conversations.value[index] = next; if (detailConversation.value?.id === next.id) detailConversation.value = next }
-function sortConversations(): void { conversations.value.sort((left, right) => Number(right.isPinned) - Number(left.isPinned) || Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt) || right.id.localeCompare(left.id)) }
-function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
+function sortConversations(): void {
+  conversations.value.sort((left, right) => {
+    const rightTimestamp = serverDateTimeTimestamp(right.lastMessageAt) ?? Number.NEGATIVE_INFINITY
+    const leftTimestamp = serverDateTimeTimestamp(left.lastMessageAt) ?? Number.NEGATIVE_INFINITY
+    return Number(right.isPinned) - Number(left.isPinned) || rightTimestamp - leftTimestamp || right.id.localeCompare(left.id)
+  })
+}
+function formatDetailTime(value: string): string {
+  const formatted = formatDateTime(value)
+  return formatted === '时间格式异常' ? '-' : formatted
+}
 function resetModelControls(): void {
   selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value)
   selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value)

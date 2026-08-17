@@ -61,8 +61,8 @@ try {
   const cooldownAccount = {
     ...account,
     status: 'temporary_unavailable',
-    cooldownUntil: new Date(Date.now() + 30_000).toISOString(),
-    cooldownRetestObservationStartedAt: new Date(Date.now() - 60_000).toISOString(),
+    cooldownUntil: '2030-08-16T08:00:00.000+08:00',
+    cooldownRetestObservationStartedAt: '2030-08-16T08:01:00.000+08:00',
     cooldownRetestGeneration: 'generation-1',
     cooldownRetestDispatchRevision: 3
   } as AccountSummary
@@ -76,11 +76,58 @@ try {
     expiresAt: new Date(Date.now() + 60_000)
   })
   const cooldownPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(cooldownPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
-  assert.equal((cooldownPayload.eligibility as Record<string, unknown>).cooldown_until, cooldownAccount.cooldownUntil)
+  assert.equal((cooldownPayload.eligibility as Record<string, unknown>).cooldown_until, '2030-08-16T00:00:00.000Z')
   assert.deepEqual(cooldownPayload.cooldown_fence, {
-    observation_started_at: cooldownAccount.cooldownRetestObservationStartedAt,
+    observation_started_at: '2030-08-16T00:01:00.000Z',
     generation: 'generation-1'
   })
+
+  const oauthAccount = {
+    ...account,
+    type: 'oauth',
+    credentials: { access_token: 'oauth-access-token', expires_at: '2030-08-16T08:00:00.000+08:00' }
+  } as AccountSummary
+  const oauthPath = publishAccountHealthJobsInputFromAccount({
+    account: oauthAccount,
+    dispatchRevision: 3,
+    inputVersion: 13,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const oauthPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(oauthPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(oauthPayload.oauth_expires_at, '2030-08-16T00:00:00.000Z')
+
+  for (const invalidTime of ['2030-08-16T08:00:00.000', '2030-08-16 08:00:00+08:00', 'not-a-time']) {
+    assert.throws(() => publishAccountHealthJobsInputFromAccount({
+      account: { ...oauthAccount, credentials: { access_token: 'oauth-access-token', expires_at: invalidTime } } as AccountSummary,
+      dispatchRevision: 3,
+      inputVersion: 14,
+      signingKey,
+      root,
+      settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+      expiresAt: new Date(Date.now() + 60_000)
+    }), /J1 OAuth credentials\.expires_at必须是带 Z 或数值 offset 的 RFC3339 时间/u, `OAuth expires_at 必须拒绝：${invalidTime}`)
+    assert.throws(() => publishAccountHealthJobsInputFromAccount({
+      account: { ...cooldownAccount, cooldownUntil: invalidTime } as AccountSummary,
+      dispatchRevision: 3,
+      inputVersion: 15,
+      signingKey,
+      root,
+      settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+      expiresAt: new Date(Date.now() + 60_000)
+    }), /J1 cooldownUntil必须是带 Z 或数值 offset 的 RFC3339 时间/u, `cooldownUntil 必须拒绝：${invalidTime}`)
+    assert.throws(() => publishAccountHealthJobsInputFromAccount({
+      account: { ...cooldownAccount, cooldownRetestObservationStartedAt: invalidTime } as AccountSummary,
+      dispatchRevision: 3,
+      inputVersion: 16,
+      signingKey,
+      root,
+      settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+      expiresAt: new Date(Date.now() + 60_000)
+    }), /J1 cooldownRetestObservationStartedAt必须是带 Z 或数值 offset 的 RFC3339 时间/u, `cooldown observation 必须拒绝：${invalidTime}`)
+  }
 
   const requestPath = publishAccountHealthJobsProbeRequest({
     account,

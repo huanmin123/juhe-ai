@@ -1,4 +1,5 @@
 import type { ChatConversation, ChatMessage, ChatMessageContentBlock } from '@/types/domain/chat'
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 
 const DEFAULT_BUDGET = 64 * 1024 ** 2
 const MAX_BUDGET = 256 * 1024 ** 2
@@ -164,13 +165,22 @@ function cloneContentBlock(value: unknown): ChatMessageContentBlock | undefined 
 function isProcessStatus(value: unknown): value is 'started' | 'completed' | 'failed' | 'canceled' { return value === 'started' || value === 'completed' || value === 'failed' || value === 'canceled' }
 function isToolStatus(value: unknown): value is 'started' | 'updated' | 'completed' | 'failed' | 'canceled' { return isProcessStatus(value) || value === 'updated' }
 
+function canonicalServerDateTime(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const timestamp = serverDateTimeTimestamp(value)
+  return timestamp === undefined ? undefined : new Date(timestamp).toISOString()
+}
+
 export function cloneVisibleChatMessage(value: unknown): ChatMessage | undefined {
   try {
     if (!isPlainRecord(value) || !validateCloneInput(value)) return undefined
     const sequenceNo = integerValue(value.sequenceNo)
-    if (!safeString(value.id) || !safeString(value.conversationId) || !safeString(value.turnId) || sequenceNo === undefined || !['user', 'assistant'].includes(String(value.role)) || !['completed', 'streaming', 'failed', 'canceled'].includes(String(value.status)) || !safeString(value.contentText) || !safeString(value.model) || !safeString(value.createdAt) || !safeString(value.expiresAt)) return undefined
-    const result: ChatMessage = { id: value.id, conversationId: value.conversationId, turnId: value.turnId, sequenceNo, role: value.role as ChatMessage['role'], status: value.status as ChatMessage['status'], contentText: value.contentText, model: value.model, createdAt: value.createdAt, expiresAt: value.expiresAt }
-    for (const key of ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'completedAt', 'reasoningText'] as const) if (value[key] !== undefined) { if (!safeString(value[key])) return undefined; result[key] = value[key] }
+    const createdAt = canonicalServerDateTime(value.createdAt)
+    const expiresAt = canonicalServerDateTime(value.expiresAt)
+    if (!safeString(value.id) || !safeString(value.conversationId) || !safeString(value.turnId) || sequenceNo === undefined || !['user', 'assistant'].includes(String(value.role)) || !['completed', 'streaming', 'failed', 'canceled'].includes(String(value.status)) || !safeString(value.contentText) || !safeString(value.model) || !createdAt || !expiresAt) return undefined
+    const result: ChatMessage = { id: value.id, conversationId: value.conversationId, turnId: value.turnId, sequenceNo, role: value.role as ChatMessage['role'], status: value.status as ChatMessage['status'], contentText: value.contentText, model: value.model, createdAt, expiresAt }
+    for (const key of ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'reasoningText'] as const) if (value[key] !== undefined) { if (!safeString(value[key])) return undefined; result[key] = value[key] }
+    if (value.completedAt !== undefined) { const completedAt = canonicalServerDateTime(value.completedAt); if (!completedAt) return undefined; result.completedAt = completedAt }
     if (Array.isArray(value.contentBlocks)) result.contentBlocks = value.contentBlocks.map(cloneContentBlock).filter((item): item is ChatMessageContentBlock => Boolean(item))
     if (Array.isArray(value.toolEvents)) result.toolEvents = value.toolEvents.flatMap((event) => isPlainRecord(event) && typeof event.id === 'string' && typeof event.type === 'string' && isToolStatus(event.status) ? [{ id: event.id, type: event.type, status: event.status }] : [])
     for (const key of ['eventVersion', 'renderRevision'] as const) if (value[key] !== undefined) { const version = integerValue(value[key]); if (version === undefined || version < 0) return undefined; result[key] = version }
@@ -299,7 +309,12 @@ export class ChatLocalCache {
   async removeRunningTurn(account: string, conversation: string) { return this.call('remove_running', () => this.adapter.removeRunningTurn(account, conversation)) }
   async touch(account: string, conversation: string) { return this.call('touch', () => this.adapter.touch(account, conversation, this.clock())) }
   async clearAccount(account: string) { return this.call('clear_account', () => this.adapter.clearAccount(account)) }
-  async cleanupExpired(serverTime: string, limits: { conversationLimit?: number; messageLimit?: number } = {}) { if (!safeString(serverTime) || !Number.isFinite(Date.parse(serverTime))) return { enabled: this.enabledState, ok: false }; return this.call('cleanup', () => this.adapter.cleanupExpired(serverTime, Math.max(1, Math.min(limits.conversationLimit ?? 8, 16)), Math.max(1, Math.min(limits.messageLimit ?? 100, 200)))) }
+  async cleanupExpired(serverTime: string, limits: { conversationLimit?: number; messageLimit?: number } = {}) {
+    const timestamp = safeString(serverTime) ? serverDateTimeTimestamp(serverTime) : undefined
+    if (timestamp === undefined) return this.fail('cleanup_invalid_server_time', new Error('server time must be RFC3339 with an offset'))
+    const normalizedServerTime = new Date(timestamp).toISOString()
+    return this.call('cleanup', () => this.adapter.cleanupExpired(normalizedServerTime, Math.max(1, Math.min(limits.conversationLimit ?? 8, 16)), Math.max(1, Math.min(limits.messageLimit ?? 100, 200))))
+  }
   close(): void { this.enabledState = false; try { this.adapter.close() } catch { /* no-op */ } }
 
   private async call<T>(operation: string, action: () => Promise<T>): Promise<ChatCacheResult<T>> { if (!this.enabledState) return { enabled: false, ok: false }; try { return { enabled: true, ok: true, value: await action() } } catch (error) { return this.fail(operation, error) } }

@@ -30,6 +30,7 @@ const [
 ])
 
 try {
+  assertRecordMaintenanceTimeBoundary(recordMaintenanceQueue)
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'ingest-worker'
   const completedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount
@@ -291,6 +292,64 @@ function buildUsageRecordsCleanupJob(source: string) {
     batchSize: 100,
     maxBatches: 1
   }
+}
+
+function assertRecordMaintenanceTimeBoundary(recordMaintenanceQueue: typeof import('../../modules/record-maintenance/record-maintenance-queue.service.js')): void {
+  const normalized = recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'api_key_related_cleanup',
+    id: 'recmaint_time_offset',
+    apiKeyId: 'key_time_offset',
+    systemAccountId: 'sys_admin',
+    createdAt: '2000-01-01T08:00:00+08:00'
+  })
+  assert.equal(normalized.createdAt, '2000-01-01T00:00:00.000Z', '本地队列应将带 offset 的 createdAt 规范化为 UTC')
+  recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
+
+  assert.throws(() => recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'api_key_related_cleanup',
+    id: 'recmaint_time_bare_created_at',
+    apiKeyId: 'key_time_bare_created_at',
+    systemAccountId: 'sys_admin',
+    createdAt: '2000-01-01T08:00:00'
+  }), /createdAt.*RFC3339/, '本地入口不得把裸 createdAt 当作本地时区时间')
+  assert.throws(() => recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'usage_records_cleanup',
+    id: 'recmaint_time_invalid_cutoff_at',
+    cutoffAt: 'not-a-time',
+    batchSize: 1,
+    maxBatches: 1
+  }), /cutoffAt.*RFC3339/, '本地入口不得让非法清理 cutoffAt 以空清理结果伪成功')
+  assert.throws(() => recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'account_usage_snapshot_upsert',
+    id: 'recmaint_time_bare_updated_at',
+    accountId: 'acct_time_boundary',
+    kind: 'openai_codex',
+    snapshot: {},
+    updatedAt: '2000-01-01T08:00:00'
+  }), /updatedAt.*RFC3339/, '本地入口不得把裸快照 updatedAt 当作本地时区时间')
+
+  const streamPayload = {
+    type: 'usage_records_cleanup' as const,
+    id: 'recmaint_time_stream_offset',
+    cutoffAt: '2000-01-01T08:00:00+08:00',
+    batchSize: 1,
+    maxBatches: 1,
+    createdAt: '2000-01-01T08:00:00+08:00'
+  }
+  assert(recordMaintenanceQueue.isRecordMaintenanceJob(streamPayload), 'Redis Stream ingress 应接受带数字 offset 的绝对时间')
+  assert.equal(recordMaintenanceQueue.isRecordMaintenanceJob({ ...streamPayload, cutoffAt: '2000-01-01T08:00:00' }), false, 'Redis Stream ingress 必须拒绝裸 cutoffAt')
+  assert.equal(recordMaintenanceQueue.isRecordMaintenanceJob({ ...streamPayload, createdAt: 'invalid-time' }), false, 'Redis Stream ingress 必须拒绝非法 createdAt')
+  assert.equal(recordMaintenanceQueue.isRecordMaintenanceJob({
+    type: 'account_usage_snapshot_upsert',
+    id: 'recmaint_time_stream_snapshot_missing_updated_at',
+    accountId: 'acct_time_boundary',
+    kind: 'openai_codex',
+    snapshot: {},
+    createdAt: '2000-01-01T00:00:00.000Z'
+  }), false, 'Redis Stream ingress 必须拒绝缺失 updatedAt 的账号用量快照')
+
+  const queueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
+  assert.match(queueSource, /return normalizeRecordMaintenanceJob\(payload\)/, 'Redis Stream consumer 必须在类型守卫后规范化时间字段')
 }
 
 function buildApiKeyCleanupJob(source: string) {

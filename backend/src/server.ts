@@ -41,7 +41,6 @@ import { startInternalGatewayRegistry, stopInternalGatewayRegistry } from './mod
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { managementSecurityHeadersMiddleware } from './shared/http-security.js'
-import { formatShanghaiNow } from './shared/time-display.js'
 import { systemErrorMessageLocalizationMiddleware } from './shared/system-error-message.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
@@ -229,7 +228,7 @@ app.get('/health', (_req, res) => {
   res.status(health.statusCode).json({
     status: health.status,
     service: 'juhe-ai',
-    checkedAt: formatShanghaiNow()
+    checkedAt: new Date().toISOString()
   })
 })
 
@@ -239,7 +238,7 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
     status: health.status,
     service: 'juhe-ai',
     runtimeMode: runtimeConfig.runtimeMode,
-    checkedAt: formatShanghaiNow(),
+    checkedAt: new Date().toISOString(),
     nodeRole: runtimeConfig.performanceNodeRole,
     instanceId: runtimeConfig.instanceId,
     processPid: process.pid,

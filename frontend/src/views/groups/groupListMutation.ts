@@ -1,4 +1,5 @@
 import type { GroupListItem } from '@/types/domain'
+import { compareServerDateTime } from '@/shared/formatters'
 
 export interface GroupListMutationContext {
   accumulated: boolean
@@ -47,6 +48,6 @@ export function reconcileCreatedGroup(
 }
 
 function compareGroupsByListOrder(left: GroupListItem, right: GroupListItem): number {
-  const updatedAtOrder = right.updatedAt.localeCompare(left.updatedAt)
+  const updatedAtOrder = compareServerDateTime(right.updatedAt, left.updatedAt)
   return updatedAtOrder || right.id.localeCompare(left.id)
 }

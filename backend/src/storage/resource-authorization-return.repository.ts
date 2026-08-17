@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { AuthorizationStatus, ResourceAuthorizationTerminalMutationResult } from '../domain/types.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
@@ -782,8 +783,9 @@ function returnAuthorizationTerminalMutationSuccess(
 
 function nextResourceAuthorizationReturnVersion(currentUpdatedAt: string): string {
   const now = Date.now()
-  const current = Date.parse(currentUpdatedAt)
-  return new Date(Number.isFinite(current) && current >= now ? current + 1 : now).toISOString()
+  const current = rfc3339InstantMilliseconds(currentUpdatedAt)
+  if (current === undefined) throw new Error(`授权归还 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentUpdatedAt}`)
+  return new Date(current >= now ? current + 1 : now).toISOString()
 }
 
 function refreshAfterResourceAuthorizationReturnedWrite(): void {

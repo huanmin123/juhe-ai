@@ -1,4 +1,5 @@
 import type { SystemMetricsRuntimeOverview } from '@/types/domain'
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 
 export type BackgroundJobRow = NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]
 
@@ -31,12 +32,17 @@ export function backgroundJobStatusColor(row: BackgroundJobRow): string {
 }
 
 function latestTimestamp(...values: Array<string | undefined>): string | undefined {
-  return values.filter((value): value is string => Boolean(value)).sort().at(-1)
+  return values
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ value, timestamp: serverDateTimeTimestamp(value) }))
+    .filter((item): item is { value: string; timestamp: number } => item.timestamp !== undefined)
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .at(-1)?.value
 }
 
 function isAfter(value: string | undefined, baseline: string): boolean {
   if (!value) return false
-  const valueMs = Date.parse(value)
-  const baselineMs = Date.parse(baseline)
-  return Number.isFinite(valueMs) && Number.isFinite(baselineMs) && valueMs > baselineMs
+  const valueMs = serverDateTimeTimestamp(value)
+  const baselineMs = serverDateTimeTimestamp(baseline)
+  return valueMs !== undefined && baselineMs !== undefined && valueMs > baselineMs
 }

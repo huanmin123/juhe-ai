@@ -1,7 +1,7 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
-import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { finiteNumberQueryValue, optionalQueryText, strictDateTimeRangeQueryValue } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepDetail, getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
@@ -108,7 +108,7 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
   const rawLevel = optionalQueryText(query.level)?.toLowerCase()
-  const timeRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
+  const timeRange = strictDateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
@@ -124,11 +124,12 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
 }
 
 function parseRuntimeLogGrepOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number; startAt?: string; endAt?: string } {
+  const timeRange = strictDateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
     keywords: stringArrayQueryValues(query.keywords),
     limit: finiteNumberQueryValue(query.limit),
-    startAt: optionalQueryText(query.startAt),
-    endAt: optionalQueryText(query.endAt)
+    startAt: timeRange.startAt,
+    endAt: timeRange.endAt
   }
 }
 
@@ -137,20 +138,4 @@ function stringArrayQueryValues(value: unknown): string[] {
     return value.filter((item): item is string => typeof item === 'string')
   }
   return typeof value === 'string' ? [value] : []
-}
-
-function dateTimeRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {
-  const startAt = dateTimeQueryValue(startValue)
-  const endAt = dateTimeQueryValue(endValue)
-  if (startAt && endAt && startAt > endAt) {
-    return { startAt: endAt, endAt: startAt }
-  }
-  return { startAt, endAt }
-}
-
-function dateTimeQueryValue(value: unknown): string | undefined {
-  const text = optionalQueryText(value)
-  if (!text) return undefined
-  const time = Date.parse(text)
-  return Number.isNaN(time) ? undefined : new Date(time).toISOString()
 }

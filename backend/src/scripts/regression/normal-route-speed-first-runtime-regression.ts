@@ -188,15 +188,19 @@ for (const generationTestScope of [generationScope, oldOnlyScope]) {
 }
 const firstGenerationEvent = {
   version: 'runtime-generation-002',
+  publishedAt: '2026-07-12T11:00:00.000+09:00'
+}
+const firstGenerationEventCanonical = {
+  ...firstGenerationEvent,
   publishedAt: '2026-07-12T02:00:00.000Z'
 }
 const delayedOlderGenerationEvent = {
   version: 'runtime-generation-999',
-  publishedAt: '2026-07-12T01:59:59.000Z'
+  publishedAt: '2026-07-12T10:59:59.000+09:00'
 }
 const sameTimeOlderGenerationEvent = {
   version: 'runtime-generation-001',
-  publishedAt: firstGenerationEvent.publishedAt
+  publishedAt: '2026-07-12T10:00:00.000+08:00'
 }
 const newerGenerationEvent = {
   version: 'runtime-generation-003',
@@ -212,6 +216,23 @@ const oldGenerationState = await latencyStateStore.getJson<Record<string, unknow
 const oldOnlyState = await latencyStateStore.getJson<Record<string, unknown>>(oldOnlyStateKey)
 assert.equal(typeof oldGenerationState?.generation, 'string', 'latency state 必须持久化 generation marker token')
 assert.equal(typeof oldOnlyState?.generation, 'string', '旧代保留 state 必须持久化 generation marker token')
+for (const publishedAt of ['2026-07-12T02:00:00.000', '2026-07-12 02:00:00.000', 'bad']) {
+  await assert.rejects(
+    clearAllForRuntimeEvent({ version: `runtime-generation-invalid-${publishedAt}`, publishedAt }),
+    /普通路由速度优先 generation event publishedAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    `提供的非法 generation publishedAt 必须失败：${publishedAt}`
+  )
+}
+await latencyStateStore.setJson('v1:generation', {
+  version: 'runtime-generation-invalid-runtime-state',
+  publishedAt: '2026-07-12T02:00:00.000'
+}, 48 * 60 * 60 * 1000)
+await assert.rejects(
+  clearAllForRuntimeEvent({ version: 'runtime-generation-valid-after-invalid-runtime-state', publishedAt: '2026-07-12T02:00:00.000Z' }),
+  /普通路由速度优先 runtime-state generation event publishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  'Redis/runtime-state 中提供的裸 generation publishedAt 必须显式失败，不能当作缺失 marker'
+)
+await latencyStateStore.delete('v1:generation')
 const oldProbeCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
   100,
   Date.now() + config.probeIntervalSeconds * 2000
@@ -273,8 +294,8 @@ assert.equal(fullClearGenerationSetCount, 0, 'generation marker 不能通过无�
 assert.equal(fullClearGenerationCasCount, 1, '首次较新 runtime-state event 应通过一次 CAS 更新 generation marker')
 assert.deepEqual(
   await latencyStateStore.getJson('v1:generation'),
-  firstGenerationEvent,
-  'generation marker 应保存 runtime-state version 和 publishedAt'
+  firstGenerationEventCanonical,
+  'generation marker 应保存 canonical UTC runtime-state version 和 publishedAt'
 )
 assert.deepEqual(
   (await latencyStateStore.getJson<{ keys?: string[] }>('v1:all-index'))?.keys ?? [],
@@ -321,7 +342,7 @@ try {
   exhaustedGenerationResult = await clearAllForRuntimeEvent(exhaustedGenerationEvent)
 } finally {
   latencyStateStore.compareSetJson = originalCompareSetJson
-  await latencyStateStore.setJson('v1:generation', firstGenerationEvent, 48 * 60 * 60 * 1000)
+  await latencyStateStore.setJson('v1:generation', firstGenerationEventCanonical, 48 * 60 * 60 * 1000)
 }
 assert.equal(exhaustedGenerationResult, false, 'generation CAS 重试耗尽应返回 deferred')
 assert(
@@ -361,7 +382,7 @@ assert.notEqual(
 )
 assert.deepEqual(
   await latencyStateStore.getJson('v1:generation'),
-  firstGenerationEvent,
+  firstGenerationEventCanonical,
   '延迟旧 event 或同时间较旧 version 不能回滚 generation marker'
 )
 assert.equal(
