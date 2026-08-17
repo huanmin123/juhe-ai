@@ -3196,6 +3196,13 @@ export async function markAccountDisabledByFailureAsync(
   return await markAccountExceptionAsync(id, 'upstream_failure', reason, { runtimeFailureGuard })
 }
 
+function optionalAccountRuntimeTimestampMilliseconds(value: string | null | undefined, label: string): number | undefined {
+  if (value === undefined || value === null) return undefined
+  const milliseconds = rfc3339InstantMilliseconds(value)
+  if (milliseconds === undefined) throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间：${value}`)
+  return milliseconds
+}
+
 export function recordAccountStreamFailure(input: {
   accountId: string
   thresholdCount: number
@@ -3215,10 +3222,10 @@ export function recordAccountStreamFailure(input: {
   const now = new Date()
   const nowIsoValue = now.toISOString()
   const thresholdMs = Math.max(1, input.thresholdWindowMinutes) * 60_000
-  const startedAt = row.stream_failure_window_started_at ? new Date(row.stream_failure_window_started_at) : undefined
-  const windowValid = startedAt !== undefined && !Number.isNaN(startedAt.getTime()) && now.getTime() - startedAt.getTime() < thresholdMs
+  const startedAtMs = optionalAccountRuntimeTimestampMilliseconds(row.stream_failure_window_started_at, '账户流失败窗口开始时间')
+  const windowValid = startedAtMs !== undefined && now.getTime() - startedAtMs < thresholdMs
   const count = windowValid ? Math.max(0, row.stream_failure_count) + 1 : 1
-  const windowStartedAt = windowValid ? row.stream_failure_window_started_at : nowIsoValue
+  const windowStartedAt = windowValid && startedAtMs !== undefined ? new Date(startedAtMs).toISOString() : nowIsoValue
 
   getBusinessDatabase()
     .prepare(`
@@ -3265,10 +3272,10 @@ export async function recordAccountStreamFailureAsync(input: {
   const now = new Date()
   const nowIsoValue = now.toISOString()
   const thresholdMs = Math.max(1, input.thresholdWindowMinutes) * 60_000
-  const startedAt = row.stream_failure_window_started_at ? new Date(row.stream_failure_window_started_at) : undefined
-  const windowValid = startedAt !== undefined && !Number.isNaN(startedAt.getTime()) && now.getTime() - startedAt.getTime() < thresholdMs
+  const startedAtMs = optionalAccountRuntimeTimestampMilliseconds(row.stream_failure_window_started_at, '账户流失败窗口开始时间')
+  const windowValid = startedAtMs !== undefined && now.getTime() - startedAtMs < thresholdMs
   const count = windowValid ? Math.max(0, row.stream_failure_count) + 1 : 1
-  const windowStartedAt = windowValid ? row.stream_failure_window_started_at : nowIsoValue
+  const windowStartedAt = windowValid && startedAtMs !== undefined ? new Date(startedAtMs).toISOString() : nowIsoValue
 
   await client.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
