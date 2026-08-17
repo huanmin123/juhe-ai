@@ -30,6 +30,22 @@ const database = new DatabaseSync(':memory:')
 applyChatSchema(database)
 const client = createSqliteDatabaseClient(database)
 const testStorageQuotaBytes = 64 * 1024 * 1024
+await assert.rejects(createChatConversation(client, {
+  id: 'chat_conv_invalid_now', systemAccountId: 'sys_invalid_time', apiKeyId: 'key_invalid',
+  apiKeyNameSnapshot: 'invalid', now: '2026-07-10T00:00:00', maxConversationsPerUser: 10
+}), /聊天会话 now必须是带 Z 或数值 offset 的 RFC3339 时间/, '聊天会话 supplied 裸 now 必须 fail-fast')
+await assert.rejects(listChatConversations(client, {
+  systemAccountId: 'sys_invalid_time', beforeIsPinned: false, beforeLastMessageAt: '', beforeId: 'cursor', limit: 10
+}), /聊天会话分页 beforeLastMessageAt必须是带 Z 或数值 offset 的 RFC3339 时间/, '聊天分页 supplied 空时间游标必须 fail-fast')
+await assert.rejects(cleanupChatRetention(client, {
+  now: '2026-07-10T00:00:00', interruptedBefore: '2026-07-09T00:00:00Z', limit: 10, retentionDays: 7
+}), /聊天保留清理 now必须是带 Z 或数值 offset 的 RFC3339 时间/, '聊天清理 supplied 裸 now 必须 fail-fast')
+const offsetConversation = await createChatConversation(client, {
+  id: 'chat_conv_offset_time', systemAccountId: 'sys_offset_time', apiKeyId: 'key_offset',
+  apiKeyNameSnapshot: 'offset', now: '2026-07-10T08:00:00+08:00', maxConversationsPerUser: 10
+})
+assert.equal(offsetConversation.createdAt, '2026-07-10T00:00:00.000Z', '聊天会话 numeric offset 必须 canonical 为 UTC')
+assert.equal(await deleteChatConversation(client, offsetConversation.id, 'sys_offset_time'), true)
 for (const [rawCount, expected] of [['0', 0], ['50', 50]] as const) {
   assert.equal((await getChatConversation(chatConversationRowClient(rawCount, 0), 'turn_count', 'turn_owner'))?.userTurnCount, expected, '合法 PostgreSQL bigint 字符串必须规范化为 number')
 }
