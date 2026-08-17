@@ -8,6 +8,8 @@ import {
 
 const oauthRoutesSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth.routes.ts', import.meta.url), 'utf8')
 const rotationRepositorySource = readFileSync(new URL('../../storage/oauth-credential-rotation.repository.ts', import.meta.url), 'utf8')
+const usageLoaderSource = readFileSync(new URL('../../storage/oauth-usage-loaders.ts', import.meta.url), 'utf8')
+const usageSnapshotRepositorySource = readFileSync(new URL('../../storage/account-usage-snapshot.repository.ts', import.meta.url), 'utf8')
 const refreshServiceSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.ts', import.meta.url), 'utf8')
 const dbServiceHandlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
 assert.match(oauthRoutesSource, /service_tier_override: z\.enum\(\['default', 'priority', 'flex'\]\)/, 'OAuth 创建接口 schema 必须接受 Flex 覆盖')
@@ -25,6 +27,11 @@ assert.doesNotMatch(refreshServiceSource, /updateOpenAIOAuthCredentialsIfCurrent
 assert.doesNotMatch(refreshServiceSource, /findAccountForTest\(/, '后台刷新不得读取账户测试宽 DTO')
 assert.match(dbServiceHandlersSource, /case 'update_openai_oauth_credentials': \{[\s\S]*findOAuthCredentialRotationAccountAsync\([\s\S]*rotateOAuthCredentialsAsync\(/, 'DB service 异步路径必须使用 OAuth 专用窄仓储')
 assert.match(dbServiceHandlersSource, /case 'update_openai_oauth_credentials':\s*case 'find_openai_oauth_account_for_refresh':\s*throw new Error\(`\$\{operation\.type\} 必须通过异步窄仓储处理`\)/, 'DB service 同步路径必须拒绝 OAuth 宽读写')
+assert.doesNotMatch(rotationRepositorySource, /Date\.parse\(/, 'OAuth 凭据轮换不得宽松解析绝对时间')
+assert.match(rotationRepositorySource, /requiredRfc3339Instant\(row\.updated_at, 'accounts\.updated_at'\)/, 'OAuth 凭据轮换必须严格读取账户 revision 时间')
+assert.doesNotMatch(usageLoaderSource, /Date\.parse\(/, 'OAuth 用量快照不得宽松解析窗口时间')
+assert.match(usageLoaderSource, /requiredRfc3339Instant\(resetValue, `account_usage_snapshots \$\{window\} resetAt`\)/, 'OAuth 用量窗口 resetAt 必须严格解析')
+assert.match(usageSnapshotRepositorySource, /requiredRfc3339Instant\(input\.updatedAt, '账户用量快照 updatedAt'\)/, 'OAuth 用量快照写入必须严格解析 supplied updatedAt')
 
 const legacyErrorHandlingRules = [{
   enabled: true,

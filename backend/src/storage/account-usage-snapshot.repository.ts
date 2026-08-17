@@ -2,6 +2,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 
 export interface AccountUsageSnapshotUpsertInput {
   accountId: string
@@ -39,7 +40,9 @@ export function upsertAccountUsageSnapshots(inputs: AccountUsageSnapshotUpsertIn
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
-      const updatedAt = input.updatedAt ?? now
+      const updatedAt = input.updatedAt === undefined
+        ? now
+        : requiredRfc3339Instant(input.updatedAt, '账户用量快照 updatedAt')
       const systemAccountId = ownersByAccountId.get(input.accountId)
       if (!systemAccountId) {
         throw new Error(`账户用量快照缺少账户归属：${input.accountId}`)
@@ -70,7 +73,9 @@ export async function upsertAccountUsageSnapshotsAsync(inputs: AccountUsageSnaps
   const ownersByAccountId = await loadAccountSystemAccountIdsAsync(client, inputs.map((input) => input.accountId))
   await client.transaction(async (tx) => {
     for (const input of inputs) {
-      const updatedAt = input.updatedAt ?? now
+      const updatedAt = input.updatedAt === undefined
+        ? now
+        : requiredRfc3339Instant(input.updatedAt, '账户用量快照 updatedAt')
       const systemAccountId = ownersByAccountId.get(input.accountId)
       if (!systemAccountId) {
         throw new Error(`账户用量快照缺少账户归属：${input.accountId}`)
@@ -113,6 +118,11 @@ export function updateAccountUsageSnapshotRefreshState(input: {
   errorMessage?: string
 }): void {
   const now = nowIso()
+  const attemptedAt = optionalInstant(input.attemptedAt, '账户用量快照 attemptedAt')
+  const successAt = input.successAt === undefined
+    ? (input.status === 'fresh' ? now : undefined)
+    : requiredRfc3339Instant(input.successAt, '账户用量快照 successAt')
+  const nextRefreshAfter = optionalInstant(input.nextRefreshAfter, '账户用量快照 nextRefreshAfter')
   const systemAccountId = accountSystemAccountId(input.accountId)
   if (!systemAccountId) {
     throw new Error(`账户用量刷新状态缺少账户归属：${input.accountId}`)
@@ -137,13 +147,18 @@ export function updateAccountUsageSnapshotRefreshState(input: {
       input.accountId,
       input.kind,
       input.status,
-      input.attemptedAt ?? null,
-      input.successAt ?? (input.status === 'fresh' ? now : null),
-      input.nextRefreshAfter ?? null,
+      attemptedAt ?? null,
+      successAt ?? null,
+      nextRefreshAfter ?? null,
       input.errorMessage ?? null,
       now,
       now
     )
+}
+
+function optionalInstant(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  return requiredRfc3339Instant(value, label)
 }
 
 function accountSystemAccountId(accountId: string): string | undefined {

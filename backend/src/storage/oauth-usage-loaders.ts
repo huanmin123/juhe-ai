@@ -2,6 +2,7 @@ import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow } from '../doma
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { getStatsDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { numberFromUnknown } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
@@ -57,17 +58,18 @@ function oauthUsageSnapshotsFromRows(rows: AccountUsageSnapshotRow[]): Map<strin
   for (const row of rows) {
     const snapshot = parseOptionalJsonObject(row.snapshot_json)
     if (!snapshot) continue
+    const updatedAt = requiredRfc3339Instant(row.updated_at, 'account_usage_snapshots.updated_at')
     result.set(row.account_id, {
       kind: 'openai_codex',
       source: row.source ?? optionalString(snapshot.source),
-      updatedAt: row.updated_at,
+      updatedAt,
       refreshStatus: row.refresh_status ?? undefined,
-      lastAttemptAt: row.last_attempt_at ?? undefined,
-      lastSuccessAt: row.last_success_at ?? undefined,
-      nextRefreshAfter: row.next_refresh_after ?? undefined,
+      lastAttemptAt: optionalInstant(row.last_attempt_at, 'account_usage_snapshots.last_attempt_at'),
+      lastSuccessAt: optionalInstant(row.last_success_at, 'account_usage_snapshots.last_success_at'),
+      nextRefreshAfter: optionalInstant(row.next_refresh_after, 'account_usage_snapshots.next_refresh_after'),
       lastErrorMessage: row.last_error_message ?? undefined,
-      fiveHour: oauthUsageWindowFromSnapshot(snapshot, '5h', row.updated_at),
-      sevenDay: oauthUsageWindowFromSnapshot(snapshot, '7d', row.updated_at)
+      fiveHour: oauthUsageWindowFromSnapshot(snapshot, '5h', updatedAt),
+      sevenDay: oauthUsageWindowFromSnapshot(snapshot, '7d', updatedAt)
     })
   }
   return result
@@ -76,9 +78,14 @@ function oauthUsageSnapshotsFromRows(rows: AccountUsageSnapshotRow[]): Map<strin
 function oauthUsageWindowFromSnapshot(snapshot: Record<string, unknown>, window: '5h' | '7d', updatedAt: string): AccountOAuthUsageWindow | undefined {
   const utilization = numberFromUnknown(snapshot[`codex_${window}_used_percent`])
   if (utilization === undefined) return undefined
-  const resetAt = optionalString(snapshot[`codex_${window}_reset_at`]) ?? resetAtFromSeconds(updatedAt, numberFromUnknown(snapshot[`codex_${window}_reset_after_seconds`]))
-  const remainingSeconds = resetAt ? Math.max(0, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000)) : 0
-  const isExpired = resetAt ? Date.parse(resetAt) <= Date.now() : false
+  const resetValue = snapshot[`codex_${window}_reset_at`]
+  const resetAt = resetValue === undefined || resetValue === null
+    ? resetAtFromSeconds(updatedAt, numberFromUnknown(snapshot[`codex_${window}_reset_after_seconds`]))
+    : requiredRfc3339Instant(resetValue, `account_usage_snapshots ${window} resetAt`)
+  const resetAtMs = resetAt === undefined ? undefined : rfc3339InstantMilliseconds(resetAt)
+  if (resetAt !== undefined && resetAtMs === undefined) throw new Error(`account_usage_snapshots ${window} resetAt 必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  const remainingSeconds = resetAtMs === undefined ? 0 : Math.max(0, Math.ceil((resetAtMs - Date.now()) / 1000))
+  const isExpired = resetAtMs !== undefined && resetAtMs <= Date.now()
   return {
     utilization: isExpired ? 0 : utilization,
     resetsAt: resetAt,
@@ -89,7 +96,12 @@ function oauthUsageWindowFromSnapshot(snapshot: Record<string, unknown>, window:
 
 function resetAtFromSeconds(updatedAt: string, seconds?: number): string | undefined {
   if (seconds === undefined || seconds <= 0) return undefined
-  const baseTime = Date.parse(updatedAt)
-  if (!Number.isFinite(baseTime)) return undefined
+  const baseTime = rfc3339InstantMilliseconds(updatedAt)
+  if (baseTime === undefined) throw new Error('account_usage_snapshots.updated_at 必须是带 Z 或数值 offset 的 RFC3339 时间')
   return new Date(baseTime + seconds * 1000).toISOString()
+}
+
+function optionalInstant(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
 }

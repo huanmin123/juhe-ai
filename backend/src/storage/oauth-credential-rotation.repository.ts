@@ -14,6 +14,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { AccountConfigRevisionConflictError } from './account-config-revision.js'
 
 const businessSchemaName = 'juhe_business'
@@ -201,11 +202,13 @@ export async function rotateOAuthCredentialsAsync(input: {
       accountCircuitCredentialOwnerIdentity(current.credentials),
       accountCircuitCredentialOwnerIdentity(credentials)
     )) {
+      const updatedAtMs = rfc3339InstantMilliseconds(updatedAt)
+      if (updatedAtMs === undefined) throw new Error('OAuth 凭据轮换 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
       await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
         accountId: current.id,
         accountRuntimeKey: current.id,
         transitionId: newId('dispatch'),
-        nowMs: Date.parse(updatedAt)
+        nowMs: updatedAtMs
       })
     }
     return {
@@ -263,9 +266,9 @@ function mapRotationAccount(row: OAuthCredentialRotationRow): OAuthCredentialRot
     proxyProfileId: row.proxy_profile_id ?? undefined,
     credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
     credentialFingerprint: row.credential_fingerprint ?? undefined,
-    accountExpiresAt: row.account_expires_at ?? undefined,
+    accountExpiresAt: optionalInstant(row.account_expires_at, 'accounts.account_expires_at'),
     configRevision: Math.max(1, Number(row.config_revision) || 1),
-    updatedAt: row.updated_at
+    updatedAt: requiredRfc3339Instant(row.updated_at, 'accounts.updated_at')
   }
 }
 
@@ -282,13 +285,21 @@ function tableName(client: DatabaseClient, name: string): string {
 }
 
 function optionalIso(value: unknown): string | null {
-  if (typeof value !== 'string' || !value.trim()) return null
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+  if (value === undefined || value === null) return null
+  return requiredRfc3339Instant(value, 'OAuth 凭据 expires_at')
 }
 
 function isExpiredAt(value: string | undefined, now: string): boolean {
-  if (!value) return false
-  const expiresAt = Date.parse(value)
-  return Number.isFinite(expiresAt) && expiresAt <= Date.parse(now)
+  if (value === undefined) return false
+  const expiresAt = rfc3339InstantMilliseconds(value)
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (expiresAt === undefined || nowMs === undefined) {
+    throw new Error('OAuth 账户到期时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return expiresAt <= nowMs
+}
+
+function optionalInstant(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
 }

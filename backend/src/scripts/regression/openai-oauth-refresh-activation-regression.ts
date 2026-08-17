@@ -25,12 +25,14 @@ const [
   databaseModule,
   repositories,
   accountTestTasks,
-  oauthRotationRepository
+  oauthRotationRepository,
+  oauthUsageLoaders
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-test-tasks.repository.js'),
-  import('../../storage/oauth-credential-rotation.repository.js')
+  import('../../storage/oauth-credential-rotation.repository.js'),
+  import('../../storage/oauth-usage-loaders.js')
 ])
 
 try {
@@ -168,6 +170,58 @@ try {
   assert.equal(expiredRow.status, 'disabled', '已过期账户重新授权后必须保持停用')
   assert.equal(expiredRow.schedulable, 0, '已过期账户重新授权后不得参与调度')
   assert.equal(expiredRow.last_error_code, 'account_expired', '已过期账户必须保留明确的过期原因')
+
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'error',
+        account_expires_at = '2026-08-16T06:34:49.137',
+        last_error_code = 'oauth_token_refresh_failed'
+    WHERE id = ?
+  `).run(created.id)
+  await assert.rejects(
+    () => oauthRotationRepository.rotateOAuthCredentialsAsync({
+      accountId: created.id,
+      expectedConfigRevision: expired?.configRevision ?? recoverable?.configRevision ?? created.configRevision ?? 1,
+      expectedProviderCode: 'gpt',
+      expectedAccountType: 'oauth',
+      expectedProviderProtocolProfileId: created.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+      credentials: created.credentials,
+      recoverableLastErrorCodes: ['oauth_token_refresh_failed'],
+      access
+    }),
+    /accounts\.account_expires_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    'OAuth 轮换必须拒绝持久化的裸账户到期时间'
+  )
+
+  const usageUpdatedAt = '2026-08-16T06:34:49.137+08:00'
+  const usageResetAt = '2099-08-16T07:34:49.137+09:00'
+  databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO account_usage_snapshots (
+      system_account_id, account_id, kind, source, snapshot_json, refresh_status,
+      last_attempt_at, updated_at, created_at
+    ) VALUES (?, ?, 'openai_codex', 'regression', ?, 'fresh', ?, ?, ?)
+  `).run(
+    owner.id,
+    created.id,
+    JSON.stringify({ codex_5h_used_percent: 40, codex_5h_reset_at: usageResetAt }),
+    '2026-08-16T08:34:49.137+10:00',
+    usageUpdatedAt,
+    usageUpdatedAt
+  )
+  const usageSnapshot = oauthUsageLoaders.loadOpenAICodexUsageSnapshotsByAccountIds([created.id]).get(created.id)
+  assert.equal(usageSnapshot?.updatedAt, '2026-08-15T22:34:49.137Z', 'OAuth 用量快照 updatedAt 必须 canonical UTC')
+  assert.equal(usageSnapshot?.lastAttemptAt, '2026-08-15T22:34:49.137Z', 'OAuth 用量快照 lastAttemptAt 必须 canonical UTC')
+  assert.equal(usageSnapshot?.fiveHour?.resetsAt, '2099-08-15T22:34:49.137Z', 'OAuth 用量窗口 resetAt 必须 canonical UTC')
+  databaseModule.getStatsDatabase().prepare(`
+    UPDATE account_usage_snapshots
+    SET snapshot_json = ?
+    WHERE system_account_id = ? AND account_id = ? AND kind = 'openai_codex'
+  `).run(JSON.stringify({ codex_5h_used_percent: 40, codex_5h_reset_at: '2099-08-16T07:34:49.137' }), owner.id, created.id)
+  assert.throws(
+    () => oauthUsageLoaders.loadOpenAICodexUsageSnapshotsByAccountIds([created.id]),
+    /account_usage_snapshots 5h resetAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    'OAuth 用量快照必须拒绝裸 resetAt'
+  )
 
   const storedTask = accountTestTasks.getAccountTestTaskRecord(task.id)
   assert.equal(storedTask?.status, 'success', '创建 OAuth 账户不应消费或改写人工测试任务')
