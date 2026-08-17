@@ -1,6 +1,7 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -434,7 +435,7 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
     outboundIp: row.outbound_ip ?? undefined,
     outboundRegion: row.outbound_region ?? undefined,
     lastTestMessage: row.last_test_message ?? undefined,
-    lastTestedAt: row.last_tested_at ?? undefined,
+    lastTestedAt: optionalProxyObservationTimestamp(row.last_tested_at),
     updatedAt: proxyPatchTimestamp(row.updated_at)
   }
 }
@@ -491,7 +492,7 @@ function proxyTestConfigFromRow(row: ProxyTestConfigRow): ProxyProfileTestConfig
   return {
     ...proxySummaryFromRow(row),
     proxyUrl: proxyUrlFromRow(row),
-    configUpdatedAt: row.config_revision
+    configUpdatedAt: proxyPatchTimestamp(row.config_revision)
   }
 }
 
@@ -1041,24 +1042,21 @@ function proxyManagementPatchOutcome(
 }
 
 function proxyPatchTimestamp(value: unknown): string {
-  if (value instanceof Date) return value.toISOString()
-  if (typeof value === 'string' && value && Number.isFinite(Date.parse(value))) return value
-  throw new Error('代理配置版本无效')
+  return requiredRfc3339Instant(value, '代理配置版本')
 }
 
 function proxyRevisionsEqual(left: string, right: string): boolean {
-  return normalizedProxyRevisionToken(left) === normalizedProxyRevisionToken(right)
-}
-
-function normalizedProxyRevisionToken(value: string): string {
-  const utcMatch = /^(.*?)(?:\.(\d+))?Z$/i.exec(value)
-  if (!utcMatch) return value
-  const fraction = (utcMatch[2] ?? '').replace(/0+$/, '')
-  return `${utcMatch[1]}${fraction ? `.${fraction}` : ''}Z`
+  return requiredRfc3339Instant(left, '代理当前配置版本')
+    === requiredRfc3339Instant(right, '代理期望配置版本')
 }
 
 function optionalStringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function optionalProxyObservationTimestamp(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, '代理检测时间')
 }
 
 function normalizedAttemptedProxyName(input: Record<string, unknown>): string {
@@ -1606,21 +1604,11 @@ function normalizeProxyTestText(value: unknown, label: string): string | null {
 }
 
 function normalizeProxyObservationTimestamp(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error('代理检测时间无效')
-  }
-  const timestamp = Date.parse(value)
-  if (!Number.isFinite(timestamp)) {
-    throw new Error('代理检测时间无效')
-  }
-  return new Date(timestamp).toISOString()
+  return requiredRfc3339Instant(value, '代理检测时间')
 }
 
 function normalizeProxyConfigRevision(value: unknown): string {
-  if (typeof value !== 'string' || !value || !Number.isFinite(Date.parse(value))) {
-    throw new Error('代理配置版本无效')
-  }
-  return value
+  return requiredRfc3339Instant(value, '代理配置版本')
 }
 
 function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {

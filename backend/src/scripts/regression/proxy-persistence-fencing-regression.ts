@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { DEFAULT_OPENAI_SUPPORTED_MODELS } from '../../storage/schema-defaults.js'
 import { proxyProfileEnabled, type ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
 
@@ -94,6 +95,84 @@ try {
   assert.ok(initialConfig?.configUpdatedAt, '代理测试配置必须携带内部 config revision')
   assert.equal(Object.prototype.hasOwnProperty.call(repositories.findProxy(created.id), 'configUpdatedAt'), false, '代理摘要不得暴露内部 config revision')
 
+  const offsetTimestamp = '2026-08-16T06:34:49.137+08:00'
+  const canonicalTimestamp = '2026-08-15T22:34:49.137Z'
+  assert.throws(
+    () => repositories.updateProxyTestState(created.id, stateInput(initialConfig.configUpdatedAt, '2026-08-16T06:34:49.137', {
+      testStatus: 'passed',
+      latencyMs: 15,
+      lastTestMessage: '裸检测时间'
+    })),
+    /代理检测时间必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '代理检测写回不得按本机时区解释裸时间'
+  )
+  assert.throws(
+    () => repositories.updateProxyTestState(created.id, stateInput('2026-08-16T06:34:49.137', canonicalTimestamp, {
+      testStatus: 'passed',
+      latencyMs: 15,
+      lastTestMessage: '裸配置版本'
+    })),
+    /代理配置版本必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '代理检测写回不得按本机时区解释裸配置版本'
+  )
+
+  const strictTimeProxy = repositories.createProxy({
+    name: '代理严格时间边界回归',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_082,
+    enabled: true
+  }, access)
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE proxy_profiles SET updated_at = ? WHERE id = ?')
+    .run(canonicalTimestamp, strictTimeProxy.id)
+  const offsetState = repositories.updateProxyTestState(strictTimeProxy.id, stateInput(offsetTimestamp, offsetTimestamp, {
+    testStatus: 'passed',
+    latencyMs: 15,
+    lastTestMessage: '带 offset 的检测时间'
+  }))
+  assert.equal(offsetState?.lastTestedAt, canonicalTimestamp, '代理检测时间带 numeric offset 时必须 canonical 为 UTC')
+  assert.equal(repositories.getProxyTestConfig(strictTimeProxy.id)?.configUpdatedAt, canonicalTimestamp, '代理配置版本带 numeric offset 时必须 canonical 为 UTC')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE proxy_profiles SET updated_at = ?, last_tested_at = ? WHERE id = ?')
+    .run(offsetTimestamp, offsetTimestamp, strictTimeProxy.id)
+  const offsetStored = repositories.findProxy(strictTimeProxy.id)
+  assert.equal(offsetStored?.updatedAt, canonicalTimestamp, '数据库代理 updatedAt 带 numeric offset 时必须 canonical 为 UTC')
+  assert.equal(offsetStored?.lastTestedAt, canonicalTimestamp, '数据库代理 lastTestedAt 带 numeric offset 时必须 canonical 为 UTC')
+  assert.equal(repositories.getProxyTestConfig(strictTimeProxy.id)?.configUpdatedAt, canonicalTimestamp, '数据库代理 configRevision 带 numeric offset 时必须 canonical 为 UTC')
+
+  const bareRevisionProxy = repositories.createProxy({
+    name: '代理裸配置版本回归',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_083,
+    enabled: true
+  }, access)
+  databaseModule.getBusinessDatabase()
+    .prepare("UPDATE proxy_profiles SET updated_at = '2026-08-16T06:34:49.137' WHERE id = ?")
+    .run(bareRevisionProxy.id)
+  assert.throws(
+    () => repositories.getProxyTestConfig(bareRevisionProxy.id),
+    /代理配置版本必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '数据库代理裸 configRevision 必须显式失败'
+  )
+
+  const bareObservationProxy = repositories.createProxy({
+    name: '代理裸检测时间回归',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_084,
+    enabled: true
+  }, access)
+  databaseModule.getBusinessDatabase()
+    .prepare("UPDATE proxy_profiles SET last_tested_at = '2026-08-16T06:34:49.137' WHERE id = ?")
+    .run(bareObservationProxy.id)
+  assert.throws(
+    () => repositories.findProxy(bareObservationProxy.id),
+    /代理检测时间必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '数据库代理裸 lastTestedAt 必须显式失败'
+  )
+
   const beforeDiagnostic = readRow(created.id)
   let invalidationCount = 0
   const unregisterInvalidator = invalidationModule.registerGatewayRuntimeCacheInvalidator(() => {
@@ -153,8 +232,12 @@ try {
   const secondRevisionUpdate = repositories.updateProxy(created.id, { description: '同毫秒 revision 2' })
   const revisionTwo = repositories.getProxyTestConfig(created.id)?.configUpdatedAt
   assert.ok(firstRevisionUpdate && secondRevisionUpdate && revisionOne && revisionTwo, '配置 revision 回归需要两次真实写入')
-  assert.ok(Date.parse(revisionOne) > Date.parse(syntheticFutureRevision), '配置写必须在时钟落后时仍推进 revision')
-  assert.ok(Date.parse(revisionTwo) > Date.parse(revisionOne), '连续配置写必须严格单调推进 revision')
+  const syntheticFutureRevisionMs = rfc3339InstantMilliseconds(syntheticFutureRevision)
+  const revisionOneMs = rfc3339InstantMilliseconds(revisionOne)
+  const revisionTwoMs = rfc3339InstantMilliseconds(revisionTwo)
+  assert.ok(syntheticFutureRevisionMs !== undefined && revisionOneMs !== undefined && revisionTwoMs !== undefined, '配置 revision 必须保持严格 RFC3339 时间')
+  assert.ok(revisionOneMs > syntheticFutureRevisionMs, '配置写必须在时钟落后时仍推进 revision')
+  assert.ok(revisionTwoMs > revisionOneMs, '连续配置写必须严格单调推进 revision')
 
   const handlerConfig = repositories.getProxyTestConfig(created.id)
   assert.ok(handlerConfig?.configUpdatedAt, 'DB service 状态写必须携带 config revision')
@@ -180,6 +263,9 @@ try {
   const dbServiceHandlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
   const proxyTestSource = readFileSync(new URL('../../modules/proxies/proxy-test.service.ts', import.meta.url), 'utf8')
   const proxyRoutesSource = readFileSync(new URL('../../modules/proxies/proxies.routes.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(proxyRepositorySource, /Date\.parse\(/, '代理仓储不得按本机时区宽松解析 absolute timestamp')
+  assert.match(proxyRepositorySource, /requiredRfc3339Instant\(value, '代理检测时间'\)/, '代理检测时间必须复用严格 RFC3339 边界')
+  assert.match(proxyRepositorySource, /requiredRfc3339Instant\(value, '代理配置版本'\)/, '代理配置版本必须复用严格 RFC3339 边界')
   const syncStateBody = sourceBetween(proxyRepositorySource, 'export function updateProxyTestState(', 'export async function updateProxyTestStateAsync(')
   const asyncStateBody = sourceBetween(proxyRepositorySource, 'export async function updateProxyTestStateAsync(', 'export function deleteProxy(')
   assert.doesNotMatch(syncStateBody, /notifyGatewayRuntimeCacheInvalidation/, 'SQLite 诊断写不得通知 shared invalidation')
