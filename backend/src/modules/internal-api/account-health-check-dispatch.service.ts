@@ -8,6 +8,7 @@ import { currentAccountHealthJobsInputVersionForRuntimeAsync } from '../../stora
 import { publishAccountHealthJobsProbeRequest } from '../background/account-health-jobs-input.service.js'
 import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 import { settleAccountHealthJobsSourceFence } from '../gateway/runtime/account-health-jobs-source-fence.consumer.js'
+import { currentAccountHealthJobsProbeInput } from './account-health-jobs-dispatch-boundary.js'
 
 // Node publishes immutable request facts only.  Go jobs is the only J1 task
 // owner; this path never calls a worker, Gateway, Redis Stream, or HTTP bridge.
@@ -47,10 +48,17 @@ function publishGoJobsProbeRequest(
   void (async () => {
     const account = await findAccountForAccountHealthJobsInputAsync(accountId)
     const inputVersion = account ? await currentAccountHealthJobsInputVersionForRuntimeAsync(accountId) : undefined
-    if (!account || inputVersion === undefined) throw new Error('J1 request 缺少当前账户或 input epoch')
+    const probeInput = currentAccountHealthJobsProbeInput(account, inputVersion)
+    if (!probeInput) {
+      // Gateway failure dispatch is shared by accounts outside the frozen J1
+      // scope.  They have no J1 input epoch by design, so skip the request
+      // without an error log while still settling a source fence, if present.
+      if (sourceFence) await settleAccountHealthJobsSourceFence(sourceFence, 'unknown')
+      return
+    }
     publishAccountHealthJobsProbeRequest({
-      account,
-      inputVersion,
+      account: probeInput.account,
+      inputVersion: probeInput.inputVersion,
       root,
       signingKey,
       requestId,

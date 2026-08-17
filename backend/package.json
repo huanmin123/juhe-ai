@@ -113,6 +113,7 @@
     "test:account-runtime-mutation-owner-fencing": "tsx src/scripts/regression/account-runtime-mutation-owner-fencing-regression.ts",
     "test:account-runtime-mutation-owner-fencing-postgres-smoke": "tsx src/scripts/regression/account-runtime-mutation-owner-fencing-postgres-smoke.ts",
     "test:account-health-jobs-input-protocol": "tsx src/scripts/regression/account-health-jobs-input-protocol-regression.ts",
+    "test:account-health-jobs-dispatch-boundary": "tsx src/scripts/regression/account-health-jobs-dispatch-boundary-regression.ts",
     "test:account-health-jobs-input-service": "tsx src/scripts/regression/account-health-jobs-input-service-regression.ts",
     "test:account-health-jobs-input-version": "tsx src/scripts/regression/account-health-jobs-input-version-regression.ts",
     "test:account-health-jobs-input-outbox": "tsx src/scripts/regression/account-health-jobs-input-outbox-regression.ts",
