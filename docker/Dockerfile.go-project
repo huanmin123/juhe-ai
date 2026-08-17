@@ -32,6 +32,8 @@ FROM ${RUNTIME_IMAGE} AS runtime
 ARG GO_PROJECT
 WORKDIR /app
 
+# The minimal jobs runtime must retain the system trust store for direct HTTPS probes.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/juhe-ai-go-${GO_PROJECT} /usr/local/bin/juhe-ai-go-project
 COPY --from=build /out/juhe-ai-go-project-healthcheck /usr/local/bin/juhe-ai-go-project-healthcheck
 
