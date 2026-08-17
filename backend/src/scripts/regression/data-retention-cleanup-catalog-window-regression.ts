@@ -21,12 +21,23 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, dataRetention] = await Promise.all([
+const [databaseModule, dataRetention, hardCleanup] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/data-retention.repository.js')
+  import('../../storage/data-retention.repository.js'),
+  import('../../storage/data-retention-hard-cleanup.js')
 ])
 
 try {
+  assert.equal(
+    hardCleanup.hardCleanupCutoffs('2026-08-16T06:34:49.137+08:00').iso,
+    '2026-08-15T22:34:49.137Z',
+    '非业务清理截止时间必须 canonical 为 UTC 瞬时值'
+  )
+  assert.throws(
+    () => hardCleanup.hardCleanupCutoffs('2026-08-16T06:34:49.137'),
+    /非业务数据清理截止时间必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '非业务清理不得接受无 offset 截止时间'
+  )
   seedShardsWithCatalogEntries(64)
 
   const registryReads = captureUsageShardRegistryReads()

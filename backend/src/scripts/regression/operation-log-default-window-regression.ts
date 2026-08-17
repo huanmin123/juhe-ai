@@ -5,18 +5,20 @@ import {
   parseOperationLogListOptions
 } from '../../modules/operation-logs/operation-log-list-options.js'
 
-const fixedNow = new Date(2026, 5, 22, 12, 30, 0, 0)
+const fixedNow = new Date(Date.UTC(2026, 5, 22, 12, 30, 0, 0))
 const range = defaultManagementOperationLogDateRange(fixedNow)
 const start = new Date(range.startAt)
 const end = new Date(range.endAt)
 
-assert.equal(start.getFullYear(), 2026)
-assert.equal(start.getMonth(), 4)
-assert.equal(start.getDate(), 23)
-assert.equal(start.getHours(), 0)
-assert.equal(end.getDate(), 22)
-assert.equal(end.getHours(), 23)
-assert.equal(end.getMinutes(), 59)
+assert.equal(start.getUTCFullYear(), 2026)
+assert.equal(start.getUTCMonth(), 4)
+assert.equal(start.getUTCDate(), 23)
+assert.equal(start.getUTCHours(), 0)
+assert.equal(end.getUTCDate(), 22)
+assert.equal(end.getUTCHours(), 23)
+assert.equal(end.getUTCMinutes(), 59)
+assert.equal(range.startAt, '2026-05-23T00:00:00.000Z', '默认窗口必须使用 UTC 自然日，而非后端进程本地时区')
+assert.equal(range.endAt, '2026-06-22T23:59:59.999Z', '默认窗口结束必须使用 UTC 自然日')
 
 const managementDefault = parseOperationLogListOptions({}, true, fixedNow)
 assert.deepEqual(

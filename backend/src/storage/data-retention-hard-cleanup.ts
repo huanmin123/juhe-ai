@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase } from './database.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
 
@@ -111,12 +112,10 @@ export function cleanupDiscoveredHardCleanupTablesBefore(
 }
 
 export function hardCleanupCutoffs(cutoffAt: string, timezone = usageStatsTimezone()): HardCleanupCutoffs {
-  const cutoffDate = new Date(cutoffAt)
-  if (!Number.isFinite(cutoffDate.getTime())) {
-    throw new Error('非业务数据清理截止时间无效')
-  }
+  const normalizedCutoffAt = requiredRfc3339Instant(cutoffAt, '非业务数据清理截止时间')
+  const cutoffDate = new Date(normalizedCutoffAt)
   return {
-    iso: cutoffDate.toISOString(),
+    iso: normalizedCutoffAt,
     minute: minuteKey(cutoffDate, timezone),
     hour: hourKey(cutoffDate, timezone),
     date: dateKey(cutoffDate, timezone),

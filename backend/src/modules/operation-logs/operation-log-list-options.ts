@@ -32,10 +32,10 @@ export function parseOperationLogListOptions(
 
 export function defaultManagementOperationLogDateRange(now = new Date()): { startAt: string; endAt: string } {
   const endAt = new Date(now)
-  endAt.setHours(23, 59, 59, 999)
+  endAt.setUTCHours(23, 59, 59, 999)
   const startAt = new Date(endAt)
-  startAt.setDate(startAt.getDate() - (managementDefaultOperationLogWindowDays - 1))
-  startAt.setHours(0, 0, 0, 0)
+  startAt.setUTCDate(startAt.getUTCDate() - (managementDefaultOperationLogWindowDays - 1))
+  startAt.setUTCHours(0, 0, 0, 0)
   return { startAt: startAt.toISOString(), endAt: endAt.toISOString() }
 }
 
