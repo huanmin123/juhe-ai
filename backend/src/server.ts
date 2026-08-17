@@ -37,6 +37,7 @@ import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
+import { renderPrometheusMetrics } from './shared/prometheus-metrics.js'
 import { startInternalGatewayRegistry, stopInternalGatewayRegistry } from './modules/gateway/runtime/internal-gateway-registry.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
@@ -247,6 +248,10 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
     workerProcesses: health.workerProcesses,
     workerTopologyReady: health.workerTopologyReady
   })
+})
+
+app.get(`${systemPrefix}/metrics`, (_req, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderPrometheusMetrics())
 })
 
 app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)
