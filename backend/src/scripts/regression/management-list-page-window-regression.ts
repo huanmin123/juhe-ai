@@ -91,11 +91,12 @@ try {
 
 function seedClientIpWindow(database: ReturnType<typeof databaseModule.getStatsDatabase>, ip: string, requestCount: number): void {
   const ipHash = createHash('sha256').update(ip).digest('hex')
+  const timestamp = '2026-02-03T00:00:00.000Z'
   database.prepare(`
     INSERT INTO client_ip_registry (
       ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version, first_seen_at, last_seen_at, created_at, updated_at
     ) VALUES (?, 1, ?, ?, 4, ?, ?, ?, ?)
-  `).run(ipHash, ip, ip, range.startDate, range.startDate, range.startDate, range.startDate)
+  `).run(ipHash, ip, ip, timestamp, timestamp, timestamp, timestamp)
   database.prepare(`
     INSERT INTO client_ip_usage_range_windows (
       ip_hash, start_date, end_date, request_count, success_count, error_count,
