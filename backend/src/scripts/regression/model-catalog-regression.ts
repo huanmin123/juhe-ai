@@ -30,15 +30,19 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-function strictCatalogItem(
-  value: Pick<ProviderModelCatalogItem, 'model' | 'scope' | 'status' | 'defaultReasoningEffort'> & Partial<ProviderModelCatalogItem>
-): ProviderModelCatalogItem {
+interface StrictCatalogTimeFixture extends Pick<ProviderModelCatalogItem, 'model' | 'scope' | 'status' | 'defaultReasoningEffort'> {
+  createdAt?: string
+  releaseDate?: string
+}
+
+function strictCatalogItem(value: StrictCatalogTimeFixture): ProviderModelCatalogItem {
   return {
     providerCode: 'openai',
     model: value.model,
     scope: value.scope,
     status: value.status,
     defaultReasoningEffort: value.defaultReasoningEffort,
+    supportedApiProtocols: [],
     inputModalities: [],
     outputModalities: [],
     supportedTools: [],
@@ -48,7 +52,8 @@ function strictCatalogItem(
     codexSupportedReasoningLevels: [],
     supportsServiceTier: false,
     source: 'regression',
-    ...value
+    ...(value.createdAt === undefined ? {} : { createdAt: value.createdAt }),
+    ...(value.releaseDate === undefined ? {} : { releaseDate: value.releaseDate })
   }
 }
 
