@@ -1,5 +1,5 @@
-ARG NODE_BUILDER_IMAGE
-FROM ${NODE_BUILDER_IMAGE}
+ARG NODE_BUILDER_PNPM_IMAGE
+FROM ${NODE_BUILDER_PNPM_IMAGE}
 
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -15,9 +15,7 @@ COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY backend/package.json backend/package.json
 COPY frontend/package.json frontend/package.json
 RUN --mount=type=cache,id=juhe-ai-pnpm-store,target=/pnpm/store \
-  corepack enable \
-  && corepack prepare pnpm@10.32.1 --activate \
-  && pnpm install --frozen-lockfile --store-dir=/pnpm/store
+  pnpm install --frozen-lockfile --store-dir=/pnpm/store
 ARG VITE_JUHE_AI_BUILD_ID
 ENV VITE_JUHE_AI_BUILD_ID=${VITE_JUHE_AI_BUILD_ID}
 COPY . .

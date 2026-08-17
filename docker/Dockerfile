@@ -1,18 +1,15 @@
-ARG NODE_RUNTIME_IMAGE
-ARG PNPM_VERSION=10.32.1
+ARG NODE_RUNTIME_PNPM_IMAGE
 
-FROM ${NODE_RUNTIME_IMAGE} AS production-deps
-ARG PNPM_VERSION
+FROM ${NODE_RUNTIME_PNPM_IMAGE} AS production-deps
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY backend/package.json backend/package.json
 RUN --mount=type=cache,id=juhe-ai-prod-pnpm-store,target=/pnpm/store \
     pnpm install --prod --frozen-lockfile --filter juhe-ai-backend... --store-dir=/pnpm/store
 
-FROM ${NODE_RUNTIME_IMAGE} AS artifacts
+FROM ${NODE_RUNTIME_PNPM_IMAGE} AS artifacts
 WORKDIR /source
 COPY backend ./backend
 COPY frontend ./frontend
@@ -35,7 +32,7 @@ RUN set -eu; \
     exit 1; \
   fi
 
-FROM ${NODE_RUNTIME_IMAGE} AS runtime
+FROM ${NODE_RUNTIME_PNPM_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

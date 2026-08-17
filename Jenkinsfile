@@ -42,7 +42,8 @@ pipeline {
           }
           def baseImages = readHarborBaseImages()
           env.NODE_RUNTIME_IMAGE = baseImages.NODE_RUNTIME_IMAGE
-          env.NODE_BUILDER_IMAGE = baseImages.NODE_BUILDER_IMAGE
+          env.NODE_RUNTIME_PNPM_IMAGE = baseImages.NODE_RUNTIME_PNPM_10_32_IMAGE
+          env.NODE_BUILDER_PNPM_IMAGE = baseImages.NODE_BUILDER_PNPM_10_32_IMAGE
           env.GO_IMAGE = baseImages.GO_IMAGE
           env.RUNTIME_IMAGE = baseImages.RUNTIME_IMAGE
           if (!fileExists(env.GITEE_WRITE_KEY)) {
@@ -85,7 +86,7 @@ pipeline {
             }
             build_with_cache "$cache_ref" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
-              --build-arg NODE_BUILDER_IMAGE="$NODE_BUILDER_IMAGE" \
+              --build-arg NODE_BUILDER_PNPM_IMAGE="$NODE_BUILDER_PNPM_IMAGE" \
               --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
               --tag "$builder_image" --file docker/Dockerfile.builder .
             docker create --name "$builder_container" "$builder_image" >/dev/null
@@ -120,7 +121,7 @@ pipeline {
             }
             build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-runtime:buildcache" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
-              --build-arg NODE_RUNTIME_IMAGE="$NODE_RUNTIME_IMAGE" \
+              --build-arg NODE_RUNTIME_PNPM_IMAGE="$NODE_RUNTIME_PNPM_IMAGE" \
               --tag "$NODE_IMAGE" --file docker/Dockerfile .
             build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-go-jobs:buildcache" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
@@ -260,7 +261,7 @@ def readHarborBaseImages() {
   if (!fileExists(env.HARBOR_BASE_IMAGES_FILE)) {
     error '缺少 Harbor 基础镜像清单；CI 禁止从外网拉取基础镜像。请先运行 platform/harbor/sync-base-images.sh。'
   }
-  def requiredKeys = ['NODE_RUNTIME_IMAGE', 'NODE_BUILDER_IMAGE', 'GO_IMAGE', 'RUNTIME_IMAGE']
+  def requiredKeys = ['NODE_RUNTIME_PNPM_10_32_IMAGE', 'NODE_BUILDER_PNPM_10_32_IMAGE', 'GO_IMAGE', 'RUNTIME_IMAGE']
   def values = [:]
   readFile(env.HARBOR_BASE_IMAGES_FILE).readLines().eachWithIndex { line, index ->
     def trimmed = line.trim()
