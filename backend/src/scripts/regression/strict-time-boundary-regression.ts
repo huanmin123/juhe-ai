@@ -113,6 +113,24 @@ const tableRouteSource = readFileSync(new URL('../../modules/table-monitor/table
 assert.match(tableRouteSource, /cutoffAt: absoluteDateTimeQuerySchema/, 'cleanup cutoff 必须复用严格 schema')
 assert.match(tableRouteSource, /nonBusinessDataCleanupSchema\.safeParse/, 'cleanup 非法时间必须走 400 safeParse contract')
 
+const accountTestTasksSource = readFileSync(new URL('../../storage/account-test-tasks.repository.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(accountTestTasksSource, /Date\.parse\(/, '账号测试任务回执不得用宽松时间解析数据库值')
+assert.match(accountTestTasksSource, /return requiredRfc3339Instant\(value, column\)/, '账号测试任务字符串时间必须严格 canonical 或失败')
+
+const authorizedDispatchSource = readFileSync(new URL('../../storage/account-authorized-dispatch.repository.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(authorizedDispatchSource, /Date\.parse\(/, '授权账户调度不得按进程时区解释到期或冷却时间')
+assert.match(authorizedDispatchSource, /rfc3339InstantMilliseconds\(value\)/, '授权账户调度必须严格解析到期与冷却时间')
+assert.match(authorizedDispatchSource, /授权账户到期时间必须是带 Z 或数值 offset 的 RFC3339 时间/, '授权到期裸时间必须可见失败')
+assert.match(authorizedDispatchSource, /授权账户冷却时间必须是带 Z 或数值 offset 的 RFC3339 时间/, '授权冷却裸时间必须可见失败')
+
+const apiKeyRuntimeStateSource = readFileSync(new URL('../../storage/account-api-key-runtime-state.repository.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(apiKeyRuntimeStateSource, /Date\.parse\(/, 'API Key 运行态不得用宽松时间解析租约或 fence')
+assert.match(apiKeyRuntimeStateSource, /requiredRfc3339Timestamp/, 'API Key 运行态租约必须基于严格 RFC3339 epoch')
+assert.match(apiKeyRuntimeStateSource, /canonicalizeRfc3339Instant\(value\)/, 'API Key probe fence 必须 canonical 数值 offset 时间')
+assert.match(apiKeyRuntimeStateSource, /value === undefined\) return normalizedFallback/, 'API Key observedAt 只有缺失时才能使用 fallback')
+assert.match(apiKeyRuntimeStateSource, /input\.cooldownUntil === undefined/, 'API Key supplied cooldownUntil 必须先区分缺失和空串')
+assert.match(apiKeyRuntimeStateSource, /requiredRfc3339Instant\(input\.cooldownUntil, 'cooldownUntil'\)/, 'API Key cooldownUntil 必须严格 canonical')
+
 const grokOAuthSource = readFileSync(new URL('../../modules/grok-oauth/grok-oauth.routes.ts', import.meta.url), 'utf8')
 const grokSsoExpirySource = grokOAuthSource.match(
   /function grokSSOImportAccountExpiresAt\([\s\S]*?\n}\n\nasync function mapWithConcurrency/

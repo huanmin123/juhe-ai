@@ -13,6 +13,7 @@ import type {
 } from '../domain/types.js'
 import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -1418,11 +1419,13 @@ function databaseBoolean(value: unknown): boolean {
 }
 
 function databaseDateTimeIso(value: string | Date, column: string): string {
-  const timestamp = value instanceof Date ? value.getTime() : Date.parse(value)
-  if (!Number.isFinite(timestamp)) {
-    throw new Error(`${column} 必须是有效时间`)
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) {
+      throw new Error(`${column} 必须是有效时间`)
+    }
+    return value.toISOString()
   }
-  return new Date(timestamp).toISOString()
+  return requiredRfc3339Instant(value, column)
 }
 
 function databaseOptionalDateTimeIso(value: string | Date | null, column: string): string | undefined {

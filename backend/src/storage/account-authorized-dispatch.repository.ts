@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountStatus, RequestQuotaLimits } from '../domain/types.js'
 import { errorLogFields, logger } from '../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import {
@@ -646,12 +647,18 @@ function hasOwn(value: object, key: string): boolean {
 
 function isExpired(value: string | null | undefined, now: number): boolean {
   if (!value) return false
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) && timestamp <= now
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error('授权账户到期时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return timestamp <= now
 }
 
 function isFuture(value: string | null | undefined, now: number): boolean {
   if (!value) return false
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) && timestamp > now
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error('授权账户冷却时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return timestamp > now
 }

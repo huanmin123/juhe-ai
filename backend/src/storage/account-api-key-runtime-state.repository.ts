@@ -3,6 +3,7 @@ import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './acc
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { canonicalizeRfc3339Instant, requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -705,7 +706,9 @@ function claimAccountApiKeyRuntimeProbeCandidatesSync(
   now: string
 ): AccountApiKeyRuntimeProbeCandidate[] {
   const claimed: AccountApiKeyRuntimeProbeCandidate[] = []
-  const claimedUntil = new Date(Date.parse(now) + probeClaimLeaseSeconds * 1000).toISOString()
+  const claimedUntil = new Date(
+    requiredRfc3339Timestamp(now, '账号 API Key 探测当前时间') + probeClaimLeaseSeconds * 1000
+  ).toISOString()
   for (const candidate of candidates) {
     if (claimed.length >= limit) break
     const token = newId('account_api_key_probe_claim')
@@ -740,7 +743,9 @@ async function claimAccountApiKeyRuntimeProbeCandidatesAsync(
 ): Promise<AccountApiKeyRuntimeProbeCandidate[]> {
   return await client.transaction(async (tx) => {
     const claimed: AccountApiKeyRuntimeProbeCandidate[] = []
-    const claimedUntil = new Date(Date.parse(now) + probeClaimLeaseSeconds * 1000).toISOString()
+    const claimedUntil = new Date(
+      requiredRfc3339Timestamp(now, '账号 API Key 探测当前时间') + probeClaimLeaseSeconds * 1000
+    ).toISOString()
     for (const candidate of candidates) {
       if (claimed.length >= limit) break
       const token = newId('account_api_key_probe_claim')
@@ -972,8 +977,11 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
-  const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
-    ? input.cooldownUntil
+  const cooldownUntil = input.cooldownUntil === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.cooldownUntil, 'cooldownUntil')
+  const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
+    ? cooldownUntil
     : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
   const errorCode = input.errorCode ?? (typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
   const errorMessage = sanitizeRuntimeErrorMessage(input.errorMessage ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
@@ -1105,8 +1113,11 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
-  const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
-    ? input.cooldownUntil
+  const cooldownUntil = input.cooldownUntil === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.cooldownUntil, 'cooldownUntil')
+  const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
+    ? cooldownUntil
     : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
   const errorCode = input.errorCode ?? (typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
   const errorMessage = sanitizeRuntimeErrorMessage(input.errorMessage ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
@@ -1120,7 +1131,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     (statement_timestamp() + ${atomicNextBackoffSql} * INTERVAL '1 second') AT TIME ZONE 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
   )`
-  const preserveExplicitCooldownSql = input.cooldownUntil && status === 'rate_limited' ? 'TRUE' : 'FALSE'
+  const preserveExplicitCooldownSql = cooldownUntil !== undefined && status === 'rate_limited' ? 'TRUE' : 'FALSE'
 
   if (expectedFence.provided) {
     const fencedResult = await client.execute(`
@@ -1250,7 +1261,10 @@ export function deferAccountApiKeyRuntimeProbe(input: AccountApiKeyRuntimeProbeD
   }
   const expectedNextProbeAt = normalizeExpectedProbeAt(input.expectedNextProbeAt)
   if (!expectedNextProbeAt) {
-    return { changed: false, skippedReason: 'missing_expected_probe_at' }
+    return {
+      changed: false,
+      skippedReason: input.expectedNextProbeAt === undefined ? 'missing_expected_probe_at' : 'invalid_expected_probe_at'
+    }
   }
   const expectedFence = expectedProbeStateFence({
     ...input,
@@ -1305,7 +1319,10 @@ export async function deferAccountApiKeyRuntimeProbeAsync(input: AccountApiKeyRu
   }
   const expectedNextProbeAt = normalizeExpectedProbeAt(input.expectedNextProbeAt)
   if (!expectedNextProbeAt) {
-    return { changed: false, skippedReason: 'missing_expected_probe_at' }
+    return {
+      changed: false,
+      skippedReason: input.expectedNextProbeAt === undefined ? 'missing_expected_probe_at' : 'invalid_expected_probe_at'
+    }
   }
   const expectedFence = expectedProbeStateFence({
     ...input,
@@ -1576,16 +1593,13 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
 }
 
 function normalizeObservedAt(value: string | undefined, fallback: string): string {
-  if (!value) return fallback
-  const time = Date.parse(value)
-  if (!Number.isFinite(time)) {
-    throw new Error('observedAt 必须是有效 ISO 时间')
-  }
-  const fallbackTime = Date.parse(fallback)
-  if (!Number.isFinite(fallbackTime)) {
-    throw new Error('observedAt fallback 必须是有效 ISO 时间')
-  }
-  return new Date(Math.min(time, fallbackTime)).toISOString()
+  const normalizedFallback = requiredRfc3339Instant(fallback, 'observedAt fallback')
+  if (value === undefined) return normalizedFallback
+  const normalizedValue = requiredRfc3339Instant(value, 'observedAt')
+  return new Date(Math.min(
+    requiredRfc3339Timestamp(normalizedValue, 'observedAt'),
+    requiredRfc3339Timestamp(normalizedFallback, 'observedAt fallback')
+  )).toISOString()
 }
 
 function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKeyRuntimeTarget | undefined {
@@ -1866,8 +1880,15 @@ function nextProbeBackoffSeconds(previous: number | null | undefined): number {
 }
 
 function normalizeExpectedProbeAt(value: string | undefined): string | undefined {
-  const normalized = value?.trim()
-  return normalized && Number.isFinite(Date.parse(normalized)) ? normalized : undefined
+  return value === undefined ? undefined : canonicalizeRfc3339Instant(value)
+}
+
+function requiredRfc3339Timestamp(value: string, label: string): number {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return timestamp
 }
 
 function expectedProbeStateFence(

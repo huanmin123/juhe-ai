@@ -441,6 +441,40 @@ try {
     status: 'temporary_unavailable',
     observedAt: 'not-an-iso-time'
   }), /observedAt/, '非法显式 observation 不得静默提升为当前时间')
+  for (const observedAt of ['', '2026-07-20T00:55:00.000']) {
+    assert.throws(() => runtimeStates.recordAccountApiKeyRuntimeFailure({
+      account: selected[0],
+      status: 'temporary_unavailable',
+      observedAt
+    }), /observedAt必须是带 Z 或数值 offset 的 RFC3339 时间/, `裸或空 observedAt 必须可见失败：${JSON.stringify(observedAt)}`)
+  }
+  assert.throws(() => runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'rate_limited',
+    cooldownUntil: '2026-07-20T01:00:00.000',
+    observedAt: '2026-07-20T00:55:00.000Z'
+  }), /cooldownUntil必须是带 Z 或数值 offset 的 RFC3339 时间/, '裸 cooldownUntil 不得写入运行态')
+  assert.deepEqual(
+    runtimeStates.deferAccountApiKeyRuntimeProbe({
+      account: selected[0],
+      expectedStatus: 'temporary_unavailable',
+      expectedNextProbeAt: '2026-07-20T01:00:00.000',
+      delaySeconds: 60,
+      observedAt: '2026-07-20T00:55:00.000Z'
+    }),
+    { changed: false, skippedReason: 'invalid_expected_probe_at' },
+    '裸 expectedNextProbeAt 必须作为无效 fence，而不是按宿主时区解释'
+  )
+  const offsetObservedAt = '2099-07-20T08:55:00.000+08:00'
+  const offsetCooldownUntil = '2099-07-20T09:00:00.000+08:00'
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'rate_limited',
+    cooldownUntil: offsetCooldownUntil,
+    observedAt: offsetObservedAt
+  }).changed, true, '带数字 offset 的运行态时间必须保留为有效瞬时值')
+  const canonicalOffsetState = runtimeStates.loadAccountApiKeyRuntimeDetailsByAccountIds([account.id]).get(account.id)?.[0]
+  assert.equal(canonicalOffsetState?.cooldownUntil, '2099-07-20T01:00:00.000Z', 'cooldownUntil 必须 canonical 为 UTC Z')
   assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
     account: selected[0],
     status: 'temporary_unavailable',
