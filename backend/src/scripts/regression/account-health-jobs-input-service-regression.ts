@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -83,6 +83,11 @@ try {
   assert.equal(request.request_id, 'request-1')
   assert.equal(request.mutate_account, true)
   assert.equal(request.input_version, 12)
+
+  const maintenanceSource = readFileSync(resolve(process.cwd(), 'src/scripts/maintenance/publish-account-health-jobs-input.ts'), 'utf8')
+  assert.match(maintenanceSource, /findAccountHealthJobsInputRevisionsAsync/u, 'J1 maintenance 发布必须读取内部 dispatch fence')
+  assert.match(maintenanceSource, /dispatchRevision:\s*revisions\.dispatchRevision/u, 'J1 maintenance 发布必须使用存储层 dispatchRevision')
+  assert.doesNotMatch(maintenanceSource, /account\.dispatchRevision\s*\?\?\s*0/u, '公开 AccountSummary 缺少 dispatchRevision 时不得静默降为 0')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

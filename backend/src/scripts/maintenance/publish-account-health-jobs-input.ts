@@ -1,6 +1,9 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { publishAccountHealthJobsInputFromAccount } from '../../modules/background/account-health-jobs-input.service.js'
-import { findAccountForAccountHealthJobsInputAsync } from '../../storage/account-health-jobs-input.repository.js'
+import {
+  findAccountForAccountHealthJobsInputAsync,
+  findAccountHealthJobsInputRevisionsAsync
+} from '../../storage/account-health-jobs-input.repository.js'
 import { reserveAccountHealthJobsInputVersion, reserveAccountHealthJobsInputVersionAsync } from '../../storage/account-health-jobs-input-version.repository.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
@@ -17,9 +20,13 @@ const signingKey = runtimeConfig.accountHealthJobs.inputSigningKey
 if (!root || !signingKey) {
   throw new Error('必须设置 JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY 和 JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY')
 }
-  const account = await findAccountForAccountHealthJobsInputAsync(accountId)
+const account = await findAccountForAccountHealthJobsInputAsync(accountId)
 if (!account) {
   throw new Error(`账户 ${accountId} 不是可发布的 active/pending_test J1 候选；不会生成不完整 snapshot`)
+}
+const revisions = await findAccountHealthJobsInputRevisionsAsync(account.id)
+if (!revisions || revisions.configRevision !== account.configRevision) {
+  throw new Error(`账户 ${account.id} 的 J1 config/dispatch fence 在发布前不一致；请重新读取后重试`)
 }
 const settings = await getSettingsAsync()
 const inputVersion = runtimeConfig.databaseDriver === 'postgres'
@@ -34,7 +41,7 @@ const numberSetting = (name: string, min: number, max: number): number => {
 }
 const path = publishAccountHealthJobsInputFromAccount({
   account,
-  dispatchRevision: account.dispatchRevision ?? 0,
+  dispatchRevision: revisions.dispatchRevision,
   inputVersion,
   signingKey,
   root,
