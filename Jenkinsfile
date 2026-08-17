@@ -249,10 +249,9 @@ def validDigest(value) { return value ==~ /^sha256:[a-f0-9]{64}$/ }
 def validHarborDigestImage(value) {
   if (!value || value != value.trim()) return false
   def prefix = "${env.HARBOR_REGISTRY}/"
-  def parts = value.split('@sha256:', 2)
-  return parts.size() == 2 && parts[0].startsWith(prefix) &&
-    (parts[0].substring(prefix.length()) ==~ /^[a-z0-9][a-z0-9._\/-]*$/) &&
-    validDigest("sha256:${parts[1]}")
+  def separator = value.lastIndexOf('@sha256:')
+  return value.startsWith(prefix) && separator > prefix.length() &&
+    value.indexOf('@sha256:') == separator && validDigest(value.substring(separator + 1))
 }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
