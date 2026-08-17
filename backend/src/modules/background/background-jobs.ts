@@ -3,6 +3,7 @@ import { stat as statFile } from 'node:fs/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import {
   performanceProcessMetricsTopologyComplete,
@@ -690,26 +691,27 @@ function oldestIso(left?: string, right?: string): string | undefined {
   const normalizedRight = normalizeIsoTime(right)
   if (!normalizedLeft) return normalizedRight
   if (!normalizedRight) return normalizedLeft
-  return Date.parse(normalizedLeft) <= Date.parse(normalizedRight) ? normalizedLeft : normalizedRight
+  const leftMs = rfc3339InstantMilliseconds(normalizedLeft)
+  const rightMs = rfc3339InstantMilliseconds(normalizedRight)
+  if (leftMs === undefined || rightMs === undefined) throw new Error('使用记录 oldestCreatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return leftMs <= rightMs ? normalizedLeft : normalizedRight
 }
 
 function usageStatsSafeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore: string, oldestPendingCreatedAt: string | undefined): string {
+  const normalizedDefaultSafeCreatedBefore = requiredRfc3339Instant(defaultSafeCreatedBefore, '统计安全截止时间')
   const normalizedOldestPendingCreatedAt = normalizeIsoTime(oldestPendingCreatedAt)
-  if (!normalizedOldestPendingCreatedAt || normalizedOldestPendingCreatedAt > defaultSafeCreatedBefore) {
-    return defaultSafeCreatedBefore
+  if (!normalizedOldestPendingCreatedAt) {
+    return normalizedDefaultSafeCreatedBefore
   }
-  const oldestPendingTime = Date.parse(normalizedOldestPendingCreatedAt)
-  if (!Number.isFinite(oldestPendingTime)) {
-    return defaultSafeCreatedBefore
-  }
+  const oldestPendingTime = rfc3339InstantMilliseconds(normalizedOldestPendingCreatedAt)
+  const defaultSafeCreatedBeforeMs = rfc3339InstantMilliseconds(normalizedDefaultSafeCreatedBefore)
+  if (oldestPendingTime === undefined || defaultSafeCreatedBeforeMs === undefined) throw new Error('统计安全截止时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  if (oldestPendingTime > defaultSafeCreatedBeforeMs) return normalizedDefaultSafeCreatedBefore
   return new Date(Math.max(0, oldestPendingTime - 1)).toISOString()
 }
 
 function normalizeIsoTime(value: string | undefined): string | undefined {
-  const trimmed = value?.trim()
-  if (!trimmed) return undefined
-  const time = Date.parse(trimmed)
-  return Number.isFinite(time) ? new Date(time).toISOString() : undefined
+  return value === undefined ? undefined : requiredRfc3339Instant(value, '使用记录 createdAt')
 }
 
 function defaultUsageStatsSafeCreatedBeforeIso(): string {

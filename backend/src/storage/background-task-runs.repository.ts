@@ -9,6 +9,7 @@ import {
 } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export type BackgroundTaskRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'skipped'
 
@@ -76,7 +77,9 @@ type BackgroundTaskRunRow = Record<string, unknown>
 export function createBackgroundTaskRun(input: BackgroundTaskRunCreateInput): BackgroundTaskRunSummary {
   const now = nowIso()
   const runId = newId('bgtask')
-  const submittedAt = input.submittedAt ?? now
+  const submittedAt = input.submittedAt === undefined
+    ? now
+    : requiredRfc3339Instant(input.submittedAt, '后台任务 submittedAt')
   getStatsDatabase().prepare(`
     INSERT INTO background_task_runs (
       run_id, job_name, job_type, worker_role, status, lease_key, params_json, result_json,
@@ -97,7 +100,8 @@ export function createBackgroundTaskRun(input: BackgroundTaskRunCreateInput): Ba
 }
 
 export function tryStartBackgroundTaskRun(input: BackgroundTaskRunStartInput): boolean {
-  const now = input.now ?? nowIso()
+  const now = input.now === undefined ? nowIso() : requiredRfc3339Instant(input.now, '后台任务 now')
+  const leaseUntil = requiredRfc3339Instant(input.leaseUntil, '后台任务 leaseUntil')
   const changed = getStatsDatabase().prepare(`
     UPDATE background_task_runs
     SET status = 'running',
@@ -115,28 +119,37 @@ export function tryStartBackgroundTaskRun(input: BackgroundTaskRunStartInput): b
     shardKey: input.runId,
     ownerId: input.ownerId,
     runId: input.runId,
-    leaseUntil: input.leaseUntil,
+    leaseUntil,
     now
   })
 }
 
-export function heartbeatBackgroundTaskRun(runId: string, ownerId: string, leaseUntil: string, now = nowIso()): boolean {
+export function heartbeatBackgroundTaskRun(runId: string, ownerId: string, leaseUntil: string, now?: string): boolean {
+  const normalizedNow = now === undefined ? nowIso() : requiredRfc3339Instant(now, '后台任务 now')
+  const normalizedLeaseUntil = requiredRfc3339Instant(leaseUntil, '后台任务 leaseUntil')
   const changed = getStatsDatabase().prepare(`
     UPDATE background_task_runs
     SET heartbeat_at = ?, updated_at = ?
     WHERE run_id = ?
       AND owner_id = ?
       AND status = 'running'
-  `).run(now, now, runId, ownerId).changes
+  `).run(normalizedNow, normalizedNow, runId, ownerId).changes
   if (changed <= 0) return false
-  return renewBackgroundJobLease(backgroundTaskLeaseKey(runId), ownerId, leaseUntil, now)
+  return renewBackgroundJobLease(backgroundTaskLeaseKey(runId), ownerId, normalizedLeaseUntil, normalizedNow)
 }
 
 export function finishBackgroundTaskRun(input: BackgroundTaskRunFinishInput): boolean {
-  const finishedAt = input.finishedAt ?? nowIso()
+  const finishedAt = input.finishedAt === undefined
+    ? nowIso()
+    : requiredRfc3339Instant(input.finishedAt, '后台任务 finishedAt')
   const row = getBackgroundTaskRun(input.runId)
-  const startedAtMs = row?.startedAt ? Date.parse(row.startedAt) : NaN
-  const durationMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.parse(finishedAt) - startedAtMs) : undefined
+  const startedAtMs = row?.startedAt === undefined ? undefined : rfc3339InstantMilliseconds(row.startedAt)
+  if (row?.startedAt !== undefined && startedAtMs === undefined) {
+    throw new Error('后台任务 startedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  const finishedAtMs = rfc3339InstantMilliseconds(finishedAt)
+  if (finishedAtMs === undefined) throw new Error('后台任务 finishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const durationMs = startedAtMs === undefined ? undefined : Math.max(0, finishedAtMs - startedAtMs)
   const changed = getStatsDatabase().prepare(`
     UPDATE background_task_runs
     SET status = ?,
@@ -173,7 +186,9 @@ export function getBackgroundTaskRun(runId: string): BackgroundTaskRunSummary | 
 export async function createBackgroundTaskRunAsync(input: BackgroundTaskRunCreateInput): Promise<BackgroundTaskRunSummary> {
   const now = nowIso()
   const runId = newId('bgtask')
-  const submittedAt = input.submittedAt ?? now
+  const submittedAt = input.submittedAt === undefined
+    ? now
+    : requiredRfc3339Instant(input.submittedAt, '后台任务 submittedAt')
   const client = createPostgresDatabaseClient(await getPostgresPool())
   await client.execute(`
     INSERT INTO ${backgroundTaskRunTable(client, 'background_task_runs')} (
@@ -195,7 +210,8 @@ export async function createBackgroundTaskRunAsync(input: BackgroundTaskRunCreat
 }
 
 export async function tryStartBackgroundTaskRunAsync(input: BackgroundTaskRunStartInput): Promise<boolean> {
-  const now = input.now ?? nowIso()
+  const now = input.now === undefined ? nowIso() : requiredRfc3339Instant(input.now, '后台任务 now')
+  const leaseUntil = requiredRfc3339Instant(input.leaseUntil, '后台任务 leaseUntil')
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const changed = await client.execute(`
     UPDATE ${backgroundTaskRunTable(client, 'background_task_runs')}
@@ -214,12 +230,14 @@ export async function tryStartBackgroundTaskRunAsync(input: BackgroundTaskRunSta
     shardKey: input.runId,
     ownerId: input.ownerId,
     runId: input.runId,
-    leaseUntil: input.leaseUntil,
+    leaseUntil,
     now
   })
 }
 
-export async function heartbeatBackgroundTaskRunAsync(runId: string, ownerId: string, leaseUntil: string, now = nowIso()): Promise<boolean> {
+export async function heartbeatBackgroundTaskRunAsync(runId: string, ownerId: string, leaseUntil: string, now?: string): Promise<boolean> {
+  const normalizedNow = now === undefined ? nowIso() : requiredRfc3339Instant(now, '后台任务 now')
+  const normalizedLeaseUntil = requiredRfc3339Instant(leaseUntil, '后台任务 leaseUntil')
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const changed = await client.execute(`
     UPDATE ${backgroundTaskRunTable(client, 'background_task_runs')}
@@ -227,17 +245,24 @@ export async function heartbeatBackgroundTaskRunAsync(runId: string, ownerId: st
     WHERE run_id = ?
       AND owner_id = ?
       AND status = 'running'
-  `, [now, now, runId, ownerId])
+  `, [normalizedNow, normalizedNow, runId, ownerId])
   if (changed.changes <= 0) return false
-  return renewBackgroundJobLeaseAsync(backgroundTaskLeaseKey(runId), ownerId, leaseUntil, now, client)
+  return renewBackgroundJobLeaseAsync(backgroundTaskLeaseKey(runId), ownerId, normalizedLeaseUntil, normalizedNow, client)
 }
 
 export async function finishBackgroundTaskRunAsync(input: BackgroundTaskRunFinishInput): Promise<boolean> {
-  const finishedAt = input.finishedAt ?? nowIso()
+  const finishedAt = input.finishedAt === undefined
+    ? nowIso()
+    : requiredRfc3339Instant(input.finishedAt, '后台任务 finishedAt')
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await getBackgroundTaskRunAsync(input.runId, client)
-  const startedAtMs = row?.startedAt ? Date.parse(row.startedAt) : NaN
-  const durationMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.parse(finishedAt) - startedAtMs) : undefined
+  const startedAtMs = row?.startedAt === undefined ? undefined : rfc3339InstantMilliseconds(row.startedAt)
+  if (row?.startedAt !== undefined && startedAtMs === undefined) {
+    throw new Error('后台任务 startedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  const finishedAtMs = rfc3339InstantMilliseconds(finishedAt)
+  if (finishedAtMs === undefined) throw new Error('后台任务 finishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const durationMs = startedAtMs === undefined ? undefined : Math.max(0, finishedAtMs - startedAtMs)
   const changed = await client.execute(`
     UPDATE ${backgroundTaskRunTable(client, 'background_task_runs')}
     SET status = ?,
@@ -274,7 +299,9 @@ export async function getBackgroundTaskRunAsync(runId: string, client?: Database
 }
 
 export function reconcileStaleBackgroundTaskRuns(input: BackgroundTaskRunReconcileInput): BackgroundTaskRunReconcileResult {
-  const now = input.now ?? nowIso()
+  const now = input.now === undefined ? nowIso() : requiredRfc3339Instant(input.now, '后台任务 now')
+  const queuedBefore = requiredRfc3339Instant(input.queuedBefore, '后台任务 queuedBefore')
+  const runningHeartbeatBefore = requiredRfc3339Instant(input.runningHeartbeatBefore, '后台任务 runningHeartbeatBefore')
   const limit = normalizeReconcileLimit(input.limit)
   const database = getStatsDatabase()
   const transactionStarted = beginImmediateDatabaseTransaction(database)
@@ -287,9 +314,9 @@ export function reconcileStaleBackgroundTaskRuns(input: BackgroundTaskRunReconci
       '临时维护 worker 未在期限内启动，后台任务已自动收口为失败',
       now,
       now,
-      input.queuedBefore,
+      queuedBefore,
       now,
-      input.queuedBefore,
+      queuedBefore,
       now,
       limit
     ).changes ?? 0)
@@ -301,9 +328,9 @@ export function reconcileStaleBackgroundTaskRuns(input: BackgroundTaskRunReconci
       '临时维护 worker 心跳中断且无有效租约，后台任务已自动收口为失败',
       now,
       now,
-      input.runningHeartbeatBefore,
+      runningHeartbeatBefore,
       now,
-      input.runningHeartbeatBefore,
+      runningHeartbeatBefore,
       now,
       limit
     ).changes ?? 0)
@@ -321,7 +348,9 @@ export function reconcileStaleBackgroundTaskRuns(input: BackgroundTaskRunReconci
 
 export async function reconcileStaleBackgroundTaskRunsAsync(input: BackgroundTaskRunReconcileInput): Promise<BackgroundTaskRunReconcileResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') return reconcileStaleBackgroundTaskRuns(input)
-  const now = input.now ?? nowIso()
+  const now = input.now === undefined ? nowIso() : requiredRfc3339Instant(input.now, '后台任务 now')
+  const queuedBefore = requiredRfc3339Instant(input.queuedBefore, '后台任务 queuedBefore')
+  const runningHeartbeatBefore = requiredRfc3339Instant(input.runningHeartbeatBefore, '后台任务 runningHeartbeatBefore')
   const limit = normalizeReconcileLimit(input.limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return await client.transaction(async (tx) => {
@@ -332,9 +361,9 @@ export async function reconcileStaleBackgroundTaskRunsAsync(input: BackgroundTas
       '临时维护 worker 未在期限内启动，后台任务已自动收口为失败',
       now,
       now,
-      input.queuedBefore,
+      queuedBefore,
       now,
-      input.queuedBefore,
+      queuedBefore,
       now,
       limit
     ])).changes
@@ -343,9 +372,9 @@ export async function reconcileStaleBackgroundTaskRunsAsync(input: BackgroundTas
       '临时维护 worker 心跳中断且无有效租约，后台任务已自动收口为失败',
       now,
       now,
-      input.runningHeartbeatBefore,
+      runningHeartbeatBefore,
       now,
-      input.runningHeartbeatBefore,
+      runningHeartbeatBefore,
       now,
       limit
     ])).changes
@@ -363,7 +392,8 @@ export function acquireBackgroundJobLease(input: {
   leaseUntil: string
   now?: string
 }): boolean {
-  const now = input.now ?? nowIso()
+  const now = input.now === undefined ? nowIso() : requiredRfc3339Instant(input.now, '后台任务 now')
+  const leaseUntil = requiredRfc3339Instant(input.leaseUntil, '后台任务 leaseUntil')
   const database = getStatsDatabase()
   const result = database.prepare(`
     INSERT INTO background_job_leases (
@@ -385,7 +415,7 @@ export function acquireBackgroundJobLease(input: {
     input.shardKey ?? '',
     input.ownerId,
     input.runId ?? null,
-    input.leaseUntil,
+    leaseUntil,
     now,
     now,
     now,
@@ -422,7 +452,8 @@ export async function acquireBackgroundJobLeaseAsync(input: {
   now?: string
 }): Promise<boolean> {
   if (runtimeConfig.databaseDriver !== 'postgres') return acquireBackgroundJobLease(input)
-  const now = input.now ?? nowIso()
+  const now = input.now === undefined ? nowIso() : requiredRfc3339Instant(input.now, '后台任务 now')
+  const leaseUntil = requiredRfc3339Instant(input.leaseUntil, '后台任务 leaseUntil')
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
       INSERT INTO ${backgroundTaskRunTable(client, 'background_job_leases')} (
@@ -444,7 +475,7 @@ export async function acquireBackgroundJobLeaseAsync(input: {
       input.shardKey ?? '',
       input.ownerId,
       input.runId ?? null,
-      input.leaseUntil,
+      leaseUntil,
       now,
       now,
       now,
@@ -453,15 +484,17 @@ export async function acquireBackgroundJobLeaseAsync(input: {
   return result.changes > 0
 }
 
-export async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now = nowIso(), client?: DatabaseClient): Promise<boolean> {
-  if (runtimeConfig.databaseDriver !== 'postgres') return renewBackgroundJobLease(leaseKey, ownerId, leaseUntil, now)
+export async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now?: string, client?: DatabaseClient): Promise<boolean> {
+  const normalizedNow = now === undefined ? nowIso() : requiredRfc3339Instant(now, '后台任务 now')
+  const normalizedLeaseUntil = requiredRfc3339Instant(leaseUntil, '后台任务 leaseUntil')
+  if (runtimeConfig.databaseDriver !== 'postgres') return renewBackgroundJobLease(leaseKey, ownerId, normalizedLeaseUntil, normalizedNow)
   const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
   const result = await databaseClient.execute(`
     UPDATE ${backgroundTaskRunTable(databaseClient, 'background_job_leases')}
     SET lease_until = ?, heartbeat_at = ?, updated_at = ?
     WHERE lease_key = ?
       AND owner_id = ?
-  `, [leaseUntil, now, now, leaseKey, ownerId])
+  `, [normalizedLeaseUntil, normalizedNow, normalizedNow, leaseKey, ownerId])
   return result.changes > 0
 }
 
@@ -597,14 +630,14 @@ function backgroundTaskRunFromRow(row: BackgroundTaskRunRow): BackgroundTaskRunS
     params: parseJsonObject(row.params_json),
     result: parseJsonObject(row.result_json),
     errorMessage: optionalString(row.error_message),
-    submittedAt: String(row.submitted_at),
-    startedAt: optionalString(row.started_at),
-    heartbeatAt: optionalString(row.heartbeat_at),
-    finishedAt: optionalString(row.finished_at),
+    submittedAt: requiredRfc3339Instant(row.submitted_at, 'background_task_runs.submitted_at'),
+    startedAt: optionalTimestamp(row.started_at, 'background_task_runs.started_at'),
+    heartbeatAt: optionalTimestamp(row.heartbeat_at, 'background_task_runs.heartbeat_at'),
+    finishedAt: optionalTimestamp(row.finished_at, 'background_task_runs.finished_at'),
     durationMs: optionalNumber(row.duration_ms),
     exitCode: optionalNumber(row.exit_code),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at)
+    createdAt: requiredRfc3339Instant(row.created_at, 'background_task_runs.created_at'),
+    updatedAt: requiredRfc3339Instant(row.updated_at, 'background_task_runs.updated_at')
   }
 }
 
@@ -616,6 +649,11 @@ function normalizeStatus(value: unknown): BackgroundTaskRunStatus {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
+}
+
+function optionalTimestamp(value: unknown, field: string): string | undefined {
+  if (value === null || value === undefined) return undefined
+  return requiredRfc3339Instant(value, field)
 }
 
 function optionalNumber(value: unknown): number | undefined {

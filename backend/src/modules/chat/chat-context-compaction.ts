@@ -19,6 +19,7 @@ import { readChatJsonResponse } from './chat-bounded-json.js'
 import type { ChatTransportProtocol } from './chat-transport.js'
 import { countChatJsonTokens } from './chat-token-count.js'
 import type { ChatGatewayDispatch } from './chat-gateway-dispatch.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 const compactionPromptVersion = 'chat-context-summary-v1'
 const compactionSourcePageRows = 40
@@ -155,7 +156,7 @@ async function runCompaction(
       expectedRevision: loaded.head.contextRevision,
       sourceThroughSequence,
       now,
-      staleClaimBefore: new Date(Date.parse(now) - 15 * 60_000).toISOString()
+      staleClaimBefore: shiftInstant(now, -15 * 60_000, '聊天上下文 staleClaimBefore')
     })
   } catch (error) {
     await failPendingChatContextCompaction(input.client, {
@@ -461,5 +462,21 @@ function isRecord(value: unknown): value is Record<string, unknown> { return Boo
 function boundedString(value: unknown, max: number): string { return typeof value === 'string' ? value.trim().slice(0, max) : '' }
 function stringArray(value: unknown, maxItems: number): string[] { return (Array.isArray(value) ? value : []).map((item) => boundedString(item, 4_000)).filter(Boolean).slice(0, maxItems) }
 function objectArray(value: unknown, maxItems: number): Record<string, unknown>[] { return (Array.isArray(value) ? value : []).filter(isRecord).slice(0, maxItems) }
-function earlierTime(left: string | undefined, right: string | undefined): string | undefined { if (!left) return right; if (!right) return left; return Date.parse(left) <= Date.parse(right) ? left : right }
+function earlierTime(left: string | undefined, right: string | undefined): string | undefined {
+  if (left === undefined) return right === undefined ? undefined : requiredRfc3339Instant(right, '聊天上下文 earliestExpiresAt')
+  if (right === undefined) return requiredRfc3339Instant(left, '聊天上下文 earliestExpiresAt')
+  const leftNormalized = requiredRfc3339Instant(left, '聊天上下文 earliestExpiresAt')
+  const rightNormalized = requiredRfc3339Instant(right, '聊天上下文 earliestExpiresAt')
+  const leftMs = rfc3339InstantMilliseconds(leftNormalized)
+  const rightMs = rfc3339InstantMilliseconds(rightNormalized)
+  if (leftMs === undefined || rightMs === undefined) throw new Error('聊天上下文 earliestExpiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return leftMs <= rightMs ? leftNormalized : rightNormalized
+}
+
+function shiftInstant(value: string, offsetMs: number, label: string): string {
+  const normalized = requiredRfc3339Instant(value, label)
+  const milliseconds = rfc3339InstantMilliseconds(normalized)
+  if (milliseconds === undefined) throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  return new Date(milliseconds + offsetMs).toISOString()
+}
 function safeErrorCode(error: unknown): string { return (error instanceof Error ? error.message : 'chat_context_compaction_failed').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 128) || 'chat_context_compaction_failed' }

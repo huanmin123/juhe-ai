@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseClient } from './database-client.js'
 import { chatAssetGeneratedMaxBytes, chatAssetGeneratedQuotaMaxBytes, chatAssetOriginalMaxBytes, chatAssetPreviewMaxBytes, chatAssetProcessedMaxBytes } from './chat-asset-storage.js'
 import { commitChatImageGenerationInClient, listChatImageGenerationRootAssetIdsInClient, renewChatImageGenerationExpiryInClient, type ChatImageGenerationCommitInput } from './chat-image-generations.repository.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export type ChatAssetOriginalMimeType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
 export type ChatAssetProcessedMimeType = 'image/jpeg' | 'image/png' | 'image/webp'
@@ -243,7 +244,8 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
   const originalHeight = normalizedOptionalDimension(input.originalHeight, 'originalHeight')
   const quotaBytes = normalizedPositiveInteger(input.quotaBytes, 'quotaBytes', chatAssetProcessedMaxBytes)
   if ((originalWidth === undefined) !== (originalHeight === undefined)) throw new Error('聊天资产原始宽高必须同时提供')
-  const expiresAt = addDays(input.now, input.retentionDays)
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
+  const expiresAt = addDays(now, input.retentionDays)
   return client.transaction(async (tx) => {
     await lockChatAssetUserQuota(tx, input.systemAccountId)
     await assertUncommittedChatAssetCountAvailable(tx, input)
@@ -274,14 +276,14 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
       originalBytes,
       originalSha256,
       quotaBytes,
-      input.now,
-      input.now,
+      now,
+      now,
       expiresAt,
       input.conversationId,
       input.systemAccountId
     ])
     if (!row) throw new Error('聊天会话不存在或不属于当前用户')
-    await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, input.now)
+    await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, now)
     return chatAssetFromRow(row)
   })
 }
@@ -306,7 +308,8 @@ export async function commitChatGeneratedAsset(client: DatabaseClient, input: Ch
   const quotaBytes = bytes + previewBytes
   if (quotaBytes > chatAssetGeneratedQuotaMaxBytes) throw new Error('生成图片原图与 preview 总字节超过上限')
   const contentOrder = nonNegativeSafeInteger(input.contentOrder, 'contentOrder')
-  const expiresAt = addDays(input.now, input.retentionDays)
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
+  const expiresAt = addDays(now, input.retentionDays)
   return client.transaction(async (tx) => {
     await lockChatAssetUserQuota(tx, input.systemAccountId)
     const message = await tx.one<{ turn_id?: unknown }>(`
@@ -331,28 +334,31 @@ export async function commitChatGeneratedAsset(client: DatabaseClient, input: Ch
       id, input.systemAccountId, input.conversationId, generatedAssetFilename(id, mimeType), mimeType,
       width, height, bytes, sha256, mimeType, width, height, bytes, sha256, storageKey,
       previewMimeType, previewWidth, previewHeight, previewBytes, previewSha256, previewStorageKey,
-      quotaBytes, input.turnId, input.messageId, input.now, input.now, input.now, expiresAt
+      quotaBytes, input.turnId, input.messageId, now, now, now, expiresAt
     ])
     if (!row) throw new Error('生成图片资产写入失败')
     await tx.execute(`
       INSERT INTO ${chatTable(tx, 'chat_asset_references')} (
         asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
       ) VALUES (?, ?, ?, ?, 'assistant_output', ?, ?, ?)
-    `, [id, input.conversationId, input.turnId, input.messageId, contentOrder, input.now, expiresAt])
+    `, [id, input.conversationId, input.turnId, input.messageId, contentOrder, now, expiresAt])
     await commitChatImageGenerationInClient(tx, {
+      ...input.generation,
       assetId: id,
       conversationId: input.conversationId,
       systemAccountId: input.systemAccountId,
-      createdAt: input.now,
-      expiresAt,
-      ...input.generation
+      createdAt: now,
+      expiresAt
     })
-    await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, input.now)
+    await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, now)
     return chatAssetFromRow(row)
   })
 }
 
 export async function insertChatAssetReference(client: DatabaseClient, input: ChatAssetReferenceCreateInput): Promise<ChatAssetReferenceRecord | undefined> {
+  const createdAt = requiredRfc3339Instant(input.createdAt, '聊天资产引用 createdAt')
+  const expiresAt = requiredRfc3339Instant(input.expiresAt, '聊天资产引用 expiresAt')
+  const now = requiredRfc3339Instant(input.now, '聊天资产引用 now')
   const row = await client.one<ChatAssetReferenceRow>(`
     INSERT INTO ${chatTable(client, 'chat_asset_references')} (
       asset_id, conversation_id, turn_id, message_id, reference_kind,
@@ -371,15 +377,15 @@ export async function insertChatAssetReference(client: DatabaseClient, input: Ch
     input.messageId,
     input.referenceKind,
     input.contentOrder,
-    input.createdAt,
-    input.expiresAt,
+    createdAt,
+    expiresAt,
     input.assetId,
     input.systemAccountId,
     input.conversationId,
-    input.now,
-    input.expiresAt,
-    input.now,
-    input.expiresAt
+    now,
+    expiresAt,
+    now,
+    expiresAt
   ])
   return row ? chatAssetReferenceFromRow(row) : undefined
 }
@@ -390,6 +396,7 @@ export async function hasValidChatAssetReference(client: DatabaseClient, input: 
   conversationId: string
   now: string
 }): Promise<boolean> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产引用 now')
   const row = await client.one<{ found?: unknown }>(`
     SELECT 1 AS found
     FROM ${chatTable(client, 'chat_asset_references')} AS reference
@@ -399,7 +406,7 @@ export async function hasValidChatAssetReference(client: DatabaseClient, input: 
       AND reference.expires_at > ? AND asset.expires_at > ?
       AND asset.processing_status = 'ready' AND asset.cleanup_status = 'active'
     LIMIT 1
-  `, [input.assetId, input.systemAccountId, input.conversationId, input.now, input.now])
+  `, [input.assetId, input.systemAccountId, input.conversationId, now, now])
   return Boolean(row?.found)
 }
 
@@ -409,6 +416,7 @@ export async function listActiveChatAssetReferences(client: DatabaseClient, inpu
   messageId: string
   now: string
 }): Promise<ChatAssetReferenceRecord[]> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产引用 now')
   const rows = await client.query<ChatAssetReferenceRow>(`
     SELECT reference.*
     FROM ${chatTable(client, 'chat_asset_references')} AS reference
@@ -418,7 +426,7 @@ export async function listActiveChatAssetReferences(client: DatabaseClient, inpu
       AND reference.message_id = ? AND reference.expires_at > ?
       AND asset.cleanup_status = 'active' AND asset.expires_at > ?
     ORDER BY reference.content_order ASC, reference.asset_id ASC
-  `, [input.systemAccountId, input.conversationId, input.messageId, input.now, input.now])
+  `, [input.systemAccountId, input.conversationId, input.messageId, now, now])
   return rows.map(chatAssetReferenceFromRow)
 }
 
@@ -445,6 +453,7 @@ async function assertUncommittedChatAssetCountAvailable(client: DatabaseClient, 
   conversationId: string
   now: string
 }): Promise<number> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const uncommitted = await client.one<{ total?: unknown }>(`
     SELECT COUNT(*) AS total
     FROM ${chatTable(client, 'chat_assets')}
@@ -453,7 +462,7 @@ async function assertUncommittedChatAssetCountAvailable(client: DatabaseClient, 
       AND turn_id IS NULL AND message_id IS NULL
       AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active'
       AND expires_at > ?
-  `, [input.systemAccountId, input.conversationId, input.now])
+  `, [input.systemAccountId, input.conversationId, now])
   const uncommittedCount = Number(uncommitted?.total ?? 0)
   if (uncommittedCount >= maxChatAssetsPerMessage) throw new ChatAssetCountExceededError()
   return uncommittedCount
@@ -466,6 +475,7 @@ export async function completeChatAssetProcessing(client: DatabaseClient, input:
   const processedBytes = normalizedPositiveInteger(input.processedBytes, 'processedBytes', chatAssetProcessedMaxBytes)
   const processedSha256 = normalizedSha256(input.processedSha256)
   const storageKey = normalizedStorageKey(input.storageKey)
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const row = await client.one<ChatAssetRow>(`
     UPDATE ${chatTable(client, 'chat_assets')}
     SET processed_mime_type = ?, processed_width = ?, processed_height = ?, processed_bytes = ?,
@@ -481,11 +491,11 @@ export async function completeChatAssetProcessing(client: DatabaseClient, input:
     processedBytes,
     processedSha256,
     storageKey,
-    input.now,
+    now,
     input.assetId,
     input.systemAccountId,
     input.conversationId,
-    input.now
+    now
   ])
   if (!row) throw new Error('聊天资产不存在、已过期或处理状态已变化')
   return chatAssetFromRow(row)
@@ -495,20 +505,22 @@ export async function failChatAssetProcessing(client: DatabaseClient, input: Cha
   errorCode: string
   now: string
 }): Promise<ChatAssetRecord | undefined> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const result = await client.execute(`
     UPDATE ${chatTable(client, 'chat_assets')}
     SET processing_status = 'failed', processing_error_code = ?, updated_at = ?
     WHERE id = ? AND system_account_id = ? AND conversation_id = ?
       AND processing_status = 'pending' AND cleanup_status = 'active'
-  `, [normalizedErrorCode(input.errorCode), input.now, input.assetId, input.systemAccountId, input.conversationId])
+  `, [normalizedErrorCode(input.errorCode), now, input.assetId, input.systemAccountId, input.conversationId])
   if (result.changes !== 1) return undefined
   return requireChatAsset(client, input)
 }
 
 export async function getChatAsset(client: DatabaseClient, input: ChatAssetLookupInput): Promise<ChatAssetRecord | undefined> {
+  const now = input.now === undefined ? undefined : requiredRfc3339Instant(input.now, '聊天资产 now')
   const params: unknown[] = [input.assetId, input.systemAccountId, input.conversationId]
-  const activeClause = input.now ? 'AND expires_at > ?' : ''
-  if (input.now) params.push(input.now)
+  const activeClause = now === undefined ? '' : 'AND expires_at > ?'
+  if (now !== undefined) params.push(now)
   const row = await client.one<ChatAssetRow>(`
     SELECT * FROM ${chatTable(client, 'chat_assets')}
     WHERE id = ? AND system_account_id = ? AND conversation_id = ?
@@ -524,6 +536,7 @@ export async function listReadyChatAssetsByIds(client: DatabaseClient, input: {
   conversationId: string
   now: string
 }): Promise<ChatAssetRecord[]> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const assetIds = normalizedAssetIds(input.assetIds)
   if (assetIds.length === 0) return []
   const rows = await client.query<ChatAssetRow>(`
@@ -531,7 +544,7 @@ export async function listReadyChatAssetsByIds(client: DatabaseClient, input: {
     WHERE id IN (${client.dialect.bindPlaceholders(assetIds.length)})
       AND system_account_id = ? AND conversation_id = ?
       AND processing_status = 'ready' AND cleanup_status = 'active' AND expires_at > ?
-  `, [...assetIds, input.systemAccountId, input.conversationId, input.now])
+  `, [...assetIds, input.systemAccountId, input.conversationId, now])
   const recordsById = new Map(rows.map((row) => {
     const record = chatAssetFromRow(row)
     return [record.id, record]
@@ -560,6 +573,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
   now: string
   retentionDays: number
 }): Promise<ChatAssetRecord[]> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const assetIds = normalizedAssetIds(input.assetIds)
   if (assetIds.length === 0) return []
   const message = await client.one<{ turn_id?: unknown }>(`
@@ -578,16 +592,21 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
   `, [...assetIds, input.systemAccountId, input.conversationId])
   const records = rows.map(chatAssetFromRow)
   const recordsById = new Map(records.map((asset) => [asset.id, asset]))
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (nowMs === undefined) throw new Error('聊天资产 now 必须是带 Z 或数值 offset 的 RFC3339 时间')
   for (const assetId of assetIds) {
     const asset = recordsById.get(assetId)
-    if (!asset || asset.processingStatus !== 'ready' || asset.cleanupStatus !== 'active' || asset.expiresAt <= input.now) {
+    if (!asset || asset.processingStatus !== 'ready' || asset.cleanupStatus !== 'active') {
       throw new Error('聊天资产不存在、未处理完成或已过期')
     }
+    const assetExpiresAtMs = rfc3339InstantMilliseconds(asset.expiresAt)
+    if (assetExpiresAtMs === undefined) throw new Error('聊天资产 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+    if (assetExpiresAtMs <= nowMs) throw new Error('聊天资产不存在、未处理完成或已过期')
     if (asset.sourceKind === 'user_upload' && ((asset.turnId && asset.turnId !== turnId) || (asset.messageId && asset.messageId !== input.messageId))) {
       throw new Error('聊天资产已绑定其他消息')
     }
   }
-  const expiresAt = addDays(input.now, input.retentionDays)
+  const expiresAt = addDays(now, input.retentionDays)
   for (const assetId of assetIds) {
     const asset = recordsById.get(assetId)!
     const result = asset.sourceKind === 'assistant_generated'
@@ -596,7 +615,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
           SET expires_at = CASE WHEN expires_at < ? THEN ? ELSE expires_at END, updated_at = ?
           WHERE id = ? AND system_account_id = ? AND conversation_id = ?
             AND source_kind = 'assistant_generated' AND processing_status = 'ready' AND cleanup_status = 'active'
-        `, [expiresAt, expiresAt, input.now, assetId, input.systemAccountId, input.conversationId])
+        `, [expiresAt, expiresAt, now, assetId, input.systemAccountId, input.conversationId])
       : await client.execute(`
           UPDATE ${chatTable(client, 'chat_assets')}
           SET turn_id = ?, message_id = ?, committed_at = COALESCE(committed_at, ?),
@@ -604,7 +623,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
           WHERE id = ? AND system_account_id = ? AND conversation_id = ?
             AND source_kind = 'user_upload' AND cleanup_status = 'active'
             AND (turn_id IS NULL OR turn_id = ?) AND (message_id IS NULL OR message_id = ?)
-        `, [turnId, input.messageId, input.now, expiresAt, expiresAt, input.now, assetId, input.systemAccountId, input.conversationId, turnId, input.messageId])
+        `, [turnId, input.messageId, now, expiresAt, expiresAt, now, assetId, input.systemAccountId, input.conversationId, turnId, input.messageId])
     if (result.changes !== 1) throw new Error('聊天资产绑定消息时发生并发冲突')
   }
   const rootAssetIds = (await listChatImageGenerationRootAssetIdsInClient(client, {
@@ -620,7 +639,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
       WHERE id IN (${client.dialect.bindPlaceholders(rootAssetIds.length)})
         AND system_account_id = ? AND conversation_id = ?
         AND source_kind = 'assistant_generated' AND processing_status = 'ready' AND cleanup_status = 'active'
-    `, [expiresAt, expiresAt, expiresAt, input.now, ...rootAssetIds, input.systemAccountId, input.conversationId])
+    `, [expiresAt, expiresAt, expiresAt, now, ...rootAssetIds, input.systemAccountId, input.conversationId])
     if (retainedRoots.changes !== rootAssetIds.length) throw new Error('聊天图片根谱系保留期限更新失败')
   }
   await renewChatImageGenerationExpiryInClient(client, {
@@ -635,7 +654,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
         asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
       ) VALUES (?, ?, ?, ?, 'user_input', ?, ?, ?)
       ON CONFLICT (message_id, content_order) DO NOTHING
-    `, [assetId, input.conversationId, turnId, input.messageId, contentOrder, input.now, expiresAt])
+    `, [assetId, input.conversationId, turnId, input.messageId, contentOrder, now, expiresAt])
   }
   return listReadyChatAssetsByIds(client, { ...input, assetIds })
 }
@@ -647,6 +666,7 @@ export async function setChatAssetObservation(client: DatabaseClient, input: Cha
   claimId: string
   now: string
 }): Promise<ChatAssetRecord | undefined> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const observationJson = input.observation === undefined ? null : boundedJson(input.observation, chatAssetObservationMaxBytes)
   if (input.status === 'ready' && !observationJson) throw new Error('图片说明完成时必须提供 observation')
   const observationRevision = nonNegativeSafeInteger(input.observationRevision, 'observationRevision')
@@ -658,7 +678,7 @@ export async function setChatAssetObservation(client: DatabaseClient, input: Cha
       AND processing_status = 'ready' AND cleanup_status = 'active' AND expires_at > ?
       AND observation_status = 'pending' AND observation_revision = ? AND observation_claim_id = ?
     RETURNING *
-  `, [input.status, observationJson, input.now, input.assetId, input.systemAccountId, input.conversationId, input.now, observationRevision, input.claimId])
+  `, [input.status, observationJson, now, input.assetId, input.systemAccountId, input.conversationId, now, observationRevision, input.claimId])
   return row ? chatAssetFromRow(row) : undefined
 }
 
@@ -667,7 +687,10 @@ export async function claimChatAssetObservation(client: DatabaseClient, input: C
   expectedMessageId: string
   now: string
 }): Promise<ChatAssetRecord | undefined> {
-  const staleBefore = new Date(Date.parse(input.now) - 15 * 60_000).toISOString()
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (nowMs === undefined) throw new Error('聊天资产 now 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const staleBefore = new Date(nowMs - 15 * 60_000).toISOString()
   const claimId = observationClaimId()
   const row = await client.one<ChatAssetRow>(`
     UPDATE ${chatTable(client, 'chat_assets')} AS asset
@@ -687,16 +710,16 @@ export async function claimChatAssetObservation(client: DatabaseClient, input: C
     RETURNING *
   `, [
     claimId,
-    input.now,
-    input.now,
+    now,
+    now,
     input.assetId,
     input.systemAccountId,
     input.conversationId,
     input.expectedTurnId,
     input.expectedMessageId,
-    input.now,
+    now,
     staleBefore,
-    input.now
+    now
   ])
   return row ? chatAssetFromRow(row) : undefined
 }
@@ -704,6 +727,7 @@ export async function claimChatAssetObservation(client: DatabaseClient, input: C
 export async function claimUncommittedChatAssetForDeletion(client: DatabaseClient, input: ChatAssetLookupInput & {
   now: string
 }): Promise<{ claimId: string; asset: ChatAssetRecord } | undefined> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const claimId = cleanupClaimId()
   const result = await client.execute(`
     UPDATE ${chatTable(client, 'chat_assets')} AS asset
@@ -719,7 +743,7 @@ export async function claimUncommittedChatAssetForDeletion(client: DatabaseClien
           AND reference.expires_at > ?
       )
       AND asset.cleanup_status IN ('active', 'failed')
-  `, [claimId, input.now, input.now, input.assetId, input.systemAccountId, input.conversationId, input.now])
+  `, [claimId, now, now, input.assetId, input.systemAccountId, input.conversationId, now])
   if (result.changes !== 1) return undefined
   const asset = await getClaimedChatAsset(client, input.assetId, claimId)
   return asset ? { claimId, asset } : undefined
@@ -731,7 +755,10 @@ export async function claimExpiredChatAssetsForCleanup(client: DatabaseClient, i
 }): Promise<ChatAssetCleanupClaim> {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit), 500))
   const claimId = cleanupClaimId()
-  const staleClaimBefore = new Date(Date.parse(input.now) - 15 * 60 * 1000).toISOString()
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (nowMs === undefined) throw new Error('聊天资产 now 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const staleClaimBefore = new Date(nowMs - 15 * 60 * 1000).toISOString()
   return client.transaction(async (tx) => {
     const rows = await tx.query<{ id?: unknown }>(`
       SELECT id FROM ${chatTable(tx, 'chat_assets')}
@@ -743,7 +770,7 @@ export async function claimExpiredChatAssetsForCleanup(client: DatabaseClient, i
         )
       ORDER BY expires_at ASC, id ASC
       LIMIT ? ${tx.driver === 'postgres' ? 'FOR UPDATE SKIP LOCKED' : ''}
-    `, [input.now, input.now, staleClaimBefore, limit])
+    `, [now, now, staleClaimBefore, limit])
     const assetIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
     if (assetIds.length === 0) return { claimId, assets: [], hasMore: false }
     const result = await tx.execute(`
@@ -752,7 +779,7 @@ export async function claimExpiredChatAssetsForCleanup(client: DatabaseClient, i
           cleanup_attempt_count = cleanup_attempt_count + 1, cleanup_retry_at = NULL,
           cleanup_error_code = NULL, updated_at = ?
       WHERE id IN (${tx.dialect.bindPlaceholders(assetIds.length)})
-    `, [claimId, input.now, input.now, ...assetIds])
+    `, [claimId, now, now, ...assetIds])
     if (result.changes !== assetIds.length) throw new Error('聊天资产清理认领发生并发冲突')
     const claimedRows = await tx.query<ChatAssetRow>(`
       SELECT * FROM ${chatTable(tx, 'chat_assets')}
@@ -768,6 +795,7 @@ export async function expireChatAssetsForConversationInClient(client: DatabaseCl
   conversationId: string
   now: string
 }): Promise<number> {
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const result = await client.execute(`
     UPDATE ${chatTable(client, 'chat_assets')}
     SET expires_at = CASE WHEN expires_at > ? THEN ? ELSE expires_at END,
@@ -775,7 +803,7 @@ export async function expireChatAssetsForConversationInClient(client: DatabaseCl
         updated_at = ?
     WHERE system_account_id = ? AND conversation_id = ?
       AND cleanup_status IN ('active', 'failed')
-  `, [input.now, input.now, input.now, input.now, input.systemAccountId, input.conversationId])
+  `, [now, now, now, now, input.systemAccountId, input.conversationId])
   return result.changes
 }
 
@@ -804,12 +832,14 @@ export async function releaseChatAssetDeletionClaim(client: DatabaseClient, inpu
   retryAt: string
   now: string
 }): Promise<boolean> {
+  const retryAt = requiredRfc3339Instant(input.retryAt, '聊天资产 cleanupRetryAt')
+  const now = requiredRfc3339Instant(input.now, '聊天资产 now')
   const result = await client.execute(`
     UPDATE ${chatTable(client, 'chat_assets')}
     SET cleanup_status = 'failed', cleanup_claim_id = NULL, cleanup_claimed_at = NULL,
         cleanup_retry_at = ?, cleanup_error_code = ?, updated_at = ?
     WHERE id = ? AND cleanup_status = 'claimed' AND cleanup_claim_id = ?
-  `, [input.retryAt, normalizedErrorCode(input.errorCode), input.now, input.assetId, input.claimId])
+  `, [retryAt, normalizedErrorCode(input.errorCode), now, input.assetId, input.claimId])
   return result.changes === 1
 }
 
@@ -886,19 +916,19 @@ function chatAssetFromRow(row: ChatAssetRow): ChatAssetRecord {
     observation: optionalJsonObject(row.observation_json),
     observationRevision: nonNegativeSafeInteger(Number(row.observation_revision), 'observationRevision'),
     observationClaimId: optionalString(row.observation_claim_id),
-    observationClaimedAt: optionalString(row.observation_claimed_at),
+    observationClaimedAt: optionalTimestamp(row.observation_claimed_at, 'chat_assets.observation_claimed_at'),
     quotaBytes: normalizedPositiveInteger(Number(row.quota_bytes), 'quotaBytes', chatAssetGeneratedQuotaMaxBytes),
     turnId: optionalString(row.turn_id),
     messageId: optionalString(row.message_id),
-    committedAt: optionalString(row.committed_at),
+    committedAt: optionalTimestamp(row.committed_at, 'chat_assets.committed_at'),
     cleanupStatus: normalizedCleanupStatus(row.cleanup_status),
     cleanupAttemptCount: Number(row.cleanup_attempt_count),
-    cleanupClaimedAt: optionalString(row.cleanup_claimed_at),
-    cleanupRetryAt: optionalString(row.cleanup_retry_at),
+    cleanupClaimedAt: optionalTimestamp(row.cleanup_claimed_at, 'chat_assets.cleanup_claimed_at'),
+    cleanupRetryAt: optionalTimestamp(row.cleanup_retry_at, 'chat_assets.cleanup_retry_at'),
     cleanupErrorCode: optionalString(row.cleanup_error_code),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-    expiresAt: String(row.expires_at)
+    createdAt: requiredRfc3339Instant(row.created_at, 'chat_assets.created_at'),
+    updatedAt: requiredRfc3339Instant(row.updated_at, 'chat_assets.updated_at'),
+    expiresAt: requiredRfc3339Instant(row.expires_at, 'chat_assets.expires_at')
   }
 }
 
@@ -910,8 +940,8 @@ function chatAssetReferenceFromRow(row: ChatAssetReferenceRow): ChatAssetReferen
     messageId: String(row.message_id),
     referenceKind: String(row.reference_kind) as ChatAssetReferenceKind,
     contentOrder: Number(row.content_order),
-    createdAt: String(row.created_at),
-    expiresAt: String(row.expires_at)
+    createdAt: requiredRfc3339Instant(row.created_at, 'chat_asset_references.created_at'),
+    expiresAt: requiredRfc3339Instant(row.expires_at, 'chat_asset_references.expires_at')
   }
 }
 
@@ -1095,12 +1125,18 @@ function optionalString(value: unknown): string | undefined {
   return value == null || value === '' ? undefined : String(value)
 }
 
+function optionalTimestamp(value: unknown, field: string): string | undefined {
+  if (value === null || value === undefined) return undefined
+  return requiredRfc3339Instant(value, field)
+}
+
 function optionalNumber(value: unknown): number | undefined {
   return value == null ? undefined : Number(value)
 }
 
 function addDays(value: string, days: number): string {
-  const timestamp = Date.parse(value)
-  if (!Number.isFinite(timestamp)) throw new Error('聊天资产时间无效')
+  const normalized = requiredRfc3339Instant(value, '聊天资产时间')
+  const timestamp = rfc3339InstantMilliseconds(normalized)
+  if (timestamp === undefined) throw new Error('聊天资产时间必须是带 Z 或数值 offset 的 RFC3339 时间')
   return new Date(timestamp + days * 24 * 60 * 60 * 1000).toISOString()
 }

@@ -631,7 +631,7 @@ function assertNoPerformanceLocalFactQueues(): void {
   )
   assert.match(
     functionBody(backgroundJobsSource, 'usageStatsSafeCreatedBeforeForPendingBacklog'),
-    /normalizeIsoTime\(oldestPendingCreatedAt\)[\s\S]*normalizedOldestPendingCreatedAt > defaultSafeCreatedBefore[\s\S]*oldestPendingTime - 1/,
+    /normalizeIsoTime\(oldestPendingCreatedAt\)[\s\S]*rfc3339InstantMilliseconds\(normalizedOldestPendingCreatedAt\)[\s\S]*oldestPendingTime > defaultSafeCreatedBeforeMs[\s\S]*oldestPendingTime - 1/,
     'redis_stream driver 下统计聚合不能因 pending/lag 非零整轮停止，必须把安全上界收窄到最早 backlog 前'
   )
 
