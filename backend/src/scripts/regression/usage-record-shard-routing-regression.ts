@@ -30,6 +30,13 @@ const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = 
 ])
 
 try {
+  for (const createdAt of ['2026-08-16T00:00:00', 'not-a-time']) {
+    assert.throws(
+      () => usageRecordShards.generateUsageRecordId(createdAt, 'invalid-time'),
+      /RFC3339/,
+      `分片定位不得把无效 createdAt 退化为当前日期：${createdAt}`
+    )
+  }
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
   const group = repositories.createGroup({ name: '分片写入回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({

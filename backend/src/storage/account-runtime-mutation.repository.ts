@@ -5,6 +5,7 @@ import {
   LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX
 } from '../domain/account-runtime-provenance.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
@@ -1025,7 +1026,6 @@ export function recordAccountRuntimeSuccessObservation(
   input: AccountRuntimeSuccessObservationInput
 ): AccountRuntimeSuccessObservationResult {
   const observedAt = normalizedRuntimeObservationAt(input.observedAt)
-  if (!observedAt) return { accepted: false, changed: false }
   const target = input.authorizedBinding
     ? normalizedAuthorizedAccountBindingRuntimeTarget(input.authorizedBinding)
     : undefined
@@ -1082,7 +1082,6 @@ export async function recordAccountRuntimeSuccessObservationAsync(
     return recordAccountRuntimeSuccessObservation(input)
   }
   const observedAt = normalizedRuntimeObservationAt(input.observedAt)
-  if (!observedAt) return { accepted: false, changed: false }
   const target = input.authorizedBinding
     ? normalizedAuthorizedAccountBindingRuntimeTarget(input.authorizedBinding)
     : undefined
@@ -1309,9 +1308,8 @@ async function finalizeAccountRuntimeSuccessObservationAsync(
   invalidateGatewayRuntimeAfterBusinessWrite(target ? 'authorized_account_runtime_success' : 'account_runtime_success')
 }
 
-function normalizedRuntimeObservationAt(value: string): string | undefined {
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
+function normalizedRuntimeObservationAt(value: string): string {
+  return requiredRfc3339Instant(value, '账户运行态 observedAt')
 }
 
 export function clearAuthorizedAccountBindingFailureStateByContext(

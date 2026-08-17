@@ -3,6 +3,12 @@ import { readFileSync } from 'node:fs'
 
 const repositorySource = readFileSync(new URL('../../storage/account-runtime-mutation.repository.ts', import.meta.url), 'utf8')
 
+assert.match(
+  repositorySource,
+  /function normalizedRuntimeObservationAt\(value: string\): string \{\s*return requiredRfc3339Instant\(value, '账户运行态 observedAt'\)/,
+  'IPC observedAt 必须严格 RFC3339，不能把无效值静默折叠成 accepted:false'
+)
+
 const cooldownAsyncSource = functionSource('markAccountCooldownAsync', 'migrateAccountTraffic')
 const exceptionAsyncSource = functionSource('markAccountExceptionAsync', 'markAccountDisabledByFailure')
 const authorizedCooldownAsyncSource = functionSource('markAuthorizedAccountBindingCooldownByContextAsync', 'markAuthorizedAccountBindingDisabledByFailure')

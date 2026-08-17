@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:pa
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
+import { parseRfc3339Instant } from '../shared/rfc3339.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getUsageCatalogDatabase, nowIso, rollbackDatabaseTransaction, sqliteWriterBoundaryStrictModeEnabled, usageCatalogDatabasePath } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
@@ -1095,8 +1096,8 @@ function stableHash(value: string): number {
 }
 
 function bucketDateKeyFromIso(value?: string): string {
-  const parsed = value ? new Date(value) : new Date()
-  const date = Number.isFinite(parsed.getTime()) ? parsed : new Date()
+  const date = value === undefined ? new Date() : parseRfc3339Instant(value)
+  if (!date) throw new Error('usage record createdAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
   return bucketDateKeyFromDate(date)
 }
 

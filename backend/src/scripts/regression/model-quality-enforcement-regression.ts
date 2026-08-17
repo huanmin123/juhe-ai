@@ -141,6 +141,11 @@ try {
   assert.equal(schedule.penaltyThreshold, 58)
   assert.equal(schedule.penaltyAction, 'quality_isolate')
   assert.equal(schedule.recoveryIntervalMinutes, 45)
+  await assert.rejects(
+    () => qualityRepository.claimDueModelQualitySchedulesAsync('regression-invalid-now', { now: '2026-07-26T00:00:00' }),
+    /RFC3339/,
+    '调度 supplied now 不得按本机时区解释'
+  )
   business.prepare("UPDATE model_quality_schedules SET next_run_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(schedule.id)
   const claimedSchedules = await qualityRepository.claimDueModelQualitySchedulesAsync('regression-schedule-policy', { now: '2026-07-26T00:00:00.000Z' })
   assert.equal(claimedSchedules.length, 1)

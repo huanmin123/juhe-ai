@@ -10,6 +10,7 @@ import type {
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
@@ -1018,12 +1019,13 @@ function table(client: DatabaseClient, name: string): string {
 }
 
 function addMinutes(value: string, minutes: number): string {
-  return new Date(Date.parse(value) + minutes * 60_000).toISOString()
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) throw new Error('模型质量调度时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return new Date(timestamp + minutes * 60_000).toISOString()
 }
 
 function normalizedIso(value?: string): string {
-  const timestamp = value ? Date.parse(value) : Date.now()
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : nowIso()
+  return value === undefined ? nowIso() : requiredRfc3339Instant(value, '模型质量调度时间')
 }
 
 function requiredText(value: unknown, message: string): string {

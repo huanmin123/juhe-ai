@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 
@@ -79,16 +80,18 @@ function cursorFromRow(row: CursorRow | undefined): AccountHealthProjectionCurso
 }
 
 function normalizedCursor(value: AccountHealthProjectionCursor): AccountHealthProjectionCursor {
-  const observedAt = value.observedAt.trim()
+  const observedAt = requiredRfc3339Instant(value.observedAt, 'J1 projection cursor observedAt')
   const outcomeId = value.outcomeId.trim()
-  if (!observedAt || !Number.isFinite(Date.parse(observedAt))) throw new Error('J1 projection cursor observedAt 无效')
   if (!outcomeId || outcomeId.length > 4_096) throw new Error('J1 projection cursor outcomeId 无效')
   return { observedAt, outcomeId }
 }
 
 function compareCursor(left: AccountHealthProjectionCursor, right: AccountHealthProjectionCursor): number {
-  if (left.observedAt < right.observedAt) return -1
-  if (left.observedAt > right.observedAt) return 1
+  const leftObservedAt = rfc3339InstantMilliseconds(left.observedAt)
+  const rightObservedAt = rfc3339InstantMilliseconds(right.observedAt)
+  if (leftObservedAt === undefined || rightObservedAt === undefined) throw new Error('J1 projection cursor observedAt 无效')
+  if (leftObservedAt < rightObservedAt) return -1
+  if (leftObservedAt > rightObservedAt) return 1
   if (left.outcomeId < right.outcomeId) return -1
   if (left.outcomeId > right.outcomeId) return 1
   return 0

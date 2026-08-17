@@ -19,6 +19,17 @@ try {
   assert.equal(advanceAccountHealthProjectionCursor('business-projector', second, database), true)
   assert.equal(advanceAccountHealthProjectionCursor('business-projector', first, database), false)
   assert.deepEqual(currentAccountHealthProjectionCursor('business-projector', database), second)
+
+  const offsetFirst = { observedAt: '2026-08-16T09:00:00.000+09:00', outcomeId: 'offset-first' }
+  const laterZulu = { observedAt: '2026-08-16T00:30:00.000Z', outcomeId: 'later-zulu' }
+  assert.equal(advanceAccountHealthProjectionCursor('epoch-projector', offsetFirst, database), true)
+  assert.equal(advanceAccountHealthProjectionCursor('epoch-projector', laterZulu, database), true, '游标比较必须按 epoch，而非 offset 文本字典序')
+  assert.deepEqual(currentAccountHealthProjectionCursor('epoch-projector', database), laterZulu)
+  assert.throws(
+    () => advanceAccountHealthProjectionCursor('invalid-projector', { observedAt: '2026-08-16T00:00:00', outcomeId: 'invalid' }, database),
+    /RFC3339/,
+    '无 offset cursor 必须拒绝'
+  )
 } finally {
   database.close()
 }
