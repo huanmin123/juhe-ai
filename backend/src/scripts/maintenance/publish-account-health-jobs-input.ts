@@ -22,7 +22,7 @@ if (!root || !signingKey) {
 }
 const account = await findAccountForAccountHealthJobsInputAsync(accountId)
 if (!account) {
-  throw new Error(`账户 ${accountId} 不是可发布的 active/pending_test J1 候选；不会生成不完整 snapshot`)
+  throw new Error(`账户 ${accountId} 不是可发布的 J1 候选；不会生成不完整 snapshot`)
 }
 const revisions = await findAccountHealthJobsInputRevisionsAsync(account.id)
 if (!revisions || revisions.configRevision !== account.configRevision) {
@@ -54,4 +54,7 @@ const path = publishAccountHealthJobsInputFromAccount({
   proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined,
   sourceConfigRevision: account.accessType === 'authorized' ? account.sourceConfigRevision : undefined
 })
-console.log(JSON.stringify({ accountId: account.id, inputVersion, path }))
+process.stdout.write(`${JSON.stringify({ accountId: account.id, inputVersion, path })}\n`)
+// This is a one-shot maintenance command. Repository clients may retain idle
+// handles after the atomic file publish, so exit after flushing its result.
+process.exit(0)
