@@ -27,12 +27,16 @@ Docker 镜像使用当前 `backend/dist` 和 `frontend/dist`，不会在服务�
 
 `go-gateway` 与 `go-jobs` 分别在镜像构建时编译，不需要预先生成 Go 二进制。受限网络可在 `.env` / `.env.performance` 设置 `JUHE_AI_GO_PROXY=https://goproxy.cn,direct`；默认仍使用官方 Go proxy。
 
+## 镜像来源
+
+所有 Compose 基础镜像与中间件镜像必须是 Harbor 内网的 `@sha256:` 不可变引用。先在 `infra-linux` 运行 k8s 仓库的 `platform/harbor/sync-base-images.sh`，再将生成的 `harbor-base-images` 中对应 `JUHE_AI_*_IMAGE` 值写入 `.env` 或 `.env.performance`。缺少任一构建基础镜像时，Compose 会失败；不会回退到 Docker Hub、镜像加速器或其他外网 Registry。
+
 ## 启动
 
 ```bash
 cd docker
 cp .env.example .env
-# 在 .env 填写稳定的 JUHE_AI_AUDIT_LOG_INPUT_SECRET 与 JUHE_AI_OPERATION_LOG_INPUT_SECRET；production 至少 32 位，不能使用 JUHE_AI_SECRET。
+# 在 .env 填写 Harbor digest 镜像引用，以及稳定的 JUHE_AI_AUDIT_LOG_INPUT_SECRET 与 JUHE_AI_OPERATION_LOG_INPUT_SECRET；production 至少 32 位，不能使用 JUHE_AI_SECRET。
 docker compose config --quiet
 docker compose up -d --build --wait
 ```
@@ -50,7 +54,7 @@ http://localhost:3000/__aisys__/
 ```bash
 cd docker
 cp .env.performance.example .env.performance
-# 填写 JUHE_AI_SECRET、PostgreSQL / Redis 密码、对应 URL、访问 Origin 和独立 JUHE_AI_AUDIT_LOG_INPUT_SECRET / JUHE_AI_OPERATION_LOG_INPUT_SECRET。
+# 填写 Harbor digest 镜像引用、JUHE_AI_SECRET、PostgreSQL / Redis 密码、对应 URL、访问 Origin 和独立 JUHE_AI_AUDIT_LOG_INPUT_SECRET / JUHE_AI_OPERATION_LOG_INPUT_SECRET。
 docker compose --env-file .env.performance -f compose.performance.yml config --quiet
 docker compose --env-file .env.performance -f compose.performance.yml up -d --build --wait
 ```
@@ -115,7 +119,7 @@ JUHE_AI_TRUST_PROXY=false
 - `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 必须显式填写为独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它同时提供给 Node 和 F3 loopback HMAC 输入端点。
 - `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 必须显式填写为独立、稳定的高熵值；不能复用、回退或与 F3 secret 共用，production 至少 32 位。它同时提供给 Node 和 F4 loopback HMAC 输入端点。
 - 直接 HTTP 访问时保持 `JUHE_AI_COOKIE_SECURE=false` 和 `JUHE_AI_TRUST_PROXY=false`；HTTPS 反向代理后改为 `true`，并确保容器端口只被 Caddy 或可信入口访问。
-- Docker Hub 拉取慢时，可以在 `.env` 中覆盖 `JUHE_AI_NODE_IMAGE` 为可访问的 Node 22 slim 镜像。
+- `JUHE_AI_NODE_IMAGE`、`JUHE_AI_GO_IMAGE` 与两个 `JUHE_AI_GO_*_RUNTIME_IMAGE` 必须是 Harbor 内网的不可变 digest 引用；不得填 Docker Hub 或镜像加速器地址。高性能模式还必须为 PostgreSQL、PgBouncer 和 Redis 填写同类 Harbor 引用。
 
 ## 数据持久化
 

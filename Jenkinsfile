@@ -17,6 +17,7 @@ pipeline {
     HARBOR_REPOSITORY_JOBS = 'platform/juhe-ai-go-jobs'
     HARBOR_REPOSITORY_GATEWAY = 'platform/juhe-ai-go-gateway'
     HARBOR_REGISTRY_FILE = '/run/jenkins-secrets/harbor-registry'
+    HARBOR_BASE_IMAGES_FILE = '/run/jenkins-secrets/harbor-base-images'
     GITEE_WRITE_KEY = '/run/jenkins-secrets/gitee-k8s-write'
     RELEASE_OBSERVER_KUBECONFIG = '/run/jenkins-secrets/kubeconfig-release-observer'
     PLATFORM_REPOSITORY = 'git@gitee.com:huanminabc/k8s-juhe.git'
@@ -38,6 +39,11 @@ pipeline {
           if (!validRegistry(env.HARBOR_REGISTRY)) {
             error 'HARBOR_REGISTRY 必须是 host 或 host:port。'
           }
+          def baseImages = readHarborBaseImages()
+          env.NODE_RUNTIME_IMAGE = baseImages.NODE_RUNTIME_IMAGE
+          env.NODE_BUILDER_IMAGE = baseImages.NODE_BUILDER_IMAGE
+          env.GO_IMAGE = baseImages.GO_IMAGE
+          env.RUNTIME_IMAGE = baseImages.RUNTIME_IMAGE
           if (!fileExists(env.GITEE_WRITE_KEY)) {
             error '缺少平台 GitOps 发布状态写入密钥。'
           }
@@ -66,6 +72,7 @@ pipeline {
           trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
           docker build --network host \
             --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+            --build-arg NODE_BUILDER_IMAGE="$NODE_BUILDER_IMAGE" \
             --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
             --tag "$builder_image" --file docker/Dockerfile.builder .
           docker create --name "$builder_container" "$builder_image" >/dev/null
@@ -88,10 +95,18 @@ pipeline {
           sh '''#!/bin/sh
             set -eu
             printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
-            build_args="--network host --build-arg HTTP_PROXY=$BUILD_HTTP_PROXY --build-arg HTTPS_PROXY=$BUILD_HTTP_PROXY --build-arg NO_PROXY=$BUILD_NO_PROXY"
-            docker build $build_args --tag "$NODE_IMAGE" --file docker/Dockerfile .
-            docker build $build_args --build-arg GO_PROJECT=jobs --tag "$JOBS_IMAGE" --file docker/Dockerfile.go-project .
-            docker build $build_args --build-arg GO_PROJECT=gateway --tag "$GATEWAY_IMAGE" --file docker/Dockerfile.go-project .
+            docker build --network host \
+              --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+              --build-arg NODE_RUNTIME_IMAGE="$NODE_RUNTIME_IMAGE" \
+              --tag "$NODE_IMAGE" --file docker/Dockerfile .
+            docker build --network host \
+              --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+              --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+              --build-arg GO_PROJECT=jobs --tag "$JOBS_IMAGE" --file docker/Dockerfile.go-project .
+            docker build --network host \
+              --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+              --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+              --build-arg GO_PROJECT=gateway --tag "$GATEWAY_IMAGE" --file docker/Dockerfile.go-project .
             docker push "$NODE_IMAGE"
             docker push "$JOBS_IMAGE"
             docker push "$GATEWAY_IMAGE"
@@ -210,6 +225,33 @@ def validRegistry(value) { return value ==~ /^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/ }
 def validDigest(value) { return value ==~ /^sha256:[a-f0-9]{64}$/ }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
+
+def readHarborBaseImages() {
+  if (!fileExists(env.HARBOR_BASE_IMAGES_FILE)) {
+    error '缺少 Harbor 基础镜像清单；CI 禁止从外网拉取基础镜像。请先运行 platform/harbor/sync-base-images.sh。'
+  }
+  def requiredKeys = ['NODE_RUNTIME_IMAGE', 'NODE_BUILDER_IMAGE', 'GO_IMAGE', 'RUNTIME_IMAGE']
+  def values = [:]
+  readFile(env.HARBOR_BASE_IMAGES_FILE).readLines().eachWithIndex { line, index ->
+    def trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) {
+      return
+    }
+    def fields = trimmed.split('=', 2)
+    if (fields.size() != 2 || !fields[0] || !fields[1] || values.containsKey(fields[0])) {
+      error "Harbor 基础镜像清单第 ${index + 1} 行格式错误。"
+    }
+    values[fields[0]] = fields[1]
+  }
+  requiredKeys.each { key ->
+    def image = values[key]
+    if (!image || !image.startsWith("${env.HARBOR_REGISTRY}/") ||
+        !(image ==~ /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[a-z0-9][a-z0-9._-]*)+@sha256:[a-f0-9]{64}$/)) {
+      error "Harbor 基础镜像清单中的 ${key} 必须是当前 Harbor 的不可变 digest 引用。"
+    }
+  }
+  return values
+}
 
 def releaseWorkspace() { return "${env.WORKSPACE}/.platform-release" }
 

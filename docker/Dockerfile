@@ -1,7 +1,7 @@
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NODE_RUNTIME_IMAGE
 ARG PNPM_VERSION=10.32.1
 
-FROM ${NODE_IMAGE} AS production-deps
+FROM ${NODE_RUNTIME_IMAGE} AS production-deps
 ARG PNPM_VERSION
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
@@ -11,7 +11,7 @@ COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY backend/package.json backend/package.json
 RUN pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
 
-FROM ${NODE_IMAGE} AS artifacts
+FROM ${NODE_RUNTIME_IMAGE} AS artifacts
 WORKDIR /source
 COPY backend ./backend
 COPY frontend ./frontend
@@ -34,7 +34,7 @@ RUN set -eu; \
     exit 1; \
   fi
 
-FROM ${NODE_IMAGE} AS runtime
+FROM ${NODE_RUNTIME_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

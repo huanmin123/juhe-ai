@@ -7,7 +7,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        NODE_IMAGE: ${JUHE_AI_NODE_IMAGE:-node:22-bookworm-slim}
+        NODE_RUNTIME_IMAGE: ${JUHE_AI_NODE_IMAGE:?JUHE_AI_NODE_IMAGE must be a Harbor digest image reference}
         PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
     ports:
       - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
@@ -102,8 +102,8 @@ services:
       dockerfile: docker/Dockerfile.go-project
       args:
         GO_PROJECT: gateway
-        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:?JUHE_AI_GO_IMAGE must be a Harbor digest image reference}
+        RUNTIME_IMAGE: ${JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE:?JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE must be a Harbor digest image reference}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       juhe-ai:
@@ -165,8 +165,8 @@ services:
       dockerfile: docker/Dockerfile.go-project
       args:
         GO_PROJECT: jobs
-        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_GO_JOBS_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:?JUHE_AI_GO_IMAGE must be a Harbor digest image reference}
+        RUNTIME_IMAGE: ${JUHE_AI_GO_JOBS_RUNTIME_IMAGE:?JUHE_AI_GO_JOBS_RUNTIME_IMAGE must be a Harbor digest image reference}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       juhe-ai:

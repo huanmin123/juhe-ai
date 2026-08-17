@@ -1,5 +1,5 @@
-ARG GO_IMAGE=golang:1.26-bookworm
-ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG GO_IMAGE
+ARG RUNTIME_IMAGE
 ARG GO_PROXY=https://proxy.golang.org,direct
 ARG GO_PROJECT
 

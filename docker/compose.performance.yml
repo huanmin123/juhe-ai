@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: ${JUHE_AI_POSTGRES_IMAGE:-postgres:18-bookworm}
+    image: ${JUHE_AI_POSTGRES_IMAGE:?JUHE_AI_POSTGRES_IMAGE must be a Harbor digest image reference}
     container_name: ${JUHE_AI_POSTGRES_CONTAINER_NAME:-juhe-ai-postgres}
     restart: unless-stopped
     environment:
@@ -36,7 +36,7 @@ services:
       retries: 12
 
   pgbouncer:
-    image: ${JUHE_AI_PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.25.2-p0}
+    image: ${JUHE_AI_PGBOUNCER_IMAGE:?JUHE_AI_PGBOUNCER_IMAGE must be a Harbor digest image reference}
     container_name: ${JUHE_AI_PGBOUNCER_CONTAINER_NAME:-juhe-ai-pgbouncer}
     restart: unless-stopped
     depends_on:
@@ -63,7 +63,7 @@ services:
       retries: 12
 
   redis-cache:
-    image: ${JUHE_AI_REDIS_IMAGE:-redis:8.2.7-bookworm}
+    image: ${JUHE_AI_REDIS_IMAGE:?JUHE_AI_REDIS_IMAGE must be a Harbor digest image reference}
     container_name: ${JUHE_AI_REDIS_CACHE_CONTAINER_NAME:-juhe-ai-redis-cache}
     restart: unless-stopped
     command:
@@ -90,7 +90,7 @@ services:
       retries: 12
 
   redis-state:
-    image: ${JUHE_AI_REDIS_IMAGE:-redis:8.2.7-bookworm}
+    image: ${JUHE_AI_REDIS_IMAGE:?JUHE_AI_REDIS_IMAGE must be a Harbor digest image reference}
     container_name: ${JUHE_AI_REDIS_STATE_CONTAINER_NAME:-juhe-ai-redis-state}
     restart: unless-stopped
     command:
@@ -117,7 +117,7 @@ services:
       retries: 12
 
   redis-queue:
-    image: ${JUHE_AI_REDIS_IMAGE:-redis:8.2.7-bookworm}
+    image: ${JUHE_AI_REDIS_IMAGE:?JUHE_AI_REDIS_IMAGE must be a Harbor digest image reference}
     container_name: ${JUHE_AI_REDIS_QUEUE_CONTAINER_NAME:-juhe-ai-redis-queue}
     restart: unless-stopped
     command:
@@ -154,7 +154,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        NODE_IMAGE: ${JUHE_AI_NODE_IMAGE:-node:22-bookworm-slim}
+        NODE_RUNTIME_IMAGE: ${JUHE_AI_NODE_IMAGE:?JUHE_AI_NODE_IMAGE must be a Harbor digest image reference}
         PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
     depends_on:
       pgbouncer:
@@ -259,8 +259,8 @@ services:
       dockerfile: docker/Dockerfile.go-project
       args:
         GO_PROJECT: gateway
-        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:?JUHE_AI_GO_IMAGE must be a Harbor digest image reference}
+        RUNTIME_IMAGE: ${JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE:?JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE must be a Harbor digest image reference}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       pgbouncer:
@@ -317,8 +317,8 @@ services:
       dockerfile: docker/Dockerfile.go-project
       args:
         GO_PROJECT: jobs
-        GO_IMAGE: ${JUHE_AI_GO_IMAGE:-golang:1.26-bookworm}
-        RUNTIME_IMAGE: ${JUHE_AI_GO_JOBS_RUNTIME_IMAGE:-debian:bookworm-slim}
+        GO_IMAGE: ${JUHE_AI_GO_IMAGE:?JUHE_AI_GO_IMAGE must be a Harbor digest image reference}
+        RUNTIME_IMAGE: ${JUHE_AI_GO_JOBS_RUNTIME_IMAGE:?JUHE_AI_GO_JOBS_RUNTIME_IMAGE must be a Harbor digest image reference}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
       pgbouncer:

@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim
+ARG NODE_BUILDER_IMAGE
+FROM ${NODE_BUILDER_IMAGE}
 
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -11,10 +12,7 @@ ENV VITE_JUHE_AI_BUILD_ID=${VITE_JUHE_AI_BUILD_ID}
 
 WORKDIR /source
 COPY . .
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && corepack enable \
+RUN corepack enable \
   && corepack prepare pnpm@10.32.1 --activate \
   && pnpm install --frozen-lockfile \
   && pnpm build
