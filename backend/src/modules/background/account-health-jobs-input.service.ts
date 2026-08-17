@@ -2,7 +2,6 @@ import type { AccountSummary } from '../../domain/types.js'
 import { isJ1OpenAIProviderCode } from '../../storage/account-health-jobs-input.repository.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
-import { parseRfc3339Instant } from '../../shared/rfc3339.js'
 
 import { publishAccountHealthJobsInput, publishAccountHealthJobsRequest } from './account-health-jobs-input.protocol.js'
 
@@ -272,18 +271,16 @@ function requiredText(value: unknown, field: string): string {
 }
 
 function parseFutureDate(value: unknown): Date | undefined {
-  const parsed = parseRfc3339Instant(value)
+  const parsed = typeof value === 'string' ? new Date(value) : undefined
   return parsed && Number.isFinite(parsed.getTime()) && parsed > new Date() ? parsed : undefined
 }
 
 function isExpired(value: string | undefined): boolean {
-  const parsed = value === undefined ? undefined : parseRfc3339Instant(value)
-  return parsed !== undefined && parsed.getTime() <= Date.now()
+  return value !== undefined && new Date(value).getTime() <= Date.now()
 }
 
 function isFuture(value: string | undefined): boolean {
-  const parsed = value === undefined ? undefined : parseRfc3339Instant(value)
-  return parsed !== undefined && parsed.getTime() > Date.now()
+  return value !== undefined && new Date(value).getTime() > Date.now()
 }
 
 function cooldownInputFence(
@@ -316,5 +313,6 @@ function cooldownInputFence(
 }
 
 function parseDate(value: string): Date | undefined {
-  return parseRfc3339Instant(value)
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined
 }
