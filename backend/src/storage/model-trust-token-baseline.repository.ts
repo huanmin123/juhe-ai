@@ -1,4 +1,6 @@
 import type { DatabaseClient } from './database-client.js'
+import { nowIso } from './database.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export type TokenInterceptScope = {
   cohortKeyHmac: string
@@ -79,8 +81,8 @@ export async function refreshTokenInterceptBaselines(
       const values = sources.map((source) => source.intercept).sort((left, right) => left - right)
       const median = percentile(values, 0.5)
       const deviations = values.map((value) => Math.abs(value - median)).sort((left, right) => left - right)
-      const firstObservedAt = sources.map((source) => source.first_observed_at).sort()[0] as string
-      const lastObservedAt = sources.map((source) => source.last_observed_at).sort().at(-1) as string
+      const firstObservedAt = earliestInstant(sources.map((source) => source.first_observed_at), 'model_trust_window_sources.first_observed_at')
+      const lastObservedAt = latestInstant(sources.map((source) => source.last_observed_at), 'model_trust_window_sources.last_observed_at')
       const evidence = tokenInterceptEvidence(sources)
       const table = client.dialect.qualifyTable('juhe_stats', 'model_token_intercept_baseline_versions')
       await client.execute(`
@@ -108,7 +110,7 @@ export async function refreshTokenInterceptBaselines(
         scope.cohortKeyHmac, scope.requestedModel, scope.tokenizerVersion, scope.probeSetVersion, version,
         evidence.status, sources.length, evidence.retainedSourceCount, sources.length - evidence.retainedSourceCount,
         median, percentile(deviations, 0.5), percentile(values, 0.1), percentile(values, 0.9),
-        firstObservedAt, lastObservedAt, new Date().toISOString()
+        firstObservedAt, lastObservedAt, nowIso()
       ])
     }
     const baseline = await findBaseline(client, scope, 'active')
@@ -146,7 +148,7 @@ export async function activateTokenInterceptBaselineVersion(client: DatabaseClie
     if (q90 === undefined || input.strongThresholdIntercept < q90) {
       throw new Error('固定截距校准阈值不能低于当前 cohort 的 q90')
     }
-    const updatedAt = new Date().toISOString()
+    const updatedAt = nowIso()
     await tx.execute(`
       UPDATE ${table}
       SET version_status = 'retired', strong_gate_enabled = 0, updated_at = ?
@@ -252,7 +254,7 @@ async function loadSourceInterceptSnapshot(
   const bucketsByAccount = new Map<string, Set<string>>()
   const accountKeys = new Map<string, TokenInterceptAccountKey>()
   const byBucket = new Map<string, SourceInterceptRow[]>()
-  for (const row of rows) {
+  for (const row of rows.map(normalizedSourceInterceptRow)) {
     const account = {
       systemAccountId: row.system_account_id,
       accountId: row.account_id,
@@ -275,8 +277,8 @@ async function loadSourceInterceptSnapshot(
       upstream_bucket_hmac: bucket,
       intercept: percentile(intercepts, 0.5),
       source_valid_sample_count: bucketRows.reduce((sum, row) => sum + Number(row.valid_sample_count), 0),
-      first_observed_at: bucketRows.map((row) => row.first_observed_at).sort()[0] as string,
-      last_observed_at: bucketRows.map((row) => row.last_observed_at).sort().at(-1) as string
+      first_observed_at: earliestInstant(bucketRows.map((row) => row.first_observed_at), 'model_trust_window_sources.first_observed_at'),
+      last_observed_at: latestInstant(bucketRows.map((row) => row.last_observed_at), 'model_trust_window_sources.last_observed_at')
     }
   })
   return { sources: collapsed, bucketsByAccount, accountKeys: [...accountKeys.values()] }
@@ -314,7 +316,7 @@ async function rematerializeTokenInterceptLatest(
   if (rows.length > maximumActivationAccounts) {
     throw new Error('固定截距基线影响账户超过激活上限，需要离线分阶段重物化')
   }
-  const updatedAt = new Date().toISOString()
+  const updatedAt = nowIso()
   const writes: unknown[][] = []
   for (const row of rows) {
     const hasIntercept = row.intercept !== null && Number.isFinite(Number(row.intercept))
@@ -389,7 +391,54 @@ function tokenInterceptEvidence(sources: CollapsedSourceIntercept[]): { status: 
 }
 
 function sourceDurationDays(source: Pick<CollapsedSourceIntercept, 'first_observed_at' | 'last_observed_at'>): number {
-  return Math.max(1, Math.ceil((Date.parse(source.last_observed_at) - Date.parse(source.first_observed_at)) / 86_400_000) + 1)
+  const firstMilliseconds = requiredInstantMilliseconds(source.first_observed_at, 'model_trust_window_sources.first_observed_at')
+  const lastMilliseconds = requiredInstantMilliseconds(source.last_observed_at, 'model_trust_window_sources.last_observed_at')
+  return Math.max(1, Math.ceil((lastMilliseconds - firstMilliseconds) / 86_400_000) + 1)
+}
+
+function normalizedSourceInterceptRow(row: SourceInterceptRow): SourceInterceptRow {
+  return {
+    ...row,
+    first_observed_at: requiredRfc3339Instant(row.first_observed_at, 'model_token_integrity_windows.first_observed_at'),
+    last_observed_at: requiredRfc3339Instant(row.last_observed_at, 'model_token_integrity_windows.last_observed_at')
+  }
+}
+
+function requiredInstantMilliseconds(value: unknown, label: string): number {
+  const normalized = requiredRfc3339Instant(value, label)
+  const milliseconds = rfc3339InstantMilliseconds(normalized)
+  if (milliseconds === undefined) throw new Error(`${label}解析后不是有效的 RFC3339 时间`)
+  return milliseconds
+}
+
+function earliestInstant(values: string[], label: string): string {
+  if (!values.length) throw new Error(`${label}不能为空`)
+  let earliest = requiredRfc3339Instant(values[0], label)
+  let earliestMilliseconds = requiredInstantMilliseconds(earliest, label)
+  for (const value of values.slice(1)) {
+    const normalized = requiredRfc3339Instant(value, label)
+    const milliseconds = requiredInstantMilliseconds(normalized, label)
+    if (milliseconds < earliestMilliseconds) {
+      earliest = normalized
+      earliestMilliseconds = milliseconds
+    }
+  }
+  return earliest
+}
+
+function latestInstant(values: string[], label: string): string {
+  if (!values.length) throw new Error(`${label}不能为空`)
+  let latest = requiredRfc3339Instant(values[0], label)
+  let latestMilliseconds = requiredInstantMilliseconds(latest, label)
+  for (const value of values.slice(1)) {
+    const normalized = requiredRfc3339Instant(value, label)
+    const milliseconds = requiredInstantMilliseconds(normalized, label)
+    if (milliseconds > latestMilliseconds) {
+      latest = normalized
+      latestMilliseconds = milliseconds
+    }
+  }
+  return latest
 }
 
 function contextFor(

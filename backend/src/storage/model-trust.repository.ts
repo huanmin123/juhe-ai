@@ -2,6 +2,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, getStatsDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { acquireBackgroundJobLeaseAsync, releaseBackgroundJobLeaseAsync, renewBackgroundJobLeaseAsync } from './background-task-runs.repository.js'
 import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 import {
@@ -218,12 +219,12 @@ async function aggregateModelTrustObservationsWithLeaseAsync(
   const stats = await statsClient()
   await cleanupCompletedObservationReceipts(dataset, stats, maximumObservationsPerTransaction)
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
-  const rows = await dataset.query<ObservationRow>(`
+  const rows = (await dataset.query<ObservationRow>(`
     SELECT * FROM ${observationsTable}
     WHERE aggregation_completed_at IS NULL
     ORDER BY created_at, id
     LIMIT ?
-  `, [boundedLimit(limit)])
+  `, [boundedLimit(limit)])).map(normalizedObservationRow)
   let processedRows: ObservationRow[] = []
   await stats.transaction(async (tx) => {
     if (lease.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, lease.scheduledLease)
@@ -366,7 +367,7 @@ export async function findModelAccountTrustResultAsync(systemAccountId: string, 
     tokenizerVersion: optionalText(row.tokenizer_version),
     probeSetVersion: optionalText(row.probe_set_version),
     reasonCodes: parseReasonCodes(row.reason_codes_json),
-    lastObservedAt: optionalText(row.last_observed_at)
+    lastObservedAt: optionalInstant(row.last_observed_at, 'model_account_trust_results.last_observed_at')
   }
 }
 
@@ -457,11 +458,12 @@ async function refreshLatestResult(
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
     LIMIT 1
   `, [key.systemAccountId, key.accountId, key.requestedModel])
-  const window = await client.one<WindowRow & { cohort_key_hmac: string; tokenizer_version: string; probe_set_version: string }>(`
+  const windowRow = await client.one<WindowRow & { cohort_key_hmac: string; tokenizer_version: string; probe_set_version: string }>(`
     SELECT * FROM ${windows}
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
     ORDER BY last_observed_at DESC LIMIT 1
   `, [key.systemAccountId, key.accountId, key.requestedModel])
+  const window = windowRow ? normalizedWindowRow(windowRow) : undefined
   const identity = await evaluateIdentityTrust(client, key)
   const representative = [...batchRows].reverse().find((row) => (
     isDiagnosticTrustObservation(row)
@@ -487,7 +489,7 @@ async function refreshLatestResult(
     window.tokenizer_version, window.probe_set_version
   ]) : undefined
   const roundCount = Number(roundRow?.round_count ?? 0)
-  const durationDays = window ? Math.max(1, Math.ceil((Date.parse(window.last_observed_at) - Date.parse(window.first_observed_at)) / 86_400_000) + 1) : 0
+  const durationDays = window ? durationDaysBetween(window.first_observed_at, window.last_observed_at, 'model_token_integrity_windows') : 0
   const tokenEvidenceStatus = sourceCount >= 10 && validSampleCount >= 300 && roundCount >= 100 && durationDays >= 14
     ? 'stable'
     : sourceCount >= 5 && validSampleCount >= 100 && roundCount >= 34 && durationDays >= 7
@@ -556,7 +558,11 @@ async function refreshLatestResult(
   const evidenceStatus = identity?.baselineVersionStatus === 'drift_protected'
     ? 'insufficient'
     : strongerEvidenceStatus(identity?.evidenceStatus, tokenEvidenceStatus)
-  const lastObservedAt = [window?.last_observed_at, identity?.lastObservedAt, representative?.created_at].filter((value): value is string => Boolean(value)).sort().at(-1)
+  const lastObservedAt = latestInstant([
+    window?.last_observed_at,
+    identity?.lastObservedAt,
+    representative?.created_at
+  ], '模型可信 latest lastObservedAt')
   await client.execute(`
     INSERT INTO ${latest} (
       system_account_id, account_id, requested_model, identity_status, mapping_status,
@@ -685,7 +691,10 @@ async function readAggregationState(client: DatabaseClient): Promise<{ createdAt
     SELECT cursor_created_at, cursor_id FROM ${table}
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
   `, [aggregationJobName])
-  return { createdAt: row?.cursor_created_at ?? '', id: row?.cursor_id ?? '' }
+  const createdAt = row?.cursor_created_at === null || row?.cursor_created_at === undefined
+    ? ''
+    : requiredRfc3339Instant(row.cursor_created_at, 'stats_job_state.cursor_created_at')
+  return { createdAt, id: row?.cursor_id ?? '' }
 }
 
 async function enqueueIdentityLatestDirtyAccounts(client: DatabaseClient, scopes: IdentityPopulationScope[]): Promise<void> {
@@ -783,8 +792,54 @@ function normalizedObservation(input: ModelCheckObservationInput): Record<string
     ...normalizedFeatureVector(input.featureVector),
     observation_status: boundedText(input.observationStatus), identity_status: boundedText(input.identityStatus), mapping_status: boundedText(input.mappingStatus),
     protocol_status: boundedText(input.protocolStatus), evidence_coverage: Math.min(100, nonNegativeInteger(input.evidenceCoverage)), trace_id: optionalBoundedText(input.traceId),
-    created_at: input.createdAt ?? nowIso()
+    created_at: input.createdAt === undefined ? nowIso() : requiredRfc3339Instant(input.createdAt, '模型可信 observation createdAt')
   }
+}
+
+function normalizedObservationRow(row: ObservationRow): ObservationRow {
+  return {
+    ...row,
+    created_at: requiredRfc3339Instant(row.created_at, 'model_check_observations.created_at')
+  }
+}
+
+function normalizedWindowRow(row: WindowRow & { cohort_key_hmac: string; tokenizer_version: string; probe_set_version: string }): WindowRow & { cohort_key_hmac: string; tokenizer_version: string; probe_set_version: string } {
+  return {
+    ...row,
+    first_observed_at: requiredRfc3339Instant(row.first_observed_at, 'model_token_integrity_windows.first_observed_at'),
+    last_observed_at: requiredRfc3339Instant(row.last_observed_at, 'model_token_integrity_windows.last_observed_at')
+  }
+}
+
+function optionalInstant(value: unknown, label: string): string | undefined {
+  return value === null || value === undefined ? undefined : requiredRfc3339Instant(value, label)
+}
+
+function requiredInstantMilliseconds(value: unknown, label: string): number {
+  const normalized = requiredRfc3339Instant(value, label)
+  const milliseconds = rfc3339InstantMilliseconds(normalized)
+  if (milliseconds === undefined) throw new Error(`${label}解析后不是有效的 RFC3339 时间`)
+  return milliseconds
+}
+
+function durationDaysBetween(first: string, last: string, label: string): number {
+  const firstMilliseconds = requiredInstantMilliseconds(first, `${label}.first_observed_at`)
+  const lastMilliseconds = requiredInstantMilliseconds(last, `${label}.last_observed_at`)
+  return Math.max(1, Math.ceil((lastMilliseconds - firstMilliseconds) / 86_400_000) + 1)
+}
+
+function latestInstant(values: Array<string | undefined>, label: string): string | undefined {
+  let latest: string | undefined
+  let latestMilliseconds: number | undefined
+  for (const value of values) {
+    if (value === undefined) continue
+    const milliseconds = requiredInstantMilliseconds(value, label)
+    if (latestMilliseconds === undefined || milliseconds > latestMilliseconds) {
+      latest = requiredRfc3339Instant(value, label)
+      latestMilliseconds = milliseconds
+    }
+  }
+  return latest
 }
 
 function normalizedFeatureVector(values?: number[]): Record<string, number | null> {

@@ -563,6 +563,7 @@
     "test:model-trust-observation-delivery": "tsx src/scripts/regression/model-trust-observation-delivery-regression.ts",
     "test:model-trust-identity-baseline": "tsx src/scripts/regression/model-trust-identity-baseline-regression.ts",
     "test:model-trust-token-intercept-baseline": "tsx src/scripts/regression/model-trust-token-intercept-baseline-regression.ts",
+    "test:model-trust-time-boundary": "tsx src/scripts/regression/model-trust-time-boundary-regression.ts",
     "test:model-check-structured-features": "tsx src/scripts/regression/model-check-structured-features-regression.ts",
     "test:model-check-strict-model-match": "tsx src/scripts/regression/model-check-strict-model-match-regression.ts",
     "test:model-check-cross-model-paired-mismatch": "tsx src/scripts/regression/model-check-cross-model-paired-mismatch-regression.ts",

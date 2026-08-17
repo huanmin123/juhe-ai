@@ -1,5 +1,6 @@
 import { nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { ObservationRow } from './model-trust.repository.js'
 import {
   euclideanVectorDistance,
@@ -105,6 +106,7 @@ export function hasHardTrustConflict(row: ObservationRow): boolean {
 
 export async function upsertIdentitySourceFeature(client: DatabaseClient, row: ObservationRow): Promise<void> {
   if (!isIdentityObservation(row)) return
+  const observedAt = requiredRfc3339Instant(row.created_at, '模型可信 identity observation created_at')
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
   const vector = observationVector(row)
   await client.execute(`
@@ -140,13 +142,14 @@ export async function upsertIdentitySourceFeature(client: DatabaseClient, row: O
     row.system_account_id, row.account_id, row.population_key_hmac, row.requested_model, row.upstream_bucket_hmac,
     row.probe_key_hmac, row.feature_version,
     ...vector, ...vector, row.constraint_passed === 1 ? 1 : 0,
-    row.created_at, row.created_at, nowIso()
+    observedAt, observedAt, nowIso()
   ])
 }
 
 export async function refreshIdentityBaselines(client: DatabaseClient, rows: ObservationRow[]): Promise<IdentityPopulationScope[]> {
+  const normalizedRows = rows.map((row) => ({ ...row, created_at: requiredRfc3339Instant(row.created_at, '模型可信 identity observation created_at') }))
   const keys = new Map<string, IdentityPopulationScope>()
-  for (const row of rows.filter(isIdentityObservation)) {
+  for (const row of normalizedRows.filter(isIdentityObservation)) {
     const key = {
       populationKey: row.population_key_hmac,
       requestedModel: row.requested_model,
@@ -167,7 +170,7 @@ export async function refreshIdentityBaselines(client: DatabaseClient, rows: Obs
 export async function evaluateIdentityTrust(client: DatabaseClient, key: AccountModelKey): Promise<IdentityTrustEvaluation | undefined> {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
   // Scope timestamps define recency; opaque keys only make exact ties deterministic across database drivers.
-  const currentScopes = await client.query<CurrentIdentityScopeRow>(`
+  const currentScopes = (await client.query<CurrentIdentityScopeRow>(`
     SELECT population_key_hmac, feature_version,
       MIN(first_observed_at) AS first_observed_at,
       MAX(last_observed_at) AS last_observed_at
@@ -175,11 +178,11 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
     GROUP BY population_key_hmac, feature_version
     LIMIT ${maximumIdentityAccountRows + 1}
-  `, [key.systemAccountId, key.accountId, key.requestedModel])
+  `, [key.systemAccountId, key.accountId, key.requestedModel])).map(normalizedCurrentIdentityScopeRow)
   if (currentScopes.length > maximumIdentityAccountRows) throw identityOverflow('账号 scope', maximumIdentityAccountRows)
   const currentScope = [...currentScopes].sort(compareCurrentIdentityScopes)[0]
   if (!currentScope) return undefined
-  const ownRows = await client.query<SourceFeatureRow>(`
+  const ownRows = (await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
       AND population_key_hmac = ? AND feature_version = ?
@@ -188,15 +191,15 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
   `, [
     key.systemAccountId, key.accountId, key.requestedModel,
     currentScope.population_key_hmac, currentScope.feature_version
-  ])
+  ])).map(normalizedSourceFeatureRow)
   if (!ownRows.length) return undefined
   if (ownRows.length > maximumIdentityAccountRows) throw identityOverflow('账号特征', maximumIdentityAccountRows)
-  const populationRows = await client.query<SourceFeatureRow>(`
+  const populationRows = (await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE population_key_hmac = ? AND feature_version = ?
     ORDER BY upstream_bucket_hmac, requested_model, account_id
     LIMIT ${maximumIdentityPopulationRows + 1}
-  `, [currentScope.population_key_hmac, currentScope.feature_version])
+  `, [currentScope.population_key_hmac, currentScope.feature_version])).map(normalizedSourceFeatureRow)
   if (populationRows.length > maximumIdentityPopulationRows) throw identityOverflow('population', maximumIdentityPopulationRows)
   const signatures = collapseSourceSignatures(populationRows)
   const targetPopulationRows = populationRows.filter((row) => row.requested_model === key.requestedModel)
@@ -290,23 +293,24 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
 async function refreshBaseline(client: DatabaseClient, key: { populationKey: string; model: string; featureVersion: string }): Promise<boolean> {
   const sourceTable = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
   const baselineTable = client.dialect.qualifyTable('juhe_stats', 'model_identity_baseline_versions')
-  const rows = await client.query<SourceFeatureRow>(`
+  const rows = (await client.query<SourceFeatureRow>(`
     SELECT * FROM ${sourceTable}
     WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
     ORDER BY upstream_bucket_hmac, account_id
     LIMIT ${maximumIdentityPopulationRows + 1}
-  `, [key.populationKey, key.model, key.featureVersion])
+  `, [key.populationKey, key.model, key.featureVersion])).map(normalizedSourceFeatureRow)
   if (rows.length > maximumIdentityPopulationRows) throw identityOverflow('population 基线', maximumIdentityPopulationRows)
   const signatures = collapseSourceSignatures(rows).map((item) => item.vector)
   if (signatures.length < 3) return false
   const summary = robustVectorSummary(signatures)
-  const active = await client.one<BaselineRow>(`
+  const activeRow = await client.one<BaselineRow>(`
     SELECT * FROM ${baselineTable}
     WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND version_status = 'active'
     ORDER BY baseline_version DESC LIMIT 1
   `, [key.populationKey, key.model, key.featureVersion])
-  const first = rows.reduce((value, row) => value < row.first_observed_at ? value : row.first_observed_at, rows[0]?.first_observed_at ?? nowIso())
-  const last = rows.reduce((value, row) => value > row.last_observed_at ? value : row.last_observed_at, '')
+  const active = activeRow ? normalizedBaselineRow(activeRow) : undefined
+  const first = earliestInstant(rows.map((row) => row.first_observed_at), 'model_identity_source_features.first_observed_at')
+  const last = latestInstant(rows.map((row) => row.last_observed_at), 'model_identity_source_features.last_observed_at')
   const evidence = evidenceStatusFor(signatures.length, rows.reduce((sum, row) => sum + Number(row.sample_count), 0), populationDurationDays(rows))
   if (!active) {
     await insertBaseline(client, baselineTable, key, 1, 'active', evidence, summary, first, last)
@@ -315,11 +319,12 @@ async function refreshBaseline(client: DatabaseClient, key: { populationKey: str
   const activeMedian = parseVector(active.median_vector_json)
   const activeMad = parseVector(active.mad_vector_json)
   const shiftedShare = signatures.filter((vector) => robustVectorDistance(vector, activeMedian, activeMad) >= 3).length / signatures.length
-  const candidate = await client.one<BaselineRow>(`
+  const candidateRow = await client.one<BaselineRow>(`
     SELECT * FROM ${baselineTable}
     WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND version_status = 'drift_protected'
     ORDER BY baseline_version DESC LIMIT 1
   `, [key.populationKey, key.model, key.featureVersion])
+  const candidate = candidateRow ? normalizedBaselineRow(candidateRow) : undefined
   if (candidate) {
     const candidateAgeDays = durationDays(candidate.first_observed_at, last)
     const candidateDistance = robustVectorDistance(summary.median, parseVector(candidate.median_vector_json), parseVector(candidate.mad_vector_json))
@@ -425,13 +430,14 @@ async function insertBaseline(client: DatabaseClient, table: string, key: { popu
 
 async function latestBaseline(client: DatabaseClient, populationKey: string, model: string, featureVersion: string): Promise<BaselineRow | undefined> {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_baseline_versions')
-  return await client.one<BaselineRow>(`
+  const row = await client.one<BaselineRow>(`
     SELECT * FROM ${table}
     WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
       AND version_status IN ('drift_protected', 'active')
     ORDER BY CASE WHEN version_status = 'drift_protected' THEN 0 ELSE 1 END, baseline_version DESC
     LIMIT 1
   `, [populationKey, model, featureVersion])
+  return row ? normalizedBaselineRow(row) : undefined
 }
 
 async function upsertPairedWindow(client: DatabaseClient, input: {
@@ -452,7 +458,7 @@ async function upsertPairedWindow(client: DatabaseClient, input: {
       loo_median_distance = excluded.loo_median_distance, loo_mad_distance = excluded.loo_mad_distance,
       loo_q10_distance = excluded.loo_q10_distance, similarity_status = excluded.similarity_status,
       last_observed_at = excluded.last_observed_at, updated_at = excluded.updated_at
-  `, [input.key.systemAccountId, input.key.accountId, input.populationKey, input.key.requestedModel, input.pairKey, input.featureVersion, input.baselineVersion ?? null, input.pairedProbeCount, input.independentSourceCount, input.pairedDistance ?? null, input.pairedBaselineMedian ?? null, input.pairedBaselineMad ?? null, input.pairedQ10 ?? null, input.status, input.lastObservedAt, nowIso()])
+  `, [input.key.systemAccountId, input.key.accountId, input.populationKey, input.key.requestedModel, input.pairKey, input.featureVersion, input.baselineVersion ?? null, input.pairedProbeCount, input.independentSourceCount, input.pairedDistance ?? null, input.pairedBaselineMedian ?? null, input.pairedBaselineMad ?? null, input.pairedQ10 ?? null, input.status, requiredRfc3339Instant(input.lastObservedAt, 'model_paired_similarity_windows.last_observed_at'), nowIso()])
 }
 
 function collapseSourceSignatures(rows: SourceFeatureRow[]): Array<{ upstreamBucket: string; model: string; vector: number[] }> {
@@ -523,14 +529,51 @@ function identityOverflow(scope: string, limit: number): Error {
 }
 
 function compareCurrentIdentityScopes(left: CurrentIdentityScopeRow, right: CurrentIdentityScopeRow): number {
-  return compareTextDescending(left.last_observed_at, right.last_observed_at)
-    || compareTextDescending(left.first_observed_at, right.first_observed_at)
+  return compareInstantDescending(left.last_observed_at, right.last_observed_at, 'model_identity_source_features.last_observed_at')
+    || compareInstantDescending(left.first_observed_at, right.first_observed_at, 'model_identity_source_features.first_observed_at')
     || compareTextDescending(left.population_key_hmac, right.population_key_hmac)
     || compareTextDescending(left.feature_version, right.feature_version)
 }
 
+function normalizedCurrentIdentityScopeRow(row: CurrentIdentityScopeRow): CurrentIdentityScopeRow {
+  return {
+    ...row,
+    first_observed_at: requiredRfc3339Instant(row.first_observed_at, 'model_identity_source_features.first_observed_at'),
+    last_observed_at: requiredRfc3339Instant(row.last_observed_at, 'model_identity_source_features.last_observed_at')
+  }
+}
+
+function normalizedSourceFeatureRow(row: SourceFeatureRow): SourceFeatureRow {
+  return {
+    ...row,
+    first_observed_at: requiredRfc3339Instant(row.first_observed_at, 'model_identity_source_features.first_observed_at'),
+    last_observed_at: requiredRfc3339Instant(row.last_observed_at, 'model_identity_source_features.last_observed_at')
+  }
+}
+
+function normalizedBaselineRow(row: BaselineRow): BaselineRow {
+  return {
+    ...row,
+    first_observed_at: requiredRfc3339Instant(row.first_observed_at, 'model_identity_baseline_versions.first_observed_at'),
+    last_observed_at: requiredRfc3339Instant(row.last_observed_at, 'model_identity_baseline_versions.last_observed_at')
+  }
+}
+
 function compareTextDescending(left: string, right: string): number {
   return left === right ? 0 : left > right ? -1 : 1
+}
+
+function requiredInstantMilliseconds(value: unknown, label: string): number {
+  const normalized = requiredRfc3339Instant(value, label)
+  const milliseconds = rfc3339InstantMilliseconds(normalized)
+  if (milliseconds === undefined) throw new Error(`${label}解析后不是有效的 RFC3339 时间`)
+  return milliseconds
+}
+
+function compareInstantDescending(left: string, right: string, label: string): number {
+  const leftMilliseconds = requiredInstantMilliseconds(left, label)
+  const rightMilliseconds = requiredInstantMilliseconds(right, label)
+  return leftMilliseconds === rightMilliseconds ? 0 : leftMilliseconds > rightMilliseconds ? -1 : 1
 }
 
 function pairedModels(model: string): string[] {
@@ -554,13 +597,45 @@ function evidenceStatusFor(sourceCount: number, sampleCount: number, durationDay
 
 function populationDurationDays(rows: SourceFeatureRow[]): number {
   if (!rows.length) return 0
-  const first = rows.reduce((value, row) => value < row.first_observed_at ? value : row.first_observed_at, rows[0]?.first_observed_at ?? '')
-  const last = rows.reduce((value, row) => value > row.last_observed_at ? value : row.last_observed_at, '')
+  const first = earliestInstant(rows.map((row) => row.first_observed_at), 'model_identity_source_features.first_observed_at')
+  const last = latestInstant(rows.map((row) => row.last_observed_at), 'model_identity_source_features.last_observed_at')
   return durationDays(first, last)
 }
 
 function durationDays(first: string, last: string): number {
-  return Math.max(1, Math.ceil((Date.parse(last) - Date.parse(first)) / 86_400_000) + 1)
+  const firstMilliseconds = requiredInstantMilliseconds(first, '模型可信 identity first_observed_at')
+  const lastMilliseconds = requiredInstantMilliseconds(last, '模型可信 identity last_observed_at')
+  return Math.max(1, Math.ceil((lastMilliseconds - firstMilliseconds) / 86_400_000) + 1)
+}
+
+function earliestInstant(values: string[], label: string): string {
+  if (!values.length) throw new Error(`${label}不能为空`)
+  let earliest = requiredRfc3339Instant(values[0], label)
+  let earliestMilliseconds = requiredInstantMilliseconds(earliest, label)
+  for (const value of values.slice(1)) {
+    const normalized = requiredRfc3339Instant(value, label)
+    const milliseconds = requiredInstantMilliseconds(normalized, label)
+    if (milliseconds < earliestMilliseconds) {
+      earliest = normalized
+      earliestMilliseconds = milliseconds
+    }
+  }
+  return earliest
+}
+
+function latestInstant(values: string[], label: string): string {
+  if (!values.length) throw new Error(`${label}不能为空`)
+  let latest = requiredRfc3339Instant(values[0], label)
+  let latestMilliseconds = requiredInstantMilliseconds(latest, label)
+  for (const value of values.slice(1)) {
+    const normalized = requiredRfc3339Instant(value, label)
+    const milliseconds = requiredInstantMilliseconds(normalized, label)
+    if (milliseconds > latestMilliseconds) {
+      latest = normalized
+      latestMilliseconds = milliseconds
+    }
+  }
+  return latest
 }
 
 function parseVector(value: string): number[] {
