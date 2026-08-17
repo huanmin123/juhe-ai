@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { DatabaseClient } from './database-client.js'
 import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 
@@ -600,7 +601,10 @@ export async function installChatContextCheckpoint(client: DatabaseClient, input
   const sourceThroughSequence = positiveSafeInteger(input.sourceThroughSequence, 'sourceThroughSequence')
   const expiresAt = normalizedTimestamp(input.expiresAt, 'expiresAt')
   const now = normalizedTimestamp(input.now, 'now')
-  if (Date.parse(expiresAt) <= Date.parse(now)) throw new Error('不能安装已过期的 checkpoint')
+  const expiresAtMs = rfc3339InstantMilliseconds(expiresAt)
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (expiresAtMs === undefined || nowMs === undefined) throw new Error('checkpoint 时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  if (expiresAtMs <= nowMs) throw new Error('不能安装已过期的 checkpoint')
   const checkpointId = input.checkpointId ? normalizedText(input.checkpointId, 'checkpointId', 128) : `chat_checkpoint_${randomUUID().replace(/-/g, '')}`
   const payloadDigest = normalizedDigest(input.payloadDigest)
   const estimatedInputTokens = optionalNonNegativeSafeInteger(input.estimatedInputTokens, 'estimatedInputTokens')
@@ -638,7 +642,10 @@ export async function installChatContextCheckpoint(client: DatabaseClient, input
     ) {
       throw new ChatContextConflictError()
     }
-    if (Date.parse(expiresAt) > Date.parse(String(current.context_progress_earliest_expires_at))) {
+    const earliestExpiresAt = normalizedTimestamp(String(current.context_progress_earliest_expires_at), 'contextProgressEarliestExpiresAt')
+    const earliestExpiresAtMs = rfc3339InstantMilliseconds(earliestExpiresAt)
+    if (earliestExpiresAtMs === undefined) throw new Error('contextProgressEarliestExpiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+    if (expiresAtMs > earliestExpiresAtMs) {
       throw new Error('checkpoint 过期时间不能晚于来源消息最早过期时间')
     }
     let checkpointSourceFromSequence = Number(current.compacted_through_sequence) + 1
@@ -1084,13 +1091,18 @@ function optionalDigest(value: string | undefined, name: string): string | undef
 }
 
 function normalizedTimestamp(value: string, name: string): string {
-  const timestamp = Date.parse(value)
-  if (!Number.isFinite(timestamp)) throw new Error(`${name} 必须是有效时间`)
-  return new Date(timestamp).toISOString()
+  return requiredRfc3339Instant(value, name)
 }
 
 function earlierTimestamp(current: string | undefined, candidate: string): string {
-  return !current || Date.parse(candidate) < Date.parse(current) ? candidate : current
+  const normalizedCandidate = normalizedTimestamp(candidate, '聊天上下文候选过期时间')
+  const candidateMs = rfc3339InstantMilliseconds(normalizedCandidate)
+  if (candidateMs === undefined) throw new Error('聊天上下文候选过期时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  if (current === undefined) return normalizedCandidate
+  const normalizedCurrent = normalizedTimestamp(current, '聊天上下文当前过期时间')
+  const currentMs = rfc3339InstantMilliseconds(normalizedCurrent)
+  if (currentMs === undefined) throw new Error('聊天上下文当前过期时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return candidateMs < currentMs ? normalizedCandidate : normalizedCurrent
 }
 
 function optionalString(value: unknown): string | undefined {

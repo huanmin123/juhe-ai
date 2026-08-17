@@ -16,6 +16,7 @@ import {
 } from '../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
@@ -851,22 +852,14 @@ function systemAccountPatchBoolean(value: unknown): boolean {
 }
 
 function nextSystemAccountUpdatedAt(currentUpdatedAt: string): string {
-  const now = nowIso()
-  const nowMs = Date.parse(now)
-  const currentMs = Date.parse(currentUpdatedAt)
-  if (!Number.isFinite(currentMs) || nowMs > currentMs) return now
-  return new Date(currentMs + 1).toISOString()
+  const currentMs = rfc3339InstantMilliseconds(currentUpdatedAt)
+  if (currentMs === undefined) throw new Error(`系统账户 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentUpdatedAt}`)
+  return new Date(Math.max(Date.now(), currentMs + 1)).toISOString()
 }
 
 function systemAccountRevisionsEqual(left: string, right: string): boolean {
-  return normalizedSystemAccountRevisionToken(left) === normalizedSystemAccountRevisionToken(right)
-}
-
-function normalizedSystemAccountRevisionToken(value: string): string {
-  const utcMatch = /^(.*?)(?:\.(\d+))?Z$/i.exec(value)
-  if (!utcMatch) return value
-  const fraction = (utcMatch[2] ?? '').replace(/0+$/, '')
-  return `${utcMatch[1]}${fraction ? `.${fraction}` : ''}Z`
+  return requiredRfc3339Instant(left, '系统账户当前 updatedAt')
+    === requiredRfc3339Instant(right, '系统账户 expectedUpdatedAt')
 }
 
 function systemAccountManagementRuntimeInvalidationReason(changes: SystemAccountManagementPatchChange[]): string | undefined {
@@ -1229,13 +1222,18 @@ function sessionWithAccountFromRow(row: SystemSessionAccountRow | undefined): (S
   if (!row) {
     return undefined
   }
-  if (Date.parse(row.expires_at) <= Date.now() || row.status !== 'active') {
+  if (row.status !== 'active') {
+    return undefined
+  }
+  const expiresAtMs = rfc3339InstantMilliseconds(row.expires_at)
+  const lastSeenAtMs = rfc3339InstantMilliseconds(row.last_seen_at)
+  if (expiresAtMs === undefined || lastSeenAtMs === undefined || expiresAtMs <= Date.now()) {
     return undefined
   }
   return {
     sessionId: row.id,
-    expiresAt: row.expires_at,
-    lastSeenAt: row.last_seen_at,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    lastSeenAt: new Date(lastSeenAtMs).toISOString(),
     tokenHash: row.token_hash,
     account: systemAccountSummaryFromRow({ ...row, id: row.account_id })
   }
@@ -1243,7 +1241,7 @@ function sessionWithAccountFromRow(row: SystemSessionAccountRow | undefined): (S
 
 export function touchSession(sessionId: string, lastSeenAt?: string): void {
   const nowMs = Date.now()
-  if (lastSeenAt && Number.isFinite(Date.parse(lastSeenAt)) && nowMs - Date.parse(lastSeenAt) < sessionTouchMinIntervalMs) {
+  if (shouldSkipSessionTouch(lastSeenAt, nowMs)) {
     return
   }
 
@@ -1255,7 +1253,7 @@ export function touchSession(sessionId: string, lastSeenAt?: string): void {
 
 export async function touchSessionAsync(sessionId: string, lastSeenAt?: string): Promise<void> {
   const nowMs = Date.now()
-  if (lastSeenAt && Number.isFinite(Date.parse(lastSeenAt)) && nowMs - Date.parse(lastSeenAt) < sessionTouchMinIntervalMs) {
+  if (shouldSkipSessionTouch(lastSeenAt, nowMs)) {
     return
   }
 
@@ -1266,6 +1264,13 @@ export async function touchSessionAsync(sessionId: string, lastSeenAt?: string):
     SET last_seen_at = ?
     WHERE id = ? AND last_seen_at < ?
   `, [new Date(nowMs).toISOString(), sessionId, cutoff])
+}
+
+function shouldSkipSessionTouch(lastSeenAt: string | undefined, nowMs: number): boolean {
+  if (lastSeenAt === undefined) return false
+  const lastSeenAtMs = rfc3339InstantMilliseconds(lastSeenAt)
+  if (lastSeenAtMs === undefined) throw new Error(`系统会话 lastSeenAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${lastSeenAt}`)
+  return nowMs - lastSeenAtMs < sessionTouchMinIntervalMs
 }
 
 export function revokeSession(token: string): void {

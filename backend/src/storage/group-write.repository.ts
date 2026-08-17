@@ -5,6 +5,7 @@ import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderCode } fro
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { maxRouteStrategyAvailabilityLossCandidates } from './route-strategy-group-binding-limits.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -759,10 +760,9 @@ function assertGroupPatchApplied(changes: number | bigint | undefined): void {
 }
 
 function nextGroupUpdatedAt(currentUpdatedAt: string): string {
-  const now = nowIso()
-  if (now > currentUpdatedAt) return now
-  const currentMs = Date.parse(currentUpdatedAt)
-  return Number.isFinite(currentMs) ? new Date(currentMs + 1).toISOString() : now
+  const currentMs = rfc3339InstantMilliseconds(currentUpdatedAt)
+  if (currentMs === undefined) throw new Error(`分组 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentUpdatedAt}`)
+  return new Date(Math.max(Date.now(), currentMs + 1)).toISOString()
 }
 
 function requiredPatchText(value: unknown, label: string): string {

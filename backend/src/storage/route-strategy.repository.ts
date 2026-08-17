@@ -31,6 +31,7 @@ import {
   notifyGatewayApiKeyValidationCacheInvalidationAsync,
   notifyGatewayRuntimeCacheInvalidation
 } from '../shared/gateway-cache-invalidation.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, buildSystemAccountScopeClause, buildSystemAccountWhereClause, type AccessScope } from './access-scope.js'
 import { canManageApiKeyOwner } from './api-key-access.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
@@ -1497,11 +1498,9 @@ async function updateRouteStrategyScalarColumnsAsync(
 }
 
 function nextRouteStrategyUpdatedAt(currentUpdatedAt: string): string {
-  const now = nowIso()
-  const currentMs = Date.parse(currentUpdatedAt)
-  const nowMs = Date.parse(now)
-  if (!Number.isFinite(currentMs) || !Number.isFinite(nowMs) || nowMs > currentMs) return now
-  return new Date(currentMs + 1).toISOString()
+  const currentMs = rfc3339InstantMilliseconds(currentUpdatedAt)
+  if (currentMs === undefined) throw new Error(`策略路由 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${currentUpdatedAt}`)
+  return new Date(Math.max(Date.now(), currentMs + 1)).toISOString()
 }
 
 function routeStrategyGroupBindingsEqual(

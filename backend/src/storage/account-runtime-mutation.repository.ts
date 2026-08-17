@@ -5,7 +5,7 @@ import {
   LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX
 } from '../domain/account-runtime-provenance.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
@@ -82,11 +82,13 @@ function authorizedBindingSystemAccountId(access?: AccessScope): string {
 }
 
 function isLaterIso(value?: string, current?: string): boolean {
-  if (!value) return false
-  if (!current) return true
-  const nextTime = Date.parse(value)
-  const currentTime = Date.parse(current)
-  return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
+  if (value === undefined) return false
+  const nextTime = rfc3339InstantMilliseconds(value)
+  if (nextTime === undefined) throw new Error(`账户冷却结束时间必须是带 Z 或数值 offset 的 RFC3339 时间：${value}`)
+  if (current === undefined) return true
+  const currentTime = rfc3339InstantMilliseconds(current)
+  if (currentTime === undefined) throw new Error(`账户冷却比较时间必须是带 Z 或数值 offset 的 RFC3339 时间：${current}`)
+  return nextTime > currentTime
 }
 
 async function accountEnabledGroupIdForClientAsync(client: DatabaseClient, accountId: string, systemAccountId: string): Promise<string | undefined> {
@@ -1248,7 +1250,9 @@ function accountRuntimeSuccessObservationDecision(
   if (row.last_health_success_at && row.last_health_success_at > observedAt) {
     return { accepted: false, changed: false, accountStatus: status }
   }
-  const expired = isAccountExpired(row.account_expires_at, Date.parse(observedAt))
+  const observedAtMs = rfc3339InstantMilliseconds(observedAt)
+  if (observedAtMs === undefined) throw new Error(`账户运行态 observedAt 必须是带 Z 或数值 offset 的 RFC3339 时间：${observedAt}`)
+  const expired = isAccountExpired(row.account_expires_at, observedAtMs)
   const explicitPolicyCooldown = isExplicitAccountErrorPolicyCooldown(row.last_error_code, row.last_error_message)
   const observationCanRestoreCurrentState = !isCoolingAccountStatus(status)
     || !row.updated_at
