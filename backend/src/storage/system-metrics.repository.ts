@@ -36,6 +36,10 @@ const PROCESS_EVENT_LOOP_LATEST_FRESHNESS_MS = 2 * 60 * 1000
 const SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK = '0001-01-01T00:00:00.000Z'
 const SYSTEM_METRICS_SOURCE_VERSION_PATTERN = /^v2:[a-f0-9]{64}$/
 
+function normalizedSampledAt(value: string | undefined, label: string): string {
+  return value === undefined ? nowIso() : requiredRfc3339Instant(value, label)
+}
+
 export interface SystemMetricsTrendWindowSnapshotContext {
   ranges: AccountUsageStatsRange[]
   earliestDate: string
@@ -390,7 +394,7 @@ async function deleteSystemMetricsTrendWindowRangesAsync(
 
 export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
   const database = getStatsDatabase()
-  const sampledAt = input.sampledAt ?? nowIso()
+  const sampledAt = normalizedSampledAt(input.sampledAt, '系统指标 sampledAt')
   const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -461,7 +465,7 @@ export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput)
   }
 
   const database = getStatsDatabase()
-  const sampledAt = input.sampledAt ?? nowIso()
+  const sampledAt = normalizedSampledAt(input.sampledAt, '进程事件循环 sampledAt')
   const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -573,7 +577,7 @@ async function insertSystemMetricsSampleWithClientAsync(
   input: SystemMetricsSampleInput,
   timezone: string
 ): Promise<void> {
-  const sampledAt = input.sampledAt ?? nowIso()
+  const sampledAt = normalizedSampledAt(input.sampledAt, '系统指标 sampledAt')
   const statHour = hourKey(new Date(sampledAt), timezone)
   await client.execute(`
     INSERT INTO ${statsTable(client, 'system_metrics_samples')} (
@@ -609,7 +613,7 @@ async function insertProcessEventLoopSampleWithClientAsync(
   input: NormalizedProcessEventLoopSample,
   timezone: string
 ): Promise<void> {
-  const sampledAt = input.sampledAt ?? nowIso()
+  const sampledAt = normalizedSampledAt(input.sampledAt, '进程事件循环 sampledAt')
   const statHour = hourKey(new Date(sampledAt), timezone)
   await client.execute(`
     INSERT INTO ${statsTable(client, 'process_event_loop_samples')} (
@@ -1305,7 +1309,7 @@ function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): Syst
     if (!processRole || statusByRole.has(processRole)) continue
     statusByRole.set(processRole, {
       processPid: nullableNumber(row.process_pid) ?? undefined,
-      sampledAt: String(row.sampled_at ?? ''),
+      sampledAt: requiredRfc3339Instant(row.sampled_at, '系统指标进程采样 sampled_at'),
       eventLoopLagMs: nullableNumber(row.event_loop_lag_ms) ?? undefined,
       processRssBytes: nullableNumber(row.process_rss_bytes) ?? undefined,
       processHeapUsedBytes: nullableNumber(row.process_heap_used_bytes) ?? undefined,
@@ -1361,7 +1365,7 @@ function buildProcessEventLoopTrendLatestStatus(rows: Array<Record<string, unkno
       processRole,
       sampleAvailable: true,
       processPid: nullableNumber(row.process_pid) ?? null,
-      sampledAt: String(row.sampled_at ?? ''),
+      sampledAt: requiredRfc3339Instant(row.sampled_at, '系统指标趋势进程采样 sampled_at'),
       eventLoopLagMs: nullableNumber(row.event_loop_lag_ms),
       processRssBytes: nullableNumber(row.process_rss_bytes),
       processHeapUsedBytes: nullableNumber(row.process_heap_used_bytes),
@@ -1388,7 +1392,7 @@ function buildProcessEventLoopTrendPeakStatus(rows: Array<Record<string, unknown
       processRole,
       sampleAvailable: true,
       processPid: nullableNumber(row.process_pid) ?? null,
-      sampledAt: String(row.sampled_at ?? ''),
+      sampledAt: requiredRfc3339Instant(row.sampled_at, '系统指标峰值进程采样 sampled_at'),
       eventLoopLagMs: nullableNumber(row.event_loop_lag_ms)
     }] : []
   })

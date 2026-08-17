@@ -270,6 +270,23 @@ assert.doesNotMatch(processMetricsRegistrySource, /Date\.parse\(/, 'Redis 进程
 assert.match(processMetricsRegistrySource, /requiredRfc3339Instant\(sample\.sampledAt, '高性能进程指标采样时间'\)/, 'Redis 写入必须拒绝非法 sampledAt')
 assert.match(processMetricsRegistrySource, /JSON\.stringify\(\{ \.\.\.sample, sampledAt \}\)/, 'Redis 写入必须保存 canonical UTC sampledAt')
 assert.match(processMetricsRegistrySource, /canonicalizeRfc3339Instant\(parsed\.sampledAt\)/, 'Redis 读取必须拒绝裸/非法 sampledAt')
+
+const systemMetricsRepositorySource = readFileSync(new URL('../../storage/system-metrics.repository.ts', import.meta.url), 'utf8')
+assert.match(
+  systemMetricsRepositorySource,
+  /function normalizedSampledAt\(value: string \| undefined, label: string\): string \{[\s\S]*?value === undefined \? nowIso\(\) : requiredRfc3339Instant\(value, label\)/,
+  '系统指标 sampledAt 只有在字段缺失时才能生成当前时间，supplied 值必须严格 canonical'
+)
+assert.doesNotMatch(
+  systemMetricsRepositorySource,
+  /const sampledAt = input\.sampledAt \?\? nowIso\(\)/,
+  '系统指标不得把 supplied sampledAt 原样写入数据库'
+)
+assert.match(
+  systemMetricsRepositorySource,
+  /sampledAt: requiredRfc3339Instant\(row\.sampled_at,/,
+  '系统指标数据库 sampled_at 读取必须严格 canonical，非法值不得原样输出'
+)
 const processMetricsRegistry = await import('../../shared/performance-process-metrics-registry.js')
 let publishedRegistryArguments: string[] | undefined
 const registryClient = {

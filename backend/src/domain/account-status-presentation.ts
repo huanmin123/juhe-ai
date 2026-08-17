@@ -11,6 +11,7 @@ import type {
   AccountRuntimeProbePresentation,
   AccountApiKeyRuntimeSummary
 } from './types.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export interface AccountStatusPresentationInput {
   id: string
@@ -67,20 +68,108 @@ export function accountProbeObservationId(input: {
   errorCode?: string
   reason?: string
 }): string {
-  const fingerprint = [input.kind, input.identity, input.attemptedAt, input.traceId ?? '', input.errorCode ?? '', input.reason ?? ''].join('|')
+  const attemptedAt = requiredRfc3339Instant(input.attemptedAt, '账户探针 attemptedAt')
+  const fingerprint = [input.kind, input.identity, attemptedAt, input.traceId ?? '', input.errorCode ?? '', input.reason ?? ''].join('|')
   return createHash('sha256').update(fingerprint).digest('hex').slice(0, 24)
 }
 
-function schedule(nextAttemptAt: string | undefined, now: Date, running = false): AccountProbeSchedule {
-  if (running) return { state: 'running' }
-  if (!nextAttemptAt) return { state: 'none' }
-  const timestamp = new Date(nextAttemptAt).getTime()
-  if (!Number.isFinite(timestamp)) return { state: 'none' }
-  return { state: timestamp <= now.getTime() ? 'due_waiting' : 'scheduled', nextAttemptAt }
+function requiredTimestamp(value: string, label: string): string {
+  return requiredRfc3339Instant(value, label)
 }
 
-function hasValidDateTime(value: string | undefined): value is string {
-  return Boolean(value && Number.isFinite(new Date(value).getTime()))
+function optionalTimestamp(value: string | null | undefined, label: string): string | undefined {
+  return value == null ? undefined : requiredTimestamp(value, label)
+}
+
+function timestampMilliseconds(value: string, label: string): number {
+  const milliseconds = rfc3339InstantMilliseconds(value)
+  if (milliseconds === undefined) throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  return milliseconds
+}
+
+function normalizedObservation(observation: AccountProbeObservation, label: string): AccountProbeObservation {
+  return {
+    ...observation,
+    attemptedAt: requiredTimestamp(observation.attemptedAt, `${label} attemptedAt`)
+  }
+}
+
+function normalizedSchedule(scheduleValue: AccountProbeSchedule, label: string): AccountProbeSchedule {
+  const nextAttemptAt = optionalTimestamp(scheduleValue.nextAttemptAt, `${label} nextAttemptAt`)
+  return nextAttemptAt === undefined ? { ...scheduleValue, nextAttemptAt: undefined } : { ...scheduleValue, nextAttemptAt }
+}
+
+function normalizedProbeSummary(probe: AccountProbeSummary, label: string): AccountProbeSummary {
+  return {
+    ...probe,
+    ...(probe.lastObservation
+      ? { lastObservation: normalizedObservation(probe.lastObservation, `${label} observation`) }
+      : {}),
+    schedule: normalizedSchedule(probe.schedule, `${label} schedule`)
+  }
+}
+
+function normalizedRuntimeProbe(probe: AccountRuntimeProbePresentation, label: string): AccountRuntimeProbePresentation {
+  const recoveryAt = optionalTimestamp(probe.recoveryAt, `${label} recoveryAt`)
+  return {
+    ...probe,
+    ...(probe.lastObservation
+      ? { lastObservation: normalizedObservation(probe.lastObservation, `${label} observation`) }
+      : {}),
+    schedule: normalizedSchedule(probe.schedule, `${label} schedule`),
+    ...(recoveryAt === undefined ? { recoveryAt: undefined } : { recoveryAt })
+  }
+}
+
+function normalizedAccount(account: AccountStatusPresentationInput): AccountStatusPresentationInput {
+  const effectiveRetryAt = optionalTimestamp(account.effectiveAvailability.retryAt, '账户 effectiveAvailability retryAt')
+  const apiKeyRuntime = account.apiKeyRuntime
+  return {
+    ...account,
+    effectiveAvailability: {
+      ...account.effectiveAvailability,
+      ...(effectiveRetryAt === undefined ? { retryAt: undefined } : { retryAt: effectiveRetryAt })
+    },
+    accountExpiresAt: optionalTimestamp(account.accountExpiresAt, '账户 accountExpiresAt'),
+    authorizationExpiresAt: optionalTimestamp(account.authorizationExpiresAt, '账户 authorizationExpiresAt'),
+    quotaResetAt: optionalTimestamp(account.quotaResetAt, '账户 quotaResetAt'),
+    authorizationInstanceSourceAccountExpiresAt: optionalTimestamp(account.authorizationInstanceSourceAccountExpiresAt, '授权来源 accountExpiresAt'),
+    authorizationInstanceSourceAccountCooldownUntil: optionalTimestamp(account.authorizationInstanceSourceAccountCooldownUntil, '授权来源 cooldownUntil'),
+    authorizationInstanceSourceAccountCooldownRetestLastAt: optionalTimestamp(account.authorizationInstanceSourceAccountCooldownRetestLastAt, '授权来源 cooldownRetestLastAt'),
+    authorizationInstanceSourceAccountLastHealthCheckAt: optionalTimestamp(account.authorizationInstanceSourceAccountLastHealthCheckAt, '授权来源 lastHealthCheckAt'),
+    authorizationInstanceSourceAccountNextHealthCheckAt: optionalTimestamp(account.authorizationInstanceSourceAccountNextHealthCheckAt, '授权来源 nextHealthCheckAt'),
+    nextHealthCheckAt: optionalTimestamp(account.nextHealthCheckAt, '账户 nextHealthCheckAt'),
+    lastHealthCheckAt: optionalTimestamp(account.lastHealthCheckAt, '账户 lastHealthCheckAt'),
+    lastHealthSuccessAt: optionalTimestamp(account.lastHealthSuccessAt, '账户 lastHealthSuccessAt'),
+    cooldownRetestLastAt: optionalTimestamp(account.cooldownRetestLastAt, '账户 cooldownRetestLastAt'),
+    cooldownUntil: optionalTimestamp(account.cooldownUntil, '账户 cooldownUntil'),
+    ...(account.runtimeProbe
+      ? { runtimeProbe: normalizedRuntimeProbe(account.runtimeProbe, '账户 runtime probe') }
+      : { runtimeProbe: undefined }),
+    ...(account.apiKeyProbe
+      ? { apiKeyProbe: normalizedProbeSummary(account.apiKeyProbe, '账户 API Key probe') }
+      : { apiKeyProbe: undefined }),
+    ...(account.sourceAccountProbe
+      ? { sourceAccountProbe: normalizedProbeSummary(account.sourceAccountProbe, '账户来源 probe') }
+      : { sourceAccountProbe: undefined }),
+    ...(apiKeyRuntime
+      ? {
+          apiKeyRuntime: {
+            ...apiKeyRuntime,
+            nextProbeAt: optionalTimestamp(apiKeyRuntime.nextProbeAt, '账户 API Key nextProbeAt'),
+            lastFailureAt: optionalTimestamp(apiKeyRuntime.lastFailureAt, '账户 API Key lastFailureAt')
+          }
+        }
+      : { apiKeyRuntime: undefined })
+  }
+}
+
+function schedule(nextAttemptAt: string | undefined, now: Date, running = false, label = '账户 probe schedule'): AccountProbeSchedule {
+  const normalizedNextAttemptAt = optionalTimestamp(nextAttemptAt, `${label} nextAttemptAt`)
+  if (running) return { state: 'running' }
+  if (normalizedNextAttemptAt === undefined) return { state: 'none' }
+  const timestamp = timestampMilliseconds(normalizedNextAttemptAt, `${label} nextAttemptAt`)
+  return { state: timestamp <= now.getTime() ? 'due_waiting' : 'scheduled', nextAttemptAt: normalizedNextAttemptAt }
 }
 
 function hasProbeFact(probe: AccountProbeSummary | undefined): probe is AccountProbeSummary {
@@ -90,14 +179,15 @@ function hasProbeFact(probe: AccountProbeSummary | undefined): probe is AccountP
 function healthObservation(account: AccountStatusPresentationInput, kind: AccountProbeKind): AccountProbeObservation | undefined {
   const attemptedAt = account.lastHealthCheckAt
   if (!attemptedAt) return undefined
+  const normalizedAttemptedAt = requiredTimestamp(attemptedAt, `账户 ${kind} attemptedAt`)
   const failed = Boolean(account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage || (account.lastHealthCheckStatusCode && account.lastHealthCheckStatusCode >= 400))
   const result: AccountProbeResult = failed ? 'failed' : 'success'
   const reason = failed ? account.lastHealthCheckErrorMessage : undefined
   const errorCode = failed ? account.lastHealthCheckErrorCode : undefined
   const traceId = failed ? account.lastHealthCheckTraceId : undefined
   return {
-    observationId: accountProbeObservationId({ kind, identity: account.id, attemptedAt, traceId, errorCode, reason }),
-    attemptedAt,
+    observationId: accountProbeObservationId({ kind, identity: account.id, attemptedAt: normalizedAttemptedAt, traceId, errorCode, reason }),
+    attemptedAt: normalizedAttemptedAt,
     result,
     httpStatus: account.lastHealthCheckStatusCode,
     errorCode,
@@ -142,6 +232,7 @@ const mappings: Record<AccountEffectiveAvailabilityStatus, { status: AccountAvai
 }
 
 export function accountAvailabilityPresentation(account: AccountStatusPresentationInput, now = new Date()): AccountAvailabilityPresentation {
+  account = normalizedAccount(account)
   const effective = account.effectiveAvailability
   const mapping = mappings[effective.status]
   const presentation: AccountAvailabilityPresentation = {
@@ -154,22 +245,22 @@ export function accountAvailabilityPresentation(account: AccountStatusPresentati
   // worker for persisted temporary-unavailable and rate-limited states.
   // It is only a status boundary for an otherwise active instance/source
   // account that is waiting for its own cooldown to expire.
-  const cooldownProbeSchedule = schedule(account.cooldownUntil, now)
+  const cooldownProbeSchedule = schedule(account.cooldownUntil, now, false, '账户 cooldown')
   const apiKeyProbe = account.apiKeyProbe ?? accountApiKeyProbe(account, now)
 
   if (effective.status === 'instance_error' && account.lastErrorCode === 'account_activation_check_timeout') presentation.action = 'retry_check'
   else if (effective.status === 'instance_error' && account.lastErrorCode?.startsWith('cooldown_retest_')) presentation.action = 'restore_account'
 
-  if (effective.status === 'authorization_expired' && hasValidDateTime(account.authorizationExpiresAt)) presentation.statusBoundary = { at: account.authorizationExpiresAt, kind: 'authorization_expired' }
-  else if (effective.status === 'source_expired' && hasValidDateTime(account.authorizationInstanceSourceAccountExpiresAt)) presentation.statusBoundary = { at: account.authorizationInstanceSourceAccountExpiresAt, kind: 'source_expired' }
-  else if (effective.status === 'instance_expired' && hasValidDateTime(account.accountExpiresAt)) presentation.statusBoundary = { at: account.accountExpiresAt, kind: 'account_expired' }
-  else if (effective.status === 'authorization_quota_exceeded' && hasValidDateTime(account.quotaResetAt)) presentation.statusBoundary = { at: account.quotaResetAt, kind: 'quota_reset' }
-  else if (effective.status === 'source_cooldown' && hasValidDateTime(account.authorizationInstanceSourceAccountCooldownUntil)) presentation.statusBoundary = { at: account.authorizationInstanceSourceAccountCooldownUntil, kind: 'cooldown_expiry' }
-  else if (effective.status === 'instance_cooldown' && hasValidDateTime(account.cooldownUntil)) presentation.statusBoundary = { at: account.cooldownUntil, kind: 'cooldown_expiry' }
+  if (effective.status === 'authorization_expired' && account.authorizationExpiresAt !== undefined) presentation.statusBoundary = { at: account.authorizationExpiresAt, kind: 'authorization_expired' }
+  else if (effective.status === 'source_expired' && account.authorizationInstanceSourceAccountExpiresAt !== undefined) presentation.statusBoundary = { at: account.authorizationInstanceSourceAccountExpiresAt, kind: 'source_expired' }
+  else if (effective.status === 'instance_expired' && account.accountExpiresAt !== undefined) presentation.statusBoundary = { at: account.accountExpiresAt, kind: 'account_expired' }
+  else if (effective.status === 'authorization_quota_exceeded' && account.quotaResetAt !== undefined) presentation.statusBoundary = { at: account.quotaResetAt, kind: 'quota_reset' }
+  else if (effective.status === 'source_cooldown' && account.authorizationInstanceSourceAccountCooldownUntil !== undefined) presentation.statusBoundary = { at: account.authorizationInstanceSourceAccountCooldownUntil, kind: 'cooldown_expiry' }
+  else if (effective.status === 'instance_cooldown' && account.cooldownUntil !== undefined) presentation.statusBoundary = { at: account.cooldownUntil, kind: 'cooldown_expiry' }
   else if (
     effective.status === 'runtime_local_suppressed'
     && account.runtimeProbe?.recoveryAtKind === 'policy_ttl_expiry'
-    && hasValidDateTime(account.runtimeProbe.recoveryAt)
+    && account.runtimeProbe.recoveryAt !== undefined
   ) presentation.statusBoundary = { at: account.runtimeProbe.recoveryAt, kind: 'policy_ttl_expiry' }
 
   if (presentation.statusBoundary) return presentation
@@ -184,12 +275,12 @@ export function accountAvailabilityPresentation(account: AccountStatusPresentati
       schedule: account.runtimeProbe.schedule
     }
   } else if (effective.status.startsWith('source_')) probe = account.sourceAccountProbe ?? sourceAccountProbe(account, now)
-  else if (effective.status === 'instance_pending_test') probe = { kind: 'activation_check', lastObservation: healthObservation(account, 'activation_check'), schedule: schedule(account.nextHealthCheckAt, now) }
+  else if (effective.status === 'instance_pending_test') probe = { kind: 'activation_check', lastObservation: healthObservation(account, 'activation_check'), schedule: schedule(account.nextHealthCheckAt, now, false, '账户健康检查') }
   else if (effective.status === 'instance_temporary_unavailable' || effective.status === 'instance_rate_limited') probe = { kind: 'cooldown_retest', lastObservation: account.cooldownRetestLastAt ? {
     observationId: accountProbeObservationId({ kind: 'cooldown_retest', identity: account.id, attemptedAt: account.cooldownRetestLastAt, traceId: account.lastErrorTraceId, errorCode: account.lastErrorCode, reason: account.lastErrorMessage }),
     attemptedAt: account.cooldownRetestLastAt, result: account.lastErrorCode || account.lastErrorMessage || (account.cooldownRetestLastStatusCode && account.cooldownRetestLastStatusCode >= 400) ? 'failed' : 'success', httpStatus: account.cooldownRetestLastStatusCode, errorCode: account.lastErrorCode, reason: account.lastErrorMessage, traceId: account.lastErrorTraceId
   } : undefined, schedule: cooldownProbeSchedule }
-  else if (effective.status === 'instance_error' && account.lastErrorCode === 'account_activation_check_timeout') probe = { kind: 'activation_check', lastObservation: healthObservation(account, 'activation_check'), schedule: schedule(account.nextHealthCheckAt, now) }
+  else if (effective.status === 'instance_error' && account.lastErrorCode === 'account_activation_check_timeout') probe = { kind: 'activation_check', lastObservation: healthObservation(account, 'activation_check'), schedule: schedule(account.nextHealthCheckAt, now, false, '账户健康检查') }
   else if (effective.status === 'instance_error' && account.lastErrorCode?.startsWith('cooldown_retest_')) probe = { kind: 'cooldown_retest', lastObservation: account.cooldownRetestLastAt ? {
     observationId: accountProbeObservationId({ kind: 'cooldown_retest', identity: account.id, attemptedAt: account.cooldownRetestLastAt, traceId: account.lastErrorTraceId, errorCode: account.lastErrorCode, reason: account.lastErrorMessage }),
     attemptedAt: account.cooldownRetestLastAt, result: 'failed', httpStatus: account.cooldownRetestLastStatusCode, errorCode: account.lastErrorCode, reason: account.lastErrorMessage, traceId: account.lastErrorTraceId
@@ -201,7 +292,7 @@ export function accountAvailabilityPresentation(account: AccountStatusPresentati
     // observed probe fact visible without inventing a future check time.
     schedule: { state: 'none' }
   }
-  else if (effective.status === 'available') probe = { kind: 'health_check', lastObservation: healthObservation(account, 'health_check'), schedule: schedule(account.nextHealthCheckAt, now) }
+  else if (effective.status === 'available') probe = { kind: 'health_check', lastObservation: healthObservation(account, 'health_check'), schedule: schedule(account.nextHealthCheckAt, now, false, '账户健康检查') }
   if (hasProbeFact(probe) || effective.status === 'instance_error') presentation.probe = probe
   return presentation
 }

@@ -48,18 +48,50 @@ assert.equal(pending.probe?.kind, 'activation_check')
 assert.equal(pending.probe?.lastObservation, undefined)
 assert.equal(pending.probe?.schedule.state, 'due_waiting')
 
-const pendingWithInvalidSchedule = accountAvailabilityPresentation({
-  id: 'account-pending-invalid-schedule',
-  status: 'pending_test',
+assert.throws(
+  () => accountAvailabilityPresentation({
+    id: 'account-pending-invalid-schedule',
+    status: 'pending_test',
+    effectiveAvailability: {
+      available: false,
+      status: 'instance_pending_test',
+      label: '账户待检查',
+      color: 'orange'
+    },
+    nextHealthCheckAt: 'not-a-date'
+  }, now),
+  /账户 nextHealthCheckAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '非法 supplied 时间必须显式失败，不得静默变成 none'
+)
+
+const offsetPresentation = accountAvailabilityPresentation({
+  id: 'account-offset-time',
+  status: 'active',
   effectiveAvailability: {
-    available: false,
-    status: 'instance_pending_test',
-    label: '账户待检查',
-    color: 'orange'
+    available: true,
+    status: 'available',
+    label: '正常'
   },
-  nextHealthCheckAt: 'not-a-date'
+  lastHealthCheckAt: '2026-07-20T09:02:03.000+08:00',
+  nextHealthCheckAt: '2026-07-20T09:12:03.000+08:00'
 }, now)
-assert.deepEqual(pendingWithInvalidSchedule.probe, undefined, '非法时间不得伪造等待调度任务')
+assert.equal(offsetPresentation.probe?.lastObservation?.attemptedAt, '2026-07-20T01:02:03.000Z', 'health observation 必须 canonical UTC')
+assert.equal(offsetPresentation.probe?.schedule.nextAttemptAt, '2026-07-20T01:12:03.000Z', 'health schedule 必须 canonical UTC')
+
+assert.throws(
+  () => accountAvailabilityPresentation({
+    id: 'account-bare-observation',
+    status: 'active',
+    effectiveAvailability: {
+      available: true,
+      status: 'available',
+      label: '正常'
+    },
+    lastHealthCheckAt: '2026-07-20T01:02:03.000'
+  }, now),
+  /账户 lastHealthCheckAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  'health observation 裸时间必须显式失败'
+)
 
 const temporaryUnavailable = accountAvailabilityPresentation({
   id: 'account-temporary',
@@ -140,6 +172,34 @@ assert.equal(authorizationExpired.statusBoundary?.kind, 'authorization_expired')
 assert.equal(authorizationExpired.statusBoundary?.at, '2026-07-20T00:00:00.000Z')
 assert.equal(authorizationExpired.probe, undefined, '业务到期边界不得写入探测时间线')
 
+const authorizationExpiredOffset = accountAvailabilityPresentation({
+  id: 'account-authorization-expired-offset',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'authorization_expired',
+    label: '授权到期',
+    color: 'red'
+  },
+  authorizationExpiresAt: '2026-07-20T08:00:00.000+08:00'
+}, now)
+assert.equal(authorizationExpiredOffset.statusBoundary?.at, '2026-07-20T00:00:00.000Z', 'status boundary 必须 canonical UTC')
+
+assert.throws(
+  () => accountAvailabilityPresentation({
+    id: 'account-invalid-unused-boundary',
+    status: 'active',
+    effectiveAvailability: {
+      available: true,
+      status: 'available',
+      label: '正常'
+    },
+    authorizationExpiresAt: '2026-07-20T00:00:00.000'
+  }, now),
+  /账户 authorizationExpiresAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '未被当前状态消费的 supplied status boundary 也必须显式失败'
+)
+
 const runtimeWithoutProbe = accountAvailabilityPresentation({
   id: 'account-runtime-pending',
   status: 'active',
@@ -189,6 +249,55 @@ assert.equal(apiKeyPoolUnavailable.probe?.kind, 'api_key_retest')
 assert.equal(apiKeyPoolUnavailable.probe?.lastObservation?.traceId, 'trace-key')
 assert.equal(apiKeyPoolUnavailable.probe?.schedule.nextAttemptAt, '2026-07-20T01:06:00.000Z')
 assert.equal(apiKeyPoolUnavailable.statusBoundary, undefined)
+
+const apiKeyOffsetPresentation = accountAvailabilityPresentation({
+  id: 'account-key-pool-offset',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'api_key_pool_unavailable',
+    label: 'API Key 暂不可用'
+  },
+  apiKeyRuntime: {
+    total: 1,
+    active: 0,
+    temporaryUnavailable: 0,
+    rateLimited: 1,
+    error: 0,
+    disabled: 0,
+    unavailable: 1,
+    allUnavailable: true,
+    lastFailureAt: '2026-07-20T09:01:00.000+08:00',
+    nextProbeAt: '2026-07-20T09:06:00.000+08:00'
+  }
+}, now)
+assert.equal(apiKeyOffsetPresentation.probe?.lastObservation?.attemptedAt, '2026-07-20T01:01:00.000Z', 'API Key attemptedAt 必须 canonical UTC')
+assert.equal(apiKeyOffsetPresentation.probe?.schedule.nextAttemptAt, '2026-07-20T01:06:00.000Z', 'API Key schedule 必须 canonical UTC')
+
+assert.throws(
+  () => accountAvailabilityPresentation({
+    id: 'account-key-pool-invalid',
+    status: 'active',
+    effectiveAvailability: {
+      available: false,
+      status: 'api_key_pool_unavailable',
+      label: 'API Key 暂不可用'
+    },
+    apiKeyRuntime: {
+      total: 1,
+      active: 0,
+      temporaryUnavailable: 0,
+      rateLimited: 1,
+      error: 0,
+      disabled: 0,
+      unavailable: 1,
+      allUnavailable: true,
+      lastFailureAt: '2026-07-20T09:01:00.000'
+    }
+  }, now),
+  /账户 API Key lastFailureAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  'API Key attemptedAt 裸时间必须显式失败'
+)
 
 const sourcePending = accountAvailabilityPresentation({
   id: 'authorized-instance-source-pending',
@@ -274,6 +383,38 @@ assert.deepEqual(sourceRateLimitedWithObservation.probe?.schedule, {
   state: 'scheduled',
   nextAttemptAt: '2026-07-20T01:12:00.000Z'
 }, '来源冷却账户必须展示来源 worker 实际使用的复测时间')
+
+const sourceOffsetPresentation = accountAvailabilityPresentation({
+  id: 'authorized-source-offset',
+  authorizationInstanceSourceAccountId: 'source-offset',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'source_rate_limited',
+    label: '来源限流中'
+  },
+  authorizationInstanceSourceAccountCooldownUntil: '2026-07-20T09:12:00.000+08:00',
+  authorizationInstanceSourceAccountCooldownRetestLastAt: '2026-07-20T08:12:00.000+08:00',
+  authorizationInstanceSourceAccountLastErrorCode: 'rate_limit_exceeded'
+}, now)
+assert.equal(sourceOffsetPresentation.probe?.lastObservation?.attemptedAt, '2026-07-20T00:12:00.000Z', 'source attemptedAt 必须 canonical UTC')
+assert.equal(sourceOffsetPresentation.probe?.schedule.nextAttemptAt, '2026-07-20T01:12:00.000Z', 'source schedule 必须 canonical UTC')
+
+assert.throws(
+  () => accountAvailabilityPresentation({
+    id: 'authorized-source-invalid',
+    authorizationInstanceSourceAccountId: 'source-invalid',
+    status: 'active',
+    effectiveAvailability: {
+      available: false,
+      status: 'source_rate_limited',
+      label: '来源限流中'
+    },
+    authorizationInstanceSourceAccountCooldownRetestLastAt: '2026-07-20T08:12:00.000'
+  }, now),
+  /授权来源 cooldownRetestLastAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  'source attemptedAt 裸时间必须显式失败'
+)
 
 const terminalError = accountAvailabilityPresentation({
   id: 'account-terminal-error',
