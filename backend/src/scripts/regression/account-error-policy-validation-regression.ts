@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   validateAccountCredentialsErrorHandlingRules,
@@ -30,6 +31,18 @@ const settings: GatewaySettings = {
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
+
+const accountErrorPolicySource = readFileSync(new URL('../../modules/gateway/policy/account-error-policy.service.ts', import.meta.url), 'utf8')
+assert.match(
+  accountErrorPolicySource,
+  /return requiredRfc3339Instant\(value, '账户运行态 observedAt'\)/,
+  '账户错误策略 supplied observedAt 必须复用严格 RFC3339 边界'
+)
+assert.doesNotMatch(
+  accountErrorPolicySource,
+  /function normalizedRuntimeObservationAt[\s\S]*?Date\.parse\(/,
+  '账户错误策略不得按本机时区解释 observedAt'
+)
 
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '429', status_codes: [429] })]).valid, true)
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '200', status_codes: [200] })]).valid, false)

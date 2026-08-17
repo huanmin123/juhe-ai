@@ -307,8 +307,11 @@ class GrokSSODeviceFlow {
       const expiresAt = Number.isFinite(maxAge)
         ? this.options.now() + Math.trunc(maxAge!) * 1000
         : parsedAttributes.expires
-          ? Date.parse(parsedAttributes.expires)
+          ? parseCookieExpiresAt(parsedAttributes.expires)
           : undefined
+      if (parsedAttributes.expires !== undefined && !Number.isFinite(expiresAt)) {
+        throw new GrokSSODeviceError('xAI OAuth Set-Cookie Expires 不是有效的 HTTP-date')
+      }
       const cookie: GrokSSOCookie = {
         name,
         value: cookieValue,
@@ -464,6 +467,30 @@ function cookieAttributes(attributes: string[]): Record<string, string | undefin
     output[name] = separator < 0 ? undefined : trimmed.slice(separator + 1).trim()
   }
   return output
+}
+
+function parseCookieExpiresAt(value: string): number | undefined {
+  const match = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/u.exec(value.trim())
+  if (!match) return undefined
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[2]!)
+  if (month < 0) return undefined
+  const day = Number(match[1])
+  const year = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = Number(match[6])
+  if (day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return undefined
+  const timestamp = Date.UTC(year, month, day, hour, minute, second)
+  if (!Number.isFinite(timestamp)) return undefined
+  const check = new Date(timestamp)
+  return check.getUTCFullYear() === year
+    && check.getUTCMonth() === month
+    && check.getUTCDate() === day
+    && check.getUTCHours() === hour
+    && check.getUTCMinutes() === minute
+    && check.getUTCSeconds() === second
+    ? timestamp
+    : undefined
 }
 
 function cookieKey(cookie: Pick<GrokSSOCookie, 'name' | 'domain' | 'path'>): string {

@@ -22,6 +22,11 @@ const database = new DatabaseSync(':memory:')
 try {
   applyChatSchema(database)
   const client = createSqliteDatabaseClient(database)
+  await assert.rejects(
+    cleanupExpiredChatAssets({ client, now: '2026-07-04T00:00:00.000', limit: 1 }),
+    /聊天资产清理 now必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '聊天资产清理不得按本机时区解释裸 now'
+  )
   const ownerId = 'asset_cleanup_owner'
   const conversationId = 'asset_cleanup_conversation'
   const createdAt = '2026-07-01T00:00:00.000Z'

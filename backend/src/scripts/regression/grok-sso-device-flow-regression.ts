@@ -129,6 +129,9 @@ await assert.rejects(
 )
 
 const routeSource = readFileSync(resolve('src/modules/grok-oauth/grok-oauth.routes.ts'), 'utf8')
+const deviceFlowSource = readFileSync(resolve('src/modules/grok-oauth/grok-sso-device-flow.ts'), 'utf8')
+assert.match(deviceFlowSource, /parseCookieExpiresAt\(parsedAttributes\.expires\)/, 'Grok SSO Cookie Expires 必须使用显式 HTTP-date 解析')
+assert.match(deviceFlowSource, /Set-Cookie Expires 不是有效的 HTTP-date/, 'Grok SSO 非法 Cookie Expires 必须显式失败')
 assert.equal(routeSource.includes("post('/sso-to-oauth'"), true, 'Grok OAuth 必须暴露 SSO Cookie 批量导入接口')
 assert.equal(routeSource.includes('mapWithConcurrency(tokens, 3'), true, 'SSO 批量导入必须固定最多 3 并发')
 assert.equal(routeSource.includes('z.array(z.string().max(16_384)).max(3)'), true, 'SSO 批量输入必须限制为单个并发波次并限制单项长度')
@@ -139,6 +142,19 @@ assert.equal(routeSource.includes("operationKey: 'grok_oauth.sso_to_oauth'"), tr
 assert.equal(routeSource.includes('sanitizeAccountResponse(account)'), false, 'SSO 创建回执不得构建或返回完整账户响应')
 assert.equal(routeSource.includes('createdCount: results.filter'), true, 'SSO 创建回执只返回成功数量')
 assert.equal(routeSource.includes('failed: results.filter'), true)
+
+await assert.rejects(
+  convertGrokSSOToOAuth({
+    ssoToken: 'valid-looking-token',
+    dependencies: {
+      request: async (request) => request.url === GROK_SSO_ACCOUNTS_URL
+        ? response(200, '{}', { 'set-cookie': ['session=web-session; Expires=not-a-date'] })
+        : response(500, '{}')
+    }
+  }),
+  /Set-Cookie Expires 不是有效的 HTTP-date/u,
+  'Grok SSO 非法 Cookie Expires 不得被静默当作会话 Cookie'
+)
 
 console.log('Grok SSO device flow 回归通过：Cookie、device code、批准、轮询、代理、边界与批量契约均符合参考实现')
 

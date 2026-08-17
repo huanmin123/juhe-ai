@@ -29,6 +29,7 @@ import {
   normalizeAccountErrorHandlingRules,
   type AccountErrorHandlingRule
 } from '../../accounts/account-error-policy-validation.js'
+import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -489,9 +490,8 @@ function accountRuntimeFailureObservationGuard(
 }
 
 function normalizedRuntimeObservationAt(value: string | undefined): string | undefined {
-  if (!value) return undefined
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
+  if (value === undefined) return undefined
+  return requiredRfc3339Instant(value, '账户运行态 observedAt')
 }
 
 function normalizedRuntimeDispatchRevision(value: number | undefined): number | undefined {

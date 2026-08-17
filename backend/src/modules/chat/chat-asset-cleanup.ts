@@ -5,6 +5,7 @@ import {
   releaseChatAssetDeletionClaim
 } from '../../storage/chat-assets.repository.js'
 import { deleteChatAssetObjects } from '../../storage/chat-asset-storage.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 export interface ChatAssetCleanupResult {
   claimedAssets: number
@@ -18,7 +19,10 @@ export async function cleanupExpiredChatAssets(input: {
   now: string
   limit: number
 }): Promise<ChatAssetCleanupResult> {
-  const claim = await claimExpiredChatAssetsForCleanup(input.client, { now: input.now, limit: input.limit })
+  const now = requiredRfc3339Instant(input.now, '聊天资产清理 now')
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (nowMs === undefined) throw new Error('聊天资产清理 now 必须是有效 RFC3339 时间')
+  const claim = await claimExpiredChatAssetsForCleanup(input.client, { now, limit: input.limit })
   let deletedAssets = 0
   let failedAssets = 0
   for (const asset of claim.assets) {
@@ -29,13 +33,13 @@ export async function cleanupExpiredChatAssets(input: {
       deletedAssets += 1
     } catch (error) {
       failedAssets += 1
-      const retryAt = new Date(Date.parse(input.now) + cleanupRetryDelayMs(asset.cleanupAttemptCount)).toISOString()
+      const retryAt = new Date(nowMs + cleanupRetryDelayMs(asset.cleanupAttemptCount)).toISOString()
       await releaseChatAssetDeletionClaim(input.client, {
         assetId: asset.id,
         claimId: claim.claimId,
         errorCode: error instanceof Error ? error.name || 'chat_asset_cleanup_failed' : 'chat_asset_cleanup_failed',
         retryAt,
-        now: input.now
+        now
       }).catch(() => undefined)
     }
   }
