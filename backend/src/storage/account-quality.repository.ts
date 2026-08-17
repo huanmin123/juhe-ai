@@ -6,6 +6,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues } from './query-utils.js'
 import { minuteKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export type AccountQualityState = 'fresh' | 'stale' | 'failed' | 'unknown'
 
@@ -304,8 +305,8 @@ export function listAccountQualityFailurePrecheckCandidates(limit = 20, offset =
       const accountId = row.account_id?.trim()
       const systemAccountId = row.system_account_id?.trim()
       const providerCode = row.provider_code?.trim()
-      const updatedAt = row.updated_at?.trim()
-      if (!accountId || !systemAccountId || !providerCode || !updatedAt) {
+      const updatedAt = requiredRfc3339Instant(row.updated_at, 'account_quality_scores.updated_at')
+      if (!accountId || !systemAccountId || !providerCode) {
         return undefined
       }
       const successRate = nullableRate(row.success_rate)
@@ -316,7 +317,7 @@ export function listAccountQualityFailurePrecheckCandidates(limit = 20, offset =
         recentRequestCount: Math.max(0, Math.trunc(Number(row.recent_request_count ?? 0))),
         recentSuccessCount: Math.max(0, Math.trunc(Number(row.recent_success_count ?? 0))),
         recentErrorCount: Math.max(0, Math.trunc(Number(row.recent_error_count ?? 0))),
-        lastErrorAt: row.last_error_at?.trim() || undefined,
+        lastErrorAt: optionalInstant(row.last_error_at, 'account_quality_scores.last_error_at'),
         lastErrorMessage: row.last_error_message?.trim() || undefined,
         updatedAt
       }
@@ -373,8 +374,8 @@ export async function listAccountQualityFailurePrecheckCandidatesAsync(limit = 2
       const accountId = row.account_id?.trim()
       const systemAccountId = row.system_account_id?.trim()
       const providerCode = row.provider_code?.trim()
-      const updatedAt = row.updated_at?.trim()
-      if (!accountId || !systemAccountId || !providerCode || !updatedAt) return undefined
+      const updatedAt = requiredRfc3339Instant(row.updated_at, 'account_quality_scores.updated_at')
+      if (!accountId || !systemAccountId || !providerCode) return undefined
       const successRate = nullableRate(row.success_rate)
       const candidate: AccountQualityFailurePrecheckCandidate = {
         accountId,
@@ -383,7 +384,7 @@ export async function listAccountQualityFailurePrecheckCandidatesAsync(limit = 2
         recentRequestCount: Math.max(0, Math.trunc(Number(row.recent_request_count ?? 0))),
         recentSuccessCount: Math.max(0, Math.trunc(Number(row.recent_success_count ?? 0))),
         recentErrorCount: Math.max(0, Math.trunc(Number(row.recent_error_count ?? 0))),
-        lastErrorAt: row.last_error_at?.trim() || undefined,
+        lastErrorAt: optionalInstant(row.last_error_at, 'account_quality_scores.last_error_at'),
         lastErrorMessage: row.last_error_message?.trim() || undefined,
         updatedAt
       }
@@ -450,7 +451,7 @@ function loadAccountQualityAggregates(
       `)
       .all(windowStartedMinute, ...chunk, windowStartedMinute) as unknown as AccountQualityAggregateRow[])
   }
-  return rows
+  return rows.map(normalizeAccountQualityAggregateRow)
 }
 
 async function loadDirtyAccountQualityMarkersAsync(client: DatabaseClient, limit: number): Promise<PostgresAccountQualityDirtyMarker[]> {
@@ -505,7 +506,7 @@ async function loadAccountQualityAggregatesAsync(
       ORDER BY quality_stats.account_id ASC
     `, [windowStartedMinute, ...chunk, windowStartedMinute]))
   }
-  return rows.map((row) => ({
+  return rows.map((row) => normalizeAccountQualityAggregateRow({
     ...row,
     recent_request_count: Number(row.recent_request_count ?? 0),
     recent_success_count: Number(row.recent_success_count ?? 0),
@@ -576,7 +577,7 @@ export function loadAccountQualityRowsByAccountIds(accountIds: string[]): Map<st
       `)
       .all(...chunk) as unknown as AccountQualityRow[])
   }
-  return new Map(rows.map((row) => [row.account_id, row]))
+  return new Map(rows.map((row) => [row.account_id, normalizeAccountQualityRow(row)]))
 }
 
 export async function loadAccountQualityRowsByAccountIdsAsync(client: DatabaseClient, accountIds: string[]): Promise<Map<string, AccountQualityRow>> {
@@ -766,7 +767,7 @@ function createTempQualityAccountIds(database: ReturnType<typeof getStatsDatabas
 }
 
 function loadStaleAccountQualityRows(database: ReturnType<typeof getStatsDatabase>, limit: number): AccountQualityRow[] {
-  return database
+  const rows = database
     .prepare(`
       SELECT ${accountQualitySelectColumns()}
       FROM account_quality_scores
@@ -799,6 +800,7 @@ function loadStaleAccountQualityRows(database: ReturnType<typeof getStatsDatabas
       LIMIT ?
     `)
     .all(Math.max(1, Math.trunc(limit))) as unknown as AccountQualityRow[]
+  return rows.map(normalizeAccountQualityRow)
 }
 
 async function loadStaleAccountQualityRowsAsync(
@@ -958,30 +960,32 @@ function prepareAccountQualityUpsert(database: ReturnType<typeof getStatsDatabas
 }
 
 function upsertAccountQuality(upsertQuality: ReturnType<DatabaseSync['prepare']>, input: AccountQualityUpsertInput): void {
+  const normalized = normalizeAccountQualityUpsertInput(input)
   upsertQuality.run(
-      input.accountId,
-      input.systemAccountId,
-      input.providerCode,
-      input.qualityScore,
-      input.qualityState,
-      Math.max(0, Math.trunc(input.recentRequestCount)),
-      Math.max(0, Math.trunc(input.recentSuccessCount)),
-      Math.max(0, Math.trunc(input.recentErrorCount)),
-      Math.max(0, Math.trunc(input.recentFirstTokenSampleCount)),
-      nullableInteger(input.recentAvgFirstTokenMs),
-      nullableInteger(input.ewmaFirstTokenMs),
-      nullableRate(input.successRate),
-      input.windowStartedAt,
-      input.windowEndedAt,
-      input.lastSampleAt ?? null,
-      input.lastSuccessAt ?? null,
-      input.lastErrorAt ?? null,
-      input.lastErrorMessage ?? null,
-      input.updatedAt
+      normalized.accountId,
+      normalized.systemAccountId,
+      normalized.providerCode,
+      normalized.qualityScore,
+      normalized.qualityState,
+      Math.max(0, Math.trunc(normalized.recentRequestCount)),
+      Math.max(0, Math.trunc(normalized.recentSuccessCount)),
+      Math.max(0, Math.trunc(normalized.recentErrorCount)),
+      Math.max(0, Math.trunc(normalized.recentFirstTokenSampleCount)),
+      nullableInteger(normalized.recentAvgFirstTokenMs),
+      nullableInteger(normalized.ewmaFirstTokenMs),
+      nullableRate(normalized.successRate),
+      normalized.windowStartedAt,
+      normalized.windowEndedAt,
+      normalized.lastSampleAt ?? null,
+      normalized.lastSuccessAt ?? null,
+      normalized.lastErrorAt ?? null,
+      normalized.lastErrorMessage ?? null,
+      normalized.updatedAt
     )
 }
 
 async function upsertAccountQualityAsync(client: DatabaseClient, input: AccountQualityUpsertInput): Promise<void> {
+  const normalized = normalizeAccountQualityUpsertInput(input)
   await client.execute(`
     INSERT INTO ${accountQualityTable(client, 'juhe_stats', 'account_quality_scores')} (
       account_id, system_account_id, provider_code, quality_score, quality_state,
@@ -1009,25 +1013,25 @@ async function upsertAccountQualityAsync(client: DatabaseClient, input: AccountQ
       last_error_message = EXCLUDED.last_error_message,
       updated_at = EXCLUDED.updated_at
   `, [
-    input.accountId,
-    input.systemAccountId,
-    input.providerCode,
-    Math.max(0, Math.trunc(input.qualityScore)),
-    input.qualityState,
-    Math.max(0, Math.trunc(input.recentRequestCount)),
-    Math.max(0, Math.trunc(input.recentSuccessCount)),
-    Math.max(0, Math.trunc(input.recentErrorCount)),
-    Math.max(0, Math.trunc(input.recentFirstTokenSampleCount)),
-    nullableInteger(input.recentAvgFirstTokenMs),
-    nullableInteger(input.ewmaFirstTokenMs),
-    nullableRate(input.successRate),
-    input.windowStartedAt,
-    input.windowEndedAt,
-    input.lastSampleAt ?? null,
-    input.lastSuccessAt ?? null,
-    input.lastErrorAt ?? null,
-    input.lastErrorMessage ?? null,
-    input.updatedAt
+    normalized.accountId,
+    normalized.systemAccountId,
+    normalized.providerCode,
+    Math.max(0, Math.trunc(normalized.qualityScore)),
+    normalized.qualityState,
+    Math.max(0, Math.trunc(normalized.recentRequestCount)),
+    Math.max(0, Math.trunc(normalized.recentSuccessCount)),
+    Math.max(0, Math.trunc(normalized.recentErrorCount)),
+    Math.max(0, Math.trunc(normalized.recentFirstTokenSampleCount)),
+    nullableInteger(normalized.recentAvgFirstTokenMs),
+    nullableInteger(normalized.ewmaFirstTokenMs),
+    nullableRate(normalized.successRate),
+    normalized.windowStartedAt,
+    normalized.windowEndedAt,
+    normalized.lastSampleAt ?? null,
+    normalized.lastSuccessAt ?? null,
+    normalized.lastErrorAt ?? null,
+    normalized.lastErrorMessage ?? null,
+    normalized.updatedAt
   ])
 }
 
@@ -1050,10 +1054,8 @@ function computeQualityScore(input: {
 }
 
 function agePenaltyMs(updatedAt: string): number {
-  const updatedTime = Date.parse(updatedAt)
-  if (!Number.isFinite(updatedTime)) {
-    return stalePenaltyMs
-  }
+  const updatedTime = rfc3339InstantMilliseconds(updatedAt)
+  if (updatedTime === undefined) throw new Error('账号质量 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
   const ageMinutes = Math.max(0, Math.floor((Date.now() - updatedTime) / 60_000))
   return Math.min(10_000, ageMinutes * 100)
 }
@@ -1083,8 +1085,40 @@ function normalizeAccountQualityRow(row: AccountQualityRow): AccountQualityRow {
     recent_first_token_sample_count: integerOrNull(row.recent_first_token_sample_count) ?? 0,
     recent_avg_first_token_ms: integerOrNull(row.recent_avg_first_token_ms),
     ewma_first_token_ms: integerOrNull(row.ewma_first_token_ms),
-    success_rate: nullableRate(row.success_rate)
+    success_rate: nullableRate(row.success_rate),
+    window_started_at: requiredRfc3339Instant(row.window_started_at, 'account_quality_scores.window_started_at'),
+    window_ended_at: requiredRfc3339Instant(row.window_ended_at, 'account_quality_scores.window_ended_at'),
+    last_sample_at: optionalInstant(row.last_sample_at, 'account_quality_scores.last_sample_at') ?? null,
+    last_success_at: optionalInstant(row.last_success_at, 'account_quality_scores.last_success_at') ?? null,
+    last_error_at: optionalInstant(row.last_error_at, 'account_quality_scores.last_error_at') ?? null,
+    updated_at: requiredRfc3339Instant(row.updated_at, 'account_quality_scores.updated_at')
   }
+}
+
+function normalizeAccountQualityAggregateRow(row: AccountQualityAggregateRow): AccountQualityAggregateRow {
+  return {
+    ...row,
+    last_sample_at: optionalInstant(row.last_sample_at, 'account_quality_minute_stats.last_sample_at') ?? null,
+    last_success_at: optionalInstant(row.last_success_at, 'account_quality_minute_stats.last_success_at') ?? null,
+    last_error_at: optionalInstant(row.last_error_at, 'account_quality_minute_stats.last_error_at') ?? null
+  }
+}
+
+function normalizeAccountQualityUpsertInput(input: AccountQualityUpsertInput): AccountQualityUpsertInput {
+  return {
+    ...input,
+    windowStartedAt: requiredRfc3339Instant(input.windowStartedAt, '账号质量 windowStartedAt'),
+    windowEndedAt: requiredRfc3339Instant(input.windowEndedAt, '账号质量 windowEndedAt'),
+    lastSampleAt: optionalInstant(input.lastSampleAt, '账号质量 lastSampleAt') ?? undefined,
+    lastSuccessAt: optionalInstant(input.lastSuccessAt, '账号质量 lastSuccessAt') ?? undefined,
+    lastErrorAt: optionalInstant(input.lastErrorAt, '账号质量 lastErrorAt') ?? undefined,
+    updatedAt: requiredRfc3339Instant(input.updatedAt, '账号质量 updatedAt')
+  }
+}
+
+function optionalInstant(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
 }
 
 function normalizeAccountQualityState(value: unknown): AccountQualityState {

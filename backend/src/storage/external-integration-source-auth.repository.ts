@@ -19,6 +19,7 @@ import type {
 } from './external-integration-source-types.js'
 import { getPostgresPool } from './postgres-client.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 const touchLastUsedIntervalMs = 60_000
 const sqliteTouchLastUsedBusyTimeoutMs = 25
@@ -69,7 +70,7 @@ export function validateExternalIntegrationSourceToken(input: {
 }
 
 export function loadExternalIntegrationSourceTokenForAuthReadOnly(token: string): ExternalIntegrationSourceTokenRow | undefined {
-  return getBusinessDatabase().prepare(`
+  const row = getBusinessDatabase().prepare(`
     SELECT
       sources.id AS source_row_id,
       sources.name AS source_name,
@@ -91,6 +92,8 @@ export function loadExternalIntegrationSourceTokenForAuthReadOnly(token: string)
     WHERE tokens.token_hash = ?
     LIMIT 1
   `).get(hashExternalIntegrationSourceTokenValue(token)) as ExternalIntegrationSourceTokenRow | undefined
+  if (!row) return undefined
+  return normalizeExternalIntegrationSourceTokenRow(row)
 }
 
 function validateExternalIntegrationSourceTokenRow(
@@ -98,12 +101,13 @@ function validateExternalIntegrationSourceTokenRow(
   input: { requiredScope?: string },
   now: string
 ): ExternalIntegrationSourceAuthResult {
-  const sourceScopes = decodeScopes(row.source_scopes_json)
-  const tokenScopes = decodeScopes(row.token_scopes_json)
+  const normalizedRow = normalizeExternalIntegrationSourceTokenRow(row)
+  const sourceScopes = decodeScopes(normalizedRow.source_scopes_json)
+  const tokenScopes = decodeScopes(normalizedRow.token_scopes_json)
   const grantedScopes = tokenScopes.filter((scope) => sourceScopes.includes(scope))
-  const context = externalIntegrationAuthContextFromRow(row, grantedScopes, now)
-  const sourceStatus = normalizeSourceStatus(row.source_status)
-  const tokenStatus = normalizeTokenStatus(row.token_status)
+  const context = externalIntegrationAuthContextFromRow(normalizedRow, grantedScopes, now)
+  const sourceStatus = normalizeSourceStatus(normalizedRow.source_status)
+  const tokenStatus = normalizeTokenStatus(normalizedRow.token_status)
   if (sourceStatus !== 'active') {
     return {
       ok: false,
@@ -113,7 +117,11 @@ function validateExternalIntegrationSourceTokenRow(
       context
     }
   }
-  if (row.source_expires_at && row.source_expires_at <= now) {
+  const nowMs = rfc3339InstantMilliseconds(now)
+  if (nowMs === undefined) throw new Error('外部集成鉴权 now 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const sourceExpiresAtMs = rfc3339InstantMilliseconds(normalizedRow.source_expires_at)
+  const tokenExpiresAtMs = rfc3339InstantMilliseconds(normalizedRow.token_expires_at)
+  if (sourceExpiresAtMs !== undefined && sourceExpiresAtMs <= nowMs) {
     return {
       ok: false,
       statusCode: 403,
@@ -122,7 +130,7 @@ function validateExternalIntegrationSourceTokenRow(
       context
     }
   }
-  if (tokenStatus !== 'active' || (row.token_expires_at && row.token_expires_at <= now)) {
+  if (tokenStatus !== 'active' || (tokenExpiresAtMs !== undefined && tokenExpiresAtMs <= nowMs)) {
     return {
       ok: false,
       statusCode: 401,
@@ -176,10 +184,11 @@ export async function validateExternalIntegrationSourceTokenAsync(input: {
         message: '来源系统或 token 无效'
       }
     }
+    const normalizedRow = normalizeExternalIntegrationSourceTokenRow(row)
     const now = nowIso()
-    const result = validateExternalIntegrationSourceTokenRow(row, input, now)
+    const result = validateExternalIntegrationSourceTokenRow(normalizedRow, input, now)
     if (result.ok) {
-      scheduleExternalIntegrationSourceLastUsedTouch(row, now)
+      scheduleExternalIntegrationSourceLastUsedTouch(normalizedRow, now)
     }
     return result
   }
@@ -226,10 +235,11 @@ export async function validateExternalIntegrationSourceTokenAsync(input: {
     }
   }
 
+  const normalizedRow = normalizeExternalIntegrationSourceTokenRow(row)
   const now = nowIso()
-  const result = validateExternalIntegrationSourceTokenRow(row, input, now)
+  const result = validateExternalIntegrationSourceTokenRow(normalizedRow, input, now)
   if (result.ok) {
-    await touchExternalIntegrationSourceLastUsedAsync(client, row, now)
+    await touchExternalIntegrationSourceLastUsedAsync(client, normalizedRow, now)
   }
   return result
 }
@@ -292,7 +302,7 @@ function mergeExternalIntegrationSourceLastUsedTouch(touch: PendingLastUsedTouch
     ? {
       tokenId: touch.tokenId ?? current.tokenId,
       sourceRefId: touch.sourceRefId ?? current.sourceRefId,
-      now: touch.now > current.now ? touch.now : current.now,
+      now: laterInstant(touch.now, current.now),
       attempts: Math.max(current.attempts, touch.attempts)
     }
     : touch)
@@ -386,15 +396,37 @@ async function touchExternalIntegrationSourceLastUsedAsync(client: DatabaseClien
 }
 
 function shouldTouchLastUsed(previous: string | null, now: string): boolean {
-  if (!previous) {
+  if (previous === null) {
     return true
   }
-  const previousTime = Date.parse(previous)
-  const nowTime = Date.parse(now)
-  if (!Number.isFinite(previousTime) || !Number.isFinite(nowTime)) {
-    return true
-  }
+  const previousTime = rfc3339InstantMilliseconds(previous)
+  const nowTime = rfc3339InstantMilliseconds(now)
+  if (previousTime === undefined) throw new Error('外部集成来源 last_used_at 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  if (nowTime === undefined) throw new Error('外部集成来源当前时间必须是带 Z 或数值 offset 的 RFC3339 时间')
   return nowTime - previousTime >= touchLastUsedIntervalMs
+}
+
+function laterInstant(first: string, second: string): string {
+  const firstMs = rfc3339InstantMilliseconds(first)
+  const secondMs = rfc3339InstantMilliseconds(second)
+  if (firstMs === undefined) throw new Error('外部集成来源当前时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  if (secondMs === undefined) throw new Error('外部集成来源当前时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return firstMs >= secondMs ? first : second
+}
+
+function normalizeExternalIntegrationSourceTokenRow(row: ExternalIntegrationSourceTokenRow): ExternalIntegrationSourceTokenRow {
+  return {
+    ...row,
+    source_expires_at: optionalInstant(row.source_expires_at, '外部集成来源 expires_at'),
+    source_last_used_at: optionalInstant(row.source_last_used_at, '外部集成来源 last_used_at'),
+    token_expires_at: optionalInstant(row.token_expires_at, '外部集成 token expires_at'),
+    token_last_used_at: optionalInstant(row.token_last_used_at, '外部集成 token last_used_at')
+  }
+}
+
+function optionalInstant(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) return null
+  return requiredRfc3339Instant(value, label)
 }
 
 function externalIntegrationAuthBusinessTable(client: DatabaseClient, tableName: string): string {

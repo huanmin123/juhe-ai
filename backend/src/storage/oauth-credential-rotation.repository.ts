@@ -80,6 +80,7 @@ export async function rotateOAuthCredentialsAsync(input: {
   if (!Number.isInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
     throw new Error('账户配置版本无效')
   }
+  const suppliedCredentials = normalizeSuppliedOAuthCredentialTimes(input.credentials)
   const client = await databaseClient()
   const ownerSystemAccountId = manageableSystemAccountId(input.access)
   const result = await client.transaction(async (tx) => {
@@ -105,7 +106,7 @@ export async function rotateOAuthCredentialsAsync(input: {
     if (current.configRevision !== input.expectedConfigRevision) {
       throw new AccountConfigRevisionConflictError(input.accountId, input.expectedConfigRevision, current.configRevision)
     }
-    const credentials = normalizeAccountCredentialsForWrite(current.type, input.credentials, {
+    const credentials = normalizeAccountCredentialsForWrite(current.type, suppliedCredentials, {
       providerCode: current.providerCode,
       accountType: current.type,
       providerProtocolProfileId: current.providerProtocolProfileId,
@@ -252,6 +253,7 @@ interface OAuthCredentialRotationRow {
 }
 
 function mapRotationAccount(row: OAuthCredentialRotationRow): OAuthCredentialRotationAccount {
+  const credentials = normalizeStoredOAuthCredentials(decryptJson<Record<string, unknown>>(row.credentials_encrypted))
   return {
     id: row.id,
     systemAccountId: row.system_account_id,
@@ -264,7 +266,7 @@ function mapRotationAccount(row: OAuthCredentialRotationRow): OAuthCredentialRot
     status: row.status,
     lastErrorCode: row.last_error_code ?? undefined,
     proxyProfileId: row.proxy_profile_id ?? undefined,
-    credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
+    credentials,
     credentialFingerprint: row.credential_fingerprint ?? undefined,
     accountExpiresAt: optionalInstant(row.account_expires_at, 'accounts.account_expires_at'),
     configRevision: Math.max(1, Number(row.config_revision) || 1),
@@ -302,4 +304,20 @@ function isExpiredAt(value: string | undefined, now: string): boolean {
 function optionalInstant(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined
   return requiredRfc3339Instant(value, label)
+}
+
+function normalizeSuppliedOAuthCredentialTimes(credentials: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(credentials, 'expires_at')) return credentials
+  return {
+    ...credentials,
+    expires_at: requiredRfc3339Instant(credentials.expires_at, 'OAuth 凭据 expires_at')
+  }
+}
+
+function normalizeStoredOAuthCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(credentials, 'expires_at')) return credentials
+  return {
+    ...credentials,
+    expires_at: requiredRfc3339Instant(credentials.expires_at, 'OAuth 凭据 expires_at')
+  }
 }
