@@ -8,6 +8,7 @@ import type {
 import type { AccessScope } from './access-scope.js'
 import type { ResourceAuthorizationGrantRow } from './repository-row-types.js'
 import { canManageResourceOwner, sanitizeAuthorizationSourcesForViewer } from './resource-authorization-helpers.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 
 export function normalizeResourceType(value: unknown): ResourceAuthorizationResourceType | undefined {
   return value === 'account' || value === 'group' ? value : undefined
@@ -50,8 +51,13 @@ export function resourceAuthorizationGrantSourceSummary(row: ResourceAuthorizati
 }
 
 export function compareResourceAuthorizationOperations(left: ResourceAuthorizationSummary, right: ResourceAuthorizationSummary): number {
-  const createdDelta = Date.parse(right.createdAt) - Date.parse(left.createdAt)
-  if (Number.isFinite(createdDelta) && createdDelta !== 0) return createdDelta
+  const leftCreatedAt = rfc3339InstantMilliseconds(requiredRfc3339Instant(left.createdAt, '授权 createdAt'))
+  const rightCreatedAt = rfc3339InstantMilliseconds(requiredRfc3339Instant(right.createdAt, '授权 createdAt'))
+  if (leftCreatedAt === undefined || rightCreatedAt === undefined) {
+    throw new Error('授权 createdAt必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  const createdDelta = rightCreatedAt - leftCreatedAt
+  if (createdDelta !== 0) return createdDelta
   return right.id.localeCompare(left.id)
 }
 

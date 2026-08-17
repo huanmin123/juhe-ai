@@ -19,6 +19,7 @@ import { expireDueResourceAuthorizationsAsync } from './resource-authorization-w
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
 import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import {
   emptyAccountUsageSummary,
@@ -39,6 +40,15 @@ import {
 const defaultResourceAuthorizationUsageDetailPageSize = 200
 const businessSchemaName = 'juhe_business'
 const statsSchemaName = 'juhe_stats'
+
+function resourceAuthorizationUsageTimestamp(value: string | null | undefined): number {
+  if (value === undefined || value === null) return 0
+  const milliseconds = rfc3339InstantMilliseconds(requiredRfc3339Instant(value, '授权使用 lastUsedAt'))
+  if (milliseconds === undefined) {
+    throw new Error('授权使用 lastUsedAt必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return milliseconds
+}
 
 export interface ResourceAuthorizationUsageOptions {
   range?: AccountUsageStatsRange
@@ -149,8 +159,8 @@ function loadResourceAuthorizationUsageDetail(
   return {
     usage: rangeUsage,
     usageBySystemAccount: pageOptions.page === 1 ? usageBySystemAccount.sort((left, right) => {
-      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
-      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      const leftTime = resourceAuthorizationUsageTimestamp(left.lastUsedAt)
+      const rightTime = resourceAuthorizationUsageTimestamp(right.lastUsedAt)
       if (rightTime !== leftTime) {
         return rightTime - leftTime
       }
@@ -214,8 +224,8 @@ async function loadResourceAuthorizationUsageDetailAsync(
   return {
     usage: rangeUsage,
     usageBySystemAccount: pageOptions.page === 1 ? usageBySystemAccount.sort((left, right) => {
-      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
-      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      const leftTime = resourceAuthorizationUsageTimestamp(left.lastUsedAt)
+      const rightTime = resourceAuthorizationUsageTimestamp(right.lastUsedAt)
       if (rightTime !== leftTime) {
         return rightTime - leftTime
       }
@@ -272,8 +282,8 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
   return {
     usage: rangeUsage,
     usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
-      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
-      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      const leftTime = resourceAuthorizationUsageTimestamp(left.lastUsedAt)
+      const rightTime = resourceAuthorizationUsageTimestamp(right.lastUsedAt)
       if (rightTime !== leftTime) {
         return rightTime - leftTime
       }
@@ -330,8 +340,8 @@ async function loadResourceAuthorizationGrantUsageDetailForTeamAsync(
   return {
     usage: rangeUsage,
     usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
-      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
-      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      const leftTime = resourceAuthorizationUsageTimestamp(left.lastUsedAt)
+      const rightTime = resourceAuthorizationUsageTimestamp(right.lastUsedAt)
       if (rightTime !== leftTime) {
         return rightTime - leftTime
       }

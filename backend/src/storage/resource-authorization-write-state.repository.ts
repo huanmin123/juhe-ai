@@ -7,6 +7,7 @@ import type {
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { replaceAccountNameSearchTerms } from './account-name-search.repository.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -180,7 +181,8 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
 
 function bindActiveAccountAuthorizationToGranteeGroup(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string, targetGroupId?: string): void {
   if (authorization.resource_type !== 'account') return
-  if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
+  const nowMilliseconds = rfc3339InstantMilliseconds(requiredRfc3339Instant(now, '授权当前时间'))
+  if (nowMilliseconds === undefined || authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, nowMilliseconds)) return
   const instance = ensureAccountAuthorizationInstance(database, authorization, now)
   if (!instance?.id || !instance.provider_code) return
   const requestedGroupId = targetGroupId?.trim()
