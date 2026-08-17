@@ -4,7 +4,7 @@ import { findAccountSummary, findAccountSummaryAsync } from './account-summary.r
 import { getBusinessDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 
-const frozenEndpointModes = new Set(['chat_json', 'responses_json', 'images_json'])
+const frozenEndpointModes = new Set(['chat_json', 'responses_json', 'responses_sse', 'images_json'])
 const acceptedStatuses = new Set(['active', 'pending_test', 'temporary_unavailable', 'rate_limited'])
 const inputPublisherAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 

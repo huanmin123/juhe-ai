@@ -46,6 +46,18 @@ try {
   assert.equal(Array.isArray(payload.api_keys), true)
   assert.equal(typeof (payload.api_keys as Array<Record<string, unknown>>)[0]?.credential, 'object')
 
+  const responsesSsePath = publishAccountHealthJobsInputFromAccount({
+    account: { ...account, healthCheckEndpointMode: 'responses_sse' } as AccountSummary,
+    dispatchRevision: 3,
+    inputVersion: 17,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const responsesSsePayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(responsesSsePath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(responsesSsePayload.endpoint_mode, 'responses_sse', 'GPT Responses SSE 必须可进入 Go J1 输入协议')
+
   const cooldownAccount = {
     ...account,
     status: 'temporary_unavailable',

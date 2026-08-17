@@ -5,7 +5,7 @@ import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 
 import { publishAccountHealthJobsInput, publishAccountHealthJobsRequest } from './account-health-jobs-input.protocol.js'
 
-type FrozenEndpointMode = 'chat_json' | 'responses_json' | 'images_json'
+type FrozenEndpointMode = 'chat_json' | 'responses_json' | 'responses_sse' | 'images_json'
 
 export interface AccountHealthJobsInputSettings {
   intervalHours: number
@@ -213,7 +213,7 @@ export function publishAccountHealthJobsInputTombstone(input: AccountHealthJobsI
 }
 
 function frozenEndpointMode(value: string): FrozenEndpointMode {
-  if (value === 'chat_json' || value === 'responses_json' || value === 'images_json') return value
+  if (value === 'chat_json' || value === 'responses_json' || value === 'responses_sse' || value === 'images_json') return value
   throw new Error(`J1 未冻结的探活 endpoint mode：${value}`)
 }
 

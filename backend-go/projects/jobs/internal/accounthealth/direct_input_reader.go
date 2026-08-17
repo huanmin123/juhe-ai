@@ -200,7 +200,7 @@ LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authoriza
 WHERE a.deleted_at IS NULL
   AND a.provider_code IN ('gpt', 'openai')
   AND a.type IN ('api_key', 'oauth')
-  AND a.health_check_endpoint_mode IN ('chat_json', 'responses_json', 'images_json')
+  AND a.health_check_endpoint_mode IN ('chat_json', 'responses_json', 'responses_sse', 'images_json')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
   AND (a.status = 'pending_test' OR a.schedulable = 1)
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)

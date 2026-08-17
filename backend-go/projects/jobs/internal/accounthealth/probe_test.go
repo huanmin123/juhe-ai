@@ -44,6 +44,61 @@ func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
 	}
 }
 
+func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/responses" || request.Method != http.MethodPost {
+			t.Fatalf("unexpected direct path: %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Accept") != "text/event-stream" {
+			t.Fatalf("unexpected accept header: %q", request.Header.Get("Accept"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "gpt-test" || body["stream"] != true || body["max_output_tokens"] != float64(256) {
+			t.Fatalf("unexpected SSE request body: %#v", body)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected SSE probe result: %#v", result)
+	}
+}
+
+func TestProbeOpenAIResponsesSSERequiresCompletionEvent(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\n"))
+	}))
+	defer server.Close()
+
+	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-test")}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
+		t.Fatalf("incomplete SSE stream must be neutral, got %#v", result)
+	}
+}
+
+func TestProbeOpenAIResponsesSSERejectsJSONImposter(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"type":"response.completed","output_text":"juhe"}`))
+	}))
+	defer server.Close()
+
+	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-test")}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
+		t.Fatalf("JSON cannot satisfy an SSE probe, got %#v", result)
+	}
+}
+
 func TestProbeTransportDisablesHTTP2ForDirectProviderProbe(t *testing.T) {
 	transport, err := probeTransport(Input{}, ProbeOptions{})
 	if err != nil {

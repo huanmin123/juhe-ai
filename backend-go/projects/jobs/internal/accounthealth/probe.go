@@ -91,7 +91,7 @@ func validateInput(input Input, options ProbeOptions) error {
 		return errors.New("未冻结的 provider 或账户类型")
 	}
 	switch input.EndpointMode {
-	case "chat_json", "responses_json", "images_json":
+	case "chat_json", "responses_json", "responses_sse", "images_json":
 	default:
 		return errors.New("未冻结的探活 endpoint mode")
 	}
@@ -173,6 +173,15 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		if input.Type == "oauth" {
 			body.(map[string]any)["store"] = false
 		}
+	case "responses_sse":
+		path = "/v1/responses"
+		body = map[string]any{
+			"model":             input.HealthModel,
+			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "只能回复：juhe"}}}},
+			"instructions":      probeInstructions,
+			"max_output_tokens": 256,
+			"stream":            true,
+		}
 	case "images_json":
 		path = "/v1/models"
 		method = http.MethodGet
@@ -193,7 +202,11 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Accept", "application/json")
+	if input.EndpointMode == "responses_sse" {
+		request.Header.Set("Accept", "text/event-stream")
+	} else {
+		request.Header.Set("Accept", "application/json")
+	}
 	request.Header.Set("User-Agent", defaultProbeUserAgent)
 	if input.Type == "oauth" {
 		request.Header.Set("OpenAI-Beta", "responses=experimental")
@@ -252,6 +265,9 @@ func decryptToken(secret string, envelope CredentialEnvelope) (string, error) {
 }
 
 func verifyResponse(mode, model string, body []byte) error {
+	if mode == "responses_sse" {
+		return verifyResponsesSSE(body)
+	}
 	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		return errors.New("响应不是 JSON")
@@ -272,6 +288,70 @@ func verifyResponse(mode, model string, body []byte) error {
 		return nil
 	}
 	return errors.New("响应未包含挑战值")
+}
+
+func verifyResponsesSSE(body []byte) error {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	var output strings.Builder
+	completed := false
+	for _, block := range strings.Split(text, "\n\n") {
+		if err := consumeResponsesSSEEvent(block, &output, &completed); err != nil {
+			return err
+		}
+	}
+	if !completed {
+		return errors.New("SSE 缺少 response.completed")
+	}
+	if !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+		return errors.New("SSE 输出未包含挑战值")
+	}
+	return nil
+}
+
+func consumeResponsesSSEEvent(block string, output *strings.Builder, completed *bool) error {
+	var eventName string
+	var dataLines []string
+	for _, line := range strings.Split(block, "\n") {
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(dataLines) == 0 {
+		return nil
+	}
+	data := strings.Join(dataLines, "\n")
+	if data == "[DONE]" {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return errors.New("SSE data 不是 JSON")
+	}
+	if kind, ok := payload["type"].(string); ok && strings.TrimSpace(kind) != "" {
+		eventName = kind
+	}
+	switch eventName {
+	case "response.output_text.delta":
+		if delta, ok := payload["delta"].(string); ok {
+			output.WriteString(delta)
+		}
+	case "response.output_text.done":
+		if finalText, ok := payload["text"].(string); ok {
+			output.WriteString(finalText)
+		}
+	case "response.completed":
+		*completed = true
+	case "response.failed", "response.incomplete":
+		return errors.New("SSE 上游未完成")
+	}
+	return nil
 }
 
 func containsChallenge(value any) bool {

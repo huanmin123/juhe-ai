@@ -7,20 +7,20 @@ const backendRoot = resolve(import.meta.dirname, '../../..')
 const runtimeProbe = "import { runtimeConfig } from './src/config/runtime.js'; process.stdout.write(JSON.stringify(runtimeConfig.accountHealthJobs))"
 const backgroundJobsSource = readFileSync(resolve(backendRoot, 'src/modules/background/background-jobs.ts'), 'utf8')
 
-assertLoads('默认 Node owner 不应要求 J1 配置', {}, (config) => {
-  assert.equal(config.owner, 'node')
+assertLoads('默认 Go owner 不应要求未启用的 J1 桥接配置', {}, (config) => {
+  assert.equal(config.owner, 'go')
   assert.equal(config.inputPublisherEnabled, false)
   assert.equal(config.projectionEnabled, false)
   assert.equal(config.sourceFenceConsumerEnabled, false)
 })
 
-assertRejects('Go owner 缺失签名输入配置必须失败', {
-  JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go'
-}, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY/u)
+assertRejects('Node owner 已归档且不得重新启用', {
+  JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'node'
+}, /Node J1 owner 已归档/u)
 
-assertRejects('Node owner 不得开启 J1 input publisher', {
+assertRejects('J1 input publisher 缺少签名输入配置必须失败', {
   JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_ENABLED: 'true'
-}, /JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_ENABLED/u)
+}, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY/u)
 
 assertLoads('Go owner 配齐输入协议后允许加载', {
   JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go',
@@ -49,10 +49,10 @@ assertLoads('J1 projector 配置 jobs outcome SQLite 路径后允许加载', {
   assert.equal(config.outcomeSqlitePath, 'j1-outcomes.sqlite3')
 })
 
-assert.match(
+assert.doesNotMatch(
   backgroundJobsSource,
-  /function scheduleCooldownAccountRetestJob\(\): void \{[\s\S]*?if \(runtimeConfig\.accountHealthJobs\.owner !== 'node'\)[\s\S]*?return[\s\S]*?runIfNodeOwnsWorkerJob/u,
-  'J1 Go owner 必须同时阻断 Node account-health 与 account cooldown 两个 scheduler，不能只停周期 health scan'
+  /scheduleCooldownAccountRetestJob|scheduleAccountHealthCheckJob/u,
+  'Node J1 owner scheduler 已归档，不得残留在 background-jobs 运行路径'
 )
 
 console.log('account-health-jobs-runtime-config-regression passed')

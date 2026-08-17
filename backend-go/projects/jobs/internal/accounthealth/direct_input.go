@@ -187,7 +187,7 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	if !isDirectOpenAIProvider(account.Provider) || (account.Type != "api_key" && account.Type != "oauth") {
 		return fmt.Errorf("PG direct input 的 provider/type 不受 J1 支持")
 	}
-	if account.EndpointMode != "chat_json" && account.EndpointMode != "responses_json" && account.EndpointMode != "images_json" {
+	if account.EndpointMode != "chat_json" && account.EndpointMode != "responses_json" && account.EndpointMode != "responses_sse" && account.EndpointMode != "images_json" {
 		return fmt.Errorf("PG direct input 的 endpoint mode 不受 J1 支持")
 	}
 	if account.Type == "oauth" && account.EndpointMode != "responses_json" {
