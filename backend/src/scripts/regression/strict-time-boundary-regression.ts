@@ -108,6 +108,90 @@ const statsSource = readFileSync(new URL('../../storage/usage-stats.repository.t
 assert.doesNotMatch(statsSource, /const parsedPreviousBoundaryMs = Date\.parse/, 'cursor invalid 不得回退 now-1h')
 assert.match(statsSource, /expiry cursor_created_at 必须是带 Z 或数值 offset 的 RFC3339 时间/, 'cursor invalid 必须保留可见错误')
 assert.match(statsSource, /cursor_created_at 必须是带 Z 或数值 offset 的 RFC3339 时间：\$\{cursorCreatedAt\}/, 'lag cursor invalid 必须失败而非 lag=0')
+assert.doesNotMatch(statsSource, /new Date\(row\.created_at\)/, '用量统计 PostgreSQL 桶不得按进程时区解析 usage created_at')
+assert.match(statsSource, /canonicalUsageStatsRecordCreatedAt\(row\)/, '用量统计 PostgreSQL 读取必须 canonical usage created_at')
+assert.match(statsSource, /normalizedUsageStatsSafeCreatedBefore/, '用量统计 supplied safeCreatedBefore 必须严格 canonical 或失败')
+
+const usageStatsTimeBucketsSource = readFileSync(new URL('../../storage/usage-stats-time-buckets.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(usageStatsTimeBucketsSource, /new Date\(row\.created_at\)/, '用量统计时间桶不得宽松解析 usage created_at')
+assert.match(usageStatsTimeBucketsSource, /usageStatsRecordCreatedAt\(row\)/, '用量统计时间桶必须严格解析 usage created_at')
+
+const usageStatsAccountQualityWriterSource = readFileSync(new URL('../../storage/usage-stats-account-quality-writer.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(usageStatsAccountQualityWriterSource, /new Date\(row\.created_at\)/, '账号质量分钟桶不得宽松解析 usage created_at')
+assert.match(usageStatsAccountQualityWriterSource, /requiredRfc3339Instant\(updatedAt, '账号质量统计 updatedAt'\)/, '账号质量 updatedAt 必须严格 canonical')
+
+const usageStatsHelpersSource = readFileSync(new URL('../../storage/usage-stats-helpers.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(usageStatsHelpersSource, /Date\.parse\(/, '聚合摘要不得宽松解析 last_used_at')
+assert.match(usageStatsHelpersSource, /rfc3339InstantMilliseconds\(normalized\)/, '聚合摘要跨 offset 排序必须使用 epoch')
+
+const usageStatsWritersSource = readFileSync(new URL('../../storage/usage-stats-writers.ts', import.meta.url), 'utf8')
+assert.match(usageStatsWritersSource, /function compareUsageStatsTimestamp/, '使用统计写入必须以 epoch 比较绝对时间')
+assert.match(usageStatsWritersSource, /canonicalUsageStatsRecordCreatedAt\(row\)/, '使用统计写入必须 canonical usage created_at')
+const usageStatsWriters = await import('../../storage/usage-stats-writers.js')
+assert.throws(
+  () => usageStatsWriters.aggregateUsageStatsRecords(undefined as never, [], '2026-08-16T06:34:49.137'),
+  /用量统计 updatedAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '空批次 supplied updatedAt 也不得静默跳过非法裸时间'
+)
+
+const usageRecordsSource = readFileSync(new URL('../../storage/usage-records.repository.ts', import.meta.url), 'utf8')
+assert.match(usageRecordsSource, /requiredRfc3339Instant\(input\.createdAt, '使用记录 createdAt'\)/, '使用记录 supplied createdAt 必须严格 canonical')
+assert.doesNotMatch(usageRecordsSource, /const fallback = nowIso\(\)/, '使用记录分片日期不得把非法 createdAt 静默替换为当前时间')
+assert.match(usageRecordsSource, /function compareUsageRecordTimestamp/, '跨 shard 使用记录排序必须按 epoch 比较 created_at')
+
+const usageStatsHelpers = await import('../../storage/usage-stats-helpers.js')
+assert.equal(
+  usageStatsHelpers.addUsageSummaries(
+    { ...usageStatsHelpers.emptyAccountUsageSummary(), lastUsedAt: '2026-08-16T06:34:49.137+08:00' },
+    { ...usageStatsHelpers.emptyAccountUsageSummary(), lastUsedAt: '2026-08-15T21:34:49.137Z' }
+  ).lastUsedAt,
+  instant,
+  '聚合摘要 lastUsedAt 必须按 epoch 选择较晚瞬间并 canonical UTC'
+)
+assert.throws(
+  () => usageStatsHelpers.addUsageSummaries(
+    { ...usageStatsHelpers.emptyAccountUsageSummary(), lastUsedAt: '2026-08-16T06:34:49.137' },
+    usageStatsHelpers.emptyAccountUsageSummary()
+  ),
+  /统计聚合 last_used_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '聚合摘要不得接受裸 lastUsedAt'
+)
+
+const resourceAuthorizationListHelpersSource = readFileSync(new URL('../../storage/resource-authorization-list-helpers.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(resourceAuthorizationListHelpersSource, /Date\.parse\(/, '资源授权列表不得宽松解析 createdAt')
+assert.match(resourceAuthorizationListHelpersSource, /requiredRfc3339Instant\(left\.createdAt, '授权 createdAt'\)/, '资源授权列表 createdAt 必须严格解析')
+assert.match(resourceAuthorizationListHelpersSource, /rfc3339InstantMilliseconds\(/, '资源授权列表排序必须按 epoch 比较')
+const resourceAuthorizationListHelpers = await import('../../storage/resource-authorization-list-helpers.js')
+const resourceAuthorizationSummary = (id: string, createdAt: string) => ({ id, createdAt } as never)
+assert.equal(
+  resourceAuthorizationListHelpers.compareResourceAuthorizationOperations(
+    resourceAuthorizationSummary('older', '2026-08-15T21:34:49.137Z'),
+    resourceAuthorizationSummary('newer', '2026-08-16T05:34:49.137+08:00')
+  ),
+  -1,
+  '资源授权列表 createdAt 的 Z 与 numeric offset 等价时必须先按同一 epoch 比较，再按 id 稳定排序'
+)
+for (const value of ['2026-08-16T06:34:49.137', 'not-a-time']) {
+  assert.throws(
+    () => resourceAuthorizationListHelpers.compareResourceAuthorizationOperations(
+      resourceAuthorizationSummary('invalid', value),
+      resourceAuthorizationSummary('valid', instant)
+    ),
+    /RFC3339/,
+    `资源授权列表 createdAt 必须拒绝裸时间或非法时间：${value}`
+  )
+}
+
+const resourceAuthorizationUsageSource = readFileSync(new URL('../../storage/resource-authorization-usage.repository.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(resourceAuthorizationUsageSource, /Date\.parse\(/, '资源授权使用排序不得宽松解析 lastUsedAt')
+assert.match(resourceAuthorizationUsageSource, /value === undefined \|\| value === null\) return 0/, '资源授权使用排序必须保留缺失 lastUsedAt 的可选语义')
+assert.match(resourceAuthorizationUsageSource, /requiredRfc3339Instant\(value, '授权使用 lastUsedAt'\)/, '资源授权使用 lastUsedAt 必须严格解析')
+assert.match(resourceAuthorizationUsageSource, /rfc3339InstantMilliseconds\(/, '资源授权使用排序必须按 epoch 比较')
+
+const resourceAuthorizationWriteStateSource = readFileSync(new URL('../../storage/resource-authorization-write-state.repository.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(resourceAuthorizationWriteStateSource, /Date\.parse\(/, '资源授权写状态不得宽松解析 now')
+assert.match(resourceAuthorizationWriteStateSource, /requiredRfc3339Instant\(now, '授权当前时间'\)/, '资源授权写状态 now 必须严格解析并 canonical')
+assert.match(resourceAuthorizationWriteStateSource, /rfc3339InstantMilliseconds\(/, '资源授权写状态 now 判断必须按 epoch 比较')
 
 const tableRouteSource = readFileSync(new URL('../../modules/table-monitor/table-monitor.routes.ts', import.meta.url), 'utf8')
 assert.match(tableRouteSource, /cutoffAt: absoluteDateTimeQuerySchema/, 'cleanup cutoff 必须复用严格 schema')
@@ -265,6 +349,35 @@ assert.match(
   'runtime-state generation 非 canonical 值必须通过 CAS 修正，不能继续传播 offset 原文'
 )
 assert.doesNotMatch(latencyGenerationLoadSource?.[0] ?? '', /Date\.parse\(/, 'generation publishedAt 不得使用宽松 Date.parse')
+
+const auditF3QuerySource = readFileSync(new URL('../../storage/audit-log-f3-query.repository.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(auditF3QuerySource, /Date\.parse\(options\.(?:startAt|endAt)/, 'F3 审计查询 supplied 时间不得按本机时区解析')
+assert.doesNotMatch(auditF3QuerySource, /Date\.parse\(row\.createdAt/, 'F3 热搜索记录 createdAt 不得按本机时区解析')
+assert.match(auditF3QuerySource, /function optionalF3Timestamp\([\s\S]*?requiredRfc3339Instant/, 'F3 审计列表时间筛选必须严格 canonical')
+assert.match(auditF3QuerySource, /f3TimestampMilliseconds\(row\.createdAt, 'F3 热搜索 createdAt'\)/, 'F3 热搜索记录时间必须严格解析')
+assert.match(auditF3QuerySource, /const f3AbsoluteTimestampColumns = new Set/, 'F3 DB 时间字段读取必须 canonical UTC')
+
+const chatAssetCleanupSource = readFileSync(new URL('../../modules/chat/chat-asset-cleanup.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(chatAssetCleanupSource, /Date\.parse\(/, '聊天资产后台清理不得按本机时区解析 now')
+assert.match(chatAssetCleanupSource, /requiredRfc3339Instant\(input\.now, '聊天资产清理 now'\)/, '聊天资产后台清理 now 必须严格 canonical')
+
+const chatRoutesSource = readFileSync(new URL('../../modules/chat/chat.routes.ts', import.meta.url), 'utf8')
+const chatAssetDeleteRouteStart = chatRoutesSource.indexOf("chatRouter.delete('/conversations/:conversationId/assets/:assetId'")
+const chatAssetDeleteRouteEnd = chatRoutesSource.indexOf("\nchatRouter.get('/conversations/:conversationId/models'", chatAssetDeleteRouteStart)
+assert.ok(chatAssetDeleteRouteStart >= 0 && chatAssetDeleteRouteEnd > chatAssetDeleteRouteStart, '必须能定位聊天资产删除路由')
+const chatAssetDeleteRouteSource = chatRoutesSource.slice(chatAssetDeleteRouteStart, chatAssetDeleteRouteEnd)
+assert.doesNotMatch(chatAssetDeleteRouteSource, /Date\.parse\(now\)/, '聊天资产删除路由不得宽松重解析内部 now')
+assert.match(chatAssetDeleteRouteSource, /const nowMs = Date\.now\(\)[\s\S]*retryAt: new Date\(nowMs \+ 60_000\)\.toISOString\(\)/, '聊天资产删除 retryAt 必须基于同一 epoch 生成')
+
+const workerSchedulerSource = readFileSync(new URL('../../modules/background/worker-scheduler.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(workerSchedulerSource, /Date\.parse\(/, 'worker scheduler 不得按本机时区解析内部绝对时间')
+assert.match(workerSchedulerSource, /rfc3339InstantMilliseconds\(value\)/, 'worker scheduler 状态时间必须严格解析')
+
+const balanceCleanupSource = readFileSync(new URL('../../modules/accounts/account-balance-snapshot-cleanup.service.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(balanceCleanupSource, /Date\.parse\(/, '余额快照清理不得按本机时区解析快照时间')
+assert.match(balanceCleanupSource, /function normalizeSuppressionRead\(/, '余额快照读取代次必须先 canonical')
+assert.match(balanceCleanupSource, /余额快照配置 nextRefreshAt/, '余额快照配置 nextRefreshAt 必须拒绝裸时间')
+assert.match(balanceCleanupSource, /余额快照 nextRefreshAfter/, '余额快照 nextRefreshAfter 必须拒绝裸时间')
 
 const { runtimeConfig } = await import('../../config/runtime.js')
 const { createRuntimeStateStore } = await import('../../shared/runtime-state-store.js')

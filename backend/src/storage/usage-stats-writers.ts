@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries, type UsageStatsAuthorizationLookup } from './usage-stats-aggregation.js'
@@ -9,7 +10,7 @@ import { subtractAccountQualityMinuteStats, upsertAccountQualityMinuteStats } fr
 import { subtractUsageErrorBuckets, upsertUsageErrorBuckets } from './usage-stats-error-writer.js'
 import { addAggregatedLatencyEntries, subtractUsageLatencyEntry, upsertAggregatedLatencyEntries, upsertUsageLatencyEntry, type AggregatedLatencyEntry } from './usage-stats-latency-writer.js'
 import { subtractUsageModelBuckets, upsertUsageModelBuckets } from './usage-stats-model-writer.js'
-import { usageModelTimeBuckets, usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
+import { canonicalUsageStatsRecordCreatedAt, usageModelTimeBuckets, usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID, type UsageStatsAccumulator, type UsageStatsEntry, type UsageStatsRecordRow } from './usage-stats-types.js'
 
@@ -150,28 +151,31 @@ function uniqueIds(values: Array<string | null | undefined>): string[] {
 }
 
 export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
-  if (!shouldAggregateUsageStatsRecord(row)) {
+  const normalizedRow = normalizeUsageStatsRecord(row)
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '用量统计 updatedAt')
+  if (!shouldAggregateUsageStatsRecord(normalizedRow)) {
     return
   }
-  persistEstimatedCacheReadCost(row)
+  persistEstimatedCacheReadCost(normalizedRow)
 
-  const timeKeys = usageStatsTimeKeys(row)
-  for (const entry of usageStatsEntries(row, context)) {
-    upsertUsageStatsEntry(database, entry, timeKeys, updatedAt, context)
-    upsertUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
+  const timeKeys = usageStatsTimeKeys(normalizedRow)
+  for (const entry of usageStatsEntries(normalizedRow, context)) {
+    upsertUsageStatsEntry(database, entry, timeKeys, normalizedUpdatedAt, context)
+    upsertUsageLatencyEntry(database, entry, normalizedRow, timeKeys, normalizedUpdatedAt)
   }
-  upsertAuthorizationUsageReportRows(database, row, timeKeys.statDate, updatedAt, context)
-  upsertUsageModelBuckets(database, row, timeKeys, updatedAt)
-  if (row.success !== 1) {
-    upsertUsageErrorBuckets(database, row, timeKeys, updatedAt)
+  upsertAuthorizationUsageReportRows(database, normalizedRow, timeKeys.statDate, normalizedUpdatedAt, context)
+  upsertUsageModelBuckets(database, normalizedRow, timeKeys, normalizedUpdatedAt)
+  if (normalizedRow.success !== 1) {
+    upsertUsageErrorBuckets(database, normalizedRow, timeKeys, normalizedUpdatedAt)
   }
-  if (shouldRecordAccountQualityStats(row)) {
-    upsertAccountQualityMinuteStats(database, row, updatedAt)
+  if (shouldRecordAccountQualityStats(normalizedRow)) {
+    upsertAccountQualityMinuteStats(database, normalizedRow, normalizedUpdatedAt)
   }
-  upsertAccountHealthHour(database, row, timeKeys.statHour, updatedAt)
+  upsertAccountHealthHour(database, normalizedRow, timeKeys.statHour, normalizedUpdatedAt)
 }
 
 export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageStatsRecordRow[], updatedAt: string, context?: UsageStatsAggregationContext): void {
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '用量统计 updatedAt')
   if (rows.length === 0) return
   const totalEntries = new Map<string, AggregatedUsageStatsEntry>()
   const timeEntries = new Map<string, AggregatedUsageStatsTimeEntry>()
@@ -180,7 +184,8 @@ export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageSt
   const accountQualityEntries = new Map<string, AggregatedAccountQualityEntry>()
   const accountHealthEntries = new Map<string, AggregatedAccountHealthEntry>()
 
-  for (const row of rows) {
+  for (const inputRow of rows) {
+    const row = normalizeUsageStatsRecord(inputRow)
     if (!shouldAggregateUsageStatsRecord(row)) {
       continue
     }
@@ -197,46 +202,48 @@ export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageSt
     addAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
     addAggregatedAccountHealthEntry(accountHealthEntries, row, timeKeys.statHour)
     if (row.account_authorization_id || row.group_authorization_id) {
-      upsertAuthorizationUsageReportRows(database, row, timeKeys.statDate, updatedAt, context)
+      upsertAuthorizationUsageReportRows(database, row, timeKeys.statDate, normalizedUpdatedAt, context)
     }
     if (row.success !== 1) {
-      upsertUsageErrorBuckets(database, row, timeKeys, updatedAt)
+      upsertUsageErrorBuckets(database, row, timeKeys, normalizedUpdatedAt)
     }
   }
 
   const statements = usageStatsUpsertStatementsFor(database, context)
   for (const entry of totalEntries.values()) {
-    upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt, statements?.total)
+    upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, normalizedUpdatedAt, statements?.total)
   }
   for (const entry of timeEntries.values()) {
-    upsertUsageStatsTimeBucket(database, entry.bucket, entry.timeValue, entry, updatedAt, statements?.timeBuckets.get(entry.bucket.tableName))
+    upsertUsageStatsTimeBucket(database, entry.bucket, entry.timeValue, entry, normalizedUpdatedAt, statements?.timeBuckets.get(entry.bucket.tableName))
   }
-  upsertAggregatedLatencyEntries(database, latencyEntries, updatedAt)
-  upsertAggregatedModelEntries(database, modelEntries, updatedAt)
-  upsertAggregatedAccountQualityEntries(database, accountQualityEntries, updatedAt)
-  upsertAggregatedAccountHealthEntries(database, accountHealthEntries, updatedAt)
+  upsertAggregatedLatencyEntries(database, latencyEntries, normalizedUpdatedAt)
+  upsertAggregatedModelEntries(database, modelEntries, normalizedUpdatedAt)
+  upsertAggregatedAccountQualityEntries(database, accountQualityEntries, normalizedUpdatedAt)
+  upsertAggregatedAccountHealthEntries(database, accountHealthEntries, normalizedUpdatedAt)
 }
 
 export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
-  if (!shouldAggregateUsageStatsRecord(row)) {
+  const normalizedRow = normalizeUsageStatsRecord(row)
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '用量统计 updatedAt')
+  if (!shouldAggregateUsageStatsRecord(normalizedRow)) {
     return
   }
 
-  const timeKeys = usageStatsTimeKeys(row)
-  const context = createUsageStatsAggregationContext([row])
-  for (const entry of usageStatsEntries(row, context)) {
-    subtractUsageStatsEntry(database, entry, timeKeys, updatedAt)
-    subtractUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
+  const timeKeys = usageStatsTimeKeys(normalizedRow)
+  const context = createUsageStatsAggregationContext([normalizedRow])
+  for (const entry of usageStatsEntries(normalizedRow, context)) {
+    subtractUsageStatsEntry(database, entry, timeKeys, normalizedUpdatedAt)
+    subtractUsageLatencyEntry(database, entry, normalizedRow, timeKeys, normalizedUpdatedAt)
   }
-  subtractAuthorizationUsageReportRows(database, row, timeKeys.statDate, updatedAt, context)
-  subtractUsageModelBuckets(database, row, timeKeys, updatedAt)
-  if (row.success !== 1) {
-    subtractUsageErrorBuckets(database, row, timeKeys, updatedAt)
+  subtractAuthorizationUsageReportRows(database, normalizedRow, timeKeys.statDate, normalizedUpdatedAt, context)
+  subtractUsageModelBuckets(database, normalizedRow, timeKeys, normalizedUpdatedAt)
+  if (normalizedRow.success !== 1) {
+    subtractUsageErrorBuckets(database, normalizedRow, timeKeys, normalizedUpdatedAt)
   }
-  if (shouldRecordAccountQualityStats(row)) {
-    subtractAccountQualityMinuteStats(database, row, updatedAt)
+  if (shouldRecordAccountQualityStats(normalizedRow)) {
+    subtractAccountQualityMinuteStats(database, normalizedRow, normalizedUpdatedAt)
   }
-  deleteAccountHealthHourForRecord(database, row)
+  deleteAccountHealthHourForRecord(database, normalizedRow)
 }
 
 function addAggregatedAccountHealthEntry(target: Map<string, AggregatedAccountHealthEntry>, row: UsageStatsRecordRow, statHour: string): void {
@@ -310,7 +317,7 @@ function accountHealthEntry(row: UsageStatsRecordRow, statHour: string): Aggrega
 }
 
 function compareHealthObservation(leftAt: string, leftId: string, rightAt: string, rightId: string): number {
-  return leftAt.localeCompare(rightAt) || leftId.localeCompare(rightId)
+  return compareUsageStatsTimestamp(leftAt, rightAt) || leftId.localeCompare(rightId)
 }
 
 function shouldRecordAccountQualityStats(row: UsageStatsRecordRow): boolean {
@@ -421,14 +428,14 @@ function addAggregatedAccountQualityEntry(target: Map<string, AggregatedAccountQ
   existing.errorCount += success ? 0 : 1
   existing.firstTokenMsSum += firstTokenMs
   existing.firstTokenMsCount += hasFirstTokenSample ? 1 : 0
-  if (row.created_at > existing.lastSampleAt) {
+  if (compareUsageStatsTimestamp(row.created_at, existing.lastSampleAt) > 0) {
     existing.lastSampleAt = row.created_at
     existing.systemAccountId = statsSystemAccountId
     existing.providerCode = row.provider_code ?? 'unknown'
   }
   if (success) {
     existing.lastSuccessAt = maxIso(existing.lastSuccessAt, row.created_at)
-  } else if (!existing.lastErrorAt || row.created_at >= existing.lastErrorAt) {
+  } else if (existing.lastErrorAt === undefined || compareUsageStatsTimestamp(row.created_at, existing.lastErrorAt) >= 0) {
     existing.lastErrorAt = row.created_at
     existing.lastErrorMessage = row.error_message ?? undefined
   }
@@ -586,9 +593,25 @@ function mergeAccumulator(target: UsageStatsAccumulator, source: UsageStatsAccum
 }
 
 function maxIso(left?: string, right?: string): string | undefined {
-  if (!left) return right
-  if (!right) return left
-  return left >= right ? left : right
+  if (left === undefined) return right === undefined ? undefined : requiredRfc3339Instant(right, '用量统计聚合时间')
+  if (right === undefined) return requiredRfc3339Instant(left, '用量统计聚合时间')
+  return compareUsageStatsTimestamp(left, right) >= 0
+    ? requiredRfc3339Instant(left, '用量统计聚合时间')
+    : requiredRfc3339Instant(right, '用量统计聚合时间')
+}
+
+function normalizeUsageStatsRecord(row: UsageStatsRecordRow): UsageStatsRecordRow {
+  const createdAt = canonicalUsageStatsRecordCreatedAt(row)
+  return row.created_at === createdAt ? row : { ...row, created_at: createdAt }
+}
+
+function compareUsageStatsTimestamp(left: string, right: string): number {
+  const leftMilliseconds = rfc3339InstantMilliseconds(left)
+  const rightMilliseconds = rfc3339InstantMilliseconds(right)
+  if (leftMilliseconds === undefined || rightMilliseconds === undefined) {
+    throw new Error('用量统计聚合时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return leftMilliseconds === rightMilliseconds ? 0 : leftMilliseconds > rightMilliseconds ? 1 : -1
 }
 
 function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {

@@ -1,3 +1,4 @@
+import { parseRfc3339Instant, requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import type { UsageStatsRecordRow } from './usage-stats-types.js'
 
@@ -48,7 +49,7 @@ export const usageLatencyTimeBuckets: UsageStatsTimeBucketDefinition[] = [
 ]
 
 export function usageStatsTimeKeys(row: UsageStatsRecordRow): UsageStatsTimeKeys {
-  const createdAt = new Date(row.created_at)
+  const createdAt = usageStatsRecordCreatedAt(row)
   const timezone = usageStatsTimezone()
   return {
     statMinute: minuteKey(createdAt, timezone),
@@ -57,4 +58,16 @@ export function usageStatsTimeKeys(row: UsageStatsRecordRow): UsageStatsTimeKeys
     statWeek: weekKey(createdAt, timezone),
     statMonth: monthKey(createdAt, timezone)
   }
+}
+
+export function canonicalUsageStatsRecordCreatedAt(row: Pick<UsageStatsRecordRow, 'created_at'>): string {
+  return requiredRfc3339Instant(row.created_at, '使用记录 created_at')
+}
+
+export function usageStatsRecordCreatedAt(row: Pick<UsageStatsRecordRow, 'created_at'>): Date {
+  const createdAt = parseRfc3339Instant(row.created_at)
+  if (!createdAt) {
+    throw new Error('使用记录 created_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return createdAt
 }

@@ -1,13 +1,17 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { canonicalUsageStatsRecordCreatedAt, usageStatsRecordCreatedAt } from './usage-stats-time-buckets.js'
 import type { UsageStatsRecordRow } from './usage-stats-types.js'
 
 export function upsertAccountQualityMinuteStats(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
+  const createdAt = usageStatsRecordCreatedAt(row)
+  const createdAtIso = canonicalUsageStatsRecordCreatedAt(row)
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '账号质量统计 updatedAt')
   if (!row.account_id || !row.api_key_id) {
     return
   }
-  const createdAt = new Date(row.created_at)
   const statMinute = minuteKey(createdAt, usageStatsTimezone())
   const success = row.success === 1
   const firstTokenMsValue = Number(row.first_token_ms ?? NaN)
@@ -44,20 +48,21 @@ export function upsertAccountQualityMinuteStats(database: DatabaseSync, row: Usa
     success ? 0 : 1,
     firstTokenMs,
     firstTokenCount,
-    row.created_at,
-    success ? row.created_at : null,
-    success ? null : row.created_at,
+    createdAtIso,
+    success ? createdAtIso : null,
+    success ? null : createdAtIso,
     success ? null : row.error_message ?? null,
-    updatedAt
+    normalizedUpdatedAt
   )
-  markAccountQualityDirty(database, row.account_id, updatedAt)
+  markAccountQualityDirty(database, row.account_id, normalizedUpdatedAt)
 }
 
 export function subtractAccountQualityMinuteStats(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
+  const createdAt = usageStatsRecordCreatedAt(row)
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '账号质量统计 updatedAt')
   if (!row.account_id || !row.api_key_id) {
     return
   }
-  const createdAt = new Date(row.created_at)
   const statMinute = minuteKey(createdAt, usageStatsTimezone())
   const success = row.success === 1
   const firstTokenMsValue = Number(row.first_token_ms ?? NaN)
@@ -73,14 +78,14 @@ export function subtractAccountQualityMinuteStats(database: DatabaseSync, row: U
         first_token_ms_count = MAX(0, first_token_ms_count - ?),
         updated_at = ?
     WHERE account_id = ? AND stat_minute = ?
-  `).run(success ? 1 : 0, success ? 0 : 1, firstTokenMs, firstTokenCount, updatedAt, row.account_id, statMinute)
+  `).run(success ? 1 : 0, success ? 0 : 1, firstTokenMs, firstTokenCount, normalizedUpdatedAt, row.account_id, statMinute)
   database.prepare(`
     DELETE FROM account_quality_minute_stats
     WHERE account_id = ? AND stat_minute = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND first_token_ms_sum = 0 AND first_token_ms_count = 0
   `).run(row.account_id, statMinute)
-  markAccountQualityDirty(database, row.account_id, updatedAt)
+  markAccountQualityDirty(database, row.account_id, normalizedUpdatedAt)
 }
 
 function accountQualityStatsSystemAccountId(row: UsageStatsRecordRow): string {

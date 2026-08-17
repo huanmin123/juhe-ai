@@ -1,3 +1,4 @@
+import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 import { buildSystemAccountScopeClause, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase } from './database.js'
 import type { UsageRecordListOptions, UsageRecordSortField } from './usage-records.repository.js'
@@ -151,12 +152,12 @@ function buildUsageRecordFiltersForColumns(
     clauses.push(`${columns.groupId} = ?`)
     params.push(groupId)
   }
-  const startAt = options?.startAt?.trim()
+  const startAt = normalizeUsageRecordBoundary(options?.startAt, '使用记录开始时间')
   if (startAt) {
     clauses.push(`${columns.createdAt} >= ?`)
     params.push(startAt)
   }
-  const endAt = options?.endAt?.trim()
+  const endAt = normalizeUsageRecordBoundary(options?.endAt, '使用记录结束时间')
   if (endAt) {
     clauses.push(`${columns.createdAt} < ?`)
     params.push(endAt)
@@ -176,6 +177,11 @@ function buildUsageRecordFiltersForColumns(
     params,
     tracePrefixLookup: Boolean(tracePrefixText && settings?.textPrefixCollation)
   }
+}
+
+function normalizeUsageRecordBoundary(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  return requiredRfc3339Instant(value, label)
 }
 
 function usageRecordSortColumns(columns: UsageRecordQueryColumns): Record<UsageRecordSortField, string> {

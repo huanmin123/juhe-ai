@@ -117,6 +117,44 @@ try {
   assert.equal(apiKeyStatsTotal(apiKey.id), records.length, 'API Key 统计应按 shard 输入聚合到统计结果库')
   assert(usageShardCursorCount() > 1, '统计结果库应为多个 usage shard 维护独立游标')
 
+  const offsetCreatedAt = '2026-08-16T09:00:00.000+09:00'
+  const strictTimestampRecord = {
+    ...records[0],
+    id: usageRecordShards.generateUsageRecordId(offsetCreatedAt, 'offset-canonical'),
+    traceId: 'trace-usage-shard-routing-offset-canonical',
+    createdAt: offsetCreatedAt
+  }
+  repositories.createUsageRecord(strictTimestampRecord)
+  assert.equal(
+    repositories.getUsageRecordDetail(strictTimestampRecord.id, access)?.createdAt,
+    '2026-08-16T00:00:00.000Z',
+    '使用记录 numeric offset 写入后必须 canonical 为 UTC Z'
+  )
+  const corruptedRecordLocation = usageRecordShards.usageRecordShardLocationForRecord(strictTimestampRecord.id)
+  usageRecordShards.getUsageRecordShardDatabase(corruptedRecordLocation)
+    .prepare('UPDATE usage_records SET created_at = ? WHERE id = ?')
+    .run('2026-08-16T00:00:00.000', strictTimestampRecord.id)
+  assert.throws(
+    () => repositories.getUsageRecordDetail(strictTimestampRecord.id, access),
+    /使用记录 created_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '持久化裸 created_at 必须可见失败，不能在读取详情时按本机时区解释'
+  )
+  assert.throws(
+    () => repositories.createUsageRecord({
+      ...strictTimestampRecord,
+      id: 'usage_invalid_created_at',
+      apiKeyId: 'api-key-that-would-be-skipped',
+      createdAt: '2026-08-16T09:00:00.000'
+    }),
+    /使用记录 createdAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '使用记录裸 createdAt 即使该行会被跳过也必须可见失败，不能按本机时区或当前时间回退'
+  )
+  assert.throws(
+    () => usageStatsRepository.aggregateUsageStatsBatch(1, '2026-08-16T09:00:00.000'),
+    /用量统计 safeCreatedBefore必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '统计聚合裸 safeCreatedBefore 必须可见失败'
+  )
+
   console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，usage catalog 独立建表，统计可从 shard 聚合')
 } finally {
   try {

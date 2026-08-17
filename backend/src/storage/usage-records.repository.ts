@@ -29,6 +29,7 @@ import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-p
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 import { errorLogFields, logger } from '../shared/logger.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -364,7 +365,7 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   const detailParams = [recordId, ...scope.params]
   const row = queryUsageRecordShardById<UsageRecordRow>(recordId, detailSql, detailParams)
     ?? queryUsageRecordShardByCatalogEntry<UsageRecordRow>(recordId, detailSql, detailParams)
-  const namedRow = row ? hydrateUsageRecordNames([row])[0] : undefined
+  const namedRow = row ? hydrateUsageRecordNames([normalizeUsageRecordRow(row)])[0] : undefined
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
     : new Map<string, string>()
@@ -417,7 +418,7 @@ export async function getUsageRecordDetailAsync(id: string, access?: AccessScope
     ${scope.clause}
     LIMIT 1
   `, [recordId, ...partitionPruning.params, ...scope.params])
-  const namedRow = row ? (await hydrateUsageRecordNamesAsync(client, [row]))[0] : undefined
+  const namedRow = row ? (await hydrateUsageRecordNamesAsync(client, [normalizeUsageRecordRow(row)]))[0] : undefined
   const accountNames = shouldIncludeSystemAccountFields
     ? await loadSystemAccountNameMapByIdsAsync(client, [optionalString(namedRow?.system_account_id)])
     : new Map<string, string>()
@@ -732,10 +733,12 @@ function buildUsageRecordBatchWritePlan(
   const shardEntries: UsageRecordShardEntryInput[] = []
 
   for (const input of inputs) {
+    const now = input.createdAt === undefined
+      ? nowIso()
+      : requiredRfc3339Instant(input.createdAt, '使用记录 createdAt')
     if (!providedOnly && input.apiKeyId && !usageApiKeyExists(input.apiKeyId, accessLookupContext)) {
       continue
     }
-    const now = input.createdAt ?? nowIso()
     const id = input.id ?? generateUsageRecordId(now, newId('usage'))
     const systemAccountId = input.systemAccountId ?? systemAccountIdFromUsageInput(input, accessLookupContext, providedOnly)
     const accessMetadata = providedOnly
@@ -985,11 +988,10 @@ function usageRecordLogicalShardLocationForPostgres(id: string, createdAt?: stri
 }
 
 function usageRecordBucketDateKey(createdAt?: string): string {
-  const value = createdAt ?? nowIso()
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
-  if (match) return `${match[1]}${match[2]}${match[3]}`
-  const fallback = nowIso()
-  return `${fallback.slice(0, 4)}${fallback.slice(5, 7)}${fallback.slice(8, 10)}`
+  const value = createdAt === undefined
+    ? nowIso()
+    : requiredRfc3339Instant(createdAt, '使用记录 createdAt')
+  return `${value.slice(0, 4)}${value.slice(5, 7)}${value.slice(8, 10)}`
 }
 
 function usageRecordLogicalShardId(value: string): number {
@@ -1103,19 +1105,20 @@ async function upsertPostgresUsageRecordScopeShardCatalog(client: DatabaseClient
   const accountRows = new Map<string, { accountId: string; shardKey: string; firstCreatedAt: string; lastSeenAt: string }>()
   const apiKeyRows = new Map<string, { apiKeyId: string; systemAccountId: string; shardKey: string; firstCreatedAt: string; lastSeenAt: string }>()
   for (const entry of entries) {
+    const createdAt = requiredRfc3339Instant(entry.createdAt, '使用记录 createdAt')
     const accountId = entry.accountId?.trim()
     if (accountId) {
       const key = `${accountId}\u0000${entry.shardKey}`
       const existing = accountRows.get(key)
       if (existing) {
-        if (entry.createdAt < existing.firstCreatedAt) existing.firstCreatedAt = entry.createdAt
-        if (entry.createdAt > existing.lastSeenAt) existing.lastSeenAt = entry.createdAt
+        if (compareUsageRecordTimestamp(createdAt, existing.firstCreatedAt) < 0) existing.firstCreatedAt = createdAt
+        if (compareUsageRecordTimestamp(createdAt, existing.lastSeenAt) > 0) existing.lastSeenAt = createdAt
       } else {
         accountRows.set(key, {
           accountId,
           shardKey: entry.shardKey,
-          firstCreatedAt: entry.createdAt,
-          lastSeenAt: entry.createdAt
+          firstCreatedAt: createdAt,
+          lastSeenAt: createdAt
         })
       }
     }
@@ -1125,15 +1128,15 @@ async function upsertPostgresUsageRecordScopeShardCatalog(client: DatabaseClient
       const key = `${apiKeyId}\u0000${systemAccountId}\u0000${entry.shardKey}`
       const existing = apiKeyRows.get(key)
       if (existing) {
-        if (entry.createdAt < existing.firstCreatedAt) existing.firstCreatedAt = entry.createdAt
-        if (entry.createdAt > existing.lastSeenAt) existing.lastSeenAt = entry.createdAt
+        if (compareUsageRecordTimestamp(createdAt, existing.firstCreatedAt) < 0) existing.firstCreatedAt = createdAt
+        if (compareUsageRecordTimestamp(createdAt, existing.lastSeenAt) > 0) existing.lastSeenAt = createdAt
       } else {
         apiKeyRows.set(key, {
           apiKeyId,
           systemAccountId,
           shardKey: entry.shardKey,
-          firstCreatedAt: entry.createdAt,
-          lastSeenAt: entry.createdAt
+          firstCreatedAt: createdAt,
+          lastSeenAt: createdAt
         })
       }
     }
@@ -1196,9 +1199,10 @@ async function lockPostgresUsageRecordBusinessSideEffectAccounts(
 }
 
 function mergePostgresMaxIsoValue(target: Map<string, string>, key: string, value: string): void {
+  const normalized = requiredRfc3339Instant(value, '使用记录 lastUsedAt')
   const previous = target.get(key)
-  if (!previous || value > previous) {
-    target.set(key, value)
+  if (previous === undefined || compareUsageRecordTimestamp(normalized, previous) > 0) {
+    target.set(key, normalized)
   }
 }
 
@@ -1227,7 +1231,7 @@ function uniquePostgresUsageRecordShardEntries(entries: UsageRecordShardEntryInp
   for (const entry of entries) {
     const id = entry.id.trim()
     if (!id) continue
-    unique.set(id, entry)
+    unique.set(id, { ...entry, createdAt: requiredRfc3339Instant(entry.createdAt, '使用记录 createdAt') })
   }
   return [...unique.values()]
 }
@@ -1433,7 +1437,7 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
         `)
         .all(...chunk) as UsageRecordRow[]
       for (const row of rows) {
-        rowsById.set(String(row.id), row)
+        rowsById.set(String(row.id), normalizeUsageRecordRow(row))
       }
     }
   }
@@ -1451,7 +1455,7 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
       WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
     `, chunk)
     for (const row of rows) {
-      rowsById.set(String(row.id), row)
+      rowsById.set(String(row.id), normalizeUsageRecordRow(row))
     }
   }
   return entries.map((entry) => rowsById.get(entry.usage_id)).filter((row): row is UsageRecordRow => Boolean(row))
@@ -1466,7 +1470,7 @@ async function listPostgresUsageRecordRows(
   const normalizedLimit = Math.max(1, Math.trunc(limit))
   const selectColumns = usageRecordListSelectColumns
   if (filters.tracePrefixLookup) {
-    return await client.query<UsageRecordRow>(`
+    return (await client.query<UsageRecordRow>(`
       WITH matched_usage_records AS MATERIALIZED (
         SELECT ur.id, ur.created_at
         FROM juhe_usage.usage_records ur
@@ -1482,16 +1486,16 @@ async function listPostgresUsageRecordRows(
         AND ur.id = matched_usage_records.id
       ${orderClause}
       LIMIT ?
-    `, [...filters.params, normalizedLimit, normalizedLimit])
+    `, [...filters.params, normalizedLimit, normalizedLimit])).map(normalizeUsageRecordRow)
   }
-  return await client.query<UsageRecordRow>(`
+  return (await client.query<UsageRecordRow>(`
     SELECT
       ${selectColumns}
     FROM juhe_usage.usage_records ur
     ${filters.clause}
     ${orderClause}
     LIMIT ?
-  `, [...filters.params, normalizedLimit])
+  `, [...filters.params, normalizedLimit])).map(normalizeUsageRecordRow)
 }
 
 function listUsageRecordRowsFromShards(
@@ -1516,7 +1520,10 @@ function listUsageRecordRowsFromShards(
       `)
       .all(...filters.params, perShardLimit) as UsageRecordRow[])
   }
-  return rows.sort((left, right) => compareUsageRecordRows(left, right, listOptions)).slice(0, perShardLimit)
+  return rows
+    .map(normalizeUsageRecordRow)
+    .sort((left, right) => compareUsageRecordRows(left, right, listOptions))
+    .slice(0, perShardLimit)
 }
 
 function usageRecordShardQueryWindowFromOptions(options?: UsageRecordListOptions): UsageRecordShardQueryWindow {
@@ -1536,9 +1543,25 @@ function compareUsageRecordRows(left: UsageRecordRow, right: UsageRecordRow, opt
     )
     if (byRequestedField !== 0) return byRequestedField
   }
-  const byCreatedAt = String(left.created_at ?? '').localeCompare(String(right.created_at ?? '')) * direction
+  const byCreatedAt = compareUsageRecordTimestamp(left.created_at, right.created_at) * direction
   if (byCreatedAt !== 0) return byCreatedAt
   return String(left.id ?? '').localeCompare(String(right.id ?? '')) * direction
+}
+
+function normalizeUsageRecordRow(row: UsageRecordRow): UsageRecordRow {
+  return {
+    ...row,
+    created_at: requiredRfc3339Instant(row.created_at, '使用记录 created_at')
+  }
+}
+
+function compareUsageRecordTimestamp(left: unknown, right: unknown): number {
+  const leftMilliseconds = rfc3339InstantMilliseconds(left)
+  const rightMilliseconds = rfc3339InstantMilliseconds(right)
+  if (leftMilliseconds === undefined || rightMilliseconds === undefined) {
+    throw new Error('使用记录 created_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return leftMilliseconds === rightMilliseconds ? 0 : leftMilliseconds > rightMilliseconds ? 1 : -1
 }
 
 function usageRecordSortValue(row: UsageRecordRow, sortBy: UsageRecordSortField): string | number | null | undefined {
@@ -1568,9 +1591,10 @@ function compareNullableValues(left: string | number | null | undefined, right: 
 
 function mergeAccountLastUsedAt(target: Map<string, string>, source: Map<string, string>): void {
   for (const [accountId, lastUsedAt] of source) {
+    const normalized = requiredRfc3339Instant(lastUsedAt, '使用记录 lastUsedAt')
     const previous = target.get(accountId)
-    if (!previous || lastUsedAt > previous) {
-      target.set(accountId, lastUsedAt)
+    if (previous === undefined || compareUsageRecordTimestamp(normalized, previous) > 0) {
+      target.set(accountId, normalized)
     }
   }
 }

@@ -18,10 +18,11 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { runDerivedWindowRolloverSeedPages } from './usage-derived-window-rollover.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import {
+  requiredSystemMetricsTrendSourceVersion,
   refreshSystemMetricsTrendWindowSnapshotsStage,
   refreshSystemMetricsTrendWindowSnapshotsStageAsync,
-  systemMetricsTrendSourceWatermark,
-  systemMetricsTrendSourceWatermarkAsync
+  systemMetricsTrendSourceState,
+  systemMetricsTrendSourceStateAsync
 } from './system-metrics.repository.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, dateKeysInRange, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
@@ -46,7 +47,7 @@ import {
   refreshUsageScopeRangeWindowSnapshotsInStages
 } from './usage-range-windows.repository.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
-import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import {
   refreshAccountLast7dRequestRankSnapshot,
   refreshAccountLast7dRequestRankSnapshotAsync,
@@ -62,7 +63,7 @@ import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendU
 import { subtractAuthorizationUsageReportRowsAsync, upsertAuthorizationUsageReportRowsAsync } from './usage-stats-authorization-daily-writer.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
 import { addAggregatedLatencyEntries, type AggregatedLatencyEntry } from './usage-stats-latency-writer.js'
-import { usageErrorTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
+import { canonicalUsageStatsRecordCreatedAt, usageErrorTimeBuckets, usageModelTimeBuckets, usageStatsRecordCreatedAt, usageStatsTimeBuckets, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import {
   aggregateUsageRowsForRange,
   type UsageStatsDailyWindowRow
@@ -143,9 +144,11 @@ export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './u
 export const usageStatsCursorSafetyDelaySeconds = 15
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = usageStatsCursorSafetyDelaySeconds
 const USAGE_STATS_MAX_SHARDS_PER_BATCH = 16
-const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
+const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0001-01-01T00:00:00.000Z'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
+const USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE = 'usage_rank_snapshot_source_version'
+const USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID = ''
 let usageStatsShardScanOffset = 0
 
 export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride?: string): number {
@@ -153,7 +156,7 @@ export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride
   const batchLimit = Math.max(1, limit)
   const shardLocationsWindow = usageStatsShardLocationsForBatch(batchLimit)
   const shardLocations = shardLocationsWindow.locations
-  const safeCreatedBefore = safeCreatedBeforeOverride?.trim() || usageStatsSafeCreatedBefore()
+  const safeCreatedBefore = normalizedUsageStatsSafeCreatedBefore(safeCreatedBeforeOverride)
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   let processedRows = 0
   try {
@@ -178,7 +181,7 @@ export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride
       const state = usageStatsShardJobState(database, location.shardKey)
       const shardDatabase = getUsageRecordShardDatabase(location)
       const rowLimit = Math.max(1, Math.min(limitForShard, batchLimit - processedRows))
-      const rows = shardDatabase
+      const rows = (shardDatabase
         .prepare(`
           SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
           FROM usage_records
@@ -187,7 +190,8 @@ export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride
           ORDER BY created_at ASC, id ASC
           LIMIT ?
         `)
-        .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, rowLimit) as unknown as UsageStatsRecordRow[]
+        .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, rowLimit) as unknown as UsageStatsRecordRow[])
+        .map(normalizeUsageStatsRecordRow)
 
       if (rows.length > 0) {
         for (const row of rows) {
@@ -259,7 +263,7 @@ export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBef
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const batchLimit = Math.max(1, Math.trunc(limit))
-  const safeCreatedBefore = safeCreatedBeforeOverride?.trim() || usageStatsSafeCreatedBefore()
+  const safeCreatedBefore = normalizedUsageStatsSafeCreatedBefore(safeCreatedBeforeOverride)
   const updatedAt = nowIso()
   const timezone = await usageStatsTimezoneAsync()
   try {
@@ -371,8 +375,10 @@ interface PostgresAggregatedAccountHealthEntry {
 }
 
 async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: UsageStatsRecordRow[], updatedAt: string, timezone: string): Promise<void> {
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '用量统计 updatedAt')
   if (rows.length === 0) return
-  const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
+  const normalizedRows = rows.map(normalizePostgresUsageStatsRecordRow)
+  const lookup = await createPostgresUsageStatsAuthorizationLookup(client, normalizedRows)
   const totalEntries = new Map<string, PostgresAggregatedUsageStatsEntry>()
   const timeEntries = new Map<string, PostgresAggregatedUsageStatsTimeEntry>()
   const latencyEntries = new Map<string, AggregatedLatencyEntry>()
@@ -381,7 +387,7 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
   const accountQualityEntries = new Map<string, PostgresAggregatedAccountQualityEntry>()
   const accountHealthEntries = new Map<string, PostgresAggregatedAccountHealthEntry>()
 
-  for (const row of rows) {
+  for (const row of normalizedRows) {
     if (!shouldAggregateUsageStatsRecord(row)) {
       continue
     }
@@ -398,28 +404,28 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
     addPostgresAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
     addPostgresAggregatedAccountHealthEntry(accountHealthEntries, row, timeKeys.statHour)
     if (row.account_authorization_id || row.group_authorization_id) {
-      await upsertAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, updatedAt, lookup)
+      await upsertAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, normalizedUpdatedAt, lookup)
     }
     if (row.success !== 1) {
       addPostgresAggregatedUsageErrorEntries(errorEntries, row, timeKeys)
     }
   }
 
-  await upsertPostgresUsageStatsTotals(client, [...totalEntries.values()], updatedAt)
+  await upsertPostgresUsageStatsTotals(client, [...totalEntries.values()], normalizedUpdatedAt)
   for (const bucket of usageStatsTimeBuckets) {
     await upsertPostgresUsageStatsTimeBucket(
       client,
       bucket,
       [...timeEntries.values()].filter((entry) => entry.bucket.tableName === bucket.tableName),
-      updatedAt
+      normalizedUpdatedAt
     )
   }
-  await upsertPostgresUsageLatencyEntries(client, [...latencyEntries.values()], updatedAt)
-  await upsertPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
-  await upsertPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
-  await upsertPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
-  await upsertPostgresAccountHealthEntries(client, [...accountHealthEntries.values()], updatedAt)
-  await markPostgresDerivedWindowDirtyScopes(client, [...timeEntries.values()], updatedAt)
+  await upsertPostgresUsageLatencyEntries(client, [...latencyEntries.values()], normalizedUpdatedAt)
+  await upsertPostgresUsageModelEntries(client, [...modelEntries.values()], normalizedUpdatedAt)
+  await upsertPostgresUsageErrorEntries(client, [...errorEntries.values()], normalizedUpdatedAt)
+  await upsertPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], normalizedUpdatedAt)
+  await upsertPostgresAccountHealthEntries(client, [...accountHealthEntries.values()], normalizedUpdatedAt)
+  await markPostgresDerivedWindowDirtyScopes(client, [...timeEntries.values()], normalizedUpdatedAt)
 }
 
 export async function subtractPostgresUsageStatsRows(
@@ -428,6 +434,7 @@ export async function subtractPostgresUsageStatsRows(
   updatedAt = nowIso(),
   timezone?: string
 ): Promise<void> {
+  const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, '用量统计 updatedAt')
   if (inputRows.length === 0) return
   const rows = inputRows.map(normalizePostgresUsageStatsRecordRow)
   const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
@@ -459,28 +466,28 @@ export async function subtractPostgresUsageStatsRows(
       accountHealthRecordIds.push({ accountId: row.account_id, recordId: row.id })
     }
     if (row.account_authorization_id || row.group_authorization_id) {
-      await subtractAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, updatedAt, lookup)
+      await subtractAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, normalizedUpdatedAt, lookup)
     }
     if (row.success !== 1) {
       addPostgresAggregatedUsageErrorEntries(errorEntries, row, timeKeys)
     }
   }
 
-  await subtractPostgresUsageStatsTotals(client, [...totalEntries.values()], updatedAt)
+  await subtractPostgresUsageStatsTotals(client, [...totalEntries.values()], normalizedUpdatedAt)
   for (const bucket of usageStatsTimeBuckets) {
     await subtractPostgresUsageStatsTimeBucket(
       client,
       bucket,
       [...timeEntries.values()].filter((entry) => entry.bucket.tableName === bucket.tableName),
-      updatedAt
+      normalizedUpdatedAt
     )
   }
-  await subtractPostgresUsageLatencyEntries(client, [...latencyEntries.values()], updatedAt)
-  await subtractPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
-  await subtractPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
-  await subtractPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
+  await subtractPostgresUsageLatencyEntries(client, [...latencyEntries.values()], normalizedUpdatedAt)
+  await subtractPostgresUsageModelEntries(client, [...modelEntries.values()], normalizedUpdatedAt)
+  await subtractPostgresUsageErrorEntries(client, [...errorEntries.values()], normalizedUpdatedAt)
+  await subtractPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], normalizedUpdatedAt)
   await deletePostgresAccountHealthRecords(client, accountHealthRecordIds)
-  await markPostgresDerivedWindowDirtyScopes(client, [...timeEntries.values()], updatedAt)
+  await markPostgresDerivedWindowDirtyScopes(client, [...timeEntries.values()], normalizedUpdatedAt)
 }
 
 async function markPostgresDerivedWindowDirtyScopes(
@@ -734,14 +741,14 @@ function addPostgresAggregatedAccountQualityEntry(
   existing.errorCount += success ? 0 : 1
   existing.firstTokenMsSum += firstTokenMs
   existing.firstTokenMsCount += hasFirstTokenSample ? 1 : 0
-  if (row.created_at > existing.lastSampleAt) {
+  if (compareUsageStatsTimestamp(row.created_at, existing.lastSampleAt) > 0) {
     existing.lastSampleAt = row.created_at
     existing.systemAccountId = statsSystemAccountId
     existing.providerCode = row.provider_code ?? 'unknown'
   }
   if (success) {
     existing.lastSuccessAt = maxOptionalIso(existing.lastSuccessAt, row.created_at)
-  } else if (!existing.lastErrorAt || row.created_at >= existing.lastErrorAt) {
+  } else if (existing.lastErrorAt === undefined || compareUsageStatsTimestamp(row.created_at, existing.lastErrorAt) >= 0) {
     existing.lastErrorAt = row.created_at
     existing.lastErrorMessage = row.error_message ?? undefined
   }
@@ -755,7 +762,7 @@ function addPostgresAggregatedAccountHealthEntry(
   if (row.traffic_source !== 'account_health_check' || !row.account_id) return
   const key = `${row.account_id}\u0000${statHour}`
   const existing = target.get(key)
-  if (existing && (existing.lastObservedAt > row.created_at || (existing.lastObservedAt === row.created_at && existing.lastRecordId >= row.id))) return
+  if (existing && (compareUsageStatsTimestamp(existing.lastObservedAt, row.created_at) > 0 || (compareUsageStatsTimestamp(existing.lastObservedAt, row.created_at) === 0 && existing.lastRecordId >= row.id))) return
   target.set(key, {
     accountId: row.account_id,
     systemAccountId: row.system_account_id,
@@ -1455,7 +1462,10 @@ async function postgresStatsJobState(client: DatabaseClient): Promise<{ cursorCr
     LIMIT 1
     FOR UPDATE
   `)
-  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+  return {
+    cursorCreatedAt: optionalUsageStatsCursorTimestamp(row?.cursor_created_at, '用量统计 cursor_created_at'),
+    cursorId: row?.cursor_id ?? ''
+  }
 }
 
 async function ensurePostgresStatsJobStateRow(client: DatabaseClient): Promise<void> {
@@ -1470,6 +1480,12 @@ async function updatePostgresStatsJobState(
   client: DatabaseClient,
   input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }
 ): Promise<void> {
+  const cursorCreatedAt = input.cursorCreatedAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.cursorCreatedAt, '用量统计 cursor_created_at')
+  const lastSuccessAt = input.lastSuccessAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.lastSuccessAt, '用量统计 last_success_at')
   await client.execute(`
     INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('global', '', 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
@@ -1480,7 +1496,7 @@ async function updatePostgresStatsJobState(
       last_error_message = EXCLUDED.last_error_message,
       lag_seconds = EXCLUDED.lag_seconds,
       updated_at = EXCLUDED.updated_at
-  `, [input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso()])
+  `, [cursorCreatedAt ?? null, input.cursorId ?? null, lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso()])
 }
 
 async function latestPostgresUsageRecordLagSeconds(client: DatabaseClient, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): Promise<number> {
@@ -1496,7 +1512,7 @@ async function latestPostgresUsageRecordLagSeconds(client: DatabaseClient, safeC
 }
 
 function postgresUsageStatsTimeKeys(row: UsageStatsRecordRow, timezone: string): UsageStatsTimeKeys {
-  const createdAt = new Date(row.created_at)
+  const createdAt = usageStatsRecordCreatedAt(row)
   return {
     statMinute: minuteKey(createdAt, timezone),
     statHour: hourKey(createdAt, timezone),
@@ -1506,9 +1522,14 @@ function postgresUsageStatsTimeKeys(row: UsageStatsRecordRow, timezone: string):
   }
 }
 
+function normalizeUsageStatsRecordRow(row: UsageStatsRecordRow): UsageStatsRecordRow {
+  const createdAt = canonicalUsageStatsRecordCreatedAt(row)
+  return row.created_at === createdAt ? row : { ...row, created_at: createdAt }
+}
+
 function normalizePostgresUsageStatsRecordRow(row: UsageStatsRecordRow): UsageStatsRecordRow {
   return {
-    ...row,
+    ...normalizeUsageStatsRecordRow(row),
     status_code: nullableNumber(row.status_code),
     success: Number(row.success ?? 0),
     first_token_ms: nullableNumber(row.first_token_ms),
@@ -1615,9 +1636,20 @@ function mergePostgresUsageStatsAccumulator(target: UsageStatsAccumulator, sourc
 }
 
 function maxOptionalIso(left?: string, right?: string): string | undefined {
-  if (!left) return right
-  if (!right) return left
-  return left >= right ? left : right
+  if (left === undefined) return right === undefined ? undefined : requiredRfc3339Instant(right, '用量统计聚合时间')
+  if (right === undefined) return requiredRfc3339Instant(left, '用量统计聚合时间')
+  return compareUsageStatsTimestamp(left, right) >= 0
+    ? requiredRfc3339Instant(left, '用量统计聚合时间')
+    : requiredRfc3339Instant(right, '用量统计聚合时间')
+}
+
+function compareUsageStatsTimestamp(left: string, right: string): number {
+  const leftMilliseconds = rfc3339InstantMilliseconds(left)
+  const rightMilliseconds = rfc3339InstantMilliseconds(right)
+  if (leftMilliseconds === undefined || rightMilliseconds === undefined) {
+    throw new Error('用量统计聚合时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return leftMilliseconds === rightMilliseconds ? 0 : leftMilliseconds > rightMilliseconds ? 1 : -1
 }
 
 function postgresUsageStatsEntryKey(systemAccountId: string, scopeType: string, scopeId: string): string {
@@ -1656,6 +1688,8 @@ interface UsageRankSnapshotContext {
   uniqueSystemAccountIds: string[]
   sourceWatermark?: string
   previousSourceWatermark?: string
+  sourceVersion?: string
+  previousSourceVersion?: string
 }
 
 export type UsageRankSnapshotStageName =
@@ -1689,6 +1723,16 @@ interface UsageRankSnapshotStage {
   sourceTables: UsageRankSnapshotSourceTable[]
   run: (database: DatabaseSync, context: UsageRankSnapshotContext) => void
   runInBackground?: (database: DatabaseSync, context: UsageRankSnapshotContext, options: UsageRankSnapshotBackgroundStageOptions) => Promise<void>
+}
+
+interface UsageRankSnapshotSourceState {
+  sourceWatermark: string
+  sourceVersion?: string
+}
+
+interface UsageRankSnapshotSourceVersionState {
+  sourceWatermark: string
+  sourceVersion: string
 }
 
 interface UsageRankSnapshotBackgroundStageOptions {
@@ -1762,9 +1806,11 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
       WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_quota_hourly_windows_expiry'
     `)
     if (expiryState?.cursor_id !== currentHour) {
-      const storedPreviousBoundary = expiryState?.cursor_created_at?.trim()
-      const parsedPreviousBoundaryMs = storedPreviousBoundary ? rfc3339InstantMilliseconds(storedPreviousBoundary) : undefined
-      if (storedPreviousBoundary && parsedPreviousBoundaryMs === undefined) {
+      const storedPreviousBoundary = expiryState?.cursor_created_at
+      const parsedPreviousBoundaryMs = storedPreviousBoundary === undefined || storedPreviousBoundary === null
+        ? undefined
+        : rfc3339InstantMilliseconds(storedPreviousBoundary)
+      if (storedPreviousBoundary !== undefined && storedPreviousBoundary !== null && parsedPreviousBoundaryMs === undefined) {
         throw new Error(`用量统计 expiry cursor_created_at 必须是带 Z 或数值 offset 的 RFC3339 时间：${storedPreviousBoundary}`)
       }
       const previousBoundaryMs = parsedPreviousBoundaryMs === undefined
@@ -2055,11 +2101,16 @@ export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRan
   const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
   const jobName = options.jobName ?? usageRankSnapshotDefaultJobName(stages)
   const startedAt = Date.now()
-  const sourceWatermark = options.skipIfUnchanged ? usageRankSnapshotSourceWatermark(database, stages) : undefined
+  const sourceState = options.skipIfUnchanged ? usageRankSnapshotSourceState(database, stages) : undefined
+  const sourceWatermark = sourceState?.sourceWatermark
   const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
     ? usageRankSnapshotRefreshJobState(database, jobName)
     : undefined
-  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+  const previousSourceVersion = sourceState?.sourceVersion === undefined
+    ? undefined
+    : usageRankSnapshotPreviousSourceVersion(database, jobName, previousState)
+  const sourceUnchanged = usageRankSnapshotSourceUnchanged(previousState, sourceState, context.todayKey, previousSourceVersion)
+  if (sourceUnchanged) {
     return {
       durationMs: Date.now() - startedAt,
       stages: [],
@@ -2070,9 +2121,13 @@ export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRan
       jobName
     }
   }
-  if (stages.length === 1 && previousState?.cursor_id === context.todayKey && previousState.cursor_created_at) {
+  if (stages.length === 1 && previousState?.cursor_id === context.todayKey && previousState.cursor_created_at && sourceWatermark !== undefined) {
     context.sourceWatermark = sourceWatermark
     context.previousSourceWatermark = previousState.cursor_created_at
+    if (sourceState?.sourceVersion !== undefined) {
+      context.sourceVersion = sourceState.sourceVersion
+      context.previousSourceVersion = previousSourceVersion
+    }
   }
   const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
   for (let index = 0; index < stages.length; index += 1) {
@@ -2089,6 +2144,7 @@ export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRan
   if (options.skipIfUnchanged && sourceWatermark !== undefined) {
     updateUsageRankSnapshotRefreshJobState(database, jobName, {
       sourceWatermark,
+      sourceVersion: sourceState?.sourceVersion,
       refreshDate: context.todayKey,
       lastSuccessAt: nowIso()
     })
@@ -2125,13 +2181,17 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
   const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
   const jobName = options.jobName ?? usageRankSnapshotDefaultJobName(stages)
   const startedAt = Date.now()
-  const sourceWatermark = options.skipIfUnchanged ? await usageRankSnapshotSourceWatermarkAsync(client, stages) : undefined
+  const sourceState = options.skipIfUnchanged ? await usageRankSnapshotSourceStateAsync(client, stages) : undefined
+  const sourceWatermark = sourceState?.sourceWatermark
   const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
     ? await usageRankSnapshotRefreshJobStateAsync(client, jobName)
     : undefined
   const context = await createUsageRankSnapshotContextAsync(client)
 
-  const sourceUnchanged = Boolean(previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey)
+  const previousSourceVersion = sourceState?.sourceVersion === undefined
+    ? undefined
+    : await usageRankSnapshotPreviousSourceVersionAsync(client, jobName, previousState)
+  const sourceUnchanged = usageRankSnapshotSourceUnchanged(previousState, sourceState, context.todayKey, previousSourceVersion)
   const hasPendingDerivedWork = sourceUnchanged && await usageRankSnapshotStagesHavePendingWorkAsync(client, stages)
   if (sourceUnchanged && !hasPendingDerivedWork) {
     return {
@@ -2144,9 +2204,13 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
       jobName
     }
   }
-  if (stages.length === 1 && previousState?.cursor_id === context.todayKey && previousState.cursor_created_at) {
+  if (stages.length === 1 && previousState?.cursor_id === context.todayKey && previousState.cursor_created_at && sourceWatermark !== undefined) {
     context.sourceWatermark = sourceWatermark
     context.previousSourceWatermark = previousState.cursor_created_at
+    if (sourceState?.sourceVersion !== undefined) {
+      context.sourceVersion = sourceState.sourceVersion
+      context.previousSourceVersion = previousSourceVersion
+    }
   }
 
   const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
@@ -2224,6 +2288,7 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
       await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
       await updateUsageRankSnapshotRefreshJobStateAsync(tx, jobName, {
         sourceWatermark,
+        sourceVersion: sourceState?.sourceVersion,
         refreshDate: context.todayKey,
         lastSuccessAt: nowIso()
       })
@@ -2262,33 +2327,71 @@ function usageRankSnapshotDefaultJobName(stages: UsageRankSnapshotStage[]): stri
   return `usage_rank_snapshots_refresh:${stages.map((stage) => stage.name).join('+')}`
 }
 
-function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageRankSnapshotStage[]): string {
-  if (stages.length === 1 && stages[0]?.name === 'system_metrics_trend_windows') {
-    return systemMetricsTrendSourceWatermark(database)
+function usageRankSnapshotSourceState(database: DatabaseSync, stages: UsageRankSnapshotStage[]): UsageRankSnapshotSourceState {
+  if (usageRankSnapshotUsesSystemMetricsSourceVersion(stages)) {
+    return systemMetricsTrendSourceState(database)
   }
+  return { sourceWatermark: usageRankSnapshotSourceWatermark(database, stages) }
+}
+
+async function usageRankSnapshotSourceStateAsync(client: DatabaseClient, stages: UsageRankSnapshotStage[]): Promise<UsageRankSnapshotSourceState> {
+  if (usageRankSnapshotUsesSystemMetricsSourceVersion(stages)) {
+    return await systemMetricsTrendSourceStateAsync(client)
+  }
+  return { sourceWatermark: await usageRankSnapshotSourceWatermarkAsync(client, stages) }
+}
+
+function usageRankSnapshotUsesSystemMetricsSourceVersion(stages: UsageRankSnapshotStage[]): boolean {
+  return stages.length === 1 && stages[0]?.name === 'system_metrics_trend_windows'
+}
+
+function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageRankSnapshotStage[]): string {
   const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
   let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
+  let watermarkMilliseconds = rfc3339InstantMilliseconds(watermark)
+  if (watermarkMilliseconds === undefined) {
+    throw new Error('用量排行快照 source watermark 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
   for (const table of sourceTables) {
-    const row = database.prepare(`SELECT MAX(updated_at) AS updated_at FROM ${table}`).get() as { updated_at?: string | null } | undefined
-    const updatedAt = row?.updated_at
-    if (typeof updatedAt === 'string' && updatedAt > watermark) {
-      watermark = updatedAt
+    const rows = database.prepare(`SELECT updated_at FROM ${table} WHERE updated_at IS NOT NULL`).all() as unknown as Array<{ updated_at?: unknown }>
+    for (const row of rows) {
+      const updatedAt = row.updated_at
+      if (updatedAt === undefined || updatedAt === null) continue
+      const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, `用量排行快照 ${table}.updated_at`)
+      const updatedAtMilliseconds = rfc3339InstantMilliseconds(normalizedUpdatedAt)
+      if (updatedAtMilliseconds === undefined) {
+        throw new Error(`用量排行快照 ${table}.updated_at必须是带 Z 或数值 offset 的 RFC3339 时间`)
+      }
+      if (updatedAtMilliseconds > watermarkMilliseconds) {
+        watermark = normalizedUpdatedAt
+        watermarkMilliseconds = updatedAtMilliseconds
+      }
     }
   }
   return watermark
 }
 
 async function usageRankSnapshotSourceWatermarkAsync(client: DatabaseClient, stages: UsageRankSnapshotStage[]): Promise<string> {
-  if (stages.length === 1 && stages[0]?.name === 'system_metrics_trend_windows') {
-    return await systemMetricsTrendSourceWatermarkAsync(client)
-  }
   const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
   let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
+  let watermarkMilliseconds = rfc3339InstantMilliseconds(watermark)
+  if (watermarkMilliseconds === undefined) {
+    throw new Error('用量排行快照 source watermark 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
   for (const table of sourceTables) {
-    const row = await client.one<{ updated_at?: string | null }>(`SELECT MAX(updated_at) AS updated_at FROM juhe_stats.${table}`)
-    const updatedAt = row?.updated_at
-    if (typeof updatedAt === 'string' && updatedAt > watermark) {
-      watermark = updatedAt
+    const rows = await client.query<{ updated_at?: unknown }>(`SELECT updated_at FROM juhe_stats.${table} WHERE updated_at IS NOT NULL`)
+    for (const row of rows) {
+      const updatedAt = row.updated_at
+      if (updatedAt === undefined || updatedAt === null) continue
+      const normalizedUpdatedAt = requiredRfc3339Instant(updatedAt, `用量排行快照 ${table}.updated_at`)
+      const updatedAtMilliseconds = rfc3339InstantMilliseconds(normalizedUpdatedAt)
+      if (updatedAtMilliseconds === undefined) {
+        throw new Error(`用量排行快照 ${table}.updated_at必须是带 Z 或数值 offset 的 RFC3339 时间`)
+      }
+      if (updatedAtMilliseconds > watermarkMilliseconds) {
+        watermark = normalizedUpdatedAt
+        watermarkMilliseconds = updatedAtMilliseconds
+      }
     }
   }
   return watermark
@@ -2315,41 +2418,154 @@ async function usageRankSnapshotStagesHavePendingWorkAsync(
 }
 
 function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
-  return database
+  return normalizeUsageRankSnapshotRefreshJobState(database
     .prepare('SELECT cursor_created_at, cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?')
-    .get(USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined
+    .get(USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined)
 }
 
 async function usageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string): Promise<StatsJobStateRow | undefined> {
-  return client.one<StatsJobStateRow>(
+  return normalizeUsageRankSnapshotRefreshJobState(await client.one<StatsJobStateRow>(
     'SELECT cursor_created_at, cursor_id, lag_seconds FROM juhe_stats.stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?',
     [USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName]
-  )
+  ))
 }
 
-function updateUsageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string, input: { sourceWatermark: string; refreshDate: string; lastSuccessAt: string }): void {
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = excluded.cursor_created_at,
-      cursor_id = excluded.cursor_id,
-      last_success_at = excluded.last_success_at,
-      last_error_message = NULL,
-      lag_seconds = NULL,
-      updated_at = excluded.updated_at
-  `).run(
-    USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE,
-    USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID,
-    jobName,
-    input.sourceWatermark,
-    input.refreshDate,
-    input.lastSuccessAt,
-    nowIso()
-  )
+function usageRankSnapshotSourceVersionState(database: DatabaseSync, jobName: string): UsageRankSnapshotSourceVersionState | undefined {
+  const row = database
+    .prepare('SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?')
+    .get(USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined
+  return normalizeUsageRankSnapshotSourceVersionState(row, jobName)
 }
 
-async function updateUsageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string, input: { sourceWatermark: string; refreshDate: string; lastSuccessAt: string }): Promise<void> {
+async function usageRankSnapshotSourceVersionStateAsync(client: DatabaseClient, jobName: string): Promise<UsageRankSnapshotSourceVersionState | undefined> {
+  const row = await client.one<StatsJobStateRow>(
+    'SELECT cursor_created_at, cursor_id FROM juhe_stats.stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?',
+    [USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID, jobName]
+  )
+  return normalizeUsageRankSnapshotSourceVersionState(row, jobName)
+}
+
+function usageRankSnapshotPreviousSourceVersion(
+  database: DatabaseSync,
+  jobName: string,
+  previousState: StatsJobStateRow | undefined
+): string | undefined {
+  const previousVersionState = usageRankSnapshotSourceVersionState(database, jobName)
+  return usageRankSnapshotPreviousSourceVersionFromState(jobName, previousState, previousVersionState)
+}
+
+async function usageRankSnapshotPreviousSourceVersionAsync(
+  client: DatabaseClient,
+  jobName: string,
+  previousState: StatsJobStateRow | undefined
+): Promise<string | undefined> {
+  const previousVersionState = await usageRankSnapshotSourceVersionStateAsync(client, jobName)
+  return usageRankSnapshotPreviousSourceVersionFromState(jobName, previousState, previousVersionState)
+}
+
+function usageRankSnapshotPreviousSourceVersionFromState(
+  jobName: string,
+  previousState: StatsJobStateRow | undefined,
+  previousVersionState: UsageRankSnapshotSourceVersionState | undefined
+): string | undefined {
+  if (!previousState) {
+    if (previousVersionState) {
+      throw new Error(`用量排行快照 sourceVersion 状态缺少主刷新状态: ${jobName}`)
+    }
+    return undefined
+  }
+  if (!previousState.cursor_created_at) {
+    throw new Error(`用量排行快照主刷新状态缺少 sourceWatermark: ${jobName}`)
+  }
+  if (!previousVersionState) {
+    throw new Error(`用量排行快照 sourceVersion 状态缺失: ${jobName}`)
+  }
+  if (previousVersionState.sourceWatermark !== previousState.cursor_created_at) {
+    throw new Error(`用量排行快照 sourceVersion 状态与主刷新水位不一致: ${jobName}`)
+  }
+  return previousVersionState.sourceVersion
+}
+
+function usageRankSnapshotSourceUnchanged(
+  previousState: StatsJobStateRow | undefined,
+  sourceState: UsageRankSnapshotSourceState | undefined,
+  refreshDate: string,
+  previousSourceVersion: string | undefined
+): boolean {
+  if (!previousState || !sourceState) return false
+  if (previousState.cursor_created_at !== sourceState.sourceWatermark || previousState.cursor_id !== refreshDate) return false
+  return sourceState.sourceVersion === undefined || previousSourceVersion === sourceState.sourceVersion
+}
+
+function updateUsageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string, input: { sourceWatermark: string; sourceVersion?: string; refreshDate: string; lastSuccessAt: string }): void {
+  const sourceWatermark = normalizeUsageRankSnapshotSourceWatermark(input.sourceWatermark)
+  const sourceVersion = input.sourceVersion === undefined
+    ? undefined
+    : requiredSystemMetricsTrendSourceVersion(input.sourceVersion, '用量排行快照 sourceVersion')
+  const lastSuccessAt = requiredRfc3339Instant(input.lastSuccessAt, '用量排行快照 lastSuccessAt')
+  const updatedAt = requiredRfc3339Instant(nowIso(), '用量排行快照状态 updatedAt')
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database.prepare(`
+      INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+      ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+        cursor_created_at = excluded.cursor_created_at,
+        cursor_id = excluded.cursor_id,
+        last_success_at = excluded.last_success_at,
+        last_error_message = NULL,
+        lag_seconds = NULL,
+        updated_at = excluded.updated_at
+    `).run(
+      USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE,
+      USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID,
+      jobName,
+      sourceWatermark,
+      input.refreshDate,
+      lastSuccessAt,
+      updatedAt
+    )
+    if (sourceVersion === undefined) {
+      database.prepare('DELETE FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?').run(
+        USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE,
+        USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID,
+        jobName
+      )
+    } else {
+      database.prepare(`
+        INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+          cursor_created_at = excluded.cursor_created_at,
+          cursor_id = excluded.cursor_id,
+          last_success_at = excluded.last_success_at,
+          last_error_message = NULL,
+          lag_seconds = NULL,
+          updated_at = excluded.updated_at
+      `).run(
+        USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE,
+        USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID,
+        jobName,
+        sourceWatermark,
+        sourceVersion,
+        lastSuccessAt,
+        updatedAt
+      )
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+async function updateUsageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string, input: { sourceWatermark: string; sourceVersion?: string; refreshDate: string; lastSuccessAt: string }): Promise<void> {
+  const sourceWatermark = normalizeUsageRankSnapshotSourceWatermark(input.sourceWatermark)
+  const sourceVersion = input.sourceVersion === undefined
+    ? undefined
+    : requiredSystemMetricsTrendSourceVersion(input.sourceVersion, '用量排行快照 sourceVersion')
+  const lastSuccessAt = requiredRfc3339Instant(input.lastSuccessAt, '用量排行快照 lastSuccessAt')
+  const updatedAt = requiredRfc3339Instant(nowIso(), '用量排行快照状态 updatedAt')
   await client.execute(`
     INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
@@ -2364,10 +2580,36 @@ async function updateUsageRankSnapshotRefreshJobStateAsync(client: DatabaseClien
     USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE,
     USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID,
     jobName,
-    input.sourceWatermark,
+    sourceWatermark,
     input.refreshDate,
-    input.lastSuccessAt,
-    nowIso()
+    lastSuccessAt,
+    updatedAt
+  ])
+  if (sourceVersion === undefined) {
+    await client.execute(
+      'DELETE FROM juhe_stats.stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?',
+      [USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID, jobName]
+    )
+    return
+  }
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      last_error_message = NULL,
+      lag_seconds = NULL,
+      updated_at = excluded.updated_at
+  `, [
+    USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE,
+    USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_ID,
+    jobName,
+    sourceWatermark,
+    sourceVersion,
+    lastSuccessAt,
+    updatedAt
   ])
 }
 
@@ -3258,11 +3500,56 @@ function usageStatsShardJobState(database: DatabaseSync, shardKey: string): { cu
   const row = database
     .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'usage_stats_aggregation'")
     .get(shardKey) as unknown as StatsJobStateRow | undefined
-  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+  return {
+    cursorCreatedAt: optionalUsageStatsCursorTimestamp(row?.cursor_created_at, '用量统计 cursor_created_at'),
+    cursorId: row?.cursor_id ?? ''
+  }
 }
 
 function usageStatsSafeCreatedBefore(): string {
   return new Date(Date.now() - USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS * 1000).toISOString()
+}
+
+function normalizedUsageStatsSafeCreatedBefore(value?: string): string {
+  return value === undefined
+    ? usageStatsSafeCreatedBefore()
+    : requiredRfc3339Instant(value, '用量统计 safeCreatedBefore')
+}
+
+function optionalUsageStatsCursorTimestamp(value: string | null | undefined, label: string): string {
+  if (value === undefined || value === null) return ''
+  return requiredRfc3339Instant(value, label)
+}
+
+function normalizeUsageRankSnapshotRefreshJobState(row: StatsJobStateRow | undefined): StatsJobStateRow | undefined {
+  if (!row) return undefined
+  return {
+    ...row,
+    cursor_created_at: row.cursor_created_at === null
+      ? null
+      : normalizeUsageRankSnapshotSourceWatermark(row.cursor_created_at)
+  }
+}
+
+function normalizeUsageRankSnapshotSourceVersionState(
+  row: StatsJobStateRow | undefined,
+  jobName: string
+): UsageRankSnapshotSourceVersionState | undefined {
+  if (!row) return undefined
+  if (row.cursor_created_at === null || row.cursor_created_at === undefined) {
+    throw new Error(`用量排行快照 sourceVersion 状态缺少 sourceWatermark: ${jobName}`)
+  }
+  if (row.cursor_id === null || row.cursor_id === undefined) {
+    throw new Error(`用量排行快照 sourceVersion 状态缺少 sourceVersion: ${jobName}`)
+  }
+  return {
+    sourceWatermark: normalizeUsageRankSnapshotSourceWatermark(row.cursor_created_at),
+    sourceVersion: requiredSystemMetricsTrendSourceVersion(row.cursor_id, `用量排行快照 sourceVersion 状态: ${jobName}`)
+  }
+}
+
+function normalizeUsageRankSnapshotSourceWatermark(value: string): string {
+  return requiredRfc3339Instant(value, '用量排行快照 sourceWatermark')
 }
 
 function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): number {
@@ -3284,8 +3571,13 @@ function latestCursor(
   next: { created_at: string; id: string }
 ): { created_at: string; id: string } {
   if (!current) return next
-  if (next.created_at > current.created_at) return next
-  if (next.created_at === current.created_at && next.id > current.id) return next
+  const currentMilliseconds = rfc3339InstantMilliseconds(current.created_at)
+  const nextMilliseconds = rfc3339InstantMilliseconds(next.created_at)
+  if (currentMilliseconds === undefined || nextMilliseconds === undefined) {
+    throw new Error('用量统计 cursor_created_at 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  if (nextMilliseconds > currentMilliseconds) return next
+  if (nextMilliseconds === currentMilliseconds && next.id > current.id) return next
   return current
 }
 
@@ -3351,6 +3643,12 @@ function boundedConsistencySampleLimit(value: number): number {
 }
 
 function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
+  const cursorCreatedAt = input.cursorCreatedAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.cursorCreatedAt, '用量统计 cursor_created_at')
+  const lastSuccessAt = input.lastSuccessAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.lastSuccessAt, '用量统计 last_success_at')
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('global', '', 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
@@ -3361,10 +3659,16 @@ function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: 
       last_error_message = excluded.last_error_message,
       lag_seconds = excluded.lag_seconds,
       updated_at = excluded.updated_at
-  `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
+  `).run(cursorCreatedAt ?? null, input.cursorId ?? null, lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
 }
 
 function updateUsageStatsShardJobState(database: DatabaseSync, location: UsageRecordShardLocation, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
+  const cursorCreatedAt = input.cursorCreatedAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.cursorCreatedAt, '用量统计 cursor_created_at')
+  const lastSuccessAt = input.lastSuccessAt === undefined
+    ? undefined
+    : requiredRfc3339Instant(input.lastSuccessAt, '用量统计 last_success_at')
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('usage_shard', ?, 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
@@ -3375,7 +3679,7 @@ function updateUsageStatsShardJobState(database: DatabaseSync, location: UsageRe
       last_error_message = excluded.last_error_message,
       lag_seconds = excluded.lag_seconds,
       updated_at = excluded.updated_at
-  `).run(location.shardKey, input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
+  `).run(location.shardKey, cursorCreatedAt ?? null, input.cursorId ?? null, lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
 }
 
 function statsLagSecondsFromCursor(cursorCreatedAt: string): number {

@@ -22,11 +22,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [{ createSystemApiApp }, databaseModule, repositories, usageRecordShards] = await Promise.all([
+const [{ createSystemApiApp }, databaseModule, repositories, usageRecordShards, usageRecordListQuery] = await Promise.all([
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/usage-record-shards.js')
+  import('../../storage/usage-record-shards.js'),
+  import('../../storage/usage-record-list-query.js')
 ])
 
 interface ApiEnvelope<T> {
@@ -50,6 +51,26 @@ interface UsageRecordListResult {
 }
 
 try {
+  const canonicalBoundaryFilters = usageRecordListQuery.buildUsageRecordFilters(undefined, {
+    startAt: '2026-08-09T09:00:00.004+09:00',
+    endAt: '2026-08-09T00:00:00.009-04:00'
+  })
+  assert.deepEqual(
+    canonicalBoundaryFilters.params,
+    ['2026-08-09T00:00:00.004Z', '2026-08-09T04:00:00.009Z'],
+    '使用记录列表时间边界必须 canonical 为 UTC 后再绑定 SQL'
+  )
+  assert.throws(
+    () => usageRecordListQuery.buildUsageRecordFilters(undefined, { startAt: '2026-08-09T09:00:00.004' }),
+    /RFC3339/,
+    '使用记录列表不得接受无 offset 的裸时间'
+  )
+  assert.throws(
+    () => usageRecordListQuery.buildUsageRecordFilters(undefined, { endAt: '' }),
+    /RFC3339/,
+    '使用记录列表 supplied 空时间必须拒绝，不能当作省略'
+  )
+
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
   const group = repositories.createGroup({
     name: '使用记录查询防护分组',

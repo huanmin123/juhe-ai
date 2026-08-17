@@ -1,5 +1,6 @@
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -96,16 +97,14 @@ export function usageSummaryFromAggregate(row: {
     outputImageTokens,
     totalTokens: inputTokens + outputTokens,
     totalCost: Number(row.total_cost ?? 0),
-    lastUsedAt: row.last_used_at ?? undefined
+    lastUsedAt: optionalUsageSummaryTimestamp(row.last_used_at, '统计聚合 last_used_at')
   }
 }
 
 export function addUsageSummaries(left: AccountUsageSummary | undefined, right: AccountUsageSummary | undefined): AccountUsageSummary {
   const leftUsage = left ?? emptyAccountUsageSummary()
   const rightUsage = right ?? emptyAccountUsageSummary()
-  const lastUsedAt = [leftUsage.lastUsedAt, rightUsage.lastUsedAt]
-    .filter((value): value is string => Boolean(value))
-    .sort((leftValue, rightValue) => Date.parse(rightValue) - Date.parse(leftValue))[0]
+  const lastUsedAt = latestUsageSummaryTimestamp(leftUsage.lastUsedAt, rightUsage.lastUsedAt)
   return {
     requestCount: leftUsage.requestCount + rightUsage.requestCount,
     inputTokens: leftUsage.inputTokens + rightUsage.inputTokens,
@@ -328,6 +327,29 @@ function requiredAggregateNumber(value: unknown, field: string): number {
   return value
 }
 
+function optionalUsageSummaryTimestamp(value: string | null | undefined, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
+}
+
+function latestUsageSummaryTimestamp(...values: Array<string | undefined>): string | undefined {
+  let latest: string | undefined
+  let latestMilliseconds: number | undefined
+  for (const value of values) {
+    if (value === undefined) continue
+    const normalized = requiredRfc3339Instant(value, '统计聚合 last_used_at')
+    const milliseconds = rfc3339InstantMilliseconds(normalized)
+    if (milliseconds === undefined) {
+      throw new Error('统计聚合 last_used_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+    }
+    if (latestMilliseconds === undefined || milliseconds > latestMilliseconds) {
+      latest = normalized
+      latestMilliseconds = milliseconds
+    }
+  }
+  return latest
+}
+
 export function clearUsageStatsTimezoneCache(): void {
   cachedUsageStatsTimezone = undefined
 }
@@ -440,14 +462,8 @@ function zonedDateParts(date: Date, timezone: string): DateParts {
       hour: Number(value('hour')),
       minute: Number(value('minute'))
     }
-  } catch {
-    return {
-      year: date.getFullYear(),
-      month: date.getMonth() + 1,
-      day: date.getDate(),
-      hour: date.getHours(),
-      minute: date.getMinutes()
-    }
+  } catch (error) {
+    throw new Error(`统计时区 ${timezone || DEFAULT_USAGE_STATS_TIMEZONE} 无效：${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

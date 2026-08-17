@@ -18,11 +18,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, usageStatsRepository, usageStatsHelpers, usageStatsWindowHelpers] = await Promise.all([
+const [databaseModule, usageStatsRepository, usageStatsHelpers, usageStatsWindowHelpers, systemMetricsRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/usage-stats-helpers.js'),
-  import('../../storage/usage-stats-window-helpers.js')
+  import('../../storage/usage-stats-window-helpers.js'),
+  import('../../storage/system-metrics.repository.js')
 ])
 
 const jobName = 'system-metrics-trend-windows-refresh-incremental-regression'
@@ -44,6 +45,12 @@ try {
 
   seedSamples(yesterdayHour, timezone, 10, 15)
   seedSamples(todayHour, timezone, 20, 25)
+  const initialSourceState = systemMetricsRepository.systemMetricsTrendSourceState(database)
+  const initialSourceWatermark = initialSourceState.sourceWatermark
+  assert.match(initialSourceWatermark, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, '系统指标源水位必须是独立 canonical UTC 时间')
+  assert(!initialSourceWatermark.includes('|'), '系统指标源水位不得拼接 digest 或其他复合字段')
+  assert.equal(systemMetricsRepository.systemMetricsTrendSourceWatermark(database), initialSourceWatermark, '水位读取接口应保持纯 RFC3339 语义')
+  assert.match(initialSourceState.sourceVersion, /^v2:[a-f0-9]{64}$/, '系统指标源版本应使用独立摘要字段')
 
   const first = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
@@ -54,6 +61,7 @@ try {
   assert.equal(first.skipped, false, '首次系统指标趋势刷新不应跳过')
   assert.ok(systemTrendUpdatedAt(yesterday, yesterday), '首次刷新应生成昨日系统趋势窗口')
   assert.ok(processTrendUpdatedAt(yesterday, yesterday), '首次刷新应生成昨日进程趋势窗口')
+  assertRefreshState(jobName, initialSourceState.sourceWatermark, today, initialSourceState.sourceVersion)
 
   database.prepare('UPDATE system_metrics_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare('UPDATE process_event_loop_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
@@ -105,33 +113,37 @@ try {
   })
   assert.equal(skipped.skipped, true, '系统指标源水位不变时应跳过')
 
+  const sourceStateBeforeSameMillisecondTie = systemMetricsRepository.systemMetricsTrendSourceState(database)
   database.prepare('UPDATE system_metrics_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare('UPDATE process_event_loop_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare(`
-    INSERT INTO process_event_loop_hourly (
-      stat_hour, process_role, sample_count, event_loop_lag_ms_sum,
-      event_loop_lag_ms_count, event_loop_lag_ms_max, updated_at
-    ) VALUES (?, 'stats-worker', 1, 35, 1, 35, ?)
-  `).run(todayHour, changedSourceUpdatedAt)
+    UPDATE system_metrics_hourly
+    SET cpu_percent_sum = 70,
+      cpu_percent_max = 70,
+      updated_at = ?
+    WHERE stat_hour = ?
+  `).run(changedSourceUpdatedAt, todayHour)
   const sameMillisecondTieRefresh = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
     skipIfUnchanged: true,
     jobName,
     yieldToEventLoop: async () => {}
   })
-  assert.equal(sameMillisecondTieRefresh.skipped, false, '同毫秒新增源行时 MAX(updated_at) 未变化也必须刷新')
-  assert.equal(processTrendUpdatedAt(yesterday, yesterday), sentinelUpdatedAt, '同毫秒 tie 刷新不应重写昨日窗口')
-  const tieOverview = usageStatsRepository.getSystemMetricsOverview({
+  const sourceStateAfterSameMillisecondTie = systemMetricsRepository.systemMetricsTrendSourceState(database)
+  assert.equal(sameMillisecondTieRefresh.skipped, false, '同一 updated_at 下源行内容变化不应跳过')
+  assert.equal(sameMillisecondTieRefresh.sourceWatermark, changedSourceUpdatedAt, '同毫秒变化不得污染纯 sourceWatermark')
+  assert.equal(sourceStateAfterSameMillisecondTie.sourceWatermark, sourceStateBeforeSameMillisecondTie.sourceWatermark, '同毫秒变化的时间水位应保持不变')
+  assert.notEqual(sourceStateAfterSameMillisecondTie.sourceVersion, sourceStateBeforeSameMillisecondTie.sourceVersion, '同毫秒变化必须更新独立 sourceVersion')
+  assert.equal(refreshedWindowCount('system_metrics_trend_windows'), 31, '同毫秒变化应重写受影响的系统趋势范围')
+  assert.equal(refreshedWindowCount('process_event_loop_trend_windows'), 31, '同毫秒变化应重写受影响的进程趋势范围')
+  assertRefreshState(jobName, changedSourceUpdatedAt, today, sourceStateAfterSameMillisecondTie.sourceVersion)
+  const sameMillisecondTieOverview = usageStatsRepository.getSystemMetricsOverview({
     startDate: today,
     endDate: today,
     days: 1,
     maxDays: 31
   })
-  assert.equal(
-    tieOverview.processEventLoopTrend.find((row) => row.statHour === todayHour && row.processRole === 'stats-worker')?.eventLoopLagMsAvg,
-    35,
-    '同毫秒 tie 指纹变化应刷新新增进程角色'
-  )
+  assert.equal(sameMillisecondTieOverview.hourlyTrend.find((row) => row.statHour === todayHour)?.cpuPercentAvg, 70, '同毫秒变化应刷新系统趋势聚合')
 
   database.prepare('UPDATE system_metrics_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare('UPDATE process_event_loop_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
@@ -152,7 +164,7 @@ try {
 
   database.prepare('UPDATE system_metrics_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare('UPDATE process_event_loop_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
-  database.prepare('UPDATE stats_job_state SET cursor_id = ? WHERE job_name = ?').run(yesterday, jobName)
+  database.prepare("UPDATE stats_job_state SET cursor_id = ? WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?").run(yesterday, jobName)
   const dateRolloverRefresh = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
     skipIfUnchanged: true,
@@ -165,7 +177,13 @@ try {
 
   database.prepare('UPDATE system_metrics_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare('UPDATE process_event_loop_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
-  database.prepare('UPDATE stats_job_state SET cursor_created_at = ? WHERE job_name = ?').run(rollbackWatermark, jobName)
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = ?
+    WHERE scope_type IN ('global', 'usage_rank_snapshot_source_version')
+      AND scope_id = ''
+      AND job_name = ?
+  `).run(rollbackWatermark, jobName)
   const rollbackRefresh = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
     skipIfUnchanged: true,
@@ -176,7 +194,56 @@ try {
   assert.notEqual(systemTrendUpdatedAt(yesterday, yesterday), sentinelUpdatedAt, '水位倒退全量回退应重写昨日系统趋势窗口')
   assert.notEqual(processTrendUpdatedAt(yesterday, yesterday), sentinelUpdatedAt, '水位倒退全量回退应重写昨日进程趋势窗口')
 
-  console.log('系统指标趋势窗口增量回归通过：同日按变更日期刷新，同毫秒 tie 不漏刷，范围外变化不全量，水位倒退安全回退')
+  const missingVersionJobName = `${jobName}:missing-version`
+  await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName: missingVersionJobName,
+    yieldToEventLoop: async () => {}
+  })
+  database.prepare(`
+    DELETE FROM stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version'
+      AND scope_id = ''
+      AND job_name = ?
+  `).run(missingVersionJobName)
+  await assert.rejects(
+    usageStatsRepository.refreshUsageRankSnapshotsInStages({
+      stageNames,
+      skipIfUnchanged: true,
+      jobName: missingVersionJobName,
+      yieldToEventLoop: async () => {}
+    }),
+    /sourceVersion 状态缺失/,
+    '缺失的独立 sourceVersion 状态必须可见失败'
+  )
+
+  const invalidVersionJobName = `${jobName}:invalid-version`
+  await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName: invalidVersionJobName,
+    yieldToEventLoop: async () => {}
+  })
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_id = 'not-a-source-version'
+    WHERE scope_type = 'usage_rank_snapshot_source_version'
+      AND scope_id = ''
+      AND job_name = ?
+  `).run(invalidVersionJobName)
+  await assert.rejects(
+    usageStatsRepository.refreshUsageRankSnapshotsInStages({
+      stageNames,
+      skipIfUnchanged: true,
+      jobName: invalidVersionJobName,
+      yieldToEventLoop: async () => {}
+    }),
+    /sourceVersion 状态.*64 位小写十六进制摘要/,
+    '非法的独立 sourceVersion 状态必须可见失败'
+  )
+
+  console.log('系统指标趋势窗口增量回归通过：纯 canonical 水位与独立 sourceVersion、同毫秒变更、范围外变化、日期变更和水位倒退均正确处理')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -243,4 +310,26 @@ function refreshedWindowCount(tableName: string): number {
     WHERE updated_at <> ?
   `).get(sentinelUpdatedAt) as { count?: number } | undefined
   return Number(row?.count ?? 0)
+}
+
+function assertRefreshState(jobName: string, sourceWatermark: string, refreshDate: string, sourceVersion: string): void {
+  const database = databaseModule.getStatsDatabase()
+  const mainState = database.prepare(`
+    SELECT cursor_created_at, cursor_id
+    FROM stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).get(jobName) as { cursor_created_at?: string; cursor_id?: string } | undefined
+  assert.equal(mainState?.cursor_created_at, sourceWatermark, '主刷新状态 cursor_created_at 必须仅保存 sourceWatermark')
+  assert.equal(mainState?.cursor_id, refreshDate, '主刷新状态 cursor_id 必须保留 refreshDate 语义')
+  assert.match(mainState?.cursor_created_at ?? '', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, '主刷新状态时间必须是 canonical UTC')
+  assert(!mainState?.cursor_created_at?.includes('|'), '主刷新状态时间字段不得混入版本摘要')
+
+  const versionState = database.prepare(`
+    SELECT cursor_created_at, cursor_id
+    FROM stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = ?
+  `).get(jobName) as { cursor_created_at?: string; cursor_id?: string } | undefined
+  assert.equal(versionState?.cursor_created_at, sourceWatermark, '独立版本状态仍必须用 canonical 水位关联主状态')
+  assert.equal(versionState?.cursor_id, sourceVersion, '独立版本状态必须保存 sourceVersion')
+  assert.match(versionState?.cursor_id ?? '', /^v2:[a-f0-9]{64}$/, '独立版本状态不得写入时间字段或裸文本')
 }

@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { processEventLoopRoleFromUnknown, type ProcessEventLoopRole } from '../shared/process-event-loop-monitor.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { AccountUsageStatsRange } from '../domain/types.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -32,7 +33,8 @@ const PROCESS_EVENT_LOOP_ROLES: ProcessEventLoopRole[] = [
 ]
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
 const PROCESS_EVENT_LOOP_LATEST_FRESHNESS_MS = 2 * 60 * 1000
-const SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
+const SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK = '0001-01-01T00:00:00.000Z'
+const SYSTEM_METRICS_SOURCE_VERSION_PATTERN = /^v2:[a-f0-9]{64}$/
 
 export interface SystemMetricsTrendWindowSnapshotContext {
   ranges: AccountUsageStatsRange[]
@@ -41,6 +43,20 @@ export interface SystemMetricsTrendWindowSnapshotContext {
   updatedAt: string
   sourceWatermark?: string
   previousSourceWatermark?: string
+  sourceVersion?: string
+  previousSourceVersion?: string
+}
+
+export interface SystemMetricsTrendSourceState {
+  sourceWatermark: string
+  sourceVersion: string
+}
+
+export function requiredSystemMetricsTrendSourceVersion(value: unknown, label = '系统指标 sourceVersion'): string {
+  if (typeof value !== 'string' || !SYSTEM_METRICS_SOURCE_VERSION_PATTERN.test(value)) {
+    throw new Error(`${label}必须是 v2: 后跟 64 位小写十六进制摘要`)
+  }
+  return value
 }
 
 export function refreshSystemMetricsTrendWindowSnapshotsStage(database: DatabaseSync, context: SystemMetricsTrendWindowSnapshotContext): void {
@@ -84,80 +100,94 @@ function systemMetricsTrendWindowRefresh(
   database: DatabaseSync,
   context: SystemMetricsTrendWindowSnapshotContext
 ): SystemMetricsTrendWindowRefresh {
-  const previousUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.previousSourceWatermark)
-  const sourceUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.sourceWatermark)
-  if (!previousUpdatedAt || !sourceUpdatedAt || sourceUpdatedAt < previousUpdatedAt) {
+  const incrementalState = systemMetricsTrendIncrementalSourceState(context)
+  if (!incrementalState || incrementalState.sourceWatermark.milliseconds < incrementalState.previousSourceWatermark.milliseconds) {
     return { ranges: context.ranges, full: true }
   }
-  if (context.sourceWatermark === context.previousSourceWatermark) {
+  if (
+    incrementalState.sourceWatermark.milliseconds === incrementalState.previousSourceWatermark.milliseconds
+    && incrementalState.sourceVersion === incrementalState.previousSourceVersion
+  ) {
     return { ranges: [], full: false }
   }
-  const updatedAtOperator = sourceUpdatedAt === previousUpdatedAt ? '>=' : '>'
+  const includePreviousWatermark = incrementalState.sourceWatermark.milliseconds === incrementalState.previousSourceWatermark.milliseconds
   const changedDates = database.prepare(`
-    SELECT stat_date
+    SELECT stat_date, updated_at
     FROM (
-      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date, updated_at
       FROM system_metrics_hourly
-      WHERE updated_at ${updatedAtOperator} ?
+      WHERE updated_at IS NOT NULL
         AND stat_hour >= ?
         AND stat_hour <= ?
       UNION
-      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date, updated_at
       FROM process_event_loop_hourly
-      WHERE updated_at ${updatedAtOperator} ?
+      WHERE updated_at IS NOT NULL
         AND stat_hour >= ?
         AND stat_hour <= ?
     ) changed_dates
     ORDER BY stat_date ASC
   `).all(
-    previousUpdatedAt,
     `${context.earliestDate}T00`,
     `${context.todayKey}T23`,
-    previousUpdatedAt,
     `${context.earliestDate}T00`,
     `${context.todayKey}T23`
-  ) as unknown as Array<{ stat_date?: string | null }>
-  return systemMetricsTrendWindowRefreshForChangedDates(context, changedDates.map((row) => row.stat_date))
+  ) as unknown as Array<{ stat_date?: string | null; updated_at?: unknown }>
+  return systemMetricsTrendWindowRefreshForChangedDates(
+    context,
+    systemMetricsTrendChangedDateValues(
+      changedDates,
+      incrementalState.previousSourceWatermark.milliseconds,
+      includePreviousWatermark
+    )
+  )
 }
 
 async function systemMetricsTrendWindowRefreshAsync(
   client: DatabaseClient,
   context: SystemMetricsTrendWindowSnapshotContext
 ): Promise<SystemMetricsTrendWindowRefresh> {
-  const previousUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.previousSourceWatermark)
-  const sourceUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.sourceWatermark)
-  if (!previousUpdatedAt || !sourceUpdatedAt || sourceUpdatedAt < previousUpdatedAt) {
+  const incrementalState = systemMetricsTrendIncrementalSourceState(context)
+  if (!incrementalState || incrementalState.sourceWatermark.milliseconds < incrementalState.previousSourceWatermark.milliseconds) {
     return { ranges: context.ranges, full: true }
   }
-  if (context.sourceWatermark === context.previousSourceWatermark) {
+  if (
+    incrementalState.sourceWatermark.milliseconds === incrementalState.previousSourceWatermark.milliseconds
+    && incrementalState.sourceVersion === incrementalState.previousSourceVersion
+  ) {
     return { ranges: [], full: false }
   }
-  const updatedAtOperator = sourceUpdatedAt === previousUpdatedAt ? '>=' : '>'
-  const changedDates = await client.query<{ stat_date?: string | null }>(`
-    SELECT stat_date
+  const includePreviousWatermark = incrementalState.sourceWatermark.milliseconds === incrementalState.previousSourceWatermark.milliseconds
+  const changedDates = await client.query<{ stat_date?: string | null; updated_at?: unknown }>(`
+    SELECT stat_date, updated_at
     FROM (
-      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date, updated_at
       FROM ${statsTable(client, 'system_metrics_hourly')}
-      WHERE updated_at ${updatedAtOperator} ?
+      WHERE updated_at IS NOT NULL
         AND stat_hour >= ?
         AND stat_hour <= ?
       UNION
-      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date, updated_at
       FROM ${statsTable(client, 'process_event_loop_hourly')}
-      WHERE updated_at ${updatedAtOperator} ?
+      WHERE updated_at IS NOT NULL
         AND stat_hour >= ?
         AND stat_hour <= ?
     ) changed_dates
     ORDER BY stat_date ASC
   `, [
-    previousUpdatedAt,
     `${context.earliestDate}T00`,
     `${context.todayKey}T23`,
-    previousUpdatedAt,
     `${context.earliestDate}T00`,
     `${context.todayKey}T23`
   ])
-  return systemMetricsTrendWindowRefreshForChangedDates(context, changedDates.map((row) => row.stat_date))
+  return systemMetricsTrendWindowRefreshForChangedDates(
+    context,
+    systemMetricsTrendChangedDateValues(
+      changedDates,
+      incrementalState.previousSourceWatermark.milliseconds,
+      includePreviousWatermark
+    )
+  )
 }
 
 function systemMetricsTrendWindowRefreshForChangedDates(
@@ -172,75 +202,124 @@ function systemMetricsTrendWindowRefreshForChangedDates(
   return { ranges, full: false }
 }
 
-function systemMetricsTrendSourceWatermarkUpdatedAt(watermark?: string): string | undefined {
-  if (!watermark) return undefined
-  const [updatedAt] = watermark.split('|', 1)
-  return updatedAt || undefined
+interface SystemMetricsTrendSourceWatermarkValue {
+  value: string
+  milliseconds: number
+}
+
+interface SystemMetricsTrendIncrementalSourceState {
+  previousSourceWatermark: SystemMetricsTrendSourceWatermarkValue
+  sourceWatermark: SystemMetricsTrendSourceWatermarkValue
+  previousSourceVersion: string
+  sourceVersion: string
+}
+
+function systemMetricsTrendIncrementalSourceState(
+  context: SystemMetricsTrendWindowSnapshotContext
+): SystemMetricsTrendIncrementalSourceState | undefined {
+  const previousSourceWatermark = systemMetricsTrendSourceWatermarkUpdatedAt(context.previousSourceWatermark, '系统指标 previousSourceWatermark')
+  const sourceWatermark = systemMetricsTrendSourceWatermarkUpdatedAt(context.sourceWatermark, '系统指标 sourceWatermark')
+  if (previousSourceWatermark === undefined && sourceWatermark === undefined) return undefined
+  if (previousSourceWatermark === undefined || sourceWatermark === undefined) {
+    throw new Error('系统指标增量刷新必须同时提供 previousSourceWatermark 和 sourceWatermark')
+  }
+  if (context.previousSourceVersion === undefined || context.sourceVersion === undefined) {
+    throw new Error('系统指标增量刷新必须同时提供 previousSourceVersion 和 sourceVersion')
+  }
+  return {
+    previousSourceWatermark,
+    sourceWatermark,
+    previousSourceVersion: requiredSystemMetricsTrendSourceVersion(context.previousSourceVersion, '系统指标 previousSourceVersion'),
+    sourceVersion: requiredSystemMetricsTrendSourceVersion(context.sourceVersion, '系统指标 sourceVersion')
+  }
+}
+
+function systemMetricsTrendSourceWatermarkUpdatedAt(
+  watermark: string | undefined,
+  label: string
+): SystemMetricsTrendSourceWatermarkValue | undefined {
+  if (watermark === undefined) return undefined
+  const value = requiredRfc3339Instant(watermark, label)
+  const milliseconds = rfc3339InstantMilliseconds(value)
+  if (milliseconds === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return { value, milliseconds }
+}
+
+function systemMetricsTrendChangedDateValues(
+  rows: Array<{ stat_date?: string | null; updated_at?: unknown }>,
+  previousWatermarkMilliseconds: number,
+  includePreviousWatermark: boolean
+): Array<string | null | undefined> {
+  return rows.flatMap((row) => {
+    const updatedAt = requiredRfc3339Instant(row.updated_at, '系统指标趋势窗口源 updated_at')
+    const updatedAtMilliseconds = rfc3339InstantMilliseconds(updatedAt)
+    if (updatedAtMilliseconds === undefined) {
+      throw new Error('系统指标趋势窗口源 updated_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+    }
+    const changed = includePreviousWatermark
+      ? updatedAtMilliseconds >= previousWatermarkMilliseconds
+      : updatedAtMilliseconds > previousWatermarkMilliseconds
+    return changed ? [row.stat_date] : []
+  })
 }
 
 export function systemMetricsTrendSourceWatermark(database: DatabaseSync): string {
   const updatedAt = systemMetricsTrendMaxUpdatedAt([
-    database.prepare('SELECT MAX(updated_at) AS updated_at FROM system_metrics_hourly').get() as { updated_at?: string | null } | undefined,
-    database.prepare('SELECT MAX(updated_at) AS updated_at FROM process_event_loop_hourly').get() as { updated_at?: string | null } | undefined
+    ...(database.prepare('SELECT updated_at FROM system_metrics_hourly WHERE updated_at IS NOT NULL').all() as unknown as Array<{ updated_at?: string | null }>),
+    ...(database.prepare('SELECT updated_at FROM process_event_loop_hourly WHERE updated_at IS NOT NULL').all() as unknown as Array<{ updated_at?: string | null }>)
   ])
-  if (updatedAt === SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK) return updatedAt
-  const systemRows = database.prepare(`
-    SELECT *
-    FROM system_metrics_hourly
-    WHERE updated_at = ?
-    ORDER BY stat_hour ASC
-  `).all(updatedAt) as unknown as Array<Record<string, unknown>>
-  const processRows = database.prepare(`
-    SELECT *
-    FROM process_event_loop_hourly
-    WHERE updated_at = ?
-    ORDER BY stat_hour ASC, process_role ASC
-  `).all(updatedAt) as unknown as Array<Record<string, unknown>>
-  return systemMetricsTrendWatermarkWithTieDigest(updatedAt, systemRows, processRows)
-}
-
-export async function systemMetricsTrendSourceWatermarkAsync(client: DatabaseClient): Promise<string> {
-  const [systemMaxRow, processMaxRow] = await Promise.all([
-    client.one<{ updated_at?: string | null }>(`SELECT MAX(updated_at) AS updated_at FROM ${statsTable(client, 'system_metrics_hourly')}`),
-    client.one<{ updated_at?: string | null }>(`SELECT MAX(updated_at) AS updated_at FROM ${statsTable(client, 'process_event_loop_hourly')}`)
-  ])
-  const updatedAt = systemMetricsTrendMaxUpdatedAt([systemMaxRow, processMaxRow])
-  if (updatedAt === SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK) return updatedAt
-  const [systemRows, processRows] = await Promise.all([
-    client.query<Record<string, unknown>>(`
-      SELECT *
-      FROM ${statsTable(client, 'system_metrics_hourly')}
-      WHERE updated_at = ?
-      ORDER BY stat_hour ASC
-    `, [updatedAt]),
-    client.query<Record<string, unknown>>(`
-      SELECT *
-      FROM ${statsTable(client, 'process_event_loop_hourly')}
-      WHERE updated_at = ?
-      ORDER BY stat_hour ASC, process_role ASC
-    `, [updatedAt])
-  ])
-  return systemMetricsTrendWatermarkWithTieDigest(updatedAt, systemRows, processRows)
-}
-
-function systemMetricsTrendMaxUpdatedAt(rows: Array<{ updated_at?: string | null } | undefined>): string {
-  let updatedAt = SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK
-  for (const row of rows) {
-    if (typeof row?.updated_at === 'string' && row.updated_at > updatedAt) updatedAt = row.updated_at
-  }
   return updatedAt
 }
 
-function systemMetricsTrendWatermarkWithTieDigest(
-  updatedAt: string,
+export async function systemMetricsTrendSourceWatermarkAsync(client: DatabaseClient): Promise<string> {
+  const [systemRows, processRows] = await Promise.all([
+    client.query<{ updated_at?: string | null }>(`SELECT updated_at FROM ${statsTable(client, 'system_metrics_hourly')} WHERE updated_at IS NOT NULL`),
+    client.query<{ updated_at?: string | null }>(`SELECT updated_at FROM ${statsTable(client, 'process_event_loop_hourly')} WHERE updated_at IS NOT NULL`)
+  ])
+  const updatedAt = systemMetricsTrendMaxUpdatedAt([...systemRows, ...processRows])
+  return updatedAt
+}
+
+export function systemMetricsTrendSourceState(database: DatabaseSync): SystemMetricsTrendSourceState {
+  const systemRows = database.prepare('SELECT * FROM system_metrics_hourly ORDER BY stat_hour ASC').all() as unknown as Array<Record<string, unknown>>
+  const processRows = database.prepare('SELECT * FROM process_event_loop_hourly ORDER BY stat_hour ASC, process_role ASC').all() as unknown as Array<Record<string, unknown>>
+  return systemMetricsTrendSourceStateFromRows(systemRows, processRows)
+}
+
+export async function systemMetricsTrendSourceStateAsync(client: DatabaseClient): Promise<SystemMetricsTrendSourceState> {
+  const [systemRows, processRows] = await Promise.all([
+    client.query<Record<string, unknown>>(`SELECT * FROM ${statsTable(client, 'system_metrics_hourly')} ORDER BY stat_hour ASC`),
+    client.query<Record<string, unknown>>(`SELECT * FROM ${statsTable(client, 'process_event_loop_hourly')} ORDER BY stat_hour ASC, process_role ASC`)
+  ])
+  return systemMetricsTrendSourceStateFromRows(systemRows, processRows)
+}
+
+function systemMetricsTrendSourceStateFromRows(
   systemRows: Array<Record<string, unknown>>,
   processRows: Array<Record<string, unknown>>
-): string {
-  const digest = createHash('sha256')
-    .update(stableWatermarkRows('system_metrics_hourly', systemRows))
-    .update(stableWatermarkRows('process_event_loop_hourly', processRows))
-    .digest('hex')
-  return `${updatedAt}|v2:${digest}`
+): SystemMetricsTrendSourceState {
+  const sourceWatermark = systemMetricsTrendMaxUpdatedAt([...systemRows, ...processRows])
+  const sourceVersion = `v2:${createHash('sha256')
+    .update(stableWatermarkRows('system_metrics_hourly', systemMetricsTrendRowsAtWatermark(systemRows, sourceWatermark)))
+    .update(stableWatermarkRows('process_event_loop_hourly', systemMetricsTrendRowsAtWatermark(processRows, sourceWatermark)))
+    .digest('hex')}`
+  return {
+    sourceWatermark,
+    sourceVersion: requiredSystemMetricsTrendSourceVersion(sourceVersion)
+  }
+}
+
+function systemMetricsTrendRowsAtWatermark(
+  rows: Array<Record<string, unknown>>,
+  sourceWatermark: string
+): Array<Record<string, unknown>> {
+  return rows.filter((row) => {
+    const updatedAt = row.updated_at
+    if (updatedAt === undefined || updatedAt === null) return false
+    return requiredRfc3339Instant(updatedAt, '系统指标 updated_at') === sourceWatermark
+  })
 }
 
 function stableWatermarkRows(tableName: string, rows: Array<Record<string, unknown>>): string {
@@ -254,6 +333,27 @@ function stableWatermarkValue(value: unknown): unknown {
   if (typeof value === 'bigint') return value.toString()
   if (value instanceof Date) return value.toISOString()
   return value
+}
+
+function systemMetricsTrendMaxUpdatedAt(rows: Array<{ updated_at?: unknown } | undefined>): string {
+  let updatedAt = SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK
+  let updatedAtMilliseconds = rfc3339InstantMilliseconds(updatedAt)
+  if (updatedAtMilliseconds === undefined) {
+    throw new Error('系统指标空 sourceWatermark 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  for (const row of rows) {
+    if (row?.updated_at === undefined || row.updated_at === null) continue
+    const normalizedUpdatedAt = requiredRfc3339Instant(row.updated_at, '系统指标 updated_at')
+    const normalizedUpdatedAtMilliseconds = rfc3339InstantMilliseconds(normalizedUpdatedAt)
+    if (normalizedUpdatedAtMilliseconds === undefined) {
+      throw new Error('系统指标 updated_at 必须是带 Z 或数值 offset 的 RFC3339 时间')
+    }
+    if (normalizedUpdatedAtMilliseconds > updatedAtMilliseconds) {
+      updatedAt = normalizedUpdatedAt
+      updatedAtMilliseconds = normalizedUpdatedAtMilliseconds
+    }
+  }
+  return updatedAt
 }
 
 function systemMetricsTrendWindowBounds(
