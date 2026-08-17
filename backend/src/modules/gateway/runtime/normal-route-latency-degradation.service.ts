@@ -502,12 +502,28 @@ async function loadLatencyStateGeneration(): Promise<string> {
 }
 
 async function loadLatencyGenerationEvent(): Promise<NormalRouteLatencyGenerationEvent | undefined> {
-  const event = await latencyStateStore.getJson<unknown>(latencyStateGenerationKey)
-  if (event === undefined) return undefined
-  if (!isNormalRouteLatencyGenerationEvent(event)) {
-    throw new Error('普通路由速度优先 runtime-state generation event publishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+  for (let attempt = 0; attempt < latencyStateGenerationCasMaxAttempts; attempt += 1) {
+    const event = await latencyStateStore.getJson<unknown>(latencyStateGenerationKey)
+    if (event === undefined) return undefined
+    if (!isNormalRouteLatencyGenerationEvent(event)) {
+      throw new Error('普通路由速度优先 runtime-state generation event publishedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
+    }
+    const normalizedEvent = normalizeLatencyGenerationEvent(event)
+    if (JSON.stringify(event) === JSON.stringify(normalizedEvent)) {
+      return normalizedEvent
+    }
+    if (await latencyStateStore.compareSetJson(
+      latencyStateGenerationKey,
+      event,
+      normalizedEvent,
+      latencyStateGenerationTtlMs
+    )) {
+      return normalizedEvent
+    }
   }
-  return event
+  throw new Error(
+    `普通路由速度优先 generation marker canonical CAS 重试耗尽（${latencyStateGenerationCasMaxAttempts} 次）`
+  )
 }
 
 async function loadOrCreateLatencyGenerationEvent(): Promise<NormalRouteLatencyGenerationEvent> {

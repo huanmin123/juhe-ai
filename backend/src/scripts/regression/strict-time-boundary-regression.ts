@@ -224,4 +224,98 @@ assert.match(runtimeSummarySource, /runtime\?\.observedAt !== undefined/, 'runti
 assert.match(runtimeSummarySource, /rfc3339InstantMilliseconds\(runtime\.observedAt\)/, 'runtime supplied observedAt 必须严格解析')
 assert.match(runtimeSummarySource, /系统指标运行时快照 observedAt必须是带 Z 或数值 offset 的 RFC3339 时间/, 'runtime 非法 observedAt 必须可见失败')
 
+const quotaSnapshotSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+const quotaReplaceSource = quotaSnapshotSource.match(
+  /export function replaceGatewayQuotaSnapshot\([\s\S]*?\n}\n\nexport function clearGatewayQuotaSnapshot/
+)
+assert.ok(quotaReplaceSource, '网关额度快照本地替换边界必须存在')
+assert.match(
+  quotaReplaceSource?.[0] ?? '',
+  /requiredRfc3339Instant\(snapshot\.generatedAt, '网关额度快照 generatedAt'\)/,
+  '本地额度快照 generatedAt 必须严格 canonical，不能因 cache driver 分支被跳过'
+)
+const quotaSharedReadSource = quotaSnapshotSource.match(
+  /async function readSharedGatewayQuotaSnapshot\([\s\S]*?\n}\n\nfunction runtimeState/
+)
+assert.ok(quotaSharedReadSource, 'Redis 额度快照读取边界必须存在')
+assert.doesNotMatch(
+  quotaSharedReadSource?.[0] ?? '',
+  /\.catch\(\(error\)/,
+  'Redis 额度快照严格时间解析错误不得被通用 fallback catch 静默吞掉'
+)
+assert.match(
+  quotaSnapshotSource,
+  /if \(snapshot === undefined\)/,
+  'Redis 额度快照只有真正缺失时才可清空，缺失 generatedAt 的对象必须失败'
+)
+
+const latencyDegradationSource = readFileSync(new URL('../../modules/gateway/runtime/normal-route-latency-degradation.service.ts', import.meta.url), 'utf8')
+const latencyGenerationLoadSource = latencyDegradationSource.match(
+  /async function loadLatencyGenerationEvent\([\s\S]*?\n}\n\nasync function loadOrCreateLatencyGenerationEvent/
+)
+assert.ok(latencyGenerationLoadSource, '普通路由速度优先 generation 读取边界必须存在')
+assert.match(
+  latencyGenerationLoadSource?.[0] ?? '',
+  /normalizeLatencyGenerationEvent\(event\)/,
+  'runtime-state generation publishedAt 读取后必须 canonical UTC'
+)
+assert.match(
+  latencyGenerationLoadSource?.[0] ?? '',
+  /compareSetJson\(/,
+  'runtime-state generation 非 canonical 值必须通过 CAS 修正，不能继续传播 offset 原文'
+)
+assert.doesNotMatch(latencyGenerationLoadSource?.[0] ?? '', /Date\.parse\(/, 'generation publishedAt 不得使用宽松 Date.parse')
+
+const { runtimeConfig } = await import('../../config/runtime.js')
+const { createRuntimeStateStore } = await import('../../shared/runtime-state-store.js')
+const quotaSnapshot = await import('../../modules/gateway/quota/quota-snapshot-cache.service.js')
+const previousCacheDriver = runtimeConfig.cacheDriver
+const previousRuntimeStateDriver = runtimeConfig.runtimeStateDriver
+try {
+  runtimeConfig.cacheDriver = 'memory'
+  quotaSnapshot.clearGatewayQuotaSnapshot()
+  quotaSnapshot.replaceGatewayQuotaSnapshot({
+    generatedAt: '2026-08-16T06:34:49.137+08:00',
+    costEntries: [],
+    authorizationEntries: []
+  })
+  assert.equal(
+    quotaSnapshot.gatewayQuotaSnapshotRuntime().generatedAt,
+    instant,
+    '本地网关额度快照 generatedAt 必须 canonical 到 UTC'
+  )
+  assert.throws(
+    () => quotaSnapshot.replaceGatewayQuotaSnapshot({
+      generatedAt: '2026-08-16T06:34:49.137',
+      costEntries: [],
+      authorizationEntries: []
+    }),
+    /网关额度快照 generatedAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '本地网关额度快照必须拒绝裸 generatedAt'
+  )
+
+  if (previousRuntimeStateDriver === 'memory') {
+    runtimeConfig.runtimeStateDriver = 'memory'
+    const latency = await import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js')
+    const latencyStore = createRuntimeStateStore('gateway-normal-route-latency-degradation')
+    await latencyStore.setJson('v1:generation', {
+      version: 'strict-preexisting-offset',
+      publishedAt: '2026-08-16T07:34:49.137+09:00'
+    }, 60_000)
+    await latency.clearAllNormalRouteLatencyDegradationAsync({
+      version: 'strict-preexisting-offset',
+      publishedAt: instant
+    })
+    assert.deepEqual(
+      await latencyStore.getJson('v1:generation'),
+      { version: 'strict-preexisting-offset', publishedAt: instant },
+      '已有 offset generation marker 读取后必须通过 CAS canonical 为 UTC'
+    )
+  }
+} finally {
+  quotaSnapshot.clearGatewayQuotaSnapshot()
+  runtimeConfig.cacheDriver = previousCacheDriver
+  runtimeConfig.runtimeStateDriver = previousRuntimeStateDriver
+}
+
 console.log('严格时间边界回归通过：RFC3339、Grok、Redis 进程指标、runtime observedAt、队列/epoch/游标失败均可见')

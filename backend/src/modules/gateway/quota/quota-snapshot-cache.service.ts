@@ -61,11 +61,12 @@ let sharedSnapshotLoadPromise: Promise<GatewayQuotaSnapshot | undefined> | undef
 const sharedSnapshotMemoTtlMs = 1000
 
 export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): void {
+  const generatedAt = requiredRfc3339Instant(snapshot.generatedAt, '网关额度快照 generatedAt')
   if (runtimeConfig.cacheDriver === 'redis') {
     clearGatewayQuotaSnapshot()
     return
   }
-  snapshotGeneratedAt = snapshot.generatedAt
+  snapshotGeneratedAt = generatedAt
   costSnapshotComplete = snapshot.costEntriesComplete ?? true
   authorizationSnapshotComplete = snapshot.authorizationEntriesComplete ?? true
   authorizationSnapshotInvalidated = false
@@ -81,7 +82,7 @@ export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): voi
   if (!costSnapshotComplete || !authorizationSnapshotComplete) {
     logger.warn({
       event: 'gateway_quota_snapshot_incomplete',
-      generatedAt: snapshot.generatedAt,
+      generatedAt,
       costEntryCount: snapshot.costEntries.length,
       authorizationEntryCount: snapshot.authorizationEntries.length,
       costEntriesComplete: costSnapshotComplete,
@@ -260,19 +261,26 @@ async function readSharedGatewayQuotaSnapshot(): Promise<GatewayQuotaSnapshot | 
   }
   if (!sharedSnapshotLoadPromise) {
     sharedSnapshotLoadPromise = runtimeState().getJson<GatewayQuotaSnapshot>(gatewayQuotaSnapshotRuntimeStateKey)
-      .then((snapshot) => {
-        replaceSharedGatewayQuotaSnapshotMemo(snapshot)
-        return sharedSnapshot
-      })
-      .catch((error) => {
-        logger.warn({
-          event: 'gateway_quota_snapshot_runtime_state_read_failed',
-          error
-        }, '读取 Redis runtime state 网关配额快照失败，将回退到 DB service 精确补判')
-        clearSharedGatewayQuotaSnapshotMemo()
-        sharedSnapshotFetchedAtMs = Date.now()
-        return undefined
-      })
+      .then(
+        (snapshot) => {
+          try {
+            replaceSharedGatewayQuotaSnapshotMemo(snapshot)
+            return sharedSnapshot
+          } catch (error) {
+            clearSharedGatewayQuotaSnapshotMemo()
+            throw error
+          }
+        },
+        (error) => {
+          logger.warn({
+            event: 'gateway_quota_snapshot_runtime_state_read_failed',
+            error
+          }, '读取 Redis runtime state 网关配额快照失败，将回退到 DB service 精确补判')
+          clearSharedGatewayQuotaSnapshotMemo()
+          sharedSnapshotFetchedAtMs = Date.now()
+          return undefined
+        }
+      )
       .finally(() => {
         sharedSnapshotLoadPromise = undefined
       })
@@ -290,7 +298,7 @@ function runtimeState(): RuntimeStateStore {
 
 function replaceSharedGatewayQuotaSnapshotMemo(snapshot: GatewayQuotaSnapshot | undefined): void {
   sharedSnapshotFetchedAtMs = Date.now()
-  if (!snapshot || snapshot.generatedAt === undefined) {
+  if (snapshot === undefined) {
     sharedSnapshot = undefined
     sharedSnapshotCostEntries = new Map()
     sharedSnapshotAuthorizationEntries = new Map()
