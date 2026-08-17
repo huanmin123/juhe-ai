@@ -3,6 +3,7 @@ import type { AgentOptions } from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { OAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
@@ -274,7 +275,7 @@ export async function refreshOpenAIOAuthToken(input: { refreshToken: string; cli
 export function buildOpenAIOAuthCredentials(tokenInfo: OpenAITokenInfo, fallback?: { refreshToken?: string }): Record<string, unknown> {
   const credentials: Record<string, unknown> = {
     access_token: tokenInfo.accessToken,
-    expires_at: tokenInfo.expiresAt,
+    expires_at: requiredRfc3339Instant(tokenInfo.expiresAt, 'OpenAI OAuth expiresAt'),
     client_id: tokenInfo.clientId,
     base_url: 'https://api.openai.com/v1'
   }
@@ -325,12 +326,14 @@ function parseOAuthAuthorizationInput(value: string): { code: string; state: str
 }
 
 export function shouldRefreshOpenAIOAuthCredentials(credentials: Record<string, unknown>): boolean {
+  const expiresAtText = optionalOpenAIOAuthExpiresAt(credentials)
   const refreshToken = normalizeString(credentials.refresh_token)
   if (!refreshToken) return false
-  const expiresAtText = normalizeString(credentials.expires_at)
   if (!expiresAtText) return true
-  const expiresAt = Date.parse(expiresAtText)
-  if (!Number.isFinite(expiresAt)) return true
+  const expiresAt = rfc3339InstantMilliseconds(expiresAtText)
+  if (expiresAt === undefined) {
+    throw new Error('OpenAI OAuth credentials.expires_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
   return expiresAt - Date.now() < 60_000
 }
 
@@ -466,6 +469,11 @@ function plainObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function optionalOpenAIOAuthExpiresAt(credentials: Record<string, unknown>): string | undefined {
+  if (credentials.expires_at === undefined) return undefined
+  return requiredRfc3339Instant(credentials.expires_at, 'OpenAI OAuth credentials.expires_at')
 }
 
 let memoryOpenAIOAuthSessionStore: OpenAIOAuthMemorySessionStore | undefined

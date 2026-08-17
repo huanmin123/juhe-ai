@@ -7,6 +7,7 @@ import {
   requestTokenExchange,
   type TokenExchangeTransport
 } from '../_shared/token-exchange-transport.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../../shared/rfc3339.js'
 
 export interface GeminiGoogleOAuthCredentials {
   access_token?: string
@@ -185,7 +186,9 @@ function validateCredentials(credentials: GeminiGoogleOAuthCredentials): GeminiG
     refresh_token: nonEmptyText(credentials.refresh_token),
     client_id: nonEmptyText(credentials.client_id),
     client_secret: nonEmptyText(credentials.client_secret),
-    expires_at: nonEmptyText(credentials.expires_at) || undefined
+    expires_at: credentials.expires_at === undefined
+      ? undefined
+      : requiredRfc3339Instant(credentials.expires_at, 'Gemini Google OAuth credentials.expires_at')
   }
   if (!normalized.access_token && !normalized.refresh_token) {
     throw new Error('Gemini Google OAuth access_token or refresh_token is required')
@@ -209,11 +212,13 @@ function initialCachedToken(credentials: GeminiGoogleOAuthCredentials): CachedTo
       expiresAtMs: Number.POSITIVE_INFINITY
     }
   }
-  const expiresAtMs = Date.parse(credentials.expires_at)
-  if (!Number.isFinite(expiresAtMs)) return undefined
+  const expiresAtMs = rfc3339InstantMilliseconds(credentials.expires_at)
+  if (expiresAtMs === undefined) {
+    throw new Error('Gemini Google OAuth credentials.expires_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
   return {
     access_token: credentials.access_token,
-    expires_at: new Date(expiresAtMs).toISOString(),
+    expires_at: credentials.expires_at,
     expiresAtMs
   }
 }

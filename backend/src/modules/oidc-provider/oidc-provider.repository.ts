@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
 import { getBusinessDatabase } from '../../storage/database.js'
 import { hashSecret } from '../../storage/crypto.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import {
   createOidcSigningKeyMaterial,
   decryptOidcValue,
@@ -306,8 +307,7 @@ async function ensureOidcSigningKeyInternal(): Promise<OAuthSigningKey> {
 }
 
 function isOidcSigningKeyRotationDue(key: OAuthSigningKey, now = Date.now()): boolean {
-  const createdAt = Date.parse(key.createdAt)
-  return !Number.isFinite(createdAt) || now - createdAt >= oidcSigningKeyRotationIntervalMs
+  return now - requiredTimestampMilliseconds(key.createdAt, 'OIDC 签名密钥 createdAt') >= oidcSigningKeyRotationIntervalMs
 }
 
 export function findActiveOidcSigningKey(): OAuthSigningKey | undefined {
@@ -324,15 +324,18 @@ export function findActiveOidcSigningKey(): OAuthSigningKey | undefined {
 
 export function listOidcSigningJwks(): Record<string, unknown>[] {
   const database = getBusinessDatabase()
-  const retainedSince = new Date(Date.now() - grantLifetimeMs).toISOString()
   const rows = database.prepare(`
-    SELECT public_jwk_json
+    SELECT public_jwk_json, status, retired_at
     FROM oauth_signing_keys
-    WHERE status = 'active' OR (status = 'retired' AND retired_at > ?)
+    WHERE status IN ('active', 'retired')
     ORDER BY created_at DESC, id DESC
-  `).all(retainedSince) as unknown[]
+  `).all() as unknown[]
+  const retainedSinceMs = Date.now() - grantLifetimeMs
   return rows.flatMap((row) => {
     const value = row as Record<string, unknown>
+    if (value.status === 'retired' && requiredTimestampMilliseconds(value.retired_at, 'OIDC 签名密钥 retiredAt') <= retainedSinceMs) {
+      return []
+    }
     try {
       const parsed = JSON.parse(stringValue(value.public_jwk_json)) as Record<string, unknown>
       return parsed.kid && parsed.kty && parsed.n && parsed.e ? [parsed] : []
@@ -621,7 +624,7 @@ export function pollDeviceAuthorization(input: {
       database.exec('ROLLBACK')
       return { kind: 'invalid_grant' }
     }
-    if (Date.parse(stringValue(row.expires_at)) <= Date.now()) {
+    if (requiredTimestampMilliseconds(row.expires_at, 'OIDC 设备授权 expiresAt') <= Date.now()) {
       database.prepare(`UPDATE oauth_device_authorizations SET status = 'expired' WHERE id = ? AND status IN ('pending', 'approved')`).run(stringValue(row.id))
       database.exec('COMMIT')
       return { kind: 'expired' }
@@ -630,9 +633,9 @@ export function pollDeviceAuthorization(input: {
       database.exec('ROLLBACK')
       return { kind: 'access_denied' }
     }
-    const lastPolledAt = optionalString(row.last_polled_at)
+    const lastPolledAt = optionalTimestamp(row.last_polled_at, 'OIDC 设备授权 lastPolledAt')
     const intervalSeconds = Math.max(1, Number(row.interval_seconds) || 5)
-    if (lastPolledAt && Date.parse(lastPolledAt) + intervalSeconds * 1_000 > Date.now()) {
+    if (lastPolledAt && requiredTimestampMilliseconds(lastPolledAt, 'OIDC 设备授权 lastPolledAt') + intervalSeconds * 1_000 > Date.now()) {
       database.prepare(`
         UPDATE oauth_device_authorizations
         SET interval_seconds = MIN(interval_seconds + 5, 60), last_polled_at = ?
@@ -814,7 +817,7 @@ export function rotateAccessToken(input: {
       database.exec('ROLLBACK')
       return undefined
     }
-    if (Date.parse(token.issued_at) + tokenRenewalDelayMs > Date.now()) {
+    if (requiredTimestampMilliseconds(token.issued_at, 'OIDC access token issuedAt') + tokenRenewalDelayMs > Date.now()) {
       database.exec('ROLLBACK')
       return 'not_eligible'
     }
@@ -828,7 +831,7 @@ export function rotateAccessToken(input: {
       systemAccountId: token.system_account_id,
       scopes: parseStringArray(token.scopes_json),
       issuedAt: now,
-      expiresAt: token.expires_at
+      expiresAt: requiredTimestamp(token.expires_at, 'OIDC access token expiresAt')
     })
     const replaced = database.prepare(`
       UPDATE oauth_access_tokens
@@ -889,7 +892,7 @@ function issueAccessTokenInTransaction(
     SELECT id, client_id, system_account_id, scopes_json, expires_at
     FROM oauth_grants WHERE id = ?
   `).get(grantId) as { id: string; client_id: string; system_account_id: string; scopes_json: string; expires_at: string } | undefined
-  if (!grant || grant.client_id !== clientId || Date.parse(grant.expires_at) <= Date.now()) {
+  if (!grant || grant.client_id !== clientId || requiredTimestampMilliseconds(grant.expires_at, 'OIDC grant expiresAt') <= Date.now()) {
     throw new Error('OAuth grant 已失效')
   }
   const accessToken = randomBytes(32).toString('base64url')
@@ -901,7 +904,7 @@ function issueAccessTokenInTransaction(
     systemAccountId: grant.system_account_id,
     scopes: parseStringArray(grant.scopes_json),
     issuedAt,
-    expiresAt: grant.expires_at
+    expiresAt: requiredTimestamp(grant.expires_at, 'OIDC grant expiresAt')
   })
   return { accessToken, context }
 }
@@ -919,20 +922,22 @@ function insertAccessToken(
     expiresAt: string
   }
 ): OAuthAccessTokenContext {
+  const issuedAt = requiredTimestamp(input.issuedAt, 'OIDC access token issuedAt')
+  const expiresAt = requiredTimestamp(input.expiresAt, 'OIDC access token expiresAt')
   database.prepare(`
     INSERT INTO oauth_access_tokens (
       id, token_hash, client_id, grant_id, issued_at, expires_at,
       revoked_at, replaced_at, successor_token_id, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-  `).run(input.tokenId, hashSecret(input.accessToken), input.clientId, input.grantId, input.issuedAt, input.expiresAt, input.issuedAt)
+  `).run(input.tokenId, hashSecret(input.accessToken), input.clientId, input.grantId, issuedAt, expiresAt, issuedAt)
   return {
     tokenId: input.tokenId,
     clientId: input.clientId,
     grantId: input.grantId,
     systemAccountId: input.systemAccountId,
     scopes: input.scopes,
-    issuedAt: input.issuedAt,
-    expiresAt: input.expiresAt
+    issuedAt,
+    expiresAt
   }
 }
 
@@ -947,8 +952,8 @@ function oauthClientFromRow(row: unknown): OAuthClient {
     redirectUris: parseStringArray(value.redirect_uris_json),
     allowedScopes: parseStringArray(value.allowed_scopes_json),
     status: value.status === 'disabled' ? 'disabled' : 'active',
-    createdAt: stringValue(value.created_at),
-    updatedAt: stringValue(value.updated_at)
+    createdAt: requiredTimestamp(value.created_at, 'OIDC OAuth client createdAt'),
+    updatedAt: requiredTimestamp(value.updated_at, 'OIDC OAuth client updatedAt')
   }
 }
 
@@ -968,8 +973,8 @@ function signingKeyFromRow(row: Record<string, unknown>): OAuthSigningKey {
     privateKeyCiphertext: stringValue(row.private_key_ciphertext),
     publicJwk,
     status: row.status === 'retired' ? 'retired' : 'active',
-    createdAt: stringValue(row.created_at),
-    retiredAt: optionalString(row.retired_at)
+    createdAt: requiredTimestamp(row.created_at, 'OIDC 签名密钥 createdAt'),
+    retiredAt: optionalTimestamp(row.retired_at, 'OIDC 签名密钥 retiredAt')
   }
 }
 
@@ -982,11 +987,11 @@ function deviceAuthorizationFromRow(row: Record<string, unknown>): OAuthDeviceAu
     userCode: stringValue(row.user_code),
     verificationUri: stringValue(row.verification_uri),
     scopes: parseStringArray(row.scopes_json),
-    expiresAt: stringValue(row.expires_at),
+    expiresAt: requiredTimestamp(row.expires_at, 'OIDC 设备授权 expiresAt'),
     intervalSeconds: Math.max(1, Number(row.interval_seconds) || 5),
     status: status as OAuthDeviceAuthorization['status'],
     systemAccountId: optionalString(row.system_account_id),
-    lastPolledAt: optionalString(row.last_polled_at)
+    lastPolledAt: optionalTimestamp(row.last_polled_at, 'OIDC 设备授权 lastPolledAt')
   }
 }
 
@@ -1013,7 +1018,7 @@ function transactionFromRow(row: Record<string, unknown>): OAuthAuthorizationTra
     codeChallenge: stringValue(row.code_challenge),
     csrfToken: payload.csrfToken,
     nonce: typeof payload.nonce === 'string' ? payload.nonce : undefined,
-    expiresAt: stringValue(row.expires_at)
+    expiresAt: requiredTimestamp(row.expires_at, 'OIDC 授权事务 expiresAt')
   }
 }
 
@@ -1032,8 +1037,8 @@ function tokenContextFromRow(row: OAuthTokenRow): OAuthAccessTokenContext {
     grantId: row.grant_id,
     systemAccountId: row.system_account_id,
     scopes: parseStringArray(row.scopes_json),
-    issuedAt: row.issued_at,
-    expiresAt: row.expires_at
+    issuedAt: requiredTimestamp(row.issued_at, 'OIDC access token issuedAt'),
+    expiresAt: requiredTimestamp(row.expires_at, 'OIDC access token expiresAt')
   }
 }
 
@@ -1062,6 +1067,23 @@ function stringValue(value: unknown): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
+}
+
+function requiredTimestamp(value: unknown, label: string): string {
+  return requiredRfc3339Instant(value, label)
+}
+
+function optionalTimestamp(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredTimestamp(value, label)
+}
+
+function requiredTimestampMilliseconds(value: unknown, label: string): number {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return timestamp
 }
 
 function nowIso(): string {

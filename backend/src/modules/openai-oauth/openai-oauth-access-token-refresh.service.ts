@@ -9,6 +9,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 import { runRedisOperationWithDeadline, type RedisCommandClient } from '../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { localizeSystemErrorMessage } from '../../shared/system-error-message.js'
@@ -643,10 +644,10 @@ function shouldStopOpenAIOAuthBackgroundRefresh(account: AccountSummary): boolea
 }
 
 function shouldPreRefreshAccessToken(credentials: Record<string, unknown>, now: number, leadMs: number): boolean {
+  const expiresAt = parseCredentialExpiresAt(credentials)
   if (!stringCredential(credentials, 'access_token')) {
     return true
   }
-  const expiresAt = parseCredentialExpiresAt(credentials)
   if (expiresAt === undefined) {
     return true
   }
@@ -654,20 +655,23 @@ function shouldPreRefreshAccessToken(credentials: Record<string, unknown>, now: 
 }
 
 function isAccessTokenExpiredOrMissing(credentials: Record<string, unknown>, now: number): boolean {
+  const expiresAt = parseCredentialExpiresAt(credentials)
   if (!stringCredential(credentials, 'access_token')) {
     return true
   }
-  const expiresAt = parseCredentialExpiresAt(credentials)
   return expiresAt === undefined || expiresAt <= now
 }
 
 function parseCredentialExpiresAt(credentials: Record<string, unknown>): number | undefined {
-  const expiresAtText = stringCredential(credentials, 'expires_at')
+  const expiresAtText = credentialExpiresAt(credentials)
   if (!expiresAtText) {
     return undefined
   }
-  const expiresAt = Date.parse(expiresAtText)
-  return Number.isFinite(expiresAt) ? expiresAt : undefined
+  const expiresAt = rfc3339InstantMilliseconds(expiresAtText)
+  if (expiresAt === undefined) {
+    throw new Error('OpenAI OAuth credentials.expires_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return expiresAt
 }
 
 async function recordRefreshFailure(
@@ -1073,7 +1077,7 @@ function refreshLeadMs(leadSeconds: unknown): number {
 function credentialsChanged(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
   return stringCredential(left, 'access_token') !== stringCredential(right, 'access_token')
     || stringCredential(left, 'refresh_token') !== stringCredential(right, 'refresh_token')
-    || stringCredential(left, 'expires_at') !== stringCredential(right, 'expires_at')
+    || credentialExpiresAt(left) !== credentialExpiresAt(right)
 }
 
 function isCredentialExpiresAtLater(nextCredentials: Record<string, unknown>, currentCredentials: Record<string, unknown>): boolean {
@@ -1085,6 +1089,11 @@ function isCredentialExpiresAtLater(nextCredentials: Record<string, unknown>, cu
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {
   const value = credentials[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function credentialExpiresAt(credentials: Record<string, unknown>): string | undefined {
+  if (credentials.expires_at === undefined) return undefined
+  return requiredRfc3339Instant(credentials.expires_at, 'OpenAI OAuth credentials.expires_at')
 }
 
 function errorMessage(error: unknown): string {

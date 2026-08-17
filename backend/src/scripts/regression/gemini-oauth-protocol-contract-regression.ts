@@ -30,12 +30,31 @@ import {
 } from '../../modules/gemini-oauth/gemini-oauth.service.js'
 import {
   prepareGeminiAccountBeforeDispatch,
+  shouldRefreshGeminiOAuthCredentials,
   type GeminiOAuthDispatchPreparationDependencies
 } from '../../modules/providers/drivers/gemini/oauth-dispatch-preparation.js'
 
 assert.equal(GEMINI_OAUTH_AUTHORIZE_URL, 'https://accounts.google.com/o/oauth2/v2/auth')
 assert.equal(GEMINI_OAUTH_TOKEN_URL, 'https://oauth2.googleapis.com/token')
 assert.equal(GEMINI_OAUTH_REDIRECT_URI, 'http://localhost:1455/auth/callback')
+assert.equal(
+  shouldRefreshGeminiOAuthCredentials({
+    access_token: 'fresh-gemini-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T09:00:00+09:00'
+  }),
+  false,
+  'Gemini OAuth 合法 offset expires_at 必须按同一绝对时间读取'
+)
+assert.throws(
+  () => shouldRefreshGeminiOAuthCredentials({
+    access_token: 'fresh-gemini-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T00:00:00'
+  }),
+  /RFC3339/u,
+  'Gemini OAuth 裸 expires_at 必须显式失败'
+)
 assert.equal(GEMINI_CLI_OAUTH_REDIRECT_URI, 'https://codeassist.google.com/authcode')
 assert.equal(GEMINI_OAUTH_DEFAULT_BASE_URL, 'https://generativelanguage.googleapis.com')
 assert.equal(GEMINI_CLI_DEFAULT_BASE_URL, 'https://cloudcode-pa.googleapis.com')

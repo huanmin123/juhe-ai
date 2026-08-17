@@ -132,11 +132,14 @@ async function runChild(): Promise<void> {
     createAuthorizationTransaction,
     createOAuthClient,
     findActiveOidcSigningKey,
+    findOAuthClient,
     exchangeAuthorizationCode,
     findAccessTokenContext,
     oidcSigningKeyRotationIntervalMs,
     rotateAccessToken
   } = await import('../../modules/oidc-provider/oidc-provider.repository.js')
+  const { signOidcIdToken } = await import('../../modules/oidc-provider/oidc-provider.crypto.js')
+  const { rfc3339InstantMilliseconds } = await import('../../shared/rfc3339.js')
   const { clearOidcProtocolRateLimitStateForTest } = await import('../../modules/oidc-provider/oidc-rate-limit.middleware.js')
   const { createSystemApiApp } = await import('../../modules/system-api/system-api-app.js')
   const { createSession } = await import('../../storage/repositories.js')
@@ -183,7 +186,9 @@ async function runChild(): Promise<void> {
       codeVerifier: verifier
     })
     assert(exchanged, '正确 PKCE verifier 必须换得 access token')
-    assert(Math.abs(Date.parse(exchanged.context.expiresAt) - Date.now() - 7 * 24 * 60 * 60 * 1_000) < 5_000, '初始 access token 不得超出 grant 的 7 天硬到期')
+    const exchangedExpiresAtMs = rfc3339InstantMilliseconds(exchanged.context.expiresAt)
+    assert(exchangedExpiresAtMs !== undefined, '初始 access token expiresAt 必须是带时区的 RFC3339 时间')
+    assert(Math.abs(exchangedExpiresAtMs - Date.now() - 7 * 24 * 60 * 60 * 1_000) < 5_000, '初始 access token 不得超出 grant 的 7 天硬到期')
     assert.equal(exchangeAuthorizationCode({
       clientId: client.clientId,
       code: authorization.code,
@@ -200,7 +205,29 @@ async function runChild(): Promise<void> {
     assert(rotated && rotated !== 'not_eligible', '满 72 小时后应能轮换一次')
     assert.equal(findAccessTokenContext(exchanged.accessToken), undefined, '轮换成功后旧 token 必须立即失效')
     assert(findAccessTokenContext(rotated.accessToken), 'successor token 必须可用')
-    assert.equal(Date.parse(rotated.context.expiresAt), Date.parse(exchanged.context.expiresAt), '轮换不得延长 grant 硬到期')
+    assert.equal(rfc3339InstantMilliseconds(rotated.context.expiresAt), exchangedExpiresAtMs, '轮换不得延长 grant 硬到期')
+
+    database.prepare('UPDATE oauth_clients SET created_at = ?, updated_at = ? WHERE client_id = ?').run(
+      '2026-08-18T09:00:00+09:00',
+      '2026-08-18T09:00:00+09:00',
+      client.clientId
+    )
+    const offsetClient = findOAuthClient(client.clientId)
+    assert.equal(offsetClient?.createdAt, '2026-08-18T00:00:00.000Z', 'OIDC 仓储读取合法 offset 时必须归一为 UTC')
+    database.prepare('UPDATE oauth_clients SET created_at = ? WHERE client_id = ?').run('2026-08-18T00:00:00', client.clientId)
+    assert.throws(
+      () => findOAuthClient(client.clientId),
+      /RFC3339/u,
+      'OIDC 仓储读取裸 created_at 时必须显式失败'
+    )
+
+    database.prepare('UPDATE oauth_access_tokens SET issued_at = ? WHERE id = ?').run('2026-08-18T00:00:00', rotated.context.tokenId)
+    assert.throws(
+      () => findAccessTokenContext(rotated.accessToken),
+      /RFC3339/u,
+      'OIDC 仓储读取裸 issued_at 时必须显式失败'
+    )
+
     const httpClient = createOAuthClient({
       displayName: 'OIDC HTTP Regression Client',
       clientType: 'public',
@@ -405,6 +432,18 @@ async function runChild(): Promise<void> {
       assert(signingKey && signingKey.kid !== initialSigningKey.kid, '每周自动轮换必须产生新的 active kid')
       const storedSigningKey = database.prepare('SELECT private_key_ciphertext FROM oauth_signing_keys WHERE kid = ?').get(signingKey.kid) as { private_key_ciphertext?: string } | undefined
       assert(storedSigningKey?.private_key_ciphertext && !storedSigningKey.private_key_ciphertext.includes('BEGIN PRIVATE KEY'), 'OIDC 私钥必须仅以密文持久化')
+      await assert.rejects(
+        signOidcIdToken({
+          privateKeyCiphertext: signingKey.privateKeyCiphertext,
+          kid: signingKey.kid,
+          issuer: 'http://127.0.0.1:39001',
+          audience: client.clientId,
+          subject: 'oidc-user',
+          expiresAt: '2026-08-18T00:00:00'
+        }),
+        /RFC3339/u,
+        'OIDC ID Token 签发不得把裸 expiresAt 当作本地时间'
+      )
       const discovery = await discoveryResponse.json() as { jwks_uri?: string; userinfo_endpoint?: string; device_authorization_endpoint?: string; juhe_token_renewal_endpoint?: string }
       assert(discovery.jwks_uri && discovery.userinfo_endpoint && discovery.device_authorization_endpoint && discovery.juhe_token_renewal_endpoint, 'discovery 必须公开 OIDC 端点元数据和受控轮换端点')
       const jwksResponse = await fetch(localOidcUrl(discovery.jwks_uri))

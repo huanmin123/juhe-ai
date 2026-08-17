@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes }
 import { SignJWT, exportJWK, exportPKCS8, generateKeyPair, importPKCS8 } from 'jose'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 export class OidcCiphertextError extends Error {
   constructor(message = 'OIDC 密文无法读取') {
@@ -71,6 +72,10 @@ export async function signOidcIdToken(input: {
   if (typeof payload.privateKeyPem !== 'string' || !payload.privateKeyPem) {
     throw new Error('OIDC 签名私钥内容无效')
   }
+  const expiresAtMs = rfc3339InstantMilliseconds(input.expiresAt)
+  if (expiresAtMs === undefined) {
+    throw new Error('OIDC ID Token expiresAt必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
   const privateKey = await importPKCS8(payload.privateKeyPem, 'RS256')
   const token = new SignJWT(input.nonce ? { nonce: input.nonce } : {})
     .setProtectedHeader({ alg: 'RS256', kid: input.kid, typ: 'JWT' })
@@ -78,7 +83,7 @@ export async function signOidcIdToken(input: {
     .setAudience(input.audience)
     .setSubject(input.subject)
     .setIssuedAt()
-    .setExpirationTime(Math.floor(Date.parse(input.expiresAt) / 1_000))
+    .setExpirationTime(Math.floor(expiresAtMs / 1_000))
   return token.sign(privateKey)
 }
 

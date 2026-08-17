@@ -68,6 +68,24 @@ async function run(): Promise<void> {
   assert.equal(await freshProvider.getAccessToken(), 'existing-access-token', '有效 access_token 应直接复用')
   assert.equal(requests, 0, '有效 access_token 不应触发刷新')
 
+  const offsetProvider = createGeminiGoogleOAuthTokenProvider({
+    access_token: 'offset-access-token',
+    expires_at: '2026-07-18T21:00:00+09:00'
+  }, { transport, now: () => nowMs })
+  assert.equal(
+    offsetProvider.getTokenSnapshot()?.expires_at,
+    '2026-07-18T12:00:00.000Z',
+    'Google OAuth 合法 offset expires_at 必须归一为 UTC'
+  )
+  assert.throws(
+    () => createGeminiGoogleOAuthTokenProvider({
+      access_token: 'bare-access-token',
+      expires_at: '2026-07-18T12:00:00'
+    }, { transport, now: () => nowMs }),
+    /RFC3339/u,
+    'Google OAuth 裸 expires_at 必须显式失败'
+  )
+
   const accessOnlyProvider = createGeminiGoogleOAuthTokenProvider({
     access_token: 'access-only-token',
     expires_at: '2026-07-18T12:00:00.000Z'

@@ -5,6 +5,7 @@ import { z } from 'zod'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { badRequest, ok } from '../../shared/http.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { findSessionByTokenAsync } from '../../storage/repositories.js'
 import { hashSecret } from '../../storage/crypto.js'
 import { parseCookie, sessionCookieName } from '../auth/auth.routes.js'
@@ -279,7 +280,7 @@ oauthPublicRouter.post('/oauth/device_authorization', (req, res) => {
     user_code: created.authorization.userCode,
     verification_uri: verificationUri,
     verification_uri_complete: `${verificationUri}?user_code=${encodeURIComponent(created.authorization.userCode)}`,
-    expires_in: secondsUntil(created.authorization.expiresAt),
+    expires_in: secondsUntil(created.authorization.expiresAt, 'OIDC 设备授权 expiresAt'),
     interval: created.authorization.intervalSeconds
   })
 })
@@ -450,7 +451,7 @@ oauthPublicRouter.post('/oauth/token/renew', (req, res) => {
   res.json({
     access_token: renewed.accessToken,
     token_type: 'Bearer',
-    expires_in: Math.max(0, Math.floor((Date.parse(renewed.context.expiresAt) - Date.now()) / 1000)),
+    expires_in: secondsUntil(renewed.context.expiresAt, 'OIDC access token expiresAt'),
     scope: renewed.context.scopes.join(' ')
   })
 })
@@ -729,7 +730,7 @@ async function maybeIssueIdToken(context: OAuthAccessTokenContext, nonce?: strin
   const issuer = runtimeConfig.oidc.issuer
   if (!signingKey || !issuer) throw new OidcUnavailableError()
   const idTokenExpiresAt = new Date(Math.min(
-    Date.parse(context.expiresAt),
+    requiredTimestampMilliseconds(context.expiresAt, 'OIDC access token expiresAt'),
     Date.now() + 5 * 60 * 1_000
   )).toISOString()
   return signOidcIdToken({
@@ -754,7 +755,7 @@ function sendTokenResponse(
     access_token: accessToken,
     ...(idToken ? { id_token: idToken } : {}),
     token_type: 'Bearer',
-    expires_in: secondsUntil(context.expiresAt),
+    expires_in: secondsUntil(context.expiresAt, 'OIDC access token expiresAt'),
     scope: context.scopes.join(' ')
   })
 }
@@ -776,8 +777,16 @@ function devicePollDescription(error: string): string {
   return '设备码无效或已使用'
 }
 
-function secondsUntil(expiresAt: string): number {
-  return Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1_000))
+function secondsUntil(expiresAt: string, label: string): number {
+  return Math.max(0, Math.floor((requiredTimestampMilliseconds(expiresAt, label) - Date.now()) / 1_000))
+}
+
+function requiredTimestampMilliseconds(value: unknown, label: string): number {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return timestamp
 }
 
 function normalizeScopes(value: string): string[] {

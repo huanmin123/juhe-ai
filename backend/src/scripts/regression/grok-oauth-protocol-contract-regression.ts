@@ -13,6 +13,7 @@ import {
   buildGrokOAuthCredentials,
   generateGrokAuthURL
 } from '../../modules/grok-oauth/grok-oauth.service.js'
+import { shouldRefreshGrokOAuthCredentials } from '../../modules/providers/drivers/xai/oauth-dispatch-preparation.js'
 
 assert.equal(GROK_OAUTH_AUTHORIZE_URL, 'https://auth.x.ai/oauth2/authorize', 'Grok OAuth authorize URL 必须固定为 xAI 官方地址')
 assert.equal(GROK_OAUTH_TOKEN_URL, 'https://auth.x.ai/oauth2/token', 'Grok OAuth token URL 必须固定为 xAI 官方端点')
@@ -20,6 +21,24 @@ assert.equal(GROK_OAUTH_CLIENT_ID, 'b1a00492-073a-47ea-816f-4c329264a828', 'Grok
 assert.equal(GROK_OAUTH_REDIRECT_URI, 'http://127.0.0.1:56121/callback', 'Grok OAuth loopback redirect URI 必须保持当前固定端口')
 assert.equal(GROK_OAUTH_SCOPE, 'openid profile email offline_access grok-cli:access api:access', 'Grok OAuth scope 必须覆盖身份、离线刷新、CLI 与 API 能力')
 assert.equal(GROK_OAUTH_BASE_URL, 'https://cli-chat-proxy.grok.com/v1', 'Grok OAuth 默认上游必须固定为 CLI Chat Proxy')
+assert.equal(
+  shouldRefreshGrokOAuthCredentials({
+    access_token: 'fresh-grok-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T09:00:00+09:00'
+  }),
+  false,
+  'Grok OAuth 合法 offset expires_at 必须按同一绝对时间读取'
+)
+assert.throws(
+  () => shouldRefreshGrokOAuthCredentials({
+    access_token: 'fresh-grok-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T00:00:00'
+  }),
+  /RFC3339/u,
+  'Grok OAuth 裸 expires_at 必须显式失败'
+)
 
 const authorizeUrl = new URL(buildGrokAuthorizeUrl({
   state: 'contract-state',

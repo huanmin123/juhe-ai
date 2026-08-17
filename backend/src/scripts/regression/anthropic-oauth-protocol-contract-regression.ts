@@ -24,6 +24,7 @@ import {
 } from '../../modules/anthropic-oauth/anthropic-oauth.service.js'
 import {
   prepareAnthropicAccountBeforeDispatch,
+  shouldRefreshAnthropicOAuthCredentials,
   type AnthropicOAuthDispatchPreparationDependencies
 } from '../../modules/providers/drivers/anthropic/oauth-dispatch-preparation.js'
 
@@ -33,6 +34,24 @@ assert.equal(ANTHROPIC_OAUTH_TOKEN_URL, 'https://platform.claude.com/v1/oauth/to
 assert.equal(ANTHROPIC_OAUTH_REDIRECT_URI, 'https://platform.claude.com/oauth/code/callback', 'Anthropic OAuth redirect URI 必须对齐 Claude platform code callback')
 assert.equal(ANTHROPIC_OAUTH_BROWSER_SCOPE, 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload', 'Anthropic OAuth 浏览器 scope 必须覆盖当前托管授权所需能力')
 assert.equal(ANTHROPIC_OAUTH_API_SCOPE, 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload', 'Anthropic OAuth API scope 必须保持与当前 Bearer 能力一致')
+assert.equal(
+  shouldRefreshAnthropicOAuthCredentials({
+    access_token: 'fresh-anthropic-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T09:00:00+09:00'
+  }),
+  false,
+  'Anthropic OAuth 合法 offset expires_at 必须按同一绝对时间读取'
+)
+assert.throws(
+  () => shouldRefreshAnthropicOAuthCredentials({
+    access_token: 'fresh-anthropic-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T00:00:00'
+  }),
+  /RFC3339/u,
+  'Anthropic OAuth 裸 expires_at 必须显式失败'
+)
 
 const authorizeUrl = new URL(buildAnthropicAuthorizeUrl({
   state: 'contract-state',

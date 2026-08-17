@@ -1,4 +1,5 @@
 import { ANTHROPIC_PROVIDER_CODE } from '../../../../domain/provider-protocol.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../../shared/rfc3339.js'
 import { assertSafeUpstreamBaseUrl } from '../../../../shared/upstream-url-policy.js'
 import { runtimeOpenAIAccountCredentials } from '../../../../storage/openai-account-selector.repository.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
@@ -89,11 +90,15 @@ export function shouldRefreshAnthropicOAuthCredentials(
   accessTokenFallback?: string,
   expiresAtFallback?: string
 ): boolean {
+  const expiresAt = resolvedAnthropicOAuthExpiresAt(credentials, expiresAtFallback)
   const accessToken = stringCredential(credentials, 'access_token') || normalizeText(accessTokenFallback)
   if (!accessToken) return true
-  const expiresAt = stringCredential(credentials, 'expires_at') || normalizeText(expiresAtFallback)
-  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN
-  return !Number.isFinite(expiresAtMs) || expiresAtMs - Date.now() <= anthropicOAuthRefreshLeadMs
+  if (expiresAt === undefined) return true
+  const expiresAtMs = rfc3339InstantMilliseconds(expiresAt)
+  if (expiresAtMs === undefined) {
+    throw new Error('Anthropic OAuth credentials.expires_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return expiresAtMs - Date.now() <= anthropicOAuthRefreshLeadMs
 }
 
 async function refreshAndPersistAnthropicOAuthAccount(
@@ -166,15 +171,31 @@ function dispatchAccountWithCredentials(
 ): DispatchAccountSecret {
   const baseUrl = stringCredential(credentials, 'base_url') || account.baseUrl
   assertSafeUpstreamBaseUrl(baseUrl)
+  const expiresAt = resolvedAnthropicOAuthExpiresAt(credentials, account.expiresAt)
+  const runtimeCredentials = {
+    ...credentials,
+    ...(expiresAt === undefined ? {} : { expires_at: expiresAt })
+  }
   return {
     ...account,
     apiKey: stringCredential(credentials, 'access_token') || account.apiKey,
     refreshToken: stringCredential(credentials, 'refresh_token') || account.refreshToken,
     clientId: stringCredential(credentials, 'client_id') || account.clientId,
-    expiresAt: stringCredential(credentials, 'expires_at') || account.expiresAt,
+    expiresAt,
     baseUrl,
-    credentials: runtimeOpenAIAccountCredentials(credentials)
+    credentials: runtimeOpenAIAccountCredentials(runtimeCredentials)
   }
+}
+
+function resolvedAnthropicOAuthExpiresAt(
+  credentials: Record<string, unknown>,
+  expiresAtFallback?: string
+): string | undefined {
+  if (credentials.expires_at !== undefined) {
+    return requiredRfc3339Instant(credentials.expires_at, 'Anthropic OAuth credentials.expires_at')
+  }
+  if (expiresAtFallback === undefined) return undefined
+  return requiredRfc3339Instant(expiresAtFallback, 'Anthropic OAuth account.expiresAt')
 }
 
 async function waitForRefresh(

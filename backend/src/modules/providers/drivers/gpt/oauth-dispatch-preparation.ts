@@ -1,5 +1,6 @@
 import { assertSafeUpstreamBaseUrl } from '../../../../shared/upstream-url-policy.js'
 import { errorLogFields, logger } from '../../../../shared/logger.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../../shared/rfc3339.js'
 import { runtimeOpenAIAccountCredentials } from '../../../../storage/repositories.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../../../openai-oauth/openai-oauth.service.js'
@@ -36,14 +37,19 @@ export async function prepareGptAccountBeforeDispatch(
   if (refreshedBaseUrl) {
     assertSafeUpstreamBaseUrl(refreshedBaseUrl)
   }
+  const expiresAt = resolvedOpenAIOAuthExpiresAt(credentials, account.expiresAt)
+  const runtimeCredentials = {
+    ...credentials,
+    ...(expiresAt === undefined ? {} : { expires_at: expiresAt })
+  }
   return {
     ...account,
     apiKey: accessToken,
     baseUrl: refreshedBaseUrl ?? account.baseUrl,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : account.refreshToken,
     clientId: typeof credentials.client_id === 'string' ? credentials.client_id : account.clientId,
-    expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : account.expiresAt,
-    credentials: runtimeOpenAIAccountCredentials(credentials)
+    expiresAt,
+    credentials: runtimeOpenAIAccountCredentials(runtimeCredentials)
   }
 }
 
@@ -84,13 +90,17 @@ function scheduleOpenAIOAuthAccessTokenPreheat(account: DispatchAccountSecret, c
 }
 
 function shouldBlockForOpenAIOAuthAccessTokenRefresh(credentials: Record<string, unknown>): boolean {
+  const expiresAt = resolvedOpenAIOAuthExpiresAt(credentials)
   const accessToken = typeof credentials.access_token === 'string' && credentials.access_token.trim()
     ? credentials.access_token.trim()
     : undefined
   if (!accessToken) return true
-  const expiresAt = typeof credentials.expires_at === 'string' ? Date.parse(credentials.expires_at) : Number.NaN
-  if (!Number.isFinite(expiresAt)) return true
-  return expiresAt - Date.now() <= oauthBlockingRefreshLeadMs
+  if (expiresAt === undefined) return true
+  const expiresAtMs = rfc3339InstantMilliseconds(expiresAt)
+  if (expiresAtMs === undefined) {
+    throw new Error('OpenAI OAuth credentials.expires_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return expiresAtMs - Date.now() <= oauthBlockingRefreshLeadMs
 }
 
 function openAIOAuthRefreshCredentials(account: DispatchAccountSecret): Record<string, unknown> {
@@ -101,8 +111,20 @@ function openAIOAuthRefreshCredentials(account: DispatchAccountSecret): Record<s
   }
   if (account.refreshToken) credentials.refresh_token = account.refreshToken
   if (account.clientId) credentials.client_id = account.clientId
-  if (account.expiresAt) credentials.expires_at = account.expiresAt
+  const expiresAt = resolvedOpenAIOAuthExpiresAt(account.credentials, account.expiresAt)
+  if (expiresAt) credentials.expires_at = expiresAt
   return credentials
+}
+
+function resolvedOpenAIOAuthExpiresAt(
+  credentials: Record<string, unknown>,
+  expiresAtFallback?: string
+): string | undefined {
+  if (credentials.expires_at !== undefined) {
+    return requiredRfc3339Instant(credentials.expires_at, 'OpenAI OAuth credentials.expires_at')
+  }
+  if (expiresAtFallback === undefined) return undefined
+  return requiredRfc3339Instant(expiresAtFallback, 'OpenAI OAuth account.expiresAt')
 }
 
 function throwIfRequestAborted(signal?: AbortSignal): void {

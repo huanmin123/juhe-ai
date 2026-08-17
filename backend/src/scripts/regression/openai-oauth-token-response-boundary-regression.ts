@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { extractCodeAndState, openAIOAuthTokenRequestTimeoutMs, openAIOAuthTokenResponseMaxBytes, parseOpenAIOAuthExpiresIn, refreshOpenAIOAuthToken, sanitizeOpenAIOAuthErrorMessage } from '../../modules/openai-oauth/openai-oauth.service.js'
+import { buildOpenAIOAuthCredentials, extractCodeAndState, openAIOAuthTokenRequestTimeoutMs, openAIOAuthTokenResponseMaxBytes, parseOpenAIOAuthExpiresIn, refreshOpenAIOAuthToken, sanitizeOpenAIOAuthErrorMessage, shouldRefreshOpenAIOAuthCredentials } from '../../modules/openai-oauth/openai-oauth.service.js'
 import { runWithProviderOAuthTokenTransportForTest } from '../../modules/providers/drivers/_shared/provider-oauth-token-transport.js'
 import { isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
 
@@ -12,6 +12,52 @@ assert.equal(parseOpenAIOAuthExpiresIn(3600), 3600, 'OAuth expires_in 正数应�
 assert.throws(() => parseOpenAIOAuthExpiresIn(0), /expires_in/, 'OAuth expires_in 为 0 时必须拒绝')
 assert.throws(() => parseOpenAIOAuthExpiresIn(-1), /expires_in/, 'OAuth expires_in 为负数时必须拒绝')
 assert.throws(() => parseOpenAIOAuthExpiresIn('not-a-number'), /expires_in/, 'OAuth expires_in 非数字时必须拒绝')
+assert.equal(
+  shouldRefreshOpenAIOAuthCredentials({
+    access_token: 'fresh-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T09:00:00+09:00'
+  }),
+  false,
+  '带 offset 的 OpenAI OAuth expires_at 必须按同一绝对时间读取'
+)
+assert.throws(
+  () => shouldRefreshOpenAIOAuthCredentials({
+    access_token: 'fresh-access-token',
+    refresh_token: 'refresh-token',
+    expires_at: '2099-01-01T00:00:00'
+  }),
+  /RFC3339/u,
+  '裸 OpenAI OAuth expires_at 必须显式失败'
+)
+assert.throws(
+  () => shouldRefreshOpenAIOAuthCredentials({
+    access_token: 'access-only-token',
+    expires_at: '2099-01-01T00:00:00'
+  }),
+  /RFC3339/u,
+  '即使没有 Refresh Token，已提供的裸 OpenAI OAuth expires_at 也必须显式失败'
+)
+assert.equal(
+  buildOpenAIOAuthCredentials({
+    accessToken: 'fresh-access-token',
+    expiresAt: '2099-01-01T09:00:00+09:00',
+    expiresIn: 3600,
+    clientId: 'contract-client'
+  }).expires_at,
+  '2099-01-01T00:00:00.000Z',
+  'OpenAI OAuth 凭据必须把合法 offset 归一为 UTC'
+)
+assert.throws(
+  () => buildOpenAIOAuthCredentials({
+    accessToken: 'fresh-access-token',
+    expiresAt: '2099-01-01T00:00:00',
+    expiresIn: 3600,
+    clientId: 'contract-client'
+  }),
+  /RFC3339/u,
+  'OpenAI OAuth 凭据不得输出裸 expires_at'
+)
 assert.throws(
   () => extractCodeAndState({ callbackUrl: 'http://localhost:1455/auth/callback?error=access_denied&error_description=upstream%20access%20denied' }),
   isOAuthUpstreamResponseError,
@@ -56,6 +102,7 @@ const upstreamMessage = sanitizeOpenAIOAuthErrorMessage(
 assert.equal(upstreamMessage, 'token endpoint failed Authorization: Bearer oauth-boundary-bearer-token sk-oauth-boundary-secret-token refresh_token=oauth-boundary-refresh-token client_secret=oauth-boundary-client-secret proxy=https://oauth-proxy-user:oauth-proxy-password@example.com', 'OAuth token 错误消息必须保留上游原文')
 
 const refreshSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth-access-token-refresh.service.ts'), 'utf8')
+assert.doesNotMatch(refreshSource, /Date\.parse/, 'OpenAI OAuth 后台刷新不得把裸 expires_at 当作本地时间')
 assert.match(refreshSource, /isOAuthUpstreamResponseError\(error\)[\s\S]*sanitizeOpenAIOAuthErrorMessage\(rawMessage\)[\s\S]*localizeSystemErrorMessage\(rawMessage, 502\)/, 'OAuth 后台刷新必须按来源区分上游原文与本地中文错误')
 assert.match(refreshSource, /failureKind = isOpenAIOAuthRefreshLocalConfigurationError\(error\)[\s\S]*'local_configuration'[\s\S]*'untrusted_upstream_or_runtime'/, 'OAuth 后台刷新必须按本地产生的专用错误类型区分状态变更资格')
 assert.match(refreshSource, /failureState\.localConfigurationCount >= oauthTokenRefreshFailureThreshold/, 'OAuth 后台刷新只允许连续本地配置错误触发账户异常')
