@@ -533,7 +533,8 @@ chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, 
     const auth = requireChatAuth()
     const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
     const client = await getChatDatabaseClient()
-    const now = new Date().toISOString()
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
     const claim = await claimUncommittedChatAssetForDeletion(client, {
       assetId: req.params.assetId,
       systemAccountId: auth.systemAccountId,
@@ -555,7 +556,7 @@ chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, 
         assetId: claim.asset.id,
         claimId: claim.claimId,
         errorCode: error instanceof Error ? error.name || 'chat_asset_delete_failed' : 'chat_asset_delete_failed',
-        retryAt: new Date(Date.parse(now) + 60_000).toISOString(),
+        retryAt: new Date(nowMs + 60_000).toISOString(),
         now
       }).catch(() => false)
       throw error

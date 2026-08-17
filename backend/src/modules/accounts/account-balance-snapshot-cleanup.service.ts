@@ -148,7 +148,8 @@ export function createAccountBalanceSnapshotCleanupCoordinator(
     isSuppressed: (accountId, current) => {
       const item = suppressedItems.get(accountId)
       if (!item) return false
-      if (!current || !snapshotSupersedesCleanup(item, current)) return true
+      const normalizedCurrent = current === undefined ? undefined : normalizeSuppressionRead(current)
+      if (!normalizedCurrent || !snapshotSupersedesCleanup(item, normalizedCurrent)) return true
       if (suppressedItems.get(accountId)?.requestId === item.requestId) {
         retryQueue.delete(accountId)
         suppressedItems.delete(accountId)
@@ -158,8 +159,8 @@ export function createAccountBalanceSnapshotCleanupCoordinator(
         lastError = undefined
         log('info', cleanupLogFields(item, {
           event: 'account_balance_snapshot_cleanup_superseded_by_current_snapshot',
-          snapshotUpdatedAt: current.snapshotRecord?.updatedAt,
-          snapshotNextRefreshAfter: current.snapshotRecord?.nextRefreshAfter,
+          snapshotUpdatedAt: normalizedCurrent.snapshotRecord?.updatedAt,
+          snapshotNextRefreshAfter: normalizedCurrent.snapshotRecord?.nextRefreshAfter,
           ...runtimeFields(retryQueue.snapshot(), suppressedItems.size, exhaustedAccountIds.size)
         }), 'AI 账户已生成当前刷新代次的新余额快照，旧快照清理抑制已解除')
       }
@@ -273,4 +274,31 @@ function snapshotSupersedesCleanup(
     throw new Error('余额快照清理 updatedBefore 必须是带 Z 或数值 offset 的 RFC3339 时间')
   }
   return snapshotUpdatedAtMs > cleanupCutoffMs
+}
+
+function normalizeSuppressionRead(current: AccountBalanceSnapshotSuppressionRead): AccountBalanceSnapshotSuppressionRead {
+  const nextRefreshAt = optionalBalanceTimestamp(current.configuration.nextRefreshAt, '余额快照配置 nextRefreshAt')
+  const snapshotRecord = current.snapshotRecord
+  const snapshotNextRefreshAfter = snapshotRecord === undefined
+    ? undefined
+    : optionalBalanceTimestamp(snapshotRecord.nextRefreshAfter, '余额快照 nextRefreshAfter')
+  return {
+    configuration: {
+      ...current.configuration,
+      ...(nextRefreshAt === undefined ? {} : { nextRefreshAt })
+    },
+    ...(snapshotRecord === undefined
+      ? {}
+      : {
+          snapshotRecord: {
+            ...snapshotRecord,
+            updatedAt: requiredRfc3339Instant(snapshotRecord.updatedAt, '余额快照 updatedAt'),
+            ...(snapshotNextRefreshAfter === undefined ? {} : { nextRefreshAfter: snapshotNextRefreshAfter })
+          }
+        })
+  }
+}
+
+function optionalBalanceTimestamp(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : requiredRfc3339Instant(value, label)
 }

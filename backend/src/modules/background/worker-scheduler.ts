@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 export type WorkerScheduledJobScheduleMode = 'fixedRate' | 'fixedDelay'
 export type WorkerScheduledJobOverlapPolicy = 'skip' | 'coalesceOne'
@@ -684,9 +685,10 @@ function currentOverdueMs(state: WorkerScheduledJobState, nowMs: number): number
 }
 
 function parsedTimestampMs(value: string | undefined): number | undefined {
-  if (!value) return undefined
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : undefined
+  if (value === undefined) return undefined
+  const parsed = rfc3339InstantMilliseconds(value)
+  if (parsed === undefined) throw new Error('后台任务调度时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  return parsed
 }
 
 function normalizedFailureBackoff(value: WorkerScheduledJobFailureBackoffOptions | undefined): WorkerScheduledJobFailureBackoffOptions | undefined {

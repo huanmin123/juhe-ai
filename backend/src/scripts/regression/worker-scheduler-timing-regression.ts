@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { logger } from '../../shared/logger.js'
+import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import {
   failureBackoffDelayMs,
   stableScheduledJobOffsetMs,
@@ -9,6 +11,10 @@ import {
 } from '../../modules/background/worker-scheduler.js'
 
 logger.level = 'silent'
+
+const workerSchedulerSource = readFileSync(new URL('../../modules/background/worker-scheduler.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(workerSchedulerSource, /Date\.parse\(/, 'worker scheduler 不得按本机时区解析内部绝对时间')
+assert.match(workerSchedulerSource, /rfc3339InstantMilliseconds\(value\)/, 'worker scheduler 内部绝对时间必须严格解析')
 
 assert.equal(stableScheduledJobOffsetMs('same-seed', 1_000), stableScheduledJobOffsetMs('same-seed', 1_000))
 assert.notEqual(stableScheduledJobOffsetMs('instance-a', 1_000), stableScheduledJobOffsetMs('instance-b', 1_000))
@@ -40,7 +46,7 @@ async function verifyCoalesceOneKeepsFixedRatePhase(): Promise<void> {
   releaseFirst?.()
   await clock.flush()
   assert.equal(runCount, 2)
-  assert.equal(Date.parse(scheduler.snapshots()[0]?.nextRunAt ?? ''), clock.epochMs + 32, '尾随执行不得漂移固定频率相位')
+  assert.equal(strictTimestampMs(scheduler.snapshots()[0]?.nextRunAt), clock.epochMs + 32, '尾随执行不得漂移固定频率相位')
   scheduler.stop()
 }
 
@@ -167,7 +173,7 @@ async function verifyFixedDelayLaneSkipSchedulesNextRun(): Promise<void> {
   await clock.flush()
   const skipped = scheduler.snapshots().find((item) => item.name === 'fixed-delay-lane-skip')
   assert.equal(skipped?.skippedCount, 1)
-  assert.equal(Date.parse(skipped?.nextRunAt ?? ''), clock.epochMs + 20, 'lane 忙导致跳过后必须保留下一次 fixedDelay 调度')
+  assert.equal(strictTimestampMs(skipped?.nextRunAt), clock.epochMs + 20, 'lane 忙导致跳过后必须保留下一次 fixedDelay 调度')
   releaseLane?.()
   await clock.flush()
   await clock.advanceBy(20)
@@ -194,7 +200,7 @@ async function verifyFailureBackoffKeepsRegularPhase(): Promise<void> {
   assert.equal(starts.length, 1)
   await clock.advanceBy(1)
   assert.deepEqual(starts, [clock.epochMs, clock.epochMs + 5])
-  assert.equal(Date.parse(scheduler.snapshots()[0]?.nextRunAt ?? ''), clock.epochMs + 10, '失败退避不得漂移固定频率相位')
+  assert.equal(strictTimestampMs(scheduler.snapshots()[0]?.nextRunAt), clock.epochMs + 10, '失败退避不得漂移固定频率相位')
   scheduler.stop()
 }
 
@@ -213,7 +219,7 @@ async function verifyFailureBackoffDeduplicatesCoincidentRegularTick(): Promise<
   })
 
   await clock.flush()
-  assert.equal(Date.parse(scheduler.snapshots()[0]?.nextRunAt ?? ''), clock.epochMs + 20)
+  assert.equal(strictTimestampMs(scheduler.snapshots()[0]?.nextRunAt), clock.epochMs + 20)
   await clock.advanceBy(20)
   assert.deepEqual(
     starts,
@@ -283,6 +289,12 @@ async function verifyStopAndDrain(): Promise<void> {
   assert.equal(result.activeCount, 0)
   await clock.advanceBy(2_000)
   assert.equal(clock.pendingTimerCount, 0, '停止后不得复活周期 timer')
+}
+
+function strictTimestampMs(value: string | undefined): number {
+  const milliseconds = rfc3339InstantMilliseconds(value)
+  if (milliseconds === undefined) throw new Error('worker scheduler 回归收到非法绝对时间')
+  return milliseconds
 }
 
 interface FakeTimer {

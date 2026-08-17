@@ -83,10 +83,10 @@ assert.equal(accountBalanceSnapshotMatchesConfiguration({
   nextRefreshAt: '2026-07-14T02:00:00.000Z'
 }, oldSnapshotRecord), false, '重新启用余额后，旧快照调度代次必须与持久化当前配置失配')
 
-const currentGeneration = { nextRefreshAt: '2026-07-14T03:00:00.000Z' }
+const currentGeneration = { nextRefreshAt: '2026-07-14T12:00:00.000+09:00' }
 const staleCurrentGenerationSnapshot: AccountBalanceSnapshotRecord = {
   snapshot: { status: 'fresh', remainingUsd: '66.00' },
-  nextRefreshAfter: currentGeneration.nextRefreshAt,
+  nextRefreshAfter: '2026-07-14T03:00:00.000Z',
   updatedAt: '2026-07-14T01:59:59.999Z'
 }
 assert.equal(exhaustedCoordinator.isSuppressed('account-exhausted', {
@@ -98,8 +98,24 @@ assert.throws(
     configuration: currentGeneration,
     snapshotRecord: { ...staleCurrentGenerationSnapshot, updatedAt: '2026-07-14T01:59:59.999' }
   }),
-  /余额快照 updatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  /余额快照 updatedAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
   '余额快照持久化裸 updatedAt 必须显式失败'
+)
+assert.throws(
+  () => exhaustedCoordinator.isSuppressed('account-exhausted', {
+    configuration: { nextRefreshAt: '2026-07-14T03:00:00.000' },
+    snapshotRecord: staleCurrentGenerationSnapshot
+  }),
+  /余额快照配置 nextRefreshAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '余额快照配置裸 nextRefreshAt 必须显式失败'
+)
+assert.throws(
+  () => exhaustedCoordinator.isSuppressed('account-exhausted', {
+    configuration: currentGeneration,
+    snapshotRecord: { ...staleCurrentGenerationSnapshot, nextRefreshAfter: '2026-07-14T03:00:00.000' }
+  }),
+  /余额快照 nextRefreshAfter必须是带 Z 或数值 offset 的 RFC3339 时间/,
+  '余额快照持久化裸 nextRefreshAfter 必须显式失败'
 )
 const cutoffCurrentGenerationSnapshot: AccountBalanceSnapshotRecord = {
   snapshot: { status: 'fresh', remainingUsd: '66.50' },
@@ -285,6 +301,9 @@ const accountBatchEditSource = readFileSync(new URL('../../modules/accounts/acco
 assert.match(cleanupSource, /createRetryQueue<AccountBalanceSnapshotCleanupQueueItem>/, '余额快照清理必须复用轻量重试队列')
 assert.match(cleanupSource, /account_balance_snapshot_cleanup_retry_exhausted/, '有限重试耗尽必须写可观测日志')
 assert.doesNotMatch(cleanupSource, /cleanupAfterSave:\s*async/, '首次删除不能绕过重试队列阻塞保存响应')
+assert.match(cleanupSource, /function normalizeSuppressionRead\(/, '余额快照读取代次必须在比较前严格 canonical')
+assert.match(cleanupSource, /余额快照配置 nextRefreshAt/, '余额快照配置 nextRefreshAt 必须拒绝裸时间')
+assert.match(cleanupSource, /余额快照 nextRefreshAfter/, '余额快照 nextRefreshAfter 必须拒绝裸时间')
 assert.match(accountRoutesSource, /cleanupAccountBalanceSnapshotAfterSave/, '单账户保存不能继续吞掉快照清理错误')
 assert.doesNotMatch(accountRoutesSource, /await cleanupAccountBalanceSnapshotAfterSave/, '单账户保存不能等待派生快照清理')
 assert.match(

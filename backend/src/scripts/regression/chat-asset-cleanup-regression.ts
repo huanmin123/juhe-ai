@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -50,11 +50,12 @@ try {
   const failed = await createReadyAsset('chat_asset_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'cc/dd/failure.png', Buffer.from('failure-object'))
   rmSync(assetStorage.chatAssetObjectPath(failed.storageKey!), { force: true })
   mkdirSync(assetStorage.chatAssetObjectPath(failed.storageKey!), { recursive: true })
-  const failedCleanup = await cleanupExpiredChatAssets({ client, now: expiresAt, limit: 10 })
+  const failedCleanup = await cleanupExpiredChatAssets({ client, now: '2026-07-04T09:00:00.000+09:00', limit: 10 })
   assert.deepEqual([failedCleanup.claimedAssets, failedCleanup.deletedAssets, failedCleanup.failedAssets], [1, 0, 1])
   const failedRow = database.prepare('SELECT cleanup_status, cleanup_attempt_count, cleanup_retry_at FROM chat_assets WHERE id = ?').get(failed.id) as Record<string, unknown>
   assert.equal(failedRow.cleanup_status, 'failed')
   assert.equal(Number(failedRow.cleanup_attempt_count), 1)
+  assert.equal(failedRow.cleanup_retry_at, '2026-07-04T00:01:00.000Z', '清理 retryAt 必须 canonical 为 UTC')
   rmSync(assetStorage.chatAssetObjectPath(failed.storageKey!), { recursive: true, force: true })
   const retryCleanup = await cleanupExpiredChatAssets({ client, now: '2026-07-08T00:01:01.000Z', limit: 10 })
   assert.deepEqual([retryCleanup.deletedAssets, retryCleanup.failedAssets], [1, 0], '退避到期后必须重试并收口 DB 行')
@@ -102,6 +103,23 @@ try {
   const clearedAssetCleanup = await cleanupExpiredChatAssets({ client, now: clearNow, limit: 10 })
   assert.deepEqual([clearedAssetCleanup.claimedAssets, clearedAssetCleanup.deletedAssets, clearedAssetCleanup.failedAssets], [1, 1, 0])
   assert.equal(await exists(committed.storageKey!), false, '后台清理应收口清空会话的过期资产')
+
+  await assert.rejects(
+    () => cleanupExpiredChatAssets({ client, now: '2026-07-08T00:16:01.000', limit: 10 }),
+    /聊天资产清理 now必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    '聊天资产清理 supplied bare now 必须显式失败'
+  )
+
+  const cleanupSource = readFileSync(new URL('../../modules/chat/chat-asset-cleanup.ts', import.meta.url), 'utf8')
+  const chatRoutesSource = readFileSync(new URL('../../modules/chat/chat.routes.ts', import.meta.url), 'utf8')
+  const deleteRouteStart = chatRoutesSource.indexOf("chatRouter.delete('/conversations/:conversationId/assets/:assetId'")
+  const deleteRouteEnd = chatRoutesSource.indexOf("\nchatRouter.get('/conversations/:conversationId/models'", deleteRouteStart)
+  assert.ok(deleteRouteStart >= 0 && deleteRouteEnd > deleteRouteStart, '必须能定位聊天资产删除路由')
+  const deleteRouteSource = chatRoutesSource.slice(deleteRouteStart, deleteRouteEnd)
+  assert.doesNotMatch(cleanupSource, /Date\.parse\(/, '聊天资产后台清理不得按进程时区解析 now')
+  assert.match(cleanupSource, /requiredRfc3339Instant\(input\.now, '聊天资产清理 now'\)/, '聊天资产后台清理 now 必须严格 canonical')
+  assert.doesNotMatch(deleteRouteSource, /retryAt: new Date\(Date\.parse\(now\)/, '聊天资产删除路由不得重新宽松解析内部 now')
+  assert.match(deleteRouteSource, /const nowMs = Date\.now\(\)[\s\S]*retryAt: new Date\(nowMs \+ 60_000\)\.toISOString\(\)/, '聊天资产删除路由必须从同一 epoch 生成 retryAt')
 
   async function createReadyAsset(id: string, storageKey: string, bytes: Buffer) {
     const sha256 = createHash('sha256').update(bytes).digest('hex')

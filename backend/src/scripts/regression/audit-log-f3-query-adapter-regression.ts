@@ -23,11 +23,16 @@ const searchHotEnd = adapterSource.indexOf('\n  getRuntime(): AuditLogF3Runtime'
 assert.ok(searchHotStart >= 0 && searchHotEnd > searchHotStart, '必须能定位 F3 hot-search 实现')
 const searchHotSource = adapterSource.slice(searchHotStart, searchHotEnd)
 assert.doesNotMatch(searchHotSource, /\breadFile\s*\(/, 'F3 hot-search 不得完整 readFile 小时 NDJSON')
+assert.doesNotMatch(searchHotSource, /Date\.parse\(/, 'F3 hot-search supplied 时间不得按本机时区解析')
+assert.match(searchHotSource, /f3TimestampMilliseconds\(options\.endAt, 'F3 热搜索 endAt'\)/, 'F3 hot-search endAt 必须严格解析')
+assert.match(searchHotSource, /f3TimestampMilliseconds\(options\.startAt, 'F3 热搜索 startAt'\)/, 'F3 hot-search startAt 必须严格解析')
 assert.match(searchHotSource, /scanF3HotSearchFile/, 'F3 hot-search 必须通过有界文件扫描器读取 NDJSON')
 assert.match(adapterSource, /const f3HotSearchMaxFiles = 2/, 'F3 hot-search 必须限制扫描文件数')
 assert.match(adapterSource, /const f3HotSearchMaxScanBytes = 4 \* 1024 \* 1024/, 'F3 hot-search 必须限制总扫描字节数')
 assert.match(adapterSource, /const f3HotSearchMaxScanLines = 10_000/, 'F3 hot-search 必须限制扫描行数')
 assert.match(adapterSource, /const f3HotSearchMaxLineBytes = 256 \* 1024/, 'F3 hot-search 必须限制单行大小')
+assert.match(adapterSource, /const f3AbsoluteTimestampColumns = new Set/, 'F3 DB 时间字段必须在读取边界统一 canonical')
+assert.match(adapterSource, /f3TimestampMilliseconds\(row\.createdAt, 'F3 热搜索 createdAt'\)/, 'F3 hot-search 文件中的 createdAt 必须严格解析')
 
 const { createAuditLogF3QueryRepository, AuditLogF3SchemaError } = await import('../../storage/audit-log-f3-query.repository.js')
 
@@ -91,14 +96,14 @@ try {
       error_group_id, capture_status, lifecycle_status, started_at, ended_at, duration_ms, created_at
     ) VALUES (?, ?, 'gateway', 'GET', '/v1/models', 'gpt-test', 0, 0, 'gateway_succeeded', 1, 200,
       1, 'sampled', 1, 1, 11, 11, 0, 'eg1', 'complete', 'finalized', ?, ?, 4, ?)
-  `).run('audit-1', 'trace-1', '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.004Z', '2026-08-09T00:00:00.004Z')
+  `).run('audit-1', 'trace-1', '2026-08-09T09:00:00.000+09:00', '2026-08-09T09:00:00.004+09:00', '2026-08-09T00:00:00.004Z')
   database.prepare(`
     INSERT INTO audit_log_attempts (
       id, audit_log_id, attempt_index, account_id, group_id, provider_code, attempt_model,
       upstream_method, upstream_url, upstream_status_code, success, started_at, ended_at, duration_ms
     ) VALUES ('attempt-1', 'audit-1', 0, 'account-1', 'group-1', 'openai', 'gpt-test',
       'GET', 'https://example.test/v1/models', 200, 1, ?, ?, 3)
-  `).run('2026-08-09T00:00:00.001Z', '2026-08-09T00:00:00.004Z')
+  `).run('2026-08-09T09:00:00.001+09:00', '2026-08-09T09:00:00.004+09:00')
   database.prepare(`
     INSERT INTO audit_payload_blobs (
       id, sha256, raw_size_bytes, compressed_size_bytes, content_type, compression, storage_key,
@@ -116,7 +121,7 @@ try {
       compressed_size_bytes, capture_status, created_at
     ) VALUES ('payload-1', 'audit-1', 'attempt-1', 'gateway_response', 0, 'text/plain',
       'blob-headers', 'blob-body', 'headers-sha', 'body-sha', 11, 11, 'complete', ?)
-  `).run('2026-08-09T00:00:00.004Z')
+  `).run('2026-08-09T09:00:00.004+09:00')
   database.prepare(`
     INSERT INTO audit_error_groups (
       id, fingerprint, window_started_at, window_ended_at, path, model, status_code,
@@ -125,8 +130,8 @@ try {
     ) VALUES ('eg1', 'fingerprint-1', ?, ?, '/v1/models', 'gpt-test', 500,
       'upstream', 'E_TEST', 'Error', 'request-1', 'error-1', 1, 'audit-1', 'audit-1', 'audit-1', 'failed', ?, ?)
   `).run(
-    '2026-08-09T00:00:00.000Z', '2026-08-09T01:00:00.000Z',
-    '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z'
+    '2026-08-09T09:00:00.000+09:00', '2026-08-09T10:00:00.000+09:00',
+    '2026-08-09T09:00:00.000+09:00', '2026-08-09T09:00:00.000+09:00'
   )
   database.close()
 
@@ -167,8 +172,21 @@ try {
     const page = await repository.listAuditLogs({ pageSize: 1 })
     assert.equal(page.items.length, 1)
     assert.equal(page.items[0]?.id, 'audit-1')
+    assert.equal(page.items[0]?.createdAt, '2026-08-09T00:00:00.004Z')
     assert.equal(page.items[0]?.lifecycleStatus, 'finalized')
+    assert.equal((await repository.listAuditLogs({ startAt: '2026-08-09T09:00:00.004+09:00' })).items[0]?.id, 'audit-1', 'F3 list 时间筛选必须 canonical numeric offset')
+    await assert.rejects(
+      () => repository.listAuditLogs({ startAt: '2026-08-09T00:00:00.004' }),
+      /F3 审计 startAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+      'F3 list supplied bare startAt 必须显式失败'
+    )
     const detail = await repository.getAuditLogDetail('audit-1')
+    assert.equal(detail?.startedAt, '2026-08-09T00:00:00.000Z')
+    assert.equal(detail?.endedAt, '2026-08-09T00:00:00.004Z')
+    assert.equal(detail?.attempts[0]?.startedAt, '2026-08-09T00:00:00.001Z')
+    assert.equal(detail?.attempts[0]?.endedAt, '2026-08-09T00:00:00.004Z')
+    assert.equal(detail?.payloads[0]?.createdAt, '2026-08-09T00:00:00.004Z')
+    assert.equal(detail?.errorGroup?.updatedAt, '2026-08-09T00:00:00.000Z')
     assert.equal(detail?.attempts[0]?.upstreamUrl, 'https://example.test/v1/models')
     assert.equal(detail?.payloads[0]?.id, 'payload-1')
     assert.equal(detail?.errorGroup?.id, 'eg1')
@@ -197,8 +215,41 @@ try {
     })
     assert.deepEqual(limitedHotSearch.auditLogIds, ['audit-hot-latest'])
     assert.equal(limitedHotSearch.truncated, true)
+    await assert.rejects(
+      () => repository.searchHot({ keywords: ['needle'], endAt: '2026-08-09T00:00:00.000' }),
+      /F3 热搜索 endAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+      'F3 hot-search supplied bare endAt 必须显式失败'
+    )
+    writeFileSync(join(hotSearchRoot, `audit-hot-${hotSearchBucketName}.ndjson`), JSON.stringify({
+      auditLogId: 'audit-hot-invalid-created-at',
+      createdAt: '2026-08-09T00:00:00.000',
+      text: 'needle'
+    }))
+    await assert.rejects(
+      () => repository.searchHot({
+        keywords: ['needle'],
+        startAt: new Date(hotSearchStartMs).toISOString(),
+        endAt: new Date(hotSearchEndMs).toISOString()
+      }),
+      /F3 热搜索 createdAt必须是带 Z 或数值 offset 的 RFC3339 时间/,
+      'F3 hot-search NDJSON bare createdAt 必须显式失败'
+    )
   } finally {
     await repository.close()
+  }
+
+  const bareTimestampDatabase = new DatabaseSync(sqlitePath)
+  bareTimestampDatabase.prepare('UPDATE audit_logs SET created_at = ? WHERE id = ?').run('2026-08-09T00:00:00.004', 'audit-1')
+  bareTimestampDatabase.close()
+  const bareTimestampRepository = await createAuditLogF3QueryRepository({ sqlitePath, payloadBlobDirectory: blobRoot, hotSearchDirectory: hotSearchRoot })
+  try {
+    await assert.rejects(
+      () => bareTimestampRepository.listAuditLogs(),
+      /F3 审计 created_at必须是带 Z 或数值 offset 的 RFC3339 时间/,
+      'F3 DB bare created_at 不得继续兼容读取'
+    )
+  } finally {
+    await bareTimestampRepository.close()
   }
 
   const emptyDatabase = new DatabaseSync(emptyPath)

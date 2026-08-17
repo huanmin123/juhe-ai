@@ -40,6 +40,7 @@ import type {
 } from './audit-log-f3-types.js'
 import { pagedTotalUpperBound, takePageRows, textPrefixUpperBound } from './audit-log-f3-query-helpers.js'
 import { convertQuestionPlaceholdersToPostgres } from './database-client.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 const nonPersistedAuditTrafficSources = ['account_health_check', 'runtime_recovery_probe', 'cooldown_retest'] as const
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined
 
@@ -56,6 +57,19 @@ const f3BooleanColumns = new Set([
   'stream',
   'success',
   'attempt_model_mapping_applied'
+])
+
+const f3AbsoluteTimestampColumns = new Set([
+  'lease_until',
+  'started_at',
+  'ended_at',
+  'http_completed_at',
+  'first_seen_at',
+  'last_seen_at',
+  'created_at',
+  'updated_at',
+  'window_started_at',
+  'window_ended_at'
 ])
 
 const f3DefaultPayloadReadLimit = 256 * 1024
@@ -360,8 +374,15 @@ class AuditLogF3QueryRepositoryImpl implements AuditLogF3QueryRepository {
     const keywords = normalizeHotKeywords(options.keywords)
     const limit = normalizeHotLimit(options.limit)
     const now = Date.now()
-    const endMs = clampHotTime(Date.parse(options.endAt ?? ''), now)
-    const startMs = Math.max(endMs - 60 * 60 * 1000, clampHotTime(Date.parse(options.startAt ?? ''), endMs - 60 * 60 * 1000))
+    const endMs = options.endAt === undefined
+      ? now
+      : clampHotTime(f3TimestampMilliseconds(options.endAt, 'F3 热搜索 endAt'), now)
+    const startMs = Math.max(
+      endMs - 60 * 60 * 1000,
+      options.startAt === undefined
+        ? endMs - 60 * 60 * 1000
+        : clampHotTime(f3TimestampMilliseconds(options.startAt, 'F3 热搜索 startAt'), endMs - 60 * 60 * 1000)
+    )
     const range = { startAt: new Date(startMs).toISOString(), endAt: new Date(endMs).toISOString() }
     const base = { available: true, elapsedMs: 0, keywords, ...range, limit, auditLogIds: [] as string[], truncated: false, scannedFileCount: 0 }
     if (keywords.length === 0) return { ...base, elapsedMs: Math.round(performance.now() - startedAt), message: '请输入要搜索的审计内容关键字' }
@@ -628,13 +649,13 @@ function buildF3AuditLogFilters(options: AuditLogListOptions, mode: AuditLogF3Qu
     clauses.push('al.traffic_source = ?')
     params.push(options.trafficSource)
   }
-  const startAt = options.startAt?.trim()
-  if (startAt) {
+  const startAt = optionalF3Timestamp(options.startAt, 'F3 审计 startAt')
+  if (startAt !== undefined) {
     clauses.push('al.created_at >= ?')
     params.push(startAt)
   }
-  const endAt = options.endAt?.trim()
-  if (endAt) {
+  const endAt = optionalF3Timestamp(options.endAt, 'F3 审计 endAt')
+  if (endAt !== undefined) {
     clauses.push('al.created_at <= ?')
     params.push(endAt)
   }
@@ -704,9 +725,33 @@ function pushPathFilter(clauses: string[], params: Array<string | number>, colum
   params.push(path)
 }
 
+function optionalF3Timestamp(value: string | undefined, label: string): string | undefined {
+  return value === undefined ? undefined : requiredRfc3339Instant(value, label)
+}
+
+function f3TimestampMilliseconds(value: unknown, label: string): number {
+  const normalized = requiredRfc3339Instant(value, label)
+  const milliseconds = rfc3339InstantMilliseconds(normalized)
+  if (milliseconds === undefined) throw new Error(`${label}无法解析为 RFC3339 时间`)
+  return milliseconds
+}
+
+function normalizeF3Timestamp(value: unknown, label: string): string {
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new Error(`${label}必须是有效时间`)
+    return value.toISOString()
+  }
+  return requiredRfc3339Instant(value, label)
+}
+
 function normalizeF3Row<T extends AuditLogRow>(row: T): T {
   let normalized: AuditLogRow | undefined
   for (const [key, value] of Object.entries(row)) {
+    if (f3AbsoluteTimestampColumns.has(key) && value !== undefined && value !== null) {
+      normalized ??= { ...row }
+      normalized[key] = normalizeF3Timestamp(value, `F3 审计 ${key}`)
+      continue
+    }
     if (value instanceof Date && Number.isFinite(value.getTime())) {
       normalized ??= { ...row }
       normalized[key] = value.toISOString()
@@ -898,14 +943,18 @@ async function scanF3HotSearchFile(options: F3HotSearchFileScanOptions): Promise
 }
 
 function collectF3HotSearchMatch(line: string, options: F3HotSearchFileScanOptions): void {
+  let parsed: unknown = undefined
   try {
-    const row = JSON.parse(line) as { auditLogId?: string; createdAt?: string; text?: string }
-    const when = Date.parse(row.createdAt ?? '')
-    if (!row.auditLogId || !Number.isFinite(when) || when < options.startMs || when > options.endMs) return
-    if (!options.keywords.some((keyword) => (row.text ?? '').toLowerCase().includes(keyword))) return
-    const previous = options.seen.get(row.auditLogId)
-    if (previous === undefined || when > previous) options.seen.set(row.auditLogId, when)
+    parsed = JSON.parse(line)
   } catch { /* malformed lines are ignored */ }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return
+  const row = parsed as { auditLogId?: unknown; createdAt?: unknown; text?: unknown }
+  if (typeof row.auditLogId !== 'string' || !row.auditLogId.trim()) return
+  const when = f3TimestampMilliseconds(row.createdAt, 'F3 热搜索 createdAt')
+  if (when < options.startMs || when > options.endMs) return
+  if (!options.keywords.some((keyword) => (typeof row.text === 'string' ? row.text : '').toLowerCase().includes(keyword))) return
+  const previous = options.seen.get(row.auditLogId)
+  if (previous === undefined || when > previous) options.seen.set(row.auditLogId, when)
 }
 
 function normalizeHotKeywords(values: string[]): string[] {
