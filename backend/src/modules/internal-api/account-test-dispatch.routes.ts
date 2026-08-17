@@ -1,8 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { BlockList, isIP } from 'node:net'
 
 import express, { Router, type NextFunction, type Request, type Response } from 'express'
-
-import { isLoopbackRemoteAddress } from './account-health-check-dispatch.routes.js'
 
 export const accountTestDispatchInternalPrefix = '/__aiinternal__'
 export const accountTestDispatchSignatureDomain = 'juhe-ai:account-test-dispatch:v1\n'
@@ -10,6 +9,15 @@ export const accountTestDispatchSignatureDomain = 'juhe-ai:account-test-dispatch
 const accountTestDispatchPath = '/v1/account-test/dispatch'
 const rawBodyLimitBytes = 1024
 const signaturePattern = /^v1=([0-9a-f]{64})$/
+const loopbackAddresses = new BlockList()
+loopbackAddresses.addAddress('127.0.0.1', 'ipv4')
+loopbackAddresses.addAddress('::1', 'ipv6')
+
+function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
+  if (!remoteAddress) return false
+  const version = isIP(remoteAddress)
+  return version !== 0 && loopbackAddresses.check(remoteAddress, version === 4 ? 'ipv4' : 'ipv6')
+}
 
 export interface AccountTestDispatchRouterOptions {
   secret: string

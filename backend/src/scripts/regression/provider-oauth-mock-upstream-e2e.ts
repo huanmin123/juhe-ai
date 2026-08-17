@@ -201,7 +201,7 @@ async function testSystemApiAccountBinding(): Promise<void> {
 
       const groupId = refreshedPersisted.boundGroupId
       assert(groupId, `${route} OAuth 账户必须绑定测试分组`)
-      repositories.recordAccountHealthCheckSuccess(created.id, {
+      repositories.projectAccountHealthFixtureSuccess(created.id, {
         intervalHours: 1,
         jitterMinutes: 0,
         failureThreshold: 3,

@@ -1283,7 +1283,7 @@ function createActiveAccount(
     ...input,
     supportedModels
   }, accountAccess)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

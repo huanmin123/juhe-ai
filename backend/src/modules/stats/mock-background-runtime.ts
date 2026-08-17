@@ -148,22 +148,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
         ready: true,
         workerRole: 'ops-worker',
         jobs: [
-          job('account-health-check', 'ops-worker', 5 * 60_000, {
-            running: accountStatusCounts.error > 0,
-            successCount: accountStatusCounts.active,
-            failureCount: accountStatusCounts.error,
-            lastDurationMs: 1640,
-            maxDurationMs: 4920,
-            lastSuccessAt: minutesAgo(now, 6)
-          }),
-          job('cooldown-account-retest', 'ops-worker', 30_000, {
-            running: accountStatusCounts.temporaryUnavailable > 0,
-            successCount: accountStatusCounts.rateLimited,
-            failureCount: accountStatusCounts.temporaryUnavailable,
-            lastDurationMs: 1180,
-            maxDurationMs: 3480,
-            lastSuccessAt: minutesAgo(now, 3)
-          }),
           job('account-api-key-cooldown-retest', 'ops-worker', 30_000, {
             successCount: Math.max(1, accountStatusCounts.rateLimited),
             failureCount: 0,
@@ -172,18 +156,6 @@ export function loadMockBackgroundRuntimeSnapshot(): DbServiceServerRuntimeSnaps
             lastSuccessAt: minutesAgo(now, 5)
           })
         ],
-        accountHealthCheckQueue: {
-          name: 'account-health-check-queue',
-          pendingCount: accountStatusCounts.error,
-          runningCount: accountStatusCounts.error > 0 ? 1 : 0,
-          nextRunAt: minutesFrom(now, 3)
-        },
-        cooldownAccountRetestQueue: {
-          name: 'cooldown-account-retest-queue',
-          pendingCount: accountStatusCounts.rateLimited + accountStatusCounts.temporaryUnavailable,
-          runningCount: accountStatusCounts.temporaryUnavailable > 0 ? 1 : 0,
-          nextRunAt: minutesFrom(now, 2)
-        },
         accountApiKeyCooldownRetestQueue: {
           name: 'account-api-key-cooldown-retest-queue',
           pendingCount: Math.max(1, accountStatusCounts.rateLimited),

@@ -29,7 +29,7 @@ for (const [source, mode] of [[standaloneSource, 'standalone'], [performanceSour
   }
   assert.match(jobs, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:/u, `${mode} jobs must own F1`)
   assert.match(jobs, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} jobs must own F2`)
-  assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: \$\{JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:-node\}/u, `${mode} Node must default J1 owner to Node until an explicit handoff`)
+  assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: \$\{JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:-go\}/u, `${mode} Node must start with the fixed Go J1 owner`)
   assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, `${mode} Node must receive the J1 signed-request directory`)
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED: \$\{JUHE_AI_ACCOUNT_HEALTH_ENABLED:-false\}/u, `${mode} jobs must keep J1 disabled by default`)
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:/u, `${mode} jobs must receive the J1 owner declaration`)

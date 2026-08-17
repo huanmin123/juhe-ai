@@ -21,14 +21,13 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, accountHealthCheckRepository, workerSchedulerModule] = await Promise.all([
+const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, workerSchedulerModule] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-balance.repository.js'),
   import('../../modules/accounts/account-balance-query.service.js'),
   import('../../modules/background/account-balance-refresh.job.js'),
   import('../../modules/background/account-balance-auto-detect.service.js'),
-  import('../../storage/account-health-check.repository.js'),
   import('../../modules/background/worker-scheduler.js')
 ])
 
@@ -42,7 +41,7 @@ const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 
 const balanceRefreshJobSource = readFileSync(resolve('src/modules/background/account-balance-refresh.job.ts'), 'utf8')
 const autoDetectServiceSource = readFileSync(resolve('src/modules/background/account-balance-auto-detect.service.ts'), 'utf8')
 const backgroundJobsSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
-const accountHealthCheckRepositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
+const accountHealthProjectionSource = readFileSync(resolve('src/storage/account-health-projection.repository.ts'), 'utf8')
 assert.doesNotMatch(
   balanceServiceSource,
   /response\.status\s*===\s*(?:401|403|408|429)|status\s*>=\s*500|HTTP \(\?:401\|403\)/,
@@ -79,7 +78,7 @@ assert.match(balanceRepositorySource, /function balanceBooleanLiteral\(value: bo
 assert.match(balanceRepositorySource, /listAccountsDueForBalanceRefreshAsync[\s\S]*schedulable = 1[\s\S]*balance_query_enabled = 1/, 'PostgreSQL 自动刷新候选必须匹配 Node INTEGER partial index')
 assert.match(balanceRepositorySource, /saveAccountBalanceConfigurationAsync[\s\S]*?\[input\.enabled \? 1 : 0, JSON\.stringify\(config \?\? \{\}\)/, 'PostgreSQL 余额开关写入必须绑定 INTEGER 0/1 参数')
 assert.match(balanceRepositorySource, /balanceDetectionCandidateWhere[\s\S]*balanceBooleanPredicate\('schedulable', true\)[\s\S]*balanceBooleanPredicate\('balance_query_enabled', false\)/, '首次探测候选及写回必须按当前方言核对可调度和关闭状态')
-assert.match(accountHealthCheckRepositorySource, /recordAccountHealthCheckSuccessAsync[\s\S]*schedulable = CASE WHEN status = 'pending_test' THEN 1[\s\S]*AND \? = 1[\s\S]*balance_query_enabled = 0/, 'PostgreSQL 健康成功必须按 Node INTEGER 写入首次余额探测意图')
+assert.match(accountHealthProjectionSource, /case 'activation_success':[\s\S]*set\('schedulable', 1\)[\s\S]*balance_query_next_refresh_at/, 'J1 activation projector 必须在同一业务事务写入首次余额探测意图')
 assert.match(balanceRefreshJobSource, /const refreshBatchSize = runtimeConfig\.background\.accountBalanceRefreshBatchSize/, '余额刷新单轮候选批次必须来自环境配置')
 assert.match(balanceRefreshJobSource, /const refreshConcurrency = runtimeConfig\.concurrency\.globalMax/, '余额刷新必须使用全局共享并发池')
 assert.match(balanceRefreshJobSource, /runWithGlobalBackgroundConcurrencySlot/, '余额刷新候选必须获取全局共享槽')
@@ -219,7 +218,7 @@ try {
           balance_query_config_json = '{}', balance_query_next_refresh_at = NULL
       WHERE id = ?
     `).run(account.id)
-    assert.equal(accountHealthCheckRepository.recordAccountHealthCheckSuccess(account.id, {
+    assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 1,
       jitterMinutes: 0,
       failureThreshold: 3,
@@ -240,7 +239,8 @@ try {
   }
 
   const directActiveDetectionAt = new Date(Date.now() - 1_000).toISOString()
-  assert.equal(accountHealthCheckRepository.recordAccountHealthCheckSuccess(directActiveAutoDetect.id, {
+  database.prepare(`UPDATE accounts SET status = 'pending_test', schedulable = 0 WHERE id = ?`).run(directActiveAutoDetect.id)
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(directActiveAutoDetect.id, {
     intervalHours: 1,
     jitterMinutes: 0,
     failureThreshold: 3,

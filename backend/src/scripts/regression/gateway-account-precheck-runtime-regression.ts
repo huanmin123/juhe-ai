@@ -1148,7 +1148,7 @@ function createGatewayAccount(name: string, errorHandlingRules: AccountErrorHand
     status: 'active',
     schedulable: true
   }, adminAccess)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

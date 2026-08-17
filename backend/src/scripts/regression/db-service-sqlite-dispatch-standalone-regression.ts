@@ -56,7 +56,7 @@ try {
     supportedModels: ['gpt-5.5'],
     healthCheckModel: 'gpt-5.5'
   }, access)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

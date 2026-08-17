@@ -290,48 +290,9 @@ function assertRuntimeWriteQueueSourceGuards(): void {
   assert(dbServiceIpcSource.includes('requestDbServiceDatasetWrite'), 'DB service 必须具备 dataset writer 转发入口')
   assert(dbServiceIpcSource.includes('respondToDatasetWriteRequest'), 'server 必须把 DB service dataset writer 请求转发给 ingest-worker')
 
-  const accountProbeJobsSource = readFileSync(resolve('src/modules/background/account-probe-jobs.ts'), 'utf8')
-  assert(accountProbeJobsSource.includes('requestBackgroundWorkerDbService'), 'ops-worker 账号探测候选扫描必须通过 DB service')
-  for (const forbidden of ['listAccountsDueForHealthCheck', 'listAccountsDueForCooldownRetest']) {
-    assert.equal(
-      accountProbeJobsSource.includes(forbidden),
-      false,
-      `ops-worker 账号探测候选扫描不能直接调用会写业务库的 repository：${forbidden}`
-    )
-  }
-  for (const required of ['list_accounts_due_for_health_check', 'list_accounts_due_for_cooldown_retest']) {
-    assert(accountProbeJobsSource.includes(required), `ops-worker 账号探测候选扫描必须登记 DB service 操作：${required}`)
-  }
-
-  const accountHealthQueueSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
-  assert.equal(
-    accountHealthQueueSource.includes('findAccountForHealthCheck'),
-    false,
-    'ops-worker 健康检测队列项不能直接调用 findAccountForHealthCheck；该函数会先停用过期账号并写业务库'
-  )
-  assert(
-    accountHealthQueueSource.includes('find_account_for_health_check'),
-    'ops-worker 健康检测队列项单账号复查必须通过 DB service'
-  )
-  assert(
-    accountHealthQueueSource.includes('findAccountForTest: loadAccountForTestViaDbService'),
-    'ops-worker 健康检测调用测试 service 时必须传入 DB service 账号读取器'
-  )
-
-  const cooldownRetestQueueSource = readFileSync(resolve('src/modules/background/cooldown-account-retest.service.ts'), 'utf8')
-  assert.equal(
-    cooldownRetestQueueSource.includes('findAccountForCooldownRetest'),
-    false,
-    'ops-worker 冷却复测队列项不能直接调用 findAccountForCooldownRetest；该函数会先停用过期账号并写业务库'
-  )
-  assert(
-    cooldownRetestQueueSource.includes('find_account_for_cooldown_retest'),
-    'ops-worker 冷却复测队列项单账号复查必须通过 DB service'
-  )
-  assert(
-    cooldownRetestQueueSource.includes('findAccountForTest: loadAccountForTestViaDbService'),
-    'ops-worker 冷却复测调用测试 service 时必须传入 DB service 账号读取器'
-  )
+  const healthProjectionSource = readFileSync(resolve('src/storage/account-health-projection.repository.ts'), 'utf8')
+  assert(healthProjectionSource.includes('projectAccountHealthJobsOutcome'), '业务 SQLite 只能由通用 J1 outcome projector 写入健康事实')
+  assert.doesNotMatch(healthProjectionSource, /createRetryQueue|handleOpenAIGatewayRequest|Redis Stream/, 'projector 不得重新承担 Node J1 调度、网关或队列职责')
 
   const accountTestTaskQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
   assert.equal(

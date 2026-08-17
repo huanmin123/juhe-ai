@@ -1,10 +1,9 @@
 import { runtimeConfig } from './config/runtime.js'
 import {
-  sendClientSourceFenceSettledToServer,
   type BackgroundWorkerRuntimeSnapshot,
   type BackgroundWorkerQueueRuntime
 } from './modules/background/background-ipc.js'
-import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, stopBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
+import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, stopBackgroundJobs } from './modules/background/background-jobs.js'
 import {
   enqueuePublicApiLogsLocal,
   flushPublicApiLogQueueForShutdown,
@@ -33,9 +32,7 @@ import {
   stopUsageRecordRedisStreamConsumer
 } from './modules/gateway/usage/record-queue.service.js'
 import { closeUsageRecordWriterPool } from './storage/usage-record-writer-pool.js'
-import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
 import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/background/account-api-key-cooldown-retest.service.js'
-import { getAccountHealthCheckQueueSnapshot } from './modules/background/account-health-check.service.js'
 import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
 import { getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot } from './modules/background/normal-route-speed-first-recovery-probe.service.js'
 import { handleStatsWriteOperation, type BackgroundStatsWriteOperation } from './modules/background/background-stats-writer.js'
@@ -50,8 +47,6 @@ import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, stats
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
-import { createTraceId, getRequestLogger, normalizeHeaderId, withRequestContext } from './shared/request-context.js'
-import { isAccountHealthCheckTriggerReason, normalizeCodexSourceProbeFence } from './modules/accounts/account-health-check-trigger.js'
 
 type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
@@ -59,7 +54,6 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown; traceId?: unknown; sourceFence?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
   | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_stats_write_request'; requestId: unknown; operation: unknown }
@@ -146,9 +140,6 @@ process.on('message', (message: unknown) => {
         cancelAccountTestTaskLocal(message.taskId)
       }
       break
-    case 'background_worker_account_health_check_trigger':
-      void triggerAccountHealthCheckFromIpcMessage(message)
-      break
     case 'background_worker_status_request':
       if (typeof message.requestId === 'string') {
         sendWorkerMessage({
@@ -188,54 +179,6 @@ sendWorkerMessage({
   workerRole: runtimeConfig.workerRole
 })
 
-async function triggerAccountHealthCheckFromIpcMessage(
-  message: Extract<WorkerIncomingMessage, { type: 'background_worker_account_health_check_trigger' }>
-): Promise<void> {
-  if (typeof message.accountId !== 'string' || !isAccountHealthCheckTriggerReason(message.reason)) return
-
-  const accountId = message.accountId
-  const reason = message.reason
-  const sourceFence = normalizeCodexSourceProbeFence(message.sourceFence)
-  const parentTraceId = typeof message.traceId === 'string' ? normalizeHeaderId(message.traceId) : undefined
-  const traceId = createTraceId()
-  const contextLogger = logger.child({
-    traceId,
-    ...(parentTraceId ? { parentTraceId } : {})
-  })
-
-  await withRequestContext({
-    traceId,
-    startedAt: Date.now(),
-    method: 'IPC',
-    path: 'background_worker_account_health_check_trigger',
-    originalUrl: 'background_worker_account_health_check_trigger',
-    logger: contextLogger
-  }, async () => {
-    getRequestLogger().info({
-      event: 'background_account_health_check_trigger_received',
-      accountId,
-      reason,
-      parentTraceId: parentTraceId ?? null
-    }, '已接收账户健康检查触发')
-    try {
-      const accepted = await triggerAccountHealthCheckNow(accountId, reason, sourceFence)
-      if (!accepted && sourceFence) {
-        sendClientSourceFenceSettledToServer(sourceFence, 'unknown')
-      }
-    } catch (error) {
-      if (sourceFence) {
-        sendClientSourceFenceSettledToServer(sourceFence, 'probe_task_failure')
-      }
-      getRequestLogger().warn(errorLogFields(error, {
-        event: 'background_account_health_check_trigger_failed',
-        accountId,
-        reason,
-        parentTraceId: parentTraceId ?? null
-      }), '立即触发账户健康检查失败，等待周期任务兜底')
-    }
-  })
-}
-
 logger.info({
   event: 'background_worker_started',
   pid: process.pid,
@@ -257,8 +200,6 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
     publicApiLogQueue: queueRuntime(getPublicApiLogQueueRuntime()),
     recordMaintenanceQueue: queueRuntime(getRecordMaintenanceQueueRuntime()),
-    accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
-    cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
     normalRouteSpeedFirstRecoveryProbeQueue: getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot(),
     accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),
@@ -505,7 +446,6 @@ function isOpsWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
     || message.type === 'background_worker_account_test_tasks'
     || message.type === 'background_worker_account_test_cancel'
-    || message.type === 'background_worker_account_health_check_trigger'
 }
 
 function workerStartedMessage(): string {

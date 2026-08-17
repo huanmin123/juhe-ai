@@ -138,7 +138,7 @@ try {
     healthCheckEndpointMode: 'responses_sse',
     groupId: ownerSourceGroup.id
   }, ownerAccess)
-  repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
+  repositories.projectAccountHealthFixtureSuccess(ownerAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -154,7 +154,7 @@ try {
   }, ownerAccess)
   const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(granteeAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
-  repositories.recordAccountHealthCheckSuccess(granteeAccount.id, {
+  repositories.projectAccountHealthFixtureSuccess(granteeAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -458,7 +458,7 @@ function sessionCookie(systemAccountId: string): string {
 }
 
 function activateAccountAfterBackgroundCheck(accountId: string): void {
-  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+  const changed = repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

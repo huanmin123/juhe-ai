@@ -11,6 +11,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { publishAccountHealthJobsInput } from '../../modules/background/account-health-jobs-input.protocol.js'
 import { projectAccountHealthJobsOutcome } from '../../storage/account-health-projection.repository.js'
 import type { AccountHealthJobsOutcome } from '../../storage/account-health-jobs-outcome.repository.js'
+import { encryptJson } from '../../storage/crypto.js'
 
 const require = createRequire(import.meta.url)
 const Constructor = require('node:sqlite').DatabaseSync as new (path: string) => DatabaseSync
@@ -186,6 +187,11 @@ function createBusinessProjectionFixture(database: DatabaseSync): void {
       cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_generation TEXT,
+      type TEXT NOT NULL DEFAULT 'api_key',
+      credentials_encrypted TEXT NOT NULL DEFAULT '',
+      balance_query_enabled INTEGER NOT NULL DEFAULT 0,
+      balance_query_config_json TEXT NOT NULL DEFAULT '{}',
+      balance_query_next_refresh_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       last_error_code TEXT,
@@ -218,9 +224,9 @@ function createBusinessProjectionFixture(database: DatabaseSync): void {
     );
   `)
   database.prepare(`
-    INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, updated_at)
-    VALUES (?, 'active', 1, 2, 3, ?)
-  `).run(accountId, '2026-08-17T00:00:00.000Z')
+    INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at)
+    VALUES (?, 'active', 1, 2, 3, ?, ?)
+  `).run(accountId, encryptJson({ api_key: 'sk-j1-cross-language' }), '2026-08-17T00:00:00.000Z')
   database.prepare(`
     INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at)
     VALUES (?, 1, ?)

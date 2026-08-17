@@ -73,9 +73,9 @@ const rejected = await detectAccountBalanceAdapter(candidate, {
 })
 assert.equal(rejected, undefined, '查询异常不能自动开启')
 
-const healthSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
-assert.match(healthSource, /reason === 'activation'[\s\S]*account\.status === 'pending_test'[\s\S]*account\.status === 'active'/, '首次创建健康检查成功后应允许待检查和直接启用的单 Key 账户成为余额自动探测候选')
-assert.match(healthSource, /const scheduleBalanceAutoDetection = shouldScheduleAccountBalanceAutoDetection\(account, item\.reason\)[\s\S]*if \(changed && scheduleBalanceAutoDetection\) \{[\s\S]*enqueueAccountBalanceAutoDetection/, '健康检查写回成功后才能投递余额自动探测')
+const healthProjectionSource = readFileSync(resolve('src/storage/account-health-projection.repository.ts'), 'utf8')
+assert.match(healthProjectionSource, /case 'activation_success':[\s\S]*set\('schedulable', 1\)[\s\S]*balance_query_next_refresh_at/, 'Go J1 activation outcome 必须由 projector 原子写入单 Key 余额自动探测意图')
+assert.match(healthProjectionSource, /shouldScheduleBalanceAutoDetection\(account: AccountFenceRow, outcome: ProjectableOutcome\)[\s\S]*effectiveAccountApiKeyCount/, '余额自动探测意图必须限制为单 API Key 账户')
 
 const querySource = readFileSync(resolve('src/modules/accounts/account-balance-query.service.ts'), 'utf8')
 assert.match(querySource, /resolveProxyUrlForProfileAsync\(candidate\.proxyProfileId\)/, '所有余额查询路径必须解析账户绑定代理')

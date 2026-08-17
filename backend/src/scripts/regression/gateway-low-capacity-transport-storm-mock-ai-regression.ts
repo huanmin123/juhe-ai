@@ -540,7 +540,7 @@ function requireDispatchAccount(groupId: string, accountId: string) {
 }
 
 function activate(accountId: string): void {
-  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

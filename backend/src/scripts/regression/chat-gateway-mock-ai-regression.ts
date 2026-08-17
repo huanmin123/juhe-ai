@@ -85,7 +85,7 @@ try {
     status: 'active',
     schedulable: true
   }, access)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
   const gatewayKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'AI 问答 Mock Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -139,7 +139,7 @@ try {
     }, access)
     assert.equal(chatOnlyAccount.clientCompatibility, 'openai_standard')
     assert.deepEqual(chatOnlyAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
-    assert(repositories.recordAccountHealthCheckSuccess(chatOnlyAccount.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
+    assert(repositories.projectAccountHealthFixtureSuccess(chatOnlyAccount.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
     const chatOnlyGatewayKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'AI 问答 Chat-only Key',
       groupBindings: [{ groupId: chatOnlyGroup.id, priority: 1, status: 'active' }],

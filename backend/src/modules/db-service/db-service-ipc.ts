@@ -745,11 +745,6 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardAccountTestCancelToWorker(record.taskId)
       }
       break
-    case 'background_worker_account_health_check_trigger':
-      if (runtimeConfig.processRole === 'server' && typeof record.accountId === 'string') {
-        void forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason, record.traceId, record.sourceFence)
-      }
-      break
     default:
       break
   }
@@ -1302,12 +1297,6 @@ async function buildServerSystemMetricsRuntimeSnapshot(): Promise<DbServiceSyste
           ready: opsWorkerSnapshot.ready,
           workerRole: opsWorkerSnapshot.workerRole,
           jobs: opsWorkerSnapshot.jobs.map((job) => ({ ...job })),
-          accountHealthCheckQueue: opsWorkerSnapshot.accountHealthCheckQueue
-            ? { ...opsWorkerSnapshot.accountHealthCheckQueue }
-            : undefined,
-          cooldownAccountRetestQueue: opsWorkerSnapshot.cooldownAccountRetestQueue
-            ? { ...opsWorkerSnapshot.cooldownAccountRetestQueue }
-            : undefined,
           accountApiKeyCooldownRetestQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue
             ? { ...opsWorkerSnapshot.accountApiKeyCooldownRetestQueue }
             : undefined,
@@ -1695,27 +1684,6 @@ async function forwardAccountTestCancelToWorker(taskId: string): Promise<void> {
       event: 'db_service_account_test_cancel_forward_failed',
       taskId: normalizedId
     }, 'DB service 转发账号测试取消到后台 worker 失败')
-  }
-}
-
-async function forwardAccountHealthCheckTriggerToWorker(accountId: string, reason: unknown, traceId: unknown, sourceFence: unknown): Promise<void> {
-  const backgroundIpc = await import('../background/background-ipc.js')
-  const { isAccountHealthCheckTriggerReason, normalizeCodexSourceProbeFence } = await import('../accounts/account-health-check-trigger.js')
-  const normalizedId = normalizedString(accountId)
-  if (
-    normalizedId
-    && isAccountHealthCheckTriggerReason(reason)
-    && !backgroundIpc.sendAccountHealthCheckTriggerToWorker(
-      normalizedId,
-      reason,
-      typeof traceId === 'string' ? traceId : undefined,
-      normalizeCodexSourceProbeFence(sourceFence)
-    )
-  ) {
-    logger.warn({
-      event: 'db_service_account_health_check_trigger_forward_failed',
-      accountId: normalizedId
-    }, 'DB service 转发账户健康检查触发消息失败，等待周期任务兜底')
   }
 }
 

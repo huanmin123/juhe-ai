@@ -3,6 +3,8 @@ import type { DatabaseSync } from 'node:sqlite'
 import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import type { AccountHealthJobsOutcome, AccountHealthJobsProjection } from './account-health-jobs-outcome.repository.js'
+import { effectiveAccountApiKeyCount } from '../modules/accounts/account-balance-config.js'
+import { decryptJson } from './crypto.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 
@@ -33,6 +35,10 @@ interface AccountFenceRow {
   authorization_instance_source_account_id: string | null
   cooldown_retest_observation_started_at: string | null
   cooldown_retest_generation: string | null
+  type: string
+  credentials_encrypted: string
+  balance_query_enabled: number | boolean
+  balance_query_config_json: string
 }
 
 interface InputVersionRow {
@@ -90,7 +96,7 @@ export function projectAccountHealthJobsOutcome(
       result = { ...base, disposition: 'stale', changed: false, reason: fenceReason }
       return
     }
-    const update = sqliteProjectionUpdate(database, validation.outcome)
+    const update = sqliteProjectionUpdate(database, validation.outcome, shouldScheduleBalanceAutoDetection(account!, validation.outcome))
     if (!update) {
       insertReceiptSqlite(database, base, 'stale', 'projection_compare_and_set_missed')
       result = { ...base, disposition: 'stale', changed: false, reason: 'projection_compare_and_set_missed' }
@@ -127,7 +133,7 @@ export async function projectAccountHealthJobsOutcomeAsync(
       await insertReceiptAsync(tx, base, 'stale', fenceReason)
       return { ...base, disposition: 'stale', changed: false, reason: fenceReason }
     }
-    const update = await asyncProjectionUpdate(tx, validation.outcome)
+    const update = await asyncProjectionUpdate(tx, validation.outcome, shouldScheduleBalanceAutoDetection(account!, validation.outcome))
     if (!update) {
       await insertReceiptAsync(tx, base, 'stale', 'projection_compare_and_set_missed')
       return { ...base, disposition: 'stale', changed: false, reason: 'projection_compare_and_set_missed' }
@@ -246,11 +252,11 @@ async function insertReceiptAsync(
 }
 
 function findAccountFenceSqlite(database: DatabaseSync, accountId: string): AccountFenceRow | undefined {
-  return database.prepare(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as AccountFenceRow | undefined
+  return database.prepare(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as AccountFenceRow | undefined
 }
 
 async function findAccountFenceAsync(client: DatabaseClient, accountId: string): Promise<AccountFenceRow | undefined> {
-  return await client.one<AccountFenceRow>(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation FROM ${table(client, 'accounts')} WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, [accountId])
+  return await client.one<AccountFenceRow>(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json FROM ${table(client, 'accounts')} WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, [accountId])
 }
 
 function sqliteFenceMismatchReason(database: DatabaseSync, account: AccountFenceRow | undefined, outcome: ProjectableOutcome): string | undefined {
@@ -294,19 +300,19 @@ function fenceMismatchReason(account: AccountFenceRow | undefined, version: Inpu
   return undefined
 }
 
-function sqliteProjectionUpdate(database: DatabaseSync, outcome: ProjectableOutcome): boolean {
-  const statement = buildProjectionUpdate('accounts', 'account_health_jobs_input_versions', outcome)
+function sqliteProjectionUpdate(database: DatabaseSync, outcome: ProjectableOutcome, scheduleBalanceAutoDetection: boolean): boolean {
+  const statement = buildProjectionUpdate('accounts', 'account_health_jobs_input_versions', outcome, scheduleBalanceAutoDetection)
   const result = database.prepare(statement.sql).run(...statement.params)
   return Number(result.changes ?? 0) === 1
 }
 
-async function asyncProjectionUpdate(client: DatabaseClient, outcome: ProjectableOutcome): Promise<boolean> {
-  const statement = buildProjectionUpdate(table(client, 'accounts'), table(client, 'account_health_jobs_input_versions'), outcome)
+async function asyncProjectionUpdate(client: DatabaseClient, outcome: ProjectableOutcome, scheduleBalanceAutoDetection: boolean): Promise<boolean> {
+  const statement = buildProjectionUpdate(table(client, 'accounts'), table(client, 'account_health_jobs_input_versions'), outcome, scheduleBalanceAutoDetection)
   const result = await client.execute(statement.sql, statement.params)
   return result.changes === 1
 }
 
-function buildProjectionUpdate(accountsTable: string, versionsTable: string, outcome: ProjectableOutcome): { sql: string; params: Array<string | number | null> } {
+function buildProjectionUpdate(accountsTable: string, versionsTable: string, outcome: ProjectableOutcome, scheduleBalanceAutoDetection: boolean): { sql: string; params: Array<string | number | null> } {
   const projection = outcome.projection
   const transition = projection.transition_kind
   const updates: string[] = ['updated_at = ?']
@@ -367,6 +373,9 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
     case 'activation_success':
       set('status', 'active')
       set('schedulable', 1)
+      if (scheduleBalanceAutoDetection) {
+        set('balance_query_next_refresh_at', outcome.observed_at)
+      }
       clearCooldown()
       clearLastError()
       healthSuccess()
@@ -434,6 +443,12 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
     sql: `UPDATE ${accountsTable} AS target SET ${updates.join(', ')} WHERE ${guards.join(' AND ')}`,
     params
   }
+}
+
+function shouldScheduleBalanceAutoDetection(account: AccountFenceRow, outcome: ProjectableOutcome): boolean {
+  if (outcome.projection.transition_kind !== 'activation_success') return false
+  if (account.type !== 'api_key' || Boolean(account.balance_query_enabled) || account.balance_query_config_json !== '{}') return false
+  return effectiveAccountApiKeyCount(decryptJson<Record<string, unknown>>(account.credentials_encrypted)) === 1
 }
 
 function requiredCooldownFence(projection: AccountHealthJobsProjection): NonNullable<AccountHealthJobsProjection['cooldown_fence']> {

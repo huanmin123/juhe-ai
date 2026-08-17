@@ -154,7 +154,7 @@ export interface RuntimeConfig {
   usageShardCount: number
   secret: string
   accountHealthJobs: {
-    owner: 'node' | 'go'
+    owner: 'go'
     inputDirectory?: string
     inputSigningKey?: string
     inputTtlMs: number
@@ -1302,16 +1302,15 @@ function processRoleConfig(name: string, fallback: ProcessRole): ProcessRole {
   throw new Error(`${name} 只能配置为 server、worker 或 db-service`)
 }
 
-function accountHealthJobsOwnerConfig(name: string, fallback: 'node' | 'go'): 'node' | 'go' {
+function accountHealthJobsOwnerConfig(name: string): 'go' {
   const value = rawStringConfig(name)?.toLowerCase()
-  if (!value) return fallback
-  if (value === 'node' || value === 'go') return value
-  throw new Error(`${name} 只能配置为 node 或 go`)
+  if (!value || value === 'go') return 'go'
+  throw new Error(`${name} 已固定为 go；Node J1 owner 已归档，不能回退到 node`)
 }
 
 function accountHealthJobsRuntimeConfig(): RuntimeConfig['accountHealthJobs'] {
   const config: RuntimeConfig['accountHealthJobs'] = {
-    owner: accountHealthJobsOwnerConfig('JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER', 'node'),
+    owner: accountHealthJobsOwnerConfig('JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER'),
     inputDirectory: optionalStringConfig('JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY'),
     inputSigningKey: optionalStringConfig('JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY'),
     inputTtlMs: integerConfig('JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS', 24 * 60 * 60_000, 60_000, 7 * 24 * 60 * 60_000),
@@ -1326,14 +1325,8 @@ function accountHealthJobsRuntimeConfig(): RuntimeConfig['accountHealthJobs'] {
     sourceFenceConsumerPollMs: integerConfig('JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_POLL_MS', 1_000, 100, 60_000),
     sourceFenceConsumerLookbackMs: integerConfig('JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_LOOKBACK_MS', 5 * 60_000, 90_000, 10 * 60_000)
   }
-  if (config.inputPublisherEnabled && config.owner !== 'go') {
-    throw new Error('JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_ENABLED 只能在 JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER=go 时启用')
-  }
   const requiresOutcomeStore = config.projectionEnabled || config.sourceFenceConsumerEnabled
-  if (requiresOutcomeStore && config.owner !== 'go') {
-    throw new Error('J1 outcome projector 或 source-fence consumer 只能在 JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER=go 时启用')
-  }
-  const requiresInputProtocol = config.owner === 'go' || config.inputPublisherEnabled
+  const requiresInputProtocol = config.inputPublisherEnabled
   if (requiresInputProtocol && (!config.inputDirectory || !config.inputSigningKey)) {
     throw new Error('启用 J1 Go owner 或 input publisher 时必须同时配置 JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY 和 JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY')
   }

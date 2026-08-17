@@ -198,7 +198,7 @@ async function main(): Promise<void> {
     assert(manualDraftTask.result?.success === true, `代理负向账户草稿人工测试应通过：${manualDraftTask.result?.message ?? manualDraftTask.message ?? ''}`)
     const createdAccount = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, accountPayload)
     assert(createdAccount.status === 'pending_test' && createdAccount.schedulable === false, '草稿人工测试成功不能激活新账户')
-    assert(repositories.recordAccountHealthCheckSuccess(createdAccount.id, {
+    assert(repositories.projectAccountHealthFixtureSuccess(createdAccount.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
     })
     assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
     assert(proxiedAccount.status === 'pending_test', '代理变更后账户应重新进入待检查')
-    assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

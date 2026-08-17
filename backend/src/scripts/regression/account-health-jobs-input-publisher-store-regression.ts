@@ -7,9 +7,12 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { readPublishedAccountHealthJobsInput } from '../../modules/background/account-health-jobs-input.protocol.js'
+import { publishAccountHealthJobsInputFromAccount } from '../../modules/background/account-health-jobs-input.service.js'
 import { publishNextAccountHealthJobsInputFromBusinessOutbox } from '../../modules/background/account-health-jobs-input-publisher.service.js'
 import { reserveAndEnqueueAccountHealthJobsInput } from '../../storage/account-health-jobs-input-outbox.repository.js'
+import { findAccountForAccountHealthJobsInput } from '../../storage/account-health-jobs-input.repository.js'
 import { getBusinessDatabase } from '../../storage/database.js'
+import { getSettings } from '../../storage/settings.repository.js'
 import { logger } from '../../shared/logger.js'
 
 const root = mkdtempSync(join(resolve(tmpdir()), 'juhe-ai-j1-input-publisher-store-'))
@@ -40,13 +43,44 @@ try {
     status: 'active',
     schedulable: true,
     supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'chat_json',
     groupId: group.id,
     credentials: { api_key: 'sk-j1-input-publisher-store', base_url: 'https://api.openai.com/v1' }
   }, access)
   const database = getBusinessDatabase()
   database.prepare('UPDATE accounts SET status = ?, schedulable = ? WHERE id = ?').run('active', 1, account.id)
+  const settings = getSettings()
+  assert.equal(typeof settings.accountHealthCheckIntervalHours, 'number', 'J1 publisher 需要账户探活间隔设置')
+  assert.equal(typeof settings.accountHealthCheckJitterMinutes, 'number', 'J1 publisher 需要账户探活抖动设置')
+  assert.equal(typeof settings.accountHealthCheckFailureThreshold, 'number', 'J1 publisher 需要账户探活失败阈值设置')
+  const inputAccount = findAccountForAccountHealthJobsInput(account.id)
+  assert.ok(inputAccount, `当前账户必须满足 J1 input reader；summary=${JSON.stringify(inputAccount ? {
+    providerCode: inputAccount.providerCode,
+    type: inputAccount.type,
+    status: inputAccount.status,
+    schedulable: inputAccount.schedulable,
+    endpointMode: inputAccount.healthCheckEndpointMode,
+    groupBindStatus: inputAccount.groupBindStatus,
+    boundGroupId: inputAccount.boundGroupId,
+    accessType: inputAccount.accessType
+  } : null)}`)
+  assert.doesNotThrow(() => publishAccountHealthJobsInputFromAccount({
+    account: inputAccount!,
+    dispatchRevision: 2,
+    inputVersion: 1,
+    root: join(root, 'direct-input-contract'),
+    signingKey: runtimeConfig.accountHealthJobs.inputSigningKey!,
+    settings: { intervalHours: 1, jitterMinutes: 0, failureThreshold: 3 },
+    expiresAt: new Date(Date.now() + 60_000)
+  }), 'input reader 返回的账户必须可被冻结 publisher 直接序列化')
 
-  assert.equal(await publishNextAccountHealthJobsInputFromBusinessOutbox(), 'published', '当前 snapshot intent 必须发布并 ACK')
+  const snapshotDisposition = await publishNextAccountHealthJobsInputFromBusinessOutbox()
+  assert.equal(
+    snapshotDisposition,
+    'published',
+    `当前 snapshot intent 必须发布并 ACK；outbox=${JSON.stringify(outboxRow(database, account.id, 1))}; account=${JSON.stringify(database.prepare('SELECT config_revision, dispatch_revision FROM accounts WHERE id = ?').get(account.id))}`
+  )
   const inputPath = inputPathForAccount(account.id)
   const input = readPublishedAccountHealthJobsInput(inputPath)
   const payload = JSON.parse(Buffer.from(input.payload, 'base64url').toString('utf8')) as Record<string, unknown>
@@ -88,9 +122,17 @@ function inputPathForAccount(accountId: string): string {
 }
 
 function outboxStatus(database: ReturnType<typeof getBusinessDatabase>, accountId: string, inputVersion: number): string | undefined {
+  return outboxRow(database, accountId, inputVersion)?.status
+}
+
+function outboxRow(
+  database: ReturnType<typeof getBusinessDatabase>,
+  accountId: string,
+  inputVersion: number
+): { status?: string, last_error?: string, config_revision?: number, dispatch_revision?: number } | undefined {
   return (database.prepare(`
-    SELECT status
+    SELECT status, last_error, config_revision, dispatch_revision
     FROM account_health_jobs_input_outbox
     WHERE account_id = ? AND input_version = ?
-  `).get(accountId, inputVersion) as { status?: string } | undefined)?.status
+  `).get(accountId, inputVersion) as { status?: string, last_error?: string, config_revision?: number, dispatch_revision?: number } | undefined)
 }

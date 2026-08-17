@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { publishAccountHealthJobsInputFromAccount } from '../../modules/background/account-health-jobs-input.service.js'
-import { findAccountForHealthCheckAsync } from '../../storage/account-health-check.repository.js'
+import { findAccountForAccountHealthJobsInputAsync } from '../../storage/account-health-jobs-input.repository.js'
 import { reserveAccountHealthJobsInputVersion, reserveAccountHealthJobsInputVersionAsync } from '../../storage/account-health-jobs-input-version.repository.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
@@ -17,7 +17,7 @@ const signingKey = runtimeConfig.accountHealthJobs.inputSigningKey
 if (!root || !signingKey) {
   throw new Error('必须设置 JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY 和 JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY')
 }
-const account = await findAccountForHealthCheckAsync(accountId, { ignoreSchedule: true })
+  const account = await findAccountForAccountHealthJobsInputAsync(accountId)
 if (!account) {
   throw new Error(`账户 ${accountId} 不是可发布的 active/pending_test J1 候选；不会生成不完整 snapshot`)
 }

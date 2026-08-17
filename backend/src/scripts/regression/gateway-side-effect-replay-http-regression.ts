@@ -523,7 +523,7 @@ function createAccount(input: {
     priority: input.priority,
     fallbackEnabled: input.fallbackEnabled
   }, access)
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

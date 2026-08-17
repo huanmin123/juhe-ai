@@ -1426,7 +1426,7 @@ function resolveMockScenario(body: Record<string, unknown>): string {
 }
 
 function activateFixtureAccount(account: ReturnType<typeof repositories.createAccount>): void {
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

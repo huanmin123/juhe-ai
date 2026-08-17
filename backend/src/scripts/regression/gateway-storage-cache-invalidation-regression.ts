@@ -325,7 +325,7 @@ function authorizedInstanceForSource(sourceAccountId: string, access: { systemAc
 }
 
 function activateAccountAfterBackgroundCheck(accountId: string): void {
-  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+  const changed = repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

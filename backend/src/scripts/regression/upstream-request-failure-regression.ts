@@ -509,7 +509,7 @@ function createAccount(
     schedulable: true,
     priority
   }, access)
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

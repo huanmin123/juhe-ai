@@ -5,7 +5,8 @@ import { dispatchAccountHealthCheck } from '../internal-api/account-health-check
 
 export {
   dispatchAccountHealthCheck,
-  dispatchAccountHealthCheckWithOutcome
+  dispatchAccountHealthCheckWithOutcome,
+  type AccountHealthCheckDispatchOutcome
 } from '../internal-api/account-health-check-dispatch.service.js'
 
 export function dispatchPendingAccountHealthCheck(

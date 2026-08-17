@@ -403,7 +403,7 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
 }
 
 function activateFixtureAccount(accountId: string): void {
-  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+  assert(repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

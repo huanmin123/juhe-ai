@@ -195,7 +195,7 @@ try {
   assert.equal(restartedPending?.lastErrorTraceId, undefined, '重新检查必须清空旧错误 trace')
   assert.equal(restartedPending?.lastHealthCheckTraceId, undefined, '重新检查必须清空旧健康检查 trace')
   assert((restartedPending?.configRevision ?? 0) > (pendingBeforeRestart?.configRevision ?? 0), '重新检查必须递增配置版本以拒绝在途旧探针结果')
-  assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(pending.id, {
     ...healthSettings,
     statusCode: 200,
     expectedConfigRevision: pendingBeforeRestart?.configRevision
@@ -230,7 +230,7 @@ try {
   assert.equal(recoveredError?.lastErrorCode, undefined, '异常恢复应清空终态错误码')
   assert.equal(recoveredError?.healthCheckFailureStartedAt, undefined, '异常恢复应重置首次失败窗口')
 
-  assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(pending.id, {
     ...healthSettings,
     statusCode: 200
   }), true, '后台健康检查成功应激活待检查账户')
@@ -282,7 +282,7 @@ try {
   assert.equal(afterManualFailure?.schedulable, false, '人工测试失败不能改写调度状态')
   assert.equal(afterManualFailure?.healthCheckModel, 'gpt-5.5', '人工测试失败不能改写检查模型')
 
-  assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(pending.id, {
     ...healthSettings,
     statusCode: 200
   }), true, '只有后台健康检查成功才能再次激活账户')

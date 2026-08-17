@@ -2,7 +2,6 @@ import { existsSync } from 'node:fs'
 import http from 'node:http'
 import { basename, resolve } from 'node:path'
 
-import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import {
@@ -41,22 +40,16 @@ import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsP
 import { startInternalGatewayRegistry, stopInternalGatewayRegistry } from './modules/gateway/runtime/internal-gateway-registry.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
-import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
+import { managementSecurityHeadersMiddleware } from './shared/http-security.js'
 import { formatShanghaiNow } from './shared/time-display.js'
 import { systemErrorMessageLocalizationMiddleware } from './shared/system-error-message.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
-import { createHttpCompressionMiddleware } from './shared/http-compression.js'
-import { dispatchAccountHealthCheckWithOutcome } from './modules/internal-api/account-health-check-dispatch.service.js'
 import { dispatchAccountTestTask } from './modules/internal-api/account-test-dispatch.service.js'
 import {
   accountTestDispatchInternalPrefix,
   createAccountTestDispatchRouter
 } from './modules/internal-api/account-test-dispatch.routes.js'
-import {
-  accountHealthCheckDispatchInternalPrefix,
-  mountAccountHealthCheckDispatchBridge
-} from './modules/internal-api/account-health-check-dispatch.routes.js'
 import { controlReadReplicaPrimaryOnlyRequestGuard } from './modules/system-api/control-read-replica-proxy.js'
 import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
 import {
@@ -209,19 +202,11 @@ app.disable('x-powered-by')
 app.use(requestContextMiddleware)
 app.use(systemErrorMessageLocalizationMiddleware)
 app.use(systemPrefix, managementSecurityHeadersMiddleware)
-const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
 app.use(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard)
-app.use(accountHealthCheckDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard)
 app.use(accountTestDispatchInternalPrefix, createAccountTestDispatchRouter({
   secret: runtimeConfig.secret,
   dispatch: dispatchAccountTestTask
 }))
-mountAccountHealthCheckDispatchBridge(app, {
-  corsMiddleware,
-  compressionMiddleware: createHttpCompressionMiddleware(),
-  secret: runtimeConfig.secret,
-  dispatch: dispatchAccountHealthCheckWithOutcome
-})
 
 function getRuntimeHealthSnapshot() {
   const workerProcesses = getBackgroundWorkerSupervisorRuntime()

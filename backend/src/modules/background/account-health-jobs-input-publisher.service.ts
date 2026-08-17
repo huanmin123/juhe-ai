@@ -17,7 +17,7 @@ import {
 import {
   findAccountForAccountHealthJobsInput,
   findAccountForAccountHealthJobsInputAsync
-} from '../../storage/account-health-check.repository.js'
+} from '../../storage/account-health-jobs-input.repository.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'

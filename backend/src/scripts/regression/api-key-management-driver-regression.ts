@@ -335,7 +335,7 @@ async function seedActiveGatewayAccountForGroup(
       enabled: true
     }]
   }, adminAccess)
-  assert.equal(await repositories.recordAccountHealthCheckSuccessAsync(account.id, {
+  assert.equal(await repositories.projectAccountHealthFixtureSuccessAsync(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

@@ -217,7 +217,7 @@ async function assertDispatchRevisionFencesStaleRecovery(
     }
   }, access)
   assert(updated, '测试应能通过真实传输身份更新入口推进 dispatch revision')
-  repositories.recordAccountHealthCheckSuccess(scenario.accountId, {
+  repositories.projectAccountHealthFixtureSuccess(scenario.accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -369,7 +369,7 @@ function createSingleAccountScenario(upstreamBaseUrl: string): GatewayScenario {
     supportedModels: ['gpt-5.5'],
     healthCheckModel: 'gpt-5.5'
   }, access)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

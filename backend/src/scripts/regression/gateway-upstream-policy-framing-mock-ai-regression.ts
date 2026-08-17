@@ -161,13 +161,13 @@ try {
       priority: 100,
       supportedModels: [model]
     }, access)
-    assert.equal(repositories.recordAccountHealthCheckSuccess(accountSummary.id, {
+    assert.equal(repositories.projectAccountHealthFixtureSuccess(accountSummary.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,
       statusCode: 200
     }), true)
-    assert.equal(repositories.recordAccountHealthCheckSuccess(backupSummary.id, {
+    assert.equal(repositories.projectAccountHealthFixtureSuccess(backupSummary.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

@@ -796,7 +796,7 @@ function seedData(): SeedState {
     healthCheckModel: 'gpt-5.5'
   }, userAAccess)
   assert(
-    repositories.recordAccountHealthCheckSuccess(userAAccount.id, {
+    repositories.projectAccountHealthFixtureSuccess(userAAccount.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,
@@ -844,7 +844,7 @@ function seedData(): SeedState {
     availabilitySchedule: userBAvailabilitySchedule
   }, userBAccess)
   assert(
-    repositories.recordAccountHealthCheckSuccess(userBAccount.id, {
+    repositories.projectAccountHealthFixtureSuccess(userBAccount.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

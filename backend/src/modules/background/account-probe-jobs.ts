@@ -1,7 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
-import type { CooldownAccountRetestCursor } from '../../storage/account-cooldown-retest.repository.js'
 import { listNormalRouteLatencyProbeCandidatesAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestStatsWriter } from './background-stats-writer.js'
@@ -15,17 +14,9 @@ import {
   getAccountApiKeyCooldownRetestQueueSnapshot
 } from './account-api-key-cooldown-retest.service.js'
 import {
-  enqueueAccountHealthCheck,
-  getAccountHealthCheckQueueSnapshot
-} from './account-health-check.service.js'
-import {
   enqueueAccountQualityFailurePrecheck,
   getAccountQualityFailurePrecheckQueueSnapshot
 } from './account-quality-failure-precheck.service.js'
-import {
-  enqueueCooldownAccountRetest,
-  getCooldownAccountRetestQueueSnapshot
-} from './cooldown-account-retest.service.js'
 import {
   enqueueNormalRouteSpeedFirstRecoveryProbe,
   getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot
@@ -34,7 +25,6 @@ import {
 const accountQualityFailurePrecheckBatchSize = runtimeConfig.background.accountQualityFailurePrecheckBatchSize
 const normalRouteSpeedFirstRecoveryProbeBatchSize = runtimeConfig.background.normalRouteSpeedFirstRecoveryProbeBatchSize
 let accountQualityFailurePrecheckOffset = 0
-let cooldownAccountRetestCursor: CooldownAccountRetestCursor | undefined
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
 
@@ -99,122 +89,6 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_account_quality_refresh_failed' }), '账户质量缓存刷新失败')
     throw error
-  }
-}
-
-export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise<void> {
-  const batchSize = runtimeConfig.background.cooldownAccountRetestBatchSize
-  const queueConcurrency = globalSharedQueueConcurrency
-  const queueBeforeScan = getCooldownAccountRetestQueueSnapshot()
-  const candidateLimit = cooldownAccountRetestScanLimit(batchSize, queueConcurrency, queueBeforeScan)
-  if (candidateLimit <= 0) return
-  const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
-  const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
-  const page = await requestBackgroundWorkerDbService({
-    type: 'list_accounts_due_for_cooldown_retest',
-    limit: candidateLimit,
-    cursor: cooldownAccountRetestCursor
-  }, backgroundProbeDbServiceTimeoutMs)
-  const candidates = page?.accounts ?? []
-  cooldownAccountRetestCursor = page?.nextCursor
-  if (!page?.nextCursor) {
-    cooldownAccountRetestCursor = undefined
-  }
-  const startedAtMs = Date.now()
-  let enqueuedCount = 0
-  let skippedQueuedCount = 0
-  for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours })) {
-      enqueuedCount += 1
-    } else {
-      skippedQueuedCount += 1
-    }
-  }
-  if (candidates.length > 0) {
-    const queue = getCooldownAccountRetestQueueSnapshot()
-    logger.info({
-      event: 'background_cooldown_account_retest_completed',
-      candidateCount: candidates.length,
-      enqueuedCount,
-      skippedQueuedCount,
-      retryQueueConcurrency: queueConcurrency,
-      retryQueuePendingCount: queue.pendingCount,
-      retryQueueRunningCount: queue.runningCount,
-      retryQueueNextRunAt: queue.nextRunAt,
-      elapsedMs: Date.now() - startedAtMs
-    }, '冷却账户复测候选已加入异步队列')
-  }
-}
-
-export function cooldownAccountRetestQueueAvailableSlots(
-  batchSize: number,
-  queue: { pendingCount: number; runningCount: number }
-): number {
-  const limit = Math.max(1, Math.trunc(batchSize))
-  const occupied = Math.max(0, Math.trunc(queue.pendingCount)) + Math.max(0, Math.trunc(queue.runningCount))
-  return Math.max(0, limit - occupied)
-}
-
-export function cooldownAccountRetestScanLimit(
-  batchSize: number,
-  queueConcurrency: number,
-  queue: { pendingCount: number; runningCount: number }
-): number {
-  const normalizedBatchSize = Math.max(1, Math.trunc(batchSize))
-  return Math.min(normalizedBatchSize, cooldownAccountRetestQueueAvailableSlots(queueConcurrency, queue))
-}
-
-export function accountHealthCheckScanLimit(
-  batchSize: number,
-  queueConcurrency: number,
-  queue: { pendingCount: number; runningCount: number }
-): number {
-  return cooldownAccountRetestScanLimit(batchSize, queueConcurrency, queue)
-}
-
-export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
-  if (runtimeConfig.accountHealthJobs.owner !== 'node') return
-  const batchSize = runtimeConfig.background.accountHealthCheckBatchSize
-  const queueConcurrency = globalSharedQueueConcurrency
-  const queueBeforeScan = getAccountHealthCheckQueueSnapshot()
-  const candidateLimit = accountHealthCheckScanLimit(batchSize, queueConcurrency, queueBeforeScan)
-  if (candidateLimit <= 0) return
-  const intervalHours = deps.settingsNumber('accountHealthCheckIntervalHours', 1, 168)
-  const jitterMinutes = deps.settingsNumber('accountHealthCheckJitterMinutes', 0, 1440)
-  const failureThreshold = deps.settingsNumber('accountHealthCheckFailureThreshold', 1, 10)
-  const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
-  const candidates = await requestBackgroundWorkerDbService({
-    type: 'list_accounts_due_for_health_check',
-    input: {
-      limit: candidateLimit,
-      intervalHours,
-      jitterMinutes,
-      failureThreshold
-    }
-  }, backgroundProbeDbServiceTimeoutMs) ?? []
-  const startedAtMs = Date.now()
-  let enqueuedCount = 0
-  let skippedQueuedCount = 0
-  for (const account of candidates) {
-    if (enqueueAccountHealthCheck(account, { intervalHours, jitterMinutes, failureThreshold, maxPauseMinutes }, 'scheduled')) {
-      enqueuedCount += 1
-    } else {
-      skippedQueuedCount += 1
-    }
-  }
-  if (candidates.length > 0) {
-    const queue = getAccountHealthCheckQueueSnapshot()
-    logger.info({
-      event: 'background_account_health_check_candidates_completed',
-      candidateCount: candidates.length,
-      enqueuedCount,
-      skippedQueuedCount,
-      healthCheckQueueConcurrency: queueConcurrency,
-      healthCheckQueuePendingCount: queue.pendingCount,
-      healthCheckQueueRunningCount: queue.runningCount,
-      healthCheckQueueNextRunAt: queue.nextRunAt,
-      elapsedMs: Date.now() - startedAtMs
-    }, '账号健康检测候选已加入异步队列')
   }
 }
 

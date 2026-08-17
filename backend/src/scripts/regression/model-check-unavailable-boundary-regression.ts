@@ -145,7 +145,7 @@ try {
     enabled: true
   }, access)
   assert(repositories.updateAccount(proxyAccount.id, { proxyProfileId: proxy.id }, access), '代理失败边界账户应能绑定启用代理')
-  assert(repositories.recordAccountHealthCheckSuccess(proxyAccount.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(proxyAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

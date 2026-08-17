@@ -23,7 +23,6 @@ import type { AccountApiKeyPersistentMutationContext } from '../gateway/runtime/
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
@@ -835,33 +834,6 @@ export type DbServiceOperation =
     }
   }
   | {
-    type: 'list_accounts_due_for_health_check'
-    input: {
-      limit: number
-      intervalHours: number
-      jitterMinutes: number
-      failureThreshold: number
-    }
-  }
-  | {
-    type: 'find_account_for_health_check'
-    accountId: string
-    ignoreSchedule?: boolean
-  }
-  | {
-    type: 'record_account_health_check_success'
-    accountId: string
-    input: {
-      intervalHours: number
-      jitterMinutes: number
-      failureThreshold: number
-      statusCode?: number
-      expectedConfigRevision?: number
-      scheduleBalanceAutoDetection?: boolean
-      traceId?: string
-    }
-  }
-  | {
     type: 'commit_account_balance_refresh'
     input:
       | {
@@ -891,22 +863,6 @@ export type DbServiceOperation =
     }
   }
   | {
-    type: 'record_account_health_check_failure'
-    accountId: string
-    input: {
-      intervalHours: number
-      jitterMinutes: number
-      failureThreshold: number
-      statusCode?: number
-      errorCode?: string
-      errorMessage?: string
-      expectedConfigRevision?: number
-      countTowardsThreshold?: boolean
-      observedAt?: string
-      traceId?: string
-    }
-  }
-  | {
     // Generic J1 business projection only. The handler decodes this untrusted
     // payload before it reaches the fenced projector.
     type: 'project_account_health_jobs_outcome'
@@ -920,11 +876,6 @@ export type DbServiceOperation =
   | {
     type: 'read_account_health_projection_cursor'
     consumerKey: string
-  }
-  | {
-    type: 'list_accounts_due_for_cooldown_retest'
-    limit: number
-    cursor?: import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestCursor
   }
   | {
     type: 'list_account_api_key_runtime_states_due_for_probe'
@@ -946,49 +897,6 @@ export type DbServiceOperation =
     action: 'delete'
     accountId: string
     purpose: import('../../storage/account-api-key-pool-probe-cursor.repository.js').AccountApiKeyPoolProbeCursorPurpose
-  }
-  | {
-    type: 'find_account_for_cooldown_retest'
-    accountId: string
-  }
-  | {
-    type: 'record_cooldown_account_retest_success'
-    accountId: string
-    expectedConfigRevision: number
-    expectedDispatchRevision: number
-    expectedObservationStartedAt: string
-    expectedGeneration: string
-    expectedSourceConfigRevision?: number
-  }
-  | {
-    type: 'defer_cooldown_account_retest'
-    accountId: string
-    delaySeconds?: number
-    expectedConfigRevision: number
-    expectedDispatchRevision: number
-    expectedObservationStartedAt: string
-    expectedGeneration: string
-    expectedSourceConfigRevision?: number
-  }
-  | {
-    type: 'record_cooldown_account_retest_failure'
-    accountId: string
-    input: {
-      traceId?: string
-      statusCode?: number
-      errorCode?: string
-      errorMessage?: string
-      expectedConfigRevision: number
-      expectedDispatchRevision: number
-      expectedObservationStartedAt: string
-      expectedGeneration: string
-      expectedSourceConfigRevision?: number
-      initialBackoffSeconds?: number
-      fastThresholdSeconds?: number
-      maxPauseMinutes?: number
-      maxRecoveryHours?: number
-      backoffMultiplier?: number
-    }
   }
   | {
     type: 'mark_account_exception'
@@ -1270,18 +1178,9 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
     skippedReason?: 'account_not_found' | 'status_ineligible' | 'mutation_cas_rejected'
   } :
   T extends { type: 'find_account_for_test' } ? AccountSummary | undefined :
-  T extends { type: 'list_accounts_due_for_health_check' } ? AccountSummary[] :
-  T extends { type: 'find_account_for_health_check' } ? AccountSummary | undefined :
-  T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
   T extends { type: 'commit_account_balance_refresh' } ? { changed: boolean } :
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
-  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt?: string; failureStartedAt?: string; transitionedToError: boolean; accountStatus?: string; errorCode: string; errorMessage: string } :
-  T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'list_account_api_key_runtime_states_due_for_probe' } ? import('../../storage/account-api-key-runtime-state.repository.js').AccountApiKeyRuntimeProbeCandidate[] :
-  T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
-  T extends { type: 'record_cooldown_account_retest_success' } ? { changed: boolean; accountStatus?: string } :
-  T extends { type: 'defer_cooldown_account_retest' } ? { changed: boolean; cooldownUntil?: string } :
-  T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; observationTimeoutSeconds?: number; transitionedToError?: boolean; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :
   T extends { type: 'mark_all_group_account_stats_dirty' } ? { marked: true } :
@@ -1493,13 +1392,6 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_account_test_cancel'
     taskId: string
-  }
-  | {
-    type: 'background_worker_account_health_check_trigger'
-    accountId: string
-    reason: AccountHealthCheckTriggerReason
-    traceId?: string
-    sourceFence?: CodexSourceProbeFence
   }
   | {
     type: 'background_worker_dataset_write_request'

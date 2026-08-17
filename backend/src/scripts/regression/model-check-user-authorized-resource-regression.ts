@@ -235,7 +235,7 @@ function seedData(upstreamBaseUrl: string): SeedState {
     status: 'active',
     schedulable: true
   }, ownerAccess)
-  assert(repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(ownerAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

@@ -57,7 +57,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
       priority: index,
       notes: `${options.label}通过 Mockdata 共享夹具生成，使用后可按造数前缀清理`
     }, access)
-    if (!repositories.recordAccountHealthCheckSuccess(account.id, {
+    if (!repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 1,
       jitterMinutes: 10,
       failureThreshold: 3,

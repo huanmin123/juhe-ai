@@ -91,7 +91,7 @@ try {
     healthCheckModel: 'gpt-5.5'
   }, access)
   for (const accountId of [account.id, expiredAccount.id]) {
-    assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    assert(repositories.projectAccountHealthFixtureSuccess(accountId, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

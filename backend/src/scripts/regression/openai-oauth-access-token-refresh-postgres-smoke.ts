@@ -12,7 +12,7 @@ import {
   createAccountAsync,
   createGroupAsync,
   findAccountForTestAsync,
-  recordAccountHealthCheckSuccessAsync
+  projectAccountHealthFixtureSuccessAsync
 } from '../../storage/repositories.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', 'OpenAI OAuth access token refresh PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
@@ -156,7 +156,7 @@ async function createOAuthAccount(
   }, access)
   createdAccountIds.push(account.id)
   assert.equal(account.status, 'pending_test', 'PG OAuth 刷新回归账户创建后必须遵守 pending_test 契约')
-  assert.equal(await recordAccountHealthCheckSuccessAsync(account.id, {
+  assert.equal(await projectAccountHealthFixtureSuccessAsync(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

@@ -72,7 +72,7 @@ function activateMockAccountIfRequested(
   if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
     return repositories.findAccountSummary(account.id, access) ?? account
   }
-  if (!repositories.recordAccountHealthCheckSuccess(account.id, {
+  if (!repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 1,
     jitterMinutes: 10,
     failureThreshold: 3,

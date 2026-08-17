@@ -192,8 +192,6 @@ function assertAccountHealthCheckModelRuntimeBoundary(): void {
   )
 
   for (const relativePath of [
-    'modules/background/cooldown-account-retest.service.ts',
-    'modules/background/account-health-check.service.ts',
     'modules/background/account-quality-failure-precheck.service.ts',
     'modules/background/account-api-key-cooldown-retest.service.ts',
     'modules/accounts/account-test-task-queue.service.ts',

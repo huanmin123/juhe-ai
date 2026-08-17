@@ -21,14 +21,8 @@ const codexContextRead = {
   maxDepth: 4
 } as DbServiceOperation
 const backgroundWrite: DbServiceOperation = {
-  type: 'record_account_health_check_success',
-  accountId: 'acct_simulated',
-  input: {
-    intervalHours: 1,
-    jitterMinutes: 0,
-    failureThreshold: 3,
-    statusCode: 200
-  }
+  type: 'project_account_health_jobs_outcome',
+  outcome: {}
 }
 const backgroundMaintenance: DbServiceOperation = {
   type: 'cleanup_expired_system_sessions',

@@ -118,7 +118,7 @@ try {
     groupId: group.id
   }, access)
   for (const account of [accountA, accountB]) {
-    assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

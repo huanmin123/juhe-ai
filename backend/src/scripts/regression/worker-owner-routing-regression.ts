@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { resolveNodeWorkerOwnership, runIfNodeOwnsWorkerJob } from '../../shared/worker-owner.js'
 import { CURRENT_RELEASE_SCHEMA_VERSION } from '../../shared/release-schema-version.js'
 
-const job = 'cooldown-account-retest'
+const job = 'migration-fixture-job'
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-ai-worker-owner-routing-'))
 
 try {

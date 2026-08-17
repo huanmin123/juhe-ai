@@ -577,7 +577,7 @@ function createHybridGroupAccount(input: {
     concurrencyLimit: 16,
     supportedModels: [input.supportedModel]
   }, access)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -612,7 +612,7 @@ function createHybridAdditionalAccount(input: {
     concurrencyLimit: 16,
     supportedModels: [input.supportedModel]
   }, access)
-  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

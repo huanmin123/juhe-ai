@@ -47,7 +47,7 @@ try {
     groupId: group.id,
     supportedModels: ['gpt-5.5']
   }, access)
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -219,7 +219,7 @@ try {
     }
   }, access)
   assert(transportEdited, '测试账户传输身份更新失败')
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -270,7 +270,7 @@ try {
     groupId: group.id,
     supportedModels: ['gpt-5.5']
   }, access)
-  repositories.recordAccountHealthCheckSuccess(transitionAccount.id, {
+  repositories.projectAccountHealthFixtureSuccess(transitionAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -297,7 +297,7 @@ try {
     groupId: group.id,
     supportedModels: ['gpt-5.5']
   }, access)
-  repositories.recordAccountHealthCheckSuccess(rateLimitedAccount.id, {
+  repositories.projectAccountHealthFixtureSuccess(rateLimitedAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -499,7 +499,7 @@ function createReadyAccount(groupId: string, name: string, keySuffix: string) {
     groupId,
     supportedModels: ['gpt-5.5']
   }, access)
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

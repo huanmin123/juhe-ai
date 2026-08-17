@@ -92,7 +92,7 @@ async function main(): Promise<void> {
       supportedModels: ['gpt-4o-mini'],
       healthCheckModel: 'gpt-4o-mini'
     }, access)
-    assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

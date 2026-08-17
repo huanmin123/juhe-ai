@@ -325,19 +325,6 @@ export const backgroundScheduledJobs = [
     writes: ['business:accounts']
   }),
   scheduled({
-    jobName: 'account-health-check',
-    category: 'scheduled',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'usage-shards:usage_records']
-  }),
-  scheduled({
     jobName: 'model-quality-scheduled-check',
     category: 'scheduled',
     kind: 'probe',
@@ -376,19 +363,6 @@ export const backgroundScheduledJobs = [
     blocksUserVisibleFreshness: true,
     writes: ['dataset:model_check_runs', 'stats:account_quality_health_hourly'],
     notes: '有界重放质量判定中 healthSyncResult=failed 的 run；统计小时表和 run 决策更新均幂等'
-  }),
-  scheduled({
-    jobName: 'cooldown-account-retest',
-    category: 'scheduled',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'usage-shards:usage_records']
   }),
   scheduled({
     jobName: 'account-api-key-cooldown-retest',
@@ -569,19 +543,6 @@ export const backgroundWorkerRegistry = [
     leaseRequired: false,
     blocksUserVisibleFreshness: true,
     writes: ['business:account_test_tasks']
-  }),
-  entry({
-    jobName: 'background_worker_account_health_check_trigger',
-    category: 'control-ipc',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: false,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: false,
-    blocksUserVisibleFreshness: true,
-    writes: ['business:accounts']
   }),
   entry({
     jobName: 'background_worker_codex_source_fence_settled',
@@ -816,19 +777,6 @@ export const backgroundWorkerRegistry = [
     leaseRequired: false,
     blocksUserVisibleFreshness: true,
     writes: ['business:account_test_tasks']
-  }),
-  entry({
-    jobName: 'cooldown-account-retest-queue',
-    category: 'local-queue',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'usage-shards:usage_records']
   }),
   entry({
     jobName: 'account-api-key-cooldown-retest-queue',

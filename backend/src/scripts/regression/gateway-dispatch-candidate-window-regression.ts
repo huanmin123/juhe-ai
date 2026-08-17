@@ -432,7 +432,7 @@ function activateAccountAfterBackgroundCheck(
   repositories: typeof import('../../storage/repositories.js'),
   accountId: string
 ): void {
-  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+  const changed = repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

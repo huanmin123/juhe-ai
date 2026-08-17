@@ -84,7 +84,7 @@ try {
 
   const groupId = allowed.boundGroupId
   assert.equal(groupId, group.id, '测试账户应加入指定分组')
-  assert.equal(repositories.recordAccountHealthCheckSuccess(allowed.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(allowed.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -225,7 +225,7 @@ try {
 }
 
 function activateAccountForSchedule(accountId: string, checkedAt: string): void {
-  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

@@ -563,7 +563,7 @@ function seedGatewayRuntime(): {
     .prepare("SELECT id FROM accounts WHERE system_account_id = 'sys_admin' AND status = 'pending_test'")
     .all() as unknown as Array<{ id: string }>
   for (const account of pendingAccounts) {
-    const changed = repositories.recordAccountHealthCheckSuccess(account.id, {
+    const changed = repositories.projectAccountHealthFixtureSuccess(account.id, {
       checkedAt: '2099-06-01T00:00:30.000Z',
       intervalHours: 24,
       jitterMinutes: 0,

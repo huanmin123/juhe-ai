@@ -22,6 +22,11 @@ import {
   reserveAndEnqueueAccountHealthJobsInputInTransaction,
   reserveAndEnqueueAccountHealthJobsInputInTransactionAsync
 } from './account-health-jobs-input-outbox.repository.js'
+export {
+  projectAccountHealthFixtureFailure,
+  projectAccountHealthFixtureSuccess,
+  projectAccountHealthFixtureSuccessAsync
+} from './account-health-projector-fixture.js'
 import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
 import {
   initializeAddedAccountApiKeyRuntimeStates,
@@ -263,40 +268,6 @@ export {
   updateSystemTeam,
   updateSystemTeamAsync
 } from './system-team.repository.js'
-export {
-  deferCooldownAccountRetest,
-  deferCooldownAccountRetestAsync,
-  findAccountForCooldownRetest,
-  findAccountForCooldownRetestAsync,
-  listAccountsDueForCooldownRetest,
-  listAccountsDueForCooldownRetestAsync,
-  listAccountsDueForCooldownRetestPage,
-  listAccountsDueForCooldownRetestPageAsync,
-  recordCooldownAccountRetestFailure,
-  recordCooldownAccountRetestFailureAsync,
-  recordCooldownAccountRetestSuccess,
-  recordCooldownAccountRetestSuccessAsync,
-  type CooldownAccountRetestCursor,
-  type CooldownAccountRetestDeferResult,
-  type CooldownAccountRetestFailureInput,
-  type CooldownAccountRetestFailureResult,
-  type CooldownAccountRetestPage
-} from './account-cooldown-retest.repository.js'
-export {
-  findAccountForHealthCheck,
-  findAccountForHealthCheckAsync,
-  listAccountsDueForHealthCheck,
-  listAccountsDueForHealthCheckAsync,
-  normalizedHealthCheckSettings,
-  recordAccountHealthCheckFailure,
-  recordAccountHealthCheckFailureAsync,
-  recordAccountHealthCheckSuccess,
-  recordAccountHealthCheckSuccessAsync,
-  recordAccountHealthSuccessSignals,
-  type AccountHealthCheckFailureResult,
-  type AccountHealthCheckListOptions,
-  type AccountHealthCheckSettings
-} from './account-health-check.repository.js'
 import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'

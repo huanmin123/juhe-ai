@@ -51,8 +51,6 @@ import {
 } from '../../storage/account-api-key-pool-probe-cursor.repository.js'
 import {
   clearGatewayApiKeyValidationCache,
-  deferCooldownAccountRetest,
-  deferCooldownAccountRetestAsync,
   clearAuthorizedAccountBindingFailureStateByContext,
   clearAuthorizedAccountBindingFailureStateByContextAsync,
   clearAccountFailureStateResult,
@@ -65,10 +63,6 @@ import {
   clearAuthorizedAccountBindingStreamFailureStateAsync,
   findAccountForTest,
   findAccountForTestAsync,
-  findAccountForCooldownRetest,
-  findAccountForCooldownRetestAsync,
-  findAccountForHealthCheck,
-  findAccountForHealthCheckAsync,
   findOpenAIAccountForGroup,
   findOpenAIAccountForGroupAsync,
   getAccountPrecheckMutationState,
@@ -76,12 +70,6 @@ import {
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listOpenAIAccountsForGroupResultAsync,
-  listAccountsDueForCooldownRetest,
-  listAccountsDueForCooldownRetestAsync,
-  listAccountsDueForCooldownRetestPage,
-  listAccountsDueForCooldownRetestPageAsync,
-  listAccountsDueForHealthCheck,
-  listAccountsDueForHealthCheckAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   listPublicGlobalSettingsAsync,
@@ -105,14 +93,6 @@ import {
   markAuthorizedAccountBindingTemporaryUnavailableByContextAsync,
   recordAccountStreamFailure,
   recordAccountStreamFailureAsync,
-  recordAccountHealthCheckFailure,
-  recordAccountHealthCheckFailureAsync,
-  recordAccountHealthCheckSuccess,
-  recordAccountHealthCheckSuccessAsync,
-  recordCooldownAccountRetestFailure,
-  recordCooldownAccountRetestFailureAsync,
-  recordCooldownAccountRetestSuccess,
-  recordCooldownAccountRetestSuccessAsync,
   recordAuthorizedAccountBindingStreamFailure,
   recordAuthorizedAccountBindingStreamFailureAsync,
   completeAccountTestTaskWithMatchingManualRecovery,
@@ -953,42 +933,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
             groupAuthorizationId: operation.groupAuthorizationId,
             accounts: operation.accounts
           })
-    case 'list_accounts_due_for_health_check':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return await listAccountsDueForHealthCheckAsync(operation.input)
-      }
-      return handleDbServiceOperationSync(operation)
-    case 'find_account_for_health_check':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return await findAccountForHealthCheckAsync(operation.accountId, {
-          ignoreSchedule: operation.ignoreSchedule
-        })
-      }
-      return handleDbServiceOperationSync(operation)
-    case 'record_account_health_check_success':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const changed = await recordAccountHealthCheckSuccessAsync(operation.accountId, operation.input)
-        if (changed) {
-          clearGatewayRuntimeCacheLocal()
-        }
-        return { changed }
-      }
-      return handleDbServiceOperationSync(operation)
     case 'commit_account_balance_refresh':
       return { changed: 'detectionIntent' in operation.input
         ? await commitAccountBalanceDetectionDueAsync(operation.input)
         : await commitAccountBalanceRefreshAsync(operation.input) }
     case 'enable_detected_account_balance_query':
       return { changed: await enableDetectedAccountBalanceQueryAsync(operation.input) }
-    case 'record_account_health_check_failure':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await recordAccountHealthCheckFailureAsync(operation.accountId, operation.input)
-        if (result.changed) {
-          clearGatewayRuntimeCacheLocal()
-        }
-        return result
-      }
-      return handleDbServiceOperationSync(operation)
     case 'project_account_health_jobs_outcome': {
       const outcome = decodeAccountHealthJobsOutcomePayload(operation.outcome)
       if (runtimeConfig.databaseDriver === 'postgres') {
@@ -1008,11 +958,6 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await currentAccountHealthProjectionCursorAsync(client, operation.consumerKey)
       }
       return handleDbServiceOperationSync(operation)
-    case 'list_accounts_due_for_cooldown_retest':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return await listAccountsDueForCooldownRetestPageAsync(operation.limit, operation.cursor)
-      }
-      return handleDbServiceOperationSync(operation)
     case 'list_account_api_key_runtime_states_due_for_probe':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listAccountApiKeyRuntimeStatesDueForProbeAsync(operation.limit)
@@ -1025,64 +970,6 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         if (operation.action === 'save') return await saveAccountApiKeyPoolProbeCursorAsync(client, operation.input)
         await deleteAccountApiKeyPoolProbeCursorAsync(client, operation.accountId, operation.purpose)
         return { deleted: true }
-      }
-      return handleDbServiceOperationSync(operation)
-    case 'find_account_for_cooldown_retest':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return await findAccountForCooldownRetestAsync(operation.accountId)
-      }
-      return handleDbServiceOperationSync(operation)
-    case 'record_cooldown_account_retest_success':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await recordCooldownAccountRetestSuccessAsync(operation.accountId, {
-          expectedConfigRevision: operation.expectedConfigRevision,
-          expectedDispatchRevision: operation.expectedDispatchRevision,
-          expectedObservationStartedAt: operation.expectedObservationStartedAt,
-          expectedGeneration: operation.expectedGeneration,
-          expectedSourceConfigRevision: operation.expectedSourceConfigRevision
-        })
-        if (result.changed) clearGatewayRuntimeCacheLocal()
-        return result
-      }
-      return handleDbServiceOperationSync(operation)
-    case 'record_cooldown_account_retest_failure':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await recordCooldownAccountRetestFailureAsync(operation.accountId, operation.input)
-        if (result.changed) {
-          clearGatewayRuntimeCacheLocal()
-        }
-        return {
-          changed: result.changed,
-          failureCount: result.failureCount,
-          action: result.action,
-          cooldownUntil: result.cooldownUntil,
-          backoffSeconds: result.backoffSeconds,
-          backoffMinutes: result.backoffMinutes,
-          recoveryStage: result.recoveryStage,
-          fastThresholdSeconds: result.fastThresholdSeconds,
-          maxPauseSeconds: result.maxPauseSeconds,
-          maxRecoverySeconds: result.maxRecoverySeconds,
-          longTermIntervalSeconds: result.longTermIntervalSeconds,
-          maxedFailureCount: result.maxedFailureCount,
-          observationStartedAt: result.observationStartedAt,
-          observationElapsedSeconds: result.observationElapsedSeconds,
-          observationTimeoutSeconds: result.observationTimeoutSeconds,
-          transitionedToError: result.transitionedToError,
-          errorCode: result.errorCode,
-          errorMessage: result.errorMessage
-        }
-      }
-      return handleDbServiceOperationSync(operation)
-    case 'defer_cooldown_account_retest':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        return await deferCooldownAccountRetestAsync(operation.accountId, {
-          delaySeconds: operation.delaySeconds,
-          expectedConfigRevision: operation.expectedConfigRevision,
-          expectedDispatchRevision: operation.expectedDispatchRevision,
-          expectedObservationStartedAt: operation.expectedObservationStartedAt,
-          expectedGeneration: operation.expectedGeneration,
-          expectedSourceConfigRevision: operation.expectedSourceConfigRevision
-        })
       }
       return handleDbServiceOperationSync(operation)
     case 'mark_account_exception': {
@@ -1647,31 +1534,9 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'find_account_for_test': {
       return findAccountForTest(operation.accountId, operation.access)
     }
-    case 'list_accounts_due_for_health_check': {
-      return listAccountsDueForHealthCheck(operation.input)
-    }
-    case 'find_account_for_health_check': {
-      return findAccountForHealthCheck(operation.accountId, {
-        ignoreSchedule: operation.ignoreSchedule
-      })
-    }
-    case 'record_account_health_check_success': {
-      const changed = recordAccountHealthCheckSuccess(operation.accountId, operation.input)
-      if (changed) {
-        clearGatewayRuntimeCacheLocal()
-      }
-      return { changed }
-    }
     case 'commit_account_balance_refresh':
     case 'enable_detected_account_balance_query':
       throw new Error(`DB service 操作 ${operation.type} 必须通过异步处理器执行`)
-    case 'record_account_health_check_failure': {
-      const result = recordAccountHealthCheckFailure(operation.accountId, operation.input)
-      if (result.changed) {
-        clearGatewayRuntimeCacheLocal()
-      }
-      return result
-    }
     case 'project_account_health_jobs_outcome': {
       const outcome = decodeAccountHealthJobsOutcomePayload(operation.outcome)
       const result = projectAccountHealthJobsOutcome(outcome)
@@ -1684,9 +1549,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'read_account_health_projection_cursor': {
       return currentAccountHealthProjectionCursor(operation.consumerKey)
     }
-    case 'list_accounts_due_for_cooldown_retest': {
-      return listAccountsDueForCooldownRetestPage(operation.limit, operation.cursor)
-    }
     case 'list_account_api_key_runtime_states_due_for_probe':
       return listAccountApiKeyRuntimeStatesDueForProbe(operation.limit)
     case 'account_api_key_pool_probe_cursor':
@@ -1694,55 +1556,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       if (operation.action === 'save') return saveAccountApiKeyPoolProbeCursor(operation.input)
       deleteAccountApiKeyPoolProbeCursor(operation.accountId, operation.purpose)
       return { deleted: true }
-    case 'find_account_for_cooldown_retest': {
-      return findAccountForCooldownRetest(operation.accountId)
-    }
-    case 'record_cooldown_account_retest_success': {
-      const result = recordCooldownAccountRetestSuccess(operation.accountId, {
-        expectedConfigRevision: operation.expectedConfigRevision,
-        expectedDispatchRevision: operation.expectedDispatchRevision,
-        expectedObservationStartedAt: operation.expectedObservationStartedAt,
-        expectedGeneration: operation.expectedGeneration,
-        expectedSourceConfigRevision: operation.expectedSourceConfigRevision
-      })
-      if (result.changed) clearGatewayRuntimeCacheLocal()
-      return result
-    }
-    case 'record_cooldown_account_retest_failure': {
-      const result = recordCooldownAccountRetestFailure(operation.accountId, operation.input)
-      if (result.changed) {
-        clearGatewayRuntimeCacheLocal()
-      }
-      return {
-        changed: result.changed,
-        failureCount: result.failureCount,
-        action: result.action,
-        cooldownUntil: result.cooldownUntil,
-        backoffSeconds: result.backoffSeconds,
-        backoffMinutes: result.backoffMinutes,
-        recoveryStage: result.recoveryStage,
-        fastThresholdSeconds: result.fastThresholdSeconds,
-        maxPauseSeconds: result.maxPauseSeconds,
-        maxRecoverySeconds: result.maxRecoverySeconds,
-        longTermIntervalSeconds: result.longTermIntervalSeconds,
-        maxedFailureCount: result.maxedFailureCount,
-        observationStartedAt: result.observationStartedAt,
-        observationElapsedSeconds: result.observationElapsedSeconds,
-        observationTimeoutSeconds: result.observationTimeoutSeconds,
-        transitionedToError: result.transitionedToError,
-        errorCode: result.errorCode,
-        errorMessage: result.errorMessage
-      }
-    }
-    case 'defer_cooldown_account_retest':
-      return deferCooldownAccountRetest(operation.accountId, {
-        delaySeconds: operation.delaySeconds,
-        expectedConfigRevision: operation.expectedConfigRevision,
-        expectedDispatchRevision: operation.expectedDispatchRevision,
-        expectedObservationStartedAt: operation.expectedObservationStartedAt,
-        expectedGeneration: operation.expectedGeneration,
-        expectedSourceConfigRevision: operation.expectedSourceConfigRevision
-      })
     case 'mark_account_exception': {
       const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
         preserveDisabled: operation.preserveDisabled,

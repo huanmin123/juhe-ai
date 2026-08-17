@@ -360,7 +360,7 @@ try {
     }, access)
 
     for (const created of repositories.listAccounts(access).filter((item) => item.providerCode === DEEPSEEK_PROVIDER_CODE)) {
-      repositories.recordAccountHealthCheckSuccess(created.id, {
+      repositories.projectAccountHealthFixtureSuccess(created.id, {
         intervalHours: 24,
         jitterMinutes: 0,
         failureThreshold: 3,

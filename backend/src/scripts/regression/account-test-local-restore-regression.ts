@@ -234,7 +234,7 @@ async function assertManualTestPreservesAccountState(input: {
     groupId: input.groupId
   }, adminAccess)
   assert.equal(account.boundGroupId, input.groupId, `${input.accountName} 应绑定分组`)
-  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -337,14 +337,14 @@ async function assertInvalidProtocolEvidenceDegradesActiveAccount(input: {
     schedulable: true,
     groupId: input.groupId
   }, adminAccess)
-  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 2,
     statusCode: 200
   }), true, '正常账户应先记录健康成功基线')
 
-  let thresholdFailure: ReturnType<typeof repositories.recordAccountHealthCheckFailure> | undefined
+  let thresholdFailure: ReturnType<typeof repositories.projectAccountHealthFixtureFailure> | undefined
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const observedAt = new Date().toISOString()
     const result = await submitAccountTestAndWait<AccountTestResult>({
@@ -355,7 +355,7 @@ async function assertInvalidProtocolEvidenceDegradesActiveAccount(input: {
     })
     assert.equal(result.success, false, `正常账户第 ${attempt} 次无效协议响应应失败`)
     assert.equal(result.accountFailureEligible, true, `正常账户第 ${attempt} 次无效协议响应应计入失败阈值`)
-    thresholdFailure = repositories.recordAccountHealthCheckFailure(account.id, {
+    thresholdFailure = repositories.projectAccountHealthFixtureFailure(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 2,

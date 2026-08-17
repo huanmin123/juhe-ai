@@ -1338,7 +1338,7 @@ function chatSseChunk(content: string): Record<string, unknown> {
 }
 
 function activateFixtureAccount(accountId: string): void {
-  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+  assert(repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

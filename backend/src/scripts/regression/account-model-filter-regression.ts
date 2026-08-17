@@ -210,7 +210,7 @@ async function assertStorageRoundTrip(): Promise<void> {
     assert.deepEqual(sorted(account.supportedModels), ['gpt-5.4', 'gpt-5.5'], '创建账户应保存资料完整的内置模型')
     assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '创建账户应写入模型关系')
 
-    assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

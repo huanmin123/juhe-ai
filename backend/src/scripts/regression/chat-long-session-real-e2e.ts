@@ -328,7 +328,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
         schedulable: true
       }, access)
       accountId = account.id
-      assert(repositories.recordAccountHealthCheckSuccess(account.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
+      assert(repositories.projectAccountHealthFixtureSuccess(account.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
       gatewayKey = createApiKeyRecordWithRouteStrategy(repositories, {
         name: '长会话真实验收 Key',
         groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],

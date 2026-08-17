@@ -120,7 +120,6 @@ function assertBackgroundIpcMessagesAreRegistered(): void {
 
 function assertWorkerEntrypointsAreRegistered(): void {
   assertRegisteredWhenSourceIncludes(workerSource, 'startAccountTestTaskQueue()', 'manual-account-test-queue')
-  assertRegisteredWhenSourceIncludes(workerSource, 'getCooldownAccountRetestQueueSnapshot()', 'cooldown-account-retest-queue')
   assertRegisteredWhenSourceIncludes(workerSource, 'getAccountQualityFailurePrecheckQueueSnapshot()', 'account-quality-failure-precheck-queue')
 }
 

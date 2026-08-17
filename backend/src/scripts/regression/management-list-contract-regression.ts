@@ -49,7 +49,7 @@ try {
     status: 'active'
   }, access)
   assert.equal(account.status, 'pending_test', '管理列表 fixture 新建账户应先进入待检查状态')
-  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

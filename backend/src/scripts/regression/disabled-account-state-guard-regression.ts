@@ -397,7 +397,7 @@ function assertAccountStatus(accountId: string, status: string, schedulable: boo
 }
 
 function activateAccount(accountId: string): void {
-  const activated = repositories.recordAccountHealthCheckSuccess(accountId, {
+  const activated = repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

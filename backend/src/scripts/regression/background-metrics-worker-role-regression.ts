@@ -47,8 +47,7 @@ for (const type of [
 }
 for (const type of [
   'background_worker_account_test_tasks',
-  'background_worker_account_test_cancel',
-  'background_worker_account_health_check_trigger'
+  'background_worker_account_test_cancel'
 ] as const) {
   assert.equal(workerMessageTargetRole({ type } as BackgroundWorkerMessage), 'ops-worker', `${type} 必须路由到 ops-worker`)
 }
@@ -102,11 +101,9 @@ assertRoleBlockContainsOnly('ops-worker', [
   'account-circuit-control-plane-maintenance',
   'account-list-availability-projection-maintenance',
   'account-circuit-recovery',
-  'account-health-check',
   'model-quality-scheduled-check',
   'model-quality-recovery',
   'model-quality-health-sync-retry',
-  'cooldown-account-retest',
   'account-api-key-cooldown-retest',
   'openai-oauth-access-token-refresh',
   'api-key-availability-schedule-status-sync',
@@ -237,12 +234,6 @@ function roleCaseBlock(role: string): string {
 
 function collectScheduledJobNames(block: string): string[] {
   const names = new Set([...block.matchAll(/backgroundScheduledJobName\('([^']+)'\)/g)].map((match) => match[1]))
-  if (/^\s*scheduleCooldownAccountRetestJob\(\)\s*$/m.test(block)) {
-    const helper = functionBlock('scheduleCooldownAccountRetestJob')
-    assert.match(helper, /const jobName = 'cooldown-account-retest'/, '冷却账户复测 helper 必须绑定稳定任务名')
-    assert.match(helper, /runIfNodeOwnsWorkerJob\(runtimeConfig\.ownerLock, jobName,[\s\S]*?scheduler\.schedule\(\{\s*name: backgroundScheduledJobName\(jobName\)/, '冷却账户复测 helper 必须通过 owner fencing 注册 scheduler 任务')
-    names.add('cooldown-account-retest')
-  }
   return [...names]
 }
 

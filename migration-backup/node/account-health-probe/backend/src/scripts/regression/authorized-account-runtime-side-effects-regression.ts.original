@@ -267,7 +267,7 @@ function createAuthorizedAccount(
     groupId: ownerSourceGroup.id,
     supportedModels: ['gpt-5.5']
   }, ownerAccess)
-  repositories.recordAccountHealthCheckSuccess(account.id, {
+  repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

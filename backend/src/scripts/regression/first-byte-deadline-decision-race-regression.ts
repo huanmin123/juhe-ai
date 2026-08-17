@@ -833,7 +833,7 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
       priority: 1
     }, access)
     for (const account of [primary, secondary]) {
-      assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+      assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
         intervalHours: 24,
         jitterMinutes: 0,
         failureThreshold: 3,

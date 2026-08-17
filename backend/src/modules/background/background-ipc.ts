@@ -4,7 +4,6 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { normalizeHeaderId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { UsageRecordInput } from '../../storage/repositories.js'
@@ -15,7 +14,6 @@ import { dbServiceOperationAccessMode } from '../db-service/db-service-operation
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import {
   normalizeCodexSourceProbeFence,
-  type AccountHealthCheckTriggerReason,
   type CodexSourceProbeFence
 } from '../accounts/account-health-check-trigger.js'
 import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
@@ -319,90 +317,6 @@ export function sendAccountTestCancelToWorker(taskId: string): boolean {
     type: 'background_worker_account_test_cancel',
     taskId: normalizedId
   })
-}
-
-export function sendAccountHealthCheckTriggerToWorker(
-  accountId: string,
-  reason: AccountHealthCheckTriggerReason,
-  traceId?: string,
-  sourceFence?: CodexSourceProbeFence
-): boolean {
-  return sendAccountHealthCheckTriggerToWorkerWithOutcome(accountId, reason, traceId, sourceFence).accepted
-}
-
-export type AccountHealthCheckWorkerDispatchOutcome =
-  | {
-    accepted: true
-    targetRole: 'ops-worker'
-    queueLength: number
-    queueBytes: number
-    messageBytes: number
-  }
-  | {
-    accepted: false
-    targetRole: 'ops-worker'
-    decisionCode: 'ops_ipc_message_limit' | 'ops_ipc_byte_limit' | 'ops_ipc_unavailable'
-    queueLength: number
-    queueBytes: number
-    messageBytes: number
-  }
-
-/**
- * Returns the bounded ops-worker queue decision for the health-check bridge.
- * Existing callers retain the boolean API above; this is deliberately scoped to
- * health-check triggers so other IPC producers keep their current contract.
- */
-export function sendAccountHealthCheckTriggerToWorkerWithOutcome(
-  accountId: string,
-  reason: AccountHealthCheckTriggerReason,
-  traceId?: string,
-  sourceFence?: CodexSourceProbeFence
-): AccountHealthCheckWorkerDispatchOutcome {
-  if (runtimeConfig.processRole === 'worker') return unavailableAccountHealthCheckWorkerDispatchOutcome()
-  const normalizedId = normalizedString(accountId)
-  if (!normalizedId) return unavailableAccountHealthCheckWorkerDispatchOutcome()
-  if (!opsWorkerProcess || !opsWorkerProcess.connected || !opsWorkerReady) {
-    return unavailableAccountHealthCheckWorkerDispatchOutcome()
-  }
-  const normalizedTraceId = normalizeHeaderId(traceId)
-  const normalizedSourceFence = sourceFence ? normalizeCodexSourceProbeFence(sourceFence) : undefined
-  if (sourceFence && !normalizedSourceFence) return unavailableAccountHealthCheckWorkerDispatchOutcome()
-  const outcome = queueWorkerMessageWithOutcome({
-    type: 'background_worker_account_health_check_trigger',
-    accountId: normalizedId,
-    reason,
-    ...(normalizedTraceId ? { traceId: normalizedTraceId } : {}),
-    ...(normalizedSourceFence ? { sourceFence: normalizedSourceFence } : {})
-  })
-  if (outcome.targetRole !== 'ops-worker') return unavailableAccountHealthCheckWorkerDispatchOutcome()
-  if (outcome.accepted) {
-    return {
-      accepted: true,
-      targetRole: 'ops-worker',
-      queueLength: outcome.queueLength,
-      queueBytes: outcome.queueBytes,
-      messageBytes: outcome.messageBytes
-    }
-  }
-  return {
-    accepted: false,
-    targetRole: 'ops-worker',
-    decisionCode: outcome.decisionCode === 'message_limit' ? 'ops_ipc_message_limit' : 'ops_ipc_byte_limit',
-    queueLength: outcome.queueLength,
-    queueBytes: outcome.queueBytes,
-    messageBytes: outcome.messageBytes
-  }
-}
-
-function unavailableAccountHealthCheckWorkerDispatchOutcome(): AccountHealthCheckWorkerDispatchOutcome {
-  return {
-    accepted: false,
-    targetRole: 'ops-worker',
-    decisionCode: 'ops_ipc_unavailable',
-    queueLength: 0,
-    queueBytes: 0,
-    messageBytes: 0
-  }
 }
 
 export function sendGatewayQuotaSnapshotToServer(snapshot: GatewayQuotaSnapshot): void {

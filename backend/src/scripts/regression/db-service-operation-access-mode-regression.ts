@@ -79,6 +79,7 @@ for (const type of [
   'apply_account_error_handling',
   'record_account_api_key_failure',
   'record_account_api_key_success',
+  'project_account_health_jobs_outcome',
   'record_account_stream_failure',
   'clear_account_stream_failure_state',
   'mark_account_temporary_unavailable',
@@ -105,10 +106,6 @@ for (const type of [
   'expire_due_resource_authorizations',
   'cleanup_expired_deleted_accounts',
   'cleanup_expired_system_sessions',
-  'list_accounts_due_for_health_check',
-  'find_account_for_health_check',
-  'list_accounts_due_for_cooldown_retest',
-  'find_account_for_cooldown_retest',
   'cleanup_expired_codex_context_states',
   'account_test_task_maintenance',
   'cleanup_account_circuit_control_plane'

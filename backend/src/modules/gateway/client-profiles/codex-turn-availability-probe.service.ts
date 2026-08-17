@@ -1,6 +1,8 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { dispatchAccountHealthCheckWithOutcome } from '../../accounts/account-health-check-dispatch.service.js'
-import type { AccountHealthCheckDispatchOutcome } from '../../internal-api/account-health-check-dispatch.routes.js'
+import {
+  dispatchAccountHealthCheckWithOutcome,
+  type AccountHealthCheckDispatchOutcome
+} from '../../accounts/account-health-check-dispatch.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { gatewayAccountRuntimeKey } from '../runtime/account-runtime-keys.js'
 import {
@@ -92,20 +94,13 @@ export async function runCodexTurnAvoidanceAvailabilityProbe(input: {
       // allowed to issue the upstream diagnostic and settle account health.
       return { disposition: 'owner', generation: coordination.generation }
     }
-    const outcome = dispatch.outcome === 'coalesced' ? 'unknown' : 'probe_task_failure'
+    const outcome = 'probe_task_failure'
     await settleDispatchedAvailabilityProbeBySourceFence({
       runtimeKey: coordination.runtimeKey,
       generation: coordination.generation,
       sourceFence,
       outcome
     })
-    if (dispatch.outcome === 'coalesced') {
-      // A local dispatch cooldown cannot prove that the pre-existing worker
-      // will acquire this generation: it may already have joined the source
-      // lease and returned. Settle inconclusively instead of leaving a source
-      // fence waiting behind a no-longer-runnable task.
-      return { disposition: 'owner', generation: coordination.generation, outcome: 'unknown' }
-    }
     return { disposition: 'owner', generation: coordination.generation, outcome: 'probe_task_failure' }
   } catch (error) {
     if (releasedForExecution && sourceFence) {

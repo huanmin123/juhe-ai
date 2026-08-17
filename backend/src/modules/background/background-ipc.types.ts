@@ -14,7 +14,7 @@ import type {
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
-import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
+import type { CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 
 export type BackgroundWorkerProcessRole =
   | 'worker'
@@ -91,8 +91,6 @@ export interface BackgroundWorkerRuntimeSnapshot {
   usageRecordQueue: BackgroundWorkerQueueRuntime
   publicApiLogQueue: BackgroundWorkerQueueRuntime
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
-  accountHealthCheckQueue?: BackgroundWorkerRetryQueueRuntime
-  cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
   accountApiKeyCooldownRetestQueue?: BackgroundWorkerRetryQueueRuntime
   normalRouteSpeedFirstRecoveryProbeQueue?: BackgroundWorkerRetryQueueRuntime
   accountQualityFailurePrecheckQueue?: BackgroundWorkerRetryQueueRuntime
@@ -134,7 +132,6 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
   | { type: 'background_worker_account_test_cancel'; taskId: string }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: string; reason: AccountHealthCheckTriggerReason; traceId?: string; sourceFence?: CodexSourceProbeFence }
   | { type: 'background_worker_codex_source_fence_settled'; sourceFence: CodexSourceProbeFence; outcome: 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale' }
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }

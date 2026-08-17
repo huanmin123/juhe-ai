@@ -568,7 +568,7 @@ function createActiveAccount(
   access: Parameters<typeof repositories.createAccount>[1]
 ) {
   const account = repositories.createAccount(input, access)
-  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

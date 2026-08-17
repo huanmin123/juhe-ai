@@ -67,7 +67,7 @@ const validV3 = {
   ...valid,
   schemaVersion: 3,
   workerAllowlist: [
-    { job: 'cooldown-account-retest', owner: 'go', rollbackOwner: 'node' }
+    { job: 'migration-fixture-job', owner: 'go', rollbackOwner: 'node' }
   ]
 }
 
@@ -125,9 +125,9 @@ assert.equal(resolveRouteOwner(valid, { surface: 'management', method: 'GET', pa
 assert.equal(resolveRouteOwner(valid, { surface: 'management', method: 'PATCH', path: '/__aisys__/api/accounts/a-1' }), 'node')
 assert.equal(resolveRouteOwner(valid, { surface: 'gateway', method: 'POST', path: '/v1/responses' }), 'go')
 assert.equal(resolveRouteOwner(valid, { surface: 'gateway', method: 'POST', path: '/v1/responses/' }), 'node')
-assert.equal(resolveWorkerOwner(legacy, 'cooldown-account-retest'), 'node')
-assert.equal(resolveWorkerOwner(valid, 'cooldown-account-retest'), 'node')
-assert.equal(resolveWorkerOwner(validV3, 'cooldown-account-retest'), 'go')
+assert.equal(resolveWorkerOwner(legacy, 'migration-fixture-job'), 'node')
+assert.equal(resolveWorkerOwner(valid, 'migration-fixture-job'), 'node')
+assert.equal(resolveWorkerOwner(validV3, 'migration-fixture-job'), 'go')
 assert.equal(resolveWorkerOwner(validV3, 'usage-sync'), 'node')
 assert.throws(() => resolveWorkerOwner(validV3, 'Invalid_Job'), /kebab-case/)
 
@@ -213,7 +213,7 @@ assert.equal(resolveRouteOwner(rollback, { surface: 'management', method: 'GET',
 const rollbackV3 = createRollbackManifest(validV3, 'rollback-2026-07-22-002')
 assert.equal(rollbackV3.workerAllowlist[0].owner, 'node')
 assert.equal(rollbackV3.workerAllowlist[0].rollbackOwner, 'go')
-assert.equal(resolveWorkerOwner(rollbackV3, 'cooldown-account-retest'), 'node')
+assert.equal(resolveWorkerOwner(rollbackV3, 'migration-fixture-job'), 'node')
 assert.throws(() => createRollbackManifest(legacy, 'rollback-legacy'), /schemaVersion 2/)
 assert.throws(() => createRollbackManifest(valid, valid.deploymentEpoch), /different/)
 

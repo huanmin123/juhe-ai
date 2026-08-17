@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { projectAccountHealthJobsOutcome } from '../../storage/account-health-projection.repository.js'
 import type { AccountHealthJobsOutcome } from '../../storage/account-health-jobs-outcome.repository.js'
+import { encryptJson } from '../../storage/crypto.js'
 
 const require = createRequire(import.meta.url)
 const Constructor = require('node:sqlite').DatabaseSync as new (path: string) => DatabaseSync
@@ -22,6 +23,11 @@ try {
       cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_generation TEXT,
+      type TEXT NOT NULL DEFAULT 'api_key',
+      credentials_encrypted TEXT NOT NULL DEFAULT '',
+      balance_query_enabled INTEGER NOT NULL DEFAULT 0,
+      balance_query_config_json TEXT NOT NULL DEFAULT '{}',
+      balance_query_next_refresh_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       last_error_code TEXT,
@@ -53,8 +59,8 @@ try {
       applied_at TEXT NOT NULL
     );
   `)
-  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run('account-1', 'active', 1, 2, 3, '2026-08-16T00:00:00.000Z')
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-1', 'active', 1, 2, 3, encryptJson({ api_key: 'sk-account-1' }), '2026-08-16T00:00:00.000Z')
   database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
     .run('account-1', 1, '2026-08-16T00:00:00.000Z')
 
@@ -76,8 +82,8 @@ try {
   const receipt = database.prepare(`SELECT disposition FROM account_health_projection_receipts WHERE outcome_id = ?`).get('outcome-2') as { disposition: string }
   assert.equal(receipt.disposition, 'stale')
 
-  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run('account-2', 'temporary_unavailable', 1, 4, 5, '2026-08-16T00:05:00.000Z', '2026-08-16T00:00:00.000Z', 'generation-1', '2026-08-16T00:00:00.000Z')
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-2', 'temporary_unavailable', 1, 4, 5, encryptJson({ api_key: 'sk-account-2' }), '2026-08-16T00:05:00.000Z', '2026-08-16T00:00:00.000Z', 'generation-1', '2026-08-16T00:00:00.000Z')
   database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
     .run('account-2', 1, '2026-08-16T00:00:00.000Z')
   const deferred = projectAccountHealthJobsOutcome(cooldownDefer('outcome-3'), database)
@@ -89,6 +95,17 @@ try {
   const staleCooldown = projectAccountHealthJobsOutcome(cooldownDefer('outcome-4'), database)
   assert.equal(staleCooldown.disposition, 'stale')
   assert.equal(staleCooldown.reason, 'cooldown_generation_stale')
+
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-3', 'pending_test', 0, 6, 7, encryptJson({ api_key: 'sk-account-3' }), '2026-08-16T00:00:00.000Z')
+  database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
+    .run('account-3', 1, '2026-08-16T00:00:00.000Z')
+  const activation = projectAccountHealthJobsOutcome(activationSuccess('outcome-5'), database)
+  assert.equal(activation.disposition, 'applied')
+  const activated = database.prepare(`SELECT status, schedulable, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get('account-3') as Record<string, unknown>
+  assert.equal(activated.status, 'active')
+  assert.equal(activated.schedulable, 1)
+  assert.equal(activated.balance_query_next_refresh_at, '2026-08-16T00:15:00.000Z')
 } finally {
   database.close()
 }
@@ -145,6 +162,29 @@ function cooldownDefer(outcomeId: string): AccountHealthJobsOutcome {
         observation_started_at: '2026-08-16T00:00:00.000Z',
         generation: 'generation-1'
       }
+    }
+  }
+}
+
+function activationSuccess(outcomeId: string): AccountHealthJobsOutcome {
+  return {
+    outcome_id: outcomeId,
+    request_id: `request-${outcomeId}`,
+    account_id: 'account-3',
+    outcome: 'complete_success',
+    observed_at: '2026-08-16T00:15:00.000Z',
+    input_version: 1,
+    config_revision: 6,
+    dispatch_revision: 7,
+    status_code: 200,
+    next_due_at: '2026-08-16T01:15:00.000Z',
+    projection: {
+      target_account_id: 'account-3',
+      transition_kind: 'activation_success',
+      input_version: 1,
+      config_revision: 6,
+      dispatch_revision: 7,
+      expected_account_status: 'pending_test'
     }
   }
 }

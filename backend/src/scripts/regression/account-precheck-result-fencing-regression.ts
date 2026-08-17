@@ -161,7 +161,7 @@ function createFixture(name: string) {
     status: 'active',
     schedulable: true
   }, adminAccess)
-  assert(repositories.recordAccountHealthCheckSuccess(created.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(created.id, {
     intervalHours: 24,
     jitterMinutes: 0,
     failureThreshold: 3,

@@ -524,7 +524,7 @@ function seedData(): {
     groupId: groupB.id
   }, access)
   for (const account of [apiKeyAccount, oauthAccount, multiApiKeyAccount, targetAccount]) {
-    repositories.recordAccountHealthCheckSuccess(account.id, {
+    repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
       failureThreshold: 3,

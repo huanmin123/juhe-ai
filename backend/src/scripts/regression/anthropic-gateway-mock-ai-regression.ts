@@ -108,7 +108,7 @@ const repositories = {
         : {})
     }, actor)
     if (input.status === 'active') {
-      assert(rawRepositories.recordAccountHealthCheckSuccess(account.id, {
+      assert(rawRepositories.projectAccountHealthFixtureSuccess(account.id, {
         intervalHours: 12,
         jitterMinutes: 0,
         failureThreshold: 3,

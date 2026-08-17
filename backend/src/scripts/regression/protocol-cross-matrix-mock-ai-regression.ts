@@ -429,7 +429,7 @@ function createActiveAccount(
   accountAccess = access
 ) {
   const created = repositories.createAccount(input, accountAccess)
-  assert(repositories.recordAccountHealthCheckSuccess(created.id, {
+  assert(repositories.projectAccountHealthFixtureSuccess(created.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,

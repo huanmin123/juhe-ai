@@ -133,8 +133,6 @@ for (const jobName of [
   'account-availability-schedule-status-sync',
   'resource-authorization-expiry-sweep',
   'expired-deleted-account-cleanup',
-  'account-health-check',
-  'cooldown-account-retest',
   'account-api-key-cooldown-retest',
   'proxy-latency-refresh',
   'openai-oauth-access-token-refresh'

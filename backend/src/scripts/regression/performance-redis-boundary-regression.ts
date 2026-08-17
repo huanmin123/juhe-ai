@@ -547,14 +547,6 @@ function assertStrictRedisCacheBoundaries(): void {
 function assertPostgresAsyncRuntimeFactReads(): void {
   const asyncConcurrencyReaders = [
     {
-      file: 'storage/account-health-check.repository.ts',
-      functions: [{ name: 'healthCheckAccountSummariesAsync', readsConcurrencyDirectly: true }]
-    },
-    {
-      file: 'storage/account-cooldown-retest.repository.ts',
-      functions: [{ name: 'cooldownRetestAccountSummariesAsync', readsConcurrencyDirectly: true }]
-    },
-    {
       file: 'storage/account-summary.repository.ts',
       functions: [
         { name: 'authorizedAccountSummaryFromRowAsync', readsConcurrencyDirectly: false },

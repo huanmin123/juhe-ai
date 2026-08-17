@@ -4,7 +4,6 @@ import { stat as statFile } from 'node:fs/promises'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { runIfNodeOwnsWorkerJob } from '../../shared/worker-owner.js'
 import {
   performanceProcessMetricsTopologyComplete,
   readPerformanceProcessEventLoopSamples
@@ -32,20 +31,14 @@ import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.j
 import { requestStatsWriter } from './background-stats-writer.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
 import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
-import { enqueueAccountHealthCheckById, stopAccountHealthCheckQueue } from './account-health-check.service.js'
-import { stopCooldownAccountRetestQueue } from './cooldown-account-retest.service.js'
 import { stopAccountApiKeyCooldownRetestQueue } from './account-api-key-cooldown-retest.service.js'
-import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 import {
   runAccountApiKeyCooldownRetest,
-  runAccountHealthCheck,
   runAccountQualityRefresh,
-  runCooldownAccountRetest,
   runNormalRouteSpeedFirstRecoveryProbe
 } from './account-probe-jobs.js'
 import {
   accountApiKeyCooldownRetestStartupDelayMs,
-  cooldownAccountRetestStartupDelayMs,
   normalRouteSpeedFirstProbeStartupDelayMs
 } from './account-probe-limits.js'
 import {
@@ -157,12 +150,10 @@ export async function stopBackgroundJobs(): Promise<{ drained: boolean; activeCo
   started = false
   startGeneration += 1
   const schedulerDrain = await scheduler.stopAndDrain(10_000)
-  const healthDrain = await stopAccountHealthCheckQueue(10_000)
-  const cooldownDrain = await stopCooldownAccountRetestQueue(10_000)
   const keyCooldownDrain = await stopAccountApiKeyCooldownRetestQueue(10_000)
   return {
-    drained: schedulerDrain.drained && healthDrain.drained && cooldownDrain.drained && keyCooldownDrain.drained,
-    activeCount: schedulerDrain.activeCount + healthDrain.activeCount + cooldownDrain.activeCount + keyCooldownDrain.activeCount
+    drained: schedulerDrain.drained && keyCooldownDrain.drained,
+    activeCount: schedulerDrain.activeCount + keyCooldownDrain.activeCount
   }
 }
 
@@ -330,15 +321,11 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, task: runAccountAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
       scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
-      if (runtimeConfig.accountHealthJobs.owner === 'node') {
-        scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, stablePhaseWindowMs: 10 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'account-diagnostic-scanner', timeoutMs: 55 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
-      }
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-scheduled-check'), intervalMs: minuteMs, initialDelayMs: 45 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityScheduledChecks(signal), '模型质量定时检查') })
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-recovery'), intervalMs: minuteMs, initialDelayMs: 55 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityRecoveries(signal), '模型质量恢复检查') })
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-health-sync-retry'), intervalMs: minuteMs, initialDelayMs: 58 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await retryFailedModelQualityHealthSyncs(signal), '模型质量健康同步补偿') })
       scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceRefresh({ signal }) })
       scheduler.schedule({ name: backgroundScheduledJobName('account-balance-auto-detect-recovery'), intervalMs: minuteMs, initialDelayMs: 25 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 45 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceAutoDetectionRecovery({ signal }) })
-      scheduleCooldownAccountRetestJob()
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, task: runNormalRouteSpeedFirstRecoveryProbe })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })
@@ -378,45 +365,6 @@ function scheduleBackgroundJobs(): void {
       return
     default:
       return
-  }
-}
-
-function scheduleCooldownAccountRetestJob(): void {
-  const jobName = 'cooldown-account-retest'
-  if (runtimeConfig.accountHealthJobs.owner !== 'node') {
-    logger.info({
-      event: 'j1_node_cooldown_owner_disabled',
-      jobName,
-      j1Owner: runtimeConfig.accountHealthJobs.owner
-    }, 'J1 已由 Go 接管，Node 不再注册账户冷却复测任务')
-    return
-  }
-  const ownership = runIfNodeOwnsWorkerJob(runtimeConfig.ownerLock, jobName, () => {
-    scheduler.schedule({
-      name: backgroundScheduledJobName(jobName),
-      intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs,
-      initialDelayMs: cooldownAccountRetestStartupDelayMs,
-      task: () => runCooldownAccountRetest({ settingsNumber })
-    })
-  })
-  if (!ownership.nodeOwns) {
-    const logFields = {
-      event: 'background_worker_job_owner_drained',
-      jobName,
-      ownerLockEnabled: runtimeConfig.ownerLock.enabled,
-      manifestPath: runtimeConfig.ownerLock.manifestPath,
-      configuredDeploymentEpoch: runtimeConfig.ownerLock.deploymentEpoch,
-      resolvedOwner: ownership.resolvedOwner,
-      manifestSchemaVersion: ownership.schemaVersion,
-      reason: ownership.reason,
-      detail: ownership.detail
-    }
-    if (ownership.reason === 'manifest_owner_go') {
-      logger.info(logFields, '后台任务 owner 已切换到 Go，Node 不再注册账户冷却复测任务')
-    } else {
-      logger.error(logFields, '后台任务 owner 无法安全确认，Node 按 fail-closed 策略不注册账户冷却复测任务')
-    }
-    return
   }
 }
 
@@ -492,20 +440,6 @@ function handleBackgroundJobsStartError(error: unknown, generation: number): voi
   started = false
   logger.error(errorLogFields(error, { event: 'background_jobs_start_failed' }), '后台任务启动失败')
   setImmediate(() => { throw error })
-}
-
-export async function triggerAccountHealthCheckNow(
-  accountId: string,
-  reason: AccountHealthCheckTriggerReason,
-  sourceFence?: CodexSourceProbeFence
-): Promise<boolean> {
-  if (runtimeConfig.accountHealthJobs.owner !== 'node') return false
-  return await enqueueAccountHealthCheckById(accountId, {
-    intervalHours: settingsNumber('accountHealthCheckIntervalHours', 1, 168),
-    jitterMinutes: settingsNumber('accountHealthCheckJitterMinutes', 0, 1440),
-    failureThreshold: settingsNumber('accountHealthCheckFailureThreshold', 1, 10),
-    maxPauseMinutes: settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
-  }, reason, sourceFence)
 }
 
 function isPostgresHighPerformanceMode(): boolean {

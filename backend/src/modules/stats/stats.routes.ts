@@ -881,8 +881,6 @@ function runtimeRetryQueueRows(runtime: DbServiceSystemMetricsRuntimeSnapshot): 
       accountQualityFailurePrecheckSnapshot ? (opsWorkerSnapshot?.workerRole ?? statsWorkerSnapshot?.workerRole) : undefined,
       accountQualityFailurePrecheckSnapshot
     ),
-    retryQueueBackgroundJobRow('account-health-check-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.accountHealthCheckQueue),
-    retryQueueBackgroundJobRow('cooldown-account-retest-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.cooldownAccountRetestQueue),
     retryQueueBackgroundJobRow('account-api-key-cooldown-retest-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.accountApiKeyCooldownRetestQueue),
     retryQueueBackgroundJobRow(
       'normal-route-speed-first-recovery-probe-queue',

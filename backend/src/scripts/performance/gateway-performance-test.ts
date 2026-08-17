@@ -180,7 +180,7 @@ const [
   { captureGatewayRawBody, wrapGatewayRawBodyParser },
   { requestContextMiddleware },
   databaseModule,
-  accountHealthChecks,
+  repositories,
   sqliteReadWorkerPool,
   mockdataFixtures,
   gatewayCache,
@@ -192,7 +192,7 @@ const [
   import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
-  import('../../storage/account-health-check.repository.js'),
+  import('../../storage/repositories.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
   import('../maintenance/mockdata/fixtures.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
@@ -297,7 +297,7 @@ function seedGatewayData(config: PerfConfig, upstreamBaseUrl: string): SeededGat
   })
   if (!fixture.apiKey) throw new Error('Mockdata 压测夹具未生成本地网关 Key')
   for (const account of fixture.accounts) {
-    if (!accountHealthChecks.recordAccountHealthCheckSuccess(account.id, {
+    if (!repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 24,
       jitterMinutes: 0,
       failureThreshold: 3,
