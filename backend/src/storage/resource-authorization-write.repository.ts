@@ -11,6 +11,7 @@ import type {
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { currentSystemAccountId, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { replaceAccountNameSearchTermsAsync } from './account-name-search.repository.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
@@ -118,7 +119,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   const database = getBusinessDatabase()
   const now = nowIso()
   const expiresAt = normalizeResourceAuthorizationExpiresAtInput(input.expiresAt)
-  validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
+  validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, requiredRfc3339Timestamp(now, '授权当前时间'))
   const actor = currentSystemAccountId(access)
   const targetGroupId = normalizeOptionalTextInput(input.targetGroupId, '目标分组')
   const remark = normalizeOptionalTextInput(input.remark, '授权备注', { allowBlank: true })
@@ -196,7 +197,7 @@ export async function createResourceAuthorizationAsync(input: Record<string, unk
   await client.transaction(async (tx) => {
     const ownerSystemAccountId = await resourceOwnerSystemAccountIdAsync(tx, resourceType, resourceId)
     if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) throw new Error('授权资源不存在')
-    await validateResourceAuthorizationExpiresAtAsync(tx, resourceType, resourceId, expiresAt, Date.parse(now))
+    await validateResourceAuthorizationExpiresAtAsync(tx, resourceType, resourceId, expiresAt, requiredRfc3339Timestamp(now, '授权当前时间'))
     if (granteeType === 'team') {
       const team = await tx.one<SystemTeamRow>(`
         SELECT *
@@ -247,7 +248,7 @@ export function createResourceAuthorizationMutation(input: Record<string, unknow
     normalized.resourceType,
     normalized.expiresAt,
     resource.resourceAccountExpiresAt,
-    Date.parse(now)
+    requiredRfc3339Timestamp(now, '授权当前时间')
   )
   const actor = currentSystemAccountId(access)
   const transactionStarted = beginDatabaseTransaction(database)
@@ -359,7 +360,7 @@ export async function createResourceAuthorizationMutationAsync(input: Record<str
       normalized.resourceType,
       normalized.expiresAt,
       resource.resourceAccountExpiresAt,
-      Date.parse(now)
+      requiredRfc3339Timestamp(now, '授权当前时间')
     )
     if (normalized.granteeType === 'team') {
       const team = await tx.one<Pick<SystemTeamRow, 'id' | 'name' | 'status'>>(`
@@ -592,7 +593,7 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
   const requestedStatus = Object.prototype.hasOwnProperty.call(input, 'status')
     ? normalizeResourceAuthorizationStatus(input.status)
     : undefined
-  validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, nextExpiresAt, Date.parse(now), { allowExpired: requestedStatus === 'expired' })
+  validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, nextExpiresAt, requiredRfc3339Timestamp(now, '授权当前时间'), { allowExpired: requestedStatus === 'expired' })
   if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
     throw new Error('到期授权恢复时请同时调整过期时间')
   }
@@ -663,7 +664,7 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
     const requestedStatus = Object.prototype.hasOwnProperty.call(input, 'status')
       ? normalizeResourceAuthorizationStatus(input.status)
       : undefined
-    await validateResourceAuthorizationExpiresAtAsync(tx, grant.resource_type, grant.resource_id, nextExpiresAt, Date.parse(now), { allowExpired: requestedStatus === 'expired' })
+    await validateResourceAuthorizationExpiresAtAsync(tx, grant.resource_type, grant.resource_id, nextExpiresAt, requiredRfc3339Timestamp(now, '授权当前时间'), { allowExpired: requestedStatus === 'expired' })
     if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
       throw new Error('到期授权恢复时请同时调整过期时间')
     }
@@ -739,7 +740,7 @@ function patchResourceAuthorizationSqlite(
   const now = nextResourceAuthorizationVersion(grant.updated_at)
   const patch = resourceAuthorizationPatch(grant, input, currentSystemAccountId(access), now)
   if (patch.validateExpiresAt) {
-    validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, patch.next.expires_at, Date.parse(now), {
+    validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, patch.next.expires_at, requiredRfc3339Timestamp(now, '授权当前时间'), {
       allowExpired: patch.next.status === 'expired'
     })
   }
@@ -792,7 +793,7 @@ async function patchResourceAuthorizationPostgresAsync(
     const now = nextResourceAuthorizationVersion(grant.updated_at)
     const patch = resourceAuthorizationPatch(grant, input, actor, now)
     if (patch.validateExpiresAt) {
-      await validateResourceAuthorizationExpiresAtAsync(tx, grant.resource_type, grant.resource_id, patch.next.expires_at, Date.parse(now), {
+      await validateResourceAuthorizationExpiresAtAsync(tx, grant.resource_type, grant.resource_id, patch.next.expires_at, requiredRfc3339Timestamp(now, '授权当前时间'), {
         allowExpired: patch.next.status === 'expired'
       })
     }
@@ -921,8 +922,8 @@ function resourceAuthorizationGrantPatchSelectColumns(): string {
 
 function nextResourceAuthorizationVersion(currentUpdatedAt: string): string {
   const now = Date.now()
-  const current = Date.parse(currentUpdatedAt)
-  return new Date(Number.isFinite(current) && current >= now ? current + 1 : now).toISOString()
+  const current = requiredRfc3339Timestamp(currentUpdatedAt, '资源授权 updatedAt')
+  return new Date(current >= now ? current + 1 : now).toISOString()
 }
 
 export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizationExpirySweepBatchSize): Promise<number> {
@@ -1720,7 +1721,7 @@ async function firstActiveTeamSourceIdAsync(client: DatabaseClient, authorizatio
 
 async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: DatabaseClient, authorization: ResourceAuthorizationRow, now: string, targetGroupId?: string): Promise<void> {
   if (authorization.resource_type !== 'account') return
-  if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
+  if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, requiredRfc3339Timestamp(now, '授权当前时间'))) return
   const instance = await ensureAccountAuthorizationInstanceAsync(client, authorization, now)
   if (!instance?.id || !instance.provider_code) return
   const requestedGroupId = targetGroupId?.trim()
@@ -2512,13 +2513,12 @@ function validateResourceAuthorizationExpiresAtAgainstKnownResource(
   now: number,
   options: { allowExpired?: boolean } = {}
 ): void {
-  if (!expiresAt) return
-  const expiresAtMs = Date.parse(expiresAt)
-  if (!Number.isFinite(expiresAtMs)) throw new Error('授权到期时间格式不正确')
+  if (expiresAt === null) return
+  const expiresAtMs = requiredRfc3339Timestamp(expiresAt, '授权到期时间')
   if (!options.allowExpired && expiresAtMs <= now) throw new Error('授权到期时间不能早于当前时间')
-  if (resourceType !== 'account' || !resourceAccountExpiresAt) return
-  const accountExpiresAtMs = Date.parse(resourceAccountExpiresAt)
-  if (Number.isFinite(accountExpiresAtMs) && expiresAtMs > accountExpiresAtMs) {
+  if (resourceType !== 'account' || resourceAccountExpiresAt === undefined) return
+  const accountExpiresAtMs = requiredRfc3339Timestamp(resourceAccountExpiresAt, '账户到期时间')
+  if (expiresAtMs > accountExpiresAtMs) {
     throw new Error('授权到期时间不能晚于账户到期时间')
   }
 }
@@ -2605,6 +2605,14 @@ function normalizeResourceAuthorizationExpiresAtInput(value: unknown): string | 
   return normalized
 }
 
+function requiredRfc3339Timestamp(value: unknown, label: string): number {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return timestamp
+}
+
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
   if (resourceType !== 'account') return groupOwnerAndProvider(resourceId)?.systemAccountId
   const row = getBusinessDatabase()
@@ -2621,17 +2629,17 @@ function validateResourceAuthorizationExpiresAt(
   now = Date.now(),
   options: { allowExpired?: boolean } = {}
 ): void {
-  if (!expiresAt) return
-  const expiresAtMs = Date.parse(expiresAt)
-  if (!Number.isFinite(expiresAtMs)) throw new Error('授权到期时间格式不正确')
+  if (expiresAt === null) return
+  const expiresAtMs = requiredRfc3339Timestamp(expiresAt, '授权到期时间')
   if (!options.allowExpired && expiresAtMs <= now) throw new Error('授权到期时间不能早于当前时间')
   if (resourceType !== 'account') return
   const account = getBusinessDatabase()
     .prepare('SELECT account_expires_at FROM accounts WHERE id = ? AND deleted_at IS NULL')
     .get(resourceId) as unknown as { account_expires_at?: string | null } | undefined
-  if (!account?.account_expires_at) return
-  const accountExpiresAtMs = Date.parse(account.account_expires_at)
-  if (Number.isFinite(accountExpiresAtMs) && expiresAtMs > accountExpiresAtMs) {
+  const accountExpiresAt = account?.account_expires_at
+  if (accountExpiresAt === undefined || accountExpiresAt === null) return
+  const accountExpiresAtMs = requiredRfc3339Timestamp(accountExpiresAt, '账户到期时间')
+  if (expiresAtMs > accountExpiresAtMs) {
     throw new Error('授权到期时间不能晚于账户到期时间')
   }
 }
@@ -2644,9 +2652,8 @@ async function validateResourceAuthorizationExpiresAtAsync(
   now = Date.now(),
   options: { allowExpired?: boolean } = {}
 ): Promise<void> {
-  if (!expiresAt) return
-  const expiresAtMs = Date.parse(expiresAt)
-  if (!Number.isFinite(expiresAtMs)) throw new Error('授权到期时间格式不正确')
+  if (expiresAt === null) return
+  const expiresAtMs = requiredRfc3339Timestamp(expiresAt, '授权到期时间')
   if (!options.allowExpired && expiresAtMs <= now) throw new Error('授权到期时间不能早于当前时间')
   if (resourceType !== 'account') return
   const account = await client.one<{ account_expires_at?: string | null }>(`
@@ -2656,9 +2663,10 @@ async function validateResourceAuthorizationExpiresAtAsync(
       AND deleted_at IS NULL
     LIMIT 1
   `, [resourceId])
-  if (!account?.account_expires_at) return
-  const accountExpiresAtMs = Date.parse(account.account_expires_at)
-  if (Number.isFinite(accountExpiresAtMs) && expiresAtMs > accountExpiresAtMs) {
+  const accountExpiresAt = account?.account_expires_at
+  if (accountExpiresAt === undefined || accountExpiresAt === null) return
+  const accountExpiresAtMs = requiredRfc3339Timestamp(accountExpiresAt, '账户到期时间')
+  if (expiresAtMs > accountExpiresAtMs) {
     throw new Error('授权到期时间不能晚于账户到期时间')
   }
 }

@@ -7,6 +7,7 @@ import { normalizeGeminiEndpointModesForRuntime } from '../domain/gemini-endpoin
 import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode } from '../domain/provider-protocol.js'
 import { normalizeHybridEndpointModesForRuntime } from '../modules/providers/drivers/hybrid/account-credentials.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsByAccountIdsAsync, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
@@ -131,9 +132,8 @@ export function findOpenAIAccountForGroup(
             AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
           )
         )
-        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     `)
-    .get(accountId, groupAccess.providerCode, groupAccess.providerCode, now) as unknown as OpenAIAccountRow | undefined
+    .get(accountId, groupAccess.providerCode, groupAccess.providerCode) as unknown as OpenAIAccountRow | undefined
   if (!row) {
     return undefined
   }
@@ -219,9 +219,8 @@ export async function findOpenAIAccountForGroupAsync(
           AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
         )
       )
-      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     LIMIT 1
-  `, [accountId, groupAccess.providerCode, groupAccess.providerCode, now])
+  `, [accountId, groupAccess.providerCode, groupAccess.providerCode])
   if (!row) {
     return undefined
   }
@@ -567,11 +566,28 @@ function normalizeRecoverableUnavailableWindowMs(value: number | undefined): num
 }
 
 function accountRecoverableCooldownUntilMs(account: OpenAIAccountSecret): number | undefined {
-  if (!account.cooldownUntil) {
+  if (account.cooldownUntil === undefined) {
     return undefined
   }
-  const cooldownUntilMs = Date.parse(account.cooldownUntil)
-  return Number.isFinite(cooldownUntilMs) ? cooldownUntilMs : undefined
+  return requiredRfc3339Timestamp(account.cooldownUntil, '可恢复账户 cooldownUntil')
+}
+
+function optionalRfc3339Instant(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Instant(value, label)
+}
+
+function optionalRfc3339Timestamp(value: string | null | undefined, label: string): number | undefined {
+  if (value === undefined || value === null) return undefined
+  return requiredRfc3339Timestamp(value, label)
+}
+
+function requiredRfc3339Timestamp(value: unknown, label: string): number {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) {
+    throw new Error(`${label}必须是带 Z 或数值 offset 的 RFC3339 时间`)
+  }
+  return timestamp
 }
 
 function mergeOpenAIGroupAccountRowsForDispatch(
@@ -648,6 +664,11 @@ function openAIAccountSecretFromRow(
   if (!accountAccess) {
     return undefined
   }
+  const cooldownUntil = optionalRfc3339Instant(row.cooldown_until, 'AI 账户 cooldownUntil')
+  const streamFailureWindowStartedAt = optionalRfc3339Instant(row.stream_failure_window_started_at, 'AI 账户 streamFailureWindowStartedAt')
+  const accountExpiresAt = optionalRfc3339Instant(row.account_expires_at, 'AI 账户 accountExpiresAt')
+  const accountAuthorizationExpiresAt = optionalRfc3339Instant(accountAccess.accountAuthorizationExpiresAt, '账户授权 expiresAt')
+  const groupAuthorizationExpiresAt = optionalRfc3339Instant(groupAccess.groupAuthorizationExpiresAt, '分组授权 expiresAt')
   const resourceType = openAIAccountResourceType(row)
   let credentials: Record<string, unknown>
   try {
@@ -655,6 +676,10 @@ function openAIAccountSecretFromRow(
   } catch {
     return undefined
   }
+  const credentialExpiresAt = optionalRfc3339Instant(
+    credentials.expires_at,
+    'AI 账户凭据 expires_at'
+  )
   const apiKeyEntries = accountApiKeyEntries(credentials)
   const apiKey = runtimeCredentialSource(resourceType, credentials, apiKeyEntries[0]?.key)
   if (!apiKey) {
@@ -713,14 +738,14 @@ function openAIAccountSecretFromRow(
     accountAccessType: accountAccess.accountAccessType,
     groupAccessType: groupAccess.groupAccessType,
     accountAuthorizationId: accountAccess.accountAuthorizationId,
-    accountAuthorizationExpiresAt: accountAccess.accountAuthorizationExpiresAt,
+    accountAuthorizationExpiresAt,
     accountAuthorizationQuotaLimited: accountAccess.accountAuthorizationQuotaLimited,
     accountAuthorizationSourceType: accountAccess.accountAuthorizationSourceType,
     accountAuthorizationSourceTeamId: accountAccess.accountAuthorizationSourceTeamId,
     bindingSystemAccountId,
     boundGroupId: isLocalAccountAuthorized ? groupAccount?.group_id ?? undefined : undefined,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
-    groupAuthorizationExpiresAt: groupAccess.groupAuthorizationExpiresAt,
+    groupAuthorizationExpiresAt,
     groupAuthorizationQuotaLimited: groupAccess.groupAuthorizationQuotaLimited,
     groupAuthorizationSourceType: groupAccess.groupAuthorizationSourceType,
     groupAuthorizationSourceTeamId: groupAccess.groupAuthorizationSourceTeamId,
@@ -753,12 +778,12 @@ function openAIAccountSecretFromRow(
     proxyUrl: proxyProfile.proxyUrl,
     proxyProfileUnavailable: proxyProfile.unavailable,
     proxyProfileErrorMessage: proxyProfile.errorMessage,
-    cooldownUntil: row.cooldown_until ?? undefined,
+    cooldownUntil,
     lastErrorMessage: row.last_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
-    streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-    accountExpiresAt: row.account_expires_at ?? undefined,
-    expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
+    streamFailureWindowStartedAt,
+    accountExpiresAt,
+    expiresAt: credentialExpiresAt,
     credentials: runtimeOpenAIAccountCredentials(credentials)
   }
 }
@@ -838,8 +863,10 @@ function copyRuntimeCredentialValue(input: Record<string, unknown>, output: Reco
   }
 }
 
-function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now: string, includeUnavailable: boolean): boolean {
-  if (row.account_expires_at && row.account_expires_at <= now) {
+function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now: number, includeUnavailable: boolean): boolean {
+  const accountExpiresAt = optionalRfc3339Timestamp(row.account_expires_at, 'AI 账户 accountExpiresAt')
+  const cooldownUntil = optionalRfc3339Timestamp(row.cooldown_until, 'AI 账户 cooldownUntil')
+  if (accountExpiresAt !== undefined && accountExpiresAt <= now) {
     return false
   }
   if (row.schedulable !== 1) {
@@ -848,17 +875,19 @@ function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now
   if (includeUnavailable) {
     return row.status === 'active' || row.status === 'rate_limited' || row.status === 'temporary_unavailable'
   }
-  return row.status === 'active' && (!row.cooldown_until || row.cooldown_until <= now)
+  return row.status === 'active' && (cooldownUntil === undefined || cooldownUntil <= now)
 }
 
-function isOpenAIResourceAccountAvailableForSelection(row: OpenAIAccountRow, now: string, includeUnavailable: boolean): boolean {
+function isOpenAIResourceAccountAvailableForSelection(row: OpenAIAccountRow, now: number, includeUnavailable: boolean): boolean {
   if (!row.authorization_instance_authorization_id) {
     return true
   }
+  const resourceAccountExpiresAt = optionalRfc3339Timestamp(row.resource_account_expires_at, '授权来源账户 accountExpiresAt')
+  const resourceCooldownUntil = optionalRfc3339Timestamp(row.resource_cooldown_until, '授权来源账户 cooldownUntil')
   if (!row.resource_account_id || !row.resource_status) {
     return false
   }
-  if (row.resource_account_expires_at && row.resource_account_expires_at <= now) {
+  if (resourceAccountExpiresAt !== undefined && resourceAccountExpiresAt <= now) {
     return false
   }
   if (row.resource_last_error_code === 'account_expired') {
@@ -870,7 +899,7 @@ function isOpenAIResourceAccountAvailableForSelection(row: OpenAIAccountRow, now
   if (includeUnavailable) {
     return row.resource_status === 'active' || row.resource_status === 'rate_limited' || row.resource_status === 'temporary_unavailable'
   }
-  return row.resource_status === 'active' && (!row.resource_cooldown_until || row.resource_cooldown_until <= now)
+  return row.resource_status === 'active' && (resourceCooldownUntil === undefined || resourceCooldownUntil <= now)
 }
 
 function isOpenAIAccountAvailableForSelection(
@@ -880,10 +909,11 @@ function isOpenAIAccountAvailableForSelection(
   now: string,
   includeUnavailable: boolean
 ): boolean {
-  if (!isOpenAIPhysicalAccountAvailableForSelection(row, now, includeUnavailable)) {
+  const nowTimestamp = requiredRfc3339Timestamp(now, '账户选择当前时间')
+  if (!isOpenAIPhysicalAccountAvailableForSelection(row, nowTimestamp, includeUnavailable)) {
     return false
   }
-  if (!isOpenAIResourceAccountAvailableForSelection(row, now, includeUnavailable)) {
+  if (!isOpenAIResourceAccountAvailableForSelection(row, nowTimestamp, includeUnavailable)) {
     return false
   }
   if (accountAccess.accountAccessType === 'account_authorized') {
