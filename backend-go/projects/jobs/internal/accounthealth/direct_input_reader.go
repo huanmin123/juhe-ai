@@ -148,7 +148,7 @@ LEFT JOIN LATERAL (
 ) binding ON TRUE
 LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
 WHERE a.deleted_at IS NULL
-  AND a.provider_code = 'openai'
+  AND a.provider_code IN ('gpt', 'openai')
   AND a.type IN ('api_key', 'oauth')
   AND a.health_check_endpoint_mode IN ('chat_json', 'responses_json', 'images_json')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
@@ -160,7 +160,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source.provider_code = 'openai' AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
+    AND source.provider_code IN ('gpt', 'openai') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
     AND source.deleted_at IS NULL AND source.last_error_code IS DISTINCT FROM 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)

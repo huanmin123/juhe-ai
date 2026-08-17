@@ -2125,7 +2125,7 @@ function createAccountInSqliteTransaction(input: Record<string, unknown>, access
       transitionId: newId('dispatch'),
       nowMs
     })
-    if (providerCode === 'openai' && (account.type === 'api_key' || account.type === 'oauth')) {
+    if ((providerCode === 'gpt' || providerCode === 'openai') && (account.type === 'api_key' || account.type === 'oauth')) {
       const revision = database.prepare('SELECT config_revision, dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number | string | bigint, dispatch_revision: number | string | bigint } | undefined
       if (!revision) throw new Error('J1 input outbox 找不到新建账户')
       reserveAndEnqueueAccountHealthJobsInputInTransaction({
@@ -2411,7 +2411,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
       transitionId: newId('dispatch'),
       nowMs
     })
-    if (providerCode === 'openai' && (account.type === 'api_key' || account.type === 'oauth')) {
+    if ((providerCode === 'gpt' || providerCode === 'openai') && (account.type === 'api_key' || account.type === 'oauth')) {
       const revision = await client.one<{ config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>(`
         SELECT config_revision, dispatch_revision
         FROM ${accountWriteTable(client, 'accounts')}

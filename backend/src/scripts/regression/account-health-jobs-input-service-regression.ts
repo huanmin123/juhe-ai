@@ -15,7 +15,7 @@ try {
     id: 'account-1',
     configRevision: 7,
     dispatchRevision: 3,
-    providerCode: 'openai',
+    providerCode: 'gpt',
     type: 'api_key',
     credentials: { api_key: 'sk-test' },
     status: 'active',
@@ -38,7 +38,7 @@ try {
   assert.equal(payload.account_id, 'account-1')
   assert.equal(payload.config_revision, 7)
   assert.equal(payload.dispatch_revision, 3)
-  assert.equal(payload.provider, 'openai')
+  assert.equal(payload.provider, 'openai', 'GPT 物理 provider 必须规范化为冻结的 OpenAI v1 jobs provider')
   assert.equal(payload.type, 'api_key')
   assert.equal(payload.endpoint_mode, 'chat_json')
   assert.equal((payload.schedule as Record<string, unknown>).health_interval_ms, 3_600_000)

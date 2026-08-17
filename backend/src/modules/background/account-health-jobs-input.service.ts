@@ -1,4 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
+import { isJ1OpenAIProviderCode } from '../../storage/account-health-jobs-input.repository.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 
@@ -104,7 +105,7 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
   const configRevision = positiveInteger(account.configRevision, 'account configRevision')
   const dispatchRevision = positiveInteger(source.dispatchRevision, 'account dispatchRevision')
   const inputVersion = positiveInteger(source.inputVersion, 'account inputVersion')
-  if (account.providerCode !== 'openai') throw new Error(`J1 未冻结的 provider：${account.providerCode}`)
+  if (!isJ1OpenAIProviderCode(account.providerCode)) throw new Error(`J1 未冻结的 provider：${account.providerCode}`)
   if (account.type !== 'api_key' && account.type !== 'oauth') throw new Error(`J1 未冻结的账户类型：${account.type}`)
   const endpointMode = frozenEndpointMode(account.healthCheckEndpointMode)
   const healthModel = account.healthCheckModel.trim()

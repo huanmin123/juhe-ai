@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { readPublishedAccountHealthJobsInput } from '../../modules/background/account-health-jobs-input.protocol.js'
 import { publishNextAccountHealthJobsInputFromBusinessOutbox } from '../../modules/background/account-health-jobs-input-publisher.service.js'
 import { reserveAndEnqueueAccountHealthJobsInput } from '../../storage/account-health-jobs-input-outbox.repository.js'
@@ -31,10 +31,10 @@ const [databaseModule, repositories] = await Promise.all([
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const group = repositories.createGroup({ name: 'J1 input publisher store 分组', providerCode: 'openai' }, access)
+  const group = repositories.createGroup({ name: 'J1 input publisher store 分组', providerCode: 'gpt' }, access)
   const account = repositories.createAccount({
-    providerCode: 'openai',
-    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'J1 input publisher store 账户',
     type: 'api_key',
     status: 'active',

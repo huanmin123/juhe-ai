@@ -8,6 +8,13 @@ const frozenEndpointModes = new Set(['chat_json', 'responses_json', 'images_json
 const acceptedStatuses = new Set(['active', 'pending_test', 'temporary_unavailable', 'rate_limited'])
 const inputPublisherAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 
+// J1 speaks the frozen OpenAI v1 upstream protocol. `gpt` is the product's
+// physical provider code for that protocol family; the jobs payload itself is
+// deliberately normalized to `openai`.
+export function isJ1OpenAIProviderCode(value: string): boolean {
+  return value === 'gpt' || value === 'openai'
+}
+
 export interface AccountHealthJobsInputRevisions {
   configRevision: number
   dispatchRevision: number
@@ -55,7 +62,7 @@ export async function findAccountHealthJobsInputRevisionsAsync(accountId: string
 
 function isEligibleForAccountHealthJobsInput(account: AccountSummary | undefined): account is AccountSummary {
   if (!account) return false
-  if (account.providerCode !== 'openai') return false
+  if (!isJ1OpenAIProviderCode(account.providerCode)) return false
   if (account.type !== 'api_key' && account.type !== 'oauth') return false
   if (!frozenEndpointModes.has(account.healthCheckEndpointMode)) return false
   if (!acceptedStatuses.has(account.status)) return false

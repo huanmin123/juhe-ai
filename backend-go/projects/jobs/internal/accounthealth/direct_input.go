@@ -108,7 +108,7 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		effective.CredentialsEncrypted = d.Source.CredentialsEncrypted
 		sourceRevision = int64Pointer(d.Source.ConfigRevision)
 	}
-	if effective.Provider != "openai" || effective.Type != d.Account.Type {
+	if !isDirectOpenAIProvider(effective.Provider) || effective.Type != d.Account.Type {
 		return Input{}, fmt.Errorf("PG direct input 的有效来源 provider/type 不受 J1 支持")
 	}
 	result := Input{
@@ -116,7 +116,7 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		InputVersion:     d.InputVersion,
 		ConfigRevision:   d.Account.ConfigRevision,
 		DispatchRevision: d.Account.DispatchRevision,
-		Provider:         d.Account.Provider,
+		Provider:         "openai",
 		Type:             d.Account.Type,
 		EndpointMode:     d.Account.EndpointMode,
 		HealthModel:      d.Account.HealthModel,
@@ -184,7 +184,7 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	if strings.TrimSpace(account.ID) == "" || account.ConfigRevision < 1 || account.DispatchRevision < 1 {
 		return fmt.Errorf("PG direct input 的账户或 revision 无效")
 	}
-	if account.Provider != "openai" || (account.Type != "api_key" && account.Type != "oauth") {
+	if !isDirectOpenAIProvider(account.Provider) || (account.Type != "api_key" && account.Type != "oauth") {
 		return fmt.Errorf("PG direct input 的 provider/type 不受 J1 支持")
 	}
 	if account.EndpointMode != "chat_json" && account.EndpointMode != "responses_json" && account.EndpointMode != "images_json" {
@@ -223,7 +223,7 @@ func validateDirectAuthorization(input DirectInput, now time.Time) error {
 	if input.Binding.AuthorizationBindingID != authorization.ID {
 		return fmt.Errorf("PG direct input 的授权 group binding 不匹配")
 	}
-	if strings.TrimSpace(source.ID) == "" || source.ConfigRevision < 1 || source.Provider != "openai" || source.Type != input.Account.Type || source.Status != "active" || !source.Schedulable || source.LastErrorCode == "account_expired" || strings.TrimSpace(source.CredentialsEncrypted) == "" {
+	if strings.TrimSpace(source.ID) == "" || source.ConfigRevision < 1 || !isDirectOpenAIProvider(source.Provider) || source.Type != input.Account.Type || source.Status != "active" || !source.Schedulable || source.LastErrorCode == "account_expired" || strings.TrimSpace(source.CredentialsEncrypted) == "" {
 		return fmt.Errorf("PG direct input 的物理来源账户不可用")
 	}
 	if source.AccountExpiresAt != nil && !source.AccountExpiresAt.After(now) {
@@ -233,6 +233,10 @@ func validateDirectAuthorization(input DirectInput, now time.Time) error {
 		return fmt.Errorf("PG direct input 的物理来源账户仍在冷却")
 	}
 	return nil
+}
+
+func isDirectOpenAIProvider(value string) bool {
+	return value == "gpt" || value == "openai"
 }
 
 func decryptJSONObject(secret, encrypted, label string) (map[string]json.RawMessage, error) {

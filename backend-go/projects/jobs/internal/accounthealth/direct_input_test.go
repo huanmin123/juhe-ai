@@ -45,6 +45,26 @@ func TestDirectInputToInputUsesEffectiveSourceAndProxy(t *testing.T) {
 	}
 }
 
+func TestDirectInputNormalizesGPTProviderToOpenAIProtocol(t *testing.T) {
+	secret := "j1-direct-input-secret"
+	credentials, err := EncryptV1Envelope(secret, []byte(`{"api_key":"key"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
+	input, err := (DirectInput{
+		Account:      DirectAccount{ID: "gpt-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials},
+		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
+		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
+	}).ToInput(secret, now)
+	if err != nil {
+		t.Fatalf("GPT OpenAI-v1 provider must be accepted: %v", err)
+	}
+	if input.Provider != "openai" {
+		t.Fatalf("normalized provider = %q, want openai", input.Provider)
+	}
+}
+
 func TestDirectInputRejectsIncompleteAuthorization(t *testing.T) {
 	secret := "j1-direct-input-secret"
 	credentials, err := EncryptV1Envelope(secret, []byte(`{"api_key":"key"}`))
