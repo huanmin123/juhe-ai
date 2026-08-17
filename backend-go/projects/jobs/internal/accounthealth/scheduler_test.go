@@ -215,6 +215,49 @@ func TestRunnerDirectPostgresInputDoesNotMergeSignedPeriodicSnapshots(t *testing
 	}
 }
 
+func TestRunnerDirectInputRefreshesDueFenceAfterRead(t *testing.T) {
+	secret := "direct-due-fence-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+	}))
+	defer server.Close()
+	start := time.Now().UTC().Truncate(time.Millisecond)
+	input := testInput(server.URL, "chat_json")
+	input.IssuedAt = start.Add(time.Millisecond)
+	input.ExpiresAt = start.Add(time.Hour)
+	input.APIKeys = []APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}}}
+	input.KeySetFingerprint = "keyset-1"
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "state.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "runner-a", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t lease=%#v err=%v", acquired, lease, err)
+	}
+	clockCalls := 0
+	now := func() time.Time {
+		clockCalls++
+		return start.Add(time.Duration(clockCalls-1) * 2 * time.Millisecond)
+	}
+	loader := &fakeDirectInputLoader{due: []Input{input}}
+	runner := NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("test-key")}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, DirectInputLimit: 8, Now: now}, store, nil)
+	runner.directInputReader = loader
+	if err := runner.runCycle(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := store.LoadCurrentState(context.Background(), input.AccountID)
+	if err != nil || !found || state.Outcome != OutcomeSuccess {
+		t.Fatalf("direct input issued during the read must run in the same cycle: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
 func TestApplyCooldownNeutralKeepsTemporaryUnavailableAndDefers(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")

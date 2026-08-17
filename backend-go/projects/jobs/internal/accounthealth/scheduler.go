@@ -168,6 +168,13 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	if err != nil {
 		return err
 	}
+	// A PostgreSQL direct-input read freezes each candidate's issued_at after
+	// this cycle starts. Refresh the due-time fence after every input/request
+	// read so a newly read active candidate with zero jitter is eligible in
+	// this cycle rather than perpetually appearing a few microseconds early.
+	// This does not change the durable input fence or broaden any candidate.
+	now = r.cfg.Now().UTC()
+	r.setScan(now)
 	inputsByAccount := make(map[string]Input, len(inputs))
 	for _, input := range inputs {
 		inputsByAccount[input.AccountID] = input
