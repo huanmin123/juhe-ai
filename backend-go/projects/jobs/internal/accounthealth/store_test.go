@@ -4,9 +4,16 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPostgresSchemaDoesNotCreateDatabaseSchema(t *testing.T) {
+	if strings.Contains(strings.ToUpper(postgresSchema), "CREATE SCHEMA") {
+		t.Fatal("PostgreSQL jobs role must not require database-level CREATE to initialize juhe_jobs")
+	}
+}
 
 func TestSQLiteStoreOwnerLeaseAndIdempotentOutcome(t *testing.T) {
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})

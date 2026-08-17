@@ -94,6 +94,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(918271446)"); err != nil {
 			return err
 		}
+		if err := ensurePostgresJobsSchema(ctx, tx); err != nil {
+			return err
+		}
 		for _, statement := range strings.Split(postgresSchema, ";") {
 			if statement = strings.TrimSpace(statement); statement != "" {
 				if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -127,6 +130,26 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	committed = true
+	return nil
+}
+
+// ensurePostgresJobsSchema keeps the jobs store constrained to its
+// externally bootstrapped schema. In particular, the jobs role must not need
+// CREATE privilege on the whole business database merely to start.
+func ensurePostgresJobsSchema(ctx context.Context, tx *sql.Tx) error {
+	var owner, currentUser string
+	err := tx.QueryRowContext(ctx, `SELECT pg_get_userbyid(nspowner), current_user
+FROM pg_namespace
+WHERE nspname = 'juhe_jobs'`).Scan(&owner, &currentUser)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("缺少外部 bootstrap 创建的 juhe_jobs schema")
+	}
+	if err != nil {
+		return fmt.Errorf("读取 account-health postgres schema owner 失败: %w", err)
+	}
+	if owner != currentUser {
+		return fmt.Errorf("juhe_jobs schema owner 必须是当前 jobs role: owner=%s current=%s", owner, currentUser)
+	}
 	return nil
 }
 
@@ -572,7 +595,6 @@ CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON account_healt
 `
 
 const postgresSchema = `
-CREATE SCHEMA IF NOT EXISTS juhe_jobs;
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_owner_leases (lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, lease_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, payload JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_current_state (account_id TEXT PRIMARY KEY, outcome_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, next_due_at TIMESTAMPTZ, failure_count INTEGER NOT NULL DEFAULT 0, failure_started_at TIMESTAMPTZ, account_status TEXT NOT NULL DEFAULT '', cooldown_observation_started_at TIMESTAMPTZ, cooldown_generation TEXT, cooldown_source_config_revision BIGINT, updated_at TIMESTAMPTZ NOT NULL);
