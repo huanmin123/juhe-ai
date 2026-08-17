@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
@@ -90,6 +92,49 @@ func main() {
 		}
 		return
 	}
+	accountHealthConfig, err := accounthealth.LoadConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load J1 account-health config: %w", err))
+	}
+	var accountHealthStore *accounthealth.Store
+	var accountHealthInputDB *sql.DB
+	var accountHealthRunner *accounthealth.Runner
+	if accountHealthConfig.Enabled {
+		accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
+		if err != nil {
+			fail(fmt.Errorf("open J1 account-health store: %w", err))
+		}
+		if err := accountHealthStore.EnsureSchema(context.Background()); err != nil {
+			_ = accountHealthStore.Close()
+			fail(fmt.Errorf("initialize J1 account-health schema: %w", err))
+		}
+		if accountHealthConfig.InputSource == "postgres" {
+			accountHealthInputDB, err = sql.Open("pgx", accountHealthConfig.BusinessPostgresURL)
+			if err != nil {
+				_ = accountHealthStore.Close()
+				fail(fmt.Errorf("open J1 account-health direct-input database: %w", err))
+			}
+			accountHealthInputDB.SetMaxOpenConns(4)
+			accountHealthInputDB.SetMaxIdleConns(4)
+			pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			pingErr := accountHealthInputDB.PingContext(pingContext)
+			pingCancel()
+			if pingErr != nil {
+				_ = accountHealthInputDB.Close()
+				_ = accountHealthStore.Close()
+				fail(fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
+			}
+			reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
+			if readerErr != nil {
+				_ = accountHealthInputDB.Close()
+				_ = accountHealthStore.Close()
+				fail(fmt.Errorf("configure J1 account-health direct-input reader: %w", readerErr))
+			}
+			accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
+		} else {
+			accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
+		}
+	}
 
 	listener, err := net.Listen("tcp", *healthAddress)
 	if err != nil {
@@ -115,15 +160,33 @@ func main() {
 			Close: store.Close,
 		},
 	}
+	accountHealthReady := func() bool { return true }
+	if accountHealthRunner != nil {
+		accountHealthReady = accountHealthRunner.Ready
+		components = append(components, supervisor.Component{
+			Name: "J1 account-health",
+			Run:  accountHealthRunner.Run,
+			Close: func() error {
+				var closeErr error
+				if accountHealthInputDB != nil {
+					closeErr = accountHealthInputDB.Close()
+				}
+				if err := accountHealthStore.Close(); err != nil && closeErr == nil {
+					closeErr = err
+				}
+				return closeErr
+			},
+		})
+	}
 	healthServer := &http.Server{
-		Handler:           healthHandler(&runtimeRunning, tableRunner.Ready),
+		Handler:           healthHandler(&runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor")
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
@@ -140,7 +203,7 @@ func main() {
 	}
 }
 
-func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool) http.Handler {
+func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -148,11 +211,14 @@ func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool) h
 		}
 		runtimeLogOwnerHeld := runtimeRunning.Load()
 		tableMonitorIsReady := tableMonitorReady()
+		accountHealthIsReady := !accountHealthEnabled || accountHealthReady()
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"ready":               runtimeLogOwnerHeld && tableMonitorIsReady,
-			"runtimeLogOwnerHeld": runtimeLogOwnerHeld,
-			"tableMonitorReady":   tableMonitorIsReady,
+			"ready":                runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady,
+			"runtimeLogOwnerHeld":  runtimeLogOwnerHeld,
+			"tableMonitorReady":    tableMonitorIsReady,
+			"accountHealthEnabled": accountHealthEnabled,
+			"accountHealthReady":   accountHealthIsReady,
 		})
 	})
 }

@@ -17,6 +17,7 @@ const (
 	defaultOwnerLease       = 90 * time.Second
 	defaultProbeTimeout     = 65 * time.Second
 	defaultMaxResponseBytes = int64(256 * 1024)
+	defaultInputTTL         = 24 * time.Hour
 )
 
 // Config is deliberately opt-in.  A release cannot accidentally claim J1
@@ -31,6 +32,7 @@ type Config struct {
 	BusinessPostgresURL string
 	DirectInputLimit    int
 	CredentialSecret    string
+	InputTTL            time.Duration
 	ScanInterval        time.Duration
 	OwnerLease          time.Duration
 	ProbeTimeout        time.Duration
@@ -110,6 +112,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET 是必填配置")
+	}
+	if cfg.InputTTL, err = configMilliseconds(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS", defaultInputTTL, time.Minute, 7*24*time.Hour); err != nil {
+		return Config{}, err
 	}
 	if cfg.ScanInterval, err = configDuration(getenv, "JUHE_AI_ACCOUNT_HEALTH_SCAN_INTERVAL", defaultScanInterval, 5*time.Second); err != nil {
 		return Config{}, err
@@ -213,4 +218,23 @@ func configInt64(getenv func(string) string, name string, fallback, minimum, max
 		return 0, fmt.Errorf("%s 必须在 %d..%d", name, minimum, maximum)
 	}
 	return parsed, nil
+}
+
+func configMilliseconds(getenv func(string) string, name string, fallback, minimum, maximum time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	milliseconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || milliseconds < 1 {
+		return 0, fmt.Errorf("%s 必须是有效毫秒数", name)
+	}
+	if milliseconds > int64(maximum/time.Millisecond) {
+		return 0, fmt.Errorf("%s 必须在 %s..%s", name, minimum, maximum)
+	}
+	result := time.Duration(milliseconds) * time.Millisecond
+	if result < minimum || result > maximum {
+		return 0, fmt.Errorf("%s 必须在 %s..%s", name, minimum, maximum)
+	}
+	return result, nil
 }
