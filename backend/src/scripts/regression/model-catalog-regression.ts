@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import type { ProviderModelCatalogItem } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 import { providerModelCatalogId } from '../../storage/provider-model-catalog-id.js'
 import { DEFAULT_PROVIDER_SEEDS } from '../../storage/schema-defaults.js'
@@ -28,6 +29,28 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+function strictCatalogItem(
+  value: Pick<ProviderModelCatalogItem, 'model' | 'scope' | 'status' | 'defaultReasoningEffort'> & Partial<ProviderModelCatalogItem>
+): ProviderModelCatalogItem {
+  return {
+    providerCode: 'openai',
+    model: value.model,
+    scope: value.scope,
+    status: value.status,
+    defaultReasoningEffort: value.defaultReasoningEffort,
+    inputModalities: [],
+    outputModalities: [],
+    supportedTools: [],
+    supportsPromptCaching: false,
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: [],
+    codexSupportedReasoningLevels: [],
+    supportsServiceTier: false,
+    source: 'regression',
+    ...value
+  }
+}
 
 const [
   databaseModule,
@@ -890,33 +913,33 @@ try {
   assert.equal(personalModel.created, Date.parse('2026-01-02T00:00:00.000Z') / 1000, '/v1/models created 应为 Unix 秒')
   assert(response.data.some((item) => item.id === 'gpt-regression-upstream-target'), '/v1/models 应包含启用且可计价的自定义上游目标模型')
 
-  const strictCreatedResponse = catalogService.buildOpenAIModelsResponseFromCatalog([{
+  const strictCreatedResponse = catalogService.buildOpenAIModelsResponseFromCatalog([strictCatalogItem({
     model: 'strict-created-offset',
     scope: 'global',
     status: 'active',
     defaultReasoningEffort: null,
     createdAt: '2026-08-16T06:34:49.137+08:00'
-  }])
+  })])
   assert.equal(strictCreatedResponse.data[0]?.created, Math.trunc(Date.UTC(2026, 7, 15, 22, 34, 49, 137) / 1000), '/v1/models createdAt 的 numeric offset 必须按同一瞬间输出 Unix 秒')
-  const strictReleaseResponse = catalogService.buildOpenAIModelsResponseFromCatalog([{
+  const strictReleaseResponse = catalogService.buildOpenAIModelsResponseFromCatalog([strictCatalogItem({
     model: 'strict-release-date',
     scope: 'built_in',
     status: 'active',
     defaultReasoningEffort: null,
     releaseDate: '2026-08-16'
-  }])
+  })])
   assert.equal(strictReleaseResponse.data[0]?.created, Math.trunc(Date.UTC(2026, 7, 16) / 1000), '模型 releaseDate 必须按明确 UTC 日期键输出 Unix 秒')
   assert.throws(
-    () => catalogService.buildOpenAIModelsResponseFromCatalog([{
+    () => catalogService.buildOpenAIModelsResponseFromCatalog([strictCatalogItem({
       model: 'bare-created-at', scope: 'global', status: 'active', defaultReasoningEffort: null, createdAt: '2026-08-16T06:34:49.137'
-    }]),
+    })]),
     /模型 createdAt 必须是带 Z 或数值 offset 的 RFC3339 时间/,
     '模型裸 createdAt 不得被按本机时区解释'
   )
   assert.throws(
-    () => catalogService.buildOpenAIModelsResponseFromCatalog([{
+    () => catalogService.buildOpenAIModelsResponseFromCatalog([strictCatalogItem({
       model: 'invalid-release-date', scope: 'built_in', status: 'active', defaultReasoningEffort: null, releaseDate: '2026-02-30'
-    }]),
+    })]),
     /模型 releaseDate 必须是有效 YYYY-MM-DD 日期/,
     '模型非法 releaseDate 不得伪造成 Unix 0'
   )
