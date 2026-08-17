@@ -42,6 +42,16 @@ func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
 	}
 }
 
+func TestProbeTransportDisablesHTTP2ForDirectProviderProbe(t *testing.T) {
+	transport, err := probeTransport(Input{}, ProbeOptions{})
+	if err != nil {
+		t.Fatalf("probeTransport() error = %v", err)
+	}
+	if transport.ForceAttemptHTTP2 {
+		t.Fatal("direct provider probe must not negotiate HTTP/2")
+	}
+}
+
 func TestProbeOpenAIClassifiesCompleteSemanticFailureAsNeutral(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

@@ -115,6 +115,8 @@ func validateInput(input Input, options ProbeOptions) error {
 
 func probeTransport(input Input, options ProbeOptions) (*http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Keep the direct probe wire protocol stable across OpenAI-compatible upstreams.
+	transport.ForceAttemptHTTP2 = false
 	transport.MaxIdleConns = 8
 	transport.MaxIdleConnsPerHost = 2
 	transport.MaxConnsPerHost = 2
