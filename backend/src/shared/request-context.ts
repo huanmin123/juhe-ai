@@ -10,6 +10,11 @@ import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import { captureExpectedFailureContext, captureUnexpectedFailureContext } from './logging/log-failure-context.js'
 import { gatewayRequestStageLogLevel } from './logging/runtime-log-policy.js'
 import { logger, logPublisherStats } from './logger.js'
+import {
+  finishHttpMetricRequest,
+  startHttpMetricRequest,
+  type HttpMetricRequest
+} from './prometheus-metrics.js'
 
 interface RequestStageSummary {
   sequence: number
@@ -71,6 +76,7 @@ export interface RequestContext {
   timingLogQueuePeakCount?: number
   timingLogQueuePeakBytes?: number
   timingDetailSampled?: boolean
+  prometheusHttpRequest?: HttpMetricRequest
   logger: Logger
 }
 
@@ -155,6 +161,7 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
     timingLogQueuePeakCount: initialLogStats.pendingCount,
     timingLogQueuePeakBytes: initialLogStats.pendingBytes,
     timingDetailSampled: isGatewayTimingDetailSampled(traceId),
+    prometheusHttpRequest: startHttpMetricRequest(req.path, req.method),
     logger: logger.child({ traceId, requestId })
   }
 
@@ -464,6 +471,7 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
   const responseState = captureDownstreamResponseState(res, 'finish')
   const statusCode = responseState.statusCode ?? res.statusCode
   const committedResponseState = { ...responseState, statusCode }
+  finishHttpMetricRequest(context.prometheusHttpRequest, statusCode, 'completed')
   setImmediate(() => logRequestTimingSummary(context, committedResponseState, resolveRequestSummaryOutcome(context, statusCode)))
   const durationMs = Date.now() - context.startedAt
   const fields = {
@@ -493,6 +501,7 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
 
 function logRequestClosed(req: Request, res: Response, context: RequestContext): void {
   const responseState = captureDownstreamResponseState(res, 'close')
+  finishHttpMetricRequest(context.prometheusHttpRequest, responseState.statusCode, 'aborted')
   const downstreamCloseFields = {
     ...responseState,
     downstreamClose: true

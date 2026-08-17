@@ -711,6 +711,7 @@
     "test:settings-query-boundary": "tsx src/scripts/regression/settings-query-boundary-regression.ts",
     "test:usage-stats-lag-unavailable": "tsx src/scripts/regression/usage-stats-lag-unavailable-regression.ts",
     "test:system-metrics-process-latest": "tsx src/scripts/regression/system-metrics-process-latest-regression.ts",
+    "test:prometheus-metrics": "tsx src/scripts/regression/prometheus-metrics-regression.ts",
     "test:system-metrics-window-query-guard": "tsx src/scripts/regression/system-metrics-window-query-guard-regression.ts",
     "test:system-metrics-event-loop-average": "tsx src/scripts/regression/system-metrics-event-loop-average-regression.ts",
     "test:system-metrics-window-incremental": "tsx src/scripts/regression/system-metrics-window-incremental-regression.ts",
