@@ -86,3 +86,14 @@ func TestRuntimeConfigRequiresManualBridgeSecret(t *testing.T) {
 		t.Fatalf("J2 valid manual bridge secret rejected: %v", err)
 	}
 }
+
+func TestRuntimeConfigRejectsSQLiteGoOwnerStore(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go", "JUHE_AI_ACCOUNT_BALANCE_STORE": "sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
+	}
+	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err == nil {
+		t.Fatal("J2 Go owner must reject SQLite jobs store because Node projects PG outcomes only")
+	}
+}

@@ -23,6 +23,7 @@ assert.match(launcherSource, /gateway\|jobs/u, 'launcher must accept only declar
 assertLauncherRejectsMissingProjectIdentity()
 assertLauncherRejectsJ1WithoutGoOwner()
 assertLauncherRejectsMissingJ1InputDirectory()
+assertLauncherRejectsSqliteJ2Store()
 assertLauncherForwardsProjectScopedPaths()
 assertLauncherForwardsJ2PathsAndOwner()
 
@@ -132,7 +133,8 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
-    JUHE_AI_ACCOUNT_BALANCE_STORE: 'sqlite',
+    JUHE_AI_ACCOUNT_BALANCE_STORE: 'postgres',
+    JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL: 'postgres://j2-store',
     JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
     JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret',
     JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET: 'j2-manual-bridge-secret-0123456789',
@@ -147,13 +149,32 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     assert.equal(jobs.status, 0, `J2 jobs launcher failed: ${jobs.output}`)
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER, 'go')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_OWNER_ID, 'j2-owner')
-    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH, join(jobs.backendRoot, 'data', 'juhe-ai-account-balance.sqlite3'))
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, 'postgres://j2-store')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL, 'postgres://j2-input')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, 'j2-manual-bridge-secret-0123456789')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
   } finally {
     jobs.cleanup()
+  }
+}
+
+function assertLauncherRejectsSqliteJ2Store() {
+  const result = runLauncher('jobs', {
+    JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
+    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
+    JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
+    JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
+    JUHE_AI_ACCOUNT_BALANCE_STORE: 'sqlite',
+    JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
+    JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret'
+  })
+  try {
+    assert.notEqual(result.status, 0, 'Go-owner J2 launcher must reject SQLite outcome store')
+    assert.match(result.output, /JUHE_AI_ACCOUNT_BALANCE_STORE=postgres/u)
+  } finally {
+    result.cleanup()
   }
 }
 
