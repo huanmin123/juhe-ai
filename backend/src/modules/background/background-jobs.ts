@@ -660,13 +660,13 @@ async function usageStatsAggregationSafety(): Promise<UsageStatsAggregationSafet
     throw new Error('ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录')
   }
   const defaultSafeCreatedBefore = defaultUsageStatsSafeCreatedBeforeIso()
-  if (flushFailureCount > 0) {
-    throw new Error(`使用记录 ingest 队列已有 ${flushFailureCount} 次写入失败，本轮跳过统计聚合，等待写入队列恢复`)
-  }
   const oldestPendingCreatedAt = oldestIso(
     oldestPendingUsageRecordCreatedAt(status),
     await oldestRedisStreamUsageRecordCreatedAtForStatsAggregation()
   )
+  if (flushFailureCount > 0 && oldestPendingCreatedAt !== undefined) {
+    throw new Error(`使用记录 ingest 队列已有 ${flushFailureCount} 次写入失败且仍有待处理记录，本轮跳过统计聚合，等待写入队列恢复`)
+  }
   return {
     safeCreatedBefore: usageStatsSafeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore, oldestPendingCreatedAt)
   }

@@ -630,6 +630,11 @@ function assertNoPerformanceLocalFactQueues(): void {
     '统计聚合推进 safeCreatedBefore 前必须用 Redis Stream backlog 最早 createdAt 收窄安全上界'
   )
   assert.match(
+    functionBody(backgroundJobsSource, 'usageStatsAggregationSafety'),
+    /const oldestPendingCreatedAt = oldestIso\([\s\S]*await oldestRedisStreamUsageRecordCreatedAtForStatsAggregation\(\)[\s\S]*if \(flushFailureCount > 0 && oldestPendingCreatedAt !== undefined\)/,
+    '历史 flush 失败仅在仍有待处理使用记录时阻塞统计聚合，空队列不能永久阻塞统计推进'
+  )
+  assert.match(
     functionBody(backgroundJobsSource, 'usageStatsSafeCreatedBeforeForPendingBacklog'),
     /normalizeIsoTime\(oldestPendingCreatedAt\)[\s\S]*rfc3339InstantMilliseconds\(normalizedOldestPendingCreatedAt\)[\s\S]*oldestPendingTime > defaultSafeCreatedBeforeMs[\s\S]*oldestPendingTime - 1/,
     'redis_stream driver 下统计聚合不能因 pending/lag 非零整轮停止，必须把安全上界收窄到最早 backlog 前'
