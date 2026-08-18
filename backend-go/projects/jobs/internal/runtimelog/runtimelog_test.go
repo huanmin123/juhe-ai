@@ -495,6 +495,35 @@ func TestStoreNormalizesTimestampsLikeNodeRepository(t *testing.T) {
 	}
 }
 
+func TestStoreNormalizesLegacyNodeTimestamp(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	ctx := testOwnerContext(t, store)
+	lease := testOwnerLease(t, ctx)
+	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "legacy:1:1"}
+	if err := store.Commit(ctx, lease, []Record{{
+		ID:        "legacy-timestamp",
+		Time:      "2026-08-17 21:12:43.935+00",
+		CreatedAt: "2026-08-17 21:12:43.935+00",
+		Level:     "info",
+		RawJSON:   "{}",
+	}}, cursor, time.Now().UTC().AddDate(0, 0, -1)); err != nil {
+		t.Fatalf("旧 Node 时间格式应可归一化: %v", err)
+	}
+	var got string
+	if err := store.db.QueryRow("SELECT time FROM runtime_logs WHERE id = ?", "legacy-timestamp").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "2026-08-17T21:12:43.935Z" {
+		t.Fatalf("旧 Node 时间格式归一化错误: got %q", got)
+	}
+}
+
+func TestNormalizeLegacyNodeTimestampRejectsUnknownFormat(t *testing.T) {
+	if _, err := normalizeNodeTimestamp("2026/08/17 21:12:43+00"); err == nil {
+		t.Fatal("未知时间格式必须继续拒绝")
+	}
+}
+
 func TestStoreRejectsRFC1123Timestamp(t *testing.T) {
 	store, config := openTestSQLiteStore(t)
 	ctx := testOwnerContext(t, store)

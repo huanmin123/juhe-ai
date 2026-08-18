@@ -953,9 +953,35 @@ func normalizeNodeTimestamp(value string) (string, error) {
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, text)
 	if err != nil {
+		// 旧 Node 日志使用空格分隔日期时间，并将整点时区写成 +HH。
+		// 仅对这个已知格式做显式规范化，其他非法值仍然拒绝。
+		legacy := normalizeLegacyNodeTimestamp(text)
+		if legacy != text {
+			parsed, err = time.Parse(time.RFC3339Nano, legacy)
+		}
+	}
+	if err != nil {
 		return "", fmt.Errorf("必须是 RFC3339 瞬时值: %w", err)
 	}
 	return nodeISO(parsed), nil
+}
+
+func normalizeLegacyNodeTimestamp(text string) string {
+	if len(text) < len("2006-01-02 15:04:05+00") || text[10] != ' ' {
+		return text
+	}
+	legacy := text[:10] + "T" + text[11:]
+	if len(legacy) >= 3 {
+		suffix := legacy[len(legacy)-3:]
+		if (suffix[0] == '+' || suffix[0] == '-') && isASCIIDigit(suffix[1]) && isASCIIDigit(suffix[2]) {
+			legacy += ":00"
+		}
+	}
+	return legacy
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
 }
 
 func nullable(value string) any {
