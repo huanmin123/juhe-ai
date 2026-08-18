@@ -38,6 +38,7 @@ import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLo
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 import { renderPrometheusMetrics } from './shared/prometheus-metrics.js'
+import { startRedisStreamMetrics, stopRedisStreamMetrics } from './shared/redis-stream-metrics.js'
 import { startInternalGatewayRegistry, stopInternalGatewayRegistry } from './modules/gateway/runtime/internal-gateway-registry.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
@@ -141,6 +142,7 @@ if (runtimeConfig.auth.captchaDisabled) {
 }
 startProcessEventLoopMonitor()
 startPerformanceProcessMetricsPublisher()
+startRedisStreamMetrics()
 startAccountHealthJobsSourceFenceConsumerRuntime()
 startDbServiceSupervisor({
   onReady: startBackgroundWorkerSupervisorAfterDbServiceReady,
@@ -593,6 +595,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
   } finally {
+    stopRedisStreamMetrics()
     stopPerformanceProcessMetricsPublisher()
     stopBackgroundWorkerSupervisor()
     stopDbServiceSupervisor()

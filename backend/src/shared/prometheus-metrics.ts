@@ -28,6 +28,33 @@ const requestCounters = new Map<string, number>()
 const requestHistograms = new Map<string, HistogramValue>()
 const inFlightRequests = new Map<string, number>()
 
+export const redisStreamQueueMetricNames = ['usage_records', 'public_api_logs', 'record_maintenance'] as const
+export type RedisStreamQueueMetricName = typeof redisStreamQueueMetricNames[number]
+
+export interface RedisStreamQueueMetricSample {
+  queue: RedisStreamQueueMetricName
+  streamLength: number
+  pendingCount: number
+  lag: number
+  lagKnown: number
+  consumerCount: number
+  oldestPendingIdleSeconds: number
+  consumerGroupPresent: number
+}
+
+export interface RedisStreamQueueMetricsSnapshot {
+  enabled: boolean
+  collectionSuccess: boolean
+  lastSuccessTimestampSeconds?: number
+  queues: readonly RedisStreamQueueMetricSample[]
+}
+
+let redisStreamQueueMetrics: RedisStreamQueueMetricsSnapshot = {
+  enabled: false,
+  collectionSuccess: false,
+  queues: []
+}
+
 export function classifyHttpMetricRoute(path: string): HttpMetricRouteGroup {
   if (path === '/__aisys__/metrics') return 'observability'
   if (path === '/health' || path === '/__aisys__/health' || path === '/__aisys__/api/health') return 'health'
@@ -106,13 +133,66 @@ export function renderPrometheusMetrics(): string {
   lines.push('# HELP juhe_ai_process_uptime_seconds Node process uptime.')
   lines.push('# TYPE juhe_ai_process_uptime_seconds gauge')
   lines.push(`juhe_ai_process_uptime_seconds{service="${serviceName}"} ${process.uptime()}`)
+  renderRedisStreamQueueMetrics(lines)
   return `${lines.join('\n')}\n`
+}
+
+export function setRedisStreamQueueMetricsSnapshot(snapshot: RedisStreamQueueMetricsSnapshot): void {
+  const allowedQueues = new Set<RedisStreamQueueMetricName>(redisStreamQueueMetricNames)
+  const queues = snapshot.queues
+    .filter((sample) => allowedQueues.has(sample.queue))
+    .map((sample) => ({
+      queue: sample.queue,
+      streamLength: finiteMetric(sample.streamLength),
+      pendingCount: finiteMetric(sample.pendingCount),
+      lag: finiteMetric(sample.lag),
+      lagKnown: sample.lagKnown > 0 ? 1 : 0,
+      consumerCount: finiteMetric(sample.consumerCount),
+      oldestPendingIdleSeconds: finiteMetric(sample.oldestPendingIdleSeconds),
+      consumerGroupPresent: sample.consumerGroupPresent > 0 ? 1 : 0
+    }))
+  redisStreamQueueMetrics = {
+    enabled: snapshot.enabled,
+    collectionSuccess: snapshot.collectionSuccess,
+    ...(finiteMetric(snapshot.lastSuccessTimestampSeconds) > 0
+      ? { lastSuccessTimestampSeconds: finiteMetric(snapshot.lastSuccessTimestampSeconds) }
+      : {}),
+    queues
+  }
 }
 
 export function resetPrometheusMetricsForTest(): void {
   requestCounters.clear()
   requestHistograms.clear()
   inFlightRequests.clear()
+  redisStreamQueueMetrics = { enabled: false, collectionSuccess: false, queues: [] }
+}
+
+function renderRedisStreamQueueMetrics(lines: string[]): void {
+  lines.push('# HELP juhe_ai_redis_stream_queue_enabled Whether Redis Stream queue monitoring is enabled for this process.')
+  lines.push('# TYPE juhe_ai_redis_stream_queue_enabled gauge')
+  lines.push(`juhe_ai_redis_stream_queue_enabled{service="${serviceName}"} ${redisStreamQueueMetrics.enabled ? 1 : 0}`)
+  if (!redisStreamQueueMetrics.enabled) return
+
+  lines.push('# HELP juhe_ai_redis_stream_queue_collection_success Whether the last bounded Redis Stream inspection succeeded.')
+  lines.push('# TYPE juhe_ai_redis_stream_queue_collection_success gauge')
+  lines.push(`juhe_ai_redis_stream_queue_collection_success{service="${serviceName}"} ${redisStreamQueueMetrics.collectionSuccess ? 1 : 0}`)
+  if (redisStreamQueueMetrics.lastSuccessTimestampSeconds !== undefined) {
+    lines.push('# HELP juhe_ai_redis_stream_queue_last_success_timestamp_seconds Unix timestamp of the last successful Redis Stream inspection.')
+    lines.push('# TYPE juhe_ai_redis_stream_queue_last_success_timestamp_seconds gauge')
+    lines.push(`juhe_ai_redis_stream_queue_last_success_timestamp_seconds{service="${serviceName}"} ${redisStreamQueueMetrics.lastSuccessTimestampSeconds}`)
+  }
+
+  for (const sample of redisStreamQueueMetrics.queues) {
+    const labels = `queue="${sample.queue}",service="${serviceName}"`
+    lines.push(`juhe_ai_redis_stream_queue_length{${labels}} ${sample.streamLength}`)
+    lines.push(`juhe_ai_redis_stream_queue_pending{${labels}} ${sample.pendingCount}`)
+    lines.push(`juhe_ai_redis_stream_queue_lag{${labels}} ${sample.lag}`)
+    lines.push(`juhe_ai_redis_stream_queue_lag_known{${labels}} ${sample.lagKnown}`)
+    lines.push(`juhe_ai_redis_stream_queue_consumers{${labels}} ${sample.consumerCount}`)
+    lines.push(`juhe_ai_redis_stream_queue_oldest_pending_idle_seconds{${labels}} ${sample.oldestPendingIdleSeconds}`)
+    lines.push(`juhe_ai_redis_stream_queue_consumer_group_present{${labels}} ${sample.consumerGroupPresent}`)
+  }
 }
 
 function createHistogram(): HistogramValue {
@@ -154,6 +234,10 @@ function decrement(target: Map<string, number>, key: string): void {
     return
   }
   target.set(key, nextValue)
+}
+
+function finiteMetric(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 function sortedEntries<T>(source: Map<string, T>): [string, T][] {

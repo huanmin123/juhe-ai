@@ -14,6 +14,7 @@ export interface RedisStreamDrainGroupSnapshot {
   name: string
   pending: number | null
   lag: number | null
+  consumers?: number
   lastDeliveredId?: string
   oldestPendingIdleMs?: number
 }
@@ -117,6 +118,9 @@ async function inspectStream(
       name,
       pending,
       lag: optionalNonNegativeInteger(fields.get('lag')) ?? null,
+      ...(optionalNonNegativeInteger(fields.get('consumers')) === undefined
+        ? {}
+        : { consumers: optionalNonNegativeInteger(fields.get('consumers')) }),
       ...(lastDeliveredId === undefined ? {} : { lastDeliveredId }),
       ...(oldestPendingIdleMs === undefined ? {} : { oldestPendingIdleMs })
     }
