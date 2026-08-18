@@ -1157,7 +1157,7 @@ func insertPostgresRecords(ctx context.Context, tx pgx.Tx, records []Record) ([]
 				record.CreatedAt,
 			)
 		}
-		rows, err := tx.Query(ctx, `INSERT INTO juhe_dataset.runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at) VALUES `+strings.Join(values, ",")+` ON CONFLICT(id) DO NOTHING RETURNING time, level, COALESCE(event, '')`, args...)
+		rows, err := tx.Query(ctx, `INSERT INTO juhe_dataset.runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at) VALUES `+strings.Join(values, ",")+` ON CONFLICT(id) DO NOTHING RETURNING time::text, level, COALESCE(event, '')`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -1317,7 +1317,7 @@ func decrementPostgresFacets(ctx context.Context, tx pgx.Tx, rows []facetRow, cu
 	}
 	now := nowISO()
 	var countedFrom, earliest, latest string
-	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT earliest_time FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", facetBucketKey).Scan(&countedFrom); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", facetBucketKey).Scan(&countedFrom); err != nil {
 		return err
 	}
 	counted := facetRowsFrom(rows, countedFrom)

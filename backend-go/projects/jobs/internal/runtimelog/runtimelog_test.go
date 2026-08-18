@@ -555,6 +555,21 @@ func TestPostgresRuntimeLogSchemaUsesTimestamptzForInstants(t *testing.T) {
 	}
 }
 
+func TestPostgresTemporalReadsCastToTextForNodeCompatibleFacets(t *testing.T) {
+	source, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		"ON CONFLICT(id) DO NOTHING RETURNING time::text, level, COALESCE(event, '')",
+		"SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary",
+	} {
+		if !strings.Contains(string(source), fragment) {
+			t.Fatalf("PostgreSQL timestamptz read must cast for Node-compatible string facets: missing %q", fragment)
+		}
+	}
+}
+
 func TestSQLiteStoreUsesNodeBusyTimeout(t *testing.T) {
 	store, _ := openTestSQLiteStore(t)
 	var timeout int
