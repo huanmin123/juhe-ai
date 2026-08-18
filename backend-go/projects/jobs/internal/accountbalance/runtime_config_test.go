@@ -13,7 +13,7 @@ func TestRuntimeConfigRejectsShortOwnerLease(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "sqlite", "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH": "C:\\temp\\j2.sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE": "20s", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
 	}
@@ -36,7 +36,7 @@ func TestRuntimeConfigRejectsShortAccountLease(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "sqlite", "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH": "C:\\temp\\j2.sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_ACCOUNT_LEASE": "1s", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
 	}
@@ -49,7 +49,7 @@ func TestRuntimeConfigBoundsRecoveryBatchWithinPeriodicBatch(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "sqlite", "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH": "C:\\temp\\j2.sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE": "4", "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE": "5",
 	}
@@ -62,7 +62,7 @@ func TestRuntimeConfigRejectsOwnerLeaseShorterThanCycleBudget(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "sqlite", "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH": "C:\\temp\\j2.sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE": "30s", "JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET": "45s",
 	}
@@ -75,7 +75,7 @@ func TestRuntimeConfigRequiresManualBridgeSecret(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "sqlite", "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH": "C:\\temp\\j2.sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret",
 	}
 	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err == nil {
