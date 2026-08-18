@@ -34,6 +34,18 @@ export function gatewayProtocolDriverForProfile(profile: ProviderProtocolProfile
   return gatewayProtocolDrivers.find((driver) => driver.supportsProfile(profile))
 }
 
+export function gatewayProtocolDriverForRequest(req: Request): GatewayProtocolDriver | undefined {
+  const endpoint = req.originalUrl || req.path || ''
+  if (isOpenAIProtocolRequestPath(endpoint)) {
+    return openAIV1ProtocolDriver
+  }
+  return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)
+}
+
+export function isGatewayProtocolRequest(req: Request): boolean {
+  return gatewayProtocolDriverForRequest(req) !== undefined
+}
+
 export function requireGatewayProtocolDriverForProfile(profile: ProviderProtocolProfileDefinition | undefined): GatewayProtocolDriver {
   const driver = gatewayProtocolDriverForProfile(profile)
   if (!driver) {
@@ -46,11 +58,7 @@ export function gatewayProtocolDriverForRequestOrProfile(
   req: Request,
   profile: ProviderProtocolProfileDefinition | undefined
 ): GatewayProtocolDriver {
-  const endpoint = req.originalUrl || req.path || ''
-  if (isOpenAIProtocolRequestPath(endpoint)) {
-    return openAIV1ProtocolDriver
-  }
-  return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)
+  return gatewayProtocolDriverForRequest(req)
     ?? requireGatewayProtocolDriverForProfile(profile)
 }
 

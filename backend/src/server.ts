@@ -17,6 +17,7 @@ import {
   stopDbServiceSupervisor
 } from './modules/db-service/db-service-supervisor.js'
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/routes.js'
+import { isGatewayProtocolRequest } from './modules/gateway/protocols/registry.js'
 import {
   getActiveAuditCaptureCount,
   waitForActiveAuditCapturesIdle
@@ -482,6 +483,7 @@ app.use(systemPrefix, (_req, res) => {
 
 app.use(
   rejectGatewayTrafficOnControlNode,
+  rejectUnrecognizedGatewayProtocolRequest,
   preResolveGatewayRuntime,
   handleGatewayDbServiceUnavailable,
   openAICompatibleFilesRouter,
@@ -502,6 +504,14 @@ function rejectGatewayTrafficOnControlNode(_req: Request, res: Response, next: N
     return
   }
   res.status(404).json({ message: '控制面节点不承接 AI 网关请求' })
+}
+
+function rejectUnrecognizedGatewayProtocolRequest(req: Request, res: Response, next: NextFunction): void {
+  if (isGatewayProtocolRequest(req)) {
+    next()
+    return
+  }
+  res.status(404).json({ message: '资源不存在' })
 }
 
 app.use((_req, res) => {

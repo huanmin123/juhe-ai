@@ -300,6 +300,7 @@
     "test:gateway-response-lifecycle": "tsx src/scripts/regression/gateway-response-lifecycle-regression.ts",
     "test:gateway-response-lifecycle-http": "tsx src/scripts/regression/gateway-response-lifecycle-http-regression.ts",
     "test:gateway-pre-auth-failure-context": "tsx src/scripts/regression/gateway-pre-auth-failure-context-regression.ts",
+    "test:gateway-unrecognized-path": "tsx src/scripts/regression/gateway-unrecognized-path-regression.ts",
     "test:gateway-json-worker-failure-logging": "tsx src/scripts/regression/gateway-json-worker-failure-logging-regression.ts",
     "test:db-service-health-recovery": "tsx src/scripts/regression/db-service-health-recovery-regression.ts",
     "test:supervisor-restart-policy": "tsx src/scripts/regression/supervisor-restart-policy-regression.ts",
