@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getTraceId } from '../../shared/request-context.js'
-import { findAccountForAccountHealthJobsInputAsync } from '../../storage/account-health-jobs-input.repository.js'
+import { findAccountForAccountHealthJobsInputAsync, findAccountHealthJobsInputRevisionsAsync } from '../../storage/account-health-jobs-input.repository.js'
 import { currentAccountHealthJobsInputVersionForRuntimeAsync } from '../../storage/account-health-jobs-input-version.repository.js'
 import { publishAccountHealthJobsProbeRequest } from '../background/account-health-jobs-input.service.js'
 import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
@@ -48,7 +48,8 @@ function publishGoJobsProbeRequest(
   void (async () => {
     const account = await findAccountForAccountHealthJobsInputAsync(accountId)
     const inputVersion = account ? await currentAccountHealthJobsInputVersionForRuntimeAsync(accountId) : undefined
-    const probeInput = currentAccountHealthJobsProbeInput(account, inputVersion)
+    const revisions = account ? await findAccountHealthJobsInputRevisionsAsync(accountId) : undefined
+    const probeInput = currentAccountHealthJobsProbeInput(account, inputVersion, revisions)
     if (!probeInput) {
       // Gateway failure dispatch is shared by accounts outside the frozen J1
       // scope.  They have no J1 input epoch by design, so skip the request
