@@ -34,7 +34,7 @@ export async function drainAccountHealthJobsOutcomes(input: {
     })
     if (!page.length) break
     for (const outcome of page) {
-      const next = { observedAt: outcome.observed_at, outcomeId: outcome.outcome_id }
+      const next = { observedAt: outcome.storage_observed_at ?? outcome.observed_at, outcomeId: outcome.outcome_id }
       const applied = await input.dependencies.projectAndAdvance(outcome, next)
       if (!applied.cursorAdvanced) {
         return { processed, ...(cursor === undefined ? {} : { lastCursor: cursor }) }

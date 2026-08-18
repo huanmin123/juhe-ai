@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
+import { parseRfc3339Instant } from '../shared/rfc3339.js'
 import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 
@@ -29,8 +29,9 @@ export async function currentAccountHealthProjectionCursorAsync(
   return cursorFromRow(row)
 }
 
-// Advancing is monotonic. A duplicate projector may race and return false,
-// but it can never move the cursor backwards or skip an earlier tuple.
+// Advancing is monotonic across outcome IDs. A legacy cursor may carry a
+// higher payload precision than the durable store; the same immutable outcome
+// ID is allowed to normalize that representation once.
 export function advanceAccountHealthProjectionCursor(
   consumerKey: string,
   next: AccountHealthProjectionCursor,
@@ -51,7 +52,11 @@ export async function advanceAccountHealthProjectionCursorAsync(
   return await client.transaction(async (tx) => {
     const current = await tx.one<CursorRow>(`SELECT observed_at, outcome_id FROM ${table(tx)} WHERE consumer_key = ? FOR UPDATE`, [key])
     const existing = cursorFromRow(current)
-    if (existing && compareCursor(existing, cursor) >= 0) return false
+    if (existing && compareCursor(existing, cursor) >= 0) {
+      if (existing.outcomeId !== cursor.outcomeId) return false
+      const result = await tx.execute(`UPDATE ${table(tx)} SET observed_at = ?, updated_at = ? WHERE consumer_key = ? AND outcome_id = ?`, [cursor.observedAt, nowIso(), key, existing.outcomeId])
+      return result.changes === 1
+    }
     if (existing) {
       const result = await tx.execute(`UPDATE ${table(tx)} SET observed_at = ?, outcome_id = ?, updated_at = ? WHERE consumer_key = ?`, [cursor.observedAt, cursor.outcomeId, nowIso(), key])
       return result.changes === 1
@@ -63,7 +68,11 @@ export async function advanceAccountHealthProjectionCursorAsync(
 
 function advanceSqlite(database: DatabaseSync, consumerKey: string, next: AccountHealthProjectionCursor): boolean {
   const existing = currentAccountHealthProjectionCursor(consumerKey, database)
-  if (existing && compareCursor(existing, next) >= 0) return false
+  if (existing && compareCursor(existing, next) >= 0) {
+    if (existing.outcomeId !== next.outcomeId) return false
+    const result = database.prepare(`UPDATE account_health_projection_cursors SET observed_at = ?, updated_at = ? WHERE consumer_key = ? AND outcome_id = ?`).run(next.observedAt, nowIso(), consumerKey, existing.outcomeId)
+    return Number(result.changes ?? 0) === 1
+  }
   if (existing) {
     const result = database.prepare(`UPDATE account_health_projection_cursors SET observed_at = ?, outcome_id = ?, updated_at = ? WHERE consumer_key = ?`).run(next.observedAt, next.outcomeId, nowIso(), consumerKey)
     return Number(result.changes ?? 0) === 1
@@ -80,21 +89,30 @@ function cursorFromRow(row: CursorRow | undefined): AccountHealthProjectionCurso
 }
 
 function normalizedCursor(value: AccountHealthProjectionCursor): AccountHealthProjectionCursor {
-  const observedAt = requiredRfc3339Instant(value.observedAt, 'J1 projection cursor observedAt')
+  const observedAt = value.observedAt.trim()
+  if (!parseRfc3339Instant(observedAt)) throw new Error('J1 projection cursor observedAt 必须是带 Z 或数值 offset 的 RFC3339 时间')
   const outcomeId = value.outcomeId.trim()
   if (!outcomeId || outcomeId.length > 4_096) throw new Error('J1 projection cursor outcomeId 无效')
   return { observedAt, outcomeId }
 }
 
 function compareCursor(left: AccountHealthProjectionCursor, right: AccountHealthProjectionCursor): number {
-  const leftObservedAt = rfc3339InstantMilliseconds(left.observedAt)
-  const rightObservedAt = rfc3339InstantMilliseconds(right.observedAt)
+  const leftObservedAt = instantNanoseconds(left.observedAt)
+  const rightObservedAt = instantNanoseconds(right.observedAt)
   if (leftObservedAt === undefined || rightObservedAt === undefined) throw new Error('J1 projection cursor observedAt 无效')
   if (leftObservedAt < rightObservedAt) return -1
   if (leftObservedAt > rightObservedAt) return 1
   if (left.outcomeId < right.outcomeId) return -1
   if (left.outcomeId > right.outcomeId) return 1
   return 0
+}
+
+function instantNanoseconds(value: string): bigint | undefined {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value)
+  const parsed = parseRfc3339Instant(value)
+  if (!match || !parsed) return undefined
+  const fraction = (match[2] ?? '').padEnd(9, '0')
+  return BigInt(parsed.getTime()) * 1_000_000n + BigInt(fraction.slice(3).padEnd(6, '0'))
 }
 
 function requiredConsumerKey(value: string): string {

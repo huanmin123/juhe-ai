@@ -17,6 +17,10 @@ const businessPath = join(root, 'business.sqlite3')
 const outcomesPath = join(root, 'jobs-outcomes.sqlite3')
 const inputDirectory = join(root, 'input')
 const accountId = 'j1-db-service-projector-account'
+const priorOutcomeId = 'j1-db-service-projector-prior-outcome'
+const priorStorageObservedAt = '2026-08-17T00:00:00.000123Z'
+const priorLegacyCursorObservedAt = '2026-08-17T00:00:00.000123456Z'
+const targetStorageObservedAt = '2026-08-17T00:00:00.001000Z'
 
 try {
   createBusinessFixture()
@@ -88,8 +92,8 @@ try {
     account: { last_health_check_at: string, last_health_success_at: string }
   }
   assert.equal(result.receipt.disposition, 'applied')
-  assert.equal(result.account.last_health_check_at, '2026-08-17T00:00:00.000Z')
-  assert.equal(result.account.last_health_success_at, '2026-08-17T00:00:00.000Z')
+  assert.equal(result.account.last_health_check_at, '2026-08-17T00:00:00.001Z')
+  assert.equal(result.account.last_health_success_at, '2026-08-17T00:00:00.001Z')
 
   const business = new Constructor(businessPath)
   try {
@@ -98,7 +102,7 @@ try {
       WHERE consumer_key = 'juhe-ai-account-health-jobs-projector-v1'
     `).get() as { observed_at: string, outcome_id: string } | undefined
     assert(cursor)
-    assert.equal(cursor.observed_at, '2026-08-17T00:00:00.000Z')
+    assert.equal(cursor.observed_at, targetStorageObservedAt)
     assert.equal(cursor.outcome_id, 'j1-db-service-projector-outcome')
   } finally {
     business.close()
@@ -126,6 +130,14 @@ function createBusinessFixture(): void {
       INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at)
       VALUES (?, 1, '2026-08-17T00:00:00.000Z')
     `).run(accountId)
+    database.prepare(`
+      INSERT INTO account_health_projection_cursors(consumer_key, observed_at, outcome_id, updated_at)
+      VALUES ('juhe-ai-account-health-jobs-projector-v1', ?, ?, '2026-08-17T00:00:00.000Z')
+    `).run(priorLegacyCursorObservedAt, priorOutcomeId)
+    database.prepare(`
+      INSERT INTO account_health_projection_receipts(outcome_id, account_id, input_version, disposition, reason, applied_at)
+      VALUES (?, ?, 1, 'applied', NULL, '2026-08-17T00:00:00.000Z')
+    `).run(priorOutcomeId, accountId)
   } finally {
     database.close()
   }
@@ -134,9 +146,9 @@ function createBusinessFixture(): void {
 function createJobsOutcomeFixture(): void {
   const database = new Constructor(outcomesPath)
   try {
-    const outcome = {
-      outcome_id: 'j1-db-service-projector-outcome',
-      request_id: 'j1-db-service-projector-request',
+    const priorOutcome = {
+      outcome_id: priorOutcomeId,
+      request_id: 'j1-db-service-projector-prior-request',
       account_id: accountId,
       outcome: 'complete_success',
       observed_at: '2026-08-17T00:00:00.000Z',
@@ -154,12 +166,30 @@ function createJobsOutcomeFixture(): void {
         expected_account_status: 'active'
       }
     }
+    const outcome = {
+      outcome_id: 'j1-db-service-projector-outcome',
+      request_id: 'j1-db-service-projector-request',
+      account_id: accountId,
+      outcome: 'complete_success',
+      observed_at: '2026-08-17T00:00:00.001Z',
+      input_version: 1,
+      config_revision: 2,
+      dispatch_revision: 3,
+      status_code: 200,
+      next_due_at: '2026-08-17T01:00:00.000Z',
+      projection: {
+        target_account_id: accountId,
+        transition_kind: 'health_success',
+        input_version: 1,
+        config_revision: 2,
+        dispatch_revision: 3,
+        expected_account_status: 'active'
+      }
+    }
     database.exec('CREATE TABLE account_health_outcomes(outcome_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL, payload TEXT NOT NULL)')
-    database.prepare('INSERT INTO account_health_outcomes(outcome_id, observed_at, payload) VALUES (?, ?, ?)').run(
-      outcome.outcome_id,
-      outcome.observed_at,
-      JSON.stringify(outcome)
-    )
+    const statement = database.prepare('INSERT INTO account_health_outcomes(outcome_id, observed_at, payload) VALUES (?, ?, ?)')
+    statement.run(priorOutcome.outcome_id, priorStorageObservedAt, JSON.stringify(priorOutcome))
+    statement.run(outcome.outcome_id, targetStorageObservedAt, JSON.stringify(outcome))
   } finally {
     database.close()
   }

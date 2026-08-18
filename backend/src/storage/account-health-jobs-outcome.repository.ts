@@ -55,6 +55,8 @@ export interface AccountHealthJobsOutcome {
   account_status?: string
   source_fence?: AccountHealthJobsSourceFence
   projection?: AccountHealthJobsProjection
+  /** Durable-store ordering timestamp; not part of the Go payload contract. */
+  storage_observed_at?: string
 }
 
 export interface AccountHealthJobsOutcomeCursor {
@@ -81,7 +83,7 @@ function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor 
   const require = createRequire(import.meta.url)
   const Constructor = require('node:sqlite').DatabaseSync as new (path: string, options?: { readOnly?: boolean }) => {
     exec(sql: string): void
-    prepare(sql: string): { all(...values: unknown[]): unknown[] }
+    prepare(sql: string): { all(...values: unknown[]): unknown[], get(...values: unknown[]): unknown }
     close(): void
   }
   const database = new Constructor(resolve(path), { readOnly: true })
@@ -89,13 +91,26 @@ function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor 
     database.exec('PRAGMA query_only = ON')
     const state = database.prepare('PRAGMA query_only').all()[0] as Record<string, unknown> | undefined
     if (Number(state?.query_only ?? state?.[0] ?? 0) !== 1) throw new Error('J1 jobs SQLite outcome 读取未进入 query_only')
-    const rows = after
-      ? database.prepare(`SELECT payload FROM account_health_outcomes WHERE observed_at > ? OR (observed_at = ? AND outcome_id > ?) ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`).all(after.observedAt, after.observedAt, after.outcomeId, limit)
-      : database.prepare(`SELECT payload FROM account_health_outcomes ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`).all(limit)
-    return rows.map((row) => decodeAccountHealthJobsOutcomePayload(rowPayload(row)))
+    const effectiveAfter = after ? resolveSqliteCursor(database, after) : undefined
+    const rows = effectiveAfter
+      ? database.prepare(`SELECT payload, observed_at AS storage_observed_at FROM account_health_outcomes WHERE observed_at > ? OR (observed_at = ? AND outcome_id > ?) ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`).all(effectiveAfter.observedAt, effectiveAfter.observedAt, effectiveAfter.outcomeId, limit)
+      : database.prepare(`SELECT payload, observed_at AS storage_observed_at FROM account_health_outcomes ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`).all(limit)
+    return rows.map((row) => decodeOutcomeRow(row))
   } finally {
     database.close()
   }
+}
+
+function resolveSqliteCursor(
+  database: { prepare(sql: string): { get(...values: unknown[]): unknown } },
+  after: AccountHealthJobsOutcomeCursor
+): AccountHealthJobsOutcomeCursor {
+  const row = database.prepare('SELECT observed_at AS storage_observed_at FROM account_health_outcomes WHERE outcome_id = ?').get(after.outcomeId)
+  const storageObservedAt = row && typeof row === 'object' ? (row as Record<string, unknown>).storage_observed_at : undefined
+  if (typeof storageObservedAt !== 'string' || !storageObservedAt.trim() || storageObservedAt === after.observedAt) {
+    return after
+  }
+  return { observedAt: storageObservedAt.trim(), outcomeId: after.outcomeId }
 }
 
 async function readPostgresOutcomes(postgresUrl: string, after: AccountHealthJobsOutcomeCursor | undefined, limit: number): Promise<AccountHealthJobsOutcome[]> {
@@ -106,12 +121,13 @@ async function readPostgresOutcomes(postgresUrl: string, after: AccountHealthJob
   try {
     await connection.query('BEGIN READ ONLY')
     inTransaction = true
-    const result = after
-      ? await connection.query('SELECT payload FROM juhe_jobs.account_health_outcomes WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2) ORDER BY observed_at ASC, outcome_id ASC LIMIT $3', [after.observedAt, after.outcomeId, limit])
-      : await connection.query('SELECT payload FROM juhe_jobs.account_health_outcomes ORDER BY observed_at ASC, outcome_id ASC LIMIT $1', [limit])
+    const effectiveAfter = after ? await resolvePostgresCursor(connection, after) : undefined
+    const result = effectiveAfter
+      ? await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2) ORDER BY observed_at ASC, outcome_id ASC LIMIT $3`, [effectiveAfter.observedAt, effectiveAfter.outcomeId, limit])
+      : await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes ORDER BY observed_at ASC, outcome_id ASC LIMIT $1`, [limit])
     await connection.query('COMMIT')
     inTransaction = false
-    return result.rows.map((row: Record<string, unknown>) => decodeAccountHealthJobsOutcomePayload(row.payload))
+    return result.rows.map((row: Record<string, unknown>) => decodeOutcomeRow(row))
   } catch (error) {
     if (inTransaction) await connection.query('ROLLBACK').catch(() => undefined)
     throw error
@@ -119,6 +135,31 @@ async function readPostgresOutcomes(postgresUrl: string, after: AccountHealthJob
     connection.release()
     await pool.end()
   }
+}
+
+function decodeOutcomeRow(row: unknown): AccountHealthJobsOutcome {
+  if (!row || typeof row !== 'object') throw new Error('J1 jobs outcome 行格式无效')
+  const record = row as Record<string, unknown>
+  const storageObservedAt = record.storage_observed_at
+  if (typeof storageObservedAt !== 'string' || !storageObservedAt.trim()) {
+    throw new Error('J1 jobs outcome storage observed_at 无效')
+  }
+  return {
+    ...decodeAccountHealthJobsOutcomePayload(rowPayload(record)),
+    storage_observed_at: storageObservedAt.trim()
+  }
+}
+
+async function resolvePostgresCursor(
+  connection: { query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> },
+  after: AccountHealthJobsOutcomeCursor
+): Promise<AccountHealthJobsOutcomeCursor> {
+  const result = await connection.query(`SELECT to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE outcome_id = $1`, [after.outcomeId])
+  const storageObservedAt = result.rows[0]?.storage_observed_at
+  if (typeof storageObservedAt !== 'string' || !storageObservedAt.trim() || storageObservedAt === after.observedAt) {
+    return after
+  }
+  return { observedAt: storageObservedAt.trim(), outcomeId: after.outcomeId }
 }
 
 function rowPayload(row: unknown): unknown {
