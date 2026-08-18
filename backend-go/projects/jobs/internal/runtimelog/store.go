@@ -428,8 +428,8 @@ func (store *postgresStore) RenewOwnerLease(ctx context.Context, lease OwnerLeas
 }
 
 func (store *postgresStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
-	nowText := nodeISO(time.Now().UTC())
-	result, err := store.pool.Exec(ctx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", nowText, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
+	now := time.Now().UTC()
+	result, err := store.pool.Exec(ctx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return err
 	}
@@ -572,8 +572,7 @@ func sqliteRenewOwnerLease(ctx context.Context, db *sql.DB, lease OwnerLease, du
 
 func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
 	now := time.Now().UTC()
-	nowText := nodeISO(now)
-	leaseUntil := nodeISO(now.Add(duration))
+	leaseUntil := now.Add(duration)
 	var token int64
 	err := pool.QueryRow(ctx, `
     INSERT INTO juhe_dataset.runtime_log_index_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
@@ -585,7 +584,7 @@ func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID 
       updated_at = excluded.updated_at
     WHERE juhe_dataset.runtime_log_index_owner_leases.lease_until <= $5
     RETURNING fence_token
-  `, runtimeLogOwnerLeaseKey, ownerID, leaseUntil, nowText, nowText).Scan(&token)
+  `, runtimeLogOwnerLeaseKey, ownerID, leaseUntil, now, now).Scan(&token)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -597,13 +596,12 @@ func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID 
 
 func postgresRenewOwnerLease(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, duration time.Duration) (bool, error) {
 	now := time.Now().UTC()
-	nowText := nodeISO(now)
-	leaseUntil := nodeISO(now.Add(duration))
+	leaseUntil := now.Add(duration)
 	result, err := pool.Exec(ctx, `
     UPDATE juhe_dataset.runtime_log_index_owner_leases
     SET lease_until = $1, updated_at = $2
     WHERE lease_key = $3 AND owner_id = $4 AND fence_token = $5 AND lease_until > $6
-  `, leaseUntil, nowText, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken, nowText)
+  `, leaseUntil, now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken, now)
 	if err != nil {
 		return false, err
 	}
@@ -628,14 +626,14 @@ func verifySQLiteOwnerLease(ctx context.Context, tx *sql.Tx, lease OwnerLease) e
 }
 
 func verifyPostgresOwnerLease(ctx context.Context, tx pgx.Tx, lease OwnerLease) error {
-	nowText := nodeISO(time.Now().UTC())
+	now := time.Now().UTC()
 	var token int64
 	err := tx.QueryRow(ctx, `
     SELECT fence_token
     FROM juhe_dataset.runtime_log_index_owner_leases
     WHERE lease_key = $1 AND owner_id = $2 AND fence_token = $3 AND lease_until > $4
     FOR UPDATE
-  `, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken, nowText).Scan(&token)
+  `, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken, now).Scan(&token)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrOwnerLeaseLost
 	}
@@ -1189,7 +1187,6 @@ func incrementPostgresFacets(ctx context.Context, tx pgx.Tx, rows []facetRow, cu
 
 func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, cutoff time.Time, batchSize int, maxBatches int) (CleanupResult, error) {
 	result := CleanupResult{}
-	cutoffText := nodeISO(cutoff)
 	batchLimit := minInt(maxInt(batchSize, 1), postgresCleanupRowsPerBatch)
 	for batch := 0; batch < maxBatches; batch++ {
 		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
@@ -1200,7 +1197,7 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 			tx.Rollback(ctx)
 			return result, err
 		}
-		rows, err := tx.Query(ctx, "SELECT id, time::text, level, COALESCE(event, '') FROM juhe_dataset.runtime_logs WHERE time < $1 ORDER BY time ASC, id ASC LIMIT $2", cutoffText, batchLimit)
+		rows, err := tx.Query(ctx, "SELECT id, time::text, level, COALESCE(event, '') FROM juhe_dataset.runtime_logs WHERE time < $1 ORDER BY time ASC, id ASC LIMIT $2", cutoff, batchLimit)
 		if err != nil {
 			tx.Rollback(ctx)
 			return result, err
@@ -1220,7 +1217,7 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 			tx.Rollback(ctx)
 			return result, err
 		}
-		if err := decrementPostgresFacets(ctx, tx, deleted, cutoffText); err != nil {
+		if err := decrementPostgresFacets(ctx, tx, deleted, cutoff); err != nil {
 			tx.Rollback(ctx)
 			return result, err
 		}
@@ -1242,7 +1239,7 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 			return result, err
 		}
 		query := `DELETE FROM juhe_dataset.runtime_log_file_cursors WHERE ctid IN (SELECT ctid FROM juhe_dataset.runtime_log_file_cursors WHERE updated_at < $1 AND cursor_offset >= file_size AND last_error_message IS NULL ORDER BY updated_at ASC, ctid ASC LIMIT $2)`
-		deleted, err := tx.Exec(ctx, query, cutoffText, batchLimit)
+		deleted, err := tx.Exec(ctx, query, cutoff, batchLimit)
 		if err != nil {
 			tx.Rollback(ctx)
 			return result, err
@@ -1288,7 +1285,7 @@ func scanPostgresFacetRows(rows pgx.Rows) ([]string, []facetRow, error) {
 	return ids, facets, rows.Err()
 }
 
-func decrementPostgresFacets(ctx context.Context, tx pgx.Tx, rows []facetRow, cutoffText string) error {
+func decrementPostgresFacets(ctx context.Context, tx pgx.Tx, rows []facetRow, cutoff time.Time) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -1301,10 +1298,10 @@ func decrementPostgresFacets(ctx context.Context, tx pgx.Tx, rows []facetRow, cu
 	if len(counted) == 0 {
 		return nil
 	}
-	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", cutoffText).Scan(&earliest); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", cutoff).Scan(&earliest); err != nil {
 		return err
 	}
-	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", cutoffText).Scan(&latest); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", cutoff).Scan(&latest); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, "UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST(0, total_count - $1), earliest_time = $2, latest_time = $3, updated_at = $4 WHERE bucket_key = $5", len(counted), nullable(earliest), nullable(latest), now, facetBucketKey); err != nil {
