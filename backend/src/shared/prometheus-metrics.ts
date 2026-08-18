@@ -3,6 +3,10 @@ const durationBuckets = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, Number.POSITIVE_INFI
 
 export type HttpMetricRouteGroup = 'health' | 'management' | 'public_api' | 'gateway' | 'other' | 'observability'
 export type HttpMetricOutcome = 'completed' | 'aborted'
+export type GatewayUpstreamFailureMetricClass =
+  | 'opaque_upstream_response'
+  | 'transport'
+  | 'unknown'
 
 export interface HttpMetricRequest {
   routeGroup: Exclude<HttpMetricRouteGroup, 'observability'>
@@ -27,6 +31,7 @@ interface HistogramValue {
 const requestCounters = new Map<string, number>()
 const requestHistograms = new Map<string, HistogramValue>()
 const inFlightRequests = new Map<string, number>()
+const gatewayUpstreamFailureCounters = new Map<string, number>()
 
 export const redisStreamQueueMetricNames = ['usage_records', 'public_api_logs', 'record_maintenance'] as const
 export type RedisStreamQueueMetricName = typeof redisStreamQueueMetricNames[number]
@@ -98,6 +103,16 @@ export function finishHttpMetricRequest(
   requestHistograms.set(labelsKey(labels), histogram)
 }
 
+export function recordGatewayUpstreamFailureMetric(
+  failureClass: GatewayUpstreamFailureMetricClass,
+  statusCode: number | undefined
+): void {
+  increment(gatewayUpstreamFailureCounters, labelsKey({
+    failure_class: failureClass,
+    status_class: classifyStatus(statusCode)
+  }))
+}
+
 export function renderPrometheusMetrics(): string {
   const lines = [
     '# HELP juhe_ai_http_requests_total Completed HTTP requests grouped without paths, identifiers, or error text.',
@@ -105,6 +120,12 @@ export function renderPrometheusMetrics(): string {
   ]
   for (const [key, count] of sortedEntries(requestCounters)) {
     lines.push(`juhe_ai_http_requests_total{${renderLabels(parseMetricLabels(key))}} ${count}`)
+  }
+
+  lines.push('# HELP juhe_ai_gateway_upstream_failures_total Gateway upstream attempt failures grouped by bounded failure and status classes.')
+  lines.push('# TYPE juhe_ai_gateway_upstream_failures_total counter')
+  for (const [key, count] of sortedEntries(gatewayUpstreamFailureCounters)) {
+    lines.push(`juhe_ai_gateway_upstream_failures_total{${renderLabels(parseMetricLabels(key))}} ${count}`)
   }
 
   lines.push('# HELP juhe_ai_http_request_duration_seconds HTTP request duration grouped without paths, identifiers, or error text.')
@@ -165,6 +186,7 @@ export function resetPrometheusMetricsForTest(): void {
   requestCounters.clear()
   requestHistograms.clear()
   inFlightRequests.clear()
+  gatewayUpstreamFailureCounters.clear()
   redisStreamQueueMetrics = { enabled: false, collectionSuccess: false, queues: [] }
 }
 

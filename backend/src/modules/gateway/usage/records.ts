@@ -46,6 +46,7 @@ import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mappi
 import { resolveUsageServiceTiers, type UsageServiceTier } from './service-tier.js'
 import type { UsageReasoningEffort } from './reasoning-effort.js'
 import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
+import { recordGatewayUpstreamFailureMetric } from '../../../shared/prometheus-metrics.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -170,13 +171,17 @@ export async function recordFailedUpstreamAttempt(
       ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
       ?? input.bodyText
   )
-  const failureObservation = interpretUpstreamSemantics && input.failureAttribution !== 'downstream_closed'
+  const failureObservation: ReturnType<typeof classifyGatewayUpstreamFailure> | undefined = interpretUpstreamSemantics && input.failureAttribution !== 'downstream_closed'
       ? classifyGatewayUpstreamFailure({
           phase: typeof input.statusCode === 'number'
             ? 'upstream_response'
             : 'upstream_request'
         })
-    : {}
+    : undefined
+
+  if (failureObservation?.failureClass) {
+    recordGatewayUpstreamFailureMetric(failureObservation.failureClass, input.statusCode)
+  }
 
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_upstream_attempt_failed',
