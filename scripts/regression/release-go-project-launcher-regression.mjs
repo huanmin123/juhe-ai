@@ -24,6 +24,7 @@ assertLauncherRejectsMissingProjectIdentity()
 assertLauncherRejectsJ1WithoutGoOwner()
 assertLauncherRejectsMissingJ1InputDirectory()
 assertLauncherForwardsProjectScopedPaths()
+assertLauncherForwardsJ2PathsAndOwner()
 
 console.log('release Go project launcher regression passed')
 
@@ -121,6 +122,38 @@ function assertLauncherForwardsProjectScopedPaths() {
   } finally {
     jobs.cleanup()
     gateway.cleanup()
+  }
+}
+
+function assertLauncherForwardsJ2PathsAndOwner() {
+  const jobs = runLauncher('jobs', {
+    JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
+    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
+    JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
+    JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
+    JUHE_AI_ACCOUNT_BALANCE_STORE: 'sqlite',
+    JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
+    JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret',
+    JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET: 'j2-manual-bridge-secret-0123456789',
+    JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE: '3',
+    JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET: '40s'
+  }, [
+    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+    'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
+  ].join('\n'))
+  try {
+    assert.equal(jobs.status, 0, `J2 jobs launcher failed: ${jobs.output}`)
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER, 'go')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_OWNER_ID, 'j2-owner')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH, join(jobs.backendRoot, 'data', 'juhe-ai-account-balance.sqlite3'))
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL, 'postgres://j2-input')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, 'j2-manual-bridge-secret-0123456789')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
+  } finally {
+    jobs.cleanup()
   }
 }
 

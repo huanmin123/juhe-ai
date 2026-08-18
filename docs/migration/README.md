@@ -7,6 +7,7 @@
 - [Go 后端架构基线](Go后端架构基线.md)：Go 技术、存储、并发和完整功能迁移的通用规则；与三项目边界冲突时，以三项目边界为准。
 - [后台任务迁移总设计与路线图](后台任务迁移总设计与路线图.md)：后台任务的完整迁移顺序、Go jobs 直连上游探活边界、PostgreSQL / SQLite 数据边界和切换门禁。
 - [J1 账号健康探活完整迁移契约](J1-账号健康探活完整迁移契约.md)：冻结账号健康探活与冷却复测的完整 owner、SQLite/PG 输入输出协议、直接上游探活、Gateway source fence、切换和归档边界。
+- [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。
 
 > 面向 AI、维护者和后续迁移执行者。

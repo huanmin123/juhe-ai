@@ -20,6 +20,7 @@ import {
 import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
+import { accountBalanceGoOwnerEnabled } from './account-balance-handover.js'
 
 const detectionIntervalMinutes = 5
 const detectionRetryMinutes = 5
@@ -61,6 +62,7 @@ const accountBalanceAutoDetectionQueue = createRetryQueue<AccountBalanceAutoDete
 })
 
 export function enqueueAccountBalanceAutoDetection(accountId: string, configRevision: number): boolean {
+  if (accountBalanceGoOwnerEnabled()) return false
   const normalizedId = accountId.trim()
   if (!normalizedId || !Number.isInteger(configRevision) || configRevision < 1) return false
   return accountBalanceAutoDetectionQueue.enqueue(normalizedId, {
@@ -111,6 +113,7 @@ export async function autoDetectAccountBalanceCandidate(
   candidate: AccountBalanceDetectionCandidate,
   dependencies: Parameters<typeof detectAccountBalanceAdapter>[1] = {}
 ): Promise<AccountBalanceAutoDetectionOutcome> {
+  if (accountBalanceGoOwnerEnabled()) return 'stale'
   const lease = await runWithAccountBalanceLease(candidate, async () => (
     await autoDetectAccountBalanceCandidateWithLease(candidate, dependencies)
   ))
@@ -198,6 +201,9 @@ export interface AccountBalanceAutoDetectionRecoveryDependencies {
 export async function runAccountBalanceAutoDetectionRecovery(
   dependencies: AccountBalanceAutoDetectionRecoveryDependencies = {}
 ): Promise<AccountBalanceAutoDetectionRecoverySummary> {
+  if (accountBalanceGoOwnerEnabled()) {
+    return { outcome: 'success', selectedCount: 0, enabledCount: 0, unsupportedCount: 0, retryCount: 0, staleCount: 0, deferredCount: 0 }
+  }
   const candidates = await (dependencies.listCandidates ?? listAccountsDueForBalanceAutoDetectionAsync)({
     limit: detectionRecoveryBatchSize
   })

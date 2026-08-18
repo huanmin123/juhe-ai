@@ -55,6 +55,7 @@ import { getUsageRecordRedisStreamOldestCreatedAt } from '../gateway/usage/recor
 import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanup.constants.js'
 import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
 import { runAccountBalanceAutoDetectionRecovery } from './account-balance-auto-detect.service.js'
+import { accountBalanceNodeOwnerEnabled } from './account-balance-handover.js'
 import {
   backgroundTaskRunReconcileInitialDelayMs,
   backgroundTaskRunReconcileIntervalMs,
@@ -325,8 +326,12 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-scheduled-check'), intervalMs: minuteMs, initialDelayMs: 45 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityScheduledChecks(signal), '模型质量定时检查') })
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-recovery'), intervalMs: minuteMs, initialDelayMs: 55 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityRecoveries(signal), '模型质量恢复检查') })
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-health-sync-retry'), intervalMs: minuteMs, initialDelayMs: 58 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await retryFailedModelQualityHealthSyncs(signal), '模型质量健康同步补偿') })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceRefresh({ signal }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-balance-auto-detect-recovery'), intervalMs: minuteMs, initialDelayMs: 25 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 45 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceAutoDetectionRecovery({ signal }) })
+      if (accountBalanceNodeOwnerEnabled()) {
+        scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceRefresh({ signal }) })
+        scheduler.schedule({ name: backgroundScheduledJobName('account-balance-auto-detect-recovery'), intervalMs: minuteMs, initialDelayMs: 25 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 45 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceAutoDetectionRecovery({ signal }) })
+      } else {
+        logger.info({ event: 'account_balance_node_owner_drained', owner: 'go' }, 'J2 Go owner 模式已停止 Node scheduler/recovery')
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, task: runNormalRouteSpeedFirstRecoveryProbe })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })

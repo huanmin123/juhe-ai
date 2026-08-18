@@ -11,6 +11,7 @@ import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
+import { accountBalanceGoOwnerEnabled } from '../background/account-balance-handover.js'
 
 export type AccountBalanceSnapshotCleanupReason = 'balance_configuration_changed' | 'multiple_api_keys' | 'batch_multiple_api_keys' | 'batch_balance_identity_changed'
 
@@ -136,6 +137,10 @@ export function createAccountBalanceSnapshotCleanupCoordinator(
 
   return {
     cleanupAfterSave: (request) => {
+      if (accountBalanceGoOwnerEnabled()) {
+        log('info', { event: 'account_balance_snapshot_cleanup_skipped_go_owner', accountId: request.accountId, configRevision: request.configRevision }, 'J2 Go owner 模式跳过 Node 旧余额快照清理')
+        return
+      }
       const item: AccountBalanceSnapshotCleanupQueueItem = {
         ...request,
         requestId: `${request.accountId}:${request.configRevision}:${Date.now()}:${cleanupRequestSequence += 1}`,

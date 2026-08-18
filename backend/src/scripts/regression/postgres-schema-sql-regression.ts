@@ -161,6 +161,7 @@ assert.match(postgresSeedDefaultsSource, /model\.supportsPromptCaching === true,
 assert.match(sql, /health_check_endpoint_mode text NOT NULL CHECK \(health_check_endpoint_mode IN \([^)]*'interactions_json', 'interactions_sse'\)\)/, 'PG 当前 accounts schema 必须允许 Gemini Interactions 健康检查模式')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+type text NOT NULL/, 'PG 当前 accounts schema 必须保留账户认证类型字段')
 assert.match(sql, /idx_accounts_health_check_candidate_order[\s\S]+type IN \('api_key', 'oauth', 'google_oauth'\)/, 'PG 当前健康检查候选索引必须覆盖当前认证类型')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS account_balance_projection_cursors[\s\S]+consumer_key text PRIMARY KEY[\s\S]+observed_at text[\s\S]+outcome_id text[\s\S]+updated_at timestamptz NOT NULL/, 'PG J2 outcome projector 必须有独立持久游标表')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS audit_(?:logs|log_attempts|payload_blobs|payload_refs|error_groups)\b/, 'Node PostgreSQL schema 不得重新创建 F3 审计表')
 assert.match(sql, /public_api_logs[\s\S]+request_size_bytes bigint NOT NULL DEFAULT 0[\s\S]+response_size_bytes bigint NOT NULL DEFAULT 0/, 'PG 公开接口日志请求/响应大小字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_records/, '应包含使用记录主表 schema')

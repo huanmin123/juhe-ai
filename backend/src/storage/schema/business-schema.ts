@@ -664,6 +664,16 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
     );
 
+    -- J2 keeps its own durable consumer cursor; it must never share J1's
+    -- state or advance a jobs-store outcome cursor itself.
+    CREATE TABLE IF NOT EXISTS account_balance_projection_cursors (
+      consumer_key TEXT PRIMARY KEY,
+      observed_at TEXT,
+      outcome_id TEXT,
+      updated_at TEXT NOT NULL,
+      CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
+    );
+
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,

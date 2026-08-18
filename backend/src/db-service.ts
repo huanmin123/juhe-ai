@@ -15,12 +15,16 @@ import { createSystemApiApp } from './modules/system-api/system-api-app.js'
 import { shutdownChatGenerationRegistry } from './modules/chat/chat-generation-runtime.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
 import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
+import { createPostgresDatabaseClient } from './storage/database-client.js'
+import { getPostgresPool } from './storage/postgres-client.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { dbServiceSuccessLogLevel } from './shared/logging/runtime-log-policy.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 import { startAccountHealthJobsInputPublisherRuntime, stopAccountHealthJobsInputPublisherRuntime } from './modules/background/account-health-jobs-input-publisher-runtime.service.js'
 import { startAccountHealthJobsOutcomeProjectionRuntime, stopAccountHealthJobsOutcomeProjectionRuntime } from './modules/background/account-health-jobs-outcome-projection-runtime.service.js'
+import { startAccountBalanceJobsOutcomeProjectionRuntime, stopAccountBalanceJobsOutcomeProjectionRuntime } from './modules/background/account-balance-jobs-outcome-projection-runtime.service.js'
+import { accountBalanceGoOwnerEnabled, sameAccountBalanceJobsPostgresStore } from './modules/background/account-balance-handover.js'
 
 const systemApiPrefix = '/__aisys__/api'
 const publicApiPrefix = '/__aipublic__'
@@ -66,6 +70,7 @@ let dbServiceStopping = false
 let dbServiceShutdownPromise: Promise<void> | undefined
 
 async function startDbService(): Promise<void> {
+  await assertAccountBalanceGoProjectionRuntimeReady()
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
   startPerformanceProcessMetricsPublisher()
@@ -76,6 +81,7 @@ async function startDbService(): Promise<void> {
   }
   startAccountHealthJobsInputPublisherRuntime()
   startAccountHealthJobsOutcomeProjectionRuntime()
+  startAccountBalanceJobsOutcomeProjectionRuntime()
   const httpEndpoint = await startDbServiceHttpServer()
   setDbServiceHttpEndpoint({ host: httpEndpoint.host, port: httpEndpoint.port })
 
@@ -103,6 +109,57 @@ async function startDbService(): Promise<void> {
     httpHost: httpEndpoint.host,
     httpPort: httpEndpoint.port
   }, `数据库服务已启动，内部系统 API 监听 http://${httpEndpoint.host}:${httpEndpoint.port}`)
+}
+
+async function assertAccountBalanceGoProjectionRuntimeReady(): Promise<void> {
+  if (!accountBalanceGoOwnerEnabled()) return
+  if (process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_ENABLED?.trim().toLowerCase() !== 'true') {
+    throw new Error('J2 Go owner 要求 JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_ENABLED=true；禁止停掉 Node owner 后无投影运行')
+  }
+  if (!process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_OUTCOME_POSTGRES_URL?.trim()) {
+    throw new Error('J2 Go owner 要求配置 PostgreSQL outcome URL；SQLite outcome source 不支持 owner handover')
+  }
+  if (process.env.JUHE_AI_ACCOUNT_BALANCE_STORE?.trim().toLowerCase() !== 'postgres') {
+    throw new Error('J2 Go owner 只允许 PostgreSQL jobs Store；SQLite outcome 不能由 Node projector 接管')
+  }
+  if (!sameAccountBalanceJobsPostgresStore(
+    process.env.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL,
+    process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_OUTCOME_POSTGRES_URL
+  )) {
+    throw new Error('J2 Go owner jobs Store 与 Node outcome source 必须指向同一 PostgreSQL 数据库')
+  }
+  if (!process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL?.trim()) {
+    throw new Error('J2 Go owner 要求配置 JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL 手动 bridge')
+  }
+  for (const name of [
+    'JUHE_AI_ACCOUNT_BALANCE_JOBS_COMMAND_WIRING_READY',
+    'JUHE_AI_ACCOUNT_BALANCE_JOBS_INPUT_RESULT_READY',
+    'JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_READY',
+    'JUHE_AI_ACCOUNT_BALANCE_JOBS_NODE_OWNER_DRAINED'
+  ]) {
+    if (process.env[name]?.trim().toLowerCase() !== 'true') {
+      throw new Error(`J2 Go owner 需要独立验收后显式设置 ${name}=true`)
+    }
+  }
+  const business = createPostgresDatabaseClient(await getPostgresPool())
+  const cursor = await business.one<{ table_name?: string }>(
+    `SELECT to_regclass('juhe_business.account_balance_projection_cursors') AS table_name`
+  )
+  if (!cursor?.table_name) {
+    throw new Error('J2 Go owner 缺少 juhe_business.account_balance_projection_cursors；必须先应用当前 PostgreSQL schema')
+  }
+  const { Pool } = await import('pg')
+  const sourcePool = new Pool({
+    connectionString: process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_OUTCOME_POSTGRES_URL?.trim(),
+    max: 1
+  })
+  try {
+    await sourcePool.query('SELECT committed FROM juhe_jobs.account_balance_outcomes LIMIT 0')
+  } catch (error) {
+    throw new Error(`J2 Go owner outcome source 不可用或缺少 committed fence: ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    await sourcePool.end()
+  }
 }
 
 function requestDbServiceShutdown(httpEndpoint: DbServiceHttpEndpoint, exitCode: number): Promise<void> {
@@ -142,6 +199,11 @@ async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: 
     await stopAccountHealthJobsOutcomeProjectionRuntime()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'account_health_jobs_outcome_projection_shutdown_failed' }), 'J1 outcome 投影器退出失败')
+  }
+  try {
+    await stopAccountBalanceJobsOutcomeProjectionRuntime()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'account_balance_jobs_outcome_projection_shutdown_failed' }), 'J2 outcome 投影器退出失败')
   }
   try {
     closeStorageDatabases()

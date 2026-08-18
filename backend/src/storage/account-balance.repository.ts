@@ -12,6 +12,11 @@ import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 export interface AccountBalanceRefreshCandidate {
   id: string
   systemAccountId: string
+  inputVersion?: number
+  provider?: string
+  type?: string
+  status?: string
+  schedulable?: boolean
   configRevision: number
   credentials: Record<string, unknown>
   config: AccountBalanceQueryConfig
@@ -22,6 +27,7 @@ export interface AccountBalanceRefreshCandidate {
 export interface AccountBalanceDetectionCandidate {
   id: string
   systemAccountId: string
+  inputVersion?: number
   configRevision: number
   credentials: Record<string, unknown>
   /**
@@ -46,6 +52,11 @@ export interface AccountBalanceSnapshotRecord {
 interface BalanceCandidateRow {
   id: string
   system_account_id: string
+  dispatch_revision?: number
+  provider_code?: string
+  type?: string
+  status?: string
+  schedulable?: number | boolean
   config_revision: number
   credentials_encrypted: string
   balance_query_config_json: string
@@ -56,6 +67,7 @@ interface BalanceCandidateRow {
 interface BalanceDetectionCandidateRow {
   id: string
   system_account_id: string
+  dispatch_revision?: number
   config_revision: number
   credentials_encrypted: string
   balance_query_next_refresh_at?: string | null
@@ -245,7 +257,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
   let wrapped = false
   for (let page = 0; page < maxScanPages && selected.length < limit; page += 1) {
     const rows = getBusinessDatabase().prepare(`
-    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
+    SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_config_json,
            balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id > ?
@@ -279,7 +291,7 @@ export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { 
 
 export async function findAccountBalanceRefreshCandidateAsync(accountId: string): Promise<AccountBalanceRefreshCandidate | undefined> {
   const sql = `
-    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
+    SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_config_json,
            balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id = ?
@@ -302,7 +314,7 @@ export async function findAccountBalanceRefreshCandidateAsync(accountId: string)
 
 export async function findAccountBalanceManualRefreshCandidateAsync(accountId: string): Promise<AccountBalanceRefreshCandidate | undefined> {
   const sql = `
-    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
+    SELECT id, system_account_id, dispatch_revision, provider_code, type, status, schedulable, config_revision, credentials_encrypted, balance_query_config_json,
            balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id = ?
@@ -326,7 +338,7 @@ export async function findAccountBalanceDetectionCandidateAsync(
   expectedConfigRevision: number
 ): Promise<AccountBalanceDetectionCandidate | undefined> {
   const sql = `
-    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
+    SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id = ? AND config_revision = ?
       AND ${balanceDetectionCandidateWhere()}
@@ -465,6 +477,46 @@ export async function enableDetectedAccountBalanceQueryAsync(input: {
     )
     changed = Number(result.changes ?? 0) > 0
   }
+  if (changed) invalidateAccountLookupCache(input.accountId)
+  return changed
+}
+
+/** Enable a first-probe account and persist its first snapshot atomically. */
+export async function enableDetectedAccountBalanceQueryWithSnapshotAsync(input: {
+  accountId: string
+  systemAccountId: string
+  expectedConfigRevision: number
+  expectedNextRefreshAt: string
+  config: AccountBalanceQueryConfig
+  nextRefreshAt: string
+  snapshot: AccountBalanceSnapshot
+}): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    throw new Error('余额配置与快照原子提交仅适用于 PostgreSQL')
+  }
+  const config = normalizeAccountBalanceConfig(input.config)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const changed = await client.transaction(async (tx) => {
+    const result = await tx.execute(`
+      UPDATE juhe_business.accounts
+      SET balance_query_enabled = ${balanceBooleanLiteral(true)},
+          balance_query_config_json = ?,
+          balance_query_next_refresh_at = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND config_revision = ?
+        AND ${balanceDetectionCandidateWhere()}
+        AND balance_query_next_refresh_at = ?
+    `, [JSON.stringify(config), input.nextRefreshAt, nowIso(), input.accountId, input.expectedConfigRevision, input.expectedNextRefreshAt])
+    if (Number(result.changes ?? 0) !== 1) return false
+    await replaceAccountBalanceSnapshotAsync({
+      accountId: input.accountId,
+      systemAccountId: input.systemAccountId,
+      snapshot: input.snapshot,
+      nextRefreshAfter: input.nextRefreshAt
+    }, tx)
+    return true
+  })
   if (changed) invalidateAccountLookupCache(input.accountId)
   return changed
 }
@@ -890,6 +942,11 @@ function balanceCandidatesFromRows(rows: BalanceCandidateRow[], limit: number): 
     output.push({
       id: row.id,
       systemAccountId: row.system_account_id,
+      inputVersion: Number(row.dispatch_revision ?? 0),
+      ...(row.provider_code ? { provider: row.provider_code } : {}),
+      ...(row.type ? { type: row.type } : {}),
+      ...(row.status ? { status: row.status } : {}),
+      ...(row.schedulable !== undefined ? { schedulable: databaseBoolean(row.schedulable) } : {}),
       configRevision: Number(row.config_revision),
       credentials,
       config,
@@ -944,6 +1001,7 @@ function balanceDetectionCandidateFromRow(row: BalanceDetectionCandidateRow): Ac
   return {
     id: row.id,
     systemAccountId: row.system_account_id,
+    inputVersion: Number(row.dispatch_revision ?? 0),
     configRevision: Number(row.config_revision),
     credentials,
     nextRefreshAt: row.balance_query_next_refresh_at ?? undefined,

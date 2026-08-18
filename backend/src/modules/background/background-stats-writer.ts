@@ -74,6 +74,7 @@ import {
   acquireBackgroundJobLeaseAsync,
   releaseBackgroundJobLeaseAsync
 } from '../../storage/background-task-runs.repository.js'
+import { accountBalanceGoOwnerEnabled } from './account-balance-handover.js'
 import {
   recordModelQualityHealthFailureAsync,
   type ModelQualityHealthFailureInput,
@@ -318,13 +319,17 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       upsertAccountUsageSnapshots(operation.inputs)
       return { upsertedCount: operation.inputs.length }
     case 'replace_account_balance_snapshot_if_current':
+      if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 余额快照 writer')
       return { written: await replaceAccountBalanceSnapshotIfCurrentAsync(operation.input) }
     case 'delete_account_balance_snapshot':
+      if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 余额快照清理 writer')
       await deleteAccountBalanceSnapshotAsync(operation.accountId, { updatedBefore: operation.updatedBefore })
       return { deleted: true }
     case 'acquire_account_balance_lease':
+      if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 余额 lease writer')
       return { acquired: await acquireBackgroundJobLeaseAsync(operation.input) }
     case 'release_account_balance_lease':
+      if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 余额 lease writer')
       return { released: await releaseBackgroundJobLeaseAsync(operation.leaseKey, operation.ownerId) }
     case 'activate_model_token_intercept_baseline':
       await activateModelTokenInterceptBaselineAsync(operation.input)

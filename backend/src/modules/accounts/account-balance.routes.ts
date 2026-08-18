@@ -13,6 +13,7 @@ import {
 } from './account-balance-config.js'
 import { prepareAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { accountBalanceDraftTestSchema } from './account-request.schemas.js'
+import { accountBalanceGoOwnerEnabled, runAccountBalanceManualViaGo } from '../background/account-balance-handover.js'
 
 export function registerAccountBalanceRoutes(router: Router): void {
   router.post('/balance/test-draft', async (req, res) => {
@@ -73,6 +74,15 @@ export function registerAccountBalanceRoutes(router: Router): void {
       const candidate = await findAccountBalanceManualRefreshCandidateAsync(account.id)
       if (!candidate) {
         res.status(400).json(badRequest('账户未开启余额查询或当前账户类型不支持'))
+        return
+      }
+      if (accountBalanceGoOwnerEnabled()) {
+        const result = await runAccountBalanceManualViaGo(candidate)
+        if (result.outcome === 'lease_busy' || result.outcome === 'stale' || !result.committed) {
+          res.status(409).json({ message: result.outcome === 'lease_busy' ? '余额查询正在进行，请稍后刷新' : '账户余额配置已变化，请刷新列表后重试' })
+          return
+        }
+        res.json(ok(result.snapshot))
         return
       }
       const result = await refreshAccountBalanceCandidateWithOutcome(candidate, { mode: 'manual' })

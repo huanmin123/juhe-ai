@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
@@ -143,6 +146,17 @@ func main() {
 			accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
 		}
 	}
+	accountBalanceConfig, err := accountbalance.LoadRuntimeConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load J2 account-balance config: %w", err))
+	}
+	var accountBalanceService *accountbalance.Service
+	if accountBalanceConfig.Enabled {
+		accountBalanceService, err = accountbalance.NewService(accountBalanceConfig, logger)
+		if err != nil {
+			fail(fmt.Errorf("initialize J2 account-balance service: %w", err))
+		}
+	}
 
 	listener, err := net.Listen("tcp", *healthAddress)
 	if err != nil {
@@ -186,15 +200,24 @@ func main() {
 			},
 		})
 	}
+	accountBalanceReady := func() bool { return true }
+	if accountBalanceService != nil {
+		accountBalanceReady = accountBalanceService.Ready
+		components = append(components, supervisor.Component{
+			Name:  "J2 account-balance",
+			Run:   accountBalanceService.Run,
+			Close: accountBalanceService.Close,
+		})
+	}
 	healthServer := &http.Server{
-		Handler:           healthHandler(&runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady),
+		Handler:           jobsHTTPHandler(&runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
@@ -211,7 +234,115 @@ func main() {
 	}
 }
 
-func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool) http.Handler {
+func jobsHTTPHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/health", healthHandler(runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, accountBalanceEnabled, accountBalanceReady))
+	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || accountBalanceService == nil {
+			http.NotFound(response, request)
+			return
+		}
+		if !matchesAccountBalanceManualSecret(request, accountBalanceManualSecret) {
+			response.Header().Set("WWW-Authenticate", `Bearer realm="juhe-ai-jobs"`)
+			http.Error(response, "J2 manual bridge 未授权", http.StatusUnauthorized)
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, 512<<10)
+		var envelope struct {
+			Input accountbalance.Input `json:"input"`
+		}
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&envelope); err != nil {
+			http.Error(response, "J2 manual input 无效", http.StatusBadRequest)
+			return
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			http.Error(response, "J2 manual input 不得包含尾随 JSON", http.StatusBadRequest)
+			return
+		}
+		if envelope.Input.Trigger == "" {
+			envelope.Input.Trigger = accountbalance.TriggerManual
+		}
+		record, _, err := accountBalanceService.RunManual(request.Context(), envelope.Input)
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, accountbalance.ErrAccountLeaseHeld) {
+				status = http.StatusConflict
+			}
+			if errors.Is(err, accountbalance.ErrOutcomeStale) {
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, accountbalance.Snapshot{Status: accountbalance.StatusPending}, envelope.Input.NextRefreshAt, false, "stale"))
+				return
+			}
+			http.Error(response, err.Error(), status)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, record.Snapshot, record.NextRefreshAt, true, manualOutcome(record.Snapshot.Status)))
+	})
+	return mux
+}
+
+func matchesAccountBalanceManualSecret(request *http.Request, expected string) bool {
+	if request == nil || len(expected) < 32 {
+		return false
+	}
+	const prefix = "Bearer "
+	provided := request.Header.Get("Authorization")
+	if len(provided) < len(prefix) || provided[:len(prefix)] != prefix {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided[len(prefix):]), []byte(expected)) == 1
+}
+
+func manualHandoverResult(input accountbalance.Input, snapshot accountbalance.Snapshot, nextRefreshAfter *time.Time, committed bool, outcome string) map[string]any {
+	result := map[string]any{
+		"schemaVersion":    1,
+		"job":              "account-balance-refresh",
+		"accountId":        input.AccountID,
+		"systemAccountId":  input.SystemAccountID,
+		"configRevision":   input.ConfigRevision,
+		"nextRefreshAfter": nextRefreshAfter,
+		"outcome":          outcome,
+		"committed":        committed,
+		"snapshot":         snapshot,
+	}
+	if input.Trigger != accountbalance.TriggerManual {
+		result["expectedNextRefreshAt"] = input.NextRefreshAt
+	}
+	return map[string]any{
+		"schemaVersion": 1,
+		"job":           "account-balance-refresh",
+		"result":        result,
+	}
+}
+
+func manualOutcome(status accountbalance.Status) string {
+	if status == accountbalance.StatusUnsupported {
+		return "unsupported"
+	}
+	if status == accountbalance.StatusFresh || status == accountbalance.StatusUnlimited {
+		return "refreshed"
+	}
+	return "failed"
+}
+
+func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {
+	accountBalanceEnabled := false
+	accountBalanceReady := func() bool { return true }
+	if len(j2) > 0 {
+		if value, ok := j2[0].(bool); ok {
+			accountBalanceEnabled = value
+		}
+	}
+	if len(j2) > 1 {
+		if value, ok := j2[1].(func() bool); ok {
+			accountBalanceReady = value
+		}
+	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -220,13 +351,16 @@ func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, a
 		runtimeLogOwnerHeld := runtimeRunning.Load()
 		tableMonitorIsReady := tableMonitorReady()
 		accountHealthIsReady := !accountHealthEnabled || accountHealthReady()
+		accountBalanceIsReady := !accountBalanceEnabled || accountBalanceReady()
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"ready":                runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady,
-			"runtimeLogOwnerHeld":  runtimeLogOwnerHeld,
-			"tableMonitorReady":    tableMonitorIsReady,
-			"accountHealthEnabled": accountHealthEnabled,
-			"accountHealthReady":   accountHealthIsReady,
+			"ready":                 runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady,
+			"runtimeLogOwnerHeld":   runtimeLogOwnerHeld,
+			"tableMonitorReady":     tableMonitorIsReady,
+			"accountHealthEnabled":  accountHealthEnabled,
+			"accountHealthReady":    accountHealthIsReady,
+			"accountBalanceEnabled": accountBalanceEnabled,
+			"accountBalanceReady":   accountBalanceIsReady,
 		})
 	})
 }

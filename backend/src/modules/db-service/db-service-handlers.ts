@@ -18,6 +18,7 @@ import {
   commitAccountBalanceRefreshAsync,
   enableDetectedAccountBalanceQueryAsync
 } from '../../storage/account-balance.repository.js'
+import { accountBalanceGoOwnerEnabled } from '../background/account-balance-handover.js'
 import {
   accountTestTaskCancelMessage,
   accountTestTaskCancelMessageAsync,
@@ -935,10 +936,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
             accounts: operation.accounts
           })
     case 'commit_account_balance_refresh':
+      if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 余额配置 writer')
       return { changed: 'detectionIntent' in operation.input
         ? await commitAccountBalanceDetectionDueAsync(operation.input)
         : await commitAccountBalanceRefreshAsync(operation.input) }
     case 'enable_detected_account_balance_query':
+      if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 首次探测 writer')
       return { changed: await enableDetectedAccountBalanceQueryAsync(operation.input) }
     case 'project_account_health_jobs_outcome': {
       const outcome = decodeAccountHealthJobsOutcomePayload(operation.outcome)
