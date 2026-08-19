@@ -45,12 +45,14 @@ function classifyMetricReason(
   input: GatewayUpstreamFailureClassificationInput
 ): GatewayUpstreamFailureMetricReasonClass {
   const errorCode = input.errorCode?.trim().toLowerCase()
-  if (errorCode === 'insufficient_user_quota' || errorCode === 'insufficient_quota' || errorCode === 'quota_exceeded' || errorCode === 'quota_exhausted' || errorCode === 'billing_hard_limit_reached') return 'quota'
+  if (errorCode === 'insufficient_user_quota' || errorCode === 'insufficient_quota' || errorCode === 'insufficient_balance' || errorCode === 'default_group_global_quota_exhausted' || errorCode === 'quota_exceeded' || errorCode === 'quota_exhausted' || errorCode === 'billing_hard_limit_reached') return 'quota'
   if (errorCode === 'rate_limit_exceeded' || errorCode === 'rate_limited' || errorCode === 'too_many_requests') return 'rate_limit'
   if (errorCode === 'invalid_api_key' || errorCode === 'invalid_authentication' || errorCode === 'authentication_error' || errorCode === 'access_denied' || errorCode === 'permission_denied') return 'authorization'
   if (errorCode === 'upstream_protocol_failure' || errorCode === 'upstream_protocol_error') return 'protocol'
   if (errorCode === 'first_byte_timeout' || errorCode === 'normal_route_first_byte_timeout' || errorCode === 'etimedout' || errorCode === 'timeout') return 'timeout'
   if (input.phase === 'upstream_request') return 'transport'
+  if (input.statusCode === 429) return 'rate_limit'
+  if (input.statusCode === 401 || input.statusCode === 403) return 'authorization'
   if (input.statusCode !== undefined && input.statusCode >= 500) return 'upstream_5xx'
   if (input.statusCode !== undefined && input.statusCode >= 400) return 'upstream_4xx'
   return 'unknown'

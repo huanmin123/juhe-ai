@@ -22,6 +22,16 @@ const cases: Array<{
     expected: observation('opaque_upstream_response', 'quota', 'opaque_upstream_response_failure')
   },
   {
+    name: '已解析的全局额度错误码映射为有限 quota 指标标签',
+    input: { phase: 'upstream_response', statusCode: 403, errorCode: 'DEFAULT_GROUP_GLOBAL_QUOTA_EXHAUSTED' },
+    expected: observation('opaque_upstream_response', 'quota', 'opaque_upstream_response_failure')
+  },
+  {
+    name: '429 状态映射为有限 rate_limit 指标标签',
+    input: { phase: 'upstream_response', statusCode: 429 },
+    expected: observation('opaque_upstream_response', 'rate_limit', 'opaque_upstream_response_failure')
+  },
+  {
     name: '传输失败只记录可观察的传输事实',
     input: { phase: 'upstream_request' },
     expected: observation('transport', 'transport', 'upstream_transport_failure')
