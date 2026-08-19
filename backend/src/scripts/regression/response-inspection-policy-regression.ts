@@ -35,6 +35,7 @@ import {
 import { parseOpenAISseEventText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import {
+  shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRetryResponseInspectionDecisionOnServer
 } from '../../modules/gateway/response/stream-finalization-retry-decision.js'
 import { isCodexResponsesCyberPolicyFailedJson } from '../../modules/gateway/response/non-stream-json-inspection.js'
@@ -357,13 +358,13 @@ async function assertCodexCyberPolicyFailedTerminalPassesThrough(): Promise<void
       }
     }
   )
-  assert.equal(result.completed, true, 'Codex cyber_policy 失败终态必须作为原始终态完成当前流')
-  assert.equal(result.errorCode, undefined, 'Codex cyber_policy 失败终态不得生成网关失败码')
-  assert.equal(result.passthroughUpstreamFailure, true, 'Codex cyber_policy 失败终态不得被记作协议验证成功')
-  assert.equal(failureCalled, false, 'Codex cyber_policy 失败终态不得触发重试或候选切换回调')
-  assert.equal(upstreamClosed, true, 'Codex cyber_policy 原样终态写出后必须关闭上游，不能等待 EOF')
-  assert.equal(response.writableEnded, true, 'Codex cyber_policy 原样终态写出后必须结束下游响应')
-  assert.equal(Buffer.concat(writes).toString('utf8'), event.toString('utf8'), 'Codex cyber_policy 失败终态必须原样写给下游')
+  assert.equal(result.completed, false, 'Codex cyber_policy 失败终态必须进入网关失败契约')
+  assert.equal(result.errorCode, 'upstream_retryable_error', 'Codex cyber_policy 失败终态必须收口为稳定可重试错误码')
+  assert.equal(result.passthroughUpstreamFailure, undefined, 'Codex cyber_policy 失败终态不得绕过网关错误处理')
+  assert.equal(failureCalled, false, 'Codex cyber_policy 失败终态应由上层统一决定重试或切号')
+  assert.equal(upstreamClosed, true, 'Codex cyber_policy 失败终态必须关闭上游，避免继续等待')
+  assert.equal(response.writableEnded, false, 'Codex cyber_policy 失败终态应交由上层统一结束下游响应')
+  assert.equal(Buffer.concat(writes).toString('utf8').includes('cyber_policy'), false, 'Codex cyber_policy 失败终态不得把供应商原文写给下游')
 }
 
 async function assertCodexCompactionFailedTerminalIsOpaque(
@@ -980,16 +981,20 @@ assert.equal(validateAccountResponseInspectionRules([
     match: rule.match,
     action: rule.action
   })), [
-    { id: 'default_openai_error_object', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' },
-    { id: 'default_openai_response_error', defaultRule: true, editable: false, enabled: true, priority: 2, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['response.error'] }, action: 'retry_no_avoidance' },
-    { id: 'default_openai_failed_status', defaultRule: true, editable: false, enabled: true, priority: 3, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { finishReasons: ['failed'] }, action: 'retry_no_avoidance' },
-    { id: 'default_codex_response_incomplete', defaultRule: true, editable: false, enabled: true, priority: 4, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['codex'], finishReasons: ['incomplete'] }, action: 'retry_no_avoidance' },
+    { id: 'default_openai_transient_precommit_error', defaultRule: true, editable: false, enabled: true, priority: 0, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['generic_openai', 'codex'], errorCodes: ['server_error', 'internal_server_error', 'server_overloaded', 'overloaded', 'service_unavailable', 'temporarily_unavailable', 'unavailable', 'timeout', 'deadline_exceeded', 'resource_exhausted', 'internal', 'cancelled', 'canceled'] }, action: 'retry_next_account' },
+    { id: 'default_openai_context_window_error', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['generic_openai', 'codex'], errorCodes: ['context_length_exceeded', 'input_too_large', 'max_tokens_exceeded'] }, action: 'retry_next_account' },
+    { id: 'default_openai_error_object', defaultRule: true, editable: false, enabled: true, priority: 2, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' },
+    { id: 'default_openai_response_error', defaultRule: true, editable: false, enabled: true, priority: 3, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['response.error'] }, action: 'retry_no_avoidance' },
+    { id: 'default_openai_failed_status', defaultRule: true, editable: false, enabled: true, priority: 4, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { finishReasons: ['failed'] }, action: 'retry_no_avoidance' },
+    { id: 'default_codex_response_incomplete', defaultRule: true, editable: false, enabled: true, priority: 5, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['codex'], finishReasons: ['incomplete'] }, action: 'retry_no_avoidance' },
     { id: 'default_codex_compaction_contract', defaultRule: true, editable: false, enabled: true, priority: 5, scopeType: 'protocol', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['codex'], errorCodes: ['codex_compaction_contract_mismatch'] }, action: 'retry_next_account' },
     { id: 'default_gpt_cyber_policy', defaultRule: true, editable: false, enabled: true, priority: 6, scopeType: 'provider', protocolCode: OPENAI_PROTOCOL_CODE, providerCode: GPT_VENDOR_CODE, match: { errorCodes: ['cyber_policy'] }, action: 'retry_no_avoidance' },
+    { id: 'default_anthropic_transient_precommit_error', defaultRule: true, editable: false, enabled: true, priority: 0, scopeType: 'protocol', protocolCode: ANTHROPIC_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['generic_anthropic', 'claude_code'], errorTypes: ['api_error', 'overloaded_error', 'server_error', 'internal_error', 'service_unavailable'] }, action: 'retry_next_account' },
     { id: 'default_anthropic_error_object', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: ANTHROPIC_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' },
+    { id: 'default_gemini_transient_precommit_error', defaultRule: true, editable: false, enabled: true, priority: 0, scopeType: 'protocol', protocolCode: GEMINI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['generic_gemini', 'gemini_cli'], errorTypes: ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'DEADLINE_EXCEEDED', 'INTERNAL', 'CANCELLED'] }, action: 'retry_next_account' },
     { id: 'default_gemini_cli_retryable_error', defaultRule: true, editable: false, enabled: true, priority: 1, scopeType: 'protocol', protocolCode: GEMINI_PROTOCOL_CODE, providerCode: undefined, match: { clientProfiles: ['gemini_cli'], errorTypes: ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'DEADLINE_EXCEEDED', 'INTERNAL', 'CANCELLED'] }, action: 'retry_next_account' },
     { id: 'default_gemini_error_object', defaultRule: true, editable: false, enabled: true, priority: 20, scopeType: 'protocol', protocolCode: GEMINI_PROTOCOL_CODE, providerCode: undefined, match: { jsonPathsExists: ['error'] }, action: 'retry_no_avoidance' }
-  ], '系统默认规则必须完整保留九项不可编辑规则及其匹配、动作和作用域')
+  ], '系统默认规则必须完整保留十二项不可编辑规则及其匹配、动作和作用域')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
       id: 'acct_gpt',
@@ -1049,6 +1054,42 @@ assert.equal(validateAccountResponseInspectionRules([
     destroyed: false
   }), false, 'retry_no_avoidance 系统规则必须由客户端重试，不能由网关隐式换号')
 
+  const genericOpenAiTransientInspection = inspectResponseSemanticFrames({
+    frames: extractOpenAIJsonSemanticFrames({
+      error: { code: 'server_error', type: 'server_error', message: 'generic OpenAI transient error' }
+    }, 'responses'),
+    policies: genericPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: { clientProfile: 'generic_openai' }
+  })
+  assert.equal(shouldRetryResponseInspectionDecisionOnServer(genericOpenAiTransientInspection.decision, {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false
+  }), true, 'OpenAI 的明确短暂首输出前错误必须在网关内切换候选账号')
+  assert.equal(
+    shouldExcludeCurrentAccountForStreamServerRetry(genericOpenAiTransientInspection.decision!),
+    true,
+    '短暂首输出前错误的当前账号只能在本次请求内排除，不能原地重试'
+  )
+
+  const anthropicTransientInspection = inspectResponseSemanticFrames({
+    frames: extractAnthropicJsonSemanticFrames({
+      type: 'error',
+      error: { type: 'api_error', message: 'Anthropic transient error' }
+    }),
+    policies: anthropicPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: { clientProfile: 'generic_anthropic' }
+  })
+  assert.equal(shouldRetryResponseInspectionDecisionOnServer(anthropicTransientInspection.decision, {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false
+  }), true, 'Anthropic 的明确短暂首输出前错误必须复用共享候选切换机制')
+
   const gptCyberPolicyInspection = inspectResponseSemanticFrames({
     frames: extractOpenAIJsonSemanticFrames({
       error: { code: 'cyber_policy', message: 'GPT provider policy' }
@@ -1083,7 +1124,7 @@ assert.equal(validateAccountResponseInspectionRules([
     transport: 'json',
     context: { clientProfile: 'generic_anthropic' }
   })
-  assert.equal(anthropicErrorInspection.decision?.policyId, 'default_anthropic_error_object', 'Anthropic error 对象默认规则必须参与运行时匹配')
+  assert.equal(anthropicErrorInspection.decision?.policyId, 'default_anthropic_transient_precommit_error', 'Anthropic 已知瞬态错误必须优先命中首输出前同账户重试规则')
 
   const retryableGeminiFrames = extractGeminiJsonSemanticFrames({
     error: {
@@ -1101,7 +1142,7 @@ assert.equal(validateAccountResponseInspectionRules([
       clientProfile: 'generic_gemini'
     }
   })
-  assert.equal(genericGeminiInspection.decision?.policyId, 'default_gemini_error_object', '通用 Gemini 客户端只能命中协议范围 error 对象规则')
+  assert.equal(genericGeminiInspection.decision?.policyId, 'default_gemini_transient_precommit_error', '通用 Gemini 已知瞬态错误必须优先命中首输出前同账户重试规则')
   const geminiCliInspection = inspectResponseSemanticFrames({
     frames: retryableGeminiFrames,
     policies: geminiPolicies,
@@ -1111,8 +1152,8 @@ assert.equal(validateAccountResponseInspectionRules([
       clientProfile: 'gemini_cli'
     }
   })
-  assert.equal(geminiCliInspection.decision?.policyId, 'default_gemini_cli_retryable_error', 'Gemini CLI 必须优先命中专属可重试错误规则')
-  assert.equal(geminiCliInspection.decision?.replayAuthority, 'system_default_retry_next_account', 'Gemini CLI retry_next_account 默认规则必须签发受限服务端重放授权')
+  assert.equal(geminiCliInspection.decision?.policyId, 'default_gemini_transient_precommit_error', 'Gemini CLI 已知瞬态错误必须优先命中首输出前同账户重试规则')
+  assert.equal(geminiCliInspection.decision?.replayAuthority, 'system_default_retry_next_account', 'Gemini CLI 瞬态 retry_next_account 默认规则必须签发受限服务端重放授权')
   assert.equal(shouldRetryResponseInspectionDecisionOnServer(geminiCliInspection.decision, {
     headersSent: false,
     writableEnded: false,
@@ -1653,8 +1694,8 @@ assert.equal(validateAccountResponseInspectionRules([
       message: 'compact request failed before response.completed'
     }
   }))
-  assert.equal(result.intercepted?.policyId, 'default_openai_error_object', 'Codex compact 的标准 event:error 终态必须命中 OpenAI 默认错误规则')
-  assert.equal(result.intercepted?.accountSwitch, 'none', 'event:error 不得被误判为 compact 契约错误并切换账号')
+  assert.equal(result.intercepted?.policyId, 'default_openai_transient_precommit_error', 'Codex compact 的标准 event:error 终态必须命中 OpenAI 短暂错误规则')
+  assert.equal(result.intercepted?.accountSwitch, 'request_next_account', '明确的短暂 event:error 应允许服务端继续候选恢复')
 }
 
 {
@@ -1689,9 +1730,8 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   })
   const codexResult = codexBuffer.pushChunk(event)
-  assert.equal(codexResult.passthroughUpstreamFailure, true, 'Codex Responses cyber_policy 失败终态必须标记为原样透传')
-  assert.equal(codexResult.intercepted, undefined, 'Codex Responses cyber_policy 失败终态不得命中系统默认或用户响应检查策略')
-  assert.equal(Buffer.concat(codexResult.chunks).toString('utf8'), event.toString('utf8'), 'Codex Responses cyber_policy 失败终态必须保留原始 SSE')
+  assert.equal(codexResult.passthroughUpstreamFailure, undefined, 'Codex Responses cyber_policy 失败终态不得绕过网关失败契约')
+  assert.equal(codexResult.intercepted?.policyId, 'default_gpt_cyber_policy', 'Codex Responses cyber_policy 失败终态应进入统一网关错误处理')
 
   const genericBuffer = new OpenAIResponseInspectionBuffer({
     clientRetryEnabled: true,
@@ -2010,7 +2050,7 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   )
   assert.equal(result.completed, false, '同批终止后失败应返回失败结果')
-  assert.equal(result.errorCode, 'upstream_protocol_failure', '同批终止后失败应使用与供应商错误码无关的网关诊断码')
+  assert.equal(result.errorCode, 'server_overloaded', '同批终止后的内部失败结果应保留诊断来源，客户端仍由中断信号感知失败')
   assert.equal(failureCalled, true, '同批终止后失败应触发失败回调')
   const responseText = Buffer.concat(response.writtenChunks).toString('utf8')
   assert.equal(countOccurrences(responseText, 'event: response.completed'), 1, '同批失败必须保留已写成功终态')
@@ -2086,7 +2126,7 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   )
   assert.equal(result.completed, false, '终止事件后一批失败也应返回失败结果')
-  assert.equal(result.errorCode, 'upstream_protocol_failure', '终止事件后一批失败应使用与供应商错误码无关的网关诊断码')
+  assert.equal(result.errorCode, 'server_overloaded', '终止事件后一批失败应保留内部诊断来源，客户端仍由中断信号感知失败')
   assert.equal(failureCalled, true, '终止事件后一批失败应触发失败回调')
   const responseText = Buffer.concat(response.writtenChunks).toString('utf8')
   assert.equal(countOccurrences(responseText, 'event: response.completed'), 1, '后续失败必须保留已写成功终态')

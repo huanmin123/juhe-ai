@@ -71,6 +71,7 @@
     "test:response-inspection-policy-progressive-loading": "tsx src/scripts/regression/response-inspection-policy-progressive-loading-regression.ts",
     "test:response-inspection-policy-postgres-smoke": "tsx src/scripts/regression/response-inspection-policy-postgres-smoke.ts",
     "test:response-inspection-gateway-e2e": "tsx src/scripts/regression/response-inspection-gateway-e2e-regression.ts",
+    "test:gateway-precommit-sse-retry-mock-ai": "tsx src/scripts/regression/gateway-precommit-sse-retry-mock-ai-regression.ts",
     "test:codex-client-strategy": "tsx src/scripts/regression/codex-client-strategy-regression.ts",
     "test:client-source-identity": "tsx src/scripts/regression/client-source-identity-regression.ts",
     "test:client-source-identity-saturation": "tsx src/scripts/regression/client-source-identity-saturation-regression.ts",

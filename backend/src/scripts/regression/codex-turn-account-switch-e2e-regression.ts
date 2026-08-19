@@ -48,7 +48,8 @@ const [
   sessionAffinity,
   accountCircuit,
   proxyHealth,
-  readWorkerPool
+  readWorkerPool,
+  clientStrategies
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -63,7 +64,8 @@ const [
   import('../../modules/gateway/runtime/session-affinity.service.js'),
   import('../../modules/gateway/runtime/account-circuit.service.js'),
   import('../../modules/gateway/runtime/proxy-health.service.js'),
-  import('../../storage/sqlite-read-worker-pool.js')
+  import('../../storage/sqlite-read-worker-pool.js'),
+  import('../../modules/gateway/client-profiles/strategy.js')
 ])
 
 interface SeededGateway {
@@ -1306,7 +1308,7 @@ function assertUsageRecords(seeded: SeededGateway): void {
   const successRecords = records.filter((record) => record.accountId === seeded.freshAccountId && record.success === true)
   assert(failedRecords.length >= 1, `应记录首选账号失败，实际 ${failedRecords.length}`)
   assert(successRecords.length >= 1, `应记录备用账号成功，实际 ${successRecords.length}`)
-  assert(failedRecords.some((record) => record.errorCode === 'upstream_protocol_failure'), '失败记录应使用与供应商 code/type 无关的结构失败码')
+  assert(failedRecords.some((record) => record.errorCode === 'upstream_retryable_error'), '输出前可切换失败记录应保存网关稳定可重试错误码')
   assert.equal(failedRecords.some((record) => record.errorCode === 'internal_server_error'), false, '使用记录不得把供应商自造错误码提升为网关失败分类')
 }
 
@@ -1336,22 +1338,38 @@ function assertAccountsStillActive(gateways: SeededGateway[]): void {
 }
 
 function rememberVisibleCodexTurnFailures(
-  seeded: Pick<SeededGateway, 'systemAccountId' | 'apiKeyId'>,
+  seeded: Pick<SeededGateway, 'systemAccountId' | 'apiKeyId' | 'groupId'>,
   turnId: string,
   accountIds: string[]
 ): void {
-  const stateKey = createHash('sha256').update(JSON.stringify({
+  const headers = {
+    accept: 'text/event-stream',
+    'content-type': 'application/json',
+    'x-codex-turn-metadata': JSON.stringify({
+      turn_id: turnId,
+      session_id: `session-${turnId}`,
+      thread_id: `thread-${turnId}`
+    })
+  }
+  const strategy = clientStrategies.resolveOpenAIGatewayClientStrategy({
+    method: 'POST',
+    path: '/v1/responses',
+    originalUrl: '/v1/responses',
+    headers,
+    header(name: string): string | undefined {
+      return headers[name.toLowerCase() as keyof typeof headers]
+    },
+    get(name: string): string | undefined {
+      return headers[name.toLowerCase() as keyof typeof headers]
+    }
+  } as unknown as Request, {
     systemAccountId: seeded.systemAccountId,
     apiKeyId: seeded.apiKeyId,
+    groupId: seeded.groupId,
     endpoint: 'POST /v1/responses',
-    codexTurnId: turnId
-  })).digest('hex')
-  const strategy = {
-    allowCodexTurnAccountAvoidance: true,
-    codexTurn: {
-      stateKey
-    }
-  } as never
+    clientIp: '127.0.0.1'
+  })
+  assert(strategy.codexTurn?.stateKey, 'Codex turn 测试必须解析出与正式请求相同的 state key')
   for (const accountId of accountIds) {
     codexTurnRetry.rememberCodexTurnStreamFailure(strategy, accountId, {
       errorCode: 'upstream_retryable_error',

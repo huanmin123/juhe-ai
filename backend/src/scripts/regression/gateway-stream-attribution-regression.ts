@@ -16,9 +16,9 @@ const preCommitFunction = routesSource.slice(
   routesSource.indexOf('async function sendPreCommitStreamRetryExhaustedResponse'),
   routesSource.indexOf('async function rememberCodexTurnFailureWhenClientRetryIsVisible')
 )
-assert.match(preCommitFunction, /if \(!input\.res\.headersSent\) \{[\s\S]*?statusCode: 503,[\s\S]*?outcome: 'stream_failed'/, '预提交流式失败必须走 503 普通错误响应并保留流失败审计')
-assert.doesNotMatch(preCommitFunction, /input\.res\.status\(200\)/, '预提交流式失败不得伪造 HTTP 200 SSE 成功响应')
-assert.match(preCommitFunction, /if \(!input\.res\.headersSent\)[\s\S]*?return[\s\S]*?writeGatewayStreamFailureEvent/, '仅已提交响应才允许继续写协议 SSE 失败事件')
+assert.match(preCommitFunction, /statusCode: 503,[\s\S]*?outcome: 'stream_failed'/, '预提交流式失败必须走 503 普通错误响应并保留流失败审计')
+assert.match(preCommitFunction, /preCommitFailureSignal !== 'protocol_error_event'[\s\S]*?statusCode: 503,[\s\S]*?return/, '普通客户端的预提交流式失败必须走 503 响应')
+assert.match(preCommitFunction, /preCommitFailureSignal === 'protocol_error_event'|preCommitFailureSignal !== 'protocol_error_event'[\s\S]*?if \(!input\.res\.headersSent\)[\s\S]*?input\.res\.status\(200\)/, '仅明确要求协议错误终态的客户端才允许以 SSE 写出可重试错误')
 
 const { createAuditCapture, resolveAuditFinalization } = await import('../../modules/gateway/audit/capture.service.js')
 

@@ -250,18 +250,25 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     return
   }
   if (scenario === 'codex_incomplete_sse') {
-    assert.equal(response.status, 200, `Codex incomplete 无用户规则时不得被内部改写：${responseText}`)
+    assert.equal(response.status, 200, `Codex incomplete 必须保持协议错误事件：${responseText}`)
     assert.equal(upstreamHits.length, 1, 'Codex incomplete 无用户规则时不得触发内部切号')
-    assert.match(responseText, /response\.incomplete/, `Codex incomplete 应保持协议事件：${responseText}`)
-    assert.match(responseText, /mock incomplete primary/, `Codex incomplete 应保持上游原始协议载荷：${responseText}`)
+    assert.match(responseText, /response\.failed/, `Codex incomplete 应返回协议失败事件：${responseText}`)
+    assert.match(responseText, /upstream_retryable_error/, `Codex incomplete 应返回客户端可重试错误码：${responseText}`)
+    assert.doesNotMatch(responseText, /mock incomplete primary/, `Codex incomplete 不应泄露上游失败细节：${responseText}`)
     const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
     assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, 'Codex incomplete 无用户规则时不得写账户运行态')
     return
   }
   assert.equal(response.status, 200, `${scenario} 应在显式污染拦截策略命中后切到干净账号成功，实际 HTTP ${response.status}: ${responseText}`)
-  assert.equal(upstreamHits.length, 2, `${scenario} 应先命中污染账号再服务端切到干净账号：${JSON.stringify({ upstreamHits, responseText })}`)
+  const expectedUpstreamHitCount = scenario === 'codex_broken_gzip_sse' ? 4 : 2
+  assert.equal(upstreamHits.length, expectedUpstreamHitCount, `${scenario} 应先按策略完成同账号重试再服务端切到干净账号：${JSON.stringify({ upstreamHits, responseText })}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 第一次请求应命中污染账号`)
-  assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`, `${scenario} 第二次请求应命中干净账号`)
+  if (scenario === 'codex_broken_gzip_sse') {
+    assert(upstreamHits.slice(0, 3).every((hit) => hit.authorization === `Bearer sk-upstream-polluted-${scenario}`), `${scenario} 前三次请求必须使用同一污染账号`)
+    assert.equal(upstreamHits[3]?.authorization, `Bearer sk-upstream-clean-${scenario}`, `${scenario} 第四次请求应命中干净账号`)
+  } else {
+    assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`, `${scenario} 第二次请求应命中干净账号`)
+  }
   assert.equal(upstreamHits.some((hit) => hit.bodyText.includes('公益服务器压力很大')), false, `${scenario} 客户端请求体不应携带污染文本`)
   assert(!responseText.includes('公益服务器压力很大'), `${scenario} 最终响应不应透出污染广告`)
   assert(!responseText.includes('dc.hhhl.cc'), `${scenario} 最终响应不应透出污染链接`)
@@ -362,7 +369,7 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
   })
   const responseText = await response.text()
   assert.equal(response.status, 200, `codex_broken_gzip_exhausted 应返回 Codex 可重试 SSE，实际 HTTP ${response.status}: ${responseText}`)
-  assert.equal(upstreamHits.length, 1, 'codex_broken_gzip_exhausted 只有单账号时不应重复请求同一坏账号')
+  assert.equal(upstreamHits.length, 3, 'codex_broken_gzip_exhausted 单账号最多允许首次请求加两次同账号重试')
   assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'codex_broken_gzip_exhausted 应返回 SSE')
   assert.equal(response.headers.get('content-encoding'), null, 'codex_broken_gzip_exhausted 失败 SSE 不应保留 content-encoding')
   assert(responseText.includes('response.failed'), `codex_broken_gzip_exhausted 应返回失败事件：${responseText}`)
@@ -444,15 +451,16 @@ async function runCodexEncryptedContentRecoveryScenario(
     : 'codex_encrypted_content_recovery_sse'
   upstreamHits.length = 0
   const accountProvider = providerForScenario(scenario)
+  const scenarioLabel = expectRecoveryExhausted ? '（exhausted）' : ''
   const group = repositories.createGroup({
-    name: includeCompaction ? 'Codex 密文恢复 E2E（compaction）' : 'Codex 密文恢复 E2E',
+    name: `${includeCompaction ? 'Codex 密文恢复 E2E（compaction）' : 'Codex 密文恢复 E2E'}${scenarioLabel}`,
     providerCode: accountProvider.providerCode,
     enabled: true
   }, access)
   const account = repositories.createAccount({
     providerCode: accountProvider.providerCode,
     providerProtocolProfileId: accountProvider.providerProtocolProfileId,
-    name: includeCompaction ? 'Codex 密文恢复单账号（compaction）' : 'Codex 密文恢复单账号',
+    name: `${includeCompaction ? 'Codex 密文恢复单账号（compaction）' : 'Codex 密文恢复单账号'}${scenarioLabel}`,
     type: 'api_key',
     credentials: {
       api_key: `sk-upstream-clean-${scenario}`,
@@ -466,7 +474,7 @@ async function runCodexEncryptedContentRecoveryScenario(
   }, access)
   activateAccount(account.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: includeCompaction ? 'Codex 密文恢复 E2E Key（compaction）' : 'Codex 密文恢复 E2E Key',
+    name: `${includeCompaction ? 'Codex 密文恢复 E2E Key（compaction）' : 'Codex 密文恢复 E2E Key'}${scenarioLabel}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)

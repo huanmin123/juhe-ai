@@ -558,15 +558,7 @@ function isCodexResponsesCyberPolicyFailedTerminal(
   endpointFamily: ResponseEndpointFamily,
   context: ResponseInspectionRuntimeContext | undefined
 ): boolean {
-  if (
-    endpointFamily !== 'responses'
-    || context?.clientProfile !== 'codex'
-    || !isExactCodexCompactionFailedTerminal(event)
-  ) return false
-  const response = objectValue(event.data?.response)
-  const error = objectValue(response?.error)
-  return response?.status === 'failed'
-    && error?.code === 'cyber_policy'
+  return false
 }
 
 function normalizeEventTransform(

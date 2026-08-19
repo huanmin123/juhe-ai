@@ -974,8 +974,8 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `systemApiRateLimitIpWritePerMinute = 180`、`systemApiRateLimitIpWriteBurstPer10Seconds = 40`：同一客户端 IP 后台写请求的分钟上限和 10 秒突发上限。
 - `systemApiRateLimitUserReadPerMinute = 300`、`systemApiRateLimitUserWritePerMinute = 120`：同一登录系统账户后台读 / 写请求每分钟上限。
 - `defaultTemporaryUnschedulableMinutes = 2`：账户首次进入临时不可调用或限流时的默认冷却时长，也用于其他普通临时不可调度流程；冷却账号后台复测的慢速通道固定在 `1..5` 分钟内错峰，不受该设置截断。
-- `temporaryUnschedulableRetryIntervalSeconds = 3`：可安全重放的文本主请求已开始、响应头前发生 transport failure 时，同账户安全原地重试之间的等待间隔；完整 HTTP、正文中断、首字切换截止和副作用请求不消费该配置。
-- `temporaryUnschedulableRetryAttempts = 3`：整次请求共享的同账户安全原地重试 token；兄弟 Key 先按请求内池唯一尝试且不消费 token，兄弟 Key 耗尽后才允许重试当前凭据；token 不按账户、Key、分组或 compact 阶段重置，也不产生账户/Key 状态或电路 confirmation 副作用。
+- `temporaryUnschedulableRetryIntervalSeconds = 3`：文本请求语义提交前发生瞬态 transport / `408/425/429/5xx` 失败时，同账户安全原地重试之间的等待间隔；完整正文中断、首字切换截止和副作用请求不消费该配置。
+- `temporaryUnschedulableRetryAttempts = 2`：每个物理账户独立计算的同账户安全原地重试次数上限，表示最多两次额外 dispatch；`0` 关闭，服务端硬限制不超过 `2`。不轮换同账户兄弟 Key，不跨账户共享 token，也不产生账户/Key 状态或电路 confirmation 副作用。
 - 本地短暂避让不落库、不使用 `defaultTemporaryUnschedulableMinutes`，固定按 `3s -> 5s -> 10s` 进程内阶梯执行；每阶到期后优先由 Web 进程内后台探针验证恢复，真实请求半开只作为兜底，半开租约跟随请求并发生命周期释放，固定租约时间只用于无在途并发时回收孤儿租约；持续失败后由后台探针按时间窗口进入事前确认。真实网关流量中的代理 profile 已知不可用也只推进这套运行态流程，确认失败且账号并发归零前不写持久临时不可调用。
 - 流式超时检测固定启用，不写入系统设置；真实网关流式失败先进入短暂避让和后台探针，确认失败且当前账号并发归零后才写持久账号状态。
 - `textFirstResponseTimeoutSeconds = 120`、`textStreamIdleTimeoutSeconds = 30`、`textUncommittedAttemptMaxLifetimeSeconds = 1800`：文本 lane 的首响应 / 首字节、流式 raw chunk 停顿和未提交单次尝试寿命。

@@ -799,7 +799,6 @@ for (const id of [
   'gpt-5.3-codex',
   'gpt-5.2',
   'gpt-5.2-2025-12-11',
-  'gpt-5.2-chat-latest',
   'gpt-5.1',
   'gpt-5',
   'gpt-5-mini',
@@ -821,6 +820,7 @@ for (const id of [
   'gpt-5.3-codex-spark',
   'codex-mini-latest',
   'o1-mini',
+  'gpt-5.2-chat-latest',
   'gpt-5.2-codex',
   'gpt-5.1-chat-latest',
   'gpt-5.1-codex',
@@ -854,6 +854,8 @@ assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedApiProtocols, [
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2-2025-12-11')?.supportedApiProtocols, ['chat_completions', 'responses'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.3-codex')?.supportedApiProtocols, ['responses'])
 assert.equal(openAIModelPricingById.has('gpt-5.2-codex'), false)
+assert.equal(listProviderModelPricingAsOf(GPT_VENDOR_CODE, '2026-08-09').some((item) => item.model === 'gpt-5.2-chat-latest'), true, 'gpt-5.2-chat-latest 应在 shutdown date 前可见')
+assert.equal(listProviderModelPricingAsOf(GPT_VENDOR_CODE, '2026-08-10').some((item) => item.model === 'gpt-5.2-chat-latest'), false, 'gpt-5.2-chat-latest 应从 2026-08-10 起隐藏')
 assert.deepEqual(openAIModelPricingById.get('gpt-image-1')?.supportedApiProtocols, ['images', 'responses'])
 assert.equal(openAIModelPricingById.has('gpt-4o-mini-tts'), false)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')
@@ -1138,7 +1140,8 @@ assert.doesNotMatch(gatewayDispatchHelpersSource, /gateway_temporary_unschedulab
 const gatewayUpstreamDispatchSource = readSource('modules/gateway/dispatch/upstream-dispatch.ts')
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryPolicy/)
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
-assert.doesNotMatch(gatewayUpstreamDispatchSource, /tryReserveSameAccountRetry|pendingSameAccountRetryId|sameAccountRetryDelayMs/)
+assert.match(gatewayUpstreamDispatchSource, /const maxSameAccountRetries = Math\.min\(2, settings\.temporaryUnschedulableRetryAttempts\)/, '同账户瞬态重试必须硬性限制为每账户最多两次额外尝试')
+assert.match(gatewayUpstreamDispatchSource, /tryReserveSameAccountRetry/, '同账户瞬态重试必须通过请求级 reservation 绑定到真实 dispatch')
 assert.match(gatewayUpstreamDispatchSource, /recordAccountCapacityLimitFailure\([\s\S]*auditCapture[\s\S]*auditAttemptIndex/, '账号容量失败写使用记录时也必须补审计 attempt')
 
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
@@ -1319,8 +1322,8 @@ assert.match(usageStatsWritersSource, /from '\.\/usage-stats-error-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-latency-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-time-buckets\.js'/)
 assert.match(usageStatsWritersSource, /function shouldRecordAccountQualityStats\(row: UsageStatsRecordRow\): boolean \{[\s\S]+row\.traffic_source === 'runtime_recovery_probe'[\s\S]+row\.traffic_source === 'cooldown_retest'[\s\S]+row\.traffic_source === 'hybrid_scoring'[\s\S]+row\.traffic_source === 'hybrid_quality_scoring'[\s\S]+return false[\s\S]+\}/, '运行态恢复探针、恢复探活、混合评分和混合质量评分应计入用量统计但不写入账号质量分钟样本')
-assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\(row\)\) \{[\s\S]+upsertAccountQualityMinuteStats/, '恢复探活应计入用量统计但不写入账号质量分钟样本')
-assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\(row\)\) \{[\s\S]+subtractAccountQualityMinuteStats/, '恢复探活反向扣减时也不应触碰账号质量分钟样本')
+assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\((?:row|normalizedRow)\)\) \{[\s\S]+upsertAccountQualityMinuteStats/, '恢复探活应计入用量统计但不写入账号质量分钟样本')
+assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\((?:row|normalizedRow)\)\) \{[\s\S]+subtractAccountQualityMinuteStats/, '恢复探活反向扣减时也不应触碰账号质量分钟样本')
 assert.doesNotMatch(usageStatsWritersSource, /function authorizationReportRows|authorization_team_usage_summary_daily|authorization_user_usage_summary_daily/)
 assert.doesNotMatch(usageStatsWritersSource, /function upsertUsageModelBuckets|usage_model_/)
 assert.doesNotMatch(usageStatsWritersSource, /function upsertUsageErrorBuckets|usage_error_/)
@@ -1401,7 +1404,7 @@ assert.doesNotMatch(proxyRepositorySource, /Number\(input\.port \?\? 0\)/)
 assert.doesNotMatch(proxyRepositorySource, /Number\(input\.port \?\? current\.port\)/)
 
 const proxiesRoutesSource = readSource('modules/proxies/proxies.routes.ts')
-assert.match(proxiesRoutesSource, /const proxyUpdateSchema = proxySchema\.partial\(\)\.extend\(\{\s*expectedUpdatedAt:\s*z\.string\(\)\.datetime/s)
+assert.match(proxiesRoutesSource, /const proxyUpdateSchema = proxySchema\.partial\(\)\.extend\(\{\s*expectedUpdatedAt:\s*rfc3339InstantSchema\(/s)
 assert.match(proxiesRoutesSource, /Object\.keys\(value\)\.some\(\(key\) => key !== 'expectedUpdatedAt'\)/)
 assert.match(proxiesRoutesSource, /proxyUpdateSchema\.safeParse\(req\.body\)/)
 

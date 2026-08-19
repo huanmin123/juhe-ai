@@ -123,6 +123,13 @@ interface HandleFailedUpstreamResponseInput {
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
   automaticAccountStateMutationEnabled?: boolean
+  /**
+   * A pre-commit transient response will be retried with the exact same
+   * physical credential by the dispatcher.  It must not be interpreted as
+   * evidence for rotating to a sibling Key or for recording Key avoidance.
+   * Explicit retry_next policies deliberately retain their existing behavior.
+   */
+  deferAutomaticSameAccountKeyRotation?: boolean
 }
 
 interface HandleUpstreamRequestErrorInput {
@@ -353,6 +360,7 @@ export async function handleFailedUpstreamResponse(
   }
 
   const automaticSameAccountKeyRotation = !explicitPolicyDecision
+    && !input.deferAutomaticSameAccountKeyRotation
     && hasAlternativeAccountApiKeys(account)
   const sameAccountKeyRotation = hasAlternativeAccountApiKeys(account)
     && (explicitPolicyDecision?.action === 'retry_next' || automaticSameAccountKeyRotation)
@@ -367,9 +375,9 @@ export async function handleFailedUpstreamResponse(
     lastAttempt,
     // A state-changing policy makes the whole account unavailable, matching
     // ordinary temporary-unavailable/non-schedulable candidate filtering.
-    // All account-internal Key strategies may continue with a sibling Key for
-    // an opaque HTTP failure even without an explicit retry_next rule. The
-    // strategy only determines the sibling selection order.
+    // An explicit retry_next policy may continue with a sibling Key.  The
+    // automatic path is deliberately disabled while the dispatcher owns a
+    // bounded retry of the same physical credential.
     keyScopedFailure: sameAccountKeyRotation,
     // A completed failure alone remains neutral. It becomes Key-scoped shared
     // evidence only after a sibling Key of this same account succeeds.

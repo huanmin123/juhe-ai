@@ -365,8 +365,8 @@ export class GatewayRequestAttemptTracker {
   private readonly semanticRetryAttemptKeys = new Set<string>()
   private readonly registeredDispatchIdentities = new Map<string, GatewayDispatchAttemptIdentity>()
   private readonly sameAccountRetryReservations = new Map<string, GatewaySameAccountRetryReservationRecord>()
-  private sameAccountRetryLimit: number | undefined
-  private sameAccountRetryReservationCount = 0
+  private readonly sameAccountRetryLimits = new Map<string, number>()
+  private readonly sameAccountRetryReservationCounts = new Map<string, number>()
 
   constructor(initial?: Partial<GatewayRequestAttemptSnapshot>) {
     this.accountRuntimeKeys = normalizedKeySet(initial?.attemptedAccountRuntimeKeys)
@@ -411,13 +411,15 @@ export class GatewayRequestAttemptTracker {
     input: GatewaySameAccountRetryReservationInput
   ): GatewaySameAccountRetryReservation {
     const maxRetries = normalizedSameAccountRetryMaxRetries(input.maxRetries)
-    this.sameAccountRetryLimit = this.sameAccountRetryLimit === undefined
+    const accountRetryKey = sameAccountRetryKey(input)
+    const currentLimit = this.sameAccountRetryLimits.get(accountRetryKey)
+    this.sameAccountRetryLimits.set(accountRetryKey, currentLimit === undefined
       ? maxRetries
-      : Math.min(this.sameAccountRetryLimit, maxRetries)
+      : Math.min(currentLimit, maxRetries))
 
     const identity = normalizedDispatchAttemptIdentity(input)
     const registeredIdentity = this.registeredDispatchIdentities.get(dispatchAttemptIdentityKey(identity))
-    const remaining = this.sameAccountRetryRemaining()
+    const remaining = this.sameAccountRetryRemaining(accountRetryKey)
     if (!registeredIdentity || !sameDispatchAttemptIdentity(registeredIdentity, identity)) {
       return { reserved: false, reason: 'same_account_retry_not_applicable', remaining }
     }
@@ -425,9 +427,9 @@ export class GatewayRequestAttemptTracker {
       return { reserved: false, reason: 'same_account_retry_budget_exhausted', remaining: 0 }
     }
 
-    const retryNumber = this.sameAccountRetryReservationCount + 1
+    const retryNumber = (this.sameAccountRetryReservationCounts.get(accountRetryKey) ?? 0) + 1
     const retryId = `same-account-retry:${randomUUID()}`
-    this.sameAccountRetryReservationCount = retryNumber
+    this.sameAccountRetryReservationCounts.set(accountRetryKey, retryNumber)
     this.sameAccountRetryReservations.set(retryId, {
       identity,
       retryNumber,
@@ -437,7 +439,7 @@ export class GatewayRequestAttemptTracker {
       reserved: true,
       retryId,
       retryNumber,
-      remaining: this.sameAccountRetryRemaining()
+      remaining: this.sameAccountRetryRemaining(accountRetryKey)
     }
   }
 
@@ -548,8 +550,11 @@ export class GatewayRequestAttemptTracker {
     })
   }
 
-  private sameAccountRetryRemaining(): number {
-    return Math.max(0, (this.sameAccountRetryLimit ?? 0) - this.sameAccountRetryReservationCount)
+  private sameAccountRetryRemaining(accountRetryKey: string): number {
+    return Math.max(0,
+      (this.sameAccountRetryLimits.get(accountRetryKey) ?? 0)
+      - (this.sameAccountRetryReservationCounts.get(accountRetryKey) ?? 0)
+    )
   }
 
   private canRotateKey(identity: GatewayDispatchAttemptIdentity): GatewayDispatchAttemptRegistration {
@@ -717,6 +722,13 @@ function normalizedDispatchAttemptIdentity(input: GatewayDispatchAttemptIdentity
 
 function dispatchAttemptIdentityKey(identity: GatewayDispatchAttemptIdentity): string {
   return JSON.stringify([identity.accountRuntimeKey, identity.physicalCredentialKey])
+}
+
+function sameAccountRetryKey(identity: Pick<GatewayDispatchAttemptIdentity, 'accountRuntimeKey' | 'physicalCredentialKey'>): string {
+  return JSON.stringify([
+    normalizedRequiredKey(identity.accountRuntimeKey),
+    normalizedRequiredKey(identity.physicalCredentialKey)
+  ])
 }
 
 function sameDispatchAttemptIdentity(

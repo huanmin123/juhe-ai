@@ -107,6 +107,9 @@ import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-l
 import { forgetOpenAIAccountForSessionAsync } from './runtime/session-affinity.service.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 import { gatewayClientAllowsUpstreamSemanticInterpretation } from './client-profiles/strategy.js'
+import {
+  shouldExcludeCurrentAccountForStreamServerRetry
+} from './response/stream-finalization-retry-decision.js'
 import { gatewayRequestAbortSource } from './request/abort-attribution.js'
 import {
   normalRouteLatencyDegradationScope,
@@ -133,10 +136,15 @@ import {
   GatewayRequestAttemptTracker,
   RouteCoordinationBudget,
   defaultGatewayFinalResponseReserveMs,
-  advanceGatewayRoutePlanCursor
+  advanceGatewayRoutePlanCursor,
+  gatewayAttemptProtocolModelKey,
+  type GatewayDispatchAttemptIdentity
 } from './routing/route-coordination.js'
+import { waitForRetryDelayMs } from '../../shared/retry-policy.js'
 
 export const openAIGatewayRouter = Router()
+
+const maxSameAccountRetriesPerAccount = 2
 
 export type { OpenAIGatewayRequestIdentity } from './request/preflight.js'
 
@@ -522,7 +530,8 @@ export async function handleOpenAIGatewayRequest(
   let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
   let activeCompactSseWaitHeartbeat: ReturnType<typeof createGatewaySseWaitHeartbeat> | undefined
 let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
-let pendingSemanticRetryId: string | undefined
+  let pendingSemanticRetryId: string | undefined
+  let pendingSameAccountRetry: { retryId: string; account: UpstreamAccount } | undefined
 let pendingCodexEncryptedContentRecovery: {
   accountId: string
   body: Buffer
@@ -807,7 +816,9 @@ let codexTurnAvoidedFallbackEnabled = false
         precheckHalfOpenEligible
       } = currentPreflight
       const codexTurnAvoidedAccountIdSet = new Set(codexTurnAvoidedAccountIds ?? [])
-      let dispatchAccounts = pendingAccountCircuitConfirmation
+      let dispatchAccounts = pendingSameAccountRetry
+        ? [pendingSameAccountRetry.account]
+        : pendingAccountCircuitConfirmation
         ? accounts.filter((account) => gatewayAccountRuntimeKey(account) === pendingAccountCircuitConfirmation?.accountRuntimeKey)
         : streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
       if (!pendingAccountCircuitConfirmation && codexTurnAccountAvoidanceApplied && codexTurnAvoidedAccountIdSet.size > 0) {
@@ -974,6 +985,8 @@ let codexTurnAvoidedFallbackEnabled = false
       const upstreamDispatchStartedAt = performance.now()
       const semanticRetryId = pendingSemanticRetryId
       pendingSemanticRetryId = undefined
+      const sameAccountRetry = pendingSameAccountRetry
+      pendingSameAccountRetry = undefined
       const requestBodyOverride = pendingCodexEncryptedContentRecovery
       pendingCodexEncryptedContentRecovery = undefined
       if (shouldKeepCodexCompactSseAliveDuringUpstreamWait(req, currentPreflight)) {
@@ -1014,6 +1027,7 @@ let codexTurnAvoidedFallbackEnabled = false
             routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
             requestAttemptTracker: currentPreflight.requestAttemptTracker,
             semanticRetryId,
+            sameAccountRetry,
             requestBodyOverride,
             normalRouteFirstByteConfig,
             onNormalRouteFirstByteDeadline,
@@ -1835,9 +1849,63 @@ let codexTurnAvoidedFallbackEnabled = false
             })
             return
           }
+          const sameAccountRetryEligible = currentPreflight.requestLane === 'text'
+            && !neutralSchedulingTermination
+            && currentPreflight.clientStrategy.codexCompactionExpected !== true
+            && handledResponse.sameAccountRetryEligible === true
+          if (sameAccountRetryEligible) {
+            const retryIdentity: GatewayDispatchAttemptIdentity = {
+              accountRuntimeKey: gatewayAccountRuntimeKey(account),
+              physicalCredentialKey: account.credentialSourceAccountId?.trim() || account.id,
+              protocolModelKey: gatewayAttemptProtocolModelKey({
+                accountRuntimeKey: gatewayAccountRuntimeKey(account),
+                protocolCode: account.protocolCode,
+                protocolVersion: account.protocolVersion,
+                model: requestModel(req)
+              }),
+              keyFingerprint: account.selectedApiKeyFingerprint
+            }
+            const retryDelayMs = Math.max(0, activeGatewaySettings.temporaryUnschedulableRetryIntervalSeconds * 1000)
+            const retryWindowMs = currentPreflight.gatewayRequestWallBudget.remainingMs() - defaultGatewayFinalResponseReserveMs
+            const reservation = retryWindowMs < retryDelayMs
+              ? undefined
+              : currentPreflight.requestAttemptTracker.tryReserveSameAccountRetry({
+                ...retryIdentity,
+                maxRetries: Math.min(maxSameAccountRetriesPerAccount, activeGatewaySettings.temporaryUnschedulableRetryAttempts)
+              })
+            if (reservation?.reserved) {
+              if (retryDelayMs > 0) {
+                await waitForRetryDelayMs(retryDelayMs, { signal: abortController.signal })
+              }
+              pendingSameAccountRetry = { retryId: reservation.retryId, account }
+              auditCapture.addGatewayMetadata({
+                label: 'same_account_retry_dispatch',
+                metadata: {
+                  accountId: account.id,
+                  retryNumber: reservation.retryNumber,
+                  remainingSameAccountRetries: reservation.remaining,
+                  retryReason: handledResponse.retryReason,
+                  errorCode: handledResponse.errorCode,
+                  delayMs: retryDelayMs
+                }
+              })
+              continue
+            }
+            auditCapture.addGatewayMetadata({
+              label: 'same_account_retry_exhausted',
+              metadata: {
+                accountId: account.id,
+                retryReason: handledResponse.retryReason,
+                errorCode: handledResponse.errorCode,
+                reason: retryWindowMs < retryDelayMs
+                  ? 'gateway_request_wall_budget_exhausted'
+                  : reservation?.reason
+              }
+            })
+          }
           streamServerRetryCount += 1
           const policyRequestedAccountExclusion = handledResponse.excludeCurrentAccount
-            || (handledResponse.responseInspection && shouldExcludeCurrentAccountForStreamRetry(handledResponse.responseInspection))
+            || (handledResponse.responseInspection && shouldExcludeCurrentAccountForStreamServerRetry(handledResponse.responseInspection))
             || false
           if (policyRequestedAccountExclusion) {
             streamServerRetryExcludedAccountIds.add(account.id)
@@ -2418,12 +2486,24 @@ function shouldSendDispatchExhaustedProtocolRetry(
   res: Response
 ): error is UpstreamAttemptError {
   return error instanceof UpstreamAttemptError
-    && !error.terminalUpstreamFailure
+    && (
+      !error.terminalUpstreamFailure
+      || (
+        preflight.clientStrategy.retryCoordination.preCommitFailureSignal === 'protocol_error_event'
+        && error.lastAttempt?.status !== undefined
+        && error.lastAttempt.status >= 500
+        && error.lastAttempt.status <= 599
+      )
+    )
     && (
       error.lastAttempt?.status === undefined
       || (
         error.lastAttempt.status >= 200
         && error.lastAttempt.status < 300
+      )
+      || (
+        error.lastAttempt.status >= 500
+        && error.lastAttempt.status <= 599
       )
     )
     && !error.agentGuidanceResponse
@@ -2474,13 +2554,6 @@ function shouldSendTransportCommittedCodexCompactFailure(
     && strategy.clientProfile === 'codex'
     && strategy.codexCompactionExpected === true
     && strategy.downstreamProtocol === 'responses_sse'
-}
-
-function shouldExcludeCurrentAccountForStreamRetry(decision: ResponseInspectionDecision): boolean {
-  return decision.accountSwitch === 'request_next_account'
-    || decision.accountSwitch === 'avoid_account_ttl'
-    || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
-    || decision.accountState === 'runtime_avoidance'
 }
 
 async function sendStreamServerRetryExhaustedResponse(input: {

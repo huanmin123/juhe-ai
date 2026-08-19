@@ -11,7 +11,14 @@ import type { StreamPipeResult } from './stream.js'
 
 const serverRetryableSystemDefaultResponseInspectionPolicyIds = new Set([
   'default_codex_compaction_contract',
+  'default_openai_context_window_error',
   'default_gemini_cli_retryable_error'
+])
+
+const transientPrecommitUpstreamPolicyIds = new Set([
+  'default_openai_transient_precommit_error',
+  'default_anthropic_transient_precommit_error',
+  'default_gemini_transient_precommit_error'
 ])
 
 export type StreamServerRetryReason =
@@ -36,22 +43,25 @@ export function shouldRetryResponseInspectionDecisionOnServer(
   response: StreamRetryResponseState
 ): decision is ResponseInspectionDecision {
   const serverRetryableSystemDefault = isServerRetryableSystemDefaultResponseInspectionDecision(decision)
+  const transientPrecommitUpstreamFailure = isTransientPrecommitUpstreamFailureDecision(decision)
   return decision !== undefined
     && (
-      decision.replayAuthority === 'explicit_user_policy'
+      transientPrecommitUpstreamFailure
+      || decision.replayAuthority === 'explicit_user_policy'
       || decision.replayAuthority === 'system_default_retry_next_account'
     )
     && (
-      decision.accountSwitch === 'request_next_account'
+      transientPrecommitUpstreamFailure
+      || decision.accountSwitch === 'request_next_account'
       || decision.accountSwitch === 'avoid_account_ttl'
       || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
     )
-    && (decision.reason === 'configured_response_policy' || serverRetryableSystemDefault)
+    && (decision.reason === 'configured_response_policy' || serverRetryableSystemDefault || transientPrecommitUpstreamFailure)
     && (
-      decision.policySource !== 'system_default'
+      transientPrecommitUpstreamFailure
+      || decision.policySource !== 'system_default'
       || serverRetryableSystemDefault
     )
-    && !response.headersSent
     && !response.writableEnded
     && !response.destroyed
 }
@@ -61,6 +71,16 @@ function isServerRetryableSystemDefaultResponseInspectionDecision(
 ): boolean {
   return decision?.policySource === 'system_default'
     && serverRetryableSystemDefaultResponseInspectionPolicyIds.has(decision.policyId ?? '')
+}
+
+export function isTransientPrecommitUpstreamFailureDecision(
+  decision: ResponseInspectionDecision | undefined
+): boolean {
+  return decision?.policySource === 'system_default'
+    && decision.reason === 'before_downstream_write_response_failure'
+    && decision.triggerPhase === 'before_downstream_write'
+    && decision.downstreamWritten !== true
+    && transientPrecommitUpstreamPolicyIds.has(decision.policyId ?? '')
 }
 
 export function shouldRetryPreCommitStreamFailureOnServer(

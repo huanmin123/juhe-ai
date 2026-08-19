@@ -124,6 +124,7 @@ import {
   shouldRememberGatewayClientSourceFailure,
   shouldRetryResponseInspectionDecisionOnServer,
   shouldExcludeCurrentAccountForStreamServerRetry,
+  isTransientPrecommitUpstreamFailureDecision,
   shouldRetryPreCommitStreamFailureOnServer,
   type StreamServerRetryReason
 } from './stream-finalization-retry-decision.js'
@@ -588,7 +589,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       firstTokenMs: streamResult.firstTokenMs,
       startedAt,
       usage: usageWithObservedUpstreamResponseModel(streamUsageFallback.usage, upstreamResponse.upstreamResponseModelObservation?.model),
-      errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
+      errorCode: streamResult.errorCode
+        ?? (streamResult.semanticCommitted ? 'upstream_protocol_failure' : streamResult.responseInspection?.upstreamErrorCode),
       requestSnapshot,
       responseSnapshot: buildUsageResponseSnapshot({
         upstreamUrl,
@@ -634,6 +636,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         alreadyFinalized: false,
         retryUpstream: true,
         retryReason: 'response_inspection',
+        sameAccountRetryEligible: isTransientPrecommitUpstreamFailureDecision(decision),
         responseInspection: decision,
         excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(decision),
         message: streamResult.message,
@@ -692,6 +695,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         alreadyFinalized: false,
         retryUpstream: true,
         retryReason: 'pre_commit_stream_failure',
+        sameAccountRetryEligible: streamResult.transportFailure !== undefined,
         responseInspection: streamResult.responseInspection,
         excludeCurrentAccount: true,
         message: streamResult.message,
@@ -1556,8 +1560,17 @@ function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponse
     : false
   return interpretsUpstreamSemantics
     ? policies
-    : policies.filter((policy) => policy.source !== 'system_default')
+    : policies.filter((policy) => (
+      policy.source !== 'system_default'
+      || genericClientSafeSystemDefaultResponseInspectionPolicyIds.has(policy.id)
+    ))
 }
+
+const genericClientSafeSystemDefaultResponseInspectionPolicyIds = new Set([
+  'default_openai_transient_precommit_error',
+  'default_anthropic_transient_precommit_error',
+  'default_gemini_transient_precommit_error'
+])
 
 async function finalizeNonStreamResponseAfterSseHeartbeat(
   input: HandleUpstreamResponseInput

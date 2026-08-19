@@ -61,6 +61,11 @@ import {
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
 import { isSuccessfulEmptyUpstreamResponseAllowed } from './empty-upstream-response.js'
+import {
+  shouldExcludeCurrentAccountForStreamServerRetry,
+  isTransientPrecommitUpstreamFailureDecision,
+  shouldRetryResponseInspectionDecisionOnServer
+} from './stream-finalization-retry-decision.js'
 export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
   res: Response
@@ -260,25 +265,17 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   })
 
   if (
-    (decision.replayAuthority === 'explicit_user_policy' || decision.replayAuthority === 'system_default_retry_next_account')
-    && (
-      decision.accountSwitch === 'request_next_account'
-      || decision.accountSwitch === 'avoid_account_ttl'
-      || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
-    )
-    && decision.retryEnabled === true
-    && !input.downstreamCommitState.semanticCommitted
+    !input.downstreamCommitState.semanticCommitted
     && input.downstreamCommitState.downstreamBytesWritten === 0
-    && !input.res.headersSent
-    && !input.res.writableEnded
-    && !input.res.destroyed
+    && shouldRetryResponseInspectionDecisionOnServer(decision, input.res)
   ) {
     return {
       alreadyFinalized: false,
       retryUpstream: true,
       retryReason: 'response_inspection',
+      sameAccountRetryEligible: isTransientPrecommitUpstreamFailureDecision(decision),
       responseInspection: decision,
-      excludeCurrentAccount: shouldExcludeCurrentAccountForJsonRetry(decision),
+      excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(decision),
       message,
       errorCode
     }
@@ -301,13 +298,6 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     firstTokenMs: input.firstTokenMs
   })
   return { alreadyFinalized: true }
-}
-
-function shouldExcludeCurrentAccountForJsonRetry(decision: ResponseInspectionDecision): boolean {
-  return decision.accountSwitch === 'request_next_account'
-    || decision.accountSwitch === 'avoid_account_ttl'
-    || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
-    || decision.accountState === 'runtime_avoidance'
 }
 
 function validateBufferedJsonProtocolResponse(

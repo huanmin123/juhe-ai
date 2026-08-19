@@ -156,8 +156,6 @@ function orderOpenAIAccountsByCodexTurnAvoidanceWithState(
     }
   }
 
-  // A turn-local failure may prefer a peer account, but it cannot turn a
-  // lower-priority account into the selected candidate while its tier is live.
   const reorderedAccounts = preserveGatewayAccountDispatchPriorityTiers(
     accounts,
     [

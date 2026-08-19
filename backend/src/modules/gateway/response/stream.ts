@@ -497,9 +497,12 @@ export async function pipeUpstreamStream(
     // The stream has already crossed the downstream commit boundary. It
     // cannot be replaced by another account, so expose the parsed upstream
     // failure when available and otherwise identify the interruption itself.
-    const clientMessage = inspection.errorMessage
-      ?? (inspection.outputReceived ? '上游流式响应在输出后中断' : '上游流式响应中断')
-    const clientErrorCode = inspection.errorCode ?? 'upstream_stream_interrupted'
+    const clientMessage = inspection.outputReceived
+      ? '上游流式响应在输出后中断'
+      : inspection.errorMessage ?? '上游流式响应中断'
+    const clientErrorCode = committedProtocolFailureEventEnabled
+      ? 'upstream_retryable_error'
+      : inspection.errorCode ?? 'upstream_stream_interrupted'
     if (options.beforeCommittedFailureSignal) {
       try {
         await options.beforeCommittedFailureSignal({
@@ -558,7 +561,7 @@ export async function pipeUpstreamStream(
     }
     if (interpretedProtocolFailure(finalInspection)) {
       const message = finalInspection.errorMessage ?? '上游流式响应在成功终态后返回矛盾失败终态'
-      const errorCode = finalInspection.errorCode ?? 'upstream_protocol_failure'
+      const errorCode = 'upstream_protocol_failure'
       await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, interpretedProtocolFailure(finalInspection)))
       interruptResponse(res)
       if (closeIteratorAfterEnd) {
@@ -797,7 +800,9 @@ export async function pipeUpstreamStream(
           const beforeDownstreamCommit = shouldFailBeforeDownstreamCommit()
           if (beforeDownstreamCommit) discardPreCommitChunks()
           const message = latestInspection.errorMessage ?? '上游流式响应返回失败终态'
-          const errorCode = latestInspection.errorCode ?? 'upstream_protocol_failure'
+          const errorCode = options.interpretProtocolFailures === false
+            ? 'upstream_protocol_failure'
+            : latestInspection.errorCode ?? 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           await closeAsyncIterator(iterator)
           const committedFailureDisposition = beforeDownstreamCommit
@@ -1058,7 +1063,9 @@ export async function pipeUpstreamStream(
           const beforeDownstreamCommit = shouldFailBeforeDownstreamCommit()
           if (beforeDownstreamCommit) discardPreCommitChunks()
           const message = latestInspection.errorMessage ?? '上游流式响应返回失败终态'
-          const errorCode = latestInspection.errorCode ?? 'upstream_protocol_failure'
+          const errorCode = options.interpretProtocolFailures === false
+            ? 'upstream_protocol_failure'
+            : latestInspection.errorCode ?? 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           const committedFailureDisposition = beforeDownstreamCommit
             ? undefined
@@ -1406,12 +1413,16 @@ export async function pipeUpstreamStream(
   if (inspection.skipped && preCommitSseEvidence.dataEventObserved) {
     const success = completed && !interpretedProtocolFailure(inspection)
     const message = success ? '已完成' : inspection.errorMessage ?? '上游流式响应返回失败终态'
-    const errorCode = success ? undefined : inspection.errorCode ?? streamClientFailureCode(
-      'upstream_protocol_failure',
-      inspection.outputReceived,
-      options.clientRetryEnabled === true,
-      totalResponseBytes
-    )
+    const errorCode = success
+      ? undefined
+      : options.interpretProtocolFailures === false && interpretedProtocolFailure(inspection)
+        ? 'upstream_protocol_failure'
+        : inspection.errorCode ?? streamClientFailureCode(
+          'upstream_protocol_failure',
+          inspection.outputReceived,
+          options.clientRetryEnabled === true,
+          totalResponseBytes
+        )
     if (!success) {
       await handleStreamFailure(message, errorCode, streamFailureContext(
         totalResponseBytes,
@@ -1485,12 +1496,14 @@ export async function pipeUpstreamStream(
     const message = interpretedProtocolFailure(inspection)
       ? inspection.errorMessage ?? '上游流式响应返回失败终态'
       : '上游流式响应已中断'
-    const errorCode = inspection.errorCode ?? streamClientFailureCode(
-      interpretedProtocolFailure(inspection) ? 'upstream_protocol_failure' : gatewayStreamFailureCode(message),
+    const errorCode = interpretedProtocolFailure(inspection)
+      ? 'upstream_protocol_failure'
+      : inspection.errorCode ?? streamClientFailureCode(
+        gatewayStreamFailureCode(message),
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
-    )
+      )
     await handleStreamFailure(message, errorCode, streamFailureContext(
       totalResponseBytes,
       inspection.outputReceived,

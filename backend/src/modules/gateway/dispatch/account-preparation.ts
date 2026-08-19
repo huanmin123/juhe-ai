@@ -172,6 +172,7 @@ export async function selectAccountApiKeyForDispatch(
   options: {
     excludeFingerprints?: Iterable<string>
     continueAfterFingerprint?: string
+    allowExcludedFingerprint?: string
   } = {}
 ): Promise<UpstreamAccount | undefined> {
   if (account.type !== 'api_key') {
@@ -191,7 +192,7 @@ export async function selectAccountApiKeyForDispatch(
   const fixedFingerprint = account.selectedApiKeyFingerprint?.trim()
   if (fixedFingerprint && apiKeyPoolIsolationEnabled) {
     const excludedFingerprints = new Set(options.excludeFingerprints ?? [])
-    if (excludedFingerprints.has(fixedFingerprint)) {
+    if (excludedFingerprints.has(fixedFingerprint) && options.allowExcludedFingerprint !== fixedFingerprint) {
       return undefined
     }
     const fixed = apiKeyEntries.find((entry) => entry.fingerprint === fixedFingerprint)

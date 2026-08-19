@@ -406,8 +406,8 @@ const sharedReservations = sharedRetryIdentities.map((identity) => sharedRetryTr
 }))
 for (const [index, reservation] of sharedReservations.entries()) {
   assert(reservation.reserved, `第 ${index + 1} 次共享原地重试必须成功预留`)
-  assert.equal(reservation.retryNumber, index + 1, '跨账户/分组不得重置请求级 retryNumber')
-  assert.equal(reservation.remaining, 2 - index)
+  assert.equal(reservation.retryNumber, 1, '每个物理账户的原地重试序号必须从 1 开始')
+  assert.equal(reservation.remaining, 2, '每个物理账户必须拥有独立的 3 次总派发中的 2 次额外重试预算')
 }
 const sharedRetryIds = sharedReservations.map((reservation) => {
   assert(reservation.reserved)
@@ -420,6 +420,20 @@ for (const [index, identity] of sharedRetryIdentities.entries()) {
     sameAccountRetryId: sharedRetryIds[index]
   }), { allowed: true })
 }
+const secondSharedRetry = sharedRetryTracker.tryReserveSameAccountRetry({
+  ...sharedRetryIdentities[0]!,
+  maxRetries: 10
+})
+assert(secondSharedRetry.reserved, '同一账户剩余预算必须允许第二次额外重试')
+assert.equal(secondSharedRetry.retryNumber, 2)
+assert.equal(secondSharedRetry.remaining, 1)
+const thirdSharedRetry = sharedRetryTracker.tryReserveSameAccountRetry({
+  ...sharedRetryIdentities[0]!,
+  maxRetries: 10
+})
+assert(thirdSharedRetry.reserved, '同一账户最多 2 次额外重试必须允许第二次 token')
+assert.equal(thirdSharedRetry.retryNumber, 3)
+assert.equal(thirdSharedRetry.remaining, 0)
 assert.deepEqual(sharedRetryTracker.tryReserveSameAccountRetry({
   ...sharedRetryIdentities[0]!,
   maxRetries: 10
@@ -427,7 +441,7 @@ assert.deepEqual(sharedRetryTracker.tryReserveSameAccountRetry({
   reserved: false,
   reason: 'same_account_retry_budget_exhausted',
   remaining: 0
-}, '跨账户用完首次锁定的 3 次预算后，更大的后续配置不得重新发放额度')
+}, '同一账户用完 3 次总派发预算后不得继续重试')
 assert.deepEqual(sharedRetryTracker.snapshot(), sharedRetrySnapshot, '跨账户共享重试也不得扩充普通尝试快照')
 
 const conservativeRetryTracker = new GatewayRequestAttemptTracker()
@@ -440,14 +454,13 @@ const firstConservativeReservation = conservativeRetryTracker.tryReserveSameAcco
 })
 assert(firstConservativeReservation.reserved)
 assert.equal(firstConservativeReservation.remaining, 2)
-assert.deepEqual(conservativeRetryTracker.tryReserveSameAccountRetry({
+const conservativeSecondReservation = conservativeRetryTracker.tryReserveSameAccountRetry({
   ...sharedRetryIdentities[1]!,
   maxRetries: 1
-}), {
-  reserved: false,
-  reason: 'same_account_retry_budget_exhausted',
-  remaining: 0
-}, '后续分组看到更小 maxRetries 时必须立即采用更保守的请求级上限')
+})
+assert(conservativeSecondReservation.reserved, '不同账户不得共享前一个账户的重试预算')
+assert.equal(conservativeSecondReservation.retryNumber, 1)
+assert.equal(conservativeSecondReservation.remaining, 0)
 assert.deepEqual(conservativeRetryTracker.tryReserveSameAccountRetry({
   ...sharedRetryIdentities[1]!,
   maxRetries: 10

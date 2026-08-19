@@ -597,7 +597,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['systemApiRateLimitUserWritePerMinute', 120],
   ['defaultTemporaryUnschedulableMinutes', 2],
   ['temporaryUnschedulableRetryIntervalSeconds', 3],
-  ['temporaryUnschedulableRetryAttempts', 3],
+  ['temporaryUnschedulableRetryAttempts', 2],
   ['textFirstResponseTimeoutSeconds', 120],
   ['textStreamIdleTimeoutSeconds', 30],
   ['textUncommittedAttemptMaxLifetimeSeconds', 1800],

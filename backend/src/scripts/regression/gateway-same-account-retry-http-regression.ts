@@ -36,6 +36,8 @@ type UpstreamBehavior =
   | 'always_reset'
   | 'advance_wall_and_reset'
   | 'complete_471'
+  | 'always_503'
+  | 'complete_503_twice_then_success'
   | 'success'
 
 interface UpstreamHit {
@@ -162,11 +164,18 @@ async function main(): Promise<void> {
     behaviorByKey.set('sk-http-primary', 'complete_471')
     behaviorByKey.set('sk-http-backup', 'success')
 
-    const multiKey = createGatewayFixture(upstreamBaseUrl, '兄弟Key先轮换', [{
+    const transientHttp = createGatewayFixture(upstreamBaseUrl, '瞬态HTTP同账户重试', [
+      { keys: ['sk-http-transient-primary'], priority: 0 },
+      { keys: ['sk-http-transient-backup'], priority: 0, fallbackEnabled: true }
+    ])
+    behaviorByKey.set('sk-http-transient-primary', 'complete_503_twice_then_success')
+    behaviorByKey.set('sk-http-transient-backup', 'success')
+
+    const multiKey = createGatewayFixture(upstreamBaseUrl, '完整HTTP兄弟Key隔离', [{
       keys: ['sk-multi-bad', 'sk-multi-good'],
       priority: 0
     }])
-    behaviorByKey.set('sk-multi-bad', 'always_reset')
+    behaviorByKey.set('sk-multi-bad', 'always_503')
     behaviorByKey.set('sk-multi-good', 'success')
 
     const sharedBudget = createGatewayFixture(upstreamBaseUrl, '请求级共享重试预算', [
@@ -239,13 +248,13 @@ async function main(): Promise<void> {
     await listen(gatewayServer)
     const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
-    await verifyContract(contractFailures, '安全 chat 的 pre-header reset 必须切换后备账户', async () => {
+    await verifyContract(contractFailures, '安全 chat 的 pre-header reset 应在当前账户恢复', async () => {
       configureRetry(1, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, sameRetry.apiKey, 'same account retry once')
-      assert.equal(response.status, 200, `账户切换应由后备账户成功：${response.status} ${response.text}`)
-      assert.match(response.text, /mock success from sk-same-retry-backup/)
-      assert.deepEqual(hitKeys(offset), ['sk-same-retry', 'sk-same-retry-backup'], 'pre-header transport 失败不得同账号重放，必须切换后备账户')
+      assert.equal(response.status, 200, `同账户重试后应成功：${response.status} ${response.text}`)
+      assert.match(response.text, /mock success from sk-same-retry/)
+      assert.deepEqual(hitKeys(offset), ['sk-same-retry', 'sk-same-retry'], '瞬态 pre-header transport 失败应先原地重试当前账户')
     })
 
     await verifyContract(contractFailures, 'attempts=0 应直接切后备账户', async () => {
@@ -264,27 +273,47 @@ async function main(): Promise<void> {
       assert.deepEqual(hitKeys(offset), ['sk-http-primary', 'sk-http-backup'], '完整 HTTP frame 只能执行显式切号，绝不能重复首 Key')
     })
 
+    await verifyContract(contractFailures, '瞬态 HTTP 503 应在当前账户最多重试两次', async () => {
+      configureRetry(3, 0)
+      const offset = hits.length
+      const response = await postChat(gatewayBaseUrl, transientHttp.apiKey, 'transient HTTP 503 should recover in place')
+      assert.equal(response.status, 200, `瞬态 HTTP 503 同账户重试后应成功：${response.status} ${response.text}`)
+      assert.match(response.text, /mock success from sk-http-transient-primary/)
+      assert.deepEqual(
+        hitKeys(offset),
+        ['sk-http-transient-primary', 'sk-http-transient-primary', 'sk-http-transient-primary'],
+        '同账户最多两次额外重试应覆盖初次 503 后的两次 dispatch，且不应提前切后备账户'
+      )
+    })
+
     await verifyContract(contractFailures, '无显式策略时同账户多 Key 不得隐式轮换', async () => {
       configureRetry(3, 0)
+      apiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, multiKey.apiKey, 'sibling key before same-key retry')
       assert.equal(response.status, 503, `单账户耗尽应返回统一网关失败：${response.status} ${response.text}`)
-      assert.deepEqual(hitKeys(offset), ['sk-multi-bad'], '未配置 retry_next 时不得隐式轮换同账户兄弟 Key')
+      assert.deepEqual(hitKeys(offset), ['sk-multi-bad', 'sk-multi-bad', 'sk-multi-bad'], '未配置 retry_next 时只允许当前 Key 最多两次额外重试，不得隐式轮换兄弟 Key')
+      await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+      assert.deepEqual(
+        apiKeyFailureGuard.getGatewayAccountApiKeyFailureGuardSnapshotForTest().filter((entry: { accountId: string }) => entry.accountId === multiKey.accounts[0]!.accountId),
+        [],
+        '瞬态 HTTP 原地重试耗尽不得写入当前 Key 的临时避让状态'
+      )
     })
 
-    await verifyContract(contractFailures, 'pre-header transport 失败必须逐账户切换', async () => {
+    await verifyContract(contractFailures, 'pre-header transport 失败按账户各自重试后再切换', async () => {
       configureRetry(1, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, sharedBudget.apiKey, 'retry budget shared by all accounts')
       assert.equal(response.status, 200, `两个失败账户后应切到第三账户成功：${response.status} ${response.text}`)
       assert.deepEqual(
         hitKeys(offset),
-        ['sk-shared-a', 'sk-shared-b', 'sk-shared-c'],
-        '每个失败账户只尝试一次，随后按候选顺序切换下一个账户'
+        ['sk-shared-a', 'sk-shared-a', 'sk-shared-b', 'sk-shared-b', 'sk-shared-c'],
+        '每个账户的额外重试预算独立；达到该账户上限后才按候选顺序切换下一个账户'
       )
     })
 
-    await verifyContract(contractFailures, 'hard pre-header request timeout 必须切换后备账户', async () => {
+    await verifyContract(contractFailures, 'hard pre-header request timeout 可在当前账户恢复', async () => {
       configureRetry(1, 0, { textFirstResponseTimeoutSeconds: 10 })
       const offset = hits.length
       // Do not globally accelerate the hard timeout here. Under a busy event
@@ -296,16 +325,16 @@ async function main(): Promise<void> {
         'hard request timeout may retry in place',
         AbortSignal.timeout(15_000)
       )
-      assert.equal(response.status, 200, `hard timeout 切号后应成功：${response.status} ${response.text}`)
+      assert.equal(response.status, 200, `hard timeout 同账户重试后应成功：${response.status} ${response.text}`)
       assert.match(
         response.text,
-        /mock success from sk-hard-timeout-backup"/,
-        `hard timeout 后必须由后备账户返回成功：${response.text}`
+        /mock success from sk-hard-timeout"/,
+        `hard timeout 后当前账户恢复时不应提前切后备账户：${response.text}`
       )
       assert.deepEqual(
         hitKeys(offset),
-        ['sk-hard-timeout', 'sk-hard-timeout-backup'],
-        'hard request timeout 不得自动重放同账号，应切换后备账户'
+        ['sk-hard-timeout', 'sk-hard-timeout'],
+        'hard request timeout 在语义提交前应按当前账户预算安全重试'
       )
     })
 
@@ -368,7 +397,7 @@ async function main(): Promise<void> {
       await assertIntermediateFailureNeutral(gatewayBaseUrl, intermediateNeutral)
     })
 
-    await verifyContract(contractFailures, '无显式策略时多 Key 账户失败后必须直接切后备账户', async () => {
+    await verifyContract(contractFailures, '无显式策略时多 Key 账户原地重试后切后备账户', async () => {
       configureRetry(1, 0)
       const offset = hits.length
       const response = await postChat(gatewayBaseUrl, uniqueKeySafetyCap.apiKey, 'unique key safety cap excludes same retry')
@@ -376,15 +405,15 @@ async function main(): Promise<void> {
       const actualKeys = hitKeys(offset)
       assert.deepEqual(
         actualKeys,
-        [allFailingMultiKeys[0]!, 'sk-unique-backup'],
-        '未配置 retry_next 时不得穷尽同账户 Key，必须直接切换后备账户'
+        [allFailingMultiKeys[0]!, allFailingMultiKeys[0]!, 'sk-unique-backup'],
+        '未配置 retry_next 时不得穷尽同账户 Key；当前 Key 的预算用尽后必须切换后备账户'
       )
       const primaryHits = actualKeys.filter((key) => key !== 'sk-unique-backup')
       assert.equal(new Set(primaryHits).size, 1, '无显式策略时只允许尝试首个同账户 Key')
-      assert.equal(primaryHits.length, 1, '同账户失败后不得自动切换兄弟 Key 或原地重放')
+      assert.equal(primaryHits.length, 2, '同账户失败后可原地重放一次，但不得自动切换兄弟 Key')
     })
 
-    await verifyContract(contractFailures, 'transport 失败不等待 interval，必须立即切换后备账户并清空资源', async () => {
+    await verifyContract(contractFailures, 'transport 失败等待同账户重试后仍能切后备账户并清空资源', async () => {
       const abortFailures: string[] = []
       configureRetry(1, 1)
       const offset = hits.length
@@ -393,7 +422,7 @@ async function main(): Promise<void> {
         assert.equal(response.status, 200, `后备账户应返回成功：${response.status} ${response.text}`)
       })
       await verifyContract(abortFailures, '上游 hit', async () => {
-        assert.deepEqual(hitKeys(offset), ['sk-abort-wait', 'sk-abort-wait-backup'], 'transport 失败必须立即切换后备账户，不得等待原地重试 interval')
+        assert.deepEqual(hitKeys(offset), ['sk-abort-wait', 'sk-abort-wait', 'sk-abort-wait-backup'], 'transport 失败应先按配置等待一次同账户重试，再切换后备账户')
       })
 
       await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -718,11 +747,11 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
     traceId
   )
   await verifyContract(failures, 'HTTP 与真实 dispatch 顺序', async () => {
-    assert.equal(response.status, 200, `中间失败后后备账户应成功：${response.status} ${response.text}`)
+    assert.equal(response.status, 200, `中间失败后当前账户重试应成功：${response.status} ${response.text}`)
     assert.deepEqual(
       hitKeys(offset),
-      ['sk-intermediate-neutral', 'sk-intermediate-neutral-backup'],
-      '中间 transport 失败必须跳过当前账户，并由后备账户完成请求'
+      ['sk-intermediate-neutral', 'sk-intermediate-neutral'],
+      '中间 transport 失败必须保持请求局部，并由当前账户重试完成请求'
     )
   })
 
@@ -732,15 +761,14 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
   await verifyContract(failures, 'circuit 状态', async () => {
     const childAfter = await circuitStore.get(childScope)
     const parentAfter = await circuitStore.get(parentScope)
-    assert.notEqual(childAfter.phase, 'CLOSED', '确认的 transport 失败必须更新失败账户的 child circuit')
-    assert(childAfter.generation > childBefore.generation, '确认的 transport 失败必须推进 child circuit generation')
+    assert(childAfter.generation >= childBefore.generation, '中间 transport 失败后的成功不得回退 child circuit generation')
     assert.equal(childAfter.lease, undefined, '请求结束后 child circuit lease 必须为空')
     assert.equal(parentAfter.lease, undefined, '请求结束后 parent circuit lease 必须为空')
   })
 
   await verifyContract(failures, 'shared hot-quality', async () => {
     const quality = await hotQuality.getGatewayHotQualityRuntime().hotQualityStore.get(qualityScope)
-    assert(quality, '失败账户必须留下 transport 失败质量样本')
+    assert(quality, '当前账户必须留下中间 transport 失败与最终成功的质量样本')
     assert.deepEqual({
       qualityAttempts: quality.window5m.qualityAttempts,
       completedResponses: quality.window5m.completedResponses,
@@ -750,8 +778,8 @@ async function assertIntermediateFailureNeutral(gatewayBaseUrl: string, fixture:
       incompleteResponses: quality.window5m.incompleteResponses,
       unknownOutcomes: quality.window5m.unknownOutcomes
     }, {
-      qualityAttempts: 0,
-      completedResponses: 0,
+      qualityAttempts: 1,
+      completedResponses: 1,
       localTransportFailures: 0,
       timeouts: 0,
       readInterruptions: 0,
@@ -900,6 +928,28 @@ function createMockUpstream(): http.Server {
             type: 'untrusted_vendor_type',
             code: 'untrusted_vendor_code',
             message: 'explicit-http-retry-next vendor-private-error'
+          }
+        }))
+        return
+      }
+      if (behavior === 'always_503') {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          error: {
+            type: 'server_error',
+            code: 'temporary_upstream_failure',
+            message: 'transient upstream overload'
+          }
+        }))
+        return
+      }
+      if (behavior === 'complete_503_twice_then_success' && ordinalForKey <= 2) {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          error: {
+            type: 'server_error',
+            code: 'temporary_upstream_failure',
+            message: 'transient upstream overload'
           }
         }))
         return

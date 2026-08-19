@@ -241,12 +241,44 @@ const positiveMatchKeys = [
 
 const systemDefaultRules: ResponseInspectionPolicySummary[] = [
   {
+    id: 'default_openai_transient_precommit_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI 首输出前短暂错误',
+    enabled: true,
+    priority: 0,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['generic_openai', 'codex'],
+      errorCodes: ['server_error', 'internal_server_error', 'server_overloaded', 'overloaded', 'service_unavailable', 'temporarily_unavailable', 'unavailable', 'timeout', 'deadline_exceeded', 'resource_exhausted', 'internal', 'cancelled', 'canceled']
+    },
+    action: 'retry_next_account',
+    notes: '仅限尚未向客户端提交语义输出的明确短暂上游错误；网关先按当前物理账号的有界预算重试，耗尽后再切换候选，不写长期账号状态。'
+  },
+  {
+    id: 'default_openai_context_window_error',
+    defaultRule: true,
+    editable: false,
+    name: 'OpenAI 上下文窗口错误',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['generic_openai', 'codex'],
+      errorCodes: ['context_length_exceeded', 'input_too_large', 'max_tokens_exceeded']
+    },
+    action: 'retry_next_account',
+    notes: '上下文容量属于当前账号/模型约束，直接切换候选账号，不在同一账号重复提交。'
+  },
+  {
     id: 'default_openai_error_object',
     defaultRule: true,
     editable: false,
     name: 'OpenAI error 对象',
     enabled: true,
-    priority: 1,
+    priority: 2,
     scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
@@ -261,7 +293,7 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     editable: false,
     name: 'OpenAI response.error',
     enabled: true,
-    priority: 2,
+    priority: 3,
     scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
@@ -276,7 +308,7 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     editable: false,
     name: 'OpenAI failed 状态',
     enabled: true,
-    priority: 3,
+    priority: 4,
     scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
@@ -291,7 +323,7 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     editable: false,
     name: 'Codex response.incomplete',
     enabled: true,
-    priority: 4,
+    priority: 5,
     scopeType: 'protocol',
     protocolCode: OPENAI_PROTOCOL_CODE,
     match: {
@@ -334,6 +366,22 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     notes: 'GPT 供应商 cyber_policy 规则，适用于该供应商的所有下游客户端；不能扩散为所有 OpenAI-compatible 供应商语义。'
   },
   {
+    id: 'default_anthropic_transient_precommit_error',
+    defaultRule: true,
+    editable: false,
+    name: 'Anthropic 首输出前短暂错误',
+    enabled: true,
+    priority: 0,
+    scopeType: 'protocol',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['generic_anthropic', 'claude_code'],
+      errorTypes: ['api_error', 'overloaded_error', 'server_error', 'internal_error', 'service_unavailable']
+    },
+    action: 'retry_next_account',
+    notes: '仅限尚未向客户端提交语义输出的明确短暂上游错误；先按当前物理账号的有界预算重试，耗尽后使用与 OpenAI/Gemini 相同的候选切换机制。'
+  },
+  {
     id: 'default_anthropic_error_object',
     defaultRule: true,
     editable: false,
@@ -347,6 +395,22 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     },
     action: 'retry_no_avoidance',
     notes: 'Anthropic Messages JSON / SSE event:error 默认检查规则；错误类型只作为响应语义输入，不直接写账号状态。'
+  },
+  {
+    id: 'default_gemini_transient_precommit_error',
+    defaultRule: true,
+    editable: false,
+    name: 'Gemini 首输出前短暂错误',
+    enabled: true,
+    priority: 0,
+    scopeType: 'protocol',
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['generic_gemini', 'gemini_cli'],
+      errorTypes: ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'DEADLINE_EXCEEDED', 'INTERNAL', 'CANCELLED']
+    },
+    action: 'retry_next_account',
+    notes: '仅限尚未向客户端提交语义输出的 Google canonical 短暂错误；网关先按当前物理账号的有界预算重试，耗尽后切换候选而不是把首次失败直接交给客户端。'
   },
   {
     id: 'default_gemini_cli_retryable_error',

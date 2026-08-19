@@ -11,6 +11,7 @@ export type UpstreamResponseHandlingResult =
     alreadyFinalized: false
     retryUpstream: true
     retryReason: StreamServerRetryReason
+    sameAccountRetryEligible?: boolean
     responseInspection?: ResponseInspectionDecision
     excludeCurrentAccount: boolean
     message: string

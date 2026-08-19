@@ -90,6 +90,7 @@ import { gatewayAccountRuntimeKey } from '../runtime/account-runtime-keys.js'
 import {
   defaultGatewayFinalResponseReserveMs,
   gatewayAttemptProtocolModelKey,
+  type GatewayDispatchAttemptIdentity,
   type GatewayRequestAttemptTracker,
   type GatewayRequestWallBudget,
   type RouteCoordinationBudget
@@ -194,6 +195,10 @@ export interface GatewayUpstreamRequestCoordinationContext {
   gatewayRequestWallBudget: GatewayRequestWallBudget
   routeCoordinationBudget: RouteCoordinationBudget
   requestAttemptTracker: GatewayRequestAttemptTracker
+  sameAccountRetry?: {
+    retryId: string
+    account: UpstreamAccount
+  }
   semanticRetryId?: string
   requestBodyOverride?: {
     accountId: string
@@ -338,6 +343,9 @@ export async function fetchFirstAvailableUpstream(
     await orderAccountsForRequestLaneAsync(accounts, requestLane, groupSchedulingPolicy, modelPriority),
     { modelRankByAccountId: modelPriority?.rankByAccountId }
   ).accounts
+  if (requestCoordination.sameAccountRetry) {
+    dispatchAccounts = [requestCoordination.sameAccountRetry.account]
+  }
   if (accountCircuitConfirmation) {
     dispatchAccounts = dispatchAccounts.filter((account) => (
       gatewayAccountRuntimeKey(account) === accountCircuitConfirmation.accountRuntimeKey
@@ -348,13 +356,63 @@ export async function fetchFirstAvailableUpstream(
     physicalCredentialKey: accountPhysicalCredentialKey(account),
     matchingConfirmation: accountCircuitConfirmation?.accountRuntimeKey === gatewayAccountRuntimeKey(account),
     semanticRetryId
-  }).allowed)
+  }).allowed || requestCoordination.sameAccountRetry?.account.id === account.id)
   const dispatchTierOptions = { modelRankByAccountId: modelPriority?.rankByAccountId }
   const primaryDispatchTier = dispatchAccounts[0]
     ? gatewayAccountDispatchPriorityTier(dispatchAccounts[0], dispatchTierOptions)
     : undefined
   const observedEscapedTiers = new Set<string>()
   let requestApiKeyAttemptCount = requestAttemptTracker.snapshot().attemptedKeyFingerprints.length
+  let activeSameAccountRetryId = requestCoordination.sameAccountRetry?.retryId
+  const maxSameAccountRetries = Math.min(2, settings.temporaryUnschedulableRetryAttempts)
+  const reserveSameAccountRetry = async (
+    identity: GatewayDispatchAttemptIdentity,
+    reason: string
+  ): Promise<string | undefined> => {
+    const configuredDelayMs = Math.max(0, settings.temporaryUnschedulableRetryIntervalSeconds * 1000)
+    const retryWindowMs = gatewayRequestWallBudget.remainingMs() - defaultGatewayFinalResponseReserveMs
+    if (retryWindowMs < configuredDelayMs) {
+      auditCapture.addGatewayMetadata({
+        label: 'same_account_retry_exhausted',
+        metadata: {
+          accountId: identity.accountRuntimeKey,
+          retryReason: reason,
+          reason: 'gateway_request_wall_budget_exhausted'
+        }
+      })
+      return undefined
+    }
+    const reservation = requestAttemptTracker.tryReserveSameAccountRetry({
+      ...identity,
+      maxRetries: maxSameAccountRetries
+    })
+    if (!reservation.reserved) {
+      auditCapture.addGatewayMetadata({
+        label: 'same_account_retry_exhausted',
+        metadata: {
+          accountId: identity.accountRuntimeKey,
+          retryReason: reason,
+          retryNumber: reservation.remaining,
+          reason: reservation.reason
+        }
+      })
+      return undefined
+    }
+    if (configuredDelayMs > 0) {
+      await waitForRetryDelayMs(configuredDelayMs, { signal })
+    }
+    auditCapture.addGatewayMetadata({
+      label: 'same_account_retry_dispatch',
+      metadata: {
+        accountId: identity.accountRuntimeKey,
+        retryNumber: reservation.retryNumber,
+        remainingSameAccountRetries: reservation.remaining,
+        retryReason: reason,
+        delayMs: configuredDelayMs
+      }
+    })
+    return reservation.retryId
+  }
 
   while (dispatchAccounts.length > 0) {
     const cycleRecoverableAccountIds = new Set<string>()
@@ -363,7 +421,11 @@ export async function fetchFirstAvailableUpstream(
     for (const originalAccount of dispatchAccounts) {
       throwIfRequestAborted(signal)
       let accountCircuitAttempt: GatewayAccountCircuitAttempt | undefined
-      if (accountCircuitService) {
+      // A reservation can only be created from an already registered attempt
+      // of this request and carries its exact physical credential/key identity.
+      // Let that bounded retry observe a transient recovery before the first
+      // failure's freshly-written SUSPECT state suppresses it immediately.
+      if (accountCircuitService && !requestCoordination.sameAccountRetry) {
         const circuitPreparation = await accountCircuitService.prepareAttempt({
           account: originalAccount,
           requestLane,
@@ -588,7 +650,8 @@ export async function fetchFirstAvailableUpstream(
             }
             const selectedAccount = await selectAccountApiKeyForDispatch(account, {
               excludeFingerprints: excludedApiKeyFingerprints,
-              continueAfterFingerprint: previousSelectedApiKeyFingerprint
+              continueAfterFingerprint: previousSelectedApiKeyFingerprint,
+              allowExcludedFingerprint: requestCoordination.sameAccountRetry?.account.selectedApiKeyFingerprint
             })
             if (!selectedAccount) {
               logRequestStage('upstream.request_prepare', {
@@ -765,7 +828,8 @@ export async function fetchFirstAvailableUpstream(
                   ...dispatchAttemptIdentity,
                   matchingConfirmation: accountCircuitAttempt?.isConfirmation === true,
                   allowKeyRotation: accountApiKeyAttemptCount > 1,
-                  semanticRetryId: activeSemanticRetryId
+                  semanticRetryId: activeSemanticRetryId,
+                  sameAccountRetryId: activeSameAccountRetryId
                 }
               )
               if (!attemptRegistration.allowed) {
@@ -788,6 +852,7 @@ export async function fetchFirstAvailableUpstream(
               if (account.selectedApiKeyFingerprint) {
                 requestApiKeyAttemptCount += 1
               }
+              activeSameAccountRetryId = undefined
               const attemptTier = gatewayAccountDispatchPriorityTier(account, dispatchTierOptions)
               if (primaryDispatchTier && attemptTier !== primaryDispatchTier && !observedEscapedTiers.has(attemptTier)) {
                 observedEscapedTiers.add(attemptTier)
@@ -955,7 +1020,11 @@ export async function fetchFirstAvailableUpstream(
                   requestClientCompatibility,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  automaticAccountStateMutationEnabled: automaticAccountStateMutationAllowed
+                  automaticAccountStateMutationEnabled: automaticAccountStateMutationAllowed,
+                  deferAutomaticSameAccountKeyRotation: requestLane === 'text'
+                    && !firstByteDeadlineTriggered
+                    && halfOpenLease?.generation === undefined
+                    && isTransientSameAccountHttpStatus(response.status)
                 }
                 const failedResponseResult = await handleFailedUpstreamResponse(failedResponseInput)
                 const explicitPolicyFailure = failedResponseResult.action !== 'return_response'
@@ -1031,6 +1100,23 @@ export async function fetchFirstAvailableUpstream(
                   }
                   retryAccountApiKey = true
                   break
+                }
+                if (
+                  requestLane === 'text'
+                  && !firstByteDeadlineTriggered
+                  && halfOpenLease?.generation === undefined
+                  && failedResponseResult.action === 'skip_account'
+                  && failedResponseResult.failureKind !== 'explicit_policy'
+                  && isTransientSameAccountHttpStatus(failedResponseResult.lastAttempt.status)
+                ) {
+                  const sameAccountRetryId = await reserveSameAccountRetry(
+                    dispatchAttemptIdentity,
+                    'upstream_http_response'
+                  )
+                  if (sameAccountRetryId) {
+                    activeSameAccountRetryId = sameAccountRetryId
+                    continue
+                  }
                 }
                 skipAccount = true
                 break
@@ -1247,6 +1333,23 @@ export async function fetchFirstAvailableUpstream(
                   }
                   if (accountCircuitAttempt && !signal?.aborted && !deferredConfirmationFailure) {
                     await accountCircuitAttempt.reportTransportFailure(requestTransportFailure)
+                  }
+                  if (
+                    requestLane === 'text'
+                    &&
+                    provenStartedTransportFailure
+                    && !neutralFirstByteDeadline
+                    && !firstByteDeadlineTriggered
+                    && halfOpenLease?.generation === undefined
+                  ) {
+                    const sameAccountRetryId = await reserveSameAccountRetry(
+                      dispatchAttemptIdentity,
+                      'upstream_transport_failure'
+                    )
+                    if (sameAccountRetryId) {
+                      activeSameAccountRetryId = sameAccountRetryId
+                      continue
+                    }
                   }
                   failedAccountIds.add(account.id)
                   skipAccount = true
@@ -1554,6 +1657,10 @@ function requestDeduplicatedAttempt(account: UpstreamAccount, reason: string): U
 
 function shouldRetainTransportFailureForRecovery(upstreamUrl: string, signal?: AbortSignal): boolean {
   return !signal?.aborted && /^https?:\/\//i.test(upstreamUrl)
+}
+
+function isTransientSameAccountHttpStatus(status: number | undefined): boolean {
+  return status === 408 || status === 425 || status === 429 || (status !== undefined && status >= 500 && status <= 599)
 }
 
 function releaseAccountDispatchSlot(releaseConcurrency: () => void): () => void {
