@@ -63,15 +63,14 @@ export async function listAccountBalanceJobsOutcomes(source: AccountBalanceJobsS
     connectionString: source.postgresUrl,
     max: 1,
     connectionTimeoutMillis: 5_000,
-    query_timeout: 5_000,
-    statement_timeout: 5_000,
-    idle_in_transaction_session_timeout: 5_000
+    query_timeout: 5_000
   })
   let connection: PoolClient | undefined
   try {
     const acquired = await pool.connect()
     connection = acquired
     await acquired.query('BEGIN READ ONLY')
+    await acquired.query('SET LOCAL statement_timeout = 5000')
     const after = options.after
     const rows = after
       ? await acquired.query('SELECT outcome_id,account_id,input_version,config_revision,trigger,payload,to_char(observed_at AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') AS storage_observed_at FROM juhe_jobs.account_balance_outcomes WHERE committed=TRUE AND (observed_at > $1 OR (observed_at = $1 AND outcome_id > $2)) ORDER BY observed_at ASC,outcome_id ASC LIMIT $3', [after.observedAt, after.outcomeId, options.limit])
