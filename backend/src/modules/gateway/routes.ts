@@ -5,7 +5,8 @@ import {
   type Response,
 } from 'express'
 
-import { createTraceId, getRequestLogger, getTraceId, logRequestStage } from '../../shared/request-context.js'
+import { createTraceId, getRequestContext, getRequestLogger, getTraceId, logRequestStage } from '../../shared/request-context.js'
+import { recordGatewayFirstOutputMetric } from '../../shared/prometheus-metrics.js'
 import { errorLogFields } from '../../shared/logger.js'
 import {
   extractClientIp,
@@ -1175,6 +1176,10 @@ let codexTurnAvoidedFallbackEnabled = false
       const markFirstOutputWithTiming = () => {
         if (!firstOutputLogged) {
           firstOutputLogged = true
+          const requestContext = getRequestContext()
+          if (requestContext) {
+            recordGatewayFirstOutputMetric(Date.now() - requestContext.startedAt, requestContext.method)
+          }
           hotQualityAttempt.markFirstByte(Date.now() - attemptStartedAt)
           logRequestStage('upstream.first_output', {
             traceId,

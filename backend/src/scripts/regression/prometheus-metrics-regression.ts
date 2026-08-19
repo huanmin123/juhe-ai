@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   classifyHttpMetricRoute,
   finishHttpMetricRequest,
+  recordGatewayFirstOutputMetric,
   recordGatewayUpstreamFailureMetric,
   renderPrometheusMetrics,
   resetPrometheusMetricsForTest,
@@ -27,6 +28,7 @@ const upstreamResponseFailure = classifyGatewayUpstreamFailure({ phase: 'upstrea
 recordGatewayUpstreamFailureMetric(upstreamResponseFailure.failureClass, 503)
 const upstreamRequestFailure = classifyGatewayUpstreamFailure({ phase: 'upstream_request' })
 recordGatewayUpstreamFailureMetric(upstreamRequestFailure.failureClass, undefined)
+recordGatewayFirstOutputMetric(1_500, 'POST')
 
 const rendered = renderPrometheusMetrics()
 assert.match(rendered, /juhe_ai_http_requests_total\{[^}]*method="POST"[^}]*outcome="completed"[^}]*route_group="gateway"[^}]*status_class="5xx"[^}]*\} 1/)
@@ -52,9 +54,18 @@ assert.match(
   rendered,
   /juhe_ai_gateway_upstream_failure_metrics_enabled\{service="juhe-ai"\} 1/
 )
+assert.match(
+  rendered,
+  /juhe_ai_gateway_first_output_duration_seconds_bucket\{[^}]*le="2"[^}]*method="POST"[^}]*\} 1/
+)
+assert.match(
+  rendered,
+  /juhe_ai_gateway_first_output_duration_seconds_count\{[^}]*method="POST"[^}]*\} 1/
+)
 
 resetPrometheusMetricsForTest()
 assert.doesNotMatch(renderPrometheusMetrics(), /juhe_ai_gateway_upstream_failures_total\{/)
+assert.doesNotMatch(renderPrometheusMetrics(), /juhe_ai_gateway_first_output_duration_seconds_count\{/)
 assert.match(
   renderPrometheusMetrics(),
   /juhe_ai_gateway_upstream_failure_metrics_enabled\{service="juhe-ai"\} 1/

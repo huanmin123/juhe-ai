@@ -1,5 +1,6 @@
 const serviceName = 'juhe-ai'
 const durationBuckets = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, Number.POSITIVE_INFINITY] as const
+const firstOutputDurationBuckets = [0.25, 0.5, 1, 2, 5, 10, 30, 60, Number.POSITIVE_INFINITY] as const
 
 export type HttpMetricRouteGroup = 'health' | 'management' | 'public_api' | 'gateway' | 'other' | 'observability'
 export type HttpMetricOutcome = 'completed' | 'aborted'
@@ -30,6 +31,7 @@ interface HistogramValue {
 
 const requestCounters = new Map<string, number>()
 const requestHistograms = new Map<string, HistogramValue>()
+const gatewayFirstOutputHistograms = new Map<string, HistogramValue>()
 const inFlightRequests = new Map<string, number>()
 const gatewayUpstreamFailureCounters = new Map<string, number>()
 
@@ -113,6 +115,20 @@ export function recordGatewayUpstreamFailureMetric(
   }))
 }
 
+export function recordGatewayFirstOutputMetric(durationMs: number, method: string): void {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return
+  const labels = { method: normalizeMethod(method) }
+  const key = labelsKey(labels)
+  const histogram = gatewayFirstOutputHistograms.get(key) ?? createHistogram()
+  const durationSeconds = durationMs / 1_000
+  histogram.count += 1
+  histogram.sum += durationSeconds
+  for (const bucket of firstOutputDurationBuckets) {
+    if (durationSeconds <= bucket) histogram.buckets.set(bucket, (histogram.buckets.get(bucket) ?? 0) + 1)
+  }
+  gatewayFirstOutputHistograms.set(key, histogram)
+}
+
 export function renderPrometheusMetrics(): string {
   const lines = [
     '# HELP juhe_ai_http_requests_total Completed HTTP requests grouped without paths, identifiers, or error text.',
@@ -130,6 +146,18 @@ export function renderPrometheusMetrics(): string {
   lines.push('# HELP juhe_ai_gateway_upstream_failure_metrics_enabled Whether this process exposes the gateway upstream failure metric contract.')
   lines.push('# TYPE juhe_ai_gateway_upstream_failure_metrics_enabled gauge')
   lines.push(`juhe_ai_gateway_upstream_failure_metrics_enabled{service="${serviceName}"} 1`)
+
+  lines.push('# HELP juhe_ai_gateway_first_output_duration_seconds Time to first upstream output for gateway requests, excluding full stream duration.')
+  lines.push('# TYPE juhe_ai_gateway_first_output_duration_seconds histogram')
+  for (const [key, histogram] of sortedEntries(gatewayFirstOutputHistograms)) {
+    const labels = parseMetricLabels(key)
+    for (const bucket of firstOutputDurationBuckets) {
+      const le = Number.isFinite(bucket) ? String(bucket) : '+Inf'
+      lines.push(`juhe_ai_gateway_first_output_duration_seconds_bucket{${renderLabels({ ...labels, le })}} ${histogram.buckets.get(bucket) ?? 0}`)
+    }
+    lines.push(`juhe_ai_gateway_first_output_duration_seconds_sum{${renderLabels(labels)}} ${histogram.sum}`)
+    lines.push(`juhe_ai_gateway_first_output_duration_seconds_count{${renderLabels(labels)}} ${histogram.count}`)
+  }
 
   lines.push('# HELP juhe_ai_http_request_duration_seconds HTTP request duration grouped without paths, identifiers, or error text.')
   lines.push('# TYPE juhe_ai_http_request_duration_seconds histogram')
@@ -188,6 +216,7 @@ export function setRedisStreamQueueMetricsSnapshot(snapshot: RedisStreamQueueMet
 export function resetPrometheusMetricsForTest(): void {
   requestCounters.clear()
   requestHistograms.clear()
+  gatewayFirstOutputHistograms.clear()
   inFlightRequests.clear()
   gatewayUpstreamFailureCounters.clear()
   redisStreamQueueMetrics = { enabled: false, collectionSuccess: false, queues: [] }
