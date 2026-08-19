@@ -30,6 +30,10 @@ export function sameAccountBalanceJobsPostgresStore(left: string | undefined, ri
     const b = new URL(right?.trim() ?? '')
     if (!['postgres:', 'postgresql:'].includes(a.protocol) || !['postgres:', 'postgresql:'].includes(b.protocol)) return false
     const identity = (value: URL): string | undefined => {
+      // pgx and node-postgres resolve dbname/database query overrides
+      // differently.  Reject them instead of accepting a pair that looks
+      // like one DB here but is split at runtime.
+      if (value.searchParams.has('dbname') || value.searchParams.has('database')) return undefined
       const path = value.pathname
       if (!path.startsWith('/') || path === '/') return undefined
       let database: string
