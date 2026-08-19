@@ -48,7 +48,16 @@ for (const line of upstreamFailureMetricLines) {
   assert.doesNotMatch(line, /account|api[_-]?key|url|model|request|user|error|trace|credential|secret/i)
 }
 
+assert.match(
+  rendered,
+  /juhe_ai_gateway_upstream_failure_metrics_enabled\{service="juhe-ai"\} 1/
+)
+
 resetPrometheusMetricsForTest()
 assert.doesNotMatch(renderPrometheusMetrics(), /juhe_ai_gateway_upstream_failures_total\{/)
+assert.match(
+  renderPrometheusMetrics(),
+  /juhe_ai_gateway_upstream_failure_metrics_enabled\{service="juhe-ai"\} 1/
+)
 
 console.log('prometheus metrics regression passed')

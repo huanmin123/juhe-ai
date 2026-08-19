@@ -127,6 +127,9 @@ export function renderPrometheusMetrics(): string {
   for (const [key, count] of sortedEntries(gatewayUpstreamFailureCounters)) {
     lines.push(`juhe_ai_gateway_upstream_failures_total{${renderLabels(parseMetricLabels(key))}} ${count}`)
   }
+  lines.push('# HELP juhe_ai_gateway_upstream_failure_metrics_enabled Whether this process exposes the gateway upstream failure metric contract.')
+  lines.push('# TYPE juhe_ai_gateway_upstream_failure_metrics_enabled gauge')
+  lines.push(`juhe_ai_gateway_upstream_failure_metrics_enabled{service="${serviceName}"} 1`)
 
   lines.push('# HELP juhe_ai_http_request_duration_seconds HTTP request duration grouped without paths, identifiers, or error text.')
   lines.push('# TYPE juhe_ai_http_request_duration_seconds histogram')
