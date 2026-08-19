@@ -11,10 +11,21 @@ const consumerKey = 'juhe-ai-account-balance-jobs-projector-v1'
 let stopping = true
 let running: Promise<void> | undefined
 let projectionReady = false
+let projectionReadyUntil = 0
 
-/** True only after the active projector has completed a successful drain. */
+/** A drain result is usable only while it remains fresh for the next poll. */
+export function accountBalanceJobsOutcomeProjectionRuntimeFresh(
+  active: boolean,
+  ready: boolean,
+  readyUntil: number,
+  now = Date.now()
+): boolean {
+  return active && ready && Number.isFinite(readyUntil) && readyUntil > now
+}
+
+/** True only after the active projector has completed a recent successful drain. */
 export function accountBalanceJobsOutcomeProjectionRuntimeReady(): boolean {
-  return !stopping && running !== undefined && projectionReady
+  return accountBalanceJobsOutcomeProjectionRuntimeFresh(!stopping && running !== undefined, projectionReady, projectionReadyUntil)
 }
 
 /** This runtime is opt-in and deliberately separate from the legacy Node
@@ -28,11 +39,12 @@ export function startAccountBalanceJobsOutcomeProjectionRuntime(): void {
   if (!postgresUrl) throw new Error('启用 J2 outcome projector 必须设置 PG outcome URL')
   stopping = false
   projectionReady = false
+  projectionReadyUntil = 0
   const source: AccountBalanceJobsStoreSource = { mode: 'postgres', postgresUrl }
-  running = loop(source).finally(() => { running = undefined; projectionReady = false })
+  running = loop(source).finally(() => { running = undefined; projectionReady = false; projectionReadyUntil = 0 })
 }
 
-export async function stopAccountBalanceJobsOutcomeProjectionRuntime(): Promise<void> { stopping = true; projectionReady = false; await running }
+export async function stopAccountBalanceJobsOutcomeProjectionRuntime(): Promise<void> { stopping = true; projectionReady = false; projectionReadyUntil = 0; await running }
 
 async function loop(source: AccountBalanceJobsStoreSource): Promise<void> {
   const delay = boundedInteger(process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_POLL_MS, 1_000, 100, 60_000)
@@ -41,8 +53,10 @@ async function loop(source: AccountBalanceJobsStoreSource): Promise<void> {
     try {
       await drain(source, batch)
       projectionReady = true
+      projectionReadyUntil = Date.now() + Math.max(5_000, delay * 2)
     } catch (error) {
       projectionReady = false
+      projectionReadyUntil = 0
       logger.error(errorLogFields(error, { event: 'account_balance_jobs_outcome_projection_failed', consumerKey }), 'J2 outcome 投影失败，将保留游标并重试')
     }
     if (!stopping) await new Promise<void>((resolve) => setTimeout(resolve, delay))

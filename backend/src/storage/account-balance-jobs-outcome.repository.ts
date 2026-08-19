@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import type { PoolClient } from 'pg'
 import { requiredRfc3339Instant } from '../shared/rfc3339.js'
 
 export type AccountBalanceJobsStoreSource =
@@ -58,21 +59,30 @@ export async function listAccountBalanceJobsOutcomes(source: AccountBalanceJobsS
   if ('mode' in source && source.mode === 'sqlite') return readSqliteOutcomes(source.databasePath, options.after, options.limit)
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 1_000) throw new Error('J2 outcome limit 必须在 1..1000')
   const { Pool } = await import('pg')
-  const pool = new Pool({ connectionString: source.postgresUrl, max: 1 })
-  const connection = await pool.connect()
+  const pool = new Pool({
+    connectionString: source.postgresUrl,
+    max: 1,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 5_000,
+    statement_timeout: 5_000,
+    idle_in_transaction_session_timeout: 5_000
+  })
+  let connection: PoolClient | undefined
   try {
-    await connection.query('BEGIN READ ONLY')
+    const acquired = await pool.connect()
+    connection = acquired
+    await acquired.query('BEGIN READ ONLY')
     const after = options.after
     const rows = after
-      ? await connection.query('SELECT outcome_id,account_id,input_version,config_revision,trigger,payload,to_char(observed_at AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') AS storage_observed_at FROM juhe_jobs.account_balance_outcomes WHERE committed=TRUE AND (observed_at > $1 OR (observed_at = $1 AND outcome_id > $2)) ORDER BY observed_at ASC,outcome_id ASC LIMIT $3', [after.observedAt, after.outcomeId, options.limit])
-      : await connection.query('SELECT outcome_id,account_id,input_version,config_revision,trigger,payload,to_char(observed_at AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') AS storage_observed_at FROM juhe_jobs.account_balance_outcomes WHERE committed=TRUE ORDER BY observed_at ASC,outcome_id ASC LIMIT $1', [options.limit])
-    await connection.query('COMMIT')
+      ? await acquired.query('SELECT outcome_id,account_id,input_version,config_revision,trigger,payload,to_char(observed_at AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') AS storage_observed_at FROM juhe_jobs.account_balance_outcomes WHERE committed=TRUE AND (observed_at > $1 OR (observed_at = $1 AND outcome_id > $2)) ORDER BY observed_at ASC,outcome_id ASC LIMIT $3', [after.observedAt, after.outcomeId, options.limit])
+      : await acquired.query('SELECT outcome_id,account_id,input_version,config_revision,trigger,payload,to_char(observed_at AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\') AS storage_observed_at FROM juhe_jobs.account_balance_outcomes WHERE committed=TRUE ORDER BY observed_at ASC,outcome_id ASC LIMIT $1', [options.limit])
+    await acquired.query('COMMIT')
     return rows.rows.map((row: any) => decodeOutcomeRow(row))
   } catch (error) {
-    await connection.query('ROLLBACK').catch(() => undefined)
+    await connection?.query('ROLLBACK').catch(() => undefined)
     throw error
   } finally {
-    connection.release()
+    connection?.release()
     await pool.end()
   }
 }
