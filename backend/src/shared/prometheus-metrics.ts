@@ -158,6 +158,9 @@ export function renderPrometheusMetrics(): string {
   lines.push('# HELP juhe_ai_gateway_upstream_failure_metrics_enabled Whether this process exposes the gateway upstream failure metric contract.')
   lines.push('# TYPE juhe_ai_gateway_upstream_failure_metrics_enabled gauge')
   lines.push(`juhe_ai_gateway_upstream_failure_metrics_enabled{service="${serviceName}"} 1`)
+  lines.push('# HELP juhe_ai_gateway_upstream_failure_reason_metrics_enabled Whether this process exposes bounded gateway upstream failure reason classes.')
+  lines.push('# TYPE juhe_ai_gateway_upstream_failure_reason_metrics_enabled gauge')
+  lines.push(`juhe_ai_gateway_upstream_failure_reason_metrics_enabled{service="${serviceName}"} 1`)
 
   lines.push('# HELP juhe_ai_gateway_first_output_duration_seconds Time to first upstream output for gateway requests, excluding full stream duration.')
   lines.push('# TYPE juhe_ai_gateway_first_output_duration_seconds histogram')

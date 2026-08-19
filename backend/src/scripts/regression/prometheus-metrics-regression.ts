@@ -56,6 +56,10 @@ assert.match(
 )
 assert.match(
   rendered,
+  /juhe_ai_gateway_upstream_failure_reason_metrics_enabled\{service="juhe-ai"\} 1/
+)
+assert.match(
+  rendered,
   /juhe_ai_gateway_first_output_duration_seconds_bucket\{[^}]*le="2"[^}]*method="POST"[^}]*\} 1/
 )
 assert.match(
@@ -69,6 +73,10 @@ assert.doesNotMatch(renderPrometheusMetrics(), /juhe_ai_gateway_first_output_dur
 assert.match(
   renderPrometheusMetrics(),
   /juhe_ai_gateway_upstream_failure_metrics_enabled\{service="juhe-ai"\} 1/
+)
+assert.match(
+  renderPrometheusMetrics(),
+  /juhe_ai_gateway_upstream_failure_reason_metrics_enabled\{service="juhe-ai"\} 1/
 )
 
 console.log('prometheus metrics regression passed')
