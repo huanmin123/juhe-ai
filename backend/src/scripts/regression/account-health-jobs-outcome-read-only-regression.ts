@@ -49,6 +49,11 @@ try {
     outcome_id: 'outcome-3', request_id: 'request-3', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3
   })
   assert.equal(postgresJsonbPayload.outcome_id, 'outcome-3')
+  const legacyErrorProjection = decodeAccountHealthJobsOutcomePayload({
+    outcome_id: 'outcome-legacy-error', request_id: 'request-legacy-error', account_id: 'account-1', outcome: 'upstream_failure', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
+    projection: { target_account_id: 'account-1', transition_kind: 'health_failure', input_version: 1, config_revision: 2, dispatch_revision: 3, expected_account_status: 'error' }
+  })
+  assert.equal(legacyErrorProjection.projection?.expected_account_status, 'error')
   assert.throws(() => decodeAccountHealthJobsOutcomePayload({
     outcome_id: 'outcome-4', request_id: 'request-4', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
     projection: { target_account_id: 'account-1', transition_kind: 'health_success', input_version: 1, config_revision: 2, dispatch_revision: 3 }
