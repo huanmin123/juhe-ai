@@ -21,6 +21,8 @@ assert.equal(sameAccountBalanceJobsPostgresStore('postgres://jobs@db.example/juh
 assert.equal(sameAccountBalanceJobsPostgresStore('postgres://writer@db.example', 'postgres://reader@db.example/'), false, '未显式数据库名会由驱动回退到不同角色默认库，handover 必须拒绝')
 assert.equal(sameAccountBalanceJobsPostgresStore('postgres://writer@db.example/juhe_jobs?dbname=other_jobs', 'postgres://reader@db.example/juhe_jobs'), false, '驱动对 dbname query override 的解析不一致，handover 必须拒绝')
 assert.equal(sameAccountBalanceJobsPostgresStore('postgres://writer@db.example/juhe_jobs?database=other_jobs', 'postgres://reader@db.example/juhe_jobs'), false, '驱动对 database query override 的解析不一致，handover 必须拒绝')
+assert.equal(sameAccountBalanceJobsPostgresStore('postgres://writer@db.example/juhe_jobs?host=writer-db.example', 'postgres://reader@db.example/juhe_jobs'), false, 'host query override 可分裂 writer 与 projector，handover 必须拒绝')
+assert.equal(sameAccountBalanceJobsPostgresStore('postgres://writer@db.example/juhe_jobs?port=5544', 'postgres://reader@db.example/juhe_jobs'), false, 'port query override 可分裂 writer 与 projector，handover 必须拒绝')
 
 const gate = {
   enabled: true,

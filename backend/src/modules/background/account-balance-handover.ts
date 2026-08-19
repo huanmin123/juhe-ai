@@ -30,10 +30,11 @@ export function sameAccountBalanceJobsPostgresStore(left: string | undefined, ri
     const b = new URL(right?.trim() ?? '')
     if (!['postgres:', 'postgresql:'].includes(a.protocol) || !['postgres:', 'postgresql:'].includes(b.protocol)) return false
     const identity = (value: URL): string | undefined => {
-      // pgx and node-postgres resolve dbname/database query overrides
-      // differently.  Reject them instead of accepting a pair that looks
-      // like one DB here but is split at runtime.
-      if (value.searchParams.has('dbname') || value.searchParams.has('database')) return undefined
+      // Driver URL parsers permit query parameters that override the parsed
+      // host, port or database. Reject every target override rather than
+      // accepting a pair that looks like one DB here but splits at runtime.
+      const targetOverrides = new Set(['host', 'hostaddr', 'port', 'dbname', 'database', 'service', 'servicefile'])
+      if ([...value.searchParams.keys()].some((key) => targetOverrides.has(key.toLowerCase()))) return undefined
       const path = value.pathname
       if (!path.startsWith('/') || path === '/') return undefined
       let database: string
