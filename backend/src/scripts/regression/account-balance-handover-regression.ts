@@ -18,6 +18,7 @@ assert.equal(accountBalanceNodeOwnerEnabled({ JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER
 assert.equal(accountBalanceGoOwnerEnabled({ JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'GO' }), true, 'owner gate 必须大小写无关')
 assert.equal(sameAccountBalanceJobsPostgresStore('postgres://jobs-writer@db.example:5432/juhe_jobs?sslmode=require', 'postgres://projector-reader@DB.EXAMPLE/juhe_jobs'), true, 'jobs writer 与 projector 可使用不同凭据但必须同库')
 assert.equal(sameAccountBalanceJobsPostgresStore('postgres://jobs@db.example/juhe_jobs_a', 'postgres://reader@db.example/juhe_jobs_b'), false, '不同 jobs DB 不得通过 handover gate')
+assert.equal(sameAccountBalanceJobsPostgresStore('postgres://writer@db.example', 'postgres://reader@db.example/'), false, '未显式数据库名会由驱动回退到不同角色默认库，handover 必须拒绝')
 
 const gate = {
   enabled: true,

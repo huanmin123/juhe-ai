@@ -29,8 +29,21 @@ export function sameAccountBalanceJobsPostgresStore(left: string | undefined, ri
     const a = new URL(left?.trim() ?? '')
     const b = new URL(right?.trim() ?? '')
     if (!['postgres:', 'postgresql:'].includes(a.protocol) || !['postgres:', 'postgresql:'].includes(b.protocol)) return false
-    const identity = (value: URL) => `${value.hostname.toLowerCase()}:${value.port || '5432'}${value.pathname.replace(/\/+$/u, '')}`
-    return identity(a) === identity(b)
+    const identity = (value: URL): string | undefined => {
+      const path = value.pathname
+      if (!path.startsWith('/') || path === '/') return undefined
+      let database: string
+      try {
+        database = decodeURIComponent(path.slice(1))
+      } catch {
+        return undefined
+      }
+      if (!database || database.includes('/')) return undefined
+      return `${value.hostname.toLowerCase()}:${value.port || '5432'}/${database}`
+    }
+    const leftIdentity = identity(a)
+    const rightIdentity = identity(b)
+    return leftIdentity !== undefined && leftIdentity === rightIdentity
   } catch {
     return false
   }
