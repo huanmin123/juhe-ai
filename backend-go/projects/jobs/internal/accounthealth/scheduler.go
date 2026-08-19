@@ -286,11 +286,6 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 	if err != nil {
 		return err
 	}
-	if request.SourceFence != nil && !request.MutateAccount {
-		if !sourceFenceHealthMutationAllowed(input, initialState, initialFound) {
-			return r.persistSourceOnlyStale(ctx, lease, input, request, initialState, initialFound, now)
-		}
-	}
 	mutationKind := ""
 	if request.MutateAccount {
 		var allowed bool
@@ -311,21 +306,6 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 	}
 	applyExplicitRequestDecision(&outcome, input, request, prior, found, mutationKind)
 	_, err = r.store.AppendOutcome(ctx, lease, outcome)
-	return err
-}
-
-func (r *Runner) persistSourceOnlyStale(ctx context.Context, lease OwnerLease, input Input, request ProbeRequest, prior CurrentState, found bool, observed time.Time) error {
-	outcome := Outcome{OutcomeID: newOutcomeID(), RequestID: request.RequestID, AccountID: request.AccountID, Outcome: OutcomeStale, ObservedAt: observed, InputVersion: request.InputVersion, ConfigRevision: request.ConfigRevision, DispatchRevision: request.DispatchRevision, ErrorCode: "source_state_stale", ErrorMessage: "source-only request 缺少匹配的当前状态", SourceFence: request.SourceFence}
-	if found && strings.TrimSpace(prior.AccountStatus) != "" {
-		copyStateToOutcome(&outcome, prior)
-	} else {
-		outcome.AccountStatus = input.Eligibility.AccountStatus
-		if (outcome.AccountStatus == "temporary_unavailable" || outcome.AccountStatus == "rate_limited") && validCooldownFence(input.Cooldown, input) {
-			outcome.CooldownFence = input.Cooldown
-			outcome.NextDueAt = input.Eligibility.CooldownUntil
-		}
-	}
-	_, err := r.store.AppendOutcome(ctx, lease, outcome)
 	return err
 }
 
@@ -357,7 +337,13 @@ func copyStateToOutcome(outcome *Outcome, prior CurrentState) {
 
 func applyExplicitRequestDecision(outcome *Outcome, input Input, request ProbeRequest, prior CurrentState, found bool, mutationKind string) {
 	if request.MutateAccount {
-		applyOutcomeDecision(outcome, input, prior, found, mutationKind)
+		decisionKind := mutationKind
+		if request.Reason == "request_failure" && mutationKind == "health" {
+			// A real request failure is the first business signal. Its dedicated
+			// confirmation must not wait for the generic anti-flap threshold.
+			decisionKind = "request_failure_health"
+		}
+		applyOutcomeDecision(outcome, input, prior, found, decisionKind)
 		return
 	}
 	if request.SourceFence != nil && outcome.Outcome == OutcomeUpstreamFailed && sourceFenceHealthMutationAllowed(input, prior, found) {
@@ -468,8 +454,6 @@ func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input
 		DispatchRevision: input.DispatchRevision,
 		ErrorCode:        code,
 		ErrorMessage:     message,
-		NextDueAt:        ptrTime(observed.Add(5 * time.Minute)),
-		AccountStatus:    input.Eligibility.AccountStatus,
 	}
 	_, err = r.store.AppendOutcome(ctx, lease, outcome)
 	return err
@@ -505,8 +489,14 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 
 func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, priorFound bool, kind string) {
 	observed := outcome.ObservedAt.UTC()
+	if !matchingCurrentStateInput(prior, priorFound, input) {
+		// A new input/config/dispatch epoch has no authority to inherit the
+		// previous epoch's counters, window or cooldown generation.
+		prior = CurrentState{}
+		priorFound = false
+	}
 	priorStatus := input.Eligibility.AccountStatus
-	if priorFound && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision && prior.AccountStatus != "" {
+	if priorFound && prior.AccountStatus != "" {
 		priorStatus = prior.AccountStatus
 	}
 	if kind == "cooldown_retest" {
@@ -514,6 +504,10 @@ func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, pri
 		return
 	}
 	applyHealthDecision(outcome, input, prior, priorStatus, kind, observed)
+}
+
+func matchingCurrentStateInput(prior CurrentState, priorFound bool, input Input) bool {
+	return priorFound && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision
 }
 
 func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, priorStatus, kind string, observed time.Time) {
@@ -540,10 +534,12 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 		outcome.FailureStartedAt = started
 		if priorStatus == "pending_test" && observed.Sub(*started) >= 24*time.Hour {
 			outcome.AccountStatus = "error"
+			outcome.ErrorCode = "account_activation_check_timeout"
+			outcome.ErrorMessage = "待检查账户自首次独立失败起持续 24 小时仍未通过探活"
 			outcome.Projection = healthProjection(input, "activation_error", priorStatus, nil, observed, outcome, failures)
 			return
 		}
-		immediateCooldown := (kind == "scheduled_health" || kind == "source_health")
+		immediateCooldown := (kind == "scheduled_health" || kind == "source_health" || kind == "request_failure_health")
 		if priorStatus == "active" && (immediateCooldown || failures >= input.Schedule.FailureThreshold) {
 			outcome.AccountStatus = "temporary_unavailable"
 			// The health threshold count belongs to the health window.  The
@@ -596,9 +592,6 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 	case OutcomeNeutral, OutcomeTaskFailed:
 		growthStep := cooldownDeferGrowthStep(fence, observed, base)
 		delay := stableCooldownDefer(input.AccountID, fence.Generation, growthStep, base, maxDelay)
-		if remaining, bounded := boundedCooldownRemaining(input, expectedStatus, fence, observed); bounded && delay > remaining {
-			delay = remaining
-		}
 		next := observed.Add(delay)
 		outcome.NextDueAt = &next
 		outcome.FailureCount = prior.FailureCount

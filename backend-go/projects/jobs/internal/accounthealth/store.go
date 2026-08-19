@@ -375,10 +375,76 @@ func (s *Store) writeCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Out
 		// current state.
 		return false, nil
 	}
+	if outcome.SourceFence != nil && outcome.Projection == nil {
+		// Source-fenced confirmations settle Gateway runtime only. Without a
+		// Go-issued business projection they may run during a cold current-state
+		// window, but must never establish scheduling state just to report that
+		// source result.
+		return false, nil
+	}
+	if outcome.Outcome == OutcomeTaskFailed && outcome.Projection == nil {
+		// Preflight/config/deadline failures have no due time and are audit-only.
+		// A task failure produced after an actual probe carries a bounded due
+		// time; update only retry metadata and error receipt, preserving status,
+		// counters and every cooldown fence field.
+		if outcome.NextDueAt == nil {
+			return false, nil
+		}
+		return s.updateTaskFailureRetryTx(ctx, tx, outcome)
+	}
 	if outcome.Projection != nil && outcome.Projection.ExpectedCooldownFence != nil {
 		return s.updateCooldownCurrentStateTx(ctx, tx, outcome)
 	}
 	return s.upsertCurrentStateTx(ctx, tx, outcome)
+}
+
+func (s *Store) updateTaskFailureRetryTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	var result sql.Result
+	var err error
+	observedText := outcome.ObservedAt.UTC().Format(time.RFC3339Nano)
+	dueText := nullableTimeText(outcome.NextDueAt)
+	if s.mode == StorePostgres {
+		result, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_current_state
+SET outcome_id=$1, outcome=$2, observed_at=$3, status_code=$4, error_code=$5, error_message=$6, next_due_at=$7, updated_at=$3
+WHERE account_id=$8 AND input_version=$9 AND config_revision=$10 AND dispatch_revision=$11 AND observed_at <= $3`,
+			outcome.OutcomeID, outcome.Outcome, observedText, outcome.StatusCode, outcome.ErrorCode, outcome.ErrorMessage, dueText, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
+	} else {
+		result, err = tx.ExecContext(ctx, `UPDATE account_health_current_state
+SET outcome_id=?, outcome=?, observed_at=?, status_code=?, error_code=?, error_message=?, next_due_at=?, updated_at=?
+WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=? AND observed_at <= ?`,
+			outcome.OutcomeID, outcome.Outcome, observedText, outcome.StatusCode, outcome.ErrorCode, outcome.ErrorMessage, dueText, observedText, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, observedText)
+	}
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows > 0 {
+		return rows > 0, err
+	}
+	// A first scheduled probe can fail before any current-state row exists
+	// (for example, an OAuth access envelope is missing). Insert only the
+	// input's status and bounded due time so the same request ID is not
+	// permanently deduplicated. Never turn this bootstrap into an UPSERT: a
+	// concurrent state writer must win rather than be overwritten.
+	return s.insertTaskFailureBaselineTx(ctx, tx, outcome)
+}
+
+func (s *Store) insertTaskFailureBaselineTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	args := currentStateArgs(outcome, s.mode)
+	var result sql.Result
+	var err error
+	if s.mode == StorePostgres {
+		result, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4) ON CONFLICT (account_id) DO NOTHING`, args...)
+	} else {
+		result, err = tx.ExecContext(ctx, `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (account_id) DO NOTHING`, args...)
+	}
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
 }
 
 func (s *Store) upsertCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {

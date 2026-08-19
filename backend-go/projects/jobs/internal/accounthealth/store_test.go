@@ -18,6 +18,16 @@ func TestPostgresSchemaDoesNotCreateDatabaseSchema(t *testing.T) {
 	}
 }
 
+func TestPostgresTaskFailureBaselineReusesObservedAtForUpdatedAt(t *testing.T) {
+	source, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4) ON CONFLICT (account_id) DO NOTHING") {
+		t.Fatal("PostgreSQL task-failure baseline must reuse observed_at for updated_at because currentStateArgs has 17 parameters")
+	}
+}
+
 // This is intentionally opt-in because the configured URL must point to an
 // isolated jobs schema. It exercises PostgreSQL's ON CONFLICT and null-safe
 // cooldown-fence predicates rather than assuming SQLite's syntax is enough.
@@ -132,6 +142,41 @@ func TestSQLiteCurrentStateCASRejectsRevisionMismatchButKeepsOutcome(t *testing.
 	}
 	assertStoredOutcomeProjectionStripped(t, store, late.RequestID)
 	assertStoredOutcomeProjectionStripped(t, store, dispatchMismatch.RequestID)
+}
+
+func TestSQLiteTaskFailureWithoutProjectionCannotResetCurrentState(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	observed := time.Now().UTC().Round(0)
+	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "task-failure-generation"}
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "task-baseline", RequestID: "task-baseline-request", AccountID: "account-task-failure",
+		Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		AccountStatus: "temporary_unavailable", FailureCount: 7, NextDueAt: ptrTime(observed.Add(time.Minute)), CooldownFence: fence,
+	})
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "task-failure", RequestID: "task-failure-request", AccountID: "account-task-failure",
+		Outcome: OutcomeTaskFailed, ObservedAt: observed.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		ErrorCode: "request_deadline_elapsed",
+	})
+	state, found, err := store.LoadCurrentState(ctx, "account-task-failure")
+	if err != nil || !found || state.OutcomeID != "task-baseline" || state.AccountStatus != "temporary_unavailable" || state.FailureCount != 7 || !sameCooldownFence(state.CooldownFence, fence) {
+		t.Fatalf("task failure without projection must preserve current state: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
+func TestSQLiteTaskFailureWithDueOnlyReschedulesWithoutChangingState(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	observed := time.Now().UTC().Round(0)
+	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "task-retry-generation"}
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "retry-baseline", RequestID: "retry-baseline-request", AccountID: "account-task-retry", Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, AccountStatus: "active", FailureCount: 3, CooldownFence: fence})
+	due := observed.Add(5 * time.Minute)
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "retry-failure", RequestID: "retry-failure-request", AccountID: "account-task-retry", Outcome: OutcomeTaskFailed, ObservedAt: observed.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "upstream_unavailable", ErrorMessage: "probe transport failed", NextDueAt: &due})
+	state, found, err := store.LoadCurrentState(ctx, "account-task-retry")
+	if err != nil || !found || state.OutcomeID != "retry-failure" || state.AccountStatus != "active" || state.FailureCount != 3 || state.NextDueAt == nil || !state.NextDueAt.Equal(due) || !sameCooldownFence(state.CooldownFence, fence) {
+		t.Fatalf("task failure retry must only advance due/error receipt: found=%t state=%#v err=%v", found, state, err)
+	}
 }
 
 func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndMissingState(t *testing.T) {

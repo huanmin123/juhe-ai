@@ -280,6 +280,42 @@ func TestRunnerDirectInputRefreshesDueFenceAfterRead(t *testing.T) {
 	}
 }
 
+func TestScheduledTaskFailureReschedulesWithoutResettingCurrentState(t *testing.T) {
+	now := time.Now().UTC().Round(0)
+	input := testInput("https://api.example.com", "chat_json")
+	input.Type = "oauth"
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: 3_000}
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	oldDue := now.Add(-time.Second)
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "scheduled-task-baseline", RequestID: "scheduled-task-baseline-request", AccountID: input.AccountID, Outcome: OutcomeSuccess, ObservedAt: now.Add(-time.Minute), InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 2, NextDueAt: &oldDue})
+	runner := NewRunner(Config{CredentialSecret: "unused", ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, Now: func() time.Time { return now }}, store, nil)
+	if err := runner.runInput(ctx, lease, input, now); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := store.LoadCurrentState(ctx, input.AccountID)
+	if err != nil || !found || state.Outcome != OutcomeTaskFailed || state.ErrorCode != "oauth_access_missing" || state.AccountStatus != "active" || state.FailureCount != 2 || state.NextDueAt == nil || !state.NextDueAt.After(now) {
+		t.Fatalf("scheduled task failure must only reschedule the existing state: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
+func TestScheduledTaskFailureBootstrapsDueStateWhenCurrentStateIsMissing(t *testing.T) {
+	now := time.Now().UTC().Round(0)
+	input := testInput("https://api.example.com", "chat_json")
+	input.Type = "oauth"
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(5 * time.Minute / time.Millisecond)}
+	store, lease := openSQLiteStoreWithLease(t)
+	if err := NewRunner(Config{CredentialSecret: "unused", ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, Now: func() time.Time { return now }}, store, nil).runInput(context.Background(), lease, input, now); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := store.LoadCurrentState(context.Background(), input.AccountID)
+	if err != nil || !found || state.AccountStatus != "active" || state.FailureCount != 0 || state.NextDueAt == nil || !state.NextDueAt.After(now) || state.CooldownFence != nil {
+		t.Fatalf("missing-state task failure must bootstrap only bounded scheduling metadata: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
 func TestApplyCooldownNeutralKeepsTemporaryUnavailableAndDefers(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")
@@ -378,6 +414,42 @@ func TestScheduledAndSourceHealthFailuresBypassGenericThreshold(t *testing.T) {
 	}
 }
 
+func TestRequestFailureHealthConfirmationBypassesGenericThreshold(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}
+	confirmed := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyExplicitRequestDecision(&confirmed, input, ProbeRequest{Reason: "request_failure", MutateAccount: true}, prior, true, "health")
+	if confirmed.AccountStatus != "temporary_unavailable" || confirmed.CooldownFence == nil || confirmed.Projection == nil || confirmed.Projection.TransitionKind != "temporary_unavailable" {
+		t.Fatalf("request failure confirmation must enter cooldown at threshold one: %#v", confirmed)
+	}
+	generic := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyExplicitRequestDecision(&generic, input, ProbeRequest{Reason: "configuration_changed", MutateAccount: true}, prior, true, "health")
+	if generic.AccountStatus != "active" || generic.Projection == nil || generic.Projection.TransitionKind != "health_failure" {
+		t.Fatalf("non-request explicit health failure must retain generic threshold: %#v", generic)
+	}
+}
+
+func TestInputRevisionMismatchCannotReuseFailureCounters(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond)}
+	for _, prior := range []CurrentState{
+		{InputVersion: input.InputVersion - 1, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 99},
+		{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision + 1, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 99},
+		{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision + 1, AccountStatus: "active", FailureCount: 99},
+	} {
+		outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+		applyOutcomeDecision(&outcome, input, prior, true, "health")
+		if outcome.AccountStatus != "active" || outcome.FailureCount != 1 || outcome.Projection == nil || outcome.Projection.TransitionKind != "health_failure" {
+			t.Fatalf("revision-mismatched current state must start a clean health window: prior=%#v outcome=%#v", prior, outcome)
+		}
+	}
+}
+
 func TestThresholdCooldownStartsIndependentRetrySequence(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")
@@ -465,8 +537,8 @@ func TestBoundedTemporaryUnavailableCapsThenTerminatesOnRealFailure(t *testing.T
 	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 1, CooldownFence: fence}
 	neutral := Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
 	applyOutcomeDecision(&neutral, input, prior, true, "cooldown_retest")
-	if neutral.NextDueAt == nil || !neutral.NextDueAt.Equal(now.Add(time.Second)) || neutral.AccountStatus != "temporary_unavailable" {
-		t.Fatalf("bounded neutral deferral must stop at ten-minute deadline: %#v", neutral)
+	if neutral.NextDueAt == nil || neutral.NextDueAt.Sub(now) < 3*time.Second || neutral.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("bounded neutral deferral must retain the 3s minimum without terminalizing: %#v", neutral)
 	}
 	beforeDeadline := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	applyOutcomeDecision(&beforeDeadline, input, prior, true, "cooldown_retest")
@@ -474,6 +546,11 @@ func TestBoundedTemporaryUnavailableCapsThenTerminatesOnRealFailure(t *testing.T
 		t.Fatalf("bounded retry must stop at ten-minute deadline: %#v", beforeDeadline)
 	}
 	fence.ObservationStartedAt = now.Add(-cooldownLimitedProbeTimeout)
+	atDeadlineTaskFailed := Outcome{Outcome: OutcomeTaskFailed, ObservedAt: now}
+	applyOutcomeDecision(&atDeadlineTaskFailed, input, prior, true, "cooldown_retest")
+	if atDeadlineTaskFailed.NextDueAt == nil || atDeadlineTaskFailed.NextDueAt.Sub(now) < 3*time.Second || atDeadlineTaskFailed.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("bounded task failure must retain the 3s minimum without terminalizing: %#v", atDeadlineTaskFailed)
+	}
 	atDeadline := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	applyOutcomeDecision(&atDeadline, input, prior, true, "cooldown_retest")
 	if atDeadline.AccountStatus != "error" || atDeadline.ErrorCode != "cooldown_retest_limited_probe_timeout" || atDeadline.Projection == nil || atDeadline.Projection.TransitionKind != "cooldown_error" || atDeadline.CooldownFence == nil || atDeadline.Projection.CooldownFence == nil || !sameCooldownFence(atDeadline.CooldownFence, fence) {
@@ -541,7 +618,7 @@ func TestSourceFenceUpstreamFailureMutatesActiveState(t *testing.T) {
 	}
 }
 
-func TestSourceOnlyMissingStateFailsClosedBeforeProbe(t *testing.T) {
+func TestSourceOnlyMissingStateStillProbesWithoutCreatingCurrentState(t *testing.T) {
 	secret := "source-state-credential-secret"
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -568,12 +645,16 @@ func TestSourceOnlyMissingStateFailsClosedBeforeProbe(t *testing.T) {
 	if err := runner.runExplicitRequest(context.Background(), lease, input, request, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 0 {
-		t.Fatalf("source-only request without state must not probe upstream, calls=%d", calls)
+	if calls != 1 {
+		t.Fatalf("source-only request without state must still settle its real probe result, calls=%d", calls)
 	}
 	state, found, err := store.LoadCurrentState(context.Background(), input.AccountID)
 	if err != nil || found || state != (CurrentState{}) {
-		t.Fatalf("source-only stale outcome must remain outcome-only: found=%t state=%#v err=%v", found, state, err)
+		t.Fatalf("source-only cold-state outcome must remain outcome-only: found=%t state=%#v err=%v", found, state, err)
+	}
+	var persistedOutcome string
+	if err := store.db.QueryRowContext(context.Background(), `SELECT outcome FROM account_health_outcomes WHERE request_id=?`, request.RequestID).Scan(&persistedOutcome); err != nil || persistedOutcome == OutcomeStale {
+		t.Fatalf("source-only cold-state result must remain a durable real outcome: outcome=%q err=%v", persistedOutcome, err)
 	}
 }
 
@@ -600,6 +681,19 @@ func TestPendingTestInputEligibleBeforeActivation(t *testing.T) {
 	input.Eligibility = Eligibility{AccountStatus: "pending_test", Schedulable: false, BoundGroup: true, AuthorizationEligible: true}
 	if !inputEligible(input) {
 		t.Fatal("pending_test must remain probeable before activation sets schedulable")
+	}
+}
+
+func TestPendingTestTimeoutCarriesFrozenTerminalError(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "pending_test", Schedulable: false, BoundGroup: true, AuthorizationEligible: true}
+	started := now.Add(-24 * time.Hour)
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "pending_test", FailureCount: 2, FailureStartedAt: &started}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now, ErrorCode: "upstream_error", ErrorMessage: "upstream unavailable"}
+	applyOutcomeDecision(&outcome, input, prior, true, "scheduled_health")
+	if outcome.AccountStatus != "error" || outcome.ErrorCode != "account_activation_check_timeout" || outcome.ErrorMessage == "" || outcome.NextDueAt != nil || outcome.Projection == nil || outcome.Projection.TransitionKind != "activation_error" {
+		t.Fatalf("pending timeout must be a terminal, explicit activation error: %#v", outcome)
 	}
 }
 

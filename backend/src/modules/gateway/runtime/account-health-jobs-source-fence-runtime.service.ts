@@ -51,7 +51,7 @@ async function runConsumerLoop(): Promise<void> {
         // outcome. Retry leaves the cursor unchanged so a runtime-state read
         // race, owner lease, or dispatch hand-off cannot be silently skipped.
         if (settlement === 'retry') break
-        cursor = { observedAt: outcome.observed_at, outcomeId: outcome.outcome_id }
+        cursor = sourceFenceOutcomeCursor(outcome)
       }
     } catch (error) {
       logger.warn(errorLogFields(error, {
@@ -61,6 +61,13 @@ async function runConsumerLoop(): Promise<void> {
     if (stopping) break
     await waitForNextTick(runtimeConfig.accountHealthJobs.sourceFenceConsumerPollMs)
   }
+}
+
+// The outcome reader orders by the durable store timestamp. Go payload
+// timestamps may retain nanoseconds while PostgreSQL storage is microsecond
+// precision, so the payload timestamp is not a safe pagination cursor.
+export function sourceFenceOutcomeCursor(outcome: Pick<Awaited<ReturnType<typeof listAccountHealthJobsOutcomes>>[number], 'storage_observed_at' | 'observed_at' | 'outcome_id'>): AccountHealthJobsOutcomeCursor {
+  return { observedAt: outcome.storage_observed_at ?? outcome.observed_at, outcomeId: outcome.outcome_id }
 }
 
 function isGatewayConsumerEnabled(): boolean {
