@@ -8,6 +8,12 @@ import {
 export type AvailabilityProbeKind = 'codex_source_avoidance' | 'account_health_check'
 export type AvailabilityProbeOutcome = 'success' | 'health_failure' | 'unknown' | 'probe_task_failure' | 'canceled' | 'stale'
 
+export interface AvailabilityProbeSourceFenceSettlementDisposition {
+  disposition: 'retry' | 'terminal'
+  /** The generation's already-committed result, when one exists. */
+  completedOutcome?: AvailabilityProbeOutcome
+}
+
 interface AvailabilityProbeState {
   runtimeKey: string
   generation: number
@@ -250,6 +256,31 @@ export async function settleDispatchedAvailabilityProbeBySourceFence(input: {
     nowMs,
     retentionMs: input.retentionMs
   })
+}
+
+// Distinguishes a durable outcome that is merely early from one that belongs
+// to a replaced/already-completed generation. The Go outcome cursor must not
+// skip the former, while the latter is safe to acknowledge.
+export async function availabilityProbeSourceFenceSettlementDisposition(input: {
+  runtimeKey: string
+  generation: number
+  sourceFence: AvailabilityProbeSourceFence
+  /** Test-only clock injection; production callers use the wall clock. */
+  nowMs?: number
+}): Promise<AvailabilityProbeSourceFenceSettlementDisposition> {
+  const current = await currentAvailabilityProbeStateStore().get(input.runtimeKey)
+  // The coordinator state is deliberately ephemeral. Once its retention has
+  // elapsed or a Gateway restarts without the memory fallback, no later
+  // source-fenced outcome can safely recreate or settle that generation.
+  // It is therefore terminal, rather than an unbounded cursor retry.
+  if (!current) return { disposition: 'terminal' }
+  if (current.generation !== input.generation) return { disposition: 'terminal' }
+  if (!(current.sourceFences ?? []).includes(encodeSourceFence(input.sourceFence))) return { disposition: 'terminal' }
+  if (current.outcome !== undefined) return { disposition: 'terminal', completedOutcome: current.outcome }
+  const nowMs = input.nowMs ?? Date.now()
+  if ((current.probeRunUntilMs ?? 0) > nowMs) return { disposition: 'retry' }
+  if (current.dispatchPending === true && (current.dispatchPendingUntilMs ?? 0) > nowMs) return { disposition: 'retry' }
+  return { disposition: 'terminal' }
 }
 
 export async function getAvailabilityProbeState(runtimeKey: string): Promise<Readonly<AvailabilityProbeState> | undefined> {

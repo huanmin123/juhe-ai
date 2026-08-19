@@ -8,9 +8,8 @@
   "archiveOverlayAllowed": false,
   "restoreProcedure": "停止 Go F3 sidecar 与 Node 应用后，以 rollbackCommit 整体恢复完整 Node 基线；归档文件仅供比对，禁止覆盖更新工作树或与 Go owner 双写运行。",
   "goImplementationPaths": [
-    "backend-go/cmd/juhe-ai-audit-log-writer/main.go",
-    "backend-go/cmd/juhe-ai-audit-log-migrate/main.go",
-    "backend-go/internal/auditlog"
+    "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go",
+    "backend-go/projects/gateway/internal/auditlog"
   ],
   "disabledNodeEntrypoints": [
     "backend/src/modules/audit-logs/audit-log-queue.service.ts",

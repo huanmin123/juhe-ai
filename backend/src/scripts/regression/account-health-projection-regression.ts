@@ -9,6 +9,17 @@ import { encryptJson } from '../../storage/crypto.js'
 const require = createRequire(import.meta.url)
 const Constructor = require('node:sqlite').DatabaseSync as new (path: string) => DatabaseSync
 
+type CooldownFence = {
+  observation_started_at: string
+  generation: string
+  source_config_revision?: number
+}
+
+const defaultCooldownFence: CooldownFence = {
+  observation_started_at: '2026-08-16T00:00:00.000Z',
+  generation: 'generation-1'
+}
+
 const database = new Constructor(':memory:')
 try {
   database.exec(`
@@ -72,6 +83,44 @@ try {
   assert.equal(account.next_health_check_at, '2026-08-16T01:00:00.000Z')
   assert.equal(account.health_check_failure_count, 0)
 
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-4', 'active', 1, 8, 9, encryptJson({ api_key: 'sk-account-4' }), '2026-08-16T00:00:00.000Z')
+  database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
+    .run('account-4', 1, '2026-08-16T00:00:00.000Z')
+  const thresholdTransition = projectAccountHealthJobsOutcome(temporaryUnavailableAfterThreshold('outcome-threshold'), database)
+  assert.equal(thresholdTransition.disposition, 'applied')
+  const thresholdAccount = database.prepare(`SELECT status, cooldown_retest_failure_count, health_check_failure_count FROM accounts WHERE id = ?`).get('account-4') as Record<string, unknown>
+  assert.equal(thresholdAccount.status, 'temporary_unavailable')
+  assert.equal(thresholdAccount.cooldown_retest_failure_count, 0)
+  assert.equal(thresholdAccount.health_check_failure_count, 3)
+
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at, cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation, health_check_failure_count, health_check_failure_started_at, last_health_check_at, next_health_check_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-5', 'temporary_unavailable', 1, 4, 5, encryptJson({ api_key: 'sk-account-5' }), '2026-08-16T00:00:00.000Z', '2026-08-16T00:10:00.000Z', '2026-08-16T00:00:00.000Z', 'generation-1', 3, '2026-08-15T23:50:00.000Z', '2026-08-16T00:00:00.000Z', '2026-08-16T00:05:00.000Z')
+  database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
+    .run('account-5', 1, '2026-08-16T00:00:00.000Z')
+  const cooldownFailurePreservesHealth = cooldownFailure('outcome-cooldown-preserves-health')
+  cooldownFailurePreservesHealth.account_id = 'account-5'
+  cooldownFailurePreservesHealth.projection!.target_account_id = 'account-5'
+  const cooldownFailureResult = projectAccountHealthJobsOutcome(cooldownFailurePreservesHealth, database)
+  assert.equal(cooldownFailureResult.disposition, 'applied')
+  const cooldownPreserved = database.prepare(`SELECT health_check_failure_count, health_check_failure_started_at, last_health_check_at, next_health_check_at, cooldown_retest_failure_count, cooldown_retest_last_at FROM accounts WHERE id = ?`).get('account-5') as Record<string, unknown>
+  assert.equal(cooldownPreserved.health_check_failure_count, 3)
+  assert.equal(cooldownPreserved.health_check_failure_started_at, '2026-08-15T23:50:00.000Z')
+  assert.equal(cooldownPreserved.last_health_check_at, '2026-08-16T00:00:00.000Z')
+  assert.equal(cooldownPreserved.next_health_check_at, '2026-08-16T00:05:00.000Z')
+  assert.equal(cooldownPreserved.cooldown_retest_failure_count, 2)
+  assert.equal(cooldownPreserved.cooldown_retest_last_at, '2026-08-16T00:05:00.000Z')
+
+  const malformedHistorical = projectAccountHealthJobsOutcome(healthFailureExpectedError('outcome-malformed-historical'), database)
+  assert.deepEqual(malformedHistorical, {
+    outcomeId: 'outcome-malformed-historical',
+    accountId: 'account-1',
+    inputVersion: 1,
+    disposition: 'rejected',
+    changed: false,
+    reason: 'projection_health_failure_expected_status_invalid'
+  })
+
   const replay = projectAccountHealthJobsOutcome(healthSuccess('outcome-1'), database)
   assert.deepEqual(replay, { outcomeId: 'outcome-1', accountId: 'account-1', inputVersion: 1, disposition: 'applied', changed: false })
 
@@ -86,6 +135,35 @@ try {
     .run('account-2', 'temporary_unavailable', 1, 4, 5, encryptJson({ api_key: 'sk-account-2' }), '2026-08-16T00:05:00.000Z', '2026-08-16T00:00:00.000Z', 'generation-1', '2026-08-16T00:00:00.000Z')
   database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
     .run('account-2', 1, '2026-08-16T00:00:00.000Z')
+
+  const observationFenceMismatch = projectAccountHealthJobsOutcome(cooldownDefer('outcome-3-observation-mismatch', {
+    observation_started_at: '2026-08-16T00:00:01.000Z',
+    generation: 'generation-1'
+  }), database)
+  assert.deepEqual(observationFenceMismatch, {
+    outcomeId: 'outcome-3-observation-mismatch',
+    accountId: 'account-2',
+    inputVersion: 1,
+    disposition: 'rejected',
+    changed: false,
+    reason: 'projection_cooldown_fence_mismatch'
+  })
+
+  const sourceFenceMismatch = projectAccountHealthJobsOutcome(cooldownDefer('outcome-3-source-mismatch', {
+    observation_started_at: '2026-08-16T00:00:00.000Z',
+    generation: 'generation-1',
+    source_config_revision: 8
+  }), database)
+  assert.equal(sourceFenceMismatch.disposition, 'rejected')
+  assert.equal(sourceFenceMismatch.reason, 'projection_cooldown_fence_mismatch')
+
+  const failureFenceMismatch = projectAccountHealthJobsOutcome(cooldownFailure('outcome-3-failure-mismatch', {
+    observation_started_at: '2026-08-16T00:00:00.000Z',
+    generation: 'generation-2'
+  }), database)
+  assert.equal(failureFenceMismatch.disposition, 'rejected')
+  assert.equal(failureFenceMismatch.reason, 'projection_cooldown_fence_mismatch')
+
   const deferred = projectAccountHealthJobsOutcome(cooldownDefer('outcome-3'), database)
   assert.equal(deferred.disposition, 'applied')
   const cooling = database.prepare(`SELECT cooldown_until, cooldown_retest_generation FROM accounts WHERE id = ?`).get('account-2') as Record<string, unknown>
@@ -96,11 +174,39 @@ try {
   assert.equal(staleCooldown.disposition, 'stale')
   assert.equal(staleCooldown.reason, 'cooldown_generation_stale')
 
+  const recovered = projectAccountHealthJobsOutcome(cooldownSuccess('outcome-5', {
+    observation_started_at: '2026-08-16T00:00:00.000Z',
+    generation: 'generation-2'
+  }), database)
+  assert.equal(recovered.disposition, 'applied')
+  const recoveredAccount = database.prepare(`SELECT status, cooldown_until, cooldown_retest_generation FROM accounts WHERE id = ?`).get('account-2') as Record<string, unknown>
+  assert.equal(recoveredAccount.status, 'active')
+  assert.equal(recoveredAccount.cooldown_until, null)
+  assert.equal(recoveredAccount.cooldown_retest_generation, null)
+
+  database.prepare(`UPDATE accounts SET status = ?, schedulable = ?, cooldown_until = ?, cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ? WHERE id = ?`)
+    .run('temporary_unavailable', 1, '2026-08-23T00:00:00.000Z', 1, '2026-08-16T00:00:00.000Z', 'terminal-generation', 'account-2')
+  const terminal = projectAccountHealthJobsOutcome(cooldownError('outcome-5-terminal', {
+    observation_started_at: '2026-08-16T00:00:00.000Z',
+    generation: 'terminal-generation'
+  }), database)
+  assert.equal(terminal.disposition, 'applied')
+  const terminalAccount = database.prepare(`SELECT status, schedulable, cooldown_until, cooldown_retest_failure_count, cooldown_retest_observation_started_at, cooldown_retest_generation, cooldown_retest_last_at, cooldown_retest_last_status_code, last_error_code FROM accounts WHERE id = ?`).get('account-2') as Record<string, unknown>
+  assert.equal(terminalAccount.status, 'error')
+  assert.equal(terminalAccount.schedulable, 0)
+  assert.equal(terminalAccount.cooldown_until, null)
+  assert.equal(terminalAccount.cooldown_retest_failure_count, 2)
+  assert.equal(terminalAccount.cooldown_retest_observation_started_at, '2026-08-16T00:00:00.000Z')
+  assert.equal(terminalAccount.cooldown_retest_generation, 'terminal-generation')
+  assert.equal(terminalAccount.cooldown_retest_last_at, '2026-08-16T00:05:00.000Z')
+  assert.equal(terminalAccount.cooldown_retest_last_status_code, 503)
+  assert.equal(terminalAccount.last_error_code, 'cooldown_retest_observation_timeout')
+
   database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run('account-3', 'pending_test', 0, 6, 7, encryptJson({ api_key: 'sk-account-3' }), '2026-08-16T00:00:00.000Z')
   database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
     .run('account-3', 1, '2026-08-16T00:00:00.000Z')
-  const activation = projectAccountHealthJobsOutcome(activationSuccess('outcome-5'), database)
+  const activation = projectAccountHealthJobsOutcome(activationSuccess('outcome-6'), database)
   assert.equal(activation.disposition, 'applied')
   const activated = database.prepare(`SELECT status, schedulable, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get('account-3') as Record<string, unknown>
   assert.equal(activated.status, 'active')
@@ -135,34 +241,89 @@ function healthSuccess(outcomeId: string): AccountHealthJobsOutcome {
   }
 }
 
-function cooldownDefer(outcomeId: string): AccountHealthJobsOutcome {
+function temporaryUnavailableAfterThreshold(outcomeId: string): AccountHealthJobsOutcome {
+  const fence: CooldownFence = { observation_started_at: '2026-08-16T00:00:00.000Z', generation: 'threshold-generation' }
+  return {
+    outcome_id: outcomeId,
+    request_id: `request-${outcomeId}`,
+    account_id: 'account-4',
+    outcome: 'upstream_failure',
+    observed_at: '2026-08-16T00:00:00.000Z',
+    input_version: 1,
+    config_revision: 8,
+    dispatch_revision: 9,
+    next_due_at: '2026-08-16T00:00:03.000Z',
+    failure_count: 0,
+    failure_started_at: '2026-08-15T23:50:00.000Z',
+    projection: {
+      target_account_id: 'account-4',
+      transition_kind: 'temporary_unavailable',
+      input_version: 1,
+      config_revision: 8,
+      dispatch_revision: 9,
+      expected_account_status: 'active',
+      cooldown_fence: fence,
+      values: { health_check_failure_count: 3 }
+    }
+  }
+}
+
+function cooldownDefer(outcomeId: string, outputFence: CooldownFence = defaultCooldownFence): AccountHealthJobsOutcome {
+  return cooldownOutcome(outcomeId, 'cooldown_defer', 'framing_complete_neutral', outputFence)
+}
+
+function cooldownFailure(outcomeId: string, outputFence: CooldownFence = defaultCooldownFence): AccountHealthJobsOutcome {
+  return cooldownOutcome(outcomeId, 'cooldown_failure', 'upstream_failure', outputFence)
+}
+
+function cooldownSuccess(outcomeId: string, expectedFence: CooldownFence = defaultCooldownFence): AccountHealthJobsOutcome {
+  return cooldownOutcome(outcomeId, 'cooldown_success', 'complete_success', undefined, expectedFence)
+}
+
+function cooldownError(outcomeId: string, expectedFence: CooldownFence): AccountHealthJobsOutcome {
+  const outcome = cooldownOutcome(outcomeId, 'cooldown_failure', 'upstream_failure', expectedFence, expectedFence)
+  outcome.next_due_at = undefined
+  outcome.account_status = 'error'
+  outcome.error_code = 'cooldown_retest_observation_timeout'
+  outcome.error_message = '冷却复测观察期已超过 7 天'
+  outcome.status_code = 503
+  outcome.projection = {
+    ...outcome.projection!,
+    transition_kind: 'cooldown_error',
+    expected_cooldown_fence: expectedFence
+  }
+  return outcome
+}
+
+function cooldownOutcome(
+  outcomeId: string,
+  transition: 'cooldown_defer' | 'cooldown_failure' | 'cooldown_success',
+  outcome: 'complete_success' | 'framing_complete_neutral' | 'upstream_failure',
+  outputFence?: CooldownFence,
+  expectedFence: CooldownFence = defaultCooldownFence
+): AccountHealthJobsOutcome {
+  const projection: NonNullable<AccountHealthJobsOutcome['projection']> = {
+    target_account_id: 'account-2',
+    transition_kind: transition,
+    input_version: 1,
+    config_revision: 4,
+    dispatch_revision: 5,
+    expected_account_status: 'temporary_unavailable',
+    expected_cooldown_fence: expectedFence
+  }
+  if (outputFence) projection.cooldown_fence = outputFence
   return {
     outcome_id: outcomeId,
     request_id: `request-${outcomeId}`,
     account_id: 'account-2',
-    outcome: 'framing_complete_neutral',
+    outcome,
     observed_at: '2026-08-16T00:05:00.000Z',
     input_version: 1,
     config_revision: 4,
     dispatch_revision: 5,
     next_due_at: '2026-08-16T00:10:00.000Z',
     failure_count: 2,
-    projection: {
-      target_account_id: 'account-2',
-      transition_kind: 'cooldown_defer',
-      input_version: 1,
-      config_revision: 4,
-      dispatch_revision: 5,
-      expected_account_status: 'temporary_unavailable',
-      expected_cooldown_fence: {
-        observation_started_at: '2026-08-16T00:00:00.000Z',
-        generation: 'generation-1'
-      },
-      cooldown_fence: {
-        observation_started_at: '2026-08-16T00:00:00.000Z',
-        generation: 'generation-1'
-      }
-    }
+    projection
   }
 }
 
@@ -185,6 +346,28 @@ function activationSuccess(outcomeId: string): AccountHealthJobsOutcome {
       config_revision: 6,
       dispatch_revision: 7,
       expected_account_status: 'pending_test'
+    }
+  }
+}
+
+function healthFailureExpectedError(outcomeId: string): AccountHealthJobsOutcome {
+  return {
+    outcome_id: outcomeId,
+    request_id: `request-${outcomeId}`,
+    account_id: 'account-1',
+    outcome: 'upstream_failure',
+    observed_at: '2026-08-16T00:20:00.000Z',
+    input_version: 1,
+    config_revision: 2,
+    dispatch_revision: 3,
+    error_code: 'upstream_connection_closed',
+    projection: {
+      target_account_id: 'account-1',
+      transition_kind: 'health_failure',
+      input_version: 1,
+      config_revision: 2,
+      dispatch_revision: 3,
+      expected_account_status: 'error'
     }
   }
 }

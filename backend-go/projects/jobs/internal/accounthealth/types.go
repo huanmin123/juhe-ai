@@ -53,12 +53,13 @@ type Input struct {
 // refuses to probe as soon as this immutable snapshot is expired or declares
 // the account unavailable; it never opens the Node business SQLite file.
 type Eligibility struct {
-	AccountStatus         string     `json:"account_status"`
-	Schedulable           bool       `json:"schedulable"`
-	BoundGroup            bool       `json:"bound_group"`
-	AuthorizationEligible bool       `json:"authorization_eligible"`
-	SourceConfigRevision  *int64     `json:"source_config_revision,omitempty"`
-	CooldownUntil         *time.Time `json:"cooldown_until,omitempty"`
+	AccountStatus                              string     `json:"account_status"`
+	Schedulable                                bool       `json:"schedulable"`
+	BoundGroup                                 bool       `json:"bound_group"`
+	AuthorizationEligible                      bool       `json:"authorization_eligible"`
+	SourceConfigRevision                       *int64     `json:"source_config_revision,omitempty"`
+	CooldownUntil                              *time.Time `json:"cooldown_until,omitempty"`
+	TemporaryUnavailableContinuousProbeEnabled *bool      `json:"temporary_unavailable_continuous_probe_enabled,omitempty"`
 }
 
 // Schedule is frozen with each input version.  Changing a policy requires a
@@ -72,6 +73,8 @@ type Schedule struct {
 	CooldownNeutralBaseMS    int64 `json:"cooldown_neutral_base_ms"`
 	CooldownNeutralMaxMS     int64 `json:"cooldown_neutral_max_ms"`
 	CooldownFailureBackoffMS int64 `json:"cooldown_failure_backoff_ms"`
+	MaxPauseMinutes          int   `json:"max_pause_minutes,omitempty"`
+	MaxRecoveryHours         int   `json:"max_recovery_hours,omitempty"`
 }
 
 type CooldownFence struct {

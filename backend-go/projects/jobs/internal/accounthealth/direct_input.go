@@ -30,19 +30,20 @@ type DirectInput struct {
 }
 
 type DirectAccount struct {
-	ID                   string
-	ConfigRevision       int64
-	DispatchRevision     int64
-	Provider             string
-	Type                 string
-	Status               string
-	Schedulable          bool
-	EndpointMode         string
-	HealthModel          string
-	CredentialsEncrypted string
-	AccountExpiresAt     *time.Time
-	CooldownUntil        *time.Time
-	Cooldown             *CooldownFence
+	ID                                         string
+	ConfigRevision                             int64
+	DispatchRevision                           int64
+	Provider                                   string
+	Type                                       string
+	Status                                     string
+	Schedulable                                bool
+	EndpointMode                               string
+	HealthModel                                string
+	CredentialsEncrypted                       string
+	AccountExpiresAt                           *time.Time
+	CooldownUntil                              *time.Time
+	Cooldown                                   *CooldownFence
+	TemporaryUnavailableContinuousProbeEnabled bool
 }
 
 type DirectSource struct {
@@ -123,7 +124,7 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		IssuedAt:         d.IssuedAt.UTC(),
 		ExpiresAt:        d.ExpiresAt.UTC(),
 		TLSPolicyVersion: d.TLSPolicy,
-		Eligibility:      Eligibility{AccountStatus: d.Account.Status, Schedulable: d.Account.Schedulable, BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: sourceRevision, CooldownUntil: cloneTime(d.Account.CooldownUntil)},
+		Eligibility:      Eligibility{AccountStatus: d.Account.Status, Schedulable: d.Account.Schedulable, BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: sourceRevision, CooldownUntil: cloneTime(d.Account.CooldownUntil), TemporaryUnavailableContinuousProbeEnabled: boolPointer(d.Account.TemporaryUnavailableContinuousProbeEnabled)},
 		Cooldown:         d.Account.Cooldown,
 		Schedule:         d.Schedule,
 	}
@@ -370,6 +371,8 @@ func mustJSON(value string) string {
 }
 
 func int64Pointer(value int64) *int64 { return &value }
+
+func boolPointer(value bool) *bool { return &value }
 
 func cloneTime(value *time.Time) *time.Time {
 	if value == nil {

@@ -6,8 +6,8 @@
   "cutoverCommit": null,
   "rollbackCommit": null,
   "goImplementationPaths": [
-    "backend-go/internal/operationlog",
-    "backend-go/internal/supervisor/supervisor.go"
+    "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go",
+    "backend-go/projects/gateway/internal/operationlog"
   ],
   "disabledNodeEntrypoints": [
     "backend/src/modules/operation-logs/operation-log-queue.service.ts",
@@ -40,8 +40,8 @@
     {"originalPath":"backend/src/storage/operation-logs.repository.ts","archivePath":"migration-backup/node/operation-log-write-retention/backend/src/storage/operation-logs.repository.ts","sha256":"18816af51bae57073f935197ca27a635069e62af5f638f6f7c2a88e50c91647f"}
   ],
   "dualModeVerification": {
-    "sqlite": "backend-go/internal/operationlog/operationlog_test.go; pnpm --filter juhe-ai-backend test:operation-log-go-rpc",
-    "postgresRedis": "backend-go/internal/operationlog TestPostgresOperationLogStoreSmoke using isolated development PostgreSQL; F4 has no Redis transport dependency"
+    "sqlite": "backend-go/projects/gateway/internal/operationlog/operationlog_test.go; pnpm --filter juhe-ai-backend test:operation-log-go-rpc",
+    "postgresRedis": "backend-go/projects/gateway/internal/operationlog TestPostgresOperationLogStoreSmoke using isolated development PostgreSQL; F4 has no Redis transport dependency"
   },
   "activeNodePathZeroEvidence": "rg scans in backend/src, scripts, docker and package scripts; backend/src/scripts/regression/operation-log-go-rpc-regression.ts negative assertions",
   "remainingGates": [

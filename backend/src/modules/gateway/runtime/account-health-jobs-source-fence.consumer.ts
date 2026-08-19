@@ -1,6 +1,7 @@
 import type { AccountHealthJobsOutcome } from '../../../storage/account-health-jobs-outcome.repository.js'
 import { clearCodexTurnAccountAvoidanceByFenceAsync } from '../client-profiles/codex-turn-retry.service.js'
 import {
+  availabilityProbeSourceFenceSettlementDisposition,
   settleDispatchedAvailabilityProbeBySourceFence,
   type AvailabilityProbeOutcome
 } from './availability-probe-coordinator.js'
@@ -18,9 +19,15 @@ export interface AccountHealthJobsSourceFence {
 // This is a Gateway-side consumer of a durable Go outcome. It never dispatches
 // a probe and never writes account business state; the source fence itself is
 // the CAS authority that prevents an old result from settling a newer turn.
+export type AccountHealthJobsSourceFenceSettlement = 'not_applicable' | 'settled' | 'retry' | 'terminal'
+
 export async function settleAccountHealthJobsSourceFenceOutcome(outcome: AccountHealthJobsOutcome): Promise<boolean> {
-  if (!outcome.source_fence) return false
-  return await settleAccountHealthJobsSourceFence({
+  return (await settleAccountHealthJobsSourceFenceOutcomeWithDisposition(outcome)) === 'settled'
+}
+
+export async function settleAccountHealthJobsSourceFenceOutcomeWithDisposition(outcome: AccountHealthJobsOutcome): Promise<AccountHealthJobsSourceFenceSettlement> {
+  if (!outcome.source_fence) return 'not_applicable'
+  const sourceFence: AccountHealthJobsSourceFence = {
     stateKey: outcome.source_fence.state_key,
     accountId: outcome.source_fence.account_id,
     sourceGeneration: outcome.source_fence.source_generation,
@@ -28,7 +35,23 @@ export async function settleAccountHealthJobsSourceFenceOutcome(outcome: Account
     runtimeKey: outcome.source_fence.runtime_key,
     probeGeneration: outcome.source_fence.probe_generation,
     configRevision: outcome.source_fence.config_revision
-  }, gatewayProbeOutcome(outcome.outcome))
+  }
+  const probeOutcome = gatewayProbeOutcome(outcome.outcome)
+  if (await settleAccountHealthJobsSourceFence(sourceFence, probeOutcome)) return 'settled'
+  const disposition = await availabilityProbeSourceFenceSettlementDisposition({
+    runtimeKey: sourceFence.runtimeKey,
+    generation: sourceFence.probeGeneration,
+    sourceFence
+  })
+  if (disposition.disposition === 'retry') return 'retry'
+  // A terminal durable success still owns its precise avoidance fence even if
+  // this Gateway no longer has the coordinator state (restart/TTL) or the
+  // generation has since been replaced. The fence CAS cannot clear a newer
+  // generation, so it is safe to release the original avoidance here.
+  if (probeOutcome === 'success') {
+    await clearCodexTurnAccountAvoidanceByFenceAsync(sourceFence)
+  }
+  return 'terminal'
 }
 
 // This settles a locally failed Go-owner request publication without going

@@ -279,10 +279,21 @@ WHERE lease_key='account-health-owner' AND owner_id=? AND fence_token=?`, lease.
 // AppendOutcome makes the request ID idempotent and persists the current
 // account state in the same owner-fenced transaction.
 func (s *Store) AppendOutcome(ctx context.Context, lease OwnerLease, outcome Outcome) (bool, error) {
-	if outcome.OutcomeID == "" || outcome.RequestID == "" || outcome.AccountID == "" || outcome.ObservedAt.IsZero() {
+	if outcome.OutcomeID == "" || outcome.RequestID == "" || outcome.AccountID == "" || outcome.ObservedAt.IsZero() || outcome.InputVersion < 1 || outcome.ConfigRevision < 1 || outcome.DispatchRevision < 1 {
 		return false, errors.New("outcome 缺少幂等或账户字段")
 	}
-	payload, err := json.Marshal(outcome)
+	if err := validateOutcomeStateContract(outcome); err != nil {
+		return false, err
+	}
+	// A projection is a conditional business-state command, not immutable
+	// probe evidence. Persist it only after the jobs current-state CAS accepts
+	// the same outcome; otherwise the durable row is audit/source-settlement
+	// only and Node must not project a stale decision.
+	storedOutcome := outcome
+	if outcome.Projection != nil {
+		storedOutcome.Projection = nil
+	}
+	payload, err := json.Marshal(storedOutcome)
 	if err != nil {
 		return false, fmt.Errorf("编码 account-health outcome 失败: %w", err)
 	}
@@ -309,10 +320,11 @@ ON CONFLICT (request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, ou
 			return false, err
 		}
 		inserted = true
-		_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4)
-ON CONFLICT (account_id) DO UPDATE SET outcome_id=EXCLUDED.outcome_id, outcome=EXCLUDED.outcome, observed_at=EXCLUDED.observed_at, input_version=EXCLUDED.input_version, config_revision=EXCLUDED.config_revision, dispatch_revision=EXCLUDED.dispatch_revision, status_code=EXCLUDED.status_code, error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, next_due_at=EXCLUDED.next_due_at, failure_count=EXCLUDED.failure_count, failure_started_at=EXCLUDED.failure_started_at, account_status=EXCLUDED.account_status, cooldown_observation_started_at=EXCLUDED.cooldown_observation_started_at, cooldown_generation=EXCLUDED.cooldown_generation, cooldown_source_config_revision=EXCLUDED.cooldown_source_config_revision, updated_at=EXCLUDED.updated_at
-WHERE (juhe_jobs.account_health_current_state.input_version, juhe_jobs.account_health_current_state.observed_at) <= (EXCLUDED.input_version, EXCLUDED.observed_at)`, outcome.AccountID, outcome.OutcomeID, outcome.Outcome, outcome.ObservedAt.UTC(), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTime(outcome.NextDueAt), outcome.FailureCount, nullableTime(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservation(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome))
+		stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
+		err = stateErr
+		if err == nil && stateApplied && outcome.Projection != nil {
+			err = s.writeOutcomePayloadTx(ctx, tx, outcome)
+		}
 	} else {
 		result, execErr := tx.ExecContext(ctx, `INSERT INTO account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, payload)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.Outcome, outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), string(payload))
@@ -324,10 +336,11 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.O
 			return false, tx.Commit()
 		}
 		inserted = true
-		_, err = tx.ExecContext(ctx, `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT (account_id) DO UPDATE SET outcome_id=excluded.outcome_id, outcome=excluded.outcome, observed_at=excluded.observed_at, input_version=excluded.input_version, config_revision=excluded.config_revision, dispatch_revision=excluded.dispatch_revision, status_code=excluded.status_code, error_code=excluded.error_code, error_message=excluded.error_message, next_due_at=excluded.next_due_at, failure_count=excluded.failure_count, failure_started_at=excluded.failure_started_at, account_status=excluded.account_status, cooldown_observation_started_at=excluded.cooldown_observation_started_at, cooldown_generation=excluded.cooldown_generation, cooldown_source_config_revision=excluded.cooldown_source_config_revision, updated_at=excluded.updated_at
-WHERE account_health_current_state.input_version < excluded.input_version OR (account_health_current_state.input_version = excluded.input_version AND account_health_current_state.observed_at <= excluded.observed_at)`, outcome.AccountID, outcome.OutcomeID, outcome.Outcome, outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTimeText(outcome.NextDueAt), outcome.FailureCount, nullableTimeText(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservationText(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome), outcome.ObservedAt.UTC().Format(time.RFC3339Nano))
+		stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
+		err = stateErr
+		if err == nil && stateApplied && outcome.Projection != nil {
+			err = s.writeOutcomePayloadTx(ctx, tx, outcome)
+		}
 	}
 	if err != nil {
 		return false, err
@@ -336,6 +349,190 @@ WHERE account_health_current_state.input_version < excluded.input_version OR (ac
 		return false, err
 	}
 	return inserted, nil
+}
+
+func (s *Store) writeOutcomePayloadTx(ctx context.Context, tx *sql.Tx, outcome Outcome) error {
+	payload, err := json.Marshal(outcome)
+	if err != nil {
+		return fmt.Errorf("编码可投影 account-health outcome 失败: %w", err)
+	}
+	if s.mode == StorePostgres {
+		_, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_outcomes SET payload=$1 WHERE outcome_id=$2`, string(payload), outcome.OutcomeID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE account_health_outcomes SET payload=? WHERE outcome_id=?`, string(payload), outcome.OutcomeID)
+	}
+	return err
+}
+
+// writeCurrentStateTx advances the jobs-owned scheduling state only when the
+// immutable input generation still matches. A rejected state CAS deliberately
+// leaves the immutable outcome row committed so operators can audit the late
+// result without letting it change the current scheduling decision.
+func (s *Store) writeCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	if outcome.Outcome == OutcomeStale {
+		// A stale explicit/source request is auditable but has no authority to
+		// create a scheduling baseline. Only a current input task may establish
+		// current state.
+		return false, nil
+	}
+	if outcome.Projection != nil && outcome.Projection.ExpectedCooldownFence != nil {
+		return s.updateCooldownCurrentStateTx(ctx, tx, outcome)
+	}
+	return s.upsertCurrentStateTx(ctx, tx, outcome)
+}
+
+func (s *Store) upsertCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	args := currentStateArgs(outcome, s.mode)
+	var query string
+	if s.mode == StorePostgres {
+		query = `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4)
+ON CONFLICT (account_id) DO UPDATE SET outcome_id=EXCLUDED.outcome_id, outcome=EXCLUDED.outcome, observed_at=EXCLUDED.observed_at, input_version=EXCLUDED.input_version, config_revision=EXCLUDED.config_revision, dispatch_revision=EXCLUDED.dispatch_revision, status_code=EXCLUDED.status_code, error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, next_due_at=EXCLUDED.next_due_at, failure_count=EXCLUDED.failure_count, failure_started_at=EXCLUDED.failure_started_at, account_status=EXCLUDED.account_status, cooldown_observation_started_at=EXCLUDED.cooldown_observation_started_at, cooldown_generation=EXCLUDED.cooldown_generation, cooldown_source_config_revision=EXCLUDED.cooldown_source_config_revision, updated_at=EXCLUDED.updated_at
+WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_version
+	   OR (juhe_jobs.account_health_current_state.input_version = EXCLUDED.input_version
+       AND juhe_jobs.account_health_current_state.config_revision = EXCLUDED.config_revision
+       AND juhe_jobs.account_health_current_state.dispatch_revision = EXCLUDED.dispatch_revision
+	   AND juhe_jobs.account_health_current_state.observed_at <= EXCLUDED.observed_at)`
+		query += `)`
+		if outcome.Projection != nil {
+			query += ` AND juhe_jobs.account_health_current_state.account_status = $18`
+			args = append(args, outcome.Projection.ExpectedAccountStatus)
+		}
+	} else {
+		query = `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT (account_id) DO UPDATE SET outcome_id=excluded.outcome_id, outcome=excluded.outcome, observed_at=excluded.observed_at, input_version=excluded.input_version, config_revision=excluded.config_revision, dispatch_revision=excluded.dispatch_revision, status_code=excluded.status_code, error_code=excluded.error_code, error_message=excluded.error_message, next_due_at=excluded.next_due_at, failure_count=excluded.failure_count, failure_started_at=excluded.failure_started_at, account_status=excluded.account_status, cooldown_observation_started_at=excluded.cooldown_observation_started_at, cooldown_generation=excluded.cooldown_generation, cooldown_source_config_revision=excluded.cooldown_source_config_revision, updated_at=excluded.updated_at
+WHERE (account_health_current_state.input_version < excluded.input_version
+	   OR (account_health_current_state.input_version = excluded.input_version
+       AND account_health_current_state.config_revision = excluded.config_revision
+       AND account_health_current_state.dispatch_revision = excluded.dispatch_revision
+	   AND account_health_current_state.observed_at <= excluded.observed_at)`
+		query += `)`
+		if outcome.Projection != nil {
+			query += ` AND account_health_current_state.account_status = ?`
+			args = append(args, outcome.Projection.ExpectedAccountStatus)
+		}
+	}
+	return execCurrentStateCAS(ctx, tx, query, args...)
+}
+
+// Cooldown transitions require an already-recorded fence. They intentionally
+// use UPDATE instead of UPSERT: a missing state cannot prove that the retest
+// still owns the cooldown generation and is therefore outcome-only stale.
+func (s *Store) updateCooldownCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	fence := outcome.Projection.ExpectedCooldownFence
+	if s.mode == StorePostgres {
+		args := currentStateArgs(outcome, s.mode)
+		query := `UPDATE juhe_jobs.account_health_current_state SET outcome_id=$2, outcome=$3, observed_at=$4, input_version=$5, config_revision=$6, dispatch_revision=$7, status_code=$8, error_code=$9, error_message=$10, next_due_at=$11, failure_count=$12, failure_started_at=$13, account_status=$14, cooldown_observation_started_at=$15, cooldown_generation=$16, cooldown_source_config_revision=$17, updated_at=$4
+WHERE account_id=$1
+  AND input_version=$5
+  AND config_revision=$6
+  AND dispatch_revision=$7
+  AND observed_at <= $4
+  AND account_status=$18
+  AND cooldown_observation_started_at=$19
+  AND cooldown_generation=$20
+  AND cooldown_source_config_revision IS NOT DISTINCT FROM $21`
+		args = append(args, outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC(), fence.Generation, nullableInt64(fence.SourceConfigRevision))
+		return execCurrentStateCAS(ctx, tx, query, args...)
+	}
+	query := `UPDATE account_health_current_state SET outcome_id=?, outcome=?, observed_at=?, input_version=?, config_revision=?, dispatch_revision=?, status_code=?, error_code=?, error_message=?, next_due_at=?, failure_count=?, failure_started_at=?, account_status=?, cooldown_observation_started_at=?, cooldown_generation=?, cooldown_source_config_revision=?, updated_at=?
+WHERE account_id=?
+  AND input_version=?
+  AND config_revision=?
+  AND dispatch_revision=?
+  AND observed_at <= ?
+  AND account_status=?
+  AND cooldown_observation_started_at=?
+	  AND cooldown_generation=?
+	  AND cooldown_source_config_revision IS ?`
+	args := append(currentStateUpdateArgs(outcome),
+		outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
+		outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
+		outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC().Format(time.RFC3339Nano), fence.Generation, nullableInt64(fence.SourceConfigRevision),
+	)
+	return execCurrentStateCAS(ctx, tx, query, args...)
+}
+
+func execCurrentStateCAS(ctx context.Context, tx *sql.Tx, query string, args ...any) (bool, error) {
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return count == 1, nil
+}
+
+func currentStateArgs(outcome Outcome, mode StoreMode) []any {
+	observed := outcome.ObservedAt.UTC()
+	if mode == StorePostgres {
+		return []any{outcome.AccountID, outcome.OutcomeID, outcome.Outcome, observed, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTime(outcome.NextDueAt), outcome.FailureCount, nullableTime(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservation(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome)}
+	}
+	return []any{outcome.AccountID, outcome.OutcomeID, outcome.Outcome, observed.Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTimeText(outcome.NextDueAt), outcome.FailureCount, nullableTimeText(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservationText(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome), observed.Format(time.RFC3339Nano)}
+}
+
+func currentStateUpdateArgs(outcome Outcome) []any {
+	return []any{outcome.OutcomeID, outcome.Outcome, outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTimeText(outcome.NextDueAt), outcome.FailureCount, nullableTimeText(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservationText(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome)}
+}
+
+func validateOutcomeStateContract(outcome Outcome) error {
+	projection := outcome.Projection
+	if projection == nil {
+		return nil
+	}
+	if projection.TargetAccountID != outcome.AccountID || projection.InputVersion != outcome.InputVersion || projection.ConfigRevision != outcome.ConfigRevision || projection.DispatchRevision != outcome.DispatchRevision {
+		return errors.New("outcome projection 与 current-state fence 不一致")
+	}
+	if strings.TrimSpace(projection.ExpectedAccountStatus) == "" {
+		return errors.New("outcome projection 缺少 expected account status")
+	}
+	if projection.ExpectedCooldownFence != nil && !validStoredCooldownFence(projection.ExpectedCooldownFence) {
+		return errors.New("outcome projection 的 expected cooldown fence 无效")
+	}
+	if projection.ExpectedCooldownFence != nil && !sameOptionalInt64(projection.ExpectedCooldownFence.SourceConfigRevision, projection.SourceRevision) {
+		return errors.New("outcome projection 的 cooldown source revision 不一致")
+	}
+	if outcome.CooldownFence != nil && projection.CooldownFence != nil && !sameCooldownFence(outcome.CooldownFence, projection.CooldownFence) {
+		return errors.New("outcome cooldown fence 与 projection 不一致")
+	}
+	if projection.TransitionKind == "cooldown_error" && projection.CooldownFence != nil && !sameCooldownFence(projection.ExpectedCooldownFence, projection.CooldownFence) {
+		return errors.New("cooldown terminal 的输出 fence 与 expected fence 不一致")
+	}
+	return nil
+}
+
+func validStoredCooldownFence(fence *CooldownFence) bool {
+	return fence != nil && !fence.ObservationStartedAt.IsZero() && strings.TrimSpace(fence.Generation) != ""
+}
+
+func sameCooldownFence(left, right *CooldownFence) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if !left.ObservationStartedAt.Equal(right.ObservationStartedAt) || left.Generation != right.Generation {
+		return false
+	}
+	if left.SourceConfigRevision == nil || right.SourceConfigRevision == nil {
+		return left.SourceConfigRevision == nil && right.SourceConfigRevision == nil
+	}
+	return *left.SourceConfigRevision == *right.SourceConfigRevision
+}
+
+func nullableInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func sameOptionalInt64(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (CurrentState, bool, error) {

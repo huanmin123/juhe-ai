@@ -16,6 +16,8 @@ export interface AccountHealthJobsInputSettings {
   cooldownNeutralBaseMs?: number
   cooldownNeutralMaxMs?: number
   cooldownFailureBackoffMs?: number
+  maxPauseMinutes?: number
+  maxRecoveryHours?: number
 }
 
 export interface AccountHealthJobsInputSource {
@@ -164,7 +166,8 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
       bound_group: Boolean(account.boundGroupId),
       authorization_eligible: authorizationEligible,
       ...(sourceConfigRevision === undefined ? {} : { source_config_revision: sourceConfigRevision }),
-      ...(cooldownUntil === undefined ? {} : { cooldown_until: cooldownUntil })
+      ...(cooldownUntil === undefined ? {} : { cooldown_until: cooldownUntil }),
+	  temporary_unavailable_continuous_probe_enabled: account.temporaryUnavailableContinuousProbeEnabled !== false
     },
     schedule: normalizedSchedule(source.settings)
   }
@@ -246,7 +249,9 @@ function normalizedSchedule(settings: AccountHealthJobsInputSettings): Record<st
     failure_retry_ms: positiveInteger(settings.failureRetryMs ?? 5 * 60_000, 'failureRetryMs'),
     cooldown_neutral_base_ms: positiveInteger(settings.cooldownNeutralBaseMs ?? 30_000, 'cooldownNeutralBaseMs'),
     cooldown_neutral_max_ms: positiveInteger(settings.cooldownNeutralMaxMs ?? 15 * 60_000, 'cooldownNeutralMaxMs'),
-    cooldown_failure_backoff_ms: positiveInteger(settings.cooldownFailureBackoffMs ?? 5 * 60_000, 'cooldownFailureBackoffMs')
+    cooldown_failure_backoff_ms: positiveInteger(settings.cooldownFailureBackoffMs ?? 3_000, 'cooldownFailureBackoffMs'),
+    max_pause_minutes: positiveInteger(settings.maxPauseMinutes ?? 2, 'maxPauseMinutes'),
+    max_recovery_hours: positiveInteger(settings.maxRecoveryHours ?? 12, 'maxRecoveryHours')
   }
 }
 

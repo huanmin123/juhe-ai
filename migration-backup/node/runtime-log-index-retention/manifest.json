@@ -33,8 +33,8 @@
     ]
   },
   "goImplementationPaths": [
-    "backend-go/cmd/juhe-ai-runtime-log-indexer/main.go",
-    "backend-go/internal/runtimelog"
+    "backend-go/projects/jobs/cmd/juhe-ai-jobs/main.go",
+    "backend-go/projects/jobs/internal/runtimelog"
   ],
   "disabledNodeEntrypoints": [
     "backend/src/worker.ts (F1 importer start/stop removed)",

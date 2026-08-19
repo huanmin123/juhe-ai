@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 )
 
 // Runner is the only J1 scheduler.  Its inputs are immutable signed files and
@@ -49,6 +50,11 @@ type RunnerStatus struct {
 
 const maxScheduleDuration = 365 * 24 * time.Hour
 const maxScheduleMilliseconds = int64(maxScheduleDuration / time.Millisecond)
+const cooldownLongTermInterval = time.Hour
+const cooldownObservationTimeout = 7 * 24 * time.Hour
+const cooldownLimitedProbeTimeout = 10 * time.Minute
+const defaultCooldownMaxPauseMinutes = 2
+const defaultCooldownMaxRecoveryHours = 12
 
 func NewRunner(cfg Config, store *Store, logger *slog.Logger) *Runner {
 	if logger == nil {
@@ -276,6 +282,23 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 	if err := validateScheduledInput(input, now); err != nil {
 		return r.persistExplicitTerminal(ctx, lease, request, OutcomeTaskFailed, now, "input_invalid", err.Error())
 	}
+	initialState, initialFound, err := r.store.LoadCurrentState(ctx, input.AccountID)
+	if err != nil {
+		return err
+	}
+	if request.SourceFence != nil && !request.MutateAccount {
+		if !sourceFenceHealthMutationAllowed(input, initialState, initialFound) {
+			return r.persistSourceOnlyStale(ctx, lease, input, request, initialState, initialFound, now)
+		}
+	}
+	mutationKind := ""
+	if request.MutateAccount {
+		var allowed bool
+		mutationKind, allowed = explicitMutationKind(input, initialState, initialFound)
+		if !allowed {
+			return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, "account_status_not_probeable", "显式请求对应的账户状态不允许 health transition")
+		}
+	}
 	probeCtx, cancel := context.WithDeadline(ctx, request.Deadline)
 	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now})
 	cancel()
@@ -286,12 +309,23 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 	if err != nil {
 		return err
 	}
-	if request.MutateAccount || (request.SourceFence != nil && outcome.Outcome == OutcomeUpstreamFailed) {
-		applyOutcomeDecision(&outcome, input, prior, found, "health")
-	} else {
-		preserveStateForSourceOnlyOutcome(&outcome, input, prior, found)
-	}
+	applyExplicitRequestDecision(&outcome, input, request, prior, found, mutationKind)
 	_, err = r.store.AppendOutcome(ctx, lease, outcome)
+	return err
+}
+
+func (r *Runner) persistSourceOnlyStale(ctx context.Context, lease OwnerLease, input Input, request ProbeRequest, prior CurrentState, found bool, observed time.Time) error {
+	outcome := Outcome{OutcomeID: newOutcomeID(), RequestID: request.RequestID, AccountID: request.AccountID, Outcome: OutcomeStale, ObservedAt: observed, InputVersion: request.InputVersion, ConfigRevision: request.ConfigRevision, DispatchRevision: request.DispatchRevision, ErrorCode: "source_state_stale", ErrorMessage: "source-only request 缺少匹配的当前状态", SourceFence: request.SourceFence}
+	if found && strings.TrimSpace(prior.AccountStatus) != "" {
+		copyStateToOutcome(&outcome, prior)
+	} else {
+		outcome.AccountStatus = input.Eligibility.AccountStatus
+		if (outcome.AccountStatus == "temporary_unavailable" || outcome.AccountStatus == "rate_limited") && validCooldownFence(input.Cooldown, input) {
+			outcome.CooldownFence = input.Cooldown
+			outcome.NextDueAt = input.Eligibility.CooldownUntil
+		}
+	}
+	_, err := r.store.AppendOutcome(ctx, lease, outcome)
 	return err
 }
 
@@ -303,14 +337,64 @@ func (r *Runner) persistExplicitTerminal(ctx context.Context, lease OwnerLease, 
 
 func preserveStateForSourceOnlyOutcome(outcome *Outcome, input Input, prior CurrentState, found bool) {
 	if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision {
-		outcome.NextDueAt = prior.NextDueAt
-		outcome.FailureCount = prior.FailureCount
-		outcome.FailureStartedAt = prior.FailureStartedAt
-		outcome.AccountStatus = prior.AccountStatus
-		outcome.CooldownFence = prior.CooldownFence
+		copyStateToOutcome(outcome, prior)
 		return
 	}
 	outcome.AccountStatus = input.Eligibility.AccountStatus
+	if (outcome.AccountStatus == "temporary_unavailable" || outcome.AccountStatus == "rate_limited") && validCooldownFence(input.Cooldown, input) {
+		outcome.CooldownFence = input.Cooldown
+		outcome.NextDueAt = input.Eligibility.CooldownUntil
+	}
+}
+
+func copyStateToOutcome(outcome *Outcome, prior CurrentState) {
+	outcome.NextDueAt = prior.NextDueAt
+	outcome.FailureCount = prior.FailureCount
+	outcome.FailureStartedAt = prior.FailureStartedAt
+	outcome.AccountStatus = prior.AccountStatus
+	outcome.CooldownFence = prior.CooldownFence
+}
+
+func applyExplicitRequestDecision(outcome *Outcome, input Input, request ProbeRequest, prior CurrentState, found bool, mutationKind string) {
+	if request.MutateAccount {
+		applyOutcomeDecision(outcome, input, prior, found, mutationKind)
+		return
+	}
+	if request.SourceFence != nil && outcome.Outcome == OutcomeUpstreamFailed && sourceFenceHealthMutationAllowed(input, prior, found) {
+		applyOutcomeDecision(outcome, input, prior, found, "source_health")
+		return
+	}
+	preserveStateForSourceOnlyOutcome(outcome, input, prior, found)
+}
+
+// Explicit mutate-account requests are for activation/configuration work.
+// If a current, matching state is cooling, it must use the cooldown state
+// machine; an already-terminal state has no authority to emit a health
+// transition that the Node projector would correctly reject.
+func explicitMutationKind(input Input, prior CurrentState, found bool) (string, bool) {
+	status := input.Eligibility.AccountStatus
+	if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision && prior.AccountStatus != "" {
+		status = prior.AccountStatus
+	}
+	switch status {
+	case "active", "pending_test":
+		return "health", true
+	case "temporary_unavailable", "rate_limited":
+		fence := input.Cooldown
+		if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision {
+			fence = prior.CooldownFence
+		}
+		return "cooldown_retest", validCooldownFence(fence, input)
+	default:
+		return "", false
+	}
+}
+
+func sourceFenceHealthMutationAllowed(input Input, prior CurrentState, found bool) bool {
+	if !found || prior.InputVersion != input.InputVersion || prior.ConfigRevision != input.ConfigRevision || prior.DispatchRevision != input.DispatchRevision {
+		return false
+	}
+	return prior.AccountStatus == "active" || prior.AccountStatus == "pending_test"
 }
 
 func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) error {
@@ -358,7 +442,11 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 	if err != nil {
 		return err
 	}
-	applyOutcomeDecision(&outcome, input, state, found, kind)
+	decisionKind := kind
+	if kind == "health" {
+		decisionKind = "scheduled_health"
+	}
+	applyOutcomeDecision(&outcome, input, state, found, decisionKind)
 	_, err = r.store.AppendOutcome(ctx, lease, outcome)
 	return err
 }
@@ -425,10 +513,10 @@ func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, pri
 		applyCooldownDecision(outcome, input, prior, priorFound, priorStatus, observed)
 		return
 	}
-	applyHealthDecision(outcome, input, prior, priorStatus, observed)
+	applyHealthDecision(outcome, input, prior, priorStatus, kind, observed)
 }
 
-func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, priorStatus string, observed time.Time) {
+func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, priorStatus, kind string, observed time.Time) {
 	interval := durationMS(input.Schedule.HealthIntervalMS, time.Hour)
 	retry := durationMS(input.Schedule.FailureRetryMS, 5*time.Minute)
 	switch outcome.Outcome {
@@ -455,10 +543,15 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 			outcome.Projection = healthProjection(input, "activation_error", priorStatus, nil, observed, outcome, failures)
 			return
 		}
-		if priorStatus == "active" {
+		immediateCooldown := (kind == "scheduled_health" || kind == "source_health")
+		if priorStatus == "active" && (immediateCooldown || failures >= input.Schedule.FailureThreshold) {
 			outcome.AccountStatus = "temporary_unavailable"
+			// The health threshold count belongs to the health window.  The
+			// cooldown retry sequence starts separately at zero, so its first
+			// upstream failure is scheduled with the frozen initial backoff.
+			outcome.FailureCount = 0
 			generation := newOutcomeID()
-			next := observed.Add(durationMS(input.Schedule.CooldownFailureBackoffMS, retry))
+			next := observed.Add(durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second))
 			outcome.NextDueAt = &next
 			outcome.Projection = healthProjection(input, "temporary_unavailable", priorStatus, nil, observed, outcome, failures)
 			outcome.CooldownFence = &CooldownFence{ObservationStartedAt: observed, Generation: generation, SourceConfigRevision: input.Eligibility.SourceConfigRevision}
@@ -492,7 +585,7 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 	}
 	base := durationMS(input.Schedule.CooldownNeutralBaseMS, 30*time.Second)
 	maxDelay := durationMS(input.Schedule.CooldownNeutralMaxMS, 15*time.Minute)
-	backoff := durationMS(input.Schedule.CooldownFailureBackoffMS, 5*time.Minute)
+	initialBackoff := durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second)
 	switch outcome.Outcome {
 	case OutcomeSuccess:
 		next := observed.Add(durationMS(input.Schedule.HealthIntervalMS, time.Hour) + stableJitter(input.AccountID, input.Schedule.HealthJitterMS))
@@ -501,19 +594,56 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 		outcome.AccountStatus = "active"
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_success", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
 	case OutcomeNeutral, OutcomeTaskFailed:
-		next := observed.Add(stableCooldownDefer(input.AccountID, prior.FailureCount, base, maxDelay))
+		growthStep := cooldownDeferGrowthStep(fence, observed, base)
+		delay := stableCooldownDefer(input.AccountID, fence.Generation, growthStep, base, maxDelay)
+		if remaining, bounded := boundedCooldownRemaining(input, expectedStatus, fence, observed); bounded && delay > remaining {
+			delay = remaining
+		}
+		next := observed.Add(delay)
 		outcome.NextDueAt = &next
 		outcome.FailureCount = prior.FailureCount
 		outcome.FailureStartedAt = prior.FailureStartedAt
-		outcome.AccountStatus = "temporary_unavailable"
+		outcome.AccountStatus = expectedStatus
 		outcome.CooldownFence = fence
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_defer", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
 	case OutcomeUpstreamFailed:
 		failures := prior.FailureCount + 1
-		next := observed.Add(backoff)
-		outcome.NextDueAt = &next
 		outcome.FailureCount = failures
-		outcome.AccountStatus = "temporary_unavailable"
+		outcome.FailureStartedAt = prior.FailureStartedAt
+		elapsed := observed.Sub(fence.ObservationStartedAt)
+		_, limitedTemporaryUnavailable := boundedCooldownRemaining(input, expectedStatus, fence, observed)
+		if limitedTemporaryUnavailable && elapsed >= cooldownLimitedProbeTimeout {
+			outcome.AccountStatus = "error"
+			outcome.ErrorCode = "cooldown_retest_limited_probe_timeout"
+			outcome.ErrorMessage = "冷却复测有界观察期已超过 10 分钟"
+			outcome.CooldownFence = fence
+			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_error", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+			return
+		}
+		if elapsed >= cooldownObservationTimeout {
+			outcome.AccountStatus = "error"
+			outcome.ErrorCode = "cooldown_retest_observation_timeout"
+			outcome.ErrorMessage = "冷却复测观察期已超过 7 天"
+			outcome.CooldownFence = fence
+			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_error", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+			return
+		}
+		if elapsed >= cooldownMaxRecovery(input.Schedule) {
+			next := observed.Add(cooldownLongTermInterval)
+			outcome.NextDueAt = &next
+			outcome.AccountStatus = expectedStatus
+			outcome.ErrorCode = "cooldown_retest_long_term_unavailable"
+			outcome.CooldownFence = fence
+			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+			return
+		}
+		delay := cooldownFailureDelay(input.AccountID, fence.Generation, initialBackoff, failures)
+		if remaining, bounded := boundedCooldownRemaining(input, expectedStatus, fence, observed); bounded && delay > remaining {
+			delay = remaining
+		}
+		next := observed.Add(delay)
+		outcome.NextDueAt = &next
+		outcome.AccountStatus = expectedStatus
 		outcome.CooldownFence = fence
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
 	default:
@@ -532,7 +662,7 @@ func validateScheduledInput(input Input, now time.Time) error {
 	if input.IssuedAt.IsZero() || input.ExpiresAt.IsZero() || !input.ExpiresAt.After(now) {
 		return errors.New("input 已过期或缺少时间 fence")
 	}
-	if input.Schedule.HealthIntervalMS < 60_000 || input.Schedule.HealthIntervalMS > maxScheduleMilliseconds || input.Schedule.HealthJitterMS < 0 || input.Schedule.HealthJitterMS > maxScheduleMilliseconds || input.Schedule.HealthJitterMS > input.Schedule.HealthIntervalMS || input.Schedule.FailureThreshold < 1 || input.Schedule.FailureRetryMS < 3_000 || input.Schedule.FailureRetryMS > maxScheduleMilliseconds || input.Schedule.CooldownNeutralBaseMS < 0 || input.Schedule.CooldownNeutralBaseMS > maxScheduleMilliseconds || input.Schedule.CooldownNeutralMaxMS < 0 || input.Schedule.CooldownNeutralMaxMS > maxScheduleMilliseconds || input.Schedule.CooldownFailureBackoffMS < 0 || input.Schedule.CooldownFailureBackoffMS > maxScheduleMilliseconds {
+	if input.Schedule.HealthIntervalMS < 60_000 || input.Schedule.HealthIntervalMS > maxScheduleMilliseconds || input.Schedule.HealthJitterMS < 0 || input.Schedule.HealthJitterMS > maxScheduleMilliseconds || input.Schedule.HealthJitterMS > input.Schedule.HealthIntervalMS || input.Schedule.FailureThreshold < 1 || input.Schedule.FailureRetryMS < 3_000 || input.Schedule.FailureRetryMS > maxScheduleMilliseconds || input.Schedule.CooldownNeutralBaseMS < 0 || input.Schedule.CooldownNeutralBaseMS > maxScheduleMilliseconds || input.Schedule.CooldownNeutralMaxMS < 0 || input.Schedule.CooldownNeutralMaxMS > maxScheduleMilliseconds || input.Schedule.CooldownFailureBackoffMS < 0 || input.Schedule.CooldownFailureBackoffMS > maxScheduleMilliseconds || input.Schedule.MaxPauseMinutes < 0 || input.Schedule.MaxPauseMinutes > 1440 || input.Schedule.MaxRecoveryHours < 0 || input.Schedule.MaxRecoveryHours > 24*30 {
 		return errors.New("input schedule 无效")
 	}
 	if !input.Eligibility.BoundGroup || !input.Eligibility.AuthorizationEligible {
@@ -550,6 +680,60 @@ func validateScheduledInput(input Input, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func cooldownMaxPause(schedule Schedule) time.Duration {
+	minutes := schedule.MaxPauseMinutes
+	if minutes == 0 {
+		minutes = defaultCooldownMaxPauseMinutes
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+func cooldownMaxRecovery(schedule Schedule) time.Duration {
+	hours := schedule.MaxRecoveryHours
+	if hours == 0 {
+		hours = defaultCooldownMaxRecoveryHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+func cooldownFailureDelay(accountID, generation string, initial time.Duration, failures int) time.Duration {
+	if initial <= 0 {
+		initial = 3 * time.Second
+	}
+	if failures < 1 {
+		failures = 1
+	}
+	if failures > 5 {
+		return cooldownSlowRetryDelay(accountID, generation, failures)
+	}
+	delay := initial
+	for step := 1; step < failures; step++ {
+		delay *= 2
+	}
+	return delay
+}
+
+func cooldownSlowRetryDelay(accountID, generation string, failures int) time.Duration {
+	value := accountID + ":" + generation + ":" + fmt.Sprintf("%d", failures)
+	hash := uint32(2166136261)
+	for _, unit := range utf16.Encode([]rune(value)) {
+		hash ^= uint32(unit)
+		hash *= 16777619
+	}
+	return time.Duration(60+hash%241) * time.Second
+}
+
+func boundedCooldownRemaining(input Input, expectedStatus string, fence *CooldownFence, observed time.Time) (time.Duration, bool) {
+	if expectedStatus != "temporary_unavailable" || input.Eligibility.TemporaryUnavailableContinuousProbeEnabled == nil || *input.Eligibility.TemporaryUnavailableContinuousProbeEnabled || fence == nil {
+		return 0, false
+	}
+	remaining := cooldownLimitedProbeTimeout - observed.Sub(fence.ObservationStartedAt)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining, true
 }
 
 func validCooldownFence(fence *CooldownFence, input Input) bool {
@@ -587,24 +771,35 @@ func stableJitter(accountID string, maximumMS int64) time.Duration {
 	return time.Duration(n%(uint64(maximumMS)+1)) * time.Millisecond
 }
 
-func stableCooldownDefer(accountID string, failures int, base, maximum time.Duration) time.Duration {
-	if failures < 0 {
-		failures = 0
+func cooldownDeferGrowthStep(fence *CooldownFence, observed time.Time, base time.Duration) int {
+	if fence == nil || fence.ObservationStartedAt.IsZero() || base <= 0 || observed.Before(fence.ObservationStartedAt) {
+		return 0
 	}
-	if base < 0 {
-		base = 0
+	return int(observed.Sub(fence.ObservationStartedAt) / base)
+}
+
+func stableCooldownDefer(accountID, generation string, growthStep int, base, maximum time.Duration) time.Duration {
+	const minimum = 3 * time.Second
+	if growthStep < 0 {
+		growthStep = 0
+	}
+	if base < minimum {
+		base = minimum
 	}
 	if base > maxScheduleDuration {
 		base = maxScheduleDuration
 	}
-	if maximum < 0 {
-		maximum = 0
+	if maximum < minimum {
+		maximum = minimum
 	}
 	if maximum > maxScheduleDuration {
 		maximum = maxScheduleDuration
 	}
+	if base > maximum {
+		base = maximum
+	}
 	delay := base
-	for step := 0; step < failures && delay < maximum; step++ {
+	for step := 0; step < growthStep && delay < maximum; step++ {
 		if delay > maximum/2 {
 			delay = maximum
 			break
@@ -614,7 +809,20 @@ func stableCooldownDefer(accountID string, failures int, base, maximum time.Dura
 	if delay > maximum {
 		delay = maximum
 	}
-	return delay + stableJitter(accountID+fmt.Sprintf(":%d", failures), int64(delay/time.Millisecond)/5) - delay/10
+	// Keep every observation stage stable across retries while spreading a
+	// generation by +/-20%, as frozen by W7. The stage derives from elapsed
+	// observation time, not upstream failure count, so neutral/task results do
+	// not mutate the failure recovery sequence.
+	spreadMS := int64(delay/time.Millisecond) * 2 / 5
+	offset := stableJitter(accountID+":"+generation+fmt.Sprintf(":%d", growthStep), spreadMS) - time.Duration(spreadMS/2)*time.Millisecond
+	result := delay + offset
+	if result < minimum {
+		return minimum
+	}
+	if result > maximum {
+		return maximum
+	}
+	return result
 }
 
 func durationMS(value int64, fallback time.Duration) time.Duration {

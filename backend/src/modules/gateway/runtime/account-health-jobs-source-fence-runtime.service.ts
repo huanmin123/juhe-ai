@@ -5,7 +5,7 @@ import {
   type AccountHealthJobsOutcomeCursor,
   type AccountHealthJobsStoreSource
 } from '../../../storage/account-health-jobs-outcome.repository.js'
-import { settleAccountHealthJobsSourceFenceOutcome } from './account-health-jobs-source-fence.consumer.js'
+import { settleAccountHealthJobsSourceFenceOutcomeWithDisposition } from './account-health-jobs-source-fence.consumer.js'
 
 let stopping = true
 let runPromise: Promise<void> | undefined
@@ -46,7 +46,11 @@ async function runConsumerLoop(): Promise<void> {
       })
       for (const outcome of outcomes) {
         if (stopping) break
-        await settleAccountHealthJobsSourceFenceOutcome(outcome)
+        const settlement = await settleAccountHealthJobsSourceFenceOutcomeWithDisposition(outcome)
+        // Only a confirmed terminal disposition may advance a source-fenced
+        // outcome. Retry leaves the cursor unchanged so a runtime-state read
+        // race, owner lease, or dispatch hand-off cannot be silently skipped.
+        if (settlement === 'retry') break
         cursor = { observedAt: outcome.observed_at, outcomeId: outcome.outcome_id }
       }
     } catch (error) {

@@ -54,6 +54,11 @@ try {
     projection: { target_account_id: 'account-1', transition_kind: 'health_failure', input_version: 1, config_revision: 2, dispatch_revision: 3, expected_account_status: 'error' }
   })
   assert.equal(legacyErrorProjection.projection?.expected_account_status, 'error')
+  const historicalMalformedProjection = decodeAccountHealthJobsOutcomePayload({
+    outcome_id: 'outcome-historical-error', request_id: 'request-historical-error', account_id: 'account-1', outcome: 'upstream_failure', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
+    projection: { target_account_id: 'account-1', transition_kind: 'health_failure', input_version: 1, config_revision: 2, dispatch_revision: 3, expected_account_status: 'error' }
+  })
+  assert.equal(historicalMalformedProjection.projection?.expected_account_status, 'error', '历史 malformed projection 必须可被读取后由 projector 记录 rejection receipt')
   assert.throws(() => decodeAccountHealthJobsOutcomePayload({
     outcome_id: 'outcome-4', request_id: 'request-4', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
     projection: { target_account_id: 'account-1', transition_kind: 'health_success', input_version: 1, config_revision: 2, dispatch_revision: 3 }

@@ -5,6 +5,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 runtimeConfig.runtimeStateDriver = 'memory'
 
 const coordinator = await import('../../modules/gateway/runtime/availability-probe-coordinator.js')
+const sourceFenceConsumer = await import('../../modules/gateway/runtime/account-health-jobs-source-fence.consumer.js')
 
 const scope = 'acct_a:authorized:sys_a:group_a:grant_a'
 const acquisitions = await Promise.all(Array.from({ length: 32 }, async () => await coordinator.acquireAvailabilityProbe({
@@ -129,6 +130,59 @@ if (handoffLeaseOwner.disposition !== 'owner') throw new Error('expected handoff
 assert.equal(await coordinator.releaseAvailabilityProbeForExecution({
   runtimeKey: handoffLeaseOwner.runtimeKey, generation: handoffLeaseOwner.generation, ownerToken: handoffLeaseOwner.ownerToken, nowMs: 3_000, leaseMs: 100
 }), true)
+const pendingSettlement = await coordinator.availabilityProbeSourceFenceSettlementDisposition({
+  runtimeKey: handoffLeaseOwner.runtimeKey,
+  generation: handoffLeaseOwner.generation,
+  sourceFence: sourceFence('source_handoff_1', 1),
+  nowMs: 3_050
+})
+assert.deepEqual(pendingSettlement, { disposition: 'retry' }, '已 handoff 但尚未完成的 Go outcome 不得推进 source cursor')
+const handoffOutcome = {
+  outcome_id: 'source-handoff-outcome',
+  request_id: 'source-handoff-request',
+  account_id: 'acct_a',
+  outcome: 'complete_success' as const,
+  observed_at: '2026-08-19T00:00:00.000Z',
+  input_version: 1,
+  config_revision: 7,
+  dispatch_revision: 1,
+  source_fence: {
+    state_key: 'source_handoff_1',
+    account_id: 'acct_a',
+    source_generation: 1,
+    source_fence_id: sourceFence('source_handoff_1', 1).sourceFenceId,
+    runtime_key: handoffLeaseOwner.runtimeKey,
+    probe_generation: handoffLeaseOwner.generation,
+    config_revision: 7
+  }
+}
+assert.equal(await sourceFenceConsumer.settleAccountHealthJobsSourceFenceOutcomeWithDisposition(handoffOutcome), 'settled', '可结算的 durable outcome 必须在同 generation 精确结算')
+const completedSettlement = await coordinator.availabilityProbeSourceFenceSettlementDisposition({
+  runtimeKey: handoffLeaseOwner.runtimeKey,
+  generation: handoffLeaseOwner.generation,
+  sourceFence: sourceFence('source_handoff_1', 1)
+})
+assert.deepEqual(completedSettlement, { disposition: 'terminal', completedOutcome: 'success' }, '同 generation 的重复 durable outcome 可确认终态并推进 cursor')
+assert.equal(await sourceFenceConsumer.settleAccountHealthJobsSourceFenceOutcomeWithDisposition(handoffOutcome), 'terminal', '已完成 generation 的重复 durable outcome 必须作为可推进终态')
+const missingSettlement = await coordinator.availabilityProbeSourceFenceSettlementDisposition({
+  runtimeKey: 'availability:missing:account_health_check:r7',
+  generation: 1,
+  sourceFence: sourceFence('source_missing', 99)
+})
+assert.deepEqual(missingSettlement, { disposition: 'terminal' }, '已过期或重启丢失的运行态必须终结，不能永久阻塞 source cursor')
+assert.equal(await sourceFenceConsumer.settleAccountHealthJobsSourceFenceOutcomeWithDisposition({
+  ...handoffOutcome,
+  outcome_id: 'source-missing-outcome',
+  request_id: 'source-missing-request',
+  source_fence: {
+    ...handoffOutcome.source_fence,
+    state_key: 'source_missing',
+    source_generation: 99,
+    source_fence_id: sourceFence('source_missing', 99).sourceFenceId,
+    runtime_key: 'availability:missing:account_health_check:r7',
+    probe_generation: 1
+  }
+}), 'terminal', 'orphan source outcome 必须可由 consumer 确认终态并让后续 cursor 继续')
 const handoffLeaseTakeover = await coordinator.acquireAvailabilityProbe({
   accountRuntimeScope: 'acct_source_handoff_lease', probeKind: 'account_health_check', configRevision: 7,
   sourceFence: sourceFence('source_handoff_2', 2), executionRole: 'source_dispatch', nowMs: 3_101, leaseMs: 100

@@ -52,4 +52,47 @@ try {
 } finally {
   rmSync(tempDir, { recursive: true, force: true })
 }
+
+let postgresCursorReadSql = ''
+const postgresCursorReader = {
+  driver: 'postgres',
+  dialect: { qualifyTable: (schema: string, name: string) => `${schema}.${name}` },
+  one: async (sql: string) => {
+    postgresCursorReadSql = sql
+    return { observed_at: '2026-08-19T04:07:26.724123Z', outcome_id: 'account-balance-outcome-precision' }
+  }
+} as never
+assert.deepEqual(
+  await currentAccountBalanceProjectionCursorAsync(postgresCursorReader, 'j2-postgres-precision'),
+  { observedAt: '2026-08-19T04:07:26.724123Z', outcomeId: 'account-balance-outcome-precision' }
+)
+assert.match(postgresCursorReadSql, /to_char\(observed_at::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS\.US"Z"'\)/u)
+
+const postgresCursorWriter: any = {
+  driver: 'postgres',
+  dialect: { qualifyTable: (schema: string, name: string) => `${schema}.${name}` },
+  transaction: async (operation: (client: unknown) => Promise<unknown>) => operation(postgresCursorWriter),
+  one: async () => ({ observed_at: '2026-08-19T04:07:26.724455Z', outcome_id: 'account-balance-outcome-f1' }),
+  execute: async () => { throw new Error('older microsecond cursor must not write') }
+}
+assert.equal(
+  await advanceAccountBalanceProjectionCursorAsync(postgresCursorWriter, 'j2-postgres-precision', { observedAt: '2026-08-19T04:07:26.724170Z', outcomeId: 'account-balance-outcome-903' }),
+  false,
+  'a prior outcome in the same millisecond must remain behind the full-precision cursor'
+)
+
+let repairedCursorParams: readonly unknown[] | undefined
+const legacyMillisecondCursor: any = {
+  driver: 'postgres',
+  dialect: { qualifyTable: (schema: string, name: string) => `${schema}.${name}` },
+  transaction: async (operation: (client: unknown) => Promise<unknown>) => operation(legacyMillisecondCursor),
+  one: async () => ({ observed_at: '2026-08-19T04:07:26.724000Z', outcome_id: 'account-balance-outcome-f1' }),
+  execute: async (_sql: string, params: readonly unknown[]) => { repairedCursorParams = params; return { changes: 1 } }
+}
+assert.equal(
+  await advanceAccountBalanceProjectionCursorAsync(legacyMillisecondCursor, 'j2-postgres-legacy', { observedAt: '2026-08-19T04:07:26.724170Z', outcomeId: 'account-balance-outcome-903' }),
+  true,
+  'a legacy millisecond cursor must advance through the first replayed microsecond outcome'
+)
+assert.equal(repairedCursorParams?.[0], '2026-08-19T04:07:26.724170Z')
 console.log('account balance jobs outcome regression passed')

@@ -2,6 +2,21 @@
   "version": 1,
   "purpose": "Archive the complete Node table-monitor sampling, writer, cursor, retention, and writer-only regression file set removed by F2.",
   "createdAt": "2026-08-09",
+  "featureId": "table-monitor-sampling-retention",
+  "lifecycleStatus": "isolated_validation_only",
+  "goImplementationPaths": [
+    "backend-go/projects/jobs/cmd/juhe-ai-jobs/main.go",
+    "backend-go/projects/jobs/internal/tablemonitor"
+  ],
+  "disabledNodeEntrypoints": [
+    "Node table-monitor sampling, snapshot, retention and writer-only regressions; the live table-monitor.repository.ts remains a read-only consumer."
+  ],
+  "dualModeVerification": {
+    "sqlite": "backend-go/projects/jobs/internal/tablemonitor/tablemonitor_test.go",
+    "postgres": "backend-go/projects/jobs/internal/tablemonitor/postgres_integration_test.go (requires isolated PostgreSQL URL; skip is not pass)"
+  },
+  "activeNodePathZeroEvidence": "The retained backend/src/storage/table-monitor.repository.ts is read-only. Writer/scheduler/retention ownership must be verified with the scoped L3 scan before production handover.",
+  "productionHandover": "not completed: no candidate readback, owner drain or production rollback evidence is recorded.",
   "rollbackCommit": "9e4c1e4d9",
   "archiveOverlayAllowed": false,
   "handoffCommits": [

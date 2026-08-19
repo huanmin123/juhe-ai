@@ -48,7 +48,9 @@ const path = publishAccountHealthJobsInputFromAccount({
   settings: {
     intervalHours: numberSetting('accountHealthCheckIntervalHours', 1, 168),
     jitterMinutes: numberSetting('accountHealthCheckJitterMinutes', 0, 1440),
-    failureThreshold: numberSetting('accountHealthCheckFailureThreshold', 1, 10)
+    failureThreshold: numberSetting('accountHealthCheckFailureThreshold', 1, 10),
+    maxPauseMinutes: numberSetting('defaultTemporaryUnschedulableMinutes', 1, 1440),
+    maxRecoveryHours: numberSetting('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   },
   expiresAt: new Date(Date.now() + runtimeConfig.accountHealthJobs.inputTtlMs),
   proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined,

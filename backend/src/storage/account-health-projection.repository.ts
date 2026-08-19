@@ -55,7 +55,8 @@ const transitionKinds = new Set([
   'temporary_unavailable',
   'cooldown_success',
   'cooldown_defer',
-  'cooldown_failure'
+  'cooldown_failure',
+  'cooldown_error'
 ])
 
 const allowedProjectionValueKeys = new Set([
@@ -178,13 +179,17 @@ function validateProjection(outcome: AccountHealthJobsOutcome): { kind: 'project
   if (transition.startsWith('cooldown_') && projection.expected_account_status !== 'temporary_unavailable' && projection.expected_account_status !== 'rate_limited') {
     return rejected('projection_cooldown_expected_status_invalid')
   }
-  const requiresNextDue = transition !== 'activation_error'
+  const requiresNextDue = transition !== 'activation_error' && transition !== 'cooldown_error'
   if (requiresNextDue && !outcome.next_due_at) return rejected('projection_next_due_missing')
   if ((transition === 'temporary_unavailable' || transition === 'cooldown_defer' || transition === 'cooldown_failure') && !projection.cooldown_fence) {
     return rejected('projection_output_cooldown_fence_missing')
   }
   if (transition.startsWith('cooldown_') && !projection.expected_cooldown_fence) {
     return rejected('projection_expected_cooldown_fence_missing')
+  }
+  if ((transition === 'cooldown_defer' || transition === 'cooldown_failure' || (transition === 'cooldown_error' && projection.cooldown_fence !== undefined))
+    && !cooldownFencesEqual(projection.expected_cooldown_fence, projection.cooldown_fence)) {
+    return rejected('projection_cooldown_fence_mismatch')
   }
   if (projection.expected_cooldown_fence && projection.source_config_revision !== undefined
     && projection.expected_cooldown_fence.source_config_revision !== projection.source_config_revision) {
@@ -205,7 +210,7 @@ function rejected(reason: string): { kind: 'terminal'; disposition: 'rejected'; 
 function outcomeMatchesTransition(outcome: AccountHealthJobsOutcome, transition: string): boolean {
   if (transition === 'activation_success' || transition === 'health_success' || transition === 'cooldown_success') return outcome.outcome === 'complete_success'
   if (transition === 'cooldown_defer') return outcome.outcome === 'framing_complete_neutral' || outcome.outcome === 'probe_task_failure'
-  if (transition === 'cooldown_failure') return outcome.outcome === 'upstream_failure'
+  if (transition === 'cooldown_failure' || transition === 'cooldown_error') return outcome.outcome === 'upstream_failure'
   return outcome.outcome === 'framing_complete_neutral' || outcome.outcome === 'upstream_failure'
 }
 
@@ -337,7 +342,7 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
   }
   const healthFailure = (): void => {
     health()
-    set('health_check_failure_count', outcome.failure_count ?? 0)
+    set('health_check_failure_count', projectedHealthFailureCount(outcome))
     set('health_check_failure_started_at', outcome.failure_started_at ?? outcome.observed_at)
     set('last_health_check_error_code', limited(outcome.error_code, 200))
     set('last_health_check_error_message', limited(outcome.error_message, 2_000))
@@ -409,12 +414,20 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
       break
     case 'cooldown_defer':
       setCooldown(requiredCooldownFence(projection))
-      healthFailure()
       break
     case 'cooldown_failure':
       setCooldown(requiredCooldownFence(projection))
       setLastError()
-      healthFailure()
+      break
+    case 'cooldown_error':
+      set('status', 'error')
+      set('schedulable', 0)
+      // A terminal cooldown stops scheduling but remains an audit record.
+      // New Go outcomes carry the exact fence; legacy terminal rows without
+      // an output fence are still accepted for rolling-upgrade compatibility.
+      if (projection.cooldown_fence) setCooldown(projection.cooldown_fence)
+      else set('cooldown_until', null)
+      setLastError()
       break
     default:
       throw new Error(`J1 未知 projection transition: ${transition}`)
@@ -451,9 +464,26 @@ function shouldScheduleBalanceAutoDetection(account: AccountFenceRow, outcome: P
   return effectiveAccountApiKeyCount(decryptJson<Record<string, unknown>>(account.credentials_encrypted)) === 1
 }
 
+function projectedHealthFailureCount(outcome: ProjectableOutcome): number {
+  const value = outcome.projection.values?.health_check_failure_count
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value
+  return outcome.failure_count ?? 0
+}
+
 function requiredCooldownFence(projection: AccountHealthJobsProjection): NonNullable<AccountHealthJobsProjection['cooldown_fence']> {
   if (!projection.cooldown_fence) throw new Error('J1 projection 缺少输出 cooldown fence')
   return projection.cooldown_fence
+}
+
+function cooldownFencesEqual(
+  expected: AccountHealthJobsProjection['expected_cooldown_fence'],
+  output: AccountHealthJobsProjection['cooldown_fence']
+): boolean {
+  return expected !== undefined
+    && output !== undefined
+    && expected.observation_started_at === output.observation_started_at
+    && expected.generation === output.generation
+    && expected.source_config_revision === output.source_config_revision
 }
 
 function projectionChangesAvailability(transition: string): boolean {
@@ -461,6 +491,7 @@ function projectionChangesAvailability(transition: string): boolean {
     || transition === 'activation_error'
     || transition === 'temporary_unavailable'
     || transition === 'cooldown_success'
+    || transition === 'cooldown_error'
 }
 
 function table(client: DatabaseClient, tableName: string): string {

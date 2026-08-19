@@ -13,6 +13,9 @@ export interface AccountHealthJobsProjection {
   config_revision: number
   dispatch_revision: number
   source_config_revision?: number
+  // Includes `error` solely so a historical malformed outcome can reach the
+  // projector and receive a durable rejection receipt. Projection validation
+  // still rejects error for every currently allowed transition.
   expected_account_status: 'active' | 'pending_test' | 'temporary_unavailable' | 'rate_limited' | 'error'
   expected_cooldown_fence?: {
     observation_started_at: string
@@ -232,6 +235,8 @@ function normalizeProjection(value: unknown): AccountHealthJobsProjection {
     input_version: requiredPositiveInteger(record.input_version, 'projection.input_version'),
     config_revision: requiredPositiveInteger(record.config_revision, 'projection.config_revision'),
     dispatch_revision: requiredPositiveInteger(record.dispatch_revision, 'projection.dispatch_revision'),
+    // Historical health_failure outcomes may contain `error`. Keep them
+    // decodable so the projector can record a durable rejection receipt.
     expected_account_status: requiredEnum(record.expected_account_status, 'projection.expected_account_status', ['active', 'pending_test', 'temporary_unavailable', 'rate_limited', 'error'] as const)
   }
   if (record.source_config_revision !== undefined) projection.source_config_revision = requiredPositiveInteger(record.source_config_revision, 'projection.source_config_revision')

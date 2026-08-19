@@ -43,7 +43,11 @@ try {
   assert.equal(payload.type, 'api_key')
   assert.equal(payload.endpoint_mode, 'chat_json')
   assert.equal((payload.schedule as Record<string, unknown>).health_interval_ms, 3_600_000)
+  assert.equal((payload.schedule as Record<string, unknown>).cooldown_failure_backoff_ms, 3_000)
+  assert.equal((payload.schedule as Record<string, unknown>).max_pause_minutes, 2)
+  assert.equal((payload.schedule as Record<string, unknown>).max_recovery_hours, 12)
   assert.equal((payload.eligibility as Record<string, unknown>).bound_group, true)
+  assert.equal((payload.eligibility as Record<string, unknown>).temporary_unavailable_continuous_probe_enabled, true)
   assert.equal(Array.isArray(payload.api_keys), true)
   assert.equal(typeof (payload.api_keys as Array<Record<string, unknown>>)[0]?.credential, 'object')
 
@@ -81,7 +85,8 @@ try {
     cooldownUntil: '2030-08-16T08:00:00.000+08:00',
     cooldownRetestObservationStartedAt: '2030-08-16T08:01:00.000+08:00',
     cooldownRetestGeneration: 'generation-1',
-    cooldownRetestDispatchRevision: 3
+    cooldownRetestDispatchRevision: 3,
+    temporaryUnavailableContinuousProbeEnabled: true
   } as AccountSummary
   const cooldownPath = publishAccountHealthJobsInputFromAccount({
     account: cooldownAccount,
@@ -98,6 +103,7 @@ try {
     observation_started_at: '2030-08-16T00:01:00.000Z',
     generation: 'generation-1'
   })
+  assert.equal((cooldownPayload.eligibility as Record<string, unknown>).temporary_unavailable_continuous_probe_enabled, true)
 
   const oauthAccount = {
     ...account,

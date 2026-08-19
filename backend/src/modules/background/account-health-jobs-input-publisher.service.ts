@@ -134,7 +134,9 @@ function inputSettings(settings: Record<string, unknown>) {
   return {
     intervalHours: settingInteger(settings, 'accountHealthCheckIntervalHours', 1, 168),
     jitterMinutes: settingInteger(settings, 'accountHealthCheckJitterMinutes', 0, 1440),
-    failureThreshold: settingInteger(settings, 'accountHealthCheckFailureThreshold', 1, 10)
+    failureThreshold: settingInteger(settings, 'accountHealthCheckFailureThreshold', 1, 10),
+    maxPauseMinutes: settingInteger(settings, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
+    maxRecoveryHours: settingInteger(settings, 'cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   }
 }
 

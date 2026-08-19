@@ -177,7 +177,7 @@ type directCandidate struct {
 const directInputCandidatesSQL = `
 SELECT
   a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.type, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model, a.credentials_encrypted, a.account_expires_at, a.cooldown_until,
+  a.health_check_endpoint_mode, a.health_check_model, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
@@ -224,6 +224,7 @@ LIMIT $2`
 func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var result directCandidate
 	var schedulable, sourceSchedulable sql.NullInt64
+	var continuousProbe sql.NullBool
 	var accountExpires, cooldownUntil, observationStarted, cooldownGeneration sql.NullString
 	var authorizationID, authorizationStatus, authorizationExpires, authorizationLimits sql.NullString
 	var authorizationResourceID, authorizationOwner, authorizationTeam sql.NullString
@@ -235,7 +236,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var proxyPort sql.NullInt64
 	if err := rows.Scan(
 		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &result.account.Type, &result.account.Status, &schedulable,
-		&result.account.EndpointMode, &result.account.HealthModel, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil,
+		&result.account.EndpointMode, &result.account.HealthModel, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe,
 		&observationStarted, &cooldownGeneration, &result.systemAccount,
 		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
 		&sourceID, &sourceRevision, &sourceProvider, &sourceType, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
@@ -245,6 +246,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		return directCandidate{}, fmt.Errorf("解码 PG direct input 候选失败: %w", err)
 	}
 	result.account.Schedulable = schedulable.Valid && schedulable.Int64 == 1
+	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
 	var err error
 	if result.account.AccountExpiresAt, err = parseNullableDirectTime(accountExpires); err != nil {
 		return directCandidate{}, err
@@ -293,7 +295,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 }
 
 func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Location, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT key, value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold', 'usageStatsTimezone')`)
+	rows, err := tx.QueryContext(ctx, `SELECT key, value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold', 'defaultTemporaryUnschedulableMinutes', 'cooldownAccountRetestMaxBackoffHours', 'usageStatsTimezone')`)
 	if err != nil {
 		return Schedule{}, nil, fmt.Errorf("读取 PG direct input settings 失败: %w", err)
 	}
@@ -321,6 +323,14 @@ func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Locati
 	if err != nil {
 		return Schedule{}, nil, err
 	}
+	maxPauseMinutes, err := directSettingInt(values, "defaultTemporaryUnschedulableMinutes", 1, 1440)
+	if err != nil {
+		return Schedule{}, nil, err
+	}
+	maxRecoveryHours, err := directSettingInt(values, "cooldownAccountRetestMaxBackoffHours", 1, 24*30)
+	if err != nil {
+		return Schedule{}, nil, err
+	}
 	var timezone string
 	if raw, found := values["usageStatsTimezone"]; !found || json.Unmarshal([]byte(raw), &timezone) != nil || strings.TrimSpace(timezone) == "" {
 		return Schedule{}, nil, fmt.Errorf("PG direct input 缺少有效 usageStatsTimezone")
@@ -329,7 +339,7 @@ func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Locati
 	if err != nil {
 		return Schedule{}, nil, fmt.Errorf("PG direct input usageStatsTimezone 无效: %w", err)
 	}
-	return Schedule{HealthIntervalMS: int64(intervalHours) * int64(time.Hour/time.Millisecond), HealthJitterMS: int64(jitterMinutes) * int64(time.Minute/time.Millisecond), FailureThreshold: threshold, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: int64(30 * time.Second / time.Millisecond), CooldownNeutralMaxMS: int64(15 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: int64(5 * time.Minute / time.Millisecond)}, location, nil
+	return Schedule{HealthIntervalMS: int64(intervalHours) * int64(time.Hour/time.Millisecond), HealthJitterMS: int64(jitterMinutes) * int64(time.Minute/time.Millisecond), FailureThreshold: threshold, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: int64(30 * time.Second / time.Millisecond), CooldownNeutralMaxMS: int64(15 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: int64(3 * time.Second / time.Millisecond), MaxPauseMinutes: maxPauseMinutes, MaxRecoveryHours: maxRecoveryHours}, location, nil
 }
 
 func directSettingInt(values map[string]string, key string, minimum, maximum int) (int, error) {

@@ -143,7 +143,7 @@ func TestScheduleMillisecondsAreBoundedWithoutDurationOverflow(t *testing.T) {
 	if got := stableJitter("bounded", 1<<63-1); got < 0 || got > maxScheduleDuration {
 		t.Fatalf("stableJitter must remain in the bounded duration range: %s", got)
 	}
-	if got := stableCooldownDefer("bounded", 1000, maxScheduleDuration, maxScheduleDuration); got < 0 || got > maxScheduleDuration+maxScheduleDuration/10 {
+	if got := stableCooldownDefer("bounded", "bounded-generation", 1000, maxScheduleDuration, maxScheduleDuration); got < 0 || got > maxScheduleDuration {
 		t.Fatalf("stable cooldown defer overflowed: %s", got)
 	}
 }
@@ -295,6 +295,39 @@ func TestApplyCooldownNeutralKeepsTemporaryUnavailableAndDefers(t *testing.T) {
 	}
 }
 
+func TestCooldownNeutralDeferUsesObservationGenerationWindow(t *testing.T) {
+	start := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	input := testInput("https://api.example.com", "chat_json")
+	fence := &CooldownFence{ObservationStartedAt: start, Generation: "neutral-generation"}
+	cooldownUntil := start
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: fence}
+
+	first := Outcome{Outcome: OutcomeNeutral, ObservedAt: start}
+	applyOutcomeDecision(&first, input, prior, true, "cooldown_retest")
+	if first.NextDueAt == nil {
+		t.Fatal("first neutral defer missing due time")
+	}
+	firstDelay := first.NextDueAt.Sub(start)
+	prior.FailureCount = 99
+	repeat := Outcome{Outcome: OutcomeTaskFailed, ObservedAt: start}
+	applyOutcomeDecision(&repeat, input, prior, true, "cooldown_retest")
+	if repeat.NextDueAt == nil || repeat.NextDueAt.Sub(start) != firstDelay || repeat.FailureCount != 99 {
+		t.Fatalf("same generation/stage defer must be stable and not change failure count: %#v", repeat)
+	}
+
+	later := Outcome{Outcome: OutcomeNeutral, ObservedAt: start.Add(30 * time.Second)}
+	applyOutcomeDecision(&later, input, prior, true, "cooldown_retest")
+	if later.NextDueAt == nil || later.NextDueAt.Sub(later.ObservedAt) <= firstDelay {
+		t.Fatalf("next observation window must increase neutral defer: first=%s later=%#v", firstDelay, later)
+	}
+	if capped := stableCooldownDefer(input.AccountID, fence.Generation, 100, 30*time.Second, 15*time.Minute); capped > 15*time.Minute || capped < 3*time.Second {
+		t.Fatalf("neutral defer must remain within [3s,15m]: %s", capped)
+	}
+}
+
 func TestApplyHealthTransitionCarriesExpectedAccountStatus(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")
@@ -303,6 +336,262 @@ func TestApplyHealthTransitionCarriesExpectedAccountStatus(t *testing.T) {
 	applyOutcomeDecision(&outcome, input, CurrentState{}, false, "health")
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "activation_success" || outcome.Projection.ExpectedAccountStatus != "pending_test" || outcome.Projection.ExpectedCooldownFence != nil {
 		t.Fatalf("health projection must carry exact expected status: %#v", outcome.Projection)
+	}
+}
+
+func TestActiveHealthFailureWaitsForConfiguredThreshold(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 1}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "health")
+	if outcome.AccountStatus != "active" || outcome.FailureCount != 2 || outcome.NextDueAt == nil || outcome.Projection == nil || outcome.Projection.TransitionKind != "health_failure" || outcome.CooldownFence != nil {
+		t.Fatalf("below threshold health failure must keep active: %#v", outcome)
+	}
+	prior.FailureCount = 2
+	outcome = Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "health")
+	if outcome.AccountStatus != "temporary_unavailable" || outcome.FailureCount != 0 || outcome.Projection == nil || outcome.Projection.TransitionKind != "temporary_unavailable" || outcome.CooldownFence == nil || outcome.Projection.Values["health_check_failure_count"] != 3 {
+		t.Fatalf("threshold health failure must enter cooldown: %#v", outcome)
+	}
+}
+
+func TestScheduledAndSourceHealthFailuresBypassGenericThreshold(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}
+	for _, result := range []string{OutcomeUpstreamFailed, OutcomeNeutral} {
+		outcome := Outcome{Outcome: result, ObservedAt: now}
+		applyOutcomeDecision(&outcome, input, prior, true, "scheduled_health")
+		if outcome.AccountStatus != "temporary_unavailable" || outcome.CooldownFence == nil || outcome.Projection == nil || outcome.Projection.TransitionKind != "temporary_unavailable" {
+			t.Fatalf("scheduled complete diagnostic failure must immediately enter cooldown: %#v", outcome)
+		}
+	}
+	source := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&source, input, prior, true, "source_health")
+	if source.AccountStatus != "temporary_unavailable" || source.CooldownFence == nil || source.Projection == nil || source.Projection.TransitionKind != "temporary_unavailable" {
+		t.Fatalf("source request confirmation must use threshold one: %#v", source)
+	}
+}
+
+func TestThresholdCooldownStartsIndependentRetrySequence(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000, MaxPauseMinutes: 10, MaxRecoveryHours: 12}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 2}
+	threshold := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&threshold, input, prior, true, "health")
+	if threshold.CooldownFence == nil || threshold.FailureCount != 0 || threshold.NextDueAt == nil || !threshold.NextDueAt.Equal(now.Add(3*time.Second)) {
+		t.Fatalf("threshold transition must reset cooldown retry count: %#v", threshold)
+	}
+	firstCooldown := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	prior = CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: threshold.FailureCount, CooldownFence: threshold.CooldownFence}
+	applyOutcomeDecision(&firstCooldown, input, prior, true, "cooldown_retest")
+	if firstCooldown.FailureCount != 1 || firstCooldown.NextDueAt == nil || !firstCooldown.NextDueAt.Equal(now.Add(3*time.Second)) {
+		t.Fatalf("first cooldown retry must use initial backoff: %#v", firstCooldown)
+	}
+	secondCooldown := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	prior.FailureCount = firstCooldown.FailureCount
+	applyOutcomeDecision(&secondCooldown, input, prior, true, "cooldown_retest")
+	if secondCooldown.FailureCount != 2 || secondCooldown.NextDueAt == nil || !secondCooldown.NextDueAt.Equal(now.Add(6*time.Second)) {
+		t.Fatalf("second cooldown retry must double initial backoff: %#v", secondCooldown)
+	}
+}
+
+func TestThresholdCooldownUsesThreeSecondDefaultBackoff(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: 0}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, CurrentState{AccountStatus: "active"}, true, "health")
+	if outcome.NextDueAt == nil || !outcome.NextDueAt.Equal(now.Add(3*time.Second)) {
+		t.Fatalf("threshold cooldown default backoff must be 3s: %#v", outcome)
+	}
+}
+
+func TestCooldownFailureTransitionsLongTermThenTerminal(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "generation-1"}
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, TemporaryUnavailableContinuousProbeEnabled: boolPointer(true)}
+	input.Cooldown = fence
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000, MaxPauseMinutes: 10, MaxRecoveryHours: 1}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 2, CooldownFence: fence}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.AccountStatus != "temporary_unavailable" || outcome.NextDueAt == nil || !outcome.NextDueAt.Equal(now.Add(time.Hour)) || outcome.ErrorCode != "cooldown_retest_long_term_unavailable" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_failure" {
+		t.Fatalf("expired max recovery must use hourly long-term retest: %#v", outcome)
+	}
+	fence.ObservationStartedAt = now.Add(-7 * 24 * time.Hour)
+	outcome = Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.AccountStatus != "error" || outcome.NextDueAt != nil || outcome.ErrorCode != "cooldown_retest_observation_timeout" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_error" || outcome.Projection.ExpectedCooldownFence == nil || outcome.CooldownFence == nil || outcome.Projection.CooldownFence == nil || !sameCooldownFence(outcome.CooldownFence, fence) || !sameCooldownFence(outcome.Projection.CooldownFence, fence) {
+		t.Fatalf("seven-day cooldown observation must become projected terminal: %#v", outcome)
+	}
+}
+
+func TestCooldownFailureUsesDeterministicSlowBackoffAfterFastRetries(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "generation-1"}
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, TemporaryUnavailableContinuousProbeEnabled: boolPointer(true)}
+	input.Cooldown = fence
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000, MaxPauseMinutes: 1, MaxRecoveryHours: 12}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 10, CooldownFence: fence}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.NextDueAt == nil || outcome.AccountStatus != "temporary_unavailable" || outcome.ErrorCode != "" {
+		t.Fatalf("slow recovery outcome invalid: %#v", outcome)
+	}
+	delay := outcome.NextDueAt.Sub(now)
+	if delay < time.Minute || delay > 5*time.Minute || delay != cooldownFailureDelay(input.AccountID, fence.Generation, 3*time.Second, 11) {
+		t.Fatalf("slow recovery delay must be stable in [1m,5m]: %s", delay)
+	}
+}
+
+func TestBoundedTemporaryUnavailableCapsThenTerminatesOnRealFailure(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-cooldownLimitedProbeTimeout + time.Second), Generation: "generation-1"}
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, TemporaryUnavailableContinuousProbeEnabled: boolPointer(false)}
+	input.Cooldown = fence
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000, MaxPauseMinutes: 10, MaxRecoveryHours: 12}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 1, CooldownFence: fence}
+	neutral := Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	applyOutcomeDecision(&neutral, input, prior, true, "cooldown_retest")
+	if neutral.NextDueAt == nil || !neutral.NextDueAt.Equal(now.Add(time.Second)) || neutral.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("bounded neutral deferral must stop at ten-minute deadline: %#v", neutral)
+	}
+	beforeDeadline := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&beforeDeadline, input, prior, true, "cooldown_retest")
+	if beforeDeadline.NextDueAt == nil || !beforeDeadline.NextDueAt.Equal(now.Add(time.Second)) || beforeDeadline.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("bounded retry must stop at ten-minute deadline: %#v", beforeDeadline)
+	}
+	fence.ObservationStartedAt = now.Add(-cooldownLimitedProbeTimeout)
+	atDeadline := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	applyOutcomeDecision(&atDeadline, input, prior, true, "cooldown_retest")
+	if atDeadline.AccountStatus != "error" || atDeadline.ErrorCode != "cooldown_retest_limited_probe_timeout" || atDeadline.Projection == nil || atDeadline.Projection.TransitionKind != "cooldown_error" || atDeadline.CooldownFence == nil || atDeadline.Projection.CooldownFence == nil || !sameCooldownFence(atDeadline.CooldownFence, fence) {
+		t.Fatalf("bounded real failure at deadline must become limited terminal: %#v", atDeadline)
+	}
+
+	input.Eligibility.AccountStatus = "rate_limited"
+	input.Schedule.MaxRecoveryHours = 1
+	fence.ObservationStartedAt = now.Add(-time.Hour)
+	rateLimited := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
+	prior.AccountStatus = "rate_limited"
+	applyOutcomeDecision(&rateLimited, input, prior, true, "cooldown_retest")
+	if rateLimited.AccountStatus != "rate_limited" || rateLimited.ErrorCode != "cooldown_retest_long_term_unavailable" {
+		t.Fatalf("rate-limited cooldown must not use temporary bounded terminal: %#v", rateLimited)
+	}
+}
+
+func TestCooldownFailureDelayStartsAtInitialBackoff(t *testing.T) {
+	initial := 3 * time.Second
+	if got := cooldownFailureDelay("account-1", "generation-1", initial, 1); got != initial {
+		t.Fatalf("first cooldown failure delay = %s, want %s", got, initial)
+	}
+	if got := cooldownFailureDelay("account-1", "generation-1", initial, 2); got != 6*time.Second {
+		t.Fatalf("second cooldown failure delay = %s, want 6s", got)
+	}
+	if got := cooldownFailureDelay("account-1", "generation-1", initial, 6); got < time.Minute || got > 5*time.Minute {
+		t.Fatalf("slow cooldown failure delay = %s, want [1m,5m]", got)
+	}
+}
+
+func TestSourceFenceUpstreamFailurePreservesCooldownState(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "generation-1"}
+	nextDue := now.Add(time.Minute)
+	failureStarted := now.Add(-2 * time.Minute)
+	prior := CurrentState{
+		InputVersion:     input.InputVersion,
+		ConfigRevision:   input.ConfigRevision,
+		DispatchRevision: input.DispatchRevision,
+		NextDueAt:        &nextDue,
+		FailureCount:     3,
+		FailureStartedAt: &failureStarted,
+		AccountStatus:    "temporary_unavailable",
+		CooldownFence:    fence,
+	}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now, SourceFence: &SourceFence{StateKey: "state-1"}}
+	applyExplicitRequestDecision(&outcome, input, ProbeRequest{SourceFence: outcome.SourceFence}, prior, true, "")
+	if outcome.NextDueAt == nil || !outcome.NextDueAt.Equal(nextDue) || outcome.FailureCount != prior.FailureCount || outcome.FailureStartedAt == nil || !outcome.FailureStartedAt.Equal(failureStarted) || outcome.AccountStatus != prior.AccountStatus || outcome.CooldownFence != fence || outcome.Projection != nil {
+		t.Fatalf("source-fenced cooldown state must be preserved: %#v", outcome)
+	}
+}
+
+func TestSourceFenceUpstreamFailureMutatesActiveState(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}
+	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now, SourceFence: &SourceFence{StateKey: "state-1"}}
+	applyExplicitRequestDecision(&outcome, input, ProbeRequest{SourceFence: outcome.SourceFence}, prior, true, "")
+	if outcome.AccountStatus != "temporary_unavailable" || outcome.NextDueAt == nil || outcome.CooldownFence == nil || outcome.Projection == nil || outcome.Projection.TransitionKind != "temporary_unavailable" {
+		t.Fatalf("source-fenced active upstream failure must mutate health state: %#v", outcome)
+	}
+}
+
+func TestSourceOnlyMissingStateFailsClosedBeforeProbe(t *testing.T) {
+	secret := "source-state-credential-secret"
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	input := testInput(server.URL, "chat_json")
+	input.APIKeys = []APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}}}
+	input.KeySetFingerprint = "keyset-1"
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: 3_000}
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "state.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "runner-a", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t err=%v", acquired, err)
+	}
+	runner := NewRunner(Config{CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, Now: time.Now}, store, nil)
+	request := ProbeRequest{RequestID: "source-missing-state", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().UTC().Add(time.Minute), SourceFence: &SourceFence{StateKey: "source-1"}}
+	if err := runner.runExplicitRequest(context.Background(), lease, input, request, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("source-only request without state must not probe upstream, calls=%d", calls)
+	}
+	state, found, err := store.LoadCurrentState(context.Background(), input.AccountID)
+	if err != nil || found || state != (CurrentState{}) {
+		t.Fatalf("source-only stale outcome must remain outcome-only: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
+func TestExplicitMutationUsesCooldownOrRejectsTerminalState(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Cooldown = &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "generation-1"}
+	cooling := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: input.Cooldown}
+	kind, allowed := explicitMutationKind(input, cooling, true)
+	if !allowed || kind != "cooldown_retest" {
+		t.Fatalf("cooling explicit mutation must use cooldown state machine: kind=%q allowed=%t", kind, allowed)
+	}
+	terminal := cooling
+	terminal.AccountStatus = "error"
+	kind, allowed = explicitMutationKind(input, terminal, true)
+	if allowed || kind != "" {
+		t.Fatalf("terminal explicit mutation must be rejected: kind=%q allowed=%t", kind, allowed)
 	}
 }
 
