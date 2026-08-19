@@ -424,7 +424,7 @@ def waitForIngress(environmentName) {
       if env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: ${host}' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' >/dev/null; then exit 0; fi
       i=\$((i + 1)); sleep 5
     done
-    echo '${environmentName} 入口或 Node DB-ready health 未通过。' >&2
+    echo '${environmentName} 入口、Node DB-ready health 或已启用的 J2 Go-owner readiness 未通过。' >&2
     exit 1
   """
 }

@@ -10,6 +10,12 @@ import { accountBalanceGoOwnerEnabled } from './account-balance-handover.js'
 const consumerKey = 'juhe-ai-account-balance-jobs-projector-v1'
 let stopping = true
 let running: Promise<void> | undefined
+let projectionReady = false
+
+/** True only after the active projector has completed a successful drain. */
+export function accountBalanceJobsOutcomeProjectionRuntimeReady(): boolean {
+  return !stopping && running !== undefined && projectionReady
+}
 
 /** This runtime is opt-in and deliberately separate from the legacy Node
  * scheduler.  It cannot be enabled without a Go-owned J2 deployment. */
@@ -21,17 +27,24 @@ export function startAccountBalanceJobsOutcomeProjectionRuntime(): void {
   const postgresUrl = process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_OUTCOME_POSTGRES_URL?.trim()
   if (!postgresUrl) throw new Error('启用 J2 outcome projector 必须设置 PG outcome URL')
   stopping = false
+  projectionReady = false
   const source: AccountBalanceJobsStoreSource = { mode: 'postgres', postgresUrl }
-  running = loop(source).finally(() => { running = undefined })
+  running = loop(source).finally(() => { running = undefined; projectionReady = false })
 }
 
-export async function stopAccountBalanceJobsOutcomeProjectionRuntime(): Promise<void> { stopping = true; await running }
+export async function stopAccountBalanceJobsOutcomeProjectionRuntime(): Promise<void> { stopping = true; projectionReady = false; await running }
 
 async function loop(source: AccountBalanceJobsStoreSource): Promise<void> {
   const delay = boundedInteger(process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_POLL_MS, 1_000, 100, 60_000)
   const batch = boundedInteger(process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_BATCH_SIZE, 100, 1, 1_000)
   while (!stopping) {
-    try { await drain(source, batch) } catch (error) { logger.error(errorLogFields(error, { event: 'account_balance_jobs_outcome_projection_failed', consumerKey }), 'J2 outcome 投影失败，将保留游标并重试') }
+    try {
+      await drain(source, batch)
+      projectionReady = true
+    } catch (error) {
+      projectionReady = false
+      logger.error(errorLogFields(error, { event: 'account_balance_jobs_outcome_projection_failed', consumerKey }), 'J2 outcome 投影失败，将保留游标并重试')
+    }
     if (!stopping) await new Promise<void>((resolve) => setTimeout(resolve, delay))
   }
 }

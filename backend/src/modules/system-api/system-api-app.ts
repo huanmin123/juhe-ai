@@ -51,6 +51,8 @@ import {
   systemApiDbServiceAdmissionControl,
   systemApiDbServiceMaxInFlight
 } from './system-api-db-access.js'
+import { accountBalanceGoOwnerEnabled } from '../background/account-balance-handover.js'
+import { accountBalanceJobsOutcomeProjectionRuntimeReady } from '../background/account-balance-jobs-outcome-projection-runtime.service.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -97,8 +99,10 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use('/__aidelegated__/v1', noStoreSystemApiResponse, controlReadReplicaPrimaryOnlyRequestGuard, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use('/__aidelegated__/v1', systemApiDbAccessModeMiddleware('/__aidelegated__/v1'), systemApiDbServiceAdmissionControl, delegatedApiRouter)
 
-  app.get(`${systemApiPrefix}/health`, (_req, res) => {
-    res.json({ status: 'ok', service: 'juhe-ai-db-service', checkedAt: new Date().toISOString() })
+  app.get(`${systemApiPrefix}/health`, async (_req, res) => {
+    const accountBalance = await accountBalanceGoOwnerHealth()
+    const response = { status: accountBalance.ready ? 'ok' : 'degraded', service: 'juhe-ai-db-service', checkedAt: new Date().toISOString(), accountBalance }
+    res.status(accountBalance.ready ? 200 : 503).json(response)
   })
 
   app.use('/.well-known', controlReadReplicaPrimaryOnlyRequestGuard)
@@ -178,6 +182,26 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(handleSystemApiError)
 
   return app
+}
+
+export async function accountBalanceGoOwnerHealth(
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: { projectorReady?: () => boolean; fetch?: typeof fetch } = {}
+): Promise<{ enabled: boolean; ready: boolean; projectorReady?: boolean }> {
+  if (!accountBalanceGoOwnerEnabled(env)) return { enabled: false, ready: true }
+  const endpoint = env.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL?.trim()
+  const projectorReady = (dependencies.projectorReady ?? accountBalanceJobsOutcomeProjectionRuntimeReady)()
+  if (!endpoint || !projectorReady) return { enabled: true, ready: false, projectorReady }
+  try {
+    const healthUrl = new URL('/health', endpoint)
+    const response = await (dependencies.fetch ?? fetch)(healthUrl, { signal: AbortSignal.timeout(2_000) })
+    const payload: unknown = await response.json()
+    const health = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
+    const ready = response.ok && health?.ready === true && health.accountBalanceEnabled === true && health.accountBalanceReady === true
+    return { enabled: true, ready, projectorReady }
+  } catch {
+    return { enabled: true, ready: false, projectorReady }
+  }
 }
 
 function noStoreSystemApiResponse(_req: Request, res: Response, next: NextFunction): void {

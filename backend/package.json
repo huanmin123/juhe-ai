@@ -131,6 +131,7 @@
     "test:account-health-jobs-runtime-config": "tsx src/scripts/regression/account-health-jobs-runtime-config-regression.ts",
     "test:account-balance-jobs-outcome": "tsx src/scripts/regression/account-balance-jobs-outcome-regression.ts",
     "test:account-balance-handover": "tsx src/scripts/regression/account-balance-handover-regression.ts",
+    "test:account-balance-jobs-health": "tsx src/scripts/regression/account-balance-jobs-health-regression.ts",
     "test:account-health-jobs-owner-handoff-scheduler": "tsx src/scripts/regression/account-health-jobs-owner-handoff-scheduler-regression.ts",
     "test:account-health-jobs-cross-language-lifecycle": "tsx src/scripts/regression/account-health-jobs-cross-language-lifecycle-regression.ts",
     "test:account-health-jobs-release-lifecycle": "tsx src/scripts/regression/account-health-jobs-release-lifecycle-regression.ts",
