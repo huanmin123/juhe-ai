@@ -12,14 +12,19 @@ const cases: Array<{
   expected: GatewayUpstreamFailureClassification
 }> = [
   {
-    name: '完整响应不解释状态码和错误体',
-    input: { phase: 'upstream_response' },
-    expected: observation('opaque_upstream_response', 'opaque_upstream_response_failure')
+    name: '完整响应只输出有限的 5xx 诊断类，不解释账户语义',
+    input: { phase: 'upstream_response', statusCode: 503 },
+    expected: observation('opaque_upstream_response', 'upstream_5xx', 'opaque_upstream_response_failure')
+  },
+  {
+    name: '已解析的额度错误码映射为有限 quota 指标标签',
+    input: { phase: 'upstream_response', statusCode: 402, errorCode: 'insufficient_user_quota' },
+    expected: observation('opaque_upstream_response', 'quota', 'opaque_upstream_response_failure')
   },
   {
     name: '传输失败只记录可观察的传输事实',
     input: { phase: 'upstream_request' },
-    expected: observation('transport', 'upstream_transport_failure')
+    expected: observation('transport', 'transport', 'upstream_transport_failure')
   }
 ]
 
@@ -35,10 +40,12 @@ console.log(`gateway failure classification observation regression passed (${cas
 
 function observation(
   failureClass: GatewayUpstreamFailureClassification['failureClass'],
+  metricReasonClass: GatewayUpstreamFailureClassification['metricReasonClass'],
   classificationReason: string
 ): GatewayUpstreamFailureClassification {
   return {
     failureClass,
+    metricReasonClass,
     classificationReason
   }
 }

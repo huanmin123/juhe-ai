@@ -8,6 +8,16 @@ export type GatewayUpstreamFailureMetricClass =
   | 'opaque_upstream_response'
   | 'transport'
   | 'unknown'
+export type GatewayUpstreamFailureMetricReasonClass =
+  | 'authorization'
+  | 'quota'
+  | 'rate_limit'
+  | 'protocol'
+  | 'timeout'
+  | 'transport'
+  | 'upstream_4xx'
+  | 'upstream_5xx'
+  | 'unknown'
 
 export interface HttpMetricRequest {
   routeGroup: Exclude<HttpMetricRouteGroup, 'observability'>
@@ -107,10 +117,12 @@ export function finishHttpMetricRequest(
 
 export function recordGatewayUpstreamFailureMetric(
   failureClass: GatewayUpstreamFailureMetricClass,
-  statusCode: number | undefined
+  statusCode: number | undefined,
+  reasonClass: GatewayUpstreamFailureMetricReasonClass
 ): void {
   increment(gatewayUpstreamFailureCounters, labelsKey({
     failure_class: failureClass,
+    reason_class: reasonClass,
     status_class: classifyStatus(statusCode)
   }))
 }
@@ -138,7 +150,7 @@ export function renderPrometheusMetrics(): string {
     lines.push(`juhe_ai_http_requests_total{${renderLabels(parseMetricLabels(key))}} ${count}`)
   }
 
-  lines.push('# HELP juhe_ai_gateway_upstream_failures_total Gateway upstream attempt failures grouped by bounded failure and status classes.')
+  lines.push('# HELP juhe_ai_gateway_upstream_failures_total Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.')
   lines.push('# TYPE juhe_ai_gateway_upstream_failures_total counter')
   for (const [key, count] of sortedEntries(gatewayUpstreamFailureCounters)) {
     lines.push(`juhe_ai_gateway_upstream_failures_total{${renderLabels(parseMetricLabels(key))}} ${count}`)

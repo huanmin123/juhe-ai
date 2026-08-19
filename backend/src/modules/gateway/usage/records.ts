@@ -175,12 +175,18 @@ export async function recordFailedUpstreamAttempt(
       ? classifyGatewayUpstreamFailure({
           phase: typeof input.statusCode === 'number'
             ? 'upstream_response'
-            : 'upstream_request'
+            : 'upstream_request',
+          statusCode: input.statusCode,
+          errorCode
         })
     : undefined
 
   if (failureObservation?.failureClass) {
-    recordGatewayUpstreamFailureMetric(failureObservation.failureClass, input.statusCode)
+    recordGatewayUpstreamFailureMetric(
+      failureObservation.failureClass,
+      input.statusCode,
+      failureObservation.metricReasonClass
+    )
   }
 
   logGatewayAttemptFailure(usageContext, {

@@ -24,10 +24,10 @@ const aborted = startHttpMetricRequest('/__aisys__/api/settings', 'GET', 2_000)
 finishHttpMetricRequest(aborted, undefined, 'aborted', 2_010)
 assert.equal(startHttpMetricRequest('/__aisys__/metrics', 'GET', 3_000), undefined)
 
-const upstreamResponseFailure = classifyGatewayUpstreamFailure({ phase: 'upstream_response' })
-recordGatewayUpstreamFailureMetric(upstreamResponseFailure.failureClass, 503)
+const upstreamResponseFailure = classifyGatewayUpstreamFailure({ phase: 'upstream_response', statusCode: 503 })
+recordGatewayUpstreamFailureMetric(upstreamResponseFailure.failureClass, 503, upstreamResponseFailure.metricReasonClass)
 const upstreamRequestFailure = classifyGatewayUpstreamFailure({ phase: 'upstream_request' })
-recordGatewayUpstreamFailureMetric(upstreamRequestFailure.failureClass, undefined)
+recordGatewayUpstreamFailureMetric(upstreamRequestFailure.failureClass, undefined, upstreamRequestFailure.metricReasonClass)
 recordGatewayFirstOutputMetric(1_500, 'POST')
 
 const rendered = renderPrometheusMetrics()
@@ -40,12 +40,12 @@ const upstreamFailureMetricLines = rendered
   .split('\n')
   .filter((line) => line.startsWith('juhe_ai_gateway_upstream_failures_total{'))
 assert.equal(upstreamFailureMetricLines.length, 2)
-assert.match(rendered, /juhe_ai_gateway_upstream_failures_total\{[^}]*failure_class="opaque_upstream_response"[^}]*status_class="5xx"[^}]*\} 1/)
-assert.match(rendered, /juhe_ai_gateway_upstream_failures_total\{[^}]*failure_class="transport"[^}]*status_class="unknown"[^}]*\} 1/)
+assert.match(rendered, /juhe_ai_gateway_upstream_failures_total\{[^}]*failure_class="opaque_upstream_response"[^}]*reason_class="upstream_5xx"[^}]*status_class="5xx"[^}]*\} 1/)
+assert.match(rendered, /juhe_ai_gateway_upstream_failures_total\{[^}]*failure_class="transport"[^}]*reason_class="transport"[^}]*status_class="unknown"[^}]*\} 1/)
 for (const line of upstreamFailureMetricLines) {
   assert.deepEqual(
     [...line.matchAll(/([a-z_]+)="/g)].map((match) => match[1]).sort(),
-    ['failure_class', 'service', 'status_class']
+    ['failure_class', 'reason_class', 'service', 'status_class']
   )
   assert.doesNotMatch(line, /account|api[_-]?key|url|model|request|user|error|trace|credential|secret/i)
 }
