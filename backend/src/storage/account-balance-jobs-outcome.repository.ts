@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import type { PoolClient } from 'pg'
-import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { parseRfc3339Instant, requiredRfc3339Instant } from '../shared/rfc3339.js'
 
 export type AccountBalanceJobsStoreSource =
   | { mode: 'sqlite'; databasePath: string }
@@ -43,7 +43,10 @@ export function decodeAccountBalanceJobsOutcome(value: unknown, storageObservedA
     observedAt: requiredRfc3339Instant(record.observed_at, 'observed_at'),
     snapshot: decodeSnapshot(record.snapshot),
     nextRefreshAt: record.next_refresh_at === undefined || record.next_refresh_at === null ? null : requiredRfc3339Instant(record.next_refresh_at, 'next_refresh_at'),
-    storageObservedAt: requiredRfc3339Instant(storageObservedAt, 'storage_observed_at')
+    // This value is also the durable source cursor. Keep PostgreSQL's
+    // microsecond fraction: reducing it to milliseconds can reorder outcomes
+    // written in the same millisecond and make the monotonic cursor stall.
+    storageObservedAt: requiredStorageCursorInstant(storageObservedAt)
   }
   if (record.adapter !== undefined) result.adapter = enumValue(record.adapter, 'adapter', ['custom', 'sub2api', 'newapi', 'openai_billing', 'litellm', 'user_balance'] as const)
   if (record.expected_next_refresh_at !== undefined) result.expectedNextRefreshAt = record.expected_next_refresh_at === null ? null : requiredRfc3339Instant(record.expected_next_refresh_at, 'expected_next_refresh_at')
@@ -53,6 +56,13 @@ export function decodeAccountBalanceJobsOutcome(value: unknown, storageObservedA
   if (record.error_message !== undefined) result.errorMessage = text(record.error_message, 'error_message')
   if (result.accountId !== text(record.account_id, 'account_id')) throw new Error('J2 outcome account fence 无效')
   return result
+}
+
+function requiredStorageCursorInstant(value: unknown): string {
+  if (typeof value !== 'string' || !parseRfc3339Instant(value.trim())) {
+    throw new Error('storage_observed_at必须是带 Z 或数值 offset 的 RFC3339 时间')
+  }
+  return value.trim()
 }
 
 export async function listAccountBalanceJobsOutcomes(source: AccountBalanceJobsStoreSource, options: { after?: AccountBalanceJobsOutcomeCursor; limit: number }): Promise<AccountBalanceJobsOutcome[]> {

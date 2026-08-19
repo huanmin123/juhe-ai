@@ -16,6 +16,11 @@ const fixture = {
 const outcome = decodeAccountBalanceJobsOutcome(fixture, '2026-08-19T00:00:00.000Z')
 assert.equal(outcome.accountId, 'acct-j2')
 assert.equal(outcome.expectedNextRefreshAt, '2026-08-18T23:55:00.000Z')
+assert.equal(
+  decodeAccountBalanceJobsOutcome(fixture, '2026-08-19T00:00:00.123456Z').storageObservedAt,
+  '2026-08-19T00:00:00.123456Z',
+  'J2 source cursor must retain PostgreSQL microseconds'
+)
 assert.equal(decodeAccountBalanceJobsOutcome({ ...fixture, adapter: 'custom' }, outcome.storageObservedAt).adapter, 'custom')
 assert.throws(() => decodeAccountBalanceJobsOutcome({ ...fixture, trigger: 'bad' }, outcome.storageObservedAt), /trigger 无效/u)
 assert.throws(() => decodeAccountBalanceJobsOutcome({ ...fixture, system_account_id: '' }, outcome.storageObservedAt), /system_account_id 无效/u)
