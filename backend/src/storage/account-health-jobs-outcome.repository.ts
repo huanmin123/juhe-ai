@@ -13,7 +13,7 @@ export interface AccountHealthJobsProjection {
   config_revision: number
   dispatch_revision: number
   source_config_revision?: number
-  expected_account_status: 'active' | 'pending_test' | 'temporary_unavailable' | 'rate_limited'
+  expected_account_status: 'active' | 'pending_test' | 'temporary_unavailable' | 'rate_limited' | 'error'
   expected_cooldown_fence?: {
     observation_started_at: string
     generation: string
@@ -232,7 +232,7 @@ function normalizeProjection(value: unknown): AccountHealthJobsProjection {
     input_version: requiredPositiveInteger(record.input_version, 'projection.input_version'),
     config_revision: requiredPositiveInteger(record.config_revision, 'projection.config_revision'),
     dispatch_revision: requiredPositiveInteger(record.dispatch_revision, 'projection.dispatch_revision'),
-    expected_account_status: requiredEnum(record.expected_account_status, 'projection.expected_account_status', ['active', 'pending_test', 'temporary_unavailable', 'rate_limited'] as const)
+    expected_account_status: requiredEnum(record.expected_account_status, 'projection.expected_account_status', ['active', 'pending_test', 'temporary_unavailable', 'rate_limited', 'error'] as const)
   }
   if (record.source_config_revision !== undefined) projection.source_config_revision = requiredPositiveInteger(record.source_config_revision, 'projection.source_config_revision')
   if (record.values !== undefined) projection.values = objectRecord(record.values, 'projection.values')
