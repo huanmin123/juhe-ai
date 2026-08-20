@@ -63,6 +63,83 @@ try {
   assert.ok(processTrendUpdatedAt(yesterday, yesterday), '首次刷新应生成昨日进程趋势窗口')
   assertRefreshState(jobName, initialSourceState.sourceWatermark, today, initialSourceState.sourceVersion)
 
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = ?
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).run(`${initialSourceState.sourceWatermark}|${initialSourceState.sourceVersion}`, jobName)
+  database.prepare(`
+    DELETE FROM stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = ?
+  `).run(jobName)
+  const legacyLayoutRefresh = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(legacyLayoutRefresh.skipped, false, '旧版复合水位必须执行一次迁移刷新，不能误判为可跳过')
+  assertRefreshState(jobName, initialSourceState.sourceWatermark, today, initialSourceState.sourceVersion)
+
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = ?
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).run(`${initialSourceState.sourceWatermark}|${initialSourceState.sourceVersion}`, jobName)
+  const legacyLayoutWithSecondaryRefresh = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(legacyLayoutWithSecondaryRefresh.skipped, false, '旧版主状态与匹配 secondary 同存时也必须执行一次迁移刷新')
+  assertRefreshState(jobName, initialSourceState.sourceWatermark, today, initialSourceState.sourceVersion)
+  const postMigrationSkip = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(postMigrationSkip.skipped, true, '迁移完成后的第二次刷新才允许按未变化跳过')
+
+  const mismatchedLegacyLayoutJobName = `${jobName}:mismatched-legacy-layout`
+  await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName: mismatchedLegacyLayoutJobName,
+    yieldToEventLoop: async () => {}
+  })
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = ?
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).run(`${initialSourceState.sourceWatermark}|${initialSourceState.sourceVersion}`, mismatchedLegacyLayoutJobName)
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_id = ?
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = ?
+  `).run(`v2:${'0'.repeat(64)}`, mismatchedLegacyLayoutJobName)
+  await assert.rejects(
+    usageStatsRepository.refreshUsageRankSnapshotsInStages({
+      stageNames,
+      skipIfUnchanged: true,
+      jobName: mismatchedLegacyLayoutJobName,
+      yieldToEventLoop: async () => {}
+    }),
+    /legacy sourceVersion 状态与当前状态不一致/,
+    'legacy 主状态与 secondary 不一致时必须可见失败'
+  )
+  const mismatchedPrimary = database.prepare(`
+    SELECT cursor_created_at FROM stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).get(mismatchedLegacyLayoutJobName) as { cursor_created_at: string }
+  const mismatchedSecondary = database.prepare(`
+    SELECT cursor_id FROM stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = ?
+  `).get(mismatchedLegacyLayoutJobName) as { cursor_id: string }
+  assert.equal(mismatchedPrimary.cursor_created_at, `${initialSourceState.sourceWatermark}|${initialSourceState.sourceVersion}`, '不一致 legacy 主状态不得被部分覆盖')
+  assert.equal(mismatchedSecondary.cursor_id, `v2:${'0'.repeat(64)}`, '不一致 legacy secondary 不得被部分覆盖')
+
   database.prepare('UPDATE system_metrics_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare('UPDATE process_event_loop_trend_windows SET updated_at = ?').run(sentinelUpdatedAt)
   database.prepare(`
@@ -241,6 +318,50 @@ try {
     }),
     /sourceVersion 状态.*64 位小写十六进制摘要/,
     '非法的独立 sourceVersion 状态必须可见失败'
+  )
+
+  const invalidLegacyLayoutJobName = `${jobName}:invalid-legacy-layout`
+  await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName: invalidLegacyLayoutJobName,
+    yieldToEventLoop: async () => {}
+  })
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = ?
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).run(`${initialSourceState.sourceWatermark}|not-a-source-version`, invalidLegacyLayoutJobName)
+  await assert.rejects(
+    usageStatsRepository.refreshUsageRankSnapshotsInStages({
+      stageNames,
+      skipIfUnchanged: true,
+      jobName: invalidLegacyLayoutJobName,
+      yieldToEventLoop: async () => {}
+    }),
+    /legacy sourceVersion.*64 位小写十六进制摘要/,
+    '未知 legacy 复合水位不得静默迁移'
+  )
+
+  const nonSystemJobName = `${jobName}:non-system-legacy-layout`
+  await usageStatsRepository.refreshHotUsageWindowSnapshots({
+    skipIfUnchanged: true,
+    jobName: nonSystemJobName,
+    yieldToEventLoop: async () => {}
+  })
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = ?
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).run(`${initialSourceState.sourceWatermark}|${initialSourceState.sourceVersion}`, nonSystemJobName)
+  await assert.rejects(
+    usageStatsRepository.refreshHotUsageWindowSnapshots({
+      skipIfUnchanged: true,
+      jobName: nonSystemJobName,
+      yieldToEventLoop: async () => {}
+    }),
+    /sourceWatermark必须是带 Z 或数值 offset 的 RFC3339 时间/,
+    'legacy 复合水位不得泄漏到非系统指标任务'
   )
 
   console.log('系统指标趋势窗口增量回归通过：纯 canonical 水位与独立 sourceVersion、同毫秒变更、范围外变化、日期变更和水位倒退均正确处理')

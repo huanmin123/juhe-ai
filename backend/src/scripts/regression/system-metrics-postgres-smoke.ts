@@ -73,6 +73,50 @@ try {
   assert.equal(refreshed.skipped, false, '首次 PG system metrics trend refresh 不应跳过')
   assert.deepEqual(refreshed.stages.map((stage) => stage.name), stageNames, 'PG system metrics trend refresh 应执行系统指标趋势阶段')
 
+  const primaryState = await pool.query(`
+    SELECT cursor_created_at, cursor_id
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = $1
+  `, [jobName])
+  const sourceVersionState = await pool.query(`
+    SELECT cursor_created_at, cursor_id
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = $1
+  `, [jobName])
+  const legacySourceWatermark = String(primaryState.rows[0]?.cursor_created_at ?? '')
+  const legacySourceVersion = String(sourceVersionState.rows[0]?.cursor_id ?? '')
+  assert.match(legacySourceWatermark, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, 'PG 初始状态必须保存 canonical sourceWatermark')
+  assert.match(legacySourceVersion, /^v2:[a-f0-9]{64}$/, 'PG 初始状态必须保存独立 sourceVersion')
+  await pool.query(`
+    UPDATE juhe_stats.stats_job_state
+    SET cursor_created_at = $1
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = $2
+  `, [`${legacySourceWatermark}|${legacySourceVersion}`, jobName])
+  await pool.query(`
+    DELETE FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = $1
+  `, [jobName])
+  const legacyLayoutRefresh = await refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(legacyLayoutRefresh.skipped, false, 'PG legacy 复合游标必须执行一次迁移刷新，不能误判为可跳过')
+  const migratedPrimaryState = await pool.query(`
+    SELECT cursor_created_at
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = $1
+  `, [jobName])
+  const migratedSourceVersionState = await pool.query(`
+    SELECT cursor_created_at, cursor_id
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'usage_rank_snapshot_source_version' AND scope_id = '' AND job_name = $1
+  `, [jobName])
+  assert.equal(migratedPrimaryState.rows[0]?.cursor_created_at, legacySourceWatermark, 'PG 迁移后主状态必须写回 canonical sourceWatermark')
+  assert.equal(migratedSourceVersionState.rows[0]?.cursor_created_at, legacySourceWatermark, 'PG 迁移后独立版本状态必须匹配主状态水位')
+  assert.equal(migratedSourceVersionState.rows[0]?.cursor_id, legacySourceVersion, 'PG 迁移后独立版本状态必须保留 sourceVersion')
+
   const overview = await getSystemMetricsOverviewAsync({
     startDate: statDate,
     endDate: statDate,

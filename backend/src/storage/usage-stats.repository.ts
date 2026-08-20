@@ -2104,7 +2104,7 @@ export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRan
   const sourceState = options.skipIfUnchanged ? usageRankSnapshotSourceState(database, stages) : undefined
   const sourceWatermark = sourceState?.sourceWatermark
   const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
-    ? usageRankSnapshotRefreshJobState(database, jobName)
+    ? usageRankSnapshotRefreshJobState(database, jobName, usageRankSnapshotAllowsLegacySourceWatermark(stages))
     : undefined
   const previousSourceVersion = sourceState?.sourceVersion === undefined
     ? undefined
@@ -2184,7 +2184,7 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
   const sourceState = options.skipIfUnchanged ? await usageRankSnapshotSourceStateAsync(client, stages) : undefined
   const sourceWatermark = sourceState?.sourceWatermark
   const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
-    ? await usageRankSnapshotRefreshJobStateAsync(client, jobName)
+    ? await usageRankSnapshotRefreshJobStateAsync(client, jobName, usageRankSnapshotAllowsLegacySourceWatermark(stages))
     : undefined
   const context = await createUsageRankSnapshotContextAsync(client)
 
@@ -2417,17 +2417,22 @@ async function usageRankSnapshotStagesHavePendingWorkAsync(
   return false
 }
 
-function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
-  return normalizeUsageRankSnapshotRefreshJobState(database
-    .prepare('SELECT cursor_created_at, cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?')
-    .get(USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined)
+interface UsageRankSnapshotRefreshJobStateRow extends StatsJobStateRow {
+  legacySourceVersion?: string
 }
 
-async function usageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string): Promise<StatsJobStateRow | undefined> {
+function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string, allowLegacySourceWatermark = false): UsageRankSnapshotRefreshJobStateRow | undefined {
+  return normalizeUsageRankSnapshotRefreshJobState(database
+    .prepare('SELECT cursor_created_at, cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?')
+    .get(USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined,
+  allowLegacySourceWatermark)
+}
+
+async function usageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string, allowLegacySourceWatermark = false): Promise<UsageRankSnapshotRefreshJobStateRow | undefined> {
   return normalizeUsageRankSnapshotRefreshJobState(await client.one<StatsJobStateRow>(
     'SELECT cursor_created_at, cursor_id, lag_seconds FROM juhe_stats.stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?',
     [USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName]
-  ))
+  ), allowLegacySourceWatermark)
 }
 
 function usageRankSnapshotSourceVersionState(database: DatabaseSync, jobName: string): UsageRankSnapshotSourceVersionState | undefined {
@@ -2448,7 +2453,7 @@ async function usageRankSnapshotSourceVersionStateAsync(client: DatabaseClient, 
 function usageRankSnapshotPreviousSourceVersion(
   database: DatabaseSync,
   jobName: string,
-  previousState: StatsJobStateRow | undefined
+  previousState: UsageRankSnapshotRefreshJobStateRow | undefined
 ): string | undefined {
   const previousVersionState = usageRankSnapshotSourceVersionState(database, jobName)
   return usageRankSnapshotPreviousSourceVersionFromState(jobName, previousState, previousVersionState)
@@ -2457,7 +2462,7 @@ function usageRankSnapshotPreviousSourceVersion(
 async function usageRankSnapshotPreviousSourceVersionAsync(
   client: DatabaseClient,
   jobName: string,
-  previousState: StatsJobStateRow | undefined
+  previousState: UsageRankSnapshotRefreshJobStateRow | undefined
 ): Promise<string | undefined> {
   const previousVersionState = await usageRankSnapshotSourceVersionStateAsync(client, jobName)
   return usageRankSnapshotPreviousSourceVersionFromState(jobName, previousState, previousVersionState)
@@ -2465,7 +2470,7 @@ async function usageRankSnapshotPreviousSourceVersionAsync(
 
 function usageRankSnapshotPreviousSourceVersionFromState(
   jobName: string,
-  previousState: StatsJobStateRow | undefined,
+  previousState: UsageRankSnapshotRefreshJobStateRow | undefined,
   previousVersionState: UsageRankSnapshotSourceVersionState | undefined
 ): string | undefined {
   if (!previousState) {
@@ -2477,6 +2482,16 @@ function usageRankSnapshotPreviousSourceVersionFromState(
   if (!previousState.cursor_created_at) {
     throw new Error(`用量排行快照主刷新状态缺少 sourceWatermark: ${jobName}`)
   }
+  if (previousState.legacySourceVersion !== undefined) {
+    if (!previousVersionState) return previousState.legacySourceVersion
+    if (
+      previousVersionState.sourceWatermark === previousState.cursor_created_at
+      && previousVersionState.sourceVersion === previousState.legacySourceVersion
+    ) {
+      return previousState.legacySourceVersion
+    }
+    throw new Error(`用量排行快照 legacy sourceVersion 状态与当前状态不一致: ${jobName}`)
+  }
   if (!previousVersionState) {
     throw new Error(`用量排行快照 sourceVersion 状态缺失: ${jobName}`)
   }
@@ -2487,12 +2502,15 @@ function usageRankSnapshotPreviousSourceVersionFromState(
 }
 
 function usageRankSnapshotSourceUnchanged(
-  previousState: StatsJobStateRow | undefined,
+  previousState: UsageRankSnapshotRefreshJobStateRow | undefined,
   sourceState: UsageRankSnapshotSourceState | undefined,
   refreshDate: string,
   previousSourceVersion: string | undefined
 ): boolean {
   if (!previousState || !sourceState) return false
+  // The pre-v2 layout stored the timestamp and version in one field. Force one
+  // refresh so the normal state writer atomically moves it to the two-row form.
+  if (previousState.legacySourceVersion !== undefined) return false
   if (previousState.cursor_created_at !== sourceState.sourceWatermark || previousState.cursor_id !== refreshDate) return false
   return sourceState.sourceVersion === undefined || previousSourceVersion === sourceState.sourceVersion
 }
@@ -3521,13 +3539,16 @@ function optionalUsageStatsCursorTimestamp(value: string | null | undefined, lab
   return requiredRfc3339Instant(value, label)
 }
 
-function normalizeUsageRankSnapshotRefreshJobState(row: StatsJobStateRow | undefined): StatsJobStateRow | undefined {
+function normalizeUsageRankSnapshotRefreshJobState(row: StatsJobStateRow | undefined, allowLegacySourceWatermark = false): UsageRankSnapshotRefreshJobStateRow | undefined {
   if (!row) return undefined
+  if (row.cursor_created_at === null) return { ...row, cursor_created_at: null }
+  const source = allowLegacySourceWatermark
+    ? normalizeUsageRankSnapshotStoredSourceState(row.cursor_created_at)
+    : { sourceWatermark: normalizeUsageRankSnapshotCanonicalSourceWatermark(row.cursor_created_at) }
   return {
     ...row,
-    cursor_created_at: row.cursor_created_at === null
-      ? null
-      : normalizeUsageRankSnapshotSourceWatermark(row.cursor_created_at)
+    cursor_created_at: source.sourceWatermark,
+    ...(source.legacySourceVersion === undefined ? {} : { legacySourceVersion: source.legacySourceVersion })
   }
 }
 
@@ -3549,7 +3570,28 @@ function normalizeUsageRankSnapshotSourceVersionState(
 }
 
 function normalizeUsageRankSnapshotSourceWatermark(value: string): string {
+  return normalizeUsageRankSnapshotCanonicalSourceWatermark(value)
+}
+
+function normalizeUsageRankSnapshotCanonicalSourceWatermark(value: string): string {
   return requiredRfc3339Instant(value, '用量排行快照 sourceWatermark')
+}
+
+function normalizeUsageRankSnapshotStoredSourceState(value: string): { sourceWatermark: string; legacySourceVersion?: string } {
+  const separator = value.indexOf('|')
+  if (separator < 0) {
+    return { sourceWatermark: requiredRfc3339Instant(value, '用量排行快照 sourceWatermark') }
+  }
+  const sourceWatermark = requiredRfc3339Instant(value.slice(0, separator), '用量排行快照 legacy sourceWatermark')
+  const legacySourceVersion = requiredSystemMetricsTrendSourceVersion(
+    value.slice(separator + 1),
+    '用量排行快照 legacy sourceVersion'
+  )
+  return { sourceWatermark, legacySourceVersion }
+}
+
+function usageRankSnapshotAllowsLegacySourceWatermark(stages: UsageRankSnapshotStage[]): boolean {
+  return stages.length === 1 && stages[0]?.name === 'system_metrics_trend_windows'
 }
 
 function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): number {
