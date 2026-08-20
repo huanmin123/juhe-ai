@@ -374,6 +374,14 @@ async function assertCleanupBarrierAndStorageKeyProtection(): Promise<void> {
   assert.equal(cleanupResult.deletedSessions, 4, 'cleanup 应只删除过期 session')
   assert.equal(cleanupResult.storageKeys.includes(sharedStorageKey), false, '仍被活跃 response 引用的 storageKey 不能返回删除')
 
+  const settlement = await writerPool.settleCodexContextStorageCleanupWithWriterPool({
+    succeededStorageKeys: cleanupResult.storageKeys,
+    failures: [],
+    now: cleanupNow
+  })
+  assert(settlement.acknowledged >= cleanupResult.storageKeys.length, 'writer pool 应确认已删除的 storage key 队列项')
+  assert.equal(settlement.deferred, 0, '无失败文件时不应延后清理队列项')
+
   const activeShared = await writerPool.readCodexContextResponseStateChainWithWriterPool({
     responseId: 'active_shared_resp',
     boundary,

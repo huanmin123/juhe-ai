@@ -392,8 +392,8 @@ export async function settleCodexContextStorageCleanupWithWriterPool(input: {
     return settleCodexContextStorageCleanup(input)
   }
   return await requestCodexContextStateWriter({
-    type: 'settle_storage_cleanup',
-    ...input
+    ...input,
+    type: 'settle_storage_cleanup'
   })
 }
 
