@@ -49,9 +49,12 @@ export interface NormalRouteLatencyProbeCandidate {
   runtimeKey: string
   scope: NormalRouteLatencyDegradationScope
   config: NormalRouteSpeedFirstRuntimeConfig
+  degradationEventId?: string
   degradedUntil: string
   nextProbeAt: string
   recoverySuccessCount: number
+  recoveryProbeRoundAttemptCount: number
+  recoveryProbeRoundSuccessCount: number
 }
 
 interface NormalRouteLatencyState {
@@ -64,8 +67,11 @@ interface NormalRouteLatencyState {
   firstSlowAtMs: number
   lastSlowAtMs: number
   slowCount: number
+  degradationEventId?: string
   degradedUntilMs?: number
   successCount: number
+  recoveryProbeRoundAttemptCount?: number
+  recoveryProbeRoundSuccessCount?: number
   nextProbeAtMs?: number
   reason: string
 }
@@ -102,6 +108,8 @@ const latencyStateMutationLockTtlMs =
 const latencyStateIndexLockTtlMs = latencyStateMutationLockTtlMs
 const latencyStateGenerationCasMaxAttempts = 8
 const latencyStateIndexCasMaxAttempts = 8
+const normalRouteRecoveryProbeRoundSize = 2
+const normalRouteRecoveryProbeIntervalMs = 5_000
 const latencyStateInitialGenerationEvent: NormalRouteLatencyGenerationEvent = {
   version: 'initial',
   publishedAt: '1970-01-01T00:00:00.000Z'
@@ -196,11 +204,18 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
   const currentStillDegraded = Boolean(current?.degradedUntilMs && current.degradedUntilMs > now)
   const triggeredDegraded = slowCount >= config.slowTriggerCount
   const degraded = triggeredDegraded || currentStillDegraded
+  // A degradation event has one bounded TTL. Repeated slow samples while it is
+  // already degraded must not keep moving the recovery deadline forward.
   const degradedUntilMs = triggeredDegraded
-    ? Math.max(current?.degradedUntilMs ?? 0, now + Math.max(60, config.degradedTtlSeconds) * 1000)
+    ? (currentStillDegraded
+      ? current?.degradedUntilMs
+      : now + Math.max(60, config.degradedTtlSeconds) * 1000)
     : current?.degradedUntilMs
+  const degradationEventId = degraded
+    ? (currentStillDegraded ? current?.degradationEventId ?? randomUUID() : randomUUID())
+    : undefined
   const nextProbeAtMs = triggeredDegraded
-    ? now + nextProbeDelayMs(config, key)
+    ? now + nextRecoveryProbeDelayMs()
     : current?.nextProbeAtMs
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const state: NormalRouteLatencyState = {
@@ -213,8 +228,11 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
     firstSlowAtMs: withinWindow ? current.firstSlowAtMs : now,
     lastSlowAtMs: now,
     slowCount,
+    degradationEventId,
     degradedUntilMs,
     successCount: 0,
+    recoveryProbeRoundAttemptCount: 0,
+    recoveryProbeRoundSuccessCount: 0,
     nextProbeAtMs,
     reason
   }
@@ -222,7 +240,11 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
     key,
     current,
     state,
-    latencyStateTtlMs(config, degraded),
+    degraded
+      ? (currentStillDegraded
+        ? latencyStateRemainingTtlMs(degradedUntilMs, now)
+        : latencyStateTtlMs(config, true))
+      : latencyStateTtlMs(config, false),
     degraded
   )
   return {
@@ -245,7 +267,27 @@ export async function recordNormalRouteFirstByteSuccessAsync(
   const key = accountLatencyStateKey(scope, account)
   const generation = await loadLatencyStateGeneration()
   return withLatencyStateMutationLock(key, generation, () =>
-    recordNormalRouteFirstByteSuccessLockedAsync(account, config, key, generation)
+    recordNormalRouteFirstByteSuccessLockedAsync(account, config, key, generation, false)
+  )
+}
+
+/** Two short-spaced background health checks restore priority without waiting for user traffic. */
+export async function recordNormalRouteRecoveryProbeSuccessAsync(
+  account: SuppressibleGatewayAccount,
+  candidate: NormalRouteLatencyProbeCandidate,
+  firstByteMs: number | undefined
+): Promise<NormalRouteLatencySuccessResult | undefined> {
+  if (firstByteMs === undefined || firstByteMs > candidate.config.firstByteDeadlineMs) return undefined
+  if (account.id !== candidate.accountId || gatewayAccountRuntimeKey(account) !== candidate.runtimeKey) return undefined
+  return withLatencyStateMutationLock(candidate.stateKey, candidate.generation, () =>
+    recordNormalRouteFirstByteSuccessLockedAsync(
+      account,
+      candidate.config,
+      candidate.stateKey,
+      candidate.generation,
+      true,
+      candidate
+    )
   )
 }
 
@@ -253,10 +295,13 @@ async function recordNormalRouteFirstByteSuccessLockedAsync(
   account: SuppressibleGatewayAccount,
   config: NormalRouteSpeedFirstRuntimeConfig,
   key: string,
-  generation: string
+  generation: string,
+  clearOnSuccess: boolean,
+  candidate?: NormalRouteLatencyProbeCandidate
 ): Promise<NormalRouteLatencySuccessResult | undefined> {
   const current = await loadLatencyState(key, generation)
   if (!current) return undefined
+  if (candidate && !latencyProbeCandidateMatchesState(candidate, current)) return undefined
   const now = Date.now()
   if (!current.degradedUntilMs || current.degradedUntilMs <= now) {
     await deleteLatencyStateAndIndexesStrictAsync(key)
@@ -267,26 +312,62 @@ async function recordNormalRouteFirstByteSuccessLockedAsync(
       requiredRecoverySuccessCount: config.recoverySuccessCount
     }
   }
-  const successCount = current.successCount + 1
-  if (successCount >= config.recoverySuccessCount) {
+  const successCount = clearOnSuccess ? current.successCount : current.successCount + 1
+  if (clearOnSuccess) {
+    const recoveryProbeRoundAttemptCount = recoveryProbeRoundAttempts(current) + 1
+    const recoveryProbeRoundSuccessCount = recoveryProbeRoundSuccesses(current) + 1
+    if (recoveryProbeRoundAttemptCount >= normalRouteRecoveryProbeRoundSize
+      && recoveryProbeRoundSuccessCount === normalRouteRecoveryProbeRoundSize) {
+      await deleteLatencyStateAndIndexesStrictAsync(key)
+      return {
+        accountId: account.id,
+        cleared: true,
+        recoverySuccessCount: recoveryProbeRoundSuccessCount,
+        requiredRecoverySuccessCount: normalRouteRecoveryProbeRoundSize
+      }
+    }
+    const nextRound = recoveryProbeRoundAttemptCount >= normalRouteRecoveryProbeRoundSize
+      ? emptyRecoveryProbeRound()
+      : { recoveryProbeRoundAttemptCount, recoveryProbeRoundSuccessCount }
+    await latencyStateStore.setJson(key, {
+      ...current,
+      // A user request and a background health probe are separate recovery
+      // mechanisms. Only the latter contributes to this two-probe window.
+      successCount: current.successCount,
+      ...nextRound,
+      nextProbeAtMs: now + nextRecoveryProbeDelayMs()
+    }, latencyStateRemainingTtlMs(current.degradedUntilMs, now))
+    return {
+      accountId: account.id,
+      cleared: false,
+      recoverySuccessCount: recoveryProbeRoundSuccessCount,
+      requiredRecoverySuccessCount: normalRouteRecoveryProbeRoundSize
+    }
+  }
+  const requiredRecoverySuccessCount = config.recoverySuccessCount
+  const recovered = successCount >= config.recoverySuccessCount
+  if (recovered) {
     await deleteLatencyStateAndIndexesStrictAsync(key)
     return {
       accountId: account.id,
       cleared: true,
       recoverySuccessCount: successCount,
-      requiredRecoverySuccessCount: config.recoverySuccessCount
+      requiredRecoverySuccessCount
     }
   }
+  const nextProbeAtMs = recoveryProbeRoundAttempts(current) > 0
+    ? current.nextProbeAtMs
+    : now + nextProbeDelayMs(config, key)
   await latencyStateStore.setJson(key, {
     ...current,
     successCount,
-    nextProbeAtMs: now + nextProbeDelayMs(config, key)
-  }, latencyStateTtlMs(config, true))
+    nextProbeAtMs
+  }, latencyStateRemainingTtlMs(current.degradedUntilMs, now))
   return {
     accountId: account.id,
     cleared: false,
     recoverySuccessCount: successCount,
-    requiredRecoverySuccessCount: config.recoverySuccessCount
+    requiredRecoverySuccessCount
   }
 }
 
@@ -345,6 +426,7 @@ export async function deferNormalRouteLatencyProbeCandidateAsync(
     const current = await loadLatencyState(candidate.stateKey, candidate.generation)
     const now = Date.now()
     if (!current) return false
+    if (!latencyProbeCandidateMatchesState(candidate, current)) return false
     if (!current.degradedUntilMs || current.degradedUntilMs <= now) {
       await deleteLatencyStateAndIndexesStrictAsync(candidate.stateKey)
       return false
@@ -353,13 +435,14 @@ export async function deferNormalRouteLatencyProbeCandidateAsync(
     const state: NormalRouteLatencyState = {
       ...current,
       config,
-      nextProbeAtMs: now + nextProbeDelayMs(config, candidate.stateKey)
+      ...emptyRecoveryProbeRound(),
+      nextProbeAtMs: now + nextRecoveryProbeDelayMs()
     }
     await writeLatencyStateAndIndexesStrictAsync(
       candidate.stateKey,
       current,
       state,
-      latencyStateTtlMs(config, true),
+      latencyStateRemainingTtlMs(state.degradedUntilMs, now),
       true
     )
     return true
@@ -373,13 +456,21 @@ async function recordNormalRouteProbeFailureLockedAsync(
   const current = await loadLatencyState(candidate.stateKey, candidate.generation)
   const now = Date.now()
   if (!current) return undefined
+  if (!latencyProbeCandidateMatchesState(candidate, current)) return undefined
   if (!current.degradedUntilMs || current.degradedUntilMs <= now) {
     await deleteLatencyStateAndIndexesStrictAsync(candidate.stateKey)
     return undefined
   }
   const config = current.config ?? candidate.config
-  const degradedUntilMs = Math.max(current.degradedUntilMs, now + Math.max(60, config.degradedTtlSeconds) * 1000)
-  const nextProbeAtMs = now + nextProbeDelayMs(config, candidate.stateKey)
+  const recoveryProbeRoundAttemptCount = recoveryProbeRoundAttempts(current) + 1
+  const recoveryProbeRoundSuccessCount = recoveryProbeRoundSuccesses(current)
+  const recoveryProbeRoundComplete = recoveryProbeRoundAttemptCount >= normalRouteRecoveryProbeRoundSize
+  // Only FF renews the lease. A mixed pair is deliberately discarded, so it
+  // cannot be combined with a later result to manufacture a double failure.
+  const degradedUntilMs = recoveryProbeRoundComplete && recoveryProbeRoundSuccessCount === 0
+    ? Math.max(current.degradedUntilMs, now + Math.max(60, config.degradedTtlSeconds) * 1000)
+    : current.degradedUntilMs
+  const nextProbeAtMs = now + nextRecoveryProbeDelayMs()
   const slowCount = Math.max(current.slowCount, config.slowTriggerCount)
   const state: NormalRouteLatencyState = {
     ...current,
@@ -387,7 +478,12 @@ async function recordNormalRouteProbeFailureLockedAsync(
     lastSlowAtMs: now,
     slowCount,
     degradedUntilMs,
-    successCount: 0,
+    // Background probe outcomes must not alter the three-request user-traffic
+    // debounce. They have an independent, exactly-two-attempt round.
+    successCount: current.successCount,
+    ...(recoveryProbeRoundComplete
+      ? emptyRecoveryProbeRound()
+      : { recoveryProbeRoundAttemptCount, recoveryProbeRoundSuccessCount }),
     nextProbeAtMs,
     reason
   }
@@ -395,7 +491,7 @@ async function recordNormalRouteProbeFailureLockedAsync(
     candidate.stateKey,
     current,
     state,
-    latencyStateTtlMs(config, true),
+    latencyStateRemainingTtlMs(degradedUntilMs, now),
     true
   )
   return {
@@ -403,7 +499,7 @@ async function recordNormalRouteProbeFailureLockedAsync(
     slowCount,
     degraded: true,
     degradedUntil: new Date(degradedUntilMs).toISOString(),
-    recoverySuccessCount: 0,
+    recoverySuccessCount: current.successCount,
     nextProbeAt: new Date(nextProbeAtMs).toISOString()
   }
 }
@@ -414,6 +510,7 @@ export async function discardNormalRouteLatencyProbeCandidateAsync(
   await withLatencyStateMutationLock(candidate.stateKey, candidate.generation, async () => {
     const current = await loadLatencyState(candidate.stateKey, candidate.generation)
     if (!current) return
+    if (!latencyProbeCandidateMatchesState(candidate, current)) return
     await deleteLatencyStateAndIndexesStrictAsync(candidate.stateKey)
   })
 }
@@ -617,6 +714,8 @@ async function loadLatencyStateRaw(key: string): Promise<NormalRouteLatencyState
   if (!isRouteStrategySpeedFirstConfig(state.config)) return undefined
   if (!Number.isFinite(state.firstSlowAtMs) || !Number.isFinite(state.lastSlowAtMs)) return undefined
   if (!Number.isFinite(state.slowCount) || !Number.isFinite(state.successCount)) return undefined
+  if (state.recoveryProbeRoundAttemptCount !== undefined && !isFiniteNonNegativeInteger(state.recoveryProbeRoundAttemptCount)) return undefined
+  if (state.recoveryProbeRoundSuccessCount !== undefined && !isFiniteNonNegativeInteger(state.recoveryProbeRoundSuccessCount)) return undefined
   if (state.degradedUntilMs !== undefined && !Number.isFinite(state.degradedUntilMs)) return undefined
   if (state.nextProbeAtMs !== undefined && !Number.isFinite(state.nextProbeAtMs)) return undefined
   return state
@@ -645,9 +744,46 @@ function probeCandidateFromState(
     runtimeKey: state.runtimeKey,
     scope: state.scope,
     config: state.config,
+    degradationEventId: state.degradationEventId,
     degradedUntil: new Date(state.degradedUntilMs).toISOString(),
     nextProbeAt: new Date(state.nextProbeAtMs).toISOString(),
-    recoverySuccessCount: state.successCount
+    recoverySuccessCount: state.successCount,
+    recoveryProbeRoundAttemptCount: recoveryProbeRoundAttempts(state),
+    recoveryProbeRoundSuccessCount: recoveryProbeRoundSuccesses(state)
+  }
+}
+
+function latencyProbeCandidateMatchesState(
+  candidate: NormalRouteLatencyProbeCandidate,
+  state: NormalRouteLatencyState
+): boolean {
+  return candidate.accountId === state.accountId
+    && candidate.runtimeKey === state.runtimeKey
+    && candidate.scope.systemAccountId === state.scope.systemAccountId
+    && candidate.scope.routeStrategyId === state.scope.routeStrategyId
+    && candidate.scope.groupId === state.scope.groupId
+    && candidate.degradationEventId === state.degradationEventId
+    && candidate.recoveryProbeRoundAttemptCount === recoveryProbeRoundAttempts(state)
+    && candidate.recoveryProbeRoundSuccessCount === recoveryProbeRoundSuccesses(state)
+    && candidate.nextProbeAt === (state.nextProbeAtMs ? new Date(state.nextProbeAtMs).toISOString() : undefined)
+    && candidate.degradedUntil === (state.degradedUntilMs ? new Date(state.degradedUntilMs).toISOString() : undefined)
+}
+
+function recoveryProbeRoundAttempts(state: NormalRouteLatencyState): number {
+  return state.recoveryProbeRoundAttemptCount ?? 0
+}
+
+function recoveryProbeRoundSuccesses(state: NormalRouteLatencyState): number {
+  return state.recoveryProbeRoundSuccessCount ?? 0
+}
+
+function emptyRecoveryProbeRound(): Pick<
+  NormalRouteLatencyState,
+  'recoveryProbeRoundAttemptCount' | 'recoveryProbeRoundSuccessCount'
+> {
+  return {
+    recoveryProbeRoundAttemptCount: 0,
+    recoveryProbeRoundSuccessCount: 0
   }
 }
 
@@ -656,10 +792,22 @@ function latencyStateTtlMs(config: NormalRouteSpeedFirstRuntimeConfig, degraded:
   return Math.max(1, seconds) * 1000
 }
 
+function latencyStateRemainingTtlMs(degradedUntilMs: number | undefined, now: number): number {
+  if (!degradedUntilMs) return 1
+  return Math.max(1, degradedUntilMs - now)
+}
+
 function nextProbeDelayMs(config: NormalRouteSpeedFirstRuntimeConfig, key: string): number {
   const baseMs = Math.max(10, config.probeIntervalSeconds) * 1000
   const jitterRatio = stableProbeJitterRatio(key)
   return Math.max(1000, Math.trunc(baseMs + baseMs * jitterRatio))
+}
+
+function nextRecoveryProbeDelayMs(): number {
+  // The scheduler itself scans every five seconds. Keeping the due time on the
+  // same cadence avoids a positive jitter turning a two-probe window into an
+  // accidental ten-second wait.
+  return normalRouteRecoveryProbeIntervalMs
 }
 
 function stableProbeJitterRatio(key: string): number {
@@ -974,6 +1122,10 @@ function isRouteStrategySpeedFirstConfig(value: unknown): value is NormalRouteSp
 
 function isFinitePositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
+
+function isFiniteNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
 function isNormalRouteLatencyGenerationEvent(

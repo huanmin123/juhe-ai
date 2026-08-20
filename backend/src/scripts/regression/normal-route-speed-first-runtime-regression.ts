@@ -17,7 +17,8 @@ const {
   listNormalRouteLatencyProbeCandidatesAsync,
   recordNormalRouteProbeFailureAsync,
   recordNormalRouteFirstByteSlowAsync,
-  recordNormalRouteFirstByteSuccessAsync
+  recordNormalRouteFirstByteSuccessAsync,
+  recordNormalRouteRecoveryProbeSuccessAsync
 } = await import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js')
 const config: NormalRouteSpeedFirstRuntimeConfig = {
   firstByteDeadlineMs: 30000,
@@ -93,13 +94,15 @@ const futureProbeAtMs = Date.now() + config.probeIntervalSeconds * 2000
 const futureProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, futureProbeAtMs)
   assert.equal(futureProbeCandidates.length, 1, '速度降级后应产生到期恢复探针候选')
   assert.equal(futureProbeCandidates[0]?.accountId, accounts[0]!.id, '恢复探针候选应指向被降级账号')
+  const originalDegradedUntil = futureProbeCandidates[0]?.degradedUntil
   assert.equal(await deferNormalRouteLatencyProbeCandidateAsync(futureProbeCandidates[0]!), true, '中性恢复探针应只顺延下一次检查')
   assert.equal((await listNormalRouteLatencyProbeCandidatesAsync(10)).length, 0, '中性恢复探针不得立即重复入队')
   const neutralDeferredCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, Date.now() + config.probeIntervalSeconds * 2000)
   assert.equal(neutralDeferredCandidates.length, 1, '中性恢复探针顺延后应保持原降级候选')
   assert.equal(neutralDeferredCandidates[0]?.recoverySuccessCount, 0, '中性恢复探针不得增加或清空恢复成功证据')
-  const failedProbe = await recordNormalRouteProbeFailureAsync(neutralDeferredCandidates[0]!, '回归模拟探针仍然慢')
+const failedProbe = await recordNormalRouteProbeFailureAsync(neutralDeferredCandidates[0]!, '回归模拟探针仍然慢')
 assert.equal(failedProbe?.degraded, true, '探针未达标后应继续保持速度降级')
+assert.equal(failedProbe?.degradedUntil, originalDegradedUntil, '探针失败不得刷新速度降级租约')
 const immediateProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10)
 assert.equal(immediateProbeCandidates.length, 0, '探针未达标后不应立即再次进入候选')
 const dueProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, Date.now() + config.probeIntervalSeconds * 2000)
@@ -129,18 +132,258 @@ assert.deepEqual(
 )
 await clearNormalRouteLatencyDegradationForRouteStrategyAsync(priorityScope.routeStrategyId)
 
-for (let index = 1; index <= 2; index += 1) {
-  const recovery = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, scope, config, 100)
-  assert.equal(recovery?.cleared, false, `第 ${index} 次恢复成功不应立即清理降级`)
-  assert.equal(recovery?.recoverySuccessCount, index, '恢复成功次数应递增')
-}
-const finalRecovery = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, scope, config, 100)
-assert.equal(finalRecovery?.cleared, true, '达到恢复成功次数后应清理速度降级')
+const allSuperPriorityScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_all_super_priority_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(allSuperPriorityScope, '四档超级优先级恢复排序回归需要有效 scope')
+const allSuperPriorityAccounts = [50, 60, 70, 80].map((priority) => ({
+  id: `account_speed_first_super_${priority}`,
+  name: `速度优先超级优先级 ${priority}`,
+  superPriorityEnabled: true,
+  priority
+}))
+await recordNormalRouteFirstByteSlowAsync(allSuperPriorityAccounts[0]!, allSuperPriorityScope, config)
+await recordNormalRouteFirstByteSlowAsync(allSuperPriorityAccounts[0]!, allSuperPriorityScope, config)
+const allSuperPriorityDegradedOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+  allSuperPriorityAccounts,
+  allSuperPriorityScope,
+  config
+)
+assert.deepEqual(
+  allSuperPriorityDegradedOrder.accounts.map((account) => account.id),
+  [
+    allSuperPriorityAccounts[1]!.id,
+    allSuperPriorityAccounts[2]!.id,
+    allSuperPriorityAccounts[3]!.id,
+    allSuperPriorityAccounts[0]!.id
+  ],
+  '四档超级优先级中确认慢账号应临时后置，其他 tier 仍按 60/70/80 顺序'
+)
+const allSuperPriorityProbeCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === allSuperPriorityAccounts[0]!.id)
+assert(allSuperPriorityProbeCandidate, '四档超级优先级恢复必须产生主账号探针候选')
+const allSuperPriorityRecovery = await recordNormalRouteRecoveryProbeSuccessAsync(
+  allSuperPriorityAccounts[0]!,
+  allSuperPriorityProbeCandidate,
+  100
+)
+assert.equal(allSuperPriorityRecovery?.cleared, false, '超级优先级账号第一次恢复探针不应立即清理降级')
+assert.equal(allSuperPriorityRecovery?.recoverySuccessCount, 1, '首次恢复探针应记录一次成功证据')
+assert.equal(allSuperPriorityRecovery?.requiredRecoverySuccessCount, 2, '后台恢复探针应要求两次成功')
+const replayedProbeRecovery = await recordNormalRouteRecoveryProbeSuccessAsync(
+  allSuperPriorityAccounts[0]!,
+  allSuperPriorityProbeCandidate,
+  100
+)
+assert.equal(replayedProbeRecovery, undefined, '重复提交同一恢复探针候选不得绕过探针间隔')
+const allSuperPriorityConfirmCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === allSuperPriorityAccounts[0]!.id)
+assert(allSuperPriorityConfirmCandidate, '首次恢复探针后必须安排第二次确认探针')
+const allSuperPriorityConfirmation = await recordNormalRouteRecoveryProbeSuccessAsync(
+  allSuperPriorityAccounts[0]!,
+  allSuperPriorityConfirmCandidate,
+  100
+)
+assert.equal(allSuperPriorityConfirmation?.cleared, true, '超级优先级账号第二次恢复探针应清理降级')
+const allSuperPriorityRecoveredOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+  allSuperPriorityAccounts,
+  allSuperPriorityScope,
+  config
+)
+assert.deepEqual(
+  allSuperPriorityRecoveredOrder.accounts.map((account) => account.id),
+  allSuperPriorityAccounts.map((account) => account.id),
+  '超级优先级账号恢复后应完整回到 50/60/70/80 原排序'
+)
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(allSuperPriorityScope.routeStrategyId)
+
+const staleProbeScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_stale_probe_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(staleProbeScope, '过期恢复探针围栏回归需要有效 scope')
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, staleProbeScope, config)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, staleProbeScope, config)
+const staleProbeCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === accounts[0]!.id && candidate.scope.routeStrategyId === staleProbeScope.routeStrategyId)
+assert(staleProbeCandidate, '旧降级事件必须产生恢复探针候选')
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(staleProbeScope.routeStrategyId)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, staleProbeScope, config)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, staleProbeScope, config)
+const replacementProbeCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === accounts[0]!.id && candidate.scope.routeStrategyId === staleProbeScope.routeStrategyId)
+assert(replacementProbeCandidate, '新降级事件必须产生新的恢复探针候选')
+assert.notEqual(replacementProbeCandidate.degradationEventId, staleProbeCandidate.degradationEventId, '新降级事件必须拥有新的事件围栏')
+const staleProbeRecovery = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, staleProbeCandidate, 100)
+assert.equal(staleProbeRecovery, undefined, '旧探针成功不得清理新降级事件')
+assert.equal(
+  (await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(accounts, staleProbeScope, config)).applied,
+  true,
+  '旧探针结果被拒绝后新降级状态必须仍然生效'
+)
+const replacementProbeRecovery = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, replacementProbeCandidate, 100)
+assert.equal(replacementProbeRecovery?.cleared, false, '当前降级事件的首次探针成功不应立即恢复')
+const replacementConfirmationCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === accounts[0]!.id && candidate.scope.routeStrategyId === staleProbeScope.routeStrategyId)
+assert(replacementConfirmationCandidate, '当前降级事件必须安排第二次确认探针')
+const replacementProbeConfirmation = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, replacementConfirmationCandidate, 100)
+assert.equal(replacementProbeConfirmation?.cleared, true, '当前降级事件第二次探针成功应正常恢复')
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(staleProbeScope.routeStrategyId)
+
+// The earlier failure exercise intentionally leaves the original scope with a
+// partial probe window. Recreate it so this SS assertion is a self-contained
+// two-attempt recovery window.
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(scope.routeStrategyId)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)
+const finalRecoveryCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === accounts[0]!.id)
+assert(finalRecoveryCandidate, '恢复前必须存在当前账号探针候选')
+const finalRecovery = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, finalRecoveryCandidate, 100)
+assert.equal(finalRecovery?.cleared, false, '首次达标恢复探针不应立即清理速度降级')
+assert.equal(finalRecovery?.recoverySuccessCount, 1, '首次达标恢复探针应记录一次成功证据')
+assert.equal(finalRecovery?.requiredRecoverySuccessCount, 2, '普通路由后台恢复要求两次达标探针')
+const finalConfirmationCandidate = (await listNormalRouteLatencyProbeCandidatesAsync(
+  10,
+  Date.now() + config.probeIntervalSeconds * 2000
+)).find((candidate) => candidate.accountId === accounts[0]!.id && candidate.scope.routeStrategyId === scope.routeStrategyId)
+assert(finalConfirmationCandidate, '首次达标恢复探针后必须安排第二次确认探针')
+const finalConfirmation = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, finalConfirmationCandidate, 100)
+assert.equal(finalConfirmation?.cleared, true, '第二次达标恢复探针应立即清理速度降级')
 const recoveredProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, Date.now() + config.probeIntervalSeconds * 2000)
 assert.equal(recoveredProbeCandidates.length, 0, '恢复后应从后台探针候选索引中清理')
 const recoveredOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(accounts, scope, config)
 assert.equal(recoveredOrder.applied, false, '恢复后不应继续应用速度降级排序')
 assert.deepEqual(recoveredOrder.accounts.map((account) => account.id), accounts.map((account) => account.id), '恢复后应回到原候选顺序')
+
+const requestRecoveryScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_request_recovery_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(requestRecoveryScope, '真实请求恢复防抖回归需要有效 scope')
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, requestRecoveryScope, config)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, requestRecoveryScope, config)
+for (let index = 1; index <= config.recoverySuccessCount; index += 1) {
+  const recovery = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, requestRecoveryScope, config, 100)
+  assert.equal(recovery?.cleared, index === config.recoverySuccessCount, `第 ${index} 次真实请求恢复的清理状态不符合防抖要求`)
+}
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(requestRecoveryScope.routeStrategyId)
+
+async function dueRecoveryProbeCandidate(
+  routeStrategyId: string,
+  accountId: string
+) {
+  const candidate = (await listNormalRouteLatencyProbeCandidatesAsync(100, Date.now() + 60_000))
+    .find((item) => item.accountId === accountId && item.scope.routeStrategyId === routeStrategyId)
+  assert(candidate, `路由策略 ${routeStrategyId} 应有到期恢复探针候选`)
+  return candidate
+}
+
+async function createTwoProbeWindowScope(suffix: string) {
+  const pairScope = normalRouteLatencyDegradationScope({
+    systemAccountId: 'sys_speed_first_runtime',
+    routeStrategyId: `route_strategy_speed_first_probe_pair_${suffix}_${Date.now()}`,
+    groupId: 'group_speed_first_runtime'
+  })
+  assert(pairScope, `两次探针窗口 ${suffix} 需要有效 scope`)
+  await recordNormalRouteFirstByteSlowAsync(accounts[0]!, pairScope, config)
+  await recordNormalRouteFirstByteSlowAsync(accounts[0]!, pairScope, config)
+  const firstCandidate = await dueRecoveryProbeCandidate(pairScope.routeStrategyId, accounts[0]!.id)
+  return { pairScope, firstCandidate }
+}
+
+// Background recovery is judged only in independent two-probe windows. Its
+// counters never contribute to, or reset, the three-success request debounce.
+const ssWindow = await createTwoProbeWindowScope('ss')
+const ssFirst = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, ssWindow.firstCandidate, 100)
+assert.equal(ssFirst?.cleared, false, 'SS 的第一个 S 只能记录当前两次窗口')
+assert.equal(ssFirst?.recoverySuccessCount, 1, 'SS 的第一个 S 应记录一次窗口成功')
+const requestBetweenProbes = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, ssWindow.pairScope, config, 100)
+assert.equal(requestBetweenProbes?.cleared, false, '探针确认间的单次真实请求不得提前清理')
+const ssSecondCandidate = await dueRecoveryProbeCandidate(ssWindow.pairScope.routeStrategyId, accounts[0]!.id)
+const ssSecond = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, ssSecondCandidate, 100)
+assert.equal(ssSecond?.cleared, true, 'SS 必须清理 latency_degraded，普通请求不得重置后台窗口')
+
+const ffWindow = await createTwoProbeWindowScope('ff')
+const ffOriginalUntil = ffWindow.firstCandidate.degradedUntil
+const ffFirst = await recordNormalRouteProbeFailureAsync(ffWindow.firstCandidate, 'FF 的第一个 F')
+assert.equal(ffFirst?.degradedUntil, ffOriginalUntil, 'FF 的第一个 F 不能提前续期')
+const ffSecondCandidate = await dueRecoveryProbeCandidate(ffWindow.pairScope.routeStrategyId, accounts[0]!.id)
+await delay(20)
+const ffSecondStartedAt = Date.now()
+const ffSecond = await recordNormalRouteProbeFailureAsync(ffSecondCandidate, 'FF 的第二个 F')
+assert(ffSecond?.degradedUntil, 'FF 的第二个 F 应保留降级租约')
+assert(
+  Date.parse(ffSecond.degradedUntil) >= ffSecondStartedAt + config.degradedTtlSeconds * 1000 - 50,
+  'FF 的第二个 F 必须将 degradedUntil 续到至少 now + degradedTtlSeconds'
+)
+assert.notEqual(ffSecond.degradedUntil, ffOriginalUntil, 'FF 的第二个 F 必须实际续期')
+const ffNextWindowCandidate = await dueRecoveryProbeCandidate(ffWindow.pairScope.routeStrategyId, accounts[0]!.id)
+assert.deepEqual(
+  [ffNextWindowCandidate.recoveryProbeRoundAttemptCount, ffNextWindowCandidate.recoveryProbeRoundSuccessCount],
+  [0, 0],
+  'FF 续期后必须从新的两次探针窗口开始'
+)
+assert.equal(
+  await recordNormalRouteProbeFailureAsync(ffSecondCandidate, '重复 FF candidate'),
+  undefined,
+  '已消费的 candidate 不能跨窗口重放'
+)
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(ffWindow.pairScope.routeStrategyId)
+
+const mixedWindow = await createTwoProbeWindowScope('sf-fs')
+const mixedOriginalUntil = mixedWindow.firstCandidate.degradedUntil
+await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, mixedWindow.firstCandidate, 100)
+const sfSecondCandidate = await dueRecoveryProbeCandidate(mixedWindow.pairScope.routeStrategyId, accounts[0]!.id)
+const sfSecond = await recordNormalRouteProbeFailureAsync(sfSecondCandidate, 'SF 的 F')
+assert.equal(sfSecond?.degradedUntil, mixedOriginalUntil, 'SF 不得续期')
+const fsFirstCandidate = await dueRecoveryProbeCandidate(mixedWindow.pairScope.routeStrategyId, accounts[0]!.id)
+assert.deepEqual(
+  [fsFirstCandidate.recoveryProbeRoundAttemptCount, fsFirstCandidate.recoveryProbeRoundSuccessCount],
+  [0, 0],
+  'SF 后必须重置下一组窗口'
+)
+await recordNormalRouteProbeFailureAsync(fsFirstCandidate, 'FS 的 F')
+const fsSecondCandidate = await dueRecoveryProbeCandidate(mixedWindow.pairScope.routeStrategyId, accounts[0]!.id)
+const fsSecond = await recordNormalRouteRecoveryProbeSuccessAsync(accounts[0]!, fsSecondCandidate, 100)
+assert.equal(fsSecond?.cleared, false, 'FS 不得恢复')
+assert.equal(
+  (await dueRecoveryProbeCandidate(mixedWindow.pairScope.routeStrategyId, accounts[0]!.id)).degradedUntil,
+  mixedOriginalUntil,
+  'FS 不得续期'
+)
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(mixedWindow.pairScope.routeStrategyId)
+
+const neutralWindow = await createTwoProbeWindowScope('neutral')
+const neutralOriginalUntil = neutralWindow.firstCandidate.degradedUntil
+await recordNormalRouteProbeFailureAsync(neutralWindow.firstCandidate, '中性窗口前的 F')
+const neutralCandidate = await dueRecoveryProbeCandidate(neutralWindow.pairScope.routeStrategyId, accounts[0]!.id)
+assert.equal(await deferNormalRouteLatencyProbeCandidateAsync(neutralCandidate), true, 'neutral/incomplete 应使当前窗口作废')
+assert.equal(
+  await recordNormalRouteProbeFailureAsync(neutralCandidate, '中性 candidate 重放'),
+  undefined,
+  'neutral/incomplete 后旧 candidate 不得重放'
+)
+const afterNeutralFailureCandidate = await dueRecoveryProbeCandidate(neutralWindow.pairScope.routeStrategyId, accounts[0]!.id)
+const afterNeutralFailure = await recordNormalRouteProbeFailureAsync(afterNeutralFailureCandidate, '中性窗口后的 F')
+assert.equal(afterNeutralFailure?.degradedUntil, neutralOriginalUntil, 'neutral/incomplete 不得把前后 F 拼成 FF 续期')
+await clearNormalRouteLatencyDegradationForRouteStrategyAsync(neutralWindow.pairScope.routeStrategyId)
 
 await recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)
 await recordNormalRouteFirstByteSlowAsync(accounts[0]!, scope, config)

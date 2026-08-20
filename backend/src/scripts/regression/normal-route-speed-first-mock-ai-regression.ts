@@ -22,6 +22,10 @@ type MockAccountKey =
   | 'sk-cost-secondary'
   | 'sk-priority-super'
   | 'sk-priority-normal'
+  | 'sk-all-super-50'
+  | 'sk-all-super-60'
+  | 'sk-all-super-70'
+  | 'sk-all-super-80'
   | 'sk-stale-a'
   | 'sk-stale-b'
   | 'sk-stale-c'
@@ -58,6 +62,11 @@ interface StaleCutoverScenario {
   firstAccountId: string
   slowAccountId: string
   healthyAccountId: string
+}
+
+interface AllSuperPriorityScenario extends SpeedFirstScenario {
+  accountIds: readonly string[]
+  accountKeys: readonly MockAccountKey[]
 }
 
 const model = 'gpt-5.5'
@@ -126,6 +135,10 @@ const accountPhases = new Map<MockAccountKey, MockPhase>([
   ['sk-cost-secondary', 'fast'],
   ['sk-priority-super', 'fast'],
   ['sk-priority-normal', 'fast'],
+  ['sk-all-super-50', 'fast'],
+  ['sk-all-super-60', 'fast'],
+  ['sk-all-super-70', 'fast'],
+  ['sk-all-super-80', 'fast'],
   ['sk-stale-a', 'fast'],
   ['sk-stale-b', 'fast'],
   ['sk-stale-c', 'fast']
@@ -153,6 +166,7 @@ try {
     const speedScenario = createSpeedFirstScenario(upstreamBaseUrl)
     const costScenario = createCostFirstScenario(upstreamBaseUrl)
     const priorityScenario = createPriorityTierScenario(upstreamBaseUrl)
+    const allSuperPriorityScenario = createAllSuperPriorityScenario(upstreamBaseUrl)
     const staleCutoverScenario = createStaleCutoverScenario(upstreamBaseUrl)
 
     appServer = http.createServer(app)
@@ -164,6 +178,7 @@ try {
     await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
     await assertCostFirstRouteUnaffected(baseUrl, costScenario)
     await assertSpeedFirstCanCrossPriorityPreference(baseUrl, priorityScenario)
+    await assertAllSuperPriorityLatencyRecovery(baseUrl, allSuperPriorityScenario)
     await assertBackgroundProbeRestoresPrimary(baseUrl, speedScenario)
     await assertBulkFastTrafficAfterRecovery(baseUrl, speedScenario)
     await assertSpeedFirstCutoverDoesNotPersistSubstituteAffinity(baseUrl, speedScenario)
@@ -242,10 +257,10 @@ async function assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl: string, s
     const hitStart = upstreamHits.length
     const startedAt = Date.now()
     const response = await postChat(baseUrl, scenario.apiKey, `non stream slow sample ${attempt}`, false)
-    assert.equal(response.status, 200, `第 ${attempt} 次慢首字请求应成功，实际 HTTP ${response.status}: ${response.text}`)
+    const hits = upstreamHits.slice(hitStart)
+    assert.equal(response.status, 200, `第 ${attempt} 次慢首字请求应成功，实际 HTTP ${response.status}: ${response.text}; hits=${JSON.stringify(hits)}`)
     assert(Date.now() - startedAt >= firstByteDeadlineMs - 2_500, '慢首字样本应真实等待接近首字阈值')
 
-    const hits = upstreamHits.slice(hitStart)
     assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, `第 ${attempt} 次请求应先命中主号`)
     if (attempt < speedFirstConfig.slowTriggerCount) {
       assert.match(response.text, /late mock ai body/, '未达到慢触发次数前应继续等待当前主号返回')
@@ -319,6 +334,88 @@ async function assertCostFirstRouteUnaffected(baseUrl: string, scenario: CostFir
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 0, '速度优先降级状态不应污染成本优先路由')
 }
 
+async function assertAllSuperPriorityLatencyRecovery(baseUrl: string, scenario: AllSuperPriorityScenario): Promise<void> {
+  const candidates = repositories.listOpenAIAccountsForGroup(scenario.groupId, access.systemAccountId, { requestedModel: model })
+  assert.deepEqual(
+    candidates.map((account) => account.id),
+    scenario.accountIds,
+    '四个全部超级优先账号的有效候选顺序必须是 50/60/70/80'
+  )
+  assert.deepEqual(
+    candidates.map((account) => [account.superPriorityEnabled, account.priority]),
+    [[true, 50], [true, 60], [true, 70], [true, 80]],
+    '四个账号必须使用分组生效的超级优先与数值优先级'
+  )
+
+  const beforeHitStart = upstreamHits.length
+  for (let index = 1; index <= 16; index += 1) {
+    const response = await postChat(baseUrl, scenario.apiKey, `all super baseline ${index}`, false)
+    assert.equal(response.status, 200, `全部超级优先基线请求 ${index} 应成功，实际 HTTP ${response.status}: ${response.text}`)
+    assert.match(response.text, /mock ai chat sk-all-super-50/, `全部超级优先基线请求 ${index} 应持续命中 50`)
+  }
+  const beforeHits = upstreamHits.slice(beforeHitStart)
+  assert.equal(countHits(beforeHits, 'sk-all-super-50', '/v1/chat/completions'), 16, '基线阶段 50 应承接全部请求')
+  for (const key of scenario.accountKeys.slice(1)) {
+    assert.equal(countHits(beforeHits, key, '/v1/chat/completions'), 0, `基线阶段 ${key} 不应抢占 50`)
+  }
+
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '全超级优先恢复 Mock 场景需要有效速度降级 scope')
+  const primaryCandidate = candidates[0]
+  assert(primaryCandidate, '全超级优先恢复 Mock 场景必须存在 50 候选')
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync(primaryCandidate, scope, speedFirstRuntimeConfig)
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync(primaryCandidate, scope, speedFirstRuntimeConfig)
+
+  const degradedHitStart = upstreamHits.length
+  const degradedResponse = await postChat(baseUrl, scenario.apiKey, 'all super 50 degraded', false)
+  assert.equal(degradedResponse.status, 200, `50 降级后请求应由备用账号成功返回，实际 HTTP ${degradedResponse.status}: ${degradedResponse.text}`)
+  assert.match(degradedResponse.text, /mock ai chat sk-all-super-60/, '50 降级后应先切到未降级的 60')
+  const degradedHits = upstreamHits.slice(degradedHitStart)
+  assert.equal(countHits(degradedHits, 'sk-all-super-50', '/v1/chat/completions'), 0, '50 降级期间不得继续抢占未降级账号')
+  assert.equal(countHits(degradedHits, 'sk-all-super-60', '/v1/chat/completions'), 1, '50 降级期间应先命中 60')
+
+  for (let index = 1; index <= 2; index += 1) {
+    const candidate = await requireSpeedProbeCandidate(scenario)
+    const account = repositories.findAccountForTest(scenario.primaryAccountId, { systemAccountId: access.systemAccountId, role: 'user' })
+    assert(account, '全超级优先恢复探针应能读取 50 账号')
+    const result = await accountTestService.testOpenAIAccount(account, {
+      model,
+      diagnostics: 'limited',
+      groupId: scenario.groupId,
+      systemAccountId: access.systemAccountId,
+      trafficSource: 'runtime_recovery_probe',
+      candidateAccount: primaryCandidate,
+      disableAccountStateMutation: true,
+      gatewaySettingsOverride: {
+        temporaryUnschedulableRetryAttempts: 0,
+        temporaryUnschedulableRetryIntervalSeconds: 0,
+        textFirstResponseTimeoutSeconds: 20,
+        noAvailableAccountWaitTimeoutSeconds: 20,
+        textUncommittedAttemptMaxLifetimeSeconds: 60
+      }
+    })
+    assert.equal(result.success, true, `全超级优先第 ${index} 次恢复探针应成功：${result.message ?? result.errorCode ?? 'unknown error'}`)
+    const recovery = await latencyDegradation.recordNormalRouteRecoveryProbeSuccessAsync(primaryCandidate, candidate, result.firstTokenMs)
+    assert.equal(recovery?.cleared, index === 2, `全超级优先第 ${index} 次恢复探针清理状态不符合两次窗口`)
+  }
+
+  const recoveredHitStart = upstreamHits.length
+  for (let index = 1; index <= 16; index += 1) {
+    const response = await postChat(baseUrl, scenario.apiKey, `all super recovered ${index}`, false)
+    assert.equal(response.status, 200, `50 恢复后请求 ${index} 应成功，实际 HTTP ${response.status}: ${response.text}`)
+    assert.match(response.text, /mock ai chat sk-all-super-50/, `50 恢复后请求 ${index} 应立即回到 50`)
+  }
+  const recoveredHits = upstreamHits.slice(recoveredHitStart)
+  assert.equal(countHits(recoveredHits, 'sk-all-super-50', '/v1/chat/completions'), 16, '50 恢复后应立即承接全部验证请求')
+  for (const key of scenario.accountKeys.slice(1)) {
+    assert.equal(countHits(recoveredHits, key, '/v1/chat/completions'), 0, `50 恢复后 ${key} 不应继续抢占`)
+  }
+}
+
 async function assertSpeedFirstCanCrossPriorityPreference(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   const scope = latencyDegradation.normalRouteLatencyDegradationScope({
     systemAccountId: access.systemAccountId,
@@ -346,8 +443,13 @@ async function assertSpeedFirstCanCrossPriorityPreference(baseUrl: string, scena
 
 async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
   setAccountPhase('sk-speed-primary', 'fast')
-  for (let index = 1; index <= speedFirstConfig.recoverySuccessCount; index += 1) {
+  for (let index = 1; index <= 2; index += 1) {
     const candidate = await requireSpeedProbeCandidate(scenario)
+    assert.deepEqual(
+      [candidate.recoveryProbeRoundAttemptCount, candidate.recoveryProbeRoundSuccessCount],
+      [index - 1, index - 1],
+      `第 ${index} 次 Mock AI 恢复探针必须属于同一严格两次窗口`
+    )
     const account = repositories.findAccountForTest(scenario.primaryAccountId, { systemAccountId: access.systemAccountId, role: 'user' })
     assert(account, '恢复探针等价测试应能读取主号账户摘要')
     const candidateAccount = repositories.findOpenAIAccountForGroup(scenario.groupId, scenario.primaryAccountId, access.systemAccountId, { ignoreAvailability: true })
@@ -374,7 +476,11 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
       result.firstTokenMs !== undefined && result.firstTokenMs <= firstByteDeadlineMs,
       `第 ${index} 次恢复探针首字应满足阈值，实际 ${result.firstTokenMs}ms`
     )
-    await latencyDegradation.recordNormalRouteFirstByteSuccessAsync(candidateAccount, candidate.scope, candidate.config, result.firstTokenMs)
+    const recovery = await latencyDegradation.recordNormalRouteRecoveryProbeSuccessAsync(
+      candidateAccount,
+      candidate,
+      result.firstTokenMs
+    )
     const hits = upstreamHits.slice(hitStart)
     assert(
       hits.some((hit) => hit.accountKey === 'sk-speed-primary' && (hit.path === '/v1/responses' || hit.path === '/v1/chat/completions')),
@@ -386,7 +492,17 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
       })))}`
     )
     const stillDegraded = (await listSpeedProbeCandidates(scenario)).some((item) => item.accountId === scenario.primaryAccountId)
-    assert.equal(stillDegraded, index < speedFirstConfig.recoverySuccessCount, `第 ${index} 次恢复探针后的降级清理状态不符合恢复次数`)
+    assert.equal(recovery?.cleared, index === 2, `第 ${index} 次达标恢复探针后的清理状态不符合预期`)
+    assert.equal(recovery?.requiredRecoverySuccessCount, 2, '后台恢复探针必须固定按两次窗口判断')
+    assert.equal(stillDegraded, index !== 2, `第 ${index} 次达标恢复探针后的降级状态不符合预期`)
+    if (index === 1) {
+      const confirmationCandidate = await requireSpeedProbeCandidate(scenario)
+      const confirmationDelayMs = Date.parse(confirmationCandidate.nextProbeAt) - Date.now()
+      assert(
+        confirmationDelayMs >= 4_000 && confirmationDelayMs <= 5_500,
+        `两次后台恢复探针的确认间隔必须约 5 秒，实际 ${confirmationDelayMs}ms`
+      )
+    }
   }
 
   // This regression owns latency-degradation recovery; isolate it from hot-quality
@@ -987,6 +1103,65 @@ function createCostFirstScenario(upstreamBaseUrl: string): CostFirstScenario {
   }, access)
   assert(apiKey.key, '成本优先 Mock AI 网关 Key 未返回明文密钥')
   return { apiKey: apiKey.key }
+}
+
+function createAllSuperPriorityScenario(upstreamBaseUrl: string): AllSuperPriorityScenario {
+  const group = repositories.createGroup({
+    name: '普通路由速度优先四档超级优先 Mock AI 分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  const definitions: ReadonlyArray<{ key: MockAccountKey, priority: number }> = [
+    { key: 'sk-all-super-50', priority: 50 },
+    { key: 'sk-all-super-60', priority: 60 },
+    { key: 'sk-all-super-70', priority: 70 },
+    { key: 'sk-all-super-80', priority: 80 }
+  ]
+  const accounts = definitions.map(({ key, priority }) => {
+    const account = repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: `普通路由速度优先超级优先 ${priority} Mock AI 账号`,
+      type: 'api_key',
+      credentials: {
+        api_key: key,
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['responses_sse', 'chat_json']
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true,
+      supportedModels: [model],
+      healthCheckModel: model,
+      superPriorityEnabled: true,
+      priority
+    }, access)
+    activateFixtureAccount(account.id)
+    return account
+  })
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '普通路由速度优先四档超级优先 Mock AI 网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      firstByteDeadlineMs,
+      speedFirstConfig
+    },
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '四档超级优先 Mock AI 网关 Key 未返回明文密钥')
+  assert(apiKey.routeStrategyId, '四档超级优先 Mock AI 网关 Key 未绑定策略路由')
+  return {
+    apiKey: apiKey.key,
+    routeStrategyId: apiKey.routeStrategyId,
+    groupId: group.id,
+    primaryAccountId: accounts[0]!.id,
+    primaryAccountName: accounts[0]!.name,
+    secondaryAccountId: accounts[1]!.id,
+    secondaryAccountName: accounts[1]!.name,
+    accountIds: accounts.map((account) => account.id),
+    accountKeys: definitions.map((definition) => definition.key)
+  }
 }
 
 function createPriorityTierScenario(upstreamBaseUrl: string): SpeedFirstScenario {

@@ -7,14 +7,15 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import {
   transportProbeMeetsFirstByteTarget,
-  transportProbeOutcomeFromAccountTestResult
+  transportProbeOutcomeFromAccountTestResult,
+  type TransportProbeOutcome
 } from '../accounts/automatic-account-probe-outcome.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
   deferNormalRouteLatencyProbeCandidateAsync,
   discardNormalRouteLatencyProbeCandidateAsync,
-  recordNormalRouteFirstByteSuccessAsync,
+  recordNormalRouteRecoveryProbeSuccessAsync,
   recordNormalRouteProbeFailureAsync,
   type NormalRouteLatencyProbeCandidate
 } from '../gateway/runtime/normal-route-latency-degradation.service.js'
@@ -119,7 +120,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
   const transportOutcome = transportProbeOutcomeFromAccountTestResult(result, { upstreamAttempt })
   const firstByteMs = result.firstTokenMs
   if (transportProbeMeetsFirstByteTarget(result, transportOutcome, item.config.firstByteDeadlineMs)) {
-    const recovery = await recordNormalRouteFirstByteSuccessAsync(candidateAccount, item.scope, item.config, firstByteMs)
+    const recovery = await recordNormalRouteRecoveryProbeSuccessAsync(candidateAccount, item, firstByteMs)
     logger.info({
       event: recovery?.cleared
         ? 'background_normal_route_speed_first_recovery_probe_restored'
@@ -141,7 +142,10 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     return true
   }
 
-  if (transportOutcome.kind !== 'transport_incomplete' && !result.success) {
+  // An incomplete/unknown transport result cannot prove the account is still
+  // slow. It must discard the current two-probe window, rather than join a
+  // preceding failure into an FF lease renewal.
+  if (normalRouteSpeedFirstRecoveryProbeRequiresWindowReset(result, transportOutcome)) {
     const deferred = await deferNormalRouteLatencyProbeCandidateAsync(item)
     logger.debug({
       event: 'background_normal_route_speed_first_recovery_probe_neutral',
@@ -176,6 +180,13 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     message: result.message
   }, '普通路由速度优先恢复探针未达标，已顺延下次探针')
   return true
+}
+
+export function normalRouteSpeedFirstRecoveryProbeRequiresWindowReset(
+  result: Pick<AccountTestResult, 'success'>,
+  transportOutcome: TransportProbeOutcome
+): boolean {
+  return transportOutcome.kind !== 'framing_complete' || !result.success
 }
 
 async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
