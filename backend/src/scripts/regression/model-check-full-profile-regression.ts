@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import type { ModelCheckRunDetail, ModelQualityPolicy } from '../../domain/types.js'
+import { stopModelCheckTokenWorker } from '../../modules/model-checks/model-checks-token-worker.service.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-full-profile-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -80,7 +81,12 @@ try {
     assert(quickRun.checks.some((item) => item.itemKey === itemKey), `快速检测必须包含 ${itemKey}`)
   }
   assert.equal(quickRun.checks.filter((item) => item.itemType === 'token_integrity').length, 1, '快速检测 Token 诊断必须聚合为一个报告项')
-  assert(quickRun.checks.some((item) => item.itemKey === 'target.token_integrity' && item.evidenceSummary.diagnosticOnly === false), 'Token 诚信通过时必须形成可评分的正向证据')
+  const quickTokenIntegrity = quickRun.checks.find((item) => item.itemKey === 'target.token_integrity')
+  assert(quickTokenIntegrity, '快速检测必须保留 Token 诚信诊断结果')
+  assert.equal(quickTokenIntegrity.status, 'skipped', '快速检测只采集一轮 Token 样本，必须如实标记为证据不足')
+  assert.equal(quickTokenIntegrity.score, 0, '快速检测的 Token 诊断不得形成评分或处罚证据')
+  assert.equal(quickTokenIntegrity.maxScore, 0, '快速检测的 Token 诊断不得进入质量评分')
+  assert.equal(quickTokenIntegrity.evidenceSummary.diagnosticOnly, true, '快速检测的 Token 诊断必须明确标记为诊断性证据')
   assert(!quickRun.checks.some((item) => ['behavior_probe', 'long_context', 'stability', 'distribution_similarity'].includes(item.itemType)), '快速检测不得执行行为、长上下文、稳定性或分布探针')
   assert.equal(quickRun.resultSummary.trustedComparison, false)
   assert.notEqual(quickRun.level, 'high_confidence', '快速检测不允许输出高可信结论')
@@ -141,6 +147,7 @@ try {
 
   console.log('模型检测完整 profile 回归通过：AI 账户目标闭环、HTTP 200 内容评分与 GPT-5.6 Juice 专项契约通过')
 } finally {
+  await stopModelCheckTokenWorker()
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
 }
