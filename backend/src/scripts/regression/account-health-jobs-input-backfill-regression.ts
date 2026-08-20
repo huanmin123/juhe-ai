@@ -10,7 +10,8 @@ import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import {
   createSqliteAccountHealthJobsInputBackfillDependencies,
   runCli,
-  runAccountHealthJobsInputBackfill
+  runAccountHealthJobsInputBackfill,
+  runProcessCli
 } from '../maintenance/backfill-account-health-jobs-input.js'
 import { currentAccountHealthJobsInputVersion } from '../../storage/account-health-jobs-input-version.repository.js'
 import { reserveAndEnqueueAccountHealthJobsInputInTransaction } from '../../storage/account-health-jobs-input-outbox.repository.js'
@@ -99,8 +100,9 @@ try {
     assert.equal((isolatedDatabase.prepare('SELECT count(*) AS count FROM account_health_jobs_input_outbox WHERE account_id = ?').get(eligible.id) as { count: number }).count, 0)
 
     let successfulCliCleanupCount = 0
-    await runCli(['--limit', '1'], async () => { successfulCliCleanupCount += 1 })
+    const successfulCliStats = await runCli(['--limit', '1'], async () => { successfulCliCleanupCount += 1 })
     assert.equal(successfulCliCleanupCount, 1, 'maintenance CLI 成功后必须释放 PostgreSQL pool')
+    assert.equal(successfulCliStats.failed, 0, 'maintenance CLI 成功路径不得报告回填失败')
 
     let failedCliCleanupCount = 0
     await assert.rejects(
@@ -108,6 +110,14 @@ try {
       /unknown argument: --unknown-option/u
     )
     assert.equal(failedCliCleanupCount, 1, 'maintenance CLI 参数失败后也必须释放 PostgreSQL pool')
+
+    const successfulProcessExitCodes: number[] = []
+    await runProcessCli([], async () => ({ ...successfulCliStats, failed: 0 }), (code) => { successfulProcessExitCodes.push(code) })
+    assert.deepEqual(successfulProcessExitCodes, [0], '一轮无失败回填完成后必须以成功码终止进程')
+
+    const failedProcessExitCodes: number[] = []
+    await runProcessCli([], async () => ({ ...successfulCliStats, failed: 1 }), (code) => { failedProcessExitCodes.push(code) })
+    assert.deepEqual(failedProcessExitCodes, [1], '任一账户回填失败后必须以非零码终止进程，避免 Job 误判成功或卡住')
   } finally {
     closeStorageDatabases()
   }

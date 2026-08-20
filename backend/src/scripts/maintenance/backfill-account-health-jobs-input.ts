@@ -223,29 +223,49 @@ function postgresDependencies(client: DatabaseClient): AccountHealthJobsInputBac
   }
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<void> {
+export async function main(argv = process.argv.slice(2)): Promise<AccountHealthJobsInputBackfillStats> {
   const options = parseArguments(argv)
   const dependencies = runtimeConfig.databaseDriver === 'postgres'
     ? postgresDependencies(createPostgresDatabaseClient(await getPostgresPool()))
     : sqliteDependencies()
   const stats = await runAccountHealthJobsInputBackfill(dependencies, options)
   process.stdout.write(`${JSON.stringify({ event: 'j1_input_backfill_completed', ...stats })}\n`)
+  return stats
 }
 
 export async function runCli(
   argv = process.argv.slice(2),
   closePool: () => Promise<void> = closePostgresPool
-): Promise<void> {
+): Promise<AccountHealthJobsInputBackfillStats> {
   try {
-    await main(argv)
+    return await main(argv)
   } finally {
     await closePool()
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  await runCli().catch((error) => {
+export async function runProcessCli(
+  argv = process.argv.slice(2),
+  execute: (arguments_: string[]) => Promise<AccountHealthJobsInputBackfillStats> = main,
+  exit: (code: number) => void = (code) => process.exit(code)
+): Promise<void> {
+  let exitCode = 0
+  try {
+    const stats = await execute(argv)
+    if (stats.failed > 0) {
+      process.stderr.write(`${JSON.stringify({ event: 'j1_input_backfill_failed', error: 'account_enqueue_failed', failed: stats.failed })}\n`)
+      exitCode = 1
+    }
+  } catch (error) {
     process.stderr.write(`${JSON.stringify({ event: 'j1_input_backfill_failed', error: safeError(error) })}\n`)
-    process.exitCode = 1
-  })
+    exitCode = 1
+  }
+  // One-shot maintenance commands must not remain alive because a repository
+  // client retained an idle handle after its final durable write. The command
+  // has already flushed its structured completion/failure record above.
+  exit(exitCode)
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  await runProcessCli()
 }
