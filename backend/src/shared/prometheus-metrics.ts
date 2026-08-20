@@ -4,6 +4,7 @@ const firstOutputDurationBuckets = [0.25, 0.5, 1, 2, 5, 10, 30, 60, Number.POSIT
 
 export type HttpMetricRouteGroup = 'health' | 'management' | 'public_api' | 'gateway' | 'other' | 'observability'
 export type HttpMetricOutcome = 'completed' | 'aborted'
+export type HttpMetricFailureScope = 'none' | 'gateway' | 'upstream'
 export type GatewayUpstreamFailureMetricClass =
   | 'opaque_upstream_response'
   | 'transport'
@@ -31,6 +32,7 @@ type HttpMetricLabels = {
   method: string
   status_class: string
   outcome: HttpMetricOutcome
+  failure_scope: HttpMetricFailureScope
 }
 
 interface HistogramValue {
@@ -93,7 +95,8 @@ export function finishHttpMetricRequest(
   request: HttpMetricRequest | undefined,
   statusCode: number | undefined,
   outcome: HttpMetricOutcome,
-  finishedAtMs = Date.now()
+  finishedAtMs = Date.now(),
+  failureScope?: Exclude<HttpMetricFailureScope, 'none'>
 ): void {
   if (!request || request.finished) return
   request.finished = true
@@ -102,7 +105,8 @@ export function finishHttpMetricRequest(
     route_group: request.routeGroup,
     method: request.method,
     status_class: classifyStatus(statusCode),
-    outcome
+    outcome,
+    failure_scope: classifyHttpMetricFailureScope(statusCode, outcome, failureScope)
   }
   increment(requestCounters, labelsKey(labels))
   const durationSeconds = Math.max(0, finishedAtMs - request.startedAtMs) / 1_000
@@ -149,6 +153,9 @@ export function renderPrometheusMetrics(): string {
   for (const [key, count] of sortedEntries(requestCounters)) {
     lines.push(`juhe_ai_http_requests_total{${renderLabels(parseMetricLabels(key))}} ${count}`)
   }
+  lines.push('# HELP juhe_ai_http_failure_scope_metrics_enabled Whether this process exposes bounded HTTP failure scope labels.')
+  lines.push('# TYPE juhe_ai_http_failure_scope_metrics_enabled gauge')
+  lines.push(`juhe_ai_http_failure_scope_metrics_enabled{service="${serviceName}"} 1`)
 
   lines.push('# HELP juhe_ai_gateway_upstream_failures_total Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.')
   lines.push('# TYPE juhe_ai_gateway_upstream_failures_total counter')
@@ -275,6 +282,16 @@ function normalizeMethod(method: string): string {
 function classifyStatus(statusCode: number | undefined): string {
   if (!Number.isInteger(statusCode) || !statusCode || statusCode < 100 || statusCode > 599) return 'unknown'
   return `${Math.floor(statusCode / 100)}xx`
+}
+
+function classifyHttpMetricFailureScope(
+  statusCode: number | undefined,
+  outcome: HttpMetricOutcome,
+  failureScope: Exclude<HttpMetricFailureScope, 'none'> | undefined
+): HttpMetricFailureScope {
+  return outcome === 'completed' && classifyStatus(statusCode) === '5xx'
+    ? failureScope ?? 'gateway'
+    : 'none'
 }
 
 function labelsKey(labels: Record<string, string>): string {

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 
+import { markRequestHttpMetricFailureScope } from '../../../shared/request-context.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
@@ -283,6 +284,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
 
   const responsePayload = gatewayErrorPayload(message, 'response_inspection_failed', errorCode)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
+  markRequestHttpMetricFailureScope('upstream')
   sendGatewayErrorResponse(input.res, 502, responsePayload, { protocol: clientErrorProtocol })
   input.auditCapture.finalize({
     outcome: 'upstream_failed',
@@ -553,6 +555,7 @@ async function finalizeBufferedJsonProtocolFailure(
   // second account's response.
   const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
+  markRequestHttpMetricFailureScope('upstream')
   sendGatewayErrorResponse(input.res, 502, responsePayload, { protocol: clientErrorProtocol })
   input.auditCapture.finalize({
     outcome: 'upstream_failed',

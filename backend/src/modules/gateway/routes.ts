@@ -412,7 +412,8 @@ export async function handleOpenAIGatewayRequest(
         errorPhase: 'dispatch',
         errorCode: 'upstream_retryable_error',
         errorMessage: message
-      }
+      },
+      failureScope: 'upstream'
     })
   }
   const resolveRouteAction = async (
@@ -2720,6 +2721,7 @@ async function sendPreCommitStreamRetryExhaustedResponse(input: {
         errorCode: input.errorCode ?? gatewayStreamClientRetryErrorCode,
         errorMessage: clientVisibleMessage
       },
+      failureScope: 'upstream',
       recordUsage: false,
       usageErrorMessage: clientVisibleMessage
     })

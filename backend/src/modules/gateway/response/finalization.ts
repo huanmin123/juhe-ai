@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { getRequestLogger } from '../../../shared/request-context.js'
+import { getRequestLogger, markRequestHttpMetricFailureScope } from '../../../shared/request-context.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
@@ -1235,6 +1235,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       }
       const responsePayload = gatewayErrorPayload(errorMessage, 'upstream_timeout_error', errorCode)
       const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
+      markRequestHttpMetricFailureScope('upstream')
       sendGatewayErrorResponse(res, 504, responsePayload, { protocol: clientErrorProtocol })
       auditCapture.finalize({
         outcome: 'upstream_failed',
@@ -1947,6 +1948,7 @@ async function inspectBufferedHybridQualityResponse(input: {
   const protocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
   const responsePayload = gatewayErrorPayload(message, 'hybrid_quality_failed', errorCode)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+  markRequestHttpMetricFailureScope('upstream')
   sendGatewayErrorResponse(input.res, statusCode, responsePayload, { protocol })
   input.auditCapture.finalize({
     outcome: 'upstream_failed',
@@ -2260,6 +2262,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
       responsePayload,
       gatewayProtocolClientErrorProtocolForRequest(req, account)
     )
+    markRequestHttpMetricFailureScope('upstream')
     sendGatewayErrorResponse(res, 502, responsePayload, {
       protocol: gatewayProtocolClientErrorProtocolForRequest(req, account)
     })

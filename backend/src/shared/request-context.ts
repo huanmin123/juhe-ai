@@ -13,6 +13,7 @@ import { logger, logPublisherStats } from './logger.js'
 import {
   finishHttpMetricRequest,
   startHttpMetricRequest,
+  type HttpMetricFailureScope,
   type HttpMetricRequest
 } from './prometheus-metrics.js'
 
@@ -77,6 +78,7 @@ export interface RequestContext {
   timingLogQueuePeakBytes?: number
   timingDetailSampled?: boolean
   prometheusHttpRequest?: HttpMetricRequest
+  prometheusHttpFailureScope?: Exclude<HttpMetricFailureScope, 'none'>
   logger: Logger
 }
 
@@ -195,6 +197,12 @@ export function getRequestContext(): RequestContext | undefined {
 
 export function getRequestLogger(): Logger {
   return getRequestContext()?.logger ?? logger
+}
+
+export function markRequestHttpMetricFailureScope(scope: Exclude<HttpMetricFailureScope, 'none'>): void {
+  const context = getRequestContext()
+  if (!context) return
+  context.prometheusHttpFailureScope = scope
 }
 
 export function bindRequestContextFields(fields: RequestContextFields): void {
@@ -471,7 +479,15 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
   const responseState = captureDownstreamResponseState(res, 'finish')
   const statusCode = responseState.statusCode ?? res.statusCode
   const committedResponseState = { ...responseState, statusCode }
-  finishHttpMetricRequest(context.prometheusHttpRequest, statusCode, 'completed')
+  const failureScope = context.prometheusHttpFailureScope
+    ?? (statusCode >= 500 ? 'gateway' : 'none')
+  finishHttpMetricRequest(
+    context.prometheusHttpRequest,
+    statusCode,
+    'completed',
+    Date.now(),
+    failureScope === 'none' ? undefined : failureScope
+  )
   setImmediate(() => logRequestTimingSummary(context, committedResponseState, resolveRequestSummaryOutcome(context, statusCode)))
   const durationMs = Date.now() - context.startedAt
   const fields = {
@@ -480,6 +496,7 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl),
     ...committedResponseState,
+    failureScope,
     durationMs,
     clientIp: context.clientIp,
     userAgent: req.header('user-agent')
@@ -490,7 +507,7 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
     return
   }
 
-  if (statusCode >= 500) {
+  if (statusCode >= 500 && failureScope !== 'upstream') {
     context.logger.error(fields, 'HTTP 请求已结束')
   } else if (statusCode >= 400) {
     context.logger.warn(fields, 'HTTP 请求已结束')

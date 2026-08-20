@@ -19,7 +19,11 @@ import {
 } from '../usage/records.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
 import type { UsageFailureAttribution } from '../../../storage/repositories.js'
-import { getRequestLogger } from '../../../shared/request-context.js'
+import {
+  getRequestLogger,
+  markRequestHttpMetricFailureScope
+} from '../../../shared/request-context.js'
+import type { HttpMetricFailureScope } from '../../../shared/prometheus-metrics.js'
 import { trackGatewayFailureUsageFinalization } from '../usage/failure-finalization.service.js'
 
 interface SendGatewayFailureResponseInput {
@@ -39,6 +43,7 @@ interface SendGatewayFailureResponseInput {
   recordUsage?: boolean
   usageErrorMessage?: string
   failureAttribution?: UsageFailureAttribution
+  failureScope?: Exclude<HttpMetricFailureScope, 'none'>
   preserveUpstreamErrorMessage?: boolean
 }
 
@@ -63,6 +68,10 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
   const clientPayload = gatewayErrorPayloadForProtocol(deliveredPayload, protocol)
   const httpCompletion = observeGatewayHttpCompletion(res)
   const requestLogger = getRequestLogger()
+  const failureScope = input.failureScope ?? inferGatewayFailureScope(audit.outcome, input.failureAttribution)
+  if (failureScope === 'upstream') {
+    markRequestHttpMetricFailureScope(failureScope)
+  }
 
   sendGatewayErrorResponse(res, statusCode, deliveredPayload, { protocol, preserveUpstreamErrorMessage })
   auditCapture.finalize({
@@ -97,6 +106,18 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
     })
     trackGatewayFailureUsageFinalization(usageFinalization)
   }
+}
+
+function inferGatewayFailureScope(
+  outcome: SendGatewayFailureResponseInput['audit']['outcome'],
+  attribution: UsageFailureAttribution | undefined
+): Exclude<HttpMetricFailureScope, 'none'> | undefined {
+  if (outcome === 'upstream_failed') return 'upstream'
+  return attribution === 'account_upstream'
+    || attribution === 'account_dependency'
+    || attribution === 'opaque_upstream'
+    ? 'upstream'
+    : undefined
 }
 
 function gatewayErrorProtocolForRequest(req: Request) {
