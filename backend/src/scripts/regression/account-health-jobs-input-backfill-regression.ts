@@ -9,6 +9,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import {
   createSqliteAccountHealthJobsInputBackfillDependencies,
+  runCli,
   runAccountHealthJobsInputBackfill
 } from '../maintenance/backfill-account-health-jobs-input.js'
 import { currentAccountHealthJobsInputVersion } from '../../storage/account-health-jobs-input-version.repository.js'
@@ -96,6 +97,17 @@ try {
     assert.equal(staleRevision, undefined)
     assert.equal(currentAccountHealthJobsInputVersion(eligible.id), undefined)
     assert.equal((isolatedDatabase.prepare('SELECT count(*) AS count FROM account_health_jobs_input_outbox WHERE account_id = ?').get(eligible.id) as { count: number }).count, 0)
+
+    let successfulCliCleanupCount = 0
+    await runCli(['--limit', '1'], async () => { successfulCliCleanupCount += 1 })
+    assert.equal(successfulCliCleanupCount, 1, 'maintenance CLI 成功后必须释放 PostgreSQL pool')
+
+    let failedCliCleanupCount = 0
+    await assert.rejects(
+      runCli(['--unknown-option'], async () => { failedCliCleanupCount += 1 }),
+      /unknown argument: --unknown-option/u
+    )
+    assert.equal(failedCliCleanupCount, 1, 'maintenance CLI 参数失败后也必须释放 PostgreSQL pool')
   } finally {
     closeStorageDatabases()
   }

@@ -20,7 +20,7 @@ import {
 } from '../../storage/account-health-jobs-input-outbox.repository.js'
 import { getBusinessDatabase, runInDatabaseTransaction } from '../../storage/database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from '../../storage/database-client.js'
-import { getPostgresPool } from '../../storage/postgres-client.js'
+import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 
 const DEFAULT_LIMIT = 1_000
 const MAX_LIMIT = 100_000
@@ -232,8 +232,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   process.stdout.write(`${JSON.stringify({ event: 'j1_input_backfill_completed', ...stats })}\n`)
 }
 
+export async function runCli(
+  argv = process.argv.slice(2),
+  closePool: () => Promise<void> = closePostgresPool
+): Promise<void> {
+  try {
+    await main(argv)
+  } finally {
+    await closePool()
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  await main().catch((error) => {
+  await runCli().catch((error) => {
     process.stderr.write(`${JSON.stringify({ event: 'j1_input_backfill_failed', error: safeError(error) })}\n`)
     process.exitCode = 1
   })
