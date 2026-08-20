@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { backup } from 'node:sqlite'
 import { createRequire } from 'node:module'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -118,6 +119,20 @@ try {
     const failedProcessExitCodes: number[] = []
     await runProcessCli([], async () => ({ ...successfulCliStats, failed: 1 }), (code) => { failedProcessExitCodes.push(code) })
     assert.deepEqual(failedProcessExitCodes, [1], '任一账户回填失败后必须以非零码终止进程，避免 Job 误判成功或卡住')
+
+    const thrownProcessExitCodes: number[] = []
+    await runProcessCli([], async () => { throw new Error('simulated backfill failure') }, (code) => { thrownProcessExitCodes.push(code) })
+    assert.deepEqual(thrownProcessExitCodes, [1], '维护入口抛错后必须以非零码终止进程')
+
+    const directCli = spawnSync(process.execPath, [
+      '--import', 'tsx', 'src/scripts/maintenance/backfill-account-health-jobs-input.ts', '--unknown-option'
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 5_000
+    })
+    assert.equal(directCli.status, 1, '真实 one-shot CLI 参数失败必须以非零码退出')
+    assert.match(directCli.stderr, /"event":"j1_input_backfill_failed"/u, '真实 one-shot CLI 退出前必须向管道完整写出结构化失败记录')
   } finally {
     closeStorageDatabases()
   }

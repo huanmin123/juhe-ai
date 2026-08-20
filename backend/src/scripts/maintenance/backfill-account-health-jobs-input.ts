@@ -94,7 +94,7 @@ export async function runAccountHealthJobsInputBackfill(
         else stats.skippedExisting += 1
       } catch (error) {
         stats.failed += 1
-        process.stderr.write(`${JSON.stringify({ event: 'j1_input_backfill_failed', accountId: account.id, error: safeError(error) })}\n`)
+        await writeStructuredLine(process.stderr, { event: 'j1_input_backfill_failed', accountId: account.id, error: safeError(error) })
       }
     }
     afterId = accountIds[accountIds.length - 1]
@@ -229,7 +229,7 @@ export async function main(argv = process.argv.slice(2)): Promise<AccountHealthJ
     ? postgresDependencies(createPostgresDatabaseClient(await getPostgresPool()))
     : sqliteDependencies()
   const stats = await runAccountHealthJobsInputBackfill(dependencies, options)
-  process.stdout.write(`${JSON.stringify({ event: 'j1_input_backfill_completed', ...stats })}\n`)
+  await writeStructuredLine(process.stdout, { event: 'j1_input_backfill_completed', ...stats })
   return stats
 }
 
@@ -253,11 +253,11 @@ export async function runProcessCli(
   try {
     const stats = await execute(argv)
     if (stats.failed > 0) {
-      process.stderr.write(`${JSON.stringify({ event: 'j1_input_backfill_failed', error: 'account_enqueue_failed', failed: stats.failed })}\n`)
+      await writeStructuredLine(process.stderr, { event: 'j1_input_backfill_failed', error: 'account_enqueue_failed', failed: stats.failed })
       exitCode = 1
     }
   } catch (error) {
-    process.stderr.write(`${JSON.stringify({ event: 'j1_input_backfill_failed', error: safeError(error) })}\n`)
+    await writeStructuredLine(process.stderr, { event: 'j1_input_backfill_failed', error: safeError(error) })
     exitCode = 1
   }
   // One-shot maintenance commands must not remain alive because a repository
@@ -268,4 +268,13 @@ export async function runProcessCli(
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   await runProcessCli()
+}
+
+function writeStructuredLine(stream: NodeJS.WriteStream, record: Record<string, unknown>): Promise<void> {
+  return new Promise((resolveWrite, rejectWrite) => {
+    stream.write(`${JSON.stringify(record)}\n`, (error) => {
+      if (error) rejectWrite(error)
+      else resolveWrite()
+    })
+  })
 }
