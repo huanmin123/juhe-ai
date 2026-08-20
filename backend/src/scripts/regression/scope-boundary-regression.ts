@@ -271,6 +271,17 @@ interface SystemTeamListResult {
   pageSize: number
 }
 
+interface SystemTeamMembersResult {
+  id: string
+  memberCount: number
+  updatedAt: string
+  items: SystemTeamMemberSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 interface SystemAccountPrincipalSummary {
   id: string
   username: string
@@ -628,17 +639,38 @@ async function main(): Promise<void> {
     const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}`, seed.userBCookie)
     assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')
     assert(userBAiPerformance.summary.requestCount === 3, `AI性能监控归属人原账户不应混入授权实例调用，实际 ${userBAiPerformance.summary.requestCount}`)
-    await assertForbidden(`${baseUrl}/__aisys__/api/my-stats/system-metrics`, seed.userACookie, '用户侧统计命名空间里的系统指标仍是管理员能力，普通用户不可访问')
-    await assertForbidden(`${baseUrl}/__aisys__/api/stats/system-metrics/runtime`, seed.userACookie, '系统指标运行态端点只允许管理员访问')
+    const adminSystemMetricsTrend = await getEnvelope<Record<string, unknown>>(
+      baseUrl,
+      `/__aisys__/api/stats/system-metrics/trend?startDate=${seed.usageYesterday}&endDate=${seed.usageToday}`,
+      seed.adminCookie
+    )
+    assert(adminSystemMetricsTrend && typeof adminSystemMetricsTrend === 'object', '管理员应能访问系统指标趋势端点')
+    const adminSystemMetricsRuntimeSummary = await getEnvelope<Record<string, unknown>>(
+      baseUrl,
+      '/__aisys__/api/stats/system-metrics/runtime/summary',
+      seed.adminCookie
+    )
+    assert(adminSystemMetricsRuntimeSummary && typeof adminSystemMetricsRuntimeSummary === 'object', '管理员应能访问系统指标运行态摘要端点')
+    await assertForbidden(
+      `${baseUrl}/__aisys__/api/stats/system-metrics/trend?startDate=${seed.usageYesterday}&endDate=${seed.usageToday}`,
+      seed.userACookie,
+      '系统指标趋势端点只允许管理员访问'
+    )
+    await assertForbidden(
+      `${baseUrl}/__aisys__/api/stats/system-metrics/runtime/summary`,
+      seed.userACookie,
+      '系统指标运行态摘要端点只允许管理员访问'
+    )
     summary.push('AI性能监控授权实例独立统计检查通过')
 
     const userATeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
     const userATeams = userATeamsPage.items
     assert(userATeams.length === 1 && userATeams[0]?.id === seed.teamSharedId, '用户 A 我的团队没有只返回自己加入的团队')
     assert(userATeams[0]?.memberCount === 2, '用户 A 我的团队成员计数异常')
-    const userASharedTeamDetail = await getEnvelope<SystemTeamSummary>(baseUrl, `/__aisys__/api/my-teams/${seed.teamSharedId}`, seed.userACookie)
-    assert((userASharedTeamDetail.members ?? []).some((member) => member.systemAccountId === seed.userAId), '用户 A 我的团队详情缺少自己')
-    assert((userASharedTeamDetail.members ?? []).some((member) => member.systemAccountId === seed.userBId), '用户 A 我的团队详情缺少同团队成员')
+    const userASharedTeamMembers = await getEnvelope<SystemTeamMembersResult>(baseUrl, `/__aisys__/api/my-teams/${seed.teamSharedId}/members`, seed.userACookie)
+    assert(userASharedTeamMembers.memberCount === 2 && userASharedTeamMembers.total === 2, '用户 A 我的团队成员计数异常')
+    assert(userASharedTeamMembers.items.some((member) => member.systemAccountId === seed.userAId), '用户 A 我的团队成员端点缺少自己')
+    assert(userASharedTeamMembers.items.some((member) => member.systemAccountId === seed.userBId), '用户 A 我的团队成员端点缺少同团队成员')
     assert(!userATeams.some((team) => team.id === seed.teamUserBOnlyId), '用户 A 我的团队返回了未加入团队')
     const userBTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userBCookie)
     const userBTeams = userBTeamsPage.items
@@ -646,14 +678,14 @@ async function main(): Promise<void> {
     const adminTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/system-teams', seed.adminCookie)
     const adminTeams = adminTeamsPage.items
     assert(adminTeams.some((team) => team.id === seed.teamSharedId) && adminTeams.some((team) => team.id === seed.teamUserBOnlyId), '管理员系统团队管理没有返回全量团队')
-    const userBOnlyTeam = await getEnvelope<SystemTeamSummary>(baseUrl, `/__aisys__/api/system-teams/${seed.teamUserBOnlyId}`, seed.adminCookie)
     const userBOnlyTeamVersion = adminTeams.find((team) => team.id === seed.teamUserBOnlyId)?.updatedAt
     assert(userBOnlyTeamVersion, '回归需要用户 B 专属团队列表版本')
-    const userBOnlyMemberId = userBOnlyTeam?.members?.find((member) => member.systemAccountId === seed.userBId)?.id
+    const userBOnlyMembers = await getEnvelope<SystemTeamMembersResult>(baseUrl, `/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members`, seed.adminCookie)
+    const userBOnlyMemberId = userBOnlyMembers.items.find((member) => member.systemAccountId === seed.userBId)?.id
     assert(userBOnlyMemberId, '回归需要用户 B 专属团队成员 ID')
     await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'PATCH', { name: '不应跨作用域更新团队', expectedUpdatedAt: userBOnlyTeamVersion }, '管理员按用户 A 作用域写入时不应能更新用户 A 不可见团队')
-    await assertJsonStatus(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members?systemAccountId=${seed.userAId}`, seed.adminCookie, 'POST', { systemAccountIds: [seed.userCId] }, 404, '管理员按用户 A 作用域写入时不应能向用户 A 不可见团队添加成员')
-    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members/${userBOnlyMemberId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'DELETE', {}, '管理员按用户 A 作用域写入时不应能移除用户 A 不可见团队成员')
+    await assertJsonStatus(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members?systemAccountId=${seed.userAId}`, seed.adminCookie, 'POST', { systemAccountIds: [seed.userCId], expectedUpdatedAt: userBOnlyTeamVersion }, 404, '管理员按用户 A 作用域写入时不应能向用户 A 不可见团队添加成员')
+    await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}/members/${userBOnlyMemberId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'DELETE', { expectedUpdatedAt: userBOnlyTeamVersion }, '管理员按用户 A 作用域写入时不应能移除用户 A 不可见团队成员')
     const scopedWriteBlockedTeam = repositories.findSystemTeamSummary(seed.teamUserBOnlyId)
     assert(scopedWriteBlockedTeam?.name !== '不应跨作用域更新团队', '系统团队 scoped 写入拦截失败：团队名称被跨作用域更新')
     assert((scopedWriteBlockedTeam?.members ?? []).every((member) => member.systemAccountId !== seed.userCId), '系统团队 scoped 写入拦截失败：用户 A 不可见团队被添加成员')

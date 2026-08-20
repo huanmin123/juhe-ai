@@ -5,8 +5,8 @@ import { resolve } from 'node:path'
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountRuntimeAvailability, AccountSummary } from '../../domain/types.js'
 import {
-  projectAccountListItem,
   sanitizeAccountBasicDetailResponse,
+  sanitizeAccountResponse,
   sanitizeAccountRuntimeAvailabilityResponse
 } from '../../modules/accounts/account-response-sanitizer.js'
 
@@ -30,13 +30,17 @@ const expectedPublicRuntime = {
   status: 'precheck_pending',
   reason: '等待确认',
   since: '2026-07-23T00:00:00.000Z',
-  probePresentation: { schedule: { state: 'running' } }
+  probePresentation: {
+    schedule: { state: 'running' },
+    recoveryAt: '2026-07-23T00:02:00.000Z',
+    recoveryAtKind: 'policy_ttl_expiry'
+  }
 }
 
 assert.deepEqual(
   publicAccountRuntimeAvailability(unsafeRuntime),
   expectedPublicRuntime,
-  '状态快照公开投影不得返回内部计数或恢复控制字段'
+  '状态快照公开投影只允许返回 policy_ttl_expiry 释放时间摘要，不得返回内部计数或租约字段'
 )
 
 const account = {
@@ -55,9 +59,9 @@ const account = {
 } as unknown as AccountSummary
 
 assert.deepEqual(
-  'runtimeAvailability' in projectAccountListItem(account),
-  false,
-  '账户列表首包不得返回运行态字段'
+  sanitizeAccountResponse(account).runtimeAvailability,
+  expectedPublicRuntime,
+  '账户公开响应投影只允许返回公开运行态字段'
 )
 assert.deepEqual(
   sanitizeAccountBasicDetailResponse(account).runtimeAvailability,
@@ -84,12 +88,12 @@ for (const [label, value] of [
     'until',
     'leaseId',
     'leasePurpose',
-    'leaseUntilMs',
-    'recoveryAt',
-    'recoveryAtKind'
+    'leaseUntilMs'
   ]) {
     assert.equal(encoded.includes(`"${field}"`), false, `${label} 不得返回 ${field}`)
   }
+  assert.equal((value as typeof expectedPublicRuntime).probePresentation?.recoveryAt, '2026-07-23T00:02:00.000Z', `${label} 应返回公开释放时间摘要`)
+  assert.equal((value as typeof expectedPublicRuntime).probePresentation?.recoveryAtKind, 'policy_ttl_expiry', `${label} 应返回公开释放时间类型`)
 }
 
 const statusSnapshotSource = readFileSync(resolve('src/modules/accounts/account-status-snapshot.service.ts'), 'utf8')

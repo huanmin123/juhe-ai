@@ -179,6 +179,8 @@ try {
   assert.equal(j1Result.items[0]?.successHours, 0, '同小时 J1 较早成功必须被较晚失败覆盖')
   assert.equal(j1Result.items[0]?.failureHours, 1, 'J1 upstream failure 必须显示为不可用')
   assert.equal(j1Result.items[0]?.latestStatus, 'failure')
+  assert.equal(j1Result.items[0]?.lastHealthCheckAt, j1LatestAt, 'J1 outcome 必须更新卡片展示的最近独立检查时间')
+  assert.equal(j1Result.items[0]?.nextHealthCheckAt, new Date(Date.parse(j1LatestAt) + 60 * 60_000).toISOString(), 'J1 outcome 的 next_due_at 必须更新卡片展示的下次检查时间')
   const j1Slot = j1Result.items[0]?.hours.find((hour) => hour.status === 'failure')
   assert.ok(j1Slot)
   assert.deepEqual(
@@ -364,6 +366,7 @@ try {
         input_version: 1,
         config_revision: 1,
         dispatch_revision: 1,
+        next_due_at: new Date(Date.parse(observedAt) + 60 * 60_000).toISOString(),
         ...(statusCode === undefined ? {} : { status_code: statusCode }),
         ...(errorCode === undefined ? {} : { error_code: errorCode }),
         ...(errorMessage === undefined ? {} : { error_message: errorMessage })

@@ -60,6 +60,7 @@ interface AccountAdvancedResponse {
   configRevision: number
   accessType: 'owner' | 'authorized'
   credentials?: Record<string, unknown>
+  effectiveErrorHandlingRules: unknown[]
   modelMappings: unknown[]
   temporaryUnavailableContinuousProbeEnabled: boolean
   balanceQueryEnabled: boolean
@@ -162,8 +163,12 @@ try {
     status: 'precheck_pending',
     reason: '回归测试',
     since: '2026-07-23T00:00:00.000Z',
-    probePresentation: { schedule: { state: 'running' } }
-  }, '公开运行态投影不得携带内部计数、租约或恢复时间')
+    probePresentation: {
+      schedule: { state: 'running' },
+      recoveryAt: '2026-07-23T00:02:00.000Z',
+      recoveryAtKind: 'policy_ttl_expiry'
+    }
+  }, '公开运行态投影只允许返回 policy_ttl_expiry 释放时间摘要，不得携带内部计数或租约字段')
   const sanitizedSynthetic = accountResponseSanitizer.sanitizeAccountRuntimeAvailabilityResponse({
     runtimeAvailability: {
       status: 'precheck_pending',
@@ -174,7 +179,8 @@ try {
       localFailureCount: 3,
       probePresentation: {
         schedule: { state: 'running' },
-        recoveryAt: '2026-07-23T00:02:00.000Z'
+        recoveryAt: '2026-07-23T00:02:00.000Z',
+        recoveryAtKind: 'policy_ttl_expiry'
       }
     }
   })
@@ -275,6 +281,7 @@ try {
     'balanceQueryEnabled',
     'configRevision',
     'credentials',
+    'effectiveErrorHandlingRules',
     'id',
     'modelMappings',
     'temporaryUnavailableContinuousProbeEnabled'
@@ -611,8 +618,11 @@ function assertNoInternalRuntimeLeak(value: Pick<AccountResponse, 'runtimeAvaila
   }
   const probe = runtime.probePresentation
   if (probe && typeof probe === 'object') {
-    assert.equal(Object.prototype.hasOwnProperty.call(probe, 'recoveryAt'), false, `${label} 不应返回运行态恢复时间`)
-    assert.equal(Object.prototype.hasOwnProperty.call(probe, 'recoveryAtKind'), false, `${label} 不应返回运行态恢复时间类型`)
+    const publicProbe = probe as Record<string, unknown>
+    if (Object.prototype.hasOwnProperty.call(publicProbe, 'recoveryAt') || Object.prototype.hasOwnProperty.call(publicProbe, 'recoveryAtKind')) {
+      assert.equal(publicProbe.recoveryAt, '2026-07-23T00:02:00.000Z', `${label} 只能返回公开释放时间摘要`)
+      assert.equal(publicProbe.recoveryAtKind, 'policy_ttl_expiry', `${label} 只能返回 policy_ttl_expiry 释放时间类型`)
+    }
   }
 }
 

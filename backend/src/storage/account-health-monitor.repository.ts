@@ -68,14 +68,11 @@ export function getAiHealthList(access?: AccessScope, options: AiHealthListOptio
   const hourBuckets = hourBucketsUntilNow(normalized.hours, now, timezone)
   const rows = loadAccountHealthRows(getStatsDatabase(), page.items.map((item) => item.id), hourBuckets)
   const source = accountHealthJobsOutcomeStoreSource()
-  if (source) {
-    rows.push(...j1OutcomeHealthRows(
-      listAccountHealthJobsOutcomesForAccounts(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) }),
-      hourBuckets,
-      timezone
-    ))
-  }
-  return mapAiHealthList(page, rows, hourBuckets)
+  const j1Outcomes = source
+    ? listAccountHealthJobsOutcomesForAccounts(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) })
+    : []
+  rows.push(...j1OutcomeHealthRows(j1Outcomes, hourBuckets, timezone))
+  return mapAiHealthList(page, rows, hourBuckets, j1Outcomes)
 }
 
 export async function getAiHealthListAsync(access?: AccessScope, options: AiHealthListOptions = {}): Promise<AiHealthListResult> {
@@ -95,14 +92,11 @@ export async function getAiHealthListAsync(access?: AccessScope, options: AiHeal
   const hourBuckets = hourBucketsUntilNow(normalized.hours, now, timezone)
   const rows = await loadAccountHealthRowsAsync(client, page.items.map((item) => item.id), hourBuckets)
   const source = accountHealthJobsOutcomeStoreSource()
-  if (source) {
-    rows.push(...j1OutcomeHealthRows(
-      await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) }),
-      hourBuckets,
-      timezone
-    ))
-  }
-  return mapAiHealthList(page, rows, hourBuckets)
+  const j1Outcomes = source
+    ? await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) })
+    : []
+  rows.push(...j1OutcomeHealthRows(j1Outcomes, hourBuckets, timezone))
+  return mapAiHealthList(page, rows, hourBuckets, j1Outcomes)
 }
 
 export function getAiHealthHourDetail(
@@ -567,7 +561,8 @@ function aiHealthAccountNameContainsFilter(
 function mapAiHealthList(
   page: AiHealthAccountPage,
   rows: AccountHealthSlotRow[],
-  hourBuckets: string[]
+  hourBuckets: string[],
+  j1Outcomes: AccountHealthJobsOutcome[] = []
 ): AiHealthListResult {
   const rowsByAccountHour = new Map<string, AccountHealthSlotRow>()
   for (const row of rows) {
@@ -575,7 +570,7 @@ function mapAiHealthList(
     rowsByAccountHour.set(key, newestAccountHealthSlotRow(rowsByAccountHour.get(key), row))
   }
   return {
-    items: page.items.map((account) => mapAiHealthAccount(account, hourBuckets, rowsByAccountHour)),
+    items: page.items.map((account) => mapAiHealthAccount(account, hourBuckets, rowsByAccountHour, latestJ1OutcomeForAccount(j1Outcomes, account.id))),
     hasMore: page.hasMore,
     page: page.page,
     pageSize: page.pageSize
@@ -585,7 +580,8 @@ function mapAiHealthList(
 function mapAiHealthAccount(
   account: AiHealthAccountProjection,
   hourBuckets: string[],
-  rowsByAccountHour: Map<string, AccountHealthSlotRow>
+  rowsByAccountHour: Map<string, AccountHealthSlotRow>,
+  latestJ1Outcome?: AccountHealthJobsOutcome
 ): AiHealthAccountRow {
   let successHours = 0
   let failureHours = 0
@@ -607,9 +603,11 @@ function mapAiHealthAccount(
     providerCode: account.provider_code,
     status: account.status,
     ...(account.system_account_name ? { systemAccountName: account.system_account_name } : {}),
-    ...(account.last_health_check_at ? { lastHealthCheckAt: account.last_health_check_at } : {}),
-    ...(account.last_health_success_at ? { lastHealthSuccessAt: account.last_health_success_at } : {}),
-    ...(account.next_health_check_at ? { nextHealthCheckAt: account.next_health_check_at } : {}),
+    ...(latestJ1Outcome?.observed_at || account.last_health_check_at ? { lastHealthCheckAt: latestJ1Outcome?.observed_at ?? account.last_health_check_at! } : {}),
+    ...(latestJ1Outcome?.outcome === 'complete_success'
+      ? { lastHealthSuccessAt: latestJ1Outcome.observed_at }
+      : account.last_health_success_at ? { lastHealthSuccessAt: account.last_health_success_at } : {}),
+    ...(latestJ1Outcome?.next_due_at || account.next_health_check_at ? { nextHealthCheckAt: latestJ1Outcome?.next_due_at ?? account.next_health_check_at! } : {}),
     latestStatus,
     successHours,
     failureHours,
@@ -617,6 +615,15 @@ function mapAiHealthAccount(
     ...(checkedHours > 0 ? { healthRate: Number(((successHours / checkedHours) * 100).toFixed(2)) } : {}),
     hours
   }
+}
+
+function latestJ1OutcomeForAccount(outcomes: AccountHealthJobsOutcome[], accountId: string): AccountHealthJobsOutcome | undefined {
+  let result: AccountHealthJobsOutcome | undefined
+  for (const outcome of outcomes) {
+    if (outcome.account_id !== accountId || !outcomeHealthStatus(outcome)) continue
+    if (!result || timestampValue(outcome.observed_at) >= timestampValue(result.observed_at)) result = outcome
+  }
+  return result
 }
 
 function normalizeAiHealthHourDetailInput(accountId: string, statHour: string): { accountId: string; statHour: string } {
