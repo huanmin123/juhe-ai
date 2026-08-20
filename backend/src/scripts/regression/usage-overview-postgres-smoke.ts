@@ -117,6 +117,11 @@ try {
         error_message, request_count, error_count, updated_at
       ) VALUES (?, ?, 'upstream', 'gpt', 'smoke_error', 502, 'overview smoke error', 1, 1, ?)
     `, [systemAccountId, yesterday, updatedAt])
+    await tx.execute(`
+      INSERT INTO juhe_stats.usage_overview_dirty_scopes (
+        system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?)
+    `, [systemAccountId, systemAccountId, yesterday, updatedAt, updatedAt])
   })
 
   const refreshed = await refreshUsageRankSnapshotsInStages({
@@ -179,6 +184,16 @@ try {
       AND scope_id = ?
       AND stat_date = ?
   `, [fresherUpdatedAt, systemAccountId, systemAccountId, today])
+  await client.execute(`
+    INSERT INTO juhe_stats.usage_overview_dirty_scopes (
+      system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
+    ) VALUES (?, ?, ?, 1, ?, ?)
+    ON CONFLICT(system_account_id) DO UPDATE SET
+      scope_id = EXCLUDED.scope_id,
+      min_changed_date = LEAST(usage_overview_dirty_scopes.min_changed_date, EXCLUDED.min_changed_date),
+      generation = usage_overview_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, systemAccountId, today, fresherUpdatedAt, fresherUpdatedAt])
 
   const freshSummaryOverview = await getUsageStatsOverviewSummaryAsync(access, range)
   assert.equal(freshSummaryOverview.summary.requestCount, 9, 'PG overview summary 应读取最新日聚合，不等待 30 分钟窗口刷新')
@@ -234,6 +249,7 @@ async function cleanupSmokeRows(): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.usage_stats_hourly WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_model_daily WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_error_daily WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_stats.usage_overview_dirty_scopes WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
 }
 

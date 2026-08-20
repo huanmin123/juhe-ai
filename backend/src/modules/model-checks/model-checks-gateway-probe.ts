@@ -356,8 +356,6 @@ async function waitForModelCheckProbeAttemptDelay(previous: GatewayProbeResult |
 }
 
 function modelCheckProbeAttemptDelayMs(): number {
-  // Uniform bounded backoff for every non-200 response.  Tests may replace
-  // Math.random with a deterministic source; production always waits 1–3s.
   return 1_000 + Math.floor(Math.random() * 2_001)
 }
 

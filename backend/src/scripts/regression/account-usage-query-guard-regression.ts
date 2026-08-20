@@ -30,7 +30,7 @@ const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes
 const repositoriesSource = readFileSync(new URL('../../storage/repositories.ts', import.meta.url), 'utf8')
 assert(statsRoutesSource.includes('getAccountUsageStatsOverviewPageAsync'), '账号用量统计接口必须调用 async repository，避免 PG 模式下阻塞系统 API')
 assert(!/ok\(getAccountUsageStatsOverviewPage\(/.test(statsRoutesSource), '账号用量统计接口不应直接调用同步 repository')
-assert(repositoriesSource.includes('buildAccountUsageStatsOverviewPageFromWindowsAsync'), '账号用量统计 repository 必须暴露 PG 异步窗口表读取路径')
+assert(repositoriesSource.includes('buildAccountUsageStatsOverviewPageFromWindowsAsync'), '账号用量统计 repository 必须暴露 PG 异步统计读取路径')
 
 const range = {
   startDate: '2026-02-01',
@@ -170,11 +170,11 @@ try {
     remark: '账号用量分组来源名查询回归'
   }, ownerAccess)
 
-  seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
-  seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
-  seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', selectedAccount.id, 1)
-  seedUsageScopeRangeWindow(grantee.id, 'caller_account', authorizedInstance.id, 11)
-  seedUsageScopeRangeWindow(grantee.id, 'caller_account', groupAuthorizedAccount.id, 13)
+  seedUsageStatsDaily(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
+  seedUsageStatsDaily(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
+  seedUsageStatsDaily(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', selectedAccount.id, 1)
+  seedUsageStatsDaily(grantee.id, 'caller_account', authorizedInstance.id, 11)
+  seedUsageStatsDaily(grantee.id, 'caller_account', groupAuthorizedAccount.id, 13)
 
   const businessDatabase = databaseModule.getBusinessDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
@@ -196,7 +196,7 @@ try {
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   statsDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
-    if (/\bFROM\s+usage_scope_range_windows\s+usage_window\b/i.test(sql)) {
+    if (/\bFROM\s+usage_stats_daily\s+usage_window\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       const originalGet = statement.get.bind(statement) as typeof statement.get
       statement.all = ((...params: SQLInputValue[]) => {
@@ -219,7 +219,7 @@ try {
       range
     })
     assert.deepEqual(keywordResult.rows.map((row) => row.id), [matchedAccount.id], '账号用量关键词应先解析成账号 ID 后再筛统计窗口')
-    assert.equal(keywordResult.rows[0]?.rangeUsage.requestCount, 7, '账号用量关键词结果应保留范围窗口用量')
+    assert.equal(keywordResult.rows[0]?.rangeUsage.requestCount, 7, '账号用量关键词结果应保留范围日聚合用量')
     assert.deepEqual(keywordResult.rows[0]?.dailyUsage, [], '账号用量列表只返回范围摘要，不返回日序列')
     const trendResult = await accountUsageRepository.getAccountUsageStatsTrendAsync(access, range, [matchedAccount.id])
     assert.deepEqual(trendResult.rows.map((row) => row.id), [matchedAccount.id], '账户用量趋势应通过独立接口按账户返回')
@@ -256,7 +256,7 @@ try {
       range
     })
     assert.deepEqual(selectedResult.rows.map((row) => row.id), [matchedAccount.id, selectedAccount.id], '账号用量手动选择的账户应按 ID 补入当前页结果')
-    assert.equal(selectedResult.rows[1]?.rangeUsage.requestCount, 1, '账号用量手动选择补入行应读取预聚合范围窗口')
+    assert.equal(selectedResult.rows[1]?.rangeUsage.requestCount, 1, '账号用量手动选择补入行应读取日聚合')
     assert.equal(selectedResult.hasMore, true, '账号用量手动补入不应抹掉原始分页 hasMore')
 
     const selectedPageTwoResult = repositories.getAccountUsageStatsOverviewPage(access, {
@@ -284,7 +284,7 @@ try {
     })
     assert.deepEqual(authorizedSourceKeywordResult.rows.map((row) => row.id), [authorizedInstance.id], '被授权用户应能通过来源账户当前名称查询自己的授权实例用量')
     assert.equal(authorizedSourceKeywordResult.rows[0]?.accessType, 'authorized', '来源账户名命中的账号用量应保留授权实例口径')
-    assert.equal(authorizedSourceKeywordResult.rows[0]?.rangeUsage.requestCount, 11, '来源账户名命中的授权实例用量应读取当前用户 caller_account 窗口')
+    assert.equal(authorizedSourceKeywordResult.rows[0]?.rangeUsage.requestCount, 11, '来源账户名命中的授权实例用量应读取当前用户 caller_account 日聚合')
 
     const groupAuthorizedKeywordResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
       keyword: '授权用量分组账户A',
@@ -294,7 +294,7 @@ try {
     })
     assert.deepEqual(groupAuthorizedKeywordResult.rows.map((row) => row.id), [groupAuthorizedAccount.id], '被授权用户应能通过来源账户名称查询分组授权产生的账号用量')
     assert.equal(groupAuthorizedKeywordResult.rows[0]?.accessType, 'authorized', '分组授权命中的账号用量应标记为授权来源')
-    assert.equal(groupAuthorizedKeywordResult.rows[0]?.rangeUsage.requestCount, 13, '分组授权账号用量应读取当前用户 caller_account 窗口')
+    assert.equal(groupAuthorizedKeywordResult.rows[0]?.rangeUsage.requestCount, 13, '分组授权账号用量应读取当前用户 caller_account 日聚合')
 
     const granteeDefaultResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
       page: 1,
@@ -352,51 +352,30 @@ try {
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量关键词预解析不应接收前导通配符参数')
     assert.equal(call.params[call.params.length - 1], 50, '账号用量关键词预解析最多只取 50 个候选账号')
   }
-  assert(capturedCalls.length >= 4, '回归应捕获账号用量窗口查询 SQL')
-  assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词窗口查询应使用 scope_id 命中预解析账号')
+  assert(capturedCalls.length >= 4, '回归应捕获账号用量日聚合查询 SQL')
+  assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词日聚合查询应使用 scope_id 命中预解析账号')
   assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql) && call.params.includes(selectedAccount.id)), '账号用量手动选择补入应使用 scope_id 命中选中账号')
-  assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描窗口表')
-  assert(capturedCalls.every((call) => /\busage_window\.window_key\s*=\s*\?/i.test(call.sql)), '账号用量窗口查询必须使用 window_key 命中范围窗口索引')
+  assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描日聚合表')
+  assert(capturedCalls.every((call) => /\busage_window\.stat_date\s*>=\s*\?\s*\n\s*AND\s+usage_window\.stat_date\s*<=\s*\?/i.test(call.sql)), '账号用量查询必须限制日聚合日期范围')
   for (const call of capturedCalls) {
     assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量窗口查询不应拼入业务字段 LIKE')
-    assert(!/\baccount_usage_business\.accounts\b/i.test(call.sql), '账号用量关键词窗口查询不应在统计结果库查询内挂业务库账号表')
-    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量窗口查询不应接收前导通配符参数')
+    assert(!/\baccount_usage_business\.accounts\b/i.test(call.sql), '账号用量关键词日聚合查询不应在统计结果库查询内挂业务库账号表')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量日聚合查询不应接收前导通配符参数')
   }
-  const pendingRangeRequest = databaseModule.getStatsDatabase()
-    .prepare(`
-      SELECT status, window_key
-      FROM usage_range_window_requests
-      WHERE domain = 'usage_scope'
-        AND system_account_id = ?
-        AND scope_type = 'account'
-        AND scope_id = '*'
-        AND start_date = ?
-        AND end_date = ?
-      LIMIT 1
-    `)
-    .get(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, range.startDate, range.endDate) as { status?: string; window_key?: string } | undefined
-  assert.equal(pendingRangeRequest?.status, 'pending', '自定义非热账号用量范围应登记后台按需窗口请求')
-  assert.equal(pendingRangeRequest?.window_key, `${range.startDate}:${range.endDate}`, '按需窗口请求应由生成列写入 window_key')
 
   assertQueryPlanUsesIndex(`
     SELECT scope_id
-    FROM usage_scope_range_windows usage_window
+    FROM usage_stats_daily usage_window
     WHERE usage_window.system_account_id = ?
       AND usage_window.scope_type = ?
-      AND usage_window.window_key = ?
-      AND (
-        usage_window.request_count > 0
-        OR usage_window.input_tokens > 0
-        OR usage_window.output_tokens > 0
-        OR usage_window.cache_read_tokens > 0
-        OR usage_window.total_cost_usd > 0
-        OR usage_window.last_used_at IS NOT NULL
-      )
-    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+      AND usage_window.stat_date >= ?
+      AND usage_window.stat_date <= ?
+    GROUP BY usage_window.scope_id
+    ORDER BY SUM(usage_window.request_count) DESC, SUM(usage_window.total_cost_usd) DESC, SUM(usage_window.input_tokens + usage_window.output_tokens) DESC, MAX(usage_window.last_used_at) DESC, usage_window.scope_id ASC
     LIMIT ?
-  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', `${range.startDate}:${range.endDate}`, 10], 'idx_usage_scope_range_windows_account_usage_order')
+  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', range.startDate, range.endDate, 10], 'idx_usage_stats_daily_system_scope_date', true)
 
-  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按窗口 scope_id 补入，窗口查询不再接收前导通配符，并使用范围窗口排序索引')
+  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按日聚合 scope_id 补入，查询不再接收前导通配符，并使用 scope/date 索引')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -406,17 +385,17 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedUsageScopeRangeWindow(systemAccountId: string, scopeType: string, scopeId: string, requestCount: number): void {
+function seedUsageStatsDaily(systemAccountId: string, scopeType: string, scopeId: string, requestCount: number): void {
   const updatedAt = '2026-02-28T23:59:59.000Z'
   databaseModule.getStatsDatabase()
     .prepare(`
-      INSERT INTO usage_scope_range_windows (
-        system_account_id, scope_type, scope_id, start_date, end_date,
+      INSERT INTO usage_stats_daily (
+        system_account_id, scope_type, scope_id, stat_date,
         request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
         total_cost_usd, last_used_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
     `)
-    .run(systemAccountId, scopeType, scopeId, range.startDate, range.endDate, requestCount, requestCount * 0.01, updatedAt, updatedAt)
+    .run(systemAccountId, scopeType, scopeId, range.startDate, requestCount, requestCount * 0.01, updatedAt, updatedAt)
 }
 
 function uniquePrefix(value: string, otherValue: string): string {
@@ -427,12 +406,14 @@ function uniquePrefix(value: string, otherValue: string): string {
   return value
 }
 
-function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
+function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string, allowTemporarySort = false): void {
   const details = databaseModule.getStatsDatabase()
     .prepare(`EXPLAIN QUERY PLAN ${sql}`)
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
-  assert(!/USE TEMP B-TREE/i.test(details), `查询计划不应创建临时排序树，实际计划：${details}`)
+  if (!allowTemporarySort) {
+    assert(!/USE TEMP B-TREE/i.test(details), `查询计划不应创建临时排序树，实际计划：${details}`)
+  }
   assert(details.includes(indexName), `查询计划应使用 ${indexName}，实际计划：${details}`)
 }

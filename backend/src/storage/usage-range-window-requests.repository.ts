@@ -104,7 +104,7 @@ export function listPendingUsageRangeWindowRequests(database: DatabaseSync, doma
     SELECT id, domain, system_account_id, scope_type, scope_id, start_date, end_date, status
     FROM usage_range_window_requests
     WHERE domain = ?
-      AND status IN ('pending', 'failed')
+      AND status = 'pending'
       AND expires_at > ?
     ORDER BY updated_at ASC, id ASC
     LIMIT ?
@@ -116,7 +116,7 @@ export async function listPendingUsageRangeWindowRequestsAsync(client: DatabaseC
     SELECT id, domain, system_account_id, scope_type, scope_id, start_date, end_date, status
     FROM juhe_stats.usage_range_window_requests
     WHERE domain = ?
-      AND status IN ('pending', 'failed')
+      AND status = 'pending'
       AND expires_at > ?
     ORDER BY updated_at ASC, id ASC
     LIMIT ?

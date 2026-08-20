@@ -7,6 +7,7 @@ import { closePostgresPool, getPostgresPool } from '../../storage/postgres-clien
 import { refreshHotUsageWindowSnapshots } from '../../storage/usage-stats.repository.js'
 import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { fixedUsageStatsDateKeys } from '../../storage/usage-stats-window-helpers.js'
+import { registerUsageRangeWindowRequestAsync } from '../../storage/usage-range-window-requests.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '热用量窗口 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -59,8 +60,8 @@ try {
   `, [systemAccountId, accountId, previousEndDate, previousEndDate])
   assert.equal(Number(previousWindow?.request_count), 99, 'PG 热刷新不应删除历史结束日期范围窗口')
 
-  const todayWindow = await client.one<{ request_count: string | number }>(`
-    SELECT request_count
+  const todayWindow = await client.one<{ request_count: string | number; updated_at: string }>(`
+    SELECT request_count, updated_at
     FROM juhe_stats.usage_scope_range_windows
     WHERE system_account_id = ?
       AND scope_type = 'account'
@@ -85,6 +86,16 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(dirtyDrain.skipped, false, 'source watermark 不变但 overview dirty 未排空时仍应局部刷新')
+  const todayWindowAfterOverviewDirty = await client.one<{ updated_at: string }>(`
+    SELECT updated_at
+    FROM juhe_stats.usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, accountId, today, today])
+  assert.equal(todayWindowAfterOverviewDirty?.updated_at, todayWindow?.updated_at, '仅 overview dirty 时不得重写账号热范围窗口')
 
   const skipped = await refreshHotUsageWindowSnapshots({
     skipIfUnchanged: true,
@@ -92,6 +103,88 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(skipped.skipped, true, 'PG 同一天同源水位热刷新应跳过')
+
+  const coldStartDate = dates.at(-3)
+  assert.ok(coldStartDate, 'PG smoke 需要至少三天日期用于冷范围请求')
+  await registerUsageRangeWindowRequestAsync(client, {
+    domain: 'usage_scope',
+    systemAccountId,
+    scopeType: 'account',
+    scopeId: '*',
+    startDate: coldStartDate,
+    endDate: today
+  })
+  const pendingRequest = await client.one<{ status: string }>(`
+    SELECT status
+    FROM juhe_stats.usage_range_window_requests
+    WHERE domain = 'usage_scope'
+      AND system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = '*'
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, coldStartDate, today])
+  assert.equal(pendingRequest?.status, 'pending', '新登记的冷范围请求应处于 pending')
+  const todayWindowBeforePendingDrain = await client.one<{ updated_at: string }>(`
+    SELECT updated_at
+    FROM juhe_stats.usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, accountId, today, today])
+
+  const pendingDrain = await refreshHotUsageWindowSnapshots({
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(pendingDrain.skipped, false, '源水位不变但存在冷范围请求时，PG 热刷新不得跳过')
+  const completedRequest = await client.one<{ status: string }>(`
+    SELECT status
+    FROM juhe_stats.usage_range_window_requests
+    WHERE domain = 'usage_scope'
+      AND system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = '*'
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, coldStartDate, today])
+  assert.equal(completedRequest?.status, 'completed', 'PG 热刷新应消费冷范围请求')
+  const coldWindow = await client.one<{ request_count: string | number }>(`
+    SELECT request_count
+    FROM juhe_stats.usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, accountId, coldStartDate, today])
+  assert.equal(Number(coldWindow?.request_count), 11, '冷范围窗口应由已有 daily 聚合生成，不需新 usage source')
+  const todayWindowAfterPendingDrain = await client.one<{ updated_at: string }>(`
+    SELECT updated_at
+    FROM juhe_stats.usage_scope_range_windows
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `, [systemAccountId, accountId, today, today])
+  assert.equal(todayWindowAfterPendingDrain?.updated_at, todayWindowBeforePendingDrain?.updated_at, '冷范围请求只能重建其精确窗口，不得重写今天热范围窗口')
+
+  await client.execute(`
+    INSERT INTO juhe_stats.usage_range_window_requests (
+      id, domain, system_account_id, scope_type, scope_id, start_date, end_date,
+      status, requested_count, last_requested_at, expires_at, created_at, updated_at, error_message
+    ) VALUES (?, 'usage_scope', ?, 'account', '*', ?, ?, 'failed', 1, ?, ?, ?, ?, 'expected test failure')
+  `, [`${marker}_failed`, systemAccountId, coldStartDate, previousEndDate, updatedAt, new Date(Date.now() + 60_000).toISOString(), updatedAt, updatedAt])
+  const failedRequestSkip = await refreshHotUsageWindowSnapshots({
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(failedRequestSkip.skipped, true, 'failed 范围请求不得持续触发热刷新；下一次用户查询会重新登记为 pending')
 
   console.log(JSON.stringify({
     message: '热用量窗口 PG smoke 通过',
@@ -177,6 +270,7 @@ async function seedTodayUsageSources(client: ReturnType<typeof createPostgresDat
 async function cleanupSmokeRows(): Promise<void> {
   const pool = await getPostgresPool()
   await pool.query('DELETE FROM juhe_stats.usage_scope_range_windows WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_stats.usage_range_window_requests WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_overview_summary_windows WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_overview_trend_windows WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_model_rank_windows WHERE system_account_id = $1', [systemAccountId])

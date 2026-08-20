@@ -62,7 +62,7 @@ const adminCookie = sessionCookie('sys_admin')
 const userCookie = sessionCookie(user.id)
 seedScope(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 10)
 seedScope(user.id, 3)
-assert.equal(usageStatsRepository.getUsageStatsOverviewSummary({ systemAccountId: 'sys_admin', role: 'admin' }, range).summary.requestCount, 10, 'HTTP 夹具应能直接读取管理全局 summary')
+assert.equal(usageStatsRepository.getUsageStatsOverviewSummary({ systemAccountId: 'sys_admin', role: 'admin' }, range).summary.requestCount, 1010, 'HTTP 夹具当天 summary 应直接读取管理全局日桶')
 assertOverviewQueryBoundaries()
 
 let server: Server | undefined
@@ -84,13 +84,13 @@ try {
     'averageDurationMs', 'averageFirstTokenMs', 'cacheReadTokens', 'errorCount', 'errorRate',
     'inputTokens', 'outputTokens', 'requestCount', 'successCount', 'totalCost', 'totalTokens'
   ], 'summary 必须只返回首页实际渲染字段')
-  assert.equal((adminSummary.summary as { requestCount?: number }).requestCount, 10, `管理全局 summary 应读取 global scope，实际：${JSON.stringify(adminSummary)}`)
+  assert.equal((adminSummary.summary as { requestCount?: number }).requestCount, 1010, `管理全局当天 summary 应读取 global 日桶，实际：${JSON.stringify(adminSummary)}`)
 
   const scopedSummary = await getData<Record<string, unknown>>(`${baseUrl}/stats/usage-overview/summary?${query}&systemAccountId=${user.id}`, adminCookie)
-  assert.equal((scopedSummary.summary as { requestCount?: number }).requestCount, 3, '管理指定用户 summary 应按 scope 隔离')
+  assert.equal((scopedSummary.summary as { requestCount?: number }).requestCount, 1003, '管理指定用户当天 summary 应按 scope 隔离')
 
   const selfSummary = await getData<Record<string, unknown>>(`${baseUrl}/my-stats/usage-overview/summary?${query}&systemAccountId=sys_admin`, userCookie)
-  assert.equal((selfSummary.summary as { requestCount?: number }).requestCount, 3, '个人 summary 必须忽略伪造 systemAccountId')
+  assert.equal((selfSummary.summary as { requestCount?: number }).requestCount, 1003, '个人当天 summary 必须忽略伪造 systemAccountId')
 
   const adminDailyTrend = await getData<DailyTrendPayload>(`${baseUrl}/stats/usage-overview/daily-trend`, adminCookie)
   assert.deepEqual(Object.keys(adminDailyTrend).sort(), ['dailyTrend', 'range'], 'daily trend 端点必须只返回 range/dailyTrend')
@@ -153,8 +153,9 @@ function assertOverviewQueryBoundaries(): void {
     source.indexOf('function loadUsageOverviewSummaryRow('),
     source.indexOf('type UsageOverviewSummaryWindowRow')
   )
-  assert.match(summarySource, /FROM (?:juhe_stats\.)?usage_overview_summary_windows/, '摘要必须直读 usage_overview_summary_windows')
-  assert.doesNotMatch(summarySource, /usage_stats_daily|aggregateUsageRowsForRange|\bSUM\s*\(|\bGROUP BY\b/i, '摘要请求路径不得读取日表或临时聚合')
+  assert.match(summarySource, /isCurrentUsageStatsDay[\s\S]*?FROM (?:juhe_stats\.)?usage_stats_daily/, '当天摘要必须直读 usage_stats_daily')
+  assert.match(summarySource, /FROM (?:juhe_stats\.)?usage_overview_summary_windows/, '历史或跨日摘要必须直读 usage_overview_summary_windows')
+  assert.doesNotMatch(summarySource, /aggregateUsageRowsForRange|\bSUM\s*\(|\bGROUP BY\b/i, '摘要请求路径不得临时聚合')
   assert.doesNotMatch(summarySource, /cache_read_cost_usd|cache_write_|thinking_tokens|image_tokens|last_used_at/i, '摘要 SQL 不得读取页面未展示字段')
 
   const hourlySource = source.slice(

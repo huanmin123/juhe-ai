@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -23,6 +23,7 @@ const [databaseModule, usageStatsRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/usage-stats.repository.js')
 ])
+const usageStatsRepositorySource = readFileSync(new URL('../../storage/usage-stats.repository.ts', import.meta.url), 'utf8')
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
@@ -34,11 +35,17 @@ try {
   seedNewUsageSources(range.endDate)
 
   const before = readOverviewSections(range)
-  assertSectionQueryBoundary('summary', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range)), 'usage_overview_summary_windows')
+  assertSectionQueryBoundary('summary', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range)), 'usage_stats_daily')
   assertSectionQueryBoundary('hourly trend', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewHourlyTrend(adminAccess, range)), 'usage_overview_trend_windows')
   assertSectionQueryBoundary('model distribution', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewModelDistribution(adminAccess, range)), 'usage_model_rank_windows')
   assertSectionQueryBoundary('errors', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewErrors(adminAccess, range)), 'usage_error_rank_windows')
-  assert.equal(before.summary.requestCount, 1, 'summary 应读取已发布的原子窗口快照')
+  const summaryReader = usageStatsRepositorySource.slice(
+    usageStatsRepositorySource.indexOf('function loadUsageOverviewSummaryRow('),
+    usageStatsRepositorySource.indexOf('type UsageOverviewSummaryWindowRow =')
+  )
+  assert.match(summaryReader, /if \(isCurrentUsageStatsDay\(range,[\s\S]*?FROM usage_stats_daily/, '仅今天的 summary 才可直读日聚合桶')
+  assert.match(summaryReader, /const row = database\.prepare\(`\s*SELECT[\s\S]*?FROM usage_overview_summary_windows/, '历史或跨日 summary 必须继续读取范围窗口')
+  assert.equal(before.summary.requestCount, 5, '仅今天的 summary 应读取当前日聚合桶')
   assert.equal(before.hourlyTrend[0]?.requestCount, 1, '测试前应读到已发布 trend 窗口')
   assert.equal(before.modelDistribution[0]?.requestCount, 1, '测试前应读到已发布 model 窗口')
   assert.equal(before.errors[0]?.errorCount, 1, '测试前应读到已发布 error 窗口')
@@ -61,7 +68,7 @@ try {
   }
 
   const afterFailure = readOverviewSections(range)
-  assert.equal(afterFailure.summary.requestCount, 1, '概览窗口 stage 失败后 summary 应保留原有窗口数据')
+  assert.equal(afterFailure.summary.requestCount, 5, '概览窗口 stage 失败不应让当天 summary 回退到旧窗口')
   assert.equal(afterFailure.hourlyTrend[0]?.requestCount, 1, '概览窗口 stage 失败后 trend 应保留原有数据')
   assert.equal(afterFailure.modelDistribution[0]?.requestCount, 1, '概览窗口 stage 失败后 model 排行应保留原有数据')
   assert.equal(afterFailure.errors[0]?.errorCount, 1, '概览窗口 stage 失败后 error 排行应保留原有数据')
@@ -93,7 +100,7 @@ try {
     errorCount: 2
   })
 
-  console.log('用量概览窗口原子发布回归通过：窗口表同一 stage 内失败不会半发布，summary 与其他区块保持同一版本')
+  console.log('用量概览窗口原子发布回归通过：当天 summary 直读日桶，其他区块窗口在同一 stage 内失败不会半发布')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

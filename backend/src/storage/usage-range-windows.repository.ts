@@ -386,7 +386,7 @@ async function refreshPendingUsageScopeRangeWindowRequests(
   }
 }
 
-async function refreshPendingUsageScopeRangeWindowRequestsAsync(
+export async function refreshPendingUsageScopeRangeWindowRequestsAsync(
   client: DatabaseClient,
   updatedAt: string,
   yieldToEventLoop?: () => Promise<void>,

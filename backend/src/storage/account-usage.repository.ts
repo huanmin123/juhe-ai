@@ -15,11 +15,9 @@ import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { dateKey, emptyAccountUsageSummary, usageStatsTimezone, usageStatsTimezoneAsync, usageSummaryFromAggregate } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
-import { hotUsageStatsRanges, rangeWindowKey } from './usage-stats-window-helpers.js'
 import { loadUsageDailySeriesForScopeRequests, loadUsageDailySeriesForScopeRequestsAsync, type UsageStatsDailySeries } from './usage-window-loaders.js'
-import { registerUsageRangeWindowRequest, registerUsageRangeWindowRequestAsync } from './usage-range-window-requests.repository.js'
 
 const accountUsageBusinessDatabaseAlias = 'account_usage_business'
 const accountUsageMaxListWindowRows = 1001
@@ -304,37 +302,38 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
   const usageScope = accountUsageListScope(input.access)
   const database = getStatsDatabase()
   const filter = accountUsageFilterPredicate(input, usageScope.scopeType, database)
-  const windowKey = rangeWindowKey(input.range)
-  registerColdUsageScopeRangeWindowRequest(input, usageScope, usageStatsTimezone())
   const rows = database.prepare(`
     SELECT
       usage_window.scope_id,
-      usage_window.request_count,
-      usage_window.input_tokens,
-      usage_window.output_tokens,
-      usage_window.cache_read_tokens,
-      usage_window.cache_read_cost_usd,
-      usage_window.total_cost_usd AS total_cost,
-      usage_window.last_used_at
-    FROM usage_scope_range_windows usage_window
+      SUM(usage_window.request_count) AS request_count,
+      SUM(usage_window.input_tokens) AS input_tokens,
+      SUM(usage_window.output_tokens) AS output_tokens,
+      SUM(usage_window.cache_read_tokens) AS cache_read_tokens,
+      SUM(usage_window.cache_read_cost_usd) AS cache_read_cost_usd,
+      SUM(usage_window.total_cost_usd) AS total_cost,
+      MAX(usage_window.last_used_at) AS last_used_at
+    FROM usage_stats_daily usage_window
     WHERE usage_window.system_account_id = ?
       AND usage_window.scope_type = ?
-      AND usage_window.window_key = ?
-      AND (
-        usage_window.request_count > 0
-        OR usage_window.input_tokens > 0
-        OR usage_window.output_tokens > 0
-        OR usage_window.cache_read_tokens > 0
-        OR usage_window.total_cost_usd > 0
-        OR usage_window.last_used_at IS NOT NULL
-      )
+      AND usage_window.stat_date >= ?
+      AND usage_window.stat_date <= ?
       ${filter.sql}
-    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+    GROUP BY usage_window.scope_id
+    HAVING (
+        SUM(usage_window.request_count) > 0
+        OR SUM(usage_window.input_tokens) > 0
+        OR SUM(usage_window.output_tokens) > 0
+        OR SUM(usage_window.cache_read_tokens) > 0
+        OR SUM(usage_window.total_cost_usd) > 0
+        OR MAX(usage_window.last_used_at) IS NOT NULL
+      )
+    ORDER BY request_count DESC, total_cost DESC, (SUM(usage_window.input_tokens) + SUM(usage_window.output_tokens)) DESC, last_used_at DESC, usage_window.scope_id ASC
     LIMIT ? OFFSET ?
   `).all(
     usageScope.systemAccountId,
     usageScope.scopeType,
-    windowKey,
+    input.range.startDate,
+    input.range.endDate,
     ...filter.params,
     pageSize + 1,
     (page - 1) * pageSize
@@ -393,37 +392,38 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
   const usageScope = accountUsageListScope(input.access)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const filter = await accountUsageFilterPredicateAsync(input, usageScope.scopeType, client)
-  const windowKey = rangeWindowKey(input.range)
-  await registerColdUsageScopeRangeWindowRequestAsync(client, input, usageScope, await usageStatsTimezoneAsync())
   const rows = await client.query<AccountUsageStatsSourceRow>(`
     SELECT
       usage_window.scope_id,
-      usage_window.request_count,
-      usage_window.input_tokens,
-      usage_window.output_tokens,
-      usage_window.cache_read_tokens,
-      CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
-      CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
-      usage_window.last_used_at
-    FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')} usage_window
+      SUM(usage_window.request_count) AS request_count,
+      SUM(usage_window.input_tokens) AS input_tokens,
+      SUM(usage_window.output_tokens) AS output_tokens,
+      SUM(usage_window.cache_read_tokens) AS cache_read_tokens,
+      CAST(SUM(usage_window.cache_read_cost_usd) AS double precision) AS cache_read_cost_usd,
+      CAST(SUM(usage_window.total_cost_usd) AS double precision) AS total_cost,
+      MAX(usage_window.last_used_at) AS last_used_at
+    FROM ${accountUsageStatsTable(client, 'usage_stats_daily')} usage_window
     WHERE usage_window.system_account_id = ?
       AND usage_window.scope_type = ?
-      AND usage_window.window_key = ?
-      AND (
-        usage_window.request_count > 0
-        OR usage_window.input_tokens > 0
-        OR usage_window.output_tokens > 0
-        OR usage_window.cache_read_tokens > 0
-        OR usage_window.total_cost_usd > 0
-        OR usage_window.last_used_at IS NOT NULL
-      )
+      AND usage_window.stat_date >= ?
+      AND usage_window.stat_date <= ?
       ${filter.sql}
-    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+    GROUP BY usage_window.scope_id
+    HAVING (
+        SUM(usage_window.request_count) > 0
+        OR SUM(usage_window.input_tokens) > 0
+        OR SUM(usage_window.output_tokens) > 0
+        OR SUM(usage_window.cache_read_tokens) > 0
+        OR SUM(usage_window.total_cost_usd) > 0
+        OR MAX(usage_window.last_used_at) IS NOT NULL
+      )
+    ORDER BY request_count DESC, total_cost DESC, (SUM(usage_window.input_tokens) + SUM(usage_window.output_tokens)) DESC, last_used_at DESC, usage_window.scope_id ASC
     LIMIT ? OFFSET ?
   `, [
     usageScope.systemAccountId,
     usageScope.scopeType,
-    windowKey,
+    input.range.startDate,
+    input.range.endDate,
     ...filter.params,
     pageSize + 1,
     (page - 1) * pageSize
@@ -564,27 +564,29 @@ function loadSelectedAccountUsageRows(input: {
   const accountIds = [...new Set((input.input.accountIds ?? []).filter((id) => id && !excludedIds.has(id)))].slice(0, accountUsageSelectedAccountLimit)
   if (!accountIds.length) return []
   const accountFilter = buildAccountUsageScopeIdFilter(accountIds)
-  const windowKey = rangeWindowKey(input.input.range)
   return input.database.prepare(`
     SELECT
       usage_window.scope_id,
-      usage_window.request_count,
-      usage_window.input_tokens,
-      usage_window.output_tokens,
-      usage_window.cache_read_tokens,
-      usage_window.cache_read_cost_usd,
-      usage_window.total_cost_usd AS total_cost,
-      usage_window.last_used_at
-    FROM usage_scope_range_windows usage_window
+      SUM(usage_window.request_count) AS request_count,
+      SUM(usage_window.input_tokens) AS input_tokens,
+      SUM(usage_window.output_tokens) AS output_tokens,
+      SUM(usage_window.cache_read_tokens) AS cache_read_tokens,
+      SUM(usage_window.cache_read_cost_usd) AS cache_read_cost_usd,
+      SUM(usage_window.total_cost_usd) AS total_cost,
+      MAX(usage_window.last_used_at) AS last_used_at
+    FROM usage_stats_daily usage_window
     WHERE usage_window.system_account_id = ?
       AND usage_window.scope_type = ?
-      AND usage_window.window_key = ?
+      AND usage_window.stat_date >= ?
+      AND usage_window.stat_date <= ?
       AND ${accountFilter.sql}
-    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+    GROUP BY usage_window.scope_id
+    ORDER BY request_count DESC, total_cost DESC, (SUM(usage_window.input_tokens) + SUM(usage_window.output_tokens)) DESC, last_used_at DESC, usage_window.scope_id ASC
   `).all(
     input.usageScope.systemAccountId,
     input.usageScope.scopeType,
-    windowKey,
+    input.input.range.startDate,
+    input.input.range.endDate,
     ...accountFilter.params
   ) as unknown as AccountUsageStatsSourceRow[]
 }
@@ -599,27 +601,29 @@ async function loadSelectedAccountUsageRowsAsync(input: {
   const accountIds = [...new Set((input.input.accountIds ?? []).filter((id) => id && !excludedIds.has(id)))].slice(0, accountUsageSelectedAccountLimit)
   if (!accountIds.length) return []
   const accountFilter = buildAccountUsageScopeIdFilter(accountIds)
-  const windowKey = rangeWindowKey(input.input.range)
   return await input.client.query<AccountUsageStatsSourceRow>(`
     SELECT
       usage_window.scope_id,
-      usage_window.request_count,
-      usage_window.input_tokens,
-      usage_window.output_tokens,
-      usage_window.cache_read_tokens,
-      CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
-      CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
-      usage_window.last_used_at
-    FROM ${accountUsageStatsTable(input.client, 'usage_scope_range_windows')} usage_window
+      SUM(usage_window.request_count) AS request_count,
+      SUM(usage_window.input_tokens) AS input_tokens,
+      SUM(usage_window.output_tokens) AS output_tokens,
+      SUM(usage_window.cache_read_tokens) AS cache_read_tokens,
+      CAST(SUM(usage_window.cache_read_cost_usd) AS double precision) AS cache_read_cost_usd,
+      CAST(SUM(usage_window.total_cost_usd) AS double precision) AS total_cost,
+      MAX(usage_window.last_used_at) AS last_used_at
+    FROM ${accountUsageStatsTable(input.client, 'usage_stats_daily')} usage_window
     WHERE usage_window.system_account_id = ?
       AND usage_window.scope_type = ?
-      AND usage_window.window_key = ?
+      AND usage_window.stat_date >= ?
+      AND usage_window.stat_date <= ?
       AND ${accountFilter.sql}
-    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+    GROUP BY usage_window.scope_id
+    ORDER BY request_count DESC, total_cost DESC, (SUM(usage_window.input_tokens) + SUM(usage_window.output_tokens)) DESC, last_used_at DESC, usage_window.scope_id ASC
   `, [
     input.usageScope.systemAccountId,
     input.usageScope.scopeType,
-    windowKey,
+    input.input.range.startDate,
+    input.input.range.endDate,
     ...accountFilter.params
   ])
 }
@@ -649,17 +653,28 @@ function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, pag
 
 function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
   const scope = accountUsageOverviewSummaryScope(access)
-  const windowKey = rangeWindowKey(range)
   const row = getStatsDatabase().prepare(`
-    SELECT request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
-      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-      total_cost_usd AS total_cost, last_used_at
-    FROM usage_scope_range_windows
+    SELECT
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(cache_read_cost_usd), 0) AS cache_read_cost_usd,
+      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+      COALESCE(SUM(cache_write_1h_tokens), 0) AS cache_write_1h_tokens,
+      COALESCE(SUM(cache_write_cost_usd), 0) AS cache_write_cost_usd,
+      COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+      COALESCE(SUM(input_image_tokens), 0) AS input_image_tokens,
+      COALESCE(SUM(output_image_tokens), 0) AS output_image_tokens,
+      COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+      MAX(last_used_at) AS last_used_at
+    FROM usage_stats_daily
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
       AND scope_id = ?
-      AND window_key = ?
-  `).get(scope.systemAccountId, scope.scopeId, windowKey) as unknown as {
+      AND stat_date >= ?
+      AND stat_date <= ?
+  `).get(scope.systemAccountId, scope.scopeId, range.startDate, range.endDate) as unknown as {
     request_count: number
     input_tokens: number
     output_tokens: number
@@ -679,7 +694,6 @@ function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range:
 
 async function loadAccountUsageOverviewSummaryAsync(client: DatabaseClient, access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
   const scope = accountUsageOverviewSummaryScope(access)
-  const windowKey = rangeWindowKey(range)
   const row = await client.one<{
     request_count: number
     input_tokens: number
@@ -696,25 +710,26 @@ async function loadAccountUsageOverviewSummaryAsync(client: DatabaseClient, acce
     last_used_at: string | null
   }>(`
     SELECT
-      request_count,
-      input_tokens,
-      output_tokens,
-      cache_read_tokens,
-      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
-      cache_write_tokens,
-      cache_write_1h_tokens,
-      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
-      thinking_tokens,
-      input_image_tokens,
-      output_image_tokens,
-      CAST(total_cost_usd AS double precision) AS total_cost,
-      last_used_at
-    FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')}
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      CAST(COALESCE(SUM(cache_read_cost_usd), 0) AS double precision) AS cache_read_cost_usd,
+      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+      COALESCE(SUM(cache_write_1h_tokens), 0) AS cache_write_1h_tokens,
+      CAST(COALESCE(SUM(cache_write_cost_usd), 0) AS double precision) AS cache_write_cost_usd,
+      COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
+      COALESCE(SUM(input_image_tokens), 0) AS input_image_tokens,
+      COALESCE(SUM(output_image_tokens), 0) AS output_image_tokens,
+      CAST(COALESCE(SUM(total_cost_usd), 0) AS double precision) AS total_cost,
+      MAX(last_used_at) AS last_used_at
+    FROM ${accountUsageStatsTable(client, 'usage_stats_daily')}
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
       AND scope_id = ?
-      AND window_key = ?
-  `, [scope.systemAccountId, scope.scopeId, windowKey])
+      AND stat_date >= ?
+      AND stat_date <= ?
+  `, [scope.systemAccountId, scope.scopeId, range.startDate, range.endDate])
   return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
 }
 
@@ -728,44 +743,6 @@ function accountUsageOverviewSummaryScope(access?: AccessScope): { systemAccount
   }
   const systemAccountId = currentSystemAccountId(access)
   return { systemAccountId, scopeId: systemAccountId }
-}
-
-function registerColdUsageScopeRangeWindowRequest(
-  input: AccountUsageStatsPageOptions,
-  usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType },
-  timezone: string
-): void {
-  if (isCurrentHotUsageRange(input.range, timezone)) return
-  registerUsageRangeWindowRequest({
-    domain: 'usage_scope',
-    systemAccountId: usageScope.systemAccountId,
-    scopeType: usageScope.scopeType,
-    scopeId: '*',
-    startDate: input.range.startDate,
-    endDate: input.range.endDate
-  })
-}
-
-async function registerColdUsageScopeRangeWindowRequestAsync(
-  client: DatabaseClient,
-  input: AccountUsageStatsPageOptions,
-  usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType },
-  timezone: string
-): Promise<void> {
-  if (isCurrentHotUsageRange(input.range, timezone)) return
-  await registerUsageRangeWindowRequestAsync(client, {
-    domain: 'usage_scope',
-    systemAccountId: usageScope.systemAccountId,
-    scopeType: usageScope.scopeType,
-    scopeId: '*',
-    startDate: input.range.startDate,
-    endDate: input.range.endDate
-  })
-}
-
-function isCurrentHotUsageRange(range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>, timezone: string): boolean {
-  const todayKey = dateKey(new Date(), timezone)
-  return hotUsageStatsRanges(timezone, todayKey).some((hotRange) => hotRange.startDate === range.startDate && hotRange.endDate === range.endDate)
 }
 
 export interface UsageScopeRequest {

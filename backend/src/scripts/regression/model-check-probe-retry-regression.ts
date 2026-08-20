@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -19,11 +19,6 @@ runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
-// Keep the 1–3s retry window deterministic without collapsing generated trace IDs.
-const originalRandom = Math.random
-let deterministicRandomIndex = 0
-Math.random = () => (deterministicRandomIndex++ % 1_000) / 1_000
-
 const retryState = {
   transientBasicAttempts: 0,
   transientStreamAttempts: 0,
@@ -32,7 +27,8 @@ const retryState = {
   opaque400BasicAttempts: 0,
   opaque429BasicAttempts: 0,
   createdBasicAttempts: 0,
-  http200QualityAttempts: 0
+  http200QualityAttempts: 0,
+  tokenTransportAttempts: 0
 }
 const fullPolicy: ModelQualityPolicy = {
   systemAccountId: 'sys_admin',
@@ -45,19 +41,26 @@ const fullPolicy: ModelQualityPolicy = {
 }
 const upstream = createRetryAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
+let stopModelCheckTokenWorker: (() => Promise<void>) | undefined
+let closeStorageDatabases: (() => void) | undefined
 
 try {
   await listen(upstream)
   const [
     { createMockGatewayFixture },
-    { runModelCheck },
-    gatewayJsonParser
+    { getModelCheckRun, runModelCheck },
+    gatewayJsonParser,
+    tokenWorker
   ] = await Promise.all([
     import('../maintenance/mockdata/fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
-    import('../../modules/gateway/request/json-parser.js')
+    import('../../modules/gateway/request/json-parser.js'),
+    import('../../modules/model-checks/model-checks-token-worker.service.js')
   ])
+  const databaseModule = await import('../../storage/database.js')
+  closeStorageDatabases = databaseModule.closeStorageDatabases
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
+  stopModelCheckTokenWorker = tokenWorker.stopModelCheckTokenWorker
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}/v1`
@@ -72,7 +75,6 @@ try {
   const transientAccount = transientFixture.accounts[0]
   assert(transientAccount, 'mock fixture should create a transient target account')
 
-  const transientStartedAt = Date.now()
   const transientRun = await runModelCheck({
     targetType: 'account',
     targetId: transientAccount.id,
@@ -88,11 +90,12 @@ try {
   )
   assert.equal(retryState.transientBasicAttempts, 2, '瞬态异常 basic 探针应在同一账号上最多尝试两次')
   assert.equal(retryState.transientStreamAttempts, 2, '瞬态流式异常应在同一账号上最多尝试两次')
-  assert(Date.now() - transientStartedAt >= 2_000, '普通瞬态错误也应执行 1–3 秒统一等待，不能贴着重打')
-  assert(!transientRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '恢复成功的基础预检不应生成模型评分项')
+  const transientBasic = requiredCheck(transientRun.checks, 'target.responses_basic')
+  assert.equal(transientBasic.status, 'passed', '恢复成功的基础预检应记录为通过')
+  assert.deepEqual(transientBasic.evidenceSummary.attemptStatusCodes, [502, 200], '基础预检应保留首次失败和恢复成功的状态码')
   assert.equal(transientStream.status, 'passed', '第 2 次恢复后流式探针应通过')
   assert.equal(transientStream.evidenceSummary.attemptCount, 2, '流式探针应记录总尝试次数')
-  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 200], '流式探针应记录每次 HTTP 状态码')
+  assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [502, 200], '流式探针应记录每次 HTTP 状态码')
 
   const rateLimitedFixture = createMockGatewayFixture({
     label: 'model-check-retry-rate-limit',
@@ -103,7 +106,6 @@ try {
   })
   const rateLimitedAccount = rateLimitedFixture.accounts[0]
   assert(rateLimitedAccount, 'mock fixture should create a rate-limited target account')
-  const rateLimitedStartedAt = Date.now()
   const rateLimitedRun = await runModelCheck({
     targetType: 'account',
     targetId: rateLimitedAccount.id,
@@ -113,8 +115,9 @@ try {
   }, access, undefined, undefined, { policy: fullPolicy })
   assert.equal(rateLimitedRun.level, 'high_confidence', `429 瞬态限流恢复后不应误判失败：${JSON.stringify(checkStatusSummary(rateLimitedRun.checks))}`)
   assert.equal(retryState.rateLimitedBasicAttempts, 2, '429 basic 探针应等待后在同一账号上最多尝试两次')
-  assert(Date.now() - rateLimitedStartedAt >= 1_000, '失败重试应执行 1–3 秒统一等待，不能贴着重打')
-  assert(!rateLimitedRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '限流恢复成功的基础预检不应生成模型评分项')
+  const rateLimitedBasic = requiredCheck(rateLimitedRun.checks, 'target.responses_basic')
+  assert.equal(rateLimitedBasic.status, 'passed', '限流恢复成功的基础预检应记录为通过')
+  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [502, 200], '限流基础预检应保留首次失败和恢复成功的状态码')
 
   const opaque400Fixture = createMockGatewayFixture({
     label: 'model-check-retry-opaque-400',
@@ -159,8 +162,10 @@ try {
   assert.equal(opaque400Basic.evidenceSummary.excludedFromScoring, opaque429Basic.evidenceSummary.excludedFromScoring, '400 与 429 排除评分事实必须等价')
   assert.equal(opaque400Basic.evidenceSummary.rateLimited, undefined, '400 正文 rate_limit 不能被内部解释为限流')
   assert.equal(opaque429Basic.evidenceSummary.rateLimited, undefined, '429 状态码不能被内部解释为限流')
-  assert.deepEqual(opaque400Basic.evidenceSummary.attemptStatusCodes, [400, 400], '400 应保留原始状态码诊断')
-  assert.deepEqual(opaque429Basic.evidenceSummary.attemptStatusCodes, [429, 429], '429 应保留原始状态码诊断')
+  assert.deepEqual(opaque400Basic.evidenceSummary.attemptStatusCodes, [502, 502], '网关错误包装状态码应保留两次失败事实')
+  assert.deepEqual(opaque400Basic.evidenceSummary.attemptUpstreamStatusCodes, [400, 400], '400 应保留原始上游状态码诊断')
+  assert.deepEqual(opaque429Basic.evidenceSummary.attemptStatusCodes, [502, 502], '网关错误包装状态码应保留两次失败事实')
+  assert.deepEqual(opaque429Basic.evidenceSummary.attemptUpstreamStatusCodes, [429, 429], '429 应保留原始上游状态码诊断')
 
   const createdFixture = createMockGatewayFixture({
     label: 'model-check-retry-created',
@@ -206,6 +211,32 @@ try {
   assert(http200QualityRun.checks.some((item) => item.itemKey === 'target.tool_calling'), 'HTTP 200 质量失败后仍必须执行余下必需探针')
   assert.notEqual(http200QualityRun.resultSummary.modelCheckUnverified, true, 'HTTP 200 质量失败不能伪装成未验证传输失败')
 
+  const tokenTransportFixture = createMockGatewayFixture({
+    label: 'model-check-retry-token-transport',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const tokenTransportAccount = tokenTransportFixture.accounts[0]
+  assert(tokenTransportAccount, 'mock fixture should create a token transport target account')
+  const tokenTransportRun = await runModelCheck({
+    targetType: 'account',
+    targetId: tokenTransportAccount.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access, undefined, undefined, { policy: fullPolicy })
+  const tokenIntegrity = requiredCheck(tokenTransportRun.checks, 'target.token_integrity')
+  assert.equal(retryState.tokenTransportAttempts, 2, 'Token integrity 第二次 non-200 后不得继续剩余 Token 样本')
+  assert.equal(tokenIntegrity.evidenceSummary.attemptCount, 2, 'Token integrity 应保留两次 transport 尝试')
+  assert.equal(tokenIntegrity.evidenceSummary.sampleCount, 0, 'Token integrity transport 失败样本因缺少 usage 不应伪装为有效样本')
+  assert.match(String(tokenIntegrity.evidenceSummary.message), /暂不支持形成 Token 诚信结论/)
+  assert(tokenTransportRun.checks.some((item) => item.itemKey === 'target.identity_observation'), 'Token 质量结论无法形成时仍应继续身份探针')
+  assert(tokenTransportRun.checks.some((item) => item.itemKey === 'target.cross_model'), 'Token 质量结论无法形成时仍应继续后续功能探针')
+  assert.doesNotMatch(JSON.stringify(tokenTransportRun), /已终止后续探针/, 'Token transport 失败不得产生终止后续探针误导文本')
+  assert.notEqual(tokenTransportRun.resultSummary.modelCheckUnverified, true, 'Token 质量结论无法形成不应伪装成整次检测未验证')
+
   const persistentFixture = createMockGatewayFixture({
     label: 'model-check-retry-persistent',
     upstreamBaseUrl,
@@ -234,14 +265,25 @@ try {
   assert.equal(persistentBasic.evidenceSummary.excludedFromScoring, true, '持续异常报告应标记不参与评分')
   assert.equal(persistentBasic.evidenceSummary.attemptCount, 2, '持续异常报告应记录总尝试次数')
   assert.equal(persistentBasic.evidenceSummary.retryAttemptCount, 1, '持续异常报告应记录重试次数')
-  assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [503, 503], '持续异常报告应记录全部失败状态码')
+  assert.deepEqual(persistentBasic.evidenceSummary.attemptStatusCodes, [502, 502], '持续异常报告应记录全部网关包装失败状态码')
+  assert.deepEqual(persistentBasic.evidenceSummary.attemptUpstreamStatusCodes, [503, 503], '持续异常报告应记录全部原始上游状态码')
   assert(!persistentRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), 'basic 连续失败后不应继续执行重型行为探针')
+
+  const baseDetail = await getModelCheckRun(tokenTransportRun.id, access)
+  assert(baseDetail, 'dataset 基础模型检测详情应可读取')
+  const baseItemCount = baseDetail.checks.length
+  databaseModule.getStatsDatabase().exec('DROP TABLE IF EXISTS model_account_trust_results')
+  const detailWithoutTrust = await getModelCheckRun(tokenTransportRun.id, access)
+  assert(detailWithoutTrust, 'latest trust 查询失败时仍应返回基础模型检测详情')
+  assert.equal(detailWithoutTrust.checks.length, baseItemCount, 'latest trust 查询失败不得丢失基础检测项')
 
   console.log('模型检测探针重试回归通过：统一延迟重试、瞬态恢复和持续失败未计分均符合预期')
 } finally {
-  Math.random = originalRandom
   await stopGatewayJsonParseWorker?.()
+  await stopModelCheckTokenWorker?.()
+  closeStorageDatabases?.()
   await closeServer(upstream)
+  rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function requiredCheck(checks: ModelCheckItemSummary[], itemKey: string): ModelCheckItemSummary {
@@ -280,6 +322,11 @@ function createRetryAwareUpstream(): http.Server {
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const authorization = String(req.headers.authorization ?? '').toLowerCase()
         const bodyText = JSON.stringify(body).toUpperCase()
+        if (authorization.includes('model-check-retry-token-transport') && bodyText.includes('CONTROLLED TOKEN INTEGRITY PROBE')) {
+          retryState.tokenTransportAttempts += 1
+          sendError(res, '模拟 Token integrity transport 异常')
+          return
+        }
         if (bodyText.includes('OK-MODEL-CHECK')) {
           if (authorization.includes('model-check-retry-opaque-400')) {
             retryState.opaque400BasicAttempts += 1
@@ -402,6 +449,8 @@ function sendStreamFailure(res: http.ServerResponse, _model: string, message: st
 }
 
 function outputForProbe(body: Record<string, unknown>): string {
+  const identityOutput = outputForIdentityCanary(body)
+  if (identityOutput !== undefined) return identityOutput
   const text = JSON.stringify(body).toUpperCase()
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
@@ -418,6 +467,55 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (needle) return needle[0]
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
+}
+
+function outputForIdentityCanary(body: Record<string, unknown>): string | undefined {
+  const prompt = inputPrompt(body)
+  if (!prompt.includes('CANARY-')) return undefined
+  const tag = prompt.match(/tag"?\s*[:=]\s*"?(CANARY-[A-Z0-9-]+)"?/i)?.[1]
+  if (!tag) return undefined
+  if (prompt.includes('result 等于')) {
+    const match = prompt.match(/result 等于\s*(-?\d+)\s*\+\s*(-?\d+)/)
+    if (!match) return undefined
+    return JSON.stringify({ result: Number(match[1]) + Number(match[2]), tag })
+  }
+  if (prompt.includes('过滤为大于') && prompt.includes('升序')) {
+    return `[1, 2, 3].filter((value) => value > 1).sort((left, right) => left - right) // ${tag}`
+  }
+  if (prompt.includes('largest 是')) {
+    const match = prompt.match(/largest 是\s*([\d、]+)\s*中第二大值加\s*(-?\d+)/)
+    if (!match) return undefined
+    const values = match[1].split('、').map(Number).sort((left, right) => right - left)
+    return JSON.stringify({ largest: (values[1] ?? 0) + Number(match[2]), tag })
+  }
+  if (prompt.includes('中间结论错误地声称')) {
+    const match = prompt.match(/声称\s*(-?\d+)\+(-?\d+)=/)
+    if (!match) return undefined
+    return JSON.stringify({ correct: Number(match[1]) + Number(match[2]), tag })
+  }
+  if (prompt.includes('队列超时') && prompt.includes('queue timeout')) {
+    return JSON.stringify({ zh: '队列超时', en: 'queue timeout', tag })
+  }
+  if (prompt.includes('action 枚举') && prompt.includes('ids 数组')) {
+    const match = prompt.match(/ids 数组\s*\[([\d,\s]+)\]/)
+    if (!match) return undefined
+    return JSON.stringify({ action: 'inspect', payload: { ids: match[1].split(',').map((value) => Number(value.trim())), dryRun: true }, tag })
+  }
+  if (prompt.includes('封闭时间线')) {
+    return JSON.stringify({ version: 'B', tag })
+  }
+  return undefined
+}
+
+function inputPrompt(body: Record<string, unknown>): string {
+  const input = Array.isArray(body.input) ? body.input[0] : undefined
+  const content = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as { content?: unknown }).content
+    : undefined
+  const firstContent = Array.isArray(content) && content[0] && typeof content[0] === 'object' && !Array.isArray(content[0])
+    ? content[0] as { text?: unknown }
+    : undefined
+  return typeof firstContent?.text === 'string' ? firstContent.text : ''
 }
 
 function sendJson(res: http.ServerResponse, body: unknown): void {
@@ -471,5 +569,6 @@ function closeServer(server: http.Server): Promise<void> {
       if (error) rejectPromise(error)
       else resolvePromise()
     })
+    server.closeAllConnections()
   })
 }

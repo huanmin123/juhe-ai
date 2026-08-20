@@ -13,6 +13,7 @@ import {
   getAccountUsageStatsOverviewPageAsync
 } from '../../storage/repositories.js'
 import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
+import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '账号用量统计 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -20,12 +21,13 @@ const marker = `account_usage_pg_smoke_${Date.now()}_${Math.random().toString(16
 const keyword = `account_usage_keyword_${Math.random().toString(16).slice(2, 10)}`
 const ownerSystemAccountId = `sys_${marker}`
 const access: AccessScope = { systemAccountId: ownerSystemAccountId, role: 'user' }
-const range = { startDate: '2026-06-28', endDate: '2026-06-28', days: 1, maxDays: 31 }
 const statsUpdatedAt = new Date().toISOString()
 const createdAccountIds: string[] = []
 const createdGroupIds: string[] = []
 
 try {
+  const today = dateKey(new Date(), await usageStatsTimezoneAsync())
+  const range = { startDate: today, endDate: today, days: 1, maxDays: 31 }
   await cleanupSmokeRows()
   await seedOwnerSystemAccount()
   const group = await createGroupAsync({
@@ -64,7 +66,7 @@ try {
   }, access)
   createdAccountIds.push(selectedAccount.id)
 
-  await seedStats(matchedAccount.id, selectedAccount.id)
+  await seedStats(matchedAccount.id, selectedAccount.id, range)
 
   const defaultResult = await getAccountUsageStatsOverviewPageAsync(access, {
     page: 1,
@@ -100,6 +102,36 @@ try {
   assert.deepEqual(selectedResult.rows.map((row) => row.id), [selectedAccount.id], 'PG 账号用量关键词未命中时仍应按 scope_id 补入手动选中账号')
   assert.equal(selectedResult.rows[0]?.rangeUsage.requestCount, 7, 'PG 账号用量手动补入行应读取选中账号窗口用量')
 
+  const pool = await getPostgresPool()
+  await pool.query(`
+    UPDATE juhe_stats.usage_stats_daily
+    SET request_count = 32,
+        input_tokens = 320,
+        updated_at = $1
+    WHERE system_account_id = $2
+      AND scope_type = 'caller_account'
+      AND scope_id = $3
+      AND stat_date = $4
+  `, [new Date(Date.now() + 1000).toISOString(), ownerSystemAccountId, matchedAccount.id, range.startDate])
+  await pool.query(`
+    UPDATE juhe_stats.usage_stats_daily
+    SET request_count = 39,
+        input_tokens = 390,
+        updated_at = $1
+    WHERE system_account_id = $2
+      AND scope_type = 'system_account'
+      AND scope_id = $2
+      AND stat_date = $3
+  `, [new Date(Date.now() + 1000).toISOString(), ownerSystemAccountId, range.startDate])
+  const refreshedTodayResult = await getAccountUsageStatsOverviewPageAsync(access, {
+    page: 1,
+    pageSize: 1,
+    range
+  })
+  assert.equal(refreshedTodayResult.rows[0]?.rangeUsage.requestCount, 32, '同一自定义范围包含今天时必须直接读取更新后的日聚合')
+  const refreshedTodaySummary = await getAccountUsageStatsSummaryAsync(access, range)
+  assert.equal(refreshedTodaySummary.summary.requestCount, 39, '同一自定义范围包含今天时汇总必须直接读取更新后的日聚合')
+
   console.log(JSON.stringify({
     message: '账号用量统计 PG smoke 通过',
     matchedAccountId: matchedAccount.id,
@@ -121,7 +153,7 @@ async function seedOwnerSystemAccount(): Promise<void> {
   `, [ownerSystemAccountId, marker, `账号用量 PG smoke 用户 ${marker}`, statsUpdatedAt])
 }
 
-async function seedStats(matchedAccountId: string, selectedAccountId: string): Promise<void> {
+async function seedStats(matchedAccountId: string, selectedAccountId: string, range: { startDate: string; endDate: string }): Promise<void> {
   const pool = await getPostgresPool()
   await pool.query(`
     INSERT INTO juhe_stats.usage_scope_range_windows (
@@ -142,8 +174,11 @@ async function seedStats(matchedAccountId: string, selectedAccountId: string): P
       duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
-    ) VALUES ($1, 'caller_account', $2, $3, 31, 31, 0, 310, 155, 12, 0.012, 0.456, 3100, 31, 180, 620, 31, 60, $4, NULL, $4)
-  `, [ownerSystemAccountId, matchedAccountId, range.startDate, statsUpdatedAt])
+    ) VALUES
+      ($1, 'caller_account', $2, $4, 31, 31, 0, 310, 155, 12, 0.012, 0.456, 3100, 31, 180, 620, 31, 60, $5, NULL, $5),
+      ($1, 'caller_account', $3, $4, 7, 7, 0, 70, 35, 3, 0.003, 0.111, 700, 7, 90, 140, 7, 40, $5, NULL, $5),
+      ($1, 'system_account', $1, $4, 38, 38, 0, 380, 190, 15, 0.015, 0.567, 3800, 38, 180, 760, 38, 60, $5, NULL, $5)
+  `, [ownerSystemAccountId, matchedAccountId, selectedAccountId, range.startDate, statsUpdatedAt])
   await pool.query(`
     INSERT INTO juhe_stats.usage_rank_snapshots (
       system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value, updated_at

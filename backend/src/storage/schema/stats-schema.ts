@@ -1545,6 +1545,9 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);
 
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_system_scope_date
+      ON usage_stats_daily(system_account_id, scope_type, stat_date, scope_id);
+
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_system_account_top_activity
       ON usage_stats_daily(stat_date, request_count DESC, last_used_at DESC, system_account_id)
       WHERE scope_type = 'system_account'

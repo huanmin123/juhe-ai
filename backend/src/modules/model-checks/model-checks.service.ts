@@ -448,19 +448,6 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           })
         : undefined
       if (tokenTarget) targetSuite.items.push(tokenTarget.item)
-      if (hasTerminalNon200Probe(targetSuite.items)) {
-        await finishModelCheckRunWithoutQualityEvidence({
-          runId: run.id,
-          items: targetSuite.items,
-          model,
-          profile,
-          trustedComparison,
-          comparisonTargetId: comparison?.targetId,
-          startedAtMs,
-          reason: 'Token 探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
-        })
-        throw new ModelCheckRunAlreadyFinishedError()
-      }
       comparisonSuite = comparison && targetSuite.basic?.success === true
         ? await executeProbeSuite(comparison, model, 'trusted_comparison', profile, signal, progress)
         : undefined
@@ -493,24 +480,11 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           })
         : undefined
       if (tokenComparison && comparisonSuite) comparisonSuite.items.push(tokenComparison.item)
-      if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
-        await finishModelCheckRunWithoutQualityEvidence({
-          runId: run.id,
-          items: [...targetSuite.items, ...comparisonSuite.items],
-          model,
-          profile,
-          trustedComparison,
-          comparisonTargetId: comparison?.targetId,
-          startedAtMs,
-          reason: '可信对比 Token 探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
-        })
-        throw new ModelCheckRunAlreadyFinishedError()
-      }
       const targetCrossModel = targetSuite.basic?.success === true
         ? await executeCrossModelComparison(target, targetSuite, model, signal, progress, 'target')
         : undefined
       if (targetCrossModel) targetSuite.items.push(targetCrossModel)
-      if (hasTerminalNon200Probe(targetSuite.items)) {
+      if (hasTerminalNon200Probe(targetSuite.items.filter((item) => item.itemType !== 'token_integrity'))) {
         await finishModelCheckRunWithoutQualityEvidence({
           runId: run.id,
           items: targetSuite.items,
@@ -527,7 +501,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         ? await executeCrossModelComparison(comparison, comparisonSuite, model, signal, progress, 'trusted_comparison')
         : undefined
       if (comparisonCrossModel && comparisonSuite) comparisonSuite.items.push(comparisonCrossModel)
-      if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items)) {
+      if (comparisonSuite && hasTerminalNon200Probe(comparisonSuite.items.filter((item) => item.itemType !== 'token_integrity'))) {
         await finishModelCheckRunWithoutQualityEvidence({
           runId: run.id,
           items: [...targetSuite.items, ...comparisonSuite.items],
@@ -598,19 +572,6 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           signal,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
-    if (tokenIntegrity && hasTerminalNon200Probe([tokenIntegrity.item])) {
-      await finishModelCheckRunWithoutQualityEvidence({
-        runId: run.id,
-        items: [...targetSuite.items, tokenIntegrity.item],
-        model,
-        profile,
-        trustedComparison,
-        comparisonTargetId: comparison?.targetId,
-        startedAtMs,
-        reason: 'Token 探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
-      })
-      throw new ModelCheckRunAlreadyFinishedError()
-    }
     const identityObservation = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
       ? undefined
       : await executeModelIdentityObservationProbes({
@@ -1300,7 +1261,20 @@ async function withLatestModelTrustResult(detail: ModelCheckRunDetail, fallbackS
   const current = recordValue(detail.resultSummary.trustReport) ?? {}
   if (reasonCodes(current.reasonCodes).includes('model_response_evidence_unavailable')) return detail
   if (detail.level === 'unavailable' && !textValue(current.observedModel)) return detail
-  const latest = await findModelAccountTrustResultAsync(systemAccountId, detail.accountId, detail.model)
+  let latest: Awaited<ReturnType<typeof findModelAccountTrustResultAsync>>
+  try {
+    latest = await findModelAccountTrustResultAsync(systemAccountId, detail.accountId, detail.model)
+  } catch (error) {
+    logger.warn({
+      event: 'model_check_latest_trust_report_lookup_failed',
+      runId: detail.id,
+      accountId: detail.accountId,
+      model: detail.model,
+      systemAccountId: systemAccountId ?? null,
+      err: error
+    }, '最新可信度报告读取失败，返回基础模型检测详情')
+    return detail
+  }
   if (!latest) return detail
   return {
     ...detail,

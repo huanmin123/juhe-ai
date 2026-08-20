@@ -1,118 +1,58 @@
-# 聚合 AI（juhe-ai）
+# juhe-ai
 
-> 轻量级 OpenAI 账号稳定调度后台。  
-> 让 Codex、OpenAI SDK、Cherry Studio、NextChat 等客户端固定一个 `/v1` 入口，把多账号、高并发调度、授权、审计和排障收进一个本地后台。
+`juhe-ai` 是一个轻量、可扩展的 AI 账号调度与 OpenAI-compatible 网关。客户端只需配置本地 API Key 和一个稳定入口；账号凭据、模型能力、分组、路由、授权、用量与审计统一由后台管理。
 
-聚合 AI 解决的不是“再转发一次请求”，而是把 OpenAI 账号池变成一套 **可管理、可授权、可观测、可恢复** 的稳定服务。
+> 整体迁移仍在进行：Web/网关、账户、管理 API、用量、统计和运维任务仍由 Node.js 承载；F1–F4 的运行日志、表监控、原始审计和操作日志职责已由 Go 承接。项目事实与迁移状态以 [整体架构](docs/architecture/架构总览.md) 和 [迁移文档](docs/migration/README.md) 为准。
 
-客户端只需要一组配置：
+## 适用场景
+
+- 为 Codex、OpenAI SDK 与兼容客户端提供稳定的本地网关入口。
+- 集中管理多个供应商账户、上游凭据、代理、模型和可用性策略。
+- 将调用侧的 API Key 与上游账号解耦，按路由策略调度账号池。
+- 需要查看用量、成本、性能、操作记录和请求审计的个人或团队。
+- 优先从单机轻量部署开始，并可按需采用 PostgreSQL + Redis 性能模式。
+
+## 核心模型
 
 ```text
-Base URL: http://你的服务器:3000/v1
-API Key : 聚合 AI 后台生成的本地 sk-... 密钥
+客户端
+  └─ 本地 API Key
+       └─ 路由策略
+            └─ 分组
+                 └─ AI 账户
+                      └─ 供应商 / 协议能力 / 上游凭据
 ```
 
-OpenAI OAuth、OpenAI API Key、代理、分组、额度、高并发策略、失败切换、统计和审计都留在后台。账号换了、限流了、过期了、代理波动了，客户端尽量不用跟着改。
+- **API Key**：调用入口，负责鉴权、额度、状态和选择一个路由策略。
+- **路由策略**：负责分组绑定与路由方式；支持普通、混合智能、权重、故障回退和轮询。
+- **分组**：协调账号池和分组内调度，不承载供应商或协议语义。
+- **AI 账户**：保存真实上游账户、凭据、代理、并发、时间计划、模型限制和错误策略。
+- **供应商与协议档案**：定义上游协议、模型目录、价格与专项能力；客户端画像仅在网关内部自动识别。
 
-时间契约：API 与异步回执的绝对时间始终使用 RFC3339 `Z` 或明确数字 offset；管理页面按浏览器本地时区展示。统计日界线、排班和可用时段等业务日历独立使用显式 IANA timezone，例如 `UTC` 或 `Asia/Shanghai`，不与绝对时间混用。
+详细边界见 [策略路由设计](docs/functions/策略路由设计.md) 与 [整体架构](docs/architecture/架构总览.md)。
 
-![聚合 AI 控制台入口预览](resources/images/home-page.png)
+## 功能概览
 
-![聚合 AI 管理后台统计预览](resources/images/statistics-page.png)
+- OpenAI-compatible 网关：支持服务根路径和 `/v1` 入口。
+- 多供应商账户：当前内置 `openai`、`gpt`、`xai`、`anthropic`、`deepseek`、`glm`、`gemini` 与 `hybrid` 账户能力。
+- 账户管理：API Key、OAuth、代理、模型映射、账号测试、健康检测与时间计划。
+- 调度与保护：分组调度、并发控制、来源级保护、显式故障回退和客户端会话亲和。
+- 授权与管理：系统账户、团队、统一授权、API Key 额度与权限边界。
+- 可观测性：使用记录、统计、性能、运行日志、操作日志、原始审计和模型检测。
+- 存储模式：默认 standalone 使用 SQLite；显式 performance 模式使用 PostgreSQL + Redis。
 
-![聚合 AI 管理后台 AI账户](resources/images/aiuser-page.png)
+OpenAI-compatible 指本地入口、认证方式和错误结构的兼容性；不同上游账户的协议与功能能力并不相同。默认情况下，真实上游失败会返回当前失败；仅在用户显式配置并满足重放条件时才会尝试 `retry_next`。
 
-## 为什么需要它
+## 快速开始
 
-很多 OpenAI 中转只解决“能不能转发”。真正用起来，更麻烦的是这些事：
+### 环境要求
 
-- 客户端里散落着上游 Key，换账号就要到处改。
-- 多个 OpenAI 账号靠人工记状态，哪个限流、哪个到期、哪个代理慢，很难看清。
-- 多人共享账号池时，权限、额度、分组和用量容易混在一起。
-- Codex / OpenAI-compatible 客户端遇到断流、EOF、429 或上游异常时，很难判断问题来自客户端、网关、代理还是上游账号。
-- 出问题后只有几行运行日志，缺少请求、账号命中、Token、耗时、错误摘要和原始链路审计。
+- Node.js `22.13.0+`（22.x）或 `24.11.0+`（24.x），并支持内置 `node:sqlite`
+- pnpm `9+`
+- Windows 环境推荐 PowerShell 7
+- 根目录 `pnpm dev` 还需要可从 `PATH` 调用的 Go 1.26.x，用于启动已迁移的辅助进程
 
-聚合 AI 的重点是：**让客户端入口稳定，让账号池后台可控，让故障链路查得明白。**
-
-## 核心优势
-
-| 能力 | 聚合 AI 怎么做 |
-| --- | --- |
-| 固定入口 | 客户端长期连接同一个根路径或 `/v1`，不用感知后台账号变化 |
-| 账号池调度 | 按分组、授权、状态、并发、优先级、冷却、到期、代理和质量选择账号 |
-| 高并发分组 | 个人分组保持稳定亲和，高并发分组支持软并发、分组短队列、每 Key 队列和可选单 IP 保护 |
-| 双账号形态 | 同时支持 OpenAI OAuth 账号和 OpenAI API Key 账号 |
-| 流式稳定 | 按 SSE 事件和可见输出边界处理失败，避免盲目重试破坏客户端状态 |
-| 统一授权 | 系统账户、系统团队、AI 账户、分组和 API Key 形成清晰使用边界 |
-| 可观测排障 | 使用记录、统计趋势、AI 性能、模型检测、运行日志、操作日志和原始审计分层追踪 |
-| 轻量部署 | Node.js + SQLite 即可运行，不强制 Redis、Kafka 或 PostgreSQL |
-
-## 和普通中转的差别
-
-普通中转更像一根管道：把客户端请求送到上游。
-
-聚合 AI 更像一个账号稳定层：
-
-- **上游凭据不散落**：客户端拿本地 API Key，上游 OAuth token 和 OpenAI API Key 留在后台。
-- **账号池不是轮询表**：账号启停、代理、优先级、冷却、到期、错误策略和复测恢复都进入管理闭环。
-- **授权不是发一个 Key 就完事**：分组承接账号池，API Key 可绑定一个或多个调用方自有分组号池，用户和团队通过统一授权获得使用权。
-- **失败不是只看状态码**：请求异常、上游错误、未知失败、流式中断和 Codex 客户端策略分层处理。
-- **排障不是猜**：从使用记录到原始审计，可以追到哪个客户端、哪个 Key、哪个分组、哪个账号、哪个上游响应。
-
-## 功能总览
-
-### 账号与调度
-
-- OpenAI OAuth 账号、OpenAI API Key 账号统一管理。
-- 支持账号启停、优先级、并发、代理、到期时间、冷却和错误策略。
-- API Key 可绑定一个或多个调用方自有分组号池，并按优先级路由到可承接账号池，请求进入后自动选择可调度账号。
-- 支持个人分组和高并发分组；高并发分组可配置最大单账户排队阈值、最大等待时间和单 IP 并发保护。
-- OAuth token 支持请求前懒刷新和后台 worker 保活。
-
-### 授权与隔离
-
-- 支持系统账户、系统团队和普通用户侧资源视图。
-- AI 账户或分组可以授权给用户 / 团队使用。
-- 授权只传递使用权，不暴露上游凭据管理权。
-- 支持 API Key 和统一授权维度的本地额度控制与消耗统计。
-
-### 稳定与排障
-
-- 支持 OpenAI 兼容协议透传和 SSE 流式响应。
-- 流式失败按可见输出边界处理，减少重复输出、工具调用错乱和上下文分叉。
-- 使用记录保存模型、Token、成本估算、耗时、错误摘要和账号命中。
-- 模型检测复用本地网关链路，对 AI 账户执行可信度诊断，并保存脱敏、有界摘要。
-- 原始审计记录客户端请求、网关处理、上游请求、上游响应和最终返回，便于定位复杂问题。
-
-### 轻量后台
-
-- Vue 3 + TypeScript + Ant Design Vue 中文管理后台。
-- SQLite 本地存储，按业务库、统计数据集域和统计结果库三类职责拆分；统计数据集域由数据集目录库和 usage shard 文件组成，默认适合单机、小服务器、家用主机或轻量云主机。
-- Web/网关主进程、background worker、本地 DB service 分离，减少统计、日志和高频 SQLite 访问对主链路的影响。
-
-## 适合谁
-
-- 想给 Codex、OpenAI SDK 或 OpenAI-compatible 客户端提供稳定入口的个人用户。
-- 有多个 OpenAI 账号，需要统一调度、代理、分组和排障的小团队。
-- 想把上游 Key 收回后台，只给成员发本地 API Key 的工作室。
-- 需要查看 Token、成本、耗时、错误、账号命中和原始链路的运维者。
-- 想轻量部署，不想先搭 Redis、Kafka、PostgreSQL 和复杂网关集群的人。
-
-## 不适合谁
-
-- 你需要全供应商、多模型、充值支付和公开售卖平台。
-- 你需要多实例分布式网关、跨机房队列或强一致计费系统。
-- 你希望一个项目同时深度覆盖 OpenAI、Claude、Gemini、Realtime、支付、工单和渠道市场。
-
-聚合 AI 当前选择更窄的路线：聚焦 OpenAI 账号接入、OpenAI 兼容网关、账号池调度、统一授权、统计审计和排障闭环。
-
-## 最快启动
-
-环境要求：
-
-- Node.js 官方 LTS：`22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 SQLite 支持 FTS5
-- pnpm `>= 9.0.0`
-- Windows 推荐使用 PowerShell 7
+### 安装与启动
 
 在项目根目录执行：
 
@@ -120,165 +60,79 @@ OpenAI OAuth、OpenAI API Key、代理、分组、额度、高并发策略、失
 pnpm install
 Copy-Item backend/.env.example backend/.env
 Copy-Item frontend/.env.example frontend/.env
+pnpm --filter juhe-ai-backend check:runtime
 pnpm dev
 ```
 
-启动后访问：
+默认开发地址：
 
-- 管理后台：`http://127.0.0.1:5173/__aisys__/`
-- 后端系统 API：`http://127.0.0.1:3000/__aisys__/api`
-- OpenAI 兼容入口：`http://127.0.0.1:3000/v1`
+| 服务 | 地址 |
+| --- | --- |
+| 管理后台 | `http://127.0.0.1:5173/__aisys__/` |
+| 系统 API | `http://127.0.0.1:3000/__aisys__/api` |
+| 网关入口 | `http://127.0.0.1:3000/v1` |
 
-默认超级管理员：
+当前运行流程与环境边界见 [开发运行说明](docs/develop/运行说明.md)；部署配置请从 [部署文档](docs/deploy/README.md) 选择对应场景。
 
-```text
-用户名：admin
-密码：admin
-```
+### 接入客户端
 
-首次登录后建议立刻修改默认密码；管理员账户不会被强制修改密码，可直接进入控制台。
-
-## 最快接入客户端
-
-1. 登录后台。
-2. 在 `AI 账户管理` 或 `我的 AI 账户` 添加 OpenAI OAuth 账号或 OpenAI API Key 账号。
-3. 在 `API Key 管理` 或 `我的 API Key` 创建一个本地 API Key，并绑定一个或多个可用分组号池。
-4. 在客户端里填写：
+1. 进入管理后台，创建或导入 AI 账户，并将账户加入分组。
+2. 创建路由策略，按需要选择普通、混合智能、权重、故障回退或轮询模式。
+3. 创建本地 API Key，并绑定该路由策略。
+4. 在客户端填入网关地址与本地 API Key：
 
 ```text
 Base URL: http://127.0.0.1:3000/v1
-API Key : `API Key 管理` 或 `我的 API Key` 页面生成的本地 sk-... 密钥
+API Key: 后台创建的本地 API Key
 ```
 
-注意：客户端填写的是聚合 AI 生成的本地 API Key，不是上游 OpenAI API Key。
-
-## 最快部署
-
-Docker 单容器启动：
-
-```powershell
-pnpm install
-pnpm build
-Set-Location docker
-docker compose up -d --build
-```
-
-启动后访问：
-
-```text
-http://localhost:3000/__aisys__/
-```
-
-需要改端口、公网访问地址、沿用已按当前 schema 准备好的数据目录 / `.env`，或让容器访问宿主机代理时，复制并修改 `docker/.env.example` 为 `docker/.env`。旧数据如需保留，必须由用户停机离线处理并落到当前 schema；运行时代码不提供旧结构兼容。完整说明见 [Docker 部署指南](docs/deploy/Docker部署指南.md)。
-
-发布包部署：
-
-先在构建机器打包：
-
-```powershell
-pnpm install
-pnpm package:release:windows
-```
-
-会生成：
-
-```text
-release/juhe-ai-release.zip
-release/juhe-ai-release.tar.gz
-```
-
-部署到 Windows：
-
-```powershell
-Expand-Archive .\juhe-ai-release.zip -DestinationPath . -Force
-Set-Location .\juhe-ai-release
-pwsh .\start.ps1
-```
-
-部署到 macOS / Linux：
-
-```bash
-tar -xzf juhe-ai-release.tar.gz
-cd juhe-ai-release
-bash ./start.sh
-```
-
-启动后访问：
-
-```text
-http://服务器IP:3000/__aisys__/
-```
-
-公网访问不要先通读所有部署文档。先按入口环境选择：[服务器部署方案](docs/deploy/scenarios/服务器部署方案.md) 或 [家庭宽带反向代理方案](docs/deploy/scenarios/家庭宽带反向代理方案.md)，再进入对应平台文档。公网域名默认推荐 [Caddy 自动 HTTPS 部署指南](docs/deploy/https/Caddy自动HTTPS部署指南.md)，免费证书会自动续期。如果服务器无法直连上游模型 API，先看 [sing-box 网络代理部署指南](docs/deploy/proxy/sing-box网络代理部署指南.md)，再在后台“代理管理”里把代理绑定到 AI 账户。
+客户端使用的是本地 API Key，不是上游供应商的 API Key。
 
 ## 常用命令
 
 ```powershell
-# 开发启动
+# 启动开发环境（Node 后端、前端及已迁移的 Go 辅助进程）
 pnpm dev
 
-# 类型检查
+# 类型检查与静态检查
 pnpm typecheck
+pnpm lint
 
-# 构建
+# 构建全部工作区
 pnpm build
 
-# 打包发布包
-pnpm package:release:windows
-
-# 真实网关烟测
+# 本地网关烟测
 pnpm test:smoke
+
+# 构建 Windows 发布包
+pnpm package:release:windows
 ```
 
-## 技术栈
+完整测试矩阵、真实账户验证和性能验证见 [开发测试与验证说明](docs/develop/测试与验证说明.md)。
 
-- 前端：Vue 3 + TypeScript + Vite + Ant Design Vue + ECharts
-- 后端：Node.js + TypeScript + Express + Zod
-- 存储：SQLite（`node:sqlite`）
-- 日志：Pino + SQLite 搜索索引
-- 包管理：pnpm workspace
+## 架构与运行形态
 
-## 文档
+- `frontend/`：Vue 3、TypeScript 与 Ant Design Vue 管理后台。
+- `backend/`：Node.js、TypeScript 与 Express；承载网关、管理 API 代理、DB service 和现有 worker。
+- `backend-go/`：渐进迁移层；`juhe-ai-jobs` 与 `juhe-ai-gateway` 已承接部分日志、审计与表监控职责，`juhe-ai-maintenance` 用于一次性维护命令。
+- 默认单机运行由 Web/网关主进程、`ingest-worker`、`stats-worker`、`ops-worker`、DB service 和相应 Go 进程组成。
 
-- [开发安装说明](docs/develop/安装指南.md)
-- [开发运行说明](docs/develop/运行说明.md)
-- [测试与验证说明](docs/develop/测试与验证说明.md)
-- [构建指南](docs/deploy/构建指南.md)
-- [服务器部署方案](docs/deploy/scenarios/服务器部署方案.md)
-- [家庭宽带反向代理方案](docs/deploy/scenarios/家庭宽带反向代理方案.md)
-- [跨平台部署基线](docs/deploy/部署指南.md)
-- [Docker 部署指南](docs/deploy/Docker部署指南.md)
-- [Linux 部署指南](docs/deploy/linux/Linux部署指南.md)
-- [Windows 部署指南](docs/deploy/windows/Windows部署指南.md)
-- [macOS 部署指南](docs/deploy/macos/macOS部署指南.md)
-- [Caddy 自动 HTTPS 部署指南](docs/deploy/https/Caddy自动HTTPS部署指南.md)
-- [状态检测与自动恢复指南](docs/deploy/watchdog/状态检测与自动恢复指南.md)
-- [sing-box 网络代理部署指南](docs/deploy/proxy/sing-box网络代理部署指南.md)
-- [整体架构](docs/architecture/架构总览.md)
-- [核心功能设计](docs/functions/核心功能设计.md)
-- [高并发分组调度设计](docs/functions/高并发分组调度设计.md)
-- [模型检测设计](docs/functions/模型检测设计.md)
-- [客户端稳定性竞品对比](docs/functions/客户端稳定性竞品对比.md)
-- [SQLite 存储说明](docs/functions/SQLite存储说明.md)
-- [接口契约与权限矩阵](docs/functions/接口契约与权限矩阵.md)
+存储、进程职责和迁移边界见 [架构总览](docs/architecture/架构总览.md)、[后端架构](docs/architecture/backend/README.md) 与 [Go 后端迁移层](backend-go/README.md)。
 
-## 当前边界
+## 部署与文档
 
-- 当前主要支持 OpenAI 供应商，其他供应商保留扩展空间。
-- 当前定位是单机轻量部署，不默认引入 Redis、Kafka 或分布式任务队列。
-- 默认使用 SQLite，业务库、数据集目录库、usage shard 目录和统计结果库位于 `backend/data/`；当前运行时只使用这四类存储入口。
-- 管理后台和网关由同一个后端服务承载，前端静态资源在发布包中由后端托管。
-- 当前已支持受保护的公开接口来源授权、公益站 IP 聚合读取、IP 管理和管理员封禁；暂不包含公益站用户维度榜单快照、公益站公网访问拦截、公益站用户 / IP 归属。
-- 本项目不是支付平台、公开售卖平台或全供应商多模型资产平台；它优先服务 OpenAI 账号池稳定调度和可观测运维。
+- [开发文档](docs/develop/README.md)：安装、运行、测试与验证。
+- [部署文档](docs/deploy/README.md)：按部署场景选择构建、Docker、Windows、Linux、macOS、代理与 HTTPS 指南。
+- [功能文档](docs/functions/README.md)：账户、路由、模型、授权、存储、统计和网关的具体契约。
+- [前端架构](docs/architecture/frontend/README.md) 与 [后端架构](docs/architecture/backend/README.md)：实现边界和维护约束。
+- [迁移文档](docs/migration/README.md)：Node 到 Go 的渐进迁移状态、验收和归档规则。
 
-## Star 支持
+## 项目边界
 
-如果这个项目对你有帮助，欢迎点一个 Star：
+- 默认目标是可管理的单机 AI 网关与账号调度；分布式部署属于显式配置能力，不是默认运行形态。
+- 本项目不将 API Key 作为跨协议转换或客户端画像的配置入口；这些能力分别归属混合供应商账户和网关运行时。
+- 数据、配置或 schema 与当前契约不一致时，应按当前 schema 离线修复或重建，不在运行链路中保留未知兼容分支。
+- 迁移中的功能是否已完成生产接管，以迁移与功能文档中的可核验验收记录为准。
 
-- GitHub：[https://github.com/huanmin123/juhe-ai](https://github.com/huanmin123/juhe-ai)
-- Gitee：[https://gitee.com/huanminabc/juhe-ai](https://gitee.com/huanminabc/juhe-ai)
-- QQ群:  1105515344   每天都有大量Tokens分享和各种资源
-
-## 友链
-- https://vsllm.com
-- https://linux.do
+## 其他
+问题或建议：QQ群 `1105515344`

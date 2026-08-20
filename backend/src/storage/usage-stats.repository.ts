@@ -40,12 +40,14 @@ import {
   refreshAuthorizationUsageRangeWindowSnapshots,
   refreshAuthorizationUsageRangeWindowSnapshotsAsync,
   refreshAuthorizationUsageRangeWindowSnapshotsInStages,
+  refreshPendingUsageScopeRangeWindowRequestsAsync,
   refreshUsageScopeRangeTodayWindowSnapshotsAsync,
   refreshUsageScopeRangeTodayWindowSnapshotsInStages,
   refreshUsageScopeRangeWindowSnapshotsAsync,
   refreshUsageScopeRangeWindowSnapshots,
   refreshUsageScopeRangeWindowSnapshotsInStages
 } from './usage-range-windows.repository.js'
+import { listPendingUsageRangeWindowRequestsAsync } from './usage-range-window-requests.repository.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import {
@@ -2032,7 +2034,13 @@ async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsage
     : undefined
   const context = await createUsageRankSnapshotContextAsync(client)
   const sourceUnchanged = Boolean(previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey)
-  const hasPendingDerivedWork = sourceUnchanged && await usageRankSnapshotStagesHavePendingWorkAsync(client, stages)
+  const hasPendingUsageScopeRangeWindowRequests = sourceUnchanged
+    && stages.some((stage) => stage.name === 'usage_scope_range_windows')
+    && (await listPendingUsageRangeWindowRequestsAsync(client, 'usage_scope', 1)).length > 0
+  const hasPendingDerivedWork = sourceUnchanged && (
+    hasPendingUsageScopeRangeWindowRequests
+    || await usageRankSnapshotStagesHavePendingWorkAsync(client, stages)
+  )
   if (sourceUnchanged && !hasPendingDerivedWork) {
     return {
       durationMs: Date.now() - startedAt,
@@ -2070,6 +2078,9 @@ async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsage
     if (index < stages.length - 1) {
       await yieldToEventLoop()
     }
+  }
+  if (sourceUnchanged && hasPendingUsageScopeRangeWindowRequests) {
+    await refreshPendingUsageScopeRangeWindowRequestsAsync(client, context.updatedAt, yieldToEventLoop, options.scheduledLease)
   }
   if (options.skipIfUnchanged && sourceWatermark !== undefined) {
     await client.transaction(async (tx) => {
@@ -3343,6 +3354,17 @@ function loadUsageOverviewSummaryRow(
   statsScope: { systemAccountId: string; scopeId: string },
   range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
 ): UsageOverviewSummaryWindowRow | undefined {
+  if (isCurrentUsageStatsDay(range, usageStatsTimezone())) {
+    return database.prepare(`
+      SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count
+      FROM usage_stats_daily
+      WHERE system_account_id = ?
+        AND scope_type = 'system_account'
+        AND scope_id = ?
+        AND stat_date = ?
+    `).get(statsScope.systemAccountId, statsScope.scopeId, range.startDate) as unknown as UsageOverviewSummaryWindowRow | undefined
+  }
   const row = database.prepare(`
     SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
       total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count
@@ -3357,6 +3379,18 @@ async function loadUsageOverviewSummaryRowAsync(
   statsScope: { systemAccountId: string; scopeId: string },
   range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
 ): Promise<UsageOverviewSummaryWindowRow | undefined> {
+  if (isCurrentUsageStatsDay(range, await usageStatsTimezoneAsync())) {
+    return await client.one<UsageOverviewSummaryWindowRow>(`
+      SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        CAST(total_cost_usd AS double precision) AS total_cost, duration_ms_sum, duration_ms_count,
+        first_token_ms_sum, first_token_ms_count
+      FROM juhe_stats.usage_stats_daily
+      WHERE system_account_id = ?
+        AND scope_type = 'system_account'
+        AND scope_id = ?
+        AND stat_date = ?
+    `, [statsScope.systemAccountId, statsScope.scopeId, range.startDate])
+  }
   const rows = await client.query<UsageOverviewSummaryWindowRow>(`
     SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
       CAST(total_cost_usd AS double precision) AS total_cost, duration_ms_sum, duration_ms_count,
@@ -3365,6 +3399,14 @@ async function loadUsageOverviewSummaryRowAsync(
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
   `, [statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate])
   return rows[0]
+}
+
+function isCurrentUsageStatsDay(
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>,
+  timezone: string
+): boolean {
+  const todayKey = dateKey(new Date(), timezone)
+  return range.startDate === todayKey && range.endDate === todayKey
 }
 
 type UsageOverviewSummaryWindowRow = {
