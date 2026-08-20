@@ -17,6 +17,7 @@ const {
 const metrics = await import('../../shared/prometheus-metrics.js')
 const { sendGatewayFailureResponse } = await import('../../modules/gateway/response/failure-response.js')
 const { gatewayErrorPayload } = await import('../../modules/gateway/response/responses.js')
+const { prepareUpstreamResponseForDownstream } = await import('../../modules/gateway/response/downstream-headers.js')
 
 class MockResponse extends EventEmitter {
   locals: Record<string, unknown> = {}
@@ -43,6 +44,10 @@ class MockResponse extends EventEmitter {
   setHeader(name: string, value: string | number | readonly string[]): this {
     this.headers.set(name.toLowerCase(), value)
     return this
+  }
+
+  hasHeader(name: string): boolean {
+    return this.headers.has(name.toLowerCase())
   }
 
   getHeaders(): Record<string, string | number | readonly string[]> {
@@ -130,6 +135,35 @@ assert.match(
   metrics.renderPrometheusMetrics(),
   /juhe_ai_http_requests_total\{[^}]*failure_scope="upstream"[^}]*outcome="completed"[^}]*status_class="5xx"[^}]*\} 1/
 )
+
+for (const statusCode of [502, 503, 504]) {
+  metrics.resetPrometheusMetricsForTest()
+  completionLogs.length = 0
+  const passthroughResponse = new MockResponse() as unknown as Response
+  let passthroughSubmitted: Promise<void> | undefined
+  requestContextMiddleware(request, passthroughResponse, () => {
+    const context = getRequestContext()
+    assert(context, '上游透传前必须建立请求上下文')
+    context.logger = completionLogger
+    prepareUpstreamResponseForDownstream(
+      passthroughResponse,
+      { status: statusCode, ok: false, headers: new Headers(), body: null },
+      false
+    )
+    passthroughSubmitted = Promise.resolve()
+  })
+  assert(passthroughSubmitted, `上游 ${statusCode} 透传必须完成请求上下文提交`)
+  await passthroughSubmitted
+  passthroughResponse.emit('finish')
+  assert.equal(completionLogs.filter((item) => item.level === 'error').length, 0, `上游透传 ${statusCode} 不得记为网关 error 日志`)
+  const passthroughLog = completionLogs.find((item) => item.fields.event === 'http_request_completed')
+  assert.equal(passthroughLog?.level, 'warn', `上游透传 ${statusCode} 必须保留为 warn 级诊断`)
+  assert.equal(passthroughLog?.fields.failureScope, 'upstream', `上游透传 ${statusCode} 必须标记 upstream`)
+  assert.match(
+    metrics.renderPrometheusMetrics(),
+    new RegExp(`juhe_ai_http_requests_total\\{[^}]*failure_scope="upstream"[^}]*outcome="completed"[^}]*status_class="5xx"[^}]*\\} 1`)
+  )
+}
 
 const finalizationSource = await readFile(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
 const nonStreamInspectionSource = await readFile(new URL('../../modules/gateway/response/non-stream-json-inspection.ts', import.meta.url), 'utf8')

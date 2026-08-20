@@ -1,5 +1,6 @@
 import type { Response } from 'express'
 
+import { markRequestHttpMetricFailureScope } from '../../../shared/request-context.js'
 import {
   copyResponseHeaders,
   type GatewayUpstreamResponse
@@ -12,6 +13,9 @@ export function prepareUpstreamResponseForDownstream(
 ): void {
   if (res.headersSent) {
     return
+  }
+  if (!upstreamResponse.ok) {
+    markRequestHttpMetricFailureScope('upstream')
   }
   res.status(upstreamResponse.status)
   copyResponseHeaders(upstreamResponse, res)
