@@ -3,6 +3,7 @@ import {
   transportProbeMeetsFirstByteTarget,
   type TransportProbeOutcome
 } from '../../modules/accounts/automatic-account-probe-outcome.js'
+import { normalRouteSpeedFirstRecoveryProbeRequiresWindowReset } from '../../modules/background/normal-route-speed-first-recovery-probe.service.js'
 
 const framingComplete: TransportProbeOutcome = {
   kind: 'framing_complete',
@@ -32,5 +33,24 @@ assert.equal(transportProbeMeetsFirstByteTarget({
   success: true,
   firstTokenMs: 1_200
 }, framingComplete, 1_000), false, '超过首字目标不得恢复速度状态')
+
+assert.equal(
+  normalRouteSpeedFirstRecoveryProbeRequiresWindowReset({ success: false }, {
+    kind: 'transport_incomplete',
+    failureKind: 'timeout'
+  }),
+  true,
+  'transport_incomplete 必须作废当前两次窗口，不能作为 FF 的第二次失败'
+)
+assert.equal(
+  normalRouteSpeedFirstRecoveryProbeRequiresWindowReset({ success: false }, framingComplete),
+  true,
+  '完整但业务失败的探针必须作废当前两次窗口'
+)
+assert.equal(
+  normalRouteSpeedFirstRecoveryProbeRequiresWindowReset({ success: true }, framingComplete),
+  false,
+  '完整业务成功但首字慢应进入失败计数，而不是作废窗口'
+)
 
 console.log('NORMAL_ROUTE_SPEED_FIRST_RECOVERY_PROBE_OK')

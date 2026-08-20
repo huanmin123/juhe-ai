@@ -1825,7 +1825,18 @@ async function raceStreamReadWithDeadlines(
         input.signal?.addEventListener('abort', abortListener, { once: true })
       }))
     }
-    return await Promise.race(races)
+    const winner = await Promise.race(races)
+    // The request precommit deadline is a hard wall. Preserve that
+    // attribution when it coincides with a configured speed-first deadline,
+    // regardless of timer registration order.
+    if (
+      winner.type === 'soft_timeout'
+      && responsePrecommitTimeoutMs !== undefined
+      && responsePrecommitTimeoutMs <= (softTimeoutMs ?? Number.POSITIVE_INFINITY)
+    ) {
+      return { type: 'response_precommit_timeout' }
+    }
+    return winner
   } finally {
     if (softTimer) clearTimeout(softTimer)
     if (responsePrecommitTimer) clearTimeout(responsePrecommitTimer)

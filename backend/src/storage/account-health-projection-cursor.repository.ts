@@ -54,6 +54,7 @@ export async function advanceAccountHealthProjectionCursorAsync(
     const existing = cursorFromRow(current)
     if (existing && compareCursor(existing, cursor) >= 0) {
       if (existing.outcomeId !== cursor.outcomeId) return false
+      if (existing.observedAt === cursor.observedAt) return false
       const result = await tx.execute(`UPDATE ${table(tx)} SET observed_at = ?, updated_at = ? WHERE consumer_key = ? AND outcome_id = ?`, [cursor.observedAt, nowIso(), key, existing.outcomeId])
       return result.changes === 1
     }
@@ -70,6 +71,7 @@ function advanceSqlite(database: DatabaseSync, consumerKey: string, next: Accoun
   const existing = currentAccountHealthProjectionCursor(consumerKey, database)
   if (existing && compareCursor(existing, next) >= 0) {
     if (existing.outcomeId !== next.outcomeId) return false
+    if (existing.observedAt === next.observedAt) return false
     const result = database.prepare(`UPDATE account_health_projection_cursors SET observed_at = ?, updated_at = ? WHERE consumer_key = ? AND outcome_id = ?`).run(next.observedAt, nowIso(), consumerKey, existing.outcomeId)
     return Number(result.changes ?? 0) === 1
   }

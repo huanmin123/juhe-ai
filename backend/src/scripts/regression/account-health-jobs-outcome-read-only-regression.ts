@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { decodeAccountHealthJobsOutcomePayload, listAccountHealthJobsOutcomes } from '../../storage/account-health-jobs-outcome.repository.js'
+import {
+  decodeAccountHealthJobsOutcomePayload,
+  listAccountHealthJobsOutcomes,
+  listAccountHealthJobsOutcomesForAccounts
+} from '../../storage/account-health-jobs-outcome.repository.js'
 
 const require = createRequire(import.meta.url)
 const Constructor = require('node:sqlite').DatabaseSync as new (path: string) => {
@@ -17,17 +21,19 @@ const root = mkdtempSync(join(testRoot, 'juhe-ai-account-health-outcome-'))
 const path = join(root, 'jobs.sqlite3')
 try {
   const database = new Constructor(path)
-  database.exec('CREATE TABLE account_health_outcomes(outcome_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL, payload TEXT NOT NULL)')
-  database.prepare('INSERT INTO account_health_outcomes(outcome_id, observed_at, payload) VALUES (?, ?, ?)').run(
+  database.exec('CREATE TABLE account_health_outcomes(outcome_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL)')
+  database.prepare('INSERT INTO account_health_outcomes(outcome_id, account_id, observed_at, payload) VALUES (?, ?, ?, ?)').run(
     'outcome-1',
+    'account-1',
     '2026-08-16T00:00:00.000Z',
     JSON.stringify({
       outcome_id: 'outcome-1', request_id: 'request-1', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
       projection: { target_account_id: 'account-1', transition_kind: 'health_success', input_version: 1, config_revision: 2, dispatch_revision: 3, expected_account_status: 'active', values: { last_health_check_at: '2026-08-16T00:00:00.000Z' } }
     })
   )
-  database.prepare('INSERT INTO account_health_outcomes(outcome_id, observed_at, payload) VALUES (?, ?, ?)').run(
+  database.prepare('INSERT INTO account_health_outcomes(outcome_id, account_id, observed_at, payload) VALUES (?, ?, ?, ?)').run(
     'outcome-2',
+    'account-1',
     '2026-08-16T00:00:00.000Z',
     JSON.stringify({
       outcome_id: 'outcome-2', request_id: 'request-2', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
@@ -45,6 +51,18 @@ try {
     limit: 1
   })
   assert.equal(secondPage[0]?.outcome_id, 'outcome-2')
+  const accountOutcomes = listAccountHealthJobsOutcomesForAccounts(
+    { mode: 'sqlite', databasePath: path },
+    { accountIds: ['account-1'], observedAfter: '2026-08-15T00:00:00.000Z' }
+  )
+  assert.deepEqual(accountOutcomes.map((outcome) => outcome.outcome_id), ['outcome-1', 'outcome-2'], '按账户读取必须只读返回时间窗内的 J1 outcome')
+  assert.throws(
+    () => listAccountHealthJobsOutcomesForAccounts({ mode: 'postgres', postgresUrl: 'postgres://unused' }, { accountIds: ['account-1'], observedAfter: '2026-08-15T00:00:00.000Z' }),
+    /异步 reader/
+  )
+  const source = readFileSync(resolve('src/storage/account-health-jobs-outcome.repository.ts'), 'utf8')
+  assert.match(source, /account_id = ANY\(\$1::text\[\]\)[\s\S]*observed_at >= \$2::timestamptz/, 'PostgreSQL 账户范围读取必须按账户与时间窗在 jobs store 内过滤')
+  assert.match(source, /BEGIN READ ONLY/, 'J1 账户范围读取必须显式只读')
   const postgresJsonbPayload = decodeAccountHealthJobsOutcomePayload({
     outcome_id: 'outcome-3', request_id: 'request-3', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3
   })

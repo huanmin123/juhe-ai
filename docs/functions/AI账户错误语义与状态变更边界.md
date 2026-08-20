@@ -6,11 +6,11 @@
 
 上游供应商不是可信的协议语义来源。它可以用任意 HTTP 状态码、错误码、错误类型、错误文案或流式事件表达任意故障；网关不能假设 `401` 一定是凭据错误、`429` 一定是限流、`5xx` 一定是供应商故障，也不能假设响应正文符合供应商标准格式。
 
-HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实保存，但在没有用户显式策略或独立探针证据时，不得把它们解释成账户、Key、代理、模型或供应商的健康事实。
+HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实保存，但在没有用户显式策略、受控系统继承策略或独立探针证据时，不得把它们解释成账户、Key、代理、模型或供应商的健康事实。
 
 ## 2. 状态变更授权来源
 
-账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
+账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `403` 且命中稳定额度错误码，或结构化错误消息命中高置信余额/额度文本时，才复用 `error_disabled` 写入账户 `error`；裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials`、`system_settings` 或数据库，且优先于账户自定义规则。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
 
 传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能形成待确认事实；账户级升级必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由独立后台传输探针确认。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
 
@@ -52,7 +52,7 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 已知 JSON 协议的非流式 `2xx` 必须在下游提交前完成完整的 JSON 与协议结构验证。上游伪造 `content-type`、返回畸形 JSON、结构缺字段，或正文超过固定验证窗口时，网关必须终止为 `502` 和 `upstream_protocol_error`；不得先透传未验证正文，再把该 attempt 记为成功。该限制不适用于本来就是二进制下载的未知协议路径。
 
-账户 `credentials.error_handling_rules` 的动作只决定当前账户状态副作用，不决定当前请求是否切号：`retry_next` 只切号，`rate_limited`、`temp_unschedulable`、`error_disabled` 在写入对应账户状态后同样排除当前账户并继续切号；未匹配用户策略的完整非 `2xx` 也按统一 `response.ok=false` 规则切号。只有同账户兄弟 Key 轮换仍需要 `retry_next` 明确授权。
+账户 `credentials.error_handling_rules` 与受控系统继承策略的动作只决定当前账户状态副作用，不决定当前请求是否切号：`retry_next` 只切号，`rate_limited`、`temp_unschedulable`、`error_disabled` 在写入对应账户状态后同样排除当前账户并继续切号；未匹配任一策略的完整非 `2xx` 也按统一 `response.ok=false` 规则切号。`system.upstream_insufficient_quota` 命中后不投递低上下文 `request_failure` 探测，避免其与明确的 `error` 状态竞争。只有同账户兄弟 Key 轮换仍需要 `retry_next` 明确授权。
 
 当前请求的 Key 排除必须使用请求内集合或等价的 request generation。未知 HTTP 响应不得写入跨请求共享的 `temporary_unavailable`、`rate_limited`、`error` 或其他带语义的 Key 避让状态。
 
@@ -62,7 +62,7 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 当前来源级避让由公共网关失败路径统一消费：Codex Responses SSE 或 `/responses/compact` 在公共来源作用域下再加入精确 `turnId` 子键，使同一 turn 下多个账户互不覆盖；Claude Code、Gemini 和通用协议请求直接使用公共来源作用域。后续供应商必须接入公共来源层，不能重新拼接外部字段或把协议资源冒充会话。每次 activation 只异步投递同一账户 runtime/config generation 的共享健康检查；control 拒绝、网络失败或 worker 入队失败按 fence 结算 `unknown`，保留短避让且不写账户或 circuit 状态。
 
-该避让只重排同一 dispatch priority tier 内的候选，不能越过健康的高优先级或 fallback 层，也不能泄漏到其他来源、API Key、endpoint 或协议。它不改变账户、Key、账户 circuit 或共享账户可用性；同一 API Key 来源发生路由切换时允许连续。Codex `committed_retry_signal`、其他客户端专属 retryable 语义和普通 availability probe 都不是 transport 证据；账户级 `temporary_unavailable` 仍只能由用户显式策略或独立探活按既有阈值、配置版本和观察栅栏写入。
+该避让只重排同一 dispatch priority tier 内的候选，不能越过健康的高优先级或 fallback 层，也不能泄漏到其他来源、API Key、endpoint 或协议。它不改变账户、Key、账户 circuit 或共享账户可用性；同一 API Key 来源发生路由切换时允许连续。Codex `committed_retry_signal`、其他客户端专属 retryable 语义和普通 availability probe 都不是 transport 证据；账户级 `temporary_unavailable` 仍只能由用户显式策略或独立探活按既有阈值、配置版本和观察栅栏写入；系统额度规则只会写 `error_disabled` 对应的 `error`。
 
 可用性探活按 `account runtime scope + probe kind + config revision` 共享单飞。Redis runtime state 为多实例权威，memory 仅单机进程内回退；同一 generation 只有 owner 可实际执行，source-only joined 触发不得追加真实上游 probe 或 retry-queue follow-up。若同一 worker 执行中已存在普通 `request_failure`，它保留一个延迟尾随任务，待 foreign owner 租约结束后重新获取 generation；这是账户级确认，不能被 source-only joined 语义吞掉。Codex 来源 activation 把 HMAC `stateKey`、账户、`sourceGeneration`、runtime/config、`probeGeneration` 组成有界 source fence（单 generation 至多 64 条），随健康检查 dispatch/IPC 交给真实 worker；worker 完成后回传同一 fence，由持有 gateway 状态的进程只执行 `stateKey + accountId + sourceGeneration` 的精确清理。worker 不得依赖另一个进程的 memory Map，也不得按账户清 Codex 状态。
 
@@ -76,7 +76,7 @@ source-only owner 的 `complete_success` 只清该 generation 中完全匹配的
 
 图片 lane 继续使用独立长时限：默认首响应上限 600 秒、流式 idle 上限 120 秒、单次未提交 attempt 上限 3600 秒。图片时限到期只终止当前请求并返回 timeout，不再触发候选切换；已写出真实协议事件、正文或可见输出时只能结束或断开当前响应，不能拼接第二个候选的结果。
 
-账户级候选切换是所有完整上游非 `2xx` 的统一请求级行为，仍必须受请求级去重、总墙钟和 attempt 预算约束；不得因失败产生重复 token、重复生成、重复外部副作用或重复计费。用户显式策略的 `cooldown`、`rate_limited`、`error_disabled` 等动作先写账户状态，再沿同一候选切换路径继续请求。
+账户级候选切换是所有完整上游非 `2xx` 的统一请求级行为，仍必须受请求级去重、总墙钟和 attempt 预算约束；不得因失败产生重复 token、重复生成、重复外部副作用或重复计费。用户显式策略与 `system.upstream_insufficient_quota` 的 `cooldown`、`rate_limited`、`error_disabled` 等动作先写账户状态，再沿同一候选切换路径继续请求。
 
 未知 transport failure 不再使用同一凭据原地重试 token。中间失败形成审计/使用记录事实，并可投递限频的独立健康检查，但不写电路 confirmation、共享质量、Key/账户状态、客户端 IP 避让、代理或上游桶；共享状态必须等待独立探针确认。
 
@@ -96,7 +96,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 
 ## 4. 明确禁止的实现
 
-下列实现一律视为越界，除非它们位于用户显式策略的匹配结果分支中：
+下列实现一律视为越界，除非它们位于用户显式策略，或本文件定义的 `system.upstream_insufficient_quota` 严格匹配结果分支中：
 
 - `statusCode === 401/403` 就标记凭据或账户失效；
 - `statusCode === 429` 就标记限流或进入账户冷却；
@@ -109,7 +109,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 - 把业务请求自身的 framing 完整失败直接写成账户/Key 不可用，或把独立探针的失败状态码解释成具体错误语义；
 - 把上游返回的任意错误类别传给客户端，要求客户端承担内部账户状态决策。
 - OAuth token 刷新连续收到远端异常后，把账户升级为永久 `error` 或停止所有自动恢复；
-- 用普通协议成功或旧在途成功，清除用户显式策略创建且 provenance 不匹配的冷却、限流或硬错误；
+- 用普通协议成功、低上下文探测或旧在途成功，清除用户显式或系统继承策略创建且 provenance 不匹配的冷却、限流或硬错误；
 - 把某个账户经同一代理发生的 request-local transport failure 写成代理级排除，连带跳过同代理的其他账户；
 
 代码中的状态码只能用于协议边界、HTTP 响应转发、审计和显式规则匹配；出现 `401/429/5xx` 字面量并不自动违规，但必须能证明它不参与内部账户状态推断。
@@ -130,8 +130,8 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 
 - 同一坏会话并发请求不会把多个正常账户或 Key 写成死亡；
 - 任意状态码互换（例如把 `400`、`401`、`429`、`500`、`503` 互换）不会改变 generic 请求的内部状态动作；
-- 用户显式策略命中时，才会产生配置指定的持久状态；
-- 普通协议成功、旧在途成功和 OAuth 刷新成功不能清理 provenance 不匹配的用户显式冷却；匹配来源恢复、TTL 和人工恢复分别有 SQLite / PostgreSQL 并发 fencing 测试；
+- 用户显式策略或严格系统额度策略命中时，才会产生配置指定的持久状态；
+- 普通协议成功、低上下文探测、旧在途成功和 OAuth 刷新成功不能清理 provenance 不匹配的用户显式或系统额度硬错误；匹配来源恢复、TTL 和人工恢复分别有 SQLite / PostgreSQL 并发 fencing 测试；
 - OAuth token 端点的 `400/401/403/429/500/503`、错误正文、坏 JSON、缺字段、断连和 timeout 都只形成诊断与有界退避，不把账户写成永久 `error`；
 - 代理检测对任意完整 HTTP 状态都只记录 transport reachable，连接/TLS/绝对 timeout/读取未完成才失败，无请求事实时为 `unknown`；
 - 同一代理下账户 A 的 request-local transport failure 不得让账户 B 在本请求内被代理级排除；

@@ -3,14 +3,20 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import type { AiHealthAccountRow, AiHealthHourDetail, AiHealthHourPoint, AiHealthListResult } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
+import {
+  listAccountHealthJobsOutcomesForAccounts,
+  listAccountHealthJobsOutcomesForAccountsAsync,
+  type AccountHealthJobsOutcome,
+  type AccountHealthJobsStoreSource
+} from './account-health-jobs-outcome.repository.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase, getStatsDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { accountNameSearchQueryTerms, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
-import { hourBucketsUntilNow } from './usage-stats-window-helpers.js'
+import { hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import { HOUR_MS, hourBucketsUntilNow } from './usage-stats-window-helpers.js'
 
 export interface AiHealthListOptions {
   hours?: number
@@ -23,6 +29,7 @@ interface AccountHealthSlotRow {
   account_id: string
   stat_hour: string
   status: 'success' | 'failure'
+  last_observed_at?: string
   source_order?: number
 }
 
@@ -32,6 +39,7 @@ interface AccountHealthHourRow {
   status_code: number | null
   error_code: string | null
   error_message: string | null
+  source_order?: number
 }
 
 interface AiHealthAccountProjection {
@@ -56,8 +64,17 @@ export function getAiHealthList(access?: AccessScope, options: AiHealthListOptio
   const normalized = normalizeAiHealthListOptions(options)
   const timezone = usageStatsTimezone()
   const page = loadAiHealthAccountPageReadOnly(access, normalized)
-  const hourBuckets = hourBucketsUntilNow(normalized.hours, Date.now(), timezone)
+  const now = Date.now()
+  const hourBuckets = hourBucketsUntilNow(normalized.hours, now, timezone)
   const rows = loadAccountHealthRows(getStatsDatabase(), page.items.map((item) => item.id), hourBuckets)
+  const source = accountHealthJobsOutcomeStoreSource()
+  if (source) {
+    rows.push(...j1OutcomeHealthRows(
+      listAccountHealthJobsOutcomesForAccounts(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) }),
+      hourBuckets,
+      timezone
+    ))
+  }
   return mapAiHealthList(page, rows, hourBuckets)
 }
 
@@ -74,8 +91,17 @@ export async function getAiHealthListAsync(access?: AccessScope, options: AiHeal
     usageStatsTimezoneAsync(),
     loadAiHealthAccountPage(client, access, normalized)
   ])
-  const hourBuckets = hourBucketsUntilNow(normalized.hours, Date.now(), timezone)
+  const now = Date.now()
+  const hourBuckets = hourBucketsUntilNow(normalized.hours, now, timezone)
   const rows = await loadAccountHealthRowsAsync(client, page.items.map((item) => item.id), hourBuckets)
+  const source = accountHealthJobsOutcomeStoreSource()
+  if (source) {
+    rows.push(...j1OutcomeHealthRows(
+      await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) }),
+      hourBuckets,
+      timezone
+    ))
+  }
   return mapAiHealthList(page, rows, hourBuckets)
 }
 
@@ -87,10 +113,10 @@ export function getAiHealthHourDetail(
   const normalized = normalizeAiHealthHourDetailInput(accountId, statHour)
   const visible = aiHealthAccountVisibleReadOnly(access, normalized.accountId)
   if (!visible) return undefined
-  return mapAiHealthHourDetail(
-    normalized.statHour,
-    loadAccountHealthHourDetail(getStatsDatabase(), normalized.accountId, normalized.statHour)
-  )
+  const source = accountHealthJobsOutcomeStoreSource()
+  const rows = [loadAccountHealthHourDetail(getStatsDatabase(), normalized.accountId, normalized.statHour)]
+  if (source) rows.push(j1OutcomeHealthHourDetail(listAccountHealthJobsOutcomesForAccounts(source, { accountIds: [normalized.accountId], observedAfter: outcomeObservedAfter(Date.now(), 31 * 24) }), normalized.statHour, usageStatsTimezone()))
+  return mapAiHealthHourDetail(normalized.statHour, newestAccountHealthHourRow(rows))
 }
 
 export async function getAiHealthHourDetailAsync(
@@ -113,10 +139,14 @@ export async function getAiHealthHourDetailAsync(
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const visible = (await aiHealthAccountVisible(client, access, normalized.accountId))
   if (!visible) return undefined
-  return mapAiHealthHourDetail(
-    normalized.statHour,
-    await loadAccountHealthHourDetailAsync(client, normalized.accountId, normalized.statHour)
-  )
+  const [timezone, statsRow] = await Promise.all([
+    usageStatsTimezoneAsync(),
+    loadAccountHealthHourDetailAsync(client, normalized.accountId, normalized.statHour)
+  ])
+  const source = accountHealthJobsOutcomeStoreSource()
+  const rows = [statsRow]
+  if (source) rows.push(j1OutcomeHealthHourDetail(await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: [normalized.accountId], observedAfter: outcomeObservedAfter(Date.now(), 31 * 24) }), normalized.statHour, timezone))
+  return mapAiHealthHourDetail(normalized.statHour, newestAccountHealthHourRow(rows))
 }
 
 function normalizeAiHealthListOptions(options: AiHealthListOptions): Required<Pick<AiHealthListOptions, 'hours' | 'page' | 'pageSize'>> & Pick<AiHealthListOptions, 'keyword'> {
@@ -125,6 +155,94 @@ function normalizeAiHealthListOptions(options: AiHealthListOptions): Required<Pi
   const pageSize = boundedInteger(options.pageSize, 20, 10, 50)
   const keyword = options.keyword?.trim()
   return { hours, page, pageSize, keyword: keyword || undefined }
+}
+
+function accountHealthJobsOutcomeStoreSource(): AccountHealthJobsStoreSource | undefined {
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    const databasePath = runtimeConfig.accountHealthJobs.outcomeSqlitePath?.trim()
+    if (!databasePath) return undefined
+    return { mode: 'sqlite', databasePath }
+  }
+  const postgresUrl = runtimeConfig.accountHealthJobs.outcomePostgresUrl?.trim()
+  if (!postgresUrl) return undefined
+  return { mode: 'postgres', postgresUrl }
+}
+
+function outcomeObservedAfter(now: number, hours: number): string {
+  return new Date(now - (hours + 2) * HOUR_MS).toISOString()
+}
+
+function j1OutcomeHealthRows(outcomes: AccountHealthJobsOutcome[], hourBuckets: string[], timezone: string): AccountHealthSlotRow[] {
+  const allowedHours = new Set(hourBuckets)
+  const latestByAccountHour = new Map<string, AccountHealthSlotRow>()
+  for (const outcome of outcomes) {
+    const status = outcomeHealthStatus(outcome)
+    if (!status) continue
+    const statHour = hourKey(new Date(outcome.observed_at), timezone)
+    if (!allowedHours.has(statHour)) continue
+    const candidate: AccountHealthSlotRow = {
+      account_id: outcome.account_id,
+      stat_hour: statHour,
+      status,
+      last_observed_at: outcome.observed_at,
+      source_order: 0
+    }
+    const key = `${candidate.account_id}\u0000${candidate.stat_hour}`
+    latestByAccountHour.set(key, newestAccountHealthSlotRow(latestByAccountHour.get(key), candidate))
+  }
+  return [...latestByAccountHour.values()]
+}
+
+function j1OutcomeHealthHourDetail(outcomes: AccountHealthJobsOutcome[], statHour: string, timezone: string): AccountHealthHourRow | undefined {
+  let result: AccountHealthHourRow | undefined
+  for (const outcome of outcomes) {
+    const status = outcomeHealthStatus(outcome)
+    if (!status || hourKey(new Date(outcome.observed_at), timezone) !== statHour) continue
+    result = newestAccountHealthHourRow([result, {
+      status,
+      last_observed_at: outcome.observed_at,
+      status_code: outcome.status_code ?? null,
+      error_code: outcome.error_code ?? null,
+      error_message: outcome.error_message ?? null,
+      source_order: 0
+    }])
+  }
+  return result
+}
+
+function outcomeHealthStatus(outcome: AccountHealthJobsOutcome): 'success' | 'failure' | undefined {
+  if (outcome.outcome === 'stale') return undefined
+  return outcome.outcome === 'complete_success' ? 'success' : 'failure'
+}
+
+function newestAccountHealthSlotRow(existing: AccountHealthSlotRow | undefined, candidate: AccountHealthSlotRow): AccountHealthSlotRow {
+  if (!existing) return candidate
+  const existingOrder = existing.source_order ?? 0
+  const candidateOrder = candidate.source_order ?? 0
+  if (candidateOrder !== existingOrder) return candidateOrder > existingOrder ? candidate : existing
+  return timestampValue(candidate.last_observed_at) >= timestampValue(existing.last_observed_at) ? candidate : existing
+}
+
+function newestAccountHealthHourRow(rows: Array<AccountHealthHourRow | undefined>): AccountHealthHourRow | undefined {
+  let result: AccountHealthHourRow | undefined
+  for (const row of rows) {
+    if (!row) continue
+    if (!result) {
+      result = row
+      continue
+    }
+    const resultOrder = result.source_order ?? 0
+    const rowOrder = row.source_order ?? 0
+    if (rowOrder > resultOrder || (rowOrder === resultOrder && timestampValue(row.last_observed_at) >= timestampValue(result.last_observed_at))) {
+      result = row
+    }
+  }
+  return result
+}
+
+function timestampValue(value: string | undefined): number {
+  const timestamp = value ? Date.parse(value) : Number.NEGATIVE_INFINITY
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY
 }
 
 
@@ -318,13 +436,13 @@ function loadAccountHealthRows(database: DatabaseSync, accountIds: string[], hou
   const endHour = hourBuckets[hourBuckets.length - 1]
   for (const chunk of chunkValues(accountIds, 900)) {
     rows.push(...database.prepare(`
-      SELECT account_id, stat_hour, status, source_order
+      SELECT account_id, stat_hour, status, last_observed_at, source_order
       FROM (
-        SELECT account_id, stat_hour, status, 0 AS source_order
+        SELECT account_id, stat_hour, status, last_observed_at, 0 AS source_order
         FROM account_health_hourly
         WHERE account_id IN (${sqlPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
         UNION ALL
-        SELECT account_id, stat_hour, 'failure' AS status, 1 AS source_order
+        SELECT account_id, stat_hour, 'failure' AS status, observed_at AS last_observed_at, 1 AS source_order
         FROM account_quality_health_hourly
         WHERE account_id IN (${sqlPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
       ) merged_health
@@ -341,13 +459,13 @@ async function loadAccountHealthRowsAsync(client: DatabaseClient, accountIds: st
   const endHour = hourBuckets[hourBuckets.length - 1]
   for (const chunk of chunkValues(accountIds, 900)) {
     rows.push(...await client.query<AccountHealthSlotRow>(`
-      SELECT account_id, stat_hour, status, source_order
+      SELECT account_id, stat_hour, status, last_observed_at, source_order
       FROM (
-        SELECT account_id, stat_hour, status, 0 AS source_order
+        SELECT account_id, stat_hour, status, last_observed_at, 0 AS source_order
         FROM ${client.dialect.qualifyTable('juhe_stats', 'account_health_hourly')}
         WHERE account_id IN (${client.dialect.bindPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
         UNION ALL
-        SELECT account_id, stat_hour, 'failure' AS status, 1 AS source_order
+        SELECT account_id, stat_hour, 'failure' AS status, observed_at AS last_observed_at, 1 AS source_order
         FROM ${client.dialect.qualifyTable('juhe_stats', 'account_quality_health_hourly')}
         WHERE account_id IN (${client.dialect.bindPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
       ) merged_health
@@ -363,7 +481,7 @@ function loadAccountHealthHourDetail(
   statHour: string
 ): AccountHealthHourRow | undefined {
   return database.prepare(`
-    SELECT status, last_observed_at, status_code, error_code, error_message
+    SELECT status, last_observed_at, status_code, error_code, error_message, source_order
     FROM (
       SELECT status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
       FROM account_health_hourly
@@ -387,7 +505,7 @@ async function loadAccountHealthHourDetailAsync(
   statHour: string
 ): Promise<AccountHealthHourRow | undefined> {
   const rows = await client.query<AccountHealthHourRow>(`
-    SELECT status, last_observed_at, status_code, error_code, error_message
+    SELECT status, last_observed_at, status_code, error_code, error_message, source_order
     FROM (
       SELECT status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
       FROM ${client.dialect.qualifyTable('juhe_stats', 'account_health_hourly')}
@@ -451,7 +569,11 @@ function mapAiHealthList(
   rows: AccountHealthSlotRow[],
   hourBuckets: string[]
 ): AiHealthListResult {
-  const rowsByAccountHour = new Map(rows.map((row) => [`${row.account_id}\u0000${row.stat_hour}`, row]))
+  const rowsByAccountHour = new Map<string, AccountHealthSlotRow>()
+  for (const row of rows) {
+    const key = `${row.account_id}\u0000${row.stat_hour}`
+    rowsByAccountHour.set(key, newestAccountHealthSlotRow(rowsByAccountHour.get(key), row))
+  }
   return {
     items: page.items.map((account) => mapAiHealthAccount(account, hourBuckets, rowsByAccountHour)),
     hasMore: page.hasMore,

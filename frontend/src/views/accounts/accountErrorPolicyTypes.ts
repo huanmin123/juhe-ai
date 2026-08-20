@@ -18,6 +18,49 @@ export interface AccountErrorPolicyRuleForm {
   description: string
 }
 
+/** A system rule rendered in the same list but never included in save payloads. */
+export interface AccountErrorPolicyInheritedRule extends AccountErrorPolicyRuleForm {
+  id: string
+  source: 'system'
+  inherited: true
+  editable: false
+}
+
+/**
+ * 新建和克隆账户尚未拥有高级详情 DTO 时的只读展示预览。保存后必须以
+ * 后端 effectiveErrorHandlingRules 为准；该对象从不进入账户凭据 payload。
+ */
+export function systemInheritedErrorPolicyRulesPreview(): AccountErrorPolicyInheritedRule[] {
+  return [{
+    id: 'system.upstream_insufficient_quota',
+    source: 'system',
+    inherited: true,
+    editable: false,
+    enabled: true,
+    name: '上游额度不足',
+    priority: 1,
+    status_codes: '403',
+    error_codes: [
+      'insufficient_user_quota',
+      'insufficient_quota',
+      'insufficient_balance',
+      'quota_exceeded',
+      'quota_exhausted',
+      'wallet_balance_exhausted',
+      'pre_consume_token_quota_failed'
+    ].join(', '),
+    error_types: '',
+    keywords: '余额不足, 额度不足, insufficient balance, insufficient quota, credit balance too low, wallet balance exhausted',
+    action: 'error_disabled',
+    reset_strategy: 'duration',
+    duration_hours: null,
+    daily_reset_hour: null,
+    weekly_reset_day: null,
+    weekly_reset_hour: null,
+    description: '仅在 HTTP 403 且上游明确表示余额或额度不足时将账户标记为异常。'
+  }]
+}
+
 export interface AccountErrorPolicyPreset {
   key: string
   label: string

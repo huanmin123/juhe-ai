@@ -82,6 +82,35 @@ export async function listAccountHealthJobsOutcomes(
   return await readPostgresOutcomes(source.postgresUrl, after, limit)
 }
 
+/**
+ * Reads only the outcomes needed by one management-page account slice. This
+ * stays read-only against the jobs-owned store and deliberately does not use
+ * the drain cursor, which is owned by the DB-service projector.
+ */
+export function listAccountHealthJobsOutcomesForAccounts(
+  source: AccountHealthJobsStoreSource,
+  options: { accountIds: string[]; observedAfter: string }
+): AccountHealthJobsOutcome[] {
+  const normalized = normalizeAccountOutcomeQuery(options)
+  if (!normalized.accountIds.length) return []
+  if (source.mode !== 'sqlite') {
+    throw new Error('PostgreSQL J1 outcome 查询必须使用异步 reader')
+  }
+  return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter)
+}
+
+export async function listAccountHealthJobsOutcomesForAccountsAsync(
+  source: AccountHealthJobsStoreSource,
+  options: { accountIds: string[]; observedAfter: string }
+): Promise<AccountHealthJobsOutcome[]> {
+  const normalized = normalizeAccountOutcomeQuery(options)
+  if (!normalized.accountIds.length) return []
+  if (source.mode === 'sqlite') {
+    return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter)
+  }
+  return await readPostgresOutcomesForAccounts(source.postgresUrl, normalized.accountIds, normalized.observedAfter)
+}
+
 function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor | undefined, limit: number): AccountHealthJobsOutcome[] {
   const require = createRequire(import.meta.url)
   const Constructor = require('node:sqlite').DatabaseSync as new (path: string, options?: { readOnly?: boolean }) => {
@@ -98,6 +127,26 @@ function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor 
     const rows = effectiveAfter
       ? database.prepare(`SELECT payload, observed_at AS storage_observed_at FROM account_health_outcomes WHERE observed_at > ? OR (observed_at = ? AND outcome_id > ?) ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`).all(effectiveAfter.observedAt, effectiveAfter.observedAt, effectiveAfter.outcomeId, limit)
       : database.prepare(`SELECT payload, observed_at AS storage_observed_at FROM account_health_outcomes ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`).all(limit)
+    return rows.map((row) => decodeOutcomeRow(row))
+  } finally {
+    database.close()
+  }
+}
+
+function readSqliteOutcomesForAccounts(path: string, accountIds: string[], observedAfter: string): AccountHealthJobsOutcome[] {
+  const require = createRequire(import.meta.url)
+  const Constructor = require('node:sqlite').DatabaseSync as new (path: string, options?: { readOnly?: boolean }) => {
+    exec(sql: string): void
+    prepare(sql: string): { all(...values: unknown[]): unknown[], get(...values: unknown[]): unknown }
+    close(): void
+  }
+  const database = new Constructor(resolve(path), { readOnly: true })
+  try {
+    database.exec('PRAGMA query_only = ON')
+    const state = database.prepare('PRAGMA query_only').all()[0] as Record<string, unknown> | undefined
+    if (Number(state?.query_only ?? state?.[0] ?? 0) !== 1) throw new Error('J1 jobs SQLite outcome 读取未进入 query_only')
+    const placeholders = accountIds.map(() => '?').join(', ')
+    const rows = database.prepare(`SELECT payload, observed_at AS storage_observed_at FROM account_health_outcomes WHERE account_id IN (${placeholders}) AND observed_at >= ? ORDER BY observed_at ASC, outcome_id ASC`).all(...accountIds, observedAfter)
     return rows.map((row) => decodeOutcomeRow(row))
   } finally {
     database.close()
@@ -128,6 +177,27 @@ async function readPostgresOutcomes(postgresUrl: string, after: AccountHealthJob
     const result = effectiveAfter
       ? await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2) ORDER BY observed_at ASC, outcome_id ASC LIMIT $3`, [effectiveAfter.observedAt, effectiveAfter.outcomeId, limit])
       : await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes ORDER BY observed_at ASC, outcome_id ASC LIMIT $1`, [limit])
+    await connection.query('COMMIT')
+    inTransaction = false
+    return result.rows.map((row: Record<string, unknown>) => decodeOutcomeRow(row))
+  } catch (error) {
+    if (inTransaction) await connection.query('ROLLBACK').catch(() => undefined)
+    throw error
+  } finally {
+    connection.release()
+    await pool.end()
+  }
+}
+
+async function readPostgresOutcomesForAccounts(postgresUrl: string, accountIds: string[], observedAfter: string): Promise<AccountHealthJobsOutcome[]> {
+  const { Pool } = await import('pg')
+  const pool = new Pool({ connectionString: postgresUrl, max: 1 })
+  const connection = await pool.connect()
+  let inTransaction = false
+  try {
+    await connection.query('BEGIN READ ONLY')
+    inTransaction = true
+    const result = await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE account_id = ANY($1::text[]) AND observed_at >= $2::timestamptz ORDER BY observed_at ASC, outcome_id ASC`, [accountIds, observedAfter])
     await connection.query('COMMIT')
     inTransaction = false
     return result.rows.map((row: Record<string, unknown>) => decodeOutcomeRow(row))
@@ -263,6 +333,12 @@ function normalizeCooldownFence(value: unknown, field: string): NonNullable<Acco
 function normalizedLimit(value: number): number {
   if (!Number.isInteger(value) || value < 1 || value > 1_000) throw new Error('J1 outcome 查询 limit 必须在 1..1000')
   return value
+}
+
+function normalizeAccountOutcomeQuery(value: { accountIds: string[]; observedAfter: string }): { accountIds: string[]; observedAfter: string } {
+  if (!Array.isArray(value.accountIds) || value.accountIds.length > 50) throw new Error('J1 outcome 账户查询最多允许 50 个账户')
+  const accountIds = [...new Set(value.accountIds.map((accountId) => requiredText(accountId, 'outcome accountId')))]
+  return { accountIds, observedAfter: requiredIso(value.observedAfter, 'outcome observedAfter') }
 }
 
 function normalizeOutcomeCursor(value: AccountHealthJobsOutcomeCursor | undefined): AccountHealthJobsOutcomeCursor | undefined {

@@ -220,6 +220,7 @@
 
               <AccountErrorPolicyCard
                 v-model:rules="errorPolicyRules"
+                :inherited-error-policy-rules="inheritedErrorPolicyRules"
                 :readonly="authorizedEditing"
               />
 
@@ -271,7 +272,7 @@ import {
   endpointModesEqual
 } from './accountEndpointModes'
 import type { AccountFormModel } from './accountFormTypes'
-import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
@@ -284,6 +285,7 @@ interface SelectOption<T = string> {
 
 const open = defineModel<boolean>('open', { required: true })
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
+const inheritedErrorPolicyRules = defineModel<AccountErrorPolicyInheritedRule[]>('inheritedErrorPolicyRules', { default: () => [] })
 const responseInspectionRules = defineModel<AccountResponseInspectionRuleForm[]>('responseInspectionRules', { required: true })
 const advancedActiveKeys = ref<string[]>([])
 

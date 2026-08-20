@@ -9,6 +9,10 @@ import type {
 } from '../domain/types.js'
 import { normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
 import type { AccountBalanceQueryConfig } from '../modules/accounts/account-balance.types.js'
+import {
+  effectiveAccountErrorHandlingRules,
+  type EffectiveAccountErrorHandlingRule
+} from '../modules/accounts/account-error-policy-system-rules.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { decryptJson } from './crypto.js'
@@ -62,6 +66,7 @@ export interface AccountAdvancedDetail {
   configRevision: number
   accessType: 'owner' | 'authorized'
   credentials?: AccountCredentials
+  effectiveErrorHandlingRules: EffectiveAccountErrorHandlingRule[]
   modelMappings: AccountModelMapping[]
   proxyProfileId?: string
   availabilitySchedule?: AccountAvailabilitySchedule
@@ -137,8 +142,11 @@ export async function findAccountAdvancedDetailAsync(
     WHERE account_id = ?
     ORDER BY source_model ASC, source_endpoint_family ASC
   `, [factAccountId])
-  const advancedCredentials = !authorized && row.credentials_encrypted
-    ? projectAdvancedEditableCredentials(decryptJson<AccountCredentials>(row.credentials_encrypted))
+  const ownerCredentials = !authorized && row.credentials_encrypted
+    ? decryptJson<AccountCredentials>(row.credentials_encrypted)
+    : undefined
+  const advancedCredentials = ownerCredentials
+    ? projectAdvancedEditableCredentials(ownerCredentials)
     : undefined
 
   return {
@@ -148,6 +156,7 @@ export async function findAccountAdvancedDetailAsync(
     ...(advancedCredentials && Object.keys(advancedCredentials).length > 0
       ? { credentials: advancedCredentials }
       : {}),
+    effectiveErrorHandlingRules: effectiveAccountErrorHandlingRules(ownerCredentials?.error_handling_rules),
     modelMappings: mappingRows.map(accountAdvancedDetailMappingFromRow),
     proxyProfileId: (authorized ? row.source_proxy_profile_id : row.proxy_profile_id) ?? undefined,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(authorized

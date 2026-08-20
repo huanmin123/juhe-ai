@@ -27,7 +27,11 @@ import {
 import {
   loadAccountErrorPolicyRules
 } from './accountErrorPolicyPayload'
-import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import {
+  systemInheritedErrorPolicyRulesPreview,
+  type AccountErrorPolicyInheritedRule,
+  type AccountErrorPolicyRuleForm
+} from './accountErrorPolicyTypes'
 import {
   loadAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
@@ -116,6 +120,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const cloningScheduleFingerprint = ref<string>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
+  const inheritedErrorPolicyRules = ref<AccountErrorPolicyInheritedRule[]>(systemInheritedErrorPolicyRulesPreview())
   const accountResponseInspectionRules = ref<AccountResponseInspectionRuleForm[]>(loadAccountResponseInspectionRules())
   let formOpenRequestToken = 0
 
@@ -319,6 +324,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     resetDeferredAccountOptionState()
     ensureDefaultGroupSelected(form.providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
+    inheritedErrorPolicyRules.value = systemInheritedErrorPolicyRulesPreview()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
     authResult.value = undefined
   }
@@ -784,6 +790,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingScheduleFingerprint.value = advancedLoad?.scheduleFingerprint
     cloningScheduleFingerprint.value = undefined
     accountErrorPolicyRules.value = advancedLoad?.errorPolicyRules ?? loadAccountErrorPolicyRules()
+    inheritedErrorPolicyRules.value = advancedLoad?.inheritedErrorPolicyRules ?? []
     accountResponseInspectionRules.value = advancedLoad?.responseInspectionRules ?? loadAccountResponseInspectionRules()
     authResult.value = undefined
     return true
@@ -842,6 +849,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     Object.assign(form, formLoad.patch)
     cloningScheduleFingerprint.value = formLoad.scheduleFingerprint
     accountErrorPolicyRules.value = formLoad.errorPolicyRules
+    inheritedErrorPolicyRules.value = formLoad.inheritedErrorPolicyRules
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
     modalOpen.value = true
@@ -962,6 +970,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountAdvancedDetailLoading,
     accountEditDetailLoading,
     accountErrorPolicyRules,
+    inheritedErrorPolicyRules,
     accountResponseInspectionRules,
     accountApiKeyRuntimeDetails,
     accountApiKeyRuntimeLoading,

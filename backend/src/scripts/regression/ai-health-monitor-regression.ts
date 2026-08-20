@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import express from 'express'
 
@@ -16,12 +17,22 @@ runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.accountHealthJobs.outcomeSqlitePath = join(tempRoot, 'j1-outcomes.sqlite3')
 runtimeConfig.secret = 'ai-health-monitor-regression-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+const jobsOutcomeDatabase = new DatabaseSync(runtimeConfig.accountHealthJobs.outcomeSqlitePath)
+jobsOutcomeDatabase.exec(`
+  CREATE TABLE account_health_outcomes (
+    outcome_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+  )
+`)
 
 const [databaseModule, repositories, usageStatsRepository, healthMonitorRepository, accountNameSearchRepository, { statsRouter }, auth, { requestContextMiddleware }] = await Promise.all([
   import('../../storage/database.js'),
@@ -51,9 +62,9 @@ try {
   const workerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
   assert.doesNotMatch(monitorSource, /\busage_records\b/i, '健康监控请求路径不得扫描使用记录明细')
   assert.match(monitorSource, /FROM account_health_hourly/, '健康监控必须查询小时预聚合表')
-  assert.match(monitorSource, /SELECT account_id, stat_hour, status, source_order/, '健康列表只应读取小时槽状态字段')
+  assert.match(monitorSource, /SELECT account_id, stat_hour, status, last_observed_at, source_order/, '健康列表只应读取小时槽状态与选取较新结果所需的观察时间')
   assert.doesNotMatch(monitorSource, /SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message/, '单点详情外层不得返回未消费的账户和小时定位字段')
-  assert.match(monitorSource, /SELECT status, last_observed_at, status_code, error_code, error_message\s+FROM \(/, '单点详情外层只应投影抽屉消费字段')
+  assert.match(monitorSource, /SELECT status, last_observed_at, status_code, error_code, error_message, source_order\s+FROM \(/, '单点详情外层只应投影抽屉消费字段和冲突优先级')
   assert.match(monitorSource, /account_name_search_terms/, '账户名包含搜索必须使用增量维护的搜索候选表')
   assert.doesNotMatch(monitorSource, /instr\(lower\(accounts\.name\)|position\(lower\(\?\) in lower\(accounts\.name\)\)/, '健康列表不得扫描 lower(name) 完成包含搜索')
   assert.match(monitorSource, /\(accounts\.last_used_at IS NULL\) ASC,[\s\S]+accounts\.last_used_at DESC,[\s\S]+accounts\.name ASC/, '健康监控应按最近使用时间和名称稳定排序')
@@ -146,6 +157,41 @@ try {
     healthMonitorRepository.getAiHealthHourDetail({ systemAccountId: 'sys_other', role: 'user' }, account.id, failureSlot.statHour),
     undefined,
     '小时详情必须在读取统计详情前按账户所有权拒绝跨用户访问'
+  )
+
+  const j1Account = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
+    name: 'AI 健康 J1 实时回归账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-ai-health-j1-regression', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
+    healthCheckModel: 'gpt-5.1',
+    groupId: group.id
+  }, access)
+  const j1EarlierAt = new Date(Date.now() - 3_000).toISOString()
+  const j1LatestAt = new Date(Date.now() - 2_000).toISOString()
+  insertJ1Outcome('j1-health-success', j1Account.id, j1EarlierAt, 'complete_success')
+  insertJ1Outcome('j1-health-failure', j1Account.id, j1LatestAt, 'upstream_failure', 503, 'upstream_unavailable', 'J1 上游暂时不可用')
+  insertJ1Outcome('j1-health-stale', j1Account.id, new Date(Date.now() - 1_000).toISOString(), 'stale')
+  const j1Result = healthMonitorRepository.getAiHealthList(access, { hours: 1, keyword: 'J1 实时回归', page: 1, pageSize: 20 })
+  assert.equal(j1Result.items.length, 1, 'J1-only 账户应在健康监控列表中可见')
+  assert.equal(j1Result.items[0]?.successHours, 0, '同小时 J1 较早成功必须被较晚失败覆盖')
+  assert.equal(j1Result.items[0]?.failureHours, 1, 'J1 upstream failure 必须显示为不可用')
+  assert.equal(j1Result.items[0]?.latestStatus, 'failure')
+  const j1Slot = j1Result.items[0]?.hours.find((hour) => hour.status === 'failure')
+  assert.ok(j1Slot)
+  assert.deepEqual(
+    healthMonitorRepository.getAiHealthHourDetail(access, j1Account.id, j1Slot.statHour),
+    {
+      statHour: j1Slot.statHour,
+      status: 'failure',
+      lastObservedAt: j1LatestAt,
+      statusCode: 503,
+      errorCode: 'upstream_unavailable',
+      errorMessage: 'J1 上游暂时不可用'
+    },
+    'J1 小时详情必须返回较晚 outcome 的脱敏诊断'
   )
   databaseModule.getStatsDatabase().prepare(`
     INSERT INTO account_quality_health_hourly (
@@ -296,6 +342,35 @@ try {
     }
   }
 
+  function insertJ1Outcome(
+    outcomeId: string,
+    accountId: string,
+    observedAt: string,
+    outcome: 'complete_success' | 'upstream_failure' | 'stale',
+    statusCode?: number,
+    errorCode?: string,
+    errorMessage?: string
+  ): void {
+    jobsOutcomeDatabase.prepare('INSERT INTO account_health_outcomes(outcome_id, account_id, observed_at, payload) VALUES (?, ?, ?, ?)').run(
+      outcomeId,
+      accountId,
+      observedAt,
+      JSON.stringify({
+        outcome_id: outcomeId,
+        request_id: `request-${outcomeId}`,
+        account_id: accountId,
+        outcome,
+        observed_at: observedAt,
+        input_version: 1,
+        config_revision: 1,
+        dispatch_revision: 1,
+        ...(statusCode === undefined ? {} : { status_code: statusCode }),
+        ...(errorCode === undefined ? {} : { error_code: errorCode }),
+        ...(errorMessage === undefined ? {} : { error_message: errorMessage })
+      })
+    )
+  }
+
   function seedLargeAccountFixture(count: number): void {
     const nowIso = new Date().toISOString()
     const insert = databaseModule.getBusinessDatabase().prepare(`
@@ -411,6 +486,7 @@ try {
   }
 } finally {
   await closeServer(server)
+  jobsOutcomeDatabase.close()
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()

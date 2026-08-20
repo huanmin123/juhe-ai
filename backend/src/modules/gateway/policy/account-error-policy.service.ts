@@ -29,6 +29,10 @@ import {
   normalizeAccountErrorHandlingRules,
   type AccountErrorHandlingRule
 } from '../../accounts/account-error-policy-validation.js'
+import {
+  SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
+  systemInsufficientQuotaRuleMatches
+} from '../../accounts/account-error-policy-system-rules.js'
 import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
@@ -81,6 +85,8 @@ export interface AccountErrorPolicyAccount {
 export interface AccountErrorPolicyDecision {
   action: 'retry_next' | 'cooldown' | 'disable'
   ruleName?: string
+  ruleId?: string
+  ruleSource?: 'system' | 'account'
   cooldownUntil?: string
   cooldownStatus?: CooldownAccountStatus
 }
@@ -237,22 +243,32 @@ export function decideAccountErrorPolicy(
   }
 ): AccountErrorPolicyDecision | undefined {
   if (statusCode >= 200 && statusCode <= 299) return undefined
-  const rules = normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
-    .filter((rule) => rule.enabled)
-    .sort((left, right) => left.priority - right.priority)
   const bodyText = bodyFacts?.bodyText ?? body.toString('utf8')
   const payload = bodyFacts?.errorPayload ?? accountErrorPolicyPayload(bodyText, headers, account)
   const errorCode = stringValue(payload.code).toLowerCase()
   const errorType = stringValue(payload.type).toLowerCase()
+  const systemSearchableText = stringValue(payload.message).toLowerCase()
+  if (systemInsufficientQuotaRuleMatches({ statusCode, errorCode, errorType, searchableText: systemSearchableText })) {
+    return {
+      action: 'disable',
+      ruleId: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
+      ruleName: '上游额度不足',
+      ruleSource: 'system'
+    }
+  }
+  const rules = normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
+    .filter((rule) => rule.enabled)
+    .sort((left, right) => left.priority - right.priority)
   const searchableText = bodyText.toLowerCase()
   const rule = rules.find((candidate) => accountErrorRuleMatches(candidate, statusCode, errorCode, errorType, searchableText))
   if (!rule) return undefined
-  if (rule.action === 'retry_next') return { action: 'retry_next', ruleName: rule.name }
-  if (rule.action === 'error_disabled') return { action: 'disable', ruleName: rule.name }
+  if (rule.action === 'retry_next') return { action: 'retry_next', ruleName: rule.name, ruleSource: 'account' }
+  if (rule.action === 'error_disabled') return { action: 'disable', ruleName: rule.name, ruleSource: 'account' }
   if (rule.action === 'rate_limited') {
     return {
       action: 'cooldown',
       ruleName: rule.name,
+      ruleSource: 'account',
       cooldownStatus: 'rate_limited',
       cooldownUntil: accountErrorRuleCooldownUntil(rule, new Date())
     }
@@ -260,6 +276,7 @@ export function decideAccountErrorPolicy(
   return {
     action: 'cooldown',
     ruleName: rule.name,
+    ruleSource: 'account',
     cooldownStatus: 'temporary_unavailable',
     cooldownUntil: new Date(Date.now() + settings.defaultTemporaryUnschedulableMinutes * 60_000).toISOString()
   }
@@ -270,6 +287,7 @@ export function accountErrorPolicyCouldMatchStatus(
   statusCode: number
 ): boolean {
   if (statusCode >= 200 && statusCode <= 299) return false
+  if (statusCode === 403) return true
   return normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
     .some((rule) => rule.enabled && (!rule.status_codes?.length || rule.status_codes.includes(statusCode)))
 }
@@ -441,7 +459,8 @@ function explicitAccountErrorPolicyReason(
   const failure = statusCode === undefined
     ? genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
     : genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-  return `账户错误策略「${decision.ruleName ?? '未命名规则'}」命中；${failure}`.slice(0, 1000)
+  const policyLabel = decision.ruleSource === 'system' ? '系统继承错误策略' : '账户错误策略'
+  return `${policyLabel}「${decision.ruleName ?? '未命名规则'}」命中；${failure}`.slice(0, 1000)
 }
 
 function authorizedAccountBindingRuntimeTarget(account: AccountErrorPolicyAccount): AuthorizedAccountBindingRuntimeTarget | undefined {

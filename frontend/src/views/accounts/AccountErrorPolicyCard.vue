@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <section class="error-policy-shell">
     <a-collapse v-model:activeKey="policyActiveKeys" class="error-policy-collapse" expand-icon-position="end">
       <a-collapse-panel key="policy">
@@ -12,7 +12,7 @@
                 </a-tooltip>
               </h4>
               <a-space :size="6" wrap>
-                <a-tag color="blue">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
+                <a-tag color="blue">{{ enabledRuleCount }}/{{ displayRules.length }} 启用</a-tag>
                 <a-tag v-if="readonly" color="default">只读</a-tag>
               </a-space>
             </div>
@@ -39,89 +39,90 @@
             </a-popconfirm>
           </a-space>
 
-          <a-empty v-if="rules.length === 0" class="compact-empty" :description="contextGuide.emptyDescription">
+          <a-empty v-if="displayRules.length === 0" class="compact-empty" :description="contextGuide.emptyDescription">
             <a-space v-if="!readonly">
               <a-button type="primary" @click="addBlankRule">添加专属规则</a-button>
             </a-space>
           </a-empty>
 
           <a-collapse v-else v-model:activeKey="activeRuleKeys" class="rule-collapse" ghost>
-            <a-collapse-panel v-for="(rule, index) in rules" :key="ruleKey(index)" class="rule-panel" :class="{ disabled: rule.enabled === false }">
+            <a-collapse-panel v-for="item in displayRules" :key="item.key" class="rule-panel" :class="{ disabled: item.rule.enabled === false }">
               <template #header>
                 <div class="rule-summary">
                   <div class="rule-summary-main">
                     <a-switch
-                      v-model:checked="rule.enabled"
+                      v-model:checked="item.rule.enabled"
                       size="small"
                       checked-children="启"
                       un-checked-children="停"
-                      :disabled="readonly"
+                      :disabled="readonly || item.inherited"
                       @click.stop
                     />
-                    <a-tag class="priority-tag" color="blue">P{{ rule.priority ?? '-' }}</a-tag>
-                    <a-tag :color="actionColor(rule.action)">{{ actionLabel(rule.action) }}</a-tag>
-                    <strong>{{ rule.name || '未命名规则' }}</strong>
+                    <a-tag class="priority-tag" color="blue">P{{ item.rule.priority ?? '-' }}</a-tag>
+                    <a-tag v-if="item.inherited" color="cyan">继承</a-tag>
+                    <a-tag :color="actionColor(item.rule.action)">{{ actionLabel(item.rule.action) }}</a-tag>
+                    <strong>{{ item.rule.name || '未命名规则' }}</strong>
                   </div>
-                  <span class="rule-condition-summary">{{ ruleConditionSummary(rule) }}</span>
+                  <span class="rule-condition-summary">{{ ruleConditionSummary(item.rule) }}</span>
                 </div>
               </template>
 
-              <template v-if="!readonly" #extra>
+              <template v-if="!readonly && !item.inherited" #extra>
                 <a-space class="rule-actions" wrap @click.stop>
-                  <a-button size="small" :disabled="index === 0" @click="moveRule(index, -1)">上移</a-button>
-                  <a-button size="small" :disabled="index === rules.length - 1" @click="moveRule(index, 1)">下移</a-button>
-                  <a-button size="small" danger @click="removeRule(index)">删除</a-button>
+                  <a-button size="small" :disabled="item.localIndex === 0" @click="moveRule(item.localIndex, -1)">上移</a-button>
+                  <a-button size="small" :disabled="item.localIndex === rules.length - 1" @click="moveRule(item.localIndex, 1)">下移</a-button>
+                  <a-button size="small" danger @click="removeRule(item.localIndex)">删除</a-button>
                 </a-space>
               </template>
 
               <div class="rule-editor">
                 <div class="form-grid error-rule-grid compact">
                   <a-form-item label="规则名称">
-                    <a-input v-model:value="rule.name" :disabled="readonly" placeholder="例如 429 临时限流" />
+                    <a-input v-model:value="item.rule.name" :disabled="readonly || item.inherited" placeholder="例如 429 临时限流" />
                   </a-form-item>
                   <a-form-item label="优先级" tooltip="小值先匹配。多条规则都能命中时，优先执行优先级更靠前的规则。">
-                    <a-input-number v-model:value="rule.priority" :disabled="readonly" :min="1" :max="9999" style="width: 100%" />
+                    <a-input-number v-model:value="item.rule.priority" :disabled="readonly || item.inherited" :min="1" :max="9999" style="width: 100%" />
                   </a-form-item>
                   <a-form-item label="处理动作" tooltip="命中规则后对账号做什么处理，例如短期避让、进入限流冷却或标记为异常。">
-                    <a-select v-model:value="rule.action" :disabled="readonly" :options="actionOptions" />
+                    <a-select v-model:value="item.rule.action" :disabled="readonly || item.inherited" :options="actionOptions" />
                   </a-form-item>
                 </div>
 
                 <div class="form-grid error-rule-grid matcher-grid">
                   <a-form-item label="状态码" tooltip="匹配上游 HTTP 状态码，例如 429、502、503。多个值用逗号、分号或换行分隔。">
-                    <a-input v-model:value="rule.status_codes" :disabled="readonly" placeholder="429, 502, 503" />
+                    <a-input v-model:value="item.rule.status_codes" :disabled="readonly || item.inherited" placeholder="429, 502, 503" />
                   </a-form-item>
                   <a-form-item label="错误码" tooltip="匹配响应体 error.code，例如 insufficient_quota。不同供应商字段可能不同，可先从审计日志或运行日志确认。">
-                    <a-input v-model:value="rule.error_codes" :disabled="readonly" placeholder="insufficient_quota" />
+                    <a-input v-model:value="item.rule.error_codes" :disabled="readonly || item.inherited" placeholder="insufficient_quota" />
                   </a-form-item>
                   <a-form-item label="错误类型" tooltip="匹配响应体 error.type，例如 rate_limit_exceeded。适合供应商把错误原因放在 type 字段的场景。">
-                    <a-input v-model:value="rule.error_types" :disabled="readonly" placeholder="rate_limit_exceeded" />
+                    <a-input v-model:value="item.rule.error_types" :disabled="readonly || item.inherited" placeholder="rate_limit_exceeded" />
                   </a-form-item>
                   <a-form-item label="关键词" tooltip="匹配错误消息文本中的关键词。多个关键词用英文或中文逗号分隔；任一关键词命中即可。">
-                    <a-textarea v-model:value="rule.keywords" :disabled="readonly" :rows="1" auto-size placeholder="多个关键词仅用英文或中文逗号分隔" />
+                    <a-textarea v-model:value="item.rule.keywords" :disabled="readonly || item.inherited" :rows="1" auto-size placeholder="多个关键词仅用英文或中文逗号分隔" />
                   </a-form-item>
                 </div>
 
-                <div v-if="rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
+                <div v-if="item.rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
                   <a-form-item label="恢复策略" tooltip="账号进入限流后什么时候自动恢复候选。按时长、每天固定时间或每周固定时间恢复。">
-                    <a-select v-model:value="rule.reset_strategy" :disabled="readonly" :options="accountErrorRecoveryStrategyOptions" />
+                    <a-select v-model:value="item.rule.reset_strategy" :disabled="readonly || item.inherited" :options="accountErrorRecoveryStrategyOptions" />
                   </a-form-item>
-                  <a-form-item v-if="rule.reset_strategy === 'duration'" label="恢复小时数">
-                    <a-input-number v-model:value="rule.duration_hours" :disabled="readonly" :min="1" :max="720" style="width: 100%" />
+                  <a-form-item v-if="item.rule.reset_strategy === 'duration'" label="恢复小时数">
+                    <a-input-number v-model:value="item.rule.duration_hours" :disabled="readonly || item.inherited" :min="1" :max="720" style="width: 100%" />
                   </a-form-item>
-                  <a-form-item v-if="rule.reset_strategy === 'daily'" label="每天恢复时间">
-                    <a-select v-model:value="rule.daily_reset_hour" :disabled="readonly" :options="accountErrorHourOptions" />
+                  <a-form-item v-if="item.rule.reset_strategy === 'daily'" label="每天恢复时间">
+                    <a-select v-model:value="item.rule.daily_reset_hour" :disabled="readonly || item.inherited" :options="accountErrorHourOptions" />
                   </a-form-item>
-                  <a-form-item v-if="rule.reset_strategy === 'weekly'" label="每周恢复日">
-                    <a-select v-model:value="rule.weekly_reset_day" :disabled="readonly" :options="accountErrorWeekdayOptions" />
+                  <a-form-item v-if="item.rule.reset_strategy === 'weekly'" label="每周恢复日">
+                    <a-select v-model:value="item.rule.weekly_reset_day" :disabled="readonly || item.inherited" :options="accountErrorWeekdayOptions" />
                   </a-form-item>
-                  <a-form-item v-if="rule.reset_strategy === 'weekly'" label="每周恢复时间">
-                    <a-select v-model:value="rule.weekly_reset_hour" :disabled="readonly" :options="accountErrorHourOptions" />
+                  <a-form-item v-if="item.rule.reset_strategy === 'weekly'" label="每周恢复时间">
+                    <a-select v-model:value="item.rule.weekly_reset_hour" :disabled="readonly || item.inherited" :options="accountErrorHourOptions" />
                   </a-form-item>
                 </div>
 
                 <a-form-item label="说明">
-                  <a-textarea v-model:value="rule.description" :disabled="readonly" :rows="1" auto-size placeholder="可写为什么要这样处理" />
+                  <a-textarea v-model:value="item.rule.description" :disabled="readonly || item.inherited" :rows="1" auto-size placeholder="可写为什么要这样处理" />
                 </a-form-item>
               </div>
             </a-collapse-panel>
@@ -186,6 +187,7 @@ import {
   accountErrorHourOptions,
   accountErrorRecoveryStrategyOptions,
   accountErrorWeekdayOptions,
+  type AccountErrorPolicyInheritedRule,
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicyTypes'
 import {
@@ -208,18 +210,34 @@ const props = withDefaults(defineProps<{
   baseUrl?: string
   providerCode?: string
   readonly?: boolean
+  inheritedErrorPolicyRules?: AccountErrorPolicyInheritedRule[]
 }>(), {
   accountType: '',
   baseUrl: '',
   providerCode: '',
-  readonly: false
+  readonly: false,
+  inheritedErrorPolicyRules: () => []
 })
 
 const policyActiveKeys = ref<string[]>([])
 const activeRuleKeys = ref<string[]>([])
 const guideOpen = ref(false)
 const actionOptions = accountErrorActionSelectOptions
-const enabledRuleCount = computed(() => rules.value.filter((rule) => rule.enabled !== false).length)
+const displayRules = computed(() => [
+  ...props.inheritedErrorPolicyRules.map((rule) => ({
+    key: `inherited:${rule.id}`,
+    inherited: true,
+    localIndex: -1,
+    rule
+  })),
+  ...rules.value.map((rule, localIndex) => ({
+    key: ruleKey(localIndex),
+    inherited: false,
+    localIndex,
+    rule
+  }))
+])
+const enabledRuleCount = computed(() => displayRules.value.filter((item) => item.rule.enabled !== false).length)
 const contextGuide = computed(() => resolveAccountErrorPolicyContextGuide({
   accountType: props.accountType,
   baseUrl: props.baseUrl,
@@ -289,7 +307,7 @@ function normalizePriorities() {
 }
 
 function expandAllRules() {
-  activeRuleKeys.value = rules.value.map((_, index) => ruleKey(index))
+  activeRuleKeys.value = displayRules.value.map((item) => item.key)
 }
 
 function collapseAllRules() {

@@ -26,11 +26,11 @@
 
 ## 3. 小时聚合
 
-- 历史事实只取 `traffic_source = account_health_check` 的使用记录。
-- 按统计时区聚合到 `account_health_hourly`。
+- 迁移前历史取 `traffic_source = account_health_check` 的使用记录，并按统计时区聚合到 `account_health_hourly`。
+- J1 Go-owner 启用后，当前窗口内的健康事实从 jobs-owned outcome store 只读取得；页面按当前页账户和时间窗查询，不把 outcome 回写为 usage record 或 `account_health_hourly`。同一账户同一小时取最新的非 `stale` outcome；`complete_success` 为 `success`，其他已完成 outcome 为 `failure`。
 - 同一账户同一小时有多次结果时，以 `created_at, id` 较新的记录为准。
 - 成功写入 `success`，失败写入 `failure`，没有聚合行时由查询层补为 `unknown`。
-- 页面请求只读取小时预聚合表，不扫描使用记录分片。
+- 页面请求不扫描使用记录分片；它读取已有小时预聚合历史，并在 J1 Go-owner 模式合并只读 outcome。
 
 可用率口径：
 

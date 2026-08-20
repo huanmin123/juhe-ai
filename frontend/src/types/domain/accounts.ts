@@ -534,8 +534,34 @@ export interface AccountAdvancedDetail {
   temporaryUnavailableContinuousProbeEnabled: boolean
   balanceQueryEnabled: boolean
   balanceQueryConfig?: AccountBalanceQueryConfig
+  /**
+   * Effective rules are display-only metadata.  Account credentials remain the
+   * sole source of editable account-local rules.
+   */
+  effectiveErrorHandlingRules?: AccountEffectiveErrorHandlingRule[]
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
+}
+
+export interface AccountEffectiveErrorHandlingRule {
+  id: string
+  source: 'system' | 'account'
+  inherited: boolean
+  editable: boolean
+  enabled: boolean
+  name: string
+  priority: number
+  status_codes?: number[]
+  error_codes?: string[]
+  error_types?: string[]
+  keywords?: string[]
+  action: 'retry_next' | 'rate_limited' | 'temp_unschedulable' | 'error_disabled'
+  reset_strategy?: 'duration' | 'daily' | 'weekly'
+  duration_hours?: number
+  daily_reset_hour?: number
+  weekly_reset_day?: number
+  weekly_reset_hour?: number
+  description?: string
 }
 
 export interface AccountOAuthReauthorizationContext {

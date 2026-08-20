@@ -55,6 +55,7 @@ try {
   await verifyStreamPrecommitOverflowCancellationReleasesTimers()
   await verifyNonStreamBodyDeadlineRace()
   await verifyStreamBodyDeadlineRace()
+  await verifyEqualStreamFirstByteAndPrecommitDeadlinePrefersWall()
   await verifyOpaqueDataSupersedesPendingStreamDeadline()
   await verifyStreamHeartbeatDoesNotSupersedeDeadlineRace()
   await verifyStreamHeartbeatCannotBypassResponsePrecommitDeadline()
@@ -443,6 +444,56 @@ async function verifyStreamBodyDeadlineRace(): Promise<void> {
   assert.match(response.writtenText(), /chatcmpl_race/)
 }
 
+async function verifyEqualStreamFirstByteAndPrecommitDeadlinePrefersWall(): Promise<void> {
+  const startedAt = Date.now()
+  const responsePrecommitDeadlineAtMs = startedAt + 40
+  const response = fakeResponse()
+  let cutoverDecisionInvocations = 0
+  let iteratorClosed = false
+  const body: AsyncIterable<Uint8Array> = {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      return {
+        next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
+        return: () => {
+          iteratorClosed = true
+          return Promise.resolve({ done: true, value: undefined })
+        }
+      }
+    }
+  }
+  const result = await withTimeout(pipeUpstreamStream(
+    body,
+    response,
+    {
+      firstResponseTimeoutMs: 1_000,
+      firstByteTimeoutMs: 1_000,
+      idleTimeoutMs: 1_000,
+      uncommittedAttemptMaxLifetimeMs: 1_000,
+      noAvailableAccountWaitMs: 1_000
+    },
+    startedAt,
+    async () => {},
+    undefined,
+    {
+      responseProtocol: 'openai_v1',
+      endpointFamily: 'chat_completions',
+      retryBeforeDownstreamWriteUntilOutput: true,
+      firstByteDeadlineMs: 40,
+      responsePrecommitDeadlineAtMs,
+      onFirstByteDeadline: async () => {
+        cutoverDecisionInvocations += 1
+        return 'abort' as const
+      }
+    }
+  ), '同一时刻的流式墙钟/首字 deadline 未在有界时间内收口')
+
+  assert.equal(result.completed, false)
+  assert.equal(result.errorCode, 'gateway_request_wall_budget_exhausted', '并列 deadline 必须保留请求墙钟错误码')
+  assert.equal(result.transportFailure, undefined, '请求墙钟不得伪装成账户首字超时')
+  assert.equal(cutoverDecisionInvocations, 0, '请求墙钟优先时不得创建流式切号决策或预占')
+  assert.equal(iteratorClosed, true, '请求墙钟到期必须关闭未产生输出的流 iterator')
+}
+
 async function verifyOpaqueDataSupersedesPendingStreamDeadline(): Promise<void> {
   const pendingRead = controlledUpstreamBody(Buffer.from('opaque raw read'))
   const deadlineObserved = deferred<void>()
@@ -745,7 +796,7 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
     import('../../storage/sqlite-read-worker-pool.js')
   ])
 
-  type TerminalKind = 'node_204' | 'node_preheader_error'
+  type TerminalKind = 'node_complete_response' | 'node_preheader_error'
   type ActiveTerminal = {
     kind: TerminalKind
     primaryKey: string
@@ -777,9 +828,9 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
       if (active && key === active.primaryKey) {
         active.requestObserved.resolve()
         await active.allowUpstreamTerminal.promise
-        if (active.kind === 'node_204') {
-          res.writeHead(204)
-          res.end()
+        if (active.kind === 'node_complete_response') {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(openAIJsonBody('primary terminal response')))
         } else {
           res.destroy(new Error(`first-byte reservation ownership ${active.kind}`))
         }
@@ -868,7 +919,7 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
     const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
     const failures: Error[] = []
-    for (const kind of ['node_204', 'node_preheader_error'] as const) {
+    for (const kind of ['node_complete_response', 'node_preheader_error'] as const) {
       accountCircuit.resetGatewayAccountCircuitStoreForTest()
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
       await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(apiKey.routeStrategyId)
@@ -908,8 +959,9 @@ async function verifyGatewayReservationOwnershipForDetachedDeadlineTerminals(): 
         await withTimeout(terminal.decisionObserved.promise, `${kind} configured deadline did not enter reservation creation`)
         terminal.allowUpstreamTerminal.resolve()
         const response = await withTimeout(clientRequest, `${kind} gateway terminal did not reach the client`)
-        if (kind === 'node_204') {
-          assert.equal(response.status, 204, '204 upstream terminal must remain a 204 client response')
+        if (kind === 'node_complete_response') {
+          assert.equal(response.status, 200, '完整上游响应必须保持成功，不得因迟到 reservation 改为切号或失败')
+          assert.match(response.body, /primary terminal response/, '完整上游响应必须保留主账号正文')
         }
         await withTimeout(terminal.upstreamTerminalObserved.promise, `${kind} upstream terminal was not emitted`)
         await waitForImmediate()

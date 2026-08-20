@@ -36,7 +36,9 @@ const [
   databaseModule,
   repositories,
   { testOpenAIAccount },
-  { applyAccountErrorHandling },
+  { applyAccountErrorHandling, readGatewaySettings },
+  { handleFailedUpstreamResponse },
+  accountSideEffects,
   { handleDbServiceOperation },
   { closeSqliteReadWorkerPool }
 ] = await Promise.all([
@@ -49,6 +51,8 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/policy/account-error-policy.service.js'),
+  import('../../modules/gateway/response/failure-dispatch.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
@@ -98,6 +102,8 @@ async function main(): Promise<void> {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     })
+    runtimeConfig.accountHealthJobs.inputDirectory = join(tempRoot, 'account-health-jobs-input')
+    runtimeConfig.accountHealthJobs.inputSigningKey = 'disabled-account-guard-j1-signing-key'
     const group = repositories.createGroup({
       name: '停用账户状态保护回归分组',
       providerCode: 'gpt'
@@ -105,6 +111,7 @@ async function main(): Promise<void> {
     const account = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
       name: '停用账户状态保护回归',
       type: 'api_key',
       credentials: {
@@ -161,6 +168,7 @@ async function main(): Promise<void> {
     const unschedulableBeforeDisabled = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
       name: '停用保留不可调度意愿',
       type: 'api_key',
       credentials: {
@@ -190,6 +198,144 @@ async function main(): Promise<void> {
     })
     assert(errorHandlingResult.changed === false && errorHandlingResult.accountStatus === 'disabled', '错误处理不应改变停用账户')
     assertAccountStatus(account.id, 'disabled', true, '错误处理写回不应改变停用状态或调度意愿')
+
+    const quotaAccount = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
+      name: '系统额度规则失败分发回归',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-system-quota-failure-dispatch',
+        base_url: 'http://127.0.0.1:9/v1'
+      },
+      status: 'active',
+      schedulable: true,
+      groupId: group.id
+    }, access)
+    activateAccount(quotaAccount.id)
+    const quotaGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, quotaAccount.id, 'sys_admin', { ignoreAvailability: true })
+    assert(quotaGatewayAccount?.status === 'active', '系统额度规则回归账户应为可用网关账户')
+    const quotaRequest = {
+      method: 'POST',
+      path: '/chat/completions',
+      originalUrl: '/v1/chat/completions',
+      headers: {},
+      body: { model: 'gpt-4o-mini', messages: [{ role: 'user', content: '额度回归' }] },
+      header: () => undefined
+    }
+    const quotaAuditMetadata: Array<{ label?: string, metadata?: Record<string, unknown> }> = []
+    const quotaDispatchResult = await handleFailedUpstreamResponse({
+      req: quotaRequest,
+      requestLane: 'text',
+      usageContext: {
+        traceId: 'system-quota-failure-dispatch-trace',
+        trafficSource: 'gateway',
+        systemAccountId: 'sys_admin',
+        apiKeyId: 'system-quota-failure-dispatch-key',
+        groupId: group.id,
+        endpoint: '/v1/chat/completions',
+        requestSnapshot: {}
+      },
+      auditCapture: {
+        completeAttempt() {},
+        addGatewayMetadata(entry: { label?: string, metadata?: Record<string, unknown> }) {
+          quotaAuditMetadata.push(entry)
+        }
+      },
+      auditAttemptId: 'system-quota-failure-dispatch-attempt',
+      account: quotaGatewayAccount,
+      upstreamUrl: 'http://127.0.0.1:9/v1/chat/completions',
+      response: {
+        status: 403,
+        ok: false,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: (async function * (): AsyncGenerator<Uint8Array> {
+          yield Buffer.from('{"error":{"code":"insufficient_user_quota","message":"余额不足"}}')
+        })()
+      },
+      settings: readGatewaySettings(),
+      attemptStartedAt: Date.now() - 5,
+      attemptIndex: 0,
+      auditAttemptIndex: 0,
+      signal: new AbortController().signal,
+      accountStateMutationEnabled: true,
+      automaticAccountStateMutationEnabled: false
+    } as unknown as Parameters<typeof handleFailedUpstreamResponse>[0])
+    assert(quotaDispatchResult.action === 'skip_account' && quotaDispatchResult.failureKind === 'explicit_policy', '系统额度规则必须走显式策略切号分支')
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    assertAccountStatus(quotaAccount.id, 'error', false, '系统额度规则必须将账户持久化为异常且不可调度')
+    assert(
+      quotaAuditMetadata.some((entry) => entry.label === 'account_error_policy_matched' && entry.metadata?.ruleSource === 'system' && entry.metadata?.ruleId === 'system.upstream_insufficient_quota'),
+      '系统额度规则必须写入来源和规则 ID 审计元数据'
+    )
+    assert(
+      !Reflect.ownKeys(quotaRequest).some((key) => typeof key === 'symbol' && String(key).includes('requestFailureHealthCheckDispatched')),
+      '系统额度规则命中后不得派发低上下文 request_failure 健康探针'
+    )
+
+    const opaque403Account = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
+      name: '裸 403 探针分发回归',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-opaque-403-failure-dispatch',
+        base_url: 'http://127.0.0.1:9/v1'
+      },
+      status: 'active',
+      schedulable: true,
+      groupId: group.id
+    }, access)
+    activateAccount(opaque403Account.id)
+    const opaque403GatewayAccount = repositories.findOpenAIAccountForGroup(group.id, opaque403Account.id, 'sys_admin', { ignoreAvailability: true })
+    assert(opaque403GatewayAccount?.status === 'active', '裸 403 回归账户应为可用网关账户')
+    const opaque403Request = {
+      method: 'POST',
+      path: '/chat/completions',
+      originalUrl: '/v1/chat/completions',
+      headers: {},
+      body: { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'opaque 403' }] },
+      header: () => undefined
+    }
+    const opaque403DispatchResult = await handleFailedUpstreamResponse({
+      req: opaque403Request,
+      requestLane: 'text',
+      usageContext: {
+        traceId: 'opaque-403-failure-dispatch-trace',
+        trafficSource: 'gateway',
+        systemAccountId: 'sys_admin',
+        apiKeyId: 'opaque-403-failure-dispatch-key',
+        groupId: group.id,
+        endpoint: '/v1/chat/completions',
+        requestSnapshot: {}
+      },
+      auditCapture: { completeAttempt() {}, addGatewayMetadata() {} },
+      auditAttemptId: 'opaque-403-failure-dispatch-attempt',
+      account: opaque403GatewayAccount,
+      upstreamUrl: 'http://127.0.0.1:9/v1/chat/completions',
+      response: {
+        status: 403,
+        ok: false,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: (async function * (): AsyncGenerator<Uint8Array> {
+          yield Buffer.from('{"error":{"message":"Forbidden"}}')
+        })()
+      },
+      settings: readGatewaySettings(),
+      attemptStartedAt: Date.now() - 5,
+      attemptIndex: 0,
+      auditAttemptIndex: 0,
+      signal: new AbortController().signal,
+      accountStateMutationEnabled: true,
+      automaticAccountStateMutationEnabled: false
+    } as unknown as Parameters<typeof handleFailedUpstreamResponse>[0])
+    assert(opaque403DispatchResult.action === 'skip_account' && opaque403DispatchResult.failureKind === 'opaque_http', '裸 403 不得命中系统额度策略')
+    assert(
+      Reflect.ownKeys(opaque403Request).some((key) => typeof key === 'symbol' && String(key).includes('requestFailureHealthCheckDispatched')),
+      '裸 403 仍必须派发普通 request_failure 健康探针'
+    )
 
     const streamFailureResult = repositories.recordAccountStreamFailure({
       accountId: account.id,
@@ -227,6 +373,7 @@ async function main(): Promise<void> {
     const errorAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
       name: '异常账户测试成功不自动恢复',
       type: 'api_key',
       credentials: {
@@ -264,6 +411,7 @@ async function main(): Promise<void> {
     const errorRaceAccount = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
       name: '异常竞态成功回写不自动恢复',
       type: 'api_key',
       credentials: {
@@ -346,6 +494,7 @@ async function main(): Promise<void> {
     const createdError = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
       name: '创建时异常账户不可调度',
       type: 'api_key',
       credentials: {
@@ -363,6 +512,7 @@ async function main(): Promise<void> {
     const pendingDisable = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-4o-mini'],
       name: '待检查账户允许人工停用',
       type: 'api_key',
       credentials: {
@@ -375,7 +525,7 @@ async function main(): Promise<void> {
     const disabledPending = repositories.updateAccount(pendingDisable.id, { status: 'disabled' }, access)
     assert(disabledPending?.status === 'disabled', '自有待检查账户必须允许人工停用')
 
-    console.log('停用/异常账户状态保护回归通过：测试、恢复、错误处理和熔断写回均不会改变硬状态')
+    console.log('停用/异常账户状态保护回归通过：系统额度 403 分发、测试、恢复、错误处理和熔断写回均符合状态边界')
   } finally {
     await closeServer(appServer)
     await closeSqliteReadWorkerPool().catch(() => undefined)

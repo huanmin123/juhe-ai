@@ -56,7 +56,16 @@ try {
       base_url: 'https://api.openai.com/v1',
       supported_endpoint_modes: ['responses_sse'],
       service_tier_override: 'priority',
-      reasoning_effort_override: 'high'
+      reasoning_effort_override: 'high',
+      error_handling_rules: [{
+        enabled: true,
+        name: '账户自定义限流',
+        priority: 10,
+        status_codes: [429],
+        action: 'rate_limited',
+        reset_strategy: 'duration',
+        duration_hours: 1
+      }]
     },
     supportedModels: ['gpt-5.4-mini'],
     modelMappings: [],
@@ -122,6 +131,7 @@ try {
     'balanceQueryEnabled',
     'configRevision',
     'credentials',
+    'effectiveErrorHandlingRules',
     'id',
     'modelMappings',
     'proxyProfileId',
@@ -130,12 +140,49 @@ try {
   assert.deepEqual(Object.keys(detail).sort(), expectedKeys, 'advanced 必须使用独立字段白名单')
   assert.deepEqual(detail.modelMappings, [])
   assert.deepEqual(Object.keys(detail.credentials ?? {}).sort(), [
+    'error_handling_rules',
     'reasoning_effort_override',
     'service_tier_override'
   ])
   assert.equal(detail.proxyProfileId, proxy.id)
   assert.equal(detail.balanceQueryConfig?.intervalMinutes, 10)
   assert.equal(detail.temporaryUnavailableContinuousProbeEnabled, false)
+  assert.equal(detail.effectiveErrorHandlingRules.length, 2, '高级投影必须合并静态系统与账户规则')
+  assert.deepEqual(detail.effectiveErrorHandlingRules[0], {
+    id: 'system.upstream_insufficient_quota',
+    source: 'system',
+    inherited: true,
+    editable: false,
+    enabled: true,
+    name: '上游额度不足',
+    priority: 1,
+    action: 'error_disabled',
+    status_codes: [403],
+    error_codes: [
+      'insufficient_user_quota',
+      'insufficient_quota',
+      'insufficient_balance',
+      'quota_exceeded',
+      'quota_exhausted',
+      'wallet_balance_exhausted',
+      'pre_consume_token_quota_failed'
+    ],
+    keywords: ['余额不足', '额度不足', 'insufficient balance', 'insufficient quota', 'credit balance too low', 'wallet balance exhausted'],
+    description: '仅在 HTTP 403 且上游明确表示余额或额度不足时将账户标记为异常。'
+  })
+  assert.deepEqual(detail.effectiveErrorHandlingRules[1], {
+    id: 'account.1',
+    source: 'account',
+    inherited: false,
+    editable: true,
+    enabled: true,
+    name: '账户自定义限流',
+    priority: 10,
+    status_codes: [429],
+    action: 'rate_limited',
+    reset_strategy: 'duration',
+    duration_hours: 1
+  })
   assert.equal(capturedSql.length, 2, `advanced 应固定为主投影与模型映射两条查询，实际 ${capturedSql.length} 条`)
   const sql = capturedSql.join('\n')
   assert.doesNotMatch(sql, /SELECT\s+\*/i)
@@ -260,6 +307,11 @@ try {
   assert(authorizedDetail, '授权实例应返回独立的只读高级投影')
   assert.equal(authorizedDetail.accessType, 'authorized')
   assert.equal(authorizedDetail.credentials, undefined, '授权实例高级投影不得读取或返回来源账户凭据')
+  assert.deepEqual(
+    authorizedDetail.effectiveErrorHandlingRules.map((rule) => ({ id: rule.id, source: rule.source, inherited: rule.inherited, editable: rule.editable })),
+    [{ id: 'system.upstream_insufficient_quota', source: 'system', inherited: true, editable: false }],
+    '授权实例只能查看无凭据的系统继承规则'
+  )
   assert.equal(authorizedDetail.authorizationInstanceSourceAccountStatus, 'active')
   assert.equal(authorizedDetail.authorizationInstanceSourceAccountSchedulable, true)
   assert.equal(authorizedDetail.accountExpiresAt, '2027-01-01T00:00:00.000Z')

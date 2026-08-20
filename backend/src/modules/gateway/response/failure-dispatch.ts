@@ -346,7 +346,9 @@ export async function handleFailedUpstreamResponse(
       label: 'account_error_policy_matched',
       metadata: {
         accountId: account.id,
+        ruleId: explicitPolicyDecision.ruleId,
         ruleName: explicitPolicyDecision.ruleName,
+        ruleSource: explicitPolicyDecision.ruleSource,
         action: explicitPolicyDecision.action,
         cooldownStatus: explicitPolicyDecision.cooldownStatus
       }
@@ -364,10 +366,15 @@ export async function handleFailedUpstreamResponse(
     && hasAlternativeAccountApiKeys(account)
   const sameAccountKeyRotation = hasAlternativeAccountApiKeys(account)
     && (explicitPolicyDecision?.action === 'retry_next' || automaticSameAccountKeyRotation)
-  // A complete gateway HTTP failure is independent evidence that this account
-  // needs the fixed-model availability confirmation. The request-level guard
-  // also covers retry_next, whose candidate replay continues below.
-  dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+  // A system quota decision has stronger semantic evidence than the deliberately
+  // small fixed-model probe. Do not enqueue that probe, because a successful
+  // low-context response must not compete with or clear the explicit error state.
+  if (explicitPolicyDecision?.ruleSource !== 'system') {
+    // A complete gateway HTTP failure is independent evidence that this account
+    // needs the fixed-model availability confirmation. The request-level guard
+    // also covers retry_next, whose candidate replay continues below.
+    dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+  }
 
   return {
     action: 'skip_account',

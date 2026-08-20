@@ -176,6 +176,7 @@
     <AccountEditModal
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
+      :inherited-error-policy-rules="inheritedErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
       :api-key-runtime-details="accountApiKeyRuntimeDetails"
@@ -750,6 +751,7 @@ const {
 })
 const {
   accountErrorPolicyRules,
+  inheritedErrorPolicyRules,
   accountResponseInspectionRules,
   accountAdvancedDetailLoaded,
   accountAdvancedDetailLoading,

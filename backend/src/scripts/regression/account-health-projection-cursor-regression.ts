@@ -20,6 +20,13 @@ try {
   assert.equal(advanceAccountHealthProjectionCursor('business-projector', first, database), false)
   assert.deepEqual(currentAccountHealthProjectionCursor('business-projector', database), second)
 
+  const legacyPrecision = { observedAt: '2026-08-16T00:00:00.123Z', outcomeId: 'legacy-precision' }
+  const preciseCursor = { observedAt: '2026-08-16T00:00:00.123456Z', outcomeId: 'legacy-precision' }
+  assert.equal(advanceAccountHealthProjectionCursor('precision-projector', legacyPrecision, database), true)
+  assert.equal(advanceAccountHealthProjectionCursor('precision-projector', preciseCursor, database), true, '同一 outcome 的更高时间精度必须能归一化 durable cursor')
+  assert.equal(advanceAccountHealthProjectionCursor('precision-projector', preciseCursor, database), false, '完全相同的 cursor 必须保持幂等')
+  assert.deepEqual(currentAccountHealthProjectionCursor('precision-projector', database), preciseCursor)
+
   const offsetFirst = { observedAt: '2026-08-16T09:00:00.000+09:00', outcomeId: 'offset-first' }
   const laterZulu = { observedAt: '2026-08-16T00:30:00.000Z', outcomeId: 'later-zulu' }
   assert.equal(advanceAccountHealthProjectionCursor('epoch-projector', offsetFirst, database), true)

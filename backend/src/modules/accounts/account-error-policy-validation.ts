@@ -64,6 +64,9 @@ function normalizeAccountErrorHandlingRule(value: unknown, index: number): Accou
   if (!isRecord(value)) {
     throw new Error(`第 ${index} 条错误处理策略规则格式无效`)
   }
+  if (value.source === 'system' || value.inherited === true || value.editable === false) {
+    throw new Error(`第 ${index} 条错误处理策略规则不能写入系统继承规则`)
+  }
   assertOnlyKeys(value, [
     'enabled',
     'name',

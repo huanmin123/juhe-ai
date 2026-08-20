@@ -17,6 +17,7 @@ const realDateNow = Date.now
 await assertBufferedBodyUsesAbsoluteLifetime(3_600_000, '图片 lane 一小时上限')
 await assertImageBodyCanCrossTextPrecommitWindow()
 await assertBufferedFragmentsUseSharedPrecommitDeadline()
+await assertEqualFirstByteAndPrecommitDeadlinePrefersWall()
 await assertDirectBodyKeepsSharedPrecommitDeadlineAfterCommit()
 await assertRealHttpDirectBodyClosesSocketAtSharedPrecommitDeadline()
 await assertProtocolInspectionOverflowStopsBeforeCommit()
@@ -155,6 +156,38 @@ async function assertImageBodyCanCrossTextPrecommitWindow(): Promise<void> {
     assert.equal(result.completeBodyText, '{"data":[]}', '图片 lane 未传共享文本墙钟时应允许跨过 270 秒')
   } finally {
     Date.now = realDateNow
+    response.destroy()
+  }
+}
+
+async function assertEqualFirstByteAndPrecommitDeadlinePrefersWall(): Promise<void> {
+  const startedAt = Date.now()
+  const responsePrecommitDeadlineAtMs = startedAt + 40
+  const response = mockResponse()
+  let cutoverDecisionInvocations = 0
+  let iteratorClosed = false
+  try {
+    await assert.rejects(
+      () => pipeNonStreamUpstreamResponseForInspection(pendingBody(() => { iteratorClosed = true }), response, {
+        startedAt,
+        inspectBytes: 1024,
+        firstByteTimeoutMs: 1_000,
+        firstByteDeadlineMs: 40,
+        responsePrecommitDeadlineAtMs,
+        onFirstByteDeadline: async () => {
+          cutoverDecisionInvocations += 1
+          return 'abort' as const
+        }
+      }),
+      (error: unknown) => {
+        assert(error instanceof GatewayResponsePrecommitDeadlineError, '首字截止与请求墙钟同时到期时必须归因到请求墙钟')
+        assert.equal(error.deadlineAtMs, responsePrecommitDeadlineAtMs)
+        return true
+      }
+    )
+    assert.equal(cutoverDecisionInvocations, 0, '请求墙钟优先时不得创建首字切号决策或预占')
+    assert.equal(iteratorClosed, true, '请求墙钟到期必须关闭未返回首字的上游 iterator')
+  } finally {
     response.destroy()
   }
 }
@@ -349,6 +382,20 @@ function mockDrippingBody(onClose: () => void): AsyncIterable<Uint8Array> {
           }
           return new Promise<IteratorResult<Uint8Array>>(() => {})
         },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          onClose()
+          return { done: true, value: undefined }
+        }
+      }
+    }
+  }
+}
+
+function pendingBody(onClose: () => void): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
         async return(): Promise<IteratorResult<Uint8Array>> {
           onClose()
           return { done: true, value: undefined }

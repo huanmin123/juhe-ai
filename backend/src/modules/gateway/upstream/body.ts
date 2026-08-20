@@ -628,7 +628,19 @@ async function raceReadWithDeadlines(
         input.signal?.addEventListener('abort', abortListener, { once: true })
       }))
     }
-    return await Promise.race(races)
+    const winner = await Promise.race(races)
+    // The shared request precommit deadline is a hard wall. When it coincides
+    // with the configurable speed-first deadline, preserve the wall-clock
+    // attribution instead of allowing timer registration order to turn it
+    // into a cutover-eligible soft timeout.
+    if (
+      winner.type === 'soft_timeout'
+      && responsePrecommitTimeoutMs !== undefined
+      && responsePrecommitTimeoutMs <= (softTimeoutMs ?? Number.POSITIVE_INFINITY)
+    ) {
+      return { type: 'response_precommit_timeout' }
+    }
+    return winner
   } finally {
     if (softTimer) clearTimeout(softTimer)
     if (hardTimer) clearTimeout(hardTimer)

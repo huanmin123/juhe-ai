@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { buildAccountDraftTestPayload } from '../../src/views/accounts/accountDraftTestPayload'
 import { defaultAccountForm } from '../../src/views/accounts/accountFormDefaults'
 import { FALLBACK_PROVIDERS } from '../../src/views/accounts/accountOptions'
+import { systemInheritedErrorPolicyRulesPreview } from '../../src/views/accounts/accountErrorPolicyTypes'
 import {
   buildAccountSavePayload,
   validateAccountSaveForm
@@ -26,6 +27,8 @@ const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
 const accountsViewSource = readSource('src/views/accounts/AccountsView.vue')
 const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
+const errorPolicyCardSource = readSource('src/views/accounts/AccountErrorPolicyCard.vue')
+const errorPolicyLoaderSource = readSource('src/views/accounts/accountEditFormLoaders.ts')
 const basicInfoSource = readSource('src/views/accounts/AccountBasicInfoSection.vue')
 const editTestSource = readSource('src/views/accounts/useAccountEditTestAction.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
@@ -94,6 +97,15 @@ assert.match(cachedDefaultGroupSource, /getCachedUserReferenceData\(referencePar
 assert.doesNotMatch(cachedDefaultGroupSource, /loadUserReferenceData|api\./, '默认分组缓存缺失时弹窗不得补发网络请求')
 assert.match(cachedDefaultGroupSource, /if \(defaultGroup\) \{[\s\S]*setFormGroup\(defaultGroup\)[\s\S]*return[\s\S]*ensureDefaultGroupSelected\(providerCode\)/, '缓存命中时必须直接复用默认分组，缺失时只能从已加载本地选项选择')
 assert.match(editFormSource, /accounts: ReadonlyValue<AccountListItem\[\]>/, '编辑表单只能把账户列表当作展示 DTO 使用')
+assert.match(errorPolicyLoaderSource, /loadInheritedErrorPolicyRules\(advanced\.effectiveErrorHandlingRules\)/, '错误策略表单加载必须从高级 DTO 提取继承规则')
+assert.match(errorPolicyLoaderSource, /filter\(\(rule\) => rule\.source === 'system' && rule\.inherited === true && rule\.editable === false\)/, '只有不可编辑系统规则可进入继承展示列表')
+assert.match(errorPolicyLoaderSource, /inheritedErrorPolicyRules: systemInheritedErrorPolicyRulesPreview\(\)/, '克隆账户在尚无高级详情 DTO 时也必须展示只读系统规则')
+assert.match(editFormSource, /inheritedErrorPolicyRules\.value = systemInheritedErrorPolicyRulesPreview\(\)/, '新建账户在尚无高级详情 DTO 时也必须展示只读系统规则')
+assert.match(editModalSource, /:inherited-error-policy-rules="inheritedErrorPolicyRules"/, '错误策略卡片必须接收独立继承规则列表')
+assert.match(errorPolicyCardSource, /<a-tag v-if="item\.inherited" color="cyan">继承<\/a-tag>/, '继承规则必须显示继承标签')
+assert.match(errorPolicyCardSource, /!readonly && !item\.inherited/, '继承规则不得显示编辑、排序或删除操作')
+assert.match(errorPolicyCardSource, /displayRules = computed\(\(\) => \[/, '系统规则与本地规则必须合并在同一展示列表')
+assert.match(errorPolicyCardSource, /inheritedErrorPolicyRules\.map[\s\S]*rules\.value\.map/, '展示列表必须系统规则优先且本地规则仍来自可保存表单')
 assert.match(
   editFormSource,
   /editingAccountDetail = ref<AccountEditBasicDetail>\(\)[\s\S]*editingAccountAdvancedDetail = ref<AccountAdvancedDetail>\(\)/,
@@ -424,6 +436,12 @@ assert.equal(createSavedAccountApiKeyRuntimeSnapshot({
 }), undefined, '配置版本不一致时不得接受并行返回的旧运行状态')
 
 const form = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
+const createInheritedRules = systemInheritedErrorPolicyRulesPreview()
+assert.deepEqual(
+  createInheritedRules.map((rule) => ({ id: rule.id, source: rule.source, inherited: rule.inherited, editable: rule.editable })),
+  [{ id: 'system.upstream_insufficient_quota', source: 'system', inherited: true, editable: false }],
+  '新建和克隆账户必须展示同一条只读系统额度规则预览'
+)
 assert.equal(form.privilege, 'normal', '新建账户默认不启用任何特权')
 assert.equal(form.status, 'pending_test', '新建账户默认应进入待检查状态')
 form.name = '检查模型保存回归账户'
@@ -462,6 +480,7 @@ const draftPayload = buildAccountDraftTestPayload({
 })
 assert.equal(savePayload.healthCheckModel, 'gpt-5.4', '账户保存必须持久化表单检查模型')
 assert.equal(savePayload.status, 'pending_test', '默认保存请求必须保持待检查状态')
+assert.equal('error_handling_rules' in savePayload.credentials, false, '只读系统规则预览不得进入新建账户的 credentials payload')
 assert.equal(draftPayload.healthCheckModel, 'gpt-5.4', '新增和编辑人工测试草稿必须携带表单检查模型')
 assert.deepEqual(savePayload.supportedModels, ['gpt-5.5', 'gpt-5.4'], '账户保存必须保留支持模型')
 

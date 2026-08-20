@@ -406,6 +406,7 @@ const postgresNumericResultFieldNames = new Set([
   'canceled',
   'completed',
   'count',
+  'dispatch_revision',
   'failed',
   'failed_targets',
   'found',

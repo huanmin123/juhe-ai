@@ -54,6 +54,11 @@ assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'range', status
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: 'legacy duration', durationMinutes: 5 })]).valid, false)
 assert.equal(validateAccountErrorHandlingRules([tempRule({ enabled: false, name: 'disabled 429', status_codes: [429] })]).valid, true)
 assert.equal(validateAccountCredentialsErrorHandlingRules({ error_handling_rules: [{ name: '201', status_codes: [201] }] }).valid, false)
+assert.equal(
+  validateAccountErrorHandlingRules([tempRule({ source: 'system', inherited: true, editable: false })]).valid,
+  false,
+  '客户端不得把系统继承规则写入账户凭据'
+)
 
 const textKeywordDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_keyword_validation',
@@ -115,6 +120,65 @@ const unconfiguredDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 503, new Headers(), Buffer.from('failed'), settings)
 assert.equal(unconfiguredDecision, undefined, '没有用户显式规则时不能由普通请求自动决定账户状态')
+
+const systemQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_system_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  credentials: {
+    error_handling_rules: [tempRule({ name: '账户自定义403重试', status_codes: [403], action: 'retry_next' })]
+  },
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_quota","message":"余额不足"}}'), settings)
+assert.equal(systemQuotaDecision?.action, 'disable', '系统额度规则必须先于账户自定义规则执行')
+assert.equal(systemQuotaDecision?.ruleSource, 'system')
+assert.equal(systemQuotaDecision?.ruleName, '上游额度不足')
+
+const systemQuotaBeforeInvalidLocalRule = decideAccountErrorPolicy({
+  id: 'account_error_policy_invalid_local_rule',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  credentials: { error_handling_rules: [{ enabled: true, name: '' }] },
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_quota"}}'), settings)
+assert.equal(systemQuotaBeforeInvalidLocalRule?.ruleSource, 'system', '损坏的历史账户规则不能阻断系统额度保护')
+
+for (const [name, statusCode, body, expected] of [
+  ['额度码insufficient_user_quota', 403, '{"error":{"code":"insufficient_user_quota"}}', 'disable'],
+  ['额度码insufficient_quota', 403, '{"error":{"code":"insufficient_quota"}}', 'disable'],
+  ['额度码insufficient_balance', 403, '{"error":{"code":"insufficient_balance"}}', 'disable'],
+  ['额度码quota_exceeded', 403, '{"error":{"code":"quota_exceeded"}}', 'disable'],
+  ['额度码quota_exhausted', 403, '{"error":{"code":"quota_exhausted"}}', 'disable'],
+  ['额度码wallet_balance_exhausted', 403, '{"error":{"code":"WALLET_BALANCE_EXHAUSTED"}}', 'disable'],
+  ['额度码pre_consume_token_quota_failed', 403, '{"error":{"code":"pre_consume_token_quota_failed"}}', 'disable'],
+  ['NewAPI包装额度码insufficient_user_quota', 403, '{"error":{"type":"new_api_error","code":"insufficient_user_quota"}}', 'disable'],
+  ['NewAPI包装额度码pre_consume_token_quota_failed', 403, '{"error":{"type":"new_api_error","code":"pre_consume_token_quota_failed"}}', 'disable'],
+  ['billing_error加余额文本', 403, '{"error":{"type":"billing_error","message":"余额不足"}}', 'disable'],
+  ['单独billing_error', 403, '{"error":{"type":"billing_error"}}', undefined],
+  ['裸403', 403, '{"error":{"message":"forbidden"}}', undefined],
+  ['权限403', 403, '{"error":{"code":"permission_denied","message":"forbidden"}}', undefined],
+  ['受限403', 403, '{"error":{"code":"client_restricted","message":"insufficient balance"}}', undefined],
+  ['中转错误附带明确余额文本403', 403, '{"error":{"code":"new_api_error","message":"insufficient balance"}}', 'disable'],
+  ['内容策略403', 403, '{"error":{"code":"content_policy_violation","message":"blocked"}}', undefined],
+  ['内容策略回显额度文本403', 403, '{"error":{"message":"content policy violation: 用户输入包含余额不足"}}', undefined],
+  ['原始正文回显额度文本403', 403, '{"error":{"message":"forbidden"},"echo":"余额不足"}', undefined],
+  ['泛quota403', 403, '{"error":{"message":"quota exceeded for another limit"}}', undefined],
+  ['401余额文本', 401, '{"error":{"message":"余额不足"}}', undefined],
+  ['429余额文本', 429, '{"error":{"message":"余额不足"}}', undefined],
+  ['明确余额文本403', 403, '{"error":{"message":"insufficient balance"}}', 'disable']
+] as const) {
+  const decision = decideAccountErrorPolicy({
+    id: `account_error_policy_system_${name}`,
+    providerCode: 'openai',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
+    credentials: {},
+    status: 'active'
+  }, statusCode, new Headers({ 'content-type': 'application/json' }), Buffer.from(body), settings)
+  assert.equal(decision?.action, expected, `${name} 的系统额度规则命中结果不符合预期`)
+}
 
 console.log('account error policy validation regression passed')
 

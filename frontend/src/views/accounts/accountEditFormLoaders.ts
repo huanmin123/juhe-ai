@@ -1,4 +1,4 @@
-import type { AccountAdvancedDetail, AccountCloneContext, AccountCloneCredentialOptions, AccountEditBasicDetail } from '@/types/domain'
+import type { AccountAdvancedDetail, AccountCloneContext, AccountCloneCredentialOptions, AccountEditBasicDetail, AccountEffectiveErrorHandlingRule } from '@/types/domain'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 
 import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
@@ -10,7 +10,11 @@ import {
   cloneAccountName
 } from './accountEditFormPayload'
 import { loadAccountErrorPolicyRules } from './accountErrorPolicyPayload'
-import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
+import {
+  systemInheritedErrorPolicyRulesPreview,
+  type AccountErrorPolicyInheritedRule,
+  type AccountErrorPolicyRuleForm
+} from './accountErrorPolicyTypes'
 import { loadAccountResponseInspectionRules } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { asString } from './accountBasicFormatters'
@@ -40,6 +44,7 @@ export class AccountEditFormLoadError extends Error {
 export interface AccountEditFormLoadResult {
   patch: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
+  inheritedErrorPolicyRules: AccountErrorPolicyInheritedRule[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   scheduleFingerprint: string
 }
@@ -71,6 +76,7 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
   const { account, advanced, credentials } = input
   const basicPatch = buildAccountBasicFormPatch(input)
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '账户详情错误处理策略')
+  const inheritedErrorPolicyRules = loadInheritedErrorPolicyRules(advanced.effectiveErrorHandlingRules)
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '账户详情响应检查策略')
   const { accountExpiresAt, availabilitySchedule } = parseAccountScheduleFields(
     advanced.accountExpiresAt,
@@ -91,6 +97,7 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
   return {
     patch,
     errorPolicyRules,
+    inheritedErrorPolicyRules,
     responseInspectionRules,
     scheduleFingerprint: accountAvailabilityScheduleFormFingerprint(patch.availabilitySchedule)
   }
@@ -195,9 +202,50 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
   return {
     patch,
     errorPolicyRules,
+    inheritedErrorPolicyRules: systemInheritedErrorPolicyRulesPreview(),
     responseInspectionRules,
     scheduleFingerprint: accountAvailabilityScheduleFormFingerprint(patch.availabilitySchedule)
   }
+}
+
+function loadInheritedErrorPolicyRules(
+  rules: AccountAdvancedDetail['effectiveErrorHandlingRules']
+): AccountErrorPolicyInheritedRule[] {
+  return (rules ?? [])
+    .filter((rule) => rule.source === 'system' && rule.inherited === true && rule.editable === false)
+    .map(toInheritedErrorPolicyRule)
+}
+
+function toInheritedErrorPolicyRule(rule: AccountEffectiveErrorHandlingRule): AccountErrorPolicyInheritedRule {
+  const actions = ['retry_next', 'rate_limited', 'temp_unschedulable', 'error_disabled'] as const
+  if (!actions.includes(rule.action)) {
+    throw new Error(`系统错误处理策略动作无效：${String(rule.action)}`)
+  }
+  return {
+    id: rule.id,
+    source: 'system',
+    inherited: true,
+    editable: false,
+    enabled: rule.enabled !== false,
+    name: rule.name,
+    priority: rule.priority,
+    status_codes: listToText(rule.status_codes),
+    error_codes: listToText(rule.error_codes),
+    error_types: listToText(rule.error_types),
+    keywords: listToText(rule.keywords),
+    action: rule.action,
+    reset_strategy: rule.reset_strategy ?? 'duration',
+    duration_hours: rule.duration_hours ?? null,
+    daily_reset_hour: rule.daily_reset_hour ?? null,
+    weekly_reset_day: rule.weekly_reset_day ?? null,
+    weekly_reset_hour: rule.weekly_reset_hour ?? null,
+    description: rule.description ?? ''
+  }
+}
+
+function listToText(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value.map((item) => String(item).trim()).filter(Boolean).join(', ')
 }
 
 function accountClientCompatibilityForForm(account: Pick<AccountEditBasicDetail, 'clientCompatibility'>): AccountFormModel['clientCompatibility'] {

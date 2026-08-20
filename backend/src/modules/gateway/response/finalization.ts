@@ -1217,6 +1217,22 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           message: errorMessage
         }
       })
+      // A configured speed-first deadline is a scheduling decision. Its
+      // coordinator may already hold a pre-acquired replacement slot, so the
+      // route loop must receive the retry signal and consume that reservation
+      // instead of finalizing a client-visible 504 here. A wall/precommit
+      // deadline remains terminal because no meaningful replacement attempt
+      // can be started within the request budget.
+      if (!responsePrecommitDeadlineExceeded) {
+        return {
+          alreadyFinalized: false,
+          retryUpstream: true,
+          retryReason: 'normal_route_first_byte_timeout',
+          excludeCurrentAccount: true,
+          message: errorMessage,
+          errorCode
+        }
+      }
       const responsePayload = gatewayErrorPayload(errorMessage, 'upstream_timeout_error', errorCode)
       const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
       sendGatewayErrorResponse(res, 504, responsePayload, { protocol: clientErrorProtocol })
