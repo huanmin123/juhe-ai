@@ -75,6 +75,10 @@ const helpPrefix = `${systemPrefix}/help`
 const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
+const modelCheckHttpProxy = createDbServiceHttpProxy({
+  maxInFlight: runtimeConfig.dbServiceHttpProxy.maxInFlight,
+  timeoutMs: runtimeConfig.dbServiceHttpProxy.chatTimeoutMs
+})
 const chatHttpProxy = createDbServiceHttpProxy({
   maxInFlight: runtimeConfig.dbServiceHttpProxy.chatMaxInFlight,
   timeoutMs: runtimeConfig.dbServiceHttpProxy.chatTimeoutMs
@@ -257,6 +261,8 @@ app.get(`${systemPrefix}/metrics`, (_req, res) => {
 })
 
 app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)
+app.use(`${systemApiPrefix}/my-model-checks`, modelCheckHttpProxy)
+app.use(`${systemApiPrefix}/model-checks`, modelCheckHttpProxy)
 app.use('/.well-known', dbServiceHttpProxy)
 app.use('/oauth', dbServiceHttpProxy)
 app.use('/__aidelegated__', dbServiceHttpProxy)

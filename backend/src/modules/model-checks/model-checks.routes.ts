@@ -38,7 +38,6 @@ import {
 } from './model-checks-active-runs.js'
 
 export const modelChecksRouter = Router()
-export const modelCheckHttpRunDeadlineMs = 25_000
 export const modelCheckStreamHeartbeatMs = 10_000
 
 const modelCheckRunSchema = z.object({
@@ -323,8 +322,10 @@ modelChecksRouter.post('/run', async (req, res, next) => {
     return
   }
   const clientAbortController = new AbortController()
-  const deadlineSignal = AbortSignal.timeout(modelCheckHttpRunDeadlineMs)
-  const signal = AbortSignal.any([activeRun.controller.signal, clientAbortController.signal, deadlineSignal])
+  // A model check may legitimately exceed a short HTTP request budget while it
+  // retries upstream probes. Cancellation is owned by the active-run stop
+  // controller or by the client disconnecting.
+  const signal = AbortSignal.any([activeRun.controller.signal, clientAbortController.signal])
   req.once('aborted', () => {
     clientAbortController.abort()
     activeRun.controller.abort()
