@@ -18,6 +18,7 @@ export interface ProcessFatalDiagnosticInput {
   error: unknown
   processRole: string
   pid: number
+  epipeSource?: 'unattributed'
   secrets?: string[]
   maxBytes?: number
 }
@@ -31,7 +32,8 @@ export function serializeProcessFatalDiagnostic(input: ProcessFatalDiagnosticInp
     processRole: boundedOriginalField(input.processRole, 128),
     pid: input.pid,
     errorName: boundedOriginalField(error.name, 256),
-    errorCode: error.code ? boundedOriginalField(error.code, 256) : undefined
+    errorCode: error.code ? boundedOriginalField(error.code, 256) : undefined,
+    epipeSource: input.epipeSource
   }
   let low = 0
   let high = Math.min(message.length, maxBytes)

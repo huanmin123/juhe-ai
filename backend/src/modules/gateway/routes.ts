@@ -2372,6 +2372,7 @@ export function attachGatewayResponseErrorBoundary(
     }
     reportError(error, {
       event: 'gateway_downstream_response_error',
+      ...(errorCode === 'EPIPE' ? { epipeSource: 'gateway_response' } : {}),
       traceId: options.traceId,
       endpoint: options.endpoint,
       downstreamDisconnected,

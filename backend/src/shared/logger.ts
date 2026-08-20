@@ -944,16 +944,21 @@ export function installProcessLogHandlers(): void {
   process.on('uncaughtException', (error) => {
     if (fatalProcessExitStarted) return
     fatalProcessExitStarted = true
+    const errorCode = nodeErrorCode(error)
     try {
       writeProcessFatalDiagnostic({
         event: 'process_uncaught_exception',
         error,
         processRole: runtimeConfig.processRole,
         pid: process.pid,
+        epipeSource: errorCode === 'EPIPE' ? 'unattributed' : undefined,
         secrets: [runtimeConfig.secret]
       })
       try {
-        logger.fatal(errorLogFields(error, { event: 'process_uncaught_exception' }), '未捕获异常')
+        logger.fatal(errorLogFields(error, {
+          event: 'process_uncaught_exception',
+          epipeSource: errorCode === 'EPIPE' ? 'unattributed' : undefined
+        }), '未捕获异常')
       } catch (loggingError) {
         writeProcessFatalDiagnostic({
           event: 'process_uncaught_exception_logging_failed',
@@ -967,6 +972,12 @@ export function installProcessLogHandlers(): void {
       setImmediate(() => process.exit(1))
     }
   })
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
 }
 
 export async function closeLogger(timeoutMs = 30_000): Promise<void> {

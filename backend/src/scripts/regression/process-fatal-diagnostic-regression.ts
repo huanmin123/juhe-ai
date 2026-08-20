@@ -31,6 +31,15 @@ assert.equal(payload.pid, 123)
 assert.match(String(payload.message), /fatal-marker/)
 assert.match(String(payload.message), new RegExp(secret))
 
+const unattributedEpipeDiagnostic = JSON.parse(serializeProcessFatalDiagnostic({
+  event: 'process_uncaught_exception',
+  error: Object.assign(new Error('broken pipe'), { code: 'EPIPE' }),
+  processRole: 'server',
+  pid: 124,
+  epipeSource: 'unattributed'
+})) as Record<string, unknown>
+assert.equal(unattributedEpipeDiagnostic.epipeSource, 'unattributed', '未归因 EPIPE 必须在同步致命诊断中明确标注')
+
 const namedError = new Error('bounded-message') as Error & { code: string }
 namedError.name = `Fatal${secret.repeat(200)}`
 namedError.code = `CODE_${secret.repeat(200)}`
@@ -139,5 +148,6 @@ assert(handlerStart >= 0 && stderrWrite > handlerStart, 'uncaught handler 必须
 assert(outerTry > handlerStart && outerTry < stderrWrite, '同步诊断也必须位于保证 exit 的 try/finally 内')
 assert(stderrWrite < structuredFatal, '同步 stderr 诊断必须早于可失败的常规 logger')
 assert(structuredFatal < forcedExit, '常规 fatal 日志后必须保证退出')
+assert.match(loggerSource.slice(handlerStart, forcedExit), /epipeSource: errorCode === 'EPIPE' \? 'unattributed' : undefined/, '无法归因的 EPIPE 必须显式标记，但仍保持全局致命退出')
 
 console.log('进程诊断回归通过：fatal 同步保底原文有界，非 fatal stderr 异步队列有界')

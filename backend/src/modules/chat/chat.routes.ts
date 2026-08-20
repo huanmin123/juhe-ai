@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Response as ExpressResponse } from 'exp
 import { z } from 'zod'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { attachDownstreamResponseErrorBoundary } from '../../shared/downstream-response-error-boundary.js'
 import { ok } from '../../shared/http.js'
 import { getTraceId } from '../../shared/request-context.js'
 import {
@@ -604,6 +605,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   let ownerId = ''
   let controller: AbortController | undefined
   let stopHeartbeat: (() => void) | undefined
+  let detachSseResponseErrorBoundary: (() => void) | undefined
   let subscriber: ChatGenerationSubscriber | undefined
   let responseClosed = false
   let partialContent = ''
@@ -612,6 +614,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   const contentBlocks: ChatMessageContentBlock[] = []
   res.once('close', () => {
     responseClosed = true
+    detachSseResponseErrorBoundary?.()
     if (!accepted) controller?.abort()
     stopHeartbeat?.()
     if (accepted && subscriber) {
@@ -1194,6 +1197,18 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     if (preparationClaim.controller.signal.aborted || responseClosed || req.aborted || res.destroyed) runner.abort()
     try {
       if (!responseClosed && !req.aborted && !res.destroyed) {
+        detachSseResponseErrorBoundary = attachChatSseResponseErrorBoundary({
+          res,
+          traceId,
+          conversationId: conversation.id,
+          turnId: accepted.turnId,
+          streamPhase: 'initial',
+          onUnwritable: () => {
+            if (subscriber) registry.unsubscribe(identity, subscriber)
+            if (!res.writableEnded) res.end()
+          }
+        })
+        res.once('finish', () => detachSseResponseErrorBoundary?.())
         prepareSseResponse(res)
         writeChatSseEvent(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
         subscriber = responseSubscriber(res, identity)
@@ -1345,21 +1360,33 @@ chatRouter.get('/conversations/:conversationId/streams/:turnId', async (req, res
       res.status(409).json({ message: '生成任务已中断，请刷新会话', code: 'chat_stream_runner_missing' })
       return
     }
-    prepareSseResponse(res)
     const identity = { ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }
     const subscriber = responseSubscriber(res, identity)
-    if (!registry.subscribe({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)) {
-      if (!res.writableEnded) res.end()
-      return
-    }
     let cleanedUp = false
     let stopHeartbeat: (() => void) | undefined
+    let detachSseResponseErrorBoundary: (() => void) | undefined
     const cleanup = (): void => {
       if (cleanedUp) return
       cleanedUp = true
       stopHeartbeat?.()
       registry.unsubscribe(identity, subscriber)
       if (!res.writableEnded) res.end()
+    }
+    detachSseResponseErrorBoundary = attachChatSseResponseErrorBoundary({
+      res,
+      traceId: getTraceId(),
+      conversationId: conversation.id,
+      turnId: req.params.turnId,
+      streamPhase: 'reattach',
+      onUnwritable: cleanup
+    })
+    res.once('finish', () => detachSseResponseErrorBoundary?.())
+    res.once('close', () => detachSseResponseErrorBoundary?.())
+    prepareSseResponse(res)
+    if (!registry.subscribe({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)) {
+      detachSseResponseErrorBoundary()
+      if (!res.writableEnded) res.end()
+      return
     }
     stopHeartbeat = startChatSseHeartbeat({ response: res, onUnwritable: cleanup })
     res.once('close', cleanup)
@@ -1772,6 +1799,38 @@ function responseSubscriber(res: import('express').Response, identity: { ownerId
     detach: () => { registry.unsubscribe(identity, subscriber) }
   })
   return subscriber
+}
+
+function attachChatSseResponseErrorBoundary(input: {
+  res: ExpressResponse
+  traceId: string | undefined
+  conversationId: string
+  turnId: string
+  streamPhase: 'initial' | 'reattach'
+  onUnwritable(): void
+}): () => void {
+  return attachDownstreamResponseErrorBoundary({
+    response: input.res,
+    onError: (error) => {
+      const errorCode = nodeErrorCode(error)
+      logger.warn(errorLogFields(error, {
+        event: 'chat_sse_downstream_response_error',
+        epipeSource: errorCode === 'EPIPE' ? 'chat_sse' : undefined,
+        streamPhase: input.streamPhase,
+        traceId: input.traceId,
+        conversationId: input.conversationId,
+        turnId: input.turnId,
+        errorCode
+      }), 'Chat SSE 下游响应发生错误')
+    },
+    onUnwritable: input.onUnwritable
+  })
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
 }
 function chatGenerationToolEvent(eventType: 'tool_started' | 'tool_updated' | 'tool_completed', item: Record<string, unknown>): { id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> } {
   return {

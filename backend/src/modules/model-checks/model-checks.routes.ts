@@ -3,6 +3,8 @@ import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { attachDownstreamResponseErrorBoundary } from '../../shared/downstream-response-error-boundary.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { manageableSystemAccountId } from '../../storage/access-scope.js'
 import {
@@ -389,6 +391,27 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
 
   const clientAbortController = new AbortController()
   const signal = activeRun.controller.signal
+  let downstreamResponseErrorReported = false
+  let latestWriteStage: 'connected' | 'heartbeat' | 'progress' | 'complete' | 'error' = 'connected'
+  const reportDownstreamResponseError = (error: unknown): void => {
+    if (downstreamResponseErrorReported) return
+    downstreamResponseErrorReported = true
+    const errorCode = nodeErrorCode(error)
+    logger.warn(errorLogFields(error, {
+      event: 'model_check_stream_downstream_response_error',
+      epipeSource: errorCode === 'EPIPE' ? 'model_check_sse' : undefined,
+      writeStage: latestWriteStage,
+      errorCode
+    }), '模型检测 SSE 下游响应发生错误')
+    clientAbortController.abort()
+  }
+  const detachDownstreamResponseErrorBoundary = attachDownstreamResponseErrorBoundary({
+    response: res,
+    onError: reportDownstreamResponseError,
+    onUnwritable: () => clientAbortController.abort()
+  })
+  res.once('finish', detachDownstreamResponseErrorBoundary)
+  res.once('close', detachDownstreamResponseErrorBoundary)
   req.once('aborted', () => {
     clientAbortController.abort()
   })
@@ -397,26 +420,41 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
       clientAbortController.abort()
     }
   })
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-    'x-accel-buffering': 'no'
-  })
-  res.write(': connected\n\n')
+  const writeEvent = (stage: typeof latestWriteStage, event: string, data: unknown): boolean => {
+    if (clientAbortController.signal.aborted || res.writableEnded || res.destroyed) return false
+    latestWriteStage = stage
+    try {
+      return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    } catch (error) {
+      reportDownstreamResponseError(error)
+      return false
+    }
+  }
+  try {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no'
+    })
+    latestWriteStage = 'connected'
+    res.write(': connected\n\n')
+  } catch (error) {
+    reportDownstreamResponseError(error)
+  }
   const heartbeat = setInterval(() => {
     if (clientAbortController.signal.aborted || res.writableEnded) return
-    res.write(': heartbeat\n\n')
+    latestWriteStage = 'heartbeat'
+    try {
+      res.write(': heartbeat\n\n')
+    } catch (error) {
+      reportDownstreamResponseError(error)
+    }
   }, modelCheckStreamHeartbeatMs)
   heartbeat.unref()
-
-  const writeEvent = (event: string, data: unknown): void => {
-    if (clientAbortController.signal.aborted || res.writableEnded) return
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
   const progressReporter = (event: ModelCheckProgressEvent): void => {
     activeModelCheckProgressUpdater(activeRun.key)(event)
-    writeEvent('progress', event)
+    writeEvent('progress', 'progress', event)
   }
 
   try {
@@ -429,18 +467,18 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
     if (clientAbortController.signal.aborted || res.writableEnded) {
       return
     }
-    writeEvent('complete', result)
+    writeEvent('complete', 'complete', result)
     res.end()
   } catch (error) {
     if (clientAbortController.signal.aborted || res.writableEnded) {
       return
     }
     if (error instanceof ModelCheckRequestError) {
-      writeEvent('error', { message: error.message, statusCode: error.statusCode })
+      writeEvent('error', 'error', { message: error.message, statusCode: error.statusCode })
       res.end()
       return
     }
-    writeEvent('error', { message: error instanceof Error ? error.message : '模型检测失败' })
+    writeEvent('error', 'error', { message: error instanceof Error ? error.message : '模型检测失败' })
     res.end()
   } finally {
     clearInterval(heartbeat)
@@ -448,6 +486,12 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
     finishActiveModelCheckRun(activeRun.key, activeRun.controller)
   }
 })
+
+function nodeErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
+}
 
 modelChecksRouter.get('/runs', async (req, res, next) => {
   try {

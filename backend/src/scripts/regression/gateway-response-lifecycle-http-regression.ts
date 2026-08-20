@@ -367,6 +367,7 @@ async function testResponseErrorBoundaryContainsInjectedErrors(): Promise<void> 
     const unfinishedEpipeDiagnostic = unfinishedEpipe.diagnostics.find((fields) => fields.event === 'gateway_downstream_response_error')
     assert.deepEqual(unfinishedEpipeDiagnostic, {
       event: 'gateway_downstream_response_error',
+      epipeSource: 'gateway_response',
       traceId: unfinishedEpipe.traceId,
       endpoint: '/response-epipe-unfinished',
       downstreamDisconnected: true,
@@ -389,6 +390,7 @@ async function testResponseErrorBoundaryContainsInjectedErrors(): Promise<void> 
     const finishedEpipeDiagnostic = finishedEpipe.diagnostics.find((fields) => fields.event === 'gateway_downstream_response_error')
     assert.deepEqual(finishedEpipeDiagnostic, {
       event: 'gateway_downstream_response_error',
+      epipeSource: 'gateway_response',
       traceId: finishedEpipe.traceId,
       endpoint: '/response-epipe-finished',
       downstreamDisconnected: true,
