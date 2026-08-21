@@ -248,10 +248,24 @@ WHERE a.deleted_at IS NULL
   ))
   AND ($3::boolean OR a.status IN ('temporary_unavailable', 'rate_limited') OR a.next_health_check_at IS NULL OR a.next_health_check_at <= $1 OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
   AND ($4 = '' OR a.id = $4)
--- Keep activation work first, then service overdue active accounts before
--- cooldown retests. Do not order by updated_at: outcome projection changes
--- it and could make a fixed-size batch indefinitely starve older accounts.
-ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status = 'active' THEN 1 ELSE 2 END, a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
+-- Keep activation work first, then interleave due cooldown recovery and
+-- periodic active checks. A plain status tier would let a large cooldown (or
+-- active) backlog starve the other class under LIMIT; per-class row numbers
+-- give each class a slot while still filling from the other class when one is
+-- exhausted. Do not order by updated_at: outcome projection changes it.
+ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,
+  CASE WHEN a.status = 'pending_test' THEN
+    ROW_NUMBER() OVER (
+      PARTITION BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 1 ELSE 2 END
+      ORDER BY a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)
+  ELSE
+    ROW_NUMBER() OVER (
+      PARTITION BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END
+      ORDER BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)
+  END,
+  CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END,
+  CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST,
+  a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
 LIMIT $2 OFFSET $5`
 
 func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {

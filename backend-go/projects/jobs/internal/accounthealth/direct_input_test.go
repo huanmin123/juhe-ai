@@ -29,9 +29,15 @@ func TestDirectInputCandidatesIncludeResponsesSSE(t *testing.T) {
 }
 
 func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *testing.T) {
-	const expectedOrder = "ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status = 'active' THEN 1 ELSE 2 END, a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC"
+	const expectedOrder = "ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,"
 	if !strings.Contains(directInputCandidatesSQL, expectedOrder) {
-		t.Fatalf("PG direct input candidates must prioritize activation, overdue active schedules, and cooldown retests: %s", directInputCandidatesSQL)
+		t.Fatalf("PG direct input candidates must prioritize activation before periodic and cooldown checks: %s", directInputCandidatesSQL)
+	}
+	if !strings.Contains(directInputCandidatesSQL, "ROW_NUMBER() OVER") || !strings.Contains(directInputCandidatesSQL, "PARTITION BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END") {
+		t.Fatal("active and cooldown candidates must use separate row-number partitions to prevent starvation")
+	}
+	if !strings.Contains(directInputCandidatesSQL, "THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST") {
+		t.Fatal("cooldown candidates must use cooldown_until as their due-order key")
 	}
 	orderBy := directInputCandidatesSQL[strings.LastIndex(directInputCandidatesSQL, "ORDER BY"):]
 	if strings.Contains(orderBy, "updated_at") {
@@ -43,6 +49,41 @@ func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *t
 	if !strings.Contains(directInputCandidatesSQL, "OFFSET $5") {
 		t.Fatal("direct input candidate query must support a stable refill offset after quota filtering")
 	}
+}
+
+func TestDirectInputCandidateFairSlotsAdmitActiveAndCooldown(t *testing.T) {
+	// The SQL row-number partitions are intentionally interleaved by rank. With
+	// both classes backlogged, every bounded page must admit both classes rather
+	// than consuming the entire LIMIT from whichever class sorts first.
+	got := fairCandidateStatusSlots(6, 8, 8)
+	want := []string{"cooldown", "active", "cooldown", "active", "cooldown", "active"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("fair candidate slots = %v, want %v", got, want)
+	}
+	got = fairCandidateStatusSlots(6, 1, 8)
+	want = []string{"cooldown", "active", "active", "active", "active", "active"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("one-sided cooldown slots = %v, want %v", got, want)
+	}
+}
+
+func fairCandidateStatusSlots(limit, cooldownCount, activeCount int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	result := make([]string, 0, limit)
+	for rank := 0; len(result) < limit && (rank < cooldownCount || rank < activeCount); rank++ {
+		if rank < cooldownCount {
+			result = append(result, "cooldown")
+			if len(result) == limit {
+				break
+			}
+		}
+		if rank < activeCount {
+			result = append(result, "active")
+		}
+	}
+	return result
 }
 
 func TestCollectDirectCandidatePagesRefillsAfterQuotaFilteredPage(t *testing.T) {

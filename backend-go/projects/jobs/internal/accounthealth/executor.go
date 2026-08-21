@@ -10,6 +10,14 @@ import (
 
 const healthKeyCursorPurpose = "health_check"
 
+// Key-cursor persistence is durable scheduling state, not part of the
+// upstream probe deadline.  A probe can legitimately exhaust its context
+// while the owner lease is still valid; give the cursor write a small bounded
+// window of its own.  SaveKeyCursor still verifies the owner lease inside the
+// write transaction, so detaching cancellation cannot let a stale worker
+// mutate state.
+const keyCursorPersistenceTimeout = 5 * time.Second
+
 // ExecuteInputProbe runs exactly one request against the immutable input. The
 // caller owns scheduling and outcome persistence; this function never calls a
 // service or mutates a business database.
@@ -44,7 +52,7 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 		result := ProbeOpenAI(ctx, input, key.Credential, options)
 		if result.Outcome == OutcomeSuccess {
 			next := (index + 1) % len(input.APIKeys)
-			if err := store.SaveKeyCursor(ctx, lease, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint, next); err != nil {
+			if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
 				return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
 			}
 			return newOutcome(input, request, result, &index, now(options)), nil
@@ -52,10 +60,20 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 		last = result
 	}
 	next := (start + 1) % len(input.APIKeys)
-	if err := store.SaveKeyCursor(ctx, lease, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint, next); err != nil {
+	if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
 		return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
 	}
 	return newOutcome(input, request, last, nil, now(options)), nil
+}
+
+func saveProbeKeyCursor(ctx context.Context, store *Store, lease OwnerLease, accountID, fingerprint string, nextIndex int) error {
+	// The cursor advances only after an attempt has completed.  It must not be
+	// discarded merely because the probe context reached its deadline.  The
+	// owner lease is checked by SaveKeyCursor, and remains the authoritative
+	// fail-closed fence for this detached, bounded persistence context.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keyCursorPersistenceTimeout)
+	defer cancel()
+	return store.SaveKeyCursor(persistCtx, lease, accountID, healthKeyCursorPurpose, fingerprint, nextIndex)
 }
 
 func newOutcome(input Input, request ProbeRequest, result ProbeResult, winner *int, observedAt time.Time) Outcome {

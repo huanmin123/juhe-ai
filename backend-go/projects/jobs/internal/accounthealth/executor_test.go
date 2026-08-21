@@ -59,3 +59,42 @@ func TestExecuteInputProbeUsesInjectedClockForOutcome(t *testing.T) {
 		t.Fatalf("outcome observedAt=%s, want injected UTC clock %s", outcome.ObservedAt, want)
 	}
 }
+
+func TestExecuteInputProbePersistsCursorAfterProbeContextExpires(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// Keep the upstream busy past the short probe deadline, then let the
+		// handler return so httptest.Server.Close cannot wait on a leaked request.
+		time.Sleep(200 * time.Millisecond)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "owner-timeout", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire lease=%#v acquired=%t err=%v", lease, acquired, err)
+	}
+	input := testInput(server.URL, "chat_json")
+	input.KeySetFingerprint = "set-timeout"
+	input.APIKeys = []APIKeyInput{
+		{Index: 0, Fingerprint: "first", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-first")}},
+		{Index: 1, Fingerprint: "second", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-second")}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-timeout", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Second)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("expired probe context must still produce an outcome after cursor persistence: %v", err)
+	}
+	if outcome.Outcome != OutcomeUpstreamFailed && outcome.Outcome != OutcomeTaskFailed {
+		t.Fatalf("outcome=%#v, want a failed probe outcome", outcome)
+	}
+	next, found, err := store.LoadKeyCursor(context.Background(), input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint)
+	if err != nil || !found || next != 1 {
+		t.Fatalf("cursor next=%d found=%t err=%v, want persisted next index 1", next, found, err)
+	}
+}
