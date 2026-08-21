@@ -123,9 +123,10 @@ assert.doesNotMatch(backgroundJobsSource, /registryProcessSamples\.length\s*>?=/
 assert.match(serverSource, /startInternalGatewayRegistryWhenReady[\s\S]*startInternalGatewayRegistry\(\)/, 'Gateway 实例必须在监听和 DB service ready 后注册内部调度端点')
 assert.match(
   serverSource,
-  /app\.use\(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)[\s\S]*app\.use\(accountHealthCheckDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)/,
-  'control-replica 必须拒绝所有直连内部派发写接口'
+  /app\.use\(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)/,
+  'control-replica 必须拒绝直连账户测试内部派发写接口'
 )
+assert.doesNotMatch(serverSource, /accountHealthCheckDispatchInternalPrefix/, 'Node J1 accountHealthCheck dispatch 入口已删除，server 不得导入、挂载或要求它')
 assert.match(
   supervisorSource,
   /attachBackgroundAuxiliaryWorkerProcess\(child/,
