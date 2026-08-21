@@ -61,6 +61,7 @@ import {
 import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
 import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
 import { startAccountHealthJobsSourceFenceConsumerRuntime, stopAccountHealthJobsSourceFenceConsumerRuntime } from './modules/gateway/runtime/account-health-jobs-source-fence-runtime.service.js'
+import { resolveRuntimeReadiness } from './shared/runtime-readiness.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -221,13 +222,16 @@ function getRuntimeHealthSnapshot() {
   const workerTopologyReady = workerProcesses.length === 0 || workerProcesses.every((processRuntime) => processRuntime.ready)
   const topologyGatesHealth = runtimeConfig.runtimeMode === 'performance'
     && runtimeConfig.performanceNodeRole === 'control'
+  const readiness = resolveRuntimeReadiness({
+    dbServiceReady: dbService.ready,
+    workerTopologyReady,
+    topologyGatesHealth
+  })
 
   return {
-    statusCode: topologyGatesHealth && !workerTopologyReady ? 503 : 200,
-    status: topologyGatesHealth && !workerTopologyReady ? 'starting' : 'ok',
+    ...readiness,
     dbService,
-    workerProcesses,
-    workerTopologyReady
+    workerProcesses
   }
 }
 
@@ -251,8 +255,10 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
     instanceId: runtimeConfig.instanceId,
     processPid: process.pid,
     dbServicePid: health.dbService.pid,
+    dbServiceReady: health.dbServiceReady,
     workerProcesses: health.workerProcesses,
-    workerTopologyReady: health.workerTopologyReady
+    workerTopologyReady: health.workerTopologyReady,
+    readinessBlockers: health.blockers
   })
 })
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 
 import { accountBalanceJobsOutcomeProjectionRuntimeFresh } from '../../modules/background/account-balance-jobs-outcome-projection-runtime.service.js'
-import { accountBalanceGoOwnerHealth } from '../../modules/system-api/system-api-app.js'
+import { accountBalanceGoOwnerHealth, resolveSystemApiHealth } from '../../modules/system-api/system-api-app.js'
+import { resolveRuntimeReadiness } from '../../shared/runtime-readiness.js'
 
 assert.equal(accountBalanceJobsOutcomeProjectionRuntimeFresh(true, true, 10_001, 10_000), true, '最近成功的 drain 必须让 projector ready')
 assert.equal(accountBalanceJobsOutcomeProjectionRuntimeFresh(true, true, 10_000, 10_000), false, '挂起 drain 超过新鲜度截止时间必须让 projector 降级')
@@ -18,6 +19,12 @@ assert.deepEqual(await accountBalanceGoOwnerHealth(goOwnerEnv, {
   projectorReady: () => false,
   fetch: async () => { throw new Error('projector 未启动时不得探测 Go jobs') }
 }), { enabled: true, ready: false, projectorReady: false }, 'Go owner 且 projector 未启动必须拒绝 DB-service health')
+assert.deepEqual(resolveSystemApiHealth({ enabled: true, ready: false, projectorReady: false }), {
+  statusCode: 200,
+  status: 'degraded',
+  service: 'juhe-ai-db-service',
+  accountBalance: { enabled: true, ready: false, projectorReady: false }
+}, 'J2 transient health 只能在 DB-service body 中降级，不得把 Node readiness 变成 503')
 
 const ready = await accountBalanceGoOwnerHealth(goOwnerEnv, {
   projectorReady: () => true,
@@ -27,5 +34,40 @@ const ready = await accountBalanceGoOwnerHealth(goOwnerEnv, {
   }
 })
 assert.deepEqual(ready, { enabled: true, ready: true, projectorReady: true }, 'Go jobs 与 projector 都 ready 时 DB-service health 必须通过')
+assert.equal(resolveSystemApiHealth(ready).statusCode, 200, 'J2 ready health 仍应返回 200')
+
+assert.deepEqual(resolveRuntimeReadiness({
+  dbServiceReady: true,
+  workerTopologyReady: true,
+  topologyGatesHealth: true
+}), {
+  statusCode: 200,
+  status: 'ok',
+  dbServiceReady: true,
+  workerTopologyReady: true,
+  blockers: []
+}, 'Node runtime 与 worker topology 正常时 readiness 必须通过')
+assert.deepEqual(resolveRuntimeReadiness({
+  dbServiceReady: true,
+  workerTopologyReady: false,
+  topologyGatesHealth: true
+}), {
+  statusCode: 503,
+  status: 'starting',
+  dbServiceReady: true,
+  workerTopologyReady: false,
+  blockers: ['worker_topology_not_ready']
+}, '真实 worker topology 未就绪仍必须阻断 Node readiness')
+assert.deepEqual(resolveRuntimeReadiness({
+  dbServiceReady: false,
+  workerTopologyReady: true,
+  topologyGatesHealth: false
+}), {
+  statusCode: 503,
+  status: 'starting',
+  dbServiceReady: false,
+  workerTopologyReady: true,
+  blockers: ['db_service_unavailable']
+}, '强制 DB service failure 仍必须阻断 Node readiness')
 
 console.log('account balance jobs health regression passed')

@@ -59,6 +59,7 @@ export interface SystemApiAppOptions {
   publicApiPrefix?: string
   trustProxy?: boolean | number
   bypassSystemApiRateLimitForTest?: boolean
+  accountBalanceHealth?: () => Promise<SystemApiDependencyHealth>
 }
 
 type BodyParserError = Error & {
@@ -70,6 +71,33 @@ type BodyParserError = Error & {
 export const systemApiJsonBodyLimit = '256kb'
 export const chatSystemApiJsonBodyLimit = '24mb'
 export { systemApiDbServiceAdmissionControl, systemApiDbServiceMaxInFlight }
+
+export interface SystemApiDependencyHealth {
+  enabled: boolean
+  ready: boolean
+  projectorReady?: boolean
+}
+
+export interface SystemApiHealthResponse {
+  statusCode: 200
+  status: 'ok' | 'degraded'
+  service: 'juhe-ai-db-service'
+  accountBalance: SystemApiDependencyHealth
+}
+
+/**
+ * The DB service health endpoint reports account-level dependency degradation
+ * without turning it into the Node process readiness signal. A dead or
+ * unreachable DB service still fails at the parent proxy boundary (503/504).
+ */
+export function resolveSystemApiHealth(accountBalance: SystemApiDependencyHealth): SystemApiHealthResponse {
+  return {
+    statusCode: 200,
+    status: accountBalance.ready ? 'ok' : 'degraded',
+    service: 'juhe-ai-db-service',
+    accountBalance
+  }
+}
 
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {
   const app = express()
@@ -100,9 +128,9 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use('/__aidelegated__/v1', systemApiDbAccessModeMiddleware('/__aidelegated__/v1'), systemApiDbServiceAdmissionControl, delegatedApiRouter)
 
   app.get(`${systemApiPrefix}/health`, async (_req, res) => {
-    const accountBalance = await accountBalanceGoOwnerHealth()
-    const response = { status: accountBalance.ready ? 'ok' : 'degraded', service: 'juhe-ai-db-service', checkedAt: new Date().toISOString(), accountBalance }
-    res.status(accountBalance.ready ? 200 : 503).json(response)
+    const accountBalance = await (options.accountBalanceHealth ?? accountBalanceGoOwnerHealth)()
+    const health = resolveSystemApiHealth(accountBalance)
+    res.status(health.statusCode).json({ ...health, checkedAt: new Date().toISOString() })
   })
 
   app.use('/.well-known', controlReadReplicaPrimaryOnlyRequestGuard)
