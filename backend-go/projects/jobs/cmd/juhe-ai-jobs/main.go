@@ -21,6 +21,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
@@ -51,6 +53,8 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	postgresPools := pgpool.NewRegistry()
+	defer postgresPools.Close()
 	runtimeConfig, err := runtimelog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F1 runtime-log-indexer config: %w", err))
@@ -157,6 +161,59 @@ func main() {
 			fail(fmt.Errorf("initialize J2 account-balance service: %w", err))
 		}
 	}
+	j3Config, err := proxylatency.LoadRuntimeConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load J3a proxy-latency config: %w", err))
+	}
+	var j3Store *proxylatency.Store
+	var j3InputDB *sql.DB
+	var j3InputPool *pgpool.Handle
+	var j3Runner *proxylatency.Runner
+	if j3Config.Enabled {
+		j3Config.Store.PostgresMaxOpenConns = j3Config.PostgresMaxOpenConns
+		j3Config.Store.PostgresMaxIdleConns = j3Config.PostgresMaxIdleConns
+		j3Config.Store.PostgresPool, err = postgresPools.Acquire("pgx", j3Config.Store.PostgresURL, "jobs-store", j3Config.Store.PostgresMaxOpenConns, j3Config.Store.PostgresMaxIdleConns)
+		if err != nil {
+			fail(fmt.Errorf("open J3a shared PostgreSQL jobs pool: %w", err))
+		}
+		j3Store, err = proxylatency.OpenStore(j3Config.Store)
+		if err != nil {
+			fail(fmt.Errorf("open J3a proxy-latency jobs store: %w", err))
+		}
+		if err := j3Store.EnsureSchema(context.Background()); err != nil {
+			_ = j3Store.Close()
+			fail(fmt.Errorf("initialize J3a proxy-latency jobs schema: %w", err))
+		}
+		j3InputPool, err = postgresPools.Acquire("pgx", j3Config.BusinessPostgresURL, "business-input", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
+		if err != nil {
+			_ = j3Store.Close()
+			fail(fmt.Errorf("open J3a proxy-latency direct-input database: %w", err))
+		}
+		j3InputDB = j3InputPool.DB()
+		pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pingErr := j3InputDB.PingContext(pingContext)
+		pingCancel()
+		if pingErr != nil {
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			fail(fmt.Errorf("ping J3a proxy-latency direct-input database: %w", pingErr))
+		}
+		reader, readerErr := proxylatency.NewPostgresDirectInputReader(j3InputDB, j3Config.InputTTL, j3Config.Now)
+		if readerErr != nil {
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			fail(fmt.Errorf("configure J3a proxy-latency direct-input reader: %w", readerErr))
+		}
+		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		contractErr := reader.CheckContract(contractContext)
+		contractCancel()
+		if contractErr != nil {
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			fail(fmt.Errorf("verify J3a proxy-latency direct-input contract: %w", contractErr))
+		}
+		j3Runner = proxylatency.NewRunner(j3Config, j3Store, reader, logger)
+	}
 
 	listener, err := net.Listen("tcp", *healthAddress)
 	if err != nil {
@@ -209,15 +266,43 @@ func main() {
 			Close: accountBalanceService.Close,
 		})
 	}
+	j3Ready := func() bool { return true }
+	if j3Runner != nil {
+		j3Ready = j3Runner.Ready
+		components = append(components, supervisor.Component{
+			Name: "J3a proxy-latency",
+			Run:  j3Runner.Run,
+			Close: func() error {
+				var closeErr error
+				if j3InputPool != nil {
+					closeErr = j3InputPool.Close()
+				}
+				if err := j3Store.Close(); err != nil && closeErr == nil {
+					closeErr = err
+				}
+				return closeErr
+			},
+		})
+	}
 	healthServer := &http.Server{
-		Handler:           jobsHTTPHandler(&runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret),
+		Handler: jobsHTTPHandler(&runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
+			if j3Runner == nil {
+				return proxylatency.RunnerStatus{}
+			}
+			return j3Runner.Status()
+		}, func() (proxylatency.RunnerStatus, bool) {
+			if j3Runner == nil {
+				return proxylatency.RunnerStatus{}, true
+			}
+			return j3Runner.Snapshot()
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
@@ -234,9 +319,10 @@ func main() {
 	}
 }
 
-func jobsHTTPHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string) http.Handler {
+func jobsHTTPHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/health", healthHandler(runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, accountBalanceEnabled, accountBalanceReady))
+	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3...)
+	mux.Handle("/health", healthHandler(runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || accountBalanceService == nil {
 			http.NotFound(response, request)
@@ -333,6 +419,12 @@ func manualOutcome(status accountbalance.Status) string {
 func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {
 	accountBalanceEnabled := false
 	accountBalanceReady := func() bool { return true }
+	proxyLatencyEnabled := false
+	proxyLatencyReady := func() bool { return true }
+	proxyLatencyStatus := func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} }
+	proxyLatencySnapshot := func() (proxylatency.RunnerStatus, bool) {
+		return proxyLatencyStatus(), proxyLatencyReady()
+	}
 	if len(j2) > 0 {
 		if value, ok := j2[0].(bool); ok {
 			accountBalanceEnabled = value
@@ -341,6 +433,26 @@ func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, a
 	if len(j2) > 1 {
 		if value, ok := j2[1].(func() bool); ok {
 			accountBalanceReady = value
+		}
+	}
+	if len(j2) > 2 {
+		if value, ok := j2[2].(bool); ok {
+			proxyLatencyEnabled = value
+		}
+	}
+	if len(j2) > 3 {
+		if value, ok := j2[3].(func() bool); ok {
+			proxyLatencyReady = value
+		}
+	}
+	if len(j2) > 4 {
+		if value, ok := j2[4].(func() proxylatency.RunnerStatus); ok {
+			proxyLatencyStatus = value
+		}
+	}
+	if len(j2) > 5 {
+		if value, ok := j2[5].(func() (proxylatency.RunnerStatus, bool)); ok {
+			proxyLatencySnapshot = value
 		}
 	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -352,17 +464,35 @@ func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, a
 		tableMonitorIsReady := tableMonitorReady()
 		accountHealthIsReady := !accountHealthEnabled || accountHealthReady()
 		accountBalanceIsReady := !accountBalanceEnabled || accountBalanceReady()
+		proxyStatus, proxyReady := proxyLatencySnapshot()
+		proxyLatencyIsReady := !proxyLatencyEnabled || proxyReady
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"ready":                 runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady,
-			"runtimeLogOwnerHeld":   runtimeLogOwnerHeld,
-			"tableMonitorReady":     tableMonitorIsReady,
-			"accountHealthEnabled":  accountHealthEnabled,
-			"accountHealthReady":    accountHealthIsReady,
-			"accountBalanceEnabled": accountBalanceEnabled,
-			"accountBalanceReady":   accountBalanceIsReady,
+			"ready":                     runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady,
+			"runtimeLogOwnerHeld":       runtimeLogOwnerHeld,
+			"tableMonitorReady":         tableMonitorIsReady,
+			"accountHealthEnabled":      accountHealthEnabled,
+			"accountHealthReady":        accountHealthIsReady,
+			"accountBalanceEnabled":     accountBalanceEnabled,
+			"accountBalanceReady":       accountBalanceIsReady,
+			"proxyLatencyEnabled":       proxyLatencyEnabled,
+			"proxyLatencyReady":         proxyLatencyIsReady,
+			"proxyLatencyOwnerHeld":     proxyStatus.OwnerHeld,
+			"proxyLatencyLastCycleAt":   proxylatencyTime(proxyStatus.LastCycleAt),
+			"proxyLatencyLastSuccessAt": proxylatencyTime(proxyStatus.LastSuccess),
+			"proxyLatencyLastError":     proxyStatus.LastError,
+			"proxyLatencyInputs":        proxyStatus.Inputs,
+			"proxyLatencyExecuted":      proxyStatus.Executed,
+			"proxyLatencyFailures":      proxyStatus.ProxyFailures,
 		})
 	})
+}
+
+func proxylatencyTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func runRuntimeLegacyMigration(config runtimelog.Config) {
