@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,10 +17,21 @@ type fakeDirectInputLoader struct {
 	due      []Input
 	explicit map[string]Input
 	loaded   []string
+	mu       sync.Mutex
+	dueCalls int
 }
 
 func (loader *fakeDirectInputLoader) LoadDue(_ context.Context, _ int) ([]Input, error) {
+	loader.mu.Lock()
+	loader.dueCalls++
+	loader.mu.Unlock()
 	return loader.due, nil
+}
+
+func (loader *fakeDirectInputLoader) DueCalls() int {
+	loader.mu.Lock()
+	defer loader.mu.Unlock()
+	return loader.dueCalls
 }
 
 func (loader *fakeDirectInputLoader) LoadAccount(_ context.Context, accountID string) ([]Input, error) {
@@ -124,6 +136,223 @@ func TestRunnerCancellationReleasesLeaseForRestart(t *testing.T) {
 	if _, acquired, err := store.AcquireOwnerLease(context.Background(), "runner-b", time.Minute); err != nil || !acquired {
 		t.Fatalf("replacement owner must acquire released lease: acquired=%t err=%v", acquired, err)
 	}
+}
+
+func TestRunnerRenewsOwnerLeaseWhileLongCycleRuns(t *testing.T) {
+	secret := "owner-lease-liveness-secret"
+	firstProbeStarted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case firstProbeStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-time.After(2500 * time.Millisecond):
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		case <-request.Context().Done():
+			return
+		}
+	}))
+	defer server.Close()
+
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "long-cycle-owner", 4*time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t lease=%#v err=%v", acquired, lease, err)
+	}
+	loader := &fakeDirectInputLoader{due: []Input{
+		testScheduledAPIKeyInput(t, server.URL, secret, "long-cycle-1"),
+		testScheduledAPIKeyInput(t, server.URL, secret, "long-cycle-2"),
+	}}
+	runner := NewRunner(Config{
+		InputDirectory:   t.TempDir(),
+		InputKeys:        map[string][]byte{"current": []byte("test-key")},
+		CredentialSecret: secret,
+		ProbeTimeout:     3 * time.Second,
+		MaxResponseBytes: 1024,
+		MaxConcurrency:   1,
+		DirectInputLimit: 2,
+		ScanInterval:     100 * time.Millisecond,
+		OwnerLease:       4 * time.Second,
+		Now:              time.Now,
+	}, store, nil)
+	runner.directInputReader = loader
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runner.runOwned(ctx, lease) }()
+	select {
+	case <-firstProbeStarted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("long cycle did not start its first probe")
+	}
+
+	// The two sequential requests keep this cycle alive beyond the original
+	// four-second lease. A synchronous runOwned would not revisit renewal and a
+	// replacement owner could acquire at this point.
+	time.Sleep(4 * time.Second)
+	if _, replacementAcquired, acquireErr := store.AcquireOwnerLease(context.Background(), "replacement-owner", time.Minute); acquireErr != nil || replacementAcquired {
+		cancel()
+		t.Fatalf("long-running cycle must retain a renewed lease: acquired=%t err=%v", replacementAcquired, acquireErr)
+	}
+	if loader.DueCalls() != 1 {
+		cancel()
+		t.Fatalf("running cycle must not overlap a scan tick: due calls=%d", loader.DueCalls())
+	}
+	cancel()
+	if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("runOwned shutdown error=%v, want context canceled", runErr)
+	}
+}
+
+func TestRunnerLostOwnerLeaseCancelsLongCycleWithoutReentry(t *testing.T) {
+	secret := "owner-lease-loss-secret"
+	probeStarted := make(chan struct{}, 1)
+	releaseProbe := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		select {
+		case probeStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-request.Context().Done():
+		case <-releaseProbe:
+		}
+	}))
+	t.Cleanup(func() {
+		close(releaseProbe)
+		server.Close()
+	})
+
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "lost-owner", 4*time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t lease=%#v err=%v", acquired, lease, err)
+	}
+	loader := &fakeDirectInputLoader{due: []Input{testScheduledAPIKeyInput(t, server.URL, secret, "lost-owner-account")}}
+	runner := NewRunner(Config{
+		InputDirectory:   t.TempDir(),
+		InputKeys:        map[string][]byte{"current": []byte("test-key")},
+		CredentialSecret: secret,
+		ProbeTimeout:     3 * time.Second,
+		MaxResponseBytes: 1024,
+		MaxConcurrency:   1,
+		DirectInputLimit: 1,
+		ScanInterval:     100 * time.Millisecond,
+		OwnerLease:       4 * time.Second,
+		Now:              time.Now,
+	}, store, nil)
+	runner.directInputReader = loader
+	done := make(chan error, 1)
+	go func() { done <- runner.runOwned(context.Background(), lease) }()
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("long cycle did not start its probe")
+	}
+	if err := store.ReleaseOwnerLease(context.Background(), lease); err != nil {
+		t.Fatalf("force owner lease loss: %v", err)
+	}
+	select {
+	case runErr := <-done:
+		if !errors.Is(runErr, ErrOwnerLeaseLost) {
+			t.Fatalf("runOwned error=%v, want owner lease lost", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("lost owner lease must cancel and join the active cycle")
+	}
+	if loader.DueCalls() != 1 {
+		t.Fatalf("lost lease must not permit cycle overlap/reentry: due calls=%d", loader.DueCalls())
+	}
+}
+
+func TestRunnerPersistsTimeoutOutcomeAfterCursorPersistence(t *testing.T) {
+	secret := "timeout-outcome-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "timeout-outcome-owner", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t lease=%#v err=%v", acquired, lease, err)
+	}
+	input := testScheduledAPIKeyInput(t, server.URL, secret, "timeout-outcome-account")
+	input.KeySetFingerprint = "timeout-outcome-keyset"
+	input.APIKeys = append(input.APIKeys, APIKeyInput{Index: 1, Fingerprint: "key-2", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-second"}`)}})
+	runner := NewRunner(Config{CredentialSecret: secret, ProbeTimeout: 20 * time.Millisecond, MaxResponseBytes: 1024, MaxConcurrency: 1, Now: time.Now}, store, nil)
+	if err := runner.runInput(context.Background(), lease, input, time.Now().UTC()); err != nil {
+		t.Fatalf("timeout probe must persist cursor and durable outcome: %v", err)
+	}
+	next, found, err := store.LoadKeyCursor(context.Background(), input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint)
+	if err != nil || !found || next != 1 {
+		t.Fatalf("cursor next=%d found=%t err=%v, want persisted next index 1", next, found, err)
+	}
+	var outcomes int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE account_id=?`, input.AccountID).Scan(&outcomes); err != nil || outcomes != 1 {
+		t.Fatalf("timeout must append one durable outcome: outcomes=%d err=%v", outcomes, err)
+	}
+}
+
+func TestRunnerLostLeaseFailsClosedWithoutCursorOrOutcome(t *testing.T) {
+	secret := "lost-lease-outcome-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+	}))
+	defer server.Close()
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "lost-lease-outcome-owner", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t lease=%#v err=%v", acquired, lease, err)
+	}
+	input := testScheduledAPIKeyInput(t, server.URL, secret, "lost-lease-outcome-account")
+	if err := store.ReleaseOwnerLease(context.Background(), lease); err != nil {
+		t.Fatalf("release lease before probe: %v", err)
+	}
+	runner := NewRunner(Config{CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, Now: time.Now}, store, nil)
+	if err := runner.runInput(context.Background(), lease, input, time.Now().UTC()); !errors.Is(err, ErrOwnerLeaseLost) {
+		t.Fatalf("lost lease must fail closed: %v", err)
+	}
+	if _, found, err := store.LoadKeyCursor(context.Background(), input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint); err != nil || found {
+		t.Fatalf("lost lease must not persist cursor: found=%t err=%v", found, err)
+	}
+	var outcomes int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE account_id=?`, input.AccountID).Scan(&outcomes); err != nil || outcomes != 0 {
+		t.Fatalf("lost lease must not append outcome: outcomes=%d err=%v", outcomes, err)
+	}
+}
+
+func testScheduledAPIKeyInput(t *testing.T, baseURL, secret, accountID string) Input {
+	t.Helper()
+	input := testInput(baseURL, "chat_json")
+	input.AccountID = accountID
+	input.IssuedAt = time.Now().UTC().Add(-time.Minute)
+	input.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	input.APIKeys = []APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}}}
+	input.KeySetFingerprint = "keyset-" + accountID
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	return input
 }
 
 func TestScheduleMillisecondsAreBoundedWithoutDurationOverflow(t *testing.T) {

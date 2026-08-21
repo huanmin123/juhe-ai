@@ -55,6 +55,7 @@ const cooldownObservationTimeout = 7 * 24 * time.Hour
 const cooldownLimitedProbeTimeout = 10 * time.Minute
 const defaultCooldownMaxPauseMinutes = 2
 const defaultCooldownMaxRecoveryHours = 12
+const ownerLeaseRenewTimeout = 5 * time.Second
 
 func NewRunner(cfg Config, store *Store, logger *slog.Logger) *Runner {
 	if logger == nil {
@@ -130,28 +131,71 @@ func (r *Runner) runOwned(parent context.Context, lease OwnerLease) error {
 	scanTicker := time.NewTicker(r.cfg.ScanInterval)
 	defer renewTicker.Stop()
 	defer scanTicker.Stop()
-	if err := r.runCycle(ctx, lease); err != nil {
-		return err
+
+	// Keep ownership renewal independent from the synchronous probe batch. A
+	// batch can legitimately outlive a renewal interval (for example, several
+	// bounded network probes at MaxConcurrency=1).  There is exactly one cycle
+	// goroutine at a time: on a lost/failed renewal we cancel it and wait for its
+	// workers to return before releasing the fenced lease or allowing a later
+	// owner to run.
+	cycleDone := make(chan error, 1)
+	cycleRunning := false
+	startCycle := func() {
+		cycleRunning = true
+		go func() { cycleDone <- r.runCycle(ctx, lease) }()
 	}
+	waitCycle := func() {
+		if !cycleRunning {
+			return
+		}
+		<-cycleDone
+		cycleRunning = false
+	}
+	stopCycle := func(cause error) error {
+		cancel(cause)
+		waitCycle()
+		return cause
+	}
+	initialCycle := true
+	startCycle()
 	for {
 		select {
 		case <-ctx.Done():
+			waitCycle()
 			return context.Cause(ctx)
+		case cycleErr := <-cycleDone:
+			cycleRunning = false
+			if ctx.Err() != nil {
+				return context.Cause(ctx)
+			}
+			if errors.Is(cycleErr, ErrOwnerLeaseLost) {
+				return stopCycle(ErrOwnerLeaseLost)
+			}
+			if cycleErr != nil {
+				if initialCycle {
+					return cycleErr
+				}
+				r.setError(cycleErr)
+				r.logger.Error("account-health scan failed; owner stays alive for the next scan", "error", cycleErr)
+			}
+			initialCycle = false
 		case <-renewTicker.C:
-			renewed, err := r.store.RenewOwnerLease(ctx, lease, r.cfg.OwnerLease)
+			renewCtx, renewCancel := context.WithTimeout(ctx, ownerLeaseRenewTimeout)
+			renewed, err := r.store.RenewOwnerLease(renewCtx, lease, r.cfg.OwnerLease)
+			renewCancel()
 			if err != nil {
-				return fmt.Errorf("续约 account-health owner lease: %w", err)
+				if ctx.Err() != nil {
+					return stopCycle(context.Cause(ctx))
+				}
+				return stopCycle(fmt.Errorf("续约 account-health owner lease: %w", err))
 			}
 			if !renewed {
-				return ErrOwnerLeaseLost
+				return stopCycle(ErrOwnerLeaseLost)
 			}
 		case <-scanTicker.C:
-			if err := r.runCycle(ctx, lease); err != nil {
-				if errors.Is(err, ErrOwnerLeaseLost) || ctx.Err() != nil {
-					return err
-				}
-				r.setError(err)
-				r.logger.Error("account-health scan failed; owner stays alive for the next scan", "error", err)
+			if !cycleRunning {
+				initialCycle = false
+				startCycle()
 			}
 		}
 	}

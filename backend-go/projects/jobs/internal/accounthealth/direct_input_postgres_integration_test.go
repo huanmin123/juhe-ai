@@ -19,6 +19,7 @@ func TestPostgresDirectInputReaderSmoke(t *testing.T) {
 	wantAuthorizedAccountID := os.Getenv("JUHE_AI_J1_DIRECT_INPUT_SMOKE_AUTHORIZED_ACCOUNT_ID")
 	wantQuotaExceededAccountID := os.Getenv("JUHE_AI_J1_DIRECT_INPUT_SMOKE_QUOTA_EXCEEDED_ACCOUNT_ID")
 	wantCooldownAccountID := os.Getenv("JUHE_AI_J1_DIRECT_INPUT_SMOKE_COOLDOWN_ACCOUNT_ID")
+	wantActiveAccountID := os.Getenv("JUHE_AI_J1_DIRECT_INPUT_SMOKE_ACTIVE_ACCOUNT_ID")
 	if postgresURL == "" || secret == "" || wantAccountID == "" {
 		t.Skip("requires isolated J1 PostgreSQL direct-input smoke environment")
 	}
@@ -95,4 +96,31 @@ func TestPostgresDirectInputReaderSmoke(t *testing.T) {
 	if len(cooldownInputs) != 1 || cooldownInputs[0].Cooldown == nil || cooldownInputs[0].Cooldown.SourceConfigRevision == nil {
 		t.Fatalf("cooldown fixture account %q is missing five-field fence: %#v", wantCooldownAccountID, cooldownInputs)
 	}
+	if wantActiveAccountID == "" {
+		return
+	}
+	// When these fixture IDs are supplied, the isolated PostgreSQL fixture must
+	// include pending, active and cooldown candidates in a single bounded page.
+	// This exercises the actual window-function order, instead of inferring
+	// fairness from the SQL text or an in-memory slot helper.
+	fairInputs, err := reader.LoadDue(context, 3)
+	if err != nil {
+		t.Fatalf("load fair-order direct input candidates: %v", err)
+	}
+	ownerIndex, activeIndex, cooldownIndex := directInputIndex(fairInputs, wantAccountID), directInputIndex(fairInputs, wantActiveAccountID), directInputIndex(fairInputs, wantCooldownAccountID)
+	if ownerIndex < 0 || activeIndex < 0 || cooldownIndex < 0 {
+		t.Fatalf("fair-order fixture IDs must all appear in one bounded page: owner=%d active=%d cooldown=%d inputs=%#v", ownerIndex, activeIndex, cooldownIndex, fairInputs)
+	}
+	if ownerIndex != 0 || cooldownIndex >= activeIndex {
+		t.Fatalf("pending must lead and first fair non-pending slot must be cooldown: owner=%d cooldown=%d active=%d", ownerIndex, cooldownIndex, activeIndex)
+	}
+}
+
+func directInputIndex(inputs []Input, accountID string) int {
+	for index, input := range inputs {
+		if input.AccountID == accountID {
+			return index
+		}
+	}
+	return -1
 }
