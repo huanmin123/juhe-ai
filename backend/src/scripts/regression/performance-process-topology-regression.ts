@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { resolveRuntimeReadiness } from '../../shared/runtime-readiness.js'
+
 const childMode = process.env.JUHE_AI_PERFORMANCE_TOPOLOGY_CHILD
 
 if (childMode) {
@@ -79,10 +81,35 @@ const serverSource = readFileSync(new URL('../../server.ts', import.meta.url), '
 const supervisorSource = readFileSync(new URL('../../modules/background/background-worker-supervisor.ts', import.meta.url), 'utf8')
 const metricsRegistrySource = readFileSync(new URL('../../shared/performance-process-metrics-registry.ts', import.meta.url), 'utf8')
 const backgroundJobsSource = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
-assert.match(
-  serverSource,
-  /topologyGatesHealth[\s\S]*performanceNodeRole === 'control'[\s\S]*!workerTopologyReady \? 503 : 200/,
+assert.deepEqual(
+  resolveRuntimeReadiness({
+    dbServiceReady: true,
+    workerTopologyReady: false,
+    topologyGatesHealth: true
+  }),
+  {
+    statusCode: 503,
+    status: 'starting',
+    dbServiceReady: true,
+    workerTopologyReady: false,
+    blockers: ['worker_topology_not_ready']
+  },
   'performance control 必须等待全部 worker ready 后才返回 200 health'
+)
+assert.deepEqual(
+  resolveRuntimeReadiness({
+    dbServiceReady: true,
+    workerTopologyReady: false,
+    topologyGatesHealth: false
+  }),
+  {
+    statusCode: 200,
+    status: 'ok',
+    dbServiceReady: true,
+    workerTopologyReady: false,
+    blockers: []
+  },
+  '不负责 worker 拓扑的运行时不得被 worker 未就绪阻塞 health'
 )
 assert.match(metricsRegistrySource, /runtimeMode === 'performance'[\s\S]*cacheDriver === 'redis'/, '进程指标注册表只能在高性能 Redis 模式启用')
 assert.match(metricsRegistrySource, /registryTtlSeconds = 20/, '进程指标注册必须使用短 TTL 避免退出节点残留')
@@ -96,9 +123,10 @@ assert.doesNotMatch(backgroundJobsSource, /registryProcessSamples\.length\s*>?=/
 assert.match(serverSource, /startInternalGatewayRegistryWhenReady[\s\S]*startInternalGatewayRegistry\(\)/, 'Gateway 实例必须在监听和 DB service ready 后注册内部调度端点')
 assert.match(
   serverSource,
-  /app\.use\(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)[\s\S]*app\.use\(accountHealthCheckDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)/,
-  'control-replica 必须拒绝所有直连内部派发写接口'
+  /app\.use\(accountTestDispatchInternalPrefix, controlReadReplicaPrimaryOnlyRequestGuard\)/,
+  'control-replica 必须拒绝直连账户测试内部派发写接口'
 )
+assert.doesNotMatch(serverSource, /accountHealthCheckDispatchInternalPrefix/, 'Node J1 accountHealthCheck dispatch 入口已删除，server 不得导入、挂载或要求它')
 assert.match(
   supervisorSource,
   /attachBackgroundAuxiliaryWorkerProcess\(child/,
