@@ -27,6 +27,20 @@ func TestDirectInputCandidatesIncludeResponsesSSE(t *testing.T) {
 	}
 }
 
+func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *testing.T) {
+	const expectedOrder = "ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status = 'active' THEN 1 ELSE 2 END, a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC"
+	if !strings.Contains(directInputCandidatesSQL, expectedOrder) {
+		t.Fatalf("PG direct input candidates must prioritize activation, overdue active schedules, and cooldown retests: %s", directInputCandidatesSQL)
+	}
+	orderBy := directInputCandidatesSQL[strings.LastIndex(directInputCandidatesSQL, "ORDER BY"):]
+	if strings.Contains(orderBy, "updated_at") {
+		t.Fatal("updated_at must not participate in direct-input scheduling, or full batches can starve overdue accounts")
+	}
+	if !strings.Contains(directInputCandidatesSQL, "LIMIT $2") {
+		t.Fatal("direct input candidate query must preserve its bounded database limit")
+	}
+}
+
 func TestDirectInputRejectsOAuthResponsesSSE(t *testing.T) {
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	err := validateDirectAccount(DirectAccount{

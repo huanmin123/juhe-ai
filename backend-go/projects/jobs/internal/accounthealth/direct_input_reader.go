@@ -218,7 +218,10 @@ WHERE a.deleted_at IS NULL
   ))
   AND ($3::boolean OR a.status IN ('temporary_unavailable', 'rate_limited') OR a.next_health_check_at IS NULL OR a.next_health_check_at <= $1 OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
   AND ($4 = '' OR a.id = $4)
-ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END, a.updated_at DESC NULLS LAST, a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
+-- Keep activation work first, then service overdue active accounts before
+-- cooldown retests. Do not order by updated_at: outcome projection changes
+-- it and could make a fixed-size batch indefinitely starve older accounts.
+ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status = 'active' THEN 1 ELSE 2 END, a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
 LIMIT $2`
 
 func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
