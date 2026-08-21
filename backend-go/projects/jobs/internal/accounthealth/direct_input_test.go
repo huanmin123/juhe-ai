@@ -2,6 +2,7 @@ package accounthealth
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,52 @@ func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *t
 	}
 	if !strings.Contains(directInputCandidatesSQL, "LIMIT $2") {
 		t.Fatal("direct input candidate query must preserve its bounded database limit")
+	}
+	if !strings.Contains(directInputCandidatesSQL, "OFFSET $5") {
+		t.Fatal("direct input candidate query must support a stable refill offset after quota filtering")
+	}
+}
+
+func TestCollectDirectCandidatePagesRefillsAfterQuotaFilteredPage(t *testing.T) {
+	const pageSize = 3
+	var offsets []int
+	accepted := 0 // The first page is entirely quota-ineligible.
+	err := collectDirectCandidatePages(pageSize, func(offset int) (int, error) {
+		offsets = append(offsets, offset)
+		switch offset {
+		case 0:
+			if accepted != 0 {
+				t.Fatalf("first full page must be entirely filtered, accepted = %d", accepted)
+			}
+			return pageSize, nil
+		case pageSize:
+			accepted += 2
+			return pageSize, nil
+		case 2 * pageSize:
+			accepted++
+			return 1, nil
+		default:
+			t.Fatalf("unexpected candidate page offset %d", offset)
+			return 0, nil
+		}
+	}, func() int { return accepted })
+	if err != nil {
+		t.Fatalf("collect pages: %v", err)
+	}
+	if accepted != 3 {
+		t.Fatalf("accepted = %d, want 3", accepted)
+	}
+	if got, want := fmt.Sprint(offsets), "[0 3 6]"; got != want {
+		t.Fatalf("page offsets = %s, want %s", got, want)
+	}
+}
+
+func TestCollectDirectCandidatePagesRejectsInvalidPageSize(t *testing.T) {
+	err := collectDirectCandidatePages(3, func(int) (int, error) {
+		return 4, nil
+	}, func() int { return 0 })
+	if err == nil {
+		t.Fatal("page count above the SQL limit must fail closed")
 	}
 }
 

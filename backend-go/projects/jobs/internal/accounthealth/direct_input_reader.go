@@ -52,7 +52,7 @@ func (r *PostgresDirectInputReader) CheckContract(ctx context.Context) error {
 		return err
 	}
 	now := r.now().UTC()
-	rows, err := tx.QueryContext(ctx, directInputCandidatesSQL, now.Format(time.RFC3339Nano), 0, false, "")
+	rows, err := tx.QueryContext(ctx, directInputCandidatesSQL, now.Format(time.RFC3339Nano), 0, false, "", 0)
 	if err != nil {
 		return fmt.Errorf("验证 PG direct input 候选查询失败: %w", err)
 	}
@@ -112,47 +112,56 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, directInputCandidatesSQL, now.Format(time.RFC3339Nano), limit, ignoreSchedule, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("读取 PG direct input 候选失败: %w", err)
-	}
-	defer rows.Close()
-	candidates := make([]directCandidate, 0)
-	for rows.Next() {
-		candidate, err := scanDirectCandidate(rows)
+	inputs := make([]Input, 0, limit)
+	err = collectDirectCandidatePages(limit, func(offset int) (int, error) {
+		rows, err := tx.QueryContext(ctx, directInputCandidatesSQL, now.Format(time.RFC3339Nano), limit, ignoreSchedule, accountID, offset)
 		if err != nil {
-			return nil, err
+			return 0, fmt.Errorf("读取 PG direct input 候选失败: %w", err)
 		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("关闭 PG direct input 候选游标失败: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历 PG direct input 候选失败: %w", err)
-	}
-	inputs := make([]Input, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.authorization != nil {
-			eligible, err := authorizationQuotaEligible(ctx, tx, candidate, now, timezone)
+		pageCount := 0
+		for rows.Next() {
+			pageCount++
+			candidate, err := scanDirectCandidate(rows)
 			if err != nil {
-				return nil, err
+				rows.Close()
+				return 0, err
 			}
-			// A valid authorization that has exhausted its own or team scope is
-			// not a malformed input and must not make unrelated accounts fail to
-			// load. Node applies the same fail-closed eligibility filter before
-			// dispatch; omit it rather than probing or returning a fallback input.
-			if !eligible {
-				continue
+			if candidate.authorization != nil {
+				eligible, err := authorizationQuotaEligible(ctx, tx, candidate, now, timezone)
+				if err != nil {
+					rows.Close()
+					return 0, err
+				}
+				// A valid authorization that has exhausted its own or team scope is
+				// not a malformed input and must not make unrelated accounts fail to
+				// load. Node applies the same fail-closed eligibility filter before
+				// dispatch; omit it rather than probing or returning a fallback input.
+				if !eligible {
+					continue
+				}
+				candidate.authorization.QuotaEligible = eligible
 			}
-			candidate.authorization.QuotaEligible = eligible
+			direct := DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
+			input, err := direct.ToInput(r.credentialSecret, now)
+			if err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("构造 PG direct input account=%s 失败: %w", candidate.account.ID, err)
+			}
+			inputs = append(inputs, input)
+			if len(inputs) == limit {
+				break
+			}
 		}
-		direct := DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
-		input, err := direct.ToInput(r.credentialSecret, now)
-		if err != nil {
-			return nil, fmt.Errorf("构造 PG direct input account=%s 失败: %w", candidate.account.ID, err)
+		if err := rows.Close(); err != nil {
+			return 0, fmt.Errorf("关闭 PG direct input 候选游标失败: %w", err)
 		}
-		inputs = append(inputs, input)
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("遍历 PG direct input 候选失败: %w", err)
+		}
+		return pageCount, nil
+	}, func() int { return len(inputs) })
+	if err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("提交 PG direct input 只读事务失败: %w", err)
@@ -172,6 +181,27 @@ type directCandidate struct {
 	authorizationResourceID string
 	authorizationOwner      string
 	authorizationTeam       string
+}
+
+// collectDirectCandidatePages advances through a repeatable-read candidate
+// snapshot until quota filtering has produced the requested number of inputs
+// or there are no more rows. This keeps SQL page bounds while preventing an
+// ineligible full page from starving later eligible candidates.
+func collectDirectCandidatePages(limit int, loadPage func(offset int) (int, error), accepted func() int) error {
+	for offset := 0; accepted() < limit; {
+		pageCount, err := loadPage(offset)
+		if err != nil {
+			return err
+		}
+		if pageCount < 0 || pageCount > limit {
+			return fmt.Errorf("PG direct input 候选页行数无效: %d", pageCount)
+		}
+		if pageCount < limit {
+			return nil
+		}
+		offset += pageCount
+	}
+	return nil
 }
 
 const directInputCandidatesSQL = `
@@ -222,7 +252,7 @@ WHERE a.deleted_at IS NULL
 -- cooldown retests. Do not order by updated_at: outcome projection changes
 -- it and could make a fixed-size batch indefinitely starve older accounts.
 ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status = 'active' THEN 1 ELSE 2 END, a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
-LIMIT $2`
+LIMIT $2 OFFSET $5`
 
 func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var result directCandidate
