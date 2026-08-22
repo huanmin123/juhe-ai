@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
 func TestMatchesAccountBalanceManualSecret(t *testing.T) {
@@ -27,6 +28,22 @@ func TestMatchesAccountBalanceManualSecret(t *testing.T) {
 	}
 }
 
+func TestPassiveJobsHealthNeverClaimsOwnerReadiness(t *testing.T) {
+	handler := passiveJobsHealthHandler(ownermode.Standby)
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if record.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%s", record.Code, record.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(record.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ready"] != false || payload["ownerReady"] != false || payload["ownerMode"] != "standby" || payload["accountBalanceReady"] != false {
+		t.Fatalf("passive health claimed owner readiness: %#v", payload)
+	}
+}
+
 func TestHealthWiresProxyLatencyStatus(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
@@ -34,7 +51,7 @@ func TestHealthWiresProxyLatencyStatus(t *testing.T) {
 	status := func() proxylatency.RunnerStatus {
 		return proxylatency.RunnerStatus{OwnerHeld: true, LastCycleAt: now, LastSuccess: now, Inputs: 2, Executed: 2}
 	}
-	handler := healthHandler(&running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, status)
+	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, status)
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if record.Code != http.StatusOK {
@@ -56,7 +73,7 @@ func TestHealthKeepsProxyLatencyFailureVisible(t *testing.T) {
 	status := func() proxylatency.RunnerStatus {
 		return proxylatency.RunnerStatus{OwnerHeld: false, LastCycleAt: now, LastError: "owner lease lost"}
 	}
-	handler := healthHandler(&running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return false }, status)
+	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return false }, status)
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
@@ -71,7 +88,7 @@ func TestHealthKeepsProxyLatencyFailureVisible(t *testing.T) {
 func TestHealthDisabledProxyLatencyDoesNotBlock(t *testing.T) {
 	running := atomic.Bool{}
 	running.Store(true)
-	handler := healthHandler(&running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, false, func() bool { return false }, func() proxylatency.RunnerStatus {
+	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, false, func() bool { return false }, func() proxylatency.RunnerStatus {
 		return proxylatency.RunnerStatus{}
 	})
 	record := httptest.NewRecorder()
@@ -97,7 +114,7 @@ func TestHealthUsesAtomicProxyLatencySnapshot(t *testing.T) {
 	snapshot := func() (proxylatency.RunnerStatus, bool) {
 		return status(), false
 	}
-	handler := healthHandler(&running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, status, snapshot)
+	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, status, snapshot)
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any

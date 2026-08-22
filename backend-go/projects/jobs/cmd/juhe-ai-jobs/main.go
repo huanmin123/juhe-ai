@@ -25,6 +25,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -53,6 +54,14 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	ownerMode, err := ownermode.Load(os.Getenv)
+	if err != nil {
+		fail(err)
+	}
+	if !ownerMode.OwnsWork() {
+		runPassiveJobs(*healthAddress, ownerMode, logger)
+		return
+	}
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
 	runtimeConfig, err := runtimelog.LoadConfig(os.Getenv)
@@ -306,7 +315,7 @@ func main() {
 		})
 	}
 	healthServer := &http.Server{
-		Handler: jobsHTTPHandler(&runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
+		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
 				return proxylatency.RunnerStatus{}
 			}
@@ -340,10 +349,60 @@ func main() {
 	}
 }
 
-func jobsHTTPHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
+// runPassiveJobs never initializes stores or leases. It exists only for a
+// candidate readiness endpoint during standby/drain; ownerReady stays false.
+func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger) {
+	listener, err := net.Listen("tcp", healthAddress)
+	if err != nil {
+		fail(fmt.Errorf("listen passive jobs health endpoint %q: %w", healthAddress, err))
+	}
+	defer listener.Close()
+	server := &http.Server{Handler: passiveJobsHealthHandler(ownerMode), ReadHeaderTimeout: 5 * time.Second}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	logger.Info("juhe-ai-jobs passive", "healthAddress", listener.Addr().String(), "ownerMode", ownerMode)
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownErr := server.Shutdown(shutdownCtx)
+	cancel()
+	serveResult := <-serveErr
+	if shutdownErr != nil {
+		fail(fmt.Errorf("shutdown passive jobs health endpoint: %w", shutdownErr))
+	}
+	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
+		fail(fmt.Errorf("passive jobs health endpoint stopped: %w", serveResult))
+	}
+}
+
+func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/health" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"ready":                 false,
+			"ownerReady":            false,
+			"ownerMode":             ownerMode,
+			"runtimeLogOwnerHeld":   false,
+			"tableMonitorReady":     false,
+			"accountHealthEnabled":  false,
+			"accountHealthReady":    false,
+			"accountBalanceEnabled": false,
+			"accountBalanceReady":   false,
+			"proxyLatencyEnabled":   false,
+			"proxyLatencyReady":     false,
+		})
+	})
+}
+
+func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
 	mux := http.NewServeMux()
 	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3...)
-	mux.Handle("/health", healthHandler(runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
+	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || accountBalanceService == nil {
 			http.NotFound(response, request)
@@ -437,7 +496,7 @@ func manualOutcome(status accountbalance.Status) string {
 	return "failed"
 }
 
-func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {
+func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {
 	accountBalanceEnabled := false
 	accountBalanceReady := func() bool { return true }
 	proxyLatencyEnabled := false
@@ -488,8 +547,11 @@ func healthHandler(runtimeRunning *atomic.Bool, tableMonitorReady func() bool, a
 		proxyStatus, proxyReady := proxyLatencySnapshot()
 		proxyLatencyIsReady := !proxyLatencyEnabled || proxyReady
 		response.Header().Set("Content-Type", "application/json")
+		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"ready":                     runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady,
+			"ready":                     ready,
+			"ownerReady":                ready,
+			"ownerMode":                 ownerMode,
 			"runtimeLogOwnerHeld":       runtimeLogOwnerHeld,
 			"tableMonitorReady":         tableMonitorIsReady,
 			"accountHealthEnabled":      accountHealthEnabled,

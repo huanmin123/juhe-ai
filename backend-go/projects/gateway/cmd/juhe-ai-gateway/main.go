@@ -19,6 +19,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -74,6 +75,14 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	ownerMode, err := ownermode.Load(os.Getenv)
+	if err != nil {
+		fail(err)
+	}
+	if !ownerMode.OwnsWork() {
+		runPassiveGateway(*healthAddress, ownerMode, logger)
+		return
+	}
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
 	auditConfig, err := auditlog.LoadConfig(os.Getenv)
@@ -165,7 +174,7 @@ func main() {
 			if !ready {
 				response.WriteHeader(http.StatusServiceUnavailable)
 			}
-			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load()})
+			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load()})
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -188,6 +197,50 @@ func main() {
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
 		fail(fmt.Errorf("gateway health endpoint stopped: %w", serveResult))
 	}
+}
+
+// runPassiveGateway never initializes F3/F4 stores or input servers. It is a
+// health-only process for a standby/draining blue-green slot.
+func runPassiveGateway(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger) {
+	listener, err := net.Listen("tcp", healthAddress)
+	if err != nil {
+		fail(fmt.Errorf("listen passive gateway health endpoint %q: %w", healthAddress, err))
+	}
+	defer listener.Close()
+	server := &http.Server{Handler: passiveGatewayHealthHandler(ownerMode), ReadHeaderTimeout: 5 * time.Second}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	logger.Info("juhe-ai-gateway passive", "healthAddress", listener.Addr().String(), "ownerMode", ownerMode)
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownErr := server.Shutdown(shutdownCtx)
+	cancel()
+	serveResult := <-serveErr
+	if shutdownErr != nil {
+		fail(fmt.Errorf("shutdown passive gateway health endpoint: %w", shutdownErr))
+	}
+	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
+		fail(fmt.Errorf("passive gateway health endpoint stopped: %w", serveResult))
+	}
+}
+
+func passiveGatewayHealthHandler(ownerMode ownermode.Mode) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/health" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"ready":             false,
+			"ownerReady":        false,
+			"ownerMode":         ownerMode,
+			"auditLogReady":     false,
+			"operationLogReady": false,
+		})
+	})
 }
 
 func runOperationLogLegacyMigration(options operationlog.LegacyMigrationOptions, postgres bool) {
