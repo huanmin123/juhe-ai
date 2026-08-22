@@ -2,7 +2,7 @@
 
 - [PLAN-20260821T004304961Z](计划-20260821T004304961Z-J3a代理延迟检测L2实现.md)：实施 J3a 独立 Go jobs 代理延迟检测契约，不切换 Node/Go owner。
 
-- [PLAN-20260821T182741627Z](计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md)：建立隔离 PostgreSQL/PgBouncer smoke 入口；真实 PG、owner handoff 与生产切换仍未完成。
+- [PLAN-20260821T182741627Z](计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md)：历史 dev scratch 经 PgBouncer `6432` 的 required smoke 已通过并完成清理；本轮未重跑，生产、跨运行时闭环、owner handoff 与生产切换仍未完成。
 
 - [PLAN-20260822T140000000Z](计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：逐项对照 Node 机制与 Go 迁移侧证据，冻结失败写回、手动报告、scheduler 生命周期差异和跨运行时后续门禁。
 
@@ -322,7 +322,7 @@ docs/plans/
 | 计划 ID | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
 | PLAN-20260821T004304961Z | J3a 代理延迟检测 L2 实现 | 进行中 | 2026-08-21 | 后台任务 / Go jobs / Node projector / 代理 / SQLite / PostgreSQL | `docs/plans/计划-20260821T004304961Z-J3a代理延迟检测L2实现.md` |
-| PLAN-20260821T182741627Z | J3a 代理延迟检测 L3-PG smoke | 进行中 | 2026-08-21 | Go jobs / PostgreSQL / PgBouncer / 权限 / 事务 / 验证 | `docs/plans/计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md` |
+| PLAN-20260821T182741627Z | J3a 代理延迟检测 L3-PG smoke | 历史 dev required smoke 已通过；本轮未重跑；生产/跨运行时/owner handoff 未完成 | 2026-08-21 | Go jobs / PostgreSQL / PgBouncer / 权限 / 事务 / 验证 | `docs/plans/计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md` |
 | PLAN-20260820T235441488Z | J3 后台任务 L1 语义冻结 | 已完成（仅文档冻结） | 2026-08-21 | 后台任务 / Node->Go 迁移 / 代理延迟 / 模型检测 / 质量检查 / SQLite / PostgreSQL / 文档 | `docs/plans/计划-20260820T235441488Z-J3后台任务L1语义冻结.md` |
 | PLAN-20260820T025332906Z | 上游额度不足继承错误策略 | 已完成 | 2026-08-20 | Node 网关 / AI 账户错误策略 / 健康探针 / Vue / 权限 / 文档 / 验证 | `docs/plans/计划-20260820T025332906Z-上游额度不足继承错误策略.md` |
 | PLAN-20260810T000000000Z | 第三方登录与个人委托授权 | 本地实现完成，待生产接入门禁 | 2026-08-10 | Node / Vue / OAuth 2.1 / OIDC / 个人委托 API / 用户请求限制 | `docs/plans/计划-20260810T000000000Z-第三方登录与个人委托授权.md` |

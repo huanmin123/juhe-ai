@@ -1,6 +1,6 @@
 # J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案
 
-> 状态：已加入 opt-in smoke harness，真实 PostgreSQL/PgBouncer 尚未执行。该方案不翻转 Go owner、不停止 Node owner，也不替代 L3/L4 的真实依赖、投影和部署门禁。
+> 状态：既有 dev 隔离 scratch 已经通过 PgBouncer `6432` 的 required smoke 并完成清理；本轮深度对照未重跑外部 smoke。该历史证据只覆盖 jobs Store、reader、lease、input/claim/outcome、权限与事务，不包含 Node→Go→Node projector/readback、生产/L4、Docker/Redis 或 owner handoff。该方案不翻转 Go owner、不停止 Node owner，也不替代后续真实依赖、投影和部署门禁。
 
 ## 1. 目的与硬边界
 

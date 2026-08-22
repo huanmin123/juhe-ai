@@ -10,7 +10,7 @@
 - [J3a 代理延迟检测完整迁移契约](J3a-代理延迟检测完整迁移契约.md)：冻结 J3a 的输入、结果、lease、投影与 L2 实施边界；owner gate 仍关闭。
 - [J3a 代理延迟检测 Node-Go 深度对照报告](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：逐项记录 Node 失败写回、手动 ProxyTestReport、scheduler 生命周期与 Go local evidence；projector、owner handoff、manual bridge 和 cross-runtime golden 仍未完成。
 - [J3a 代理延迟检测 Node-Go 深度对照计划](../plans/计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：维护 Node 机制补缺、跨运行时门禁和主分支精确 staging allowlist。
-- [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：固定隔离 scratch 数据库、角色、PgBouncer 6432 smoke、清理和后续 L3/L4 非目标；真实环境未执行不计通过。
+- [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：历史 dev scratch 经 PgBouncer `6432` 的 required smoke 已通过并完成清理；本轮未重跑，生产、跨运行时闭环、owner handoff 与 L4 仍未完成。
 - [J1 账号健康探活完整迁移契约](J1-账号健康探活完整迁移契约.md)：冻结账号健康探活与冷却复测的完整 owner、SQLite/PG 输入输出协议、直接上游探活、Gateway source fence、切换和归档边界。
 - [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。

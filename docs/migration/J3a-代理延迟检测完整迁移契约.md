@@ -1,6 +1,6 @@
 # J3a 代理延迟检测完整迁移契约
 
-> 状态：L2 executor 与 Store/reader 基础域已完成本地验证，尚未接入 Go owner。基线为 `master@982468590`；本文件冻结 J3a 的实现契约，不启用 Go owner、不停止 Node owner，也不授权部署。
+> 状态：L2 executor 与 Store/reader 基础域已完成本地验证，尚未接入 Go owner。`master@982468590` 是历史取证基线；本轮审计基线为当前 `master@a83d1e83e`（后续文档修复提交需另行更新）。本文件冻结 J3a 的实现契约，不启用 Go owner、不停止 Node owner，也不授权部署。
 
 ## 1. Owner 与范围
 
@@ -30,7 +30,7 @@ Go 在短生命周期、`REPEATABLE READ READ ONLY` 的 PostgreSQL 事务内读�
 - `observed_at` 固定为开始探测的 UTC 时刻，以兼容当前 Node 的 `last_tested_at <= testedAt` fence。探测完成时刻仅用于 outcome 存储排序和审计。
 - 完整 framing 的任意 HTTP 状态码保持 item `passed`；2xx 归 `complete_success`，非 2xx 归 `framing_complete_neutral`。连接/DNS/TLS/超时/提前关闭/不完整 framing 归 `upstream_failure` 和 item `failed`。输入过期、取消、未发起请求的配置错误、lease 丢失和执行器错误归 `probe_task_failure` 和 item `unknown`。
 - 整体状态保持 Node 规则：任一 failed 为 failed；无 failed 且 warning 或 passed/unknown 混合为 warning；仅 unknown 或空为 unknown；其余为 passed。
-- 周期结果不包含出口 IP/地区；手动成功结果可以包含这两个字段。`probe_task_failure`、`stale`、`lease_busy` 默认只写可观察 receipt，不投影为代理 failed 或 unknown。
+- 周期结果不包含出口 IP/地区；手动成功结果可以包含这两个字段。`probe_task_failure`、`stale`、`lease_busy` 当前只产生 runtime error/`LastError`/失败计数，不存在 durable receipt 表，也不投影为代理 failed 或 unknown；`applied`、`stale`、`ignored`、`rejected` receipt 仅是未来 projector/bridge contract，不能当作当前持久化能力。
 
 ## 4. Jobs Store 与 fence
 
@@ -42,7 +42,7 @@ Store 签发时必须拒绝非 RFC3339 UTC revision、非 `j3a-proxy-latency-v1`
 
 Node projector 只读 `committed` jobs outcomes，按 `(stored_at, outcome_id)` 读取；`stored_at` 仅是 jobs Store 游标时间，业务 CAS 仍使用开始探测的 `observed_at`。它在同一个 Node business DB 事务内先处理 receipt，再校验 schema、proxy ID、trigger、config revision、开始观察时刻与允许的 outcome；只有匹配时才更新 `test_status`、`latency_ms`、允许的出口字段、`last_test_message` 和 `last_tested_at`。
 
-业务 CAS 维持 `id + updated_at/config_revision + last_tested_at <= observed_at`。receipt 为 `applied`、`stale`、`ignored` 或 `rejected`；重复 outcome 不重复写，失败不推进 cursor。投影不得更新 `proxy_profiles.updated_at`，也不得触发代理配置缓存失效。
+业务 CAS 维持 `id + updated_at/config_revision + last_tested_at <= observed_at`。未来 projector receipt 可为 `applied`、`stale`、`ignored` 或 `rejected`；重复 outcome 不重复写，失败不推进 cursor。投影不得更新 `proxy_profiles.updated_at`，也不得触发代理配置缓存失效。
 
 ## 6. 已完成基础与剩余 L2
 
@@ -84,11 +84,11 @@ L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS�
 
 ### 11.1 失败写回不是同一语义
 
-Node 周期候选遇到非取消执行异常时，会把 `testStatus=unknown`、`latency=null`、错误消息、配置 revision 和 `testedAt` 写回业务读模型，并增加 `executionFailed`。Go 的输入、claim、凭据、取消、lease 或 envelope 失败属于 `probe_task_failure`：只写可观察 receipt，不提交 committed outcome，也不得让 projector 把旧业务状态误改成 `unknown`。真实 transport failure 仍是代理 item `failed`，不能与调度执行失败混淆。P1 projector 必须明确三类结果的映射和旧状态保留规则。
+Node 周期候选遇到非取消执行异常时，会把 `testStatus=unknown`、`latency=null`、错误消息、配置 revision 和 `testedAt` 写回业务读模型，并增加 `executionFailed`。Go 的输入、claim、凭据、取消、lease 或 envelope 失败属于 `probe_task_failure`：当前实现直接返回 runtime error、更新 runner 的 `LastError`/失败计数，不存在 durable receipt 表，不提交 committed outcome，也不得让 projector 把旧业务状态误改成 `unknown`。未来若增加 receipt，必须另立 schema、幂等和 cursor 契约；不得把当前 runtime error 误称为已持久化 receipt。真实 transport failure 仍是代理 item `failed`，不能与调度执行失败混淆。P1 projector 必须明确三类结果的映射和旧状态保留规则。
 
 ### 11.2 手动 ProxyTestReport 不是 Go Outcome 的同构对象
 
-Node 手动报告至少冻结以下字段和规则：synthetic 基础连通性 item、provider display name 与 provider code 的映射、每个 target 的 `targetUrl`/HTTP message/status/latency、`baseLatencyMs`、`counts`、`score`、`grade`、总体 `message`、`testedAt`，以及 `outboundIp/outboundRegion`。出口探测顺序固定为 `ip-api`、`ipwho.is`、`api.ip.sb`、`ipinfo.io`、`ipify`、`httpbin`；仅 HTTP 200 进入解析，解析失败或非 200 才回退下一个目标，周期刷新不写 outbound。Go `Outcome` 目前不包含这些管理端聚合字段，manual bridge 必须另订 schema/适配层，不得直接把 Go outcome 当成 Node 响应。
+Node 手动报告外部 schema 冻结为：报告字段 `proxyId`、`proxyName`、`score`、`grade`、`status`、`passedCount`、`warningCount`、`failedCount`、`outboundIp?`、`outboundRegion?`、`baseLatencyMs?`、`testedAt`、`items`、`message`；item 字段 `name`、`status`、`httpStatus?`、`latencyMs?`、`message`、`targetUrl?`。`?` 表示 Node JSON 序列化时字段为 `undefined` 则省略，不得改写为 `null`；synthetic 基础连通性 item（无 provider 或 provider 聚合）可省略 `targetUrl`，provider item 无论 passed/failed/unknown/deadline/transport 都保留 `targetUrl`，其中 unknown/deadline/transport 可省略 `httpStatus`、`latencyMs`；无可用出口或基础延迟时也省略对应 report 字段。状态枚举冻结为 `passed|warning|failed|unknown`；聚合规则为 failed>0→failed，否则 warning>0 或 passed 与 unknown 混合→warning，否则 passed>0→passed，否则 unknown；`unknown` score=0，否则 `max(0, round(100-warningCount*10-failedCount*35))`，grade 为 A(≥90)/B(≥75)/C(≥60)/D。报告包含 synthetic 基础连通性 item；provider item 使用 display name/base URL，Node 外部响应不携带 provider code。provider code 仅允许作为 bridge 内部查找元数据，code→display-name 映射不得改变外部 schema。出口探测顺序固定为 `ip-api`、`ipwho.is`、`api.ip.sb`、`ipinfo.io`、`ipify`、`httpbin`；仅 HTTP 200 进入解析，解析失败或非 200 才回退下一个目标，周期刷新不写 outbound。Go `Outcome` 目前不包含这些管理端聚合字段，manual bridge 必须另订逐字段适配层，不得直接把 Go outcome 当成 Node 响应。
 
 ### 11.3 手动入口边界
 
@@ -96,10 +96,10 @@ Node 路由只做存在性检查，停用 proxy 仍可进入手动测试；诊�
 
 ### 11.4 调度器生命周期
 
-Node `proxy-latency-refresh` 的事实配置为 60 秒间隔、4 分钟初始延迟、30 秒 stable phase、`coalesceOne`、`external-account-maintenance` lane、60 秒 task timeout、30 秒至 10 分钟 failure backoff、ops-worker 角色；候选池 factor=4、global diagnostic concurrency、candidate deadline 与 lease grace 共同限制批次。scheduler timeout 只 abort，底层 task 结束前仍占用 running/lane；`stopAndDrain` 必须报告 active count。Go 当前是 opt-in 串行 cycle，没有等价 lane/global governor/partial summary/stop-drain 机制；这些差异在 owner handoff 前必须作为明确 non-goal 或补实现门禁，不能用 Go serial cycle 宣称 Node scheduler parity。
+Node `proxy-latency-refresh` 的事实配置为 60 秒间隔、4 分钟初始延迟、30 秒 stable phase、`coalesceOne`、`external-account-maintenance` lane、60 秒 task timeout、30 秒至 10 分钟 failure backoff、ops-worker 角色；默认 `batchSize=20`、`candidatePoolFactor=4`，候选池为 `max(limit, limit*4)`，`targetCount=min(limit,candidates.length)`，`startedCount`/`deferredCount`/partial summary 可观察；busy lease 会跳过并继续补位，另受 global diagnostic concurrency、candidate deadline 与 lease grace 限制。scheduler timeout 只 abort，底层 task 结束前仍占用 running/lane；`stopAndDrain` 必须报告 active count。Go 当前默认 `InputLimit=64`、按 `LoadDue` 串行执行，lease busy 计入 cycle failure，没有等价 candidate pool、target/started/deferred/partial summary、lane/global governor/stop-drain 机制；这些差异在 owner handoff 前必须作为明确 non-goal 或补实现门禁，不能用 Go serial cycle 宣称 Node scheduler parity。
 
 ## 12. 证据与提交边界
 
 - 报告中的“通过”统一解释为 Node 源码事实或 Go 本地验证；没有同一 fixture 的 Node/Go runtime golden 就标记为 `cross-runtime-unverified`。
 - 既有 dev PgBouncer smoke 的真实结果只由 `docs/reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md` 支持；本轮未新增外部运行。
-- 本轮主分支提交 allowlist 仅包含本契约、Node-Go 深度对照报告/计划及三个对应 `README.md` 索引；`docs/migration/后台任务迁移总设计与路线图.md`、`backend-go/projects/jobs/internal/proxylatency/transport.go`、`transport_test.go` 以及其他 dirty worktree 文件均明确排除。
+- 本轮主分支提交 allowlist 仅包含本契约、L3-PG 验收方案、两份计划、Node-Go 深度对照报告及三个对应 `README.md` 索引；`docs/migration/后台任务迁移总设计与路线图.md`、`backend-go/projects/jobs/internal/proxylatency/transport.go`、`transport_test.go` 以及其他 dirty worktree 文件均明确排除。
