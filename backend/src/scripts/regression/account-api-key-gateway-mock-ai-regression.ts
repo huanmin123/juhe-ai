@@ -25,6 +25,10 @@ interface MockUpstreamHit {
 
 type ApiKeyStrategy = 'round_robin' | 'weighted_round_robin' | 'failover'
 type MockSuccessfulResponseMode = 'complete_json' | 'invalid_json' | 'interrupted_json' | 'sse_without_terminal'
+type MockResponsePlan = {
+  failureStatus?: number
+  successMode?: MockSuccessfulResponseMode
+}
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const backendRoot = resolve(currentDir, '../../..')
@@ -64,10 +68,18 @@ const [
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+assert.equal(
+  databaseModule.getBusinessDatabase()
+    .prepare("UPDATE system_accounts SET image_generation_enabled = 1 WHERE id = 'sys_admin'")
+    .run().changes,
+  1,
+  '非 text lane 回归必须显式开启 Mock 管理账户图像生成权限'
+)
 const mockHits: MockUpstreamHit[] = []
 const forcedFailureStatusByAuthorization = new Map<string, number>()
 const forcedTransportFailureAuthorizations = new Set<string>()
 const forcedSuccessfulResponseModeByAuthorization = new Map<string, MockSuccessfulResponseMode>()
+const forcedResponsePlansByUserAgent = new Map<string, MockResponsePlan[]>()
 const heldSuccessResponseUserAgents = new Set<string>()
 const heldSuccessResponseReleases = new Map<string, Array<() => void>>()
 const clientIpByBatchId = new Map<string, string>()
@@ -107,7 +119,8 @@ try {
     name: '单账户多 Key 网关主备',
     upstreamBaseUrl,
     apiKeys: ['sk-gateway-primary-backup-primary', 'sk-gateway-primary-backup-secondary', 'sk-gateway-primary-backup-reserve'],
-    strategy: 'failover'
+    strategy: 'failover',
+    errorHandlingRules: [explicitRetryNextRule([503])]
   })
   forcedFailureStatusByAuthorization.set('Bearer sk-gateway-primary-backup-primary', 503)
   const invalidBodyConfirmationGatewayApiKey = createGatewayApiKeyScenario({
@@ -142,14 +155,16 @@ try {
     upstreamBaseUrl,
     apiKeys: ['sk-gateway-weight-failure-bad', 'sk-gateway-weight-failure-good'],
     strategy: 'weighted_round_robin',
-    weights: [100, 1]
+    weights: [100, 1],
+    errorHandlingRules: [explicitRetryNextRule([503])]
   })
   forcedFailureStatusByAuthorization.set('Bearer sk-gateway-weight-failure-bad', 503)
   const failoverGatewayApiKey = createGatewayApiKeyScenario({
     name: '轮询 Key 失败确认避让',
     upstreamBaseUrl,
     apiKeys: ['sk-gateway-failover-bad', 'sk-gateway-failover-good'],
-    strategy: 'round_robin'
+    strategy: 'round_robin',
+    errorHandlingRules: [explicitRetryNextRule([503])]
   })
   forcedFailureStatusByAuthorization.set('Bearer sk-gateway-failover-bad', 503)
   const threeKeyExhaustionGatewayApiKey = createGatewayApiKeyScenario({
@@ -178,13 +193,30 @@ try {
   const transportRecoveryAccountId = accountIdByName('三 Key transport 后同账户恢复 账户')
   forcedTransportFailureAuthorizations.add('Bearer sk-gateway-transport-bad')
   const failoverTransportGatewayApiKey = createGatewayApiKeyScenario({
-    name: '主备 transport 同账户切换',
+    name: '主备 transport 不得同账户切换',
     upstreamBaseUrl,
     apiKeys: ['sk-gateway-failover-transport-primary', 'sk-gateway-failover-transport-secondary'],
     strategy: 'failover',
     concurrencyLimit: 64
   })
   forcedTransportFailureAuthorizations.add('Bearer sk-gateway-failover-transport-primary')
+  const imageTransientGatewayApiKey = createGatewayApiKeyScenario({
+    name: '无规则非 text lane 瞬态 HTTP',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-image-transient-primary', 'sk-gateway-image-transient-secondary'],
+    strategy: 'failover',
+    concurrencyLimit: 64,
+    supportedModels: ['gpt-image-1']
+  })
+  forcedFailureStatusByAuthorization.set('Bearer sk-gateway-image-transient-primary', 503)
+  const sameKeyRetryThenExplicitRotationGatewayApiKey = createGatewayApiKeyScenario({
+    name: '原 Key 重试后显式切换兄弟 Key',
+    upstreamBaseUrl,
+    apiKeys: ['sk-gateway-same-key-retry-primary', 'sk-gateway-same-key-retry-secondary'],
+    strategy: 'failover',
+    concurrencyLimit: 64,
+    errorHandlingRules: [explicitRetryNextRule([503])]
+  })
   const delayedFailureRaceGatewayApiKey = createGatewayApiKeyScenario({
     name: '迟到 Key transport 确认 fencing',
     upstreamBaseUrl,
@@ -482,8 +514,12 @@ try {
   assert.equal(transportRecovery.status, 503, `未配置规则的 transport 失败应返回统一候选耗尽错误：${transportRecovery.text}`)
   assert.deepEqual(
     authorizationsForBatches([transportRecoveryBatchId]),
-    ['Bearer sk-gateway-transport-bad'],
-    'transport 失败不得隐式轮换同账户兄弟 Key'
+    [
+      'Bearer sk-gateway-transport-bad',
+      'Bearer sk-gateway-transport-bad',
+      'Bearer sk-gateway-transport-bad'
+    ],
+    'transport 失败只可在当前 Key 的有界原地重试内恢复，不得隐式轮换同账户兄弟 Key'
   )
   const transportIsolationAuthorizations = authorizationsForBatches([transportRecoveryBatchId])
   assert.equal(apiKeyRuntimeStateStatus('sk-gateway-transport-bad'), undefined, '无显式规则的 transport 失败不得写 Key 持久状态')
@@ -497,18 +533,67 @@ try {
     backendBaseUrl,
     failoverTransportGatewayApiKey,
     failoverTransportBatchId,
-    { content: 'failover transport failure must switch to the secondary key' }
+    { content: 'failover transport failure must stay on the primary key' }
   )
   const failoverTransportAuthorizations = authorizationsForBatches([failoverTransportBatchId])
   assert.equal(
     failoverTransportResult.status,
-    200,
-    `主备 transport 失败后必须切换备用 Key：${failoverTransportResult.text}; attempts=${JSON.stringify(failoverTransportAuthorizations)}`
+    503,
+    `failover transport 失败不得隐式切换备用 Key：${failoverTransportResult.text}; attempts=${JSON.stringify(failoverTransportAuthorizations)}`
   )
   assert.deepEqual(
     failoverTransportAuthorizations,
-    ['Bearer sk-gateway-failover-transport-primary', 'Bearer sk-gateway-failover-transport-secondary'],
-    '主备策略必须在同一请求的传输失败后按主备顺序切换 Key'
+    [
+      'Bearer sk-gateway-failover-transport-primary',
+      'Bearer sk-gateway-failover-transport-primary',
+      'Bearer sk-gateway-failover-transport-primary'
+    ],
+    'api_key_strategy=failover 不得成为 transport 失败切换兄弟 Key 的隐式授权，只允许当前 Key 有界原地重试'
+  )
+  const imageTransientBatchId = `gateway-api-key-image-transient-${++postBatchSequence}`
+  const imageTransientResult = await postImageGeneration(
+    backendBaseUrl,
+    imageTransientGatewayApiKey,
+    imageTransientBatchId
+  )
+  const imageTransientAuthorizations = authorizationsForBatches([imageTransientBatchId])
+  assert.equal(
+    imageTransientResult.status,
+    503,
+    `无规则非 text lane 瞬态 HTTP 失败不得切换兄弟 Key：${imageTransientResult.text}; attempts=${JSON.stringify(imageTransientAuthorizations)}`
+  )
+  assert.deepEqual(
+    imageTransientAuthorizations,
+    ['Bearer sk-gateway-image-transient-primary'],
+    '无规则的 image lane 503 不得切换同账户兄弟 Key，也不应启用 text lane 原地重试'
+  )
+  const sameKeyRetryThenExplicitRotationBatchId = `gateway-api-key-same-key-retry-then-explicit-rotation-${++postBatchSequence}`
+  forcedResponsePlansByUserAgent.set(batchUserAgent(sameKeyRetryThenExplicitRotationBatchId), [
+    { successMode: 'interrupted_json' },
+    { failureStatus: 503 }
+  ])
+  const sameKeyRetryThenExplicitRotation = await postSingleChatCompletion(
+    backendBaseUrl,
+    sameKeyRetryThenExplicitRotationGatewayApiKey,
+    sameKeyRetryThenExplicitRotationBatchId,
+    { content: 'precommit retry must release the fixed key before explicit retry_next rotation' }
+  )
+  const sameKeyRetryThenExplicitRotationAuthorizations = authorizationsForBatches([
+    sameKeyRetryThenExplicitRotationBatchId
+  ])
+  assert.equal(
+    sameKeyRetryThenExplicitRotation.status,
+    200,
+    `原 Key 预提交失败后的显式 retry_next 必须切到兄弟 Key：${sameKeyRetryThenExplicitRotation.text}; attempts=${JSON.stringify(sameKeyRetryThenExplicitRotationAuthorizations)}`
+  )
+  assert.deepEqual(
+    sameKeyRetryThenExplicitRotationAuthorizations,
+    [
+      'Bearer sk-gateway-same-key-retry-primary',
+      'Bearer sk-gateway-same-key-retry-primary',
+      'Bearer sk-gateway-same-key-retry-secondary'
+    ],
+    '原 Key 原地重试消费后，后续显式 retry_next 必须解除固定 fingerprint 放行并只切一次兄弟 Key'
   )
   const transportRecoveredBatchIds: string[] = []
 
@@ -522,8 +607,12 @@ try {
   assert.equal(delayedFailureResult.status, 503, `transport 失败不应隐式重放同账户兄弟 Key：${delayedFailureResult.text}`)
   assert.deepEqual(
     authorizationsForBatches([delayedFailureBatchId]),
-    ['Bearer sk-gateway-race-bad'],
-    'transport 失败必须在当前账户结束后交由账户候选切换，而非同账户兄弟 Key'
+    [
+      'Bearer sk-gateway-race-bad',
+      'Bearer sk-gateway-race-bad',
+      'Bearer sk-gateway-race-bad'
+    ],
+    'transport 失败只可在当前 Key 的有界原地重试内恢复，随后才交由账户候选切换，不能轮换同账户兄弟 Key'
   )
   const postRaceBatchIds: string[] = []
   assert.equal(apiKeyRuntimeStateStatus('sk-gateway-race-bad'), undefined, 'transport 失败不得写 Key 持久状态')
@@ -715,6 +804,8 @@ try {
     transportFailureThenHealthyKey: authorizationsForBatches([transportRecoveryBatchId]),
     confirmedTransportIsolation: transportIsolationAuthorizations,
     failoverTransport: failoverTransportAuthorizations,
+    imageTransientWithoutSiblingRotation: imageTransientAuthorizations,
+    sameKeyRetryThenExplicitRotation: sameKeyRetryThenExplicitRotationAuthorizations,
     recoveredFingerprintReincluded: authorizationsForBatches(transportRecoveredBatchIds),
     delayedFailureFencedByNewerSuccess: authorizationsForBatches(postRaceBatchIds),
     concurrentBadSessionRequests: concurrentBadSessionResults.length,
@@ -1327,6 +1418,27 @@ async function postSingleChatCompletion(
   return { status: response.status, text: await response.text() }
 }
 
+async function postImageGeneration(
+  backendBaseUrl: string,
+  apiKey: string,
+  batchId: string
+): Promise<{ status: number; text: string }> {
+  const response = await fetch(`${backendBaseUrl}/v1/images/generations`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      'user-agent': batchUserAgent(batchId),
+      'x-forwarded-for': batchClientIp(batchId)
+    },
+    body: JSON.stringify({
+      model: 'gpt-image-1',
+      prompt: 'image lane transient failure'
+    })
+  })
+  return { status: response.status, text: await response.text() }
+}
+
 async function postAdminEnvelope(backendBaseUrl: string, path: string, cookie: string, body: Record<string, unknown>): Promise<unknown> {
   const response = await fetch(`${backendBaseUrl}${path}`, {
     method: 'POST',
@@ -1369,7 +1481,11 @@ function createMockOpenAIUpstream(): http.Server {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
-      if (req.method !== 'POST' || (requestPath !== '/v1/chat/completions' && requestPath !== '/v1/responses')) {
+      if (req.method !== 'POST' || (
+        requestPath !== '/v1/chat/completions'
+        && requestPath !== '/v1/responses'
+        && requestPath !== '/v1/images/generations'
+      )) {
         sendJsonError(res, 404, 'mock upstream path not found')
         return
       }
@@ -1383,19 +1499,32 @@ function createMockOpenAIUpstream(): http.Server {
         req.socket.destroy()
         return
       }
+      const userAgent = String(req.headers['user-agent'] ?? '')
+      const responsePlan = forcedResponsePlansByUserAgent.get(userAgent)?.shift()
+      if (responsePlan?.failureStatus !== undefined) {
+        sendJsonError(res, responsePlan.failureStatus, 'mock upstream key unavailable')
+        return
+      }
       const failureStatus = failureStatusForAuthorization(authorization)
       if (failureStatus !== undefined) {
         sendJsonError(res, failureStatus, 'mock upstream key unavailable')
         return
       }
-      const userAgent = String(req.headers['user-agent'] ?? '')
       if (heldSuccessResponseUserAgents.has(userAgent)) {
         const releases = heldSuccessResponseReleases.get(userAgent) ?? []
-        releases.push(() => sendMockSuccess(res, requestPath, forcedSuccessfulResponseModeByAuthorization.get(authorization)))
+        releases.push(() => sendMockSuccess(
+          res,
+          requestPath,
+          responsePlan?.successMode ?? forcedSuccessfulResponseModeByAuthorization.get(authorization)
+        ))
         heldSuccessResponseReleases.set(userAgent, releases)
         return
       }
-      sendMockSuccess(res, requestPath, forcedSuccessfulResponseModeByAuthorization.get(authorization))
+      sendMockSuccess(
+        res,
+        requestPath,
+        responsePlan?.successMode ?? forcedSuccessfulResponseModeByAuthorization.get(authorization)
+      )
     })
   })
 }

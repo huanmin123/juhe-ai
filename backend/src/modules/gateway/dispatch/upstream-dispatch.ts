@@ -648,10 +648,24 @@ export async function fetchFirstAvailableUpstream(
               failedAccountIds.add(account.id)
               break
             }
-            const selectedAccount = await selectAccountApiKeyForDispatch(account, {
+            const sameAccountRetrySelectionActive = activeSameAccountRetryId !== undefined
+              && activeSameAccountRetryId === requestCoordination.sameAccountRetry?.retryId
+            const accountForApiKeySelection = requestCoordination.sameAccountRetry
+              && !sameAccountRetrySelectionActive
+              && account.selectedApiKeyFingerprint
+              ? {
+                  ...account,
+                  selectedApiKeyFingerprint: undefined,
+                  selectedApiKeyIndex: undefined,
+                  selectedApiKeyTransientGeneration: undefined
+                }
+              : account
+            const selectedAccount = await selectAccountApiKeyForDispatch(accountForApiKeySelection, {
               excludeFingerprints: excludedApiKeyFingerprints,
               continueAfterFingerprint: previousSelectedApiKeyFingerprint,
-              allowExcludedFingerprint: requestCoordination.sameAccountRetry?.account.selectedApiKeyFingerprint
+              allowExcludedFingerprint: sameAccountRetrySelectionActive
+                ? requestCoordination.sameAccountRetry?.account.selectedApiKeyFingerprint
+                : undefined
             })
             if (!selectedAccount) {
               logRequestStage('upstream.request_prepare', {
@@ -1021,8 +1035,7 @@ export async function fetchFirstAvailableUpstream(
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
                   automaticAccountStateMutationEnabled: automaticAccountStateMutationAllowed,
-                  deferAutomaticSameAccountKeyRotation: requestLane === 'text'
-                    && !firstByteDeadlineTriggered
+                  deferAutomaticSameAccountKeyRotation: !firstByteDeadlineTriggered
                     && halfOpenLease?.generation === undefined
                     && isTransientSameAccountHttpStatus(response.status)
                 }
@@ -1160,10 +1173,8 @@ export async function fetchFirstAvailableUpstream(
                       errorMessage: error instanceof Error ? error.message : undefined
                     }
                   : undefined
-                const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
                 const retryAnotherAccountApiKey = (
                   isOpaqueUpstreamFailoverAllowed(req)
-                  || automaticApiKeyFailover
                 ) && !localRequestFailure
                   && provenStartedTransportFailure
                   && !neutralFirstByteDeadline

@@ -577,7 +577,6 @@ export async function handleUpstreamRequestError(
     message,
     observationId: `${auditAttemptId}:transport_failure`
   })
-  const automaticApiKeyFailover = account.credentials?.api_key_strategy === 'failover'
   // The source-level failure was recorded above only when a validated source
   // key exists. The request callback still must not directly mutate proxy
   // health, local account suppression/precheck, client-IP avoidance, API-Key
@@ -587,7 +586,7 @@ export async function handleUpstreamRequestError(
   return {
     action: 'skip_account',
     lastAttempt,
-    keyScopedFailure: automaticApiKeyFailover && hasAlternativeAccountApiKeys(account)
+    keyScopedFailure: false
   }
 }
 
