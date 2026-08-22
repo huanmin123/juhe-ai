@@ -48,7 +48,7 @@ Node projector 只读 `committed` jobs outcomes，按 `(stored_at, outcome_id)` 
 
 Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、目标 `host`、`connection: close`、`proxy-connection: close` 与代理认证。HTTPS 经 HTTP(S) proxy 时，`host`、`proxy-connection` 与代理认证只属于 CONNECT 握手；隧道内目标请求只携带 `accept` 与 `user-agent`。SOCKS 隧道同样不得收到 forward-proxy 头。
 
-已完成且仅在本地 Go 测试（SQLite jobs Store + SQL contract）验证的基础域包括：proxy URL / stored `socks5` 与 `socks5h` 的 Node-effective 远端 DNS 映射、禁止重定向、Node probe request headers、512 KiB 收集上限并持续 drain 到完整 framing、CONNECT response header 64 KiB 上限、成功/neutral/upstream failure/probe task failure 分类、owner/proxy lease、request 级 execution claim、Store 签发的 durable `request_id/input_version`、持久化深拷贝 snapshot、issued-input identity/expiry fence、executor timeout 不越过 input expiry、payload SHA-256 digest 及 replay poison 校验，以及 outcome 的 trigger、RFC3339 UTC config revision 和 lease token 持久字段。最小 executor 只消费 Store 已签发且由 claim 交付的 input：先验证 live owner/proxy lease 与持久 payload，再逐 target 直接请求，且只把脱敏 item 写入 outcome；首次执行前的 input、解密、lease、取消或 claim 失败不伪造 committed outcome。已提交 request 只读回原 outcome，不再次请求上游；同一 request 并发执行返回明确 in-flight，不重复请求。password envelope 仅在 executor 内存中解密为 proxy URL，不进入 outcome、Store 错误或日志。PostgreSQL reader 已实现 `REPEATABLE READ READ ONLY` 与 transaction-local timeout；它使用 Node 兼容的候选排序、启用 profile 优先/无启用项回退、Gemini/GLM profile 优先和 username-only proxy 语义，但尚未在真实 PostgreSQL/PgBouncer 上运行。
+已完成且仅在本地 Go 测试（SQLite jobs Store + SQL contract）验证的基础域包括：proxy URL / stored `socks5` 与 `socks5h` 的 Node-effective 远端 DNS 映射、禁止重定向、Node probe request headers、512 KiB 收集上限并持续 drain 到完整 framing、CONNECT response header 64 KiB 上限、成功/neutral/upstream failure/probe task failure 分类、owner/proxy lease、request 级 execution claim、Store 签发的 durable `request_id/input_version`、持久化深拷贝 snapshot、issued-input identity/expiry fence、executor timeout 不越过 input expiry、payload SHA-256 digest 及 replay poison 校验，以及 outcome 的 trigger、RFC3339 UTC config revision 和 lease token 持久字段。最小 executor 只消费 Store 已签发且由 claim 交付的 input：先验证 live owner/proxy lease 与持久 payload，再逐 target 直接请求，且只把脱敏 item 写入 outcome；首次执行前的 input、解密、lease、取消或 claim 失败不伪造 committed outcome。已提交 request 只读回原 outcome，不再次请求上游；同一 request 并发执行返回明确 in-flight，不重复请求。password envelope 仅在 executor 内存中解密为 proxy URL，不进入 outcome、Store 错误或日志。PostgreSQL reader 已实现 `REPEATABLE READ READ ONLY` 与 transaction-local timeout；既有 dev 隔离 scratch smoke 已经通过 PgBouncer `6432` required 验收并清理，详见 [L3-PG 真实验收报告](../reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md)。本轮深度对照未重跑该外部 smoke；该证据只覆盖 jobs/reader 基础域，不代表跨运行时闭环或生产。
 
 这仍不构成生产 owner 切换。jobs supervisor/health 的 opt-in 本地 wiring 已加入，但 Node outcome reader/projector、手动 bridge、owner gate 和 Node 旧路径清零仍未实施。
 
@@ -58,11 +58,11 @@ Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、
 
 配置缺失、非法 duration/limit、非 PostgreSQL jobs Store 或缺少 owner gate/credential secret 均 fail-closed；默认关闭时不打开数据库、不创建 runner。jobs `/health` 增加 `proxyLatencyEnabled`、`proxyLatencyReady`、`proxyLatencyOwnerHeld`、最近周期/成功/错误、输入/执行/失败计数和 J3a readiness 汇总；启用后必须完成至少一轮无失败 cycle 才 ready，owner/lease 丢失或失败周期不得伪造成功状态。
 
-本批不翻转 owner、不接 Node projector/manual bridge、不访问真实 dev PG/PgBouncer、不启动 Docker/Redis，也不修改 Node/accounthealth/tablemonitor。
+本批不翻转 owner、不接 Node projector/manual bridge、不启动 Docker/Redis，也不修改 Node/accounthealth/tablemonitor。本轮深度对照未新增访问真实 dev PG/PgBouncer；既有 required smoke 结果保留为历史可复核证据，不得重复计为本轮跨运行时验收。
 
 ## 8. L2 验收与非目标
 
-L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer 和 Node projector payload/metadata 双校验。当前本地命令已覆盖 proxylatency package/race/vet/jobs 全量、Node typecheck、三项 proxy regression 与 diff check；真实 dev PG/PgBouncer/Docker/Redis、Node -> Go -> Node 闭环、Jenkins 和 GitOps 属于后续 L3/L4，未完成前不得翻转 owner gate。
+L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer 和 Node projector payload/metadata 双校验。当前本地命令已覆盖 proxylatency package/race/vet/jobs 全量、Node typecheck、三项 proxy regression 与 diff check；既有 dev PG/PgBouncer smoke 已在独立报告中通过，但本轮未重跑。Docker/Redis、Node -> Go -> Node 闭环、Jenkins 和 GitOps 属于后续 L3/L4，未完成前不得翻转 owner gate。
 
 ## 9. Node↔Go 深度对照门
 
@@ -79,3 +79,27 @@ L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS�
 - 不修改 Node 代码来掩盖 Go 缺口，不启用 Go owner，不停止 Node scheduler，不做双写或 fallback。
 - 不把 projector、manual bridge、owner handoff 作为本批“已完成”或通过 health 200 推断。
 - 不把 dev scratch PG/PgBouncer 结果扩展为生产/L4 结论；所有跨运行时和生产门禁必须另立计划、单独取证。
+
+## 11. Node 机制差异冻结（深度对照补充）
+
+### 11.1 失败写回不是同一语义
+
+Node 周期候选遇到非取消执行异常时，会把 `testStatus=unknown`、`latency=null`、错误消息、配置 revision 和 `testedAt` 写回业务读模型，并增加 `executionFailed`。Go 的输入、claim、凭据、取消、lease 或 envelope 失败属于 `probe_task_failure`：只写可观察 receipt，不提交 committed outcome，也不得让 projector 把旧业务状态误改成 `unknown`。真实 transport failure 仍是代理 item `failed`，不能与调度执行失败混淆。P1 projector 必须明确三类结果的映射和旧状态保留规则。
+
+### 11.2 手动 ProxyTestReport 不是 Go Outcome 的同构对象
+
+Node 手动报告至少冻结以下字段和规则：synthetic 基础连通性 item、provider display name 与 provider code 的映射、每个 target 的 `targetUrl`/HTTP message/status/latency、`baseLatencyMs`、`counts`、`score`、`grade`、总体 `message`、`testedAt`，以及 `outboundIp/outboundRegion`。出口探测顺序固定为 `ip-api`、`ipwho.is`、`api.ip.sb`、`ipinfo.io`、`ipify`、`httpbin`；仅 HTTP 200 进入解析，解析失败或非 200 才回退下一个目标，周期刷新不写 outbound。Go `Outcome` 目前不包含这些管理端聚合字段，manual bridge 必须另订 schema/适配层，不得直接把 Go outcome 当成 Node 响应。
+
+### 11.3 手动入口边界
+
+Node 路由只做存在性检查，停用 proxy 仍可进入手动测试；诊断槽耗尽返回 `503 + Retry-After`；测试期间对象消失返回 `404`；CAS stale (`updated=false`) 仍返回 `200` 报告；异常才返回 `502`。无启用 provider 时 Node 仍生成 `unknown` 基础 item 并可返回 `200`，而 Go reader 对无有效 target fail-closed。`requireAdmin`、operation log、槽释放、25 秒 deadline、父取消和 outbound fallback 都是 bridge 必须保留的可观察边界。
+
+### 11.4 调度器生命周期
+
+Node `proxy-latency-refresh` 的事实配置为 60 秒间隔、4 分钟初始延迟、30 秒 stable phase、`coalesceOne`、`external-account-maintenance` lane、60 秒 task timeout、30 秒至 10 分钟 failure backoff、ops-worker 角色；候选池 factor=4、global diagnostic concurrency、candidate deadline 与 lease grace 共同限制批次。scheduler timeout 只 abort，底层 task 结束前仍占用 running/lane；`stopAndDrain` 必须报告 active count。Go 当前是 opt-in 串行 cycle，没有等价 lane/global governor/partial summary/stop-drain 机制；这些差异在 owner handoff 前必须作为明确 non-goal 或补实现门禁，不能用 Go serial cycle 宣称 Node scheduler parity。
+
+## 12. 证据与提交边界
+
+- 报告中的“通过”统一解释为 Node 源码事实或 Go 本地验证；没有同一 fixture 的 Node/Go runtime golden 就标记为 `cross-runtime-unverified`。
+- 既有 dev PgBouncer smoke 的真实结果只由 `docs/reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md` 支持；本轮未新增外部运行。
+- 本轮主分支提交 allowlist 仅包含本契约、Node-Go 深度对照报告/计划及三个对应 `README.md` 索引；`docs/migration/后台任务迁移总设计与路线图.md`、`backend-go/projects/jobs/internal/proxylatency/transport.go`、`transport_test.go` 以及其他 dirty worktree 文件均明确排除。
