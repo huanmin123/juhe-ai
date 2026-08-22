@@ -28,6 +28,7 @@ type MockSuccessfulResponseMode = 'complete_json' | 'invalid_json' | 'interrupte
 type MockResponsePlan = {
   failureStatus?: number
   successMode?: MockSuccessfulResponseMode
+  transportFailure?: boolean
 }
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -569,14 +570,14 @@ try {
   )
   const sameKeyRetryThenExplicitRotationBatchId = `gateway-api-key-same-key-retry-then-explicit-rotation-${++postBatchSequence}`
   forcedResponsePlansByUserAgent.set(batchUserAgent(sameKeyRetryThenExplicitRotationBatchId), [
-    { successMode: 'interrupted_json' },
+    { transportFailure: true },
     { failureStatus: 503 }
   ])
   const sameKeyRetryThenExplicitRotation = await postSingleChatCompletion(
     backendBaseUrl,
     sameKeyRetryThenExplicitRotationGatewayApiKey,
     sameKeyRetryThenExplicitRotationBatchId,
-    { content: 'precommit retry must release the fixed key before explicit retry_next rotation' }
+    { content: 'precommit retry must release the fixed key before explicit retry_next rotation', stream: true }
   )
   const sameKeyRetryThenExplicitRotationAuthorizations = authorizationsForBatches([
     sameKeyRetryThenExplicitRotationBatchId
@@ -1495,12 +1496,13 @@ function createMockOpenAIUpstream(): http.Server {
         userAgent: String(req.headers['user-agent'] ?? '')
       })
       const authorization = String(req.headers.authorization ?? '')
-      if (forcedTransportFailureAuthorizations.has(authorization)) {
-        req.socket.destroy()
-        return
-      }
       const userAgent = String(req.headers['user-agent'] ?? '')
       const responsePlan = forcedResponsePlansByUserAgent.get(userAgent)?.shift()
+      if (responsePlan?.transportFailure || forcedTransportFailureAuthorizations.has(authorization)) {
+        const timer = setTimeout(() => res.destroy(), 20)
+        timer.unref()
+        return
+      }
       if (responsePlan?.failureStatus !== undefined) {
         sendJsonError(res, responsePlan.failureStatus, 'mock upstream key unavailable')
         return
