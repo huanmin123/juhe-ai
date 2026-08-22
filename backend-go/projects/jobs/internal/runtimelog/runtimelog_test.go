@@ -273,7 +273,8 @@ func TestRetentionDeletesExpiredRecordsAndFacets(t *testing.T) {
 	store, config := openTestSQLiteStore(t)
 	ctx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-	writeTestFile(t, rotatedPath, logLine("expired", "2000-01-01T00:00:00.000Z")+"\n"+logLine("retained", "2026-08-08T00:00:00.000Z")+"\n")
+	now := time.Now().UTC()
+	writeTestFile(t, rotatedPath, logLine("expired", nodeISO(now.AddDate(0, 0, -15)))+"\n"+logLine("retained", nodeISO(now.Add(-6*time.Hour)))+"\n")
 	indexer := NewIndexer(config, store)
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)

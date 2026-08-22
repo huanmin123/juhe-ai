@@ -109,6 +109,8 @@ interface ProxyProfileMutationResult {
 interface AccountSummary {
   id: string
   name: string
+  configRevision?: number
+  changedFields?: string[]
   status?: string
   schedulable?: boolean
   cooldownUntil?: string
@@ -132,7 +134,7 @@ interface ApiKeySummary {
 interface RouteStrategySummary {
   id: string
   name: string
-  groupBindings: Array<{ groupId: string }>
+  groupBindings?: Array<{ groupId: string }>
 }
 
 interface AccountTestResult {
@@ -192,12 +194,15 @@ async function main(): Promise<void> {
       },
       supportedModels: [proxyRegressionModel],
       healthCheckModel: proxyRegressionModel,
+      healthCheckEndpointMode: 'responses_json',
       groupId: group.id
     }
     const manualDraftTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
     assert(manualDraftTask.result?.success === true, `代理负向账户草稿人工测试应通过：${manualDraftTask.result?.message ?? manualDraftTask.message ?? ''}`)
     const createdAccount = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, accountPayload)
-    assert(createdAccount.status === 'pending_test' && createdAccount.schedulable === false, '草稿人工测试成功不能激活新账户')
+    assert(createdAccount.status === 'pending_test', '草稿人工测试成功不能激活新账户')
+    const createdAccountSnapshot = repositories.findAccountSummary(createdAccount.id, adminAccess)
+    assert(createdAccountSnapshot?.status === 'pending_test' && createdAccountSnapshot.schedulable === false, '草稿人工测试成功后新账户必须保持待检查且不可调度')
     assert(repositories.projectAccountHealthFixtureSuccess(createdAccount.id, {
       intervalHours: 12,
       jitterMinutes: 0,
@@ -206,11 +211,18 @@ async function main(): Promise<void> {
     }), '后台检查成功应激活代理负向账户')
     const account = repositories.findAccountSummary(createdAccount.id, adminAccess)
     assert(account?.status === 'active' && account.schedulable === true, '后台检查成功后代理负向账户应正常可调度')
+    assert(typeof account.configRevision === 'number' && Number.isSafeInteger(account.configRevision) && account.configRevision >= 1, '代理负向账户必须返回有效配置版本')
+    const expectedConfigRevision = account.configRevision
     const proxiedAccount = await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
+      expectedConfigRevision,
       proxyProfileId: proxy.id
     })
-    assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
-    assert(proxiedAccount.status === 'pending_test', '代理变更后账户应重新进入待检查')
+    assert(proxiedAccount.changedFields?.includes('proxyProfileId'), '代理负向账户应成功绑定代理')
+    assert(proxiedAccount.configRevision === expectedConfigRevision + 1, '代理变更后配置版本必须严格递增')
+    const proxiedAccountSnapshot = repositories.findAccountSummary(account.id, adminAccess)
+    assert(proxiedAccountSnapshot?.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
+    assert(proxiedAccountSnapshot.status === 'pending_test', '代理变更后账户应重新进入待检查')
+    assert(proxiedAccountSnapshot.configRevision === proxiedAccount.configRevision, '代理变更后的持久态配置版本必须与响应一致')
     assert(repositories.projectAccountHealthFixtureSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,
@@ -224,13 +236,14 @@ async function main(): Promise<void> {
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     })
-    assert(routeStrategy.groupBindings.some((binding) => binding.groupId === group.id), '代理负向策略路由应绑定当前分组')
+    const routeStrategyDetail = repositories.findRouteStrategySummary(routeStrategy.id, adminAccess)
+    assert(routeStrategyDetail?.groupBindings.some((binding) => binding.groupId === group.id), '代理负向策略路由应绑定当前分组')
     const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '代理负向回归 Key',
       routeStrategyId: routeStrategy.id,
       status: 'active'
     })
-    assert(apiKey.routeStrategyId === routeStrategy.id, '代理负向 API Key 应绑定当前策略路由')
+    assert(repositories.findApiKeySummary(apiKey.id, adminAccess)?.routeStrategyId === routeStrategy.id, '代理负向 API Key 应绑定当前策略路由')
     assert(apiKey.key, '临时 API Key 未返回明文密钥')
 
     const disabledProxy = await patchEnvelope<ProxyProfileMutationResult>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, {
@@ -322,7 +335,10 @@ function createDirectUpstreamServer(): http.Server {
         object: 'response',
         status: 'completed',
         model: proxyRegressionModel,
-        output: [],
+        output: [{
+          type: 'message',
+          content: [{ type: 'output_text', text: 'juhe' }]
+        }],
         usage: {
           input_tokens: 1,
           output_tokens: 1
