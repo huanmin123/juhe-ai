@@ -276,7 +276,7 @@ async function assertHardUnavailableDoesNotEnterRecoverableWait(baseUrl: string,
   const response = await postChat(baseUrl, scenario.apiKey, 'disabled account should fail without recoverable wait')
   const elapsedMs = Date.now() - startedAt
   assert.equal(response.status, 503, `硬不可用账号不应恢复等待，实际 HTTP ${response.status}: ${response.text}`)
-  assert.match(response.text, /upstream_retryable_error/, '硬不可用账号耗尽后应返回稳定可重试错误码')
+  assert.match(response.text, /no_available_upstream_account/, '硬不可用账号应返回无候选账户错误码，而不是进入可恢复等待')
   assert(elapsedMs < 800, `硬不可用账号不应进入本地恢复等待，实际 ${elapsedMs}ms`)
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-disabled'), [])
 }

@@ -236,13 +236,24 @@ async function assertCompleteStatusBodyMatrix(
       assert.doesNotMatch(result.text, /chaos[_ -]error|invalid[_ -]api[_ -]key|rate[_ -]limit|content[_ -]policy/i, `${requestId} 不得泄露误导性上游语义`)
 
       const requestHits = hitsForRequest(requestId)
-      assert.equal(requestHits.length, 3, `${requestId} 应尝试两个 Key 后跨组切到健康账户：${JSON.stringify(requestHits)}`)
-      assert.deepEqual(
-        new Set(requestHits.slice(0, 2).map((hit) => bearerKey(hit.authorization))),
-        new Set(scenario.primaryKeys),
-        `${requestId} 应在请求内穷尽当前账户两个 Key`
+      const expectedPrimaryKeyCount = transientSameAccountHttpStatus(status)
+        ? 1
+        : scenario.primaryKeys.length
+      assert.equal(
+        requestHits.length,
+        expectedPrimaryKeyCount + 1,
+        `${requestId} 应按状态契约完成当前账户 Key 尝试后切健康账户：${JSON.stringify(requestHits)}`
       )
-      assert.equal(bearerKey(requestHits[2]!.authorization), scenario.backupKey, `${requestId} 最终应命中跨组健康账户`)
+      const observedPrimaryKeys = requestHits.slice(0, expectedPrimaryKeyCount).map((hit) => bearerKey(hit.authorization))
+      assert(observedPrimaryKeys.every((key) => scenario.primaryKeys.includes(key)), `${requestId} 不得命中主账户之外的 Key`)
+      if (!transientSameAccountHttpStatus(status)) {
+        assert.deepEqual(new Set(observedPrimaryKeys), new Set(scenario.primaryKeys), `${requestId} 应在请求内穷尽当前账户 Key`)
+      }
+      assert.equal(
+        bearerKey(requestHits[expectedPrimaryKeyCount]!.authorization),
+        scenario.backupKey,
+        `${requestId} 最终应命中跨组健康账户`
+      )
     }
   }
 }
@@ -289,10 +300,20 @@ async function assertConcurrentBadSessionStorm(
   assert(responses.every((response) => response.status === 200), '64 并发坏会话请求必须全部由健康账户完成')
   assert(responses.every((response) => /chaos backup success/.test(response.text)), '64 并发坏会话请求不得把中间错误返回客户端')
   assert(responses.every((response) => !/chaos[_ -]error|invalid[_ -]api[_ -]key|rate[_ -]limit|content[_ -]policy/i.test(response.text)), '64 并发坏会话不得泄露上游错误语义')
-  for (const requestId of requestIds) {
+  for (let index = 0; index < requestIds.length; index += 1) {
+    const requestId = requestIds[index]!
+    const status = untrustedStatuses[index % untrustedStatuses.length]!
     const requestHits = hitsForRequest(requestId)
+    const expectedPrimaryKeyCount = transientSameAccountHttpStatus(status)
+      ? 1
+      : scenario.primaryKeys.length
     assert.equal(requestHits.filter((hit) => bearerKey(hit.authorization) === scenario.backupKey).length, 1, `${requestId} 最终只能由后备账户执行一次`)
-    assert.equal(requestHits.length, 3, `${requestId} 必须保持有界的两 Key + 一后备执行次数`)
+    assert.equal(requestHits.length, expectedPrimaryKeyCount + 1, `${requestId} 必须保持按状态分层的有界执行次数`)
+    const observedPrimaryKeys = requestHits.slice(0, expectedPrimaryKeyCount).map((hit) => bearerKey(hit.authorization))
+    assert(observedPrimaryKeys.every((key) => scenario.primaryKeys.includes(key)), `${requestId} 不得命中主账户之外的 Key`)
+    if (!transientSameAccountHttpStatus(status)) {
+      assert.deepEqual(new Set(observedPrimaryKeys), new Set(scenario.primaryKeys), `${requestId} 应穷尽当前账户 Key`)
+    }
   }
 
   const primary = requireDispatchAccount(scenario.primaryGroupId, scenario.primaryAccountId)
@@ -398,7 +419,14 @@ async function assertInterleavedMixedSessionStorm(
   for (const { request } of badResults) {
     const requestHits = hitsForRequest(request.requestId)
     if (scenario.mode === 'opaque') {
-      assert.equal(requestHits.length, scenario.accountKeys.length, `${request.requestId} 完整 opaque 异常必须有界穷尽同账户三个物理 Key`)
+      const expectedOpaqueAttemptCount = transientSameAccountHttpStatus(request.status)
+        ? 1
+        : scenario.accountKeys.length
+      assert.equal(
+        requestHits.length,
+        expectedOpaqueAttemptCount,
+        `${request.requestId} 完整 opaque 异常必须按状态契约有界尝试物理 Key`
+      )
     }
     assert(requestHits.length <= scenario.accountKeys.length, `${request.requestId} 的物理 Key 尝试必须有界`)
     assert.equal(new Set(requestHits.map((hit) => hit.authorization)).size, requestHits.length, `${request.requestId} 内不得重复同一物理 Key`)
@@ -460,7 +488,7 @@ async function assertInterleavedMixedSessionStorm(
     assert.equal(
       quality.window5m.qualityAttempts,
       mixedHealthyRequestCount,
-      `共享质量分母只能包含 32 个健康会话，实际 ${quality.window5m.qualityAttempts}：${JSON.stringify(quality.window5m)}`
+      `共享质量分母只能包含 32 个健康会话，实际 ${quality.window5m.qualityAttempts}：${JSON.stringify(quality.window5m)}; healthyFailures=${JSON.stringify(healthyResults.filter(({ response }) => response.status !== 200).map(({ request, response }) => ({ requestId: request.requestId, status: response.status, text: response.text.slice(0, 240), hits: hitsForRequest(request.requestId) })))}; healthySuccessCount=${healthySuccessCount}; badHitCount=${badHitCount}`
     )
     const terminalOutcomeCount = quality.window5m.completedResponses
       + quality.window5m.upstreamResponseFailures
@@ -489,7 +517,7 @@ async function assertInterleavedMixedSessionStorm(
   }
   assert(
     healthySuccessCount === mixedHealthyRequestCount,
-    `${scenario.mode} 风暴中的 32 个独立健康会话必须全部由同一多 Key 账户完成，实际 ${healthySuccessCount}/${mixedHealthyRequestCount}：${JSON.stringify(healthyResults.filter(({ response }) => response.status !== 200).slice(0, 3))}`
+    `${scenario.mode} 风暴中的 32 个独立健康会话必须全部由同一多 Key 账户完成，实际 ${healthySuccessCount}/${mixedHealthyRequestCount}：${JSON.stringify(healthyResults.filter(({ response }) => response.status !== 200).slice(0, 3))}; quality=${JSON.stringify(quality.window5m)}; healthyHits=${JSON.stringify(healthyResults.filter(({ response }) => response.status !== 200).map(({ request, response }) => ({ requestId: request.requestId, status: response.status, text: response.text.slice(0, 240), hits: hitsForRequest(request.requestId) })))}; badHitCount=${badHitCount}`
   )
 }
 
@@ -992,6 +1020,10 @@ function hitsForRequest(requestId: string): UpstreamHit[] {
 
 function bearerKey(value: string): string {
   return value.replace(/^Bearer\s+/i, '')
+}
+
+function transientSameAccountHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599)
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {

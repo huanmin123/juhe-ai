@@ -239,11 +239,13 @@ async function assertSameTierRealSampleReselection(baseUrl: string, scenario: Sc
 
   setPhase(accountB.key, 'fast')
   const recoveryHitStart = hits.length
-  const recovery = await createCircuitRecoveryService(
-    scenario,
-    suspectB.retryAtMs ?? Date.now() + 3_000
-  ).sweep()
-  assert.equal(recovery.framingCompleteCount, 1, '后台 due sweep 必须通过真实 framing 探针主动恢复无业务流量的 B')
+  const recoveryNowMs = suspectB.retryAtMs ?? Date.now() + 3_000
+  const recovery = await createCircuitRecoveryService(scenario, recoveryNowMs).sweep()
+  assert.equal(
+    recovery.framingCompleteCount,
+    1,
+    `后台 due sweep 必须通过真实 framing 探针主动恢复无业务流量的 B：recovery=${JSON.stringify(recovery)} state=${JSON.stringify(await protocolCircuit(scenario, accountB))} retryAt=${String(suspectB.retryAtMs)} now=${String(recoveryNowMs)} hits=${JSON.stringify(hits.slice(recoveryHitStart))}`
+  )
   assert(
     hits.slice(recoveryHitStart).some(hit => hit.accountKey === accountB.key),
     '后台恢复必须真实命中 B，而不是依赖客户端流量碰巧重选'
@@ -577,13 +579,16 @@ function sendSuccess(
   requestLabel: string,
   stream: boolean
 ): void {
+  const responseText = requestLabel === '只能回复：juhe'
+    ? 'juhe'
+    : `mock success ${accountKey}`
   if (stream && path.includes('/chat/completions')) {
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
     res.write(`data: ${JSON.stringify({
       id: `chatcmpl_${accountKey}`,
       object: 'chat.completion.chunk',
       model,
-      choices: [{ index: 0, delta: { role: 'assistant', content: `mock success ${accountKey}` }, finish_reason: null }]
+      choices: [{ index: 0, delta: { role: 'assistant', content: responseText }, finish_reason: null }]
     })}\n\n`)
     res.write(`data: ${JSON.stringify({
       id: `chatcmpl_${accountKey}`,
@@ -601,7 +606,7 @@ function sendSuccess(
       object: 'response',
       status: 'completed',
       model,
-      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `mock success ${accountKey}` }] }],
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: responseText }] }],
       usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
     }))
     return
@@ -610,7 +615,7 @@ function sendSuccess(
     id: `chatcmpl_${accountKey}`,
     object: 'chat.completion',
     model,
-    choices: [{ index: 0, message: { role: 'assistant', content: `mock success ${accountKey} ${requestLabel}` }, finish_reason: 'stop' }],
+    choices: [{ index: 0, message: { role: 'assistant', content: `${responseText} ${requestLabel}` }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
   }))
 }

@@ -1174,7 +1174,19 @@ export async function fetchFirstAvailableUpstream(
                     }
                   : undefined
                 const retryAnotherAccountApiKey = (
-                  isOpaqueUpstreamFailoverAllowed(req)
+                  (
+                    isOpaqueUpstreamFailoverAllowed(req)
+                    // Confirmation leases are a deliberate circuit-recovery
+                    // protocol: a transport failure on the confirming Key
+                    // may be retried on the next physical Key for text
+                    // requests so the lease can settle on a complete framing
+                    // result. Image and other side-effect lanes never gain an
+                    // implicit sibling-Key replay path.
+                    || (
+                      requestLane === 'text'
+                      && accountCircuitAttempt?.isConfirmation === true
+                    )
+                  )
                 ) && !localRequestFailure
                   && provenStartedTransportFailure
                   && !neutralFirstByteDeadline

@@ -202,7 +202,12 @@ async function assertScopeLimitAndSingleTimer(baseUrl: string, fixture: GatewayP
   }
 
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-  assertStableHandoffResults({ admittedResults, overflowResults, label: '单 scope 上限' })
+  assertStableHandoffResults({
+    admittedResults,
+    overflowResults,
+    label: '单 scope 上限',
+    expectedErrorCode: /upstream_retryable_error/
+  })
   assert.equal(upstreamHitCount, baselineUpstreamHits, '单 scope 软屏蔽风暴不得命中上游')
   assert.deepEqual(accountFingerprint(fixture.accountId), baselineAccount, '单 scope 风暴不得改变账户状态')
   assert.deepEqual(keyFingerprint(fixture.keys[0]!.id), baselineKey, '单 scope 风暴不得禁用或改变网关 Key')
@@ -272,7 +277,12 @@ async function assertGlobalLimitAcrossScopes(baseUrl: string, fixture: GatewayPo
   }
 
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-  assertStableHandoffResults({ admittedResults, overflowResults, label: 'global 上限' })
+  assertStableHandoffResults({
+    admittedResults,
+    overflowResults,
+    label: 'global 上限',
+    expectedErrorCode: /no_available_upstream_account/
+  })
   assert.equal(upstreamHitCount, baselineUpstreamHits, '多 scope 可恢复冷却风暴不得命中上游')
   assert.deepEqual(accountFingerprint(fixture.accountId), baselineAccount, '多 scope 风暴不得把可恢复账户升级为死亡状态')
   assert.deepEqual(
@@ -292,13 +302,14 @@ function assertStableHandoffResults(input: {
   admittedResults: GatewayResponseResult[]
   overflowResults: GatewayResponseResult[]
   label: string
+  expectedErrorCode: RegExp
 }): void {
-  const { admittedResults, overflowResults, label } = input
+  const { admittedResults, overflowResults, label, expectedErrorCode } = input
   const results = [...admittedResults, ...overflowResults]
   assert.equal(results.length, requestCount)
   for (const result of results) {
     assert.equal(result.status, 503, `${label}请求应统一交还客户端重试：${result.text}`)
-    assert.match(result.text, /upstream_retryable_error/, `${label}请求应返回稳定可重试错误码`)
+    assert.match(result.text, expectedErrorCode, `${label}请求必须返回当前路由契约错误码`)
     assert(result.elapsedMs < sharedWaitUpperBoundMs, `${label}请求不得超过共享最大等待预算，实际 ${result.elapsedMs}ms`)
   }
   assert(admittedResults.length > 0, `${label}必须保留已准入等待者样本`)

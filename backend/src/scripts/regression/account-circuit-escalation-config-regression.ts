@@ -7,7 +7,7 @@ import { GatewayAccountCircuitService } from '../../modules/gateway/runtime/acco
 import type { AccountCircuitScope } from '../../modules/gateway/runtime/account-circuit-store.js'
 
 const runtimeSource = readFileSync(new URL('../../config/runtime.ts', import.meta.url), 'utf8')
-const envExampleSource = readFileSync(new URL('../../../.env.example', import.meta.url), 'utf8')
+const capacityEnvExampleSource = readFileSync(new URL('../../../.env.capacity.example', import.meta.url), 'utf8')
 
 assert.match(
   runtimeSource,
@@ -19,8 +19,8 @@ assert.match(
   /ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS',[\s\S]{0,100}10 \* 60_000,[\s\S]{0,100}60_000,[\s\S]{0,100}24 \* 60 \* 60_000/,
   '运行配置必须把父级升级窗口限制为 1 分钟到 24 小时，默认 10 分钟'
 )
-assert.match(envExampleSource, /ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD=3/)
-assert.match(envExampleSource, /ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS=600000/)
+assert.match(capacityEnvExampleSource, /JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD=3/)
+assert.match(capacityEnvExampleSource, /JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS=600000/)
 
 let now = 10_000
 let id = 0

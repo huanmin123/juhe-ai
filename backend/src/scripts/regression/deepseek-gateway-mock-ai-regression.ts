@@ -946,8 +946,8 @@ async function assertDeepSeekNativeResponsesUpstreamFailure(
   assert.equal(body.error?.message, 'deepseek native responses upstream rate limit', 'DeepSeek 原生 Responses 上游错误消息应可见')
   assert.equal(body.error?.type, 'rate_limit_error', 'DeepSeek 原生 Responses 上游错误类型应可见')
   assert.equal(body.error?.code, 'deepseek_native_responses_rate_limited', 'DeepSeek 原生 Responses 上游错误码应可见')
-  assert.equal(upstreamHits.length, 1, 'DeepSeek 原生 Responses 上游失败应只命中一次上游')
-  assert.equal(upstreamHits[0]?.path, expectedUpstreamPath)
+  assert.equal(upstreamHits.length, 3, 'DeepSeek 原生 Responses 瞬态 429 应按默认 2 次同账户重试后结束')
+  assert(upstreamHits.every((hit) => hit.path === expectedUpstreamPath), 'DeepSeek 原生 Responses 重试不得改变上游路径')
 }
 
 async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: string): Promise<void> {

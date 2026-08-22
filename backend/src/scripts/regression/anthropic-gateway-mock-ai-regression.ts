@@ -1130,15 +1130,15 @@ async function assertAnthropicApiKeyPoolOpaqueFailover(baseUrl: string, upstream
 
   upstreamHits.length = 0
   const first = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool failover')
-  assert.equal(first.status, 200, `通用 Anthropic 文本请求应 opaque 切换到同账户健康 Key，实际 HTTP ${first.status}: ${first.text}`)
-  assert.match(first.text, /anthropic json ok/, '通用 Anthropic 客户端应收到健康 Key 的完整响应')
+  assert.equal(first.status, 200, `通用 Anthropic 文本请求应在当前 Key 有界重试后切到账户 B，实际 HTTP ${first.status}: ${first.text}`)
+  assert.match(first.text, /anthropic json ok/, '通用 Anthropic 客户端应收到救援账户的完整响应')
   assert.doesNotMatch(first.text, /mock key pool bad key/, '网关不得把中间坏 Key 的供应商原始错误泄漏给客户端')
   assert.deepEqual(
     upstreamHits.map((hit) => hit.xApiKey),
-    ['sk-ant-keypool-bad', 'sk-ant-keypool-good'],
-    '通用 Anthropic 文本请求应只依据完整 HTTP 失败做请求内 opaque Key 轮换，并优先耗尽兄弟 Key'
+    ['sk-ant-keypool-bad', 'sk-ant-keypool-bad', 'sk-ant-keypool-bad', 'sk-ant-keypool-rescue'],
+    '通用 Anthropic 瞬态 HTTP 失败应先按默认 2 次同账户重试，再切到账户 B；不得隐式轮换兄弟 Key'
   )
-  await assertConfirmedSameAccountKeyFailureIsScoped(sourceAccount.id, rescueAccount.id, apiKey.id)
+  await assertOpaqueFailureDoesNotMutateKeyState(sourceAccount.id, rescueAccount.id, apiKey.id)
 }
 
 async function assertAnthropicConfiguredResponseInspectionSwitchesRequestLocally(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -1434,7 +1434,7 @@ async function assertRequestLocalSwitchDidNotMutateSharedState(accountIds: strin
   assert.equal(repositories.findApiKeySummary(gatewayApiKeyId, access)?.status, 'active', '请求内切号不得修改客户端网关 API Key 状态')
 }
 
-async function assertConfirmedSameAccountKeyFailureIsScoped(
+async function assertOpaqueFailureDoesNotMutateKeyState(
   sourceAccountId: string,
   rescueAccountId: string,
   gatewayApiKeyId: string
@@ -1444,7 +1444,7 @@ async function assertConfirmedSameAccountKeyFailureIsScoped(
   assert(source, `缺少同账户 Key 确认来源账户：${sourceAccountId}`)
   assert.equal(source.status, 'active', '同账户 Key 确认不得修改账户状态')
   assert.equal(source.schedulable, true, '同账户 Key 确认不得关闭账户调度')
-  assert.equal(source.apiKeyRuntime?.temporaryUnavailable ?? 0, 1, '后继 Key 成功后必须只标记失败 Key 为临时避让')
+  assert.equal(source.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, '无显式 retry_next 的完整 HTTP 失败不得写入 Key 临时避让状态')
   assert.equal(source.apiKeyRuntime?.rateLimited ?? 0, 0)
   assert.equal(source.apiKeyRuntime?.error ?? 0, 0)
   assert.equal(source.apiKeyRuntime?.disabled ?? 0, 0)

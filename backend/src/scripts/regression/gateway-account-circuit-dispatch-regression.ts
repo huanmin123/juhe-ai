@@ -1102,10 +1102,15 @@ try {
 const upstreamDispatchSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url)), 'utf8')
 const routesSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/routes.ts', import.meta.url)), 'utf8')
 assert.match(upstreamDispatchSource, /getGatewayAccountCircuitService/, '上游候选派发必须接入账户短电路 service')
-assert.doesNotMatch(upstreamDispatchSource, /retrySameAccount|sameAccountRetry/, '未知传输失败不得保留同账号自动重试路径')
+assert.doesNotMatch(upstreamDispatchSource, /automaticApiKeyFailover/, '普通 transport 不得恢复废弃的 automaticApiKeyFailover 路径')
 assert.doesNotMatch(upstreamDispatchSource, /function shouldRetrySameAccountAfterFailure/, '旧普通同号重试函数必须移除')
 assert.doesNotMatch(upstreamDispatchSource, /SameAccountRetryBudget|createSameAccountRetryBudget|sameAccountRetryBudget/, '非租约同号重试预算必须移除')
 assert.doesNotMatch(upstreamDispatchSource, /OpaqueFailoverBudget|maxOpaqueFailoverAccountsPerRequest|opaqueFailoverBudget/, '普通候选不得保留固定四账户预算')
+assert.match(
+  upstreamDispatchSource,
+  /isOpaqueUpstreamFailoverAllowed\(req\)[\s\S]{0,500}requestLane === 'text'[\s\S]{0,200}accountCircuitAttempt\?\.isConfirmation === true/,
+  'confirmation transport 切号必须限定在 text lane，image 等非文本 lane 不得隐式切换兄弟 Key'
+)
 assert.match(routesSource, /transportFailure[\s\S]*reportTransportFailure/, '响应读取未完成必须回报账户短电路')
 
 console.log('gateway account circuit dispatch regression passed')

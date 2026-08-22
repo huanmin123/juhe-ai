@@ -192,9 +192,9 @@ async function assertBadSessionAndOpaqueResponseStayNeutral(baseUrl: string, sce
   assert.equal(badSession.status, 200, `坏会话命中 A 的完整 opaque HTTP 后应隐藏切换到 B：${badSession.text}`)
   assert.match(badSession.text, /sk-quality-b/, '坏会话不得把 A 的原始错误直接返回客户端')
   const badHits = hitsFor('bad-session-account-a-opaque')
-  assert.equal(badHits.length, 3, `坏会话应穷尽 A 的两个 Key 后切到 B：${JSON.stringify(badHits)}`)
-  assert.deepEqual(new Set(badHits.slice(0, 2).map(hit => hit.accountKey)), new Set(['sk-quality-a1', 'sk-quality-a2']))
-  assert.equal(badHits[2]!.accountKey, 'sk-quality-b')
+  assert.equal(badHits.length, 2, `瞬态 503 在同账户重试预算为 0 时应从 A 当前 Key 切到 B：${JSON.stringify(badHits)}`)
+  assert(new Set(['sk-quality-a1', 'sk-quality-a2']).has(badHits[0]!.accountKey), 'A 必须先尝试一个当前轮转 Key')
+  assert.equal(badHits[1]!.accountKey, 'sk-quality-b')
   assert(badHits.every(hit => hit.sessionId === 'damaged-session-fixed'), '同一坏会话 ID 应贯穿全部请求内切号尝试')
 
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -202,7 +202,7 @@ async function assertBadSessionAndOpaqueResponseStayNeutral(baseUrl: string, sce
   const afterB = await requireQualitySnapshot(scopeB)
   assert.equal(afterA.window5m.qualityAttempts, beforeA.window5m.qualityAttempts, 'A 的完整 opaque HTTP 不得进入共享质量分母')
   assert.equal(afterA.window5m.localTransportFailures, beforeA.window5m.localTransportFailures, 'A 的完整 opaque HTTP 不得伪装成 transport failure')
-  assert.equal(afterA.window5m.upstreamResponseFailures, beforeA.window5m.upstreamResponseFailures + 2, 'A 两个 Key 的完整 opaque HTTP 只增加中性诊断计数')
+  assert.equal(afterA.window5m.upstreamResponseFailures, beforeA.window5m.upstreamResponseFailures + 1, 'A 当前 Key 的瞬态 opaque HTTP 只增加一份中性诊断计数')
   assert.equal(afterB.window5m.completedResponses, beforeB.window5m.completedResponses + 1, 'B 的真实成功应正常进入质量样本')
   await assertAccountRemainsSchedulable(scenario.accountAId)
   await assertCircuitClosed(accountA)
@@ -226,8 +226,9 @@ async function assertConcurrentOpaqueStormCannotMisorderOrKillPool(baseUrl: stri
     assert.equal(response.status, 503, `${requestLabel} 全池只有完整 opaque HTTP 时应返回有界 503：${response.text}`)
     assert.doesNotMatch(response.text, /sk-quality-a1|sk-quality-a2|sk-quality-b/, `${requestLabel} 不得向客户端泄漏上游凭据`)
     const requestHits = hitsFor(requestLabel)
-    assert.equal(requestHits.length, 3, `${requestLabel} 应有界穷尽三个物理 Key：${JSON.stringify(requestHits)}`)
-    assert.deepEqual(new Set(requestHits.map(hit => hit.accountKey)), new Set(['sk-quality-a1', 'sk-quality-a2', 'sk-quality-b']))
+    assert.equal(requestHits.length, 2, `${requestLabel} 的瞬态 503 应从 A 当前 Key 切到 B：${JSON.stringify(requestHits)}`)
+    assert(new Set(['sk-quality-a1', 'sk-quality-a2']).has(requestHits[0]!.accountKey), `${requestLabel} 必须先尝试 A 的当前 Key`)
+    assert.equal(requestHits[1]!.accountKey, 'sk-quality-b', `${requestLabel} 必须随后切到 B`)
   }
 
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -237,7 +238,7 @@ async function assertConcurrentOpaqueStormCannotMisorderOrKillPool(baseUrl: stri
   assert.equal(afterB.window5m.qualityAttempts, beforeB.window5m.qualityAttempts, '并发 opaque 风暴不得改变账户 B 质量分母')
   assert.equal(afterA.window5m.localTransportFailures, beforeA.window5m.localTransportFailures, '并发 opaque 风暴不得把账户 A 误判为传输死亡')
   assert.equal(afterB.window5m.localTransportFailures, beforeB.window5m.localTransportFailures, '并发 opaque 风暴不得把账户 B 误判为传输死亡')
-  assert.equal(afterA.window5m.upstreamResponseFailures, beforeA.window5m.upstreamResponseFailures + concurrentStormSize * 2, '账户 A 每请求两个 Key 只应增加中性诊断计数')
+  assert.equal(afterA.window5m.upstreamResponseFailures, beforeA.window5m.upstreamResponseFailures + concurrentStormSize, '账户 A 每请求一个当前 Key 只应增加中性诊断计数')
   assert.equal(afterB.window5m.upstreamResponseFailures, beforeB.window5m.upstreamResponseFailures + concurrentStormSize, '账户 B 每请求只应增加中性诊断计数')
   assert.equal(afterA.effectiveReliability > afterB.effectiveReliability ? 'a' : 'b', preferredBefore, '中性并发样本不得颠倒账户池质量顺序')
 

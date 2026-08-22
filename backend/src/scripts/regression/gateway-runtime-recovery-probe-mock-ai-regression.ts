@@ -47,6 +47,7 @@ const [
   databaseModule,
   readWorkerPool,
   repositories,
+  settingsRepository,
   gatewayCache,
   accountSideEffects,
   accountCircuit,
@@ -60,6 +61,7 @@ const [
   import('../../storage/database.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/repositories.js'),
+  import('../../storage/settings.repository.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/runtime/account-circuit.service.js'),
@@ -80,6 +82,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   gatewayCache.clearGatewayRuntimeCache()
+  settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
   accountCircuit.resetGatewayAccountCircuitStoreForTest()
   await assertGatewayAutomaticProbeConcurrencyLimit()
   let upstreamServer: http.Server | undefined

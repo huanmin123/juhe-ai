@@ -1613,10 +1613,45 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
   ensureAccountHealthCheckEndpointModeSchema(database)
+  ensureAccountCircuitControlPlaneSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureOidcProviderSchema(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+/**
+ * Upgrade the account-circuit incident table created by pre-confirmation
+ * schemas.  `CREATE TABLE IF NOT EXISTS` intentionally leaves an existing
+ * table untouched, so the confirmation fields need an explicit, idempotent
+ * migration before repositories start reading them.
+ */
+function ensureAccountCircuitControlPlaneSchema(database: DatabaseSync): void {
+  const incidentColumns = database.prepare('PRAGMA table_info(account_circuit_incidents)').all() as Array<{ name?: unknown }>
+  if (incidentColumns.length === 0) return
+
+  const columnNames = new Set(
+    incidentColumns
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string')
+  )
+
+  if (!columnNames.has('confirmation_failures_required')) {
+    database.exec(`
+      ALTER TABLE account_circuit_incidents
+      ADD COLUMN confirmation_failures_required INTEGER NOT NULL DEFAULT 1
+        CHECK (confirmation_failures_required BETWEEN 1 AND 5)
+    `)
+  }
+
+  if (!columnNames.has('confirmation_failure_evidence_keys_json')) {
+    database.exec(`
+      ALTER TABLE account_circuit_incidents
+      ADD COLUMN confirmation_failure_evidence_keys_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(confirmation_failure_evidence_keys_json)
+          AND json_type(confirmation_failure_evidence_keys_json) = 'array')
+    `)
+  }
 }
 
 function ensureAccountHealthCheckEndpointModeSchema(database: DatabaseSync): void {
