@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -32,9 +34,12 @@ var (
 )
 
 type StoreConfig struct {
-	Mode         StoreMode
-	DatabasePath string
-	PostgresURL  string
+	Mode                 StoreMode
+	DatabasePath         string
+	PostgresURL          string
+	PostgresMaxOpenConns int
+	PostgresMaxIdleConns int
+	PostgresPool         *pgpool.Handle
 }
 
 type OwnerLease struct {
@@ -52,6 +57,7 @@ type Store struct {
 	db      *sql.DB
 	mode    StoreMode
 	writeMu sync.Mutex
+	pool    *pgpool.Handle
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
@@ -80,13 +86,27 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		if strings.TrimSpace(config.PostgresURL) == "" {
 			return nil, errors.New("account-balance postgres 缺少连接 URL")
 		}
-		db, err := sql.Open("pgx", config.PostgresURL)
-		if err != nil {
-			return nil, err
+		maxOpen := config.PostgresMaxOpenConns
+		if maxOpen == 0 {
+			maxOpen = 1000
 		}
-		db.SetMaxOpenConns(4)
-		db.SetMaxIdleConns(4)
-		return &Store{db: db, mode: config.Mode}, nil
+		maxIdle := config.PostgresMaxIdleConns
+		if maxIdle == 0 {
+			maxIdle = 1000
+		}
+		if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
+			return nil, fmt.Errorf("account-balance postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
+		}
+		var err error
+		pool := config.PostgresPool
+		if pool == nil {
+			registry := pgpool.NewRegistry()
+			pool, err = registry.Acquire("pgx", config.PostgresURL, "account-balance-store", maxOpen, maxIdle)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return &Store{db: pool.DB(), mode: config.Mode, pool: pool}, nil
 	default:
 		return nil, errors.New("account-balance store mode 必须为 sqlite 或 postgres")
 	}
@@ -95,6 +115,9 @@ func OpenStore(config StoreConfig) (*Store, error) {
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	if s.pool != nil {
+		return s.pool.Close()
 	}
 	return s.db.Close()
 }

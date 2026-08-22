@@ -34,6 +34,13 @@ import {
   systemInsufficientQuotaRuleMatches
 } from '../../accounts/account-error-policy-system-rules.js'
 import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
+import { isAccountApiKeyPoolIsolationEnabled } from '../../../storage/account-api-key-rotation.js'
+import {
+  extractApiKeyQuotaRecoveryHint,
+  genericApiKeyQuotaCooldownUntil,
+  type ApiKeyQuotaRecoveryHint,
+  type ApiKeyQuotaRecoveryMode
+} from './api-key-quota-recovery.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -69,6 +76,8 @@ export interface AccountErrorPolicyAccount {
   protocolVersion?: string
   type?: string
   credentials: Record<string, unknown>
+  apiKeys?: string[]
+  selectedApiKeyFingerprint?: string
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
   bindingSystemAccountId?: string
   groupOwnerSystemAccountId?: string
@@ -89,6 +98,9 @@ export interface AccountErrorPolicyDecision {
   ruleSource?: 'system' | 'account'
   cooldownUntil?: string
   cooldownStatus?: CooldownAccountStatus
+  keyScoped?: boolean
+  quotaRecoveryMode?: ApiKeyQuotaRecoveryMode
+  quotaRecoveryHintSource?: ApiKeyQuotaRecoveryHint['source']
 }
 
 export interface AccountErrorHandlingResult {
@@ -190,6 +202,14 @@ export function applyAccountErrorHandling(
   }
 
   if (!input.policyDecision) return { action: 'none', changed: false, accountStatus: account.status }
+  if (input.policyDecision.keyScoped) {
+    return {
+      action: 'cooldown',
+      changed: false,
+      accountStatus: account.status,
+      reason: 'api_key_key_scoped_quota_recovery'
+    }
+  }
   return applyExplicitAccountErrorPolicyDecision(account, input, input.policyDecision)
 }
 
@@ -228,6 +248,14 @@ export async function applyAccountErrorHandlingAsync(
   }
 
   if (!input.policyDecision) return { action: 'none', changed: false, accountStatus: account.status }
+  if (input.policyDecision.keyScoped) {
+    return {
+      action: 'cooldown',
+      changed: false,
+      accountStatus: account.status,
+      reason: 'api_key_key_scoped_quota_recovery'
+    }
+  }
   return await applyExplicitAccountErrorPolicyDecisionAsync(account, input, input.policyDecision)
 }
 
@@ -247,13 +275,47 @@ export function decideAccountErrorPolicy(
   const payload = bodyFacts?.errorPayload ?? accountErrorPolicyPayload(bodyText, headers, account)
   const errorCode = stringValue(payload.code).toLowerCase()
   const errorType = stringValue(payload.type).toLowerCase()
-  const systemSearchableText = stringValue(payload.message).toLowerCase()
+  const systemSearchableText = [stringValue(payload.message), bodyText]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join('\n')
+    .toLowerCase()
   if (systemInsufficientQuotaRuleMatches({ statusCode, errorCode, errorType, searchableText: systemSearchableText })) {
+    const apiKeyGenericRecovery = account.type === 'api_key'
+    const recoveryHint = apiKeyGenericRecovery
+      ? extractApiKeyQuotaRecoveryHint({ bodyText, headers })
+      : undefined
+    const apiKeyPoolIsolation = isAccountApiKeyPoolIsolationEnabled({
+      providerCode: account.providerCode,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      type: account.type,
+      credentials: account.apiKeys?.length
+        ? { ...account.credentials, api_keys: account.apiKeys }
+        : account.credentials
+    }) && Boolean(account.selectedApiKeyFingerprint)
+    const recoveryMode = apiKeyGenericRecovery
+      ? recoveryHint?.mode ?? 'generic'
+      : recoveryHint?.mode
+    const cooldownUntil = recoveryHint?.cooldownUntil
+      ?? (apiKeyGenericRecovery ? genericApiKeyQuotaCooldownUntil() : undefined)
     return {
-      action: 'disable',
+      action: 'cooldown',
       ruleId: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
       ruleName: '上游额度不足',
-      ruleSource: 'system'
+      ruleSource: 'system',
+      cooldownStatus: 'rate_limited',
+      cooldownUntil: cooldownUntil
+        ?? accountErrorRuleCooldownUntil({
+          enabled: true,
+          name: '上游额度不足',
+          priority: 1,
+          action: 'rate_limited',
+          reset_strategy: 'daily',
+          daily_reset_hour: 0
+        }, new Date()),
+      keyScoped: apiKeyPoolIsolation,
+      quotaRecoveryMode: recoveryMode,
+      quotaRecoveryHintSource: recoveryHint?.source
     }
   }
   const rules = normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)

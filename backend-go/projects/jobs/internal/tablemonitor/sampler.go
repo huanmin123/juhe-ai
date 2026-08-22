@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 )
 
 type collectedSample struct {
@@ -452,14 +454,25 @@ func aggregateCodexShards(root string, sampledAt time.Time, shards []collectedSa
 }
 
 func collectPostgres(ctx context.Context, cfg Config, sampledAt time.Time) (collectedSample, error) {
-	db, err := sql.Open("pgx", cfg.PostgresURL)
-	if err != nil {
-		return collectedSample{}, fmt.Errorf("打开表监控 PostgreSQL 源库失败: %w", err)
+	pool := cfg.PostgresPool
+	if pool == nil {
+		registry := pgpool.NewRegistry()
+		maxOpen := cfg.PostgresMaxOpenConns
+		if maxOpen == 0 {
+			maxOpen = 1000
+		}
+		maxIdle := cfg.PostgresMaxIdleConns
+		if maxIdle == 0 {
+			maxIdle = 1000
+		}
+		var err error
+		pool, err = registry.Acquire("pgx", cfg.PostgresURL, "table-monitor-source", maxOpen, maxIdle)
+		if err != nil {
+			return collectedSample{}, fmt.Errorf("打开表监控 PostgreSQL 源库连接池失败: %w", err)
+		}
+		defer pool.Close()
 	}
-	defer db.Close()
-	connections := min(cfg.MaxConcurrentSources, 5)
-	db.SetMaxOpenConns(connections)
-	db.SetMaxIdleConns(connections)
+	db := pool.DB()
 	targets := []postgresTarget{
 		{role: "business", schema: "juhe_business", path: "postgres:juhe_business"},
 		{role: "dataset", schema: "juhe_dataset", path: "postgres:juhe_dataset"},

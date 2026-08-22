@@ -264,7 +264,7 @@ async function main(): Promise<void> {
     } as unknown as Parameters<typeof handleFailedUpstreamResponse>[0])
     assert(quotaDispatchResult.action === 'skip_account' && quotaDispatchResult.failureKind === 'explicit_policy', '系统额度规则必须走显式策略切号分支')
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
-    assertAccountStatus(quotaAccount.id, 'error', false, '系统额度规则必须将账户持久化为异常且不可调度')
+    assertAccountStatus(quotaAccount.id, 'rate_limited', true, '系统额度规则必须将账户持久化为限流中且可调度')
     assert(
       quotaAuditMetadata.some((entry) => entry.label === 'account_error_policy_matched' && entry.metadata?.ruleSource === 'system' && entry.metadata?.ruleId === 'system.upstream_insufficient_quota'),
       '系统额度规则必须写入来源和规则 ID 审计元数据'

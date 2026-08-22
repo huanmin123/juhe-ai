@@ -13,32 +13,42 @@ import (
 )
 
 const (
-	defaultScanInterval     = time.Minute
-	defaultOwnerLease       = 90 * time.Second
-	defaultProbeTimeout     = 65 * time.Second
-	defaultMaxResponseBytes = int64(256 * 1024)
-	defaultInputTTL         = 24 * time.Hour
+	defaultScanInterval           = time.Minute
+	defaultOwnerLease             = 90 * time.Second
+	defaultProbeTimeout           = 65 * time.Second
+	defaultMaxResponseBytes       = int64(256 * 1024)
+	defaultInputTTL               = 24 * time.Hour
+	defaultDirectInputLimit       = 256
+	defaultPostgresPoolSize       = 1000
+	defaultSQLiteConcurrency      = 4
+	defaultPerformanceConcurrency = 64
+	defaultPostgresConcurrency    = 256
+	minJ1Concurrency              = 4
+	maxJ1Concurrency              = 256
+	maxJ1Capacity                 = 1000
 )
 
 // Config is deliberately opt-in.  A release cannot accidentally claim J1
 // ownership merely because the jobs binary was upgraded.
 type Config struct {
-	Enabled             bool
-	InstanceID          string
-	Store               StoreConfig
-	InputDirectory      string
-	InputKeys           map[string][]byte
-	InputSource         string
-	BusinessPostgresURL string
-	DirectInputLimit    int
-	CredentialSecret    string
-	InputTTL            time.Duration
-	ScanInterval        time.Duration
-	OwnerLease          time.Duration
-	ProbeTimeout        time.Duration
-	MaxResponseBytes    int64
-	MaxConcurrency      int
-	Now                 func() time.Time
+	Enabled                         bool
+	InstanceID                      string
+	Store                           StoreConfig
+	InputDirectory                  string
+	InputKeys                       map[string][]byte
+	InputSource                     string
+	BusinessPostgresURL             string
+	DirectInputLimit                int
+	DirectInputPostgresMaxOpenConns int
+	DirectInputPostgresMaxIdleConns int
+	CredentialSecret                string
+	InputTTL                        time.Duration
+	ScanInterval                    time.Duration
+	OwnerLease                      time.Duration
+	ProbeTimeout                    time.Duration
+	MaxResponseBytes                int64
+	MaxConcurrency                  int
+	Now                             func() time.Time
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -68,6 +78,16 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if mode == StorePostgres && cfg.Store.PostgresURL == "" {
 		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL")
 	}
+	if mode == StorePostgres {
+		if cfg.Store.PostgresMaxOpenConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
+			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_MAX", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_POOL_SIZE"); err != nil {
+			return Config{}, err
+		}
+		if cfg.Store.PostgresMaxIdleConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
+			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_IDLE_MAX", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_POOL_SIZE"); err != nil {
+			return Config{}, err
+		}
+	}
 	cfg.InputDirectory = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY"))
 	if cfg.InputDirectory == "" {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY 是必填配置")
@@ -84,6 +104,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.InputSource != "files" && cfg.InputSource != "postgres" {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE 必须为 files 或 postgres")
 	}
+	if cfg.DirectInputLimit, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT", defaultDirectInputLimit, 1, maxJ1Capacity); err != nil {
+		return Config{}, err
+	}
 	if cfg.InputSource == "postgres" {
 		if mode != StorePostgres {
 			return Config{}, errors.New("PG direct input 只允许与 postgres jobs store 一起启用")
@@ -92,7 +115,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.BusinessPostgresURL == "" {
 			return Config{}, errors.New("postgres direct input 缺少 JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
 		}
-		if cfg.DirectInputLimit, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT", 256, 1, 1024); err != nil {
+		if cfg.DirectInputPostgresMaxOpenConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_MAX", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_POOL_SIZE"); err != nil {
+			return Config{}, err
+		}
+		if cfg.DirectInputPostgresMaxIdleConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_IDLE_MAX", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_POOL_SIZE"); err != nil {
 			return Config{}, err
 		}
 	}
@@ -131,7 +159,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.MaxResponseBytes, err = configInt64(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_RESPONSE_BYTES", defaultMaxResponseBytes, 1, 16*1024*1024); err != nil {
 		return Config{}, err
 	}
-	if cfg.MaxConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", 4, 1, 64); err != nil {
+	concurrencyDefault := defaultSQLiteConcurrency
+	if mode == StorePostgres {
+		concurrencyDefault = defaultPostgresConcurrency
+	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
+		concurrencyDefault = defaultPerformanceConcurrency
+	}
+	if cfg.MaxConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", concurrencyDefault, minJ1Concurrency, maxJ1Concurrency); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -206,6 +240,30 @@ func configInt(getenv func(string) string, name string, fallback, minimum, maxim
 		return 0, fmt.Errorf("%s 必须在 %d..%d", name, minimum, maximum)
 	}
 	return parsed, nil
+}
+
+func configIntAny(getenv func(string) string, fallback, minimum, maximum int, names ...string) (int, error) {
+	for _, name := range names {
+		if strings.TrimSpace(getenv(name)) != "" {
+			return configInt(getenv, name, fallback, minimum, maximum)
+		}
+	}
+	return fallback, nil
+}
+
+func configPositiveIntAny(getenv func(string) string, fallback int, names ...string) (int, error) {
+	for _, name := range names {
+		if strings.TrimSpace(getenv(name)) == "" {
+			continue
+		}
+		value := strings.TrimSpace(getenv(name))
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 {
+			return 0, fmt.Errorf("%s 必须是正整数", name)
+		}
+		return parsed, nil
+	}
+	return fallback, nil
 }
 
 func configInt64(getenv func(string) string, name string, fallback, minimum, maximum int64) (int64, error) {

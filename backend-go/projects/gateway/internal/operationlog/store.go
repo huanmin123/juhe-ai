@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/text/unicode/norm"
@@ -60,6 +61,7 @@ type sqlStore struct {
 	writeMu     sync.Mutex
 	schemaMu    sync.Mutex
 	schemaReady bool
+	pool        *pgpool.Handle
 }
 
 func OpenStore(cfg Config) (Store, error) {
@@ -88,18 +90,34 @@ func OpenStore(cfg Config) (Store, error) {
 		}
 		return &sqlStore{db: db, businessDB: businessDB, mode: cfg.Mode}, nil
 	}
-	pgConfig, err := pgx.ParseConfig(cfg.PostgresURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse F4 PostgreSQL URL: %w", err)
+	maxOpen := cfg.PostgresMaxOpenConns
+	if maxOpen == 0 {
+		maxOpen = 1000
 	}
-	if pgConfig.RuntimeParams == nil {
-		pgConfig.RuntimeParams = map[string]string{}
+	maxIdle := cfg.PostgresMaxIdleConns
+	if maxIdle == 0 {
+		maxIdle = 1000
 	}
-	pgConfig.RuntimeParams["application_name"] = postgresApplicationName
-	db := stdlib.OpenDB(*pgConfig)
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(8)
-	return &sqlStore{db: db, mode: cfg.Mode}, nil
+	var err error
+	pool := cfg.PostgresPool
+	if pool == nil {
+		registry := pgpool.NewRegistry()
+		pool, err = registry.AcquireWith(func() (*sql.DB, error) {
+			pgConfig, parseErr := pgx.ParseConfig(cfg.PostgresURL)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if pgConfig.RuntimeParams == nil {
+				pgConfig.RuntimeParams = map[string]string{}
+			}
+			pgConfig.RuntimeParams["application_name"] = postgresApplicationName
+			return stdlib.OpenDB(*pgConfig), nil
+		}, cfg.PostgresURL, "operation-log", maxOpen, maxIdle)
+		if err != nil {
+			return nil, fmt.Errorf("open F4 PostgreSQL pool: %w", err)
+		}
+	}
+	return &sqlStore{db: pool.DB(), mode: cfg.Mode, pool: pool}, nil
 }
 
 func (s *sqlStore) beginTx(ctx context.Context) (*sql.Tx, error) {
@@ -198,6 +216,9 @@ func configureSQLite(db *sql.DB) error {
 func (s *sqlStore) Close() error {
 	if s.businessDB != nil {
 		_ = s.businessDB.Close()
+	}
+	if s.pool != nil {
+		return s.pool.Close()
 	}
 	return s.db.Close()
 }

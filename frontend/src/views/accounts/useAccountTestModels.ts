@@ -53,6 +53,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testEndpointModes.value = [healthCheckEndpointMode]
     input.testForm.model = defaultModel
     input.testForm.testEndpointMode = healthCheckEndpointMode
+    testModelsReady.value = Boolean(defaultModel && healthCheckEndpointMode)
   }
 
   async function loadTestModelOptions(

@@ -81,6 +81,12 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F2 table-monitor config: %w", err))
 	}
+	if cfg.Mode == tablemonitor.ModePostgres {
+		cfg.PostgresPool, err = postgresPools.Acquire("pgx", cfg.PostgresURL, "jobs-store", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
+		if err != nil {
+			fail(fmt.Errorf("open F2 shared PostgreSQL pool: %w", err))
+		}
+	}
 	store, err := tablemonitor.OpenStore(cfg)
 	if err != nil {
 		fail(fmt.Errorf("open F2 table-monitor store: %w", err))
@@ -105,8 +111,15 @@ func main() {
 	}
 	var accountHealthStore *accounthealth.Store
 	var accountHealthInputDB *sql.DB
+	var accountHealthInputPool *pgpool.Handle
 	var accountHealthRunner *accounthealth.Runner
 	if accountHealthConfig.Enabled {
+		if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
+			accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
+			if err != nil {
+				fail(fmt.Errorf("open J1 shared PostgreSQL jobs pool: %w", err))
+			}
+		}
 		accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
 		if err != nil {
 			fail(fmt.Errorf("open J1 account-health store: %w", err))
@@ -116,24 +129,23 @@ func main() {
 			fail(fmt.Errorf("initialize J1 account-health schema: %w", err))
 		}
 		if accountHealthConfig.InputSource == "postgres" {
-			accountHealthInputDB, err = sql.Open("pgx", accountHealthConfig.BusinessPostgresURL)
+			accountHealthInputPool, err = postgresPools.Acquire("pgx", accountHealthConfig.BusinessPostgresURL, "business-input", accountHealthConfig.DirectInputPostgresMaxOpenConns, accountHealthConfig.DirectInputPostgresMaxIdleConns)
 			if err != nil {
 				_ = accountHealthStore.Close()
 				fail(fmt.Errorf("open J1 account-health direct-input database: %w", err))
 			}
-			accountHealthInputDB.SetMaxOpenConns(4)
-			accountHealthInputDB.SetMaxIdleConns(4)
+			accountHealthInputDB = accountHealthInputPool.DB()
 			pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			pingErr := accountHealthInputDB.PingContext(pingContext)
 			pingCancel()
 			if pingErr != nil {
-				_ = accountHealthInputDB.Close()
+				_ = accountHealthInputPool.Close()
 				_ = accountHealthStore.Close()
 				fail(fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
 			}
 			reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
 			if readerErr != nil {
-				_ = accountHealthInputDB.Close()
+				_ = accountHealthInputPool.Close()
 				_ = accountHealthStore.Close()
 				fail(fmt.Errorf("configure J1 account-health direct-input reader: %w", readerErr))
 			}
@@ -141,7 +153,7 @@ func main() {
 			contractErr := reader.CheckContract(contractContext)
 			contractCancel()
 			if contractErr != nil {
-				_ = accountHealthInputDB.Close()
+				_ = accountHealthInputPool.Close()
 				_ = accountHealthStore.Close()
 				fail(fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
 			}
@@ -156,6 +168,15 @@ func main() {
 	}
 	var accountBalanceService *accountbalance.Service
 	if accountBalanceConfig.Enabled {
+		accountBalanceConfig.PostgresPool, err = postgresPools.Acquire("pgx", accountBalanceConfig.Store.PostgresURL, "jobs-store", accountBalanceConfig.PostgresMaxOpenConns, accountBalanceConfig.PostgresMaxIdleConns)
+		if err != nil {
+			fail(fmt.Errorf("open J2 shared PostgreSQL jobs pool: %w", err))
+		}
+		accountBalanceConfig.InputPostgresPool, err = postgresPools.Acquire("pgx", accountBalanceConfig.BusinessPostgresURL, "business-input", accountBalanceConfig.InputPostgresMaxOpenConns, accountBalanceConfig.InputPostgresMaxIdleConns)
+		if err != nil {
+			_ = accountBalanceConfig.PostgresPool.Close()
+			fail(fmt.Errorf("open J2 shared PostgreSQL input pool: %w", err))
+		}
 		accountBalanceService, err = accountbalance.NewService(accountBalanceConfig, logger)
 		if err != nil {
 			fail(fmt.Errorf("initialize J2 account-balance service: %w", err))
@@ -247,8 +268,8 @@ func main() {
 			Run:  accountHealthRunner.Run,
 			Close: func() error {
 				var closeErr error
-				if accountHealthInputDB != nil {
-					closeErr = accountHealthInputDB.Close()
+				if accountHealthInputPool != nil {
+					closeErr = accountHealthInputPool.Close()
 				}
 				if err := accountHealthStore.Close(); err != nil && closeErr == nil {
 					closeErr = err

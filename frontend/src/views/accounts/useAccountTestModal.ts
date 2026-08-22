@@ -127,7 +127,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       account.healthCheckEndpointMode
     )
     testModalOpen.value = true
-    void loadAccountTestModelOptionsNow(account, '')
     void restoreSavedAccountTestRun(account, viewToken)
   }
 

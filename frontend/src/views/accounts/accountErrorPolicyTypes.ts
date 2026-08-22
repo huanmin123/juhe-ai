@@ -51,13 +51,13 @@ export function systemInheritedErrorPolicyRulesPreview(): AccountErrorPolicyInhe
     ].join(', '),
     error_types: '',
     keywords: '余额不足, 额度不足, insufficient balance, insufficient quota, credit balance too low, wallet balance exhausted',
-    action: 'error_disabled',
-    reset_strategy: 'duration',
+    action: 'rate_limited',
+    reset_strategy: 'daily',
     duration_hours: null,
-    daily_reset_hour: null,
+    daily_reset_hour: 0,
     weekly_reset_day: null,
     weekly_reset_hour: null,
-    description: '仅在 HTTP 403 且上游明确表示余额或额度不足时将账户标记为异常。'
+    description: '仅在 HTTP 403 且明确额度不足时进入限流中；官方 OAuth 遵守固定场景，API Key 优先遵守供应商恢复时间，否则按通用间隔复测。'
   }]
 }
 

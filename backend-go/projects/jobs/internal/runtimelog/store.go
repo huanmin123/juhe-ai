@@ -86,7 +86,20 @@ func OpenStore(ctx context.Context, config Config) (Store, error) {
 		}
 		return &sqliteStore{db: db, businessDB: businessDB}, nil
 	case ModePostgres:
-		pool, err := pgxpool.New(ctx, config.PostgresURL)
+		poolConfig, err := pgxpool.ParseConfig(config.PostgresURL)
+		if err != nil {
+			return nil, err
+		}
+		maxConns := config.PostgresMaxConns
+		if maxConns == 0 {
+			maxConns = 1000
+		}
+		poolConfig.MaxConns = int32(maxConns)
+		poolConfig.MinConns = int32(config.PostgresMinConns)
+		if poolConfig.MinConns > poolConfig.MaxConns {
+			return nil, fmt.Errorf("运行日志 PostgreSQL min connections 不得大于 max connections: %d > %d", poolConfig.MinConns, poolConfig.MaxConns)
+		}
+		pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 		if err != nil {
 			return nil, err
 		}

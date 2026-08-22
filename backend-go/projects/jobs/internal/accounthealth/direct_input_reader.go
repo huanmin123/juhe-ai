@@ -18,6 +18,37 @@ type PostgresDirectInputReader struct {
 	credentialSecret string
 	inputTTL         time.Duration
 	now              func() time.Time
+	suppression      func(context.Context, time.Time) ([]DirectInputSuppression, error)
+}
+
+// DirectInputLoadResult separates a candidate-local construction failure from
+// a failed read transaction. The runner must persist every Failure before it
+// probes Inputs; a SQL/query/scan failure remains a whole-read error.
+type DirectInputLoadResult struct {
+	Inputs   []Input
+	Failures []DirectInputFailure
+}
+
+// DirectInputFailure carries only the immutable account generation needed for
+// a durable, idempotent task receipt. It deliberately excludes credentials,
+// proxy values, and the underlying conversion error.
+type DirectInputFailure struct {
+	AccountID        string
+	InputVersion     int64
+	ConfigRevision   int64
+	DispatchRevision int64
+}
+
+// DirectInputSuppression is jobs-owned retry metadata for a malformed
+// business candidate. The business reader never writes this state; it only
+// receives a snapshot from the jobs Store and excludes the exact fenced
+// generation while its retry window is still active.
+type DirectInputSuppression struct {
+	AccountID        string
+	InputVersion     int64
+	ConfigRevision   int64
+	DispatchRevision int64
+	NextDueAt        time.Time
 }
 
 func NewPostgresDirectInputReader(db *sql.DB, credentialSecret string, inputTTL time.Duration, now func() time.Time) (*PostgresDirectInputReader, error) {
@@ -28,6 +59,14 @@ func NewPostgresDirectInputReader(db *sql.DB, credentialSecret string, inputTTL 
 		now = time.Now
 	}
 	return &PostgresDirectInputReader{db: db, credentialSecret: credentialSecret, inputTTL: inputTTL, now: now}, nil
+}
+
+// SetSuppressionProvider wires the jobs-owned retry snapshot without giving
+// the business reader any write access to the jobs schema.
+func (r *PostgresDirectInputReader) SetSuppressionProvider(provider func(context.Context, time.Time) ([]DirectInputSuppression, error)) {
+	if r != nil {
+		r.suppression = provider
+	}
 }
 
 // CheckContract verifies the frozen business-read contract before the runner
@@ -81,6 +120,14 @@ var directInputRequiredRelations = []string{
 }
 
 func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]Input, error) {
+	result, err := r.LoadDueWithFailures(ctx, limit)
+	if err == nil && len(result.Failures) > 0 {
+		return nil, fmt.Errorf("PG direct input 存在 %d 个候选构造失败；请使用 LoadDueWithFailures 处理隔离结果", len(result.Failures))
+	}
+	return result.Inputs, err
+}
+
+func (r *PostgresDirectInputReader) LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error) {
 	return r.load(ctx, limit, false, "")
 }
 
@@ -88,33 +135,52 @@ func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]I
 // due-time predicate, but retains every account/source/authorization/binding/
 // quota eligibility guard from LoadDue.
 func (r *PostgresDirectInputReader) LoadAccount(ctx context.Context, accountID string) ([]Input, error) {
+	result, err := r.LoadAccountWithFailures(ctx, accountID)
+	if err == nil && len(result.Failures) > 0 {
+		return nil, fmt.Errorf("PG direct input account=%s 候选构造失败；请使用 LoadAccountWithFailures 处理隔离结果", strings.TrimSpace(accountID))
+	}
+	return result.Inputs, err
+}
+
+func (r *PostgresDirectInputReader) LoadAccountWithFailures(ctx context.Context, accountID string) (DirectInputLoadResult, error) {
 	normalizedAccountID := strings.TrimSpace(accountID)
 	if normalizedAccountID == "" {
-		return nil, fmt.Errorf("PG direct input account ID 不能为空")
+		return DirectInputLoadResult{}, fmt.Errorf("PG direct input account ID 不能为空")
 	}
 	return r.load(ctx, 1, true, normalizedAccountID)
 }
 
-func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreSchedule bool, accountID string) ([]Input, error) {
-	if limit < 1 || limit > 1024 {
-		return nil, fmt.Errorf("PG direct input limit 必须在 1..1024")
+func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreSchedule bool, accountID string) (DirectInputLoadResult, error) {
+	if limit < 1 || limit > maxJ1Capacity {
+		return DirectInputLoadResult{}, fmt.Errorf("PG direct input limit 必须在 1..%d", maxJ1Capacity)
 	}
 	now := r.now().UTC()
+	var suppressions []DirectInputSuppression
+	if r.suppression != nil {
+		var err error
+		suppressions, err = r.suppression(ctx, now)
+		if err != nil {
+			return DirectInputLoadResult{}, fmt.Errorf("读取 PG direct input 重试抑制快照失败: %w", err)
+		}
+	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
-		return nil, fmt.Errorf("开始 PG direct input 只读事务失败: %w", err)
+		return DirectInputLoadResult{}, fmt.Errorf("开始 PG direct input 只读事务失败: %w", err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "SET LOCAL TRANSACTION READ ONLY"); err != nil {
-		return nil, fmt.Errorf("设置 PG direct input 只读事务失败: %w", err)
+		return DirectInputLoadResult{}, fmt.Errorf("设置 PG direct input 只读事务失败: %w", err)
 	}
 	schedule, timezone, err := loadDirectSchedule(ctx, tx)
 	if err != nil {
-		return nil, err
+		return DirectInputLoadResult{}, err
 	}
-	inputs := make([]Input, 0, limit)
+	result := DirectInputLoadResult{Inputs: make([]Input, 0, limit), Failures: make([]DirectInputFailure, 0)}
 	err = collectDirectCandidatePages(limit, func(offset int) (int, error) {
-		rows, err := tx.QueryContext(ctx, directInputCandidatesSQL, now.Format(time.RFC3339Nano), limit, ignoreSchedule, accountID, offset)
+		candidateSQL, suppressionArgs := directInputCandidatesQuery(suppressions)
+		args := []any{now.Format(time.RFC3339Nano), limit, ignoreSchedule, accountID, offset}
+		args = append(args, suppressionArgs...)
+		rows, err := tx.QueryContext(ctx, candidateSQL, args...)
 		if err != nil {
 			return 0, fmt.Errorf("读取 PG direct input 候选失败: %w", err)
 		}
@@ -142,13 +208,20 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 				candidate.authorization.QuotaEligible = eligible
 			}
 			direct := DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
-			input, err := direct.ToInput(r.credentialSecret, now)
+			input, failure, err := buildDirectCandidateInput(candidate, direct, r.credentialSecret, now)
 			if err != nil {
 				rows.Close()
-				return 0, fmt.Errorf("构造 PG direct input account=%s 失败: %w", candidate.account.ID, err)
+				return 0, err
 			}
-			inputs = append(inputs, input)
-			if len(inputs) == limit {
+			if failure != nil {
+				result.Failures = append(result.Failures, *failure)
+				if len(result.Inputs) >= limit {
+					break
+				}
+				continue
+			}
+			result.Inputs = append(result.Inputs, input)
+			if len(result.Inputs) >= limit {
 				break
 			}
 		}
@@ -159,14 +232,26 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 			return 0, fmt.Errorf("遍历 PG direct input 候选失败: %w", err)
 		}
 		return pageCount, nil
-	}, func() int { return len(inputs) })
+	}, func() int { return len(result.Inputs) })
 	if err != nil {
-		return nil, err
+		return DirectInputLoadResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交 PG direct input 只读事务失败: %w", err)
+		return DirectInputLoadResult{}, fmt.Errorf("提交 PG direct input 只读事务失败: %w", err)
 	}
-	return inputs, nil
+	return result, nil
+}
+
+func buildDirectCandidateInput(candidate directCandidate, direct DirectInput, secret string, now time.Time) (Input, *DirectInputFailure, error) {
+	input, err := direct.ToInput(secret, now)
+	if err == nil {
+		return input, nil, nil
+	}
+	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision}
+	if strings.TrimSpace(failure.AccountID) == "" || failure.InputVersion < 1 || failure.ConfigRevision < 1 || failure.DispatchRevision < 1 {
+		return Input{}, nil, fmt.Errorf("PG direct input 坏候选缺少可持久化的 account/revision fence")
+	}
+	return Input{}, &failure, nil
 }
 
 type directCandidate struct {
@@ -183,12 +268,47 @@ type directCandidate struct {
 	authorizationTeam       string
 }
 
+// directInputCandidatesQuery keeps the frozen SQL unchanged when there is no
+// retry metadata, and otherwise adds a parameterized fenced suppression CTE.
+// Suppression is deliberately applied before LIMIT/OFFSET so malformed rows
+// cannot consume the bounded candidate window on every cycle.
+func directInputCandidatesQuery(suppressions []DirectInputSuppression) (string, []any) {
+	if len(suppressions) == 0 {
+		return directInputCandidatesSQL, nil
+	}
+	values := make([]string, 0, len(suppressions))
+	args := make([]any, 0, len(suppressions)*5)
+	for index, suppression := range suppressions {
+		base := 6 + index*5
+		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d)", base, base+1, base+2, base+3, base+4))
+		args = append(args, suppression.AccountID, suppression.InputVersion, suppression.ConfigRevision, suppression.DispatchRevision, suppression.NextDueAt.UTC())
+	}
+	clause := "\n  AND NOT EXISTS (SELECT 1 FROM (VALUES " + strings.Join(values, ",") + ") AS suppressed(account_id, input_version, config_revision, dispatch_revision, next_due_at) WHERE suppressed.account_id = a.id AND suppressed.input_version = iv.current_version AND suppressed.config_revision = a.config_revision AND suppressed.dispatch_revision = a.dispatch_revision AND suppressed.next_due_at > $1)"
+	marker := "\n-- Keep activation work first"
+	query := strings.Replace(directInputCandidatesSQL, marker, clause+marker, 1)
+	return query, args
+}
+
 // collectDirectCandidatePages advances through a repeatable-read candidate
 // snapshot until quota filtering has produced the requested number of inputs
 // or there are no more rows. This keeps SQL page bounds while preventing an
-// ineligible full page from starving later eligible candidates.
+// ineligible full page from starving later eligible candidates. The scan cap
+// bounds work when a large backlog consists entirely of malformed candidates;
+// callers still receive the failures observed before the cap and can retry
+// them through their durable suppression window on a later cycle.
 func collectDirectCandidatePages(limit int, loadPage func(offset int) (int, error), accepted func() int) error {
-	for offset := 0; accepted() < limit; {
+	return collectDirectCandidatePagesWithCap(limit, directInputScanCap(limit), loadPage, accepted)
+}
+
+func collectDirectCandidatePagesWithCap(limit, scanCap int, loadPage func(offset int) (int, error), accepted func() int) error {
+	if limit < 1 || limit > maxJ1Capacity {
+		return fmt.Errorf("PG direct input limit 必须在 1..%d", maxJ1Capacity)
+	}
+	if scanCap < limit {
+		scanCap = limit
+	}
+	scanned := 0
+	for offset := 0; accepted() < limit && scanned < scanCap; {
 		pageCount, err := loadPage(offset)
 		if err != nil {
 			return err
@@ -196,12 +316,26 @@ func collectDirectCandidatePages(limit int, loadPage func(offset int) (int, erro
 		if pageCount < 0 || pageCount > limit {
 			return fmt.Errorf("PG direct input 候选页行数无效: %d", pageCount)
 		}
+		scanned += pageCount
 		if pageCount < limit {
 			return nil
 		}
 		offset += pageCount
 	}
 	return nil
+}
+
+const maxDirectInputScanCandidates = 10_000
+
+func directInputScanCap(limit int) int {
+	cap := limit * 4
+	if cap < limit {
+		cap = limit
+	}
+	if cap > maxDirectInputScanCandidates {
+		return maxDirectInputScanCandidates
+	}
+	return cap
 }
 
 const directInputCandidatesSQL = `
@@ -246,6 +380,11 @@ WHERE a.deleted_at IS NULL
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
   ))
+  -- Image generation is too expensive for a healthy periodic check. Keep
+  -- image accounts eligible for activation, cooldown recovery, and explicit
+  -- account loads (ignoreSchedule=$3), but never schedule an active image
+  -- account merely because next_health_check_at is due.
+  AND ($3::boolean OR a.status <> 'active' OR a.health_check_endpoint_mode <> 'images_json')
   AND ($3::boolean OR a.status IN ('temporary_unavailable', 'rate_limited') OR a.next_health_check_at IS NULL OR a.next_health_check_at <= $1 OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
   AND ($4 = '' OR a.id = $4)
 -- Keep activation work first, then interleave due cooldown recovery and

@@ -81,7 +81,7 @@ export const accountCreateSchema = z.object({
   priority: z.number().int().optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
-  proxyProfileId: z.string().optional(),
+  proxyProfileId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),

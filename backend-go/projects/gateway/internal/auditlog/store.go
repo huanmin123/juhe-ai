@@ -21,6 +21,8 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -45,6 +47,7 @@ type sqlStore struct {
 	hotMu       sync.Mutex
 	schemaMu    sync.Mutex
 	schemaReady bool
+	pool        *pgpool.Handle
 }
 
 type blobPlan struct {
@@ -111,19 +114,28 @@ func OpenStore(cfg Config) (Store, error) {
 		}
 		return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
 	}
-	db, err := sql.Open("pgx", cfg.PostgresURL)
-	if err != nil {
-		return nil, fmt.Errorf("打开 F3 PostgreSQL 失败: %w", err)
+	maxOpen := cfg.PostgresMaxOpenConns
+	if maxOpen == 0 {
+		maxOpen = 1000
 	}
-	// The pool is deliberately bounded: direct F3 writes use the actual DB
-	// transaction capacity rather than a synthetic task queue.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(8)
+	maxIdle := cfg.PostgresMaxIdleConns
+	if maxIdle == 0 {
+		maxIdle = 1000
+	}
+	var err error
+	pool := cfg.PostgresPool
+	if pool == nil {
+		registry := pgpool.NewRegistry()
+		pool, err = registry.Acquire(cfg.PostgresURL, "audit-log", maxOpen, maxIdle)
+		if err != nil {
+			return nil, fmt.Errorf("打开 F3 PostgreSQL 连接池失败: %w", err)
+		}
+	}
 	hotDir := cfg.HotSearchDirectory
 	if hotDir == "" {
 		hotDir = filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")
 	}
-	return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
+	return &sqlStore{db: pool.DB(), mode: cfg.Mode, pool: pool, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
 }
 
 func sqliteDSN(path string) (string, error) {
@@ -163,7 +175,15 @@ func configureSQLite(db *sql.DB) error {
 	return nil
 }
 
-func (s *sqlStore) Close() error { return s.db.Close() }
+func (s *sqlStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if s.pool != nil {
+		return s.pool.Close()
+	}
+	return s.db.Close()
+}
 
 func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 	s.schemaMu.Lock()

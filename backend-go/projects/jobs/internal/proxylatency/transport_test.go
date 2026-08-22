@@ -28,6 +28,17 @@ func TestAllowedTargetURL(t *testing.T) {
 	}
 }
 
+func TestProxyTransportDoesNotSerializeConnectionsPerHost(t *testing.T) {
+	transport, err := newProxyTransport("http://proxy.example:8080", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.CloseIdleConnections()
+	if transport.MaxConnsPerHost != 0 || transport.MaxIdleConnsPerHost != 0 {
+		t.Fatalf("proxy transport must not impose a per-host connection cap: max=%d idle=%d", transport.MaxConnsPerHost, transport.MaxIdleConnsPerHost)
+	}
+}
+
 func TestProbeItemNon2xxIsNeutralButPassed(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

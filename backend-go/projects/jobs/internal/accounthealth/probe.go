@@ -118,9 +118,13 @@ func probeTransport(input Input, options ProbeOptions) (*http.Transport, error) 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// Keep the direct probe wire protocol stable across OpenAI-compatible upstreams.
 	transport.ForceAttemptHTTP2 = false
-	transport.MaxIdleConns = 8
-	transport.MaxIdleConnsPerHost = 2
-	transport.MaxConnsPerHost = 2
+	// Do not add an application-level per-host connection queue here.  J1's
+	// worker concurrency and the upstream/OS transport are the effective
+	// capacity boundaries; the default zero MaxConnsPerHost means unlimited
+	// active connections for this transport.
+	transport.MaxIdleConns = 0
+	transport.MaxIdleConnsPerHost = 0
+	transport.MaxConnsPerHost = 0
 	transport.ResponseHeaderTimeout = options.Timeout
 	if input.Proxy == nil {
 		return transport, nil
@@ -183,8 +187,16 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"stream":            true,
 		}
 	case "images_json":
-		path = "/v1/models"
-		method = http.MethodGet
+		path = "/v1/images/generations"
+		body = map[string]any{
+			"model":              input.HealthModel,
+			"prompt":             "Solid black.",
+			"n":                  1,
+			"size":               "1024x1024",
+			"quality":            "low",
+			"output_format":      "webp",
+			"output_compression": 100,
+		}
 	default:
 		return nil, errors.New("未冻结的 endpoint mode")
 	}
@@ -275,14 +287,21 @@ func verifyResponse(mode, model string, body []byte) error {
 	if mode == "images_json" {
 		data, ok := response["data"].([]any)
 		if !ok {
-			return errors.New("模型目录缺少 data")
+			return errors.New("Images API 响应缺少 data")
 		}
 		for _, item := range data {
-			if record, ok := item.(map[string]any); ok && record["id"] == model {
+			record, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if value, ok := record["b64_json"].(string); ok && strings.TrimSpace(value) != "" {
+				return nil
+			}
+			if value, ok := record["url"].(string); ok && strings.TrimSpace(value) != "" {
 				return nil
 			}
 		}
-		return errors.New("模型目录无精确模型")
+		return errors.New("Images API 响应缺少有效图片结果")
 	}
 	if containsChallenge(response) {
 		return nil

@@ -99,6 +99,40 @@ func TestProbeOpenAIResponsesSSERejectsJSONImposter(t *testing.T) {
 	}
 }
 
+func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/images/generations" || request.Method != http.MethodPost {
+			t.Fatalf("unexpected image probe path: %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "gpt-test" || body["prompt"] != "Solid black." || body["n"] != float64(1) || body["size"] != "1024x1024" || body["quality"] != "low" || body["output_format"] != "webp" || body["output_compression"] != float64(100) {
+			t.Fatalf("unexpected image probe body: %#v", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"b64_json":"c2FtcGxl"}]}`))
+	}))
+	defer server.Close()
+
+	result := ProbeOpenAI(context.Background(), testInput(server.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected image probe result: %#v", result)
+	}
+
+	missingResultServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":[{"revised_prompt":"Solid black."}]}`))
+	}))
+	defer missingResultServer.Close()
+	result = ProbeOpenAI(context.Background(), testInput(missingResultServer.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
+		t.Fatalf("missing image result must be neutral, got %#v", result)
+	}
+}
+
 func TestProbeTransportDisablesHTTP2ForDirectProviderProbe(t *testing.T) {
 	transport, err := probeTransport(Input{}, ProbeOptions{})
 	if err != nil {
@@ -106,6 +140,9 @@ func TestProbeTransportDisablesHTTP2ForDirectProviderProbe(t *testing.T) {
 	}
 	if transport.ForceAttemptHTTP2 {
 		t.Fatal("direct provider probe must not negotiate HTTP/2")
+	}
+	if transport.MaxConnsPerHost != 0 || transport.MaxIdleConnsPerHost != 0 {
+		t.Fatalf("direct provider probe must not impose a per-host connection cap: max=%d idle=%d", transport.MaxConnsPerHost, transport.MaxIdleConnsPerHost)
 	}
 }
 

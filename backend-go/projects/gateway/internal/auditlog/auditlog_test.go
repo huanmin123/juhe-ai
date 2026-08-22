@@ -123,6 +123,15 @@ func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
 	if cfg.PostgresURL != env["JUHE_AI_AUDIT_LOG_POSTGRES_URL"] {
 		t.Fatalf("PostgresURL=%q want dedicated F3 URL", cfg.PostgresURL)
 	}
+	if cfg.PostgresMaxOpenConns != 1000 || cfg.PostgresMaxIdleConns != 1000 {
+		t.Fatalf("default F3 PostgreSQL pool=%d/%d want 1000/1000", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
+	}
+	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"] = "1200"
+	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"] = "1100"
+	cfg, err = LoadConfig(func(name string) string { return env[name] })
+	if err != nil || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 1100 {
+		t.Fatalf("configured F3 PostgreSQL pool=%d/%d err=%v", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns, err)
+	}
 	delete(env, "JUHE_AI_AUDIT_LOG_POSTGRES_URL")
 	cfg, err = LoadConfig(func(name string) string { return env[name] })
 	if err != nil {

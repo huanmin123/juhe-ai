@@ -131,9 +131,99 @@ const systemQuotaDecision = decideAccountErrorPolicy({
   },
   status: 'active'
 }, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_quota","message":"余额不足"}}'), settings)
-assert.equal(systemQuotaDecision?.action, 'disable', '系统额度规则必须先于账户自定义规则执行')
+assert.equal(systemQuotaDecision?.action, 'cooldown', '系统额度规则必须先于账户自定义规则执行')
 assert.equal(systemQuotaDecision?.ruleSource, 'system')
+assert.equal(systemQuotaDecision?.ruleId, 'system.upstream_insufficient_quota')
 assert.equal(systemQuotaDecision?.ruleName, '上游额度不足')
+assert.equal(systemQuotaDecision?.cooldownStatus, 'rate_limited')
+assert.ok(systemQuotaDecision?.cooldownUntil, '系统额度规则命中必须返回下一次每日恢复时间')
+assert(Number.isFinite(Date.parse(systemQuotaDecision!.cooldownUntil!)) && Date.parse(systemQuotaDecision!.cooldownUntil!) > Date.now(), '系统额度规则 cooldownUntil 必须是未来 RFC3339 时间')
+
+const oauthFixedQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_oauth_fixed_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'oauth',
+  credentials: {},
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota","reset_at":"2099-01-02T03:04:05Z"}}'), settings)
+assert.equal(oauthFixedQuotaDecision?.quotaRecoveryMode, undefined, '官方 OAuth 额度场景必须继续使用固定恢复规则')
+assert.notEqual(oauthFixedQuotaDecision?.cooldownUntil, '2099-01-02T03:04:05.000Z', 'OAuth 不得被 API Key 的 reset_at 通用化覆盖')
+
+const multiKeyApiKeyQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_multi_key_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  apiKeys: ['sk-quota-a', 'sk-quota-b'],
+  selectedApiKeyFingerprint: 'selected-key-fingerprint',
+  credentials: { api_keys: ['sk-quota-a', 'sk-quota-b'] },
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
+assert.equal(multiKeyApiKeyQuotaDecision?.keyScoped, true, '多 Key API Key 额度不足必须只作用于当前 fingerprint')
+assert.equal(multiKeyApiKeyQuotaDecision?.quotaRecoveryMode, 'generic', '没有 reset_at 时 API Key 必须走通用恢复模式')
+assert.equal(multiKeyApiKeyQuotaDecision?.cooldownStatus, 'rate_limited')
+assert(multiKeyApiKeyQuotaDecision?.cooldownUntil, '通用 API Key 额度恢复必须提供复测边界')
+assert(Date.parse(multiKeyApiKeyQuotaDecision!.cooldownUntil!) - Date.now() > 2 * 60 * 60_000 - 10_000, '通用 API Key 额度复测默认应约为 2 小时')
+
+const normalizedRuntimeApiKeysQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_runtime_api_keys_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  apiKeys: ['sk-runtime-a', 'sk-runtime-b'],
+  selectedApiKeyFingerprint: 'selected-runtime-key',
+  credentials: { api_key: 'sk-runtime-a' },
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
+assert.equal(normalizedRuntimeApiKeysQuotaDecision?.keyScoped, true, '运行态已经展开 apiKeys 时，即使 credentials 只保留主 Key 也必须按当前 Key 隔离')
+
+const explicitResetApiKeyQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_explicit_reset',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  apiKeys: ['sk-reset-a', 'sk-reset-b'],
+  selectedApiKeyFingerprint: 'selected-reset-key',
+  credentials: { api_keys: ['sk-reset-a', 'sk-reset-b'] },
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota","reset_at":"2099-01-02T03:04:05Z"}}'), settings)
+assert.equal(explicitResetApiKeyQuotaDecision?.keyScoped, true)
+assert.equal(explicitResetApiKeyQuotaDecision?.quotaRecoveryMode, 'explicit_reset', '供应商提供 reset_at 时必须进入显式恢复模式')
+assert.equal(explicitResetApiKeyQuotaDecision?.cooldownUntil, '2099-01-02T03:04:05.000Z')
+
+const singleKeyApiKeyQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_single_key_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  apiKeys: ['sk-single'],
+  selectedApiKeyFingerprint: 'single-key-fingerprint',
+  credentials: { api_key: 'sk-single' },
+  status: 'active'
+}, 403, new Headers({ 'retry-after': '7200' }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
+assert.equal(singleKeyApiKeyQuotaDecision?.keyScoped, false, '单 Key 账户不应伪造多 Key fingerprint 隔离')
+assert.equal(singleKeyApiKeyQuotaDecision?.quotaRecoveryMode, 'explicit_reset')
+assert(Date.parse(singleKeyApiKeyQuotaDecision!.cooldownUntil!) > Date.now() + 7_100_000, 'Retry-After 必须覆盖 API Key 通用默认间隔')
+
+const numericResetHeaderDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_numeric_reset_header',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  apiKeys: ['sk-numeric-reset-a', 'sk-numeric-reset-b'],
+  selectedApiKeyFingerprint: 'numeric-reset-key',
+  credentials: { api_key: 'sk-numeric-reset-a' },
+  status: 'active'
+}, 403, new Headers({ 'x-ratelimit-reset': String(Math.ceil((Date.now() + 7_200_000) / 1000)) }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
+assert.equal(numericResetHeaderDecision?.quotaRecoveryMode, 'explicit_reset', 'Unix 秒级 reset header 必须被识别为明确恢复时间')
+assert(Date.parse(numericResetHeaderDecision!.cooldownUntil!) > Date.now() + 7_100_000, 'Unix 秒级 reset header 必须覆盖 API Key 通用默认间隔')
 
 const systemQuotaBeforeInvalidLocalRule = decideAccountErrorPolicy({
   id: 'account_error_policy_invalid_local_rule',
@@ -145,29 +235,42 @@ const systemQuotaBeforeInvalidLocalRule = decideAccountErrorPolicy({
 }, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_quota"}}'), settings)
 assert.equal(systemQuotaBeforeInvalidLocalRule?.ruleSource, 'system', '损坏的历史账户规则不能阻断系统额度保护')
 
+const plainTextQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_plain_text_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  credentials: {},
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'text/plain' }), Buffer.from('余额不足，请充值'), settings)
+assert.equal(plainTextQuotaDecision?.action, 'cooldown', 'text/plain 403 额度正文也必须命中系统额度规则')
+assert.equal(plainTextQuotaDecision?.cooldownStatus, 'rate_limited')
+
 for (const [name, statusCode, body, expected] of [
-  ['额度码insufficient_user_quota', 403, '{"error":{"code":"insufficient_user_quota"}}', 'disable'],
-  ['额度码insufficient_quota', 403, '{"error":{"code":"insufficient_quota"}}', 'disable'],
-  ['额度码insufficient_balance', 403, '{"error":{"code":"insufficient_balance"}}', 'disable'],
-  ['额度码quota_exceeded', 403, '{"error":{"code":"quota_exceeded"}}', 'disable'],
-  ['额度码quota_exhausted', 403, '{"error":{"code":"quota_exhausted"}}', 'disable'],
-  ['额度码wallet_balance_exhausted', 403, '{"error":{"code":"WALLET_BALANCE_EXHAUSTED"}}', 'disable'],
-  ['额度码pre_consume_token_quota_failed', 403, '{"error":{"code":"pre_consume_token_quota_failed"}}', 'disable'],
-  ['NewAPI包装额度码insufficient_user_quota', 403, '{"error":{"type":"new_api_error","code":"insufficient_user_quota"}}', 'disable'],
-  ['NewAPI包装额度码pre_consume_token_quota_failed', 403, '{"error":{"type":"new_api_error","code":"pre_consume_token_quota_failed"}}', 'disable'],
-  ['billing_error加余额文本', 403, '{"error":{"type":"billing_error","message":"余额不足"}}', 'disable'],
+  ['额度码insufficient_user_quota', 403, '{"error":{"code":"insufficient_user_quota"}}', 'cooldown'],
+  ['额度码insufficient_quota', 403, '{"error":{"code":"insufficient_quota"}}', 'cooldown'],
+  ['额度码insufficient_balance', 403, '{"error":{"code":"insufficient_balance"}}', 'cooldown'],
+  ['额度码quota_exceeded', 403, '{"error":{"code":"quota_exceeded"}}', 'cooldown'],
+  ['额度码quota_exhausted', 403, '{"error":{"code":"quota_exhausted"}}', 'cooldown'],
+  ['额度码wallet_balance_exhausted', 403, '{"error":{"code":"WALLET_BALANCE_EXHAUSTED"}}', 'cooldown'],
+  ['额度码pre_consume_token_quota_failed', 403, '{"error":{"code":"pre_consume_token_quota_failed"}}', 'cooldown'],
+  ['NewAPI包装额度码insufficient_user_quota', 403, '{"error":{"type":"new_api_error","code":"insufficient_user_quota"}}', 'cooldown'],
+  ['NewAPI包装额度码pre_consume_token_quota_failed', 403, '{"error":{"type":"new_api_error","code":"pre_consume_token_quota_failed"}}', 'cooldown'],
+  ['billing_error加余额文本', 403, '{"error":{"type":"billing_error","message":"余额不足"}}', 'cooldown'],
   ['单独billing_error', 403, '{"error":{"type":"billing_error"}}', undefined],
   ['裸403', 403, '{"error":{"message":"forbidden"}}', undefined],
   ['权限403', 403, '{"error":{"code":"permission_denied","message":"forbidden"}}', undefined],
   ['受限403', 403, '{"error":{"code":"client_restricted","message":"insufficient balance"}}', undefined],
-  ['中转错误附带明确余额文本403', 403, '{"error":{"code":"new_api_error","message":"insufficient balance"}}', 'disable'],
+  ['中转错误附带明确余额文本403', 403, '{"error":{"code":"new_api_error","message":"insufficient balance"}}', 'cooldown'],
   ['内容策略403', 403, '{"error":{"code":"content_policy_violation","message":"blocked"}}', undefined],
   ['内容策略回显额度文本403', 403, '{"error":{"message":"content policy violation: 用户输入包含余额不足"}}', undefined],
   ['原始正文回显额度文本403', 403, '{"error":{"message":"forbidden"},"echo":"余额不足"}', undefined],
   ['泛quota403', 403, '{"error":{"message":"quota exceeded for another limit"}}', undefined],
+  ['纯文本余额不足403', 403, '余额不足，请充值', 'cooldown'],
   ['401余额文本', 401, '{"error":{"message":"余额不足"}}', undefined],
   ['429余额文本', 429, '{"error":{"message":"余额不足"}}', undefined],
-  ['明确余额文本403', 403, '{"error":{"message":"insufficient balance"}}', 'disable']
+  ['明确余额文本403', 403, '{"error":{"message":"insufficient balance"}}', 'cooldown']
 ] as const) {
   const decision = decideAccountErrorPolicy({
     id: `account_error_policy_system_${name}`,
@@ -178,6 +281,12 @@ for (const [name, statusCode, body, expected] of [
     status: 'active'
   }, statusCode, new Headers({ 'content-type': 'application/json' }), Buffer.from(body), settings)
   assert.equal(decision?.action, expected, `${name} 的系统额度规则命中结果不符合预期`)
+  if (expected === 'cooldown') {
+    assert.equal(decision?.ruleSource, 'system', `${name} 必须记录系统规则来源`)
+    assert.equal(decision?.cooldownStatus, 'rate_limited', `${name} 必须进入 rate_limited`)
+    assert.ok(decision?.cooldownUntil, `${name} 必须提供下一次每日恢复时间`)
+    assert(Number.isFinite(Date.parse(decision!.cooldownUntil!)) && Date.parse(decision!.cooldownUntil!) > Date.now(), `${name} 的 cooldownUntil 必须是未来 RFC3339 时间`)
+  }
 }
 
 console.log('account error policy validation regression passed')

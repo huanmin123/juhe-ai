@@ -17,6 +17,8 @@ const (
 	defaultLogMaxFiles       = 500
 	defaultBatchSize         = 500
 	defaultOwnerLease        = 30 * time.Second
+	defaultPostgresMaxConns  = 1000
+	defaultPostgresMinConns  = 0
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -64,6 +66,14 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	postgresMaxConns, err := positiveIntOrDefault("JUHE_AI_RUNTIME_LOG_POSTGRES_MAX_CONNS", getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_MAX_CONNS"), defaultPostgresMaxConns)
+	if err != nil {
+		return Config{}, err
+	}
+	postgresMinConns, err := positiveIntOrDefault("JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS", getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS"), defaultPostgresMinConns)
+	if err != nil {
+		return Config{}, err
+	}
 	config := Config{
 		OwnerID:                fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),
 		OwnerLease:             ownerLease,
@@ -75,6 +85,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		StatsPath:              strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
 		CodexShardRoot:         strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
 		PostgresURL:            firstNonEmpty(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresMaxConns:       postgresMaxConns,
+		PostgresMinConns:       postgresMinConns,
 		LogDirectory:           strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
 		FileEnabled:            fileEnabled,
 		Once:                   once,
@@ -196,6 +208,17 @@ func intOrDefault(name string, value string, defaultValue int, min int, max int)
 	parsed, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || parsed < min || parsed > max {
 		return 0, fmt.Errorf("%s 必须在 %d..%d", name, min, max)
+	}
+	return parsed, nil
+}
+
+func positiveIntOrDefault(name string, value string, defaultValue int) (int, error) {
+	if strings.TrimSpace(value) == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s 必须是非负整数", name)
 	}
 	return parsed, nil
 }

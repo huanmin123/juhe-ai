@@ -18,6 +18,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -73,6 +74,8 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	postgresPools := pgpool.NewRegistry()
+	defer postgresPools.Close()
 	auditConfig, err := auditlog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F3 audit-log config: %w", err))
@@ -80,6 +83,12 @@ func main() {
 	auditInputConfig, err := auditlog.LoadInputServerConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F3 audit input config: %w", err))
+	}
+	if auditConfig.Mode == auditlog.ModePostgres {
+		auditConfig.PostgresPool, err = postgresPools.Acquire(auditConfig.PostgresURL, "gateway-store", auditConfig.PostgresMaxOpenConns, auditConfig.PostgresMaxIdleConns)
+		if err != nil {
+			fail(fmt.Errorf("open shared F3 PostgreSQL pool: %w", err))
+		}
 	}
 	auditStore, err := auditlog.OpenStore(auditConfig)
 	if err != nil {
@@ -96,6 +105,12 @@ func main() {
 	var operationStore operationlog.Store
 	var operationInputConfig operationlog.InputServerConfig
 	if operationConfig.Enabled {
+		if operationConfig.Mode == operationlog.ModePostgres {
+			operationConfig.PostgresPool, err = postgresPools.Acquire(operationConfig.PostgresURL, "gateway-store", operationConfig.PostgresMaxOpenConns, operationConfig.PostgresMaxIdleConns)
+			if err != nil {
+				fail(fmt.Errorf("open shared F4 PostgreSQL pool: %w", err))
+			}
+		}
 		operationInputConfig, err = operationlog.LoadInputServerConfig(os.Getenv)
 		if err != nil {
 			fail(fmt.Errorf("load F4 operation-log input config: %w", err))

@@ -28,6 +28,47 @@ func TestPostgresTaskFailureBaselineReusesObservedAtForUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsInvalidPostgresPoolShape(t *testing.T) {
+	for name, config := range map[string]StoreConfig{
+		"non-positive-open": {Mode: StorePostgres, PostgresURL: "postgres://jobs-output", PostgresMaxOpenConns: -1, PostgresMaxIdleConns: 1},
+		"idle-above-open":   {Mode: StorePostgres, PostgresURL: "postgres://jobs-output", PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 5},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := OpenStore(config); err == nil {
+				t.Fatal("invalid PostgreSQL pool shape must fail before opening the database")
+			}
+		})
+	}
+}
+
+func TestStoreLoadDirectInputSuppressionsReturnsOnlyActiveFences(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	future := now.Add(5 * time.Minute)
+	past := now.Add(-time.Minute)
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-future", RequestID: "direct-suppression-future", AccountID: "direct-suppression-future-account", Outcome: OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &future, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-past", RequestID: "direct-suppression-past", AccountID: "direct-suppression-past-account", Outcome: OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &past, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-other", RequestID: "direct-suppression-other", AccountID: "direct-suppression-other-account", Outcome: OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "other_error", NextDueAt: &future, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-newer-state", RequestID: "direct-suppression-newer-state", AccountID: "direct-suppression-old-state-account", Outcome: OutcomeSuccess, ObservedAt: now, InputVersion: 9, ConfigRevision: 9, DispatchRevision: 9, AccountStatus: "active"})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-old-state", RequestID: "direct-suppression-old-state", AccountID: "direct-suppression-old-state-account", Outcome: OutcomeTaskFailed, ObservedAt: now.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &future, FailureCount: 1})
+	suppressions, err := store.LoadDirectInputSuppressions(context.Background(), now)
+	if err != nil || len(suppressions) != 2 {
+		t.Fatalf("active direct-input suppressions = %#v err=%v", suppressions, err)
+	}
+	foundFenced := false
+	for _, suppression := range suppressions {
+		if suppression.AccountID == "direct-suppression-future-account" && suppression.NextDueAt.UTC() == future {
+			foundFenced = true
+		}
+		if suppression.AccountID == "direct-suppression-old-state-account" && suppression.InputVersion != 4 {
+			t.Fatalf("suppression must retain the malformed generation despite newer current state: %#v", suppression)
+		}
+	}
+	if !foundFenced {
+		t.Fatalf("missing future suppression: %#v", suppressions)
+	}
+}
+
 // This is intentionally opt-in because the configured URL must point to an
 // isolated jobs schema. It exercises PostgreSQL's ON CONFLICT and null-safe
 // cooldown-fence predicates rather than assuming SQLite's syntax is enough.
@@ -116,6 +157,31 @@ func TestSQLiteStoreOwnerLeaseAndIdempotentOutcome(t *testing.T) {
 	}
 	if _, err := store.AppendOutcome(ctx, OwnerLease{OwnerID: "owner-a", FenceToken: lease.FenceToken + 1}, Outcome{OutcomeID: "outcome-2", RequestID: "request-2", AccountID: "account-1", Outcome: OutcomeSuccess, ObservedAt: time.Now().UTC(), InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}); !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("stale lease must fail: %v", err)
+	}
+}
+
+func TestRenewOwnerLeaseWriteGateHonorsDeadline(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "deadline-owner", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire=%t err=%v", acquired, err)
+	}
+	if err := store.lockWrite(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer store.unlockWrite()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if renewed, err := store.RenewOwnerLease(ctx, lease, time.Minute); renewed || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("renew under held shared write gate = renewed:%t err:%v, want deadline", renewed, err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("renewal must not wait past its context deadline, elapsed=%s", elapsed)
 	}
 }
 

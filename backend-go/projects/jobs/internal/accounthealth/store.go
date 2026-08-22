@@ -9,8 +9,9 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
@@ -26,9 +27,12 @@ const (
 var ErrOwnerLeaseLost = errors.New("account-health owner lease 已丢失")
 
 type StoreConfig struct {
-	Mode         StoreMode
-	DatabasePath string
-	PostgresURL  string
+	Mode                 StoreMode
+	DatabasePath         string
+	PostgresURL          string
+	PostgresMaxOpenConns int
+	PostgresMaxIdleConns int
+	PostgresPool         *pgpool.Handle
 }
 
 type OwnerLease struct {
@@ -37,9 +41,10 @@ type OwnerLease struct {
 }
 
 type Store struct {
-	db      *sql.DB
-	mode    StoreMode
-	writeMu sync.Mutex
+	db        *sql.DB
+	mode      StoreMode
+	writeGate chan struct{}
+	pool      *pgpool.Handle
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
@@ -63,28 +68,78 @@ func OpenStore(config StoreConfig) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("配置 account-health sqlite 单 writer 失败: %w", err)
 		}
-		return &Store{db: db, mode: config.Mode}, nil
+		return newStore(db, config.Mode, nil), nil
 	case StorePostgres:
 		if strings.TrimSpace(config.PostgresURL) == "" {
 			return nil, errors.New("account-health postgres 缺少连接 URL")
 		}
-		db, err := sql.Open("pgx", config.PostgresURL)
-		if err != nil {
-			return nil, err
+		maxOpenConns := config.PostgresMaxOpenConns
+		if maxOpenConns == 0 {
+			maxOpenConns = defaultPostgresPoolSize
 		}
-		db.SetMaxOpenConns(4)
-		db.SetMaxIdleConns(4)
-		return &Store{db: db, mode: config.Mode}, nil
+		maxIdleConns := config.PostgresMaxIdleConns
+		if maxIdleConns == 0 {
+			maxIdleConns = defaultPostgresPoolSize
+		}
+		if maxOpenConns < 1 || maxIdleConns < 1 || maxIdleConns > maxOpenConns {
+			return nil, fmt.Errorf("account-health postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpenConns, maxIdleConns)
+		}
+		var err error
+		pool := config.PostgresPool
+		if pool == nil {
+			registry := pgpool.NewRegistry()
+			pool, err = registry.Acquire("pgx", config.PostgresURL, "account-health-store", maxOpenConns, maxIdleConns)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return newStore(pool.DB(), config.Mode, pool), nil
 	default:
 		return nil, errors.New("account-health store mode 必须为 sqlite 或 postgres")
 	}
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func newStore(db *sql.DB, mode StoreMode, pool *pgpool.Handle) *Store {
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	return &Store{db: db, mode: mode, writeGate: gate, pool: pool}
+}
+
+// lockWrite uses the same process-local gate for every writer, including the
+// owner-fenced transactions.  Unlike sync.Mutex it lets a short owner-renewal
+// context expire while another SQLite/PG write is in progress, without
+// creating a second renewal path that could bypass the transaction fence.
+func (s *Store) lockWrite(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.writeGate:
+		return nil
+	}
+}
+
+func (s *Store) unlockWrite() {
+	s.writeGate <- struct{}{}
+}
+
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.pool != nil {
+		return s.pool.Close()
+	}
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
 
 func (s *Store) EnsureSchema(ctx context.Context) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	if s.mode == StorePostgres {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -199,8 +254,10 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 	if err := s.EnsureSchema(ctx); err != nil {
 		return OwnerLease{}, false, err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return OwnerLease{}, false, err
+	}
+	defer s.unlockWrite()
 	now := time.Now().UTC()
 	if s.mode == StorePostgres {
 		var token int64
@@ -237,8 +294,10 @@ func (s *Store) RenewOwnerLease(ctx context.Context, lease OwnerLease, duration 
 	if duration <= 0 {
 		return false, errors.New("owner lease 续约 duration 无效")
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return false, err
+	}
+	defer s.unlockWrite()
 	now := time.Now().UTC()
 	var result sql.Result
 	var err error
@@ -263,8 +322,10 @@ func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 	if strings.TrimSpace(lease.OwnerID) == "" || lease.FenceToken < 1 {
 		return errors.New("owner lease 释放参数无效")
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	var err error
 	if s.mode == StorePostgres {
 		_, err = s.db.ExecContext(ctx, `DELETE FROM juhe_jobs.account_health_owner_leases
@@ -297,8 +358,10 @@ func (s *Store) AppendOutcome(ctx context.Context, lease OwnerLease, outcome Out
 	if err != nil {
 		return false, fmt.Errorf("编码 account-health outcome 失败: %w", err)
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return false, err
+	}
+	defer s.unlockWrite()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -322,6 +385,9 @@ ON CONFLICT (request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, ou
 		inserted = true
 		stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
 		err = stateErr
+		if err == nil && outcome.ErrorCode == "direct_input_invalid" && outcome.NextDueAt != nil {
+			err = s.writeDirectInputSuppressionTx(ctx, tx, outcome)
+		}
 		if err == nil && stateApplied && outcome.Projection != nil {
 			err = s.writeOutcomePayloadTx(ctx, tx, outcome)
 		}
@@ -338,6 +404,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.O
 		inserted = true
 		stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
 		err = stateErr
+		if err == nil && outcome.ErrorCode == "direct_input_invalid" && outcome.NextDueAt != nil {
+			err = s.writeDirectInputSuppressionTx(ctx, tx, outcome)
+		}
 		if err == nil && stateApplied && outcome.Projection != nil {
 			err = s.writeOutcomePayloadTx(ctx, tx, outcome)
 		}
@@ -349,6 +418,32 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.O
 		return false, err
 	}
 	return inserted, nil
+}
+
+func (s *Store) writeDirectInputSuppressionTx(ctx context.Context, tx *sql.Tx, outcome Outcome) error {
+	if outcome.NextDueAt == nil {
+		return nil
+	}
+	if s.mode == StorePostgres {
+		_, err := tx.ExecContext(ctx, `DELETE FROM juhe_jobs.account_health_direct_input_suppressions
+WHERE account_id=$1 AND NOT (input_version=$2 AND config_revision=$3 AND dispatch_revision=$4)`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_direct_input_suppressions (account_id,input_version,config_revision,dispatch_revision,next_due_at,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (account_id,input_version,config_revision,dispatch_revision) DO UPDATE SET next_due_at=EXCLUDED.next_due_at, updated_at=EXCLUDED.updated_at`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.NextDueAt.UTC(), outcome.ObservedAt.UTC())
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM account_health_direct_input_suppressions
+WHERE account_id=? AND NOT (input_version=? AND config_revision=? AND dispatch_revision=?)`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO account_health_direct_input_suppressions (account_id,input_version,config_revision,dispatch_revision,next_due_at,updated_at)
+VALUES (?,?,?,?,?,?)
+ON CONFLICT (account_id,input_version,config_revision,dispatch_revision) DO UPDATE SET next_due_at=excluded.next_due_at, updated_at=excluded.updated_at`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableTimeText(outcome.NextDueAt), outcome.ObservedAt.UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func (s *Store) writeOutcomePayloadTx(ctx context.Context, tx *sql.Tx, outcome Outcome) error {
@@ -650,6 +745,46 @@ func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (Current
 	return state, true, nil
 }
 
+// LoadDirectInputSuppressions returns jobs-owned retry windows for malformed
+// direct-input generations. It is read-only and intentionally exposes only
+// the account/revision fence plus the retry time; credentials and error text
+// never cross into the business reader.
+func (s *Store) LoadDirectInputSuppressions(ctx context.Context, now time.Time) ([]DirectInputSuppression, error) {
+	now = now.UTC()
+	query := `SELECT account_id,input_version,config_revision,dispatch_revision,next_due_at
+FROM account_health_direct_input_suppressions
+WHERE next_due_at IS NOT NULL`
+	if s.mode == StorePostgres {
+		query = `SELECT account_id,input_version,config_revision,dispatch_revision,next_due_at
+	FROM juhe_jobs.account_health_direct_input_suppressions
+	WHERE next_due_at IS NOT NULL`
+	}
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]DirectInputSuppression, 0)
+	for rows.Next() {
+		var suppression DirectInputSuppression
+		var nextDue nullableDBTime
+		if err := rows.Scan(&suppression.AccountID, &suppression.InputVersion, &suppression.ConfigRevision, &suppression.DispatchRevision, &nextDue); err != nil {
+			return nil, err
+		}
+		if !nextDue.Valid {
+			continue
+		}
+		suppression.NextDueAt = nextDue.Time.UTC()
+		if suppression.NextDueAt.After(now) {
+			result = append(result, suppression)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *Store) HasRequest(ctx context.Context, requestID string) (bool, error) {
 	if strings.TrimSpace(requestID) == "" {
 		return false, errors.New("request ID 缺失")
@@ -716,8 +851,10 @@ func (s *Store) SaveKeyCursor(ctx context.Context, lease OwnerLease, accountID, 
 	if strings.TrimSpace(accountID) == "" || strings.TrimSpace(purpose) == "" || strings.TrimSpace(fingerprint) == "" || nextIndex < 0 {
 		return errors.New("key cursor 写入参数无效")
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	if err := s.lockWrite(ctx); err != nil {
+		return err
+	}
+	defer s.unlockWrite()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -852,6 +989,7 @@ const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS account_health_owner_leases (lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, lease_until TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS account_health_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS account_health_current_state (account_id TEXT PRIMARY KEY, outcome_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, next_due_at TEXT, failure_count INTEGER NOT NULL DEFAULT 0, failure_started_at TEXT, account_status TEXT NOT NULL DEFAULT '', cooldown_observation_started_at TEXT, cooldown_generation TEXT, cooldown_source_config_revision INTEGER, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS account_health_direct_input_suppressions (account_id TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, next_due_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, input_version, config_revision, dispatch_revision));
 CREATE TABLE IF NOT EXISTS account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON account_health_outcomes(account_id, observed_at DESC, outcome_id DESC);
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON account_health_outcomes(observed_at DESC, outcome_id DESC);
@@ -861,6 +999,7 @@ const postgresSchema = `
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_owner_leases (lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, lease_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, payload JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_current_state (account_id TEXT PRIMARY KEY, outcome_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, next_due_at TIMESTAMPTZ, failure_count INTEGER NOT NULL DEFAULT 0, failure_started_at TIMESTAMPTZ, account_status TEXT NOT NULL DEFAULT '', cooldown_observation_started_at TIMESTAMPTZ, cooldown_generation TEXT, cooldown_source_config_revision BIGINT, updated_at TIMESTAMPTZ NOT NULL);
+CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_direct_input_suppressions (account_id TEXT NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, next_due_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, input_version, config_revision, dispatch_revision));
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS next_due_at TIMESTAMPTZ;
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS failure_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS failure_started_at TIMESTAMPTZ;

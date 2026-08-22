@@ -148,6 +148,15 @@ func TestLoadConfigValidatesSamplingAndRetentionBounds(t *testing.T) {
 	if cfg.MaxConcurrentSources != defaultMaxConcurrentSources || cfg.RetentionBatchSize != defaultRetentionBatchSize || cfg.RetentionMaxBatches != defaultRetentionMaxBatches {
 		t.Fatalf("unexpected bounded execution defaults: %+v", cfg)
 	}
+	performance := sqliteTestEnv(root)
+	performance["JUHE_AI_RUNTIME_MODE"] = "performance"
+	performanceCfg, err := LoadConfig(func(key string) string { return performance[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if performanceCfg.MaxConcurrentSources != defaultPerformanceSources {
+		t.Fatalf("SQLite performance source concurrency = %d, want %d", performanceCfg.MaxConcurrentSources, defaultPerformanceSources)
+	}
 	for key, value := range map[string]string{
 		"JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES": "0",
 		"JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE":   "0",

@@ -1,6 +1,10 @@
 package tablemonitor
 
-import "time"
+import (
+	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+)
 
 type Mode string
 
@@ -20,6 +24,9 @@ type Config struct {
 	StatsPath            string
 	CodexShardRoot       string
 	PostgresURL          string
+	PostgresMaxOpenConns int
+	PostgresMaxIdleConns int
+	PostgresPool         *pgpool.Handle
 	Interval             time.Duration
 	RunTimeout           time.Duration
 	RetentionDays        int

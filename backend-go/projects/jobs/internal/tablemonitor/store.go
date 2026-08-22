@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -22,6 +24,7 @@ type Store struct {
 	writeMu     sync.Mutex
 	schemaMu    sync.Mutex
 	schemaReady bool
+	pool        *pgpool.Handle
 }
 
 const sqliteBusyTimeoutMs = 5000
@@ -44,13 +47,24 @@ func OpenStore(cfg Config) (*Store, error) {
 		}
 		return &Store{db: db, mode: cfg.Mode}, nil
 	}
-	db, err := sql.Open("pgx", cfg.PostgresURL)
-	if err != nil {
-		return nil, fmt.Errorf("打开表监控 PostgreSQL 失败: %w", err)
+	maxOpen := cfg.PostgresMaxOpenConns
+	if maxOpen == 0 {
+		maxOpen = 1000
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
-	return &Store{db: db, mode: cfg.Mode}, nil
+	maxIdle := cfg.PostgresMaxIdleConns
+	if maxIdle == 0 {
+		maxIdle = 1000
+	}
+	var err error
+	pool := cfg.PostgresPool
+	if pool == nil {
+		registry := pgpool.NewRegistry()
+		pool, err = registry.Acquire("pgx", cfg.PostgresURL, "table-monitor-store", maxOpen, maxIdle)
+		if err != nil {
+			return nil, fmt.Errorf("打开表监控 PostgreSQL 连接池失败: %w", err)
+		}
+	}
+	return &Store{db: pool.DB(), mode: cfg.Mode, pool: pool}, nil
 }
 
 func configureSQLiteWriter(db *sql.DB) error {
@@ -90,7 +104,15 @@ func sqliteOutputDSN(path string) (string, error) {
 	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_pragma=busy_timeout(5000)"}).String(), nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.pool != nil {
+		return s.pool.Close()
+	}
+	return s.db.Close()
+}
 
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 

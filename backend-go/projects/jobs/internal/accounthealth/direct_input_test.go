@@ -51,6 +51,18 @@ func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *t
 	}
 }
 
+func TestDirectInputCandidatesExcludeHealthyImagesFromPeriodicScan(t *testing.T) {
+	guard := "AND ($3::boolean OR a.status <> 'active' OR a.health_check_endpoint_mode <> 'images_json')"
+	guardIndex := strings.Index(directInputCandidatesSQL, guard)
+	dueIndex := strings.Index(directInputCandidatesSQL, "a.next_health_check_at <= $1")
+	if guardIndex < 0 || dueIndex < 0 || guardIndex > dueIndex {
+		t.Fatalf("periodic candidate SQL must exclude active image accounts before due scheduling: guard=%d due=%d", guardIndex, dueIndex)
+	}
+	if !strings.Contains(directInputCandidatesSQL, "$3::boolean") {
+		t.Fatal("explicit account loads must be able to bypass the periodic image exclusion")
+	}
+}
+
 func TestDirectInputCandidateFairSlotsAdmitActiveAndCooldown(t *testing.T) {
 	// The SQL row-number partitions are intentionally interleaved by rank. With
 	// both classes backlogged, every bounded page must admit both classes rather
@@ -120,12 +132,72 @@ func TestCollectDirectCandidatePagesRefillsAfterQuotaFilteredPage(t *testing.T) 
 	}
 }
 
+func TestCollectDirectCandidatePagesDoesNotCountMalformedCandidates(t *testing.T) {
+	const pageSize = 2
+	var offsets []int
+	accepted := 0
+	err := collectDirectCandidatePages(pageSize, func(offset int) (int, error) {
+		offsets = append(offsets, offset)
+		switch offset {
+		case 0:
+			// Both rows are malformed, but they must not consume the two-input
+			// success window.
+			return pageSize, nil
+		case pageSize:
+			accepted = pageSize
+			return pageSize, nil
+		default:
+			t.Fatalf("unexpected candidate page offset %d", offset)
+			return 0, nil
+		}
+	}, func() int { return accepted })
+	if err != nil {
+		t.Fatalf("collect pages: %v", err)
+	}
+	if got, want := fmt.Sprint(offsets), "[0 2]"; got != want {
+		t.Fatalf("page offsets = %s, want %s", got, want)
+	}
+}
+
+func TestCollectDirectCandidatePagesStopsAtBoundedScanCap(t *testing.T) {
+	const pageSize = 2
+	var offsets []int
+	err := collectDirectCandidatePagesWithCap(pageSize, 4, func(offset int) (int, error) {
+		offsets = append(offsets, offset)
+		return pageSize, nil
+	}, func() int { return 0 })
+	if err != nil {
+		t.Fatalf("collect pages: %v", err)
+	}
+	if got, want := fmt.Sprint(offsets), "[0 2]"; got != want {
+		t.Fatalf("bounded scan offsets = %s, want %s", got, want)
+	}
+}
+
 func TestCollectDirectCandidatePagesRejectsInvalidPageSize(t *testing.T) {
 	err := collectDirectCandidatePages(3, func(int) (int, error) {
 		return 4, nil
 	}, func() int { return 0 })
 	if err == nil {
 		t.Fatal("page count above the SQL limit must fail closed")
+	}
+}
+
+func TestDirectInputCandidatesQuerySuppressesExactFencedGenerationBeforeLimit(t *testing.T) {
+	nextDue := time.Date(2030, 8, 16, 12, 5, 0, 0, time.UTC)
+	query, args := directInputCandidatesQuery([]DirectInputSuppression{{
+		AccountID: "bad-account", InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, NextDueAt: nextDue,
+	}})
+	clause := strings.Index(query, "NOT EXISTS")
+	limit := strings.Index(query, "LIMIT $2")
+	if clause < 0 || limit < 0 || clause > limit {
+		t.Fatalf("suppression must be applied before bounded SQL window: clause=%d limit=%d", clause, limit)
+	}
+	if len(args) != 5 || args[0] != "bad-account" || args[1] != int64(4) || args[2] != int64(5) || args[3] != int64(6) {
+		t.Fatalf("suppression args = %#v", args)
+	}
+	if got, ok := args[4].(time.Time); !ok || !got.Equal(nextDue) {
+		t.Fatalf("suppression due arg = %#v", args[4])
 	}
 }
 
@@ -272,6 +344,29 @@ func TestDirectInputRejectsUnavailableProxy(t *testing.T) {
 		if _, err := candidate.ToInput(secret, now); err == nil {
 			t.Fatalf("proxy %q must fail closed", proxy.ID)
 		}
+	}
+}
+
+func TestBuildDirectCandidateInputIsolatesBadProxyWithoutLeakingSecrets(t *testing.T) {
+	secret := "j1-direct-input-secret"
+	credentials, err := EncryptV1Envelope(secret, []byte(`{"api_key":"key"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
+	base := DirectInput{Account: DirectAccount{ID: "bad-proxy-account", ConfigRevision: 2, DispatchRevision: 3, Provider: "openai", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials}, Binding: DirectBinding{GroupID: "group-1", Enabled: true}, InputVersion: 4, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1}}
+	bad := base
+	bad.Proxy = &DirectProxy{ID: "bad-proxy", Enabled: false, Type: "http", Host: "127.0.0.1", Port: 8080, PasswordEncrypted: "must-not-escape"}
+	candidate := directCandidate{account: bad.Account, inputVersion: bad.InputVersion}
+	if input, failure, err := buildDirectCandidateInput(candidate, bad, secret, now); err != nil || input.AccountID != "" || failure == nil || failure.AccountID != bad.Account.ID || failure.InputVersion != 4 || failure.ConfigRevision != 2 || failure.DispatchRevision != 3 {
+		t.Fatalf("bad candidate must become a fenced failure: input=%#v failure=%#v err=%v", input, failure, err)
+	}
+	good := base
+	good.Account.ID = "good-account"
+	candidate = directCandidate{account: good.Account, inputVersion: good.InputVersion}
+	input, failure, err := buildDirectCandidateInput(candidate, good, secret, now)
+	if err != nil || failure != nil || input.AccountID != good.Account.ID {
+		t.Fatalf("normal candidate after isolated bad candidate must stay probeable: input=%#v failure=%#v err=%v", input, failure, err)
 	}
 }
 

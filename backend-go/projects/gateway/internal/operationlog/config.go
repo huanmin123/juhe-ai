@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
 )
 
@@ -19,6 +20,9 @@ type Config struct {
 	SQLiteIsolationPaths []string
 	UsageShardRoot       string
 	PostgresURL          string
+	PostgresMaxOpenConns int
+	PostgresMaxIdleConns int
+	PostgresPool         *pgpool.Handle
 	OwnerLease           time.Duration
 	RetentionInterval    time.Duration
 	RetentionDays        int
@@ -38,6 +42,7 @@ const (
 	defaultOwnerLease        = 30 * time.Second
 	defaultRetentionInterval = time.Minute
 	defaultRetentionBatch    = 1000
+	defaultPostgresPoolSize  = 1000
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -65,7 +70,15 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Enabled: true, InstanceID: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INSTANCE_ID")), Mode: Mode(strings.ToLower(modeRaw)), DatabasePath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_DATABASE_PATH")), BusinessSettingsPath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH")), PostgresURL: postgresURL, OwnerLease: ownerLease, RetentionInterval: retentionInterval, RetentionDays: 365, RetentionBatchSize: retentionBatch}
+	postgresMaxOpen, err := positiveIntOrDefault("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize)
+	if err != nil {
+		return Config{}, err
+	}
+	postgresMaxIdle, err := positiveIntOrDefault("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresPoolSize)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := Config{Enabled: true, InstanceID: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INSTANCE_ID")), Mode: Mode(strings.ToLower(modeRaw)), DatabasePath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_DATABASE_PATH")), BusinessSettingsPath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH")), PostgresURL: postgresURL, PostgresMaxOpenConns: postgresMaxOpen, PostgresMaxIdleConns: postgresMaxIdle, OwnerLease: ownerLease, RetentionInterval: retentionInterval, RetentionDays: 365, RetentionBatchSize: retentionBatch}
 	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
 		for _, path := range strings.Split(getenv(key), ",") {
 			if path = strings.TrimSpace(path); path != "" {
@@ -116,6 +129,18 @@ func intOrDefault(name, value string, fallback, min, max int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < min || parsed > max {
 		return 0, fmt.Errorf("%s must be an integer from %d to %d", name, min, max)
+	}
+	return parsed, nil
+}
+
+func positiveIntOrDefault(name, value string, fallback int) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return parsed, nil
 }

@@ -12,14 +12,17 @@ import (
 )
 
 const (
-	defaultInterval             = time.Minute
-	defaultRunTimeout           = 45 * time.Second
-	defaultOwnerLease           = 5 * time.Minute
-	defaultRetentionDays        = 30
-	defaultMaxTables            = 256
-	defaultMaxConcurrentSources = 8
-	defaultRetentionBatchSize   = 1000
-	defaultRetentionMaxBatches  = 1000
+	defaultInterval                  = time.Minute
+	defaultRunTimeout                = 45 * time.Second
+	defaultOwnerLease                = 5 * time.Minute
+	defaultRetentionDays             = 30
+	defaultMaxTables                 = 256
+	defaultMaxConcurrentSources      = 4
+	defaultPerformanceSources        = 64
+	defaultPostgresConcurrentSources = 256
+	defaultRetentionBatchSize        = 1000
+	defaultRetentionMaxBatches       = 1000
+	defaultPostgresPoolSize          = 1000
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -55,7 +58,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), defaultMaxConcurrentSources, 1, 256)
+	concurrencyDefault := defaultMaxConcurrentSources
+	if mode == ModePostgres {
+		concurrencyDefault = defaultPostgresConcurrentSources
+	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
+		concurrencyDefault = defaultPerformanceSources
+	}
+	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 4, 256)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES 无效: %w", err)
 	}
@@ -78,6 +87,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		StatsPath:            strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
 		CodexShardRoot:       strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
 		PostgresURL:          firstNonEmpty(getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresMaxOpenConns: 0,
+		PostgresMaxIdleConns: 0,
 		Interval:             interval,
 		RunTimeout:           runTimeout,
 		RetentionDays:        retentionDays,
@@ -85,6 +96,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		MaxConcurrentSources: maxConcurrentSources,
 		RetentionBatchSize:   retentionBatchSize,
 		RetentionMaxBatches:  retentionMaxBatches,
+	}
+	if cfg.PostgresMaxOpenConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize); err != nil {
+		return Config{}, err
+	}
+	if cfg.PostgresMaxIdleConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresPoolSize); err != nil {
+		return Config{}, err
 	}
 	if mode == ModeSQLite {
 		if cfg.OutputPath == "" {
@@ -181,6 +198,18 @@ func intOrDefault(value string, fallback, min, max int) (int, error) {
 	parsed, err := strconv.Atoi(strings.TrimSpace(value))
 	if err != nil || parsed < min || parsed > max {
 		return 0, fmt.Errorf("表监控数值必须在 %d..%d", min, max)
+	}
+	return parsed, nil
+}
+
+func positiveIntOrDefault(name, value string, fallback int) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s 必须是正整数", name)
 	}
 	return parsed, nil
 }

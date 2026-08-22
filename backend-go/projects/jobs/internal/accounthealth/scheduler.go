@@ -39,6 +39,10 @@ type directInputLoader interface {
 	LoadAccount(ctx context.Context, accountID string) ([]Input, error)
 }
 
+type directInputFailureLoader interface {
+	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
+}
+
 type RunnerStatus struct {
 	OwnerHeld   bool
 	LastScanAt  time.Time
@@ -67,6 +71,9 @@ func NewRunner(cfg Config, store *Store, logger *slog.Logger) *Runner {
 func NewRunnerWithDirectInputReader(cfg Config, store *Store, logger *slog.Logger, reader *PostgresDirectInputReader) *Runner {
 	runner := NewRunner(cfg, store, logger)
 	runner.directInputReader = reader
+	if reader != nil && store != nil {
+		reader.SetSuppressionProvider(store.LoadDirectInputSuppressions)
+	}
 	return runner
 }
 
@@ -134,7 +141,7 @@ func (r *Runner) runOwned(parent context.Context, lease OwnerLease) error {
 
 	// Keep ownership renewal independent from the synchronous probe batch. A
 	// batch can legitimately outlive a renewal interval (for example, several
-	// bounded network probes at MaxConcurrency=1).  There is exactly one cycle
+	// network probes at the configured worker concurrency).  There is exactly one cycle
 	// goroutine at a time: on a lost/failed renewal we cancel it and wait for its
 	// workers to return before releasing the fenced lease or allowing a later
 	// owner to run.
@@ -207,7 +214,20 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	var err error
 	var inputs []Input
 	if r.directInputReader != nil {
-		inputs, err = r.directInputReader.LoadDue(ctx, r.cfg.DirectInputLimit)
+		if reader, ok := r.directInputReader.(directInputFailureLoader); ok {
+			result, loadErr := reader.LoadDueWithFailures(ctx, r.cfg.DirectInputLimit)
+			if loadErr != nil {
+				return loadErr
+			}
+			for _, failure := range result.Failures {
+				if err := r.persistDirectInputFailure(ctx, lease, failure, now); err != nil {
+					return err
+				}
+			}
+			inputs = result.Inputs
+		} else {
+			inputs, err = r.directInputReader.LoadDue(ctx, r.cfg.DirectInputLimit)
+		}
 		if err != nil {
 			return err
 		}
@@ -293,6 +313,37 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	}
 	r.setSuccess(len(inputs), int(executed.Load()))
 	return nil
+}
+
+func (r *Runner) persistDirectInputFailure(ctx context.Context, lease OwnerLease, failure DirectInputFailure, observed time.Time) error {
+	requestID := directInputFailureRequestID(failure, observed)
+	nextDue := observed.Add(directInputFailureRetryBackoff)
+	outcome := Outcome{
+		OutcomeID:        requestID,
+		RequestID:        requestID,
+		AccountID:        failure.AccountID,
+		Outcome:          OutcomeTaskFailed,
+		ObservedAt:       observed,
+		InputVersion:     failure.InputVersion,
+		ConfigRevision:   failure.ConfigRevision,
+		DispatchRevision: failure.DispatchRevision,
+		ErrorCode:        "direct_input_invalid",
+		ErrorMessage:     "PG direct input 候选无效；已隔离该账户探活任务并延迟重试",
+		NextDueAt:        &nextDue,
+		FailureCount:     1,
+		FailureStartedAt: &observed,
+	}
+	_, err := r.store.AppendOutcome(ctx, lease, outcome)
+	return err
+}
+
+const directInputFailureRetryBackoff = 5 * time.Minute
+
+func directInputFailureRequestID(failure DirectInputFailure, observed time.Time) string {
+	slot := observed.UTC().UnixNano() / directInputFailureRetryBackoff.Nanoseconds()
+	value := fmt.Sprintf("direct-input-failure-v2\\x00%s\\x00%d\\x00%d\\x00%d\\x00%d", failure.AccountID, failure.InputVersion, failure.ConfigRevision, failure.DispatchRevision, slot)
+	sum := sha256.Sum256([]byte(value))
+	return "direct-input-failure-" + hex.EncodeToString(sum[:])
 }
 
 func (r *Runner) removeConsumedRequest(ctx context.Context, request ProbeRequest) error {

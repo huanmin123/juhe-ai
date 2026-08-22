@@ -28,7 +28,9 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
     enabled: true,
     name: '上游额度不足',
     priority: 1,
-    action: 'error_disabled',
+    action: 'rate_limited',
+    reset_strategy: 'daily',
+    daily_reset_hour: 0,
     status_codes: [403],
     error_codes: [
       'insufficient_user_quota',
@@ -47,7 +49,7 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
       'credit balance too low',
       'wallet balance exhausted'
     ],
-    description: '仅在 HTTP 403 且上游明确表示余额或额度不足时将账户标记为异常。'
+    description: '仅在 HTTP 403 且明确额度不足时进入限流中；官方 OAuth 遵守固定场景，API Key 优先遵守供应商恢复时间，否则按通用间隔复测。'
   }
 ]
 

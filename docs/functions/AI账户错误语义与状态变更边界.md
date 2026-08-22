@@ -12,7 +12,7 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 ## 2. 状态变更授权来源
 
-账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `403` 且命中稳定额度错误码，或结构化错误消息命中高置信余额/额度文本时，才复用 `error_disabled` 写入账户 `error`；裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials`、`system_settings` 或数据库，且优先于账户自定义规则。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
+账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `403` 且命中稳定额度错误码，或结构化错误消息命中高置信余额/额度文本时，才进入额度恢复状态。官方 OAuth 继续使用固定账户场景；API Key 优先遵守供应商恢复时间，否则按通用 2 小时复测，多 Key 只写失败 fingerprint，通用模式连续确认 30 天后该 Key 进入人工恢复的 `error`。裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials`、`system_settings` 或数据库，且优先于账户自定义规则。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
 
 传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能形成待确认事实；账户级升级必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由独立后台传输探针确认。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
 
@@ -54,7 +54,7 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 已知 JSON 协议的非流式 `2xx` 必须在下游提交前完成完整的 JSON 与协议结构验证。上游伪造 `content-type`、返回畸形 JSON、结构缺字段，或正文超过固定验证窗口时，网关必须终止为 `502` 和 `upstream_protocol_error`；不得先透传未验证正文，再把该 attempt 记为成功。该限制不适用于本来就是二进制下载的未知协议路径。
 
-账户 `credentials.error_handling_rules` 与受控系统继承策略的动作只决定当前账户状态副作用，不决定当前请求是否切号：`retry_next` 只切号，`rate_limited`、`temp_unschedulable`、`error_disabled` 在写入对应账户状态后同样排除当前账户并继续切号；未匹配任一策略的完整非 `2xx` 也按统一 `response.ok=false` 规则切号。`system.upstream_insufficient_quota` 命中后不投递低上下文 `request_failure` 探测，避免其与明确的 `error` 状态竞争。只有同账户兄弟 Key 轮换仍需要 `retry_next` 明确授权。
+账户 `credentials.error_handling_rules` 与受控系统继承策略的动作只决定当前账户状态副作用，不决定当前请求是否切号：`retry_next` 只切号，`rate_limited`、`temp_unschedulable`、`error_disabled` 在写入对应账户状态后同样排除当前账户并继续切号；未匹配任一策略的完整非 `2xx` 也按统一 `response.ok=false` 规则切号。`system.upstream_insufficient_quota` 命中后不投递低上下文 `request_failure` 探测，避免其与明确的 `rate_limited` 状态竞争。只有同账户兄弟 Key 轮换仍需要 `retry_next` 明确授权。
 
 当前请求的 Key 排除必须使用请求内集合或等价的 request generation。未知 HTTP 响应不得写入跨请求共享的 `temporary_unavailable`、`rate_limited`、`error` 或其他带语义的 Key 避让状态。
 
@@ -64,13 +64,13 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 当前来源级避让由公共网关失败路径统一消费：Codex Responses SSE 或 `/responses/compact` 在公共来源作用域下再加入精确 `turnId` 子键，使同一 turn 下多个账户互不覆盖；Claude Code、Gemini 和通用协议请求直接使用公共来源作用域。后续供应商必须接入公共来源层，不能重新拼接外部字段或把协议资源冒充会话。每次 activation 只异步投递同一账户 runtime/config generation 的共享健康检查；control 拒绝、网络失败或 worker 入队失败按 fence 结算 `unknown`，保留短避让且不写账户或 circuit 状态。
 
-该避让只重排同一 dispatch priority tier 内的候选，不能越过健康的高优先级或 fallback 层，也不能泄漏到其他来源、API Key、endpoint 或协议。它不改变账户、Key、账户 circuit 或共享账户可用性；同一 API Key 来源发生路由切换时允许连续。Codex `committed_retry_signal`、其他客户端专属 retryable 语义和普通 availability probe 都不是 transport 证据；账户级 `temporary_unavailable` 仍只能由用户显式策略或独立探活按既有阈值、配置版本和观察栅栏写入；系统额度规则只会写 `error_disabled` 对应的 `error`。
+该避让只重排同一 dispatch priority tier 内的候选，不能越过健康的高优先级或 fallback 层，也不能泄漏到其他来源、API Key、endpoint 或协议。它不改变账户、Key、账户 circuit 或共享账户可用性；同一 API Key 来源发生路由切换时允许连续。Codex `committed_retry_signal`、其他客户端专属 retryable 语义和普通 availability probe 都不是 transport 证据；账户级 `temporary_unavailable` 仍只能由用户显式策略或独立探活按既有阈值、配置版本和观察栅栏写入；系统额度规则对多 Key API Key 只写当前 Key 的 `rate_limited`，通用模式 30 天后才允许该 Key 进入 `error`，明确 reset 信号不得进入该终局。
 
 可用性探活按 `account runtime scope + probe kind + config revision` 共享单飞。Redis runtime state 为多实例权威，memory 仅单机进程内回退；同一 generation 只有 owner 可实际执行，source-only joined 触发不得追加真实上游 probe 或 retry-queue follow-up。若同一 worker 执行中已存在普通 `request_failure`，它保留一个延迟尾随任务，待 foreign owner 租约结束后重新获取 generation；这是账户级确认，不能被 source-only joined 语义吞掉。Codex 来源 activation 把 HMAC `stateKey`、账户、`sourceGeneration`、runtime/config、`probeGeneration` 组成有界 source fence（单 generation 至多 64 条），随健康检查 dispatch/IPC 交给真实 worker；worker 完成后回传同一 fence，由持有 gateway 状态的进程只执行 `stateKey + accountId + sourceGeneration` 的精确清理。worker 不得依赖另一个进程的 memory Map，也不得按账户清 Codex 状态。
 
 来源 owner 在健康任务明确入队后释放带截止时间的 handoff lease；未回传时 lease 到期可由新 source owner 接管，避免无限 joined waiter。owner token、lease 过期接管、completion/fence 原子边界和 generation fencing 保护结算：已 settled 的旧 generation 必须原子替换，新 activation 只能加入新 generation，不能消费旧 success；替换操作必须原子返回旧 fence 快照，旧 worker 与新 owner 任一方都可按旧 outcome 精确结算，不能让 fence 因替换丢失。投递拒绝、在途合并或释放栅栏失败均结算为 `probe_task_failure` / `unknown`，不会把尚未执行的任务假称成功。
 
-source-only owner 的 `complete_success` 只清该 generation 中完全匹配的来源避让，绝不写账户健康、账户运行态或 circuit；`unknown`、任务失败、取消、stale 和 `framing_complete_neutral` 保留短避让且不写账户不可调度。确认的 health failure 才按既有自动探活分类、阈值和观察栅栏处理。若原本的 scheduled/quality/request-failure 健康任务正在执行，同一 generation 新附着 source fence 不会把该普通任务降格：普通账户健康副作用仍完整结算，同时 source fence 只得到自己的窄清理/保留结果。`temporary_unavailable` 仍只能通过既有 cooldown retest 恢复。
+source-only owner 的 `complete_success` 只清该 generation 中完全匹配的来源避让，绝不写账户健康、账户运行态或 circuit；`unknown`、任务失败、取消、stale 和 `framing_complete_neutral` 保留短避让且不写账户不可调度。确认的 health failure 才按既有自动探活分类、阈值和观察栅栏处理。若原本的 scheduled/quality/request-failure 健康任务正在执行，同一 generation 新附着 source fence 不会把该普通任务降格：普通账户健康副作用仍完整结算，同时 source fence 只得到自己的窄清理/保留结果。`temporary_unavailable` 仍只能通过既有 cooldown retest 恢复；系统额度 `rate_limited` 只有在 `cooldown_until` 到期后才进入实际复测。
 
 完整 HTTP 非 `2xx` 不能被伪装成 `completed_response` 成功，也不能被改写为 `upstream_retryable_error` 或“未识别失败”。使用记录中的 `opaque_upstream` 只表达“没有匹配账户策略”，列表必须同时显示已知的 HTTP 状态、错误码和有界错误摘要；完整原始正文留在审计详情。完整响应表示传输 framing 已完成，不应据此确认传输电路失败。
 

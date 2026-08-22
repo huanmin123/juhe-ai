@@ -182,7 +182,9 @@ accountsRouter.post('/', mutationGuard({
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountCreateSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('账户参数无效'))
+    const issue = parsed.error.issues[0]
+    const issuePath = issue?.path.length ? `（${issue.path.join('.')}）` : ''
+    res.status(400).json(badRequest(`账户参数无效${issuePath}${issue?.message ? `：${issue.message}` : ''}`))
     return
   }
   const creationStatus = accountCreationStatusInput(parsed.data.status)

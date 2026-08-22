@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
 )
 
@@ -22,6 +23,7 @@ const (
 	defaultSuccessSampleRate        = 0.1
 	defaultSuccessRetentionDays     = 3
 	defaultProblemRetentionDays     = 7
+	defaultPostgresPoolSize         = 1000
 )
 
 type Config struct {
@@ -38,6 +40,9 @@ type Config struct {
 	PayloadBlobDirectory     string
 	HotSearchDirectory       string
 	PostgresURL              string
+	PostgresMaxOpenConns     int
+	PostgresMaxIdleConns     int
+	PostgresPool             *pgpool.Handle
 	BusinessSettingsPath     string
 	BusinessSettingsURL      string
 	BusinessPath             string
@@ -59,6 +64,14 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if postgresURL == "" {
 		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	}
+	postgresMaxOpen, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize)
+	if err != nil {
+		return Config{}, err
+	}
+	postgresMaxIdle, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresPoolSize)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		InstanceID:               strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INSTANCE_ID")),
 		Mode:                     mode,
@@ -66,6 +79,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		PayloadBlobDirectory:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")),
 		HotSearchDirectory:       strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY")),
 		PostgresURL:              postgresURL,
+		PostgresMaxOpenConns:     postgresMaxOpen,
+		PostgresMaxIdleConns:     postgresMaxIdle,
 		BusinessSettingsPath:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH")),
 		BusinessSettingsURL:      strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL")),
 		BusinessPath:             strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
@@ -267,6 +282,18 @@ func parseBoundedInteger(name, value string, fallback, min, max int) (int, error
 		return 0, fmt.Errorf("%s 必须是 %d 到 %d 之间的整数", name, min, max)
 	}
 	return int(parsed), nil
+}
+
+func parsePositiveInteger(name, value string, fallback int) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s 必须是正整数", name)
+	}
+	return parsed, nil
 }
 
 func parseBoundedDecimal(name, value string, fallback, min, max float64, maxDecimals int) (float64, error) {

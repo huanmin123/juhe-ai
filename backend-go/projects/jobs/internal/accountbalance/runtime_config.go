@@ -7,28 +7,36 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 )
 
 // RuntimeConfig is deliberately opt-in.  The J2 package never claims an
 // owner merely because a newer jobs binary is deployed.
 type RuntimeConfig struct {
-	Enabled             bool
-	OwnerID             string
-	Store               StoreConfig
-	BusinessPostgresURL string
-	CredentialSecret    string
-	ManualHTTPSecret    string
-	ScanInterval        time.Duration
-	OwnerLease          time.Duration
-	AccountLease        time.Duration
-	InputTTL            time.Duration
-	ProbeTimeout        time.Duration
-	CycleBudget         time.Duration
-	MaxResponseBytes    int64
-	MaxConcurrency      int
-	BatchSize           int
-	RecoveryBatchSize   int
-	Now                 func() time.Time
+	Enabled                   bool
+	OwnerID                   string
+	Store                     StoreConfig
+	BusinessPostgresURL       string
+	CredentialSecret          string
+	ManualHTTPSecret          string
+	ScanInterval              time.Duration
+	OwnerLease                time.Duration
+	AccountLease              time.Duration
+	InputTTL                  time.Duration
+	ProbeTimeout              time.Duration
+	CycleBudget               time.Duration
+	MaxResponseBytes          int64
+	MaxConcurrency            int
+	BatchSize                 int
+	RecoveryBatchSize         int
+	PostgresMaxOpenConns      int
+	PostgresMaxIdleConns      int
+	InputPostgresMaxOpenConns int
+	InputPostgresMaxIdleConns int
+	PostgresPool              *pgpool.Handle
+	InputPostgresPool         *pgpool.Handle
+	Now                       func() time.Time
 }
 
 func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
@@ -54,6 +62,19 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.Store.PostgresURL == "" {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}
+	var err error
+	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+		return RuntimeConfig{}, err
+	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {
 		return RuntimeConfig{}, errors.New("J2 direct input 缺少 JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL")
@@ -66,7 +87,6 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if len(cfg.ManualHTTPSecret) < 32 {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET 至少需要 32 个字符")
 	}
-	var err error
 	if cfg.ScanInterval, err = runtimeDuration(getenv, "JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL", time.Minute, 5*time.Second); err != nil {
 		return RuntimeConfig{}, err
 	}
@@ -97,7 +117,7 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.MaxResponseBytes, err = runtimeInt64(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_RESPONSE_BYTES", defaultMaxBodyBytes, 1, defaultMaxBodyBytes); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", 4, 1, 64); err != nil {
+	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", 256, 4, 256); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", 36, 1, 1024); err != nil {
@@ -143,6 +163,18 @@ func runtimeInt64(getenv func(string) string, name string, fallback, minimum, ma
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed < minimum || parsed > maximum {
 		return 0, fmt.Errorf("%s 必须在 %d..%d", name, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func runtimePositiveInt(getenv func(string) string, name string, fallback int) (int, error) {
+	value := strings.TrimSpace(getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s 必须是正整数", name)
 	}
 	return parsed, nil
 }

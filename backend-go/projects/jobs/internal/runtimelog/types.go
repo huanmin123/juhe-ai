@@ -23,6 +23,8 @@ type Config struct {
 	StatsPath              string
 	CodexShardRoot         string
 	PostgresURL            string
+	PostgresMaxConns       int
+	PostgresMinConns       int
 	LogDirectory           string
 	FileEnabled            bool
 	Once                   bool

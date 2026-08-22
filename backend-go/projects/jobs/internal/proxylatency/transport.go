@@ -119,9 +119,12 @@ func newProxyTransport(rawProxyURL string, timeout time.Duration) (*http.Transpo
 	// Node's http.request does not synthesize Accept-Encoding. Disable Go's
 	// transparent gzip negotiation so the probe wire shape remains identical.
 	transport.DisableCompression = true
-	transport.MaxIdleConns = 4
-	transport.MaxIdleConnsPerHost = 1
-	transport.MaxConnsPerHost = 1
+	// Do not serialize proxy probes behind a fixed per-host connection cap.
+	// MaxConnsPerHost=0 is net/http's unlimited active-connection setting;
+	// worker/cancellation and upstream capacity remain the real boundaries.
+	transport.MaxIdleConns = 0
+	transport.MaxIdleConnsPerHost = 0
+	transport.MaxConnsPerHost = 0
 	transport.ResponseHeaderTimeout = timeout
 	// The proxy CONNECT response is parsed by net/http using this limit. Keep
 	// the limit explicit instead of inheriting Go's much larger default.

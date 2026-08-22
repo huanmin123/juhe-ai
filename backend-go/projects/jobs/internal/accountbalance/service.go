@@ -8,17 +8,19 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Service struct {
-	config  RuntimeConfig
-	store   *Store
-	inputDB *sql.DB
-	reader  *PostgresDirectInputReader
-	runner  *Runner
-	ready   atomic.Bool
-	logger  *slog.Logger
+	config    RuntimeConfig
+	store     *Store
+	inputDB   *sql.DB
+	inputPool *pgpool.Handle
+	reader    *PostgresDirectInputReader
+	runner    *Runner
+	ready     atomic.Bool
+	logger    *slog.Logger
 }
 
 func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
@@ -28,7 +30,11 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	store, err := OpenStore(config.Store)
+	storeConfig := config.Store
+	storeConfig.PostgresMaxOpenConns = config.PostgresMaxOpenConns
+	storeConfig.PostgresMaxIdleConns = config.PostgresMaxIdleConns
+	storeConfig.PostgresPool = config.PostgresPool
+	store, err := OpenStore(storeConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -36,24 +42,27 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	db, err := sql.Open("pgx", config.BusinessPostgresURL)
-	if err != nil {
-		_ = store.Close()
-		return nil, err
+	inputPool := config.InputPostgresPool
+	if inputPool == nil {
+		registry := pgpool.NewRegistry()
+		inputPool, err = registry.Acquire("pgx", config.BusinessPostgresURL, "account-balance-input", config.InputPostgresMaxOpenConns, config.InputPostgresMaxIdleConns)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
+	db := inputPool.DB()
 	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	err = db.PingContext(pingCtx)
 	cancel()
 	if err != nil {
-		_ = db.Close()
+		_ = inputPool.Close()
 		_ = store.Close()
 		return nil, err
 	}
 	reader, err := NewPostgresDirectInputReader(db, config.CredentialSecret, config.InputTTL, config.Now)
 	if err != nil {
-		_ = db.Close()
+		_ = inputPool.Close()
 		_ = store.Close()
 		return nil, err
 	}
@@ -61,17 +70,17 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 	err = reader.CheckContract(checkCtx)
 	checkCancel()
 	if err != nil {
-		_ = db.Close()
+		_ = inputPool.Close()
 		_ = store.Close()
 		return nil, err
 	}
 	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: config.OwnerID, OwnerLeaseTTL: config.OwnerLease, AccountLeaseTTL: config.AccountLease, InputTTL: config.InputTTL, MaxConcurrent: config.MaxConcurrency, CredentialSecret: config.CredentialSecret, ProbeTimeout: config.ProbeTimeout, MaxResponseBytes: config.MaxResponseBytes, Now: config.Now})
 	if err != nil {
-		_ = db.Close()
+		_ = inputPool.Close()
 		_ = store.Close()
 		return nil, err
 	}
-	service := &Service{config: config, store: store, inputDB: db, reader: reader, runner: runner, logger: logger}
+	service := &Service{config: config, store: store, inputDB: db, inputPool: inputPool, reader: reader, runner: runner, logger: logger}
 	return service, nil
 }
 
@@ -115,7 +124,11 @@ func (s *Service) Close() error {
 	s.ready.Store(false)
 	var first error
 	if s.inputDB != nil {
-		first = s.inputDB.Close()
+		if s.inputPool != nil {
+			first = s.inputPool.Close()
+		} else {
+			first = s.inputDB.Close()
+		}
 	}
 	if err := s.store.Close(); first == nil {
 		first = err

@@ -58,6 +58,33 @@ Go 使用 goroutine（M:N 调度），不是无限成本的虚拟线程。新接
 
 “直接异步”不等于丢失关键事实。必须持久的写入应在 goroutine 内直接提交到 Store，并等待该提交结果；进程退出前未完成的工作必须由功能自身可重放的事实来源重新发现。若一个功能无法说明重启后的恢复语义，它不能以裸 goroutine 接管。
 
+### 4.1 Go 迁移并发减法决策（2026-08-21）
+
+后续 Node -> Go 迁移不得把 Node 运行时为了事件循环、worker thread、`p-limit`、IPC pending 或历史队列而设置的“低并发常量、业务限速、固定 worker 数、通用内存队列”直接带入 Go。Go 功能默认按独立 I/O 工作单元直接 fan-out；不得仅为了“看起来稳妥”新增一道人为全局并发上限，也不得新增只用于限制业务吞吐的环境变量。
+
+本条的“无业务限速”不等于删除正确性和物理资源边界。以下边界是迁移契约的一部分，不得为了追求“无限”而删除、绕过或静默降级：
+
+- `context` 取消、请求 / 事务 deadline、owner lease、fence、CAS、幂等键和周期防重入；
+- SQLite 文件单 writer、PostgreSQL / PgBouncer 连接池、事务 / 锁等待、statement timeout 和稳定分页窗口；
+- 上游 / 代理连接、文件描述符、内存、payload、HTTP transport、`429/503` 和客户端断开语义；
+- cursor、`LIMIT`、claim window、scan cap 等用于公平读取、恢复和背压的窗口；它们不是产品限流，必须证明窗口耗尽后可重放、可观测且不会永久饿死后续合法工作。
+
+因此，迁移评审必须把“人为业务限速”与“真实资源及正确性边界”分开记录：前者默认删除，后者只在实际运行确实出现问题时处理。默认先直接并发；没有实际故障依据，不得凭假设新增限制、降低并发或把容量写死。后续若出现明确故障，再针对根因调整实现、保留回滚方式并重新验证。任何新增有限值都必须说明它保护的真实资源、取消 / 恢复行为和回滚方式；没有实际故障依据不得把有限值写进 Go 业务层，也不得把“goroutine 成本低”作为无限连接、无限扫描或无限提交的依据。本决策只约束迁移设计，不授权生产发布或改变当前 owner。
+
+### 4.2 Go 运行模式、并发与 PostgreSQL pool 统一规则（2026-08-22）
+
+本条是后续 Node -> Go 迁移的固定默认，不得把 Node 的低并发、队列或 worker 常量移植进 Go：
+
+- SQLite 默认 worker 并发为 `4`；需要高性能模式时由外部配置提升到 `64`，仍保留 SQLite 文件单 writer、事务和 owner/fence 正确性边界。
+- PostgreSQL 性能模式的 J1 账号探活、J2 余额刷新以及同类 Go I/O worker 使用 `4..256` 的外部配置范围，默认 `256`；不得在业务代码中另加低并发、固定批次等待或通用内存队列。J3/F2 等按自身 I/O 工作单元使用同一并发策略，不能因历史 Node 实现引入 `p-limit` 式人为限速。
+- PostgreSQL `database/sql` 连接池默认 `max open = 1000`、`max idle = 1000`，所有相关参数必须通过环境变量或启动配置注入，不得写死在业务调用点。一个 Go 进程内，完全相同的 PostgreSQL URL 与权限/逻辑 role 只能复用同一个 registry pool；不同 URL、不同权限 role 或不同进程必须保持隔离，不能伪装成同一连接池。
+- 连接池配置键按功能前缀保持可发现：J1 使用 `JUHE_AI_ACCOUNT_HEALTH_*_POSTGRES_MAX_{OPEN,IDLE}_CONNS`，J2 使用 `JUHE_AI_ACCOUNT_BALANCE_*`，F2 使用 `JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_{OPEN,IDLE}_CONNS`，F3/F4 使用各自 `JUHE_AI_AUDIT_LOG_*` / `JUHE_AI_OPERATION_LOG_*`；J1/J2/F2/F3/F4 的 worker/source 并发分别由对应 `*_MAX_CONCURRENCY` 或 `*_MAX_CONCURRENT_SOURCES` 注入。未声明的参数不得在代码中另设隐藏常量。
+- jobs 与 gateway 是不同 Go 进程，不能共享进程内 `*sql.DB`；每个进程分别按上述 registry 复用。使用 `pgxpool` 的模块（例如运行日志）必须显式记录其 driver/pool 边界；在没有完成同 driver 迁移前，不得声称它与 `database/sql` pool 共享同一连接池。
+- 探活和代理 transport 不得再设置固定的 `MaxConnsPerHost` 串行上限；当前 Go 代码使用 `0` 表示不由迁移层追加 per-host 活跃连接限制，真实上游、代理、FD、超时、取消和 PostgreSQL pool 仍按实际故障处理。
+- “1000”是默认 pool 配置，不是已经完成的生产容量证明；迁移验收仍需记录真实 PostgreSQL/PgBouncer、长连接、取消、连接池等待和吞吐验证结果。没有该证据时只能报告“代码和配置已实现，容量待验证”，不得直接上线或宣称可承载任意并发。
+
+后续迁移如需新增任何并发、pool、timeout、batch、scan 或 transport 参数，必须同时写明：外部配置键、默认值、作用的真实资源、取消/恢复语义、回滚方式及验证命令。没有实际故障证据，不得为了“看起来稳妥”再加限制；发现故障后只修复被证实的根因，不将监控指标本身变成业务限流。
+
 ## 5. 每功能验收
 
 接管记录必须证明：完整文件清单已经归档、Node 活跃路径为零、Go 是唯一 owner、两种存储模式均通过、直接异步并发不丢事实、取消和重启可恢复、调用方和部署均不再引用 Node 功能。只完成 Go 的某个小文件、读路径、影子路径或一次 smoke 均不构成接管。

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,10 +16,18 @@ import (
 
 type fakeDirectInputLoader struct {
 	due      []Input
+	failures []DirectInputFailure
 	explicit map[string]Input
 	loaded   []string
 	mu       sync.Mutex
 	dueCalls int
+}
+
+func (loader *fakeDirectInputLoader) LoadDueWithFailures(_ context.Context, _ int) (DirectInputLoadResult, error) {
+	loader.mu.Lock()
+	loader.dueCalls++
+	loader.mu.Unlock()
+	return DirectInputLoadResult{Inputs: loader.due, Failures: loader.failures}, nil
 }
 
 func (loader *fakeDirectInputLoader) LoadDue(_ context.Context, _ int) ([]Input, error) {
@@ -506,6 +515,53 @@ func TestRunnerDirectInputRefreshesDueFenceAfterRead(t *testing.T) {
 	state, found, err := store.LoadCurrentState(context.Background(), input.AccountID)
 	if err != nil || !found || state.Outcome != OutcomeSuccess {
 		t.Fatalf("direct input issued during the read must run in the same cycle: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
+func TestRunnerDirectInputFailureIsDurableIdempotentAndDoesNotBlockOtherCandidates(t *testing.T) {
+	secret := "direct-failure-isolation-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+	}))
+	defer server.Close()
+	store, lease := openSQLiteStoreWithLease(t)
+	good := testScheduledAPIKeyInput(t, server.URL, secret, "healthy-after-bad-candidate")
+	failure := DirectInputFailure{AccountID: "invalid-direct-candidate", InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6}
+	loader := &fakeDirectInputLoader{due: []Input{good}, failures: []DirectInputFailure{failure}}
+	now := time.Now().UTC()
+	runner := NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("test-key")}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, DirectInputLimit: 2, Now: func() time.Time { return now }}, store, nil)
+	runner.directInputReader = loader
+	if err := runner.runCycle(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	requestID := directInputFailureRequestID(failure, now)
+	var outcome, code, message string
+	var count int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT outcome,error_code,error_message FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&outcome, &code, &message); err != nil {
+		t.Fatalf("read isolated failure receipt: %v", err)
+	}
+	if outcome != OutcomeTaskFailed || code != "direct_input_invalid" || strings.Contains(message, "must-not-escape") {
+		t.Fatalf("direct failure receipt must be task_failed and sanitized: outcome=%q code=%q message=%q", outcome, code, message)
+	}
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("direct failure must have one deterministic receipt: count=%d err=%v", count, err)
+	}
+	state, found, err := store.LoadCurrentState(context.Background(), failure.AccountID)
+	if err != nil || !found || state.ErrorCode != "direct_input_invalid" || state.NextDueAt == nil || !state.NextDueAt.After(now) {
+		t.Fatalf("isolated bad candidate must create bounded retry suppression state: found=%t state=%#v err=%v", found, state, err)
+	}
+	if _, found, err := store.LoadKeyCursor(context.Background(), failure.AccountID, healthKeyCursorPurpose, "bad-candidate-keyset"); err != nil || found {
+		t.Fatalf("isolated bad candidate must not advance a key cursor: found=%t err=%v", found, err)
+	}
+	state, found, err = store.LoadCurrentState(context.Background(), good.AccountID)
+	if err != nil || !found || state.Outcome != OutcomeSuccess {
+		t.Fatalf("healthy candidate must still execute: found=%t state=%#v err=%v", found, state, err)
+	}
+	if err := runner.runCycle(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("repeated failure generation must remain idempotent: count=%d err=%v", count, err)
 	}
 }
 
