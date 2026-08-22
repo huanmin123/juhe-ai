@@ -8,11 +8,25 @@ import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccountDiagnosticAttempt } from '../accounts/account-test.service.js'
+import type { AccountTestDiagnosticProtocol } from '../accounts/account-test-response-diagnostics.js'
+import type { AccountTestResult } from '../../domain/types.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
 import { runAccountApiKeyPoolDiagnostic } from '../accounts/account-api-key-pool-diagnostic.js'
 import { isRealUpstreamAttempt, type UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, globalSharedQueueConcurrency, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import { systemInsufficientQuotaRuleMatches } from '../accounts/account-error-policy-system-rules.js'
+import { parseAccountTestUpstreamErrorCode, parseAccountTestUpstreamMessage } from '../accounts/account-test-response-diagnostics.js'
+import {
+  API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE,
+  apiKeyQuotaObservationExceeded,
+  apiKeyQuotaRecoveryModeFromErrorCode,
+  extractApiKeyQuotaRecoveryHint,
+  genericApiKeyQuotaCooldownUntil,
+  quotaRecoveryErrorCode,
+  type ApiKeyQuotaRecoveryHint,
+  type ApiKeyQuotaRecoveryMode
+} from '../gateway/policy/api-key-quota-recovery.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
   maxRecoveryHours: number
@@ -52,6 +66,63 @@ export function getAccountApiKeyCooldownRetestQueueSnapshot() {
 
 export async function stopAccountApiKeyCooldownRetestQueue(timeoutMs = 10_000): Promise<{ drained: boolean; activeCount: number }> {
   return await accountApiKeyCooldownRetestQueue.stopAndDrain(timeoutMs)
+}
+
+export interface AccountApiKeyQuotaRetestDecision {
+  quotaFailure: boolean
+  statusCode: number
+  errorCode?: string
+  message: string
+  previousRecoveryMode?: ApiKeyQuotaRecoveryMode
+  recoveryMode?: ApiKeyQuotaRecoveryMode
+  recoveryHint?: ApiKeyQuotaRecoveryHint
+  timedOut: boolean
+  cooldownUntil?: string
+}
+
+export function resolveAccountApiKeyQuotaRetestDecision(input: {
+  result: Pick<AccountTestResult, 'statusCode' | 'errorCode' | 'message'>
+  upstreamAttempt?: UpstreamAttempt
+  protocol?: AccountTestDiagnosticProtocol
+  previousErrorCode?: string
+  recoveryStartedAt?: string
+  observedAt?: Date
+}): AccountApiKeyQuotaRetestDecision {
+  const observedAt = input.observedAt ?? new Date()
+  const upstreamResponseBodyText = input.upstreamAttempt?.responseBodyText
+  const upstreamResponseHeaders = input.upstreamAttempt?.responseHeaders
+    ? new Headers(input.upstreamAttempt.responseHeaders)
+    : undefined
+  const errorCode = input.result.errorCode
+    ?? (upstreamResponseBodyText ? parseAccountTestUpstreamErrorCode(upstreamResponseBodyText) : undefined)
+  const message = upstreamResponseBodyText
+    ? parseAccountTestUpstreamMessage(upstreamResponseBodyText, input.protocol ?? 'openai', { rawFallback: true }) ?? input.result.message
+    : input.result.message
+  const searchableText = [message, upstreamResponseBodyText, input.result.message]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join('\n')
+  const statusCode = input.upstreamAttempt?.status ?? input.result.statusCode ?? 0
+  const quotaFailure = systemInsufficientQuotaRuleMatches({ statusCode, errorCode, searchableText })
+  const recoveryHint = quotaFailure
+    ? extractApiKeyQuotaRecoveryHint({ bodyText: upstreamResponseBodyText, headers: upstreamResponseHeaders, now: observedAt })
+    : undefined
+  const previousRecoveryMode = apiKeyQuotaRecoveryModeFromErrorCode(input.previousErrorCode)
+  const recoveryMode = quotaFailure ? recoveryHint?.mode ?? 'generic' : undefined
+  const timedOut = recoveryMode === 'generic'
+    && apiKeyQuotaObservationExceeded(input.recoveryStartedAt, observedAt)
+  return {
+    quotaFailure,
+    statusCode,
+    ...(errorCode ? { errorCode } : {}),
+    message,
+    ...(previousRecoveryMode ? { previousRecoveryMode } : {}),
+    ...(recoveryMode ? { recoveryMode } : {}),
+    ...(recoveryHint ? { recoveryHint } : {}),
+    timedOut,
+    ...(!timedOut && recoveryMode
+      ? { cooldownUntil: recoveryHint?.cooldownUntil ?? genericApiKeyQuotaCooldownUntil(observedAt) }
+      : {})
+  }
 }
 
 async function runAccountApiKeyCooldownRetestQueueItem(
@@ -106,7 +177,6 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     ...fixedKeyCandidate,
     apiKeyRuntimeStateDisabled: false
   }
-  const probeStartedAt = new Date().toISOString()
   let upstreamAttempt: UpstreamAttempt | undefined
   let diagnosticCanceled = false
   let diagnosticTimeoutExhausted = false
@@ -163,6 +233,26 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     timeout: diagnosticTimeoutExhausted,
     diagnosticTimeoutExhausted
   })
+  // Relative provider hints and the recovery window are defined from the
+  // response observation time, not from the moment the probe was launched.
+  const responseObservedAt = new Date()
+  const responseObservedAtIso = responseObservedAt.toISOString()
+  const quotaDecision = resolveAccountApiKeyQuotaRetestDecision({
+    result,
+    upstreamAttempt,
+    protocol: account.protocolCode === 'anthropic'
+      ? 'anthropic'
+      : account.protocolCode === 'gemini' ? 'gemini' : 'openai',
+    previousErrorCode: item.lastErrorCode,
+    recoveryStartedAt: item.recoveryStartedAt,
+    observedAt: responseObservedAt
+  })
+  const quotaFailure = quotaDecision.quotaFailure
+  const quotaStatusCode = quotaDecision.statusCode
+  const upstreamMessage = quotaFailure ? quotaDecision.message : undefined
+  const quotaRecoveryHint = quotaDecision.recoveryHint
+  const previousQuotaRecoveryMode = quotaDecision.previousRecoveryMode
+  const quotaRecoveryMode = quotaDecision.recoveryMode
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',
@@ -173,7 +263,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
         trafficSource: 'cooldown_retest',
         probeOutcome: 'complete_success'
       },
-      observedAt: probeStartedAt,
+      observedAt: responseObservedAtIso,
       expectedStatus: item.status,
       expectedNextProbeAt: item.nextProbeAt,
       expectedStateUpdatedAt: item.stateUpdatedAt,
@@ -194,6 +284,59 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     return true
   }
 
+  if (quotaFailure && quotaRecoveryMode !== undefined) {
+    const timedOut = quotaDecision.timedOut
+    const status = timedOut ? 'error' : 'rate_limited'
+    const failure = await requestBackgroundWorkerDbService({
+      type: 'record_account_api_key_failure',
+      account: fixedKeyRuntimeStateMutationCandidate,
+      trafficSource: 'cooldown_retest',
+      mutationContext: {
+        authority: 'automatic_probe',
+        trafficSource: 'cooldown_retest',
+        probeOutcome,
+        quotaRecoveryMode
+      },
+      input: {
+        status,
+        statusCode: quotaStatusCode,
+        errorCode: timedOut ? API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE : quotaRecoveryErrorCode(quotaRecoveryMode),
+        errorMessage: upstreamMessage ?? result.message,
+        cooldownUntil: timedOut ? undefined : quotaDecision.cooldownUntil,
+        quotaRecoveryMode,
+        traceId: result.traceId,
+        observedAt: responseObservedAtIso,
+        expectedStatus: item.status,
+        expectedNextProbeAt: item.nextProbeAt,
+        expectedStateUpdatedAt: item.stateUpdatedAt,
+        expectedProbeClaimToken: item.probeClaimToken,
+        expectedAccountConfigRevision: item.accountConfigRevision
+      }
+    }, backgroundProbeDbServiceTimeoutMs)
+    logger.info({
+      event: timedOut
+        ? 'background_account_api_key_quota_recovery_timeout'
+        : 'background_account_api_key_quota_retest_failed',
+      accountId: account.id,
+      accountName: account.name,
+      keyFingerprint: item.keyFingerprint,
+      quotaRecoveryMode,
+      status,
+      statusCode: quotaStatusCode,
+      errorCode: result.errorCode,
+      probeOutcome,
+      durationMs: result.durationMs,
+      changed: failure?.changed ?? false
+    }, timedOut
+      ? 'API Key 额度连续确认失败已达到 30 天，进入人工恢复的异常状态'
+      : quotaRecoveryMode === 'explicit_reset'
+        ? 'API Key 额度仍不足，已严格按上游恢复时间等待下次复测'
+        : previousQuotaRecoveryMode === 'explicit_reset'
+          ? 'API Key 当前未提供恢复时间，已切换通用 30 天额度观察窗口'
+          : 'API Key 额度仍不足，已按通用恢复间隔等待下次复测')
+    return true
+  }
+
   if (probeOutcome !== 'upstream_failure') {
     const deferred = await requestBackgroundWorkerDbService({
       type: 'defer_account_api_key_probe',
@@ -202,7 +345,8 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       mutationContext: {
         authority: 'automatic_probe',
         trafficSource: 'cooldown_retest',
-        probeOutcome
+        probeOutcome,
+        ...(quotaRecoveryMode ? { quotaRecoveryMode } : {})
       },
       input: {
         expectedStatus: item.status,
@@ -210,8 +354,9 @@ async function runAccountApiKeyCooldownRetestQueueItem(
         expectedStateUpdatedAt: item.stateUpdatedAt,
         expectedProbeClaimToken: item.probeClaimToken,
         expectedAccountConfigRevision: item.accountConfigRevision,
-        delaySeconds: 60,
-        observedAt: probeStartedAt
+        delaySeconds: quotaRecoveryMode ? 2 * 60 * 60 : 60,
+        observedAt: responseObservedAtIso,
+        breakQuotaRecoveryWindow: previousQuotaRecoveryMode !== undefined
       }
     }, backgroundProbeDbServiceTimeoutMs)
     logger.warn({
@@ -229,6 +374,39 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     return true
   }
 
+  if (quotaRecoveryMode) {
+    const deferred = await requestBackgroundWorkerDbService({
+      type: 'defer_account_api_key_probe',
+      account: fixedKeyRuntimeStateMutationCandidate,
+      trafficSource: 'cooldown_retest',
+      mutationContext: {
+        authority: 'automatic_probe',
+        trafficSource: 'cooldown_retest',
+        probeOutcome,
+        quotaRecoveryMode
+      },
+      input: {
+        expectedStatus: item.status,
+        expectedNextProbeAt: item.nextProbeAt,
+        expectedStateUpdatedAt: item.stateUpdatedAt,
+        expectedProbeClaimToken: item.probeClaimToken,
+        expectedAccountConfigRevision: item.accountConfigRevision,
+        delaySeconds: 2 * 60 * 60,
+        observedAt: responseObservedAtIso,
+        breakQuotaRecoveryWindow: previousQuotaRecoveryMode !== undefined
+      }
+    }, backgroundProbeDbServiceTimeoutMs)
+    logger.warn({
+      event: 'background_account_api_key_quota_retest_transport_deferred',
+      accountId: account.id,
+      accountName: account.name,
+      keyFingerprint: item.keyFingerprint,
+      probeOutcome,
+      deferred: deferred?.changed ?? false
+    }, 'API Key 额度复测未形成有效额度结论，按通用间隔顺延且不累计 30 天确认失败')
+    return true
+  }
+
   const failure = await requestBackgroundWorkerDbService({
     type: 'record_account_api_key_failure',
     account: fixedKeyRuntimeStateMutationCandidate,
@@ -240,11 +418,12 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     },
     input: {
       status: 'temporary_unavailable',
-      statusCode: result.statusCode,
+      statusCode: quotaStatusCode,
       errorCode: result.errorCode,
-      errorMessage: result.message,
+      errorMessage: upstreamMessage ?? result.message,
       traceId: result.traceId,
-      observedAt: probeStartedAt,
+      breakQuotaRecoveryWindow: previousQuotaRecoveryMode !== undefined,
+      observedAt: responseObservedAtIso,
       expectedStatus: item.status,
       expectedNextProbeAt: item.nextProbeAt,
       expectedStateUpdatedAt: item.stateUpdatedAt,

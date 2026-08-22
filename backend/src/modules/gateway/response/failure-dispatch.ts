@@ -62,8 +62,12 @@ import {
   type CodexEncryptedContentRecoveryResult
 } from '../request/codex-encrypted-content-recovery.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
-import { captureGatewayAccountApiKeyFailureObservation } from '../runtime/account-api-key-effects.service.js'
+import {
+  captureGatewayAccountApiKeyFailureObservation,
+  recordGatewayAccountApiKeyFailure
+} from '../runtime/account-api-key-effects.service.js'
 import type { AccountApiKeyPersistentMutationContext } from '../runtime/account-api-key-mutation-authority.js'
+import { quotaRecoveryErrorCode } from '../policy/api-key-quota-recovery.js'
 
 /**
  * Opaque HTTP failures may not retry a sibling API Key.  Account-level
@@ -341,6 +345,27 @@ export async function handleFailedUpstreamResponse(
   }
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 
+  if (explicitPolicyDecision?.keyScoped && input.accountStateMutationEnabled !== false) {
+    await recordGatewayAccountApiKeyFailure(account, {
+      status: 'rate_limited',
+      statusCode: response.status,
+      errorCode: quotaRecoveryErrorCode(explicitPolicyDecision.quotaRecoveryMode ?? 'generic'),
+      errorMessage: failureBodyFacts.upstreamErrorSummary,
+      cooldownUntil: explicitPolicyDecision.cooldownUntil,
+      quotaRecoveryMode: explicitPolicyDecision.quotaRecoveryMode ?? 'generic',
+      trafficSource: usageContext.trafficSource,
+      mutationContext: {
+        authority: 'system_quota_policy',
+        trafficSource: 'gateway'
+      },
+      traceId: usageContext.traceId,
+      clientIp: usageContext.clientIp,
+      apiKeyId: usageContext.apiKeyId,
+      attemptStartedAt: new Date(attemptStartedAt).toISOString(),
+      source: 'system_quota_policy'
+    })
+  }
+
   if (explicitPolicyDecision && input.accountStateMutationEnabled !== false) {
     auditCapture.addGatewayMetadata({
       label: 'account_error_policy_matched',
@@ -350,7 +375,10 @@ export async function handleFailedUpstreamResponse(
         ruleName: explicitPolicyDecision.ruleName,
         ruleSource: explicitPolicyDecision.ruleSource,
         action: explicitPolicyDecision.action,
-        cooldownStatus: explicitPolicyDecision.cooldownStatus
+        cooldownStatus: explicitPolicyDecision.cooldownStatus,
+        keyScoped: explicitPolicyDecision.keyScoped,
+        quotaRecoveryMode: explicitPolicyDecision.quotaRecoveryMode,
+        quotaRecoveryHintSource: explicitPolicyDecision.quotaRecoveryHintSource
       }
     })
     if (explicitPolicyDecision.action !== 'retry_next') {
@@ -365,7 +393,7 @@ export async function handleFailedUpstreamResponse(
     && !input.deferAutomaticSameAccountKeyRotation
     && hasAlternativeAccountApiKeys(account)
   const sameAccountKeyRotation = hasAlternativeAccountApiKeys(account)
-    && (explicitPolicyDecision?.action === 'retry_next' || automaticSameAccountKeyRotation)
+    && (explicitPolicyDecision?.action === 'retry_next' || explicitPolicyDecision?.keyScoped === true || automaticSameAccountKeyRotation)
   // A system quota decision has stronger semantic evidence than the deliberately
   // small fixed-model probe. Do not enqueue that probe, because a successful
   // low-context response must not compete with or clear the explicit error state.
@@ -390,6 +418,7 @@ export async function handleFailedUpstreamResponse(
     // evidence only after a sibling Key of this same account succeeds.
     pendingApiKeyFailure: sameAccountKeyRotation
       && input.accountStateMutationEnabled !== false
+      && explicitPolicyDecision?.keyScoped !== true
       && account.selectedApiKeyFingerprint
       && !account.apiKeyRuntimeStateDisabled
       ? {

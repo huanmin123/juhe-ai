@@ -12,6 +12,12 @@ import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-i
 import { markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import type { OpenAIAccountSecret } from './openai-account-selector.types.js'
 import type { AccountApiKeyRuntimeDetail } from '../domain/types.js'
+import {
+  API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE,
+  API_KEY_QUOTA_GENERIC_ERROR_CODE,
+  apiKeyQuotaRecoveryModeFromErrorCode,
+  type ApiKeyQuotaRecoveryMode
+} from '../modules/gateway/policy/api-key-quota-recovery.js'
 
 export interface AccountApiKeyRuntimeFailureInput {
   account: OpenAIAccountSecret
@@ -21,6 +27,8 @@ export interface AccountApiKeyRuntimeFailureInput {
   errorMessage?: string
   traceId?: string
   cooldownUntil?: string
+  quotaRecoveryMode?: ApiKeyQuotaRecoveryMode
+  breakQuotaRecoveryWindow?: boolean
   observedAt?: string
   expectedStatus?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
   expectedNextProbeAt?: string
@@ -43,6 +51,7 @@ export interface AccountApiKeyRuntimeProbeDeferInput {
   expectedStateUpdatedAt?: string
   expectedAccountConfigRevision?: number
   expectedProbeClaimToken?: string
+  breakQuotaRecoveryWindow?: boolean
 }
 
 export interface AccountApiKeyRuntimeSuccessInput {
@@ -66,6 +75,8 @@ export interface AccountApiKeyRuntimeProbeCandidate {
   accountConfigRevision: number
   probeClaimToken: string
   probeClaimedUntil: string
+  recoveryStartedAt?: string
+  lastErrorCode?: string
 }
 
 export interface AccountApiKeyRuntimeSummary {
@@ -98,6 +109,8 @@ interface AccountApiKeyRuntimeRow {
   cooldown_until: string | null
   next_probe_at: string | null
   probe_backoff_seconds: number | null
+  recovery_started_at: string | null
+  last_error_code: string | null
   updated_at: string
 }
 
@@ -133,6 +146,8 @@ interface AccountApiKeyRuntimeProbeRow {
   status: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
   next_probe_at: string
   updated_at: string
+  recovery_started_at: string | null
+  last_error_code: string | null
   account_name: string
   provider_code: string
   protocol_code: string
@@ -159,7 +174,7 @@ const maxProbeBackoffSeconds = 60 * 60
 const probeClaimLeaseSeconds = 10 * 60
 const probeCandidateScanLimit = runtimeConfig.background.accountApiKeyProbeCandidateScanLimit
 const businessSchemaName = 'juhe_business'
-const accountApiKeyRuntimeProbeCandidateStatuses = ['unverified', 'temporary_unavailable', 'rate_limited', 'error'] as const
+const accountApiKeyRuntimeProbeCandidateStatuses = ['unverified', 'temporary_unavailable', 'rate_limited'] as const
 const accountApiKeyRuntimeProbeCandidateStatusSql = accountApiKeyRuntimeProbeCandidateStatuses.map((status) => `'${status}'`).join(', ')
 
 function isAccountApiKeyRuntimeProbeCandidateStatus(
@@ -303,7 +318,10 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
     if (!eligible || keyFingerprints.length < 2) return { changed: 0, eligible: false, reason: 'not_supported' }
     const result = database.prepare(`
       UPDATE account_api_key_runtime_states
-      SET next_probe_at = ?, updated_at = ?
+      SET status = CASE WHEN status = 'error' THEN 'unverified' ELSE status END,
+          recovery_started_at = NULL,
+          cooldown_until = NULL,
+          next_probe_at = ?, last_attempt_at = ?, updated_at = ?
       WHERE account_id = ?
         AND key_fingerprint IN (${sqlPlaceholders(keyFingerprints.length)})
         AND status NOT IN ('active', 'disabled')
@@ -316,7 +334,7 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
             AND accounts.schedulable = 1
             AND accounts.deleted_at IS NULL
         )
-    `).run(now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision)
+    `).run(now, now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision)
     const changed = Number(result.changes ?? 0)
     if (changed === 0) {
       const current = database.prepare(`SELECT status, schedulable, config_revision FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as { status: string; schedulable: number; config_revision: number } | undefined
@@ -335,7 +353,10 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
       if (!candidate) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
       const retry = database.prepare(`
         UPDATE account_api_key_runtime_states
-        SET next_probe_at = ?, updated_at = ?
+        SET status = CASE WHEN status = 'error' THEN 'unverified' ELSE status END,
+            recovery_started_at = NULL,
+            cooldown_until = NULL,
+            next_probe_at = ?, last_attempt_at = ?, updated_at = ?
         WHERE account_id = ?
           AND key_fingerprint IN (${sqlPlaceholders(keyFingerprints.length)})
           AND status NOT IN ('active', 'disabled')
@@ -348,7 +369,7 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
               AND accounts.schedulable = 1
               AND accounts.deleted_at IS NULL
           )
-      `).run(now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision)
+      `).run(now, now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision)
       const retried = Number(retry.changes ?? 0)
       if (retried <= 0) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
       markRuntimeStateChanged(accountId)
@@ -372,7 +393,10 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
   const accountsTable = accountApiKeyRuntimeBusinessTable(client, 'accounts')
   const result = await client.execute(`
     UPDATE ${statesTable} AS states
-    SET next_probe_at = ?, updated_at = ?
+    SET status = CASE WHEN states.status = 'error' THEN 'unverified' ELSE states.status END,
+        recovery_started_at = NULL,
+        cooldown_until = NULL,
+        next_probe_at = ?, last_attempt_at = ?, updated_at = ?
     WHERE states.account_id = ?
       AND states.key_fingerprint IN (${keyFingerprints.map(() => '?').join(', ')})
       AND states.status NOT IN ('active', 'disabled')
@@ -385,7 +409,7 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
           AND accounts.schedulable = 1
           AND accounts.deleted_at IS NULL
       )
-  `, [now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision])
+  `, [now, now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision])
   const changed = Number(result.changes ?? 0)
   if (changed === 0) {
     const current = await client.one<{ status: string; schedulable: number; config_revision: number }>(`SELECT status, schedulable, config_revision FROM ${accountsTable} WHERE id = ? AND deleted_at IS NULL`, [accountId])
@@ -404,7 +428,10 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
     if (!candidate) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
     const retry = await client.execute(`
       UPDATE ${statesTable} AS states
-      SET next_probe_at = ?, updated_at = ?
+      SET status = CASE WHEN states.status = 'error' THEN 'unverified' ELSE states.status END,
+          recovery_started_at = NULL,
+          cooldown_until = NULL,
+          next_probe_at = ?, last_attempt_at = ?, updated_at = ?
       WHERE states.account_id = ?
         AND states.key_fingerprint IN (${keyFingerprints.map(() => '?').join(', ')})
         AND states.status NOT IN ('active', 'disabled')
@@ -417,7 +444,7 @@ export async function revalidateAccountApiKeyRuntimePoolAsync(input: {
             AND accounts.schedulable = 1
             AND accounts.deleted_at IS NULL
         )
-    `, [now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision])
+    `, [now, now, now, accountId, ...keyFingerprints, now, input.expectedConfigRevision])
     const retried = Number(retry.changes ?? 0)
     if (retried <= 0) return { changed: 0, eligible: false, reason: 'no_revalidatable_key' }
     await markRuntimeStateChangedAsync(client, accountId)
@@ -601,7 +628,7 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
   const rows = database
     .prepare(`
       SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
-        states.updated_at,
+        states.updated_at, states.recovery_started_at, states.last_error_code,
         accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
         accounts.type, accounts.credentials_encrypted, accounts.config_revision,
         states.probe_claim_token, states.probe_claimed_until
@@ -632,7 +659,7 @@ export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20)
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
   const rows = await client.query<AccountApiKeyRuntimeProbeRow>(`
     SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
-      states.updated_at,
+      states.updated_at, states.recovery_started_at, states.last_error_code,
       accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
       accounts.type, accounts.credentials_encrypted, accounts.config_revision,
       states.probe_claim_token, states.probe_claimed_until
@@ -690,7 +717,9 @@ function accountApiKeyRuntimeProbeCandidatesFromRows(rows: AccountApiKeyRuntimeP
       stateUpdatedAt: row.updated_at,
       accountConfigRevision: row.config_revision,
       probeClaimToken: row.probe_claim_token ?? '',
-      probeClaimedUntil: row.probe_claimed_until ?? ''
+      probeClaimedUntil: row.probe_claimed_until ?? '',
+      recoveryStartedAt: row.recovery_started_at ?? undefined,
+      lastErrorCode: row.last_error_code ?? undefined
     })
     if (output.length >= normalizedLimit) {
       break
@@ -959,7 +988,8 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   const database = getBusinessDatabase()
   const existing = database
     .prepare(`
-      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds, updated_at
+      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds,
+        recovery_started_at, last_error_code, updated_at
       FROM account_api_key_runtime_states
       WHERE account_id = ?
         AND key_fingerprint = ?
@@ -983,8 +1013,24 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
     ? cooldownUntil
     : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
-  const errorCode = input.errorCode ?? (typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
+  const errorCode = input.errorCode
+    ?? (input.quotaRecoveryMode === 'explicit_reset'
+      ? API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE
+      : input.quotaRecoveryMode === 'generic'
+        ? API_KEY_QUOTA_GENERIC_ERROR_CODE
+        : typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
   const errorMessage = sanitizeRuntimeErrorMessage(input.errorMessage ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
+  const recoveryStartedAt = quotaRecoveryStartedAt({
+    mode: input.quotaRecoveryMode,
+    existing,
+    observedAt,
+    breakWindow: input.breakQuotaRecoveryWindow === true
+  })
+  const recoveryStartedAtSql = input.breakQuotaRecoveryWindow === true
+    ? '?'
+    : input.quotaRecoveryMode === undefined
+    ? 'COALESCE(recovery_started_at, ?)'
+    : '?'
 
   const result = existing
     ? database
@@ -998,7 +1044,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
               cooldown_until = ?,
               next_probe_at = ?,
               probe_backoff_seconds = ?,
-              recovery_started_at = COALESCE(recovery_started_at, ?),
+              recovery_started_at = ${recoveryStartedAtSql},
               last_attempt_at = ?,
               last_failure_at = ?,
               last_error_code = ?,
@@ -1021,7 +1067,9 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           nextProbeAt,
           nextProbeAt,
           nextBackoffSeconds,
-          now,
+          ...(input.breakQuotaRecoveryWindow === true || input.quotaRecoveryMode !== undefined
+            ? [recoveryStartedAt]
+            : [now]),
           observedAt,
           observedAt,
           errorCode,
@@ -1056,7 +1104,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           nextProbeAt,
           nextProbeAt,
           nextBackoffSeconds,
-          now,
+          recoveryStartedAt,
           observedAt,
           observedAt,
           errorCode,
@@ -1096,7 +1144,8 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     true
   )
   const existing = await client.one<AccountApiKeyRuntimeRow>(`
-    SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds, updated_at
+    SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds,
+      recovery_started_at, last_error_code, updated_at
     FROM ${accountApiKeyRuntimeStatesTable(client)}
     WHERE account_id = ?
       AND key_fingerprint = ?
@@ -1119,8 +1168,19 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
     ? cooldownUntil
     : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
-  const errorCode = input.errorCode ?? (typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
+  const errorCode = input.errorCode
+    ?? (input.quotaRecoveryMode === 'explicit_reset'
+      ? API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE
+      : input.quotaRecoveryMode === 'generic'
+        ? API_KEY_QUOTA_GENERIC_ERROR_CODE
+        : typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
   const errorMessage = sanitizeRuntimeErrorMessage(input.errorMessage ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
+  const recoveryStartedAt = quotaRecoveryStartedAt({
+    mode: input.quotaRecoveryMode,
+    existing,
+    observedAt,
+    breakWindow: input.breakQuotaRecoveryWindow === true
+  })
   const table = accountApiKeyRuntimeStatesTable(client)
   const atomicNextBackoffSql = `(CASE
     WHEN current_state.probe_backoff_seconds > 0
@@ -1150,7 +1210,9 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
             ELSE ${atomicNextProbeAtSql}
           END,
           probe_backoff_seconds = ${atomicNextBackoffSql},
-          recovery_started_at = COALESCE(current_state.recovery_started_at, ?),
+          recovery_started_at = ${input.breakQuotaRecoveryWindow === true
+            ? '?'
+            : input.quotaRecoveryMode === undefined ? 'COALESCE(current_state.recovery_started_at, ?)' : '?'},
           last_attempt_at = ?,
           last_failure_at = ?,
           last_error_code = ?,
@@ -1171,7 +1233,9 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       status,
       nextProbeAt,
       nextProbeAt,
-      now,
+      ...(input.breakQuotaRecoveryWindow === true || input.quotaRecoveryMode !== undefined
+        ? [recoveryStartedAt]
+        : [now]),
       observedAt,
       observedAt,
       errorCode,
@@ -1216,7 +1280,11 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
         ELSE ${atomicNextProbeAtSql}
       END,
       probe_backoff_seconds = ${atomicNextBackoffSql},
-      recovery_started_at = COALESCE(current_state.recovery_started_at, excluded.recovery_started_at),
+      recovery_started_at = CASE
+        WHEN ${input.breakQuotaRecoveryWindow === true || input.quotaRecoveryMode !== undefined ? 'FALSE' : 'TRUE'}
+          THEN excluded.recovery_started_at
+        ELSE COALESCE(current_state.recovery_started_at, excluded.recovery_started_at)
+      END,
       last_attempt_at = excluded.last_attempt_at,
       last_failure_at = excluded.last_failure_at,
       last_error_code = excluded.last_error_code,
@@ -1237,7 +1305,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     nextProbeAt,
     nextProbeAt,
     nextBackoffSeconds,
-    now,
+    recoveryStartedAt,
     observedAt,
     observedAt,
     errorCode,
@@ -1288,6 +1356,7 @@ export function deferAccountApiKeyRuntimeProbe(input: AccountApiKeyRuntimeProbeD
           last_attempt_at = ?,
           probe_claim_token = NULL,
           probe_claimed_until = NULL,
+          recovery_started_at = CASE WHEN ${input.breakQuotaRecoveryWindow === true ? 'TRUE' : 'FALSE'} THEN NULL ELSE recovery_started_at END,
           updated_at = ?
       WHERE account_id = ?
         AND key_fingerprint = ?
@@ -1347,6 +1416,7 @@ export async function deferAccountApiKeyRuntimeProbeAsync(input: AccountApiKeyRu
         last_attempt_at = ?,
         probe_claim_token = NULL,
         probe_claimed_until = NULL,
+        recovery_started_at = CASE WHEN ${input.breakQuotaRecoveryWindow === true ? 'TRUE' : 'FALSE'} THEN NULL ELSE current_state.recovery_started_at END,
         updated_at = ?
     WHERE account_id = ?
       AND key_fingerprint = ?
@@ -1368,6 +1438,9 @@ export async function deferAccountApiKeyRuntimeProbeAsync(input: AccountApiKeyRu
 }
 
 export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, input: AccountApiKeyRuntimeSuccessInput = {}): AccountApiKeyRuntimeWriteResult {
+  if (input.expectedStatus === 'error') {
+    return { changed: false, skippedReason: 'manual_restore_required' }
+  }
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
@@ -1406,7 +1479,7 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
             updated_at = ?
         WHERE account_id = ?
           AND key_fingerprint = ?
-          AND status <> 'disabled'
+          AND status NOT IN ('disabled', 'error')
           AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
           ${expectedFence.sql}
           ${configFence.sql}
@@ -1458,7 +1531,7 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
         probe_claim_token = NULL,
         probe_claimed_until = NULL,
         updated_at = excluded.updated_at
-      WHERE account_api_key_runtime_states.status <> 'disabled'
+      WHERE account_api_key_runtime_states.status NOT IN ('disabled', 'error')
         AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
     `)
     .run(
@@ -1482,6 +1555,9 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
 export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret, input: AccountApiKeyRuntimeSuccessInput = {}): Promise<AccountApiKeyRuntimeWriteResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordAccountApiKeyRuntimeSuccess(account, input)
+  }
+  if (input.expectedStatus === 'error') {
+    return { changed: false, skippedReason: 'manual_restore_required' }
   }
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
@@ -1522,7 +1598,7 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
           updated_at = ?
       WHERE current_state.account_id = ?
         AND current_state.key_fingerprint = ?
-        AND current_state.status <> 'disabled'
+        AND current_state.status NOT IN ('disabled', 'error')
         AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= ?)
         ${expectedFence.sql}
         ${configFence.sql}
@@ -1572,7 +1648,7 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
       probe_claim_token = NULL,
       probe_claimed_until = NULL,
       updated_at = excluded.updated_at
-    WHERE current_state.status <> 'disabled'
+    WHERE current_state.status NOT IN ('disabled', 'error')
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
   `, [
     newId('account_api_key_runtime_state'),
@@ -1607,18 +1683,22 @@ function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKey
   const keyFingerprint = account.selectedApiKeyFingerprint?.trim()
   if (!keyFingerprint) return undefined
   const apiKeys = account.apiKeys ?? []
+  const credentials = {
+    ...account.credentials,
+    api_key: account.apiKey,
+    ...(apiKeys.length ? { api_keys: apiKeys } : {})
+  }
   if (!isAccountApiKeyPoolIsolationEnabled({
     providerCode: account.providerCode,
     protocolCode: account.protocolCode,
     protocolVersion: account.protocolVersion,
     type: account.type,
     apiKeys,
-    credentials: {
-      ...account.credentials,
-      api_key: account.apiKey,
-      ...(apiKeys.length ? { api_keys: apiKeys } : {})
-    }
+    credentials
   })) {
+    return undefined
+  }
+  if (!accountApiKeyEntries(credentials).some((entry) => entry.fingerprint === keyFingerprint)) {
     return undefined
   }
   const accountId = account.credentialSourceAccountId ?? account.id
@@ -1868,6 +1948,24 @@ async function markGroupAccountStatsDirtyByAccountIdsAsync(
 function normalizeFailureStatus(status: AccountApiKeyRuntimeFailureInput['status']): Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'> {
   if (status === 'rate_limited' || status === 'error') return status
   return 'temporary_unavailable'
+}
+
+function quotaRecoveryStartedAt(input: {
+  mode: ApiKeyQuotaRecoveryMode | undefined
+  existing: Pick<AccountApiKeyRuntimeRow, 'status' | 'recovery_started_at' | 'last_error_code'> | undefined
+  observedAt: string
+  breakWindow?: boolean
+}): string | null {
+  if (input.breakWindow) return null
+  if (input.mode === 'explicit_reset') return null
+  if (input.mode === 'generic') {
+    const previousMode = apiKeyQuotaRecoveryModeFromErrorCode(input.existing?.last_error_code ?? undefined)
+    if (previousMode === 'generic' && (input.existing?.status === 'rate_limited' || input.existing?.status === 'error')) {
+      return input.existing?.recovery_started_at ?? input.observedAt
+    }
+    return input.observedAt
+  }
+  return input.existing?.recovery_started_at ?? input.observedAt
 }
 
 function nextProbeBackoffSeconds(previous: number | null | undefined): number {

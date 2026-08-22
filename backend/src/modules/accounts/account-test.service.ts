@@ -28,6 +28,7 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
+import { systemInsufficientQuotaRuleMatches } from './account-error-policy-system-rules.js'
 import { inspectAccountTestImageResponseEnvelope } from './account-test-image-response-inspection.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
@@ -527,6 +528,20 @@ export async function testOpenAIAccount(
       downstreamResponseTruncated: response.bodyTruncated(),
       upstreamAttempt: diagnosticLastAttempt
     })
+    // The diagnostic gateway path intentionally returns the provider response
+    // without exposing the full failure payload to callers.  Keep the bounded
+    // response facts on the internal attempt object so background quota
+    // retests can still honor reset_at/Retry-After and match text-only quota
+    // failures.  The limited result below continues to redact these fields.
+    if (diagnosticLastAttempt) {
+      diagnosticLastAttempt.responseBodyText = responseText
+      diagnosticLastAttempt.responseHeaders = Object.fromEntries(
+        Object.entries(responseHeaders).map(([name, value]) => [
+          name,
+          Array.isArray(value) ? value.join(', ') : value
+        ])
+      )
+    }
     const responseContext = probeKind === 'image_generation'
       ? undefined
       : diagnosticResponseContextFromGatewayResponse(
@@ -864,6 +879,7 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     sourceEndpointFamily: result.sourceEndpointFamily,
     upstreamEndpointFamily: result.upstreamEndpointFamily,
     testEndpointMode: result.testEndpointMode,
+    responseHeaders: limitedQuotaResponseHeaders(result),
     responseBody: result.success && result.testEndpointMode === 'images_json' ? result.responseBody : undefined,
     responseText: result.success && result.testEndpointMode === 'images_json'
       ? result.responseText
@@ -904,7 +920,35 @@ function accountTestResultWithTotalDuration(result: AccountTestResult, startedAt
 
 function limitedAccountTestMessage(result: AccountTestResult): string {
   if (result.success) return result.message
+  if (systemInsufficientQuotaRuleMatches({
+    statusCode: result.statusCode ?? 0,
+    errorCode: result.errorCode,
+    searchableText: result.message
+  })) {
+    return '上游额度不足'
+  }
   return '上游请求失败'
+}
+
+function limitedQuotaResponseHeaders(result: AccountTestResult): Record<string, string | string[]> | undefined {
+  if (!systemInsufficientQuotaRuleMatches({
+    statusCode: result.statusCode ?? 0,
+    errorCode: result.errorCode,
+    searchableText: result.message
+  }) || !result.responseHeaders) {
+    return undefined
+  }
+  const safeHeaders: Record<string, string | string[]> = {}
+  for (const [name, value] of Object.entries(result.responseHeaders)) {
+    const normalizedName = name.toLowerCase()
+    if (normalizedName === 'retry-after'
+      || normalizedName === 'x-quota-reset-at'
+      || normalizedName === 'x-ratelimit-reset'
+      || normalizedName === 'x-rate-limit-reset') {
+      safeHeaders[name] = value
+    }
+  }
+  return Object.keys(safeHeaders).length ? safeHeaders : undefined
 }
 
 function accountTestAbortMessage(signal: AbortSignal): string {

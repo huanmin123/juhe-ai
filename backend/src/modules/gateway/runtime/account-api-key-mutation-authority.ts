@@ -19,6 +19,10 @@ export type AccountApiKeyPersistentMutationContext =
       trafficSource: 'gateway'
     }
   | {
+      authority: 'system_quota_policy'
+      trafficSource: 'gateway'
+    }
+  | {
       authority: 'confirmed_same_account_key_rotation'
       trafficSource: 'gateway'
     }
@@ -26,6 +30,7 @@ export type AccountApiKeyPersistentMutationContext =
       authority: 'automatic_probe'
       trafficSource: AccountApiKeyAutomaticProbeTrafficSource
       probeOutcome: AccountApiKeyAutomaticProbeOutcome
+      quotaRecoveryMode?: 'generic' | 'explicit_reset'
     }
 
 export type AccountApiKeyPersistentMutationAuthorization =
@@ -55,6 +60,14 @@ export function authorizeAccountApiKeyPersistentMutation(
       ? { allowed: true }
       : { allowed: false, reason: 'invalid_policy_mutation' }
   }
+  if (context.authority === 'system_quota_policy') {
+    if (context.trafficSource !== 'gateway') {
+      return { allowed: false, reason: 'unauthorized_traffic_source' }
+    }
+    return mutation === 'failure'
+      ? { allowed: true }
+      : { allowed: false, reason: 'invalid_policy_mutation' }
+  }
   if (context.authority === 'confirmed_same_account_key_rotation') {
     if (context.trafficSource !== 'gateway') {
       return { allowed: false, reason: 'unauthorized_traffic_source' }
@@ -69,7 +82,11 @@ export function authorizeAccountApiKeyPersistentMutation(
   if (!isAutomaticProbeTrafficSource(context.trafficSource)) {
     return { allowed: false, reason: 'unauthorized_traffic_source' }
   }
-  if (mutation === 'failure' && context.probeOutcome === 'upstream_failure') {
+  if (
+    mutation === 'failure'
+    && (context.probeOutcome === 'upstream_failure'
+      || (context.probeOutcome === 'framing_complete_neutral' && context.quotaRecoveryMode !== undefined))
+  ) {
     return { allowed: true }
   }
   if (mutation === 'success' && context.probeOutcome === 'complete_success') {
@@ -77,7 +94,11 @@ export function authorizeAccountApiKeyPersistentMutation(
   }
   if (
     mutation === 'defer'
-    && (context.probeOutcome === 'framing_complete_neutral' || context.probeOutcome === 'probe_task_failure')
+    && (
+      context.probeOutcome === 'framing_complete_neutral'
+      || context.probeOutcome === 'probe_task_failure'
+      || (context.probeOutcome === 'upstream_failure' && context.quotaRecoveryMode !== undefined)
+    )
   ) {
     return { allowed: true }
   }

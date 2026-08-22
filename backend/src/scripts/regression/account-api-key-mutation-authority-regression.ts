@@ -48,6 +48,14 @@ assert.deepEqual(
   '同账户后继成功确认只能由 gateway 流量写入失败状态'
 )
 
+const systemQuotaContext: AccountApiKeyPersistentMutationContext = {
+  authority: 'system_quota_policy',
+  trafficSource: 'gateway'
+}
+assert.equal(authorizeAccountApiKeyPersistentMutation('failure', systemQuotaContext).allowed, true, '系统额度策略必须能够写入当前 fingerprint 的限流状态')
+assert.equal(authorizeAccountApiKeyPersistentMutation('success', systemQuotaContext).allowed, false)
+assert.equal(authorizeAccountApiKeyPersistentMutation('defer', systemQuotaContext).allowed, false)
+
 for (const trafficSource of ['manual_account_test', 'hybrid_scoring', 'hybrid_quality_scoring'] as const) {
   const forgedContexts = [
     { authority: 'explicit_user_policy', trafficSource },
@@ -120,6 +128,17 @@ for (const trafficSource of ['account_health_check', 'runtime_recovery_probe', '
       )
     }
   }
+  const quotaNeutralContext = {
+    authority: 'automatic_probe',
+    trafficSource,
+    probeOutcome: 'framing_complete_neutral',
+    quotaRecoveryMode: 'generic'
+  } as const
+  assert.equal(
+    authorizeAccountApiKeyPersistentMutation('failure', quotaNeutralContext).allowed,
+    true,
+    `${trafficSource}/额度中性结果必须只允许写额度失败状态`
+  )
 }
 
 console.log('账户内 API Key 持久状态授权矩阵回归通过')

@@ -715,6 +715,8 @@ export type DbServiceOperation =
       errorMessage?: string
       traceId?: string
       cooldownUntil?: string
+      quotaRecoveryMode?: 'generic' | 'explicit_reset'
+      breakQuotaRecoveryWindow?: boolean
       observedAt?: string
       expectedStatus?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
       expectedNextProbeAt?: string
@@ -748,6 +750,7 @@ export type DbServiceOperation =
       expectedProbeClaimToken?: string
       delaySeconds: number
       observedAt?: string
+      breakQuotaRecoveryWindow?: boolean
     }
   }
   | {

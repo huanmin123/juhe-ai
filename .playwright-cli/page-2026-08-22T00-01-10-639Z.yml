@@ -1,0 +1,66 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - img "聚合 AI 图标" [ref=e7]
+        - generic [ref=e8]: 聚合 AI
+      - menu [ref=e9]:
+        - menuitem "message AI 问答" [ref=e10] [cursor=pointer]:
+          - img "message" [ref=e11]
+          - generic [ref=e14]: AI 问答
+        - menuitem "bar-chart 统计概览" [ref=e15] [cursor=pointer]:
+          - img "bar-chart" [ref=e16]
+          - generic [ref=e19]: 统计概览
+        - menuitem "user-switch 我的 AI 账户" [ref=e20] [cursor=pointer]:
+          - img "user-switch" [ref=e21]
+          - generic [ref=e24]: 我的 AI 账户
+        - menuitem "apartment 我的分组" [ref=e25] [cursor=pointer]:
+          - img "apartment" [ref=e26]
+          - generic [ref=e29]: 我的分组
+        - menuitem "我的 API Key" [ref=e30] [cursor=pointer]
+        - menuitem "branches 我的策略路由" [ref=e37] [cursor=pointer]:
+          - img "branches" [ref=e38]
+          - generic [ref=e41]: 我的策略路由
+        - menuitem "experiment 模型检测" [ref=e42] [cursor=pointer]:
+          - img "experiment" [ref=e43]
+          - generic [ref=e46]: 模型检测
+        - menuitem "appstore 模型目录" [ref=e47] [cursor=pointer]:
+          - img "appstore" [ref=e48]
+          - generic [ref=e51]: 模型目录
+        - generic [ref=e52] [cursor=pointer]:
+          - img "safety-certificate" [ref=e53]
+          - generic [ref=e56]: 我的授权
+        - menuitem "fund 我的用量" [ref=e57] [cursor=pointer]:
+          - img "fund" [ref=e58]
+          - generic [ref=e61]: 我的用量
+        - menuitem "bar-chart AI性能监控" [ref=e62] [cursor=pointer]:
+          - img "bar-chart" [ref=e63]
+          - generic [ref=e66]: AI性能监控
+        - menuitem "safety-certificate AI健康监控" [ref=e67] [cursor=pointer]:
+          - img "safety-certificate" [ref=e68]
+          - generic [ref=e71]: AI健康监控
+        - menuitem "history 我的使用记录" [ref=e72] [cursor=pointer]:
+          - img "history" [ref=e73]
+          - generic [ref=e76]: 我的使用记录
+        - menuitem "profile 我的操作日志" [ref=e77] [cursor=pointer]:
+          - img "profile" [ref=e78]
+          - generic [ref=e81]: 我的操作日志
+      - button "menu-fold 收起" [ref=e82] [cursor=pointer]:
+        - img "menu-fold" [ref=e83]
+        - generic [ref=e86]: 收起
+  - generic [ref=e87]:
+    - generic [ref=e88]:
+      - generic [ref=e91]:
+        - generic [ref=e92]: 轻量中转管理
+        - generic [ref=e93]: OpenAI OAuth + API Key
+      - generic [ref=e94]:
+        - button "打开帮助" [ref=e96] [cursor=pointer]:
+          - img "question-circle" [ref=e97]
+        - button "打开公告" [ref=e102] [cursor=pointer]
+        - button "打开用户菜单" [ref=e108] [cursor=pointer]:
+          - generic [ref=e109]: 用
+          - generic [ref=e110]:
+            - generic [ref=e111]: 用户
+            - generic [ref=e112]: 普通用户
+          - img "down" [ref=e113]
+    - main [ref=e116]

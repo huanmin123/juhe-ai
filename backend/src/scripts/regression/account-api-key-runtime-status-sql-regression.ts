@@ -33,7 +33,7 @@ try {
   const allUnverified = createMultiKeyAccount('全未验证 Key 池', ['sk-unverified-a', 'sk-unverified-b'])
   const missingRuntimeState = createMultiKeyAccount('缺失 Key 运行态', ['sk-missing-a', 'sk-missing-b'])
   const diagnosticsAccount = createMultiKeyAccount('运行态诊断隔离 Key 池', ['sk-diagnostic-a', 'sk-diagnostic-b'])
-  const summaryProbeAccount = createMultiKeyAccount('探测汇总候选 Key 池', ['sk-summary-active', 'sk-summary-error'])
+  const summaryProbeAccount = createMultiKeyAccount('探测汇总候选 Key 池', ['sk-summary-active', 'sk-summary-error', 'sk-summary-rate-limited'])
   const db = database.getBusinessDatabase()
   db.prepare("UPDATE accounts SET status = 'active', schedulable = 1 WHERE id IN (?, ?, ?, ?)")
     .run(allUnverified.id, missingRuntimeState.id, diagnosticsAccount.id, summaryProbeAccount.id)
@@ -97,7 +97,7 @@ try {
     now,
     now
   )
-  const summaryProbeEntries = accountApiKeyEntries({ api_keys: ['sk-summary-active', 'sk-summary-error'] })
+  const summaryProbeEntries = accountApiKeyEntries({ api_keys: ['sk-summary-active', 'sk-summary-error', 'sk-summary-rate-limited'] })
   const staleActiveProbe = new Date(Date.now() - 60_000).toISOString()
   insert.run(
     'state-summary-active',
@@ -126,6 +126,21 @@ try {
     'upstream_rejected',
     'active Key 的陈旧探测时间不得污染汇总',
     'trace-summary-runtime-private',
+    now,
+    now
+  )
+  insert.run(
+    'state-summary-rate-limited',
+    access.systemAccountId,
+    summaryProbeAccount.id,
+    summaryProbeEntries[2]!.fingerprint,
+    summaryProbeEntries[2]!.index,
+    'rate_limited',
+    laterProbe,
+    now,
+    'api_key_quota_insufficient',
+    '周期额度不足，等待下次探测',
+    'trace-summary-runtime-rate-limited',
     now,
     now
   )

@@ -16,18 +16,19 @@ export function resolveAccountTestResponseDiagnostics(input: {
   responseHeaders: Record<string, string | string[]>
   responseTruncated: boolean
 } {
-  const upstreamResponseText = input.upstreamAttempt?.responseBodyText ?? ''
-  if (!upstreamResponseText.trim()) {
+  const upstreamResponseText = input.upstreamAttempt?.responseBodyText
+  const hasUpstreamResponseText = Boolean(upstreamResponseText?.trim())
+  if (!hasUpstreamResponseText) {
     return {
       responseText: input.downstreamResponseText,
-      responseHeaders: input.downstreamResponseHeaders,
+      responseHeaders: input.upstreamAttempt?.responseHeaders ?? input.downstreamResponseHeaders,
       responseTruncated: input.downstreamResponseTruncated
     }
   }
   return {
-    responseText: upstreamResponseText,
+    responseText: upstreamResponseText!,
     responseHeaders: input.upstreamAttempt?.responseHeaders ?? input.downstreamResponseHeaders,
-    responseTruncated: upstreamResponseText.endsWith('\n[truncated]')
+    responseTruncated: upstreamResponseText!.endsWith('\n[truncated]')
   }
 }
 

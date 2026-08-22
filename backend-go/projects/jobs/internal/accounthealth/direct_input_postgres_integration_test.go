@@ -116,6 +116,45 @@ func TestPostgresDirectInputReaderSmoke(t *testing.T) {
 	}
 }
 
+func TestPostgresDirectInputReaderExcludesHealthyImagesFromPeriodicScan(t *testing.T) {
+	postgresURL := os.Getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
+	secret := os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET")
+	imageAccountID := os.Getenv("JUHE_AI_J1_DIRECT_INPUT_SMOKE_IMAGE_ACCOUNT_ID")
+	if postgresURL == "" || secret == "" || imageAccountID == "" {
+		t.Skip("requires isolated J1 PostgreSQL image-account smoke environment")
+	}
+	database, err := sql.Open("pgx", postgresURL)
+	if err != nil {
+		t.Fatalf("open image-account database: %v", err)
+	}
+	defer database.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := database.PingContext(ctx); err != nil {
+		t.Fatalf("ping image-account database: %v", err)
+	}
+	reader, err := NewPostgresDirectInputReader(database, secret, time.Hour, time.Now)
+	if err != nil {
+		t.Fatalf("new direct input reader: %v", err)
+	}
+	periodic, err := reader.LoadDue(ctx, 64)
+	if err != nil {
+		t.Fatalf("load periodic image candidates: %v", err)
+	}
+	for _, input := range periodic {
+		if input.AccountID == imageAccountID {
+			t.Fatalf("healthy active image account %q must not enter periodic candidates: %#v", imageAccountID, input)
+		}
+	}
+	explicit, err := reader.LoadAccount(ctx, imageAccountID)
+	if err != nil {
+		t.Fatalf("load explicit image candidate: %v", err)
+	}
+	if len(explicit) != 1 || explicit[0].AccountID != imageAccountID || explicit[0].EndpointMode != "images_json" {
+		t.Fatalf("explicit image account must remain loadable: %#v", explicit)
+	}
+}
+
 func directInputIndex(inputs []Input, accountID string) int {
 	for index, input := range inputs {
 		if input.AccountID == accountID {

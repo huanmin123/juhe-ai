@@ -1,0 +1,221 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - img "聚合 AI 图标" [ref=e7]
+          - generic [ref=e8]: 聚合 AI
+        - menu [ref=e9]:
+          - menuitem "bar-chart 统计概览" [ref=e117] [cursor=pointer]:
+            - img "bar-chart" [ref=e118]
+            - generic [ref=e121]: 统计概览
+          - generic [ref=e122] [cursor=pointer]:
+            - img "database" [ref=e123]
+            - generic [ref=e126]: AI 管理
+          - list [ref=e127]:
+            - menuitem "global 供应商" [ref=e128] [cursor=pointer]:
+              - img "global" [ref=e129]
+              - generic [ref=e132]: 供应商
+            - menuitem "node-index 代理管理" [ref=e133] [cursor=pointer]:
+              - img "node-index" [ref=e134]
+              - generic [ref=e137]: 代理管理
+            - menuitem "user-switch AI 账户管理" [ref=e138] [cursor=pointer]:
+              - img "user-switch" [ref=e139]
+              - generic [ref=e142]: AI 账户管理
+            - menuitem "apartment AI 分组管理" [ref=e143] [cursor=pointer]:
+              - img "apartment" [ref=e144]
+              - generic [ref=e147]: AI 分组管理
+            - menuitem "API Key 管理" [ref=e148] [cursor=pointer]
+            - menuitem "experiment 模型检测" [ref=e155] [cursor=pointer]:
+              - img "experiment" [ref=e156]
+              - generic [ref=e159]: 模型检测
+            - menuitem "fund 用量统计管理" [ref=e160] [cursor=pointer]:
+              - img "fund" [ref=e161]
+              - generic [ref=e164]: 用量统计管理
+            - menuitem "bar-chart AI性能监控" [ref=e165] [cursor=pointer]:
+              - img "bar-chart" [ref=e166]
+              - generic [ref=e169]: AI性能监控
+            - menuitem "safety-certificate AI健康监控" [ref=e170] [cursor=pointer]:
+              - img "safety-certificate" [ref=e171]
+              - generic [ref=e174]: AI健康监控
+            - menuitem "history 使用记录管理" [ref=e175] [cursor=pointer]:
+              - img "history" [ref=e176]
+              - generic [ref=e179]: 使用记录管理
+            - menuitem "branches 策略路由" [ref=e180] [cursor=pointer]:
+              - img "branches" [ref=e181]
+              - generic [ref=e184]: 策略路由
+          - generic [ref=e185] [cursor=pointer]:
+            - img "safety-certificate" [ref=e186]
+            - generic [ref=e189]: 统一授权管理
+          - generic [ref=e190] [cursor=pointer]:
+            - img "profile" [ref=e191]
+            - generic [ref=e194]: 日志管理
+          - generic [ref=e195] [cursor=pointer]:
+            - img "setting" [ref=e196]
+            - generic [ref=e199]: 系统运维
+        - button "menu-fold 收起" [ref=e82] [cursor=pointer]:
+          - img "menu-fold" [ref=e83]
+          - generic [ref=e86]: 收起
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e91]:
+          - generic [ref=e92]: AI 账户管理
+          - generic [ref=e93]: 按系统账户管理 GPT OAuth / API Key 账户，统一查看状态、并发、代理和错误策略。
+        - generic [ref=e94]:
+          - button "打开帮助" [ref=e96] [cursor=pointer]:
+            - img "question-circle" [ref=e97]
+          - button "打开公告" [ref=e102] [cursor=pointer]
+          - button "打开用户菜单" [ref=e108] [cursor=pointer]:
+            - generic [ref=e109]: 超
+            - generic [ref=e110]:
+              - generic [ref=e111]: 超级管理员
+              - generic [ref=e112]: 超级管理员 · 管理模式
+            - img "down" [ref=e113]
+      - main [ref=e116]:
+        - generic [ref=e202]:
+          - generic [ref=e203]:
+            - generic [ref=e204]:
+              - generic [ref=e205]:
+                - img "search" [ref=e207]
+                - textbox "账户名称" [ref=e210]
+              - button "filter 更多" [ref=e213] [cursor=pointer]:
+                - img "filter" [ref=e214]
+                - generic [ref=e217]: 更多
+              - button "reload 刷新" [ref=e218] [cursor=pointer]:
+                - img "reload" [ref=e219]
+                - generic [ref=e222]: 刷新
+              - button "重 置" [ref=e223] [cursor=pointer]
+            - generic [ref=e225]:
+              - button "setting 列管理" [ref=e226] [cursor=pointer]:
+                - img "setting" [ref=e227]
+                - generic [ref=e230]: 列管理
+              - button "upload 导出" [ref=e231] [cursor=pointer]:
+                - img "upload" [ref=e232]
+                - generic [ref=e235]: 导出
+              - button "download 导入" [ref=e236] [cursor=pointer]:
+                - img "download" [ref=e237]
+                - generic [ref=e240]: 导入
+              - button "添加账户" [active] [ref=e241] [cursor=pointer]
+          - generic [ref=e249]:
+            - table [ref=e251]:
+              - rowgroup [ref=e271]:
+                - row [ref=e272]:
+                  - columnheader "Select all" [ref=e273]:
+                    - checkbox "Select all" [ref=e277] [cursor=pointer]
+                  - columnheader "名称" [ref=e279]
+                  - columnheader "账户类型" [ref=e280]
+                  - columnheader "供应商" [ref=e281]
+                  - columnheader "系统账户 caret-up caret-down" [ref=e282] [cursor=pointer]:
+                    - generic [ref=e283]:
+                      - generic [ref=e284]: 系统账户
+                      - generic [ref=e286]:
+                        - generic "caret-up" [ref=e287]
+                        - generic "caret-down" [ref=e290]
+                  - columnheader "并发数" [ref=e293]
+                  - columnheader "状态 caret-up caret-down" [ref=e294] [cursor=pointer]:
+                    - generic [ref=e295]:
+                      - generic [ref=e296]: 状态
+                      - generic [ref=e298]:
+                        - generic "caret-up" [ref=e299]
+                        - generic "caret-down" [ref=e302]
+                  - columnheader "优先级 caret-up caret-down" [ref=e305] [cursor=pointer]:
+                    - generic [ref=e306]:
+                      - generic [ref=e307]: 优先级
+                      - generic [ref=e309]:
+                        - generic "caret-up" [ref=e310]
+                        - generic "caret-down" [ref=e313]
+                  - columnheader "用量(日)" [ref=e316]
+                  - columnheader "标签" [ref=e317]
+                  - columnheader "代理" [ref=e318]
+                  - columnheader "加入分组" [ref=e319]
+                  - columnheader "最近使用时间 caret-up caret-down" [ref=e320] [cursor=pointer]:
+                    - generic [ref=e321]:
+                      - generic [ref=e322]: 最近使用时间
+                      - generic [ref=e324]:
+                        - generic "caret-up" [ref=e325]
+                        - generic "caret-down" [ref=e328]
+                  - columnheader "账户到期时间 caret-up caret-down" [ref=e331] [cursor=pointer]:
+                    - generic [ref=e332]:
+                      - generic [ref=e333]: 账户到期时间
+                      - generic [ref=e335]:
+                        - generic "caret-up" [ref=e336]
+                        - generic "caret-down" [ref=e339]
+                  - columnheader "时间计划" [ref=e342]
+                  - columnheader "说明" [ref=e343]
+                  - columnheader "操作" [ref=e344]
+            - table [ref=e346]:
+              - rowgroup [ref=e365]:
+                - row "J1 PG direct input j1_direct_input_mt3kvyry_ccdeab API Key GPT 超级管理员 0/5000 可调度 0 edit 0req 0 $0.00 - J1 proxy j1_direct_input_mt3kvyry_ccdeab J1 PG direct input j1_direct_input_mt3kvyry_ccdeab - - 未设置 - 编辑 删除 更多操作" [ref=e366]:
+                  - cell [ref=e367]:
+                    - checkbox [ref=e370] [cursor=pointer]
+                  - cell "J1 PG direct input j1_direct_input_mt3kvyry_ccdeab" [ref=e372]
+                  - cell "API Key" [ref=e376]
+                  - cell "GPT" [ref=e378]
+                  - cell "超级管理员" [ref=e380]
+                  - cell "0/5000" [ref=e381]
+                  - cell "可调度" [ref=e383]
+                  - cell [ref=e387]:
+                    - button "0 edit" [ref=e389] [cursor=pointer]:
+                      - generic [ref=e390]: "0"
+                      - img "edit" [ref=e391]
+                  - cell "0req 0 $0.00" [ref=e394]:
+                    - generic [ref=e396]:
+                      - generic [ref=e397]: 0req
+                      - generic [ref=e398]: "0"
+                      - generic [ref=e399]: $0.00
+                  - cell "-" [ref=e400]
+                  - cell "J1 proxy j1_direct_input_mt3kvyry_ccdeab" [ref=e401]
+                  - cell "J1 PG direct input j1_direct_input_mt3kvyry_ccdeab" [ref=e403]
+                  - cell "-" [ref=e405]
+                  - cell "-" [ref=e406]
+                  - cell "未设置" [ref=e407]
+                  - cell "-" [ref=e409]
+                  - cell [ref=e411]:
+                    - generic [ref=e412]:
+                      - button "编辑" [ref=e413] [cursor=pointer]:
+                        - img "edit" [ref=e414]
+                      - button "删除" [ref=e417] [cursor=pointer]:
+                        - img "delete" [ref=e418]
+                      - button "更多操作" [ref=e421] [cursor=pointer]:
+                        - img "more" [ref=e422]
+                - row "J1 PG direct input j1_direct_input_mt3kvyry_ccdeab （超级管理员授权） info-circle API Key GPT J1 PG direct input sysacc_j1_direct_input_mt3kvyry_ccdeab 0/5000 可调度 0 edit 0req 0 $0.00 - J1 proxy j1_direct_input_mt3kvyry_ccdeab J1 PG direct input grantee j1_direct_input_mt3kvyry_ccdeab - - 未设置 - 编辑 归还 更多操作" [ref=e425]:
+                  - cell [ref=e426]:
+                    - checkbox [ref=e429] [cursor=pointer]
+                  - cell "J1 PG direct input j1_direct_input_mt3kvyry_ccdeab （超级管理员授权） info-circle" [ref=e431]:
+                    - generic [ref=e433]:
+                      - generic [ref=e434]: J1 PG direct input j1_direct_input_mt3kvyry_ccdeab
+                      - generic [ref=e435]: （超级管理员授权）
+                      - img "info-circle" [ref=e436]
+                  - cell "API Key" [ref=e440]
+                  - cell "GPT" [ref=e442]
+                  - cell "J1 PG direct input sysacc_j1_direct_input_mt3kvyry_ccdeab" [ref=e444]
+                  - cell "0/5000" [ref=e445]
+                  - cell "可调度" [ref=e447]
+                  - cell [ref=e451]:
+                    - button "0 edit" [ref=e453] [cursor=pointer]:
+                      - generic [ref=e454]: "0"
+                      - img "edit" [ref=e455]
+                  - cell "0req 0 $0.00" [ref=e458]:
+                    - generic [ref=e460]:
+                      - generic [ref=e461]: 0req
+                      - generic [ref=e462]: "0"
+                      - generic [ref=e463]: $0.00
+                  - cell "-" [ref=e464]
+                  - cell "J1 proxy j1_direct_input_mt3kvyry_ccdeab" [ref=e465]
+                  - cell "J1 PG direct input grantee j1_direct_input_mt3kvyry_ccdeab" [ref=e467]
+                  - cell "-" [ref=e469]
+                  - cell "-" [ref=e470]
+                  - cell "未设置" [ref=e471]
+                  - cell "-" [ref=e473]
+                  - cell [ref=e475]:
+                    - generic [ref=e476]:
+                      - button "编辑" [ref=e477] [cursor=pointer]:
+                        - img "edit" [ref=e478]
+                      - button "归还" [ref=e481] [cursor=pointer]:
+                        - img "disconnect" [ref=e482]
+                      - button "更多操作" [ref=e485] [cursor=pointer]:
+                        - img "more" [ref=e486]
+  - generic: "* * * * * *"
+  - generic [ref=e490]:
+    - img "exclamation-circle" [ref=e491]
+    - text: 请先在右侧选择目标系统账户，再创建 AI 账户

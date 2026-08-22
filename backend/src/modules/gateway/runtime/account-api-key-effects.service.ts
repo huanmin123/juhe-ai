@@ -39,18 +39,23 @@ export async function recordGatewayAccountApiKeyFailure(
     errorMessage?: string
     traceId?: string
     cooldownUntil?: string
+    quotaRecoveryMode?: 'generic' | 'explicit_reset'
     trafficSource?: OpenAIGatewayTrafficSource
     mutationContext?: AccountApiKeyPersistentMutationContext
     clientIp?: string
     apiKeyId?: string
     observationEpoch?: number
+    attemptStartedAt?: string
     source: string
   }
 ): Promise<void> {
   if (!account.selectedApiKeyFingerprint || account.apiKeyRuntimeStateDisabled) {
     return
   }
-  const observedAt = new Date().toISOString()
+  const observedAt = input.attemptStartedAt ?? new Date().toISOString()
+  const expectedAccountConfigRevision = input.quotaRecoveryMode === undefined
+    ? undefined
+    : account.configRevision
   const guardDecision = recordGatewayAccountApiKeyFailureGuard(account, {
     status: input.status,
     statusCode: input.statusCode,
@@ -113,7 +118,9 @@ export async function recordGatewayAccountApiKeyFailure(
         errorMessage: input.errorMessage,
         traceId: input.traceId,
         cooldownUntil: input.cooldownUntil,
-        observedAt
+        quotaRecoveryMode: input.quotaRecoveryMode,
+        observedAt,
+        expectedAccountConfigRevision
       }
     }, {
       priority: 'low'
@@ -144,7 +151,9 @@ export async function recordGatewayAccountApiKeyFailure(
         errorMessage: input.errorMessage,
         traceId: input.traceId,
         cooldownUntil: input.cooldownUntil,
-        observedAt
+        quotaRecoveryMode: input.quotaRecoveryMode,
+        observedAt,
+        expectedAccountConfigRevision
       }
     }, {
       priority: 'low'

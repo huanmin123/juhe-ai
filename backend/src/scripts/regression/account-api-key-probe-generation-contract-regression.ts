@@ -21,8 +21,8 @@ assert.match(
 )
 assert.equal(
   (cooldownServiceSource.match(/account: fixedKeyRuntimeStateMutationCandidate/g) ?? []).length,
-  3,
-  '固定 Key 探测的 success/failure/defer 三条状态写回必须使用可写运行态目标'
+  5,
+  '固定 Key 探测的 success、额度失败、neutral defer、transport defer、普通 failure 五条状态写回必须使用可写运行态目标'
 )
 for (const generationField of [
   'expectedStatus',
@@ -32,7 +32,7 @@ for (const generationField of [
   'expectedProbeClaimToken'
 ] as const) {
   const serviceMatches = cooldownServiceSource.match(new RegExp(`${generationField}: item\\.`, 'g')) ?? []
-  assert.equal(serviceMatches.length, 3, `success/failure/defer 必须都透传 ${generationField}`)
+  assert.equal(serviceMatches.length, 5, `所有固定 Key 探测状态写回都必须透传 ${generationField}`)
   assert.match(dbServiceTypesSource, new RegExp(`${generationField}\\?:`), `DB-service IPC 必须声明 ${generationField}`)
 }
 
@@ -48,6 +48,6 @@ assert.match(
   'Key 探针 scheduler 必须同时扣除 running 与 pending，并通过 DB service 只 claim 实际空槽'
 )
 assert.match(dbServiceHandlersSource, /case 'list_account_api_key_runtime_states_due_for_probe':[\s\S]{0,250}listAccountApiKeyRuntimeStatesDueForProbe/, 'Key 探针候选 claim 必须在 DB service 中执行')
-assert.doesNotMatch(cooldownServiceSource, /statusCode\s*===|\[\s*401|\[\s*429|statusCode\s*>?=/, 'Key 冷却探针不得按具体上游状态码解释账户语义')
+assert.doesNotMatch(cooldownServiceSource, /statusCode\s*===|\[\s*401|\[\s*429|statusCode\s*(?:>=|<=|>|<)\s*\d/, 'Key 冷却探针不得按具体上游状态码解释账户语义')
 
 console.log('ACCOUNT_API_KEY_PROBE_GENERATION_CONTRACT_OK')

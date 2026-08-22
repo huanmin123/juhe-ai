@@ -415,6 +415,7 @@ try {
   await delay(50)
   assert.equal(runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint), undefined, '网关 error 状态也不能直接写成全局 Key 错误')
 
+  const gatewayAttemptStartedAt = new Date(Date.now() - 1_000).toISOString()
   await apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedB, {
     status: 'temporary_unavailable',
     statusCode: 503,
@@ -427,9 +428,35 @@ try {
       trafficSource: 'cooldown_retest',
       probeOutcome: 'upstream_failure'
     },
+    attemptStartedAt: gatewayAttemptStartedAt,
     source: 'confirmed_probe_regression'
   })
   assert.equal(runtimeTraceId(account.id, selectedB.selectedApiKeyFingerprint), 'trace-confirmed-probe', '确认探针失败的 traceId 应通过网关副作用写入 Key 运行态')
+  const confirmedProbeAttempt = databaseModule.getBusinessDatabase()
+    .prepare('SELECT last_attempt_at FROM account_api_key_runtime_states WHERE account_id = ? AND key_fingerprint = ? LIMIT 1')
+    .get(account.id, selectedB.selectedApiKeyFingerprint) as { last_attempt_at: string | null } | undefined
+  assert.equal(confirmedProbeAttempt?.last_attempt_at, gatewayAttemptStartedAt, '网关失败写回必须沿用 attemptStartedAt，不能用处理完成时间覆盖较新观察')
+
+  const staleConfigGatewayAccount = {
+    ...selectedB,
+    configRevision: (selectedB.configRevision ?? 1) + 1
+  }
+  const beforeStaleConfigGatewayFailure = runtimeStateDetail(account.id, selectedB.selectedApiKeyFingerprint)
+  await apiKeyEffects.recordGatewayAccountApiKeyFailure(staleConfigGatewayAccount, {
+    status: 'rate_limited',
+    errorCode: 'stale_gateway_config_failure',
+    errorMessage: '迟到的旧网关失败',
+    quotaRecoveryMode: 'generic',
+    trafficSource: 'cooldown_retest',
+    mutationContext: {
+      authority: 'automatic_probe',
+      trafficSource: 'cooldown_retest',
+      probeOutcome: 'upstream_failure'
+    },
+    source: 'stale_gateway_config_regression'
+  })
+  const afterStaleConfigGatewayFailure = runtimeStateDetail(account.id, selectedB.selectedApiKeyFingerprint)
+  assert.deepEqual(afterStaleConfigGatewayFailure, beforeStaleConfigGatewayFailure, '网关失败写回必须受 account.configRevision fence 保护')
 
   forceApiKeyRuntimeProbeDue(account.id, selectedB.selectedApiKeyFingerprint)
   const neutralProbeCandidate = apiKeyRuntimeStates.listAccountApiKeyRuntimeStatesDueForProbe(10)

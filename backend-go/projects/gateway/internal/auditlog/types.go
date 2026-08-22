@@ -395,6 +395,13 @@ func canonicalAuditTime(value, field string, optional bool) (string, error) {
 // Missing CreatedAt is intentionally generated once here; supplied values
 // are never replaced after a parse failure.
 func normalizeAuditInput(input AuditLogInput) (AuditLogInput, error) {
+	// Persist may be called concurrently with the same decoded DTO (for
+	// example, a finalized write racing its loser retry).  A value copy of
+	// AuditLogInput still aliases its slice/map/pointer fields, so canonicalizing
+	// those children in place would race with the other caller and mutate the
+	// caller-owned wire object.  Detach every mutable child before validation
+	// and normalization; the scalar fields remain copied by value.
+	input = cloneAuditLogInputMutableFields(input)
 	if err := validateInput(input); err != nil {
 		return AuditLogInput{}, err
 	}
@@ -429,4 +436,93 @@ func normalizeAuditInput(input AuditLogInput) (AuditLogInput, error) {
 		}
 	}
 	return input, nil
+}
+
+func cloneAuditLogInputMutableFields(input AuditLogInput) AuditLogInput {
+	if input.ModelMappingApplied != nil {
+		value := *input.ModelMappingApplied
+		input.ModelMappingApplied = &value
+	}
+	if input.Stream != nil {
+		value := *input.Stream
+		input.Stream = &value
+	}
+	if input.FinalStatusCode != nil {
+		value := *input.FinalStatusCode
+		input.FinalStatusCode = &value
+	}
+	if input.DurationMS != nil {
+		value := *input.DurationMS
+		input.DurationMS = &value
+	}
+	if input.HTTPDurationMS != nil {
+		value := *input.HTTPDurationMS
+		input.HTTPDurationMS = &value
+	}
+	if input.FirstTokenMS != nil {
+		value := *input.FirstTokenMS
+		input.FirstTokenMS = &value
+	}
+	input.Attempts = cloneAuditLogAttempts(input.Attempts)
+	input.Payloads = cloneAuditLogPayloads(input.Payloads)
+	return input
+}
+
+func cloneAuditLogAttempts(attempts []AuditLogAttemptInput) []AuditLogAttemptInput {
+	if attempts == nil {
+		return nil
+	}
+	cloned := make([]AuditLogAttemptInput, len(attempts))
+	for index, attempt := range attempts {
+		cloned[index] = attempt
+		if attempt.ModelMappingApplied != nil {
+			value := *attempt.ModelMappingApplied
+			cloned[index].ModelMappingApplied = &value
+		}
+		if attempt.UpstreamStatusCode != nil {
+			value := *attempt.UpstreamStatusCode
+			cloned[index].UpstreamStatusCode = &value
+		}
+		if attempt.Success != nil {
+			value := *attempt.Success
+			cloned[index].Success = &value
+		}
+		if attempt.DurationMS != nil {
+			value := *attempt.DurationMS
+			cloned[index].DurationMS = &value
+		}
+	}
+	return cloned
+}
+
+func cloneAuditLogPayloads(payloads []AuditLogPayloadInput) []AuditLogPayloadInput {
+	if payloads == nil {
+		return nil
+	}
+	cloned := make([]AuditLogPayloadInput, len(payloads))
+	for index, payload := range payloads {
+		cloned[index] = payload
+		if payload.SequenceIndex != nil {
+			value := *payload.SequenceIndex
+			cloned[index].SequenceIndex = &value
+		}
+		if payload.RawBodySizeBytes != nil {
+			value := *payload.RawBodySizeBytes
+			cloned[index].RawBodySizeBytes = &value
+		}
+		if payload.Headers != nil {
+			cloned[index].Headers = make(map[string]HeaderValues, len(payload.Headers))
+			for name, header := range payload.Headers {
+				clonedHeader := HeaderValues{Array: header.Array}
+				if header.Values != nil {
+					clonedHeader.Values = append([]string(nil), header.Values...)
+				}
+				cloned[index].Headers[name] = clonedHeader
+			}
+		}
+		if payload.Body.Bytes != nil {
+			cloned[index].Body.Bytes = append([]byte(nil), payload.Body.Bytes...)
+		}
+	}
+	return cloned
 }

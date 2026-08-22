@@ -6,6 +6,11 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import {
+  API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE,
+  API_KEY_QUOTA_GENERIC_ERROR_CODE,
+  API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE
+} from '../../modules/gateway/policy/api-key-quota-recovery.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-api-key-runtime-observation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -65,6 +70,17 @@ try {
     selectedApiKeyFingerprint: entry.fingerprint,
     selectedApiKeyIndex: entry.index
   }))
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: {
+      ...selected[0],
+      apiKey: 'sk-runtime-observation-outside-pool',
+      selectedApiKeyFingerprint: rotation.fingerprintAccountApiKey('sk-runtime-observation-outside-pool'),
+      selectedApiKeyIndex: 0
+    },
+    status: 'temporary_unavailable',
+    errorCode: 'selected_fingerprint_not_in_pool',
+    observedAt
+  }).changed, false, '持久化 Key 运行态必须拒绝不属于当前 credentials/api_keys 的 selected fingerprint')
 
   assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
     account: selected[1],
@@ -595,6 +611,136 @@ try {
   } finally {
     database.exec('DROP TRIGGER IF EXISTS ignore_first_hundred_api_key_probe_claims')
   }
+
+  database.prepare(`
+    UPDATE account_api_key_runtime_states
+    SET status = 'active',
+        failure_count = 0,
+        consecutive_failures = 0,
+        cooldown_until = NULL,
+        next_probe_at = NULL,
+        recovery_started_at = NULL,
+        last_attempt_at = NULL,
+        last_failure_at = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        probe_claim_token = NULL,
+        probe_claimed_until = NULL,
+        updated_at = ?
+    WHERE account_id = ? AND key_fingerprint IN (?, ?)
+  `).run(new Date().toISOString(), account.id, entries[0]!.fingerprint, entries[1]!.fingerprint)
+
+  const quotaObservedAt = '2026-01-01T00:00:00.000Z'
+  const quotaCooldownUntil = '2026-01-01T02:00:00.000Z'
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'rate_limited',
+    errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
+    errorMessage: 'API Key 余额不足',
+    quotaRecoveryMode: 'generic',
+    cooldownUntil: quotaCooldownUntil,
+    observedAt: quotaObservedAt
+  }).changed, true, '通用 API Key 额度失败必须写入当前 fingerprint')
+  const genericQuotaRow = database.prepare(`
+    SELECT status, recovery_started_at, last_error_code, next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[0]!.fingerprint) as { status: string; recovery_started_at: string | null; last_error_code: string | null; next_probe_at: string | null }
+  assert.equal(genericQuotaRow.status, 'rate_limited')
+  assert.equal(genericQuotaRow.recovery_started_at, quotaObservedAt, '通用额度观察窗口必须从首次确认开始')
+  assert.equal(genericQuotaRow.last_error_code, API_KEY_QUOTA_GENERIC_ERROR_CODE)
+  assert.equal(genericQuotaRow.next_probe_at, quotaCooldownUntil, '无 reset_at 的 API Key 默认复测边界必须由调用方传入 2 小时')
+
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'temporary_unavailable',
+    errorCode: 'transport_between_quota_observations',
+    errorMessage: '额度复测期间出现 transport 波动',
+    breakQuotaRecoveryWindow: true,
+    observedAt: '2026-01-15T00:00:00.000Z'
+  }).changed, true, '通用额度观察期间的 transport 结果必须继续沿用当前观察窗口')
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'rate_limited',
+    errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
+    errorMessage: '额度仍不足',
+    quotaRecoveryMode: 'generic',
+    observedAt: '2026-01-31T00:00:00.000Z'
+  }).changed, true, 'quota -> transport -> quota 必须继续写入当前 Key')
+  const continuousQuotaRow = database.prepare(`
+    SELECT status, recovery_started_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[0]!.fingerprint) as { status: string; recovery_started_at: string | null }
+  assert.equal(continuousQuotaRow.status, 'rate_limited', 'quota -> transport -> quota 在 30 天内不得提前进入 error')
+  assert.equal(continuousQuotaRow.recovery_started_at, '2026-01-31T00:00:00.000Z', 'quota -> transport -> quota 必须从 break 后重新开始观察窗口')
+
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'rate_limited',
+    errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
+    errorMessage: '额度仍不足',
+    quotaRecoveryMode: 'generic',
+    observedAt: '2026-02-01T00:00:00.000Z'
+  }).changed, true, 'break 后的通用 quota 观察必须允许继续写入')
+  const notTimedOutQuotaRow = database.prepare(`
+    SELECT status, recovery_started_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[0]!.fingerprint) as { status: string; recovery_started_at: string | null }
+  assert.equal(notTimedOutQuotaRow.status, 'rate_limited', 'quota -> transport -> quota 不得沿用旧观察窗口提前进入 error')
+  assert.equal(notTimedOutQuotaRow.recovery_started_at, '2026-01-31T00:00:00.000Z')
+
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'error',
+    errorCode: API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE,
+    errorMessage: 'API Key 额度连续确认失败超过 30 天',
+    quotaRecoveryMode: 'generic',
+    observedAt: '2026-03-03T00:00:00.000Z'
+  }).changed, true, '通用额度观察超过 30 天必须允许写入 Key error')
+  const quotaTimeoutRow = database.prepare(`
+    SELECT status, next_probe_at, last_error_code
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[0]!.fingerprint) as { status: string; next_probe_at: string | null; last_error_code: string | null }
+  assert.equal(quotaTimeoutRow.status, 'error')
+  assert.equal(quotaTimeoutRow.last_error_code, API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE)
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeSuccess(selected[0], { expectedStatus: 'error' }).changed, false, 'Key error 必须等待人工恢复，不得被自动成功清除')
+  assert.equal(runtimeStates.listAccountApiKeyRuntimeStatesDueForProbe(100).some((item) => item.keyFingerprint === entries[0]!.fingerprint), false, 'Key error 不得继续进入自动复测候选')
+
+  const manualRestore = await runtimeStates.revalidateAccountApiKeyRuntimePoolAsync({
+    accountId: account.id,
+    expectedConfigRevision: Number((database.prepare('SELECT config_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number }).config_revision)
+  })
+  assert(manualRestore.changed >= 1, '人工重新验证必须重新打开 error Key 的探测入口')
+  const restoredForProbe = database.prepare(`
+    SELECT status, recovery_started_at, cooldown_until, next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[0]!.fingerprint) as { status: string; recovery_started_at: string | null; cooldown_until: string | null; next_probe_at: string | null }
+  assert.equal(restoredForProbe.status, 'unverified')
+  assert.equal(restoredForProbe.recovery_started_at, null, '人工恢复必须重置通用额度 30 天观察窗口')
+  assert.equal(restoredForProbe.cooldown_until, null, '人工恢复必须清除旧额度 cooldown，立即打开探测入口')
+  assert(restoredForProbe.next_probe_at && Date.parse(restoredForProbe.next_probe_at) <= Date.now() + 1000, '人工恢复后的 next_probe_at 应保持可探测')
+
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[1],
+    status: 'rate_limited',
+    errorCode: API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE,
+    errorMessage: '供应商已提供明确 reset_at',
+    quotaRecoveryMode: 'explicit_reset',
+    cooldownUntil: '2030-01-01T00:00:00.000Z',
+    observedAt: '2026-01-02T00:00:00.000Z'
+  }).changed, true, '明确 reset_at 必须进入显式恢复模式')
+  const explicitQuotaRow = database.prepare(`
+    SELECT recovery_started_at, last_error_code, next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[1]!.fingerprint) as { recovery_started_at: string | null; last_error_code: string | null; next_probe_at: string | null }
+  assert.equal(explicitQuotaRow.recovery_started_at, null, '明确 reset_at 不得启动 30 天通用观察窗口')
+  assert.equal(explicitQuotaRow.last_error_code, API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE)
+  assert.equal(explicitQuotaRow.next_probe_at, '2030-01-01T00:00:00.000Z')
 
   console.log('账户内 API Key 探测摘要回归通过')
 } finally {
