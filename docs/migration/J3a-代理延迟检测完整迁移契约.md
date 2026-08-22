@@ -63,3 +63,19 @@ Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、
 ## 8. L2 验收与非目标
 
 L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer 和 Node projector payload/metadata 双校验。当前本地命令已覆盖 proxylatency package/race/vet/jobs 全量、Node typecheck、三项 proxy regression 与 diff check；真实 dev PG/PgBouncer/Docker/Redis、Node -> Go -> Node 闭环、Jenkins 和 GitOps 属于后续 L3/L4，未完成前不得翻转 owner gate。
+
+## 9. Node↔Go 深度对照门
+
+深度对照报告：[J3a 代理延迟检测 Node↔Go 深度对照报告（2026-08-22）](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)。报告将 Node 事实源逐项映射到 Go，并明确以下当前阻断：
+
+1. Node committed-outcome projector/readback 尚未接入；Go outcome 不能直接更新 Node `proxy_profiles` 读模型。
+2. Node scheduler/business writer 尚未 drain，缺少 owner handoff、active-path-zero、旧 owner manifest 与回滚证据；Go owner gate 必须保持关闭。
+3. Node 手动 `POST /proxies/:id/test` 的 `404`、`503 + Retry-After`、`200`、`502`、25 秒同步等待和 outbound 字段尚无 Go bridge/readback。
+
+数值默认值、provider target 排序、IPv6 CONNECT authority、SOCKS wire、407/502/TLS/truncated/slow-drip 仍需同 fixture Node/Go golden 验证；不得以本地 Go 测试或一次 dev smoke 代替跨运行时闭环。
+
+## 10. 完整迁移前的明确禁止事项
+
+- 不修改 Node 代码来掩盖 Go 缺口，不启用 Go owner，不停止 Node scheduler，不做双写或 fallback。
+- 不把 projector、manual bridge、owner handoff 作为本批“已完成”或通过 health 200 推断。
+- 不把 dev scratch PG/PgBouncer 结果扩展为生产/L4 结论；所有跨运行时和生产门禁必须另立计划、单独取证。
