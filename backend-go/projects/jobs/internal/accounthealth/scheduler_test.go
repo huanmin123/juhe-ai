@@ -666,6 +666,35 @@ func TestApplyCooldownNeutralKeepsTemporaryUnavailableAndDefers(t *testing.T) {
 	}
 }
 
+func TestCooldownRetestUsesInputFenceWhenCurrentStateFenceChanged(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Second)
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "current-generation"}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: &CooldownFence{ObservationStartedAt: now.Add(-2 * time.Minute), Generation: "stale-generation"}}
+	outcome := Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	applyCooldownDecision(&outcome, input, prior, true, "temporary_unavailable", now)
+	if outcome.Projection == nil || !sameCooldownFence(outcome.Projection.ExpectedCooldownFence, input.Cooldown) {
+		t.Fatalf("cooldown retest must use the current input fence: projection=%#v", outcome.Projection)
+	}
+}
+
+func TestNextDueUsesInputCooldownWhenCurrentStateFenceChanged(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Second)
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "current-generation"}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond)}
+	state := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", NextDueAt: &cooldownUntil, CooldownFence: &CooldownFence{ObservationStartedAt: now.Add(-2 * time.Minute), Generation: "stale-generation"}}
+	kind, due, ok := nextDue(input, state, true, now)
+	if !ok || kind != "cooldown_retest" || !due.Equal(cooldownUntil) {
+		t.Fatalf("nextDue must fall back to the current input fence: kind=%q due=%s ok=%t", kind, due, ok)
+	}
+}
+
 func TestCooldownNeutralDeferUsesObservationGenerationWindow(t *testing.T) {
 	start := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
 	input := testInput("https://api.example.com", "chat_json")

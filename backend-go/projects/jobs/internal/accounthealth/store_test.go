@@ -407,7 +407,7 @@ func TestSQLiteTaskFailureWithDueOnlyReschedulesWithoutChangingState(t *testing.
 	}
 }
 
-func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndMissingState(t *testing.T) {
+func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndBootstrapsMissingState(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
@@ -431,18 +431,55 @@ func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndMissingState(t
 	if exists, err := store.HasRequest(ctx, sourceMismatch.RequestID); err != nil || !exists {
 		t.Fatalf("cooldown source revision CAS miss must keep immutable outcome: exists=%t err=%v", exists, err)
 	}
-	assertStoredOutcomeProjectionStripped(t, store, mismatch.RequestID)
-	assertStoredOutcomeProjectionStripped(t, store, sourceMismatch.RequestID)
+	assertStoredOutcomeProjectionPresent(t, store, mismatch.RequestID)
+	assertStoredOutcomeProjectionPresent(t, store, sourceMismatch.RequestID)
 
 	missing := cooldownCASOutcome("cooldown-missing-state", "cooldown-missing-state-request", "account-without-current-state", observed.Add(3*time.Second), oldFence)
+	missing.CooldownFence = nil
+	missing.Projection.CooldownFence = nil
 	appendStoreOutcome(t, store, lease, missing)
-	if state, found, err := store.LoadCurrentState(ctx, missing.AccountID); err != nil || found || state != (CurrentState{}) {
-		t.Fatalf("cooldown CAS without current state must be outcome-only stale: found=%t state=%#v err=%v", found, state, err)
+	state, found, err = store.LoadCurrentState(ctx, missing.AccountID)
+	if err != nil || !found || state.OutcomeID != missing.OutcomeID || state.InputVersion != missing.InputVersion || state.ConfigRevision != missing.ConfigRevision || state.DispatchRevision != missing.DispatchRevision || state.AccountStatus != missing.AccountStatus || !sameCooldownFence(state.CooldownFence, oldFence) {
+		t.Fatalf("cooldown CAS without current state must insert fenced baseline: found=%t state=%#v err=%v", found, state, err)
 	}
 	if exists, err := store.HasRequest(ctx, missing.RequestID); err != nil || !exists {
 		t.Fatalf("missing-state CAS miss must keep immutable outcome: exists=%t err=%v", exists, err)
 	}
-	assertStoredOutcomeProjectionStripped(t, store, missing.RequestID)
+	assertStoredOutcomeProjectionPresent(t, store, missing.RequestID)
+}
+
+func TestSQLiteCooldownCASAdvancesStrictlyNewerEpoch(t *testing.T) {
+	for name, staleEpoch := range map[string]struct {
+		inputVersion     int64
+		configRevision   int64
+		dispatchRevision int64
+	}{
+		"input":    {inputVersion: 6, configRevision: 11, dispatchRevision: 17},
+		"config":   {inputVersion: 7, configRevision: 10, dispatchRevision: 17},
+		"dispatch": {inputVersion: 7, configRevision: 11, dispatchRevision: 16},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, lease := openSQLiteStoreWithLease(t)
+			ctx := context.Background()
+			observed := time.Now().UTC().Round(0)
+			accountID := "account-cooldown-epoch-" + name
+			staleFence := &CooldownFence{ObservationStartedAt: observed.Add(-2 * time.Minute), Generation: "stale-generation"}
+			appendStoreOutcome(t, store, lease, Outcome{
+				OutcomeID: "cooldown-epoch-old-" + name, RequestID: "cooldown-epoch-old-request-" + name, AccountID: accountID,
+				Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: staleEpoch.inputVersion, ConfigRevision: staleEpoch.configRevision, DispatchRevision: staleEpoch.dispatchRevision,
+				AccountStatus: "active", CooldownFence: staleFence,
+			})
+
+			newFence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "new-generation"}
+			newer := cooldownCASOutcome("cooldown-epoch-new-"+name, "cooldown-epoch-new-request-"+name, accountID, observed.Add(time.Second), newFence)
+			appendStoreOutcome(t, store, lease, newer)
+			state, found, err := store.LoadCurrentState(ctx, newer.AccountID)
+			if err != nil || !found || state.OutcomeID != newer.OutcomeID || state.InputVersion != newer.InputVersion || state.ConfigRevision != newer.ConfigRevision || state.DispatchRevision != newer.DispatchRevision || state.AccountStatus != newer.AccountStatus || !sameCooldownFence(state.CooldownFence, newFence) {
+				t.Fatalf("strictly newer cooldown epoch must advance stale state: found=%t state=%#v err=%v", found, state, err)
+			}
+			assertStoredOutcomeProjectionPresent(t, store, newer.RequestID)
+		})
+	}
 }
 
 func TestSQLiteCooldownTerminalPreservesFenceAndRejectsMismatchedOutputFence(t *testing.T) {
@@ -469,6 +506,7 @@ func TestSQLiteCooldownTerminalPreservesFenceAndRejectsMismatchedOutputFence(t *
 	if err != nil || !found || state.AccountStatus != "error" || state.NextDueAt != nil || state.FailureCount != 2 || !sameCooldownFence(state.CooldownFence, fence) {
 		t.Fatalf("terminal current state must retain final cooldown audit fence: found=%t state=%#v err=%v", found, state, err)
 	}
+	assertStoredOutcomeProjectionPresent(t, store, terminal.RequestID)
 	wrongFence := &CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: "wrong-terminal-generation"}
 	invalid := terminal
 	invalid.OutcomeID = "terminal-invalid"

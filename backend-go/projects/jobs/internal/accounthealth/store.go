@@ -346,12 +346,14 @@ func (s *Store) AppendOutcome(ctx context.Context, lease OwnerLease, outcome Out
 	if err := validateOutcomeStateContract(outcome); err != nil {
 		return false, err
 	}
-	// A projection is a conditional business-state command, not immutable
-	// probe evidence. Persist it only after the jobs current-state CAS accepts
-	// the same outcome; otherwise the durable row is audit/source-settlement
-	// only and Node must not project a stale decision.
+	// A regular health projection is a conditional business-state command, not
+	// immutable probe evidence. Persist it only after the jobs current-state
+	// CAS accepts the same outcome; otherwise the durable row is audit-only and
+	// Node must not project a stale decision. Cooldown projections are different:
+	// their business fence is carried to the Node projector, which must make the
+	// final stale decision when this jobs-side current-state CAS misses.
 	storedOutcome := outcome
-	if outcome.Projection != nil {
+	if outcome.Projection != nil && outcome.Projection.ExpectedCooldownFence == nil {
 		storedOutcome.Projection = nil
 	}
 	payload, err := json.Marshal(storedOutcome)
@@ -578,10 +580,12 @@ WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revisi
 	// input's status and bounded due time so the same request ID is not
 	// permanently deduplicated. Never turn this bootstrap into an UPSERT: a
 	// concurrent state writer must win rather than be overwritten.
-	return s.insertTaskFailureBaselineTx(ctx, tx, outcome)
+	return s.insertCurrentStateBaselineTx(ctx, tx, outcome)
 }
 
-func (s *Store) insertTaskFailureBaselineTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+// insertCurrentStateBaselineTx is insert-only: it may bootstrap a missing
+// current-state row, but an existing row always wins and is never overwritten.
+func (s *Store) insertCurrentStateBaselineTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
 	args := currentStateArgs(outcome, s.mode)
 	var result sql.Result
 	var err error
@@ -647,9 +651,11 @@ WHERE (account_health_current_state.input_version < excluded.input_version
 	return execCurrentStateCAS(ctx, tx, query, args...)
 }
 
-// Cooldown transitions require an already-recorded fence. They intentionally
-// use UPDATE instead of UPSERT: a missing state cannot prove that the retest
-// still owns the cooldown generation and is therefore outcome-only stale.
+// Cooldown transitions first require an already-recorded fence and therefore
+// use a strict UPDATE. If that UPDATE finds no row, an insert-only bootstrap
+// may create the missing state; ON CONFLICT leaves any existing generation,
+// status, or revision untouched. Node still performs the final business-fence
+// stale decision for the durable cooldown projection.
 func (s *Store) updateCooldownCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
 	fence := outcome.Projection.ExpectedCooldownFence
 	if s.mode == StorePostgres {
@@ -665,7 +671,11 @@ WHERE account_id=$1
   AND cooldown_generation=$20
   AND cooldown_source_config_revision IS NOT DISTINCT FROM $21`
 		args = append(args, outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC(), fence.Generation, nullableInt64(fence.SourceConfigRevision))
-		return execCurrentStateCAS(ctx, tx, query, args...)
+		stateApplied, err := execCurrentStateCAS(ctx, tx, query, args...)
+		if err != nil || stateApplied {
+			return stateApplied, err
+		}
+		return s.upsertCooldownCurrentStateEpochTx(ctx, tx, outcome)
 	}
 	query := `UPDATE account_health_current_state SET outcome_id=?, outcome=?, observed_at=?, input_version=?, config_revision=?, dispatch_revision=?, status_code=?, error_code=?, error_message=?, next_due_at=?, failure_count=?, failure_started_at=?, account_status=?, cooldown_observation_started_at=?, cooldown_generation=?, cooldown_source_config_revision=?, updated_at=?
 WHERE account_id=?
@@ -682,6 +692,41 @@ WHERE account_id=?
 		outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
 		outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC().Format(time.RFC3339Nano), fence.Generation, nullableInt64(fence.SourceConfigRevision),
 	)
+	stateApplied, err := execCurrentStateCAS(ctx, tx, query, args...)
+	if err != nil || stateApplied {
+		return stateApplied, err
+	}
+	return s.upsertCooldownCurrentStateEpochTx(ctx, tx, outcome)
+}
+
+// upsertCooldownCurrentStateEpochTx only inserts a missing row or advances a
+// strictly newer input/config/dispatch epoch. It deliberately does not
+// replace a same-epoch row whose cooldown generation/status fence mismatches;
+// that outcome remains available to Node for its business-fence stale check.
+func (s *Store) upsertCooldownCurrentStateEpochTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	args := currentStateArgs(outcome, s.mode)
+	var query string
+	if s.mode == StorePostgres {
+		query = `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4)
+ON CONFLICT (account_id) DO UPDATE SET outcome_id=EXCLUDED.outcome_id, outcome=EXCLUDED.outcome, observed_at=EXCLUDED.observed_at, input_version=EXCLUDED.input_version, config_revision=EXCLUDED.config_revision, dispatch_revision=EXCLUDED.dispatch_revision, status_code=EXCLUDED.status_code, error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, next_due_at=EXCLUDED.next_due_at, failure_count=EXCLUDED.failure_count, failure_started_at=EXCLUDED.failure_started_at, account_status=EXCLUDED.account_status, cooldown_observation_started_at=EXCLUDED.cooldown_observation_started_at, cooldown_generation=EXCLUDED.cooldown_generation, cooldown_source_config_revision=EXCLUDED.cooldown_source_config_revision, updated_at=EXCLUDED.updated_at
+WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_version
+       OR (juhe_jobs.account_health_current_state.input_version = EXCLUDED.input_version
+       AND juhe_jobs.account_health_current_state.config_revision < EXCLUDED.config_revision)
+       OR (juhe_jobs.account_health_current_state.input_version = EXCLUDED.input_version
+       AND juhe_jobs.account_health_current_state.config_revision = EXCLUDED.config_revision
+       AND juhe_jobs.account_health_current_state.dispatch_revision < EXCLUDED.dispatch_revision))`
+	} else {
+		query = `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT (account_id) DO UPDATE SET outcome_id=excluded.outcome_id, outcome=excluded.outcome, observed_at=excluded.observed_at, input_version=excluded.input_version, config_revision=excluded.config_revision, dispatch_revision=excluded.dispatch_revision, status_code=excluded.status_code, error_code=excluded.error_code, error_message=excluded.error_message, next_due_at=excluded.next_due_at, failure_count=excluded.failure_count, failure_started_at=excluded.failure_started_at, account_status=excluded.account_status, cooldown_observation_started_at=excluded.cooldown_observation_started_at, cooldown_generation=excluded.cooldown_generation, cooldown_source_config_revision=excluded.cooldown_source_config_revision, updated_at=excluded.updated_at
+WHERE (account_health_current_state.input_version < excluded.input_version
+       OR (account_health_current_state.input_version = excluded.input_version
+       AND account_health_current_state.config_revision < excluded.config_revision)
+       OR (account_health_current_state.input_version = excluded.input_version
+       AND account_health_current_state.config_revision = excluded.config_revision
+       AND account_health_current_state.dispatch_revision < excluded.dispatch_revision))`
+	}
 	return execCurrentStateCAS(ctx, tx, query, args...)
 }
 
@@ -1018,7 +1063,12 @@ func outcomeCooldownFence(outcome Outcome) *CooldownFence {
 		return outcome.CooldownFence
 	}
 	if outcome.Projection != nil {
-		return outcome.Projection.CooldownFence
+		if outcome.Projection.CooldownFence != nil {
+			return outcome.Projection.CooldownFence
+		}
+		// A cooldown-success projection carries the same immutable fence as
+		// ExpectedCooldownFence even when it has no output-side fence copy.
+		return outcome.Projection.ExpectedCooldownFence
 	}
 	return nil
 }

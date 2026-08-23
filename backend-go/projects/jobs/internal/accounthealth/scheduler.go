@@ -461,7 +461,7 @@ func explicitMutationKind(input Input, prior CurrentState, found bool) (string, 
 		return "health", true
 	case "temporary_unavailable", "rate_limited":
 		fence := input.Cooldown
-		if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision {
+		if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision && (input.Cooldown == nil || sameCooldownFence(prior.CooldownFence, input.Cooldown)) {
 			fence = prior.CooldownFence
 		}
 		return "cooldown_retest", validCooldownFence(fence, input)
@@ -573,6 +573,12 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		return "health", now, true
 	}
 	if state.AccountStatus == "temporary_unavailable" || state.AccountStatus == "rate_limited" {
+		if !sameCooldownFence(state.CooldownFence, input.Cooldown) {
+			if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
+				return "", time.Time{}, false
+			}
+			return "cooldown_retest", *input.Eligibility.CooldownUntil, true
+		}
 		if !validCooldownFence(state.CooldownFence, input) {
 			return "", time.Time{}, false
 		}
@@ -666,7 +672,7 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 
 func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, priorFound bool, expectedStatus string, observed time.Time) {
 	fence := input.Cooldown
-	if priorFound && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision {
+	if priorFound && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision && (input.Cooldown == nil || sameCooldownFence(prior.CooldownFence, input.Cooldown)) {
 		fence = prior.CooldownFence
 	}
 	if !validCooldownFence(fence, input) {

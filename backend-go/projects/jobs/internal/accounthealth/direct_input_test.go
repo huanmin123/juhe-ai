@@ -351,6 +351,15 @@ func TestCollectDirectCandidatePagesStopsAtBoundedScanCap(t *testing.T) {
 	}
 }
 
+func TestDirectInputScanCapAllowsCooldownBacklogToDrain(t *testing.T) {
+	if got, want := directInputScanCap(64), 1024; got != want {
+		t.Fatalf("production direct-input scan cap = %d, want %d", got, want)
+	}
+	if got, want := directInputScanCap(1000), maxDirectInputScanCandidates; got != want {
+		t.Fatalf("scan cap must remain bounded at %d, got %d", want, got)
+	}
+}
+
 func TestCollectDirectCandidatePagesRejectsInvalidPageSize(t *testing.T) {
 	err := collectDirectCandidatePages(3, func(int) (int, error) {
 		return 4, nil

@@ -330,10 +330,19 @@ func collectDirectCandidatePagesWithCap(limit, scanCap int, loadPage func(offset
 	return nil
 }
 
-const maxDirectInputScanCandidates = 10_000
+const (
+	maxDirectInputScanCandidates = 10_000
+	directInputScanMultiplier    = 16
+)
 
 func directInputScanCap(limit int) int {
-	cap := limit * 4
+	// A small accepted batch must still be able to pass a durable backlog of
+	// due cooldown rows. The SQL ordering deliberately interleaves cooldown
+	// and active work, but a 4x window at the production limit (64) only
+	// examines 256 rows and can leave a newly due account behind a stuck
+	// cooldown backlog. Keep the work bounded while giving each cycle a 16x
+	// admission window (1024 rows at the current production limit).
+	cap := limit * directInputScanMultiplier
 	if cap < limit {
 		cap = limit
 	}
