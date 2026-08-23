@@ -89,6 +89,74 @@ export type DispatchPreparationResult =
   | { outcome: 'fallback'; reason: string; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
 
+type GatewayCandidateDecision = 'entered' | 'retained' | 'postponed' | 'skipped' | 'selected'
+
+function gatewayCandidateLogFields(
+  account: UpstreamAccount,
+  modelPriority: GatewayAccountModelPriority,
+  decision: GatewayCandidateDecision,
+  reason?: string
+): Record<string, unknown> {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    priority: account.priority,
+    fallback: account.fallbackEnabled,
+    super: account.superPriorityEnabled,
+    modelRank: modelPriority.rankByAccountId.get(account.id),
+    decision,
+    ...(reason ? { reason } : {})
+  }
+}
+
+function gatewayCandidateSnapshot(
+  before: UpstreamAccount[],
+  after: UpstreamAccount[],
+  modelPriority: GatewayAccountModelPriority,
+  postponedAccountIds: readonly string[] = [],
+  reason?: string
+): Record<string, unknown>[] {
+  const afterIds = new Set(after.map((account) => account.id))
+  const afterIndexById = new Map(after.map((account, index) => [account.id, index]))
+  const postponedIds = new Set(postponedAccountIds)
+  return before.map((account, candidateIndex) => {
+    const retained = afterIds.has(account.id)
+    const postponed = postponedIds.has(account.id)
+    return {
+      ...gatewayCandidateLogFields(
+      account,
+      modelPriority,
+      retained ? postponed ? 'postponed' : 'retained' : 'skipped',
+      postponed ? reason ?? 'stage_reorder' : reason ?? (retained ? undefined : 'stage_filter')
+      ),
+      candidateIndex,
+      effectiveCandidateIndex: afterIndexById.get(account.id)
+    }
+  })
+}
+
+function logGatewayCandidateSnapshot(input: {
+  stage: 'account.session_affinity' | 'account.runtime_suppression' | 'account.latency_degradation' | 'account.proxy_health' | 'account.client_ip_avoidance' | 'account.client_source_avoidance' | 'account.dispatch_candidates'
+  traceId: string
+  groupId: string
+  before: UpstreamAccount[]
+  after: UpstreamAccount[]
+  modelPriority: GatewayAccountModelPriority
+  stageStartedAt: number
+  reason?: string
+  postponedAccountIds?: readonly string[]
+  stageDecisions?: readonly Record<string, unknown>[]
+}): void {
+  logRequestStage(input.stage, {
+    traceId: input.traceId,
+    groupId: input.groupId,
+    candidateSnapshot: gatewayCandidateSnapshot(input.before, input.after, input.modelPriority, input.postponedAccountIds, input.reason),
+    candidateAccountCount: input.before.length,
+    retainedAccountCount: input.after.length,
+    ...(input.stageDecisions ? { stageDecisions: input.stageDecisions } : {})
+  }, 'success', input.stageStartedAt)
+}
+
 export async function prepareOpenAIGatewayDispatchAccounts(input: {
   req: Request
   res: Response
@@ -135,7 +203,8 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     traceId: input.usageContext.traceId,
     groupId: input.groupId,
     candidateAccountCount: orderedCandidateAccounts.length,
-    applied: Boolean(input.sessionAffinityKey)
+    applied: Boolean(input.sessionAffinityKey),
+    candidateSnapshot: gatewayCandidateSnapshot(input.candidateAccounts, orderedCandidateAccounts, input.modelPriority)
   }, 'success', sessionAffinityStartedAt)
   const suppressionStartedAt = performance.now()
   const bypassLocalSuppression = input.ignoreAccountRuntimeSuppression === true || isAccountProbeTrafficSource(input.usageContext.trafficSource)
@@ -147,7 +216,14 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     groupId: input.groupId,
     candidateAccountCount: initialLocalSuppressionFilter.accounts.length,
     suppressedCount: initialLocalSuppressionFilter.suppressedCount,
-    bypassed: bypassLocalSuppression
+    bypassed: bypassLocalSuppression,
+    candidateSnapshot: gatewayCandidateSnapshot(
+      orderedCandidateAccounts,
+      initialLocalSuppressionFilter.accounts,
+      input.modelPriority,
+      initialLocalSuppressionFilter.suppressedAccountIds,
+      'runtime_suppression'
+    )
   }, 'success', suppressionStartedAt)
   let precheckHalfOpenEligible = false
   if (initialLocalSuppressionFilter.allSuppressed) {
@@ -254,7 +330,14 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     groupId: input.groupId,
     candidateAccountCount: latencyDegradationOrder.accounts.length,
     applied: latencyDegradationOrder.applied,
-    bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded
+    bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded,
+    candidateSnapshot: gatewayCandidateSnapshot(
+      runtimeDegradationOrder.accounts,
+      latencyDegradationOrder.accounts,
+      input.modelPriority,
+      latencyDegradationOrder.degradedAccountIds,
+      'latency_degraded'
+    )
   }, 'success', latencyDegradationStartedAt)
   if (latencyDegradationOrder.applied || latencyDegradationOrder.bypassedAllDegraded) {
     logger.warn({
@@ -288,7 +371,14 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     groupId: input.groupId,
     candidateAccountCount: proxyHealthOrder.accounts.length,
     applied: proxyHealthOrder.applied,
-    bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided
+    bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided,
+    candidateSnapshot: gatewayCandidateSnapshot(
+      latencyDegradationOrder.accounts,
+      proxyHealthOrder.accounts,
+      input.modelPriority,
+      proxyHealthOrder.avoidedAccountIds,
+      'proxy_health'
+    )
   }, 'success', proxyHealthStartedAt)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
@@ -336,7 +426,14 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     applied: clientIpAccountAvoidance.applied,
     avoidedAccountCount: clientIpAccountAvoidance.avoidedAccountIds.length,
     bypassedAllAvoided: clientIpAccountAvoidance.bypassedAllAvoided,
-    clientIpPresent: Boolean(input.clientIp)
+    clientIpPresent: Boolean(input.clientIp),
+    candidateSnapshot: gatewayCandidateSnapshot(
+      proxyHealthOrder.accounts,
+      clientIpAccountAvoidance.accounts,
+      input.modelPriority,
+      clientIpAccountAvoidance.avoidedAccountIds,
+      'client_ip_avoidance'
+    )
   }, 'success', clientIpAvoidanceStartedAt)
   if (clientIpAccountAvoidance.applied || clientIpAccountAvoidance.bypassedAllAvoided) {
     logger.warn({
@@ -376,7 +473,14 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     applied: clientSourceAvoidance.applied,
     failureCount: clientSourceAvoidance.failureCount,
     avoidedAccountCount: clientSourceAvoidance.avoidedAccountIds.length,
-    bypassedAllAvoided: clientSourceAvoidance.bypassedAllAvoided
+    bypassedAllAvoided: clientSourceAvoidance.bypassedAllAvoided,
+    candidateSnapshot: gatewayCandidateSnapshot(
+      clientIpAccountAvoidance.accounts,
+      clientSourceAvoidance.accounts,
+      input.modelPriority,
+      clientSourceAvoidance.avoidedAccountIds,
+      'client_source_avoidance'
+    )
   }, 'success', clientSourceAvoidanceStartedAt)
   if (clientSourceAvoidance.applied || clientSourceAvoidance.bypassedAllAvoided) {
     logger.warn({
@@ -424,7 +528,49 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     return readyPreparation
   }
   let readyAccounts = readyPreparation.accounts
+  logGatewayCandidateSnapshot({
+    stage: 'account.dispatch_candidates',
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    before: input.candidateAccounts,
+    after: readyAccounts,
+    modelPriority: input.modelPriority,
+    stageStartedAt: candidatePreparationStartedAt,
+    reason: 'prepared_for_upstream_dispatch',
+    stageDecisions: [
+      {
+        stage: 'runtime',
+        skippedAccountIds: initialLocalSuppressionFilter.suppressedAccountIds,
+        reason: 'runtime_suppression'
+      },
+      {
+        stage: 'latency',
+        postponedAccountIds: latencyDegradationOrder.degradedAccountIds,
+        reason: 'latency_degraded'
+      },
+      {
+        stage: 'proxy',
+        postponedAccountIds: proxyHealthOrder.avoidedAccountIds,
+        reason: 'proxy_health'
+      },
+      {
+        stage: 'client_ip',
+        postponedAccountIds: clientIpAccountAvoidance.avoidedAccountIds,
+        reason: 'client_ip_avoidance'
+      },
+      {
+        stage: 'source',
+        postponedAccountIds: clientSourceAvoidance.avoidedAccountIds,
+        reason: 'client_source_avoidance'
+      },
+      {
+        stage: 'hot_quality',
+        reason: 'hot_quality_order'
+      }
+    ]
+  })
   try {
+    const accountsBeforeSessionAffinityClaim = readyAccounts
     const proposedAccountId = readyAccounts[0]?.id
     const claimedAccountId = proposedAccountId
       ? await claimOpenAIAccountForSessionAsync(input.sessionAffinityKey, proposedAccountId, {
@@ -439,6 +585,21 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
         input.sessionAffinityKey,
         dispatchOrderingOptions
       )
+      logGatewayCandidateSnapshot({
+        stage: 'account.dispatch_candidates',
+        traceId: input.usageContext.traceId,
+        groupId: input.groupId,
+        before: accountsBeforeSessionAffinityClaim,
+        after: readyAccounts,
+        modelPriority: input.modelPriority,
+        stageStartedAt: candidatePreparationStartedAt,
+        reason: 'session_affinity_claim',
+        stageDecisions: [{
+          stage: 'session_affinity_claim',
+          proposedAccountId,
+          claimedAccountId
+        }]
+      })
     }
     if (input.sessionAffinityKey && proposedAccountId) {
       input.auditCapture.addGatewayMetadata({
@@ -511,7 +672,13 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     groupId: input.groupId,
     candidateAccountCount: input.accounts.length,
     allowedAccountCount: accounts.length,
-    deniedAccountCount: authorizationQuotaDeniedAccountCount
+    deniedAccountCount: authorizationQuotaDeniedAccountCount,
+    candidateSnapshot: input.accounts.map((account) => gatewayCandidateLogFields(
+      account,
+      input.dispatchOrderingOptions.modelPriority ?? { rankByAccountId: new Map() },
+      accounts.includes(account) ? 'retained' : 'skipped',
+      accounts.includes(account) ? undefined : 'authorization_quota'
+    ))
   }, authorizationQuotaDeniedAccountCount > 0 ? 'expected_failure' : 'success', quotaStartedAt)
   const capacityStartedAt = performance.now()
   if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
@@ -521,7 +688,15 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     traceId: input.usageContext.traceId,
     groupId: input.groupId,
     candidateAccountCount: accounts.length,
-    groupType: input.dispatchOrderingOptions.groupType
+    groupType: input.dispatchOrderingOptions.groupType,
+    candidateSnapshot: accounts.map((account) => gatewayCandidateLogFields(
+      account,
+      input.dispatchOrderingOptions.modelPriority ?? { rankByAccountId: new Map() },
+      'retained',
+      account.currentConcurrency !== undefined && account.currentConcurrency >= account.concurrencyLimit
+        ? 'capacity_busy_snapshot'
+        : undefined
+    ))
   }, 'success', capacityStartedAt)
 
   if (accounts.length === 0) {

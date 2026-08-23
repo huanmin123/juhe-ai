@@ -69,6 +69,92 @@ func TestStoreLoadDirectInputSuppressionsReturnsOnlyActiveFences(t *testing.T) {
 	}
 }
 
+func TestStoreDuplicateDirectInputInvalidRefreshesSuppressionOnly(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	firstObserved := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	firstDue := firstObserved.Add(5 * time.Minute)
+	secondObserved := firstObserved.Add(6 * time.Minute)
+	secondDue := secondObserved.Add(5 * time.Minute)
+	first := Outcome{
+		OutcomeID: "direct-refresh-first", RequestID: "direct-refresh-request", AccountID: "direct-refresh-account",
+		Outcome: OutcomeTaskFailed, ObservedAt: firstObserved, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		ErrorCode: "direct_input_invalid", NextDueAt: &firstDue, FailureCount: 1, FailureStartedAt: &firstObserved,
+	}
+	inserted, err := store.AppendOutcome(ctx, lease, first)
+	if err != nil || !inserted {
+		t.Fatalf("first direct-input outcome inserted=%t err=%v", inserted, err)
+	}
+	stateBefore, found, err := store.LoadCurrentState(ctx, first.AccountID)
+	if err != nil || !found {
+		t.Fatalf("load first current state: found=%t state=%#v err=%v", found, stateBefore, err)
+	}
+	second := first
+	second.OutcomeID = "direct-refresh-second-id-is-ignored"
+	second.ObservedAt = secondObserved
+	second.NextDueAt = &secondDue
+	inserted, err = store.AppendOutcome(ctx, lease, second)
+	if err != nil || inserted {
+		t.Fatalf("duplicate direct-input outcome inserted=%t err=%v", inserted, err)
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_health_outcomes WHERE request_id=?`, first.RequestID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate direct-input outcome count=%d err=%v", count, err)
+	}
+	var nextDueText, updatedText string
+	if err := store.db.QueryRowContext(ctx, `SELECT next_due_at,updated_at FROM account_health_direct_input_suppressions WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, first.AccountID, first.InputVersion, first.ConfigRevision, first.DispatchRevision).Scan(&nextDueText, &updatedText); err != nil {
+		t.Fatalf("read refreshed suppression: %v", err)
+	}
+	if nextDueText != secondDue.Format(time.RFC3339Nano) || updatedText != secondObserved.Format(time.RFC3339Nano) {
+		t.Fatalf("suppression was not refreshed: next_due_at=%q updated_at=%q", nextDueText, updatedText)
+	}
+	stateAfter, found, err := store.LoadCurrentState(ctx, first.AccountID)
+	if err != nil || !found || stateAfter.OutcomeID != stateBefore.OutcomeID || !stateAfter.ObservedAt.Equal(stateBefore.ObservedAt) || stateAfter.NextDueAt == nil || stateBefore.NextDueAt == nil || !stateAfter.NextDueAt.Equal(*stateBefore.NextDueAt) {
+		t.Fatalf("duplicate refresh must not change current state: before=%#v after=%#v found=%t err=%v", stateBefore, stateAfter, found, err)
+	}
+}
+
+func TestStoreDuplicateDirectInputInvalidDifferentGenerationDoesNotRefreshSuppression(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	observed := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	firstDue := observed.Add(5 * time.Minute)
+	secondObserved := observed.Add(6 * time.Minute)
+	secondDue := secondObserved.Add(5 * time.Minute)
+	first := Outcome{
+		OutcomeID: "direct-generation-a", RequestID: "direct-generation-shared-request", AccountID: "direct-generation-account",
+		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		ErrorCode: "direct_input_invalid", NextDueAt: &firstDue, FailureCount: 1, FailureStartedAt: &observed,
+	}
+	if inserted, err := store.AppendOutcome(ctx, lease, first); err != nil || !inserted {
+		t.Fatalf("first generation outcome inserted=%t err=%v", inserted, err)
+	}
+	second := first
+	second.OutcomeID = "direct-generation-b-is-ignored"
+	second.ObservedAt = secondObserved
+	second.InputVersion = 7
+	second.ConfigRevision = 8
+	second.DispatchRevision = 9
+	second.NextDueAt = &secondDue
+	if inserted, err := store.AppendOutcome(ctx, lease, second); err != nil || inserted {
+		t.Fatalf("different-generation duplicate inserted=%t err=%v", inserted, err)
+	}
+	var gotDue, gotUpdated string
+	if err := store.db.QueryRowContext(ctx, `SELECT next_due_at,updated_at FROM account_health_direct_input_suppressions WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, first.AccountID, first.InputVersion, first.ConfigRevision, first.DispatchRevision).Scan(&gotDue, &gotUpdated); err != nil {
+		t.Fatalf("read generation A suppression: %v", err)
+	}
+	if gotDue != firstDue.Format(time.RFC3339Nano) || gotUpdated != observed.Format(time.RFC3339Nano) {
+		t.Fatalf("generation A suppression changed: next_due_at=%q updated_at=%q", gotDue, gotUpdated)
+	}
+	var generationBCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_health_direct_input_suppressions WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, second.AccountID, second.InputVersion, second.ConfigRevision, second.DispatchRevision).Scan(&generationBCount); err != nil {
+		t.Fatalf("read generation B suppression: %v", err)
+	}
+	if generationBCount != 0 {
+		t.Fatalf("different-generation duplicate must not create suppression B: count=%d", generationBCount)
+	}
+}
+
 // This is intentionally opt-in because the configured URL must point to an
 // isolated jobs schema. It exercises PostgreSQL's ON CONFLICT and null-safe
 // cooldown-fence predicates rather than assuming SQLite's syntax is enough.

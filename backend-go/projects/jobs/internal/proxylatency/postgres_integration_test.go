@@ -15,10 +15,196 @@ import (
 const (
 	pgSmokeJobsURLEnv      = "J3A_PG_SMOKE_JOBS_URL"
 	pgSmokeInputURLEnv     = "J3A_PG_SMOKE_INPUT_URL"
+	pgProjectorURLEnv      = "J3A_PG_PROJECTOR_URL"
 	pgSmokeRequiredEnv     = "J3A_PG_SMOKE_REQUIRED"
 	pgSmokePrefixEnv       = "J3A_PG_SMOKE_DB_PREFIX"
 	pgSmokeDefaultDBPrefix = "juhe_ai_sub2api_dev_j3a_"
 )
+
+// TestPostgresResultProjectorSmoke is the explicit Go business-result gate.
+// It is opt-in because it must use a disposable PgBouncer database and a
+// result-role URL that can access juhe_business.  The generic Node CRUD smoke
+// intentionally does not exercise this path after the Node writer removal.
+func TestPostgresResultProjectorSmoke(t *testing.T) {
+	jobsURL := strings.TrimSpace(os.Getenv(pgSmokeJobsURLEnv))
+	resultURL := strings.TrimSpace(os.Getenv(pgProjectorURLEnv))
+	required, err := parseSmokeRequired(os.Getenv(pgSmokeRequiredEnv))
+	if err != nil {
+		t.Fatalf("J3a projector PostgreSQL smoke 配置错误: %s", err)
+	}
+	if jobsURL == "" && resultURL == "" && !required {
+		t.Skipf("J3a projector PostgreSQL smoke skipped: set %s, %s and %s=1 for an isolated required run", pgSmokeJobsURLEnv, pgProjectorURLEnv, pgSmokeRequiredEnv)
+	}
+	if jobsURL == "" || resultURL == "" {
+		t.Fatalf("J3a projector PostgreSQL smoke requires both %s and %s", pgSmokeJobsURLEnv, pgProjectorURLEnv)
+	}
+	jobsDatabase, err := validateProjectorURL(jobsURL)
+	if err != nil {
+		t.Fatalf("J3a projector jobs URL preflight failed: %s", redactPGError(err, jobsURL))
+	}
+	resultDatabase, err := validateProjectorURL(resultURL)
+	if err != nil {
+		t.Fatalf("J3a projector result URL preflight failed: %s", redactPGError(err, resultURL))
+	}
+	if jobsDatabase != resultDatabase {
+		t.Fatalf("J3a projector jobs/result URL 必须指向同一 scratch database: jobs=%q result=%q", jobsDatabase, resultDatabase)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: jobsURL})
+	if err != nil {
+		t.Fatalf("open J3a projector jobs PostgreSQL failed: %s", redactPGError(err, jobsURL))
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close J3a projector jobs PostgreSQL failed: %s", redactPGError(err, jobsURL))
+		}
+	})
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatalf("J3a projector jobs EnsureSchema failed: %s", redactPGError(err, jobsURL))
+	}
+	business, err := sql.Open("pgx", resultURL)
+	if err != nil {
+		t.Fatalf("open J3a projector result PostgreSQL failed: %s", redactPGError(err, resultURL))
+	}
+	t.Cleanup(func() {
+		if err := business.Close(); err != nil {
+			t.Errorf("close J3a projector result PostgreSQL failed: %s", redactPGError(err, resultURL))
+		}
+	})
+	business.SetMaxOpenConns(2)
+	business.SetMaxIdleConns(1)
+	if err := business.PingContext(ctx); err != nil {
+		t.Fatalf("ping J3a projector result PostgreSQL failed: %s", redactPGError(err, resultURL))
+	}
+	projector, err := NewResultProjector(store, business, ResultProjectorConfig{ConsumerKey: "j3a-pg-projector-smoke", PollInterval: time.Second, BatchSize: 10}, nil)
+	if err != nil {
+		t.Fatalf("create J3a result projector failed: %s", err)
+	}
+	if err := projector.CheckContract(ctx); err != nil {
+		t.Fatalf("J3a result projector CheckContract failed: %s", redactPGError(err, resultURL))
+	}
+
+	var systemAccountID string
+	if err := business.QueryRowContext(ctx, `SELECT id FROM juhe_business.system_accounts ORDER BY id LIMIT 1`).Scan(&systemAccountID); err != nil {
+		t.Fatalf("J3a projector business fixture requires a system account: %s", redactPGError(err, resultURL))
+	}
+	ownerID := fmt.Sprintf("j3a-projector-%d", time.Now().UTC().UnixNano())
+	proxyID := ownerID + "-proxy"
+	noTargetProxyID := ownerID + "-no-target"
+	outcomeIDs := make([]string, 0, 1)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, err = business.ExecContext(ctx, `INSERT INTO juhe_business.proxy_profiles (id,system_account_id,name,type,host,port,enabled,test_status,created_at,updated_at) VALUES ($1,$2,$3,'http','127.0.0.1',65535,TRUE,'unknown',$4,$4)`, proxyID, systemAccountID, ownerID, now)
+	if err != nil {
+		t.Fatalf("insert J3a projector business fixture failed: %s", redactPGError(err, resultURL))
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		for _, outcomeID := range outcomeIDs {
+			if _, err := business.ExecContext(cleanupCtx, `DELETE FROM juhe_business.proxy_latency_projection_receipts WHERE outcome_id=$1`, outcomeID); err != nil {
+				t.Errorf("J3a projector cleanup receipt %q failed: %s", outcomeID, redactPGError(err, resultURL))
+			}
+		}
+		if _, err := business.ExecContext(cleanupCtx, `DELETE FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`, "j3a-pg-projector-smoke"); err != nil {
+			t.Errorf("J3a projector cleanup cursor failed: %s", redactPGError(err, resultURL))
+		}
+		for _, fixtureID := range []string{proxyID, noTargetProxyID} {
+			if _, err := business.ExecContext(cleanupCtx, `DELETE FROM juhe_business.proxy_profiles WHERE id=$1`, fixtureID); err != nil {
+				t.Errorf("J3a projector cleanup proxy %q failed: %s", fixtureID, redactPGError(err, resultURL))
+			}
+		}
+	})
+
+	owner, acquired, err := store.AcquireOwnerLease(ctx, ownerID, 45*time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("acquire J3a projector owner lease failed: acquired=%t err=%s", acquired, redactPGError(err, jobsURL))
+	}
+	var proxyLease ProxyLease
+	proxyLeaseAcquired := false
+	cleanupProjectorSmokeRows(t, store, owner, &proxyLease, &proxyLeaseAcquired, proxyID, &outcomeIDs)
+	draft := InputDraft{ProxyID: proxyID, ConfigRevision: now.Format(time.RFC3339Nano), Trigger: TriggerManual, IssuedAt: now, ExpiresAt: now.Add(time.Minute), PolicyVersion: proxyLatencyInputPolicyVersion, ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 65535, Targets: []Target{{Provider: "smoke", ProfileID: "scratch", URL: "https://example.invalid/"}}}
+	issued, err := store.IssueInput(ctx, draft)
+	if err != nil {
+		t.Fatalf("issue J3a projector input failed: %s", redactPGError(err, jobsURL))
+	}
+	proxyLease, acquired, err = store.AcquireProxyLease(ctx, owner, proxyID, 30*time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("acquire J3a projector proxy lease failed: acquired=%t err=%s", acquired, redactPGError(err, jobsURL))
+	}
+	proxyLeaseAcquired = true
+	issuedSnapshot, claimToken, _, err := store.AdmitExecution(ctx, owner, proxyLease, issued)
+	if err != nil || claimToken == "" {
+		t.Fatalf("admit J3a projector execution failed: claim=%q err=%s", claimToken, redactPGError(err, jobsURL))
+	}
+	outcome := Outcome{OutcomeID: stableOutcomeID(issuedSnapshot.RequestID), RequestID: issuedSnapshot.RequestID, ProxyID: proxyID, ObservedAt: now.Add(time.Second), InputVersion: issuedSnapshot.InputVersion, ConfigRevision: issuedSnapshot.ConfigRevision, Trigger: TriggerManual, OwnerFenceToken: owner.FenceToken, ProxyFenceToken: proxyLease.FenceToken, OverallStatus: OverallPassed, Items: []ItemResult{{Provider: "smoke", ProfileID: "scratch", Status: ItemPassed, Outcome: OutcomeSuccess, HTTPStatus: 200}}, executionClaimToken: claimToken}
+	inserted, err := store.AppendOutcome(ctx, owner, proxyLease, outcome)
+	if err != nil || !inserted {
+		t.Fatalf("append J3a projector outcome failed: inserted=%t err=%s", inserted, redactPGError(err, jobsURL))
+	}
+	outcomeIDs = append(outcomeIDs, outcome.OutcomeID)
+	result, err := projector.ProjectOutcome(ctx, outcome)
+	if err != nil || result.Disposition != ProjectionApplied || !result.Changed {
+		t.Fatalf("J3a projector applied projection failed: disposition=%s changed=%t err=%s", result.Disposition, result.Changed, redactPGError(err, resultURL))
+	}
+	var status string
+	var lastTested time.Time
+	if err := business.QueryRowContext(ctx, `SELECT test_status,last_tested_at FROM juhe_business.proxy_profiles WHERE id=$1`, proxyID).Scan(&status, &lastTested); err != nil {
+		t.Fatalf("read J3a projector applied proxy state failed: %s", redactPGError(err, resultURL))
+	}
+	if status != string(OverallPassed) || !lastTested.Equal(outcome.ObservedAt) {
+		t.Fatalf("J3a projector applied proxy state mismatch: status=%q last_tested=%s", status, lastTested.UTC().Format(time.RFC3339Nano))
+	}
+	var disposition string
+	if err := business.QueryRowContext(ctx, `SELECT disposition FROM juhe_business.proxy_latency_projection_receipts WHERE outcome_id=$1`, outcome.OutcomeID).Scan(&disposition); err != nil || disposition != string(ProjectionApplied) {
+		t.Fatalf("J3a projector receipt mismatch: disposition=%q err=%s", disposition, redactPGError(err, resultURL))
+	}
+	if _, err := projector.Drain(ctx); err != nil {
+		t.Fatalf("J3a projector cursor drain failed: %s", redactPGError(err, resultURL))
+	}
+	var cursorOutcome string
+	if err := business.QueryRowContext(ctx, `SELECT outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`, "j3a-pg-projector-smoke").Scan(&cursorOutcome); err != nil || cursorOutcome != outcome.OutcomeID {
+		t.Fatalf("J3a projector cursor mismatch: outcome=%q err=%s", cursorOutcome, redactPGError(err, resultURL))
+	}
+	if replay, err := projector.ProjectOutcome(ctx, outcome); err != nil || replay.Disposition != ProjectionApplied || replay.Changed {
+		t.Fatalf("J3a projector receipt replay mismatch: disposition=%s changed=%t err=%s", replay.Disposition, replay.Changed, redactPGError(err, resultURL))
+	}
+	if err := projector.ProjectManualOutbound(ctx, outcome, "198.51.100.10", "smoke"); err != nil {
+		t.Fatalf("J3a projector outbound CAS failed: %s", redactPGError(err, resultURL))
+	}
+	var outboundIP string
+	if err := business.QueryRowContext(ctx, `SELECT outbound_ip FROM juhe_business.proxy_profiles WHERE id=$1`, proxyID).Scan(&outboundIP); err != nil || outboundIP != "198.51.100.10" {
+		t.Fatalf("J3a projector outbound state mismatch: ip=%q err=%s", outboundIP, redactPGError(err, resultURL))
+	}
+	if _, err := business.ExecContext(ctx, `UPDATE juhe_business.proxy_profiles SET updated_at=updated_at + INTERVAL '1 microsecond' WHERE id=$1`, proxyID); err != nil {
+		t.Fatalf("advance J3a projector config revision failed: %s", redactPGError(err, resultURL))
+	}
+	staleRequest := ManualRequest{SchemaVersion: 1, ProxyID: proxyID, ProxyName: ownerID, ConfigRevision: now.Format(time.RFC3339Nano), ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 65535}
+	stale, err := projector.ProjectManualNoTargets(ctx, staleRequest, now.Add(2*time.Second))
+	if err != nil || stale.Disposition != ProjectionStale {
+		t.Fatalf("J3a projector stale fence failed: disposition=%s err=%s", stale.Disposition, redactPGError(err, resultURL))
+	}
+	if _, err := business.ExecContext(ctx, `INSERT INTO juhe_business.proxy_profiles (id,system_account_id,name,type,host,port,enabled,test_status,created_at,updated_at) VALUES ($1,$2,$3,'http','127.0.0.1',65535,TRUE,'unknown',$4,$4)`, noTargetProxyID, systemAccountID, noTargetProxyID, now); err != nil {
+		t.Fatalf("insert J3a no-target fixture failed: %s", redactPGError(err, resultURL))
+	}
+	noTargetRequest := ManualRequest{SchemaVersion: 1, ProxyID: noTargetProxyID, ProxyName: noTargetProxyID, ConfigRevision: now.Format(time.RFC3339Nano), ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 65535}
+	noTarget, err := projector.ProjectManualNoTargets(ctx, noTargetRequest, now.Add(time.Second))
+	if err != nil || noTarget.Disposition != ProjectionApplied || !noTarget.Changed {
+		t.Fatalf("J3a projector no-target CAS failed: disposition=%s changed=%t err=%s", noTarget.Disposition, noTarget.Changed, redactPGError(err, resultURL))
+	}
+	if _, err := business.ExecContext(ctx, `DELETE FROM juhe_business.proxy_profiles WHERE id=$1`, noTargetProxyID); err != nil {
+		t.Fatalf("delete J3a no-target fixture failed: %s", redactPGError(err, resultURL))
+	}
+	deleted, err := projector.ProjectManualNoTargets(ctx, noTargetRequest, now.Add(2*time.Second))
+	if err != nil || deleted.Disposition != ProjectionIgnored || deleted.Reason != "proxy_missing_or_deleted" {
+		t.Fatalf("J3a projector deleted fence failed: disposition=%s reason=%q err=%s", deleted.Disposition, deleted.Reason, redactPGError(err, resultURL))
+	}
+}
+
+func validateProjectorURL(raw string) (string, error) {
+	return validatePgBouncerURL(raw)
+}
 
 // TestPostgresSmoke is deliberately opt-in. It must only be run against a
 // disposable child database whose application URLs terminate at PgBouncer.
@@ -344,6 +530,46 @@ func cleanupSmokeRows(t *testing.T, store *Store, owner OwnerLease, proxyID stri
 		}
 		if _, err := store.db.ExecContext(ctx, `DELETE FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND owner_id=$1`, owner.OwnerID); err != nil {
 			t.Errorf("J3a smoke cleanup owner row failed: %s", redactPGError(err, ""))
+		}
+	})
+}
+
+func cleanupProjectorSmokeRows(t *testing.T, store *Store, owner OwnerLease, proxyLease *ProxyLease, proxyLeaseAcquired *bool, proxyID string, outcomeIDs *[]string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if proxyLeaseAcquired != nil && *proxyLeaseAcquired {
+			if err := store.ReleaseProxyLease(ctx, *proxyLease); err != nil && !errors.Is(err, ErrProxyLeaseLost) {
+				t.Errorf("J3a projector smoke cleanup proxy lease release failed: %s", redactPGError(err, ""))
+			}
+		}
+		if err := store.ReleaseOwnerLease(ctx, owner); err != nil && !errors.Is(err, ErrOwnerLeaseLost) {
+			t.Errorf("J3a projector smoke cleanup owner lease release failed: %s", redactPGError(err, ""))
+		}
+		cleanupStatements := []string{
+			`DELETE FROM juhe_jobs.proxy_latency_execution_claims WHERE proxy_id=$1`,
+			`DELETE FROM juhe_jobs.proxy_latency_outcomes WHERE proxy_id=$1`,
+			`DELETE FROM juhe_jobs.proxy_latency_inputs WHERE proxy_id=$1`,
+			`DELETE FROM juhe_jobs.proxy_latency_input_versions WHERE proxy_id=$1`,
+			`DELETE FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1`,
+			`DELETE FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND owner_id=$1`,
+		}
+		for _, statement := range cleanupStatements {
+			argument := any(proxyID)
+			if strings.Contains(statement, "owner_leases") {
+				argument = owner.OwnerID
+			}
+			if _, err := store.db.ExecContext(ctx, statement, argument); err != nil {
+				t.Errorf("J3a projector smoke cleanup jobs rows failed: statement=%q err=%s", statement, redactPGError(err, ""))
+			}
+		}
+		if outcomeIDs != nil && len(*outcomeIDs) > 0 {
+			for _, outcomeID := range *outcomeIDs {
+				if _, err := store.db.ExecContext(ctx, `DELETE FROM juhe_jobs.proxy_latency_outcomes WHERE outcome_id=$1`, outcomeID); err != nil {
+					t.Errorf("J3a projector smoke cleanup outcome %q failed: %s", outcomeID, redactPGError(err, ""))
+				}
+			}
 		}
 	})
 }

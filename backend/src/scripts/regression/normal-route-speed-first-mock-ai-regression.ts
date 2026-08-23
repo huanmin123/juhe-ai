@@ -70,15 +70,20 @@ interface AllSuperPriorityScenario extends SpeedFirstScenario {
 }
 
 const model = 'gpt-5.5'
-const slowBodyDelayMs = 12_000
-const firstByteDeadlineMs = 10_000
+const thresholdFocus = process.env.JUHE_AI_SPEED_FIRST_THRESHOLD_FOCUS === '1'
+const configuredNumber = (name: string, fallback: number): number => {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+const firstByteDeadlineMs = configuredNumber('JUHE_AI_SPEED_FIRST_FIRST_BYTE_DEADLINE_MS', 10_000)
+const slowBodyDelayMs = configuredNumber('JUHE_AI_SPEED_FIRST_SLOW_BODY_DELAY_MS', firstByteDeadlineMs + 2_000)
 const speedFirstConfig: RouteStrategySpeedFirstConfig = {
-  slowTriggerCount: 2,
-  slowWindowSeconds: 60,
-  recoverySuccessCount: 3,
-  probeIntervalSeconds: 10,
-  degradedTtlSeconds: 60,
-  maxFirstByteRetriesPerRequest: 2
+  slowTriggerCount: configuredNumber('JUHE_AI_SPEED_FIRST_SLOW_TRIGGER_COUNT', 2),
+  slowWindowSeconds: configuredNumber('JUHE_AI_SPEED_FIRST_SLOW_WINDOW_SECONDS', 60),
+  recoverySuccessCount: configuredNumber('JUHE_AI_SPEED_FIRST_RECOVERY_SUCCESS_COUNT', 3),
+  probeIntervalSeconds: configuredNumber('JUHE_AI_SPEED_FIRST_PROBE_INTERVAL_SECONDS', 10),
+  degradedTtlSeconds: configuredNumber('JUHE_AI_SPEED_FIRST_DEGRADED_TTL_SECONDS', 60),
+  maxFirstByteRetriesPerRequest: configuredNumber('JUHE_AI_SPEED_FIRST_MAX_RETRIES_PER_REQUEST', 2)
 }
 const speedFirstRuntimeConfig = { ...speedFirstConfig, firstByteDeadlineMs }
 
@@ -152,8 +157,9 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   settingsRepository.updateSettings({
     temporaryUnschedulableRetryAttempts: 0,
-    textFirstResponseTimeoutSeconds: 30,
-    noAvailableAccountWaitTimeoutSeconds: 60
+    textFirstResponseTimeoutSeconds: Math.max(30, Math.ceil(firstByteDeadlineMs / 1000) + 30),
+    textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, Math.ceil(firstByteDeadlineMs / 1000) + 30),
+    noAvailableAccountWaitTimeoutSeconds: Math.max(60, Math.ceil(firstByteDeadlineMs / 1000) + 60)
   })
   gatewayCache.clearGatewayRuntimeCache()
 
@@ -173,10 +179,15 @@ try {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    await assertTransientSlowThenFastDoesNotDegrade(baseUrl, speedScenario)
-    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
-    await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
-    await assertCostFirstRouteUnaffected(baseUrl, costScenario)
+    if (thresholdFocus) {
+      await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(speedScenario.routeStrategyId)
+      await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
+      console.log(`普通路由速度优先阈值窗口 Mock AI 回归通过：首字截止 ${firstByteDeadlineMs}ms，慢样本触发 ${speedFirstConfig.slowTriggerCount} 次，窗口 ${speedFirstConfig.slowWindowSeconds}s；单次慢请求未立即切号，达到阈值后才后置慢账号`)
+    } else {
+      await assertTransientSlowThenFastDoesNotDegrade(baseUrl, speedScenario)
+      gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+      await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
+      await assertCostFirstRouteUnaffected(baseUrl, costScenario)
     await assertSpeedFirstCanCrossPriorityPreference(baseUrl, priorityScenario)
     await assertAllSuperPriorityLatencyRecovery(baseUrl, allSuperPriorityScenario)
     await assertBackgroundProbeRestoresPrimary(baseUrl, speedScenario)
@@ -194,7 +205,8 @@ try {
     await assertAllDegradedBypassKeepsOriginalOrder(baseUrl, speedScenario)
     await assertStreamSlowFirstByteRetriesBeforeDownstreamOutput(baseUrl, speedScenario)
 
-    console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、跨账户偏好覆盖、替补亲和回归、批量混合请求、降级后置、成本优先隔离、后台探针恢复、本地状态/样本/并发预占异常 fail-open、请求内旧候选不再预占、已降级候选不切换、全部降级旁路和流式首字确认切号均生效')
+      console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、跨账户偏好覆盖、替补亲和回归、批量混合请求、降级后置、成本优先隔离、后台探针恢复、本地状态/样本/并发预占异常 fail-open、请求内旧候选不再预占、已降级候选不切换、全部降级旁路和流式首字确认切号均生效')
+    }
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)

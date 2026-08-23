@@ -277,6 +277,27 @@ const accountConcurrencyRetryPolicy = exponentialRetryPolicy(
 // while auditing that untried keys remain, rather than claiming pool exhaustion.
 export const gatewayAccountApiKeyRequestAttemptSafetyLimit = runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit
 
+function logGatewayAccountDispatchDecision(input: {
+  traceId: string
+  account: UpstreamAccount
+  decision: 'skipped' | 'postponed' | 'selected' | 'retained'
+  reason: string
+  modelPriority?: GatewayAccountModelPriority
+  outcome?: 'success' | 'expected_failure'
+}): void {
+  logRequestStage('upstream.request_prepare', {
+    traceId: input.traceId,
+    accountId: input.account.id,
+    accountName: input.account.name,
+    priority: input.account.priority,
+    fallback: input.account.fallbackEnabled,
+    super: input.account.superPriorityEnabled,
+    modelRank: input.modelPriority?.rankByAccountId.get(input.account.id),
+    candidateDecision: input.decision,
+    decisionReason: input.reason
+  }, input.outcome ?? (input.decision === 'skipped' ? 'expected_failure' : 'success'))
+}
+
 export async function fetchFirstAvailableUpstream(
   req: Request,
   accounts: UpstreamAccount[],
@@ -420,6 +441,13 @@ export async function fetchFirstAvailableUpstream(
 
     for (const originalAccount of dispatchAccounts) {
       throwIfRequestAborted(signal)
+      logGatewayAccountDispatchDecision({
+        traceId: usageContext.traceId,
+        account: originalAccount,
+        decision: 'retained',
+        reason: 'dispatch_attempt_started',
+        modelPriority
+      })
       let accountCircuitAttempt: GatewayAccountCircuitAttempt | undefined
       // A reservation can only be created from an already registered attempt
       // of this request and carries its exact physical credential/key identity.
@@ -439,6 +467,13 @@ export async function fetchFirstAvailableUpstream(
         })
         if (circuitPreparation.outcome === 'blocked') {
           lastAttempt = accountCircuitBlockedAttempt(originalAccount, circuitPreparation.state.phase)
+          logGatewayAccountDispatchDecision({
+            traceId: usageContext.traceId,
+            account: originalAccount,
+            decision: 'skipped',
+            reason: `circuit_${circuitPreparation.state.phase}`,
+            modelPriority
+          })
           getRequestLogger().debug({
             event: 'gateway_account_circuit_dispatch_skipped',
             accountId: originalAccount.id,
@@ -479,6 +514,13 @@ export async function fetchFirstAvailableUpstream(
           })
       if (localSuppression.allSuppressed) {
         lastAttempt = locallySuppressedAttempt(originalAccount, localSuppression.nextRetryAfterMs)
+        logGatewayAccountDispatchDecision({
+          traceId: usageContext.traceId,
+          account: originalAccount,
+          decision: 'skipped',
+          reason: 'runtime_suppression',
+          modelPriority
+        })
         getRequestLogger().warn({
           event: 'gateway_local_account_suppression_dispatch_skip',
           accountId: originalAccount.id,
@@ -499,6 +541,13 @@ export async function fetchFirstAvailableUpstream(
       if (skippedProxyAttempt) {
         await releaseHalfOpenLease(halfOpenLease)
         lastAttempt = skippedProxyAttempt
+        logGatewayAccountDispatchDecision({
+          traceId: usageContext.traceId,
+          account: originalAccount,
+          decision: 'skipped',
+          reason: 'proxy_dispatch_failed',
+          modelPriority
+        })
         failedAccountIds.add(originalAccount.id)
         if (recoverableFailedAccountIds.has(originalAccount.id)) {
           cycleRecoverableAccountIds.add(originalAccount.id)
@@ -521,6 +570,13 @@ export async function fetchFirstAvailableUpstream(
         auditAttemptIndex = unavailableProxyAuditAttemptIndex
         await releaseHalfOpenLease(halfOpenLease)
         lastAttempt = unavailableProxyAttempt
+        logGatewayAccountDispatchDecision({
+          traceId: usageContext.traceId,
+          account: originalAccount,
+          decision: 'skipped',
+          reason: 'proxy_unavailable',
+          modelPriority
+        })
         failedAccountIds.add(originalAccount.id)
         continue
       }
@@ -586,6 +642,13 @@ export async function fetchFirstAvailableUpstream(
           ? accountConcurrencyLimitMessage(concurrencySlot, concurrencyAcquire.waitedMs)
           : accountConcurrencyLimitMessage(concurrencySlot)
         lastAttempt = accountCapacityLimitAttempt(originalAccount, message)
+        logGatewayAccountDispatchDecision({
+          traceId: usageContext.traceId,
+          account: originalAccount,
+          decision: 'skipped',
+          reason: 'capacity_limit',
+          modelPriority
+        })
         capacityLimitFailures.push({ account: originalAccount, message })
         continue
       }
@@ -635,6 +698,13 @@ export async function fetchFirstAvailableUpstream(
               (account.apiKeys?.length ?? 0) > 1
               && requestApiKeyAttemptCount >= gatewayAccountApiKeyRequestAttemptSafetyLimit
             ) {
+              logGatewayAccountDispatchDecision({
+                traceId: usageContext.traceId,
+                account,
+                decision: 'skipped',
+                reason: 'api_key_retry_budget_exhausted',
+                modelPriority
+              })
               recordAccountApiKeyRequestRetryBudgetExhausted(account, {
                 accountApiKeyAttemptCount,
                 requestApiKeyAttemptCount,
@@ -668,6 +738,13 @@ export async function fetchFirstAvailableUpstream(
                 : undefined
             })
             if (!selectedAccount) {
+              logGatewayAccountDispatchDecision({
+                traceId: usageContext.traceId,
+                account,
+                decision: 'skipped',
+                reason: 'api_key_pool_unavailable',
+                modelPriority
+              })
               logRequestStage('upstream.request_prepare', {
                 traceId: usageContext.traceId,
                 accountId: account.id,
@@ -975,6 +1052,13 @@ export async function fetchFirstAvailableUpstream(
                   status: response.status
                 }
                 if (response.ok) {
+                  logGatewayAccountDispatchDecision({
+                    traceId: usageContext.traceId,
+                    account,
+                    decision: 'selected',
+                    reason: 'upstream_response_accepted',
+                    modelPriority
+                  })
                   // Response headers only prove HTTP acceptance. The caller
                   // confirms failed sibling Keys after it has consumed the
                   // body and established protocolValidatedSuccess.
@@ -1243,6 +1327,14 @@ export async function fetchFirstAvailableUpstream(
                 }
                 if (neutralFirstByteDeadline && normalRouteFirstByteDeadline) {
                   const message = error instanceof Error ? error.message : String(error)
+                  logGatewayAccountDispatchDecision({
+                    traceId: usageContext.traceId,
+                    account,
+                    decision: 'skipped',
+                    reason: 'first_byte_timeout',
+                    modelPriority,
+                    outcome: 'expected_failure'
+                  })
                   auditCapture.completeAttempt(auditAttemptId, {
                     success: false,
                     errorPhase: 'upstream_request',

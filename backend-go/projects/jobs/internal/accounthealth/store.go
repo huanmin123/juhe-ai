@@ -377,6 +377,15 @@ func (s *Store) AppendOutcome(ctx context.Context, lease OwnerLease, outcome Out
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 ON CONFLICT (request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.Outcome, outcome.ObservedAt.UTC(), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), string(payload)).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
+			matches, matchErr := s.duplicateDirectInputOutcomeMatchesTx(ctx, tx, outcome)
+			if matchErr != nil {
+				return false, matchErr
+			}
+			if matches && outcome.NextDueAt != nil {
+				if err := s.refreshDirectInputSuppressionTx(ctx, tx, outcome); err != nil {
+					return false, err
+				}
+			}
 			return false, tx.Commit()
 		}
 		if err != nil {
@@ -399,6 +408,15 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.O
 		}
 		count, _ := result.RowsAffected()
 		if count == 0 {
+			matches, matchErr := s.duplicateDirectInputOutcomeMatchesTx(ctx, tx, outcome)
+			if matchErr != nil {
+				return false, matchErr
+			}
+			if matches && outcome.NextDueAt != nil {
+				if err := s.refreshDirectInputSuppressionTx(ctx, tx, outcome); err != nil {
+					return false, err
+				}
+			}
 			return false, tx.Commit()
 		}
 		inserted = true
@@ -418,6 +436,45 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.O
 		return false, err
 	}
 	return inserted, nil
+}
+
+func (s *Store) duplicateDirectInputOutcomeMatchesTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
+	var accountID string
+	var inputVersion, configRevision, dispatchRevision int64
+	var errorCode sql.NullString
+	query := `SELECT account_id,input_version,config_revision,dispatch_revision,error_code FROM account_health_outcomes WHERE request_id=?`
+	if s.mode == StorePostgres {
+		query = `SELECT account_id,input_version,config_revision,dispatch_revision,error_code FROM juhe_jobs.account_health_outcomes WHERE request_id=$1`
+	}
+	err := tx.QueryRowContext(ctx, query, outcome.RequestID).Scan(&accountID, &inputVersion, &configRevision, &dispatchRevision, &errorCode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return outcome.ErrorCode == "direct_input_invalid" && errorCode.Valid && errorCode.String == "direct_input_invalid" &&
+		accountID == outcome.AccountID && inputVersion == outcome.InputVersion && configRevision == outcome.ConfigRevision && dispatchRevision == outcome.DispatchRevision, nil
+}
+
+// refreshDirectInputSuppressionTx renews only the exact malformed-input
+// generation. A duplicate immutable outcome must not rewrite current state or
+// create another audit receipt, but a retry cycle still needs to extend the
+// durable suppression window.
+func (s *Store) refreshDirectInputSuppressionTx(ctx context.Context, tx *sql.Tx, outcome Outcome) error {
+	if outcome.NextDueAt == nil {
+		return nil
+	}
+	if s.mode == StorePostgres {
+		_, err := tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_direct_input_suppressions
+SET next_due_at=$1, updated_at=$2
+WHERE account_id=$3 AND input_version=$4 AND config_revision=$5 AND dispatch_revision=$6`, outcome.NextDueAt.UTC(), outcome.ObservedAt.UTC(), outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE account_health_direct_input_suppressions
+SET next_due_at=?, updated_at=?
+WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, nullableTimeText(outcome.NextDueAt), outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
+	return err
 }
 
 func (s *Store) writeDirectInputSuppressionTx(ctx context.Context, tx *sql.Tx, outcome Outcome) error {
