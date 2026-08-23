@@ -48,9 +48,6 @@ func (r *PostgresDirectInputReader) CheckContract(ctx context.Context) error {
 			return fmt.Errorf("J3a PG direct input 缺少业务只读契约 %s: %w", relation, err)
 		}
 	}
-	if err := requireProxyLatencyTargets(ctx, tx); err != nil {
-		return err
-	}
 	rows, err := tx.QueryContext(ctx, proxyLatencyCandidatesSQL, 1, 0)
 	if err != nil {
 		return fmt.Errorf("验证 J3a PG direct input 候选查询失败: %w", err)
@@ -79,10 +76,6 @@ func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]I
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := requireProxyLatencyTargets(ctx, tx); err != nil {
-		return nil, err
-	}
-
 	now := r.now().UTC()
 	result := make([]InputDraft, 0, limit)
 	pageSize := limit * 4
@@ -132,17 +125,6 @@ func (r *PostgresDirectInputReader) beginReadOnly(ctx context.Context) (*sql.Tx,
 		}
 	}
 	return tx, nil
-}
-
-func requireProxyLatencyTargets(ctx context.Context, tx *sql.Tx) error {
-	var count int
-	if err := tx.QueryRowContext(ctx, proxyLatencyTargetCountSQL).Scan(&count); err != nil {
-		return fmt.Errorf("读取 J3a PG direct input 启用目标失败: %w", err)
-	}
-	if count < 1 {
-		return errors.New("J3a PG direct input 没有启用且具备有效协议档案的 provider target")
-	}
-	return nil
 }
 
 type proxyLatencyCandidateRow struct {
@@ -292,15 +274,6 @@ func parseProxyLatencyUTC(value, field string) (time.Time, error) {
 	}
 	return parsed.UTC(), nil
 }
-
-const proxyLatencyTargetCountSQL = `
-SELECT count(*)
-FROM juhe_business.providers p
-WHERE p.enabled = 1
-  AND EXISTS (
-    SELECT 1 FROM juhe_business.provider_protocol_profiles ppp
-    WHERE ppp.provider_code = p.code
-  )`
 
 // Candidates are paged by proxy before targets are expanded. This retains the
 // Node ordering and lets a malformed proxy be skipped without starving later

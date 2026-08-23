@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ const (
 	sqliteBusyTimeoutMs            = 5000
 	postgresInsertRowsPerStatement = 5000
 	postgresCleanupRowsPerBatch    = 5000
+	sqliteCleanupRowsPerBatch      = 500
 )
 
 type facetRow struct {
@@ -1015,6 +1017,7 @@ func nodeISO(value time.Time) string {
 func cleanupSQLite(ctx context.Context, db *sql.DB, lease OwnerLease, cutoff time.Time, batchSize int, maxBatches int) (CleanupResult, error) {
 	result := CleanupResult{}
 	cutoffText := nodeISO(cutoff)
+	batchLimit := minInt(maxInt(batchSize, 1), sqliteCleanupRowsPerBatch)
 	for batch := 0; batch < maxBatches; batch++ {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
@@ -1024,7 +1027,7 @@ func cleanupSQLite(ctx context.Context, db *sql.DB, lease OwnerLease, cutoff tim
 			tx.Rollback()
 			return result, err
 		}
-		rows, err := tx.QueryContext(ctx, "SELECT id, time, level, COALESCE(event, '') FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?", cutoffText, batchSize)
+		rows, err := tx.QueryContext(ctx, "SELECT id, time, level, COALESCE(event, '') FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?", cutoffText, batchLimit)
 		if err != nil {
 			tx.Rollback()
 			return result, err
@@ -1051,7 +1054,7 @@ func cleanupSQLite(ctx context.Context, db *sql.DB, lease OwnerLease, cutoff tim
 			return result, err
 		}
 		result.RuntimeLogs += int64(len(ids))
-		if len(ids) < batchSize {
+		if len(ids) < batchLimit {
 			break
 		}
 	}
@@ -1064,8 +1067,42 @@ func cleanupSQLite(ctx context.Context, db *sql.DB, lease OwnerLease, cutoff tim
 			tx.Rollback()
 			return result, err
 		}
-		query := `DELETE FROM runtime_log_file_cursors WHERE log_file IN (SELECT log_file FROM runtime_log_file_cursors WHERE updated_at < ? AND cursor_offset >= file_size AND last_error_message IS NULL ORDER BY updated_at ASC, log_file ASC LIMIT ?)`
-		deleted, err := tx.ExecContext(ctx, query, cutoffText, batchSize)
+		rows, err := tx.QueryContext(ctx, `SELECT log_file FROM runtime_log_file_cursors WHERE updated_at < ? AND cursor_offset >= file_size AND last_error_message IS NULL ORDER BY updated_at ASC, log_file ASC`, cutoffText)
+		if err != nil {
+			tx.Rollback()
+			return result, err
+		}
+		var candidates []string
+		for rows.Next() {
+			var logFile string
+			if err := rows.Scan(&logFile); err != nil {
+				rows.Close()
+				tx.Rollback()
+				return result, err
+			}
+			if _, kind, ok := ParseLogFileName(filepath.Base(logFile)); ok && kind == LogFileRotated {
+				candidates = append(candidates, logFile)
+				if len(candidates) == batchLimit {
+					break
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			tx.Rollback()
+			return result, err
+		}
+		rows.Close()
+		if len(candidates) == 0 {
+			tx.Rollback()
+			break
+		}
+		marks := questionMarks(len(candidates))
+		args := make([]any, len(candidates))
+		for index, candidate := range candidates {
+			args[index] = candidate
+		}
+		deleted, err := tx.ExecContext(ctx, "DELETE FROM runtime_log_file_cursors WHERE log_file IN ("+marks+")", args...)
 		if err != nil {
 			tx.Rollback()
 			return result, err
@@ -1079,7 +1116,7 @@ func cleanupSQLite(ctx context.Context, db *sql.DB, lease OwnerLease, cutoff tim
 			return result, err
 		}
 		result.RuntimeLogCursors += count
-		if count < int64(batchSize) {
+		if count < int64(batchLimit) {
 			break
 		}
 	}

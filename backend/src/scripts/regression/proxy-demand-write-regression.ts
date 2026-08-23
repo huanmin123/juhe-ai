@@ -160,15 +160,6 @@ try {
   assert.deepEqual(invalidations, ['proxy_updated'], '启停变化必须失效代理运行时缓存')
   const enabledVersion = enabledPatch?.mutation.updatedAt ?? ''
 
-  const diagnosticAt = new Date(Date.now() + 1_000).toISOString()
-  const diagnostic = await repositories.updateProxyTestStateAsync(target.id, {
-    testStatus: 'passed',
-    latencyMs: 18,
-    lastTestMessage: '停用代理历史检测结果',
-    lastTestedAt: diagnosticAt,
-    expectedConfigUpdatedAt: enabledVersion
-  })
-  assert.equal(diagnostic?.testStatus, 'passed')
   invalidations.length = 0
   const disabledNoOp = await captureSql(() => repositories.patchProxyForManagementAsync(
     target.id,
@@ -177,7 +168,6 @@ try {
   ))
   assert.deepEqual(disabledNoOp.result?.mutation, { id: target.id, updatedAt: enabledVersion, changed: false, values: {} })
   assert.deepEqual(proxyDml(disabledNoOp.calls), [], '已停用代理再次提交 enabled=false 必须零 DML')
-  assert.equal((await repositories.findProxyAsync(target.id))?.testStatus, 'passed', '停用同值 PATCH 不得清理既有检测状态')
   assert.deepEqual(invalidations, [], '停用同值 PATCH 不得撤销运行态或触发缓存失效')
 
   const app = express()
@@ -269,7 +259,6 @@ try {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
-
 interface SqlCall {
   kind: 'get' | 'all' | 'run'
   sql: string

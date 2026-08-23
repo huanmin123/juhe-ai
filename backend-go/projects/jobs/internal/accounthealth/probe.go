@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const (
@@ -43,13 +45,9 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	if err != nil {
 		return taskFailure("base_url_invalid", err.Error())
 	}
-	transport, err := probeTransport(input, options)
+	client, err := probeHTTPClient(input, options)
 	if err != nil {
 		return taskFailure("proxy_unavailable", err.Error())
-	}
-	client := &http.Client{
-		Transport:     transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	timeout := options.Timeout
 	if timeout <= 0 {
@@ -70,7 +68,7 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxBodyBytes
 	}
-	body, err := readBounded(response.Body, maxBytes)
+	body, err := upstreamhttp.ReadBounded(response.Body, maxBytes)
 	if err != nil {
 		return responseReadFailure(err)
 	}
@@ -115,38 +113,40 @@ func validateInput(input Input, options ProbeOptions) error {
 }
 
 func probeTransport(input Input, options ProbeOptions) (*http.Transport, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// Keep the direct probe wire protocol stable across OpenAI-compatible upstreams.
-	transport.ForceAttemptHTTP2 = false
-	// Do not add an application-level per-host connection queue here.  J1's
-	// worker concurrency and the upstream/OS transport are the effective
-	// capacity boundaries; the default zero MaxConnsPerHost means unlimited
-	// active connections for this transport.
-	transport.MaxIdleConns = 0
-	transport.MaxIdleConnsPerHost = 0
-	transport.MaxConnsPerHost = 0
-	transport.ResponseHeaderTimeout = options.Timeout
+	proxyURL, timeout, err := probeTransportConfig(input, options)
+	if err != nil {
+		return nil, err
+	}
+	return upstreamhttp.NewTransport(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+}
+
+func probeHTTPClient(input Input, options ProbeOptions) (*http.Client, error) {
+	proxyURL, timeout, err := probeTransportConfig(input, options)
+	if err != nil {
+		return nil, err
+	}
+	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+}
+
+func probeTransportConfig(input Input, options ProbeOptions) (string, time.Duration, error) {
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
 	if input.Proxy == nil {
-		return transport, nil
+		return "", timeout, nil
 	}
 	proxyText, err := decryptToken(options.Secret, *input.Proxy)
 	if err != nil {
-		return nil, errors.New("代理凭据不可用")
+		return "", 0, errors.New("代理凭据不可用")
 	}
-	proxyURL, err := url.Parse(proxyText)
-	if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
-		return nil, errors.New("代理 URL 无效")
+	if _, err := upstreamhttp.ParseProxyURL(proxyText); err != nil {
+		if errors.Is(err, upstreamhttp.ErrProxySchemeUnsupported) {
+			return "", 0, errors.New("未支持的代理协议")
+		}
+		return "", 0, errors.New("代理 URL 无效")
 	}
-	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
-		transport.Proxy = nil
-		transport.DialContext = newSOCKS5DialContext(proxyURL, proxyURL.Scheme == "socks5h")
-		return transport, nil
-	}
-	if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
-		return nil, errors.New("未支持的代理协议")
-	}
-	transport.Proxy = http.ProxyURL(proxyURL)
-	return transport, nil
+	return proxyText, timeout, nil
 }
 
 func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token string) (*http.Request, error) {
@@ -391,18 +391,6 @@ func containsChallenge(value any) bool {
 		}
 	}
 	return false
-}
-
-func readBounded(reader io.Reader, maxBytes int64) ([]byte, error) {
-	limited := io.LimitReader(reader, maxBytes+1)
-	body, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(body)) > maxBytes {
-		return nil, errors.New("响应超过大小上限")
-	}
-	return body, nil
 }
 
 func transportFailure(err error) ProbeResult {

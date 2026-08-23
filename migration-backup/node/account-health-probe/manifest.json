@@ -58,35 +58,142 @@
       "kind": "Node health usage/settings snapshot helper"
     },
     {
-      "originalPath": "backend/src/scripts/regression/*health* and *cooldown* J1 owner regressions",
-      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/*.original",
-      "sha256": "See SHA-256 sidecar list below; every archive file is immutable and covered by the complete archive hash list.",
+      "originalPath": "backend/src/scripts/regression/account-diagnostic-mock-ai-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-diagnostic-mock-ai-regression.ts.original",
+      "sha256": "3FC79D7F6958B7E3953254D4DFEAAEF6DD12A0AA7AF62570ED2A9F0A2C829A26",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-error-policy-observation-fencing-postgres-smoke.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-error-policy-observation-fencing-postgres-smoke.ts.original",
+      "sha256": "DC96B5122A16D8780EEB89DCCDCA20AA6CB04EA7E90385801D9B895B39E29C0D",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-error-policy-observation-fencing-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-error-policy-observation-fencing-regression.ts.original",
+      "sha256": "5549C6743B0C5D6C23B71E9869B56F64B0FB927083B2973EE1B0C85FD302C5F5",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-control-fence-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-control-fence-regression.ts.original",
+      "sha256": "F0B1785534C833D9721E95C07AC825AEF9573D422C9A9DBD70CD9A76BDFC975E",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-dispatch-http-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-dispatch-http-regression.ts.original",
+      "sha256": "BD70A3B5F9238D1547095FF9E594689DB140D3EF920C60AA64F71532FBE7FFD0",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-dispatch-node-e2e-server.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-dispatch-node-e2e-server.ts.original",
+      "sha256": "93A155EF6D55EDEFA171311FD3EBD1D5707651D18B17CBFDDDAB61EAAA198920",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-dispatch-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-dispatch-regression.ts.original",
+      "sha256": "12A72A1907087FF22DAF8440CD132586DBE085712B586BE75161BE446F576EA2",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-endpoint-mode-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-endpoint-mode-regression.ts.original",
+      "sha256": "66E71144E5A5B86D2B836006B7448C76BB25353C1D018BA922AB838880D6A5EA",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-execution-lifecycle-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-execution-lifecycle-regression.ts.original",
+      "sha256": "BA8FC4AB2F87E99F71BD20B2A7E56A9447260E7BE3FB09AE00B5B56DB693E3BE",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-postgres-settings-boundary-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-postgres-settings-boundary-regression.ts.original",
+      "sha256": "DCCCFDD9DDA841B42AD01F776A3938DDDCBA8BF7C43AFFD95F86605973818D73",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-health-check-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-health-check-regression.ts.original",
+      "sha256": "B6EEC7F5926B260EAFE6BEA2200785B4E3E28E274AD1AD0F6F2B7F2C6B9338B7",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-pending-test-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-pending-test-regression.ts.original",
+      "sha256": "9FD8F27574D662D3BDFE6203348B57226BBEE53F2F6B5AD80C874874462CD4B7",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-probe-postgres-smoke.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-probe-postgres-smoke.ts.original",
+      "sha256": "D969743D7C42EE3E75A304C157320AA9B72A5A10E9102653DC794267B097A015",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/account-request-failure-health-check-e2e-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/account-request-failure-health-check-e2e-regression.ts.original",
+      "sha256": "B3E7ED1FB6AA1764FBC32A08036E77FC991AD8423FC6B3640B4310295A8FC52B",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/authorized-account-runtime-side-effects-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/authorized-account-runtime-side-effects-regression.ts.original",
+      "sha256": "C34A0466C362E2AA2F211D77060F9174726D4248DA8201CEEA1E3D0C7DD14C02",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/automatic-account-probe-outcome-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/automatic-account-probe-outcome-regression.ts.original",
+      "sha256": "2AB583BE6F0000EF05208E64C656608A8BFDDF07773B40FD53D1464FC1C386BF",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/background-worker-performance-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/background-worker-performance-regression.ts.original",
+      "sha256": "E0335C6F980C9EF8A1F3CFE058B3E45A61CEE33F3B61209534A95CED7D455E07",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/codex-turn-availability-probe-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/codex-turn-availability-probe-regression.ts.original",
+      "sha256": "C0F7E5B9F2CA916FA4AAEACCDCA4EEE1BE6EB56CAC6E5BFD6362C81EEEA7C04D",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/cooldown-retest-postgres-smoke.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/cooldown-retest-postgres-smoke.ts.original",
+      "sha256": "D26ABAA12D93BA71D933F2936893AAC07027E17C335AE228AF152343BB8B0BAF",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/cooldown-retest-recovery-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/cooldown-retest-recovery-regression.ts.original",
+      "sha256": "A68137FDE80AEA86F7FF84395672B49EA0F0643B9A99BD9234535EBE16A3BA53",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/health-check-source-fence-and-stream-model-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/health-check-source-fence-and-stream-model-regression.ts.original",
+      "sha256": "4C304C6FE6D56481A92262A12D39C6596DE1BB95815EDBCA41BD072DEE6BE477",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/temporary-unavailable-continuous-probe-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/temporary-unavailable-continuous-probe-regression.ts.original",
+      "sha256": "C284EEF42C40A831CD2734E5646356C2659619E926EFA2498D8C191FADC64286",
+      "kind": "Node owner-only regression suite"
+    },
+    {
+      "originalPath": "backend/src/scripts/regression/usage-health-check-settings-snapshot-regression.ts",
+      "archivePath": "migration-backup/node/account-health-probe/backend/src/scripts/regression/usage-health-check-settings-snapshot-regression.ts.original",
+      "sha256": "22AF14A1FD271F32D4B5E4ABAFDEECD8725F38A0A27AD19B836FC509F12A76CD",
       "kind": "Node owner-only regression suite"
     }
-  ],
-  "archiveSha256": {
-    "backend/src/scripts/regression/account-diagnostic-mock-ai-regression.ts.original": "3FC79D7F6958B7E3953254D4DFEAAEF6DD12A0AA7AF62570ED2A9F0A2C829A26",
-    "backend/src/scripts/regression/account-error-policy-observation-fencing-postgres-smoke.ts.original": "DC96B5122A16D8780EEB89DCCDCA20AA6CB04EA7E90385801D9B895B39E29C0D",
-    "backend/src/scripts/regression/account-error-policy-observation-fencing-regression.ts.original": "5549C6743B0C5D6C23B71E9869B56F64B0FB927083B2973EE1B0C85FD302C5F5",
-    "backend/src/scripts/regression/account-health-check-control-fence-regression.ts.original": "F0B1785534C833D9721E95C07AC825AEF9573D422C9A9DBD70CD9A76BDFC975E",
-    "backend/src/scripts/regression/account-health-check-dispatch-http-regression.ts.original": "BD70A3B5F9238D1547095FF9E594689DB140D3EF920C60AA64F71532FBE7FFD0",
-    "backend/src/scripts/regression/account-health-check-dispatch-node-e2e-server.ts.original": "93A155EF6D55EDEFA171311FD3EBD1D5707651D18B17CBFDDDAB61EAAA198920",
-    "backend/src/scripts/regression/account-health-check-dispatch-regression.ts.original": "12A72A1907087FF22DAF8440CD132586DBE085712B586BE75161BE446F576EA2",
-    "backend/src/scripts/regression/account-health-check-endpoint-mode-regression.ts.original": "66E71144E5A5B86D2B836006B7448C76BB25353C1D018BA922AB838880D6A5EA",
-    "backend/src/scripts/regression/account-health-check-execution-lifecycle-regression.ts.original": "BA8FC4AB2F87E99F71BD20B2A7E56A9447260E7BE3FB09AE00B5B56DB693E3BE",
-    "backend/src/scripts/regression/account-health-check-postgres-settings-boundary-regression.ts.original": "DCCCFDD9DDA841B42AD01F776A3938DDDCBA8BF7C43AFFD95F86605973818D73",
-    "backend/src/scripts/regression/account-health-check-regression.ts.original": "B6EEC7F5926B260EAFE6BEA2200785B4E3E28E274AD1AD0F6F2B7F2C6B9338B7",
-    "backend/src/scripts/regression/account-pending-test-regression.ts.original": "9FD8F27574D662D3BDFE6203348B57226BBEE53F2F6B5AD80C874874462CD4B7",
-    "backend/src/scripts/regression/account-probe-postgres-smoke.ts.original": "D969743D7C42EE3E75A304C157320AA9B72A5A10E9102653DC794267B097A015",
-    "backend/src/scripts/regression/account-request-failure-health-check-e2e-regression.ts.original": "B3E7ED1FB6AA1764FBC32A08036E77FC991AD8423FC6B3640B4310295A8FC52B",
-    "backend/src/scripts/regression/authorized-account-runtime-side-effects-regression.ts.original": "C34A0466C362E2AA2F211D77060F9174726D4248DA8201CEEA1E3D0C7DD14C02",
-    "backend/src/scripts/regression/automatic-account-probe-outcome-regression.ts.original": "2AB583BE6F0000EF05208E64C656608A8BFDDF07773B40FD53D1464FC1C386BF",
-    "backend/src/scripts/regression/background-worker-performance-regression.ts.original": "E0335C6F980C9EF8A1F3CFE058B3E45A61CEE33F3B61209534A95CED7D455E07",
-    "backend/src/scripts/regression/codex-turn-availability-probe-regression.ts.original": "C0F7E5B9F2CA916FA4AAEACCDCA4EEE1BE6EB56CAC6E5BFD6362C81EEEA7C04D",
-    "backend/src/scripts/regression/cooldown-retest-postgres-smoke.ts.original": "D26ABAA12D93BA71D933F2936893AAC07027E17C335AE228AF152343BB8B0BAF",
-    "backend/src/scripts/regression/cooldown-retest-recovery-regression.ts.original": "A68137FDE80AEA86F7FF84395672B49EA0F0643B9A99BD9234535EBE16A3BA53",
-    "backend/src/scripts/regression/health-check-source-fence-and-stream-model-regression.ts.original": "4C304C6FE6D56481A92262A12D39C6596DE1BB95815EDBCA41BD072DEE6BE477",
-    "backend/src/scripts/regression/temporary-unavailable-continuous-probe-regression.ts.original": "C284EEF42C40A831CD2734E5646356C2659619E926EFA2498D8C191FADC64286",
-    "backend/src/scripts/regression/usage-health-check-settings-snapshot-regression.ts.original": "22AF14A1FD271F32D4B5E4ABAFDEECD8725F38A0A27AD19B836FC509F12A76CD"
-  }
+  ]
 }

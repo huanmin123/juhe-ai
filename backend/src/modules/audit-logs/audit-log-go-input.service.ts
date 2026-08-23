@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
@@ -49,10 +49,16 @@ export function dispatchAuditLogToGo(input: AuditLogInput): void {
     return
   }
   const { body } = prepared
+  const timestamp = new Date().toISOString()
+  const nonce = randomUUID()
   // Copy into an exact ArrayBuffer. Buffer may be a view into a larger pool.
   const requestBody = new Uint8Array(body).buffer
   const signature = createHmac('sha256', runtimeConfig.auditLogInputSecret!)
     .update(auditLogGoInputSignatureDomain)
+    .update('\n')
+    .update(timestamp)
+    .update('\n')
+    .update(nonce)
     .update('\n')
     .update(body)
     .digest('hex')
@@ -63,6 +69,8 @@ export function dispatchAuditLogToGo(input: AuditLogInput): void {
       'content-type': 'application/json',
       'content-length': String(body.byteLength),
       'x-juhe-ai-signature': `v1=${signature}`,
+      'x-juhe-ai-timestamp': timestamp,
+      'x-juhe-ai-nonce': nonce,
       ...(input.traceId ? { 'x-trace-id': input.traceId } : {})
     },
     body: requestBody,

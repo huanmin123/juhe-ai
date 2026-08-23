@@ -53,13 +53,13 @@ for (const [name, fileSource] of [
   ['API Key', apiKeyScheduleSyncSource],
   ['账户', accountScheduleSyncSource]
 ] as const) {
-  assert.match(fileSource, /const availabilityScheduleStatusSyncBatchLimit = 500/, `${name} 时间计划同步每轮扫描必须有固定窗口上限`)
+  assert.match(fileSource, /const availabilityScheduleStatusSyncBatchLimit = runtimeConfig\.background\.(apiKey|accountAvailability)ScheduleSyncBatchLimit/, `${name} 时间计划同步每轮扫描必须使用 runtime 固定窗口上限`)
   assert.match(fileSource, /availability_schedule_next_check_at <= \?/, `${name} 时间计划同步必须只读取到期检查点`)
   assert.match(fileSource, /ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC\s+LIMIT \?/s, `${name} 时间计划同步查询必须按 next_check_at/id 命中窗口索引`)
   assert.doesNotMatch(fileSource, /ScheduleStatusSyncCursor|updated_at > \?/, `${name} 时间计划同步不能使用滚动 updated_at 游标延迟边界切换`)
   assert.doesNotMatch(fileSource, /\.all\(\)\s+as unknown as Scheduled/, `${name} 时间计划同步不能无参数 .all() 拉取全部计划行`)
   assert.match(fileSource, /export async function sync.*AvailabilityScheduleStatusesAsync/, `${name} 时间计划同步必须提供 PostgreSQL async 入口`)
-  assert.match(fileSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+return sync.*AvailabilityScheduleStatuses\(now\)/, `${name} 时间计划 async 入口必须保留 SQLite standalone 分支`)
+  assert.match(fileSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+(?:const result = sync.*AvailabilityScheduleStatuses\(now\)[\s\S]+return result|return sync.*AvailabilityScheduleStatuses\(now\))/, `${name} 时间计划 async 入口必须保留 SQLite standalone 分支`)
   assert.match(fileSource, /createPostgresDatabaseClient\(await getPostgresPool\(\)\)/, `${name} 时间计划 async 入口必须使用 PostgreSQL client`)
   assert.match(fileSource, /await client\.transaction\(async \(tx\) => \{[\s\S]+ON CONFLICT\(event_key\) DO NOTHING/, `${name} 时间计划 async 状态切换必须在事务内写事件去重`)
   assert.match(fileSource, /client\.dialect\.qualifyTable\(businessSchemaName, tableName\)/, `${name} 时间计划 async SQL 必须限定 juhe_business schema`)
@@ -68,8 +68,8 @@ for (const [name, fileSource] of [
 const dbServiceDispatchSource = sourceBetween(dbServiceHandlersSource, 'async function handleDbServiceOperationDispatch', 'async function handleAccountTestTaskMaintenanceAsync')
 assert.match(
   dbServiceDispatchSource,
-  /case 'sync_api_key_availability_schedule_statuses': \{[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+await syncApiKeyAvailabilityScheduleStatusesAsync\(\)[\s\S]+return handleDbServiceOperationSync\(operation\)/,
-  'PG 模式 DB service 必须使用 async API Key 时间计划同步，SQLite 模式才回退同步分支'
+  /case 'sync_api_key_availability_schedule_statuses': \{[\s\S]+await syncApiKeyAvailabilityScheduleStatusesAsync\(\)[\s\S]+return result/,
+  'DB service 必须使用 async API Key 时间计划同步入口'
 )
 assert.match(
   dbServiceDispatchSource,
@@ -134,7 +134,6 @@ for (const jobName of [
   'resource-authorization-expiry-sweep',
   'expired-deleted-account-cleanup',
   'account-api-key-cooldown-retest',
-  'proxy-latency-refresh',
   'openai-oauth-access-token-refresh'
 ] as const) {
   const jobIndex = opsWorkerScheduleSource.indexOf(`backgroundScheduledJobName('${jobName}')`)
@@ -218,10 +217,10 @@ assert.doesNotMatch(
   /safeJsonStringify\(data\)/,
   '公开接口日志不能对原始快照对象完整 JSON.stringify'
 )
-assert.doesNotMatch(
-  sourceBetween(publicApiLogCaptureSource, 'function estimatePayloadSizeBytes', 'function safeJsonStringify'),
-  /safeJsonStringify\(value\)/,
-  '公开接口日志响应大小估算不能对原始响应对象完整 JSON.stringify'
+assert.match(
+  sourceBetween(publicApiLogCaptureSource, 'function boundedSnapshot', 'function isSnapshotEmpty'),
+  /const bounded = boundedSnapshotValue\(data, publicApiSnapshotMaxBytes\)[\s\S]+safeJsonStringify\(bounded\.value\)/,
+  '公开接口日志响应大小估算必须基于预算裁剪后的快照序列化'
 )
 
 assert.match(runtimeLogsSource, /const runtimeLogKeywordDefaultWindowHours = 6/, '运行日志 keyword 无时间范围时必须有默认窗口')

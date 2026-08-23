@@ -39,6 +39,20 @@ func TestProxyTransportDoesNotSerializeConnectionsPerHost(t *testing.T) {
 	}
 }
 
+func TestProxyTransportEnablesHTTP2ForSOCKSDialer(t *testing.T) {
+	transport, err := newProxyTransport("socks5://proxy.example:1080", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.CloseIdleConnections()
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("SOCKS proxy transport must enable HTTP/2 for TLS upstreams")
+	}
+	if transport.MaxResponseHeaderBytes != 64*1024 {
+		t.Fatalf("response header limit=%d", transport.MaxResponseHeaderBytes)
+	}
+}
+
 func TestProbeItemNon2xxIsNeutralButPassed(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

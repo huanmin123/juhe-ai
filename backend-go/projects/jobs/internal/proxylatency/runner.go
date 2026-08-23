@@ -6,8 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+)
+
+var (
+	ErrManualProxyMissing    = errors.New("J3a manual proxy missing or deleted")
+	ErrManualProjectionStale = errors.New("J3a manual projection stale")
 )
 
 type inputLoader interface {
@@ -44,6 +50,7 @@ type Runner struct {
 	cfg        RuntimeConfig
 	store      *Store
 	reader     inputLoader
+	projector  *ResultProjector
 	logger     *slog.Logger
 	mu         sync.RWMutex
 	status     RunnerStatus
@@ -71,6 +78,58 @@ func NewRunner(cfg RuntimeConfig, store *Store, reader inputLoader, logger *slog
 	return runner
 }
 
+// SetResultProjector binds the Go-owned business writer. A J3a runner without
+// it is deliberately not ready to execute: durable jobs evidence alone is not
+// a completed proxy test until Go has fenced and persisted the business state.
+func (r *Runner) SetResultProjector(projector *ResultProjector) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.projector = projector
+	r.mu.Unlock()
+}
+
+func (r *Runner) projectOutcomeResult(ctx context.Context, outcome Outcome) (ProjectionResult, error) {
+	// runCycle is intentionally unit-testable without a business database.
+	// Production Run and RunManual reject a nil projector before any executor
+	// is reached, so this branch cannot create a runtime Node fallback.
+	r.mu.RLock()
+	projector := r.projector
+	r.mu.RUnlock()
+	if projector == nil {
+		return ProjectionResult{}, nil
+	}
+	return projector.ProjectOutcome(ctx, outcome)
+}
+
+func (r *Runner) projectOutcome(ctx context.Context, outcome Outcome) error {
+	_, err := r.projectOutcomeResult(ctx, outcome)
+	return err
+}
+
+// manualProjectionDisposition is the fail-closed boundary between durable
+// outcome projection and the manual HTTP report. Applied outcomes may perform
+// the second outbound CAS; stale outcomes still return their report without a
+// business write, while a deleted proxy is an explicit not-found result.
+func manualProjectionDisposition(result ProjectionResult) (bool, error) {
+	switch result.Disposition {
+	case ProjectionApplied:
+		return true, nil
+	case ProjectionStale:
+		return false, nil
+	case ProjectionIgnored:
+		if result.Reason == "proxy_missing_or_deleted" {
+			return false, ErrManualProxyMissing
+		}
+		return false, errors.New("J3a manual projector ignored outcome: " + result.Reason)
+	case ProjectionRejected:
+		return false, errors.New("J3a manual projector rejected outcome: " + result.Reason)
+	default:
+		return false, errors.New("J3a manual projector returned unknown disposition")
+	}
+}
+
 func (r *Runner) Snapshot() (RunnerStatus, bool) {
 	if r == nil {
 		return RunnerStatus{}, false
@@ -83,11 +142,20 @@ func (r *Runner) Snapshot() (RunnerStatus, bool) {
 }
 
 func (r *Runner) Status() RunnerStatus { status, _ := r.Snapshot(); return status }
-func (r *Runner) Ready() bool          { _, ready := r.Snapshot(); return ready }
+func (r *Runner) Ready() bool {
+	_, ready := r.Snapshot()
+	r.mu.RLock()
+	projector := r.projector
+	r.mu.RUnlock()
+	return ready && projector != nil && projector.Ready()
+}
 
 func (r *Runner) Run(ctx context.Context) error {
 	if r == nil || r.store == nil || r.reader == nil {
 		return errors.New("J3a runner 未初始化")
+	}
+	if r.projector == nil && strings.TrimSpace(r.cfg.ResultPostgresURL) != "" {
+		return errors.New("J3a Go runner 缺少唯一 business-result projector")
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -143,7 +211,7 @@ func (r *Runner) Run(ctx context.Context) error {
 // This keeps manual diagnostics available during Go ownership while preserving
 // the same owner/proxy fences and committed outcome semantics as periodic work.
 func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTestReport, error) {
-	if r == nil || r.store == nil {
+	if r == nil || r.store == nil || r.projector == nil {
 		return ProxyTestReport{}, errors.New("J3a manual runner 未初始化")
 	}
 	if err := request.Validate(r.cfg.ManualDeadline); err != nil {
@@ -162,6 +230,13 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 	// persist in this branch; returning the report directly keeps that boundary
 	// without weakening the jobs Store's normal non-empty-target contract.
 	if len(request.Targets) == 0 {
+		projection, err := r.projector.ProjectManualNoTargets(ctx, request, now)
+		if err != nil {
+			return ProxyTestReport{}, err
+		}
+		if _, err := manualProjectionDisposition(projection); err != nil {
+			return ProxyTestReport{}, err
+		}
 		return request.Report(Outcome{ProxyID: request.ProxyID, ObservedAt: now, OverallStatus: OverallUnknown}), nil
 	}
 	owner, reused := r.currentOwnerLease()
@@ -205,15 +280,6 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 		return ProxyTestReport{}, err
 	}
 	defer clearProxyURL(&proxyURL)
-	outbound := make(chan manualOutboundInfo, 1)
-	go func() {
-		info, ok := probeManualOutbound(execCtx, proxyURL, deadline)
-		if !ok {
-			outbound <- manualOutboundInfo{}
-			return
-		}
-		outbound <- info
-	}()
 	outcome, _, err := ExecuteIssuedInput(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: deadline, Now: r.cfg.Now})
 	if err != nil {
 		return ProxyTestReport{}, err
@@ -221,13 +287,36 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 	if err := request.ValidateOutcome(outcome); err != nil {
 		return ProxyTestReport{}, err
 	}
+	projection, err := r.projectOutcomeResult(ctx, outcome)
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
+	writeOutbound, err := manualProjectionDisposition(projection)
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
 	report := request.Report(outcome)
-	info := <-outbound
+	if !writeOutbound {
+		return report, nil
+	}
+	info, ok := probeManualOutbound(execCtx, proxyURL, deadline)
+	if !ok {
+		info = manualOutboundInfo{}
+	}
 	if info.IP != "" {
 		report.OutboundIP = info.IP
 	}
 	if info.Region != "" {
 		report.OutboundRegion = info.Region
+	}
+	if err := r.projector.ProjectManualOutbound(ctx, outcome, report.OutboundIP, report.OutboundRegion); err != nil {
+		if errors.Is(err, ErrManualProxyMissing) {
+			return ProxyTestReport{}, err
+		}
+		if errors.Is(err, ErrManualProjectionStale) {
+			return report, nil
+		}
+		return ProxyTestReport{}, err
 	}
 	return report, nil
 }
@@ -397,7 +486,10 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			if execute == nil {
 				execute = ExecuteIssuedInput
 			}
-			_, committed, execErr := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, Now: r.cfg.Now})
+			outcome, committed, execErr := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, Now: r.cfg.Now})
+			if execErr == nil {
+				execErr = r.projectOutcome(execCtx, outcome)
+			}
 			execCancel()
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			releaseErr := r.releaseProxyLease(releaseCtx, proxy)

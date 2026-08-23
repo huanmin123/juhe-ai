@@ -10,10 +10,9 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
-import { requestDbService } from '../db-service/db-service-ipc.js'
 import { diffSafeFields, runLoggedOperationAsync, safeChange } from '../operation-logs/operation-log.service.js'
-import { manualProxyTestDeadlineMs, testProxyById, type ProxyTestReport } from './proxy-test.service.js'
-import { proxyLatencyGoHandoverReady, proxyLatencyGoOwnerEnabled, runProxyLatencyManualViaGo } from '../background/proxy-latency-handover.js'
+import { manualProxyTestDeadlineMs, type ProxyTestReport } from './proxy-test.contract.js'
+import { GoManualBridgeHttpError, runProxyLatencyManualViaGo } from '../background/proxy-latency-handover.js'
 
 export const proxiesRouter = Router()
 
@@ -268,34 +267,17 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
     return
   }
   try {
-    const goOwner = proxyLatencyGoOwnerEnabled()
-    if (goOwner && !proxyLatencyGoHandoverReady()) {
-      throw new Error('J3a Go owner handoff gate 未完成')
-    }
-    const execution = goOwner
-      ? await runGoProxyManualExecution(req.params.id)
-      : await testProxyById(req.params.id, { persist: false, deadlineMs: manualProxyTestDeadlineMs })
+    const execution = await runGoProxyManualExecution(req.params.id)
     if (!execution) {
       res.status(404).json({ message: '代理不存在' })
       return
     }
-    const { report } = execution
-    const after = await requestDbService({
-      type: 'update_proxy_test_state',
-      proxyId: report.proxyId,
-      input: {
-        testStatus: report.status,
-        latencyMs: report.baseLatencyMs,
-        outboundIp: report.outboundIp,
-        outboundRegion: report.outboundRegion,
-        lastTestMessage: report.message,
-        lastTestedAt: report.testedAt,
-        expectedConfigUpdatedAt: execution.configUpdatedAt
-      }
-    })
-    if (after.updated && after.proxyStatus !== report.status) {
-      throw new Error('DB service 未确认代理检测状态写入成功')
+    const after = await findProxyAsync(req.params.id)
+    if (!after) {
+      res.status(404).json({ message: '代理不存在' })
+      return
     }
+    const { report } = execution
     await runLoggedOperationAsync(async () => {
       return {
         result: report,
@@ -330,6 +312,15 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
     }, req)
     res.json(ok(report))
   } catch (error) {
+    if (error instanceof GoManualBridgeHttpError) {
+      if (error.status === 503) {
+        if (error.retryAfter) res.setHeader('Retry-After', error.retryAfter)
+        res.status(503).json({ message: '代理检测暂时繁忙' })
+        return
+      }
+      res.status(502).json({ message: error.message })
+      return
+    }
     if (error instanceof Error && error.message === '代理不存在') {
       res.status(404).json({ message: '代理不存在' })
       return
@@ -340,11 +331,11 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
   }
 })
 
-async function runGoProxyManualExecution(proxyId: string): Promise<{ report: ProxyTestReport; configUpdatedAt: string } | undefined> {
+async function runGoProxyManualExecution(proxyId: string): Promise<{ report: ProxyTestReport } | undefined> {
   const config = await getProxyTestConfigAsync(proxyId)
   if (!config) return undefined
   const report = await runProxyLatencyManualViaGo(config, { timeoutMs: manualProxyTestDeadlineMs })
-  return { report, configUpdatedAt: config.configUpdatedAt }
+  return { report }
 }
 
 proxiesRouter.delete('/:id', requireAdmin, async (req, res) => {

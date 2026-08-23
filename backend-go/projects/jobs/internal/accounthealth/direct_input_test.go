@@ -1,12 +1,189 @@
 package accounthealth
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+const directInputRowsLifecycleDriverName = "accounthealth-direct-input-rows-lifecycle"
+
+var registerDirectInputRowsLifecycleDriver sync.Once
+
+type directInputRowsLifecycleDriver struct{}
+
+func (directInputRowsLifecycleDriver) Open(string) (driver.Conn, error) {
+	return &directInputRowsLifecycleConn{}, nil
+}
+
+type directInputRowsLifecycleConn struct {
+	mu                sync.Mutex
+	candidateRowsOpen bool
+}
+
+func (*directInputRowsLifecycleConn) Prepare(string) (driver.Stmt, error) {
+	return nil, fmt.Errorf("prepared statements are not supported by the test driver")
+}
+
+func (*directInputRowsLifecycleConn) Close() error { return nil }
+
+func (conn *directInputRowsLifecycleConn) Begin() (driver.Tx, error) {
+	return &directInputRowsLifecycleTx{conn: conn}, nil
+}
+
+func (conn *directInputRowsLifecycleConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return conn.Begin()
+}
+
+func (conn *directInputRowsLifecycleConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+	return directInputRowsLifecycleResult{}, nil
+}
+
+func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.candidateRowsOpen {
+		return nil, fmt.Errorf("candidate rows must be closed before a second query")
+	}
+	if strings.Contains(query, "FROM juhe_business.accounts a") {
+		conn.candidateRowsOpen = true
+		return &directInputRowsLifecycleRows{conn: conn, candidate: true, columns: directInputLifecycleCandidateColumns(), values: [][]driver.Value{directInputLifecycleCandidateValues()}}, nil
+	}
+	if strings.Contains(query, "SELECT key, value_json") {
+		return &directInputRowsLifecycleRows{columns: []string{"key", "value_json"}, values: directInputLifecycleSettingsValues()}, nil
+	}
+	return &directInputRowsLifecycleRows{columns: []string{"value"}}, nil
+}
+
+type directInputRowsLifecycleTx struct {
+	conn *directInputRowsLifecycleConn
+}
+
+func (*directInputRowsLifecycleTx) Commit() error   { return nil }
+func (*directInputRowsLifecycleTx) Rollback() error { return nil }
+
+type directInputRowsLifecycleResult struct{}
+
+func (directInputRowsLifecycleResult) LastInsertId() (int64, error) { return 0, nil }
+func (directInputRowsLifecycleResult) RowsAffected() (int64, error) { return 0, nil }
+
+type directInputRowsLifecycleRows struct {
+	conn      *directInputRowsLifecycleConn
+	candidate bool
+	columns   []string
+	values    [][]driver.Value
+	index     int
+}
+
+func (rows *directInputRowsLifecycleRows) Columns() []string { return rows.columns }
+
+func (rows *directInputRowsLifecycleRows) Close() error {
+	if rows.candidate {
+		rows.conn.mu.Lock()
+		rows.conn.candidateRowsOpen = false
+		rows.conn.mu.Unlock()
+	}
+	return nil
+}
+func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
+	if rows.index >= len(rows.values) {
+		if rows.candidate {
+			rows.conn.mu.Lock()
+			rows.conn.candidateRowsOpen = false
+			rows.conn.mu.Unlock()
+		}
+		return io.EOF
+	}
+	copy(dest, rows.values[rows.index])
+	rows.index++
+	return nil
+}
+
+func directInputLifecycleCandidateColumns() []string {
+	columns := make([]string, 43)
+	for index := range columns {
+		columns[index] = fmt.Sprintf("c%d", index)
+	}
+	return columns
+}
+
+func directInputLifecycleCandidateValues() []driver.Value {
+	secret := "direct-input-rows-lifecycle-secret"
+	credentials, err := EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"],"base_url":"https://api.example.com"}`))
+	if err != nil {
+		panic(err)
+	}
+	values := make([]driver.Value, 43)
+	values[0] = "account-rows-lifecycle"
+	values[1] = int64(1)
+	values[2] = int64(2)
+	values[3] = int64(3)
+	values[4] = "openai"
+	values[5] = "api_key"
+	values[6] = "active"
+	values[7] = int64(1)
+	values[8] = "chat_json"
+	values[9] = "gpt-test"
+	values[10] = credentials
+	values[16] = "system-account"
+	values[17] = "authorization-1"
+	values[18] = "active"
+	values[20] = `{}`
+	values[21] = "source-account"
+	values[22] = "owner-account"
+	values[24] = "source-account"
+	values[25] = int64(4)
+	values[26] = "openai"
+	values[27] = "api_key"
+	values[28] = "active"
+	values[29] = int64(1)
+	values[33] = credentials
+	values[34] = "group-1"
+	values[35] = "authorization-1"
+	return values
+}
+
+func directInputLifecycleSettingsValues() [][]driver.Value {
+	return [][]driver.Value{
+		{"accountHealthCheckIntervalHours", "1"},
+		{"accountHealthCheckJitterMinutes", "0"},
+		{"accountHealthCheckFailureThreshold", "1"},
+		{"defaultTemporaryUnschedulableMinutes", "5"},
+		{"cooldownAccountRetestMaxBackoffHours", "24"},
+		{"usageStatsTimezone", `"UTC"`},
+	}
+}
+
+func TestPostgresDirectInputReaderClosesCandidateRowsBeforeQuotaQueries(t *testing.T) {
+	registerDirectInputRowsLifecycleDriver.Do(func() {
+		sql.Register(directInputRowsLifecycleDriverName, directInputRowsLifecycleDriver{})
+	})
+	database, err := sql.Open(directInputRowsLifecycleDriverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	reader, err := NewPostgresDirectInputReader(database, "direct-input-rows-lifecycle-secret", time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.LoadDueWithFailures(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("direct input load must permit quota queries after candidate rows close: %v", err)
+	}
+	if len(result.Inputs) != 1 || result.Inputs[0].AccountID != "account-rows-lifecycle" {
+		t.Fatalf("unexpected direct input result: %#v", result)
+	}
+}
 
 func TestDirectInputRequiredRelationsStayOutsideJobsSchema(t *testing.T) {
 	if len(directInputRequiredRelations) == 0 {

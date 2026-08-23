@@ -44,7 +44,7 @@
   "entries": [
     {
       "originalPath": "backend/src/storage/table-monitor.repository.ts",
-      "archivePath": "migration-backup/node/table-monitor-sampling-retention/table-monitor.repository.ts.original",
+      "archivePath": "migration-backup/node/table-monitor-sampling-retention/backend/src/storage/table-monitor.repository.ts.original",
       "sha256": "908C85772DB910D313BEA247C83F22979A676DA79D53BE0017B827A1F7C75251",
       "kind": "complete Node repository snapshot",
       "restore": "Restore only with the exact rollback baseline and the full F2 shared-file changes; this file is not a standalone overlay for a newer tree."

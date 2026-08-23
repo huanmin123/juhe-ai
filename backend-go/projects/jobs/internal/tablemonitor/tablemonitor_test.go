@@ -350,7 +350,7 @@ func TestRunOnceSQLiteCalculatesGrowthAndRepeatsRetentionBatches(t *testing.T) {
 	}
 	var growth1h, growth24h sql.NullInt64
 	if err := store.db.QueryRow(`SELECT growth_rows_1h, growth_rows_24h
-FROM table_storage_snapshots WHERE database_role = 'business' AND table_name = 'source_rows' AND sampled_at = ?`, secondAt.Format(time.RFC3339Nano)).Scan(&growth1h, &growth24h); err != nil {
+FROM table_storage_snapshots WHERE database_role = 'business' AND table_name = 'source_rows' AND sampled_at = ?`, sqliteTimestamp(secondAt)).Scan(&growth1h, &growth24h); err != nil {
 		t.Fatal(err)
 	}
 	if !growth1h.Valid || !growth24h.Valid || growth1h.Int64 != 1 || growth24h.Int64 != 1 {
@@ -447,6 +447,80 @@ func TestCollectBoundedConvertsCallbackPanicToError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "fixture panic") || !strings.Contains(err.Error(), "panic") {
 		t.Fatalf("callback panic must become a component error, got %v", err)
+	}
+}
+
+func TestCollectBoundedKeepsSuccessfulSourcesWhenOneSourceFails(t *testing.T) {
+	results, err := collectBounded(context.Background(), 2, []string{"good", "bad"}, func(source string) (string, error) {
+		if source == "bad" {
+			return "", errors.New("broken SQLite source")
+		}
+		return source + "-sample", nil
+	})
+	if len(results) != 1 || results[0] != "good-sample" {
+		t.Fatalf("successful source sample must be retained: results=%v", results)
+	}
+	if err == nil || !strings.Contains(err.Error(), "broken SQLite source") {
+		t.Fatalf("source error must remain observable: %v", err)
+	}
+}
+
+func TestRunOnceSQLiteWritesSuccessfulSourcesAndRunsRetentionAfterPartialFailure(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteTestEnv(root)
+	for _, path := range []string{env["JUHE_AI_DATABASE_PATH"], env["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"], env["JUHE_AI_STATS_DATABASE_PATH"]} {
+		createSQLiteSource(t, path)
+	}
+	if err := os.WriteFile(env["JUHE_AI_DATASET_DATABASE_PATH"], []byte("broken sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 23, 1, 2, 3, 500000000, time.UTC)
+	stale := now.Add(-40 * 24 * time.Hour)
+	var result SampleResult
+	err = RunWithOwnerLease(context.Background(), cfg, store, func(ownerCtx context.Context) error {
+		lease, leaseErr := ownerLeaseFromContext(ownerCtx)
+		if leaseErr != nil {
+			return leaseErr
+		}
+		if leaseErr := store.WriteSample(ownerCtx, lease, collectedSample{databases: []DatabaseSnapshot{{Role: "stale", Path: "stale", SampledAt: stale}}}); leaseErr != nil {
+			return leaseErr
+		}
+		var runErr error
+		result, runErr = RunOnce(ownerCtx, cfg, store, now)
+		return runErr
+	})
+	if err == nil || !strings.Contains(err.Error(), "dataset") {
+		t.Fatalf("partial source failure must be reported: result=%+v err=%v", result, err)
+	}
+	if result.DatabaseSnapshots != 3 || result.TableSnapshots != 3 {
+		t.Fatalf("successful sources must still be written: result=%+v", result)
+	}
+	var stored int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM database_storage_snapshots WHERE database_role = 'stale'").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 0 {
+		t.Fatalf("retention must run after partial source failure: stale rows=%d", stored)
+	}
+}
+
+func TestSQLiteTimestampsUseFixedWidthAndSortByInstant(t *testing.T) {
+	first := sqliteTimestamp(time.Date(2026, 8, 23, 1, 2, 3, 500000000, time.UTC))
+	second := sqliteTimestamp(time.Date(2026, 8, 23, 1, 2, 3, 500000001, time.UTC))
+	if len(first) != len(second) || len(first) != len("2026-08-23T01:02:03.500000000Z") {
+		t.Fatalf("SQLite timestamp must have fixed width: first=%q second=%q", first, second)
+	}
+	if first >= second {
+		t.Fatalf("SQLite timestamp lexical order must match instant order: first=%q second=%q", first, second)
 	}
 }
 

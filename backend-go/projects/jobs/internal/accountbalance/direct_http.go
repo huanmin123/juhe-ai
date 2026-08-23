@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const (
@@ -86,7 +87,7 @@ func ExecuteBalanceQuery(ctx context.Context, input Input, options QueryOptions)
 	if keyPayload.APIKey == "" {
 		return QueryResult{}, errors.New("account-balance API Key envelope 缺少 API Key")
 	}
-	doer, err := balanceHTTPClient(options, input.Proxy)
+	doer, err := balanceHTTPClient(options, input.Proxy, timeout)
 	if err != nil {
 		return QueryResult{}, err
 	}
@@ -306,13 +307,12 @@ func (r *balanceRequester) getJSON(path string, auth ...requestAuth) (any, *quer
 		return nil, &queryDiagnostic{code: "response_invalid", message: "余额上游响应为空", temporary: true}
 	}
 	defer response.Body.Close()
-	limited := io.LimitReader(response.Body, r.maxBytes+1)
-	body, readErr := io.ReadAll(limited)
+	body, readErr := upstreamhttp.ReadBounded(response.Body, r.maxBytes)
 	if readErr != nil {
+		if errors.Is(readErr, upstreamhttp.ErrResponseBodyTooLarge) {
+			return nil, &queryDiagnostic{code: "response_too_large", message: "余额上游响应超过大小限制"}
+		}
 		return nil, &queryDiagnostic{code: "response_read_error", message: "余额上游响应读取失败", temporary: true}
-	}
-	if int64(len(body)) > r.maxBytes {
-		return nil, &queryDiagnostic{code: "response_too_large", message: "余额上游响应超过大小限制"}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, &queryDiagnostic{code: fmt.Sprintf("http_%d", response.StatusCode), message: fmt.Sprintf("余额上游返回 HTTP %d", response.StatusCode)}
@@ -347,12 +347,12 @@ func balanceEndpoint(base, path string) (string, error) {
 	return baseURL.String(), nil
 }
 
-func balanceHTTPClient(options QueryOptions, proxy *CredentialEnvelope) (HTTPDoer, error) {
+func balanceHTTPClient(options QueryOptions, proxy *CredentialEnvelope, timeout time.Duration) (HTTPDoer, error) {
 	if proxy == nil {
 		if options.Client != nil {
 			return options.Client, nil
 		}
-		return &http.Client{Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+		return upstreamhttp.SharedClient("", upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
 	}
 	var payload struct {
 		URL string `json:"url"`
@@ -360,12 +360,11 @@ func balanceHTTPClient(options QueryOptions, proxy *CredentialEnvelope) (HTTPDoe
 	if err := openCredential(options.Secret, *proxy, "proxy_url", &payload); err != nil {
 		return nil, fmt.Errorf("account-balance proxy envelope 无法安全解封: %w", err)
 	}
-	proxyURL, err := url.Parse(payload.URL)
-	if err != nil || proxyURL.Host == "" || proxyURL.User == nil && strings.Contains(payload.URL, "@") {
+	if _, err := upstreamhttp.ParseProxyURL(payload.URL); err != nil {
+		if errors.Is(err, upstreamhttp.ErrProxySchemeUnsupported) {
+			return nil, errors.New("account-balance proxy 协议不受支持")
+		}
 		return nil, errors.New("account-balance proxy URL 无效")
-	}
-	if proxyURL.Scheme != "http" && proxyURL.Scheme != "https" && proxyURL.Scheme != "socks5" && proxyURL.Scheme != "socks5h" {
-		return nil, errors.New("account-balance proxy 协议不受支持")
 	}
 	if options.Client != nil {
 		// An injected client owns its transport; still validate the encrypted
@@ -373,11 +372,5 @@ func balanceHTTPClient(options QueryOptions, proxy *CredentialEnvelope) (HTTPDoe
 		// production input.
 		return options.Client, nil
 	}
-	transport := &http.Transport{}
-	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
-		transport.DialContext = newBalanceSOCKS5DialContext(proxyURL, proxyURL.Scheme == "socks5h")
-	} else {
-		transport.Proxy = http.ProxyURL(proxyURL)
-	}
-	return &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+	return upstreamhttp.SharedClient(payload.URL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
 }

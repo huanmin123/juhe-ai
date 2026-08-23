@@ -1,13 +1,13 @@
 # 功能文档目录
 
-> 存储与 Go 被动任务迁移的现行规则见 [双模式存储与被动任务优先迁移方案](../migration/双模式存储与被动任务优先迁移方案.md)：SQLite 和 PostgreSQL/Redis 均为正式目标模式；当前 Node 继续拥有网关、账户管理和主要 HTTP 接口。下列专题中早于 2026-08-08 的“Go 仅 PG/Redis / 删除 SQLite”表述均是已取代的历史规划。
+> 存储与 Go 被动任务迁移的现行规则见 [双模式存储与被动任务优先迁移方案](../migration/双模式存储与被动任务优先迁移方案.md)：SQLite 和 PostgreSQL/Redis 均为正式目标模式；当前 Node 继续拥有网关、账户管理和主要 HTTP 接口。J3a 代理延迟检测是已完成的 Go `juhe-ai-jobs` 独占例外：Node 只保留管理 HTTP adapter，不拥有该任务的调度、执行、投影或 `proxy_profiles` 写回。下列专题中早于 2026-08-08 的“Go 仅 PG/Redis / 删除 SQLite”表述均是已取代的历史规划。
 
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)：记录 reasoning 可见性诊断边界，以及不在响应热路径实施质量拦截的当前决定。
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)：记录当前账户级健康机制的代码事实，以及多模型按实际 Route / Key 精确探测和隔离的目标设计。
 - [网关 Body 解析性能治理设计](网关Body解析性能治理设计.md)：盘点并清理请求、响应、SSE、审计和日志链路中的重复或非必要 Body 解析。
 - [统一会话身份与审计串联设计](统一会话身份与审计串联设计.md)：只从厂商官方客户端的会话 Header 识别会话，按客户端隔离亲和，并统一写入审计 `session_id`。
 - [用户请求限制设计](用户请求限制设计.md)：定义全局与用户级每分钟 / 日 / 周 / 月请求限制、进程内零 I/O 快速判断、Redis 后台延迟协调、快速失败和个人信息展示。
-- [Node 后台任务统一调度与错峰设计](Node后台任务统一调度与错峰设计.md)：定义 fixed-rate / fixed-delay、稳定相位、资源 lane、超时取消、合并补跑、PostgreSQL 租约与重任务有界执行契约。
+- [Node 后台任务统一调度与错峰设计](Node后台任务统一调度与错峰设计.md)：定义 Node owner 任务的 fixed-rate / fixed-delay、稳定相位、资源 lane、超时取消、合并补跑、PostgreSQL 租约与重任务有界执行契约；J3a 已迁移到 Go，不适用此 Node 调度入口。
 - [用户个人信息页面设计](用户个人信息页面设计.md)：头像菜单统一进入个人信息页面，集中展示账号、角色、状态、生图权限和时间，并维护用户名称与登录密码。
 - [第三方登录与个人委托授权设计](第三方登录与个人委托授权设计.md)：记录 juhe-ai OAuth 2.1 / OIDC Provider 的浏览器、本地客户端与 Device Flow、7 天硬到期的本人资源委托边界、每 7 天自动轮换的签名密钥和生产启用门禁。
 - [第三方 OAuth OIDC 对接指南](第三方OAuthOIDC对接指南.md)：供外部应用接入 Authorization Code + PKCE、Device Flow、JWKS 验签和个人委托 API；管理员从每个第三方应用的操作列下载绑定该 Client 的动态 Markdown，不需要再单独整理地址、Client ID、回调地址或 Scope。

@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 func TestSOCKS5DialPreservesResolutionMode(t *testing.T) {
@@ -25,7 +27,7 @@ func TestSOCKS5DialPreservesResolutionMode(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			connection, err := newSOCKS5DialContext(proxyURL, test.scheme == "socks5h")(ctx, "tcp", test.target)
+			connection, err := upstreamhttp.NewSOCKS5DialContext(proxyURL, test.scheme == "socks5h")(ctx, "tcp", test.target)
 			if err != nil {
 				t.Fatal(err)
 			}

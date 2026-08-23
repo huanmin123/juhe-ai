@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -296,6 +297,42 @@ func TestRetentionDeletesExpiredRecordsAndFacets(t *testing.T) {
 	}
 	if total != 1 {
 		t.Fatalf("facet 汇总未随保留清理更新: %d", total)
+	}
+}
+
+func TestSQLiteCleanupPreservesCurrentCursorAndBoundsLargeRecordBatch(t *testing.T) {
+	store, config := openTestSQLiteStore(t)
+	lease := testOwnerLease(t, testOwnerContext(t, store))
+	cutoff := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
+	old := nodeISO(cutoff.Add(-time.Hour))
+	records := make([]Record, 0, sqliteCleanupRowsPerBatch+1)
+	for index := 0; index < sqliteCleanupRowsPerBatch+1; index++ {
+		records = append(records, Record{ID: fmt.Sprintf("cleanup-%d", index), LogFile: "juhe-ai.log", Time: old, Level: "info", Event: "cleanup", RawJSON: "{}", CreatedAt: old})
+	}
+	if err := store.Commit(context.Background(), lease, records, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyCursor(context.Background(), lease, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyCursor(context.Background(), lease, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"), FileIdentity: "rotated:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("UPDATE runtime_log_file_cursors SET updated_at = ?", old); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Cleanup(context.Background(), lease, cutoff, 100000, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RuntimeLogs != sqliteCleanupRowsPerBatch+1 {
+		t.Fatalf("large SQLite cleanup batch must delete all records safely: deleted=%d", result.RuntimeLogs)
+	}
+	if cursor, err := store.FindCursor(context.Background(), filepath.Join(config.LogDirectory, "juhe-ai.log")); err != nil || cursor == nil {
+		t.Fatalf("current cursor must never be cleanup target: cursor=%v err=%v", cursor, err)
+	}
+	if cursor, err := store.FindCursor(context.Background(), filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")); err != nil || cursor != nil {
+		t.Fatalf("rotated cursor should be eligible for cleanup: cursor=%v err=%v", cursor, err)
 	}
 }
 

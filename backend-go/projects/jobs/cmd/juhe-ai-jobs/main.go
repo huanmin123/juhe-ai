@@ -199,7 +199,10 @@ func main() {
 	var j3Store *proxylatency.Store
 	var j3InputDB *sql.DB
 	var j3InputPool *pgpool.Handle
+	var j3ResultDB *sql.DB
+	var j3ResultPool *pgpool.Handle
 	var j3Runner *proxylatency.Runner
+	var j3Projector *proxylatency.ResultProjector
 	if j3Config.Enabled {
 		j3Config.Store.PostgresMaxOpenConns = j3Config.PostgresMaxOpenConns
 		j3Config.Store.PostgresMaxIdleConns = j3Config.PostgresMaxIdleConns
@@ -243,7 +246,32 @@ func main() {
 			_ = j3Store.Close()
 			fail(fmt.Errorf("verify J3a proxy-latency direct-input contract: %w", contractErr))
 		}
+		j3ResultPool, err = postgresPools.Acquire("pgx", j3Config.ResultPostgresURL, "business-result", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
+		if err != nil {
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			fail(fmt.Errorf("open J3a Go business-result PostgreSQL pool: %w", err))
+		}
+		j3ResultDB = j3ResultPool.DB()
+		resultProjector, projectorErr := proxylatency.NewResultProjector(j3Store, j3ResultDB, proxylatency.ResultProjectorConfig{PollInterval: time.Second, BatchSize: 100, Now: j3Config.Now}, logger)
+		if projectorErr != nil {
+			_ = j3ResultPool.Close()
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			fail(fmt.Errorf("initialize J3a Go business-result projector: %w", projectorErr))
+		}
+		projectorContext, projectorCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		projectorContractErr := resultProjector.CheckContract(projectorContext)
+		projectorCancel()
+		if projectorContractErr != nil {
+			_ = j3ResultPool.Close()
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			fail(fmt.Errorf("verify J3a Go business-result contract: %w", projectorContractErr))
+		}
 		j3Runner = proxylatency.NewRunner(j3Config, j3Store, reader, logger)
+		j3Runner.SetResultProjector(resultProjector)
+		j3Projector = resultProjector
 	}
 
 	listener, err := net.Listen("tcp", *healthAddress)
@@ -300,6 +328,16 @@ func main() {
 	j3Ready := func() bool { return true }
 	if j3Runner != nil {
 		j3Ready = j3Runner.Ready
+		components = append(components, supervisor.Component{
+			Name: "J3a Go business-result-projector",
+			Run:  j3Projector.Run,
+			Close: func() error {
+				if j3ResultPool != nil {
+					return j3ResultPool.Close()
+				}
+				return nil
+			},
+		})
 		components = append(components, supervisor.Component{
 			Name: "J3a proxy-latency",
 			Run:  j3Runner.Run,
@@ -467,8 +505,13 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 		manualRunner, _ = j3[6].(*proxylatency.Runner)
 	}
 	mux.HandleFunc("/proxy-latency/manual", func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || !manualEnabled || manualRunner == nil {
-			http.NotFound(response, request)
+		if request.Method != http.MethodPost {
+			response.Header().Set("Allow", http.MethodPost)
+			http.Error(response, "J3a manual bridge 仅支持 POST", http.StatusMethodNotAllowed)
+			return
+		}
+		if !manualEnabled || manualRunner == nil {
+			http.Error(response, "J3a manual bridge unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if !matchesAccountBalanceManualSecret(request, manualSecret) {
@@ -494,7 +537,9 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 		report, err := manualRunner.RunManual(request.Context(), envelope.Input)
 		if err != nil {
 			status := http.StatusBadGateway
-			if errors.Is(err, proxylatency.ErrOwnerLeaseHeld) || errors.Is(err, proxylatency.ErrProxyLeaseHeld) {
+			if errors.Is(err, proxylatency.ErrManualProxyMissing) {
+				status = http.StatusNotFound
+			} else if errors.Is(err, proxylatency.ErrOwnerLeaseHeld) || errors.Is(err, proxylatency.ErrProxyLeaseHeld) {
 				response.Header().Set("Retry-After", "1")
 				status = http.StatusServiceUnavailable
 			} else if strings.Contains(err.Error(), "schema") || strings.Contains(err.Error(), "字段") || strings.Contains(err.Error(), "无效") {

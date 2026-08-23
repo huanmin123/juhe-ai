@@ -1,4 +1,4 @@
-package proxylatency
+package upstreamhttp
 
 import (
 	"context"
@@ -13,8 +13,14 @@ import (
 	"time"
 )
 
-func newSOCKS5DialContext(proxyURL *url.URL, remoteResolve bool) func(context.Context, string, string) (net.Conn, error) {
+// NewSOCKS5DialContext returns a context-aware SOCKS5 dialer.  When
+// remoteResolve is true the target hostname is sent as a domain (SOCKS5H);
+// otherwise a hostname is resolved locally before the CONNECT request.
+func NewSOCKS5DialContext(proxyURL *url.URL, remoteResolve bool) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		if proxyURL == nil || proxyURL.Host == "" {
+			return nil, ErrProxyURLInvalid
+		}
 		if network != "tcp" && network != "tcp4" && network != "tcp6" {
 			return nil, fmt.Errorf("SOCKS5 unsupported network %q", network)
 		}
@@ -22,9 +28,28 @@ func newSOCKS5DialContext(proxyURL *url.URL, remoteResolve bool) func(context.Co
 		if err != nil {
 			return nil, err
 		}
-		if err := socks5Handshake(ctx, connection, proxyURL, address, remoteResolve); err != nil {
+		stopCancellation := context.AfterFunc(ctx, func() {
 			_ = connection.Close()
+		})
+		if err := socks5Handshake(ctx, connection, proxyURL, address, remoteResolve); err != nil {
+			stopCancellation()
+			_ = connection.Close()
+			if contextErr := ctx.Err(); contextErr != nil {
+				return nil, contextErr
+			}
 			return nil, err
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			stopCancellation()
+			_ = connection.Close()
+			return nil, contextErr
+		}
+		if !stopCancellation() {
+			_ = connection.Close()
+			if contextErr := ctx.Err(); contextErr != nil {
+				return nil, contextErr
+			}
+			return nil, context.Canceled
 		}
 		return connection, nil
 	}
@@ -37,12 +62,13 @@ func socks5Handshake(ctx context.Context, connection net.Conn, proxyURL *url.URL
 		}
 	}
 	defer connection.SetDeadline(time.Time{})
+
 	methods := []byte{0x00}
 	username, password, hasCredentials := socksCredentials(proxyURL)
 	if hasCredentials {
 		methods = append(methods, 0x02)
 	}
-	if _, err := connection.Write(append([]byte{0x05, byte(len(methods))}, methods...)); err != nil {
+	if err := writeFull(connection, append([]byte{0x05, byte(len(methods))}, methods...)); err != nil {
 		return err
 	}
 	var selection [2]byte
@@ -50,32 +76,36 @@ func socks5Handshake(ctx context.Context, connection net.Conn, proxyURL *url.URL
 		return err
 	}
 	if selection[0] != 0x05 || selection[1] == 0xff {
-		return errors.New("SOCKS5 authentication rejected")
+		return errors.New("SOCKS5 authentication method rejected")
 	}
 	if selection[1] == 0x02 {
-		if !hasCredentials || len(username) > 255 || len(password) > 255 {
-			return errors.New("SOCKS5 credential rejected")
+		if !hasCredentials {
+			return errors.New("SOCKS5 proxy requires credentials")
+		}
+		if len(username) > 255 || len(password) > 255 {
+			return errors.New("SOCKS5 credentials exceed protocol limit")
 		}
 		auth := append([]byte{0x01, byte(len(username))}, []byte(username)...)
 		auth = append(auth, byte(len(password)))
 		auth = append(auth, []byte(password)...)
-		if _, err := connection.Write(auth); err != nil {
+		if err := writeFull(connection, auth); err != nil {
 			return err
 		}
 		if _, err := io.ReadFull(connection, selection[:]); err != nil {
 			return err
 		}
 		if selection[1] != 0x00 {
-			return errors.New("SOCKS5 credential rejected")
+			return errors.New("SOCKS5 username/password authentication failed")
 		}
 	} else if selection[1] != 0x00 {
-		return errors.New("SOCKS5 authentication invalid")
+		return errors.New("SOCKS5 proxy returned an unknown authentication method")
 	}
+
 	request, err := socks5ConnectRequest(ctx, target, remoteResolve)
 	if err != nil {
 		return err
 	}
-	if _, err := connection.Write(request); err != nil {
+	if err := writeFull(connection, request); err != nil {
 		return err
 	}
 	var header [4]byte
@@ -83,29 +113,35 @@ func socks5Handshake(ctx context.Context, connection net.Conn, proxyURL *url.URL
 		return err
 	}
 	if header[0] != 0x05 || header[1] != 0x00 {
-		return errors.New("SOCKS5 connect failed")
+		return fmt.Errorf("SOCKS5 CONNECT failed: reply=%d", header[1])
 	}
-	addressLength := 0
-	switch header[3] {
-	case 0x01:
-		addressLength = net.IPv4len
-	case 0x04:
-		addressLength = net.IPv6len
-	case 0x03:
-		var length [1]byte
-		if _, err := io.ReadFull(connection, length[:]); err != nil {
-			return err
-		}
-		addressLength = int(length[0])
-	default:
-		return errors.New("SOCKS5 bind address invalid")
+	addressLength, err := socks5BoundAddressLength(connection, header[3])
+	if err != nil {
+		return err
 	}
 	_, err = io.CopyN(io.Discard, connection, int64(addressLength+2))
 	return err
 }
 
+func socks5BoundAddressLength(connection net.Conn, addressType byte) (int, error) {
+	switch addressType {
+	case 0x01:
+		return net.IPv4len, nil
+	case 0x04:
+		return net.IPv6len, nil
+	case 0x03:
+		var length [1]byte
+		if _, err := io.ReadFull(connection, length[:]); err != nil {
+			return 0, err
+		}
+		return int(length[0]), nil
+	default:
+		return 0, errors.New("SOCKS5 proxy returned an unknown bound address type")
+	}
+}
+
 func socksCredentials(proxyURL *url.URL) (string, string, bool) {
-	if proxyURL.User == nil {
+	if proxyURL == nil || proxyURL.User == nil {
 		return "", "", false
 	}
 	username := proxyURL.User.Username()
@@ -145,10 +181,24 @@ func socks5ConnectRequest(ctx context.Context, target string, remoteResolve bool
 			request = append(request, 0x04)
 			request = append(request, ipv6...)
 		} else {
-			return nil, errors.New("local SOCKS5 target resolution invalid")
+			return nil, errors.New("local SOCKS5 resolution did not return an IP")
 		}
 	}
 	portBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(portBytes, uint16(port))
 	return append(request, portBytes...), nil
+}
+
+func writeFull(connection net.Conn, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := connection.Write(payload)
+		if err != nil {
+			return err
+		}
+		if written <= 0 {
+			return io.ErrShortWrite
+		}
+		payload = payload[written:]
+	}
+	return nil
 }

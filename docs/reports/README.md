@@ -5,7 +5,7 @@
 
 ## 文档索引
 
-- [J3a 代理延迟检测 Node-Go 深度对照报告（2026-08-22）](J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：逐项记录 Node proxy-test、手动报告、失败写回、scheduler 生命周期、Go local evidence、本轮 dev PG reader/projector 验证与本地接线结果；真实进程 readback、owner handoff/active-path-zero、生产切换仍未完成。
+- [J3a 代理延迟检测 Node-Go 深度对照报告（2026-08-22）](J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：逐项记录 Node 历史 oracle、手动报告、Go projector、现役 Node 管理 CRUD/CAS、scheduler 生命周期和本地接线结果；真实进程 readback、owner handoff/active-path-zero、生产切换仍未完成。
 - [Codex Reasoning 完整性检测源码审计报告（2026-07-28）](CodexReasoning完整性检测源码审计报告-2026-07-28.md)：核对 reasoning item、summary、encrypted content、SSE 终态与 juhe-ai 缺口，区分确定协议失败、合法不可见和语义启发式异常。
 - [Codex Responses 双向协议防护验证报告（2026-07-28）](CodexResponses双向协议防护验证报告-2026-07-28.md)：记录目标生产会话的请求/响应 ID 污染证据、双检查点和 identity 暴露边界修复，以及 JSON/SSE 性能门禁。
 - [performance 进程指标活跃索引修复验证报告（2026-07-27）](performance进程指标活跃索引修复验证报告-2026-07-27.md)：记录生产漏采根因、Redis 活跃索引与部署 freshness fence、真实 Redis/PostgreSQL 验证，以及当前不扩容 Gateway 的证据边界。

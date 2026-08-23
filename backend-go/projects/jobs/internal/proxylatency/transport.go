@@ -2,7 +2,6 @@ package proxylatency
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"net"
@@ -10,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 const maxResponseBodyBytes = 512 * 1024
@@ -43,12 +44,8 @@ func ProbeItem(ctx context.Context, request ProbeRequest) ItemResult {
 		return taskFailureResult("request_build_failed")
 	}
 	applyNodeProbeHeaders(httpRequest, target, proxyURL)
-	client := &http.Client{
-		Transport: transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := upstreamhttp.NewClientWithTransport(transport)
+	defer client.CloseIdleConnections()
 	started := time.Now()
 	response, err := client.Do(httpRequest)
 	if err != nil {
@@ -58,7 +55,7 @@ func ProbeItem(ctx context.Context, request ProbeRequest) ItemResult {
 		return transportFailureResult(err)
 	}
 	defer response.Body.Close()
-	if err := discardBounded(response.Body, maxResponseBodyBytes); err != nil {
+	if _, err := upstreamhttp.Drain(response.Body); err != nil {
 		return responseReadFailureResult(err)
 	}
 	result := ItemResult{
@@ -110,74 +107,20 @@ func newProxyTransport(rawProxyURL string, timeout time.Duration) (*http.Transpo
 	if strings.TrimSpace(rawProxyURL) == "" {
 		return nil, errors.New("proxy required")
 	}
-	proxyURL, err := url.Parse(strings.TrimSpace(rawProxyURL))
-	if err != nil || proxyURL == nil || proxyURL.Host == "" {
+	if _, err := upstreamhttp.ParseProxyURL(rawProxyURL); err != nil {
 		return nil, errors.New("proxy URL invalid")
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ForceAttemptHTTP2 = false
 	// Node's http.request does not synthesize Accept-Encoding. Disable Go's
 	// transparent gzip negotiation so the probe wire shape remains identical.
-	transport.DisableCompression = true
-	// Do not serialize proxy probes behind a fixed per-host connection cap.
-	// MaxConnsPerHost=0 is net/http's unlimited active-connection setting;
-	// worker/cancellation and upstream capacity remain the real boundaries.
-	transport.MaxIdleConns = 0
-	transport.MaxIdleConnsPerHost = 0
-	transport.MaxConnsPerHost = 0
-	transport.ResponseHeaderTimeout = timeout
-	// The proxy CONNECT response is parsed by net/http using this limit. Keep
-	// the limit explicit instead of inheriting Go's much larger default.
-	transport.MaxResponseHeaderBytes = 64 * 1024
-	switch proxyURL.Scheme {
-	case "http", "https":
-		transport.Proxy = http.ProxyURL(proxyURL)
-		// Node's custom CONNECT agent closes the proxy handshake. This header
-		// is intentionally scoped to CONNECT by net/http's ProxyConnectHeader;
-		// it must not leak into a tunneled HTTPS/SOCKS target request.
-		transport.ProxyConnectHeader = http.Header{"Proxy-Connection": []string{"close"}}
-		if proxyURL.User != nil {
-			username := proxyURL.User.Username()
-			password, _ := proxyURL.User.Password()
-			credentials := username + ":" + password
-			transport.ProxyConnectHeader.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(credentials)))
-		}
-	case "socks5", "socks5h":
-		transport.Proxy = nil
-		// Node's repository maps both stored SOCKS variants to socks5h. The
-		// effective contract therefore delegates hostname resolution remotely
-		// for both `socks5` and `socks5h` inputs.
-		transport.DialContext = newSOCKS5DialContext(proxyURL, true)
-	default:
-		return nil, errors.New("proxy scheme invalid")
-	}
-	return transport, nil
-}
-
-func discardBounded(body io.Reader, maxBytes int64) error {
-	if maxBytes <= 0 {
-		return errors.New("response body limit invalid")
-	}
-	// maxBytes limits retained/diagnostic data, not framing. Continue reading
-	// until EOF so a complete oversized response remains a passed/neutral item
-	// exactly like Node's bounded collector.
-	var retained int64
-	buffer := make([]byte, 32*1024)
-	for {
-		read, err := body.Read(buffer)
-		if read > 0 && retained < maxBytes {
-			retained += int64(read)
-			if retained > maxBytes {
-				retained = maxBytes
-			}
-		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
+	// The shared transport also enables HTTP/2 for the SOCKS custom dialer and
+	// keeps direct access independent from HTTP(S)_PROXY environment state.
+	return upstreamhttp.NewTransport(rawProxyURL, upstreamhttp.TransportOptions{
+		ResponseHeaderTimeout:  timeout,
+		DisableCompression:     true,
+		ForceRemoteSOCKS5:      true,
+		MaxResponseHeaderBytes: 64 * 1024,
+		ProxyConnectHeader:     http.Header{"Proxy-Connection": []string{"close"}},
+	})
 }
 
 func taskFailureResult(code string) ItemResult {

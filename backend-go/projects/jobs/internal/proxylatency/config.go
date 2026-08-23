@@ -29,6 +29,7 @@ type RuntimeConfig struct {
 	InstanceID                string
 	Store                     StoreConfig
 	BusinessPostgresURL       string
+	ResultPostgresURL         string
 	PostgresMaxOpenConns      int
 	PostgresMaxIdleConns      int
 	InputPostgresMaxOpenConns int
@@ -91,6 +92,10 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL")
+	}
+	cfg.ResultPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL"))
+	if cfg.ResultPostgresURL == "" {
+		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL")
 	}
 	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, 1024); err != nil {
 		return RuntimeConfig{}, err

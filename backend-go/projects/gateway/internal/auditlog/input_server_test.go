@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+var auditInputTestNonce atomic.Uint64
 
 func TestAuditInputHandlerPersistsSignedLoopbackInput(t *testing.T) {
 	cfg := sqliteConfig(t, t.TempDir())
@@ -33,7 +36,7 @@ func TestAuditInputHandlerPersistsSignedLoopbackInput(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-loopback")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -59,7 +62,7 @@ func TestAuditInputHandlerPersistsSignedLoopbackInput(t *testing.T) {
 	duplicate := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	duplicate.RemoteAddr = "127.0.0.1:32100"
 	duplicate.Header.Set("Content-Type", "application/json")
-	duplicate.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(duplicate, "test-secret", body, "input-loopback-duplicate")
 	duplicateResponse := httptest.NewRecorder()
 	handler.ServeHTTP(duplicateResponse, duplicate)
 	if duplicateResponse.Code != http.StatusNoContent {
@@ -93,7 +96,7 @@ func TestAuditInputHandlerRejectsInvalidAbsoluteTime(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-invalid-time")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -119,7 +122,7 @@ func TestAuditInputHandlerPersistsAfterClientContextCancellation(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body)).WithContext(clientCtx)
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-client-cancelled")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -155,7 +158,7 @@ func TestAuditInputHandlerContainsPersistPanic(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-panic")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusInternalServerError {
@@ -191,7 +194,7 @@ func TestAuditInputHandlerContainsPersistFailure(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-persist-failure")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusInternalServerError {
@@ -227,7 +230,7 @@ func TestAuditInputHandlerReportsLeaseLossToSupervisor(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-lease-loss")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
@@ -266,7 +269,7 @@ func TestAuditInputHandlerContainsHotSearchFailureAfterCommit(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:32100"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(AuditInputSignatureHeader, SignAuditInput("test-secret", body))
+	signAuditRequest(request, "test-secret", body, "input-hot-search-failure")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
@@ -332,7 +335,8 @@ func eventuallySendInput(t *testing.T, inputConfig InputServerConfig, body []byt
 			t.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set(AuditInputSignatureHeader, SignAuditInput(inputConfig.SharedSecret, body))
+		nonce := "input-server-persist-failure-" + strconv.FormatUint(auditInputTestNonce.Add(1), 10)
+		signAuditRequest(request, inputConfig.SharedSecret, body, nonce)
 		response, err := client.Do(request)
 		if err == nil {
 			return response
@@ -363,13 +367,15 @@ func TestAuditInputHandlerRejectsUnsignedOrNonLoopbackInput(t *testing.T) {
 		signature  string
 		wantStatus int
 	}{
-		{name: "remote", remoteAddr: "192.0.2.10:32100", signature: SignAuditInput("test-secret", body), wantStatus: http.StatusForbidden},
+		{name: "remote", remoteAddr: "192.0.2.10:32100", signature: SignAuditInput("test-secret", time.Now().UTC().Format(time.RFC3339Nano), "input-reject-remote", body), wantStatus: http.StatusForbidden},
 		{name: "signature", remoteAddr: "127.0.0.1:32100", signature: "v1=00", wantStatus: http.StatusUnauthorized},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(body))
 			request.RemoteAddr = testCase.remoteAddr
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(AuditInputTimestampHeader, time.Now().UTC().Format(time.RFC3339Nano))
+			request.Header.Set(AuditInputNonceHeader, "input-reject-"+testCase.name)
 			request.Header.Set(AuditInputSignatureHeader, testCase.signature)
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -378,6 +384,103 @@ func TestAuditInputHandlerRejectsUnsignedOrNonLoopbackInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuditInputHandlerEnforcesTimestampNonceSignatureContract(t *testing.T) {
+	cfg := sqliteConfig(t, t.TempDir())
+	store := openSQLiteStore(t, cfg)
+	defer store.Close()
+	handler := &auditInputHandler{
+		store: store,
+		lease: acquireLease(t, store),
+		cfg: InputServerConfig{
+			SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second,
+			ReplayWindow: time.Minute, ReplayCacheCapacity: 8,
+		},
+	}
+	body, err := json.Marshal(auditInputEnvelope{SchemaVersion: 1, AuditLog: fixture("input-contract", LifecycleFinalized)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(timestamp, nonce, signature string, requestBody []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, AuditInputPath, bytes.NewReader(requestBody))
+		req.RemoteAddr = "127.0.0.1:32100"
+		req.Header.Set("Content-Type", "application/json")
+		if timestamp != "" {
+			req.Header.Set(AuditInputTimestampHeader, timestamp)
+		}
+		if nonce != "" {
+			req.Header.Set(AuditInputNonceHeader, nonce)
+		}
+		if signature != "" {
+			req.Header.Set(AuditInputSignatureHeader, signature)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	now := time.Now().UTC()
+	sign := func(timestamp time.Time, nonce string, requestBody []byte) string {
+		return SignAuditInput("test-secret", timestamp.Format(time.RFC3339Nano), nonce, requestBody)
+	}
+	validTimestamp := now.Format(time.RFC3339Nano)
+	validSignature := sign(now, "contract-valid", body)
+	if response := request(validTimestamp, "contract-valid", validSignature, body); response.Code != http.StatusNoContent {
+		t.Fatalf("valid request status=%d want=%d", response.Code, http.StatusNoContent)
+	}
+	for _, testCase := range []struct {
+		name      string
+		timestamp string
+		nonce     string
+		signature string
+		body      []byte
+	}{
+		{name: "missing-timestamp", nonce: "missing-timestamp", signature: SignAuditInput("test-secret", "", "missing-timestamp", body), body: body},
+		{name: "missing-nonce", timestamp: validTimestamp, signature: SignAuditInput("test-secret", validTimestamp, "", body), body: body},
+		{name: "expired", timestamp: now.Add(-2 * time.Minute).Format(time.RFC3339Nano), nonce: "expired", signature: sign(now.Add(-2*time.Minute), "expired", body), body: body},
+		{name: "future", timestamp: now.Add(2 * time.Minute).Format(time.RFC3339Nano), nonce: "future", signature: sign(now.Add(2*time.Minute), "future", body), body: body},
+		{name: "tampered", timestamp: validTimestamp, nonce: "tampered", signature: validSignature, body: bytes.Replace(body, []byte("input-contract"), []byte("input-tampered"), 1)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if response := request(testCase.timestamp, testCase.nonce, testCase.signature, testCase.body); response.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d want=%d", response.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+	if response := request(validTimestamp, "contract-replay", sign(now, "contract-replay", body), body); response.Code != http.StatusNoContent {
+		t.Fatalf("first nonce status=%d want=%d", response.Code, http.StatusNoContent)
+	}
+	if response := request(validTimestamp, "contract-replay", sign(now, "contract-replay", body), body); response.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed nonce status=%d want=%d", response.Code, http.StatusUnauthorized)
+	}
+	if response := request(validTimestamp, "contract-different-nonce", sign(now, "contract-different-nonce", body), body); response.Code != http.StatusNoContent {
+		t.Fatalf("different nonce status=%d want=%d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestAuditInputReplayCacheIsBoundedByCapacityAndWindow(t *testing.T) {
+	var cache replayCache
+	now := time.Now().UTC()
+	if !cache.accept("one", now, time.Minute, 2) || !cache.accept("two", now, time.Minute, 2) {
+		t.Fatal("initial nonces must be accepted")
+	}
+	if cache.accept("three", now, time.Minute, 2) {
+		t.Fatal("replay cache must reject entries beyond capacity")
+	}
+	if len(cache.nonces) != 2 {
+		t.Fatalf("replay cache size=%d want=2", len(cache.nonces))
+	}
+	if !cache.accept("expired", now.Add(time.Minute), time.Minute, 2) {
+		t.Fatal("expired entries must be evicted before accepting a new nonce")
+	}
+}
+
+func signAuditRequest(request *http.Request, secret string, body []byte, nonce string) {
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(AuditInputTimestampHeader, timestamp)
+	request.Header.Set(AuditInputNonceHeader, nonce)
+	request.Header.Set(AuditInputSignatureHeader, SignAuditInput(secret, timestamp, nonce, body))
 }
 
 func TestLoadInputServerConfigRequiresLoopbackAndSecret(t *testing.T) {

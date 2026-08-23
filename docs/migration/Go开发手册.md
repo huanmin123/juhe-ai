@@ -9,6 +9,10 @@
 3. 只有现有能力和合适库都不能满足明确契约时才自建最小实现。自建必须记录原因、替代方案、边界、测试和后续退出条件。
 4. 共享代码只放稳定且无业务 owner 的契约或基础设施。不得为复用把业务 service、跨项目 Store 或全局可变状态塞进 shared，也不得为了隔离复制多套同类实现。
 
+外部上游请求统一优先复用 `backend-go/shared/platform/upstreamhttp`：它负责直连/HTTP(S)/SOCKS5(SOCKS5H) transport、代理认证边界、HTTP/2、响应头限制、有界响应体读取/排空、请求级取消所依赖的 transport 配置和无重定向 client；业务项目只负责 URL、认证、请求体、SSE/JSON/余额等协议语义和错误投影。不得把通用重试、供应商协议解析或业务状态机塞进该共享包。
+
+`database/sql` pool 的引用计数、复用和关闭统一优先使用 `backend-go/shared/platform/sqlpool`；项目只提供 driver opener、连接 URL、逻辑 role 和资源上限，不能在 gateway/jobs 各自复制 pool registry，也不能把 schema、事务或业务 Store 放入 shared。
+
 ## 2. 三项目边界
 
 - `gateway`：对外 API、管理 API、AI 上游桥接和请求级业务处理。

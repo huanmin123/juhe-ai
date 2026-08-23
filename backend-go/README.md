@@ -10,6 +10,8 @@
 
 三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/migration/Go三项目架构基线.md) 与 [Go 开发手册](../docs/migration/Go开发手册.md)。
 
+`shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 当前还没有生产上游 client，`maintenance` 当前没有上游请求。
+
 当前常驻入口是 `projects/jobs/cmd/juhe-ai-jobs` 与 `projects/gateway/cmd/juhe-ai-gateway`：
 
 - `jobs` 运行 F1 运行日志索引与保留、F2 表存储监控采样与保留。

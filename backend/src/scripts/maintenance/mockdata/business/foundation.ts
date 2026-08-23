@@ -146,16 +146,6 @@ export function createProxies(adminAccess: AccessScope): { http: string; socks: 
     password: 'mock_proxy_password',
     enabled: true
   }, adminAccess)
-  const httpTestConfig = repositories.getProxyTestConfig(http.id)
-  repositories.updateProxyTestState(http.id, {
-    testStatus: 'passed',
-    latencyMs: 82,
-    outboundIp: '203.0.113.10',
-    outboundRegion: '本地测试出口',
-    lastTestMessage: 'Mockdata 代理连通正常',
-    lastTestedAt: nowIso(),
-    expectedConfigUpdatedAt: httpTestConfig?.configUpdatedAt ?? ''
-  })
 
   const socks = repositories.createProxy({
     name: `${namePrefix}SOCKS 代理`,
@@ -165,16 +155,6 @@ export function createProxies(adminAccess: AccessScope): { http: string; socks: 
     port: 1080,
     enabled: true
   }, adminAccess)
-  const socksTestConfig = repositories.getProxyTestConfig(socks.id)
-  repositories.updateProxyTestState(socks.id, {
-    testStatus: 'passed',
-    latencyMs: 118,
-    outboundIp: '203.0.113.11',
-    outboundRegion: '本地备用出口',
-    lastTestMessage: 'Mockdata SOCKS 代理连通正常',
-    lastTestedAt: nowIso(),
-    expectedConfigUpdatedAt: socksTestConfig?.configUpdatedAt ?? ''
-  })
 
   const disabled = repositories.createProxy({
     name: `${namePrefix}停用代理`,

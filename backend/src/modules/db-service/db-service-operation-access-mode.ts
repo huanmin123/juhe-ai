@@ -54,7 +54,6 @@ export const dbServiceOperationAccessModeByType = {
   list_account_api_key_runtime_states_due_for_probe: 'maintenance',
   account_api_key_pool_probe_cursor: 'maintenance',
   mark_account_exception: 'write',
-  update_proxy_test_state: 'write',
   mark_all_group_account_stats_dirty: 'maintenance',
   delete_group_account_stats_dirty_rows: 'maintenance',
   update_group_account_stats_all_cursor: 'maintenance',

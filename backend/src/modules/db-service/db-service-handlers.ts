@@ -110,8 +110,6 @@ import {
   type OpenAIAccountSecret,
   updateAccount,
   updateAccountAsync,
-  updateProxyTestState,
-  updateProxyTestStateAsync,
   validateGatewayApiKey,
   validateGatewayApiKeyAsync
 } from '../../storage/repositories.js'
@@ -736,13 +734,6 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           account: operation.account,
           ...operation.input
         })
-      }
-      return handleDbServiceOperationSync(operation)
-    }
-    case 'update_proxy_test_state': {
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const updated = await updateProxyTestStateAsync(operation.proxyId, operation.input)
-        return { updated: Boolean(updated), proxyStatus: updated?.testStatus }
       }
       return handleDbServiceOperationSync(operation)
     }
@@ -1571,10 +1562,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         clearGatewayRuntimeCacheLocal()
       }
       return { updated: Boolean(updated), accountStatus: updated?.status }
-    }
-    case 'update_proxy_test_state': {
-      const updated = updateProxyTestState(operation.proxyId, operation.input)
-      return { updated: Boolean(updated), proxyStatus: updated?.testStatus }
     }
     case 'mark_all_group_account_stats_dirty':
       markAllGroupAccountStatsDirty(operation.reason)

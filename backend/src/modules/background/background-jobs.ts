@@ -25,7 +25,6 @@ import {
   type ScheduledJobLeaseFence
 } from '../../storage/scheduled-job-lease.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
-import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestBackgroundWorkerDbService, requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples } from './background-ipc.js'
 import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.js'
@@ -56,7 +55,6 @@ import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanu
 import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
 import { runAccountBalanceAutoDetectionRecovery } from './account-balance-auto-detect.service.js'
 import { accountBalanceNodeOwnerEnabled } from './account-balance-handover.js'
-import { proxyLatencyNodeOwnerEnabled } from './proxy-latency-handover.js'
 import {
   backgroundTaskRunReconcileInitialDelayMs,
   backgroundTaskRunReconcileIntervalMs,
@@ -367,11 +365,6 @@ function scheduleBackgroundJobs(): void {
         })
       }
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-recovery'), intervalMs: 5 * secondMs, initialDelayMs: 5 * secondMs, task: runScheduledAccountCircuitRecovery })
-      if (proxyLatencyNodeOwnerEnabled()) {
-        scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runProxyLatencyRefresh(signal) })
-      } else {
-        logger.info({ event: 'proxy_latency_node_owner_drained', owner: 'go' }, 'J3a Go owner 模式已停止 Node proxy-latency scheduler')
-      }
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 90 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runOpenAIOAuthAccessTokenRefresh(signal) })
       return
     default:
@@ -912,19 +905,6 @@ async function runOpenAIOAuthAccessTokenRefresh(signal?: AbortSignal): Promise<W
     return { outcome: 'success' }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_openai_oauth_access_token_refresh_failed' }), 'OpenAI OAuth Access Token 刷新失败')
-    throw error
-  }
-}
-
-async function runProxyLatencyRefresh(signal?: AbortSignal): Promise<WorkerScheduledJobTaskResult> {
-  try {
-    const result = await refreshProxyLatencyBatch({ limit: proxyLatencyRefreshBatchSize, signal })
-    if (result.processedCount > 0 || result.warning) {
-      logger.info({ event: 'background_proxy_latency_refresh_completed', ...result }, '代理延迟刷新完成')
-    }
-    return result
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), '代理延迟刷新失败')
     throw error
   }
 }

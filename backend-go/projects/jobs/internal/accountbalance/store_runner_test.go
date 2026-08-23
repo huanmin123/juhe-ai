@@ -118,6 +118,29 @@ func TestStoreSQLiteLeaseFenceAndSnapshotCAS(t *testing.T) {
 	}
 }
 
+func TestStoreEnsureSchemaCachesOnlySuccessfulInitialization(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\schema-cache.sqlite"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := store.EnsureSchema(canceled); err == nil {
+		t.Fatal("canceled schema initialization must fail")
+	}
+	if store.schemaReady {
+		t.Fatal("failed schema initialization must not be cached")
+	}
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !store.schemaReady {
+		t.Fatal("successful schema initialization must be cached")
+	}
+}
+
 func TestRunnerPeriodicDirectHTTPAndFirstProbe(t *testing.T) {
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\runner.sqlite"})
 	if err != nil {

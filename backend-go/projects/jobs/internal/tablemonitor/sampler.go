@@ -3,6 +3,7 @@ package tablemonitor
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -43,26 +44,27 @@ func RunOnce(ctx context.Context, cfg Config, store *Store, now time.Time) (Samp
 		now = time.Now().UTC()
 	}
 	var collected collectedSample
+	var sampleErr error
 	if cfg.Mode == ModeSQLite {
-		collected, err = collectSQLite(ctx, cfg, now)
+		collected, sampleErr = collectSQLite(ctx, cfg, now)
 	} else {
-		collected, err = collectPostgres(ctx, cfg, now)
+		collected, sampleErr = collectPostgres(ctx, cfg, now)
 	}
-	if err != nil {
-		return SampleResult{}, err
+	if sampleErr != nil && len(collected.databases) == 0 && len(collected.tables) == 0 {
+		return SampleResult{}, sampleErr
 	}
 	if err := store.populateGrowth(ctx, &collected); err != nil {
-		return SampleResult{}, fmt.Errorf("读取表监控历史增长基线失败: %w", err)
+		return SampleResult{}, errors.Join(sampleErr, fmt.Errorf("读取表监控历史增长基线失败: %w", err))
 	}
 	if err := store.WriteSample(ctx, lease, collected); err != nil {
-		return SampleResult{}, fmt.Errorf("写入表监控快照失败: %w", err)
+		return SampleResult{}, errors.Join(sampleErr, fmt.Errorf("写入表监控快照失败: %w", err))
 	}
 	cutoff := now.UTC().Add(-time.Duration(cfg.RetentionDays) * 24 * time.Hour)
 	deleted, err := store.CleanupUntilComplete(ctx, lease, cutoff, cfg.RetentionBatchSize, cfg.RetentionMaxBatches)
 	if err != nil {
-		return SampleResult{}, fmt.Errorf("清理表监控快照失败: %w", err)
+		return SampleResult{}, errors.Join(sampleErr, fmt.Errorf("清理表监控快照失败: %w", err))
 	}
-	return SampleResult{SampledAt: now.UTC(), DatabaseSnapshots: len(collected.databases), TableSnapshots: len(collected.tables), DeletedSnapshots: deleted}, nil
+	return SampleResult{SampledAt: now.UTC(), DatabaseSnapshots: len(collected.databases), TableSnapshots: len(collected.tables), DeletedSnapshots: deleted}, sampleErr
 }
 
 func collectSQLite(ctx context.Context, cfg Config, sampledAt time.Time) (collectedSample, error) {
@@ -89,13 +91,10 @@ func collectSQLite(ctx context.Context, cfg Config, sampledAt time.Time) (collec
 	parts, err := collectBounded(ctx, cfg.MaxConcurrentSources, targets, func(target sqliteTarget) (collectedSample, error) {
 		return collectSQLiteTarget(ctx, target, sampledAt, target.maxTables)
 	})
-	if err != nil {
-		return collectedSample{}, err
-	}
 	var collected collectedSample
 	shards := make([]collectedSample, 0, len(selectedEntries))
-	for index, part := range parts {
-		if targets[index].role == "codex-context-state" {
+	for _, part := range parts {
+		if len(part.databases) > 0 && part.databases[0].Role == "codex-context-state" {
 			shards = append(shards, part)
 			continue
 		}
@@ -121,7 +120,7 @@ func collectSQLite(ctx context.Context, cfg Config, sampledAt time.Time) (collec
 		}
 		return collected.tables[i].TableName < collected.tables[j].TableName
 	})
-	return collected, nil
+	return collected, err
 }
 
 // selectShardWindow bounds one sampling round without introducing a queue. The
@@ -483,15 +482,12 @@ func collectPostgres(ctx context.Context, cfg Config, sampledAt time.Time) (coll
 	parts, err := collectBounded(ctx, cfg.MaxConcurrentSources, targets, func(target postgresTarget) (collectedSample, error) {
 		return collectPostgresTarget(ctx, db, target, sampledAt, cfg.MaxTables)
 	})
-	if err != nil {
-		return collectedSample{}, err
-	}
 	var collected collectedSample
 	for _, part := range parts {
 		collected.databases = append(collected.databases, part.databases...)
 		collected.tables = append(collected.tables, part.tables...)
 	}
-	return collected, nil
+	return collected, err
 }
 
 func collectPostgresTarget(ctx context.Context, db *sql.DB, target postgresTarget, sampledAt time.Time, maxTables int) (collectedSample, error) {
@@ -603,6 +599,7 @@ func collectBounded[T any, R any](ctx context.Context, limit int, targets []T, c
 	}
 	workers := min(limit, len(targets))
 	results := make([]R, len(targets))
+	succeeded := make([]bool, len(targets))
 	jobs := make(chan int, len(targets))
 	errs := make(chan error, len(targets))
 	for index := range targets {
@@ -630,17 +627,25 @@ func collectBounded[T any, R any](ctx context.Context, limit int, targets []T, c
 					continue
 				}
 				results[index] = result
+				succeeded[index] = true
 			}
 		}()
 	}
 	wg.Wait()
 	close(errs)
+	var collectedErrs []error
 	for err := range errs {
 		if err != nil {
-			return nil, err
+			collectedErrs = append(collectedErrs, err)
 		}
 	}
-	return results, nil
+	compact := make([]R, 0, len(results))
+	for index, result := range results {
+		if succeeded[index] {
+			compact = append(compact, result)
+		}
+	}
+	return compact, errors.Join(collectedErrs...)
 }
 
 func collectSafely[T any, R any](collect func(T) (R, error), target T) (result R, err error) {

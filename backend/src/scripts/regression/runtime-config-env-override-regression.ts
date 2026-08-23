@@ -43,7 +43,6 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.gateway.automaticProbeSweepIntervalMs, 750, '自动恢复探针扫描周期应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.gateway.accountCircuitRecoveryLeaseDurationMs, 240000, '熔断恢复租约应支持进程环境变量覆盖')
   assert.deepEqual(runtimeConfig.gateway.accountCircuitBackoffMs, [1000, 2000, 3000], '熔断退避阶梯应支持进程环境变量覆盖')
-  assert.equal(runtimeConfig.background.proxyLatencyRefreshRunBudgetMs, 55000, '代理刷新时间预算应支持进程环境变量覆盖')
   assert.equal(runtimeConfig.runtimeMode, 'standalone', '默认运行模式应为 standalone')
   assert.equal(runtimeConfig.databaseDriver, 'sqlite', 'standalone 默认数据库 driver 应为 sqlite')
   assert.equal(runtimeConfig.cacheDriver, 'memory', 'standalone 默认缓存 driver 应为 memory')

@@ -24,9 +24,7 @@ import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsP
 import { startAccountHealthJobsInputPublisherRuntime, stopAccountHealthJobsInputPublisherRuntime } from './modules/background/account-health-jobs-input-publisher-runtime.service.js'
 import { startAccountHealthJobsOutcomeProjectionRuntime, stopAccountHealthJobsOutcomeProjectionRuntime } from './modules/background/account-health-jobs-outcome-projection-runtime.service.js'
 import { startAccountBalanceJobsOutcomeProjectionRuntime, stopAccountBalanceJobsOutcomeProjectionRuntime } from './modules/background/account-balance-jobs-outcome-projection-runtime.service.js'
-import { startProxyLatencyJobsOutcomeProjectionRuntime, stopProxyLatencyJobsOutcomeProjectionRuntime } from './modules/background/proxy-latency-jobs-outcome-projection-runtime.service.js'
 import { accountBalanceGoOwnerEnabled, sameAccountBalanceJobsPostgresStore } from './modules/background/account-balance-handover.js'
-import { proxyLatencyGoOwnerEnabled } from './modules/background/proxy-latency-handover.js'
 
 const systemApiPrefix = '/__aisys__/api'
 const publicApiPrefix = '/__aipublic__'
@@ -73,7 +71,6 @@ let dbServiceShutdownPromise: Promise<void> | undefined
 
 async function startDbService(): Promise<void> {
   await assertAccountBalanceGoProjectionRuntimeReady()
-  await assertProxyLatencyGoProjectionRuntimeReady()
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
   startPerformanceProcessMetricsPublisher()
@@ -85,7 +82,6 @@ async function startDbService(): Promise<void> {
   startAccountHealthJobsInputPublisherRuntime()
   startAccountHealthJobsOutcomeProjectionRuntime()
   startAccountBalanceJobsOutcomeProjectionRuntime()
-  startProxyLatencyJobsOutcomeProjectionRuntime()
   const httpEndpoint = await startDbServiceHttpServer()
   setDbServiceHttpEndpoint({ host: httpEndpoint.host, port: httpEndpoint.port })
 
@@ -113,67 +109,6 @@ async function startDbService(): Promise<void> {
     httpHost: httpEndpoint.host,
     httpPort: httpEndpoint.port
   }, `数据库服务已启动，内部系统 API 监听 http://${httpEndpoint.host}:${httpEndpoint.port}`)
-}
-
-async function assertProxyLatencyGoProjectionRuntimeReady(): Promise<void> {
-  if (!proxyLatencyGoOwnerEnabled()) return
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    throw new Error('J3a Go owner 只允许 PostgreSQL business DB；SQLite 不能承载跨进程 outcome projection')
-  }
-  if (process.env.JUHE_AI_PROXY_LATENCY_PROJECTION_ENABLED?.trim().toLowerCase() !== 'true') {
-    throw new Error('J3a Go owner 要求 JUHE_AI_PROXY_LATENCY_PROJECTION_ENABLED=true')
-  }
-  if (process.env.JUHE_AI_PROXY_LATENCY_MANUAL_ENABLED?.trim().toLowerCase() !== 'true') {
-    throw new Error('J3a Go owner 要求 JUHE_AI_PROXY_LATENCY_MANUAL_ENABLED=true；否则手动检测仍无 Go 接管路径')
-  }
-  if (process.env.JUHE_AI_PROXY_LATENCY_STORE?.trim().toLowerCase() !== 'postgres') {
-    throw new Error('J3a Go owner 只允许 PostgreSQL jobs Store')
-  }
-  const jobsUrl = process.env.JUHE_AI_PROXY_LATENCY_POSTGRES_URL?.trim()
-  const outcomeUrl = process.env.JUHE_AI_PROXY_LATENCY_JOBS_OUTCOME_POSTGRES_URL?.trim()
-  if (!jobsUrl || !outcomeUrl || !sameAccountBalanceJobsPostgresStore(jobsUrl, outcomeUrl)) {
-    throw new Error('J3a Go owner jobs Store 与 Node outcome reader 必须指向同一 PostgreSQL 数据库')
-  }
-  if (!runtimeConfig.postgres.url || !sameAccountBalanceJobsPostgresStore(runtimeConfig.postgres.url, process.env.JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL)) {
-    throw new Error('J3a Go owner direct-input business DB 必须与 Node business PostgreSQL 相同')
-  }
-  if (!process.env.JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL?.trim()) {
-    throw new Error('J3a Go owner 要求配置 JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL manual bridge')
-  }
-  const manualSecret = process.env.JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET?.trim()
-  if (!manualSecret || manualSecret.length < 32) {
-    throw new Error('J3a Go owner 要求 JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET 至少 32 字符')
-  }
-  for (const name of [
-    'JUHE_AI_PROXY_LATENCY_JOBS_COMMAND_WIRING_READY',
-    'JUHE_AI_PROXY_LATENCY_PROJECTION_READY',
-    'JUHE_AI_PROXY_LATENCY_MANUAL_BRIDGE_READY',
-    'JUHE_AI_PROXY_LATENCY_NODE_OWNER_DRAINED'
-  ]) {
-    if (process.env[name]?.trim().toLowerCase() !== 'true') {
-      throw new Error(`J3a Go owner 需要独立验收后显式设置 ${name}=true`)
-    }
-  }
-  const business = createPostgresDatabaseClient(await getPostgresPool())
-  const tables = await business.query<{ table_name?: string }>(`
-    SELECT to_regclass(?) AS table_name
-    UNION ALL SELECT to_regclass(?) AS table_name
-  `, [
-    'juhe_business.proxy_latency_projection_cursors',
-    'juhe_business.proxy_latency_projection_receipts'
-  ])
-  if (tables.some((row) => !row?.table_name)) {
-    throw new Error('J3a Go owner 缺少 proxy latency projection cursor/receipt schema')
-  }
-  const { Pool } = await import('pg')
-  const sourcePool = new Pool({ connectionString: outcomeUrl, max: 1 })
-  try {
-    await sourcePool.query('SELECT committed FROM juhe_jobs.proxy_latency_outcomes LIMIT 0')
-  } catch (error) {
-    throw new Error(`J3a Go owner outcome source 不可用或缺少 committed fence: ${error instanceof Error ? error.message : String(error)}`)
-  } finally {
-    await sourcePool.end()
-  }
 }
 
 async function assertAccountBalanceGoProjectionRuntimeReady(): Promise<void> {
@@ -269,11 +204,6 @@ async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: 
     await stopAccountBalanceJobsOutcomeProjectionRuntime()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'account_balance_jobs_outcome_projection_shutdown_failed' }), 'J2 outcome 投影器退出失败')
-  }
-  try {
-    await stopProxyLatencyJobsOutcomeProjectionRuntime()
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'proxy_latency_jobs_outcome_projection_shutdown_failed' }), 'J3a outcome 投影器退出失败')
   }
   try {
     closeStorageDatabases()

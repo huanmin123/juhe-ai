@@ -221,7 +221,7 @@ func syntheticBase(items []ProxyTestItem, providerCount int) ProxyTestItem {
 	}
 	base := ProxyTestItem{Name: "基础连通性", Status: status, Message: "供应商默认地址均未形成真实传输检测"}
 	if latencies > 0 {
-		average := total / int64(latencies)
+		average := (total + int64(latencies)/2) / int64(latencies)
 		base.LatencyMS = &average
 	}
 	switch {

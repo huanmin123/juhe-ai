@@ -60,9 +60,15 @@ try {
   const expectedSignature = `v1=${createHmac('sha256', inputSecret)
     .update('juhe-ai/audit-log-input/v1')
     .update('\n')
+    .update(successRequest.timestamp ?? '')
+    .update('\n')
+    .update(successRequest.nonce ?? '')
+    .update('\n')
     .update(successRequest.body)
     .digest('hex')}`
-  assert.equal(successRequest.signature, expectedSignature, 'Go 输入签名必须覆盖 domain、换行和原始 JSON body')
+  assert(successRequest.timestamp && !Number.isNaN(Date.parse(successRequest.timestamp)), 'Go 输入必须声明 RFC3339 timestamp header')
+  assert(successRequest.nonce, 'Go 输入必须声明 nonce header')
+  assert.equal(successRequest.signature, expectedSignature, 'Go 输入签名必须覆盖 domain、timestamp、nonce 和原始 JSON body')
   assert.equal(requestCount, 1, '204 成功必须只发送一次 one-shot 请求')
 
   for (const trafficSource of ['account_health_check', 'runtime_recovery_probe', 'cooldown_retest'] as const) {
@@ -104,6 +110,8 @@ interface ReceivedRequest {
   contentType: string | undefined
   contentLength: string | undefined
   signature: string | undefined
+  timestamp: string | undefined
+  nonce: string | undefined
   traceId: string | undefined
   body: Buffer
 }
@@ -123,6 +131,8 @@ function handleRequest(request: IncomingMessage, response: ServerResponse): void
       contentType: headerValue(request.headers['content-type']),
       contentLength: headerValue(request.headers['content-length']),
       signature: headerValue(request.headers['x-juhe-ai-signature']),
+      timestamp: headerValue(request.headers['x-juhe-ai-timestamp']),
+      nonce: headerValue(request.headers['x-juhe-ai-nonce']),
       traceId: headerValue(request.headers['x-trace-id']),
       body: Buffer.concat(chunks)
     }

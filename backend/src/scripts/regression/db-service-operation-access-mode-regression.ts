@@ -83,7 +83,6 @@ for (const type of [
   'record_account_stream_failure',
   'clear_account_stream_failure_state',
   'mark_account_temporary_unavailable',
-  'update_proxy_test_state',
   'save_codex_context_response_state',
   'save_codex_context_compact_state',
   'mark_account_test_task_running',
@@ -96,6 +95,10 @@ for (const type of [
 ] as const) {
   assert.equal(dbServiceOperationAccessMode({ type } as DbServiceOperation), 'write', `${type} 必须归类为 write`)
 }
+
+assert.doesNotMatch(dbServiceTypesSource, /update_proxy_test_state/, 'J3a Node DB service 不得再声明 proxy test state writer')
+assert.doesNotMatch(dbServiceAccessModeSource, /update_proxy_test_state/, 'J3a Node DB service 不得再暴露 proxy test state write access mode')
+assert.doesNotMatch(dbServiceHandlersSource, /update_proxy_test_state|updateProxyTestState/, 'J3a Node DB service 不得再分发 proxy test state writer')
 
 for (const type of [
   'mark_all_group_account_stats_dirty',

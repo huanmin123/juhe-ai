@@ -6,7 +6,6 @@ import type { RuntimeLogDetail, RuntimeLogDetailDelta, RuntimeLogListOptions, Ru
 import type { RuntimeLogFacets } from '../../storage/runtime-log-query.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
-import type { ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type {
   BackgroundDatasetWriteOperation,
@@ -900,11 +899,6 @@ export type DbServiceOperation =
     expectedStatus?: import('../../domain/types.js').AccountStatus
   }
   | {
-    type: 'update_proxy_test_state'
-    proxyId: string
-    input: ProxyTestStateUpdateInput
-  }
-  | {
     type: 'mark_all_group_account_stats_dirty'
     reason: string
   }
@@ -1173,7 +1167,6 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
   T extends { type: 'list_account_api_key_runtime_states_due_for_probe' } ? import('../../storage/account-api-key-runtime-state.repository.js').AccountApiKeyRuntimeProbeCandidate[] :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
-  T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :
   T extends { type: 'mark_all_group_account_stats_dirty' } ? { marked: true } :
   T extends { type: 'delete_group_account_stats_dirty_rows' } ? { deleted: true } :
   T extends { type: 'update_group_account_stats_all_cursor' } ? { updated: true } :

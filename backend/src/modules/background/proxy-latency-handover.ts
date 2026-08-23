@@ -2,86 +2,37 @@ import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 import type { ProxyProfileTestConfig } from '../../storage/proxy.repository.js'
 import { listProvidersAsync } from '../../storage/provider.repository.js'
 import { parseRfc3339Instant } from '../../shared/rfc3339.js'
-import type { ProxyTestReport } from '../proxies/proxy-test.service.js'
+import type { ProxyTestReport } from '../proxies/proxy-test.contract.js'
 
 export const proxyLatencyHandoverSchemaVersion = 1 as const
 export const proxyLatencyHandoverJobName = 'proxy-latency' as const
+const proxyLatencyManualResponseMaxBytes = 512 * 1024
 
-export function proxyLatencyGoOwnerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.JUHE_AI_PROXY_LATENCY_JOBS_OWNER?.trim().toLowerCase() === 'go'
-}
+export class GoManualBridgeHttpError extends Error {
+  readonly status: number
+  readonly retryAfter: string | undefined
 
-/** Node remains the default owner until every Go-owner gate is explicit. */
-export function proxyLatencyNodeOwnerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return !proxyLatencyGoOwnerEnabled(env)
-}
-
-export function proxyLatencyManualBridgeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return proxyLatencyGoOwnerEnabled(env)
-    && env.JUHE_AI_PROXY_LATENCY_MANUAL_ENABLED?.trim().toLowerCase() === 'true'
-}
-
-/**
- * The public Node route must not select Go merely because the owner string was
- * changed.  All four handoff facts are required before the route is allowed
- * to cross the process boundary; otherwise a partial cutover would silently
- * remove the Node executor without a ready projector/bridge.
- */
-export function proxyLatencyGoHandoverReady(env: NodeJS.ProcessEnv = process.env): boolean {
-  return resolveProxyLatencyHandoverGate({
-    enabled: proxyLatencyGoOwnerEnabled(env),
-    goCommandWiringReady: env.JUHE_AI_PROXY_LATENCY_JOBS_COMMAND_WIRING_READY?.trim().toLowerCase() === 'true',
-    goProjectionReady: env.JUHE_AI_PROXY_LATENCY_PROJECTION_READY?.trim().toLowerCase() === 'true',
-    goManualBridgeReady: proxyLatencyManualBridgeEnabled(env)
-      && env.JUHE_AI_PROXY_LATENCY_MANUAL_BRIDGE_READY?.trim().toLowerCase() === 'true',
-    nodeOwnerDrained: env.JUHE_AI_PROXY_LATENCY_NODE_OWNER_DRAINED?.trim().toLowerCase() === 'true'
-  }).enabled
-}
-
-export interface ProxyLatencyHandoverGateInput {
-  enabled?: boolean
-  goCommandWiringReady?: boolean
-  goProjectionReady?: boolean
-  goManualBridgeReady?: boolean
-  nodeOwnerDrained?: boolean
-}
-
-export type ProxyLatencyHandoverGateReason =
-  | 'disabled_by_default'
-  | 'go_command_wiring_missing'
-  | 'go_projection_missing'
-  | 'go_manual_bridge_missing'
-  | 'node_owner_not_drained'
-
-export interface ProxyLatencyHandoverGate {
-  enabled: boolean
-  reason?: ProxyLatencyHandoverGateReason
-}
-
-/**
- * Resolve the complete J3a owner gate. Every fact is intentionally explicit;
- * a missing handoff fact never falls back to the legacy Node/Go path.
- */
-export function resolveProxyLatencyHandoverGate(
-  input: ProxyLatencyHandoverGateInput = {}
-): ProxyLatencyHandoverGate {
-  if (input.enabled !== true) return { enabled: false, reason: 'disabled_by_default' }
-  if (input.goCommandWiringReady !== true) return { enabled: false, reason: 'go_command_wiring_missing' }
-  if (input.goProjectionReady !== true) return { enabled: false, reason: 'go_projection_missing' }
-  if (input.goManualBridgeReady !== true) return { enabled: false, reason: 'go_manual_bridge_missing' }
-  if (input.nodeOwnerDrained !== true) return { enabled: false, reason: 'node_owner_not_drained' }
-  return { enabled: true }
+  constructor(status: number, retryAfter: string | undefined, body: string) {
+    super(`Go manual bridge HTTP ${status}: ${body.slice(0, 2_000)}`)
+    this.name = 'GoManualBridgeHttpError'
+    this.status = status
+    this.retryAfter = retryAfter
+  }
 }
 
 export async function runProxyLatencyManualViaGo(
   proxy: ProxyProfileTestConfig,
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<ProxyTestReport> {
-  if (!proxyLatencyGoHandoverReady()) throw new Error('J3a Go owner handoff gate 未完成')
   const endpoint = process.env.JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL?.trim()
+  const owner = process.env.JUHE_AI_PROXY_LATENCY_JOBS_OWNER?.trim().toLowerCase()
   const secret = process.env.JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET?.trim()
   const credentialSecret = process.env.JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET?.trim()
-  if (!endpoint || !secret || secret.length < 32 || !credentialSecret) throw new Error('J3a Go manual bridge 配置不完整')
+  if (owner !== 'go' || !endpoint || !secret || secret.length < 32 || !credentialSecret) throw new Error('J3a Go manual bridge 配置不完整或 owner 不是 go')
+  const endpointURL = new URL(endpoint)
+  if (endpointURL.protocol !== 'http:' || !['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpointURL.hostname)) {
+    throw new Error('J3a Go manual bridge endpoint 必须是本机 loopback HTTP 地址')
+  }
   const providers = (await listProvidersAsync()).filter((provider) => provider.enabled)
   const proxyUrl = new URL(proxy.proxyUrl)
   const input = {
@@ -102,14 +53,18 @@ export async function runProxyLatencyManualViaGo(
   const onAbort = (): void => controller.abort(options.signal?.reason ?? new Error('J3a Go manual bridge canceled'))
   options.signal?.addEventListener('abort', onAbort, { once: true })
   try {
-    const response = await fetch(new URL('/proxy-latency/manual', endpoint), {
+    const response = await fetch(new URL('/proxy-latency/manual', endpointURL), {
       method: 'POST',
       headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
       body: JSON.stringify({ input }),
       signal: controller.signal
     })
-    const text = await response.text()
-    if (!response.ok) throw new Error(`Go manual bridge HTTP ${response.status}: ${text.slice(0, 2_000)}`)
+    const text = await readBoundedGoManualResponse(response)
+    if (response.status === 404) {
+      if (text.includes('J3a manual proxy missing or deleted')) throw new Error('代理不存在')
+      throw new GoManualBridgeHttpError(response.status, response.headers.get('retry-after') ?? undefined, text)
+    }
+    if (!response.ok) throw new GoManualBridgeHttpError(response.status, response.headers.get('retry-after') ?? undefined, text)
     const report = parseProxyLatencyHandoverReport(JSON.parse(text))
     assertProxyLatencyReportMatchesProxy(report, proxy.id)
     return report
@@ -117,6 +72,32 @@ export async function runProxyLatencyManualViaGo(
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', onAbort)
   }
+}
+
+async function readBoundedGoManualResponse(response: Response): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length') ?? '')
+  if (Number.isFinite(declaredLength) && declaredLength > proxyLatencyManualResponseMaxBytes) throw new Error('J3a Go manual bridge 响应过大')
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const next = await reader.read()
+    if (next.done) break
+    size += next.value.byteLength
+    if (size > proxyLatencyManualResponseMaxBytes) {
+      await reader.cancel()
+      throw new Error('J3a Go manual bridge 响应过大')
+    }
+    chunks.push(next.value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
 }
 
 function encryptProxyPassword(password: string, secret: string): string {
@@ -133,6 +114,7 @@ export function parseProxyLatencyHandoverReport(value: unknown): ProxyTestReport
   const report = record(envelope.report, 'J3a Go report')
   exact(report, ['proxyId', 'proxyName', 'score', 'grade', 'status', 'passedCount', 'warningCount', 'failedCount', 'testedAt', 'items', 'message'], ['outboundIp', 'outboundRegion', 'baseLatencyMs'])
   if (typeof report.proxyId !== 'string' || typeof report.proxyName !== 'string' || !Number.isSafeInteger(report.score) || report.score < 0 || report.score > 100 || typeof report.grade !== 'string' || !['A', 'B', 'C', 'D'].includes(report.grade) || typeof report.testedAt !== 'string' || !parseRfc3339Instant(report.testedAt) || typeof report.message !== 'string') throw new Error('J3a Go report 基础字段无效')
+  for (const field of ['outboundIp', 'outboundRegion']) if (report[field] !== undefined && typeof report[field] !== 'string') throw new Error(`J3a Go report ${field} 无效`)
   if (report.baseLatencyMs !== undefined && (!Number.isSafeInteger(report.baseLatencyMs) || report.baseLatencyMs < 0)) throw new Error('J3a Go report baseLatencyMs 无效')
   if (!['passed', 'warning', 'failed', 'unknown'].includes(String(report.status))) throw new Error('J3a Go report status 无效')
   for (const field of ['passedCount', 'warningCount', 'failedCount']) if (!Number.isSafeInteger(report[field]) || Number(report[field]) < 0) throw new Error(`J3a Go report ${field} 无效`)

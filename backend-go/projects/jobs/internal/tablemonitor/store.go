@@ -276,7 +276,7 @@ RETURNING fence_token`, ownerID, leaseUntil, now).Scan(&token)
 		}
 		return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
 	}
-	nowText := now.Format(time.RFC3339Nano)
+	nowText := sqliteTimestamp(now)
 	err := s.db.QueryRowContext(ctx, `
 INSERT INTO table_monitor_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
 VALUES ('table-monitor-sampling-retention', ?, 1, ?, ?)
@@ -286,7 +286,7 @@ ON CONFLICT (lease_key) DO UPDATE SET
   lease_until = excluded.lease_until,
   updated_at = excluded.updated_at
 WHERE table_monitor_owner_leases.lease_until <= ?
-RETURNING fence_token`, ownerID, leaseUntil.Format(time.RFC3339Nano), nowText, nowText).Scan(&token)
+RETURNING fence_token`, ownerID, sqliteTimestamp(leaseUntil), nowText, nowText).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -310,10 +310,10 @@ WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = $3 AND fence
 		affected, err := result.RowsAffected()
 		return affected == 1, err
 	}
-	nowText := now.Format(time.RFC3339Nano)
+	nowText := sqliteTimestamp(now)
 	result, err := s.db.ExecContext(ctx, `UPDATE table_monitor_owner_leases
 SET lease_until = ?, updated_at = ?
-WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = ? AND fence_token = ? AND lease_until > ?`, now.Add(duration).Format(time.RFC3339Nano), nowText, lease.OwnerID, lease.FenceToken, nowText)
+WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = ? AND fence_token = ? AND lease_until > ?`, sqliteTimestamp(now.Add(duration)), nowText, lease.OwnerID, lease.FenceToken, nowText)
 	if err != nil {
 		return false, err
 	}
@@ -332,7 +332,7 @@ func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 SET owner_id = '', lease_until = $1, updated_at = $1
 WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = $2 AND fence_token = $3`, now, lease.OwnerID, lease.FenceToken)
 	} else {
-		nowText := now.Format(time.RFC3339Nano)
+		nowText := sqliteTimestamp(now)
 		result, err = s.db.ExecContext(ctx, `UPDATE table_monitor_owner_leases
 SET owner_id = '', lease_until = ?, updated_at = ?
 WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = ? AND fence_token = ?`, nowText, nowText, lease.OwnerID, lease.FenceToken)
@@ -365,7 +365,7 @@ FOR UPDATE`, lease.OwnerID, lease.FenceToken, time.Now().UTC()).Scan(&token)
 		}
 		return err
 	}
-	nowText := time.Now().UTC().Format(time.RFC3339Nano)
+	nowText := sqliteTimestamp(time.Now().UTC())
 	result, err := tx.ExecContext(ctx, `UPDATE table_monitor_owner_leases SET updated_at = updated_at
 WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = ? AND fence_token = ? AND lease_until > ?`, lease.OwnerID, lease.FenceToken, nowText)
 	if err != nil {
@@ -476,7 +476,7 @@ func (s *Store) hasExpiredSnapshots(ctx context.Context, lease OwnerLease, cutof
   SELECT 1 FROM table_storage_snapshots WHERE sampled_at < ?
   UNION ALL
   SELECT 1 FROM database_storage_snapshots WHERE sampled_at < ?
-)`, cutoff.UTC().Format(time.RFC3339Nano), cutoff.UTC().Format(time.RFC3339Nano)).Scan(&pending)
+)`, sqliteTimestamp(cutoff.UTC()), sqliteTimestamp(cutoff.UTC())).Scan(&pending)
 	}
 	if err != nil {
 		return false, err
@@ -523,7 +523,7 @@ ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, before.UTC()).Scan(
 		err = s.db.QueryRowContext(ctx, `SELECT total_bytes, row_count
 FROM table_storage_snapshots
 WHERE database_role = ? AND table_name = ? AND sampled_at <= ?
-ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, before.UTC().Format(time.RFC3339Nano)).Scan(&totalBytes, &rowCount)
+ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, sqliteTimestamp(before.UTC())).Scan(&totalBytes, &rowCount)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return tableSnapshotBaseline{}, nil
@@ -564,7 +564,7 @@ func (s *Store) cleanupSQLite(ctx context.Context, lease OwnerLease, cutoff time
 	}
 	var total int64
 	for _, table := range []string{"table_storage_snapshots", "database_storage_snapshots"} {
-		res, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE sampled_at < ? ORDER BY sampled_at ASC, id ASC LIMIT ?)`, table, table), cutoff.UTC().Format(time.RFC3339Nano), limit)
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE sampled_at < ? ORDER BY sampled_at ASC, id ASC LIMIT ?)`, table, table), sqliteTimestamp(cutoff.UTC()), limit)
 		if err != nil {
 			return 0, err
 		}
@@ -608,7 +608,7 @@ func insertSQLiteDatabase(ctx context.Context, tx *sql.Tx, snapshot DatabaseSnap
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC().Format(time.RFC3339Nano), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount, snapshot.SampledAt.UTC().Format(time.RFC3339Nano))
+	_, err = tx.ExecContext(ctx, `INSERT INTO database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, snapshot.Role, snapshot.Path, sqliteTimestamp(snapshot.SampledAt.UTC()), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount, sqliteTimestamp(snapshot.SampledAt.UTC()))
 	return err
 }
 
@@ -623,7 +623,7 @@ ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
   is_archive = excluded.is_archive, row_count = excluded.row_count, table_bytes = excluded.table_bytes,
   index_bytes = excluded.index_bytes, total_bytes = excluded.total_bytes, page_count = excluded.page_count,
   index_count = excluded.index_count, growth_bytes_1h = excluded.growth_bytes_1h, growth_rows_1h = excluded.growth_rows_1h,
-  growth_bytes_24h = excluded.growth_bytes_24h, growth_rows_24h = excluded.growth_rows_24h, created_at = excluded.created_at`, id, snapshot.Role, snapshot.TableName, snapshot.SampledAt.UTC().Format(time.RFC3339Nano), snapshot.TableKind, snapshot.ParentTableName, boolInt(snapshot.IsPartition), boolInt(snapshot.IsArchive), snapshot.RowCount, snapshot.TableBytes, snapshot.IndexBytes, snapshot.TotalBytes, snapshot.PageCount, snapshot.IndexCount, snapshot.GrowthBytes1h, snapshot.GrowthRows1h, snapshot.GrowthBytes24h, snapshot.GrowthRows24h, snapshot.SampledAt.UTC().Format(time.RFC3339Nano))
+  growth_bytes_24h = excluded.growth_bytes_24h, growth_rows_24h = excluded.growth_rows_24h, created_at = excluded.created_at`, id, snapshot.Role, snapshot.TableName, sqliteTimestamp(snapshot.SampledAt.UTC()), snapshot.TableKind, snapshot.ParentTableName, boolInt(snapshot.IsPartition), boolInt(snapshot.IsArchive), snapshot.RowCount, snapshot.TableBytes, snapshot.IndexBytes, snapshot.TotalBytes, snapshot.PageCount, snapshot.IndexCount, snapshot.GrowthBytes1h, snapshot.GrowthRows1h, snapshot.GrowthBytes24h, snapshot.GrowthRows24h, sqliteTimestamp(snapshot.SampledAt.UTC()))
 	return err
 }
 
@@ -656,6 +656,10 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func sqliteTimestamp(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 
 func newID(prefix string) (string, error) {

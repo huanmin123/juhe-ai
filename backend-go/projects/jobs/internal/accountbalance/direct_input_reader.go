@@ -117,7 +117,15 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, kind ca
 	args := []any{now, scanLimit}
 	if byID {
 		query = j2CandidateByIDSQL(kind)
-		args = []any{now, ids[0]}
+		if len(ids) != 1 || strings.TrimSpace(ids[0]) == "" {
+			return nil, errors.New("J2 account ID 不能为空")
+		}
+		args = []any{ids[0]}
+		if kind == candidateReadFirstProbe {
+			args = append(args, now)
+		}
+	} else if kind == candidateReadRecovery {
+		args = []any{scanLimit}
 	}
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -255,22 +263,28 @@ func j2CandidateSQL(kind candidateReadKind) string {
 	case candidateReadFirstProbe:
 		predicate = "a.balance_query_enabled = 0 AND a.balance_query_config_json = '{}' AND a.balance_query_next_refresh_at IS NOT NULL AND a.balance_query_next_refresh_at::timestamptz <= $1"
 	case candidateReadRecovery:
-		// Keep the prepared-query parameter shape stable while ensuring the
-		// recovery scan remains independent of wall-clock ordering.
-		predicate = "a.balance_query_enabled = 1 AND a.balance_query_next_refresh_at IS NULL AND $1::timestamptz IS NOT NULL"
+		predicate = "a.balance_query_enabled = 1 AND a.balance_query_next_refresh_at IS NULL"
 	}
 	orderBy := "a.balance_query_next_refresh_at ASC,a.id ASC"
 	if kind == candidateReadRecovery {
 		orderBy = "a.id ASC"
 	}
-	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,a.provider_code,a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT $2`
+	limit := "$2"
+	if kind == candidateReadRecovery {
+		limit = "$1"
+	}
+	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,a.provider_code,a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
 }
 
 func j2CandidateByIDSQL(kind candidateReadKind) string {
 	query := j2CandidateSQL(kind)
 	if kind == candidateReadDue {
 		query = strings.Replace(query, "a.balance_query_enabled = 1 AND a.balance_query_next_refresh_at IS NOT NULL AND a.balance_query_next_refresh_at::timestamptz <= $1", "a.balance_query_enabled = 1", 1)
+	} else if kind == candidateReadFirstProbe {
+		// By-ID first-probe reads bind the account ID to $1 and keep the
+		// wall-clock fence on a separate $2 parameter.
+		query = strings.Replace(query, "a.balance_query_next_refresh_at::timestamptz <= $1", "a.balance_query_next_refresh_at::timestamptz <= $2", 1)
 	}
-	query = strings.Replace(query, " ORDER BY ", " AND a.id=$2 ORDER BY ", 1)
-	return strings.Replace(query, " LIMIT $2", " LIMIT 1", 1)
+	query = strings.Replace(query, " ORDER BY ", " AND a.id=$1 ORDER BY ", 1)
+	return strings.Replace(strings.Replace(query, " LIMIT $2", " LIMIT 1", 1), " LIMIT $1", " LIMIT 1", 1)
 }

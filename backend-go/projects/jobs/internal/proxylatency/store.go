@@ -79,6 +79,22 @@ type Store struct {
 	pool    *pgpool.Handle
 }
 
+// OutcomeCursor is the immutable jobs-store ordering key consumed by the Go
+// business projector. It intentionally follows the durable storage order,
+// not the probe observation time used for the proxy-state CAS fence.
+type OutcomeCursor struct {
+	StoredAt  time.Time
+	OutcomeID string
+}
+
+// StoredOutcome keeps the committed payload with the jobs-store cursor tuple
+// that made it visible. Target URLs and credentials remain absent because the
+// embedded Outcome is the sanitized durable record.
+type StoredOutcome struct {
+	Outcome
+	StoredAt time.Time
+}
+
 func OpenStore(config StoreConfig) (*Store, error) {
 	switch config.Mode {
 	case StoreSQLite:
@@ -555,6 +571,119 @@ func (s *Store) LoadCommittedOutcome(ctx context.Context, input IssuedInput) (Ou
 		return Outcome{}, false, err
 	}
 	return outcome, true, nil
+}
+
+// ListCommittedOutcomes exposes immutable jobs facts to the Go-owned business
+// projector. It verifies each row against its typed payload and digest before
+// returning it, so a malformed durable record cannot become a proxy update.
+func (s *Store) ListCommittedOutcomes(ctx context.Context, after *OutcomeCursor, limit int) ([]StoredOutcome, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("J3a jobs Store 未初始化")
+	}
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("J3a committed outcome limit 必须在 1..1000")
+	}
+	if after != nil && (after.StoredAt.IsZero() || strings.TrimSpace(after.OutcomeID) == "") {
+		return nil, errors.New("J3a committed outcome cursor 无效")
+	}
+	query := `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM proxy_latency_outcomes WHERE committed=1`
+	args := make([]any, 0, 3)
+	if s.mode == StorePostgres {
+		query = `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE committed=TRUE`
+	}
+	if after != nil {
+		if s.mode == StorePostgres {
+			query += ` AND (stored_at>$1 OR (stored_at=$1 AND outcome_id>$2))`
+			args = append(args, after.StoredAt.UTC(), after.OutcomeID)
+		} else {
+			query += ` AND (stored_at>? OR (stored_at=? AND outcome_id>?))`
+			storedAt := after.StoredAt.UTC().Format(time.RFC3339Nano)
+			args = append(args, storedAt, storedAt, after.OutcomeID)
+		}
+	}
+	query += ` ORDER BY stored_at ASC,outcome_id ASC`
+	if s.mode == StorePostgres {
+		query += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+	} else {
+		query += ` LIMIT ?`
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("读取 J3a committed outcomes 失败: %w", err)
+	}
+	defer rows.Close()
+	result := make([]StoredOutcome, 0, limit)
+	for rows.Next() {
+		var outcomeID, requestID, proxyID, configRevision, trigger, digest string
+		var inputVersion, ownerFenceToken, proxyFenceToken int64
+		var observedRaw, storedRaw any
+		var payload []byte
+		if err := rows.Scan(&outcomeID, &requestID, &proxyID, &inputVersion, &configRevision, &trigger, &ownerFenceToken, &proxyFenceToken, &observedRaw, &storedRaw, &payload, &digest); err != nil {
+			return nil, fmt.Errorf("解码 J3a committed outcome 行失败: %w", err)
+		}
+		observedAt, err := sqlTime(observedRaw)
+		if err != nil {
+			return nil, errors.New("J3a committed outcome observed_at 无效")
+		}
+		storedAt, err := sqlTime(storedRaw)
+		if err != nil || storedAt.IsZero() {
+			return nil, errors.New("J3a committed outcome stored_at 无效")
+		}
+		var outcome Outcome
+		if err := json.Unmarshal(payload, &outcome); err != nil || validateOutcome(outcome) != nil {
+			return nil, errors.New("J3a committed outcome payload 无效")
+		}
+		if outcome.OutcomeID != outcomeID || outcome.RequestID != requestID || outcome.ProxyID != proxyID || outcome.InputVersion != inputVersion || outcome.ConfigRevision != configRevision || outcome.Trigger != Trigger(trigger) || outcome.OwnerFenceToken != ownerFenceToken || outcome.ProxyFenceToken != proxyFenceToken || !outcome.ObservedAt.Equal(observedAt) || !payloadDigestMatches(s.mode, payload, outcome, digest) {
+			return nil, errors.New("J3a committed outcome 行元数据与 payload 不一致")
+		}
+		result = append(result, StoredOutcome{Outcome: outcome, StoredAt: storedAt.UTC()})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 J3a committed outcomes 失败: %w", err)
+	}
+	return result, nil
+}
+
+// FindCommittedOutcome resolves one durable record for the synchronous manual
+// path. The returned storage tuple is still used by the same Go projector
+// cursor transaction as the asynchronous periodic path.
+func (s *Store) FindCommittedOutcome(ctx context.Context, outcomeID string) (StoredOutcome, bool, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(outcomeID) == "" {
+		return StoredOutcome{}, false, errors.New("J3a committed outcome id 无效")
+	}
+	query := `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM proxy_latency_outcomes WHERE outcome_id=? AND committed=1`
+	if s.mode == StorePostgres {
+		query = `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE outcome_id=$1 AND committed=TRUE`
+	}
+	var row StoredOutcome
+	var storedID, requestID, proxyID, configRevision, trigger, digest string
+	var inputVersion, ownerFenceToken, proxyFenceToken int64
+	var observedRaw, storedRaw any
+	var payload []byte
+	err := s.db.QueryRowContext(ctx, query, outcomeID).Scan(&storedID, &requestID, &proxyID, &inputVersion, &configRevision, &trigger, &ownerFenceToken, &proxyFenceToken, &observedRaw, &storedRaw, &payload, &digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoredOutcome{}, false, nil
+	}
+	if err != nil {
+		return StoredOutcome{}, false, fmt.Errorf("读取 J3a committed outcome 失败: %w", err)
+	}
+	observedAt, err := sqlTime(observedRaw)
+	if err != nil {
+		return StoredOutcome{}, false, errors.New("J3a committed outcome observed_at 无效")
+	}
+	storedAt, err := sqlTime(storedRaw)
+	if err != nil || storedAt.IsZero() {
+		return StoredOutcome{}, false, errors.New("J3a committed outcome stored_at 无效")
+	}
+	if err := json.Unmarshal(payload, &row.Outcome); err != nil || validateOutcome(row.Outcome) != nil {
+		return StoredOutcome{}, false, errors.New("J3a committed outcome payload 无效")
+	}
+	if row.Outcome.OutcomeID != storedID || row.Outcome.RequestID != requestID || row.Outcome.ProxyID != proxyID || row.Outcome.InputVersion != inputVersion || row.Outcome.ConfigRevision != configRevision || row.Outcome.Trigger != Trigger(trigger) || row.Outcome.OwnerFenceToken != ownerFenceToken || row.Outcome.ProxyFenceToken != proxyFenceToken || !row.Outcome.ObservedAt.Equal(observedAt) || !payloadDigestMatches(s.mode, payload, row.Outcome, digest) {
+		return StoredOutcome{}, false, errors.New("J3a committed outcome 行元数据与 payload 不一致")
+	}
+	row.StoredAt = storedAt.UTC()
+	return row, true, nil
 }
 
 // VerifyExecutionInput checks the Store-issued input and the live owner/proxy

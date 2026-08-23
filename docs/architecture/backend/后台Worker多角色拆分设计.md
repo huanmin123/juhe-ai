@@ -24,7 +24,7 @@
 - 热写入优先：使用记录、审计、日志和 record maintenance 不被重统计或外部探测拖住。
 - 重统计隔离：所有 Node 统计聚合、窗口刷新和系统指标集中在 `stats-worker`，便于定位慢任务。
 - F1/F2/F3 已接管：表存储监控、运行日志索引和原始审计分别由唯一 Go sidecar 内的组件直接执行；Node 仅保留对应输入或只读查询。F4 操作日志已完成切换前实现，待独立发布切流后成为同一 sidecar 内的运行 owner。
-- 轻运维合并：账号测试、复测、OAuth、代理检测、可用时段同步、授权到期和过期删除协调统一在 `ops-worker`。
+- 轻运维合并：账号测试、复测、OAuth、可用时段同步、授权到期和过期删除协调统一在 `ops-worker`；J3a 代理延迟检测由 `juhe-ai-jobs/proxylatency` 独占，Node `ops-worker` 不注册该任务。
 - 运行态和前端展示只暴露当前角色，避免旧角色造成误判。
 - `standalone` 不引入外部队列或多实例假设；`performance` 使用 Redis Stream consumer group 在同机多进程间分工。
 
@@ -44,7 +44,7 @@
 | `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
 | `log-worker` | performance persistent | 公开接口日志消费；运行日志文件索引与保留、原始审计和操作日志持久化由 Go sidecar 负责 | 各日志 Stream lag 持续超标 |
 | `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量和统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量；F2 表存储监控不属于 Node worker |
-| `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、代理延迟刷新、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活 |
+| `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活；J3a 代理延迟检测不属于 Node worker |
 | `temporary-maintenance-worker` | temporary | 历史按需任务入口，运行后退出 | 不作为常驻扩容对象 |
 
 `log-worker` 与 `usage-worker` 只在 `performance` 启用；`standalone` 继续由 `ingest-worker` 承担对应职责。`metrics-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker` 仍不是常驻角色。
@@ -74,7 +74,7 @@
 | `account-health-check` | `ops-worker` | 正常账户低频健康检测 |
 | `cooldown-account-retest` / `account-api-key-cooldown-retest` | `ops-worker` | 外部复测 I/O，可受控并发，写记录仍投递 ingest |
 | `openai-oauth-access-token-refresh` | `ops-worker` | OAuth token 保活 |
-| `proxy-latency-refresh` | `ops-worker` | 代理延迟检测 |
+| `juhe-ai-jobs/proxylatency` | Go jobs owner | 代理延迟检测；Node ops-worker 不注册、不执行、不写回 J3a 状态 |
 | `api-key-availability-schedule-status-sync` / `account-availability-schedule-status-sync` | `ops-worker` | 时间计划状态同步 |
 | `resource-authorization-expiry-sweep` | `ops-worker` | 授权到期扫描 |
 | `expired-deleted-account-cleanup` | `ops-worker` + DB service + ingest / stats | ops 调度业务库候选和最终删除；明细清理由 ingest / stats 推进 |

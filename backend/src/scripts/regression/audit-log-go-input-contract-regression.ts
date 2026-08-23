@@ -33,7 +33,7 @@ assert(!client.includes('Redis'), 'Go input client 不得引入 Redis fallback')
 assert(!client.includes('retry'), 'Go input client 不得自动重试')
 assert.match(
   developmentLauncher,
-  /const secret = firstConfiguredValue\(childEnv\.JUHE_AI_AUDIT_LOG_INPUT_SECRET\)/u,
+  /const secret = firstConfiguredValue\(\s*childEnv\.JUHE_AI_AUDIT_LOG_INPUT_SECRET\s*,/u,
   '开发 F3 launcher 必须读取显式输入密钥'
 )
 assert.doesNotMatch(

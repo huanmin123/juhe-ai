@@ -185,6 +185,7 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 			return 0, fmt.Errorf("读取 PG direct input 候选失败: %w", err)
 		}
 		pageCount := 0
+		candidates := make([]directCandidate, 0, limit)
 		for rows.Next() {
 			pageCount++
 			candidate, err := scanDirectCandidate(rows)
@@ -192,10 +193,21 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 				rows.Close()
 				return 0, err
 			}
+			candidates = append(candidates, candidate)
+		}
+		if err := rows.Close(); err != nil {
+			return 0, fmt.Errorf("关闭 PG direct input 候选游标失败: %w", err)
+		}
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("遍历 PG direct input 候选失败: %w", err)
+		}
+		for _, candidate := range candidates {
+			if len(result.Inputs) >= limit {
+				break
+			}
 			if candidate.authorization != nil {
 				eligible, err := authorizationQuotaEligible(ctx, tx, candidate, now, timezone)
 				if err != nil {
-					rows.Close()
 					return 0, err
 				}
 				// A valid authorization that has exhausted its own or team scope is
@@ -210,7 +222,6 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 			direct := DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
 			input, failure, err := buildDirectCandidateInput(candidate, direct, r.credentialSecret, now)
 			if err != nil {
-				rows.Close()
 				return 0, err
 			}
 			if failure != nil {
@@ -224,12 +235,6 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 			if len(result.Inputs) >= limit {
 				break
 			}
-		}
-		if err := rows.Close(); err != nil {
-			return 0, fmt.Errorf("关闭 PG direct input 候选游标失败: %w", err)
-		}
-		if err := rows.Err(); err != nil {
-			return 0, fmt.Errorf("遍历 PG direct input 候选失败: %w", err)
 		}
 		return pageCount, nil
 	}, func() int { return len(result.Inputs) })

@@ -52,6 +52,18 @@ func (loader *fakeDirectInputLoader) LoadAccount(_ context.Context, accountID st
 	return []Input{input}, nil
 }
 
+func TestInvalidInputRequestIDIsStableAcrossObservedTimes(t *testing.T) {
+	input := Input{AccountID: "account-invalid", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 13}
+	first := invalidInputRequestID(input)
+	second := invalidInputRequestID(input)
+	if first == "" || first != second {
+		t.Fatalf("invalid input request ID must be stable: first=%q second=%q", first, second)
+	}
+	if first == scheduledRequestID(input, "invalid_input", time.Now().UTC()) {
+		t.Fatal("invalid input request ID must not depend on the observed clock")
+	}
+}
+
 func TestRunnerPersistsDirectProbeOutcomeInJobsStore(t *testing.T) {
 	secret := "scheduler-credential-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -562,6 +574,44 @@ func TestRunnerDirectInputFailureIsDurableIdempotentAndDoesNotBlockOtherCandidat
 	}
 	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("repeated failure generation must remain idempotent: count=%d err=%v", count, err)
+	}
+}
+
+func TestRunnerDirectInputFailureRenewsSuppressionAfterRetryWindow(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	failure := DirectInputFailure{AccountID: "retryable-invalid-direct-candidate", InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6}
+	firstNow := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	now := firstNow
+	runner := NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("test-key")}, CredentialSecret: "retry-suppression-secret", ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, DirectInputLimit: 2, Now: func() time.Time { return now }}, store, nil)
+	runner.directInputReader = &fakeDirectInputLoader{failures: []DirectInputFailure{failure}}
+	if err := runner.runCycle(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	now = firstNow.Add(directInputFailureRetryBackoff + time.Minute)
+	if err := runner.runCycle(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	requestID := directInputFailureRequestID(failure, firstNow)
+	var count int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("retry after suppression expiry must retain one outcome receipt: count=%d err=%v", count, err)
+	}
+	wantDue := now.Add(directInputFailureRetryBackoff)
+	var gotDue, gotUpdated string
+	if err := store.db.QueryRowContext(context.Background(), `SELECT next_due_at,updated_at FROM account_health_direct_input_suppressions WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, failure.AccountID, failure.InputVersion, failure.ConfigRevision, failure.DispatchRevision).Scan(&gotDue, &gotUpdated); err != nil {
+		t.Fatalf("read renewed suppression: %v", err)
+	}
+	if gotDue != wantDue.Format(time.RFC3339Nano) || gotUpdated != now.Format(time.RFC3339Nano) {
+		t.Fatalf("suppression was not renewed after retry window: next_due_at=%q updated_at=%q", gotDue, gotUpdated)
+	}
+}
+
+func TestDirectInputFailureRequestIDIsStableAcrossRetryRounds(t *testing.T) {
+	failure := DirectInputFailure{AccountID: "invalid-direct-candidate", InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6}
+	first := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	second := first.Add(2 * directInputFailureRetryBackoff)
+	if got, want := directInputFailureRequestID(failure, first), directInputFailureRequestID(failure, second); got != want {
+		t.Fatalf("invalid input request ID must be stable across retry rounds: first=%q second=%q", got, want)
 	}
 }
 

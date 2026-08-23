@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -133,16 +134,63 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	}
 }
 
-func TestProbeTransportDisablesHTTP2ForDirectProviderProbe(t *testing.T) {
+func TestProbeTransportEnablesHTTP2ForCustomDialer(t *testing.T) {
 	transport, err := probeTransport(Input{}, ProbeOptions{})
 	if err != nil {
 		t.Fatalf("probeTransport() error = %v", err)
 	}
-	if transport.ForceAttemptHTTP2 {
-		t.Fatal("direct provider probe must not negotiate HTTP/2")
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("direct provider probe must explicitly enable HTTP/2 when it owns a custom dialer")
 	}
 	if transport.MaxConnsPerHost != 0 || transport.MaxIdleConnsPerHost != 0 {
 		t.Fatalf("direct provider probe must not impose a per-host connection cap: max=%d idle=%d", transport.MaxConnsPerHost, transport.MaxIdleConnsPerHost)
+	}
+}
+
+func TestProbeHTTPClientReusesSharedTransportPolicy(t *testing.T) {
+	first, err := probeHTTPClient(Input{}, ProbeOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := probeHTTPClient(Input{}, ProbeOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatal("account-health probes must reuse the shared HTTP client for the same transport policy")
+	}
+}
+
+func TestProbeTransportReadsHTTP2ResponseWithCustomDialer(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	transport, err := probeTransport(Input{}, ProbeOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("probeTransport() error = %v", err)
+	}
+	serverTransport := server.Client().Transport.(*http.Transport)
+	transport.TLSClientConfig = serverTransport.TLSClientConfig.Clone()
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	client := &http.Client{Transport: transport}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("HTTP/2 response through custom dialer failed: %v", err)
+	}
+	defer response.Body.Close()
+	if response.ProtoMajor != 2 {
+		t.Fatalf("response protocol = HTTP/%d.%d, want HTTP/2", response.ProtoMajor, response.ProtoMinor)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != `{"ok":true}` {
+		t.Fatalf("response body = %q, read error = %v", body, err)
 	}
 }
 

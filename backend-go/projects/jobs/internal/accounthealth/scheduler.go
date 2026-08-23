@@ -339,9 +339,8 @@ func (r *Runner) persistDirectInputFailure(ctx context.Context, lease OwnerLease
 
 const directInputFailureRetryBackoff = 5 * time.Minute
 
-func directInputFailureRequestID(failure DirectInputFailure, observed time.Time) string {
-	slot := observed.UTC().UnixNano() / directInputFailureRetryBackoff.Nanoseconds()
-	value := fmt.Sprintf("direct-input-failure-v2\\x00%s\\x00%d\\x00%d\\x00%d\\x00%d", failure.AccountID, failure.InputVersion, failure.ConfigRevision, failure.DispatchRevision, slot)
+func directInputFailureRequestID(failure DirectInputFailure, _ time.Time) string {
+	value := fmt.Sprintf("direct-input-failure-v3\\x00%s\\x00%d\\x00%d\\x00%d", failure.AccountID, failure.InputVersion, failure.ConfigRevision, failure.DispatchRevision)
 	sum := sha256.Sum256([]byte(value))
 	return "direct-input-failure-" + hex.EncodeToString(sum[:])
 }
@@ -533,7 +532,10 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 }
 
 func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input Input, observed time.Time, code, message string) error {
-	requestID := scheduledRequestID(input, "invalid_input", observed)
+	// Invalid input is a deterministic failure of this immutable input fence,
+	// not a new scheduled attempt.  The observed clock is deliberately omitted
+	// so repeated scans cannot append one durable failure per scan.
+	requestID := invalidInputRequestID(input)
 	already, err := r.store.HasRequest(ctx, requestID)
 	if err != nil || already {
 		return err
@@ -844,6 +846,17 @@ func inputEligible(input Input) bool {
 
 func scheduledRequestID(input Input, kind string, due time.Time) string {
 	value := sha256.Sum256([]byte(strings.Join([]string{input.AccountID, fmt.Sprintf("%d", input.InputVersion), fmt.Sprintf("%d", input.ConfigRevision), fmt.Sprintf("%d", input.DispatchRevision), kind, due.UTC().Format(time.RFC3339Nano)}, "\n")))
+	return "account-health-" + hex.EncodeToString(value[:])
+}
+
+func invalidInputRequestID(input Input) string {
+	value := sha256.Sum256([]byte(strings.Join([]string{
+		input.AccountID,
+		fmt.Sprintf("%d", input.InputVersion),
+		fmt.Sprintf("%d", input.ConfigRevision),
+		fmt.Sprintf("%d", input.DispatchRevision),
+		"invalid_input",
+	}, "\n")))
 	return "account-health-" + hex.EncodeToString(value[:])
 }
 

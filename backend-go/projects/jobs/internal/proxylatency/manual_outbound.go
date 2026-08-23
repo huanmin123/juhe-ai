@@ -3,12 +3,12 @@ package proxylatency
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 type manualOutboundInfo struct {
@@ -51,12 +51,14 @@ func requestManualOutbound(ctx context.Context, proxyURL string, target manualOu
 	if err != nil {
 		return manualOutboundInfo{}, false
 	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	transport, err := newProxyTransport(proxyURL, timeout)
 	if err != nil {
 		return manualOutboundInfo{}, false
 	}
 	defer transport.CloseIdleConnections()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, targetURL.String(), nil)
 	if err != nil {
 		return manualOutboundInfo{}, false
 	}
@@ -65,38 +67,21 @@ func requestManualOutbound(ctx context.Context, proxyURL string, target manualOu
 		return manualOutboundInfo{}, false
 	}
 	applyNodeProbeHeaders(request, targetURL, parsedProxy)
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := upstreamhttp.NewClientWithTransport(transport)
 	response, err := client.Do(request)
 	if err != nil {
 		return manualOutboundInfo{}, false
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_ = discardBounded(response.Body, maxResponseBodyBytes)
+		_, _ = upstreamhttp.Drain(response.Body)
 		return manualOutboundInfo{}, false
 	}
-	body, err := readBoundedBody(response.Body, maxResponseBodyBytes)
+	body, err := upstreamhttp.ReadAndDrainBounded(response.Body, maxResponseBodyBytes)
 	if err != nil {
 		return manualOutboundInfo{}, false
 	}
 	return parseManualOutbound(target.Parser, body)
-}
-
-func readBoundedBody(body io.Reader, maxBytes int64) ([]byte, error) {
-	if maxBytes <= 0 {
-		return nil, errors.New("response body limit invalid")
-	}
-	retained, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if err := discardBounded(body, maxBytes); err != nil {
-		return nil, err
-	}
-	if int64(len(retained)) > maxBytes {
-		retained = retained[:maxBytes]
-	}
-	return retained, nil
 }
 
 func parseManualOutbound(parser string, body []byte) (manualOutboundInfo, bool) {

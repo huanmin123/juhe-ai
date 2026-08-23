@@ -1,8 +1,8 @@
 # 计划目录
 
-- [PLAN-20260821T004304961Z](计划-20260821T004304961Z-J3a代理延迟检测L2实现.md)：实施 J3a 独立 Go jobs 代理延迟检测契约，不切换 Node/Go owner。
+- [PLAN-20260821T004304961Z](计划-20260821T004304961Z-J3a代理延迟检测L2实现.md)：实施 J3a 独立 Go jobs 代理延迟检测契约；当前实现已完成 Go 独占执行/投影，Node J3a 执行路径已删除。
 
-- [PLAN-20260821T182741627Z](计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Node PG reader/projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；真实进程闭环、生产、owner handoff 与生产切换仍未完成。
+- [PLAN-20260821T182741627Z](计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Go business-result projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；真实 Node→Go 手动进程联调、active-path-zero、生产与 owner handoff 仍未完成。
 
 - [PLAN-20260822T140000000Z](计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：逐项对照 Node 机制与 Go 迁移侧证据，记录 projector/manual/handoff 本地接线、shared golden 与真实 PG/owner 后续门禁。
 
@@ -321,8 +321,8 @@ docs/plans/
 
 | 计划 ID | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| PLAN-20260821T004304961Z | J3a 代理延迟检测 L2 实现 | 本地实现完成；真实切换门禁待验收 | 2026-08-21 | 后台任务 / Go jobs / Node projector / 代理 / SQLite / PostgreSQL | `docs/plans/计划-20260821T004304961Z-J3a代理延迟检测L2实现.md` |
-| PLAN-20260821T182741627Z | J3a 代理延迟检测 L3-PG smoke | 2026-08-23 required smoke 与 Node PG reader/projector 已通过并清理；真实进程/生产/owner handoff 未完成 | 2026-08-21 | Go jobs / PostgreSQL / PgBouncer / 权限 / 事务 / 验证 | `docs/plans/计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md` |
+| PLAN-20260821T004304961Z | J3a 代理延迟检测 L2 实现 | Go 独占执行/投影完成；真实发布门禁待验收 | 2026-08-21 | Go jobs / Go result projector / 代理 / SQLite / PostgreSQL | `docs/plans/计划-20260821T004304961Z-J3a代理延迟检测L2实现.md` |
+| PLAN-20260821T182741627Z | J3a 代理延迟检测 L3-PG smoke | 2026-08-23 required smoke 与 Go business-result projector 已通过并清理；真实手动进程/生产/active-path-zero 未完成 | 2026-08-21 | Go jobs / PostgreSQL / PgBouncer / 权限 / 事务 / 验证 | `docs/plans/计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md` |
 | PLAN-20260820T235441488Z | J3 后台任务 L1 语义冻结 | 已完成（仅文档冻结） | 2026-08-21 | 后台任务 / Node->Go 迁移 / 代理延迟 / 模型检测 / 质量检查 / SQLite / PostgreSQL / 文档 | `docs/plans/计划-20260820T235441488Z-J3后台任务L1语义冻结.md` |
 | PLAN-20260820T025332906Z | 上游额度不足继承错误策略 | 已完成 | 2026-08-20 | Node 网关 / AI 账户错误策略 / 健康探针 / Vue / 权限 / 文档 / 验证 | `docs/plans/计划-20260820T025332906Z-上游额度不足继承错误策略.md` |
 | PLAN-20260810T000000000Z | 第三方登录与个人委托授权 | 本地实现完成，待生产接入门禁 | 2026-08-10 | Node / Vue / OAuth 2.1 / OIDC / 个人委托 API / 用户请求限制 | `docs/plans/计划-20260810T000000000Z-第三方登录与个人委托授权.md` |

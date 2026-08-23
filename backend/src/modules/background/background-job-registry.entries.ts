@@ -258,19 +258,6 @@ export const backgroundScheduledJobs = [
     writes: ['business:resource_authorizations']
   }),
   scheduled({
-    jobName: 'proxy-latency-refresh',
-    category: 'scheduled',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: true,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: false,
-    writes: ['business:proxies']
-  }),
-  scheduled({
     jobName: 'account-quality-refresh',
     category: 'scheduled',
     kind: 'stats',

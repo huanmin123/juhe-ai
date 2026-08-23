@@ -90,6 +90,18 @@ func TestManualReportPreservesProviderTargetURLAndSyntheticOptionality(t *testin
 	}
 }
 
+func TestSyntheticBaseRoundsLatencyLikeNode(t *testing.T) {
+	first := int64(10)
+	second := int64(11)
+	base := syntheticBase([]ProxyTestItem{
+		{Status: ItemPassed, LatencyMS: &first},
+		{Status: ItemPassed, LatencyMS: &second},
+	}, 2)
+	if base.LatencyMS == nil || *base.LatencyMS != 11 {
+		t.Fatalf("synthetic base latency=%v want rounded 11", base.LatencyMS)
+	}
+}
+
 func TestManualInputDraftUsesManualTriggerAndDeadline(t *testing.T) {
 	request := ManualRequest{
 		SchemaVersion:  1,

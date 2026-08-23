@@ -1,7 +1,7 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { parseRfc3339Instant, requiredRfc3339Instant } from '../shared/rfc3339.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -128,16 +128,6 @@ export interface ProxyProfileListResult {
 export interface ProxyProfileTestConfig extends ProxyProfileSummary {
   proxyUrl: string
   configUpdatedAt: string
-}
-
-export interface ProxyTestStateUpdateInput {
-  testStatus: string
-  latencyMs?: number | null
-  outboundIp?: string | null
-  outboundRegion?: string | null
-  lastTestMessage?: string | null
-  lastTestedAt: string
-  expectedConfigUpdatedAt: string
 }
 
 export interface ProxyProfileUrlResolution {
@@ -1042,12 +1032,25 @@ function proxyManagementPatchOutcome(
 }
 
 function proxyPatchTimestamp(value: unknown): string {
-  return requiredRfc3339Instant(value, '代理配置版本')
+  if (typeof value !== 'string') return requiredRfc3339Instant(value, '代理配置版本')
+  const text = value.trim()
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(text)
+  const parsed = parseRfc3339Instant(text)
+  if (!match || !parsed) throw new Error('代理配置版本必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const fraction = match[7]
+  if (!fraction) return parsed.toISOString()
+  // Keep the database's exact fractional representation: the Go manual
+  // projector uses this value as a PostgreSQL CAS identity, not as a JS Date.
+  return parsed.toISOString().replace(/\.\d{3}Z$/, `.${fraction}Z`)
 }
 
 function proxyRevisionsEqual(left: string, right: string): boolean {
-  return requiredRfc3339Instant(left, '代理当前配置版本')
-    === requiredRfc3339Instant(right, '代理期望配置版本')
+  return canonicalProxyRevisionForComparison(proxyPatchTimestamp(left)) === canonicalProxyRevisionForComparison(proxyPatchTimestamp(right))
+}
+
+function canonicalProxyRevisionForComparison(value: string): string {
+  if (/\.0+Z$/.test(value)) return value.replace(/\.0+Z$/, '.000Z')
+  return value.replace(/\.(\d*?[1-9])0+Z$/, '.$1Z')
 }
 
 function optionalStringValue(value: unknown): string | undefined {
@@ -1103,86 +1106,6 @@ export async function listEnabledProxyTestConfigsAsync(limit = 20): Promise<Prox
     LIMIT ?
   `, [Math.max(1, Math.trunc(limit))])
   return rows.map(proxyTestConfigFromRow)
-}
-
-export function updateProxyTestState(
-  id: string,
-  input: ProxyTestStateUpdateInput
-): ProxyProfileSummary | undefined {
-  const testedAt = normalizeProxyObservationTimestamp(input.lastTestedAt)
-  const expectedConfigUpdatedAt = normalizeProxyConfigRevision(input.expectedConfigUpdatedAt)
-  const testStatus = normalizeProxyTestStatus(input.testStatus)
-  const latencyMs = normalizeProxyTestLatencyMs(input.latencyMs)
-  const outboundIp = input.outboundIp === undefined ? undefined : normalizeProxyTestText(input.outboundIp, '代理出口 IP')
-  const outboundRegion = input.outboundRegion === undefined ? undefined : normalizeProxyTestText(input.outboundRegion, '代理出口地区')
-  const outboundUpdateSql = [
-    outboundIp !== undefined ? 'outbound_ip = ?' : '',
-    outboundRegion !== undefined ? 'outbound_region = ?' : ''
-  ].filter(Boolean).join(', ')
-  const sql = `
-      UPDATE proxy_profiles
-      SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?
-      WHERE id = ?
-        AND updated_at = ?
-        AND (last_tested_at IS NULL OR last_tested_at <= ?)
-      RETURNING ${proxySummarySelectColumns()}
-    `
-  const params = [
-    testStatus,
-    latencyMs,
-    ...(outboundIp !== undefined ? [outboundIp] : []),
-    ...(outboundRegion !== undefined ? [outboundRegion] : []),
-    normalizeProxyTestText(input.lastTestMessage, '代理检测消息'),
-    testedAt,
-    id,
-    expectedConfigUpdatedAt,
-    testedAt
-  ]
-  const row = getBusinessDatabase()
-    .prepare(sql)
-    .get(...params) as unknown as ProxyRow | undefined
-  return row ? proxySummaryFromRow(row) : undefined
-}
-
-export async function updateProxyTestStateAsync(
-  id: string,
-  input: ProxyTestStateUpdateInput
-): Promise<ProxyProfileSummary | undefined> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return updateProxyTestState(id, input)
-  }
-  const testedAt = normalizeProxyObservationTimestamp(input.lastTestedAt)
-  const expectedConfigUpdatedAt = normalizeProxyConfigRevision(input.expectedConfigUpdatedAt)
-  const testStatus = normalizeProxyTestStatus(input.testStatus)
-  const latencyMs = normalizeProxyTestLatencyMs(input.latencyMs)
-  const outboundIp = input.outboundIp === undefined ? undefined : normalizeProxyTestText(input.outboundIp, '代理出口 IP')
-  const outboundRegion = input.outboundRegion === undefined ? undefined : normalizeProxyTestText(input.outboundRegion, '代理出口地区')
-  const outboundUpdateSql = [
-    outboundIp !== undefined ? 'outbound_ip = ?' : '',
-    outboundRegion !== undefined ? 'outbound_region = ?' : ''
-  ].filter(Boolean).join(', ')
-  const client = await getProxyDatabaseClient()
-  const sql = `
-    UPDATE ${proxyProfilesTable(client)}
-    SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?
-    WHERE id = ?
-      AND updated_at = ?
-      AND (last_tested_at IS NULL OR last_tested_at <= ?)
-    RETURNING ${proxySummarySelectColumns(client.driver)}
-  `
-  const params = [
-    testStatus,
-    latencyMs,
-    ...(outboundIp !== undefined ? [outboundIp] : []),
-    ...(outboundRegion !== undefined ? [outboundRegion] : []),
-    normalizeProxyTestText(input.lastTestMessage, '代理检测消息'),
-    testedAt,
-    id,
-    expectedConfigUpdatedAt,
-    testedAt
-  ]
-  const row = await client.one<ProxyRow>(sql, params)
-  return row ? proxySummaryFromRow(row) : undefined
 }
 
 export function deleteProxy(id: string): boolean {
@@ -1486,7 +1409,7 @@ async function enqueueProxyAffectedAccountHealthInputsInTransactionAsync(
       AND target.type IN ('api_key', 'oauth')
       AND (target.proxy_profile_id = ? OR source.proxy_profile_id = ?)
     ORDER BY target.id ASC
-    ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
+    ${client.driver === 'postgres' ? 'FOR UPDATE OF target' : ''}
   `, [proxyProfileId, proxyProfileId])
   for (const row of rows) {
     await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
@@ -1608,7 +1531,7 @@ function normalizeProxyObservationTimestamp(value: unknown): string {
 }
 
 function normalizeProxyConfigRevision(value: unknown): string {
-  return requiredRfc3339Instant(value, '代理配置版本')
+  return proxyPatchTimestamp(value)
 }
 
 function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {

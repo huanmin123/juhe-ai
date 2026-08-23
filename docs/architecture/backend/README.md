@@ -132,7 +132,7 @@ flowchart LR
 - `/__aisys__/api/*` 和 `/__aipublic__/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 / 公开系统 API JSON body，不直接导入管理路由或 repository。代理层只做流式转发，并保留最大 in-flight 请求数和内部超时，避免慢 DB service 把主进程 socket 无限堆积。
 - 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商管理、代理管理 CRUD / 检测、统计和需要管理员权限的接口再叠加 `requireAdmin`，代理 options 作为登录用户可用的全局选择项不叠加管理员权限。
-- 账号测试、模型检测和代理检测都会发起外部网络探测。账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，执行进入 `JUHE_AI_CONCURRENCY_GLOBAL_MAX` 进程级共享池，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
+- 账号测试、模型检测和代理检测都会发起外部网络探测。账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，执行进入 `JUHE_AI_CONCURRENCY_GLOBAL_MAX` 进程级共享池，排队时间不计入 60 秒运行超时。模型检测和仍由 Node owner 的诊断任务继续共享 DB service 诊断任务 in-flight 上限；J3a 代理延迟检测已由 Go `juhe-ai-jobs` 独占执行、投影和 `proxy_profiles` 写回，Node 只保留手动管理 adapter，不再把 J3a 任务送入 Node DB service writer。超过 Node 诊断上限的任务直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
   - 活动账号测试取消以 worker IPC + 本地 `AbortController` 为即时信号；管理 API 仍先把 `cancel_requested` 写入数据库，再转发 cancel IPC。
   - claim / complete / fail 使用 `status` 与 `cancel_requested` 条件状态转换；取消与完成/失败竞态由 SQLite 与 PostgreSQL repository 在稀有失败分支收口，数据库保持跨进程重启后的最终权威。
   - 正常任务执行路径不得为每个阶段轮询 `is_account_test_task_cancel_requested` 或 `read_account_test_task_cancel_message`，也不得通过提高 DB service timeout、PostgreSQL 连接数或账号测试并发来掩盖积压。
@@ -177,7 +177,7 @@ flowchart LR
 - OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。OAuth token endpoint 响应体必须有固定字节上限，超限主动中断，不能在刷新路径无界累积 chunk 或拼接完整异常响应。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
-- 使用记录和账号状态副作用必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；原始审计和操作日志分别由 Node 一次性 loopback HMAC RPC 交给 Go `juhe-ai-gateway` 的 F3/F4。server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，`juhe-ai-jobs` 内 F1 按持久化 cursor 直接索引到专用运行日志库，不得另建 Node IPC、内存或 Redis 逐行队列。F1 不能由 Node 开关关闭或回退，且不得借此关闭或清理使用记录。
+- 使用记录和账号状态副作用必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；J3a 代理延迟检测是 Go owner 例外，由 `juhe-ai-jobs` 直接执行和写回，Node 不提供等价 writer/fallback。原始审计和操作日志分别由 Node 一次性 loopback HMAC RPC 交给 Go `juhe-ai-gateway` 的 F3/F4。server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，`juhe-ai-jobs` 内 F1 按持久化 cursor 直接索引到专用运行日志库，不得另建 Node IPC、内存或 Redis 逐行队列。F1 不能由 Node 开关关闭或回退，且不得借此关闭或清理使用记录。
 - 真实上游派发开始后，opaque 非 `2xx`、本地 transport failure、timeout、正文中断或精确协议声明的失败结构都属于当前 attempt，默认直接向客户端返回实际失败；不得按 Key -> 账户 -> 后续分组隐式接管。只有用户显式账户错误策略命中 `retry_next` 时，才允许在 `semanticCommitted = false` 且端点可安全重放的前提下切换候选。已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
 
 ## 6. 数据库设计
@@ -301,7 +301,7 @@ erDiagram
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
 - 涉及多 worker、worker 角色、job registry、任务租约、热点隔离或进程拓扑调整时，先按 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md) 执行；worker 数量不设固定上限，但必须有明确隔离域、队列上限、租约边界和健康指标。
 - 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
-- 当前 Node 后台任务按三类常驻 worker 隔离：使用记录 / 公开接口日志和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口和账号质量固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、代理检测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。Go `juhe-ai-jobs` 内 F1 完整接管运行日志索引、cursor、facet 和保留清理，F2 完整接管表数据/表空间监控采样、快照写入和 retention；Go `juhe-ai-gateway` 内 F3 完整接管原始审计持久化、读取和 retention，F4 承接操作日志写入、读取和保留。F1-F4 都不属于 Node worker，F3/F4 不使用 Node queue、Redis Stream 或 IPC。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
+- 当前 Node 后台任务按三类常驻 worker 隔离：使用记录 / 公开接口日志和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口和账号质量固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。J3a 代理延迟检测不在上述 Node worker 中，已由 Go `juhe-ai-jobs` 完整接管周期/手动执行、结果投影和 `proxy_profiles` 写回；Node 只保留到 Go 的管理 adapter。Go `juhe-ai-jobs` 内 F1 完整接管运行日志索引、cursor、facet 和保留清理，F2 完整接管表数据/表空间监控采样、快照写入和 retention；Go `juhe-ai-gateway` 内 F3 完整接管原始审计持久化、读取和 retention，F4 承接操作日志写入、读取和保留。F1-F4 与 J3a 都不属于 Node worker，且不使用 Node queue、Redis Stream 或 Node fallback。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
 - 请求链路产生的使用记录如需异步处理，应通过有界 IPC 或等价轻量通道投递到 `ingest-worker`；原始审计和操作日志分别以一次签名 RPC 交给 Go F3/F4，不得回退 IPC、Redis 或 Node writer。普通运行日志只允许顺序追加角色 JSONL 文件，解析、正则、脱敏、哈希、索引 DTO、数据库调用和 Redis 投递必须留在业务热路径之外。
 - 原始审计和操作日志均是 Node 一次直接 RPC 到 Go `juhe-ai-gateway` 的 best-effort 输入；业务成功不等待该旁路写入。进程在 RPC 完成前退出时允许丢失该条旁路记录，但失败必须可观察，不能恢复 Node queue、Redis Stream、IPC 或本地 writer。

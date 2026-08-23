@@ -468,12 +468,15 @@ function collapseAllRules() {
 
 .rule-condition-summary {
   display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: #64748b;
   font-size: 12px;
   line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .priority-tag {

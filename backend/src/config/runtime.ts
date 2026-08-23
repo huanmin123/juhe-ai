@@ -262,15 +262,8 @@ export interface RuntimeConfig {
     accountListAvailabilityProjectionMaxBatchesPerRun: number
     accountListAvailabilityProjectionWorkerConcurrency: number
     accountListAvailabilityProjectionRuntimeDependencyMaxAgeMs: number
-    proxyLatencyRefreshConcurrency: number
-    proxyLatencyRefreshBatchSize: number
     proxyProbeTimeoutMs: number
     proxyManualTestDeadlineMs: number
-    proxyLatencyRefreshIntervalSeconds: number
-    proxyLatencyRefreshRunBudgetMs: number
-    proxyLatencyRefreshCandidateDeadlineMs: number
-    proxyLatencyRefreshCandidatePoolFactor: number
-    proxyLatencyRefreshLeaseGraceMs: number
     accountProbeDbServiceTimeoutMs: number
     accountHealthCheckProbeDeadlineMs: number
     cooldownAccountRetestStartupDelayMs: number
@@ -812,15 +805,8 @@ export const runtimeConfig: RuntimeConfig = {
     accountListAvailabilityProjectionMaxBatchesPerRun: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN', 200, 1, 400),
     accountListAvailabilityProjectionWorkerConcurrency: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY', 4, 1, 8),
     accountListAvailabilityProjectionRuntimeDependencyMaxAgeMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_RUNTIME_DEPENDENCY_MAX_AGE_MS', 15_000, 1_000, 120_000),
-    proxyLatencyRefreshConcurrency: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CONCURRENCY', defaultBackgroundConcurrency, 1, 1_000),
-    proxyLatencyRefreshBatchSize: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_BATCH_SIZE', 20, 1, 1_000),
     proxyProbeTimeoutMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_PROBE_TIMEOUT_MS', 15_000, 1_000, 5 * 60_000),
     proxyManualTestDeadlineMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_MANUAL_TEST_DEADLINE_MS', 25_000, 1_000, 10 * 60_000),
-    proxyLatencyRefreshIntervalSeconds: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_INTERVAL_SECONDS', 60, 5, 24 * 60 * 60),
-    proxyLatencyRefreshRunBudgetMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_RUN_BUDGET_MS', 45_000, 1_000, 10 * 60_000),
-    proxyLatencyRefreshCandidateDeadlineMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CANDIDATE_DEADLINE_MS', 25_000, 1_000, 60_000),
-    proxyLatencyRefreshCandidatePoolFactor: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_CANDIDATE_POOL_FACTOR', 4, 1, 100),
-    proxyLatencyRefreshLeaseGraceMs: integerConfig('JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH_LEASE_GRACE_MS', 5_000, 0, 5 * 60_000),
     accountProbeDbServiceTimeoutMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_PROBE_DB_SERVICE_TIMEOUT_MS', 30_000, 1_000, 5 * 60_000),
     accountHealthCheckProbeDeadlineMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS', 65_000, 1_000, 10 * 60_000),
     cooldownAccountRetestStartupDelayMs: integerConfig('JUHE_AI_BACKGROUND_COOLDOWN_ACCOUNT_RETEST_STARTUP_DELAY_MS', 60_000, 0, 10 * 60_000),

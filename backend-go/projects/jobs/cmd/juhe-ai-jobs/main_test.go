@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	_ "modernc.org/sqlite"
 )
 
 func TestMatchesAccountBalanceManualSecret(t *testing.T) {
@@ -161,7 +163,27 @@ func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	business, err := sql.Open("sqlite", "file:j3a-manual-business?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer business.Close()
+	for _, statement := range []string{
+		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, test_status TEXT NOT NULL, latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE proxy_latency_projection_receipts (outcome_id TEXT PRIMARY KEY, proxy_id TEXT NOT NULL, input_version INTEGER NOT NULL, disposition TEXT NOT NULL, reason TEXT, applied_at TEXT NOT NULL)`,
+		`CREATE TABLE proxy_latency_projection_cursors (consumer_key TEXT PRIMARY KEY, stored_at TEXT, outcome_id TEXT, updated_at TEXT NOT NULL)`,
+		`INSERT INTO proxy_profiles(id,test_status,updated_at) VALUES ('proxy-manual','unknown','2026-08-23T00:00:00.123Z'), ('proxy-no-provider','unknown','2026-08-23T00:00:00.123Z')`,
+	} {
+		if _, err := business.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projector, err := proxylatency.NewResultProjector(store, business, proxylatency.ResultProjectorConfig{Now: time.Now}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := proxylatency.NewRunner(cfg, store, nil, nil)
+	runner.SetResultProjector(projector)
 	var running atomic.Bool
 	running.Store(true)
 	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "", true, func() bool { return false }, func() proxylatency.RunnerStatus { return runner.Status() }, func() (proxylatency.RunnerStatus, bool) { return runner.Snapshot() }, true, cfg.ManualHTTPSecret, runner)
@@ -185,6 +207,28 @@ func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
 	if !ok || report["proxyId"] != "proxy-manual" {
 		t.Fatalf("manual bridge report mismatch: %#v", payload)
 	}
+	if _, err := business.Exec(`UPDATE proxy_profiles SET updated_at='2026-08-24T00:00:00.123Z' WHERE id='proxy-manual'`); err != nil {
+		t.Fatal(err)
+	}
+	staleRequest := httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(body))
+	staleRequest.Header.Set("Authorization", "Bearer "+cfg.ManualHTTPSecret)
+	staleRequest.Header.Set("Content-Type", "application/json")
+	staleRecord := httptest.NewRecorder()
+	handler.ServeHTTP(staleRecord, staleRequest)
+	if staleRecord.Code != http.StatusOK {
+		t.Fatalf("stale manual bridge must keep report status=%d body=%s", staleRecord.Code, staleRecord.Body.String())
+	}
+	if _, err := business.Exec(`DELETE FROM proxy_profiles WHERE id='proxy-manual'`); err != nil {
+		t.Fatal(err)
+	}
+	deletedRequest := httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(body))
+	deletedRequest.Header.Set("Authorization", "Bearer "+cfg.ManualHTTPSecret)
+	deletedRequest.Header.Set("Content-Type", "application/json")
+	deletedRecord := httptest.NewRecorder()
+	handler.ServeHTTP(deletedRecord, deletedRequest)
+	if deletedRecord.Code != http.StatusNotFound {
+		t.Fatalf("deleted proxy manual bridge status=%d body=%s", deletedRecord.Code, deletedRecord.Body.String())
+	}
 	noProviderRequest := httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(`{"input":{"schema_version":1,"proxy_id":"proxy-no-provider","proxy_name":"No provider","config_revision":"2026-08-23T00:00:00.123Z","proxy_type":"http","proxy_host":"127.0.0.1","proxy_port":8080,"targets":[]}}`))
 	noProviderRequest.Header.Set("Authorization", "Bearer "+cfg.ManualHTTPSecret)
 	noProviderRequest.Header.Set("Content-Type", "application/json")
@@ -201,6 +245,17 @@ func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
 	if !ok || noProviderReport["status"] != "unknown" || noProviderReport["message"] != "代理检测未形成有效传输尝试" {
 		t.Fatalf("no-provider manual report mismatch: %#v", noProviderPayload)
 	}
+	if _, err := business.Exec(`DELETE FROM proxy_profiles WHERE id='proxy-no-provider'`); err != nil {
+		t.Fatal(err)
+	}
+	deletedNoProviderRequest := httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(`{"input":{"schema_version":1,"proxy_id":"proxy-no-provider","proxy_name":"No provider","config_revision":"2026-08-23T00:00:00.123Z","proxy_type":"http","proxy_host":"127.0.0.1","proxy_port":8080,"targets":[]}}`))
+	deletedNoProviderRequest.Header.Set("Authorization", "Bearer "+cfg.ManualHTTPSecret)
+	deletedNoProviderRequest.Header.Set("Content-Type", "application/json")
+	deletedNoProviderRecord := httptest.NewRecorder()
+	handler.ServeHTTP(deletedNoProviderRecord, deletedNoProviderRequest)
+	if deletedNoProviderRecord.Code != http.StatusNotFound {
+		t.Fatalf("deleted no-provider manual bridge status=%d body=%s", deletedNoProviderRecord.Code, deletedNoProviderRecord.Body.String())
+	}
 }
 
 func TestJobsHTTPHandlerRejectsProxyLatencyManualInvalidBoundary(t *testing.T) {
@@ -212,8 +267,8 @@ func TestJobsHTTPHandlerRejectsProxyLatencyManualInvalidBoundary(t *testing.T) {
 		request *http.Request
 		want    int
 	}{
-		{name: "missing runner returns 404", request: httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(`{"input":{}}`)), want: http.StatusNotFound},
-		{name: "wrong method returns 404", request: httptest.NewRequest(http.MethodGet, "/proxy-latency/manual", nil), want: http.StatusNotFound},
+		{name: "missing runner returns service unavailable", request: httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(`{"input":{}}`)), want: http.StatusServiceUnavailable},
+		{name: "wrong method returns method not allowed", request: httptest.NewRequest(http.MethodGet, "/proxy-latency/manual", nil), want: http.StatusMethodNotAllowed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			record := httptest.NewRecorder()

@@ -92,7 +92,7 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 
 | 优先级 | 当前 Node 角色/任务域 | 目标项目 | 迁移要求 |
 | --- | --- | --- | --- |
-| P0 实时 | `ops-worker` 账号复制、账号健康探活、模型/代理检测、冷却复测 | `jobs` | 先冻结状态机、lease、取消和上游超时；按账户/上游直接 fan-out，单账户失败隔离 |
+| P0 实时 | `ops-worker` 账号复制、账号健康探活、模型检测、冷却复测 | `jobs` | 先冻结状态机、lease、取消和上游超时；按账户/上游直接 fan-out，单账户失败隔离。J3a 代理延迟检测已完成 Go `jobs` 独占迁移，Node 不再保留该执行/投影/写回路径 |
 | P0 实时 | OAuth token 保活、授权到期扫描 | `jobs` | token/授权事实必须幂等；外部 I/O 与数据库写入分 lane，不能阻塞探活 |
 | P1 批处理 | `stats-worker` 用量聚合、IP/分组统计、趋势和窗口刷新 | `jobs` | 以 cursor/window 增量读取，统计写入独立 owner；按窗口并发，不回请求路径实时汇总 |
 | P1 批处理 | 系统指标和表监控采样 | `jobs` | F2 已物理归入 jobs；后续按完整功能继续收敛 Node owner，禁止双写 |

@@ -54,10 +54,12 @@ type AccountLease struct {
 }
 
 type Store struct {
-	db      *sql.DB
-	mode    StoreMode
-	writeMu sync.Mutex
-	pool    *pgpool.Handle
+	db          *sql.DB
+	mode        StoreMode
+	writeMu     sync.Mutex
+	schemaMu    sync.Mutex
+	schemaReady bool
+	pool        *pgpool.Handle
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
@@ -126,6 +128,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("account-balance store 未初始化")
 	}
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+	if s.schemaReady {
+		return nil
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if s.mode == StorePostgres {
@@ -150,7 +157,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE juhe_jobs.account_balance_outcomes ADD COLUMN IF NOT EXISTS committed BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
 			return fmt.Errorf("迁移 account-balance postgres outcome committed 字段失败: %w", err)
 		}
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.schemaReady = true
+		return nil
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -178,6 +189,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	committed = true
+	s.schemaReady = true
 	return nil
 }
 
@@ -278,9 +290,6 @@ func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 func (s *Store) AcquireAccountLease(ctx context.Context, owner OwnerLease, accountID string, duration time.Duration) (AccountLease, bool, error) {
 	if owner.FenceToken < 1 || strings.TrimSpace(owner.OwnerID) == "" || strings.TrimSpace(accountID) == "" || duration <= 0 {
 		return AccountLease{}, false, errors.New("account lease 参数无效")
-	}
-	if err := s.EnsureSchema(ctx); err != nil {
-		return AccountLease{}, false, err
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

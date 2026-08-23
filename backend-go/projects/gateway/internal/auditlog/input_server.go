@@ -17,6 +17,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -25,9 +26,13 @@ const (
 	AuditInputPath                        = "/__aiinternal__/v1/audit-captures"
 	AuditInputHealthPath                  = "/__aiinternal__/health"
 	AuditInputSignatureHeader             = "X-Juhe-AI-Signature"
+	AuditInputTimestampHeader             = "X-Juhe-AI-Timestamp"
+	AuditInputNonceHeader                 = "X-Juhe-AI-Nonce"
 	auditInputSignatureDomain             = "juhe-ai/audit-log-input/v1"
 	defaultInputMaxBytes            int64 = 4 << 20
 	defaultInputTimeout                   = 5 * time.Second
+	defaultInputReplayWindow              = 5 * time.Minute
+	defaultInputReplayCacheCapacity       = 4096
 	minimumProductionInputSecretLen       = 32
 )
 
@@ -35,18 +40,22 @@ const (
 // A foundation-only Store can still be constructed for migrations and smoke
 // tests, while a running F3 owner must explicitly opt into a loopback input.
 type InputServerConfig struct {
-	ListenAddress  string
-	SharedSecret   string
-	MaxBytes       int64
-	RequestTimeout time.Duration
+	ListenAddress       string
+	SharedSecret        string
+	MaxBytes            int64
+	RequestTimeout      time.Duration
+	ReplayWindow        time.Duration
+	ReplayCacheCapacity int
 }
 
 func LoadInputServerConfig(getenv func(string) string) (InputServerConfig, error) {
 	cfg := InputServerConfig{
-		ListenAddress:  strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS")),
-		SharedSecret:   strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_SECRET")),
-		MaxBytes:       defaultInputMaxBytes,
-		RequestTimeout: defaultInputTimeout,
+		ListenAddress:       strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS")),
+		SharedSecret:        strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_SECRET")),
+		MaxBytes:            defaultInputMaxBytes,
+		RequestTimeout:      defaultInputTimeout,
+		ReplayWindow:        defaultInputReplayWindow,
+		ReplayCacheCapacity: defaultInputReplayCacheCapacity,
 	}
 	if cfg.ListenAddress == "" {
 		return InputServerConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS 是 F3 sidecar 的必填配置")
@@ -104,6 +113,9 @@ type auditInputEnvelope struct {
 func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg InputServerConfig, logger *slog.Logger) error {
 	if err := cfg.validateRetentionPolicy(); err != nil {
 		return fmt.Errorf("F3 audit retention 配置无效: %w", err)
+	}
+	if replayWindow := effectiveAuditInputReplayWindow(inputCfg); replayWindow >= time.Duration(cfg.ProblemRetentionDays)*24*time.Hour {
+		return fmt.Errorf("F3 audit input replay window 必须小于 problem retention")
 	}
 	logger = loggerOrDefault(logger)
 	lease, acquired, err := store.AcquireOwnerLease(ctx, cfg.InstanceID, cfg.OwnerLease)
@@ -269,6 +281,47 @@ type auditInputHandler struct {
 	logger         *slog.Logger
 	healthy        *atomic.Bool
 	componentFatal chan<- error
+	replays        replayCache
+}
+
+type replayCache struct {
+	mu     sync.Mutex
+	nonces map[string]time.Time
+}
+
+func effectiveAuditInputReplayWindow(cfg InputServerConfig) time.Duration {
+	if cfg.ReplayWindow > 0 {
+		return cfg.ReplayWindow
+	}
+	return defaultInputReplayWindow
+}
+
+func effectiveAuditInputReplayCacheCapacity(cfg InputServerConfig) int {
+	if cfg.ReplayCacheCapacity > 0 {
+		return cfg.ReplayCacheCapacity
+	}
+	return defaultInputReplayCacheCapacity
+}
+
+func (c *replayCache) accept(nonce string, now time.Time, window time.Duration, capacity int) bool {
+	if nonce == "" || len(nonce) > 128 {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.nonces == nil {
+		c.nonces = map[string]time.Time{}
+	}
+	for value, expiry := range c.nonces {
+		if !expiry.After(now) {
+			delete(c.nonces, value)
+		}
+	}
+	if _, exists := c.nonces[nonce]; exists || len(c.nonces) >= capacity {
+		return false
+	}
+	c.nonces[nonce] = now.Add(window)
+	return true
 }
 
 func reportInputComponentFatal(ctx context.Context, fatal chan<- error, err error) {
@@ -335,7 +388,19 @@ func (h *auditInputHandler) ServeHTTP(writer http.ResponseWriter, request *http.
 		writer.WriteHeader(http.StatusRequestEntityTooLarge)
 		return
 	}
-	if !validAuditInputSignature(h.cfg.SharedSecret, body, request.Header.Get(AuditInputSignatureHeader)) {
+	timestamp := request.Header.Get(AuditInputTimestampHeader)
+	nonce := request.Header.Get(AuditInputNonceHeader)
+	parsedTimestamp, timestampErr := time.Parse(time.RFC3339Nano, timestamp)
+	replayWindow := effectiveAuditInputReplayWindow(h.cfg)
+	if timestampErr != nil || time.Since(parsedTimestamp).Abs() > replayWindow {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if !validAuditInputSignature(h.cfg.SharedSecret, timestamp, nonce, body, request.Header.Get(AuditInputSignatureHeader)) {
+		writer.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if !h.replays.accept(nonce, time.Now().UTC(), replayWindow, effectiveAuditInputReplayCacheCapacity(h.cfg)) {
 		writer.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -404,20 +469,28 @@ func isLoopbackRemote(remoteAddress string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func SignAuditInput(secret string, body []byte) string {
+func SignAuditInput(secret, timestamp, nonce string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(auditInputSignatureDomain))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(timestamp))
+	_, _ = mac.Write([]byte{'\n'})
+	_, _ = mac.Write([]byte(nonce))
 	_, _ = mac.Write([]byte{'\n'})
 	_, _ = mac.Write(body)
 	return "v1=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-func validAuditInputSignature(secret string, body []byte, supplied string) bool {
+func validAuditInputSignature(secret, timestamp, nonce string, body []byte, supplied string) bool {
 	if !strings.HasPrefix(supplied, "v1=") {
 		return false
 	}
 	expected := hmac.New(sha256.New, []byte(secret))
 	_, _ = expected.Write([]byte(auditInputSignatureDomain))
+	_, _ = expected.Write([]byte{'\n'})
+	_, _ = expected.Write([]byte(timestamp))
+	_, _ = expected.Write([]byte{'\n'})
+	_, _ = expected.Write([]byte(nonce))
 	_, _ = expected.Write([]byte{'\n'})
 	_, _ = expected.Write(body)
 	actual, err := hex.DecodeString(strings.TrimPrefix(supplied, "v1="))

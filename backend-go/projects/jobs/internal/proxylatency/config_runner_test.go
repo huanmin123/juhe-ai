@@ -28,13 +28,14 @@ func TestLoadRuntimeConfigEnabledRequiresCompletePostgresConfig(t *testing.T) {
 
 func TestLoadRuntimeConfigUsesNodeBatchAndCandidatePoolDefaults(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":            "true",
-		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":         "go",
-		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":        "jobs-test",
-		"JUHE_AI_PROXY_LATENCY_STORE":              "postgres",
-		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":       "postgres://jobs",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL": "postgres://business",
-		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":  "credential-secret",
+		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
+		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
+		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "jobs-test",
+		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
+		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":        "postgres://jobs",
+		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":  "postgres://business",
+		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": "postgres://business-writer",
+		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":   "credential-secret",
 	}
 	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
 	if err != nil {

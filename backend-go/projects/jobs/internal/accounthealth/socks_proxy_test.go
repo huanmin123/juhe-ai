@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 func TestSOCKS5HDialSendsDomainToProxy(t *testing.T) {
@@ -17,7 +19,7 @@ func TestSOCKS5HDialSendsDomainToProxy(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	connection, err := newSOCKS5DialContext(proxyURL, true)(ctx, "tcp", "example.test:443")
+	connection, err := upstreamhttp.NewSOCKS5DialContext(proxyURL, true)(ctx, "tcp", "example.test:443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +38,7 @@ func TestSOCKS5DialSendsLocalIPToProxy(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	connection, err := newSOCKS5DialContext(proxyURL, false)(ctx, "tcp", "127.0.0.1:443")
+	connection, err := upstreamhttp.NewSOCKS5DialContext(proxyURL, false)(ctx, "tcp", "127.0.0.1:443")
 	if err != nil {
 		t.Fatal(err)
 	}

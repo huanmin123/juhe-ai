@@ -720,8 +720,6 @@ export {
   resolveProxyUrlForProfileAsync,
   resolveProxyUrlForProfileForSystemAccount,
   resolveProxyUrlForProfileForSystemAccountAsync,
-  updateProxyTestState,
-  updateProxyTestStateAsync,
   updateProxy,
   updateProxyAsync,
   type ProxyProfileUrlResolution,
