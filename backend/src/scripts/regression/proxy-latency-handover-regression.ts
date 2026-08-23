@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  assertProxyLatencyReportMatchesProxy,
   parseProxyLatencyHandoverReport,
   proxyLatencyGoHandoverReady,
   proxyLatencyGoOwnerEnabled,
@@ -57,11 +58,36 @@ const report = parseProxyLatencyHandoverReport({
 })
 assert.equal(report.items[0]?.targetUrl, undefined, 'synthetic base item may omit targetUrl')
 assert.equal(report.items[2]?.targetUrl, 'https://generativelanguage.googleapis.com/v1', 'provider unknown item must retain targetUrl')
+assert.doesNotThrow(() => assertProxyLatencyReportMatchesProxy(report, 'proxy-j3a'))
+assert.throws(() => assertProxyLatencyReportMatchesProxy(report, 'proxy-other'), /proxyId.*不匹配/u)
 assert.throws(() => parseProxyLatencyHandoverReport({
   schemaVersion: 1,
   job: 'proxy-latency',
   report: { ...report, unexpected: true }
 }), /字段不完整/u)
+
+for (const [field, invalidValue] of [
+  ['score', '90'],
+  ['grade', 90],
+  ['testedAt', 123],
+  ['baseLatencyMs', '42']
+] as const) {
+  assert.throws(() => parseProxyLatencyHandoverReport({
+    schemaVersion: 1,
+    job: 'proxy-latency',
+    report: { ...report, [field]: invalidValue }
+  }), /(?:基础字段|baseLatencyMs).*无效/u, `${field} wrong type must fail closed`)
+}
+assert.throws(() => parseProxyLatencyHandoverReport({
+  schemaVersion: 1,
+  job: 'proxy-latency',
+  report: { ...report, testedAt: '2026-08-23' }
+}), /基础字段无效/u, 'testedAt must be strict RFC3339')
+assert.throws(() => parseProxyLatencyHandoverReport({
+  schemaVersion: 1,
+  job: 'proxy-latency',
+  report: { ...report, items: report.items.map((item, index) => index === 1 ? { ...item, targetUrl: 42 } : item) }
+}), /targetUrl 无效/u, 'targetUrl wrong type must fail closed')
 
 const goldenPath = resolve(import.meta.dirname, '../../../../backend-go/projects/jobs/internal/proxylatency/testdata/j3a-manual-report-golden.json')
 const golden = JSON.parse(readFileSync(goldenPath, 'utf8')) as { schemaVersion: number; job: string; report: unknown }

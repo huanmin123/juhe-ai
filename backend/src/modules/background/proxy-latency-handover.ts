@@ -1,6 +1,7 @@
 import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 import type { ProxyProfileTestConfig } from '../../storage/proxy.repository.js'
 import { listProvidersAsync } from '../../storage/provider.repository.js'
+import { parseRfc3339Instant } from '../../shared/rfc3339.js'
 import type { ProxyTestReport } from '../proxies/proxy-test.service.js'
 
 export const proxyLatencyHandoverSchemaVersion = 1 as const
@@ -109,7 +110,9 @@ export async function runProxyLatencyManualViaGo(
     })
     const text = await response.text()
     if (!response.ok) throw new Error(`Go manual bridge HTTP ${response.status}: ${text.slice(0, 2_000)}`)
-    return parseProxyLatencyHandoverReport(JSON.parse(text))
+    const report = parseProxyLatencyHandoverReport(JSON.parse(text))
+    assertProxyLatencyReportMatchesProxy(report, proxy.id)
+    return report
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', onAbort)
@@ -129,7 +132,8 @@ export function parseProxyLatencyHandoverReport(value: unknown): ProxyTestReport
   if (envelope.schemaVersion !== 1 || envelope.job !== proxyLatencyHandoverJobName) throw new Error('J3a Go result schema/job 不匹配')
   const report = record(envelope.report, 'J3a Go report')
   exact(report, ['proxyId', 'proxyName', 'score', 'grade', 'status', 'passedCount', 'warningCount', 'failedCount', 'testedAt', 'items', 'message'], ['outboundIp', 'outboundRegion', 'baseLatencyMs'])
-  if (typeof report.proxyId !== 'string' || typeof report.proxyName !== 'string' || typeof report.score !== 'number' || typeof report.grade !== 'string' || typeof report.testedAt !== 'string' || typeof report.message !== 'string') throw new Error('J3a Go report 基础字段无效')
+  if (typeof report.proxyId !== 'string' || typeof report.proxyName !== 'string' || !Number.isSafeInteger(report.score) || report.score < 0 || report.score > 100 || typeof report.grade !== 'string' || !['A', 'B', 'C', 'D'].includes(report.grade) || typeof report.testedAt !== 'string' || !parseRfc3339Instant(report.testedAt) || typeof report.message !== 'string') throw new Error('J3a Go report 基础字段无效')
+  if (report.baseLatencyMs !== undefined && (!Number.isSafeInteger(report.baseLatencyMs) || report.baseLatencyMs < 0)) throw new Error('J3a Go report baseLatencyMs 无效')
   if (!['passed', 'warning', 'failed', 'unknown'].includes(String(report.status))) throw new Error('J3a Go report status 无效')
   for (const field of ['passedCount', 'warningCount', 'failedCount']) if (!Number.isSafeInteger(report[field]) || Number(report[field]) < 0) throw new Error(`J3a Go report ${field} 无效`)
   if (!Array.isArray(report.items)) throw new Error('J3a Go report items 无效')
@@ -139,6 +143,7 @@ export function parseProxyLatencyHandoverReport(value: unknown): ProxyTestReport
     if (typeof row.name !== 'string' || typeof row.message !== 'string' || !['passed', 'warning', 'failed', 'unknown'].includes(String(row.status))) throw new Error('J3a Go report item 无效')
     if (row.httpStatus !== undefined && (!Number.isSafeInteger(row.httpStatus) || Number(row.httpStatus) < 100 || Number(row.httpStatus) > 599)) throw new Error('J3a Go report item httpStatus 无效')
     if (row.latencyMs !== undefined && (!Number.isSafeInteger(row.latencyMs) || Number(row.latencyMs) < 0)) throw new Error('J3a Go report item latencyMs 无效')
+    if (row.targetUrl !== undefined && typeof row.targetUrl !== 'string') throw new Error('J3a Go report item targetUrl 无效')
     return row as unknown as ProxyTestReport['items'][number]
   })
   return {
@@ -157,6 +162,13 @@ export function parseProxyLatencyHandoverReport(value: unknown): ProxyTestReport
     items,
     message: report.message
   }
+}
+
+export function assertProxyLatencyReportMatchesProxy(
+  report: Pick<ProxyTestReport, 'proxyId'>,
+  proxyId: string
+): void {
+  if (report.proxyId !== proxyId) throw new Error('J3a Go report proxyId 与请求代理不匹配')
 }
 
 function record(value: unknown, label: string): Record<string, any> {

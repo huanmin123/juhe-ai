@@ -118,6 +118,9 @@ func (request ManualRequest) ValidateOutcome(outcome Outcome) error {
 	if len(outcome.Items) == 0 {
 		return errors.New("J3a manual outcome items 为空")
 	}
+	if len(outcome.Items) != len(request.Targets) {
+		return fmt.Errorf("J3a manual outcome items 未覆盖全部 provider: got=%d want=%d", len(outcome.Items), len(request.Targets))
+	}
 	declared := make(map[string]ManualTarget, len(request.Targets))
 	for _, target := range request.Targets {
 		declared[target.Provider] = target

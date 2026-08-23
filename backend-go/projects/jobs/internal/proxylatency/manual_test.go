@@ -142,6 +142,24 @@ func TestManualOutcomeRejectsUndeclaredProvider(t *testing.T) {
 	}
 }
 
+func TestManualOutcomeRejectsMissingProviderItem(t *testing.T) {
+	request := ManualRequest{
+		SchemaVersion: 1, ProxyID: "proxy-manual", ProxyName: "Manual proxy",
+		ConfigRevision: "2026-08-23T00:00:00.123Z", ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 8080,
+		Targets: []ManualTarget{
+			{Provider: "openai", ProfileID: "profile-openai", Name: "OpenAI", URL: "https://api.openai.com/v1"},
+			{Provider: "gemini", ProfileID: "profile-gemini", Name: "Gemini", URL: "https://generativelanguage.googleapis.com/v1"},
+		},
+	}
+	err := request.ValidateOutcome(Outcome{
+		ProxyID: request.ProxyID, Trigger: TriggerManual, OverallStatus: OverallPassed,
+		Items: []ItemResult{{Provider: "openai", ProfileID: "profile-openai", Status: ItemPassed, Outcome: OutcomeSuccess}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "未覆盖全部 provider") {
+		t.Fatalf("missing provider item must fail closed: %v", err)
+	}
+}
+
 func TestManualOutboundProbeUsesFirstSuccessfulFallback(t *testing.T) {
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.String() == "" {
